@@ -1,0 +1,42 @@
+{
+  "name": "aether-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Aether Android — Capacitor + nodejs-mobile",
+  "scripts": {
+    "build": "npm run build:renderer && npm run build:node",
+    "build:renderer": "vite build --config vite.config.mobile.ts",
+    "build:node": "vite build --config vite.config.node-backend.ts && node ../../scripts/copy-node-project.mjs",
+    "cap:sync": "npm run build && cap sync android && node ../../scripts/sync-android-node-project.mjs && node ../../scripts/sync-cordova-nodejs-native.mjs",
+    "sync:android-native": "node ../../scripts/sync-android-native-to-wsl.mjs",
+    "sync:android-web": "npm run build:renderer && node ../../scripts/sync-android-web-to-wsl.mjs",
+    "preflight:android": "node ../../scripts/preflight-android.mjs",
+    "deploy:android": "npm run sync:android-web && npm run build:node && node ../../scripts/sync-android-node-project.mjs && npm run sync:android-native && npm run preflight:android",
+    "android:open": "cap open android"
+  },
+  "dependencies": {
+    "@aether/core": "*",
+    "@aether/skin": "*",
+    "@aether/ui": "*",
+    "@capacitor-mlkit/barcode-scanning": "^7.5.0",
+    "@capacitor/android": "^7.6.6",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/core": "^7.6.6",
+    "chokidar": "^4.0.3",
+    "music-metadata": "^10.6.4",
+    "node-taglib-sharp": "^5.2.3",
+    "nodejs-mobile-cordova": "^0.4.3",
+    "p-queue": "^8.0.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "sql.js": "1.12.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.6.6",
+    "@tailwindcss/vite": "^4.0.0",
+    "esbuild": "^0.25.12",
+    "tailwindcss": "^4.0.0"
+  }
+}

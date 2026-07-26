@@ -1,0 +1,14 @@
+{
+  "name": "@aether/core",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Backend Aether: errori tipizzati, contratto IPC, dominio, adapter di piattaforma",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  }
+}

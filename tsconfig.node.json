@@ -1,0 +1,20 @@
+{
+  // Progetto backend: core, main process Electron, backend nodejs-mobile.
+  // Nessun tipo DOM — se un file del core tocca `document` o `window` è un bug
+  // architetturale e va scoperto qui, non a runtime sul telefono.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "customConditions": ["node"],
+    "lib": ["ES2023"],
+    "types": ["node"]
+  },
+  "include": [
+    "packages/core/**/*.ts",
+    "apps/desktop/electron/**/*.ts",
+    "apps/desktop/*.config.ts",
+    "apps/mobile/node-backend/**/*.ts",
+    "apps/mobile/*.config.ts",
+    "scripts/**/*.mjs",
+    "vitest.config.ts"
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "name": "aether",
+  "version": "1.0.0",
+  "description": "Aether — player musicale local-first, con skin creabili e trasferimento wireless PC↔telefono",
+  "private": true,
+  "type": "module",
+  "author": "Federico Baratti",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w apps/desktop",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "check:node12": "node scripts/check-node12-compat.mjs",
+    "verify": "npm run typecheck && npm run lint && npm test",
+    "build:desktop": "npm run build -w apps/desktop",
+    "build:mobile": "npm run build -w apps/mobile",
+    "cap:sync": "npm run cap:sync -w apps/mobile",
+    "android:open": "npm run android:open -w apps/mobile"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "eslint": "^10.7.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "jsdom": "^29.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.64.0",
+    "vite": "^6.0.5",
+    "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "overrides": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}

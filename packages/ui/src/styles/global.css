@@ -1,0 +1,1401 @@
+@import 'tailwindcss';
+/* Skin layers — scoped under :root[data-skin='<id>'], override the tokens below.
+   Higher specificity than the base :root, so import order doesn't affect cascade. */
+@import './skins/nothing.css';
+@import './skins/cyberpunk.css';
+
+@theme {
+  --font-sans: 'Inter Variable', system-ui, -apple-system, sans-serif;
+
+  --color-surface-0: #09090d;
+  --color-surface-1: #0e0e14;
+  --color-surface-2: #16161f;
+  --color-surface-3: #1e1e2a;
+
+  --color-text-1: rgba(255, 255, 255, 0.92);
+  --color-text-2: rgba(255, 255, 255, 0.6);
+  --color-text-3: rgba(255, 255, 255, 0.38);
+}
+
+:root {
+  /* Dynamic accent — updated at runtime from cover art palette */
+  --accent: #8b7cf6;
+  --accent-rgb: 139 124 246;
+  --accent-soft: rgba(139, 124, 246, 0.16);
+  --accent-glow: rgba(139, 124, 246, 0.35);
+  /* Like/heart fill — tracks the accent in plain, overridden to red in the
+     Nothing skin (where red is the rare "interrupt" reserved for likes/errors). */
+  --accent-like: var(--accent);
+
+  /* Semantic status colors — skins re-tint these in skins/*/tokens.css */
+  --danger: #e5484d;
+  --danger-soft: rgba(229, 72, 77, 0.14);
+  --success: #34d399;
+  --success-soft: rgba(52, 211, 153, 0.14);
+  --warning: #facc15;
+  --warning-soft: rgba(250, 204, 21, 0.14);
+  --ambient-1: rgba(139, 124, 246, 0.1);
+  --ambient-2: rgba(76, 60, 180, 0.06);
+
+  --sidebar-bg: rgba(255, 255, 255, 0.04);
+  --hairline: rgba(255, 255, 255, 0.07);
+
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-med: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Shell layout */
+  --rail-w: 68px;
+  --rail-w-expanded: 240px;
+  --shell-left: var(--rail-w);
+  --player-h: 92px;
+  --player-gap: 14px;
+  --player-clearance: calc(var(--player-h) + var(--player-gap) * 2);
+  --content-x: clamp(16px, 3cqw, 48px);
+
+  /* Radius & elevation */
+  --radius-panel: 20px;
+  --radius-card: 14px;
+  --shadow-1: 0 2px 12px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 8px 28px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 16px 56px rgba(0, 0, 0, 0.55);
+  --glow-accent: 0 0 24px var(--accent-glow);
+  /* Floating player elevation — single token so PlayerBar/NowPlaying don't
+     hardcode shadow stacks inline. Top inner hairline + deep ambient drop. */
+  --shadow-player: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 40px rgba(0, 0, 0, 0.5);
+
+  /* Motion system */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-1: 150ms;
+  --dur-2: 280ms;
+  --dur-3: 450ms;
+
+  /* Hero tint — overridden per-hero from its artwork palette */
+  --hero-rgb: var(--accent-rgb);
+
+  /* Playhead glow (px) letto dal canvas dello Scrubber; le skin piatte
+     (Nothing) lo azzerano. */
+  --scrubber-glow: 6;
+  /* Onda non riprodotta dello Scrubber — le skin la ricolorano. */
+  --scrubber-rest: rgba(255, 255, 255, 0.18);
+
+  /* Contratto visualizer (Mini/FullscreenVisualizer leggono questi token):
+     primary = barre dello spettro, secondary = anello dei bassi, glow = alone. */
+  --viz-primary: var(--accent);
+  --viz-primary-rgb: var(--accent-rgb);
+  --viz-secondary: var(--accent);
+  --viz-secondary-rgb: var(--accent-rgb);
+  --viz-glow: 20;
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --sidebar-bg: rgba(0, 0, 0, 0.04);
+  --hairline: rgba(0, 0, 0, 0.08);
+  --danger: #d1242b;
+  --danger-soft: rgba(209, 36, 43, 0.12);
+  --success: #0f8a4d;
+  --success-soft: rgba(15, 138, 77, 0.12);
+  --warning: #9a7b00;
+  --warning-soft: rgba(154, 123, 0, 0.14);
+}
+
+/* Pinned sidebar widens the shell; pin only takes effect ≥1100px
+   (same breakpoint as the pin toggle in Sidebar.tsx) */
+@media (min-width: 1100px) {
+  :root[data-sidebar-pinned] {
+    --shell-left: var(--rail-w-expanded);
+  }
+}
+
+/* ── Route view transitions (see useRouteTransition) ── */
+::view-transition-old(root) {
+  animation: vt-out 200ms var(--ease-out-expo) both;
+}
+::view-transition-new(root) {
+  animation: vt-in 240ms var(--ease-out-expo) both;
+}
+@keyframes vt-out {
+  to {
+    opacity: 0;
+    transform: scale(0.992);
+  }
+}
+@keyframes vt-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+/* Chrome surfaces get their own snapshot group so they stay visually
+   static while the route content underneath cross-fades. */
+.player-shell {
+  view-transition-name: player;
+}
+.vt-sidebar {
+  view-transition-name: sidebar;
+}
+.vt-queue {
+  view-transition-name: queue;
+}
+
+/* Floating glass player positioning */
+.player-shell {
+  position: fixed;
+  z-index: 30;
+  left: calc(var(--shell-left) + var(--player-gap));
+  right: var(--player-gap);
+  bottom: var(--player-gap);
+  height: var(--player-h);
+  border-radius: var(--radius-panel);
+  transition: left 220ms var(--ease-out-expo);
+}
+@media (min-width: 1680px) {
+  .player-shell {
+    max-width: 1280px;
+    margin-inline: auto;
+  }
+}
+
+/* ── Mobile (Capacitor/Android) chrome ──
+   Activated by html[data-mobile] (set in src/main.mobile.tsx). Overrides the
+   desktop shell vars so the existing page layouts work unchanged: bottom-nav
+   primary navigation, full-bleed player above it, and scroll clearance that
+   accounts for the player + nav + gesture-nav safe area. */
+html[data-mobile] {
+  --shell-left: 0px;
+  --bottom-nav-h: 56px;
+  --player-h: 64px;
+  --content-x: 16px;
+  /* Contrasto (M3 accessibility / WCAG AA): il token desktop text-3 = 38% bianco
+     scende sotto 4.5:1 su surface-0 e diventa illeggibile sui telefoni al sole.
+     Su mobile lo alziamo a 50% (~4.6:1 su #09090d) e text-2 a 64%. Override solo
+     qui, il desktop tiene i valori originali. */
+  --color-text-3: rgba(255, 255, 255, 0.5);
+  --color-text-2: rgba(255, 255, 255, 0.64);
+  /* --sa-* are pushed by MainActivity from the real WindowInsets (edge-to-edge on
+     API 36). They take precedence over env(safe-area-inset-*), which is unreliable
+     below Chromium 140; env() is the fallback, 0px the last resort. */
+  --player-clearance: calc(
+    var(--player-h) + var(--bottom-nav-h) +
+      var(--sa-bottom, env(safe-area-inset-bottom, 0px)) + 14px
+  );
+}
+
+/* Status-bar safe area (viewport-fit=cover lets content go under it).
+   Side insets too: API 36 unlocks orientation on large displays, and in
+   landscape the display cutout / gesture bar sits on the sides. */
+html[data-mobile] .app-shell {
+  padding-top: var(--sa-top, env(safe-area-inset-top, 0px));
+  padding-left: var(--sa-left, env(safe-area-inset-left, 0px));
+  padding-right: var(--sa-right, env(safe-area-inset-right, 0px));
+}
+
+/* Bottom navigation bar. */
+html[data-mobile] .bottom-nav {
+  height: calc(var(--bottom-nav-h) + var(--sa-bottom, env(safe-area-inset-bottom, 0px)));
+  padding-bottom: var(--sa-bottom, env(safe-area-inset-bottom, 0px));
+  padding-left: var(--sa-left, env(safe-area-inset-left, 0px));
+  padding-right: var(--sa-right, env(safe-area-inset-right, 0px));
+  backdrop-filter: blur(24px) saturate(1.5);
+}
+
+/* Player floats full-width just above the bottom nav. */
+html[data-mobile] .player-shell {
+  left: calc(8px + var(--sa-left, env(safe-area-inset-left, 0px)));
+  right: calc(8px + var(--sa-right, env(safe-area-inset-right, 0px)));
+  bottom: calc(var(--bottom-nav-h) + var(--sa-bottom, env(safe-area-inset-bottom, 0px)) + 6px);
+  border-radius: var(--radius-card);
+}
+
+/* Comfortable touch targets for the bottom-sheet context menu (M3: ≥48dp). */
+html[data-mobile] .menu-pop button {
+  min-height: 48px;
+}
+
+/* Tap feedback on track rows: they're plain <div onClick>, so they sit outside
+   the button/.pressable tap-highlight reset and had NO pressed state — taps
+   felt dead. The header row (.track-head) is excluded. */
+html[data-mobile] .track-grid {
+  -webkit-tap-highlight-color: transparent;
+}
+html[data-mobile] .track-grid:not(.track-head):active {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+/* Artwork is UI chrome: long-press must open OUR menus (useLongPress →
+   BottomSheet), never the WebView "save/copy image" sheet or a drag ghost. */
+html[data-mobile] img {
+  -webkit-touch-callout: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* In-page inputs vs the soft keyboard: the edge-to-edge WebView never resizes,
+   so scrollIntoView (wired in main.mobile.tsx on focusin) needs breathing room
+   at the bottom of page scroll containers while the IME is up. */
+html[data-mobile] main .overflow-y-auto {
+  scroll-padding-bottom: calc(var(--kb-height, 0px) + 16px);
+}
+
+/* ── Mobile state layer (Material 3) ──
+   M3 sostituisce l'hover desktop con uno "state layer": un velo che appare al
+   tocco. Su touch non c'è hover, quindi diamo un feedback istantaneo al press
+   (oltre allo scale di .pressable) così ogni controllo reagisce sotto il dito.
+   Velo neutro sui controlli, accent sulle righe selezionabili. */
+html[data-mobile] .icon-btn:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+html[data-mobile][data-theme='light'] .icon-btn:active {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+/* Disabled M3: niente glow/ombra residua, solo superficie spenta. */
+html[data-mobile] .btn-accent:disabled {
+  box-shadow: none;
+  filter: saturate(0.6);
+}
+
+/* Scrollbar desktop (10px webkit) fuori posto su touch: niente barra su mobile,
+   lo scroll è gestuale. */
+html[data-mobile] ::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* Placeholder leggibile e coerente col token text-3 (mobile). */
+html[data-mobile] input::placeholder,
+html[data-mobile] textarea::placeholder {
+  color: var(--color-text-3);
+  opacity: 1;
+}
+
+/* ── Page header (mobile) ──
+   pt-12 nel markup è la clearance della titlebar desktop (drag region): su
+   mobile la shell ha già il padding --sa-top, quindi quel padding è solo una
+   fascia morta sopra ogni titolo. Il titolo scala col viewport stretto via
+   --page-title-size (letta dall'inline style di PageHeader). */
+html[data-mobile] .page-header {
+  padding-top: 12px;
+  padding-bottom: 14px;
+}
+html[data-mobile] {
+  --page-title-size: clamp(26px, 7cqw, 34px);
+}
+
+/* Form density (M3/WCAG): campi tappabili comodamente col dito. */
+html[data-mobile] .field-input {
+  min-height: 44px;
+}
+
+/* Icon button dentro i dialoghi (close, nudge, azioni riga): su touch il
+   target sale a 44px senza toccare i singoli componenti. */
+html[data-mobile] .glass-modal .icon-btn {
+  min-height: 44px;
+  min-width: 44px;
+}
+/* Idem nei full-screen sheet (editor testi: righe dense di micro-bottoni →
+   40px, il compromesso che tiene stamp/nudge/delete + input in 360dp). */
+html[data-mobile] .fs-sheet .icon-btn {
+  min-height: 40px;
+  min-width: 40px;
+}
+
+/* Scrubber: hit area piena da 48dp per il seek col dito (il canvas riempie
+   il wrapper, la waveform si ridisegna in proporzione). */
+html[data-mobile] .scrub-wrap {
+  height: 48px;
+}
+
+/* Input nell'app bar dei full-screen sheet: il focus è già evidente (tastiera
+   aperta + caret) — l'anello accent del :focus-visible globale è solo rumore. */
+html[data-mobile] .fs-sheet input:focus-visible {
+  outline: none;
+}
+
+/* Lo scroll di una lista non deve incatenarsi al contenitore dietro (sheet,
+   overlay) né rimbalzare sulla shell: app-like, niente scroll-chaining. */
+html[data-mobile] main,
+html[data-mobile] .overflow-y-auto {
+  overscroll-behavior: contain;
+}
+
+/* ── BottomNav active indicator (Material 3 pill) ──
+   A soft accent pill grows behind the icon of the active destination, the
+   standard Material 3 navigation-bar cue. Animated via transform/opacity so
+   it stays cheap and respects reduced-motion (no transition there). */
+.nav-pill {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  transform: scale(0.6);
+  opacity: 0;
+  transition:
+    transform var(--dur-2) var(--ease-spring),
+    opacity var(--dur-2) var(--ease-out-expo);
+  pointer-events: none;
+}
+.bottom-nav a[aria-current='page'] .nav-pill {
+  transform: scale(1);
+  opacity: 1;
+}
+/* Icona "filled" sulla destinazione attiva (cue Material 3): riempimento accent
+   morbido oltre allo stroke marcato. In CSS la var si risolve (a differenza
+   dell'attributo SVG fill). */
+.bottom-nav a[aria-current='page'] svg {
+  fill: var(--accent-soft);
+}
+
+/* ── Mini-player progress hairline ──
+   A thin accent fill pinned to the top edge of the floating mobile player so
+   elapsed position is glanceable without opening Now Playing. Width is driven
+   by the inline --progress var (0–1). */
+html[data-mobile] .player-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 2px;
+  width: calc(var(--progress, 0) * 100%);
+  background: var(--accent);
+  border-top-left-radius: var(--radius-card);
+  box-shadow: 0 0 8px var(--accent-glow);
+  transition: width 250ms linear;
+  pointer-events: none;
+}
+
+/* ── Large-screen adaptive chrome (Android 16 / API 36 #5) ──
+   La chrome mobile è attiva via html[data-mobile] a qualunque larghezza; su display
+   ≥600dp (tablet/foldable/finestre desktop, dove API 36 vieta il lock di orientamento)
+   nav e player non devono stirarsi a tutta larghezza. Le liste già si adattano via
+   @container content. */
+@media (min-width: 600px) {
+  html[data-mobile] .bottom-nav {
+    justify-content: center;
+    gap: clamp(8px, 4vw, 56px);
+  }
+  html[data-mobile] .bottom-nav > a {
+    flex: 0 1 96px; /* annulla il flex-1 di Tailwind: voci a larghezza fissa, centrate */
+  }
+  html[data-mobile] .player-shell {
+    /* left/right già 8px dal blocco mobile: max-width + margin auto centra (stesso
+       pattern del desktop @media 1680px) — niente transform per non toccare slide-up-in */
+    max-width: 760px;
+    margin-inline: auto;
+  }
+}
+
+/* ── Dialog opacity fix for the Android WebView ──
+   Nested backdrop-filter (overlay .backdrop-blur-sm → .glass-modal → .glass-chrome)
+   composites to transparent on Chromium/Android, leaking page content through every
+   dialog (most glaring on "Migra da Spotify" over the dense Settings page). On mobile
+   we drop the blur and use solid surfaces so dialogs are opaque. Desktop/Electron,
+   which handles nested backdrop-filter fine, keeps the frosted glass. */
+html[data-mobile] .overlay-in {
+  background: rgba(0, 0, 0, 0.62); /* guaranteed dim backdrop, no color-mix/blur */
+  backdrop-filter: none;
+  /* Keyboard-aware: shrink the overlay to the band ABOVE the soft keyboard so
+     centered, bottom-sheet and top-anchored dialogs all stay fully visible when an
+     input is focused. --kb-height is the IME inset pushed by MainActivity (0 when the
+     keyboard is hidden); on edge-to-edge / API 36 the WebView itself never resizes. */
+  bottom: var(--kb-height, 0px);
+}
+html[data-mobile] .glass-modal {
+  background: var(--color-surface-2); /* #16161f — opaque, reads as elevated */
+  backdrop-filter: none;
+  /* Never let a dialog exceed the space between the status bar and the keyboard top. */
+  max-height: calc(100vh - var(--kb-height, 0px) - var(--sa-top, 0px) - 24px);
+}
+html[data-mobile][data-theme='light'] .glass-modal {
+  background: #f4f4f8; /* opaque light surface */
+}
+/* Controls inside the now-solid modal: flat translucent fill, no nested blur. Scoped
+   to within .glass-modal so the standalone mobile search bar keeps its own chrome. */
+html[data-mobile] .glass-modal .glass-chrome {
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: none;
+}
+html[data-mobile][data-theme='light'] .glass-modal .glass-chrome {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  margin: 0;
+  user-select: none;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-surface-0);
+  color: var(--color-text-1);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Ambient radial gradient reacting to the playing album's palette */
+.ambient-backdrop {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 70% -10%, var(--ambient-1), transparent 60%),
+    radial-gradient(ellipse 60% 50% at 10% 110%, var(--ambient-2), transparent 60%),
+    radial-gradient(ellipse 50% 40% at 95% 70%, var(--ambient-2), transparent 65%);
+  transition: background 800ms ease;
+}
+
+/* ── Glass recipes ──
+   Budget: at most ~4 backdrop-filter surfaces composited at once
+   (rail overlay, player, queue drawer, one modal). */
+.glass-chrome {
+  background: rgba(14, 14, 20, 0.72);
+  backdrop-filter: blur(24px) saturate(1.5);
+  border: 1px solid var(--hairline);
+}
+.glass-modal {
+  background: rgba(18, 18, 26, 0.95);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--hairline);
+}
+:root[data-theme='light'] .glass-chrome {
+  background: rgba(248, 248, 252, 0.72);
+}
+:root[data-theme='light'] .glass-modal {
+  background: rgba(250, 250, 253, 0.95);
+}
+
+/* ── Card hover recipe — transform/opacity/shadow only ──
+   NO will-change here: a blanket hint promotes EVERY card to its own
+   compositor layer permanently (1–2k layers on a big Albums grid → GPU
+   memory pressure + scroll jank on phones). The transform transition is
+   cheap enough to promote lazily on interaction. */
+.card-lift {
+  position: relative;
+  transition:
+    transform var(--dur-2) var(--ease-out-expo),
+    box-shadow var(--dur-2) var(--ease-out-expo),
+    background var(--dur-2) var(--ease-out-expo);
+}
+.card-lift::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(125deg, rgba(255, 255, 255, 0.07) 0%, transparent 45%);
+  opacity: 0;
+  transition: opacity var(--dur-2) var(--ease-out-expo);
+}
+/* Hover lift only on devices that actually hover (desktop). On touch a hover
+   that never fires would otherwise leave the lift stuck after a tap. */
+@media (hover: hover) {
+  .card-lift:hover {
+    transform: translateY(-4px);
+    box-shadow:
+      var(--shadow-2),
+      inset 0 0 0 1px rgba(var(--accent-rgb) / 0.25);
+  }
+  .card-lift:hover::after {
+    opacity: 1;
+  }
+  .card-lift:hover img {
+    transform: scale(1.06);
+  }
+}
+.card-lift img {
+  transition: transform var(--dur-3) var(--ease-out-expo);
+}
+/* Touch press feedback — subtle scale-down so a tap feels tactile. */
+@media (hover: none) {
+  .card-lift:active {
+    transform: scale(0.97);
+  }
+}
+
+/* ── Card play affordance ──
+   The round play button overlaid on album/playlist/artist covers. On desktop
+   it reveals on hover; on touch (no hover) it must stay visible, otherwise the
+   primary action is unreachable. */
+.card-play {
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity var(--dur-2) var(--ease-out-expo),
+    transform var(--dur-2) var(--ease-out-expo);
+}
+.card-lift:hover .card-play {
+  opacity: 1;
+  transform: translateY(0);
+}
+.card-play:active {
+  transform: scale(0.92);
+}
+@media (hover: none) {
+  .card-play {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Staggered grid entrance ──
+   Small incremental delay on the first row of children so a freshly mounted
+   grid cascades in instead of popping all at once. Capped at 8 so long lists
+   never crawl; items past the 8th share no delay (already on-screen later). */
+.stagger > *:nth-child(1) { animation-delay: 0ms; }
+.stagger > *:nth-child(2) { animation-delay: 35ms; }
+.stagger > *:nth-child(3) { animation-delay: 70ms; }
+.stagger > *:nth-child(4) { animation-delay: 105ms; }
+.stagger > *:nth-child(5) { animation-delay: 140ms; }
+.stagger > *:nth-child(6) { animation-delay: 175ms; }
+.stagger > *:nth-child(7) { animation-delay: 210ms; }
+.stagger > *:nth-child(8) { animation-delay: 245ms; }
+
+/* ── Hero scrim — tinted by the page artwork via --hero-rgb ── */
+.hero-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(var(--hero-rgb) / 0.28) 0%,
+      rgba(var(--hero-rgb) / 0.08) 45%,
+      var(--color-surface-0) 100%
+    );
+}
+
+/* ── Fluid media card grid ── */
+.media-grid {
+  --card-min: 176px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--card-min), 100%), 1fr));
+  gap: clamp(8px, 1.2cqw, 20px);
+}
+/* Cheap virtualization for card grids: off-screen cards skip layout/paint
+   entirely (a 1–2k album library used to keep every card subtree live).
+   `auto` remembers the real size after first render, so the 240px estimate
+   only seeds the initial scrollbar. */
+.media-grid > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+.media-grid--dense {
+  --card-min: 150px;
+}
+@container content (max-width: 800px) {
+  .media-grid {
+    --card-min: 140px;
+  }
+  .media-grid--dense {
+    --card-min: 124px;
+  }
+}
+@container content (min-width: 1600px) {
+  .media-grid {
+    --card-min: 190px;
+  }
+  .media-grid--dense {
+    --card-min: 160px;
+  }
+}
+
+/* ── Track list responsive grid (container: main = "content") ──
+   Header row and data rows share this class; the tg-album / tg-year
+   cells appear in lockstep with the added template columns. */
+.track-grid {
+  display: grid;
+  align-items: center;
+  gap: 0.5rem;
+  padding-inline: 12px;
+  grid-template-columns: 40px minmax(180px, 2fr) minmax(120px, 1.4fr) minmax(120px, 1.4fr) 56px 64px 100px;
+}
+/* Hide cells below the width where their column drops out — cells keep
+   their own display (flex header buttons, block row divs) when visible. */
+@container content (max-width: 919.98px) {
+  .track-grid {
+    grid-template-columns: 40px minmax(160px, 2fr) minmax(110px, 1.3fr) minmax(110px, 1.3fr) 64px 100px;
+  }
+  .track-grid .tg-year {
+    display: none;
+  }
+}
+@container content (max-width: 759.98px) {
+  .track-grid {
+    grid-template-columns: 40px minmax(140px, 2fr) minmax(100px, 1.2fr) 64px 100px;
+  }
+  .track-grid .tg-album {
+    display: none;
+  }
+}
+
+/* Telefono (chrome mobile + contenuto stretto): la tabella diventa un list
+   item M3 a due righe — thumb 44px, titolo sopra, artista sotto, durata a
+   destra. Rating e header colonne spariscono (il rating vive nel menu
+   long-press, l'ordinamento nel bottone Sort). La cella data-idx resta la
+   prima: la skin Nothing ci disegna l'indice.
+   Scoped a html[data-mobile]: una finestra desktop stretta tiene la tabella
+   (le righe restano 48px, l'altezza è inline da TrackList). */
+@container content (max-width: 559.98px) {
+  html[data-mobile] .track-grid {
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    grid-template-areas:
+      'thumb title dur'
+      'thumb artist dur';
+    align-content: center;
+    column-gap: 12px;
+    row-gap: 1px;
+    padding-inline: 16px;
+  }
+  html[data-mobile] .track-grid .tg-thumb {
+    grid-area: thumb;
+    height: 44px;
+    width: 44px;
+  }
+  html[data-mobile] .track-grid .tg-title {
+    grid-area: title;
+    font-size: 14px;
+    align-self: end;
+  }
+  html[data-mobile] .track-grid .tg-artist {
+    grid-area: artist;
+    font-size: 12px;
+    align-self: start;
+  }
+  html[data-mobile] .track-grid .tg-dur {
+    grid-area: dur;
+    align-self: center;
+    font-size: 12px;
+  }
+  html[data-mobile] .track-grid .tg-rating,
+  html[data-mobile] .track-head {
+    display: none;
+  }
+}
+
+/* ── Entrance keyframes ── */
+@keyframes slide-up-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.slide-up-in {
+  animation: slide-up-in var(--dur-3) var(--ease-out-expo) both;
+}
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.scale-in {
+  animation: scale-in var(--dur-2) var(--ease-out-expo) both;
+}
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.slide-in-right {
+  animation: slide-in-right var(--dur-2) var(--ease-out-expo) both;
+}
+
+/* ── Shared form field recipe ── */
+.field-input {
+  border-radius: 10px;
+  border: 1px solid var(--hairline);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--color-text-1);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    background var(--transition-fast);
+}
+.field-input:focus {
+  outline: none;
+  border-color: rgba(var(--accent-rgb) / 0.5);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb) / 0.15);
+}
+:root[data-theme='light'] .field-input {
+  background: rgba(0, 0, 0, 0.04);
+}
+/* The native <select> popup can ignore the page color-scheme and render
+   light; without solid colors here the inherited near-white text becomes
+   invisible on the white popup */
+select.field-input option {
+  background-color: var(--color-surface-3);
+  color: var(--color-text-1);
+}
+:root[data-theme='light'] select.field-input option {
+  background-color: #fff;
+  color: rgba(0, 0, 0, 0.85);
+}
+
+/* ── Press feedback ──
+   Drop-in tactile scale for any tappable control. Pairs with haptics.ts on
+   mobile. Kept transform-only so it never reflows surrounding layout. */
+.pressable {
+  transition: transform var(--dur-1) var(--ease-out-expo);
+}
+.pressable:active {
+  transform: scale(0.96);
+}
+
+/* ── Shared button recipes ── */
+.btn-accent {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 4px 16px var(--accent-glow);
+  transition:
+    filter var(--dur-1) ease,
+    transform var(--dur-1) var(--ease-out-expo),
+    box-shadow var(--dur-2) ease;
+}
+.btn-accent:hover:not(:disabled) {
+  filter: brightness(1.12);
+  box-shadow: 0 6px 22px var(--accent-glow);
+}
+.btn-accent:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.btn-accent:disabled {
+  opacity: 0.5;
+}
+.btn-ghost {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-text-1);
+  transition:
+    background var(--transition-fast),
+    transform var(--dur-1) var(--ease-out-expo);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+.btn-ghost:active:not(:disabled) {
+  transform: scale(0.97);
+}
+:root[data-theme='light'] .btn-ghost {
+  background: rgba(0, 0, 0, 0.05);
+}
+:root[data-theme='light'] .btn-ghost:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.09);
+}
+
+/* ── Error banner — replaces inline red boxes, animated entrance ── */
+@keyframes banner-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.error-banner {
+  border-radius: 10px;
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  background: rgba(239, 68, 68, 0.1);
+  color: rgb(248, 113, 113);
+  padding: 10px 14px;
+  font-size: 13px;
+  animation: banner-in var(--dur-2) var(--ease-out-expo) both;
+}
+:root[data-theme='light'] .error-banner {
+  color: rgb(185, 28, 28);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+/* ── Toast cards — opaque on purpose: stays outside the glass budget ── */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+.toast-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--hairline);
+  background: rgba(20, 20, 28, 0.97);
+  box-shadow: var(--shadow-2);
+  animation: toast-in var(--dur-2) var(--ease-spring) both;
+}
+.toast-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--toast-bar, var(--accent));
+}
+.toast-card--leaving {
+  animation: toast-out 200ms ease both;
+}
+.toast-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--toast-bar, var(--accent));
+  opacity: 0.5;
+  animation: toast-progress var(--toast-dur, 4500ms) linear both;
+}
+@keyframes toast-progress {
+  from { width: 100%; }
+  to { width: 0%; }
+}
+.toast-card:hover .toast-progress {
+  animation-play-state: paused;
+}
+:root[data-theme='light'] .toast-card {
+  background: rgba(252, 252, 254, 0.98);
+}
+
+/* ── Modal backdrop fade-in ── */
+@keyframes overlay-in {
+  from { opacity: 0; }
+}
+.overlay-in {
+  animation: overlay-in 200ms ease both;
+}
+
+/* ── Bottom sheet rise (mobile) ── */
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+/* ── Now Playing full-screen rise (mobile) ──
+   Entrata M3: la schermata sale con un breve translate + fade invece di un fade
+   secco, così la transizione mini-player → Now Playing ha una direzione chiara.
+   La gesture di chiusura (swipe-down) è gestita in NowPlaying.tsx via transform
+   inline, che sovrascrive questo all'inizio del drag. */
+@keyframes np-rise {
+  from {
+    opacity: 0;
+    transform: translateY(7%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+html[data-mobile] .np-rise {
+  animation: np-rise var(--dur-3) var(--ease-out-expo) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-mobile] .np-rise {
+    animation: none !important;
+  }
+}
+
+/* ── Equalizer vertical sliders ──
+   Shared by the desktop floating panel and the mobile bottom sheet; mobile gets
+   larger, finger-friendly thumbs/track. */
+.eq-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 22px;
+  height: 130px;
+  background: transparent;
+  cursor: pointer;
+}
+.eq-slider::-webkit-slider-runnable-track {
+  width: 4px;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 2px;
+}
+.eq-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-left: -5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+  cursor: pointer;
+  transition: transform 150ms;
+}
+.eq-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+.eq-slider:disabled {
+  opacity: 0.5;
+}
+html[data-mobile] .eq-slider {
+  width: 34px;
+  height: 168px;
+}
+html[data-mobile] .eq-slider::-webkit-slider-runnable-track {
+  width: 6px;
+}
+html[data-mobile] .eq-slider::-webkit-slider-thumb {
+  width: 22px;
+  height: 22px;
+  margin-left: -8px;
+}
+
+/* ── Context menu pop — grows from the cursor via --menu-origin ── */
+.menu-pop {
+  transform-origin: var(--menu-origin, top left);
+  animation: scale-in 160ms var(--ease-out-expo) both;
+}
+
+/* ── Gentle float for empty-state icons ── */
+@keyframes icon-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+.icon-float {
+  animation: icon-float 6s ease-in-out infinite;
+}
+
+/* ── Switch — styled track/knob over a visually-hidden native checkbox ── */
+.switch {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+}
+.switch input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+}
+.switch .switch-track {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  transition: background var(--dur-2) ease, box-shadow var(--dur-2) ease;
+}
+.switch .switch-track::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: transform var(--dur-2) var(--ease-spring);
+}
+.switch input:checked + .switch-track {
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+.switch input:checked + .switch-track::after {
+  transform: translateX(18px);
+}
+.switch input:focus-visible + .switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+:root[data-theme='light'] .switch .switch-track {
+  background: rgba(0, 0, 0, 0.15);
+}
+:root[data-theme='light'] .switch input:checked + .switch-track {
+  background: var(--accent);
+}
+/* MD3 switch metrics on touch: 52×32 with a 24px knob. The desktop 40×22 is
+   under the 44px touch minimum and fiddly under a finger. The ::before pad
+   grows the <label>'s hit box to ~76×48 without moving layout — taps on it
+   still toggle the nested checkbox (label semantics). */
+html[data-mobile] .switch {
+  width: 52px;
+  height: 32px;
+}
+html[data-mobile] .switch::before {
+  content: '';
+  position: absolute;
+  inset: -8px -12px;
+}
+html[data-mobile] .switch .switch-track::after {
+  top: 4px;
+  left: 4px;
+  width: 24px;
+  height: 24px;
+}
+html[data-mobile] .switch input:checked + .switch-track::after {
+  transform: translateX(20px);
+}
+
+/* ── Row-card hover — lighter language than .card-lift, for list rows ── */
+.row-lift {
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--dur-2) ease;
+}
+@media (hover: hover) {
+  .row-lift:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(var(--accent-rgb) / 0.18);
+  }
+  :root[data-theme='light'] .row-lift:hover {
+    background: rgba(0, 0, 0, 0.04);
+  }
+}
+/* Touch press: row highlights on finger-down for immediate feedback. */
+@media (hover: none) {
+  .row-lift:active {
+    background: rgba(255, 255, 255, 0.07);
+  }
+  :root[data-theme='light'] .row-lift:active {
+    background: rgba(0, 0, 0, 0.06);
+  }
+}
+
+/* ── Progress sheen — moving highlight on active progress fills ── */
+.progress-sheen {
+  position: relative;
+  overflow: hidden;
+}
+.progress-sheen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.35) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+}
+
+/* ── Now-playing equalizer bars (one instance in the whole list) ── */
+.eq-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+}
+.eq-bars span {
+  width: 3px;
+  border-radius: 1.5px;
+  background: var(--accent);
+  transform-origin: bottom;
+  animation: eq-bounce 0.9s ease-in-out infinite;
+}
+.eq-bars span:nth-child(1) {
+  height: 100%;
+  animation-delay: -0.3s;
+}
+.eq-bars span:nth-child(2) {
+  height: 100%;
+  animation-delay: -0.6s;
+  animation-duration: 0.75s;
+}
+.eq-bars span:nth-child(3) {
+  height: 100%;
+  animation-delay: -0.1s;
+  animation-duration: 1.05s;
+}
+.eq-bars--paused span {
+  animation-play-state: paused;
+}
+@keyframes eq-bounce {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+
+/* ── Range slider — accent thumb with glow, hairline track ── */
+input[type='range'].range-accent {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  background: transparent;
+}
+input[type='range'].range-accent::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+}
+input[type='range'].range-accent::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5px;
+  height: 14px;
+  width: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  transition: box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+input[type='range'].range-accent:hover::-webkit-slider-thumb {
+  box-shadow: 0 0 12px var(--accent-glow);
+  transform: scale(1.15);
+}
+:root[data-theme='light'] input[type='range'].range-accent::-webkit-slider-runnable-track {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* ── Tooltip pill — opaque, outside the glass budget.
+   Positioning lives on a wrapper: the entrance animation owns transform. ── */
+.tooltip-wrap {
+  position: fixed;
+  z-index: 90;
+  pointer-events: none;
+}
+.tooltip-pill {
+  padding: 5px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: rgba(24, 24, 32, 0.97);
+  color: var(--color-text-1);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: var(--shadow-1);
+  transform-origin: var(--menu-origin, bottom center);
+  animation: scale-in 160ms var(--ease-out-expo) both;
+}
+:root[data-theme='light'] .tooltip-pill {
+  background: rgba(252, 252, 254, 0.98);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-lift,
+  .card-lift::after,
+  .card-lift img,
+  .slide-up-in,
+  .scale-in,
+  .slide-in-right,
+  .fade-in,
+  .error-banner,
+  .toast-card,
+  .toast-card--leaving,
+  .overlay-in,
+  .menu-pop,
+  .icon-float,
+  .progress-sheen::after,
+  .eq-bars span,
+  .tooltip-pill {
+    transition: none !important;
+    animation: none !important;
+  }
+  .toast-progress {
+    animation: none !important;
+    display: none;
+  }
+  .switch .switch-track,
+  .switch .switch-track::after,
+  .btn-accent,
+  .btn-ghost,
+  .row-lift,
+  .pressable,
+  .card-play,
+  .nav-pill,
+  .player-progress {
+    transition: none !important;
+  }
+  .card-lift:hover,
+  .card-lift:active,
+  .pressable:active,
+  .card-play:active {
+    transform: none;
+  }
+  .card-lift:hover img {
+    transform: none;
+  }
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
+  }
+}
+
+.tnum {
+  font-feature-settings: 'tnum';
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Window drag region (frameless title bar) */
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Focus visibility for keyboard navigation */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+button {
+  cursor: default;
+}
+
+/* Touch tuning: kill the 300ms tap delay and the grey tap flash so presses
+   feel instant and our own :active states own the feedback. */
+button,
+a,
+[role='button'],
+input[type='range'],
+.pressable {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Generic interactive icon button */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--color-text-2);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast),
+    transform var(--transition-fast);
+}
+@media (hover: hover) {
+  .icon-btn:hover {
+    color: var(--color-text-1);
+    background: rgba(255, 255, 255, 0.07);
+  }
+}
+.icon-btn:active {
+  transform: scale(0.94);
+  color: var(--color-text-1);
+}
+.icon-btn[data-active='true'] {
+  color: var(--accent);
+}
+
+/* Skeleton shimmer for async loading */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.05) 25%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.05) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: 6px;
+}
+@keyframes shimmer {
+  to { background-position: -200% 0; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-in {
+  animation: fade-in 250ms ease both;
+}
+
+/* Onboarding tour — spotlight hole punched via giant box-shadow */
+.tour-spotlight {
+  position: fixed;
+  z-index: 100;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 9999px rgba(0, 0, 0, 0.6),
+    0 0 0 2px var(--accent-glow),
+    0 0 32px var(--accent-glow);
+  outline: 2px solid rgba(var(--accent-rgb) / 0);
+  outline-offset: 3px;
+  animation: tour-pulse 2.4s ease-in-out infinite;
+  transition:
+    top 380ms cubic-bezier(0.4, 0, 0.2, 1),
+    left 380ms cubic-bezier(0.4, 0, 0.2, 1),
+    width 380ms cubic-bezier(0.4, 0, 0.2, 1),
+    height 380ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-radius 380ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* Centered steps (no target): plain dim, no ring on the 0×0 hole */
+.tour-spotlight--full {
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6);
+  animation: none;
+}
+@keyframes tour-pulse {
+  0%, 100% { outline-color: rgba(var(--accent-rgb) / 0); }
+  50% { outline-color: rgba(var(--accent-rgb) / 0.55); }
+}
+.tour-tooltip {
+  position: fixed;
+  z-index: 101;
+  transition:
+    top 380ms cubic-bezier(0.4, 0, 0.2, 1),
+    left 380ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-spotlight,
+  .tour-tooltip {
+    transition: none;
+    animation: none;
+  }
+}

@@ -1,0 +1,25 @@
+# Il progetto si compila sia su Windows (desktop) sia su Linux/WSL2 (Android:
+# l'NDK e gli script di sync girano lì). I file restano LF in repo e in working
+# tree, così i due ambienti vedono gli stessi byte e non si generano diff
+# fantasma sui fine-riga.
+* text=auto eol=lf
+
+# Binari: nessuna conversione.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.woff2 binary
+*.wasm binary
+*.so binary
+*.node binary
+*.jks binary
+*.keystore binary
+*.pfx binary
+*.cer binary
+
+# Gli script shell del build Android devono avere LF anche se editati su Windows,
+# altrimenti bash fallisce con "bad interpreter".
+*.sh text eol=lf
+gradlew text eol=lf
