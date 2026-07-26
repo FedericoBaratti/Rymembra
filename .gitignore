@@ -1,0 +1,49 @@
+# ── Dipendenze e output di build ─────────────────────────────────────────────
+node_modules/
+out/
+dist/
+dist-mobile/
+dist-node/
+release/
+*.tsbuildinfo
+*.log
+
+# ── Binari esterni e strumenti vendorizzati ──────────────────────────────────
+# resources/bin: yt-dlp/spotdl/ffmpeg/fpcalc, scaricati durante il setup.
+resources/bin/
+# platform-tools: adb e compagnia, dall'Android SDK.
+platform-tools/
+
+# ── Segreti ──────────────────────────────────────────────────────────────────
+.env
+build/*.pfx
+build/*.cer
+# Perdere il keystore significa non poter più aggiornare l'app con la stessa
+# firma: va conservato fuori dal repo, non ignorato e dimenticato.
+*.jks
+*.keystore
+android/keystore.properties
+
+# ── Android / Capacitor: si tengono i sorgenti, si ignora il generato ────────
+android/.gradle/
+android/build/
+android/app/build/
+android/capacitor-cordova-android-plugins/
+android/local.properties
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+# Bundle prodotto da build:node, in entrambe le posizioni del progetto nodejs-mobile.
+android/app/src/main/assets/nodejs-project/main.js
+nodejs-assets/nodejs-project/main.js
+nodejs-assets/nodejs-project/node_modules/
+# Librerie native prebuilt (libnode.so, binari ARM), aggiunte durante il setup.
+android/app/src/main/jniLibs/**/*.so
+
+# ── Analisi del codice ───────────────────────────────────────────────────────
+# graphify-out: grafo rigenerabile, graph.json da solo pesa 27 MB.
+graphify-out/
+
+# ── Sistema ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

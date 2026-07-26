@@ -1,0 +1,178 @@
+/* ── Cyberpunk / now-playing ─────────────────────────────────────────────────
+   Showpiece della skin su mobile: schermata full-screen. Campo griglia+scanline
+   che sfuma dall'alto, artwork chamfer con corner-brackets (recipe in chrome),
+   titolo Orbitron con ghost RGB, dot "REC" rosso in riproduzione, transport
+   outline, volume a celle RAM, serial diegetico. Hook DOM (da NowPlaying.tsx):
+   .np-screen + [data-playing], .np-scrim, .np-handle, .np-tools, .np-meta,
+   .np-transport, .np-art, .np-vol-slider (+ --vol-pct). */
+
+/* ── Backdrop: griglia + scanline che sfuma in basso, sopra lo scrim tinto ── */
+:root[data-skin='cyberpunk'] .np-screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: var(--cyber-grid), var(--cyber-scanline);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, transparent 70%);
+  mask-image: linear-gradient(180deg, #000 0%, transparent 70%);
+}
+/* Serial diegetico in basso a sinistra. */
+:root[data-skin='cyberpunk'] .np-screen::after {
+  content: 'SYS://AUDIO.LNK ▮ CH-02 // 48KHZ' / '';
+  position: absolute;
+  left: 24px;
+  bottom: calc(var(--sa-bottom, env(safe-area-inset-bottom, 0px)) + 4px);
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  color: var(--cyber-microtext);
+}
+
+/* ── Scrim: wash teal con linea d'orizzonte sottile in chiusura ──────────── */
+:root[data-skin='cyberpunk'] .np-scrim {
+  background:
+    linear-gradient(rgba(var(--cyber-teal-rgb) / 0.22), rgba(var(--cyber-teal-rgb) / 0.22))
+      0 100% / 100% 1px no-repeat,
+    linear-gradient(
+      180deg,
+      rgba(var(--cyber-teal-rgb) / 0.1) 0%,
+      rgba(var(--cyber-teal-rgb) / 0.03) 46%,
+      transparent 100%
+    ) !important;
+}
+
+/* ── Maniglia di trascinamento: barretta neon teal ───────────────────────── */
+:root[data-skin='cyberpunk'] .np-screen .np-handle > span,
+:root[data-skin='cyberpunk'] .np-screen > div[aria-hidden] > span {
+  height: 2px;
+  width: 30px;
+  border-radius: 0;
+  background: var(--cyber-teal);
+  box-shadow: 0 0 8px var(--cyber-teal-glow);
+}
+
+/* ── Tools row: bottoni outline tecnici ──────────────────────────────────── */
+:root[data-skin='cyberpunk'] .np-tools .icon-btn {
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+}
+:root[data-skin='cyberpunk'] .np-tools .icon-btn[data-active='true'] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 8px rgba(var(--accent-rgb) / 0.15);
+}
+
+/* ── Artwork: quadro chamfer con alone neon + corner-brackets ──────────────
+   Chamfer/brackets/glow arrivano dalla recipe condivisa in chrome.css
+   (.hero-art/.np-art); qui non serve altro. */
+
+/* ── Metadata: allineati a sinistra, eyebrow mono "terminale" ─────────────── */
+:root[data-skin='cyberpunk'] .np-meta .text-center {
+  text-align: left;
+}
+:root[data-skin='cyberpunk'] .np-meta::before {
+  content: '> NOW PLAYING' / '';
+  display: block;
+  padding: 0 24px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--cyber-teal);
+  text-shadow: 0 0 8px var(--cyber-teal-glow);
+}
+:root[data-skin='cyberpunk'] .np-title {
+  font-size: 26px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.05em !important;
+}
+/* Dot "REC" rosso pulsante davanti al titolo solo in riproduzione. */
+:root[data-skin='cyberpunk'] .np-screen[data-playing='true'] .np-title::before {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 10px;
+  border-radius: 50%;
+  vertical-align: 2px;
+  background: var(--cyber-red);
+  box-shadow: 0 0 10px rgba(var(--cyber-red-rgb) / 0.8);
+  animation: cyber-pulse-dot 1.4s var(--ease-out-expo) infinite;
+}
+/* Riga artista: micro-label mono. */
+:root[data-skin='cyberpunk'] .np-meta .text-text-2 {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+/* ── Transport: cerchi outline; stato attivo = bordo giallo + glow + dot ──── */
+:root[data-skin='cyberpunk'] .np-transport .icon-btn {
+  position: relative;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+}
+:root[data-skin='cyberpunk'] .np-transport .icon-btn[data-active='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 14px rgba(var(--accent-rgb) / 0.35), inset 0 0 10px rgba(var(--accent-rgb) / 0.12);
+}
+:root[data-skin='cyberpunk'] .np-transport .icon-btn[data-active='true']::after {
+  content: '';
+  position: absolute;
+  bottom: 5px;
+  left: 50%;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent-glow);
+  transform: translateX(-50%);
+}
+
+/* ── Volume: barra a celle "RAM" (fill giallo via --vol-pct dal componente;
+   i separatori surface-0 la spezzano in unità), thumb a barretta gialla ───── */
+:root[data-skin='cyberpunk'] .np-vol-slider {
+  border-radius: 0 !important;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 9px, var(--color-surface-0) 9px 12px),
+    linear-gradient(
+      90deg,
+      var(--accent) var(--vol-pct, 0%),
+      rgba(var(--cyber-teal-rgb) / 0.14) var(--vol-pct, 0%)
+    ) !important;
+}
+:root[data-skin='cyberpunk'] .np-vol-slider::-webkit-slider-thumb {
+  width: 10px !important;
+  height: 20px !important;
+  border-radius: 1px !important;
+  background: var(--accent) !important;
+  box-shadow: 0 0 10px var(--accent-glow) !important;
+}
+
+/* ── LyricsScreen: campo griglia+scanline sopra il backdrop sfocato ────────
+   z-index 1: sopra cover/vignetta (z auto), sotto header/liriche (z-10). */
+:root[data-skin='cyberpunk'] .lyrics-screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background: var(--cyber-grid), var(--cyber-scanline);
+  opacity: 0.55;
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, transparent 55%);
+  mask-image: linear-gradient(180deg, #000 0%, transparent 55%);
+}
+:root[data-skin='cyberpunk'] .lyrics-screen::after {
+  content: 'SYS://LYR.SYNC ▮' / '';
+  position: absolute;
+  right: 24px;
+  bottom: calc(var(--sa-bottom, env(safe-area-inset-bottom, 0px)) + 4px);
+  pointer-events: none;
+  z-index: 1;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  color: var(--cyber-microtext);
+}

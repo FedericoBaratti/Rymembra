@@ -1,0 +1,142 @@
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+
+// Release signing: credentials live in android/keystore.properties (NOT committed,
+// see .gitignore) next to aether-release.jks. Guarded so debug builds and CI
+// without the keystore still work; without it assembleRelease emits an
+// unsigned APK.
+def keystorePropsFile = rootProject.file('keystore.properties')
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
+android {
+    namespace "com.aether.player"
+    compileSdk rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.aether.player"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 2
+        versionName "1.0.1"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // Test device (Android 16) is arm64. The nodejs-mobile-cordova native build
+        // only has libnode.so for arm64-v8a here, so without this it tries all 4 ABIs
+        // and fails (CMake: armeabi-v7a libnode.so missing). Restricting also shrinks
+        // the APK and speeds the build. To re-enable another ABI, first place its
+        // decompressed libnode.so under app/libs/cdvnodejsmobile/libnode/bin/<abi>/.
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+        // 16 KB page-size alignment for the CMake-built native lib
+        // (libnodejs-mobile-cordova-native-lib.so). Without this the NDK linker
+        // emits 4 KB-aligned LOAD segments, which fail to load on 16 KB-page
+        // devices (Android 15 has no backcompat; Android 16 falls back to the
+        // pageSizeCompat mode below). ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON makes
+        // the toolchain pass -Wl,-z,max-page-size=16384 (NDK r26+; r28 defaults it).
+        // NOTE: the prebuilt libnode.so is IMPORTED and NOT affected by this — it
+        // must be replaced with a 16 KB-aligned prebuilt to be truly 16 KB-clean.
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+            }
+        }
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            release {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+    buildTypes {
+        release {
+            // R8: dead-code elimination over the Kotlin/AndroidX/Media3 graph.
+            // Less DEX to load and JIT = faster cold start and less CPU/RAM on
+            // device. Reflection surfaces are pinned in proguard-rules.pro.
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (keystorePropsFile.exists()) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+    kotlinOptions {
+        jvmTarget = '21'
+    }
+    // youtubedl-android (YtDlpPlugin) execs a bundled Python that must exist as a
+    // real file in nativeLibraryDir, so native libs have to be extracted at
+    // install. AGP 8 defaults to non-extraction; honor the manifest's
+    // extractNativeLibs="true" via legacy packaging. (Harmless for libnode.so.)
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+    // nodejs-mobile-cordova references libnode.so only as a CMake IMPORTED lib,
+    // which AGP does not package. The plugin's src/android/build.gradle only
+    // registers libnode/bin as a jniLibs dir when Gradle < 4.0 (we run 8.x), so
+    // libnode.so is never merged into the APK -> UnsatisfiedLinkError at startup.
+    // scripts/sync-cordova-nodejs-native.mjs decompresses the prebuilt libnode.so
+    // into this dir on every cap:sync; point jniLibs at it so AGP packages it
+    // alongside libnodejs-mobile-cordova-native-lib.so. abiFilters keeps it arm64-v8a.
+    sourceSets {
+        main {
+            jniLibs.srcDirs += 'libs/cdvnodejsmobile/libnode/bin'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    // Aether native plugins: MediaSession + foreground service, Custom Tabs
+    // (openExternal), and Keystore-backed secret key (SecureStore).
+    implementation "androidx.media:media:1.7.0"
+    // Media3/ExoPlayer: native audio playback on Android so a real 10-band EQ
+    // (BiquadEqProcessor in NativeAudioPlugin.kt) can run in the player's own
+    // audio session — the WebView HTML5 audio bypasses the renderer Web Audio EQ.
+    implementation "androidx.media3:media3-exoplayer:$media3Version"
+    implementation "androidx.media3:media3-common:$media3Version"
+    implementation "androidx.browser:browser:1.8.0"
+    implementation "androidx.security:security-crypto:1.1.0-alpha06"
+    implementation "androidx.documentfile:documentfile:1.0.1"
+    // yt-dlp on Android: the PyInstaller/glibc standalone binary can't run on
+    // bionic, so we drive yt-dlp through youtubedl-android (bundled Python +
+    // ffmpeg, Maven Central) from YtDlpPlugin.kt. See MOBILE.md / binaries.ts.
+    implementation "io.github.junkfood02.youtubedl-android:library:0.18.1"
+    implementation "io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

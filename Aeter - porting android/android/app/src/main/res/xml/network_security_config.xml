@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Permette il traffico cleartext (HTTP non cifrato) verso: il loopback (server
+  media/cover di nodejs-mobile, node-backend/server.ts) e QUALSIASI host — in
+  pratica, in modalità LAN thin-client, il server del desktop accoppiato
+  (electron/modules/lan/, src/lib/lanClient.ts).
+  Da Android 9 (API 28) il cleartext è bloccato di default: senza questa
+  eccezione audio, copertine e le chiamate REST/WS al desktop falliscono con
+  net::ERR_CLEARTEXT_NOT_PERMITTED.
+
+  Il server LAN gira volutamente su HTTP semplice, non TLS (impossibile avere
+  un certificato attendibile per un dispositivo LAN ad-hoc senza hostname
+  stabile — stesso compromesso documentato lato desktop in
+  RemoteAccessSection.tsx). L'IP del desktop accoppiato è noto solo a runtime
+  (dipende dalla rete dell'utente), quindi non è restringibile a un dominio
+  statico: il confine di sicurezza reale è la rete Wi-Fi/hotspot stessa, non
+  TLS applicativo — per questo l'app non fa altre richieste cleartext verso
+  host arbitrari al di fuori di questo flusso.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

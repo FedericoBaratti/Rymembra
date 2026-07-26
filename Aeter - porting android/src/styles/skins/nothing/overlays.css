@@ -1,0 +1,137 @@
+/* ── Nothing / overlays ──────────────────────────────────────────────────────
+   Toast, modali/sheet, menu/tooltip, search, coda, skeleton, empty state.
+   Hook DOM inerte: .queue-list (QueueDrawer.tsx) per i counter della coda. */
+
+/* ── Toast: piatto, bordo; countdown segmentato ──────────────────────────── */
+:root[data-skin='nothing'] .toast-card {
+  border-radius: 4px;
+  box-shadow: var(--shadow-2);
+  background: var(--color-surface-1);
+}
+:root[data-skin='nothing'][data-theme='light'] .toast-card {
+  background: var(--color-surface-2);
+}
+:root[data-skin='nothing'] .toast-progress {
+  height: 2px;
+  opacity: 0.8;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--toast-bar, var(--accent)) 0 4px,
+    transparent 4px 7px
+  );
+}
+
+/* ── Modali e bottom sheet: raggi tecnici ────────────────────────────────── */
+:root[data-skin='nothing'] .glass-modal {
+  border-radius: 8px;
+}
+/* Il BottomSheet mobile usa rounded-t-3xl sull'elemento .glass-modal. */
+:root[data-skin='nothing'][data-mobile] .glass-modal.rounded-t-3xl {
+  border-radius: 12px 12px 0 0;
+}
+
+/* ── Tooltip/menu: piatti, mono ──────────────────────────────────────────── */
+:root[data-skin='nothing'] .tooltip-pill,
+:root[data-skin='nothing'] .menu-pop {
+  box-shadow: 0 0 0 1px var(--hairline) !important;
+}
+:root[data-skin='nothing'] .menu-pop {
+  border-radius: 6px;
+}
+:root[data-skin='nothing'] .tooltip-pill {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-radius: 3px;
+  background: var(--color-surface-1);
+}
+
+/* ── Search: l'evidenziazione dei match è l'interrupt, non un wash ───────── */
+:root[data-skin='nothing'] mark {
+  background: transparent;
+  color: var(--nothing-red);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+/* ── Coda: righe numerate 01 02 … (lista non virtualizzata → counter ok) ─── */
+:root[data-skin='nothing'] .queue-list {
+  counter-reset: q;
+}
+:root[data-skin='nothing'] .queue-list .group {
+  border-radius: 0;
+}
+:root[data-skin='nothing'] .queue-list .group::before {
+  counter-increment: q;
+  content: counter(q, decimal-leading-zero);
+  flex-shrink: 0;
+  width: 18px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+}
+:root[data-skin='nothing'] .queue-list .group .rounded {
+  border-radius: 2px;
+}
+
+/* ── Sheen progress: lo shimmer diagonale è un gradiente tonale → via ────── */
+:root[data-skin='nothing'] .progress-sheen::after {
+  display: none;
+}
+
+/* ── Skeleton: niente shimmer; griglia di punti che pulsa a step ─────────── */
+:root[data-skin='nothing'] .skeleton {
+  background: radial-gradient(currentColor 1px, transparent 1.4px) 0 0 / 8px 8px;
+  color: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  animation: nothing-dot-pulse 1.4s steps(4, end) infinite;
+}
+:root[data-skin='nothing'][data-theme='light'] .skeleton {
+  color: rgba(0, 0, 0, 0.12);
+}
+
+/* ── Empty state: campo di punti + icona a mirino ────────────────────────── */
+:root[data-skin='nothing'] .empty-state::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(currentColor 1px, transparent 1.6px) 0 0 / 14px 14px;
+  color: var(--accent);
+  opacity: 0.06;
+  -webkit-mask-image: radial-gradient(ellipse 60% 55% at 50% 45%, #000 30%, transparent 75%);
+  mask-image: radial-gradient(ellipse 60% 55% at 50% 45%, #000 30%, transparent 75%);
+}
+/* Niente glow radiale inline dell'empty-state (gradiente tonale vietato). */
+:root[data-skin='nothing'] .empty-state > div[style*='radial-gradient'] {
+  display: none !important;
+}
+:root[data-skin='nothing'] .empty-icon {
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 4px;
+  border: 1px solid var(--hairline);
+}
+/* Angoli a mirino: due pseudo-elementi con soli bordi parziali. */
+:root[data-skin='nothing'] .empty-icon::before,
+:root[data-skin='nothing'] .empty-icon::after {
+  content: '';
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--accent);
+}
+:root[data-skin='nothing'] .empty-icon::before {
+  top: -3px;
+  left: -3px;
+  border-right: none;
+  border-bottom: none;
+}
+:root[data-skin='nothing'] .empty-icon::after {
+  bottom: -3px;
+  right: -3px;
+  border-left: none;
+  border-top: none;
+}

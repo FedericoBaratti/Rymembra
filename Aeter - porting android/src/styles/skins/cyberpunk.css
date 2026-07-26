@@ -1,0 +1,35 @@
+/* ============================================================================
+   SKIN: Cyberpunk — indice
+   ----------------------------------------------------------------------------
+   Identità "Cyberpunk 2077": giallo elettrico (#fcee0a, accento primario),
+   teal (#00f0ff, secondario/hairline), rosso glitch (#ff003c, alert/like) su
+   nero HUD. Tutto è scoped sotto :root[data-skin='cyberpunk'] e lavora
+   sovrascrivendo i design token e le recipe-class di global.css — nessun
+   componente è skin-aware (gli unici touchpoint JS sono `supportsDynamicAccent`
+   nel registry e il token --scrubber-glow letto dal canvas dello Scrubber).
+
+   Grammatica visiva (grafica "classica" del tema):
+   · Pavimento prospettico synthwave + scanline CRT su tutta l'app.
+   · Glow al neon (box-shadow, drop-shadow) al posto delle ombre morbide.
+   · Angoli tagliati "chamfer" (clip-path) sui pannelli HUD: bottoni, card,
+     player, artwork, toast, menu. Il glow segue il taglio via filter:drop-shadow
+     (box-shadow verrebbe ritagliato dalla clip-path).
+   · Corner brackets "targeting" su artwork hero/now-playing e tour.
+   · Titoli display Orbitron con ghost RGB + glitch; label Space Mono teal.
+   · Micro-testo diegetico (SYS://…) sugli angoli delle superfici.
+   · Motion compositor-only: boot sequence, glitch, flicker, scan-sweep,
+     ring-spin (motion.css; le infinite toccano solo transform/opacity).
+
+   Ordine import: token → chrome → nav → player → now-playing → pages →
+   overlays → viz → motion (la specificità > base regge la cascade).
+   ========================================================================== */
+
+@import './cyberpunk/tokens.css';
+@import './cyberpunk/chrome.css';
+@import './cyberpunk/nav.css';
+@import './cyberpunk/player.css';
+@import './cyberpunk/now-playing.css';
+@import './cyberpunk/pages.css';
+@import './cyberpunk/overlays.css';
+@import './cyberpunk/viz.css';
+@import './cyberpunk/motion.css';

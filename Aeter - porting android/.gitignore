@@ -1,0 +1,34 @@
+node_modules/
+out/
+dist/
+dist-mobile/
+dist-node/
+release/
+*.log
+.DS_Store
+resources/bin/
+.env
+build/*.pfx
+build/*.cer
+
+# Android / Capacitor build artifacts (keep sources, ignore generated output)
+android/.gradle/
+android/build/
+android/app/build/
+android/capacitor-cordova-android-plugins/
+android/local.properties
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+# Generated bundle copied by build:node (both nodejs-mobile project locations)
+android/app/src/main/assets/nodejs-project/main.js
+nodejs-assets/nodejs-project/main.js
+nodejs-assets/nodejs-project/node_modules/
+# Prebuilt native libs (libnode.so, ARM tool binaries) — added during setup
+android/app/src/main/jniLibs/**/*.so
+
+# Release signing secrets (back these up privately — losing the keystore means
+# never being able to update the app with the same signature)
+*.jks
+*.keystore
+android/keystore.properties

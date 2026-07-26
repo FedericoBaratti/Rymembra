@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Aether logo: five rounded waveform bars with a violet gradient, matching
+     the desktop icon (resources/icon-256.png). Transparent background — the
+     dark #111118 backdrop comes from the iconBackgroundColor/splashBackgroundColor
+     flags passed to `npx @capacitor/assets generate`. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="aetherViolet" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#A78BFA"/>
+      <stop offset="1" stop-color="#7C3AED"/>
+    </linearGradient>
+  </defs>
+  <g fill="url(#aetherViolet)">
+    <rect x="220" y="422" width="72" height="180" rx="36"/>
+    <rect x="348" y="352" width="72" height="320" rx="36"/>
+    <rect x="476" y="252" width="72" height="520" rx="36"/>
+    <rect x="604" y="322" width="72" height="380" rx="36"/>
+    <rect x="732" y="392" width="72" height="240" rx="36"/>
+  </g>
+</svg>

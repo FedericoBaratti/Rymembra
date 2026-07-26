@@ -1,0 +1,8 @@
+{
+  "name": "aether-node-backend",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.js",
+  "description": "nodejs-mobile backend for Aether (Android). main.js is the bundled output of `npm run build:node`. better-sqlite3 is replaced by sql.js, which is kept external (its emscripten glue can't be inlined) and shipped as sibling files sql-wasm.js + sql-wasm.wasm next to main.js. No runtime node_modules. See MOBILE.md.",
+  "dependencies": {}
+}

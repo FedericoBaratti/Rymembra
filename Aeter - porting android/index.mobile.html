@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no"
+    />
+    <!--
+      Mobile CSP. Differs from the desktop index.html:
+      - media/img/connect allow http: broadly (not just http://127.0.0.1:*):
+        the local nodejs-mobile server (loopback) AND, in LAN thin-client mode
+        (src/lib/lanClient.ts), the paired desktop's LAN server — whose IP is
+        only known at pairing time, so it can't be pinned to a static origin
+        here (same reasoning as network_security_config.xml's cleartext
+        exception). connect-src also allows ws: for the LAN server's /ws
+        push-event channel.
+      - https kept for remote cover art and lrclib lyrics.
+      - font-src allows data: because Vite inlines assets under 4KB as data
+        URIs, and some bundled font subsets fall below that limit.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' http: data: blob: https:; media-src 'self' http: blob:; connect-src 'self' http: ws: https://lrclib.net https:"
+    />
+    <title>Aether</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.mobile.tsx"></script>
+  </body>
+</html>

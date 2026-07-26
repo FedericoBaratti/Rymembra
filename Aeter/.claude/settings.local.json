@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(npx tsc -p tsconfig.web.json --noEmit)"
+    ]
+  }
+}

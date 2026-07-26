@@ -1,0 +1,325 @@
+/* ── Nothing / motion ────────────────────────────────────────────────────────
+   Keyframes scoped alla skin + view transitions meccaniche + reduced-motion.
+   Le entrate condivise (slide-up-in, scale-in…) ereditano già le durate/ease
+   ritimate dai token. */
+
+/* ── Keyframes ───────────────────────────────────────────────────────────── */
+/* Griglia di punti che pulsa a step (skeleton). */
+@keyframes nothing-dot-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+/* Dot rosso pulsante (eq-bars, titolo now-playing). */
+@keyframes nothing-pulse-dot {
+  0%, 100% { opacity: 0.45; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+/* Glyph pulse: per elementi .nothing-glyph. */
+@keyframes nothing-glyph {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.04); }
+}
+/* Dot ripple: onda su pressione. */
+@keyframes nothing-ripple {
+  from { box-shadow: 0 0 0 0 var(--accent-soft); }
+  to { box-shadow: 0 0 0 10px transparent; }
+}
+/* Dot indicatore nav: si "stampa" con doppio blink (timbro meccanico). */
+@keyframes nothing-dot-in {
+  0% { transform: translateX(-50%) scale(0); opacity: 0; }
+  30% { transform: translateX(-50%) scale(1); opacity: 1; }
+  45% { opacity: 0; }
+  60% { opacity: 1; }
+  75% { opacity: 0; }
+  100% { transform: translateX(-50%) scale(1); opacity: 1; }
+}
+/* Boot reveal dot-matrix: flicker a gradini sui titoli display. */
+@keyframes nothing-boot {
+  0% { opacity: 0; }
+  30% { opacity: 1; }
+  45% { opacity: 0.35; }
+  60% { opacity: 1; }
+  75% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+/* View transitions: taglio piatto, wipe verticale minimo. */
+@keyframes nothing-vt-out {
+  to { opacity: 0; }
+}
+@keyframes nothing-vt-in {
+  from { opacity: 0; clip-path: inset(0 0 6% 0); }
+  to { opacity: 1; clip-path: inset(0 0 0 0); }
+}
+/* Reveal dot-matrix: l'immagine "si stampa" a gradini discreti. */
+@keyframes nothing-matrix-in {
+  0% { opacity: 0; }
+  25% { opacity: 0.3; }
+  50% { opacity: 0.55; }
+  75% { opacity: 0.85; }
+  100% { opacity: 1; }
+}
+/* Velo di punti sopra la cover che svanisce mentre l'immagine si stampa. */
+@keyframes nothing-matrix-cover {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+/* Print-head wipe: il testo si rivela da sinistra a colpi di testina. */
+@keyframes nothing-print-in {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+/* Tick-ring del play che avanza a scatti discreti (un dente ogni 600ms). */
+@keyframes nothing-ring-step {
+  to { transform: rotate(360deg); }
+}
+/* Tick meccanico dell'icona nav all'attivazione. */
+@keyframes nothing-icon-tick {
+  0% { transform: translateY(0); }
+  50% { transform: translateY(-1px); }
+  100% { transform: translateY(0); }
+}
+/* Entrata riga: wipe duro dall'alto (cascata typewriter con .stagger). */
+@keyframes nothing-row-in {
+  from { opacity: 0; clip-path: inset(0 0 100% 0); }
+  to { opacity: 1; clip-path: inset(0 0 0 0); }
+}
+/* Tick-in transport: i controlli si assestano in sequenza. */
+@keyframes nothing-tick-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+/* Doppio blink del dot rosso (eyebrow di pagina). */
+@keyframes nothing-blink-twice {
+  0%, 40%, 100% { opacity: 1; }
+  20%, 70% { opacity: 0; }
+}
+/* Focus-lock: i segni a mirino scattano a fuoco sulla nuova cover. */
+@keyframes nothing-focus-lock {
+  from { transform: scale(1.06); opacity: 0.4; }
+  to { transform: scale(1); opacity: 1; }
+}
+/* Toast: si timbra con un wipe da destra. */
+@keyframes nothing-toast-in {
+  from { opacity: 0; clip-path: inset(0 0 0 100%); }
+  to { opacity: 1; clip-path: inset(0 0 0 0); }
+}
+
+/* ── Applicazioni ────────────────────────────────────────────────────────── */
+:root[data-skin='nothing'] .nothing-glyph {
+  animation: nothing-glyph 2.2s var(--ease-out-expo) infinite;
+}
+:root[data-skin='nothing'] .icon-btn:active {
+  animation: nothing-ripple var(--dur-3) var(--ease-out-expo);
+}
+:root[data-skin='nothing'] .page-title {
+  animation: nothing-boot 340ms steps(1, end) both;
+}
+/* Titolo now-playing: boot flicker + stampa da print-head. Si riavvia a ogni
+   cambio traccia (NowPlaying rimonta il nodo via key={track.id}). */
+:root[data-skin='nothing'] .np-title {
+  animation:
+    nothing-boot 340ms steps(1, end) both,
+    nothing-print-in 300ms steps(10, end) both;
+}
+
+/* ── Cover now-playing: reveal dot-matrix per traccia (rimontata via key) ──
+   L'immagine si stampa a gradini mentre un velo di punti svanisce; i segni a
+   mirino (::before) scattano a fuoco. ::after è libero (viewfinder = ::before). */
+:root[data-skin='nothing'] .np-art img {
+  animation: nothing-matrix-in 260ms steps(4, end) both;
+}
+:root[data-skin='nothing'] .np-art::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: var(--n-dot-grid);
+  color: rgba(255, 255, 255, 0.35);
+  animation: nothing-matrix-cover 260ms steps(3, end) both;
+}
+:root[data-skin='nothing'][data-theme='light'] .np-art::after {
+  color: rgba(0, 0, 0, 0.3);
+}
+:root[data-skin='nothing'] .np-art::before {
+  animation: nothing-focus-lock 200ms steps(3, end) both;
+}
+
+/* ── Glyph ring: mentre suona, il tick-ring del play ruota a scatti ──────── */
+:root[data-skin='nothing'] .player-shell[data-playing='true'] .play-btn-primary::before,
+:root[data-skin='nothing'] .np-screen[data-playing='true'] .play-btn-primary::before {
+  animation: nothing-ring-step 14.4s steps(24, end) infinite;
+}
+
+/* ── Mini-player: write-head rosso alla punta del progress segmentato e dot
+   "recording" sull'angolo della cover, solo in riproduzione ─────────────── */
+:root[data-skin='nothing'][data-mobile] .player-shell[data-playing='true'] .player-progress {
+  overflow: visible;
+}
+:root[data-skin='nothing'][data-mobile] .player-shell[data-playing='true'] .player-progress::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  right: -2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--nothing-red);
+  animation: nothing-pulse-dot 1.2s steps(2, end) infinite;
+}
+:root[data-skin='nothing'][data-mobile] .player-shell[data-playing='true'] .rounded-lg::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--nothing-red);
+  z-index: 1;
+  animation: nothing-pulse-dot 1.6s steps(2, end) infinite;
+}
+:root[data-skin='nothing'][data-mobile] .player-shell .rounded-lg {
+  position: relative;
+}
+
+/* ── Coreografia apertura Now Playing: eyebrow → titolo → transport ───────
+   Solo al mount della sheet; fill backwards così a fine animazione i controlli
+   tornano interattivi senza transform residui (il .pressable usa :active). */
+:root[data-skin='nothing'] .np-meta::before {
+  animation: nothing-print-in 220ms steps(11, end) 80ms backwards;
+}
+:root[data-skin='nothing'] .np-transport .icon-btn {
+  animation: nothing-tick-in 120ms steps(2, end) backwards;
+}
+:root[data-skin='nothing'] .np-transport .icon-btn:nth-child(1) { animation-delay: 160ms; }
+:root[data-skin='nothing'] .np-transport .icon-btn:nth-child(2) { animation-delay: 200ms; }
+:root[data-skin='nothing'] .np-transport .icon-btn:nth-child(4) { animation-delay: 280ms; }
+:root[data-skin='nothing'] .np-transport .icon-btn:nth-child(5) { animation-delay: 320ms; }
+:root[data-skin='nothing'] .np-transport .play-btn-primary {
+  animation: nothing-tick-in 120ms steps(2, end) 240ms backwards;
+}
+
+/* ── Eyebrow di pagina: sottotitolo stampato + doppio blink del dot rosso ── */
+:root[data-skin='nothing'] .page-subtitle {
+  animation: nothing-print-in 240ms steps(12, end) backwards;
+}
+:root[data-skin='nothing'] .page-subtitle::before {
+  animation: nothing-blink-twice 360ms steps(1, end) 240ms backwards;
+}
+
+/* ── Nav: tick meccanico dell'icona quando la voce si attiva ─────────────── */
+:root[data-skin='nothing'] .bottom-nav a[aria-current='page'] svg {
+  animation: nothing-icon-tick 160ms steps(2, end);
+}
+
+/* ── Toast: timbro con wipe da destra (coerente col countdown segmentato) ── */
+:root[data-skin='nothing'] .toast-card {
+  animation: nothing-toast-in 200ms steps(3, end) both;
+}
+
+/* ── Pressed: flash del tick rosso sulla riga traccia (solo touch) ───────── */
+@media (hover: none) {
+  :root[data-skin='nothing'] .track-grid.group:active {
+    box-shadow:
+      inset 2px 0 0 var(--nothing-red),
+      inset 0 -1px 0 var(--hairline);
+    transition: box-shadow 90ms steps(1, end);
+  }
+}
+
+/* ── Switch: il knob scatta a step invece di scivolare ───────────────────── */
+:root[data-skin='nothing'] .switch .switch-track::after {
+  transition: transform 160ms steps(2, end);
+}
+
+/* View transitions di route: i due pseudo originano su <html>, quindi il
+   selettore d'attributo compone correttamente (niente scale morbido). */
+:root[data-skin='nothing']::view-transition-old(root) {
+  animation: nothing-vt-out 140ms steps(3, end) both;
+}
+:root[data-skin='nothing']::view-transition-new(root) {
+  animation: nothing-vt-in 200ms var(--ease-out-expo) both;
+}
+
+/* Stagger: le entrate morbide diventano un wipe duro a 2 step (riga che si
+   "stampa"), mantenendo la cascata typewriter. Solo sulle classi d'entrata
+   note: un override su * animerebbe anche figli senza animazione. */
+:root[data-skin='nothing'] .stagger > .slide-up-in,
+:root[data-skin='nothing'] .stagger > .scale-in,
+:root[data-skin='nothing'] .stagger > .fade-in {
+  animation-name: nothing-row-in;
+  animation-duration: 160ms;
+  animation-timing-function: steps(2, end);
+}
+
+/* Stagger: cascata typewriter a passi fissi di 25ms. */
+:root[data-skin='nothing'] .stagger > *:nth-child(1) { animation-delay: 0ms; }
+:root[data-skin='nothing'] .stagger > *:nth-child(2) { animation-delay: 25ms; }
+:root[data-skin='nothing'] .stagger > *:nth-child(3) { animation-delay: 50ms; }
+:root[data-skin='nothing'] .stagger > *:nth-child(4) { animation-delay: 75ms; }
+:root[data-skin='nothing'] .stagger > *:nth-child(5) { animation-delay: 100ms; }
+:root[data-skin='nothing'] .stagger > *:nth-child(6) { animation-delay: 125ms; }
+:root[data-skin='nothing'] .stagger > *:nth-child(7) { animation-delay: 150ms; }
+:root[data-skin='nothing'] .stagger > *:nth-child(8) { animation-delay: 175ms; }
+
+/* Entrata Now Playing: stessa keyframe np-rise, timing meccanico. */
+:root[data-skin='nothing'][data-mobile] .np-rise {
+  animation-duration: 220ms;
+  animation-timing-function: var(--ease-out-expo);
+}
+
+/* Niente float "gentile" sulle icone empty-state: il vuoto è statico. */
+:root[data-skin='nothing'] .icon-float {
+  animation: none;
+}
+
+/* ── Reduced motion: spegne tutto ciò che la skin introduce ──────────────── */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-skin='nothing'] .skeleton,
+  :root[data-skin='nothing'] .nothing-glyph,
+  :root[data-skin='nothing'] .icon-btn:active,
+  :root[data-skin='nothing'] .eq-bars span:first-child,
+  :root[data-skin='nothing'] .page-title,
+  :root[data-skin='nothing'] .np-title,
+  :root[data-skin='nothing'] .np-screen[data-playing='true'] .np-title::before,
+  :root[data-skin='nothing'] .bottom-nav a[aria-current='page']::after,
+  :root[data-skin='nothing'] .bottom-nav a[aria-current='page'] svg,
+  :root[data-skin='nothing'] .np-art img,
+  :root[data-skin='nothing'] .np-art::before,
+  :root[data-skin='nothing'] .np-art::after,
+  :root[data-skin='nothing'] .player-shell[data-playing='true'] .play-btn-primary::before,
+  :root[data-skin='nothing'] .np-screen[data-playing='true'] .play-btn-primary::before,
+  :root[data-skin='nothing'][data-mobile] .player-shell[data-playing='true'] .player-progress::after,
+  :root[data-skin='nothing'][data-mobile] .player-shell[data-playing='true'] .rounded-lg::after,
+  :root[data-skin='nothing'] .np-meta::before,
+  :root[data-skin='nothing'] .np-transport .icon-btn,
+  :root[data-skin='nothing'] .np-transport .play-btn-primary,
+  :root[data-skin='nothing'] .page-subtitle,
+  :root[data-skin='nothing'] .page-subtitle::before,
+  :root[data-skin='nothing'] .toast-card {
+    animation: none !important;
+  }
+  /* Il velo dot-matrix sulla cover resterebbe pieno senza animazione: via. */
+  :root[data-skin='nothing'] .np-art::after {
+    display: none;
+  }
+  :root[data-skin='nothing'] .stagger > * {
+    animation-delay: 0ms !important;
+  }
+  :root[data-skin='nothing'] .stagger > .slide-up-in,
+  :root[data-skin='nothing'] .stagger > .scale-in,
+  :root[data-skin='nothing'] .stagger > .fade-in {
+    animation: none !important;
+  }
+  :root[data-skin='nothing'] .switch .switch-track::after {
+    transition: none;
+  }
+  :root[data-skin='nothing']::view-transition-old(root),
+  :root[data-skin='nothing']::view-transition-new(root) {
+    animation: none !important;
+  }
+  :root[data-skin='nothing'] .toast-progress {
+    animation: none !important;
+    display: none;
+  }
+}

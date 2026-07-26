@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- QR pairing scan (LAN thin-client mode, src/pages/PairDevice.tsx via
+         @capacitor-mlkit/barcode-scanning). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- allowBackup=false: an Auto Backup restore would bring back a DB/settings
+         snapshot inconsistent with the actual on-device music files (which are
+         NOT in the backup); the library repopulates from the folder scan anyway. -->
+    <application
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:pageSizeCompat="enabled"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+        <!-- 16 KB page-size backcompat: the prebuilt nodejs-mobile libnode.so (2019,
+             Node 12) is 4 KB-aligned and can't be relinked. On 16 KB-page devices
+             this runs it in backcompat mode without the launch warning dialog; it's
+             a no-op on 4 KB devices. Requires compileSdk 36. -->
+
+        <!-- Declares Aether as an Android Auto media app (browse + voice playback). -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <!-- Required by @capacitor-mlkit/barcode-scanning (QR pairing scan). -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="barcode_ui" />
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- App Actions (PLAY_MUSIC → VoicePlayActivity): phone-side Gemini /
+                 Assistant entity playback. Inert on sideloads (Play-only), see
+                 res/xml/shortcuts.xml. -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity>
+
+        <!-- No-display App Actions target: resolves the spoken entity against the
+             Auto catalog and starts native playback (warm) or launches the app
+             (cold), then finishes. Exported: launched by the Google app. -->
+        <activity
+            android:name=".VoicePlayActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Process-restart trampoline (see RestartActivity.kt): lives in its own
+             process so it can kill the main process (dead node engine) and
+             relaunch the app. Started only by FileAccessPlugin.restartApp(). -->
+        <activity
+            android:name=".RestartActivity"
+            android:process=":restart"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Background audio: keeps the WebView player alive + media controls. -->
+        <service
+            android:name=".MediaPlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback"
+        />
+
+        <!-- Android Auto / Assistant browse + voice playback. Reads the catalog
+             snapshot and drives the SAME MediaSession as the notification/lock
+             screen; exported so the car service can bind it. -->
+        <service
+            android:name=".AetherMediaBrowserService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
+
+        <!-- Keeps the process (and WebView/yt-dlp RPC) alive during a Spotify
+             migration so backgrounding the app doesn't abort the downloads. -->
+        <service
+            android:name=".MigrationForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+        />
+
+        <!-- Aggregate download progress notification (YouTube + Spotify): keeps
+             the process alive and shows live percentage while backgrounded. -->
+        <service
+            android:name=".DownloadForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+        />
+
+        <!-- Keeps the process, CPU (WakeLock) and Wi-Fi (WifiLock) alive while a
+             paired desktop runs a "repair from PC" transfer session. -->
+        <service
+            android:name=".TransferForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+        />
+
+        <!-- Routes notification/lock-screen/headset transport to the MediaSession. -->
+        <receiver android:name="androidx.media.session.MediaButtonReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+    <!-- Permissions -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- LAN discovery of the paired desktop via mDNS/NSD (LanDiscoveryPlugin). -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!-- Local music library access (Android 13+ granular media permission). -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <!-- Broad file access: the app auto-creates and manages a Download/Music
+         library folder at startup (FileAccessPlugin.ensureDownloadMusicFolder)
+         and reads/writes it by path from the Node backend. Scoped storage cannot
+         create an empty, persistent folder in a public collection, so All Files
+         Access is required. (Sideload build — not Play-Store distributed.)
+         Folder selection still uses SAF (ACTION_OPEN_DOCUMENT_TREE) as a fallback. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <!-- Background audio playback + media controls (MediaSession). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Keep-alive foreground service for long Spotify migrations (Android 14+). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Track-change notifications (Android 13+ runtime permission). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Keep CPU/wifi awake during background audio playback (ExoPlayer setWakeMode). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Haptic feedback from the WebView UI (navigator.vibrate). -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+</manifest>

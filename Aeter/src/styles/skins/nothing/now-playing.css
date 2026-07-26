@@ -1,0 +1,121 @@
+/* ── Nothing / now-playing ───────────────────────────────────────────────────
+   Lo showpiece della skin: schermata full-screen mobile. Campo dot-matrix che
+   sfuma dall'alto, artwork quadrato con angoli a mirino, metadata allineati a
+   sinistra con eyebrow mono, titolo Doto con dot rosso pulsante quando in
+   riproduzione, transport a cerchi outline.
+   Hook DOM (inerti, aggiunti in NowPlaying.tsx): .np-screen + [data-playing],
+   .np-scrim, .np-meta, .np-transport. */
+
+/* ── Backdrop: via lo scrim tinto; campo dot-matrix che sfuma in basso ───── */
+:root[data-skin='nothing'] .np-scrim {
+  display: none;
+}
+:root[data-skin='nothing'] .np-screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: var(--n-dot-grid);
+  color: rgba(255, 255, 255, 0.05);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, transparent 65%);
+  mask-image: linear-gradient(180deg, #000 0%, transparent 65%);
+}
+:root[data-skin='nothing'][data-theme='light'] .np-screen::before {
+  color: rgba(0, 0, 0, 0.07);
+}
+
+/* ── Maniglia di trascinamento: barretta piatta 2px ──────────────────────── */
+:root[data-skin='nothing'] .np-screen > div[aria-hidden] > span {
+  height: 2px;
+  width: 28px;
+  border-radius: 0;
+  background: var(--hairline);
+}
+
+/* ── Artwork: quadro tecnico con angoli a mirino (viewfinder) ─────────────
+   L'inline box-shadow (shadow-3 + glow) va battuto con !important. np-art ha
+   overflow:hidden, quindi i marks stanno DENTRO i bordi, sopra l'immagine. */
+:root[data-skin='nothing'] .np-art {
+  position: relative;
+  border-radius: 4px !important;
+  box-shadow: 0 0 0 1px var(--hairline) !important;
+}
+:root[data-skin='nothing'] .np-art::before {
+  content: '';
+  position: absolute;
+  inset: 8px;
+  pointer-events: none;
+  z-index: 1;
+  --np-mark: rgba(255, 255, 255, 0.85);
+  background:
+    linear-gradient(var(--np-mark), var(--np-mark)) 0 0 / 12px 1px,
+    linear-gradient(var(--np-mark), var(--np-mark)) 0 0 / 1px 12px,
+    linear-gradient(var(--np-mark), var(--np-mark)) 100% 0 / 12px 1px,
+    linear-gradient(var(--np-mark), var(--np-mark)) 100% 0 / 1px 12px,
+    linear-gradient(var(--np-mark), var(--np-mark)) 0 100% / 12px 1px,
+    linear-gradient(var(--np-mark), var(--np-mark)) 0 100% / 1px 12px,
+    linear-gradient(var(--np-mark), var(--np-mark)) 100% 100% / 12px 1px,
+    linear-gradient(var(--np-mark), var(--np-mark)) 100% 100% / 1px 12px;
+  background-repeat: no-repeat;
+}
+
+/* ── Metadata: da colonna centrata a blocco allineato a sinistra ─────────── */
+:root[data-skin='nothing'] .np-meta .text-center {
+  text-align: left;
+}
+/* Eyebrow mono sopra il titolo — stamp in inglese, coerente col brand. */
+:root[data-skin='nothing'] .np-meta::before {
+  content: 'NOW PLAYING';
+  display: block;
+  padding: 0 24px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--color-text-3);
+}
+:root[data-skin='nothing'] .np-title {
+  font-size: 26px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.04em !important;
+}
+/* Dot rosso pulsante davanti al titolo solo quando in riproduzione. */
+:root[data-skin='nothing'] .np-screen[data-playing='true'] .np-title::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 10px;
+  border-radius: 50%;
+  vertical-align: 2px;
+  background: var(--nothing-red);
+  animation: nothing-pulse-dot 1.6s var(--ease-out-expo) infinite;
+}
+/* Riga artista: micro-label mono. */
+:root[data-skin='nothing'] .np-meta .text-text-2 {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+/* ── Transport: cerchi outline; stato attivo = dot rosso sotto l'icona ───── */
+:root[data-skin='nothing'] .np-transport .icon-btn {
+  position: relative;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+}
+:root[data-skin='nothing'] .np-transport .icon-btn[data-active='true'] {
+  border-color: var(--accent);
+  color: var(--color-text-1);
+}
+:root[data-skin='nothing'] .np-transport .icon-btn[data-active='true']::after {
+  content: '';
+  position: absolute;
+  bottom: 5px;
+  left: 50%;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--nothing-red);
+  transform: translateX(-50%);
+}
