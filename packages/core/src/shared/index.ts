@@ -10,6 +10,21 @@
  * proprio per questo — non "semplificarlo" in `/\p{M}/gu`.
  */
 export { foldText } from './text'
+export {
+  aggregateAlbums,
+  albumFolder,
+  albumGroupKey,
+  buildAlbumGroups,
+  canonicalAlbumArtist,
+  normalizeKeyText,
+  pickAlbumCover,
+  pickCanonical,
+  stripEditionSuffix,
+  type AlbumAgg,
+  type AlbumAggInput,
+  type AlbumBuildResult,
+  type ArtistRow
+} from './albumKey'
 export { formatLrcTime, serializeLrc, type TimedLine } from './lrc'
 export { trackKey, upgradeLegacyTrackKey, normalizeKey, playlistKey } from './trackKey'
 export { splitYoutubeWatchUrl } from './youtubeUrl'

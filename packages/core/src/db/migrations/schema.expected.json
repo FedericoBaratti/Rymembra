@@ -1,0 +1,1602 @@
+{
+  "tables": {
+    "albums": {
+      "columns": [
+        {
+          "name": "album_key",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "artist",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "cover_art_hash",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "genre",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "mb_album_id",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "spotify_id",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "total_tracks",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "year",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "api_cache": {
+      "columns": [
+        {
+          "name": "created_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "expires_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "key",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 2
+        },
+        {
+          "name": "payload",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "service",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 1
+        }
+      ],
+      "withoutRowid": true
+    },
+    "artists": {
+      "columns": [
+        {
+          "name": "bio",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "image_hash",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "mb_artist_id",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "spotify_id",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "cover_art": {
+      "columns": [
+        {
+          "name": "hash",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "height",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "mime_type",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "source",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "'unknown'",
+          "pk": 0
+        },
+        {
+          "name": "width",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "downloads": {
+      "columns": [
+        {
+          "name": "album",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "artist",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "attempts",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "completed_tracks",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "cover_url",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "created_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "current_file",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "error_message",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "file_path",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "last_failure_class",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "next_retry_at",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "progress",
+          "type": "REAL",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "source_type",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "source_url",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "status",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "'pending'",
+          "pk": 0
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "name": "total_tracks",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "1",
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "library_fetch": {
+      "columns": [
+        {
+          "name": "album",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "name": "artist",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "name": "attempts",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "download_id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "duration",
+          "type": "REAL",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "error",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "next_retry_at",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "status",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "'pending'",
+          "pk": 0
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "name": "track_key",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "updated_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "phone_repair": {
+      "columns": [
+        {
+          "name": "action_enrich",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "action_transcode",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "album",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "name": "artist",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "name": "attempts",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "device_id",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "error",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "next_retry_at",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "phone_track_id",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "result_ext",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "result_sha256",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "src_mtime",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "src_sha256",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "src_size",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "status",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "'pending'",
+          "pk": 0
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "name": "track_key",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "updated_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "play_history": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "ms_played",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "played_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "track_id",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "playlist_tracks": {
+      "columns": [
+        {
+          "name": "playlist_id",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "position",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 2
+        },
+        {
+          "name": "track_id",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "playlists": {
+      "columns": [
+        {
+          "name": "cover_art_hash",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "created_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "is_smart",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "rules",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "updated_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "podcast_episodes": {
+      "columns": [
+        {
+          "name": "audio_url",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "duration",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "guid",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "image_url",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "played",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "podcast_id",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "progress_sec",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "published_at",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "podcasts": {
+      "columns": [
+        {
+          "name": "added_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "author",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "feed_url",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "image_url",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "last_refreshed",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "scrobble_queue": {
+      "columns": [
+        {
+          "name": "album",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "artist",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "attempts",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "created_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "duration",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "played_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "spotify_migration": {
+      "columns": [
+        {
+          "name": "cover_url",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "created_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "error",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "kind",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "migration_id",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "playlist_id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "recreate_playlist",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "source_url",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "status",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "name": "updated_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "spotify_migration_tracks": {
+      "columns": [
+        {
+          "name": "album",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "album_artist",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "artist",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "cover_url",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "disc_number",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "duration_ms",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "idx",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "status",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "'pending'",
+          "pk": 0
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "track_number",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "year",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "sync_tombstones": {
+      "columns": [
+        {
+          "name": "deleted_at",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "key",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 2
+        },
+        {
+          "name": "kind",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 1
+        }
+      ],
+      "withoutRowid": false
+    },
+    "tracks": {
+      "columns": [
+        {
+          "name": "acoustid_fingerprint",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "album",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "name": "album_artist",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "album_key",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "artist",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "name": "bitrate",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "bpm",
+          "type": "REAL",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "codec",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "comment",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "cover_art_hash",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "date_added",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "date_modified",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "disc_number",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "duration",
+          "type": "REAL",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "enrich_attempted_at",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "enrich_status",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "file_size",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "genre",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        },
+        {
+          "name": "is_local",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "1",
+          "pk": 0
+        },
+        {
+          "name": "key",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "last_played",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "liked",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "liked_at",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "lyrics",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "mb_recording_id",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "mb_release_group_id",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "mb_release_id",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "path",
+          "type": "TEXT",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "play_count",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "rating",
+          "type": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "pk": 0
+        },
+        {
+          "name": "replaygain_album_gain",
+          "type": "REAL",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "replaygain_track_gain",
+          "type": "REAL",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "sample_rate",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "source",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "spotify_album_id",
+          "type": "TEXT",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "stats_updated_at",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "pk": 0
+        },
+        {
+          "name": "track_number",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "year",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 0
+        }
+      ],
+      "withoutRowid": false
+    },
+    "waveforms": {
+      "columns": [
+        {
+          "name": "peaks",
+          "type": "BLOB",
+          "notNull": true,
+          "default": null,
+          "pk": 0
+        },
+        {
+          "name": "track_id",
+          "type": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "pk": 1
+        }
+      ],
+      "withoutRowid": false
+    }
+  },
+  "virtualTables": {
+    "tracks_fts": "CREATE VIRTUAL TABLE tracks_fts USING fts5( title, artist, album, album_artist, content='tracks', content_rowid='id', tokenize='unicode61 remove_diacritics 2' )"
+  },
+  "indexes": {
+    "idx_api_cache_expiry": {
+      "table": "api_cache",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "expires_at"
+      ]
+    },
+    "idx_downloads_pending": {
+      "table": "downloads",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "status",
+        "next_retry_at"
+      ]
+    },
+    "idx_episodes_podcast": {
+      "table": "podcast_episodes",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "podcast_id",
+        "published_at"
+      ]
+    },
+    "idx_library_fetch_status": {
+      "table": "library_fetch",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "status",
+        "next_retry_at"
+      ]
+    },
+    "idx_phone_repair_status": {
+      "table": "phone_repair",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "status",
+        "next_retry_at"
+      ]
+    },
+    "idx_play_history_played_at": {
+      "table": "play_history",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "played_at"
+      ]
+    },
+    "idx_play_history_track": {
+      "table": "play_history",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "track_id"
+      ]
+    },
+    "idx_tracks_album": {
+      "table": "tracks",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "album"
+      ]
+    },
+    "idx_tracks_album_key": {
+      "table": "tracks",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "album_key"
+      ]
+    },
+    "idx_tracks_artist": {
+      "table": "tracks",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "artist"
+      ]
+    },
+    "idx_tracks_enrich": {
+      "table": "tracks",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "enrich_status"
+      ]
+    },
+    "idx_tracks_genre": {
+      "table": "tracks",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "genre"
+      ]
+    },
+    "idx_tracks_liked": {
+      "table": "tracks",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "liked",
+        "liked_at"
+      ]
+    },
+    "idx_tracks_title": {
+      "table": "tracks",
+      "unique": false,
+      "origin": "c",
+      "columns": [
+        "title"
+      ]
+    },
+    "sqlite_autoindex_albums_1": {
+      "table": "albums",
+      "unique": true,
+      "origin": "u",
+      "columns": [
+        "album_key"
+      ]
+    },
+    "sqlite_autoindex_api_cache_1": {
+      "table": "api_cache",
+      "unique": true,
+      "origin": "pk",
+      "columns": [
+        "service",
+        "key"
+      ]
+    },
+    "sqlite_autoindex_artists_1": {
+      "table": "artists",
+      "unique": true,
+      "origin": "u",
+      "columns": [
+        "name"
+      ]
+    },
+    "sqlite_autoindex_cover_art_1": {
+      "table": "cover_art",
+      "unique": true,
+      "origin": "pk",
+      "columns": [
+        "hash"
+      ]
+    },
+    "sqlite_autoindex_library_fetch_1": {
+      "table": "library_fetch",
+      "unique": true,
+      "origin": "pk",
+      "columns": [
+        "track_key"
+      ]
+    },
+    "sqlite_autoindex_phone_repair_1": {
+      "table": "phone_repair",
+      "unique": true,
+      "origin": "u",
+      "columns": [
+        "device_id",
+        "phone_track_id"
+      ]
+    },
+    "sqlite_autoindex_playlist_tracks_1": {
+      "table": "playlist_tracks",
+      "unique": true,
+      "origin": "pk",
+      "columns": [
+        "playlist_id",
+        "position"
+      ]
+    },
+    "sqlite_autoindex_podcast_episodes_1": {
+      "table": "podcast_episodes",
+      "unique": true,
+      "origin": "u",
+      "columns": [
+        "podcast_id",
+        "guid"
+      ]
+    },
+    "sqlite_autoindex_podcasts_1": {
+      "table": "podcasts",
+      "unique": true,
+      "origin": "u",
+      "columns": [
+        "feed_url"
+      ]
+    },
+    "sqlite_autoindex_sync_tombstones_1": {
+      "table": "sync_tombstones",
+      "unique": true,
+      "origin": "pk",
+      "columns": [
+        "kind",
+        "key"
+      ]
+    },
+    "sqlite_autoindex_tracks_1": {
+      "table": "tracks",
+      "unique": true,
+      "origin": "u",
+      "columns": [
+        "path"
+      ]
+    }
+  },
+  "triggers": {
+    "tracks_ad": "CREATE TRIGGER tracks_ad AFTER DELETE ON tracks BEGIN INSERT INTO tracks_fts(tracks_fts, rowid, title, artist, album, album_artist) VALUES ('delete', old.id, old.title, old.artist, old.album, old.album_artist); END",
+    "tracks_ai": "CREATE TRIGGER tracks_ai AFTER INSERT ON tracks BEGIN INSERT INTO tracks_fts(rowid, title, artist, album, album_artist) VALUES (new.id, new.title, new.artist, new.album, new.album_artist); END",
+    "tracks_au": "CREATE TRIGGER tracks_au AFTER UPDATE ON tracks BEGIN INSERT INTO tracks_fts(tracks_fts, rowid, title, artist, album, album_artist) VALUES ('delete', old.id, old.title, old.artist, old.album, old.album_artist); INSERT INTO tracks_fts(rowid, title, artist, album, album_artist) VALUES (new.id, new.title, new.artist, new.album, new.album_artist); END"
+  }
+}

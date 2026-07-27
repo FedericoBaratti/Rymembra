@@ -62,7 +62,17 @@ export interface OpenDbDeps {
    * dipendono dal driver — sql.js non ha WAL.
    */
   readonly configure?: (driver: SqliteDriver) => void
-  /** Rileva se la tabella virtuale FTS5 è utilizzabile su questo DB. */
+  /**
+   * Se il driver SUPPORTA FTS5. Va alle migrazioni, che creano la tabella
+   * virtuale solo quando è vero: su sql.js crearla farebbe fallire ogni insert
+   * su `tracks` a causa dei trigger.
+   */
+  readonly supportsFts5?: boolean
+  /**
+   * Se la tabella virtuale c'è DAVVERO in questo file. Domanda diversa dalla
+   * precedente: un file creato da una build senza FTS5 non ce l'ha, anche se il
+   * driver che lo apre ora la supporterebbe. È questa che decide come si cerca.
+   */
   readonly detectFts5?: (driver: SqliteDriver) => boolean
   readonly backup?: (version: number) => void
   /**
@@ -111,6 +121,7 @@ export function createDbHandle(deps: OpenDbDeps): DbHandle {
       files: deps.files,
       chain: deps.chain,
       history: deps.history,
+      fts5: deps.supportsFts5 ?? false,
       ...(deps.backup !== undefined ? { backup: deps.backup } : {})
     })
 

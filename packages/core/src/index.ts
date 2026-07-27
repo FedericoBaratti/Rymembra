@@ -100,8 +100,13 @@ export {
 } from './capabilities'
 
 export {
+  AETHER_CHAIN,
+  ANDROID_HISTORY,
+  BASELINE,
   BASELINE_VERSION,
+  DESKTOP_HISTORY,
   LEGACY_FINAL_VERSION,
+  UNIFIED,
   createDbHandle,
   execute,
   latestVersion,

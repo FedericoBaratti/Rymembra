@@ -42,3 +42,11 @@ export {
 } from './migrate'
 
 export { createDbHandle, type DbHandle, type DbStatus, type OpenDbDeps } from './open'
+
+export {
+  AETHER_CHAIN,
+  ANDROID_HISTORY,
+  BASELINE,
+  DESKTOP_HISTORY,
+  UNIFIED
+} from './migrations'

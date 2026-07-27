@@ -74,6 +74,18 @@ export interface MigrationContext {
   readonly db: SqliteDriver
   readonly files: MigrationFiles
   /**
+   * Se questo DB deve avere la tabella virtuale FTS5.
+   *
+   * Non è una preferenza: sul backend mobile sql.js è compilato senza FTS5, e
+   * creare `tracks_fts` con i suoi trigger renderebbe fallire OGNI insert su
+   * `tracks`. Il legacy lo risolveva con `process.platform === 'android' ? '' :
+   * FTS_SCHEMA` dentro il passo v1 — cioè una decisione di piattaforma dentro una
+   * migrazione. Qui è un dato che arriva dall'adapter, e la conseguenza è che lo
+   * schema di un dispositivo Android differisce legittimamente da quello del
+   * desktop per questa tabella e questi tre trigger.
+   */
+  readonly fts5: boolean
+  /**
    * Un guasto non bloccante dentro un passo (una copertina su 10.000 che non si
    * estrae). Va NOMINATO: nel legacy la v9 aveva già la cura di dire quale
    * copertina fallisse, perché altrimenti disco pieno e permessi negati restano
@@ -248,6 +260,8 @@ export interface MigrateDeps {
   readonly files: MigrationFiles
   readonly chain: Chain
   readonly history: LegacyHistoryName
+  /** Vedi `MigrationContext.fts5`. Default: assente, la scelta prudente. */
+  readonly fts5?: boolean
   /**
    * Copia di sicurezza prima di migrare un file esistente. Nel legacy c'era
    * (`preMigrationBackup`) e va tenuta: una migrazione che fallisce a metà su un
@@ -300,6 +314,7 @@ export function migrate(deps: MigrateDeps): Result<MigrateOutcome, AppError> {
   const ctx: MigrationContext = {
     db,
     files,
+    fts5: deps.fts5 ?? false,
     warn: (message, error) => log.warn(message, error, { phase: 'migration' })
   }
 
