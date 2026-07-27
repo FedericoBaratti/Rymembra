@@ -26,6 +26,12 @@ const root = resolve(here, '../..')
  * "just-in-time packages" del monorepo, nessun passo di build — quindi lasciarli
  * fuori significa che a runtime Electron farebbe `require('@aether/core')` e
  * troverebbe un `.ts` che non sa caricare. Vanno transpilati dentro.
+ *
+ * Da quando stanno in `devDependencies` — è ciò che sono, ingressi di
+ * compilazione, e serve a electron-builder per non seguirne il collegamento
+ * simbolico fuori dalla app — questo elenco è già soddisfatto per costruzione.
+ * Resta perché è la riga che dice *perché*: rimetterne uno in `dependencies`
+ * senza questo elenco produrrebbe un pacchetto che si avvia solo in sviluppo.
  */
 const WORKSPACE_PACKAGES = ['@aether/core', '@aether/skin', '@aether/ui', '@aether/skin-studio']
 
