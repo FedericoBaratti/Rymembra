@@ -148,6 +148,19 @@ export {
 export { compileEffect, compileSkin, type CompiledSkin } from './compile'
 
 export {
+  alignLibraries,
+  canonicalJson,
+  compareVersions,
+  fingerprint,
+  libraryEntryFor,
+  skinFingerprint,
+  type AlignmentAction,
+  type AlignmentItem,
+  type AlignmentPlan,
+  type LibraryEntry
+} from './library'
+
+export {
   MANIFEST_NAME,
   PACKAGE_LIMITS,
   PREVIEW_NAME,
