@@ -148,6 +148,15 @@ export {
 export { compileEffect, compileSkin, type CompiledSkin } from './compile'
 
 export {
+  createMemoryStorage,
+  createSkinLibrary,
+  type InstalledSkin,
+  type SkinLibrary,
+  type SkinLibraryOptions,
+  type SkinStorage
+} from './store'
+
+export {
   alignLibraries,
   canonicalJson,
   compareVersions,
