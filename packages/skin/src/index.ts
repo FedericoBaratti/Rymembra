@@ -146,3 +146,15 @@ export {
 } from './parse'
 
 export { compileEffect, compileSkin, type CompiledSkin } from './compile'
+
+export {
+  MANIFEST_NAME,
+  PACKAGE_LIMITS,
+  PREVIEW_NAME,
+  packageFileName,
+  readSkinPackage,
+  writeSkinPackage,
+  type SkinAsset,
+  type SkinPackage,
+  type WritePackageInput
+} from './package'
