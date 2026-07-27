@@ -161,6 +161,30 @@ export {
 } from './playback'
 
 export {
+  MIN_TRACK_BYTES,
+  SUPPORTED_EXTENSIONS,
+  TRASH_DIR_NAME,
+  baseName,
+  extensionOf,
+  isInTrash,
+  isNoOp,
+  isSupportedAudioPath,
+  isUnder,
+  pathKey,
+  planScan,
+  type DiscoveredFile,
+  type KnownTrack,
+  type PathRules,
+  type PendingRemoval,
+  type PendingUpdate,
+  type RemoveReason,
+  type ScanInput,
+  type ScanPlan,
+  type SkipReason,
+  type SkippedFile
+} from './library'
+
+export {
   errorEnvelope,
   fromEnvelope,
   toEnvelope,
