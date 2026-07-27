@@ -129,6 +129,18 @@ export interface AlignmentItem {
   readonly name: string
   readonly localVersion: string | null
   readonly remoteVersion: string | null
+  /**
+   * Le impronte su cui la decisione è stata presa.
+   *
+   * Non sono diagnostica: un piano è una FOTOGRAFIA, e fra lo scatto e
+   * l'esecuzione qualcuno può salvare una skin dallo Studio o riceverne una
+   * dall'altro dispositivo. Chi esegue ricontrolla che le due parti siano ancora
+   * quelle viste qui prima di sovrascrivere, e senza le impronte nel piano quel
+   * controllo non si può fare — resterebbe solo la versione, che è esattamente
+   * ciò che non basta a distinguere due contenuti diversi.
+   */
+  readonly localFingerprint: string | null
+  readonly remoteFingerprint: string | null
   /** Perché questa decisione, in una frase mostrabile. */
   readonly reason: string
 }
@@ -172,77 +184,50 @@ export function alignLibraries(
     const { local: here, remote: there } = pair
     const name = here?.name ?? there?.name ?? id
 
-    if (here?.builtin === true || there?.builtin === true) {
+    // Versioni e impronte vengono dalle stesse due voci in ogni ramo: ripeterle
+    // a ogni push sarebbe solo l'occasione di scriverne una sbagliata.
+    const decided = (action: AlignmentAction, reason: string): void => {
       items.push({
         id,
-        action: 'skipBuiltin',
+        action,
         name,
         localVersion: here?.version ?? null,
         remoteVersion: there?.version ?? null,
-        reason: 'skin di serie: presente su entrambi i dispositivi'
+        localFingerprint: here?.fingerprint ?? null,
+        remoteFingerprint: there?.fingerprint ?? null,
+        reason
       })
+    }
+
+    if (here?.builtin === true || there?.builtin === true) {
+      decided('skipBuiltin', 'skin di serie: presente su entrambi i dispositivi')
       continue
     }
 
     if (here !== undefined && there === undefined) {
-      items.push({
-        id,
-        action: 'send',
-        name,
-        localVersion: here.version,
-        remoteVersion: null,
-        reason: 'manca sull\'altro dispositivo'
-      })
+      decided('send', 'manca sull\'altro dispositivo')
       continue
     }
 
     if (here === undefined && there !== undefined) {
-      items.push({
-        id,
-        action: 'receive',
-        name,
-        localVersion: null,
-        remoteVersion: there.version,
-        reason: 'presente solo sull\'altro dispositivo'
-      })
+      decided('receive', 'presente solo sull\'altro dispositivo')
       continue
     }
 
     if (here === undefined || there === undefined) continue
 
     if (here.fingerprint === there.fingerprint) {
-      items.push({
-        id,
-        action: 'inSync',
-        name,
-        localVersion: here.version,
-        remoteVersion: there.version,
-        reason: 'identiche'
-      })
+      decided('inSync', 'identiche')
       continue
     }
 
     const order = compareVersions(here.version, there.version)
     if (order > 0) {
-      items.push({
-        id,
-        action: 'sendNewer',
-        name,
-        localVersion: here.version,
-        remoteVersion: there.version,
-        reason: `qui è ${here.version}, là è ${there.version}`
-      })
+      decided('sendNewer', `qui è ${here.version}, là è ${there.version}`)
       continue
     }
     if (order < 0) {
-      items.push({
-        id,
-        action: 'receiveNewer',
-        name,
-        localVersion: here.version,
-        remoteVersion: there.version,
-        reason: `là è ${there.version}, qui è ${here.version}`
-      })
+      decided('receiveNewer', `là è ${there.version}, qui è ${here.version}`)
       continue
     }
 
@@ -252,14 +237,7 @@ export function alignLibraries(
      * Qualunque scelta automatica butterebbe via il lavoro di uno dei due lati,
      * quindi si chiede.
      */
-    items.push({
-      id,
-      action: 'conflict',
-      name,
-      localVersion: here.version,
-      remoteVersion: there.version,
-      reason: `entrambe a ${here.version} ma con contenuto diverso: serve una scelta`
-    })
+    decided('conflict', `entrambe a ${here.version} ma con contenuto diverso: serve una scelta`)
   }
 
   return {

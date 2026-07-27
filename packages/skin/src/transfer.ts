@@ -33,7 +33,7 @@
  * interfaccia ascoltare.
  */
 
-import { AppError } from '@aether/core'
+import { AppError, type AppErrorPayload } from '@aether/core'
 import { skinFingerprint, type LibraryEntry } from './library'
 import { readSkinPackage } from './package'
 import { skinIdSchema } from './schema'
@@ -110,16 +110,15 @@ export interface SkinTransferResponse {
   readonly body: SkinTransferBody
 }
 
-/** La forma di un errore sul filo. Vedi `wireError` per cosa NON contiene. */
-export interface SkinTransferError {
-  readonly code: string
-  readonly domain: string
-  readonly retryable: boolean
-  readonly params: Record<string, unknown>
-  readonly i18nKey: string
-  readonly message: string
-  readonly traceId: string
-}
+/**
+ * La forma di un errore sul filo: il payload di AppError meno `stack` e
+ * `context`. Vedi `wireError` per il perché di quei due.
+ *
+ * Resta un `AppErrorPayload` valido, quindi l'altro capo lo ricostruisce con
+ * `AppError.fromPayload` senza indovinare niente — è la stessa promessa che
+ * regge il confine IPC, applicata al confine di rete.
+ */
+export type SkinTransferError = Omit<AppErrorPayload, 'stack' | 'context'>
 
 /** Quel che l'upload risponde: tutto ciò che serve a decidere se committare. */
 export interface UploadAccepted {
@@ -225,16 +224,19 @@ function statusFor(error: AppError): number {
 /**
  * L'errore che attraversa la rete.
  *
- * È il payload di AppError meno `stack` e `context`. Non è prudenza generica:
- * quei due campi contengono percorsi locali e nomi di file di questo
- * dispositivo, e l'altro capo non ha nulla da farci. `params` invece resta —
+ * È il payload di AppError meno `stack`, `context` e la catena delle cause. Non
+ * è prudenza generica: quei campi contengono percorsi locali e nomi di file di
+ * questo dispositivo (e ogni anello della catena porta a sua volta uno stack), e
+ * l'altro capo non ha nulla da farci. `params` invece resta —
  * sono i dati che l'i18n interpola, cioè il messaggio stesso — e con `code`,
  * `retryable` e `traceId` l'errore si ricostruisce dall'altra parte senza
  * indovinare nulla, che è la promessa di tutto lo strato degli errori.
  */
 export function wireError(error: AppError): SkinTransferError {
   return {
+    __aetherError: true,
     code: error.code,
+    severity: error.severity,
     domain: error.domain,
     retryable: error.retryable,
     params: error.params,

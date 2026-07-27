@@ -170,6 +170,15 @@ export {
 } from './library'
 
 export {
+  runAlignment,
+  type AlignmentOutcome,
+  type AlignmentReport,
+  type AlignmentResult,
+  type RunAlignmentOptions,
+  type SkinPeer
+} from './sync'
+
+export {
   FINGERPRINT_HEADER,
   SKIN_PACKAGE_MIME,
   SKIN_TRANSFER_PROTOCOL,
