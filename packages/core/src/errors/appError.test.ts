@@ -125,6 +125,26 @@ describe('AppError.from — accetta qualunque cosa senza lanciare', () => {
       .toBe('net.timeout')
   })
 
+  it('trova l\'errno anche quando è sotto la causa', () => {
+    /*
+     * Chi lancia spesso non è chi ha fallito. `fetch` è il caso che l'ha reso
+     * evidente: un rifiuto di connessione arriva come `TypeError: fetch failed`
+     * con ECONNREFUSED un anello più sotto. Guardando solo il livello superiore
+     * diventava `internal.unexpected`, cioè si perdevano dominio e
+     * ritentabilità — le due cose per cui il catalogo esiste.
+     */
+    const wrapped = new Error('fetch failed', {
+      cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })
+    })
+    const mapped = AppError.from(wrapped)
+    expect(mapped.code).toBe('net.offline')
+    expect(mapped.retryable).toBe(true)
+
+    // Ma un `code` qualsiasi non deve poter dirottare la classificazione.
+    const estraneo = new Error('boom', { cause: { code: 'QUALCOSA_ALTRO' } })
+    expect(AppError.from(estraneo).code).toBe('internal.unexpected')
+  })
+
   it('riconosce i codici stringa del legacy, anche con parametri', () => {
     expect(AppError.from('DL_FORBIDDEN').code).toBe('download.forbidden')
 

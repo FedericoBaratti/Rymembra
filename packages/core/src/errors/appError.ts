@@ -133,6 +133,37 @@ function readErrno(value: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined
 }
 
+interface ErrnoHit {
+  readonly mapped: ErrorCode
+  readonly path?: string
+}
+
+/**
+ * Cerca un errno noto lungo la catena delle cause, non solo in cima.
+ *
+ * Serve perché chi lancia spesso non è chi ha fallito. `fetch` è il caso che l'ha
+ * reso evidente: un rifiuto di connessione arriva come `TypeError: fetch failed`
+ * con `ECONNREFUSED` un anello più sotto, e guardare solo il livello superiore
+ * classificava come `internal.unexpected` un banale «l'altro dispositivo non
+ * risponde» — cioè perdeva sia il dominio sia la ritentabilità, che sono
+ * esattamente le due cose per cui il catalogo esiste.
+ *
+ * Solo gli errno MAPPATI vincono: un oggetto qualsiasi con un campo `code` non
+ * deve poter dirottare la classificazione.
+ */
+function findErrno(value: unknown, depth = 0): ErrnoHit | undefined {
+  if (depth >= MAX_CAUSE_DEPTH || typeof value !== 'object' || value === null) return undefined
+
+  const errno = readErrno(value)
+  const mapped = errno === undefined ? undefined : ERRNO_TO_CODE[errno]
+  if (mapped !== undefined) {
+    const path = (value as { path?: unknown }).path
+    return typeof path === 'string' ? { mapped, path } : { mapped }
+  }
+
+  return findErrno((value as { cause?: unknown }).cause, depth + 1)
+}
+
 /** Appiattisce la catena delle cause, con tetto di profondità. */
 function flattenCauses(cause: unknown, depth = 0): CauseInfo[] {
   if (cause === undefined || cause === null || depth >= MAX_CAUSE_DEPTH) return []
@@ -284,17 +315,13 @@ export class AppError extends Error {
       return new AppError('internal.unexpected', { detail: value }, options)
     }
 
-    const errno = readErrno(value)
-    if (errno !== undefined) {
-      const mapped = ERRNO_TO_CODE[errno]
-      if (mapped) {
-        const path = (value as { path?: unknown }).path
-        return new AppError(
-          mapped,
-          typeof path === 'string' ? { path } : {},
-          { ...options, cause: value }
-        )
-      }
+    const hit = findErrno(value)
+    if (hit !== undefined) {
+      return new AppError(
+        hit.mapped,
+        hit.path === undefined ? {} : { path: hit.path },
+        { ...options, cause: value }
+      )
     }
 
     if (value instanceof Error) {

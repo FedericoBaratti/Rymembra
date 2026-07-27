@@ -179,6 +179,13 @@ export interface SkinTransferOptions {
 }
 
 export interface SkinTransferRouter {
+  /**
+   * Se il percorso appartiene a questo gruppo di rotte.
+   *
+   * Si chiede PRIMA di leggere il corpo: chi ospita non deve scaricare venti
+   * mega per scoprire poi che la richiesta era per un'altra parte del server.
+   */
+  owns(path: string): boolean
   /** `null` quando il percorso non appartiene a questo gruppo di rotte. */
   handle(request: SkinTransferRequest): SkinTransferResponse | null
   /** Quante attese di commit ci sono. Per la diagnostica e per i test. */
@@ -249,6 +256,16 @@ export function wireError(error: AppError): SkinTransferError {
 function fail(error: AppError): SkinTransferResponse {
   return { status: statusFor(error), body: { kind: 'json', value: { error: wireError(error) } } }
 }
+
+/**
+ * Una risposta d'errore, con lo stato e la forma di quelle delle rotte.
+ *
+ * Esportata perché l'innesto su HTTP ha i propri guasti da riportare — un corpo
+ * oltre il tetto, un JSON illeggibile — e devono uscire nella stessa forma. Due
+ * funzioni che scrivono lo stesso errore sono due funzioni che prima o poi lo
+ * scrivono in modi diversi.
+ */
+export { fail as failureResponse }
 
 function json(status: number, value: unknown): SkinTransferResponse {
   return { status, body: { kind: 'json', value } }
@@ -483,9 +500,14 @@ export function createSkinTransferRouter(options: SkinTransferOptions): SkinTran
   return {
     pendingUploads: () => pending.size,
 
+    owns: (path) => {
+      const segments = path.split('/').filter(Boolean)
+      return segments[0] === 'api' && segments[1] === 'skins'
+    },
+
     handle(request) {
+      if (!this.owns(request.path)) return null
       const segments = request.path.split('/').filter(Boolean)
-      if (segments[0] !== 'api' || segments[1] !== 'skins') return null
 
       const rest = segments.slice(2)
       const method = request.method.toUpperCase()
