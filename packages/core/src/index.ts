@@ -137,6 +137,30 @@ export {
 } from './db'
 
 export {
+  INITIAL_PLAYBACK_STATE,
+  MAX_PLAYBACK_ATTEMPTS,
+  PLAYBACK_RETRY_BASE_MS,
+  PLAYBACK_RETRY_MAX_MS,
+  STALL_THRESHOLD_MS,
+  decidePlaybackRecovery,
+  fromExoPlayerError,
+  fromHowlerError,
+  isDistrusted,
+  reduce as reducePlayback,
+  reduceAll as reducePlaybackAll,
+  shouldDeclareStall,
+  type ExoPlayerFailure,
+  type HowlerFailure,
+  type PlaybackEvent,
+  type PlaybackState,
+  type PlaybackStatus,
+  type PlaybackTransition,
+  type RecoveryAction,
+  type RecoveryContext,
+  type RecoveryDecision
+} from './playback'
+
+export {
   errorEnvelope,
   fromEnvelope,
   toEnvelope,
