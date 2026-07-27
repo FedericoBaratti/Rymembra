@@ -17,6 +17,7 @@
 import { AppError } from '@aether/core'
 import { err, ok, type Result } from '@aether/core'
 import { EFFECT_TARGET, stackCost, type Effect } from './effects'
+import { compilePart, type PartName, type PartStyle } from './parts'
 import { TOKENS, tokenDef, type ColorValue, type ShadowValue, type TokenId } from './tokens'
 import {
   formatColor,
@@ -345,6 +346,55 @@ function compilePatterns(patterns: Record<string, Effect>): {
   return { declarations, cost: stackCost(effects) }
 }
 
+/**
+ * Le parti ridisegnate.
+ *
+ * L'ordine è quello del registro e non quello di scrittura, per la stessa ragione
+ * dei token: un output deterministico è ciò che rende utili gli snapshot e la
+ * cache dell'anteprima dal vivo. Ma qui c'è un motivo in più — nel CSS l'ordine
+ * decide la cascata a parità di specificità, quindi un ordine che dipende da come
+ * è stato scritto il JSON renderebbe il risultato imprevedibile.
+ */
+function compileParts(
+  skinId: string,
+  parts: Partial<Record<string, PartStyle>> | undefined
+): { css: string; cost: number } {
+  if (parts === undefined) return { css: '', cost: 0 }
+
+  let css = ''
+  const effects: Effect[] = []
+
+  for (const name of Object.keys(parts).sort()) {
+    const style = parts[name]
+    if (style === undefined) continue
+
+    for (const effect of style.background ?? []) effects.push(effect)
+    for (const effect of style.layer?.background ?? []) effects.push(effect)
+    if (style.clip !== undefined) effects.push(style.clip)
+
+    const rules = compilePart(
+      skinId,
+      name as PartName,
+      style,
+      compileEffect,
+      (color) => resolveColor(color as ColorValue),
+      (length) => formatLength(length as Length)
+    )
+
+    for (const rule of rules) {
+      css += block(
+        rule.selector,
+        rule.declarations.map((declaration) => ({
+          property: declaration.property,
+          value: declaration.value
+        }))
+      )
+    }
+  }
+
+  return { css, cost: stackCost(effects) }
+}
+
 function block(selector: string, declarations: readonly Declaration[]): string {
   if (declarations.length === 0) return ''
   const body = declarations
@@ -463,10 +513,15 @@ export function compileSkin(skin: SkinDocument): Result<CompiledSkin, AppError> 
 
     if (skin.motion !== undefined) css += compileMotion(skin.id, skin.motion)
 
+    const compiledParts = compileParts(skin.id, skin.parts)
+    css += compiledParts.css
+
     return ok({
       id: skin.id,
       css,
-      cost: patterns.cost,
+      // Il costo somma motivi e parti: è la cifra che il budget della Fase 7
+      // confronta, e sommarne solo una metà la renderebbe inutile.
+      cost: patterns.cost + compiledParts.cost,
       dynamicTokens: base.dynamic
     })
   } catch (cause) {

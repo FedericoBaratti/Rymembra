@@ -12,6 +12,7 @@
 
 import { z } from 'zod'
 import { effectSchema } from './effects'
+import { skinPartsSchema } from './parts'
 import { DYNAMIC_SOURCES, buildTokensSchema } from './tokens'
 import { easingSchema } from './values'
 
@@ -160,7 +161,16 @@ export const skinDocumentSchema = z
       .optional(),
     motion: skinMotionSchema.optional(),
     layout: skinLayoutSchema.optional(),
-    patterns: skinPatternsSchema.optional()
+    patterns: skinPatternsSchema.optional(),
+    /**
+     * Le superfici ridisegnate, per nome di parte.
+     *
+     * È il livello che nel legacy occupava la quasi totalità del CSS di una skin:
+     * 1.084 righe su 1.165 per `nothing`, 1.709 su 1.879 per `cyberpunk`. Un nome
+     * di parte inesistente è un errore di validazione, dove prima era un selettore
+     * che non combaciava con niente e non lo diceva.
+     */
+    parts: skinPartsSchema.optional()
   })
   .strict()
 

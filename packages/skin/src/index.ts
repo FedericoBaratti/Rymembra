@@ -58,8 +58,29 @@ export {
 export {
   BUILTIN_SKIN_IDS,
   BUILTIN_SKIN_SOURCES,
+  NOTHING_SKIN_SOURCE,
   PLAIN_SKIN_SOURCE
 } from './builtin'
+
+export {
+  PARTS,
+  PART_NAMES,
+  PART_STATES,
+  compilePart,
+  isPartName,
+  part,
+  partDef,
+  parts,
+  partStyleSchema,
+  partsInGroup,
+  skinPartsSchema,
+  type CompiledPart,
+  type PartDef,
+  type PartGroup,
+  type PartName,
+  type PartState,
+  type PartStyle
+} from './parts'
 
 export {
   DYNAMIC_SOURCES,
