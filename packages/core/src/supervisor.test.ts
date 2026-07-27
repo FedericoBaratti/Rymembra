@@ -200,8 +200,9 @@ describe('supervisor', () => {
 
   it('un secondo guasto durante la gestione del primo viene ingoiato', () => {
     const notify = vi.fn()
-    let supervisor: ReturnType<typeof createSupervisor>
-    supervisor = createSupervisor({
+    // Riferimento a sé stesso dentro il flush: il flush gira dopo, quindi la
+    // const è già inizializzata quando viene letta.
+    const supervisor: ReturnType<typeof createSupervisor> = createSupervisor({
       flushes: [
         {
           name: 'rientrante',

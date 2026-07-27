@@ -181,6 +181,15 @@ export interface ErrorParams {
   'internal.unexpected': { detail?: string }
   'internal.notImplemented': { what: string }
   'internal.invariantViolated': { what: string }
+  /**
+   * Operazione interrotta da un AbortSignal. Non è un guasto: è l'utente che ha
+   * annullato, o una vista smontata. Va distinta da un fallimento vero, perché
+   * nel legacy un annullamento arrivava come `new Error('Aborted')` e finiva nei
+   * log come errore accanto ai guasti veri.
+   */
+  'internal.aborted': { what?: string }
+  /** Scadenza superata da un'operazione con deadline. */
+  'internal.timeout': { what: string; timeoutMs: number }
 }
 
 export type ErrorCode = keyof ErrorParams
@@ -361,8 +370,12 @@ export const CATALOG: Record<ErrorCode, ErrorMeta> = {
   'download.ytdlpBadResponse': {
     domain: 'download', severity: 'warning', retryable: true, legacy: 'DL_YTDLP_BAD_RESPONSE'
   },
+  // Ritentabile, e non è un dettaglio: un pacchetto yt-dlp corrotto (unzip
+  // parziale, header zip rotto, traceback di zipimport) è un guasto d'ambiente,
+  // non un URL cattivo. Il legacy lo forzava a 'transient' dentro decideRetry;
+  // qui la decisione sta nel catalogo, dove la vedono anche gli altri chiamanti.
   'download.ytdlpCorrupted': {
-    domain: 'download', severity: 'error', retryable: false, legacy: 'YTDLP_CORRUPTED'
+    domain: 'download', severity: 'error', retryable: true, legacy: 'YTDLP_CORRUPTED'
   },
   'download.ytdlpBusy': {
     domain: 'download', severity: 'info', retryable: true, legacy: 'YTDLP_BUSY'
@@ -442,7 +455,12 @@ export const CATALOG: Record<ErrorCode, ErrorMeta> = {
   // ── internal ──────────────────────────────────────────────────────────────
   'internal.unexpected': { domain: 'internal', severity: 'error', retryable: false },
   'internal.notImplemented': { domain: 'internal', severity: 'error', retryable: false },
-  'internal.invariantViolated': { domain: 'internal', severity: 'fatal', retryable: false }
+  'internal.invariantViolated': { domain: 'internal', severity: 'fatal', retryable: false },
+  // `info`, non `error`: un annullamento voluto non deve inquinare la
+  // diagnostica. E non è ritentabile — ritentare ciò che è stato annullato è
+  // esattamente il contrario di quello che è stato chiesto.
+  'internal.aborted': { domain: 'internal', severity: 'info', retryable: false },
+  'internal.timeout': { domain: 'internal', severity: 'warning', retryable: true }
 }
 
 /** Tutti i codici, utile per i test di esaustività e per generare l'i18n. */

@@ -19,7 +19,7 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "check:node12": "node scripts/check-node12-compat.mjs",
-    "verify": "npm run typecheck && npm run lint && npm test",
+    "verify": "npm run typecheck && npm run lint && npm run check:node12 && npm test",
     "build:desktop": "npm run build -w apps/desktop",
     "build:mobile": "npm run build -w apps/mobile",
     "cap:sync": "npm run cap:sync -w apps/mobile",

@@ -7,9 +7,15 @@
 // build when it spots an API with no runtime polyfill — moving those failures off
 // the device and onto this machine.
 //
-// SCOPE: only the dirs bundled into dist-node/main.js and run on device —
-//   electron/modules, node-backend, shared. NOT scripts/ (dev-machine Node 20+) and
-//   NOT *.test.* (vitest runs on the dev Node, not on the device).
+// SCOPE: only the code bundled into dist-node/main.js and run on device. Nel
+// monorepo sono packages/core/src (il core, isomorfo per costruzione),
+// packages/skin/src (lo schema e i validatori: l'import di una skin avviene sul
+// backend) e apps/mobile/node-backend. NOT scripts/ (dev-machine Node 20+),
+// NOT legacy/ (riferimento in sola lettura) e NOT *.test.* (vitest gira sul Node
+// di sviluppo, non sul dispositivo).
+//
+// Se NESSUNA delle directory esiste, questo script FALLISCE invece di dire OK:
+// una guardia che non guarda niente è peggio di nessuna guardia, perché mente.
 //
 // INTENTIONALLY NOT FLAGGED (already polyfilled, so flagging would be a false
 // positive on safe code):
@@ -26,7 +32,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const SCAN_DIRS = ['electron/modules', 'node-backend', 'shared']
+const SCAN_DIRS = ['packages/core/src', 'packages/skin/src', 'apps/mobile/node-backend']
 
 // Patterns that genuinely throw / misbehave on Node 12.19 with no polyfill in place.
 const RULES = [
@@ -134,13 +140,15 @@ function walk(dir) {
 }
 
 const violations = []
+let scanned = 0
 for (const rel of SCAN_DIRS) {
   let files
   try {
     files = walk(resolve(root, rel))
   } catch {
-    continue // dir may not exist in every checkout
+    continue // non tutte le directory esistono in ogni fase del monorepo
   }
+  scanned += files.length
   for (const file of files) {
     const raw = readFileSync(file, 'utf8')
     const code = blankComments(raw)
@@ -157,8 +165,17 @@ for (const rel of SCAN_DIRS) {
   }
 }
 
+if (scanned === 0) {
+  console.error('[check-node12] NESSUN file esaminato. Le directory attese sono:')
+  for (const rel of SCAN_DIRS) console.error(`  ${rel}`)
+  console.error('Aggiorna SCAN_DIRS: un OK su zero file è un falso negativo.')
+  process.exit(1)
+}
+
 if (violations.length === 0) {
-  console.log('[check-node12] OK — no unpolyfilled Node-12-incompatible APIs in device code.')
+  console.log(
+    `[check-node12] OK — ${scanned} file esaminati, nessuna API incompatibile con Node 12 senza polyfill.`
+  )
   process.exit(0)
 }
 

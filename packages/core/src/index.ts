@@ -1,19 +1,156 @@
 /**
  * Punto d'ingresso pubblico di @aether/core.
  *
- * Nella Fase 1 qui arrivano: Result, la tassonomia degli errori, la busta di
- * serializzazione, il contratto IPC tipizzato, il logger e il supervisor.
- * `AetherAPI` sarà DERIVATA dal contratto invece di essere scritta a mano come
- * nel legacy (shared/types.ts:651, ~200 righe più un cast `as unknown as`).
+ * Cosa c'è, e in che ordine dipende:
+ *
+ *   result       — l'esito come valore. Non dipende da nulla.
+ *   errors       — catalogo, AppError, chiavi i18n derivate.
+ *   resilience   — ritentare, arrendersi, rallentare, scadere.
+ *   serialize    — la busta che attraversa l'IPC senza perdite.
+ *   contract     — canali, tipi, validazione: una sola fonte.
+ *   logger       — livelli, campi, stack, ring buffer, sink iniettati.
+ *   supervisor   — reti di sicurezza di processo e flush di chiusura guardati.
+ *
+ * `AetherAPI` è DERIVATA dal contratto (`ApiFor<typeof CONTRACT>`), non scritta a
+ * mano: nel legacy erano ~200 righe in `shared/types.ts:651` più un cast
+ * `as unknown as` che non garantiva nulla. Il contratto dei canali reali nasce
+ * nella Fase 2, insieme ai moduli di dominio che li implementano.
+ *
+ * Nota sui sottoinsiemi: `@aether/core/shared` è l'unico sottoinsieme che il
+ * renderer può importare senza un adapter di piattaforma. Il resto di questo
+ * indice è isomorfo per costruzione (nessun `window`, nessun `require` di moduli
+ * Node), ma presuppone che qualcuno abbia configurato i sink del logger.
  */
+
+export {
+  ok,
+  err,
+  isOk,
+  isErr,
+  map,
+  mapErr,
+  andThen,
+  unwrapOr,
+  all,
+  partition,
+  type Ok,
+  type Err,
+  type Result
+} from './result'
+
+export {
+  AppError,
+  CATALOG,
+  ERROR_CODES,
+  i18nKeyFor,
+  isAppError,
+  isAppErrorPayload,
+  legacyCodeToErrorCode,
+  missingI18nKeys,
+  requiredI18nKeys,
+  type AppErrorOptions,
+  type AppErrorPayload,
+  type CauseInfo,
+  type ErrorCode,
+  type ErrorDomain,
+  type ErrorMeta,
+  type ErrorParams,
+  type ErrorSeverity,
+  type NoParams
+} from './errors'
+
+export {
+  CircuitBreaker,
+  MAX_ATTEMPTS,
+  RATE_LIMIT_PAUSE_MS,
+  RETRY_BASE_MS,
+  RateLimiter,
+  abortError,
+  abortedIfSignalled,
+  createDeadline,
+  decideRetry,
+  nextDelayMs,
+  normalizeDownloadError,
+  retryThrowing,
+  runFallible,
+  sleep,
+  withDeadline,
+  withRetry,
+  type CircuitBreakerOptions,
+  type CircuitState,
+  type Deadline,
+  type DeadlineOptions,
+  type DownloadFailureClass,
+  type Fallible,
+  type RateLimiterOptions,
+  type RetryDecision,
+  type RetryOptions
+} from './resilience'
+
+export {
+  errorEnvelope,
+  fromEnvelope,
+  toEnvelope,
+  unwrapEnvelope,
+  withIpcTimeout,
+  wrapHandler,
+  type HandlerReturn,
+  type IpcEnvelope
+} from './serialize'
+
+export {
+  assertHandlersComplete,
+  channel,
+  channelNames,
+  defineHandlers,
+  type ApiFor,
+  type BoundHandler,
+  type ChannelDef,
+  type Contract,
+  type EventContract,
+  type EventEmitter,
+  type EventListener,
+  type EventPayload,
+  type HandlerContext,
+  type HandlerMap,
+  type InputOf,
+  type OutputOf
+} from './contract'
+
+export {
+  LOG_LEVELS,
+  addLogSink,
+  clearRecentLogs,
+  configureLogger,
+  createConsoleSink,
+  createMemorySink,
+  flushLogs,
+  formatLogLine,
+  logger,
+  recentLogs,
+  type LogLevel,
+  type LogRecord,
+  type LogScope,
+  type LogSink,
+  type LoggerConfig,
+  type ScopedLogger
+} from './logger'
+
+export {
+  createSupervisor,
+  type FlushOutcome,
+  type FlushStep,
+  type Supervisor,
+  type SupervisorDeps,
+  type SupervisorEvent,
+  type SupervisorTrigger
+} from './supervisor'
 
 /**
  * Superficie che il renderer vede come `window.aether`.
  *
- * Segnaposto volutamente aperto: serve solo a far compilare il ponteggio del
- * monorepo. La Fase 1 lo sostituisce con il tipo generato dal contratto, e da
- * quel momento un handler mancante diventa un errore di compilazione.
+ * Ancora un segnaposto: diventa `ApiFor<typeof CONTRACT>` quando i moduli di
+ * dominio della Fase 2 dichiarano i canali reali. Fino a quel momento serve ai
+ * test di `packages/ui`, che montano un finto `window.aether`.
  */
 export type AetherAPI = Record<string, (...args: never[]) => unknown>
-
-export const CORE_PLACEHOLDER = true
