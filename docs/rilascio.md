@@ -56,7 +56,8 @@ pulsante oggi non va premuto.
 
 - **Provare l'installer su una macchina pulita**, non su quella di sviluppo: è
   l'unico modo di accorgersi di un modulo nativo che si carica solo perché il
-  toolchain è installato.
+  toolchain è installato. L'app impacchettata qui si avvia e apre il database,
+  ma questa macchina ha il toolchain: non è la stessa prova.
 
 ## Procedura
 
@@ -153,10 +154,34 @@ pulita.
 Su questa macchina, senza rete:
 
 - `npm run verify` — verde, 631 test su 23 file;
-- `npm run pack:desktop` — `release/win-unpacked/Aether.exe` prodotto, con i due
-  moduli nativi fuori dall'asar e nessun `.ts` dentro;
-- `npm run check:version` — provato anche in negativo, disallineando un manifest.
+- `npm run check:version` — provato anche in negativo, disallineando un manifest;
+- `npm run pack:desktop` — `release/win-unpacked/Aether.exe`, con i due moduli
+  nativi fuori dall'asar e nessuna voce `@aether/*` dentro;
+- `npm run dist:desktop` — entrambi i target di Windows costruiti:
+  `Aether Setup 1.0.0.exe` (90 MB, nsis) e `Aether 1.0.0.exe` (89 MB, portable),
+  più il blockmap. Non firmati, come previsto;
+- **l'app impacchettata si avvia**, e nel log scrive le tre righe di boot:
 
-**Non** verificati, e vanno provati quando servono: gli installer veri (`nsis`,
-`dmg`, `AppImage`, `deb`), la firma, e i due workflow, che non hanno mai girato —
-questo repository non ha ancora un remoto GitHub.
+  ```
+  INFO [boot] avvio paths="…aether-desktop" version="1.0.0"
+  INFO [boot] skin di serie caricate count=3 ids=["plain","nothing","cyberpunk"]
+  INFO [db]   database aperto version=100 latest=100 fts5=true migrations=0
+  ```
+
+  La terza è quella che conta: se il database si apre, `better_sqlite3.node` si è
+  caricato da `app.asar.unpacked`. È la prova che `asarUnpack` è giusto, e si
+  ottiene solo lanciando il binario prodotto — non quello di sviluppo;
+- l'impacchettamento **non tocca `node_modules`**: inventario delle 61
+  dipendenze dirette e impronta del binario nativo identici prima e dopo. È il
+  controllo che `npmRebuild: false` fa il suo lavoro.
+
+**Non** verificati, e vanno provati quando servono:
+
+- gli installer di macOS e Linux (`dmg`, `AppImage`, `deb`): vanno costruiti dal
+  proprio sistema, qui c'è solo Windows;
+- la firma del codice, su entrambi i sistemi;
+- l'**installazione** vera: `Aether Setup 1.0.0.exe` è stato costruito ma non
+  eseguito. Va provato su una macchina pulita, non su questa, dove un modulo
+  nativo potrebbe caricarsi solo perché il toolchain è presente;
+- i due workflow, che non hanno mai girato — questo repository non ha ancora un
+  remoto GitHub.
