@@ -1,8 +1,8 @@
 # Stato della riscrittura
 
-Aggiornato al 27 luglio 2026. Undici commit sul ramo `aether/skin-system-e-core`.
+Aggiornato al 27 luglio 2026. Quindici commit sul ramo `aether/skin-system-e-core`.
 
-**556 test** su 19 file. `npm run verify` (typecheck node + web, lint, check:node12,
+**631 test** su 23 file. `npm run verify` (typecheck node + web, lint, check:node12,
 test) verde a ogni commit.
 
 ## Fatto e verificato
@@ -12,10 +12,10 @@ test) verde a ogni commit.
 | **0** Monorepo | completa. npm workspaces, i due alberi in `legacy/` come riferimento |
 | **1** Nucleo core | completa. Errori tipizzati end-to-end, contratto IPC, logger, supervisor, resilienza |
 | **2** Core | **parziale**: DB, riproduzione, capacità, adapter desktop, app avviabile |
-| **3** Skin engine | completa. Registro token, effetti, parts registry, compilatore, pacchetto |
+| **3** Skin engine | completa. Registro token, effetti, parts registry, compilatore, pacchetto, libreria installata |
 | **4** Conversione | **parziale**: livello token di tutte e tre le skin |
 | **5** Studio | **parziale**: la logica (bozza, contrasto) |
-| **6** Trasporto | **parziale**: l'allineamento delle librerie |
+| **6** Trasporto | **parziale**: protocollo completo e provato su TCP; manca l'innesto nei due server reali |
 | **7** Animazioni | non iniziata |
 
 ### L'app si avvia
@@ -56,11 +56,22 @@ con `adoptedStyleSheets` (`applySkinCss` c'è già), trascinamento di un'immagin
 estrarre la palette (riusare `extractPalette` da `usePalette.ts` nel legacy),
 esportazione e invio al telefono.
 
-### Fase 6 — trasporto vero
-Quattro rotte sul server del telefono (`POST /api/skin/upload`, `/commit`,
-`GET /api/skins`, `DELETE /api/skin/:id`) e tre sul server LAN del desktop. I
-protocolli, l'accoppiamento con QR e token, mDNS e il rate limiting esistono già in
-`legacy/`: è un innesto, non un protocollo nuovo.
+### Fase 6 — quel che resta del trasporto
+
+Il protocollo c'è ed è provato su una porta vera: `transfer.ts` (le rotte),
+`sync.ts` (l'esecuzione di un piano), `http.ts` (l'innesto su `node:http` e il
+client su `fetch`). Un test allinea due librerie reali su TCP nei due sensi.
+
+Restano tre cose, tutte fuori da `packages/`:
+
+1. **Montare le rotte sul server LAN del desktop.** L'accoppiamento con QR e
+   token, mDNS e il rate limiting esistono già in
+   `legacy/Aeter/electron/modules/lan/`: è un innesto — `serveSkinRoutes` prima
+   del `sendJson(404)` finale, dopo `authenticate()`.
+2. **Montare le stesse rotte sul server del telefono**, in
+   `legacy/…/node-backend/transfer/server.ts`, con `allowRemove: true`. Aspetta
+   che `apps/mobile/node-backend` esista.
+3. **I due bug qui sotto**, entrambi bloccati sull'app mobile.
 
 **Due bug reali da chiudere qui**, individuati durante l'esplorazione:
 1. `legacy/…/src/lib/lanClient.ts:209-221` tiene le impostazioni **solo in memoria**
@@ -69,6 +80,11 @@ protocolli, l'accoppiamento con QR e token, mDNS e il rate limiting esistono gi�
    `surface-0` di *plain*: con un'altra skin l'avvio a freddo lampeggia del colore
    sbagliato. `activeSurfaceColor()` in `apps/desktop/src/skinRuntime.ts` mostra come
    leggerlo dalla skin attiva invece di duplicarlo.
+
+Nota sul conteggio delle rotte: la nota precedente ne prevedeva quattro sul
+telefono e tre sul desktop, tutte in *push*. Non basta — per le voci `receive` del
+piano serve scaricare — quindi c'è anche `GET /api/skins/:id`, e le azioni stanno
+sotto `/api/skins` per non avere due prefissi per la stessa risorsa.
 
 ### Fase 2 — quel che resta
 Moduli di dominio (libreria, scansione, metadati, download, sync), adapter mobile
@@ -95,6 +111,22 @@ quindi in quei punti c'è un dispatch scritto a mano.
 **La forma interna non è serializzabile come sorgente.** Un colore validato è
 `{r,g,b,a}`, non `"#8b7cf6"`. Chi scrive un pacchetto o un editor deve tenere la
 sorgente.
+
+**Un piano è una fotografia.** Fra il momento in cui si costruisce un piano di
+allineamento e quello in cui lo si esegue passano secondi in cui il mondo cambia:
+qualcuno salva una skin dallo Studio, l'altro dispositivo ne riceve una da un
+terzo. Eseguire un piano invecchiato senza accorgersene sovrascrive lavoro che il
+piano non ha mai visto — e siccome l'utente ha approvato *quel* piano, il danno
+porta la sua firma. Ogni scrittura è quindi condizionata: si verifica che la
+parte da sovrascrivere sia ancora quella su cui la decisione è stata presa. Vale
+per qualsiasi operazione in blocco che si mostri prima di eseguirla.
+
+**Chi lancia non è chi ha fallito.** `AppError.from` cercava l'errno solo in cima
+al valore ricevuto, e `fetch` riporta un rifiuto di connessione come
+`TypeError: fetch failed` con `ECONNREFUSED` un anello più sotto. Nel caso più
+comune di tutto il trasporto LAN si perdevano dominio e ritentabilità, cioè le due
+cose per cui il catalogo esiste. La classificazione ora scende lungo la catena
+delle cause.
 
 **Ogni pezzo verificabile trova difetti in quelli precedenti.** Il formato di
 pacchetto ha corretto il modello di modifica dello Studio; la verifica di contrasto
