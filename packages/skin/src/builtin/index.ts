@@ -10,13 +10,19 @@
  * affatto, dava una superficie del colore sbagliato.
  */
 
+import { CYBERPUNK_SKIN_SOURCE } from './cyberpunk'
 import { NOTHING_SKIN_SOURCE } from './nothing'
 import { PLAIN_SKIN_SOURCE } from './plain'
 
+export { CYBERPUNK_SKIN_SOURCE } from './cyberpunk'
 export { NOTHING_SKIN_SOURCE } from './nothing'
 export { PLAIN_SKIN_SOURCE } from './plain'
 
 /** Nell'ordine in cui compaiono nel selettore delle impostazioni. */
-export const BUILTIN_SKIN_SOURCES: readonly unknown[] = [PLAIN_SKIN_SOURCE, NOTHING_SKIN_SOURCE]
+export const BUILTIN_SKIN_SOURCES: readonly unknown[] = [
+  PLAIN_SKIN_SOURCE,
+  NOTHING_SKIN_SOURCE,
+  CYBERPUNK_SKIN_SOURCE
+]
 
-export const BUILTIN_SKIN_IDS = ['plain', 'nothing'] as const
+export const BUILTIN_SKIN_IDS = ['plain', 'nothing', 'cyberpunk'] as const

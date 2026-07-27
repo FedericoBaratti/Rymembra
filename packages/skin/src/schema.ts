@@ -13,7 +13,7 @@
 import { z } from 'zod'
 import { effectSchema } from './effects'
 import { skinPartsSchema } from './parts'
-import { DYNAMIC_SOURCES, buildTokensSchema } from './tokens'
+import { DYNAMIC_SOURCES, buildTokensSchema, skinPaletteSchema } from './tokens'
 import { easingSchema } from './values'
 
 /** La versione del formato. Un numero, non semver: cambia solo se rompiamo. */
@@ -148,6 +148,15 @@ export const skinDocumentSchema = z
       mobile: false,
       dynamicAccent: true
     }),
+    /**
+     * I colori locali della skin, nominati.
+     *
+     * Sono i token skin-locali del legacy: `--cyber-teal`, `--cyber-red`,
+     * `--nothing-red`. Non fanno parte del contratto con i componenti — nessun
+     * componente li legge — ma servono alla skin per non ripetere lo stesso valore
+     * in venti dichiarazioni.
+     */
+    palette: skinPaletteSchema.optional(),
     tokens: tokenOverridesSchema,
     /** Sovrascritture per `[data-theme='light']`. */
     themes: z

@@ -503,7 +503,42 @@ export const dynamicSourceSchema = z.object({
  * rifiutare. Riconoscendo prima la forma e validando poi, ogni ramo tiene il suo
  * messaggio.
  */
+/**
+ * Riferimento a un colore della tavolozza locale della skin.
+ *
+ * Emerso convertendo `cyberpunk`: il suo `--cyber-teal` compare in decine di
+ * dichiarazioni — hairline, griglia, scanline, microtesto, ombre, visualizer — e
+ * senza un nome andrebbe ripetuto letteralmente in ognuna. Ripeterlo non è solo
+ * verboso: significa che cambiare il teal della skin richiede di trovare e
+ * correggere venti valori identici, e che sbagliarne uno dà un'incoerenza che si
+ * nota solo guardando.
+ *
+ * Il nome è validato e il compilatore lo trasforma in una proprietà con prefisso,
+ * quindi non può collidere né col registro dei token né con un'altra skin.
+ */
+export const paletteRefSchema = z.object({
+  $palette: z
+    .string()
+    .min(1)
+    .max(40)
+    .regex(/^[a-z][a-z0-9-]*$/, 'il nome di un colore della tavolozza ammette minuscole, cifre e trattini'),
+  /** Opacità da applicare. Serve alle varianti soft e glow dello stesso colore. */
+  alpha: z.number().min(0).max(1).optional()
+})
+
 export const colorValueSchema = z.unknown().transform((raw, ctx) => {
+  if (typeof raw === 'object' && raw !== null && '$palette' in raw) {
+    const parsed = paletteRefSchema.safeParse(raw)
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: 'custom',
+        message: parsed.error.issues[0]?.message ?? 'riferimento alla tavolozza non valido'
+      })
+      return z.NEVER
+    }
+    return parsed.data
+  }
+
   if (typeof raw === 'object' && raw !== null && '$token' in raw) {
     const parsed = tokenRefSchema.safeParse(raw)
     if (!parsed.success) {
@@ -543,15 +578,26 @@ export const colorValueSchema = z.unknown().transform((raw, ctx) => {
   ctx.addIssue({
     code: 'custom',
     message:
-      'un colore va scritto come stringa (#rrggbb, rgba(...)), come { "$token": … } o come { "$source": … }'
+      'un colore va scritto come stringa (#rrggbb, rgba(...)), come { "$token": … }, { "$palette": … } o { "$source": … }'
   })
   return z.NEVER
 })
 
 export type ColorValue =
+  | z.infer<typeof paletteRefSchema>
   | z.infer<typeof tokenRefSchema>
   | z.infer<typeof dynamicSourceSchema>
   | z.infer<typeof colorSchema>
+
+/** La tavolozza locale: solo colori letterali, per non ammettere cicli. */
+export const skinPaletteSchema = z.record(
+  z
+    .string()
+    .min(1)
+    .max(40)
+    .regex(/^[a-z][a-z0-9-]*$/, 'il nome di un colore della tavolozza ammette minuscole, cifre e trattini'),
+  colorSchema
+)
 
 // ── Ombre ───────────────────────────────────────────────────────────────────
 

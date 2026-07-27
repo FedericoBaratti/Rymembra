@@ -65,7 +65,19 @@ function selectorFor(id: string, variant: 'base' | 'light' | 'mobile'): string {
  * variabile viene dal registro, quindi non può essere testo arbitrario — e una
  * sorgente dinamica è un legame che il runtime aggiorna dalla copertina.
  */
+/** Il prefisso dei colori della tavolozza locale. */
+const PALETTE_PREFIX = '--skin-color-'
+
 function resolveColor(value: ColorValue): string {
+  if (typeof value === 'object' && '$palette' in value) {
+    if (value.alpha === undefined) return `var(${PALETTE_PREFIX}${value.$palette})`
+    // Con un'opacità serve la tripla: `rgb(var(--x) / a)` funziona solo se --x è
+    // una tripla di canali. Il compilatore emette entrambe le forme per ogni
+    // colore della tavolozza, proprio perché questo caso è frequente — è come
+    // `cyberpunk` costruisce le sue varianti soft e glow del teal.
+    return `rgb(var(${PALETTE_PREFIX}${value.$palette}-rgb) / ${Number(value.alpha.toFixed(3))})`
+  }
+
   if (typeof value === 'object' && '$token' in value) {
     // Il nome della variabile viene dal registro, non dal documento: è la ragione
     // per cui un riferimento non può diventare un canale di iniezione.
@@ -84,7 +96,35 @@ function resolveColor(value: ColorValue): string {
 }
 
 function isLiteralColor(value: ColorValue): value is Rgba {
-  return typeof value === 'object' && !('$token' in value) && !('$source' in value)
+  return (
+    typeof value === 'object' &&
+    !('$token' in value) &&
+    !('$source' in value) &&
+    !('$palette' in value)
+  )
+}
+
+/**
+ * La tavolozza locale, con la tripla di ogni colore.
+ *
+ * Entrambe le forme, sempre: senza la tripla, `rgb(var(--x) / 0.14)` non
+ * funziona, ed è la forma con cui le skin costruiscono le varianti a bassa
+ * opacità dello stesso colore. Nel legacy erano due dichiarazioni scritte a mano
+ * per ogni colore locale — `--cyber-teal` e `--cyber-teal-rgb` — con la stessa
+ * possibilità di divergere che avevano `--accent` e `--accent-rgb`.
+ */
+function compilePalette(palette: Record<string, Rgba>): Declaration[] {
+  const declarations: Declaration[] = []
+  for (const name of Object.keys(palette).sort()) {
+    const color = palette[name]
+    if (color === undefined) continue
+    declarations.push({ property: `${PALETTE_PREFIX}${name}`, value: formatColor(color) })
+    declarations.push({
+      property: `${PALETTE_PREFIX}${name}-rgb`,
+      value: formatRgbTriple(color)
+    })
+  }
+  return declarations
 }
 
 function resolveShadow(value: ShadowValue): string {
@@ -306,6 +346,23 @@ function computedDeclarations(tokens: SkinTokens): Declaration[] {
       value: 'calc(var(--player-h) + var(--player-gap) * 2)'
     })
   }
+  /*
+   * La tripla di surface-0.
+   *
+   * Nel legacy `cyberpunk` dichiarava `--cyber-fog-rgb: 6 6 8` con un commento in
+   * maiuscolo accanto: «DEVE combaciare con surface-0». Un'invariante affidata a
+   * un commento è un'invariante che prima o poi si rompe — basta ritoccare la
+   * superficie e dimenticare la nebbia, e il pavimento prospettico sfuma verso un
+   * colore che non è il fondo. Derivandola, il commento non serve più.
+   */
+  const surface0 = entries['color.surface.0']
+  if (surface0 !== undefined && isLiteralColor(surface0 as ColorValue)) {
+    declarations.push({
+      property: '--surface-0-rgb',
+      value: formatRgbTriple(surface0 as Rgba)
+    })
+  }
+
   if (entries['motion.dur.1'] !== undefined) {
     declarations.push({
       property: '--transition-fast',
@@ -482,6 +539,10 @@ export function compileSkin(skin: SkinDocument): Result<CompiledSkin, AppError> 
 
     let css = `/* ${skin.meta.name} ${skin.meta.version} — generato, non modificare a mano */\n`
     css += block(selectorFor(skin.id, 'base'), [
+      // La tavolozza per prima: i token possono riferirla, quindi va dichiarata
+      // sopra. Nel CSS l'ordine non conta per le variabili, ma leggere il foglio
+      // generato dall'alto in basso deve avere senso.
+      ...compilePalette((skin.palette ?? {}) as Record<string, Rgba>),
       ...base.declarations,
       ...computed,
       ...patterns.declarations,
