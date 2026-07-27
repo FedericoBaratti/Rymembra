@@ -170,6 +170,26 @@ export {
 } from './library'
 
 export {
+  FINGERPRINT_HEADER,
+  SKIN_PACKAGE_MIME,
+  SKIN_TRANSFER_PROTOCOL,
+  STAGING_LIMITS,
+  createSkinTransferRouter,
+  wireError,
+  type CommitDone,
+  type InstalledSummary,
+  type SkinListing,
+  type SkinTransferBody,
+  type SkinTransferError,
+  type SkinTransferOptions,
+  type SkinTransferRequest,
+  type SkinTransferResponse,
+  type SkinTransferRouter,
+  type StagingLimits,
+  type UploadAccepted
+} from './transfer'
+
+export {
   MANIFEST_NAME,
   PACKAGE_LIMITS,
   PREVIEW_NAME,
