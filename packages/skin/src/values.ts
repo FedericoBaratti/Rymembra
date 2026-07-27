@@ -180,6 +180,34 @@ export function formatLength(length: Length): string {
 /** Zero è l'unico numero senza unità che CSS accetta come lunghezza. */
 export const ZERO_LENGTH: Length = { value: 0, unit: 'px' }
 
+/**
+ * Una lunghezza che si adatta: minimo, preferito, massimo.
+ *
+ * È emersa convertendo la skin `plain`: `--content-x` nel legacy è
+ * `clamp(16px, 3cqw, 48px)`, e una lunghezza semplice non lo esprime. La risposta
+ * NON è ammettere `clamp()` come stringa — sarebbe il primo campo che copia testo
+ * nell'output, e da lì la garanzia del formato salta tutta. La risposta è la
+ * struttura: tre lunghezze, e il compilatore compone lui la funzione.
+ */
+export interface ClampLength {
+  readonly min: Length
+  readonly preferred: Length
+  readonly max: Length
+}
+
+export type LengthValue = Length | ClampLength
+
+export function isClampLength(value: LengthValue): value is ClampLength {
+  return 'preferred' in value
+}
+
+export function formatLengthValue(value: LengthValue): string {
+  if (isClampLength(value)) {
+    return `clamp(${formatLength(value.min)}, ${formatLength(value.preferred)}, ${formatLength(value.max)})`
+  }
+  return formatLength(value)
+}
+
 // ── Durate ──────────────────────────────────────────────────────────────────
 
 export interface Duration {
@@ -268,6 +296,53 @@ export const lengthSchema = z.string().transform((raw, ctx) => {
     return z.NEVER
   }
   return parsed
+})
+
+export const clampLengthSchema = z.object({
+  min: lengthSchema,
+  preferred: lengthSchema,
+  max: lengthSchema
+})
+
+/**
+ * Una lunghezza semplice o adattiva.
+ *
+ * Dispatch a mano e non `z.union`, per lo stesso motivo del colore: con l'unione
+ * zod riporta «Invalid input» e il messaggio che nomina l'unità sbagliata — l'unica
+ * cosa utile a chi sta scrivendo la skin — viene inghiottito.
+ */
+export const lengthValueSchema = z.unknown().transform((raw, ctx) => {
+  if (typeof raw === 'object' && raw !== null) {
+    const parsed = clampLengthSchema.safeParse(raw)
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          parsed.error.issues[0]?.message ??
+          'una lunghezza adattiva va scritta come { "min": …, "preferred": …, "max": … }'
+      })
+      return z.NEVER
+    }
+    return parsed.data
+  }
+
+  if (typeof raw === 'string') {
+    const parsed = lengthSchema.safeParse(raw)
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: 'custom',
+        message: parsed.error.issues[0]?.message ?? `lunghezza non valida: ${raw}`
+      })
+      return z.NEVER
+    }
+    return parsed.data
+  }
+
+  ctx.addIssue({
+    code: 'custom',
+    message: 'una lunghezza va scritta come "14px" o come { min, preferred, max }'
+  })
+  return z.NEVER
 })
 
 export const durationSchema = z.string().transform((raw, ctx) => {

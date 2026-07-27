@@ -24,8 +24,10 @@ import {
   formatEasing,
   formatFontStack,
   formatLength,
+  formatLengthValue,
   formatRgbTriple,
   type Length,
+  type LengthValue,
   type Rgba
 } from './values'
 import type { SkinDocument, SkinTokens } from './schema'
@@ -246,7 +248,7 @@ function compileTokens(tokens: SkinTokens): {
         break
       }
       case 'length':
-        declarations.push({ property: def.css, value: formatLength(value as Length) })
+        declarations.push({ property: def.css, value: formatLengthValue(value as LengthValue) })
         break
       case 'duration':
         declarations.push({
@@ -432,7 +434,12 @@ export function compileSkin(skin: SkinDocument): Result<CompiledSkin, AppError> 
     css += block(selectorFor(skin.id, 'base'), [
       ...base.declarations,
       ...computed,
-      ...patterns.declarations
+      ...patterns.declarations,
+      // `color-scheme` non è un token: è ciò che dice al motore di rendering come
+      // disegnare le barre di scorrimento e i controlli nativi. Nel legacy stava
+      // scritto a mano in ogni skin, e dimenticarlo dava scrollbar chiare su fondo
+      // nero.
+      { property: 'color-scheme', value: 'dark' }
     ])
 
     const light = skin.themes?.light
@@ -440,7 +447,8 @@ export function compileSkin(skin: SkinDocument): Result<CompiledSkin, AppError> 
       const compiled = compileTokens(light)
       css += block(selectorFor(skin.id, 'light'), [
         ...compiled.declarations,
-        ...computedDeclarations(light)
+        ...computedDeclarations(light),
+        { property: 'color-scheme', value: 'light' }
       ])
     }
 

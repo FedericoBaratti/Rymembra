@@ -34,6 +34,7 @@ import {
   easingSchema,
   fontStackSchema,
   lengthSchema,
+  lengthValueSchema,
   unitlessSchema
 } from './values'
 
@@ -594,7 +595,9 @@ export function schemaForKind(kind: TokenKind): z.ZodTypeAny {
     case 'color':
       return colorValueSchema
     case 'length':
-      return lengthSchema
+      // lengthValue e non length: i token di layout possono essere adattivi, ed è
+      // emerso convertendo `plain`, dove --content-x è un clamp().
+      return lengthValueSchema
     case 'duration':
       return durationSchema
     case 'easing':

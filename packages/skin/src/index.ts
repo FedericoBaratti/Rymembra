@@ -22,9 +22,13 @@ export {
   MAX_DURATION_MS,
   SYSTEM_FALLBACKS,
   ZERO_LENGTH,
+  clampLengthSchema,
   colorSchema,
   contrastRatio,
   durationSchema,
+  formatLengthValue,
+  isClampLength,
+  lengthValueSchema,
   easingSchema,
   fontFamilySchema,
   fontStackSchema,
@@ -41,13 +45,21 @@ export {
   relativeLuminance,
   unitlessSchema,
   withAlpha,
+  type ClampLength,
   type Duration,
   type Easing,
   type EasingKeyword,
   type Length,
   type LengthUnit,
+  type LengthValue,
   type Rgba
 } from './values'
+
+export {
+  BUILTIN_SKIN_IDS,
+  BUILTIN_SKIN_SOURCES,
+  PLAIN_SKIN_SOURCE
+} from './builtin'
 
 export {
   DYNAMIC_SOURCES,
