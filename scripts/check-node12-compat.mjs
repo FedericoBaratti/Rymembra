@@ -44,7 +44,8 @@ const RULES = [
   { re: /\.(toSorted|toReversed)\s*\(/, why: 'Array.prototype.toSorted/toReversed — added in Node 20.' },
   { re: /\bObject\.hasOwn\s*\(/, why: 'Object.hasOwn — added in Node 16.9. Use Object.prototype.hasOwnProperty.call.' },
   { re: /\b(Object|Map)\.groupBy\s*\(/, why: 'Object.groupBy/Map.groupBy — added in Node 21.' },
-  { re: /\.fromAsync\s*\(/, why: 'Array.fromAsync — added in Node 22.' }
+  { re: /\.fromAsync\s*\(/, why: 'Array.fromAsync — added in Node 22.' },
+  { re: /['"]node:sqlite['"]/, why: 'node:sqlite — added in Node 22.5; absent on Node 12. Device code must go through the adapter driver (sql.js on mobile, better-sqlite3 on desktop), never the built-in.' }
 ]
 
 // Keywords after which a `/` begins a regex literal rather than a division.

@@ -88,6 +88,50 @@ export {
 } from './resilience'
 
 export {
+  NO_CAPABILITIES,
+  defineCapabilities,
+  type AppearanceCapabilities,
+  type CapabilityOverrides,
+  type Capabilities,
+  type NetworkCapabilities,
+  type PlaybackCapabilities,
+  type SearchCapabilities,
+  type SystemCapabilities
+} from './capabilities'
+
+export {
+  BASELINE_VERSION,
+  LEGACY_FINAL_VERSION,
+  createDbHandle,
+  execute,
+  latestVersion,
+  migrate,
+  planMigration,
+  queryAll,
+  queryOne,
+  sqlError,
+  validateChain,
+  type Chain,
+  type Db,
+  type DbHandle,
+  type DbStatus,
+  type LegacyHistoryName,
+  type MigrateDeps,
+  type MigrateOutcome,
+  type Migration,
+  type MigrationContext,
+  type MigrationFiles,
+  type MigrationPlan,
+  type OpenDbDeps,
+  type SqlParams,
+  type SqlRow,
+  type SqlRunInfo,
+  type SqlStatement,
+  type SqlValue,
+  type SqliteDriver
+} from './db'
+
+export {
   errorEnvelope,
   fromEnvelope,
   toEnvelope,

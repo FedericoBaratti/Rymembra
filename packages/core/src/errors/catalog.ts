@@ -64,7 +64,7 @@ export interface ErrorParams {
   // ── db ────────────────────────────────────────────────────────────────────
   'db.openFailed': { path?: string }
   'db.corrupt': { path?: string; quarantinedAs?: string }
-  'db.migrationFailed': { from: number; to: number }
+  'db.migrationFailed': { from: number; to: number; step?: string }
   /** DB scritto da una versione più nuova dell'app: migrare indietro non si può. */
   'db.versionAhead': { dbVersion: number; appVersion: number }
   'db.locked': NoParams
