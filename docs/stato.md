@@ -1,9 +1,11 @@
 # Stato della riscrittura
 
-Aggiornato al 27 luglio 2026. Quindici commit sul ramo `aether/skin-system-e-core`.
+Aggiornato al 27 luglio 2026. Diciotto commit sul ramo `aether/skin-system-e-core`.
 
-**631 test** su 23 file. `npm run verify` (typecheck node + web, lint, check:node12,
-test) verde a ogni commit.
+**658 test** su 24 file. `npm run verify` (typecheck node + web, lint, check:node12,
+check:version, test) verde a ogni commit.
+
+Come si rilascia, e cosa manca per poterlo fare: [rilascio.md](rilascio.md).
 
 ## Fatto e verificato
 
@@ -11,7 +13,7 @@ test) verde a ogni commit.
 |---|---|
 | **0** Monorepo | completa. npm workspaces, i due alberi in `legacy/` come riferimento |
 | **1** Nucleo core | completa. Errori tipizzati end-to-end, contratto IPC, logger, supervisor, resilienza |
-| **2** Core | **parziale**: DB, riproduzione, capacità, adapter desktop, app avviabile |
+| **2** Core | **parziale**: DB, riproduzione, capacità, adapter desktop, app avviabile, decisione della scansione |
 | **3** Skin engine | completa. Registro token, effetti, parts registry, compilatore, pacchetto, libreria installata |
 | **4** Conversione | **parziale**: livello token di tutte e tre le skin |
 | **5** Studio | **parziale**: la logica (bozza, contrasto) |
@@ -87,10 +89,24 @@ piano serve scaricare — quindi c'è anche `GET /api/skins/:id`, e le azioni st
 sotto `/api/skins` per non avere due prefissi per la stessa risorsa.
 
 ### Fase 2 — quel che resta
-Moduli di dominio (libreria, scansione, metadati, download, sync), adapter mobile
-(riusare `sqlite-shim.ts`, `net-polyfill.ts`, `electron-shim.ts` dal legacy),
-spezzare `NativeAudioPlugin.kt` (1.174 righe, 2 catch) e collegare il suo
-`onPlayerError` alla macchina a stati — `fromExoPlayerError` è già pronta.
+
+È la fase che tiene fermo tutto il resto: senza moduli di dominio l'app non ha
+una libreria, e senza libreria non c'è niente da riprodurre.
+
+Della scansione c'è la **decisione** (`packages/core/src/library/`): una funzione
+pura da tre elenchi — cartelle sorvegliate, file trovati, righe già in libreria —
+a un piano di inserimenti, riletture e rimozioni. Manca l'**esecuzione**, ed è
+lavoro di adapter: camminata sul disco, lettura dei metadati con `music-metadata`
+(preferendo la copertina `FrontCover`, non `picture[0]`), scrittura in
+transazione, coda con concorrenza adattiva, e la riscansione richiesta a metà che
+va accodata invece che persa. Poi gli aggregati — album e artisti ricostruiti dai
+brani, con `albumKey` che è già portato — e le query di lettura, che sul mobile
+devono passare da `LIKE` più `afold()` perché sql.js non ha FTS5 (`caps.fts5`).
+
+Restano poi: metadati, download, sync; l'adapter mobile (riusare `sqlite-shim.ts`,
+`net-polyfill.ts`, `electron-shim.ts` dal legacy); e spezzare `NativeAudioPlugin.kt`
+(1.174 righe, 2 catch) collegando il suo `onPlayerError` alla macchina a stati —
+`fromExoPlayerError` è già pronta.
 
 ### Fase 7
 Motore spring interno (~150 righe, nessuna libreria), transizioni a elemento
