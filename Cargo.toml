@@ -1,6 +1,13 @@
+# Il workspace di tutto il repo.
+#
+# Stava in `core/`, quando in Rust c'era solo il nucleo. Con l'arrivo dell'app
+# desktop il posto giusto è la radice: un membro fuori dalla cartella del
+# workspace è legale ma bugiardo, e soprattutto un `cargo test` dalla radice
+# deve costruire e provare anche l'app, non solo le librerie che usa.
+
 [workspace]
 resolver = "3"
-members = ["aether-domain", "aether-app"]
+members = ["core/aether-domain", "core/aether-app", "apps/desktop/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

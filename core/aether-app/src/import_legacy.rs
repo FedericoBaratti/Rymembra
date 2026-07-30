@@ -70,7 +70,8 @@ struct LegacyPlaylist {
 }
 
 /// Cosa l'importazione porterebbe, o ha portato.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportReport {
     /// Righe lette dal vecchio database.
     pub legacy_tracks: usize,

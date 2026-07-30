@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Quel che la finestra principale può fare. Elenco chiuso: ogni voce in più è una cosa che una pagina compromessa potrebbe chiamare.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "dialog:allow-open"
+  ]
+}

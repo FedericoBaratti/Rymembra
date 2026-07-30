@@ -1,5 +1,12 @@
 # ── Dipendenze e output di build ─────────────────────────────────────────────
 node_modules/
+# Il workspace Rust sta in radice: un solo `target/` per tutto il repo.
+/target/
+# Gli schemi dei permessi: li rigenera `tauri-build` a ogni compilazione dalle
+# capacità dichiarate. Versionarli significherebbe avere due sorgenti di verità
+# per la stessa cosa, e la seconda si accorge di essere vecchia solo quando
+# qualcuno legge un errore che non capisce.
+apps/desktop/src-tauri/gen/
 out/
 dist/
 dist-mobile/

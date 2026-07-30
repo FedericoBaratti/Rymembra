@@ -1,0 +1,463 @@
+/*
+ * I colori stanno tutti qui, e tutti come variabili.
+ *
+ * Non è ordine per l'ordine: il motore delle skin, quando arriverà, produce
+ * esattamente questo — un insieme di token — e li applica sostituendo questo
+ * blocco. Ogni colore scritto a mano dentro una regola più sotto sarebbe un
+ * punto che nessuna skin può cambiare, cioè un pezzo di interfaccia che resta
+ * del colore sbagliato quando tutto il resto cambia.
+ *
+ * Nel vecchio albero questo problema esiste ancora, ed è annotato: MainActivity
+ * e capacitor.config cablano `#09090d`, che è il fondo di UNA skin, e con
+ * un'altra l'avvio a freddo lampeggia del colore sbagliato.
+ */
+:root {
+  --superficie-0: #0b0b10;
+  --superficie-1: #131320;
+  --superficie-2: #1b1b2c;
+  --superficie-alta: #23233a;
+
+  --testo-forte: #f2f2f7;
+  --testo-medio: #a9a9c2;
+  --testo-debole: #6f6f8c;
+
+  --accento: #8b7cf6;
+  --accento-2: #4fd6e0;
+  --pericolo: #f2726f;
+
+  --bordo: #26263c;
+  --raggio: 10px;
+  --raggio-grande: 14px;
+
+  --spazio-1: 4px;
+  --spazio-2: 8px;
+  --spazio-3: 14px;
+  --spazio-4: 22px;
+  --spazio-5: 34px;
+
+  --laterale: 232px;
+  --barra: 58px;
+
+  --carattere: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  --cifre: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#radice {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--superficie-0);
+  color: var(--testo-forte);
+  font-family: var(--carattere);
+  font-size: 14px;
+  line-height: 1.45;
+  /* Il testo dell'interfaccia non si seleziona: è cromo, non contenuto, e
+     selezionarlo per sbaglio trascinando è solo rumore. I titoli dei brani sì. */
+  user-select: none;
+  overflow: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--superficie-alta);
+  border-radius: 99px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--testo-debole);
+  background-clip: content-box;
+}
+
+/* ── impalcatura ─────────────────────────────────────────────────────────── */
+.telaio {
+  display: grid;
+  grid-template-columns: var(--laterale) 1fr;
+  grid-template-rows: var(--barra) 1fr;
+  height: 100%;
+}
+
+.barra {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  padding: 0 var(--spazio-4);
+  background: var(--superficie-1);
+  border-bottom: 1px solid var(--bordo);
+}
+
+.marchio {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  width: calc(var(--laterale) - var(--spazio-4));
+}
+
+.anello {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 3px solid var(--accento);
+  border-right-color: var(--accento-2);
+  border-bottom-color: var(--accento-2);
+}
+
+.ricerca {
+  flex: 1;
+  max-width: 520px;
+  height: 34px;
+  padding: 0 var(--spazio-3);
+  background: var(--superficie-2);
+  border: 1px solid var(--bordo);
+  border-radius: 99px;
+  color: var(--testo-forte);
+  font: inherit;
+  outline: none;
+  user-select: text;
+}
+.ricerca:focus {
+  border-color: var(--accento);
+}
+.ricerca::placeholder {
+  color: var(--testo-debole);
+}
+
+.laterale {
+  background: var(--superficie-1);
+  border-right: 1px solid var(--bordo);
+  padding: var(--spazio-4) var(--spazio-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-4);
+  overflow-y: auto;
+}
+
+.contenuto {
+  overflow-y: auto;
+  padding: var(--spazio-4);
+}
+
+/* ── navigazione ─────────────────────────────────────────────────────────── */
+.navigazione {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.voce {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 8px var(--spazio-3);
+  border: none;
+  background: transparent;
+  color: var(--testo-medio);
+  font: inherit;
+  text-align: left;
+  border-radius: var(--raggio);
+  cursor: pointer;
+}
+.voce:hover {
+  background: var(--superficie-2);
+  color: var(--testo-forte);
+}
+.voce[aria-current="true"] {
+  background: var(--superficie-alta);
+  color: var(--testo-forte);
+}
+.voce .conteggio {
+  font-family: var(--cifre);
+  font-size: 12px;
+  color: var(--testo-debole);
+}
+
+/* ── blocchi del pannello laterale ───────────────────────────────────────── */
+.blocco {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.blocco > h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--testo-debole);
+}
+
+.cartella {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  font-size: 12px;
+  color: var(--testo-medio);
+  background: var(--superficie-2);
+  border-radius: var(--raggio);
+  padding: 6px var(--spazio-2);
+  overflow: hidden;
+}
+.cartella span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.bottone {
+  padding: 8px var(--spazio-3);
+  border: 1px solid var(--bordo);
+  border-radius: var(--raggio);
+  background: var(--superficie-2);
+  color: var(--testo-forte);
+  font: inherit;
+  cursor: pointer;
+}
+.bottone:hover:not(:disabled) {
+  border-color: var(--accento);
+}
+.bottone:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.bottone.primario {
+  background: var(--accento);
+  border-color: var(--accento);
+  color: #0d0a1a;
+  font-weight: 600;
+}
+.bottone.primario:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.bottone.minuto {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* ── avanzamento ─────────────────────────────────────────────────────────── */
+.avanzamento {
+  height: 6px;
+  border-radius: 99px;
+  background: var(--superficie-alta);
+  overflow: hidden;
+}
+.avanzamento > div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accento), var(--accento-2));
+  transition: width 120ms linear;
+}
+
+/* ── griglia degli album ─────────────────────────────────────────────────── */
+.griglia {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
+  gap: var(--spazio-4) var(--spazio-3);
+}
+
+.scheda {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.copertina {
+  aspect-ratio: 1;
+  width: 100%;
+  border-radius: var(--raggio-grande);
+  background: var(--superficie-2);
+  object-fit: cover;
+  display: block;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 35%);
+}
+.scheda:hover .copertina {
+  outline: 2px solid var(--accento);
+  outline-offset: 2px;
+}
+
+.copertina.vuota {
+  display: grid;
+  place-items: center;
+  color: var(--testo-debole);
+  font-size: 26px;
+}
+
+.scheda .titolo {
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scheda .sotto {
+  font-size: 12px;
+  color: var(--testo-medio);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── elenco dei brani ────────────────────────────────────────────────────── */
+.elenco {
+  display: flex;
+  flex-direction: column;
+}
+
+.riga {
+  display: grid;
+  grid-template-columns: 34px 34px 1fr 1fr 52px 34px;
+  align-items: center;
+  gap: var(--spazio-3);
+  padding: 6px var(--spazio-2);
+  border-radius: var(--raggio);
+  cursor: default;
+}
+.riga:hover {
+  background: var(--superficie-1);
+}
+
+.riga .indice {
+  font-family: var(--cifre);
+  font-size: 12px;
+  color: var(--testo-debole);
+  text-align: right;
+}
+.riga img,
+.riga .segnaposto {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  background: var(--superficie-2);
+  object-fit: cover;
+}
+.riga .nome {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+.riga .autore {
+  color: var(--testo-medio);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.riga .durata {
+  font-family: var(--cifre);
+  font-size: 12px;
+  color: var(--testo-debole);
+  text-align: right;
+}
+
+.cuore {
+  border: none;
+  background: transparent;
+  color: var(--testo-debole);
+  font-size: 15px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 4px;
+  border-radius: 6px;
+}
+.cuore[aria-pressed="true"] {
+  color: var(--accento);
+}
+.cuore:hover {
+  background: var(--superficie-2);
+}
+
+/* ── intestazione dell'album aperto ──────────────────────────────────────── */
+.intestazione {
+  display: flex;
+  gap: var(--spazio-4);
+  margin-bottom: var(--spazio-5);
+  align-items: flex-end;
+}
+.intestazione img,
+.intestazione .segnaposto {
+  width: 168px;
+  height: 168px;
+  border-radius: var(--raggio-grande);
+  background: var(--superficie-2);
+  object-fit: cover;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 45%);
+}
+.intestazione h1 {
+  margin: 0 0 var(--spazio-1);
+  font-size: 30px;
+  line-height: 1.15;
+  user-select: text;
+}
+.intestazione .meta {
+  color: var(--testo-medio);
+  font-size: 13px;
+}
+
+/* ── stati ───────────────────────────────────────────────────────────────── */
+.vuoto {
+  display: grid;
+  /* `align-content` e non `align-items`: il primo centra il gruppo di righe,
+     il secondo centra ognuna dentro la propria riga — e con la griglia alta
+     quanto il contenitore le righe si distribuiscono su tutta l'altezza,
+     lasciando il titolo in cima e il bottone in fondo. */
+  align-content: center;
+  justify-items: center;
+  gap: var(--spazio-3);
+  height: 100%;
+  text-align: center;
+  color: var(--testo-medio);
+}
+.vuoto h2 {
+  margin: 0;
+  color: var(--testo-forte);
+  font-size: 19px;
+}
+.vuoto p {
+  margin: 0;
+  max-width: 46ch;
+}
+
+.errore {
+  border: 1px solid var(--pericolo);
+  border-radius: var(--raggio);
+  padding: var(--spazio-3);
+  background: color-mix(in srgb, var(--pericolo) 12%, transparent);
+  color: var(--testo-forte);
+  font-size: 13px;
+}
+.errore code {
+  font-family: var(--cifre);
+  color: var(--pericolo);
+}
+
+.percorso {
+  font-family: var(--cifre);
+  font-size: 11px;
+  color: var(--testo-debole);
+  word-break: break-all;
+  user-select: text;
+}

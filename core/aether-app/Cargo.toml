@@ -19,6 +19,13 @@ lofty = "0.24.0"
 # cambia da versione a versione, e FTS5 non è garantito: è il motivo per cui il
 # vecchio porting doveva ripiegare su `LIKE` per la ricerca.
 rusqlite = { version = "0.37", features = ["bundled", "functions"] }
+# Il dominio non serializza niente da sé, ed è una regola che vale per il
+# dominio: là una `derive` costringerebbe le decisioni pure ad avere
+# un'opinione su come vengono trasmesse. Qui è diverso — questo crate esiste
+# per parlare col mondo, e i tipi di lettura della libreria attraversano l'IPC
+# verso la finestra e il ponte verso Android. Rimirarli a mano da ogni
+# consumatore sarebbe la duplicazione che questo ramo esiste per togliere.
+serde.workspace = true
 walkdir = "2.5.0"
 
 [dev-dependencies]

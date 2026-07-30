@@ -1,0 +1,36 @@
+[package]
+name = "aether-desktop"
+description = "L'applicazione desktop: una finestra sopra il nucleo, niente logica propria."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Il binario si chiama `aether`, non `aether-desktop`: è il nome che l'utente
+# vede nel gestore attività e nella barra delle applicazioni.
+[[bin]]
+name = "aether"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+aether-app = { path = "../../../core/aether-app" }
+aether-domain = { path = "../../../core/aether-domain" }
+# La stessa versione che usa `aether-app`: due `rusqlite` diversi nell'albero
+# darebbero due tipi `Connection` incompatibili, e l'errore che ne esce parla di
+# tratti non implementati invece che di versioni.
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+# Senza `protocol-asset`: le copertine passano da uno schema nostro, che accetta
+# un'impronta e non un percorso. Il protocollo generale servirebbe file
+# arbitrari dietro una lista di cartelle permesse — più superficie, per una cosa
+# che non ci serve.
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+
+[lints]
+workspace = true

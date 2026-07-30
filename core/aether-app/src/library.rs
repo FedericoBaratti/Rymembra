@@ -838,9 +838,14 @@ impl Scan<'_> {
     }
 }
 
-/// Un brano trovato da una ricerca.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrackHit {
+/// Un brano come lo mostra una lista.
+///
+/// Non tutte le colonne di `tracks`: testo, commento e impronte non servono a
+/// disegnare una riga, e trascinarseli dietro vorrebbe dire spedire qualche
+/// megabyte di testi di canzoni verso la finestra a ogni scorrimento.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackSummary {
     /// L'identificativo della riga.
     pub id: i64,
     /// Il percorso.
@@ -851,6 +856,208 @@ pub struct TrackHit {
     pub artist: String,
     /// L'album.
     pub album: String,
+    /// La chiave dell'album, per aprirne la scheda.
+    pub album_key: Option<String>,
+    /// Numero di traccia.
+    pub track_number: Option<i64>,
+    /// Numero di disco.
+    pub disc_number: Option<i64>,
+    /// Durata in millisecondi.
+    pub duration_ms: i64,
+    /// L'anno.
+    pub year: Option<i64>,
+    /// L'impronta della copertina.
+    pub cover_art_hash: Option<String>,
+    /// Quante volte è stato ascoltato.
+    pub play_count: i64,
+    /// È fra i preferiti.
+    pub liked: bool,
+    /// Il voto, 0–5.
+    pub rating: i64,
+}
+
+/// Le colonne di [`TrackSummary`], nell'ordine in cui le legge `track_from_row`.
+const COLONNE_BRANO: &str = "t.id, t.path, t.title, t.artist, t.album, t.album_key,
+     t.track_number, t.disc_number, t.duration_ms, t.year, t.cover_art_hash,
+     t.play_count, t.liked, t.rating";
+
+fn track_from_row(row: &Row<'_>) -> rusqlite::Result<TrackSummary> {
+    Ok(TrackSummary {
+        id: row.get(0)?,
+        path: row.get(1)?,
+        title: row.get(2)?,
+        artist: row.get(3)?,
+        album: row.get(4)?,
+        album_key: row.get(5)?,
+        track_number: row.get(6)?,
+        disc_number: row.get(7)?,
+        duration_ms: row.get(8)?,
+        year: row.get(9)?,
+        cover_art_hash: row.get(10)?,
+        play_count: row.get(11)?,
+        liked: row.get::<_, i64>(12)? != 0,
+        rating: row.get(13)?,
+    })
+}
+
+/// Un album come lo mostra una griglia.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlbumSummary {
+    /// La chiave canonica.
+    pub album_key: String,
+    /// Il titolo.
+    pub title: String,
+    /// L'artista.
+    pub artist: String,
+    /// L'anno.
+    pub year: Option<i64>,
+    /// Il genere dominante.
+    pub genre: Option<String>,
+    /// Quanti brani.
+    pub total_tracks: i64,
+    /// L'impronta della copertina.
+    pub cover_art_hash: Option<String>,
+}
+
+/// Quanto c'è in libreria.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Counts {
+    /// Brani.
+    pub tracks: i64,
+    /// Album.
+    pub albums: i64,
+    /// Artisti.
+    pub artists: i64,
+    /// Brani fra i preferiti.
+    pub liked: i64,
+    /// Durata totale in millisecondi.
+    pub duration_ms: i64,
+}
+
+/// I numeri della libreria, in una query sola.
+pub fn counts(connection: &Connection) -> Result<Counts, AppError> {
+    connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM tracks),
+                    (SELECT COUNT(*) FROM albums),
+                    (SELECT COUNT(*) FROM artists),
+                    (SELECT COUNT(*) FROM tracks WHERE liked = 1),
+                    (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks)",
+            [],
+            |row| {
+                Ok(Counts {
+                    tracks: row.get(0)?,
+                    albums: row.get(1)?,
+                    artists: row.get(2)?,
+                    liked: row.get(3)?,
+                    duration_ms: row.get(4)?,
+                })
+            },
+        )
+        .map_err(|err| db_error("numeri della libreria", &err))
+}
+
+/// Come ordinare un elenco di brani.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackOrder {
+    /// Artista, poi album, poi disco e traccia: l'ordine di uno scaffale.
+    Shelf,
+    /// I più recenti in cima.
+    RecentlyAdded,
+    /// I più ascoltati in cima.
+    MostPlayed,
+    /// Titolo alfabetico.
+    Title,
+}
+
+impl TrackOrder {
+    /// La clausola `ORDER BY`. Chiusa in un `match`, mai composta da stringhe
+    /// che arrivano da fuori: un ordinamento scelto dall'interfaccia non deve
+    /// poter diventare un'iniezione.
+    const fn sql(self) -> &'static str {
+        match self {
+            Self::Shelf => {
+                "t.artist COLLATE NOCASE, t.album COLLATE NOCASE,
+                 t.disc_number, t.track_number, t.title COLLATE NOCASE"
+            }
+            Self::RecentlyAdded => "t.date_added DESC, t.id DESC",
+            Self::MostPlayed => "t.play_count DESC, t.last_played_at DESC, t.title COLLATE NOCASE",
+            Self::Title => "t.title COLLATE NOCASE, t.artist COLLATE NOCASE",
+        }
+    }
+}
+
+/// Una pagina di brani.
+pub fn list_tracks(
+    connection: &Connection,
+    order: TrackOrder,
+    offset: i64,
+    limit: i64,
+) -> Result<Vec<TrackSummary>, AppError> {
+    let sql = format!(
+        "SELECT {COLONNE_BRANO} FROM tracks t ORDER BY {} LIMIT ?1 OFFSET ?2",
+        order.sql()
+    );
+    let mut statement = connection
+        .prepare_cached(&sql)
+        .map_err(|err| db_error("elenco dei brani", &err))?;
+    let rows = statement
+        .query_map(rusqlite::params![limit, offset], track_from_row)
+        .map_err(|err| db_error("elenco dei brani", &err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("elenco dei brani", &err))
+}
+
+/// I brani di un album, nell'ordine del disco.
+pub fn album_tracks(
+    connection: &Connection,
+    album_key: &str,
+) -> Result<Vec<TrackSummary>, AppError> {
+    let sql = format!(
+        "SELECT {COLONNE_BRANO} FROM tracks t WHERE t.album_key = ?1
+         ORDER BY t.disc_number, t.track_number, t.title COLLATE NOCASE"
+    );
+    let mut statement = connection
+        .prepare_cached(&sql)
+        .map_err(|err| db_error("brani di un album", &err))?;
+    let rows = statement
+        .query_map([album_key], track_from_row)
+        .map_err(|err| db_error("brani di un album", &err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("brani di un album", &err))
+}
+
+/// Una pagina di album, per artista e anno.
+pub fn list_albums(
+    connection: &Connection,
+    offset: i64,
+    limit: i64,
+) -> Result<Vec<AlbumSummary>, AppError> {
+    let mut statement = connection
+        .prepare_cached(
+            "SELECT album_key, title, artist, year, genre, total_tracks, cover_art_hash
+             FROM albums
+             ORDER BY artist COLLATE NOCASE, year, title COLLATE NOCASE
+             LIMIT ?1 OFFSET ?2",
+        )
+        .map_err(|err| db_error("elenco degli album", &err))?;
+    let rows = statement
+        .query_map(rusqlite::params![limit, offset], |row| {
+            Ok(AlbumSummary {
+                album_key: row.get(0)?,
+                title: row.get(1)?,
+                artist: row.get(2)?,
+                year: row.get(3)?,
+                genre: row.get(4)?,
+                total_tracks: row.get(5)?,
+                cover_art_hash: row.get(6)?,
+            })
+        })
+        .map_err(|err| db_error("elenco degli album", &err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("elenco degli album", &err))
 }
 
 /// Traduce quel che l'utente ha scritto in un'espressione FTS5.
@@ -881,36 +1088,28 @@ pub fn search(
     connection: &Connection,
     query: &str,
     limit: usize,
-) -> Result<Vec<TrackHit>, AppError> {
+) -> Result<Vec<TrackSummary>, AppError> {
     let expression = fts_query(query);
     if expression.is_empty() {
         return Ok(Vec::new());
     }
+    // Il nome della tabella e non un alias: in FTS5 il lato sinistro di `MATCH`
+    // e l'argomento di `bm25` devono nominare la tabella virtuale per esteso, e
+    // con un alias SQLite risponde che quella colonna non esiste.
+    let sql = format!(
+        "SELECT {COLONNE_BRANO}
+         FROM tracks_fts
+         JOIN tracks t ON t.id = tracks_fts.rowid
+         WHERE tracks_fts MATCH ?1
+         ORDER BY bm25(tracks_fts) LIMIT ?2"
+    );
     let mut statement = connection
-        .prepare_cached(
-            // Il nome della tabella e non un alias: in FTS5 il lato sinistro di
-            // `MATCH` e l'argomento di `bm25` devono nominare la tabella
-            // virtuale per esteso, e con un alias SQLite risponde che quella
-            // colonna non esiste.
-            "SELECT t.id, t.path, t.title, t.artist, t.album
-             FROM tracks_fts
-             JOIN tracks t ON t.id = tracks_fts.rowid
-             WHERE tracks_fts MATCH ?1
-             ORDER BY bm25(tracks_fts) LIMIT ?2",
-        )
+        .prepare_cached(&sql)
         .map_err(|err| db_error("ricerca", &err))?;
     let rows = statement
         .query_map(
             rusqlite::params![expression, i64::try_from(limit).unwrap_or(i64::MAX)],
-            |row| {
-                Ok(TrackHit {
-                    id: row.get(0)?,
-                    path: row.get(1)?,
-                    title: row.get(2)?,
-                    artist: row.get(3)?,
-                    album: row.get(4)?,
-                })
-            },
+            track_from_row,
         )
         .map_err(|err| db_error("ricerca", &err))?;
     rows.collect::<Result<Vec<_>, _>>()
