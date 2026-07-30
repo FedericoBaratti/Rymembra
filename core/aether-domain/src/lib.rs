@@ -38,5 +38,8 @@ pub mod text;
 pub use errors::{AppError, Domain, ErrorCode, ErrorCodeKind, Severity};
 pub use keys::{PlaylistKey, TrackKey, TrackKeyInput};
 pub use paths::PathRules;
-pub use scan_plan::{DiscoveredFile, KnownTrack, ScanInput, ScanPlan, plan_scan};
+pub use scan_plan::{
+    DiscoveredFile, KnownTrack, Rematch, RemovedIdentity, ScanInput, ScanPlan, match_moved_tracks,
+    plan_scan,
+};
 pub use text::fold_text;

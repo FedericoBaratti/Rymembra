@@ -216,6 +216,8 @@ pub struct AlbumMember {
     pub artist: Option<String>,
     /// L'anno.
     pub year: Option<i32>,
+    /// Il genere dichiarato dal brano.
+    pub genre: Option<String>,
     /// L'impronta della copertina.
     pub cover_art_hash: Option<String>,
     /// La provenienza della copertina: `tag`, `provider`, `spotify`, `caa`.
@@ -243,6 +245,8 @@ pub struct AlbumRow {
     pub artist: String,
     /// L'anno.
     pub year: Option<i32>,
+    /// Il genere dominante fra i brani.
+    pub genre: Option<String>,
     /// Quanti brani.
     pub total_tracks: usize,
     /// La copertina scelta.
@@ -390,6 +394,10 @@ fn aggregate_group(album_key: String, members: &[AlbumMember]) -> AlbumRow {
             artist
         },
         year: members.iter().filter_map(|m| m.year).max(),
+        // Il genere dominante e non quello del primo brano: su un disco taggato
+        // a mano capita che una traccia porti «Rock» e le altre «Alternative
+        // Rock», e la scheda dell'album mostrerebbe il genere di quella sola.
+        genre: dominant(members, |m| m.genre.as_deref()),
         total_tracks: members.len(),
         cover_art_hash: pick_album_cover(members),
         // L'identificativo della pubblicazione quando c'è, altrimenti quello del
@@ -662,6 +670,31 @@ mod tests {
             with_cover("h2", "caa", 1000, 1000),
         ]);
         assert_eq!(scelta.as_deref(), Some("h1"));
+    }
+
+    #[test]
+    fn il_genere_dell_album_e_quello_dominante() {
+        // Una traccia taggata a mano diversamente dalle altre non deve dettare
+        // il genere della scheda.
+        let rows = vec![
+            AlbumMember {
+                genre: Some("Alternative Rock".to_owned()),
+                ..member("k", "A")
+            },
+            AlbumMember {
+                genre: Some("Alternative Rock".to_owned()),
+                ..member("k", "A")
+            },
+            AlbumMember {
+                genre: Some("Rock".to_owned()),
+                ..member("k", "A")
+            },
+        ];
+        let out = build_album_groups(&rows);
+        assert_eq!(
+            out.albums.first().and_then(|a| a.genre.as_deref()),
+            Some("Alternative Rock")
+        );
     }
 
     #[test]

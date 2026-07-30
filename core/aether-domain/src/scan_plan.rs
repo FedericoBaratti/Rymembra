@@ -282,6 +282,86 @@ pub fn plan_scan(input: ScanInput<'_>, rules: PathRules) -> ScanPlan {
     plan
 }
 
+/// L'identità di una riga che il piano toglierebbe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemovedIdentity<'a> {
+    /// La riga.
+    pub track_id: i64,
+    /// La sua chiave di brano, come sta nel database.
+    pub track_key: &'a str,
+}
+
+/// Una riga che sopravvive perché il suo file si è solo spostato.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rematch {
+    /// La riga da aggiornare invece di cancellare.
+    pub track_id: i64,
+    /// La posizione, dentro l'elenco degli inserimenti, del file che la riempie.
+    pub insert_index: usize,
+}
+
+/// La chiave identifica davvero un brano?
+///
+/// La forma è `artista|titolo|album`. Senza titolo non resta identità
+/// sufficiente: appaiare su una chiave del genere significherebbe dichiarare
+/// «stesso brano» due file che hanno in comune soltanto di non avere un nome.
+fn identifies_a_track(track_key: &str) -> bool {
+    track_key
+        .split('|')
+        .nth(1)
+        .is_some_and(|title| !title.is_empty())
+}
+
+/// Riconosce, fra le righe che sparirebbero, quelle il cui file è semplicemente
+/// altrove: si aggiorna il percorso invece di cancellare e reinserire.
+///
+/// # Perché non è un'ottimizzazione
+///
+/// L'identificativo di una riga è il perno a cui puntano playlist, cronologia
+/// d'ascolto, conteggi, valutazioni e preferiti. Cancellare e reinserire ne
+/// crea uno nuovo: il brano ricompare in libreria **senza niente di tutto
+/// quello**, e sparisce dalle playlist in cui stava.
+///
+/// Non è un caso raro. È esattamente ciò che succede a **ogni file** dopo un
+/// riordino della libreria, che è la funzione appena costruita: senza questo
+/// passaggio, riordinare una volta azzera l'intera storia d'ascolto.
+///
+/// L'appaiamento è sulla sola chiave di brano — non sulla dimensione — perché un
+/// file può essersi spostato *e* essere stato ritaggato nello stesso giro. A
+/// pari chiave si appaia in ordine: se due copie dello stesso brano si scambiano
+/// le statistiche fra loro il danno è nullo, mentre un appaiamento rifiutato
+/// costa la storia di entrambe.
+#[must_use]
+pub fn match_moved_tracks(removed: &[RemovedIdentity<'_>], inserted_keys: &[&str]) -> Vec<Rematch> {
+    let mut candidates: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (index, key) in inserted_keys.iter().enumerate() {
+        if identifies_a_track(key) {
+            candidates.entry(key).or_default().push(index);
+        }
+    }
+
+    let mut taken: HashMap<&str, usize> = HashMap::new();
+    let mut matched = Vec::new();
+    for row in removed {
+        if !identifies_a_track(row.track_key) {
+            continue;
+        }
+        let Some(free) = candidates.get(row.track_key) else {
+            continue;
+        };
+        let next = taken.entry(row.track_key).or_insert(0);
+        let Some(&index) = free.get(*next) else {
+            continue;
+        };
+        *next += 1;
+        matched.push(Rematch {
+            track_id: row.track_id,
+            insert_index: index,
+        });
+    }
+    matched
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,6 +497,88 @@ mod tests {
         assert!(p.to_remove.is_empty());
         assert_eq!(p.untouched, 1);
         assert!(p.is_no_op());
+    }
+
+    #[test]
+    fn un_riordino_non_azzera_la_storia_d_ascolto() {
+        // Il caso vero: il riordino ha spostato tutti i file, quindi il piano
+        // vede due sparizioni e due file nuovi. Sono le stesse due righe.
+        let rematch = match_moved_tracks(
+            &[
+                RemovedIdentity {
+                    track_id: 1,
+                    track_key: "art|uno|alb",
+                },
+                RemovedIdentity {
+                    track_id: 2,
+                    track_key: "art|due|alb",
+                },
+            ],
+            &["art|due|alb", "art|uno|alb"],
+        );
+        assert_eq!(
+            rematch,
+            vec![
+                Rematch {
+                    track_id: 1,
+                    insert_index: 1
+                },
+                Rematch {
+                    track_id: 2,
+                    insert_index: 0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn i_file_senza_titolo_non_si_appaiano_fra_loro() {
+        // `art||` non identifica un brano: appaiarli significherebbe dire
+        // «stesso brano» a due file che hanno in comune solo di non avere nome.
+        let rematch = match_moved_tracks(
+            &[RemovedIdentity {
+                track_id: 1,
+                track_key: "art||",
+            }],
+            &["art||"],
+        );
+        assert!(rematch.is_empty());
+    }
+
+    #[test]
+    fn una_riga_sola_non_si_appaia_a_due_file() {
+        // Due copie sparite, tre arrivate: se ne appaiano due, la terza è nuova.
+        let rematch = match_moved_tracks(
+            &[
+                RemovedIdentity {
+                    track_id: 1,
+                    track_key: "a|t|b",
+                },
+                RemovedIdentity {
+                    track_id: 2,
+                    track_key: "a|t|b",
+                },
+            ],
+            &["a|t|b", "a|t|b", "a|t|b"],
+        );
+        assert_eq!(rematch.len(), 2);
+        assert_eq!(
+            rematch.iter().map(|r| r.insert_index).collect::<Vec<_>>(),
+            vec![0, 1],
+            "ogni inserimento va appaiato una volta sola"
+        );
+    }
+
+    #[test]
+    fn quel_che_non_torna_resta_un_inserimento() {
+        let rematch = match_moved_tracks(
+            &[RemovedIdentity {
+                track_id: 1,
+                track_key: "a|sparito|b",
+            }],
+            &["a|altro|b"],
+        );
+        assert!(rematch.is_empty());
     }
 
     #[test]

@@ -124,9 +124,16 @@ CREATE TABLE albums (
   genre          TEXT,
   total_tracks   INTEGER NOT NULL DEFAULT 0,
   cover_art_hash TEXT REFERENCES cover_art(hash) ON DELETE SET NULL,
-  mb_release_group_id TEXT,
+  -- L'identificativo MusicBrainz della PUBBLICAZIONE quando i brani ce l'hanno,
+  -- altrimenti quello del gruppo di pubblicazione. Il nome è generico apposta:
+  -- chiamarla `mb_release_group_id` e scriverci dentro un release id è il modo
+  -- di far interrogare l'endpoint sbagliato a chi arriverà dopo.
+  mb_album_id    TEXT,
   spotify_id     TEXT
 );
+
+-- La giunzione brani⋈album passa da qui a ogni apertura di una scheda artista.
+CREATE INDEX idx_albums_artist ON albums(artist);
 
 CREATE TABLE artists (
   name         TEXT PRIMARY KEY,

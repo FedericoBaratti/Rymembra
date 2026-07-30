@@ -58,6 +58,17 @@ i requisiti per poter rilasciare in [docs/rilascio.md](docs/rilascio.md).
 - **Logica dello Skin Studio**: bozza e verifica di contrasto.
 - **Infrastruttura di rilascio**: configurazione electron-builder, workflow di CI
   e di rilascio, guardia sull'allineamento delle versioni.
+- **Scansione completa**: dal disco alla libreria interrogabile. Scrittura a
+  lotti, ognuno nella sua transazione — una scansione interrotta lascia una
+  libreria giusta e incompleta, che la passata dopo finisce, invece di non
+  lasciare niente. Aggregati ricostruiti dai brani, ricerca FTS5 con
+  virgolettatura degli operatori. Misurata sulla libreria vera: 1421 brani in
+  19,5 s la prima volta, 0,1 s la seconda.
+- **Un brano che si sposta non è un brano nuovo**: le sparizioni si appaiano ai
+  file nuovi per chiave di brano, e la riga si aggiorna invece di essere
+  cancellata e ricreata. Senza, riordinare la libreria — la funzione aggiunta
+  poco prima — azzererebbe conteggi d'ascolto, preferiti e valutazioni di ogni
+  brano, e li toglierebbe da tutte le playlist.
 
 ### Corretto
 

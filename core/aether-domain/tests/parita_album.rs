@@ -128,6 +128,9 @@ impl RigaJson {
             album_artist: self.album_artist.clone(),
             artist: self.artist.clone(),
             year: self.year,
+            // I casi di parità vengono dal vecchio albero, che il genere
+            // dell'album non lo aggregava: qui non c'è niente da confrontare.
+            genre: None,
             cover_art_hash: self.cover_art_hash.clone(),
             cover_source: self.cover_source.clone(),
             cover_width: self.cover_w,

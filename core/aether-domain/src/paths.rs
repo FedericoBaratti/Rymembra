@@ -87,6 +87,23 @@ pub fn extension_of(path: &str) -> String {
     }
 }
 
+/// Il nome del file senza estensione.
+///
+/// È il ripiego per il titolo di un brano che non ha tag: un file che in
+/// libreria comparisse senza nome non si potrebbe né leggere né cercare, e il
+/// nome che l'utente gli ha dato sul disco è l'unica cosa che si sa di lui.
+///
+/// Le stesse regole di [`extension_of`], al contrario: un punto in posizione
+/// zero non separa niente, quindi `.trashinfo` ha come radice sé stesso.
+#[must_use]
+pub fn file_stem(path: &str) -> &str {
+    let name = base_name(path);
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => name.get(..dot).unwrap_or(name),
+        _ => name,
+    }
+}
+
 /// I segmenti non vuoti di un percorso, con qualunque separatore.
 fn segments(path: &str) -> impl Iterator<Item = &str> {
     path.split(['/', '\\']).filter(|part| !part.is_empty())
@@ -207,6 +224,15 @@ mod tests {
         assert_eq!(extension_of(r"C:\Music\a.mp3.txt"), "txt");
         // Un nome che comincia con un punto ha un nome, non un'estensione.
         assert_eq!(extension_of(r"C:\Music\.trashinfo"), "");
+    }
+
+    #[test]
+    fn la_radice_del_nome_serve_da_titolo_di_ripiego() {
+        assert_eq!(file_stem(r"C:\Music\01 - Traccia.mp3"), "01 - Traccia");
+        assert_eq!(file_stem("C:/Music/senza estensione"), "senza estensione");
+        // Come `extension_of`: un punto in testa non separa niente.
+        assert_eq!(file_stem(r"C:\Music\.trashinfo"), ".trashinfo");
+        assert_eq!(file_stem("a.mp3.txt"), "a.mp3");
     }
 
     #[test]
