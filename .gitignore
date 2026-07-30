@@ -16,6 +16,13 @@ platform-tools/
 
 # ── Segreti ──────────────────────────────────────────────────────────────────
 .env
+.secrets/
+# Credenziali OAuth e token. Elencati per nome e non solo per cartella: la
+# regola serve proprio nel momento in cui qualcuno li salva nel posto sbagliato.
+*.secrets.json
+client_secret*.json
+google-oauth*.json
+token*.json
 build/*.pfx
 build/*.cer
 # Perdere il keystore significa non poter più aggiornare l'app con la stessa
