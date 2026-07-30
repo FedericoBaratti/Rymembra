@@ -6,6 +6,11 @@
 //!
 //!     cargo run -p aether-app --example leggi_tag -- "C:/Users/.../Music" 40
 
+// Questi esempi sono strumenti diagnostici, eseguiti a mano da chi sviluppa.
+// Qui un guasto DEVE fermare tutto rumorosamente: un esempio che prosegue su un
+// errore riporta numeri sbagliati, e i numeri sono l unica cosa che produce.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use aether_app::files::{LocalFiles, MusicFiles};
 use aether_app::metadata::read_tags;
 use aether_domain::paths::is_supported_audio_path;

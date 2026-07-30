@@ -5,6 +5,11 @@
 //!
 //!     cargo run -p aether-app --example piano_riordino -- "C:/Users/.../Music"
 
+// Questi esempi sono strumenti diagnostici, eseguiti a mano da chi sviluppa.
+// Qui un guasto DEVE fermare tutto rumorosamente: un esempio che prosegue su un
+// errore riporta numeri sbagliati, e i numeri sono l unica cosa che produce.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::collections::HashMap;
 
 use aether_app::files::{LocalFiles, MusicFiles};

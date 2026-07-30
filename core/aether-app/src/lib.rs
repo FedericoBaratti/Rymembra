@@ -12,3 +12,4 @@
 pub mod db;
 pub mod files;
 pub mod metadata;
+pub mod organize;
