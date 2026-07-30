@@ -10,3 +10,5 @@
 //! monolitico del vecchio albero si perdevano righe di libreria.
 
 pub mod db;
+pub mod files;
+pub mod metadata;

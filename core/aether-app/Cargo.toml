@@ -9,12 +9,16 @@ authors.workspace = true
 
 [dependencies]
 aether-domain = { path = "../aether-domain" }
+blake3 = "1.8.5"
+imagesize = "0.15.0"
+lofty = "0.24.0"
 # `bundled`: SQLite compilato da sorgente e incluso nel binario. Non è comodità
 # — è l'unico modo di avere la STESSA versione di SQLite e le stesse opzioni di
 # compilazione sul desktop e dentro l'APK. Su Android il SQLite di sistema
 # cambia da versione a versione, e FTS5 non è garantito: è il motivo per cui il
 # vecchio porting doveva ripiegare su `LIKE` per la ricerca.
 rusqlite = { version = "0.37", features = ["bundled", "functions"] }
+walkdir = "2.5.0"
 
 [dev-dependencies]
 tempfile = "3"
