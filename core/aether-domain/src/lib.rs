@@ -30,6 +30,7 @@
 pub mod album;
 pub mod errors;
 pub mod keys;
+pub mod organize;
 pub mod paths;
 pub mod scan_plan;
 pub mod text;
