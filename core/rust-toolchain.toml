@@ -1,0 +1,7 @@
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+# I quattro ABI Android si aggiungono alla fase 8 con:
+#   rustup target add aarch64-linux-android armv7-linux-androideabi \
+#                     x86_64-linux-android i686-linux-android
+targets = ["x86_64-pc-windows-msvc"]

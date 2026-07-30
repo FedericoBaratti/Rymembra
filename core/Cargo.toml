@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = ["aether-domain"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+authors = ["Federico Baratti"]
+repository = "https://github.com/federicobaratti/aether"
+
+[workspace.dependencies]
+unicode-normalization = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace.lints.rust]
+# Il dominio non ha bisogno di unsafe. Vietato, non scoraggiato: se un giorno
+# servisse davvero, deve essere una decisione visibile in questo file.
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# Le operazioni che possono terminare il processo vanno scritte per esteso.
+# Un `unwrap()` in un modulo di dominio non fa cadere una funzione: fa cadere
+# l'app dell'utente mentre ascolta.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+integer_division = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+
+# I profili di rilascio: il nucleo gira anche su telefono, dove ogni MB
+# dell'.so e ogni millisecondo di avvio si vedono.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

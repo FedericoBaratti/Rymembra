@@ -1,0 +1,1567 @@
+{
+  "_nota": "Generato eseguendo paths.ts e scanPlan.ts del ramo aether/skin-system-e-core. Sono le funzioni che possono togliere righe di libreria: il port Rust deve decidere identico, caso per caso.",
+  "_generatoIl": "2026-07-30T12:45:12.772Z",
+  "pathKey": [
+    {
+      "nota": "windows normale [win]",
+      "input": "C:\\Music\\a.mp3",
+      "caseInsensitive": true,
+      "atteso": "c:/music/a.mp3"
+    },
+    {
+      "nota": "windows normale [posix]",
+      "input": "C:\\Music\\a.mp3",
+      "caseInsensitive": false,
+      "atteso": "C:/Music/a.mp3"
+    },
+    {
+      "nota": "stesso percorso con barre dritte [win]",
+      "input": "C:/Music/a.mp3",
+      "caseInsensitive": true,
+      "atteso": "c:/music/a.mp3"
+    },
+    {
+      "nota": "stesso percorso con barre dritte [posix]",
+      "input": "C:/Music/a.mp3",
+      "caseInsensitive": false,
+      "atteso": "C:/Music/a.mp3"
+    },
+    {
+      "nota": "stesso percorso in maiuscolo [win]",
+      "input": "C:\\MUSIC\\A.MP3",
+      "caseInsensitive": true,
+      "atteso": "c:/music/a.mp3"
+    },
+    {
+      "nota": "stesso percorso in maiuscolo [posix]",
+      "input": "C:\\MUSIC\\A.MP3",
+      "caseInsensitive": false,
+      "atteso": "C:/MUSIC/A.MP3"
+    },
+    {
+      "nota": "cartella con separatore finale [win]",
+      "input": "C:\\Music\\",
+      "caseInsensitive": true,
+      "atteso": "c:/music"
+    },
+    {
+      "nota": "cartella con separatore finale [posix]",
+      "input": "C:\\Music\\",
+      "caseInsensitive": false,
+      "atteso": "C:/Music"
+    },
+    {
+      "nota": "cartella senza separatore [win]",
+      "input": "C:\\Music",
+      "caseInsensitive": true,
+      "atteso": "c:/music"
+    },
+    {
+      "nota": "cartella senza separatore [posix]",
+      "input": "C:\\Music",
+      "caseInsensitive": false,
+      "atteso": "C:/Music"
+    },
+    {
+      "nota": "separatori doppi [win]",
+      "input": "C:\\Music\\\\a.mp3",
+      "caseInsensitive": true,
+      "atteso": "c:/music//a.mp3"
+    },
+    {
+      "nota": "separatori doppi [posix]",
+      "input": "C:\\Music\\\\a.mp3",
+      "caseInsensitive": false,
+      "atteso": "C:/Music//a.mp3"
+    },
+    {
+      "nota": "posix [win]",
+      "input": "/home/f/Music/a.mp3",
+      "caseInsensitive": true,
+      "atteso": "/home/f/music/a.mp3"
+    },
+    {
+      "nota": "posix [posix]",
+      "input": "/home/f/Music/a.mp3",
+      "caseInsensitive": false,
+      "atteso": "/home/f/Music/a.mp3"
+    },
+    {
+      "nota": "relativo [win]",
+      "input": "a.mp3",
+      "caseInsensitive": true,
+      "atteso": "a.mp3"
+    },
+    {
+      "nota": "relativo [posix]",
+      "input": "a.mp3",
+      "caseInsensitive": false,
+      "atteso": "a.mp3"
+    },
+    {
+      "nota": "vuoto [win]",
+      "input": "",
+      "caseInsensitive": true,
+      "atteso": ""
+    },
+    {
+      "nota": "vuoto [posix]",
+      "input": "",
+      "caseInsensitive": false,
+      "atteso": ""
+    },
+    {
+      "nota": "cartella con un punto, file senza estensione [win]",
+      "input": "C:\\Music\\Album.2019\\traccia",
+      "caseInsensitive": true,
+      "atteso": "c:/music/album.2019/traccia"
+    },
+    {
+      "nota": "cartella con un punto, file senza estensione [posix]",
+      "input": "C:\\Music\\Album.2019\\traccia",
+      "caseInsensitive": false,
+      "atteso": "C:/Music/Album.2019/traccia"
+    },
+    {
+      "nota": "nome che comincia con un punto [win]",
+      "input": "C:\\Music\\.trashinfo",
+      "caseInsensitive": true,
+      "atteso": "c:/music/.trashinfo"
+    },
+    {
+      "nota": "nome che comincia con un punto [posix]",
+      "input": "C:\\Music\\.trashinfo",
+      "caseInsensitive": false,
+      "atteso": "C:/Music/.trashinfo"
+    },
+    {
+      "nota": "estensione maiuscola [win]",
+      "input": "C:\\Music\\a.MP3",
+      "caseInsensitive": true,
+      "atteso": "c:/music/a.mp3"
+    },
+    {
+      "nota": "estensione maiuscola [posix]",
+      "input": "C:\\Music\\a.MP3",
+      "caseInsensitive": false,
+      "atteso": "C:/Music/a.MP3"
+    },
+    {
+      "nota": "flac [win]",
+      "input": "C:\\Music\\a.flac",
+      "caseInsensitive": true,
+      "atteso": "c:/music/a.flac"
+    },
+    {
+      "nota": "flac [posix]",
+      "input": "C:\\Music\\a.flac",
+      "caseInsensitive": false,
+      "atteso": "C:/Music/a.flac"
+    },
+    {
+      "nota": "non audio [win]",
+      "input": "C:\\Music\\a.txt",
+      "caseInsensitive": true,
+      "atteso": "c:/music/a.txt"
+    },
+    {
+      "nota": "non audio [posix]",
+      "input": "C:\\Music\\a.txt",
+      "caseInsensitive": false,
+      "atteso": "C:/Music/a.txt"
+    },
+    {
+      "nota": "doppia estensione, la vera è .txt [win]",
+      "input": "C:\\Music\\a.mp3.txt",
+      "caseInsensitive": true,
+      "atteso": "c:/music/a.mp3.txt"
+    },
+    {
+      "nota": "doppia estensione, la vera è .txt [posix]",
+      "input": "C:\\Music\\a.mp3.txt",
+      "caseInsensitive": false,
+      "atteso": "C:/Music/a.mp3.txt"
+    },
+    {
+      "nota": "dentro il cestino [win]",
+      "input": "C:\\Music\\.trash\\a.mp3",
+      "caseInsensitive": true,
+      "atteso": "c:/music/.trash/a.mp3"
+    },
+    {
+      "nota": "dentro il cestino [posix]",
+      "input": "C:\\Music\\.trash\\a.mp3",
+      "caseInsensitive": false,
+      "atteso": "C:/Music/.trash/a.mp3"
+    },
+    {
+      "nota": "il cestino stesso [win]",
+      "input": "C:\\Music\\.trash",
+      "caseInsensitive": true,
+      "atteso": "c:/music/.trash"
+    },
+    {
+      "nota": "il cestino stesso [posix]",
+      "input": "C:\\Music\\.trash",
+      "caseInsensitive": false,
+      "atteso": "C:/Music/.trash"
+    },
+    {
+      "nota": "cartella che CONTIENE il nome del cestino [win]",
+      "input": "C:\\Music\\non.trash\\a.mp3",
+      "caseInsensitive": true,
+      "atteso": "c:/music/non.trash/a.mp3"
+    },
+    {
+      "nota": "cartella che CONTIENE il nome del cestino [posix]",
+      "input": "C:\\Music\\non.trash\\a.mp3",
+      "caseInsensitive": false,
+      "atteso": "C:/Music/non.trash/a.mp3"
+    },
+    {
+      "nota": "cartella che COMINCIA come il cestino [win]",
+      "input": "C:\\Music\\.trashy\\a.mp3",
+      "caseInsensitive": true,
+      "atteso": "c:/music/.trashy/a.mp3"
+    },
+    {
+      "nota": "cartella che COMINCIA come il cestino [posix]",
+      "input": "C:\\Music\\.trashy\\a.mp3",
+      "caseInsensitive": false,
+      "atteso": "C:/Music/.trashy/a.mp3"
+    },
+    {
+      "nota": "cartella che comincia come quella sorvegliata [win]",
+      "input": "C:\\Musica\\a.mp3",
+      "caseInsensitive": true,
+      "atteso": "c:/musica/a.mp3"
+    },
+    {
+      "nota": "cartella che comincia come quella sorvegliata [posix]",
+      "input": "C:\\Musica\\a.mp3",
+      "caseInsensitive": false,
+      "atteso": "C:/Musica/a.mp3"
+    }
+  ],
+  "baseName": [
+    {
+      "nota": "windows normale",
+      "input": "C:\\Music\\a.mp3",
+      "atteso": "a.mp3"
+    },
+    {
+      "nota": "stesso percorso con barre dritte",
+      "input": "C:/Music/a.mp3",
+      "atteso": "a.mp3"
+    },
+    {
+      "nota": "stesso percorso in maiuscolo",
+      "input": "C:\\MUSIC\\A.MP3",
+      "atteso": "A.MP3"
+    },
+    {
+      "nota": "cartella con separatore finale",
+      "input": "C:\\Music\\",
+      "atteso": ""
+    },
+    {
+      "nota": "cartella senza separatore",
+      "input": "C:\\Music",
+      "atteso": "Music"
+    },
+    {
+      "nota": "separatori doppi",
+      "input": "C:\\Music\\\\a.mp3",
+      "atteso": "a.mp3"
+    },
+    {
+      "nota": "posix",
+      "input": "/home/f/Music/a.mp3",
+      "atteso": "a.mp3"
+    },
+    {
+      "nota": "relativo",
+      "input": "a.mp3",
+      "atteso": "a.mp3"
+    },
+    {
+      "nota": "vuoto",
+      "input": "",
+      "atteso": ""
+    },
+    {
+      "nota": "cartella con un punto, file senza estensione",
+      "input": "C:\\Music\\Album.2019\\traccia",
+      "atteso": "traccia"
+    },
+    {
+      "nota": "nome che comincia con un punto",
+      "input": "C:\\Music\\.trashinfo",
+      "atteso": ".trashinfo"
+    },
+    {
+      "nota": "estensione maiuscola",
+      "input": "C:\\Music\\a.MP3",
+      "atteso": "a.MP3"
+    },
+    {
+      "nota": "flac",
+      "input": "C:\\Music\\a.flac",
+      "atteso": "a.flac"
+    },
+    {
+      "nota": "non audio",
+      "input": "C:\\Music\\a.txt",
+      "atteso": "a.txt"
+    },
+    {
+      "nota": "doppia estensione, la vera è .txt",
+      "input": "C:\\Music\\a.mp3.txt",
+      "atteso": "a.mp3.txt"
+    },
+    {
+      "nota": "dentro il cestino",
+      "input": "C:\\Music\\.trash\\a.mp3",
+      "atteso": "a.mp3"
+    },
+    {
+      "nota": "il cestino stesso",
+      "input": "C:\\Music\\.trash",
+      "atteso": ".trash"
+    },
+    {
+      "nota": "cartella che CONTIENE il nome del cestino",
+      "input": "C:\\Music\\non.trash\\a.mp3",
+      "atteso": "a.mp3"
+    },
+    {
+      "nota": "cartella che COMINCIA come il cestino",
+      "input": "C:\\Music\\.trashy\\a.mp3",
+      "atteso": "a.mp3"
+    },
+    {
+      "nota": "cartella che comincia come quella sorvegliata",
+      "input": "C:\\Musica\\a.mp3",
+      "atteso": "a.mp3"
+    }
+  ],
+  "extensionOf": [
+    {
+      "nota": "windows normale",
+      "input": "C:\\Music\\a.mp3",
+      "atteso": "mp3"
+    },
+    {
+      "nota": "stesso percorso con barre dritte",
+      "input": "C:/Music/a.mp3",
+      "atteso": "mp3"
+    },
+    {
+      "nota": "stesso percorso in maiuscolo",
+      "input": "C:\\MUSIC\\A.MP3",
+      "atteso": "mp3"
+    },
+    {
+      "nota": "cartella con separatore finale",
+      "input": "C:\\Music\\",
+      "atteso": ""
+    },
+    {
+      "nota": "cartella senza separatore",
+      "input": "C:\\Music",
+      "atteso": ""
+    },
+    {
+      "nota": "separatori doppi",
+      "input": "C:\\Music\\\\a.mp3",
+      "atteso": "mp3"
+    },
+    {
+      "nota": "posix",
+      "input": "/home/f/Music/a.mp3",
+      "atteso": "mp3"
+    },
+    {
+      "nota": "relativo",
+      "input": "a.mp3",
+      "atteso": "mp3"
+    },
+    {
+      "nota": "vuoto",
+      "input": "",
+      "atteso": ""
+    },
+    {
+      "nota": "cartella con un punto, file senza estensione",
+      "input": "C:\\Music\\Album.2019\\traccia",
+      "atteso": ""
+    },
+    {
+      "nota": "nome che comincia con un punto",
+      "input": "C:\\Music\\.trashinfo",
+      "atteso": ""
+    },
+    {
+      "nota": "estensione maiuscola",
+      "input": "C:\\Music\\a.MP3",
+      "atteso": "mp3"
+    },
+    {
+      "nota": "flac",
+      "input": "C:\\Music\\a.flac",
+      "atteso": "flac"
+    },
+    {
+      "nota": "non audio",
+      "input": "C:\\Music\\a.txt",
+      "atteso": "txt"
+    },
+    {
+      "nota": "doppia estensione, la vera è .txt",
+      "input": "C:\\Music\\a.mp3.txt",
+      "atteso": "txt"
+    },
+    {
+      "nota": "dentro il cestino",
+      "input": "C:\\Music\\.trash\\a.mp3",
+      "atteso": "mp3"
+    },
+    {
+      "nota": "il cestino stesso",
+      "input": "C:\\Music\\.trash",
+      "atteso": ""
+    },
+    {
+      "nota": "cartella che CONTIENE il nome del cestino",
+      "input": "C:\\Music\\non.trash\\a.mp3",
+      "atteso": "mp3"
+    },
+    {
+      "nota": "cartella che COMINCIA come il cestino",
+      "input": "C:\\Music\\.trashy\\a.mp3",
+      "atteso": "mp3"
+    },
+    {
+      "nota": "cartella che comincia come quella sorvegliata",
+      "input": "C:\\Musica\\a.mp3",
+      "atteso": "mp3"
+    }
+  ],
+  "isInTrash": [
+    {
+      "nota": "windows normale",
+      "input": "C:\\Music\\a.mp3",
+      "atteso": false
+    },
+    {
+      "nota": "stesso percorso con barre dritte",
+      "input": "C:/Music/a.mp3",
+      "atteso": false
+    },
+    {
+      "nota": "stesso percorso in maiuscolo",
+      "input": "C:\\MUSIC\\A.MP3",
+      "atteso": false
+    },
+    {
+      "nota": "cartella con separatore finale",
+      "input": "C:\\Music\\",
+      "atteso": false
+    },
+    {
+      "nota": "cartella senza separatore",
+      "input": "C:\\Music",
+      "atteso": false
+    },
+    {
+      "nota": "separatori doppi",
+      "input": "C:\\Music\\\\a.mp3",
+      "atteso": false
+    },
+    {
+      "nota": "posix",
+      "input": "/home/f/Music/a.mp3",
+      "atteso": false
+    },
+    {
+      "nota": "relativo",
+      "input": "a.mp3",
+      "atteso": false
+    },
+    {
+      "nota": "vuoto",
+      "input": "",
+      "atteso": false
+    },
+    {
+      "nota": "cartella con un punto, file senza estensione",
+      "input": "C:\\Music\\Album.2019\\traccia",
+      "atteso": false
+    },
+    {
+      "nota": "nome che comincia con un punto",
+      "input": "C:\\Music\\.trashinfo",
+      "atteso": false
+    },
+    {
+      "nota": "estensione maiuscola",
+      "input": "C:\\Music\\a.MP3",
+      "atteso": false
+    },
+    {
+      "nota": "flac",
+      "input": "C:\\Music\\a.flac",
+      "atteso": false
+    },
+    {
+      "nota": "non audio",
+      "input": "C:\\Music\\a.txt",
+      "atteso": false
+    },
+    {
+      "nota": "doppia estensione, la vera è .txt",
+      "input": "C:\\Music\\a.mp3.txt",
+      "atteso": false
+    },
+    {
+      "nota": "dentro il cestino",
+      "input": "C:\\Music\\.trash\\a.mp3",
+      "atteso": true
+    },
+    {
+      "nota": "il cestino stesso",
+      "input": "C:\\Music\\.trash",
+      "atteso": true
+    },
+    {
+      "nota": "cartella che CONTIENE il nome del cestino",
+      "input": "C:\\Music\\non.trash\\a.mp3",
+      "atteso": false
+    },
+    {
+      "nota": "cartella che COMINCIA come il cestino",
+      "input": "C:\\Music\\.trashy\\a.mp3",
+      "atteso": false
+    },
+    {
+      "nota": "cartella che comincia come quella sorvegliata",
+      "input": "C:\\Musica\\a.mp3",
+      "atteso": false
+    }
+  ],
+  "isSupportedAudioPath": [
+    {
+      "nota": "windows normale",
+      "input": "C:\\Music\\a.mp3",
+      "atteso": true
+    },
+    {
+      "nota": "stesso percorso con barre dritte",
+      "input": "C:/Music/a.mp3",
+      "atteso": true
+    },
+    {
+      "nota": "stesso percorso in maiuscolo",
+      "input": "C:\\MUSIC\\A.MP3",
+      "atteso": true
+    },
+    {
+      "nota": "cartella con separatore finale",
+      "input": "C:\\Music\\",
+      "atteso": false
+    },
+    {
+      "nota": "cartella senza separatore",
+      "input": "C:\\Music",
+      "atteso": false
+    },
+    {
+      "nota": "separatori doppi",
+      "input": "C:\\Music\\\\a.mp3",
+      "atteso": true
+    },
+    {
+      "nota": "posix",
+      "input": "/home/f/Music/a.mp3",
+      "atteso": true
+    },
+    {
+      "nota": "relativo",
+      "input": "a.mp3",
+      "atteso": true
+    },
+    {
+      "nota": "vuoto",
+      "input": "",
+      "atteso": false
+    },
+    {
+      "nota": "cartella con un punto, file senza estensione",
+      "input": "C:\\Music\\Album.2019\\traccia",
+      "atteso": false
+    },
+    {
+      "nota": "nome che comincia con un punto",
+      "input": "C:\\Music\\.trashinfo",
+      "atteso": false
+    },
+    {
+      "nota": "estensione maiuscola",
+      "input": "C:\\Music\\a.MP3",
+      "atteso": true
+    },
+    {
+      "nota": "flac",
+      "input": "C:\\Music\\a.flac",
+      "atteso": true
+    },
+    {
+      "nota": "non audio",
+      "input": "C:\\Music\\a.txt",
+      "atteso": false
+    },
+    {
+      "nota": "doppia estensione, la vera è .txt",
+      "input": "C:\\Music\\a.mp3.txt",
+      "atteso": false
+    },
+    {
+      "nota": "dentro il cestino",
+      "input": "C:\\Music\\.trash\\a.mp3",
+      "atteso": true
+    },
+    {
+      "nota": "il cestino stesso",
+      "input": "C:\\Music\\.trash",
+      "atteso": false
+    },
+    {
+      "nota": "cartella che CONTIENE il nome del cestino",
+      "input": "C:\\Music\\non.trash\\a.mp3",
+      "atteso": true
+    },
+    {
+      "nota": "cartella che COMINCIA come il cestino",
+      "input": "C:\\Music\\.trashy\\a.mp3",
+      "atteso": true
+    },
+    {
+      "nota": "cartella che comincia come quella sorvegliata",
+      "input": "C:\\Musica\\a.mp3",
+      "atteso": true
+    }
+  ],
+  "isUnder": [
+    {
+      "nota": "IL difetto: Musica non sta dentro Music [win]",
+      "path": "C:\\Musica\\a.mp3",
+      "folder": "C:\\Music",
+      "caseInsensitive": true,
+      "atteso": false
+    },
+    {
+      "nota": "IL difetto: Musica non sta dentro Music [posix]",
+      "path": "C:\\Musica\\a.mp3",
+      "folder": "C:\\Music",
+      "caseInsensitive": false,
+      "atteso": false
+    },
+    {
+      "nota": "dentro davvero [win]",
+      "path": "C:\\Music\\a.mp3",
+      "folder": "C:\\Music",
+      "caseInsensitive": true,
+      "atteso": true
+    },
+    {
+      "nota": "dentro davvero [posix]",
+      "path": "C:\\Music\\a.mp3",
+      "folder": "C:\\Music",
+      "caseInsensitive": false,
+      "atteso": true
+    },
+    {
+      "nota": "la cartella stessa [win]",
+      "path": "C:\\Music",
+      "folder": "C:\\Music",
+      "caseInsensitive": true,
+      "atteso": true
+    },
+    {
+      "nota": "la cartella stessa [posix]",
+      "path": "C:\\Music",
+      "folder": "C:\\Music",
+      "caseInsensitive": false,
+      "atteso": true
+    },
+    {
+      "nota": "la cartella con separatore finale [win]",
+      "path": "C:\\Music\\",
+      "folder": "C:\\Music",
+      "caseInsensitive": true,
+      "atteso": true
+    },
+    {
+      "nota": "la cartella con separatore finale [posix]",
+      "path": "C:\\Music\\",
+      "folder": "C:\\Music",
+      "caseInsensitive": false,
+      "atteso": true
+    },
+    {
+      "nota": "radice con separatore finale [win]",
+      "path": "C:\\Music\\sub\\a.mp3",
+      "folder": "C:\\Music\\",
+      "caseInsensitive": true,
+      "atteso": true
+    },
+    {
+      "nota": "radice con separatore finale [posix]",
+      "path": "C:\\Music\\sub\\a.mp3",
+      "folder": "C:\\Music\\",
+      "caseInsensitive": false,
+      "atteso": true
+    },
+    {
+      "nota": "barre miste [win]",
+      "path": "C:/Music/a.mp3",
+      "folder": "C:\\Music",
+      "caseInsensitive": true,
+      "atteso": true
+    },
+    {
+      "nota": "barre miste [posix]",
+      "path": "C:/Music/a.mp3",
+      "folder": "C:\\Music",
+      "caseInsensitive": false,
+      "atteso": true
+    },
+    {
+      "nota": "caso diverso [win]",
+      "path": "C:\\MUSIC\\a.mp3",
+      "folder": "C:\\Music",
+      "caseInsensitive": true,
+      "atteso": true
+    },
+    {
+      "nota": "caso diverso [posix]",
+      "path": "C:\\MUSIC\\a.mp3",
+      "folder": "C:\\Music",
+      "caseInsensitive": false,
+      "atteso": false
+    },
+    {
+      "nota": "radice vuota [win]",
+      "path": "C:\\Music\\a.mp3",
+      "folder": "",
+      "caseInsensitive": true,
+      "atteso": false
+    },
+    {
+      "nota": "radice vuota [posix]",
+      "path": "C:\\Music\\a.mp3",
+      "folder": "",
+      "caseInsensitive": false,
+      "atteso": false
+    },
+    {
+      "nota": "percorso vuoto [win]",
+      "path": "",
+      "folder": "C:\\Music",
+      "caseInsensitive": true,
+      "atteso": false
+    },
+    {
+      "nota": "percorso vuoto [posix]",
+      "path": "",
+      "folder": "C:\\Music",
+      "caseInsensitive": false,
+      "atteso": false
+    },
+    {
+      "nota": "suffisso senza separatore [win]",
+      "path": "C:\\MusicX\\a.mp3",
+      "folder": "C:\\Music",
+      "caseInsensitive": true,
+      "atteso": false
+    },
+    {
+      "nota": "suffisso senza separatore [posix]",
+      "path": "C:\\MusicX\\a.mp3",
+      "folder": "C:\\Music",
+      "caseInsensitive": false,
+      "atteso": false
+    }
+  ],
+  "planScan": [
+    {
+      "nota": "la cartella accanto non viene svuotata",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": [
+          {
+            "id": 1,
+            "path": "C:\\Music\\a.mp3",
+            "modifiedMs": 1000
+          },
+          {
+            "id": 2,
+            "path": "C:\\Musica\\b.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [],
+        "unchanged": 1,
+        "untouched": 1,
+        "isNoOp": true
+      }
+    },
+    {
+      "nota": "una barra diversa non fa sparire il file",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:/Music/a.mp3",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": [
+          {
+            "id": 1,
+            "path": "C:\\Music\\a.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [],
+        "unchanged": 1,
+        "untouched": 0,
+        "isNoOp": true
+      }
+    },
+    {
+      "nota": "una maiuscola diversa non fa sparire il file (windows)",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:\\MUSIC\\A.MP3",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": [
+          {
+            "id": 1,
+            "path": "C:\\Music\\a.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [],
+        "unchanged": 1,
+        "untouched": 0,
+        "isNoOp": true
+      }
+    },
+    {
+      "nota": "ma su un filesystem che distingue le maiuscole sono due brani",
+      "caseInsensitive": false,
+      "input": {
+        "roots": [
+          "/m"
+        ],
+        "found": [
+          {
+            "path": "/m/A.mp3",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": [
+          {
+            "id": 1,
+            "path": "/m/a.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [
+          "/m/A.mp3"
+        ],
+        "toUpdate": [],
+        "toRemove": [
+          {
+            "id": 1,
+            "path": "/m/a.mp3",
+            "reason": "disappeared"
+          }
+        ],
+        "skipped": [],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": false
+      }
+    },
+    {
+      "nota": "due righe per lo stesso file: si tiene quella con id piu basso",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": [
+          {
+            "id": 7,
+            "path": "C:\\Music\\A.MP3",
+            "modifiedMs": 1000
+          },
+          {
+            "id": 3,
+            "path": "C:\\Music\\a.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [
+          {
+            "id": 7,
+            "path": "C:\\Music\\A.MP3",
+            "reason": "duplicateRow"
+          }
+        ],
+        "skipped": [],
+        "unchanged": 1,
+        "untouched": 0,
+        "isNoOp": false
+      }
+    },
+    {
+      "nota": "righe fuori dalle radici: lasciate stare, non cancellate",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Download"
+        ],
+        "found": [],
+        "known": [
+          {
+            "id": 1,
+            "path": "C:\\Music\\a.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [],
+        "unchanged": 0,
+        "untouched": 1,
+        "isNoOp": true
+      }
+    },
+    {
+      "nota": "disco staccato: tutto sparito, ed e il piano che va mostrato",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "D:\\Music"
+        ],
+        "found": [],
+        "known": [
+          {
+            "id": 1,
+            "path": "D:\\Music\\a.mp3",
+            "modifiedMs": 1000
+          },
+          {
+            "id": 2,
+            "path": "D:\\Music\\b.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [
+          {
+            "id": 1,
+            "path": "D:\\Music\\a.mp3",
+            "reason": "disappeared"
+          },
+          {
+            "id": 2,
+            "path": "D:\\Music\\b.mp3",
+            "reason": "disappeared"
+          }
+        ],
+        "skipped": [],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": false
+      }
+    },
+    {
+      "nota": "file troncato sotto la soglia",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "sizeBytes": 1024,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": []
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "reason": "tooSmall"
+          }
+        ],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": true
+      }
+    },
+    {
+      "nota": "esattamente alla soglia: entra",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "sizeBytes": 32768,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": []
+      },
+      "atteso": {
+        "toInsert": [
+          "C:\\Music\\a.mp3"
+        ],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": false
+      }
+    },
+    {
+      "nota": "un byte sotto la soglia: fuori",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "sizeBytes": 32767,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": []
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "reason": "tooSmall"
+          }
+        ],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": true
+      }
+    },
+    {
+      "nota": "ordine dei motivi: il cestino prima della soglia",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:\\Music\\.trash\\a.mp3",
+            "sizeBytes": 10,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": []
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [
+          {
+            "path": "C:\\Music\\.trash\\a.mp3",
+            "reason": "inTrash"
+          }
+        ],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": true
+      }
+    },
+    {
+      "nota": "ordine dei motivi: non audio prima della soglia",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:\\Music\\a.txt",
+            "sizeBytes": 10,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": []
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [
+          {
+            "path": "C:\\Music\\a.txt",
+            "reason": "nonAudio"
+          }
+        ],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": true
+      }
+    },
+    {
+      "nota": "stesso file trovato due volte nella stessa passata",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          },
+          {
+            "path": "C:/Music/a.mp3",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": []
+      },
+      "atteso": {
+        "toInsert": [
+          "C:\\Music\\a.mp3"
+        ],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [
+          {
+            "path": "C:/Music/a.mp3",
+            "reason": "duplicate"
+          }
+        ],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": false
+      }
+    },
+    {
+      "nota": "data di modifica identica: non si rilegge",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": [
+          {
+            "id": 1,
+            "path": "C:\\Music\\a.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [],
+        "unchanged": 1,
+        "untouched": 0,
+        "isNoOp": true
+      }
+    },
+    {
+      "nota": "data di modifica cambiata: si rilegge",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "sizeBytes": 5000000,
+            "modifiedMs": 2000
+          }
+        ],
+        "known": [
+          {
+            "id": 1,
+            "path": "C:\\Music\\a.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "trackId": 1
+          }
+        ],
+        "toRemove": [],
+        "skipped": [],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": false
+      }
+    },
+    {
+      "nota": "data tornata indietro: si rilegge lo stesso",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "sizeBytes": 5000000,
+            "modifiedMs": 500
+          }
+        ],
+        "known": [
+          {
+            "id": 1,
+            "path": "C:\\Music\\a.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [
+          {
+            "path": "C:\\Music\\a.mp3",
+            "trackId": 1
+          }
+        ],
+        "toRemove": [],
+        "skipped": [],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": false
+      }
+    },
+    {
+      "nota": "nessuna radice: niente e sorvegliato, niente si cancella",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [],
+        "found": [],
+        "known": [
+          {
+            "id": 1,
+            "path": "C:\\Music\\a.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [],
+        "unchanged": 0,
+        "untouched": 1,
+        "isNoOp": true
+      }
+    },
+    {
+      "nota": "radice con separatore finale",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music\\"
+        ],
+        "found": [],
+        "known": [
+          {
+            "id": 1,
+            "path": "C:\\Music\\a.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [
+          {
+            "id": 1,
+            "path": "C:\\Music\\a.mp3",
+            "reason": "disappeared"
+          }
+        ],
+        "skipped": [],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": false
+      }
+    },
+    {
+      "nota": "due radici, una dentro l altra",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music",
+          "C:\\Music\\Aether"
+        ],
+        "found": [
+          {
+            "path": "C:\\Music\\Aether\\a.mp3",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": [
+          {
+            "id": 1,
+            "path": "C:\\Music\\Aether\\a.mp3",
+            "modifiedMs": 1000
+          },
+          {
+            "id": 2,
+            "path": "C:\\Music\\Aether\\b.mp3",
+            "modifiedMs": 1000
+          }
+        ]
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [
+          {
+            "id": 2,
+            "path": "C:\\Music\\Aether\\b.mp3",
+            "reason": "disappeared"
+          }
+        ],
+        "skipped": [],
+        "unchanged": 1,
+        "untouched": 0,
+        "isNoOp": false
+      }
+    },
+    {
+      "nota": "tutte le estensioni supportate entrano",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\M"
+        ],
+        "found": [
+          {
+            "path": "C:\\M\\a.mp3",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          },
+          {
+            "path": "C:\\M\\a.flac",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          },
+          {
+            "path": "C:\\M\\a.m4a",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          },
+          {
+            "path": "C:\\M\\a.aac",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          },
+          {
+            "path": "C:\\M\\a.ogg",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          },
+          {
+            "path": "C:\\M\\a.wav",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          },
+          {
+            "path": "C:\\M\\a.aiff",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          },
+          {
+            "path": "C:\\M\\a.aif",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          },
+          {
+            "path": "C:\\M\\a.opus",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          },
+          {
+            "path": "C:\\M\\a.wma",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          },
+          {
+            "path": "C:\\M\\a.mp4",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          },
+          {
+            "path": "C:\\M\\a.txt",
+            "sizeBytes": 5000000,
+            "modifiedMs": 1000
+          }
+        ],
+        "known": []
+      },
+      "atteso": {
+        "toInsert": [
+          "C:\\M\\a.mp3",
+          "C:\\M\\a.flac",
+          "C:\\M\\a.m4a",
+          "C:\\M\\a.aac",
+          "C:\\M\\a.ogg",
+          "C:\\M\\a.wav",
+          "C:\\M\\a.aiff",
+          "C:\\M\\a.aif",
+          "C:\\M\\a.opus",
+          "C:\\M\\a.wma"
+        ],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [
+          {
+            "path": "C:\\M\\a.mp4",
+            "reason": "nonAudio"
+          },
+          {
+            "path": "C:\\M\\a.txt",
+            "reason": "nonAudio"
+          }
+        ],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": false
+      }
+    },
+    {
+      "nota": "piano vuoto",
+      "caseInsensitive": true,
+      "input": {
+        "roots": [
+          "C:\\Music"
+        ],
+        "found": [],
+        "known": []
+      },
+      "atteso": {
+        "toInsert": [],
+        "toUpdate": [],
+        "toRemove": [],
+        "skipped": [],
+        "unchanged": 0,
+        "untouched": 0,
+        "isNoOp": true
+      }
+    }
+  ]
+}

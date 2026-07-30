@@ -1,0 +1,712 @@
+{
+  "_nota": "Generato eseguendo le funzioni TypeScript originali (packages/core/src/shared/). Il port Rust deve riprodurre ESATTAMENTE questi valori: le chiavi finiscono nei file di sync su Drive, e una differenza fa apparire \"mancante\" ogni brano.",
+  "_generatoIl": "2026-07-30T12:18:27.733Z",
+  "foldText": [
+    {
+      "nota": "vuoto",
+      "input": "",
+      "atteso": ""
+    },
+    {
+      "nota": "soli spazi",
+      "input": "   ",
+      "atteso": "   "
+    },
+    {
+      "nota": "spazi multipli e ai bordi",
+      "input": "  a  b  ",
+      "atteso": "  a  b  "
+    },
+    {
+      "nota": "spazi non-blank",
+      "input": "\t\na\r\nb\t",
+      "atteso": "\t\na\r\nb\t"
+    },
+    {
+      "nota": "dieresi precomposta",
+      "input": "Blue Öyster Cult",
+      "atteso": "blue oyster cult"
+    },
+    {
+      "nota": "dieresi decomposta (u + U+0308)",
+      "input": "Blüe",
+      "atteso": "blue"
+    },
+    {
+      "nota": "e acuta precomposta",
+      "input": "Café",
+      "atteso": "cafe"
+    },
+    {
+      "nota": "e acuta decomposta (U+0301)",
+      "input": "Café",
+      "atteso": "cafe"
+    },
+    {
+      "nota": "anello sopra",
+      "input": "Ångström",
+      "atteso": "angstrom"
+    },
+    {
+      "nota": "tilde",
+      "input": "Señor Coconut",
+      "atteso": "senor coconut"
+    },
+    {
+      "nota": "cediglia",
+      "input": "Françoise Hardy",
+      "atteso": "francoise hardy"
+    },
+    {
+      "nota": "accenti gravi, entrambi i casi",
+      "input": "ÀÈÌÒÙàèìòù",
+      "atteso": "aeiouaeiou"
+    },
+    {
+      "nota": "combinante DENTRO (U+0300 grave)",
+      "input": "à",
+      "atteso": "a"
+    },
+    {
+      "nota": "combinante DENTRO, ultimo (U+036F)",
+      "input": "aͯ",
+      "atteso": "a"
+    },
+    {
+      "nota": "combinante FUORI, supplement (U+1DC0)",
+      "input": "a᷀",
+      "atteso": "a᷀"
+    },
+    {
+      "nota": "combinante FUORI, per simboli (U+20D0)",
+      "input": "a⃐",
+      "atteso": "a⃐"
+    },
+    {
+      "nota": "combinante FUORI, half mark (U+FE20)",
+      "input": "a︠",
+      "atteso": "a︠"
+    },
+    {
+      "nota": "combinante FUORI, cirillico (U+0483)",
+      "input": "a҃",
+      "atteso": "a҃"
+    },
+    {
+      "nota": "combinante FUORI, ebraico (U+05B0)",
+      "input": "aְ",
+      "atteso": "aְ"
+    },
+    {
+      "nota": "combinante FUORI, arabo (U+0655)",
+      "input": "aٕ",
+      "atteso": "aٕ"
+    },
+    {
+      "nota": "maiuscole semplici",
+      "input": "STRASSE",
+      "atteso": "strasse"
+    },
+    {
+      "nota": "eszett",
+      "input": "Straße",
+      "atteso": "straße"
+    },
+    {
+      "nota": "I turca con punto (U+0130)",
+      "input": "İstanbul",
+      "atteso": "istanbul"
+    },
+    {
+      "nota": "I latina",
+      "input": "ISTANBUL",
+      "atteso": "istanbul"
+    },
+    {
+      "nota": "titlecase (U+01C5)",
+      "input": "ǅungla",
+      "atteso": "ǆungla"
+    },
+    {
+      "nota": "legatura fi (U+FB01)",
+      "input": "ﬁglio",
+      "atteso": "ﬁglio"
+    },
+    {
+      "nota": "larghezza piena",
+      "input": "ＦＵＬＬＷＩＤＴＨ",
+      "atteso": "ｆｕｌｌｗｉｄｔｈ"
+    },
+    {
+      "nota": "apostrofo ricurvo destro (U+2019)",
+      "input": "don’t",
+      "atteso": "don’t"
+    },
+    {
+      "nota": "apostrofo ricurvo sinistro (U+2018)",
+      "input": "don‘t",
+      "atteso": "don‘t"
+    },
+    {
+      "nota": "apostrofo ricurvo alto (U+201B)",
+      "input": "don‛t",
+      "atteso": "don‛t"
+    },
+    {
+      "nota": "primi (U+2032, U+2035)",
+      "input": "5′ e 6‵",
+      "atteso": "5′ e 6‵"
+    },
+    {
+      "nota": "virgolette ricurve",
+      "input": "“virgolette”",
+      "atteso": "“virgolette”"
+    },
+    {
+      "nota": "virgolette basse",
+      "input": "„basse‟",
+      "atteso": "„basse‟"
+    },
+    {
+      "nota": "doppi primi",
+      "input": "″ ‶",
+      "atteso": "″ ‶"
+    },
+    {
+      "nota": "tutti i trattini",
+      "input": "a‐b‑c‒d–e—f―g−h",
+      "atteso": "a‐b‑c‒d–e—f―g−h"
+    },
+    {
+      "nota": "ellissi (U+2026)",
+      "input": "tre…punti",
+      "atteso": "tre…punti"
+    },
+    {
+      "nota": "tutta la punteggiatura ASCII",
+      "input": "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
+      "atteso": "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+    },
+    {
+      "nota": "punti interni",
+      "input": "A.C.A.B.",
+      "atteso": "a.c.a.b."
+    },
+    {
+      "nota": "barra",
+      "input": "AC/DC",
+      "atteso": "ac/dc"
+    },
+    {
+      "nota": "parentesi vuote",
+      "input": "Sigur Rós - ( )",
+      "atteso": "sigur ros - ( )"
+    },
+    {
+      "nota": "punto esclamativo interno",
+      "input": "P!nk",
+      "atteso": "p!nk"
+    },
+    {
+      "nota": "asterisco iniziale",
+      "input": "*NSYNC",
+      "atteso": "*nsync"
+    },
+    {
+      "nota": "giapponese",
+      "input": "坂本龍一",
+      "atteso": "坂本龍一"
+    },
+    {
+      "nota": "giapponese a larghezza piena con apostrofo",
+      "input": "Ｂ’ｚ",
+      "atteso": "ｂ’ｚ"
+    },
+    {
+      "nota": "cirillico",
+      "input": "Кино",
+      "atteso": "кино"
+    },
+    {
+      "nota": "greco con accenti",
+      "input": "Σωκράτης",
+      "atteso": "σωκρατης"
+    },
+    {
+      "nota": "arabo",
+      "input": "العندليب",
+      "atteso": "العندليب"
+    },
+    {
+      "nota": "ebraico",
+      "input": "שלמה ארצי",
+      "atteso": "שלמה ארצי"
+    },
+    {
+      "nota": "coreano",
+      "input": "방탄소년단",
+      "atteso": "방탄소년단"
+    },
+    {
+      "nota": "emoji ai bordi",
+      "input": "🎵 musica 🎶",
+      "atteso": "🎵 musica 🎶"
+    },
+    {
+      "nota": "zero width space",
+      "input": "a​b",
+      "atteso": "a​b"
+    },
+    {
+      "nota": "spazio unificatore (U+00A0)",
+      "input": "a b",
+      "atteso": "a b"
+    },
+    {
+      "nota": "titolo reale con parentesi e apostrofo",
+      "input": "(Don't Fear) The Reaper",
+      "atteso": "(don't fear) the reaper"
+    },
+    {
+      "nota": "cancelletto iniziale",
+      "input": "#FREEBOSSETTI",
+      "atteso": "#freebossetti"
+    },
+    {
+      "nota": "titolo reale lungo",
+      "input": "(I Can’t Get No) Satisfaction - Mono Version",
+      "atteso": "(i can’t get no) satisfaction - mono version"
+    }
+  ],
+  "normalizeKey": [
+    {
+      "nota": "vuoto",
+      "input": "",
+      "atteso": ""
+    },
+    {
+      "nota": "soli spazi",
+      "input": "   ",
+      "atteso": ""
+    },
+    {
+      "nota": "spazi multipli e ai bordi",
+      "input": "  a  b  ",
+      "atteso": "a b"
+    },
+    {
+      "nota": "spazi non-blank",
+      "input": "\t\na\r\nb\t",
+      "atteso": "a b"
+    },
+    {
+      "nota": "dieresi precomposta",
+      "input": "Blue Öyster Cult",
+      "atteso": "blue oyster cult"
+    },
+    {
+      "nota": "dieresi decomposta (u + U+0308)",
+      "input": "Blüe",
+      "atteso": "blue"
+    },
+    {
+      "nota": "e acuta precomposta",
+      "input": "Café",
+      "atteso": "cafe"
+    },
+    {
+      "nota": "e acuta decomposta (U+0301)",
+      "input": "Café",
+      "atteso": "cafe"
+    },
+    {
+      "nota": "anello sopra",
+      "input": "Ångström",
+      "atteso": "angstrom"
+    },
+    {
+      "nota": "tilde",
+      "input": "Señor Coconut",
+      "atteso": "senor coconut"
+    },
+    {
+      "nota": "cediglia",
+      "input": "Françoise Hardy",
+      "atteso": "francoise hardy"
+    },
+    {
+      "nota": "accenti gravi, entrambi i casi",
+      "input": "ÀÈÌÒÙàèìòù",
+      "atteso": "aeiouaeiou"
+    },
+    {
+      "nota": "combinante DENTRO (U+0300 grave)",
+      "input": "à",
+      "atteso": "a"
+    },
+    {
+      "nota": "combinante DENTRO, ultimo (U+036F)",
+      "input": "aͯ",
+      "atteso": "a"
+    },
+    {
+      "nota": "combinante FUORI, supplement (U+1DC0)",
+      "input": "a᷀",
+      "atteso": "a᷀"
+    },
+    {
+      "nota": "combinante FUORI, per simboli (U+20D0)",
+      "input": "a⃐",
+      "atteso": "a⃐"
+    },
+    {
+      "nota": "combinante FUORI, half mark (U+FE20)",
+      "input": "a︠",
+      "atteso": "a︠"
+    },
+    {
+      "nota": "combinante FUORI, cirillico (U+0483)",
+      "input": "a҃",
+      "atteso": "a҃"
+    },
+    {
+      "nota": "combinante FUORI, ebraico (U+05B0)",
+      "input": "aְ",
+      "atteso": "aְ"
+    },
+    {
+      "nota": "combinante FUORI, arabo (U+0655)",
+      "input": "aٕ",
+      "atteso": "aٕ"
+    },
+    {
+      "nota": "maiuscole semplici",
+      "input": "STRASSE",
+      "atteso": "strasse"
+    },
+    {
+      "nota": "eszett",
+      "input": "Straße",
+      "atteso": "straße"
+    },
+    {
+      "nota": "I turca con punto (U+0130)",
+      "input": "İstanbul",
+      "atteso": "istanbul"
+    },
+    {
+      "nota": "I latina",
+      "input": "ISTANBUL",
+      "atteso": "istanbul"
+    },
+    {
+      "nota": "titlecase (U+01C5)",
+      "input": "ǅungla",
+      "atteso": "ǆungla"
+    },
+    {
+      "nota": "legatura fi (U+FB01)",
+      "input": "ﬁglio",
+      "atteso": "ﬁglio"
+    },
+    {
+      "nota": "larghezza piena",
+      "input": "ＦＵＬＬＷＩＤＴＨ",
+      "atteso": "ｆｕｌｌｗｉｄｔｈ"
+    },
+    {
+      "nota": "apostrofo ricurvo destro (U+2019)",
+      "input": "don’t",
+      "atteso": "dont"
+    },
+    {
+      "nota": "apostrofo ricurvo sinistro (U+2018)",
+      "input": "don‘t",
+      "atteso": "dont"
+    },
+    {
+      "nota": "apostrofo ricurvo alto (U+201B)",
+      "input": "don‛t",
+      "atteso": "dont"
+    },
+    {
+      "nota": "primi (U+2032, U+2035)",
+      "input": "5′ e 6‵",
+      "atteso": "5 e 6"
+    },
+    {
+      "nota": "virgolette ricurve",
+      "input": "“virgolette”",
+      "atteso": "virgolette"
+    },
+    {
+      "nota": "virgolette basse",
+      "input": "„basse‟",
+      "atteso": "basse"
+    },
+    {
+      "nota": "doppi primi",
+      "input": "″ ‶",
+      "atteso": ""
+    },
+    {
+      "nota": "tutti i trattini",
+      "input": "a‐b‑c‒d–e—f―g−h",
+      "atteso": "abcdefgh"
+    },
+    {
+      "nota": "ellissi (U+2026)",
+      "input": "tre…punti",
+      "atteso": "trepunti"
+    },
+    {
+      "nota": "tutta la punteggiatura ASCII",
+      "input": "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
+      "atteso": "\\"
+    },
+    {
+      "nota": "punti interni",
+      "input": "A.C.A.B.",
+      "atteso": "acab"
+    },
+    {
+      "nota": "barra",
+      "input": "AC/DC",
+      "atteso": "acdc"
+    },
+    {
+      "nota": "parentesi vuote",
+      "input": "Sigur Rós - ( )",
+      "atteso": "sigur ros"
+    },
+    {
+      "nota": "punto esclamativo interno",
+      "input": "P!nk",
+      "atteso": "pnk"
+    },
+    {
+      "nota": "asterisco iniziale",
+      "input": "*NSYNC",
+      "atteso": "nsync"
+    },
+    {
+      "nota": "giapponese",
+      "input": "坂本龍一",
+      "atteso": "坂本龍一"
+    },
+    {
+      "nota": "giapponese a larghezza piena con apostrofo",
+      "input": "Ｂ’ｚ",
+      "atteso": "ｂｚ"
+    },
+    {
+      "nota": "cirillico",
+      "input": "Кино",
+      "atteso": "кино"
+    },
+    {
+      "nota": "greco con accenti",
+      "input": "Σωκράτης",
+      "atteso": "σωκρατης"
+    },
+    {
+      "nota": "arabo",
+      "input": "العندليب",
+      "atteso": "العندليب"
+    },
+    {
+      "nota": "ebraico",
+      "input": "שלמה ארצי",
+      "atteso": "שלמה ארצי"
+    },
+    {
+      "nota": "coreano",
+      "input": "방탄소년단",
+      "atteso": "방탄소년단"
+    },
+    {
+      "nota": "emoji ai bordi",
+      "input": "🎵 musica 🎶",
+      "atteso": "🎵 musica 🎶"
+    },
+    {
+      "nota": "zero width space",
+      "input": "a​b",
+      "atteso": "a​b"
+    },
+    {
+      "nota": "spazio unificatore (U+00A0)",
+      "input": "a b",
+      "atteso": "a b"
+    },
+    {
+      "nota": "titolo reale con parentesi e apostrofo",
+      "input": "(Don't Fear) The Reaper",
+      "atteso": "dont fear the reaper"
+    },
+    {
+      "nota": "cancelletto iniziale",
+      "input": "#FREEBOSSETTI",
+      "atteso": "freebossetti"
+    },
+    {
+      "nota": "titolo reale lungo",
+      "input": "(I Can’t Get No) Satisfaction - Mono Version",
+      "atteso": "i cant get no satisfaction mono version"
+    }
+  ],
+  "trackKey": [
+    {
+      "nota": "reale",
+      "input": {
+        "artist": "Blue Öyster Cult",
+        "title": "(Don't Fear) The Reaper",
+        "album": "Agents of Fortune"
+      },
+      "atteso": "blue oyster cult|dont fear the reaper|agents of fortune"
+    },
+    {
+      "nota": "stesso brano, tag ripuliti",
+      "input": {
+        "artist": "Blue Oyster Cult",
+        "title": "(Dont Fear) The Reaper",
+        "album": "Agents of Fortune"
+      },
+      "atteso": "blue oyster cult|dont fear the reaper|agents of fortune"
+    },
+    {
+      "nota": "tutti null",
+      "input": {
+        "artist": null,
+        "title": null,
+        "album": null
+      },
+      "atteso": "||"
+    },
+    {
+      "nota": "oggetto vuoto",
+      "input": {},
+      "atteso": "||"
+    },
+    {
+      "nota": "undefined misti",
+      "input": {
+        "title": "x"
+      },
+      "atteso": "|x|"
+    },
+    {
+      "nota": "stringhe vuote",
+      "input": {
+        "artist": "",
+        "title": "",
+        "album": ""
+      },
+      "atteso": "||"
+    },
+    {
+      "nota": "pipe nei valori (il separatore)",
+      "input": {
+        "artist": "A|B",
+        "title": "C|D",
+        "album": "E|F"
+      },
+      "atteso": "ab|cd|ef"
+    },
+    {
+      "nota": "solo punteggiatura e spazi",
+      "input": {
+        "artist": "   ",
+        "title": "...",
+        "album": "---"
+      },
+      "atteso": "||"
+    },
+    {
+      "nota": "misto CJK/latino",
+      "input": {
+        "artist": "坂本龍一",
+        "title": "Merry Christmas Mr. Lawrence",
+        "album": "戦場のメリークリスマス"
+      },
+      "atteso": "坂本龍一|merry christmas mr lawrence|戦場のメリークリスマス"
+    },
+    {
+      "nota": "punteggiatura interna",
+      "input": {
+        "artist": "AC/DC",
+        "title": "T.N.T.",
+        "album": "High Voltage"
+      },
+      "atteso": "acdc|tnt|high voltage"
+    }
+  ],
+  "playlistKey": [
+    {
+      "input": "",
+      "atteso": ""
+    },
+    {
+      "input": "Preferiti",
+      "atteso": "preferiti"
+    },
+    {
+      "input": "  Preferiti  ",
+      "atteso": "preferiti"
+    },
+    {
+      "input": "Rock ’n’ Roll",
+      "atteso": "rock n roll"
+    },
+    {
+      "input": "坂本",
+      "atteso": "坂本"
+    },
+    {
+      "input": "A|B",
+      "atteso": "ab"
+    }
+  ],
+  "upgradeLegacyTrackKey": [
+    {
+      "input": "artist|title|album|240",
+      "atteso": "artist|title|album"
+    },
+    {
+      "input": "artist|title|album",
+      "atteso": "artist|title|album"
+    },
+    {
+      "input": "artist|title|album|0",
+      "atteso": "artist|title|album"
+    },
+    {
+      "input": "artist|title|album|24a",
+      "atteso": "artist|title|album|24a"
+    },
+    {
+      "input": "artist|title|album|240|extra",
+      "atteso": "artist|title|album|240|extra"
+    },
+    {
+      "input": "a|b|c|d",
+      "atteso": "a|b|c|d"
+    },
+    {
+      "input": "",
+      "atteso": ""
+    },
+    {
+      "input": "solo",
+      "atteso": "solo"
+    },
+    {
+      "input": "a|b",
+      "atteso": "a|b"
+    },
+    {
+      "input": "artist|title|album|00240",
+      "atteso": "artist|title|album"
+    }
+  ]
+}

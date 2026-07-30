@@ -1,0 +1,9 @@
+# `unwrap`/`expect`/`panic`/indicizzazione sono vietati nel codice di
+# produzione (vedi [workspace.lints.clippy] in Cargo.toml): un panico in un
+# modulo di dominio non fa cadere una funzione, fa cadere l'app di chi sta
+# ascoltando. Nei test invece sono il modo normale di dichiarare un'aspettativa,
+# e vietarli costringerebbe a scrivere ogni asserzione due volte.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true

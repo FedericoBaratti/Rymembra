@@ -1,0 +1,19 @@
+[package]
+name = "aether-domain"
+description = "Il dominio puro di Aether: nessun I/O, nessun orologio, nessuno stato globale."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+# Servono ai soli vettori dorati: il dominio non serializza nulla da sé.
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
