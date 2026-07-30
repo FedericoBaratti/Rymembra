@@ -69,6 +69,16 @@ i requisiti per poter rilasciare in [docs/rilascio.md](docs/rilascio.md).
   cancellata e ricreata. Senza, riordinare la libreria — la funzione aggiunta
   poco prima — azzererebbe conteggi d'ascolto, preferiti e valutazioni di ogni
   brano, e li toglierebbe da tutte le playlist.
+- **Fusione delle statistiche** (`aether-domain::merge`): commutativa e
+  idempotente, con ogni regola scelta nella direzione che non distrugge — un
+  conteggio sale e non scende, uno zero non cancella un voto, un preferito tolto
+  non se lo rimette l'altro dispositivo. Serve all'importatore e servirà identica
+  alla sincronia fra dispositivi.
+- **Importatore dal vecchio database**: porta conteggi d'ascolto, voti,
+  preferiti, cronologia, playlist e lapidi — le uniche cose che una scansione non
+  può ricostruire. Il vecchio database si apre in sola lettura e non viene
+  toccato. Sulla libreria vera: 261 brani ritrovati su 297, 409 ascolti, 82 righe
+  di cronologia, la playlist automatica con le sue regole.
 
 ### Corretto
 

@@ -30,6 +30,7 @@
 pub mod album;
 pub mod errors;
 pub mod keys;
+pub mod merge;
 pub mod organize;
 pub mod paths;
 pub mod scan_plan;
@@ -37,6 +38,7 @@ pub mod text;
 
 pub use errors::{AppError, Domain, ErrorCode, ErrorCodeKind, Severity};
 pub use keys::{PlaylistKey, TrackKey, TrackKeyInput};
+pub use merge::{TrackStats, merge_stats};
 pub use paths::PathRules;
 pub use scan_plan::{
     DiscoveredFile, KnownTrack, Rematch, RemovedIdentity, ScanInput, ScanPlan, match_moved_tracks,

@@ -12,6 +12,7 @@
 pub mod covers;
 pub mod db;
 pub mod files;
+pub mod import_legacy;
 pub mod library;
 pub mod metadata;
 pub mod organize;
