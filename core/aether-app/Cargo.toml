@@ -10,6 +10,7 @@ authors.workspace = true
 [dependencies]
 aether-domain = { path = "../aether-domain" }
 blake3 = "1.8.5"
+image = { version = "0.25.9", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "rayon"] }
 imagesize = "0.15.0"
 lofty = "0.24.0"
 # `bundled`: SQLite compilato da sorgente e incluso nel binario. Non è comodità

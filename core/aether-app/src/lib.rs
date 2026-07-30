@@ -9,6 +9,7 @@
 //! questo crate si perde un'operazione. Quando andava storto nel modulo
 //! monolitico del vecchio albero si perdevano righe di libreria.
 
+pub mod covers;
 pub mod db;
 pub mod files;
 pub mod metadata;
