@@ -1,0 +1,23 @@
+[package]
+name = "aether-app"
+description = "Orchestrazione di Aether: database, rete, filesystem. Il dominio sta in aether-domain."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+aether-domain = { path = "../aether-domain" }
+# `bundled`: SQLite compilato da sorgente e incluso nel binario. Non è comodità
+# — è l'unico modo di avere la STESSA versione di SQLite e le stesse opzioni di
+# compilazione sul desktop e dentro l'APK. Su Android il SQLite di sistema
+# cambia da versione a versione, e FTS5 non è garantito: è il motivo per cui il
+# vecchio porting doveva ripiegare su `LIKE` per la ricerca.
+rusqlite = { version = "0.37", features = ["bundled", "functions"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
