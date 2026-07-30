@@ -27,6 +27,7 @@
 //!
 //! Separata, la stessa decisione si prova come una chiamata di funzione.
 
+pub mod album;
 pub mod errors;
 pub mod keys;
 pub mod paths;

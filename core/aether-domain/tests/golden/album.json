@@ -1,0 +1,1225 @@
+{
+  "_nota": "Generato eseguendo albumKey.ts del ramo aether/skin-system-e-core. Decide quando due cartelle sono lo stesso disco: sbagliare spezza un album in cinque schede, o ne fonde due di artisti diversi.",
+  "_generatoIl": "2026-07-30T13:22:11.920Z",
+  "stripEditionSuffix": [
+    {
+      "nota": "semplice",
+      "input": "Homogenic",
+      "atteso": "Homogenic"
+    },
+    {
+      "nota": "edizione da togliere",
+      "input": "Abbey Road (Deluxe Edition)",
+      "atteso": "Abbey Road"
+    },
+    {
+      "nota": "rimasterizzazione fra quadre",
+      "input": "Abbey Road [2019 Remaster]",
+      "atteso": "Abbey Road"
+    },
+    {
+      "nota": "disco fra parentesi",
+      "input": "Greatest Hits (CD1)",
+      "atteso": "Greatest Hits"
+    },
+    {
+      "nota": "disc",
+      "input": "Greatest Hits (Disc 2)",
+      "atteso": "Greatest Hits"
+    },
+    {
+      "nota": "disco in italiano",
+      "input": "Greatest Hits (Disco 1)",
+      "atteso": "Greatest Hits"
+    },
+    {
+      "nota": "parentesi che fa parte del titolo",
+      "input": "Songs (For Drella)",
+      "atteso": "Songs (For Drella)"
+    },
+    {
+      "nota": "contiene «ep» dentro «deep», non e un EP",
+      "input": "Deep Cuts",
+      "atteso": "Deep Cuts"
+    },
+    {
+      "nota": "LA trappola: «deep» contiene «ep»",
+      "input": "Rarities (Deep Cuts)",
+      "atteso": "Rarities (Deep Cuts)"
+    },
+    {
+      "nota": "togliendo resterebbe vuoto: si tiene l originale",
+      "input": "(Deluxe Edition)",
+      "atteso": "(Deluxe Edition)"
+    },
+    {
+      "nota": "due gruppi da togliere",
+      "input": "Album (Bonus Tracks) (Remastered)",
+      "atteso": "Album"
+    },
+    {
+      "nota": "uno da togliere, uno no",
+      "input": "Album (Live) (Deluxe)",
+      "atteso": "Album (Live)"
+    },
+    {
+      "nota": "vol senza parentesi: resta",
+      "input": "Vol. 2",
+      "atteso": "Vol. 2"
+    },
+    {
+      "nota": "vol fra parentesi: si toglie",
+      "input": "Best Of (Vol. 2)",
+      "atteso": "Best Of"
+    },
+    {
+      "nota": "vuoto",
+      "input": "",
+      "atteso": ""
+    },
+    {
+      "nota": "soli spazi",
+      "input": "   ",
+      "atteso": ""
+    },
+    {
+      "nota": "esplicito",
+      "input": "The Wall (Explicit)",
+      "atteso": "The Wall"
+    },
+    {
+      "nota": "mono",
+      "input": "Kind of Blue (Mono)",
+      "atteso": "Kind of Blue"
+    },
+    {
+      "nota": "formato non riconosciuto come disco",
+      "input": "Album (2CD)",
+      "atteso": "Album (2CD)"
+    },
+    {
+      "nota": "accenti piu edizione",
+      "input": "Café Bleu (Remastered)",
+      "atteso": "Café Bleu"
+    }
+  ],
+  "normalizeKeyText": [
+    {
+      "nota": "semplice",
+      "input": "Homogenic",
+      "atteso": "homogenic"
+    },
+    {
+      "nota": "edizione da togliere",
+      "input": "Abbey Road (Deluxe Edition)",
+      "atteso": "abbey road (deluxe edition)"
+    },
+    {
+      "nota": "rimasterizzazione fra quadre",
+      "input": "Abbey Road [2019 Remaster]",
+      "atteso": "abbey road [2019 remaster]"
+    },
+    {
+      "nota": "disco fra parentesi",
+      "input": "Greatest Hits (CD1)",
+      "atteso": "greatest hits (cd1)"
+    },
+    {
+      "nota": "disc",
+      "input": "Greatest Hits (Disc 2)",
+      "atteso": "greatest hits (disc 2)"
+    },
+    {
+      "nota": "disco in italiano",
+      "input": "Greatest Hits (Disco 1)",
+      "atteso": "greatest hits (disco 1)"
+    },
+    {
+      "nota": "parentesi che fa parte del titolo",
+      "input": "Songs (For Drella)",
+      "atteso": "songs (for drella)"
+    },
+    {
+      "nota": "contiene «ep» dentro «deep», non e un EP",
+      "input": "Deep Cuts",
+      "atteso": "deep cuts"
+    },
+    {
+      "nota": "LA trappola: «deep» contiene «ep»",
+      "input": "Rarities (Deep Cuts)",
+      "atteso": "rarities (deep cuts)"
+    },
+    {
+      "nota": "togliendo resterebbe vuoto: si tiene l originale",
+      "input": "(Deluxe Edition)",
+      "atteso": "(deluxe edition)"
+    },
+    {
+      "nota": "due gruppi da togliere",
+      "input": "Album (Bonus Tracks) (Remastered)",
+      "atteso": "album (bonus tracks) (remastered)"
+    },
+    {
+      "nota": "uno da togliere, uno no",
+      "input": "Album (Live) (Deluxe)",
+      "atteso": "album (live) (deluxe)"
+    },
+    {
+      "nota": "vol senza parentesi: resta",
+      "input": "Vol. 2",
+      "atteso": "vol. 2"
+    },
+    {
+      "nota": "vol fra parentesi: si toglie",
+      "input": "Best Of (Vol. 2)",
+      "atteso": "best of (vol. 2)"
+    },
+    {
+      "nota": "vuoto",
+      "input": "",
+      "atteso": ""
+    },
+    {
+      "nota": "soli spazi",
+      "input": "   ",
+      "atteso": ""
+    },
+    {
+      "nota": "esplicito",
+      "input": "The Wall (Explicit)",
+      "atteso": "the wall (explicit)"
+    },
+    {
+      "nota": "mono",
+      "input": "Kind of Blue (Mono)",
+      "atteso": "kind of blue (mono)"
+    },
+    {
+      "nota": "formato non riconosciuto come disco",
+      "input": "Album (2CD)",
+      "atteso": "album (2cd)"
+    },
+    {
+      "nota": "accenti piu edizione",
+      "input": "Café Bleu (Remastered)",
+      "atteso": "cafe bleu (remastered)"
+    }
+  ],
+  "albumFolder": [
+    {
+      "nota": "cartella normale",
+      "input": "C:/Music/Beatles/Abbey Road/01.mp3",
+      "atteso": "C:/Music/Beatles/Abbey Road"
+    },
+    {
+      "nota": "disco 1 in sottocartella",
+      "input": "C:/Music/Beatles/Abbey Road/CD1/01.mp3",
+      "atteso": "C:/Music/Beatles/Abbey Road"
+    },
+    {
+      "nota": "disco 2",
+      "input": "C:/Music/Beatles/Abbey Road/Disc 2/01.mp3",
+      "atteso": "C:/Music/Beatles/Abbey Road"
+    },
+    {
+      "nota": "disco in italiano",
+      "input": "C:/Music/Beatles/Abbey Road/Disco 1/01.mp3",
+      "atteso": "C:/Music/Beatles/Abbey Road"
+    },
+    {
+      "nota": "disco alla radice: non si collassa",
+      "input": "C:/Music/CD1/01.mp3",
+      "atteso": "C:/Music"
+    },
+    {
+      "nota": "barre rovesciate",
+      "input": "C:\\Music\\Beatles\\Abbey Road\\01.mp3",
+      "atteso": "C:/Music/Beatles/Abbey Road"
+    },
+    {
+      "nota": "un solo livello",
+      "input": "C:/Music/01.mp3",
+      "atteso": "C:/Music"
+    },
+    {
+      "nota": "nessuna cartella",
+      "input": "01.mp3",
+      "atteso": ""
+    },
+    {
+      "nota": "vuoto",
+      "input": "",
+      "atteso": ""
+    },
+    {
+      "nota": "omonimia: artista A",
+      "input": "C:/Music/A/Greatest Hits/01.mp3",
+      "atteso": "C:/Music/A/Greatest Hits"
+    },
+    {
+      "nota": "omonimia: artista B",
+      "input": "C:/Music/B/Greatest Hits/01.mp3",
+      "atteso": "C:/Music/B/Greatest Hits"
+    }
+  ],
+  "albumGroupKey": [
+    {
+      "nota": "Abbey Road @ C:/Music/Beatles/Abbey Road/01.mp3",
+      "album": "Abbey Road",
+      "path": "C:/Music/Beatles/Abbey Road/01.mp3",
+      "atteso": "abbey road c:/music/beatles/abbey road"
+    },
+    {
+      "nota": "Abbey Road (Deluxe Edition) @ C:/Music/Beatles/Abbey Road/02.mp3",
+      "album": "Abbey Road (Deluxe Edition)",
+      "path": "C:/Music/Beatles/Abbey Road/02.mp3",
+      "atteso": "abbey road c:/music/beatles/abbey road"
+    },
+    {
+      "nota": "ABBEY ROAD @ C:/Music/Beatles/Abbey Road/03.mp3",
+      "album": "ABBEY ROAD",
+      "path": "C:/Music/Beatles/Abbey Road/03.mp3",
+      "atteso": "abbey road c:/music/beatles/abbey road"
+    },
+    {
+      "nota": "Abbey  Road @ C:/Music/Beatles/Abbey Road/04.mp3",
+      "album": "Abbey  Road",
+      "path": "C:/Music/Beatles/Abbey Road/04.mp3",
+      "atteso": "abbey road c:/music/beatles/abbey road"
+    },
+    {
+      "nota": "Abbey Road @ C:/Music/Beatles/Abbey Road/CD1/05.mp3",
+      "album": "Abbey Road",
+      "path": "C:/Music/Beatles/Abbey Road/CD1/05.mp3",
+      "atteso": "abbey road c:/music/beatles/abbey road"
+    },
+    {
+      "nota": "Greatest Hits @ C:/Music/A/Greatest Hits/01.mp3",
+      "album": "Greatest Hits",
+      "path": "C:/Music/A/Greatest Hits/01.mp3",
+      "atteso": "greatest hits c:/music/a/greatest hits"
+    },
+    {
+      "nota": "Greatest Hits @ C:/Music/B/Greatest Hits/01.mp3",
+      "album": "Greatest Hits",
+      "path": "C:/Music/B/Greatest Hits/01.mp3",
+      "atteso": "greatest hits c:/music/b/greatest hits"
+    },
+    {
+      "nota": "Café Bleu @ C:/Music/Style Council/Cafe Bleu/01.mp3",
+      "album": "Café Bleu",
+      "path": "C:/Music/Style Council/Cafe Bleu/01.mp3",
+      "atteso": "cafe bleu c:/music/style council/cafe bleu"
+    },
+    {
+      "nota": "Cafe Bleu @ C:/Music/Style Council/Cafe Bleu/02.mp3",
+      "album": "Cafe Bleu",
+      "path": "C:/Music/Style Council/Cafe Bleu/02.mp3",
+      "atteso": "cafe bleu c:/music/style council/cafe bleu"
+    },
+    {
+      "nota": "Rock 'n' Roll @ C:/Music/X/Rock n Roll/01.mp3",
+      "album": "Rock 'n' Roll",
+      "path": "C:/Music/X/Rock n Roll/01.mp3",
+      "atteso": "rock 'n' roll c:/music/x/rock n roll"
+    },
+    {
+      "nota": "Rock ’n’ Roll @ C:/Music/X/Rock n Roll/02.mp3",
+      "album": "Rock ’n’ Roll",
+      "path": "C:/Music/X/Rock n Roll/02.mp3",
+      "atteso": "rock 'n' roll c:/music/x/rock n roll"
+    },
+    {
+      "nota": "A–B @ C:/Music/X/AB/01.mp3",
+      "album": "A–B",
+      "path": "C:/Music/X/AB/01.mp3",
+      "atteso": "a-b c:/music/x/ab"
+    },
+    {
+      "nota": "A-B @ C:/Music/X/AB/02.mp3",
+      "album": "A-B",
+      "path": "C:/Music/X/AB/02.mp3",
+      "atteso": "a-b c:/music/x/ab"
+    }
+  ],
+  "pickCanonical": [
+    {
+      "nota": "maggioranza semplice",
+      "rows": [
+        {
+          "artist": "A"
+        },
+        {
+          "artist": "A"
+        },
+        {
+          "artist": "B"
+        }
+      ],
+      "atteso": "A"
+    },
+    {
+      "nota": "pareggio: vince il piu corto",
+      "rows": [
+        {
+          "artist": "A feat. B"
+        },
+        {
+          "artist": "A"
+        }
+      ],
+      "atteso": "A"
+    },
+    {
+      "nota": "pareggio a pari lunghezza: alfabetico",
+      "rows": [
+        {
+          "artist": "B"
+        },
+        {
+          "artist": "A"
+        }
+      ],
+      "atteso": "A"
+    },
+    {
+      "nota": "album_artist ha precedenza",
+      "rows": [
+        {
+          "album_artist": "AA",
+          "artist": "X"
+        },
+        {
+          "artist": "X"
+        }
+      ],
+      "atteso": "X"
+    },
+    {
+      "nota": "tutti vuoti",
+      "rows": [
+        {
+          "artist": ""
+        },
+        {
+          "artist": "  "
+        }
+      ],
+      "atteso": ""
+    },
+    {
+      "nota": "nessuna riga",
+      "rows": [],
+      "atteso": ""
+    }
+  ],
+  "pickAlbumCover": [
+    {
+      "nota": "provenienza batte dimensione",
+      "members": [
+        {
+          "album_key": "k",
+          "album": "A",
+          "album_artist": null,
+          "artist": null,
+          "year": null,
+          "cover_art_hash": "h1",
+          "cover_source": "tag",
+          "cover_w": 300,
+          "cover_h": 300
+        },
+        {
+          "album_key": "k",
+          "album": "A",
+          "album_artist": null,
+          "artist": null,
+          "year": null,
+          "cover_art_hash": "h2",
+          "cover_source": "caa",
+          "cover_w": 1000,
+          "cover_h": 1000
+        }
+      ],
+      "atteso": "h1"
+    },
+    {
+      "nota": "a pari provenienza e conteggio vince l area",
+      "members": [
+        {
+          "album_key": "k",
+          "album": "A",
+          "album_artist": null,
+          "artist": null,
+          "year": null,
+          "cover_art_hash": "h1",
+          "cover_source": "caa",
+          "cover_w": 300,
+          "cover_h": 300
+        },
+        {
+          "album_key": "k",
+          "album": "A",
+          "album_artist": null,
+          "artist": null,
+          "year": null,
+          "cover_art_hash": "h2",
+          "cover_source": "caa",
+          "cover_w": 1000,
+          "cover_h": 1000
+        }
+      ],
+      "atteso": "h2"
+    },
+    {
+      "nota": "il conteggio batte l area",
+      "members": [
+        {
+          "album_key": "k",
+          "album": "A",
+          "album_artist": null,
+          "artist": null,
+          "year": null,
+          "cover_art_hash": "h1",
+          "cover_source": "caa",
+          "cover_w": 300,
+          "cover_h": 300
+        },
+        {
+          "album_key": "k",
+          "album": "A",
+          "album_artist": null,
+          "artist": null,
+          "year": null,
+          "cover_art_hash": "h1",
+          "cover_source": "caa",
+          "cover_w": 300,
+          "cover_h": 300
+        },
+        {
+          "album_key": "k",
+          "album": "A",
+          "album_artist": null,
+          "artist": null,
+          "year": null,
+          "cover_art_hash": "h2",
+          "cover_source": "caa",
+          "cover_w": 1000,
+          "cover_h": 1000
+        }
+      ],
+      "atteso": "h1"
+    },
+    {
+      "nota": "pareggio totale: hash alfabetico",
+      "members": [
+        {
+          "album_key": "k",
+          "album": "A",
+          "album_artist": null,
+          "artist": null,
+          "year": null,
+          "cover_art_hash": "h2",
+          "cover_source": "tag",
+          "cover_w": 100,
+          "cover_h": 100
+        },
+        {
+          "album_key": "k",
+          "album": "A",
+          "album_artist": null,
+          "artist": null,
+          "year": null,
+          "cover_art_hash": "h1",
+          "cover_source": "tag",
+          "cover_w": 100,
+          "cover_h": 100
+        }
+      ],
+      "atteso": "h1"
+    },
+    {
+      "nota": "nessuna copertina",
+      "members": [
+        {
+          "album_key": "k",
+          "album": "A",
+          "album_artist": null,
+          "artist": null,
+          "year": null,
+          "cover_art_hash": null,
+          "cover_source": "tag",
+          "cover_w": 0,
+          "cover_h": 0
+        }
+      ],
+      "atteso": null
+    },
+    {
+      "nota": "provenienza ignota vale meno di caa",
+      "members": [
+        {
+          "album_key": "k",
+          "album": "A",
+          "album_artist": null,
+          "artist": null,
+          "year": null,
+          "cover_art_hash": "h1",
+          "cover_source": "sconosciuta",
+          "cover_w": 500,
+          "cover_h": 500
+        },
+        {
+          "album_key": "k",
+          "album": "A",
+          "album_artist": null,
+          "artist": null,
+          "year": null,
+          "cover_art_hash": "h2",
+          "cover_source": "caa",
+          "cover_w": 100,
+          "cover_h": 100
+        }
+      ],
+      "atteso": "h2"
+    },
+    {
+      "nota": "nessun membro",
+      "members": [],
+      "atteso": null
+    }
+  ],
+  "buildAlbumGroups": [
+    {
+      "nota": "due chiavi diverse restano due album",
+      "rows": [
+        {
+          "album_key": "k1",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "k2",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        }
+      ],
+      "atteso": {
+        "albums": [
+          {
+            "album_key": "k1",
+            "title": "Album",
+            "artist": "Art",
+            "year": null,
+            "total_tracks": 1,
+            "cover_art_hash": null,
+            "mb_album_id": null,
+            "spotify_id": null
+          },
+          {
+            "album_key": "k2",
+            "title": "Album",
+            "artist": "Art",
+            "year": null,
+            "total_tracks": 1,
+            "cover_art_hash": null,
+            "mb_album_id": null,
+            "spotify_id": null
+          }
+        ],
+        "remap": [
+          [
+            "k1",
+            "k1"
+          ],
+          [
+            "k2",
+            "k2"
+          ]
+        ]
+      }
+    },
+    {
+      "nota": "lo stesso release-group fonde due cartelle",
+      "rows": [
+        {
+          "album_key": "k1",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": "RG1",
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "k2",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": "RG1",
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        }
+      ],
+      "atteso": {
+        "albums": [
+          {
+            "album_key": "mbrg:RG1",
+            "title": "Album",
+            "artist": "Art",
+            "year": null,
+            "total_tracks": 2,
+            "cover_art_hash": null,
+            "mb_album_id": "RG1",
+            "spotify_id": null
+          }
+        ],
+        "remap": [
+          [
+            "k1",
+            "mbrg:RG1"
+          ],
+          [
+            "k2",
+            "mbrg:RG1"
+          ]
+        ]
+      }
+    },
+    {
+      "nota": "taggatura parziale: uno solo ha l id, non deve spezzare",
+      "rows": [
+        {
+          "album_key": "k1",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": "RG1",
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "k1",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "k2",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": "RG1",
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        }
+      ],
+      "atteso": {
+        "albums": [
+          {
+            "album_key": "mbrg:RG1",
+            "title": "Album",
+            "artist": "Art",
+            "year": null,
+            "total_tracks": 3,
+            "cover_art_hash": null,
+            "mb_album_id": "RG1",
+            "spotify_id": null
+          }
+        ],
+        "remap": [
+          [
+            "k1",
+            "mbrg:RG1"
+          ],
+          [
+            "k2",
+            "mbrg:RG1"
+          ]
+        ]
+      }
+    },
+    {
+      "nota": "priorita: release-group prima di release",
+      "rows": [
+        {
+          "album_key": "k1",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": "RG1",
+          "mb_release_id": "R1",
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "k2",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": "RG1",
+          "mb_release_id": "R1",
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        }
+      ],
+      "atteso": {
+        "albums": [
+          {
+            "album_key": "mbrg:RG1",
+            "title": "Album",
+            "artist": "Art",
+            "year": null,
+            "total_tracks": 2,
+            "cover_art_hash": null,
+            "mb_album_id": "R1",
+            "spotify_id": null
+          }
+        ],
+        "remap": [
+          [
+            "k1",
+            "mbrg:RG1"
+          ],
+          [
+            "k2",
+            "mbrg:RG1"
+          ]
+        ]
+      }
+    },
+    {
+      "nota": "solo spotify: chiave sp:",
+      "rows": [
+        {
+          "album_key": "k1",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": "SP1",
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "k2",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": "SP1",
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        }
+      ],
+      "atteso": {
+        "albums": [
+          {
+            "album_key": "sp:SP1",
+            "title": "Album",
+            "artist": "Art",
+            "year": null,
+            "total_tracks": 2,
+            "cover_art_hash": null,
+            "mb_album_id": null,
+            "spotify_id": "SP1"
+          }
+        ],
+        "remap": [
+          [
+            "k1",
+            "sp:SP1"
+          ],
+          [
+            "k2",
+            "sp:SP1"
+          ]
+        ]
+      }
+    },
+    {
+      "nota": "nessun id: chiave = la base piu piccola",
+      "rows": [
+        {
+          "album_key": "zzz",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "aaa",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        }
+      ],
+      "atteso": {
+        "albums": [
+          {
+            "album_key": "aaa",
+            "title": "Album",
+            "artist": "Art",
+            "year": null,
+            "total_tracks": 1,
+            "cover_art_hash": null,
+            "mb_album_id": null,
+            "spotify_id": null
+          },
+          {
+            "album_key": "zzz",
+            "title": "Album",
+            "artist": "Art",
+            "year": null,
+            "total_tracks": 1,
+            "cover_art_hash": null,
+            "mb_album_id": null,
+            "spotify_id": null
+          }
+        ],
+        "remap": [
+          [
+            "aaa",
+            "aaa"
+          ],
+          [
+            "zzz",
+            "zzz"
+          ]
+        ]
+      }
+    },
+    {
+      "nota": "catena: k1-k2 per release-group, k2-k3 per spotify",
+      "rows": [
+        {
+          "album_key": "k1",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": "RG1",
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "k2",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": "RG1",
+          "mb_release_id": null,
+          "spotify_album_id": "SP1",
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "k3",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": "SP1",
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        }
+      ],
+      "atteso": {
+        "albums": [
+          {
+            "album_key": "mbrg:RG1",
+            "title": "Album",
+            "artist": "Art",
+            "year": null,
+            "total_tracks": 3,
+            "cover_art_hash": null,
+            "mb_album_id": "RG1",
+            "spotify_id": "SP1"
+          }
+        ],
+        "remap": [
+          [
+            "k1",
+            "mbrg:RG1"
+          ],
+          [
+            "k2",
+            "mbrg:RG1"
+          ],
+          [
+            "k3",
+            "mbrg:RG1"
+          ]
+        ]
+      }
+    },
+    {
+      "nota": "anno: si tiene il massimo",
+      "rows": [
+        {
+          "album_key": "k1",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": 1969,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "k1",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": 2019,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "k1",
+          "album": "Album",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        }
+      ],
+      "atteso": {
+        "albums": [
+          {
+            "album_key": "k1",
+            "title": "Album",
+            "artist": "Art",
+            "year": 2019,
+            "total_tracks": 3,
+            "cover_art_hash": null,
+            "mb_album_id": null,
+            "spotify_id": null
+          }
+        ],
+        "remap": [
+          [
+            "k1",
+            "k1"
+          ]
+        ]
+      }
+    },
+    {
+      "nota": "titolo: il piu frequente, poi il piu corto",
+      "rows": [
+        {
+          "album_key": "k1",
+          "album": "Abbey Road (Deluxe)",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "k1",
+          "album": "Abbey Road",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        },
+        {
+          "album_key": "k1",
+          "album": "Abbey Road",
+          "album_artist": null,
+          "artist": "Art",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        }
+      ],
+      "atteso": {
+        "albums": [
+          {
+            "album_key": "k1",
+            "title": "Abbey Road",
+            "artist": "Art",
+            "year": null,
+            "total_tracks": 3,
+            "cover_art_hash": null,
+            "mb_album_id": null,
+            "spotify_id": null
+          }
+        ],
+        "remap": [
+          [
+            "k1",
+            "k1"
+          ]
+        ]
+      }
+    },
+    {
+      "nota": "nessuna riga",
+      "rows": [],
+      "atteso": {
+        "albums": [],
+        "remap": []
+      }
+    },
+    {
+      "nota": "titolo e artista assenti: i ripieghi",
+      "rows": [
+        {
+          "album_key": "k1",
+          "album": "",
+          "album_artist": null,
+          "artist": "",
+          "year": null,
+          "cover_art_hash": null,
+          "mb_release_group_id": null,
+          "mb_release_id": null,
+          "spotify_album_id": null,
+          "cover_source": null,
+          "cover_w": null,
+          "cover_h": null
+        }
+      ],
+      "atteso": {
+        "albums": [
+          {
+            "album_key": "k1",
+            "title": "Album sconosciuto",
+            "artist": "Artista sconosciuto",
+            "year": null,
+            "total_tracks": 1,
+            "cover_art_hash": null,
+            "mb_album_id": null,
+            "spotify_id": null
+          }
+        ],
+        "remap": [
+          [
+            "k1",
+            "k1"
+          ]
+        ]
+      }
+    }
+  ]
+}
