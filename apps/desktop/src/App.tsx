@@ -11,6 +11,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  applicaSkin,
   ipc,
   testoErrore,
   urlCopertina,
@@ -137,6 +138,17 @@ export function App() {
   useEffect(() => {
     void ricarica();
   }, [ricarica]);
+
+  // La skin, appena si può. Fino a quando non arriva valgono i token che
+  // `stile.css` porta sotto `:root`, che sono gli stessi della skin di serie —
+  // quindi non c'è un fotogramma del colore sbagliato, e se questa chiamata
+  // fallisce l'applicazione resta usabile invece che illeggibile.
+  useEffect(() => {
+    ipc
+      .skin()
+      .then(applicaSkin)
+      .catch((e: unknown) => setErrore(testoErrore(e)));
+  }, []);
 
   useEffect(() => {
     const promessa = listen<Avanzamento>("scansione:avanzamento", (evento) =>

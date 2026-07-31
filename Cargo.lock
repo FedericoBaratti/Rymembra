@@ -30,6 +30,7 @@ version = "0.1.0"
 dependencies = [
  "aether-app",
  "aether-domain",
+ "aether-skin",
  "rusqlite",
  "serde",
  "serde_json",

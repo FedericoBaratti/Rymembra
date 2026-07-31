@@ -13,8 +13,12 @@
     "mobile": false,
     "dynamicAccent": true
   },
+  "palette": {
+    "ciano": "#4fd6e0"
+  },
   "tokens": {
     "font.sans": ["Inter Variable"],
+    "font.mono": ["Cascadia Mono", "Consolas"],
 
     "color.surface.0": "#09090d",
     "color.surface.1": "#0e0e14",

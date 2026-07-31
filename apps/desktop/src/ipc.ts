@@ -110,6 +110,16 @@ export interface Avanzamento {
 /** Come ordinare un elenco di brani. */
 export type Ordine = "scaffale" | "recenti" | "ascoltati" | "titolo";
 
+/** Una skin compilata. */
+export interface Skin {
+  id: string;
+  /** Il foglio, già CSS. Nessun valore scritto dall'autore vi è finito dentro. */
+  css: string;
+  cost: number;
+  /** I token che seguiranno la copertina quando ci sarà la riproduzione. */
+  dynamicTokens: string[];
+}
+
 export const ipc = {
   avvio: () => invoke<Avvio>("avvio"),
   impostaCartelle: (cartelle: string[]) =>
@@ -125,7 +135,30 @@ export const ipc = {
     invoke<Brano[]>("brani_album", { chiave }),
   preferito: (id: number, valore: boolean) =>
     invoke<void>("preferito", { id, valore }),
+  skin: (id?: string) => invoke<Skin>("skin", { id: id ?? null }),
 };
+
+/**
+ * Applica una skin alla finestra.
+ *
+ * Un foglio a parte e non le proprietà scritte una a una su `style`: sostituire
+ * il testo di un `<style>` è **un'unica** invalidazione per il motore di
+ * rendering, mentre cinquanta `setProperty` sono cinquanta ricalcoli sull'intero
+ * albero. Conta quando la skin cambierà dal vivo mentre la si costruisce.
+ *
+ * `data-skin` va messo dopo: il selettore del foglio è
+ * `:root[data-skin='<id>']`, e metterlo prima significherebbe un fotogramma in
+ * cui l'attributo c'è e le regole no.
+ */
+export function applicaSkin(skin: Skin): void {
+  const id = "skin-attiva";
+  const foglio =
+    document.getElementById(id) ?? document.createElement("style");
+  foglio.id = id;
+  foglio.textContent = skin.css;
+  if (!foglio.isConnected) document.head.append(foglio);
+  document.documentElement.dataset.skin = skin.id;
+}
 
 /**
  * L'indirizzo di una copertina.

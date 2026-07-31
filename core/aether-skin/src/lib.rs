@@ -77,6 +77,12 @@ pub use tokens::{TOKENS, TokenDef};
 /// Serve da collaudo — un formato provato solo su casi costruiti per riuscire è
 /// un formato che non si sa se regge, e convertire `plain` ha fatto emergere la
 /// lunghezza adattiva, `color-scheme` e i riferimenti fra token.
+///
+/// Due voci non vengono da `global.css` e sono del guscio nuovo: `font.mono`,
+/// che serve a durate e indici, e il ciano della tavolozza, che disegna lo
+/// spinner e la barra di avanzamento. Il ciano sta nella **tavolozza** e non fra
+/// i token perché nessun componente lo legge per nome: è un colore che la skin
+/// usa per sé, ed è esattamente il caso per cui la tavolozza locale esiste.
 pub const PLAIN_SOURCE: &str = include_str!("../skins/plain.json");
 
 /// La skin di riferimento, validata.

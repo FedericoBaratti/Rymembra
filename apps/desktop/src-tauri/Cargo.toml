@@ -19,6 +19,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 aether-app = { path = "../../../core/aether-app" }
 aether-domain = { path = "../../../core/aether-domain" }
+aether-skin = { path = "../../../core/aether-skin" }
 # La stessa versione che usa `aether-app`: due `rusqlite` diversi nell'albero
 # darebbero due tipi `Connection` incompatibili, e l'errore che ne esce parla di
 # tratti non implementati invece che di versioni.

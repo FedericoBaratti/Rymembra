@@ -11,6 +11,7 @@
 mod comandi;
 mod copertine;
 mod errore;
+mod skin;
 mod stato;
 
 use tauri::Manager as _;
@@ -47,6 +48,7 @@ fn main() {
             comandi::preferito,
             comandi::piano_importazione,
             comandi::importa,
+            skin::skin,
         ])
         .run(tauri::generate_context!());
 

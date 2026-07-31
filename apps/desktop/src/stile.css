@@ -1,47 +1,100 @@
 /*
- * I colori stanno tutti qui, e tutti come variabili.
+ * I colori non stanno più qui: li scrive il motore delle skin.
  *
- * Non è ordine per l'ordine: il motore delle skin, quando arriverà, produce
- * esattamente questo — un insieme di token — e li applica sostituendo questo
- * blocco. Ogni colore scritto a mano dentro una regola più sotto sarebbe un
- * punto che nessuna skin può cambiare, cioè un pezzo di interfaccia che resta
- * del colore sbagliato quando tutto il resto cambia.
+ * Quel che segue è il foglio che `aether-skin` produce per la skin di serie,
+ * copiato sotto `:root` invece che sotto `:root[data-skin='plain']`. Serve
+ * perché l'IPC risponde qualche millisecondo dopo il primo disegno, e in quei
+ * millisecondi senza token la finestra sarebbe testo nero su bianco. È lo stesso
+ * strato che nel vecchio albero era il blocco `:root` di `global.css`, con le
+ * skin che lo sovrascrivevano da un selettore più specifico.
  *
- * Nel vecchio albero questo problema esiste ancora, ed è annotato: MainActivity
- * e capacitor.config cablano `#09090d`, che è il fondo di UNA skin, e con
- * un'altra l'avvio a freddo lampeggia del colore sbagliato.
+ * NON si modifica a mano. Si rigenera con
+ *
+ *     cargo run -p aether-skin --example compila
+ *
+ * e un test del crate desktop confronta questo blocco con l'uscita del
+ * compilatore: una copia che può divergere in silenzio è il difetto che tutto il
+ * motore esiste per togliere, e non ha senso reintrodurlo proprio qui.
+ */
+/* ── inizio blocco generato ────────────────────────────────────────────────── */
+:root {
+  --skin-color-ciano: rgb(79 214 224);
+  --skin-color-ciano-rgb: 79 214 224;
+  --font-sans: 'Inter Variable', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Cascadia Mono', 'Consolas', ui-monospace, SFMono-Regular, monospace;
+  --color-surface-0: rgb(9 9 13);
+  --color-surface-1: rgb(14 14 20);
+  --color-surface-2: rgb(22 22 31);
+  --color-surface-3: rgb(30 30 42);
+  --color-text-1: rgb(255 255 255 / 0.92);
+  --color-text-2: rgb(255 255 255 / 0.6);
+  --color-text-3: rgb(255 255 255 / 0.38);
+  --accent: rgb(139 124 246);
+  --accent-rgb: 139 124 246;
+  --accent-soft: rgb(139 124 246 / 0.16);
+  --accent-glow: rgb(139 124 246 / 0.35);
+  --accent-like: var(--accent);
+  --hero-rgb: var(--accent-rgb);
+  --danger: rgb(229 72 77);
+  --danger-soft: rgb(229 72 77 / 0.14);
+  --success: rgb(52 211 153);
+  --success-soft: rgb(52 211 153 / 0.14);
+  --warning: rgb(250 204 21);
+  --warning-soft: rgb(250 204 21 / 0.14);
+  --sidebar-bg: rgb(255 255 255 / 0.04);
+  --hairline: rgb(255 255 255 / 0.07);
+  --ambient-1: rgb(139 124 246 / 0.1);
+  --ambient-2: rgb(76 60 180 / 0.06);
+  --rail-w: 68px;
+  --rail-w-expanded: 240px;
+  --player-h: 92px;
+  --player-gap: 14px;
+  --content-x: clamp(16px, 3cqw, 48px);
+  --radius-panel: 20px;
+  --radius-card: 14px;
+  --shadow-1: 0px 2px 12px rgb(0 0 0 / 0.3);
+  --shadow-2: 0px 8px 28px rgb(0 0 0 / 0.45);
+  --shadow-3: 0px 16px 56px rgb(0 0 0 / 0.55);
+  --shadow-player: inset 0px 1px 0px rgb(255 255 255 / 0.06), 0px 8px 40px rgb(0 0 0 / 0.5);
+  --glow-accent: 0px 0px 24px var(--accent-glow);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-1: 150ms;
+  --dur-2: 280ms;
+  --dur-3: 450ms;
+  --viz-primary: var(--accent);
+  --viz-primary-rgb: var(--accent-rgb);
+  --viz-secondary: var(--accent);
+  --viz-secondary-rgb: var(--accent-rgb);
+  --viz-glow: 20;
+  --scrubber-glow: 6;
+  --scrubber-rest: rgb(255 255 255 / 0.18);
+  --shell-left: var(--rail-w);
+  --player-clearance: calc(var(--player-h) + var(--player-gap) * 2);
+  --surface-0-rgb: 9 9 13;
+  --transition-fast: var(--dur-1) var(--ease-out-expo);
+  --transition-med: var(--dur-2) var(--ease-out-expo);
+  color-scheme: dark;
+}
+/* ── fine blocco generato ──────────────────────────────────────────────────── */
+
+/*
+ * Le misure dell'impalcatura di questa finestra.
+ *
+ * Restano qui, e non sono una dimenticanza: il registro dei token è il contratto
+ * dei COLORI, della geometria e del movimento — la spaziatura non ne ha mai
+ * fatto parte, nemmeno nel vecchio albero. Una skin che potesse cambiarla
+ * potrebbe far uscire le cose dallo schermo, che è il confine che il formato
+ * traccia apposta.
  */
 :root {
-  --superficie-0: #0b0b10;
-  --superficie-1: #131320;
-  --superficie-2: #1b1b2c;
-  --superficie-alta: #23233a;
-
-  --testo-forte: #f2f2f7;
-  --testo-medio: #a9a9c2;
-  --testo-debole: #6f6f8c;
-
-  --accento: #8b7cf6;
-  --accento-2: #4fd6e0;
-  --pericolo: #f2726f;
-
-  --bordo: #26263c;
-  --raggio: 10px;
-  --raggio-grande: 14px;
-
   --spazio-1: 4px;
   --spazio-2: 8px;
   --spazio-3: 14px;
   --spazio-4: 22px;
   --spazio-5: 34px;
 
-  --laterale: 232px;
   --barra: 58px;
-
-  --carattere: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
-  --cifre: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-
-  color-scheme: dark;
 }
 
 * {
@@ -56,9 +109,9 @@ body,
 }
 
 body {
-  background: var(--superficie-0);
-  color: var(--testo-forte);
-  font-family: var(--carattere);
+  background: var(--color-surface-0);
+  color: var(--color-text-1);
+  font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.45;
   /* Il testo dell'interfaccia non si seleziona: è cromo, non contenuto, e
@@ -72,20 +125,20 @@ body {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--superficie-alta);
+  background: var(--color-surface-3);
   border-radius: 99px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--testo-debole);
+  background: var(--color-text-3);
   background-clip: content-box;
 }
 
 /* ── impalcatura ─────────────────────────────────────────────────────────── */
 .telaio {
   display: grid;
-  grid-template-columns: var(--laterale) 1fr;
+  grid-template-columns: var(--rail-w-expanded) 1fr;
   grid-template-rows: var(--barra) 1fr;
   height: 100%;
 }
@@ -96,8 +149,8 @@ body {
   align-items: center;
   gap: var(--spazio-3);
   padding: 0 var(--spazio-4);
-  background: var(--superficie-1);
-  border-bottom: 1px solid var(--bordo);
+  background: var(--color-surface-1);
+  border-bottom: 1px solid var(--hairline);
 }
 
 .marchio {
@@ -106,16 +159,16 @@ body {
   gap: var(--spazio-2);
   font-weight: 600;
   letter-spacing: 0.02em;
-  width: calc(var(--laterale) - var(--spazio-4));
+  width: calc(var(--rail-w-expanded) - var(--spazio-4));
 }
 
 .anello {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 3px solid var(--accento);
-  border-right-color: var(--accento-2);
-  border-bottom-color: var(--accento-2);
+  border: 3px solid var(--accent);
+  border-right-color: var(--skin-color-ciano);
+  border-bottom-color: var(--skin-color-ciano);
 }
 
 .ricerca {
@@ -123,24 +176,24 @@ body {
   max-width: 520px;
   height: 34px;
   padding: 0 var(--spazio-3);
-  background: var(--superficie-2);
-  border: 1px solid var(--bordo);
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
   border-radius: 99px;
-  color: var(--testo-forte);
+  color: var(--color-text-1);
   font: inherit;
   outline: none;
   user-select: text;
 }
 .ricerca:focus {
-  border-color: var(--accento);
+  border-color: var(--accent);
 }
 .ricerca::placeholder {
-  color: var(--testo-debole);
+  color: var(--color-text-3);
 }
 
 .laterale {
-  background: var(--superficie-1);
-  border-right: 1px solid var(--bordo);
+  background: var(--color-surface-1);
+  border-right: 1px solid var(--hairline);
   padding: var(--spazio-4) var(--spazio-3);
   display: flex;
   flex-direction: column;
@@ -168,24 +221,24 @@ body {
   padding: 8px var(--spazio-3);
   border: none;
   background: transparent;
-  color: var(--testo-medio);
+  color: var(--color-text-2);
   font: inherit;
   text-align: left;
-  border-radius: var(--raggio);
+  border-radius: var(--radius-card);
   cursor: pointer;
 }
 .voce:hover {
-  background: var(--superficie-2);
-  color: var(--testo-forte);
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
 }
 .voce[aria-current="true"] {
-  background: var(--superficie-alta);
-  color: var(--testo-forte);
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
 }
 .voce .conteggio {
-  font-family: var(--cifre);
+  font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--testo-debole);
+  color: var(--color-text-3);
 }
 
 /* ── blocchi del pannello laterale ───────────────────────────────────────── */
@@ -200,7 +253,7 @@ body {
   font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: var(--testo-debole);
+  color: var(--color-text-3);
 }
 
 .cartella {
@@ -208,9 +261,9 @@ body {
   align-items: center;
   gap: var(--spazio-2);
   font-size: 12px;
-  color: var(--testo-medio);
-  background: var(--superficie-2);
-  border-radius: var(--raggio);
+  color: var(--color-text-2);
+  background: var(--color-surface-2);
+  border-radius: var(--radius-card);
   padding: 6px var(--spazio-2);
   overflow: hidden;
 }
@@ -224,24 +277,27 @@ body {
 
 .bottone {
   padding: 8px var(--spazio-3);
-  border: 1px solid var(--bordo);
-  border-radius: var(--raggio);
-  background: var(--superficie-2);
-  color: var(--testo-forte);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
   font: inherit;
   cursor: pointer;
 }
 .bottone:hover:not(:disabled) {
-  border-color: var(--accento);
+  border-color: var(--accent);
 }
 .bottone:disabled {
   opacity: 0.5;
   cursor: default;
 }
 .bottone.primario {
-  background: var(--accento);
-  border-color: var(--accento);
-  color: #0d0a1a;
+  background: var(--accent);
+  border-color: var(--accent);
+  /* Il testo sopra l'accento è il fondo dell'applicazione, non un nero scelto a
+     mano: così una skin chiara ottiene testo chiaro su accento senza dover
+     dichiarare un token in più. */
+  color: var(--color-surface-0);
   font-weight: 600;
 }
 .bottone.primario:hover:not(:disabled) {
@@ -256,12 +312,12 @@ body {
 .avanzamento {
   height: 6px;
   border-radius: 99px;
-  background: var(--superficie-alta);
+  background: var(--color-surface-3);
   overflow: hidden;
 }
 .avanzamento > div {
   height: 100%;
-  background: linear-gradient(90deg, var(--accento), var(--accento-2));
+  background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
   transition: width 120ms linear;
 }
 
@@ -288,21 +344,21 @@ body {
 .copertina {
   aspect-ratio: 1;
   width: 100%;
-  border-radius: var(--raggio-grande);
-  background: var(--superficie-2);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
   object-fit: cover;
   display: block;
-  box-shadow: 0 6px 20px rgb(0 0 0 / 35%);
+  box-shadow: var(--shadow-2);
 }
 .scheda:hover .copertina {
-  outline: 2px solid var(--accento);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 .copertina.vuota {
   display: grid;
   place-items: center;
-  color: var(--testo-debole);
+  color: var(--color-text-3);
   font-size: 26px;
 }
 
@@ -314,7 +370,7 @@ body {
 }
 .scheda .sotto {
   font-size: 12px;
-  color: var(--testo-medio);
+  color: var(--color-text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -332,17 +388,17 @@ body {
   align-items: center;
   gap: var(--spazio-3);
   padding: 6px var(--spazio-2);
-  border-radius: var(--raggio);
+  border-radius: var(--radius-card);
   cursor: default;
 }
 .riga:hover {
-  background: var(--superficie-1);
+  background: var(--color-surface-1);
 }
 
 .riga .indice {
-  font-family: var(--cifre);
+  font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--testo-debole);
+  color: var(--color-text-3);
   text-align: right;
 }
 .riga img,
@@ -350,7 +406,7 @@ body {
   width: 34px;
   height: 34px;
   border-radius: 6px;
-  background: var(--superficie-2);
+  background: var(--color-surface-2);
   object-fit: cover;
 }
 .riga .nome {
@@ -360,23 +416,23 @@ body {
   user-select: text;
 }
 .riga .autore {
-  color: var(--testo-medio);
+  color: var(--color-text-2);
   font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .riga .durata {
-  font-family: var(--cifre);
+  font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--testo-debole);
+  color: var(--color-text-3);
   text-align: right;
 }
 
 .cuore {
   border: none;
   background: transparent;
-  color: var(--testo-debole);
+  color: var(--color-text-3);
   font-size: 15px;
   cursor: pointer;
   line-height: 1;
@@ -384,10 +440,13 @@ body {
   border-radius: 6px;
 }
 .cuore[aria-pressed="true"] {
-  color: var(--accento);
+  /* `--accent-like` e non `--accent`: è il token che esiste apposta perché una
+     skin possa portare il cuore al rosso senza toccare l'accento di tutto il
+     resto, ed è quel che fa Nothing col suo unico rosso. */
+  color: var(--accent-like);
 }
 .cuore:hover {
-  background: var(--superficie-2);
+  background: var(--color-surface-2);
 }
 
 /* ── intestazione dell'album aperto ──────────────────────────────────────── */
@@ -401,10 +460,10 @@ body {
 .intestazione .segnaposto {
   width: 168px;
   height: 168px;
-  border-radius: var(--raggio-grande);
-  background: var(--superficie-2);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-2);
   object-fit: cover;
-  box-shadow: 0 10px 30px rgb(0 0 0 / 45%);
+  box-shadow: var(--shadow-3);
 }
 .intestazione h1 {
   margin: 0 0 var(--spazio-1);
@@ -413,7 +472,7 @@ body {
   user-select: text;
 }
 .intestazione .meta {
-  color: var(--testo-medio);
+  color: var(--color-text-2);
   font-size: 13px;
 }
 
@@ -429,11 +488,11 @@ body {
   gap: var(--spazio-3);
   height: 100%;
   text-align: center;
-  color: var(--testo-medio);
+  color: var(--color-text-2);
 }
 .vuoto h2 {
   margin: 0;
-  color: var(--testo-forte);
+  color: var(--color-text-1);
   font-size: 19px;
 }
 .vuoto p {
@@ -442,22 +501,22 @@ body {
 }
 
 .errore {
-  border: 1px solid var(--pericolo);
-  border-radius: var(--raggio);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-card);
   padding: var(--spazio-3);
-  background: color-mix(in srgb, var(--pericolo) 12%, transparent);
-  color: var(--testo-forte);
+  background: var(--danger-soft);
+  color: var(--color-text-1);
   font-size: 13px;
 }
 .errore code {
-  font-family: var(--cifre);
-  color: var(--pericolo);
+  font-family: var(--font-mono);
+  color: var(--danger);
 }
 
 .percorso {
-  font-family: var(--cifre);
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--testo-debole);
+  color: var(--color-text-3);
   word-break: break-all;
   user-select: text;
 }
