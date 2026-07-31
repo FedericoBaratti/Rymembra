@@ -1,0 +1,25 @@
+[package]
+name = "aether-skin"
+description = "Il motore delle skin di Aether: da `skin.json` a CSS, e il pacchetto `.aeskin`."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+aether-domain = { path = "../aether-domain" }
+# Solo per LEGGERE. Nessun tipo di questo crate deriva `Serialize`, ed è una
+# scelta: la forma interna non è riserializzabile come sorgente — un colore
+# validato è una quaterna di canali, e riscriverlo produrrebbe un manifest che
+# la validazione rifiuta. Chi deve conservare la sorgente conserva il JSON.
+serde_json.workspace = true
+# `default-features = false` più il solo `deflate`: bzip2, zstd, lzma, xz, ppmd
+# e aes sarebbero sei decompressori in più esposti a un archivio ostile, per
+# leggere formati che il nostro scrittore non produce mai. Restano implementazioni
+# in puro Rust, che è anche ciò che serve a compilare per Android senza portarsi
+# dietro una libreria C.
+zip = { version = "6", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

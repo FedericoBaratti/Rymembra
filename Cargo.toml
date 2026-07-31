@@ -7,7 +7,12 @@
 
 [workspace]
 resolver = "3"
-members = ["core/aether-domain", "core/aether-app", "apps/desktop/src-tauri"]
+members = [
+    "core/aether-domain",
+    "core/aether-app",
+    "core/aether-skin",
+    "apps/desktop/src-tauri",
+]
 
 [workspace.package]
 version = "0.1.0"
