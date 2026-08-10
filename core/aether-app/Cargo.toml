@@ -36,6 +36,13 @@ serde_json.workspace = true
 walkdir = "2.5.0"
 
 [dev-dependencies]
+# Solo per l'esempio `archivio`, che deve pur aprire uno zip da qualche parte.
+# In `[dev-dependencies]` e non fra le dipendenze vere: la regola del crate è
+# che chi scrive nel database non legge dal mondo, e `import_account` riceve
+# infatti un `AccountSnapshot` già pronto senza sapere chi l'abbia riempito. Un
+# esempio è un programma a parte, ed è il posto giusto per far incontrare le due
+# metà — come `importa.rs` fa già con il vecchio database.
+aether-archivio = { path = "../aether-archivio" }
 # Serve a datare un file di prova: due scritture di fila cadono nello stesso
 # millisecondo, e il piano di scansione le vedrebbe come «invariato».
 filetime = "0.2"

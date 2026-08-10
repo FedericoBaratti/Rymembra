@@ -25,7 +25,7 @@ use std::collections::HashMap;
 
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::keys::{PlaylistKey, TrackKey, TrackKeyInput};
-use aether_domain::spotify::{SpotifyContent, SpotifyTrack};
+use aether_domain::spotify::{SpotifyContent, SpotifyKind, SpotifyTrack};
 use aether_domain::spotify_plan::{Gradino, LibraryTrack, plan_spotify_import};
 use rusqlite::{Connection, Transaction};
 
@@ -59,12 +59,15 @@ pub struct Truncation {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpotifyImportReport {
-    /// Che cosa si è importato: `brano`, `album`, `playlist`, `artista`.
+    /// Che cosa si è importato: `brano`, `album`, `playlist`, `artista`, e da
+    /// [`crate::import_account`] anche `preferiti`.
     pub kind: String,
-    /// Da quale livello del lettore keyless è arrivato.
+    /// Da dove sono arrivati questi brani.
     ///
-    /// `pathfinder`, `embed` o `oembed`: **non** è l'identificativo del
-    /// contenuto — quello è [`Self::source_id`], e il nome quasi uguale è la
+    /// Da un link è il livello del lettore keyless — `pathfinder`, `embed` o
+    /// `oembed`; da un account è la strada — `api` o `archivio`. Una domanda
+    /// sola, due vocabolari, e in nessuno dei due è l'identificativo del
+    /// contenuto: quello è [`Self::source_id`], e il nome quasi uguale è la
     /// ragione per cui questa riga esiste.
     pub source: String,
     /// L'identificativo del contenuto su Spotify.
@@ -214,7 +217,19 @@ fn run(
         .map_err(|err| db_error("apertura della transazione", &err))?;
 
     if crea_playlist {
-        let (id, creata, sostituita) = prepara_playlist(&tx, &contenuto.title, contenuto)?;
+        // L'identificativo si passa **solo** quando è davvero quello di una
+        // playlist. `contenuto.id` è l'identificativo di quel che si sta
+        // importando: per un album è un album, e scriverlo in
+        // `playlists.spotify_playlist_id` farebbe riconoscere come «la stessa
+        // playlist» due cose che non lo sono.
+        let identificativo =
+            matches!(contenuto.kind, SpotifyKind::Playlist).then_some(contenuto.id.as_str());
+        let (id, creata, sostituita) = prepara_playlist(
+            &tx,
+            &contenuto.title,
+            identificativo,
+            contenuto.truncation(),
+        )?;
         rapporto.playlist_id = Some(id);
         rapporto.playlist_name = Some(contenuto.title.trim().to_owned());
         rapporto.playlist_created = creata;
@@ -247,8 +262,17 @@ fn run(
     rapporto.spotify_album_ids_written = scritti_album;
     rapporto.isrc_written = scritti_isrc;
 
-    rapporto.wanted_rows =
-        scrivi_desiderati(&tx, contenuto, &piano.mancanti, rapporto.playlist_id)?;
+    rapporto.wanted_rows = scrivi_desiderati(
+        &tx,
+        &contenuto.tracks,
+        Sorgente {
+            kind: contenuto.kind.nome(),
+            id: &contenuto.id,
+            titolo: &contenuto.title,
+        },
+        &piano.mancanti,
+        rapporto.playlist_id,
+    )?;
 
     // Il viaggio di ritorno, ristretto a **questa** importazione: quel che è
     // successo alle altre playlist non è affar suo e non deve comparire nel suo
@@ -278,7 +302,12 @@ fn run(
 }
 
 /// La libreria, ridotta a quel che serve per riconoscere un brano.
-fn leggi_libreria(connection: &Connection) -> Result<Vec<LibraryTrack>, AppError> {
+///
+/// Si legge **una volta per importazione**, non una per elenco: un account con
+/// duecento playlist la rileggerebbe duecento volte, ed è la ragione per cui
+/// `plan_account_import` prende la libreria come argomento invece di andarsela a
+/// prendere da sé.
+pub(crate) fn leggi_libreria(connection: &Connection) -> Result<Vec<LibraryTrack>, AppError> {
     let mut statement = connection
         .prepare("SELECT id, track_key, artist, title, duration_ms, isrc FROM tracks ORDER BY id")
         .map_err(|err| db_error("lettura della libreria", &err))?;
@@ -302,6 +331,21 @@ fn leggi_libreria(connection: &Connection) -> Result<Vec<LibraryTrack>, AppError
 /// Trova o crea la playlist, svuotandola se esisteva.
 ///
 /// Restituisce `(id, creata, sostituita)`.
+///
+/// # I due modi di riconoscere una playlist già importata
+///
+/// `spotify_id` prima, `playlist_key` poi. L'ordine è tutto: la chiave nasce dal
+/// **nome** (vedi [`PlaylistKey`]), quindi chi rinomina «Corsa» in «Corsa 2026»
+/// su Spotify, senza l'identificativo, alla reimportazione si ritroverebbe due
+/// playlist — la vecchia col nome vecchio e i suoi brani, e una nuova identica
+/// accanto. È il difetto per cui `005_account.sql` ha aggiunto quella colonna, e
+/// riconoscere per identificativo è il solo modo di ripagarla.
+///
+/// Quando l'identificativo ritrova una playlist che nel frattempo ha cambiato
+/// nome, il nome **si aggiorna**: è quel che l'utente ha deciso su Spotify. Non
+/// si aggiorna in un solo caso — se quel nome è già di un'altra playlist — e lì
+/// si tiene il vecchio: rifiutare l'importazione intera per un nome occupato
+/// sarebbe una punizione sproporzionata rispetto ai brani che sta portando.
 ///
 /// # Perché sostituire e non accodare
 ///
@@ -328,10 +372,11 @@ fn leggi_libreria(connection: &Connection) -> Result<Vec<LibraryTrack>, AppError
 /// **Solo** la sostituzione, però. Un elenco monco che crea una playlist nuova
 /// non cancella niente: duecento brani sono meglio di nessuno, e reimportare
 /// quando la rete è tornata a posto li completa.
-fn prepara_playlist(
+pub(crate) fn prepara_playlist(
     tx: &Transaction<'_>,
     titolo: &str,
-    contenuto: &SpotifyContent,
+    spotify_id: Option<&str>,
+    troncatura: Option<(u32, u32)>,
 ) -> Result<(i64, bool, bool), AppError> {
     let chiave = PlaylistKey::compute(Some(titolo.trim()));
     if chiave.as_str().is_empty() {
@@ -340,20 +385,31 @@ fn prepara_playlist(
         }));
     }
 
-    let esistente: Option<(i64, bool)> = tx
-        .query_row(
+    let per_identificativo = match spotify_id {
+        Some(id) => tx
+            .query_row(
+                "SELECT id, is_smart FROM playlists WHERE spotify_playlist_id = ?1",
+                [id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? != 0)),
+            )
+            .ok(),
+        None => None,
+    };
+    let esistente: Option<(i64, bool)> = per_identificativo.or_else(|| {
+        tx.query_row(
             "SELECT id, is_smart FROM playlists WHERE playlist_key = ?1",
             [chiave.as_str()],
             |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
         )
-        .ok();
+        .ok()
+    });
 
     match esistente {
         Some((_, true)) => Err(AppError::new(ErrorCode::LibraryPlaylistIsSmart {
             playlist_id: esistente.map(|(id, _)| id),
         })),
         Some((id, false)) => {
-            if let Some((letti, attesi)) = contenuto.truncation() {
+            if let Some((letti, attesi)) = troncatura {
                 return Err(AppError::new(ErrorCode::SpotifyTracklistTruncated {
                     letti,
                     attesi,
@@ -361,13 +417,56 @@ fn prepara_playlist(
             }
             tx.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [id])
                 .map_err(|err| db_error("svuotamento della playlist", &err))?;
+            rinomina_se_libero(tx, id, titolo.trim(), &chiave)?;
+            segna_identificativo(tx, id, spotify_id)?;
             Ok((id, false, true))
         }
         None => {
             let id = crate::playlists::crea_riga(tx, titolo.trim())?;
+            segna_identificativo(tx, id, spotify_id)?;
             Ok((id, true, false))
         }
     }
+}
+
+/// Allinea il nome a quello che la playlist ha adesso su Spotify.
+///
+/// `WHERE NOT EXISTS` invece di un `UPDATE` nudo: `playlist_key` è unica, e una
+/// collisione qui alzerebbe un errore che farebbe fallire l'importazione intera
+/// per un nome occupato. Il `WHERE` la trasforma in «zero righe cambiate», che è
+/// la decisione giusta — la playlist resta col nome vecchio e i suoi brani sono
+/// comunque arrivati.
+fn rinomina_se_libero(
+    tx: &Transaction<'_>,
+    id: i64,
+    nome: &str,
+    chiave: &PlaylistKey,
+) -> Result<(), AppError> {
+    tx.execute(
+        "UPDATE playlists SET name = ?2, playlist_key = ?3
+          WHERE id = ?1 AND playlist_key <> ?3
+            AND NOT EXISTS (SELECT 1 FROM playlists WHERE playlist_key = ?3)",
+        rusqlite::params![id, nome, chiave.as_str()],
+    )
+    .map_err(|err| db_error("aggiornamento del nome della playlist", &err))?;
+    Ok(())
+}
+
+/// Scrive `spotify_playlist_id`, se ce n'è uno da scrivere.
+fn segna_identificativo(
+    tx: &Transaction<'_>,
+    id: i64,
+    spotify_id: Option<&str>,
+) -> Result<(), AppError> {
+    let Some(spotify_id) = spotify_id else {
+        return Ok(());
+    };
+    tx.execute(
+        "UPDATE playlists SET spotify_playlist_id = ?2 WHERE id = ?1",
+        rusqlite::params![id, spotify_id],
+    )
+    .map_err(|err| db_error("scrittura dell'identificativo della playlist", &err))?;
+    Ok(())
 }
 
 /// Mette i brani ritrovati in playlist, al posto che hanno su Spotify.
@@ -391,7 +490,7 @@ fn prepara_playlist(
 /// densa e la riscrivono (`ordine_attuale` → `riscrivi_ordine`), quindi trattano
 /// quel numero come indice di **visualizzazione** e non come `position` grezza.
 /// I buchi non li vede nessuno, e la prima modifica a mano li richiude da sé.
-fn riempi_playlist(
+pub(crate) fn riempi_playlist(
     tx: &Transaction<'_>,
     playlist_id: i64,
     voci: &[(usize, i64)],
@@ -426,7 +525,7 @@ fn riempi_playlist(
 /// da MusicBrainz o da un'importazione precedente, ed è almeno altrettanto
 /// autorevole. La condizione serve anche a contare le scritture vere, che è
 /// l'unico modo di sapere se vale la pena ricostruire gli aggregati.
-fn scrivi_identificativi(
+pub(crate) fn scrivi_identificativi(
     tx: &Transaction<'_>,
     track_id: i64,
     brano: &SpotifyTrack,
@@ -456,10 +555,33 @@ fn scrivi_identificativi(
     Ok((album, isrc))
 }
 
+/// Da dove veniva un brano desiderato.
+///
+/// Le tre colonne `source_*` di `spotify_wanted`, raccolte perché sono un
+/// argomento solo: separate erano tre `&str` di fila, cioè tre occasioni di
+/// passarle in ordine sbagliato senza che il compilatore dica niente.
+///
+/// [`Self::id`] è anche metà dell'indice unico `(track_key, source_id)`, quindi
+/// **due sorgenti diverse devono avere identificativi diversi**: se due playlist
+/// lo condividessero, il brano che manca a entrambe diventerebbe una riga sola e
+/// la seconda playlist perderebbe il proprio posto. Da un link e dalla Web API
+/// l'identificativo è quello di Spotify; dall'archivio, che non lo contiene, chi
+/// chiama ne fabbrica uno stabile (vedi `import_account`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Sorgente<'a> {
+    /// `brano`, `album`, `playlist`, `artista`, `preferiti`.
+    pub kind: &'a str,
+    /// L'identificativo del contenitore.
+    pub id: &'a str,
+    /// Come si chiama, per poter dire «mancano da questa playlist».
+    pub titolo: &'a str,
+}
+
 /// Registra i brani che in libreria non ci sono.
-fn scrivi_desiderati(
+pub(crate) fn scrivi_desiderati(
     tx: &Transaction<'_>,
-    contenuto: &SpotifyContent,
+    brani: &[SpotifyTrack],
+    sorgente: Sorgente<'_>,
     mancanti: &[usize],
     playlist_id: Option<i64>,
 ) -> Result<usize, AppError> {
@@ -511,7 +633,7 @@ fn scrivi_desiderati(
     let mut viste: HashMap<String, ()> = HashMap::new();
     let mut quante = 0_usize;
     for indice in mancanti {
-        let Some(brano) = contenuto.tracks.get(*indice) else {
+        let Some(brano) = brani.get(*indice) else {
             continue;
         };
         let chiave = TrackKey::compute(TrackKeyInput {
@@ -534,9 +656,9 @@ fn scrivi_desiderati(
                 brano.track_number,
                 brano.disc_number,
                 brano.year,
-                contenuto.kind.nome(),
-                contenuto.id,
-                contenuto.title,
+                sorgente.kind,
+                sorgente.id,
+                sorgente.titolo,
                 playlist_id,
                 i64::try_from(*indice).unwrap_or(i64::MAX),
                 adesso,
@@ -822,6 +944,111 @@ mod prove {
             conta(&db, "SELECT COUNT(*) FROM spotify_wanted"),
             1,
             "e i desiderati non si accumulano"
+        );
+    }
+
+    #[test]
+    fn la_playlist_si_ricorda_da_quale_playlist_di_spotify_viene() {
+        // E ci si riconosce anche dopo un rinominare, che è tutto il motivo per
+        // cui `005_account.sql` ha aggiunto quella colonna: `PlaylistKey` nasce
+        // dal nome, e senza l'identificativo la seconda importazione ne
+        // creerebbe una accanto alla prima.
+        let mut db = database();
+        aggiungi(&db, "Radiohead", "Karma Police", "OK Computer", 264_000);
+        let mut c = contenuto(vec![brano(
+            "Radiohead",
+            "Karma Police",
+            "OK Computer",
+            264_066,
+        )]);
+
+        let Ok(_) = import(&mut db, &c, true) else {
+            panic!("la prima importazione deve riuscire");
+        };
+        let scritto: Option<String> = db
+            .query_row("SELECT spotify_playlist_id FROM playlists", [], |r| {
+                r.get(0)
+            })
+            .unwrap_or(None);
+        assert_eq!(scritto.as_deref(), Some("37i9dQZF1DXcBWIGoYBM5M"));
+
+        c.title = "Un altro nome".to_owned();
+        let Ok(secondo) = import(&mut db, &c, true) else {
+            panic!("la seconda importazione deve riuscire");
+        };
+        assert!(secondo.playlist_replaced, "è la stessa playlist");
+        assert_eq!(conta(&db, "SELECT COUNT(*) FROM playlists"), 1);
+        let nome: String = db
+            .query_row("SELECT name FROM playlists", [], |r| r.get(0))
+            .unwrap_or_default();
+        assert_eq!(nome, "Un altro nome");
+    }
+
+    #[test]
+    fn un_album_non_si_spaccia_per_una_playlist() {
+        // `contenuto.id` è l'identificativo di quel che si sta importando: per
+        // un album è un album, e scriverlo in `playlists.spotify_playlist_id`
+        // farebbe riconoscere come «la stessa playlist» due cose che non lo
+        // sono — bastano un album e una playlist con lo stesso identificativo
+        // dentro due spazi di nomi diversi.
+        let mut db = database();
+        aggiungi(&db, "Radiohead", "Karma Police", "OK Computer", 264_000);
+        let mut c = contenuto(vec![brano(
+            "Radiohead",
+            "Karma Police",
+            "OK Computer",
+            264_066,
+        )]);
+        c.kind = SpotifyKind::Album;
+
+        let Ok(_) = import(&mut db, &c, true) else {
+            panic!("l'importazione di un album deve riuscire");
+        };
+        let scritto: Option<String> = db
+            .query_row("SELECT spotify_playlist_id FROM playlists", [], |r| {
+                r.get(0)
+            })
+            .unwrap_or(None);
+        assert_eq!(scritto, None);
+    }
+
+    #[test]
+    fn un_nome_gia_di_un_altra_playlist_non_fa_fallire_l_importazione() {
+        // Il rinominare si ferma qui e basta: `playlist_key` è unica, e far
+        // fallire l'importazione per un nome occupato sarebbe una punizione
+        // sproporzionata rispetto ai brani che sta portando.
+        let mut db = database();
+        aggiungi(&db, "Radiohead", "Karma Police", "OK Computer", 264_000);
+        let mut c = contenuto(vec![brano(
+            "Radiohead",
+            "Karma Police",
+            "OK Computer",
+            264_066,
+        )]);
+        let Ok(_) = import(&mut db, &c, true) else {
+            panic!("la prima importazione deve riuscire");
+        };
+        let Ok(_) = db.execute(
+            "INSERT INTO playlists (playlist_key, name, created_at, updated_at, is_smart)
+             VALUES ('occupato', 'Occupato', 0, 0, 0)",
+            [],
+        ) else {
+            panic!("la playlist di prova si deve inserire");
+        };
+
+        c.title = "Occupato".to_owned();
+        let Ok(rapporto) = import(&mut db, &c, true) else {
+            panic!("l'importazione deve riuscire lo stesso");
+        };
+        assert!(rapporto.playlist_replaced);
+        assert_eq!(conta(&db, "SELECT COUNT(*) FROM playlists"), 2);
+        assert_eq!(
+            conta(
+                &db,
+                "SELECT COUNT(*) FROM playlists WHERE name = 'La mia playlist'"
+            ),
+            1,
+            "tiene il nome vecchio invece di rifiutare i brani"
         );
     }
 

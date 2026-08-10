@@ -183,12 +183,30 @@ impl AscoltoSpotify {
     /// conta in Aether: la cronologia importata e quella vera non sarebbero più
     /// confrontabili, e `play_count` sommerebbe due misure diverse.
     ///
-    /// La durata la si prende dal brano quando c'è; `0` la lascia decidere alla
-    /// sola soglia dei quattro minuti, che è già come `counts_as_play` tratta
-    /// una durata sconosciuta.
+    /// # La durata, che Spotify non sempre dice
+    ///
+    /// `durata_in_libreria` è il ripiego per quando `brano.duration_ms` è
+    /// `None` — cioè **sempre**, venendo dall'archivio: né `YourLibrary.json`
+    /// né i file di playlist né la cronologia estesa hanno un campo per la
+    /// durata. Senza quel ripiego `counts_as_play` ricadrebbe sulla sola soglia
+    /// dei quattro minuti, e un archivio di dieci anni entrerebbe in libreria
+    /// senza nessuna delle canzoni che durano meno di quattro minuti — cioè
+    /// quasi tutte, e senza che niente lo dica: gli ascolti scartati finiscono
+    /// in [`ScartiCronologia::troppo_brevi`], che è esattamente dove uno si
+    /// aspetta di trovare gli skip.
+    ///
+    /// Non è un'ipotesi: è quel che è successo la prima volta che
+    /// `examples/archivio.rs` ha letto un archivio vero, dove di cinque righe
+    /// quattro risultavano «troppo brevi» e una sola era davvero uno skip.
+    ///
+    /// La durata del brano ritrovato in libreria va bene perché è la stessa
+    /// canzone — l'abbinamento non ne accetta un'altra. `0`, quando non c'è
+    /// nemmeno quella, lascia decidere alla soglia dei quattro minuti, che è già
+    /// come `counts_as_play` tratta una durata sconosciuta.
     #[must_use]
-    pub fn conta(&self) -> bool {
-        counts_as_play(self.ms_ascoltati, self.brano.duration_ms.unwrap_or(0))
+    pub fn conta(&self, durata_in_libreria: Option<u64>) -> bool {
+        let durata = self.brano.duration_ms.or(durata_in_libreria).unwrap_or(0);
+        counts_as_play(self.ms_ascoltati, durata)
     }
 }
 
@@ -437,11 +455,20 @@ pub fn plan_account_import(
 
 /// Dalla cronologia grezza agli ascolti scrivibili.
 ///
-/// L'ordine dei tre filtri non è indifferente ed è quello che costa meno: prima
-/// i doppioni (un confronto di stringhe), poi la soglia (un'aritmetica), e solo
-/// alla fine l'abbinamento, che è l'unico a toccare le tabelle. Su un archivio
-/// da quarantamila righe con metà doppioni è la differenza fra un'attesa e
-/// nessuna.
+/// # L'ordine dei tre filtri, e perché non è quello che verrebbe da sé
+///
+/// Verrebbe da sé mettere prima i due filtri che costano meno — i doppioni sono
+/// un confronto di stringhe, la soglia è un'aritmetica — e lasciare in fondo
+/// l'abbinamento, che è l'unico a interrogare le tabelle. La prima versione
+/// faceva così, ed era sbagliata: **la soglia ha bisogno di sapere quanto dura
+/// il brano**, e dall'archivio quel dato non arriva mai. Ricadeva sui quattro
+/// minuti e scartava come «troppo brevi» quattro righe su cinque, comprese
+/// quelle ascoltate per intero.
+///
+/// Quindi: doppioni, abbinamento, soglia. Il costo non cambia di molto — un
+/// abbinamento è una manciata di ricerche in tabelle di hash, non una scansione
+/// — e la deduplicazione resta comunque per prima, che sull'archivio è il filtro
+/// che toglie di mezzo più righe.
 fn pianifica_cronologia(
     cronologia: &[AscoltoSpotify],
     indice: &Indice<'_>,
@@ -460,14 +487,14 @@ fn pianifica_cronologia(
             scarti.doppioni = scarti.doppioni.saturating_add(1);
             continue;
         }
-        if !ascolto.conta() {
-            scarti.troppo_brevi = scarti.troppo_brevi.saturating_add(1);
-            continue;
-        }
         let Some((track_id, _)) = indice.abbina(&ascolto.brano) else {
             scarti.non_in_libreria = scarti.non_in_libreria.saturating_add(1);
             continue;
         };
+        if !ascolto.conta(indice.durata(track_id)) {
+            scarti.troppo_brevi = scarti.troppo_brevi.saturating_add(1);
+            continue;
+        }
         ascolti.push(AscoltoAbbinato {
             track_id,
             iniziato_ms: ascolto.iniziato_ms(),
@@ -550,18 +577,64 @@ mod prove {
         // Metà brano. Non una regola nuova: `counts_as_play`, la stessa che
         // decide quando `play_count` sale ascoltando in Aether.
         let brano = sp("Blur", "Song 2", "Blur", 180_000);
-        assert!(!ascolto(brano.clone(), 0, 89_999).conta());
-        assert!(ascolto(brano, 0, 90_000).conta());
+        assert!(!ascolto(brano.clone(), 0, 89_999).conta(None));
+        assert!(ascolto(brano, 0, 90_000).conta(None));
     }
 
     #[test]
-    fn una_durata_che_spotify_non_dice_ricade_sui_quattro_minuti() {
+    fn la_durata_che_l_archivio_non_dice_la_dice_la_libreria() {
+        // Il difetto vero, trovato facendo girare `examples/archivio.rs` su un
+        // archivio: l'archivio la durata non la scrive **mai**, e senza il
+        // ripiego `counts_as_play` ricade sui quattro minuti — cioè scarta come
+        // «troppo breve» una canzone di tre minuti ascoltata per intero.
         let senza_durata = SpotifyTrack {
             title: "Ignoto".to_owned(),
             ..SpotifyTrack::default()
         };
-        assert!(!ascolto(senza_durata.clone(), 0, 239_000).conta());
-        assert!(ascolto(senza_durata, 0, 240_000).conta());
+        let tre_minuti = ascolto(senza_durata.clone(), 0, 180_000);
+        assert!(
+            !tre_minuti.conta(None),
+            "senza nessuna durata restano i quattro minuti"
+        );
+        assert!(
+            tre_minuti.conta(Some(180_000)),
+            "con la durata di libreria è un brano ascoltato per intero"
+        );
+        assert!(
+            !ascolto(senza_durata, 0, 3_000).conta(Some(180_000)),
+            "e uno skip di tre secondi resta uno skip"
+        );
+    }
+
+    #[test]
+    fn quel_che_spotify_dice_batte_il_ripiego() {
+        // Il ripiego è un ripiego: quando la durata arriva dalla Web API è
+        // quella del brano su Spotify, e va usata quella.
+        let brano = sp("Blur", "Song 2", "Blur", 180_000);
+        assert!(
+            ascolto(brano, 0, 90_000).conta(Some(3_600_000)),
+            "mezz'ora di libreria non deve far perdere un ascolto vero"
+        );
+    }
+
+    #[test]
+    fn un_ascolto_dall_archivio_entra_davvero() {
+        // La prova dall'alto della stessa cosa: uno snapshot fatto come lo fa
+        // `aether-archivio` — nessuna durata da nessuna parte — deve produrre un
+        // ascolto, non uno scarto.
+        let senza_durata = SpotifyTrack {
+            title: "Song 2".to_owned(),
+            artist: Some("Blur".to_owned()),
+            album: Some("Blur".to_owned()),
+            ..SpotifyTrack::default()
+        };
+        let snapshot = AccountSnapshot {
+            cronologia: vec![ascolto(senza_durata, 1_000_000, 180_000)],
+            ..AccountSnapshot::vuoto(Provenienza::Archivio)
+        };
+        let piano = plan_account_import(&snapshot, &libreria(), &Scelte::default());
+        assert_eq!(piano.cronologia.len(), 1);
+        assert_eq!(piano.scarti.troppo_brevi, 0);
     }
 
     #[test]

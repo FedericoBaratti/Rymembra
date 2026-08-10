@@ -15,6 +15,7 @@ pub mod db;
 pub mod desiderati;
 pub mod enrich;
 pub mod files;
+pub mod import_account;
 pub mod import_legacy;
 pub mod import_spotify;
 pub mod library;

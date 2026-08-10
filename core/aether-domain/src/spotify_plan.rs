@@ -161,6 +161,7 @@ pub struct Indice<'a> {
     per_chiave: HashMap<String, i64>,
     per_artista_titolo: HashMap<(String, String), Vec<&'a LibraryTrack>>,
     per_ripulito: HashMap<(String, String), Vec<&'a LibraryTrack>>,
+    durate: HashMap<i64, i64>,
 }
 
 impl<'a> Indice<'a> {
@@ -182,7 +183,28 @@ impl<'a> Indice<'a> {
                     normalize_key(Some(&senza_decorazioni(&t.title))),
                 )
             }),
+            durate: libreria.iter().map(|t| (t.id, t.duration_ms)).collect(),
         }
+    }
+
+    /// Quanto dura, sul disco, il brano che [`Self::abbina`] ha ritrovato.
+    ///
+    /// Esiste per un caso solo, e vale la pena dire quale: l'archivio di Spotify
+    /// **non porta mai la durata** — né `YourLibrary.json`, né i file di
+    /// playlist, né la cronologia estesa hanno un campo per dirla. Chi deve
+    /// decidere se un ascolto conta si ritroverebbe con `duration_ms: None`, e
+    /// [`crate::listen::counts_as_play`] senza durata ricade sulla sola soglia
+    /// dei quattro minuti: cioè butterebbe via ogni ascolto di ogni canzone che
+    /// dura meno di quattro minuti, che è quasi tutta la musica.
+    ///
+    /// Il brano ritrovato in libreria la durata ce l'ha, e per definizione è la
+    /// stessa canzone. Da lì la si prende.
+    #[must_use]
+    pub fn durata(&self, track_id: i64) -> Option<u64> {
+        self.durate
+            .get(&track_id)
+            .copied()
+            .and_then(|ms| u64::try_from(ms).ok())
     }
 
     /// Cosa porterebbe l'importazione di questo elenco.
