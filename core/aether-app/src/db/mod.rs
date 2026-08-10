@@ -279,6 +279,145 @@ mod tests {
     }
 
     #[test]
+    fn un_ascolto_nasce_locale_e_puo_essere_solo_una_delle_due_cose() {
+        // La colonna esiste per una ragione sola: rendere possibile «dimentica
+        // gli ascolti importati», che è una `DELETE` mirata. Se un valore
+        // storto potesse entrare, quella `DELETE` mancherebbe delle righe — e
+        // ce ne si accorgerebbe solo nel momento in cui si sta cercando di
+        // rimediare a qualcosa, cioè nel peggiore.
+        let db = open_in_memory().expect("apertura");
+        db.connection
+            .execute_batch(
+                "INSERT INTO tracks (path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified)
+                 VALUES ('C:/m/a.mp3', 'a|b|c', 'T', 'A', 'Al', 1, 0, 0);
+                 INSERT INTO play_history (track_id, played_at, ms_played)
+                 VALUES (1, 1000, 120000);",
+            )
+            .expect("un ascolto vero");
+
+        let source: String = db
+            .connection
+            .query_row("SELECT source FROM play_history WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .expect("lettura");
+        assert_eq!(source, "local", "quel che c'era prima resta quel che era");
+
+        db.connection
+            .execute(
+                "INSERT INTO play_history (track_id, played_at, ms_played, source)
+                 VALUES (1, 2000, 120000, 'spotify')",
+                [],
+            )
+            .expect("un ascolto importato");
+
+        db.connection
+            .execute(
+                "INSERT INTO play_history (track_id, played_at, ms_played, source)
+                 VALUES (1, 3000, 120000, 'sptoify')",
+                [],
+            )
+            .expect_err("un refuso non deve poter entrare");
+    }
+
+    #[test]
+    fn la_coppia_brano_istante_ha_il_suo_indice_e_il_vecchio_se_n_e_andato() {
+        // È l'interrogazione che l'importazione di un archivio fa decine di
+        // migliaia di volte, una per riga di cronologia. Senza la coppia,
+        // ciascuna scorre tutti gli ascolti di quel brano.
+        let db = open_in_memory().expect("apertura");
+        let indici: Vec<String> = {
+            let mut q = db
+                .connection
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='play_history'",
+                )
+                .expect("elenco indici");
+            q.query_map([], |r| r.get::<_, String>(0))
+                .expect("lettura")
+                .filter_map(Result::ok)
+                .collect()
+        };
+        assert!(
+            indici.iter().any(|n| n == "idx_play_history_brano_quando"),
+            "manca l'indice della coppia: {indici:?}"
+        );
+        assert!(
+            !indici.iter().any(|n| n == "idx_play_history_track"),
+            "il vecchio indice è un prefisso del nuovo, e mantenerne due \
+             costa un albero in più a ogni inserimento: {indici:?}"
+        );
+    }
+
+    #[test]
+    fn una_playlist_ricorda_da_quale_playlist_di_spotify_viene() {
+        // Senza, chi rinomina una playlist su Spotify se ne ritrova due qui
+        // alla sincronizzazione dopo: `playlist_key` nasce dal nome.
+        let db = open_in_memory().expect("apertura");
+        db.connection
+            .execute_batch(
+                "INSERT INTO playlists (playlist_key, name, created_at, updated_at,
+                                        spotify_playlist_id)
+                 VALUES ('corsa', 'Corsa', 0, 0, '37i9dQZF1DXcBWIGoYBM5M');
+                 -- Due playlist senza identificativo non si pestano i piedi:
+                 -- l'indice è parziale apposta.
+                 INSERT INTO playlists (playlist_key, name, created_at, updated_at)
+                 VALUES ('a', 'A', 0, 0);
+                 INSERT INTO playlists (playlist_key, name, created_at, updated_at)
+                 VALUES ('b', 'B', 0, 0);",
+            )
+            .expect("playlist");
+
+        let quante: i64 = db
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM playlists WHERE spotify_playlist_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("conteggio");
+        assert_eq!(quante, 1);
+    }
+
+    #[test]
+    fn scollegare_un_account_e_una_delete_non_quattro_stringhe_vuote() {
+        // La differenza con `nuvola.*` in `settings`, dove «scollega» scrive
+        // stringa vuota in quattro chiavi e le righe restano.
+        let db = open_in_memory().expect("apertura");
+        db.connection
+            .execute_batch(
+                "INSERT INTO spotify_account (spotify_user_id, display_name, last_source)
+                 VALUES ('tizio', 'Tizio', 'archivio')",
+            )
+            .expect("account");
+
+        // Ricollegare lo stesso account aggiorna, non aggiunge.
+        db.connection
+            .execute_batch(
+                "INSERT INTO spotify_account (spotify_user_id, display_name, last_source)
+                 VALUES ('tizio', 'Tizio', 'api')
+                 ON CONFLICT (spotify_user_id) DO UPDATE SET last_source = excluded.last_source",
+            )
+            .expect("ricollegamento");
+
+        db.connection
+            .execute_batch(
+                "INSERT INTO spotify_account (spotify_user_id, last_source)
+                 VALUES ('caio', 'posta')",
+            )
+            .expect_err("una provenienza inventata non deve poter entrare");
+
+        assert_eq!(
+            db.connection
+                .execute("DELETE FROM spotify_account", [])
+                .expect("scollegamento"),
+            1,
+            "una riga sola, e se ne va tutta"
+        );
+    }
+
+    #[test]
     fn le_chiavi_esterne_sono_accese() {
         // Spente (il default di SQLite) le righe di playlist_tracks
         // sopravviverebbero al brano, e la playlist mostrerebbe voci fantasma.
