@@ -1,0 +1,18 @@
+[package]
+name = "aether-net"
+description = "Il client HTTP di Aether: scadenze, ritentativi e la traduzione di un guasto di rete in un codice del catalogo."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Solo il catalogo degli errori: questo crate non conosce né la libreria né il
+# database, e non deve cominciare. È la ragione per cui può stare sotto sia al
+# backup su Drive sia all'importazione da Spotify senza legarli fra loro.
+aether-domain = { path = "../aether-domain" }
+ureq.workspace = true
+
+[lints]
+workspace = true

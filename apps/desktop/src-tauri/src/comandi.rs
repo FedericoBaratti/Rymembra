@@ -8,16 +8,17 @@
 
 use aether_app::import_legacy;
 use aether_app::library::{
-    AlbumSummary, Counts, Scan, ScanReport, TrackOrder, TrackSummary, album_tracks, counts,
-    list_albums, list_tracks, search,
+    AlbumSummary, ArtistSummary, Counts, Scan, ScanReport, TrackOrder, TrackSummary, album_tracks,
+    counts, list_albums, list_artists, list_tracks, search,
 };
+use aether_app::settings::CHIAVE_CARTELLE;
 use aether_domain::errors::AppError;
 use aether_domain::paths::PathRules;
 use serde::Serialize;
 use tauri::{Emitter as _, State};
 
 use crate::errore::{Esito, errore};
-use crate::stato::{Stato, con_libreria};
+use crate::stato::{Stato, adesso_ms, con_libreria};
 
 /// Quel che la finestra deve sapere appena si apre.
 #[derive(Debug, Clone, Serialize)]
@@ -35,32 +36,14 @@ pub struct Avvio {
     pub numeri: Counts,
 }
 
-/// La chiave con cui le cartelle sorvegliate stanno in `settings`.
-const CHIAVE_CARTELLE: &str = "library.roots";
-
+/// Le cartelle sorvegliate.
+///
+/// Una lista malformata vale come nessuna cartella, non come un errore — al
+/// massimo l'utente le riseleziona, mentre un avvio che fallisce per un valore
+/// di impostazione corrotto non gli lascia modo di correggerlo. È la regola di
+/// `settings::read_json`, dove sta ora insieme alla sua ragione.
 fn leggi_cartelle(connection: &rusqlite::Connection) -> Result<Vec<String>, AppError> {
-    let raw: Option<String> = connection
-        .query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            [CHIAVE_CARTELLE],
-            |row| row.get(0),
-        )
-        .or_else(|err| match err {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(other),
-        })
-        .map_err(|err| {
-            AppError::new(aether_domain::errors::ErrorCode::DbQueryFailed {
-                detail: Some("lettura delle cartelle sorvegliate".into()),
-            })
-            .with_cause(err.to_string())
-        })?;
-    // Una lista malformata vale come nessuna cartella, non come un errore: al
-    // massimo l'utente le riseleziona, mentre un avvio che fallisce per un
-    // valore di impostazione corrotto non gli lascia modo di correggerlo.
-    Ok(raw
-        .and_then(|value: String| serde_json::from_str::<Vec<String>>(&value).ok())
-        .unwrap_or_default())
+    Ok(aether_app::settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default())
 }
 
 /// Lo stato all'avvio.
@@ -80,25 +63,18 @@ pub fn avvio(stato: State<'_, Stato>) -> Esito<Avvio> {
 
 /// Cambia le cartelle sorvegliate.
 #[tauri::command]
-pub fn imposta_cartelle(stato: State<'_, Stato>, cartelle: Vec<String>) -> Esito<()> {
-    con_libreria(&stato, |libreria| {
-        let value = serde_json::to_string(&cartelle).unwrap_or_else(|_| "[]".to_owned());
-        libreria
-            .connection
-            .execute(
-                "INSERT INTO settings (key, value) VALUES (?1, ?2)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                rusqlite::params![CHIAVE_CARTELLE, value],
-            )
-            .map(|_| ())
-            .map_err(|err| {
-                AppError::new(aether_domain::errors::ErrorCode::DbQueryFailed {
-                    detail: Some("scrittura delle cartelle sorvegliate".into()),
-                })
-                .with_cause(err.to_string())
-            })
-    })
-    .map_err(errore)
+pub fn imposta_cartelle(
+    app: tauri::AppHandle,
+    stato: State<'_, Stato>,
+    cartelle: Vec<String>,
+) -> Esito<()> {
+    crate::nuvola::se_riuscito(
+        &app,
+        con_libreria(&stato, |libreria| {
+            aether_app::settings::write_json(&libreria.connection, CHIAVE_CARTELLE, &cartelle)
+        })
+        .map_err(errore),
+    )
 }
 
 /// L'avanzamento di una scansione, mandato alla finestra mentre procede.
@@ -129,6 +105,8 @@ pub struct EsitoScansione {
     pub copertine_nuove: usize,
     /// Quanto è durata, in millisecondi.
     pub durata_ms: u128,
+    /// È stata fermata a metà.
+    pub annullata: bool,
     /// I numeri della libreria dopo.
     pub numeri: Counts,
 }
@@ -143,6 +121,7 @@ impl EsitoScansione {
             illeggibili: report.unreadable.len(),
             copertine_nuove: report.covers_stored,
             durata_ms: report.elapsed_ms,
+            annullata: report.cancelled,
             numeri,
         }
     }
@@ -156,7 +135,11 @@ impl EsitoScansione {
 /// sono venti secondi in cui l'applicazione sembra bloccata.
 #[tauri::command]
 pub fn scansiona(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito<EsitoScansione> {
-    con_libreria(&stato, |libreria| {
+    // Prima di prendere il lucchetto: un annullamento arrivato dopo la fine
+    // della scansione precedente fermerebbe questa al primo file.
+    stato.riprendi_scansioni();
+    let fermare = &*stato;
+    let esito = con_libreria(&stato, |libreria| {
         let roots = leggi_cartelle(&libreria.connection)?;
         let scan = Scan {
             files: &aether_app::files::LocalFiles,
@@ -173,18 +156,88 @@ pub fn scansiona(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito<EsitoS
                 ultimo = fatti;
                 let _ = app.emit("scansione:avanzamento", Avanzamento { fatti, totale });
             }
+            if fermare.scansione_fermata() {
+                std::ops::ControlFlow::Break(())
+            } else {
+                std::ops::ControlFlow::Continue(())
+            }
         })?;
         let numeri = counts(&libreria.connection)?;
         Ok(EsitoScansione::da(&report, numeri))
     })
+    .map_err(errore);
+    // Una scansione porta dentro brani che nessuno ha mai tentato di
+    // arricchire, ed è il momento in cui hanno più bisogno: appena importati
+    // sono precisamente quelli con «Album sconosciuto» e nessuna copertina.
+    if esito.is_ok() {
+        crate::arricchimento::sporca(&app);
+    }
+    // Una scansione cambia quali brani esistono, quindi quali statistiche il
+    // backup può ancorare: un brano ritrovato dopo una reinstallazione va
+    // salvato subito, non al prossimo cuoricino.
+    crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Chiede alla scansione in corso di fermarsi.
+///
+/// Non chiede il lucchetto della libreria — e non può: quel lucchetto ce l'ha
+/// la scansione che deve fermare, per tutta la sua durata. Alza un bit, e la
+/// scansione lo legge fra un file e l'altro.
+///
+/// Torna subito: fermarsi vuol dire «alla fine del lotto in corso», non
+/// «adesso». Chi la mostra lo sa dall'esito, che dirà `annullata`.
+#[tauri::command]
+pub fn annulla_scansione(stato: State<'_, Stato>) -> Esito<()> {
+    stato.ferma_scansione();
+    Ok(())
+}
+
+/// Una pagina di risultati.
+#[tauri::command]
+pub fn cerca(
+    stato: State<'_, Stato>,
+    query: String,
+    offset: i64,
+    limite: i64,
+) -> Esito<Vec<TrackSummary>> {
+    con_libreria(&stato, |libreria| {
+        search(&libreria.connection, &query, offset, limite)
+    })
     .map_err(errore)
 }
 
-/// Cerca in libreria.
+/// Quanti risultati ha questa ricerca in tutto.
+///
+/// Separato dalla pagina e non un campo del risultato: la pagina si chiede a
+/// ogni scorrimento, il conteggio una volta per query. Metterli insieme
+/// vorrebbe dire rifare la `COUNT(*)` a ogni fetta.
 #[tauri::command]
-pub fn cerca(stato: State<'_, Stato>, query: String, limite: usize) -> Esito<Vec<TrackSummary>> {
+pub fn cerca_conteggio(stato: State<'_, Stato>, query: String) -> Esito<i64> {
     con_libreria(&stato, |libreria| {
-        search(&libreria.connection, &query, limite)
+        aether_app::library::search_count(&libreria.connection, &query)
+    })
+    .map_err(errore)
+}
+
+/// Una pagina di preferiti.
+#[tauri::command]
+pub fn preferiti(stato: State<'_, Stato>, offset: i64, limite: i64) -> Esito<Vec<TrackSummary>> {
+    con_libreria(&stato, |libreria| {
+        aether_app::library::list_liked(&libreria.connection, offset, limite)
+    })
+    .map_err(errore)
+}
+
+/// Una pagina degli album di un artista.
+#[tauri::command]
+pub fn album_artista(
+    stato: State<'_, Stato>,
+    nome: String,
+    offset: i64,
+    limite: i64,
+) -> Esito<Vec<AlbumSummary>> {
+    con_libreria(&stato, |libreria| {
+        aether_app::library::albums_by_artist(&libreria.connection, &nome, offset, limite)
     })
     .map_err(errore)
 }
@@ -220,6 +273,17 @@ pub fn album(stato: State<'_, Stato>, offset: i64, limite: i64) -> Esito<Vec<Alb
     .map_err(errore)
 }
 
+/// Tutti gli artisti, in ordine alfabetico.
+///
+/// Senza offset né limite, al contrario di `album` e `brani`: gli artisti sono
+/// pochi e la vista li mostra tutti con un indice alfabetico laterale. Il
+/// giorno in cui non fosse più vero, il posto in cui aggiungere la pagina è
+/// `list_artists`, non qui.
+#[tauri::command]
+pub fn artisti(stato: State<'_, Stato>) -> Esito<Vec<ArtistSummary>> {
+    con_libreria(&stato, |libreria| list_artists(&libreria.connection)).map_err(errore)
+}
+
 /// I brani di un album.
 #[tauri::command]
 pub fn brani_album(stato: State<'_, Stato>, chiave: String) -> Esito<Vec<TrackSummary>> {
@@ -236,15 +300,14 @@ pub fn brani_album(stato: State<'_, Stato>, chiave: String) -> Esito<Vec<TrackSu
 /// quando due dispositivi si allineano. Senza, il cuoricino tolto qui
 /// tornerebbe indietro dal telefono.
 #[tauri::command]
-pub fn preferito(stato: State<'_, Stato>, id: i64, valore: bool) -> Esito<()> {
-    con_libreria(&stato, |libreria| {
-        let now = i64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
-        )
-        .unwrap_or(0);
+pub fn preferito(
+    app: tauri::AppHandle,
+    stato: State<'_, Stato>,
+    id: i64,
+    valore: bool,
+) -> Esito<()> {
+    let esito = con_libreria(&stato, |libreria| {
+        let now = adesso_ms();
         libreria
             .connection
             .execute(
@@ -259,7 +322,47 @@ pub fn preferito(stato: State<'_, Stato>, id: i64, valore: bool) -> Esito<()> {
                 .with_cause(err.to_string())
             })
     })
-    .map_err(errore)
+    .map_err(errore);
+    crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Cambia la valutazione di un brano.
+///
+/// Come `preferito`, scrive `stats_updated_at`: è il timestamp della decisione,
+/// e senza, un voto tolto qui tornerebbe indietro dal telefono alla prima
+/// sincronia. Il voto non ha una colonna «quando» tutta sua perché non ne ha
+/// bisogno — `merge` confronta l'istante delle statistiche, non quello del
+/// singolo campo.
+#[tauri::command]
+pub fn valutazione(
+    app: tauri::AppHandle,
+    stato: State<'_, Stato>,
+    id: i64,
+    stelle: i64,
+) -> Esito<()> {
+    // Tagliato qui, non lasciato arrivare al database. Lo schema dichiara
+    // `CHECK (rating BETWEEN 0 AND 5)`: un sei arriverebbe alla finestra come
+    // un errore di vincolo SQL, cioè come un guasto del programma, quando è
+    // solo un valore da riportare in scala.
+    let stelle = stelle.clamp(0, 5);
+    let esito = con_libreria(&stato, |libreria| {
+        let now = adesso_ms();
+        libreria
+            .connection
+            .execute(
+                "UPDATE tracks SET rating = ?2, stats_updated_at = ?3 WHERE id = ?1",
+                rusqlite::params![id, stelle, now],
+            )
+            .map(|_| ())
+            .map_err(|err| {
+                AppError::new(aether_domain::errors::ErrorCode::DbQueryFailed {
+                    detail: Some("valutazione".into()),
+                })
+                .with_cause(err.to_string())
+            })
+    })
+    .map_err(errore);
+    crate::nuvola::se_riuscito(&app, esito)
 }
 
 /// Cosa porterebbe l'importazione dal vecchio database.
@@ -273,8 +376,12 @@ pub fn piano_importazione(
 
 /// Importa dal vecchio database.
 #[tauri::command]
-pub fn importa(stato: State<'_, Stato>, percorso: String) -> Esito<import_legacy::ImportReport> {
-    importa_interno(&stato, &percorso, true)
+pub fn importa(
+    app: tauri::AppHandle,
+    stato: State<'_, Stato>,
+    percorso: String,
+) -> Esito<import_legacy::ImportReport> {
+    crate::nuvola::se_riuscito(&app, importa_interno(&stato, &percorso, true))
 }
 
 fn importa_interno(

@@ -9,8 +9,14 @@
 resolver = "3"
 members = [
     "core/aether-domain",
+    "core/aether-play",
     "core/aether-app",
     "core/aether-skin",
+    "core/aether-net",
+    "core/aether-meta",
+    "core/aether-cloud",
+    "core/aether-spotify",
+    "core/aether-yt",
     "apps/desktop/src-tauri",
 ]
 
@@ -26,6 +32,22 @@ repository = "https://github.com/federicobaratti/aether"
 unicode-normalization = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# ── la nuvola ───────────────────────────────────────────────────────────────
+# Queste stanno qui e non in `aether-cloud` perché prima o poi le vorrà anche
+# qualcun altro (il recupero delle copertine, l'arricchimento da MusicBrainz), e
+# due versioni diverse di uno stack TLS nello stesso binario sono megabyte
+# duplicati.
+#
+# `ureq` e non `reqwest`: è bloccante, e tutto Aether è bloccante. Un runtime
+# asincrono per fare quattro richieste HTTP ogni quarto d'ora vorrebbe dire
+# portarsi dietro tokio — e con lui una seconda idea di cos'è un errore, di
+# cos'è un timeout e di chi possiede un thread.
+ureq = "3"
+flate2 = "1"
+sha2 = "0.10"
+getrandom = "0.3"
+keyring = { version = "3", features = ["windows-native"] }
 
 [workspace.lints.rust]
 # Il dominio non ha bisogno di unsafe. Vietato, non scoraggiato: se un giorno

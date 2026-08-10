@@ -1,0 +1,36 @@
+[package]
+name = "aether-cloud"
+description = "Il backup di Aether su Google Drive: OAuth, HTTP, e la cartella privata dell'app."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+aether-app = { path = "../aether-app" }
+aether-domain = { path = "../aether-domain" }
+# Il client HTTP, che stava qui dentro finché Drive era l'unico a uscire in rete.
+aether-net = { path = "../aether-net" }
+# Le guardie dell'archivio non fidato: un `.aeskin` scaricato passa di lì prima
+# di toccare il disco. Vedi `pacchetti`.
+aether-skin = { path = "../aether-skin" }
+flate2.workspace = true
+getrandom.workspace = true
+# Il portachiavi di sistema, dietro una feature accesa di serie: una futura
+# build Android la spegne e fornisce la sua, senza portarsi dietro il
+# Credential Manager di Windows.
+keyring = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[features]
+default = ["portachiavi"]
+portachiavi = ["dep:keyring"]
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

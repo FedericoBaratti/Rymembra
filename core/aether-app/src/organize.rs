@@ -28,9 +28,46 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::organize::{Move, OrganizePlan};
+use aether_domain::organize::{Move, OrganizePlan, TrackToOrganize};
+use rusqlite::Connection;
 
 use crate::files::io_error;
+use crate::library::db_error;
+
+/// I brani della libreria, nella forma che il piano di riordino accetta.
+///
+/// # Perché dal database e non dai file
+///
+/// Gli esempi a riga di comando camminano sul disco e rileggono i tag di ogni
+/// file. Va bene per uno strumento diagnostico; dentro l'applicazione sarebbero
+/// venti secondi di attesa — la durata di una scansione intera — per mostrare
+/// un'anteprima, e su dati che la scansione ha già letto e messo in tabella.
+///
+/// L'`id` che ne esce è quello vero della riga, non un indice: il giornale lo
+/// conserva, e questo lascia aperta la strada per aggiornare i percorsi senza
+/// una riscansione, il giorno in cui servisse.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la lettura fallisce.
+pub fn tracks_to_organize(connection: &Connection) -> Result<Vec<TrackToOrganize>, AppError> {
+    let mut statement = connection
+        .prepare("SELECT id, path, album, album_artist, artist FROM tracks ORDER BY id")
+        .map_err(|err| db_error("brani da riordinare", &err))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(TrackToOrganize {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                album: row.get(2)?,
+                album_artist: row.get(3)?,
+                artist: row.get(4)?,
+            })
+        })
+        .map_err(|err| db_error("brani da riordinare", &err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("brani da riordinare", &err))
+}
 
 /// Una riga del giornale: uno spostamento che è avvenuto per davvero.
 #[derive(Debug, Clone, PartialEq, Eq)]

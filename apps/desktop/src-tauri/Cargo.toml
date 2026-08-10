@@ -18,8 +18,21 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 aether-app = { path = "../../../core/aether-app" }
+aether-play = { path = "../../../core/aether-play" }
+aether-cloud = { path = "../../../core/aether-cloud" }
 aether-domain = { path = "../../../core/aether-domain" }
+# Per portare dentro la copertina di Spotify da incorporare nei tag di un brano
+# appena scaricato. Stessa `Rete` che usa `aether-spotify`, così l'agente e i
+# timeout sono quelli, non una seconda idea di cosa sia una richiesta HTTP.
+aether-net = { path = "../../../core/aether-net" }
+# Solo per costruire i `Fornitori` che il filo dell'arricchimento tiene vivi fra
+# una passata e l'altra: dentro ci sono la riserva di connessioni e — quel che
+# conta — lo stato degli interruttori, che rinascendo a ogni passata non
+# riuscirebbe mai a ricordare che MusicBrainz è giù.
+aether-meta = { path = "../../../core/aether-meta" }
 aether-skin = { path = "../../../core/aether-skin" }
+aether-spotify = { path = "../../../core/aether-spotify" }
+aether-yt = { path = "../../../core/aether-yt" }
 # La stessa versione che usa `aether-app`: due `rusqlite` diversi nell'albero
 # darebbero due tipi `Connection` incompatibili, e l'errore che ne esce parla di
 # tratti non implementati invece che di versioni.
@@ -32,6 +45,16 @@ serde_json.workspace = true
 # che non ci serve.
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# La schermata di consenso di Google si apre nel browser di **sistema**, mai
+# nella webview: una finestra dell'app che sa disegnare `accounts.google.com` è
+# una superficie di phishing, e allargare il CSP per sempre per un'operazione da
+# cinque minuti l'anno non si fa.
+tauri-plugin-opener = "2"
+
+[dev-dependencies]
+# Installare una skin scrive un file: provarlo vuol dire una cartella vera che
+# sparisce da sé. La stessa versione di `aether-app` e `aether-play`.
+tempfile = "3"
 
 [lints]
 workspace = true

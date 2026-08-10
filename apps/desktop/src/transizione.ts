@@ -1,0 +1,74 @@
+/**
+ * Il passaggio da una vista all'altra.
+ *
+ * # Perché non c'è nessuna animazione scritta qui
+ *
+ * Perché è già scritta, e non da noi. `motion.routeTransition` è un campo del
+ * documento skin — `plain.json` dichiara «esci sfumando e rimpicciolendo di otto
+ * millesimi, entra sfumando e salendo di otto pixel» — e il compilatore ne emette
+ * da sempre le regole complete: due `@keyframes` e i due selettori
+ * `::view-transition-old(root)` / `::view-transition-new(root)`
+ * (`core/aether-skin/src/compile.rs`, `compila_movimento`).
+ *
+ * Mancava una riga sola: **nessuno chiamava `startViewTransition`**, quindi il
+ * motore non produceva mai le due pseudo-elemento su cui quelle regole
+ * agiscono. Era una funzione dichiarata, compilata, spedita nel foglio e mai
+ * eseguita — lo stesso difetto di `--motion-scale` prima che qualcuno lo
+ * leggesse, e con lo stesso rimedio: non aggiungere una funzione, collegare
+ * quella che c'è.
+ *
+ * # `flushSync`, e perché non se ne può fare a meno
+ *
+ * `startViewTransition` fotografa la pagina, esegue il callback, rifotografa e
+ * anima la differenza. Il callback deve quindi cambiare il DOM **prima di
+ * ritornare**, e un `setState` di React non lo fa: mette in coda un rendering
+ * per dopo. Senza `flushSync` la seconda fotografia sarebbe identica alla prima
+ * e non si vedrebbe niente — o peggio, la transizione resterebbe aperta finché
+ * non scade.
+ *
+ * # Chi vince sul movimento
+ *
+ * Due porte, e tutte e due chiudono:
+ *
+ * - `prefers-reduced-motion` del sistema, che è una condizione di chi guarda e
+ *   non una preferenza estetica;
+ * - `--motion-scale`, che è l'intensità dichiarata dalla skin. Qui va letta a
+ *   mano perché le regole che il compilatore emette per la transizione di rotta
+ *   usano `var(--dur-2)` nudo, senza la scala: una skin che si dichiara `none`
+ *   avrebbe comunque animato. Leggerla da qui costa una riga e le ridà voce.
+ */
+
+import { flushSync } from "react-dom";
+
+/** Il motore sa fare le transizioni di vista? */
+interface ConTransizione {
+  startViewTransition?: (aggiorna: () => void) => unknown;
+}
+
+/** Niente movimento: lo dice il sistema, o lo dice la skin. */
+function fermoRestando(): boolean {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return true;
+  const scala = getComputedStyle(document.documentElement)
+    .getPropertyValue("--motion-scale")
+    .trim();
+  // Assente vuol dire «la skin non si è espressa», che non è «ferma».
+  return scala !== "" && Number(scala) === 0;
+}
+
+/**
+ * Cambia vista, animando il passaggio se si può.
+ *
+ * Il ripiego non è un caso d'errore: è il comportamento di prima, cioè il
+ * cambio istantaneo. Chi non ha l'API — o non la vuole — vede l'applicazione
+ * esattamente come la vedeva.
+ */
+export function cambiandoVista(cambia: () => void): void {
+  const documento = document as Document & ConTransizione;
+  if (typeof documento.startViewTransition !== "function" || fermoRestando()) {
+    cambia();
+    return;
+  }
+  documento.startViewTransition(() => {
+    flushSync(cambia);
+  });
+}

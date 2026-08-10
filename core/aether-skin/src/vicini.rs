@@ -7,7 +7,7 @@
 //!
 //! Sta in un modulo suo perché serve identico ai token e alle parti, e nel
 //! vecchio albero esisteva solo per le parti: chi sbagliava il nome di un token
-//! riceveva l'elenco completo di quarantotto voci, che è il modo educato di non
+//! riceveva l'elenco completo delle voci del registro, che è il modo educato di non
 //! dire niente.
 
 /// I nomi più vicini a quello scritto, al massimo tre.

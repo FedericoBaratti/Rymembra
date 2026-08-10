@@ -43,7 +43,14 @@ pub trait MusicFiles: Send + Sync {
     fn walk(&self, root: &str) -> Result<Vec<DiscoveredFile>, AppError>;
 
     /// Apre un file in lettura.
-    fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send>, AppError>;
+    ///
+    /// `Sync` oltre a `Send` perché lo stesso flusso serve al motore audio, e
+    /// symphonia lo pretende: il suo `MediaSource` è `Send + Sync`. Non è un
+    /// requisito gratuito — significa che un'implementazione non può nascondere
+    /// uno stato mutabile senza lucchetto dietro un `&self` — ma è quello che
+    /// permette a lettura dei tag e riproduzione di passare dallo stesso tratto
+    /// invece che da due.
+    fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send + Sync>, AppError>;
 }
 
 /// Traduce un errore di I/O nel catalogo, distinguendo i casi che cambiano cosa
@@ -109,7 +116,7 @@ impl MusicFiles for LocalFiles {
         Ok(found)
     }
 
-    fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send>, AppError> {
+    fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send + Sync>, AppError> {
         let file = std::fs::File::open(Path::new(path)).map_err(|err| io_error(path, &err))?;
         Ok(Box::new(std::io::BufReader::new(file)))
     }

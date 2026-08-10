@@ -311,6 +311,30 @@ impl Effect {
         }
     }
 
+    /// I colori che questo effetto dichiara.
+    ///
+    /// Serve a chi deve sapere **dove** un colore è usato: il conteggio d'uso
+    /// della tavolozza nello Studio, e qualunque cosa dovrà chiedersi «se cambio
+    /// questo, cosa si muove». Il `match` è esaustivo, quindi un effetto nuovo
+    /// non può dimenticarsi di rispondere.
+    #[must_use]
+    pub fn colors(&self) -> Vec<&ColorValue> {
+        match self {
+            Self::Solid { color }
+            | Self::HairlineGrid { color, .. }
+            | Self::Scanlines { color, .. }
+            | Self::DotGrid { color, .. }
+            | Self::Vignette { color, .. } => vec![color],
+            Self::Stripes {
+                color, background, ..
+            } => vec![color, background],
+            Self::LinearGradient { stops, .. }
+            | Self::RadialGradient { stops, .. }
+            | Self::ConicGradient { stops, .. } => stops.iter().map(|stop| &stop.color).collect(),
+            Self::Chamfer { .. } | Self::BlurBehind { .. } => Vec::new(),
+        }
+    }
+
     /// I nomi ammessi, per il messaggio di un effetto sconosciuto.
     pub const NAMES: &'static [&'static str] = &[
         "solid",
@@ -325,6 +349,65 @@ impl Effect {
         "chamfer",
         "blurBehind",
     ];
+}
+
+/// Uno strato di pittura: un effetto scritto per esteso, o un motivo dichiarato
+/// più su e richiamato per nome.
+///
+/// # Perché non è una variante di `Effect`
+///
+/// La strada ovvia sarebbe `Effect::Pattern { name }`. Costerebbe i quattro
+/// `match` esaustivi su `Effect` — `name`, `cost`, `target`, `colors` — che
+/// esistono proprio perché un effetto nuovo non possa dimenticarsi di rispondere,
+/// e ognuno dei quattro dovrebbe inventare una risposta per un caso che risposta
+/// non ha: un riferimento non ha un costo proprio, ha il costo di quel che
+/// riferisce. Tenendolo fuori, `Effect` resta l'elenco di ciò che si sa
+/// disegnare e `Paint` diventa l'elenco di come lo si nomina.
+///
+/// # Perché la definizione viaggia col nome
+///
+/// `Pattern` porta con sé il `def` risolto al momento di validare. Chiunque
+/// debba sapere **cosa** si disegna — il costo, i colori usati, il controllo di
+/// destinazione — chiama `effect()` e non si accorge della differenza; solo il
+/// compilatore guarda la variante, e lo fa per scrivere `var(--skin-<nome>)`
+/// invece della dichiarazione per esteso. Nessuno deve tenersi la tabella dei
+/// motivi per capire una `Paint`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Paint {
+    /// Un effetto scritto lì dove si usa.
+    Inline(Effect),
+    /// Un motivo dichiarato in `patterns`, richiamato con `{"$pattern": "…"}`.
+    Pattern {
+        /// Il nome nella tabella dei motivi.
+        name: String,
+        /// La definizione risolta, copiata qui al momento di validare.
+        def: Effect,
+    },
+}
+
+impl Paint {
+    /// L'effetto che questo strato disegna, comunque sia stato scritto.
+    #[must_use]
+    pub const fn effect(&self) -> &Effect {
+        match self {
+            Self::Inline(effect) | Self::Pattern { def: effect, .. } => effect,
+        }
+    }
+
+    /// Il nome del motivo, se è un riferimento.
+    #[must_use]
+    pub fn pattern_name(&self) -> Option<&str> {
+        match self {
+            Self::Inline(_) => None,
+            Self::Pattern { name, .. } => Some(name),
+        }
+    }
+}
+
+/// Gli effetti di una pila di strati, per contarne il costo.
+#[must_use]
+pub fn paint_effects(paints: &[Paint]) -> Vec<Effect> {
+    paints.iter().map(|p| p.effect().clone()).collect()
 }
 
 /// Il costo sommato di una pila di livelli.

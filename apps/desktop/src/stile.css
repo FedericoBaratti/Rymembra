@@ -8,27 +8,119 @@
  * strato che nel vecchio albero era il blocco `:root` di `global.css`, con le
  * skin che lo sovrascrivevano da un selettore più specifico.
  *
+ * Ci sono DUE blocchi, e il secondo è la variante chiara: finché `themes.light`
+ * sovrascriveva otto voci su quaranta il primo fotogramma era sbagliato di poco,
+ * ora che il chiaro è completo sarebbe una finestra nera.
+ *
  * NON si modifica a mano. Si rigenera con
  *
  *     cargo run -p aether-skin --example compila
  *
- * e un test del crate desktop confronta questo blocco con l'uscita del
+ * e due test del crate desktop confrontano questi blocchi con l'uscita del
  * compilatore: una copia che può divergere in silenzio è il difetto che tutto il
  * motore esiste per togliere, e non ha senso reintrodurlo proprio qui.
  */
+
+/*
+ * I caratteri, impacchettati.
+ *
+ * Tre famiglie, e tutte e tre stanno qui dentro. La CSP è chiusa
+ * (`default-src 'self'`, e senza `font-src` vale quella), quindi un carattere
+ * remoto non era nemmeno un'opzione — il che rende l'unica soluzione onesta
+ * anche l'unica possibile.
+ *
+ * Geist per il testo, Geist Mono per i nomi del registro e per i valori,
+ * Bricolage Grotesque per i titoli. Qui ci sono i file; il nome sta in
+ * `plain.json`, nei token `font.sans`, `font.mono` e `font.display`. Una skin
+ * può dichiararne altri, e allora ricade su `system-ui` a meno che non porti il
+ * proprio carattere dentro il pacchetto — dove `woff2` è già un tipo ammesso
+ * (`package.rs`, la tabella `TIPI`).
+ *
+ * Due file per famiglia e non sette: latino e latino esteso coprono l'italiano,
+ * l'inglese e le lingue che compaiono nei metadati di una libreria musicale
+ * occidentale. `unicode-range` fa sì che il secondo si scarichi solo se serve
+ * davvero.
+ *
+ * Una faccia sola per famiglia: sono variabili, e i pesi 400, 500, 550, 600 e
+ * 700 che il disegno usa vengono tutti da lì invece che da cinque file diversi.
+ * Bricolage arriva a `200 800`, che è tutto il suo asse.
+ */
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./font/geist-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./font/geist-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./font/geist-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./font/geist-mono-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 200 800;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url('./font/bricolage-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 200 800;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url('./font/bricolage-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
 /* ── inizio blocco generato ────────────────────────────────────────────────── */
 :root {
   --skin-color-ciano: rgb(79 214 224);
   --skin-color-ciano-rgb: 79 214 224;
-  --font-sans: 'Inter Variable', system-ui, -apple-system, sans-serif;
-  --font-mono: 'Cascadia Mono', 'Consolas', ui-monospace, SFMono-Regular, monospace;
+  --font-sans: 'Geist', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+  --font-dot: 'Bricolage Grotesque', system-ui, sans-serif;
   --color-surface-0: rgb(9 9 13);
   --color-surface-1: rgb(14 14 20);
   --color-surface-2: rgb(22 22 31);
   --color-surface-3: rgb(30 30 42);
   --color-text-1: rgb(255 255 255 / 0.92);
   --color-text-2: rgb(255 255 255 / 0.6);
-  --color-text-3: rgb(255 255 255 / 0.38);
+  --color-text-3: rgb(255 255 255 / 0.46);
   --accent: rgb(139 124 246);
   --accent-rgb: 139 124 246;
   --accent-soft: rgb(139 124 246 / 0.16);
@@ -52,11 +144,11 @@
   --content-x: clamp(16px, 3cqw, 48px);
   --radius-panel: 20px;
   --radius-card: 14px;
-  --shadow-1: 0px 2px 12px rgb(0 0 0 / 0.3);
-  --shadow-2: 0px 8px 28px rgb(0 0 0 / 0.45);
-  --shadow-3: 0px 16px 56px rgb(0 0 0 / 0.55);
-  --shadow-player: inset 0px 1px 0px rgb(255 255 255 / 0.06), 0px 8px 40px rgb(0 0 0 / 0.5);
-  --glow-accent: 0px 0px 24px var(--accent-glow);
+  --shadow-1: 0px 1px 2px rgb(0 0 0 / 0.32), 0px 4px 12px -2px rgb(0 0 0 / 0.24);
+  --shadow-2: 0px 2px 4px -1px rgb(0 0 0 / 0.34), 0px 10px 26px -6px rgb(0 0 0 / 0.42);
+  --shadow-3: 0px 4px 10px -2px rgb(0 0 0 / 0.36), 0px 26px 60px -12px rgb(0 0 0 / 0.55);
+  --shadow-player: inset 0px 1px 0px rgb(255 255 255 / 0.07), 0px 2px 6px -1px rgb(0 0 0 / 0.34), 0px 14px 44px -10px rgb(0 0 0 / 0.5);
+  --glow-accent: 0px 2px 10px -2px var(--accent-glow), 0px 0px 26px var(--accent-glow);
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --dur-1: 150ms;
@@ -72,9 +164,39 @@
   --shell-left: var(--rail-w);
   --player-clearance: calc(var(--player-h) + var(--player-gap) * 2);
   --surface-0-rgb: 9 9 13;
-  --transition-fast: var(--dur-1) var(--ease-out-expo);
-  --transition-med: var(--dur-2) var(--ease-out-expo);
+  --transition-fast: calc(var(--dur-1) * var(--motion-scale, 1)) var(--ease-out-expo);
+  --transition-med: calc(var(--dur-2) * var(--motion-scale, 1)) var(--ease-out-expo);
   color-scheme: dark;
+}
+:root[data-theme='light'] {
+  --color-surface-0: rgb(251 251 253);
+  --color-surface-1: rgb(243 243 247);
+  --color-surface-2: rgb(235 235 241);
+  --color-surface-3: rgb(226 226 236);
+  --color-text-1: rgb(16 16 22 / 0.92);
+  --color-text-2: rgb(16 16 22 / 0.68);
+  --color-text-3: rgb(16 16 22 / 0.6);
+  --accent: rgb(103 82 214);
+  --accent-rgb: 103 82 214;
+  --accent-soft: rgb(103 82 214 / 0.14);
+  --accent-glow: rgb(103 82 214 / 0.28);
+  --danger: rgb(196 31 38);
+  --danger-soft: rgb(196 31 38 / 0.12);
+  --success: rgb(10 112 64);
+  --success-soft: rgb(10 112 64 / 0.12);
+  --warning: rgb(125 98 0);
+  --warning-soft: rgb(125 98 0 / 0.14);
+  --sidebar-bg: rgb(0 0 0 / 0.04);
+  --hairline: rgb(0 0 0 / 0.08);
+  --ambient-1: rgb(103 82 214 / 0.08);
+  --ambient-2: rgb(76 60 180 / 0.05);
+  --shadow-1: 0px 1px 1px rgb(16 16 22 / 0.05), 0px 2px 6px -1px rgb(16 16 22 / 0.07);
+  --shadow-2: 0px 1px 2px rgb(16 16 22 / 0.06), 0px 8px 20px -4px rgb(16 16 22 / 0.1);
+  --shadow-3: 0px 2px 6px -1px rgb(16 16 22 / 0.07), 0px 20px 48px -10px rgb(16 16 22 / 0.14);
+  --shadow-player: inset 0px 1px 0px rgb(255 255 255 / 0.85), 0px 1px 3px rgb(16 16 22 / 0.07), 0px 10px 30px -8px rgb(16 16 22 / 0.11);
+  --scrubber-rest: rgb(16 16 22 / 0.16);
+  --surface-0-rgb: 251 251 253;
+  color-scheme: light;
 }
 /* ── fine blocco generato ──────────────────────────────────────────────────── */
 
@@ -93,8 +215,96 @@
   --spazio-3: 14px;
   --spazio-4: 22px;
   --spazio-5: 34px;
+}
 
-  --barra: 58px;
+/*
+ * `density`: la scala della spaziatura.
+ *
+ * I numeri stanno qui e non nel compilatore, ed è la stessa ragione per cui
+ * `--spazio-*` non è un token: sono costanti del **motore**. La skin sceglie una
+ * parola fra tre, non scrive una misura — così una densità non può ridurre l'aria
+ * a zero né gonfiarla finché qualcosa esce dallo schermo, e restano tre gradini
+ * che qualcuno ha guardato.
+ *
+ * `comfortable` non ha un blocco: è la scala di sopra, e riscriverla qui
+ * significherebbe tenere due copie degli stessi cinque numeri.
+ *
+ * Il selettore non è `:root[…]` ma l'attributo nudo: lo porta la radice della
+ * finestra, e lo porta anche il riquadro dell'anteprima dello Studio. Le variabili
+ * si ereditano, quindi lo stesso blocco serve tutti e due, e la manopola si vede
+ * dove la si gira invece che solo dopo aver installato la skin.
+ */
+[data-density='compact'] {
+  --spazio-1: 3px;
+  --spazio-2: 6px;
+  --spazio-3: 11px;
+  --spazio-4: 17px;
+  --spazio-5: 26px;
+}
+[data-density='spacious'] {
+  --spazio-1: 5px;
+  --spazio-2: 11px;
+  --spazio-3: 18px;
+  --spazio-4: 29px;
+  --spazio-5: 44px;
+}
+
+/*
+ * Il modello di luce: da dove viene, e come si scrive.
+ *
+ * Prima di questo blocco ogni superficie era una tinta piatta appoggiata su
+ * un'altra tinta piatta. Quattro grigi impilati si distinguono, ma non si
+ * *sopraelevano*: manca il filo chiaro sul bordo alto, che è il modo in cui
+ * l'occhio riconosce uno spigolo illuminato, e manca la sfumatura che dice che
+ * la luce viene dall'alto e si esaurisce scendendo.
+ *
+ * Non sono token e non lo diventano, per la stessa ragione di `--spazio-*`: non
+ * sono un colore, sono il **modo** in cui i colori della skin si compongono. Una
+ * skin che li dichiarasse potrebbe accendere un filo bianco su una superficie
+ * bianca; una skin che vuole altro ridipinge la parte, che è la porta giusta e
+ * vince per specificità.
+ *
+ * `light-dark()` legge `color-scheme`, che il compilatore scrive già: `dark` sul
+ * blocco base, `light` sulla variante chiara (`compile.rs`, righe 891 e 905).
+ * Non è un indovinello sulla luminosità — è la stessa dichiarazione con cui il
+ * motore decide di che colore disegnare le barre di scorrimento.
+ *
+ * La direzione si inverte fra i due temi, ed è giusto: al buio il chiaro è il
+ * testo, alla luce il chiaro è il fondo. In tutti e due i casi «verso la luce»
+ * significa verso il token più chiaro che c'è, e «verso l'ombra» verso il più
+ * scuro. Nessun bianco e nessun nero scritti a mano.
+ */
+:root {
+  /* Il filo sul bordo alto: uno spigolo che prende luce. */
+  --spigolo: light-dark(
+    color-mix(in srgb, var(--color-surface-0) 80%, transparent),
+    color-mix(in srgb, var(--color-text-1) 9%, transparent)
+  );
+  /* Il fondo di un incavo: una pista, un solco, un campo che sprofonda. */
+  --incavo: light-dark(
+    color-mix(in srgb, var(--color-text-1) 9%, transparent),
+    color-mix(in srgb, var(--color-surface-0) 60%, transparent)
+  );
+  /* Quanto schiarisce la cima di una superficie. */
+  --alzata: light-dark(
+    color-mix(in srgb, var(--color-surface-0) 55%, transparent),
+    color-mix(in srgb, var(--color-text-1) 3.5%, transparent)
+  );
+
+  /* Le due forme già composte, così che ogni superficie ne scriva una sola
+     parola invece di tre. Il `min()` serve perché la stessa sfumatura vale su
+     una barra alta trentadue pixel e su una colonna alta ottocento: in
+     percentuale sarebbe un lavaggio su tutta la colonna, in pixel fissi sarebbe
+     invisibile sulla barra. */
+  --luce: linear-gradient(180deg, var(--alzata), transparent min(72px, 70%));
+  --filo: inset 0 1px 0 var(--spigolo);
+
+  /* I raggi interni, derivati dal token invece che scritti a mano.
+     Erano sei numeri fissi — 4, 5, 6, 8, 10 — dentro contenitori che usavano
+     `--radius-card`: una skin che squadra tutto (`radius.card: 0`) lasciava sei
+     angoli tondi. Con la moltiplicazione, zero resta zero. */
+  --raggio-interno: calc(var(--radius-card) * 0.6);
+  --raggio-minuto: calc(var(--radius-card) * 0.36);
 }
 
 * {
@@ -120,128 +330,616 @@ body {
   overflow: hidden;
 }
 
+/* ── icone ───────────────────────────────────────────────────────────────────
+ *
+ * Un'icona è un blocco che non partecipa alla linea di base del testo: `inline`
+ * la farebbe scendere sotto le lettere e aggiungerebbe lo spazio del descender
+ * sotto ogni bottone, che è il motivo per cui i bottoni con dentro un glifo
+ * erano alti un pixel più del previsto.
+ *
+ * Il colore non si dichiara: `stroke` e `fill` dei simboli sono `currentColor`,
+ * quindi l'icona è del colore del testo che la contiene, e quel colore viene da
+ * un token.
+ */
+.icona {
+  display: block;
+  flex: none;
+}
+
+/* ── il fuoco da tastiera ─────────────────────────────────────────────────────
+ *
+ * Una regola sola, e globale. Ce n'erano sette locali, e tutto il resto —
+ * bottoni, pillole, linguette, righe, schede — cadeva sul contorno di serie del
+ * motore, che è un rettangolo azzurro di sistema: l'unico colore
+ * dell'interfaccia che nessuna skin poteva toccare, e per giunta quello che si
+ * vede solo quando qualcuno naviga senza mouse.
+ *
+ * `:focus-visible` e non `:focus`, come già ovunque qui: lo stato appare a chi
+ * usa il tabulatore e non a ogni clic. `outline` e non `box-shadow` perché
+ * l'outline segue il raggio dell'elemento da solo e non partecipa
+ * all'impaginazione, quindi non fa saltare niente di un pixel quando compare.
+ */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── le barre di scorrimento ──────────────────────────────────────────────────
+ *
+ * Quattro pixel di pollice e non dieci. La barra è cromo di secondo livello: si
+ * guarda per sapere a che punto si è, non si trascina quasi mai — a trascinare
+ * c'è la rotella. Il bordo trasparente le dà l'area cliccabile che l'occhio non
+ * vede, quindi resta afferrabile pur essendo sottile.
+ *
+ * Il colore viene composto invece che preso da `--color-surface-3`: quel token
+ * è una superficie, e una superficie su una superficie quasi uguale sparisce.
+ * `--color-text-1` al 14% è la stessa cosa in tutti e due i temi, cioè «un po'
+ * verso il primo piano».
+ */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-surface-3);
+  background: color-mix(in srgb, var(--color-text-1) 14%, transparent);
   border-radius: 99px;
-  border: 3px solid transparent;
+  border: 4px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-3);
+  background: color-mix(in srgb, var(--color-text-1) 30%, transparent);
   background-clip: content-box;
 }
 
-/* ── impalcatura ─────────────────────────────────────────────────────────── */
-.telaio {
-  display: grid;
-  grid-template-columns: var(--rail-w-expanded) 1fr;
-  grid-template-rows: var(--barra) 1fr;
+/* ── impalcatura: lo scafale ─────────────────────────────────────────────────
+ *
+ * `navigo | guardo | ascolto` — e da qui in giù **non è più scritto qui**. La
+ * disposizione la decide l'albero dichiarato dalla skin, e il compilatore ne
+ * emette le regole in blocchi propri, agganciati a `[data-nodo]`. Questo file
+ * conserva soltanto quel che il motore possiede in ogni caso: le misure che chi
+ * galleggia deve conoscere, e l'aspetto dei singoli posti.
+ *
+ * La riga in cima non c'è più. Era alta cinquantotto pixel su tutta la
+ * larghezza e conteneva un marchio, un campo di ricerca e a volte un menù a
+ * tendina: il marchio è salito in cima alla navigazione, dove c'era già il suo
+ * spazio, e la ricerca è scesa nell'intestazione della pagina, che è la cosa su
+ * cui cerca.
+ */
+[data-scafale] {
   height: 100%;
+  /* Quanto è larga la navigazione adesso. Serve a chi galleggia `fixed` sopra
+     il contenuto — il lettore, la barra della selezione — e deve sapere dove il
+     contenuto comincia: una barra larga quanto la finestra copre il fondo della
+     navigazione, cioè il punto in cui «Impostazioni» è appuntata. */
+  --nav-w: var(--rail-w-expanded);
+  /* La terza colonna. Non è un token: una skin che potesse cambiarla potrebbe
+     ridurla a zero, e a quel punto il lettore non esisterebbe più. La misura
+     della **traccia** la decide l'albero; questa è la copia che serve a chi
+     galleggia, e resta quella del motore. */
+  --colonna-w: 348px;
+}
+/* La misura la decide la barra richiudendosi, e qui si legge soltanto: `:has()`
+   guarda lo stato dove vive invece di issarlo fin quassù e tenerlo in due
+   posti. Sopravvive al passaggio all'albero, ed è giusto che sopravviva —
+   `Navigazione` continua a possedere il suo `stretta`. */
+[data-scafale]:has(.navigazione[data-stretta]) {
+  --nav-w: var(--rail-w);
 }
 
-.barra {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: var(--spazio-3);
-  padding: 0 var(--spazio-4);
-  background: var(--color-surface-1);
-  border-bottom: 1px solid var(--hairline);
+/* Le zone e i posti.
+ *
+ * `display`, `flex-direction`, `gap`, `flex` e i due minimi a zero li scrive il
+ * compilatore per ogni nodo: qui resta solo quel che non dipende dall'albero.
+ * `position: relative` perché un nodo è il riferimento di quel che gli sta
+ * dentro in assoluto, e `min-width: 0` è già del compilatore. */
+.zona,
+.posto {
+  position: relative;
 }
-
-.marchio {
-  display: flex;
-  align-items: center;
-  gap: var(--spazio-2);
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  width: calc(var(--rail-w-expanded) - var(--spazio-4));
-}
-
-.anello {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 3px solid var(--accent);
-  border-right-color: var(--skin-color-ciano);
-  border-bottom-color: var(--skin-color-ciano);
-}
-
-.ricerca {
-  flex: 1;
-  max-width: 520px;
-  height: 34px;
-  padding: 0 var(--spazio-3);
-  background: var(--color-surface-2);
-  border: 1px solid var(--hairline);
-  border-radius: 99px;
-  color: var(--color-text-1);
-  font: inherit;
-  outline: none;
-  user-select: text;
-}
-.ricerca:focus {
-  border-color: var(--accent);
-}
-.ricerca::placeholder {
-  color: var(--color-text-3);
-}
-
-.laterale {
-  background: var(--color-surface-1);
-  border-right: 1px solid var(--hairline);
-  padding: var(--spazio-4) var(--spazio-3);
+/* Un posto è un involucro, non un componente: il widget dentro lo riempie. */
+.posto {
   display: flex;
   flex-direction: column;
-  gap: var(--spazio-4);
-  overflow-y: auto;
+}
+.posto > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 
-.contenuto {
+/* Il posto della pagina è l'unico che ha bisogno di contenere: dentro ci sono
+   l'elenco che scorre e, a schermo intero, la copertina grande sopra di esso. */
+.posto-content {
+  overflow: hidden;
+}
+
+/* L'aria sta **sopra** l'elenco, non fra le righe: l'intestazione resta ferma e
+   respira, e quel che scorre comincia subito sotto. */
+/* L'aria laterale è `--content-x`, cioè `clamp(16px, 3cqw, 48px)`, e il `cq` ha
+   finalmente un contenitore: il compilatore mette `container-type: inline-size`
+   sulla zona che contiene `content`. Prima il token era emesso, asserito da un
+   test e letto da nessuno — e senza contenitore `3cqw` sarebbe stato il 3% della
+   finestra intera, cioè avrebbe contato anche la navigazione e la terza colonna,
+   che non sono il contenuto. */
+.posto-content .dentro {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: var(--spazio-4);
+  /* Lo spazio della barra è riservato sempre. Senza, passare da una vista che
+     scorre a una che ci sta tutta allarga il contenuto di dodici pixel, e
+     l'intera griglia si ridispone per una barra che è sparita. */
+  scrollbar-gutter: stable;
+  padding: 0 var(--content-x) var(--content-x);
+}
+
+/* Il lettore galleggia sopra il contenuto — `"player": "floating"` nella skin —
+   quindi non toglie spazio da solo: senza questo margine l'ultima riga
+   dell'elenco resterebbe sotto la barra, raggiungibile solo scorrendo oltre la
+   fine. Vale **solo** quando la barra c'è davvero: con la terza colonna aperta
+   il lettore non è flottante, e novanta pixel di vuoto in fondo alla libreria
+   sarebbero un buco. */
+[data-scafale][data-lettore] .posto-content .dentro {
+  padding-bottom: var(--player-clearance);
+}
+
+/* I tre widget che galleggiano non prendono spazio nel flusso: il loro posto
+   resta un riquadro alto zero, e la barra si dispone da sé rispetto alla
+   finestra. Non è un caso speciale del renderer — è ciò che `position: fixed`
+   significa — ma va detto qui, altrimenti un posto vuoto lascerebbe un buco
+   dove la sua zona gli dà spazio. */
+.posto-player,
+.posto-selection-bar,
+.posto-queue {
+  flex: 0 0 auto;
+}
+
+/* Un widget che il nucleo conosce e la finestra no.
+ *
+ * Si vede, e deve vedersi: senza un runner di test in TypeScript, l'unico modo
+ * onesto di tenere allineati il registro in Rust e la tabella dei componenti è
+ * rendere rumorosa la divergenza invece di asserirla.
+ */
+.widget-mancante {
+  padding: var(--spazio-2) var(--spazio-3);
+  border: 1px dashed var(--color-warning, var(--hairline));
+  border-radius: var(--radius-card);
+  color: var(--color-text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: center;
 }
 
 /* ── navigazione ─────────────────────────────────────────────────────────── */
 .navigazione {
+  width: var(--rail-w-expanded);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--spazio-3);
+  padding: 18px 12px;
+  background: var(--color-surface-1);
+  background-image: var(--luce);
+  border-right: 1px solid var(--hairline);
+  overflow-y: auto;
+  overflow-x: hidden;
+  transition: width var(--transition-med);
+}
+.navigazione[data-stretta] {
+  width: var(--rail-w);
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+/* In fondo invece che di lato.
+ *
+ * È l'altra forma che la stessa navigazione può prendere — `bottom-nav` nel
+ * registro dei widget — e soddisfa lo stesso gruppo di essenzialità: una skin
+ * che toglie la barra laterale non ha tolto il modo di cambiare vista. Marchio,
+ * playlist e spinta sono nascosti dal componente; qui resta la disposizione.
+ */
+.navigazione[data-fondo] {
+  width: 100%;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spazio-2);
+  padding: var(--spazio-2) var(--spazio-3);
+  border-right: none;
+  border-top: 1px solid var(--hairline);
+  overflow: visible;
+}
+.navigazione[data-fondo] .destinazioni,
+.navigazione[data-fondo] .fondo {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+/* In orizzontale il conteggio accanto a ogni voce è rumore: la barra è larga
+   quanto la finestra e i numeri la riempirebbero al posto dei nomi. */
+.navigazione[data-fondo] .conteggio {
+  display: none;
+}
+/* Richiusa, resta l'icona. Le etichette non si nascondono con `display: none`:
+   sparirebbero anche per uno screen reader, e una barra richiusa continua a
+   essere una navigazione con quattro destinazioni che hanno un nome. */
+.navigazione[data-stretta] .etichetta,
+.navigazione[data-stretta] .conteggio,
+.navigazione[data-stretta] .titolo-gruppo span,
+.navigazione[data-stretta] .marchio .nome,
+.navigazione[data-stretta] .niente {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.navigazione[data-stretta] .voce {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* Il nome dell'applicazione è l'unica parola dell'interfaccia che non descrive
+   niente: è un marchio. Il carattere da titolo è il posto in cui una skin mette
+   la sua faccia, e questo è il posto in cui l'applicazione mette la propria. */
+.marchio {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 0 4px var(--spazio-2);
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.marchio .anello {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  flex: none;
+}
+.marchio .nome {
+  flex: 1;
+  min-width: 0;
+}
+.marchio .richiudi {
+  width: 28px;
+  height: 28px;
+}
+.navigazione[data-stretta] .marchio {
+  justify-content: center;
+}
+
+.destinazioni,
+.gruppo {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.titolo-gruppo {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 0 12px 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.titolo-gruppo span {
+  flex: 1;
+}
+.titolo-gruppo .tasto {
+  width: 20px;
+  height: 20px;
 }
 
 .voce {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: var(--spazio-2);
-  padding: 8px var(--spazio-3);
+  gap: 11px;
+  padding: 8px 12px;
   border: none;
   background: transparent;
   color: var(--color-text-2);
   font: inherit;
+  font-size: 13.5px;
   text-align: left;
   border-radius: var(--radius-card);
   cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.voce .etichetta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .voce:hover {
   background: var(--color-surface-2);
   color: var(--color-text-1);
 }
-.voce[aria-current="true"] {
-  background: var(--color-surface-3);
-  color: var(--color-text-1);
+.voce[data-active] {
+  /* `--accent-soft` e l'accento sul testo: lo stato attivo si legge dal colore,
+     non da un fondo più chiaro che sull'occhio pesa come un semplice hover. */
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 550;
 }
 .voce .conteggio {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--color-text-3);
 }
+.voce[data-active] .conteggio {
+  color: inherit;
+  opacity: 0.75;
+}
 
-/* ── blocchi del pannello laterale ───────────────────────────────────────── */
+.gruppo .voce {
+  padding: 7px 12px;
+  font-size: 13px;
+}
+.gruppo .niente {
+  margin: 0;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+/* Lo spaziatore che spinge Impostazioni in fondo. */
+.navigazione .spinta {
+  flex: 1;
+  min-height: var(--spazio-3);
+}
+.navigazione .fondo {
+  padding-top: var(--spazio-2);
+  border-top: 1px solid var(--hairline);
+}
+
+/* ── intestazione di pagina ──────────────────────────────────────────────── */
+/*
+ * Titolo a sinistra, comandi a destra — finché ci stanno.
+ *
+ * `flex-wrap` non è una precauzione teorica: con la terza colonna aperta su una
+ * finestra da 1280 il contenuto è largo seicento pixel, e lì dentro ci sono un
+ * titolo, due bottoni e un campo di ricerca da duecentocinquanta. Senza il
+ * ritorno a capo il titolo è l'unico che può stringersi — è l'unico `flex: 1` —
+ * e si riduceva a una lettera sola mentre il campo di ricerca restava largo
+ * come su uno schermo intero. Il titolo di una pagina non è la voce che cede.
+ */
+.intestazione-pagina {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--spazio-2) var(--spazio-4);
+  padding: 24px 32px 14px;
+}
+/* La copertina dell'album aperto, l'unica immagine che un'intestazione porta.
+   Novantasei pixel e allineata in basso col titolo: la pagina di un album resta
+   l'elenco dei suoi brani, e una testata alta trecento spingerebbe il primo
+   brano sotto la piega. `flex: none` perché una copertina non si stringe — è
+   quadrata, e stringerla la ovalizzerebbe. */
+.intestazione-pagina .hero-art {
+  width: clamp(64px, 9cqw, 96px);
+  height: clamp(64px, 9cqw, 96px);
+  flex: none;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  object-fit: cover;
+  box-shadow: var(--shadow-2);
+}
+
+/* `220px` è la base, non un minimo rigido: sotto quella misura il gruppo dei
+   comandi va a capo invece di continuare a mangiare il titolo. */
+.intestazione-pagina .chi {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.intestazione-pagina .occhiello {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+  margin-bottom: 5px;
+}
+.intestazione-pagina .titolo {
+  margin: 0;
+  /* `--font-dot` è il token del carattere da titolo. Si chiama così per ragioni
+     storiche — è nato nella skin Nothing — ma è il posto in cui una skin mette
+     la sua faccia, e finché nessuno lo usava era una dichiarazione senza
+     conseguenze. */
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Una riga sola: sono metadati separati da punti mediani, e su tre righe
+   diventano un paragrafo che nessuno legge. */
+.intestazione-pagina .sotto {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--color-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.intestazione-pagina .comandi {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  /* Si stringe prima di andare a capo, ma non oltre quel che i suoi bottoni
+     chiedono: a stringersi è il campo di ricerca, che ha un minimo suo. */
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.pillola {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--hairline);
+  border-radius: 99px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.pillola:hover:not(:disabled) {
+  color: var(--color-text-1);
+  border-color: var(--color-text-3);
+}
+.pillola:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.pillola.btn-accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--color-surface-0);
+  font-weight: 600;
+}
+.pillola.btn-accent:hover:not(:disabled) {
+  filter: brightness(1.08);
+  color: var(--color-surface-0);
+}
+
+.intestazione-pagina .cerca {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Duecentocinquanta è la misura voluta, non un minimo: `flex: 0 1` la lascia
+     stringere quando la riga è piena, e `min-width` è il pavimento sotto cui un
+     campo di ricerca smette di mostrare quel che ci si è scritto. */
+  flex: 0 1 250px;
+  width: 250px;
+  min-width: 170px;
+  height: 34px;
+  padding: 0 12px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 99px;
+  box-shadow: inset 0 1px 2px var(--incavo);
+  color: var(--color-text-3);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.intestazione-pagina .cerca:focus-within {
+  border-color: var(--accent);
+  /* L'anello sostituisce l'incavo invece di aggiungersi: un campo col fuoco è
+     acceso, non affondato. */
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  color: var(--color-text-2);
+}
+.intestazione-pagina .campo {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  user-select: text;
+}
+.intestazione-pagina .campo::placeholder {
+  color: var(--color-text-3);
+}
+/* Il campo di ricerca nativo disegna una crocetta sua, che non è la nostra
+   icona e non segue i token. */
+.intestazione-pagina .campo::-webkit-search-cancel-button {
+  appearance: none;
+}
+.scorciatoia {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-minuto);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+}
+
+/* ── linguette ───────────────────────────────────────────────────────────── */
+/* La pista sprofonda, la linguetta scelta ne esce.
+   È l'unico modo in cui un segmentato si legge senza bordi: due grigi vicini
+   non dicono quale dei due sta sopra, un incavo e uno spigolo sì. */
+.segmentato {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-surface-2);
+  border-radius: 99px;
+  box-shadow: inset 0 1px 2px var(--incavo);
+}
+.segmentato .linguetta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 99px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.segmentato .linguetta:hover:not(:disabled) {
+  color: var(--color-text-1);
+}
+.segmentato .linguetta[data-active] {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
+  font-weight: 550;
+  box-shadow: var(--filo), var(--shadow-1);
+}
+.segmentato .linguetta:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.segmentato .quante {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  opacity: 0.7;
+}
+.segmentato.minuto .linguetta {
+  padding: 4px 10px;
+  font-size: 11.5px;
+}
+/* Quattro linguette dentro una riga di proprietà larga 190px: si stringono e si
+   spartiscono lo spazio invece di traboccare. */
+.segmentato.denso {
+  display: flex;
+  width: 100%;
+}
+.segmentato.denso .linguetta {
+  flex: 1;
+  justify-content: center;
+  padding: 4px 0;
+  border-radius: var(--raggio-minuto);
+  font-size: 10.5px;
+}
+
+/* ── blocchi ─────────────────────────────────────────────────────────────── */
 .blocco {
   display: flex;
   flex-direction: column;
@@ -267,15 +965,38 @@ body {
   padding: 6px var(--spazio-2);
   overflow: hidden;
 }
-.cartella span {
+.cartella .percorso {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  /* Il troncamento va a sinistra — la coda di un percorso dice più della testa —
+     e `unicode-bidi: plaintext` è la metà che mancava: con `direction: rtl` da
+     sola, un percorso UNC come `\\nas\archivio\Vinili` si disegnava con le due
+     barre iniziali **in fondo**, perché il motore le trattava come caratteri
+     neutri e li metteva nella direzione del paragrafo invece che in quella del
+     testo. */
   direction: rtl;
+  unicode-bidi: plaintext;
   text-align: left;
+}
+.cartella .tasto {
+  width: 22px;
+  height: 22px;
+  flex: none;
 }
 
 .bottone {
+  /* `inline-flex` e non `inline-block`: da quando l'etichetta può essere
+     preceduta da un'icona, il testo e il disegno vanno allineati al centro fra
+     loro, non alla linea di base del testo. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   padding: 8px var(--spazio-3);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-card);
@@ -308,17 +1029,86 @@ body {
   font-size: 12px;
 }
 
-/* ── avanzamento ─────────────────────────────────────────────────────────── */
-.avanzamento {
-  height: 6px;
-  border-radius: 99px;
-  background: var(--color-surface-3);
-  overflow: hidden;
+/* ── le copertine ─────────────────────────────────────────────────────────────
+ *
+ * Sono le uniche immagini dell'applicazione, e l'unica cosa colorata: tutto il
+ * resto è cromo. Quel che segue vale per tutte e sei le misure in cui compaiono
+ * — miniatura di riga, scheda della griglia, tassello del mosaico, testata di
+ * un album, terza colonna, schermo intero — perché `Copertina` emette `foto`
+ * accanto alla classe del posto in cui sta.
+ *
+ * Entrano in dissolvenza. Con `loading="lazy"` una griglia le riceve **mentre**
+ * si scorre, e quaranta comparse istantanee di file diversi sono uno
+ * sfarfallio; con una dissolvenza da `--dur-2` diventano un arrivo. Chi ha già
+ * l'immagine in cache non vede niente di tutto questo: `load` scatta prima del
+ * primo disegno, quindi l'attributo c'è già e la regola di partenza non si
+ * applica mai.
+ */
+.foto {
+  opacity: 0;
+  transition: opacity var(--transition-med);
 }
-.avanzamento > div {
+.foto[data-pronta] {
+  opacity: 1;
+}
+
+/* Il filo attorno a una copertina.
+ *
+ * Una copertina scura su un fondo scuro non ha un bordo, e allora non ha
+ * nemmeno una forma: il quadrato finisce dove capita. Un pixel di spigolo
+ * gliela ridà, e su una copertina chiara non si vede perché è chiaro anche lui.
+ *
+ * `outline` con scostamento negativo e non `box-shadow: inset`: su un `<img>`
+ * l'ombra interna si dipinge **sotto** il contenuto, cioè sotto l'immagine, e
+ * non si vedrebbe mai. Le due regole che disegnano un contorno d'accento — il
+ * sorvolo di una scheda e il fuoco sulla copertina della colonna — restano più
+ * specifiche e continuano a vincere.
+ */
+.copertina,
+.miniatura,
+.hero-art,
+.np-art,
+.mosaico {
+  outline: 1px solid var(--spigolo);
+  outline-offset: -1px;
+}
+
+/*
+ * L'ambiente è la copertina, sfocata fino a non essere più un'immagine.
+ *
+ * `--hero-rgb` resta sotto e non è stato tolto: è il fondo di quando la
+ * copertina non c'è, cioè di metà libreria vera. Quando c'è, questa immagine lo
+ * copre — ed è meglio di una tinta estratta perché una copertina non ha *un*
+ * colore: un disco rosso con la fascia gialla dà un ambiente rosso e giallo,
+ * ognuno dalla parte in cui sta davvero.
+ *
+ * Lo `scale` viene prima della sfocatura nell'ordine in cui si legge, e conta:
+ * un `blur` porta dentro il riquadro i pixel trasparenti di fuori, e senza
+ * l'ingrandimento il bordo dell'immagine si vedrebbe come una cornice chiara.
+ *
+ * Il costo è una rasterizzazione sola: l'immagine è ferma, il livello si
+ * compone una volta e poi resta. Cambia solo quando cambia il brano.
+ */
+.tinta {
+  position: absolute;
+  inset: 0;
+  width: 100%;
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
-  transition: width 120ms linear;
+  object-fit: cover;
+  transform: scale(1.3);
+  filter: blur(64px) saturate(1.35);
+  pointer-events: none;
+}
+/* I colori di una maschera non si vedono — contano solo le opacità — quindi
+   `black` qui non è un colore ma la parola per «opaco», e non è il letterale
+   che la disciplina dei token vieta. */
+.colonna .ambiente .tinta {
+  opacity: 0.5;
+  mask-image: radial-gradient(130% 100% at 50% 0%, black 18%, transparent 76%);
+}
+.in-riproduzione .ambiente .tinta {
+  opacity: 0.8;
+  mask-image: linear-gradient(180deg, black 8%, rgb(0 0 0 / 0.4) 66%, transparent);
 }
 
 /* ── griglia degli album ─────────────────────────────────────────────────── */
@@ -350,16 +1140,24 @@ body {
   display: block;
   box-shadow: var(--shadow-2);
 }
-.scheda:hover .copertina {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 
-.copertina.vuota {
+/* Il quadrato con la nota, dove la copertina non c'è — e ce n'è una su due in
+   una libreria vera. La regola vale per tutte e sei le misure: era scritta due
+   volte, per la scheda e per la riga, e le altre quattro non l'avevano —
+   `np-art` senza immagine metteva la nota nell'angolo in alto a sinistra di un
+   quadrato da trecentosessanta pixel. Resta per taglia solo la misura del
+   glifo, che è l'unica cosa che cambia davvero. */
+.vuota {
   display: grid;
   place-items: center;
   color: var(--color-text-3);
+}
+.copertina.vuota {
   font-size: 26px;
+}
+.hero-art.vuota,
+.np-art.vuota {
+  font-size: 44px;
 }
 
 .scheda .titolo {
@@ -376,40 +1174,217 @@ body {
   white-space: nowrap;
 }
 
-/* ── elenco dei brani ────────────────────────────────────────────────────── */
+/* ── elenco dei brani ─────────────────────────────────────────────────────────
+ *
+ * Righe da quaranta pixel. Non è una misura scelta per far stare più roba: è la
+ * misura in cui una miniatura da trentaquattro sta comoda e due righe di testo
+ * — titolo a 13.5, artista a 12 — ci stanno senza schiacciarsi. Sotto i
+ * quaranta il titolo e l'artista si toccano, sopra i cinquanta l'elenco comincia
+ * a sembrare un modulo.
+ *
+ * L'intestazione di colonna condivide la griglia con le righe, e la condivide
+ * **per costruzione**: `--colonne-riga` è dichiarata una volta e letta da tutte
+ * e due. Due `grid-template-columns` copiati sono due misure che si scollano
+ * alla prima colonna che cambia larghezza, ed è il difetto che si vede solo
+ * quando le intestazioni non stanno più sopra le loro colonne.
+ */
 .elenco {
   display: flex;
   flex-direction: column;
+  --colonne-riga: 34px 40px minmax(0, 1fr) 150px 82px 46px 32px;
+}
+
+/*
+ * Dentro una playlist modificabile la riga ha una colonna in più: il tasto che
+ * la toglie da lì.
+ *
+ * Va **dichiarata**. Prima ci si affidava a `grid-auto-columns: 32px`, che è la
+ * proprietà giusta per un'altra cosa: dimensiona le tracce implicite di
+ * *colonna*, e quelle nascono solo con `grid-auto-flow: column`. Con il flusso
+ * di serie — per righe — l'ottavo figlio non finisce in fondo alla riga, va a
+ * capo: la × si vedeva sotto la riga a cui apparteneva, allineata a sinistra.
+ */
+.elenco[data-con-togli] {
+  --colonne-riga: 34px 40px minmax(0, 1fr) 150px 82px 46px 32px 32px;
+}
+
+/*
+ * L'elenco che si stringe.
+ *
+ * `@container` e non `@media`, e la differenza si vede il giorno in cui si apre
+ * la terza colonna: la finestra non ha cambiato misura, il **contenuto** sì, di
+ * trecentoquarantotto pixel. Una media query non se ne accorgerebbe e il titolo
+ * verrebbe schiacciato a nulla mentre album e voto restano larghi come prima.
+ * Il contenitore è la zona che contiene `content`, e chi lo dichiara è il
+ * compilatore dello scafale: la skin non lo sceglie e non può toglierlo.
+ *
+ * Le colonne si ritirano in ordine di quanto pesano: prima l'album, che è la
+ * seconda informazione dopo il titolo; poi il voto, che si vede comunque nella
+ * terza colonna e nel lettore. Titolo, durata e cuore non si tolgono mai —
+ * sotto quella soglia l'elenco smetterebbe di essere un elenco di brani.
+ *
+ * `--colonne-riga` si riscrive una volta sola e le due griglie la seguono, che è
+ * la proprietà per cui esiste.
+ */
+@container (max-width: 760px) {
+  .elenco {
+    --colonne-riga: 34px 40px minmax(0, 1fr) 82px 46px 32px;
+  }
+  .elenco[data-con-togli] {
+    --colonne-riga: 34px 40px minmax(0, 1fr) 82px 46px 32px 32px;
+  }
+  .testa-elenco .disco,
+  .riga .disco {
+    display: none;
+  }
+}
+@container (max-width: 560px) {
+  .elenco {
+    --colonne-riga: 34px 40px minmax(0, 1fr) 46px 32px;
+  }
+  .elenco[data-con-togli] {
+    --colonne-riga: 34px 40px minmax(0, 1fr) 46px 32px 32px;
+  }
+  .testa-elenco .voto,
+  .riga .stelle {
+    display: none;
+  }
+}
+
+.testa-elenco {
+  display: grid;
+  grid-template-columns: var(--colonne-riga);
+  gap: 12px;
+  align-items: center;
+  padding: 0 var(--spazio-2) 8px;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.testa-elenco .indice,
+.testa-elenco .durata {
+  text-align: right;
 }
 
 .riga {
   display: grid;
-  grid-template-columns: 34px 34px 1fr 1fr 52px 34px;
+  grid-template-columns: var(--colonne-riga);
   align-items: center;
-  gap: var(--spazio-3);
-  padding: 6px var(--spazio-2);
+  gap: 12px;
+  height: 40px;
+  padding: 5px var(--spazio-2);
   border-radius: var(--radius-card);
   cursor: default;
 }
+/* Il sorvolo è un velo, non una superficie.
+   `--color-surface-1` sopra `--color-surface-0` sono due grigi a cinque unità
+   di distanza: sulla riga sotto il dito non si vedeva quasi niente. Una
+   percentuale del colore di testo funziona su qualunque fondo — anche sopra la
+   riga in riproduzione, che è già tinta d'accento — e si inverte da sola nel
+   tema chiaro. */
 .riga:hover {
-  background: var(--color-surface-1);
+  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
+}
+/* Il brano che sta suonando. `aria-current` e non una classe: l'informazione
+   serve identica a chi guarda e a chi ascolta lo schermo, e tenerla in un posto
+   solo è ciò che impedisce alle due di divergere. `data-active` accanto è per le
+   skin — è lo stato che il registro delle parti chiama «attivo» — e non
+   sostituisce l'attributo di accessibilità, gli sta accanto. */
+.riga[aria-current="true"] {
+  background: var(--accent-soft);
+}
+/* Il velo si somma alla tinta invece di essere coperto da essa: senza questa
+   riga la riga che suona era l'unica dell'elenco che non rispondeva al dito. */
+.riga[aria-current="true"]:hover {
+  background:
+    linear-gradient(color-mix(in srgb, var(--color-text-1) 6%, transparent) 0 0),
+    var(--accent-soft);
+}
+.riga[aria-current="true"] .nome {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.riga .chi {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.25;
+}
+.riga .disco {
+  font-size: 12px;
+  color: var(--color-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .riga .indice {
+  border: none;
+  background: transparent;
+  padding: 0;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--color-text-3);
   text-align: right;
+  cursor: pointer;
 }
-.riga img,
-.riga .segnaposto {
+/* Il numero lascia il posto al triangolo quando il dito è sulla riga: due
+   informazioni nello stesso spazio, quella utile a seconda del momento. Restano
+   entrambe raggiungibili da tastiera perché il fuoco conta come sorvolo. */
+.riga .via {
+  display: none;
+  color: var(--color-text-1);
+}
+/* ── il riordino: dove cadrebbe la riga che si sta trascinando ────────────────
+ *
+ * Un filo d'accento sul bordo alto della riga sorvolata, e la riga presa che si
+ * fa trasparente. Il trascinamento c'era già nel pannello della coda e non
+ * diceva **dove** sarebbe finita la riga: si lasciava andare e si scopriva
+ * dopo. Il segno sta sul bordo e non come fondo perché quel che si sta per
+ * scegliere è una posizione **fra** due righe, non una riga.
+ *
+ * `outline` e non `border`: un bordo cambierebbe l'altezza della riga, e
+ * l'elenco salterebbe di due pixel a ogni riga sorvolata.
+ */
+.riga[draggable="true"] {
+  cursor: grab;
+}
+.riga[data-sopra] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.riga:active[draggable="true"] {
+  cursor: grabbing;
+}
+
+.riga:hover .indice .numero,
+.riga .indice:focus-visible .numero {
+  display: none;
+}
+.riga:hover .indice .via,
+.riga .indice:focus-visible .via {
+  display: inline;
+}
+
+.riga .miniatura {
   width: 34px;
   height: 34px;
-  border-radius: 6px;
+  border-radius: var(--raggio-interno);
   background: var(--color-surface-2);
   object-fit: cover;
 }
+.miniatura.vuota {
+  font-size: 15px;
+}
 .riga .nome {
+  font-size: 13.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -417,7 +1392,7 @@ body {
 }
 .riga .autore {
   color: var(--color-text-2);
-  font-size: 13px;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -429,15 +1404,47 @@ body {
   text-align: right;
 }
 
+/* ── valutazione ─────────────────────────────────────────────────────────── */
+.stelle {
+  display: flex;
+  gap: 1px;
+}
+
+.stella {
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  padding: 0;
+  width: 15px;
+  height: 15px;
+  color: var(--color-text-3);
+  line-height: 1;
+  cursor: pointer;
+}
+.stella[aria-pressed="true"] {
+  color: var(--warning);
+}
+/* Un brano non votato mostra cinque stelle vuote, e cinque stelle vuote su ogni
+   riga sono rumore su tutta la libreria: restano quasi invisibili finché il
+   dito non passa sulla riga o il fuoco non entra nel gruppo. */
+.stelle:not(:hover) .stella[aria-pressed="false"] {
+  opacity: 0.18;
+}
+.stelle:focus-within .stella[aria-pressed="false"] {
+  opacity: 1;
+}
+
 .cuore {
+  display: grid;
+  place-items: center;
   border: none;
   background: transparent;
   color: var(--color-text-3);
-  font-size: 15px;
   cursor: pointer;
   line-height: 1;
   padding: 4px;
-  border-radius: 6px;
+  border-radius: var(--raggio-minuto);
 }
 .cuore[aria-pressed="true"] {
   /* `--accent-like` e non `--accent`: è il token che esiste apposta perché una
@@ -449,32 +1456,11 @@ body {
   background: var(--color-surface-2);
 }
 
-/* ── intestazione dell'album aperto ──────────────────────────────────────── */
-.intestazione {
-  display: flex;
-  gap: var(--spazio-4);
-  margin-bottom: var(--spazio-5);
-  align-items: flex-end;
-}
-.intestazione img,
-.intestazione .segnaposto {
-  width: 168px;
-  height: 168px;
-  border-radius: var(--radius-panel);
-  background: var(--color-surface-2);
-  object-fit: cover;
-  box-shadow: var(--shadow-3);
-}
-.intestazione h1 {
-  margin: 0 0 var(--spazio-1);
-  font-size: 30px;
-  line-height: 1.15;
-  user-select: text;
-}
-.intestazione .meta {
-  color: var(--color-text-2);
-  font-size: 13px;
-}
+/* Qui c'era `.intestazione`, la vecchia testata dell'album aperto: copertina da
+   168, `h1` e riga di metadati. Non la emetteva più nessuno da quando l'album
+   aperto usa `Intestazione`, cioè la stessa testata di tutte le altre pagine —
+   erano ventisette righe che nessun selettore poteva raggiungere. La copertina
+   è tornata lassù, in `.intestazione-pagina .hero-art`. */
 
 /* ── stati ───────────────────────────────────────────────────────────────── */
 .vuoto {
@@ -493,24 +1479,3334 @@ body {
 .vuoto h2 {
   margin: 0;
   color: var(--color-text-1);
-  font-size: 19px;
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: 20px;
+  letter-spacing: -0.015em;
+  /* Uno stato vuoto è la prima cosa che si legge in una libreria appena
+     installata, e un titolo che va a capo lasciando una parola sola sulla
+     seconda riga si legge come un errore di impaginazione. */
+  text-wrap: balance;
 }
 .vuoto p {
   margin: 0;
   max-width: 46ch;
+  text-wrap: pretty;
 }
 
 .errore {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spazio-2);
   border: 1px solid var(--danger);
+  border-left-width: 2px;
   border-radius: var(--radius-card);
   padding: var(--spazio-3);
+  margin-bottom: var(--spazio-3);
   background: var(--danger-soft);
   color: var(--color-text-1);
   font-size: 13px;
 }
+.errore > svg {
+  color: var(--danger);
+  margin-top: 2px;
+}
+.errore > span {
+  flex: 1;
+  user-select: text;
+}
 .errore code {
   font-family: var(--font-mono);
   color: var(--danger);
+}
+
+.empty-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--color-surface-2);
+  color: var(--color-text-3);
+}
+
+/* ── la terza colonna ─────────────────────────────────────────────────────── */
+.colonna {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  padding: 14px 16px 0;
+  background: var(--color-surface-1);
+  border-left: 1px solid var(--hairline);
+  overflow: hidden;
+}
+
+/* Lo strato ambientale: la tinta della copertina, e **solo** qui. Alto 340
+   pixel, cioè il primo terzo della colonna, al venti per cento: sta dietro la
+   copertina, quindi dietro un'immagine, e non sotto una riga di testo. */
+.colonna .ambiente {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 340px;
+  /* Ingrandita di un terzo, la copertina sfocata uscirebbe da questi
+     trecentoquaranta pixel e finirebbe dietro la coda. */
+  overflow: hidden;
+  background: radial-gradient(
+    120% 100% at 50% 0%,
+    rgb(var(--hero-rgb) / 0.2),
+    transparent 70%
+  );
+  pointer-events: none;
+}
+.colonna > *:not(.ambiente) {
+  position: relative;
+}
+
+.colonna .testa {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-1);
+}
+.colonna .testa .occhiello {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+
+.colonna .apri-grande {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  border-radius: var(--radius-panel);
+}
+.colonna .hero-art {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-2);
+  object-fit: cover;
+  box-shadow: var(--shadow-3);
+  display: block;
+}
+.colonna .apri-grande:focus-visible .hero-art {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.colonna .chi {
+  min-width: 0;
+}
+.colonna .titolo {
+  /* Lo stesso carattere del titolo a schermo intero, e per la stessa ragione:
+     è lo stesso `np-title`, in un'altra misura. Che cambiasse faccia aprendo e
+     chiudendo lo schermo intero era l'unico posto in cui la stessa parte si
+     disegnava in due modi. */
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  /* Due righe qui come a schermo intero: la colonna è larga trecentoquindici
+     pixel, e su una riga sola quasi ogni titolo di remix finisce nei puntini. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  user-select: text;
+}
+.colonna .meta {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--color-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.colonna .cursore {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.colonna .tempo {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+  /* Larghezza fissa: senza, il passaggio da «0:59» a «1:00» allargherebbe la
+     colonna e farebbe saltare il cursore di qualche pixel una volta al minuto. */
+  width: 38px;
+  flex: none;
+}
+.colonna .tempo:last-child {
+  text-align: right;
+}
+
+.colonna .trasporto {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spazio-2);
+}
+.colonna .trasporto .grande {
+  width: 48px;
+  height: 48px;
+  background: var(--accent);
+  color: var(--color-surface-0);
+  box-shadow: var(--glow-accent);
+}
+.colonna .trasporto .grande:hover {
+  filter: brightness(1.08);
+  background: var(--accent);
+  color: var(--color-surface-0);
+}
+
+.colonna .giudizio {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding-bottom: var(--spazio-3);
+  border-bottom: 1px solid var(--hairline);
+}
+.colonna .giudizio .volume {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-1);
+  min-width: 0;
+}
+.colonna .giudizio .volume .scorrimento {
+  flex: 1;
+  min-width: 0;
+}
+
+.colonna .niente-in-ascolto {
+  flex: 1;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: var(--spazio-2);
+  text-align: center;
+  color: var(--color-text-2);
+  font-size: 13px;
+}
+.colonna .niente-in-ascolto p {
+  margin: 0;
+  max-width: 30ch;
+}
+.colonna .niente-in-ascolto .sotto {
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+
+.coda-in-colonna {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  flex: 1;
+  min-height: 0;
+  padding-bottom: var(--spazio-3);
+}
+.coda-in-colonna .testa-coda {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.coda-in-colonna .testa-coda .segmentato {
+  flex: 1;
+  min-width: 0;
+}
+.coda-in-colonna .righe-coda {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ── In riproduzione, a schermo quasi intero ──────────────────────────────────
+ *
+ * Copre il contenuto ma **non** la navigazione: sta dentro il posto della
+ * pagina, non sopra lo scafale. Coprire tutto costringerebbe a chiudere per cambiare vista,
+ * e a quel punto guardare la copertina e navigare diventano due gesti che si
+ * annullano a vicenda.
+ *
+ * La pagina sotto resta montata, e non è un dettaglio di implementazione:
+ * smontarla perderebbe la posizione di scorrimento, e chiudere riporterebbe in
+ * cima a un elenco che si stava guardando a metà.
+ */
+.in-riproduzione {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-surface-0);
+}
+
+/* Due strati e non uno. L'ambiente prende il colore dalla copertina; il velo è
+   neutro, e sopra il velo sta il testo. Se il velo fosse una versione scura
+   della tinta, con una copertina gialla il titolo si leggerebbe su giallo
+   scuro — che è ancora giallo. */
+.in-riproduzione .ambiente {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(60% 60% at 22% 18%, rgb(var(--hero-rgb) / 0.45), transparent 70%),
+    radial-gradient(70% 70% at 82% 78%, rgb(var(--hero-rgb) / 0.28), transparent 72%);
+}
+.in-riproduzione .velo {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgb(var(--surface-0-rgb) / 0.42),
+    rgb(var(--surface-0-rgb) / 0.8)
+  );
+}
+
+.in-riproduzione .testa,
+.in-riproduzione .corpo {
+  position: relative;
+}
+
+.in-riproduzione .testa {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  padding: 18px 32px 10px;
+}
+.in-riproduzione .chi-suona {
+  flex: 1;
+  min-width: 0;
+}
+.in-riproduzione .occhiello {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.in-riproduzione .disco {
+  margin-top: 3px;
+  font-size: 13px;
+  color: var(--color-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.in-riproduzione .comandi {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-1);
+}
+
+/* Un bottone spento che porta la sua ragione. Il suggerimento appare al
+   passaggio **e al fuoco da tastiera**: un motivo raggiungibile solo col mouse
+   è un motivo che una parte delle persone non legge mai. */
+.con-suggerimento {
+  position: relative;
+  display: inline-flex;
+}
+.tooltip-pill {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 2;
+  width: max-content;
+  max-width: 260px;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-interno);
+  background: var(--color-surface-3);
+  background-image: var(--luce);
+  box-shadow: var(--filo), var(--shadow-2);
+  color: var(--color-text-2);
+  font-size: 11.5px;
+  line-height: 1.4;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+}
+.con-suggerimento:hover .tooltip-pill,
+.con-suggerimento:focus-within .tooltip-pill {
+  opacity: 1;
+}
+
+.in-riproduzione .comandi .tasto:disabled {
+  color: var(--color-text-3);
+  opacity: 0.55;
+  cursor: default;
+}
+
+.in-riproduzione .corpo {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--spazio-5);
+  padding: 0 32px 28px;
+  overflow: hidden;
+}
+.in-riproduzione .corpo[data-con-coda] {
+  grid-template-columns: minmax(0, 1fr) 316px;
+}
+
+.in-riproduzione .centro {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spazio-3);
+  min-height: 0;
+  text-align: center;
+  /* Un contenitore suo, e serve al titolo. Il `cq` più vicino era la zona del
+     contenuto, larga settecento pixel anche quando questa colonna ne è larga
+     trecentoquaranta perché la coda è aperta: il titolo si misurava su uno
+     spazio che non era il suo.
+
+     `size` e non `inline-size`: serve anche l'altezza, e serve alla copertina.
+     Vedi `.quadro-np`. Si può fare perché questa colonna è una cella di griglia
+     tirata dai due lati — la sua misura viene dal genitore, non dal contenuto —
+     che è esattamente la condizione che un contenitore di dimensione richiede. */
+  container-type: size;
+}
+/*
+ * Il quadro: la copertina, e sotto il suo riflesso.
+ *
+ * Serve un contenitore perché l'alone è `position: absolute` e senza di questo
+ * si misurerebbe sul centro, che è alto quanto tutta la schermata. Il quadro è
+ * anche il posto in cui sta la misura — prima stava sulla copertina, e con due
+ * strati sarebbe stata da tenere allineata in due punti.
+ */
+.in-riproduzione .quadro-np {
+  position: relative;
+  /*
+   * `42cqh` e non `42vh`, ed è la differenza fra un titolo che si legge e uno
+   * tagliato a metà.
+   *
+   * `vh` è la finestra intera; questa colonna ne è una fetta — sotto
+   * l'intestazione della pagina, sotto la testa della schermata, dentro il
+   * padding. Su una finestra da 820 pixel `42vh` dava una copertina da 344 in
+   * uno spazio da 590, e i 246 che restavano non bastavano a titolo, cursore,
+   * trasporto e giudizio: tutti quanti si stringevano — è il `flex-shrink` di
+   * serie — e il titolo, che ha `overflow: hidden` per il clamp a due righe,
+   * si tagliava sulla seconda. `cqh` misura lo spazio che c'è davvero.
+   */
+  width: min(360px, 42cqh);
+  aspect-ratio: 1;
+  flex: none;
+}
+.in-riproduzione .np-art {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-2);
+  object-fit: cover;
+  box-shadow: var(--shadow-3);
+  display: block;
+}
+/*
+ * Il riflesso sotto la copertina.
+ *
+ * È la stessa immagine, spostata in giù, sfocata e mascherata perché esista
+ * solo nella metà bassa. Non è un'ombra colorata di moda: è quel che un disco
+ * appoggiato fa su un tavolo lucido, ed è la ragione per cui sfuma verso il
+ * basso invece di circondare la copertina — un alone tutt'intorno sarebbe un
+ * bagliore, e questa stanza ha una luce sola.
+ */
+.in-riproduzione .alone {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: var(--radius-panel);
+  transform: translateY(7%) scale(1.06);
+  filter: blur(28px) saturate(1.5);
+  opacity: 0.5;
+  mask-image: linear-gradient(180deg, transparent 38%, black);
+  pointer-events: none;
+}
+/*
+ * Il titolo, su due righe e di misura fluida.
+ *
+ * Prima era trentotto punti fissi su una riga sola, e con la coda aperta il
+ * centro è largo poco più di trecento pixel: «Solar Sailer - Remixed by Pretty
+ * Lights» si leggeva «Solar Sailer - …». La parte tolta era esattamente quella
+ * che distingue una versione dall'altra, cioè la ragione per cui quel brano ha
+ * un titolo così lungo.
+ *
+ * Due righe e non tre: alla terza il titolo comincia a spingere il cursore e il
+ * trasporto fuori dallo schermo, e i comandi contano più del terzo capoverso di
+ * un titolo.
+ */
+.in-riproduzione .np-title {
+  margin: 0;
+  max-width: 100%;
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: clamp(20px, 8cqw, 40px);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.032em;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  text-wrap: balance;
+  user-select: text;
+}
+.in-riproduzione .np-meta {
+  font-size: 14.5px;
+  color: var(--color-text-2);
+}
+.in-riproduzione .cursore {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  width: min(560px, 100%);
+}
+.in-riproduzione .tempo {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-3);
+  width: 42px;
+  flex: none;
+}
+.in-riproduzione .tempo:last-child {
+  text-align: right;
+}
+.in-riproduzione .trasporto {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+}
+.in-riproduzione .trasporto .tasto {
+  width: 38px;
+  height: 38px;
+}
+.in-riproduzione .trasporto .grande {
+  width: 60px;
+  height: 60px;
+  background: var(--accent);
+  color: var(--color-surface-0);
+  box-shadow: var(--glow-accent);
+}
+.in-riproduzione .trasporto .grande:hover {
+  filter: brightness(1.08);
+  background: var(--accent);
+  color: var(--color-surface-0);
+}
+.in-riproduzione .giudizio {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+}
+.in-riproduzione .giudizio .volume {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-1);
+  width: 120px;
+}
+.in-riproduzione .giudizio .volume .scorrimento {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── lo spettro ───────────────────────────────────────────────────────────────
+ *
+ * Dieci barre disegnate su canvas, fra la copertina e il cursore. L'altezza è
+ * fissa e non proporzionale: la copertina è già l'elemento che si prende lo
+ * spazio che c'è, e uno spettro che cresce con la finestra si mangerebbe
+ * proprio quella.
+ */
+.spettro {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.spettro .viz-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+/* Un solco, come le altre piste: lo spettro sta **dentro** la superficie, non
+   sopra. `--incavo` è la stessa proprietà del cursore e delle barre. */
+.spettro .eq-bars {
+  display: block;
+  width: 100%;
+  height: 64px;
+  border-radius: var(--raggio-interno);
+  background: var(--incavo);
+  box-shadow: var(--filo);
+}
+
+.coda-np {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  min-height: 0;
+  padding: var(--spazio-3);
+  background: rgb(var(--surface-0-rgb) / 0.45);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--filo);
+}
+.coda-np > header {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.coda-np > header .occhiello {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.coda-np .righe-coda {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.coda-np .come-si-riordina {
+  margin: 0;
+  padding-top: var(--spazio-2);
+  border-top: 1px solid var(--hairline);
+  font-size: 11px;
+  color: var(--color-text-3);
+}
+.coda-np kbd,
+.in-riproduzione kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-minuto);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+/* ── la barra della selezione ────────────────────────────────────────────── */
+/* Stessa geometria del lettore, e prende il suo posto: `--player-h` e
+   `--player-gap` vengono dai token, quindi una skin che alza il lettore alza
+   anche questa e le due non si scollano. */
+.barra-selezione {
+  position: fixed;
+  left: calc(var(--nav-w) + var(--player-gap));
+  right: var(--player-gap);
+  bottom: var(--player-gap);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  /* Va a capo per righe intere invece di comprimere i tasti: con la terza
+     colonna aperta lo spazio è 668 pixel e i sei comandi ne vogliono
+     settecento, e le due uscite alternative erano peggio di questa — schiacciare
+     le etichette le taglia a metà parola, lasciarle traboccare rimette la barra
+     sotto la colonna, che è il difetto appena tolto. */
+  flex-wrap: wrap;
+  gap: var(--spazio-1) var(--spazio-2);
+  min-height: 56px;
+  padding: var(--spazio-2) var(--spazio-3);
+  background: var(--color-surface-2);
+  background-image: var(--luce);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-player);
+}
+/*
+ * Con la terza colonna aperta si ferma prima, come la notifica.
+ *
+ * Il lettore non ha bisogno di questa riga perché con la colonna aperta non si
+ * vede affatto; la barra della selezione sì — una selezione si fa anche mentre
+ * si guarda cosa sta suonando — e senza, i suoi ultimi trecentocinquanta pixel
+ * finivano sotto la colonna, «Chiudi» compreso.
+ */
+[data-scafale][data-colonna] .barra-selezione {
+  right: calc(var(--colonna-w) + var(--player-gap));
+}
+/* I comandi non vanno a capo: sono etichette di due parole, e spezzate su due
+   righe in una barra alta cinquantasei pixel escono da sopra e da sotto. È lo
+   spaziatore a cedere per primo — è lì per questo — e quando ha ceduto tutto,
+   la barra si stringe fin dove serve invece di riscrivere i suoi tasti. */
+.barra-selezione .bottone {
+  flex: none;
+  white-space: nowrap;
+}
+
+.barra-selezione .quanti {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  /* Il conteggio sale mentre si tiene premuto Maiusc: senza cifre di larghezza
+     fissa, i bottoni accanto slittano a ogni riga scelta. */
+  font-variant-numeric: tabular-nums;
+}
+.barra-selezione .separatore {
+  width: 1px;
+  height: 20px;
+  background: var(--hairline);
+}
+.barra-selezione .spinta {
+  flex: 1;
+}
+
+/* La riga scelta. `data-scelta` e non `:checked`: una riga non è un controllo,
+   e lo stato serve identico a chi guarda (`aria-selected`) e alle skin. */
+.riga[data-scelta] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* ── artisti ─────────────────────────────────────────────────────────────── */
+.artisti {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20px;
+  gap: var(--spazio-3);
+}
+
+.griglia-artisti {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 20px 14px;
+  align-content: start;
+}
+
+.scheda-artista {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/*
+ * Il ritratto: un mosaico due per due delle copertine dei suoi dischi.
+ *
+ * Non è un segnaposto. Nessuna immagine d'artista esisterà mai — non c'è rete —
+ * e queste sono immagini vere, che per di più dicono qualcosa: si riconosce un
+ * artista dai suoi album prima che dalla sua faccia. Chi ne ha uno solo lo vede
+ * a tutto riquadro, che è il caso giusto e non un ripiego.
+ */
+.mosaico {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 1px;
+  aspect-ratio: 1;
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--color-surface-2);
+  box-shadow: var(--shadow-2);
+}
+.mosaico[data-quante="1"] {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+/* Con due o tre copertine la prima prende tutta la colonna di sinistra: tre
+   tasselli in una griglia due per due lascerebbero un quarto vuoto, e un buco
+   in un mosaico si legge come un'immagine che non ha caricato. */
+.mosaico[data-quante="2"] {
+  grid-template-rows: 1fr;
+}
+.mosaico[data-quante="3"] > :first-child {
+  grid-row: span 2;
+}
+.mosaico .tassello {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: var(--color-surface-2);
+}
+.mosaico .senza,
+.mosaico .tassello.vuota {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-3);
+  background: var(--color-surface-2);
+}
+.mosaico .senza {
+  grid-column: span 2;
+  grid-row: span 2;
+}
+.scheda-artista:hover .mosaico {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.scheda-artista .nome {
+  font-size: 13.5px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scheda-artista .quanti {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+}
+
+/* L'indice alfabetico, al posto della paginazione: si salta alla R, non a
+   pagina sette. Le lettere vuote restano visibili e spente — un indice a buchi
+   dice quanto è grande la libreria, uno che mostra solo le lettere piene sembra
+   completo e fa cercare la Q che non c'è. */
+.indice-alfabetico {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.indice-alfabetico .lettera {
+  border: none;
+  background: transparent;
+  padding: 0;
+  width: 18px;
+  height: 15px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+.indice-alfabetico .lettera:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.indice-alfabetico .lettera:disabled {
+  color: var(--color-text-3);
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── notifiche ───────────────────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  right: var(--player-gap);
+  bottom: calc(var(--player-clearance) + var(--player-gap));
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  width: 320px;
+  padding: 10px 12px;
+  background: var(--color-surface-2);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  box-shadow: var(--filo), var(--shadow-3);
+  font-size: 12.5px;
+}
+[data-scafale][data-colonna] .toast {
+  right: calc(var(--colonna-w) + var(--player-gap));
+  bottom: var(--player-gap);
+}
+.toast .dentro {
+  flex: 1;
+  min-width: 0;
+}
+.toast .cosa {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-2);
+  margin-bottom: 5px;
+}
+.toast-progress {
+  height: 4px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  box-shadow: inset 0 1px 2px var(--incavo);
+  overflow: hidden;
+}
+.toast-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+
+/* ── lo Skin Studio ──────────────────────────────────────────────────────── */
+.studio {
+  display: grid;
+  grid-template-rows: 52px minmax(0, 1fr) 34px;
+  height: 100%;
+  background: var(--color-surface-0);
+}
+
+.testa-studio,
+.piede-studio {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 0 16px;
+  background: var(--color-surface-1);
+}
+.testa-studio {
+  border-bottom: 1px solid var(--hairline);
+}
+.piede-studio {
+  border-top: 1px solid var(--hairline);
+  font-size: 11.5px;
+  color: var(--color-text-3);
+  gap: var(--spazio-3);
+}
+.piede-studio .mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.piede-studio .spinta,
+.testa-studio .spinta {
+  flex: 1;
+}
+/*
+ * Quattro numeri, non tre.
+ *
+ * Gli errori dicono se si esporta; «fuori budget» e «sotto 4,5:1» dicono cosa si
+ * sta per esportare. Erano già calcolati e si vedevano solo entrando in un'altra
+ * vista, che è il posto sbagliato per una cosa che riguarda tutto il documento.
+ */
+.voce-piede {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.voce-piede[data-esito='bene'] {
+  color: var(--success);
+}
+.voce-piede[data-esito='attenzione'] {
+  color: var(--warning);
+}
+.voce-piede[data-esito='male'] {
+  color: var(--danger);
+}
+
+.marchio-studio {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.marchio-studio .icona {
+  color: var(--accent);
+}
+.testa-studio .divisore {
+  width: 1px;
+  height: 20px;
+  background: var(--hairline);
+}
+.pillola-skin {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  height: 30px;
+  padding: 0 12px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 99px;
+  font-size: 13px;
+}
+.pillola-skin code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+}
+.pillola-skin .bozza,
+.pillola-skin .rotta {
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.pillola-skin .bozza {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.pillola-skin .rotta {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.corpo-studio {
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr) 320px;
+  min-height: 0;
+}
+
+/* ── Impagina: l'albero e la tavolozza, a sinistra ───────────────────────────
+ *
+ * Stessa colonna del registro, stesse righe: `voce-registro` è riusata alla
+ * lettera, perché un albero di nodi e un albero di parti sono la stessa forma —
+ * e due forme diverse per la stessa cosa insegnerebbero che le due viste non
+ * sono lo stesso editor.
+ */
+.scafale-albero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  padding: 12px 10px;
+  background: var(--color-surface-1);
+  border-right: 1px solid var(--hairline);
+  min-height: 0;
+  overflow-y: auto;
+}
+/* Niente si comprime: è la colonna intera a scorrere.
+   Senza, l'albero e la tavolozza si schiacciano l'uno sull'altra e il contenuto
+   esce dai riquadri — che è quel che succede a un figlio flex con
+   `min-height: 0` in un contenitore più corto del suo contenuto. */
+.scafale-albero > * {
+  flex: none;
+}
+/* La stessa testa di sezione dei livelli: due viste dello stesso editor devono
+   avere la stessa forma, o insegnano che non lo sono. */
+.scafale-albero .testa-sezione {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spazio-2);
+  margin-bottom: 3px;
+}
+.scafale-albero .testa-sezione .da-dove {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+}
+.scafale-albero .nodo-riga {
+  cursor: grab;
+}
+.scafale-albero .nodo-riga[data-zona] .nome-voce {
+  color: var(--color-text-3);
+}
+.scafale-albero .misura {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+}
+.scafale-albero .essenziale {
+  color: var(--accent);
+  font-size: 15px;
+  line-height: 1;
+}
+.scafale-albero .peso {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+/* La fessura è il bersaglio, e la riga no: rilasciare su una **zona** avrebbe
+   due letture — dentro, o prima? — e una fessura ne ha una sola. Alta sei
+   pixel a riposo, e si accende solo quando il rilascio è legale: l'interfaccia
+   non offre l'errore. */
+.fessura {
+  height: 6px;
+  margin: 1px 0;
+  border-radius: 3px;
+  transition: background var(--transition-fast);
+}
+.fessura[data-attiva] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.fessura[data-attiva]:hover {
+  background: var(--accent);
+}
+.dentro-zona {
+  padding-left: 6px;
+  border-left: 1px solid var(--hairline);
+}
+
+.tavolozza-widget {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.gruppo-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.gruppo-widget .titolo-gruppo {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+  padding: 4px 8px 2px;
+}
+.un-widget {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: var(--color-surface-2);
+  color: var(--color-text-2);
+  font-size: 11.5px;
+  cursor: grab;
+}
+.un-widget code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.un-widget:hover {
+  color: var(--color-text-1);
+}
+/* Spento con la ragione nel suggerimento: spento e muto insegnerebbe soltanto
+   che l'editor a volte non risponde. */
+.un-widget[data-spento] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.azioni-nodo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-1);
+}
+/* Il sottoalbero viene da un prefab: modificarlo qui muove tutti gli usi, e
+   dirlo prima vale più che scoprirlo dopo. */
+.da-prefab {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+}
+
+/* L'ispettore del nodo riusa i controlli dell'ispettore delle parti: qui resta
+   solo la disposizione delle manopole, che sono una forma nuova. */
+.manopola {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  font-size: 12px;
+}
+.manopola .nome-manopola {
+  flex: none;
+  min-width: 64px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-2);
+}
+.manopola .scorrimento {
+  flex: 1;
+  min-width: 0;
+}
+.cursore-campo {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.cursore-campo .scorrimento {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── il registro, a sinistra ─────────────────────────────────────────────── */
+.registro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  padding: 12px 10px;
+  background: var(--color-surface-1);
+  border-right: 1px solid var(--hairline);
+  min-height: 0;
+}
+.registro .filtro {
+  height: 30px;
+  padding: 0 10px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 99px;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+.registro .albero {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+/*
+ * I gruppi si richiudono.
+ *
+ * Cinquantuno parti in otto gruppi tutti aperti sono un elenco che si scorre;
+ * chiusi, sono una mappa. Con un filtro attivo si riaprono tutti, perché un
+ * albero chiuso su una ricerca è una ricerca senza risultati.
+ */
+.gruppo-registro .titolo-gruppo {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+}
+.gruppo-registro .titolo-gruppo:hover {
+  background: var(--color-surface-2);
+}
+.gruppo-registro .titolo-gruppo[aria-expanded='true'] {
+  background: rgb(255 255 255 / 0.04);
+  color: var(--color-text-1);
+  font-weight: 550;
+}
+.gruppo-registro .titolo-gruppo > span:first-of-type {
+  flex: 1;
+}
+.gruppo-registro .titolo-gruppo .quante {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+}
+/* Le voci rientrano sotto il loro gruppo: il rientro è la gerarchia. */
+.gruppo-registro .voce-registro {
+  margin-left: 12px;
+  width: calc(100% - 12px);
+}
+.voce-registro {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.voce-registro:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+}
+.voce-registro[data-active] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.voce-registro .nome-voce {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Il pallino dell'accento dice che la skin ha già toccato questa parte. Senza,
+   per sapere cosa si è ridisegnato bisogna leggere il JSON — e a quel punto
+   l'albero non serve a niente. */
+.voce-registro .pallino {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.2);
+  flex: none;
+}
+.voce-registro .pallino[data-toccata] {
+  background: var(--accent);
+}
+.voce-registro .obbligatorio {
+  color: var(--warning);
+  font-size: 14px;
+  line-height: 1;
+}
+.piede-registro {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: var(--spazio-2);
+  border-top: 1px solid var(--hairline);
+  font-size: 11px;
+  color: var(--color-text-2);
+}
+/*
+ * L'etichettina in mono maiuscoletto: è la stessa in tutto lo Studio, e si
+ * chiama così invece che `h4` perché non è un titolo di sezione — è una
+ * didascalia che dice di cosa parla la riga sotto.
+ */
+.titolino {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+/* «Quanto è grande il vocabolario, e dov'è»: è la domanda che ci si fa una
+   volta sola, ma all'inizio — e la risposta non vale un giro nell'albero. */
+.chip-gruppi {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.chip-gruppo {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--color-surface-2);
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.chip-gruppo:hover {
+  color: var(--color-text-1);
+}
+.chip-gruppo[data-active] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.chip-gruppo .quante {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+}
+.piede-registro .sintesi {
+  font-size: 11px;
+  color: var(--color-text-2);
+}
+.piede-registro .manca {
+  color: var(--warning);
+}
+
+/* ── l'anteprima, al centro ──────────────────────────────────────────────── */
+.centro-studio {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spazio-3);
+  padding: 14px;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* La larghezza la scrive React, ed è quella misurata del riquadro sotto: la
+   testata finisce dove finisce l'anteprima, a ogni misura della finestra.
+   `max-width` è la rete: la misura arriva un disegno dopo il primo. */
+.testa-centro {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  width: 100%;
+  max-width: 100%;
+  /* Quel che sta intorno all'anteprima tiene la sua altezza: a crescere è
+     solo il riquadro, e quando non ci sta più lo Studio scorre. */
+  flex: none;
+  /* E non va a capo, mai. Qui la larghezza viene dal riquadro e il riquadro
+     viene dall'altezza che avanza: se andando a capo questa riga diventasse
+     più alta, avanzerebbe meno altezza, il riquadro si stringerebbe e la riga
+     andrebbe a capo di nuovo. Una riga che non va a capo non ha il giro. */
+  white-space: nowrap;
+}
+.testa-centro .spinta {
+  flex: 1;
+}
+/* «1280×820 · 100%»: dice che quel che si guarda ha le proporzioni della
+   finestra e non misure inventate — e quindi che una superficie sottile qui lo è
+   davvero. La percentuale cambia con la finestra, ed è il punto: dice quanto
+   manca al vero. */
+.misura-anteprima {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+}
+.anteprima-guscio {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+  align-items: center;
+  min-height: 0;
+}
+
+/*
+ * Lo spazio in cui il riquadro si misura.
+ *
+ * Dove non serve — l'anteprima ferma della vista Documento, che una misura sua
+ * ce l'ha — sparisce dal calcolo invece di aggiungere una scatola in mezzo.
+ */
+.anteprima-spazio {
+  display: contents;
+}
+
+/*
+ * L'anteprima si prende lo spazio che c'è.
+ *
+ * Prima era 656×420 scritti a mano, ed erano il 51% della finestra vera a
+ * qualunque misura la finestra fosse: su uno schermo grande restava un
+ * francobollo con mezzo Studio vuoto sotto. Il difetto era di misura, ma si
+ * pagava sul lavoro — la sonda serve a leggere il nome di una superficie, e a
+ * quella scala le superfici sottili erano righe di due pixel.
+ *
+ * Adesso la misura è una conseguenza: `100cqh` è quel che resta in altezza dopo
+ * la testata e le briciole, `100cqw` quel che resta in larghezza fra le due
+ * colonne, e il riquadro prende il minore dei due tenendo le proporzioni della
+ * finestra. Il terzo termine è il tetto: oltre 1280×820 non si va, perché oltre
+ * la finestra vera l'anteprima smetterebbe di essere un'anteprima — al 100% è
+ * la finestra, e più grande sarebbe una bugia.
+ *
+ * Le due misure arrivano da `MISURA` in `Anteprima.tsx` come variabili sul
+ * contenitore: la finestra vera è dichiarata in un posto solo, e riscriverla
+ * qui sarebbe il modo di farle divergere.
+ */
+.centro-studio .anteprima-guscio {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+}
+.centro-studio .anteprima-spazio {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  width: 100%;
+  /* Il pavimento: sotto questa altezza lo Studio scorre invece di ridurre
+     l'anteprima a niente. */
+  min-height: 240px;
+  container-type: size;
+}
+.centro-studio .anteprima {
+  width: min(
+    100cqw,
+    100cqh * var(--misura-l) / var(--misura-a),
+    var(--misura-l) * 1px
+  );
+  height: auto;
+  aspect-ratio: var(--misura-l) / var(--misura-a);
+}
+
+/*
+ * La miniatura. Non ha misure «finte»: tiene le proporzioni di 1280×820, quindi
+ * quelle che si vedono sono le proporzioni vere e una superficie che sembra
+ * sottile qui è sottile davvero. Le misure qui sotto valgono dove il riquadro
+ * sta fermo — la vista Documento — e sono il 51% della finestra vera.
+ *
+ * `contain` non è un'ottimizzazione: da quando qui dentro c'è **l'applicazione**
+ * invece di un disegno, ci sono anche i tre elementi che galleggiano `fixed` —
+ * la barra del lettore, la coda, la barra della selezione — e `fixed` si
+ * riferisce alla finestra. Senza contenimento uscirebbero dal riquadro e si
+ * appiccicherebbero al fondo dello Studio: `contain: layout paint` rende questo
+ * elemento il loro blocco contenitore, e la miniatura torna a essere una
+ * miniatura di tutto invece che di quasi tutto.
+ */
+.anteprima {
+  width: 656px;
+  height: 420px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--color-surface-0);
+  position: relative;
+  contain: layout paint;
+}
+.anteprima[data-sonda] {
+  cursor: crosshair;
+}
+.anteprima .e-scelta {
+  outline: 1px dashed var(--accent);
+  outline-offset: 2px;
+}
+/*
+ * L'alone della sonda sta **sopra** la scena, non addosso all'elemento.
+ *
+ * Un fondo messo sulla parte coprirebbe proprio la cosa che si sta guardando —
+ * come la skin l'ha dipinta — e il contorno è quel che serve a dire «questa»,
+ * non a ridipingerla. `pointer-events: none` perché la sonda deve continuare a
+ * vedere quel che c'è sotto mentre il puntatore si muove.
+ */
+.anteprima .alone {
+  position: absolute;
+  border: 1.5px dashed var(--accent);
+  background: var(--accent-soft);
+  pointer-events: none;
+  z-index: 2;
+}
+/* La targhetta è il cuore: dice il nome, il gruppo e se c'è uno strato libero.
+   Sapere come si chiama la cosa che si sta guardando è il problema vero. */
+.anteprima .targhetta {
+  position: absolute;
+  left: -1.5px;
+  top: -19px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--color-surface-0);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: var(--shadow-2);
+}
+/* Sul bordo di sopra non c'è posto: la targhetta scende dentro il riquadro. */
+.anteprima .targhetta[data-sotto] {
+  top: 4px;
+  left: 4px;
+}
+.anteprima .targhetta .gruppo {
+  opacity: 0.65;
+  font-weight: 400;
+}
+.anteprima .targhetta .strato {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgb(0 0 0 / 0.22);
+}
+
+.mini {
+  position: relative;
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  height: 100%;
+  font-size: 0;
+}
+.mini-ambiente {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(80% 60% at 50% 0%, var(--ambient-1), transparent 70%);
+}
+.mini-nav {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 8px;
+  background: var(--color-surface-1);
+  border-right: 1px solid var(--hairline);
+}
+.mini-voce {
+  height: 9px;
+  border-radius: 4px;
+  background: var(--color-surface-2);
+}
+.mini-main {
+  position: relative;
+  padding: 12px;
+  min-width: 0;
+  overflow: hidden;
+}
+.mini-main.sfocata {
+  opacity: 0.4;
+}
+.mini-testa {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+.mini-riga {
+  display: block;
+  height: 7px;
+  border-radius: 3px;
+  background: var(--color-text-3);
+  opacity: 0.5;
+}
+.mini-riga.corta {
+  width: 40%;
+  height: 10px;
+  opacity: 0.8;
+}
+.mini-riga.cortissima {
+  width: 24%;
+  height: 6px;
+}
+.mini-campo {
+  height: 12px;
+  width: 90px;
+  border-radius: 99px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+}
+.mini-elenco {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mini-riga-elenco {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 6px;
+}
+.mini-quadro {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--color-surface-3);
+}
+.mini-scheletro {
+  height: 18px;
+  margin-bottom: 5px;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-1),
+    var(--color-surface-3),
+    var(--color-surface-1)
+  );
+}
+.mini-scheletro.largo {
+  height: 26px;
+}
+.mini-vuoto {
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  height: 100%;
+}
+.mini-icona-vuota {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--color-surface-2);
+  color: var(--color-text-3);
+}
+.mini-modale {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 240px;
+  padding: 14px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-3);
+}
+.mini-bottoni {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.mini-bottone {
+  width: 46px;
+  height: 15px;
+  border-radius: 6px;
+  background: var(--color-surface-3);
+}
+.mini-bottone.btn-accent {
+  background: var(--accent);
+}
+.mini-lettore {
+  position: absolute;
+  left: 90px;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 8px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: var(--shadow-player);
+}
+.mini-cursore {
+  flex: 1;
+  height: 3px;
+  border-radius: 99px;
+  background: var(--scrubber-rest);
+}
+.mini-np {
+  grid-template-columns: 82px minmax(0, 1fr) 120px;
+}
+.mini-velo {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgb(var(--surface-0-rgb) / 0.42),
+    rgb(var(--surface-0-rgb) / 0.8)
+  );
+}
+.mini-np-corpo {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 14px;
+}
+.mini-copertona {
+  width: 110px;
+  height: 110px;
+  border-radius: 12px;
+  background: var(--color-surface-2);
+  box-shadow: var(--shadow-3);
+}
+.mini-trasporto {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mini-tondo {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-surface-3);
+}
+.mini-tondo.grande {
+  width: 22px;
+  height: 22px;
+  background: var(--accent);
+  box-shadow: var(--glow-accent);
+}
+.mini-coda {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 8px;
+  background: var(--color-surface-1);
+  border-left: 1px solid var(--hairline);
+}
+.mini-riga-coda {
+  height: 14px;
+  border-radius: 5px;
+  background: var(--color-surface-2);
+}
+
+.briciole {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  justify-content: center;
+  min-height: 18px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-2);
+}
+.briciole .niente {
+  color: var(--color-text-3);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+.briciola {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.briciola .freccia {
+  color: var(--color-text-3);
+}
+.briciola:last-child code {
+  color: var(--accent);
+}
+/*
+ * L'ultima briciola, quando non è una parte.
+ *
+ * Prima la catena si fermava e basta, e non si sapeva se il puntatore fosse sul
+ * bordo o se quella superficie non fosse nel registro. Scritta in giallo, è il
+ * modo più rapido per scoprire che manca — che è quel che questa vista serve a
+ * far succedere.
+ */
+.briciola.mancante code {
+  color: var(--warning);
+}
+.briciola .richiesta {
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+}
+.in-pausa {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--warning);
+  flex: none;
+}
+/* Resta a 656 anche quando l'anteprima cresce: è un paragrafo, e una riga
+   lunga 1280 pixel si legge peggio di una lunga 656. */
+.spiega-sonda {
+  width: 656px;
+  max-width: 100%;
+  margin: 0;
+  flex: none;
+  padding: 9px 12px;
+  background: var(--color-surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-text-2);
+}
+.spiega-sonda strong {
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+
+/* ── l'ispettore, a destra ───────────────────────────────────────────────── */
+.ispettore {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  padding: 12px 14px;
+  background: var(--color-surface-1);
+  border-left: 1px solid var(--hairline);
+  overflow-y: auto;
+  min-height: 0;
+}
+.ispettore .niente-scelto {
+  color: var(--color-text-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.ispettore .niente-scelto .sotto {
+  color: var(--color-text-3);
+  font-size: 11.5px;
+}
+.testa-ispettore .nome-parte {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent);
+}
+.testa-ispettore .gruppo-parte {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.chip-livello {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--color-surface-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-2);
+}
+.testa-ispettore .descrizione {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--color-text-2);
+}
+
+.corpo-ispettore {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  min-height: 0;
+}
+
+/* ── lo sfondo, a livelli ─────────────────────────────────────────────────── */
+/*
+ * Una pila, e si vede che è una pila: i livelli stanno uno sopra l'altro come
+ * stanno nel documento, dal più basso. Un elenco che non lo mostrasse
+ * costringerebbe a ricordarsi in che verso si legge.
+ */
+.livelli .testa-sezione {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spazio-2);
+  margin-bottom: 7px;
+}
+.livelli .testa-sezione .da-dove {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+}
+.pila {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.livello {
+  display: grid;
+  grid-template-columns: 14px 14px minmax(0, 1fr) auto 18px;
+  gap: 7px;
+  align-items: center;
+  padding: 6px 8px;
+  background: var(--color-surface-2);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: grab;
+}
+.livello[data-preso] {
+  border-color: var(--accent);
+  opacity: 0.6;
+}
+.livello .maniglia {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-3);
+}
+.livello .ritratto {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid var(--hairline);
+}
+.livello .quale {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-1);
+}
+.peso {
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+.livello .via {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.livello .via:hover {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
+}
+
+.aggiungi-livello {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border: 1px dashed var(--hairline);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.aggiungi-livello:hover {
+  border-color: var(--accent);
+}
+.aggiungi-livello .quanti {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--color-text-3);
+}
+.elenco-effetti {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 5px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+}
+.un-effetto {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.un-effetto:hover {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
+}
+.un-effetto code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── le otto proprietà ────────────────────────────────────────────────────── */
+.proprieta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.proprieta-riga {
+  display: grid;
+  grid-template-columns: 66px minmax(0, 1fr);
+  gap: var(--spazio-2);
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--color-text-2);
+}
+.proprieta-riga .come {
+  min-width: 0;
+}
+.proprieta-riga input,
+.proprieta-riga select {
+  height: 26px;
+  padding: 0 8px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 11px;
+  outline: none;
+  min-width: 0;
+}
+.proprieta-riga input:focus,
+.proprieta-riga select:focus {
+  border-color: var(--accent);
+}
+
+/*
+ * Il colore in tre modi, e il modo si dichiara.
+ *
+ * Un campo solo dovrebbe indovinare se «#c96a2e» è un letterale o il nome di un
+ * colore in tavolozza. Dichiararlo costa un selettore e toglie l'ambiguità.
+ */
+.valore-colore {
+  display: grid;
+  grid-template-columns: 14px auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+.valore-colore .pastiglia {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid var(--hairline);
+}
+/* Un valore non dichiarato non si finge nero: il nero si scambia per una scelta. */
+.valore-colore .pastiglia[data-vuota] {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--color-surface-3) 0 3px,
+    transparent 3px 6px
+  );
+}
+.valore-colore .modo {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.valore-colore input[type='color'] {
+  padding: 2px;
+  cursor: pointer;
+}
+
+.proprieta-riga .bordo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 54px;
+  gap: 6px;
+}
+.proprieta-riga .bordo .spessore {
+  text-align: center;
+  font-family: var(--font-mono);
+}
+
+.cursore {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px 20px;
+  gap: 6px;
+  align-items: center;
+}
+.cursore input[type='range'] {
+  height: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.cursore .lettura {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+  text-align: right;
+}
+.cursore .sgancia {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.cursore .sgancia:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.proprieta-riga .ritaglio {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+/* Quattro caselle disposte come stanno sulla superficie: `bottomRight` non si
+   traduce, si guarda. */
+.angoli {
+  display: grid;
+  grid-template-columns: 12px 12px;
+  grid-template-rows: 12px 12px;
+  gap: 2px;
+}
+.angolo {
+  border: 0;
+  border-radius: 2px;
+  background: var(--color-surface-3);
+  cursor: pointer;
+  padding: 0;
+}
+.angolo[data-active] {
+  background: var(--accent);
+}
+.angolo:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ── il costo, mentre lo si spende ────────────────────────────────────────── */
+.costo {
+  padding: 9px 11px;
+  background: var(--color-surface-2);
+  border-radius: var(--radius-card);
+}
+.costo .testa-costo {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-bottom: 6px;
+}
+.costo .testa-costo .titolino {
+  flex: 1;
+}
+.costo .testa-costo strong {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.costo .testa-costo .su {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+}
+/*
+ * Una barra proporzionale, non dieci caselle: un segmento per livello, largo
+ * quanto pesa. Così il livello che sta mangiando il budget si vede senza
+ * contare — e un `blurBehind`, che da solo vale tutto, riempie la barra.
+ */
+.misuratore {
+  display: flex;
+  gap: 1px;
+  height: 5px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  overflow: hidden;
+}
+.misuratore[data-sopra] {
+  outline: 1px solid var(--danger);
+  outline-offset: 1px;
+}
+.costo .nota {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--color-text-3);
+}
+.quel-che-non-ce {
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-text-2);
+}
+.quel-che-non-ce p {
+  margin: 5px 0 0;
+}
+
+/* ── la vista Documento ──────────────────────────────────────────────────── */
+.studio-documento {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr) 340px;
+  min-height: 0;
+}
+
+/* ── il pacchetto e le istantanee, a sinistra ─────────────────────────────── */
+.colonna-pacchetto {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-4);
+  padding: 12px 10px;
+  background: var(--color-surface-1);
+  border-right: 1px solid var(--hairline);
+  min-height: 0;
+  overflow-y: auto;
+}
+.colonna-pacchetto .spinta {
+  flex: 1;
+}
+.blocco-pacchetto {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.blocco-pacchetto > .titolino {
+  padding: 0 8px;
+}
+.albero-file {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.albero-file .file {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  color: var(--color-text-2);
+}
+.albero-file .file[data-active] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.albero-file .file.dentro {
+  padding-left: 22px;
+}
+.albero-file .nome {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.albero-file .peso-file {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+}
+
+.testa-istantanee {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 0 8px;
+}
+.testa-istantanee .prendi {
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.testa-istantanee .prendi:hover {
+  background: var(--color-surface-2);
+  color: var(--accent);
+}
+.elenco-istantanee {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.istantanea {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.istantanea:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+}
+/* La prima riga non è su disco, e non si clicca: dirlo è il modo di non far
+   credere che il lavoro sia già al sicuro. */
+.istantanea.adesso {
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+  cursor: default;
+}
+.istantanea .quale {
+  font-size: 11.5px;
+}
+.istantanea .quanto {
+  margin-top: 1px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+}
+.nota-pacchetto {
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--color-text-3);
+}
+
+/* ── l'editor, al centro ──────────────────────────────────────────────────── */
+.colonna-editor {
+  display: flex;
+  flex-direction: column;
+  padding: 9px 14px 14px;
+  min-height: 0;
+}
+/*
+ * Linguette vere: si saldano al riquadro sotto, che perde l'angolo in alto a
+ * sinistra per riceverle. La forma dice che quel che si sceglie è il contenuto
+ * di **quel** riquadro, non di tutta la vista — un segmentato tondo diceva
+ * un'altra cosa.
+ */
+.linguette-editor {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+.linguette-editor .spinta {
+  flex: 1;
+}
+.linguetta-file {
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  background: transparent;
+  color: var(--color-text-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.linguetta-file:hover {
+  color: var(--color-text-1);
+}
+.linguetta-file[data-active] {
+  background: var(--color-surface-1);
+  border-color: var(--hairline);
+  color: var(--color-text-1);
+  font-weight: 550;
+}
+.linguette-editor .misure {
+  padding-bottom: 7px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+}
+.riquadro-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: 0 12px 12px 12px;
+  overflow: hidden;
+}
+
+/*
+ * Due strati che devono restare incollati.
+ *
+ * Sotto il `<pre>` colorato, sopra la `<textarea>` col testo trasparente e il
+ * cursore visibile. Perché non si sfalsino, ogni proprietà che influisce sulla
+ * disposizione del testo va scritta **una volta** e valere per entrambi: è quel
+ * che fa il selettore doppio qui sotto. Un `padding` diverso di un pixel si
+ * vedrebbe come un'ombra che segue il testo.
+ */
+.editor-doppio {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.editor-doppio .editor,
+.editor-doppio .sotto-editor {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding-block: 12px;
+  padding-right: 14px;
+  border: none;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.72;
+  white-space: pre;
+  tab-size: 2;
+  overflow: auto;
+}
+.editor-doppio .sotto-editor {
+  /* La grondaia sta **dentro** il `<pre>`, come prima colonna della griglia di
+     ogni riga: 40px di numero più 12px di stacco. */
+  padding-left: 0;
+  pointer-events: none;
+  color: var(--color-text-1);
+}
+/* E la textarea si scosta della stessa misura, altrimenti i due strati
+   scriverebbero il testo in due posti diversi e si vedrebbe un'ombra. */
+.editor-doppio .editor {
+  padding-left: 52px;
+}
+/* Il testo è invisibile ma selezionabile: quel che si legge è lo strato sotto,
+   quel che si scrive è questo. `caret-color` riporta il cursore. */
+.editor-doppio .editor {
+  color: transparent;
+  caret-color: var(--color-text-1);
+  resize: none;
+  outline: none;
+  user-select: text;
+}
+.editor-doppio .editor::selection {
+  background: var(--accent-soft);
+}
+.riga-json {
+  display: grid;
+  grid-template-columns: 40px minmax(0, max-content);
+  gap: 12px;
+}
+.riga-json .numero {
+  text-align: right;
+  color: rgb(255 255 255 / 0.28);
+}
+/* La riga dell'errore, sottolineata come la sottolinea un correttore: si vede
+   dov'è senza cercare il percorso nel pannello sotto. */
+.riga-json[data-rotta] .testo {
+  text-decoration: underline wavy var(--danger);
+  text-underline-offset: 3px;
+}
+.t-chiave {
+  color: var(--accent);
+}
+.t-stringa {
+  color: var(--success);
+}
+.t-numero,
+.t-letterale {
+  color: var(--warning);
+}
+.t-segno {
+  color: var(--color-text-3);
+}
+
+.uscita {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 12px 14px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.72;
+  outline: none;
+  overflow: auto;
+  user-select: text;
+  white-space: pre;
+  tab-size: 2;
+}
+.uscita code {
+  font: inherit;
+}
+.differenze .d-piu {
+  background: var(--success-soft);
+}
+.differenze .d-meno {
+  background: var(--danger-soft);
+}
+.differenze .segno {
+  display: inline-block;
+  width: 12px;
+  color: var(--color-text-3);
+}
+
+.pannello-errore {
+  display: flex;
+  gap: 9px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--hairline);
+  background: var(--danger-soft);
+  border-left: 2px solid var(--danger);
+}
+.pannello-errore > .icona {
+  color: var(--danger);
+  margin-top: 2px;
+}
+.pannello-errore .dove code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.pannello-errore .dove .codice {
+  color: var(--danger);
+}
+.pannello-errore .cosa {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-2);
+}
+.pannello-errore .forse {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+.suggerimento {
+  border: none;
+  background: var(--color-surface-3);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+  margin: 0 2px;
+}
+.pannello-errore .da-dove {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--color-text-3);
+}
+.piede-editor {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  padding: 7px 14px;
+  border-top: 1px solid var(--hairline);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+}
+.piede-editor .spinta {
+  flex: 1;
+}
+
+.colonna-diagnosi {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  padding: 12px 14px;
+  background: var(--color-surface-1);
+  border-left: 1px solid var(--hairline);
+  overflow-y: auto;
+  min-height: 0;
+}
+.colonna-diagnosi h3 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spazio-2);
+  margin: 0 0 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.colonna-diagnosi h3 .temi {
+  margin-left: auto;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/*
+ * L'anteprima dentro la vista Documento.
+ *
+ * È mentre si scrive che il documento si rompe, ed è qui che «resta all'ultimo
+ * stato valido» smette di essere una promessa e diventa una cosa che si vede.
+ * La miniatura è la stessa della vista Ispeziona, rimpicciolita con `scale`:
+ * ridisegnarne una seconda vorrebbe dire due scene da tenere allineate.
+ */
+.anteprima-documento .riquadro-fermo {
+  position: relative;
+  height: 200px;
+  border-radius: 10px;
+  border: 1px solid var(--hairline);
+  overflow: hidden;
+}
+.anteprima-documento .riquadro-fermo .anteprima-guscio {
+  transform: scale(0.474);
+  transform-origin: top left;
+  pointer-events: none;
+}
+.anteprima-documento .riquadro-fermo .briciole {
+  display: none;
+}
+.anteprima-documento .riquadro-fermo[data-in-pausa] .anteprima {
+  opacity: 0.55;
+}
+.anteprima-documento .velo {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(var(--surface-0-rgb) / 0.55);
+}
+.pillola-pausa {
+  padding: 4px 10px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  border: 1px solid var(--hairline);
+  font-size: 11px;
+  color: var(--color-text-2);
+}
+.colonna-diagnosi .niente {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+.avvisi {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.avviso {
+  display: grid;
+  grid-template-columns: 3px minmax(0, 1fr);
+  gap: 9px;
+  padding: 6px 9px;
+  background: var(--color-surface-2);
+  border-radius: 10px;
+}
+.avviso .barretta {
+  border-radius: 99px;
+}
+.testa-avviso {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+.testa-avviso .genere {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+}
+.testa-avviso .dove {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.avviso .cosa {
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-2);
+}
+
+.contrasti {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.riga-contrasto {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 40px 40px;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 8px;
+  background: var(--color-surface-2);
+  border-radius: 9px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.riga-contrasto .coppia {
+  min-width: 0;
+  color: var(--color-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.riga-contrasto .rapporto {
+  text-align: right;
+}
+.colonna-diagnosi .nota {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--color-text-3);
+}
+.colonna-diagnosi .nota code {
+  font-family: var(--font-mono);
+  color: var(--color-text-2);
+}
+
+/* ── la vista Tavolozza ──────────────────────────────────────────────────── */
+.studio-tavolozza {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  padding: 18px 24px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.studio-tavolozza .colonna {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.studio-tavolozza .niente {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-3);
+}
+.colori,
+.dinamici {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.colore {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) 82px 68px 20px;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 9px;
+  background: var(--color-surface-2);
+  border: 1px solid transparent;
+  border-radius: 11px;
+}
+.colore .pastiglia {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.colore .nome {
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+}
+.colore .nome:hover {
+  border-color: var(--hairline);
+}
+.colore .nome:focus {
+  border-color: var(--accent);
+  background: var(--color-surface-1);
+}
+.colore .via {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.colore .via:hover {
+  background: var(--color-surface-3);
+  color: var(--danger);
+}
+.aggiungi-colore {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px dashed var(--hairline);
+  border-radius: 11px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.aggiungi-colore:hover {
+  border-color: var(--accent);
+}
+/* Il colore mai usato non è un errore, ma è la cosa che si è venuti a vedere:
+   `UnusedPattern` è dichiarato nel crate e nessun ramo lo produce, e questo è
+   l'unico momento in cui qualcuno guarda la tavolozza. */
+.colore[data-mai] {
+  background: var(--warning-soft);
+  border-color: var(--warning);
+}
+.colore[data-mai] .uso {
+  color: var(--warning);
+}
+.colore .valore {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-2);
+}
+.colore .uso {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+  text-align: right;
+}
+.dinamico {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 168px;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 9px;
+  background: var(--color-surface-2);
+  border-radius: 11px;
+}
+.dinamico.spento {
+  opacity: 0.6;
+}
+.dinamico .token {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.dinamico .scelta {
+  height: 26px;
+  padding: 0 8px;
+  background: var(--color-surface-3);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 11px;
+}
+.dinamico .fisso {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+  text-align: center;
+  border: 1px dashed var(--hairline);
+  border-radius: 8px;
+  padding: 5px;
+}
+.studio-tavolozza .nota {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-text-2);
+}
+.studio-tavolozza .nota code {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-1);
+}
+.mancanti {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.chip {
+  border: none;
+  background: var(--color-surface-3);
+  color: var(--color-text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.quattro {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+}
+.scelta-impaginazione .che {
+  font-size: 11px;
+  color: var(--color-text-2);
+  margin-bottom: 5px;
+}
+.scelta-impaginazione .valori {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-surface-2);
+  border-radius: 9px;
+}
+.scelta-impaginazione .valore {
+  flex: 1;
+  padding: 5px 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-3);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.scelta-impaginazione .valore[data-active] {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
+  font-weight: 550;
+}
+.prima-di-esportare {
+  border-color: var(--accent) !important;
+}
+.controlli {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.controlli li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+}
+.controlli li > span {
+  flex: 1;
+}
+.controlli li[data-esito='bene'] > .icona {
+  color: var(--success);
+}
+.controlli li[data-esito='attenzione'] > .icona {
+  color: var(--warning);
+}
+.controlli li[data-esito='male'] > .icona {
+  color: var(--danger);
+}
+.controlli .vai {
+  border: none;
+  background: var(--color-surface-3);
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+/* La riga in fondo: la nota che spiega perché si può esportare comunque, e il
+   bottone che lo fa. Stanno insieme perché è una frase sola. */
+.piede-esportare {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--hairline);
+}
+.piede-esportare .nota {
+  flex: 1;
+}
+.studio-tavolozza .nota.gialla {
+  margin-top: 11px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--warning-soft);
+}
+
+/* ── impostazioni ────────────────────────────────────────────────────────── */
+.impostazioni {
+  display: grid;
+  grid-template-columns: 186px minmax(0, 1fr);
+  gap: 26px;
+  align-items: start;
+}
+
+.impostazioni .indice {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.impostazioni .indice .voce {
+  font-size: 12.5px;
+  padding: 7px 10px;
+}
+
+.impostazioni .corpo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  min-width: 0;
+}
+
+.scheda.section-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  background: var(--color-surface-1);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  /* Un'ombra corta anche qui, e non solo il bordo: sei schede impilate contro
+     il fondo della pagina, tutte dello stesso grigio, si leggevano come un
+     unico blocco diviso da righe. Con il contatto sotto ognuna è un oggetto
+     appoggiato. */
+  box-shadow: var(--filo), var(--shadow-1);
+  padding: 13px 15px;
+}
+.scheda.section-card > header {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.scheda.section-card .section-icon {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-3);
+}
+.scheda.section-card .section-heading {
+  flex: 1;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.scheda.section-card .nota-testa {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+}
+
+.impostazioni .cartelle {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.impostazioni .azioni {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  flex-wrap: wrap;
+}
+/* I campi delle credenziali OAuth crescono con la scheda: alla larghezza di
+   serie di un input, un client id di Google si vede per un terzo. */
+.impostazioni .azioni .campo {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.impostazioni .oppure {
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+.impostazioni .nota,
+.impostazioni .esito {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-2);
+  text-wrap: pretty;
+}
+.impostazioni .nota code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-1);
+}
+
+.avanzamento-scansione {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.avanzamento-scansione .riga-avanzamento {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.avanzamento-scansione .quanti {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+.avanzamento-scansione .barra {
+  height: 6px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  box-shadow: inset 0 1px 2px var(--incavo);
+  overflow: hidden;
+}
+.avanzamento-scansione .riempita {
+  position: relative;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
+  transition: width 120ms linear;
+  overflow: hidden;
+}
+/* Il riflesso che scorre. Dice che qualcosa sta succedendo anche quando la
+   percentuale non si muove — e su una scansione la percentuale sta ferma per
+   secondi interi, perché il nucleo annuncia ogni venticinque file. */
+/* `--color-surface-0` e non un bianco scritto a mano: era l'ultimo colore
+   letterale del foglio. Il riflesso corre sopra la parte già riempita, che è
+   accento pieno — e il fondo dell'applicazione sopra l'accento è la stessa
+   regola con cui si scrive l'etichetta di un bottone primario. Nel tema chiaro
+   si inverte da sé, che è il motivo per cui un `#fff` lì era sbagliato due
+   volte. */
+.avanzamento-scansione .riflesso {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-surface-0) 34%, transparent),
+    transparent
+  );
+  animation: scorri 1.4s linear infinite;
+}
+@keyframes scorri {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.riga-opzione {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+}
+.riga-opzione .che-cosa {
+  flex: 1;
+  min-width: 0;
+}
+.riga-opzione .etichetta {
+  font-size: 13px;
+}
+.riga-opzione .spiegazione {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--color-text-2);
+  text-wrap: pretty;
+}
+
+.interruttore {
+  flex: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+.interruttore:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.interruttore .pista {
+  display: block;
+  position: relative;
+  width: 40px;
+  height: 23px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  transition: background var(--transition-fast);
+}
+.interruttore[aria-checked="true"] .pista {
+  background: var(--accent);
+}
+.interruttore .pallina {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--color-text-3);
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+.interruttore[aria-checked="true"] .pallina {
+  transform: translateX(17px);
+  background: var(--color-surface-0);
+}
+
+.griglia-skin {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: var(--spazio-2);
+}
+.scheda-skin {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--color-surface-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+}
+.scheda-skin[data-active] {
+  border-color: var(--accent);
+}
+.scheda-skin .prova {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/* Tre fasce di colore vere, scelte dall'autore in `meta.preview`. Prima erano
+   indovinate prendendo fondo, superficie e accento, che per una skin sobria dà
+   tre grigi quasi uguali. */
+.scheda-skin .bande {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  height: 34px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.scheda-skin .bande > span {
+  display: block;
+}
+.scheda-skin .nome-skin {
+  font-size: 13px;
+  font-weight: 550;
+}
+.scheda-skin .stato {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+}
+.scheda-skin[data-active] .stato {
+  color: var(--accent);
+}
+.scheda-skin .descrizione {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--color-text-2);
+}
+
+.impostazioni .numeri {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: var(--spazio-3);
+  margin: 0;
+}
+/* I numeri stanno tutti sulla stessa riga di base, e ci vuole questa regola.
+   Le celle di una riga della griglia hanno già la stessa altezza; quel che
+   mancava è che il numero si appoggiasse in fondo alla sua invece di seguire
+   l'occhiello. Con «SENZA CORRISPONDENZA» che va a capo su due righe, il suo
+   zero scendeva di quindici pixel sotto gli altri due — tre `stat-number` che
+   perdono l'allineamento sono la cosa che si vede prima di leggerli. */
+.impostazioni .numeri > div {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+}
+.impostazioni .numeri dt {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.impostazioni .numeri dd {
+  margin: 2px 0 0;
+}
+/* Il carattere da titolo anche qui: un numero grande in una scheda di
+   statistiche non è un dato in una tabella, è il titolo di quella scheda —
+   «1 421» è ciò che si legge per primo e la parola sotto lo spiega.
+   `tabular-nums` perché quei numeri crescono durante una scansione, e cifre di
+   larghezza diversa farebbero ballare la riga a ogni centinaio. */
+.stat-number {
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
 }
 
 .percorso {
@@ -519,4 +4815,1343 @@ body {
   color: var(--color-text-3);
   word-break: break-all;
   user-select: text;
+}
+
+/* ── il lettore ──────────────────────────────────────────────────────────── */
+/*
+ * Galleggiante, perché è la forma che la skin dichiara (`"player": "floating"`
+ * in `plain.json`). Le misure vengono dai token — `--player-h`, `--player-gap`,
+ * `--shadow-player` — e non da numeri scritti qui: sono esattamente i tre valori
+ * che una skin deve poter cambiare, ed erano già nel registro prima che questa
+ * barra esistesse.
+ */
+.lettore {
+  position: fixed;
+  /* Comincia **dopo** la navigazione, non dal bordo della finestra: a sinistra
+     c'è la barra, e in fondo alla barra c'è «Impostazioni». */
+  left: calc(var(--nav-w) + var(--player-gap));
+  right: var(--player-gap);
+  bottom: var(--player-gap);
+  height: var(--player-h);
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(320px, 2fr) minmax(140px, 1fr);
+  align-items: center;
+  gap: var(--spazio-4);
+  padding: 0 var(--spazio-4);
+  background: var(--color-surface-2);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  /* Niente `--filo` qui: `shadow.player` porta già il suo bordo alto interno,
+     ed è un token — cioè una cosa che la skin ha deciso. Aggiungerne un secondo
+     lo raddoppierebbe. */
+  box-shadow: var(--shadow-player);
+}
+
+.lettore .ora {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  min-width: 0;
+}
+.lettore .ora .miniatura {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-3);
+  object-fit: cover;
+  flex: none;
+}
+/* `min-width: 0` su un figlio di flex non è superstizione: senza, la larghezza
+   minima è quella del contenuto, il titolo lungo non si accorcia e spinge i
+   comandi fuori dalla barra invece di andare in ellissi. */
+.lettore .chi {
+  min-width: 0;
+}
+.lettore .chi .nome,
+.lettore .chi .autore {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lettore .chi .nome {
+  font-weight: 550;
+  user-select: text;
+}
+.lettore .chi .autore {
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+
+.lettore .comandi {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spazio-1);
+  min-width: 0;
+}
+
+.lettore .tasti {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+
+.tasto {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-2);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.tasto:hover {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
+}
+.tasto[aria-pressed="true"] {
+  color: var(--accent);
+}
+.tasto.grande {
+  width: 40px;
+  height: 40px;
+  background: var(--accent);
+  /* Come per `.bottone.primario`: il testo sopra l'accento è il fondo
+     dell'applicazione, così una skin chiara non deve dichiarare un token in
+     più per avere un triangolo leggibile. */
+  color: var(--color-surface-0);
+  font-size: 16px;
+}
+.tasto.grande:hover {
+  background: var(--accent);
+  color: var(--color-surface-0);
+  filter: brightness(1.08);
+}
+/* Il «1» di «ripeti questo brano»: un esponente, non un'icona diversa — il
+   gesto è lo stesso e cambiarne il disegno costringerebbe a riconoscerne due. */
+.tasto .modo {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  line-height: 1;
+}
+
+.lettore .cursore {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  width: 100%;
+}
+.lettore .tempo {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+  /* Larghezza fissa: senza, il passaggio da «0:59» a «1:00» allargherebbe
+     l'etichetta di un carattere e farebbe sobbalzare la barra ogni minuto. */
+  width: 40px;
+  text-align: center;
+  flex: none;
+}
+
+.lettore .suono {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  justify-content: flex-end;
+}
+.lettore .suono .scorrimento {
+  max-width: 110px;
+}
+
+/*
+ * Il cursore, come `input[type=range]`.
+ *
+ * Un elemento nativo e non un `div` con dei gestori: si muove con le frecce, ha
+ * un ruolo che uno screen reader conosce e un valore che annuncia da solo. Le
+ * stesse cose su un `div` sarebbero cinquanta righe di tastiera da mantenere.
+ */
+.scorrimento {
+  flex: 1;
+  min-width: 0;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+}
+.scorrimento::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 99px;
+  /* Il riempimento è un gradiente a scalino su `--avanzamento`, che React
+     riscrive come proprietà custom: una sola dichiarazione da invalidare invece
+     di ricomporre la regola a ogni fotogramma. */
+  background: linear-gradient(
+    90deg,
+    var(--accent) var(--avanzamento, 0%),
+    var(--scrubber-rest) var(--avanzamento, 0%)
+  );
+  /* Il solco: quattro pixel di pista senza profondità sono una riga disegnata,
+     con l'incavo sono un binario in cui la parte suonata si è riempita. */
+  box-shadow: inset 0 1px 1px var(--incavo);
+}
+.scorrimento::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--color-text-1);
+  box-shadow: 0 0 calc(var(--scrubber-glow) * 1px) var(--accent-glow);
+  /* Compare al sorvolo: mentre si ascolta la barra è un'informazione, non un
+     comando, e una pallina ferma in mezzo la fa sembrare da toccare. */
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.scorrimento:hover::-webkit-slider-thumb,
+.scorrimento:focus-visible::-webkit-slider-thumb {
+  opacity: 1;
+}
+.scorrimento:disabled {
+  cursor: default;
+}
+.scorrimento:disabled::-webkit-slider-thumb {
+  opacity: 0;
+}
+
+/* ── l'equalizzatore ─────────────────────────────────────────────────────── */
+/*
+ * Due taglie, un blocco solo di regole: `--eq-h` è l'unica cosa che cambia
+ * davvero fra il pannello della barra e la scheda in Impostazioni, e tenerla in
+ * una proprietà custom evita di riscrivere la griglia due volte.
+ */
+.equalizzatore {
+  --eq-h: 96px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+}
+.equalizzatore[data-taglia="pagina"] {
+  --eq-h: 140px;
+}
+/* Spento resta visibile e leggibile: nascondere la curva impedirebbe di
+   prepararla prima di accendere, che è quel che si fa quando si confronta. */
+.equalizzatore[data-spento] .eq-bande {
+  opacity: 0.5;
+}
+
+.eq-testa {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.eq-preset {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.eq-preset:focus {
+  border-color: var(--accent);
+}
+
+.eq-bande {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--spazio-1);
+}
+.eq-banda {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.eq-hz,
+.eq-db {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--color-text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.eq-db {
+  color: var(--color-text-2);
+}
+
+/*
+ * Il cursore verticale.
+ *
+ * `writing-mode` e non `appearance: slider-vertical`: la seconda è la vecchia
+ * proprietà proprietaria, tolta da Chromium a favore della prima. `direction:
+ * rtl` è ciò che mette il minimo in basso — senza, i decibel crescerebbero
+ * verso il pavimento.
+ */
+.eq-cursore {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 16px;
+  height: var(--eq-h);
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+}
+.eq-cursore::-webkit-slider-runnable-track {
+  width: 4px;
+  border-radius: 99px;
+  /* Il segno dello zero disegnato dentro il fondo del binario: una banda ferma
+     si riconosce perché la pallina sta sulla riga, e ritrovare il centro non
+     richiede di leggere un numero. */
+  background: linear-gradient(
+    to top,
+    var(--scrubber-rest) calc(50% - 1px),
+    var(--accent) calc(50% - 1px),
+    var(--accent) calc(50% + 1px),
+    var(--scrubber-rest) calc(50% + 1px)
+  );
+}
+.eq-cursore::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-text-1);
+  box-shadow: 0 0 calc(var(--scrubber-glow) * 1px) var(--accent-glow);
+}
+/* Al contrario dello scrubber, qui la pallina resta sempre visibile: là era
+   un'informazione da leggere, qui è la manopola da afferrare. */
+.eq-cursore:focus-visible {
+  outline: none;
+}
+.eq-cursore:focus-visible::-webkit-slider-thumb {
+  background: var(--accent);
+}
+
+.eq-salva {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.eq-salva .campo {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.eq-mie {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-1);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.eq-mie li {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 2px 2px var(--spazio-2);
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 99px;
+  font-size: 12px;
+}
+
+/* Il pannello che si apre dalla barra. Ancorato al tasto e non alla finestra:
+   così resta attaccato all'icona anche quando la barra cambia larghezza. */
+.con-pannello {
+  position: relative;
+  display: flex;
+  z-index: 3;
+}
+.con-pannello .tasto[data-acceso] {
+  color: var(--accent);
+}
+.pannello-eq {
+  position: absolute;
+  bottom: calc(100% + var(--spazio-3));
+  /* A destra del tasto sborderebbe: il tasto sta già in fondo alla barra. */
+  right: -8px;
+  width: 380px;
+  max-width: calc(100vw - var(--spazio-4) * 2);
+  padding: var(--spazio-3);
+  background: var(--color-surface-3);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  box-shadow: var(--filo), var(--shadow-3);
+}
+
+/* ── il pannello della coda ──────────────────────────────────────────────── */
+/* Fissato come il lettore e allineato ai suoi margini: si apre sopra il
+   contenuto invece di restringerlo, così l'elenco che si stava guardando non
+   si riflow-a sotto le dita mentre si trascina un brano nella coda. */
+.pannello-coda {
+  position: fixed;
+  top: var(--player-gap);
+  right: var(--player-gap);
+  bottom: var(--player-clearance);
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-2);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--filo), var(--shadow-3);
+  overflow: hidden;
+}
+
+.pannello-coda > header {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: var(--spazio-3);
+  border-bottom: 1px solid var(--hairline);
+}
+.pannello-coda > header h2 {
+  margin: 0;
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.pannello-coda > header .conteggio {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+.vuota-coda {
+  margin: 0;
+  padding: var(--spazio-4);
+  color: var(--color-text-2);
+  font-size: 13px;
+  text-align: center;
+}
+
+.righe-coda {
+  margin: 0;
+  padding: var(--spazio-2);
+  list-style: none;
+  overflow-y: auto;
+}
+
+.riga-coda {
+  display: grid;
+  grid-template-columns: 18px 1fr 44px 28px;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 4px var(--spazio-2);
+  border-radius: var(--radius-card);
+  cursor: grab;
+}
+/* La presa dice che la riga si trascina. Prima non c'era niente che lo dicesse
+   se non il cursore, e il cursore lo si scopre solo dopo aver già provato. */
+.riga-coda .presa {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-3);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.riga-coda:hover .presa,
+.riga-coda:focus-within .presa {
+  opacity: 1;
+}
+.riga-coda:hover {
+  background: var(--color-surface-3);
+}
+.riga-coda[aria-current="true"] .nome {
+  color: var(--accent);
+  font-weight: 600;
+}
+/* Dove cadrebbe la riga trascinata. La stessa regola di `.riga` in un elenco,
+   e per la stessa ragione: `outline` invece di `border` perché un bordo
+   cambierebbe l'altezza e farebbe saltare la coda di due pixel a ogni riga
+   sorvolata. */
+.riga-coda[data-sopra] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.riga-coda:active {
+  cursor: grabbing;
+}
+
+.riga-coda .salta {
+  display: block;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.riga-coda .salta:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.riga-coda .nome,
+.riga-coda .autore {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.riga-coda .autore {
+  font-size: 11px;
+  color: var(--color-text-2);
+}
+.riga-coda .durata {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+  text-align: right;
+}
+.riga-coda .tasto {
+  width: 24px;
+  height: 24px;
+  font-size: 11px;
+}
+
+/* ── il menù contestuale ─────────────────────────────────────────────────── */
+.velo {
+  position: fixed;
+  inset: 0;
+}
+/* Il velo del menù è trasparente — serve solo a prendere il clic di chiusura —
+   mentre quello di una finestrella oscura: lì l'attenzione deve stare tutta
+   sulla decisione da prendere. */
+.velo.scuro {
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  background: rgb(var(--surface-0-rgb) / 0.72);
+}
+
+/* ── finestrelle ─────────────────────────────────────────────────────────── */
+.finestrella {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  width: min(560px, calc(100vw - var(--spazio-5) * 2));
+  max-height: calc(100vh - var(--spazio-5) * 2);
+  overflow-y: auto;
+  padding: var(--spazio-4);
+  background: var(--color-surface-1);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--filo), var(--shadow-3);
+}
+.finestrella h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.finestrella p {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 13px;
+  /* Le spiegazioni di queste finestrelle sono lunghe tre righe e vanno lette
+     tutte: `pretty` toglie le righe orfane senza toccare l'altezza del
+     blocco. */
+  text-wrap: pretty;
+}
+
+.tasti-finestrella {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spazio-2);
+  margin-top: var(--spazio-2);
+}
+
+.finestrella.stretta {
+  width: min(420px, calc(100vw - var(--spazio-5) * 2));
+}
+/* Il riordino mostra percorsi, e un percorso accorciato è un percorso che non
+   si può controllare — che è l'unica cosa da fare in quella schermata. */
+.finestrella.larga {
+  width: min(900px, calc(100vw - var(--spazio-4) * 2));
+}
+
+/* ── elenco degli spostamenti ────────────────────────────────────────────── */
+.spostamenti {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  padding: var(--spazio-2) var(--spazio-3);
+  font-size: 13px;
+}
+.spostamenti summary {
+  cursor: pointer;
+}
+.spostamenti ul {
+  max-height: 320px;
+  overflow-y: auto;
+  margin: var(--spazio-2) 0 0;
+  padding: 0;
+  list-style: none;
+  user-select: text;
+}
+.spostamenti li {
+  display: grid;
+  grid-template-columns: 1fr 18px 1fr;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 2px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.spostamenti .da {
+  color: var(--color-text-3);
+}
+.spostamenti .a {
+  color: var(--color-text-1);
+}
+.spostamenti .freccia {
+  color: var(--accent);
+  text-align: center;
+}
+.spostamenti .da,
+.spostamenti .a {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Da destra: la parte che distingue due percorsi è la fine, non l'inizio. */
+  direction: rtl;
+  text-align: left;
+}
+.finestrella label {
+  display: grid;
+  gap: var(--spazio-1);
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+
+.campo {
+  height: 34px;
+  padding: 0 var(--spazio-3);
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  box-shadow: inset 0 1px 2px var(--incavo);
+  color: var(--color-text-1);
+  font: inherit;
+  outline: none;
+  user-select: text;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.campo:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.campo::placeholder {
+  color: var(--color-text-3);
+}
+
+/* ── scelta di una playlist ──────────────────────────────────────────────── */
+.scelta-playlist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.scelta-playlist button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: 8px var(--spazio-3);
+  border: none;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.scelta-playlist button:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.scelta-playlist button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.scelta-playlist .nome {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scelta-playlist .conteggio {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+.crea-playlist {
+  display: flex;
+  gap: var(--spazio-2);
+}
+.crea-playlist .campo {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── un tema nuovo ───────────────────────────────────────────────────────── */
+/* La finestrella ha `gap: var(--spazio-3)` fra i suoi blocchi, che è la
+   distanza giusta fra due domande e troppa fra una domanda e la sua nota. */
+.nuovo-tema .campo-con-nota {
+  display: grid;
+  gap: var(--spazio-1);
+}
+
+/* ── i segnaposto del caricamento ─────────────────────────────────────────────
+ *
+ * `skeleton` è una parte del registro, e la sua descrizione dice che
+ * l'animazione fa parte dell'identità della skin. Qui c'è quella di serie: un
+ * riquadro appena più chiaro del fondo, e un riflesso che lo attraversa.
+ *
+ * Il riflesso è una posizione di sfondo che si muove, **non** uno
+ * pseudo-elemento: `skeleton` ha `layers: true` nel registro, cioè il suo
+ * `::after` è promesso alle skin, e prendercelo qui vorrebbe dire togliere alle
+ * altre proprio il livello che la loro identità userebbe. Il costo è lo stesso —
+ * il compositore anima una posizione di sfondo senza ridisegnare.
+ *
+ * Il colore si compone da `--color-text-1`, così il segnaposto è più chiaro del
+ * fondo al buio e più scuro alla luce senza dover conoscere il tema.
+ */
+.skeleton {
+  background:
+    linear-gradient(
+        90deg,
+        transparent 25%,
+        color-mix(in srgb, var(--color-text-1) 7%, transparent) 50%,
+        transparent 75%
+      )
+      0 0 / 260% 100% no-repeat,
+    color-mix(in srgb, var(--color-text-1) 6%, transparent);
+  border-radius: var(--raggio-interno);
+  animation: scintilla 1.6s linear infinite;
+}
+@keyframes scintilla {
+  to {
+    background-position: 260% 0;
+  }
+}
+
+/* Il fondo di un elenco impaginato.
+   Alto quanto una riga perché l'osservatore abbia un bersaglio vero, e con la
+   barra larga un terzo: deve leggersi come «continua», non come una riga che
+   non è ancora arrivata. Lo spazio sotto è quello che separa due blocchi —
+   senza, la barra toccherebbe il lettore flottante. */
+.sentinella {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  margin-block: var(--spazio-2) var(--spazio-4);
+}
+.sentinella .skeleton {
+  width: min(33%, 220px);
+  height: 4px;
+  border-radius: 99px;
+}
+
+/* Le due misure di testo finto: una riga piena e una più corta, che è quel che
+   un titolo e un artista fanno davvero. */
+.riga-finta {
+  height: 11px;
+  border-radius: 99px;
+}
+.riga-finta.corta {
+  width: 62%;
+}
+
+/* Una scheda finta ha la stessa griglia di una vera, altrimenti l'arrivo dei
+   dati sposterebbe tutto di qualche pixel — cioè il salto che i segnaposto
+   esistono per togliere. */
+.scheda.finta {
+  gap: 7px;
+  cursor: default;
+}
+.scheda.finta .copertina {
+  outline: none;
+}
+.riga.finta {
+  cursor: default;
+}
+.riga.finta .chi {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+}
+
+/* ── il movimento ─────────────────────────────────────────────────────────────
+ *
+ * Quel che si muove, e perché ognuna di queste è una risposta e non un effetto.
+ *
+ * # Il cambio di vista non è qui
+ *
+ * Lo scrive il compilatore da `motion.routeTransition`, e questo foglio non ne
+ * possiede una riga. Qui c'è solo il rovescio: **chi non partecipa.**
+ *
+ * Un elemento con un `view-transition-name` esce dall'istantanea della radice e
+ * prende un gruppo suo. Non vuol dire che non si muova — se il suo contenuto è
+ * cambiato, sfuma sul posto — vuol dire che non eredita la scala e lo
+ * scorrimento che la skin ha scritto per la *pagina*. La navigazione fa
+ * esattamente questo: la voce attiva passa da una all'altra sfumando, mentre le
+ * quattro destinazioni restano ferme dove sono. Senza il nome, l'intera colonna
+ * salirebbe di otto pixel a ogni cambio di vista, cioè la cornice si muoverebbe
+ * insieme al quadro.
+ *
+ * Per il lettore c'è una seconda ragione, tecnica: è `position: fixed`, e un
+ * elemento fisso dentro l'istantanea della radice viene fotografato nel posto
+ * in cui starebbe se scorresse — cioè nel posto sbagliato.
+ */
+.navigazione {
+  view-transition-name: navigazione;
+}
+.lettore {
+  view-transition-name: lettore;
+}
+.colonna {
+  view-transition-name: colonna;
+}
+.pannello-coda {
+  view-transition-name: coda;
+}
+.barra-selezione {
+  view-transition-name: selezione;
+}
+.toast {
+  view-transition-name: notifica;
+}
+
+/*
+ * Quel che compare, compare da qualche parte.
+ *
+ * `@starting-style` dà a un elemento appena montato uno stato di partenza da
+ * cui transire, senza il giro di classi e `requestAnimationFrame` che serviva
+ * prima. Non è decorazione: un menù contestuale che sboccia dal punto in cui si
+ * è premuto dice **da dove viene**, e un menù che appare di colpo lascia a chi
+ * guarda il compito di ritrovare il puntatore.
+ *
+ * Le due transizioni passano da `--transition-med`, che porta già dentro
+ * `--motion-scale`: chi ha chiesto meno movimento, o ha una skin che lo
+ * dichiara, non deve essere elencato qui sotto una seconda volta.
+ */
+.menu,
+.finestrella,
+.pannello-eq,
+.toast,
+.velo.scuro {
+  transition: opacity var(--transition-med), transform var(--transition-med);
+}
+/* L'origine è il punto in cui il gesto è avvenuto: il menù nasce dal puntatore,
+   il pannello dell'equalizzatore dal suo tasto in fondo a destra. */
+.menu {
+  transform-origin: top left;
+}
+.pannello-eq {
+  transform-origin: bottom right;
+}
+@starting-style {
+  .menu,
+  .pannello-eq {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  .finestrella {
+    opacity: 0;
+    transform: scale(0.97) translateY(6px);
+  }
+  .toast {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  .velo.scuro {
+    opacity: 0;
+  }
+}
+
+/*
+ * La scheda di un album si solleva.
+ *
+ * Prima il sorvolo disegnava un contorno d'accento attorno alla copertina, che
+ * è il segno del **fuoco** e non quello del puntatore: due stati diversi che
+ * dicevano la stessa cosa. Ora il puntatore alza il disco di tre pixel e ne
+ * approfondisce l'ombra — la risposta di un oggetto, non di un modulo — e
+ * l'anello d'accento resta a chi arriva col tabulatore, dove significa
+ * qualcosa.
+ *
+ * Non c'è un tasto di riproduzione sopra la copertina, ed è una scelta: la
+ * scheda **è** un bottone, e un bottone dentro un bottone non è HTML valido né
+ * qualcosa che una tastiera possa raggiungere. Riprodurre un disco resta a
+ * portata da due porte — la pagina dell'album e il tasto destro — che è quel
+ * che il disegno chiede.
+ */
+.scheda .copertina {
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.scheda:hover .copertina {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-3);
+}
+
+/*
+ * Il tasto grande risponde al dito.
+ *
+ * `--ease-spring` è una curva che la skin dichiara e che nessuna regola leggeva.
+ * Sta bene esattamente qui e in nessun altro posto: una molla su un pannello lo
+ * fa rimbalzare, su un tasto premuto è il tasto che torna su.
+ */
+.tasto.grande {
+  transition:
+    background var(--transition-fast),
+    transform calc(var(--dur-1) * var(--motion-scale, 1)) var(--ease-spring);
+}
+.tasto.grande:hover {
+  transform: scale(1.05);
+}
+.tasto.grande:active {
+  transform: scale(0.93);
+}
+
+/*
+ * Il cuore batte una volta, quando lo si accende.
+ *
+ * L'aggiornamento del preferito è ottimistico — il cuoricino risponde al dito e
+ * non al disco — quindi il colore cambia prima che la scrittura sia avvenuta.
+ * Il battito è ciò che rende quel colore un evento invece di un fatto: si
+ * innesca perché `aria-pressed` diventa vero, cioè una volta sola e nel momento
+ * giusto.
+ */
+@keyframes batte {
+  40% {
+    transform: scale(1.28);
+  }
+}
+.cuore[aria-pressed="true"] {
+  animation: batte calc(var(--dur-2) * var(--motion-scale, 1)) var(--ease-spring);
+}
+
+/* ── il movimento ridotto ─────────────────────────────────────────────────────
+ *
+ * Il sistema operativo vince sulla skin, e non è una gentilezza: `motion` è una
+ * scelta estetica di chi ha scritto il tema, mentre l'interruttore di sistema è
+ * una **condizione di chi guarda**. Una skin che si dichiara `maximum` non ha
+ * titolo di ignorarlo. Era già scritto come intenzione nel commento accanto a
+ * `MotionIntensity` e non era mai stato implementato: il compilatore scriveva
+ * `--motion-scale` e nessuna regola lo leggeva.
+ *
+ * Basta azzerare la scala perché il foglio ha **due** variabili di transizione
+ * — `--transition-fast` e `--transition-med` — e ogni `transition:` del file
+ * passa da lì. `calc(var(--dur-1) * 0)` è `0s`, cioè lo stato nuovo compare
+ * subito: niente si muove, e niente sparisce.
+ *
+ * `!important` perché il foglio della skin arriva **dopo** questo (è un `<style>`
+ * appeso a `<head>` a runtime) e dichiara `--motion-scale` in
+ * `:root[data-skin='…']`. Senza, la skin vincerebbe per ordine. È anche ciò che
+ * lo fa arrivare al riquadro dell'anteprima dello Studio, che porta gli stessi
+ * attributi della radice ma con i selettori riscritti.
+ */
+@media (prefers-reduced-motion: reduce) {
+  [data-motion] {
+    --motion-scale: 0 !important;
+  }
+
+  /* L'unica animazione che ripete all'infinito. Ferma resterebbe una banda
+     chiara parcheggiata in mezzo alla barra, cioè un difetto invece di una
+     quiete: se non può scorrere, non c'è. La percentuale continua a dire quel
+     che il riflesso diceva. Le altre — il battito del cuore, la molla del tasto
+     — durano `calc(… * var(--motion-scale))`, quindi qui durano zero e non
+     serve nominarle. */
+  .avanzamento-scansione .riflesso {
+    display: none;
+  }
+
+  /* Stessa ragione per il riflesso dei segnaposto, e stesso rimedio: il
+     riquadro resta — è quello che dice «qui arriverà qualcosa» — e a sparire è
+     solo la banda che lo attraversa. */
+  .skeleton {
+    animation: none;
+  }
+
+  /* La transizione di rotta la salta `cambiandoVista` in `transizione.ts`,
+     prima ancora di chiamare il motore: le regole che il compilatore emette per
+     `::view-transition-*` usano `var(--dur-2)` nudo, senza la scala, quindi
+     spegnerle da qui non basterebbe. */
+}
+.nuovo-tema .nota-id {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-3);
+}
+.nuovo-tema .facoltativo {
+  color: var(--color-text-3);
+}
+.nuovo-tema .scelta-base {
+  display: grid;
+  gap: var(--spazio-2);
+}
+.nuovo-tema .etichetta-gruppo {
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+/* Schedine più strette di quelle di Impostazioni: qui non c'è la descrizione e
+   non c'è il pulsante dello Studio, e restano le tre fasce col nome. */
+.basi-tema {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: var(--spazio-2);
+  max-height: 216px;
+  overflow-y: auto;
+}
+.basi-tema .base {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  background: var(--color-surface-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.basi-tema .base:hover {
+  border-color: var(--hairline);
+}
+.basi-tema .base[data-scelta] {
+  border-color: var(--accent);
+}
+.basi-tema .bande {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  height: 24px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.basi-tema .bande > span {
+  display: block;
+}
+.basi-tema .nome-skin {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Una playlist non ha copertina propria: l'intestazione è solo testo, e senza
+   l'immagine l'allineamento in fondo del blocco album non ha più senso. */
+.intestazione.playlist {
+  align-items: flex-start;
+}
+
+.nota {
+  margin: 0 0 var(--spazio-4);
+  padding: var(--spazio-2) var(--spazio-3);
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0 var(--radius-card) var(--radius-card) 0;
+  color: var(--color-text-2);
+  font-size: 13px;
+  max-width: 72ch;
+}
+
+.rapporto {
+  display: grid;
+  gap: 2px;
+}
+.voce-rapporto {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: var(--spazio-2);
+  padding: 5px var(--spazio-2);
+  border-radius: 8px;
+  background: var(--color-surface-2);
+}
+.voce-rapporto .conteggio {
+  font-family: var(--font-mono);
+  color: var(--color-text-1);
+}
+.voce-rapporto small {
+  grid-column: 1 / -1;
+  color: var(--color-text-3);
+  font-size: 11px;
+}
+
+/* ── importazione da Spotify ──────────────────────────────────────────────── */
+/*
+ * L'immagine è un `data:` già scaricato dal nucleo, non un indirizzo esterno:
+ * la politica dei contenuti della finestra non ammette domini di terzi fra le
+ * immagini, e non è stata allargata per una miniatura.
+ */
+.anteprima-spotify {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: var(--spazio-3);
+  padding: var(--spazio-2);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+}
+.anteprima-spotify img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--color-surface-3);
+}
+.anteprima-spotify .titolo {
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+.anteprima-spotify .autore {
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+.anteprima-spotify .nota {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--color-text-3);
+}
+
+/* Un elenco arrivato monco è l'unico guasto qui che assomiglia a un successo:
+   ha il colore dell'avviso perché va letto prima di premere «Importa». */
+.avviso-monco {
+  padding: var(--spazio-2) var(--spazio-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-card);
+  background: var(--warning-soft);
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+/* Il tasto che rilegge il link sta dentro l'avviso, e a capo: è la risposta a
+   quel che l'avviso dice, e in fondo alla finestrella — accanto ad «Annulla» e
+   a un «Importa» spento — andrebbe cercato. */
+.avviso-monco .bottone {
+  display: flex;
+  width: fit-content;
+  margin-top: var(--spazio-2);
+}
+
+/* `.finestrella label` è una griglia — l'etichetta sopra, il campo sotto — e
+   una casella di spunta è l'unico caso in cui i due pezzi stanno in riga. */
+.finestrella label.scelta {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spazio-2);
+  font-size: 13px;
+  color: var(--color-text-1);
+  cursor: pointer;
+}
+.finestrella label.scelta input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+.finestrella label.scelta em {
+  color: var(--color-text-3);
+  font-style: normal;
+}
+
+.diagnosi-spotify {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  padding: var(--spazio-2) var(--spazio-3);
+  font-size: 12px;
+}
+.diagnosi-spotify summary {
+  cursor: pointer;
+  color: var(--color-text-2);
+}
+.diagnosi-spotify p {
+  margin: var(--spazio-2) 0 0;
+  font-size: 12px;
+}
+
+.non-ritrovati {
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-card);
+  background: var(--warning-soft);
+  padding: var(--spazio-2) var(--spazio-3);
+  font-size: 13px;
+}
+.non-ritrovati summary {
+  cursor: pointer;
+  color: var(--color-text-1);
+}
+.non-ritrovati ul {
+  max-height: 190px;
+  overflow-y: auto;
+  margin: var(--spazio-2) 0 0;
+  padding-left: var(--spazio-4);
+  color: var(--color-text-2);
+  font-size: 12px;
+  user-select: text;
+}
+
+/* ── le importazioni da Spotify, e la coda che le scarica ─────────────────
+   Sotto il tasto che apre la finestrella, e non dentro la finestrella: la coda
+   gira su un filo del nucleo e non si ferma quando quella si chiude. Il colore
+   non è quello di `.non-ritrovati`: quello è un avviso — «questi brani
+   mancano» — e questo è un lavoro in corso. Un riquadro d'avviso acceso per
+   venti minuti mentre tutto va bene insegna a ignorare gli avvisi.
+
+   # Una riga per importazione, non una barra per tutte
+
+   Perché due playlist insieme dietro un solo «31 su 74» sono indistinguibili,
+   e quale delle due stia scendendo è precisamente ciò che si vuole sapere.
+
+   # Due barre e non una
+
+   Ci sono due tempi, e si vivono in modo diverso: quanti brani mancano ancora
+   (minuti, e si guarda ogni tanto) e a che punto è quello in corso (secondi,
+   ed è quel che dice che le cose si muovono). Una barra sola per cento brani
+   si sposterebbe di un pixel per brano e sembrerebbe ferma. */
+.importazioni {
+  display: grid;
+  gap: var(--spazio-2);
+  margin-top: var(--spazio-3);
+  padding: var(--spazio-2) var(--spazio-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  font-size: 13px;
+}
+.importazioni-testata {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spazio-2);
+}
+.importazioni-testata .conteggio {
+  color: var(--color-text-2);
+  font-size: 12px;
+}
+.elenco-importazioni {
+  display: grid;
+  gap: var(--spazio-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.importazione {
+  display: grid;
+  gap: 6px;
+}
+.importazione .che-cosa {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spazio-2);
+}
+.importazione .che-cosa .titolo {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-1);
+}
+.importazione .che-cosa .conteggio {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-2);
+}
+.importazione .barra {
+  height: 6px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  overflow: hidden;
+}
+.importazione .riempimento {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
+  transition: width 160ms linear;
+}
+.importazione .note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-3);
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+/* Il brano in corso su una riga sola: il titolo si tronca, la nota no. È la
+   nota che dice se le cose si muovono, e troncarla la renderebbe inutile. */
+.importazione-brano {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spazio-2);
+  color: var(--color-text-2);
+  font-size: 12px;
+}
+.importazione-brano .titolo {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.importazione-brano .nota {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.menu {
+  position: fixed;
+  z-index: 1;
+  min-width: 200px;
+  padding: var(--spazio-1);
+  background: var(--color-surface-3);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  box-shadow: var(--filo), var(--shadow-3);
+}
+.menu button {
+  display: block;
+  width: 100%;
+  padding: 7px var(--spazio-3);
+  border: none;
+  border-radius: var(--raggio-interno);
+  background: transparent;
+  color: var(--color-text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.menu button:hover,
+.menu button:focus-visible {
+  background: var(--accent-soft);
+  color: var(--color-text-1);
+  outline: none;
 }

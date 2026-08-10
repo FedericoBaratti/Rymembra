@@ -9,10 +9,19 @@
 //! questo crate si perde un'operazione. Quando andava storto nel modulo
 //! monolitico del vecchio albero si perdevano righe di libreria.
 
+pub mod backup;
 pub mod covers;
 pub mod db;
+pub mod desiderati;
+pub mod enrich;
 pub mod files;
 pub mod import_legacy;
+pub mod import_spotify;
 pub mod library;
 pub mod metadata;
 pub mod organize;
+pub mod playback;
+pub mod playlists;
+pub mod settings;
+pub mod tag_scrittura;
+pub mod tinta;

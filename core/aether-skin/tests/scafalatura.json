@@ -1,0 +1,64 @@
+{
+  "format": 1,
+  "id": "scafalatura",
+  "meta": {
+    "name": "Scafalatura",
+    "author": "Aether",
+    "version": "1.0.0",
+    "description": "Uno scafale non di serie, per provare che il vocabolario basta a dirlo."
+  },
+  "tokens": {
+    "color.accent": "#8b7cf6"
+  },
+  "layout": {
+    "density": "compact",
+    "shell": {
+      "zone": "column",
+      "part": "app-shell",
+      "children": [
+        {
+          "zone": "row",
+          "size": "fill",
+          "children": [
+            { "widget": "navigation", "options": { "wide": true } },
+            {
+              "zone": "column",
+              "size": "fill",
+              "gap": "s",
+              "children": [
+                { "widget": "page-header" },
+                { "widget": "content" }
+              ]
+            },
+            { "widget": "queue", "size": "300px" }
+          ]
+        },
+        {
+          "zone": "row",
+          "size": "hug",
+          "gap": "m",
+          "align": "center",
+          "spread": "between",
+          "part": "player-shell",
+          "children": [
+            { "widget": "now-playing", "options": { "heart": false } },
+            {
+              "zone": "column",
+              "size": "fill",
+              "gap": "xs",
+              "align": "center",
+              "children": [
+                {
+                  "widget": "transport",
+                  "options": { "size": "column", "shuffle": false }
+                },
+                { "widget": "scrubber", "size": "fill" }
+              ]
+            },
+            { "widget": "rating", "options": { "stars": false } }
+          ]
+        }
+      ]
+    }
+  }
+}

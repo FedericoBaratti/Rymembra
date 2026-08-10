@@ -129,6 +129,28 @@ impl CoverStore {
         self.root.join(prefix).join(format!("{hash}.t.jpg"))
     }
 
+    /// La tinta dominante di una copertina, dalla sua miniatura.
+    ///
+    /// Dalla miniatura e non dalla piena: sono gli stessi colori nelle stesse
+    /// proporzioni — è una riduzione della stessa immagine — e sono sedici volte
+    /// meno pixel da decodificare. La scelta di quale colore vince sta in
+    /// [`crate::tinta::dominante`]; qui c'è solo la lettura.
+    ///
+    /// `None` per ogni motivo per cui potrebbe non esserci: file assente,
+    /// illeggibile, o una copertina in bianco e nero. Nessuno di questi è un
+    /// guasto da riportare — è un disco che non tinge l'interfaccia, e
+    /// l'interfaccia ha già il suo accento.
+    #[must_use]
+    pub fn tinta(&self, hash: &str) -> Option<[u8; 3]> {
+        let bytes = std::fs::read(self.thumbnail_path_for(hash)).ok()?;
+        let immagine = ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?
+            .decode()
+            .ok()?;
+        crate::tinta::dominante(&immagine.to_rgb8())
+    }
+
     /// Salva una copertina, ricodificandola. Se c'è già, non fa niente.
     pub fn store(&self, original: &[u8], source: CoverSource) -> Result<StoredCover, AppError> {
         let _ = source; // la provenienza la registra il database, non lo store

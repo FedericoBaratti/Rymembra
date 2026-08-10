@@ -9,6 +9,12 @@ authors.workspace = true
 
 [dependencies]
 aether-domain = { path = "../aether-domain" }
+# I servizi di metadati. Non `aether-net`: questo crate non fa richieste da sé,
+# le fa fare a `aether-meta` — che a sua volta non vede `rusqlite`, ed è quel
+# che rende impossibile tenere il lucchetto della libreria mentre si aspetta
+# una risposta da MusicBrainz.
+aether-meta = { path = "../aether-meta" }
+aether-play = { path = "../aether-play" }
 blake3 = "1.8.5"
 image = { version = "0.25.9", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "rayon"] }
 imagesize = "0.15.0"
@@ -26,6 +32,7 @@ rusqlite = { version = "0.37", features = ["bundled", "functions"] }
 # verso la finestra e il ponte verso Android. Rimirarli a mano da ogni
 # consumatore sarebbe la duplicazione che questo ramo esiste per togliere.
 serde.workspace = true
+serde_json.workspace = true
 walkdir = "2.5.0"
 
 [dev-dependencies]

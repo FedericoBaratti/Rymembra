@@ -103,6 +103,8 @@ fn main() {
                 print!("\rletti {fatti}/{totale}");
                 let _ = std::io::stdout().flush();
             }
+            // Da riga di comando non c'è chi prema Annulla: si va fino in fondo.
+            std::ops::ControlFlow::Continue(())
         })
         .expect("scansione");
     if !esito.plan.to_insert.is_empty() || !esito.plan.to_update.is_empty() {
@@ -166,7 +168,7 @@ fn main() {
 
     if let Some(query) = ricerca {
         println!("\n── ricerca «{query}» ──");
-        let trovati = search(&connection, &query, 10).expect("ricerca");
+        let trovati = search(&connection, &query, 0, 10).expect("ricerca");
         println!("{} risultati", trovati.len());
         for hit in trovati.iter().take(10) {
             println!("  {} · {} — {}", hit.artist, hit.album, hit.title);

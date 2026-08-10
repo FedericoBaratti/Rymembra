@@ -22,11 +22,28 @@ pub struct Migration {
 }
 
 /// La catena, in ordine.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "baseline",
-    sql: include_str!("schema/001_baseline.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "baseline",
+        sql: include_str!("schema/001_baseline.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "spotify",
+        sql: include_str!("schema/002_spotify.sql"),
+    },
+    Migration {
+        version: 3,
+        name: "download",
+        sql: include_str!("schema/003_download.sql"),
+    },
+    Migration {
+        version: 4,
+        name: "arricchimento",
+        sql: include_str!("schema/004_arricchimento.sql"),
+    },
+];
 
 /// La versione a cui questa build porta il database.
 pub const LATEST_VERSION: u32 = {

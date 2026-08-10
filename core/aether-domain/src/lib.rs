@@ -28,20 +28,38 @@
 //! Separata, la stessa decisione si prova come una chiamata di funzione.
 
 pub mod album;
+pub mod enrich;
 pub mod errors;
 pub mod keys;
+pub mod listen;
 pub mod merge;
 pub mod organize;
 pub mod paths;
+pub mod queue;
+pub mod restore;
 pub mod scan_plan;
+pub mod spotify;
+pub mod spotify_plan;
 pub mod text;
+pub mod yt_match;
 
+pub use enrich::{
+    AlbumMatch, Candidate, Fields, Fonte, LocalAlbum, LocalTrack, RemoteRelease, RemoteTrack,
+    TrackMatch, Verdetto, album_distance, decide_album, plan_write, resolve_track,
+};
 pub use errors::{AppError, Domain, ErrorCode, ErrorCodeKind, Severity};
 pub use keys::{PlaylistKey, TrackKey, TrackKeyInput};
+pub use listen::{Listen, ListenTracker, counts_as_play};
 pub use merge::{TrackStats, merge_stats};
 pub use paths::PathRules;
+pub use queue::{Queue, QueueSnapshot, RepeatMode, Step};
+pub use restore::{
+    PlaylistChange, PlaylistState, RestoreInput, RestorePlan, RootToAdd, TrackChange, plan_restore,
+};
 pub use scan_plan::{
     DiscoveredFile, KnownTrack, Rematch, RemovedIdentity, ScanInput, ScanPlan, match_moved_tracks,
     plan_scan,
 };
+pub use spotify::{SpotifyContent, SpotifyKind, SpotifySource, SpotifyTrack};
+pub use spotify_plan::{Abbinato, Gradino, LibraryTrack, SpotifyPlan, plan_spotify_import};
 pub use text::fold_text;

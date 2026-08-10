@@ -35,6 +35,7 @@
 //! - [`tokens`]: il contratto fra le skin e i componenti.
 //! - [`effects`]: gli undici effetti, e quanto costano.
 //! - [`parts`]: le superfici ridisegnabili.
+//! - [`layout`]: dove stanno le cose — il vocabolario dello scafale.
 //! - [`document`]: la forma di `skin.json`, e la validazione.
 //! - [`compile`]: l'unico autore di CSS.
 //! - [`package`]: il formato `.aeskin`, e le difese contro un archivio ostile.
@@ -54,8 +55,10 @@
 //! compilatore chiede tutti e quattro, e un effetto a metà non si compila.
 
 pub mod compile;
+pub mod dinamico;
 pub mod document;
 pub mod effects;
+pub mod layout;
 pub mod package;
 pub mod parts;
 pub mod tokens;
@@ -63,11 +66,15 @@ pub mod values;
 mod vicini;
 
 pub use compile::{CompiledSkin, compile_skin};
+pub use dinamico::{Oklch, accento_sicuro};
 pub use document::{
-    SKIN_FORMAT_VERSION, SkinDocument, SkinIssue, SkinWarning, check_skin, parse_skin,
-    parse_skin_json,
+    CONTRASTO_MINIMO, ContrastPair, SKIN_FORMAT_VERSION, SkinDocument, SkinIssue, SkinWarning,
+    WarningKind, check_skin, contrast_pairs, palette_usage, parse_skin, parse_skin_json,
 };
 pub use effects::{Effect, SURFACE_COST_BUDGET, exceeds_budget, stack_cost};
+pub use layout::{
+    LayoutNode, LayoutZone, SHELL_COST_BUDGET, WIDGETS, WidgetDef, WidgetInstance, default_shell,
+};
 pub use package::{SkinPackage, read_skin_package, write_skin_package};
 pub use tokens::{TOKENS, TokenDef};
 

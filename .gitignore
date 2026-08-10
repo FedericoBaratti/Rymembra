@@ -17,9 +17,24 @@ release/
 
 # ── Binari esterni e strumenti vendorizzati ──────────────────────────────────
 # resources/bin: yt-dlp/spotdl/ffmpeg/fpcalc, scaricati durante il setup.
-resources/bin/
+# Il `**/` non è ornamento: una regola con uno slash in mezzo git la ancora alla
+# cartella del .gitignore, quindi `resources/bin/` da solo copriva soltanto una
+# cartella in radice che non esiste — e lasciava scoperta quella vera, che sta in
+# `apps/desktop/src-tauri/`. Se ne accorge chi guarda un `git status` con dentro
+# diciotto megabyte di yt-dlp.exe, cioè nessuno finché non è troppo tardi.
+**/resources/bin/
 # platform-tools: adb e compagnia, dall'Android SDK.
 platform-tools/
+
+# ── Archivi ──────────────────────────────────────────────────────────────────
+# `legacy/` è già fuori dal repo; `legacy.rar` è lo stesso albero compresso e
+# pesa 2,2 GB. Un archivio in un commit non si toglie più: la storia se lo porta
+# dietro anche dopo un `git rm`.
+# Le skin non sono in questo elenco pur essendo zip: hanno estensione `.aeskin`
+# e vivono nel repo di proposito.
+*.rar
+*.7z
+*.zip
 
 # ── Segreti ──────────────────────────────────────────────────────────────────
 .env
@@ -61,3 +76,10 @@ graphify-out/
 # ── Sistema ──────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# -- Credenziali OAuth della macchina di build ---------------------------------
+# Le si passa a `build.rs` da qui o dalle variabili d'ambiente. Se questo file
+# finisse in un commit, il rimedio NON e' toglierlo: e' eliminare il client in
+# Google Cloud Console e farne uno nuovo. Togliere le righe non le de-pubblica
+# dalla storia di git.
+apps/desktop/src-tauri/oauth.local.toml

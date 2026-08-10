@@ -1,0 +1,41 @@
+# Le credenziali del client Google, per la macchina che compila.
+#
+# Copia questo file in `oauth.local.toml` (che è gitignorato) e riempi i due
+# valori. In alternativa, esporta le stesse due variabili d'ambiente: quelle
+# vincono su questo file, ed è la strada di una macchina di build automatica che
+# non deve scrivere segreti su disco.
+#
+# Senza credenziali il progetto **compila lo stesso**: il backup si limita a
+# dire che non è configurato. È voluto — altrimenti clonare il repo e lanciare
+# `cargo test` sarebbe impossibile per chiunque non abbia un progetto Google.
+#
+# ── Da dove vengono ─────────────────────────────────────────────────────────
+#
+# In Google Cloud Console, una volta sola:
+#
+#   1. Abilita la Google Drive API sul progetto.
+#   2. Schermata di consenso OAuth: External, nome dell'app, email di supporto,
+#      scope `https://www.googleapis.com/auth/drive.appdata`. È uno scope NON
+#      sensibile: nessuna verifica, nessun security assessment.
+#   3. PUBBLICA la schermata di consenso — «In production». È il passo che si
+#      salta e costa una settimana: restando in «Testing» i token di
+#      aggiornamento scadono dopo sette giorni, e il backup automatico smette
+#      di funzionare in silenzio. Con soli scope non sensibili, pubblicare non
+#      fa scattare nessuna revisione.
+#   4. Credentials → Create OAuth client ID → tipo «Desktop app». Il redirect
+#      su loopback è implicito per quel tipo: non c'è nessuna URI da registrare.
+#
+# ── Sul segreto ─────────────────────────────────────────────────────────────
+#
+# Un client secret dentro un binario desktop NON è un segreto: `strings` lo
+# trova, e la documentazione di Google per le installed app lo dice. Quel che
+# protegge davvero lo scambio è PKCE. L'esposizione vera è che un terzo consumi
+# la quota del progetto — da cui l'avviso di quota in Console.
+#
+# Se questo file finisse in un commit, il rimedio non è toglierlo: è eliminare
+# il client in Console e farne uno nuovo. Togliere le righe non le de-pubblica
+# dalla storia di git, ed eliminare il client invalida anche ogni token di
+# aggiornamento mai emesso per lui.
+
+AETHER_GOOGLE_CLIENT_ID = ""
+AETHER_GOOGLE_CLIENT_SECRET = ""

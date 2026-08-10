@@ -28,7 +28,7 @@
 //! evitare un ciclo fra moduli che in Rust non è un problema. Qui il registro è
 //! dati e basta: ogni carattere di CSS esce da [`crate::compile`].
 
-use crate::effects::Effect;
+use crate::effects::{Effect, Paint, paint_effects};
 use crate::tokens::ColorValue;
 use crate::values::Length;
 
@@ -121,9 +121,13 @@ pub static PARTS: &[PartDef] = &[
     parte!("field-input", Controls, false, "Il campo di testo."),
     parte!("range-accent", Controls, false, "Il cursore a scorrimento."),
     parte!("tooltip-pill", Controls, false, "Il suggerimento al passaggio."),
+    parte!("segmented", Controls, false,
+        "Il gruppo di linguette che sceglie fra due o tre viste dello stesso contenuto."),
 
     // ── Elenchi ─────────────────────────────────────────────────────────────
     parte!("track-grid", Lists, false, "La griglia delle tracce o degli album."),
+    parte!("list-row", Lists, false,
+        "La singola riga di un elenco, compresi lo stato attivo e quello selezionato."),
     parte!("queue-list", Lists, false, "La coda di riproduzione."),
     parte!("home-shortcuts", Lists, false, "Le scorciatoie della schermata iniziale."),
     parte!("empty-state", Lists, true, "Il riquadro mostrato quando non c'è niente."),
@@ -135,6 +139,8 @@ pub static PARTS: &[PartDef] = &[
     parte!("player-progress", Player, true, "La barra di avanzamento del player."),
     parte!("progress-sheen", Player, false,
         "Il riflesso che scorre sulla barra di avanzamento."),
+    parte!("selection-bar", Player, true,
+        "La barra che prende il posto del player quando ci sono più brani selezionati."),
 
     // ── In riproduzione ─────────────────────────────────────────────────────
     parte!("np-screen", NowPlaying, true, "La schermata In riproduzione."),
@@ -280,7 +286,7 @@ impl TextTransform {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PartAppearance {
     /// Livelli di sfondo, dal più basso. Il costo sommato è soggetto al budget.
-    pub background: Vec<Effect>,
+    pub background: Vec<Paint>,
     /// Colore del testo.
     pub text_color: Option<ColorValue>,
     /// Colore del bordo.
@@ -290,7 +296,20 @@ pub struct PartAppearance {
     /// Raggio degli angoli.
     pub radius: Option<Length>,
     /// Un ritaglio, di norma un `chamfer`.
-    pub clip: Option<Effect>,
+    pub clip: Option<Paint>,
+    /// Un filtro su quel che sta **dietro**, di norma un `blurBehind`.
+    ///
+    /// # Perché è arrivato dopo
+    ///
+    /// Non c'era, e la sua assenza era un buco silenzioso: `blurBehind` si
+    /// poteva dichiarare come motivo, [`EffectTarget::Filter`] sapeva già che
+    /// finisce in `backdrop-filter`, e poi **nessun campo poteva riferirlo**.
+    /// Una skin che ci provava riceveva un messaggio d'errore giusto su una
+    /// strada che non esisteva.
+    ///
+    /// Costa dieci, cioè il budget intero di una skin: è il modo del formato di
+    /// dire che di sfocature dietro una superficie se ne può avere una sola.
+    pub filter: Option<Paint>,
     /// Opacità.
     pub opacity: Option<f64>,
     /// Spaziatura fra le lettere.
@@ -313,7 +332,7 @@ impl PartAppearance {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PartLayer {
     /// Gli sfondi del livello.
-    pub background: Vec<Effect>,
+    pub background: Vec<Paint>,
     /// Opacità del livello.
     pub opacity: Option<f64>,
 }
@@ -361,13 +380,51 @@ impl PartStyle {
     /// Tutti gli effetti che questa parte disegna, per contarne il costo.
     #[must_use]
     pub fn effects(&self) -> Vec<Effect> {
-        let mut tutti = self.appearance.background.clone();
+        let mut tutti = paint_effects(&self.appearance.background);
         if let Some(layer) = self.layer.as_ref() {
-            tutti.extend(layer.background.iter().cloned());
+            tutti.extend(paint_effects(&layer.background));
         }
         if let Some(clip) = self.appearance.clip.as_ref() {
-            tutti.push(clip.clone());
+            tutti.push(clip.effect().clone());
         }
+        // Il filtro **deve** entrare nel conto, ed è la ragione per cui il
+        // budget esiste: un `blurBehind` costa dieci da solo, e senza questa
+        // riga una skin potrebbe metterne uno su ogni superficie senza che
+        // niente lo dica.
+        if let Some(filter) = self.appearance.filter.as_ref() {
+            tutti.push(filter.effect().clone());
+        }
+        tutti
+    }
+
+    /// I motivi che questa parte richiama, base e stati.
+    ///
+    /// Serve al conteggio che rende `UnusedPattern` finalmente producibile: un
+    /// motivo richiamato **solo** al passaggio del mouse è un motivo usato,
+    /// esattamente come per i colori in `appearances()`.
+    #[must_use]
+    pub fn patterns_used(&self) -> Vec<&str> {
+        let mut nomi: Vec<&str> = Vec::new();
+        for aspetto in self.appearances() {
+            nomi.extend(aspetto.background.iter().filter_map(Paint::pattern_name));
+            nomi.extend(aspetto.clip.as_ref().and_then(Paint::pattern_name));
+            nomi.extend(aspetto.filter.as_ref().and_then(Paint::pattern_name));
+        }
+        if let Some(layer) = self.layer.as_ref() {
+            nomi.extend(layer.background.iter().filter_map(Paint::pattern_name));
+        }
+        nomi
+    }
+
+    /// L'aspetto di base e quelli degli stati dichiarati.
+    ///
+    /// Gli stati contano quanto la base: un colore usato **solo** al passaggio
+    /// del mouse è un colore usato, e un conteggio che li saltasse direbbe «mai
+    /// usato» di un colore che si vede eccome.
+    #[must_use]
+    pub fn appearances(&self) -> Vec<&PartAppearance> {
+        let mut tutti = vec![&self.appearance];
+        tutti.extend(PartState::ALL.iter().filter_map(|s| self.states.get(*s)));
         tutti
     }
 }

@@ -18,10 +18,19 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use aether_app::covers::CoverStore;
 use aether_domain::errors::AppError;
 use rusqlite::Connection;
+
+/// Come si chiama il file del database dentro la cartella dati.
+///
+/// Una costante perché non è più aperto da un posto solo: l'arricchimento apre
+/// una **seconda** connessione allo stesso file per la sua cache, e due nomi
+/// scritti a mano che divergono produrrebbero un database vuoto accanto a quello
+/// vero — senza nessun errore, perché SQLite crea il file che non trova.
+pub const NOME_DATABASE: &str = "aether.db";
 
 /// La libreria aperta.
 pub struct Libreria {
@@ -46,6 +55,21 @@ pub struct Stato {
     /// può leggere il percorso, cambiare cartella, ripristinare un backup. Un
     /// processo che esce prima di disegnare qualcosa non lo è.
     pub libreria: Mutex<Result<Libreria, AppError>>,
+
+    /// Qualcuno ha chiesto di fermare la scansione in corso.
+    ///
+    /// # Perché **non** sta dietro il mutex della libreria
+    ///
+    /// Perché sarebbe irraggiungibile. `scansiona` chiama `con_libreria`, che
+    /// tiene il lucchetto per tutta la durata della scansione — venti secondi
+    /// sulla libreria vera, la prima volta. Un comando `annulla_scansione` che
+    /// chiedesse lo stesso lucchetto resterebbe in coda dietro la scansione che
+    /// deve fermare, e arriverebbe a fermarla dopo la fine.
+    ///
+    /// Un `AtomicBool` accanto al mutex si legge e si scrive senza chiederlo. È
+    /// esattamente il caso per cui gli atomici esistono: un bit condiviso fra
+    /// due fili, senza niente da tenere coerente insieme a lui.
+    scansione_da_fermare: AtomicBool,
 }
 
 impl Stato {
@@ -53,7 +77,56 @@ impl Stato {
     pub fn apri(data_dir: PathBuf) -> Self {
         Self {
             libreria: Mutex::new(apri_libreria(data_dir)),
+            scansione_da_fermare: AtomicBool::new(false),
         }
+    }
+
+    /// Chiede alla scansione in corso di fermarsi.
+    pub fn ferma_scansione(&self) {
+        self.scansione_da_fermare.store(true, Ordering::Relaxed);
+    }
+
+    /// Azzera la richiesta. Si chiama all'inizio di ogni scansione: senza,
+    /// un annullamento arrivato dopo la fine fermerebbe quella successiva.
+    pub fn riprendi_scansioni(&self) {
+        self.scansione_da_fermare.store(false, Ordering::Relaxed);
+    }
+
+    /// Se qualcuno ha chiesto di fermarsi.
+    ///
+    /// `Relaxed` basta: non c'è nessun altro dato che debba essere visibile
+    /// insieme a questo bit, e il ritardo massimo è un file letto in più.
+    pub fn scansione_fermata(&self) -> bool {
+        self.scansione_da_fermare.load(Ordering::Relaxed)
+    }
+}
+
+/// Il diritto di essere l'unica operazione in corso.
+///
+/// Una guardia e non due `store` a mano: fra il primo e il secondo ci sono dei
+/// `?`, e un ritorno anticipato lascerebbe il bit alzato per sempre — cioè un
+/// filo di sottofondo che non riparte più fino al riavvio, senza nessun errore
+/// da nessuna parte.
+///
+/// Sta qui e non nei due moduli che la usano perché è la stessa identica regola:
+/// due copie di una guardia di concorrenza sono due copie che divergono il
+/// giorno in cui qualcuno ne aggiusta una sola, e il sintomo sarebbe una passata
+/// che si sovrappone a se stessa in uno dei due posti soltanto.
+pub struct Turno<'a>(&'a AtomicBool);
+
+impl Turno<'_> {
+    /// Prende il turno, se è libero.
+    pub fn prendi(bandiera: &AtomicBool) -> Option<Turno<'_>> {
+        bandiera
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Turno(bandiera))
+    }
+}
+
+impl Drop for Turno<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -61,7 +134,7 @@ fn apri_libreria(data_dir: PathBuf) -> Result<Libreria, AppError> {
     std::fs::create_dir_all(&data_dir)
         .map_err(|err| aether_app::files::io_error(&data_dir.display().to_string(), &err))?;
     let covers = CoverStore::open(data_dir.join("copertine"))?;
-    let aperto = aether_app::db::open(&data_dir.join("aether.db"))?;
+    let aperto = aether_app::db::open(&data_dir.join(NOME_DATABASE))?;
     Ok(Libreria {
         connection: aperto.connection,
         covers,
@@ -96,6 +169,28 @@ pub fn riga_di_avvio(stato: &Stato) {
     }
 }
 
+/// L'orologio, in millisecondi dall'epoca.
+///
+/// Qui e non in `aether-app`: il dominio non ha un orologio — è la sua regola —
+/// e chi glielo porta è l'applicazione. Sta in questo modulo, e non copiato nei
+/// due file che lo usano, perché il timestamp che scrive `preferito` e quello
+/// che chiude un ascolto devono venire dalla stessa riga: due letture che si
+/// somigliano sono due letture che possono divergere di un'unità di misura.
+///
+/// Un orologio indietro rispetto all'epoca — cosa che succede su una macchina
+/// con la data sbagliata — vale zero invece di far cadere il comando: perdere
+/// la precedenza in una fusione è meno grave che non poter mettere un
+/// preferito.
+pub fn adesso_ms() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+    )
+    .unwrap_or(0)
+}
+
 /// Esegue `azione` sulla libreria aperta.
 ///
 /// Il mutex avvelenato — un panico dentro un altro comando mentre teneva il
@@ -114,5 +209,40 @@ pub fn con_libreria<T>(
     match guardia.as_mut() {
         Ok(libreria) => azione(libreria),
         Err(errore) => Err(errore.clone()),
+    }
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    #[test]
+    fn il_turno_si_libera_anche_uscendo_per_la_via_breve() {
+        // La ragione per cui è una guardia e non due `store`: fra il primo e il
+        // secondo ci sono dei `?`, e un turno rimasto alzato è un filo che non
+        // riparte più fino al riavvio, senza nessun errore da nessuna parte.
+        let bandiera = AtomicBool::new(false);
+        fn esce_subito(bandiera: &AtomicBool) -> Option<()> {
+            let _turno = Turno::prendi(bandiera)?;
+            None
+        }
+        assert_eq!(esce_subito(&bandiera), None);
+        assert!(
+            !bandiera.load(Ordering::Acquire),
+            "il turno è tornato libero"
+        );
+    }
+
+    #[test]
+    fn due_operazioni_insieme_non_si_intrecciano() {
+        let bandiera = AtomicBool::new(false);
+        let primo = Turno::prendi(&bandiera);
+        assert!(primo.is_some());
+        assert!(
+            Turno::prendi(&bandiera).is_none(),
+            "una passata automatica e un'operazione a mano non devono sovrapporsi"
+        );
+        drop(primo);
+        assert!(Turno::prendi(&bandiera).is_some(), "e dopo si può di nuovo");
     }
 }

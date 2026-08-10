@@ -99,6 +99,84 @@ pub fn normalize_key(input: Option<&str>) -> String {
     collapse_whitespace(&without_punctuation)
 }
 
+/// Gli articoli che non contano nell'ordine alfabetico.
+///
+/// Quattro lingue e non una: una libreria musicale italiana ha «The Cure»
+/// accanto a «I Cani» e a «Los Lobos», e ordinarne una sola sotto la lettera
+/// giusta è peggio che non ordinarne nessuna — chi cerca sa dove guardare solo
+/// se la regola vale sempre.
+///
+/// La lista è **chiusa e corta di proposito**. «El» non c'è: è anche un nome
+/// («El-P», «El Guincho»), e ordinare El Guincho sotto G è più sbagliato che
+/// lasciarlo sotto E. Nel dubbio, non si tocca.
+/// L'apostrofo va **prima** dello spazio: si toglie dal nome vero, non da
+/// quello normalizzato, perché `normalize_key` butta via la punteggiatura
+/// ASCII — apostrofo compreso — e a quel punto «L'Arc» è già diventato «larc»,
+/// dove nessun articolo si riconosce più.
+const ARTICOLI: &[&str] = &[
+    "l'", // italiano e francese, senza spazio
+    "the ", "a ", "an ", // inglese
+    "il ", "lo ", "la ", "i ", "gli ", "le ",  // italiano
+    "les ", // francese
+    "los ", "las ", // spagnolo
+    "der ", "die ", "das ", // tedesco
+];
+
+/// Il nome sotto cui ordinare, senza l'articolo iniziale.
+///
+/// «The Cure» finisce sotto C, «I Cani» sotto C, «Los Lobos» sotto L. Il
+/// confronto avviene sul risultato di [`normalize_key`], quindi maiuscole,
+/// diacritici e punteggiatura sono già fuori dai piedi.
+///
+/// # Perché sta nel dominio
+///
+/// È una regola su cosa significa «in ordine alfabetico» per una libreria
+/// musicale, e vale identica sul telefono. Scritta nella finestra, sarebbe la
+/// prima cosa che l'interfaccia Android riscrive in modo leggermente diverso,
+/// e due dispositivi ordinerebbero gli stessi artisti in due modi.
+///
+/// Il nome mostrato resta quello vero: questa funzione produce **solo** la
+/// chiave d'ordinamento, e «The Cure» continua a chiamarsi The Cure.
+///
+/// ```
+/// use aether_domain::keys::sort_name;
+/// assert_eq!(sort_name("The Cure"), "cure");
+/// assert_eq!(sort_name("Los Lobos"), "lobos");
+/// assert_eq!(sort_name("L'Arc~en~Ciel"), "arcenciel");
+/// assert_eq!(sort_name("The The"), "the");
+/// // Un nome che è solo un articolo resta sé stesso, e finisce sotto la sua
+/// // lettera invece che in cima a tutto con una chiave vuota.
+/// assert_eq!(sort_name("The"), "the");
+/// // «El» non è nella lista: El-P resta sotto E.
+/// assert_eq!(sort_name("El-P"), "elp");
+/// ```
+#[must_use]
+pub fn sort_name(name: &str) -> String {
+    let pulito = name.trim();
+    for articolo in ARTICOLI {
+        // Gli articoli sono tutti ASCII, quindi tagliare per byte taglia anche
+        // per carattere; e `get` restituisce `None` se il taglio cadesse dentro
+        // un carattere multibyte, che è la ragione per cui non si usa l'indice
+        // diretto.
+        let (Some(inizio), Some(resto)) =
+            (pulito.get(..articolo.len()), pulito.get(articolo.len()..))
+        else {
+            continue;
+        };
+        if !inizio.eq_ignore_ascii_case(articolo) {
+            continue;
+        }
+        // Un nome fatto **solo** di un articolo non si svuota: «The The» ha un
+        // resto, «The» da solo no, e una chiave vuota lo manderebbe in cima a
+        // tutto invece che sotto T.
+        if resto.trim().is_empty() {
+            continue;
+        }
+        return normalize_key(Some(resto));
+    }
+    normalize_key(Some(pulito))
+}
+
 /// I tre tag da cui si deriva l'identità di un brano.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TrackKeyInput<'a> {

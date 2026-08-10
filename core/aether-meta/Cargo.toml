@@ -1,0 +1,17 @@
+[package]
+name = "aether-meta"
+description = "I servizi di metadati musicali, tutti senza chiave: MusicBrainz, Cover Art Archive, iTunes, Deezer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+aether-domain = { path = "../aether-domain" }
+aether-net = { path = "../aether-net" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

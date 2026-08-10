@@ -23,6 +23,8 @@ pub enum Domain {
     Metadata,
     /// Scaricamento.
     Download,
+    /// Importazione da Spotify.
+    Spotify,
     /// Skin.
     Skin,
     /// Trasferimento diretto PC↔telefono.
@@ -228,6 +230,28 @@ catalogo! {
     LibraryScanFailed = "library.scanFailed", Library, Warning, Always, None, { path: Option<String>, detail: Option<String> };
     /// Il brano non è in libreria.
     LibraryTrackNotFound = "library.trackNotFound", Library, Warning, Never, Some("TRACK_NOT_FOUND"), { track_id: Option<i64> };
+    /// La playlist non esiste.
+    LibraryPlaylistNotFound = "library.playlistNotFound", Library, Warning, Never, None, { playlist_id: Option<i64> };
+    /// Una playlist con questo nome c'è già.
+    ///
+    /// Non è un dettaglio di database: l'identità di una playlist **è** il suo
+    /// nome normalizzato (`PlaylistKey`), quindi due playlist con lo stesso nome
+    /// sono la stessa playlist. Dirlo come conflitto, e non come violazione di
+    /// vincolo, è la differenza fra «scegline un altro» e «errore SQL».
+    LibraryPlaylistExists = "library.playlistExists", Library, Warning, Never, None, { name: String };
+    /// Il nome della playlist non identifica niente.
+    ///
+    /// Vuoto, o fatto di sola punteggiatura: la normalizzazione lo riduce a una
+    /// chiave vuota, che scontrerebbe con qualunque altro nome altrettanto
+    /// vuoto.
+    LibraryPlaylistNameInvalid = "library.playlistNameInvalid", Library, Warning, Never, None, { name: String };
+    /// La playlist è automatica: la sua appartenenza la decidono le regole.
+    ///
+    /// Aggiungere un brano a mano a una playlist automatica non è vietato per
+    /// principio: è che non avrebbe effetto. Ogni dispositivo la ricalcola dalle
+    /// regole, e la riga aggiunta sparirebbe al primo ricalcolo senza che
+    /// nessuno abbia sbagliato niente.
+    LibraryPlaylistIsSmart = "library.playlistIsSmart", Library, Warning, Never, None, { playlist_id: Option<i64> };
     /// Le regole della playlist automatica non sono valide.
     LibrarySmartRulesInvalid = "library.smartRulesInvalid", Library, Warning, Never, Some("SMART_RULES_INVALID");
     /// Campo non valido in una regola.
@@ -250,6 +274,14 @@ catalogo! {
     MetadataEnrichFound = "metadata.enrichFound", Metadata, Info, Never, Some("ENRICH_FOUND"), { what: String };
     /// MusicBrainz non risponde.
     MetadataMusicbrainzUnavailable = "metadata.musicbrainzUnavailable", Metadata, Warning, Always, Some("ENRICH_MB_UNAVAILABLE");
+    /// Una passata di arricchimento è già in corso.
+    ///
+    /// `Info` e ritentabile, come `sync.busy`: non è un guasto, è che una
+    /// passata automatica e un annullamento non devono intrecciarsi — il secondo
+    /// riporterebbe indietro dei tag che la prima sta riscrivendo nello stesso
+    /// istante, e quale dei due vincerebbe dipenderebbe dall'ordine in cui i due
+    /// fili arrivano al file.
+    MetadataEnrichBusy = "metadata.enrichBusy", Metadata, Info, Always, None;
     /// L'impronta acustica non è disponibile.
     MetadataFingerprintUnavailable = "metadata.fingerprintUnavailable", Metadata, Info, Never, None;
 
@@ -272,7 +304,22 @@ catalogo! {
     /// Rallentamento, con ritentativo già programmato.
     DownloadRateLimitedRetry = "download.rateLimitedRetry", Download, Info, Always, Some("DL_RATE_LIMITED_RETRY");
     /// Accesso negato dalla sorgente.
-    DownloadForbidden = "download.forbidden", Download, Warning, Never, Some("DL_FORBIDDEN");
+    ///
+    /// Ritentabile, contro l'istinto. Un `403` da YouTube non è una proprietà
+    /// del video — quelli che lo sono hanno un codice loro (privato, rimosso,
+    /// con limite d'età) — ma del momento: arriva a ondate, legato all'indirizzo
+    /// IP e al ritmo delle richieste. Chi lo produce
+    /// (`aether_yt::scarica`) ha già camminato i tre profili di client di
+    /// `argomenti::TENTATIVI` prima di arrendersi, quindi qui non si sta
+    /// riprovando la stessa cosa: si sta riprovando *più tardi*, che è l'unica
+    /// mossa rimasta e quella che di solito funziona.
+    ///
+    /// Con `Never` il brano resterebbe perduto per sempre, e il vecchio albero
+    /// faceva proprio questo — non per scelta, ma perché `classifyDownloadFailure`
+    /// non aveva il 403 in nessuna delle sue due liste e cadeva nel default
+    /// `permanent`, mentre il commento tre righe sopra dichiarava di volerlo
+    /// trattare come passeggero.
+    DownloadForbidden = "download.forbidden", Download, Warning, Always, Some("DL_FORBIDDEN");
     /// Guasto di rete durante lo scaricamento.
     DownloadNetwork = "download.network", Download, Warning, Always, Some("DL_NETWORK");
     /// Fallito senza una causa più precisa.
@@ -306,6 +353,42 @@ catalogo! {
     /// messaggio è una constatazione invece che un'istruzione.
     DownloadBinaryMissing = "download.binaryMissing", Download, Error, Never, Some("BINARY_MISSING"), { name: String, dir: Option<String>, url: Option<String> };
 
+    // ── spotify ─────────────────────────────────────────────────────────────
+    // Un dominio a sé e non `Download`: da qui non si scarica niente. Si legge
+    // un elenco di brani da un servizio che non ha mai promesso di farcelo
+    // leggere, e i modi in cui quella lettura fallisce non somigliano ai modi in
+    // cui fallisce yt-dlp — somigliano a «hanno cambiato il sito».
+    //
+    // Il riconoscimento del link riusa `download.unrecognizedUrl` e
+    // `download.invalidUrl`, che dicono già esattamente questo e hanno già la
+    // loro traduzione: un secondo codice per la stessa frase sarebbe la cosa che
+    // poi diverge.
+    /// Non si è riusciti a ottenere il gettone anonimo del lettore web.
+    ///
+    /// Ritentabile perché la causa di gran lunga più comune è un intoppo di
+    /// rete. Quando invece è la rotazione dei cifrari, ritentare non serve — ma
+    /// non fa danno: chi chiama scende comunque al livello successivo, e
+    /// `spotify_diagnostica` dice qual è dei due.
+    SpotifyTokenUnavailable = "spotify.tokenUnavailable", Spotify, Warning, Always, None;
+    /// Nessun livello è riuscito a leggere il contenuto.
+    ///
+    /// Non ritentabile: prima di arrivare qui si è già provato Pathfinder, la
+    /// pagina incorporabile e oEmbed. Se hanno detto di no tutti e tre, dirlo
+    /// una quarta volta non cambia la risposta.
+    SpotifyResolveFailed = "spotify.resolveFailed", Spotify, Warning, Never, None;
+    /// Il contenuto non è pubblico, o non esiste più.
+    ///
+    /// Distinto da quello sopra perché è l'unico caso in cui l'utente può fare
+    /// qualcosa: rendere pubblica la playlist, o controllare il link.
+    SpotifyNotPublic = "spotify.notPublic", Spotify, Warning, Never, None;
+    /// L'elenco dei brani è arrivato più corto di quanto Spotify dichiari.
+    ///
+    /// Porta i due numeri perché il messaggio possa dire «142 su 300» invece di
+    /// «alcuni brani»: una playlist importata a metà in silenzio è il guasto
+    /// peggiore possibile qui, e la differenza fra saperlo e non saperlo è tutta
+    /// in questi due valori.
+    SpotifyTracklistTruncated = "spotify.tracklistTruncated", Spotify, Warning, Never, None, { letti: u32, attesi: u32 };
+
     // ── skin ────────────────────────────────────────────────────────────────
     // Nessuno è ritentabile: un pacchetto non valido resta non valido. Portano
     // invece un dettaglio preciso, perché chi crea una skin deve sapere COSA è
@@ -326,6 +409,8 @@ catalogo! {
     SkinUnknownEffect = "skin.unknownEffect", Skin, Warning, Never, None, { effect_type: String };
     /// Valore non valido per un token.
     SkinTokenInvalid = "skin.tokenInvalid", Skin, Warning, Never, None, { token: String, value: String };
+    /// Lo scafale della skin non monta un widget senza il quale l'app non è usabile.
+    SkinLayoutIncomplete = "skin.layoutIncomplete", Skin, Warning, Never, None, { widget: String };
     /// La skin non è installata.
     SkinNotFound = "skin.notFound", Skin, Warning, Never, None, { id: String };
     /// Le skin di serie non si modificano.
@@ -358,6 +443,12 @@ catalogo! {
     SyncRemoteCorrupt = "sync.remoteCorrupt", Sync, Error, Never, None;
     /// Conflitto irrisolvibile in automatico.
     SyncConflict = "sync.conflict", Sync, Warning, Never, None, { detail: Option<String> };
+    /// C'è già un salvataggio o un ripristino in corso.
+    ///
+    /// `Info` e ritentabile, come `TransferSessionBusy`: non è un guasto, è che
+    /// due operazioni che parlano con Drive non devono intrecciarsi. Chi la
+    /// riceve riprova fra poco e trova il turno libero.
+    SyncBusy = "sync.busy", Sync, Info, Always, None;
 
     // ── settings ────────────────────────────────────────────────────────────
     /// Le impostazioni salvate sono illeggibili.

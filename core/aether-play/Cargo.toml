@@ -1,0 +1,56 @@
+# Il motore audio.
+#
+# Dipende da `aether-domain` e da nient'altro del progetto: in particolare
+# **non** da `aether-app`. È chi sta sopra a procurargli i byte, e questo è ciò
+# che tiene aperta la strada per Android — là i byte arrivano dallo Storage
+# Access Framework attraverso lo stesso tratto `MusicFiles`, e il motore non
+# deve accorgersene.
+
+[package]
+name = "aether-play"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Il motore audio di Aether: decodifica, uscita, e il tempo che passa."
+
+[dependencies]
+aether-domain = { path = "../aether-domain" }
+
+# La decodifica. Le feature sono l'elenco chiuso di `SUPPORTED_EXTENSIONS` meno
+# i due che symphonia non sa fare (opus, wma): quelli si dichiarano non
+# supportati con un codice del catalogo, invece di fallire in silenzio.
+symphonia = { version = "0.5", default-features = false, features = [
+    "mp3",
+    "flac",
+    "isomp4",
+    "aac",
+    "alac",
+    "ogg",
+    "vorbis",
+    "wav",
+    "pcm",
+    "aiff",
+] }
+
+# L'uscita. WASAPI qui, AAudio quando ci sarà Android: è la ragione per cui il
+# dispositivo sta dietro questa libreria e non dietro una chiamata di sistema.
+cpal = "0.15"
+
+# Il ricampionamento, che non è un lusso: il dispositivo apre a una frequenza
+# sola e i file ne hanno una loro. Senza, due brani a frequenze diverse non
+# possono attaccarsi senza buco.
+rubato = "0.16"
+
+# L'anello fra il filo che decodifica e la callback che suona. Senza lucchetti:
+# prendere un mutex dentro una callback audio significa che, se il proprietario
+# viene sospeso, l'audio si interrompe.
+rtrb = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

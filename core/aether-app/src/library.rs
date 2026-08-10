@@ -41,6 +41,8 @@
 //! riguardano ogni file della libreria. L'appaiamento avviene quindi lotto per
 //! lotto, contro l'insieme delle sparizioni ancora libere.
 
+use std::ops::ControlFlow;
+
 use aether_domain::album::{AlbumMember, AlbumRow, album_group_key, build_album_groups};
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::keys::{TrackKey, TrackKeyInput};
@@ -63,7 +65,7 @@ use crate::metadata::read_tags;
 pub const LOTTO: usize = 500;
 
 /// Traduce un errore di SQLite nel catalogo, tenendo il testo originale.
-fn db_error(detail: &str, err: &rusqlite::Error) -> AppError {
+pub(crate) fn db_error(detail: &str, err: &rusqlite::Error) -> AppError {
     AppError::new(ErrorCode::DbQueryFailed {
         detail: Some(detail.to_owned()),
     })
@@ -71,7 +73,7 @@ fn db_error(detail: &str, err: &rusqlite::Error) -> AppError {
 }
 
 /// L'ora attuale in millisecondi. Zero se l'orologio è dietro l'epoca.
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
@@ -609,6 +611,12 @@ pub struct ScanReport {
     pub aggregates: Aggregates,
     /// Quanto è durata.
     pub elapsed_ms: u128,
+    /// È stata fermata a metà.
+    ///
+    /// Non è un errore e non è un fallimento: quel che ha fatto è già scritto, e
+    /// la passata dopo riprende da lì. Serve a chi la mostra, per non dire
+    /// «scansione completata» a chi ha appena premuto Annulla.
+    pub cancelled: bool,
 }
 
 /// Una scansione da eseguire.
@@ -671,10 +679,25 @@ impl Scan<'_> {
     /// `on_progress` riceve `(fatti, totale)` sui soli file da leggere, che sono
     /// la parte lenta. Rimozioni e aggregati non entrano nel conteggio perché
     /// non hanno una durata percepibile.
+    ///
+    /// # Fermarsi
+    ///
+    /// `on_progress` restituisce un [`ControlFlow`]: chi la chiama può dire di
+    /// smettere. Non è un annullamento nel senso di «disfare» — quel che è già
+    /// scritto resta — ma nel senso di «basta così»: la scansione si ferma alla
+    /// fine del lotto in corso, e la passata dopo trova una libreria giusta e
+    /// incompleta che finisce da sé.
+    ///
+    /// È il contrario di come si annulla di solito, e il motivo sta nella forma
+    /// della scansione: ogni lotto sta nella sua transazione, apposta perché
+    /// un'interruzione qualunque — un crollo, una chiusura, una macchina che si
+    /// spegne — non lasci niente a metà. Un annullamento è solo l'interruzione
+    /// che qualcuno ha chiesto, e trattarla diversamente vorrebbe dire scrivere
+    /// un secondo percorso per lo stesso caso.
     pub fn run(
         &self,
         connection: &mut Connection,
-        mut on_progress: impl FnMut(usize, usize),
+        mut on_progress: impl FnMut(usize, usize) -> ControlFlow<()>,
     ) -> Result<ScanReport, AppError> {
         let started = std::time::Instant::now();
         let mut report = ScanReport {
@@ -752,7 +775,9 @@ impl Scan<'_> {
                     }),
                 }
                 fatti += 1;
-                on_progress(fatti, totale);
+                if on_progress(fatti, totale).is_break() {
+                    report.cancelled = true;
+                }
             }
 
             // ── quali di questi file nuovi sono righe che si sono spostate ──
@@ -812,10 +837,28 @@ impl Scan<'_> {
             }
             tx.commit()
                 .map_err(|err| db_error("chiusura della transazione", &err))?;
+
+            // Il lotto è chiuso e scritto: è l'unico punto in cui fermarsi non
+            // lascia niente a metà.
+            if report.cancelled {
+                break;
+            }
         }
 
         // ── le sparizioni che nessun file nuovo ha reclamato ──
-        if !sospese.is_empty() {
+        //
+        // **Saltate** se ci si è fermati a metà, ed è la parte che rende
+        // l'annullamento sicuro invece che distruttivo. Queste righe sono brani
+        // il cui file non c'è più *dove era*, e restano in sospeso perché uno
+        // dei lotti successivi potrebbe ritrovarli altrove — è così che
+        // riorganizzare la libreria non azzera conteggi, preferiti e voti.
+        //
+        // Fermandosi al terzo lotto su dieci, i sette che non sono stati letti
+        // non hanno avuto la loro occasione di reclamarli: cancellarli qui
+        // vorrebbe dire che premere Annulla a metà di una scansione dopo aver
+        // spostato una cartella distrugge le statistiche di tutti i brani che
+        // ci stavano dentro.
+        if !report.cancelled && !sospese.is_empty() {
             let ids: Vec<i64> = sospese.iter().map(|(id, _)| *id).collect();
             let tx = connection
                 .transaction()
@@ -877,11 +920,11 @@ pub struct TrackSummary {
 }
 
 /// Le colonne di [`TrackSummary`], nell'ordine in cui le legge `track_from_row`.
-const COLONNE_BRANO: &str = "t.id, t.path, t.title, t.artist, t.album, t.album_key,
+pub(crate) const COLONNE_BRANO: &str = "t.id, t.path, t.title, t.artist, t.album, t.album_key,
      t.track_number, t.disc_number, t.duration_ms, t.year, t.cover_art_hash,
      t.play_count, t.liked, t.rating";
 
-fn track_from_row(row: &Row<'_>) -> rusqlite::Result<TrackSummary> {
+pub(crate) fn track_from_row(row: &Row<'_>) -> rusqlite::Result<TrackSummary> {
     Ok(TrackSummary {
         id: row.get(0)?,
         path: row.get(1)?,
@@ -1010,6 +1053,100 @@ pub fn list_tracks(
         .map_err(|err| db_error("elenco dei brani", &err))
 }
 
+/// Una pagina di preferiti.
+///
+/// # Perché una query e non un filtro sull'elenco dei brani
+///
+/// La finestra chiedeva duemila brani e teneva quelli col cuore. Due cose
+/// storte insieme: legge tutta la libreria a ogni visita, e chi ne ha più di
+/// duemila non vede i preferiti che stanno oltre — senza che niente lo dica.
+///
+/// L'ordine è quello della **decisione**, non del titolo: chi apre i preferiti
+/// cerca quasi sempre quello che ha segnato poco fa. `liked_at` è nullo sulle
+/// righe segnate prima che quella colonna esistesse, e `IS NULL` in testa
+/// all'`ORDER BY` le manda in fondo invece di lasciarle dove capita.
+pub fn list_liked(
+    connection: &Connection,
+    offset: i64,
+    limit: i64,
+) -> Result<Vec<TrackSummary>, AppError> {
+    let sql = format!(
+        "SELECT {COLONNE_BRANO} FROM tracks t WHERE t.liked = 1
+         ORDER BY t.liked_at IS NULL, t.liked_at DESC, t.title COLLATE NOCASE
+         LIMIT ?1 OFFSET ?2"
+    );
+    let mut statement = connection
+        .prepare_cached(&sql)
+        .map_err(|err| db_error("elenco dei preferiti", &err))?;
+    let rows = statement
+        .query_map(rusqlite::params![limit, offset], track_from_row)
+        .map_err(|err| db_error("elenco dei preferiti", &err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("elenco dei preferiti", &err))
+}
+
+/// Un brano solo, per identificativo.
+///
+/// `None` se la riga non c'è più: capita a un brano tolto dalla libreria mentre
+/// la coda lo teneva ancora, e non è un guasto da propagare — è una riga da
+/// saltare.
+pub fn read_summary(connection: &Connection, id: i64) -> Result<Option<TrackSummary>, AppError> {
+    let sql = format!("SELECT {COLONNE_BRANO} FROM tracks t WHERE t.id = ?1");
+    let mut statement = connection
+        .prepare_cached(&sql)
+        .map_err(|err| db_error("lettura di un brano", &err))?;
+    statement
+        .query_row([id], track_from_row)
+        .map(Some)
+        .or_else(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            altro => Err(db_error("lettura di un brano", &altro)),
+        })
+}
+
+/// Le righe di un elenco di identificativi, **nell'ordine chiesto**.
+///
+/// L'ordine è il punto. Una `IN (…)` restituisce le righe nell'ordine che fa
+/// comodo a SQLite, e chi chiama qui — il pannello della coda — ha un ordine
+/// suo che è l'unica cosa che gli interessa: la coda non suona per
+/// identificativo crescente. Riordinare a valle costa una mappa e toglie una
+/// classe di difetti in cui l'elenco mostrato non è quello che si sentirà.
+///
+/// Gli identificativi che non esistono più semplicemente non compaiono.
+pub fn summaries_by_id(
+    connection: &Connection,
+    ids: &[i64],
+) -> Result<Vec<TrackSummary>, AppError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    // I segnaposto si contano, non si compongono con i valori: un elenco di
+    // identificativi resta un elenco di parametri anche quando è lungo.
+    let segnaposto = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!("SELECT {COLONNE_BRANO} FROM tracks t WHERE t.id IN ({segnaposto})");
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|err| db_error("brani per identificativo", &err))?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(ids), track_from_row)
+        .map_err(|err| db_error("brani per identificativo", &err))?;
+    let trovati = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("brani per identificativo", &err))?;
+
+    // Si clona invece di consumare la mappa: la stessa canzone può stare due
+    // volte nella stessa coda — accodarla due volte è legittimo — e toglierla
+    // dalla mappa alla prima occorrenza la farebbe sparire dalla seconda.
+    let per_id: std::collections::HashMap<i64, TrackSummary> =
+        trovati.into_iter().map(|b| (b.id, b)).collect();
+    Ok(ids
+        .iter()
+        .filter_map(|id| per_id.get(id).cloned())
+        .collect())
+}
+
 /// I brani di un album, nell'ordine del disco.
 pub fn album_tracks(
     connection: &Connection,
@@ -1060,6 +1197,160 @@ pub fn list_albums(
         .map_err(|err| db_error("elenco degli album", &err))
 }
 
+/// Una pagina degli album di un artista.
+///
+/// Confronto esatto sul nome come sta nei tag, che è la stessa chiave con cui
+/// [`list_artists`] raggruppa: la normalizzazione serve a **ordinare** gli
+/// artisti, non a fonderli, e due grafie diverse restano due artisti anche
+/// nella griglia.
+///
+/// Esiste perché la pagina di un artista filtrava nella finestra la pagina di
+/// album già scaricata: chi stava oltre l'ultimo album chiesto vedeva una
+/// pagina vuota sotto un titolo che diceva «tre album».
+pub fn albums_by_artist(
+    connection: &Connection,
+    artist: &str,
+    offset: i64,
+    limit: i64,
+) -> Result<Vec<AlbumSummary>, AppError> {
+    let mut statement = connection
+        .prepare_cached(
+            "SELECT album_key, title, artist, year, genre, total_tracks, cover_art_hash
+             FROM albums
+             WHERE artist = ?1
+             ORDER BY year, title COLLATE NOCASE
+             LIMIT ?2 OFFSET ?3",
+        )
+        .map_err(|err| db_error("album di un artista", &err))?;
+    let rows = statement
+        .query_map(rusqlite::params![artist, limit, offset], |row| {
+            Ok(AlbumSummary {
+                album_key: row.get(0)?,
+                title: row.get(1)?,
+                artist: row.get(2)?,
+                year: row.get(3)?,
+                genre: row.get(4)?,
+                total_tracks: row.get(5)?,
+                cover_art_hash: row.get(6)?,
+            })
+        })
+        .map_err(|err| db_error("album di un artista", &err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("album di un artista", &err))
+}
+
+/// Un artista come lo mostra la griglia.
+///
+/// # Perché le copertine sono quattro e vengono dagli album
+///
+/// Nessuna immagine d'artista esisterà mai: non c'è rete, e un lettore locale
+/// che va a prendersi i ritratti su internet è un lettore locale che chiama
+/// casa. Il ritratto è un mosaico due per due delle copertine dei suoi dischi —
+/// dati che ci sono già, e che per di più dicono qualcosa di vero: si riconosce
+/// un artista dai suoi album prima che dalla sua faccia.
+///
+/// Quattro perché il mosaico ne mostra quattro. Chi ne ha uno solo ottiene una
+/// copertina sola a tutto riquadro, che è il caso giusto e non un ripiego.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistSummary {
+    /// Il nome come sta nei tag.
+    pub name: String,
+    /// Il nome sotto cui ordinarlo, senza articolo iniziale.
+    pub sort_name: String,
+    /// Quanti album.
+    pub albums: i64,
+    /// Quanti brani.
+    pub tracks: i64,
+    /// Fino a quattro copertine, dalle più vecchie alle più recenti.
+    pub covers: Vec<String>,
+}
+
+/// Gli artisti della libreria, in ordine alfabetico del nome normalizzato.
+///
+/// # Perché niente pagina, e perché l'ordine si fa qui
+///
+/// Gli artisti sono pochi — un ordine di grandezza meno dei brani — e la vista
+/// li mostra tutti con un indice alfabetico laterale invece che a pagine: si
+/// salta alla lettera, non alla pagina sette. Chiederne una fetta alla volta
+/// vorrebbe dire non poter dire quante lettere esistono.
+///
+/// L'ordinamento **non** è in SQL. `sort_name` è una regola del dominio — «The
+/// Cure» sta sotto C — e SQLite non può chiamarla senza che gliela si registri
+/// come funzione, cioè senza duplicarla. Ordinare qui la tiene in un posto solo,
+/// e quel posto è lo stesso che userà Android.
+pub fn list_artists(connection: &Connection) -> Result<Vec<ArtistSummary>, AppError> {
+    let mut statement = connection
+        .prepare_cached(&format!(
+            "SELECT {ARTISTA_EFFETTIVO} AS nome,
+                    COUNT(DISTINCT album_key) AS album,
+                    COUNT(*)                  AS brani
+             FROM tracks
+             WHERE {ARTISTA_EFFETTIVO} <> ''
+             GROUP BY nome"
+        ))
+        .map_err(|err| db_error("elenco degli artisti", &err))?;
+    let mut artisti: Vec<ArtistSummary> = statement
+        .query_map([], |row| {
+            let name: String = row.get(0)?;
+            Ok(ArtistSummary {
+                sort_name: aether_domain::keys::sort_name(&name),
+                name,
+                albums: row.get(1)?,
+                tracks: row.get(2)?,
+                covers: Vec::new(),
+            })
+        })
+        .map_err(|err| db_error("elenco degli artisti", &err))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("elenco degli artisti", &err))?;
+
+    // Le copertine in una seconda passata e non in una sottoquery correlata: una
+    // riga per album invece di una per brano, e il raggruppamento a quattro si
+    // fa dove è leggibile. Su una libreria vera sono qualche migliaio di righe.
+    let mut copertine = connection
+        .prepare_cached(&format!(
+            "SELECT {ARTISTA_EFFETTIVO} AS nome, MIN(cover_art_hash) AS hash, MIN(year) AS anno
+             FROM tracks
+             WHERE {ARTISTA_EFFETTIVO} <> '' AND cover_art_hash IS NOT NULL
+             GROUP BY nome, album_key
+             ORDER BY nome, anno"
+        ))
+        .map_err(|err| db_error("copertine degli artisti", &err))?;
+    let mut per_artista: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let righe = copertine
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|err| db_error("copertine degli artisti", &err))?;
+    for riga in righe {
+        let (nome, hash) = riga.map_err(|err| db_error("copertine degli artisti", &err))?;
+        let elenco = per_artista.entry(nome).or_default();
+        // Quattro, e le stesse quattro a ogni chiamata: l'ordine della query è
+        // deterministico, quindi il mosaico di un artista non cambia disegno da
+        // un'apertura all'altra.
+        if elenco.len() < 4 && !elenco.contains(&hash) {
+            elenco.push(hash);
+        }
+    }
+    for artista in &mut artisti {
+        if let Some(trovate) = per_artista.remove(&artista.name) {
+            artista.covers = trovate;
+        }
+    }
+
+    artisti.sort_by(|a, b| {
+        a.sort_name
+            .cmp(&b.sort_name)
+            // A parità di chiave d'ordinamento — due artisti che differiscono
+            // solo per accenti o punteggiatura — decide il nome vero, altrimenti
+            // l'ordine dipenderebbe da come `HashMap` ha girato.
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(artisti)
+}
+
 /// Traduce quel che l'utente ha scritto in un'espressione FTS5.
 ///
 /// Ogni parola diventa una stringa fra virgolette con un asterisco in coda.
@@ -1087,7 +1378,8 @@ pub fn fts_query(input: &str) -> String {
 pub fn search(
     connection: &Connection,
     query: &str,
-    limit: usize,
+    offset: i64,
+    limit: i64,
 ) -> Result<Vec<TrackSummary>, AppError> {
     let expression = fts_query(query);
     if expression.is_empty() {
@@ -1101,19 +1393,40 @@ pub fn search(
          FROM tracks_fts
          JOIN tracks t ON t.id = tracks_fts.rowid
          WHERE tracks_fts MATCH ?1
-         ORDER BY bm25(tracks_fts) LIMIT ?2"
+         ORDER BY bm25(tracks_fts) LIMIT ?2 OFFSET ?3"
     );
     let mut statement = connection
         .prepare_cached(&sql)
         .map_err(|err| db_error("ricerca", &err))?;
     let rows = statement
         .query_map(
-            rusqlite::params![expression, i64::try_from(limit).unwrap_or(i64::MAX)],
+            rusqlite::params![expression, limit, offset],
             track_from_row,
         )
         .map_err(|err| db_error("ricerca", &err))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| db_error("ricerca", &err))
+}
+
+/// Quanti brani risponderebbero a questa ricerca.
+///
+/// Serve a poter scrivere «312 risultati» invece di «60 risultati», che è quel
+/// che l'intestazione diceva quando il numero era la lunghezza della prima
+/// pagina: un conteggio che si ferma al limite non è un conteggio, è il limite
+/// scritto in lettere.
+///
+/// Passa dalla **stessa** [`fts_query`] della ricerca: due traduzioni diverse
+/// della stessa stringa sono due occasioni di contare righe che poi non
+/// arrivano.
+pub fn search_count(connection: &Connection, query: &str) -> Result<i64, AppError> {
+    let expression = fts_query(query);
+    if expression.is_empty() {
+        return Ok(0);
+    }
+    connection
+        .prepare_cached("SELECT COUNT(*) FROM tracks_fts WHERE tracks_fts MATCH ?1")
+        .and_then(|mut statement| statement.query_row([&expression], |row| row.get(0)))
+        .map_err(|err| db_error("conteggio della ricerca", &err))
 }
 
 #[cfg(test)]
@@ -1211,8 +1524,27 @@ mod tests {
                 roots: &roots,
                 rules: PathRules::for_current_platform(),
             };
-            scan.run(&mut self.connection, |_, _| {})
+            scan.run(&mut self.connection, |_, _| ControlFlow::Continue(()))
                 .expect("scansione")
+        }
+
+        /// Come `scansiona`, ma si ferma dopo `quanti` file letti.
+        fn scansiona_e_ferma(&mut self, quanti: usize) -> ScanReport {
+            let roots = vec![self.root()];
+            let scan = Scan {
+                files: &LocalFiles,
+                covers: &self.store,
+                roots: &roots,
+                rules: PathRules::for_current_platform(),
+            };
+            scan.run(&mut self.connection, |fatti, _| {
+                if fatti >= quanti {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .expect("scansione")
         }
 
         fn conta(&self, tabella: &str) -> i64 {
@@ -1248,14 +1580,193 @@ mod tests {
 
         // Interrogabile davvero: la piegatura del tokenizzatore attraversa tutto
         // il giro, dal tag sul disco alla riga trovata.
-        let trovati = search(&lib.connection, "bjork", 10).expect("ricerca");
+        let trovati = search(&lib.connection, "bjork", 0, 10).expect("ricerca");
         assert_eq!(trovati.len(), 2);
-        let per_titolo = search(&lib.connection, "bachelor", 10).expect("ricerca");
+        let per_titolo = search(&lib.connection, "bachelor", 0, 10).expect("ricerca");
         assert_eq!(
             per_titolo.first().map(|t| t.title.as_str()),
             Some("Bachelorette"),
             "una ricerca si fa mentre si digita"
         );
+    }
+
+    #[test]
+    fn una_scansione_fermata_lascia_una_libreria_giusta_e_incompleta() {
+        // Il patto dell'annullamento: quel che è stato letto è scritto, il resto
+        // lo finisce la passata dopo. Con il lotto da 500 e sei file, tutto sta
+        // in un lotto solo — quindi il conteggio dice quanti ne sono stati letti
+        // prima dello stop, e il taglio avviene alla chiusura del lotto.
+        let mut lib = Libreria::nuova();
+        for n in 1..=6 {
+            lib.brano(
+                &format!("Tale/Al/{n:02}.wav"),
+                &format!("Pezzo {n}"),
+                "Tale",
+                "Al",
+            );
+        }
+
+        let esito = lib.scansiona_e_ferma(3);
+        assert!(esito.cancelled, "l'esito deve dire che è stata fermata");
+        // I brani letti prima dello stop ci sono, e sono righe vere: la
+        // transazione del lotto è stata chiusa comunque.
+        assert!(lib.conta("tracks") > 0, "quel che è stato letto resta");
+
+        // E la passata dopo finisce, senza rileggere quel che c'era già.
+        let seconda = lib.scansiona();
+        assert!(!seconda.cancelled);
+        assert_eq!(lib.conta("tracks"), 6, "la seconda passata completa");
+    }
+
+    #[test]
+    fn fermare_una_scansione_non_cancella_i_brani_spostati() {
+        // La parte che rende l'annullamento sicuro invece che distruttivo.
+        //
+        // Un brano il cui file non è più dove era resta **in sospeso**: potrebbe
+        // essersi spostato, e uno dei lotti successivi potrebbe ritrovarlo. Se
+        // ci si ferma prima, quei lotti non ci sono stati — e cancellare le
+        // righe in sospeso vorrebbe dire che premere Annulla dopo aver
+        // riorganizzato una cartella azzera conteggi, preferiti e voti di tutti
+        // i brani che ci stavano dentro.
+        let mut lib = Libreria::nuova();
+        lib.brano("Tale/Al/01.wav", "Pezzo", "Tale", "Al");
+        lib.scansiona();
+        assert_eq!(lib.conta("tracks"), 1);
+
+        // Gli si dà un voto: è la cosa che una cancellazione distruggerebbe e
+        // che nessuna riscansione potrebbe ricostruire.
+        lib.connection
+            .execute("UPDATE tracks SET rating = 5, liked = 1", [])
+            .expect("voto");
+
+        // Il file si sposta, e insieme arriva altra musica da leggere.
+        let da = lib.musica().join("Tale/Al/01.wav");
+        let a = lib.musica().join("Tale/Altrove/01.wav");
+        std::fs::create_dir_all(a.parent().expect("cartella")).expect("cartella");
+        std::fs::rename(&da, &a).expect("spostamento");
+        for n in 2..=5 {
+            lib.brano(
+                &format!("Nuovi/Al/{n:02}.wav"),
+                &format!("Nuovo {n}"),
+                "Altri",
+                "Al",
+            );
+        }
+
+        // Ci si ferma al primo file letto: la riga sparita è ancora in sospeso.
+        let esito = lib.scansiona_e_ferma(1);
+        assert!(esito.cancelled);
+        assert_eq!(
+            esito.removed, 0,
+            "una scansione fermata non toglie righe in sospeso"
+        );
+
+        let voto: i64 = lib
+            .connection
+            .query_row("SELECT COALESCE(MAX(rating), -1) FROM tracks", [], |r| {
+                r.get(0)
+            })
+            .expect("voto");
+        assert_eq!(voto, 5, "il voto del brano spostato è sopravvissuto");
+    }
+
+    #[test]
+    fn gli_artisti_si_ordinano_senza_articolo() {
+        // La regola che la vista Artisti promette: «The Cure» sotto C. Vive nel
+        // dominio (`sort_name`) e non in SQL, e questo test è il posto in cui si
+        // vede che il giro completo — tag sul disco, riga in libreria, elenco
+        // ordinato — la rispetta davvero.
+        let mut lib = Libreria::nuova();
+        lib.brano(
+            "Cure/Disintegration/01.wav",
+            "Plainsong",
+            "The Cure",
+            "Disintegration",
+        );
+        lib.brano(
+            "Cure/Disintegration/02.wav",
+            "Lovesong",
+            "The Cure",
+            "Disintegration",
+        );
+        lib.brano("Cure/Wish/01.wav", "Open", "The Cure", "Wish");
+        lib.brano(
+            "Air/Moon Safari/01.wav",
+            "La femme d'argent",
+            "Air",
+            "Moon Safari",
+        );
+        lib.brano(
+            "Doors/Strange Days/01.wav",
+            "Strange Days",
+            "The Doors",
+            "Strange Days",
+        );
+        lib.scansiona();
+
+        let artisti = list_artists(&lib.connection).expect("elenco");
+        let nomi: Vec<&str> = artisti.iter().map(|a| a.name.as_str()).collect();
+        // Air, poi Cure, poi Doors: l'articolo non conta, e il nome mostrato
+        // resta quello vero.
+        assert_eq!(nomi, ["Air", "The Cure", "The Doors"]);
+
+        let cure = artisti
+            .iter()
+            .find(|a| a.name == "The Cure")
+            .expect("i Cure");
+        assert_eq!(cure.sort_name, "cure");
+        assert_eq!(cure.albums, 2, "due album");
+        assert_eq!(cure.tracks, 3, "tre brani");
+    }
+
+    /// Una PNG diversa per ogni numero, per avere impronte diverse.
+    fn png(seme: u8) -> Vec<u8> {
+        let mut buffer = image::RgbImage::new(64, 64);
+        for (x, y, pixel) in buffer.enumerate_pixels_mut() {
+            *pixel = image::Rgb([
+                u8::try_from(x % 256).unwrap_or(0),
+                u8::try_from(y % 256).unwrap_or(0),
+                seme,
+            ]);
+        }
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgb8(buffer)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("codifica");
+        out
+    }
+
+    #[test]
+    fn il_mosaico_di_un_artista_si_ferma_a_quattro() {
+        // Il ritratto è due per due: chiedere tutte le copertine di chi ha
+        // trenta dischi vorrebbe dire spedirne ventisei che nessuno disegna.
+        let mut lib = Libreria::nuova();
+        for n in 1..=6u8 {
+            let path = lib.musica().join(format!("Tale/Album {n}")).join("01.wav");
+            wav(&path);
+            let mut tag = Tag::new(TagType::Id3v2);
+            tag.set_title("Pezzo".to_owned());
+            tag.set_artist("Tale".to_owned());
+            tag.set_album(format!("Album {n}"));
+            tag.push_picture(
+                lofty::picture::Picture::unchecked(png(n * 40))
+                    .pic_type(lofty::picture::PictureType::CoverFront)
+                    .mime_type(lofty::picture::MimeType::Png)
+                    .build(),
+            );
+            tag.save_to_path(&path, WriteOptions::default())
+                .expect("tag con copertina");
+        }
+        lib.scansiona();
+
+        let artisti = list_artists(&lib.connection).expect("elenco");
+        let tale = artisti.first().expect("un artista");
+        assert_eq!(tale.albums, 6);
+        assert_eq!(tale.covers.len(), 4, "il mosaico ne mostra quattro");
+        // E sono quattro **diverse**: quattro volte la stessa immagine sarebbe
+        // un mosaico che sembra un errore di disegno.
+        let distinte: std::collections::HashSet<&String> = tale.covers.iter().collect();
+        assert_eq!(distinte.len(), 4);
     }
 
     #[test]
@@ -1479,20 +1990,157 @@ mod tests {
         lib.scansiona();
 
         for query in ["AC/DC", "back - black", "\"virgolette", "NEAR", "OR", "*"] {
-            let esito = search(&lib.connection, query, 10);
+            let esito = search(&lib.connection, query, 0, 10);
             assert!(
                 esito.is_ok(),
                 "{query} ha fatto fallire la ricerca: {esito:?}"
             );
         }
         assert_eq!(
-            search(&lib.connection, "AC/DC", 10).expect("ricerca").len(),
+            search(&lib.connection, "AC/DC", 0, 10).expect("ricerca").len(),
             1
         );
         assert!(
-            search(&lib.connection, "", 10).expect("ricerca").is_empty(),
+            search(&lib.connection, "", 0, 10).expect("ricerca").is_empty(),
             "una ricerca vuota non è un errore, è nessun risultato"
         );
+    }
+
+    #[test]
+    fn la_ricerca_si_impagina_e_sa_quanti_ne_ha() {
+        // Il difetto che chiude: l'intestazione scriveva «N risultati» dove N
+        // era la lunghezza della prima pagina, cioè il limite travestito da
+        // conteggio. E oltre quel limite non c'era modo di arrivare.
+        let mut lib = Libreria::nuova();
+        for n in 1..=7 {
+            lib.brano(
+                &format!("Tale/Al/{n:02}.wav"),
+                &format!("Pezzo {n}"),
+                "Tale",
+                "Al",
+            );
+        }
+        lib.scansiona();
+
+        assert_eq!(
+            search_count(&lib.connection, "pezzo").expect("conteggio"),
+            7,
+            "il conteggio non si ferma alla pagina"
+        );
+        let prima = search(&lib.connection, "pezzo", 0, 3).expect("ricerca");
+        let seconda = search(&lib.connection, "pezzo", 3, 3).expect("ricerca");
+        let terza = search(&lib.connection, "pezzo", 6, 3).expect("ricerca");
+        assert_eq!((prima.len(), seconda.len(), terza.len()), (3, 3, 1));
+
+        // Le tre pagine non si sovrappongono e coprono tutto: senza un ordine
+        // stabile due fette consecutive potrebbero ripetere una riga e saltarne
+        // un'altra, che è il difetto che l'impaginazione porta con sé.
+        let mut visti: Vec<i64> = prima
+            .iter()
+            .chain(&seconda)
+            .chain(&terza)
+            .map(|b| b.id)
+            .collect();
+        visti.sort_unstable();
+        visti.dedup();
+        assert_eq!(visti.len(), 7, "sette righe distinte in tre pagine");
+
+        assert_eq!(
+            search_count(&lib.connection, "").expect("conteggio"),
+            0,
+            "una ricerca vuota conta zero, non tutto"
+        );
+    }
+
+    #[test]
+    fn i_preferiti_sono_una_query_e_non_un_filtro() {
+        // Prima si chiedevano duemila brani e si tenevano quelli col cuore:
+        // tutta la libreria letta a ogni visita, e chi ne ha più di duemila non
+        // vedeva i preferiti oltre — senza che niente lo dicesse.
+        let mut lib = Libreria::nuova();
+        for n in 1..=5 {
+            lib.brano(
+                &format!("Tale/Al/{n:02}.wav"),
+                &format!("Pezzo {n}"),
+                "Tale",
+                "Al",
+            );
+        }
+        lib.scansiona();
+
+        // Tre segnati, in tre momenti diversi: l'ordine atteso è quello della
+        // decisione, dal più recente.
+        lib.connection
+            .execute(
+                "UPDATE tracks SET liked = 1, liked_at = 300 WHERE title = 'Pezzo 1'",
+                [],
+            )
+            .expect("cuore");
+        lib.connection
+            .execute(
+                "UPDATE tracks SET liked = 1, liked_at = 100 WHERE title = 'Pezzo 3'",
+                [],
+            )
+            .expect("cuore");
+        // Segnato prima che `liked_at` esistesse: va in fondo, non dove capita.
+        lib.connection
+            .execute(
+                "UPDATE tracks SET liked = 1, liked_at = NULL WHERE title = 'Pezzo 5'",
+                [],
+            )
+            .expect("cuore");
+
+        let tutti = list_liked(&lib.connection, 0, 100).expect("preferiti");
+        assert_eq!(
+            tutti.iter().map(|b| b.title.as_str()).collect::<Vec<_>>(),
+            ["Pezzo 1", "Pezzo 3", "Pezzo 5"]
+        );
+        assert!(
+            tutti.iter().all(|b| b.liked),
+            "solo brani col cuore, e la query non lo deve dimenticare"
+        );
+
+        // E si impagina come gli altri elenchi.
+        let pagina = list_liked(&lib.connection, 1, 1).expect("preferiti");
+        assert_eq!(pagina.len(), 1);
+        assert_eq!(pagina.first().map(|b| b.title.as_str()), Some("Pezzo 3"));
+    }
+
+    #[test]
+    fn gli_album_di_un_artista_si_chiedono_al_database() {
+        // Prima si filtrava nella finestra la pagina di album già scaricata:
+        // un artista i cui dischi stavano oltre l'ultimo album chiesto dava una
+        // pagina vuota sotto un titolo che diceva «due album».
+        let mut lib = Libreria::nuova();
+        lib.brano("Tale/Primo/01.wav", "A", "Tale", "Primo");
+        lib.brano("Tale/Secondo/01.wav", "B", "Tale", "Secondo");
+        lib.brano("Altro/Terzo/01.wav", "C", "Altro", "Terzo");
+        lib.scansiona();
+
+        let suoi = albums_by_artist(&lib.connection, "Tale", 0, 100).expect("album");
+        assert_eq!(
+            suoi.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(),
+            ["Primo", "Secondo"]
+        );
+        assert!(
+            suoi.iter().all(|a| a.artist == "Tale"),
+            "nessun disco di qualcun altro"
+        );
+
+        // Confronto esatto sul nome dei tag — `albums.artist` non è dichiarata
+        // `COLLATE NOCASE` — e deve restare così: la normalizzazione serve a
+        // **ordinare** gli artisti, non a fonderli, e la griglia mostra la
+        // stessa chiave con cui `list_artists` raggruppa. Se un giorno le due
+        // dovessero fondersi, va deciso in un posto solo e questa prova cade.
+        assert!(
+            albums_by_artist(&lib.connection, "tale", 0, 100)
+                .expect("album")
+                .is_empty(),
+            "il raggruppamento e il filtro devono usare la stessa chiave"
+        );
+
+        let pagina = albums_by_artist(&lib.connection, "Tale", 1, 1).expect("album");
+        assert_eq!(pagina.first().map(|a| a.title.as_str()), Some("Secondo"));
     }
 
     #[test]

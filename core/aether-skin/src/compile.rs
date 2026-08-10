@@ -22,7 +22,7 @@
 use std::fmt::Write as _;
 
 use crate::document::{RouteFrame, SkinDocument, SkinMotion};
-use crate::effects::{Effect, EffectTarget, stack_cost};
+use crate::effects::{Effect, EffectTarget, Paint, stack_cost};
 use crate::parts::{PartAppearance, PartState, PartStyle};
 use crate::tokens::{
     ColorValue, DynamicSource, ShadowValue, TokenDef, TokenKind, TokenSet, TokenValue,
@@ -41,6 +41,11 @@ pub struct CompiledSkin {
     pub css: String,
     /// Somma dei costi di motivi e parti, per il budget prestazionale.
     pub cost: u32,
+    /// Quanti pezzi dell'app lo scafale monta, sul budget dello scafale.
+    ///
+    /// Non entra in [`Self::cost`]: sono due budget di due cose diverse, e la
+    /// somma non risponderebbe a nessuna delle due domande.
+    pub shell_cost: u32,
     /// I token che seguono la copertina: il runtime deve aggiornarli.
     pub dynamic_tokens: Vec<&'static str>,
 }
@@ -476,16 +481,27 @@ fn calcolati(tokens: &TokenSet) -> Vec<Dichiarazione> {
         dichiarazioni.push(dichiara("--surface-0-rgb", format_rgb_triple(colore)));
     }
 
+    // Il `calc()` è il lettore che a `--motion-scale` mancava. Il compilatore lo
+    // scriveva da sempre (`compila_movimento`) e nessuna regola lo interrogava,
+    // quindi l'intensità del movimento era una manopola scollegata. Passando di
+    // qui invece che da ogni singola transizione si raggiunge tutto in due
+    // righe: `--transition-fast` e `--transition-med` *sono* le due variabili
+    // che ogni transizione del foglio usa.
+    //
+    // Il fallback `, 1` non è difensivo per abitudine: `--motion-scale` esiste
+    // solo se la skin dichiara `motion.intensity`, e senza fallback una skin che
+    // dichiara le durate ma non l'intensità otterrebbe un `calc()` invalido —
+    // cioè nessuna transizione affatto.
     if tokens.contains("motion.dur.1") {
         dichiarazioni.push(dichiara(
             "--transition-fast",
-            "var(--dur-1) var(--ease-out-expo)",
+            "calc(var(--dur-1) * var(--motion-scale, 1)) var(--ease-out-expo)",
         ));
     }
     if tokens.contains("motion.dur.2") {
         dichiarazioni.push(dichiara(
             "--transition-med",
-            "var(--dur-2) var(--ease-out-expo)",
+            "calc(var(--dur-2) * var(--motion-scale, 1)) var(--ease-out-expo)",
         ));
     }
 
@@ -500,21 +516,48 @@ fn compila_motivi(patterns: &[(String, Effect)]) -> (Vec<Dichiarazione>, u32) {
 
     for (nome, effetto) in patterns {
         effetti.push(effetto.clone());
-        // Il suffisso dice in quale proprietà va usato: un clip-path e uno
-        // sfondo non si scambiano, e il nome lo rende evidente a chi scrive le
-        // parti.
-        let suffisso = match effetto.target() {
-            EffectTarget::Background => "",
-            EffectTarget::ClipPath => "-clip",
-            EffectTarget::Filter => "-filter",
-        };
         dichiarazioni.push(dichiara(
-            format!("{PREFISSO_MOTIVO}{nome}{suffisso}"),
+            format!(
+                "{PREFISSO_MOTIVO}{nome}{}",
+                suffisso_motivo(effetto.target())
+            ),
             compile_effect(effetto),
         ));
     }
 
     (dichiarazioni, stack_cost(&effetti))
+}
+
+/// Il suffisso dice in quale proprietà va usato un motivo: un clip-path e uno
+/// sfondo non si scambiano, e il nome lo rende evidente a chi scrive le parti.
+///
+/// È anche ciò che rende controllabile un `$pattern` messo nel posto sbagliato:
+/// `pittura()` in `document.rs` rifiuta prima che il nome sbagliato arrivi qui.
+const fn suffisso_motivo(target: EffectTarget) -> &'static str {
+    match target {
+        EffectTarget::Background => "",
+        EffectTarget::ClipPath => "-clip",
+        EffectTarget::Filter => "-filter",
+    }
+}
+
+/// Uno strato di pittura, per esteso o come riferimento a un motivo.
+///
+/// Il nome del motivo è l'unico pezzo di documento che finisce nel testo del
+/// foglio, e ci arriva già passato da `is_local_name` — minuscole, cifre e
+/// trattini — cioè da un alfabeto che non contiene né parentesi né due punti né
+/// il carattere che chiude una dichiarazione. L'invariante che il test di
+/// iniezione difende regge quindi per costruzione, non per controllo a valle.
+fn compila_pittura(paint: &Paint) -> String {
+    match paint {
+        Paint::Inline(effect) => compile_effect(effect),
+        Paint::Pattern { name, def } => {
+            format!(
+                "var({PREFISSO_MOTIVO}{name}{})",
+                suffisso_motivo(def.target())
+            )
+        }
+    }
 }
 
 // ── Le parti ────────────────────────────────────────────────────────────────
@@ -528,7 +571,7 @@ fn compila_aspetto(source: &PartAppearance) -> Vec<Dichiarazione> {
             source
                 .background
                 .iter()
-                .map(compile_effect)
+                .map(compila_pittura)
                 .collect::<Vec<_>>()
                 .join(", "),
         ));
@@ -550,7 +593,10 @@ fn compila_aspetto(source: &PartAppearance) -> Vec<Dichiarazione> {
         dichiarazioni.push(dichiara("border-radius", format_length(radius)));
     }
     if let Some(clip) = source.clip.as_ref() {
-        dichiarazioni.push(dichiara("clip-path", compile_effect(clip)));
+        dichiarazioni.push(dichiara("clip-path", compila_pittura(clip)));
+    }
+    if let Some(filter) = source.filter.as_ref() {
+        dichiarazioni.push(dichiara("backdrop-filter", compila_pittura(filter)));
     }
     if let Some(opacity) = source.opacity {
         dichiarazioni.push(dichiara("opacity", num(opacity)));
@@ -591,7 +637,7 @@ fn compila_parte(id: &str, stile: &PartStyle) -> String {
                 layer
                     .background
                     .iter()
-                    .map(compile_effect)
+                    .map(compila_pittura)
                     .collect::<Vec<_>>()
                     .join(", "),
             ),
@@ -681,6 +727,154 @@ fn compila_movimento(id: &str, motion: &SkinMotion) -> String {
     css
 }
 
+// ── Lo scafale ──────────────────────────────────────────────────────────────
+
+/// L'indirizzo di un nodo: il percorso degli indici dei figli.
+///
+/// `0-1-2` è «il terzo figlio del secondo figlio del primo figlio della
+/// radice». Lo calcola **il compilatore** camminando l'albero — non è un id
+/// scritto nel documento — e questo compra quattro cose in una:
+///
+/// 1. niente del documento entra nel selettore, quindi l'invariante che il test
+///    di iniezione difende regge senza una regola nuova;
+/// 2. il renderer React deriva lo stesso indirizzo dallo stesso albero, quindi
+///    i due lati non hanno bisogno di accordarsi su niente;
+/// 3. la sonda dello Studio ottiene un appiglio nel DOM (`closest("[data-nodo]")`);
+/// 4. **è** il percorso JSON, quindi portare il cursore sull'errore è
+///    formattazione e non ricerca.
+fn indirizzo(via: &[usize]) -> String {
+    if via.is_empty() {
+        return "radice".to_owned();
+    }
+    via.iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Come una misura diventa `flex`.
+///
+/// `min-width: 0` e `min-height: 0` li mette **sempre** il compilatore, mai la
+/// skin: senza, un figlio flex si rifiuta di scendere sotto la larghezza del
+/// suo contenuto, ed è il modo in cui un elenco di brani con un titolo lungo
+/// spinge fuori dallo schermo tutto quel che gli sta accanto. È la stessa idea
+/// per cui `compila_parte` forza `position`/`inset` sui livelli: le proprietà
+/// che tengono in piedi la finestra non sono negoziabili.
+fn misura_flex(size: crate::layout::TrackSize, riga: bool) -> Vec<Dichiarazione> {
+    use crate::layout::TrackSize;
+
+    let mut dichiarazioni = vec![
+        dichiara("min-width", "0"),
+        dichiara("min-height", "0"),
+        dichiara(
+            "flex",
+            match size {
+                TrackSize::Hug => "0 0 auto".to_owned(),
+                TrackSize::Fill => "1 1 0".to_owned(),
+                // `clamp` invece del numero nudo: la validazione ha già
+                // controllato l'intervallo, e questo lo rende vero anche se un
+                // giorno qualcuno compilasse un albero che non è passato di lì.
+                TrackSize::Fixed(length) => format!(
+                    "0 0 clamp({}px, {}, {}px)",
+                    num(crate::layout::FIXED_MIN),
+                    format_length(length),
+                    num(crate::layout::FIXED_MAX)
+                ),
+            },
+        ),
+    ];
+    // La misura fissa va detta anche sull'asse giusto: `flex-basis` da solo non
+    // vincola l'altezza di un figlio di colonna né la larghezza di un figlio di
+    // riga quando il contenitore ha spazio in abbondanza.
+    if let TrackSize::Fixed(length) = size {
+        let proprieta = if riga { "width" } else { "height" };
+        dichiarazioni.push(dichiara(
+            proprieta,
+            format!(
+                "clamp({}px, {}, {}px)",
+                num(crate::layout::FIXED_MIN),
+                format_length(length),
+                num(crate::layout::FIXED_MAX)
+            ),
+        ));
+    }
+    dichiarazioni
+}
+
+/// Le regole di una zona e di tutto quel che contiene.
+///
+/// `dentro` dice se la zona che *contiene* questa dispone in riga: serve a
+/// sapere su quale asse una misura fissa vada scritta.
+fn compila_zona(
+    id: &str,
+    zona: &crate::layout::LayoutZone,
+    via: &mut Vec<usize>,
+    dentro_una_riga: bool,
+    css: &mut String,
+) {
+    use crate::layout::{LayoutNode, ZoneKind};
+
+    let mut dichiarazioni = vec![
+        dichiara("display", "flex"),
+        dichiara(
+            "flex-direction",
+            if zona.kind.is_row() { "row" } else { "column" },
+        ),
+        dichiara("align-items", zona.align.as_str()),
+        dichiara("justify-content", zona.spread.css()),
+    ];
+    if let Some(gradino) = zona.gap.gradino() {
+        dichiarazioni.push(dichiara("gap", format!("var(--spazio-{gradino})")));
+    }
+    if matches!(zona.kind, ZoneKind::Scroll) {
+        dichiarazioni.push(dichiara("overflow-y", "auto"));
+        dichiarazioni.push(dichiara("overflow-x", "hidden"));
+    }
+    // Il contenitore di query per `--content-x`, deciso dal compilatore in base
+    // a **chi c'è dentro** e non da una chiave del formato: la pagina si adatta
+    // alla zona che la ospita, quale che sia, e una skin non ha bisogno di
+    // sapere che questa parola esiste.
+    if zona
+        .children
+        .iter()
+        .any(|figlio| matches!(figlio, LayoutNode::Widget(w) if w.def.name == "content"))
+    {
+        dichiarazioni.push(dichiara("container-type", "inline-size"));
+    }
+    dichiarazioni.extend(misura_flex(zona.size, dentro_una_riga));
+
+    css.push_str(&blocco(
+        &format!(":root[data-skin='{id}'] [data-nodo='{}']", indirizzo(via)),
+        &dichiarazioni,
+    ));
+
+    for (indice, figlio) in zona.children.iter().enumerate() {
+        via.push(indice);
+        match figlio {
+            LayoutNode::Zone(sotto) => compila_zona(id, sotto, via, zona.kind.is_row(), css),
+            LayoutNode::Widget(istanza) => {
+                css.push_str(&blocco(
+                    &format!(":root[data-skin='{id}'] [data-nodo='{}']", indirizzo(via)),
+                    &misura_flex(istanza.size, zona.kind.is_row()),
+                ));
+            }
+        }
+        via.pop();
+    }
+}
+
+/// Le regole di impaginazione di una skin.
+///
+/// Sono **blocchi propri**, mai dichiarazioni dentro `:root[data-skin='<id>']`:
+/// quel blocco è confrontato riga per riga con `stile.css` da un test di
+/// allineamento, e aggiungerci roba lo romperebbe senza guadagnare niente.
+fn compila_impaginazione(id: &str, shell: &crate::layout::LayoutZone) -> String {
+    let mut css = String::new();
+    let mut via = Vec::with_capacity(crate::layout::MAX_SHELL_DEPTH);
+    compila_zona(id, shell, &mut via, false, &mut css);
+    css
+}
+
 // ── L'insieme ───────────────────────────────────────────────────────────────
 
 /// Compila una skin validata.
@@ -737,12 +931,26 @@ pub fn compile_skin(skin: &SkinDocument) -> CompiledSkin {
         css.push_str(&compila_parte(&skin.id, stile));
     }
 
+    // Lo scafale esce **dopo** le parti: a parità di specificità vince chi viene
+    // dopo, e le regole di impaginazione devono poter dire l'ultima parola su
+    // `display` e `flex` — che sono precisamente le proprietà che il vocabolario
+    // delle parti non contiene, quindi non c'è niente da scavalcare, solo un
+    // ordine da non lasciare al caso.
+    let difetto = crate::document::SkinLayout::default();
+    let layout = skin.layout.as_ref().unwrap_or(&difetto);
+    css.push_str(&compila_impaginazione(&skin.id, &layout.shell));
+
     CompiledSkin {
         id: skin.id.clone(),
         css,
         // Il costo somma motivi e parti: è la cifra che il budget confronta, e
         // sommarne solo una metà la renderebbe inutile.
         cost: costo_motivi + costo_parti,
+        // **Separato**, e mai sommato in `cost`: sono due budget che misurano
+        // due cose diverse — quanto costa disegnare una superficie, e quanti
+        // pezzi dell'app sono montati insieme. Sommarli darebbe un numero che
+        // non risponde a nessuna delle due domande.
+        shell_cost: layout.shell.costo(),
         dynamic_tokens: dinamici,
     }
 }
@@ -817,10 +1025,17 @@ mod tests {
             css.contains("--player-clearance: calc(var(--player-h) + var(--player-gap) * 2);"),
             "{css}"
         );
+        // Il fallback `, 1` fa parte dell'asserzione, non è rumore: questa skin
+        // dichiara `motion.dur.1` e **non** `motion.intensity`, quindi
+        // `--motion-scale` non esiste. Senza fallback il `calc()` sarebbe
+        // invalido e la transizione sparirebbe invece di durare 150ms.
         assert!(
-            css.contains("--transition-fast: var(--dur-1) var(--ease-out-expo);"),
+            css.contains(
+                "--transition-fast: calc(var(--dur-1) * var(--motion-scale, 1)) var(--ease-out-expo);"
+            ),
             "{css}"
         );
+        assert!(!css.contains("--motion-scale:"), "{css}");
         // E non compaiono se la skin non dichiara ciò da cui derivano.
         let vuota = compila("{}");
         assert!(!vuota.contains("--shell-left"), "{vuota}");
@@ -853,6 +1068,12 @@ mod tests {
               "patterns": {
                 "griglia": { "effect": "hairlineGrid", "color": { "$palette": "teal" }, "cell": "36px" },
                 "taglio": { "effect": "chamfer", "size": "10px" }
+              },
+              "parts": {
+                "app-shell": {
+                  "background": [{ "$pattern": "griglia" }],
+                  "clip": { "$pattern": "taglio" }
+                }
               }
             }"##,
         );
@@ -886,8 +1107,130 @@ mod tests {
             "{}",
             compilata.css
         );
+        // `$pattern` è l'unico canale nuovo per cui un pezzo di documento — il
+        // nome — finisce nel testo del foglio. Ci arriva passato da
+        // `is_local_name`, e ne esce come una `var()` e nient'altro: il suffisso
+        // lo sceglie il compilatore dalla destinazione dell'effetto, non il
+        // documento.
+        assert!(
+            compilata.css.contains("background: var(--skin-griglia);"),
+            "{}",
+            compilata.css
+        );
+        assert!(
+            compilata
+                .css
+                .contains("clip-path: var(--skin-taglio-clip);"),
+            "{}",
+            compilata.css
+        );
         // E il token legato alla copertina è dichiarato come tale.
         assert_eq!(compilata.dynamic_tokens, ["color.hero"]);
+    }
+
+    #[test]
+    fn una_parte_puo_finalmente_sfocare_quel_che_ha_dietro() {
+        // Il buco che questo chiude: `blurBehind` si poteva dichiarare come
+        // motivo, `EffectTarget::Filter` sapeva già che finisce in
+        // `backdrop-filter`, e `PartAppearance` non aveva un campo che lo
+        // riferisse. Una skin che ci provava riceveva un errore giusto su una
+        // strada che non esisteva.
+        let compilata = compila_documento(
+            r##"{
+              "format": 1,
+              "id": "prova",
+              "meta": { "name": "Prova", "author": "Aether", "version": "1.0.0" },
+              "tokens": {},
+              "patterns": {
+                "velo": { "effect": "blurBehind", "radius": "18px", "saturate": 140 }
+              },
+              "parts": {
+                "glass-modal": { "filter": { "$pattern": "velo" } }
+              }
+            }"##,
+        );
+        // Il motivo esce col suffisso della sua destinazione, e la parte lo
+        // richiama con quello: è il suffisso a rendere impossibile scambiare
+        // uno sfondo con un filtro.
+        assert!(
+            compilata.css.contains("--skin-velo-filter: blur("),
+            "{}",
+            compilata.css
+        );
+        assert!(
+            compilata
+                .css
+                .contains("backdrop-filter: var(--skin-velo-filter);"),
+            "{}",
+            compilata.css
+        );
+    }
+
+    #[test]
+    fn una_sfocatura_dietro_costa_il_budget_intero() {
+        // Dieci è un `backdrop-filter` da solo. Il punto della prova non è il
+        // numero: è che il filtro **entri** nel conto. Finché `effects()`
+        // sommava i soli sfondi, una skin poteva metterne uno su ogni
+        // superficie e nessuno se ne accorgeva.
+        let compilata = compila_documento(
+            r##"{
+              "format": 1,
+              "id": "prova",
+              "meta": { "name": "Prova", "author": "Aether", "version": "1.0.0" },
+              "tokens": {},
+              "patterns": {
+                "velo": { "effect": "blurBehind", "radius": "18px" }
+              },
+              "parts": {
+                "glass-modal": { "filter": { "$pattern": "velo" } }
+              }
+            }"##,
+        );
+        // Il motivo conta una volta come motivo e una come uso nella parte:
+        // quel che serve è che la seconda non sia zero.
+        assert!(
+            compilata.cost >= crate::effects::SURFACE_COST_BUDGET,
+            "una sfocatura dietro deve pesare almeno il budget, non {}",
+            compilata.cost
+        );
+
+        // E senza il filtro la stessa skin non costa niente: è il confronto che
+        // dimostra che il costo viene da lì e non da altro.
+        let senza = compila_documento(
+            r##"{
+              "format": 1,
+              "id": "prova",
+              "meta": { "name": "Prova", "author": "Aether", "version": "1.0.0" },
+              "tokens": {},
+              "parts": { "glass-modal": { "opacity": 0.9 } }
+            }"##,
+        );
+        assert_eq!(senza.cost, 0, "senza effetti non si spende niente");
+    }
+
+    #[test]
+    fn un_nome_di_motivo_ostile_non_arriva_al_foglio() {
+        // La `var()` di `$pattern` è l'unico posto in cui un nome scritto nel
+        // documento diventa testo del foglio. Chiuderla richiede che l'alfabeto
+        // dei nomi non contenga né la parentesi che la chiude né il punto e
+        // virgola che finisce la dichiarazione — ed è ciò che si verifica qui,
+        // sul rifiuto e non sull'uscita.
+        for ostile in ["a); color: red; --b:(", "a}", "Griglia", "a b", "a/*"] {
+            let json = format!(
+                r##"{{
+                  "format": 1,
+                  "id": "prova",
+                  "meta": {{ "name": "Prova", "author": "Aether", "version": "1.0.0" }},
+                  "tokens": {{}},
+                  "patterns": {{ {} : {{ "effect": "solid", "color": "#fff" }} }}
+                }}"##,
+                serde_json::Value::String(ostile.to_owned())
+            );
+            assert!(
+                crate::document::parse_skin_json(&json).is_err(),
+                "accettato un nome di motivo ostile: {ostile}"
+            );
+        }
     }
 
     #[test]
@@ -978,6 +1321,179 @@ mod tests {
         let posizione = |ago: &str| css.find(ago).unwrap_or(usize::MAX);
         assert!(posizione("--color-surface-0") < posizione("--accent"));
         assert!(posizione("--accent") < posizione("--radius-card"));
+    }
+
+    // ── Lo scafale ──────────────────────────────────────────────────────────
+
+    /// Il corpo di un blocco CSS: quel che sta fra la graffa aperta e la chiusa.
+    fn corpo(css: &str, apertura: &str) -> String {
+        let inizio = css.find(apertura).map_or(0, |i| i + apertura.len());
+        let resto = css.get(inizio..).unwrap_or_default();
+        let fine = resto.find("\n}").unwrap_or(0);
+        resto.get(..fine).unwrap_or_default().to_owned()
+    }
+
+    #[test]
+    fn lo_scafale_esce_in_blocchi_propri() {
+        // Non dentro `:root[data-skin='<id>']`: quel blocco è confrontato riga
+        // per riga con `stile.css`, e aggiungerci una regola di layout
+        // romperebbe il test di allineamento senza guadagnare niente.
+        let css = compila_documento(MINIMA).css;
+        let radice = corpo(&css, ":root[data-skin='prova'] {");
+        assert!(!radice.contains("display"), "{radice}");
+        assert!(!radice.contains("flex"), "{radice}");
+        assert!(
+            css.contains(":root[data-skin='prova'] [data-nodo="),
+            "{css}"
+        );
+    }
+
+    #[test]
+    fn l_indirizzo_di_un_nodo_e_il_suo_percorso() {
+        // `1-1` è il secondo figlio del secondo figlio: nell'albero di serie è
+        // `content`, dentro la colonna che sta accanto alla navigazione.
+        let css = compila_documento(MINIMA).css;
+        for atteso in [
+            "[data-nodo='radice']",
+            "[data-nodo='1']",
+            "[data-nodo='1-1']",
+        ] {
+            assert!(css.contains(atteso), "manca {atteso} in:\n{css}");
+        }
+    }
+
+    #[test]
+    fn il_contenitore_di_query_va_dove_sta_il_contenuto() {
+        // `--content-x` è `clamp(16px, 3cqw, 48px)`: senza un `container-type`
+        // da qualche parte, `cqw` non ha un contenitore e la lunghezza adattiva
+        // non si adatta a niente.
+        let css = compila_documento(MINIMA).css;
+        let zona = corpo(&css, ":root[data-skin='prova'] [data-nodo='1'] {");
+        assert!(zona.contains("container-type: inline-size;"), "{zona}");
+        let radice = corpo(&css, ":root[data-skin='prova'] [data-nodo='radice'] {");
+        assert!(!radice.contains("container-type"), "{radice}");
+    }
+
+    #[test]
+    fn ogni_nodo_riceve_il_minimo_a_zero() {
+        // È la proprietà che impedisce a un titolo lungo di spingere fuori
+        // schermo quel che gli sta accanto, ed è del compilatore: nessuna skin
+        // può toglierla, perché non ha una parola per dirlo.
+        let css = compila_documento(MINIMA).css;
+        let nodi = css.matches("[data-nodo=").count();
+        assert!(nodi >= 6, "solo {nodi} nodi:\n{css}");
+        assert_eq!(css.matches("min-width: 0;").count(), nodi);
+        assert_eq!(css.matches("min-height: 0;").count(), nodi);
+    }
+
+    #[test]
+    fn una_misura_fissa_esce_stretta_fra_due_estremi() {
+        let css = compila_documento(MINIMA).css;
+        // La terza colonna dell'albero di serie: 348px, fra 24 e 480.
+        assert!(
+            css.contains("flex: 0 0 clamp(24px, 348px, 480px);"),
+            "{css}"
+        );
+    }
+
+    #[test]
+    fn il_costo_dello_scafale_non_entra_in_quello_delle_superfici() {
+        let compilata = compila_documento(MINIMA);
+        // Nessun motivo e nessuna parte: le superfici non costano niente.
+        assert_eq!(compilata.cost, 0);
+        // Ma l'albero di serie monta navigazione, colonna e lettore (5), più la
+        // coda e la barra della selezione (1 ciascuna) che galleggiano accanto
+        // al lettore.
+        assert_eq!(compilata.shell_cost, 7);
+    }
+
+    #[test]
+    fn uno_scafale_scritto_a_mano_esce_come_l_ha_scritto_chi_lo_ha_scritto() {
+        let css = compila_documento(
+            r##"{
+              "format": 1,
+              "id": "prova",
+              "meta": { "name": "Prova", "author": "Aether", "version": "1.0.0" },
+              "tokens": {},
+              "layout": { "shell": {
+                "zone": "column",
+                "gap": "l",
+                "align": "center",
+                "spread": "between",
+                "children": [
+                  { "widget": "content" },
+                  { "zone": "scroll", "size": "120px", "children": [
+                    { "widget": "queue", "size": "fill" }
+                  ] },
+                  { "widget": "player" },
+                  { "widget": "bottom-nav" }
+                ]
+              } }
+            }"##,
+        )
+        .css;
+        let radice = corpo(&css, ":root[data-skin='prova'] [data-nodo='radice'] {");
+        assert!(radice.contains("flex-direction: column;"), "{radice}");
+        assert!(radice.contains("gap: var(--spazio-4);"), "{radice}");
+        assert!(radice.contains("align-items: center;"), "{radice}");
+        assert!(
+            radice.contains("justify-content: space-between;"),
+            "{radice}"
+        );
+        let scorrevole = corpo(&css, ":root[data-skin='prova'] [data-nodo='1'] {");
+        assert!(scorrevole.contains("overflow-y: auto;"), "{scorrevole}");
+        // Figlio di una colonna: la misura fissa va sull'altezza, non sulla
+        // larghezza. È l'unica cosa che `flex-basis` da solo non direbbe.
+        assert!(
+            scorrevole.contains("height: clamp(24px, 120px, 480px);"),
+            "{scorrevole}"
+        );
+    }
+
+    #[test]
+    fn niente_dello_scafale_finisce_nel_foglio_come_testo() {
+        // Lo scafale aggiunge tre canali dal documento al foglio — il nome del
+        // widget, il nome della manopola, il valore della manopola — e nessuno
+        // dei tre ci arriva: il selettore porta l'indirizzo calcolato qui, e le
+        // manopole non producono CSS affatto. Si verifica sull'uscita.
+        let compilata = compila_documento(
+            r##"{
+              "format": 1,
+              "id": "prova",
+              "meta": { "name": "Prova", "author": "Aether", "version": "1.0.0" },
+              "tokens": {},
+              "layout": { "shell": {
+                "zone": "row",
+                "part": "app-shell",
+                "children": [
+                  { "widget": "navigation", "options": { "wide": true } },
+                  { "widget": "content" },
+                  {
+                    "widget": "transport",
+                    "options": { "size": "large", "shuffle": false }
+                  }
+                ]
+              } }
+            }"##,
+        );
+        for vietato in ["url(", "@import", "expression(", "javascript:", "</style"] {
+            assert!(!compilata.css.contains(vietato), "{}", compilata.css);
+        }
+        // Il nome del widget e quello della manopola non compaiono: il
+        // selettore è un indirizzo, non un nome.
+        for nome in ["navigation", "transport", "shuffle", "large"] {
+            assert!(
+                !compilata.css.contains(nome),
+                "«{nome}» nel foglio:\n{}",
+                compilata.css
+            );
+        }
+    }
+
+    #[test]
+    fn due_compilazioni_danno_lo_stesso_scafale() {
+        let skin = parse_skin_json(MINIMA).expect("valida");
+        assert_eq!(compile_skin(&skin).css, compile_skin(&skin).css);
     }
 
     #[test]
