@@ -388,6 +388,19 @@ catalogo! {
     /// peggiore possibile qui, e la differenza fra saperlo e non saperlo è tutta
     /// in questi due valori.
     SpotifyTracklistTruncated = "spotify.tracklistTruncated", Spotify, Warning, Never, None, { letti: u32, attesi: u32 };
+    /// L'archivio non si apre: non è uno zip, o è troncato.
+    ///
+    /// Non ritentabile. Un file scaricato a metà non si completa riprovando ad
+    /// aprirlo, e la risposta utile è «riscaricalo», non «aspetta».
+    SpotifyArchiveUnreadable = "spotify.archiveUnreadable", Spotify, Error, Never, None, { path: String, detail: Option<String> };
+    /// Lo zip si apre, ma dentro non c'è niente che Aether sappia leggere.
+    ///
+    /// È il caso di chi sbaglia archivio — quello dei dati dell'account e quello
+    /// della cronologia estesa arrivano separati, e in mezzo Spotify ne manda
+    /// altri che non riguardano la musica. Porta l'elenco di quel che c'era
+    /// dentro: senza, «archivio non riconosciuto» non dice a nessuno quale dei
+    /// due file scaricati sia quello giusto.
+    SpotifyArchiveEmpty = "spotify.archiveEmpty", Spotify, Warning, Never, None, { trovati: Vec<String> };
 
     // ── skin ────────────────────────────────────────────────────────────────
     // Nessuno è ritentabile: un pacchetto non valido resta non valido. Portano

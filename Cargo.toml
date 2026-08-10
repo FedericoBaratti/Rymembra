@@ -15,6 +15,7 @@ members = [
     "core/aether-net",
     "core/aether-meta",
     "core/aether-oauth",
+    "core/aether-archivio",
     "core/aether-cloud",
     "core/aether-spotify",
     "core/aether-yt",
@@ -49,6 +50,13 @@ flate2 = "1"
 sha2 = "0.10"
 getrandom = "0.3"
 keyring = { version = "3", features = ["windows-native"] }
+# `default-features = false` più il solo `deflate`: bzip2, zstd, lzma, xz e ppmd
+# porterebbero altrettante catene di compilazione C per formati che né una skin
+# né un archivio di Spotify usano. Serve a due crate — `aether-skin` per i
+# pacchetti `.aeskin`, `aether-archivio` per i dati che Spotify manda — e sta
+# qui perché due versioni diverse dello stesso decompressore nello stesso
+# binario sono megabyte duplicati.
+zip = { version = "6", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 # Il dominio non ha bisogno di unsafe. Vietato, non scoraggiato: se un giorno

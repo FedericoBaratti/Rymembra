@@ -28,6 +28,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-archivio"
+version = "0.1.0"
+dependencies = [
+ "aether-domain",
+ "serde_json",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "aether-cloud"
 version = "0.1.0"
 dependencies = [
