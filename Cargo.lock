@@ -34,13 +34,12 @@ dependencies = [
  "aether-app",
  "aether-domain",
  "aether-net",
+ "aether-oauth",
  "aether-skin",
  "flate2",
  "getrandom 0.3.4",
- "keyring",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
 ]
 
@@ -91,6 +90,16 @@ version = "0.1.0"
 dependencies = [
  "aether-domain",
  "ureq",
+]
+
+[[package]]
+name = "aether-oauth"
+version = "0.1.0"
+dependencies = [
+ "aether-domain",
+ "getrandom 0.3.4",
+ "keyring",
+ "sha2",
 ]
 
 [[package]]

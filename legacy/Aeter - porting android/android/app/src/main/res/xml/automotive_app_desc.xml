@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Declares Aether as an Android Auto "media" app so the projected car UI shows it
-     among the media players. Referenced from AndroidManifest.xml via the
-     com.google.android.gms.car.application meta-data. -->
-<automotiveApp>
-    <uses name="media" />
-</automotiveApp>

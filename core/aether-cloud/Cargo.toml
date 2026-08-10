@@ -12,22 +12,25 @@ aether-app = { path = "../aether-app" }
 aether-domain = { path = "../aether-domain" }
 # Il client HTTP, che stava qui dentro finché Drive era l'unico a uscire in rete.
 aether-net = { path = "../aether-net" }
+# PKCE, il servitore di loopback e il portachiavi: stavano qui dentro finché
+# Google era l'unico a chiedere un consenso. Vedi il preambolo di `aether-oauth`
+# sul perché il confine passa dove passa.
+aether-oauth = { path = "../aether-oauth", default-features = false }
 # Le guardie dell'archivio non fidato: un `.aeskin` scaricato passa di lì prima
 # di toccare il disco. Vedi `pacchetti`.
 aether-skin = { path = "../aether-skin" }
 flate2.workspace = true
 getrandom.workspace = true
-# Il portachiavi di sistema, dietro una feature accesa di serie: una futura
-# build Android la spegne e fornisce la sua, senza portarsi dietro il
-# Credential Manager di Windows.
-keyring = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 
 [features]
 default = ["portachiavi"]
-portachiavi = ["dep:keyring"]
+# Il portachiavi di sistema, acceso di serie: una futura build Android lo spegne
+# e fornisce il suo, senza portarsi dietro il Credential Manager di Windows.
+# L'interruttore vero sta in `aether-oauth`; qui si inoltra soltanto, perché chi
+# dipende dal backup non deve sapere in quale crate è finito il tratto.
+portachiavi = ["aether-oauth/portachiavi"]
 
 [dev-dependencies]
 tempfile = "3"

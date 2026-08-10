@@ -40,7 +40,6 @@
 //! per cui non si ripiega mai in silenzio.
 
 pub mod drive;
-pub mod loopback;
 pub mod oauth;
 pub mod pacchetti;
 pub mod portachiavi;
@@ -53,6 +52,13 @@ pub mod servizio;
 /// spostamento non si vede da qui. Chi scrive codice nuovo può importarlo dalla
 /// sua casa vera.
 pub use aether_net::http;
+
+/// Il servitore di loopback, che ora vive in `aether-oauth`.
+///
+/// Stessa storia dell'HTTP qui sopra, e per la stessa ragione: raccogliere la
+/// risposta di un browser su `127.0.0.1` non è una faccenda di Drive, ed è
+/// diventato evidente quando anche Spotify ha avuto bisogno di farlo.
+pub use aether_oauth::loopback;
 pub use drive::{Drive, FileRemoto};
 pub use oauth::{Credenziali, Token};
 pub use portachiavi::Portachiavi;

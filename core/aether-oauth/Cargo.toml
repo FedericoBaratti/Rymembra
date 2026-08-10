@@ -1,0 +1,24 @@
+[package]
+name = "aether-oauth"
+description = "Le parti di OAuth che non sanno con chi stanno parlando: PKCE, il servitore di loopback, il portachiavi."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+aether-domain = { path = "../aether-domain" }
+getrandom.workspace = true
+sha2.workspace = true
+# Il portachiavi di sistema, dietro una feature accesa di serie: una futura
+# build Android la spegne e fornisce la sua, senza portarsi dietro il
+# Credential Manager di Windows.
+keyring = { workspace = true, optional = true }
+
+[features]
+default = ["portachiavi"]
+portachiavi = ["dep:keyring"]
+
+[lints]
+workspace = true

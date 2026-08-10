@@ -28,13 +28,26 @@
 //! causa il **campo `error` di Google** — `invalid_grant`, `invalid_client` —
 //! che è quel che serve a capire cosa è successo e non è un segreto.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use aether_domain::errors::{AppError, ErrorCode};
-use sha2::{Digest as _, Sha256};
+use aether_oauth::{Attesa, Pkce, Servizio, adesso_ms};
 
 use crate::http::{Corpo, Metodo, Rete, Richiesta, percento};
-use crate::loopback::Attesa;
+
+/// Le parti di OAuth che non sanno con chi stanno parlando.
+///
+/// Re-esportate da qui perché è da qui che ci si aspetta di trovarle: chi legge
+/// `oauth::base64url` in `drive` o `oauth::identificativo` nella finestra non ha
+/// bisogno di sapere che quel codice ha traslocato in `aether-oauth`. La casa
+/// vera è quella, e chi scrive codice nuovo può importarlo di là.
+pub use aether_oauth::{ancora_valido, base64url, da_base64url, identificativo};
+
+/// Con chi si sta parlando, per gli errori del consenso.
+pub const GOOGLE: Servizio = Servizio {
+    chiave: "google",
+    nome: "Google",
+};
 
 /// Dove si manda l'utente a dare il consenso.
 const AUTORIZZAZIONE: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -69,14 +82,6 @@ pub const ATTESA_CONSENSO: Duration = Duration::from_secs(3 * 60);
 /// risponde in quindici secondi non risponderà.
 pub const SCADENZA: Duration = Duration::from_secs(15);
 
-/// Con quanto anticipo si rinfresca un token che sta per scadere.
-///
-/// Un minuto: il tempo che una passata di backup può metterci fra il momento in
-/// cui controlla la scadenza e quello in cui fa l'ultima richiesta. Senza
-/// anticipo, un token valido «ancora due secondi» supererebbe il controllo e
-/// darebbe un 401 a metà caricamento.
-const ANTICIPO: Duration = Duration::from_secs(60);
-
 /// Il client OAuth di questa applicazione.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credenziali {
@@ -84,46 +89,6 @@ pub struct Credenziali {
     pub client_id: String,
     /// Il segreto del client. Vedi la nota in testa al modulo.
     pub client_secret: String,
-}
-
-/// Il segreto che resta in questo processo, e la sua prova pubblica.
-///
-/// Il `verifier` non esce mai da qui finché non è ora di scambiarlo; quel che
-/// viaggia nell'indirizzo di autorizzazione è solo il suo digest.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pkce {
-    verifier: String,
-    challenge: String,
-}
-
-impl Pkce {
-    /// Genera una coppia nuova.
-    ///
-    /// Trentadue byte di casualità del sistema operativo, scritti in base64url:
-    /// quarantatré caratteri, dentro i 43..128 che la RFC 7636 impone e composti
-    /// dei soli caratteri non riservati, quindi indenni a qualunque codifica li
-    /// attraversi.
-    ///
-    /// # Errori
-    ///
-    /// `internal.unexpected` se il sistema operativo non fornisce casualità. È
-    /// un guasto che non si aggira: un verifier prevedibile toglie a PKCE la
-    /// ragione di esistere, e ripiegare su un orologio sarebbe peggio che non
-    /// collegarsi.
-    pub fn nuovo() -> Result<Self, AppError> {
-        let verifier = base64url(&casuale::<32>()?);
-        let challenge = base64url(Sha256::digest(verifier.as_bytes()).as_slice());
-        Ok(Self {
-            verifier,
-            challenge,
-        })
-    }
-
-    /// La prova pubblica, da mettere nell'indirizzo di autorizzazione.
-    #[must_use]
-    pub fn challenge(&self) -> &str {
-        &self.challenge
-    }
 }
 
 /// I token appena ricevuti da Google.
@@ -174,7 +139,7 @@ pub fn invito(
     pkce: &Pkce,
     redirect_uri: &str,
 ) -> Result<Invito, AppError> {
-    let state = base64url(&casuale::<16>()?);
+    let state = aether_oauth::stato()?;
     let url = format!(
         "{AUTORIZZAZIONE}\
          ?client_id={}\
@@ -214,7 +179,7 @@ pub fn scambia(
         ("client_id", credenziali.client_id.clone()),
         ("client_secret", credenziali.client_secret.clone()),
         ("redirect_uri", redirect_uri.to_owned()),
-        ("code_verifier", pkce.verifier.clone()),
+        ("code_verifier", pkce.verifier().to_owned()),
     ];
     interpreta_token(&chiedi(rete, &campi)?)
 }
@@ -290,7 +255,7 @@ pub fn collega(
 ) -> Result<Token, AppError> {
     // Il servitore si apre per primo: la porta fa parte dell'indirizzo di
     // ritorno, e quell'indirizzo fa parte di ciò che si firma con PKCE.
-    let attesa = Attesa::apri()?;
+    let attesa = Attesa::apri(GOOGLE)?;
     let redirect_uri = attesa.redirect_uri();
     let pkce = Pkce::nuovo()?;
     let invito = invito(credenziali, &pkce, &redirect_uri)?;
@@ -395,117 +360,6 @@ fn email_dal_id_token(id_token: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// L'access token è ancora buono fra un minuto?
-///
-/// Il minuto di anticipo è il punto: vedi [`ANTICIPO`].
-#[must_use]
-pub fn ancora_valido(scade_ms: i64) -> bool {
-    let anticipo = i64::try_from(ANTICIPO.as_millis()).unwrap_or(60_000);
-    adesso_ms().saturating_add(anticipo) < scade_ms
-}
-
-/// Un identificativo casuale, buono a distinguere un dispositivo da un altro.
-///
-/// **Non è un segreto**: finisce in chiaro dentro il backup, ed è quel che
-/// permette a una passata di riconoscere se il file lassù l'ha scritto questo
-/// computer o un altro. Casuale e non il nome della macchina perché due computer
-/// che si chiamano `DESKTOP-PC` non devono scambiarsi per lo stesso — e quando
-/// succede, il sintomo è che ciascuno sovrascrive il backup dell'altro invece di
-/// fondersi con lui.
-///
-/// # Errori
-///
-/// `internal.unexpected` se il sistema non fornisce casualità.
-pub fn identificativo() -> Result<String, AppError> {
-    Ok(base64url(&casuale::<8>()?))
-}
-
-/// L'orologio, in millisecondi dall'epoca.
-fn adesso_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|quanto| i64::try_from(quanto.as_millis()).ok())
-        .unwrap_or(0)
-}
-
-/// `N` byte di casualità del sistema operativo.
-fn casuale<const N: usize>() -> Result<[u8; N], AppError> {
-    let mut byte = [0u8; N];
-    getrandom::fill(&mut byte).map_err(|err| {
-        AppError::new(ErrorCode::InternalUnexpected {
-            detail: Some("il sistema non fornisce casualità".to_owned()),
-        })
-        .with_cause(err.to_string())
-    })?;
-    Ok(byte)
-}
-
-/// L'alfabeto base64url: `-` e `_` al posto di `+` e `/`.
-const ALFABETO: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-/// Codifica in base64url **senza riempimento**.
-///
-/// Senza `=` finali perché è quel che la RFC 7636 impone per PKCE, e perché un
-/// `=` dentro una `query` va poi codificato a sua volta: due modi di sbagliare
-/// tolti insieme.
-///
-/// Scritta con iteratori e `get`, non con indici: `indexing_slicing` è `deny` in
-/// questo workspace, e in una funzione che maneggia byte crittografici quella
-/// regola vale il doppio — un indice fuori posto qui non darebbe un errore, ma
-/// una stringa sbagliata che fallisce solo dalla parte di Google.
-#[must_use]
-pub fn base64url(byte: &[u8]) -> String {
-    let mut fuori = String::new();
-    for gruppo in byte.chunks(3) {
-        let mut pezzi = gruppo.iter().copied();
-        let primo = pezzi.next().unwrap_or(0);
-        let secondo = pezzi.next();
-        let terzo = pezzi.next();
-        let impacchettato = (u32::from(primo) << 16)
-            | (u32::from(secondo.unwrap_or(0)) << 8)
-            | u32::from(terzo.unwrap_or(0));
-        // Tre byte fanno quattro caratteri; due ne fanno tre, uno ne fa due. È
-        // il conto che rende la codifica reversibile senza riempimento.
-        let quanti = match (secondo, terzo) {
-            (None, _) => 2,
-            (Some(_), None) => 3,
-            (Some(_), Some(_)) => 4,
-        };
-        for spostamento in [18u32, 12, 6, 0].into_iter().take(quanti) {
-            let sestina = usize::try_from((impacchettato >> spostamento) & 63).unwrap_or(0);
-            if let Some(carattere) = ALFABETO.get(sestina) {
-                fuori.push(char::from(*carattere));
-            }
-        }
-    }
-    fuori
-}
-
-/// Decodifica base64url, con o senza riempimento.
-///
-/// `None` se compare un carattere che non appartiene all'alfabeto. Serve a
-/// leggere il carico di un id token, che Google manda senza `=`.
-#[must_use]
-pub fn da_base64url(testo: &str) -> Option<Vec<u8>> {
-    let mut fuori = Vec::new();
-    let mut accumulatore: u32 = 0;
-    let mut bit: u32 = 0;
-    for carattere in testo.bytes() {
-        if carattere == b'=' {
-            break;
-        }
-        let valore = ALFABETO.iter().position(|c| *c == carattere)?;
-        accumulatore = (accumulatore << 6) | u32::try_from(valore).unwrap_or(0);
-        bit += 6;
-        if bit >= 8 {
-            bit -= 8;
-            fuori.push(u8::try_from((accumulatore >> bit) & 0xFF).unwrap_or(0));
-        }
-    }
-    Some(fuori)
-}
-
 #[cfg(test)]
 mod prove {
     use super::*;
@@ -516,71 +370,6 @@ mod prove {
             client_id: "123.apps.googleusercontent.com".to_owned(),
             client_secret: "GOCSPX-finto".to_owned(),
         }
-    }
-
-    #[test]
-    fn il_vettore_di_prova_della_rfc_7636() {
-        // Il vettore dell'appendice B della RFC 7636. Se questa prova passa,
-        // PKCE è calcolato come Google se lo aspetta; se fallisce, il
-        // collegamento fallirebbe solo dalla parte di Google, con un messaggio
-        // che non dice quale dei due pezzi è sbagliato.
-        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-        let challenge = base64url(Sha256::digest(verifier.as_bytes()).as_slice());
-        assert_eq!(challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
-    }
-
-    #[test]
-    fn base64url_non_usa_ne_piu_ne_barre_ne_riempimento() {
-        // I tre byte che producono `+` e `/` in base64 normale. In un indirizzo
-        // una barra spezzerebbe il percorso e un più diventerebbe uno spazio.
-        let byte = [0xFBu8, 0xFF, 0xBF];
-        let codificato = base64url(&byte);
-        assert!(!codificato.contains('+'));
-        assert!(!codificato.contains('/'));
-        assert!(!codificato.contains('='));
-        assert_eq!(da_base64url(&codificato), Some(byte.to_vec()));
-    }
-
-    #[test]
-    fn base64url_fa_andata_e_ritorno_su_ogni_lunghezza() {
-        // Le tre code possibili: zero, uno o due byte oltre il gruppo da tre.
-        for quanti in 0..12usize {
-            let byte: Vec<u8> = (0..quanti)
-                .map(|i| u8::try_from(i * 7 % 256).unwrap_or(0))
-                .collect();
-            assert_eq!(
-                da_base64url(&base64url(&byte)),
-                Some(byte.clone()),
-                "lunghezza {quanti}"
-            );
-        }
-    }
-
-    #[test]
-    fn un_carattere_estraneo_non_si_decodifica() {
-        assert_eq!(da_base64url("abc!"), None);
-        assert_eq!(
-            da_base64url("ab+c"),
-            None,
-            "il più non è di questo alfabeto"
-        );
-    }
-
-    #[test]
-    fn un_verifier_e_lungo_quanto_la_rfc_impone() {
-        let pkce = Pkce::nuovo().expect("casualità");
-        assert_eq!(pkce.verifier.len(), 43, "il minimo della RFC 7636");
-        assert!(
-            pkce.verifier
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'~')),
-            "solo caratteri non riservati: nessuna codifica lo può cambiare"
-        );
-        // Due chiamate non danno mai la stessa coppia: se la dessero, PKCE non
-        // starebbe proteggendo niente.
-        let altro = Pkce::nuovo().expect("casualità");
-        assert_ne!(pkce.verifier, altro.verifier);
-        assert_ne!(pkce.challenge, altro.challenge);
     }
 
     #[test]
@@ -613,7 +402,7 @@ mod prove {
             invito.url
         );
         // E quel che non ci deve essere: il verifier resta in questo processo.
-        assert!(!invito.url.contains(&pkce.verifier));
+        assert!(!invito.url.contains(pkce.verifier()));
     }
 
     #[test]
@@ -663,11 +452,10 @@ mod prove {
     }
 
     #[test]
-    fn un_token_che_scade_fra_poco_e_gia_da_rinfrescare() {
-        // Il minuto di anticipo: senza, un token «valido ancora due secondi»
-        // supererebbe il controllo e darebbe un 401 a metà caricamento.
-        assert!(!ancora_valido(adesso_ms() + 30_000));
-        assert!(ancora_valido(adesso_ms() + 120_000));
-        assert!(!ancora_valido(adesso_ms() - 1));
+    fn il_consenso_si_aspetta_a_nome_di_google() {
+        // `Attesa` ora serve due fornitori: questa prova è ciò che impedisce a
+        // un errore del collegamento a Drive di dire «consenso Spotify».
+        assert_eq!(GOOGLE.chiave, "google");
+        assert_eq!(GOOGLE.nome, "Google");
     }
 }

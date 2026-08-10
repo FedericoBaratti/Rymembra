@@ -504,17 +504,18 @@ pub fn riconcilia(
         .execute(&sql_voci, rusqlite::params![sorgente])
         .map_err(|err| db_error("ritorno dei brani nelle playlist", &err))?;
 
-    let sql_righe = format!(
-        "UPDATE spotify_wanted
+    // Senza `format!`, a differenza della query qui sopra: questa non interpola
+    // nessuna costante, e un `format!` che non formatta niente fa credere a chi
+    // legge che da qualche parte ci sia un pezzo di SQL costruito a mano.
+    const SQL_RIGHE: &str = "UPDATE spotify_wanted
             SET download_state = ?2, download_error = NULL, updated_at = ?3
           WHERE download_state = ?4
             AND (?1 IS NULL OR source_id = ?1)
             AND EXISTS (SELECT 1 FROM tracks AS t
-                         WHERE t.track_key = spotify_wanted.track_key)"
-    );
+                         WHERE t.track_key = spotify_wanted.track_key)";
     let righe_chiuse = connection
         .execute(
-            &sql_righe,
+            SQL_RIGHE,
             rusqlite::params![
                 sorgente,
                 Stato::Fatto.come_testo(),
