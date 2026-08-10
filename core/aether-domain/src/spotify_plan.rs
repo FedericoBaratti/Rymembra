@@ -132,89 +132,119 @@ impl SpotifyPlan {
 /// Lo stesso brano di libreria può essere abbinato più volte: una playlist può
 /// contenere due volte la stessa canzone, e `playlist_tracks` lo permette
 /// apposta. Impedirlo qui vorrebbe dire far sparire la seconda occorrenza.
+///
+/// Per un elenco solo va benissimo. Chi ne ha molti — l'importazione di un
+/// account intero ne ha una per playlist, più i preferiti, più la cronologia —
+/// costruisca un [`Indice`] una volta e lo riusi: qui dentro si ricostruisce a
+/// ogni chiamata, e su duecento playlist vorrebbe dire scorrere duecento volte
+/// tutta la libreria per rifare le stesse quattro tabelle.
 #[must_use]
 pub fn plan_spotify_import(brani: &[SpotifyTrack], libreria: &[LibraryTrack]) -> SpotifyPlan {
-    let per_isrc = indicizza_per_isrc(libreria);
-    let per_chiave = indicizza_per_chiave(libreria);
-    let per_artista_titolo = indicizza(libreria, |t| {
-        (
-            normalize_key(Some(&t.artist)),
-            normalize_key(Some(&t.title)),
-        )
-    });
-    let per_ripulito = indicizza(libreria, |t| {
-        (
-            normalize_key(Some(primo_artista(&t.artist))),
-            normalize_key(Some(&senza_decorazioni(&t.title))),
-        )
-    });
-
-    let mut piano = SpotifyPlan::default();
-    for (indice, brano) in brani.iter().enumerate() {
-        match abbina(
-            brano,
-            &per_isrc,
-            &per_chiave,
-            &per_artista_titolo,
-            &per_ripulito,
-        ) {
-            Some((track_id, gradino)) => piano.abbinati.push(Abbinato {
-                indice,
-                track_id,
-                gradino,
-            }),
-            None => piano.mancanti.push(indice),
-        }
-    }
-    piano
+    Indice::nuovo(libreria).piano(brani)
 }
 
-/// La scala, un gradino alla volta.
-fn abbina(
-    brano: &SpotifyTrack,
-    per_isrc: &HashMap<String, i64>,
-    per_chiave: &HashMap<String, i64>,
-    per_artista_titolo: &HashMap<(String, String), Vec<&LibraryTrack>>,
-    per_ripulito: &HashMap<(String, String), Vec<&LibraryTrack>>,
-) -> Option<(i64, Gradino)> {
-    // Il gradino zero: nessuna normalizzazione, nessuna durata a sorvegliare.
-    // Due registrazioni con lo stesso ISRC *sono* la stessa registrazione.
-    if let Some(codice) = brano.isrc.as_deref().and_then(normalizza_isrc)
-        && let Some(id) = per_isrc.get(&codice)
-    {
-        return Some((*id, Gradino::Isrc));
+/// La libreria messa in tabella, pronta a rispondere «questo brano ce l'ho?».
+///
+/// # Perché è un tipo e non quattro variabili locali
+///
+/// Perché costruirlo costa quanto scorrere la libreria quattro volte, e chi
+/// importa un account intero fa la stessa domanda a duecento elenchi diversi. Le
+/// quattro tabelle non dipendono da cosa si sta cercando: dipendono solo da cosa
+/// c'è sul disco, che per tutta la durata di un'importazione non cambia.
+///
+/// Il tempo di vita è quello della libreria che l'ha generato — le due tabelle
+/// larghe tengono riferimenti alle righe invece di copiarle, perché una riga
+/// duplicata per ognuno dei due indici sarebbe la libreria in memoria tre volte.
+#[derive(Debug)]
+pub struct Indice<'a> {
+    per_isrc: HashMap<String, i64>,
+    per_chiave: HashMap<String, i64>,
+    per_artista_titolo: HashMap<(String, String), Vec<&'a LibraryTrack>>,
+    per_ripulito: HashMap<(String, String), Vec<&'a LibraryTrack>>,
+}
+
+impl<'a> Indice<'a> {
+    /// Mette in tabella una libreria.
+    #[must_use]
+    pub fn nuovo(libreria: &'a [LibraryTrack]) -> Self {
+        Self {
+            per_isrc: indicizza_per_isrc(libreria),
+            per_chiave: indicizza_per_chiave(libreria),
+            per_artista_titolo: indicizza(libreria, |t| {
+                (
+                    normalize_key(Some(&t.artist)),
+                    normalize_key(Some(&t.title)),
+                )
+            }),
+            per_ripulito: indicizza(libreria, |t| {
+                (
+                    normalize_key(Some(primo_artista(&t.artist))),
+                    normalize_key(Some(&senza_decorazioni(&t.title))),
+                )
+            }),
+        }
     }
 
-    let chiave = TrackKey::compute(TrackKeyInput {
-        artist: brano.artist.as_deref(),
-        title: Some(&brano.title),
-        album: brano.album.as_deref(),
-    });
-    if let Some(id) = per_chiave.get(chiave.as_str()) {
-        return Some((*id, Gradino::ChiaveEsatta));
+    /// Cosa porterebbe l'importazione di questo elenco.
+    #[must_use]
+    pub fn piano(&self, brani: &[SpotifyTrack]) -> SpotifyPlan {
+        let mut piano = SpotifyPlan::default();
+        for (indice, brano) in brani.iter().enumerate() {
+            match self.abbina(brano) {
+                Some((track_id, gradino)) => piano.abbinati.push(Abbinato {
+                    indice,
+                    track_id,
+                    gradino,
+                }),
+                None => piano.mancanti.push(indice),
+            }
+        }
+        piano
     }
 
-    let secondo = (
-        normalize_key(brano.artist.as_deref()),
-        normalize_key(Some(&brano.title)),
-    );
-    if let Some(candidati) = per_artista_titolo.get(&secondo)
-        && let Some(id) = scegli(candidati, brano.duration_ms)
-    {
-        return Some((id, Gradino::ArtistaTitolo));
-    }
+    /// La scala, un gradino alla volta.
+    #[must_use]
+    pub fn abbina(&self, brano: &SpotifyTrack) -> Option<(i64, Gradino)> {
+        // Il gradino zero: nessuna normalizzazione, nessuna durata a
+        // sorvegliare. Due registrazioni con lo stesso ISRC *sono* la stessa
+        // registrazione.
+        if let Some(codice) = brano.isrc.as_deref().and_then(normalizza_isrc)
+            && let Some(id) = self.per_isrc.get(&codice)
+        {
+            return Some((*id, Gradino::Isrc));
+        }
 
-    let terzo = (
-        normalize_key(brano.artist.as_deref().map(primo_artista)),
-        normalize_key(Some(&senza_decorazioni(&brano.title))),
-    );
-    if let Some(candidati) = per_ripulito.get(&terzo)
-        && let Some(id) = scegli(candidati, brano.duration_ms)
-    {
-        return Some((id, Gradino::Ripulito));
-    }
+        let chiave = TrackKey::compute(TrackKeyInput {
+            artist: brano.artist.as_deref(),
+            title: Some(&brano.title),
+            album: brano.album.as_deref(),
+        });
+        if let Some(id) = self.per_chiave.get(chiave.as_str()) {
+            return Some((*id, Gradino::ChiaveEsatta));
+        }
 
-    None
+        let secondo = (
+            normalize_key(brano.artist.as_deref()),
+            normalize_key(Some(&brano.title)),
+        );
+        if let Some(candidati) = self.per_artista_titolo.get(&secondo)
+            && let Some(id) = scegli(candidati, brano.duration_ms)
+        {
+            return Some((id, Gradino::ArtistaTitolo));
+        }
+
+        let terzo = (
+            normalize_key(brano.artist.as_deref().map(primo_artista)),
+            normalize_key(Some(&senza_decorazioni(&brano.title))),
+        );
+        if let Some(candidati) = self.per_ripulito.get(&terzo)
+            && let Some(id) = scegli(candidati, brano.duration_ms)
+        {
+            return Some((id, Gradino::Ripulito));
+        }
+
+        None
+    }
 }
 
 /// Fra più candidati, quello che la durata conferma.
@@ -574,7 +604,10 @@ mod prove {
         let piano = plan_spotify_import(&brani, &libreria);
         assert!(piano.abbinati.is_empty(), "{piano:?}");
         assert_eq!(piano.mancanti, vec![0]);
-        assert_eq!(normalizza_isrc("GBAYE9700426").as_deref(), Some("GBAYE9700426"));
+        assert_eq!(
+            normalizza_isrc("GBAYE9700426").as_deref(),
+            Some("GBAYE9700426")
+        );
         assert_eq!(normalizza_isrc("troppo-corto"), None);
         assert_eq!(normalizza_isrc("GBAYE9700426XXXX"), None);
     }
@@ -756,6 +789,39 @@ mod prove {
         let piano = plan_spotify_import(&brani, &[]);
         assert!(piano.abbinati.is_empty());
         assert_eq!(piano.mancanti, vec![0]);
+    }
+
+    #[test]
+    fn un_indice_riusato_da_gli_stessi_piani_di_tanti_indici() {
+        // È la proprietà su cui poggia l'importazione di un account intero:
+        // costruire l'indice una volta e interrogarlo per ogni elenco deve dare
+        // esattamente quel che darebbe `plan_spotify_import` chiamata a ripetizione.
+        let libreria = [
+            lib(1, "Blur", "Song 2", "Blur", 122_000),
+            lib(2, "Gorillaz", "Feel Good Inc", "Demon Days", 222_000),
+        ];
+        let elenchi = [
+            vec![sp("Blur", "Song 2", "Song 2 - Single", Some(121_000))],
+            vec![
+                sp(
+                    "Gorillaz, De La Soul",
+                    "Feel Good Inc.",
+                    "Demon Days",
+                    Some(222_640),
+                ),
+                sp("Nessuno", "Niente", "Nulla", Some(1_000)),
+            ],
+            vec![],
+        ];
+
+        let indice = Indice::nuovo(&libreria);
+        for elenco in &elenchi {
+            assert_eq!(
+                indice.piano(elenco),
+                plan_spotify_import(elenco, &libreria),
+                "l'indice riusato ha deciso diversamente su {elenco:?}"
+            );
+        }
     }
 
     #[test]
