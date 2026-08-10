@@ -44,7 +44,6 @@
 pub mod cronologia;
 pub mod libreria;
 pub mod playlist;
-pub mod tempo;
 
 use std::io::Read as _;
 use std::path::Path;

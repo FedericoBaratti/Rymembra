@@ -401,6 +401,41 @@ catalogo! {
     /// dentro: senza, «archivio non riconosciuto» non dice a nessuno quale dei
     /// due file scaricati sia quello giusto.
     SpotifyArchiveEmpty = "spotify.archiveEmpty", Spotify, Warning, Never, None, { trovati: Vec<String> };
+    /// Manca l'identificativo dell'applicazione Spotify.
+    ///
+    /// La via OAuth è l'unica cosa in Aether che chiede all'utente di
+    /// registrare qualcosa da sé, e la ragione è fuori dal nostro controllo: le
+    /// applicazioni in Development Mode accettano cinque utenti, e una chiave
+    /// distribuita nel binario li esaurirebbe con i primi cinque che la usano.
+    /// L'altra via — l'archivio — non chiede niente a nessuno, ed è il motivo
+    /// per cui restano due.
+    SpotifyAccountNotConfigured = "spotify.accountNotConfigured", Spotify, Warning, Never, None;
+    /// Spotify ha risposto «no» a un account che ha dato il consenso.
+    ///
+    /// Il guasto più probabile di tutta questa funzione, e quello che senza un
+    /// codice suo sembrerebbe un errore di Aether. In Development Mode significa
+    /// una di due cose, e Spotify non dice quale: l'utente non è fra i cinque
+    /// registrati nella dashboard, oppure **il proprietario dell'applicazione
+    /// non ha più Premium** — da febbraio 2026 è un requisito, e quando
+    /// l'abbonamento scade l'applicazione smette di funzionare senza nessun
+    /// avviso.
+    SpotifyAccountForbidden = "spotify.accountForbidden", Spotify, Warning, Never, None;
+    /// Il consenso non vale più: si ricomincia dalla schermata di Spotify.
+    ///
+    /// Distinto da [`Self::SpotifyAccountForbidden`] perché la risposta è
+    /// diversa: qui basta ricollegarsi, là c'è da sistemare qualcosa nella
+    /// dashboard. Non ritentabile — un token rifiutato viene rifiutato anche la
+    /// seconda volta.
+    SpotifyAccountAuthExpired = "spotify.accountAuthExpired", Spotify, Warning, Never, None;
+    /// La quota giornaliera dello sviluppatore è esaurita.
+    ///
+    /// Un `429` come gli altri, ma con `reason: "QUOTA_EXCEEDED"` dentro, e la
+    /// differenza conta: un limite di frequenza passa aspettando qualche
+    /// secondo, una quota esaurita no. Ritentarla vorrebbe dire tenere occupato
+    /// chi guarda per il tempo di tre tentativi e poi dirgli la stessa cosa.
+    /// Da luglio 2026 la quota si conta per **account sviluppatore**, non più
+    /// per applicazione.
+    SpotifyQuotaExceeded = "spotify.quotaExceeded", Spotify, Warning, Never, None, { retry_after_ms: Option<u64> };
 
     // ── skin ────────────────────────────────────────────────────────────────
     // Nessuno è ritentabile: un pacchetto non valido resta non valido. Portano

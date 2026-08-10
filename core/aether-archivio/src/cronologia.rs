@@ -39,7 +39,7 @@ use aether_domain::spotify::SpotifyTrack;
 use aether_domain::spotify_account::AscoltoSpotify;
 use serde_json::Value;
 
-use crate::tempo::istante_ms;
+use aether_domain::tempo::istante_ms;
 
 /// Quel che una passata su un file di cronologia ha prodotto.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

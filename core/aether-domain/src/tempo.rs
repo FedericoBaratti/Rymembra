@@ -1,5 +1,15 @@
 //! Le date di Spotify, ridotte a millisecondi dall'epoca.
 //!
+//! # Perché sta nel dominio
+//!
+//! È nato dentro `aether-archivio`, quando l'unico posto in cui Aether leggeva
+//! una data di Spotify era lo zip che Spotify manda per posta. Con la via OAuth
+//! i lettori sono due — `aether_spotify::account::web` legge il `played_at` di
+//! `/me/player/recently-played` — e due implementazioni di un lettore di date
+//! divergono in silenzio: la seconda sbaglia un caso limite che la prima
+//! trattava, e nessuno se ne accorge finché una cronologia non finisce datata
+//! male. È puro, non tocca niente, e questa è la casa delle cose pure.
+//!
 //! # Perché a mano e non con una libreria di date
 //!
 //! Perché il problema è più piccolo di quel che una libreria di date risolve.
@@ -9,9 +19,11 @@
 //! modello di zone, un database dei fusi e una superficie di API che nessuno
 //! qui userebbe mai.
 //!
-//! I due formati, come Spotify li scrive:
+//! I formati, come Spotify li scrive:
 //!
-//! - `2020-01-01T12:00:00Z` — la cronologia estesa, ISO 8601 con i secondi.
+//! - `2020-01-01T12:00:00Z` — la cronologia estesa dell'archivio, ISO 8601 con
+//!   i secondi. È anche la forma del `played_at` della Web API, che però ci
+//!   mette i millisecondi: `2020-01-01T12:00:00.123Z`, troncati ai secondi.
 //! - `2023-01-01 12:00` — la cronologia breve, con lo spazio al posto della `T`
 //!   e **senza secondi**. Non è una variante dello stesso: è un altro formato,
 //!   e trattarli con lo stesso lettore è ciò che permette di non accorgersi che

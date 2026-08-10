@@ -41,6 +41,7 @@ pub mod scan_plan;
 pub mod spotify;
 pub mod spotify_account;
 pub mod spotify_plan;
+pub mod tempo;
 pub mod text;
 pub mod yt_match;
 
@@ -66,7 +67,5 @@ pub use spotify_account::{
     AccountPlan, AccountSnapshot, AlbumSpotify, ArtistaSpotify, AscoltoAbbinato, AscoltoSpotify,
     PianoPlaylist, PlaylistSpotify, Provenienza, ScartiCronologia, Scelte, plan_account_import,
 };
-pub use spotify_plan::{
-    Abbinato, Gradino, Indice, LibraryTrack, SpotifyPlan, plan_spotify_import,
-};
+pub use spotify_plan::{Abbinato, Gradino, Indice, LibraryTrack, SpotifyPlan, plan_spotify_import};
 pub use text::fold_text;

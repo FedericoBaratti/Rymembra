@@ -43,6 +43,7 @@
 //! dentro è costruita attorno a quel fatto: livelli, configurazione esterna,
 //! diagnostica.
 
+pub mod account;
 pub mod config;
 pub mod copertina;
 pub mod embed;
@@ -54,6 +55,7 @@ pub mod sessione;
 pub mod totp;
 pub mod url;
 
+pub use account::{Avanzamento, Lettura};
 pub use config::Configurazione;
 pub use risolvi::{Diagnostica, Fallito, Lettore, Risultato};
 pub use url::{Riferimento, riconosci};

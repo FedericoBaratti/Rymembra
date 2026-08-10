@@ -9,6 +9,10 @@ authors.workspace = true
 
 [dependencies]
 aether-domain = { path = "../aether-domain" }
+# Il consenso dell'account: PKCE, il socket di loopback, il portachiavi.
+# `default-features = false` lascia fuori `keyring`: chi decide dove tenere i
+# segreti e` la finestra, non un lettore di elenchi.
+aether-oauth = { path = "../aether-oauth", default-features = false }
 aether-net = { path = "../aether-net" }
 # L'identificativo di dispositivo della stretta di mano anonima: sedici byte
 # casuali, non un contatore. Vedi `sessione`.

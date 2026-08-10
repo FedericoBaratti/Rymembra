@@ -15,7 +15,9 @@ dependencies = [
  "aether-archivio",
  "aether-domain",
  "aether-meta",
+ "aether-net",
  "aether-play",
+ "aether-spotify",
  "blake3",
  "filetime",
  "image",
@@ -140,6 +142,7 @@ version = "0.1.0"
 dependencies = [
  "aether-domain",
  "aether-net",
+ "aether-oauth",
  "getrandom 0.3.4",
  "hmac",
  "serde",

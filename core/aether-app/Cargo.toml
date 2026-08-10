@@ -43,6 +43,11 @@ walkdir = "2.5.0"
 # esempio è un programma a parte, ed è il posto giusto per far incontrare le due
 # metà — come `importa.rs` fa già con il vecchio database.
 aether-archivio = { path = "../aether-archivio" }
+# Solo per l'esempio `spotify_account`, per la stessa ragione: un esempio è un
+# programma a parte, ed è il posto giusto per far incontrare chi legge un
+# account e chi lo scrive senza che i due crate si conoscano.
+aether-spotify = { path = "../aether-spotify" }
+aether-net = { path = "../aether-net" }
 # Serve a datare un file di prova: due scritture di fila cadono nello stesso
 # millisecondo, e il piano di scansione le vedrebbe come «invariato».
 filetime = "0.2"
