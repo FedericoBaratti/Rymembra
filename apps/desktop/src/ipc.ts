@@ -67,6 +67,21 @@ const TESTI: Record<string, string> = {
     "Questo nome non identifica nessuna playlist: serve almeno una lettera o una cifra.",
   "library.playlistIsSmart":
     "Questa playlist è automatica: il suo contenuto lo decidono le regole, e le righe aggiunte a mano sparirebbero al primo ricalcolo.",
+  // I sei dell'account. Ognuno dice **cosa fare**, perché sono i sei momenti in
+  // cui una persona resta ferma senza sapere da che parte girarsi.
+  "spotify.accountNotConfigured":
+    "Manca l'identificativo dell'applicazione Spotify. Creane una su developer.spotify.com/dashboard, con «http://127.0.0.1» come Redirect URI, e incolla qui il Client ID.",
+  // Sono due cose diverse e Spotify non dice quale: vanno dette tutte e due.
+  "spotify.accountForbidden":
+    "Spotify ha rifiutato l'accesso. O questo account non è fra quelli abilitati nella dashboard dell'applicazione, oppure chi ha registrato l'applicazione non ha più Spotify Premium — da febbraio 2026 è un requisito, e quando scade l'app smette di funzionare senza avvisare.",
+  "spotify.accountAuthExpired":
+    "Il collegamento con Spotify non vale più. Ricollega l'account.",
+  "spotify.quotaExceeded":
+    "La quota giornaliera dell'applicazione Spotify è esaurita. Non passa riprovando: riprova domani, oppure importa dall'archivio, che non ha quote.",
+  "spotify.archiveUnreadable":
+    "Questo file non si apre come archivio: può essere stato scaricato a metà. Riscaricalo da Spotify.",
+  "spotify.archiveEmpty":
+    "L'archivio si apre ma non contiene niente che Aether sappia leggere. Spotify ne manda più d'uno: cerca quello con dentro «Playlist1.json» o «Streaming_History_Audio».",
 };
 
 /**
@@ -371,6 +386,203 @@ export interface EsitoSpotify {
   /** Quante righe di «lista desideri» sono state scritte. */
   wantedRows: number;
   truncated: { read: number; expected: number } | null;
+}
+
+
+// ── l'account Spotify intero ─────────────────────────────────
+// Due vie che finiscono nello stesso posto: il consenso OAuth e l'archivio che
+// Spotify manda per posta producono lo stesso valore di là, quindi da qui in giù
+// i comandi sono gli stessi. È il motivo per cui questa è una schermata sola e
+// non due.
+
+/** Un file dell'archivio che non si è aperto. */
+export interface FileIlleggibile {
+  nome: string;
+  perche: string;
+}
+
+/**
+ * Cosa si è letto di un account, prima di guardare la libreria.
+ *
+ * Una forma sola per tutte e due le vie: i campi che riguardano solo l'archivio
+ * (`letti`, `ignorati`, …) arrivano vuoti quando si viene dall'API, e viceversa.
+ * `provenienza` dice quale delle due è stata.
+ */
+export interface AnteprimaAccount {
+  /** `api` o `archivio`. */
+  provenienza: string;
+  profilo: string | null;
+  spotifyUserId: string | null;
+  /**
+   * Questa via porta una cronologia degna di quel nome?
+   *
+   * Falso per l'API, che ne dà cinquanta righe e basta. Serve a non far sembrare
+   * un guasto il limite di un endpoint: «50 ascolti» da lassù sono tutto quel che
+   * c'è, non un'importazione andata male.
+   */
+  cronologiaCompleta: boolean;
+  playlist: number;
+  braniInPlaylist: number;
+  preferiti: number;
+  album: number;
+  artisti: number;
+  cronologia: number;
+  podcast: number;
+
+  // solo dalla Web API
+  /**
+   * L'account ha Premium?
+   *
+   * `null` quando Spotify non l'ha detto — che è diverso da «no», e dirlo
+   * sbagliato sarebbe un allarme falso. Dal febbraio 2026 un'applicazione in
+   * Development Mode smette di funzionare quando il suo proprietario perde
+   * l'abbonamento, e Spotify non manda nessun avviso: questo è l'unico modo di
+   * dirlo prima.
+   */
+  premium: boolean | null;
+  /**
+   * Le playlist di cui Spotify non dà più il contenuto.
+   *
+   * Dal marzo 2026 i brani si leggono solo di quelle che l'utente possiede o in
+   * cui collabora. Vanno mostrate: una playlist vuota senza spiegazione sembra
+   * un guasto dell'abbinamento, e non lo è.
+   */
+  senzaContenuto: string[];
+  /** Gli elenchi arrivati a metà. Vuoto su qualunque account vero. */
+  troncati: string[];
+
+  // solo dall'archivio
+  letti: string[];
+  ignorati: string[];
+  illeggibili: FileIlleggibile[];
+  righeIlleggibili: number;
+  nonMusica: number;
+}
+
+/** Cosa portarsi dietro. Tutto acceso di serie. */
+export interface ScelteAccount {
+  playlist: boolean;
+  preferiti: boolean;
+  album: boolean;
+  artisti: boolean;
+  cronologia: boolean;
+}
+
+/** Una playlist che non si è potuta importare, e perché. */
+export interface PlaylistRifiutata {
+  name: string;
+  /** Il codice del catalogo: `spotify.tracklistTruncated`, … */
+  code: string;
+}
+
+/** Quel che della cronologia non è diventato un ascolto. */
+export interface ScartiCronologia {
+  duplicates: number;
+  tooShort: number;
+  /**
+   * Brani che in libreria non ci sono.
+   *
+   * **Non** finiscono fra i desiderati: un brano sentito una volta nel 2017 non
+   * è una cosa che l'utente ha chiesto di avere. I desiderati nascono dalle
+   * playlist e dai preferiti, dove l'intenzione c'è.
+   */
+  notInLibrary: number;
+}
+
+/** Cosa l'importazione di un account porterebbe, o ha portato. */
+export interface EsitoAccount {
+  source: string;
+  profile: string | null;
+  spotifyUserId: string | null;
+  fullHistory: boolean;
+  /** Un rapporto per playlist, nella stessa forma dell'importazione da un link. */
+  playlists: EsitoSpotify[];
+  rejectedPlaylists: PlaylistRifiutata[];
+  liked: EsitoSpotify;
+  /** Quanti brani sono stati segnati preferiti **adesso**: zero alla seconda passata. */
+  likedMarked: number;
+  albums: EsitoSpotify[];
+  albumsSeen: number;
+  albumIdsWritten: number;
+  artistsSeen: number;
+  artistsLinked: number;
+  historyRows: number;
+  historySkipped: ScartiCronologia;
+  statsUpdated: number;
+  playlistRestored: number;
+  wantedClosed: number;
+}
+
+/** Che aria tira sull'account, senza toccare la rete. */
+export interface StatoAccount {
+  configurato: boolean;
+  clientId: string | null;
+  collegato: boolean;
+  spotifyUserId: string | null;
+  displayName: string | null;
+  ultimoMs: number | null;
+  /** `api` o `archivio`. */
+  ultimaVia: string | null;
+  /**
+   * Quanti ascolti importati ci sono adesso.
+   *
+   * È il numero che rende «dimentica gli ascolti importati» un tasto che dice
+   * quel che sta per cancellare, invece di uno che chiede di fidarsi.
+   */
+  ascoltiImportati: number;
+  inCorso: boolean;
+  caricato: AnteprimaAccount | null;
+}
+
+/** A che punto è la lettura di un account. Arriva su `account:avanzamento`. */
+export interface AvanzamentoAccount {
+  /** `profilo`, `preferiti`, `album`, `artisti`, `playlist`, `cronologia`. */
+  fase: string;
+  nome: string | null;
+  fatti: number;
+  totali: number | null;
+}
+
+/** I totali di un esito, che la finestra somma in tre posti diversi. */
+export function totaliAccount(esito: EsitoAccount): {
+  ritrovati: number;
+  mancanti: number;
+  inCoda: number;
+} {
+  const elenchi = [...esito.playlists, ...esito.albums, esito.liked];
+  return {
+    ritrovati: elenchi.reduce((somma, r) => somma + r.matched, 0),
+    mancanti: elenchi.reduce((somma, r) => somma + r.missing, 0),
+    inCoda: elenchi.reduce((somma, r) => somma + r.wantedRows, 0),
+  };
+}
+
+/** Quali brani mancano, senza ripetere lo stesso fra elenchi diversi. */
+export function mancantiAccount(esito: EsitoAccount): BranoMancante[] {
+  const visti = new Set<string>();
+  const fuori: BranoMancante[] = [];
+  for (const elenco of [...esito.playlists, ...esito.albums, esito.liked]) {
+    for (const brano of elenco.missingTracks) {
+      // Lo stesso brano può mancare da tre playlist: elencarlo tre volte
+      // farebbe sembrare il problema tre volte più grande di quel che è.
+      const chiave = `${brano.artist ?? ""}|${brano.title}`;
+      if (visti.has(chiave)) continue;
+      visti.add(chiave);
+      fuori.push(brano);
+    }
+  }
+  return fuori;
+}
+
+/** Non c'è proprio niente da importare? */
+export function vuotoAccount(anteprima: AnteprimaAccount): boolean {
+  return (
+    anteprima.playlist === 0 &&
+    anteprima.preferiti === 0 &&
+    anteprima.album === 0 &&
+    anteprima.artisti === 0 &&
+    anteprima.cronologia === 0
+  );
 }
 
 /** Che aria tira sul lettore keyless. */
@@ -1175,6 +1387,48 @@ export const ipc = {
   nuvolaPianoRipristino: () =>
     invoke<PianoRipristino>("nuvola_piano_ripristino"),
   nuvolaRipristina: () => invoke<EsitoRipristino>("nuvola_ripristina"),
+
+  // ── l'account Spotify intero ───────────────────────────────
+  // Il flusso è a tre tempi come per un link — anteprima, piano, conferma — ma
+  // quel che si legge resta di là, in una cella. Qui viaggiano solo i conteggi:
+  // un account sono decine di migliaia di brani più anni di cronologia, e
+  // serializzarli tre volte per mostrarne il totale non ha senso.
+  accountStato: () => invoke<StatoAccount>("account_stato"),
+  // Un `clientId` vuoto lo cancella. Non ce n'è uno compilato dentro
+  // l'applicazione, al contrario di Google: un'app Spotify in Development Mode
+  // accetta **cinque** utenti, e una chiave distribuita nel binario li
+  // esaurirebbe con i primi cinque che la usano.
+  accountCredenziali: (clientId: string) =>
+    invoke<StatoAccount>("account_credenziali", { clientId }),
+  // Apre il browser di **sistema** e aspetta il consenso, per non più di tre
+  // minuti. Può quindi metterci a lungo: chi la chiama deve mostrare che sta
+  // succedendo qualcosa.
+  accountCollega: () => invoke<StatoAccount>("account_collega"),
+  // Pulisce il portachiavi e dimentica chi era. **Non** disfa niente di quel che
+  // è stato importato: per quello c'è `cronologiaDimenticaImportati`, che dice
+  // quante righe cancella.
+  accountScollega: () => invoke<StatoAccount>("account_scollega"),
+  // Minuti di rete: un account da duecento playlist sono duecento richieste.
+  // L'avanzamento arriva sull'evento `account:avanzamento`.
+  accountLeggi: () => invoke<AnteprimaAccount>("account_leggi"),
+  // L'altra via, e non chiede niente a nessuno: lo zip che Spotify manda su
+  // richiesta. Arriva in due pezzi separati da settimane — i dati dell'account e
+  // la cronologia estesa — e se ne può aprire uno solo: quel che manca resta
+  // vuoto, e l'anteprima lo dice.
+  archivioApri: (percorso: string) =>
+    invoke<AnteprimaAccount>("archivio_apri", { percorso }),
+  // Tutti e due lavorano su quel che è in cella, da qualunque via sia arrivato.
+  // Il piano è l'importazione vera dentro una transazione abbandonata: i numeri
+  // che mostra sono quelli che si otterranno, non una previsione.
+  accountPiano: (scelte: ScelteAccount) =>
+    invoke<EsitoAccount>("account_piano", { scelte }),
+  accountImporta: (scelte: ScelteAccount) =>
+    invoke<EsitoAccount>("account_importa", { scelte }),
+  // L'operazione che `play_history.source` esiste per rendere possibile.
+  // Restituisce quante righe se ne sono andate. I conteggi d'ascolto **non**
+  // scendono: `merge_stats` non sa scendere, e non deve — vedi la nota di là.
+  cronologiaDimenticaImportati: () =>
+    invoke<number>("cronologia_dimentica_importati"),
 
   // ── l'arricchimento dei metadati ─────────────────────────────────────────
   // Non c'è un «arricchisci adesso»: la passata è automatica per scelta, e un

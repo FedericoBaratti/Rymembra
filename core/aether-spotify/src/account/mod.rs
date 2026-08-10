@@ -39,6 +39,7 @@
 //! sconsigliato, tenere preso il lucchetto della libreria per tutto quel tempo.
 
 pub mod oauth;
+pub mod portachiavi;
 pub mod web;
 
 use aether_domain::errors::AppError;

@@ -8,6 +8,7 @@
 // In sviluppo la si vuole: è dove finiscono i messaggi di avvio.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod account;
 mod arricchimento;
 mod comandi;
 mod copertine;
@@ -78,6 +79,10 @@ fn main() {
             // nasce alla prima importazione, così chi non importa mai da
             // Spotify non paga nemmeno una stretta di mano.
             app.manage(spotify::StatoSpotify::nuovo(&data_dir));
+            // Come sopra, e per la stessa ragione: due celle vuote e un bit.
+            // Il consenso, la rete e lo zip arrivano solo se qualcuno apre la
+            // schermata dell'account.
+            app.manage(account::StatoAccount::nuovo());
             // Anche questo prima della libreria, e per la stessa ragione: tiene
             // solo il percorso dei binari e tre bit. Il binario vero si cerca
             // quando parte una coda, non adesso.
@@ -149,6 +154,15 @@ fn main() {
             spotify::spotify_piano,
             spotify::spotify_importa,
             spotify::spotify_diagnostica,
+            account::account_stato,
+            account::account_credenziali,
+            account::account_collega,
+            account::account_scollega,
+            account::account_leggi,
+            account::account_piano,
+            account::account_importa,
+            account::archivio_apri,
+            account::cronologia_dimentica_importati,
             scarica::scarica_desiderati,
             scarica::annulla_scarico,
             scarica::scarico_stato,

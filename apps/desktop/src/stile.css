@@ -5939,8 +5939,16 @@ body {
   font-size: 13px;
   color: var(--color-text-2);
 }
+/* Il `.nota` globale è un riquadro con la barra d'accento: sta bene per un
+   paragrafo che spiega, e qui dentro è una didascalia di una riga sotto un
+   titolo. Senza questi azzeramenti eredita fondo, bordo e un margine di sotto da
+   riquadro, e «dall'archivio» diventa un cartellino che sembra cliccabile. */
 .anteprima-spotify .nota {
-  margin-top: 2px;
+  margin: 2px 0 0;
+  padding: 0;
+  border: none;
+  background: none;
+  border-radius: 0;
   font-size: 11px;
   color: var(--color-text-3);
 }
@@ -6154,4 +6162,94 @@ body {
   background: var(--accent-soft);
   color: var(--color-text-1);
   outline: none;
+}
+
+
+/* ── l'account Spotify intero ─────────────────────────────────────────────── */
+/* Una finestrella che contiene tre schede, e non ne aveva mai contenute: le due
+   vie fra cui scegliere più il tasto per disfare. `h3` non era stilato perché
+   fino a qui nessuna finestrella aveva sottotitoli. */
+.finestrella h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.finestrella .scheda {
+  gap: var(--spazio-2);
+  padding: var(--spazio-3);
+}
+.finestrella .scheda header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spazio-2);
+}
+
+/* Le cinque caselle di cosa portarsi dietro. Un riquadro invece di righe nude:
+   sono l'unica parte della finestrella su cui si decide, e vanno distinte a
+   colpo d'occhio dai numeri che raccontano e basta. */
+.scelte-account {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  padding: 0 var(--spazio-3);
+}
+/* `display: flex` ripetuto e non ereditato da `.riga-opzione`: queste righe sono
+   `<label>`, e `.finestrella label` è una griglia in colonna — l'etichetta sopra
+   e il campo sotto, che è giusto per una casella di testo e mette la spunta
+   sotto la spiegazione invece che accanto. Due selettori valgono più di uno, ed
+   è l'unica ragione per cui questa riga esiste. */
+.scelte-account .riga-opzione {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  padding: var(--spazio-2) 0;
+  cursor: pointer;
+}
+.scelte-account .riga-opzione input {
+  flex: none;
+  accent-color: var(--accent);
+}
+.scelte-account .riga-opzione + .riga-opzione {
+  border-top: 1px solid var(--hairline);
+}
+/* Una casella spenta perché non c'è niente da spegnere non è un divieto: è
+   un'informazione, e non deve sembrare rotta. */
+.scelte-account .riga-opzione:has(input:disabled) {
+  opacity: 0.5;
+}
+.scelte-account .etichetta .conteggio {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-2);
+  margin-left: 6px;
+}
+
+/* I brani che mancano, per nome. Sono l'unica cosa che l'utente non può
+   ricostruire dopo, quindi si possono selezionare e copiare: `user-select: text`
+   non è un dettaglio, è quel che permette di portarli altrove. */
+.mancanti-account {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  padding: var(--spazio-2) var(--spazio-3);
+  font-size: 13px;
+}
+.mancanti-account summary {
+  cursor: pointer;
+}
+.mancanti-account ul {
+  max-height: 260px;
+  overflow-y: auto;
+  margin: var(--spazio-2) 0 0;
+  padding: 0;
+  list-style: none;
+  user-select: text;
+}
+.mancanti-account li {
+  padding: 2px 0;
+  color: var(--color-text-2);
+  border-top: 1px solid var(--hairline);
 }

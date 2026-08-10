@@ -25,6 +25,16 @@ aether-domain = { path = "../../../core/aether-domain" }
 # appena scaricato. Stessa `Rete` che usa `aether-spotify`, così l'agente e i
 # timeout sono quelli, non una seconda idea di cosa sia una richiesta HTTP.
 aether-net = { path = "../../../core/aether-net" }
+# La lettura dell'archivio che Spotify manda per posta: la via che non chiede
+# nessuna chiave e nessun abbonamento. Non vede `rusqlite`, ed e` quel che rende
+# impossibile tenere preso il lucchetto della libreria mentre si scompatta uno
+# zip da trecento megabyte.
+aether-archivio = { path = "../../../core/aether-archivio" }
+# Il portachiavi di sistema, con la feature accesa: dove i segreti stanno lo
+# decide chi ha un sistema operativo sotto, cioe` questo crate. I crate del
+# nucleo lo dichiarano `default-features = false` proprio per non decidere al
+# posto suo.
+aether-oauth = { path = "../../../core/aether-oauth", features = ["portachiavi"] }
 # Solo per costruire i `Fornitori` che il filo dell'arricchimento tiene vivi fra
 # una passata e l'altra: dentro ci sono la riserva di connessioni e — quel che
 # conta — lo stato degli interruttori, che rinascendo a ogni passata non

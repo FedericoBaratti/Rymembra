@@ -61,10 +61,12 @@ name = "aether-desktop"
 version = "0.1.0"
 dependencies = [
  "aether-app",
+ "aether-archivio",
  "aether-cloud",
  "aether-domain",
  "aether-meta",
  "aether-net",
+ "aether-oauth",
  "aether-play",
  "aether-skin",
  "aether-spotify",

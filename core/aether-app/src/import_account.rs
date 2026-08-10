@@ -785,6 +785,89 @@ fn ricorda_account(
     Ok(())
 }
 
+/// L'account che risulta collegato, come il database se lo ricorda.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRegistrato {
+    /// L'identificativo dell'utente su Spotify.
+    pub spotify_user_id: String,
+    /// Il nome visualizzato, quando si è potuto leggere.
+    pub display_name: Option<String>,
+    /// Quando è finita l'ultima importazione riuscita.
+    pub last_sync_at: Option<i64>,
+    /// Da quale via: `api` o `archivio`.
+    pub last_source: String,
+}
+
+/// Chi risulta collegato, se qualcuno.
+///
+/// `ORDER BY last_sync_at DESC` e non `LIMIT 1` su una tabella che di righe ne
+/// ha una: la chiave primaria è l'utente Spotify, e chi importa due account
+/// diversi ne ha due. Mostrare quello sincronizzato per ultimo è la risposta
+/// giusta a «di chi è questo?».
+///
+/// # Errori
+///
+/// `db.queryFailed` quando il database non risponde.
+pub fn registrato(connection: &Connection) -> Result<Option<AccountRegistrato>, AppError> {
+    let esito = connection.query_row(
+        "SELECT spotify_user_id, display_name, last_sync_at, last_source
+           FROM spotify_account ORDER BY last_sync_at DESC LIMIT 1",
+        [],
+        |row| {
+            Ok(AccountRegistrato {
+                spotify_user_id: row.get(0)?,
+                display_name: row.get(1)?,
+                last_sync_at: row.get(2)?,
+                last_source: row.get(3)?,
+            })
+        },
+    );
+    match esito {
+        Ok(riga) => Ok(Some(riga)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(db_error("lettura dell'account collegato", &err)),
+    }
+}
+
+/// Quanti ascolti in `play_history` vengono da un'importazione.
+///
+/// È il numero che rende «dimentica gli ascolti importati» un tasto che dice
+/// quel che sta per cancellare, invece di uno che chiede di fidarsi.
+///
+/// # Errori
+///
+/// `db.queryFailed` quando il database non risponde.
+pub fn quanti_importati(connection: &Connection) -> Result<i64, AppError> {
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM play_history WHERE source = 'spotify'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|err| db_error("conteggio degli ascolti importati", &err))
+}
+
+/// Dimentica di quale account si trattava.
+///
+/// Una `DELETE`, non quattro stringhe vuote: è la ragione per cui
+/// `spotify_account` è una tabella e non quattro chiavi in `settings`, ed è
+/// scritta per esteso in `005_account.sql`.
+///
+/// **Non** tocca niente di quel che è stato importato — le playlist restano, i
+/// preferiti restano, la cronologia resta. Scollegarsi è smettere di parlare con
+/// Spotify; disfare è [`dimentica_importati`], che dice cosa cancella.
+///
+/// # Errori
+///
+/// `db.queryFailed` quando il database non risponde.
+pub fn scollega(connection: &Connection) -> Result<(), AppError> {
+    connection
+        .execute("DELETE FROM spotify_account", [])
+        .map(|_| ())
+        .map_err(|err| db_error("scollegamento dell'account", &err))
+}
+
 /// Dimentica gli ascolti importati da Spotify.
 ///
 /// L'operazione che `play_history.source` esiste per rendere possibile. Cancella

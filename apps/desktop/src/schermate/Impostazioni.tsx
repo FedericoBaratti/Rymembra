@@ -164,6 +164,7 @@ export function Impostazioni({
   onApriStudio,
   onImporta,
   onImportaSpotify,
+  onImportaAccount,
   importazioni,
   arricchimento,
   avanzaArricchimento,
@@ -221,6 +222,15 @@ export function Impostazioni({
   onImporta: () => void;
   /** Apre la finestrella in cui si incolla un link di Spotify. */
   onImportaSpotify: () => void;
+  /**
+   * Apre la finestrella dell'account intero.
+   *
+   * Un secondo callback e non un parametro del primo: sono due operazioni
+   * diverse — una legge un link pubblico, l'altra porta dentro un account —
+   * e un booleano che sceglie fra due schermate è la firma che poi nessuno
+   * ricorda in che verso va.
+   */
+  onImportaAccount: () => void;
   /**
    * Le importazioni da Spotify e la coda che le scarica.
    *
@@ -909,6 +919,46 @@ export function Impostazioni({
                 finestrella si chiude da sola a importazione confermata, e quel
                 che succede dopo — che dura minuti — succede qui. */}
             <Importazioni importazioni={importazioni} />
+          </Scheda>
+        )}
+
+        {/* L'account intero è una scheda a parte e non un secondo tasto in
+            quella sopra: quella dice «non serve un account», e questa comincia
+            chiedendone uno. Due promesse opposte nello stesso riquadro sono il
+            modo di far credere che una delle due sia falsa. */}
+        {sezione === "spotify" && (
+          <Scheda
+            icona="i-cloud"
+            titolo="Tutto il tuo account"
+            nota="playlist, preferiti, ascolti"
+          >
+            <p className="nota">
+              Playlist, «Brani che ti piacciono», album e artisti salvati, e{" "}
+              <strong>gli anni di ascolti</strong>: tutto in una volta, invece di
+              trenta link incollati a mano.
+            </p>
+            <p className="nota">
+              Due strade. L&apos;<strong>archivio</strong> che Spotify manda per
+              posta non chiede niente a nessuno e contiene tutti gli ascolti, ma
+              ci mette giorni ad arrivare. Il <strong>collegamento</strong> è
+              immediato e ritrova meglio i brani, ma degli ascolti dà solo gli
+              ultimi cinquanta — e richiede che chi registra l&apos;applicazione
+              abbia Spotify Premium.
+            </p>
+            <p className="nota">
+              Gli ascolti importati restano <strong>riconoscibili</strong>: si
+              possono togliere senza toccare quelli veri.
+            </p>
+            <div className="azioni">
+              <button
+                type="button"
+                className="bottone btn-ghost"
+                onClick={onImportaAccount}
+              >
+                <Icona nome="i-cloud" dim={15} />
+                Importa il mio account…
+              </button>
+            </div>
           </Scheda>
         )}
 

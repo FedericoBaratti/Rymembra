@@ -25,6 +25,7 @@ import { AggiungiAPlaylist } from "./AggiungiAPlaylist";
 import { Chiedi } from "./Chiedi";
 import { Copertina } from "./Copertina";
 import { Impaginazione, type ContestoWidget } from "./Impaginazione";
+import { Account } from "./Account";
 import { Importa, ImportaSpotify } from "./Importa";
 import { Menu, type Apertura } from "./Menu";
 import { NuovoTema } from "./NuovoTema";
@@ -405,6 +406,7 @@ export function App() {
   // Un booleano e non un link: il link lo si incolla dentro la finestrella, che
   // è anche il posto in cui si scopre se è un link buono.
   const [importandoSpotify, setImportandoSpotify] = useState(false);
+  const [importandoAccount, setImportandoAccount] = useState(false);
   const [playlist, setPlaylist] = useState<Playlist[]>([]);
   const [playlistAperta, setPlaylistAperta] = useState<Playlist | null>(null);
   const [braniPlaylist, setBraniPlaylist] = useState<Brano[]>([]);
@@ -1860,6 +1862,7 @@ export function App() {
           onApriStudio={setStudioAperto}
           onImporta={() => void scegliDatabase()}
           onImportaSpotify={() => setImportandoSpotify(true)}
+          onImportaAccount={() => setImportandoAccount(true)}
           importazioni={importazioni}
           arricchimento={arricchimento}
           avanzaArricchimento={avanzaArricchimento}
@@ -2274,6 +2277,27 @@ export function App() {
             importazioni.registra(esito);
             // Come sopra: può aver creato una playlist, riempito la sua, e
             // scritto identificativi che rifondono gli album.
+            void ricarica();
+            void caricaVista();
+            void ricaricaPlaylist();
+          }}
+        />
+      )}
+
+      {importandoAccount && (
+        <Account
+          onChiudi={() => setImportandoAccount(false)}
+          onImportato={(esito) => {
+            // Un rapporto per playlist, e ognuno ha già la forma che l'elenco
+            // delle importazioni conosce: registrarli tutti è quel che fa
+            // comparire in coda le playlist appena importate, con il loro nome
+            // invece di un identificativo.
+            for (const elenco of [...esito.playlists, ...esito.albums, esito.liked]) {
+              if (elenco.wantedRows > 0) importazioni.registra(elenco);
+            }
+            // Playlist nuove, preferiti segnati, conteggi d'ascolto riscritti,
+            // album rifusi: è l'importazione che cambia più cose in una volta di
+            // tutta l'applicazione, e nessuna vista aperta sa che è successo.
             void ricarica();
             void caricaVista();
             void ricaricaPlaylist();
