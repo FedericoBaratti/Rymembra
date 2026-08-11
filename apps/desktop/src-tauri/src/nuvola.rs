@@ -677,9 +677,17 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
                 if motivo == Sveglia::Sporca {
                     // Si aspetta che la raffica finisca: dieci cuoricini di fila
                     // sono un salvataggio, non dieci. Si esce da qui quando per
-                    // due minuti non arriva più niente — o quando il canale si
-                    // chiude, e allora l'`Err` fa uscire anche dal ciclo sotto.
-                    while orecchio.recv_timeout(RAFFICA).is_ok() {}
+                    // due minuti non arriva più niente — oppure subito, se nel
+                    // frattempo il canale si è chiuso.
+                    //
+                    // I due esiti si distinguono, e non è pedanteria: un
+                    // `while … .is_ok()` li confonde, e alla chiusura
+                    // dell'applicazione uscirebbe dall'attesa per poi fare una
+                    // passata **intera** — cioè un caricamento su Drive mentre il
+                    // processo sta uscendo.
+                    if crate::stato::aspetta_la_raffica(&orecchio, RAFFICA).is_break() {
+                        return;
+                    }
                 }
                 passata(&app);
                 motivo = match orecchio.recv_timeout(INTERVALLO) {

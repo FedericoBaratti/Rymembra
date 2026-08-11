@@ -130,6 +130,40 @@ impl Drop for Turno<'_> {
     }
 }
 
+/// Aspetta che una raffica di sveglie finisca.
+///
+/// `Continue` quando per `raffica` non è arrivato più niente: la raffica è
+/// esaurita e si può lavorare. `Break` quando il canale si è chiuso, cioè quando
+/// l'applicazione sta uscendo.
+///
+/// # Perché i due esiti si distinguono
+///
+/// Perché `while orecchio.recv_timeout(raffica).is_ok() {}` li confonde: esce
+/// allo stesso modo per un silenzio di due minuti e per un canale chiuso, e chi
+/// chiama in entrambi i casi tira dritto e fa la sua passata. Alla chiusura
+/// dell'applicazione questo vuol dire cominciare **allora** una passata intera:
+/// per la nuvola un caricamento su Drive, per l'arricchimento minuti di
+/// richieste di rete e tag riscritti sui file dell'utente — mentre il processo
+/// sta uscendo e nessuno aspetta più il filo.
+///
+/// Sta qui e non nei due moduli che la usano per la stessa ragione di [`Turno`]:
+/// due copie di una regola di concorrenza sono due copie che divergono il giorno
+/// in cui qualcuno ne aggiusta una sola.
+pub fn aspetta_la_raffica<T>(
+    orecchio: &std::sync::mpsc::Receiver<T>,
+    raffica: std::time::Duration,
+) -> std::ops::ControlFlow<()> {
+    use std::sync::mpsc::RecvTimeoutError;
+    loop {
+        match orecchio.recv_timeout(raffica) {
+            // Un'altra sveglia: la raffica continua.
+            Ok(_) => {}
+            Err(RecvTimeoutError::Timeout) => return std::ops::ControlFlow::Continue(()),
+            Err(RecvTimeoutError::Disconnected) => return std::ops::ControlFlow::Break(()),
+        }
+    }
+}
+
 fn apri_libreria(data_dir: PathBuf) -> Result<Libreria, AppError> {
     std::fs::create_dir_all(&data_dir)
         .map_err(|err| aether_app::files::io_error(&data_dir.display().to_string(), &err))?;
@@ -230,6 +264,36 @@ mod prove {
         assert!(
             !bandiera.load(Ordering::Acquire),
             "il turno è tornato libero"
+        );
+    }
+
+    #[test]
+    fn una_raffica_esaurita_e_un_canale_chiuso_non_sono_la_stessa_cosa() {
+        // Il difetto che questa prova impedisce: `while … .is_ok() {}` esce allo
+        // stesso modo per un silenzio e per un canale chiuso, e chi chiama fa la
+        // sua passata in tutti e due i casi. Alla chiusura dell'applicazione
+        // quella passata è un caricamento su Drive, o dei tag riscritti sui file
+        // dell'utente, cominciati mentre il processo sta uscendo.
+        let breve = std::time::Duration::from_millis(20);
+
+        // Silenzio: la raffica è finita, si lavora.
+        let (manda, orecchio) = std::sync::mpsc::channel::<u8>();
+        assert!(
+            aspetta_la_raffica(&orecchio, breve).is_continue(),
+            "un silenzio vuol dire che la raffica è esaurita"
+        );
+
+        // Le sveglie si consumano tutte, e poi si continua lo stesso.
+        for _ in 0..5 {
+            manda.send(1).expect("sveglia");
+        }
+        assert!(aspetta_la_raffica(&orecchio, breve).is_continue());
+
+        // Canale chiuso: non si lavora più.
+        drop(manda);
+        assert!(
+            aspetta_la_raffica(&orecchio, breve).is_break(),
+            "l'applicazione sta uscendo: il filo deve fermarsi, non fare una passata"
         );
     }
 

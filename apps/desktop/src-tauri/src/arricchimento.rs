@@ -373,9 +373,16 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
                 if motivo == Sveglia::Sporca {
                     // Si aspetta che la raffica finisca: venti brani scaricati
                     // sono una passata, non venti. Si esce da qui quando per due
-                    // minuti non arriva più niente — o quando il canale si
-                    // chiude, e allora l'`Err` fa uscire anche dal ciclo sotto.
-                    while orecchio.recv_timeout(RAFFICA).is_ok() {}
+                    // minuti non arriva più niente — oppure subito, se nel
+                    // frattempo il canale si è chiuso.
+                    //
+                    // Distinguere i due esiti è ciò che impedisce a una chiusura
+                    // dell'applicazione di far cominciare **adesso** una passata
+                    // intera: minuti di richieste di rete e, soprattutto, tag
+                    // riscritti sui file dell'utente mentre il processo esce.
+                    if crate::stato::aspetta_la_raffica(&orecchio, RAFFICA).is_break() {
+                        return;
+                    }
                 }
                 passata(&app, &mut fornitori);
                 motivo = match orecchio.recv_timeout(INTERVALLO) {
