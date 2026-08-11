@@ -386,12 +386,26 @@ fn costruisci_stato(app: &tauri::AppHandle, lettore: &Lettore) -> StatoRiproduzi
         .ok()
         .flatten()
     });
+    // Un dispositivo perso è fermo, comunque la pensi il motore.
+    //
+    // `Condiviso::in_pausa` lo alzano solo pausa, stop e fine del brano: la
+    // callback di `cpal` che segnala il guasto non lo tocca, e non deve — gira
+    // dentro il backend audio. Il risultato era uno stato che diceva
+    // `inPausa: false` con le cuffie staccate, e la finestra ci si ancorava: il
+    // cursore continuava a interpolare da solo, oltre la fine del brano, mentre
+    // il pulsante accanto mostrava «riprendi». Cioè esattamente la bugia che
+    // `GuastoAudio` è stato aggiunto per togliere.
+    //
+    // Si corregge qui e non nella finestra perché di stato ce n'è uno: le
+    // schermate che leggono `inPausa` sono tre, e ognuna che se lo aggiusti per
+    // conto suo è un'occasione di non farlo.
+    let guasto = guasto_di(&lettore.motore);
     StatoRiproduzione {
         durata_ms: brano.as_ref().map_or(posizione.durata_ms, |b| {
             u64::try_from(b.duration_ms).unwrap_or(0)
         }),
         brano,
-        in_pausa: posizione.in_pausa,
+        in_pausa: posizione.in_pausa || guasto.is_some(),
         posizione_ms: posizione.ms,
         shuffle: lettore.coda.shuffle(),
         ripeti: nome_ripetizione(lettore.coda.repeat()).to_owned(),
@@ -402,7 +416,7 @@ fn costruisci_stato(app: &tauri::AppHandle, lettore: &Lettore) -> StatoRiproduzi
         eq_attivo: lettore.eq.attivo,
         eq_guadagni: lettore.eq.guadagni.clone(),
         replaygain: lettore.normalizzazione.attivo,
-        audio: guasto_di(&lettore.motore),
+        audio: guasto,
     }
 }
 
