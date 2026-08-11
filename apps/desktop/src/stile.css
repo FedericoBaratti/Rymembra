@@ -1555,6 +1555,40 @@ body {
   color: var(--danger);
   margin-top: 2px;
 }
+
+/* Il dispositivo audio mancante non è un'operazione fallita: è una condizione
+   che dura finché qualcuno non riapre. Colore d'avviso e non di pericolo —
+   niente si è rotto e niente è andato perso, semplicemente non si sente — e
+   il tasto allineato al centro perché è la risposta, non un'aggiunta. */
+.audio-perso {
+  align-items: center;
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+.audio-perso > svg {
+  color: var(--warning);
+  margin-top: 0;
+}
+.audio-perso .bottone {
+  flex: none;
+}
+/* Dentro la terza colonna la fascia non è un `toast-card`: sta in cima alla
+   colonna, sopra la copertina, e i margini della pagina lì non ci sono. */
+.colonna .audio-perso {
+  display: flex;
+  gap: var(--spazio-2);
+  margin: 0 var(--spazio-3) var(--spazio-2);
+  padding: var(--spazio-2) var(--spazio-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-card);
+  background: var(--warning-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.colonna .audio-perso .cosa {
+  flex: 1;
+  min-width: 0;
+}
 .errore > span {
   flex: 1;
   user-select: text;

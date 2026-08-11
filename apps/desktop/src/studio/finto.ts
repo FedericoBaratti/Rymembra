@@ -63,6 +63,7 @@ const STATO: StatoRiproduzione = {
   eqAttivo: false,
   eqGuadagni: [],
   replaygain: true,
+  audio: null,
 };
 
 /** Un comando che non fa niente: nell'anteprima non c'è niente da comandare. */

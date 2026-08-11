@@ -17,6 +17,7 @@ import {
 import {
   ipc,
   type ErroreIpc,
+  type GuastoAudio,
   type StatoEq,
   type StatoRiproduzione,
   type Tempo,
@@ -54,6 +55,7 @@ const FERMO: StatoRiproduzione = {
   // Acceso, come il motore: il valore di ripiego finché il nucleo non risponde
   // deve dire quel che sta succedendo davvero, non la posizione più prudente.
   replaygain: true,
+  audio: null,
 };
 
 // ── La posizione, fuori da React ────────────────────────────────────────────
@@ -200,6 +202,13 @@ export function useRiproduzione(): Riproduzione {
       ),
       listen<ErroreIpc>("riproduzione:errore", (evento) =>
         setErrore(evento.payload),
+      ),
+      // Il dispositivo sparito. Arriva **una volta** — l'orologio annuncia il
+      // passaggio, non lo stato — e va nello stato invece che fra gli errori:
+      // non è un'operazione fallita da mostrare e poi scordare, è una
+      // condizione che dura finché qualcuno non riapre.
+      listen<GuastoAudio>("riproduzione:audio", (evento) =>
+        setStato((prima) => ({ ...prima, audio: evento.payload, inPausa: true })),
       ),
     ];
     return () => {

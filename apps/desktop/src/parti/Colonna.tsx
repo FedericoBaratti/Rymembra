@@ -94,6 +94,33 @@ export function Colonna({
         </button>
       </header>
 
+      {/* Sopra tutto il resto, copertina compresa: è la risposta alla domanda
+          «perché non si sente niente», e quella domanda viene prima di
+          qualunque cosa ci sia da guardare. Prima di questa fascia il nucleo
+          alzava un bit che nessuno leggeva, e staccare le cuffie voleva dire
+          premere play senza sentire niente, per sempre. */}
+      {stato.audio !== null && (
+        <div className="audio-perso">
+          <div className="cosa">
+            <strong>Non c&apos;è audio.</strong> {stato.audio.causa}.
+          </div>
+          {stato.audio.riapribile && (
+            <button
+              type="button"
+              className="bottone minuto btn-ghost"
+              onClick={() => comanda(ipc.riapriAudio())}
+              /* Il brano riparte da capo, e va detto prima di premere: il
+                 motore nuovo nasce senza niente aperto, e la posizione non
+                 sopravvive. Coda, volume, curva e normalizzazione sì. */
+              title="Il brano riparte da capo. Coda, volume ed equalizzatore restano."
+            >
+              <Icona nome="i-repeat" dim={14} />
+              Riapri
+            </button>
+          )}
+        </div>
+      )}
+
       {brano === null ? (
         <div className="niente-in-ascolto empty-state">
           <span className="empty-icon" aria-hidden="true">

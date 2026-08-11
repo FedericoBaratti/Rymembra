@@ -2268,6 +2268,32 @@ export function App() {
                 />
               ) : null}
               <div className="dentro" ref={contenuto}>
+                {/* Qui e non solo nella terza colonna: la colonna si può
+                    chiudere, e il lettore flottante sparisce quando non c'è un
+                    brano — cioè proprio nei due casi in cui il dispositivo
+                    manca da prima che si provasse a suonare qualcosa. Una
+                    fascia che si può non vedere non è una fascia. */}
+                {riproduzione.stato.audio !== null && (
+                  <div className="errore audio-perso toast-card" role="alert">
+                    <Icona nome="i-alert" dim={16} />
+                    <span>
+                      <strong>Non c&apos;è audio.</strong>{" "}
+                      {riproduzione.stato.audio.causa}.
+                    </span>
+                    {riproduzione.stato.audio.riapribile && (
+                      <button
+                        type="button"
+                        className="bottone minuto btn-ghost"
+                        title="Il brano riparte da capo. Coda, volume ed equalizzatore restano."
+                        onClick={() => {
+                          ipc.riapriAudio().catch(segnalaErrore);
+                        }}
+                      >
+                        Riapri
+                      </button>
+                    )}
+                  </div>
+                )}
                 {messaggio && (
                   <div className="errore toast-card" role="alert">
                     <Icona nome="i-alert" dim={16} />

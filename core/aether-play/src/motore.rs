@@ -80,9 +80,18 @@ enum Comando {
     Pausa,
     Ferma,
     VaiA(u64),
-    Volume { volume: f32, muto: bool },
-    ReplayGain { attivo: bool, bersaglio_db: f32 },
-    Equalizzatore { guadagni: [f32; BANDE], attivo: bool },
+    Volume {
+        volume: f32,
+        muto: bool,
+    },
+    ReplayGain {
+        attivo: bool,
+        bersaglio_db: f32,
+    },
+    Equalizzatore {
+        guadagni: [f32; BANDE],
+        attivo: bool,
+    },
     Chiudi,
 }
 
@@ -313,6 +322,24 @@ impl Motore {
         self.condiviso.perso.load(Ordering::Acquire)
     }
 
+    /// Perché è sparito, in una parola che si può mettere in un registro.
+    ///
+    /// `None` finché non è sparito. Le due cause non sono la stessa cosa per chi
+    /// legge: «non c'è più» è un cavo staccato o un dispositivo predefinito
+    /// cambiato — riaprire funziona quasi sempre — mentre un guasto del backend
+    /// è tutto il resto, e riaprire è un tentativo, non una cura.
+    #[must_use]
+    pub fn causa_perdita(&self) -> Option<&'static str> {
+        if !self.dispositivo_perso() {
+            return None;
+        }
+        Some(match self.condiviso.causa_perdita.load(Ordering::Acquire) {
+            1 => "dispositivo non più disponibile",
+            2 => "guasto del sistema audio",
+            _ => "causa sconosciuta",
+        })
+    }
+
     /// Quanti campioni sono stati serviti a vuoto: se cresce, il disco non sta
     /// dietro.
     #[must_use]
@@ -476,8 +503,7 @@ impl Contesto {
         self.eq_passi = self.eq_passi.saturating_sub(1);
         avvicina(&mut self.eq_correnti, &self.eq_bersaglio, self.eq_passi);
 
-        let coefficienti =
-            Coefficienti::calcola(&self.eq_correnti, true, self.formato.frequenza);
+        let coefficienti = Coefficienti::calcola(&self.eq_correnti, true, self.formato.frequenza);
         if self.coefficienti.push(coefficienti).is_err() {
             self.eq_in_attesa = Some(coefficienti);
         }

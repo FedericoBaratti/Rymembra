@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use aether_app::library::TrackSummary;
 use aether_app::playback::{self, Equalizzazione, Normalizzazione, Volume};
-use aether_domain::errors::AppError;
+use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::listen::ListenTracker;
 use aether_domain::queue::{Queue, RepeatMode, Step};
 use aether_play::{Evento, Motore, PRESET_DI_SERIE};
@@ -107,6 +107,40 @@ pub struct StatoRiproduzione {
     /// riga in `settings` e il valore che vale è quello del motore. Uno stato
     /// che dice cos'è vero adesso non deve avere due sorgenti.
     pub replaygain: bool,
+    /// Il dispositivo audio non c'è più, o non si è mai aperto.
+    ///
+    /// Un campo dello stato e non solo un evento: chi apre la finestra dopo che
+    /// il dispositivo è sparito deve trovarlo detto, non aspettare che sparisca
+    /// una seconda volta.
+    pub audio: Option<GuastoAudio>,
+}
+
+/// Il motore audio non c'è: perché, e da quando.
+///
+/// # Perché questo tipo esiste
+///
+/// Perché fino a ieri un dispositivo perso era **indistinguibile da un brano
+/// che non parte**. `Motore::dispositivo_perso` c'era da sempre, `uscita.rs`
+/// alzava quel bit quando `cpal` segnalava un guasto del flusso, e in tutta
+/// l'applicazione non c'era una riga che lo leggesse: staccare le cuffie voleva
+/// dire premere play e non sentire niente, per sempre, senza nessuna schermata
+/// che dicesse perché.
+///
+/// Trovato provando: la riproduzione si è fermata a otto secondi e la finestra
+/// continuava a dire che suonava.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuastoAudio {
+    /// Il codice del catalogo: `playback.deviceLost` o `playback.engineUnavailable`.
+    pub codice: String,
+    /// Cosa è successo, in una frase.
+    pub causa: String,
+    /// Riaprire ha senso provarlo.
+    ///
+    /// Sempre vero, oggi, e resta un campo perché la finestra non deve saperlo:
+    /// il giorno in cui una causa non fosse più ritentabile, il tasto sparisce
+    /// senza toccare la finestra.
+    pub riapribile: bool,
 }
 
 /// La curva dell'equalizzatore da sola.
@@ -174,11 +208,22 @@ pub struct StatoLettore {
     pub spettro: std::sync::atomic::AtomicBool,
 }
 
+/// Apre il dispositivo audio e collega l'osservatore degli eventi.
+///
+/// In una funzione sua perché adesso i posti che aprono un motore sono due:
+/// l'avvio e [`riapri_audio`]. Due copie di questa riga vorrebbero dire un
+/// motore riaperto che non manda più eventi alla finestra — cioè un lettore che
+/// suona e non lo dice a nessuno, che è il difetto peggiore da diagnosticare
+/// perché somiglia a tutto.
+fn apri_motore(app: &tauri::AppHandle) -> Result<Motore, AppError> {
+    let manico = app.clone();
+    aether_play::avvia(move |evento| su_evento(&manico, evento))
+}
+
 impl StatoLettore {
     /// Avvia il motore e riprende la coda di ieri.
     pub fn avvia(app: &tauri::AppHandle) -> Self {
-        let manico = app.clone();
-        let motore = aether_play::avvia(move |evento| su_evento(&manico, evento));
+        let motore = apri_motore(app);
         let lettore = motore.map(|motore| Lettore {
             motore,
             coda: Queue::new(),
@@ -351,6 +396,28 @@ fn costruisci_stato(app: &tauri::AppHandle, lettore: &Lettore) -> StatoRiproduzi
         eq_attivo: lettore.eq.attivo,
         eq_guadagni: lettore.eq.guadagni.clone(),
         replaygain: lettore.normalizzazione.attivo,
+        audio: guasto_di(&lettore.motore),
+    }
+}
+
+/// Il guasto del motore, se ce n'è uno.
+fn guasto_di(motore: &Motore) -> Option<GuastoAudio> {
+    motore.causa_perdita().map(|causa| GuastoAudio {
+        codice: ErrorCode::PlaybackDeviceLost.kind().code().to_owned(),
+        causa: causa.to_owned(),
+        riapribile: true,
+    })
+}
+
+/// Il guasto di un motore che non si è proprio aperto.
+fn guasto_di_apertura(err: &AppError) -> GuastoAudio {
+    GuastoAudio {
+        codice: err.code().kind().code().to_owned(),
+        causa: err
+            .cause()
+            .unwrap_or("il motore audio non si è aperto")
+            .to_owned(),
+        riapribile: true,
     }
 }
 
@@ -435,9 +502,37 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
         .name("aether-orologio".to_owned())
         .spawn(move || {
             let mut ultimo_fermo = true;
+            // Il dispositivo era già sparito all'ultimo giro: serve perché
+            // l'annuncio parta **una volta**, non quattro al secondo per tutto
+            // il tempo in cui le cuffie restano staccate.
+            let mut gia_perso = false;
             loop {
                 std::thread::sleep(PASSO_TEMPO);
                 let stato_lettore = app.state::<StatoLettore>();
+
+                // Prima della posizione, perché è la ragione per cui la
+                // posizione ha smesso di muoversi. Un dispositivo sparito
+                // lascia la callback senza nessuno che la chiami: i fotogrammi
+                // non avanzano più, il cursore resta fermo, e senza questo
+                // controllo la finestra continua a dire che sta suonando.
+                let perso = con_lettore(&stato_lettore, |lettore| Ok(guasto_di(&lettore.motore)))
+                    .unwrap_or(None);
+                match (&perso, gia_perso) {
+                    (Some(guasto), false) => {
+                        eprintln!("[riproduzione] dispositivo audio perso: {}", guasto.causa);
+                        let _ = app.emit("riproduzione:audio", guasto.clone());
+                        // E lo stato intero, perché chi non stava ascoltando
+                        // l'evento — una schermata aperta dopo — lo trovi lì.
+                        let _ = con_lettore(&stato_lettore, |lettore| {
+                            manda_stato(&app, lettore);
+                            Ok(())
+                        });
+                        gia_perso = true;
+                    }
+                    (None, true) => gia_perso = false,
+                    _ => {}
+                }
+
                 let tempo = con_lettore(&stato_lettore, |lettore| {
                     let p = lettore.motore.posizione();
                     Ok(Tempo {
@@ -447,6 +542,12 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                     })
                 });
                 let Ok(tempo) = tempo else { continue };
+                // Con il dispositivo perso la posizione è ferma per definizione:
+                // mandarla quattro volte al secondo direbbe «sta suonando» a chi
+                // interpola, che è la bugia che questo giro è venuto a togliere.
+                if perso.is_some() {
+                    continue;
+                }
                 // Un colpo anche quando si è appena fermato, per non lasciare il
                 // cursore a interpolare nel vuoto.
                 if !tempo.in_pausa || !ultimo_fermo {
@@ -754,6 +855,94 @@ pub fn equalizzatore(
     .map_err(errore)
 }
 
+/// Riapre il dispositivo audio.
+///
+/// # Perché è un comando e non un tentativo automatico
+///
+/// Perché riaprire non è gratis e non è sempre giusto. `cpal` apre il
+/// dispositivo **predefinito di sistema**: se le cuffie si sono staccate e il
+/// predefinito è tornato a essere gli altoparlanti del portatile, riaprire da
+/// solo vuol dire far uscire la musica dagli altoparlanti — in un ufficio, di
+/// notte, in una riunione. Chi ha staccato le cuffie sa se vuole che continui;
+/// l'applicazione no.
+///
+/// C'è anche la ragione tecnica, ed è quella scritta in `uscita.rs`: riaprire
+/// può bloccarsi, e non si può fare dal filo che segnala il guasto — quello è
+/// un `StreamError` che arriva da dentro `cpal`.
+///
+/// # Cosa sopravvive
+///
+/// La coda, il volume, la curva dell'equalizzatore e la normalizzazione: sono
+/// tutte cose del lettore, non del dispositivo, e ricostruirle dal database a
+/// ogni riapertura le farebbe divergere da quel che l'utente ha davanti se una
+/// scrittura fosse fallita. **La posizione no**: il motore nuovo nasce senza
+/// niente aperto, e il brano riparte da capo — dirlo è meglio che far ripartire
+/// una canzone di venti minuti dall'inizio senza avvisare.
+///
+/// Funziona anche quando il motore non si è **mai** aperto, che è il caso più
+/// utile: l'applicazione avviata senza scheda audio è un catalogo consultabile
+/// finché qualcuno non attacca le cuffie, e prima di oggi l'unico modo di
+/// accorgersene era riavviare.
+///
+/// `(async)`: aprire un dispositivo audio parla con il sistema e può prendersi
+/// il suo tempo. Sul filo principale sarebbe la finestra ferma.
+#[tauri::command(async)]
+pub fn riapri_audio(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+    let mut guardia = stato
+        .lettore
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    // Il motore nuovo si apre **prima** di buttare via quello vecchio: se
+    // l'apertura fallisce, quel che c'era resta dov'è. Un riaprire fallito che
+    // lascia il lettore peggio di come l'ha trovato è la cosa che un tasto
+    // «riprova» non deve mai fare.
+    let motore = apri_motore(&app).map_err(errore)?;
+
+    match guardia.as_mut() {
+        Ok(lettore) => {
+            lettore.ascolto = None; // La posizione è persa: l'ascolto in corso non si può chiudere onestamente.
+            lettore.motore = motore;
+            lettore
+                .motore
+                .volume(lettore.volume.volume, lettore.volume.muto);
+            lettore
+                .motore
+                .equalizzatore(&lettore.eq.guadagni, lettore.eq.attivo);
+            lettore.motore.replaygain(
+                lettore.normalizzazione.attivo,
+                lettore.normalizzazione.bersaglio_db,
+            );
+        }
+        Err(_) => {
+            // Il caso del motore mai aperto: si costruisce il lettore adesso, e
+            // la coda di ieri la rimette `riprendi_coda` — che è la stessa
+            // funzione dell'avvio, non una sua copia.
+            *guardia = Ok(Lettore {
+                motore,
+                coda: Queue::new(),
+                ascolto: None,
+                volume: Volume::default(),
+                eq: Equalizzazione::default(),
+                normalizzazione: Normalizzazione::default(),
+            });
+            drop(guardia);
+            riprendi_coda(&app);
+            let stato_lettore = app.state::<StatoLettore>();
+            return con_lettore(&stato_lettore, |lettore| {
+                manda_stato(&app, lettore);
+                Ok(())
+            })
+            .map_err(errore);
+        }
+    }
+
+    if let Ok(lettore) = guardia.as_mut() {
+        manda_stato(&app, lettore);
+    }
+    Ok(())
+}
+
 /// Accende o spegne la normalizzazione ReplayGain.
 ///
 /// # Cosa cambia davvero, e cosa no
@@ -857,12 +1046,46 @@ pub fn eq_preset_cancella(stato: State<'_, Stato>, nome: String) -> Esito<bool> 
 }
 
 /// Lo stato corrente, per quando la finestra si apre.
+///
+/// **Non fallisce quando il motore non si è aperto**, ed è l'unico comando di
+/// questo file a comportarsi così. Gli altri sì, e devono: chiedere di suonare
+/// a un lettore che non c'è è una richiesta senza risposta. Questo invece è la
+/// domanda che la finestra fa per prima, e rispondere con un errore vorrebbe
+/// dire una finestra che si apre su un guasto invece che su una libreria —
+/// mentre senza scheda audio Aether resta un catalogo consultabile, che è
+/// quello che `StatoLettore` conserva l'errore per permettere.
+///
+/// Lo stato che torna è quello di un lettore fermo, con dentro il motivo: è la
+/// stessa forma che la finestra riceve quando il dispositivo sparisce dopo, ed
+/// è ciò che le permette di disegnare una fascia sola per i due casi.
 #[tauri::command]
 pub fn riproduzione_stato(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
 ) -> Esito<StatoRiproduzione> {
-    con_lettore(&stato, |lettore| Ok(costruisci_stato(&app, lettore))).map_err(errore)
+    let guardia = stato
+        .lettore
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match guardia.as_ref() {
+        Ok(lettore) => Ok(costruisci_stato(&app, lettore)),
+        Err(err) => Ok(StatoRiproduzione {
+            brano: None,
+            in_pausa: true,
+            posizione_ms: 0,
+            durata_ms: 0,
+            shuffle: false,
+            ripeti: nome_ripetizione(RepeatMode::Off).to_owned(),
+            volume: Volume::default().volume,
+            muto: false,
+            coda: Vec::new(),
+            posizione_coda: None,
+            eq_attivo: false,
+            eq_guadagni: Vec::new(),
+            replaygain: Normalizzazione::default().attivo,
+            audio: Some(guasto_di_apertura(err)),
+        }),
+    }
 }
 
 /// Accoda in fondo.

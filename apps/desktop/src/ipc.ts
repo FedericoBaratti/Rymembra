@@ -253,6 +253,25 @@ export interface StatoRiproduzione {
   eqGuadagni: number[];
   /** La normalizzazione ReplayGain è accesa. Di serie sì. */
   replaygain: boolean;
+  /** Il motore audio non c'è: perché, e se vale la pena riaprire. */
+  audio: GuastoAudio | null;
+}
+
+/**
+ * Il dispositivo audio non c'è, o non si è mai aperto.
+ *
+ * Prima di esistere, un dispositivo perso era indistinguibile da un brano che
+ * non parte: il nucleo alzava un bit che nessuno leggeva, e staccare le cuffie
+ * voleva dire premere play senza sentire niente, per sempre, senza nessuna
+ * schermata che dicesse perché.
+ */
+export interface GuastoAudio {
+  /** `playback.deviceLost` o `playback.engineUnavailable`. */
+  codice: string;
+  /** Cosa è successo, in una frase. */
+  causa: string;
+  /** Riaprire ha senso provarlo. */
+  riapribile: boolean;
 }
 
 /** Solo il tempo che passa: arriva quattro volte al secondo mentre suona. */
@@ -1380,6 +1399,12 @@ export const ipc = {
   // correzione esiste solo dove c'è un guadagno dichiarato da rispettare.
   normalizzazione: (attivo: boolean) =>
     invoke<void>("normalizzazione", { attivo }),
+  // Riapre il dispositivo audio. È un comando e non un tentativo automatico
+  // perché `cpal` apre il predefinito di **sistema**: staccate le cuffie, il
+  // predefinito torna agli altoparlanti, e riaprire da soli vorrebbe dire far
+  // uscire la musica dagli altoparlanti — in ufficio, di notte, in riunione.
+  // Sopravvivono coda, volume, curva e normalizzazione; la posizione no.
+  riapriAudio: () => invoke<void>("riapri_audio"),
   // Lo spettro si accende e si spegne: acceso, la callback audio scrive i
   // campioni in un terzo anello e un filo manda `riproduzione:spettro` trenta
   // volte al secondo. Spento non costa niente da nessuna delle due parti, ed è

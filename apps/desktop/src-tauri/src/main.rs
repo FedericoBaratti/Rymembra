@@ -208,6 +208,7 @@ fn main() {
             riproduzione::volume,
             riproduzione::equalizzatore,
             riproduzione::normalizzazione,
+            riproduzione::riapri_audio,
             riproduzione::spettro,
             riproduzione::eq_preset_elenco,
             riproduzione::eq_preset_salva,
@@ -273,7 +274,7 @@ fn cartella_dati(app: &tauri::AppHandle) -> Result<std::path::PathBuf, tauri::Er
     if let Some(scelta) = std::env::var_os("AETHER_DATI").filter(|v| !v.is_empty()) {
         return Ok(std::path::PathBuf::from(scelta));
     }
-    app.path().app_data_dir().map_err(Into::into)
+    app.path().app_data_dir()
 }
 
 /// Dove stanno i binari esterni — oggi solo yt-dlp.
