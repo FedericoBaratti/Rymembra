@@ -1,13 +1,23 @@
 /**
  * Chiaro, scuro, o quel che dice il sistema.
  *
- * # Perché non serve nessun comando nuovo
+ * # Perché adesso un comando serve
  *
  * Il compilatore delle skin emette già la variante chiara sotto
  * `:root[data-skin='<id>'][data-theme='light']` — è in `compile.rs`, alla riga
- * che costruisce il selettore. Tutto quel che manca è che qualcuno scriva
- * quell'attributo. Non c'è niente da decidere nel nucleo: la scelta è una
- * preferenza della finestra, non un dato della libreria.
+ * che costruisce il selettore. Tutto quel che serve è che qualcuno scriva
+ * quell'attributo, e questo file non fa altro.
+ *
+ * Dove la scelta si **ricorda** è invece cambiato: stava in `localStorage`,
+ * adesso sta in `ui.theme`, nel database. La ragione sta scritta per esteso in
+ * `core/aether-app/src/preferenze.rs`, e in breve è che nel frattempo sono nati
+ * due lettori di tutte le preferenze — il backup su Drive e il profilo — e una
+ * preferenza in `localStorage` non finisce in nessuno dei due.
+ *
+ * Quel che resta qui è il **ripiego della prima apertura**: chi aveva già
+ * scelto un tema non deve ritrovarselo azzerato dall'aggiornamento. Si legge
+ * una volta, si riscrive nel database, e la chiave vecchia si toglie — così il
+ * ripiego non può risorgere e sovrascrivere una scelta fatta dopo.
  *
  * # Perché «sistema» non è il difetto silenzioso
  *
@@ -28,17 +38,32 @@
 /** Le tre scelte. */
 export type Tema = "scuro" | "chiaro" | "sistema";
 
-/** La chiave con cui la scelta sopravvive alla chiusura della finestra. */
+/** La chiave in cui la scelta viveva prima che tornasse nel nucleo. */
 const CHIAVE = "aether.tema";
 
-/** La scelta salvata, o «sistema» se non ce n'è una. */
-export function temaSalvato(): Tema {
+/**
+ * La scelta rimasta da prima dell'aggiornamento, se c'è.
+ *
+ * `null` quando non c'è niente da recuperare — che è il caso di chiunque apra
+ * Aether per la prima volta, e di chiunque abbia già fatto questo passaggio.
+ */
+export function temaDiRipiego(): Tema | null {
   const letto = window.localStorage.getItem(CHIAVE);
-  return letto === "scuro" || letto === "chiaro" ? letto : "sistema";
+  return letto === "scuro" || letto === "chiaro" || letto === "sistema" ? letto : null;
 }
 
 /**
- * Applica un tema, e ricorda la scelta.
+ * Toglie la chiave vecchia.
+ *
+ * Da chiamare **dopo** che il valore è arrivato nel database, mai prima: se la
+ * scrittura fallisce, il ripiego deve restare lì per il tentativo successivo.
+ */
+export function dimenticaRipiego(): void {
+  window.localStorage.removeItem(CHIAVE);
+}
+
+/**
+ * Applica un tema. Non lo ricorda: quello lo fa `ipc.impostaTema`.
  *
  * `chiara` dice se la skin attiva ha davvero una variante chiara. Quando non ce
  * l'ha si resta sullo scuro anche se la preferenza dice altro: mettere
@@ -52,7 +77,6 @@ export function temaSalvato(): Tema {
  * sbagliata proprio nel caso in cui i due divergono.
  */
 export function applicaTema(tema: Tema, chiara: boolean): boolean {
-  window.localStorage.setItem(CHIAVE, tema);
   const vuoleChiaro =
     tema === "chiaro" ||
     (tema === "sistema" &&

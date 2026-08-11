@@ -4608,6 +4608,104 @@ body {
   padding: 7px 10px;
 }
 
+/* Il filtro sopra l'indice.
+
+   Dentro il `nav` e non sopra la pagina: quel che filtra è l'indice, e un campo
+   piazzato in cima al corpo direbbe «cerca in questa sezione» — che è
+   esattamente il contrario di quel che fa. */
+.impostazioni .filtro-impostazioni {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  margin-bottom: var(--spazio-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-2);
+  color: var(--color-text-3);
+}
+.impostazioni .filtro-impostazioni input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+/* La crocetta che i browser mettono dentro un `search` è di un altro disegno e
+   di un altro colore: si toglie, e a svuotare basta Esc — che qui esce dal
+   campo, cioè il gesto che si sta già facendo. */
+.impostazioni .filtro-impostazioni input::-webkit-search-cancel-button {
+  display: none;
+}
+
+/* Una voce trovata porta il nome della sezione sotto: senza, «Normalizza il
+   volume» comparirebbe da sola e non si saprebbe dove si sta per andare. */
+.impostazioni .indice .voce.trovata {
+  align-items: flex-start;
+  text-align: left;
+}
+.impostazioni .indice .voce.trovata .dove {
+  display: block;
+  font-size: 11px;
+  font-style: normal;
+  color: var(--color-text-3);
+}
+
+/* ── le scorciatoie ── */
+
+.impostazioni .cartella.scorciatoia {
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.impostazioni .cartella.scorciatoia .che-cosa {
+  min-width: 0;
+  flex: 1;
+}
+.impostazioni .cartella.scorciatoia .tasti {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Il tasto assegnato è un bottone: cliccarlo lo toglie. Che sia cliccabile lo
+   dice la crocetta, non il colore — un `kbd` colorato si legge come uno stato,
+   e questo invece è un comando. */
+.tasto-scorciatoia {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-2);
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+.tasto-scorciatoia:hover {
+  color: var(--color-text-1);
+  border-color: var(--color-accent);
+}
+.tasto-scorciatoia kbd {
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+/* Un tasto conteso non si nasconde e non si disabilita: sta lì, segnato, e la
+   nota sotto dice chi se lo divide. */
+.tasto-scorciatoia[data-conteso] {
+  border-color: var(--color-warning, var(--hairline));
+  color: var(--color-warning, var(--color-text-2));
+}
+.bottone.minuto[data-inascolto] {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
 .impostazioni .corpo {
   display: flex;
   flex-direction: column;

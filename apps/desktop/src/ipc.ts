@@ -163,7 +163,57 @@ export interface Avvio {
    * proprio quel che la scheda deve poter dire.
    */
   cartellaDownload: string | null;
+  /**
+   * Il tema scelto, o `null` se non è mai stato scelto.
+   *
+   * `null` **non** vuol dire «sistema»: vuol dire che la scelta non c'è nel
+   * database, e che va cercata in `localStorage` dove viveva prima. Confondere
+   * i due stati butterebbe via il tema chiaro di chi l'aveva fissato.
+   */
+  tema: string | null;
+  /** Le scorciatoie riassegnate, come JSON. `null` = quelle di serie. */
+  scorciatoie: string | null;
   numeri: Numeri;
+}
+
+/** Cosa ha portato via un'esportazione del profilo. */
+export interface EsportazioneProfilo {
+  /** Il documento, già scritto sul file scelto. */
+  json: string;
+  /** Quante chiavi ha portato via. */
+  voci: number;
+  /**
+   * Le chiavi presenti nel database e rimaste qui.
+   *
+   * Il profilo porta un elenco di **inclusioni** — `nuvola.dispositivo` e la
+   * coda non devono viaggiare — e questa è la riga che impedisce all'elenco di
+   * essere silenzioso.
+   */
+  lasciate: string[];
+}
+
+/** Una chiave che l'importazione di un profilo cambierebbe. */
+export interface CambioProfilo {
+  chiave: string;
+  /** `preferenza` viaggia sempre; `percorso` può non esistere di qua. */
+  genere: "preferenza" | "percorso";
+  /** Cosa c'è adesso, o `null` se la chiave non c'è. */
+  prima: string | null;
+  /** Cosa ci sarebbe. */
+  dopo: string;
+}
+
+/** Cosa farebbe importare un profilo. */
+export interface PianoProfilo {
+  /** Quando il profilo è stato scritto. */
+  creatoMs: number;
+  cambi: CambioProfilo[];
+  /** Le chiavi del file che questa versione non porta. Non è un guasto. */
+  sconosciute: string[];
+  /** I percorsi che arrivano e che su questo computer non esistono. */
+  percorsiMancanti: string[];
+  /** Quante chiavi sono già uguali a quel che c'è. */
+  invariate: number;
 }
 
 /** Cosa ha fatto una scansione. */
@@ -1425,6 +1475,23 @@ export const ipc = {
   // vuoto: «mai scelta» e «scelta vuota» devono restare la stessa cosa.
   impostaCartellaDownload: (percorso: string) =>
     invoke<void>("imposta_cartella_download", { percorso }),
+
+  // ── le preferenze della finestra, e il profilo ────────────────────────────
+  // Il tema stava in `localStorage` e adesso sta in `settings`: era l'unica
+  // preferenza che non finiva né nel backup su Drive né nel profilo.
+  impostaTema: (tema: string) => invoke<void>("imposta_tema", { tema }),
+  // Stringa vuota = rimetti quelle di serie. Il nucleo controlla soltanto che
+  // sia JSON: i nomi dei comandi sono roba della finestra, e un nucleo che li
+  // validasse andrebbe ricompilato per aggiungere una scorciatoia.
+  impostaScorciatoie: (scorciatoie: string) =>
+    invoke<void>("imposta_scorciatoie", { scorciatoie }),
+  profiloEsporta: (percorso: string) =>
+    invoke<EsportazioneProfilo>("profilo_esporta", { percorso }),
+  // Il piano prima di applicare, come per ogni altra cosa irreversibile qui.
+  profiloPiano: (percorso: string) =>
+    invoke<PianoProfilo>("profilo_piano", { percorso }),
+  profiloImporta: (percorso: string) =>
+    invoke<PianoProfilo>("profilo_importa", { percorso }),
   // La cronologia d'ascolto, dal più recente. Si scriveva dal primo giorno e
   // non la leggeva nessuno; dopo l'importazione di un account contiene anni.
   cronologia: (offset: number, limite: number) =>

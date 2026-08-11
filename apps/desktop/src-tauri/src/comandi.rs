@@ -41,6 +41,19 @@ pub struct Avvio {
     pub cartella_download: Option<String>,
     /// I numeri della libreria.
     pub numeri: Counts,
+    /// Il tema scelto: `scuro`, `chiaro`, `sistema`.
+    ///
+    /// `None` vuol dire **mai scelto**, ed è diverso da «sistema»: la finestra
+    /// deve poter distinguere le due cose per sapere se ripiegare sulla
+    /// preferenza rimasta in `localStorage` prima che il tema tornasse nel
+    /// nucleo. Vedi `aether_app::preferenze`.
+    pub tema: Option<String>,
+    /// Le scorciatoie riscritte dall'utente, come JSON. `None` = quelle di serie.
+    ///
+    /// Grezze e non interpretate: i nomi dei comandi appartengono alla finestra,
+    /// e un nucleo che li capisse andrebbe ricompilato per aggiungere una
+    /// scorciatoia.
+    pub scorciatoie: Option<String>,
 }
 
 /// Le cartelle sorvegliate.
@@ -70,6 +83,8 @@ pub fn avvio(stato: State<'_, Stato>) -> Esito<Avvio> {
             )?
             .filter(|scelta| !scelta.trim().is_empty()),
             numeri: counts(&libreria.connection)?,
+            tema: aether_app::preferenze::tema(&libreria.connection)?.map(|t| t.nome().to_owned()),
+            scorciatoie: aether_app::preferenze::scorciatoie(&libreria.connection)?,
         })
     })
     .map_err(errore)
@@ -482,4 +497,119 @@ fn importa_interno(
         }
     })
     .map_err(errore)
+}
+
+// ── le preferenze della finestra, e il profilo ──────────────────────────────
+
+/// Scrive il tema.
+///
+/// Passa da `nuvola::se_riuscito` come ogni altra scrittura di preferenza: il
+/// tema adesso sta nel database, quindi finisce nel backup — che è metà della
+/// ragione per cui ci è tornato.
+#[tauri::command]
+pub fn imposta_tema(app: tauri::AppHandle, stato: State<'_, Stato>, tema: String) -> Esito<()> {
+    let Some(scelto) = aether_app::preferenze::Tema::dal_nome(&tema) else {
+        return Err(errore(AppError::new(
+            aether_domain::errors::ErrorCode::IpcPayloadInvalid {
+                channel: "imposta_tema".to_owned(),
+                detail: Some(format!("«{tema}» non è uno dei tre temi")),
+            },
+        )));
+    };
+    crate::nuvola::se_riuscito(
+        &app,
+        con_libreria(&stato, |libreria| {
+            aether_app::preferenze::imposta_tema(&libreria.connection, scelto)
+        })
+        .map_err(errore),
+    )
+}
+
+/// Scrive le scorciatoie. Una stringa vuota rimette quelle di serie.
+#[tauri::command]
+pub fn imposta_scorciatoie(
+    app: tauri::AppHandle,
+    stato: State<'_, Stato>,
+    scorciatoie: String,
+) -> Esito<()> {
+    crate::nuvola::se_riuscito(
+        &app,
+        con_libreria(&stato, |libreria| {
+            aether_app::preferenze::imposta_scorciatoie(&libreria.connection, &scorciatoie)
+        })
+        .map_err(errore),
+    )
+}
+
+/// Scrive il profilo su un file.
+#[tauri::command]
+pub fn profilo_esporta(
+    stato: State<'_, Stato>,
+    percorso: String,
+) -> Esito<aether_app::profilo::Esportazione> {
+    let esito = (|| {
+        let profilo = con_libreria(&stato, |libreria| {
+            aether_app::profilo::esporta(&libreria.connection, adesso_ms())
+        })?;
+        std::fs::write(&percorso, profilo.json.as_bytes()).map_err(|err| {
+            AppError::new(aether_domain::errors::ErrorCode::FsWriteFailed {
+                path: percorso.clone(),
+                detail: Some(err.kind().to_string()),
+            })
+            .with_cause(err.to_string())
+        })?;
+        Ok(profilo)
+    })();
+    esito.map_err(errore)
+}
+
+/// Cosa cambierebbe importare questo profilo. Non scrive niente.
+#[tauri::command]
+pub fn profilo_piano(
+    stato: State<'_, Stato>,
+    percorso: String,
+) -> Esito<aether_app::profilo::Piano> {
+    let esito = (|| {
+        let json = leggi_profilo(&percorso)?;
+        con_libreria(&stato, |libreria| {
+            aether_app::profilo::piano(&libreria.connection, &json, &esiste)
+        })
+    })();
+    esito.map_err(errore)
+}
+
+/// Applica il profilo.
+#[tauri::command]
+pub fn profilo_importa(
+    app: tauri::AppHandle,
+    stato: State<'_, Stato>,
+    percorso: String,
+) -> Esito<aether_app::profilo::Piano> {
+    let esito = (|| {
+        let json = leggi_profilo(&percorso)?;
+        con_libreria(&stato, |libreria| {
+            aether_app::profilo::importa(&mut libreria.connection, &json, &esiste)
+        })
+    })();
+    crate::nuvola::se_riuscito(&app, esito.map_err(errore))
+}
+
+/// Legge il file del profilo, nominandolo se non si apre.
+fn leggi_profilo(percorso: &str) -> Result<String, AppError> {
+    std::fs::read_to_string(percorso).map_err(|err| {
+        AppError::new(aether_domain::errors::ErrorCode::FsReadFailed {
+            path: percorso.to_owned(),
+            detail: Some(err.kind().to_string()),
+        })
+        .with_cause(err.to_string())
+    })
+}
+
+/// Questo percorso esiste su questo computer?
+///
+/// Il modulo del profilo non guarda il disco da sé — la si passa come funzione,
+/// così le sue prove girano senza avere le cartelle di nessuno. Qui il disco
+/// c'è, ed è questa riga.
+fn esiste(percorso: &str) -> bool {
+    std::path::Path::new(percorso).exists()
 }

@@ -726,6 +726,52 @@ Due cose che valgono più della somma delle righe che costano:
 alla cieca trenta secondi quando ne bastavano due — moltiplicato per ogni blocco
 di una coda che si svuota.
 
+### Aggiunto — le impostazioni si cercano, e si portano via
+
+Nove sezioni sono oltre il punto in cui una cosa si trova scorrendo.
+
+- **Una ricerca fra le sezioni.** L'indice è scritto a mano e non ricavato dal
+  testo della pagina, perché il testo della pagina è quello della sezione
+  **aperta**: un motore che vede un nono di quel che c'è direbbe «non c'è» di
+  cose che ci sono. Metà dell'indice sono i sinonimi — nessuno cerca
+  «normalizzazione», si cerca «volume» o «replaygain».
+- **Il profilo delle impostazioni**: un file JSON con le proprie scelte, da
+  riaprire su un altro computer o dopo una reinstallazione. Con il **piano**
+  prima di applicare, come ogni altra cosa irreversibile qui: `profilo_piano` è
+  `profilo_importa` in una transazione che viene abbandonata, quindi l'elenco
+  che si legge non è una previsione, è il risultato.
+- **Le scorciatoie si riassegnano.** `tastiera.ts` era uno `switch`: cambiarne
+  una voleva dire ricompilare, e mostrarle a schermo voleva dire riscriverle a
+  mano in un secondo elenco che prima o poi si scosta. Adesso la tabella che
+  l'ascoltatore consulta è quella che la scheda disegna. Si preme il tasto
+  invece di scriverne il nome, e `Esc` non si assegna: è l'uscita da ogni campo
+  e da ogni finestrella.
+- **Il tema è tornato nel nucleo.** Stava in `localStorage` per una ragione che
+  era buona quando è stato scritto — è una preferenza della finestra, non un
+  dato della libreria. Nel frattempo sono nati due lettori di *tutte* le
+  preferenze, il backup su Drive e il profilo, e una preferenza in
+  `localStorage` non finisce in nessuno dei due: chi ripristinava un backup si
+  ritrovava la skin giusta e il tema sbagliato. Adesso è `ui.theme`, e la prima
+  apertura dopo l'aggiornamento recupera la scelta vecchia e la riscrive dentro.
+
+Tre decisioni che si vedono solo se qualcosa va storto:
+
+- **Il profilo porta un elenco di inclusioni, non di esclusioni.**
+  `nuvola.dispositivo` non deve viaggiare: due computer con lo stesso
+  identificativo si rovinano il backup a vicenda, e ci si accorge mesi dopo.
+  Neanche `player.queue`, che contiene identificativi di righe di `tracks` — su
+  un'altra libreria nominano canzoni diverse. Il rovescio di un elenco di
+  inclusioni è che dimenticarsi una chiave è silenzioso, quindi l'esportazione
+  **dichiara** quali chiavi ha lasciato indietro.
+- **Un profilo di una versione futura si rifiuta invece di essere letto a
+  metà.** Leggerne le chiavi che si riconoscono sembra generoso e produce una
+  macchina configurata a metà, senza dire quale metà.
+- **Un tasto assegnato a due comandi si dichiara, non si rifiuta.** Il momento
+  in cui succede è a metà di uno spostamento — per un istante ce l'hanno tutti
+  e due — e rifiutare la seconda assegnazione obbligherebbe a fare i passi
+  nell'ordine giusto senza dirlo. Nel frattempo vince il primo dell'elenco,
+  quindi non esiste un istante di comportamento imprevedibile.
+
 ### Difetti noti
 
 - **Il consenso OAuth di Spotify non è mai stato provato contro Spotify vero.**
@@ -737,6 +783,10 @@ di una coda che si svuota.
   la firma di Last.fm, la lettura delle risposte e il destino di ogni riga in
   coda sono provati; il primo `200` da `api.listenbrainz.org` richiede un token
   di qualcuno.
+- **Un profilo importato si vede subito solo per metà.** Tema, skin e
+  scorciatoie cambiano mentre si guarda; volume, equalizzatore e
+  normalizzazione li legge il motore audio quando si apre, e restano quelli di
+  prima fino al riavvio. La scheda lo scrive invece di lasciarlo scoprire.
 - Una cosa che il nucleo sa fare e l'IPC non espone: i testi in
   `tracks.lyrics`. Il suo controllo è disegnato **spento, con la ragione a
   schermo**, invece di essere omesso o — peggio — finto. Le bande dello spettro,

@@ -67,8 +67,20 @@ import { Impostazioni, type Sezione } from "./schermate/Impostazioni";
 import { InRiproduzione } from "./schermate/InRiproduzione";
 import { Studio } from "./studio/Studio";
 import { sorgenteNuova, type DatiTema } from "./studio/nuovo";
-import { campoRicerca, useScorciatoie } from "./tastiera";
-import { applicaTema, seguiIlSistema, temaSalvato, type Tema } from "./tema";
+import {
+  campoRicerca,
+  leggiAssociazioni,
+  scriviAssociazioni,
+  useScorciatoie,
+  type Associazioni,
+} from "./tastiera";
+import {
+  applicaTema,
+  dimenticaRipiego,
+  seguiIlSistema,
+  temaDiRipiego,
+  type Tema,
+} from "./tema";
 
 /** Come si legge un ordinamento, e in che ordine si sceglie. */
 const ORDINAMENTI: readonly (readonly [Ordine, string])[] = [
@@ -453,7 +465,29 @@ export function App() {
     useState<EsitoArricchimento | null>(null);
   const [skin, setSkin] = useState<VoceSkin[]>([]);
   const [skinAttiva, setSkinAttiva] = useState<Skin | null>(null);
-  const [tema, setTema] = useState<Tema>(temaSalvato);
+  /**
+   * Il tema, che adesso arriva dal database.
+   *
+   * Si parte da «sistema» e non dal valore salvato perché quel valore non è
+   * ancora arrivato: `avvio()` è una chiamata. Il fotogramma prima che
+   * risponda segue il sistema operativo, che è il ripiego giusto — e la
+   * finestra non si mostra finché skin e tema non sono sul documento (vedi
+   * `pronto`), quindi nessuno lo vede.
+   */
+  const [tema, setTema] = useState<Tema>("sistema");
+  /** Il tema è già stato deciso in questa sessione. Vedi l'effetto sotto. */
+  const temaDeciso = useRef(false);
+  /**
+   * Le scorciatoie in uso.
+   *
+   * Derivate e non copiate in uno stato: la sorgente è `avvio.scorciatoie`, e
+   * tenerne una seconda copia qui vorrebbe dire avere due verità che si
+   * scostano appena una scrittura fallisce.
+   */
+  const scorciatoie = useMemo(
+    () => leggiAssociazioni(avvio?.scorciatoie ?? null),
+    [avvio?.scorciatoie],
+  );
   const [menu, setMenu] = useState<Apertura | null>(null);
   const [grande, setGrande] = useState(false);
   /** La skin aperta nello Studio, o `null`. */
@@ -520,6 +554,68 @@ export function App() {
     setChiaro(applicaTema(tema, skinAttiva?.light ?? false));
   }, [tema, skinAttiva]);
 
+  /**
+   * Da dove viene il tema: dal database, o dalla chiave vecchia.
+   *
+   * Una volta sola per apertura — il `ref` — perché `avvio` si rilegge dopo
+   * ogni scansione e ogni cambio di cartella: senza la guardia, ogni ricarica
+   * riscriverebbe il tema di chi non ne ha ancora scelto uno, e soprattutto
+   * riporterebbe indietro quello appena scelto se la ricarica arrivasse fra la
+   * scelta e la scrittura.
+   */
+  useEffect(() => {
+    if (avvio === null || temaDeciso.current) return;
+    temaDeciso.current = true;
+    const salvato = avvio.tema;
+    if (salvato === "scuro" || salvato === "chiaro" || salvato === "sistema") {
+      setTema(salvato);
+      // La chiave vecchia ha già fatto il suo mestiere: se restasse, un giorno
+      // in cui il database non risponde tornerebbe a vincere lei.
+      dimenticaRipiego();
+      return;
+    }
+    const ripiego = temaDiRipiego();
+    if (ripiego === null) return;
+    setTema(ripiego);
+    ipc.impostaTema(ripiego).then(dimenticaRipiego).catch(segnalaErrore);
+  }, [avvio, segnalaErrore]);
+
+  /**
+   * Cambia il tema, e lo scrive.
+   *
+   * Qui lo stato locale si muove **prima** della scrittura, al contrario di
+   * `cambiaAccentoDinamico`: il tema è un cambio che si vede: la finestra si
+   * ridipinge, ed è quella la risposta al gesto. Aspettare il database
+   * vorrebbe dire un ritardo visibile su ogni pressione per proteggersi da un
+   * guasto che, se capita, si vede lo stesso — l'errore compare, e la prossima
+   * apertura mostra la scelta di prima.
+   */
+  const cambiaTema = useCallback(
+    (scelto: Tema) => {
+      setTema(scelto);
+      ipc.impostaTema(scelto).catch(segnalaErrore);
+    },
+    [segnalaErrore],
+  );
+
+  /**
+   * Riassegna le scorciatoie.
+   *
+   * Si scrive e si rilegge: `scorciatoie` è derivata da `avvio`, quindi
+   * l'elenco a schermo si muove quando il database ha davvero preso la
+   * modifica. Una scorciatoia che compare nella scheda e non funziona sarebbe
+   * la peggiore delle due bugie possibili qui.
+   */
+  const cambiaScorciatoie = useCallback(
+    (nuove: Associazioni) => {
+      ipc
+        .impostaScorciatoie(scriviAssociazioni(nuove))
+        .then(ricarica)
+        .catch(segnalaErrore);
+    },
+    [ricarica, segnalaErrore],
+  );
+
   useEffect(
     () =>
       seguiIlSistema(
@@ -566,6 +662,28 @@ export function App() {
     },
     [segnalaErrore],
   );
+
+  /**
+   * Un profilo è appena stato applicato: si rilegge tutto quel che ha toccato.
+   *
+   * `temaDeciso` torna falso apposta — è l'unico caso in cui il tema salvato
+   * cambia sotto i piedi della finestra, e la guardia che impedisce di
+   * rileggerlo a ogni ricarica qui va tolta di mano. Quel che il motore audio
+   * legge alla sua apertura (volume, equalizzatore, normalizzazione) resta di
+   * prima fino al riavvio, e la scheda lo dice invece di lasciarlo scoprire.
+   */
+  const dopoProfilo = useCallback(() => {
+    temaDeciso.current = false;
+    void ricarica();
+    ipc
+      .skin()
+      .then((s) => {
+        applicaSkin(s);
+        setSkinAttiva(s);
+      })
+      .catch(segnalaErrore);
+    ipc.accentoDinamico().then(setAccentoDinamico).catch(segnalaErrore);
+  }, [ricarica, segnalaErrore]);
 
   /**
    * Quante volte un'anteprima ha rimesso a schermo la skin scelta.
@@ -1598,7 +1716,7 @@ export function App() {
       }
       return false;
     },
-  });
+  }, scorciatoie);
 
   /**
    * Il trascinamento sulla finestra.
@@ -1948,7 +2066,10 @@ export function App() {
           onAccentoDinamico={(attivo) => void cambiaAccentoDinamico(attivo)}
           movimento={skinAttiva?.layout.motion ?? "full"}
           tema={tema}
-          onTema={setTema}
+          onTema={cambiaTema}
+          scorciatoie={scorciatoie}
+          onScorciatoie={cambiaScorciatoie}
+          onProfiloImportato={dopoProfilo}
           eqAttivo={riproduzione.stato.eqAttivo}
           eqGuadagni={riproduzione.stato.eqGuadagni}
           replaygain={riproduzione.stato.replaygain}

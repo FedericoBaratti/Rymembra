@@ -33,8 +33,11 @@ import { ore } from "../formato";
 import { Equalizzatore } from "../parti/Equalizzatore";
 import { Icona, type NomeIcona } from "../parti/Icone";
 import { Importazioni, type UsoImportazioni } from "../parti/Importazioni";
+import { Profilo } from "../parti/Profilo";
+import { Scorciatoie } from "../parti/Scorciatoie";
 import { Scrobbling } from "../parti/Scrobbling";
 import { Segmentato } from "../parti/Segmentato";
+import type { Associazioni } from "../tastiera";
 import type { Tema } from "../tema";
 
 /** Le nove sezioni, nell'ordine in cui si visitano la prima volta. */
@@ -68,6 +71,60 @@ const SEZIONI: readonly (readonly [Sezione, string, NomeIcona])[] = [
   ["scrobbling", "Scrobbling", "i-cloud"],
   ["dati", "Libreria e dati", "i-album"],
 ];
+
+/**
+ * Cosa c'è dentro le sezioni, per poterlo cercare.
+ *
+ * # Perché un indice scritto a mano e non il testo della pagina
+ *
+ * Cercare dentro il DOM troverebbe soltanto la sezione **aperta**: le altre
+ * otto non sono disegnate, e un motore di ricerca che vede un nono di quel che
+ * c'è è peggio di nessuno — dice «non c'è» di cose che ci sono.
+ *
+ * I `sinonimi` sono la metà che conta. Nessuno cerca «normalizzazione»: si
+ * cerca «volume», «uguale», «replaygain». Nessuno cerca «arricchimento»: si
+ * cerca «copertine» o «tag». La riga è un elenco di come la gente chiama la
+ * cosa, non di come l'abbiamo chiamata noi.
+ */
+const VOCI: readonly {
+  sezione: Sezione;
+  titolo: string;
+  sinonimi: readonly string[];
+}[] = [
+  { sezione: "cartelle", titolo: "Cartelle sorvegliate", sinonimi: ["percorsi", "musica", "dove", "aggiungi", "radice"] },
+  { sezione: "cartelle", titolo: "Scansione", sinonimi: ["scansiona", "rileggi", "aggiorna", "trova brani"] },
+  { sezione: "cartelle", titolo: "Cartella dei brani scaricati", sinonimi: ["download", "scarichi", "yt-dlp", "dove finiscono"] },
+  { sezione: "cartelle", titolo: "Riordino dei file", sinonimi: ["rinomina", "organizza", "sposta", "struttura"] },
+  { sezione: "aspetto", titolo: "Tema chiaro o scuro", sinonimi: ["scuro", "chiaro", "notte", "luce", "dark", "light"] },
+  { sezione: "aspetto", titolo: "Skin", sinonimi: ["temi", "colori", "aspetto", "installa", "studio"] },
+  { sezione: "aspetto", titolo: "Accento che segue la copertina", sinonimi: ["colore dinamico", "copertina", "accento"] },
+  { sezione: "riproduzione", titolo: "Equalizzatore", sinonimi: ["eq", "bassi", "alti", "curva", "bande"] },
+  { sezione: "riproduzione", titolo: "Normalizza il volume", sinonimi: ["replaygain", "volume uguale", "loudness"] },
+  { sezione: "riproduzione", titolo: "Arricchimento dei tag", sinonimi: ["copertine", "musicbrainz", "metadati", "tag", "automatico"] },
+  { sezione: "movimento", titolo: "Movimento e animazioni", sinonimi: ["animazioni", "accessibilità", "riduci"] },
+  { sezione: "movimento", titolo: "Scorciatoie da tastiera", sinonimi: ["tasti", "tastiera", "spazio", "combinazioni", "keyboard"] },
+  { sezione: "nuvola", titolo: "Backup su Google Drive", sinonimi: ["nuvola", "salvataggio", "ripristino", "google", "drive", "sincronizza"] },
+  { sezione: "legacy", titolo: "Importa dalla versione precedente", sinonimi: ["1.0", "vecchio database", "migrazione", "ascolti"] },
+  { sezione: "spotify", titolo: "Importa una playlist da un link", sinonimi: ["spotify", "link", "playlist", "incolla"] },
+  { sezione: "spotify", titolo: "Importa l'account intero", sinonimi: ["spotify", "account", "preferiti", "archivio", "gdpr", "cronologia"] },
+  { sezione: "scrobbling", titolo: "Scrobbling", sinonimi: ["last.fm", "lastfm", "listenbrainz", "cronologia", "manda", "ascolti"] },
+  { sezione: "dati", titolo: "Numeri della libreria", sinonimi: ["statistiche", "quanti brani", "durata", "cartella dati"] },
+  { sezione: "dati", titolo: "Profilo delle impostazioni", sinonimi: ["esporta", "importa", "trasferisci", "altro computer", "json"] },
+];
+
+/** Le voci che una ricerca trova. Vuota la ricerca, nessuna. */
+function cerca(testo: string): typeof VOCI {
+  const q = testo.trim().toLowerCase();
+  if (q === "") return [];
+  return VOCI.filter(
+    (v) =>
+      v.titolo.toLowerCase().includes(q) ||
+      v.sinonimi.some((s) => s.includes(q)) ||
+      (SEZIONI.find(([chiave]) => chiave === v.sezione)?.[1] ?? "")
+        .toLowerCase()
+        .includes(q),
+  );
+}
 
 /** Quando è successa una cosa, in una forma che si legge a colpo d'occhio. */
 function quando(ms: number | null): string {
@@ -196,6 +253,9 @@ export function Impostazioni({
   movimento,
   tema,
   onTema,
+  scorciatoie,
+  onScorciatoie,
+  onProfiloImportato,
   eqAttivo,
   eqGuadagni,
   replaygain,
@@ -253,6 +313,12 @@ export function Impostazioni({
   movimento: string;
   tema: Tema;
   onTema: (t: Tema) => void;
+  /** Le associazioni fra tasti e comandi, come sono in uso adesso. */
+  scorciatoie: Associazioni;
+  /** Le nuove, già intere: le scrive `App`, che è chi le fa valere. */
+  onScorciatoie: (a: Associazioni) => void;
+  /** Un profilo è stato applicato: quel che sta in `App` va riletto. */
+  onProfiloImportato: () => void;
   /** L'equalizzatore è acceso, secondo il nucleo. */
   eqAttivo: boolean;
   /** La sua curva, in decibel per banda. */
@@ -321,6 +387,9 @@ export function Impostazioni({
 }) {
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
+  /** Il filtro sopra l'indice. Nove sezioni sono oltre il punto in cui si scorre. */
+  const [filtro, setFiltro] = useState("");
+  const trovate = cerca(filtro);
   const attiva = skin.find((s) => s.attiva);
   const avanzaNuvola = useAvanzamentoNuvola(nuvola?.inCorso ?? false);
   /** Dove i brani finiscono davvero: la scelta, o la prima sorvegliata. */
@@ -352,19 +421,67 @@ export function Impostazioni({
   return (
     <div className="impostazioni">
       <nav className="indice" aria-label="Sezioni delle impostazioni">
-        {SEZIONI.map(([chiave, etichetta, icona]) => (
-          <button
-            key={chiave}
-            type="button"
-            className="voce nav-pill"
-            aria-current={sezione === chiave ? "true" : undefined}
-            data-active={sezione === chiave || undefined}
-            onClick={() => onSezione(chiave)}
-          >
-            <Icona nome={icona} dim={16} />
-            <span>{etichetta}</span>
-          </button>
-        ))}
+        <div className="filtro-impostazioni">
+          <Icona nome="i-search" dim={14} />
+          <input
+            type="search"
+            value={filtro}
+            placeholder="Cerca fra le impostazioni"
+            aria-label="Cerca fra le impostazioni"
+            onChange={(e) => setFiltro(e.target.value)}
+            /* Invio va alla prima trovata: chi ha scritto «replaygain» e vede
+               una riga sola non deve staccare la mano dalla tastiera per
+               cliccarla. */
+            onKeyDown={(e) => {
+              const prima = trovate[0];
+              if (e.key === "Enter" && prima) {
+                onSezione(prima.sezione);
+                setFiltro("");
+              }
+            }}
+          />
+        </div>
+
+        {filtro.trim() === "" ? (
+          SEZIONI.map(([chiave, etichetta, icona]) => (
+            <button
+              key={chiave}
+              type="button"
+              className="voce nav-pill"
+              aria-current={sezione === chiave ? "true" : undefined}
+              data-active={sezione === chiave || undefined}
+              onClick={() => onSezione(chiave)}
+            >
+              <Icona nome={icona} dim={16} />
+              <span>{etichetta}</span>
+            </button>
+          ))
+        ) : trovate.length === 0 ? (
+          <p className="niente empty-state">Niente con questo nome.</p>
+        ) : (
+          trovate.map((v) => {
+            const dove = SEZIONI.find(([chiave]) => chiave === v.sezione);
+            return (
+              <button
+                key={`${v.sezione}/${v.titolo}`}
+                type="button"
+                className="voce nav-pill trovata"
+                onClick={() => {
+                  onSezione(v.sezione);
+                  // Il filtro si svuota: lasciarlo pieno vorrebbe dire tornare
+                  // in una pagina il cui indice non mostra più dove si è.
+                  setFiltro("");
+                }}
+              >
+                <Icona nome={dove?.[2] ?? "i-search"} dim={16} />
+                <span>
+                  {v.titolo}
+                  <em className="dove">{dove?.[1] ?? ""}</em>
+                </span>
+              </button>
+            );
+          })
+        )}
       </nav>
 
       <div className="corpo">
@@ -848,6 +965,16 @@ export function Impostazioni({
         )}
 
         {sezione === "movimento" && (
+          <Scheda
+            icona="i-eq"
+            titolo="Scorciatoie da tastiera"
+            nota="premi Assegna, poi il tasto"
+          >
+            <Scorciatoie associazioni={scorciatoie} onCambia={onScorciatoie} />
+          </Scheda>
+        )}
+
+        {sezione === "movimento" && (
           <Scheda icona="i-eq" titolo="Movimento e accesso">
             <p className="nota">
               Il movimento lo dichiara la skin (<code>motion.intensity</code>), e
@@ -1179,6 +1306,20 @@ export function Impostazioni({
                 ? "La ricerca a tutto testo è disponibile."
                 : "FTS5 non è disponibile: la ricerca non funziona."}
             </p>
+          </Scheda>
+        )}
+
+        {sezione === "dati" && (
+          <Scheda
+            icona="i-import"
+            titolo="Profilo delle impostazioni"
+            nota="le tue scelte, non la tua libreria"
+          >
+            <Profilo
+              onErrore={onErrore}
+              onNotizia={onNotizia}
+              onImportato={onProfiloImportato}
+            />
           </Scheda>
         )}
       </div>
