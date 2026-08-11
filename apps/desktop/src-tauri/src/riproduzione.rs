@@ -900,16 +900,22 @@ pub fn equalizzatore(
 /// il suo tempo. Sul filo principale sarebbe la finestra ferma.
 #[tauri::command(async)]
 pub fn riapri_audio(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
-    let mut guardia = stato
-        .lettore
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-
     // Il motore nuovo si apre **prima** di buttare via quello vecchio: se
     // l'apertura fallisce, quel che c'era resta dov'è. Un riaprire fallito che
     // lascia il lettore peggio di come l'ha trovato è la cosa che un tasto
     // «riprova» non deve mai fare.
+    //
+    // E si apre **prima di chiedere il lucchetto**, non dopo. Aprire un
+    // dispositivo audio parla con il sistema e può prendersi secondi: con il
+    // lucchetto già in mano, pausa, volume e «prossimo» resterebbero tutti in
+    // coda dietro la riapertura. `(async)` toglie di mezzo il filo principale,
+    // non il lucchetto.
     let motore = apri_motore(&app).map_err(errore)?;
+
+    let mut guardia = stato
+        .lettore
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     match guardia.as_mut() {
         Ok(lettore) => {
