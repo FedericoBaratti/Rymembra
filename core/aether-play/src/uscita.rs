@@ -170,7 +170,10 @@ fn costruisci(
         quanti: 0,
     };
     let stato = Arc::clone(condiviso);
-    let mut guadagno = 0.0f32;
+    let mut andamento = Andamento {
+        guadagno: 0.0,
+        resto: 0,
+    };
 
     let su_errore = {
         let stato = Arc::clone(condiviso);
@@ -193,7 +196,7 @@ fn costruisci(
                     dati,
                     &mut lettore,
                     &stato,
-                    &mut guadagno,
+                    &mut andamento,
                     &mut filtro,
                     &mut spia,
                     |v| v,
@@ -209,7 +212,7 @@ fn costruisci(
                     dati,
                     &mut lettore,
                     &stato,
-                    &mut guadagno,
+                    &mut andamento,
                     &mut filtro,
                     &mut spia,
                     a_i16,
@@ -225,7 +228,7 @@ fn costruisci(
                     dati,
                     &mut lettore,
                     &stato,
-                    &mut guadagno,
+                    &mut andamento,
                     &mut filtro,
                     &mut spia,
                     a_u16,
@@ -310,6 +313,31 @@ impl Spia {
     }
 }
 
+/// Quel che la callback si porta dietro da un blocco all'altro.
+///
+/// Due numeri che non stanno in [`Condiviso`] perché nessun altro filo li
+/// guarda, e non sono variabili locali perché devono sopravvivere alla fine del
+/// blocco. Stanno insieme in una struttura invece che sciolti per una ragione
+/// prosaica: [`riempi`] ha già sette argomenti.
+struct Andamento {
+    /// Il guadagno raggiunto dalla rampa, da cui riparte il blocco dopo.
+    guadagno: f32,
+    /// I campioni di un fotogramma servito a metà.
+    ///
+    /// # Perché non si possono buttare
+    ///
+    /// Perché l'anello può svuotarsi **in mezzo a un fotogramma**: allora i
+    /// campioni presi non sono un multiplo dei canali, e `presi / canali` scarta
+    /// il resto. Quei campioni sono usciti dalle casse lo stesso, e i loro
+    /// compagni usciranno al blocco dopo — ma il fotogramma che formano insieme
+    /// non verrebbe contato da nessuno dei due.
+    ///
+    /// L'errore non si compensa: va sempre nella stessa direzione, e si somma a
+    /// ogni interruzione. Su un disco lento il cursore mente in difetto, sempre
+    /// di più, senza che niente lo segnali.
+    resto: u64,
+}
+
 /// L'equalizzatore come lo vede la callback: i filtri, e il filo da cui
 /// arrivano le curve nuove.
 struct Filtro {
@@ -346,7 +374,7 @@ fn riempi<T>(
     dati: &mut [T],
     lettore: &mut rtrb::Consumer<f32>,
     condiviso: &Condiviso,
-    guadagno: &mut f32,
+    andamento: &mut Andamento,
     filtro: &mut Filtro,
     spia: &mut Spia,
     converti: impl Fn(f32) -> T,
@@ -366,6 +394,10 @@ fn riempi<T>(
         // cosa che non svuotare.
         filtro.stato.azzera();
         spia.azzera();
+        // Il fotogramma a metà appartiene al punto di prima, come i campioni
+        // nell'anello: portarlo oltre il salto conterebbe un fotogramma vecchio
+        // dentro il conteggio nuovo, che il decodificatore ha appena azzerato.
+        andamento.resto = 0;
         for posto in dati.iter_mut() {
             *posto = converti(0.0);
         }
@@ -395,7 +427,7 @@ fn riempi<T>(
     let mut mancati = 0u64;
 
     for (indice, posto) in dati.iter_mut().enumerate() {
-        *guadagno += (voluto - *guadagno) * RAMPA;
+        andamento.guadagno += (voluto - andamento.guadagno) * RAMPA;
         match lettore.pop() {
             Ok(campione) => {
                 presi += 1;
@@ -419,7 +451,7 @@ fn riempi<T>(
                 if guarda {
                     spia.campione(campione, per_fotogramma);
                 }
-                *posto = converti(campione * *guadagno);
+                *posto = converti(campione * andamento.guadagno);
             }
             Err(_) => {
                 // L'anello è vuoto: il decodificatore non ce l'ha fatta.
@@ -432,9 +464,15 @@ fn riempi<T>(
         }
     }
 
+    // Il resto del blocco precedente entra nel conto di questo: i campioni di un
+    // fotogramma servito a metà escono dalle casse a cavallo di due callback, e
+    // il fotogramma che formano insieme va contato una volta — non zero.
+    let campioni = andamento.resto.saturating_add(presi);
+    let canali = u64::from(canali);
     condiviso
         .fotogrammi
-        .fetch_add(presi / u64::from(canali), Ordering::Relaxed);
+        .fetch_add(campioni / canali, Ordering::Relaxed);
+    andamento.resto = campioni % canali;
     if mancati > 0 {
         condiviso.vuoti.fetch_add(mancati, Ordering::Relaxed);
     }
@@ -502,10 +540,10 @@ mod prove {
         let stato = condiviso(2);
         stato.in_pausa.store(true, Ordering::Release);
         let mut lettore = lettore;
-        let mut guadagno = 1.0;
+        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
         let (_manda, mut filtro) = filtro();
         let mut dati = [1.0f32; 4];
-        riempi(&mut dati, &mut lettore, &stato, &mut guadagno, &mut filtro, &mut spia(), |v| v);
+        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
         assert_eq!(dati, [0.0; 4]);
         // Niente è stato consumato: riprendere non deve aspettare.
         assert_eq!(lettore.slots(), 8);
@@ -520,10 +558,10 @@ mod prove {
         }
         let stato = condiviso(2);
         stato.svuota.store(true, Ordering::Release);
-        let mut guadagno = 1.0;
+        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
         let (_manda, mut filtro) = filtro();
         let mut dati = [1.0f32; 4];
-        riempi(&mut dati, &mut lettore, &stato, &mut guadagno, &mut filtro, &mut spia(), |v| v);
+        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
         assert_eq!(dati, [0.0; 4]);
         assert_eq!(lettore.slots(), 0, "l'anello doveva restare vuoto");
         assert!(!stato.svuota.load(Ordering::Acquire), "doveva disarmarsi");
@@ -533,10 +571,10 @@ mod prove {
     fn un_anello_vuoto_da_silenzio_e_lo_conta() {
         let (_scrittore, mut lettore) = rtrb::RingBuffer::<f32>::new(16);
         let stato = condiviso(2);
-        let mut guadagno = 1.0;
+        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
         let (_manda, mut filtro) = filtro();
         let mut dati = [1.0f32; 4];
-        riempi(&mut dati, &mut lettore, &stato, &mut guadagno, &mut filtro, &mut spia(), |v| v);
+        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
         assert_eq!(dati, [0.0; 4]);
         assert_eq!(stato.vuoti.load(Ordering::Relaxed), 4);
     }
@@ -548,12 +586,77 @@ mod prove {
             let _ = scrittore.push(0.5);
         }
         let stato = condiviso(2);
-        let mut guadagno = 1.0;
+        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
         let (_manda, mut filtro) = filtro();
         let mut dati = [0.0f32; 8];
-        riempi(&mut dati, &mut lettore, &stato, &mut guadagno, &mut filtro, &mut spia(), |v| v);
+        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
         // Otto campioni su due canali sono quattro fotogrammi.
         assert_eq!(stato.fotogrammi.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn un_fotogramma_a_cavallo_di_due_blocchi_si_conta_una_volta() {
+        // Il difetto che questa prova impedisce: `presi / canali` buttava il
+        // resto. Con l'anello che si svuota a metà fotogramma, i campioni presi
+        // non sono un multiplo dei canali e il fotogramma spezzato non veniva
+        // contato da nessuno dei due blocchi. L'errore non si compensa — va
+        // sempre nella stessa direzione — quindi su un disco lento il cursore
+        // resta indietro sempre di più, in silenzio.
+        let (mut scrittore, mut lettore) = rtrb::RingBuffer::<f32>::new(64);
+        let stato = condiviso(2);
+        let (_manda, mut filtro) = filtro();
+        let mut andamento = Andamento {
+            guadagno: 1.0,
+            resto: 0,
+        };
+
+        // Tre campioni per un'uscita da quattro: un fotogramma e mezzo su due
+        // canali. L'anello si secca esattamente in mezzo al secondo.
+        for _ in 0..3 {
+            let _ = scrittore.push(0.5);
+        }
+        let mut dati = [0.0f32; 4];
+        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        assert_eq!(
+            stato.fotogrammi.load(Ordering::Relaxed),
+            1,
+            "un fotogramma intero è uscito, il secondo è a metà"
+        );
+
+        // Il compagno del campione spaiato arriva adesso: insieme fanno il
+        // secondo fotogramma, e va contato.
+        let _ = scrittore.push(0.5);
+        let mut ancora = [0.0f32; 2];
+        riempi(&mut ancora, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        assert_eq!(
+            stato.fotogrammi.load(Ordering::Relaxed),
+            2,
+            "quattro campioni su due canali sono due fotogrammi, comunque \
+             siano stati consegnati"
+        );
+    }
+
+    #[test]
+    fn lo_svuotamento_dimentica_anche_il_fotogramma_a_meta() {
+        // Dopo un salto il decodificatore azzera il conteggio: un resto portato
+        // oltre lo svuotamento conterebbe un fotogramma del punto vecchio dentro
+        // quello nuovo.
+        let (mut scrittore, mut lettore) = rtrb::RingBuffer::<f32>::new(64);
+        let stato = condiviso(2);
+        let (_manda, mut filtro) = filtro();
+        let mut andamento = Andamento {
+            guadagno: 1.0,
+            resto: 0,
+        };
+        let _ = scrittore.push(0.5);
+        let mut dati = [0.0f32; 2];
+        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        assert_eq!(andamento.resto, 1, "un campione spaiato è rimasto in sospeso");
+
+        stato.svuota.store(true, Ordering::Release);
+        let mut silenzio = [0.0f32; 2];
+        riempi(&mut silenzio, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        assert_eq!(andamento.resto, 0, "il fotogramma a metà era del punto di prima");
     }
 
     #[test]
@@ -563,10 +666,10 @@ mod prove {
             let _ = scrittore.push(1.0);
         }
         let stato = condiviso(2);
-        let mut guadagno = 0.0;
+        let mut andamento = Andamento { guadagno: 0.0, resto: 0 };
         let (_manda, mut filtro) = filtro();
         let mut dati = [0.0f32; 64];
-        riempi(&mut dati, &mut lettore, &stato, &mut guadagno, &mut filtro, &mut spia(), |v| v);
+        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
         // Il primo campione è quasi zero, non uno: nessun gradino.
         let primo = dati.first().copied().unwrap_or(1.0);
         assert!(primo < 0.01, "primo campione: {primo}");
@@ -580,10 +683,10 @@ mod prove {
             let _ = scrittore.push(4.0);
         }
         let stato = condiviso(2);
-        let mut guadagno = 1.0;
+        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
         let (_manda, mut filtro) = filtro();
         let mut dati = [0i16; 4];
-        riempi(&mut dati, &mut lettore, &stato, &mut guadagno, &mut filtro, &mut spia(), a_i16);
+        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), a_i16);
         assert!(dati.iter().all(|&v| v > 0), "un picco è diventato negativo");
     }
 
@@ -594,10 +697,10 @@ mod prove {
             let _ = scrittore.push(valore);
         }
         let stato = condiviso(2);
-        let mut guadagno = 1.0;
+        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
         let (_manda, mut filtro) = filtro();
         let mut dati = [0.0f32; 4];
-        riempi(&mut dati, &mut lettore, &stato, &mut guadagno, &mut filtro, &mut spia(), |v| v);
+        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
         // Il guadagno parte già a uno, quindi la rampa non sposta niente di
         // percettibile: quel che è entrato è quel che esce.
         for (uscito, atteso) in dati.iter().zip([0.1f32, -0.2, 0.3, -0.4]) {
@@ -612,12 +715,12 @@ mod prove {
             let _ = scrittore.push(0.5);
         }
         let stato = condiviso(2);
-        let mut guadagno = 1.0;
+        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
         let (mut manda, mut filtro) = filtro();
         // Tutto abbassato: il preamp resta a uno e i filtri tagliano.
         let _ = manda.push(Coefficienti::calcola(&[-LIMITE_DB; BANDE], true, 48_000));
         let mut dati = [0.0f32; 64];
-        riempi(&mut dati, &mut lettore, &stato, &mut guadagno, &mut filtro, &mut spia(), |v| v);
+        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
         assert!(!filtro.stato.piatto(), "la curva doveva essere ritirata");
         let ultimo = dati.last().copied().unwrap_or(0.5);
         assert!(
@@ -635,11 +738,11 @@ mod prove {
             let _ = scrittore.push(0.9);
         }
         let stato = condiviso(2);
-        let mut guadagno = 1.0;
+        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
         let (mut manda, mut filtro) = filtro();
         let _ = manda.push(Coefficienti::calcola(&[LIMITE_DB; BANDE], true, 48_000));
         let mut dati = [0.0f32; 64];
-        riempi(&mut dati, &mut lettore, &stato, &mut guadagno, &mut filtro, &mut spia(), |v| v);
+        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
 
         stato.svuota.store(true, Ordering::Release);
         let mut silenzio = [0.0f32; 4];
@@ -647,7 +750,7 @@ mod prove {
             &mut silenzio,
             &mut lettore,
             &stato,
-            &mut guadagno,
+            &mut andamento,
             &mut filtro,
             &mut spia(),
             |v| v,
@@ -660,7 +763,7 @@ mod prove {
             let _ = scrittore.push(0.0);
         }
         let mut dopo = [1.0f32; 8];
-        riempi(&mut dopo, &mut lettore, &stato, &mut guadagno, &mut filtro, &mut spia(), |v| v);
+        riempi(&mut dopo, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
         for (n, valore) in dopo.iter().enumerate() {
             assert!(valore.abs() < 1e-6, "campione {n} vale {valore}, non zero");
         }
