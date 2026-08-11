@@ -330,38 +330,94 @@ pub fn undo(
         }
         on_progress(index + 1, total);
     }
-    // Le cartelle create dal riordino restano vuote: si tolgono, dalla più
-    // profonda alla più esterna.
-    let mut dirs: Vec<&str> = entries
-        .iter()
-        .filter_map(|e| e.to.rsplit_once(['/', '\\']).map(|(dir, _)| dir))
-        .collect();
-    dirs.sort_unstable_by_key(|d| std::cmp::Reverse(d.len()));
-    dirs.dedup();
-    for dir in dirs {
-        outcome.removed_dirs += usize::from(fs::remove_dir(dir).is_ok());
-    }
+    // Le cartelle create dal riordino restano vuote: si tolgono risalendo, dalla
+    // più profonda in su. La radice è l'antenato comune delle **partenze**, cioè
+    // dei posti in cui l'annullamento ha appena rimesso i file: sopra di lei non
+    // si tocca niente.
+    outcome.removed_dirs += pulisci(
+        entries.iter().map(|e| e.to.as_str()),
+        &radice_di(entries.iter().map(|e| e.from.as_str())),
+    );
     outcome
+}
+
+/// L'antenato comune di un insieme di file: la cartella che li contiene tutti.
+///
+/// È la fermata della risalita in [`pulisci`]. Senza, togliere le cartelle
+/// rimaste vuote potrebbe arrivare a togliere la cartella della libreria — o
+/// quella sopra ancora, se anche lei fosse rimasta vuota.
+fn radice_di<'a>(percorsi: impl Iterator<Item = &'a str>) -> PathBuf {
+    percorsi
+        .filter_map(|p| Path::new(p).parent())
+        .fold(None::<PathBuf>, |comune, cartella| {
+            Some(match comune {
+                None => cartella.to_path_buf(),
+                Some(fin_qui) => fin_qui
+                    .components()
+                    .zip(cartella.components())
+                    .take_while(|(a, b)| a == b)
+                    .map(|(a, _)| a)
+                    .collect(),
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// Toglie le cartelle di `percorsi` rimaste vuote, risalendo fino a `radice`.
+///
+/// # Perché si risale invece di fermarsi al genitore
+///
+/// Perché un riordino crea due livelli — `Artista/Album` — e toglierne uno solo
+/// lascia la libreria piena di cartelle d'artista vuote. Prima l'annullamento
+/// toglieva `Radice/Artista/Album` e mai `Radice/Artista`, e la prova non se ne
+/// accorgeva perché guardava solo la prima.
+///
+/// La risalita è sicura per costruzione: `remove_dir` rifiuta una cartella che
+/// non sia vuota, quindi la prima che contiene ancora qualcosa ferma il giro, e
+/// nessun file può mai essere coinvolto. `radice` è la seconda fermata, quella
+/// che impedisce di uscire dall'albero della libreria.
+fn pulisci<'a>(percorsi: impl Iterator<Item = &'a str>, radice: &Path) -> usize {
+    // Ordinate dalla più profonda: una cartella d'artista si può togliere solo
+    // dopo che tutti i suoi album se ne sono andati. `BTreeSet` deduplica per
+    // davvero — `dedup()` su un vettore ordinato per sola lunghezza toglie solo
+    // i doppioni che capitano adiacenti.
+    let cartelle: std::collections::BTreeSet<&Path> = percorsi
+        .filter_map(|p| Path::new(p).parent())
+        .filter(|dir| dir.starts_with(radice) && dir != &radice)
+        .collect();
+
+    let mut tolte = 0;
+    for cartella in cartelle.iter().rev() {
+        let mut corrente: &Path = cartella;
+        while corrente != radice && corrente.starts_with(radice) {
+            if fs::remove_dir(corrente).is_err() {
+                break;
+            }
+            tolte += 1;
+            match corrente.parent() {
+                Some(genitore) => corrente = genitore,
+                None => break,
+            }
+        }
+    }
+    tolte
 }
 
 /// Toglie le cartelle di partenza rimaste vuote, dalla più profonda.
 ///
 /// Solo quelle che il piano ha svuotato: una cartella già vuota prima del
 /// riordino non è affar nostro, e cancellarla sarebbe un effetto collaterale
-/// che nessuno ha chiesto.
+/// che nessuno ha chiesto. È `remove_dir` a garantirlo — rifiuta qualunque
+/// cartella che contenga ancora qualcosa — e per questo la risalita di
+/// [`pulisci`] non può fare danni: si ferma alla prima che non è vuota.
+///
+/// La radice è l'antenato comune degli **arrivi**, cioè dei posti in cui i file
+/// sono appena stati messi.
 fn prune_empty_dirs(plan: &OrganizePlan) -> usize {
-    let mut dirs: Vec<&str> = plan
-        .moves
-        .iter()
-        .filter_map(|m| m.from.rsplit_once(['/', '\\']).map(|(dir, _)| dir))
-        .collect();
-    dirs.sort_unstable_by_key(|d| std::cmp::Reverse(d.len()));
-    dirs.dedup();
-    dirs.iter()
-        .filter(|dir| {
-            fs::read_dir(dir).is_ok_and(|mut it| it.next().is_none()) && fs::remove_dir(dir).is_ok()
-        })
-        .count()
+    pulisci(
+        plan.moves.iter().map(|m| m.from.as_str()),
+        &radice_di(plan.moves.iter().map(|m| m.to.as_str())),
+    )
 }
 
 #[cfg(test)]
@@ -421,6 +477,70 @@ mod tests {
         // Tutto dov'era, e le cartelle create sono sparite.
         assert!(Path::new(&format!("{root}/a.mp3")).exists());
         assert!(!Path::new(&format!("{root}/Art/Album")).exists());
+    }
+
+    #[test]
+    fn l_annullamento_non_lascia_le_cartelle_degli_artisti_vuote() {
+        // Il difetto che questa prova impedisce: si toglieva solo il genitore
+        // immediato. Un riordino crea due livelli — `Artista/Album` — quindi
+        // annullare toglieva `Art/Album` e lasciava `Art` vuota, per ogni
+        // artista della libreria. La prova che c'era guardava solo il primo
+        // livello e passava lo stesso.
+        let (dir, root, plan) = scenario(&[
+            ("a.mp3", "Album", "Art"),
+            ("b.mp3", "Altro", "Art"),
+            ("c.mp3", "Terzo", "Altra"),
+        ]);
+        let journal_path = dir.path().join("g.jsonl");
+        execute(&plan, &journal_path, |_, _| {}).expect("esecuzione");
+        let entries = read_journal(&journal_path).expect("rilettura");
+
+        let esito = undo(&entries, |_, _| {});
+        assert!(esito.failed.is_empty(), "{:?}", esito.failed);
+
+        for rimasta in ["Art/Album", "Art/Altro", "Art", "Altra/Terzo", "Altra"] {
+            assert!(
+                !Path::new(&format!("{root}/{rimasta}")).exists(),
+                "«{rimasta}» è rimasta lì vuota"
+            );
+        }
+        // E la radice della libreria resta, con dentro i file tornati a casa.
+        assert!(Path::new(&root).is_dir(), "la radice non si tocca");
+        assert!(Path::new(&format!("{root}/a.mp3")).exists());
+    }
+
+    #[test]
+    fn la_risalita_si_ferma_a_quel_che_non_e_vuoto_e_alla_radice() {
+        // Le due fermate della risalita. Senza la prima si coinvolgerebbero dei
+        // file; senza la seconda si arriverebbe a togliere la cartella della
+        // libreria, e poi quella sopra ancora.
+        let dir = tempfile::tempdir().expect("cartella");
+        let root = dir.path().to_string_lossy().replace('\\', "/");
+        scrivi(Path::new(&format!("{root}/lib/Art/Album/a.mp3")), "A");
+        // Un estraneo dentro la cartella dell'artista: la risalita deve fermarsi
+        // lì, e lasciarlo dov'è.
+        scrivi(Path::new(&format!("{root}/lib/Art/copertina.jpg")), "img");
+
+        let entries = vec![JournalEntry {
+            track_id: 1,
+            from: format!("{root}/lib/a.mp3"),
+            to: format!("{root}/lib/Art/Album/a.mp3"),
+        }];
+        let esito = undo(&entries, |_, _| {});
+        assert!(esito.failed.is_empty(), "{:?}", esito.failed);
+
+        assert!(
+            !Path::new(&format!("{root}/lib/Art/Album")).exists(),
+            "l'album era vuoto e doveva sparire"
+        );
+        assert!(
+            Path::new(&format!("{root}/lib/Art/copertina.jpg")).exists(),
+            "un file estraneo ferma la risalita e non viene toccato"
+        );
+        assert!(
+            Path::new(&format!("{root}/lib")).is_dir(),
+            "la radice della libreria non si tocca mai"
+        );
     }
 
     #[test]
