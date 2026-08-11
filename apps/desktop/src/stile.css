@@ -1556,6 +1556,33 @@ body {
   margin-top: 2px;
 }
 
+/* Una notizia riuscita. Stessa forma della fascia d'errore — sta nello stesso
+   posto, si chiude allo stesso modo — e un colore che dice l'opposto: ci ho
+   messo dentro «5 brani scritti in …» sul canale sbagliato e a schermo è
+   comparso in rosso col triangolo d'avviso, cioè un'esportazione andata bene
+   che sembrava fallita. */
+.notizia {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  border: 1px solid var(--accent);
+  border-left-width: 2px;
+  border-radius: var(--radius-card);
+  padding: var(--spazio-3);
+  margin-bottom: var(--spazio-3);
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+  font-size: 13px;
+}
+.notizia > svg {
+  color: var(--accent);
+}
+.notizia > span {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
 /* Il dispositivo audio mancante non è un'operazione fallita: è una condizione
    che dura finché qualcuno non riapre. Colore d'avviso e non di pericolo —
    niente si è rotto e niente è andato perso, semplicemente non si sente — e
@@ -5414,6 +5441,131 @@ body {
   width: 24px;
   height: 24px;
   font-size: 11px;
+}
+
+/* ── l'editor delle regole ────────────────────────────────────────────────── */
+/*
+ * Una riga per condizione, e le tre parti in griglia invece che in flex: i
+ * menù di righe diverse devono incolonnarsi, altrimenti «Artista contiene …»
+ * sopra «Anno > …» disegna due file di controlli disallineati che sembrano due
+ * moduli diversi. La terza colonna è `minmax(0, 1fr)` perché un campo di testo
+ * dentro una griglia, senza quel minimo, si rifiuta di restringersi e spinge
+ * fuori il tasto che toglie la riga.
+ */
+.riga-combinazione {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spazio-2);
+  margin-top: var(--spazio-3);
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+.regole {
+  list-style: none;
+  margin: var(--spazio-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.regola {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.2fr) 26px;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.regola select,
+.regola input {
+  width: 100%;
+  min-width: 0;
+}
+.regola .senza-valore {
+  color: var(--color-text-3);
+  text-align: center;
+}
+.riga-ordine {
+  display: flex;
+  gap: var(--spazio-3);
+  margin-top: var(--spazio-3);
+}
+.riga-ordine label {
+  flex: 1;
+  min-width: 0;
+}
+.anteprima-regole {
+  margin-top: var(--spazio-3);
+  padding-top: var(--spazio-3);
+  border-top: 1px solid var(--color-border);
+}
+.anteprima-regole .quanti {
+  font-size: 15px;
+  color: var(--color-text-1);
+}
+.anteprima-regole .quanti .nota {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+/* L'avviso qui è una frase, non il riquadro con la barretta dello Studio. */
+.anteprima-regole .avviso {
+  display: block;
+  margin: var(--spazio-2) 0 0;
+  padding: var(--spazio-2) var(--spazio-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-card);
+  background: var(--warning-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-text-1);
+}
+.anteprima-regole .primi {
+  list-style: none;
+  margin: var(--spazio-2) 0 0;
+  padding: 0;
+  max-height: 190px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.anteprima-regole .primi li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 48px;
+  gap: var(--spazio-2);
+  padding: 3px 0;
+  color: var(--color-text-2);
+}
+.anteprima-regole .primi .nome {
+  color: var(--color-text-1);
+}
+.anteprima-regole .primi .nome,
+.anteprima-regole .primi .autore {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.anteprima-regole .primi .durata {
+  font-family: var(--font-mono);
+  text-align: right;
+  color: var(--color-text-3);
+}
+/* Il percorso di un brano mancante, nell'elenco dell'importazione da file: è
+   l'unica cosa utile per andarselo a prendere, quindi si vede per intero e
+   tronca a sinistra come nelle cartelle sorvegliate. */
+.mancanti-account .percorso {
+  display: block;
+  direction: rtl;
+  unicode-bidi: plaintext;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
 }
 
 /* ── la cronologia, sotto la stessa linguetta della coda ──────────────────── */

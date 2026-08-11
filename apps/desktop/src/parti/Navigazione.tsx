@@ -54,6 +54,8 @@ export function Navigazione({
   onPlaylist,
   onMenuPlaylist,
   onNuovaPlaylist,
+  onNuovaSmart,
+  onImportaFile,
 }: {
   vista: Vista;
   playlistAperta: number | null;
@@ -74,6 +76,10 @@ export function Navigazione({
   onPlaylist: (p: Playlist) => void;
   onMenuPlaylist: (e: React.MouseEvent, p: Playlist) => void;
   onNuovaPlaylist: () => void;
+  /** Apre l'editor delle regole per una playlist che si aggiorna da sé. */
+  onNuovaSmart: () => void;
+  /** Sceglie un file M3U, PLS o XSPF da portare dentro. */
+  onImportaFile: () => void;
 }) {
   const [stretta, setStretta] = useState(!larga);
 
@@ -130,6 +136,28 @@ export function Navigazione({
       <div className="gruppo" hidden={inFondo}>
         <div className="titolo-gruppo">
           <span>Playlist</span>
+          {/* Tre tasti e non un menù: sono tre cose che si fanno di rado ma
+              che, quando si fanno, si sanno già — e un menù a tendina per tre
+              voci è un clic in più per ognuna delle tre. L'ordine è quello
+              della frequenza. */}
+          <button
+            type="button"
+            className="tasto icon-btn"
+            aria-label="Importa una playlist da file"
+            title="Da un file M3U, PLS o XSPF…"
+            onClick={onImportaFile}
+          >
+            <Icona nome="i-import" dim={14} />
+          </button>
+          <button
+            type="button"
+            className="tasto icon-btn"
+            aria-label="Nuova playlist intelligente"
+            title="Nuova playlist intelligente: si riempie da sé"
+            onClick={onNuovaSmart}
+          >
+            <Icona nome="i-settings" dim={14} />
+          </button>
           <button
             type="button"
             className="tasto icon-btn"

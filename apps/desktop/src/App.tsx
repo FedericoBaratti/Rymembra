@@ -18,7 +18,7 @@
  * che imposta.
  */
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AggiungiAPlaylist } from "./AggiungiAPlaylist";
@@ -27,6 +27,8 @@ import { Copertina } from "./Copertina";
 import { Impaginazione, type ContestoWidget } from "./Impaginazione";
 import { Account } from "./Account";
 import { Importa, ImportaSpotify } from "./Importa";
+import { ImportaPlaylist } from "./ImportaPlaylist";
+import { Regole } from "./Regole";
 import { Menu, type Apertura } from "./Menu";
 import { NuovoTema } from "./NuovoTema";
 import { Riordino } from "./Riordino";
@@ -388,6 +390,16 @@ function Sentinella({
 export function App() {
   const [avvio, setAvvio] = useState<Avvio | null>(null);
   const [errore, setErrore] = useState<string | null>(null);
+  /**
+   * Una notizia riuscita, non un guasto.
+   *
+   * Un canale suo e non quello degli errori: ci ho messo dentro «5 brani
+   * scritti in …» e a schermo è comparso in rosso, con il triangolo d'avviso
+   * accanto — un'esportazione andata bene che sembra fallita. Il colore di una
+   * fascia è metà del suo messaggio, e riusare il canale sbagliato è il modo
+   * più economico di dire la cosa opposta.
+   */
+  const [notizia, setNotizia] = useState<string | null>(null);
   const [vista, setVista] = useState<Vista>("album");
   const [sezione, setSezione] = useState<Sezione>("cartelle");
   const [query, setQuery] = useState("");
@@ -408,6 +420,18 @@ export function App() {
   const [importandoSpotify, setImportandoSpotify] = useState(false);
   const [importandoAccount, setImportandoAccount] = useState(false);
   const [playlist, setPlaylist] = useState<Playlist[]>([]);
+  /** Il file di playlist da importare, o `null`. */
+  const [filePlaylist, setFilePlaylist] = useState<string | null>(null);
+  /**
+   * L'editor delle regole: `null` chiuso, `{playlist: null}` per una nuova.
+   *
+   * Un oggetto e non due stati separati: «sto creando» e «sto modificando
+   * questa» si escludono, e due booleani che si escludono sono due booleani che
+   * prima o poi saranno veri insieme.
+   */
+  const [regoleAperte, setRegoleAperte] = useState<{
+    playlist: Playlist | null;
+  } | null>(null);
   const [playlistAperta, setPlaylistAperta] = useState<Playlist | null>(null);
   const [braniPlaylist, setBraniPlaylist] = useState<Brano[]>([]);
   const [daAggiungere, setDaAggiungere] = useState<number[] | null>(null);
@@ -1037,6 +1061,51 @@ export function App() {
     }
   };
 
+  /**
+   * Sceglie un file di playlist da importare.
+   *
+   * I tre formati insieme in un filtro solo: chi ha un file di playlist non sa
+   * necessariamente quale dei tre sia, e tre voci separate nel dialogo
+   * sarebbero tre modi di non trovarlo.
+   */
+  const scegliFilePlaylist = async () => {
+    const scelta = await open({
+      multiple: false,
+      filters: [
+        { name: "Playlist", extensions: ["m3u", "m3u8", "pls", "xspf"] },
+      ],
+    });
+    if (typeof scelta === "string") setFilePlaylist(scelta);
+  };
+
+  /**
+   * Scrive una playlist in un file.
+   *
+   * Il formato lo decide l'estensione che l'utente scrive nel dialogo, e il
+   * nome proposto è quello della playlist: `defaultPath` con l'estensione
+   * dentro è ciò che fa comparire «Serata.m3u8» già scritto, invece di un campo
+   * vuoto in cui va indovinata anche l'estensione.
+   */
+  const esportaPlaylist = async (p: Playlist) => {
+    try {
+      const scelta = await save({
+        defaultPath: `${p.name}.m3u8`,
+        filters: [
+          { name: "M3U", extensions: ["m3u8", "m3u"] },
+          { name: "PLS", extensions: ["pls"] },
+          { name: "XSPF", extensions: ["xspf"] },
+        ],
+      });
+      if (typeof scelta !== "string") return;
+      const quanti = await ipc.playlistEsporta(p.id, scelta);
+      setNotizia(
+        `${quanti.toLocaleString("it")} ${quanti === 1 ? "brano scritto" : "brani scritti"} in ${scelta}`,
+      );
+    } catch (e) {
+      segnalaErrore(e);
+    }
+  };
+
   const togliCartella = async (percorso: string) => {
     if (!avvio) return;
     try {
@@ -1209,7 +1278,20 @@ export function App() {
           etichetta: "Rinomina…",
           azione: () => setDaRinominare(p),
         });
+      } else {
+        voci.splice(1, 0, {
+          etichetta: "Modifica le regole…",
+          azione: () => setRegoleAperte({ playlist: p }),
+        });
       }
+      // L'esportazione vale per tutte e due: una playlist intelligente si
+      // esporta con i brani che ha **adesso**, che è quel che un M3U può
+      // rappresentare — le regole non attraversano il formato, e portarle via
+      // fingendo di sì sarebbe peggio che non esportarla.
+      voci.push({
+        etichetta: "Esporta come file…",
+        azione: () => void esportaPlaylist(p),
+      });
       setMenu({ x: e.clientX, y: e.clientY, voci });
     },
     [ricaricaPlaylist, segnalaErrore],
@@ -1632,6 +1714,8 @@ export function App() {
       },
       onMenuPlaylist: menuPlaylist,
       onNuovaPlaylist: () => setCreandoPlaylist(true),
+      onNuovaSmart: () => setRegoleAperte({ playlist: null }),
+      onImportaFile: () => void scegliFilePlaylist(),
       onColonna: setColonnaAperta,
       onCoda: setCodaAperta,
       onGrande: () => setGrande(true),
@@ -2028,10 +2112,11 @@ export function App() {
         <>
           {playlistAperta.isSmart && (
             <p className="nota">
-              È una playlist automatica: l&apos;appartenenza la decidono le sue
-              regole, e ogni dispositivo la ricalcola da quelle. Per ora Aether
-              mostra i brani che il vecchio database le assegnava, ma non li
-              ricalcola e non li lascia modificare a mano.
+              È una playlist automatica: non contiene brani, contiene una
+              domanda. Quello che vedi è la libreria filtrata{" "}
+              <strong>adesso</strong>, e cambia da sé quando aggiungi musica o
+              ascolti qualcosa. Per lo stesso motivo non si modifica a mano: si
+              cambiano le regole, con il tasto destro sul suo nome.
             </p>
           )}
           {/* L'attributo, non solo la prop: la colonna in più la deve
@@ -2294,6 +2379,20 @@ export function App() {
                     )}
                   </div>
                 )}
+                {notizia !== null && (
+                  <div className="notizia toast-card" role="status">
+                    <Icona nome="i-check" dim={16} />
+                    <span>{notizia}</span>
+                    <button
+                      type="button"
+                      className="tasto icon-btn"
+                      aria-label="Chiudi"
+                      onClick={() => setNotizia(null)}
+                    >
+                      <Icona nome="i-x" dim={14} />
+                    </button>
+                  </div>
+                )}
                 {messaggio && (
                   <div className="errore toast-card" role="alert">
                     <Icona nome="i-alert" dim={16} />
@@ -2317,6 +2416,29 @@ export function App() {
           ),
         }}
       />
+
+      {filePlaylist !== null && (
+        <ImportaPlaylist
+          percorso={filePlaylist}
+          onChiudi={() => setFilePlaylist(null)}
+          onImportato={() => {
+            void ricaricaPlaylist();
+          }}
+          onErrore={segnalaErrore}
+        />
+      )}
+
+      {regoleAperte !== null && (
+        <Regole
+          playlist={regoleAperte.playlist}
+          onChiudi={() => setRegoleAperte(null)}
+          onFatto={() => {
+            setRegoleAperte(null);
+            void ricaricaPlaylist();
+          }}
+          onErrore={segnalaErrore}
+        />
+      )}
 
       {daImportare && (
         <Importa

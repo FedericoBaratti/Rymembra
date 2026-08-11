@@ -517,6 +517,185 @@ export interface ScelteAccount {
   cronologia: boolean;
 }
 
+/**
+ * Le regole di una playlist intelligente.
+ *
+ * I nomi di campo e operatore sono stringhe e non unioni chiuse a caso: sono
+ * **le stesse** che il nucleo scrive in `playlists.rules`, e la traduzione da
+ * una parte all'altra è `Campo::da_testo`. Scriverne uno sbagliato qui non
+ * rompe niente — quella regola viene saltata — ma non fa neanche quel che
+ * dovrebbe, quindi le costanti stanno accanto.
+ */
+export interface RegolaSmart {
+  campo: CampoSmart;
+  operatore: OperatoreSmart;
+  /** Il valore, quando l'operatore ne vuole uno di testo. */
+  testo?: string | null;
+  /** Il valore, quando l'operatore ne vuole uno numerico. */
+  numero?: number | null;
+}
+
+/** L'insieme completo, com'è salvato. */
+export interface InsiemeSmart {
+  combinazione: "tutte" | "qualsiasi";
+  regole: RegolaSmart[];
+  limite?: number | null;
+  ordinamento: OrdinamentoSmart;
+}
+
+export type CampoSmart =
+  | "titolo"
+  | "artista"
+  | "album"
+  | "genere"
+  | "anno"
+  | "valutazione"
+  | "preferito"
+  | "riproduzioni"
+  | "aggiunto"
+  | "durata"
+  | "ultimoAscolto";
+
+export type OperatoreSmart =
+  | "contiene"
+  | "nonContiene"
+  | "uguale"
+  | "diverso"
+  | "inizia"
+  | "finisce"
+  | "maggiore"
+  | "minore"
+  | "negliUltimi"
+  | "nonNegliUltimi"
+  | "vuoto"
+  | "nonVuoto";
+
+export type OrdinamentoSmart =
+  | "scaffale"
+  | "piuAscoltati"
+  | "menoAscoltati"
+  | "recenti"
+  | "casuale";
+
+/** Che genere di valore vuole un campo. */
+export type GenereSmart = "testo" | "numero" | "booleano" | "data";
+
+/**
+ * Il genere di ogni campo, e le sue etichette.
+ *
+ * Ricopiato da `aether_domain::regole` — `Campo::genere` e `Operatore::per` —
+ * che è l'originale. Qui serve solo a disegnare i menù: quali coppie stiano in
+ * piedi lo decide comunque il nucleo, che scarta le regole storte invece di
+ * fallire.
+ */
+export const CAMPI_SMART: readonly {
+  chiave: CampoSmart;
+  etichetta: string;
+  genere: GenereSmart;
+}[] = [
+  { chiave: "titolo", etichetta: "Titolo", genere: "testo" },
+  { chiave: "artista", etichetta: "Artista", genere: "testo" },
+  { chiave: "album", etichetta: "Album", genere: "testo" },
+  { chiave: "genere", etichetta: "Genere", genere: "testo" },
+  { chiave: "anno", etichetta: "Anno", genere: "numero" },
+  { chiave: "valutazione", etichetta: "Voto", genere: "numero" },
+  { chiave: "preferito", etichetta: "Preferito", genere: "booleano" },
+  { chiave: "riproduzioni", etichetta: "Riproduzioni", genere: "numero" },
+  { chiave: "durata", etichetta: "Durata (ms)", genere: "numero" },
+  { chiave: "aggiunto", etichetta: "Aggiunto", genere: "data" },
+  { chiave: "ultimoAscolto", etichetta: "Ultimo ascolto", genere: "data" },
+];
+
+/** Gli operatori che hanno senso per ogni genere di campo. */
+export const OPERATORI_SMART: Record<
+  GenereSmart,
+  readonly { chiave: OperatoreSmart; etichetta: string }[]
+> = {
+  testo: [
+    { chiave: "contiene", etichetta: "contiene" },
+    { chiave: "nonContiene", etichetta: "non contiene" },
+    { chiave: "uguale", etichetta: "è" },
+    { chiave: "diverso", etichetta: "non è" },
+    { chiave: "inizia", etichetta: "comincia con" },
+    { chiave: "finisce", etichetta: "finisce con" },
+    { chiave: "vuoto", etichetta: "è vuoto" },
+    { chiave: "nonVuoto", etichetta: "non è vuoto" },
+  ],
+  numero: [
+    { chiave: "uguale", etichetta: "=" },
+    { chiave: "diverso", etichetta: "≠" },
+    { chiave: "maggiore", etichetta: ">" },
+    { chiave: "minore", etichetta: "<" },
+    { chiave: "vuoto", etichetta: "non c'è" },
+    { chiave: "nonVuoto", etichetta: "c'è" },
+  ],
+  booleano: [{ chiave: "uguale", etichetta: "è" }],
+  data: [
+    { chiave: "negliUltimi", etichetta: "negli ultimi (giorni)" },
+    { chiave: "nonNegliUltimi", etichetta: "non negli ultimi (giorni)" },
+    { chiave: "vuoto", etichetta: "mai" },
+    { chiave: "nonVuoto", etichetta: "almeno una volta" },
+  ],
+};
+
+export const ORDINAMENTI_SMART: readonly {
+  chiave: OrdinamentoSmart;
+  etichetta: string;
+}[] = [
+  { chiave: "scaffale", etichetta: "Da scaffale" },
+  { chiave: "recenti", etichetta: "Aggiunti di recente" },
+  { chiave: "piuAscoltati", etichetta: "Più ascoltati" },
+  { chiave: "menoAscoltati", etichetta: "Meno ascoltati" },
+  { chiave: "casuale", etichetta: "A caso" },
+];
+
+/** Gli operatori che non vogliono un valore accanto. */
+export function senzaValore(operatore: OperatoreSmart): boolean {
+  return operatore === "vuoto" || operatore === "nonVuoto";
+}
+
+/** Cosa prenderebbero delle regole non ancora salvate. */
+export interface AnteprimaRegole {
+  quanti: number;
+  /** Regole che non stanno in piedi, saltate. */
+  scartate: number;
+  /** Nessuna condizione: prende tutta la libreria. */
+  prendeTutto: boolean;
+  /** Un «oppure» senza condizioni: non prende niente, mai. */
+  prendeNiente: boolean;
+  primi: Brano[];
+}
+
+/** Una voce di un file di playlist che in libreria non c'è. */
+export interface VoceMancante {
+  title: string | null;
+  artist: string | null;
+  /** Il percorso scritto nel file: l'unica cosa utile per andarsela a prendere. */
+  path: string;
+}
+
+/** Cosa porterebbe dentro — o ha portato dentro — un file di playlist. */
+export interface EsitoFilePlaylist {
+  name: string;
+  entries: number;
+  /** Ritrovate perché il percorso porta a un brano in libreria. */
+  matchedByPath: number;
+  /** Ritrovate per titolo e interprete, con la scala di Spotify. */
+  matchedByTags: number;
+  missing: VoceMancante[];
+  /** Righe del file che non si sono capite. */
+  unreadable: number;
+  playlistId: number | null;
+  /** Ne esisteva una con lo stesso nome ed è stata sostituita. */
+  replaced: boolean;
+}
+
+/** Il piano di un file, più il nome che la finestra propone. */
+export interface PianoFilePlaylist {
+  nome: string;
+  rapporto: EsitoFilePlaylist;
+}
+
 /** Una playlist che non si è potuta importare, e perché. */
 export interface PlaylistRifiutata {
   name: string;
@@ -1296,6 +1475,35 @@ export const ipc = {
     invoke<Playlist>("playlist_aggiungi", { id, brani }),
   playlistTogli: (id: number, posizione: number) =>
     invoke<Playlist>("playlist_togli", { id, posizione }),
+  // ── le playlist intelligenti ──────────────────────────────────────────
+  // Non si materializzano: una playlist intelligente **è** la sua
+  // interrogazione, e `playlistBrani` la esegue. Scrivere le righe vorrebbe
+  // dire tenerle aggiornate a ogni ascolto, a ogni scansione e a ogni
+  // mezzanotte che passa — «ascoltati negli ultimi 30 giorni» cambia da sé.
+  playlistCreaSmart: (nome: string, regole: InsiemeSmart) =>
+    invoke<Playlist>("playlist_crea_smart", { nome, regole }),
+  playlistRegole: (id: number) =>
+    invoke<InsiemeSmart | null>("playlist_regole", { id }),
+  playlistRegoleScrivi: (id: number, regole: InsiemeSmart) =>
+    invoke<Playlist>("playlist_regole_scrivi", { id, regole }),
+  // L'anteprima mentre si scrive: è l'unico modo di accorgersi di aver scritto
+  // «anno maggiore di 2050» prima di salvare una playlist vuota.
+  playlistRegoleProva: (regole: InsiemeSmart) =>
+    invoke<AnteprimaRegole>("playlist_regole_prova", { regole }),
+
+  // ── i file di playlist ────────────────────────────────────────────────
+  // Il piano prima, come ogni altra cosa che scrive: reimportare un file
+  // **sostituisce** la playlist con lo stesso nome, e cancellare va detto
+  // prima di farlo.
+  playlistFilePiano: (percorso: string) =>
+    invoke<PianoFilePlaylist>("playlist_file_piano", { percorso }),
+  playlistFileImporta: (percorso: string, nome: string) =>
+    invoke<EsitoFilePlaylist>("playlist_file_importa", { percorso, nome }),
+  // Il formato lo decide l'estensione del file scelto: chiederlo una seconda
+  // volta in una tendina accanto sarebbe la stessa domanda con due risposte.
+  playlistEsporta: (id: number, percorso: string) =>
+    invoke<number>("playlist_esporta", { id, percorso }),
+
   playlistRiordina: (id: number, da: number, a: number) =>
     invoke<Playlist>("playlist_riordina", { id, da, a }),
 

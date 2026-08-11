@@ -83,6 +83,10 @@ export interface ContestoWidget {
   onPlaylist: (p: Playlist) => void;
   onMenuPlaylist: (e: React.MouseEvent, p: Playlist) => void;
   onNuovaPlaylist: () => void;
+  /** Apre l'editor delle regole per una playlist che si aggiorna da sé. */
+  onNuovaSmart: () => void;
+  /** Sceglie un file M3U, PLS o XSPF da portare dentro. */
+  onImportaFile: () => void;
   onColonna: (aperta: boolean) => void;
   onCoda: (aperta: boolean) => void;
   onGrande: () => void;
@@ -174,6 +178,8 @@ const WIDGET: Record<string, ComponenteWidget> = {
         onPlaylist={ctx.onPlaylist}
         onMenuPlaylist={ctx.onMenuPlaylist}
         onNuovaPlaylist={ctx.onNuovaPlaylist}
+        onNuovaSmart={ctx.onNuovaSmart}
+        onImportaFile={ctx.onImportaFile}
       />
     ),
   },
@@ -191,6 +197,8 @@ const WIDGET: Record<string, ComponenteWidget> = {
         onPlaylist={ctx.onPlaylist}
         onMenuPlaylist={ctx.onMenuPlaylist}
         onNuovaPlaylist={ctx.onNuovaPlaylist}
+        onNuovaSmart={ctx.onNuovaSmart}
+        onImportaFile={ctx.onImportaFile}
       />
     ),
   },

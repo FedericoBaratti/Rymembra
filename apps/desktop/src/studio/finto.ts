@@ -103,6 +103,8 @@ export function contestoFinto(scena: Scena): ContestoWidget {
     onPlaylist: niente,
     onMenuPlaylist: niente,
     onNuovaPlaylist: niente,
+    onNuovaSmart: niente,
+    onImportaFile: niente,
     onColonna: niente,
     onCoda: niente,
     onGrande: niente,

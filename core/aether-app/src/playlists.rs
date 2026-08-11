@@ -33,6 +33,7 @@
 
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::keys::PlaylistKey;
+use aether_domain::regole::Insieme;
 use rusqlite::{Connection, Transaction};
 
 use crate::library::{COLONNE_BRANO, TrackSummary, db_error, now_ms, track_from_row};
@@ -93,14 +94,45 @@ fn summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaylistSummary
 ///
 /// `db.queryFailed` se la lettura fallisce.
 pub fn list(connection: &Connection) -> Result<Vec<PlaylistSummary>, AppError> {
-    let mut statement = connection
-        .prepare(ELENCO)
-        .map_err(|err| db_error("elenco delle playlist", &err))?;
-    let rows = statement
-        .query_map([], summary_from_row)
-        .map_err(|err| db_error("elenco delle playlist", &err))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|err| db_error("elenco delle playlist", &err))
+    let mut elenco = {
+        let mut statement = connection
+            .prepare(ELENCO)
+            .map_err(|err| db_error("elenco delle playlist", &err))?;
+        let rows = statement
+            .query_map([], summary_from_row)
+            .map_err(|err| db_error("elenco delle playlist", &err))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| db_error("elenco delle playlist", &err))?
+    };
+
+    // Le playlist intelligenti non hanno righe in `playlist_tracks`, quindi la
+    // query qui sopra le conta **zero**: senza questo giro l'elenco direbbe
+    // «0 brani» sotto ognuna di loro, che è la cosa più simile a «è rotta».
+    //
+    // Una query in più per ognuna, e va bene: le playlist sono decine, non
+    // migliaia, e questo elenco si chiede quando si apre la barra laterale.
+    // L'alternativa — tenere i conteggi in una colonna — sarebbe una copia da
+    // aggiornare a ogni ascolto e a ogni scansione, cioè il motivo per cui i
+    // brani di una playlist intelligente non si materializzano.
+    let adesso = now_ms();
+    for riga in elenco.iter_mut().filter(|p| p.is_smart) {
+        let insieme = crate::smart::da_json(&regole_grezze(connection, riga.id)?);
+        if let Ok((brani, durata)) = crate::smart::conteggi(connection, &insieme, adesso) {
+            riga.tracks = brani;
+            riga.duration_ms = durata;
+        }
+    }
+    Ok(elenco)
+}
+
+/// La colonna `rules` così com'è, senza interpretarla.
+fn regole_grezze(connection: &Connection, id: i64) -> Result<String, AppError> {
+    connection
+        .query_row("SELECT rules FROM playlists WHERE id = ?1", [id], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .map(|r| r.unwrap_or_default())
+        .map_err(|err| db_error("regole di una playlist", &err))
 }
 
 /// Una playlist sola, dopo averla toccata.
@@ -118,12 +150,65 @@ fn read_one(connection: &Connection, id: i64) -> Result<PlaylistSummary, AppErro
         })
 }
 
-/// I brani di una playlist, nell'ordine in cui stanno.
+/// I brani di una playlist, che sia a mano o automatica.
+///
+/// # Perché una funzione sola per due cose diverse
+///
+/// Perché per chi guarda **non** sono due cose diverse: è una playlist, e
+/// dentro ci sono dei brani. Due funzioni vorrebbero dire che ogni chiamante —
+/// l'elenco, l'esportazione, la coda, il backup — deve ricordarsi di chiedere
+/// prima `is_smart` e poi la funzione giusta, e il primo che se lo dimentica
+/// mostra una playlist intelligente vuota. Il `match` sta qui, una volta sola.
 ///
 /// # Errori
 ///
 /// `db.queryFailed` se la lettura fallisce.
 pub fn tracks(connection: &Connection, id: i64) -> Result<Vec<TrackSummary>, AppError> {
+    if let Some(insieme) = regole_di(connection, id)? {
+        return crate::smart::brani(connection, &insieme, now_ms());
+    }
+    brani_a_mano(connection, id)
+}
+
+/// Le regole di una playlist, se è intelligente.
+///
+/// `Ok(None)` quando è una playlist normale — non è un errore, è la
+/// maggioranza dei casi.
+///
+/// # Errori
+///
+/// `library.playlistNotFound` se la playlist non c'è; `db.queryFailed` se il
+/// database non risponde.
+pub fn regole_di(connection: &Connection, id: i64) -> Result<Option<Insieme>, AppError> {
+    let riga: Option<(i64, Option<String>)> = connection
+        .query_row(
+            "SELECT is_smart, rules FROM playlists WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+        .map_err(|err| db_error("regole di una playlist", &err))?;
+    let Some((smart, rules)) = riga else {
+        return Err(AppError::new(ErrorCode::LibraryPlaylistNotFound {
+            playlist_id: Some(id),
+        }));
+    };
+    if smart == 0 {
+        return Ok(None);
+    }
+    // Una playlist marcata intelligente e senza regole vale insieme vuoto, cioè
+    // tutta la libreria. È visibile subito e si corregge dall'interfaccia; un
+    // errore qui renderebbe la playlist impossibile perfino da aprire per
+    // sistemarla.
+    Ok(Some(crate::smart::da_json(rules.as_deref().unwrap_or(""))))
+}
+
+/// I brani di una playlist a mano, nell'ordine in cui stanno.
+fn brani_a_mano(connection: &Connection, id: i64) -> Result<Vec<TrackSummary>, AppError> {
     let sql = format!(
         "SELECT {COLONNE_BRANO}
          FROM playlist_tracks pt
@@ -186,7 +271,11 @@ fn ordine_attuale(tx: &Transaction<'_>, id: i64) -> Result<Vec<i64>, AppError> {
 /// diventa codice: le posizioni finiscono `0..n` senza salti e senza che
 /// nessuna istruzione passi mai per uno stato in cui due righe condividono un
 /// posto — la tabella è vuota quando cominciano gli inserimenti.
-fn riscrivi_ordine(tx: &Transaction<'_>, id: i64, ordine: &[i64]) -> Result<(), AppError> {
+pub(crate) fn riscrivi_ordine(
+    tx: &Transaction<'_>,
+    id: i64,
+    ordine: &[i64],
+) -> Result<(), AppError> {
     tx.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [id])
         .map_err(|err| db_error("riscrittura di una playlist", &err))?;
     let mut inserisci = tx
@@ -273,6 +362,64 @@ fn e_conflitto(err: &rusqlite::Error) -> bool {
             _
         )
     )
+}
+
+/// Crea una playlist intelligente.
+///
+/// # Perché è una funzione a parte e non un parametro di [`create`]
+///
+/// Perché sono due operazioni con due esiti diversi: una playlist a mano nasce
+/// vuota e si riempie, una intelligente nasce **piena** — la sua appartenenza
+/// esiste già, è la libreria filtrata. Un booleano nella firma di `create`
+/// sarebbe il parametro che nessuno ricorda in che verso va, e per giunta
+/// lascerebbe `create` senza un posto dove mettere le regole.
+///
+/// # Errori
+///
+/// `library.playlistNameInvalid`, `library.playlistExists`, `db.queryFailed`.
+pub fn create_smart(
+    connection: &Connection,
+    name: &str,
+    insieme: &Insieme,
+) -> Result<PlaylistSummary, AppError> {
+    let regole = crate::smart::a_json(insieme)?;
+    let id = crea_riga(connection, name)?;
+    connection
+        .execute(
+            "UPDATE playlists SET is_smart = 1, rules = ?2 WHERE id = ?1",
+            rusqlite::params![id, regole],
+        )
+        .map_err(|err| db_error("regole di una playlist nuova", &err))?;
+    read_one(connection, id)
+}
+
+/// Riscrive le regole di una playlist intelligente.
+///
+/// # Errori
+///
+/// `library.playlistNotFound` se non c'è; `library.playlistIsSmart` **al
+/// contrario** — `library.playlistNotFound` con il dettaglio — se la playlist
+/// non è intelligente: cambiare le regole di una playlist a mano vorrebbe dire
+/// convertirla, e una conversione butta via delle righe che qualcuno ha messo
+/// lì a una a una. Se serve, si crea una playlist nuova.
+pub fn set_rules(
+    connection: &Connection,
+    id: i64,
+    insieme: &Insieme,
+) -> Result<PlaylistSummary, AppError> {
+    if regole_di(connection, id)?.is_none() {
+        return Err(AppError::new(ErrorCode::LibraryPlaylistNotFound {
+            playlist_id: Some(id),
+        })
+        .with_cause("non è una playlist intelligente: le regole non si applicano"));
+    }
+    connection
+        .execute(
+            "UPDATE playlists SET rules = ?2, updated_at = ?3 WHERE id = ?1",
+            rusqlite::params![id, crate::smart::a_json(insieme)?, now_ms()],
+        )
+        .map_err(|err| db_error("regole di una playlist", &err))?;
+    read_one(connection, id)
 }
 
 /// Rinomina una playlist.
@@ -500,6 +647,63 @@ mod prove {
             )
             .expect("brani");
         connection
+    }
+
+    #[test]
+    fn una_playlist_intelligente_e_la_sua_interrogazione() {
+        use aether_domain::regole::{Campo, Operatore, Regola, Valore};
+
+        let c = libreria();
+        let insieme = Insieme {
+            regole: vec![Regola {
+                campo: Campo::Durata,
+                operatore: Operatore::Maggiore,
+                valore: Valore::Numero(2500),
+            }],
+            ..Insieme::default()
+        };
+        let creata = create_smart(&c, "I lunghi", &insieme).expect("creata");
+        assert!(creata.is_smart);
+        // Nasce **piena**: l'appartenenza esiste già, è la libreria filtrata.
+        assert_eq!(creata.tracks, 2, "l'elenco deve contare i brani veri");
+        assert_eq!(creata.duration_ms, 7000);
+        // In ordine da scaffale: stesso artista e stesso album, nessun numero
+        // di traccia, quindi decide il titolo.
+        assert_eq!(posizioni(&c, creata.id), ["Quattro", "Tre"]);
+
+        // E cambia da sola quando cambia la libreria, senza che nessuno la
+        // tocchi: è la ragione per cui i brani non si materializzano.
+        c.execute(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album,
+                                 duration_ms, file_size, date_added, date_modified)
+             VALUES (5, 'e.mp3', 'k5', 'Cinque', 'Art', 'Al', 9000, 1, 1, 1)",
+            [],
+        )
+        .expect("brano nuovo");
+        assert_eq!(posizioni(&c, creata.id).len(), 3);
+    }
+
+    #[test]
+    fn una_playlist_intelligente_non_si_modifica_a_mano() {
+        // Il controllo c'era da sempre — `modificabile` — e fino a oggi non
+        // c'era modo di creare una playlist che lo facesse scattare.
+        let mut c = libreria();
+        let creata = create_smart(&c, "Tutto", &Insieme::default()).expect("creata");
+        let esito = add_tracks(&mut c, creata.id, &[1]);
+        assert!(matches!(
+            esito.map_err(|e| e.code().clone()),
+            Err(ErrorCode::LibraryPlaylistIsSmart { .. })
+        ));
+    }
+
+    #[test]
+    fn le_regole_di_una_playlist_a_mano_non_si_riscrivono() {
+        // Cambiare le regole di una playlist a mano vorrebbe dire convertirla,
+        // e una conversione butta via righe messe lì a una a una.
+        let c = libreria();
+        let creata = create(&c, "A mano").expect("creata");
+        assert!(set_rules(&c, creata.id, &Insieme::default()).is_err());
+        assert_eq!(regole_di(&c, creata.id), Ok(None));
     }
 
     fn posizioni(connection: &Connection, id: i64) -> Vec<String> {
