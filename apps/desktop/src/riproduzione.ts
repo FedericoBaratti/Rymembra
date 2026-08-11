@@ -157,15 +157,63 @@ export function useRiproduzione(): Riproduzione {
   // dei fotogrammi, che non deve far ridisegnare niente per sapere che ora è.
   const ancora = useRef({ ms: 0, quando: 0, inPausa: true, durataMs: 0 });
 
-  const ancoraggio = useCallback((tempo: Tempo) => {
-    ancora.current = {
-      ms: tempo.posizioneMs,
-      quando: performance.now(),
-      inPausa: tempo.inPausa,
-      durataMs: tempo.durataMs,
+  // Il fotogramma in volo, o `0` quando il ciclo è spento.
+  const fotogramma = useRef(0);
+
+  /**
+   * Accende il ciclo dei fotogrammi, se non è già acceso.
+   *
+   * # Perché si spegne invece di girare a vuoto
+   *
+   * Perché un `requestAnimationFrame` che si riarma comunque sveglia il
+   * compositore sessanta volte al secondo per **tutta la vita della finestra**,
+   * anche con niente in riproduzione — cioè quasi sempre. Prima l'uscita per la
+   * pausa stava dopo il riarmo, quindi il ciclo non si fermava mai: costava una
+   * sveglia a ogni fotogramma per non fare niente.
+   *
+   * È la stessa disciplina per cui il nucleo manda la posizione quattro volte al
+   * secondo e non sessanta, e per cui questo modulo esiste (`disegno-ux.md §9`:
+   * «nessun componente deve chiedere niente a quel ritmo»).
+   */
+  const accendi = useCallback(() => {
+    if (fotogramma.current !== 0) return;
+    let ultima = -1;
+    const passo = () => {
+      const { ms, quando, inPausa, durataMs } = ancora.current;
+      // Fermo: la posizione è quella dell'ancora, e l'ha già scritta
+      // `ancoraggio`. Non ci si riarma — riaccende lei quando riparte.
+      if (inPausa) {
+        fotogramma.current = 0;
+        return;
+      }
+      fotogramma.current = requestAnimationFrame(passo);
+      const stimata = ms + (performance.now() - quando);
+      const limitata = durataMs > 0 ? Math.min(stimata, durataMs) : stimata;
+      const quantizzata =
+        Math.round(limitata / PASSO_INTERPOLAZIONE) * PASSO_INTERPOLAZIONE;
+      if (quantizzata !== ultima) {
+        ultima = quantizzata;
+        pubblica(quantizzata);
+      }
     };
-    pubblica(tempo.posizioneMs);
+    fotogramma.current = requestAnimationFrame(passo);
   }, []);
+
+  const ancoraggio = useCallback(
+    (tempo: Tempo) => {
+      ancora.current = {
+        ms: tempo.posizioneMs,
+        quando: performance.now(),
+        inPausa: tempo.inPausa,
+        durataMs: tempo.durataMs,
+      };
+      pubblica(tempo.posizioneMs);
+      // Riparte da qui, e solo da qui: è l'unico posto che sa che si è tornati
+      // a suonare.
+      if (!tempo.inPausa) accendi();
+    },
+    [accendi],
+  );
 
   // Lo stato all'apertura. La coda di ieri è già stata ripresa dal nucleo in
   // `riprendi_coda`, ma la finestra non c'era: senza questa chiamata la barra
@@ -218,27 +266,19 @@ export function useRiproduzione(): Riproduzione {
     };
   }, [ancoraggio]);
 
-  useEffect(() => {
-    let fotogramma = 0;
-    let ultima = -1;
-    const passo = () => {
-      fotogramma = requestAnimationFrame(passo);
-      const { ms, quando, inPausa, durataMs } = ancora.current;
-      // Fermo: la posizione è quella dell'ancora, e l'ha già scritta
-      // `ancoraggio`. Continuare a calcolarla la farebbe avanzare in pausa.
-      if (inPausa) return;
-      const stimata = ms + (performance.now() - quando);
-      const limitata = durataMs > 0 ? Math.min(stimata, durataMs) : stimata;
-      const quantizzata =
-        Math.round(limitata / PASSO_INTERPOLAZIONE) * PASSO_INTERPOLAZIONE;
-      if (quantizzata !== ultima) {
-        ultima = quantizzata;
-        pubblica(quantizzata);
+  // Il ciclo non si avvia qui: lo accende `ancoraggio` quando il nucleo dice
+  // che si sta suonando. Questo effetto esiste solo per spegnerlo alla chiusura
+  // della finestra, che è l'unico caso in cui il ciclo può restare acceso senza
+  // che nessuno lo fermi.
+  useEffect(
+    () => () => {
+      if (fotogramma.current !== 0) {
+        cancelAnimationFrame(fotogramma.current);
+        fotogramma.current = 0;
       }
-    };
-    fotogramma = requestAnimationFrame(passo);
-    return () => cancelAnimationFrame(fotogramma);
-  }, []);
+    },
+    [],
+  );
 
   const scartaErrore = useCallback(() => setErrore(null), []);
 
