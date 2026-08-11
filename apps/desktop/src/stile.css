@@ -4682,6 +4682,45 @@ body {
   color: var(--color-text-3);
 }
 
+/* Un sottotitolo dentro una scheda.
+
+   Serve dove una scheda contiene due cose parallele e non due passi della
+   stessa — «ListenBrainz» e «Last.fm» nello scrobbling. L'alternativa, due
+   schede separate, direbbe che sono due argomenti diversi: non lo sono, e
+   soprattutto l'interruttore che li governa è uno solo e starebbe sopra una
+   delle due.
+
+   Più piccolo del titolo della scheda e senza maiuscoletto: è un secondo
+   livello, e due intestazioni con lo stesso peso non fanno una gerarchia. */
+.impostazioni .titoletto {
+  margin: var(--spazio-2) 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+.impostazioni .titoletto:first-of-type {
+  margin-top: 0;
+}
+
+/* Un bottone che sta dentro una frase e si legge come un collegamento.
+
+   Un `<button>` e non un `<a>`: non porta da nessuna parte, fa una cosa — e un
+   collegamento senza destinazione è la trappola che manda in bianco chi naviga
+   da tastiera. Quel che si prende in prestito è solo l'aspetto. */
+.impostazioni .collegamento {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.impostazioni .collegamento:hover {
+  color: var(--color-text-1);
+}
+
 .impostazioni .nota,
 .impostazioni .esito {
   margin: 0;

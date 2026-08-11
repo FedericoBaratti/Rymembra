@@ -33,10 +33,11 @@ import { ore } from "../formato";
 import { Equalizzatore } from "../parti/Equalizzatore";
 import { Icona, type NomeIcona } from "../parti/Icone";
 import { Importazioni, type UsoImportazioni } from "../parti/Importazioni";
+import { Scrobbling } from "../parti/Scrobbling";
 import { Segmentato } from "../parti/Segmentato";
 import type { Tema } from "../tema";
 
-/** Le otto sezioni, nell'ordine in cui si visitano la prima volta. */
+/** Le nove sezioni, nell'ordine in cui si visitano la prima volta. */
 export type Sezione =
   | "cartelle"
   | "aspetto"
@@ -45,13 +46,17 @@ export type Sezione =
   | "nuvola"
   | "legacy"
   | "spotify"
+  | "scrobbling"
   | "dati";
 
 // «Backup su Drive» sta fra «movimento» e «legacy»: parla di dati che si
 // spostano da un computer all'altro, e i suoi due vicini sono l'importazione
 // dalla versione precedente e le statistiche della libreria. «Da Spotify» sta
 // accanto a «Dalla versione precedente» perché è la stessa cosa da un'altra
-// parte: portare dentro qualcosa che l'utente ha già altrove.
+// parte: portare dentro qualcosa che l'utente ha già altrove. «Scrobbling» le
+// sta subito dopo perché è il verso opposto dello stesso rapporto con i servizi
+// esterni — quel che esce invece di quel che entra — e perché il gesto che le
+// unisce è uno solo: la cronologia importata da Spotify si manda a ListenBrainz.
 const SEZIONI: readonly (readonly [Sezione, string, NomeIcona])[] = [
   ["cartelle", "Cartelle e scansione", "i-folder"],
   ["aspetto", "Aspetto", "i-skin"],
@@ -60,6 +65,7 @@ const SEZIONI: readonly (readonly [Sezione, string, NomeIcona])[] = [
   ["nuvola", "Backup su Drive", "i-cloud"],
   ["legacy", "Dalla versione precedente", "i-import"],
   ["spotify", "Da Spotify", "i-list"],
+  ["scrobbling", "Scrobbling", "i-cloud"],
   ["dati", "Libreria e dati", "i-album"],
 ];
 
@@ -195,6 +201,7 @@ export function Impostazioni({
   replaygain,
   onReplaygain,
   onErrore,
+  onNotizia,
   onAggiungiCartella,
   onTogliCartella,
   onScegliCartellaDownload,
@@ -254,6 +261,8 @@ export function Impostazioni({
   replaygain: boolean;
   onReplaygain: (attivo: boolean) => void;
   onErrore: (e: unknown) => void;
+  /** Una cosa andata bene da dire: non è un errore e non va sul canale rosso. */
+  onNotizia: (testo: string) => void;
   onAggiungiCartella: () => void;
   onTogliCartella: (percorso: string) => void;
   /** Apre il dialogo che sceglie dove finiscono i brani scaricati. */
@@ -1126,6 +1135,16 @@ export function Impostazioni({
                 Importa il mio account…
               </button>
             </div>
+          </Scheda>
+        )}
+
+        {sezione === "scrobbling" && (
+          <Scheda
+            icona="i-cloud"
+            titolo="Scrobbling"
+            nota="quel che esce, non quel che entra"
+          >
+            <Scrobbling onErrore={onErrore} onNotizia={onNotizia} />
           </Scheda>
         )}
 

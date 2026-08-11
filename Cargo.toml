@@ -17,6 +17,7 @@ members = [
     "core/aether-oauth",
     "core/aether-archivio",
     "core/aether-cloud",
+    "core/aether-scrobble",
     "core/aether-spotify",
     "core/aether-yt",
     "apps/desktop/src-tauri",

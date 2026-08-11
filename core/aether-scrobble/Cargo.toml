@@ -1,0 +1,25 @@
+[package]
+name = "aether-scrobble"
+description = "Lo scrobbling di Aether: ListenBrainz e Last.fm, i due protocolli e la firma che uno chiede e l'altro no."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Solo il catalogo degli errori e la regola di cosa conta come ascolto. Non la
+# libreria, non `rusqlite`: la coda dello scrobbling sta in `aether-app`, e
+# questo crate riceve gli ascolti già pronti. Vedi il preambolo.
+aether-domain = { path = "../aether-domain" }
+aether-net = { path = "../aether-net" }
+# MD5, che Last.fm richiede per `api_sig`. Nel workspace c'erano `sha2` e
+# `sha1`: sono algoritmi diversi e non servono a questo. Stessa famiglia
+# RustCrypto degli altri due, quindi non porta dentro niente di nuovo — il
+# tratto `digest` e il suo buffer sono già nell'albero.
+md-5 = "0.10"
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

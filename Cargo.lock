@@ -68,6 +68,7 @@ dependencies = [
  "aether-net",
  "aether-oauth",
  "aether-play",
+ "aether-scrobble",
  "aether-skin",
  "aether-spotify",
  "aether-yt",
@@ -127,6 +128,17 @@ dependencies = [
  "rubato",
  "symphonia",
  "tempfile",
+]
+
+[[package]]
+name = "aether-scrobble"
+version = "0.1.0"
+dependencies = [
+ "aether-domain",
+ "aether-net",
+ "md-5",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2726,6 +2738,16 @@ checksum = "8ea1f30cedd69f0a2954655f7188c6a834246d2bcf1e315e2ac40c4b24dc9519"
 dependencies = [
  "cfg-if",
  "rayon",
+]
+
+[[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
 ]
 
 [[package]]

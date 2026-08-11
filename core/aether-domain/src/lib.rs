@@ -40,6 +40,7 @@ pub mod queue;
 pub mod regole;
 pub mod restore;
 pub mod scan_plan;
+pub mod scrobble;
 pub mod spotify;
 pub mod spotify_account;
 pub mod spotify_plan;

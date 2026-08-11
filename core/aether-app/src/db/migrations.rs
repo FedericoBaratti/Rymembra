@@ -48,6 +48,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "account",
         sql: include_str!("schema/005_account.sql"),
     },
+    Migration {
+        version: 6,
+        name: "scrobble",
+        sql: include_str!("schema/006_scrobble.sql"),
+    },
 ];
 
 /// La versione a cui questa build porta il database.

@@ -24,6 +24,7 @@ pub mod metadata;
 pub mod organize;
 pub mod playback;
 pub mod playlists;
+pub mod scrobble;
 pub mod settings;
 pub mod smart;
 pub mod tag_scrittura;

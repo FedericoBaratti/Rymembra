@@ -40,6 +40,9 @@ aether-oauth = { path = "../../../core/aether-oauth", features = ["portachiavi"]
 # conta — lo stato degli interruttori, che rinascendo a ogni passata non
 # riuscirebbe mai a ricordare che MusicBrainz è giù.
 aether-meta = { path = "../../../core/aether-meta" }
+# I due protocolli di scrobbling. La coda sta in `aether-app` e non conosce la
+# rete; questo crate mette in mezzo le credenziali e il filo che svuota.
+aether-scrobble = { path = "../../../core/aether-scrobble" }
 aether-skin = { path = "../../../core/aether-skin" }
 aether-spotify = { path = "../../../core/aether-spotify" }
 aether-yt = { path = "../../../core/aether-yt" }

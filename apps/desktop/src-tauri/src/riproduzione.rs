@@ -319,7 +319,13 @@ fn chiudi_ascolto(app: &tauri::AppHandle, lettore: &mut Lettore) {
         // anche quando l'ascolto non contava riempirebbe il canale del backup
         // di sveglie a vuoto: chi salta un brano dopo tre secondi non ha
         // cambiato niente da salvare.
-        Ok(true) => crate::nuvola::sporca(app),
+        Ok(true) => {
+            crate::nuvola::sporca(app);
+            // Dopo `record_play` e solo se ha scritto: la coda degli scrobble
+            // deve contenere le stesse righe della cronologia, non un insieme
+            // suo. Non va in rete da qui — accoda e sveglia il filo.
+            crate::scrobble::dopo_un_ascolto(app, &ascolto);
+        }
         Ok(false) => {}
         Err(err) => eprintln!(
             "[riproduzione] ascolto non registrato codice={} causa={}",
@@ -456,6 +462,12 @@ fn su_evento(app: &tauri::AppHandle, evento: Evento) {
                     .durata_ms
                     .max(durata_di(app, track_id));
                 lettore.ascolto = Some(ListenTracker::begin(track_id, durata, adesso_ms()));
+
+                // Il «sta ascoltando» verso i servizi di scrobbling. Parte su un
+                // filo suo: qui il lucchetto del lettore è in mano, e una
+                // richiesta HTTP dentro questa chiusura terrebbe fermo il brano
+                // successivo per il tempo di una risposta da Last.fm.
+                crate::scrobble::sta_suonando(app, track_id);
 
                 prepara_prossimo(app, lettore);
                 salva_coda(app, lettore);

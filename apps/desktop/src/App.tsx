@@ -1937,6 +1937,7 @@ export function App() {
         <Impostazioni
           sezione={sezione}
           onSezione={setSezione}
+          onNotizia={setNotizia}
           avvio={avvio}
           scansione={scansione}
           esito={esito}

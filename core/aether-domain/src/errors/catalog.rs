@@ -506,7 +506,32 @@ catalogo! {
     /// Last.fm non è configurato.
     SettingsLastfmNotConfigured = "settings.lastfmNotConfigured", Settings, Info, Never, Some("LASTFM_NOT_CONFIGURED");
     /// Nessuna richiesta Last.fm in attesa.
+    ///
+    /// Il consenso di Last.fm è a due tempi — si chiede un token, l'utente lo
+    /// approva nel browser, poi lo si scambia per una sessione — e in mezzo
+    /// l'applicazione può essere stata chiusa. Questo codice è quel «in mezzo»:
+    /// non è un guasto, è che il primo tempo va rifatto.
     SettingsLastfmNoPendingToken = "settings.lastfmNoPendingToken", Settings, Info, Never, Some("LASTFM_NO_PENDING_TOKEN");
+    /// ListenBrainz non è configurato.
+    ///
+    /// Un codice suo e non uno condiviso con Last.fm: quel che manca è diverso —
+    /// là una chiave, un segreto e un consenso nel browser, qui un token
+    /// incollato da una pagina — e il messaggio che porta l'utente a rimediare
+    /// non può essere lo stesso.
+    SettingsListenbrainzNotConfigured = "settings.listenbrainzNotConfigured", Settings, Info, Never, None;
+    /// Il servizio di scrobbling ha rifiutato le credenziali.
+    ///
+    /// Non ritentabile, e qui è la distinzione che conta: una coda di ascolti
+    /// che riprova all'infinito con una sessione revocata è una coda che non si
+    /// svuota più. Chi lo riceve **scollega** e lo dice.
+    SettingsScrobbleAuthRejected = "settings.scrobbleAuthRejected", Settings, Warning, Never, None, { service: String };
+    /// Il servizio di scrobbling ha rifiutato l'ascolto.
+    ///
+    /// L'ascolto, non le credenziali: un artista vuoto, una data fuori
+    /// dall'intervallo ammesso, un documento troppo grande. Rimandarlo darebbe
+    /// lo stesso rifiuto per sempre, quindi non si rimanda — si dice quale e
+    /// perché.
+    SettingsScrobbleRejected = "settings.scrobbleRejected", Settings, Warning, Never, None, { service: String, detail: Option<String> };
     /// L'autenticazione Spotify è fallita.
     SettingsSpotifyAuthFailed = "settings.spotifyAuthFailed", Settings, Warning, Always, Some("SPOTIFY_AUTH_FAILED"), { status: String };
 

@@ -518,6 +518,68 @@ che si accendevano senza fare niente; gli altri si vedevano solo a schermo.
 - **La barra della selezione finiva sotto la terza colonna**, «Chiudi» compreso:
   la notifica aveva già la regola che la ferma prima, questa no.
 
+### Aggiunto — l'account Spotify intero, per due strade
+
+Fin qui da Spotify si importava **un link alla volta**. Quel che mancava era il
+gesto grande: portare dentro tutte le playlist, i brani salvati, gli album, gli
+artisti seguiti e la cronologia d'ascolto senza incollare trenta indirizzi a
+mano.
+
+Le strade sono due perché sono complementari, non alternative, e nessuna delle
+due basta:
+
+- **Il consenso OAuth** (`aether-spotify::account`) dà l'ISRC — il gradino zero
+  dell'abbinamento, che il lettore keyless non riceve più — ed è ripetibile
+  quando si vuole. Ma dal febbraio 2026 un'applicazione in Development Mode
+  richiede che il proprietario abbia **Premium attivo**: se scade, smette di
+  funzionare e Spotify non avvisa nessuno. La schermata lo dice **prima** del
+  collegamento.
+- **L'archivio ZIP** che Spotify manda su richiesta (`aether-archivio`) non
+  chiede niente a nessuno e porta **anni** di cronologia, dove l'API ne dà
+  cinquanta righe. In cambio arriva in due pezzi separati da settimane, e se ne
+  può aprire uno solo: quel che manca resta vuoto e l'anteprima dice quale metà.
+
+Il perno è che tutte e due producono lo **stesso valore di dominio**
+(`AccountSnapshot`), quindi da lì in poi il codice è uno solo: un piano, una
+conferma, una transazione. La finestra ha una schermata sola, e non sa da dove
+viene quel che sta mostrando.
+
+Quel che ne segue:
+
+- **`aether-oauth`**, estratto: PKCE, il servitore di loopback e il portachiavi
+  stavano dentro `aether-cloud` e sapevano di Google. Adesso servono a due
+  padroni e non ne nominano nessuno.
+- **Gli scope sono tutti di sola lettura**, con una prova che ne vieta
+  l'allargamento. Aether non deve poter toccare l'account di nessuno.
+- **`play_history.source`** distingue gli ascolti importati da quelli veri, ed è
+  ciò che rende l'importazione **annullabile**: «dimentica gli ascolti
+  importati» è una `DELETE` mirata più un ricalcolo, invece di un ripristino da
+  backup — cioè invece di perdere anche tutto quel che si è fatto nel frattempo.
+- **`playlists.spotify_playlist_id`**: senza, rinominare una playlist su Spotify
+  ne creerebbe una seconda qui alla sincronizzazione successiva, perché
+  `PlaylistKey` nasce dal nome.
+- I brani mancanti finiscono in `spotify_wanted` e la coda yt-dlp parte da sé,
+  come già faceva per un link singolo.
+
+Tre difetti che solo il farlo girare ha mostrato:
+
+- **La durata che l'archivio non scrive mai.** `SpotifyTrack.duration_ms` è
+  sempre `None` là dentro — nessuno dei quattro formati ha un campo per la
+  durata — e `counts_as_play` senza durata ricade sulla soglia dei quattro
+  minuti: avrebbe scartato **ogni ascolto di ogni canzone più corta di quattro
+  minuti**, in silenzio e sotto l'etichetta «troppo breve». Adesso l'abbinamento
+  viene prima della soglia, e la durata la dà la libreria. Nessuna prova
+  unitaria l'avrebbe presa: gli snapshot scritti a mano ce l'avevano tutti.
+- **Il totale dichiarato conta anche i podcast, i brani no.** Una playlist di
+  cinquanta canzoni più un podcast risultava «50 su 51» a ogni lettura, e
+  `prepara_playlist` **rifiuta di sostituire** una playlist arrivata monca:
+  quella playlist sarebbe diventata impossibile da reimportare, per sempre, a
+  causa di un podcast.
+- **Dal marzo 2026 anche il corpo delle risposte** ha rinominato `tracks` in
+  `items` e `track` in `item`, e la guida lo dichiara per le playlist tacendo
+  sugli altri elenchi. Si leggono tutti e due i nomi: sbagliare quale sia quello
+  giusto importa zero brani da un account pieno, **senza nessun errore**.
+
 ### Aggiunto — i controlli che c'erano solo come spiegazione
 
 Cinque cose che il nucleo faceva già e che dalla finestra non si potevano né
@@ -574,18 +636,107 @@ per non mostrare un account senza nome al posto di nessun account. Adesso c'è
 sola: un'identità che l'utente ha chiesto di dimenticare non resta scritta in un
 file che il backup copia via.
 
+### Corretto — un dispositivo audio perso adesso lo dice, e si riapre
+
+Era il difetto noto della fase precedente: la riproduzione si fermava e la
+finestra continuava a dire che suonava. `Motore::dispositivo_perso()` e
+`causa_perdita()` esistevano dal primo giorno e **non li leggeva nessuno**,
+quindi una scheda audio scomparsa — un dispositivo virtuale che si spegne, una
+cuffia USB staccata — era indistinguibile da un brano che non parte.
+
+Adesso l'orologio se ne accorge sul fronte, la finestra mostra una fascia con la
+causa, e c'è un tasto **Riapri** che apre il motore nuovo **prima** di buttare
+il vecchio, ripristinando volume, equalizzatore e normalizzazione. Funziona
+anche nel caso in cui il motore non si è mai aperto: un'applicazione avviata
+senza scheda audio adesso lo dichiara invece di restare muta, e
+`riproduzione_stato` risponde uno stato fermo con la ragione invece di fallire.
+
+### Aggiunto — playlist da file, e playlist che si scrivono da sole
+
+- **M3U, M3U8, PLS e XSPF**, in lettura e scrittura (`playlist_file.rs`, puro).
+  BOM, CRLF, percorsi relativi e assoluti, `file://` con le sequenze `%NN`.
+  L'importazione abbina prima per percorso — esatto, poi per nome di file — e
+  poi ricade sulla **stessa scala a quattro gradini** dell'importazione da
+  Spotify, quindi una playlist esportata da un altro programma trova i brani
+  anche se i file sono stati spostati. Quel che non trova lo **elenca**, con il
+  percorso che c'era scritto.
+- **Le playlist intelligenti.** Le colonne `is_smart` e `rules` erano nello
+  schema dal primo giorno e non le scriveva nessuno. Adesso un insieme di regole
+  su undici campi — artista, album, genere, anno, voto, preferito, ascolti,
+  durata, aggiunto, ultimo ascolto, formato — diventa **SQL parametrizzato**:
+  mai una concatenazione di stringhe, e una prova ci mette dentro
+  `'; DROP TABLE tracks; --` per dimostrarlo. L'anteprima è viva mentre si
+  scrive: si vede il conteggio scendere da 1421 a 5 mentre si digita.
+
+Tre difetti trovati facendo girare le cose, non leggendo il codice:
+
+- **`<trackList>` comincia con `<track`.** Cercare la sottostringa nuda faceva
+  prendere l'apertura dell'elenco per una traccia, il cui blocco finiva al primo
+  `</track>` vero: **il primo brano di ogni XSPF spariva**, sempre, su file
+  perfettamente validi.
+- Le playlist intelligenti dicevano «0 brani» nella barra laterale: il conteggio
+  veniva da `playlist_tracks`, dove per loro non c'è nessuna riga.
+- Una condizione appena aggiunta veniva dichiarata «non sta in piedi» prima di
+  averci scritto dentro. Le regole incomplete adesso non si mandano e non si
+  salvano.
+
+### Aggiunto — lo scrobbling: ListenBrainz e Last.fm
+
+Mandare fuori quel che si ascolta, con la **stessa regola** che conta tutto il
+resto: metà brano o quattro minuti, quel che viene prima, mai sotto i trenta
+secondi. Non è una comodità che si riusa una funzione — è che `play_count`, la
+cronologia e lo scrobble devono contare la **stessa cosa**, e una seconda misura
+scritta qui sarebbe il difetto che `listen.rs` esiste per correggere, rientrato
+dalla porta di servizio.
+
+- **`aether-scrobble`**, crate nuovo, non vede `rusqlite`. Non è igiene: la coda
+  si svuota mille ascolti alla volta, e se questo crate potesse toccare la
+  connessione la cosa naturale da scrivere sarebbe «leggi una riga, mandala,
+  cancellala» — cioè tenere il lucchetto della libreria per tutta la durata
+  della rete, con la riproduzione ferma dietro.
+- **Una coda su disco** (`scrobble_queue`, migrazione 6). Quel che non parte
+  perché non c'è rete non si perde e riparte da solo, anche dopo una chiusura.
+  Le righe si portano dietro **i tag di allora**, non un `track_id`: fra
+  l'ascolto e l'invio il brano può essere stato cancellato, spostato o
+  ritaggato, e quel che va mandato è cosa si è ascoltato allora.
+- **I due codici d'errore orfani trovano chi li usa.**
+  `settings.lastfmNotConfigured` e `settings.lastfmNoPendingToken` stavano nel
+  catalogo senza un solo chiamante: il secondo è precisamente il consenso di
+  Last.fm chiesto quando il primo tempo non è mai stato fatto — perché quel
+  consenso è a due tempi e in mezzo c'è una persona che torna dal browser.
+- **La cronologia importata da Spotify si può mandare a ListenBrainz in
+  blocco**, ed è il cerchio che si chiude: anni di ascolti diventano la propria
+  cronologia su un servizio che non appartiene a nessuna piattaforma. Solo là, e
+  non è una preferenza — Last.fm rifiuta le date vecchie e ha un tetto
+  giornaliero.
+
+Due cose che valgono più della somma delle righe che costano:
+
+- **Un blocco rifiutato si divide invece di essere buttato.** ListenBrainz
+  valuta il documento intero: un solo ascolto con una data impossibile fa
+  rispondere `400` a tutti e mille. Segnare il blocco come fallito butterebbe
+  novecentonovantanove ascolti buoni per colpa di uno, in silenzio e secondo le
+  regole. Si dimezza finché non resta il colpevole.
+- **Un ascolto ignorato è un ascolto consegnato.** Se Last.fm risponde «accettati
+  3, ignorati 2», quei due non torneranno mai accettati — la data è quella che
+  è. Rimetterli in coda vorrebbe dire rimandarli per sempre.
+
+`aether-net` ha imparato una seconda intestazione: ListenBrainz non manda
+`Retry-After` ma `X-RateLimit-Reset-In`, e senza leggerla un `429` aspetterebbe
+alla cieca trenta secondi quando ne bastavano due — moltiplicato per ogni blocco
+di una coda che si svuota.
+
 ### Difetti noti
 
-- **La riproduzione si è fermata a 0:08 e la finestra continuava a dire che
-  suonava.** Trovato provando la fase 8 sulla libreria vera: il brano parte, la
-  posizione avanza per qualche secondo e poi si blocca; pausa e ripresa cambiano
-  l'icona, un salto sul cursore non fa niente. Il sospetto è il dispositivo
-  audio che smette di consumare — `Sonic Studio Virtual Mixer` è il predefinito
-  su questa macchina — e il fatto che **nessuno lo direbbe** è il difetto
-  certo: `Motore::perso()` esiste, `uscita.rs` alza quel bit quando `cpal`
-  segnala un guasto del flusso, e in tutta l'applicazione non c'è una riga che
-  lo legga. Un dispositivo perso oggi è indistinguibile da un brano che non
-  parte.
+- **Il consenso OAuth di Spotify non è mai stato provato contro Spotify vero.**
+  Serve un client id registrato e le mani di una persona sulla schermata di
+  consenso, quindi resta l'unica parte dell'importazione dell'account che non è
+  passata per una rete vera. L'altra via — l'archivio ZIP — sì, su un account
+  intero.
+- **Lo stesso vale per i due servizi di scrobbling.** Il documento che si manda,
+  la firma di Last.fm, la lettura delle risposte e il destino di ogni riga in
+  coda sono provati; il primo `200` da `api.listenbrainz.org` richiede un token
+  di qualcuno.
 - Una cosa che il nucleo sa fare e l'IPC non espone: i testi in
   `tracks.lyrics`. Il suo controllo è disegnato **spento, con la ragione a
   schermo**, invece di essere omesso o — peggio — finto. Le bande dello spettro,

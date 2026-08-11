@@ -1229,6 +1229,60 @@ export interface StatoNuvola {
   errore: ErroreIpc | null;
 }
 
+/** Com'è messo un servizio di scrobbling. */
+export interface CollegamentoScrobble {
+  /**
+   * Ci sono le credenziali per parlare col servizio.
+   *
+   * Diverso da `collegato`: per Last.fm servono una chiave e un segreto — che
+   * si prendono dalla propria pagina di sviluppatore — *prima* di poter anche
+   * solo chiedere il consenso. ListenBrainz non ha questo passo, e per lui è
+   * sempre vero.
+   */
+  configurato: boolean;
+  /** C'è un token o una sessione: si può mandare. */
+  collegato: boolean;
+  /** Come ci si chiama lassù. */
+  utente: string | null;
+  /** Quanti ascolti aspettano di partire verso questo servizio. */
+  inAttesa: number;
+  /** Quanti hanno finito i tentativi e stanno fermi. */
+  abbandonati: number;
+}
+
+/** Lo stato dello scrobbling. */
+export interface StatoScrobble {
+  /** Mandare quel che si ascolta è acceso. */
+  attivo: boolean;
+  listenbrainz: CollegamentoScrobble;
+  lastfm: CollegamentoScrobble;
+  /** C'è un consenso Last.fm cominciato e non finito. */
+  attesaLastfm: boolean;
+  /** C'è una passata in corso adesso. */
+  inCorso: boolean;
+}
+
+/** Com'è andata una passata di invio. */
+export interface EsitoInvio {
+  /** Quanti ascolti sono usciti e sono stati accettati. */
+  mandati: number;
+  /**
+   * Quanti il servizio ha ricevuto e scartato.
+   *
+   * Ricevuto: escono comunque dalla coda. Un ascolto che Last.fm scarta perché
+   * la data è troppo vecchia non tornerà mai accettato.
+   */
+  ignorati: number;
+  /** Perché li ha scartati, un motivo per riga senza ripetizioni. */
+  motivi: string[];
+  /** Quanti restano in coda. */
+  inAttesa: number;
+  /** Quanti hanno finito i tentativi. */
+  abbandonati: number;
+  /** Il codice del guasto che ha fermato la passata, quando ce n'è stato uno. */
+  guasto: string | null;
+}
+
 /** Un brano che il ripristino cambierebbe, o che nel backup non ha un file qui. */
 export interface CambioBrano {
   /** I tre pezzi della chiave: sono la forma **normalizzata** dei tag. */
@@ -1722,6 +1776,48 @@ export const ipc = {
   // Può metterci decine di secondi: riapre e riscrive un file per brano.
   arricchimentoAnnulla: () =>
     invoke<EsitoAnnullamento>("arricchimento_annulla"),
+
+  // ── lo scrobbling ────────────────────────────────────────────────────────
+  // Nessuno di questi comandi manda niente da sé, tranne `scrobbleInvia`: la
+  // coda si svuota da sola su un filo di sottofondo, e quel che si accoda è
+  // deciso dalla riproduzione. Qui ci sono le credenziali e i due gesti che
+  // riguardano ciò che è rimasto indietro.
+  scrobbleStato: () => invoke<StatoScrobble>("scrobble_stato"),
+  // Spento, la coda **smette di riempirsi**: mettere in pausa e poi ritrovarsi
+  // tre giorni di ascolti spediti insieme sarebbe una sorpresa.
+  scrobbleAttivo: (attivo: boolean) =>
+    invoke<StatoScrobble>("scrobble_attivo", { attivo }),
+  // Il token si verifica **prima** di essere salvato: uno sbagliato non darebbe
+  // nessun sintomo finché il primo ascolto non fallisce, ore dopo.
+  scrobbleListenbrainzCollega: (token: string) =>
+    invoke<StatoScrobble>("scrobble_listenbrainz_collega", { token }),
+  scrobbleListenbrainzScollega: () =>
+    invoke<StatoScrobble>("scrobble_listenbrainz_scollega"),
+  // Vuoti cancellano e scollegano: una sessione ottenuta con un'altra chiave
+  // continuerebbe a funzionare, e nasconderebbe che le nuove non vanno.
+  scrobbleLastfmCredenziali: (apiKey: string, segreto: string) =>
+    invoke<StatoScrobble>("scrobble_lastfm_credenziali", { apiKey, segreto }),
+  // Il consenso di Last.fm è a due tempi e **in mezzo c'è una persona**: apre il
+  // browser, e non succede più niente finché non si chiama `completa`. Last.fm
+  // non richiama nessuno, non c'è nessun socket in ascolto.
+  scrobbleLastfmCollega: () =>
+    invoke<StatoScrobble>("scrobble_lastfm_collega"),
+  scrobbleLastfmCompleta: () =>
+    invoke<StatoScrobble>("scrobble_lastfm_completa"),
+  scrobbleLastfmScollega: () =>
+    invoke<StatoScrobble>("scrobble_lastfm_scollega"),
+  // Svuota adesso invece di aspettare il filo. Può metterci minuti.
+  scrobbleInvia: () => invoke<EsitoInvio>("scrobble_invia"),
+  // Azzera i tentativi di chi li ha finiti. Serve dopo aver rimediato a quel
+  // che li aveva fermati — ricollegare un account, aspettare che il servizio
+  // torni su.
+  scrobbleRiprova: () => invoke<StatoScrobble>("scrobble_riprova"),
+  scrobbleDimentica: () => invoke<StatoScrobble>("scrobble_dimentica"),
+  // Solo verso ListenBrainz, e non è una preferenza: Last.fm rifiuta gli
+  // ascolti con una data vecchia e ha un tetto giornaliero, quindi quarantamila
+  // righe di cronologia là comparirebbero come «ignorate».
+  scrobbleImportaCronologia: (soloImportati: boolean) =>
+    invoke<number>("scrobble_importa_cronologia", { soloImportati }),
 };
 
 /**

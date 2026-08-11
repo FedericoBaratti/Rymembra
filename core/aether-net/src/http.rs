@@ -263,11 +263,7 @@ impl Rete {
         // `ureq` segue i reindirizzamenti da sé: qui si legge soltanto dove è
         // finita. Va preso **prima** del corpo, che consuma la risposta.
         let url_finale = risposta.get_uri().to_string();
-        let riprova_fra_ms = risposta
-            .headers()
-            .get("retry-after")
-            .and_then(|valore| valore.to_str().ok())
-            .and_then(secondi_in_ms);
+        let riprova_fra_ms = quanto_ha_chiesto(risposta.headers());
         let posizione = risposta
             .headers()
             .get("location")
@@ -408,6 +404,31 @@ pub fn quanto_aspettare(err: &AppError, predefinita: Duration) -> Duration {
     chiesto.unwrap_or(predefinita).min(ATTESA_MASSIMA)
 }
 
+/// Quanto il servizio ha chiesto di aspettare, in millisecondi.
+///
+/// Due intestazioni, e la seconda non è un capriccio: `Retry-After` è quella
+/// standard e la mandano Google e Spotify, ma **ListenBrainz non la manda**. Al
+/// suo posto dichiara `X-RateLimit-Reset-In`, i secondi che mancano alla
+/// finestra successiva, ed è documentata insieme all'endpoint — non è
+/// un'estensione inventata da noi.
+///
+/// Senza questa riga un `429` di ListenBrainz ricadrebbe sull'attesa che
+/// raddoppia: corretta, ma cieca. Con una coda di scrobble che si svuota mille
+/// ascolti alla volta significa aspettare trenta secondi quando ne bastavano
+/// due, moltiplicato per ogni blocco.
+///
+/// L'ordine conta: se un giorno ListenBrainz mandasse tutte e due, quella
+/// standard vince. È l'unica delle due che tutti i proxy di mezzo capiscono.
+fn quanto_ha_chiesto(intestazioni: &ureq::http::HeaderMap) -> Option<u64> {
+    let legge = |nome: &str| {
+        intestazioni
+            .get(nome)
+            .and_then(|valore| valore.to_str().ok())
+            .and_then(secondi_in_ms)
+    };
+    legge("retry-after").or_else(|| legge("x-ratelimit-reset-in"))
+}
+
 /// Un `Retry-After` in secondi, tradotto in millisecondi.
 ///
 /// La forma con la data HTTP (`Retry-After: Wed, 21 Oct 2015 07:28:00 GMT`) non
@@ -517,6 +538,41 @@ mod prove {
             None,
             "resta l'attesa che raddoppia, che è comunque corretta"
         );
+    }
+
+    #[test]
+    fn listenbrainz_dice_quanto_aspettare_con_un_altro_nome() {
+        let mappa = |coppie: &[(&str, &str)]| {
+            let mut m = ureq::http::HeaderMap::new();
+            for (nome, valore) in coppie {
+                if let (Ok(n), Ok(v)) = (
+                    ureq::http::HeaderName::try_from(*nome),
+                    ureq::http::HeaderValue::try_from(*valore),
+                ) {
+                    m.insert(n, v);
+                }
+            }
+            m
+        };
+
+        assert_eq!(
+            quanto_ha_chiesto(&mappa(&[("retry-after", "7")])),
+            Some(7000)
+        );
+        assert_eq!(
+            quanto_ha_chiesto(&mappa(&[("x-ratelimit-reset-in", "3")])),
+            Some(3000),
+            "ListenBrainz non manda Retry-After: senza questa riga un 429 aspetterebbe alla cieca"
+        );
+        assert_eq!(
+            quanto_ha_chiesto(&mappa(&[
+                ("retry-after", "1"),
+                ("x-ratelimit-reset-in", "60")
+            ])),
+            Some(1000),
+            "quella standard vince: è l'unica che i proxy di mezzo capiscono"
+        );
+        assert_eq!(quanto_ha_chiesto(&mappa(&[])), None);
     }
 
     #[test]

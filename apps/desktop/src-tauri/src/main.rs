@@ -18,6 +18,7 @@ mod playlist;
 mod riordino;
 mod riproduzione;
 mod scarica;
+mod scrobble;
 mod skin;
 mod spotify;
 mod stato;
@@ -121,6 +122,13 @@ fn main() {
             let (arricchimento, orecchio) = arricchimento::StatoArricchimento::nuovo();
             app.manage(arricchimento);
             arricchimento::avvia_filo(app.handle().clone(), orecchio);
+
+            // Lo scrobbling **dopo** la libreria, perché la prima cosa che fa è
+            // guardare se è rimasto qualcosa in coda dalla sessione precedente.
+            // Il suo filo dorme finché non lo si chiama: a servizi scollegati
+            // non costa niente.
+            app.manage(scrobble::StatoScrobble::nuovo());
+            scrobble::avvia(app.handle());
 
             // Per ultima, e dopo tutto il resto: quel che conta è che parta a
             // finestra già costruita, non prima di aprire il database.
@@ -241,6 +249,18 @@ fn main() {
             arricchimento::arricchimento_stato,
             arricchimento::arricchimento_attiva,
             arricchimento::arricchimento_annulla,
+            scrobble::scrobble_stato,
+            scrobble::scrobble_attivo,
+            scrobble::scrobble_listenbrainz_collega,
+            scrobble::scrobble_listenbrainz_scollega,
+            scrobble::scrobble_lastfm_credenziali,
+            scrobble::scrobble_lastfm_collega,
+            scrobble::scrobble_lastfm_completa,
+            scrobble::scrobble_lastfm_scollega,
+            scrobble::scrobble_invia,
+            scrobble::scrobble_riprova,
+            scrobble::scrobble_dimentica,
+            scrobble::scrobble_importa_cronologia,
         ])
         .run(tauri::generate_context!());
 
