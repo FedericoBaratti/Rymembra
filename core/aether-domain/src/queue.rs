@@ -367,15 +367,28 @@ impl Queue {
     ///
     /// Vedi [`RIAVVIO_SOTTO_MS`]: il gesto ha due significati e li separa la
     /// posizione nel brano.
+    ///
+    /// # In testa alla coda
+    ///
+    /// Con `Repeat::All` si avvolge all'**ultimo** brano, esattamente come
+    /// [`Self::advance`] avvolge al primo. Senza, i due versi della stessa coda
+    /// circolare si comporterebbero diversamente: andando avanti la coda gira,
+    /// tornando indietro si incaglia sul primo brano. Con gli altri due modi non
+    /// c'è un brano prima del primo, e allora il gesto vuol dire «ricomincia».
     pub fn previous(&mut self, position_ms: u64) -> Step {
         if self.order.is_empty() {
             return Step::Stop;
         }
         let pos = self.order_pos.unwrap_or(0);
-        if position_ms >= RIAVVIO_SOTTO_MS || pos == 0 {
+        if position_ms >= RIAVVIO_SOTTO_MS {
             return Step::Restart;
         }
-        self.order_pos = Some(pos.saturating_sub(1));
+        let prima = match pos.checked_sub(1) {
+            Some(prima) => prima,
+            None if self.repeat == RepeatMode::All => self.order.len().saturating_sub(1),
+            None => return Step::Restart,
+        };
+        self.order_pos = Some(prima);
         self.current().map_or(Step::Stop, Step::Track)
     }
 
@@ -584,6 +597,36 @@ mod prove {
     fn precedente_sul_primo_brano_lo_ricomincia() {
         let mut q = coda(3);
         assert_eq!(q.previous(0), Step::Restart);
+    }
+
+    #[test]
+    fn con_ripeti_tutto_precedente_avvolge_come_avvolge_prossimo() {
+        // I due versi di una coda circolare devono comportarsi allo stesso modo.
+        // Prima andando avanti la coda girava e tornando indietro si incagliava
+        // sul primo brano: la stessa coda, dichiarata circolare, che gira in un
+        // verso solo.
+        let mut q = coda(3);
+        q.set_repeat(RepeatMode::All);
+
+        // Indietro dal primo: si arriva all'ultimo.
+        assert_eq!(q.previous(0), Step::Track(3));
+        assert_eq!(q.position(), Some(2));
+        // E avanti dall'ultimo si torna al primo, com'è sempre stato.
+        assert_eq!(q.advance(true), Step::Track(1));
+        assert_eq!(q.position(), Some(0));
+    }
+
+    #[test]
+    fn senza_ripeti_tutto_precedente_sul_primo_resta_un_riavvio() {
+        // L'avvolgimento è una conseguenza di «ripeti tutto», non un cambio di
+        // significato del gesto: con gli altri due modi non c'è un brano prima
+        // del primo.
+        for modo in [RepeatMode::Off, RepeatMode::One] {
+            let mut q = coda(3);
+            q.set_repeat(modo);
+            assert_eq!(q.previous(0), Step::Restart, "modo {modo:?}");
+            assert_eq!(q.current(), Some(1), "modo {modo:?}");
+        }
     }
 
     #[test]
