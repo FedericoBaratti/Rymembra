@@ -333,6 +333,18 @@ pub fn da_mandare(
 /// rimetterlo in fila vorrebbe dire rimandarlo per sempre. È consegnato, e il
 /// motivo dell'ignoro lo racconta il rapporto, non la coda.
 ///
+/// # Il lotto si chiude tutto insieme, o non si chiude
+///
+/// La transazione non è un'ottimizzazione. Fuori da una, ogni `DELETE` è una
+/// transazione implicita a sé: una caduta a metà ciclo lascerebbe una parte del
+/// lotto cancellata e il resto in coda, e quel resto **il servizio l'ha già
+/// ricevuto**. La passata dopo lo rimanderebbe, cioè scrobble doppi su Last.fm e
+/// ListenBrainz — e un ascolto contato due volte è esattamente il dato che una
+/// riscansione non sa rimettere a posto.
+///
+/// Che poi cinquanta righe costino un commit invece di cinquanta è il secondo
+/// motivo, non il primo.
+///
 /// # Errori
 ///
 /// `db.queryFailed`.
@@ -340,15 +352,23 @@ pub fn fatte(connection: &Connection, id: &[i64]) -> Result<usize, AppError> {
     if id.is_empty() {
         return Ok(0);
     }
+    let transazione = connection
+        .unchecked_transaction()
+        .map_err(|err| db_error("apertura della chiusura scrobble", &err))?;
     let mut tolte = 0;
-    let mut istruzione = connection
-        .prepare("DELETE FROM scrobble_queue WHERE id = ?1")
-        .map_err(|err| db_error("preparazione della chiusura scrobble", &err))?;
-    for uno in id {
-        tolte += istruzione
-            .execute([uno])
-            .map_err(|err| db_error("chiusura di uno scrobble", &err))?;
+    {
+        let mut istruzione = transazione
+            .prepare("DELETE FROM scrobble_queue WHERE id = ?1")
+            .map_err(|err| db_error("preparazione della chiusura scrobble", &err))?;
+        for uno in id {
+            tolte += istruzione
+                .execute([uno])
+                .map_err(|err| db_error("chiusura di uno scrobble", &err))?;
+        }
     }
+    transazione
+        .commit()
+        .map_err(|err| db_error("chiusura del lotto scrobble", &err))?;
     Ok(tolte)
 }
 
@@ -376,15 +396,27 @@ pub fn fallite(
     } else {
         "UPDATE scrobble_queue SET attempts = MIN(attempts + 1, ?2), last_error = ?3 WHERE id = ?1"
     };
-    let mut istruzione = connection
-        .prepare(sql)
-        .map_err(|err| db_error("preparazione del fallimento scrobble", &err))?;
+    // In transazione per la stessa ragione di [`fatte`], al contrario: un lotto
+    // segnato per metà lascerebbe l'altra metà con i tentativi di prima, cioè in
+    // testa alla coda a ritentare un guasto già dichiarato definitivo.
+    let transazione = connection
+        .unchecked_transaction()
+        .map_err(|err| db_error("apertura del fallimento scrobble", &err))?;
     let mut segnate = 0;
-    for uno in id {
-        segnate += istruzione
-            .execute(rusqlite::params![uno, MASSIMI_TENTATIVI, ritaglia(causa)])
-            .map_err(|err| db_error("registrazione di un fallimento scrobble", &err))?;
+    {
+        let mut istruzione = transazione
+            .prepare(sql)
+            .map_err(|err| db_error("preparazione del fallimento scrobble", &err))?;
+        let causa = ritaglia(causa);
+        for uno in id {
+            segnate += istruzione
+                .execute(rusqlite::params![uno, MASSIMI_TENTATIVI, causa])
+                .map_err(|err| db_error("registrazione di un fallimento scrobble", &err))?;
+        }
     }
+    transazione
+        .commit()
+        .map_err(|err| db_error("chiusura dei fallimenti scrobble", &err))?;
     Ok(segnate)
 }
 
@@ -759,6 +791,46 @@ mod prove {
             )
             .expect("lettura");
         assert_eq!(scritto.chars().count(), 300);
+    }
+
+    #[test]
+    fn un_lotto_chiuso_a_meta_non_lascia_niente_di_chiuso() {
+        // Il difetto che questa prova impedisce: senza transazione, ogni `DELETE`
+        // è una transazione implicita a sé. Una caduta a metà lotto cancellava le
+        // righe già passate e lasciava le altre in coda — ma il servizio le aveva
+        // ricevute **tutte**, quindi la passata dopo rimandava le superstiti. Il
+        // sintomo, dall'altra parte, sono scrobble doppi: l'unico dato che una
+        // riscansione non sa rimettere a posto.
+        let c = libreria();
+        for quando in [1_700_000_000, 1_700_000_300, 1_700_000_600] {
+            let mut a = ascolto();
+            a.quando_s = quando;
+            accoda(&c, &[Servizio::ListenBrainz], &a).expect("accodamento");
+        }
+        let id: Vec<i64> = da_mandare(&c, Servizio::ListenBrainz, 10)
+            .expect("coda")
+            .iter()
+            .map(|v| v.id)
+            .collect();
+        assert_eq!(id.len(), 3, "tre righe da chiudere");
+
+        // La seconda cancellazione fallisce: è la caduta a metà lotto, in forma
+        // riproducibile.
+        let seconda = id.get(1).copied().unwrap_or(0);
+        c.execute_batch(&format!(
+            "CREATE TRIGGER cade_a_meta BEFORE DELETE ON scrobble_queue
+                 WHEN OLD.id = {seconda}
+             BEGIN SELECT RAISE(ABORT, 'caduta simulata'); END;"
+        ))
+        .expect("trigger");
+
+        assert!(fatte(&c, &id).is_err(), "il lotto non si è potuto chiudere");
+        assert_eq!(
+            conteggi(&c, None).expect("conteggi").in_attesa,
+            3,
+            "o si chiude tutto il lotto, o non se ne chiude niente: una riga \
+             cancellata qui sarebbe uno scrobble mandato due volte"
+        );
     }
 
     #[test]

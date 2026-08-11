@@ -737,11 +737,22 @@ const fn meta(quante: usize) -> usize {
 }
 
 /// Chiude le righe: via quelle arrivate, contate quelle rifiutate.
+///
+/// I fallimenti si raggruppano per causa invece di chiudersi uno per uno. La
+/// bisezione produce la **stessa** causa per tutte le voci di un ramo — è la
+/// stessa stringa clonata — quindi un lotto rifiutato in blocco è un gruppo solo,
+/// e una chiamata sola: [`coda::fallite`] apre una transazione per invocazione, e
+/// una per riga vorrebbe dire tornare ai commit contati che questa correzione
+/// toglie di mezzo.
 fn chiudi(stato: &State<'_, Stato>, riuscite: &[i64], fallite: &[(i64, String)]) {
+    let mut per_causa: std::collections::HashMap<&str, Vec<i64>> = std::collections::HashMap::new();
+    for (id, causa) in fallite {
+        per_causa.entry(causa.as_str()).or_default().push(*id);
+    }
     let esito = con_libreria(stato, |libreria| {
         coda::fatte(&libreria.connection, riuscite)?;
-        for (id, causa) in fallite {
-            coda::fallite(&libreria.connection, &[*id], causa, true)?;
+        for (causa, id) in &per_causa {
+            coda::fallite(&libreria.connection, id, causa, true)?;
         }
         Ok(())
     });
