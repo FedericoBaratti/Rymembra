@@ -989,6 +989,51 @@ body {
   flex: none;
 }
 
+/* La cartella degli scaricamenti si disegna come una di quelle sorvegliate —
+   è la stessa cosa, un percorso — ma senza i tasti accanto: quel che ci si fa
+   sta nelle azioni sotto, perché sono due comandi con un'etichetta e non due
+   icone da indovinare. Il troncamento da sinistra viene da `.cartella
+   .percorso`, e per la stessa ragione: la coda di un percorso dice più della
+   testa. */
+.cartella-scarichi {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  font-size: 12px;
+  color: var(--color-text-2);
+  background: var(--color-surface-2);
+  border-radius: var(--radius-card);
+  padding: 8px var(--spazio-3);
+  overflow: hidden;
+}
+.cartella-scarichi .percorso {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  direction: rtl;
+  unicode-bidi: plaintext;
+  text-align: left;
+  word-break: normal;
+}
+/* Un avviso dentro una scheda delle impostazioni, e non il `.avviso` globale:
+   quello è una griglia con la barretta d'accento, fatta per l'elenco degli
+   avvisi dello Studio. Qui è una frase sotto un percorso. */
+.impostazioni .scheda > .avviso {
+  display: block;
+  margin: var(--spazio-2) 0 0;
+  padding: var(--spazio-2) var(--spazio-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-card);
+  background: var(--warning-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-text-1);
+}
+
 .bottone {
   /* `inline-flex` e non `inline-block`: da quando l'etichetta può essere
      preceduta da un'icona, il testo e il disegno vanno allineati al centro fra
@@ -5335,6 +5380,48 @@ body {
   width: 24px;
   height: 24px;
   font-size: 11px;
+}
+
+/* ── la cronologia, sotto la stessa linguetta della coda ──────────────────── */
+/*
+ * Riusa `.riga-coda` perché è la stessa riga — icona, titolo con sotto
+ * l'interprete, un dato a destra — e ridisegnarla da capo vorrebbe dire due
+ * elenchi che si somigliano fino al giorno in cui uno dei due cambia. Quel che
+ * qui è diverso è diverso davvero: tre colonne invece di quattro (non c'è
+ * niente da togliere: un ascolto è successo, e cancellarlo dalla cronologia non
+ * lo farebbe non succedere), e nessun trascinamento.
+ */
+.cronologia {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* La scatola che scorre la porta `.coda-in-colonna .righe-coda`, che questo
+   elenco ha per classe insieme alla sua. Qui resta solo il caso in cui la
+   cronologia sta da sola, senza quella cornice. */
+.righe-cronologia {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.righe-cronologia .riga-coda {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  cursor: default;
+}
+/* La presa della coda dice «questa riga si trascina», e qui non è vero. Al suo
+   posto l'icona resta visibile sempre, perché porta un'informazione: distingue
+   un ascolto fatto qui da uno importato da Spotify. */
+.righe-cronologia .riga-coda .presa {
+  opacity: 1;
+  color: var(--color-text-3);
+}
+.righe-cronologia .riga-coda:active {
+  cursor: default;
+}
+.altri-ascolti {
+  flex: none;
+  margin: 0 var(--spazio-2) var(--spazio-2);
 }
 
 /* ── il menù contestuale ─────────────────────────────────────────────────── */

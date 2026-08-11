@@ -73,7 +73,7 @@ fn main() {
         // `tauri.conf.json` resta identico.
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
+            let data_dir = cartella_dati(app.handle())?;
             // Prima della libreria, perché non ne ha bisogno: tiene solo il
             // percorso di `spotify.json` e una cella vuota. Il lettore vero
             // nasce alla prima importazione, così chi non importa mai da
@@ -136,6 +136,9 @@ fn main() {
             pronto,
             comandi::avvio,
             comandi::imposta_cartelle,
+            comandi::imposta_cartella_download,
+            comandi::cronologia,
+            comandi::cronologia_conteggio,
             comandi::scansiona,
             comandi::annulla_scansione,
             comandi::cerca,
@@ -204,6 +207,7 @@ fn main() {
             riproduzione::vai_a,
             riproduzione::volume,
             riproduzione::equalizzatore,
+            riproduzione::normalizzazione,
             riproduzione::spettro,
             riproduzione::eq_preset_elenco,
             riproduzione::eq_preset_salva,
@@ -241,6 +245,35 @@ fn main() {
         eprintln!("Aether non è riuscito ad avviarsi: {err}");
         std::process::exit(1);
     }
+}
+
+/// Dove stanno database, copertine e skin.
+///
+/// Normalmente la cartella dati dell'applicazione, che su Windows è
+/// `%APPDATA%\dev.aether.desktop`. `AETHER_DATI` la sostituisce.
+///
+/// # Perché una scorciatoia del genere esiste
+///
+/// Perché quasi tutto ciò che questa applicazione fa di irreversibile —
+/// riordinare i file sul disco, importare un account intero, ripristinare un
+/// backup — si può leggere in una prova unitaria e si può giudicare **solo**
+/// guardandolo succedere in una finestra vera, su una libreria che somiglia a
+/// quella di qualcuno. Senza questa variabile le due cose sono la stessa
+/// libreria: la sola, quella dell'utente. Provare un'importazione vorrebbe dire
+/// scrivere sulla sua cronologia d'ascolto, che è — con voti e preferiti —
+/// l'unica cosa in tutto il programma che una scansione non sa ricostruire.
+///
+/// Con questa, si copia il database in una cartella qualunque, si lancia
+/// `AETHER_DATI=... aether.exe` e si rompe pure tutto: la libreria vera non sa
+/// nemmeno che è successo.
+///
+/// La variabile si legge **solo qui**, all'avvio, e da nessun'altra parte:
+/// quello che il resto del programma vede è un `PathBuf` e basta, come prima.
+fn cartella_dati(app: &tauri::AppHandle) -> Result<std::path::PathBuf, tauri::Error> {
+    if let Some(scelta) = std::env::var_os("AETHER_DATI").filter(|v| !v.is_empty()) {
+        return Ok(std::path::PathBuf::from(scelta));
+    }
+    app.path().app_data_dir().map_err(Into::into)
 }
 
 /// Dove stanno i binari esterni — oggi solo yt-dlp.

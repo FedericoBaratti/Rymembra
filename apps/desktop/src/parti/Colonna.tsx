@@ -30,6 +30,7 @@ import { useState } from "react";
 import { Copertina, Sfocata } from "../Copertina";
 import { RigheCoda, useRigheCoda } from "../Coda";
 import { ipc, type Brano, type StatoRiproduzione } from "../ipc";
+import { Cronologia } from "./Cronologia";
 import { Giudizio } from "./Giudizio";
 import { Icona } from "./Icone";
 import { Scrubber } from "./Scrubber";
@@ -152,27 +153,29 @@ export function Colonna({
             classe="minuto"
             voci={[
               { chiave: "coda", etichetta: "Coda", conteggio: stato.coda.length },
-              {
-                chiave: "cronologia",
-                etichetta: "Cronologia",
-                /* Il nucleo la scrive — `listening_history` esiste ed è
-                   popolata — ma non c'è un comando che la legga. La linguetta
-                   resta, spenta e con la sua ragione: toglierla nasconderebbe
-                   che i dati ci sono già. */
-                spenta: "La cronologia si registra, ma non c'è ancora un comando per leggerla",
-              },
+              { chiave: "cronologia", etichetta: "Cronologia" },
             ]}
           />
-          <button
-            type="button"
-            className="bottone minuto btn-ghost"
-            disabled={stato.coda.length === 0}
-            onClick={() => comanda(ipc.codaSvuota())}
-          >
-            Svuota
-          </button>
+          {/* «Svuota» è della coda, e con la cronologia aperta non avrebbe
+              niente da svuotare che sia sotto gli occhi. Sparisce invece di
+              spegnersi: un tasto spento accanto a un elenco che non è il suo è
+              un tasto che invita a chiedersi cosa cancellerebbe. */}
+          {scheda === "coda" && (
+            <button
+              type="button"
+              className="bottone minuto btn-ghost"
+              disabled={stato.coda.length === 0}
+              onClick={() => comanda(ipc.codaSvuota())}
+            >
+              Svuota
+            </button>
+          )}
         </div>
-        <RigheCoda stato={stato} righe={righe} onErrore={onErrore} compatta />
+        {scheda === "coda" ? (
+          <RigheCoda stato={stato} righe={righe} onErrore={onErrore} compatta />
+        ) : (
+          <Cronologia stato={stato} onErrore={onErrore} />
+        )}
       </div>
     </aside>
   );

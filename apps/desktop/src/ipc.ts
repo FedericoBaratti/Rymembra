@@ -154,6 +154,15 @@ export interface Avvio {
   migrazioni: number;
   fts5: boolean;
   cartelle: string[];
+  /**
+   * Dove finiscono i brani scaricati, se è stata scelta.
+   *
+   * `null` **non** vuol dire «nessuna»: vuol dire la prima cartella
+   * sorvegliata, che è quel che il nucleo fa davvero. Il valore di serie non
+   * arriva già risolto perché la differenza fra una scelta e un ripiego è
+   * proprio quel che la scheda deve poter dire.
+   */
+  cartellaDownload: string | null;
   numeri: Numeri;
 }
 
@@ -197,6 +206,25 @@ export interface Playlist {
 }
 
 /** Come ordinare un elenco di brani. */
+/**
+ * Un ascolto, con il brano che lo ha prodotto.
+ *
+ * Il brano intero e non il solo identificativo: la cronologia è fatta di
+ * titoli, e duecento righe vorrebbero dire duecento richieste — o una
+ * `braniPerId` che rimescola l'ordine proprio quando l'ordine *è* il contenuto.
+ */
+export interface VoceCronologia {
+  /** La riga, per distinguere due ascolti dello stesso brano nello stesso istante. */
+  id: number;
+  brano: Brano;
+  /** Quando è **finito**, in millisecondi dall'epoca. */
+  quandoMs: number;
+  /** Quanto se n'è sentito. */
+  msAscoltati: number;
+  /** `local` se l'ha suonato Aether, `spotify` se importato da un account. */
+  sorgente: string;
+}
+
 export type Ordine = "scaffale" | "recenti" | "ascoltati" | "titolo";
 
 /** Come si ripete: niente, questo brano, tutta la coda. */
@@ -223,6 +251,8 @@ export interface StatoRiproduzione {
   posizioneCoda: number | null;
   eqAttivo: boolean;
   eqGuadagni: number[];
+  /** La normalizzazione ReplayGain è accesa. Di serie sì. */
+  replaygain: boolean;
 }
 
 /** Solo il tempo che passa: arriva quattro volte al secondo mentre suona. */
@@ -1138,6 +1168,16 @@ export const ipc = {
   avvio: () => invoke<Avvio>("avvio"),
   impostaCartelle: (cartelle: string[]) =>
     invoke<void>("imposta_cartelle", { cartelle }),
+  // Stringa vuota = rimetti il valore di serie, cioè la prima cartella
+  // sorvegliata. Il nucleo **toglie** la riga invece di scriverci dentro il
+  // vuoto: «mai scelta» e «scelta vuota» devono restare la stessa cosa.
+  impostaCartellaDownload: (percorso: string) =>
+    invoke<void>("imposta_cartella_download", { percorso }),
+  // La cronologia d'ascolto, dal più recente. Si scriveva dal primo giorno e
+  // non la leggeva nessuno; dopo l'importazione di un account contiene anni.
+  cronologia: (offset: number, limite: number) =>
+    invoke<VoceCronologia[]>("cronologia", { offset, limite }),
+  cronologiaConteggio: () => invoke<number>("cronologia_conteggio"),
   scansiona: () => invoke<EsitoScansione>("scansiona"),
   // Torna subito: fermarsi vuol dire «alla fine del lotto in corso», non
   // «adesso». Che sia successo lo dice `EsitoScansione.annullata`.
@@ -1334,6 +1374,12 @@ export const ipc = {
   // campi e nessuna query.
   equalizzatore: (guadagni: number[], attivo: boolean) =>
     invoke<void>("equalizzatore", { guadagni, attivo }),
+  // La normalizzazione invece manda `riproduzione:stato`: arriva quando un dito
+  // preme un interruttore, non dodici volte al secondo. Sui brani senza tag
+  // ReplayGain non sposta niente in nessuna delle due posizioni — la
+  // correzione esiste solo dove c'è un guadagno dichiarato da rispettare.
+  normalizzazione: (attivo: boolean) =>
+    invoke<void>("normalizzazione", { attivo }),
   // Lo spettro si accende e si spegne: acceso, la callback audio scrive i
   // campioni in un terzo anello e un filo manda `riproduzione:spettro` trenta
   // volte al secondo. Spento non costa niente da nessuna delle due parti, ed è

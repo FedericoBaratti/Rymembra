@@ -1014,6 +1014,29 @@ export function App() {
     await ricarica();
   };
 
+  /**
+   * Sceglie dove finiscono i brani scaricati.
+   *
+   * Il dialogo si apre sulla cartella già scelta, o sulla prima sorvegliata:
+   * chi la cambia quasi sempre la sposta lì accanto, e ripartire dalla radice
+   * del disco ogni volta è la differenza fra due clic e otto.
+   */
+  const scegliCartellaDownload = async () => {
+    const partenza = avvio?.cartellaDownload ?? avvio?.cartelle[0];
+    const scelta = await open({
+      directory: true,
+      multiple: false,
+      ...(partenza === undefined ? {} : { defaultPath: partenza }),
+    });
+    if (typeof scelta !== "string") return;
+    try {
+      await ipc.impostaCartellaDownload(scelta);
+      await ricarica();
+    } catch (e) {
+      segnalaErrore(e);
+    }
+  };
+
   const togliCartella = async (percorso: string) => {
     if (!avvio) return;
     try {
@@ -1843,9 +1866,26 @@ export function App() {
           onTema={setTema}
           eqAttivo={riproduzione.stato.eqAttivo}
           eqGuadagni={riproduzione.stato.eqGuadagni}
+          replaygain={riproduzione.stato.replaygain}
+          onReplaygain={(attivo) => {
+            // Nessun `setStato` qui: il comando manda `riproduzione:stato`, e
+            // l'interruttore si muove quando il motore ha davvero cambiato
+            // posizione. Anticiparlo mostrerebbe «acceso» anche se il salvataggio
+            // fallisse.
+            ipc.normalizzazione(attivo).catch(segnalaErrore);
+          }}
           onErrore={segnalaErrore}
           onAggiungiCartella={() => void scegliCartella()}
           onTogliCartella={(c) => void togliCartella(c)}
+          onScegliCartellaDownload={() => void scegliCartellaDownload()}
+          onCartellaDownloadDiSerie={() => {
+            // Stringa vuota: il nucleo toglie la riga e torna alla prima
+            // cartella sorvegliata.
+            ipc
+              .impostaCartellaDownload("")
+              .then(ricarica)
+              .catch(segnalaErrore);
+          }}
           onRiordina={setDaRiordinare}
           onScansiona={() => void scansiona()}
           onAnnullaScansione={() => {

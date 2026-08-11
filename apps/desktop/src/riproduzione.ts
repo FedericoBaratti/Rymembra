@@ -51,6 +51,9 @@ const FERMO: StatoRiproduzione = {
   posizioneCoda: null,
   eqAttivo: false,
   eqGuadagni: [],
+  // Acceso, come il motore: il valore di ripiego finché il nucleo non risponde
+  // deve dire quel che sta succedendo davvero, non la posizione più prudente.
+  replaygain: true,
 };
 
 // ── La posizione, fuori da React ────────────────────────────────────────────

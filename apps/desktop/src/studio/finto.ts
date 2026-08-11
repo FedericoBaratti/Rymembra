@@ -62,6 +62,7 @@ const STATO: StatoRiproduzione = {
   // l'equalizzatore sia una decisione della skin.
   eqAttivo: false,
   eqGuadagni: [],
+  replaygain: true,
 };
 
 /** Un comando che non fa niente: nell'anteprima non c'è niente da comandare. */

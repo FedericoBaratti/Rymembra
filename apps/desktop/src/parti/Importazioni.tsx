@@ -46,6 +46,14 @@ interface Sessione {
   quando: number;
 }
 
+/** Il viaggio di ritorno: i brani scesi che tornano nelle loro playlist. */
+export interface Rientro {
+  /** Quante voci sono tornate nelle loro playlist. */
+  vociRimesse: number;
+  /** Quante righe si sono chiuse perché il brano ormai in libreria c'è. */
+  righeChiuse: number;
+}
+
 /** Una riga dell'elenco, da qualunque delle due parti arrivi. */
 export interface RigaImportazione {
   sourceId: string;
@@ -78,6 +86,16 @@ export interface UsoImportazioni {
   brano: BranoScarico | null;
   /** Perché la coda non è partita, quando non parte. */
   errore: string | null;
+  /**
+   * Cosa ha rimesso a posto l'ultimo viaggio di ritorno, se ce n'è stato uno.
+   *
+   * I brani scesi non finiscono da soli nelle playlist da cui mancavano: il
+   * nucleo li rimette al loro posto dopo la scansione finale, ed è l'unica
+   * parte dell'importazione che avviene **dopo** che la coda ha finito. Senza
+   * dirlo, chi guarda vede una playlist riempirsi da sola qualche secondo dopo
+   * che tutto sembrava concluso.
+   */
+  rientro: Rientro | null;
   /** Prende in carico un'importazione appena confermata. */
   registra: (esito: EsitoSpotify) => void;
   /** Toglie dall'elenco un'importazione conclusa. */
@@ -106,6 +124,7 @@ export function useImportazioni(): UsoImportazioni {
   const [stato, setStato] = useState<StatoScarico | null>(null);
   const [brano, setBrano] = useState<BranoScarico | null>(null);
   const [errore, setErrore] = useState<string | null>(null);
+  const [rientro, setRientro] = useState<Rientro | null>(null);
   /** Le importazioni confermate in questa sessione. */
   const [registrate, setRegistrate] = useState<Map<string, Sessione>>(
     () => new Map(),
@@ -162,6 +181,18 @@ export function useImportazioni(): UsoImportazioni {
       // conteggi definitivi senza tenere un interrogatorio acceso.
       listen("scarico:finito", () => {
         setBrano(null);
+        void ipc
+          .scaricoStato()
+          .then(setStato)
+          .catch(() => {});
+      }),
+      // Il viaggio di ritorno. Non è solo una notizia da mostrare: `riconcilia`
+      // **chiude** delle righe di `spotify_wanted` senza passare per la coda,
+      // quindi i conteggi in mano qui sono già vecchi nell'istante in cui
+      // questo evento arriva. Senza la rilettura, un'importazione conclusa
+      // resterebbe a mostrare dei brani «in attesa» che non esistono più.
+      listen<Rientro>("scarico:riconciliato", (evento) => {
+        setRientro(evento.payload);
         void ipc
           .scaricoStato()
           .then(setStato)
@@ -316,6 +347,7 @@ export function useImportazioni(): UsoImportazioni {
     stato,
     brano,
     errore,
+    rientro,
     registra,
     scarta,
     annulla,
@@ -431,7 +463,7 @@ export function Importazioni({
 }: {
   importazioni: UsoImportazioni;
 }) {
-  const { elenco, stato, brano, errore, scarta } = importazioni;
+  const { elenco, stato, brano, errore, rientro, scarta } = importazioni;
   if (elenco.length === 0) return null;
 
   const inAttesa = stato?.conteggi.attesa ?? 0;
@@ -461,6 +493,14 @@ export function Importazioni({
       )}
 
       {errore && <div className="errore">{errore}</div>}
+
+      {rientro !== null && rientro.vociRimesse > 0 && (
+        <p className="esito">
+          {rientro.vociRimesse.toLocaleString("it")}{" "}
+          {rientro.vociRimesse === 1 ? "brano è tornato" : "brani sono tornati"}{" "}
+          nelle playlist da cui {rientro.vociRimesse === 1 ? "mancava" : "mancavano"}.
+        </p>
+      )}
 
       <ul className="elenco-importazioni">
         {elenco.map((riga) => (

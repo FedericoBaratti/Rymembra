@@ -111,6 +111,34 @@ pub fn write(connection: &Connection, chiave: &str, valore: &str) -> Result<(), 
         .map_err(|err| db_error(chiave, &err))
 }
 
+/// Toglie un'impostazione, se c'è. Dice se c'era.
+///
+/// # Perché non basta scriverci dentro una stringa vuota
+///
+/// Perché stringa vuota e assente sono due stati diversi, e chi legge lo sa solo
+/// se glielo si ricorda. `nuvola.email` si «cancellava» così, e chi si scollegava
+/// lasciava in tabella una riga `nuvola.email = ""`: [`read`] rispondeva
+/// `Some("")` e ogni lettore doveva ricordarsi di aggiungere un
+/// `.filter(|e| !e.is_empty())` per non mostrare un indirizzo vuoto al posto di
+/// nessun indirizzo. Il primo che se lo dimentica non produce un errore —
+/// produce una schermata che dice di essere collegata a un account senza nome.
+///
+/// C'è anche la ragione più semplice, e vale da sola: un'identità che l'utente
+/// ha chiesto di dimenticare non deve restare scritta in un file che il backup
+/// copia via.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde. Una chiave che non c'era
+/// **non** è un errore: cancellare due volte è la stessa cosa che cancellare
+/// una volta, ed è ciò che permette di chiamarla senza guardare prima.
+pub fn forget(connection: &Connection, chiave: &str) -> Result<bool, AppError> {
+    connection
+        .execute("DELETE FROM settings WHERE key = ?1", [chiave])
+        .map(|righe| righe > 0)
+        .map_err(|err| db_error(chiave, &err))
+}
+
 /// Legge un'impostazione interpretandola come JSON.
 ///
 /// Un valore che non si interpreta vale **come se non ci fosse**, e non come un
@@ -209,6 +237,28 @@ mod tests {
         let connection = connessione();
         assert_eq!(write(&connection, "cartelle", "\"una stringa\""), Ok(()));
         assert_eq!(read_json::<Vec<String>>(&connection, "cartelle"), Ok(None));
+    }
+
+    #[test]
+    fn cancellare_toglie_la_riga_invece_di_svuotarla() {
+        // La differenza che conta: dopo `forget` la chiave torna a essere
+        // «mai scritta», che è lo stato in cui chi legge applica il suo valore
+        // di serie. Con una stringa vuota resterebbe «scritta, e vuota».
+        let connection = connessione();
+        assert_eq!(
+            write(&connection, "nuvola.email", "tizio@esempio.it"),
+            Ok(())
+        );
+        assert_eq!(forget(&connection, "nuvola.email"), Ok(true));
+        assert_eq!(read(&connection, "nuvola.email"), Ok(None));
+    }
+
+    #[test]
+    fn cancellare_una_chiave_che_non_c_e_non_e_un_errore() {
+        // È ciò che permette di scollegarsi due volte, o di scollegarsi senza
+        // essersi mai collegati, senza guardare prima se c'è qualcosa.
+        let connection = connessione();
+        assert_eq!(forget(&connection, "mai.scritta"), Ok(false));
     }
 
     #[test]

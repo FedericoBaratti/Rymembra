@@ -518,16 +518,79 @@ che si accendevano senza fare niente; gli altri si vedevano solo a schermo.
 - **La barra della selezione finiva sotto la terza colonna**, «Chiudi» compreso:
   la notifica aveva già la regola che la ferma prima, questa no.
 
+### Aggiunto — i controlli che c'erano solo come spiegazione
+
+Cinque cose che il nucleo faceva già e che dalla finestra non si potevano né
+vedere né cambiare. Non erano funzioni mancanti: erano funzioni **presenti e
+non raggiungibili**, il che è peggio, perché il codice che le fa continua a
+girare e nessuno può correggerlo se sbaglia.
+
+- **La cartella degli scaricamenti si sceglie.** `download.folder` era letta in
+  `scarica.rs` e non la scriveva nessuno: la coda yt-dlp finiva sempre nella
+  prima cartella sorvegliata, e quale fosse dipendeva dall'ordine in cui erano
+  state aggiunte. La scheda mostra dove i brani finiscono davvero — la scelta o
+  il ripiego, distinti — e **avvisa** quando la cartella scelta sta fuori da
+  quelle sorvegliate: lì i file arrivano e in libreria non compaiono, che per
+  chi guarda è indistinguibile da uno scaricamento fallito.
+- **ReplayGain si spegne.** Il motore lo applica da sempre con il riferimento a
+  −18 LUFS; l'interruttore era disegnato spento con la sua ragione accanto.
+  Adesso c'è `player.replaygain`, e il valore di serie è **acceso** — non per
+  preferenza ma per continuità: spegnerlo di nascosto in un aggiornamento
+  cambierebbe il volume di chi ha i tag senza che niente lo spieghi.
+- **La cronologia d'ascolto si legge.** `play_history` si scriveva dal primo
+  giorno e la linguetta accanto a «Coda» era spenta. Era un difetto piccolo
+  finché quella tabella conteneva solo gli ascolti fatti qui dentro; dopo
+  l'importazione di un account Spotify contiene anni, e una schermata che non li
+  mostra è la differenza fra aver importato e non averlo fatto. Ogni riga dice
+  anche **da dove viene**, che è l'altra metà di `source`.
+- **Il viaggio di ritorno si vede.** `scarico:riconciliato` partiva e non lo
+  ascoltava nessuno. Non era solo una notizia mancante: quella passata **chiude**
+  delle righe di `spotify_wanted` senza passare per la coda, quindi il pannello
+  restava a mostrare dei brani «in attesa» che non esistevano più.
+- **Un salvataggio su Drive ha una barra.** `nuvola:avanzamento` lo ascoltava
+  solo la finestrella del ripristino: un «Salva adesso» dalle impostazioni
+  mostrava «Salvataggio in corso…» e nient'altro, per decine di secondi.
+
+### Aggiunto — `AETHER_DATI`, per provare senza rischiare
+
+La variabile d'ambiente sostituisce la cartella dati dell'applicazione. Esiste
+perché quasi tutto ciò che Aether fa di irreversibile — riordinare i file sul
+disco, importare un account intero, ripristinare un backup — si può leggere in
+una prova unitaria e si può **giudicare** solo guardandolo succedere in una
+finestra vera, su una libreria che somiglia a quella di qualcuno. Senza,
+quelle due cose sono la stessa libreria: la sola, quella dell'utente. Con,
+si copia il database in una cartella qualunque e si rompe pure tutto.
+
+Si legge in un punto solo, all'avvio; il resto del programma vede un percorso e
+basta, come prima.
+
+### Corretto — un'assenza scritta come stringa vuota
+
+`nuvola.email`, `nuvola.file_id`, `nuvola.impronta` e `nuvola.client_id` si
+«cancellavano» scrivendoci dentro `""`. Stringa vuota e riga assente sono due
+stati diversi, e ogni lettore doveva ricordarsi di un `.filter(|e| !e.is_empty())`
+per non mostrare un account senza nome al posto di nessun account. Adesso c'è
+`settings::forget`, che toglie la riga — e c'è la ragione che basterebbe da
+sola: un'identità che l'utente ha chiesto di dimenticare non resta scritta in un
+file che il backup copia via.
+
 ### Difetti noti
 
-- Due cose che il nucleo sa fare e l'IPC non espone: la normalizzazione del
-  volume di `aether-play` (ReplayGain è applicato e non si può spegnere) e i
-  testi in `tracks.lyrics`. I loro controlli sono disegnati **spenti, con la
-  ragione a schermo**, invece di essere omessi o — peggio — finti. Le bande
-  dello spettro erano la terza voce di questo elenco e non lo sono più.
-- La cronologia d'ascolto si scrive e non si legge: `listening_history` è
-  popolata, nessun comando la interroga, e la linguetta nella terza colonna è
-  spenta.
+- **La riproduzione si è fermata a 0:08 e la finestra continuava a dire che
+  suonava.** Trovato provando la fase 8 sulla libreria vera: il brano parte, la
+  posizione avanza per qualche secondo e poi si blocca; pausa e ripresa cambiano
+  l'icona, un salto sul cursore non fa niente. Il sospetto è il dispositivo
+  audio che smette di consumare — `Sonic Studio Virtual Mixer` è il predefinito
+  su questa macchina — e il fatto che **nessuno lo direbbe** è il difetto
+  certo: `Motore::perso()` esiste, `uscita.rs` alza quel bit quando `cpal`
+  segnala un guasto del flusso, e in tutta l'applicazione non c'è una riga che
+  lo legga. Un dispositivo perso oggi è indistinguibile da un brano che non
+  parte.
+- Una cosa che il nucleo sa fare e l'IPC non espone: i testi in
+  `tracks.lyrics`. Il suo controllo è disegnato **spento, con la ragione a
+  schermo**, invece di essere omesso o — peggio — finto. Le bande dello spettro,
+  la normalizzazione del volume e la cronologia d'ascolto erano le altre tre
+  voci di questo elenco e non lo sono più.
 - **L'accento dinamico muove i token, non i colori riscritti per esteso.** Le
   quattro voci della famiglia e tutto ciò che il compilatore ha reso
   `var(--accent)` seguono la copertina; una skin che avesse ripetuto lo stesso

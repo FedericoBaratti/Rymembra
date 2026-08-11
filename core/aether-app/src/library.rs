@@ -1085,6 +1085,93 @@ pub fn list_liked(
         .map_err(|err| db_error("elenco dei preferiti", &err))
 }
 
+/// Un ascolto, con il brano che lo ha prodotto.
+///
+/// Il brano intero e non il solo identificativo: chi guarda la cronologia
+/// guarda dei titoli, e restituire duecento `track_id` obbligherebbe la finestra
+/// a duecento richieste — o a una `summaries_by_id` che rimescola l'ordine
+/// proprio quando l'ordine *è* il contenuto.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoceCronologia {
+    /// La riga di `play_history`, per distinguere due ascolti dello stesso
+    /// brano nello stesso secondo.
+    pub id: i64,
+    /// Il brano, come lo mostra ogni altro elenco.
+    pub brano: TrackSummary,
+    /// Quando è **finito**, in millisecondi dall'epoca.
+    pub quando_ms: i64,
+    /// Quanto se n'è sentito.
+    pub ms_ascoltati: i64,
+    /// Da dove viene: `local` se l'ha suonato Aether, `spotify` se importato.
+    pub sorgente: String,
+}
+
+/// Una pagina di cronologia, dal più recente.
+///
+/// # Perché esiste solo adesso
+///
+/// `play_history` si scriveva dal primo giorno e non la leggeva nessuno: la
+/// linguetta «Cronologia» della terza colonna era spenta con la sua ragione
+/// scritta accanto. Era un difetto piccolo finché quella tabella conteneva
+/// soltanto gli ascolti fatti dentro Aether — su una libreria appena aperta,
+/// zero righe. Dopo l'importazione di un account Spotify contiene anni, e una
+/// schermata che non li mostra diventa la differenza fra aver importato e non
+/// averlo fatto.
+///
+/// # Un ascolto il cui brano non c'è più non compare
+///
+/// È una `JOIN`, non una `LEFT JOIN`. `play_history.track_id` ha
+/// `ON DELETE CASCADE`, quindi il caso è già impossibile per un brano tolto
+/// davvero; la `JOIN` è ciò che rende impossibile anche il resto — una riga
+/// senza titolo né interprete in mezzo a un elenco di canzoni.
+pub fn list_history(
+    connection: &Connection,
+    offset: i64,
+    limit: i64,
+) -> Result<Vec<VoceCronologia>, AppError> {
+    let sql = format!(
+        "SELECT {COLONNE_BRANO}, h.id, h.played_at, h.ms_played, h.source
+           FROM play_history AS h
+           JOIN tracks AS t ON t.id = h.track_id
+          ORDER BY h.played_at DESC, h.id DESC
+          LIMIT ?1 OFFSET ?2"
+    );
+    let mut statement = connection
+        .prepare_cached(&sql)
+        .map_err(|err| db_error("cronologia d'ascolto", &err))?;
+    // 14 colonne di brano: le successive cominciano da 14, e il conto lo tiene
+    // `COLONNE_BRANO` insieme a `track_from_row`. Se una colonna venisse
+    // aggiunta là, questi indici si spostano — ed è il motivo per cui la prova
+    // qui sotto controlla il campo `quando_ms` e non solo la lunghezza.
+    let rows = statement
+        .query_map(rusqlite::params![limit, offset], |row| {
+            Ok(VoceCronologia {
+                brano: track_from_row(row)?,
+                id: row.get(14)?,
+                quando_ms: row.get(15)?,
+                ms_ascoltati: row.get(16)?,
+                sorgente: row.get(17)?,
+            })
+        })
+        .map_err(|err| db_error("cronologia d'ascolto", &err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("cronologia d'ascolto", &err))
+}
+
+/// Quanti ascolti ci sono in tutto.
+///
+/// Serve alla finestra per sapere se c'è una pagina dopo. Una `COUNT(*)` su una
+/// tabella di centomila righe con un indice su `played_at` costa poco, e la
+/// alternativa — chiedere una riga in più e guardare se arriva — mente sul
+/// totale, che qui è l'unica cosa che dice «hai importato dieci anni».
+pub fn count_history(connection: &Connection) -> Result<i64, AppError> {
+    connection
+        .prepare_cached("SELECT COUNT(*) FROM play_history")
+        .and_then(|mut statement| statement.query_row([], |row| row.get(0)))
+        .map_err(|err| db_error("conteggio della cronologia", &err))
+}
+
 /// Un brano solo, per identificativo.
 ///
 /// `None` se la riga non c'è più: capita a un brano tolto dalla libreria mentre
@@ -1399,10 +1486,7 @@ pub fn search(
         .prepare_cached(&sql)
         .map_err(|err| db_error("ricerca", &err))?;
     let rows = statement
-        .query_map(
-            rusqlite::params![expression, limit, offset],
-            track_from_row,
-        )
+        .query_map(rusqlite::params![expression, limit, offset], track_from_row)
         .map_err(|err| db_error("ricerca", &err))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| db_error("ricerca", &err))
@@ -1997,11 +2081,15 @@ mod tests {
             );
         }
         assert_eq!(
-            search(&lib.connection, "AC/DC", 0, 10).expect("ricerca").len(),
+            search(&lib.connection, "AC/DC", 0, 10)
+                .expect("ricerca")
+                .len(),
             1
         );
         assert!(
-            search(&lib.connection, "", 0, 10).expect("ricerca").is_empty(),
+            search(&lib.connection, "", 0, 10)
+                .expect("ricerca")
+                .is_empty(),
             "una ricerca vuota non è un errore, è nessun risultato"
         );
     }
@@ -2104,6 +2192,84 @@ mod tests {
         let pagina = list_liked(&lib.connection, 1, 1).expect("preferiti");
         assert_eq!(pagina.len(), 1);
         assert_eq!(pagina.first().map(|b| b.title.as_str()), Some("Pezzo 3"));
+    }
+
+    #[test]
+    fn la_cronologia_si_legge_dal_piu_recente_e_porta_il_brano_con_se() {
+        // La tabella si scriveva dal primo giorno e non la leggeva nessuno.
+        // Questa prova tiene fermi i due punti in cui è facile sbagliare: il
+        // verso dell'ordine — chi apre la cronologia guarda l'ultima cosa che ha
+        // ascoltato, non la prima in assoluto — e gli indici delle colonne dopo
+        // quelle del brano, che si spostano se `COLONNE_BRANO` ne guadagna una.
+        let mut lib = Libreria::nuova();
+        lib.brano("Tale/Al/01.wav", "Primo", "Tale", "Al");
+        lib.brano("Tale/Al/02.wav", "Secondo", "Tale", "Al");
+        lib.scansiona();
+
+        let ids: Vec<i64> = {
+            let mut s = lib
+                .connection
+                .prepare("SELECT id FROM tracks ORDER BY title")
+                .expect("brani");
+            let righe = s.query_map([], |r| r.get(0)).expect("query");
+            righe.collect::<Result<_, _>>().expect("ids")
+        };
+        let (primo, secondo) = (ids.first().copied(), ids.get(1).copied());
+
+        for (id, quando, ms, sorgente) in [
+            (primo, 1_000_i64, 200_000_i64, "local"),
+            (secondo, 3_000, 150_000, "spotify"),
+            (primo, 2_000, 210_000, "local"),
+        ] {
+            lib.connection
+                .execute(
+                    "INSERT INTO play_history (track_id, played_at, ms_played, source)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![id, quando, ms, sorgente],
+                )
+                .expect("ascolto");
+        }
+
+        let pagina = list_history(&lib.connection, 0, 10).expect("cronologia");
+        assert_eq!(count_history(&lib.connection), Ok(3));
+        assert_eq!(
+            pagina.iter().map(|v| v.quando_ms).collect::<Vec<_>>(),
+            [3_000, 2_000, 1_000],
+            "il più recente in cima"
+        );
+        let capo = pagina.first().expect("una riga");
+        assert_eq!(capo.brano.title, "Secondo");
+        assert_eq!(capo.ms_ascoltati, 150_000);
+        assert_eq!(capo.sorgente, "spotify");
+
+        // E si impagina come tutti gli altri elenchi.
+        let seconda = list_history(&lib.connection, 2, 10).expect("cronologia");
+        assert_eq!(seconda.len(), 1);
+        assert_eq!(seconda.first().map(|v| v.quando_ms), Some(1_000));
+    }
+
+    #[test]
+    fn un_brano_tolto_porta_via_i_suoi_ascolti() {
+        // `ON DELETE CASCADE` più la `JOIN`: due difese sullo stesso caso, e la
+        // seconda è quella che regge se un giorno la prima venisse tolta da una
+        // migrazione. Una riga di cronologia senza titolo né interprete, in
+        // mezzo a un elenco di canzoni, non è un dato mancante — è una riga
+        // vuota che l'utente legge come un guasto.
+        let mut lib = Libreria::nuova();
+        lib.brano("Tale/Al/01.wav", "Solo", "Tale", "Al");
+        lib.scansiona();
+        lib.connection
+            .execute(
+                "INSERT INTO play_history (track_id, played_at, ms_played)
+                 SELECT id, 500, 120000 FROM tracks",
+                [],
+            )
+            .expect("ascolto");
+        assert_eq!(list_history(&lib.connection, 0, 10).map(|v| v.len()), Ok(1));
+
+        std::fs::remove_file(lib.musica().join("Tale/Al/01.wav")).expect("cancellato");
+        lib.scansiona();
+        assert_eq!(list_history(&lib.connection, 0, 10), Ok(vec![]));
     }
 
     #[test]

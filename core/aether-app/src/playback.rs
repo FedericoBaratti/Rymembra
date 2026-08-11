@@ -38,6 +38,9 @@ pub const CHIAVE_EQ: &str = "player.eq";
 /// l'elenco intero sedici volte al secondo.
 pub const CHIAVE_EQ_PRESET: &str = "player.eq.presets";
 
+/// La chiave con cui la normalizzazione ReplayGain sta in `settings`.
+pub const CHIAVE_REPLAYGAIN: &str = "player.replaygain";
+
 fn db_error(cosa: &str, err: &rusqlite::Error) -> AppError {
     AppError::new(ErrorCode::DbQueryFailed {
         detail: Some(cosa.to_owned()),
@@ -260,6 +263,93 @@ pub fn load_volume(connection: &Connection) -> Result<Volume, AppError> {
         .unwrap_or_default())
 }
 
+// ── la normalizzazione ──────────────────────────────────────────────────────
+
+/// La normalizzazione ReplayGain, come sta su disco.
+///
+/// Assente vale **accesa**, ed è l'unico valore di serie che qui non si sceglie
+/// ma si constata: il motore parte con `replaygain_attivo: true` da quando
+/// esiste, e questa chiave arriva dopo. Scrivere `false` come valore di serie
+/// vorrebbe dire che la prima apertura dopo l'aggiornamento spegne di nascosto
+/// una cosa che era accesa — un cambiamento di volume che nessuno ha chiesto e
+/// che nessuna schermata spiega.
+///
+/// Non c'è nessun rischio nel lasciarla accesa su una libreria senza tag: senza
+/// `replaygain_db` la correzione è esattamente 1.0, cioè niente. Il valore serve
+/// a chi i tag ce li ha e vuole i dischi come sono stati masterizzati.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Normalizzazione {
+    /// Il guadagno dei tag si applica.
+    pub attivo: bool,
+    /// A quanti LUFS si porta tutto. Il riferimento dei tag è −18.
+    pub bersaglio_db: f32,
+}
+
+impl Default for Normalizzazione {
+    fn default() -> Self {
+        Self {
+            attivo: true,
+            bersaglio_db: BERSAGLIO_PREDEFINITO_DB,
+        }
+    }
+}
+
+/// Il riferimento a cui i tag ReplayGain sono misurati.
+///
+/// A −18 il tag si usa com'è scritto; è il valore del riferimento originale, ed
+/// è la ragione per cui è questo e non −14 (lo standard delle piattaforme di
+/// streaming, che qui vorrebbe dire alzare tutto di quattro decibel).
+pub const BERSAGLIO_PREDEFINITO_DB: f32 = -18.0;
+
+/// I limiti oltre cui un bersaglio non è più una preferenza ma un guasto.
+///
+/// Gli stessi che `aether_play::guadagno` applica alla correzione finale: qui
+/// per non scrivere su disco un valore che poi verrebbe tagliato in silenzio,
+/// lasciando la finestra a mostrare un numero che non è quello che si sente.
+const BERSAGLIO_MIN_DB: f32 = -30.0;
+const BERSAGLIO_MAX_DB: f32 = -6.0;
+
+/// Conserva la scelta sulla normalizzazione.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn save_replaygain(
+    connection: &Connection,
+    normalizzazione: Normalizzazione,
+) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_REPLAYGAIN, &sana(normalizzazione))
+}
+
+/// Rilegge la scelta sulla normalizzazione.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde. Un valore illeggibile vale
+/// [`Normalizzazione::default`], cioè accesa: la stessa regola del resto del
+/// modulo.
+pub fn load_replaygain(connection: &Connection) -> Result<Normalizzazione, AppError> {
+    Ok(
+        crate::settings::read_json::<Normalizzazione>(connection, CHIAVE_REPLAYGAIN)?
+            .map(sana)
+            .unwrap_or_default(),
+    )
+}
+
+/// Porta un bersaglio dentro i limiti, e un valore non finito al riferimento.
+fn sana(normalizzazione: Normalizzazione) -> Normalizzazione {
+    Normalizzazione {
+        attivo: normalizzazione.attivo,
+        bersaglio_db: if normalizzazione.bersaglio_db.is_finite() {
+            normalizzazione
+                .bersaglio_db
+                .clamp(BERSAGLIO_MIN_DB, BERSAGLIO_MAX_DB)
+        } else {
+            BERSAGLIO_PREDEFINITO_DB
+        },
+    }
+}
+
 // ── l'equalizzatore ─────────────────────────────────────────────────────────
 
 /// La curva dell'equalizzatore, come sta su disco.
@@ -372,8 +462,8 @@ pub fn save_preset_eq(connection: &Connection, preset: &[PresetEq]) -> Result<()
 /// elenco vuoto: l'utente al massimo risalva una curva, mentre un avvio che
 /// fallisce non gli lascia nessun modo di correggerla.
 pub fn load_preset_eq(connection: &Connection) -> Result<Vec<PresetEq>, AppError> {
-    let letti: Vec<PresetEq> = crate::settings::read_json(connection, CHIAVE_EQ_PRESET)?
-        .unwrap_or_default();
+    let letti: Vec<PresetEq> =
+        crate::settings::read_json(connection, CHIAVE_EQ_PRESET)?.unwrap_or_default();
     Ok(letti
         .into_iter()
         .map(|p| PresetEq {
@@ -667,7 +757,10 @@ mod prove {
     fn una_curva_mai_impostata_e_spenta_e_piatta() {
         let c = db();
         let curva = load_eq(&c).expect("riletta");
-        assert!(!curva.attivo, "non deve equalizzare senza che glielo si chieda");
+        assert!(
+            !curva.attivo,
+            "non deve equalizzare senza che glielo si chieda"
+        );
         assert_eq!(curva.guadagni, vec![0.0; BANDE]);
     }
 
@@ -709,6 +802,62 @@ mod prove {
     }
 
     #[test]
+    fn la_normalizzazione_mai_impostata_e_accesa() {
+        // Il valore di serie non è una preferenza: è quel che il motore fa da
+        // sempre. Se questo diventasse `false`, il primo avvio dopo
+        // l'aggiornamento cambierebbe il volume di chi ha i tag senza dirglielo.
+        let c = db();
+        let letta = load_replaygain(&c).expect("riletta");
+        assert!(letta.attivo);
+        assert_eq!(letta.bersaglio_db, BERSAGLIO_PREDEFINITO_DB);
+    }
+
+    #[test]
+    fn spegnere_la_normalizzazione_resta_scritto() {
+        let c = db();
+        save_replaygain(
+            &c,
+            Normalizzazione {
+                attivo: false,
+                bersaglio_db: -14.0,
+            },
+        )
+        .expect("salvata");
+        let letta = load_replaygain(&c).expect("riletta");
+        assert!(!letta.attivo);
+        assert_eq!(letta.bersaglio_db, -14.0);
+    }
+
+    #[test]
+    fn un_bersaglio_assurdo_si_taglia() {
+        // Come per la curva: il valore si può scrivere a mano nel database, e
+        // `aether_play::guadagno` taglierebbe comunque la correzione a ±24 dB —
+        // ma in silenzio, lasciando la finestra a mostrare un numero che non è
+        // quello che si sente.
+        let c = db();
+        crate::settings::write(
+            &c,
+            CHIAVE_REPLAYGAIN,
+            r#"{"attivo":true,"bersaglio_db":40.0}"#,
+        )
+        .expect("scritta");
+        assert_eq!(
+            load_replaygain(&c).expect("riletta").bersaglio_db,
+            BERSAGLIO_MAX_DB
+        );
+    }
+
+    #[test]
+    fn una_normalizzazione_illeggibile_non_impedisce_l_avvio() {
+        let c = db();
+        crate::settings::write(&c, CHIAVE_REPLAYGAIN, "{non è json").expect("scritta");
+        assert_eq!(
+            load_replaygain(&c).expect("riletta"),
+            Normalizzazione::default()
+        );
+    }
+
+    #[test]
     fn i_preset_fanno_andata_e_ritorno() {
         let c = db();
         assert!(salva_preset(&c, "Sera", &[2.0; BANDE]).expect("salvato"));
@@ -727,7 +876,10 @@ mod prove {
         salva_preset(&c, "  sera ", &[5.0; BANDE]).expect("risalvato");
         let elenco = load_preset_eq(&c).expect("riletti");
         assert_eq!(elenco.len(), 1, "il nome era lo stesso a meno di spazi");
-        assert_eq!(elenco.first().map(|p| p.guadagni.first().copied()), Some(Some(5.0)));
+        assert_eq!(
+            elenco.first().map(|p| p.guadagni.first().copied()),
+            Some(Some(5.0))
+        );
         // Il nome resta quello scritto per ultimo, ripulito.
         assert_eq!(elenco.first().map(|p| p.nome.as_str()), Some("sera"));
     }
@@ -743,7 +895,10 @@ mod prove {
     fn cancellare_un_preset_lo_toglie_e_dice_se_c_era() {
         let c = db();
         salva_preset(&c, "Sera", &[2.0; BANDE]).expect("salvato");
-        assert!(!cancella_preset(&c, "Mattina").expect("provato"), "non c'era");
+        assert!(
+            !cancella_preset(&c, "Mattina").expect("provato"),
+            "non c'era"
+        );
         assert!(cancella_preset(&c, "SERA").expect("cancellato"));
         assert!(load_preset_eq(&c).expect("riletti").is_empty());
     }

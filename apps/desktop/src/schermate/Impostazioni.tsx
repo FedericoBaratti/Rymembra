@@ -14,11 +14,13 @@
  * cosa fanno. Un comando che sposta dei file merita una riga di testo accanto;
  * in una colonna da 240 pixel quella riga non ci stava, quindi non c'era.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 
 import type {
   Avanzamento,
   AvanzamentoArricchimento,
+  AvanzamentoNuvola,
   Avvio,
   EsitoArricchimento,
   EsitoScansione,
@@ -68,6 +70,45 @@ function quando(ms: number | null): string {
   if (passati < 60_000) return "poco fa";
   if (passati < 3_600_000) return `${Math.round(passati / 60_000)} minuti fa`;
   return new Date(ms).toLocaleString();
+}
+
+/** Come si chiamano le tre fasi di un salvataggio, a schermo. */
+const FASI_NUVOLA: Record<AvanzamentoNuvola["cosa"], string> = {
+  metadati: "Metadati",
+  skin: "Skin",
+  bozze: "Bozze dello Studio",
+};
+
+/**
+ * L'avanzamento di un salvataggio su Drive.
+ *
+ * L'evento partiva da sempre e lo ascoltava soltanto la finestrella del
+ * ripristino: un «Salva adesso» da questa pagina mostrava «Salvataggio in
+ * corso…» sul pulsante e nient'altro, per tutto il tempo. Su una libreria
+ * grande sono decine di secondi identici a un blocco.
+ *
+ * Si azzera quando il salvataggio finisce — `inCorso` torna falso — e non
+ * quando arriva l'ultimo passo: l'ultimo passo di una fase non è la fine del
+ * lavoro, e una barra ferma al 100% mentre il caricamento continua racconta
+ * qualcosa che non è successo.
+ */
+function useAvanzamentoNuvola(inCorso: boolean): AvanzamentoNuvola | null {
+  const [avanzamento, setAvanzamento] = useState<AvanzamentoNuvola | null>(null);
+
+  useEffect(() => {
+    const promessa = listen<AvanzamentoNuvola>("nuvola:avanzamento", (evento) =>
+      setAvanzamento(evento.payload),
+    );
+    return () => {
+      void promessa.then((stop) => stop());
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!inCorso) setAvanzamento(null);
+  }, [inCorso]);
+
+  return inCorso ? avanzamento : null;
 }
 
 /** Una scheda di sezione. */
@@ -151,9 +192,13 @@ export function Impostazioni({
   onTema,
   eqAttivo,
   eqGuadagni,
+  replaygain,
+  onReplaygain,
   onErrore,
   onAggiungiCartella,
   onTogliCartella,
+  onScegliCartellaDownload,
+  onCartellaDownloadDiSerie,
   onRiordina,
   onScansiona,
   onAnnullaScansione,
@@ -205,9 +250,16 @@ export function Impostazioni({
   eqAttivo: boolean;
   /** La sua curva, in decibel per banda. */
   eqGuadagni: number[];
+  /** La normalizzazione ReplayGain è accesa, secondo il nucleo. */
+  replaygain: boolean;
+  onReplaygain: (attivo: boolean) => void;
   onErrore: (e: unknown) => void;
   onAggiungiCartella: () => void;
   onTogliCartella: (percorso: string) => void;
+  /** Apre il dialogo che sceglie dove finiscono i brani scaricati. */
+  onScegliCartellaDownload: () => void;
+  /** Rimette il valore di serie: la prima cartella sorvegliata. */
+  onCartellaDownloadDiSerie: () => void;
   onRiordina: (percorso: string) => void;
   onScansiona: () => void;
   onAnnullaScansione: () => void;
@@ -261,6 +313,28 @@ export function Impostazioni({
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const attiva = skin.find((s) => s.attiva);
+  const avanzaNuvola = useAvanzamentoNuvola(nuvola?.inCorso ?? false);
+  /** Dove i brani finiscono davvero: la scelta, o la prima sorvegliata. */
+  const cartellaScarichi = avvio?.cartellaDownload ?? avvio?.cartelle[0] ?? null;
+  /**
+   * La cartella scelta non sta sotto nessuna di quelle sorvegliate.
+   *
+   * Il confronto è testuale e volutamente grezzo — normalizza le barre e
+   * ignora le maiuscole, che è quanto serve su Windows — perché il caso da
+   * prendere è quello grossolano: `D:\Scarichi` mentre si sorveglia
+   * `C:\Musica`. Un giudizio più fine su collegamenti simbolici e percorsi UNC
+   * lo può dare solo il nucleo, che guarda il disco; qui basta non stare zitti.
+   */
+  const fuoriDalleSorvegliate = (() => {
+    if (cartellaScarichi === null) return false;
+    const normale = (p: string) =>
+      p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    const scelta = normale(cartellaScarichi);
+    return !(avvio?.cartelle ?? []).some((c) => {
+      const radice = normale(c);
+      return scelta === radice || scelta.startsWith(`${radice}/`);
+    });
+  })();
   const percentuale =
     scansione && scansione.totale > 0
       ? Math.round((scansione.fatti / scansione.totale) * 100)
@@ -394,6 +468,67 @@ export function Impostazioni({
                   </>
                 )}
               </p>
+            )}
+          </Scheda>
+        )}
+
+        {sezione === "cartelle" && (
+          <Scheda
+            icona="i-import"
+            titolo="Dove finiscono i brani scaricati"
+            nota={
+              avvio?.cartellaDownload === null ? "valore di serie" : "scelta tua"
+            }
+          >
+            <p className="nota">
+              Quando un&apos;importazione da Spotify trova un brano che non hai,
+              la coda va a prenderlo e lo scrive qui. Di serie è la{" "}
+              <strong>prima cartella sorvegliata</strong>, e non è un ripiego
+              comodo: un file scaricato fuori da quelle cartelle è un file che
+              nessuna scansione trova mai — cioè uno scaricamento riuscito che
+              non compare in libreria, indistinguibile da uno fallito.
+            </p>
+
+            {(avvio?.cartelle.length ?? 0) === 0 ? (
+              <p className="niente empty-state">
+                Prima serve una cartella sorvegliata: senza, non c&apos;è nessun
+                posto in cui uno scaricamento possa finire ed essere trovato.
+              </p>
+            ) : (
+              <>
+                <div className="cartella-scarichi">
+                  <span className="percorso" title={cartellaScarichi ?? undefined}>
+                    {cartellaScarichi}
+                  </span>
+                </div>
+                {fuoriDalleSorvegliate && (
+                  <p className="avviso">
+                    Questa cartella non sta dentro nessuna di quelle sorvegliate:
+                    i brani ci arriveranno, ma in libreria non compariranno
+                    finché non aggiungi anche lei alle cartelle qui sopra.
+                  </p>
+                )}
+                <div className="azioni">
+                  <button
+                    type="button"
+                    className="bottone btn-ghost"
+                    onClick={onScegliCartellaDownload}
+                  >
+                    <Icona nome="i-folder" dim={15} />
+                    Cambia cartella…
+                  </button>
+                  {avvio?.cartellaDownload !== null && (
+                    <button
+                      type="button"
+                      className="bottone btn-ghost"
+                      onClick={onCartellaDownloadDiSerie}
+                    >
+                      <Icona nome="i-x" dim={15} />
+                      Rimetti quella di serie
+                    </button>
+                  )}
+                </div>
+              </>
             )}
           </Scheda>
         )}
@@ -689,11 +824,15 @@ export function Impostazioni({
                 compilatore li scrive come <code>var(--accent)</code>.
               </p>
             )}
+            {/* Acceso di serie, e non è una scelta di disegno: è quel che il
+                motore fa da quando esiste. Un aggiornamento che lo spegnesse in
+                silenzio cambierebbe il volume di chi ha i tag senza che nessuna
+                schermata lo spieghi. */}
             <Interruttore
               etichetta="Normalizza il volume (ReplayGain)"
-              spiegazione="Porta tutti i dischi allo stesso volume percepito."
-              acceso={false}
-              impedito="Il motore audio lo sa fare — `aether-play` legge i tag e applica il guadagno — ma non c'è ancora un comando che lo accenda dalla finestra."
+              spiegazione="I dischi che portano il tag vengono riportati allo stesso volume percepito, con il riferimento a cui il tag è misurato. Un brano senza tag non viene toccato: qui non si misura niente, si rispetta quel che c'è scritto."
+              acceso={replaygain}
+              onCambia={onReplaygain}
             />
           </Scheda>
           </>
@@ -767,6 +906,34 @@ export function Impostazioni({
                 <dd className="stat-number">{quando(nuvola?.ultimoMs ?? null)}</dd>
               </div>
             </dl>
+
+            {avanzaNuvola && (
+              <div className="avanzamento-scansione">
+                <div className="riga-avanzamento">
+                  <span className="quanti">
+                    {FASI_NUVOLA[avanzaNuvola.cosa]}{" "}
+                    {avanzaNuvola.fatti.toLocaleString("it")} /{" "}
+                    {avanzaNuvola.totale.toLocaleString("it")}
+                  </span>
+                </div>
+                <div className="barra player-progress">
+                  <div
+                    className="riempita"
+                    style={{
+                      width: `${
+                        avanzaNuvola.totale > 0
+                          ? Math.round(
+                              (avanzaNuvola.fatti / avanzaNuvola.totale) * 100,
+                            )
+                          : 0
+                      }%`,
+                    }}
+                  >
+                    <span className="riflesso progress-sheen" aria-hidden="true" />
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="azioni">
               {nuvola?.collegato ? (

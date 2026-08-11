@@ -27,7 +27,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use aether_app::library::TrackSummary;
-use aether_app::playback::{self, Equalizzazione, Volume};
+use aether_app::playback::{self, Equalizzazione, Normalizzazione, Volume};
 use aether_domain::errors::AppError;
 use aether_domain::listen::ListenTracker;
 use aether_domain::queue::{Queue, RepeatMode, Step};
@@ -100,6 +100,13 @@ pub struct StatoRiproduzione {
     pub eq_attivo: bool,
     /// La curva dell'equalizzatore, in decibel per banda.
     pub eq_guadagni: Vec<f32>,
+    /// La normalizzazione ReplayGain è accesa.
+    ///
+    /// Qui e non in [`crate::comandi::Avvio`] perché è una cosa del lettore, e
+    /// perché il lettore la cambia anche da solo: al primo avvio non c'è nessuna
+    /// riga in `settings` e il valore che vale è quello del motore. Uno stato
+    /// che dice cos'è vero adesso non deve avere due sorgenti.
+    pub replaygain: bool,
 }
 
 /// La curva dell'equalizzatore da sola.
@@ -148,6 +155,7 @@ pub struct Lettore {
     ascolto: Option<ListenTracker>,
     volume: Volume,
     eq: Equalizzazione,
+    normalizzazione: Normalizzazione,
 }
 
 /// Il lettore, o il motivo per cui non c'è.
@@ -177,6 +185,7 @@ impl StatoLettore {
             ascolto: None,
             volume: Volume::default(),
             eq: Equalizzazione::default(),
+            normalizzazione: Normalizzazione::default(),
         });
         Self {
             lettore: Mutex::new(lettore),
@@ -341,6 +350,7 @@ fn costruisci_stato(app: &tauri::AppHandle, lettore: &Lettore) -> StatoRiproduzi
         posizione_coda: lettore.coda.position(),
         eq_attivo: lettore.eq.attivo,
         eq_guadagni: lettore.eq.guadagni.clone(),
+        replaygain: lettore.normalizzazione.attivo,
     }
 }
 
@@ -503,6 +513,18 @@ pub fn riprendi_coda(app: &tauri::AppHandle) {
             .unwrap_or_default();
         lettore.motore.equalizzatore(&eq.guadagni, eq.attivo);
         lettore.eq = eq;
+        // La normalizzazione si rimanda al motore anche quando coincide con il
+        // suo valore di serie: costa un comando su una coda che è già lì, e
+        // toglie di mezzo la domanda «chi dei due ha ragione» il giorno in cui
+        // uno dei due valori cambiasse.
+        let normalizzazione = con_libreria(&stato, |libreria| {
+            playback::load_replaygain(&libreria.connection)
+        })
+        .unwrap_or_default();
+        lettore
+            .motore
+            .replaygain(normalizzazione.attivo, normalizzazione.bersaglio_db);
+        lettore.normalizzazione = normalizzazione;
         Ok(())
     });
 }
@@ -727,6 +749,51 @@ pub fn equalizzatore(
                 guadagni: lettore.eq.guadagni.clone(),
             },
         );
+        Ok(())
+    })
+    .map_err(errore)
+}
+
+/// Accende o spegne la normalizzazione ReplayGain.
+///
+/// # Cosa cambia davvero, e cosa no
+///
+/// Il guadagno lo applica `aether_play::guadagno` allo stadio del volume, e la
+/// correzione esiste **solo per i brani che portano il tag**: su un file senza
+/// `replaygain_track_gain` questo interruttore non sposta niente, in nessuna
+/// delle due posizioni. È il motivo per cui il valore di serie è «acceso» —
+/// sulla libreria misurata di questo progetto nessun file ha il tag, quindi
+/// acceso e spento suonano identici finché non arriva un disco che ce l'ha, e
+/// allora la cosa giusta da fare è rispettarlo.
+///
+/// Manda [`StatoRiproduzione`] e non un evento suo, al contrario
+/// dell'equalizzatore: questo comando arriva quando un dito preme un
+/// interruttore, cioè una volta ogni tanto, non dodici volte al secondo.
+#[tauri::command]
+pub fn normalizzazione(
+    app: tauri::AppHandle,
+    stato: State<'_, StatoLettore>,
+    attivo: bool,
+) -> Esito<()> {
+    con_lettore(&stato, |lettore| {
+        let voluta = Normalizzazione {
+            attivo,
+            ..lettore.normalizzazione
+        };
+        let stato_app = app.state::<Stato>();
+        // Si rilegge quel che è stato scritto invece di fidarsi di quel che è
+        // arrivato: è la disciplina dell'equalizzatore, e serve perché il
+        // bersaglio passa per un taglio.
+        let salvata = con_libreria(&stato_app, |libreria| {
+            playback::save_replaygain(&libreria.connection, voluta)?;
+            playback::load_replaygain(&libreria.connection)
+        })
+        .unwrap_or(voluta);
+        lettore
+            .motore
+            .replaygain(salvata.attivo, salvata.bersaglio_db);
+        lettore.normalizzazione = salvata;
+        manda_stato(&app, lettore);
         Ok(())
     })
     .map_err(errore)

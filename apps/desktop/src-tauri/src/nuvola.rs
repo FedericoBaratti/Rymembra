@@ -450,11 +450,20 @@ pub fn nuvola_scollega(
         DiSistema.cancella(portachiavi::GOOGLE_CLIENT_SECRET)?;
         dimentica_token(&nuvola);
 
+        // `forget` e non `write(.., "")`: una stringa vuota è un terzo stato
+        // oltre «c'è» e «non c'è», e lo deve riconoscere ogni lettore — il
+        // primo che si dimenta il `.filter(|e| !e.is_empty())` mostra una
+        // schermata collegata a un account senza nome. E c'è la ragione che
+        // basterebbe da sola: un'identità che l'utente ha chiesto di
+        // dimenticare non resta scritta in un file che il backup copia via.
+        // `CHIAVE_ATTIVO` no: lì lo zero è un valore, non un'assenza — spento
+        // per scelta e mai acceso si comportano uguale, ma solo il primo è
+        // quello che l'utente ha appena detto.
         con_libreria(&stato, |libreria| {
             settings::write(&libreria.connection, CHIAVE_ATTIVO, "0")?;
-            settings::write(&libreria.connection, CHIAVE_EMAIL, "")?;
-            settings::write(&libreria.connection, CHIAVE_FILE_ID, "")?;
-            settings::write(&libreria.connection, CHIAVE_IMPRONTA, "")
+            settings::forget(&libreria.connection, CHIAVE_EMAIL)?;
+            settings::forget(&libreria.connection, CHIAVE_FILE_ID)?;
+            settings::forget(&libreria.connection, CHIAVE_IMPRONTA).map(|_| ())
         })?;
         scorda_errore(&nuvola);
         Ok(())
@@ -483,7 +492,7 @@ pub fn nuvola_credenziali(
         // non lo è mai stato.
         if id.is_empty() {
             con_libreria(&stato, |libreria| {
-                settings::write(&libreria.connection, CHIAVE_CLIENT_ID, "")
+                settings::forget(&libreria.connection, CHIAVE_CLIENT_ID).map(|_| ())
             })?;
             DiSistema.cancella(portachiavi::GOOGLE_CLIENT_SECRET)?;
         } else {

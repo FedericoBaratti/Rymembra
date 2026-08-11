@@ -32,6 +32,13 @@ pub struct Avvio {
     pub fts5: bool,
     /// Le cartelle sorvegliate.
     pub cartelle: Vec<String>,
+    /// Dove finiscono i brani scaricati, se l'utente l'ha scelto.
+    ///
+    /// `None` vuol dire «la prima cartella sorvegliata», che è quel che
+    /// `scarica::cartella_download` fa davvero. Non si risolve qui il valore di
+    /// serie: la finestra deve poter distinguere una scelta esplicita da un
+    /// ripiego, se non altro per sapere se offrire «rimetti quella di serie».
+    pub cartella_download: Option<String>,
     /// I numeri della libreria.
     pub numeri: Counts,
 }
@@ -55,6 +62,13 @@ pub fn avvio(stato: State<'_, Stato>) -> Esito<Avvio> {
             migrazioni: libreria.migrazioni,
             fts5: libreria.fts5,
             cartelle: leggi_cartelle(&libreria.connection)?,
+            // Il `filter` regge le righe vuote scritte prima che
+            // `imposta_cartella_download` cancellasse invece di svuotare.
+            cartella_download: aether_app::settings::read(
+                &libreria.connection,
+                aether_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
+            )?
+            .filter(|scelta| !scelta.trim().is_empty()),
             numeri: counts(&libreria.connection)?,
         })
     })
@@ -75,6 +89,76 @@ pub fn imposta_cartelle(
         })
         .map_err(errore),
     )
+}
+
+/// Sceglie dove finiscono i brani scaricati. Una stringa vuota rimette il
+/// valore di serie, cioè la prima cartella sorvegliata.
+///
+/// # La cartella si può scegliere fuori dalle sorvegliate, e la finestra lo dice
+///
+/// Sarebbe stato più semplice rifiutarla. Ma «sorvegliata» è uno stato che
+/// cambia — si toglie una cartella e la scelta di ieri diventa illegale — e un
+/// comando che fallisce su un valore già scritto è un comando che si rompe da
+/// solo. Qui si scrive quel che l'utente chiede; è la scheda delle impostazioni
+/// che, accanto al percorso scelto, avvisa quando nessuna scansione passerà mai
+/// di lì. Vale anche il caso opposto e più comune: la cartella la si sceglie
+/// *prima* di sorvegliarla.
+///
+/// Il valore di serie non si scrive: si **toglie** la riga. Una stringa vuota
+/// in tabella è un terzo stato oltre «scelta» e «mai scelta», e
+/// `scarica::cartella_download` dovrebbe ricordarsi di filtrarlo — cosa che fa,
+/// ma che nessuno dovrebbe dover fare.
+#[tauri::command]
+pub fn imposta_cartella_download(
+    app: tauri::AppHandle,
+    stato: State<'_, Stato>,
+    percorso: String,
+) -> Esito<()> {
+    crate::nuvola::se_riuscito(
+        &app,
+        con_libreria(&stato, |libreria| {
+            let scelta = percorso.trim();
+            if scelta.is_empty() {
+                aether_app::settings::forget(
+                    &libreria.connection,
+                    aether_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
+                )
+                .map(|_| ())
+            } else {
+                aether_app::settings::write(
+                    &libreria.connection,
+                    aether_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
+                    scelta,
+                )
+            }
+        })
+        .map_err(errore),
+    )
+}
+
+/// Una pagina di cronologia d'ascolto, dal più recente.
+#[tauri::command]
+pub fn cronologia(
+    stato: State<'_, Stato>,
+    offset: i64,
+    limite: i64,
+) -> Esito<Vec<aether_app::library::VoceCronologia>> {
+    con_libreria(&stato, |libreria| {
+        aether_app::library::list_history(&libreria.connection, offset, limite)
+    })
+    .map_err(errore)
+}
+
+/// Quanti ascolti ci sono in tutto.
+///
+/// Separato dalla pagina per la stessa ragione di [`cerca_conteggio`]: la pagina
+/// si richiede a ogni scorrimento, il totale una volta sola.
+#[tauri::command]
+pub fn cronologia_conteggio(stato: State<'_, Stato>) -> Esito<i64> {
+    con_libreria(&stato, |libreria| {
+        aether_app::library::count_history(&libreria.connection)
+    })
+    .map_err(errore)
 }
 
 /// L'avanzamento di una scansione, mandato alla finestra mentre procede.
