@@ -73,6 +73,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter as _, Manager as _, State};
 
 use crate::errore::{Esito, errore};
+use crate::nota;
 use crate::stato::{Stato, con_libreria};
 
 /// Quanti brani si procurano insieme.
@@ -527,7 +528,7 @@ pub fn avvia(app: &AppHandle) {
             let _ = manico.emit("scarico:finito", ());
         });
     if let Err(err) = avviato {
-        eprintln!("[procura] il filo della coda non è partito: {err}");
+        nota!("[procura] il filo della coda non è partito: {err}");
         procura.lascia_posto();
     }
 }
@@ -733,9 +734,19 @@ fn un_brano(
     let copertina = copertina(app, desiderato);
     let da_scrivere = con_attribuzione(&desiderato.brano, preso.attribuzione.as_deref());
     if let Err(guasto) = scrivi_tag(&preso.percorso, &da_scrivere, numero, copertina.as_deref()) {
-        eprintln!(
-            "[procura] tag non scritti su {}: {guasto}",
-            preso.percorso.display()
+        // L'estensione e non il percorso: il diario si spedisce, e un percorso
+        // di download porta dentro il nome dell'account di Windows e — visto
+        // come `riordino` costruisce le cartelle — l'artista e l'album. Quel
+        // che serve a capire perché un tag non si scrive è **quale formato**
+        // era, che è la differenza fra un FLAC e un contenitore che `lofty` non
+        // sa riscrivere. Il resto lo dice `{guasto}`.
+        nota!(
+            "[procura] tag non scritti su un .{}: {guasto}",
+            preso
+                .percorso
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("senza estensione")
         );
     }
 
@@ -871,9 +882,13 @@ fn segna(
         // Non si può fare altro che dirlo: se il database non risponde, il
         // brano resterà in `attesa` e verrà ritentato al prossimo giro — che è
         // il comportamento meno sbagliato fra quelli disponibili.
-        eprintln!(
-            "[procura] esito non registrato per «{}»: {guasto}",
-            desiderato.brano.title
+        // L'identificativo e non il titolo, per la ragione del `nota!` qui
+        // sopra: un diario che elenca i brani che qualcuno sta procurando è
+        // l'elenco di cosa ascolta. Il numero basta a ritrovare la riga nel
+        // database di chi segnala, ed è l'unico che possa servire.
+        nota!(
+            "[procura] esito non registrato per il desiderato {}: {guasto}",
+            desiderato.id
         );
     }
 }
@@ -947,7 +962,7 @@ pub fn annuncia(app: &AppHandle) {
 
 /// Fa sapere alla finestra che la coda non può partire.
 fn segnala_guasto(app: &AppHandle, guasto: &AppError) {
-    eprintln!("[procura] la coda non parte: {guasto}");
+    nota!("[procura] la coda non parte: {guasto}");
     let _ = app.emit("scarico:guasto", crate::errore::errore(guasto.clone()));
 }
 
@@ -1051,7 +1066,7 @@ fn rientra_in_libreria(app: &AppHandle) {
         Ok(report) => {
             let _ = app.emit("scarico:in_libreria", report.inserted);
         }
-        Err(guasto) => eprintln!("[procura] la scansione finale è fallita: {guasto}"),
+        Err(guasto) => nota!("[procura] la scansione finale è fallita: {guasto}"),
     }
 
     // `None`: la scansione ha guardato tutte le cartelle, quindi possono essere
@@ -1066,7 +1081,7 @@ fn rientra_in_libreria(app: &AppHandle) {
             let _ = app.emit("scarico:riconciliato", fatto);
         }
         Ok(_) => {}
-        Err(guasto) => eprintln!("[procura] il ritorno nelle playlist è fallito: {guasto}"),
+        Err(guasto) => nota!("[procura] il ritorno nelle playlist è fallito: {guasto}"),
     }
     // Brani nuovi sono statistiche nuove da ancorare, per la stessa ragione
     // scritta in `comandi::scansiona`.

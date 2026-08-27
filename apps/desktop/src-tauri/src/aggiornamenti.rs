@@ -54,6 +54,7 @@ use tauri::{AppHandle, Emitter as _, Manager as _, State};
 use tauri_plugin_updater::{Update, Updater, UpdaterExt as _};
 
 use crate::errore::{ErroreIpc, Esito, errore};
+use crate::nota;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
 
 /// La chiave con cui l'interruttore del controllo sta in `settings`.
@@ -375,7 +376,7 @@ pub fn aggiornamenti_installa(
         // aggiornamento non partito — ma «più grossi» non vuol dire che qui si
         // possa lasciare uno stato che mente.
         aggiornamenti.installazione.store(false, Ordering::Release);
-        eprintln!("[aggiornamenti] il filo dell'installazione non è partito: {err}");
+        nota!("[aggiornamenti] il filo dell'installazione non è partito: {err}");
         riferisci(&app);
         return Err(errore(
             AppError::new(ErrorCode::InternalUnexpected {
@@ -407,7 +408,7 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
             }
         });
     if let Err(err) = avviato {
-        eprintln!("[avvio] il filo degli aggiornamenti non è partito: {err}");
+        nota!("[avvio] il filo degli aggiornamenti non è partito: {err}");
     }
 }
 
@@ -449,7 +450,7 @@ fn passata(app: &AppHandle) {
             }
         }
         Err(err) => {
-            eprintln!(
+            nota!(
                 "[aggiornamenti] controllo non riuscito codice={} causa={}",
                 err.code().kind().code(),
                 err.cause().unwrap_or("—")
@@ -488,7 +489,7 @@ fn costruisci(app: &AppHandle) -> Result<Updater, AppError> {
                     detail: Some(format!("{VARIABILE_ENDPOINT} non è un URL: {err}")),
                 })
             })?;
-            eprintln!("[aggiornamenti] endpoint sostituito: {indirizzo}");
+            nota!("[aggiornamenti] endpoint sostituito: {indirizzo}");
             costruttore.endpoints(vec![indirizzo]).map_err(guasto)?
         }
         _ => costruttore,
@@ -534,7 +535,7 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
         aggiornamenti.installazione.store(false, Ordering::Release);
         if let Err(err) = esito {
             let err = guasto(err);
-            eprintln!(
+            nota!(
                 "[aggiornamenti] installazione non riuscita codice={} causa={}",
                 err.code().kind().code(),
                 err.cause().unwrap_or("—")

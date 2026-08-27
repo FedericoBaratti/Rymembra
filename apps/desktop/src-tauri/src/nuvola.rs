@@ -58,6 +58,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter as _, Manager as _, State};
 
 use crate::errore::{ErroreIpc, Esito, errore};
+use crate::nota;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
 
 // ── le credenziali compilate dentro ─────────────────────────────────────────
@@ -705,7 +706,7 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
             }
         });
     if let Err(err) = avviato {
-        eprintln!("[avvio] il filo del backup non è partito: {err}");
+        nota!("[avvio] il filo del backup non è partito: {err}");
     }
 }
 
@@ -727,7 +728,7 @@ fn passata(app: &AppHandle) {
         };
     }
     if let Err(err) = &esito {
-        eprintln!(
+        nota!(
             "[nuvola] passata non riuscita codice={} causa={}",
             err.code().kind().code(),
             err.cause().unwrap_or("—")

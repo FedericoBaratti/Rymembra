@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::nota;
 use aether_app::covers::CoverStore;
 use aether_domain::errors::AppError;
 use rusqlite::Connection;
@@ -189,13 +190,13 @@ pub fn riga_di_avvio(stato: &Stato) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match guardia.as_ref() {
-        Ok(libreria) => println!(
+        Ok(libreria) => nota!(
             "[avvio] libreria aperta dati={} migrazioni={} fts5={}",
             libreria.data_dir.display(),
             libreria.migrazioni,
             libreria.fts5
         ),
-        Err(errore) => eprintln!(
+        Err(errore) => nota!(
             "[avvio] libreria NON aperta codice={} causa={}",
             errore.code().kind().code(),
             errore.cause().unwrap_or("—")

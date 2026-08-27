@@ -18,6 +18,8 @@
 use aether_domain::errors::AppError;
 use serde::Serialize;
 
+use crate::nota;
+
 /// Un errore, nella forma che la finestra riceve.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,8 +68,27 @@ pub type Esito<T> = Result<T, Box<ErroreIpc>>;
 
 /// Il ponte da un errore di dominio a quello che la finestra riceve.
 ///
-/// Una funzione invece di `.map_err(ErroreIpc::from)` sparso: il giorno in cui
-/// gli errori andranno anche nel log, il posto dove aggiungerlo è questo.
+/// Una funzione invece di `.map_err(ErroreIpc::from)` sparso, e il giorno in
+/// cui gli errori sarebbero andati anche nel log è arrivato: **è questa riga**.
+///
+/// Ogni guasto che l'utente vede passa di qui — è la definizione di questo
+/// tipo — quindi il diario contiene esattamente ciò di cui qualcuno potrebbe
+/// lamentarsi, e nell'ordine in cui è successo. È la differenza fra leggere una
+/// segnalazione che dice «non funziona» e vedere quale comando ha risposto
+/// male, con che codice, tre secondi prima.
+///
+/// Nel diario va il **codice**, non il messaggio: il messaggio è tradotto e
+/// scritto per chi ascolta, mentre `db.openFailed` è la stessa parola in ogni
+/// lingua. La causa tecnica invece sì, perché è l'unica metà che dice *quale*
+/// apertura è fallita.
 pub fn errore(err: AppError) -> Box<ErroreIpc> {
-    Box::new(ErroreIpc::from(err))
+    let ipc = ErroreIpc::from(err);
+    nota!(
+        "[errore] {} gravita={} ritentabile={} causa={}",
+        ipc.code,
+        ipc.severity,
+        ipc.retryable,
+        ipc.cause.as_deref().unwrap_or("—")
+    );
+    Box::new(ipc)
 }

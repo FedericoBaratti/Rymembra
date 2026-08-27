@@ -215,6 +215,15 @@ export function Aggiornamenti({
     ipc.aggiornamentiSalta("").then(setStato).catch(onErrore);
   }, [onErrore, setStato]);
 
+  // Il diario sta qui e non in una scheda sua per una ragione sola: è la
+  // sezione in cui si legge quale versione è installata, cioè il posto in cui
+  // arriva chi sta per raccontare che qualcosa non funziona. Le due
+  // informazioni che servono a una segnalazione stanno così a un centimetro
+  // l'una dall'altra.
+  const apriDiario = useCallback(() => {
+    ipc.diarioApri().catch(onErrore);
+  }, [onErrore]);
+
   return (
     <>
       <p className="nota">{t("settings.update.p1")}</p>
@@ -267,7 +276,16 @@ export function Aggiornamenti({
             {t("settings.update.unskip", { v: stato.disponibile.versione })}
           </button>
         )}
+        <button
+          type="button"
+          className="bottone btn-ghost"
+          onClick={apriDiario}
+        >
+          {t("settings.diary.open")}
+        </button>
       </div>
+
+      <p className="nota">{t("settings.diary.hint")}</p>
     </>
   );
 }

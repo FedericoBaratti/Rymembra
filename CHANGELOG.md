@@ -37,6 +37,57 @@ finestra Tauri; la terza ha tolto tutto quel che rendeva Aether non
 distribuibile. **Non è ancora rilasciabile**: il lato mobile non esiste, e
 manca la firma del codice.
 
+### Aggiunto — un diario, perché «non si apre» diventi una diagnosi
+
+In rilascio Aether non aveva **nessun** modo di raccontare cos'era andato
+storto. `main.rs` dichiara `windows_subsystem = "windows"`, che toglie la
+console; i trentacinque `eprintln!` sparsi per l'applicazione — il filo che non
+parte, il dispositivo audio che sparisce, il catalogo che rifiuta — finivano
+quindi nel nulla appena fuori da `cargo run`. Finché la finestra si apre non è
+grave, perché quasi ogni guasto ha una faccia. Il caso che conta è l'altro:
+davanti a «non si apre» c'erano due informazioni, «non si apre» e «Windows 11»,
+e nessuna delle due si può usare.
+
+Adesso c'è `diario/` nella cartella dati: tre file di testo che si danno il
+cambio a due megabyte, e il più vecchio se ne va. I `[modulo] cosa è successo`
+non cambiano forma — sono la ragione per cui il file si legge in diagonale — e
+`nota!` ha preso il posto di `eprintln!` una riga per una.
+
+Due cose sono state aggiunte perché senza di loro il diario avrebbe coperto
+solo i guasti che già si vedevano.
+
+**Il gancio dei panici.** Il profilo di rilascio dichiara `panic = "abort"`:
+niente svolgimento dello stack, nessun `catch_unwind`, nessun `Drop`. Il gancio
+è letteralmente l'ultimo codice nostro che gira, e scrive filo, posizione e
+messaggio. I panici propri restano vietati con `deny` in tutto l'albero — quelli
+che arriveranno qui vengono dalle 429 crate sotto, che quella regola non la
+rispettano.
+
+**Ogni errore che attraversa l'IPC.** `errore.rs` diceva da mesi: «il giorno in
+cui gli errori andranno anche nel log, il posto dove aggiungerlo è questo». Ci
+va il codice e la causa, non il messaggio: `db.openFailed` è la stessa parola in
+ogni lingua, mentre il messaggio è tradotto e scritto per chi ascolta.
+
+Il diario **non lo manda mai nessuno**, e non c'è un comando che possa: un
+programma che sa spedire i propri log da sé ha la telemetria, e `PRIVACY.md`
+promette che qui non ce n'è. Dalla finestra si può solo aprire la cartella, con
+un bottone in *Impostazioni → Aggiornamenti* — accanto a «Versione installata»,
+che è dove arriva chi sta per segnalare qualcosa.
+
+E siccome un file che si spedisce va guardato prima di prometterci sopra
+qualcosa, due righe convertite sono state riscritte: una stampava il percorso
+completo del file appena scaricato — che porta dentro il nome dell'account di
+Windows e, per come `riordino` costruisce le cartelle, l'artista e l'album — e
+adesso stampa la sola estensione, che è quel che serve a capire perché un tag
+non si scrive; l'altra nominava il brano, e adesso ne dà il numero di riga.
+`PRIVACY.md` § 8 elenca cosa ci finisce e cosa no, e adesso quelle due liste
+sono vere.
+
+Per scrivere l'istante davanti a ogni riga serviva convertire dei millisecondi
+in una data, cosa che nel dominio non c'era: `giorni_dall_epoca` esisteva senza
+la sua inversa. `data_dall_epoca` e `istante_iso` le stanno accanto, e una prova
+percorre un secolo giorno per giorno per verificare che le due si annullino.
+
 ### Corretto — il testo restava fermo su brani di cui i tempi esistevano
 
 Certe canzoni mostravano le parole con l'etichetta «senza tempi» e non

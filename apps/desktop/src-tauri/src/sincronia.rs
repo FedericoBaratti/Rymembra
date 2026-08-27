@@ -56,6 +56,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter as _, Manager as _, State};
 
 use crate::errore::{ErroreIpc, Esito, errore};
+use crate::nota;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
 
 /// La chiave con cui l'interruttore della sincronia sta in `settings`.
@@ -439,7 +440,7 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
             }
         });
     if let Err(err) = avviato {
-        eprintln!("[avvio] il filo della sincronia non è partito: {err}");
+        nota!("[avvio] il filo della sincronia non è partito: {err}");
     }
 }
 
@@ -455,7 +456,7 @@ fn passata(app: &AppHandle) {
     let esito = passata_vera(app);
     ricorda(app, &esito);
     if let Err(err) = &esito {
-        eprintln!(
+        nota!(
             "[sincronia] passata non riuscita codice={} causa={}",
             err.code().kind().code(),
             err.cause().unwrap_or("—")

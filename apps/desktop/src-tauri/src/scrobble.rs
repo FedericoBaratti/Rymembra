@@ -51,6 +51,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter as _, Manager as _, State};
 
 use crate::errore::{Esito, errore};
+use crate::nota;
 use crate::stato::{Stato, Turno, con_libreria};
 
 /// Il token di ListenBrainz, nel portachiavi.
@@ -495,7 +496,7 @@ pub fn sta_suonando(app: &AppHandle, track_id: i64) {
             }
         });
     if let Err(err) = avviato {
-        eprintln!("[scrobble] il filo del «sta suonando» non è partito: {err}");
+        nota!("[scrobble] il filo del «sta suonando» non è partito: {err}");
     }
 }
 
@@ -525,7 +526,7 @@ pub fn avvia(app: &AppHandle) {
             }
         });
     if let Err(err) = avviato {
-        eprintln!("[scrobble] il filo della coda non è partito: {err}");
+        nota!("[scrobble] il filo della coda non è partito: {err}");
         return;
     }
     // Un giro subito: alla chiusura precedente può essere rimasto qualcosa, e
@@ -943,7 +944,7 @@ fn stato_ipc(
 
 /// Un guasto che non ferma niente, ma che non va perso.
 fn lamenta(cosa: &str, err: &AppError) {
-    eprintln!(
+    nota!(
         "[scrobble] {cosa} codice={} causa={}",
         err.code().kind().code(),
         err.cause().unwrap_or("—")

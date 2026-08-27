@@ -267,6 +267,38 @@ Due funzioni scrivono nei tuoi file, e conviene saperlo:
 
 Nessuna delle due manda niente da nessuna parte: è tutto locale.
 
+### Il diario
+
+Dentro la cartella dati dell'applicazione — `%APPDATA%\io.github.federicobaratti.aether\diario`
+— Aether tiene tre file di testo con quel che è andato storto: il filo che non è
+partito, il dispositivo audio che è sparito, il codice d'errore di un comando
+che ha risposto male. Servono a una cosa sola, e cioè a poter rispondere a
+«non si apre» con qualcosa di più di «prova a reinstallarlo».
+
+**Cosa ci finisce:** codici di errore (`db.openFailed`, `playback.deviceLost`),
+la causa tecnica che li accompagna, il nome del filo che li ha prodotti, e il
+percorso della **cartella dati dell'applicazione** — quella qui sopra, che su
+Windows contiene il nome del tuo account perché ci passa dentro `%APPDATA%`. È
+l'unica cosa tua che ci finisca, ed è tenuta apposta perché è la prima riga da
+guardare quando Aether non si apre: dice se il database era dove doveva essere.
+Cancellarla dal file prima di allegarlo non toglie niente al resto.
+
+**Cosa non ci finisce:** i titoli dei tuoi brani, i nomi degli artisti, i
+percorsi dei tuoi file musicali, quel che ascolti e quando. Non è una promessa
+sulla buona volontà di chi scrive: dove un messaggio avrebbe voluto nominare un
+brano c'è il suo numero di riga, e dove avrebbe voluto scrivere un percorso c'è
+la sola estensione del file. Un diario si spedisce, e spedire la lista di cosa
+qualcuno ascolta non sarebbe una diagnosi.
+
+**Non parte da lì niente.** Il diario **non viene mandato a nessuno**, mai, e
+non c'è nessun comando che possa farlo: un programma che sa spedire da sé i
+propri log è un programma con la telemetria, e qui non ce n'è. L'unica cosa che
+la finestra sa fare è aprire quella cartella nel gestore file, dal bottone in
+*Impostazioni → Aggiornamenti*. Cosa farne dopo lo decidi tu.
+
+I file si danno il cambio quando arrivano a due megabyte, e se ne tengono tre:
+il più vecchio viene cancellato. Cancellarli tutti a mano non rompe niente.
+
 ---
 
 ## 9. Se cambia qualcosa

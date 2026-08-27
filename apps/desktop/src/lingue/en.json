@@ -752,6 +752,8 @@
   "settings.update.check": "Check now",
   "settings.update.checking": "Checking…",
   "settings.update.unskip": "Show me {v} again",
+  "settings.diary.open": "Open the log folder",
+  "settings.diary.hint": "When something goes wrong, Aether writes it there: three text files, holding fault codes and nothing else. Your track titles and your library paths never go in, so the file can be attached to a bug report without a second thought.",
   "update.available": "Aether {v} is out",
   "update.notes": "What changes",
   "update.install": "Update",

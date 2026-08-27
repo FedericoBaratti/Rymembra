@@ -752,6 +752,8 @@
   "settings.update.check": "Controlla adesso",
   "settings.update.checking": "Sto controllando…",
   "settings.update.unskip": "Mostrami di nuovo la {v}",
+  "settings.diary.open": "Apri la cartella dei log",
+  "settings.diary.hint": "Quando qualcosa va storto, Aether lo scrive lì: tre file di testo, con i codici dei guasti e nient'altro. Non ci finiscono i titoli dei tuoi brani né i percorsi della tua libreria, così il file si può allegare a una segnalazione senza pensarci.",
   "update.available": "C'è Aether {v}",
   "update.notes": "Cosa cambia",
   "update.install": "Aggiorna",

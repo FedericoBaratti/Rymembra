@@ -36,6 +36,7 @@ use serde::Serialize;
 use tauri::{Emitter as _, Manager as _, State};
 
 use crate::errore::{Esito, errore};
+use crate::nota;
 use crate::stato::{Stato, adesso_ms, con_libreria};
 
 /// Ogni quanto la finestra riceve la posizione.
@@ -383,12 +384,13 @@ pub fn riga_di_avvio_lettore(stato: &StatoLettore) {
     match guardia.as_ref() {
         Ok(lettore) => {
             let f = lettore.motore.formato();
-            println!(
+            nota!(
                 "[avvio] audio aperto frequenza={} canali={}",
-                f.frequenza, f.canali
+                f.frequenza,
+                f.canali
             );
         }
-        Err(err) => eprintln!(
+        Err(err) => nota!(
             "[avvio] audio NON aperto codice={} causa={}",
             err.code().kind().code(),
             err.cause().unwrap_or("—")
@@ -461,7 +463,7 @@ fn chiudi_ascolto(app: &tauri::AppHandle, lettore: &mut Lettore) {
             crate::scrobble::dopo_un_ascolto(app, &ascolto);
         }
         Ok(false) => {}
-        Err(err) => eprintln!(
+        Err(err) => nota!(
             "[riproduzione] ascolto non registrato codice={} causa={}",
             err.code().kind().code(),
             err.cause().unwrap_or("—")
@@ -753,7 +755,7 @@ fn su_evento(app: &tauri::AppHandle, evento: Evento) {
             });
         }
         Evento::Errore(err) => {
-            eprintln!(
+            nota!(
                 "[riproduzione] {} causa={}",
                 err.code().kind().code(),
                 err.cause().unwrap_or("—")
@@ -965,7 +967,7 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                     .unwrap_or(None);
                 match (&perso, gia_perso) {
                     (Some(guasto), false) => {
-                        eprintln!("[riproduzione] dispositivo audio perso: {}", guasto.causa);
+                        nota!("[riproduzione] dispositivo audio perso: {}", guasto.causa);
                         let _ = app.emit("riproduzione:audio", guasto.clone());
                         // E lo stato intero, perché chi non stava ascoltando
                         // l'evento — una schermata aperta dopo — lo trovi lì.

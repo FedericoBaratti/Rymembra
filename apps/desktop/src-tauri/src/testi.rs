@@ -32,6 +32,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter as _, Manager as _, State};
 
 use crate::errore::{Esito, errore};
+use crate::nota;
 use crate::stato::{NOME_DATABASE, Stato, Turno, adesso_ms, con_libreria};
 
 /// La chiave in `settings` per l'interruttore della rete.
@@ -467,7 +468,7 @@ fn avvia(app: &AppHandle) {
             let _ = manico.emit("testi:finito", ());
         });
     if let Err(err) = avviato {
-        eprintln!("[testi] il filo della passata non è partito: {err}");
+        nota!("[testi] il filo della passata non è partito: {err}");
     }
 }
 

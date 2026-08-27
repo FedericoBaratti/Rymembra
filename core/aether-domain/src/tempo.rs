@@ -133,6 +133,80 @@ pub fn giorni_dall_epoca(anno: i64, mese: u32, giorno: u32) -> i64 {
     era * 146_097 + giorno_nell_era - 719_468
 }
 
+/// La data del calendario gregoriano, dai giorni contati dall'epoca.
+///
+/// `civil_from_days` di Howard Hinnant: l'inversa esatta di
+/// [`giorni_dall_epoca`], e sta accanto a lei perché due funzioni che devono
+/// annullarsi a vicenda si controllano leggendole insieme. La prova
+/// `andata_e_ritorno` percorre un secolo giorno per giorno.
+///
+/// Restituisce `(anno, mese, giorno)`, col mese in `1..=12`.
+// Le divisioni intere qui **sono** l'algoritmo, come nella funzione inversa:
+// contano gli anni bisestili di un'era e ridistribuiscono i mesi di 30 e 31
+// giorni. Il troncamento è il conto, non una perdita da evitare.
+#[allow(clippy::integer_division)]
+#[must_use]
+pub fn data_dall_epoca(giorni: i64) -> (i64, u32, u32) {
+    // Si riporta l'origine al 1º marzo dell'anno 0, dove il 29 febbraio cade in
+    // fondo all'anno e smette di essere un caso speciale.
+    let spostato = giorni + 719_468;
+    let era = if spostato >= 0 {
+        spostato
+    } else {
+        spostato - 146_096
+    }
+    .div_euclid(146_097);
+    let giorno_nell_era = spostato - era * 146_097; // [0, 146096]
+    let anno_nell_era = (giorno_nell_era - giorno_nell_era / 1460 + giorno_nell_era / 36_524
+        - giorno_nell_era / 146_096)
+        / 365; // [0, 399]
+    let anno = anno_nell_era + era * 400;
+    let giorno_nell_anno =
+        giorno_nell_era - (365 * anno_nell_era + anno_nell_era / 4 - anno_nell_era / 100); // [0, 365]
+    let mese_spostato = (5 * giorno_nell_anno + 2) / 153; // [0, 11]
+    let giorno = giorno_nell_anno - (153 * mese_spostato + 2) / 5 + 1; // [1, 31]
+    let mese = if mese_spostato < 10 {
+        mese_spostato + 3
+    } else {
+        mese_spostato - 9
+    }; // [1, 12]
+    // Gennaio e febbraio appartengono all'anno successivo a quello dell'era.
+    let anno = if mese <= 2 { anno + 1 } else { anno };
+    (
+        anno,
+        u32::try_from(mese).unwrap_or(1),
+        u32::try_from(giorno).unwrap_or(1),
+    )
+}
+
+/// Un istante in millisecondi, scritto come `2026-08-27 14:03:11.482Z`.
+///
+/// La gemella di [`istante_ms`], che fa il cammino contrario. Serve al diario
+/// dell'applicazione, e la forma è scelta per chi lo leggerà: ordinabile come
+/// testo, e con la `Z` in fondo perché **è UTC**. Un orario locale
+/// richiederebbe il fuso del sistema operativo — cioè una dipendenza in più, o
+/// dell'`unsafe` — e soprattutto renderebbe illeggibile un diario spedito da
+/// un'altra parte del mondo, che è esattamente il caso in cui si legge un
+/// diario.
+///
+/// Un istante prima dell'epoca si scrive lo stesso: `div_euclid` e `rem_euclid`
+/// non cambiano verso sotto lo zero, quindi non escono ore negative.
+// Le divisioni qui sono conversioni fra unità di tempo, non misure: i
+// millisecondi in un secondo sono mille esatti.
+#[allow(clippy::integer_division)]
+#[must_use]
+pub fn istante_iso(ms: i64) -> String {
+    let giorni = ms.div_euclid(MS_AL_GIORNO);
+    let nel_giorno = ms.rem_euclid(MS_AL_GIORNO);
+    let (anno, mese, giorno) = data_dall_epoca(giorni);
+    let millisecondi = nel_giorno % 1_000;
+    let secondi_totali = nel_giorno / 1_000;
+    let secondi = secondi_totali % 60;
+    let minuti = (secondi_totali / 60) % 60;
+    let ore = secondi_totali / 3_600;
+    format!("{anno:04}-{mese:02}-{giorno:02} {ore:02}:{minuti:02}:{secondi:02}.{millisecondi:03}Z")
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;
@@ -249,5 +323,67 @@ mod prove {
                 precedente = Some(ms);
             }
         }
+    }
+
+    #[test]
+    fn andata_e_ritorno_su_un_secolo() {
+        // Le due funzioni devono annullarsi a vicenda per ogni giorno, non per
+        // qualche data scelta bene: un errore di un giorno nella
+        // redistribuzione dei mesi si nasconde benissimo fra due campioni.
+        // Dal 1º gennaio 1970 al 2069, giorno per giorno.
+        for giorni in 0..36_525_i64 {
+            let (anno, mese, giorno) = data_dall_epoca(giorni);
+            assert_eq!(
+                giorni_dall_epoca(anno, mese, giorno),
+                giorni,
+                "il giorno {giorni} torna {anno:04}-{mese:02}-{giorno:02}, che non ci ritorna"
+            );
+            assert!((1..=12).contains(&mese), "mese fuori scala: {mese}");
+            assert!((1..=31).contains(&giorno), "giorno fuori scala: {giorno}");
+        }
+    }
+
+    #[test]
+    fn il_ventinove_febbraio_va_e_torna() {
+        // Il caso che l'aritmetica delle ere esiste per prendere, nel verso
+        // che la funzione nuova percorre.
+        assert_eq!(
+            data_dall_epoca(giorni_dall_epoca(2000, 2, 29)),
+            (2000, 2, 29)
+        );
+        assert_eq!(
+            data_dall_epoca(giorni_dall_epoca(2024, 2, 29)),
+            (2024, 2, 29)
+        );
+        // 1900 non è bisestile: il 28 è l'ultimo giorno di febbraio.
+        assert_eq!(
+            data_dall_epoca(giorni_dall_epoca(1900, 2, 28)),
+            (1900, 2, 28)
+        );
+        assert_eq!(data_dall_epoca(giorni_dall_epoca(1900, 3, 1)), (1900, 3, 1));
+    }
+
+    #[test]
+    fn l_istante_si_scrive_e_si_rilegge() {
+        assert_eq!(istante_iso(0), "1970-01-01 00:00:00.000Z");
+        // La stessa data che `istante_ms` legge nella prova qui sopra, scritta
+        // dall'altra funzione: è il giro completo fra le due.
+        assert_eq!(istante_iso(1_577_880_000_000), "2020-01-01 12:00:00.000Z");
+        assert_eq!(
+            istante_ms("2020-01-01T12:00:00Z"),
+            Some(1_577_880_000_000),
+            "e la lettura torna indietro"
+        );
+        // I millisecondi non si perdono per strada.
+        assert_eq!(istante_iso(1_577_880_000_482), "2020-01-01 12:00:00.482Z");
+    }
+
+    #[test]
+    fn prima_dell_epoca_non_escono_ore_negative() {
+        // Una macchina con l'orologio indietro non deve produrre un diario
+        // illeggibile: `div_euclid` e `rem_euclid` tengono il verso.
+        let scritto = istante_iso(-1);
+        assert_eq!(scritto, "1969-12-31 23:59:59.999Z");
+        assert!(!scritto.contains('-') || scritto.starts_with("19"));
     }
 }

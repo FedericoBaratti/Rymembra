@@ -58,6 +58,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter as _, Manager as _, State};
 
 use crate::errore::{ErroreIpc, Esito, errore};
+use crate::nota;
 use crate::stato::{NOME_DATABASE, Stato, Turno, adesso_ms, con_libreria};
 
 // ── le chiavi in `settings` ─────────────────────────────────────────────────
@@ -394,7 +395,7 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
             }
         });
     if let Err(err) = avviato {
-        eprintln!("[avvio] il filo dell'arricchimento non è partito: {err}");
+        nota!("[avvio] il filo dell'arricchimento non è partito: {err}");
     }
 }
 
@@ -423,7 +424,7 @@ fn passata(app: &AppHandle, fornitori: &mut Option<Fornitori>) {
         // Niente da fare, o interruttore spento: nessun evento. Una riga di
         // «zero applicati» ogni mezz'ora addestrerebbe chi guarda a ignorarle.
         Ok(None) => {}
-        Err(err) => eprintln!(
+        Err(err) => nota!(
             "[arricchimento] passata non riuscita codice={} causa={}",
             err.code().kind().code(),
             err.cause().unwrap_or("—")
@@ -526,7 +527,7 @@ fn passata_vera(
             // Un file bloccato — su Windows basta che sia in riproduzione — non
             // ferma la passata: si dice e si va avanti. La riga resta candidata,
             // e la si ritenta fra una settimana.
-            eprintln!(
+            nota!(
                 "[arricchimento] file non scritto codice={} causa={}",
                 guasto.code().kind().code(),
                 guasto.cause().unwrap_or("—")

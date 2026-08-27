@@ -51,6 +51,7 @@ use souvlaki::{
 };
 use tauri::Manager as _;
 
+use crate::nota;
 use crate::riproduzione::{StatoLettore, StatoRiproduzione};
 use crate::stato::{Stato, con_libreria};
 
@@ -121,13 +122,13 @@ impl StatoMedia {
 /// riquadro del volume è un lettore, un lettore che non si apre no.
 pub fn avvia(app: &tauri::AppHandle) {
     let Some(finestra) = app.get_webview_window("main") else {
-        eprintln!("[media] nessuna finestra: i tasti multimediali restano spenti");
+        nota!("[media] nessuna finestra: i tasti multimediali restano spenti");
         return;
     };
     let punt: *mut c_void = match finestra.hwnd() {
         Ok(hwnd) => hwnd.0.cast(),
         Err(err) => {
-            eprintln!("[media] la finestra non ha un puntatore: {err}");
+            nota!("[media] la finestra non ha un puntatore: {err}");
             return;
         }
     };
@@ -145,14 +146,14 @@ pub fn avvia(app: &tauri::AppHandle) {
     let mut controlli = match MediaControls::new(config) {
         Ok(controlli) => controlli,
         Err(err) => {
-            eprintln!("[media] il sistema non concede i controlli: {err:?}");
+            nota!("[media] il sistema non concede i controlli: {err:?}");
             return;
         }
     };
 
     let mano = app.clone();
     if let Err(err) = controlli.attach(move |evento| su_evento(&mano, evento)) {
-        eprintln!("[media] i tasti non si collegano: {err:?}");
+        nota!("[media] i tasti non si collegano: {err:?}");
         return;
     }
 
@@ -163,7 +164,7 @@ pub fn avvia(app: &tauri::AppHandle) {
         Ok::<CoverStore, aether_domain::errors::AppError>(libreria.covers.clone())
     });
     let Ok(copertine) = copertine else {
-        eprintln!("[media] la libreria non è aperta: niente copertine nella scheda");
+        nota!("[media] la libreria non è aperta: niente copertine nella scheda");
         return;
     };
 
@@ -296,7 +297,7 @@ fn su_evento(app: &tauri::AppHandle, evento: MediaControlEvent) {
         | MediaControlEvent::Quit => Ok(()),
     };
     if let Err(err) = esito {
-        eprintln!(
+        nota!(
             "[media] {} causa={}",
             err.code,
             err.cause.unwrap_or_default()

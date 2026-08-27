@@ -2463,6 +2463,13 @@ export const ipc = {
   // riaprirlo.
   aggiornamentiInstalla: () => invoke<void>("aggiornamenti_installa"),
 
+  // ── il diario ────────────────────────────────────────────────────────────
+  // L'unica cosa che la finestra può fare col diario: farlo vedere. Non lo
+  // legge e non lo manda a nessuno — un log che l'applicazione sa spedire da
+  // sé è telemetria, e `PRIVACY.md` dice che non ce n'è. Qui si apre la
+  // cartella nel gestore file, e cosa farne lo decide chi guarda.
+  diarioApri: () => invoke<void>("diario_apri"),
+
   // ── l'account Spotify intero ───────────────────────────────
   // Il flusso è a tre tempi come per un link — anteprima, piano, conferma — ma
   // quel che si legge resta di là, in una cella. Qui viaggiano solo i conteggi:

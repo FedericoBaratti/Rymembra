@@ -13,6 +13,7 @@ mod aggiornamenti;
 mod arricchimento;
 mod comandi;
 mod copertine;
+mod diario;
 mod errore;
 mod importa;
 mod media;
@@ -163,6 +164,14 @@ fn rete_di_sicurezza(app: &tauri::AppHandle) {
 }
 
 fn main() {
+    // Per prima cosa, prima ancora di costruire la finestra: da qui in poi un
+    // panico lascia scritto cos'era invece di far sparire il processo in
+    // silenzio. Finché `setup` non apre il diario le righe vanno su `stderr` —
+    // cioè da nessuna parte, in rilascio — ma il gancio installato tardi non
+    // coprirebbe proprio i panici dell'avvio, che sono quelli che nessuno
+    // riesce a raccontare.
+    diario::installa_gancio_dei_panici();
+
     let esito = tauri::Builder::default()
         // Scegliere la cartella della musica è la prima cosa che fa chi apre
         // Aether: un campo di testo in cui incollare un percorso funziona, e
@@ -182,6 +191,10 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let data_dir = cartella_dati(app.handle())?;
+            // Il diario **prima di tutto il resto**, libreria compresa: quel
+            // che si vuole leggere quando Aether non si apre è precisamente
+            // ciò che succede nelle righe qui sotto.
+            diario::apri(&data_dir);
             // Prima della libreria, perché non ne ha bisogno: una cella vuota
             // e un cliente HTTP che non ha ancora aperto niente. La prima
             // richiesta parte quando qualcuno incolla un link, così chi non
@@ -453,6 +466,7 @@ fn main() {
             aggiornamenti::aggiornamenti_adesso,
             aggiornamenti::aggiornamenti_salta,
             aggiornamenti::aggiornamenti_installa,
+            diario::diario_apri,
         ])
         .run(tauri::generate_context!());
 
@@ -462,7 +476,12 @@ fn main() {
     // il codice, e chi apre l'applicazione merita di leggere cos'è andato
     // storto invece di una traccia di stack.
     if let Err(err) = esito {
-        eprintln!("Aether non è riuscito ad avviarsi: {err}");
+        // Nel diario e non solo su `stderr`: questo è il ramo in cui la
+        // finestra non è mai comparsa, cioè l'unico caso in cui chi guarda non
+        // ha nient'altro da leggere. Se `setup` era arrivato ad aprire il
+        // diario, la riga resta sul disco; se non ci era arrivato, resta
+        // almeno in sviluppo.
+        nota!("[avvio] Aether non è riuscito ad avviarsi: {err}");
         std::process::exit(1);
     }
 }
