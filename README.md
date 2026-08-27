@@ -97,7 +97,7 @@ cronologia di quanta ne desse l'API.
 Serve Rust (la versione sta in `rust-toolchain.toml`) e Node 20 o più recente.
 
 ```bash
-# Le prove: circa 1 100, e girano senza rete
+# Le prove: circa 1 260, e girano senza rete
 cargo test --workspace
 
 # L'applicazione, in sviluppo
