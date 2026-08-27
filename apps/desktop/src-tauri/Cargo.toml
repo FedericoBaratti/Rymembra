@@ -111,6 +111,14 @@ tauri-plugin-updater = "2"
 # tutte le altre, per sempre, anche a lettore fermo.
 souvlaki = { version = "0.8", default-features = false }
 
+[features]
+# L'interruttore di Jamendo, da qui. Inoltra quello di `aether-catalogo`, dove
+# sta scritto per esteso perche` e` spento: la loro API e` gratuita per i soli
+# usi non commerciali, e se le donazioni contino come compenso deve dirlo
+# Jamendo. Accendendola qui si accende tutta la catena — client, comandi,
+# diagnostica, schermata — in una riga sola.
+jamendo = ["aether-catalogo/jamendo"]
+
 [dev-dependencies]
 # Installare una skin scrive un file: provarlo vuol dire una cartella vera che
 # sparisce da sé. La stessa versione di `aether-app` e `aether-play`.

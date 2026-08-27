@@ -37,6 +37,58 @@ finestra Tauri; la terza ha tolto tutto quel che rendeva Aether non
 distribuibile. **Non è ancora rilasciabile**: il lato mobile non esiste, e
 manca la firma del codice.
 
+### Aggiunto — un file remoto che si legge e si posiziona, e il client di Jamendo
+
+Jamendo è **solo ascolto**: i loro termini vietano espressamente la cache e
+l'accesso fuori linea, quindi `Fonte::puo_consegnare()` è `false` e da lì non
+esce mai un brano scaricabile — non «di solito», ma sempre, perché lo decide
+`Disponibilita::decidi` un gradino sotto e il modulo non ha modo di scavalcarla.
+
+Ascoltare senza tenere vuol dire suonare qualcosa che non è un file, e Aether
+non lo sapeva fare. Adesso c'è `aether_net::FlussoHttp`.
+
+**Il motore audio non è stato toccato.** `aether_play::Sorgente` prende un
+`Box<dyn Flusso>` — `Read + Seek + Send + Sync` — e non un percorso; il
+commento che lo dice parlava di Android, «là non esiste un percorso da aprire
+ma una concessione del sistema», e vale identico per un catalogo di solo
+ascolto. La giuntura c'era già, aspettava qualcuno.
+
+**Posizionabile, non in avanti.** Un decodificatore non legge dall'inizio alla
+fine: cerca i tag in testa, poi in coda — ID3v1 e APE stanno *dopo* l'audio —
+poi torna al primo fotogramma, e quando qualcuno sposta il cursore salta a
+metà. Con un flusso in avanti ognuno di quei gesti sarebbe il file intero
+scaricato per leggerne quattro kilobyte, tre volte prima di sentire una nota.
+Da qui una finestra di 256 KB che scorre, e `Rete::intervallo`, che chiede quei
+byte con `Range` invece di chiedere tutto.
+
+**Niente disco, e non è un dettaglio implementativo.** Nessun file temporaneo,
+e non ci sarà: il tetto della finestra è il vincolo dei termini di Jamendo, non
+un'ottimizzazione. Un buffer che tenesse tutto quel che è passato sarebbe una
+copia del brano in memoria, e una copia in memoria è una copia. Spostarsi non
+chiede niente alla rete — la finestra si riempie alla prima lettura che ne ha
+bisogno — ed è quel che rende gratis il «vai alla fine e torna» che ogni
+lettore di tag fa all'apertura.
+
+Sette prove, tutte senza rete: la logica della finestra è tutto quel che il
+modulo contiene, e provarla contro un servizio vero vorrebbe dire non provarla.
+
+Del client di Jamendo vale la pena dire due cose. Si prende `audio` e **mai**
+`audiodownload`, che pure è pieno per certi brani: leggerlo sarebbe scoprire se
+il server ce li lascerebbe prendere, che è una domanda diversa da «si può». E
+Jamendo risponde `200` anche quando rifiuta — il verdetto sta in
+`headers.status` — quindi leggere solo il codice HTTP vorrebbe dire dire a chi
+ha sbagliato a incollare la chiave che il catalogo non ha quel brano.
+
+**La feature `jamendo` nasce spenta**, ed è la parte che conta di più. La loro
+API è gratuita per i soli usi non commerciali e i termini definiscono l'uso
+commerciale come «any monetary compensation»; Aether si sostiene con le
+donazioni. Se contino deve dirlo Jamendo — la domanda è a
+`licensing@jamendo.com`, vedi `TERMS.md` § 2 — e finché non ha risposto, un
+installer che usa quell'API a condizioni ignote è precisamente il genere di
+cosa per cui questo programma è stato riscritto. Il codice c'è ed è provato
+(`cargo test -p aether-catalogo --features jamendo`); il giorno della risposta
+si accende con una riga.
+
 ### Aggiunto — Audius, il secondo catalogo
 
 Aether ne aveva uno solo. `Cataloghi::cerca` raccoglieva i guasti in un vettore

@@ -474,6 +474,15 @@ pub fn import_diagnostica(importa: State<'_, StatoImport>) -> Esito<Diagnostica>
                 risponde: d.audius,
                 consegna: Fonte::Audius.puo_consegnare(),
             },
+            // Jamendo compare solo se compilato: una riga «non risponde» per un
+            // catalogo che non esiste in questa versione manderebbe a cercare
+            // un guasto di rete dove c'è una decisione di distribuzione.
+            #[cfg(feature = "jamendo")]
+            DiagnosticaCatalogo {
+                nome: Fonte::Jamendo.nome().to_owned(),
+                risponde: d.jamendo,
+                consegna: Fonte::Jamendo.puo_consegnare(),
+            },
         ],
     })
 }

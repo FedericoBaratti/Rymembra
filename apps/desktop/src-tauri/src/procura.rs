@@ -490,6 +490,14 @@ fn cataloghi_attivi() -> Vec<CatalogoAttivo> {
             nome: Fonte::Audius.nome(),
             consegna: Fonte::Audius.puo_consegnare(),
         },
+        // `consegna` è `false`, ed è la riga che dice a chi guarda perché i
+        // brani di Jamendo non entrano mai nella coda che procura: da lì si
+        // ascolta e basta, per contratto e non per limite tecnico.
+        #[cfg(feature = "jamendo")]
+        CatalogoAttivo {
+            nome: Fonte::Jamendo.nome(),
+            consegna: Fonte::Jamendo.puo_consegnare(),
+        },
     ]
 }
 

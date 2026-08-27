@@ -24,7 +24,9 @@
 //! rende impossibile, e non solo sconsigliato, tenere preso un lucchetto della
 //! libreria mentre si aspetta una risposta dalla rete.
 
+pub mod flusso;
 pub mod http;
 pub mod immagine;
 
-pub use http::{Corpo, Metodo, Rete, Richiesta, Risposta, percento};
+pub use flusso::{FlussoHttp, Sorgente};
+pub use http::{Corpo, Metodo, Pezzo, Rete, Richiesta, Risposta, percento};

@@ -52,6 +52,8 @@
 
 pub mod archivio_org;
 pub mod audius;
+#[cfg(feature = "jamendo")]
+pub mod jamendo;
 pub mod prelievo;
 pub mod riferimento;
 
@@ -61,6 +63,8 @@ use aether_domain::scelta::Candidato;
 
 pub use archivio_org::ArchivioOrg;
 pub use audius::Audius;
+#[cfg(feature = "jamendo")]
+pub use jamendo::Jamendo;
 pub use prelievo::{Prelevato, Richiesta, attribuzione, preleva};
 pub use riferimento::{Riferimento, riconosci};
 
@@ -75,6 +79,13 @@ pub struct Diagnostica {
     pub internet_archive: bool,
     /// Audius risponde.
     pub audius: bool,
+    /// Jamendo risponde.
+    ///
+    /// `false` anche quando manca il `client_id`, e anche quando la feature è
+    /// spenta: dal punto di vista di chi guarda la diagnostica sono la stessa
+    /// riga — «adesso non funziona» — e la ragione la dice la schermata che
+    /// chiede la chiave, non questa colonna.
+    pub jamendo: bool,
 }
 
 /// I cataloghi attivi, con la loro riserva di connessioni.
@@ -86,6 +97,8 @@ pub struct Diagnostica {
 pub struct Cataloghi {
     archivio: ArchivioOrg,
     audius: Audius,
+    #[cfg(feature = "jamendo")]
+    jamendo: Jamendo,
 }
 
 impl Default for Cataloghi {
@@ -101,6 +114,8 @@ impl Cataloghi {
         Self {
             archivio: ArchivioOrg::nuovo(),
             audius: Audius::nuovo(),
+            #[cfg(feature = "jamendo")]
+            jamendo: Jamendo::nuovo(),
         }
     }
 
@@ -116,6 +131,13 @@ impl Cataloghi {
         &self.audius
     }
 
+    /// Jamendo, per chi deve leggerne il flusso o dargli la chiave.
+    #[cfg(feature = "jamendo")]
+    #[must_use]
+    pub const fn jamendo(&self) -> &Jamendo {
+        &self.jamendo
+    }
+
     /// Che cosa risponde adesso.
     ///
     /// Fa richieste vere: è l'unico modo di distinguere «è giù» da «non ce l'ha»,
@@ -125,6 +147,10 @@ impl Cataloghi {
         Diagnostica {
             internet_archive: self.archivio.risponde(),
             audius: self.audius.risponde(),
+            #[cfg(feature = "jamendo")]
+            jamendo: self.jamendo.risponde(),
+            #[cfg(not(feature = "jamendo"))]
+            jamendo: false,
         }
     }
 
@@ -162,6 +188,19 @@ impl Cataloghi {
             }
         }
 
+        // Jamendo per ultimo, e senza chiave non chiede niente. I suoi
+        // candidati non si potranno mai tenere — `puo_consegnare` è `false` —
+        // quindi per la coda che procura sono zavorra; servono a chi cerca
+        // qualcosa da **ascoltare**, ed è `scegli_candidato` a scartarli quando
+        // la domanda era un'altra.
+        #[cfg(feature = "jamendo")]
+        if !annullato() && self.jamendo.configurato() {
+            match self.jamendo.cerca(brano, annullato) {
+                Ok(suoi) => trovati.extend(suoi),
+                Err(err) => guasti.push(err),
+            }
+        }
+
         if trovati.is_empty()
             && let Some(primo) = guasti.into_iter().next()
         {
@@ -181,12 +220,14 @@ impl Cataloghi {
         match riferimento.fonte {
             Fonte::InternetArchive => self.archivio.risolvi(&riferimento.id),
             Fonte::Audius => self.audius.risolvi(riferimento),
-            // Jamendo arriva con la sola metà «in ascolto»: leggerne un elenco
-            // senza saperlo suonare darebbe una playlist di brani che non
-            // partono, che è peggio di non leggerla.
+            #[cfg(feature = "jamendo")]
+            Fonte::Jamendo => self.jamendo.risolvi(riferimento),
+            // Senza la feature Jamendo non c'è: il codice non è compilato, e
+            // l'unica risposta onesta è che questo catalogo qui non funziona.
+            #[cfg(not(feature = "jamendo"))]
             Fonte::Jamendo => Err(AppError::new(ErrorCode::CatalogoNotAvailable).with_cause(
                 format!(
-                    "{} non è ancora fra i cataloghi che Aether sa suonare",
+                    "{} non è compilato in questa versione di Aether",
                     riferimento.fonte.etichetta()
                 ),
             )),

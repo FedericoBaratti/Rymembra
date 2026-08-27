@@ -36,9 +36,18 @@ serde_json.workspace = true
 [features]
 # Jamendo sta dietro un interruttore, e non per gusto di configurabilita`: la
 # loro API e` gratuita per i soli usi non commerciali, e «non commerciale» e` una
-# proprieta` del progetto che lo usa, non di questo codice. Il giorno che Aether
-# dovesse incassare qualcosa, questa feature si spegne senza toccare nient'altro.
-default = ["jamendo"]
+# proprieta` del progetto che lo usa, non di questo codice.
+#
+# **Spenta di serie, e il perche` non e` tecnico.** I loro termini definiscono
+# l'uso commerciale come «any monetary compensation»; Aether si sostiene con le
+# donazioni. Se contino o no e` una domanda a cui deve rispondere Jamendo — la
+# si e` posta a `licensing@jamendo.com`, vedi README e TERMS § 2 — e finche` non
+# ha risposto, un installer che usa quell'API a condizioni ignote e`
+# precisamente il genere di cosa per cui questo programma e` stato riscritto.
+#
+# Il codice c'e` ed e` provato: `cargo test -p aether-catalogo --features jamendo`.
+# Il giorno della risposta, questa riga diventa `default = ["jamendo"]`.
+default = []
 jamendo = []
 
 [lints]

@@ -191,6 +191,46 @@ pub struct Rete {
 /// archivi che nessuno paga.
 const AGENTE: &str = "Aether/0.1 (+https://github.com/federicobaratti/aether)";
 
+/// Un pezzo di un file, con quanto è lungo il file intero.
+///
+/// Lo restituisce [`Rete::intervallo`], e lo consuma `crate::flusso::FlussoHttp`.
+#[derive(Debug, Clone)]
+pub struct Pezzo {
+    /// I byte arrivati.
+    ///
+    /// Possono essere **meno** di quanti chiesti, e non è un guasto: è la fine
+    /// del file. Possono essere zero per la stessa ragione.
+    pub byte: Vec<u8>,
+    /// Quanto è lungo il file in tutto, quando il servizio lo dichiara.
+    ///
+    /// `None` toglie il cursore invece di inventarne uno sbagliato: un flusso
+    /// senza lunghezza si sente lo stesso, e `MediaSource::is_seekable` di
+    /// symphonia risponde `false` proprio guardando questo.
+    pub totale: Option<u64>,
+}
+
+/// Quanto è lungo il file, da `Content-Range` o da `Content-Length`.
+///
+/// Nell'ordine, e conta: con una risposta parziale `Content-Length` è la
+/// lunghezza del **pezzo**, non del file. Leggere quella e chiamarla «totale»
+/// darebbe un cursore che finisce dopo un quarto di canzone.
+fn totale_da(intestazioni: &ureq::http::HeaderMap) -> Option<u64> {
+    // `bytes 0-1023/45678`: quel che serve è dopo la barra. Un `*` al posto del
+    // numero è legale e vuol dire «non lo so», e allora non lo si sa nemmeno noi.
+    if let Some(intervallo) = intestazioni
+        .get("content-range")
+        .and_then(|v| v.to_str().ok())
+        && let Some(coda) = intervallo.rsplit('/').next()
+        && let Ok(quanto) = coda.trim().parse::<u64>()
+    {
+        return Some(quanto);
+    }
+    intestazioni
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+}
+
 impl Rete {
     /// Un client con una scadenza complessiva.
     ///
@@ -392,6 +432,71 @@ impl Rete {
         }
 
         Ok(scritti)
+    }
+
+    /// Un pezzo di un file, chiesto per intervallo.
+    ///
+    /// # Perché esiste accanto a [`Self::preleva`]
+    ///
+    /// Perché le due domande sono diverse. `preleva` chiede **tutto**, dall'inizio
+    /// alla fine, e lo scrive su un disco: è la forma di chi si tiene una copia.
+    /// Questa chiede *quei* byte e basta, e chi la usa non ha il permesso di
+    /// tenersi niente — serve a `Flusso`, cioè a suonare qualcosa mentre arriva.
+    ///
+    /// Il decodificatore non legge un file dall'inizio alla fine: cerca i tag in
+    /// testa, poi in coda, poi torna al primo fotogramma, e quando qualcuno
+    /// sposta il cursore salta a metà. Senza gli intervalli, ognuno di quei
+    /// gesti sarebbe un file intero scaricato per leggerne quattro kilobyte.
+    ///
+    /// # Errori
+    ///
+    /// `download.badResponse` se il servizio **ignora** l'intervallo e risponde
+    /// col file intero: succede, ed è un caso che va detto invece che tacere,
+    /// perché vuol dire che quel flusso non si può posizionare. `net.*` per i
+    /// guasti di trasporto, `download.*` per gli stati di errore.
+    pub fn intervallo(&self, url: &str, da: u64, quanti: u64) -> Result<Pezzo, AppError> {
+        let fino = da.saturating_add(quanti.max(1)).saturating_sub(1);
+        let mut risposta = self
+            .agente
+            .get(url)
+            .header("range", &format!("bytes={da}-{fino}"))
+            .call()
+            .map_err(|err| self.trasporto(&err, url))?;
+
+        let stato = risposta.status().as_u16();
+        if !(200..300).contains(&stato) {
+            let riprova_fra_ms = quanto_ha_chiesto(risposta.headers());
+            return Err(self.stato_a_errore(
+                &Risposta {
+                    stato,
+                    corpo: Vec::new(),
+                    riprova_fra_ms,
+                    posizione: None,
+                    url_finale: url.to_owned(),
+                },
+                url,
+            ));
+        }
+
+        // `206 Partial Content` è la risposta che si è chiesta. Un `200` vuol
+        // dire che il servizio ha ignorato l'intestazione e sta mandando tutto:
+        // dal principio va bene — sono gli stessi byte — ma da un punto in mezzo
+        // no, e fingere di non essersene accorti vorrebbe dire consegnare al
+        // decodificatore dei byte presi dal posto sbagliato.
+        if stato != 206 && da > 0 {
+            return Err(
+                AppError::new(ErrorCode::DownloadBadResponse).with_cause(format!(
+                    "l'intervallo è stato ignorato: chiesto da {da}, risposto {stato}"
+                )),
+            );
+        }
+
+        let totale = totale_da(risposta.headers());
+        let byte = risposta.body_mut().read_to_vec().map_err(|err| {
+            AppError::new(ErrorCode::DownloadNetwork)
+                .with_cause(format!("lettura dell'intervallo interrotta: {err}"))
+        })?;
+        Ok(Pezzo { byte, totale })
     }
 
     /// Traduce un guasto di trasporto di `ureq` in un codice Aether.
