@@ -41,6 +41,13 @@ use ureq::ResponseExt as _;
 /// d'ora.
 const ATTESA_MASSIMA: Duration = Duration::from_secs(30);
 
+/// Quanti byte alla volta si leggono da un prelievo.
+///
+/// Sessantaquattro kilobyte: abbastanza grande da non chiamare `write` mille
+/// volte al secondo, abbastanza piccolo da rispondere a un annullamento entro
+/// un battito di ciglia anche su una connessione lenta.
+const BLOCCO_PRELIEVO: usize = 64 * 1024;
+
 /// Il metodo della richiesta.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Metodo {
@@ -165,11 +172,24 @@ pub struct Rete {
     servizio: &'static str,
 }
 
-/// Come Aether si presenta a un servizio che ha il diritto di sapere chi è.
+/// Come Aether si presenta, sempre, a chiunque.
 ///
-/// Un indirizzo dentro lo `User-Agent` è la cortesia che permette a chi gestisce
-/// un servizio pubblico di scrivere a qualcuno invece di limitarsi a bloccare.
-const AGENTE_PREDEFINITO: &str = "Aether/0.1 (+https://github.com/federicobaratti/aether)";
+/// # Perché non si può cambiare
+///
+/// C'era un costruttore che accettava un `User-Agent` diverso, e serviva a una
+/// cosa sola: farsi passare per un browser davanti ai punti interni del lettore
+/// web di Spotify, che a un nome sconosciuto rispondono male o non rispondono.
+/// Quel sottosistema non c'è più — era accesso non autorizzato a un servizio —
+/// e con lui è sparita l'unica ragione per cui questo valore fosse un
+/// parametro.
+///
+/// Adesso è una costante, ed è meglio che sia difficile da cambiare: un
+/// programma che può travestirsi è un programma in cui qualcuno, prima o poi,
+/// lo fa. Un indirizzo dentro lo `User-Agent` è invece la cortesia che permette
+/// a chi gestisce un servizio pubblico di scrivere a qualcuno invece di
+/// limitarsi a bloccare — ed è la cosa che rende sostenibile interrogare
+/// archivi che nessuno paga.
+const AGENTE: &str = "Aether/0.1 (+https://github.com/federicobaratti/aether)";
 
 impl Rete {
     /// Un client con una scadenza complessiva.
@@ -180,25 +200,6 @@ impl Rete {
     /// non copre.
     #[must_use]
     pub fn nuova(servizio: &'static str, scadenza: Duration) -> Self {
-        Self::nuova_con_agente(servizio, scadenza, AGENTE_PREDEFINITO)
-    }
-
-    /// Come [`Self::nuova`], ma dichiarando un altro `User-Agent`.
-    ///
-    /// # Perché è un parametro e non una costante
-    ///
-    /// Esiste per un caso solo, e vale la pena dire quale invece di lasciarlo
-    /// scoprire: il lettore keyless di Spotify parla con i punti interni del
-    /// lettore web, che a uno `User-Agent` sconosciuto rispondono in modo
-    /// diverso — quando rispondono. Lì presentarsi come Aether non è onestà,
-    /// è un guasto: non c'è nessuno a cui quel nome dica qualcosa, e l'unico
-    /// effetto è che la richiesta non funziona.
-    ///
-    /// Resta un costruttore separato, e non un parametro di [`Self::nuova`],
-    /// perché il valore normale è il nome vero: chi scrive un client nuovo deve
-    /// dover **scegliere** di non dirlo, non trovarselo già scelto.
-    #[must_use]
-    pub fn nuova_con_agente(servizio: &'static str, scadenza: Duration, agente: &str) -> Self {
         let configurazione = ureq::Agent::config_builder()
             .timeout_global(Some(scadenza))
             // Vedi la nota in testa al modulo: il corpo di un 4xx è
@@ -208,7 +209,7 @@ impl Rete {
             // Non è teorico: senza, un `http://` scritto per sbaglio in una
             // costante manderebbe un token in rete leggibile da chiunque.
             .https_only(true)
-            .user_agent(agente)
+            .user_agent(AGENTE)
             .build();
         Self {
             agente: configurazione.into(),
@@ -281,6 +282,116 @@ impl Rete {
             posizione,
             url_finale,
         })
+    }
+
+    /// Prende un file e lo scrive dove gli si dice, un pezzo per volta.
+    ///
+    /// # Perché non basta [`Self::esegui`]
+    ///
+    /// Perché quella raccoglie tutto il corpo in un `Vec<u8>` prima di
+    /// restituirlo, e i corpi di cui si occupa sono risposte JSON da qualche
+    /// kilobyte. Un concerto in FLAC dell'Internet Archive sono duecento
+    /// megabyte: tenerli in memoria per poi riscriverli su disco è il doppio
+    /// della memoria per niente, e soprattutto rende impossibile dire a chi
+    /// guarda a che punto è — la barra salterebbe da 0 a 1 quando è già finito.
+    ///
+    /// # L'annullamento è una domanda, non un segnale
+    ///
+    /// Come in tutto il resto dell'albero: una chiusura che chi chiama collega
+    /// al proprio `AtomicBool`, interrogata fra un blocco e l'altro. Non c'è
+    /// niente da interrompere dall'esterno, e un prelievo annullato smette entro
+    /// un blocco invece che entro una richiesta.
+    ///
+    /// Restituisce quanti byte sono stati scritti.
+    ///
+    /// # Errori
+    ///
+    /// `net.*` per i guasti di trasporto, `download.network` per una lettura che
+    /// si interrompe a metà, `internal.aborted` per l'annullamento. Uno stato di
+    /// errore diventa un `Err` — qui, a differenza di [`Self::esegui`], un corpo
+    /// di errore non è un'informazione: è un file che non c'è.
+    pub fn preleva(
+        &self,
+        url: &str,
+        intestazioni: &[(&str, &str)],
+        destinazione: &mut dyn std::io::Write,
+        annullato: &dyn Fn() -> bool,
+        avanzamento: &mut dyn FnMut(u64, Option<u64>),
+    ) -> Result<u64, AppError> {
+        let mut costruttore = self.agente.get(url);
+        for (nome, valore) in intestazioni {
+            costruttore = costruttore.header(*nome, *valore);
+        }
+        let mut risposta = costruttore
+            .call()
+            .map_err(|err| self.trasporto(&err, url))?;
+
+        let stato = risposta.status().as_u16();
+        if !(200..300).contains(&stato) {
+            let riprova_fra_ms = quanto_ha_chiesto(risposta.headers());
+            return Err(self.stato_a_errore(
+                &Risposta {
+                    stato,
+                    corpo: Vec::new(),
+                    riprova_fra_ms,
+                    posizione: None,
+                    url_finale: url.to_owned(),
+                },
+                url,
+            ));
+        }
+
+        // Quanto sarà in tutto, se il servizio lo dichiara. `None` è il permesso
+        // di disegnare una barra indeterminata, come per le pagine di una
+        // lettura: uno zero sarebbe un numero, e un numero è una promessa.
+        let totale = risposta
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+
+        let mut lettore = risposta.body_mut().as_reader();
+        let mut blocco = vec![0_u8; BLOCCO_PRELIEVO];
+        let mut scritti = 0_u64;
+
+        loop {
+            if annullato() {
+                return Err(AppError::new(ErrorCode::InternalAborted {
+                    what: Some("prelievo".to_owned()),
+                }));
+            }
+            let quanti = match std::io::Read::read(&mut lettore, &mut blocco) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) => {
+                    return Err(AppError::new(ErrorCode::DownloadNetwork)
+                        .with_cause(format!("lettura interrotta dopo {scritti} byte: {err}")));
+                }
+            };
+            let pezzo = blocco.get(..quanti).unwrap_or(&[]);
+            destinazione.write_all(pezzo).map_err(|err| {
+                AppError::new(ErrorCode::DownloadInvalidFiles)
+                    .with_cause(format!("scrittura fallita: {err}"))
+            })?;
+            scritti = scritti.saturating_add(quanti as u64);
+            avanzamento(scritti, totale);
+        }
+
+        // Un corpo troncato è il guasto che passerebbe in silenzio: il file c'è,
+        // si apre, e finisce a metà canzone. Se il servizio ha dichiarato una
+        // lunghezza, quella lunghezza è un contratto.
+        if let Some(atteso) = totale
+            && scritti < atteso
+        {
+            return Err(
+                AppError::new(ErrorCode::DownloadNetwork).with_cause(format!(
+                    "corpo troncato: {scritti} byte su {atteso} dichiarati"
+                )),
+            );
+        }
+
+        Ok(scritti)
     }
 
     /// Traduce un guasto di trasporto di `ureq` in un codice Aether.
@@ -383,7 +494,7 @@ impl Rete {
 /// detto.
 ///
 /// Pubblica perché non tutti i cicli di tentativi possono passare da
-/// [`Rete::con_tentativi`]: quello di `aether_spotify::pathfinder` porta con sé
+/// [`Rete::con_tentativi`]: quello di un catalogo porta con sé
 /// un `&mut Sessione` da invalidare sul 401, che in una chiusura `FnMut` non ci
 /// sta. Quel ciclo resta scritto a mano, ma l'attesa la calcola qui — o
 /// riprenderebbe un `429` all'istante, che è il modo più diretto di prenderne un

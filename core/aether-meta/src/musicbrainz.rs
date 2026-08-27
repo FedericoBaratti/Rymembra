@@ -30,7 +30,7 @@
 //! il caso normale costa una richiesta e quello difficile ne costa tre invece di
 //! restituire spazzatura.
 
-use aether_domain::enrich::{Candidate, Fonte, RemoteRelease, RemoteTrack, titolo_da_cercare};
+use aether_domain::enrich::{Candidate, FonteMeta, RemoteRelease, RemoteTrack, titolo_da_cercare};
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_net::percento;
 use serde_json::Value;
@@ -266,7 +266,7 @@ pub fn interpreta_registrazioni(corpo: &[u8]) -> Vec<Candidate> {
             let titolo = voce.get("title").and_then(Value::as_str)?;
             let pubblicazione = scegli_pubblicazione(voce.get("releases"));
             Some(Candidate {
-                fonte: Some(Fonte::MusicBrainz),
+                fonte: Some(FonteMeta::MusicBrainz),
                 title: titolo.to_owned(),
                 artist: artista_composto(voce.get("artist-credit")),
                 album: pubblicazione

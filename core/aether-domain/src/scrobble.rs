@@ -2,7 +2,7 @@
 //!
 //! # Perché sta nel dominio e non nel crate che parla con i servizi
 //!
-//! Stessa ragione per cui `AccountSnapshot` sta qui e non in `aether-spotify`:
+//! Stessa ragione per cui `AccountSnapshot` sta qui e non in `aether-archivio`:
 //! è il **perno** fra due parti che non devono conoscersi. Chi lo produce è la
 //! coda in `aether-app`, che vede il database e non la rete; chi lo consuma è
 //! `aether-scrobble`, che vede la rete e non il database. Se il tipo vivesse di

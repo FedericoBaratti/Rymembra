@@ -45,8 +45,15 @@ interface ConTransizione {
   startViewTransition?: (aggiorna: () => void) => unknown;
 }
 
-/** Niente movimento: lo dice il sistema, o lo dice la skin. */
-function fermoRestando(): boolean {
+/**
+ * Niente movimento: lo dice il sistema, o lo dice la skin.
+ *
+ * Esportata perché non serve solo alle transizioni di vista: il pannello del
+ * testo insegue la riga accesa scorrendo, e scorrere è movimento quanto una
+ * dissolvenza. Chiedere due volte la stessa cosa in due modi diversi vorrebbe
+ * dire che un giorno una delle due dimentica `--motion-scale`.
+ */
+export function fermoRestando(): boolean {
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return true;
   const scala = getComputedStyle(document.documentElement)
     .getPropertyValue("--motion-scale")

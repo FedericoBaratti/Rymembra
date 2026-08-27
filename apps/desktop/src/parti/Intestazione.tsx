@@ -17,6 +17,7 @@
  * campo è qui, dove sta la cosa su cui cerca.
  */
 import { Icona } from "./Icone";
+import { t } from "../lingue";
 
 export function Intestazione({
   occhiello,
@@ -71,7 +72,7 @@ export function Intestazione({
             type="button"
             className="pillola btn-ghost"
             onClick={ordinamento.onApri}
-            aria-label={`Ordinamento: ${ordinamento.etichetta}`}
+            aria-label={t("header.sort", { nome: ordinamento.etichetta })}
           >
             <Icona nome="i-sort" dim={15} />
             <span>{ordinamento.etichetta}</span>
@@ -84,7 +85,7 @@ export function Intestazione({
             <input
               className="campo field-input"
               type="search"
-              placeholder="Cerca…"
+              placeholder={t("header.search")}
               value={query ?? ""}
               onChange={(e) => onQuery(e.target.value)}
               spellCheck={false}

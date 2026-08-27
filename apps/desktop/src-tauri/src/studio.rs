@@ -53,6 +53,15 @@ pub struct TokenIpc {
     pub group: &'static str,
     /// La skin di riferimento lo deve dichiarare.
     pub required: bool,
+    /// Gli estremi ammessi, dove ci sono: sono i capi del cursore nell'editor.
+    ///
+    /// Vengono dal registro e non da una tabella qui per la stessa ragione di
+    /// `esempio`: il validatore rifiuta quel che esce da questi due numeri, e un
+    /// cursore che arrivasse altrove offrirebbe un valore che il documento poi
+    /// respinge — cioè un errore che l'interfaccia ha suggerito.
+    pub min: Option<f64>,
+    /// L'altro capo. Vedi [`Self::min`].
+    pub max: Option<f64>,
     /// A cosa serve. È il testo che chi scrive una skin legge nell'editor.
     pub description: &'static str,
 }
@@ -89,6 +98,221 @@ pub struct EffettoIpc {
     /// livello valido senza che nessuno se ne ricordi. Un vocabolario chiuso
     /// copiato in due lingue è un vocabolario che diverge.
     pub esempio: &'static str,
+    /// Le manopole dell'effetto.
+    ///
+    /// Senza questa lista, «Aggiungi livello» scriveva l'esemplare e finiva lì:
+    /// si otteneva un rettangolo nero e per cambiarne il colore si scendeva nel
+    /// JSON. Cioè la vista a controlli non era una seconda tastiera sullo stesso
+    /// documento — era una tastiera con meno tasti.
+    pub params: Vec<ParametroIpc>,
+}
+
+/// Un parametro di un effetto, come lo mostra l'editor.
+///
+/// Ricalca [`OpzioneIpc`] di proposito: sono due elenchi di manopole, e il
+/// pannello che le disegna è lo stesso. La differenza è il vocabolario dei tipi
+/// — qui c'è `color` e `length`, là c'è `flag` — perché sono i tipi che i due
+/// posti usano davvero.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParametroIpc {
+    /// Come si chiama nel documento.
+    pub name: &'static str,
+    /// `color`, `length`, `angle`, `number`, `stops`, `corners`, `word`.
+    pub kind: &'static str,
+    /// A cosa serve.
+    pub description: &'static str,
+    /// Le parole ammesse, per `word`. Vuoto altrimenti.
+    pub allowed: Vec<&'static str>,
+    /// L'intervallo, per `angle`, `number` e `length`.
+    pub min: Option<f64>,
+    /// L'altro capo.
+    pub max: Option<f64>,
+    /// Si può togliere: il crate ha un valore di serie per questo campo.
+    pub optional: bool,
+}
+
+/// Scorciatoia per tenere la tabella dei parametri leggibile: una riga per manopola.
+macro_rules! par {
+    ($name:literal, $kind:literal, $optional:literal, $desc:literal) => {
+        ParametroIpc {
+            name: $name,
+            kind: $kind,
+            description: $desc,
+            allowed: Vec::new(),
+            min: None,
+            max: None,
+            optional: $optional,
+        }
+    };
+    ($name:literal, $kind:literal, $optional:literal, $min:literal, $max:literal, $desc:literal) => {
+        ParametroIpc {
+            name: $name,
+            kind: $kind,
+            description: $desc,
+            allowed: Vec::new(),
+            min: Some($min),
+            max: Some($max),
+            optional: $optional,
+        }
+    };
+    ($name:literal, $kind:literal, $optional:literal, [$($parola:literal),+], $desc:literal) => {
+        ParametroIpc {
+            name: $name,
+            kind: $kind,
+            description: $desc,
+            allowed: vec![$($parola),+],
+            min: None,
+            max: None,
+            optional: $optional,
+        }
+    };
+}
+
+/// Le manopole di ogni effetto, nell'ordine in cui si mostrano.
+///
+/// È una tabella e non una derivazione perché `Effect` è un enum di varianti
+/// tipizzate, non un elenco dichiarativo: non c'è niente da cui leggerla a
+/// macchina. Sta **qui** e non nell'editor per la stessa ragione di `esempio` —
+/// accanto al codice che la deve tenere allineata alle varianti, in Rust, dove
+/// aggiungerne una senza aggiornare questa riga è visibile a chi la aggiunge.
+fn parametri(nome: &str) -> Vec<ParametroIpc> {
+    match nome {
+        "solid" => vec![par!("color", "color", false, "La tinta.")],
+        "linearGradient" => vec![
+            par!(
+                "angle",
+                "angle",
+                true,
+                -360.0,
+                360.0,
+                "Gradi. 180 va dall'alto in basso."
+            ),
+            par!("stops", "stops", false, "Le fermate, in ordine."),
+        ],
+        "radialGradient" => vec![
+            par!(
+                "shape",
+                "word",
+                true,
+                ["circle", "ellipse"],
+                "Cerchio o ellisse."
+            ),
+            par!("stops", "stops", false, "Le fermate, dal centro."),
+        ],
+        "conicGradient" => vec![
+            par!(
+                "from",
+                "angle",
+                true,
+                -360.0,
+                360.0,
+                "Da che angolo parte il giro."
+            ),
+            par!("stops", "stops", false, "Le fermate, in senso orario."),
+        ],
+        "hairlineGrid" => vec![
+            par!("color", "color", false, "Il colore delle linee."),
+            par!("cell", "length", false, 1.0, 200.0, "Il lato della cella."),
+            par!(
+                "cellY",
+                "length",
+                true,
+                1.0,
+                200.0,
+                "L'altezza, se diversa dal lato."
+            ),
+            par!(
+                "thickness",
+                "length",
+                true,
+                0.0,
+                8.0,
+                "Lo spessore delle linee."
+            ),
+        ],
+        "scanlines" => vec![
+            par!("color", "color", false, "Il colore della riga."),
+            par!("line", "length", false, 0.0, 32.0, "Quanto è alta la riga."),
+            par!(
+                "gap",
+                "length",
+                false,
+                0.0,
+                64.0,
+                "Quanto la separa dalla prossima."
+            ),
+        ],
+        "stripes" => vec![
+            par!("angle", "angle", true, -360.0, 360.0, "L'inclinazione."),
+            par!("color", "color", false, "La striscia."),
+            par!("background", "color", false, "Quel che sta fra le strisce."),
+            par!(
+                "width",
+                "length",
+                false,
+                1.0,
+                96.0,
+                "La larghezza di una striscia."
+            ),
+        ],
+        "dotGrid" => vec![
+            par!("color", "color", false, "Il colore dei punti."),
+            par!(
+                "spacing",
+                "length",
+                false,
+                2.0,
+                96.0,
+                "Quanto distano fra loro."
+            ),
+            par!("dot", "length", false, 0.0, 16.0, "Quanto sono grossi."),
+        ],
+        "vignette" => vec![
+            par!(
+                "color",
+                "color",
+                false,
+                "Il colore che si chiude sui bordi."
+            ),
+            par!(
+                "start",
+                "number",
+                true,
+                0.0,
+                100.0,
+                "Da che percentuale del raggio comincia."
+            ),
+        ],
+        "chamfer" => vec![
+            par!("size", "length", false, 0.0, 64.0, "Quanto taglia."),
+            par!(
+                "corners",
+                "corners",
+                true,
+                "Quali angoli. Nessuno dichiarato vuol dire tutti."
+            ),
+        ],
+        "blurBehind" => vec![
+            par!(
+                "radius",
+                "length",
+                false,
+                0.0,
+                64.0,
+                "Il raggio della sfocatura."
+            ),
+            par!(
+                "saturate",
+                "number",
+                true,
+                0.0,
+                400.0,
+                "Quanto satura quel che sta dietro."
+            ),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 /// Una manopola di widget, come la mostra l'editor.
@@ -189,7 +413,9 @@ const fn nome_gruppo_token(group: aether_skin::tokens::TokenGroup) -> &'static s
         G::Status => "Stati",
         G::Chrome => "Cornice",
         G::Layout => "Impaginazione",
+        G::Rhythm => "Ritmo",
         G::Geometry => "Geometria",
+        G::Depth => "Profondità",
         G::Elevation => "Sopraelevazione",
         G::Motion => "Movimento",
         G::Canvas => "Tela",
@@ -239,6 +465,8 @@ pub fn studio_registro() -> RegistroIpc {
                 kind: nome_tipo(def.kind),
                 group: nome_gruppo_token(def.group),
                 required: def.required,
+                min: def.limiti.map(|(min, _)| min),
+                max: def.limiti.map(|(_, max)| max),
                 description: def.description,
             })
             .collect(),
@@ -362,6 +590,7 @@ fn esempio(nome: &str) -> Option<EffettoIpc> {
         name: effetto.name(),
         cost: effetto.cost().weight(),
         esempio: minimo,
+        params: parametri(effetto.name()),
         target: match effetto.target() {
             aether_skin::effects::EffectTarget::Background => "background",
             aether_skin::effects::EffectTarget::ClipPath => "clipPath",
@@ -726,6 +955,40 @@ pub fn studio_salva(
     // Una bozza è lavoro non ancora salvato da nessuna parte: è precisamente la
     // cosa che un backup deve portare via per prima.
     crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Butta la bozza e torna a quel che dice il pacchetto.
+///
+/// # Perché le istantanee restano
+///
+/// Sono due cose diverse e non si cancellano insieme. La bozza è «dove sono
+/// arrivato»; le istantanee sono «dove sono passato», e sono l'unica rete sotto
+/// questo bottone — che è irreversibile per natura. Chi scarta una bozza e si
+/// pente ha ancora l'ultima istantanea da cui ripartire; se questo comando
+/// portasse via anche quelle, non avrebbe più niente.
+///
+/// Restituisce la sorgente del pacchetto, cioè quel che l'editor deve mostrare
+/// da qui in poi: farsela ridire con una seconda chiamata lascerebbe un istante
+/// in cui la finestra mostra un documento che non esiste più da nessuna parte.
+#[tauri::command]
+pub fn studio_scarta(stato: State<'_, Stato>, id: String) -> Esito<String> {
+    con_libreria(&stato, |libreria| {
+        if !id_sicuro(&id) {
+            return Err(non_trovata(&id));
+        }
+        let cartella = cartella_bozze(&libreria.data_dir).join(&id);
+        if cartella.exists() {
+            std::fs::remove_dir_all(&cartella).map_err(|err| {
+                aether_app::files::io_error(&cartella.display().to_string(), &err)
+            })?;
+        }
+        // Dopo la cancellazione `da_lavorare` non trova più la bozza e ricade
+        // sul pacchetto: è la stessa funzione che decide all'apertura, quindi
+        // non c'è un secondo posto in cui la regola «la bozza vince» possa
+        // divergere.
+        Ok(da_lavorare(&libreria.data_dir, &id)?.sorgente)
+    })
+    .map_err(errore)
 }
 
 /// Scrive un `.aeskin` da una sorgente, con dentro le risorse che aveva.
@@ -1217,6 +1480,75 @@ mod tests {
 
         let da = da_lavorare(dir.path(), DI_SERIE).expect("la bozza");
         assert_eq!(da.sorgente, modificata, "la bozza deve vincere sul binario");
+    }
+
+    #[test]
+    fn ogni_effetto_porta_le_sue_manopole() {
+        // La tabella dei parametri è scritta a mano perché `Effect` è un enum di
+        // varianti tipizzate e non c'è niente da cui leggerla a macchina. Questo
+        // test è il prezzo di quella scelta: un effetto nuovo senza la sua riga
+        // arriverebbe all'editor come un livello che si aggiunge e non si può
+        // aprire, che è il difetto da cui `params` è nato.
+        let registro = studio_registro();
+        assert_eq!(
+            registro.effects.len(),
+            aether_skin::effects::Effect::NAMES.len()
+        );
+        for effetto in &registro.effects {
+            assert!(
+                !effetto.params.is_empty(),
+                "«{}» non dichiara nessuna manopola",
+                effetto.name
+            );
+        }
+    }
+
+    #[test]
+    fn le_manopole_dichiarate_esistono_davvero_nell_esemplare() {
+        // Un parametro obbligatorio deve comparire nell'esemplare minimo: se non
+        // ci fosse, l'editor mostrerebbe un controllo vuoto per un campo che il
+        // parser pretende, e il primo salvataggio fallirebbe.
+        for effetto in studio_registro().effects {
+            let esempio: serde_json::Value =
+                serde_json::from_str(effetto.esempio).expect("l'esemplare è JSON");
+            for parametro in effetto.params.iter().filter(|p| !p.optional) {
+                assert!(
+                    esempio.get(parametro.name).is_some(),
+                    "«{}» dichiara «{}» obbligatorio e non lo scrive nell'esemplare",
+                    effetto.name,
+                    parametro.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn buttata_la_bozza_torna_a_parlare_il_pacchetto() {
+        // Il comando vive dietro `con_libreria` e qui non si può chiamare, ma
+        // quel che deve garantire sì: tolta la cartella della bozza,
+        // `da_lavorare` — la stessa funzione che decide all'apertura — deve
+        // tornare a leggere il pacchetto. Senza questo, «butta la bozza»
+        // lascerebbe l'editor su un documento che non sta più da nessuna parte.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let bozza = cartella_bozze(dir.path()).join(DI_SERIE);
+        std::fs::create_dir_all(&bozza).expect("cartella");
+        let modificata =
+            aether_skin::PLAIN_SOURCE.replace("\"name\": \"Plain\"", "\"name\": \"Mia\"");
+        std::fs::write(bozza.join("skin.json"), &modificata).expect("scritta");
+        assert_eq!(
+            da_lavorare(dir.path(), DI_SERIE)
+                .expect("la bozza")
+                .sorgente,
+            modificata
+        );
+
+        std::fs::remove_dir_all(&bozza).expect("buttata");
+        assert_eq!(
+            da_lavorare(dir.path(), DI_SERIE)
+                .expect("il pacchetto")
+                .sorgente,
+            aether_skin::PLAIN_SOURCE
+        );
     }
 
     #[test]

@@ -12,6 +12,8 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 
+import { t, tSe } from "./lingue";
+
 /** Un errore, come lo manda il nucleo. */
 export interface ErroreIpc {
   code: string;
@@ -29,71 +31,42 @@ export function eErroreIpc(value: unknown): value is ErroreIpc {
     typeof value === "object" &&
     value !== null &&
     "code" in value &&
+    typeof value.code === "string" &&
     "domain" in value &&
-    "severity" in value
+    typeof value.domain === "string" &&
+    "severity" in value &&
+    typeof value.severity === "string"
   );
 }
 
 /**
- * Cosa dire, per i codici che arrivano davanti a chi usa l'applicazione.
- *
- * Non tutti i codici del catalogo: solo quelli che una persona può leggere sullo
- * schermo. Il nucleo manda `message` soltanto quando ha qualcosa di specifico da
- * aggiungere — un percorso, uno stato HTTP — e per la maggior parte dei guasti
- * previsti non ce l'ha, perché il *codice* è già l'informazione. Senza questa
- * tabella `testoErrore` ripiegava su `code`, e chi sbagliava una lettera nel
- * link di Spotify leggeva `spotify.notPublic`.
- *
- * Ogni voce dice **cosa fare**, non solo cosa è successo: un messaggio che
- * constata e basta lascia la persona esattamente dov'era.
- */
-const TESTI: Record<string, string> = {
-  // Sono indistinguibili di là — Spotify risponde allo stesso modo a un
-  // contenuto privato e a uno cancellato — quindi vanno detti tutti e due.
-  "spotify.notPublic":
-    "Questo contenuto non è pubblico, oppure il link non esiste più. Controlla il link, o rendi pubblica la playlist su Spotify.",
-  "spotify.resolveFailed":
-    "Non si è riusciti a leggere questo link. Apri «Perché non funziona?» qui sotto per sapere dove si è fermato.",
-  "spotify.tokenUnavailable":
-    "Spotify non ha rilasciato il gettone anonimo. Di solito è passeggero: riprova fra qualche istante.",
-  "download.unrecognizedUrl":
-    "Questo non sembra un link di Spotify. Vanno bene gli indirizzi «open.spotify.com», quelli brevi «spotify.link» e gli URI «spotify:album:…».",
-  "net.offline": "Nessuna connessione a Internet.",
-  "net.timeout": "Il server non ha risposto in tempo. Riprova.",
-  "net.rateLimited":
-    "Troppe richieste di fila: il servizio ha chiesto di rallentare. Aspetta un minuto e riprova.",
-  "net.http": "Il server ha risposto con un errore.",
-  "library.playlistNameInvalid":
-    "Questo nome non identifica nessuna playlist: serve almeno una lettera o una cifra.",
-  "library.playlistIsSmart":
-    "Questa playlist è automatica: il suo contenuto lo decidono le regole, e le righe aggiunte a mano sparirebbero al primo ricalcolo.",
-  // I sei dell'account. Ognuno dice **cosa fare**, perché sono i sei momenti in
-  // cui una persona resta ferma senza sapere da che parte girarsi.
-  "spotify.accountNotConfigured":
-    "Manca l'identificativo dell'applicazione Spotify. Creane una su developer.spotify.com/dashboard, con «http://127.0.0.1» come Redirect URI, e incolla qui il Client ID.",
-  // Sono due cose diverse e Spotify non dice quale: vanno dette tutte e due.
-  "spotify.accountForbidden":
-    "Spotify ha rifiutato l'accesso. O questo account non è fra quelli abilitati nella dashboard dell'applicazione, oppure chi ha registrato l'applicazione non ha più Spotify Premium — da febbraio 2026 è un requisito, e quando scade l'app smette di funzionare senza avvisare.",
-  "spotify.accountAuthExpired":
-    "Il collegamento con Spotify non vale più. Ricollega l'account.",
-  "spotify.quotaExceeded":
-    "La quota giornaliera dell'applicazione Spotify è esaurita. Non passa riprovando: riprova domani, oppure importa dall'archivio, che non ha quote.",
-  "spotify.archiveUnreadable":
-    "Questo file non si apre come archivio: può essere stato scaricato a metà. Riscaricalo da Spotify.",
-  "spotify.archiveEmpty":
-    "L'archivio si apre ma non contiene niente che Aether sappia leggere. Spotify ne manda più d'uno: cerca quello con dentro «Playlist1.json» o «Streaming_History_Audio».",
-};
-
-/**
  * Il testo da mostrare per un errore qualsiasi.
  *
- * La tabella per prima, e non `message`, perché `message` è il dettaglio tecnico
- * che il nucleo aggiunge per chi legge i registri: quando c'è tutti e due, quello
- * scritto per una persona è questo.
+ * # La tabella che c'era qui, e perché non c'è più
+ *
+ * Stava scritta a mano — venticinque messaggi italiani chiavati per codice — e
+ * il campo che li avrebbe resi inutili arrivava dal nucleo da sempre senza che
+ * nessuno lo leggesse: `ErroreIpc.i18nKey`, generato in
+ * `aether-domain/src/errors/catalog.rs` come `concat!("errors.", <codice>)`.
+ * Erano le stesse due tabelle da tenere allineate che il catalogo del nucleo
+ * esiste per non avere: venticinque voci qui contro centoquattro codici di là,
+ * e ogni codice nuovo compariva a schermo come `spotify.notPublic` finché
+ * qualcuno non si ricordava di questo file.
+ *
+ * Adesso la chiave la decide il nucleo e il testo lo decide il catalogo delle
+ * lingue, dove sono tutti e centoquattro. Un codice aggiunto di là senza testo
+ * di qua ripiega su `message`, e in sviluppo lo dice in console.
+ *
+ * # Perché la chiave viene prima di `message`
+ *
+ * Perché `message` è il dettaglio tecnico che il nucleo aggiunge per chi legge
+ * i registri — lo dice `AppError::with_message`: «per chi sviluppa, non per chi
+ * ascolta musica». Quando ci sono tutti e due, quello scritto per una persona è
+ * il primo.
  */
 export function testoErrore(value: unknown): string {
   if (eErroreIpc(value)) {
-    return TESTI[value.code] ?? value.message ?? value.cause ?? value.code;
+    return tSe(value.i18nKey, value.message ?? value.cause ?? value.code);
   }
   return value instanceof Error ? value.message : String(value);
 }
@@ -171,6 +144,14 @@ export interface Avvio {
    * i due stati butterebbe via il tema chiaro di chi l'aveva fissato.
    */
   tema: string | null;
+  /**
+   * La lingua scelta, come codice ISO, o `null` se non è mai stata scelta.
+   *
+   * `null` **non** vuol dire «inglese»: vuol dire che nessuno ha scelto, ed è
+   * ciò che fa rilevare la lingua dal sistema operativo. Confondere i due stati
+   * farebbe partire in inglese ogni installazione tedesca, per sempre.
+   */
+  lingua: string | null;
   /** Le scorciatoie riassegnate, come JSON. `null` = quelle di serie. */
   scorciatoie: string | null;
   numeri: Numeri;
@@ -281,6 +262,61 @@ export type Ordine = "scaffale" | "recenti" | "ascoltati" | "titolo";
 export type Ripetizione = "off" | "one" | "all";
 
 /**
+ * A che livello si normalizza il volume.
+ *
+ * Quattro stati e non un interruttore più un numero: sotto c'è un bersaglio in
+ * decibel — il nucleo sa portare tutto a un livello qualunque fra −30 e −6 — ma
+ * chiedere quel numero a chi ascolta vorrebbe dire chiedergli cos'è un LUFS.
+ * `normale` è il riferimento a cui i tag ReplayGain sono misurati, `alto` è
+ * quello delle piattaforme di streaming, `basso` sta cinque decibel sotto.
+ */
+export type Normalizzazione = "spento" | "basso" | "normale" | "alto";
+
+/**
+ * Quel che la Home mostra all'apertura.
+ *
+ * Un tipo solo e una chiamata sola: sono cinque domande che si fanno insieme,
+ * e cinque `invoke` separati vorrebbero dire cinque attraversamenti dell'IPC
+ * per disegnare una schermata sola.
+ */
+export interface Casa {
+  /** Il brano su cui ci si era fermati. */
+  riprendi: Brano | null;
+  /** A che punto era, in millisecondi. */
+  riprendiMs: number;
+  /** Gli ultimi ascoltati, senza ripetizioni. */
+  recenti: Brano[];
+  /**
+   * I dischi entrati in libreria per ultimi.
+   *
+   * Dischi e non brani: la musica entra una cartella alla volta, e dodici brani
+   * ordinati per data d'ingresso sono dodici tracce dello stesso album.
+   */
+  aggiunti: Album[];
+  /** Quel che non si ascolta da mesi. */
+  trascurati: Brano[];
+}
+
+/**
+ * Il valore di `spegnimento` che dice «quando finisce questo brano».
+ *
+ * Non è una durata, quindi non può essere un numero di minuti. Il nucleo lo
+ * riconosce come modo e non prepara il brano successivo, così la musica finisce
+ * dove sarebbe finita comunque invece di essere tagliata a metà.
+ */
+export const FINE_DEL_BRANO = -1;
+
+/**
+ * Il massimo di dissolvenza che si può chiedere, in secondi.
+ *
+ * Dodici, come Spotify. Oltre, la sovrapposizione dura più della coda di quasi
+ * ogni brano e quel che si sente non è più un passaggio ma due canzoni suonate
+ * insieme. Il nucleo taglia comunque: questo serve al cursore per sapere dove
+ * finire.
+ */
+export const DISSOLVENZA_MASSIMA_S = 12;
+
+/**
  * Lo stato della riproduzione.
  *
  * `coda` sono solo identificativi, ed è voluto: mandare millequattrocento righe
@@ -301,10 +337,45 @@ export interface StatoRiproduzione {
   posizioneCoda: number | null;
   eqAttivo: boolean;
   eqGuadagni: number[];
-  /** La normalizzazione ReplayGain è accesa. Di serie sì. */
-  replaygain: boolean;
+  /** A che livello normalizza il volume. Di serie `normale`. */
+  replaygain: Normalizzazione;
+  /**
+   * Fra quanto si spegne da solo, in millisecondi.
+   *
+   * `null` se nessun timer è acceso, `0` se è «alla fine di questo brano» —
+   * che non è una durata e si scrive a parole.
+   */
+  spegnimentoMs: number | null;
+  /** A coda finita si continua da soli. Di serie no. */
+  autoplay: boolean;
+  /**
+   * Quanto si sovrappongono due brani, in secondi. `0` è spenta.
+   *
+   * In secondi e non in millisecondi perché è così che si sceglie: il cursore
+   * ha una tacca per secondo, e millisecondi vorrebbero dire dividere per
+   * mille per disegnare e moltiplicare per mille per chiedere.
+   */
+  dissolvenzaS: number;
   /** Il motore audio non c'è: perché, e se vale la pena riaprire. */
   audio: GuastoAudio | null;
+}
+
+/**
+ * Le bande dello spettro, come arrivano dall'evento `riproduzione:spettro`.
+ *
+ * Quante ne ha chieste chi guarda, da 8 a 1024, dalla più bassa alla più alta.
+ *
+ * Arrivano in `0..=255` e non in `0..=1`: mille numeri in virgola mobile trenta
+ * volte al secondo sono mezzo megabyte al secondo di JSON per disegnare barre
+ * alte qualche centinaio di pixel. Chi disegna divide per 255.
+ *
+ * Il nucleo legge dalla stessa trasformata anche le dieci bande d'ottava — quelle
+ * dell'equalizzatore — e non stanno qui: le disegnava la striscia sotto la
+ * copertina, che non c'è più, e dieci numeri per trenta eventi al secondo che
+ * nessuno legge sono dieci numeri di troppo.
+ */
+export interface BandeSpettro {
+  fini: number[];
 }
 
 /**
@@ -382,15 +453,14 @@ export interface EsitoImportazione {
   tombstones: number;
 }
 
-// ── importazione da Spotify ────────────────────────────────────────────────
+// ── importazione da un catalogo ────────────────────────────────────────────
 
 /**
- * Un livello del lettore keyless che non ha risposto.
+ * Un livello del lettore che non ha risposto.
  *
- * Ce ne sono tre in cascata — Pathfinder, pagina embed, oEmbed — e questo è
- * l'elenco di quelli scartati prima di quello che ha funzionato. Serve alla
- * diagnosi: gli endpoint sono interni e volatili, e «ha risposto il terzo»
- * distingue una rotazione di Spotify da un computer offline.
+ * L'elenco di quelli scartati prima di quello che ha funzionato. Serve alla
+ * diagnosi: «ha risposto il secondo» distingue un catalogo che ha cambiato
+ * qualcosa da un computer offline.
  */
 export interface LivelloFallito {
   livello: string;
@@ -398,7 +468,7 @@ export interface LivelloFallito {
 }
 
 /**
- * Un elenco arrivato più corto di quanto Spotify dichiari.
+ * Un elenco arrivato più corto di quanto il catalogo dichiari.
  *
  * `null` quando è completo. Non è un dettaglio da nascondere: una playlist
  * importata a metà **in silenzio** è il guasto peggiore possibile qui, perché
@@ -410,8 +480,10 @@ export interface Troncatura {
 }
 
 /** Cosa c'è dietro un link, prima di guardare la libreria. */
-export interface AnteprimaSpotify {
-  /** `brano`, `album`, `playlist` o `artista`. */
+export interface AnteprimaImport {
+  /** Il nome stabile: `internet-archive`, `jamendo`, `audius`. Vedi `nomeFonte`. */
+  fonte: string;
+  /** `brano`, `album`, `playlist`, `artista` o `collezione`. */
   genere: string;
   id: string;
   titolo: string;
@@ -419,7 +491,7 @@ export interface AnteprimaSpotify {
   /**
    * La copertina come `data:` URI, già scaricata dal nucleo.
    *
-   * **Non** un indirizzo di Spotify: la politica dei contenuti della finestra
+   * **Non** un indirizzo del catalogo: la politica dei contenuti della finestra
    * (`tauri.conf.json`) ammette fra le immagini solo `data:` e il protocollo
    * locale delle copertine, e allargarla per sempre a un dominio esterno per una
    * miniatura è quel che questa applicazione non fa. Va quindi in `src` così
@@ -427,15 +499,39 @@ export interface AnteprimaSpotify {
    */
   copertina: string | null;
   brani: number;
-  /** Quale livello ha risposto: `pathfinder`, `embed` o `oembed`. */
+  /** Quale livello ha risposto. Non è statistica: dice quanto ci si può fidare. */
   sorgente: string;
   troncato: Troncatura | null;
-  falliti: LivelloFallito[];
+  /**
+   * Quanti di quei brani si possono tenere sul disco.
+   *
+   * Il numero che rende onesta questa schermata. Un elenco di venti brani di
+   * cui tre si prendono e diciassette si ascoltano e basta è una cosa da sapere
+   * **prima** di confermare, non da scoprire dalla coda che si riempie di righe
+   * introvabili.
+   */
+  scaricabili: number;
 }
 
-/** Un brano di Spotify che in libreria non c'è. */
+/**
+ * Come va la lettura di un link, mentre va.
+ *
+ * `pagine` è `null` quando il livello che risponde non sa quante saranno: la
+ * barra diventa indeterminata invece di stimare. Un massimo non è una previsione.
+ */
+export interface AvanzamentoImport {
+  /** Il livello che sta rispondendo. */
+  sorgente: string;
+  /** Quante pagine sono state lette, da 1. */
+  pagina: number;
+  pagine: number | null;
+  /** Quanti brani sono stati raccolti finora. */
+  brani: number;
+}
+
+/** Un brano di una fonte esterna che in libreria non c'è. */
 export interface BranoMancante {
-  /** La posizione nell'elenco di Spotify, da 1. */
+  /** La posizione nell'elenco del servizio, da 1. */
   position: number;
   title: string;
   artist: string | null;
@@ -443,18 +539,20 @@ export interface BranoMancante {
 }
 
 /**
- * Cosa l'importazione da Spotify porterebbe, o ha portato.
+ * Cosa l'importazione da una fonte esterna porterebbe, o ha portato.
  *
  * `missingTracks` è la voce che conta, per lo stesso motivo di
- * `EsitoImportazione.unmatched`: sono brani che l'utente ha su Spotify e non su
- * questo disco, e sono l'unica cosa che non può ricostruire dopo.
+ * `EsitoImportazione.unmatched`: sono brani che l'utente ha altrove e non
+ * su questo disco, e sono l'unica cosa che non può ricostruire dopo.
  */
-export interface EsitoSpotify {
+export interface EsitoImport {
   kind: string;
-  /** Quale livello del lettore ha risposto: `pathfinder`, `embed`, `oembed`. */
+  /**
+   * Quale livello del lettore ha risposto; da un archivio, `archivio`.
+   */
   source: string;
   /**
-   * L'identificativo del contenuto su Spotify.
+   * L'identificativo del contenuto presso la fonte.
    *
    * **Non** `source`, che nonostante il nome è il livello del lettore. È questo
    * che combacia con `SorgenteScarico.sourceId`, ed è così che la finestrella
@@ -462,10 +560,12 @@ export interface EsitoSpotify {
    */
   sourceId: string;
   title: string;
-  /** Quanti brani sono stati letti da Spotify. */
+  /** Quanti brani sono stati letti dalla fonte. */
   resolved: number;
   matched: number;
   missing: number;
+  /** Ritrovati per ISRC: stessa registrazione, senza guardare i nomi. */
+  matchedIsrc: number;
   /** Artista, titolo e album coincidenti. */
   matchedExact: number;
   /** Artista e titolo, album diverso. */
@@ -484,15 +584,19 @@ export interface EsitoSpotify {
   isrcWritten: number;
   /** Quante righe di «lista desideri» sono state scritte. */
   wantedRows: number;
+  /** Voci rimesse nelle playlist dal viaggio di ritorno. */
+  playlistRestored: number;
+  /** Righe di `desiderati` chiuse perché il brano è comparso in libreria. */
+  wantedClosed: number;
   truncated: { read: number; expected: number } | null;
 }
 
-
 // ── l'account Spotify intero ─────────────────────────────────
-// Due vie che finiscono nello stesso posto: il consenso OAuth e l'archivio che
-// Spotify manda per posta producono lo stesso valore di là, quindi da qui in giù
-// i comandi sono gli stessi. È il motivo per cui questa è una schermata sola e
-// non due.
+// Una via sola: l'archivio che Spotify consegna su richiesta. Il consenso OAuth
+// c'era e non c'è più — non per un guasto, ma perché quel che si può fare dei
+// dati della Web API lo decide il *Spotify Developer Policy*, mentre l'archivio
+// è dell'utente per diritto di portabilità (GDPR art. 20) e portarselo dove
+// vuole è precisamente ciò che quell'articolo gli riconosce.
 
 /** Un file dell'archivio che non si è aperto. */
 export interface FileIlleggibile {
@@ -500,24 +604,23 @@ export interface FileIlleggibile {
   perche: string;
 }
 
-/**
- * Cosa si è letto di un account, prima di guardare la libreria.
- *
- * Una forma sola per tutte e due le vie: i campi che riguardano solo l'archivio
- * (`letti`, `ignorati`, …) arrivano vuoti quando si viene dall'API, e viceversa.
- * `provenienza` dice quale delle due è stata.
- */
+/** Cosa si è letto di un account, prima di guardare la libreria. */
 export interface AnteprimaAccount {
-  /** `api` o `archivio`. */
+  /**
+   * `archivio`.
+   *
+   * Resta un campo e non una costante perché un database scritto da una
+   * versione precedente può contenere `api`, e leggerlo non deve rompersi.
+   */
   provenienza: string;
   profilo: string | null;
   spotifyUserId: string | null;
   /**
    * Questa via porta una cronologia degna di quel nome?
    *
-   * Falso per l'API, che ne dà cinquanta righe e basta. Serve a non far sembrare
-   * un guasto il limite di un endpoint: «50 ascolti» da lassù sono tutto quel che
-   * c'è, non un'importazione andata male.
+   * Vero per l'archivio, che porta tutto. Falso per le vecchie importazioni via
+   * API, che ne davano cinquanta righe: serve a non far sembrare un guasto il
+   * limite di un endpoint che non si usa più.
    */
   cronologiaCompleta: boolean;
   playlist: number;
@@ -527,30 +630,6 @@ export interface AnteprimaAccount {
   artisti: number;
   cronologia: number;
   podcast: number;
-
-  // solo dalla Web API
-  /**
-   * L'account ha Premium?
-   *
-   * `null` quando Spotify non l'ha detto — che è diverso da «no», e dirlo
-   * sbagliato sarebbe un allarme falso. Dal febbraio 2026 un'applicazione in
-   * Development Mode smette di funzionare quando il suo proprietario perde
-   * l'abbonamento, e Spotify non manda nessun avviso: questo è l'unico modo di
-   * dirlo prima.
-   */
-  premium: boolean | null;
-  /**
-   * Le playlist di cui Spotify non dà più il contenuto.
-   *
-   * Dal marzo 2026 i brani si leggono solo di quelle che l'utente possiede o in
-   * cui collabora. Vanno mostrate: una playlist vuota senza spiegazione sembra
-   * un guasto dell'abbinamento, e non lo è.
-   */
-  senzaContenuto: string[];
-  /** Gli elenchi arrivati a metà. Vuoto su qualunque account vero. */
-  troncati: string[];
-
-  // solo dall'archivio
   letti: string[];
   ignorati: string[];
   illeggibili: FileIlleggibile[];
@@ -638,66 +717,97 @@ export type GenereSmart = "testo" | "numero" | "booleano" | "data";
  * piedi lo decide comunque il nucleo, che scarta le regole storte invece di
  * fallire.
  */
-export const CAMPI_SMART: readonly {
+export function campiSmart(): readonly {
   chiave: CampoSmart;
   etichetta: string;
   genere: GenereSmart;
-}[] = [
-  { chiave: "titolo", etichetta: "Titolo", genere: "testo" },
-  { chiave: "artista", etichetta: "Artista", genere: "testo" },
-  { chiave: "album", etichetta: "Album", genere: "testo" },
-  { chiave: "genere", etichetta: "Genere", genere: "testo" },
-  { chiave: "anno", etichetta: "Anno", genere: "numero" },
-  { chiave: "valutazione", etichetta: "Voto", genere: "numero" },
-  { chiave: "preferito", etichetta: "Preferito", genere: "booleano" },
-  { chiave: "riproduzioni", etichetta: "Riproduzioni", genere: "numero" },
-  { chiave: "durata", etichetta: "Durata (ms)", genere: "numero" },
-  { chiave: "aggiunto", etichetta: "Aggiunto", genere: "data" },
-  { chiave: "ultimoAscolto", etichetta: "Ultimo ascolto", genere: "data" },
-];
+}[] {
+  return [
+    { chiave: "titolo", etichetta: t("smart.field.titolo"), genere: "testo" },
+    { chiave: "artista", etichetta: t("smart.field.artista"), genere: "testo" },
+    { chiave: "album", etichetta: t("smart.field.album"), genere: "testo" },
+    { chiave: "genere", etichetta: t("smart.field.genere"), genere: "testo" },
+    { chiave: "anno", etichetta: t("smart.field.anno"), genere: "numero" },
+    {
+      chiave: "valutazione",
+      etichetta: t("smart.field.valutazione"),
+      genere: "numero",
+    },
+    {
+      chiave: "preferito",
+      etichetta: t("smart.field.preferito"),
+      genere: "booleano",
+    },
+    {
+      chiave: "riproduzioni",
+      etichetta: t("smart.field.riproduzioni"),
+      genere: "numero",
+    },
+    { chiave: "durata", etichetta: t("smart.field.durata"), genere: "numero" },
+    {
+      chiave: "aggiunto",
+      etichetta: t("smart.field.aggiunto"),
+      genere: "data",
+    },
+    {
+      chiave: "ultimoAscolto",
+      etichetta: t("smart.field.ultimoAscolto"),
+      genere: "data",
+    },
+  ];
+}
 
 /** Gli operatori che hanno senso per ogni genere di campo. */
-export const OPERATORI_SMART: Record<
+export function operatoriSmart(): Record<
   GenereSmart,
   readonly { chiave: OperatoreSmart; etichetta: string }[]
-> = {
-  testo: [
-    { chiave: "contiene", etichetta: "contiene" },
-    { chiave: "nonContiene", etichetta: "non contiene" },
-    { chiave: "uguale", etichetta: "è" },
-    { chiave: "diverso", etichetta: "non è" },
-    { chiave: "inizia", etichetta: "comincia con" },
-    { chiave: "finisce", etichetta: "finisce con" },
-    { chiave: "vuoto", etichetta: "è vuoto" },
-    { chiave: "nonVuoto", etichetta: "non è vuoto" },
-  ],
-  numero: [
-    { chiave: "uguale", etichetta: "=" },
-    { chiave: "diverso", etichetta: "≠" },
-    { chiave: "maggiore", etichetta: ">" },
-    { chiave: "minore", etichetta: "<" },
-    { chiave: "vuoto", etichetta: "non c'è" },
-    { chiave: "nonVuoto", etichetta: "c'è" },
-  ],
-  booleano: [{ chiave: "uguale", etichetta: "è" }],
-  data: [
-    { chiave: "negliUltimi", etichetta: "negli ultimi (giorni)" },
-    { chiave: "nonNegliUltimi", etichetta: "non negli ultimi (giorni)" },
-    { chiave: "vuoto", etichetta: "mai" },
-    { chiave: "nonVuoto", etichetta: "almeno una volta" },
-  ],
-};
+> {
+  return {
+    testo: [
+      { chiave: "contiene", etichetta: t("smart.op.text.contiene") },
+      { chiave: "nonContiene", etichetta: t("smart.op.text.nonContiene") },
+      { chiave: "uguale", etichetta: t("smart.op.text.uguale") },
+      { chiave: "diverso", etichetta: t("smart.op.text.diverso") },
+      { chiave: "inizia", etichetta: t("smart.op.text.inizia") },
+      { chiave: "finisce", etichetta: t("smart.op.text.finisce") },
+      { chiave: "vuoto", etichetta: t("smart.op.text.vuoto") },
+      { chiave: "nonVuoto", etichetta: t("smart.op.text.nonVuoto") },
+    ],
+    // I quattro segni non si traducono: «=» e «>» si leggono uguali ovunque, e
+    // sostituirli con delle parole allungherebbe un menù che sta su una riga.
+    numero: [
+      { chiave: "uguale", etichetta: "=" },
+      { chiave: "diverso", etichetta: "≠" },
+      { chiave: "maggiore", etichetta: ">" },
+      { chiave: "minore", etichetta: "<" },
+      { chiave: "vuoto", etichetta: t("smart.op.num.vuoto") },
+      { chiave: "nonVuoto", etichetta: t("smart.op.num.nonVuoto") },
+    ],
+    booleano: [{ chiave: "uguale", etichetta: t("smart.op.bool.uguale") }],
+    data: [
+      { chiave: "negliUltimi", etichetta: t("smart.op.date.negliUltimi") },
+      {
+        chiave: "nonNegliUltimi",
+        etichetta: t("smart.op.date.nonNegliUltimi"),
+      },
+      { chiave: "vuoto", etichetta: t("smart.op.date.vuoto") },
+      { chiave: "nonVuoto", etichetta: t("smart.op.date.nonVuoto") },
+    ],
+  };
+}
 
-export const ORDINAMENTI_SMART: readonly {
+export function ordinamentiSmart(): readonly {
   chiave: OrdinamentoSmart;
   etichetta: string;
-}[] = [
-  { chiave: "scaffale", etichetta: "Da scaffale" },
-  { chiave: "recenti", etichetta: "Aggiunti di recente" },
-  { chiave: "piuAscoltati", etichetta: "Più ascoltati" },
-  { chiave: "menoAscoltati", etichetta: "Meno ascoltati" },
-  { chiave: "casuale", etichetta: "A caso" },
-];
+}[] {
+  return [
+    { chiave: "scaffale", etichetta: t("smart.order.scaffale") },
+    { chiave: "recenti", etichetta: t("smart.order.recenti") },
+    { chiave: "piuAscoltati", etichetta: t("smart.order.piuAscoltati") },
+    { chiave: "menoAscoltati", etichetta: t("smart.order.menoAscoltati") },
+    { chiave: "casuale", etichetta: t("smart.order.casuale") },
+  ];
+}
 
 /** Gli operatori che non vogliono un valore accanto. */
 export function senzaValore(operatore: OperatoreSmart): boolean {
@@ -774,12 +884,12 @@ export interface EsitoAccount {
   spotifyUserId: string | null;
   fullHistory: boolean;
   /** Un rapporto per playlist, nella stessa forma dell'importazione da un link. */
-  playlists: EsitoSpotify[];
+  playlists: EsitoImport[];
   rejectedPlaylists: PlaylistRifiutata[];
-  liked: EsitoSpotify;
+  liked: EsitoImport;
   /** Quanti brani sono stati segnati preferiti **adesso**: zero alla seconda passata. */
   likedMarked: number;
-  albums: EsitoSpotify[];
+  albums: EsitoImport[];
   albumsSeen: number;
   albumIdsWritten: number;
   artistsSeen: number;
@@ -791,15 +901,12 @@ export interface EsitoAccount {
   wantedClosed: number;
 }
 
-/** Che aria tira sull'account, senza toccare la rete. */
+/** Che aria tira sull'account. Istantaneo: legge solo il database. */
 export interface StatoAccount {
-  configurato: boolean;
-  clientId: string | null;
-  collegato: boolean;
   spotifyUserId: string | null;
   displayName: string | null;
   ultimoMs: number | null;
-  /** `api` o `archivio`. */
+  /** Oggi sempre `archivio`; `api` solo nei database scritti prima. */
   ultimaVia: string | null;
   /**
    * Quanti ascolti importati ci sono adesso.
@@ -810,15 +917,6 @@ export interface StatoAccount {
   ascoltiImportati: number;
   inCorso: boolean;
   caricato: AnteprimaAccount | null;
-}
-
-/** A che punto è la lettura di un account. Arriva su `account:avanzamento`. */
-export interface AvanzamentoAccount {
-  /** `profilo`, `preferiti`, `album`, `artisti`, `playlist`, `cronologia`. */
-  fase: string;
-  nome: string | null;
-  fatti: number;
-  totali: number | null;
 }
 
 /** I totali di un esito, che la finestra somma in tre posti diversi. */
@@ -863,17 +961,30 @@ export function vuotoAccount(anteprima: AnteprimaAccount): boolean {
   );
 }
 
-/** Che aria tira sul lettore keyless. */
-export interface DiagnosticaSpotify {
-  /** `null` se la stretta di mano riesce, altrimenti perché no. */
-  strettaDiMano: string | null;
-  cifrari: number;
-  versioniCifrari: number[];
-  /** Dove va messo il file che corregge le costanti scadute. */
-  percorsoConfig: string;
-  /** `assente`, `letto` o `illeggibile`. */
-  fileConfig: string;
-  fileConfigErrore: string | null;
+/** Che aria tira su un catalogo. */
+export interface DiagnosticaCatalogo {
+  /**
+   * Il nome stabile: `internet-archive`, `jamendo`, `audius`.
+   *
+   * L'etichetta che si legge non arriva di qui: la mette `nomeFonte`, dal
+   * catalogo delle lingue.
+   */
+  nome: string;
+  /** Risponde, adesso. Questa voce **tocca la rete**. */
+  risponde: boolean;
+  /**
+   * Da qui si può tenere una copia, o solo ascoltare.
+   *
+   * Non è una capacità tecnica ma una regola: Jamendo vieta esplicitamente la
+   * cache e l'accesso offline nei suoi termini, e Aether la rispetta invece di
+   * scoprire se il server glielo lascerebbe fare.
+   */
+  consegna: boolean;
+}
+
+/** Che aria tira, catalogo per catalogo. */
+export interface DiagnosticaImport {
+  cataloghi: DiagnosticaCatalogo[];
 }
 
 /** Quanti desiderati ci sono, per stato. */
@@ -885,10 +996,12 @@ export interface ConteggiScarico {
   /** Non presi, e non si riprova più. Sono quelli che «Riprova» rimette in fila. */
   fallito: number;
   /**
-   * Su YouTube non ci sono.
+   * Nessuna fonte lecita ce l'ha.
    *
-   * Distinti dai falliti di proposito: ritentare all'infinito un brano che non
-   * esiste nasconde quelli che un ritentativo lo meritavano.
+   * **Non** «non esiste»: esiste, e da qualche parte si compra. Distinti dai
+   * falliti di proposito — ritentare all'infinito un brano che nessun catalogo
+   * libero avrà mai nasconde quelli che un ritentativo lo meritavano — e sono
+   * le righe che riempiono «Da comprare».
    */
   introvabile: number;
 }
@@ -897,16 +1010,29 @@ export interface ConteggiScarico {
  * Un'importazione, vista dalla coda.
  *
  * Non c'è nessuna tabella delle importazioni: è il gruppo delle righe di
- * `spotify_wanted` con lo stesso `sourceId`. Siccome quelle righe non si
- * cancellano mai, l'elenco sopravvive alla chiusura dell'applicazione.
+ * `desiderati` con lo stesso `sourceId`. Siccome quelle righe non si cancellano
+ * mai, l'elenco sopravvive alla chiusura dell'applicazione.
  */
 export interface SorgenteScarico {
-  /** L'identificativo del contenitore su Spotify. */
+  /** L'identificativo del contenitore presso il servizio. */
   sourceId: string;
   /** `brano`, `album`, `playlist` o `artista`. */
   sourceKind: string;
   /** Come si chiama. */
   sourceTitle: string;
+  /**
+   * Da dove viene: la colonna `desiderati.source_service`.
+   *
+   * `archivio-spotify`, `file-playlist`, `internet-archive`, `jamendo`,
+   * `audius`. Serve a una cosa sola, e non è statistica: da un catalogo il file
+   * è quello che l'utente ha incollato, e la riga deve poter dire «dall'elenco»
+   * invece di mostrare una scelta che nessuno ha fatto.
+   *
+   * Porta il nome della colonna come i tre qui sopra, e non `fonte`: sono
+   * quattro campi della stessa riga di database, e tradurne uno solo farebbe
+   * sembrare che venga da un'altra parte.
+   */
+  sourceService: string;
   /** Come stanno i suoi brani. */
   conteggi: ConteggiScarico;
   /** Quando è stata importata. */
@@ -931,12 +1057,102 @@ export interface StatoScarico {
    */
   sorgenti: SorgenteScarico[];
   /**
-   * yt-dlp è al suo posto.
+   * Da dove Aether prende la musica, adesso.
    *
-   * `false` vuol dire che la coda non può nemmeno partire, ed è un'informazione
-   * da mostrare **prima** che l'utente prema qualcosa.
+   * Sostituisce il vecchio `ytdlp: boolean`, e la differenza non è cosmetica:
+   * là c'era una cosa che poteva **mancare**, e mezza interfaccia esisteva per
+   * dirlo. Qui non manca niente — i cataloghi sono compilati dentro — e
+   * l'elenco serve a un'altra cosa, che prima non si poteva fare: dire da dove
+   * arriva quel che si sta prendendo.
    */
-  ytdlp: boolean;
+  cataloghi: CatalogoAttivo[];
+  /**
+   * Si accettano registrazioni diverse da quella chiesta.
+   *
+   * I cataloghi liberi non hanno le versioni in studio del catalogo
+   * commerciale: hanno concerti e riletture. Acceso, la coda le prende e
+   * **dice** che l'ha fatto; spento, torna severa e trova molto meno.
+   */
+  alternative: boolean;
+}
+
+/**
+ * Un brano che nessuna fonte lecita ha, e che quindi si compra.
+ *
+ * # Perché non è un errore
+ *
+ * Perché non lo è. La sostituzione onesta di uno scaricamento che non si può
+ * fare non è una riga rossa: è dire **dove** prendere quel brano. Queste righe
+ * sono lo stato `introvabile` della coda, che fino a poco fa era solo un numero
+ * in un conteggio.
+ */
+export interface DaComprare {
+  titolo: string;
+  /** Vuoto quando la fonte non l'ha dato. */
+  artista: string;
+  /** Vuoto quando la fonte non l'ha dato. */
+  album: string;
+  /** Da quale importazione veniva, per dire dove manca. */
+  provenienza: string;
+  /**
+   * Perché nessuno ce l'ha.
+   *
+   * `download.noResults` è «non l'ho trovato da nessuna parte»;
+   * `download.notPermitted` è «l'ho trovato e la licenza non me lo lascia
+   * prendere» — cioè da qualche parte si **ascolta**, e sono due cose diverse
+   * per chi legge.
+   */
+  motivo: string;
+}
+
+/** Un catalogo compilato dentro questa build. */
+export interface CatalogoAttivo {
+  /** Il nome stabile: `internet-archive`, `jamendo`, `audius`. Vedi `nomeFonte`. */
+  nome: string;
+  /** Da qui si può tenere una copia, o solo ascoltare. */
+  consegna: boolean;
+}
+
+/** Il file che la coda ha scelto per un brano di cui aveva solo i nomi. */
+export interface FileScelto {
+  /** Il titolo, come sta nel catalogo. */
+  titolo: string;
+  /** Chi lo pubblica. `null` quando il catalogo non lo dà. */
+  autore: string | null;
+  /** Da quale catalogo: il nome stabile della fonte. */
+  fonte: string;
+  /**
+   * Sotto che licenza sta: `pubblicoDominio`, `cc-by`, `cc-by-nc-sa`,
+   * `openMusicLicense`, `liberaNonCommerciale`, `tutteRiservate`,
+   * `sconosciuta`.
+   *
+   * Va **mostrata**. È la differenza fra un'applicazione che prende musica dove
+   * le pare e una che sa cosa sta prendendo, e chi ascolta ha il diritto di
+   * saperlo quanto chi pubblica.
+   */
+  licenza: string;
+  /**
+   * Che registrazione è: `studio`, `dalVivo`, `alternativa`.
+   *
+   * Il campo che rende onesta l'intera funzione. Un catalogo di concerti
+   * risponde con dei concerti, e prenderne uno per la versione in studio senza
+   * dirlo sarebbe scrivere in libreria una cosa per un'altra.
+   */
+  natura: string;
+  /** Quanto è affidabile chi pubblica: `nomeAutore`, `verificata`, `ignota`. */
+  affidabilita: string;
+  /**
+   * Scarto fra la durata del file e quella dichiarata, in ms.
+   *
+   * **Firmato**: positivo se il file è più lungo. Un `+8 s` è un'introduzione o
+   * una coda che sfuma; un `−8 s` è una versione tagliata. Il valore assoluto
+   * direbbe la metà della cosa. `null` quando una delle due durate non si sa:
+   * un candidato senza durata resta in gara, e disegnare `0 s` mostrerebbe un
+   * combaciare che nessuno ha verificato.
+   */
+  scartoMs: number | null;
+  /** La pagina d'origine, da aprire per vedere da dove viene. */
+  pagina: string | null;
 }
 
 /** Cosa sta succedendo a un brano della coda. */
@@ -945,7 +1161,7 @@ export interface BranoScarico {
   artista: string | null;
   /** Da 0 a 1 mentre scende; `null` mentre cerca. */
   frazione: number | null;
-  /** `cerco`, `scarico`, `fatto`, `fallito`, `introvabile`. */
+  /** `cerco`, `prendo`, `fatto`, `fallito`, `introvabile`. */
   esito: string;
   /** Il codice del catalogo, quando è andata male. */
   codice: string | null;
@@ -953,6 +1169,16 @@ export interface BranoScarico {
   sorgenteId: string;
   /** Il nome di quel contenitore. */
   provenienza: string;
+  /**
+   * Il file scelto, e perché quello.
+   *
+   * `null` in due casi che chi legge deve distinguere: da un link di un
+   * catalogo la scelta non c'è stata — il file era già noto e la coda salta la
+   * ricerca — e mentre `esito` è `cerco` non è ancora stata fatta. Il primo si
+   * riconosce da `SorgenteScarico.sourceService`, e la riga lo dice invece di
+   * tacere.
+   */
+  scelto: FileScelto | null;
 }
 
 /** Uno spostamento proposto dal riordino. */
@@ -1092,13 +1318,32 @@ export interface VoceSkin {
 
 // ── lo Skin Studio ──────────────────────────────────────────────────────────
 
+/** Il tipo di valore che un token accetta. Decide quale controllo lo modifica. */
+export type TipoToken =
+  | "color"
+  | "length"
+  | "duration"
+  | "easing"
+  | "number"
+  | "fontStack"
+  | "shadow";
+
 /** Un token del registro. */
 export interface TokenRegistro {
   id: string;
   css: string;
-  kind: "color" | "length" | "duration" | "easing" | "number" | "fontStack" | "shadow";
+  kind: TipoToken;
   group: string;
   required: boolean;
+  /**
+   * Gli estremi, per gli undici token la cui libertà è limitata di proposito.
+   *
+   * Sono i capi del cursore: vengono dal registro perché sono gli stessi due
+   * numeri con cui il validatore rifiuta il documento, e un cursore che
+   * arrivasse altrove offrirebbe un valore che il salvataggio poi respinge.
+   */
+  min: number | null;
+  max: number | null;
   description: string;
 }
 
@@ -1109,6 +1354,23 @@ export interface ParteRegistro {
   description: string;
   /** Ha uno pseudo-elemento libero per un livello aggiuntivo. */
   layers: boolean;
+}
+
+/** Il tipo di una manopola d'effetto. Decide quale controllo la modifica. */
+export type TipoParametro =
+  "color" | "length" | "angle" | "number" | "stops" | "corners" | "word";
+
+/** Una manopola di un effetto, col controllo che le corrisponde. */
+export interface ParametroRegistro {
+  name: string;
+  kind: TipoParametro;
+  description: string;
+  /** Le parole ammesse, per `word`. Vuoto altrimenti. */
+  allowed: string[];
+  min: number | null;
+  max: number | null;
+  /** Si può togliere: il nucleo ha un valore di serie per questo campo. */
+  optional: boolean;
 }
 
 /** Un effetto, col costo che dichiara. */
@@ -1124,6 +1386,13 @@ export interface EffettoRegistro {
    * vocabolario chiuso copiato in due lingue è un vocabolario che diverge.
    */
   esempio: string;
+  /**
+   * Le manopole, per aprire un livello e modificarlo.
+   *
+   * Senza, «Aggiungi livello» scriveva l'esemplare e finiva lì: si otteneva un
+   * rettangolo nero e per cambiarne il colore si scendeva nel JSON.
+   */
+  params: ParametroRegistro[];
 }
 
 /** Una manopola di widget, col controllo che le corrisponde. */
@@ -1279,6 +1548,141 @@ export interface StatoNuvola {
   errore: ErroreIpc | null;
 }
 
+/**
+ * Un dispositivo che partecipa alla sincronia.
+ *
+ * `nome` è `null` finché non lo si accoppia, ed è voluto: un dispositivo che
+ * compare da solo nella cartella condivisa non ha un nome da esibire, e
+ * inventargliene uno lo farebbe sembrare già conosciuto.
+ */
+export interface DispositivoSincronia {
+  id: string;
+  nome: string | null;
+  /** Ci si fida di quel che scrive. */
+  fidato: boolean;
+  /** Quando il suo documento è stato letto l'ultima volta. */
+  vistoMs: number | null;
+  /** È questo computer. */
+  sonoIo: boolean;
+}
+
+/**
+ * Cosa la sincronia ha cambiato nella libreria.
+ *
+ * Non è telemetria: è la sola cosa che permette di fidarsi di un automatismo che
+ * scrive da solo. «142 ascolti, 3 playlist rifatte» è una frase che si legge;
+ * «sincronizzato» non lo è.
+ */
+export interface CambiamentiSincronia {
+  ascolti: number;
+  voti: number;
+  preferiti: number;
+  posizioni: number;
+  playlist: number;
+  playlistTolte: number;
+  cartelle: number;
+  dispositivi: number;
+}
+
+/** Com'è andata una passata di sincronia. */
+export interface Resoconto {
+  quandoMs: number;
+  /** Quanti documenti altrui sono stati letti davvero. */
+  letti: number;
+  /** Quanti erano già in mano, immutati: è la passata a vuoto che costa niente. */
+  saltati: number;
+  /** Il proprio documento è stato riscritto. */
+  scritto: boolean;
+  /** Quanti documenti non si sono potuti leggere. */
+  guasti: number;
+  cambiamenti: CambiamentiSincronia;
+}
+
+/**
+ * Lo stato della sincronia fra dispositivi.
+ *
+ * Come `StatoNuvola`, ogni campo è non opzionale: è ciò che fa scoprire a `tsc`
+ * un `rename_all` dimenticato di là invece di lasciare un `undefined` in
+ * silenzio.
+ */
+export interface StatoSincronia {
+  /** La sincronia automatica è accesa. */
+  attiva: boolean;
+  /** Dove si depositano i documenti. */
+  dove: "cartella" | "drive";
+  cartella: string | null;
+  /**
+   * Il deposito è utilizzabile davvero.
+   *
+   * Diverso da `attiva`: una cartella non ancora scelta e un Drive non collegato
+   * sono due modi di non essere pronti, e vanno distinti da «spento».
+   */
+  pronta: boolean;
+  /** L'identificativo di questo computer. */
+  io: string;
+  dispositivi: DispositivoSincronia[];
+  ultimaMs: number | null;
+  inCorso: boolean;
+  resoconto: Resoconto | null;
+  errore: ErroreIpc | null;
+}
+
+/** Una versione più nuova che aspetta di essere installata. */
+export interface AggiornamentoDisponibile {
+  /** Il numero di versione annunciato dal manifesto. */
+  versione: string;
+  /** Le note di rilascio, quando il manifesto ne porta. */
+  note: string | null;
+  /** Quando è stata pubblicata. */
+  dataMs: number | null;
+  /**
+   * L'utente ha già detto «non ora» per **questa** versione.
+   *
+   * Non spegne niente: al prossimo controllo la richiesta parte lo stesso, e se
+   * nel frattempo ne esce un'altra l'avviso torna. Serve solo a non ripetere
+   * ogni mezz'ora una domanda a cui è già stato risposto.
+   */
+  saltata: boolean;
+}
+
+/**
+ * Lo stato del controllo aggiornamenti.
+ *
+ * È l'unica richiesta di rete che Aether fa senza che nessuno gliel'abbia
+ * chiesta, e per questo ha un interruttore suo in Impostazioni e un numero suo
+ * in `PRIVACY.md`.
+ */
+export interface StatoAggiornamenti {
+  /** Il controllo periodico è acceso. Di serie lo è. */
+  attivo: boolean;
+  /**
+   * Questa copia di Aether sa verificare la firma di un aggiornamento.
+   *
+   * Falso in un albero compilato senza chiavi di firma. Il controllo allora non
+   * parte affatto — annunciare qualcosa che poi non si può installare sarebbe
+   * solo un modo più lungo di fallire — e la finestra nasconde l'interruttore
+   * invece di mostrarne uno che non comanda niente.
+   */
+  configurato: boolean;
+  /** La versione installata adesso. */
+  versioneCorrente: string;
+  /** Quando è finito l'ultimo controllo riuscito. */
+  ultimoMs: number | null;
+  disponibile: AggiornamentoDisponibile | null;
+  /** Un controllo è in corso adesso. Dura un secondo e non si mostra. */
+  inCorso: boolean;
+  /** Uno scaricamento è in corso adesso. Dura minuti e ha una barra. */
+  installazione: boolean;
+  errore: ErroreIpc | null;
+}
+
+/** Quanto è sceso di un aggiornamento in corso di scaricamento. */
+export interface AvanzamentoAggiornamento {
+  scaricati: number;
+  /** Quanti se ne aspettano in tutto, quando il server lo dice. */
+  totale: number | null;
+}
+
 /** Com'è messo un servizio di scrobbling. */
 export interface CollegamentoScrobble {
   /**
@@ -1404,6 +1808,105 @@ export interface AvanzamentoNuvola {
   cosa: "metadati" | "skin" | "bozze";
 }
 
+/** Una parola con il suo tempo, nell'LRC esteso. */
+export interface ParolaTesto {
+  /** Quando comincia, in millisecondi. */
+  ms: number;
+  /** Il pezzo di riga che le appartiene, spazi compresi. */
+  testo: string;
+}
+
+/** Una riga di testo con il suo tempo. */
+export interface RigaTesto {
+  /** Quando comincia, in millisecondi. */
+  ms: number;
+  /** La riga. */
+  testo: string;
+  /** I tempi delle parole, quando il file li porta. Quasi sempre vuoto. */
+  parole: ParolaTesto[];
+}
+
+/**
+ * Il testo di un brano, già interpretato dal nucleo.
+ *
+ * Qui non arriva mai un LRC: arrivano righe in ordine, con i loro millisecondi.
+ * È deliberato — il formato lo legge `aether_domain::testo`, e un secondo
+ * lettore scritto in TypeScript divergerebbe dal primo su tutto quel che il
+ * formato non dice, che è quasi tutto.
+ */
+export interface TestoBrano {
+  /** Le righe con i tempi. Vuoto se il testo non è sincronizzato. */
+  righe: RigaTesto[];
+  /** Il testo senza tempi, da mostrare quando le righe non ci sono. */
+  piatto: string | null;
+  /** Il brano non ha parole. È una risposta, non un'assenza. */
+  strumentale: boolean;
+  /** Da dove viene. */
+  fonte: "nessuna" | "sidecar" | "tag" | "lrclib" | "mano";
+  /**
+   * Lo scarto dichiarato dal file, nel verso dello standard: positivo anticipa.
+   *
+   * Arriva separato da `scartoMs` perché i due li decidono due persone diverse:
+   * questo chi ha scritto il `.lrc`, l'altro chi sta ascoltando adesso. Si
+   * sommano alla posizione, mai ai tempi delle righe — vedi
+   * `aether_domain::testo::posizione_corretta`, che è dove la regola vive.
+   */
+  offsetMs: number;
+  /** La correzione di chi ascolta. */
+  scartoMs: number;
+  /**
+   * Quanto i tempi stanno dentro *questo* file.
+   *
+   * `sospetta` e `fuori` non nascondono il testo: lo mostrano dicendo che c'è
+   * qualcosa da verificare. Un testo giusto della versione sbagliata scorre
+   * benissimo, ed è il modo in cui un lettore mente senza accorgersene.
+   */
+  aderenza: "buona" | "sospetta" | "fuori";
+  /** Si è già chiesto al catalogo per questo brano. */
+  cercato: boolean;
+  /**
+   * Vale la pena chiedere al catalogo: quel che si ha non scorre.
+   *
+   * Non si ricostruisce qui da `fonte` e `cercato`. Il testo piatto conta come
+   * «non si ha»: il catalogo tiene più voci per lo stesso brano e la prima che
+   * risponde non è sempre quella con i tempi — vedi
+   * `aether_app::testi::TestoBrano::da_chiedere`.
+   */
+  daChiedere: boolean;
+}
+
+/** Quanti brani stanno in ciascuno dei quattro stati. */
+export interface CoperturaTesti {
+  /** Brani con i tempi: scorrono. */
+  sincronizzati: number;
+  /** Brani col solo testo: si leggono. */
+  piatti: number;
+  /** Brani che non hanno parole. */
+  strumentali: number;
+  /** Brani per cui non si è ancora trovato niente. */
+  mancanti: number;
+}
+
+/** Come stanno i testi sulla libreria intera. */
+export interface StatoTesti {
+  /** Si può chiedere al catalogo. */
+  rete: boolean;
+  /** Una passata sta girando adesso. */
+  inCorso: boolean;
+  /** Quanti brani ha guardato la passata in corso. */
+  fatti: number;
+  /** Quanti gliene restano. */
+  rimasti: number;
+  /** I quattro numeri, contati sui brani e non sui file. */
+  copertura: CoperturaTesti;
+}
+
+/** L'avanzamento di una passata sui testi, in brani. */
+export interface AvanzamentoTesti {
+  fatti: number;
+  rimasti: number;
+}
+
 /**
  * Lo stato dell'arricchimento automatico dei metadati.
  *
@@ -1467,6 +1970,24 @@ export const ipc = {
   // tema sono già sul documento. Se questa chiamata non arriva mai, la mostra
   // il nucleo dopo due secondi.
   pronto: () => invoke<void>("pronto"),
+
+  // ── la barra del titolo ───────────────────────────────────────────────────
+  // La finestra non ha decorazioni: i quattro gesti che dava il sistema
+  // operativo li disegna la pagina, e passano da comandi nostri invece che dai
+  // permessi `core:window:*` — vedi `main.rs`, dove sta scritto perché. Il
+  // quinto — lo schermo intero — quella fascia non lo dava nemmeno: arriva da
+  // `F11`, cioè dalla tabella delle scorciatoie.
+  finestraTrascina: () => invoke<void>("finestra_trascina"),
+  finestraRiduci: () => invoke<void>("finestra_riduci"),
+  // Torna com'è rimasta: un giro solo invece di «cambia» e poi «com'è?».
+  finestraIngrandisci: () => invoke<boolean>("finestra_ingrandisci"),
+  finestraIngrandita: () => invoke<boolean>("finestra_ingrandita"),
+  // Lo schermo intero della **finestra**, che non è quello di «In riproduzione»:
+  // quello riempie la finestra di un brano, questo toglie di mezzo il resto del
+  // desktop. Torna com'è rimasta, come `finestraIngrandisci`.
+  finestraSchermoIntero: () => invoke<boolean>("finestra_schermo_intero"),
+  finestraChiudi: () => invoke<void>("finestra_chiudi"),
+
   avvio: () => invoke<Avvio>("avvio"),
   impostaCartelle: (cartelle: string[]) =>
     invoke<void>("imposta_cartelle", { cartelle }),
@@ -1480,6 +2001,10 @@ export const ipc = {
   // Il tema stava in `localStorage` e adesso sta in `settings`: era l'unica
   // preferenza che non finiva né nel backup su Drive né nel profilo.
   impostaTema: (tema: string) => invoke<void>("imposta_tema", { tema }),
+  // Stringa vuota = rimetti il rilevamento dal sistema. Il nucleo non sa quali
+  // lingue esistono — l'elenco è la cartella `src/lingue/` — e controlla
+  // soltanto che il testo sia un codice di lingua.
+  impostaLingua: (lingua: string) => invoke<void>("imposta_lingua", { lingua }),
   // Stringa vuota = rimetti quelle di serie. Il nucleo controlla soltanto che
   // sia JSON: i nomi dei comandi sono roba della finestra, e un nucleo che li
   // validasse andrebbe ricompilato per aggiungere una scorciatoia.
@@ -1508,6 +2033,7 @@ export const ipc = {
   // della lunghezza della prima pagina.
   cercaConteggio: (query: string) =>
     invoke<number>("cerca_conteggio", { query }),
+  casa: () => invoke<Casa>("casa"),
   brani: (ordine: Ordine, offset: number, limite: number) =>
     invoke<Brano[]>("brani", { ordine, offset, limite }),
   album: (offset: number, limite: number) =>
@@ -1541,6 +2067,10 @@ export const ipc = {
   // e rientrare dalla stessa finestra di dialogo per essere usato.
   skinInstallaSorgente: (sorgente: string) =>
     invoke<VoceSkin>("skin_installa_sorgente", { sorgente }),
+  // Restituisce la skin che **resta attiva**: togliere quella indossata torna a
+  // quella di serie, e il CSS da applicare arriva di qui invece che da una
+  // seconda chiamata.
+  skinDisinstalla: (id: string) => invoke<Skin>("skin_disinstalla", { id }),
   skinScegli: (id: string) => invoke<Skin>("skin_scegli", { id }),
 
   // ── l'accento che segue la copertina ─────────────────────────────────────
@@ -1569,6 +2099,10 @@ export const ipc = {
     invoke<VoceFile[]>("studio_pacchetto", { id }),
   studioSalva: (id: string, sorgente: string) =>
     invoke<void>("studio_salva", { id, sorgente }),
+  // Butta la bozza e restituisce quel che dice il pacchetto: la sorgente torna
+  // di qui e non da una seconda chiamata, così non esiste un istante in cui la
+  // finestra mostra un documento che non sta più da nessuna parte.
+  studioScarta: (id: string) => invoke<string>("studio_scarta", { id }),
   // Vuole l'`id` perché il manifest è quello dell'editor ma le risorse sono
   // quelle del pacchetto: senza, una skin col suo carattere dentro lo perdeva
   // ogni volta che usciva da qui.
@@ -1647,54 +2181,125 @@ export const ipc = {
   importa: (percorso: string) =>
     invoke<EsitoImportazione>("importa", { percorso }),
 
-  // ── importazione da Spotify ──────────────────────────────────────────────
-  // Tutti e tre i comandi ricevono il **link**, mai il contenuto: quel che è
-  // stato letto resta di là, in una cella indicizzata dall'URI. Farlo viaggiare
-  // fin qui e indietro vorrebbe dire serializzare trecento brani due volte e
-  // poi fidarsi che quel che torna sia quel che era partito.
+  // ── importazione da un link ──────────────────────────────────────────────
+  // Una serie sola per tutti i cataloghi: i lettori di là producono lo stesso
+  // tipo, quindi da qui in poi il percorso è uno. Chi incolla non deve
+  // scegliere un catalogo prima di sapere che cosa ha negli appunti.
   //
-  // Chiamarli in fila con lo stesso link fa **una** stretta di mano e **una**
-  // lettura di rete: il secondo e il terzo trovano la cella già piena.
+  // I link che valgono sono quelli di **archive.org**, **jamendo.com** e
+  // **audius.co**. Un link che non si riconosce non viene tentato: il nucleo
+  // risponde `download.unrecognizedUrl` senza fare nessuna richiesta, perché un
+  // link a cui non si sa bussare è un link a cui non si bussa.
+  //
+  // Tutti e tre i comandi ricevono il **link**, mai il contenuto: quel che è
+  // stato letto resta di là, in una cella indicizzata da catalogo e
+  // identificativo. Farlo viaggiare fin qui e indietro vorrebbe dire
+  // serializzare trecento brani due volte e poi fidarsi che quel che torna sia
+  // quel che era partito.
+  //
+  // Chiamarli in fila con lo stesso link fa **una** lettura di rete: il secondo
+  // e il terzo trovano la cella già piena.
   //
   // `forza` salta il riuso della cella, ed è quel che rende «Riprova» una cosa
-  // che riprova: senza, una lettura caduta al terzo livello — perché in quel
+  // che riprova: senza, una lettura caduta all'ultimo livello — perché in quel
   // momento la rete singhiozzava — resterebbe la risposta di quel link per tutto
   // il tempo in cui l'applicazione è aperta. Una rilettura **fallita** lascia in
   // cella quella di prima: si perde il tentativo, non quel che si aveva.
-  spotifyAnteprima: (url: string, forza = false) =>
-    invoke<AnteprimaSpotify>("spotify_anteprima", { url, forza }),
-  spotifyPiano: (url: string, creaPlaylist: boolean) =>
-    invoke<EsitoSpotify>("spotify_piano", { url, creaPlaylist }),
-  spotifyImporta: (url: string, creaPlaylist: boolean) =>
-    invoke<EsitoSpotify>("spotify_importa", { url, creaPlaylist }),
+  //
+  // Mentre `importAnteprima` legge arriva `import:avanzamento` — pagine e brani,
+  // vedi `AvanzamentoImport`. Fino a poco fa una famiglia `import:*` non
+  // esisteva affatto, ed era la ragione per cui una playlist da trecento brani
+  // era una chiamata bloccante muta dietro il tasto «Guarda». Non c'è un evento
+  // di annullamento: l'abort del lettore è cablato a «no», e un tasto che non
+  // annulla è peggio della sua assenza.
+  importAnteprima: (url: string, forza = false) =>
+    invoke<AnteprimaImport>("import_anteprima", { url, forza }),
+  importPiano: (url: string, creaPlaylist: boolean) =>
+    invoke<EsitoImport>("import_piano", { url, creaPlaylist }),
+  importEsegui: (url: string, creaPlaylist: boolean) =>
+    invoke<EsitoImport>("import_esegui", { url, creaPlaylist }),
   // Il comando che rende leggibile un guasto invece di lasciare «non funziona»:
-  // dice se il gettone anonimo si ottiene ancora e dove va messo il file che
-  // corregge le costanti quando Spotify le ruota.
-  spotifyDiagnostica: () =>
-    invoke<DiagnosticaSpotify>("spotify_diagnostica"),
+  // dice quali cataloghi rispondono adesso e da quali si può tenere una copia.
+  // **Tocca la rete**, al contrario di `scaricoStato`: è l'unico posto in cui
+  // farlo è giusto, perché è l'unico che l'utente apre per saperlo.
+  importDiagnostica: () => invoke<DiagnosticaImport>("import_diagnostica"),
+  /**
+   * Il rapporto di un'importazione passata, o `null` se non c'è più.
+   *
+   * `null` **non è un errore**: è un'importazione più vecchia della persistenza,
+   * o una di cui il rapporto è stato potato. Chi chiama lo distingue, perché
+   * dirlo come guasto manderebbe qualcuno a cercare una riparazione che non
+   * esiste.
+   */
+  importRapporto: (sourceId: string) =>
+    invoke<EsitoImport | null>("import_rapporto", { sourceId }),
+  /**
+   * Gli ultimi rapporti, per la pagina: le concluse in sessioni passate.
+   *
+   * Si chiede un limite perché `desiderati` non cancella mai niente e i rapporti
+   * seguono la stessa regola: un elenco che cresce per sempre va potato prima o
+   * poi, e potarlo dalla finestra non si può — quindi si chiede solo quel che si
+   * mostra.
+   */
+  importRapporti: (limite: number) =>
+    invoke<EsitoImport[]>("import_rapporti", { limite }),
 
-  // ── lo scaricamento dei desiderati ───────────────────────────────────────
-  // I brani che Spotify nomina e la libreria non ha si prendono da **YouTube**,
-  // non da Spotify: da Spotify non si scarica niente, e nessuna parte di Aether
-  // ci prova. Il video lo sceglie il nucleo, preferendo i canali ufficiali.
+  // ── la procura dei desiderati ────────────────────────────────────────────
+  // I brani che l'archivio nomina e la libreria non ha si cercano nei
+  // **cataloghi liberi**: Internet Archive, e — quando ci saranno — Jamendo e
+  // Audius. Non da Spotify, che non consegna file a nessuno, e non da YouTube,
+  // le cui *API Developer Policies* (§ III.E.1.a) vietano di scaricare,
+  // memorizzare o mettere in cache i loro contenuti. Nessuna parte di Aether ci
+  // prova più.
+  //
+  // Il nome IPC è rimasto `scarica_*`, e vale la pena dire perché: cambiarlo
+  // avrebbe rotto ogni chiamante per guadagnare una parola più giusta, e la
+  // parola giusta sta nel modulo di là — `procura.rs` — dove chi legge il
+  // codice la trova.
+  //
+  // Quel che il nucleo trova, lo prende **solo se la licenza lo consente**, e
+  // la verifica avviene prima di qualunque richiesta. Quel che non trova
+  // diventa una riga `introvabile`, che alimenta «Da comprare» invece di
+  // ritentare per sempre.
   //
   // `scaricaDesiderati` torna **subito**: la coda gira su un filo suo di là, e
   // quel che succede arriva sui due eventi `scarico:*`. Chiamarlo mentre una
   // coda gira non ne avvia una seconda — quella in corso rilegge la tabella a
   // ogni lotto, quindi i brani appena importati li prende comunque.
   //
-  // Di norma non serve chiamarlo: dopo `spotifyImporta` la coda parte da sé.
-  // Resta per il caso in cui era stata annullata, o yt-dlp mancava.
+  // Di norma non serve chiamarlo: dopo un'importazione la coda parte da sé.
+  // Resta per il caso in cui era stata annullata.
   scaricaDesiderati: () => invoke<StatoScarico>("scarica_desiderati"),
   // Torna subito anche questo: fermarsi vuol dire «appena il brano in corso si
-  // interrompe», non «adesso». Il processo di yt-dlp viene ucciso, quindi il
-  // brano a metà non lascia niente nella cartella sorvegliata.
+  // interrompe», non «adesso». Il prelievo controlla il bit fra un blocco e
+  // l'altro e scrive in una cartella temporanea, quindi il brano a metà non
+  // lascia niente nella cartella sorvegliata.
   annullaScarico: () => invoke<void>("annulla_scarico"),
   scaricoStato: () => invoke<StatoScarico>("scarico_stato"),
   // Rimette in fila **solo** i falliti, mai gli introvabili: vedi
   // `ConteggiScarico`. Restituisce quanti ne sono tornati in coda, e se sono
   // più di zero riavvia la coda da sé.
   riprovaFalliti: () => invoke<number>("riprova_falliti"),
+  // Quel che resta da comprare: le righe `introvabile`, distinte per titolo e
+  // artista. Un comando a parte e non un campo di `scaricoStato`, che viene
+  // chiamato decine di volte in una coda: questa lista può essere lunga come la
+  // libreria di qualcuno, e vive in una sezione che di norma è chiusa.
+  daComprare: (limite: number) =>
+    invoke<DaComprare[]>("da_comprare", { limite }),
+  // Il negozio si **nomina**, non si indirizza: l'indirizzo lo costruisce il
+  // nucleo da un elenco chiuso di tre domini. Aprire un indirizzo nel browser di
+  // sistema è l'unica capacità pericolosa che la finestra ha, e farle scegliere
+  // *quale* vorrebbe dire darla intera a una pagina compromessa.
+  cercaDoveComprare: (
+    negozio: "bandcamp" | "qobuz" | "discogs",
+    cosa: string,
+  ) => invoke<void>("cerca_dove_comprare", { negozio, cosa }),
+  // Accetta o rifiuta le registrazioni diverse da quella chiesta — concerti,
+  // riletture. **Non** tocca quel che è già stato preso: decide cosa fa la coda
+  // da adesso in poi. Restituisce lo stato aggiornato, così l'interruttore
+  // riflette quel che il nucleo ha davvero scritto.
+  alternativeAmmettile: (ammesse: boolean) =>
+    invoke<StatoScarico>("alternative_ammettile", { ammesse }),
 
   // ── riproduzione ─────────────────────────────────────────────────────────
   // Nessuno di questi comandi restituisce lo stato: lo mandano tutti
@@ -1726,8 +2331,22 @@ export const ipc = {
   // preme un interruttore, non dodici volte al secondo. Sui brani senza tag
   // ReplayGain non sposta niente in nessuna delle due posizioni — la
   // correzione esiste solo dove c'è un guadagno dichiarato da rispettare.
-  normalizzazione: (attivo: boolean) =>
-    invoke<void>("normalizzazione", { attivo }),
+  normalizzazione: (livello: Normalizzazione) =>
+    invoke<void>("normalizzazione", { livello }),
+  // Il timer di spegnimento. `minuti` a zero lo spegne, `FINE_DEL_BRANO` chiede
+  // di fermarsi dove finisce quel che suona. I minuti e non un istante: «fra
+  // mezz'ora» è quel che si intende, e un istante calcolato qui sarebbe
+  // calcolato con l'orologio della finestra.
+  spegnimento: (minuti: number) => invoke<void>("spegnimento", { minuti }),
+  // La coda che non finisce. Come sopra: lo stato torna sull'evento, non da
+  // qui, così l'interruttore si muove quando il nucleo ha davvero cambiato
+  // idea.
+  autoplay: (attivo: boolean) => invoke<void>("autoplay", { attivo }),
+  // La dissolvenza incrociata, in secondi. Zero la spegne e riporta il
+  // passaggio a com'era: esatto al campione. Il nucleo taglia a
+  // `DISSOLVENZA_MASSIMA_S` e rilegge quel che ha scritto, quindi il valore
+  // che torna sull'evento è quello vero, non quello chiesto.
+  dissolvenza: (secondi: number) => invoke<void>("dissolvenza", { secondi }),
   // Riapre il dispositivo audio. È un comando e non un tentativo automatico
   // perché `cpal` apre il predefinito di **sistema**: staccate le cuffie, il
   // predefinito torna agli altoparlanti, e riaprire da soli vorrebbe dire far
@@ -1739,6 +2358,15 @@ export const ipc = {
   // volte al secondo. Spento non costa niente da nessuna delle due parti, ed è
   // la ragione per cui è un comando invece di essere sempre acceso.
   spettro: (attivo: boolean) => invoke<void>("spettro", { attivo }),
+  // Quante barre disegna la scena dello spettro. La scelta sta in `settings`,
+  // non in `localStorage`: è una preferenza, e le preferenze viaggiano con il
+  // backup e con la sincronia.
+  spettroBande: () => invoke<number>("spettro_bande"),
+  // Riporta quante ne sono rimaste: fra le potenze di due non c'è niente, e un
+  // numero che non è una di quelle si porta alla più vicina invece di essere
+  // rifiutato. Chi ha premuto deve vedere accesa la linguetta vera.
+  spettroBandeScegli: (quante: number) =>
+    invoke<number>("spettro_bande_scegli", { quante }),
   eqPresetElenco: () => invoke<VocePreset[]>("eq_preset_elenco"),
   // Salva la curva **corrente**, quella che si sta ascoltando: il nome è
   // l'unica cosa che serve passare. `false` se il nome era vuoto; un nome che
@@ -1788,36 +2416,76 @@ export const ipc = {
     invoke<PianoRipristino>("nuvola_piano_ripristino"),
   nuvolaRipristina: () => invoke<EsitoRipristino>("nuvola_ripristina"),
 
+  // ── la sincronia fra dispositivi ─────────────────────────────────────────
+  // Stessa forma del backup, e per la stessa ragione: chi tocca un interruttore
+  // deve vedere subito com'è finita. `sincroniaAdesso` fa eccezione e restituisce
+  // il **resoconto** — è l'unica cosa che rende leggibile un automatismo che
+  // scrive nella libreria da solo, e chi ha appena premuto «Sincronizza adesso»
+  // sta guardando proprio per sapere cosa è cambiato.
+  sincroniaStato: () => invoke<StatoSincronia>("sincronia_stato"),
+  sincroniaAttiva: (accesa: boolean) =>
+    invoke<StatoSincronia>("sincronia_attiva", { accesa }),
+  // `cartella` conta solo quando `dove` è `"cartella"`. Il percorso viene creato
+  // subito se non esiste: un errore deve arrivare mentre si è ancora davanti al
+  // campo che lo ha causato, non fra cinque minuti da un filo di sottofondo.
+  sincroniaMagazzino: (dove: "cartella" | "drive", cartella: string | null) =>
+    invoke<StatoSincronia>("sincronia_magazzino", { dove, cartella }),
+  // Questa **aspetta**: una passata a vuoto è un'elencazione, e su una cartella
+  // condivisa non tocca nemmeno la rete.
+  sincroniaAdesso: () => invoke<Resoconto>("sincronia_adesso"),
+  sincroniaDispositivi: () =>
+    invoke<DispositivoSincronia[]>("sincronia_dispositivi"),
+  sincroniaAccoppia: (id: string, nome: string | null) =>
+    invoke<DispositivoSincronia[]>("sincronia_accoppia", { id, nome }),
+  sincroniaDimentica: (id: string) =>
+    invoke<DispositivoSincronia[]>("sincronia_dimentica", { id }),
+
+  // ── gli aggiornamenti ────────────────────────────────────────────────────
+  // Il controllo vero non passa mai di qui: lo fa un filo di sottofondo ogni
+  // mezz'ora, e quel che la finestra vede arriva dall'evento
+  // `aggiornamenti:stato`. Anche `aggiornamentiAdesso` si limita a svegliare
+  // quel filo e a restituire lo stato di **prima**, apposta: una via sola per
+  // raccontare com'è andata, invece di due che possono dire cose diverse.
+  aggiornamentiStato: () => invoke<StatoAggiornamenti>("aggiornamenti_stato"),
+  // Spegnendolo si butta via anche l'aggiornamento già trovato: lasciare
+  // l'avviso in piedi dopo che qualcuno ha chiesto di non essere avvisato
+  // sarebbe rispondere «va bene» e continuare come prima.
+  aggiornamentiAttivo: (attivo: boolean) =>
+    invoke<StatoAggiornamenti>("aggiornamenti_attivo", { attivo }),
+  aggiornamentiAdesso: () => invoke<StatoAggiornamenti>("aggiornamenti_adesso"),
+  // «Non ora», e vale per quella versione sola.
+  aggiornamentiSalta: (versione: string) =>
+    invoke<StatoAggiornamenti>("aggiornamenti_salta", { versione }),
+  // Torna **subito**: scaricare settanta megabyte e lanciare un installer non
+  // sta dentro una chiamata IPC. Quel che succede arriva da
+  // `aggiornamenti:avanzamento`, e se va bene l'ultima cosa che questa finestra
+  // fa è chiudersi — su Windows è l'installer NSIS a terminare Aether e a
+  // riaprirlo.
+  aggiornamentiInstalla: () => invoke<void>("aggiornamenti_installa"),
+
   // ── l'account Spotify intero ───────────────────────────────
   // Il flusso è a tre tempi come per un link — anteprima, piano, conferma — ma
   // quel che si legge resta di là, in una cella. Qui viaggiano solo i conteggi:
   // un account sono decine di migliaia di brani più anni di cronologia, e
   // serializzarli tre volte per mostrarne il totale non ha senso.
+  //
+  // Una via sola: lo zip che Spotify consegna su richiesta. Il consenso OAuth
+  // c'era e non c'è più — l'archivio è dell'utente per diritto di portabilità
+  // (GDPR art. 20), mentre cosa si possa fare dei dati della Web API lo decide
+  // il *Spotify Developer Policy*, e una libreria che li tiene per anni non ci
+  // sta dentro.
   accountStato: () => invoke<StatoAccount>("account_stato"),
-  // Un `clientId` vuoto lo cancella. Non ce n'è uno compilato dentro
-  // l'applicazione, al contrario di Google: un'app Spotify in Development Mode
-  // accetta **cinque** utenti, e una chiave distribuita nel binario li
-  // esaurirebbe con i primi cinque che la usano.
-  accountCredenziali: (clientId: string) =>
-    invoke<StatoAccount>("account_credenziali", { clientId }),
-  // Apre il browser di **sistema** e aspetta il consenso, per non più di tre
-  // minuti. Può quindi metterci a lungo: chi la chiama deve mostrare che sta
-  // succedendo qualcosa.
-  accountCollega: () => invoke<StatoAccount>("account_collega"),
-  // Pulisce il portachiavi e dimentica chi era. **Non** disfa niente di quel che
-  // è stato importato: per quello c'è `cronologiaDimenticaImportati`, che dice
-  // quante righe cancella.
-  accountScollega: () => invoke<StatoAccount>("account_scollega"),
-  // Minuti di rete: un account da duecento playlist sono duecento richieste.
-  // L'avanzamento arriva sull'evento `account:avanzamento`.
-  accountLeggi: () => invoke<AnteprimaAccount>("account_leggi"),
-  // L'altra via, e non chiede niente a nessuno: lo zip che Spotify manda su
-  // richiesta. Arriva in due pezzi separati da settimane — i dati dell'account e
-  // la cronologia estesa — e se ne può aprire uno solo: quel che manca resta
+  // Lo zip arriva in due pezzi separati da settimane — i dati dell'account e la
+  // cronologia estesa — e se ne può aprire uno solo: quel che manca resta
   // vuoto, e l'anteprima lo dice.
   archivioApri: (percorso: string) =>
     invoke<AnteprimaAccount>("archivio_apri", { percorso }),
-  // Tutti e due lavorano su quel che è in cella, da qualunque via sia arrivato.
+  // Butta via quel che è in cella. Non succede da solo dopo l'importazione,
+  // perché importare due volte con scelte diverse è una cosa che si fa; ma un
+  // archivio di dieci anni sono centinaia di megabyte in memoria, e questo è il
+  // tasto che li restituisce.
+  archivioDimentica: () => invoke<StatoAccount>("archivio_dimentica"),
+  // Tutti e due lavorano su quel che è in cella.
   // Il piano è l'importazione vera dentro una transazione abbandonata: i numeri
   // che mostra sono quelli che si otterranno, non una previsione.
   accountPiano: (scelte: ScelteAccount) =>
@@ -1829,6 +2497,42 @@ export const ipc = {
   // scendono: `merge_stats` non sa scendere, e non deve — vedi la nota di là.
   cronologiaDimenticaImportati: () =>
     invoke<number>("cronologia_dimentica_importati"),
+
+  // ── i testi ──────────────────────────────────────────────────────────────
+  // `testoBrano` non tocca la rete: dice quel che si sa già dal disco — il
+  // sidecar accanto al file, la riga in tabella, il tag — e lo dice subito.
+  // Quando risponde `daChiedere: true`, c'è ancora qualcuno a cui chiedere.
+  testoBrano: (id: number) => invoke<TestoBrano>("testo_brano", { id }),
+  // Lo scarto sta sul brano, non sul file: chi ha lo stesso brano in FLAC e in
+  // mp3 lo corregge una volta sola.
+  testoScarto: (id: number, scartoMs: number) =>
+    invoke<void>("testo_scarto", { id, scartoMs }),
+  // Questo invece la rete la tocca, ed è per questo che lo chiama solo il
+  // pannello del testo quando è aperto: chiedere un testo dice al catalogo
+  // cosa si sta ascoltando. Con l'interruttore spento risponde quel che si sa
+  // dal disco, senza fallire — spegnere non è un errore.
+  testoCerca: (id: number) => invoke<TestoBrano>("testo_cerca", { id }),
+  testiStato: () => invoke<StatoTesti>("testi_stato"),
+  testiRete: (attivo: boolean) => invoke<StatoTesti>("testi_rete", { attivo }),
+  // Torna subito: il lavoro va su un filo suo e l'avanzamento arriva con
+  // l'evento `testi:avanzamento`.
+  testiRiempi: () => invoke<StatoTesti>("testi_riempi"),
+  testiFerma: () => invoke<void>("testi_ferma"),
+  // Le battute date a orecchio tornano raddrizzate. Gli attacchi del brano non
+  // attraversano l'IPC — sono centinaia per canzone, e qui non servirebbero a
+  // niente: quel che serve è il risultato.
+  testoAggancia: (id: number, battute: number[]) =>
+    invoke<number[]>("testo_aggancia", { id, battute }),
+  // Scrive il `.lrc` accanto al brano e la riga in tabella. L'LRC lo compone il
+  // nucleo, con la stessa funzione che lo rilegge.
+  testoSalva: (id: number, righe: { ms: number; testo: string }[]) =>
+    invoke<TestoBrano>("testo_salva", { id, righe }),
+  // Il verso opposto, e mai automatico: manda a LRCLIB il testo che si è
+  // sincronizzato a mano, uno per volta e solo dopo averlo visto. Ci mette
+  // secondi, e non per la rete — il catalogo chiede una prova di lavoro. Il
+  // nucleo rifiuta da sé quel che non ha `fonte: "mano"`, così la regola non
+  // dipende da questo file.
+  testoPubblica: (id: number) => invoke<void>("testo_pubblica", { id }),
 
   // ── l'arricchimento dei metadati ─────────────────────────────────────────
   // Non c'è un «arricchisci adesso»: la passata è automatica per scelta, e un

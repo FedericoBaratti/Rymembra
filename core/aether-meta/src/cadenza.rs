@@ -62,6 +62,16 @@ pub const RITMO_ITUNES: Duration = Duration::from_millis(350);
 /// Il ritmo di Deezer.
 pub const RITMO_DEEZER: Duration = Duration::from_millis(220);
 
+/// Il ritmo di LRCLIB.
+///
+/// Duecentocinquanta millisecondi. Il servizio non dichiara un limite, e questo
+/// è precisamente il motivo per cui ne serve uno: un catalogo che ci ospita
+/// gratis e non si difende è quello a cui è più facile fare male senza
+/// accorgersene. Una passata su millequattrocento brani a quattro richieste al
+/// secondo dura sei minuti, che è un tempo accettabile per una cosa che si fa
+/// una volta sola.
+pub const RITMO_LRCLIB: Duration = Duration::from_millis(250);
+
 /// Quel che la cadenza tiene fra una richiesta e l'altra.
 #[derive(Debug)]
 struct Stato {

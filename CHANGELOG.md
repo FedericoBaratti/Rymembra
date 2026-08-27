@@ -30,10 +30,936 @@ Cosa incrementa cosa:
 
 ## [Non rilasciato]
 
-Due riscritture in fila, sullo stesso ramo di lavoro. La prima
+Tre riscritture in fila, sullo stesso ramo di lavoro. La prima
 (`aether/skin-system-e-core`, dal 26 luglio 2026) ha rifatto nucleo e sistema
 delle skin; la seconda (`aether/rust-core`) ha portato tutto in Rust dietro una
-finestra Tauri. **Non è ancora rilasciabile**: il lato mobile non esiste.
+finestra Tauri; la terza ha tolto tutto quel che rendeva Aether non
+distribuibile. **Non è ancora rilasciabile**: il lato mobile non esiste, e
+manca la firma del codice.
+
+### Corretto — il testo restava fermo su brani di cui i tempi esistevano
+
+Certe canzoni mostravano le parole con l'etichetta «senza tempi» e non
+scorrevano, mentre altre dello stesso disco scorrevano benissimo. Non era una
+questione di lingua, di formato o di durata: era quale voce del catalogo
+rispondeva per prima.
+
+LRCLIB tiene **più voci per lo stesso brano** — una per ogni edizione che
+qualcuno ha caricato — e `/api/get`, la domanda esatta, ne restituisce una sola:
+quella la cui firma (titolo, artista, album, durata al secondo) coincide con
+quella del file. Non è detto che sia quella con i tempi. Per «The Auditels
+Family» di Caparezza la firma esatta trova la voce caricata nel 2020, che porta
+il solo testo piatto; le altre sei voci dello stesso brano, stessa durata al
+decimo di secondo, l'LRC ce l'hanno. Aether si fermava alla prima e non chiedeva
+mai le altre.
+
+Adesso una risposta esatta **senza tempi** non chiude più la ricerca: si tiene da
+parte e si fa comunque la domanda generosa, e se fra le voci che tornano ce n'è
+una con i tempi che passa i veti di durata e di titolo, vince lei. Con i tempi,
+o strumentale, la prima risposta resta l'ultima parola e la seconda richiesta non
+si spende.
+
+Da lì sono venute le altre tre metà dello stesso difetto. Un testo **piatto** non
+conta più come «brano già fatto»: né per la coda della passata — che così smette
+di saltare per sempre chi ha le parole dentro i tag dei propri mp3, cosa che il
+codice dichiarava di non voler fare — né per il pannello, che va a chiedere
+quando quel che ha in mano non scorre. Un `.lrc` senza tempi accanto al file non
+copre più, e soprattutto non sovrascrive più, dei tempi già in tabella. E una
+migrazione rimette in coda le vecchie risposte del catalogo che si erano fermate
+al piatto: il testo che si ha resta lì da leggere intanto, ma la domanda torna
+aperta.
+
+### Aggiunto — una porta d'ingresso, invece di un elenco alfabetico
+
+Aether apriva sulla griglia degli album. Le quattro destinazioni della libreria
+— album, artisti, brani, preferiti — sono tutte e quattro un elenco ordinato, e
+nessuna rispondeva alla domanda che uno si fa davvero aprendo un lettore:
+*cosa stavo ascoltando*. Per riprendere il disco di ieri sera bisognava
+ricordarsi come si chiamava e andarlo a cercare.
+
+La Home ha quattro ripiani da dodici brani: **riprendi dov'eri**, con la
+posizione dentro il brano; **ascoltati di recente**; **aggiunti di recente**; e
+**angoli trascurati**, cioè dischi in libreria da più di sei mesi e mai
+toccati. L'ultimo è il ripiano che solo una libreria locale può avere: nessun
+servizio in streaming sa cosa possiedi e non ascolti, perché per lui non
+possiedi niente.
+
+«Riprendi dov'eri» ha richiesto un fatto che non era conservato da nessuna
+parte: `QueueSnapshot` sapeva a che brano si era, non a che punto del brano.
+Adesso la posizione sta in una chiave sua di `settings` e non dentro la coda —
+`aether_domain::queue` descrive quali brani e in che ordine, e non sa cosa sia
+un millisecondo.
+
+**Nessun widget nuovo e nessuna modifica al registro delle skin**: la pagina
+passa dallo slot `contenuto` che già esiste, quindi ogni skin già scritta la
+mostra senza essere ritoccata. Una migrazione (`012_home`) per il solo indice
+parziale su `last_played_at`, senza il quale «ascoltati di recente» era una
+scansione di tutta la tabella.
+
+Scartato: lo scorrimento infinito. Un ripiano si guarda, non si scorre — dodici
+brani presi una volta sola all'apertura, e `usePagine` resta per le viste che
+sono elenchi veri.
+
+### Aggiunto — i tasti multimediali della tastiera, e la scheda di Windows
+
+Il tasto play/pausa della tastiera non faceva niente se la finestra non era in
+primo piano, e il riquadro che Windows 11 mostra nel flyout del volume era
+vuoto: Aether suonava e il sistema operativo non sapeva cosa.
+
+Adesso Aether si registra come sessione SMTC. Il riquadro mostra copertina,
+titolo e artista, i suoi pulsanti funzionano, e — questo è il punto — **è
+Windows a instradare i tasti multimediali**, che quindi arrivano anche da
+un'altra applicazione a schermo intero.
+
+Scartato `tauri-plugin-global-shortcut`: registrare i tasti multimediali come
+scorciatoie globali li **ruberebbe a ogni altro programma**, e chi apre un
+video mentre Aether è aperto si troverebbe il tasto pausa che mette in pausa la
+cosa sbagliata. Registrare una sessione media è il contrario — è il sistema che
+decide a chi tocca, come per ogni altro lettore.
+
+La dipendenza è `souvlaki`. In tutto l'albero non c'è una riga di `unsafe` e il
+`Cargo.toml` la vieta con `forbid`, che nessun `#[allow]` scavalca: l'`hwnd`
+della finestra si passa a souvlaki senza dereferenziarlo, e il dereferenziamento
+avviene di là.
+
+### Aggiunto — la normalizzazione ha tre livelli, non un interruttore
+
+Il bersaglio della normalizzazione ReplayGain c'era già dentro il nucleo, ma la
+finestra poteva solo accendere e spegnere: il valore restava −18 dBFS
+qualunque cosa si volesse. Chi ascolta in cuffia di sera e chi ascolta in
+macchina non hanno lo stesso problema.
+
+Adesso i livelli sono tre — **basso** (−23), **normale** (−18), **alto** (−14) —
+più spento. Un valore con un nome e non il booleano di prima: uno spento che non
+dice a quale livello tornerebbe è uno spento che chi riaccende deve scoprire per
+tentativi.
+
+Trovato provandolo: l'uscita in virgola mobile — che è il formato con cui
+WASAPI si apre quasi sempre — **non tagliava i campioni fuori scala**. Con la
+normalizzazione ferma a −18 non si notava; a −14 su un brano già forte il
+moltiplicatore supera uno, e sarebbe diventata la regola invece dell'eccezione.
+Adesso taglia, con una prova che lo tiene tagliato.
+
+### Aggiunto — un timer di spegnimento, e «alla fine di questo brano»
+
+Nel backend e non nella finestra: un `setTimeout` muore a ogni ricarica della
+UI, e un timer che sopravvive solo finché nessuno tocca niente non è un timer.
+Sta in un intero atomico accanto al lettore, letto quattro volte al secondo dal
+filo dell'orologio che già c'era — fuori dal lucchetto, perché prenderlo quattro
+volte al secondo per scoprire quasi sempre che non c'è niente da fare vorrebbe
+dire contendere il lucchetto col tasto pausa.
+
+Allo scadere **mette in pausa e non ferma**, così la posizione resta e la
+mattina dopo si riprende da lì.
+
+«Alla fine di questo brano» non passa dall'orologio: dice al motore di non
+preparare il successivo, e la musica finisce dove sarebbe finita comunque invece
+di essere tagliata a metà.
+
+Il timer **non viaggia nel profilo esportabile**, al contrario delle altre
+preferenze: è una decisione di stasera, e ritrovarlo acceso domani su un altro
+computer sarebbe una musica che si spegne da sola senza che nessuno ricordi di
+averlo chiesto.
+
+### Aggiunto — la coda che non finisce, scelta dalla tua libreria
+
+Finito l'ultimo brano, Aether ne sceglie un altro invece di fermarsi. La
+cascata è: il resto del disco, poi un altro album dello stesso artista, poi
+qualcosa dello stesso genere che non si ascolta da un mese, poi un preferito
+mai sentito, poi uno qualunque.
+
+**La scelta non chiede niente a nessuno**: esce dalla libreria locale
+riusando il motore delle playlist intelligenti, quindi eredita anche la sua
+difesa dall'iniezione — colonne e operatori escono da `match` su enum chiusi, i
+valori viaggiano come parametri.
+
+L'aggancio non è la fine del brano ma il momento in cui il motore prepara il
+successivo e la coda non ne ha uno. Accodare **lì** vuol dire che l'autoplay
+eredita gratis il gapless — e adesso la dissolvenza — e non produce mai un
+istante di silenzio.
+
+Spento di serie: un aggiornamento che lo accendesse da sé farebbe partire musica
+che nessuno ha chiesto, magari a notte fonda, in una casa in cui l'ultimo album
+era finito apposta. Con «ripeti tutto» o «ripeti questo» non entra mai in gioco,
+perché la coda un dopo ce l'ha già — ed è detto sotto l'interruttore invece di
+essere lasciato scoprire.
+
+### Aggiunto — la dissolvenza incrociata, fino a dodici secondi
+
+Un brano sfuma dentro il successivo invece di finire e ricominciare. Da zero a
+dodici secondi, e zero è il gapless esatto al campione di prima — con una prova
+che dice proprio questo, cioè che a durata zero il blocco che esce resta
+identico campione per campione.
+
+La curva è a **energia costante** (coseno/seno), non due rette. Su materiale
+scorrelato — che è il caso di due brani diversi — le potenze si sommano, quindi
+`cos² + sin² = 1` tiene il volume percepito fermo; due rampe lineari darebbero
+metà dell'energia a metà della dissolvenza, cioè un buco udibile proprio nel
+punto in cui la dissolvenza esiste per non farne.
+
+Il lavoro è stato possibile perché il motore teneva **già due decodificatori
+aperti insieme** — è quel che rende il gapless gapless. La miscelazione sta nel
+filo del decodificatore e non nella callback audio: l'anello fra i due fili è un
+flusso piatto di `f32` senza confini di traccia, e farla di là avrebbe voluto
+dire un secondo anello e un secondo decodificatore dentro il percorso realtime,
+dove non si può né allocare né prendere un lucchetto.
+
+Due conseguenze, entrambe volute:
+
+- Il **ReplayGain si è spostato**. Era un unico scalare globale che la callback
+  applicava a tutto quel che usciva dall'anello; due brani sovrapposti hanno
+  bisogno di due guadagni diversi, quindi adesso la correzione si applica ai
+  campioni di ciascun brano al momento in cui vengono decodificati. Il prezzo:
+  cambiare il livello di normalizzazione ha effetto dopo la riserva dell'anello,
+  qualche secondo, invece che all'istante. Alla callback resta il solo volume,
+  con la rampa che aveva già.
+- Il brano entrante viene annunciato **a metà** sovrapposizione, non
+  all'inizio. Prima è un sottofondo sotto quello vecchio, e annunciarlo allora
+  vorrebbe dire una finestra che cambia titolo mentre si sente ancora l'altro —
+  e uno scrobble attribuito al brano sbagliato.
+
+La prima versione della miscelazione aveva due difetti, tutti e due nel filo del
+decodificatore e tutti e due corretti qui.
+
+Il primo si sentiva come un raspare. I due decodificatori consegnano blocchi di
+lunghezza diversa — un pacchetto MP3 sono 1152 fotogrammi, uno FLAC anche 4096,
+e un brano da ricampionare quel che decide il ricampionatore — e la
+sovrapposizione ne mescolava uno contro l'altro, buttando via quel che avanzava
+del brano entrante. Anche tre quarti dei suoi campioni nel cestino a ogni
+blocco: non una dissolvenza, il brano nuovo mandato avanti a scatti. Adesso i
+campioni decodificati stanno in una coda e la miscelazione ne prende esattamente
+quanti gliene servono, tenendo il resto per il blocco dopo.
+
+Il secondo saltava un brano. A metà sovrapposizione il motore annuncia il brano
+che entra — vedi qui sopra — e chi sta sopra risponde a quell'annuncio
+preparando il brano **ancora dopo**: finché «preparato» ed «entrante» sono stati
+la stessa casella, quella preparazione scippava il brano a metà curva. La
+seconda metà della dissolvenza faceva entrare il brano sbagliato e alla fine del
+passaggio il motore attaccava quello, così chi ascoltava si ritrovava un brano
+più avanti nella coda. Adesso il brano che entra ha una casella sua per tutta la
+sovrapposizione, e «il prossimo» torna a essere quel che dice di essere. Ne
+segue anche che una dissolvenza sopravvive alla manopola: la durata si congela
+quando comincia, perché cambiare il denominatore a metà curva sposterebbe il
+guadagno di colpo.
+
+Un terzo caso non era un guasto ma un limite, e adesso è coperto. La
+sovrapposizione comincia quando alla fine del brano manca quanto dura la
+dissolvenza, e «quanto manca» si sa dalla durata **dichiarata** dal database —
+che per un MP3 a bitrate variabile senza intestazione Xing è una stima, e la
+stima può essere lunga. Quando lo è, il decodificatore del brano uscente finisce
+a metà curva e quello entrante resta solo a mezza ampiezza: saltava di colpo a
+piena ampiezza, cioè un clic sul brano che poi si ascolta per intero. Adesso la
+sua salita riprende dal punto esatto in cui la curva si è interrotta — il
+guadagno lo dà la stessa funzione a chi mescola e a chi riprende, perché due
+formule scritte in due posti sarebbero due gradini — e si completa in quaranta
+millisecondi, gli stessi della rampa del volume. Non il resto della curva:
+quella era tarata su una durata che si è appena scoperta falsa, e continuarla
+vorrebbe dire un brano che parte a mezza voce e ci mette dei secondi a venire su
+da solo, che è più udibile del clic che si voleva togliere.
+
+Tre prove nuove li tengono chiusi, e sono le prime che fanno girare il filo
+della decodifica per intero: WAV costruiti in memoria, decodificatori veri,
+nessun dispositivo audio. La prima controlla che il brano entrante si senta **da
+solo** — se al suo posto entrasse quello dopo non ci sarebbe un solo campione al
+suo livello; la seconda che due brani da un secondo sovrapposti per quattro
+decimi durino un secondo e sei, non uno e due; la terza fa dichiarare a un file
+mille millisecondi e contenerne ottocento, e guarda che il brano entrante
+riprenda da dove era invece di saltare.
+
+Spenta di serie, e detto nella scheda: finché è accesa il passaggio esatto al
+campione non c'è più, comprese le tracce di un disco scritte per attaccarsi.
+
+### Cambiato — lo Studio mostra l'applicazione, non una sua imitazione
+
+L'anteprima dello Skin Studio aveva un elenco solo, di nove scene, e mescolava
+due cose che nell'applicazione sono indipendenti: **quale pagina** si sta
+guardando e **cosa c'è sopra**. La scena «modale» *era* la coda aperta più due
+brani selezionati; la scena «avvisi» era menù, notifica e fumetto messi in fila
+dentro il contenuto, cioè in un posto in cui nell'app non compaiono mai. Chi
+ridipingeva la barra della selezione poteva vederla solo sopra la libreria; chi
+ridipingeva la notifica non poteva vederla mai sopra Impostazioni, che è l'unico
+posto in cui la notifica della scansione compare davvero.
+
+Adesso gli assi sono due, come nell'app. Una **pagina** si sceglie fra nove — la
+griglia della libreria, un album, Impostazioni, Importazioni, l'account, «In
+riproduzione» a schermo intero, i tre pannelli grandi, il vuoto, il caricamento —
+e sopra si accendono a piacere sei **sovrapposizioni**: terza colonna, coda,
+barra della selezione, menù contestuale, notifica, finestrella. Ogni
+combinazione che l'applicazione sa produrre si può guardare.
+
+**E nessuna che non sappia produrre.** Un interruttore che qui non avrebbe
+effetto — la coda a schermo intero, la terza colonna senza un brano che suoni —
+si spegne e dice perché nel suggerimento, invece di accendersi e non far
+succedere niente. Le ragioni sono scritte contro i predicati `visibile` di
+`Impaginazione.tsx`, cioè contro il codice che decide davvero, non contro
+un'idea di come dovrebbe comportarsi.
+
+Le sovrapposizioni si disegnano **accanto** allo scafale e non dentro il buco del
+contenuto, che è dove stavano: sono `position: fixed` e si riferiscono alla
+finestra, e nel riquadro dell'anteprima si riferiscono al riquadro perché
+`.anteprima` porta già `contain: layout paint`. I loro veli, che nell'app
+prendono il clic per chiudere, qui non prendono il puntatore: restando bersagli
+la sonda avrebbe letto `.velo` dovunque, e la superficie sotto — quella che si
+sta ridipingendo — sarebbe diventata irraggiungibile.
+
+**Tre pagine nuove, e sono le tre che mancavano.** «In riproduzione» a schermo
+intero non c'era affatto: `np-screen`, `np-scrim` e la copertina piena vivono
+solo là, e la tabella «portami dove si vede» mandava a cercarle nella terza
+colonna, dove non sono mai state. Importazioni porta la seconda forma di
+`list-row` — fitta, senza copertina, con una barra dentro — e una skin accordata
+sull'elenco della libreria scopriva poi che lì la riga è alta la metà.
+L'account porta `stat-number` in fila, l'interruttore con la sua pista, un campo
+di testo e uno stato vuoto dentro una scheda invece che al posto di una pagina.
+
+### Cambiato — le scene copiano il markup vero invece di somigliargli
+
+La regola dei frammenti dell'anteprima era «si scrivono le classi del registro,
+mai una geometria che l'app non ha», e non bastava: le classi del registro erano
+giuste e tutto il resto era inventato. La copertina di un album era
+`scheda section-card` dove l'applicazione scrive `scheda list-row` — chi
+ridipingeva `list-row` non vedeva cambiare la libreria, chi ridipingeva
+`section-card` la vedeva cambiare qui e non nella finestra. Il titolo di una
+scheda era `.titolo-scheda` dove l'app dice `.titolo`. In Impostazioni c'erano
+un cursore di dissolvenza incrociata e un campo per la cartella della libreria
+che in Impostazioni non esistono.
+
+Adesso la regola è più stretta: **si copia il markup vero**, classe per classe,
+dal componente che disegna quella schermata. Dove il componente si può montare —
+`Interruttore`, `Segmentato`, `Copertina`, `Trasporto`, `Scrubber`, `Giudizio`,
+`Stelle` — non si copia affatto, si usa. Venti regole di `stile.css` che
+disegnavano l'imitazione se ne sono andate: quel che resta lo disegnano le regole
+dell'applicazione, che sono le stesse.
+
+L'intestazione di pagina riceve `query` e `ordinamento` dove l'app li passa, ed
+è l'unico posto in cui vivono `field-input` e uno dei `btn-ghost`: senza, il
+riquadro mostrava una testata senza ricerca, cioè senza il campo di testo che una
+skin deve poter ridipingere.
+
+### Corretto — «non si vede» aveva due risposte e i casi sono tre
+
+Scegliendo una parte che non compare nella scena aperta, lo Studio rispondeva o
+«sta di là, ti ci porto» o «sta nella cornice, comparirà quando l'albero la
+monta». Chi sceglieva `tour-tooltip` — che il registro dichiara e **nessuna**
+schermata disegna — si sentiva dare la seconda, cioè un'attesa che non finisce
+mai.
+
+Le risposte adesso sono tre, e la terza dice il vero: cinque parti del registro
+non le disegna ancora nessuno, e ognuna porta il suo perché. `strumenti/classi.js`
+controlla che l'elenco dello Studio e il suo — `ATTESE`, quello che gira in CI —
+restino la stessa cosa: sono la stessa informazione detta a due destinatari, e
+divergendo lo Studio tornerebbe a dare la risposta sbagliata.
+
+### Corretto — due parti del registro che quasi nessuno emetteva
+
+`glass-modal` è dichiarata come «la finestra modale» e la portava una sola
+superficie: il pannello della coda. Le undici finestrelle vere — l'account, le
+regole di una playlist intelligente, il ripristino, il riordino, la conferma —
+erano `.finestrella` e basta, cioè non ridipingibili. Adesso la portano tutte, e
+la parte significa quel che il registro dice che significa.
+
+`field-input` è «il campo di testo» e stava su uno solo: quello della ricerca in
+testata. Gli altri quindici — il token dello scrobbling, il nome di una playlist
+nuova, il nome di un preset dell'equalizzatore — erano `.campo` e basta. Sono la
+stessa cosa e adesso lo dicono.
+
+Nessuna delle due è una scelta estetica: erano due promesse del registro che
+l'applicazione non manteneva, e si scoprivano scrivendo una skin — cioè dopo.
+
+### Aggiunto — `F11`, il quinto gesto della finestra
+
+Lo schermo intero c'era già, ma era quello dell'applicazione: «In riproduzione»
+con `F` riempie la **finestra** col brano, e la finestra resta com'era, dentro il
+suo desktop. Mancava l'altro — quello che il resto del desktop lo toglie di mezzo
+— cioè il tasto che ha ogni programma che si apra in una finestra.
+
+Sta nella tabella delle scorciatoie (`tastiera.ts`) come tutti gli altri: si
+riassegna, si legge nelle impostazioni accanto agli altri sette, e se qualcuno gli
+mette addosso un tasto già preso il conflitto si vede invece di succedere e
+basta. Di serie è `F11`, che non è una lettera e quindi non toglie niente a
+nessuno.
+
+**I tasti funzione passano anche mentre si scrive.** La regola era che un tasto
+nudo non arriva se il fuoco è in un campo — chi cerca «space oddity» non vuole
+mettere in pausa a metà parola — e senza un'eccezione lo schermo intero sarebbe
+stato l'unico comando della finestra a spegnersi mentre si cerca un disco.
+`F1`…`F12` non finiscono dentro nessuna parola, e adesso hanno l'esenzione che
+avevano già `Ctrl` e `Alt`.
+
+Il comando è nostro — `finestra_schermo_intero` — e non il permesso
+`core:window`: aprire quell'elenco per un tasto darebbe alla pagina anche
+`set_position`, `set_size` e `set_always_on_top`, ed è la stessa ragione per cui
+passano da comandi nostri gli altri quattro gesti. Quel che si rifiuta è il mazzo,
+non lo schermo intero.
+
+Il bottone di mezzo della fascia, a schermo intero, **ne esce**: la sua icona lì
+dice «rimpicciolisci», e ingrandire una finestra che occupa già lo schermo
+sarebbe un clic che non fa niente mentre l'icona promette il contrario. È anche
+la via d'uscita per chi si ritrova a schermo intero e non ricorda quale tasto ha
+premuto.
+
+### Cambiato — la fascia in cima non è più di Windows
+
+La finestra nasce senza decorazioni. La striscia grigia che il sistema operativo
+disegnava sopra l'applicazione — l'icona, il nome ripetuto a chi aveva appena
+aperto Aether, i tre quadrati — era di un altro programma: portava i suoi colori
+dentro una finestra che ha una skin, restava chiara mentre tutto il resto era
+scuro, e si prendeva trentadue pixel su tutta la larghezza.
+
+La strada corta era ridisegnarne una identica coi colori giusti. Sarebbe costata
+di nuovo trentadue pixel per tre bottoni, e avrebbe messo il marchio due volte:
+la navigazione ce l'ha già in cima.
+
+**La riga in alto l'applicazione ce l'aveva di suo.** Il marchio ha il centro a
+32 pixel dal bordo, la testa della terza colonna a 30, l'occhiello
+dell'intestazione a 29: è la stessa riga, e i tre bottoni si siedono lì invece di
+aprirsene una. Chi arriva sotto quell'angolo — la colonna, l'intestazione della
+pagina quando la colonna è chiusa, la testata dello schermo intero e quella dello
+Studio — cede in **larghezza**: cedere in altezza avrebbe voluto dire abbassare
+ogni schermata di sessanta pixel, cioè la fascia di prima, trasparente.
+
+Il bersaglio di ogni bottone arriva allo spigolo, il disegno no. Chiudere una
+finestra si fa sbattendo il puntatore contro il vertice dello schermo senza
+guardare, ed è l'unico gesto dell'interfaccia che si può fare a occhi chiusi;
+quel che si vede però è un riquadro alto trentadue con gli angoli
+dell'applicazione, perché tre rettangoli pieni alti sessanta sarebbero la fascia
+di Windows, ridipinta.
+
+Trascinare non passa da un riquadro trasparente sopra tutto il resto: quello
+avrebbe mangiato ogni clic dei primi sessanta pixel — il tasto che richiude la
+navigazione, i due della colonna, la ricerca quando va a capo. C'è invece un
+ascoltatore che guarda dove è caduto il `mousedown`: in alto e non su qualcosa
+che si clicca, la finestra si trascina. Si afferra anche il titolo della pagina,
+che a guardarlo è esattamente la barra del titolo.
+
+Ridimensionare dai bordi non si perde: lo fa `tao` da sé in `WM_NCHITTEST` per
+ogni finestra senza decorazioni che sia ridimensionabile. `Alt`+`Spazio` continua
+ad aprire il menù di sistema, e `Alt`+`F4` a chiudere.
+
+I tre comandi passano da comandi nostri — `finestra_trascina`, `finestra_riduci`,
+`finestra_ingrandisci`, `finestra_chiudi` — e non dai permessi `core:window:*`:
+`capabilities/default.json` è un elenco chiuso, e aprirlo a `core:window`
+darebbe alla pagina anche `set_position`, `set_size`, `set_always_on_top` e
+`set_fullscreen`, cioè quattro modi di far sparire una finestra da sotto le dita
+di chi la sta guardando, in cambio di tre bottoni. Per la stessa ragione non
+passano dallo scafale delle skin: una skin che potesse nascondere il tasto di
+chiusura arriva da un file.
+
+### Sicurezza — la catena di rilascio non si fida più di un'etichetta
+
+Un passaggio con uno scanner sul ramo: di venticinque segnalazioni, dodici sono
+state corrette, dieci non hanno retto alla verifica, e tre riguardano un file
+generato che non nasce in questo repository.
+
+Le dodici stanno tutte in `.github/`, e tutte e dodici passano accanto alla
+stessa cosa: `TAURI_SIGNING_PRIVATE_KEY`, la chiave che firma gli aggiornamenti
+e che — sta scritto nel preambolo di `release.yml` — non è recuperabile e non è
+sostituibile.
+
+**Le undici azioni della CI sono inchiodate a un hash.** `actions/checkout@v4`
+non nomina una versione: nomina un'**etichetta**, e chi possiede quel repository
+può spostarla su un altro commit senza che qui cambi una riga. Non è un timore di
+scuola — nel marzo del 2025 le etichette di `tj-actions/changed-files` sono state
+riscritte, e ventitremila repository hanno eseguito codice nuovo credendo di
+eseguire quello di prima. Il conto di quel giorno, dentro `release.yml`, non
+sarebbe una build sporca: sarebbe la chiave privata dell'updater in mano a
+qualcun altro, cioè ogni copia installata di Aether che non si aggiorna mai più.
+La versione resta leggibile nel commento accanto all'hash. Il prezzo è che le
+azioni non si aggiornano più da sole, e quel commento è l'unico posto in cui si
+vede che sono vecchie.
+
+**Il tag non entra più nello script.** Era
+`tag="${GITHUB_REF_NAME:-${{ inputs.tag }}}"`, e quel `${{ }}` dentro un `run:`
+non è una variabile: è una sostituzione di testo che avviene **prima** che bash
+veda la riga, quindi un tag che contiene `$(…)` smetteva di essere un tag.
+Adesso passa dall'ambiente, dove resta un dato qualunque cosa ci sia scritto. Non
+era un varco verso l'interno — per lanciare a mano un workflow servono già i
+permessi di scrittura sul repository — ma era un varco che passava accanto a
+quella chiave, e per una chiave che non si può sostituire è tutto quel che serve.
+
+Correggendolo è venuto fuori che **il rilascio a mano non ha mai funzionato**: su
+`workflow_dispatch` `GITHUB_REF_NAME` c'è comunque, ed è il ramo da cui si
+lancia. Il valore di riserva non cadeva quindi mai sull'input, e un rilascio
+lanciato da `main` confrontava la versione dei tre file con la parola «main» e si
+fermava lì. Adesso il tag lo decide `github.ref_type`, e lo stesso testo va in
+`tag_name:` e nel titolo della release — che leggevano anche loro il ref, e su un
+rilascio a mano avrebbero pubblicato «Aether main».
+
+Le tre segnalazioni che restano sono i `postMessage` di `site/support.js`, che
+dichiarano `"*"` come origine e non controllano quella di chi scrive. Il file
+comincia con «GENERATED — do not edit» e la sua sorgente non sta qui: una
+correzione a mano sparirebbe alla prima rigenerazione, e l'origine giusta da
+scrivere non è nemmeno fissa. Quel che passa di lì sono nomi di componenti verso
+la cornice che contiene la pagina, e solo se una cornice c'è; se un giorno conta,
+la risposta è un `frame-ancestors` sull'header del sito, non una patch al bundle.
+
+Le altre dieci vale la pena scriverle, se non altro perché lo scanner le ridirà:
+il token OAuth «hardcoded» è `ya29.finto` dentro un `#[cfg(test)]`; i due path
+traversal compongono percorsi con nomi che arrivano da `readdirSync`, che un
+separatore non lo restituisce; l'SRI mancante è su un favicon `data:`, dove non
+c'è nessuna richiesta da verificare; le quattro «format string» sono
+concatenazioni passate a `console.error`. Le ultime due dicevano *prototype
+pollution*, e sono la voce qui sotto: quel che hanno trovato è vero, ma non è
+quello.
+
+### Corretto — un colore che si chiamava `__proto__` spariva mentre lo scrivevi
+
+Non è l'inquinamento del prototipo globale che il nome fa temere.
+`Object.prototype` non si tocca mai: l'oggetto che lo Studio riscrive nasce
+sempre da `JSON.parse` o da uno `spread` di `patch.ts`, e il prototipo che cambia
+è quello di una copia che un istante dopo viene buttata. È un difetto di un'altra
+specie, e si vede invece di essere teorico.
+
+`__proto__` è l'unico nome che un autore di skin può battere in un campo di testo
+— il nome di un colore della tavolozza, di un motivo, una rinomina — per cui
+`oggetto[nome] = valore` **non scrive una chiave**. `Object.prototype` espone un
+accessore con quel nome e l'assegnazione chiama quello; `JSON.stringify` poi non
+stampa niente. Il colore spariva dal documento senza che nulla lo dicesse, e
+l'editor mostrava un file che non conteneva quel che si era appena scritto.
+
+Il difetto aveva una faccia asimmetrica, ed è il modo in cui si è visto:
+`rinominaChiave` passa da `Object.fromEntries`, che una proprietà propria la crea
+davvero. Rinominare un colore in `__proto__` funzionava; cambiargli il valore un
+istante dopo lo cancellava.
+
+Le tre funzioni che camminano un percorso — `valoreIn`, `scriviIn`, `togliDa` —
+adesso scrivono con `defineProperty` e leggono dietro un `hasOwnProperty`. La
+prima è esattamente quel che fa `JSON.parse` quando incontra `"__proto__"` dentro
+un oggetto, quindi le due direzioni del documento tornano a coincidere. La
+seconda chiude anche il caso di lettura: un percorso che passava per `__proto__`
+restituiva `Object.prototype`, e i controlli dello Studio si mettevano a disegnare
+le proprietà di quello invece che del documento.
+
+### Aggiunto — i testi, e il bottone che era spento
+
+In `InRiproduzione` il bottone «testo» era disegnato e spento, con la ragione
+scritta accanto: «il nucleo non legge ancora i testi». Adesso li legge, e il
+pannello scorre.
+
+Le fonti si consultano in quest'ordine, e la prima che risponde vince: un `.lrc`
+(o `.a2.lrc`) accanto al brano, la riga già presa per lo stesso `track_key`, il
+tag dentro il file, LRCLIB, e infine l'editor a battute. **Nessuna fonte
+scaricata sovrascrive mai una sincronizzazione fatta a mano** — la condizione
+sta nella `WHERE` dell'`UPSERT`, cioè nel database, non in un `if` che il
+prossimo punto di chiamata potrebbe dimenticare.
+
+Quel che si può dire e quel che non si può:
+
+- **non esiste una fonte gratuita che abbia i testi di tutte le canzoni.** Chi
+  lo promette o raschia pagine o ha una licenza editoriale, e nessuna delle due
+  è una cosa che questo programma faccia. Quel che c'è invece è che ogni brano
+  finisce in uno di quattro stati **dichiarati** — sincronizzato, piatto,
+  strumentale, da sincronizzare — e mai in una schermata bianca. I quattro
+  numeri si vedono in Impostazioni › Cartelle, invece di essere una speranza;
+- l'ultimo stato si chiude a mano, e l'editor a battute è fatto perché costi tre
+  minuti: si preme Spazio a ogni riga mentre il brano suona, ogni battuta viene
+  agganciata all'attacco vero più vicino nella finestra `[-250 ms, +120 ms]` —
+  asimmetrica, perché la mano è sempre in ritardo — e la **mediana** degli
+  scarti sulle righe agganciate corregge quelle che un attacco non l'hanno
+  trovato. È la latenza di reazione di quella persona in quel momento, misurata
+  invece che indovinata. Gli attacchi escono dal flusso spettrale calcolato con
+  la FFT che `aether-play` aveva già per lo spettro: nessuna dipendenza nuova,
+  nessun binario da impacchettare.
+
+L'LRC lo legge **il nucleo**, in `aether_domain::testo`: la finestra riceve
+righe già in ordine e già in millisecondi, e non sa cosa sia un `[mm:ss.xx]`. Un
+secondo lettore scritto in TypeScript sarebbe divergito dal primo su tutto quel
+che il formato non dice — e un formato del 1998 non dice quasi niente.
+
+L'illuminazione che attraversa la riga accesa è una variabile CSS scritta su un
+`ref`, fuori da React: farne uno stato vorrebbe dire ricostruire l'albero venti
+volte al secondo per muovere un gradiente di un pixel. Dove i tempi delle parole
+ci sono — l'LRC esteso `.a2.lrc` — il fronte lascia la riga e passa alle parole,
+ed è l'unico caso in cui quell'illuminazione dice qualcosa di vero invece di
+essere una bugia gentile.
+
+### Corretto — la riga accesa si accendeva e spariva
+
+`--color-accent` non esisteva. Il token dell'accento in questo programma si
+chiama `--accent`, e il foglio di stile lo chiamava con l'altro nome in nove
+punti — due dei quali erano il gradiente che illumina la riga di testo che sta
+suonando.
+
+Una variabile CSS che non esiste non lascia scoperta la sua proprietà: rende
+invalida **tutta** la dichiarazione. Quindi `background-image` tornava a `none`,
+e siccome quella riga affida il proprio colore al gradiente e mette
+`color: transparent`, il risultato era che la riga accesa — e su un `.a2.lrc`
+ogni parola della riga accesa — diventava perfettamente invisibile. Il testo si
+leggeva tutto tranne il verso che si stava ascoltando: si accendeva, e spariva.
+
+Gli altri sette usi degradavano in silenzio, che è il motivo per cui nessuno se
+n'era accorto: `color` e `border-color` invalidi ereditano o ricadono su
+`currentColor`, quindi l'elenco delle battute e il tasto di scorciatoia
+perdevano solo il loro accento. Due `border-radius` invece cadevano a zero, e i
+due controlli che li portavano erano squadrati in un'interfaccia che non ha un
+solo angolo vivo.
+
+Corretti tutti e quindici gli usi delle quattro variabili morte del foglio
+(`--color-accent`, `--color-border`, `--color-warning`, `--radius-control`). Nel
+gradiente della riga accesa il nome giusto porta con sé un ripiego annidato,
+`var(--accent, var(--color-text-1))`: è l'unico punto in cui una variabile
+mancante non vuol dire «senza accento» ma «senza testo», e un difetto che
+cancella quel che si sta leggendo non deve poter tornare per una rinomina.
+
+### Corretto — su un verso che va a capo il fronte si sdoppiava
+
+Rimessa in piedi la riga accesa, si vedeva il difetto che ci stava sotto. Su
+
+    Guardo nel retrovisore, dietro me si sta
+    scuencendo l'autostrada
+
+a un quarto del percorso erano accesi «Guardo nel» **e** «scuencendo»: due
+frammenti staccati, e la riga di sotto che si illuminava in parallelo a quella
+di sopra invece che dopo di lei. In una colonna stretta va a capo un verso su
+due, quindi il fronte diceva la cosa sbagliata quasi sempre.
+
+La causa: il gradiente stava sul **blocco**, e un blocco che va a capo resta
+largo uno solo. Lo stesso taglio orizzontale cadeva su tutte le sue righe
+visive nello stesso istante.
+
+Adesso l'illuminazione vive su un elemento **inline** dentro la riga. Su un
+inline che va a capo vale `box-decoration-break: slice`: il fondo si dipinge
+come se i frammenti fossero uno in fila all'altro, e solo dopo si affetta riga
+per riga — cioè esattamente l'ordine che serve. Costa un elemento e nessuna
+scrittura in più per fotogramma; l'alternativa, una parola per elemento come
+nell'LRC esteso, sarebbe stata `N` scritture ogni cinquantesimo di secondo per
+lo stesso risultato.
+
+L'LRC esteso non aveva questo difetto e non l'ha mai avuto, per la stessa
+ragione per cui adesso non ce l'ha nemmeno l'altro: lì ogni parola è già un
+elemento inline con il suo gradiente.
+
+### Corretto — il pannello del testo, che non inseguiva e non si leggeva
+
+Lo stesso screenshot diceva altre tre cose, ognuna abbastanza piccola da non
+farsi notare da sola: il pannello era fermo in cima dopo mezzo minuto di brano,
+e tutto il testo stava al 46% di bianco sopra le barre viola dello spettro.
+
+- **Lo scorrimento automatico si spegneva da solo.** La pausa che il pannello si
+  prende quando lo scorri a mano era appesa all'evento `scroll` — che emette
+  anche lo scorrimento chiesto dal pannello stesso. Cioè: inseguiva la riga
+  una volta, quell'inseguimento lo metteva in pausa, e nella pausa passavano
+  tutte le righe successive. Adesso la pausa è appesa al **gesto** — la
+  rotella, il dito, i tasti che scorrono — che è l'unica cosa che una
+  persona fa e il browser no.
+- **`padding-block: 40%` non era «metà pannello».** Una percentuale nel
+  padding si risolve sulla larghezza del contenitore anche in verticale: su una
+  colonna da trecentosessanta pixel erano centotrenta invece di seicento, e la
+  riga accesa non poteva salire al suo posto finché la canzone non era a
+  metà. Il respiro adesso lo fanno due distanziatori, dove la stessa
+  percentuale si misura sull'altezza — e compaiono solo per un testo che
+  scorre, invece di spingere in giù anche i testi senza tempi.
+- **Il pannello era trasparente sopra una tela che si ridisegna.** Il velo al 45%
+  è la ricetta giusta sopra una copertina sfocata e quella sbagliata sopra lo
+  spettro, che lascia le barre piene proprio nella metà bassa — dov'è
+  quasi tutto il testo. Adesso è all'82%, e le righe non ancora cantate
+  passano da `--color-text-3` a `--color-text-2`: sopra il caso peggiore stanno
+  a 6.6:1 invece che a 4.4:1.
+
+E tre cose che mancavano:
+
+- l'**ultima riga** di ogni brano restava bianca e ferma, perché l'avanzamento
+  si misura fino alla riga dopo e una riga dopo non c'era. Adesso il fondo lo
+  dà la durata del file, che il dominio non conosce e la finestra sì;
+- nell'**introduzione e negli stacchi** fra due strofe non era acceso niente, e
+  un pannello immobile sembra rotto proprio quando sta funzionando. Al loro posto
+  ci sono tre puntini che si riempiono, guidati dallo stesso `--avanzamento` di
+  tutto il resto: nessun meccanismo nuovo, la stessa variabile letta da tre
+  elementi. Sotto i tre secondi non compaiono, perché sarebbero un lampeggio;
+- **si clicca una riga per saltarci**. Gli scarti si disfano invece di essere
+  applicati — i tempi delle righe non si toccano mai, è la regola di tutto
+  il modulo — e una sola riga per volta sta nell'ordine di tabulazione, perché
+  duecento fermate dentro un pannello che si legge non sono accessibilità.
+
+Intorno: la colonna del testo è diventata fluida (`clamp(340px, 26vw, 460px)`)
+perché a trecentosessanta pixel fissi quasi ogni verso andava a capo mentre al
+centro dello schermo restavano milleottocento pixel di scena quasi vuota; le
+righe sfumano ai bordi invece di essere tranciate dall'angolo del pannello; e
+«torna al brano» dice che l'inseguimento è in pausa, che è quel che
+permette alla pausa di durare sei secondi invece di tre senza lasciare perso
+nessuno.
+
+### Aggiunto — restituire a LRCLIB, e perché è un pulsante e non una casella
+
+Dopo aver sincronizzato un testo a mano si può mandarlo a LRCLIB. Vale la pena
+essere espliciti su come, perché la forma **è** la sostanza qui:
+
+- è un gesto, un brano alla volta, e si preme dopo aver visto cosa si sta
+  mandando. Mai in blocco, mai automatico, mai attaccato al salvataggio — perché
+  si salva sempre, e tutto quel che sta attaccato al salvataggio è automatico
+  per definizione;
+- **non si pubblica mai il testo che stava dentro il tag di un file**, né quel
+  che dal catalogo è appena arrivato. La regola sta in `testi::da_restituire`,
+  non nella finestra: vale anche se un giorno il pulsante fosse in un altro
+  posto;
+- il testo senza tempi che accompagna l'invio è **ricavato** dall'LRC che si sta
+  mandando, mai preso altrove: così è per costruzione lo stesso testo, e non c'è
+  modo di spedire due versioni che dicono cose diverse;
+- con l'interruttore dei testi spento il pulsante non compare.
+
+`PRIVACY.md` § 2-bis elenca adesso riga per riga cosa esce quando lo si preme, e
+`TERMS.md` § 3-bis dice la cosa che di solito si tace: quel che metti in comune
+sono i tempi, le parole restano dell'avente diritto, e mandarle a un catalogo
+pubblico è una decisione tua e non una che il programma prende al posto tuo.
+
+La pubblicazione ci mette qualche secondo, e non per la rete: LRCLIB chiede una
+prova di lavoro SHA-256 a ogni invio. È una difesa onesta — non tocca chi manda
+un testo alla volta e rende impraticabile mandarne centomila — e la finestra lo
+dice **prima** che si prema, non dopo.
+
+Musixmatch, Genius, AZLyrics, LyricFind e i cataloghi cinesi restano fuori, e
+adesso la CI lo verifica a ogni modifica: passo «Nessuna fonte di testi vietata»
+nel lavoro `niente-di-vietato`, accanto a quello che tiene fuori gli strumenti
+di scaricamento. La decisione vive nella CI, non nella memoria di chi rivede.
+
+### Aggiunto — l'updater, e la richiesta che non c'era
+
+Chi installava la 0.1.0 restava sulla 0.1.0. Adesso, due minuti dopo l'avvio e
+poi ogni mezz'ora, un filo di sottofondo chiede a GitHub se è uscita una
+versione più nuova, e quando c'è lo dice con una fascia sopra il contenuto —
+versione, note di rilascio, «Aggiorna» e «Non ora».
+
+**È una richiesta di rete che parte da sola, e questo changelog è il posto in
+cui dirlo.** Fino a ieri `PRIVACY.md` § 6 diceva «nessuna richiesta all'avvio:
+non c'è un controllo aggiornamenti», e quella frase è diventata falsa con questo
+commit — quindi è stata riscritta nello stesso commit, e il controllo ha adesso
+una sezione numerata sua. Dentro la richiesta non va niente: nessun
+identificativo, nessun conteggio, nemmeno la versione installata. È una GET a un
+file pubblico di trecento byte, e il confronto fra i due numeri avviene qui. Si
+spegne in *Impostazioni → Aggiornamenti*, e spento non parte nulla.
+
+Non installa da sé. Installare vuol dire chiudere l'applicazione, e farlo mentre
+qualcuno sta ascoltando — o mentre sta riordinando trentamila file sul disco —
+è il genere di cosa che si perdona una volta sola. Il filo trova e aspetta; lo
+scaricamento parte da un tasto, e prima che l'installer venga eseguito la sua
+firma minisign viene verificata contro una chiave pubblica compilata dentro
+l'eseguibile. Un «non ora» vale per quella versione sola e si scrive nel
+database, non in memoria: un avviso che ricompare a ogni riavvio è un avviso che
+si impara a chiudere senza leggerlo.
+
+La cosa che poteva andare storta in silenzio è un'altra, ed è quella per cui
+esiste `strumenti/manifesto.js`: se la chiave privata con cui la CI firma non è
+la metà di quella che gli eseguibili già installati conoscono, il `latest.json`
+è perfetto, l'installer si scarica, la verifica fallisce e **nessuno si
+aggiorna** — e non se ne accorge nessuno, perché il guasto succede sul computer
+di altri. Lo script confronta gli otto byte di identificativo che minisign mette
+sia nella chiave sia nella firma, e fa fallire la release se non coincidono.
+
+La release nasce bozza, e `/releases/latest` salta le bozze: pubblicarla **è** il
+gesto che spedisce l'aggiornamento a tutti. Automatizzarlo si può in due righe;
+non si fa, perché è l'unico punto della catena in cui una persona guarda la cosa
+prima che parta.
+
+Non si è usata una cartella condivisa su MEGA, che era la prima idea. Un link
+`mega.nz/folder/<id>#<chiave>` non è un file scaricabile: la chiave sta nel
+frammento `#`, che per definizione non arriva mai al server; l'URL vero si
+ottiene con una POST all'API ed è temporaneo e legato a un nodo che ruota; i
+byte che tornano sono cifrati AES-128-CTR con un meta-MAC da verificare; e i
+download anonimi sono contati per indirizzo IP, quindi dietro un NAT condiviso
+gli utenti si brucerebbero la quota a vicenda. `tauri-plugin-updater` non ha
+un punto in cui sostituire il proprio downloader: MEGA avrebbe voluto dire
+rinunciare al plugin e riscrivere a mano anche la verifica della firma, cioè
+l'unica parte che non si deve sbagliare.
+
+### Aggiunto — italiano e inglese, e il tedesco costa un file
+
+L'interfaccia era scritta in italiano e basta: le stringhe stavano dentro il
+JSX, `«1 brano» / «2 brani»` era cucito in `formato.ts`, `<html lang="it">` era
+fisso in `index.html`, e `toLocaleString("it")` compariva a mano in quarantacinque
+punti su diciassette file — più tre volte senza argomento, cioè tre numeri che
+seguivano il sistema operativo mentre tutti gli altri seguivano l'italiano.
+
+Adesso parla due lingue, e — questa è la parte che conta — aggiungerne una terza
+costa **un file**: si lascia cadere `de.json` in `apps/desktop/src/lingue/` e il
+programma lo trova. Nessun registro da aggiornare, nessuno `switch` da
+allungare, nessun import da scrivere. Il perno è `import.meta.glob` di Vite:
+l'elenco delle lingue disponibili **è** il contenuto della cartella, e il nome
+nativo con cui la lingua compare nel selettore viaggia dentro il file stesso,
+sotto la chiave riservata `_nome`. Provato: copiato `en.json` in `de.json`,
+cambiato `_nome` in «Deutsch», tradotte tre chiavi — il tedesco compare senza
+aver toccato un solo `.ts`, e le chiavi non tradotte si mostrano in inglese.
+
+Niente `i18next`: il progetto ha quattro dipendenze runtime in tutto, e un
+modulo di duecentosessanta righe fa questo lavoro meglio di quaranta kilobyte di
+libreria generica. Nessun `<ProviderLingua>` nemmeno: il repo non usa i Context
+— `grep` di `createContext` su tutto `src` dà zero risultati — e la lingua segue
+la stessa forma della riproduzione, un modulo con `useSyncExternalStore`. Serviva
+anche in pratica: `Impostazioni` riceve già sessantuno prop, e far scendere `t`
+per prop drilling attraverso settanta file non era sostenibile.
+
+Le scelte, in breve:
+
+- **La lingua all'avvio** si rileva dal sistema, con `de-DE` ridotto a `de`; se
+  per quella lingua non c'è un file, **inglese** — anche se la lingua di sviluppo
+  è l'italiano. Sono due ruoli distinti e il codice li tiene separati: `"en"` per
+  chi arriva con un sistema in svedese, e ancora `"en"` per le chiavi che mancano
+  dentro un `de.json` incompleto.
+- **La scelta vive nelle preferenze del nucleo** (`ui.language`), accanto al
+  tema, quindi finisce da sé nel backup su Drive e nel profilo esportabile —
+  `profilo.rs` è un elenco di inclusione, e dimenticarlo là avrebbe dato un
+  profilo che ripristina tutto tranne una cosa. Nessuna migrazione: `settings` è
+  una tabella chiave/valore.
+- **Niente lampo di lingua sbagliata**: la finestra nasce invisibile
+  (`"visible": false`) e la mostra il frontend col comando `pronto`, che adesso
+  aspetta anche `Avvio.lingua`. La lingua di sistema si applica prima del primo
+  disegno, quella salvata prima che la finestra si veda.
+
+Il campo `i18nKey` era già lì e non lo leggeva nessuno: `ErroreIpc` lo porta dal
+nucleo da sempre, generato in `errors/catalog.rs` come `concat!("errors.", <codice>)`,
+e il frontend usava invece una tabella scritta a mano di venticinque messaggi
+italiani chiavati per codice — venticinque voci contro centoquattro codici. Adesso
+la chiave la decide il nucleo e il testo lo decide il catalogo delle lingue, dove
+ci sono tutti e centoquattro: gli **otto orfani** che l'utente vedeva col messaggio
+grezzo del backend sono chiusi.
+
+Tradotti anche i duecentoventinove `aria-label`, `title` e `placeholder`:
+guardare solo il testo dei nodi avrebbe lasciato l'accessibilità monolingue. E
+le diciassette tabelle `const` con dentro delle etichette sono diventate
+funzioni, perché una costante di modulo congela la lingua al primo import.
+
+Due cose restano di proposito nella lingua in cui nascono, e non è una
+dimenticanza: i segnaposti «Album sconosciuto» e «Artista sconosciuto» del
+nucleo — che `library.rs` scrive **nelle righe del database** e `organize.rs` usa
+per **nomi di cartelle su disco** — e la riga di attribuzione che
+`prelievo.rs` scrive **nei tag di un file scaricato**. Tradurle dove nascono
+darebbe chiavi d'album diverse fra due avvii con lingue diverse, cartelle di due
+lingue affiancate, e un'attribuzione che cambia lingua a seconda del mese. Sono
+valori, non etichette: il frontend riconosce i due segnaposti e li sostituisce al
+momento di disegnare, e i percorsi già scritti non si toccano.
+
+Fuori portata, e vale dirlo: `tauri.conf.json` (`title`, `shortDescription`,
+`longDescription`) resta italiano. Titolo della finestra e testi dell'installer
+non si localizzano senza `bundle.windows.nsis.languages`, che non c'è.
+
+**Un guardiano in CI.** `strumenti/lingue.js` confronta le chiavi di ogni
+`lingue/*.json` con `it.json` e fallisce elencando le mancanti — e anche quelle
+che avanzano, che sono chiavi rinominate altrove e non qui, cioè testo che
+nessuno disegnerà mai. Senza, il secondo `de.json` si scopre incompleto quando lo
+usa qualcuno: il motore ripiega sull'inglese e disegna lo stesso, ed è proprio
+questo a rendere invisibile una traduzione a metà. `node strumenti/lingue.js
+--scrivi` mette in fila le chiavi mancanti col testo italiano, così restano da
+tradurre invece che da cercare.
+
+### Tolto — YouTube, lo scraping di Spotify, e il binario impacchettato
+
+La cosa più grande di questa tornata è una sottrazione, e vale la pena scrivere
+perché.
+
+**`aether-yt` — cancellato per intero.** Cinquemilacinquecento righe che
+invocavano `yt-dlp.exe` per prendere i byte dei video, più l'API interna di
+YouTube Music. Le *YouTube API Developer Policies* § III.E.1.a lo vietano in
+termini che non lasciano margine: «You must not… download, import, backup,
+cache, or store copies of YouTube audiovisual content». Non esisteva una
+configurazione che lo rendesse lecito.
+
+Non esisteva nemmeno una versione corretta del modulo. Le stesse policy vietano
+di separare l'audio dal video (§ III.I.7) e di riprodurlo da un player non
+visibile (§ III.I.9), e limitano a trenta giorni la conservazione dei metadati
+(§ III.E.4). Un lettore musicale che tiene una libreria è esattamente la cosa
+che quelle tre regole escludono: YouTube non si correggeva, si toglieva.
+
+**`aether-spotify` — cancellato per intero.** Parlava con endpoint privati: il
+GraphQL interno con gli hash delle query persistite, i gettoni anonimi
+ricostruiti con HMAC-SHA1, la stretta di mano anonima, e il **client id del web
+player di Spotify** — non nostro — con uno User-Agent di Chrome falsificato. Era
+accesso non autorizzato al servizio, ed era la violazione che nessuno aveva
+dichiarato.
+
+Con lui se n'è andata anche la metà **lecita**: il consenso OAuth alla Web API.
+Quella funzionava, ma lo *Spotify Developer Policy* (III.5, III.9) limita cosa
+si può fare dei dati che restituisce, e una libreria che li tiene per anni non
+sta dentro quei limiti. Resta l'archivio GDPR, che è dell'utente per diritto
+(art. 20) e porta la cronologia **completa** invece degli ultimi cinquanta
+ascolti.
+
+**`resources/bin/yt-dlp.exe`** — diciotto megabyte, e la riga
+`bundle.resources` che li impacchettava. L'installer adesso non contiene
+**nessun eseguibile di terze parti**.
+
+Conseguenze visibili: sparisce l'importazione da un link di Spotify o di
+YouTube, e sparisce il selettore fra i due servizi. Restano l'archivio GDPR e i
+file di playlist, e arrivano i cataloghi liberi.
+
+### Aggiunto — i cataloghi liberi
+
+**`aether-catalogo`**, un crate nuovo che parla solo con `aether-net`: nessun
+processo figlio, nessun binario da impacchettare, richieste HTTP che si leggono
+nel codice. Nella prima tornata c'è l'**Internet Archive** — Live Music Archive,
+netlabel, pubblico dominio — con ricerca, lettura dell'item e prelievo dei file.
+
+Il concetto che porta il peso è `Disponibilita`, e non esisteva prima: la
+risposta strutturata alla domanda «questo brano lo posso prendere?», al posto
+dell'assunto implicito di prima («su YouTube c'è tutto»). Accanto sta
+`Licenza`, e in tutti e due i casi **il valore restrittivo è quello di
+serie**: una licenza che non si conosce vale «non si copia», e `preleva` rifiuta
+prima di fare qualunque richiesta.
+
+**«Da comprare»**, una sezione nuova nella pagina delle importazioni. Lo stato
+`Introvabile` della coda cambia significato — non più «su YouTube non c'è» ma
+«nessuna fonte lecita ce l'ha» — e diventa una lista d'acquisto con i link a
+Bandcamp, Qobuz e Discogs. È la sostituzione onesta di uno scaricamento che non
+si può fare: dire **dove** prendere quel brano, in posti dove chi l'ha fatto
+viene pagato.
+
+**La natura della registrazione**, detta a schermo. I cataloghi liberi non hanno
+le versioni in studio del catalogo commerciale: hanno concerti, riedizioni,
+riletture — il Live Music Archive è fatto **solo** di concerti. Aether le
+accetta, e mette accanto al brano una pastiglia che dice quale ha preso. Chi
+ricostruisce un disco preciso può spegnere quel comportamento
+(`catalogo.alternative` nelle impostazioni).
+
+**La licenza di ogni brano**, scritta in `desiderati` (migrazione 10) e mostrata
+nella coda. Un file che entra in libreria senza che nessuno dica a quali
+condizioni ci è entrato è un file che fra un anno nessuno saprà se può
+condividere.
+
+### Aggiunto — quel che serve a distribuire
+
+- **`LICENSE`** in radice: il testo MIT che quattordici manifest dichiaravano e
+  che non esisteva da nessuna parte.
+- **`THIRD-PARTY-NOTICES.md`**, generato da `strumenti/licenze.js`: copre i
+  diciotto crate **MPL-2.0** (tutta la famiglia symphonia, più cssparser e
+  selectors), `cpal` e `tao` che sono **Apache-2.0 senza alternativa**, `ring`,
+  e i tredici crate `Unicode-3.0`.
+- **`apps/desktop/src/font/OFL.txt`**: Geist e Bricolage Grotesque erano
+  impacchettati nudi, e la SIL OFL obbliga a distribuire la licenza con loro.
+- **`publish = false`** in tutti e tredici i manifest: nessuno di questi crate va
+  su crates.io, e fino a ieri un `cargo publish` distratto ce li avrebbe messi.
+- **`README.md`**, **`PRIVACY.md`**, **`TERMS.md`**: non esistevano. I termini
+  riportano il vincolo non commerciale del Live Music Archive, che è una
+  condizione d'uso e non una nota a piè di pagina.
+- **Due workflow di CI** (`.github/workflows/`). Il primo prova tutto; il
+  secondo, da un tag, produce l'installer. Il primo ha un lavoro a parte che
+  fallisce se qualcuno rimette un binario in `resources/bin` o reintroduce uno
+  strumento di scaricamento non lecito: la regola vale se qualcosa la fa
+  rispettare.
+- **`strumenti/versione.js`** e **`strumenti/licenze.js`**, con gli script npm
+  `check:version`, `version:set`, `licenze` e `verify` — che il CHANGELOG dava
+  per esistenti da mesi senza che ci fossero.
+- **Il modulo email del sito è stato tolto.** Chiedeva un indirizzo, prometteva
+  «una mail quando si apre la tua ondata» e **non lo mandava da nessuna parte**:
+  nessun backend, nessuna informativa, e il tasto diventava verde lo stesso.
+  Raccogliere un indirizzo e buttarlo via è peggio che non chiederlo. Con lui
+  sono state corrette le tre affermazioni false del sito: «Nothing here is
+  fetched from a network», «macOS · Windows · Linux» quando l'unico bersaglio è
+  NSIS, e «no stream».
+
+### Cambiato — l'identificativo dell'applicazione
+
+`dev.aether.desktop` → **`io.github.federicobaratti.aether`**.
+
+Il primo è un reverse-DNS su `aether.dev`, un dominio che non è mio. Su una cosa
+che si pubblica non è una sottigliezza, e cambiarlo **prima** del primo
+rilascio costa a una persona sola; cambiarlo dopo costa a tutte.
+
+**Se avevi già una libreria in prova**, si sposta anche la cartella dati e il
+nome del servizio nel portachiavi. In pratica:
+
+- la libreria sta in `%APPDATA%\dev.aether.desktop` e Aether adesso la cerca in
+  `%APPDATA%\io.github.federicobaratti.aether`: rinominare la cartella la
+  ritrova, oppure si lancia con `AETHER_DATI=...` puntato alla vecchia;
+- i collegamenti a Google Drive e ai servizi di scrobbling vanno rifatti: i
+  token stanno nel Credential Manager sotto il vecchio nome del servizio, e
+  cercarli sotto il nuovo dà «non collegato».
 
 ### Aggiunto — il nucleo in Rust
 

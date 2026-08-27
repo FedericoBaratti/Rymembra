@@ -123,7 +123,7 @@ fn main() {
     // I mancanti sono l'unica cosa che l'utente non può ricostruire dopo: vanno
     // detti, non contati. I primi venti bastano a capire se l'abbinamento sta
     // funzionando; l'elenco intero lo mostra la finestra.
-    let mancanti: Vec<&aether_app::import_spotify::MissingTrack> = fatto
+    let mancanti: Vec<&aether_app::import_esterno::MissingTrack> = fatto
         .playlists
         .iter()
         .chain(fatto.albums.iter())

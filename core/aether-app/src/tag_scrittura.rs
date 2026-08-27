@@ -25,7 +25,7 @@
 //! con un ospite diverso. Per questo, quando Spotify non lo dà, si ripiega
 //! sull'interprete del brano invece di lasciarlo assente.
 
-use aether_domain::SpotifyTrack;
+use aether_domain::BranoEsterno;
 use aether_domain::enrich::Fields;
 use aether_domain::errors::{AppError, ErrorCode};
 use lofty::config::WriteOptions;
@@ -59,7 +59,7 @@ const COPERTINA_MASSIMA: usize = 8 * 1024 * 1024;
 /// riscrive.
 pub fn scrivi_tag(
     percorso: &std::path::Path,
-    brano: &SpotifyTrack,
+    brano: &BranoEsterno,
     posizione: u32,
     copertina: Option<&[u8]>,
 ) -> Result<(), AppError> {
@@ -498,8 +498,8 @@ mod prove {
     use crate::metadata::read_tags;
 
     /// Un brano di Spotify completo di tutto.
-    fn brano() -> SpotifyTrack {
-        SpotifyTrack {
+    fn brano() -> BranoEsterno {
+        BranoEsterno {
             title: "Poetica".to_owned(),
             artist: Some("Cesare Cremonini".to_owned()),
             album: Some("Possibili scenari".to_owned()),
@@ -508,7 +508,7 @@ mod prove {
             disc_number: Some(1),
             year: Some(2017),
             duration_ms: Some(297_000),
-            ..SpotifyTrack::default()
+            ..BranoEsterno::default()
         }
     }
 
@@ -561,7 +561,7 @@ mod prove {
         // È la chiave con cui un album si raggruppa in una sola uscita: vuota,
         // l'album si spezzerebbe in libreria.
         let (_cartella, percorso) = file_di_prova();
-        let senza = SpotifyTrack {
+        let senza = BranoEsterno {
             album_artist: None,
             ..brano()
         };
@@ -574,7 +574,7 @@ mod prove {
     #[test]
     fn senza_numero_di_traccia_vale_la_posizione() {
         let (_cartella, percorso) = file_di_prova();
-        let senza = SpotifyTrack {
+        let senza = BranoEsterno {
             track_number: None,
             ..brano()
         };

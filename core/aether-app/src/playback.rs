@@ -41,6 +41,14 @@ pub const CHIAVE_EQ_PRESET: &str = "player.eq.presets";
 /// La chiave con cui la normalizzazione ReplayGain sta in `settings`.
 pub const CHIAVE_REPLAYGAIN: &str = "player.replaygain";
 
+/// La chiave con cui sta quante barre disegna lo spettro.
+///
+/// In `settings` e non in `localStorage`, come tutto il resto delle preferenze
+/// da quando il tema si è spostato qui: `localStorage` non finisce né nel
+/// backup né nella sincronia, e una scelta che sparisce cambiando dispositivo è
+/// una scelta che va rifatta ogni volta.
+pub const CHIAVE_SPETTRO_BANDE: &str = "player.spectrum.bands";
+
 fn db_error(cosa: &str, err: &rusqlite::Error) -> AppError {
     AppError::new(ErrorCode::DbQueryFailed {
         detail: Some(cosa.to_owned()),
@@ -122,7 +130,20 @@ fn estensione_di(path: &str) -> Option<String> {
 /// incrementava cinquanta.
 ///
 /// Restituisce `true` se ha scritto.
-pub fn record_play(connection: &mut Connection, ascolto: &Listen) -> Result<bool, AppError> {
+///
+/// # A nome di chi
+///
+/// `dispositivo` è l'identificativo di **questa** macchina, e non è un dettaglio
+/// contabile: il conteggio non è più un numero in una colonna ma una somma di
+/// numeri, uno per dispositivo, e chi non dice il proprio nome non può
+/// contribuire. Vedi [`crate::sincronia::conta_ascolto`] sul perché la somma
+/// è l'unica forma che regge fra due macchine — con un numero solo, fondere può
+/// solo raddoppiare la storia o perderne metà.
+pub fn record_play(
+    connection: &mut Connection,
+    ascolto: &Listen,
+    dispositivo: &str,
+) -> Result<bool, AppError> {
     if !ascolto.counts {
         return Ok(false);
     }
@@ -135,15 +156,20 @@ pub fn record_play(connection: &mut Connection, ascolto: &Listen) -> Result<bool
     // chi vince quando due dispositivi si allineano. Scrivere il conteggio senza
     // di lui vorrebbe dire che l'ascolto di stasera perde contro quello di ieri
     // fatto sul telefono.
+    //
+    // `play_count` non si incrementa più qui: lo ricalcola `conta_ascolto` come
+    // somma dei contatori, subito sotto e nella stessa transazione. Farlo in due
+    // posti darebbe due volte lo stesso ascolto.
     tx.execute(
         "UPDATE tracks
-            SET play_count = play_count + 1,
-                last_played_at = ?2,
+            SET last_played_at = ?2,
                 stats_updated_at = ?2
           WHERE id = ?1",
         rusqlite::params![ascolto.track_id, ascolto.started_at],
     )
     .map_err(|err| db_error("conteggio d'ascolto", &err))?;
+
+    crate::sincronia::conta_ascolto(&tx, ascolto.track_id, dispositivo)?;
 
     tx.execute(
         "INSERT INTO play_history (track_id, played_at, ms_played) VALUES (?1, ?2, ?3)",
@@ -301,6 +327,26 @@ impl Default for Normalizzazione {
 /// streaming, che qui vorrebbe dire alzare tutto di quattro decibel).
 pub const BERSAGLIO_PREDEFINITO_DB: f32 = -18.0;
 
+/// Il bersaglio «basso», per chi ascolta di notte o in cuffia.
+///
+/// Cinque decibel sotto il riferimento. Non è «più silenzioso» nel senso del
+/// volume — quello ha già il suo cursore — ma un punto di arrivo più basso a
+/// cui *tutti* i brani vengono portati: la differenza si sente su una
+/// scaletta che mescola un disco degli anni Ottanta e una rimasterizzazione
+/// recente, dove la seconda arriva molto più forte del primo.
+pub const BERSAGLIO_BASSO_DB: f32 = -23.0;
+
+/// Il bersaglio «alto», quello delle piattaforme di streaming.
+///
+/// È il valore a cui normalizzano Spotify e gli altri, ed è il motivo per cui
+/// una libreria locale suona più piano di loro a parità di cursore. Alzando di
+/// quattro decibel sopra il riferimento dei tag, i brani già forti arrivano
+/// oltre lo zero: la correzione finale in `aether_play::guadagno` è tagliata a
+/// +12 dB e la conversione di `aether_play::uscita` satura invece di
+/// avvolgere, quindi il caso peggiore è una compressione udibile, non un
+/// rumore. Chi ha una libreria di dischi rumorosi tiene «normale».
+pub const BERSAGLIO_ALTO_DB: f32 = -14.0;
+
 /// I limiti oltre cui un bersaglio non è più una preferenza ma un guasto.
 ///
 /// Gli stessi che `aether_play::guadagno` applica alla correzione finale: qui
@@ -334,6 +380,160 @@ pub fn load_replaygain(connection: &Connection) -> Result<Normalizzazione, AppEr
             .map(sana)
             .unwrap_or_default(),
     )
+}
+
+// ── dov'eri rimasto ─────────────────────────────────────────────────────────
+
+/// A che punto del brano corrente si era arrivati.
+pub const CHIAVE_POSIZIONE: &str = "player.position";
+
+/// Conserva la posizione dentro il brano.
+///
+/// # Perché una chiave sua e non un campo di `QueueSnapshot`
+///
+/// Perché `QueueSnapshot` è un tipo del **dominio**, e descrive la struttura
+/// di una coda: quali brani, in che ordine, dove siamo dentro l'ordine.
+/// Quanti millisecondi sono passati dentro una traccia non è una proprietà
+/// della coda — è una proprietà del motore, che il dominio non conosce e non
+/// deve conoscere. Infilarcelo dentro vorrebbe dire che
+/// `aether_domain::queue`, che oggi non sa nemmeno cosa sia il tempo, si
+/// ritrova un campo che solo `aether-play` sa produrre.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn save_posizione(connection: &Connection, ms: u64) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_POSIZIONE, &ms)
+}
+
+/// Legge la posizione dentro il brano. Assente vale l'inizio.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn load_posizione(connection: &Connection) -> Result<u64, AppError> {
+    Ok(crate::settings::read_json::<u64>(connection, CHIAVE_POSIZIONE)?.unwrap_or(0))
+}
+
+// ── la coda che non finisce ─────────────────────────────────────────────────
+
+/// Se a coda esaurita si continua da soli.
+pub const CHIAVE_AUTOPLAY: &str = "player.autoplay";
+
+/// Conserva la scelta sull'autoplay.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn save_autoplay(connection: &Connection, attivo: bool) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_AUTOPLAY, &attivo)
+}
+
+/// Legge la scelta sull'autoplay.
+///
+/// Assente vale **spento**, ed è il contrario della normalizzazione qui sopra
+/// per una ragione precisa: la normalizzazione descriveva quel che il motore
+/// già faceva, questo aggiunge un comportamento che prima non c'era. Un
+/// aggiornamento che accendesse l'autoplay da sé farebbe partire musica che
+/// nessuno ha chiesto, magari a notte fonda, in una casa in cui l'ultimo album
+/// era finito apposta.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn load_autoplay(connection: &Connection) -> Result<bool, AppError> {
+    Ok(crate::settings::read_json::<bool>(connection, CHIAVE_AUTOPLAY)?.unwrap_or(false))
+}
+
+// ── un brano dentro l'altro ─────────────────────────────────────────────────
+
+/// Quanti secondi dura la sovrapposizione fra un brano e il successivo.
+pub const CHIAVE_CROSSFADE: &str = "player.crossfade";
+
+/// Il massimo che si può chiedere, in secondi.
+///
+/// Dodici come Spotify, e non per imitazione: oltre i dodici secondi la
+/// sovrapposizione dura più della coda di quasi ogni brano, e quel che si
+/// sente non è più un passaggio ma due canzoni suonate insieme. Il limite è
+/// anche una difesa del motore — la finestra di dissolvenza va tenuta in
+/// memoria e confrontata con la durata del brano, e un valore assurdo
+/// significherebbe una dissolvenza che comincia prima della metà.
+pub const CROSSFADE_MASSIMO_S: u64 = 12;
+
+/// Riporta i secondi dentro il consentito.
+fn sano_crossfade(secondi: u64) -> u64 {
+    secondi.min(CROSSFADE_MASSIMO_S)
+}
+
+/// Conserva la durata della dissolvenza incrociata, in secondi.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn save_crossfade(connection: &Connection, secondi: u64) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_CROSSFADE, &sano_crossfade(secondi))
+}
+
+/// Legge la durata della dissolvenza. Assente vale **zero**, cioè spenta.
+///
+/// Spenta di serie per la stessa ragione dell'autoplay qui sopra: fino a ieri
+/// il passaggio fra due brani era esatto al campione, ed è una qualità che chi
+/// ascolta un album ha scelto Aether per avere. Un aggiornamento che
+/// accendesse la dissolvenza da sé sovrapporrebbe le tracce di un disco
+/// pensato per non averne — cioè romperebbe il gapless senza che nessuno
+/// l'abbia chiesto.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn load_crossfade(connection: &Connection) -> Result<u64, AppError> {
+    Ok(
+        crate::settings::read_json::<u64>(connection, CHIAVE_CROSSFADE)?
+            .map(sano_crossfade)
+            .unwrap_or(0),
+    )
+}
+
+/// Conserva quante barre disegna lo spettro.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn save_spettro_bande(connection: &Connection, quante: u16) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_SPETTRO_BANDE, &sane(quante))
+}
+
+/// Rilegge quante barre disegna lo spettro.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde. Un valore illeggibile o fuori
+/// scala vale [`aether_play::RISOLUZIONE_DI_SERIE`]: la stessa regola del resto
+/// del modulo, e qui conta doppio perché la preferenza è disegno, non suono —
+/// rifiutare di partire per una barra in più sarebbe sproporzionato.
+pub fn load_spettro_bande(connection: &Connection) -> Result<u16, AppError> {
+    Ok(
+        crate::settings::read_json::<u16>(connection, CHIAVE_SPETTRO_BANDE)?
+            .map(sane)
+            .unwrap_or(aether_play::RISOLUZIONE_DI_SERIE),
+    )
+}
+
+/// Porta un numero di barre su una delle risoluzioni che esistono.
+///
+/// Non un `clamp`: fra 64 e 128 non c'è niente, e scrivere 100 vorrebbe dire
+/// conservare un valore che il motore poi stringe per conto suo — cioè una
+/// preferenza che dice una cosa e ne fa un'altra. Si sceglie la potenza di due
+/// più vicina *in rapporto*, che è il modo in cui queste scale si confrontano:
+/// fra 64 e 128, il mezzo è 90, non 96.
+fn sane(quante: u16) -> u16 {
+    aether_play::RISOLUZIONI
+        .into_iter()
+        .min_by(|a, b| {
+            let scarto = |v: u16| (f32::from(v) / f32::from(quante.max(1))).log2().abs();
+            scarto(*a).total_cmp(&scarto(*b))
+        })
+        .unwrap_or(aether_play::RISOLUZIONE_DI_SERIE)
 }
 
 /// Porta un bersaglio dentro i limiti, e un valore non finito al riferimento.
@@ -619,6 +819,7 @@ mod prove {
                 listened_ms: 120_000,
                 counts: true,
             },
+            "prova",
         )
         .expect("registrato");
         assert!(scritto);
@@ -639,6 +840,7 @@ mod prove {
                 listened_ms: 2_000,
                 counts: false,
             },
+            "prova",
         )
         .expect("registrato");
         assert!(!scritto);
@@ -658,6 +860,7 @@ mod prove {
                     listened_ms: 120_000,
                     counts: true,
                 },
+                "prova",
             )
             .expect("registrato");
         }
@@ -676,6 +879,7 @@ mod prove {
                 listened_ms: 120_000,
                 counts: true,
             },
+            "prova",
         )
         .expect("registrato");
         let stats: i64 = c
@@ -810,6 +1014,80 @@ mod prove {
         let letta = load_replaygain(&c).expect("riletta");
         assert!(letta.attivo);
         assert_eq!(letta.bersaglio_db, BERSAGLIO_PREDEFINITO_DB);
+    }
+
+    #[test]
+    fn le_barre_dello_spettro_mai_scelte_sono_quelle_di_serie() {
+        let c = db();
+        assert_eq!(
+            load_spettro_bande(&c).expect("riletta"),
+            aether_play::RISOLUZIONE_DI_SERIE
+        );
+    }
+
+    #[test]
+    fn le_barre_dello_spettro_restano_scritte() {
+        let c = db();
+        save_spettro_bande(&c, 256).expect("scritta");
+        assert_eq!(load_spettro_bande(&c).expect("riletta"), 256);
+    }
+
+    #[test]
+    fn un_numero_di_barre_che_non_esiste_diventa_il_piu_vicino() {
+        // Il caso vero: una preferenza scritta da una versione con un altro
+        // elenco di risoluzioni. Deve valere adattabile, non illeggibile — la
+        // stessa regola della curva dell'equalizzatore.
+        let c = db();
+        crate::settings::write(&c, CHIAVE_SPETTRO_BANDE, "100").expect("scritta");
+        assert_eq!(load_spettro_bande(&c).expect("riletta"), 128);
+        crate::settings::write(&c, CHIAVE_SPETTRO_BANDE, "3").expect("scritta");
+        assert_eq!(load_spettro_bande(&c).expect("riletta"), 8);
+        crate::settings::write(&c, CHIAVE_SPETTRO_BANDE, "60000").expect("scritta");
+        assert_eq!(load_spettro_bande(&c).expect("riletta"), 1024);
+    }
+
+    #[test]
+    fn barre_illeggibili_non_impediscono_l_avvio() {
+        let c = db();
+        crate::settings::write(&c, CHIAVE_SPETTRO_BANDE, "{non è json").expect("scritta");
+        assert_eq!(
+            load_spettro_bande(&c).expect("riletta"),
+            aether_play::RISOLUZIONE_DI_SERIE
+        );
+    }
+
+    #[test]
+    fn una_dissolvenza_mai_scelta_e_spenta() {
+        let c = db();
+        assert_eq!(load_crossfade(&c).expect("riletta"), 0);
+    }
+
+    #[test]
+    fn la_dissolvenza_resta_scritta() {
+        let c = db();
+        save_crossfade(&c, 8).expect("scritta");
+        assert_eq!(load_crossfade(&c).expect("riletta"), 8);
+    }
+
+    #[test]
+    fn una_dissolvenza_piu_lunga_del_massimo_si_taglia() {
+        let c = db();
+        save_crossfade(&c, 60).expect("scritta");
+        assert_eq!(load_crossfade(&c).expect("riletta"), CROSSFADE_MASSIMO_S);
+    }
+
+    #[test]
+    fn una_dissolvenza_scritta_a_mano_fuori_scala_si_taglia_in_lettura() {
+        let c = db();
+        crate::settings::write(&c, CHIAVE_CROSSFADE, "600").expect("scritta");
+        assert_eq!(load_crossfade(&c).expect("riletta"), CROSSFADE_MASSIMO_S);
+    }
+
+    #[test]
+    fn una_dissolvenza_illeggibile_non_impedisce_l_avvio() {
+        let c = db();
+        crate::settings::write(&c, CHIAVE_CROSSFADE, "{non è json").expect("scritta");
+        assert_eq!(load_crossfade(&c).expect("riletta"), 0);
     }
 
     #[test]

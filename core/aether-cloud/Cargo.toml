@@ -7,6 +7,15 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+# Nessuno di questi crate va su crates.io.
+#
+# Non è modestia: sono i pezzi di un'applicazione, con nomi che occuperebbero
+# uno spazio dei nomi pubblico senza offrire niente a nessuno, e con un patto
+# di stabilità che non esiste — le firme qui dentro cambiano quando serve.
+# Senza questa riga un `cargo publish` distratto dalla radice li
+# pubblicherebbe tutti, e un nome preso su crates.io non si restituisce.
+publish = false
+
 [dependencies]
 aether-app = { path = "../aether-app" }
 aether-domain = { path = "../aether-domain" }
@@ -19,6 +28,11 @@ aether-oauth = { path = "../aether-oauth", default-features = false }
 # Le guardie dell'archivio non fidato: un `.aeskin` scaricato passa di lì prima
 # di toccare il disco. Vedi `pacchetti`.
 aether-skin = { path = "../aether-skin" }
+# Il motore della sincronia. La direzione è questa e non il contrario: chi decide
+# cosa sopravvive quando due dispositivi si incontrano non deve sapere che esiste
+# un HTTP. Qui si fornisce solo il deposito — `impl Magazzino for Drive`, che è
+# cinque righe perché la forma era già quella.
+aether-sync = { path = "../aether-sync" }
 flate2.workspace = true
 getrandom.workspace = true
 serde.workspace = true

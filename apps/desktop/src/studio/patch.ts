@@ -46,6 +46,57 @@ export function scrivi(documento: Record<string, unknown>): string {
   return `${JSON.stringify(documento, null, 2)}\n`;
 }
 
+/**
+ * `__proto__`, e perché le chiavi di questo file si leggono e si scrivono a mano.
+ *
+ * È l'unico nome che un autore di skin può battere in un campo di testo — il
+ * nome di un colore della tavolozza, di un motivo, una rinomina — per cui
+ * `oggetto[nome] = valore` **non scrive una chiave**. `Object.prototype` espone
+ * un accessore con quel nome, e l'assegnazione chiama quello: cambia il
+ * prototipo dell'oggetto, e `JSON.stringify` non stampa niente. Il colore
+ * sparisce dal documento senza che nulla lo dica, e l'editor mostra un file che
+ * non contiene quel che si è appena scritto.
+ *
+ * Non è l'inquinamento del prototipo globale che il nome fa temere.
+ * `Object.prototype` non si tocca mai: l'oggetto scritto qui nasce sempre da
+ * `JSON.parse` o da uno `spread` di queste funzioni, e il prototipo che cambia è
+ * quello di quella copia — che poi viene buttata. Il difetto è la perdita di
+ * dati, e finisce nelle due funzioni qui sotto.
+ *
+ * `defineProperty` invece dell'assegnazione perché è quel che fa `JSON.parse`
+ * quando incontra `"__proto__"` in un oggetto: una proprietà propria,
+ * enumerabile, che `stringify` poi ristampa. Le due direzioni tornano a
+ * coincidere.
+ */
+function poni(
+  dentro: Record<string, unknown>,
+  chiave: string,
+  valore: unknown,
+): void {
+  Object.defineProperty(dentro, chiave, {
+    value: valore,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/**
+ * Il valore di una chiave **dell'oggetto**, e `undefined` per tutto il resto.
+ *
+ * Il rovescio di `poni`: senza la verifica, un percorso che passa per
+ * `__proto__` restituirebbe `Object.prototype` — e i controlli dello Studio si
+ * troverebbero a disegnare le proprietà di quello invece che del documento.
+ * Vale anche per `toString` e per gli altri nomi ereditati, che non sono mai
+ * chiavi di un manifest.
+ */
+function preso(dentro: unknown, chiave: string): unknown {
+  if (dentro === null || typeof dentro !== "object") return undefined;
+  return Object.prototype.hasOwnProperty.call(dentro, chiave)
+    ? (dentro as Record<string, unknown>)[chiave]
+    : undefined;
+}
+
 /** Il valore in un percorso, o `undefined`. */
 export function valoreIn(
   documento: Record<string, unknown>,
@@ -53,8 +104,7 @@ export function valoreIn(
 ): unknown {
   let dove: unknown = documento;
   for (const passo of percorso) {
-    if (dove === null || typeof dove !== "object") return undefined;
-    dove = (dove as Record<string, unknown>)[passo];
+    dove = preso(dove, passo);
   }
   return dove;
 }
@@ -82,17 +132,17 @@ export function scriviIn(
   const radice: Record<string, unknown> = { ...documento };
   let dove = radice;
   for (const passo of percorso.slice(0, -1)) {
-    const dentro = dove[passo];
+    const dentro = preso(dove, passo);
     const copia: Record<string, unknown> =
       dentro !== null && typeof dentro === "object" && !Array.isArray(dentro)
         ? { ...(dentro as Record<string, unknown>) }
         : {};
-    dove[passo] = copia;
+    poni(dove, passo, copia);
     dove = copia;
   }
   const ultimo = percorso[percorso.length - 1];
   if (ultimo === undefined) return sorgente;
-  dove[ultimo] = valore;
+  poni(dove, ultimo, valore);
   return scrivi(radice);
 }
 
@@ -138,13 +188,13 @@ export function togliDa(sorgente: string, percorso: readonly string[]): string {
       delete copia[testa];
       return copia;
     }
-    const sotto = copia[testa];
+    const sotto = preso(copia, testa);
     if (sotto === null || typeof sotto !== "object" || Array.isArray(sotto)) return copia;
     const ripulito = pulisci(sotto as Record<string, unknown>, coda);
     if (vuoto(ripulito)) {
       delete copia[testa];
     } else {
-      copia[testa] = ripulito;
+      poni(copia, testa, ripulito);
     }
     return copia;
   };
@@ -194,4 +244,99 @@ export function percorsoNodo(via: readonly number[], campo?: string): string[] {
 /** L'indirizzo `data-nodo` di un percorso di indici. */
 export function indirizzoNodo(via: readonly number[]): string {
   return via.length === 0 ? "radice" : via.join("-");
+}
+
+/**
+ * Il percorso di un errore, sciolto in passi veri.
+ *
+ * Il validatore scrive i percorsi col punto — `parts.section-card.radius` — e i
+ * nomi delle chiavi contengono a loro volta dei punti: `tokens.color.surface.0`
+ * è **due** passi, non quattro. Spezzare sul punto e basta dà il risultato
+ * giusto per le parti e sbagliato per i token, che è il modo peggiore di
+ * sbagliare: funziona finché non si prova col caso che conta.
+ *
+ * Si scioglie guardando il documento, non indovinando: a ogni livello si prende
+ * il prefisso **più lungo** che è davvero una chiave lì dentro. `null` se il
+ * percorso non porta da nessuna parte.
+ */
+export function passiDi(
+  documento: Record<string, unknown>,
+  percorso: string,
+): string[] | null {
+  const pezzi = percorso.split(".");
+  const passi: string[] = [];
+  let dove: unknown = documento;
+  let da = 0;
+
+  while (da < pezzi.length) {
+    if (dove === null || typeof dove !== "object" || Array.isArray(dove))
+      return null;
+    const dentro = dove as Record<string, unknown>;
+    let trovato: string | null = null;
+    // Dal più lungo: `color.surface.0` prima di `color`, altrimenti un token si
+    // fermerebbe al primo pezzo e il resto diventerebbe un cammino inesistente.
+    for (let fino = pezzi.length; fino > da; fino -= 1) {
+      const candidato = pezzi.slice(da, fino).join(".");
+      if (Object.prototype.hasOwnProperty.call(dentro, candidato)) {
+        trovato = candidato;
+        da = fino;
+        break;
+      }
+    }
+    if (trovato === null) return null;
+    passi.push(trovato);
+    dove = dentro[trovato];
+  }
+
+  return passi;
+}
+
+/**
+ * Rinomina una chiave, al suo posto e senza spostarla.
+ *
+ * È la correzione di «forse volevi dire…», e prima era una
+ * `String.replace('"sbagliato"', '"giusto"')` sul testo intero: sostituiva la
+ * **prima** occorrenza ovunque fosse, quindi bastava che quella parola comparisse
+ * prima da qualche altra parte — dentro una descrizione, in `meta`, in un altro
+ * blocco — perché il bottone correggesse la cosa sbagliata e lasciasse
+ * l'errore dov'era.
+ *
+ * Qui si passa dal percorso dell'errore, che il validatore dà già preciso.
+ *
+ * La chiave resta **dov'era**: ricostruire l'oggetto con uno `spread` la
+ * sposterebbe in fondo, e un diff che muove un blocco per una lettera cambiata
+ * è un diff che nessuno rilegge.
+ */
+export function rinominaChiave(
+  sorgente: string,
+  percorso: string,
+  nuovo: string,
+): string {
+  const documento = leggi(sorgente);
+  if (documento === null) return sorgente;
+  const passi = passiDi(documento, percorso);
+  if (passi === null || passi.length === 0) return sorgente;
+
+  const vecchio = passi[passi.length - 1];
+  if (vecchio === undefined || vecchio === nuovo) return sorgente;
+  const versoIlPadre = passi.slice(0, -1);
+
+  const padre = valoreIn(documento, versoIlPadre);
+  if (padre === null || typeof padre !== "object" || Array.isArray(padre))
+    return sorgente;
+  const dentro = padre as Record<string, unknown>;
+  // Rinominare su una chiave che esiste già fonderebbe due dichiarazioni in
+  // silenzio: meglio non fare niente, e lasciare l'errore a dirlo.
+  if (Object.prototype.hasOwnProperty.call(dentro, nuovo)) return sorgente;
+
+  const rinominato = Object.fromEntries(
+    Object.entries(dentro).map(([chiave, valore]) => [
+      chiave === vecchio ? nuovo : chiave,
+      valore,
+    ]),
+  );
+
+  return versoIlPadre.length === 0
+    ? scrivi(rinominato)
+    : scriviIn(sorgente, versoIlPadre, rinominato);
 }

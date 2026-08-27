@@ -8,7 +8,7 @@
 //! di un percorso che coincide, e provarci significa solo introdurre modi di
 //! sbagliare.
 //!
-//! La scala di [`aether_domain::spotify_plan`] resta, ed è il secondo gradino:
+//! La scala di [`aether_domain::abbinamento`] resta, ed è il secondo gradino:
 //! serve quando il percorso non porta a niente — la playlist viene da un altro
 //! computer, da un altro disco, da una libreria riordinata — e allora quel che
 //! resta sono il titolo e l'interprete scritti nel file. È la **stessa** scala
@@ -18,7 +18,7 @@
 //! # Cosa non fa
 //!
 //! Non scarica niente. Un brano di un M3U che non è in libreria non finisce in
-//! `spotify_wanted`: quel file esisteva sul computer di chi ha scritto la
+//! `desiderati`: quel file esisteva sul computer di chi ha scritto la
 //! playlist, e cercarlo su YouTube sarebbe una risposta a una domanda che
 //! nessuno ha fatto. I mancanti si **dicono**, con il percorso che avevano, che
 //! è l'unica cosa utile per andarseli a prendere dove sono davvero.
@@ -26,10 +26,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use aether_domain::SpotifyTrack;
+use aether_domain::BranoEsterno;
+use aether_domain::abbinamento::Indice;
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::playlist_file::{FormatoPlaylist, PlaylistLetta, VocePlaylist};
-use aether_domain::spotify_plan::Indice;
 use rusqlite::Connection;
 
 use crate::library::db_error;
@@ -119,7 +119,7 @@ fn esegui(
     commit: bool,
 ) -> Result<PlaylistFileReport, AppError> {
     let per_percorso = indice_percorsi(connection)?;
-    let libreria = crate::import_spotify::leggi_libreria(connection)?;
+    let libreria = crate::import_esterno::leggi_libreria(connection)?;
     let indice = Indice::nuovo(&libreria);
 
     let tx = connection
@@ -156,13 +156,13 @@ fn esegui(
             continue;
         }
         // Il secondo gradino: la stessa scala dell'importazione da Spotify. Un
-        // `SpotifyTrack` senza identificativi — non viene da Spotify — quindi
+        // `BranoEsterno` senza identificativi — non viene da Spotify — quindi
         // ISRC e chiave completa cadono da sole e restano artista+titolo, che
         // è esattamente quel che un file di playlist porta.
-        let brano = SpotifyTrack {
+        let brano = BranoEsterno {
             title: voce.titolo.clone().unwrap_or_default(),
             artist: voce.artista.clone(),
-            ..SpotifyTrack::default()
+            ..BranoEsterno::default()
         };
         match (!brano.title.is_empty())
             .then(|| indice.abbina(&brano))
@@ -180,7 +180,7 @@ fn esegui(
         }
     }
 
-    let (id, _creata, sostituita) = crate::import_spotify::prepara_playlist(&tx, nome, None, None)?;
+    let (id, _creata, sostituita) = crate::import_esterno::prepara_playlist(&tx, nome, None, None)?;
     rapporto.playlist_id = Some(id);
     rapporto.replaced = sostituita;
     crate::playlists::riscrivi_ordine(&tx, id, &ordine)?;

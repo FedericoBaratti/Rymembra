@@ -179,10 +179,10 @@ mod tests {
 
     #[test]
     fn i_codici_legacy_a_parametro_si_riconoscono_dal_prefisso() {
-        // Viaggiavano come `PREFISSO:payload`, es. `BINARY_MISSING:yt-dlp:...`.
+        // Viaggiavano come `PREFISSO:payload`, es. `DL_YT_ERROR:...`.
         assert_eq!(
-            ErrorCodeKind::from_legacy_code("BINARY_MISSING:yt-dlp:resources/bin"),
-            Some(ErrorCodeKind::DownloadBinaryMissing)
+            ErrorCodeKind::from_legacy_code("EXT_SEARCH_FAILED:archive.org"),
+            Some(ErrorCodeKind::DownloadExternalSearchFailed)
         );
         assert_eq!(ErrorCodeKind::from_legacy_code("SCONOSCIUTO"), None);
     }
@@ -207,11 +207,14 @@ mod tests {
         // decisione sta nel catalogo, quindi è la stessa ovunque per costruzione.
         assert!(!ErrorCode::DownloadUnavailable.is_retryable());
         assert!(!ErrorCode::DownloadPrivate.is_retryable());
-        assert!(!ErrorCode::DownloadAgeRestricted.is_retryable());
         assert!(ErrorCode::DownloadNetwork.is_retryable());
-        // Un pacchetto yt-dlp corrotto è un guasto d'ambiente, non un URL
-        // cattivo: si ritenta, e la decisione è visibile agli altri chiamanti.
-        assert!(ErrorCode::DownloadYtdlpCorrupted.is_retryable());
+        // Un `403` non è una proprietà del file: arriva a ondate, legato
+        // all'indirizzo IP e al ritmo delle richieste. Con `Never` il brano
+        // resterebbe perduto per sempre.
+        assert!(ErrorCode::DownloadForbidden.is_retryable());
+        // Una licenza che non permette la copia non cambia riprovando, ed è la
+        // differenza fra «riprovo» e «dico dove si compra».
+        assert!(!ErrorCode::DownloadNotPermitted { licenza: None }.is_retryable());
     }
 
     #[test]

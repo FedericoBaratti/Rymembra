@@ -16,7 +16,7 @@
 //!
 //! ```text
 //! aether-cloud    ──►  aether-net  ──►  aether-domain
-//! aether-spotify  ──►  aether-net  ──►  aether-domain
+//! aether-catalogo ──►  aether-net  ──►  aether-domain
 //! ```
 //!
 //! Questo crate vede **solo** il catalogo degli errori. Non conosce la libreria,

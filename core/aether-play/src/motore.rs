@@ -29,7 +29,7 @@ use aether_domain::errors::{AppError, ErrorCode};
 use crate::decodifica::{Decodificatore, Sorgente};
 use crate::equalizzatore::{BANDE, Coefficienti};
 use crate::uscita::{FormatoUscita, RISERVA_MS, Uscita};
-use crate::{Condiviso, guadagno};
+use crate::{Condiviso, correzione, dissolvi, punto_curva, risali, volume_uscita};
 
 /// In quanti passi si passa da una curva dell'equalizzatore all'altra.
 ///
@@ -40,6 +40,15 @@ use crate::{Condiviso, guadagno};
 /// sufficienti a non sentire il gradino. È lo stesso ragionamento della `RAMPA`
 /// del volume in [`crate::uscita`], applicato dove la rampa non poteva arrivare.
 const PASSI_EQ: u8 = 10;
+
+/// In quanto tempo un brano entrante si riprende tutta l'ampiezza, quando
+/// quello che usciva è finito prima della fine della curva.
+///
+/// Quaranta millisecondi, gli stessi della rampa del volume in
+/// [`crate::uscita`]: non si sentono come un cambio di livello, e non sono un
+/// gradino. Il perché di una ripresa breve invece del resto della dissolvenza
+/// sta in [`risali`].
+const RIPRESA_MS: u64 = 40;
 
 /// Cosa è successo, per chi sta sopra.
 #[derive(Debug, Clone)]
@@ -69,6 +78,10 @@ pub struct Posizione {
     /// Quanto dura, secondo il database.
     pub durata_ms: u64,
     /// È in pausa.
+    ///
+    /// Unico campo che non viene dall'istantanea: lo riempie
+    /// [`Motore::posizione`] leggendo il bit condiviso nell'istante in cui
+    /// qualcuno chiede dove siamo. Il perché sta in [`Motore::pausa`].
     pub in_pausa: bool,
 }
 
@@ -76,8 +89,6 @@ pub struct Posizione {
 enum Comando {
     Suona(Box<Sorgente>),
     Prepara(Option<Box<Sorgente>>),
-    Riprendi,
-    Pausa,
     Ferma,
     VaiA(u64),
     Volume {
@@ -87,6 +98,9 @@ enum Comando {
     ReplayGain {
         attivo: bool,
         bersaglio_db: f32,
+    },
+    Dissolvenza {
+        ms: u64,
     },
     Equalizzatore {
         guadagni: [f32; BANDE],
@@ -161,32 +175,15 @@ impl Motore {
         let posizione = Arc::new(std::sync::Mutex::new(Posizione::default()));
         let (manda, ricevi) = std::sync::mpsc::channel();
 
-        let contesto = Contesto {
-            comandi: ricevi,
+        let contesto = Contesto::nuovo(
+            ricevi,
             produttore,
-            condiviso: Arc::clone(&condiviso),
-            posizione: Arc::clone(&posizione),
-            osservatore: Box::new(osservatore),
+            manda_coefficienti,
+            Arc::clone(&condiviso),
+            Arc::clone(&posizione),
             formato,
-            corrente: None,
-            prossimo: None,
-            segni: VecDeque::new(),
-            resto: VecDeque::new(),
-            blocco: Vec::new(),
-            spinti: 0,
-            annunciato: None,
-            fine_dichiarata: true,
-            volume: 0.8,
-            muto: false,
-            replaygain_attivo: true,
-            bersaglio_db: -18.0,
-            replaygain_corrente: None,
-            coefficienti: manda_coefficienti,
-            eq_correnti: [0.0; BANDE],
-            eq_bersaglio: [0.0; BANDE],
-            eq_passi: 0,
-            eq_in_attesa: None,
-        };
+            Box::new(osservatore),
+        );
 
         std::thread::Builder::new()
             .name("aether-decodifica".to_owned())
@@ -220,17 +217,37 @@ impl Motore {
             .spettro
             .store(acceso, std::sync::atomic::Ordering::Relaxed);
         if !acceso && let Ok(mut lettore) = self.spettro.lock() {
-            lettore.leggi();
+            let _ = lettore.leggi();
         }
     }
 
-    /// Le dieci bande, ognuna in `0..=1`, nell'ordine di [`crate::CENTRI_HZ`].
+    /// Quante bande fini calcolare accanto alle dieci d'ottava.
+    ///
+    /// Vedi [`crate::spettro::RISOLUZIONI`]. Un valore fuori scala si stringe
+    /// invece di fallire: chi chiama arriva da una preferenza su disco.
+    pub fn spettro_dettaglio(&self, quante: u16) {
+        if let Ok(mut lettore) = self.spettro.lock() {
+            lettore.dettaglio(quante);
+        }
+    }
+
+    /// Le bande, dentro una funzione che le legge senza copiarle.
+    ///
+    /// Una chiusura e non un valore restituito: le bande fini sono fino a
+    /// milleventiquattro numeri letti trenta volte al secondo, e restituirle
+    /// vorrebbe dire allocare un vettore trenta volte al secondo per buttarlo
+    /// via subito dopo averlo serializzato. Chi chiama prende quel che gli
+    /// serve — di solito la forma che va sul filo verso la finestra — e il
+    /// lucchetto si chiude appena finito.
     ///
     /// Restituisce `None` solo se il lucchetto è avvelenato — cioè se qualcuno
     /// è caduto tenendolo, che in questo crate non può succedere ma non si
     /// dichiara impossibile con un `unwrap`.
-    pub fn spettro(&self) -> Option<[f32; crate::equalizzatore::BANDE]> {
-        self.spettro.lock().ok().map(|mut lettore| lettore.leggi())
+    pub fn spettro<R>(&self, prendi: impl FnOnce(&crate::spettro::Bande) -> R) -> Option<R> {
+        self.spettro
+            .lock()
+            .ok()
+            .map(|mut lettore| prendi(lettore.leggi()))
     }
 
     /// Come si è aperto il dispositivo.
@@ -241,6 +258,9 @@ impl Motore {
 
     /// Comincia a suonare questo brano, adesso, scartando quel che c'era.
     pub fn suona(&self, sorgente: Sorgente) {
+        // Abbassato qui e non all'apertura del file, per la ragione — e per
+        // l'ordine — scritti in [`Motore::pausa`].
+        self.condiviso.in_pausa.store(false, Ordering::Release);
         self.manda(Comando::Suona(Box::new(sorgente)));
     }
 
@@ -255,16 +275,39 @@ impl Motore {
 
     /// Riprende.
     pub fn riprendi(&self) {
-        self.manda(Comando::Riprendi);
+        self.condiviso.in_pausa.store(false, Ordering::Release);
     }
 
     /// Mette in pausa.
+    ///
+    /// # Perché non passa dalla coda dei comandi
+    ///
+    /// Ci passava, e il comando non faceva altro che alzare questo bit: la
+    /// pausa vera sta nella callback dell'uscita, che legge `in_pausa` a ogni
+    /// blocco e manda silenzio senza consumare l'anello. Il giro per il filo
+    /// della decodifica non serviva a mettere in pausa — serviva solo a farsi
+    /// aspettare.
+    ///
+    /// E chi aspettava era la finestra. `pausa()` tornava subito, il filo
+    /// alzava il bit qualche millisecondo dopo, e il chiamante che nel
+    /// frattempo componeva lo stato da mandare leggeva il valore **di prima**:
+    /// il pulsante mostrava il triangolo mentre il brano suonava e le due
+    /// stanghette a brano fermo, per sempre, perché dopo una pausa non arriva
+    /// nessun evento a correggere il tiro.
+    ///
+    /// Alzarlo qui rimette anche l'ordine giusto. Pausa, ripresa e avvio
+    /// scrivono tutti dal filo di chi preme, quindi valgono nell'ordine in cui
+    /// si preme: con l'avvio in coda e la pausa immediata, una pausa premuta
+    /// subito dopo un avvio se la sarebbe mangiata l'avvio, arrivando dopo.
     pub fn pausa(&self) {
-        self.manda(Comando::Pausa);
+        self.condiviso.in_pausa.store(true, Ordering::Release);
     }
 
     /// Smette e dimentica tutto.
     pub fn ferma(&self) {
+        // Il bit prima del comando: svuotare l'anello è lavoro del filo, dire
+        // che siamo fermi no — vedi [`Motore::pausa`].
+        self.condiviso.in_pausa.store(true, Ordering::Release);
         self.manda(Comando::Ferma);
     }
 
@@ -284,6 +327,15 @@ impl Motore {
             attivo,
             bersaglio_db,
         });
+    }
+
+    /// Quanto si sovrappongono due brani, in millisecondi. Zero: per niente.
+    ///
+    /// A zero il passaggio resta il gapless di sempre — i campioni del brano
+    /// dopo cominciano dove finiscono quelli di prima, senza un istante di
+    /// silenzio e senza un istante di sovrapposizione.
+    pub fn dissolvenza(&self, ms: u64) {
+        self.manda(Comando::Dissolvenza { ms });
     }
 
     /// Cambia la curva dell'equalizzatore.
@@ -309,11 +361,21 @@ impl Motore {
     }
 
     /// Dove siamo.
+    ///
+    /// Il tempo viene dall'istantanea che scrive il filo della decodifica; la
+    /// pausa no, viene dal bit condiviso letto adesso. Chi ha appena premuto
+    /// pausa non deve aspettare il prossimo giro di quel filo per sentirselo
+    /// dire — vedi [`Motore::pausa`].
     #[must_use]
     pub fn posizione(&self) -> Posizione {
-        self.posizione
+        let istantanea = self
+            .posizione
             .lock()
-            .map_or_else(|avvelenato| *avvelenato.into_inner(), |g| *g)
+            .map_or_else(|avvelenato| *avvelenato.into_inner(), |g| *g);
+        Posizione {
+            in_pausa: self.condiviso.in_pausa.load(Ordering::Acquire),
+            ..istantanea
+        }
     }
 
     /// Il dispositivo è sparito da sotto i piedi.
@@ -408,7 +470,66 @@ struct Contesto {
     muto: bool,
     replaygain_attivo: bool,
     bersaglio_db: f32,
-    replaygain_corrente: Option<f32>,
+    /// La correzione del brano che si sta **decodificando**.
+    ///
+    /// Non di quello che si sente: da quando il guadagno del brano viaggia coi
+    /// campioni invece di stare in uno scalare globale, quel che conta è a chi
+    /// appartengono i campioni che stanno uscendo dal decodificatore adesso —
+    /// e con una dissolvenza in corso i due non sono lo stesso brano.
+    rg_decodifica: Option<f32>,
+    /// Quanto dura la sovrapposizione fra due brani. Zero: nessuna.
+    dissolvenza_ms: u64,
+    /// La durata dichiarata del brano corrente, per sapere quando finisce.
+    durata_corrente_ms: u64,
+    /// Quanti fotogrammi di sovrapposizione sono già stati mescolati.
+    dissolvenza_fatti: u64,
+    /// Quanto dura la sovrapposizione **cominciata**, in fotogrammi.
+    ///
+    /// Congelata quando comincia invece di essere ricalcolata a ogni blocco: la
+    /// manopola si può muovere mentre due brani si stanno già sovrapponendo, e
+    /// cambiare il denominatore a metà curva sposterebbe il guadagno di colpo —
+    /// un gradino proprio nel punto in cui la dissolvenza esiste per non farne.
+    /// Il valore nuovo vale dal passaggio dopo, che è quel che il comando
+    /// promette a chi lo manda.
+    dissolvenza_durata: u64,
+    /// Il segno del brano entrante è già stato annotato.
+    segno_dissolvenza: bool,
+    /// Il brano che sta entrando, per tutta la sovrapposizione.
+    ///
+    /// # Perché non basta `prossimo`
+    ///
+    /// Perché a metà sovrapposizione il brano entrante viene annunciato, e chi
+    /// sta sopra risponde all'annuncio preparando il brano **ancora dopo** —
+    /// cioè scrivendo in `prossimo` mentre la dissolvenza lo sta ancora
+    /// leggendo. Finché i due erano la stessa casella, la seconda metà della
+    /// curva faceva entrare il brano sbagliato e poi il motore attaccava
+    /// quello: chi ascoltava sentiva gracchiare e si ritrovava un brano più
+    /// avanti nella coda. Qui il brano che entra è al riparo, e `prossimo`
+    /// torna a essere quel che dice di essere.
+    entrante: Option<Preparato>,
+    /// Il blocco appena uscito dal decodificatore del brano che entra.
+    blocco_entrante: Vec<f32>,
+    /// I campioni dell'entrante decodificati e non ancora mescolati.
+    ///
+    /// Due decodificatori consegnano blocchi di lunghezza diversa — un
+    /// pacchetto MP3 sono 1152 fotogrammi, uno FLAC anche 4096 — e mescolarne
+    /// uno contro l'altro vorrebbe dire buttare via quel che avanza o riempire
+    /// di silenzio quel che manca. Tre quarti del brano entrante nel cestino a
+    /// ogni blocco: è così che una dissolvenza diventa un raspare. Da qui
+    /// invece la sovrapposizione prende i campioni che le servono, esatti, e
+    /// tiene il resto per il blocco dopo.
+    coda_entrante: Vec<f32>,
+    /// Quanto dura la ripresa del brano entrante. Zero: nessuna in corso.
+    ///
+    /// Si accende quando il brano uscente finisce **prima** della fine della
+    /// curva — succede quando la durata dichiarata dal database è più lunga
+    /// dell'audio vero — e il brano che stava entrando resta solo a mezza
+    /// ampiezza. Vedi [`risali`].
+    entrata_durata: u64,
+    /// A che punto è quella ripresa, in fotogrammi.
+    entrata_fatti: u64,
+    /// Da quale guadagno è ripartita: quello che la curva gli aveva dato.
+    entrata_da: f32,
     /// Da qui le curve dell'equalizzatore raggiungono la callback.
     coefficienti: rtrb::Producer<Coefficienti>,
     /// La curva che sta suonando adesso, in decibel.
@@ -444,16 +565,66 @@ fn filo(mut ctx: Contesto) {
 }
 
 impl Contesto {
+    /// Tutte le manopole al valore di riposo, e niente di aperto.
+    ///
+    /// Fuori da [`Motore::avvia`] perché è l'unico modo di provare questo filo
+    /// senza una scheda audio: qui dentro non si apre nessun dispositivo, e le
+    /// prove in fondo al file costruiscono un contesto vero — decodificatori
+    /// veri, dissolvenza vera — con un anello loro. Il valore di riposo di
+    /// ventisette campi scritto in due posti diversi sarebbe invece il modo
+    /// sicuro di provare qualcosa che non è quel che gira davvero.
+    fn nuovo(
+        comandi: Receiver<Comando>,
+        produttore: rtrb::Producer<f32>,
+        coefficienti: rtrb::Producer<Coefficienti>,
+        condiviso: Arc<Condiviso>,
+        posizione: Arc<std::sync::Mutex<Posizione>>,
+        formato: FormatoUscita,
+        osservatore: Box<dyn Fn(Evento) + Send>,
+    ) -> Self {
+        Self {
+            comandi,
+            produttore,
+            condiviso,
+            posizione,
+            osservatore,
+            formato,
+            corrente: None,
+            prossimo: None,
+            segni: VecDeque::new(),
+            resto: VecDeque::new(),
+            blocco: Vec::new(),
+            spinti: 0,
+            annunciato: None,
+            fine_dichiarata: true,
+            volume: 0.8,
+            muto: false,
+            replaygain_attivo: true,
+            bersaglio_db: -18.0,
+            rg_decodifica: None,
+            dissolvenza_ms: 0,
+            durata_corrente_ms: 0,
+            dissolvenza_fatti: 0,
+            dissolvenza_durata: 0,
+            segno_dissolvenza: false,
+            entrante: None,
+            blocco_entrante: Vec::new(),
+            coda_entrante: Vec::new(),
+            entrata_durata: 0,
+            entrata_fatti: 0,
+            entrata_da: 1.0,
+            coefficienti,
+            eq_correnti: [0.0; BANDE],
+            eq_bersaglio: [0.0; BANDE],
+            eq_passi: 0,
+            eq_in_attesa: None,
+        }
+    }
+
     fn esegui(&mut self, comando: Comando) {
         match comando {
             Comando::Suona(sorgente) => self.avvia_brano(*sorgente),
             Comando::Prepara(sorgente) => self.prepara(sorgente.map(|s| *s)),
-            Comando::Riprendi => {
-                self.condiviso.in_pausa.store(false, Ordering::Release);
-            }
-            Comando::Pausa => {
-                self.condiviso.in_pausa.store(true, Ordering::Release);
-            }
             Comando::Ferma => self.ferma(),
             Comando::VaiA(ms) => self.vai_a(ms),
             Comando::Volume { volume, muto } => {
@@ -467,7 +638,13 @@ impl Contesto {
             } => {
                 self.replaygain_attivo = attivo;
                 self.bersaglio_db = bersaglio_db;
+                // Il guadagno d'uscita non dipende più dal ReplayGain, ma la
+                // chiamata resta: `volume_uscita` va ripubblicato comunque, e
+                // costa un `store` atomico.
                 self.applica_guadagno();
+            }
+            Comando::Dissolvenza { ms } => {
+                self.dissolvenza_ms = ms;
             }
             Comando::Equalizzatore { guadagni, attivo } => {
                 // Spegnere non è un salto a piatto: è una corsa verso lo zero,
@@ -509,14 +686,20 @@ impl Contesto {
         }
     }
 
+    /// Pubblica alla callback il guadagno d'uscita: volume e silenziamento.
+    ///
+    /// La correzione ReplayGain **non** passa più di qui. Sta nei campioni, e
+    /// li raggiunge in [`Contesto::decodifica_un_blocco`]: durante una
+    /// dissolvenza ci sono due brani con due correzioni diverse, e un unico
+    /// numero atomico non può dirle entrambe.
+    ///
+    /// Il prezzo, dichiarato: cambiare il livello di normalizzazione ora si
+    /// sente dopo la riserva dell'anello — qualche secondo — invece che
+    /// all'istante, perché i campioni già decodificati portano il guadagno di
+    /// prima. È una manopola che si tocca dalle impostazioni una volta ogni
+    /// tanto, e il cambio arriva senza un salto.
     fn applica_guadagno(&self) {
-        let g = guadagno(
-            self.volume,
-            self.muto,
-            self.replaygain_corrente,
-            self.replaygain_attivo,
-            self.bersaglio_db,
-        );
+        let g = volume_uscita(self.volume, self.muto);
         self.condiviso
             .guadagno
             .store(g.to_bits(), Ordering::Relaxed);
@@ -556,7 +739,9 @@ impl Contesto {
                 self.prossimo = None;
                 self.annunciato = None;
                 self.fine_dichiarata = false;
-                self.replaygain_corrente = replaygain_db;
+                self.rg_decodifica = replaygain_db;
+                self.durata_corrente_ms = durata_ms;
+                self.azzera_dissolvenza();
                 self.applica_guadagno();
                 self.segni.push_back(Segno {
                     da: 0,
@@ -565,11 +750,15 @@ impl Contesto {
                     offset_ms: 0,
                     replaygain_db,
                 });
-                self.condiviso.in_pausa.store(false, Ordering::Release);
             }
             Err(err) => {
                 // Il brano non si apre: si dice, e ci si ferma. Andare avanti da
                 // soli al successivo è una decisione della coda, non del motore.
+                //
+                // Il bit torna su qui: l'aveva abbassato [`Motore::suona`] al
+                // clic, e lasciarlo giù vorrebbe dire una finestra che dice «in
+                // riproduzione» per un file che non si è mai aperto.
+                self.condiviso.in_pausa.store(true, Ordering::Release);
                 (self.osservatore)(Evento::Errore(Box::new(err)));
             }
         }
@@ -600,10 +789,10 @@ impl Contesto {
     }
 
     fn ferma(&mut self) {
-        self.condiviso.in_pausa.store(true, Ordering::Release);
         self.scarta_in_volo();
         self.corrente = None;
         self.prossimo = None;
+        self.azzera_dissolvenza();
         self.annunciato = None;
         if !self.fine_dichiarata {
             self.fine_dichiarata = true;
@@ -628,6 +817,28 @@ impl Contesto {
             .find(|s| s.track_id == track_id)
             .map_or((0, None), |s| (s.durata_ms, s.replaygain_db));
         self.scarta_in_volo();
+        // Una sovrapposizione in corso non sopravvive a un salto: i campioni
+        // già mescolati sono appena stati buttati, e il brano che stava
+        // entrando torna a essere quello che verrà **dopo** — dal suo inizio,
+        // non da dove la curva l'aveva portato. Senza questo riavvolgimento
+        // attaccherebbe a metà, e senza il ritorno in `prossimo` non
+        // attaccherebbe affatto: al suo posto suonerebbe quello ancora dopo,
+        // che chi sta sopra ha preparato all'annuncio di metà curva.
+        if let Some(mut entrante) = self.entrante.take() {
+            if entrante.decodificatore.cerca(0).is_ok() {
+                self.prossimo = Some(entrante);
+            }
+            // Se non si riavvolge si lascia perdere: un brano che non sa
+            // tornare al proprio inizio non è materiale per una dissolvenza, e
+            // in `prossimo` resta quel che c'era.
+            //
+            // L'annuncio di metà curva invece era già partito, e per chi sta
+            // sopra il brano corrente è quello che stava entrando. Riscriverlo
+            // qui evita che il ritorno al brano di prima sembri un brano nuovo,
+            // cioè che un salto faccia avanzare la coda.
+            self.annunciato = Some(track_id);
+        }
+        self.azzera_dissolvenza();
         // Dopo un salto, il brano che si sente è ancora quello: annunciarlo di
         // nuovo farebbe ripartire il conteggio dell'ascolto da capo.
         self.segni.push_back(Segno {
@@ -667,6 +878,30 @@ impl Contesto {
         };
         match decodificatore.prossimo(&mut self.blocco) {
             Ok(true) => {
+                // La correzione del brano si applica ai **suoi** campioni,
+                // adesso, invece che a tutto quel che esce dall'anello. È
+                // l'unico modo perché due brani sovrapposti possano avere due
+                // ReplayGain diversi, e per la catena non cambia niente: il
+                // filtro dell'equalizzatore è lineare, quindi moltiplicare
+                // prima o dopo di lui dà lo stesso suono.
+                let g = correzione(
+                    self.rg_decodifica,
+                    self.replaygain_attivo,
+                    self.bersaglio_db,
+                );
+                if (g - 1.0).abs() > f32::EPSILON {
+                    for campione in &mut self.blocco {
+                        *campione *= g;
+                    }
+                }
+                // Prima la salita del brano che è rimasto solo a metà curva,
+                // poi l'eventuale curva nuova: sono due cose diverse che
+                // possono capitare allo stesso blocco — un brano brevissimo fa
+                // in tempo a finire di entrare e a cominciare a uscire — e in
+                // quel caso i due guadagni si moltiplicano, che è esattamente
+                // quel che deve succedere.
+                self.forse_risali();
+                self.forse_dissolvi();
                 self.resto.extend(self.blocco.iter().copied());
                 self.spinti = self
                     .spinti
@@ -681,22 +916,269 @@ impl Contesto {
         }
     }
 
+    /// Quanti fotogrammi dura la sovrapposizione, se ci sarà.
+    ///
+    /// Zero quando la dissolvenza è spenta, quando non c'è un brano dopo, o
+    /// quando la durata del corrente non si sa: senza sapere dove finisce non
+    /// c'è modo di sapere quando cominciare, e cominciare a caso vorrebbe dire
+    /// tagliare un brano nel mezzo.
+    /// Una volta cominciata vale quella con cui è cominciata: vedi
+    /// [`Contesto::dissolvenza_durata`].
+    fn fotogrammi_dissolvenza(&self) -> u64 {
+        if self.entrante.is_some() {
+            return self.dissolvenza_durata;
+        }
+        if self.dissolvenza_ms == 0 || self.prossimo.is_none() || self.durata_corrente_ms == 0 {
+            return 0;
+        }
+        fotogrammi_da_ms(self.dissolvenza_ms, self.formato.frequenza)
+    }
+
+    /// La sovrapposizione è finita: resta solo un brano.
+    ///
+    /// Non tocca la ripresa: quando la curva si è interrotta a metà, la salita
+    /// del brano rimasto solo comincia proprio qui e deve sopravvivere a questa
+    /// chiamata. Vedi [`Contesto::forse_riprendi`].
+    fn chiudi_sovrapposizione(&mut self) {
+        self.entrante = None;
+        self.coda_entrante.clear();
+        self.dissolvenza_fatti = 0;
+        self.dissolvenza_durata = 0;
+        self.segno_dissolvenza = false;
+    }
+
+    /// Butta via una sovrapposizione, con tutto quel che ci stava dentro.
+    ///
+    /// Questa invece spegne anche la ripresa: la chiamano un brano nuovo, uno
+    /// stop e un salto, cioè i tre casi in cui quel che stava succedendo non
+    /// deve lasciare tracce nei campioni che verranno.
+    fn azzera_dissolvenza(&mut self) {
+        self.chiudi_sovrapposizione();
+        self.entrata_durata = 0;
+        self.entrata_fatti = 0;
+        self.entrata_da = 1.0;
+    }
+
+    /// Il brano uscente è finito prima della fine della curva: prepara la
+    /// salita che porterà quello entrante a piena ampiezza.
+    ///
+    /// Il guadagno di partenza è quello che la curva gli aveva dato all'ultimo
+    /// blocco mescolato, letto dalla stessa [`punto_curva`] che l'ha
+    /// applicato: è così che la ripresa attacca senza gradino. Se invece la
+    /// curva era finita — il caso normale — il brano è già a piena ampiezza e
+    /// non c'è niente da riprendere.
+    fn forse_riprendi(&mut self) {
+        let restanti = self
+            .dissolvenza_durata
+            .saturating_sub(self.dissolvenza_fatti);
+        if restanti == 0 {
+            return;
+        }
+        let (_, dentro) = punto_curva(self.dissolvenza_fatti, self.dissolvenza_durata);
+        self.entrata_da = dentro;
+        self.entrata_fatti = 0;
+        // Mai più lunga di quel che restava della curva: se mancava un decimo
+        // di quaranta millisecondi, il brano era già quasi a piena ampiezza e
+        // allungare la salita vorrebbe dire inventare un livello che non c'era.
+        self.entrata_durata = fotogrammi_da_ms(RIPRESA_MS, self.formato.frequenza).min(restanti);
+    }
+
+    /// Un pezzo di quella salita, sul blocco appena decodificato.
+    fn forse_risali(&mut self) {
+        if self.entrata_durata == 0 {
+            return;
+        }
+        let canali = self.formato.canali;
+        risali(
+            &mut self.blocco,
+            self.entrata_da,
+            self.entrata_fatti,
+            self.entrata_durata,
+            canali,
+        );
+        self.entrata_fatti = self
+            .entrata_fatti
+            .saturating_add(fotogrammi(self.blocco.len(), canali));
+        if self.entrata_fatti >= self.entrata_durata {
+            self.entrata_durata = 0;
+        }
+    }
+
+    /// Tiene nella coda dell'entrante almeno tanti campioni, se ne ha ancora.
+    ///
+    /// Decodifica quanto serve, e non un pacchetto per blocco: le due lunghezze
+    /// non hanno nessuna ragione di coincidere — dipendono dal codec di due file
+    /// diversi — e trattarle come se coincidessero vuol dire perdere o
+    /// inventare campioni a ogni giro. Vedi [`Contesto::coda_entrante`].
+    fn riempi_entrante(&mut self, quanti: usize) {
+        let attivo = self.replaygain_attivo;
+        let bersaglio = self.bersaglio_db;
+        let Some(entrante) = self.entrante.as_mut() else {
+            return;
+        };
+        // Il brano che entra porta la **sua** correzione, non quella di quello
+        // che esce.
+        let g = correzione(entrante.replaygain_db, attivo, bersaglio);
+        while self.coda_entrante.len() < quanti {
+            // Un `let ... else` e non un `match`: gli altri due casi — il brano
+            // entrante finito, o illeggibile — vogliono la stessa cosa, cioè
+            // che non succeda niente. Una dissolvenza mancata è un gapless, che
+            // è il comportamento di prima; non è un guasto da segnalare a
+            // nessuno.
+            let Ok(true) = entrante.decodificatore.prossimo(&mut self.blocco_entrante) else {
+                return;
+            };
+            if (g - 1.0).abs() > f32::EPSILON {
+                for campione in &mut self.blocco_entrante {
+                    *campione *= g;
+                }
+            }
+            self.coda_entrante
+                .extend(self.blocco_entrante.iter().copied());
+        }
+    }
+
+    /// Mescola il brano che entra dentro il blocco di quello che esce.
+    ///
+    /// # Perché qui e non nella callback
+    ///
+    /// Perché l'anello fra i due fili è un flusso piatto di `f32` **senza
+    /// confini di traccia**: chi legge di là non sa dove finisce un brano e
+    /// comincia l'altro, e non potrebbe saperlo senza un secondo anello e un
+    /// secondo decodificatore dentro il percorso realtime — dove non si può né
+    /// allocare né prendere un lucchetto. Di qua invece i due decodificatori ci
+    /// sono già entrambi: `prossimo` è aperto da quando il brano corrente è
+    /// cominciato, ed è quel che rende il gapless gapless.
+    fn forse_dissolvi(&mut self) {
+        let durata = self.fotogrammi_dissolvenza();
+        if durata == 0 {
+            return;
+        }
+        let Some(corrente) = self.corrente.as_ref() else {
+            return;
+        };
+        // Quanto manca alla fine, secondo quel che il decodificatore ha già
+        // consegnato. Una volta cominciata, la dissolvenza va avanti anche se
+        // il conto dicesse il contrario: fermarla a metà lascerebbe il brano
+        // entrante a mezza ampiezza.
+        let totali = fotogrammi_da_ms(self.durata_corrente_ms, self.formato.frequenza);
+        let mancano = totali.saturating_sub(corrente.consegnati());
+        if mancano > durata && self.dissolvenza_fatti == 0 {
+            return;
+        }
+
+        // La sovrapposizione comincia: il brano preparato lascia la casella del
+        // «prossimo» e passa in quella dell'«entrante», dove nessuno lo
+        // sostituirà. Da qui in poi `prossimo` è libero di ricevere il brano
+        // ancora dopo — cosa che succede fra pochi millisecondi, appena
+        // l'annuncio di metà curva arriva a chi sta sopra. Vedi
+        // [`Contesto::entrante`].
+        if self.entrante.is_none() {
+            let Some(preparato) = self.prossimo.take() else {
+                return;
+            };
+            self.entrante = Some(preparato);
+            self.coda_entrante.clear();
+            self.dissolvenza_durata = durata;
+        }
+
+        // Il segno del brano entrante si annota **a metà** della
+        // sovrapposizione, e nel futuro: `Segno.da` è in fotogrammi d'uscita, e
+        // `aggiorna` lo raccoglie quando il contatore lo raggiunge. Metà e non
+        // l'inizio perché è lì che il brano nuovo diventa quello che si sta
+        // ascoltando: prima è un sottofondo sotto quello vecchio, e annunciarlo
+        // allora vorrebbe dire una finestra che cambia titolo mentre si sente
+        // ancora l'altro — e uno scrobble attribuito al brano sbagliato.
+        if !self.segno_dissolvenza {
+            #[expect(
+                clippy::integer_division,
+                reason = "metà dissolvenza: mezzo fotogramma non sposta il \
+                          punto in cui il brano nuovo prende il sopravvento"
+            )]
+            let meta = durata / 2;
+            if let Some(preparato) = self.entrante.as_ref() {
+                self.segni.push_back(Segno {
+                    da: self.spinti.saturating_add(meta),
+                    track_id: preparato.decodificatore.track_id(),
+                    durata_ms: preparato.durata_ms,
+                    offset_ms: 0,
+                    replaygain_db: preparato.replaygain_db,
+                });
+            }
+            self.segno_dissolvenza = true;
+            self.fine_dichiarata = false;
+        }
+
+        // Tanti campioni quanti ne mescola questo blocco, né uno di meno né uno
+        // buttato: quel che il decodificatore dell'entrante consegna in più
+        // resta in coda per il blocco dopo.
+        self.riempi_entrante(self.blocco.len());
+
+        let canali = self.formato.canali;
+        let fatti = self.dissolvenza_fatti;
+        dissolvi(&mut self.blocco, &self.coda_entrante, fatti, durata, canali);
+        // `dissolvi` si ferma dove finisce il blocco uscente: consumati sono
+        // quelli che ci sono entrati davvero. Se l'entrante ne aveva di meno —
+        // il suo ultimo blocco, o un brano più corto della sovrapposizione — la
+        // coda si svuota e quel che manca è silenzio, cioè un gapless.
+        let consumati = self.coda_entrante.len().min(self.blocco.len());
+        self.coda_entrante.drain(..consumati);
+        // La curva avanza col brano che **esce**: è lui a dettare il tempo
+        // d'uscita, ed è la sua fine il punto in cui la sovrapposizione deve
+        // essere finita.
+        self.dissolvenza_fatti = fatti.saturating_add(fotogrammi(self.blocco.len(), canali));
+    }
+
     /// Il corrente è finito: attacca il preparato, se c'è.
     ///
     /// Il segno si annota **adesso**, al fotogramma dove finisce quel che è già
     /// stato spinto: è lì che il brano nuovo comincerà a sentirsi, e non un
     /// campione prima. È tutto quel che serve perché il gapless sia gapless.
     fn passa_al_prossimo(&mut self) -> bool {
-        match self.prossimo.take() {
+        // Chi prende il posto è l'entrante, se una sovrapposizione era in
+        // corso: è lui che si stava già sentendo, ed è già avanti di tutta la
+        // dissolvenza. In quel caso `prossimo` è il brano ancora dopo e deve
+        // restare dov'è — prenderlo qui vorrebbe dire saltarne uno.
+        let dissolveva = self.entrante.is_some();
+        match self.entrante.take().or_else(|| self.prossimo.take()) {
             Some(preparato) => {
                 let track_id = preparato.decodificatore.track_id();
-                self.segni.push_back(Segno {
-                    da: self.spinti,
-                    track_id,
-                    durata_ms: preparato.durata_ms,
-                    offset_ms: 0,
-                    replaygain_db: preparato.replaygain_db,
-                });
+                // Con una dissolvenza in corso il segno è già stato annotato a
+                // metà sovrapposizione, e rimetterlo qui vorrebbe dire lo
+                // stesso brano che comincia due volte.
+                if !self.segno_dissolvenza {
+                    self.segni.push_back(Segno {
+                        da: self.spinti,
+                        track_id,
+                        durata_ms: preparato.durata_ms,
+                        offset_ms: 0,
+                        replaygain_db: preparato.replaygain_db,
+                    });
+                }
+                if dissolveva {
+                    // Se la curva non era finita, il brano che entrava è
+                    // rimasto solo a mezza ampiezza: da qui comincia la sua
+                    // salita.
+                    self.forse_riprendi();
+                    // I campioni decodificati per la sovrapposizione e non
+                    // ancora mescolati sono il seguito esatto di quel che è
+                    // appena uscito: ripartire dal decodificatore li salterebbe,
+                    // e il brano attaccherebbe qualche decina di millisecondi
+                    // più avanti di dove si era interrotto. Passano per
+                    // `blocco` — che il decodificatore ha appena svuotato — così
+                    // la salita gliela applica la stessa riga di codice che la
+                    // applicherà a tutti i blocchi dopo di loro.
+                    self.blocco.clear();
+                    self.blocco.append(&mut self.coda_entrante);
+                    self.forse_risali();
+                    self.resto.extend(self.blocco.iter().copied());
+                    self.spinti = self
+                        .spinti
+                        .saturating_add(fotogrammi(self.blocco.len(), self.formato.canali));
+                }
+                self.rg_decodifica = preparato.replaygain_db;
+                self.durata_corrente_ms = preparato.durata_ms;
+                self.chiudi_sovrapposizione();
                 self.corrente = Some(preparato.decodificatore);
                 true
             }
@@ -721,12 +1203,8 @@ impl Contesto {
             }
         }
 
-        let in_pausa = self.condiviso.in_pausa.load(Ordering::Acquire);
         let Some(segno) = self.segni.front() else {
-            self.scrivi_posizione(Posizione {
-                in_pausa,
-                ..Posizione::default()
-            });
+            self.scrivi_posizione(Posizione::default());
             self.forse_fine(suonati);
             return;
         };
@@ -740,16 +1218,22 @@ impl Contesto {
 
         if self.annunciato != Some(track_id) {
             self.annunciato = Some(track_id);
-            self.replaygain_corrente = replaygain_db;
-            self.applica_guadagno();
+            // Nessun `applica_guadagno` qui: la correzione del brano è già nei
+            // campioni da quando sono stati decodificati. Prima andava
+            // riapplicata **adesso** — al fotogramma in cui il brano nuovo
+            // cominciava a sentirsi — ed era l'unica ragione per cui `Segno`
+            // portava con sé un `replaygain_db`.
             (self.osservatore)(Evento::Iniziato { track_id });
         }
+        let _ = replaygain_db;
 
+        // `in_pausa` resta al valore di riposo: lo riempie [`Motore::posizione`]
+        // quando qualcuno legge, dal bit condiviso.
         self.scrivi_posizione(Posizione {
             track_id: Some(track_id),
             ms,
             durata_ms,
-            in_pausa,
+            ..Posizione::default()
         });
         self.forse_fine(suonati);
     }
@@ -808,11 +1292,21 @@ fn fotogrammi(campioni: usize, canali: u16) -> u64 {
     u64::try_from(campioni).unwrap_or(0) / canali
 }
 
+/// I fotogrammi che stanno in un tempo, alla frequenza d'uscita.
+#[expect(
+    clippy::integer_division,
+    reason = "il resto è meno di un millisecondo di campioni: sulla soglia \
+              della dissolvenza vale un fotogramma su quarantottomila"
+)]
+fn fotogrammi_da_ms(ms: u64, frequenza: u32) -> u64 {
+    ms.saturating_mul(u64::from(frequenza)) / 1000
+}
+
 /// I millisecondi corrispondenti a tanti fotogrammi.
 #[expect(
     clippy::integer_division,
-    reason = "il cursore si disegna in millisecondi interi: il resto è meno di un \
-              millisecondo, cioè meno di un pixel su qualunque barra"
+    reason = "il cursore si disegna in millisecondi interi: il resto è meno \
+              di un millisecondo, cioè meno di un pixel su qualunque barra"
 )]
 fn ms_da_fotogrammi(fotogrammi: u64, frequenza: u32) -> u64 {
     let frequenza = u64::from(frequenza).max(1);
@@ -878,6 +1372,265 @@ mod prove {
             assert!(adesso < 12.0, "arrivato troppo presto a {adesso}");
             precedente = adesso;
         }
+    }
+
+    // ── il passaggio fra due brani, con due decodificatori veri ─────────────
+    //
+    // Queste prove costruiscono un `Contesto` come quello che gira davvero —
+    // stessi decodificatori, stessa dissolvenza, stesso anello — e gli danno
+    // due WAV fatti a mano invece di due file. Manca solo il dispositivo, che
+    // qui non serve: quel che si vuole guardare è la sequenza di campioni che
+    // *sarebbe* uscita, ed è esattamente quel che finisce nell'anello.
+
+    /// Byte in memoria che si comportano come un file.
+    ///
+    /// Il motore vuole un [`crate::decodifica::Flusso`] e non un percorso: è la
+    /// stessa giuntura che su Android porta i byte dallo Storage Access
+    /// Framework, e qui porta un WAV costruito a mano senza toccare il disco.
+    struct Byte(std::io::Cursor<Vec<u8>>);
+
+    impl std::io::Read for Byte {
+        fn read(&mut self, dove: &mut [u8]) -> std::io::Result<usize> {
+            std::io::Read::read(&mut self.0, dove)
+        }
+    }
+
+    impl std::io::Seek for Byte {
+        fn seek(&mut self, da: std::io::SeekFrom) -> std::io::Result<u64> {
+            std::io::Seek::seek(&mut self.0, da)
+        }
+    }
+
+    impl crate::decodifica::Flusso for Byte {
+        fn lunghezza(&self) -> Option<u64> {
+            u64::try_from(self.0.get_ref().len()).ok()
+        }
+    }
+
+    /// Un WAV mono a 16 bit con i campioni dati.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "i campioni di prova stanno fra -1 e 1: per costruzione il \
+                  prodotto entra in un i16"
+    )]
+    fn wav(frequenza: u32, campioni: &[f32]) -> Vec<u8> {
+        let dati = u32::try_from(campioni.len() * 2).unwrap_or(0);
+        let mut byte = Vec::with_capacity(44 + campioni.len() * 2);
+        byte.extend_from_slice(b"RIFF");
+        byte.extend_from_slice(&(36 + dati).to_le_bytes());
+        byte.extend_from_slice(b"WAVEfmt ");
+        byte.extend_from_slice(&16u32.to_le_bytes());
+        byte.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        byte.extend_from_slice(&1u16.to_le_bytes()); // un canale
+        byte.extend_from_slice(&frequenza.to_le_bytes());
+        byte.extend_from_slice(&(frequenza * 2).to_le_bytes());
+        byte.extend_from_slice(&2u16.to_le_bytes()); // allineamento
+        byte.extend_from_slice(&16u16.to_le_bytes()); // bit per campione
+        byte.extend_from_slice(b"data");
+        byte.extend_from_slice(&dati.to_le_bytes());
+        for campione in campioni {
+            byte.extend_from_slice(&((campione * 32_767.0) as i16).to_le_bytes());
+        }
+        byte
+    }
+
+    /// Un brano di un secondo, tutto allo stesso livello: si riconosce a
+    /// orecchio nell'elenco dei campioni.
+    fn brano(track_id: i64, frequenza: u32, livello: f32) -> Sorgente {
+        brano_da(track_id, frequenza, livello, 1_000)
+    }
+
+    /// Come sopra, ma `veri_ms` dice quanto il file **contiene**: la durata
+    /// dichiarata resta un secondo. I due valori diversi sono il caso di un
+    /// file che mente sulla propria durata, che è quel che il database si
+    /// ritrova per un MP3 a bitrate variabile senza intestazione Xing.
+    fn brano_da(track_id: i64, frequenza: u32, livello: f32, veri_ms: u64) -> Sorgente {
+        let quanti = fotogrammi_da_ms(veri_ms, frequenza);
+        let campioni = vec![livello; usize::try_from(quanti).unwrap_or(48_000)];
+        Sorgente {
+            track_id,
+            media: Box::new(Byte(std::io::Cursor::new(wav(frequenza, &campioni)))),
+            estensione: Some("wav".to_owned()),
+            durata_ms: 1_000,
+            replaygain_db: None,
+        }
+    }
+
+    /// Il filo della decodifica senza il filo e senza il dispositivo.
+    struct Banco {
+        ctx: Contesto,
+        consumatore: rtrb::Consumer<f32>,
+        /// Da tenere vivi: il canale dei comandi e l'anello delle curve non
+        /// vengono usati, ma se cadessero il contesto parlerebbe con dei morti.
+        _manda: Sender<Comando>,
+        _curve: rtrb::Consumer<Coefficienti>,
+    }
+
+    fn banco(frequenza: u32) -> Banco {
+        let (manda, ricevi) = std::sync::mpsc::channel();
+        let (produttore, consumatore) = rtrb::RingBuffer::<f32>::new(16_384);
+        let (curve, prese) = rtrb::RingBuffer::<Coefficienti>::new(32);
+        let ctx = Contesto::nuovo(
+            ricevi,
+            produttore,
+            curve,
+            Condiviso::nuovo(),
+            Arc::new(std::sync::Mutex::new(Posizione::default())),
+            FormatoUscita {
+                frequenza,
+                canali: 1,
+            },
+            Box::new(|_| {}),
+        );
+        Banco {
+            ctx,
+            consumatore,
+            _manda: manda,
+            _curve: prese,
+        }
+    }
+
+    /// Quanti campioni stanno a un livello, entro un errore che copre la
+    /// quantizzazione a 16 bit e il ricampionatore.
+    fn quanti_a(campioni: &[f32], livello: f32) -> usize {
+        campioni
+            .iter()
+            .filter(|c| (**c - livello).abs() < 0.01)
+            .count()
+    }
+
+    /// Fa girare il contesto fino alla fine di tutto, raccogliendo quel che
+    /// sarebbe uscito dalle casse. `dopo_l_inizio` è quel che chi sta sopra fa
+    /// quando il motore comincia a sovrapporre due brani.
+    fn suona_tutto(banco: &mut Banco, mut dopo_l_inizio: impl FnMut(&mut Contesto)) -> Vec<f32> {
+        let mut fuori = Vec::new();
+        let mut avvisato = false;
+        // Un tetto ai giri: una prova che non finisce è una prova che blocca
+        // l'intera suite, e tre brani da un secondo non ne chiedono nemmeno un
+        // decimo.
+        for _ in 0..100_000 {
+            let lavorato = banco.ctx.riempi();
+            while let Ok(campione) = banco.consumatore.pop() {
+                fuori.push(campione);
+            }
+            if !avvisato && banco.ctx.entrante.is_some() {
+                dopo_l_inizio(&mut banco.ctx);
+                avvisato = true;
+            }
+            if !lavorato && banco.ctx.corrente.is_none() {
+                break;
+            }
+        }
+        fuori
+    }
+
+    #[test]
+    fn la_dissolvenza_manda_avanti_il_brano_dopo_non_quello_dopo_ancora() {
+        // Il guasto che questa prova tiene chiuso: a metà sovrapposizione il
+        // motore annuncia il brano che entra, chi sta sopra risponde preparando
+        // il brano **ancora dopo**, e finché «preparato» ed «entrante» erano la
+        // stessa casella quella preparazione scippava il brano a metà curva.
+        // Chi ascoltava sentiva gracchiare e si ritrovava un brano più avanti.
+        let mut banco = banco(48_000);
+        banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
+        banco
+            .ctx
+            .esegui(Comando::Suona(Box::new(brano(1, 48_000, 0.8))));
+        banco
+            .ctx
+            .esegui(Comando::Prepara(Some(Box::new(brano(2, 24_000, 0.4)))));
+
+        let fuori = suona_tutto(&mut banco, |ctx| {
+            ctx.esegui(Comando::Prepara(Some(Box::new(brano(3, 48_000, 0.1)))));
+        });
+
+        // Il secondo brano deve sentirsi **da solo**, cioè al suo livello: fra
+        // la fine della prima dissolvenza e l'inizio della seconda c'è un
+        // quinto di secondo in cui non c'è nient'altro. Se al suo posto fosse
+        // entrato il terzo, di campioni a 0,4 non ce ne sarebbe nessuno.
+        let secondo = quanti_a(&fuori, 0.4);
+        assert!(
+            secondo > 5_000,
+            "il brano che entra non si sente mai da solo: {secondo} campioni a 0,4"
+        );
+        // E il terzo deve sentirsi dopo, non al posto suo.
+        assert!(quanti_a(&fuori, 0.1) > 5_000, "il terzo brano non arriva");
+    }
+
+    #[test]
+    fn il_brano_che_entra_non_perde_campioni_per_strada() {
+        // L'altro guasto, quello che si sentiva come un raspare: i due
+        // decodificatori consegnano blocchi di lunghezza diversa — qui 1152
+        // fotogrammi contro 2048, perché il secondo brano va ricampionato — e
+        // mescolarne uno contro l'altro buttava via tutto quel che avanzava.
+        // Il brano entrante ci arrivava in fondo quasi al doppio della
+        // velocità, e la coda finiva prima del dovuto: la durata totale è il
+        // modo più semplice di accorgersene.
+        let mut banco = banco(48_000);
+        banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
+        banco
+            .ctx
+            .esegui(Comando::Suona(Box::new(brano(1, 48_000, 0.8))));
+        banco
+            .ctx
+            .esegui(Comando::Prepara(Some(Box::new(brano(2, 24_000, 0.4)))));
+
+        let fuori = suona_tutto(&mut banco, |_| {});
+
+        // Due brani da un secondo che si sovrappongono per quattro decimi: un
+        // secondo e sei decimi, non uno e due.
+        let atteso = 48_000 + 48_000 - 19_200;
+        let scarto = i64::try_from(fuori.len()).unwrap_or(0) - atteso;
+        assert!(
+            scarto.abs() < 2_400,
+            "durata sbagliata di {scarto} fotogrammi: {} invece di {atteso}",
+            fuori.len()
+        );
+    }
+
+    #[test]
+    fn un_brano_che_finisce_prima_della_curva_non_fa_saltare_quello_dopo() {
+        // La sovrapposizione comincia quando alla fine manca quanto dura la
+        // dissolvenza, e «quanto manca» si sa dalla durata dichiarata. Qui il
+        // primo brano ne dichiara mille millisecondi e ne contiene ottocento:
+        // il suo decodificatore finisce a metà curva, e quello entrante resta
+        // solo a mezza ampiezza. Senza la ripresa salterebbe di colpo a tutta.
+        let mut banco = banco(48_000);
+        banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
+        banco
+            .ctx
+            .esegui(Comando::Suona(Box::new(brano_da(1, 48_000, 0.8, 800))));
+        banco
+            .ctx
+            .esegui(Comando::Prepara(Some(Box::new(brano(2, 48_000, 0.4)))));
+
+        let fuori = suona_tutto(&mut banco, |_| {});
+
+        // Finché i due si sovrappongono la somma sta sopra 0,8; appena il primo
+        // finisce resta solo il secondo, che a piena ampiezza fa 0,4.
+        let taglio = fuori
+            .iter()
+            .position(|c| *c < 0.5)
+            .expect("il primo brano non finisce mai");
+        let ripresa = fuori.get(taglio).copied().unwrap_or(0.0);
+        assert!(
+            ripresa < 0.36,
+            "il brano entrante salta a piena ampiezza: {ripresa}"
+        );
+        // E a piena ampiezza ci arriva, in una quarantina di millisecondi.
+        let dopo = fuori.get(taglio + 2_400).copied().unwrap_or(0.0);
+        assert!(
+            (dopo - 0.4).abs() < 0.01,
+            "la ripresa non arriva a piena ampiezza: {dopo}"
+        );
+        // Senza gradini per strada, che è tutto il punto.
+        let salto = fuori.get(taglio..taglio + 2_400).map_or(1.0, |pezzo| {
+            pezzo
+                .windows(2)
+                .map(|due| (due[1] - due[0]).abs())
+                .fold(0.0_f32, f32::max)
+        });
+        assert!(salto < 0.005, "gradino di {salto} dentro la ripresa");
     }
 
     #[test]

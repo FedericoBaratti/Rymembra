@@ -26,7 +26,7 @@ import { Chiedi } from "./Chiedi";
 import { Copertina } from "./Copertina";
 import { Impaginazione, type ContestoWidget } from "./Impaginazione";
 import { Account } from "./Account";
-import { Importa, ImportaSpotify } from "./Importa";
+import { Importa, ImportaLink } from "./Importa";
 import { ImportaPlaylist } from "./ImportaPlaylist";
 import { Regole } from "./Regole";
 import { Menu, type Apertura } from "./Menu";
@@ -35,7 +35,7 @@ import { Riordino } from "./Riordino";
 import { Ripristino } from "./Ripristino";
 import { Stelle } from "./Stelle";
 import { cambiandoVista } from "./transizione";
-import { brani_, durata } from "./formato";
+import { brani_, durata, nomeArtista, numero, titoloAlbum } from "./formato";
 import {
   applicaAccento,
   applicaSkin,
@@ -43,6 +43,7 @@ import {
   testoErrore,
   type Album,
   type Artista,
+  type Casa,
   type Avanzamento,
   type AvanzamentoArricchimento,
   type Avvio,
@@ -54,15 +55,24 @@ import {
   type Skin,
   type StatoArricchimento,
   type StatoNuvola,
+  type StatoSincronia,
   type VoceSkin,
 } from "./ipc";
+import { applicaLingua, scegli, t, useLingua } from "./lingue";
 import { usePagine, usePigro } from "./pagine";
+import { AvvisoAggiornamento } from "./parti/Aggiornamenti";
 import { Icona } from "./parti/Icone";
 import { useImportazioni } from "./parti/Importazioni";
 import { Intestazione } from "./parti/Intestazione";
 import type { Vista } from "./parti/Navigazione";
+import { ToastImportazioni } from "./parti/ToastImportazioni";
 import { useRiproduzione } from "./riproduzione";
 import { Artisti } from "./schermate/Artisti";
+import { Home, TestaHome } from "./schermate/Home";
+import {
+  SchermataImportazioni,
+  TestaImportazioni,
+} from "./schermate/Importazioni";
 import { Impostazioni, type Sezione } from "./schermate/Impostazioni";
 import { InRiproduzione } from "./schermate/InRiproduzione";
 import { Studio } from "./studio/Studio";
@@ -81,14 +91,22 @@ import {
   temaDiRipiego,
   type Tema,
 } from "./tema";
+import { Trans } from "./lingue/Trans";
 
-/** Come si legge un ordinamento, e in che ordine si sceglie. */
-const ORDINAMENTI: readonly (readonly [Ordine, string])[] = [
-  ["scaffale", "Per scaffale"],
-  ["recenti", "Aggiunti di recente"],
-  ["ascoltati", "Più ascoltati"],
-  ["titolo", "Per titolo"],
-];
+/**
+ * Come si legge un ordinamento, e in che ordine si sceglie.
+ *
+ * Una funzione perché porta testo: una costante di modulo si fisserebbe sulla
+ * lingua che c'era al primo `import`.
+ */
+function ordinamenti(): readonly (readonly [Ordine, string])[] {
+  return [
+    ["scaffale", t("sort.shelf")],
+    ["recenti", t("sort.recent")],
+    ["ascoltati", t("sort.played")],
+    ["titolo", t("sort.title")],
+  ];
+}
 
 /**
  * Sotto questa larghezza la terza colonna si chiude da sé.
@@ -178,6 +196,15 @@ const RigaBrano = memo(function RigaBrano({
   /** Il rilascio cadrebbe **su questa riga**: disegna il segno. */
   sopra?: boolean | undefined;
 }) {
+  /*
+   * L'unico `memo` dell'applicazione è anche l'unico posto che deve iscriversi
+   * alla lingua da sé: `App` si ridisegna, ma il confronto delle prop farebbe
+   * saltare il giro proprio a queste duecento righe, e i loro titoli — «Preferito»,
+   * «Togli dalla playlist» — resterebbero nella lingua di prima fino al primo
+   * cambio di elenco.
+   */
+  useLingua();
+
   /**
    * `Alt+↑↓` sposta la riga.
    *
@@ -252,7 +279,11 @@ const RigaBrano = memo(function RigaBrano({
           <Icona nome="i-play" dim={13} />
         </span>
       </button>
-      <Copertina hash={brano.coverArtHash} titolo={brano.album} classe="miniatura" />
+      <Copertina
+        hash={brano.coverArtHash}
+        titolo={titoloAlbum(brano.album)}
+        classe="miniatura"
+      />
       {/* Titolo e artista impilati in una cella sola, l'album nella sua: sono
           due informazioni di peso diverso, e dare all'artista una colonna larga
           quanto il titolo lo farebbe leggere come se lo fosse. */}
@@ -260,20 +291,23 @@ const RigaBrano = memo(function RigaBrano({
         <div className="nome" title={brano.title}>
           {brano.title}
         </div>
-        <div className="autore" title={brano.artist}>
-          {brano.artist}
+        <div className="autore" title={nomeArtista(brano.artist)}>
+          {nomeArtista(brano.artist)}
         </div>
       </div>
-      <div className="disco" title={brano.album}>
-        {brano.album}
+      <div className="disco" title={titoloAlbum(brano.album)}>
+        {titoloAlbum(brano.album)}
       </div>
-      <Stelle valore={brano.rating} onVoto={(stelle) => onVoto(brano, stelle)} />
+      <Stelle
+        valore={brano.rating}
+        onVoto={(stelle) => onVoto(brano, stelle)}
+      />
       <div className="durata">{durata(brano.durationMs)}</div>
       <button
         type="button"
         className="cuore icon-btn"
         aria-pressed={brano.liked}
-        aria-label={brano.liked ? "Togli dai preferiti" : "Aggiungi ai preferiti"}
+        aria-label={brano.liked ? t("track.unlike") : t("track.like")}
         onClick={() => onPreferito(brano)}
       >
         <Icona nome={brano.liked ? "i-heart-f" : "i-heart"} dim={15} />
@@ -282,7 +316,7 @@ const RigaBrano = memo(function RigaBrano({
         <button
           type="button"
           className="tasto icon-btn"
-          aria-label={`Togli ${brano.title} dalla playlist`}
+          aria-label={t("list.removeFromPlaylist", { titolo: brano.title })}
           onClick={() => onTogli(indice)}
         >
           <Icona nome="i-x" dim={14} />
@@ -298,13 +332,13 @@ function TestaElenco({ conTogli }: { conTogli?: boolean | undefined }) {
     <div className="testa-elenco" aria-hidden="true">
       <span className="indice">#</span>
       <span />
-      <span>Titolo</span>
+      <span>{t("list.title")}</span>
       {/* Le due colonne che si ritirano quando il contenuto si stringe portano un
           nome: nasconderle per posizione — `:nth-child(4)` — vorrebbe dire tenere
           allineati un numero qui e un numero nel foglio. */}
-      <span className="disco">Album</span>
-      <span className="voto">Voto</span>
-      <span className="durata">Durata</span>
+      <span className="disco">{t("list.album")}</span>
+      <span className="voto">{t("list.rating")}</span>
+      <span className="durata">{t("list.duration")}</span>
       <span />
       {conTogli && <span />}
     </div>
@@ -333,7 +367,11 @@ function TestaElenco({ conTogli }: { conTogli?: boolean | undefined }) {
  */
 function GrigliaFinta() {
   return (
-    <div className="griglia track-grid" role="status" aria-label="Caricamento in corso">
+    <div
+      className="griglia track-grid"
+      role="status"
+      aria-label={t("list.loading")}
+    >
       {Array.from({ length: 12 }, (_, i) => (
         <div className="scheda finta" key={i} aria-hidden="true">
           <div className="copertina skeleton" />
@@ -347,7 +385,11 @@ function GrigliaFinta() {
 
 function ElencoFinto() {
   return (
-    <div className="elenco track-grid" role="status" aria-label="Caricamento in corso">
+    <div
+      className="elenco track-grid"
+      role="status"
+      aria-label={t("list.loading")}
+    >
       <TestaElenco />
       {Array.from({ length: 10 }, (_, i) => (
         <div className="riga finta" key={i} aria-hidden="true">
@@ -392,7 +434,7 @@ function Sentinella({
       className="sentinella"
       ref={pagine.sentinella}
       role="status"
-      aria-label="Altri in arrivo"
+      aria-label={t("list.more")}
     >
       <span className="skeleton" aria-hidden="true" />
     </div>
@@ -412,10 +454,23 @@ export function App() {
    * più economico di dire la cosa opposta.
    */
   const [notizia, setNotizia] = useState<string | null>(null);
-  const [vista, setVista] = useState<Vista>("album");
+  const [vista, setVista] = useState<Vista>("home");
   const [sezione, setSezione] = useState<Sezione>("cartelle");
   const [query, setQuery] = useState("");
   const [artisti, setArtisti] = useState<Artista[]>([]);
+  // La Home arriva in una chiamata sola. `null` è «non ancora chiesta», che è
+  // diverso da «vuota»: la schermata mostra i suoi segnaposto finché il nucleo
+  // non ha risposto, invece dello stato vuoto per un fotogramma.
+  const [casa, setCasa] = useState<Casa | null>(null);
+  /**
+   * Di quale brano corrente parla la `casa` che si ha in mano.
+   *
+   * «Riprendi dov'eri» fa partire la coda del nucleo, quindi deve nominare il
+   * brano che quella coda ha davvero in mano. Questo riferimento è il confronto
+   * che dice se i due sono ancora d'accordo, e sta fuori dallo stato perché
+   * serve a **decidere** una richiesta, non a disegnare qualcosa.
+   */
+  const casaPerBrano = useRef<number | null>(null);
   const [aperto, setAperto] = useState<Album | null>(null);
   const [artistaAperto, setArtistaAperto] = useState<Artista | null>(null);
   const [braniAperto, setBraniAperto] = useState<Brano[]>([]);
@@ -427,9 +482,16 @@ export function App() {
   );
   const [codaAperta, setCodaAperta] = useState(false);
   const [daImportare, setDaImportare] = useState<string | null>(null);
-  // Un booleano e non un link: il link lo si incolla dentro la finestrella, che
-  // è anche il posto in cui si scopre se è un link buono.
-  const [importandoSpotify, setImportandoSpotify] = useState(false);
+  /**
+   * La finestrella del link è aperta.
+   *
+   * Un booleano e non più il servizio da cui la si è aperta: c'era un
+   * suggerimento — Spotify o YouTube — che decideva segnaposto e diagnosi di
+   * là, e non c'è più niente da suggerire. I cataloghi si riconoscono dal link,
+   * e chi incolla non deve sceglierne uno prima di sapere cosa ha negli
+   * appunti.
+   */
+  const [importandoLink, setImportandoLink] = useState(false);
   const [importandoAccount, setImportandoAccount] = useState(false);
   const [playlist, setPlaylist] = useState<Playlist[]>([]);
   /** Il file di playlist da importare, o `null`. */
@@ -452,6 +514,7 @@ export function App() {
   const [daRiordinare, setDaRiordinare] = useState<string | null>(null);
   /** Lo stato del backup su Drive, o `null` finché non è stato chiesto. */
   const [nuvola, setNuvola] = useState<StatoNuvola | null>(null);
+  const [sincronia, setSincronia] = useState<StatoSincronia | null>(null);
   /** La finestrella del ripristino è aperta. */
   const [ripristinando, setRipristinando] = useState(false);
   /** Lo stato dell'arricchimento, o `null` finché non è stato chiesto. */
@@ -478,6 +541,17 @@ export function App() {
   /** Il tema è già stato deciso in questa sessione. Vedi l'effetto sotto. */
   const temaDeciso = useRef(false);
   /**
+   * La lingua in uso.
+   *
+   * Non è uno stato di questo componente: vive nel modulo `lingue`, perché i
+   * testi servono anche fuori da React — `formato.ts` e `ipc.ts` ne chiamano le
+   * funzioni senza essere componenti. Qui ci si **iscrive** e basta, e
+   * l'iscrizione è quel che ridisegna l'albero quando la lingua cambia.
+   */
+  const lingua = useLingua();
+  /** La lingua è già stata decisa in questa sessione. Come il tema. */
+  const linguaDecisa = useRef(false);
+  /**
    * Le scorciatoie in uso.
    *
    * Derivate e non copiate in uno stato: la sorgente è `avvio.scorciatoie`, e
@@ -494,6 +568,8 @@ export function App() {
   const [studioAperto, setStudioAperto] = useState<string | null>(null);
   /** La finestrella che battezza un tema nuovo è aperta. */
   const [creandoTema, setCreandoTema] = useState(false);
+  /** Da quale skin partire, quando si è arrivati da «Deriva…». */
+  const [baseTema, setBaseTema] = useState<string | null>(null);
   /** Gli identificativi selezionati, e da dove partire per un intervallo. */
   const [selezione, setSelezione] = useState<Set<number>>(() => new Set());
   const [ancora, setAncora] = useState<number | null>(null);
@@ -594,6 +670,40 @@ export function App() {
     (scelto: Tema) => {
       setTema(scelto);
       ipc.impostaTema(scelto).catch(segnalaErrore);
+    },
+    [segnalaErrore],
+  );
+
+  /**
+   * Quale lingua parlare, appena il database risponde.
+   *
+   * Una volta sola per apertura — il `ref` — per la stessa ragione del tema:
+   * `avvio` si rilegge dopo ogni scansione, e senza la guardia una ricarica
+   * arrivata subito dopo un cambio di lingua rimetterebbe quella di prima.
+   *
+   * `scegli` fa il resto: la lingua salvata se il suo file c'è ancora, altrimenti
+   * quella del sistema, altrimenti l'inglese. Il caso «c'era e non c'è più» non è
+   * teorico — basta un profilo importato da un'installazione con più lingue — e
+   * il ripiego lì è meglio di un'interfaccia di sole chiavi.
+   */
+  useEffect(() => {
+    if (avvio === null || linguaDecisa.current) return;
+    linguaDecisa.current = true;
+    applicaLingua(scegli(avvio.lingua, navigator.language));
+  }, [avvio]);
+
+  /**
+   * Cambia la lingua, e la scrive.
+   *
+   * Come il tema: il documento si muove **prima** della scrittura, perché il
+   * cambio si vede ed è quella la risposta al gesto. Se il database non prende
+   * la modifica, l'errore compare e la prossima apertura mostra la lingua di
+   * prima — cosa che si nota subito, al contrario di un'attesa su ogni click.
+   */
+  const cambiaLingua = useCallback(
+    (scelta: string) => {
+      applicaLingua(scelta);
+      ipc.impostaLingua(scelta).catch(segnalaErrore);
     },
     [segnalaErrore],
   );
@@ -739,17 +849,22 @@ export function App() {
    * Due fotogrammi e non uno: il primo lascia che skin e tema arrivino al
    * documento, il secondo è quello in cui il motore li ha davvero disegnati.
    * Mostrarla nel mezzo rimetterebbe il difetto un fotogramma più in là.
+   *
+   * Si aspetta anche `avvio`, e non solo la skin, da quando l'interfaccia ha una
+   * lingua: la lingua salvata arriva di lì, e mostrare la finestra prima
+   * vorrebbe dire far leggere a chi ha scelto l'inglese un fotogramma di
+   * italiano — lo stesso difetto del colore, con le parole.
    */
   const mostrata = useRef(false);
   useEffect(() => {
-    if (mostrata.current || skinAttiva === null) return;
+    if (mostrata.current || skinAttiva === null || avvio === null) return;
     mostrata.current = true;
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         ipc.pronto().catch(segnalaErrore);
       }),
     );
-  }, [skinAttiva, segnalaErrore]);
+  }, [skinAttiva, avvio, segnalaErrore]);
 
   // La colonna si chiude da sé quando la finestra si stringe, e non si riapre
   // da sé quando torna larga: riaprirla annullerebbe una chiusura decisa a mano.
@@ -815,6 +930,31 @@ export function App() {
   );
 
   /**
+   * Toglie una skin installata.
+   *
+   * Il comando risponde con la skin che **resta attiva** — quella di serie, se
+   * si è appena tolta quella indossata — quindi il foglio si riscrive con
+   * quella e non c'è un istante in cui la finestra è dipinta da un pacchetto
+   * che non esiste più. Passa dal contatore come la scelta e l'anteprima, per
+   * la stessa ragione: se nel frattempo il puntatore è finito su un'altra
+   * scheda, l'anteprima più recente vince.
+   */
+  const disinstallaSkin = useCallback(
+    async (id: string) => {
+      const giro = (giroSkin.current += 1);
+      try {
+        const resta = await ipc.skinDisinstalla(id);
+        if (giro === giroSkin.current) applicaSkin(resta);
+        setSkinAttiva(resta);
+        await ricaricaSkin();
+      } catch (e) {
+        setErrore(testoErrore(e));
+      }
+    },
+    [ricaricaSkin],
+  );
+
+  /**
    * Prova una skin senza sceglierla.
    *
    * `skin(id)` compila e basta: la scelta persistente la scrive solo
@@ -846,12 +986,12 @@ export function App() {
   );
 
   const installaSkin = async () => {
-    const scelta = await open({
-      multiple: false,
-      filters: [{ name: "Skin di Aether", extensions: ["aeskin"] }],
-    });
-    if (typeof scelta !== "string") return;
     try {
+      const scelta = await open({
+        multiple: false,
+        filters: [{ name: t("file.skin"), extensions: ["aeskin"] }],
+      });
+      if (typeof scelta !== "string") return;
       const installata = await ipc.skinInstalla(scelta);
       // Installare e non provare sarebbe metà del gesto: chi sceglie un file
       // di skin vuole vederla.
@@ -923,6 +1063,23 @@ export function App() {
   }, [segnalaErrore]);
 
   /**
+   * Lo stato della sincronia, con la stessa disciplina del backup.
+   *
+   * Si chiede una volta e poi si **ascolta**, e qui conta più che altrove: la
+   * sincronia scrive nella libreria da sola, e la schermata deve poter dire
+   * cosa è arrivato mentre la si guardava.
+   */
+  useEffect(() => {
+    ipc.sincroniaStato().then(setSincronia).catch(segnalaErrore);
+    const promessa = listen<StatoSincronia>("sincronia:stato", (evento) =>
+      setSincronia(evento.payload),
+    );
+    return () => {
+      void promessa.then((stop) => stop());
+    };
+  }, [segnalaErrore]);
+
+  /**
    * Lo stato dell'arricchimento, con la stessa disciplina del backup.
    *
    * Si chiede una volta e poi si **ascolta**, per la stessa ragione: il filo
@@ -966,7 +1123,28 @@ export function App() {
       // tempo — con il risultato che chi non vede succedere niente clicca due
       // volte e si prende un `sync.busy`.
       setNuvola((prima) => (prima ? { ...prima, inCorso: true } : prima));
-      azione().then(setNuvola).catch(segnalaErrore);
+      azione()
+        .then(setNuvola)
+        .catch((e: unknown) => {
+          setNuvola((prima) => (prima ? { ...prima, inCorso: false } : prima));
+          segnalaErrore(e);
+        });
+    },
+    [segnalaErrore],
+  );
+
+  /** Un comando della sincronia: aggiorna lo stato, o mostra perché non ci riesce. */
+  const conSincronia = useCallback(
+    (azione: () => Promise<StatoSincronia>) => {
+      setSincronia((prima) => (prima ? { ...prima, inCorso: true } : prima));
+      azione()
+        .then(setSincronia)
+        .catch((e: unknown) => {
+          setSincronia((prima) =>
+            prima ? { ...prima, inCorso: false } : prima,
+          );
+          segnalaErrore(e);
+        });
     },
     [segnalaErrore],
   );
@@ -1070,6 +1248,86 @@ export function App() {
     };
   }, [vista, cercando, segnalaErrore]);
 
+  /*
+   * La Home, entrando.
+   *
+   * Fino a qui `ipc.casa()` stava **solo** dentro `caricaVista`, che parte sugli
+   * eventi che cambiano la libreria — una scansione, dei brani scaricati. Non
+   * all'apertura, e non entrando nella vista: quindi `casa` restava `null` per
+   * sempre e la Home disegnava il vuoto sotto il proprio titolo. Era tutta
+   * costruita — comando, stili, stringhe, indice — e non la chiedeva nessuno.
+   *
+   * I ripiani sono fatti di «di recente», che è vero solo nel momento in cui lo
+   * si chiede: si rifà a ogni ritorno, come fa la vista degli artisti qui sopra.
+   *
+   * `casa` non si azzera prima della richiesta. Tornando alla Home i ripiani di
+   * prima restano sullo schermo finché non arrivano i nuovi — che è anche il
+   * motivo per cui il segnaposto di `CasaFinta` si vede una volta sola, la
+   * prima.
+   */
+  useEffect(() => {
+    if (vista !== "home" || cercando) return;
+    // Subito, non nella risposta: questo effetto e quello qui sotto girano tutti
+    // e due quando si entra nella vista, e senza questa riga il secondo vedrebbe
+    // il segno di prima e chiederebbe la stessa cosa una seconda volta.
+    casaPerBrano.current = riproduzione.stato.brano?.id ?? null;
+    let annullato = false;
+    ipc
+      .casa()
+      .then((arrivata) => {
+        if (annullato) return;
+        // E adesso il segno vero: di quale brano corrente parla la Home che si
+        // ha in mano. All'avvio lo stato di riproduzione arriva per conto suo, e
+        // senza questa riga il suo primo colpo sembrerebbe un cambio di brano —
+        // cioè una seconda richiesta nel momento in cui la finestra ha già tutto
+        // il resto da fare.
+        casaPerBrano.current = arrivata.riprendi?.id ?? null;
+        setCasa(arrivata);
+      })
+      .catch(segnalaErrore);
+    return () => {
+      annullato = true;
+    };
+  }, [vista, cercando, segnalaErrore]);
+
+  /*
+   * E la Home, restando.
+   *
+   * «Riprendi dov'eri» fa partire **la coda del nucleo**, non il brano che ha
+   * scritto sopra: se i due divergono la riga mente. E divergono appena si
+   * preme qualcosa senza uscire dalla Home — la coda cambia brano corrente,
+   * `casa` no.
+   *
+   * `trascurati` si conserva attraverso il rinfresco. Quel ripiano arriva da un
+   * ordinamento casuale: rimescolarsi entrando nella vista va bene ed è il
+   * senso di un ripiano di riscoperta, rimescolarsi mentre lo si sta guardando
+   * vuol dire che la copertina sotto il dito non è più quella che si stava per
+   * premere.
+   */
+  const branoCorrente = riproduzione.stato.brano?.id ?? null;
+  useEffect(() => {
+    if (vista !== "home" || cercando) return;
+    // Il confronto sta in un riferimento e non fra le dipendenze: mettendoci
+    // `casa` questo effetto girerebbe di nuovo a ogni sua risposta, e basterebbe
+    // che la coda salvata sul database e quella del motore fossero d'accordo un
+    // istante dopo invece che subito per farne un giro senza fine.
+    if (casaPerBrano.current === branoCorrente) return;
+    casaPerBrano.current = branoCorrente;
+    let annullato = false;
+    ipc
+      .casa()
+      .then((arrivata) => {
+        if (annullato) return;
+        setCasa((prima) =>
+          prima ? { ...arrivata, trascurati: prima.trascurati } : arrivata,
+        );
+      })
+      .catch(segnalaErrore);
+    return () => {
+      annullato = true;
+    };
+  }, [branoCorrente, vista, cercando, segnalaErrore]);
+
   // In cima a ogni cambio di elenco: la posizione di scorrimento di prima
   // appartiene a un contenuto che non c'è più.
   useEffect(() => {
@@ -1091,13 +1349,26 @@ export function App() {
     if (vista === "artisti") {
       ipc.artisti().then(setArtisti).catch(segnalaErrore);
     }
+    // La Home dopo una scansione o dei brani scaricati: i suoi ripiani sono
+    // fatti di «di recente», e quel che è appena entrato in libreria li cambia
+    // tutti e quattro. Entrandoci ci pensa invece l'effetto suo, che è quel che
+    // fino a poco fa non esisteva e lasciava la schermata vuota.
+    if (vista === "home") {
+      ipc
+        .casa()
+        .then((arrivata) => {
+          casaPerBrano.current = arrivata.riprendi?.id ?? null;
+          setCasa(arrivata);
+        })
+        .catch(segnalaErrore);
+    }
   }, [ricaricaBrani, ricaricaAlbum, vista, segnalaErrore]);
 
   /**
    * I brani scaricati sono entrati in libreria.
    *
-   * La coda, quando finisce, rifà una scansione da sé: i file scesi da YouTube
-   * diventano brani veri senza che nessuno prema «Scansiona». Ma la vista
+   * La coda, quando finisce, rifà una scansione da sé: i file presi dai
+   * cataloghi diventano brani veri senza che nessuno prema «Scansiona». Ma la vista
    * aperta continuerebbe a mostrare i conteggi di prima — una libreria a cui
    * sono appena arrivati quaranta brani che non compaiono finché non si cambia
    * schermata.
@@ -1147,13 +1418,17 @@ export function App() {
   }, []);
 
   const scegliCartella = async () => {
-    const scelta = await open({ directory: true, multiple: false });
-    if (typeof scelta !== "string" || !avvio) return;
-    const cartelle = avvio.cartelle.includes(scelta)
-      ? avvio.cartelle
-      : [...avvio.cartelle, scelta];
-    await ipc.impostaCartelle(cartelle);
-    await ricarica();
+    try {
+      const scelta = await open({ directory: true, multiple: false });
+      if (typeof scelta !== "string" || !avvio) return;
+      const cartelle = avvio.cartelle.includes(scelta)
+        ? avvio.cartelle
+        : [...avvio.cartelle, scelta];
+      await ipc.impostaCartelle(cartelle);
+      await ricarica();
+    } catch (e) {
+      segnalaErrore(e);
+    }
   };
 
   /**
@@ -1164,14 +1439,14 @@ export function App() {
    * del disco ogni volta è la differenza fra due clic e otto.
    */
   const scegliCartellaDownload = async () => {
-    const partenza = avvio?.cartellaDownload ?? avvio?.cartelle[0];
-    const scelta = await open({
-      directory: true,
-      multiple: false,
-      ...(partenza === undefined ? {} : { defaultPath: partenza }),
-    });
-    if (typeof scelta !== "string") return;
     try {
+      const partenza = avvio?.cartellaDownload ?? avvio?.cartelle[0];
+      const scelta = await open({
+        directory: true,
+        multiple: false,
+        ...(partenza === undefined ? {} : { defaultPath: partenza }),
+      });
+      if (typeof scelta !== "string") return;
       await ipc.impostaCartellaDownload(scelta);
       await ricarica();
     } catch (e) {
@@ -1187,13 +1462,20 @@ export function App() {
    * sarebbero tre modi di non trovarlo.
    */
   const scegliFilePlaylist = async () => {
-    const scelta = await open({
-      multiple: false,
-      filters: [
-        { name: "Playlist", extensions: ["m3u", "m3u8", "pls", "xspf"] },
-      ],
-    });
-    if (typeof scelta === "string") setFilePlaylist(scelta);
+    try {
+      const scelta = await open({
+        multiple: false,
+        filters: [
+          {
+            name: t("file.playlist"),
+            extensions: ["m3u", "m3u8", "pls", "xspf"],
+          },
+        ],
+      });
+      if (typeof scelta === "string") setFilePlaylist(scelta);
+    } catch (e) {
+      segnalaErrore(e);
+    }
   };
 
   /**
@@ -1217,7 +1499,7 @@ export function App() {
       if (typeof scelta !== "string") return;
       const quanti = await ipc.playlistEsporta(p.id, scelta);
       setNotizia(
-        `${quanti.toLocaleString("it")} ${quanti === 1 ? "brano scritto" : "brani scritti"} in ${scelta}`,
+        `${numero(quanti)} ${quanti === 1 ? "brano scritto" : "brani scritti"} in ${scelta}`,
       );
     } catch (e) {
       segnalaErrore(e);
@@ -1238,22 +1520,28 @@ export function App() {
    * Sceglie il database della versione rilasciata.
    *
    * La cartella dati di questa applicazione è **diversa** da quella della 1.0.0
-   * — `%APPDATA%\Aether` contro `%APPDATA%\dev.aether.desktop` — apposta perché
+   * — `%APPDATA%\Aether` contro `%APPDATA%\io.github.federicobaratti.aether` — apposta perché
    * finché questa non è finita la vecchia deve restare apribile. Perciò il
    * dialogo si apre lì: è dove il file sta, e comporre il percorso a mano è il
    * modo di sbagliarlo su un profilo spostato.
    */
   const scegliDatabase = async () => {
-    const roaming = avvio?.dataDir.replace(/[/\\][^/\\]+$/, "");
-    const scelta = await open({
-      multiple: false,
-      // Sparso e non `defaultPath: … : undefined`: con
-      // `exactOptionalPropertyTypes` una proprietà assente e una uguale a
-      // `undefined` sono due cose diverse, e il dialogo vuole la prima.
-      ...(roaming ? { defaultPath: `${roaming}\\Aether` } : {}),
-      filters: [{ name: "Database", extensions: ["db", "sqlite", "sqlite3"] }],
-    });
-    if (typeof scelta === "string") setDaImportare(scelta);
+    try {
+      const roaming = avvio?.dataDir.replace(/[/\\][^/\\]+$/, "");
+      const scelta = await open({
+        multiple: false,
+        // Sparso e non `defaultPath: … : undefined`: con
+        // `exactOptionalPropertyTypes` una proprietà assente e una uguale a
+        // `undefined` sono due cose diverse, e il dialogo vuole la prima.
+        ...(roaming ? { defaultPath: `${roaming}\\Aether` } : {}),
+        filters: [
+          { name: t("file.database"), extensions: ["db", "sqlite", "sqlite3"] },
+        ],
+      });
+      if (typeof scelta === "string") setDaImportare(scelta);
+    } catch (e) {
+      segnalaErrore(e);
+    }
   };
 
   const scansiona = async () => {
@@ -1331,19 +1619,19 @@ export function App() {
         y: e.clientY,
         voci: [
           {
-            etichetta: "Riproduci dopo",
+            etichetta: t("action.playNext"),
             azione: () => {
               ipc.codaDopo(elenco).catch(segnalaErrore);
             },
           },
           {
-            etichetta: "Accoda",
+            etichetta: t("action.enqueue"),
             azione: () => {
               ipc.codaAccoda(elenco).catch(segnalaErrore);
             },
           },
           {
-            etichetta: "Aggiungi a playlist…",
+            etichetta: t("action.addToPlaylist"),
             azione: () => setDaAggiungere(elenco),
           },
         ],
@@ -1358,7 +1646,7 @@ export function App() {
       e.preventDefault();
       const voci = [
         {
-          etichetta: "Riproduci",
+          etichetta: t("action.play"),
           azione: () => {
             ipc
               .playlistBrani(p.id)
@@ -1374,7 +1662,7 @@ export function App() {
           },
         },
         {
-          etichetta: "Elimina",
+          etichetta: t("common.delete"),
           azione: () => {
             ipc
               .playlistCancella(p.id)
@@ -1393,12 +1681,12 @@ export function App() {
       // conoscono più.
       if (!p.isSmart) {
         voci.splice(1, 0, {
-          etichetta: "Rinomina…",
+          etichetta: t("menu.rename"),
           azione: () => setDaRinominare(p),
         });
       } else {
         voci.splice(1, 0, {
-          etichetta: "Modifica le regole…",
+          etichetta: t("menu.editRules"),
           azione: () => setRegoleAperte({ playlist: p }),
         });
       }
@@ -1407,7 +1695,7 @@ export function App() {
       // rappresentare — le regole non attraversano il formato, e portarle via
       // fingendo di sì sarebbe peggio che non esportarla.
       voci.push({
-        etichetta: "Esporta come file…",
+        etichetta: t("menu.exportFile"),
         azione: () => void esportaPlaylist(p),
       });
       setMenu({ x: e.clientX, y: e.clientY, voci });
@@ -1429,8 +1717,8 @@ export function App() {
         x: e.clientX,
         y: e.clientY,
         voci: [
-          { etichetta: "Riproduci dopo", azione: conBrani(ipc.codaDopo) },
-          { etichetta: "Accoda", azione: conBrani(ipc.codaAccoda) },
+          { etichetta: t("action.playNext"), azione: conBrani(ipc.codaDopo) },
+          { etichetta: t("action.enqueue"), azione: conBrani(ipc.codaAccoda) },
         ],
       });
     },
@@ -1443,7 +1731,7 @@ export function App() {
     setMenu({
       x: riquadro.left,
       y: riquadro.bottom + 4,
-      voci: ORDINAMENTI.map(([chiave, etichetta]) => ({
+      voci: ordinamenti().map(([chiave, etichetta]) => ({
         etichetta,
         azione: () => setOrdine(chiave),
       })),
@@ -1464,14 +1752,21 @@ export function App() {
       elencoBrani.aggiorna(aggiorna);
       setBraniAperto(aggiorna);
       setBraniPlaylist(aggiorna);
+      // E il brano che suona, che negli elenchi c'è ma è un'altra copia: quella
+      // la tiene il nucleo, e `caricaVista` non la sfiora. Vedi `ritoccaBrano`.
+      riproduzione.ritoccaBrano(brano.id, { rating: stelle });
       try {
         await ipc.valutazione(brano.id, stelle);
       } catch (e) {
         setErrore(testoErrore(e));
+        // La copia del nucleo si rimette a mano: `caricaVista` rimedia agli
+        // elenchi, non a lei, e senza questa riga il valore sbagliato resterebbe
+        // nella barra fino al prossimo evento della riproduzione.
+        riproduzione.ritoccaBrano(brano.id, { rating: brano.rating });
         await caricaVista();
       }
     },
-    [caricaVista],
+    [caricaVista, riproduzione.ritoccaBrano],
   );
 
   const cambiaPreferito = useCallback(
@@ -1484,6 +1779,11 @@ export function App() {
       elencoBrani.aggiorna(aggiorna);
       setBraniAperto(aggiorna);
       setBraniPlaylist(aggiorna);
+      // Il cuore della barra sta nel brano del nucleo, non negli elenchi: senza
+      // questa riga restava fermo al valore di quando il brano era partito, e la
+      // prima pausa — che è la prima occasione in cui il nucleo ricompone lo
+      // stato — lo faceva saltare al valore vero.
+      riproduzione.ritoccaBrano(brano.id, { liked: valore });
       try {
         await ipc.preferito(brano.id, valore);
         setAvvio((prima) =>
@@ -1499,10 +1799,11 @@ export function App() {
         );
       } catch (e) {
         setErrore(testoErrore(e));
+        riproduzione.ritoccaBrano(brano.id, { liked: brano.liked });
         await caricaVista();
       }
     },
-    [caricaVista],
+    [caricaVista, riproduzione.ritoccaBrano],
   );
 
   /**
@@ -1668,55 +1969,81 @@ export function App() {
   );
 
   /** Le scorciatoie. La mappa completa sta in `tastiera.ts`. */
-  useScorciatoie({
-    durataMs: riproduzione.stato.durataMs,
-    alterna: () => {
-      ipc.alterna().catch(segnalaErrore);
-    },
-    cerca: () => {
-      // Cercare da Impostazioni non ha un campo dove atterrare: si torna prima
-      // in libreria, che è la cosa che chi preme «/» sta chiedendo.
-      if (vista === "impostazioni") vaiA("brani");
-      window.requestAnimationFrame(() => campoRicerca()?.focus());
-    },
-    vaiA: (ms) => {
-      ipc.vaiA(ms).catch(segnalaErrore);
-    },
-    inRiproduzione: () => {
-      if (riproduzione.stato.brano) setGrande((prima) => !prima);
-    },
-    chiudi: () => {
-      if (grande) {
+  useScorciatoie(
+    {
+      durataMs: riproduzione.stato.durataMs,
+      alterna: () => {
+        ipc.alterna().catch(segnalaErrore);
+      },
+      cerca: () => {
+        // Cercare da una pagina che non è una destinazione non ha un campo dove
+        // atterrare: si torna prima in libreria, che è la cosa che chi preme «/»
+        // sta chiedendo.
+        if (vista === "impostazioni" || vista === "importazioni") vaiA("brani");
+        // E si esce dallo schermo intero, per lo stesso motivo detto altrimenti:
+        // là l'intestazione non è disegnata, quindi il campo dove atterrare non
+        // esiste e il fuoco cadrebbe sul `<body>`.
         setGrande(false);
-        return true;
-      }
-      if (menu) {
-        setMenu(null);
-        return true;
-      }
-      if (selezione.size > 0) {
-        setSelezione(new Set());
-        return true;
-      }
-      if (query.length > 0) {
-        setQuery("");
-        return true;
-      }
-      // Un livello per pressione, nell'ordine in cui ci si è entrati. Prima
-      // erano una riga sola che azzerava tutti e due, e da un album aperto
-      // dentro un artista Escape saltava la pagina dell'artista — cioè
-      // riportava due passi indietro chi ne aveva chiesto uno.
-      if (aperto) {
-        setAperto(null);
-        return true;
-      }
-      if (artistaAperto) {
-        setArtistaAperto(null);
-        return true;
-      }
-      return false;
+        window.requestAnimationFrame(() => campoRicerca()?.focus());
+      },
+      vaiA: (ms) => {
+        ipc.vaiA(ms).catch(segnalaErrore);
+      },
+      inRiproduzione: () => {
+        if (riproduzione.stato.brano) setGrande((prima) => !prima);
+      },
+      // L'altro schermo intero, quello della finestra: la riga qui sopra riempie
+      // la finestra col brano, questa toglie di mezzo il resto del desktop. Lo
+      // stato che torna non si tiene da questa parte — a disegnarlo è la barra
+      // del titolo, che sta fuori da `App` e se lo richiede da sé quando la
+      // pagina cambia misura.
+      schermoIntero: () => {
+        ipc.finestraSchermoIntero().catch(segnalaErrore);
+      },
+      // Alterna, come `inRiproduzione`: premuta due volte riporta dov'era, che è
+      // quel che ci si aspetta da una scorciatoia che apre una pagina.
+      importazioni: () => {
+        vaiA(vista === "importazioni" ? "brani" : "importazioni");
+      },
+      // Da qualunque pagina, senza passare dalle impostazioni: è il gesto che
+      // questo flusso esiste per rendere breve, e finora costava tre clic.
+      // «qualunque»: la scorciatoia non viene da nessuna scheda, quindi non c'è
+      // un servizio da suggerire e la finestrella li nomina tutti e due.
+      incollaLink: () => setImportandoLink(true),
+      chiudi: () => {
+        if (grande) {
+          setGrande(false);
+          return true;
+        }
+        if (menu) {
+          setMenu(null);
+          return true;
+        }
+        if (selezione.size > 0) {
+          setSelezione(new Set());
+          return true;
+        }
+        if (query.length > 0) {
+          setQuery("");
+          return true;
+        }
+        // Un livello per pressione, nell'ordine in cui ci si è entrati. Prima
+        // erano una riga sola che azzerava tutti e due, e da un album aperto
+        // dentro un artista Escape saltava la pagina dell'artista — cioè
+        // riportava due passi indietro chi ne aveva chiesto uno.
+        if (aperto) {
+          setAperto(null);
+          return true;
+        }
+        if (artistaAperto) {
+          setArtistaAperto(null);
+          return true;
+        }
+        return false;
+      },
     },
-  }, scorciatoie);
+    scorciatoie,
+  );
 
   /**
    * Il trascinamento sulla finestra.
@@ -1792,7 +2119,7 @@ export function App() {
   );
 
   const etichettaOrdine =
-    ORDINAMENTI.find(([c]) => c === ordine)?.[1] ?? "Per scaffale";
+    ordinamenti().find(([c]) => c === ordine)?.[1] ?? t("sort.shelf");
 
   /**
    * Tutto quel che i widget sanno del mondo, in un oggetto solo.
@@ -1821,12 +2148,14 @@ export function App() {
           setQuery("");
           setAperto(null);
           setArtistaAperto(null);
-          // Da Impostazioni bisogna anche **uscire**: `corpo()` guarda `vista`
-          // per prima, quindi senza questa riga la playlist si accendeva nella
-          // barra e la pagina restava quella delle impostazioni. Si atterra sui
-          // Brani perché è la vista che una playlist somiglia di più, ed è
-          // quella che si ritrova chiudendola.
-          if (vista === "impostazioni") setVista("brani");
+          // Da una pagina che non è una destinazione bisogna anche **uscire**:
+          // `corpo()` guarda `vista` per prima, quindi senza questa riga la
+          // playlist si accendeva nella barra e la pagina restava quella delle
+          // impostazioni. Si atterra sui Brani perché è la vista che una
+          // playlist somiglia di più, ed è quella che si ritrova chiudendola.
+          if (vista === "impostazioni" || vista === "importazioni") {
+            setVista("brani");
+          }
           setPlaylistAperta(p);
         });
       },
@@ -1897,15 +2226,39 @@ export function App() {
    * **avanti** nella pagina dell'album invece che indietro.
    *
    * Aggiungendo un caso, va aggiunto nello stesso punto di tutte e due.
+   *
+   * # Perché la Home sta in fondo e non in cima
+   *
+   * Era il primo caso di tutti e due, ed è la posizione sbagliata per una
+   * destinazione. Sopra `cercando` voleva dire che dalla schermata su cui
+   * l'applicazione apre la ricerca non funzionava — contro la regola scritta
+   * sopra `elencoBrani`, «quel che si sta cercando è ciò che si vuole vedere».
+   * E sopra `aperto` voleva dire che un disco aperto da un ripiano della Home
+   * avrebbe rimesso la Home: `apriAlbum` scrive `aperto` e lascia `vista` dov'è.
+   * Le pagine di servizio — importazioni, impostazioni — restano in cima perché
+   * là non c'è niente da cercare e niente da aprire.
    */
   const testa = () => {
+    if (vista === "importazioni") {
+      return (
+        <TestaImportazioni
+          importazioni={importazioni}
+          onIncollaLink={() => setImportandoLink(true)}
+        />
+      );
+    }
     if (vista === "impostazioni") {
-      return <Intestazione titolo="Impostazioni" sottotitolo="Cartelle, aspetto, dati" />;
+      return (
+        <Intestazione
+          titolo={t("page.settings.title")}
+          sottotitolo={t("page.settings.sub")}
+        />
+      );
     }
     if (cercando) {
       return (
         <Intestazione
-          occhiello="Ricerca"
+          occhiello={t("page.search.eyebrow")}
           titolo={`«${query.trim()}»`}
           /* Il conteggio del nucleo, non la lunghezza dell'elenco in mano:
              quello diceva «60 risultati» per una ricerca che ne aveva
@@ -1914,10 +2267,8 @@ export function App() {
              cambia è peggio di nessun numero. */
           sottotitolo={
             risultati === null
-              ? "…"
-              : risultati === 1
-                ? "1 risultato"
-                : `${risultati.toLocaleString("it")} risultati`
+              ? t("common.loading")
+              : t("page.search.results", { n: risultati })
           }
           query={query}
           onQuery={setQuery}
@@ -1927,7 +2278,11 @@ export function App() {
     if (playlistAperta) {
       return (
         <Intestazione
-          occhiello={playlistAperta.isSmart ? "Playlist automatica" : "Playlist"}
+          occhiello={
+            playlistAperta.isSmart
+              ? t("page.playlist.smart")
+              : t("page.playlist")
+          }
           titolo={playlistAperta.name}
           sottotitolo={`${brani_(playlistAperta.tracks)}${
             playlistAperta.durationMs > 0
@@ -1944,7 +2299,7 @@ export function App() {
               onClick={() => void suonaDa(braniPlaylist, 0)}
             >
               <Icona nome="i-play" dim={14} />
-              Riproduci
+              {t("action.play")}
             </button>
           }
         />
@@ -1953,9 +2308,9 @@ export function App() {
     if (aperto) {
       return (
         <Intestazione
-          occhiello="Album"
-          titolo={aperto.title}
-          sottotitolo={`${aperto.artist}${aperto.year ? ` · ${aperto.year}` : ""} · ${brani_(
+          occhiello={t("page.album")}
+          titolo={titoloAlbum(aperto.title)}
+          sottotitolo={`${nomeArtista(aperto.artist)}${aperto.year ? ` · ${aperto.year}` : ""} · ${brani_(
             aperto.totalTracks,
           )}${aperto.genre ? ` · ${aperto.genre}` : ""}`}
           /* L'unica pagina che ha un'immagine sua, e per questo la porta:
@@ -1965,7 +2320,7 @@ export function App() {
           copertina={
             <Copertina
               hash={aperto.coverArtHash}
-              titolo={aperto.title}
+              titolo={titoloAlbum(aperto.title)}
               classe="hero-art"
               piena
             />
@@ -1975,17 +2330,22 @@ export function App() {
           azioni={
             <>
               {/* Torna da dove si è entrati, e lo dice. Chiudere l'album lascia
-                  in piedi l'artista — è `apriAlbum(null)` in tutti e due i
-                  casi — quindi l'unica cosa che cambia è l'etichetta, che deve
-                  cambiare: un tasto che dice «Album» e riporta alla pagina di
-                  un artista è il tasto sbagliato. */}
+                  in piedi quel che c'era sotto — è `apriAlbum(null)` in tutti e
+                  tre i casi — quindi l'unica cosa che cambia è l'etichetta, che
+                  deve cambiare: un tasto che dice «Album» e riporta alla pagina
+                  di un artista è il tasto sbagliato, e da quando anche la Home
+                  ha un ripiano di dischi i posti da cui si entra sono tre. */}
               <button
                 type="button"
                 className="pillola btn-ghost"
                 onClick={() => apriAlbum(null)}
               >
                 <Icona nome="i-chev-l" dim={14} />
-                {artistaAperto ? artistaAperto.name : "Album"}
+                {artistaAperto
+                  ? nomeArtista(artistaAperto.name)
+                  : vista === "home"
+                    ? t("nav.home")
+                    : t("page.album")}
               </button>
               <button
                 type="button"
@@ -1994,7 +2354,7 @@ export function App() {
                 onClick={() => void suonaDa(braniAperto, 0)}
               >
                 <Icona nome="i-play" dim={14} />
-                Riproduci
+                {t("action.play")}
               </button>
             </>
           }
@@ -2004,11 +2364,12 @@ export function App() {
     if (artistaAperto) {
       return (
         <Intestazione
-          occhiello="Artista"
-          titolo={artistaAperto.name}
-          sottotitolo={`${brani_(artistaAperto.tracks)} · ${
-            artistaAperto.albums === 1 ? "1 album" : `${artistaAperto.albums} album`
-          }`}
+          occhiello={t("page.artist")}
+          titolo={nomeArtista(artistaAperto.name)}
+          sottotitolo={t("page.artist.sub", {
+            brani: brani_(artistaAperto.tracks),
+            album: t("artists.albums", { n: artistaAperto.albums }),
+          })}
           query={query}
           onQuery={setQuery}
           azioni={
@@ -2018,25 +2379,37 @@ export function App() {
               onClick={() => apriArtista(null)}
             >
               <Icona nome="i-chev-l" dim={14} />
-              Artisti
+              {t("nav.artists")}
             </button>
           }
         />
       );
     }
+    if (vista === "home") {
+      return <TestaHome query={query} onQuery={setQuery} />;
+    }
     const titoli: Record<string, [string, string]> = {
-      album: ["Album", `${numeri?.albums ?? 0} in libreria`],
-      artisti: [
-        "Artisti",
-        `${numeri?.artists ?? 0} · nome normalizzato dal dominio`,
+      album: [
+        t("nav.albums"),
+        t("page.library.inLibrary", { n: numeri?.albums ?? 0 }),
       ],
-      brani: ["Brani", `${numeri?.tracks ?? 0} in libreria`],
-      preferiti: ["Preferiti", `${numeri?.liked ?? 0} segnati`],
+      artisti: [
+        t("nav.artists"),
+        t("page.library.artistsSub", { n: numeri?.artists ?? 0 }),
+      ],
+      brani: [
+        t("nav.tracks"),
+        t("page.library.inLibrary", { n: numeri?.tracks ?? 0 }),
+      ],
+      preferiti: [
+        t("nav.favorites"),
+        t("page.library.liked", { n: numeri?.liked ?? 0 }),
+      ],
     };
-    const [titolo, sotto] = titoli[vista] ?? ["Libreria", ""];
+    const [titolo, sotto] = titoli[vista] ?? [t("page.library"), ""];
     return (
       <Intestazione
-        occhiello="Libreria"
+        occhiello={t("page.library")}
         titolo={titolo}
         sottotitolo={sotto}
         query={query}
@@ -2050,6 +2423,14 @@ export function App() {
 
   /** Il corpo, cioè quel che sta sotto l'intestazione. */
   const corpo = () => {
+    if (vista === "importazioni") {
+      return (
+        <SchermataImportazioni
+          importazioni={importazioni}
+          onIncollaLink={() => setImportandoLink(true)}
+        />
+      );
+    }
     if (vista === "impostazioni") {
       return (
         <Impostazioni
@@ -2067,18 +2448,32 @@ export function App() {
           movimento={skinAttiva?.layout.motion ?? "full"}
           tema={tema}
           onTema={cambiaTema}
+          lingua={lingua}
+          onLingua={cambiaLingua}
           scorciatoie={scorciatoie}
           onScorciatoie={cambiaScorciatoie}
           onProfiloImportato={dopoProfilo}
           eqAttivo={riproduzione.stato.eqAttivo}
           eqGuadagni={riproduzione.stato.eqGuadagni}
           replaygain={riproduzione.stato.replaygain}
-          onReplaygain={(attivo) => {
+          onReplaygain={(livello) => {
             // Nessun `setStato` qui: il comando manda `riproduzione:stato`, e
-            // l'interruttore si muove quando il motore ha davvero cambiato
-            // posizione. Anticiparlo mostrerebbe «acceso» anche se il salvataggio
-            // fallisse.
-            ipc.normalizzazione(attivo).catch(segnalaErrore);
+            // la linguetta si sposta quando il motore ha davvero cambiato
+            // posizione. Anticiparlo mostrerebbe il livello nuovo anche se il
+            // salvataggio fallisse.
+            ipc.normalizzazione(livello).catch(segnalaErrore);
+          }}
+          spegnimentoMs={riproduzione.stato.spegnimentoMs}
+          onSpegnimento={(minuti) => {
+            ipc.spegnimento(minuti).catch(segnalaErrore);
+          }}
+          autoplay={riproduzione.stato.autoplay}
+          onAutoplay={(attivo) => {
+            ipc.autoplay(attivo).catch(segnalaErrore);
+          }}
+          dissolvenzaS={riproduzione.stato.dissolvenzaS}
+          onDissolvenza={(secondi) => {
+            ipc.dissolvenza(secondi).catch(segnalaErrore);
           }}
           onErrore={segnalaErrore}
           onAggiungiCartella={() => void scegliCartella()}
@@ -2104,11 +2499,20 @@ export function App() {
           onScegliSkin={(id) => void scegliSkin(id)}
           onAnteprimaSkin={anteprimaSkin}
           onInstallaSkin={() => void installaSkin()}
-          onCreaTema={() => setCreandoTema(true)}
+          onCreaTema={() => {
+            setBaseTema(null);
+            setCreandoTema(true);
+          }}
+          onDeriva={(id) => {
+            setBaseTema(id);
+            setCreandoTema(true);
+          }}
+          onDisinstallaSkin={(id) => void disinstallaSkin(id)}
           onApriStudio={setStudioAperto}
           onImporta={() => void scegliDatabase()}
-          onImportaSpotify={() => setImportandoSpotify(true)}
+          onImportaLink={() => setImportandoLink(true)}
           onImportaAccount={() => setImportandoAccount(true)}
+          onVista={vaiA}
           importazioni={importazioni}
           arricchimento={arricchimento}
           avanzaArricchimento={avanzaArricchimento}
@@ -2147,6 +2551,47 @@ export function App() {
           onNuvolaCredenziali={(id, segreto) =>
             conNuvola(() => ipc.nuvolaCredenziali(id, segreto))
           }
+          sincronia={sincronia}
+          onSincroniaAttiva={(accesa) =>
+            conSincronia(() => ipc.sincroniaAttiva(accesa))
+          }
+          onSincroniaMagazzino={(dove, cartella) =>
+            conSincronia(() => ipc.sincroniaMagazzino(dove, cartella))
+          }
+          // Aspetta davvero: una passata a vuoto è un'elencazione, e su una
+          // cartella condivisa non tocca nemmeno la rete. Quel che torna lo
+          // rimanda comunque l'evento, quindi qui basta non perdere l'errore.
+          onSincroniaAdesso={() => {
+            setSincronia((prima) =>
+              prima ? { ...prima, inCorso: true } : prima,
+            );
+            ipc
+              .sincroniaAdesso()
+              .catch(segnalaErrore)
+              .finally(() => {
+                ipc.sincroniaStato().then(setSincronia).catch(segnalaErrore);
+              });
+          }}
+          onSincroniaAccoppia={(id, nome) => {
+            ipc
+              .sincroniaAccoppia(id, nome)
+              .then((dispositivi) =>
+                setSincronia((prima) =>
+                  prima ? { ...prima, dispositivi } : prima,
+                ),
+              )
+              .catch(segnalaErrore);
+          }}
+          onSincroniaDimentica={(id) => {
+            ipc
+              .sincroniaDimentica(id)
+              .then((dispositivi) =>
+                setSincronia((prima) =>
+                  prima ? { ...prima, dispositivi } : prima,
+                ),
+              )
+              .catch(segnalaErrore);
+          }}
         />
       );
     }
@@ -2157,17 +2602,14 @@ export function App() {
           <span className="empty-icon" aria-hidden="true">
             <Icona nome="i-folder" dim={30} />
           </span>
-          <h2>Nessuna cartella sorvegliata</h2>
-          <p>
-            Aggiungi la cartella dove tieni la musica: Aether la legge, non la
-            sposta e non la modifica finché non glielo chiedi.
-          </p>
+          <h2>{t("empty.noFolders.title")}</h2>
+          <p>{t("empty.noFolders.body")}</p>
           <button
             type="button"
             className="bottone primario btn-accent"
             onClick={() => void scegliCartella()}
           >
-            Scegli una cartella…
+            {t("empty.noFolders.cta")}
           </button>
         </div>
       );
@@ -2179,14 +2621,14 @@ export function App() {
           <span className="empty-icon" aria-hidden="true">
             <Icona nome="i-scan" dim={30} />
           </span>
-          <h2>Libreria vuota</h2>
-          <p>Le cartelle ci sono. Manca una scansione.</p>
+          <h2>{t("empty.library.title")}</h2>
+          <p>{t("empty.library.body")}</p>
           <button
             type="button"
             className="bottone primario btn-accent"
             onClick={() => void scansiona()}
           >
-            Scansiona ora
+            {t("empty.library.cta")}
           </button>
         </div>
       );
@@ -2201,8 +2643,8 @@ export function App() {
           <span className="empty-icon" aria-hidden="true">
             <Icona nome="i-search" dim={30} />
           </span>
-          <h2>Nessun risultato</h2>
-          <p>La ricerca guarda titoli, artisti e album.</p>
+          <h2>{t("empty.search.title")}</h2>
+          <p>{t("empty.search.body")}</p>
         </div>
       ) : (
         <>
@@ -2234,11 +2676,10 @@ export function App() {
         <>
           {playlistAperta.isSmart && (
             <p className="nota">
-              È una playlist automatica: non contiene brani, contiene una
-              domanda. Quello che vedi è la libreria filtrata{" "}
-              <strong>adesso</strong>, e cambia da sé quando aggiungi musica o
-              ascolti qualcosa. Per lo stesso motivo non si modifica a mano: si
-              cambiano le regole, con il tasto destro sul suo nome.
+              <Trans
+                k="page.playlist.smart.note"
+                v={{ adesso: <strong>{t("rules.intro.now")}</strong> }}
+              />
             </p>
           )}
           {/* L'attributo, non solo la prop: la colonna in più la deve
@@ -2326,9 +2767,12 @@ export function App() {
                 onClick={() => apriAlbum(a)}
                 onContextMenu={(e) => menuAlbum(e, a.albumKey)}
               >
-                <Copertina hash={a.coverArtHash} titolo={a.title} />
-                <div className="titolo" title={a.title}>
-                  {a.title}
+                <Copertina
+                  hash={a.coverArtHash}
+                  titolo={titoloAlbum(a.title)}
+                />
+                <div className="titolo" title={titoloAlbum(a.title)}>
+                  {titoloAlbum(a.title)}
                 </div>
                 <div className="sotto">
                   {a.year ?? ""}
@@ -2340,6 +2784,32 @@ export function App() {
           </div>
           <Sentinella pagine={elencoAlbum} />
         </>
+      );
+    }
+
+    if (vista === "home") {
+      return (
+        <Home
+          casa={casa}
+          onSuona={(elenco, indice) => void suonaDa(elenco, indice)}
+          onRiprendi={(ms) => {
+            void (async () => {
+              // `riprendi` e non `suona`: la coda conservata è già in piedi —
+              // il nucleo la rimette all'avvio senza far partire niente — e
+              // `suona([brano], 0)` la buttava via per sostituirla con un brano
+              // solo. Cioè «riprendi dov'eri» faceva calare il silenzio dove
+              // ieri sera la serata continuava. Il comando sa già di dover
+              // cominciare quando il motore ha le mani vuote.
+              await ipc.riprendi().catch(segnalaErrore);
+              // Il salto **dopo** l'avvio: `vai_a` su un motore che non ha
+              // ancora aperto il file non ha un posto dove andare.
+              if (ms > 0) await ipc.vaiA(ms).catch(segnalaErrore);
+            })();
+          }}
+          onMenu={(e, brano) => menuSuSelezione(e, [brano.id])}
+          onApriAlbum={apriAlbum}
+          onMenuAlbum={(e, album) => menuAlbum(e, album.albumKey)}
+        />
       );
     }
 
@@ -2366,11 +2836,11 @@ export function App() {
               y: e.clientY,
               voci: [
                 {
-                  etichetta: "Apri",
+                  etichetta: t("menu.open"),
                   azione: () => apriArtista(a),
                 },
                 {
-                  etichetta: "Cerca il nome",
+                  etichetta: t("menu.searchName"),
                   azione: () => setQuery(a.name),
                 },
               ],
@@ -2392,12 +2862,15 @@ export function App() {
                 onClick={() => apriAlbum(a)}
                 onContextMenu={(e) => menuAlbum(e, a.albumKey)}
               >
-                <Copertina hash={a.coverArtHash} titolo={a.title} />
-                <div className="titolo" title={a.title}>
-                  {a.title}
+                <Copertina
+                  hash={a.coverArtHash}
+                  titolo={titoloAlbum(a.title)}
+                />
+                <div className="titolo" title={titoloAlbum(a.title)}>
+                  {titoloAlbum(a.title)}
                 </div>
-                <div className="sotto" title={a.artist}>
-                  {a.artist}
+                <div className="sotto" title={nomeArtista(a.artist)}>
+                  {nomeArtista(a.artist)}
                   {a.totalTracks > 1 ? ` · ${a.totalTracks}` : ""}
                 </div>
               </button>
@@ -2484,23 +2957,30 @@ export function App() {
                   <div className="errore audio-perso toast-card" role="alert">
                     <Icona nome="i-alert" dim={16} />
                     <span>
-                      <strong>Non c&apos;è audio.</strong>{" "}
+                      <strong>{t("audio.lost.what")}</strong>{" "}
                       {riproduzione.stato.audio.causa}.
                     </span>
                     {riproduzione.stato.audio.riapribile && (
                       <button
                         type="button"
                         className="bottone minuto btn-ghost"
-                        title="Il brano riparte da capo. Coda, volume ed equalizzatore restano."
+                        title={t("audio.lost.reopen.title")}
                         onClick={() => {
                           ipc.riapriAudio().catch(segnalaErrore);
                         }}
                       >
-                        Riapri
+                        {t("audio.lost.reopen")}
                       </button>
                     )}
                   </div>
                 )}
+                {/* Sopra la notizia e sotto il dispositivo audio perso, che è
+                    l'ordine della fretta: l'audio che non si sente è adesso,
+                    una versione nuova può aspettare che si finisca di
+                    ascoltare. Il componente decide da sé se disegnarsi — non
+                    c'è niente da mostrare quasi sempre — e non torna dopo un
+                    «non ora», perché il rifiuto è scritto nel database. */}
+                <AvvisoAggiornamento onErrore={segnalaErrore} />
                 {notizia !== null && (
                   <div className="notizia toast-card" role="status">
                     <Icona nome="i-check" dim={16} />
@@ -2508,7 +2988,7 @@ export function App() {
                     <button
                       type="button"
                       className="tasto icon-btn"
-                      aria-label="Chiudi"
+                      aria-label={t("common.close")}
                       onClick={() => setNotizia(null)}
                     >
                       <Icona nome="i-x" dim={14} />
@@ -2522,7 +3002,7 @@ export function App() {
                     <button
                       type="button"
                       className="tasto icon-btn"
-                      aria-label="Chiudi l'avviso"
+                      aria-label={t("toast.dismiss")}
                       onClick={() => {
                         setErrore(null);
                         riproduzione.scartaErrore();
@@ -2577,9 +3057,9 @@ export function App() {
         />
       )}
 
-      {importandoSpotify && (
-        <ImportaSpotify
-          onChiudi={() => setImportandoSpotify(false)}
+      {importandoLink && (
+        <ImportaLink
+          onChiudi={() => setImportandoLink(false)}
           onImportato={(esito) => {
             // Il rapporto va all'elenco prima di tutto il resto: la finestrella
             // sta per chiudersi, e da lì in poi è quello l'unico posto che sa
@@ -2626,9 +3106,9 @@ export function App() {
 
       {creandoPlaylist && (
         <Chiedi
-          titolo="Nuova playlist"
-          etichetta="Nome"
-          conferma="Crea"
+          titolo={t("dialog.newPlaylist")}
+          etichetta={t("rules.name")}
+          conferma={t("addTo.create")}
           onChiudi={() => setCreandoPlaylist(false)}
           onRispondi={(nome) => {
             setCreandoPlaylist(false);
@@ -2645,10 +3125,10 @@ export function App() {
 
       {daRinominare && (
         <Chiedi
-          titolo="Rinomina playlist"
-          etichetta="Nome"
+          titolo={t("dialog.renamePlaylist")}
+          etichetta={t("rules.name")}
           iniziale={daRinominare.name}
-          conferma="Rinomina"
+          conferma={t("dialog.rename")}
           onChiudi={() => setDaRinominare(null)}
           onRispondi={(nome) => {
             const quale = daRinominare;
@@ -2667,7 +3147,11 @@ export function App() {
       {creandoTema && (
         <NuovoTema
           skin={skin}
-          onChiudi={() => setCreandoTema(false)}
+          baseIniziale={baseTema}
+          onChiudi={() => {
+            setCreandoTema(false);
+            setBaseTema(null);
+          }}
           onCrea={(dati) => void creaTema(dati)}
         />
       )}
@@ -2701,43 +3185,67 @@ export function App() {
         />
       )}
 
-      {/* La scansione segue chi se ne va.
-          Dura venti secondi la prima volta, e nessuno resta a guardare una
-          barra per venti secondi: si torna alla libreria, e l'avanzamento va
-          in basso a destra invece di sparire. Sparire farebbe credere che sia
-          finita — o peggio, che sia stata annullata dal cambio di schermata. */}
-      {scansione !== null && vista !== "impostazioni" && (
-        <div className="toast toast-card" role="status">
-          <Icona nome="i-scan" dim={16} />
-          <div className="dentro">
-            <div className="cosa">
-              {scansione.totale > 0
-                ? `Scansione · ${scansione.fatti.toLocaleString("it")} / ${scansione.totale.toLocaleString("it")}`
-                : "Scansione · confronto col disco…"}
+      {/* Una pila e non due riquadri fissi.
+          Finché il toast era uno, «in basso a destra» bastava a dire dove.
+          Adesso sono due e possono stare in piedi insieme — una scansione parte
+          da sé quando la coda ha finito di scaricare — e due elementi fissi allo
+          stesso angolo si coprono a vicenda. La pila li impila; è anche l'unico
+          posto in cui `view-transition-name` può stare, perché quel nome deve
+          essere unico nella pagina e su `.toast` con due toast non lo era. */}
+      <div className="pila-toast">
+        {/* La scansione segue chi se ne va.
+            Dura venti secondi la prima volta, e nessuno resta a guardare una
+            barra per venti secondi: si torna alla libreria, e l'avanzamento va
+            in basso a destra invece di sparire. Sparire farebbe credere che sia
+            finita — o peggio, che sia stata annullata dal cambio di schermata. */}
+        {scansione !== null && vista !== "impostazioni" && (
+          <div className="toast toast-card" role="status">
+            <Icona nome="i-scan" dim={16} />
+            <div className="dentro">
+              <div className="cosa">
+                {scansione.totale > 0
+                  ? t("toast.scan", {
+                      fatti: numero(scansione.fatti),
+                      totale: numero(scansione.totale),
+                    })
+                  : t("toast.scan.comparing")}
+              </div>
+              <div className="toast-progress">
+                <span
+                  style={{
+                    width:
+                      scansione.totale > 0
+                        ? `${Math.round((scansione.fatti / scansione.totale) * 100)}%`
+                        : "0%",
+                  }}
+                />
+              </div>
             </div>
-            <div className="toast-progress">
-              <span
-                style={{
-                  width:
-                    scansione.totale > 0
-                      ? `${Math.round((scansione.fatti / scansione.totale) * 100)}%`
-                      : "0%",
-                }}
-              />
-            </div>
+            <button
+              type="button"
+              className="bottone minuto btn-ghost"
+              onClick={() => {
+                vaiA("impostazioni");
+                setSezione("cartelle");
+              }}
+            >
+              {t("toast.open")}
+            </button>
           </div>
-          <button
-            type="button"
-            className="bottone minuto btn-ghost"
-            onClick={() => {
-              vaiA("impostazioni");
-              setSezione("cartelle");
-            }}
-          >
-            Apri
-          </button>
-        </div>
-      )}
+        )}
+
+        {/* La coda segue chi se ne va, per la ragione scritta sopra — e a
+            maggior ragione: la scansione dura venti secondi, questa un'ora, e
+            sopravvive alla chiusura dell'applicazione. Sulla pagina stessa il
+            toast non compare: sarebbe la stessa barra due volte. */}
+        <ToastImportazioni
+          stato={importazioni.stato}
+          rientro={importazioni.rientro}
+          giaLì={vista === "importazioni"}
+          onApri={() => vaiA("importazioni")}
+          onChiudiRientro={importazioni.dimenticaRientro}
+        />
+      </div>
 
       {menu && <Menu apertura={menu} onChiudi={() => setMenu(null)} />}
     </>

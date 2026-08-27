@@ -23,23 +23,27 @@
 import { useState } from "react";
 
 import { Icona } from "./Icone";
+import { t } from "../lingue";
 import {
-  COMANDI,
   DI_SERIE,
   type Associazioni,
   type Comando,
+  comandi,
   conflitti,
   serieMutabile,
   tastoDi,
   tastoScritto,
 } from "../tastiera";
+import { Trans } from "../lingue/Trans";
 
 /** I tasti che non si lasciano assegnare, e perché. */
-const VIETATI: Record<string, string> = {
-  Escape: "Escape chiude quel che è aperto, sempre: è l'uscita di sicurezza.",
-  Tab: "Tab sposta il fuoco: serve a chi naviga con la tastiera.",
-  Enter: "Invio attiva quel che è a fuoco.",
-};
+function vietati(): Record<string, string> {
+  return {
+    Escape: t("shortcuts.forbidden.escape"),
+    Tab: t("shortcuts.forbidden.tab"),
+    Enter: t("shortcuts.forbidden.enter"),
+  };
+}
 
 export function Scorciatoie({
   associazioni,
@@ -76,7 +80,7 @@ export function Scorciatoie({
     // `null` = è stato premuto solo un modificatore: la combinazione si sta
     // ancora componendo, e concludere adesso registrerebbe «Ctrl» da solo.
     if (tasto === null) return;
-    const vietato = VIETATI[e.key];
+    const vietato = vietati()[e.key];
     if (vietato !== undefined) {
       setRifiutato(vietato);
       return;
@@ -92,14 +96,17 @@ export function Scorciatoie({
   return (
     <>
       <p className="nota">
-        Premi <strong>Assegna</strong> e poi il tasto che vuoi. Un comando può
-        averne più di uno. <code>Esc</code> non si riassegna: è l&apos;uscita da
-        ogni finestrella e da ogni campo, e un&apos;uscita che si può chiudere a
-        chiave non è un&apos;uscita.
+        <Trans
+          k="shortcuts.intro"
+          v={{
+            assegna: <strong>{t("shortcuts.intro.assign")}</strong>,
+            esc: <code>{t("keys.esc")}</code>,
+          }}
+        />
       </p>
 
       <ul className="cartelle">
-        {COMANDI.map(({ chiave, titolo, spiegazione }) => (
+        {comandi().map(({ chiave, titolo, spiegazione }) => (
           <li className="cartella scorciatoia" key={chiave}>
             <div className="che-cosa">
               <div className="etichetta">{titolo}</div>
@@ -113,8 +120,8 @@ export function Scorciatoie({
                   className="tasto-scorciatoia"
                   title={
                     contesi.has(tasto)
-                      ? `${tastoScritto(tasto)} è assegnato anche a un altro comando`
-                      : `Togli ${tastoScritto(tasto)}`
+                      ? t("shortcuts.contested", { tasto: tastoScritto(tasto) })
+                      : t("shortcuts.removeKey", { tasto: tastoScritto(tasto) })
                   }
                   data-conteso={contesi.has(tasto) || undefined}
                   onClick={() =>
@@ -129,12 +136,12 @@ export function Scorciatoie({
                 </button>
               ))}
               {associazioni[chiave].length === 0 && (
-                <span className="spiegazione">nessuna</span>
+                <span className="spiegazione">{t("shortcuts.none")}</span>
               )}
               <button
                 type="button"
                 className="bottone minuto btn-ghost"
-                aria-label={`Assegna un tasto a ${titolo}`}
+                aria-label={t("shortcuts.assignTo", { comando: titolo })}
                 data-inascolto={inAscolto === chiave || undefined}
                 onKeyDown={(e) => {
                   if (inAscolto === chiave) cattura(chiave, e);
@@ -145,7 +152,9 @@ export function Scorciatoie({
                   setInAscolto(inAscolto === chiave ? null : chiave);
                 }}
               >
-                {inAscolto === chiave ? "Premi un tasto…" : "Assegna"}
+                {inAscolto === chiave
+                  ? t("shortcuts.pressAKey")
+                  : t("shortcuts.assign")}
               </button>
             </div>
           </li>
@@ -156,17 +165,18 @@ export function Scorciatoie({
 
       {contesi.size > 0 && (
         <p className="nota">
-          <strong>Lo stesso tasto per più comandi</strong>:{" "}
+          <strong>{t("shortcuts.clash")}</strong>:{" "}
           {[...contesi.entries()]
             .map(
-              ([tasto, comandi]) =>
-                `${tastoScritto(tasto)} (${comandi
-                  .map((c) => COMANDI.find((x) => x.chiave === c)?.titolo ?? c)
+              ([tasto, quali]) =>
+                `${tastoScritto(tasto)} (${quali
+                  .map(
+                    (c) => comandi().find((x) => x.chiave === c)?.titolo ?? c,
+                  )
                   .join(", ")})`,
             )
             .join("; ")}
-          . Finché è così vince il primo di questo elenco — non è casuale, ma
-          quasi di sicuro non è quel che volevi.
+          {t("shortcuts.clash.tail")}
         </p>
       )}
 
@@ -174,14 +184,14 @@ export function Scorciatoie({
         <button
           type="button"
           className="bottone btn-ghost"
-          disabled={COMANDI.every(
+          disabled={comandi().every(
             ({ chiave }) =>
               associazioni[chiave].length === DI_SERIE[chiave].length &&
               associazioni[chiave].every((t, i) => t === DI_SERIE[chiave][i]),
           )}
           onClick={() => onCambia(serieMutabile())}
         >
-          Rimetti quelle di serie
+          {t("shortcuts.reset")}
         </button>
       </div>
     </>

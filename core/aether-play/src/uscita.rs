@@ -199,7 +199,7 @@ fn costruisci(
                     &mut andamento,
                     &mut filtro,
                     &mut spia,
-                    |v| v,
+                    a_f32,
                 );
             },
             su_errore,
@@ -251,6 +251,24 @@ fn costruisci(
     })?;
 
     Ok((flusso, formato))
+}
+
+/// Da campione normalizzato a campione normalizzato, ma tagliato.
+///
+/// Sembra la funzione identità e per quasi tutti i campioni lo è. Non lo è per
+/// quelli fuori scala, e fuori scala ci si va davvero: la correzione
+/// ReplayGain arriva fino a +12 dB, cioè quasi il quadruplo, e il bersaglio
+/// «alto» della normalizzazione — quello delle piattaforme di streaming — la
+/// porta lì su qualunque brano già forte.
+///
+/// Fino a ieri qui c'era `|v| v`. Sulle due uscite a interi il taglio c'era
+/// già dentro [`a_i16`]; su questa, che è il formato che WASAPI offre quasi
+/// sempre, i campioni uscivano come venivano. Cosa ne faccia il sistema
+/// operativo non è scritto da nessuna parte — di solito taglia, ma «di solito»
+/// non è una garanzia su cui costruire il suono, e un driver che invece
+/// avvolge produce uno schianto a piena ampiezza esattamente sui picchi.
+fn a_f32(v: f32) -> f32 {
+    v.clamp(-1.0, 1.0)
 }
 
 /// Da campione normalizzato a intero con segno a 16 bit.
@@ -540,10 +558,21 @@ mod prove {
         let stato = condiviso(2);
         stato.in_pausa.store(true, Ordering::Release);
         let mut lettore = lettore;
-        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
+        let mut andamento = Andamento {
+            guadagno: 1.0,
+            resto: 0,
+        };
         let (_manda, mut filtro) = filtro();
         let mut dati = [1.0f32; 4];
-        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        riempi(
+            &mut dati,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
         assert_eq!(dati, [0.0; 4]);
         // Niente è stato consumato: riprendere non deve aspettare.
         assert_eq!(lettore.slots(), 8);
@@ -558,10 +587,21 @@ mod prove {
         }
         let stato = condiviso(2);
         stato.svuota.store(true, Ordering::Release);
-        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
+        let mut andamento = Andamento {
+            guadagno: 1.0,
+            resto: 0,
+        };
         let (_manda, mut filtro) = filtro();
         let mut dati = [1.0f32; 4];
-        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        riempi(
+            &mut dati,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
         assert_eq!(dati, [0.0; 4]);
         assert_eq!(lettore.slots(), 0, "l'anello doveva restare vuoto");
         assert!(!stato.svuota.load(Ordering::Acquire), "doveva disarmarsi");
@@ -571,10 +611,21 @@ mod prove {
     fn un_anello_vuoto_da_silenzio_e_lo_conta() {
         let (_scrittore, mut lettore) = rtrb::RingBuffer::<f32>::new(16);
         let stato = condiviso(2);
-        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
+        let mut andamento = Andamento {
+            guadagno: 1.0,
+            resto: 0,
+        };
         let (_manda, mut filtro) = filtro();
         let mut dati = [1.0f32; 4];
-        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        riempi(
+            &mut dati,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
         assert_eq!(dati, [0.0; 4]);
         assert_eq!(stato.vuoti.load(Ordering::Relaxed), 4);
     }
@@ -586,10 +637,21 @@ mod prove {
             let _ = scrittore.push(0.5);
         }
         let stato = condiviso(2);
-        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
+        let mut andamento = Andamento {
+            guadagno: 1.0,
+            resto: 0,
+        };
         let (_manda, mut filtro) = filtro();
         let mut dati = [0.0f32; 8];
-        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        riempi(
+            &mut dati,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
         // Otto campioni su due canali sono quattro fotogrammi.
         assert_eq!(stato.fotogrammi.load(Ordering::Relaxed), 4);
     }
@@ -616,7 +678,15 @@ mod prove {
             let _ = scrittore.push(0.5);
         }
         let mut dati = [0.0f32; 4];
-        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        riempi(
+            &mut dati,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
         assert_eq!(
             stato.fotogrammi.load(Ordering::Relaxed),
             1,
@@ -627,7 +697,15 @@ mod prove {
         // secondo fotogramma, e va contato.
         let _ = scrittore.push(0.5);
         let mut ancora = [0.0f32; 2];
-        riempi(&mut ancora, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        riempi(
+            &mut ancora,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
         assert_eq!(
             stato.fotogrammi.load(Ordering::Relaxed),
             2,
@@ -650,13 +728,35 @@ mod prove {
         };
         let _ = scrittore.push(0.5);
         let mut dati = [0.0f32; 2];
-        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
-        assert_eq!(andamento.resto, 1, "un campione spaiato è rimasto in sospeso");
+        riempi(
+            &mut dati,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
+        assert_eq!(
+            andamento.resto, 1,
+            "un campione spaiato è rimasto in sospeso"
+        );
 
         stato.svuota.store(true, Ordering::Release);
         let mut silenzio = [0.0f32; 2];
-        riempi(&mut silenzio, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
-        assert_eq!(andamento.resto, 0, "il fotogramma a metà era del punto di prima");
+        riempi(
+            &mut silenzio,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
+        assert_eq!(
+            andamento.resto, 0,
+            "il fotogramma a metà era del punto di prima"
+        );
     }
 
     #[test]
@@ -666,10 +766,21 @@ mod prove {
             let _ = scrittore.push(1.0);
         }
         let stato = condiviso(2);
-        let mut andamento = Andamento { guadagno: 0.0, resto: 0 };
+        let mut andamento = Andamento {
+            guadagno: 0.0,
+            resto: 0,
+        };
         let (_manda, mut filtro) = filtro();
         let mut dati = [0.0f32; 64];
-        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        riempi(
+            &mut dati,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
         // Il primo campione è quasi zero, non uno: nessun gradino.
         let primo = dati.first().copied().unwrap_or(1.0);
         assert!(primo < 0.01, "primo campione: {primo}");
@@ -683,11 +794,45 @@ mod prove {
             let _ = scrittore.push(4.0);
         }
         let stato = condiviso(2);
-        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
+        let mut andamento = Andamento {
+            guadagno: 1.0,
+            resto: 0,
+        };
         let (_manda, mut filtro) = filtro();
         let mut dati = [0i16; 4];
-        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), a_i16);
+        riempi(
+            &mut dati,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            a_i16,
+        );
         assert!(dati.iter().all(|&v| v > 0), "un picco è diventato negativo");
+    }
+
+    #[test]
+    fn l_uscita_in_virgola_mobile_taglia_i_campioni_fuori_scala() {
+        // Il caso che il bersaglio «alto» della normalizzazione rende comune:
+        // una correzione ReplayGain che porta un brano già forte sopra l'uno.
+        // Prima questa uscita passava il valore com'era, e cosa ne facesse il
+        // driver non era scritto da nessuna parte.
+        assert!(
+            (a_f32(1.8) - 1.0).abs() < f32::EPSILON,
+            "non ha tagliato sopra"
+        );
+        assert!(
+            (a_f32(-1.8) + 1.0).abs() < f32::EPSILON,
+            "non ha tagliato sotto"
+        );
+        // E per tutto il resto, che è quasi sempre, non deve toccare niente.
+        for dentro in [0.0f32, 0.5, -0.5, 1.0, -1.0] {
+            assert!(
+                (a_f32(dentro) - dentro).abs() < f32::EPSILON,
+                "ha cambiato un campione che stava già in scala: {dentro}"
+            );
+        }
     }
 
     #[test]
@@ -697,14 +842,28 @@ mod prove {
             let _ = scrittore.push(valore);
         }
         let stato = condiviso(2);
-        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
+        let mut andamento = Andamento {
+            guadagno: 1.0,
+            resto: 0,
+        };
         let (_manda, mut filtro) = filtro();
         let mut dati = [0.0f32; 4];
-        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        riempi(
+            &mut dati,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
         // Il guadagno parte già a uno, quindi la rampa non sposta niente di
         // percettibile: quel che è entrato è quel che esce.
         for (uscito, atteso) in dati.iter().zip([0.1f32, -0.2, 0.3, -0.4]) {
-            assert!((uscito - atteso).abs() < 1e-3, "{uscito} invece di {atteso}");
+            assert!(
+                (uscito - atteso).abs() < 1e-3,
+                "{uscito} invece di {atteso}"
+            );
         }
     }
 
@@ -715,12 +874,23 @@ mod prove {
             let _ = scrittore.push(0.5);
         }
         let stato = condiviso(2);
-        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
+        let mut andamento = Andamento {
+            guadagno: 1.0,
+            resto: 0,
+        };
         let (mut manda, mut filtro) = filtro();
         // Tutto abbassato: il preamp resta a uno e i filtri tagliano.
         let _ = manda.push(Coefficienti::calcola(&[-LIMITE_DB; BANDE], true, 48_000));
         let mut dati = [0.0f32; 64];
-        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        riempi(
+            &mut dati,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
         assert!(!filtro.stato.piatto(), "la curva doveva essere ritirata");
         let ultimo = dati.last().copied().unwrap_or(0.5);
         assert!(
@@ -738,11 +908,22 @@ mod prove {
             let _ = scrittore.push(0.9);
         }
         let stato = condiviso(2);
-        let mut andamento = Andamento { guadagno: 1.0, resto: 0 };
+        let mut andamento = Andamento {
+            guadagno: 1.0,
+            resto: 0,
+        };
         let (mut manda, mut filtro) = filtro();
         let _ = manda.push(Coefficienti::calcola(&[LIMITE_DB; BANDE], true, 48_000));
         let mut dati = [0.0f32; 64];
-        riempi(&mut dati, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        riempi(
+            &mut dati,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
 
         stato.svuota.store(true, Ordering::Release);
         let mut silenzio = [0.0f32; 4];
@@ -763,7 +944,15 @@ mod prove {
             let _ = scrittore.push(0.0);
         }
         let mut dopo = [1.0f32; 8];
-        riempi(&mut dopo, &mut lettore, &stato, &mut andamento, &mut filtro, &mut spia(), |v| v);
+        riempi(
+            &mut dopo,
+            &mut lettore,
+            &stato,
+            &mut andamento,
+            &mut filtro,
+            &mut spia(),
+            |v| v,
+        );
         for (n, valore) in dopo.iter().enumerate() {
             assert!(valore.abs() < 1e-6, "campione {n} vale {valore}, non zero");
         }

@@ -28,6 +28,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { CENTRI_EQ, LIMITE_EQ_DB, ipc, type VocePreset } from "../ipc";
 import { Icona } from "./Icone";
+import { t } from "../lingue";
 
 /** Dove sta l'equalizzatore, e quindi quanto è grande. */
 export type TagliaEq = "pannello" | "pagina";
@@ -230,7 +231,7 @@ export function Equalizzatore({
           className="interruttore switch"
           role="switch"
           aria-checked={acceso}
-          aria-label="Equalizzatore"
+          aria-label={t("player.eq")}
           onClick={() => applica(curva, !acceso)}
         >
           <span className="pista switch-track" aria-hidden="true">
@@ -239,14 +240,16 @@ export function Equalizzatore({
         </button>
         <select
           className="eq-preset"
-          aria-label="Curva"
+          aria-label={t("eq.curve")}
           value={attuale?.nome ?? ""}
           onChange={(e) => scegliPreset(e.target.value)}
         >
           {/* La voce vuota esiste solo finché la curva non corrisponde a
               nessuna dell'elenco: senza, il campo mostrerebbe il primo preset
               come se fosse quello in ascolto. */}
-          {attuale === undefined && <option value="">Curva tua</option>}
+          {attuale === undefined && (
+            <option value="">{t("eq.curve.own")}</option>
+          )}
           {preset.map((p) => (
             <option key={`${p.diSerie ? "s" : "u"}:${p.nome}`} value={p.nome}>
               {p.nome}
@@ -257,13 +260,13 @@ export function Equalizzatore({
           type="button"
           className="bottone minuto btn-ghost"
           onClick={azzera}
-          title="Riporta tutte le bande a zero"
+          title={t("eq.reset.title")}
         >
-          Azzera
+          {t("eq.reset")}
         </button>
       </div>
 
-      <div className="eq-bande">
+      <div className="eq-bande eq-bars">
         {CENTRI_EQ.map((hz, banda) => {
           const db = curva[banda] ?? 0;
           return (
@@ -271,12 +274,15 @@ export function Equalizzatore({
               {conNomi && <span className="eq-db stat-number">{db > 0 ? `+${db}` : db}</span>}
               <input
                 type="range"
-                className="eq-cursore"
+                className="eq-cursore eq-slider"
                 min={-LIMITE_EQ_DB}
                 max={LIMITE_EQ_DB}
                 step={PASSO_DB}
                 value={db}
-                aria-label={`${etichettaBanda(hz)}, ${db} decibel`}
+                aria-label={t("eq.band.aria", {
+                  banda: etichettaBanda(hz),
+                  db,
+                })}
                 onChange={(e) => muoviBanda(banda, Number(e.target.value))}
                 /* Il doppio clic riporta a zero la banda: è la scorciatoia che
                    ogni equalizzatore ha, e senza di lei ricentrare un cursore
@@ -293,8 +299,8 @@ export function Equalizzatore({
         <div className="eq-salva">
           <input
             type="text"
-            className="campo"
-            placeholder="Nome della curva…"
+            className="campo field-input"
+            placeholder={t("eq.save.name")}
             value={nomeNuovo}
             maxLength={40}
             onChange={(e) => setNomeNuovo(e.target.value)}
@@ -309,7 +315,7 @@ export function Equalizzatore({
             onClick={salva}
           >
             <Icona nome="i-plus" dim={15} />
-            Salva questa curva
+            {t("eq.save")}
           </button>
           {miei.length > 0 && (
             <ul className="eq-mie">
@@ -319,8 +325,8 @@ export function Equalizzatore({
                   <button
                     type="button"
                     className="tasto icon-btn"
-                    aria-label={`Cancella la curva ${p.nome}`}
-                    title="Cancella"
+                    aria-label={t("eq.delete", { nome: p.nome })}
+                    title={t("eq.delete.title")}
                     onClick={() => cancella(p.nome)}
                   >
                     <Icona nome="i-x" dim={13} />
@@ -360,7 +366,11 @@ export function PannelloEq({
       {/* Lo stesso velo del menù contestuale: prende il clic di chiusura, così
           il pannello si chiude cliccando ovunque e non solo su un tasto. */}
       <div className="velo" onClick={onChiudi} />
-      <div className="pannello-eq menu-pop" role="dialog" aria-label="Equalizzatore">
+      <div
+        className="pannello-eq menu-pop"
+        role="dialog"
+        aria-label={t("player.eq")}
+      >
         <Equalizzatore
           attivo={attivo}
           guadagni={guadagni}

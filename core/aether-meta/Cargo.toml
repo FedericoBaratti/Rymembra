@@ -8,10 +8,23 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+# Nessuno di questi crate va su crates.io.
+#
+# Non è modestia: sono i pezzi di un'applicazione, con nomi che occuperebbero
+# uno spazio dei nomi pubblico senza offrire niente a nessuno, e con un patto
+# di stabilità che non esiste — le firme qui dentro cambiano quando serve.
+# Senza questa riga un `cargo publish` distratto dalla radice li
+# pubblicherebbe tutti, e un nome preso su crates.io non si restituisce.
+publish = false
+
 [dependencies]
 aether-domain = { path = "../aether-domain" }
 aether-net = { path = "../aether-net" }
 serde_json.workspace = true
+# Solo per la prova di lavoro con cui LRCLIB protegge la pubblicazione. Sta già
+# nel workspace — la usa l'OAuth — quindi non è una dipendenza nuova
+# nell'albero, è la stessa versione usata da un secondo posto.
+sha2.workspace = true
 
 [lints]
 workspace = true

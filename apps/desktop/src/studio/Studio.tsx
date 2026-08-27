@@ -29,7 +29,13 @@
  *    accanto al nome, e la superficie ha un contatore su dieci.
  */
 import { save } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
 import {
   ipc,
@@ -41,7 +47,6 @@ import {
 } from "../ipc";
 import { Impaginazione } from "../Impaginazione";
 import { Icona } from "../parti/Icone";
-import { Intestazione } from "../parti/Intestazione";
 import { Segmentato } from "../parti/Segmentato";
 import { Anteprima, MISURA } from "./Anteprima";
 import { Documento, type Scheda } from "./Documento";
@@ -49,10 +54,28 @@ import { Ispettore } from "./Ispettore";
 import { IspettoreNodo, Scafale } from "./Scafale";
 import { Pacchetto } from "./Pacchetto";
 import { Tavolozza } from "./Tavolozza";
-import { SCENE, contestoFinto, type Scena } from "./finto";
+import { Token } from "./Token";
+import {
+  contestoFinto,
+  effettive,
+  pagine,
+  sovrapposizioni,
+  spentaPerche,
+  type Pagina,
+  type Sovrapposizione,
+} from "./finto";
+import {
+  DOVE_SI_VEDE,
+  NON_ANCORA,
+  Sovrapposte,
+  perchePartMai,
+  slotDellaPagina,
+} from "./scene";
+import { useStoria } from "./storia";
 import {
   leggi,
   percorsoParte,
+  rinominaChiave,
   scrivi as riscrivi,
   scriviIn,
   togliDa,
@@ -67,40 +90,116 @@ import {
   versoDocumento,
   type Via,
 } from "./albero";
+import { t } from "../lingue";
+import { Trans } from "../lingue/Trans";
+import { descrizioneParte, descrizioneToken } from "./vocabolario";
 
 /** Le quattro viste dello Studio. */
 type Vista = "ispeziona" | "impagina" | "documento" | "tavolozza";
 
 /**
- * I due buchi dell'anteprima.
+ * I gradini dell'ingrandimento.
  *
- * Non sono nell'albero, e non è un ripiego: **l'albero decide dove va la pagina,
- * l'app decide quale pagina è**. Quale vista si stia guardando è instradamento —
- * stato dell'app — e una skin non ha titolo a sceglierlo. Qui dentro va quindi
- * un segnaposto: l'intestazione vera con dei dati inventati, e un riquadro che
- * porta i nomi delle parti che una pagina usa davvero, così la sonda li
- * riconosce come li riconoscerebbe nell'applicazione.
+ * `null` è «stai nello spazio che c'è», cioè la miniatura di sempre. Gli altri
+ * due sono misure vere: a `1` un bordo da un pixel è un pixel, ed è l'unica
+ * scala a cui si possa giudicare un raggio da tre o una hairline.
  */
-const SLOT_FINTI = {
-  intestazione: (
-    <Intestazione
-      occhiello="Libreria"
-      titolo="Album"
-      sottotitolo="135 in libreria"
-    />
-  ),
-  contenuto: (
-    <div className="dentro">
-      <div className="griglia track-grid">
-        {[0, 1, 2, 3, 4, 5].map((i) => (
-          <div key={i} className="scheda section-card">
-            <div className="copertina skeleton" />
-          </div>
-        ))}
+function ingrandimenti(): readonly (readonly [string, number | null])[] {
+  return [
+    [t("studio.zoom.fit"), null],
+    ["1:1", 1],
+    ["2×", 2],
+  ];
+}
+
+/**
+ * La testata dell'anteprima: quale pagina, e cosa c'è sopra.
+ *
+ * Due righe e non una, perché sono due assi: sotto le linguette della pagina
+ * stanno gli interruttori delle sovrapposizioni, che si accendono a piacere e
+ * in qualunque combinazione l'applicazione sappia produrre. Un interruttore che
+ * qui non avrebbe effetto — la coda a schermo intero, la colonna senza un brano
+ * — si spegne **e dice perché**, invece di accendersi e non far succedere
+ * niente: quella è la stessa ambiguità che tutta questa vista esiste per non
+ * avere.
+ *
+ * Le due righe portano la larghezza misurata del riquadro, come già faceva la
+ * prima: finiscono dove finisce quel che governano.
+ */
+function TestaScene({
+  larghezza,
+  pagina,
+  accese,
+  onPagina,
+  onCommuta,
+  children,
+}: {
+  larghezza: number;
+  pagina: Pagina;
+  /**
+   * Quel che è acceso, **prima** del filtro di `effettive()`.
+   *
+   * Gli interruttori ricordano: si accende la coda, si passa a schermo intero
+   * dove non può esserci, si torna indietro e la coda è ancora accesa. Spegnerli
+   * davvero avrebbe fatto pagare il viaggio di andata e ritorno.
+   */
+  accese: ReadonlySet<Sovrapposizione>;
+  onPagina: (pagina: Pagina) => void;
+  onCommuta: (quale: Sovrapposizione) => void;
+  /** Quel che va a destra della prima riga: la scala, o l'indirizzo del nodo. */
+  children?: ReactNode;
+}) {
+  return (
+    <>
+      {/* La testata è larga quanto il riquadro, misurato: le linguette stanno
+          sopra la scena che cambiano, e la riga di sotto finisce dove finisce
+          quel che misura.
+
+          Le nove pagine hanno la prima riga tutta per sé. Dividerla con la
+          scala voleva dire che le ultime due — «Vuoto» e «Caricamento» —
+          uscivano dal bordo su una finestra normale: raggiungibili scorrendo, e
+          quindi invisibili, che per un elenco di destinazioni è come non
+          averle. */}
+      <div className="testa-centro" style={{ width: larghezza }}>
+        <Segmentato
+          etichetta={t("studio.whichScreen")}
+          scelta={pagina}
+          onScegli={onPagina}
+          classe="minuto"
+          voci={pagine().map(([chiave, etichetta]) => ({ chiave, etichetta }))}
+        />
+        <span className="spinta" />
       </div>
-    </div>
-  ),
-} as const;
+
+      <div className="testa-sovrapposte" style={{ width: larghezza }}>
+        <span className="titolino">{t("studio.whichOverlays")}</span>
+        {sovrapposizioni().map(([chiave, etichetta]) => {
+          const perche = spentaPerche(chiave, pagina, accese);
+          const accesa = accese.has(chiave);
+          return (
+            <button
+              key={chiave}
+              type="button"
+              className="chip-gruppo"
+              role="switch"
+              aria-checked={accesa && perche === undefined}
+              data-active={(accesa && perche === undefined) || undefined}
+              disabled={perche !== undefined}
+              title={perche}
+              onClick={() => onCommuta(chiave)}
+            >
+              {etichetta}
+            </button>
+          );
+        })}
+        <span className="spinta" />
+        {/* La scala e la sua lettura stanno qui, all'angolo destro della riga
+            che tocca il riquadro: è dove finisce quel che misurano. */}
+        {children}
+      </div>
+    </>
+  );
+}
 
 export function Studio({
   id,
@@ -116,20 +215,76 @@ export function Studio({
   onErrore: (e: unknown) => void;
 }) {
   const [registro, setRegistro] = useState<Registro | null>(null);
-  const [sorgente, setSorgente] = useState("");
+  /**
+   * Il testo, con la sua storia.
+   *
+   * `setSorgente` è diventato `scriviSorgente` per tutti allo stesso modo:
+   * controlli, editor e ripristini passano di qui, quindi non esiste una
+   * modifica che sfugga all'annullo. Il caricamento del documento è l'unica
+   * eccezione, e usa `riparti` — vedi `storia.ts`.
+   */
+  const {
+    sorgente,
+    scriviSorgente: setSorgente,
+    riparti,
+    annulla,
+    ripeti,
+    puoAnnullare,
+    puoRipetere,
+  } = useStoria();
   const [originale, setOriginale] = useState("");
+  /**
+   * Il testo che sta nella bozza su disco, se ce n'è una.
+   *
+   * È diverso da `originale`, che è quel che sta nel pacchetto installato. I due
+   * rispondono a due domande che si somigliano e non sono la stessa: «ho
+   * cambiato qualcosa rispetto alla skin installata» e «quel che ho scritto è al
+   * sicuro». La seconda era rimasta senza risposta, e la pillola «non salvata»
+   * la dava sbagliata.
+   */
+  const [salvataAl, setSalvataAl] = useState("");
   const [esito, setEsito] = useState<Validazione | null>(null);
   const [ultimoValido, setUltimoValido] = useState<Validazione | null>(null);
   const [vista, setVista] = useState<Vista>("ispeziona");
   const [scheda, setScheda] = useState<Scheda>("json");
-  const [scena, setScena] = useState<Scena>("libreria");
+  /**
+   * I due assi dell'anteprima: quale pagina, e cosa c'è sopra.
+   *
+   * Era un valore solo, e mescolava due cose che nell'app sono indipendenti: la
+   * scena «modale» *era* la coda aperta più due brani selezionati, e non c'era
+   * modo di guardare la notifica sopra Impostazioni — che è l'unico posto in cui
+   * la notifica della scansione compare davvero.
+   */
+  const [pagina, setPagina] = useState<Pagina>("libreria");
+  const [accese, setAccese] = useState<ReadonlySet<Sovrapposizione>>(
+    () => new Set(),
+  );
   const [sonda, setSonda] = useState(true);
   const [parteScelta, setParteScelta] = useState<string | null>(null);
+  /**
+   * Il token aperto nell'editor.
+   *
+   * È il gemello di `parteScelta`, e per un pezzo non è esistito: l'albero
+   * elencava i token e cliccarli non faceva niente, quindi per cambiare
+   * `color.accent` bisognava scendere nel JSON.
+   */
+  const [tokenScelto, setTokenScelto] = useState<string | null>(null);
   const [stato, setStato] = useState<string | null>(null);
   const [filtro, setFiltro] = useState("");
   const [lato, setLato] = useState<"token" | "parti">("parti");
   /** Quale variante mostra l'anteprima. Cambia il riquadro, non la finestra. */
   const [tema, setTema] = useState<"dark" | "light">("dark");
+  /** A che scala si guarda. `null` è «adatta allo spazio». */
+  const [ingrandimento, setIngrandimento] = useState<number | null>(null);
+  /**
+   * Quante volte la parte scelta compare nella scena aperta.
+   *
+   * Serve a dire «questa parte qui non c'è, sta di là». Prima non lo diceva
+   * nessuno: si sceglieva `toast-card`, si ridipingeva, non succedeva niente, e
+   * non c'era modo di distinguere una skin che non funziona da una superficie
+   * che non è in questa scena.
+   */
+  const [quanteVolte, setQuanteVolte] = useState(0);
   /**
    * Quanto è larga l'anteprima adesso, in pixel: la misura la prende lei.
    *
@@ -161,11 +316,14 @@ export function Studio({
     ipc
       .studioDocumento(id)
       .then((testo) => {
-        setSorgente(testo);
+        riparti(testo);
         setOriginale(testo);
+        // Quel che si è appena letto viene dal disco per definizione, che ci sia
+        // arrivato da una bozza o dal pacchetto.
+        setSalvataAl(testo);
       })
       .catch(onErrore);
-  }, [id, onErrore]);
+  }, [id, onErrore, riparti]);
 
   /** L'albero del pacchetto: cambia solo quando si esporta o si installa. */
   const rileggiPacchetto = useCallback(() => {
@@ -208,10 +366,18 @@ export function Studio({
   // La bozza si salva da sé, e si salva **anche se non è valida**: un documento
   // a metà è un lavoro in corso, e perderlo chiudendo la finestra sarebbe il
   // modo peggiore di insegnare a salvare spesso.
+  //
+  // Quel che è finito su disco si segna, e non è un dettaglio contabile: senza,
+  // «non salvata» resta acceso per sempre — anche un minuto dopo che la bozza è
+  // stata scritta — e un indicatore che dice sempre la stessa cosa smette di
+  // essere un indicatore.
   useEffect(() => {
     if (sorgente.length === 0 || sorgente === originale) return;
     const attesa = setTimeout(() => {
-      ipc.studioSalva(id, sorgente).catch(onErrore);
+      ipc
+        .studioSalva(id, sorgente)
+        .then(() => setSalvataAl(sorgente))
+        .catch(onErrore);
     }, 800);
     return () => clearTimeout(attesa);
   }, [sorgente, originale, id, onErrore]);
@@ -226,21 +392,41 @@ export function Studio({
    */
   useEffect(() => {
     const ascolta = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.altKey || e.metaKey) return;
-      if (e.key !== "i" && e.key !== "I") return;
       const dove = document.activeElement;
       const scrivendo =
         dove instanceof HTMLInputElement ||
         dove instanceof HTMLTextAreaElement ||
         dove instanceof HTMLSelectElement ||
         (dove instanceof HTMLElement && dove.isContentEditable);
+
+      // Annulla e ripeti **anche** dentro l'editor, e questa è la differenza
+      // con la sonda. Di solito si lascia al campo il suo annullo nativo; qui
+      // quell'annullo non esiste — la sorgente è controllata e ogni controllo
+      // la riscrive da fuori, il che svuota la pila del browser. Intercettarlo
+      // non toglie niente a nessuno: restituisce l'unico annullo che c'è.
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const tasto = e.key.toLowerCase();
+        if (tasto === "z" && !e.shiftKey) {
+          e.preventDefault();
+          annulla();
+          return;
+        }
+        if ((tasto === "z" && e.shiftKey) || tasto === "y") {
+          e.preventDefault();
+          ripeti();
+          return;
+        }
+      }
+
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key !== "i" && e.key !== "I") return;
       if (scrivendo) return;
       e.preventDefault();
       setSonda((prima) => !prima);
     };
     window.addEventListener("keydown", ascolta);
     return () => window.removeEventListener("keydown", ascolta);
-  }, []);
+  }, [annulla, ripeti]);
 
   const parti = useMemo(
     () => new Map((registro?.parts ?? []).map((p) => [p.name, p])),
@@ -288,6 +474,69 @@ export function Studio({
   );
 
   /**
+   * Come `valoreDi` e `scrivi`, ma sempre alla base della parte.
+   *
+   * Serve a `layer`, che è l'unica dichiarazione di una parte a **non** essere
+   * un aspetto: `document.rs` la toglie dalla mappa prima di validare il resto
+   * (`solo_aspetto.remove("layer")`), quindi esiste solo in
+   * `parts.<nome>.layer` e non ha una versione per stato. Passarla dal funnel
+   * normale scriverebbe `parts.x.states.hover.layer`, che il parser rifiuta —
+   * un errore che l'interfaccia avrebbe suggerito.
+   */
+  const valoreBase = useCallback(
+    (campo: string): unknown => {
+      if (parteScelta === null || documento === null) return undefined;
+      return valoreIn(documento, ["parts", parteScelta, campo]);
+    },
+    [documento, parteScelta],
+  );
+
+  const scriviBase = useCallback(
+    (campo: string, valore: unknown) => {
+      if (parteScelta === null) return;
+      const dove = ["parts", parteScelta, campo];
+      setSorgente((prima) =>
+        valore === null || vuoto(valore)
+          ? togliDa(prima, dove)
+          : scriviIn(prima, dove, valore),
+      );
+    },
+    [parteScelta],
+  );
+
+  /**
+   * Il ponte fra l'editor dei token e il testo.
+   *
+   * Il prefisso è `["tokens"]` per il tema scuro e `["themes", "light"]` per il
+   * chiaro: sono due insiemi dello stesso vocabolario, e passarli come argomento
+   * invece di scrivere due funzioni tiene la regola in un posto solo — «`null`
+   * toglie, e togliere l'ultimo token di `themes.light` toglie anche
+   * `themes.light`», che è `togliDa` a farlo.
+   */
+  const scriviToken = useCallback(
+    (prefisso: readonly string[], valore: unknown) => {
+      if (tokenScelto === null) return;
+      const dove = [...prefisso, tokenScelto];
+      setSorgente((prima) =>
+        valore === null || vuoto(valore)
+          ? togliDa(prima, dove)
+          : scriviIn(prima, dove, valore),
+      );
+    },
+    [tokenScelto],
+  );
+
+  /** La skin promette un tema chiaro: solo allora la seconda colonna serve. */
+  const chiaroPromesso =
+    valoreIn(documento ?? {}, ["capabilities", "light"]) === true;
+
+  /** I motivi dichiarati: nome → effetto per esteso. */
+  const motivi = useMemo(
+    () => (documento?.["patterns"] ?? {}) as Readonly<Record<string, unknown>>,
+    [documento],
+  );
+
+  /**
    * Mette il lavoro nell'elenco delle skin, e lo indossa.
    *
    * # Perché non basta l'esportazione
@@ -328,6 +577,28 @@ export function Studio({
     try {
       await ipc.studioIstantanea(id, sorgente, "esportata");
       await ipc.studioEsporta(id, sorgente, dove);
+      rileggiPacchetto();
+    } catch (e) {
+      onErrore(e);
+    }
+  };
+
+  /**
+   * Butta la bozza e torna a quel che dice il pacchetto.
+   *
+   * Un'istantanea **prima**: è l'unica azione irreversibile dello Studio, e
+   * l'unica rete che ha senso stendere sotto è quella che c'è già. Chi si pente
+   * la ritrova in cima all'elenco.
+   */
+  const scartaBozza = async () => {
+    try {
+      await ipc.studioIstantanea(id, sorgente, "manuale");
+      const dalPacchetto = await ipc.studioScarta(id);
+      // Non `riparti`: buttare la bozza è una modifica come le altre, e
+      // annullarla deve essere possibile finché la finestra è aperta.
+      setSorgente(dalPacchetto);
+      setOriginale(dalPacchetto);
+      setSalvataAl(dalPacchetto);
       rileggiPacchetto();
     } catch (e) {
       onErrore(e);
@@ -463,49 +734,132 @@ export function Studio({
     });
   };
 
-  /** Il contesto e gli slot dell'anteprima: il mondo finto, per una scena. */
-  const finto = useMemo(() => contestoFinto(scena), [scena]);
+  /**
+   * Le sovrapposizioni accese **e** possibili su questa pagina.
+   *
+   * Un interruttore lasciato acceso e poi diventato impossibile — si accende la
+   * coda, si passa a schermo intero — non arriva al renderer: là produrrebbe uno
+   * stato che l'applicazione non ha. Si filtra qui invece che nel gesto, così
+   * tornando alla pagina di prima lo si ritrova acceso.
+   */
+  const attive = useMemo(() => effettive(pagina, accese), [pagina, accese]);
 
-  const definizione = registro?.parts.find((p) => p.name === parteScelta) ?? null;
+  /** Il contesto e gli slot dell'anteprima: il mondo finto, per una scena. */
+  const finto = useMemo(() => contestoFinto(pagina, attive), [pagina, attive]);
+  /**
+   * Quel che riempie il buco «contenuto» dell'albero.
+   *
+   * L'albero decide **dove** va la pagina, l'app decide **quale** pagina è: il
+   * secondo è instradamento, e una skin non ha titolo a sceglierlo. Ma senza
+   * niente là dentro le pagine dell'applicazione non comparivano in nessuna
+   * scena — e una parte che non si vede non si può ridipingere. Adesso ogni
+   * pagina porta il markup vero di quella schermata.
+   */
+  const slot = useMemo(() => slotDellaPagina(pagina, finto), [pagina, finto]);
+
+  /**
+   * Accende o spegne una sovrapposizione.
+   *
+   * Non tocca la pagina: sono due assi, e cambiarne uno per l'altro sarebbe il
+   * difetto che questa vista ha appena smesso di avere.
+   */
+  const commuta = useCallback((quale: Sovrapposizione) => {
+    setAccese((prima) => {
+      const dopo = new Set(prima);
+      if (dopo.has(quale)) dopo.delete(quale);
+      else dopo.add(quale);
+      return dopo;
+    });
+  }, []);
+
+  /**
+   * Porta dove la parte scelta si vede: la pagina **e** gli interruttori.
+   *
+   * Prima cambiava solo la scena, che con un asse solo era tutto quel che c'era
+   * da cambiare. Adesso «portami dalla barra della selezione» vuol dire una
+   * pagina qualunque con un interruttore acceso, e accenderlo è metà del
+   * viaggio.
+   */
+  const portamiA = useCallback((dove: (typeof DOVE_SI_VEDE)[string]) => {
+    if (dove.pagina !== undefined) setPagina(dove.pagina);
+    if (dove.accendi !== undefined) {
+      const quali = dove.accendi;
+      setAccese((prima) => new Set([...prima, ...quali]));
+    }
+  }, []);
+
+  const definizione =
+    registro?.parts.find((p) => p.name === parteScelta) ?? null;
   const obbligatori = registro?.tokens.filter((t) => t.required).length ?? 0;
   const mancanti =
-    registro?.tokens.filter((t) => t.required && !dichiarati.has(t.id)).length ?? 0;
+    registro?.tokens.filter((t) => t.required && !dichiarati.has(t.id))
+      .length ?? 0;
 
   return (
-    <section className="studio" aria-label="Skin Studio">
+    <section className="studio" aria-label={t("studio.title")}>
       <header className="testa-studio">
         <button
           type="button"
           className="tasto icon-btn"
-          aria-label="Esci dallo Studio"
+          aria-label={t("studio.leave")}
           onClick={onEsci}
         >
           <Icona nome="i-chev-l" dim={17} />
         </button>
         <span className="marchio-studio">
           <Icona nome="i-skin" dim={18} />
-          Skin Studio
+          {t("studio.title")}
         </span>
         <span className="divisore" />
         <span className="pillola-skin">
           <strong>{nome}</strong>
           <code>{versione}</code>
-          {sorgente !== originale && <span className="bozza">bozza</span>}
-          {errori > 0 && <span className="rotta">{errori} errori</span>}
+          {sorgente !== originale && (
+            <span className="bozza">{t("studio.draft")}</span>
+          )}
+          {errori > 0 && (
+            <span className="rotta">{t("studio.errors", { n: errori })}</span>
+          )}
         </span>
 
         <Segmentato
-          etichetta="Vista dello Studio"
+          etichetta={t("studio.whichView")}
           scelta={vista}
           onScegli={setVista}
           classe="minuto"
           voci={[
-            { chiave: "ispeziona", etichetta: "Ispeziona" },
-            { chiave: "impagina", etichetta: "Impagina" },
-            { chiave: "documento", etichetta: "Documento" },
-            { chiave: "tavolozza", etichetta: "Tavolozza" },
+            { chiave: "ispeziona", etichetta: t("studio.view.ispeziona") },
+            { chiave: "impagina", etichetta: t("studio.view.impagina") },
+            { chiave: "documento", etichetta: t("studio.view.documento") },
+            { chiave: "tavolozza", etichetta: t("studio.view.tavolozza") },
           ]}
         />
+
+        {/* Annulla e ripeti, accanto al nome e non in un menu: sono i due
+            bottoni che si cercano subito dopo aver sbagliato, e cercarli è già
+            metà del fastidio. La scorciatoia è quella di sempre. */}
+        <span className="coppia-storia">
+          <button
+            type="button"
+            className="tasto icon-btn"
+            aria-label={t("studio.undo")}
+            title={t("studio.undo.key")}
+            disabled={!puoAnnullare}
+            onClick={annulla}
+          >
+            <Icona nome="i-chev-l" dim={15} />
+          </button>
+          <button
+            type="button"
+            className="tasto icon-btn"
+            aria-label={t("studio.redo")}
+            title={t("studio.redo.key")}
+            disabled={!puoRipetere}
+            onClick={ripeti}
+          >
+            <Icona nome="i-chev-r" dim={15} />
+          </button>
+        </span>
 
         <span className="spinta" />
 
@@ -514,13 +868,13 @@ export function Studio({
             proprio il difetto che la vista Tavolozza denuncia. */}
         {capacita["light"] && (
           <Segmentato
-            etichetta="Quale variante mostra l'anteprima"
+            etichetta={t("studio.whichVariant")}
             scelta={tema}
             onScegli={setTema}
             classe="minuto"
             voci={[
-              { chiave: "dark", etichetta: "Scuro" },
-              { chiave: "light", etichetta: "Chiaro" },
+              { chiave: "dark", etichetta: t("studio.variant.dark") },
+              { chiave: "light", etichetta: t("studio.variant.light") },
             ]}
           />
         )}
@@ -530,15 +884,11 @@ export function Studio({
             type="button"
             className="pillola btn-ghost"
             disabled={documento === null}
-            title={
-              documento === null
-                ? "Il documento non è JSON: riformattarlo vorrebbe dire riscriverci sopra"
-                : undefined
-            }
+            title={documento === null ? t("studio.notJson") : undefined}
             onClick={formatta}
           >
             <Icona nome="i-sort" dim={15} />
-            Formatta
+            {t("studio.format")}
           </button>
         )}
 
@@ -550,7 +900,7 @@ export function Studio({
             onClick={() => setSonda((prima) => !prima)}
           >
             <Icona nome="i-search" dim={15} />
-            Sonda
+            {t("studio.probe")}
             <kbd className="scorciatoia">I</kbd>
           </button>
         )}
@@ -560,27 +910,83 @@ export function Studio({
           disabled={errori > 0 || diSerie}
           title={
             diSerie
-              ? "«Plain» è la skin di serie e non si sovrascrive: cambia «id» e «meta.name» nella scheda Documento, e questo diventa un tema tuo"
+              ? t("studio.stockSkin")
               : errori > 0
-                ? "Gli errori bloccano l'installazione"
+                ? t("studio.errorsBlockInstall")
                 : undefined
           }
           onClick={() => void salvaEUsa()}
         >
           <Icona nome="i-check" dim={15} />
-          Salva e usa
+          {t("studio.saveAndUse")}
         </button>
+        {/* Il consiglio del suggerimento, fatto bottone. Dire «cambia id e
+            nome» accanto a un bottone spento lascia comunque da cercare dove:
+            il pannello Identità nella vista Tavolozza è quel dove, ed esiste da
+            adesso. */}
+        {diSerie && (
+          <button
+            type="button"
+            className="pillola btn-ghost"
+            title={t("studio.nameIt.why")}
+            onClick={() => setVista("tavolozza")}
+          >
+            <Icona nome="i-mark" dim={15} />
+            {t("studio.nameIt")}
+          </button>
+        )}
         <button
           type="button"
           className="pillola btn-ghost"
           disabled={errori > 0}
-          title={errori > 0 ? "Gli errori bloccano l'esportazione" : undefined}
+          title={errori > 0 ? t("studio.export.blocked") : undefined}
           onClick={() => void esporta()}
         >
           <Icona nome="i-import" dim={15} />
-          Esporta .aeskin
+          {t("studio.export.do")}
         </button>
       </header>
+
+      {/*
+        Quando il testo non è JSON, i controlli non scrivono.
+
+        Non è una scelta di questa fascia: `scriviIn` restituisce la sorgente
+        intatta se non riesce a leggerla, ed è giusto — riscrivere sopra un
+        documento a metà di una parentesi vorrebbe dire buttare via quel che si
+        stava scrivendo. Il difetto era il silenzio: si trascinava un cursore,
+        non succedeva niente, e non c'era modo di sapere perché. Adesso lo dice,
+        e offre le due uscite invece di lasciarle cercare.
+      */}
+      {documento === null && sorgente.length > 0 && (
+        <div className="testo-rotto" role="status">
+          <Icona nome="i-alert" dim={15} />
+          <span>
+            <Trans
+              k="studio.broken"
+              v={{
+                nonScrivono: <strong>{t("studio.broken.controls")}</strong>,
+              }}
+            />
+          </span>
+          <button
+            type="button"
+            className="pillola btn-ghost"
+            onClick={() => setVista("documento")}
+          >
+            <Icona nome="i-text" dim={14} />
+            {t("studio.broken.goText")}
+          </button>
+          <button
+            type="button"
+            className="pillola btn-ghost"
+            disabled={!puoAnnullare}
+            onClick={annulla}
+          >
+            <Icona nome="i-chev-l" dim={14} />
+            {t("studio.undo")}
+          </button>
+        </div>
+      )}
 
       {vista === "documento" && (
         <Documento
@@ -596,10 +1002,8 @@ export function Studio({
           idSkin={String(documento?.["id"] ?? id)}
           vaiAlla={vaiAlla}
           onArrivato={() => setVaiAlla(null)}
-          onCorreggi={(sbagliato, giusto) =>
-            setSorgente((prima) =>
-              prima.replace(`"${sbagliato}"`, `"${giusto}"`),
-            )
+          onCorreggi={(percorso, giusto) =>
+            setSorgente((prima) => rinominaChiave(prima, percorso, giusto))
           }
           colonnaSinistra={
             <Pacchetto
@@ -608,7 +1012,12 @@ export function Studio({
               istantanee={istantanee}
               parti={ridisegnate.size}
               token={dichiarati.size}
-              sporca={sorgente !== originale}
+              // Rispetto alla **bozza su disco**, non alla skin installata:
+              // altrimenti restava «non salvata» per sempre, perché il salvataggio
+              // automatico non tocca il pacchetto e non poteva farlo scendere.
+              sporca={sorgente !== salvataAl}
+              derivata={sorgente !== originale}
+              onScarta={() => void scartaBozza()}
               onIstantanea={() => {
                 ipc
                   .studioIstantanea(id, sorgente, "manuale")
@@ -634,6 +1043,11 @@ export function Studio({
           registro={registro}
           onEsporta={() => void esporta()}
           onVaiA={vaiA}
+          onApriToken={(token) => {
+            setTokenScelto(token);
+            setLato("token");
+            setVista("ispeziona");
+          }}
         />
       )}
 
@@ -643,19 +1057,27 @@ export function Studio({
             <input
               className="filtro field-input"
               type="search"
-              placeholder="Cerca nel registro…"
+              placeholder={t("studio.registry.search")}
               value={filtro}
               onChange={(e) => setFiltro(e.target.value)}
               spellCheck={false}
             />
             <Segmentato
-              etichetta="Cosa mostrare"
+              etichetta={t("studio.registry.what")}
               scelta={lato}
               onScegli={setLato}
               classe="minuto"
               voci={[
-                { chiave: "token", etichetta: "Token", conteggio: registro?.tokens.length },
-                { chiave: "parti", etichetta: "Parti", conteggio: registro?.parts.length },
+                {
+                  chiave: "token",
+                  etichetta: t("studio.registry.tokens"),
+                  conteggio: registro?.tokens.length,
+                },
+                {
+                  chiave: "parti",
+                  etichetta: t("studio.registry.parts"),
+                  conteggio: registro?.parts.length,
+                },
               ]}
             />
 
@@ -666,66 +1088,91 @@ export function Studio({
                 const aperto =
                   filtro.trim().length > 0 ||
                   aperti.has(gruppo) ||
-                  dentro.some((v) => ("name" in v ? v.name : v.id) === parteScelta);
+                  dentro.some((v) =>
+                    "name" in v ? v.name === parteScelta : v.id === tokenScelto,
+                  );
                 return (
-                <div key={gruppo} className="gruppo-registro">
-                  <button
-                    type="button"
-                    className="titolo-gruppo"
-                    aria-expanded={aperto}
-                    onClick={() =>
-                      setAperti((prima) => {
-                        const dopo = new Set(prima);
-                        if (dopo.has(gruppo)) dopo.delete(gruppo);
-                        else dopo.add(gruppo);
-                        return dopo;
-                      })
-                    }
-                  >
-                    <Icona nome={aperto ? "i-chev-d" : "i-chev-r"} dim={13} />
-                    <span>{gruppo}</span>
-                    <span className="quante">{dentro.length}</span>
-                  </button>
-                  {aperto &&
-                    dentro.map((voce) => {
-                    const nomeVoce = "name" in voce ? voce.name : voce.id;
-                    const toccata =
-                      "name" in voce
-                        ? ridisegnate.has(voce.name)
-                        : dichiarati.has(voce.id);
-                    return (
-                      <button
-                        key={nomeVoce}
-                        type="button"
-                        className="voce-registro"
-                        data-active={parteScelta === nomeVoce || undefined}
-                        title={voce.description}
-                        onClick={() =>
-                          "name" in voce ? setParteScelta(voce.name) : undefined
+                  <div key={gruppo} className="gruppo-registro">
+                    <button
+                      type="button"
+                      className="titolo-gruppo"
+                      aria-expanded={aperto}
+                      onClick={() =>
+                        setAperti((prima) => {
+                          const dopo = new Set(prima);
+                          if (dopo.has(gruppo)) dopo.delete(gruppo);
+                          else dopo.add(gruppo);
+                          return dopo;
+                        })
+                      }
+                    >
+                      <Icona nome={aperto ? "i-chev-d" : "i-chev-r"} dim={13} />
+                      <span>{gruppo}</span>
+                      <span className="quante">{dentro.length}</span>
+                    </button>
+                    {aperto &&
+                      dentro.map((voce) => {
+                        const nomeVoce = "name" in voce ? voce.name : voce.id;
+                        const toccata =
+                          "name" in voce
+                            ? ridisegnate.has(voce.name)
+                            : dichiarati.has(voce.id);
+                        return (
+                          <button
+                            key={nomeVoce}
+                            type="button"
+                            className="voce-registro"
+                            data-active={
+                              ("name" in voce
+                                ? parteScelta === voce.name
+                                : tokenScelto === voce.id) || undefined
+                            }
+                            title={
+                          "name" in voce
+                            ? descrizioneParte(voce.name, voce.description)
+                            : descrizioneToken(voce.id, voce.description)
                         }
-                      >
-                        {/* Il pallino dice se la skin l'ha già toccata: senza,
+                            // Un token si apre come si apre una parte. Prima questo
+                            // ramo restituiva `undefined`: l'albero mostrava
+                            // cinquantotto voci e nessuna di esse era un bottone che
+                            // portasse da qualche parte.
+                            onClick={() =>
+                              "name" in voce
+                                ? setParteScelta(voce.name)
+                                : setTokenScelto(voce.id)
+                            }
+                          >
+                            {/* Il pallino dice se la skin l'ha già toccata: senza,
                             per sapere cosa si è ridisegnato bisogna leggere il
                             JSON, e a quel punto l'albero non serve. */}
-                        <span className="pallino" data-toccata={toccata || undefined} />
-                        <code className="nome-voce">{nomeVoce}</code>
-                        {"layers" in voce && voce.layers && (
-                          <Icona nome="i-list" dim={11} titolo="ha un livello libero" />
-                        )}
-                        {"required" in voce && voce.required && (
-                          <span className="obbligatorio">•</span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+                            <span
+                              className="pallino"
+                              data-toccata={toccata || undefined}
+                            />
+                            <code className="nome-voce">{nomeVoce}</code>
+                            {"layers" in voce && voce.layers && (
+                              <Icona
+                                nome="i-list"
+                                dim={11}
+                                titolo={t("studio.registry.freeLayer")}
+                              />
+                            )}
+                            {"required" in voce && voce.required && (
+                              <span className="obbligatorio">•</span>
+                            )}
+                          </button>
+                        );
+                      })}
+                  </div>
                 );
               })}
             </div>
 
             <footer className="piede-registro">
               <span className="titolino">
-                {lato === "parti" ? "Parti per gruppo" : "Token per gruppo"}
+                {lato === "parti"
+                  ? t("studio.registry.partsByGroup")
+                  : t("studio.registry.tokensByGroup")}
               </span>
               {/* I chip rispondono «quanto è grande il vocabolario, e dov'è»
                   senza aprire i gruppi: è la domanda che si fa una volta sola,
@@ -753,14 +1200,19 @@ export function Studio({
               </div>
               <div className="sintesi">
                 {lato === "parti" ? (
-                  `${ridisegnate.size} ridisegnate su ${registro?.parts.length ?? 0}`
+                  t("studio.registry.redrawn", {
+                    n: ridisegnate.size,
+                    quante: registro?.parts.length ?? 0,
+                  })
                 ) : (
                   <>
-                    {obbligatori} obbligatori
+                    {t("studio.registry.required", { n: obbligatori })}
                     {mancanti > 0 && (
                       <>
                         {" · "}
-                        <span className="manca">{mancanti} non dichiarati</span>
+                        <span className="manca">
+                          {t("studio.registry.undeclared", { n: mancanti })}
+                        </span>
                       </>
                     )}
                   </>
@@ -770,22 +1222,32 @@ export function Studio({
           </aside>
 
           <div className="centro-studio">
-            {/* La testata è larga quanto il riquadro, misurato: le linguette
-                stanno sopra la scena che cambiano, e la lettura della scala
-                finisce sull'angolo di quel che misura. */}
-            <div className="testa-centro" style={{ width: larghezza }}>
+            <TestaScene
+              larghezza={larghezza}
+              pagina={pagina}
+              accese={accese}
+              onPagina={setPagina}
+              onCommuta={commuta}
+            >
               <Segmentato
-                etichetta="Quale schermata"
-                scelta={scena}
-                onScegli={setScena}
-                classe="minuto"
-                voci={SCENE.map(([chiave, etichetta]) => ({ chiave, etichetta }))}
+                etichetta={t("studio.whichScale")}
+                scelta={String(ingrandimento)}
+                onScegli={(v) =>
+                  setIngrandimento(v === "null" ? null : Number(v))
+                }
+                classe="minuto denso"
+                voci={ingrandimenti().map(([etichetta, quanto]) => ({
+                  chiave: String(quanto),
+                  etichetta,
+                }))}
               />
-              <span className="spinta" />
               <span className="misura-anteprima">
-                {MISURA.larghezza}×{MISURA.altezza} · {scala}%
+                {MISURA.larghezza}×{MISURA.altezza} ·{" "}
+                {ingrandimento === null
+                  ? `${scala}%`
+                  : `${ingrandimento * 100}%`}
               </span>
-            </div>
+            </TestaScene>
             <Anteprima
               css={(esito?.errori.length ?? 0) > 0 ? (ultimoValido?.css ?? "") : (esito?.css ?? "")}
               id={String(documento?.["id"] ?? id)}
@@ -795,40 +1257,137 @@ export function Studio({
               tema={tema === "light" ? "light" : undefined}
               densita={impaginazione?.density}
               movimento={impaginazione?.motion}
-              onScegli={setParteScelta}
+              ingrandimento={ingrandimento}
+              onScegli={(parte) => {
+                setParteScelta(parte);
+                // Scegliere dall'anteprima porta con sé il lato giusto: senza,
+                // si clicca una superficie e il pannello resta sul token che si
+                // stava guardando prima.
+                setLato("parti");
+              }}
+              onQuante={setQuanteVolte}
               onLarghezza={setLarghezza}
             >
-              <Impaginazione albero={albero} contesto={finto} slot={SLOT_FINTI} />
+              {/* L'applicazione, e accanto — non dentro il buco del contenuto
+                  — le sovrapposizioni: nell'app stanno fuori dall'albero perché
+                  si sovrappongono per definizione, e ficcarle nel contenuto
+                  voleva dire mostrarle in un posto in cui non compaiono mai. */}
+              <Impaginazione albero={albero} contesto={finto} slot={slot} />
+              <Sovrapposte accese={attive} />
             </Anteprima>
+
+            {/*
+              «Questa parte qui non si vede», e le tre ragioni per cui.
+
+              Prima erano due, e la seconda copriva un caso che non c'entrava:
+              chi sceglieva `tour-tooltip` — che il registro dichiara e nessuna
+              schermata disegna — si sentiva rispondere «sta nella cornice,
+              comparirà quando l'albero la monta», cioè un'attesa che non finisce
+              mai. Le tre risposte vere sono: sta in un'altra scena e ti ci
+              porto; sta nella cornice e dipende dall'albero; non la disegna
+              ancora nessuno, e nessuna scena te la può mostrare.
+            */}
+            {parteScelta !== null && lato === "parti" && quanteVolte === 0 && (
+              <p
+                className="non-si-vede section-card"
+                data-mai={NON_ANCORA[parteScelta] !== undefined || undefined}
+              >
+                <Icona
+                  nome={
+                    NON_ANCORA[parteScelta] !== undefined ? "i-alert" : "i-search"
+                  }
+                  dim={13}
+                />
+                <span>
+                  <Trans
+                    k={
+                      NON_ANCORA[parteScelta] !== undefined
+                        ? "studio.notYet"
+                        : "studio.notHere"
+                    }
+                    v={{ parte: <code>.{parteScelta}</code> }}
+                  />
+                </span>
+                {NON_ANCORA[parteScelta] !== undefined ? (
+                  <span className="da-dove">{perchePartMai(parteScelta)}</span>
+                ) : DOVE_SI_VEDE[parteScelta] !== undefined ? (
+                  <button
+                    type="button"
+                    className="pillola btn-ghost"
+                    onClick={() => {
+                      const dove = DOVE_SI_VEDE[parteScelta];
+                      if (dove !== undefined) portamiA(dove);
+                    }}
+                  >
+                    {t("studio.takeMeThere")}
+                  </button>
+                ) : (
+                  <span className="da-dove">{t("studio.inTheFrame")}</span>
+                )}
+              </p>
+            )}
+
             {(esito?.errori.length ?? 0) > 0 && (
               <p className="in-pausa">
                 <Icona nome="i-alert" dim={13} />
-                In pausa sull&apos;errore: l&apos;anteprima resta all&apos;ultimo
-                stato valido, e non lampeggia mentre scrivi.
+                {t("studio.pausedOnError")}
               </p>
             )}
             {sonda && (
               <p className="spiega-sonda section-card">
-                <strong>Sonda attiva.</strong> Il puntatore illumina la parte più
-                interna che la skin può ridisegnare; la briciola di pane mostra le
-                superfici sopra. Quel che <strong>non</strong> è una parte non si
-                illumina — ed è il modo più rapido per scoprire che una superficie
-                non è ancora nel registro.
+                <Trans
+                  k="studio.probe.note"
+                  v={{
+                    titolo: <strong>{t("studio.probe.note.title")}</strong>,
+                    non: <strong>{t("studio.probe.note.not")}</strong>,
+                  }}
+                />
               </p>
             )}
           </div>
 
-          <Ispettore
-            definizione={definizione}
-            stato={stato}
-            onStato={setStato}
-            valoreDi={valoreDi}
-            scrivi={scrivi}
-            tokens={registro?.tokens ?? []}
-            effetti={registro?.effects ?? []}
-            tavolozza={tavolozza}
-            budget={registro?.budget ?? 10}
-          />
+          {/* Il pannello segue il lato dell'albero: a sinistra si sceglie fra
+              token e parti, e il pannello mostra l'editor di quel che si è
+              scelto. Due pannelli affiancati vorrebbero dire che uno dei due è
+              sempre vuoto. */}
+          {lato === "token" ? (
+            <Token
+              definizione={
+                registro?.tokens.find((t) => t.id === tokenScelto) ?? null
+              }
+              valore={
+                tokenScelto === null || documento === null
+                  ? undefined
+                  : valoreIn(documento, ["tokens", tokenScelto])
+              }
+              valoreChiaro={
+                tokenScelto === null || documento === null
+                  ? undefined
+                  : valoreIn(documento, ["themes", "light", tokenScelto])
+              }
+              chiaroPromesso={chiaroPromesso}
+              tokens={registro?.tokens ?? []}
+              tavolozza={tavolozza}
+              onScrivi={(v) => scriviToken(["tokens"], v)}
+              onScriviChiaro={(v) => scriviToken(["themes", "light"], v)}
+              onVaiAlJson={vaiA}
+            />
+          ) : (
+            <Ispettore
+              definizione={definizione}
+              stato={stato}
+              onStato={setStato}
+              valoreDi={valoreDi}
+              scrivi={scrivi}
+              valoreBase={valoreBase}
+              scriviBase={scriviBase}
+              tokens={registro?.tokens ?? []}
+              effetti={registro?.effects ?? []}
+              tavolozza={tavolozza}
+              motivi={motivi}
+              budget={registro?.budget ?? 10}
+            />
+          )}
         </div>
       )}
 
@@ -845,23 +1404,27 @@ export function Studio({
           />
 
           <div className="centro-studio">
-            <div className="testa-centro" style={{ width: larghezza }}>
-              <Segmentato
-                etichetta="Quale schermata"
-                scelta={scena}
-                onScegli={setScena}
-                classe="minuto"
-                voci={SCENE.map(([chiave, etichetta]) => ({ chiave, etichetta }))}
-              />
-              <span className="spinta" />
+            <TestaScene
+              larghezza={larghezza}
+              pagina={pagina}
+              accese={accese}
+              onPagina={setPagina}
+              onCommuta={commuta}
+            >
               {/* La seconda briciola di pane: `riga › colonna › lettore`. Sono
                   gli indici del percorso, cioè esattamente il percorso JSON. */}
               <span className="misura-anteprima">
-                {nodoSotto === null ? `${MISURA.larghezza}×${MISURA.altezza} · ${scala}%` : `nodo ${nodoSotto}`}
+                {nodoSotto === null
+                  ? `${MISURA.larghezza}×${MISURA.altezza} · ${scala}%`
+                  : t("studio.node", { via: nodoSotto })}
               </span>
-            </div>
+            </TestaScene>
             <Anteprima
-              css={(esito?.errori.length ?? 0) > 0 ? (ultimoValido?.css ?? "") : (esito?.css ?? "")}
+              css={
+                (esito?.errori.length ?? 0) > 0
+                  ? (ultimoValido?.css ?? "")
+                  : (esito?.css ?? "")
+              }
               id={String(documento?.["id"] ?? id)}
               parti={parti}
               sondaAccesa={sonda}
@@ -873,14 +1436,19 @@ export function Studio({
               onNodo={setNodoSotto}
               onLarghezza={setLarghezza}
             >
-              <Impaginazione albero={albero} contesto={finto} slot={SLOT_FINTI} />
+              {/* L'applicazione, e accanto — non dentro il buco del contenuto
+                  — le sovrapposizioni: nell'app stanno fuori dall'albero perché
+                  si sovrappongono per definizione, e ficcarle nel contenuto
+                  voleva dire mostrarle in un posto in cui non compaiono mai. */}
+              <Impaginazione albero={albero} contesto={finto} slot={slot} />
+              <Sovrapposte accese={attive} />
             </Anteprima>
             {documento !== null && documento["layout"] === undefined && (
               <p className="spiega-sonda section-card">
-                <strong>Questa skin non dichiara un layout.</strong> Quel che
-                vedi è l&apos;albero di serie: la prima modifica lo scrive per
-                esteso nel documento — ed è corretto, nel momento in cui tocchi
-                il layout il documento deve dire qual è.
+                <Trans
+                  k="studio.noLayout"
+                  v={{ titolo: <strong>{t("studio.noLayout.title")}</strong> }}
+                />
               </p>
             )}
           </div>
@@ -900,28 +1468,37 @@ export function Studio({
       <footer className="piede-studio">
         <span className="voce-piede" data-esito={errori > 0 ? "male" : "bene"}>
           <Icona nome={errori > 0 ? "i-alert" : "i-check"} dim={14} />
-          {errori} errori
+          {t("studio.errors", { n: errori })}
         </span>
-        <span className="voce-piede" data-esito={avvisi > 0 ? "attenzione" : undefined}>
+        <span
+          className="voce-piede"
+          data-esito={avvisi > 0 ? "attenzione" : undefined}
+        >
           <Icona nome={avvisi > 0 ? "i-alert" : "i-check"} dim={14} />
-          {avvisi} avvisi
+          {t("studio.warnings", { n: avvisi })}
         </span>
         {fuoriBudget > 0 && (
           <span className="voce-piede" data-esito="male">
             <Icona nome="i-alert" dim={14} />
-            {fuoriBudget} superfici fuori budget
+            {t("studio.foot.overBudget", { n: fuoriBudget })}
           </span>
         )}
         {sottoSoglia > 0 && (
           <span className="voce-piede" data-esito="male">
             <Icona nome="i-alert" dim={14} />
-            {sottoSoglia} coppie sotto {registro?.contrastoMinimo ?? 4.5}:1
+            {t("studio.foot.underContrast", {
+              n: sottoSoglia,
+              soglia: registro?.contrastoMinimo ?? 4.5,
+            })}
           </span>
         )}
         <span className="spinta" />
         <span className="mono">
-          formato {registro?.format ?? 1} · {esito?.parti ?? 0} parti ridisegnate ·
-          compilato in {esito?.compilatoMs ?? 0} ms
+          {t("studio.foot.summary", {
+            formato: registro?.format ?? 1,
+            parti: esito?.parti ?? 0,
+            ms: esito?.compilatoMs ?? 0,
+          })}
         </span>
       </footer>
     </section>

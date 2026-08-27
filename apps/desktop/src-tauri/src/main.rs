@@ -9,20 +9,24 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod account;
+mod aggiornamenti;
 mod arricchimento;
 mod comandi;
 mod copertine;
 mod errore;
+mod importa;
+mod media;
 mod nuvola;
 mod playlist;
+mod procura;
 mod riordino;
 mod riproduzione;
-mod scarica;
 mod scrobble;
+mod sincronia;
 mod skin;
-mod spotify;
 mod stato;
 mod studio;
+mod testi;
 
 use tauri::Manager as _;
 
@@ -51,6 +55,102 @@ fn pronto(finestra: tauri::Window) {
     let _ = finestra.show();
 }
 
+/// # La barra del titolo la disegna la pagina
+///
+/// La finestra nasce senza decorazioni (`"decorations": false` in
+/// `tauri.conf.json`), e i quattro gesti che il sistema operativo offriva con la
+/// sua fascia grigia — trascinare, ridurre, ingrandire, chiudere — arrivano da
+/// qui. Sono comandi nostri e non i permessi `core:window:*` del plugin per una
+/// ragione sola: `capabilities/default.json` è un elenco chiuso, e aprirlo a
+/// `core:window` darebbe alla pagina anche `set_position`, `set_size`,
+/// `set_always_on_top` e `set_fullscreen` — quattro modi di far sparire una
+/// finestra da sotto le dita di chi la sta guardando, in cambio di tre bottoni.
+///
+/// Quel che il ridimensionamento ai bordi non perde niente: lo fa `tao` da sé,
+/// in `WM_NCHITTEST`, per ogni finestra senza decorazioni che sia
+/// ridimensionabile e non ingrandita. Nessuna maniglia da disegnare di qua.
+#[tauri::command]
+fn finestra_trascina(finestra: tauri::Window) {
+    let _ = finestra.start_dragging();
+}
+
+/// Riduce a icona.
+#[tauri::command]
+fn finestra_riduci(finestra: tauri::Window) {
+    let _ = finestra.minimize();
+}
+
+/// Ingrandisce o rimette com'era, e dice com'è rimasta.
+///
+/// Restituisce lo stato **dopo**: senza, la pagina dovrebbe chiedere di nuovo
+/// subito dopo aver chiesto di cambiare, e fra le due domande c'è un giro di
+/// IPC in cui l'icona resta quella di prima.
+///
+/// A schermo intero il primo significato di quel bottone è «rimpicciolisci», e
+/// quindi è da lì che si esce: ingrandire *sotto* lo schermo intero cambierebbe
+/// una finestra che non si vede, cioè sarebbe un bottone che non fa niente
+/// mentre l'icona dice il contrario.
+#[tauri::command]
+fn finestra_ingrandisci(finestra: tauri::Window) -> bool {
+    if finestra.is_fullscreen().unwrap_or(false) {
+        let _ = finestra.set_fullscreen(false);
+        // `tao` rimette la finestra dov'era, ingrandita compresa: quel che
+        // torna è lo stato in cui è ricaduta, non un «no» dato per scontato.
+        return finestra.is_maximized().unwrap_or(false);
+    }
+    let _ = if finestra.is_maximized().unwrap_or(false) {
+        finestra.unmaximize()
+    } else {
+        finestra.maximize()
+    };
+    finestra.is_maximized().unwrap_or(false)
+}
+
+/// È più grande della finestra adesso?
+///
+/// La pagina lo chiede all'apertura e a ogni ridimensionamento: ingrandire non
+/// passa sempre di qua — c'è il doppio clic sulla fascia, `Win`+`↑`, e
+/// l'affiancamento di Windows — e l'icona deve dire il vero anche allora.
+///
+/// Ingrandita **o** a schermo intero, perché è a quest'unica domanda che serve
+/// rispondere: da tutte e due si torna col medesimo gesto, e l'icona che le
+/// distinguesse offrirebbe di ingrandire una finestra che occupa già lo
+/// schermo.
+#[tauri::command]
+fn finestra_ingrandita(finestra: tauri::Window) -> bool {
+    finestra.is_maximized().unwrap_or(false) || finestra.is_fullscreen().unwrap_or(false)
+}
+
+/// Entra o esce dallo schermo intero, e dice com'è rimasta.
+///
+/// È il quinto gesto, e l'unico che la fascia grigia di Windows non dava: `F11`
+/// arriva dalla tabella delle scorciatoie, come ogni altro tasto della finestra
+/// (`tastiera.ts`). Vale però la regola dei quattro qui sopra — un comando
+/// nostro invece di aprire `capabilities/default.json` a `core:window`, che
+/// darebbe alla pagina anche `set_position`, `set_size` e `set_always_on_top`.
+/// Quel che si rifiuta è il mazzo intero, non lo schermo intero: qui c'è una
+/// funzione sola, chiamata da un tasto che chi guarda ha premuto apposta.
+///
+/// Restituisce lo stato **dopo**, per la stessa ragione di
+/// `finestra_ingrandisci`. Chiedere a `set_fullscreen` invece che fidarsi del
+/// contrario di prima non è pignoleria: se il sistema operativo lo nega — un
+/// monitor staccato mentre si preme — la pagina deve saperlo, non crederci.
+#[tauri::command]
+fn finestra_schermo_intero(finestra: tauri::Window) -> bool {
+    let intero = finestra.is_fullscreen().unwrap_or(false);
+    let _ = finestra.set_fullscreen(!intero);
+    finestra.is_fullscreen().unwrap_or(false)
+}
+
+/// Chiude la finestra, cioè l'applicazione.
+///
+/// `close()` e non `exit()`: fa la stessa strada del tasto di sistema — l'evento
+/// di chiusura, e chi lo ascolta — invece di scavalcarla.
+#[tauri::command]
+fn finestra_chiudi(finestra: tauri::Window) {
+    let _ = finestra.close();
+}
+
 /// Mostra la finestra fra due secondi, qualunque cosa succeda di là.
 fn rete_di_sicurezza(app: &tauri::AppHandle) {
     let app = app.clone();
@@ -73,21 +173,34 @@ fn main() {
         // `accounts.google.com` è una superficie di phishing, e il CSP di
         // `tauri.conf.json` resta identico.
         .plugin(tauri_plugin_opener::init())
+        // Il controllo degli aggiornamenti. Il plugin qui non fa niente da sé:
+        // non parte nessuna richiesta al `init`, e la finestra non ha il
+        // permesso di chiamarlo — `capabilities/default.json` non elenca
+        // `updater:*`, ed è deliberato. Tutto passa da `crate::aggiornamenti`,
+        // che è l'unico posto in cui sta scritto ogni quanto si controlla e a
+        // quali condizioni.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let data_dir = cartella_dati(app.handle())?;
-            // Prima della libreria, perché non ne ha bisogno: tiene solo il
-            // percorso di `spotify.json` e una cella vuota. Il lettore vero
-            // nasce alla prima importazione, così chi non importa mai da
-            // Spotify non paga nemmeno una stretta di mano.
-            app.manage(spotify::StatoSpotify::nuovo(&data_dir));
-            // Come sopra, e per la stessa ragione: due celle vuote e un bit.
-            // Il consenso, la rete e lo zip arrivano solo se qualcuno apre la
-            // schermata dell'account.
+            // Prima della libreria, perché non ne ha bisogno: una cella vuota
+            // e un cliente HTTP che non ha ancora aperto niente. La prima
+            // richiesta parte quando qualcuno incolla un link, così chi non
+            // importa mai da un catalogo non paga nemmeno una stretta di mano.
+            app.manage(importa::StatoImport::nuovo());
+            // Come sopra, e per la stessa ragione: una cella vuota e un bit.
+            // Lo zip arriva solo se qualcuno apre la schermata dell'account.
             app.manage(account::StatoAccount::nuovo());
-            // Anche questo prima della libreria, e per la stessa ragione: tiene
-            // solo il percorso dei binari e tre bit. Il binario vero si cerca
-            // quando parte una coda, non adesso.
-            app.manage(scarica::StatoScarico::nuovo(cartella_binari(app.handle())));
+            // E anche questo: tre bit e i cataloghi, che sono a loro volta un
+            // cliente HTTP inerte. Non c'è più nessun binario da cercare sul
+            // disco — la coda parla solo con la rete, ed è il motivo per cui
+            // l'installer non impacchetta più niente di eseguibile.
+            app.manage(procura::StatoProcura::nuovo());
+
+            // I testi: due bit, due contatori, e i fornitori che nascono alla
+            // prima richiesta. Prima di allora non c'è niente da aprire, e
+            // aprire il deposito all'avvio vorrebbe dire una connessione al
+            // database in più per chi il pannello del testo non lo apre mai.
+            app.manage(testi::StatoTesti::nuovo());
 
             let stato = stato::Stato::apri(data_dir);
             // La riga di avvio va stampata **prima** di disegnare: se
@@ -99,12 +212,29 @@ fn main() {
             // Il lettore **dopo** la libreria: apre il dispositivo audio e
             // rilegge la coda di ieri, e per la seconda cosa il database deve
             // già essere aperto.
+            // Lo stato dei controlli multimediali **prima** del lettore, anche
+            // se a riempirlo si farà più sotto. Il filo dell'orologio parte
+            // insieme al lettore e chiama `manda_stato` da sé quando il
+            // dispositivo audio sparisce: se quel momento arrivasse prima di
+            // questa riga, cercherebbe uno stato non registrato. Registrarlo
+            // vuoto costa un mutex e un intero.
+            app.manage(media::StatoMedia::nuovo());
+
             let lettore = riproduzione::StatoLettore::avvia(app.handle());
             riproduzione::riga_di_avvio_lettore(&lettore);
             app.manage(lettore);
             riproduzione::riprendi_coda(app.handle());
             riproduzione::avvia_orologio(app.handle().clone());
             riproduzione::avvia_spettro(app.handle().clone());
+
+            // I controlli veri **dopo** il lettore, e per una ragione che non è
+            // l'ordine di dipendenza ma quello della finestra: su Windows le
+            // SMTC si appendono a una finestra, e qui la finestra esiste già —
+            // `tauri.conf.json` la crea nascosta, non assente. Serve anche la
+            // libreria aperta, per sapere dove stanno le copertine. Il primo
+            // stato le riempirà da sé, perché passa dallo stesso `manda_stato`
+            // di tutti gli altri.
+            media::avvia(app.handle());
 
             // Il backup **per ultimo**: il suo filo aspetta mezzo minuto prima
             // della prima passata proprio per lasciar finire quel che parte
@@ -119,6 +249,14 @@ fn main() {
             // mezzo prima della prima passata — il triplo della nuvola — perché
             // arricchire mentre una scansione riscrive le righe vuol dire
             // decidere su dati che stanno per cambiare.
+            // La sincronia **subito dopo il backup**: condivide con lui la cache
+            // dell'access token di Drive, e il suo filo aspetta venti secondi —
+            // meno della nuvola, perché una passata a vuoto su una cartella è una
+            // lettura di directory e nient'altro.
+            let (sincronia, orecchio) = sincronia::StatoSincronia::nuovo();
+            app.manage(sincronia);
+            sincronia::avvia_filo(app.handle().clone(), orecchio);
+
             let (arricchimento, orecchio) = arricchimento::StatoArricchimento::nuovo();
             app.manage(arricchimento);
             arricchimento::avvia_filo(app.handle().clone(), orecchio);
@@ -129,6 +267,16 @@ fn main() {
             // non costa niente.
             app.manage(scrobble::StatoScrobble::nuovo());
             scrobble::avvia(app.handle());
+
+            // Gli aggiornamenti **dopo tutti gli altri**, e il suo filo aspetta
+            // due minuti: è la cosa meno urgente che l'applicazione possa fare
+            // all'apertura, ed è anche l'unica che parla con la rete senza che
+            // nessuno gliel'abbia chiesto. Due minuti sono il tempo perché la
+            // scansione e la coda di ieri abbiano finito di contendersi il
+            // disco.
+            let (aggiornamenti, orecchio) = aggiornamenti::StatoAggiornamenti::nuovo();
+            app.manage(aggiornamenti);
+            aggiornamenti::avvia_filo(app.handle().clone(), orecchio);
 
             // Per ultima, e dopo tutto il resto: quel che conta è che parta a
             // finestra già costruita, non prima di aprire il database.
@@ -142,6 +290,12 @@ fn main() {
         .register_asynchronous_uri_scheme_protocol("aether-cover", copertine::servi)
         .invoke_handler(tauri::generate_handler![
             pronto,
+            finestra_trascina,
+            finestra_riduci,
+            finestra_ingrandisci,
+            finestra_ingrandita,
+            finestra_schermo_intero,
+            finestra_chiudi,
             comandi::avvio,
             comandi::imposta_cartelle,
             comandi::imposta_cartella_download,
@@ -152,6 +306,7 @@ fn main() {
             comandi::cerca,
             comandi::cerca_conteggio,
             comandi::brani,
+            comandi::casa,
             comandi::album,
             comandi::album_artista,
             comandi::artisti,
@@ -162,27 +317,30 @@ fn main() {
             comandi::piano_importazione,
             comandi::importa,
             comandi::imposta_tema,
+            comandi::imposta_lingua,
             comandi::imposta_scorciatoie,
             comandi::profilo_esporta,
             comandi::profilo_piano,
             comandi::profilo_importa,
-            spotify::spotify_anteprima,
-            spotify::spotify_piano,
-            spotify::spotify_importa,
-            spotify::spotify_diagnostica,
+            importa::import_anteprima,
+            importa::import_piano,
+            importa::import_esegui,
+            importa::import_rapporto,
+            importa::import_rapporti,
+            importa::import_diagnostica,
             account::account_stato,
-            account::account_credenziali,
-            account::account_collega,
-            account::account_scollega,
-            account::account_leggi,
             account::account_piano,
             account::account_importa,
             account::archivio_apri,
+            account::archivio_dimentica,
             account::cronologia_dimentica_importati,
-            scarica::scarica_desiderati,
-            scarica::annulla_scarico,
-            scarica::scarico_stato,
-            scarica::riprova_falliti,
+            procura::scarica_desiderati,
+            procura::annulla_scarico,
+            procura::scarico_stato,
+            procura::riprova_falliti,
+            procura::da_comprare,
+            procura::cerca_dove_comprare,
+            procura::alternative_ammettile,
             riordino::piano_riordino,
             riordino::esegui_riordino,
             riordino::annulla_riordino,
@@ -205,6 +363,7 @@ fn main() {
             skin::skin_elenco,
             skin::skin_installa,
             skin::skin_installa_sorgente,
+            skin::skin_disinstalla,
             skin::skin_scegli,
             skin::accento_dinamico,
             skin::accento_dinamico_attiva,
@@ -214,6 +373,7 @@ fn main() {
             studio::studio_documento,
             studio::studio_pacchetto,
             studio::studio_salva,
+            studio::studio_scarta,
             studio::studio_esporta,
             studio::studio_istantanee,
             studio::studio_istantanea,
@@ -228,8 +388,13 @@ fn main() {
             riproduzione::volume,
             riproduzione::equalizzatore,
             riproduzione::normalizzazione,
+            riproduzione::spegnimento,
+            riproduzione::autoplay,
+            riproduzione::dissolvenza,
             riproduzione::riapri_audio,
             riproduzione::spettro,
+            riproduzione::spettro_bande,
+            riproduzione::spettro_bande_scegli,
             riproduzione::eq_preset_elenco,
             riproduzione::eq_preset_salva,
             riproduzione::eq_preset_cancella,
@@ -251,6 +416,23 @@ fn main() {
             nuvola::nuvola_salva,
             nuvola::nuvola_piano_ripristino,
             nuvola::nuvola_ripristina,
+            sincronia::sincronia_stato,
+            sincronia::sincronia_attiva,
+            sincronia::sincronia_adesso,
+            sincronia::sincronia_magazzino,
+            sincronia::sincronia_dispositivi,
+            sincronia::sincronia_accoppia,
+            sincronia::sincronia_dimentica,
+            testi::testo_brano,
+            testi::testo_scarto,
+            testi::testo_cerca,
+            testi::testi_stato,
+            testi::testi_rete,
+            testi::testi_riempi,
+            testi::testi_ferma,
+            testi::testo_aggancia,
+            testi::testo_salva,
+            testi::testo_pubblica,
             arricchimento::arricchimento_stato,
             arricchimento::arricchimento_attiva,
             arricchimento::arricchimento_annulla,
@@ -266,6 +448,11 @@ fn main() {
             scrobble::scrobble_riprova,
             scrobble::scrobble_dimentica,
             scrobble::scrobble_importa_cronologia,
+            aggiornamenti::aggiornamenti_stato,
+            aggiornamenti::aggiornamenti_attivo,
+            aggiornamenti::aggiornamenti_adesso,
+            aggiornamenti::aggiornamenti_salta,
+            aggiornamenti::aggiornamenti_installa,
         ])
         .run(tauri::generate_context!());
 
@@ -283,7 +470,7 @@ fn main() {
 /// Dove stanno database, copertine e skin.
 ///
 /// Normalmente la cartella dati dell'applicazione, che su Windows è
-/// `%APPDATA%\dev.aether.desktop`. `AETHER_DATI` la sostituisce.
+/// `%APPDATA%\io.github.federicobaratti.aether`. `AETHER_DATI` la sostituisce.
 ///
 /// # Perché una scorciatoia del genere esiste
 ///
@@ -307,24 +494,4 @@ fn cartella_dati(app: &tauri::AppHandle) -> Result<std::path::PathBuf, tauri::Er
         return Ok(std::path::PathBuf::from(scelta));
     }
     app.path().app_data_dir()
-}
-
-/// Dove stanno i binari esterni — oggi solo yt-dlp.
-///
-/// In rilascio è `bin/` dentro le risorse impacchettate, dichiarata in
-/// `tauri.conf.json` sotto `bundle.resources`. In sviluppo è la cartella del
-/// repo, che non è impacchettata: senza questo secondo ramo, provare uno
-/// scaricamento richiederebbe una build di rilascio da sei minuti.
-///
-/// Modellato su `binDir()` di `legacy/Aeter/electron/modules/binaries.ts`, che
-/// faceva esattamente la stessa distinzione.
-fn cartella_binari(app: &tauri::AppHandle) -> std::path::PathBuf {
-    if let Ok(risorse) = app
-        .path()
-        .resolve("bin", tauri::path::BaseDirectory::Resource)
-        && risorse.is_dir()
-    {
-        return risorse;
-    }
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/bin")
 }

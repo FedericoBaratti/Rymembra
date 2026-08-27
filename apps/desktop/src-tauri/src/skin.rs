@@ -576,6 +576,58 @@ pub fn skin_installa_sorgente(
     crate::nuvola::se_riuscito(&app, esito)
 }
 
+/// Disinstalla una skin, e restituisce quella che resta attiva.
+///
+/// # Perché mancava, e perché l'assenza si vedeva
+///
+/// `VoceSkin::di_serie` esiste apposta e porta scritto «non si può
+/// disinstallare» — cioè afferma che le altre sì. Non c'era il comando: una skin
+/// installata per curiosità restava nell'elenco per sempre, e l'unico modo di
+/// toglierla era cancellare un file dalla cartella dei dati.
+///
+/// # Togliere quella attiva
+///
+/// Si torna a quella di serie, qui e subito. L'alternativa — rifiutare finché
+/// non se ne sceglie un'altra — costringerebbe a un giro di due passi per
+/// un'operazione che ne ha uno; lasciare la scelta puntata su un file che non
+/// c'è più darebbe invece una finestra senza foglio al riavvio, che è il caso
+/// che `skin_scegli` sta attento a non produrre mai.
+#[tauri::command]
+pub fn skin_disinstalla(
+    app: tauri::AppHandle,
+    stato: State<'_, Stato>,
+    id: String,
+) -> Esito<SkinIpc> {
+    let esito = con_libreria(&stato, |libreria| {
+        if id == DI_SERIE || !id_sicuro(&id) {
+            return Err(
+                AppError::new(ErrorCode::SkinNotFound { id: id.clone() }).with_cause(
+                    "la skin di serie è compilata dentro e non si disinstalla".to_owned(),
+                ),
+            );
+        }
+        let file = cartella_skin(&libreria.data_dir).join(format!("{id}.aeskin"));
+        if !file.exists() {
+            return Err(AppError::new(ErrorCode::SkinNotFound { id: id.clone() }));
+        }
+        std::fs::remove_file(&file)
+            .map_err(|err| aether_app::files::io_error(&file.display().to_string(), &err))?;
+
+        // Se era quella indossata, la finestra resterebbe con un foglio che non
+        // ha più una sorgente: si torna a quella di serie prima di rispondere,
+        // così chi riceve l'esito ha già il CSS da applicare.
+        let attiva = skin_scelta(&libreria.connection);
+        if attiva == id {
+            let compilata = compila(&libreria.data_dir, DI_SERIE)?;
+            aether_app::settings::write(&libreria.connection, CHIAVE_SKIN, &compilata.id)?;
+            return Ok(compilata);
+        }
+        compila(&libreria.data_dir, &attiva)
+    })
+    .map_err(errore);
+    crate::nuvola::se_riuscito(&app, esito)
+}
+
 /// Sceglie la skin attiva e la compila.
 ///
 /// La scelta si scrive **dopo** che la compilazione è riuscita: salvare prima

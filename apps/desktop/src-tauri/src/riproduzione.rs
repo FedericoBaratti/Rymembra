@@ -52,12 +52,13 @@ const PASSO_TEMPO: Duration = Duration::from_millis(250);
 /// Trenta volte al secondo, che è sette volte la posizione — e non è una
 /// contraddizione con la disciplina qui sopra. La posizione va a quattro perché
 /// **la finestra la sa interpolare**: fra un colpo e l'altro il tempo passa da
-/// solo, e il cursore avanza senza chiedere niente. Le bande no: fra un colpo e
-/// l'altro non c'è niente da indovinare, e a quattro colpi al secondo le barre
-/// saltano invece di muoversi.
+/// solo, e il cursore avanza senza chiedere niente. Le bande no: la scena
+/// smussa il passaggio da una fila alla successiva, ma quel che smussa sono due
+/// misure vere, e a quattro colpi al secondo fra le due misure ci sarebbe un
+/// quarto di secondo di musica che nessuno ha guardato.
 ///
-/// Il costo è dieci numeri e nessuna interrogazione al database, e si paga solo
-/// mentre la schermata è aperta.
+/// Il costo è da otto a mille byte per colpo e nessuna interrogazione al
+/// database, e si paga solo mentre la schermata è aperta.
 const PASSO_SPETTRO: Duration = Duration::from_millis(33);
 
 /// Ogni quanto il filo dello spettro si sveglia quando nessuno guarda.
@@ -66,6 +67,57 @@ const PASSO_SPETTRO: Duration = Duration::from_millis(33);
 /// coordinare la sua fine con l'apertura successiva, e un quarto di secondo di
 /// ritardo all'apertura della schermata non lo vede nessuno.
 const PASSO_SPETTRO_FERMO: Duration = Duration::from_millis(250);
+
+/// Ogni quanti giri d'orologio si conserva la posizione dentro il brano.
+///
+/// Venti giri da 250 ms, cioè cinque secondi.
+const BATTITI_PER_SEGNO: u32 = 20;
+
+/// Le bande dello spettro, come vanno sul filo verso la finestra.
+///
+/// # Perché sono byte
+///
+/// Perché possono essere 1024, e trenta volte al secondo: in JSON un `f32`
+/// occupa una ventina di caratteri — `0.123456789` e la sua coda — che fa mezzo
+/// megabyte al secondo di testo da scrivere di qua e riparsare di là, per
+/// disegnare barre alte qualche centinaio di pixel. Un byte per banda ne fa
+/// quattro, e la differenza fra `0.501` e `0.5019` non esiste su uno schermo: un
+/// livello in `0..=1` diventa `0..=255`, e chi disegna divide.
+///
+/// # Perché le ottave non ci sono
+///
+/// Il lettore le calcola dalla stessa trasformata — sono quelle
+/// dell'equalizzatore, e le sue prove le controllano — ma nella finestra non le
+/// legge più nessuno: le disegnava la striscia a dieci barre sotto la copertina,
+/// e quella striscia non c'è più. Dieci `f32` per trenta eventi al secondo che
+/// nessuno guarda sono dieci `f32` di troppo.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BandeIpc {
+    /// Le fini, per la scena: quante ne ha chieste chi guarda.
+    fini: Vec<u8>,
+}
+
+impl BandeIpc {
+    /// Quantizza quel che il lettore ha appena misurato.
+    fn da(bande: &aether_play::Bande) -> Self {
+        Self {
+            fini: bande
+                .fini
+                .iter()
+                .map(|livello| {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "il livello sta in 0..=1 e la moltiplicazione lo porta in 0..=255"
+                    )]
+                    let byte = (livello.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    byte
+                })
+                .collect(),
+        }
+    }
+}
 
 /// Lo stato della riproduzione, come lo vede la finestra.
 #[derive(Debug, Clone, Serialize)]
@@ -100,13 +152,36 @@ pub struct StatoRiproduzione {
     pub eq_attivo: bool,
     /// La curva dell'equalizzatore, in decibel per banda.
     pub eq_guadagni: Vec<f32>,
-    /// La normalizzazione ReplayGain è accesa.
+    /// A che livello normalizza: `spento`, `basso`, `normale`, `alto`.
     ///
     /// Qui e non in [`crate::comandi::Avvio`] perché è una cosa del lettore, e
     /// perché il lettore la cambia anche da solo: al primo avvio non c'è nessuna
     /// riga in `settings` e il valore che vale è quello del motore. Uno stato
     /// che dice cos'è vero adesso non deve avere due sorgenti.
-    pub replaygain: bool,
+    ///
+    /// Un nome e non il booleano di prima: gli stati sono quattro, e uno spento
+    /// che non dice a quale livello tornerebbe è uno spento che chi riaccende
+    /// deve scoprire per tentativi.
+    pub replaygain: String,
+    /// Fra quanto si spegne da solo, in millisecondi.
+    ///
+    /// `null` se nessun timer è acceso; `0` se il timer è «alla fine di questo
+    /// brano», che non è una durata e che la finestra scrive a parole.
+    ///
+    /// Un tempo che **manca** e non l'istante in cui scade: l'istante
+    /// obbligherebbe la finestra a conoscere l'orologio del nucleo, e i due
+    /// orologi sono lo stesso solo finché nessuno cambia fuso mentre la musica
+    /// suona.
+    pub spegnimento_ms: Option<i64>,
+    /// A coda finita si continua da soli.
+    pub autoplay: bool,
+    /// Quanto si sovrappongono due brani, in secondi. `0` è spenta.
+    ///
+    /// In secondi e non in millisecondi perché è così che si sceglie: il
+    /// cursore ha dodici tacche, e mandare millisecondi vorrebbe dire che la
+    /// finestra divide per mille per disegnare e moltiplica per mille per
+    /// chiedere, cioè due conversioni che possono divergere per niente.
+    pub dissolvenza_s: u64,
     /// Il dispositivo audio non c'è più, o non si è mai aperto.
     ///
     /// Un campo dello stato e non solo un evento: chi apre la finestra dopo che
@@ -190,6 +265,21 @@ pub struct Lettore {
     volume: Volume,
     eq: Equalizzazione,
     normalizzazione: Normalizzazione,
+    /// A coda finita si continua da soli.
+    ///
+    /// Una copia di quel che sta in `settings`, tenuta accanto alla coda
+    /// perché la legge `prepara_prossimo` — cioè il percorso che decide il
+    /// brano successivo, che gira a ogni cambio di traccia e non deve
+    /// interrogare il database per sapere un bit.
+    autoplay: bool,
+    /// Quanto dura la sovrapposizione fra due brani, in secondi.
+    ///
+    /// Una copia di quel che il motore ha già, come per `eq` e
+    /// `normalizzazione`: il motore la usa e non la racconta — `Contesto` vive
+    /// nel filo del decodificatore e non ha un modo di rispondere a una
+    /// domanda — e senza questa copia il cursore delle impostazioni tornerebbe
+    /// a zero a ogni ridisegno della finestra.
+    dissolvenza_s: u64,
 }
 
 /// Il lettore, o il motivo per cui non c'è.
@@ -206,7 +296,43 @@ pub struct StatoLettore {
     /// l'evento, e leggerlo di là vorrebbe dire prendere il lucchetto del
     /// lettore trenta volte al secondo per scoprire che non c'è niente da fare.
     pub spettro: std::sync::atomic::AtomicBool,
+    /// Quante barre fini disegna la scena dello spettro.
+    ///
+    /// Qui e non solo dentro il motore per la stessa ragione dell'interruttore
+    /// qui sopra, più una: riaprire il dispositivo audio costruisce un lettore
+    /// nuovo, e senza una copia di questa scelta fuori dal motore la finestra
+    /// tornerebbe a sessantaquattro barre da sola.
+    pub spettro_bande: std::sync::atomic::AtomicU16,
+    /// Quando si spegne da solo.
+    ///
+    /// Tre significati in un intero: `0` è spento, un numero positivo è
+    /// l'istante assoluto in cui mettere in pausa, e [`FINE_DEL_BRANO`] dice di
+    /// non preparare il brano successivo e fermarsi dove la musica finisce da
+    /// sé.
+    ///
+    /// # Perché qui e non dentro `Lettore`
+    ///
+    /// Per la stessa ragione di `spettro` qui sopra: lo legge il filo
+    /// dell'orologio quattro volte al secondo, e metterlo dietro il mutex del
+    /// lettore vorrebbe dire prenderlo quattro volte al secondo per scoprire
+    /// quasi sempre che non c'è niente da fare — cioè contendere il lucchetto
+    /// col tasto pausa per leggere un intero.
+    ///
+    /// # Perché non sopravvive alla chiusura
+    ///
+    /// Un timer è una decisione di stasera, non una preferenza. Ritrovarlo
+    /// acceso domani mattina vorrebbe dire una musica che si spegne da sola
+    /// senza che nessuno ricordi di averlo chiesto, ed è per lo stesso motivo
+    /// che non entra nel profilo esportabile.
+    pub spegnimento: std::sync::atomic::AtomicI64,
 }
+
+/// Il valore di [`StatoLettore::spegnimento`] che dice «quando finisce questo».
+///
+/// Negativo perché non è un istante: è un modo, e mescolarlo agli istanti
+/// veri senza un valore che nessun orologio produrrà mai vorrebbe dire un
+/// timer che scatta nel 1970.
+pub const FINE_DEL_BRANO: i64 = -1;
 
 /// Apre il dispositivo audio e collega l'osservatore degli eventi.
 ///
@@ -231,10 +357,14 @@ impl StatoLettore {
             volume: Volume::default(),
             eq: Equalizzazione::default(),
             normalizzazione: Normalizzazione::default(),
+            autoplay: false,
+            dissolvenza_s: 0,
         });
         Self {
             lettore: Mutex::new(lettore),
             spettro: std::sync::atomic::AtomicBool::new(false),
+            spettro_bande: std::sync::atomic::AtomicU16::new(aether_play::RISOLUZIONE_DI_SERIE),
+            spegnimento: std::sync::atomic::AtomicI64::new(0),
         }
     }
 }
@@ -312,7 +442,11 @@ fn chiudi_ascolto(app: &tauri::AppHandle, lettore: &mut Lettore) {
     }
     let stato = app.state::<Stato>();
     let scritto = con_libreria(&stato, |libreria| {
-        playback::record_play(&mut libreria.connection, &ascolto)
+        // L'ascolto si intesta a questo computer. Non è contabilità: il conteggio
+        // è la somma dei contatori di tutti i dispositivi, e un ascolto senza
+        // mittente non saprebbe in quale sommarsi.
+        let dispositivo = crate::nuvola::dispositivo(&libreria.connection)?;
+        playback::record_play(&mut libreria.connection, &ascolto, &dispositivo)
     });
     match scritto {
         // `true` vuol dire che il conteggio è cresciuto davvero. Segnalarlo
@@ -353,12 +487,57 @@ fn sorgente_di(app: &tauri::AppHandle, track_id: i64) -> Result<aether_play::Sor
 /// suona ancora, così quando tocca a lui i suoi campioni sono già pronti. Un
 /// brano che non si apre non è un guasto da mostrare adesso: lo si scoprirà
 /// quando toccherà a lui, e nel frattempo quello che suona non va interrotto.
-fn prepara_prossimo(app: &tauri::AppHandle, lettore: &Lettore) {
+fn prepara_prossimo(app: &tauri::AppHandle, lettore: &mut Lettore) {
+    // Il timer «fine del brano» si fa qui, e non con una sveglia: non è un
+    // istante da aspettare ma un successivo che non deve esserci. Detto così,
+    // la musica finisce dove sarebbe finita comunque — senza dissolvenze,
+    // senza tagli, senza un secondo di silenzio prima del previsto.
+    let fine = app
+        .state::<StatoLettore>()
+        .spegnimento
+        .load(std::sync::atomic::Ordering::Relaxed)
+        == FINE_DEL_BRANO;
+    if fine {
+        lettore.motore.prepara(None);
+        return;
+    }
+
+    // La coda non ha un dopo: è qui che l'autoplay entra, e **qui** e non
+    // sull'evento `Fermato`. Accodando adesso — mentre il brano corrente
+    // suona ancora — quel che si sceglie passa dalla stessa strada di tutti
+    // gli altri: viene aperto in anticipo, attacca senza stacco, e non c'è
+    // nessun istante in cui l'applicazione si sia fermata. Reagire a
+    // `Fermato` vorrebbe dire ripartire *dopo* il silenzio.
+    if lettore.coda.peek_next().is_none() && lettore.autoplay {
+        if let Some(scelto) = scegli_da_solo(app, lettore) {
+            lettore.coda.enqueue(&[scelto]);
+        }
+    }
+
     let prossimo = lettore
         .coda
         .peek_next()
         .and_then(|id| sorgente_di(app, id).ok());
     lettore.motore.prepara(prossimo);
+}
+
+/// Il brano che continua la sessione, secondo la libreria.
+///
+/// Fuori da [`prepara_prossimo`] perché prende il lucchetto della libreria, e
+/// la regola di questo file è che lo si prenda **dopo** quello del lettore —
+/// che a questo punto è già in mano a chi ci ha chiamati. Tenerla separata
+/// rende la sequenza leggibile invece che implicita.
+fn scegli_da_solo(app: &tauri::AppHandle, lettore: &Lettore) -> Option<i64> {
+    let corrente = lettore.coda.current()?;
+    // Tutto quel che è già in coda, così l'autoplay non ripropone quel che si
+    // è appena sentito.
+    let esclusi = lettore.coda.in_play_order();
+    let stato = app.state::<Stato>();
+    con_libreria(&stato, |libreria| {
+        aether_app::autoplay::prossimo(&libreria.connection, corrente, &esclusi, adesso_ms())
+    })
+    .ok()
+    .flatten()
 }
 
 /// Conserva la coda.
@@ -370,9 +549,16 @@ fn salva_coda(app: &tauri::AppHandle, lettore: &Lettore) {
     });
 }
 
-/// Compone lo stato e lo manda alla finestra.
+/// Compone lo stato e lo manda alla finestra — e al sistema operativo.
+///
+/// I due destinatari sono qui insieme di proposito. La scheda nel riquadro del
+/// volume di Windows dice le stesse cose della barra in fondo alla finestra, e
+/// aggiornarla da un posto suo vorrebbe dire due sorgenti per la stessa
+/// verità: prima o poi una delle due mostrerebbe il brano di prima, e sarebbe
+/// il difetto che nessuno segnala perché chi lo vede pensa di aver letto male.
 fn manda_stato(app: &tauri::AppHandle, lettore: &Lettore) {
     let stato = costruisci_stato(app, lettore);
+    crate::media::aggiorna(app, &stato);
     let _ = app.emit("riproduzione:stato", stato);
 }
 
@@ -415,7 +601,13 @@ fn costruisci_stato(app: &tauri::AppHandle, lettore: &Lettore) -> StatoRiproduzi
         posizione_coda: lettore.coda.position(),
         eq_attivo: lettore.eq.attivo,
         eq_guadagni: lettore.eq.guadagni.clone(),
-        replaygain: lettore.normalizzazione.attivo,
+        replaygain: nome_normalizzazione(lettore.normalizzazione).to_owned(),
+        // Solo una lettura atomica: `state` restituisce il registro, non
+        // prende il lucchetto — che del resto è già in mano a chi ci ha
+        // chiamati.
+        spegnimento_ms: quanto_manca(&app.state::<StatoLettore>()),
+        autoplay: lettore.autoplay,
+        dissolvenza_s: lettore.dissolvenza_s,
         audio: guasto,
     }
 }
@@ -447,6 +639,70 @@ const fn nome_ripetizione(repeat: RepeatMode) -> &'static str {
         RepeatMode::One => "one",
         RepeatMode::All => "all",
     }
+}
+
+/// Il livello di normalizzazione che porta questo nome.
+///
+/// # Perché un nome e non un numero di decibel
+///
+/// Il modello sotto è ed era un bersaglio in decibel, e resta quello: qui non
+/// si aggiunge niente al motore, che sapeva già portare tutto a un livello
+/// scelto. Quel che mancava era un modo di dirglielo.
+///
+/// Ai decibel non si dà però accesso dalla finestra. Un cursore da −30 a −6
+/// chiederebbe a chi ascolta di sapere cos'è un LUFS per decidere, e la
+/// risposta giusta per quasi tutti è una di tre. Il nome viene tradotto qui in
+/// un `match` chiuso, come `ordine` in [`crate::comandi::brani`]: quel che
+/// arriva dalla finestra non raggiunge mai un valore che il motore userebbe
+/// senza guardarlo.
+///
+/// Un nome sconosciuto vale «normale», che è il riferimento dei tag.
+fn normalizzazione_da_nome(nome: &str) -> Normalizzazione {
+    match nome {
+        // Spento conserva il bersaglio invece di azzerarlo: chi rispegne e
+        // riaccende ritrova il livello che aveva scelto, non quello di serie.
+        "spento" => Normalizzazione {
+            attivo: false,
+            bersaglio_db: playback::BERSAGLIO_PREDEFINITO_DB,
+        },
+        "basso" => Normalizzazione {
+            attivo: true,
+            bersaglio_db: playback::BERSAGLIO_BASSO_DB,
+        },
+        "alto" => Normalizzazione {
+            attivo: true,
+            bersaglio_db: playback::BERSAGLIO_ALTO_DB,
+        },
+        _ => Normalizzazione {
+            attivo: true,
+            bersaglio_db: playback::BERSAGLIO_PREDEFINITO_DB,
+        },
+    }
+}
+
+/// Come si chiama il livello in cui si trova la normalizzazione.
+///
+/// Il verso opposto di [`normalizzazione_da_nome`], e non è un `match` perché
+/// il bersaglio su disco è un `f32` che passa da un taglio: confrontarlo con
+/// `==` vorrebbe dire che un valore scritto da una versione precedente, o
+/// limitato da `sana`, non corrisponde a nessun nome e la finestra non
+/// evidenzia niente. Si prende il più vicino dei tre, che per i valori scritti
+/// da qui è sempre quello esatto.
+fn nome_normalizzazione(normalizzazione: Normalizzazione) -> &'static str {
+    if !normalizzazione.attivo {
+        return "spento";
+    }
+    let scarto = |bersaglio: f32| (normalizzazione.bersaglio_db - bersaglio).abs();
+    let mut nome = "normale";
+    let mut minimo = scarto(playback::BERSAGLIO_PREDEFINITO_DB);
+    if scarto(playback::BERSAGLIO_BASSO_DB) < minimo {
+        nome = "basso";
+        minimo = scarto(playback::BERSAGLIO_BASSO_DB);
+    }
+    if scarto(playback::BERSAGLIO_ALTO_DB) < minimo {
+        nome = "alto";
+    }
+    nome
 }
 
 /// Quel che arriva dal motore.
@@ -518,6 +774,166 @@ fn durata_di(app: &tauri::AppHandle, track_id: i64) -> u64 {
     .map_or(0, |b| u64::try_from(b.duration_ms).unwrap_or(0))
 }
 
+/// Accende o spegne la coda che non finisce.
+///
+/// Cambia anche quel che il motore ha già in canna: se si accende mentre
+/// l'ultimo brano sta suonando, il successivo va scelto **adesso**, non al
+/// prossimo cambio di traccia — che non ci sarebbe.
+#[tauri::command]
+pub fn autoplay(app: tauri::AppHandle, stato: State<'_, StatoLettore>, attivo: bool) -> Esito<()> {
+    con_lettore(&stato, |lettore| {
+        let stato_app = app.state::<Stato>();
+        // Si rilegge quel che è stato scritto, come per la normalizzazione: se
+        // il salvataggio fallisce, l'interruttore non deve restare acceso su
+        // una scelta che non sopravvivrà alla chiusura.
+        let salvato = con_libreria(&stato_app, |libreria| {
+            playback::save_autoplay(&libreria.connection, attivo)?;
+            playback::load_autoplay(&libreria.connection)
+        })
+        .unwrap_or(attivo);
+        lettore.autoplay = salvato;
+        prepara_prossimo(&app, lettore);
+        manda_stato(&app, lettore);
+        Ok(())
+    })
+    .map_err(errore)
+}
+
+/// Sceglie quanto due brani si sovrappongono, in secondi. `0` la spegne.
+///
+/// # Perché non restituisce lo stato
+///
+/// Perché tocca il motore, e la disciplina dell'IPC dice che chi tocca il
+/// motore parla per `riproduzione:stato`: due sorgenti per lo stesso fatto
+/// vorrebbero dire una finestra che mostra otto secondi mentre il motore ne fa
+/// zero, il giorno in cui il salvataggio fallisse.
+///
+/// # Quando ha effetto
+///
+/// Dal **prossimo** cambio di traccia. Una dissolvenza già cominciata va
+/// avanti con la durata con cui è partita: cambiarla a metà vorrebbe dire due
+/// rampe che non si sommano più a uno, cioè un salto di volume proprio nel
+/// punto in cui la dissolvenza esiste per non farne.
+#[tauri::command]
+pub fn dissolvenza(
+    app: tauri::AppHandle,
+    stato: State<'_, StatoLettore>,
+    secondi: u64,
+) -> Esito<()> {
+    con_lettore(&stato, |lettore| {
+        let stato_app = app.state::<Stato>();
+        // Riletta invece che ripetuta, come per l'autoplay: `save_crossfade`
+        // taglia al massimo, e senza rileggere il cursore resterebbe su un
+        // valore che il database ha rifiutato.
+        let salvato = con_libreria(&stato_app, |libreria| {
+            playback::save_crossfade(&libreria.connection, secondi)?;
+            playback::load_crossfade(&libreria.connection)
+        })
+        .unwrap_or(secondi.min(playback::CROSSFADE_MASSIMO_S));
+        lettore.motore.dissolvenza(salvato.saturating_mul(1000));
+        lettore.dissolvenza_s = salvato;
+        manda_stato(&app, lettore);
+        Ok(())
+    })
+    .map_err(errore)
+}
+
+/// Quanto manca allo spegnimento, come lo legge la finestra.
+///
+/// `None` se non c'è nessun timer, `Some(0)` per «alla fine di questo brano»,
+/// che non ha una durata da mostrare. Il conto non scende mai sotto zero: un
+/// timer scaduto ma non ancora raccolto dall'orologio — c'è un quarto di
+/// secondo in cui può succedere — mostrerebbe altrimenti un numero negativo.
+fn quanto_manca(stato_lettore: &StatoLettore) -> Option<i64> {
+    let quando = stato_lettore
+        .spegnimento
+        .load(std::sync::atomic::Ordering::Relaxed);
+    match quando {
+        0 => None,
+        FINE_DEL_BRANO => Some(0),
+        scadenza => Some((scadenza - adesso_ms()).max(0)),
+    }
+}
+
+/// Accende, cambia o spegne il timer di spegnimento.
+///
+/// `minuti` a zero spegne il timer; [`FINE_DEL_BRANO`] chiede di fermarsi dove
+/// finisce quel che sta suonando; qualunque altro numero positivo sono i
+/// minuti da adesso.
+///
+/// # Perché i minuti e non un istante
+///
+/// Perché «fra mezz'ora» è quel che si intende, e un istante calcolato dalla
+/// finestra sarebbe calcolato con l'orologio della finestra. Sono lo stesso
+/// orologio finché nessuno cambia fuso, e «finché nessuno» non è una
+/// garanzia.
+#[tauri::command]
+pub fn spegnimento(
+    app: tauri::AppHandle,
+    stato: State<'_, StatoLettore>,
+    minuti: i64,
+) -> Esito<()> {
+    use std::sync::atomic::Ordering;
+
+    let quando = match minuti {
+        0 => 0,
+        FINE_DEL_BRANO => FINE_DEL_BRANO,
+        // Un tetto a ventiquattro ore: oltre non è più un timer per
+        // addormentarsi, e `adesso_ms` più un numero arbitrario è il modo di
+        // farlo traboccare.
+        minuti => adesso_ms().saturating_add(minuti.clamp(1, 24 * 60).saturating_mul(60_000)),
+    };
+    stato.spegnimento.store(quando, Ordering::Relaxed);
+
+    // «Fine del brano» cambia quel che il motore ha già in canna: il brano
+    // successivo era stato preparato quando questo è cominciato, e senza
+    // questa riga suonerebbe lo stesso.
+    con_lettore(&stato, |lettore| {
+        prepara_prossimo(&app, lettore);
+        manda_stato(&app, lettore);
+        Ok(())
+    })
+    .map_err(errore)
+}
+
+/// Mette in pausa se il timer di spegnimento è scaduto.
+///
+/// Pausa e non `ferma`: chi si addormenta con la musica accesa, al risveglio,
+/// vuole ritrovare il segno dov'era. `ferma` butterebbe la posizione, e il
+/// mattino dopo il brano ripartirebbe da capo senza che nessuno capisca
+/// perché.
+///
+/// Il modo «fine del brano» non passa di qui: quello non è una scadenza ma un
+/// brano successivo che non viene preparato, e lo decide
+/// [`prepara_prossimo`].
+fn scade_il_timer(app: &tauri::AppHandle, stato_lettore: &StatoLettore) {
+    use std::sync::atomic::Ordering;
+
+    let quando = stato_lettore.spegnimento.load(Ordering::Relaxed);
+    if quando <= 0 || adesso_ms() < quando {
+        return;
+    }
+    // Si azzera **prima** di agire, e solo se nel frattempo nessuno l'ha
+    // cambiato: uno scambio secco metterebbe a zero anche una scadenza nuova —
+    // o un «fine del brano» — arrivata fra la lettura qui sopra e questa riga,
+    // spegnendo un timer che qualcuno aveva appena acceso.
+    if stato_lettore
+        .spegnimento
+        .compare_exchange(quando, 0, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let _ = con_lettore(stato_lettore, |lettore| {
+        lettore.motore.pausa();
+        if let Some(ascolto) = lettore.ascolto.as_mut() {
+            ascolto.pause(adesso_ms());
+        }
+        manda_stato(app, lettore);
+        Ok(())
+    });
+}
+
 /// Avvia il filo che manda la posizione alla finestra.
 ///
 /// Manda solo mentre suona: un'applicazione ferma in secondo piano non deve
@@ -528,6 +944,10 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
         .name("aether-orologio".to_owned())
         .spawn(move || {
             let mut ultimo_fermo = true;
+            // Quanti giri d'orologio sono passati, per il segno di «riprendi
+            // dov'eri». Un contatore locale al filo: non lo guarda nessun
+            // altro, e non merita né un atomico né un lucchetto.
+            let mut battiti: u32 = 0;
             // Il dispositivo era già sparito all'ultimo giro: serve perché
             // l'annuncio parta **una volta**, non quattro al secondo per tutto
             // il tempo in cui le cuffie restano staccate.
@@ -559,6 +979,11 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                     _ => {}
                 }
 
+                // Il timer di spegnimento. Prima della posizione perché se
+                // scade adesso, la posizione che manderemmo fra due righe
+                // sarebbe già quella di un lettore in pausa.
+                scade_il_timer(&app, &stato_lettore);
+
                 let tempo = con_lettore(&stato_lettore, |lettore| {
                     let p = lettore.motore.posizione();
                     Ok(Tempo {
@@ -580,6 +1005,22 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                     let _ = app.emit("riproduzione:tempo", tempo);
                 }
                 ultimo_fermo = tempo.in_pausa;
+
+                // Il segno per «riprendi dov'eri», ogni tanto.
+                //
+                // Non a ogni giro: sarebbero quattro scritture al secondo sul
+                // database per un numero che serve una volta sola, alla
+                // prossima apertura. Ogni venti giri sono cinque secondi, che
+                // è la peggior imprecisione possibile su una cosa che si
+                // riprende a mano — e chi chiude a metà brano ritrova il segno
+                // a cinque secondi da dove l'aveva lasciato, non all'inizio.
+                battiti = battiti.wrapping_add(1);
+                if !tempo.in_pausa && battiti % BATTITI_PER_SEGNO == 0 {
+                    let stato_app = app.state::<Stato>();
+                    let _ = con_libreria(&stato_app, |libreria| {
+                        playback::save_posizione(&libreria.connection, tempo.posizione_ms)
+                    });
+                }
             }
         })
         .ok();
@@ -607,7 +1048,12 @@ pub fn avvia_spettro(app: tauri::AppHandle) {
                     std::thread::sleep(PASSO_SPETTRO_FERMO);
                     continue;
                 }
-                let bande = con_lettore(&stato_lettore, |lettore| Ok(lettore.motore.spettro()));
+                // La quantizzazione avviene **dentro** il lucchetto, e non è
+                // una distrazione: è l'unico modo di leggere fino a 1024 bande
+                // senza copiarle prima in un vettore da buttare via subito dopo.
+                let bande = con_lettore(&stato_lettore, |lettore| {
+                    Ok(lettore.motore.spettro(BandeIpc::da))
+                });
                 if let Ok(Some(bande)) = bande {
                     let _ = app.emit("riproduzione:spettro", bande);
                 }
@@ -652,6 +1098,39 @@ pub fn riprendi_coda(app: &tauri::AppHandle) {
             .motore
             .replaygain(normalizzazione.attivo, normalizzazione.bersaglio_db);
         lettore.normalizzazione = normalizzazione;
+
+        // L'autoplay non si manda al motore — il motore non sa cosa sia una
+        // libreria, ed è giusto così. Serve solo a `prepara_prossimo`, che è
+        // di qui.
+        lettore.autoplay = con_libreria(&stato, |libreria| {
+            playback::load_autoplay(&libreria.connection)
+        })
+        .unwrap_or(false);
+
+        // La dissolvenza invece sì: è il motore a doverla fare, ed è l'unico
+        // che sa quando un brano sta per finire. Si manda anche quando vale
+        // zero, per la stessa ragione della normalizzazione qui sopra.
+        let dissolvenza_s = con_libreria(&stato, |libreria| {
+            playback::load_crossfade(&libreria.connection)
+        })
+        .unwrap_or(0);
+        lettore
+            .motore
+            .dissolvenza(dissolvenza_s.saturating_mul(1000));
+        lettore.dissolvenza_s = dissolvenza_s;
+
+        // Quante barre vuole vedere chi guarda. Si applica all'avvio anche se
+        // la schermata è chiusa: costa un messaggio e vuol dire che la prima
+        // apertura mostra la scena giusta invece di quella di serie per un
+        // fotogramma.
+        let bande = con_libreria(&stato, |libreria| {
+            playback::load_spettro_bande(&libreria.connection)
+        })
+        .unwrap_or(aether_play::RISOLUZIONE_DI_SERIE);
+        app.state::<StatoLettore>()
+            .spettro_bande
+            .store(bande, std::sync::atomic::Ordering::Relaxed);
+        lettore.motore.spettro_dettaglio(bande);
         Ok(())
     });
 }
@@ -669,11 +1148,62 @@ pub fn spettro(stato: State<'_, StatoLettore>, attivo: bool) -> Esito<()> {
     stato
         .spettro
         .store(attivo, std::sync::atomic::Ordering::Relaxed);
+    let bande = stato
+        .spettro_bande
+        .load(std::sync::atomic::Ordering::Relaxed);
     con_lettore(&stato, |lettore| {
         lettore.motore.guarda_spettro(attivo);
+        // La risoluzione si rimanda a ogni accensione. Costa un lucchetto già
+        // preso e toglie di mezzo il caso in cui il dispositivo audio si sia
+        // riaperto mentre la schermata era chiusa: là il lettore dello spettro è
+        // nuovo e non sa niente della scelta di chi guarda.
+        lettore.motore.spettro_dettaglio(bande);
         Ok(())
     })
     .map_err(errore)
+}
+
+/// Quante barre disegna la scena dello spettro.
+#[tauri::command]
+pub fn spettro_bande(stato: State<'_, Stato>) -> Esito<u16> {
+    con_libreria(&stato, |libreria| {
+        playback::load_spettro_bande(&libreria.connection)
+    })
+    .map_err(errore)
+}
+
+/// Sceglie quante barre disegna la scena dello spettro. Riporta com'è rimasta.
+///
+/// # Perché la risposta è un numero e non un `()`
+///
+/// Perché fra le potenze di due non c'è niente, e un valore che non è una di
+/// quelle si porta alla più vicina invece di essere rifiutato. Chi ha premuto
+/// deve vedere la linguetta che è rimasta accesa davvero — la stessa disciplina
+/// dell'equalizzatore, che rilegge quel che ha scritto invece di fidarsi di
+/// quel che è arrivato.
+#[tauri::command]
+pub fn spettro_bande_scegli(
+    app: tauri::AppHandle,
+    stato: State<'_, StatoLettore>,
+    quante: u16,
+) -> Esito<u16> {
+    let stato_app = app.state::<Stato>();
+    let rimaste = con_libreria(&stato_app, |libreria| {
+        playback::save_spettro_bande(&libreria.connection, quante)?;
+        playback::load_spettro_bande(&libreria.connection)
+    })
+    .map_err(errore)?;
+    stato
+        .spettro_bande
+        .store(rimaste, std::sync::atomic::Ordering::Relaxed);
+    // Il motore può non esserci — nessuna scheda audio — e la preferenza resta
+    // comunque scritta: è una scelta di disegno, e negarla perché le casse non
+    // rispondono sarebbe legare due cose che non c'entrano.
+    let _ = con_lettore(&stato, |lettore| {
+        lettore.motore.spettro_dettaglio(rimaste);
+        Ok(())
+    });
+    Ok(rimaste)
 }
 
 /// Fa partire una coda nuova a partire dal brano indicato.
@@ -945,6 +1475,17 @@ pub fn riapri_audio(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Es
                 lettore.normalizzazione.attivo,
                 lettore.normalizzazione.bersaglio_db,
             );
+            // Anche lo spettro: il lettore dentro il motore nuovo è nuovo pure
+            // lui, e senza queste due righe chi stava guardando le barre le
+            // vedrebbe fermarsi a zero dopo aver riaperto il dispositivo.
+            lettore
+                .motore
+                .guarda_spettro(stato.spettro.load(std::sync::atomic::Ordering::Relaxed));
+            lettore.motore.spettro_dettaglio(
+                stato
+                    .spettro_bande
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            );
         }
         Err(_) => {
             // Il caso del motore mai aperto: si costruisce il lettore adesso, e
@@ -957,6 +1498,11 @@ pub fn riapri_audio(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Es
                 volume: Volume::default(),
                 eq: Equalizzazione::default(),
                 normalizzazione: Normalizzazione::default(),
+                // Come volume, curva e normalizzazione qui sopra: valori di
+                // partenza che `riprendi_coda`, due righe più giù, rimpiazza
+                // con quel che c'è scritto in `settings`.
+                autoplay: false,
+                dissolvenza_s: 0,
             });
             drop(guardia);
             riprendi_coda(&app);
@@ -994,13 +1540,10 @@ pub fn riapri_audio(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Es
 pub fn normalizzazione(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
-    attivo: bool,
+    livello: String,
 ) -> Esito<()> {
     con_lettore(&stato, |lettore| {
-        let voluta = Normalizzazione {
-            attivo,
-            ..lettore.normalizzazione
-        };
+        let voluta = normalizzazione_da_nome(&livello);
         let stato_app = app.state::<Stato>();
         // Si rilegge quel che è stato scritto invece di fidarsi di quel che è
         // arrivato: è la disciplina dell'equalizzatore, e serve perché il
@@ -1114,7 +1657,10 @@ pub fn riproduzione_stato(
             posizione_coda: None,
             eq_attivo: false,
             eq_guadagni: Vec::new(),
-            replaygain: Normalizzazione::default().attivo,
+            replaygain: nome_normalizzazione(Normalizzazione::default()).to_owned(),
+            spegnimento_ms: None,
+            autoplay: false,
+            dissolvenza_s: 0,
             audio: Some(guasto_di_apertura(err)),
         }),
     }
@@ -1264,4 +1810,51 @@ pub fn brani_per_id(stato: State<'_, Stato>, brani: Vec<i64>) -> Esito<Vec<Track
         aether_app::library::summaries_by_id(&libreria.connection, &brani)
     })
     .map_err(errore)
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    /// I quattro nomi vanno e tornano.
+    ///
+    /// La prova che conta davvero è il ritorno: `nome_normalizzazione` non fa
+    /// un confronto esatto ma prende il più vicino, e un bersaglio nuovo
+    /// aggiunto in mezzo agli altri potrebbe rubare il nome a uno dei tre
+    /// senza che niente smetta di compilare.
+    #[test]
+    fn i_livelli_di_normalizzazione_vanno_e_tornano() {
+        for nome in ["spento", "basso", "normale", "alto"] {
+            let livello = normalizzazione_da_nome(nome);
+            assert_eq!(
+                nome_normalizzazione(livello),
+                nome,
+                "andata e ritorno di «{nome}»"
+            );
+        }
+    }
+
+    /// Un nome che non conosciamo vale «normale», non un guasto.
+    #[test]
+    fn un_livello_sconosciuto_vale_il_riferimento() {
+        let livello = normalizzazione_da_nome("fortissimo");
+        assert!(livello.attivo);
+        assert_eq!(nome_normalizzazione(livello), "normale");
+    }
+
+    /// Spento conserva un bersaglio valido a cui tornare.
+    ///
+    /// Se spegnere scrivesse uno zero, riaccendere porterebbe tutto a 0 dB —
+    /// diciotto decibel sopra il riferimento, cioè un salto di volume che
+    /// nessuno ha chiesto.
+    #[test]
+    fn spento_non_perde_il_bersaglio() {
+        let spento = normalizzazione_da_nome("spento");
+        assert!(!spento.attivo);
+        assert!(
+            spento.bersaglio_db.is_finite() && spento.bersaglio_db < 0.0,
+            "spento ha lasciato un bersaglio insensato: {}",
+            spento.bersaglio_db
+        );
+    }
 }

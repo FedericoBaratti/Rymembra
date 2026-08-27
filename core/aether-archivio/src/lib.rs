@@ -15,7 +15,7 @@
 //! # Cosa NON c'è qui dentro
 //!
 //! `rusqlite`. Questo crate legge un file e restituisce un valore, esattamente
-//! come `aether-meta` e `aether-spotify` fanno con la rete. È la regola scritta
+//! come `aether-meta` e `aether-catalogo` fanno con la rete. È la regola scritta
 //! nel `Cargo.toml` di `aether-app`: chi parla col mondo non vede il database, e
 //! così «nessun lucchetto della libreria resta preso mentre si scompatta un
 //! archivio da trecento megabyte» non è un commento che qualcuno violerà per

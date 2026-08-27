@@ -25,6 +25,7 @@ import { useState, type CSSProperties } from "react";
 import { durata } from "../formato";
 import { ipc, type StatoRiproduzione } from "../ipc";
 import { usePosizioneMs } from "../riproduzione";
+import { t } from "../lingue";
 
 export function Scrubber({
   stato,
@@ -70,7 +71,7 @@ export function Scrubber({
            ricomposto a ogni fotogramma: è una proprietà custom sola, e il
            motore di rendering la risolve senza rileggere la regola. */
         style={{ "--avanzamento": `${avanzamento}%` } as CSSProperties}
-        aria-label="Posizione nel brano"
+        aria-label={t("player.position")}
         disabled={durataMs === 0}
         onChange={(e) => setTrascinato(Number(e.target.value))}
         onPointerUp={() => void rilascia()}

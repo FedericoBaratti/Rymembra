@@ -7,6 +7,7 @@
  * stessa domanda fatta due volte.
  */
 import { useEffect, useRef, useState } from "react";
+import { t } from "./lingue";
 
 export function Chiedi({
   titolo,
@@ -45,7 +46,7 @@ export function Chiedi({
   return (
     <div className="velo scuro" onClick={onChiudi}>
       <form
-        className="finestrella stretta"
+        className="finestrella stretta glass-modal"
         aria-label={titolo}
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
@@ -59,7 +60,7 @@ export function Chiedi({
           {etichetta}
           <input
             ref={campo}
-            className="campo"
+            className="campo field-input"
             value={testo}
             spellCheck={false}
             onChange={(e) => setTesto(e.target.value)}
@@ -67,7 +68,7 @@ export function Chiedi({
         </label>
         <div className="tasti-finestrella">
           <button type="button" className="bottone" onClick={onChiudi}>
-            Annulla
+            {t("common.cancel")}
           </button>
           <button type="submit" className="bottone primario" disabled={vuoto}>
             {conferma}

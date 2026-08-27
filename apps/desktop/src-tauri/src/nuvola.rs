@@ -635,6 +635,12 @@ pub fn sporca(app: &AppHandle) {
         // di cui il comando che ha appena messo un cuoricino debba occuparsi.
         let _ = nuvola.sveglia.send(Sveglia::Sporca);
     }
+    // E la sincronia insieme, da qui e non da un secondo punto di marcatura
+    // sparso per i comandi. Ce n'è già una versione per ogni comando che cambia
+    // qualcosa; aggiungerne una seconda vorrebbe dire che il diciottesimo comando
+    // ne chiama una delle due e non l'altra, e il sintomo sarebbe una modifica
+    // che finisce nel backup ma non sull'altro dispositivo.
+    crate::sincronia::sporca(app);
 }
 
 /// Segnala il cambiamento **solo se** il comando è andato a buon fine.
@@ -889,6 +895,42 @@ fn accesso(nuvola: &StatoNuvola, credenziali: &Credenziali) -> Result<String, Ap
     Ok(access)
 }
 
+/// Un access token valido per chi non è il backup.
+///
+/// Esiste perché la sincronia può depositare i suoi documenti sullo stesso Drive,
+/// e un secondo posto che rinfresca il token vorrebbe dire due cache che si
+/// invalidano a vicenda: due rinfreschi ogni volta che uno dei due lavora, e un
+/// `invalid_grant` il giorno che Google smette di accettare il refresh token
+/// vecchio dopo averne emesso uno nuovo. La cache resta **una**, qui.
+///
+/// # Errori
+///
+/// `settings.secretUnavailable` se non c'è un account collegato, `net.*` se il
+/// rinfresco non riesce.
+pub(crate) fn accesso_condiviso(
+    app: &AppHandle,
+    credenziali: &Credenziali,
+) -> Result<String, AppError> {
+    let Some(nuvola) = app.try_state::<StatoNuvola>() else {
+        return Err(AppError::new(ErrorCode::SettingsSecretUnavailable {
+            key: portachiavi::GOOGLE_REFRESH_TOKEN.to_owned(),
+        })
+        .with_cause("il backup non è avviato"));
+    };
+    accesso(&nuvola, credenziali)
+}
+
+/// Le credenziali del client, per chi non è il backup.
+///
+/// # Errori
+///
+/// `settings.secretUnavailable` se il client Google non è configurato.
+pub(crate) fn credenziali_condivise(
+    connection: &rusqlite::Connection,
+) -> Result<Credenziali, AppError> {
+    credenziali(connection)
+}
+
 /// Mette in cache l'access token appena ottenuto.
 fn ricorda_token(nuvola: &StatoNuvola, token: Token) {
     let mut cache = nuvola
@@ -961,7 +1003,13 @@ fn attivo(connection: &rusqlite::Connection) -> Result<bool, AppError> {
 }
 
 /// L'identificativo casuale di questo computer, generandolo la prima volta.
-fn dispositivo(connection: &rusqlite::Connection) -> Result<String, AppError> {
+///
+/// Uno solo per tutto il programma, e non uno per funzione: lo usano il backup,
+/// per firmare il salvataggio, e la sincronia, per intestarsi i propri ascolti.
+/// Se fossero due, gli ascolti di questo computer arriverebbero all'altro
+/// dispositivo come quelli di un terzo che non esiste — e ogni reinstallazione
+/// ne inventerebbe un altro ancora.
+pub(crate) fn dispositivo(connection: &rusqlite::Connection) -> Result<String, AppError> {
     if let Some(id) =
         settings::read(connection, CHIAVE_DISPOSITIVO)?.filter(|id| !id.trim().is_empty())
     {

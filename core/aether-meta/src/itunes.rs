@@ -12,7 +12,7 @@
 //! - **una copertina quadrata ad alta risoluzione**, legata alla pubblicazione
 //!   esatta invece che al gruppo di pubblicazione.
 
-use aether_domain::enrich::{Candidate, Fonte, normalize_for_match, titolo_da_cercare};
+use aether_domain::enrich::{Candidate, FonteMeta, normalize_for_match, titolo_da_cercare};
 use aether_domain::errors::AppError;
 use aether_net::percento;
 use serde_json::Value;
@@ -42,7 +42,7 @@ pub fn interpreta(corpo: &[u8]) -> Vec<Candidate> {
             let titolo = voce.get("trackName").and_then(Value::as_str)?;
             let artista = voce.get("artistName").and_then(Value::as_str)?;
             Some(Candidate {
-                fonte: Some(Fonte::Itunes),
+                fonte: Some(FonteMeta::Itunes),
                 title: titolo.to_owned(),
                 artist: artista.to_owned(),
                 album: voce
@@ -196,7 +196,7 @@ mod prove {
         let candidati = interpreta(corpo);
         assert_eq!(candidati.len(), 1);
         let primo = candidati.first().expect("un candidato");
-        assert_eq!(primo.fonte, Some(Fonte::Itunes));
+        assert_eq!(primo.fonte, Some(FonteMeta::Itunes));
         assert_eq!(primo.genre.as_deref(), Some("Pop"));
         assert_eq!(primo.year, Some(2017));
         assert_eq!(primo.duration_ms, Some(297_000));

@@ -44,8 +44,12 @@ pub enum TokenGroup {
     Chrome,
     /// Misure della shell.
     Layout,
+    /// La scala della spaziatura.
+    Rhythm,
     /// Raggi e forme.
     Geometry,
+    /// Quanto rilievo hanno le superfici.
+    Depth,
     /// Ombre e aloni.
     Elevation,
     /// Durate e curve.
@@ -74,7 +78,11 @@ pub enum TokenKind {
 }
 
 /// Un token del registro.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Non è più `Eq`: [`Self::limiti`] contiene due `f64`, e `f64` non lo è. Il
+/// confronto fra token non ne ha mai avuto bisogno — si confrontano per `id`,
+/// che è la loro identità.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TokenDef {
     /// Il nome nel documento, es. `color.accent`.
     pub id: &'static str,
@@ -91,6 +99,18 @@ pub struct TokenDef {
     /// Emette anche la tripla `r g b` sotto questo nome. Solo per i colori che i
     /// canvas leggono a runtime.
     pub rgb_triple: Option<&'static str>,
+    /// Gli estremi ammessi, per i token la cui libertà è limitata di proposito.
+    ///
+    /// Serve a due lettori diversi, ed è la ragione per cui sta nel registro
+    /// invece che in un `match` del validatore: il validatore rifiuta quel che
+    /// esce dagli estremi, e l'editor ne fa i capi del cursore. Un solo posto da
+    /// cambiare per spostare un limite, e nessun modo di spostarne uno e
+    /// dimenticare l'altro.
+    ///
+    /// `None` non vuol dire «senza limiti» in senso lato: vuol dire che il tipo
+    /// del valore è già tutto il vincolo che serve. Un colore non ha estremi, e
+    /// un raggio esagerato produce un pulsante buffo, non un'interfaccia rotta.
+    pub limiti: Option<(f64, f64)>,
     /// A cosa serve, per chi lo legge nell'editor.
     pub description: &'static str,
 }
@@ -105,6 +125,28 @@ macro_rules! token {
             group: TokenGroup::$group,
             required: $required,
             rgb_triple: $rgb,
+            limiti: None,
+            description: $desc,
+        }
+    };
+}
+
+/// Come [`token!`], per i pochi token che hanno estremi.
+///
+/// È una macro a parte e non un ottavo argomento di `token!` perché gli estremi
+/// riguardano undici voci su cinquantotto: aggiungere un `None` alle altre
+/// quarantasette metterebbe due `None` di fila su ogni riga della tabella, e da
+/// lì in poi nessuno saprebbe più a vista quale dei due è la tripla.
+macro_rules! token_limitato {
+    ($id:literal, $css:literal, $kind:ident, $group:ident, $min:literal, $max:literal, $desc:literal) => {
+        TokenDef {
+            id: $id,
+            css: $css,
+            kind: TokenKind::$kind,
+            group: TokenGroup::$group,
+            required: false,
+            rgb_triple: None,
+            limiti: Some(($min, $max)),
             description: $desc,
         }
     };
@@ -203,11 +245,60 @@ pub static TOKENS: &[TokenDef] = &[
     token!("layout.contentX", "--content-x", Length, Layout, false, None,
         "Margine orizzontale del contenuto."),
 
+    // ── Ritmo ───────────────────────────────────────────────────────────────
+    // I cinque gradini della spaziatura. Erano costanti del motore, e non per
+    // caso: una skin che potesse scrivere una spaziatura qualunque potrebbe far
+    // uscire le cose dallo schermo. Gli estremi sono quella garanzia, scritta
+    // dove si può verificare invece che ottenuta togliendo la manopola — sotto
+    // zero non si scende e sopra i 64px non si sale, e la scala resta una scala.
+    //
+    // Restano **il ritmo di base**: `density` li moltiplica per `--densita-k`,
+    // quindi le due manopole non si contraddicono e chi sceglie «compatto»
+    // continua ad avere il compatto della propria scala.
+    token_limitato!("space.1", "--ritmo-1", Length, Rhythm, 0.0, 64.0,
+        "Il gradino più stretto: dentro un chip, fra un'icona e la sua etichetta."),
+    token_limitato!("space.2", "--ritmo-2", Length, Rhythm, 0.0, 64.0,
+        "Fra elementi affiancati della stessa riga."),
+    token_limitato!("space.3", "--ritmo-3", Length, Rhythm, 0.0, 64.0,
+        "Il gradino di base: dentro le schede, fra le righe di un elenco."),
+    token_limitato!("space.4", "--ritmo-4", Length, Rhythm, 0.0, 64.0,
+        "Fra i blocchi di una pagina."),
+    token_limitato!("space.5", "--ritmo-5", Length, Rhythm, 0.0, 64.0,
+        "Fra le sezioni grandi, e ai bordi delle schermate."),
+
     // ── Geometria ───────────────────────────────────────────────────────────
     token!("radius.panel", "--radius-panel", Length, Geometry, true, None,
         "Raggio dei pannelli. Cyberpunk lo porta a 4px, ed è metà della sua identità."),
     token!("radius.card", "--radius-card", Length, Geometry, true, None,
         "Raggio delle schede."),
+    // Fattori e non misure: erano `calc(var(--radius-card) * 0.6)` scritti nel
+    // foglio, cioè già derivati. Esporre il fattore invece della misura è quel
+    // che tiene la promessa che `radius.card: 0` squadri **tutto** — con due
+    // misure indipendenti, una skin che azzera le schede si ritroverebbe i
+    // contenitori interni ancora tondi.
+    token_limitato!("radius.inner", "--raggio-fattore-interno", Number, Geometry, 0.0, 1.0,
+        "Quanto del raggio delle schede prendono i contenitori interni."),
+    token_limitato!("radius.tiny", "--raggio-fattore-minuto", Number, Geometry, 0.0, 1.0,
+        "Quanto ne prendono i dettagli minuti: pastiglie, caselle, maniglie."),
+
+    // ── Profondità ──────────────────────────────────────────────────────────
+    // Il modello di luce, come quantità e mai come colore.
+    //
+    // Le tre variabili sono `color-mix` fra token della skin dentro
+    // `light-dark()`, e la composizione resta nel foglio: qui si dice **quanto**
+    // rilievo, non **di che colore**. È la ragione per cui questi possono essere
+    // token mentre `--spigolo` non poteva — una skin che scrivesse il colore
+    // potrebbe accendere un filo bianco su una superficie bianca; una che ne
+    // sceglie l'intensità, no. Zero appiattisce tutto, uno è quel che si vede
+    // oggi, tre è il massimo prima che il rilievo diventi una fascia.
+    token_limitato!("depth.edge", "--profondita-spigolo", Number, Depth, 0.0, 3.0,
+        "Quanto risalta il filo di luce sul bordo alto delle superfici."),
+    token_limitato!("depth.inset", "--profondita-incavo", Number, Depth, 0.0, 3.0,
+        "Quanto sprofondano piste, solchi e campi."),
+    token_limitato!("depth.lift", "--profondita-alzata", Number, Depth, 0.0, 3.0,
+        "Quanto schiarisce la cima di una superficie."),
+    token_limitato!("depth.sheen", "--profondita-luce", Length, Depth, 0.0, 240.0,
+        "Fin dove scende la sfumatura di luce prima di esaurirsi."),
 
     // ── Elevazione ──────────────────────────────────────────────────────────
     token!("shadow.1", "--shadow-1", Shadow, Elevation, true, None,
@@ -514,7 +605,9 @@ mod tests {
             TokenGroup::Status,
             TokenGroup::Chrome,
             TokenGroup::Layout,
+            TokenGroup::Rhythm,
             TokenGroup::Geometry,
+            TokenGroup::Depth,
             TokenGroup::Elevation,
             TokenGroup::Motion,
             TokenGroup::Canvas,
@@ -524,6 +617,36 @@ mod tests {
         // invisibili nell'editor pur essendo validi: è il tipo di silenzio che
         // il registro esiste per togliere.
         assert_eq!(contati, TOKENS.len());
+    }
+
+    #[test]
+    fn gli_estremi_hanno_senso_e_solo_dove_servono() {
+        for def in TOKENS {
+            let Some((min, max)) = def.limiti else {
+                continue;
+            };
+            assert!(min < max, "{}: estremi al contrario", def.id);
+            // Un estremo su un colore o su una curva non avrebbe niente da
+            // confrontare, e il validatore lo ignorerebbe in silenzio: meglio
+            // che non compili la tabella.
+            assert!(
+                matches!(def.kind, TokenKind::Length | TokenKind::Number),
+                "{} ha estremi ma è {:?}",
+                def.id,
+                def.kind
+            );
+        }
+    }
+
+    #[test]
+    fn il_ritmo_e_la_profondita_non_sono_mai_obbligatori() {
+        // Sono arrivati dopo il formato 1, e un token nuovo obbligatorio
+        // trasformerebbe ogni skin già scritta in una skin con un avviso.
+        for def in TOKENS {
+            if matches!(def.group, TokenGroup::Rhythm | TokenGroup::Depth) {
+                assert!(!def.required, "{} è obbligatorio", def.id);
+            }
+        }
     }
 
     #[test]

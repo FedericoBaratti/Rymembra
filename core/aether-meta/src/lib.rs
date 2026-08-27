@@ -11,8 +11,8 @@
 //! aether-meta  ──►  aether-net  ──►  aether-domain
 //! ```
 //!
-//! Questo crate **non vede `rusqlite`**, esattamente come `aether-spotify` e
-//! `aether-yt`. Non è pulizia: è ciò che rende impossibile — e non solo
+//! Questo crate **non vede `rusqlite`**, esattamente come `aether-catalogo` e
+//! `aether-archivio`. Non è pulizia: è ciò che rende impossibile — e non solo
 //! sconsigliato — scrivere il codice che tiene preso il lucchetto della libreria
 //! mentre aspetta una risposta da MusicBrainz. Chi ha bisogno di ricordare le
 //! risposte passa dal tratto [`Deposito`], che sta implementato dall'altra parte
@@ -43,6 +43,7 @@ pub mod copertine;
 pub mod deezer;
 pub mod deposito;
 pub mod itunes;
+pub mod lrclib;
 pub mod musicbrainz;
 
 use std::time::Duration;
@@ -102,6 +103,8 @@ pub struct Fornitori {
     pub itunes: Cadenza,
     /// Il cancello di Deezer.
     pub deezer: Cadenza,
+    /// Il cancello del catalogo dei testi.
+    pub lrclib: Cadenza,
 }
 
 impl std::fmt::Debug for Fornitori {
@@ -124,6 +127,7 @@ impl Fornitori {
             copertine: Cadenza::nuova("coverartarchive", cadenza::RITMO_COVERART),
             itunes: Cadenza::nuova("itunes", cadenza::RITMO_ITUNES),
             deezer: Cadenza::nuova("deezer", cadenza::RITMO_DEEZER),
+            lrclib: Cadenza::nuova("lrclib", cadenza::RITMO_LRCLIB),
         }
     }
 

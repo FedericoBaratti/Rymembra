@@ -69,6 +69,10 @@ pub enum Genere {
 const CATALOGO: &[(&str, Genere)] = &[
     // ── l'aspetto ──
     (crate::preferenze::CHIAVE_TEMA, Genere::Preferenza),
+    // La lingua viaggia, e su un'altra macchina può nominare un file che di là
+    // non c'è: la finestra ripiega sul sistema, che è il comportamento giusto —
+    // meglio dell'inglese imposto da un profilo scritto altrove.
+    (crate::preferenze::CHIAVE_LINGUA, Genere::Preferenza),
     ("skin.active", Genere::Preferenza),
     ("skin.dynamicAccent", Genere::Preferenza),
     // ── la riproduzione ──
@@ -79,6 +83,14 @@ const CATALOGO: &[(&str, Genere)] = &[
     ("player.eq", Genere::Preferenza),
     ("player.eq.presets", Genere::Preferenza),
     ("player.replaygain", Genere::Preferenza),
+    // Viaggia, al contrario del timer di spegnimento: «continua quando la coda
+    // finisce» è come uno vuole che il lettore si comporti, e vale su ogni
+    // macchina. Il timer invece è una decisione di stasera, e ritrovarlo su un
+    // altro computer sarebbe una musica che si spegne da sola senza motivo.
+    ("player.autoplay", Genere::Preferenza),
+    // Viaggia per la stessa ragione: quanto si vuole che due brani si
+    // sovrappongano è un gusto d'ascolto, non un fatto di questa macchina.
+    ("player.crossfade", Genere::Preferenza),
     // ── la tastiera ──
     (crate::preferenze::CHIAVE_SCORCIATOIE, Genere::Preferenza),
     // ── gli automatismi ──

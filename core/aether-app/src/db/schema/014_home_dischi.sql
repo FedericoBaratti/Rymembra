@@ -1,0 +1,32 @@
+-- I dischi entrati per ultimi, senza leggere tutta la libreria.
+--
+-- Il ripiano «aggiunti di recente» della Home mostrava dodici brani, e su una
+-- libreria vera erano dodici tracce dello stesso album: la musica non entra un
+-- brano alla volta, entra una cartella alla volta, e una cartella è un disco.
+-- Adesso mostra dischi, e per farlo chiede a `tracks` la data più alta di ogni
+-- `album_key` — cioè un GROUP BY su una tabella che nelle librerie vere ha
+-- decine di migliaia di righe.
+--
+-- Gli indici che c'erano non bastano, ed è utile dire perché invece di
+-- aggiungerne uno per scaramanzia. `idx_tracks_added` è su `date_added` da
+-- sola: ordina, non raggruppa, e a SQLite tocca comunque toccare ogni riga per
+-- sapere di che album è. `idx_tracks_album_key` raggruppa ma non porta con sé
+-- la data, quindi ogni gruppo diventa una serie di letture della tabella.
+-- Quello qui sotto ha tutte e due le colonne nell'ordine giusto: il
+-- raggruppamento scorre l'indice, e il MAX di ogni gruppo è l'ultima voce del
+-- suo tratto. La tabella non si apre mai.
+--
+-- `WHERE album_key IS NOT NULL` per la stessa ragione dell'indice parziale
+-- della migrazione 12: i brani senza album non entrano in un ripiano di
+-- dischi, e tenerli nell'indice sarebbe pagare per righe che la query scarta
+-- nella clausola successiva.
+--
+-- L'id non serve elencarlo: in SQLite `tracks.id` è il rowid, e il rowid sta
+-- dentro ogni voce di ogni indice. La query lo chiede — a pari data, davanti va
+-- il disco scritto per ultimo — e lo ottiene senza aprire la tabella.
+--
+-- È il momento peggiore in cui farsi aspettare, di nuovo: questa query gira
+-- all'apertura della finestra, insieme alle altre quattro della Home.
+CREATE INDEX IF NOT EXISTS idx_tracks_album_added
+    ON tracks(album_key, date_added)
+    WHERE album_key IS NOT NULL;

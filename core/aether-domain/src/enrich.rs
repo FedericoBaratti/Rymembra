@@ -58,9 +58,9 @@
 
 use std::collections::HashMap;
 
+use crate::abbinamento::senza_decorazioni;
 use crate::album::{UNKNOWN_ALBUM, UNKNOWN_ARTIST, strip_edition_suffix};
 use crate::keys::normalize_key;
-use crate::spotify_plan::senza_decorazioni;
 use crate::text::{collapse_whitespace, fold_text, is_js_whitespace};
 
 // ── le soglie ───────────────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ pub const SMENTITA: f64 = 0.35;
 
 /// Lo scarto di durata entro cui due registrazioni sono la stessa.
 ///
-/// Dieci secondi, come [`crate::spotify_plan::TOLLERANZA_MS`] e per la stessa
+/// Dieci secondi, come [`crate::abbinamento::TOLLERANZA_MS`] e per la stessa
 /// ragione già scritta lì: sono i silenzi di coda e gli stacchi che cambiano fra
 /// una codifica e l'altra dello stesso master.
 pub const GRAZIA_MS: u64 = 10_000;
@@ -259,7 +259,7 @@ fn togli_coda_topic(input: &str) -> String {
 /// Se una parentesi non si chiude, il resto della stringa torna com'era: un
 /// titolo con una parentesi aperta per sbaglio è comunque un titolo, e mangiarne
 /// la metà finale sarebbe peggio che lasciarlo intero — la stessa scelta che
-/// [`crate::spotify_plan`] fa in `togli_parentesi`.
+/// [`crate::abbinamento`] fa in `togli_parentesi`.
 fn togli_gruppi(input: &str, scarta: impl Fn(&str) -> bool) -> String {
     let mut fuori = String::with_capacity(input.len());
     let mut resto = input;
@@ -441,7 +441,13 @@ fn bigrammi(testo: &str) -> HashMap<(char, char), usize> {
 /// Il neutro a metà è per il **punteggio**, dove serve a non premiare né punire
 /// un candidato per un dato che manca. Nella decisione la stessa assenza si
 /// scrive `None` e non conta verso niente: vedi la nota in testa al modulo.
-fn punteggio_durata(a: Option<u64>, b: Option<u64>) -> f64 {
+///
+/// Pubblica perché la usa anche [`crate::testo::scegli`], che sceglie fra le
+/// risposte di un catalogo di testi con la stessa domanda — quanto ci credo che
+/// questi due siano lo stesso brano — e una seconda curva scritta là darebbe due
+/// idee diverse di «la durata concorda» nello stesso programma.
+#[must_use]
+pub fn punteggio_durata(a: Option<u64>, b: Option<u64>) -> f64 {
     let (Some(a), Some(b)) = (a.filter(|d| *d > 0), b.filter(|d| *d > 0)) else {
         return 0.5;
     };
@@ -556,7 +562,7 @@ pub struct RemoteRelease {
 
 /// Da quale servizio arriva un candidato.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Fonte {
+pub enum FonteMeta {
     /// MusicBrainz.
     MusicBrainz,
     /// iTunes Search.
@@ -565,7 +571,7 @@ pub enum Fonte {
     Deezer,
 }
 
-impl Fonte {
+impl FonteMeta {
     /// Il nome che finisce nel database e nei registri.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -586,7 +592,7 @@ impl Fonte {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Candidate {
     /// Chi lo propone.
-    pub fonte: Option<Fonte>,
+    pub fonte: Option<FonteMeta>,
     /// Il titolo.
     pub title: String,
     /// L'interprete.
@@ -1454,7 +1460,7 @@ mod tests {
         }
     }
 
-    fn candidato(fonte: Fonte, titolo: &str, artista: &str, durata_ms: u64) -> Candidate {
+    fn candidato(fonte: FonteMeta, titolo: &str, artista: &str, durata_ms: u64) -> Candidate {
         Candidate {
             fonte: Some(fonte),
             title: titolo.to_owned(),
@@ -1805,11 +1811,16 @@ mod tests {
         // commento di `decide_track`: due assi forti sono quel che una base
         // karaoke soddisfa.
         let locale = brano("Poetica", "Cesare Cremonini", 297_000);
-        let uno = candidato(Fonte::MusicBrainz, "Poetica", "Cesare Cremonini", 297_000);
+        let uno = candidato(
+            FonteMeta::MusicBrainz,
+            "Poetica",
+            "Cesare Cremonini",
+            297_000,
+        );
         let solo = resolve_track(&locale, std::slice::from_ref(&uno)).expect("un candidato");
         assert_eq!(solo.verdict, Verdetto::DaRivedere);
 
-        let due = candidato(Fonte::Deezer, "Poetica", "Cesare Cremonini", 297_500);
+        let due = candidato(FonteMeta::Deezer, "Poetica", "Cesare Cremonini", 297_500);
         let insieme = resolve_track(&locale, &[uno, due]).expect("due candidati");
         assert!(insieme.evidence.consensus);
         assert_eq!(insieme.verdict, Verdetto::Applica);
@@ -1821,8 +1832,18 @@ mod tests {
         // vale perché due basi dati indipendenti dicono la stessa cosa.
         let locale = brano("Poetica", "Cesare Cremonini", 297_000);
         let candidati = [
-            candidato(Fonte::MusicBrainz, "Poetica", "Cesare Cremonini", 297_000),
-            candidato(Fonte::MusicBrainz, "Poetica", "Cesare Cremonini", 297_200),
+            candidato(
+                FonteMeta::MusicBrainz,
+                "Poetica",
+                "Cesare Cremonini",
+                297_000,
+            ),
+            candidato(
+                FonteMeta::MusicBrainz,
+                "Poetica",
+                "Cesare Cremonini",
+                297_200,
+            ),
         ];
         let esito = resolve_track(&locale, &candidati).expect("candidati");
         assert!(!esito.evidence.consensus);
@@ -1833,8 +1854,13 @@ mod tests {
     fn un_interprete_smentito_veta_l_applicazione() {
         let locale = brano("Poetica", "Cesare Cremonini", 297_000);
         let candidati = [
-            candidato(Fonte::MusicBrainz, "Poetica", "Coro dei Bambini", 297_000),
-            candidato(Fonte::Deezer, "Poetica", "Coro dei Bambini", 297_100),
+            candidato(
+                FonteMeta::MusicBrainz,
+                "Poetica",
+                "Coro dei Bambini",
+                297_000,
+            ),
+            candidato(FonteMeta::Deezer, "Poetica", "Coro dei Bambini", 297_100),
         ];
         let esito = resolve_track(&locale, &candidati).expect("candidati");
         assert!(esito.evidence.artist_sim.is_some_and(|s| s < SMENTITA));
@@ -1854,11 +1880,11 @@ mod tests {
         let candidati = [
             Candidate {
                 duration_ms: None,
-                ..candidato(Fonte::MusicBrainz, "Yesterday", "The Beatles", 0)
+                ..candidato(FonteMeta::MusicBrainz, "Yesterday", "The Beatles", 0)
             },
             Candidate {
                 album: Some("Help!".to_owned()),
-                ..candidato(Fonte::Deezer, "Yesterday", "The Beatles", 0)
+                ..candidato(FonteMeta::Deezer, "Yesterday", "The Beatles", 0)
             },
         ];
         let esito = resolve_track(&locale, &candidati).expect("candidati");

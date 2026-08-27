@@ -11,7 +11,7 @@
 //! qualunque delle due, cadendo, spegne la possibilità di applicare qualcosa.
 //! Con tre, ne basta una che risponda insieme a MusicBrainz.
 
-use aether_domain::enrich::{Candidate, Fonte, normalize_for_match};
+use aether_domain::enrich::{Candidate, FonteMeta, normalize_for_match};
 use aether_domain::errors::AppError;
 use aether_net::percento;
 use serde_json::Value;
@@ -38,7 +38,7 @@ pub fn interpreta(corpo: &[u8]) -> Vec<Candidate> {
                 .and_then(Value::as_str)?;
             let album = voce.get("album");
             Some(Candidate {
-                fonte: Some(Fonte::Deezer),
+                fonte: Some(FonteMeta::Deezer),
                 title: titolo.to_owned(),
                 artist: artista.to_owned(),
                 album: album
@@ -130,7 +130,7 @@ mod prove {
         let candidati = interpreta(corpo);
         let primo = candidati.first().expect("un candidato");
         assert_eq!(primo.duration_ms, Some(297_000));
-        assert_eq!(primo.fonte, Some(Fonte::Deezer));
+        assert_eq!(primo.fonte, Some(FonteMeta::Deezer));
         assert_eq!(primo.cover_url.as_deref(), Some("https://c/xl.jpg"));
     }
 

@@ -1,10 +1,10 @@
 /**
- * Le icone: trentotto simboli disegnati apposta, montati una volta sola.
+ * Le icone: quarantadue simboli disegnati apposta, montati una volta sola.
  *
  * # Perché uno sprite e non una libreria
  *
  * L'applicazione non ha dipendenze di componenti, di icone o di animazione, e
- * questo file è il motivo per cui può continuare a non averne: trentotto
+ * questo file è il motivo per cui può continuare a non averne: quarantadue
  * `<symbol>` in un `<defs>` nascosto costano meno di sei chilobyte e non portano
  * dietro un albero di pacchetti da aggiornare. La CSP è chiusa
  * (`default-src 'self'`), quindi un font di icone remoto non sarebbe nemmeno
@@ -32,6 +32,7 @@
 
 /** Il nome di un'icona. Chiuso: un refuso è un errore di compilazione. */
 export type NomeIcona =
+  | "i-home"
   | "i-album"
   | "i-artist"
   | "i-track"
@@ -51,6 +52,13 @@ export type NomeIcona =
   | "i-vol"
   | "i-vol-x"
   | "i-x"
+  // I tre della barra del titolo, che qui è disegnata e non del sistema. Non
+  // sono icone dell'applicazione: sono i glifi che Windows mette in quell'ordine
+  // da trent'anni, ridisegnati col tratto delle altre invece che presi da un
+  // carattere di sistema che una skin non potrebbe toccare.
+  | "i-win-min"
+  | "i-win-max"
+  | "i-win-restore"
   | "i-plus"
   | "i-dots"
   | "i-grip"
@@ -94,6 +102,9 @@ export function Simboli() {
   return (
     <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true" focusable="false">
       <defs>
+        <symbol id="i-home" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M3.2 8.6 10 3.2l6.8 5.4v7.2a1 1 0 0 1-1 1h-3.4v-4.6H7.6v4.6H4.2a1 1 0 0 1-1-1Z" />
+        </symbol>
         <symbol id="i-album" viewBox="0 0 20 20" {...TRATTO}>
           <circle cx="10" cy="10" r="6.8" />
           <circle cx="10" cy="10" r="1.9" />
@@ -168,6 +179,18 @@ export function Simboli() {
         </symbol>
         <symbol id="i-x" viewBox="0 0 20 20" {...TRATTO}>
           <path d="m5.6 5.6 8.8 8.8M14.4 5.6l-8.8 8.8" />
+        </symbol>
+        <symbol id="i-win-min" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M5.4 10h9.2" />
+        </symbol>
+        <symbol id="i-win-max" viewBox="0 0 20 20" {...TRATTO}>
+          <rect x="5.4" y="5.4" width="9.2" height="9.2" rx="1.6" />
+        </symbol>
+        {/* Due riquadri sfalsati: quello davanti è la finestra che torna
+            piccola, quello dietro il posto che lascia. */}
+        <symbol id="i-win-restore" viewBox="0 0 20 20" {...TRATTO}>
+          <rect x="4.4" y="7.6" width="8" height="8" rx="1.5" />
+          <path d="M7.6 7.6V6a1.6 1.6 0 0 1 1.6-1.6h4.4A1.6 1.6 0 0 1 15.6 6v4.4a1.6 1.6 0 0 1-1.6 1.6h-1.6" />
         </symbol>
         <symbol id="i-plus" viewBox="0 0 20 20" {...TRATTO}>
           <path d="M10 4.4v11.2M4.4 10h11.2" />

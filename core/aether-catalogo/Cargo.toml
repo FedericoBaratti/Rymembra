@@ -1,0 +1,45 @@
+# I cataloghi liberi: l'unico posto dell'albero che va a prendere dei byte
+# musicali.
+#
+# Sostituisce `aether-yt`, e la differenza che conta non e` quale servizio si
+# interroga: e` che qui non c'e` nessun processo figlio e nessun binario da
+# impacchettare nell'installer. Tutto passa da `aether-net`, cioe` da `ureq`,
+# cioe` da richieste HTTP che si leggono nel codice.
+#
+# Non vede `rusqlite`, come `aether-cloud` e `aether-archivio`: e` il verso della
+# dipendenza a rendere impossibile — e non solo sconsigliato — tenere preso il
+# lucchetto della libreria per il minuto che dura un prelievo.
+
+[package]
+name = "aether-catalogo"
+description = "I cataloghi liberi da cui Aether prende la musica: Internet Archive, Jamendo, Audius."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+# Nessuno di questi crate va su crates.io.
+#
+# Non è modestia: sono i pezzi di un'applicazione, con nomi che occuperebbero
+# uno spazio dei nomi pubblico senza offrire niente a nessuno, e con un patto
+# di stabilità che non esiste — le firme qui dentro cambiano quando serve.
+# Senza questa riga un `cargo publish` distratto dalla radice li
+# pubblicherebbe tutti, e un nome preso su crates.io non si restituisce.
+publish = false
+
+[dependencies]
+aether-domain = { path = "../aether-domain" }
+aether-net = { path = "../aether-net" }
+serde_json.workspace = true
+
+[features]
+# Jamendo sta dietro un interruttore, e non per gusto di configurabilita`: la
+# loro API e` gratuita per i soli usi non commerciali, e «non commerciale» e` una
+# proprieta` del progetto che lo usa, non di questo codice. Il giorno che Aether
+# dovesse incassare qualcosa, questa feature si spegne senza toccare nient'altro.
+default = ["jamendo"]
+jamendo = []
+
+[lints]
+workspace = true

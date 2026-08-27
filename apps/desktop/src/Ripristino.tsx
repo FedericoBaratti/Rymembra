@@ -31,40 +31,54 @@ import {
   type EsitoRipristino,
   type PianoRipristino,
 } from "./ipc";
+import { t } from "./lingue";
+import { Trans } from "./lingue/Trans";
+import { dataOra } from "./formato";
 
 /** Come si legge una fase dell'avanzamento. */
-const FASI: Record<AvanzamentoNuvola["cosa"], string> = {
-  metadati: "metadati",
-  skin: "skin",
-  bozze: "bozze dello Studio",
-};
+function fasi(): Record<AvanzamentoNuvola["cosa"], string> {
+  return {
+    metadati: t("restore.phase.metadati"),
+    skin: t("restore.phase.skin"),
+    bozze: t("restore.phase.bozze"),
+  };
+}
 
 /** Un brano, nella forma in cui la chiave lo sa descrivere. */
 function nomina(brano: CambioBrano): string {
   const pezzi = [brano.titolo, brano.artista, brano.album].filter(
     (p) => p.length > 0,
   );
-  return pezzi.length > 0 ? pezzi.join(" · ") : "(senza tag)";
+  return pezzi.length > 0 ? pezzi.join(" · ") : t("restore.noTags");
 }
 
 /** Il delta di un brano, nella forma «ascolti 3 → 17, voto — → ★★★★». */
 function delta(brano: CambioBrano): string {
   const parti: string[] = [];
   if (brano.ascoltiDopo !== brano.ascoltiPrima) {
-    parti.push(`ascolti ${brano.ascoltiPrima} → ${brano.ascoltiDopo}`);
+    parti.push(
+      t("restore.delta.plays", {
+        prima: brano.ascoltiPrima,
+        dopo: brano.ascoltiDopo,
+      }),
+    );
   }
   if (brano.votoDopo !== brano.votoPrima) {
     const stelle = (n: number) => (n > 0 ? "★".repeat(n) : "—");
-    parti.push(`voto ${stelle(brano.votoPrima)} → ${stelle(brano.votoDopo)}`);
+    parti.push(
+      t("restore.delta.rating", {
+        prima: stelle(brano.votoPrima),
+        dopo: stelle(brano.votoDopo),
+      }),
+    );
   }
-  if (brano.preferitoDopo) parti.push("preferito");
+  if (brano.preferitoDopo) parti.push(t("restore.delta.liked"));
   return parti.join(", ");
 }
 
 /** La data di un backup, come si legge. */
 function quando(ms: number): string {
-  if (ms <= 0) return "data sconosciuta";
-  return new Date(ms).toLocaleString();
+  return ms <= 0 ? t("restore.unknownDate") : dataOra(ms);
 }
 
 export function Ripristino({
@@ -130,15 +144,17 @@ export function Ripristino({
   return (
     <div className="velo scuro" onClick={inCorso ? undefined : onChiudi}>
       <div
-        className="finestrella larga"
+        className="finestrella larga glass-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="Ripristina dal backup"
+        aria-label={t("restore.aria")}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2>{esito ? "Ripristino concluso" : "Ripristina dal backup"}</h2>
+        <h2>{esito ? t("restore.done.title") : t("restore.aria")}</h2>
         {piano?.cEUnBackup && (
-          <div className="percorso">Backup del {quando(piano.generatoMs)}</div>
+          <div className="percorso">
+            {t("restore.backupOf", { quando: quando(piano.generatoMs) })}
+          </div>
         )}
 
         {errore && <div className="errore">{errore}</div>}
@@ -149,48 +165,44 @@ export function Ripristino({
               <div style={{ width: `${percentuale}%` }} />
             </div>
             <div className="conteggio">
-              {FASI[avanzamento.cosa]} {avanzamento.fatti} /{" "}
+              {fasi()[avanzamento.cosa]} {avanzamento.fatti} /{" "}
               {avanzamento.totale}
             </div>
           </>
         )}
 
-        {!piano && !esito && inCorso && <p>Scarico il backup…</p>}
+        {!piano && !esito && inCorso && <p>{t("restore.downloading")}</p>}
 
         {esito && (
           <>
             <div className="rapporto">
               <div className="voce-rapporto">
-                <span>Brani ripristinati</span>
+                <span>{t("restore.tracks")}</span>
                 <span className="conteggio">{esito.brani}</span>
               </div>
               <div className="voce-rapporto">
-                <span>Playlist</span>
+                <span>{t("restore.playlists")}</span>
                 <span className="conteggio">{esito.playlist}</span>
               </div>
               <div className="voce-rapporto">
-                <span>Cartelle sorvegliate aggiunte</span>
+                <span>{t("restore.folders")}</span>
                 <span className="conteggio">{esito.cartelle}</span>
               </div>
               <div className="voce-rapporto">
-                <span>Skin installate</span>
+                <span>{t("restore.skins")}</span>
                 <span className="conteggio">{esito.skin}</span>
               </div>
               <div className="voce-rapporto">
-                <span>Bozze dello Studio</span>
+                <span>{t("restore.drafts")}</span>
                 <span className="conteggio">{esito.bozze}</span>
               </div>
             </div>
             {esito.mancanti.length > 0 && (
               <details className="non-ritrovati" open>
                 <summary>
-                  {esito.mancanti.length} file non erano su Drive
+                  {t("restore.missing", { n: esito.mancanti.length })}
                 </summary>
-                <p>
-                  Succede quando un salvataggio si è interrotto fra i metadati e
-                  i pacchetti. Il resto è stato ripristinato: il prossimo
-                  salvataggio li rimanda su.
-                </p>
+                <p>{t("restore.missing.note")}</p>
                 <ul>
                   {esito.mancanti.slice(0, 100).map((m) => (
                     <li key={m}>{m}</li>
@@ -200,65 +212,60 @@ export function Ripristino({
             )}
             {esito.cartelle > 0 && (
               <p>
-                Sono tornate delle cartelle sorvegliate.{" "}
-                <strong>Fai una scansione</strong>: i brani che erano lì dentro
-                rientrano in libreria e ritrovano le loro statistiche.
+                <Trans
+                  k="restore.foldersBack"
+                  v={{
+                    scansiona: <strong>{t("restore.foldersBack.cta")}</strong>,
+                  }}
+                />
               </p>
             )}
           </>
         )}
 
-        {piano && !esito && !piano.cEUnBackup && (
-          <p>
-            Su Drive non c&apos;è ancora nessun backup. Collega un account dalle
-            Impostazioni e lascia passare un salvataggio.
-          </p>
-        )}
+        {piano && !esito && !piano.cEUnBackup && <p>{t("restore.noBackup")}</p>}
 
         {piano && !esito && piano.cEUnBackup && (
           <>
             <div className="rapporto">
               <div className="voce-rapporto">
-                <span>Brani da aggiornare</span>
+                <span>{t("restore.plan.tracks")}</span>
                 <span className="conteggio">{piano.braniDaAggiornare}</span>
               </div>
               <div className="voce-rapporto">
-                <span>Brani già a posto</span>
+                <span>{t("restore.plan.same")}</span>
                 <span className="conteggio">{piano.braniInvariati}</span>
               </div>
               <div className="voce-rapporto">
-                <span>Playlist da scrivere</span>
+                <span>{t("restore.plan.playlists")}</span>
                 <span className="conteggio">{piano.playlist.length}</span>
               </div>
               <div className="voce-rapporto">
-                <span>Skin da installare</span>
+                <span>{t("restore.plan.skins")}</span>
                 <span className="conteggio">
                   {piano.skinDaInstallare.length}
                 </span>
               </div>
               <div className="voce-rapporto">
-                <span>Bozze da scrivere</span>
-                <span className="conteggio">{piano.bozzeDaScrivere.length}</span>
+                <span>{t("restore.plan.drafts")}</span>
+                <span className="conteggio">
+                  {piano.bozzeDaScrivere.length}
+                </span>
               </div>
             </div>
 
-            {piano.vuoto && (
-              <p>
-                Non c&apos;è niente da ripristinare: quello che sta nel backup è
-                già qui.
-              </p>
-            )}
+            {piano.vuoto && <p>{t("restore.plan.empty")}</p>}
 
             {piano.assentiTotale > 0 && (
               <details className="non-ritrovati">
                 <summary>
-                  {piano.assentiTotale} brani del backup non hanno un file qui
+                  {t("restore.absent", { n: piano.assentiTotale })}
                 </summary>
                 <p>
-                  Il ripristino <strong>non li ricrea</strong>: una riga senza
-                  file non si può aprire, e la scansione successiva la
-                  toglierebbe. Sono elencati perché tu sappia cosa andare a
-                  ricercare. I nomi sono nella forma normalizzata dei tag.
+                  <Trans
+                    k="restore.absent.note"
+                    v={{ non: <strong>{t("restore.absent.note.not")}</strong> }}
+                  />
                 </p>
                 <ul>
                   {piano.assenti.map((b) => (
@@ -269,8 +276,10 @@ export function Ripristino({
                 </ul>
                 {piano.assentiTotale > piano.assenti.length && (
                   <p>
-                    Mostrati i primi {piano.assenti.length} di{" "}
-                    {piano.assentiTotale}.
+                    {t("restore.shownFirst", {
+                      quanti: piano.assenti.length,
+                      totale: piano.assentiTotale,
+                    })}
                   </p>
                 )}
               </details>
@@ -278,14 +287,24 @@ export function Ripristino({
 
             {piano.playlist.length > 0 && (
               <details className="non-ritrovati" open>
-                <summary>{piano.playlist.length} playlist</summary>
+                <summary>
+                  {t("restore.playlists.n", { n: piano.playlist.length })}
+                </summary>
                 <ul>
                   {piano.playlist.map((p) => (
                     <li key={p.nome}>
-                      «{p.nome}» — {p.daCreare ? "da creare" : "da aggiornare"}
+                      {t("restore.playlist.line", {
+                        nome: p.nome,
+                        cosa: p.daCreare
+                          ? t("restore.playlist.create")
+                          : t("restore.playlist.update"),
+                      })}
                       {p.automatica
-                        ? ", automatica: riceve le regole, non i brani"
-                        : `, ${p.braniQui} brani su ${p.braniNelBackup} presenti qui`}
+                        ? t("restore.playlist.smart")
+                        : t("restore.playlist.count", {
+                            qui: p.braniQui,
+                            backup: p.braniNelBackup,
+                          })}
                     </li>
                   ))}
                 </ul>
@@ -295,13 +314,13 @@ export function Ripristino({
             {piano.cartelle.length > 0 && (
               <details className="non-ritrovati" open>
                 <summary>
-                  {piano.cartelle.length} cartelle sorvegliate da aggiungere
+                  {t("restore.foldersToAdd", { n: piano.cartelle.length })}
                 </summary>
                 <ul>
                   {piano.cartelle.map((c) => (
                     <li key={c.percorso}>
                       {c.percorso}
-                      {c.esiste ? "" : " — non esiste più su questo disco"}
+                      {c.esiste ? "" : t("restore.folderGone")}
                     </li>
                   ))}
                 </ul>
@@ -312,31 +331,40 @@ export function Ripristino({
               piano.bozzeDaScrivere.length > 0) && (
               <details className="non-ritrovati">
                 <summary>
-                  {piano.skinDaInstallare.length} skin e{" "}
-                  {piano.bozzeDaScrivere.length} bozze
+                  {t("restore.skinsAndDrafts", {
+                    skin: piano.skinDaInstallare.length,
+                    bozze: piano.bozzeDaScrivere.length,
+                  })}
                 </summary>
                 <p>
-                  Quelle che ci sono già non vengono toccate:{" "}
-                  {piano.skinPresenti} skin e {piano.bozzePresenti} bozze restano
-                  come sono.
+                  {t("restore.keptAsIs", {
+                    skin: piano.skinPresenti,
+                    bozze: piano.bozzePresenti,
+                  })}
                 </p>
                 <ul>
                   {piano.skinDaInstallare.map((s) => (
-                    <li key={`skin-${s}`}>skin «{s}»</li>
+                    <li key={`skin-${s}`}>
+                      {t("restore.skinItem", { nome: s })}
+                    </li>
                   ))}
                   {piano.bozzeDaScrivere.map((b) => (
-                    <li key={`bozza-${b}`}>bozza «{b}»</li>
+                    <li key={`bozza-${b}`}>
+                      {t("restore.draftItem", { nome: b })}
+                    </li>
                   ))}
                 </ul>
                 {piano.skinAttiva !== null && (
-                  <p>La skin attiva diventerà «{piano.skinAttiva}».</p>
+                  <p>{t("restore.activeSkin", { nome: piano.skinAttiva })}</p>
                 )}
               </details>
             )}
 
             {piano.cambi.length > 0 && (
               <details className="spostamenti" open>
-                <summary>{piano.braniDaAggiornare} brani da aggiornare</summary>
+                <summary>
+                  {t("restore.tracksToUpdate", { n: piano.braniDaAggiornare })}
+                </summary>
                 <ul>
                   {piano.cambi.map((b) => (
                     <li key={`${b.artista}|${b.titolo}|${b.album}`}>
@@ -350,8 +378,10 @@ export function Ripristino({
                 </ul>
                 {piano.braniDaAggiornare > piano.cambi.length && (
                   <p>
-                    Mostrati i primi {piano.cambi.length} di{" "}
-                    {piano.braniDaAggiornare}. Verranno aggiornati tutti.
+                    {t("restore.shownAllUpdated", {
+                      quanti: piano.cambi.length,
+                      totale: piano.braniDaAggiornare,
+                    })}
                   </p>
                 )}
               </details>
@@ -366,7 +396,7 @@ export function Ripristino({
             disabled={inCorso}
             onClick={onChiudi}
           >
-            {esito ? "Chiudi" : "Non fare niente"}
+            {esito ? t("common.close") : t("restore.doNothing")}
           </button>
           {!esito && (
             <button
@@ -375,7 +405,7 @@ export function Ripristino({
               disabled={inCorso || !piano || piano.vuoto}
               onClick={() => void esegui()}
             >
-              {inCorso ? "Ripristino…" : "Ripristina"}
+              {inCorso ? t("restore.running") : t("restore.go")}
             </button>
           )}
         </div>

@@ -1,14 +1,20 @@
 {
   "name": "aether-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
     "dev:web": "vite",
     "build:web": "tsc --noEmit && vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "check:version": "node ../../strumenti/versione.js",
+    "check:lingue": "node ../../strumenti/lingue.js",
+    "check:classi": "node ../../strumenti/classi.js",
+    "version:set": "node ../../strumenti/versione.js",
+    "licenze": "node ../../strumenti/licenze.js",
+    "verify": "npm run check:version && npm run check:lingue && npm run check:classi && npm run build:web && cargo fmt --all --check --manifest-path ../../Cargo.toml && cargo clippy --workspace --all-targets --manifest-path ../../Cargo.toml && cargo test --workspace --manifest-path ../../Cargo.toml"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

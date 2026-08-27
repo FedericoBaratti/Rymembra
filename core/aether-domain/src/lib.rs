@@ -27,9 +27,12 @@
 //!
 //! Separata, la stessa decisione si prova come una chiamata di funzione.
 
+pub mod abbinamento;
 pub mod album;
+pub mod destinazione;
 pub mod enrich;
 pub mod errors;
+pub mod esterno;
 pub mod keys;
 pub mod listen;
 pub mod merge;
@@ -40,19 +43,27 @@ pub mod queue;
 pub mod regole;
 pub mod restore;
 pub mod scan_plan;
+pub mod scelta;
 pub mod scrobble;
-pub mod spotify;
 pub mod spotify_account;
-pub mod spotify_plan;
 pub mod tempo;
+pub mod testo;
 pub mod text;
-pub mod yt_match;
+pub mod titolo;
 
+pub use abbinamento::{
+    Abbinato, Gradino, Indice, LibraryTrack, PianoAbbinamento, plan_abbinamento,
+};
+pub use destinazione::{Destinazione, destinazione, segmento_sicuro};
 pub use enrich::{
-    AlbumMatch, Candidate, Fields, Fonte, LocalAlbum, LocalTrack, RemoteRelease, RemoteTrack,
+    AlbumMatch, Candidate, Fields, FonteMeta, LocalAlbum, LocalTrack, RemoteRelease, RemoteTrack,
     TrackMatch, Verdetto, album_distance, decide_album, plan_write, resolve_track,
 };
 pub use errors::{AppError, Domain, ErrorCode, ErrorCodeKind, Severity};
+pub use esterno::{
+    AvanzamentoLettura, BranoEsterno, ContenutoEsterno, Disponibilita, Fonte, GenereContenuto,
+    Licenza, Livello,
+};
 pub use keys::{PlaylistKey, TrackKey, TrackKeyInput};
 pub use listen::{Listen, ListenTracker, counts_as_play};
 pub use merge::{TrackStats, merge_stats};
@@ -65,10 +76,10 @@ pub use scan_plan::{
     DiscoveredFile, KnownTrack, Rematch, RemovedIdentity, ScanInput, ScanPlan, match_moved_tracks,
     plan_scan,
 };
-pub use spotify::{SpotifyContent, SpotifyKind, SpotifySource, SpotifyTrack};
+pub use scelta::{Affidabilita, Candidato as CandidatoCatalogo, Natura, scegli_candidato};
 pub use spotify_account::{
     AccountPlan, AccountSnapshot, AlbumSpotify, ArtistaSpotify, AscoltoAbbinato, AscoltoSpotify,
     PianoPlaylist, PlaylistSpotify, Provenienza, ScartiCronologia, Scelte, plan_account_import,
 };
-pub use spotify_plan::{Abbinato, Gradino, Indice, LibraryTrack, SpotifyPlan, plan_spotify_import};
+pub use testo::{Aderenza, Parola, Riga, Testo, leggi as leggi_testo, scrivi as scrivi_testo};
 pub use text::fold_text;

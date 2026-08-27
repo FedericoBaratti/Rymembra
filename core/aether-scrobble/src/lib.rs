@@ -24,7 +24,7 @@
 //!
 //! # Perché non conosce il database
 //!
-//! Stessa regola di `aether-net`, `aether-spotify` e `aether-cloud`: chi parla
+//! Stessa regola di `aether-net`, `aether-catalogo` e `aether-cloud`: chi parla
 //! col mondo non vede `rusqlite`. Qui però la regola paga un dividendo
 //! specifico, e vale la pena dirlo: la coda dello scrobbling si svuota mille
 //! ascolti alla volta, con richieste che possono durare minuti se il servizio è

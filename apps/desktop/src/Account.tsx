@@ -1,13 +1,17 @@
 /**
- * L'account Spotify intero, in una schermata sola.
+ * L'account Spotify intero, dal solo posto da cui si può prendere.
  *
- * # Perché una sola, e non due
+ * # Una via sola, e perché
  *
- * Perché le due vie — il consenso OAuth e l'archivio che Spotify manda per
- * posta — producono di là lo **stesso** valore, e da quel punto in giù il codice
- * è uno solo. Due schermate sarebbero due copie della stessa cosa che divergono
- * il giorno in cui qualcuno ne aggiusta una: la scelta della via è un
- * interruttore in cima, non un altro posto in cui andare.
+ * L'archivio che Spotify consegna su richiesta. Il consenso OAuth alla Web API
+ * c'era, funzionava, ed è stato tolto: quel che si può fare dei dati che quella
+ * restituisce lo decide lo *Spotify Developer Policy*, e una libreria musicale
+ * che tiene per anni le playlist e la cronologia di qualcuno non sta dentro
+ * quei limiti. L'archivio no: è dell'utente per diritto (GDPR art. 20), e
+ * portarselo dove vuole è esattamente ciò che quell'articolo gli riconosce.
+ *
+ * Il ragionamento per esteso, con quel che il confronto fra le due strade
+ * diceva, sta in `parti/ArchivioSpotify.tsx`.
  *
  * # Tre tempi, come per ogni operazione che non si disfa
  *
@@ -18,18 +22,14 @@
  * abbandonata, quindi i numeri che mostra sono quelli che si otterranno — non
  * una previsione che poi può smentirsi.
  *
- * # Le due cose che vanno dette prima, non dopo
+ * # La cosa che va detta prima, non dopo
  *
- * **I brani mancanti**: sono l'unica cosa che l'utente non può ricostruire dopo,
- * e vanno elencati per nome.
- *
- * **Il Premium**: dal febbraio 2026 un'applicazione Spotify in Development Mode
- * smette di funzionare quando chi l'ha registrata perde l'abbonamento, e Spotify
- * non manda nessun avviso. Se lo si scopre al primo guasto, lo si scopre come
- * «Aether non funziona».
+ * **I brani mancanti**: sono l'unica cosa che l'utente non può ricostruire
+ * dopo, e vanno elencati per nome. Da qui finiscono nella coda, che li cerca
+ * nei cataloghi liberi; quelli che nessun catalogo libero ha finiscono in «Da
+ * comprare», che è la risposta onesta e non un guasto.
  */
 import { useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import {
@@ -39,11 +39,15 @@ import {
   totaliAccount,
   vuotoAccount,
   type AnteprimaAccount,
-  type AvanzamentoAccount,
   type EsitoAccount,
   type ScelteAccount,
   type StatoAccount,
 } from "./ipc";
+import { ComeAvereLArchivio } from "./parti/ArchivioSpotify";
+import { Avviso } from "./parti/Avvisi";
+import { numero } from "./formato";
+import { t } from "./lingue";
+import { Trans } from "./lingue/Trans";
 
 /** Tutto acceso: chi preme «importa il mio account» vuole il suo account. */
 const TUTTO: ScelteAccount = {
@@ -52,16 +56,6 @@ const TUTTO: ScelteAccount = {
   album: true,
   artisti: true,
   cronologia: true,
-};
-
-/** Come si legge una fase dell'avanzamento. */
-const FASI: Record<string, string> = {
-  profilo: "Chi sei",
-  preferiti: "Brani che ti piacciono",
-  album: "Album salvati",
-  artisti: "Artisti seguiti",
-  playlist: "Playlist",
-  cronologia: "Ascolti recenti",
 };
 
 /** Una riga del rapporto: etichetta, numero, e il perché quando serve. */
@@ -77,7 +71,7 @@ function Voce({
   return (
     <div className="voce-rapporto">
       <span>{etichetta}</span>
-      <span className="conteggio">{valore.toLocaleString("it")}</span>
+      <span className="conteggio">{numero(valore)}</span>
       {nota && <small>{nota}</small>}
     </div>
   );
@@ -97,18 +91,25 @@ function Casella({
   quanti: number;
   onCambia: (valore: boolean) => void;
 }) {
+  // A zero la casella resta **visibile** e spenta, e dice perché. Toglierla
+  // farebbe sparire una riga fra cinque senza spiegazione — chi sa di avere
+  // degli album salvati e non trova la riga «Album salvati» conclude che
+  // l'applicazione non li importa, non che l'archivio non li portava.
+  const vuota = quanti === 0;
   return (
     <label className="riga-opzione">
       <div className="che-cosa">
         <div className="etichetta">
-          {etichetta} <span className="conteggio">{quanti.toLocaleString("it")}</span>
+          {etichetta} <span className="conteggio">{numero(quanti)}</span>
         </div>
-        <div className="spiegazione">{spiegazione}</div>
+        <div className="spiegazione">
+          {vuota ? t("account.empty.hint") : spiegazione}
+        </div>
       </div>
       <input
         type="checkbox"
-        checked={acceso}
-        disabled={quanti === 0}
+        checked={acceso && !vuota}
+        disabled={vuota}
         onChange={(e) => onCambia(e.target.checked)}
       />
     </label>
@@ -126,21 +127,18 @@ export function Account({
   const [anteprima, setAnteprima] = useState<AnteprimaAccount | null>(null);
   const [scelte, setScelte] = useState<ScelteAccount>(TUTTO);
   const [piano, setPiano] = useState<EsitoAccount | null>(null);
-  const [avanzamento, setAvanzamento] = useState<AvanzamentoAccount | null>(null);
-  const [clientId, setClientId] = useState("");
   const [errore, setErrore] = useState<string | null>(null);
   const [inCorso, setInCorso] = useState(false);
   const [dimenticati, setDimenticati] = useState<number | null>(null);
 
-  // Lo stato è la prima cosa: decide che cosa mostrare — la casella del client
-  // id, il tasto «Collega», o direttamente quel che è già in cella da una
-  // sessione precedente della stessa finestra.
+  // Lo stato è la prima cosa: decide che cosa mostrare — le istruzioni per
+  // ottenere l'archivio, o direttamente quel che è già in cella da un giro
+  // precedente della stessa sessione.
   const caricaStato = () => {
     ipc
       .accountStato()
       .then((s) => {
         setStato(s);
-        setClientId(s.clientId ?? "");
         if (s.caricato) setAnteprima(s.caricato);
       })
       .catch((e: unknown) => setErrore(testoErrore(e)));
@@ -150,19 +148,6 @@ export function Account({
     if (!primoGiro.current) return;
     primoGiro.current = false;
     caricaStato();
-  }, []);
-
-  // L'evento che nel resto dell'applicazione sarebbe rimasto orfano. Leggere un
-  // account da duecento playlist sono duecento richieste: senza qualcosa che
-  // avanzi, chi guarda non ha modo di distinguere «sta lavorando» da «si è
-  // piantato».
-  useEffect(() => {
-    const promessa = listen<AvanzamentoAccount>("account:avanzamento", (e) =>
-      setAvanzamento(e.payload),
-    );
-    return () => {
-      void promessa.then((stacca) => stacca());
-    };
   }, []);
 
   // Il piano si rifà a ogni cambio delle caselle: non tocca la rete — quel che
@@ -188,53 +173,6 @@ export function Account({
     };
   }, [anteprima, scelte]);
 
-  const salvaClientId = async () => {
-    setErrore(null);
-    try {
-      setStato(await ipc.accountCredenziali(clientId.trim()));
-    } catch (e) {
-      setErrore(testoErrore(e));
-    }
-  };
-
-  const collega = async () => {
-    setInCorso(true);
-    setErrore(null);
-    try {
-      setStato(await ipc.accountCollega());
-    } catch (e) {
-      setErrore(testoErrore(e));
-    } finally {
-      setInCorso(false);
-    }
-  };
-
-  const scollega = async () => {
-    setErrore(null);
-    try {
-      setStato(await ipc.accountScollega());
-      setAnteprima(null);
-      setPiano(null);
-    } catch (e) {
-      setErrore(testoErrore(e));
-    }
-  };
-
-  const leggi = async () => {
-    setInCorso(true);
-    setErrore(null);
-    setPiano(null);
-    setAvanzamento(null);
-    try {
-      setAnteprima(await ipc.accountLeggi());
-    } catch (e) {
-      setErrore(testoErrore(e));
-    } finally {
-      setInCorso(false);
-      setAvanzamento(null);
-    }
-  };
-
   /**
    * Apre uno degli zip che Spotify manda.
    *
@@ -246,7 +184,7 @@ export function Account({
   const apriArchivio = async () => {
     const scelta = await open({
       multiple: false,
-      filters: [{ name: "Archivio Spotify", extensions: ["zip"] }],
+      filters: [{ name: t("account.file"), extensions: ["zip"] }],
     });
     if (typeof scelta !== "string") return;
     setInCorso(true);
@@ -302,153 +240,40 @@ export function Account({
            una riga di prosa lunga novecento pixel si legge peggio — l'occhio
            perde il capo della riga successiva. `larga` serve al riordino, che
            mostra percorsi che non si possono accorciare. */
-        className="finestrella"
+        className="finestrella glass-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="Importa il tuo account Spotify"
+        aria-label={t("account.aria")}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2>
-          {anteprima ? "Cosa verrebbe importato" : "Il tuo account Spotify"}
-        </h2>
+        <h2>{anteprima ? t("account.title.preview") : t("account.title")}</h2>
 
         {!anteprima && (
           <>
-            <p className="nota">
-              Due strade, e portano nello stesso posto. L&apos;
-              <strong>archivio</strong> non chiede niente a nessuno ma ci mette
-              giorni ad arrivare, e contiene <strong>tutti</strong> i tuoi
-              ascolti. Il <strong>collegamento</strong> è immediato e porta
-              l&apos;ISRC — con cui i brani si ritrovano meglio — ma degli
-              ascolti dà solo gli ultimi cinquanta.
-            </p>
+            <ComeAvereLArchivio onApriArchivio={() => void apriArchivio()} />
 
-            {/* ── via B: l'archivio ── */}
-            <section className="scheda">
-              <header>
-                <h3>Dall&apos;archivio</h3>
-                <span className="nota-testa">niente account, niente chiavi</span>
-              </header>
-              <p className="nota">
-                Chiedi i tuoi dati su{" "}
-                <code>spotify.com/account/privacy</code>: spunta anche{" "}
-                <em>«Cronologia di streaming estesa»</em> se vuoi gli ascolti di
-                tutti gli anni. Arrivano per email in due zip separati — apri
-                pure uno solo, quel che manca resta vuoto.
-              </p>
-              <div className="azioni">
-                <button
-                  type="button"
-                  className="bottone btn-ghost"
-                  disabled={inCorso}
-                  onClick={() => void apriArchivio()}
-                >
-                  Scegli l&apos;archivio…
-                </button>
-              </div>
-            </section>
-
-            {/* ── via A: il consenso ── */}
-            <section className="scheda">
-              <header>
-                <h3>Collegando l&apos;account</h3>
-                <span className="nota-testa">
-                  {stato?.collegato ? "collegato" : "serve un Client ID"}
-                </span>
-              </header>
-
-              {!stato?.collegato && (
-                <>
-                  <p className="nota">
-                    Serve un&apos;applicazione tua su{" "}
-                    <code>developer.spotify.com/dashboard</code>, con{" "}
-                    <code>http://127.0.0.1</code> come <em>Redirect URI</em> —
-                    senza porta. Aether non ne porta una dentro apposta: in
-                    Development Mode ognuna accetta <strong>cinque</strong>{" "}
-                    utenti, e una chiave nel programma la esaurirebbero i primi
-                    cinque che lo installano.
-                  </p>
-                  {/* Prima del collegamento e non dopo il primo guasto: quando
-                      l'abbonamento scade, l'applicazione smette di funzionare e
-                      Spotify non avvisa nessuno. */}
-                  <p className="nota">
-                    Da febbraio 2026 chi registra l&apos;applicazione deve avere{" "}
-                    <strong>Spotify Premium attivo</strong>: se scade, smette di
-                    funzionare senza avviso. L&apos;archivio non ha questa
-                    dipendenza.
-                  </p>
-                  <label>
-                    Client ID
-                    <input
-                      type="text"
-                      className="campo"
-                      placeholder="32 caratteri esadecimali"
-                      value={clientId}
-                      onChange={(e) => setClientId(e.target.value)}
-                      onBlur={() => void salvaClientId()}
-                    />
-                  </label>
-                </>
-              )}
-
-              <div className="azioni">
-                {stato?.collegato ? (
-                  <>
-                    <button
-                      type="button"
-                      className="bottone"
-                      disabled={inCorso}
-                      onClick={() => void leggi()}
-                    >
-                      {inCorso ? "Lettura…" : "Leggi il mio account"}
-                    </button>
-                    <button
-                      type="button"
-                      className="bottone btn-ghost"
-                      disabled={inCorso}
-                      onClick={() => void scollega()}
-                    >
-                      Scollega
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    disabled={inCorso || clientId.trim() === ""}
-                    onClick={() => void collega()}
-                  >
-                    {inCorso ? "Aspetto il consenso…" : "Collega l'account"}
-                  </button>
-                )}
-              </div>
-              {inCorso && !stato?.collegato && (
-                <p className="nota">
-                  Ho aperto il consenso nel browser di sistema. Hai tre minuti.
-                </p>
-              )}
-            </section>
-
-            {/* Sta qui e non fra le scelte: è l'unico modo di disfare, e chi
-                lo cerca lo cerca quando ha già importato. */}
+            {/* Sotto le istruzioni e non sopra: è l'unico modo di disfare, e
+                chi lo cerca lo cerca quando ha già importato — cioè quando ha
+                già letto tutto il resto una volta e non lo rilegge. */}
             {stato !== null && stato.ascoltiImportati > 0 && (
               <section className="scheda">
                 <header>
-                  <h3>Ascolti già importati</h3>
+                  <h3>{t("account.already")}</h3>
                   <span className="nota-testa">
-                    {stato.ascoltiImportati.toLocaleString("it")} righe
+                    {t("account.already.rows", { n: stato.ascoltiImportati })}
                   </span>
                 </header>
                 <p className="nota">
-                  Restano distinguibili da quelli veri, e si possono togliere. I
-                  conteggi d&apos;ascolto però <strong>non scendono</strong>:
-                  quel numero è l&apos;unica cosa in libreria che non si può
-                  ricostruire, e una funzione che lo abbassa prima o poi lo
-                  abbassa quando non doveva.
+                  <Trans
+                    k="account.already.note"
+                    v={{
+                      non: <strong>{t("account.already.note.not")}</strong>,
+                    }}
+                  />
                 </p>
                 {dimenticati !== null && (
                   <p className="nota">
-                    Tolte {dimenticati.toLocaleString("it")} righe.
+                    {t("account.forgotten", { n: dimenticati })}
                   </p>
                 )}
                 <div className="azioni">
@@ -457,7 +282,7 @@ export function Account({
                     className="bottone btn-ghost"
                     onClick={() => void dimentica()}
                   >
-                    Dimentica gli ascolti importati
+                    {t("account.forget")}
                   </button>
                 </div>
               </section>
@@ -465,31 +290,21 @@ export function Account({
           </>
         )}
 
-        {avanzamento && (
-          <p className="nota">
-            {FASI[avanzamento.fase] ?? avanzamento.fase}
-            {avanzamento.totali !== null && avanzamento.totali > 1
-              ? ` ${avanzamento.fatti + 1}/${avanzamento.totali}`
-              : "…"}
-            {avanzamento.nome && ` — ${avanzamento.nome}`}
-          </p>
-        )}
+        {inCorso && !anteprima && <p>{t("account.opening")}</p>}
 
         {errore && <div className="errore">{errore}</div>}
 
         {anteprima && (
           <>
-            <div className="anteprima-spotify">
+            <div className="scheda-anteprima">
               <div className="che-cosa">
                 <div className="titolo">
-                  {anteprima.profilo ?? "Account Spotify"}
+                  {anteprima.profilo ?? t("account.unnamed")}
                 </div>
                 <div className="nota">
                   {anteprima.provenienza === "archivio"
-                    ? "dall'archivio"
-                    : "dal collegamento"}
-                  {anteprima.premium === false &&
-                    " · questo account non ha Premium"}
+                    ? t("account.from.archive")
+                    : t("account.from.earlier")}
                 </div>
               </div>
             </div>
@@ -497,142 +312,171 @@ export function Account({
             {/* Prima delle scelte: sono le cose che spiegano un numero più
                 basso di quel che uno si aspetta, e leggerle dopo vorrebbe dire
                 credere per qualche secondo che l'importazione abbia sbagliato. */}
-            {!anteprima.cronologiaCompleta && anteprima.cronologia > 0 && (
-              <div className="avviso-monco">
-                Della cronologia il collegamento dà solo gli{" "}
-                <strong>ultimi {anteprima.cronologia}</strong> ascolti: è tutto
-                quel che Spotify espone da lì. Gli anni precedenti stanno
-                soltanto nell&apos;archivio.
-              </div>
+            {/* Nota, e con un tasto: dei due zip che Spotify manda, questo è
+                quello senza la cronologia estesa. Non è un guasto — è l'altro
+                file, che arriva settimane dopo — e il gesto che ripara è
+                aprirlo quando arriva, sopra questo. */}
+            {anteprima.cronologia === 0 && anteprima.playlist > 0 && (
+              <Avviso
+                livello="nota"
+                azione={
+                  <button
+                    type="button"
+                    className="bottone minuto btn-ghost"
+                    disabled={inCorso}
+                    onClick={() => void apriArchivio()}
+                  >
+                    {t("account.otherArchive.cta")}
+                  </button>
+                }
+              >
+                {t("account.otherArchive")}
+              </Avviso>
             )}
-            {anteprima.senzaContenuto.length > 0 && (
-              <div className="avviso-monco">
-                Di {anteprima.senzaContenuto.length} playlist Spotify non dà più
-                i brani:{" "}
-                {anteprima.senzaContenuto.length === 1
-                  ? "è una che segui"
-                  : "sono quelle che segui"}{" "}
-                e non possiedi. Le altre ci sono tutte.
-              </div>
-            )}
-            {anteprima.troncati.length > 0 && (
-              <div className="avviso-monco">
-                Questi elenchi sono arrivati a metà:{" "}
-                {anteprima.troncati.join(", ")}. Verrebbe importato meno di
-                quello che hai.
-              </div>
-            )}
+            {/* Nota: il resto è stato letto, e non c'è niente da premere. I nomi
+                oltre i tre stanno in un `<details>`: un archivio con quaranta
+                file illeggibili darebbe quaranta nomi in mezzo alla frase. */}
             {anteprima.illeggibili.length > 0 && (
-              <div className="avviso-monco">
-                {anteprima.illeggibili.length} file dell&apos;archivio non si
-                sono aperti:{" "}
-                {anteprima.illeggibili.map((f) => f.nome).join(", ")}. Il resto
-                è stato letto lo stesso.
-              </div>
+              <Avviso livello="nota">
+                {t("account.unreadable", { n: anteprima.illeggibili.length })}
+                {anteprima.illeggibili.length <= 3 ? (
+                  <span className="quali">
+                    {anteprima.illeggibili.map((f) => f.nome).join(" · ")}
+                  </span>
+                ) : (
+                  <details>
+                    <summary>{t("account.unreadable.which")}</summary>
+                    <ul className="quali-elenco">
+                      {anteprima.illeggibili.map((f) => (
+                        <li key={f.nome}>{f.nome}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </Avviso>
             )}
+            {/* Blocco: non c'è niente da importare, e continuare non porta da
+                nessuna parte. La frase dice l'unica cosa che si può fare. */}
             {niente && (
-              <div className="avviso-monco">
-                Qui dentro non c&apos;è niente da importare. Se è un archivio,
-                può essere l&apos;altro dei due che Spotify manda: cerca quello
-                con dentro <code>Playlist1.json</code> o{" "}
-                <code>Streaming_History_Audio</code>.
-              </div>
+              <Avviso livello="blocco">
+                <Trans
+                  k="account.nothing"
+                  v={{
+                    a: <code>Playlist1.json</code>,
+                    b: <code>Streaming_History_Audio</code>,
+                  }}
+                />
+              </Avviso>
             )}
 
             <div className="scelte-account">
               <Casella
-                etichetta="Playlist"
-                spiegazione={`${anteprima.braniInPlaylist.toLocaleString("it")} brani in tutto. Una playlist qui per ognuna di là; reimportare sostituisce invece di accodare.`}
+                etichetta={t("account.pick.playlists")}
+                spiegazione={t("account.pick.playlists.hint", {
+                  n: anteprima.braniInPlaylist,
+                })}
                 acceso={scelte.playlist}
                 quanti={anteprima.playlist}
                 onCambia={(v) => setScelte({ ...scelte, playlist: v })}
               />
               <Casella
-                etichetta="Brani che ti piacciono"
-                spiegazione="Diventano preferiti qui. Non una playlist: Aether ha già il suo posto per i preferiti."
+                etichetta={t("account.pick.liked")}
+                spiegazione={t("account.pick.liked.hint")}
                 acceso={scelte.preferiti}
                 quanti={anteprima.preferiti}
                 onCambia={(v) => setScelte({ ...scelte, preferiti: v })}
               />
               <Casella
-                etichetta="Album salvati"
-                spiegazione="Attaccano l'identificativo Spotify ai dischi che hai già, così le edizioni dello stesso album si fondono."
+                etichetta={t("account.pick.albums")}
+                spiegazione={t("account.pick.albums.hint")}
                 acceso={scelte.album}
                 quanti={anteprima.album}
                 onCambia={(v) => setScelte({ ...scelte, album: v })}
               />
               <Casella
-                etichetta="Artisti seguiti"
-                spiegazione="Solo per quelli che hai già in libreria: gli altri sparirebbero alla prima scansione."
+                etichetta={t("account.pick.artists")}
+                spiegazione={t("account.pick.artists.hint")}
                 acceso={scelte.artisti}
                 quanti={anteprima.artisti}
                 onCambia={(v) => setScelte({ ...scelte, artisti: v })}
               />
               <Casella
-                etichetta="Ascolti"
-                spiegazione="Restano marcati come importati, e si possono togliere. Contano solo quelli sentiti per almeno metà brano, la stessa regola di quando suona Aether."
+                etichetta={t("account.pick.history")}
+                spiegazione={t("account.pick.history.hint")}
                 acceso={scelte.cronologia}
                 quanti={anteprima.cronologia}
                 onCambia={(v) => setScelte({ ...scelte, cronologia: v })}
               />
             </div>
 
-            {inCorso && !piano && <p>Calcolo di quel che succederebbe…</p>}
+            {inCorso && !piano && <p>{t("account.planning")}</p>}
 
             {piano && totali && (
               <>
                 <div className="rapporto">
-                  <Voce etichetta="Brani ritrovati" valore={totali.ritrovati} />
+                  <Voce
+                    etichetta={t("account.found")}
+                    valore={totali.ritrovati}
+                  />
                   {/* Il conteggio **distinto**, non la somma per elenco: lo
                       stesso brano che manca da tre playlist è un brano che non
                       hai, non tre. La somma resta nella nota, perché è quella
                       che descrive la coda — lì una riga per sorgente c'è
                       davvero, ed è quel che permette di dire da dove manca. */}
                   <Voce
-                    etichetta="Brani che non hai"
+                    etichetta={t("account.missing")}
                     valore={mancanti.length}
                     nota={
                       totali.inCoda > 0
-                        ? `${totali.inCoda} righe in coda di scaricamento`
+                        ? t("account.missing.queue", { n: totali.inCoda })
                         : undefined
                     }
                   />
                   <Voce
-                    etichetta="Preferiti da segnare"
+                    etichetta={t("account.toLike")}
                     valore={piano.likedMarked}
-                    nota="quelli già segnati non si contano"
+                    nota={t("account.toLike.note")}
                   />
                   <Voce
-                    etichetta="Ascolti da scrivere"
+                    etichetta={t("account.toWrite")}
                     valore={piano.historyRows}
                     nota={
                       piano.historySkipped.duplicates +
                         piano.historySkipped.tooShort +
                         piano.historySkipped.notInLibrary >
                       0
-                        ? `fuori: ${piano.historySkipped.duplicates} doppioni, ${piano.historySkipped.tooShort} troppo brevi, ${piano.historySkipped.notInLibrary} non in libreria`
+                        ? t("account.skipped", {
+                            doppioni: piano.historySkipped.duplicates,
+                            brevi: piano.historySkipped.tooShort,
+                            fuori: piano.historySkipped.notInLibrary,
+                          })
                         : undefined
                     }
                   />
                   <Voce
-                    etichetta="Artisti da collegare"
+                    etichetta={t("account.artistsLink")}
                     valore={piano.artistsLinked}
                   />
                   <Voce
-                    etichetta="Album da collegare"
+                    etichetta={t("account.albumsLink")}
                     valore={piano.albumIdsWritten}
                   />
                 </div>
 
+                {/* Nota: è il nucleo che le rifiuta per una ragione sua — vedi
+                    `import_account` — e non c'è un tasto che le faccia entrare.
+                    Un ambra qui prometterebbe che ci sia. */}
                 {piano.rejectedPlaylists.length > 0 && (
-                  <div className="avviso-monco">
-                    {piano.rejectedPlaylists.length} playlist verrebbero
-                    saltate:{" "}
-                    {piano.rejectedPlaylists
-                      .map((p) => `«${p.name}»`)
-                      .join(", ")}
-                    . Le altre entrano lo stesso.
-                  </div>
+                  <Avviso livello="nota">
+                    {t("account.rejected", {
+                      n: piano.rejectedPlaylists.length,
+                    })}{" "}
+                    <span className="quali">
+                      {piano.rejectedPlaylists
+                        .map((p) => `«${p.name}»`)
+                        .join(" · ")}
+                    </span>
+                  </Avviso>
                 )}
 
                 {/* L'elenco per nome, e non un numero: sono l'unica cosa che
@@ -640,8 +484,7 @@ export function Account({
                 {mancanti.length > 0 && (
                   <details className="mancanti-account">
                     <summary>
-                      {mancanti.length.toLocaleString("it")}{" "}
-                      {mancanti.length === 1 ? "brano" : "brani"} che non hai
+                      {t("account.missingList", { n: mancanti.length })}
                     </summary>
                     <ul>
                       {mancanti.slice(0, 200).map((b) => (
@@ -653,7 +496,7 @@ export function Account({
                     </ul>
                     {mancanti.length > 200 && (
                       <p className="nota">
-                        …e altri {(mancanti.length - 200).toLocaleString("it")}.
+                        {t("account.andMore", { n: mancanti.length - 200 })}
                       </p>
                     )}
                   </details>
@@ -664,8 +507,12 @@ export function Account({
         )}
 
         <div className="azioni">
-          <button type="button" className="bottone btn-ghost" onClick={onChiudi}>
-            {anteprima ? "Annulla" : "Chiudi"}
+          <button
+            type="button"
+            className="bottone btn-ghost"
+            onClick={onChiudi}
+          >
+            {anteprima ? t("common.cancel") : t("account.close")}
           </button>
           {anteprima && (
             <button
@@ -674,7 +521,7 @@ export function Account({
               disabled={inCorso || piano === null || niente}
               onClick={() => void importa()}
             >
-              {inCorso ? "Importazione…" : "Importa"}
+              {inCorso ? t("account.importing") : t("account.import")}
             </button>
           )}
         </div>

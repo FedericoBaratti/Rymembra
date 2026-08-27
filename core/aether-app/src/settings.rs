@@ -46,6 +46,25 @@ pub const CHIAVE_CARTELLE: &str = "library.roots";
 /// La chiave con cui la skin scelta sta in `settings`.
 pub const CHIAVE_SKIN: &str = "skin.active";
 
+/// Quando la skin è stata scelta, in millisecondi.
+///
+/// Serve alla sincronia e a nient'altro: fra due dispositivi che hanno scelto
+/// due skin diverse vince chi ha scelto per ultimo, e senza una data «per
+/// ultimo» non è una domanda a cui si possa rispondere. Assente vale **zero**,
+/// cioè «da sempre»: una scelta non datata perde contro qualunque scelta datata,
+/// che è la direzione giusta — chi ha appena cliccato deve vincere su chi aveva
+/// quella skin da prima che ci fosse una sincronia.
+pub const CHIAVE_SKIN_QUANDO: &str = "skin.activeAt";
+
+/// Lo stato acceso/spento delle cartelle sorvegliate, per la sincronia.
+///
+/// `library.roots` è un elenco, e un elenco non sa dire «questa l'ho tolta».
+/// L'unione di due elenchi rimette dentro tutto ciò che qualcuno ha mai
+/// sorvegliato, e una cartella tolta sul portatile tornerebbe da sola alla prima
+/// passata. Qui accanto sta la stessa informazione in forma di mappa, con la
+/// data della decisione: è ciò che rende una rimozione una cosa che viaggia.
+pub const CHIAVE_CARTELLE_SINCRONIA: &str = "sync.roots";
+
 /// La chiave dell'accento che segue la copertina.
 ///
 /// Assente vale **spento**, e non è timidezza: è un cambiamento visibile di
@@ -60,6 +79,25 @@ pub const CHIAVE_ACCENTO_DINAMICO: &str = "skin.dynamicAccent";
 /// scansione trova mai, cioè uno scaricamento riuscito che l'utente non vede
 /// comparire in libreria — indistinguibile, per lui, da uno fallito.
 pub const CHIAVE_CARTELLA_DOWNLOAD: &str = "download.folder";
+
+/// La chiave che dice se accettare una registrazione diversa da quella chiesta.
+///
+/// # Perché è una scelta, e perché di serie è «sì»
+///
+/// I cataloghi liberi non hanno le versioni in studio del catalogo commerciale:
+/// hanno concerti, riedizioni, riletture. Rifiutarle tutte vorrebbe dire una
+/// coda che non trova mai niente e un'applicazione che sembra rotta; accettarle
+/// in silenzio vorrebbe dire mettere in libreria un live col nome della
+/// versione in studio, che è la cosa peggiore che questo sottosistema possa
+/// fare.
+///
+/// La terza via è quella scelta: si accettano, e si **dice** quale
+/// registrazione si è presa — la natura viaggia in `scarico:brano` e finisce
+/// nel rapporto. Chi sta ricostruendo un disco preciso spegne l'interruttore e
+/// torna al comportamento severo.
+///
+/// Assente vale **acceso**: è il valore con cui un catalogo di concerti è utile.
+pub const CHIAVE_ALTERNATIVE: &str = "catalogo.alternative";
 
 /// Traduce un guasto di SQLite nominando la chiave che lo ha causato.
 ///

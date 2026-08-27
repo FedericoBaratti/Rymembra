@@ -119,7 +119,7 @@ fn scarica(fornitori: &Fornitori, url: &str) -> Option<Copertina> {
     // Solo `https`. L'indirizzo arriva da una risposta di rete, non dall'utente,
     // ma è pur sempre una stringa presa dalla rete che finisce in una richiesta:
     // `file:` o `http:` non hanno motivo di essere seguiti. Lo stesso cancello,
-    // con la stessa ragione, di `aether_spotify::copertina::scarica_byte`.
+    // con la stessa ragione, di `aether_catalogo`.
     if !url.starts_with("https://") {
         return None;
     }

@@ -1,30 +1,40 @@
 /**
- * L'elenco delle importazioni da Spotify, e lo stato della coda che le scarica.
+ * Lo stato delle importazioni da una fonte esterna, e della coda che le procura.
  *
- * # Perché non sta dentro la finestrella
+ * Spotify è una delle sorgenti, non l'unica: `desiderati.source_service` dice
+ * quale, e niente qui la nomina.
+ *
+ * # Perché lo stato non sta dentro la finestrella, né nella pagina
  *
  * Perché la parte lunga dell'importazione comincia **dopo** che la finestrella
  * ha finito il suo lavoro. Confermato un link, il nucleo scrive i brani
- * mancanti in `spotify_wanted` e avvia una coda che gira su un filo suo: cento
+ * mancanti in `desiderati` e avvia una coda che gira su un filo suo: cento
  * brani sono un'ora. Il pannello che la mostrava viveva dentro la finestrella e
  * moriva con lei — e siccome la coda **non** si ferma quando la finestrella si
  * chiude, chi chiudeva si ritrovava un'applicazione che scaricava in silenzio,
  * senza un posto al mondo in cui accorgersene. Chi riapriva l'applicazione con
  * una coda in sospeso, idem.
  *
- * Qui lo stato vive quanto l'applicazione: si chiede una volta e poi si
+ * Lo stato vive quanto l'applicazione — si chiede una volta e poi si
  * **ascolta**, con la stessa disciplina di `nuvola` e `arricchimento` in
  * `App.tsx`. È anche ciò che permette la cosa che serviva davvero: avviare una
  * seconda importazione mentre la prima scende, e vederle tutte e due.
  *
  * # Un'importazione è un gruppo di righe
  *
- * Non c'è nessuna tabella delle importazioni: `spotify_wanted` porta
- * `source_id` su ogni riga e non cancella mai niente, quindi
- * `desiderati::per_sorgente` le raggruppa e l'elenco sopravvive ai riavvii
- * senza che nessuno lo salvi. L'unica cosa che vive solo qui è la scelta di
- * **cosa mostrare**: al riavvio le concluse non si ripresentano, ma una che si
- * conclude sotto gli occhi resta finché non la si chiude.
+ * Non c'è nessuna tabella delle importazioni: `desiderati` porta `source_id` su
+ * ogni riga e non cancella mai niente, quindi `desiderati::per_sorgente` le
+ * raggruppa e l'elenco sopravvive ai riavvii senza che nessuno lo salvi.
+ * L'unica cosa che vive solo qui è la scelta di **cosa mostrare**: al riavvio le
+ * concluse non si ripresentano, ma una che si conclude sotto gli occhi resta
+ * finché non la si chiude.
+ *
+ * # Perché la presentazione è di là
+ *
+ * `schermate/Importazioni.tsx` è la superficie; questo è lo stato. Se le due
+ * cose stessero nello stesso file, montare la pagina vorrebbe dire sottoscrivere
+ * gli eventi e uscirne vorrebbe dire smettere — cioè tornare alla coda che
+ * scende in silenzio.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -33,15 +43,15 @@ import {
   ipc,
   testoErrore,
   type BranoScarico,
-  type EsitoSpotify,
+  type EsitoImport,
   type SorgenteScarico,
   type StatoScarico,
 } from "../ipc";
-import { Icona } from "./Icone";
+import { t } from "../lingue";
 
 /** Un'importazione confermata in questa sessione. */
 interface Sessione {
-  esito: EsitoSpotify;
+  esito: EsitoImport;
   /** Quando è stata confermata, per tenerla in cima. */
   quando: number;
 }
@@ -72,6 +82,27 @@ export interface RigaImportazione {
   giaInLibreria: number | null;
   /** La playlist creata o riempita, se ce n'è una. */
   playlist: string | null;
+  /**
+   * Quale livello del lettore ha risposto: `archivio`, `file-playlist`,
+   * `archive.org`, `jamendo`, `audius`. `null` per un'importazione ritrovata
+   * al riavvio, di cui il rapporto non c'è più — e allora la riga **omette** le
+   * tacche invece di inventare «completo».
+   */
+  sorgente: string | null;
+  /** La frase di `nomeSorgente()` per quel livello, o `null`. */
+  provenienza: string | null;
+  /** Quanti brani sono stati letti dalla fonte, se lo sappiamo. */
+  brani: number | null;
+  /**
+   * Il nome stabile della fonte: `desiderati.source_service`.
+   *
+   * Decide se la riga in volo mostra una scelta o «dall'elenco». Da un link di
+   * un catalogo il file è quello che l'utente ha incollato e la coda non ne
+   * cerca un altro: l'asimmetria fra i due percorsi **è** il disegno, e
+   * appianarla inventando una confidenza sarebbe la prima bugia di
+   * un'interfaccia che se n'è vietata una sola.
+   */
+  servizio: string;
   /** Per l'ordinamento: la più recente in cima. */
   quando: number;
 }
@@ -96,16 +127,34 @@ export interface UsoImportazioni {
    * che tutto sembrava concluso.
    */
   rientro: Rientro | null;
+  /**
+   * Le importazioni concluse in sessioni passate, di cui resta il rapporto.
+   *
+   * Stanno **fuori** dall'elenco principale e si mostrano solo su richiesta,
+   * per la stessa ragione per cui al riavvio le concluse non si ripresentano: un
+   * elenco che cresce a ogni link smette di essere leggibile dopo la decima
+   * playlist. Servono a una cosa sola — poter riaprire un rapporto che si
+   * credeva perso.
+   */
+  storia: EsitoImport[];
   /** Prende in carico un'importazione appena confermata. */
-  registra: (esito: EsitoSpotify) => void;
+  registra: (esito: EsitoImport) => void;
   /** Toglie dall'elenco un'importazione conclusa. */
   scarta: (sourceId: string) => void;
+  /** Dimentica l'esito del rientro: una notizia si legge una volta. */
+  dimenticaRientro: () => void;
   /** Chiede alla coda di fermarsi. */
   annulla: () => void;
   /** Fa ripartire la coda. */
   riprendi: () => void;
   /** Rimette in fila i non riusciti. */
   riprovaFalliti: () => void;
+  /**
+   * Accetta o rifiuta le registrazioni diverse da quella chiesta.
+   *
+   * Vale per quel che la coda farà da adesso: non tocca niente di già preso.
+   */
+  ammettiAlternative: (ammesse: boolean) => void;
 }
 
 /** Somma i quattro conteggi: quanti brani ha messo in coda un'importazione. */
@@ -133,6 +182,28 @@ export function useImportazioni(): UsoImportazioni {
   const [appuntate, setAppuntate] = useState<Set<string>>(() => new Set());
   /** Quelle che l'utente ha tolto dall'elenco. */
   const [scartate, setScartate] = useState<Set<string>>(() => new Set());
+  /** I rapporti salvati: le concluse delle sessioni passate. */
+  const [storia, setStoria] = useState<EsitoImport[]>([]);
+
+  // Cinquanta e non tutti: `desiderati` non cancella mai niente e i rapporti
+  // seguono la stessa regola. Un elenco che cresce per sempre va potato prima o
+  // poi, e potarlo dalla finestra non si può — quindi si chiede solo quel che si
+  // mostra.
+  useEffect(() => {
+    let annullato = false;
+    ipc
+      .importRapporti(50)
+      .then((r) => {
+        if (!annullato) setStoria(r);
+      })
+      .catch(() => {
+        /* Senza storia la pagina funziona lo stesso: è un'aggiunta, non una
+           dipendenza. */
+      });
+    return () => {
+      annullato = true;
+    };
+  }, []);
 
   // Lo stato iniziale. È l'interrogazione che fa ricomparire una coda rimasta
   // in sospeso dalla sessione precedente: senza, l'elenco resterebbe vuoto
@@ -204,7 +275,7 @@ export function useImportazioni(): UsoImportazioni {
           setErrore(
             evento.payload.messaggio ??
               evento.payload.codice ??
-              "la coda non è partita",
+              t("queue.didNotStart"),
           ),
       ),
     ];
@@ -230,7 +301,7 @@ export function useImportazioni(): UsoImportazioni {
     });
   }, [stato]);
 
-  const registra = useCallback((esito: EsitoSpotify) => {
+  const registra = useCallback((esito: EsitoImport) => {
     setRegistrate((prima) => {
       const dopo = new Map(prima);
       dopo.set(esito.sourceId, { esito, quando: Date.now() });
@@ -262,6 +333,11 @@ export function useImportazioni(): UsoImportazioni {
     });
   }, []);
 
+  // Nella pagina il rientro può restare — è un esito, e la pagina è il posto
+  // degli esiti. Nel toast no: un toast che non si chiude mai è un toast che si
+  // impara a coprire.
+  const dimenticaRientro = useCallback(() => setRientro(null), []);
+
   const annulla = useCallback(() => {
     // Non si tocca `attiva`: la coda si ferma alla fine del brano in corso, e
     // dire «ferma» prima che lo sia sarebbe la stessa bugia che
@@ -284,6 +360,19 @@ export function useImportazioni(): UsoImportazioni {
       .riprovaFalliti()
       .then(() => ipc.scaricoStato())
       .then(setStato)
+      .catch((e: unknown) => setErrore(testoErrore(e)));
+  }, []);
+
+  // Lo stato che torna è quello che il nucleo ha davvero scritto, non quello
+  // che l'interruttore sperava: se la scrittura non riesce, l'interruttore
+  // torna dov'era invece di mostrare una scelta che non è stata registrata.
+  const ammettiAlternative = useCallback((ammesse: boolean) => {
+    ipc
+      .alternativeAmmettile(ammesse)
+      .then((s) => {
+        setErrore(null);
+        setStato(s);
+      })
       .catch((e: unknown) => setErrore(testoErrore(e)));
   }, []);
 
@@ -313,6 +402,11 @@ export function useImportazioni(): UsoImportazioni {
         totale: quanti(sorgente),
         giaInLibreria: sessione?.esito.matched ?? null,
         playlist: sessione?.esito.playlistName ?? null,
+        sorgente: sessione?.esito.source ?? null,
+        provenienza:
+          sessione !== undefined ? nomeSorgente(sessione.esito.source) : null,
+        brani: sessione?.esito.resolved ?? null,
+        servizio: sorgente.sourceService,
         quando: sessione?.quando ?? sorgente.aggiuntaMs,
       });
     }
@@ -334,6 +428,15 @@ export function useImportazioni(): UsoImportazioni {
         totale: 0,
         giaInLibreria: sessione.esito.matched,
         playlist: sessione.esito.playlistName,
+        sorgente: sessione.esito.source,
+        provenienza: nomeSorgente(sessione.esito.source),
+        brani: sessione.esito.resolved,
+        // Qui non c'è una `SorgenteScarico` da cui leggerlo: questa
+        // importazione non ha lasciato righe in coda, e il livello del lettore è
+        // l'unica cosa che porta dentro la fonte. La distinzione non si vede —
+        // una riga senza coda non ha una riga in volo — e si scrive lo stesso,
+        // per non lasciare un campo mentito.
+        servizio: fonteDelLivello(sessione.esito.source),
         quando: sessione.quando,
       });
     }
@@ -342,215 +445,79 @@ export function useImportazioni(): UsoImportazioni {
     return righe;
   }, [stato, registrate, appuntate, scartate]);
 
+  /**
+   * La storia, tolte le importazioni che stanno già nell'elenco.
+   *
+   * Un'importazione ritrovata al riavvio con delle righe ancora in coda sta in
+   * tutte e due: nell'elenco perché la coda la conosce, nella tabella dei
+   * rapporti perché il rapporto è stato salvato. Mostrarla due volte darebbe
+   * **due** «Riapri il rapporto» per la stessa cosa, e — visto che il rapporto
+   * aperto è uno solo — premere quello in fondo aprirebbe il riquadro anche in
+   * cima. La sezione dice «concluse prima di questa sessione»: quel che è ancora
+   * in coda non è concluso, e non ci appartiene.
+   */
+  const storiaFuoriDallElenco = useMemo(() => {
+    const inElenco = new Set(elenco.map((r) => r.sourceId));
+    return storia.filter((r) => !inElenco.has(r.sourceId));
+  }, [storia, elenco]);
+
   return {
     elenco,
     stato,
     brano,
     errore,
     rientro,
+    storia: storiaFuoriDallElenco,
     registra,
     scarta,
+    dimenticaRientro,
     annulla,
     riprendi,
     riprovaFalliti,
+    ammettiAlternative,
   };
 }
 
-/** Cosa sta succedendo al brano in corso, in due parole. */
-function nota(brano: BranoScarico): string {
-  switch (brano.esito) {
-    case "cerco":
-      return "cerco su YouTube…";
-    case "scarico":
-      return brano.frazione === null
-        ? "scarico…"
-        : `${Math.round(brano.frazione * 100)}%`;
-    case "fatto":
-      return "fatto";
-    case "introvabile":
-      return "non c'è su YouTube";
-    default:
-      return brano.codice ?? "non riuscito";
-  }
-}
-
-/** Una riga: una playlist, un album o un brano, e come sta scendendo. */
-function Riga({
-  riga,
-  brano,
-  onScarta,
-}: {
-  riga: RigaImportazione;
-  /** Il brano in corso, se è di questa importazione. */
-  brano: BranoScarico | null;
-  onScarta: (sourceId: string) => void;
-}) {
-  const percento =
-    riga.totale > 0 ? Math.round((riga.fatti / riga.totale) * 100) : 100;
-  const conclusa = riga.attesa === 0;
-
-  return (
-    <li className="importazione">
-      <div className="che-cosa">
-        <span className="titolo" title={riga.titolo}>
-          {riga.titolo}
-        </span>
-        <span className="conteggio">
-          {riga.totale > 0 ? `${riga.fatti}/${riga.totale}` : "nulla da scaricare"}
-        </span>
-        {/* Solo a coda vuota: togliere dall'elenco qualcosa che sta ancora
-            scendendo nasconderebbe una cosa in corso, che è il difetto che
-            questo pannello esiste per togliere. */}
-        {conclusa && (
-          <button
-            type="button"
-            className="tasto icon-btn"
-            aria-label={`Togli «${riga.titolo}» dall'elenco`}
-            onClick={() => onScarta(riga.sourceId)}
-          >
-            <Icona nome="i-x" dim={12} />
-          </button>
-        )}
-      </div>
-
-      {riga.totale > 0 && (
-        <div
-          className="barra"
-          role="progressbar"
-          aria-valuenow={percento}
-          aria-valuemin={0}
-          aria-valuemax={100}
-        >
-          <div className="riempimento" style={{ width: `${percento}%` }} />
-        </div>
-      )}
-
-      <div className="note">
-        <span>{riga.genere}</span>
-        {riga.giaInLibreria !== null && riga.giaInLibreria > 0 && (
-          <span>{riga.giaInLibreria} già in libreria</span>
-        )}
-        {riga.playlist && <span>playlist «{riga.playlist}»</span>}
-        {riga.falliti > 0 && (
-          <span>
-            {riga.falliti} {riga.falliti === 1 ? "non riuscito" : "non riusciti"}
-          </span>
-        )}
-        {riga.introvabili > 0 && <span>{riga.introvabili} non su YouTube</span>}
-      </div>
-
-      {brano && (
-        <div className="importazione-brano">
-          <span className="titolo">
-            {brano.artista ? `${brano.artista} — ` : ""}
-            {brano.titolo}
-          </span>
-          <span className="nota">{nota(brano)}</span>
-        </div>
-      )}
-    </li>
-  );
+/**
+ * Il nome del livello che ha risposto, in italiano.
+ *
+ * Non è decorazione: dice **quanto fidarsi** di quel che si sta per importare.
+ * `archivio` vuol dire che l'elenco è completo per costruzione — è tutto quel
+ * che c'è, e non c'è una pagina dopo — mentre `oembed` vuol dire che di brani
+ * non ne è arrivato nessuno.
+ *
+ * Sta qui e non in `Importa.tsx` perché adesso la leggono in quattro — la scheda
+ * d'anteprima, la riga della coda, il rapporto e la storia. Due copie della
+ * stessa frase sono il modo di farle divergere alla prossima sorgente.
+ */
+export function nomeSorgente(sorgente: string): string {
+  if (sorgente === "archivio") return t("source.archive");
+  if (sorgente === "file-playlist") return t("source.playlistFile");
+  if (sorgente === "archive.org") return t("source.internetArchive");
+  if (sorgente === "jamendo") return t("source.jamendo");
+  if (sorgente === "audius") return t("source.audius");
+  return t("source.bare");
 }
 
 /**
- * Il pannello, sotto il tasto che apre la finestrella.
+ * Da quale fonte viene un'importazione, dedotto dal livello che ha risposto.
  *
- * Non rende niente quando non c'è niente da dire: una scheda che dichiara «zero
- * importazioni» occupa lo spazio di un'informazione senza esserlo.
+ * Un ripiego, e si vede: la risposta vera è `desiderati.source_service`, che
+ * però esiste solo se quell'importazione ha lasciato righe in coda. Quando non
+ * ne ha lasciate — perché era già tutto in libreria — questa è l'unica cosa che
+ * resta, e scriverla è meglio che lasciare un campo mentito.
  */
-export function Importazioni({
-  importazioni,
-}: {
-  importazioni: UsoImportazioni;
-}) {
-  const { elenco, stato, brano, errore, rientro, scarta } = importazioni;
-  if (elenco.length === 0) return null;
-
-  const inAttesa = stato?.conteggi.attesa ?? 0;
-  const falliti = stato?.conteggi.fallito ?? 0;
-  const attiva = stato?.attiva ?? false;
-
-  return (
-    <div className="importazioni">
-      <div className="importazioni-testata">
-        <strong>Importazioni</strong>
-        <span className="conteggio">
-          {attiva
-            ? "scaricamento in corso"
-            : inAttesa > 0
-              ? "in pausa"
-              : "concluse"}
-        </span>
-      </div>
-
-      {/* yt-dlp non c'è: è l'unica cosa da dire, e va detta qui perché è il
-          motivo per cui le barre non si muovono. */}
-      {stato && !stato.ytdlp && (
-        <div className="avviso-monco">
-          Per scaricare serve <strong>yt-dlp</strong>, che non è al suo posto. I
-          brani restano registrati e la coda riparte da sola appena c&apos;è.
-        </div>
-      )}
-
-      {errore && <div className="errore">{errore}</div>}
-
-      {rientro !== null && rientro.vociRimesse > 0 && (
-        <p className="esito">
-          {rientro.vociRimesse.toLocaleString("it")}{" "}
-          {rientro.vociRimesse === 1 ? "brano è tornato" : "brani sono tornati"}{" "}
-          nelle playlist da cui {rientro.vociRimesse === 1 ? "mancava" : "mancavano"}.
-        </p>
-      )}
-
-      <ul className="elenco-importazioni">
-        {elenco.map((riga) => (
-          <Riga
-            key={riga.sourceId}
-            riga={riga}
-            brano={
-              brano && brano.sorgenteId === riga.sourceId ? brano : null
-            }
-            onScarta={scarta}
-          />
-        ))}
-      </ul>
-
-      <div className="azioni">
-        {attiva ? (
-          <button
-            type="button"
-            className="bottone btn-ghost"
-            onClick={importazioni.annulla}
-          >
-            <Icona nome="i-pause" dim={15} />
-            Ferma la coda
-          </button>
-        ) : (
-          inAttesa > 0 && (
-            <button
-              type="button"
-              className="bottone btn-ghost"
-              onClick={importazioni.riprendi}
-            >
-              <Icona nome="i-play" dim={15} />
-              Riprendi ({inAttesa})
-            </button>
-          )
-        )}
-        {/* Rimette in fila solo i falliti: gli introvabili resterebbero
-            introvabili, e riprovarli trasformerebbe «riprova» in «rifai
-            tutto». */}
-        {!attiva && falliti > 0 && (
-          <button
-            type="button"
-            className="bottone btn-ghost"
-            onClick={importazioni.riprovaFalliti}
-          >
-            <Icona nome="i-repeat" dim={15} />
-            Riprova i {falliti} non riusciti
-          </button>
-        )}
-      </div>
-    </div>
-  );
+function fonteDelLivello(livello: string): string {
+  switch (livello) {
+    case "archive.org":
+      return "internet-archive";
+    case "jamendo":
+      return "jamendo";
+    case "audius":
+      return "audius";
+    case "file-playlist":
+      return "file-playlist";
+    default:
+      return "archivio-spotify";
+  }
 }

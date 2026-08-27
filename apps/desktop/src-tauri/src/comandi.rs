@@ -9,7 +9,7 @@
 use aether_app::import_legacy;
 use aether_app::library::{
     AlbumSummary, ArtistSummary, Counts, Scan, ScanReport, TrackOrder, TrackSummary, album_tracks,
-    counts, list_albums, list_artists, list_tracks, search,
+    counts, list_albums, list_artists, list_tracks, recently_added_albums, search,
 };
 use aether_app::settings::CHIAVE_CARTELLE;
 use aether_domain::errors::AppError;
@@ -48,6 +48,14 @@ pub struct Avvio {
     /// preferenza rimasta in `localStorage` prima che il tema tornasse nel
     /// nucleo. Vedi `aether_app::preferenze`.
     pub tema: Option<String>,
+    /// La lingua scelta, come codice ISO. `None` vuol dire **mai scelta**.
+    ///
+    /// E «mai scelta» è ciò che fa rilevare la lingua dal sistema operativo:
+    /// risolverla qui darebbe alla finestra una lingua senza modo di sapere se
+    /// qualcuno l'ha voluta. Il codice non è controllato contro un elenco perché
+    /// l'elenco è la cartella `src/lingue/`, che il nucleo non conosce e non
+    /// deve conoscere.
+    pub lingua: Option<String>,
     /// Le scorciatoie riscritte dall'utente, come JSON. `None` = quelle di serie.
     ///
     /// Grezze e non interpretate: i nomi dei comandi appartengono alla finestra,
@@ -84,6 +92,7 @@ pub fn avvio(stato: State<'_, Stato>) -> Esito<Avvio> {
             .filter(|scelta| !scelta.trim().is_empty()),
             numeri: counts(&libreria.connection)?,
             tema: aether_app::preferenze::tema(&libreria.connection)?.map(|t| t.nome().to_owned()),
+            lingua: aether_app::preferenze::lingua(&libreria.connection)?,
             scorciatoie: aether_app::preferenze::scorciatoie(&libreria.connection)?,
         })
     })
@@ -449,7 +458,13 @@ pub fn valutazione(
         libreria
             .connection
             .execute(
-                "UPDATE tracks SET rating = ?2, stats_updated_at = ?3 WHERE id = ?1",
+                // `rating_at` accanto a `stats_updated_at`, e non al suo posto:
+                // il primo data **questo** voto, il secondo continua a datare
+                // l'ultima notizia qualunque sul brano. Solo il primo permette a
+                // uno zero di viaggiare come una decisione invece che come
+                // un'assenza — vedi `aether_app::sincronia`.
+                "UPDATE tracks SET rating = ?2, stats_updated_at = ?3, rating_at = ?3
+                  WHERE id = ?1",
                 rusqlite::params![id, stelle, now],
             )
             .map(|_| ())
@@ -520,6 +535,24 @@ pub fn imposta_tema(app: tauri::AppHandle, stato: State<'_, Stato>, tema: String
         &app,
         con_libreria(&stato, |libreria| {
             aether_app::preferenze::imposta_tema(&libreria.connection, scelto)
+        })
+        .map_err(errore),
+    )
+}
+
+/// Scrive la lingua. Una stringa vuota rimette il rilevamento dal sistema.
+///
+/// Non si controlla che esista un file per quel codice: l'elenco delle lingue
+/// sta nella finestra (`src/lingue/`), e un nucleo che lo conoscesse andrebbe
+/// ricompilato per aggiungere `de.json` — cioè proprio quel che l'impianto
+/// esiste per evitare. Qui si controlla soltanto che sia un codice di lingua, e
+/// lo fa `preferenze::imposta_lingua`.
+#[tauri::command]
+pub fn imposta_lingua(app: tauri::AppHandle, stato: State<'_, Stato>, lingua: String) -> Esito<()> {
+    crate::nuvola::se_riuscito(
+        &app,
+        con_libreria(&stato, |libreria| {
+            aether_app::preferenze::imposta_lingua(&libreria.connection, &lingua)
         })
         .map_err(errore),
     )
@@ -612,4 +645,113 @@ fn leggi_profilo(percorso: &str) -> Result<String, AppError> {
 /// c'è, ed è questa riga.
 fn esiste(percorso: &str) -> bool {
     std::path::Path::new(percorso).exists()
+}
+
+/// Quanti brani sta in un ripiano della Home.
+///
+/// Dodici e non duecento: un ripiano si guarda, non si scorre. Chi vuole
+/// l'elenco intero ha le quattro destinazioni della libreria, che sono
+/// impaginate apposta.
+const RIPIANO: i64 = 12;
+
+/// Da quanti giorni un brano dev'essere fermo per contare come «trascurato».
+///
+/// Sei mesi. Trenta giorni sarebbero «non di questo mese», che su una libreria
+/// vera comprende quasi tutto e non racconta niente.
+const GIORNI_TRASCURATO: i64 = 180;
+
+/// Quel che la Home mostra all'apertura.
+///
+/// # Perché un comando solo e non cinque
+///
+/// Perché sono cinque domande che si fanno **insieme**, all'apertura della
+/// finestra, e cinque `invoke` separati vorrebbero dire cinque attraversamenti
+/// dell'IPC e cinque prese del lucchetto della libreria per disegnare una
+/// schermata sola. È lo stesso ragionamento di [`Avvio`], che raccoglie tutto
+/// quel che serve al primo disegno.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Casa {
+    /// Il brano su cui ci si era fermati, se c'è.
+    pub riprendi: Option<TrackSummary>,
+    /// A che punto era, in millisecondi.
+    pub riprendi_ms: u64,
+    /// Gli ultimi ascoltati, senza ripetizioni.
+    pub recenti: Vec<TrackSummary>,
+    /// I dischi entrati in libreria per ultimi.
+    ///
+    /// Dischi e non brani: la musica entra una cartella alla volta, e dodici
+    /// brani ordinati per data d'ingresso sono dodici tracce dello stesso
+    /// album. Vedi [`recently_added_albums`].
+    pub aggiunti: Vec<AlbumSummary>,
+    /// Quel che non si ascolta da mesi.
+    pub trascurati: Vec<TrackSummary>,
+}
+
+/// Compone la Home.
+#[tauri::command]
+pub fn casa(stato: State<'_, Stato>) -> Esito<Casa> {
+    use aether_domain::regole::{
+        Campo, Combinazione, Insieme, Operatore, Ordinamento, Regola, Valore,
+    };
+
+    con_libreria(&stato, |libreria| {
+        let connection = &libreria.connection;
+
+        // Dove ci si era fermati: la coda di ieri sa quale brano, e la
+        // posizione sta in una chiave sua.
+        let istantanea = aether_app::playback::load_queue(connection)?;
+        let corrente = aether_domain::queue::Queue::restore(istantanea).current();
+        let riprendi = match corrente {
+            Some(id) => aether_app::library::read_summary(connection, id)?,
+            None => None,
+        };
+        // La posizione si legge solo se c'è un brano a cui appartiene: da sola
+        // sarebbe un numero senza significato, e mostrarla accanto al brano
+        // sbagliato è peggio che non mostrarla.
+        let riprendi_ms = if riprendi.is_some() {
+            aether_app::playback::load_posizione(connection)?
+        } else {
+            0
+        };
+
+        let recenti = list_tracks(connection, TrackOrder::RecentlyPlayed, 0, RIPIANO)?
+            .into_iter()
+            // I mai ascoltati stanno in fondo a quell'ordinamento: qui non ci
+            // devono proprio essere, o il ripiano «ascoltati di recente» di una
+            // libreria appena scansionata si riempirebbe di brani che nessuno
+            // ha mai sentito.
+            .filter(|brano| brano.play_count > 0)
+            .collect();
+
+        let aggiunti = recently_added_albums(connection, RIPIANO)?;
+
+        // I trascurati passano dal motore delle regole invece che da una query
+        // scritta a mano: è la stessa domanda che una playlist intelligente sa
+        // già fare, e scriverla due volte vorrebbe dire due idee di cosa
+        // significhi «non di recente».
+        let trascurati = aether_app::smart::brani(
+            connection,
+            &Insieme {
+                combinazione: Combinazione::Tutte,
+                regole: vec![Regola {
+                    campo: Campo::UltimoAscolto,
+                    operatore: Operatore::NonNegliUltimi,
+                    valore: Valore::Numero(GIORNI_TRASCURATO),
+                }],
+                limite: Some(12),
+                ordinamento: Ordinamento::Casuale,
+            },
+            adesso_ms(),
+        )?;
+
+        Ok(Casa {
+            riprendi,
+            riprendi_ms,
+            recenti,
+            aggiunti,
+            trascurati,
+        })
+    })
+    .map_err(errore)
 }

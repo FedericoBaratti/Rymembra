@@ -23,8 +23,15 @@ pub enum Domain {
     Metadata,
     /// Scaricamento.
     Download,
-    /// Importazione da Spotify.
+    /// L'archivio che Spotify manda per posta a chi lo chiede.
     Spotify,
+    /// Lettura di un catalogo libero: **importare**, non prendere i byte.
+    ///
+    /// Separato da [`Self::Download`], che è la coda che preleva un file. Qui si
+    /// legge un elenco, e i modi in cui quella lettura fallisce — «l'item non
+    /// esiste», «la risposta è arrivata monca» — non somigliano a quelli di un
+    /// trasferimento.
+    Catalogo,
     /// Skin.
     Skin,
     /// Trasferimento diretto PC↔telefono.
@@ -284,6 +291,19 @@ catalogo! {
     MetadataEnrichBusy = "metadata.enrichBusy", Metadata, Info, Always, None;
     /// L'impronta acustica non è disponibile.
     MetadataFingerprintUnavailable = "metadata.fingerprintUnavailable", Metadata, Info, Never, None;
+    /// Il catalogo dei testi non ha questo brano.
+    ///
+    /// `Info` e non ritentabile: è un fatto sul brano, non sulla rete, e chi
+    /// chiama lo ricorda per non richiederlo a ogni passata. La distinzione fra
+    /// questo e un guasto di rete attraversa tutto il modulo dei testi.
+    MetadataLyricsNoMatch = "metadata.lyricsNoMatch", Metadata, Info, Never, Some("LYRICS_NO_MATCH");
+    /// Il catalogo ha rifiutato il testo che gli si è mandato.
+    ///
+    /// `Never` ritentabile perché il rifiuto è sul contenuto — un timestamp
+    /// storto, un campo mancante — e rimandare lo stesso testo darebbe lo stesso
+    /// rifiuto. Il caso in cui invece **si** ritenta è il token scaduto, e
+    /// quello si vede prima, come errore di trasporto.
+    MetadataLyricsPublishRefused = "metadata.lyricsPublishRefused", Metadata, Warning, Never, Some("LYRICS_PUBLISH_REFUSED"), { detail: Option<String> };
 
     // ── download ────────────────────────────────────────────────────────────
     // La ritentabilità qui SOSTITUISCE `classifyDownloadFailure`, che nel vecchio
@@ -293,101 +313,62 @@ catalogo! {
     DownloadUnrecognizedUrl = "download.unrecognizedUrl", Download, Warning, Never, Some("DL_UNRECOGNIZED_URL");
     /// URL malformato.
     DownloadInvalidUrl = "download.invalidUrl", Download, Warning, Never, Some("DL_INVALID_URL");
-    /// Contenuto con limite d'età.
-    DownloadAgeRestricted = "download.ageRestricted", Download, Warning, Never, Some("DL_AGE_RESTRICTED");
-    /// Contenuto privato.
-    DownloadPrivate = "download.private", Download, Warning, Never, Some("DL_PRIVATE");
     /// Contenuto non più disponibile.
     DownloadUnavailable = "download.unavailable", Download, Warning, Never, Some("DL_UNAVAILABLE");
+    /// Contenuto riservato: c'è, e non è per chiunque.
+    DownloadPrivate = "download.private", Download, Warning, Never, Some("DL_PRIVATE");
+    /// La licenza di questo brano non permette di tenerne una copia.
+    ///
+    /// Non è un guasto ed è **terminale**: ritentare non cambierà la licenza. È
+    /// il codice che esiste perché la domanda «lo posso prendere?» abbia una
+    /// risposta diversa da «la richiesta è fallita» — vedi
+    /// [`crate::esterno::Disponibilita`]. Chi lo riceve non deve riprovare: deve
+    /// dire dove si compra.
+    DownloadNotPermitted = "download.notPermitted", Download, Info, Never, None, { licenza: Option<String> };
     /// La sorgente ha chiesto di rallentare.
     DownloadRateLimited = "download.rateLimited", Download, Warning, Always, Some("DL_RATE_LIMITED");
     /// Rallentamento, con ritentativo già programmato.
     DownloadRateLimitedRetry = "download.rateLimitedRetry", Download, Info, Always, Some("DL_RATE_LIMITED_RETRY");
     /// Accesso negato dalla sorgente.
     ///
-    /// Ritentabile, contro l'istinto. Un `403` da YouTube non è una proprietà
-    /// del video — quelli che lo sono hanno un codice loro (privato, rimosso,
-    /// con limite d'età) — ma del momento: arriva a ondate, legato all'indirizzo
-    /// IP e al ritmo delle richieste. Chi lo produce
-    /// (`aether_yt::scarica`) ha già camminato i tre profili di client di
-    /// `argomenti::TENTATIVI` prima di arrendersi, quindi qui non si sta
-    /// riprovando la stessa cosa: si sta riprovando *più tardi*, che è l'unica
-    /// mossa rimasta e quella che di solito funziona.
-    ///
-    /// Con `Never` il brano resterebbe perduto per sempre, e il vecchio albero
-    /// faceva proprio questo — non per scelta, ma perché `classifyDownloadFailure`
-    /// non aveva il 403 in nessuna delle sue due liste e cadeva nel default
-    /// `permanent`, mentre il commento tre righe sopra dichiarava di volerlo
-    /// trattare come passeggero.
+    /// Ritentabile, contro l'istinto. Un `403` non è una proprietà del file —
+    /// quelle hanno un codice loro (non disponibile, riservato, licenza che non
+    /// lo permette) — ma del momento: arriva a ondate, legato all'indirizzo IP e
+    /// al ritmo delle richieste. Con `Never` il brano resterebbe perduto per
+    /// sempre, e il vecchio albero faceva proprio questo — non per scelta, ma
+    /// perché il 403 cadeva nel default «permanente» mentre il commento tre
+    /// righe sopra dichiarava di volerlo trattare come passeggero.
     DownloadForbidden = "download.forbidden", Download, Warning, Always, Some("DL_FORBIDDEN");
-    /// Guasto di rete durante lo scaricamento.
+    /// Guasto di rete durante il prelievo.
     DownloadNetwork = "download.network", Download, Warning, Always, Some("DL_NETWORK");
     /// Fallito senza una causa più precisa.
     DownloadFailed = "download.failed", Download, Warning, Always, Some("DL_FAILED");
     /// La ricerca non ha prodotto risultati.
+    ///
+    /// Terminale, e va detto bene a chi guarda: vuol dire «nessun catalogo
+    /// lecito ce l'ha», non «non esiste». È la riga che finisce nella lista di
+    /// quel che resta da comprare.
     DownloadNoResults = "download.noResults", Download, Info, Never, Some("DL_NO_RESULTS");
     /// I file prodotti non sono validi.
     DownloadInvalidFiles = "download.invalidFiles", Download, Warning, Never, Some("DL_INVALID_FILES");
-    /// yt-dlp non ha risposto in tempo.
-    DownloadYtdlpTimeout = "download.ytdlpTimeout", Download, Warning, Always, Some("DL_YTDLP_TIMEOUT");
-    /// yt-dlp ha risposto in modo incomprensibile.
-    DownloadYtdlpBadResponse = "download.ytdlpBadResponse", Download, Warning, Always, Some("DL_YTDLP_BAD_RESPONSE");
-    /// Il pacchetto yt-dlp è corrotto.
+    /// Il catalogo ha risposto in un modo che non si sa leggere.
     ///
-    /// Ritentabile, e non è un dettaglio: uno zip scompattato a metà o un
-    /// traceback di `zipimport` sono un guasto d'ambiente, non un URL cattivo.
-    /// Il vecchio albero lo forzava a «transitorio» dentro la funzione di
-    /// decisione; qui la scelta sta nel catalogo, dove la vedono tutti.
-    DownloadYtdlpCorrupted = "download.ytdlpCorrupted", Download, Error, Always, Some("YTDLP_CORRUPTED");
-    /// yt-dlp è occupato.
-    DownloadYtdlpBusy = "download.ytdlpBusy", Download, Info, Always, Some("YTDLP_BUSY");
-    /// Errore riportato da YouTube.
-    DownloadYtError = "download.ytError", Download, Warning, Always, Some("DL_YT_ERROR"), { detail: String };
-    /// spotdl è uscito con un codice di errore.
-    DownloadSpotdlExit = "download.spotdlExit", Download, Warning, Always, Some("DL_SPOTDL_EXIT"), { code: String };
-    /// La ricerca esterna è fallita.
+    /// Senza codice storico: quello che c'era nominava lo strumento che non
+    /// esiste più, e un ponte verso un albero che non emette più quella stringa
+    /// è solo il nome vecchio che sopravvive al motivo per cui esisteva.
+    DownloadBadResponse = "download.badResponse", Download, Warning, Always, None;
+    /// La ricerca in un catalogo è fallita.
     DownloadExternalSearchFailed = "download.externalSearchFailed", Download, Warning, Always, Some("EXT_SEARCH_FAILED");
-    /// Manca un binario esterno.
-    ///
-    /// `dir` e `url` servono a dire dove metterlo e dove prenderlo: senza, il
-    /// messaggio è una constatazione invece che un'istruzione.
-    DownloadBinaryMissing = "download.binaryMissing", Download, Error, Never, Some("BINARY_MISSING"), { name: String, dir: Option<String>, url: Option<String> };
 
     // ── spotify ─────────────────────────────────────────────────────────────
     // Un dominio a sé e non `Download`: da qui non si scarica niente. Si legge
-    // un elenco di brani da un servizio che non ha mai promesso di farcelo
-    // leggere, e i modi in cui quella lettura fallisce non somigliano ai modi in
-    // cui fallisce yt-dlp — somigliano a «hanno cambiato il sito».
+    // l'archivio che Spotify manda per posta a chi lo chiede — dati che sono già
+    // dell'utente, consegnati dal servizio stesso — e i modi in cui quella
+    // lettura fallisce sono quelli di un file, non quelli di una rete.
     //
-    // Il riconoscimento del link riusa `download.unrecognizedUrl` e
-    // `download.invalidUrl`, che dicono già esattamente questo e hanno già la
-    // loro traduzione: un secondo codice per la stessa frase sarebbe la cosa che
-    // poi diverge.
-    /// Non si è riusciti a ottenere il gettone anonimo del lettore web.
-    ///
-    /// Ritentabile perché la causa di gran lunga più comune è un intoppo di
-    /// rete. Quando invece è la rotazione dei cifrari, ritentare non serve — ma
-    /// non fa danno: chi chiama scende comunque al livello successivo, e
-    /// `spotify_diagnostica` dice qual è dei due.
-    SpotifyTokenUnavailable = "spotify.tokenUnavailable", Spotify, Warning, Always, None;
-    /// Nessun livello è riuscito a leggere il contenuto.
-    ///
-    /// Non ritentabile: prima di arrivare qui si è già provato Pathfinder, la
-    /// pagina incorporabile e oEmbed. Se hanno detto di no tutti e tre, dirlo
-    /// una quarta volta non cambia la risposta.
-    SpotifyResolveFailed = "spotify.resolveFailed", Spotify, Warning, Never, None;
-    /// Il contenuto non è pubblico, o non esiste più.
-    ///
-    /// Distinto da quello sopra perché è l'unico caso in cui l'utente può fare
-    /// qualcosa: rendere pubblica la playlist, o controllare il link.
-    SpotifyNotPublic = "spotify.notPublic", Spotify, Warning, Never, None;
-    /// L'elenco dei brani è arrivato più corto di quanto Spotify dichiari.
-    ///
-    /// Porta i due numeri perché il messaggio possa dire «142 su 300» invece di
-    /// «alcuni brani»: una playlist importata a metà in silenzio è il guasto
-    /// peggiore possibile qui, e la differenza fra saperlo e non saperlo è tutta
-    /// in questi due valori.
-    SpotifyTracklistTruncated = "spotify.tracklistTruncated", Spotify, Warning, Never, None, { letti: u32, attesi: u32 };
+    // Qui non c'è più nessun codice per il lettore keyless né per il consenso
+    // OAuth, e non è una potatura: quelle due strade parlavano con punti che
+    // Spotify non ha mai promesso a nessuno, e sono state tolte.
     /// L'archivio non si apre: non è uno zip, o è troncato.
     ///
     /// Non ritentabile. Un file scaricato a metà non si completa riprovando ad
@@ -401,41 +382,47 @@ catalogo! {
     /// dentro: senza, «archivio non riconosciuto» non dice a nessuno quale dei
     /// due file scaricati sia quello giusto.
     SpotifyArchiveEmpty = "spotify.archiveEmpty", Spotify, Warning, Never, None, { trovati: Vec<String> };
-    /// Manca l'identificativo dell'applicazione Spotify.
+    /// L'elenco dei brani è arrivato più corto di quanto l'archivio dichiari.
     ///
-    /// La via OAuth è l'unica cosa in Aether che chiede all'utente di
-    /// registrare qualcosa da sé, e la ragione è fuori dal nostro controllo: le
-    /// applicazioni in Development Mode accettano cinque utenti, e una chiave
-    /// distribuita nel binario li esaurirebbe con i primi cinque che la usano.
-    /// L'altra via — l'archivio — non chiede niente a nessuno, ed è il motivo
-    /// per cui restano due.
-    SpotifyAccountNotConfigured = "spotify.accountNotConfigured", Spotify, Warning, Never, None;
-    /// Spotify ha risposto «no» a un account che ha dato il consenso.
+    /// Porta i due numeri perché il messaggio possa dire «142 su 300» invece di
+    /// «alcuni brani»: una playlist importata a metà in silenzio è il guasto
+    /// peggiore possibile qui, e la differenza fra saperlo e non saperlo è tutta
+    /// in questi due valori.
+    SpotifyTracklistTruncated = "spotify.tracklistTruncated", Spotify, Warning, Never, None, { letti: u32, attesi: u32 };
+
+    // ── catalogo ────────────────────────────────────────────────────────────
+    // La **lettura** di un catalogo libero, non il prelievo: quello resta
+    // `download.*`. Qui si legge un elenco, e i guasti sono quelli di un
+    // servizio pubblico che risponde male — non quelli di un trasferimento.
+    //
+    // Il riconoscimento del link riusa `download.unrecognizedUrl` e
+    // `download.invalidUrl`, che dicono già esattamente questo e hanno già la
+    // loro traduzione: un secondo codice per la stessa frase sarebbe la cosa che
+    // poi diverge.
+    /// Nessun catalogo è riuscito a leggere il contenuto.
     ///
-    /// Il guasto più probabile di tutta questa funzione, e quello che senza un
-    /// codice suo sembrerebbe un errore di Aether. In Development Mode significa
-    /// una di due cose, e Spotify non dice quale: l'utente non è fra i cinque
-    /// registrati nella dashboard, oppure **il proprietario dell'applicazione
-    /// non ha più Premium** — da febbraio 2026 è un requisito, e quando
-    /// l'abbonamento scade l'applicazione smette di funzionare senza nessun
-    /// avviso.
-    SpotifyAccountForbidden = "spotify.accountForbidden", Spotify, Warning, Never, None;
-    /// Il consenso non vale più: si ricomincia dalla schermata di Spotify.
+    /// Non ritentabile: prima di arrivare qui i cataloghi attivi hanno già
+    /// risposto tutti. Se hanno detto di no tutti, dirlo una volta in più non
+    /// cambia la risposta.
+    CatalogoResolveFailed = "catalogo.resolveFailed", Catalogo, Warning, Never, None;
+    /// Il contenuto non c'è, o non è pubblico.
     ///
-    /// Distinto da [`Self::SpotifyAccountForbidden`] perché la risposta è
-    /// diversa: qui basta ricollegarsi, là c'è da sistemare qualcosa nella
-    /// dashboard. Non ritentabile — un token rifiutato viene rifiutato anche la
-    /// seconda volta.
-    SpotifyAccountAuthExpired = "spotify.accountAuthExpired", Spotify, Warning, Never, None;
-    /// La quota giornaliera dello sviluppatore è esaurita.
+    /// Distinto da quello sopra perché è l'unico caso in cui chi ascolta può
+    /// fare qualcosa: controllare il link.
+    CatalogoNotPublic = "catalogo.notPublic", Catalogo, Warning, Never, None;
+    /// L'elenco è arrivato più corto di quanto il catalogo dichiari.
     ///
-    /// Un `429` come gli altri, ma con `reason: "QUOTA_EXCEEDED"` dentro, e la
-    /// differenza conta: un limite di frequenza passa aspettando qualche
-    /// secondo, una quota esaurita no. Ritentarla vorrebbe dire tenere occupato
-    /// chi guarda per il tempo di tre tentativi e poi dirgli la stessa cosa.
-    /// Da luglio 2026 la quota si conta per **account sviluppatore**, non più
-    /// per applicazione.
-    SpotifyQuotaExceeded = "spotify.quotaExceeded", Spotify, Warning, Never, None, { retry_after_ms: Option<u64> };
+    /// Il gemello di [`Self::SpotifyTracklistTruncated`], e porta i due numeri
+    /// per la stessa ragione: un elenco importato a metà **in silenzio** è il
+    /// guasto peggiore che questo sottosistema possa produrre. Qui ha una causa
+    /// in più: una paginazione che si interrompe a metà produce esattamente
+    /// questo, e senza il totale dichiarato passerebbe per un elenco corto.
+    CatalogoListTruncated = "catalogo.listTruncated", Catalogo, Warning, Never, None, { letti: u32, attesi: u32 };
+    /// Il catalogo ha risposto, ma il brano non è ascoltabile da qui.
+    ///
+    /// Succede su Audius quando l'artista ha tolto l'accesso via API, e su un
+    /// item dell'Internet Archive marcato come solo consultabile. Terminale.
+    CatalogoNotAvailable = "catalogo.notAvailable", Catalogo, Info, Never, None;
 
     // ── skin ────────────────────────────────────────────────────────────────
     // Nessuno è ritentabile: un pacchetto non valido resta non valido. Portano
@@ -532,8 +519,6 @@ catalogo! {
     /// lo stesso rifiuto per sempre, quindi non si rimanda — si dice quale e
     /// perché.
     SettingsScrobbleRejected = "settings.scrobbleRejected", Settings, Warning, Never, None, { service: String, detail: Option<String> };
-    /// L'autenticazione Spotify è fallita.
-    SettingsSpotifyAuthFailed = "settings.spotifyAuthFailed", Settings, Warning, Always, Some("SPOTIFY_AUTH_FAILED"), { status: String };
 
     // ── ipc ─────────────────────────────────────────────────────────────────
     /// Nessun gestore registrato per questo canale.

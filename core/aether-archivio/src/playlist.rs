@@ -35,7 +35,7 @@
 //! Web API sullo stesso account. È il comportamento voluto — nel dubbio si
 //! dichiara mancante — ma spiega la differenza fra i due numeri.
 
-use aether_domain::spotify::SpotifyTrack;
+use aether_domain::esterno::BranoEsterno;
 use aether_domain::spotify_account::PlaylistSpotify;
 use serde_json::Value;
 
@@ -122,7 +122,7 @@ pub fn leggi(corpo: &Value) -> Lette {
 /// che vive un'iterazione.
 #[allow(clippy::large_enum_variant)]
 enum Esito {
-    Brano(SpotifyTrack),
+    Brano(BranoEsterno),
     Podcast,
     Illeggibile,
 }
@@ -147,14 +147,14 @@ fn voce_a_brano(item: &Value) -> Esito {
         return Esito::Illeggibile;
     };
 
-    Esito::Brano(SpotifyTrack {
+    Esito::Brano(BranoEsterno {
         title: titolo,
         artist: testo(brano, "artistName"),
         album: testo(brano, "albumName"),
         spotify_track_id: testo(brano, "trackUri").as_deref().and_then(id_da_uri),
         // La durata l'archivio non la dice. Vedi la nota in testa al modulo su
         // cosa comporta per i gradini larghi dell'abbinamento.
-        ..SpotifyTrack::default()
+        ..BranoEsterno::default()
     })
 }
 

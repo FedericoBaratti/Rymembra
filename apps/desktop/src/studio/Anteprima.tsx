@@ -54,6 +54,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ParteRegistro } from "../ipc";
+import { t } from "../lingue";
 
 /**
  * La finestra vera, di cui la miniatura è una riduzione.
@@ -97,6 +98,8 @@ export function Anteprima({
   onScegli,
   onNodo,
   onLarghezza,
+  onQuante,
+  ingrandimento,
   children,
 }: {
   css: string;
@@ -139,6 +142,24 @@ export function Anteprima({
    */
   onLarghezza?: ((pixel: number) => void) | undefined;
   /**
+   * Quante volte la parte scelta compare in questa scena.
+   *
+   * Zero è l'informazione che mancava del tutto: si sceglieva una parte, si
+   * ridipingeva, e non succedeva niente sullo schermo — senza modo di sapere se
+   * la skin non funzionava o se quella superficie semplicemente non è in questa
+   * scena. Chi lo riceve può proporre la scena giusta.
+   */
+  onQuante?: ((quante: number) => void) | undefined;
+  /**
+   * Ingrandimento: `1` è la finestra vera, uno a uno.
+   *
+   * `null` vuol dire «stai nello spazio che c'è», che è la miniatura di sempre.
+   * A grandezza naturale il riquadro esce dal suo spazio e si scorre — perché a
+   * metà scala un contorno da un pixel e un raggio da tre non si possono
+   * giudicare, e giudicarli è tutto il mestiere.
+   */
+  ingrandimento?: number | null | undefined;
+  /**
    * Cosa mostrare dentro: l'applicazione, con dati finti.
    */
   children: React.ReactNode;
@@ -146,6 +167,22 @@ export function Anteprima({
   const riquadro = useRef<HTMLDivElement>(null);
   const [sotto, setSotto] = useState<string[]>([]);
   const [dove, setDove] = useState<Riquadro | null>(null);
+  /**
+   * Dove sta, adesso, la parte scelta. Anche più volte.
+   *
+   * `--parte-scelta` c'era già, scritta qui sotto come variabile CSS — e nessuna
+   * regola la leggeva. Non poteva: una variabile CSS non può diventare un
+   * selettore, e per illuminare `.section-card` serve una regola che nomini
+   * `.section-card`. `.e-scelta` in `stile.css` era l'altra metà del tentativo,
+   * e restava codice morto perché nessuno metteva mai quella classe addosso a
+   * niente.
+   *
+   * Si misura invece di dipingere, come già fa la sonda: si cercano gli elementi
+   * con quella classe e se ne disegna il contorno **sopra**. Il vantaggio non è
+   * solo che funziona — è che un contorno sopra non copre come la skin ha
+   * dipinto la superficie, che è la cosa che si sta guardando.
+   */
+  const [scelte, setScelte] = useState<readonly Riquadro[]>([]);
   /**
    * La classe più interna che **non** è una parte.
    *
@@ -221,6 +258,48 @@ export function Anteprima({
     };
   }, [sondaAccesa, parti, onNodo]);
 
+  /**
+   * Il contorno della parte scelta, rimisurato quando serve.
+   *
+   * `children` fra le dipendenze non è pigrizia: è la scena. Cambiare scena
+   * ridisegna il contenuto, e le misure di prima sarebbero contorni appoggiati
+   * dove non c'è più niente. Il foglio pure — una skin che cambia un raggio o un
+   * riempimento sposta i bordi di quel che si sta indicando.
+   */
+  useEffect(() => {
+    const nodo = riquadro.current;
+    if (!nodo || scelta === null) {
+      setScelte([]);
+      return;
+    }
+    const misura = () => {
+      const mio = nodo.getBoundingClientRect();
+      const trovati = [...nodo.querySelectorAll(`.${CSS.escape(scelta)}`)].map(
+        (q) => {
+          const suo = q.getBoundingClientRect();
+          return {
+            x: suo.left - mio.left,
+            y: suo.top - mio.top,
+            w: suo.width,
+            h: suo.height,
+          };
+        },
+      );
+      setScelte(trovati);
+      onQuante?.(trovati.length);
+    };
+    misura();
+    // Il disegno del browser non è finito quando l'effetto gira: un carattere
+    // che arriva o un'immagine che si decodifica muovono i bordi subito dopo.
+    const dopo = requestAnimationFrame(misura);
+    const osserva = new ResizeObserver(misura);
+    osserva.observe(nodo);
+    return () => {
+      cancelAnimationFrame(dopo);
+      osserva.disconnect();
+    };
+  }, [scelta, foglio, children, onQuante]);
+
   // Quanto è largo: si misura, non si scrive. Quanto spazio prendersi lo decide
   // il foglio, che è il posto giusto per deciderlo; qui si legge il risultato,
   // e la lettura resta vera da sé a ogni misura della finestra.
@@ -259,10 +338,14 @@ export function Anteprima({
        */}
       <div
         className="anteprima-spazio"
+        data-ingrandita={ingrandimento != null || undefined}
         style={
           {
             "--misura-l": String(MISURA.larghezza),
             "--misura-a": String(MISURA.altezza),
+            ...(ingrandimento == null
+              ? {}
+              : { "--ingrandimento": String(ingrandimento) }),
           } as React.CSSProperties
         }
       >
@@ -274,10 +357,45 @@ export function Anteprima({
           data-density={densita}
           data-motion={movimento}
           data-sonda={sondaAccesa || undefined}
-          style={{ "--parte-scelta": scelta ?? "" } as React.CSSProperties}
-          onClick={() => piuInterna !== null && onScegli(piuInterna)}
+          /*
+           * Il clic sceglie **anche a sonda spenta**.
+           *
+           * Prima passava da `piuInterna`, che si popola solo dentro l'effetto
+           * della sonda: spenta la sonda, l'anteprima diventava un'immagine —
+           * si poteva guardare e non toccare, e per aprire una superficie
+           * bisognava riaccendere la sonda o cercarne il nome nell'albero. La
+           * risalita è la stessa della sonda, fatta al momento del clic.
+           */
+          onClick={(e) => {
+            if (!(e.target instanceof Element)) return;
+            const nodo = riquadro.current;
+            for (
+              let q: Element | null = e.target;
+              q && q !== nodo;
+              q = q.parentElement
+            ) {
+              for (const classe of q.classList) {
+                if (parti.has(classe)) {
+                  onScegli(classe);
+                  return;
+                }
+              }
+            }
+          }}
         >
           {children}
+
+          {/* La parte scelta, illuminata dove capita di essere. Più contorni e
+              non uno: `.list-row` compare venti volte, e indicarne una sola
+              direbbe una cosa falsa su cosa si sta ridipingendo. */}
+          {scelte.map((q, i) => (
+            <div
+              key={i}
+              className="alone e-scelta"
+              style={{ left: q.x, top: q.y, width: q.w, height: q.h }}
+              aria-hidden="true"
+            />
+          ))}
 
           {/* Il contorno e l'etichetta stanno **sopra** la scena e non addosso
               all'elemento: un fondo messo sulla parte coprirebbe proprio la cosa
@@ -302,8 +420,8 @@ export function Anteprima({
         {sotto.length === 0 && nonParte === null ? (
           <span className="niente">
             {sondaAccesa
-              ? "Passa sopra una superficie per sapere come si chiama."
-              : "Sonda spenta · I"}
+              ? t("studio.preview.hover")
+              : t("studio.preview.probeOff")}
           </span>
         ) : (
           <>
@@ -317,7 +435,7 @@ export function Anteprima({
               <span className="briciola mancante">
                 {sotto.length > 0 && <span className="freccia">›</span>}
                 <code>.{nonParte}</code>
-                <span className="richiesta">richiesta al registro</span>
+                <span className="richiesta">{t("studio.preview.asked")}</span>
               </span>
             )}
           </>

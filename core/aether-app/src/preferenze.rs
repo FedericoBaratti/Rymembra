@@ -1,4 +1,4 @@
-//! Le due preferenze della finestra che stavano fuori dal nucleo.
+//! Le preferenze della finestra che stavano fuori dal nucleo.
 //!
 //! # Il tema, e perché torna dentro
 //!
@@ -34,6 +34,15 @@
 //! scritta qui dentro non darebbe nessun sintomo finché la finestra non prova a
 //! leggerla, cioè al riavvio successivo — e a quel punto tutte le scorciatoie
 //! sparirebbero insieme, senza che niente colleghi le due cose.
+//!
+//! # La lingua, e perché non è un `enum`
+//!
+//! Stessa disciplina delle scorciatoie, per la stessa ragione. Le lingue
+//! disponibili sono i file dentro `apps/desktop/src/lingue/`, e l'intero
+//! impianto esiste perché aggiungerne una costi **un file solo**: un `enum` qui
+//! vorrebbe dire ricompilare il nucleo per far comparire il tedesco. Si conserva
+//! quindi il codice ISO com'è, controllando soltanto che *sia* un codice di
+//! lingua — vedi [`imposta_lingua`].
 
 use aether_domain::errors::{AppError, ErrorCode};
 use rusqlite::Connection;
@@ -45,6 +54,9 @@ pub const CHIAVE_TEMA: &str = "ui.theme";
 
 /// Le associazioni fra tasti e comandi, come JSON.
 pub const CHIAVE_SCORCIATOIE: &str = "ui.shortcuts";
+
+/// La lingua dell'interfaccia, come codice ISO: `it`, `en`, `de`.
+pub const CHIAVE_LINGUA: &str = "ui.language";
 
 /// Le tre scelte del tema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +115,76 @@ pub fn tema(connection: &Connection) -> Result<Option<Tema>, AppError> {
 /// `db.queryFailed`.
 pub fn imposta_tema(connection: &Connection, tema: Tema) -> Result<(), AppError> {
     settings::write(connection, CHIAVE_TEMA, tema.nome())
+}
+
+/// Un codice di lingua plausibile: `it`, `en`, `pt-BR`.
+///
+/// # Perché qui non c'è un `enum`
+///
+/// Il tema ha tre valori e li conosce il nucleo; le lingue no. L'elenco delle
+/// lingue disponibili è il **contenuto di una cartella** nella finestra
+/// (`apps/desktop/src/lingue/`), e il punto di tutto l'impianto è che
+/// aggiungerne una costi un file solo. Un `enum` qui vorrebbe dire ricompilare
+/// il nucleo per aggiungere `de.json`, cioè esattamente la cosa che si sta
+/// evitando — la stessa disciplina delle scorciatoie, che si conservano opache
+/// perché i nomi dei comandi appartengono alla finestra.
+///
+/// Quel che resta da controllare non è quindi *quale* lingua, ma che il testo
+/// **sia** un codice di lingua: senza, una riga qualunque scritta a mano
+/// diventerebbe il nome di un file da cercare.
+fn codice_valido(codice: &str) -> bool {
+    let mut parti = codice.split('-');
+    let Some(lingua) = parti.next() else {
+        return false;
+    };
+    let lingua_ok =
+        (2..=3).contains(&lingua.len()) && lingua.bytes().all(|b| b.is_ascii_lowercase());
+    lingua_ok
+        && parti.all(|parte| {
+            (2..=8).contains(&parte.len()) && parte.bytes().all(|b| b.is_ascii_alphanumeric())
+        })
+}
+
+/// La lingua scelta, o `None` se non è mai stata scelta.
+///
+/// La distinzione conta come per il tema, e per una ragione ancora più visibile:
+/// «mai scelto» è ciò che fa rilevare la lingua dal sistema operativo. Se
+/// diventasse una lingua qualsiasi, un'installazione tedesca partirebbe in
+/// inglese per sempre senza che nessuno abbia deciso niente.
+///
+/// Un codice storto vale come mai scelto: una riga arrivata da un profilo di una
+/// versione futura non deve poter far cercare un file che non esiste.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn lingua(connection: &Connection) -> Result<Option<String>, AppError> {
+    Ok(settings::read(connection, CHIAVE_LINGUA)?.filter(|codice| codice_valido(codice)))
+}
+
+/// Scrive la lingua. Una stringa vuota rimette il rilevamento dal sistema.
+///
+/// Si **toglie** la riga invece di scrivere `""`, per la stessa ragione della
+/// cartella dei download: una stringa vuota in tabella è un terzo stato oltre
+/// «scelta» e «mai scelta», e ogni lettore dovrebbe ricordarsi di filtrarlo.
+///
+/// # Errori
+///
+/// `settings.corrupt` se il testo non è un codice di lingua. `db.queryFailed`
+/// per il resto.
+pub fn imposta_lingua(connection: &Connection, codice: &str) -> Result<(), AppError> {
+    let codice = codice.trim();
+    if codice.is_empty() {
+        settings::forget(connection, CHIAVE_LINGUA)?;
+        return Ok(());
+    }
+    if !codice_valido(codice) {
+        return Err(AppError::new(ErrorCode::SettingsCorrupt {
+            quarantined_as: None,
+        })
+        .with_cause(format!("«{codice}» non è un codice di lingua")));
+    }
+    settings::write(connection, CHIAVE_LINGUA, codice)
 }
 
 /// Le scorciatoie come sono state scritte, o `None` se sono quelle di serie.
@@ -190,6 +272,58 @@ mod prove {
 
         imposta_scorciatoie(&c, r#"{"alterna":[" "]}"#).expect("JSON valido");
         assert_eq!(scorciatoie(&c), Ok(Some(r#"{"alterna":[" "]}"#.to_owned())));
+    }
+
+    #[test]
+    fn mai_scelta_e_cio_che_fa_rilevare_la_lingua() {
+        let c = libreria();
+        assert_eq!(
+            lingua(&c),
+            Ok(None),
+            "senza «mai scelta» un'installazione tedesca partirebbe in inglese per sempre"
+        );
+        imposta_lingua(&c, "de").expect("scrittura");
+        assert_eq!(lingua(&c), Ok(Some("de".to_owned())));
+    }
+
+    #[test]
+    fn una_lingua_qualunque_va_e_torna() {
+        let c = libreria();
+        // Nessuna di queste è nell'elenco della finestra oggi, ed è il punto:
+        // il nucleo non ha un elenco.
+        for codice in ["it", "en", "de", "sv", "pt-BR"] {
+            imposta_lingua(&c, codice).expect("scrittura");
+            assert_eq!(lingua(&c), Ok(Some(codice.to_owned())));
+        }
+    }
+
+    #[test]
+    fn quel_che_non_e_un_codice_non_si_scrive() {
+        let c = libreria();
+        for storto in ["../it", "italiano bello", "I", "IT", "it_IT!"] {
+            let err = imposta_lingua(&c, storto).expect_err("non è un codice");
+            assert_eq!(err.code().kind().code(), "settings.corrupt");
+        }
+        assert_eq!(lingua(&c), Ok(None));
+    }
+
+    #[test]
+    fn una_lingua_storta_gia_in_tabella_vale_come_mai_scelta() {
+        let c = libreria();
+        settings::write(&c, CHIAVE_LINGUA, "../../etc").expect("scrittura");
+        assert_eq!(
+            lingua(&c),
+            Ok(None),
+            "una riga arrivata da un profilo futuro non deve far cercare un file"
+        );
+    }
+
+    #[test]
+    fn svuotare_la_lingua_rimette_il_rilevamento() {
+        let c = libreria();
+        imposta_lingua(&c, "en").expect("scrittura");
+        imposta_lingua(&c, "  ").expect("svuotamento");
+        assert_eq!(lingua(&c), Ok(None));
     }
 
     #[test]

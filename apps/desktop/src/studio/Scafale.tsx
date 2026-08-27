@@ -35,6 +35,8 @@ import {
   zonaNuova,
   type Via,
 } from "./albero";
+import { t } from "../lingue";
+import { descrizioneOpzione, descrizioneWidget } from "./vocabolario";
 
 /** Cosa si sta trascinando: un nodo che c'è già, o un widget dalla tavolozza. */
 type Preso =
@@ -68,7 +70,7 @@ export function Scafale({
   if (albero === null) {
     return (
       <aside className="scafale-albero">
-        <p className="niente">Lo scafale arriva col primo esito valido.</p>
+        <p className="niente">{t("studio.shelf.later")}</p>
       </aside>
     );
   }
@@ -133,14 +135,16 @@ export function Scafale({
     const costo = def?.cost ?? 0;
     const qui = scelto !== null && scelto.length === via.length && scelto.every((v, i) => v === via[i]);
     return (
-      <div className="ramo" style={{ paddingLeft: `${via.length * 12}px` }}>
+      <div style={{ paddingLeft: `${via.length * 12}px` }}>
         <button
           type="button"
           className="nodo-riga voce-registro"
           data-active={qui || undefined}
           data-zona={nodo.kind === "zone" || undefined}
           draggable={via.length > 0}
-          title={def?.description ?? `Zona ${nodo.name}`}
+          title={
+            def?.description ?? t("studio.shelf.zone", { nome: nodo.name })
+          }
           onDragStart={(e) => {
             setPreso({ tipo: "nodo", via });
             e.dataTransfer.effectAllowed = "move";
@@ -153,20 +157,29 @@ export function Scafale({
           {/* Da un prefab: modificarlo qui muove **tutti** gli usi, e dirlo
               prima vale più che scoprirlo dopo. */}
           {nodo.fromPrefab !== null && (
-            <span className="da-prefab" title={`dal prefab «${nodo.fromPrefab}»`}>
+            <span
+              className="da-prefab"
+              title={t("studio.shelf.fromPrefab", { nome: nodo.fromPrefab })}
+            >
               {nodo.fromPrefab}
             </span>
           )}
           {/* Il pallino dell'essenziale: senza, togliere il widget sbagliato si
               scopre dal validatore invece che dall'albero. */}
           {def && def.essential !== "no" && (
-            <span className="essenziale" title={`essenziale · ${def.essential}`}>
+            <span
+              className="essenziale"
+              title={t("studio.shelf.essential", { quale: def.essential })}
+            >
               •
             </span>
           )}
           <span className="misura">{nodo.size}</span>
           {costo > 0 && (
-            <span className="peso" style={{ color: coloreCosto(costo, registro?.shellBudget ?? 24) }}>
+            <span
+              className="peso"
+              style={{ color: coloreCosto(costo, registro?.shellBudget ?? 24) }}
+            >
               {costo}
             </span>
           )}
@@ -197,13 +210,13 @@ export function Scafale({
   return (
     <aside className="scafale-albero">
       <div className="testa-sezione">
-        <span className="titolino">Struttura</span>
+        <span className="titolino">{t("studio.shelf.structure")}</span>
         <span className="da-dove">
           {costoAlbero(albero, widgets)} / {registro?.shellBudget ?? 24}
         </span>
       </div>
 
-      <div className="albero-scafale">
+      <div>
         <Riga nodo={albero} via={[]} />
       </div>
 
@@ -218,7 +231,7 @@ export function Scafale({
             }}
           >
             <Icona nome="i-x" dim={13} />
-            Togli il nodo
+            {t("studio.shelf.removeNode")}
           </button>
           {/* Solo le zone: un prefab è un **sottoalbero** nominato, e nominare
               un widget solo sarebbe dargli un secondo nome per niente. Non uno
@@ -228,29 +241,31 @@ export function Scafale({
               <button
                 type="button"
                 className="pillola btn-ghost"
-                title={`Diventa «${nomePrefabLibero(
-                  nodoA(albero, scelto) ?? zonaNuova("row"),
-                  prefabs,
-                )}» in layout.prefabs, e qui resta un riferimento`}
+                title={t("studio.shelf.makePrefab.why", {
+                  nome: nomePrefabLibero(
+                    nodoA(albero, scelto) ?? zonaNuova("row"),
+                    prefabs,
+                  ),
+                })}
                 onClick={() => onPrefab(scelto)}
               >
                 <Icona nome="i-list" dim={13} />
-                Fanne un prefab
+                {t("studio.shelf.makePrefab")}
               </button>
             )}
         </div>
       )}
 
       <div className="testa-sezione">
-        <span className="titolino">Tavolozza</span>
-        <span className="da-dove">trascina in una fessura</span>
+        <span className="titolino">{t("studio.shelf.palette")}</span>
+        <span className="da-dove">{t("studio.shelf.dragHint")}</span>
       </div>
 
       <div className="tavolozza-widget">
         {/* Le zone prima dei widget: sono il contenitore, e chi costruisce un
             layout ne mette una prima di riempirla. */}
         <div className="gruppo-widget">
-          <span className="titolo-gruppo">Zone</span>
+          <span className="titolo-gruppo">{t("studio.shelf.zones")}</span>
           {(registro?.vocabolario.zones ?? []).map((kind) => (
             <div
               key={kind}
@@ -284,8 +299,11 @@ export function Scafale({
                   draggable={!gia}
                   title={
                     gia
-                      ? `«${w.name}» può stare in un posto solo, ed è già montato`
-                      : `${w.description} · ci sta in ${w.fits.join(" o ")}`
+                      ? t("studio.shelf.singleton", { nome: w.name })
+                      : t("studio.shelf.fits", {
+                          descrizione: descrizioneWidget(w.name, w.description),
+                          dove: w.fits.join(t("studio.shelf.or")),
+                        })
                   }
                   onDragStart={(e) => {
                     setPreso({ tipo: "widget", def: w });
@@ -338,9 +356,7 @@ export function IspettoreNodo({
   if (albero === null || via === null || nodo === null) {
     return (
       <aside className="ispettore">
-        <p className="niente">
-          Scegli un nodo nell&apos;albero, o trascina un widget in una fessura.
-        </p>
+        <p className="niente">{t("studio.shelf.pickNode")}</p>
       </aside>
     );
   }
@@ -354,17 +370,28 @@ export function IspettoreNodo({
   return (
     <aside className="ispettore">
       <header className="testa-ispettore">
-        <code className="quale">{nodo.name}</code>
-        <span className="gruppo">{nodo.kind === "zone" ? "zona" : def?.group ?? "widget"}</span>
+        <code className="nome-parte">{nodo.name}</code>
+        <span className="gruppo-parte">
+          {nodo.kind === "zone"
+            ? t("studio.shelf.zoneWord")
+            : (def?.group ?? "widget")}
+        </span>
+        {/* Dentro la testata e non dopo: `.testa-ispettore .descrizione` è
+            un discendente, e un paragrafo fuori restava senza regola. */}
+        {def && (
+          <p className="descrizione">
+            {descrizioneWidget(def.name, def.description)}
+          </p>
+        )}
       </header>
 
-      {def && <p className="a-cosa-serve">{def.description}</p>}
-
       <div className="campo-ispettore">
-        <span className="titolino">Misura</span>
+        <span className="titolino">{t("studio.shelf.size")}</span>
         <Segmentato
-          etichetta="Quanto spazio prende"
-          scelta={nodo.size === "hug" || nodo.size === "fill" ? nodo.size : "fissa"}
+          etichetta={t("studio.shelf.size.how")}
+          scelta={
+            nodo.size === "hug" || nodo.size === "fill" ? nodo.size : "fissa"
+          }
           onScegli={(scelta) =>
             cambia("size", scelta === "fissa" ? "240px" : scelta)
           }
@@ -372,7 +399,7 @@ export function IspettoreNodo({
           voci={[
             { chiave: "hug", etichetta: "Hug" },
             { chiave: "fill", etichetta: "Fill" },
-            { chiave: "fissa", etichetta: "Fissa" },
+            { chiave: "fissa", etichetta: t("studio.shelf.size.fixed") },
           ]}
         />
         {nodo.size !== "hug" && nodo.size !== "fill" && (
@@ -394,9 +421,9 @@ export function IspettoreNodo({
       {nodo.kind === "zone" && (
         <>
           <div className="campo-ispettore">
-            <span className="titolino">Verso</span>
+            <span className="titolino">{t("studio.shelf.direction")}</span>
             <Segmentato
-              etichetta="In che verso dispone"
+              etichetta={t("studio.shelf.direction.how")}
               scelta={nodo.name}
               onScegli={(scelta) => cambia("name", scelta)}
               classe="minuto"
@@ -408,9 +435,9 @@ export function IspettoreNodo({
           </div>
 
           <div className="campo-ispettore">
-            <span className="titolino">Aria</span>
+            <span className="titolino">{t("studio.shelf.gap")}</span>
             <Segmentato
-              etichetta="Quanta aria fra i figli"
+              etichetta={t("studio.shelf.gap.how")}
               scelta={nodo.gap ?? "none"}
               onScegli={(scelta) => cambia("gap", scelta)}
               classe="minuto"
@@ -422,9 +449,9 @@ export function IspettoreNodo({
           </div>
 
           <div className="campo-ispettore">
-            <span className="titolino">Allineamento</span>
+            <span className="titolino">{t("studio.shelf.align")}</span>
             <Segmentato
-              etichetta="Come allinea sull'asse trasverso"
+              etichetta={t("studio.shelf.align.how")}
               scelta={nodo.align ?? "stretch"}
               onScegli={(scelta) => cambia("align", scelta)}
               classe="minuto"
@@ -436,9 +463,9 @@ export function IspettoreNodo({
           </div>
 
           <div className="campo-ispettore">
-            <span className="titolino">Distribuzione</span>
+            <span className="titolino">{t("studio.shelf.spread")}</span>
             <Segmentato
-              etichetta="Come distribuisce sull'asse principale"
+              etichetta={t("studio.shelf.spread.how")}
               scelta={nodo.spread ?? "start"}
               onScegli={(scelta) => cambia("spread", scelta)}
               classe="minuto"
@@ -450,16 +477,18 @@ export function IspettoreNodo({
           </div>
 
           <div className="campo-ispettore">
-            <span className="titolino">Parte ridipingibile</span>
+            <span className="titolino">{t("studio.shelf.part")}</span>
             {/* Un elenco chiuso e non un campo di testo: il nome deve venire dal
                 registro, e un refuso qui sarebbe un errore di validazione al
                 posto di una scelta che non si poteva sbagliare. */}
             <select
               className="scelta field-input"
               value={nodo.part ?? ""}
-              onChange={(e) => cambia("part", e.target.value === "" ? null : e.target.value)}
+              onChange={(e) =>
+                cambia("part", e.target.value === "" ? null : e.target.value)
+              }
             >
-              <option value="">nessuna</option>
+              <option value="">{t("studio.shelf.part.none")}</option>
               {parti.map((p) => (
                 <option key={p.name} value={p.name}>
                   {p.name}
@@ -472,7 +501,7 @@ export function IspettoreNodo({
 
       {def && def.options.length > 0 && (
         <div className="campo-ispettore">
-          <span className="titolino">Manopole</span>
+          <span className="titolino">{t("studio.shelf.knobs")}</span>
           {def.options.map((o) => {
             const valore = nodo.options[o.name] ?? o.default;
             const scriviOpzione = (v: boolean | string | number) =>
@@ -480,7 +509,11 @@ export function IspettoreNodo({
 
             if (o.kind === "flag") {
               return (
-                <label key={o.name} className="interruttore" title={o.description}>
+                <label
+                  key={o.name}
+                  className="interruttore"
+                  title={descrizioneOpzione(nodo.name, o.name, o.description)}
+                >
                   <input
                     type="checkbox"
                     checked={valore === true}
@@ -492,10 +525,14 @@ export function IspettoreNodo({
             }
             if (o.kind === "word") {
               return (
-                <div key={o.name} className="manopola" title={o.description}>
+                <div
+                  key={o.name}
+                  className="manopola"
+                  title={descrizioneOpzione(nodo.name, o.name, o.description)}
+                >
                   <span className="nome-manopola">{o.name}</span>
                   <Segmentato
-                    etichetta={o.description}
+                    etichetta={descrizioneOpzione(nodo.name, o.name, o.description)}
                     scelta={String(valore)}
                     onScegli={scriviOpzione}
                     classe="minuto"
@@ -505,7 +542,11 @@ export function IspettoreNodo({
               );
             }
             return (
-              <label key={o.name} className="manopola" title={o.description}>
+              <label
+                key={o.name}
+                className="manopola"
+                title={descrizioneOpzione(nodo.name, o.name, o.description)}
+              >
                 <span className="nome-manopola">{o.name}</span>
                 <input
                   type="range"

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Aether",
-  "version": "0.1.0",
-  "identifier": "dev.aether.desktop",
+  "version": "0.2.0",
+  "identifier": "io.github.federicobaratti.aether",
   "build": {
     "beforeDevCommand": "npm run dev:web",
     "devUrl": "http://localhost:5173",
@@ -18,6 +18,7 @@
         "minWidth": 880,
         "minHeight": 560,
         "resizable": true,
+        "decorations": false,
         "backgroundColor": "#09090d",
         "dragDropEnabled": true,
         "visible": false
@@ -32,12 +33,34 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "resources": ["resources/bin/*"],
+    "createUpdaterArtifacts": true,
+    "publisher": "Federico Baratti",
+    "copyright": "Copyright (c) 2026 Federico Baratti",
+    "category": "Music",
+    "shortDescription": "Un lettore musicale per la musica che possiedi.",
+    "longDescription": "Aether suona i file che hai gia sul disco, e sa procurarti quel che manca dai cataloghi liberi: Internet Archive, Jamendo, Audius. Ogni brano porta con se la licenza sotto cui e stato preso. Quel che nessun catalogo libero ha finisce in una lista d'acquisto, con i link ai negozi dove l'artista viene pagato.",
+    "licenseFile": "../../../LICENSE",
+    "resources": {
+      "../../../LICENSE": "LICENSE.txt",
+      "../../../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md",
+      "../src/font/OFL.txt": "font-OFL.txt"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM5RUEzNEE4OTY4MEM3RkEKUldUNng0Q1dxRFRxT1JLdVdhK21JWHJsbEtkbW5KL1plL3lzWi9rNlY2STN4c3ZVa2Y5Sk1sRGEK",
+      "endpoints": [
+        "https://github.com/FedericoBaratti/Aether/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

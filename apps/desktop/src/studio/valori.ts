@@ -25,10 +25,32 @@ import type { EffettoRegistro, TokenRegistro } from "../ipc";
 /** Un livello di sfondo, come sta nel documento. */
 export type Livello = Record<string, unknown> & { effect?: unknown };
 
-/** Il nome dell'effetto di un livello, se ce l'ha. */
-export function nomeEffetto(livello: unknown): string | null {
-  if (livello === null || typeof livello !== "object") return null;
-  const quale = (livello as Record<string, unknown>)["effect"];
+/**
+ * I motivi dichiarati dal documento: nome → l'effetto per esteso.
+ *
+ * Serve a leggere un livello scritto come `{ "$pattern": "lampada" }`. Senza,
+ * un riferimento a un motivo non ha né un nome né un costo — e si vedeva: la
+ * riga mostrava `?` e il peso `0`, cioè diceva che un motivo è gratis proprio
+ * mentre lo si stava impilando su una superficie col budget contato.
+ */
+export type Motivi = Readonly<Record<string, unknown>>;
+
+/** Un livello scritto per esteso: se è un riferimento, il motivo che indica. */
+export function sciolto(livello: unknown, motivi: Motivi = {}): unknown {
+  if (livello === null || typeof livello !== "object") return livello;
+  const riferimento = (livello as Record<string, unknown>)["$pattern"];
+  if (typeof riferimento !== "string") return livello;
+  return motivi[riferimento] ?? null;
+}
+
+/** Il nome dell'effetto di un livello, se ce l'ha. Segue i riferimenti. */
+export function nomeEffetto(
+  livello: unknown,
+  motivi: Motivi = {},
+): string | null {
+  const dentro = sciolto(livello, motivi);
+  if (dentro === null || typeof dentro !== "object") return null;
+  const quale = (dentro as Record<string, unknown>)["effect"];
   return typeof quale === "string" ? quale : null;
 }
 
@@ -100,9 +122,14 @@ export function ritrattoEffetto(
   livello: Livello,
   tokens: readonly TokenRegistro[],
   tavolozza: Readonly<Record<string, string>>,
+  motivi: Motivi = {},
 ): string {
-  const colore = coloreDelLivello(livello, tokens, tavolozza);
-  switch (nomeEffetto(livello)) {
+  const dentro = sciolto(livello, motivi);
+  if (dentro === null || typeof dentro !== "object")
+    return "var(--color-surface-3)";
+  const disteso = dentro as Livello;
+  const colore = coloreDelLivello(disteso, tokens, tavolozza);
+  switch (nomeEffetto(disteso)) {
     case "dotGrid":
       return `radial-gradient(circle at 1.5px 1.5px, ${colore} 0.9px, transparent 1.1px) 0 0 / 4px 4px`;
     case "hairlineGrid":
@@ -127,9 +154,19 @@ export function ritrattoEffetto(
   }
 }
 
-/** Il costo di un livello, dal registro. Zero se l'effetto non si riconosce. */
-export function costoDi(livello: unknown, effetti: readonly EffettoRegistro[]): number {
-  const quale = nomeEffetto(livello);
+/**
+ * Il costo di un livello, dal registro. Zero se l'effetto non si riconosce.
+ *
+ * Un riferimento a un motivo costa quanto il motivo che indica: il compilatore
+ * lo conta così, e contarlo zero qui vorrebbe dire mostrare una superficie
+ * dentro il budget mentre non lo è.
+ */
+export function costoDi(
+  livello: unknown,
+  effetti: readonly EffettoRegistro[],
+  motivi: Motivi = {},
+): number {
+  const quale = nomeEffetto(livello, motivi);
   return effetti.find((e) => e.name === quale)?.cost ?? 0;
 }
 
@@ -137,8 +174,12 @@ export function costoDi(livello: unknown, effetti: readonly EffettoRegistro[]): 
 export function costoPila(
   livelli: readonly unknown[],
   effetti: readonly EffettoRegistro[],
+  motivi: Motivi = {},
 ): number {
-  return livelli.reduce<number>((somma, livello) => somma + costoDi(livello, effetti), 0);
+  return livelli.reduce<number>(
+    (somma, livello) => somma + costoDi(livello, effetti, motivi),
+    0,
+  );
 }
 
 /**

@@ -14,13 +14,23 @@
  */
 import { ipc, type StatoRiproduzione } from "../ipc";
 import { Icona } from "./Icone";
+import { t } from "../lingue";
 
-/** Come si legge un modo di ripetizione, per chi usa uno screen reader. */
-const RIPETIZIONE: Record<StatoRiproduzione["ripeti"], string> = {
-  off: "Ripetizione spenta",
-  one: "Ripeti questo brano",
-  all: "Ripeti tutta la coda",
-};
+/**
+ * Come si legge un modo di ripetizione, per chi usa uno screen reader.
+ *
+ * Una funzione e non una costante: una tabella costruita all'apertura del
+ * modulo si porterebbe dietro la lingua di quel momento, e cambiarla dalle
+ * impostazioni lascerebbe queste tre etichette indietro. Vale per ogni tabella
+ * di testi di questo albero.
+ */
+function ripetizione(): Record<StatoRiproduzione["ripeti"], string> {
+  return {
+    off: t("player.repeat.off"),
+    one: t("player.repeat.one"),
+    all: t("player.repeat.all"),
+  };
+}
 
 /** Dove sta il trasporto, e quindi quanto è grande. */
 export type TagliaTrasporto = "barra" | "colonna" | "grande";
@@ -34,20 +44,28 @@ export type TagliaTrasporto = "barra" | "colonna" | "grande";
  * decorativo — è metà del selettore.
  */
 const MISURE = {
-  barra: { icona: 17, play: 20, classe: "tasti", titoli: true, scorciatoia: "" },
+  barra: {
+    icona: 17,
+    play: 20,
+    classe: "tasti",
+    titoli: true,
+    scorciatoia: false,
+  },
   colonna: {
     icona: 17,
     play: 20,
     classe: "trasporto np-transport",
     titoli: true,
-    scorciatoia: " · Spazio",
+    // Il nome del tasto è una parola come le altre: «Space» non si legge in
+    // italiano più di quanto «Spazio» si legga in inglese.
+    scorciatoia: true,
   },
   grande: {
     icona: 18,
     play: 24,
     classe: "trasporto np-transport",
     titoli: false,
-    scorciatoia: "",
+    scorciatoia: false,
   },
 } as const;
 
@@ -85,8 +103,8 @@ export function Trasporto({
           type="button"
           className="tasto icon-btn"
           aria-pressed={stato.shuffle}
-          aria-label="Ordine casuale"
-          title={forse("Ordine casuale")}
+          aria-label={t("player.shuffle")}
+          title={forse(t("player.shuffle"))}
           onClick={() => comanda(ipc.mescola())}
         >
           <Icona nome="i-shuffle" dim={icona} />
@@ -95,8 +113,8 @@ export function Trasporto({
       <button
         type="button"
         className="tasto icon-btn"
-        aria-label="Brano precedente"
-        title={forse("Precedente")}
+        aria-label={t("player.previous")}
+        title={forse(t("player.previous.short"))}
         onClick={() => comanda(ipc.precedente())}
       >
         <Icona nome="i-prev" dim={icona} />
@@ -104,8 +122,12 @@ export function Trasporto({
       <button
         type="button"
         className="tasto grande play-btn-primary"
-        aria-label={stato.inPausa ? "Riprendi" : "Metti in pausa"}
-        title={forse(`${stato.inPausa ? "Riprendi" : "Pausa"}${scorciatoia}`)}
+        aria-label={stato.inPausa ? t("player.resume") : t("player.pause")}
+        title={forse(
+          `${stato.inPausa ? t("player.resume") : t("player.pause.short")}${
+            scorciatoia ? ` · ${t("keys.space")}` : ""
+          }`,
+        )}
         onClick={() => comanda(ipc.alterna())}
       >
         <Icona nome={stato.inPausa ? "i-play" : "i-pause"} dim={play} />
@@ -113,8 +135,8 @@ export function Trasporto({
       <button
         type="button"
         className="tasto icon-btn"
-        aria-label="Brano successivo"
-        title={forse("Successivo")}
+        aria-label={t("player.next")}
+        title={forse(t("player.next.short"))}
         onClick={() => comanda(ipc.prossimo())}
       >
         <Icona nome="i-next" dim={icona} />
@@ -124,8 +146,8 @@ export function Trasporto({
           type="button"
           className="tasto icon-btn"
           aria-pressed={stato.ripeti !== "off"}
-          aria-label={RIPETIZIONE[stato.ripeti]}
-          title={forse(RIPETIZIONE[stato.ripeti])}
+          aria-label={ripetizione()[stato.ripeti]}
+          title={forse(ripetizione()[stato.ripeti])}
           onClick={() => comanda(ipc.ripeti())}
         >
           <Icona nome="i-repeat" dim={icona} />

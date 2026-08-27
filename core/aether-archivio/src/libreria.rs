@@ -27,7 +27,7 @@
 //! Tutte e quattro vengono **contate** e dichiarate nel rapporto, perché «ho
 //! ignorato 340 podcast» è un'informazione e il silenzio no.
 
-use aether_domain::spotify::SpotifyTrack;
+use aether_domain::esterno::BranoEsterno;
 use aether_domain::spotify_account::{AlbumSpotify, ArtistaSpotify};
 use serde_json::Value;
 
@@ -37,7 +37,7 @@ use crate::cronologia::id_da_uri;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Letta {
     /// I «Brani che ti piacciono».
-    pub preferiti: Vec<SpotifyTrack>,
+    pub preferiti: Vec<BranoEsterno>,
     /// Gli album salvati.
     pub album: Vec<AlbumSpotify>,
     /// Gli artisti seguiti.
@@ -96,8 +96,8 @@ fn sezione<'a>(corpo: &'a Value, nome: &str) -> impl Iterator<Item = &'a Value> 
         .flatten()
 }
 
-fn brano(voce: &Value) -> Option<SpotifyTrack> {
-    Some(SpotifyTrack {
+fn brano(voce: &Value) -> Option<BranoEsterno> {
+    Some(BranoEsterno {
         // Qui il titolo si chiama `track`. Nella cronologia si chiama
         // `trackName`. Nelle playlist si chiama `trackName`. Sono tre file
         // scritti in momenti diversi da persone diverse.
@@ -105,7 +105,7 @@ fn brano(voce: &Value) -> Option<SpotifyTrack> {
         artist: testo(voce, "artist"),
         album: testo(voce, "album"),
         spotify_track_id: testo(voce, "uri").as_deref().and_then(id_da_uri),
-        ..SpotifyTrack::default()
+        ..BranoEsterno::default()
     })
 }
 

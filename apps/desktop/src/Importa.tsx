@@ -1,5 +1,5 @@
 /**
- * Le due importazioni: dal vecchio database e da Spotify.
+ * Le due importazioni: dal vecchio database e da un link.
  *
  * # Due tempi, e perché non uno
  *
@@ -18,16 +18,23 @@
  * due schermate. Ha un passo in più davanti, il link, e per il resto il piano
  * dice le stesse cose: quanti brani ci sono già e quali no.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
+  eErroreIpc,
   ipc,
   testoErrore,
-  type AnteprimaSpotify,
-  type DiagnosticaSpotify,
+  type AnteprimaImport,
+  type DiagnosticaImport,
   type EsitoImportazione,
-  type EsitoSpotify,
+  type EsitoImport,
 } from "./ipc";
+import { Avviso, AvvisoErrore } from "./parti/Avvisi";
+import { nomeSorgente } from "./parti/Importazioni";
+import { fiduciaDi, nomeFonte, PastigliaGradino, Tacche } from "./parti/Incertezza";
+import { LetturaLink, useLetturaLink } from "./parti/LetturaLink";
+import { t } from "./lingue";
+import { Trans } from "./lingue/Trans";
 
 /** Una riga del rapporto: etichetta, numero, e il perché quando serve. */
 function Voce({
@@ -102,37 +109,49 @@ export function Importa({
   return (
     <div className="velo scuro" onClick={onChiudi}>
       <div
-        className="finestrella"
+        className="finestrella glass-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="Importa dal vecchio database"
+        aria-label={t("legacy.aria")}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2>{fatto ? "Importazione conclusa" : "Cosa verrebbe importato"}</h2>
+        <h2>{fatto ? t("legacy.done") : t("legacy.preview")}</h2>
         <div className="percorso">{percorso}</div>
 
         {errore && <div className="errore">{errore}</div>}
-        {inCorso && !rapporto && <p>Lettura del vecchio database…</p>}
+        {inCorso && !rapporto && <p>{t("legacy.reading")}</p>}
 
         {rapporto && (
           <>
             <div className="rapporto">
-              <Voce etichetta="Brani ritrovati" valore={rapporto.matched} />
+              <Voce etichetta={t("legacy.found")} valore={rapporto.matched} />
               <Voce
-                etichetta="Ascolti"
+                etichetta={t("legacy.plays")}
                 valore={rapporto.playCountCarried}
-                nota="conteggi fusi, mai abbassati"
+                nota={t("legacy.plays.note")}
               />
-              <Voce etichetta="Voti" valore={rapporto.ratingsCarried} />
-              <Voce etichetta="Preferiti" valore={rapporto.likedCarried} />
-              <Voce etichetta="Righe di cronologia" valore={rapporto.historyRows} />
-              <Voce etichetta="Playlist" valore={rapporto.playlists} />
               <Voce
-                etichetta="Voci di playlist"
+                etichetta={t("legacy.ratings")}
+                valore={rapporto.ratingsCarried}
+              />
+              <Voce
+                etichetta={t("legacy.liked")}
+                valore={rapporto.likedCarried}
+              />
+              <Voce
+                etichetta={t("legacy.historyRows")}
+                valore={rapporto.historyRows}
+              />
+              <Voce
+                etichetta={t("legacy.playlists")}
+                valore={rapporto.playlists}
+              />
+              <Voce
+                etichetta={t("legacy.entries")}
                 valore={rapporto.playlistEntries}
                 nota={
                   rapporto.playlistOrphans > 0
-                    ? `${rapporto.playlistOrphans} saltate: il brano non c'è più`
+                    ? t("legacy.orphans", { n: rapporto.playlistOrphans })
                     : undefined
                 }
               />
@@ -141,14 +160,9 @@ export function Importa({
             {rapporto.unmatched.length > 0 && (
               <details className="non-ritrovati">
                 <summary>
-                  {rapporto.unmatched.length} brani del vecchio database non sono
-                  in libreria
+                  {t("legacy.unmatched", { n: rapporto.unmatched.length })}
                 </summary>
-                <p>
-                  Le loro statistiche restano indietro. Di solito vuol dire che i
-                  file sono stati spostati o cancellati: una scansione delle
-                  cartelle giuste, poi di nuovo qui, li recupera.
-                </p>
+                <p>{t("legacy.unmatched.note")}</p>
                 <ul>
                   {rapporto.unmatched.map((etichetta) => (
                     <li key={etichetta}>{etichetta}</li>
@@ -161,7 +175,7 @@ export function Importa({
 
         <div className="tasti-finestrella">
           <button type="button" className="bottone" onClick={onChiudi}>
-            {fatto ? "Chiudi" : "Annulla"}
+            {fatto ? t("common.close") : t("common.cancel")}
           </button>
           {!fatto && (
             <button
@@ -170,7 +184,7 @@ export function Importa({
               disabled={inCorso || piano === null}
               onClick={() => void esegui()}
             >
-              {inCorso ? "Importazione…" : "Importa"}
+              {inCorso ? t("legacy.importing") : t("legacy.import")}
             </button>
           )}
         </div>
@@ -179,61 +193,83 @@ export function Importa({
   );
 }
 
-// ── da Spotify ──────────────────────────────────────────────────────────────
+// ── da un link: uno dei cataloghi liberi ────────────────────────────────────
 
-/** Il nome del livello che ha risposto, in italiano. */
-function nomeSorgente(sorgente: string): string {
-  if (sorgente === "pathfinder") return "dal lettore web";
-  if (sorgente === "embed") return "dalla pagina incorporabile";
-  return "dai soli titolo e copertina";
-}
+/**
+ * Che aspetto ha un link che Aether sa leggere.
+ *
+ * Esempi veri e non descrizioni: chi ha negli appunti qualcosa che a questi non
+ * somiglia lo vede prima di incollare, invece di scoprirlo dal messaggio di una
+ * lettura fallita.
+ *
+ * Sono tre e non uno perché sono tre posti diversi, e la differenza non è
+ * cosmetica: dall'Internet Archive si può tenere una copia, da Jamendo no —
+ * i loro termini vietano esplicitamente la cache e l'accesso offline.
+ */
+const ESEMPI: readonly string[] = [
+  "https://archive.org/details/…",
+  "https://www.jamendo.com/track/…",
+  "https://audius.co/…",
+];
 
 /**
  * Perché non funziona.
  *
- * Vive dietro un `<details>` chiuso e non in mezzo alla schermata: questo
- * sottosistema dipende da punti interni di Spotify, e quando si rompe la
- * differenza fra «i cifrari sono scaduti» e «questo computer è offline» è
- * l'unica cosa che permette di ripararlo. Chi importa e basta non deve
- * leggerla.
+ * Vive dietro un `<details>` chiuso e non in mezzo alla schermata: chi importa
+ * e basta non deve leggerlo. Ma quando qualcosa non va, la differenza fra «il
+ * catalogo non risponde» e «questo computer è offline» è l'unica cosa che
+ * permette di ripararlo, e senza un posto dove guardarla resta «non funziona».
+ *
+ * # Perché li mostra tutti, adesso
+ *
+ * Il pannello di prima mostrava solo la metà che riguardava il servizio da cui
+ * si era partiti, perché le due metà parlavano di cose incomparabili — cifrari
+ * TOTP di qua, presenza di un binario di là. Adesso i cataloghi rispondono alla
+ * **stessa** domanda ciascuno, e un elenco di tre righe uguali si legge tutto
+ * insieme più in fretta di quanto si sceglierebbe quale guardare.
+ *
+ * # E perché tocca la rete
+ *
+ * Perché la domanda è «rispondono adesso», e nessuna risposta cablata la
+ * risolve. È l'unico posto dell'applicazione in cui aprire un pannello fa
+ * partire delle richieste, ed è giusto che sia questo: è l'unico che si apre
+ * per saperlo.
  */
 function Diagnosi() {
-  const [dati, setDati] = useState<DiagnosticaSpotify | null>(null);
+  const [dati, setDati] = useState<DiagnosticaImport | null>(null);
   const [errore, setErrore] = useState<string | null>(null);
 
   const chiedi = () => {
     if (dati) return;
     ipc
-      .spotifyDiagnostica()
+      .importDiagnostica()
       .then(setDati)
       .catch((e: unknown) => setErrore(testoErrore(e)));
   };
 
   return (
-    <details className="diagnosi-spotify" onToggle={chiedi}>
-      <summary>Perché non funziona?</summary>
+    <details className="diagnosi-servizio" onToggle={chiedi}>
+      <summary>{t("link.why")}</summary>
       {errore && <div className="errore">{errore}</div>}
       {dati && (
         <>
-          <p>
-            {dati.strettaDiMano === null
-              ? "Il collegamento a Spotify funziona: il problema è nel link, o in questo contenuto."
-              : `Spotify non risponde: ${dati.strettaDiMano}`}
-          </p>
-          <p>
-            {dati.cifrari} cifrari disponibili (v
-            {dati.versioniCifrari.join(", v")}).
-            {dati.fileConfig === "letto"
-              ? " Le costanti sono state lette dal file qui sotto."
-              : dati.fileConfig === "illeggibile"
-                ? ` Il file qui sotto non si è capito (${dati.fileConfigErrore ?? "?"}) e sono state usate quelle compilate dentro.`
-                : " Sono quelle compilate dentro l'applicazione."}
-          </p>
-          <p>
-            Quando Spotify le cambia, si riparano scrivendo il file qui sotto —
-            senza aggiornare Aether.
-          </p>
-          <div className="percorso">{dati.percorsoConfig}</div>
+          <ul className="cataloghi-stato">
+            {dati.cataloghi.map((c) => (
+              <li key={c.nome} data-risponde={c.risponde || undefined}>
+                <span className="nome">{nomeFonte(c.nome)}</span>
+                <span className="che-fa">
+                  {c.risponde ? t("link.answering") : t("link.notAnswering")}
+                  {" · "}
+                  {c.consegna ? t("link.canDownload") : t("link.listenOnly")}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {dati.cataloghi.every((c) => !c.risponde) ? (
+            <p>{t("link.allDown")}</p>
+          ) : (
+            <p>{t("link.someUp")}</p>
+          )}
         </>
       )}
     </details>
@@ -251,54 +287,102 @@ function Diagnosi() {
  */
 
 /**
- * L'importazione da un link di Spotify.
+ * L'importazione da un link di un catalogo libero.
+ *
+ * # Una casella sola, e perché non tre
+ *
+ * Perché chi incolla non deve scegliere un catalogo prima di sapere che cosa ha
+ * negli appunti. Il riconoscimento del link lo fa il nucleo, e i lettori
+ * producono lo stesso tipo: da qui in poi non c'è nessuna differenza fra le
+ * strade, tranne una — da un link il file di ogni brano **è già noto**, quindi
+ * la coda non si rimette a cercarlo.
+ *
+ * Un link che non è di un catalogo riconosciuto non viene tentato: il nucleo
+ * risponde `download.unrecognizedUrl` senza fare **nessuna** richiesta. Non è
+ * prudenza generica — è la regola che tiene questa applicazione dentro i
+ * termini di chi le dà la musica: si bussa dove si sa di poter bussare.
  *
  * # Tre passi, e nessuno è cosmetico
  *
  * 1. **Anteprima** — cosa c'è dietro il link. È l'unico passo che tocca la
- *    rete, e dice anche *quale* dei tre livelli ha risposto: se ha risposto il
- *    terzo, di quel contenuto si sanno solo il titolo e la copertina, e la cosa
- *    va vista prima di importare, non dedotta da un rapporto con zero brani.
+ *    rete, e dice anche *quale* livello ha risposto: se ha risposto l'ultimo,
+ *    di quel contenuto si sanno solo il titolo e la copertina, e la cosa va
+ *    vista prima di importare, non dedotta da un rapporto con zero brani.
  * 2. **Piano** — quanti brani ci sono già in libreria e quali no. È l'ultimo
  *    momento in cui si può ancora andare a cercare i mancanti sul disco e
  *    rifare una scansione, per lo stesso motivo scritto in `import_legacy.rs`.
  * 3. **Conferma** — scrive.
  *
  * Il contenuto letto non viaggia mai fin qui: tutti e tre i comandi ricevono il
- * **link**, e di là c'è una cella indicizzata dall'URI. Il secondo e il terzo
- * passo quindi non ripagano la rete.
+ * **link**, e di là c'è una cella. Il secondo e il terzo passo quindi non
+ * ripagano la rete.
  *
  * # E perché il terzo passo chiude
  *
- * Perché quello che comincia dopo la conferma — lo scaricamento dei mancanti da
- * YouTube — dura molto più di questa finestrella e non ha bisogno di lei: gira
- * su un filo del nucleo e si racconta in Impostazioni › Da Spotify, una riga per
+ * Perché quello che comincia dopo la conferma — la ricerca dei mancanti nei
+ * cataloghi — dura molto più di questa finestrella e non ha bisogno di lei: gira
+ * su un filo del nucleo e si racconta in Impostazioni, una riga per
  * importazione. Tenere aperto un riepilogo davanti a quell'elenco vorrebbe dire
  * un tasto «Chiudi» fra l'utente e il link successivo, che è precisamente il
  * gesto che si voleva rendere facile.
  *
-
  * # E perché c'è «Riprova»
  *
- * Per la stessa cella. Una lettura caduta al terzo livello — perché in quel
+ * Per la stessa cella. Una lettura caduta all'ultimo livello — perché in quel
  * momento la rete singhiozzava — resterebbe altrimenti *la* risposta di quel
  * link per tutto il tempo in cui l'applicazione è aperta, e riaprire questa
  * finestrella non cambierebbe niente. `forza` la salta.
  */
-export function ImportaSpotify({
+export function ImportaLink({
   onChiudi,
   onImportato,
 }: {
   onChiudi: () => void;
   /** Riceve il rapporto: è quel che fa comparire la riga nell'elenco. */
-  onImportato: (esito: EsitoSpotify) => void;
+  onImportato: (esito: EsitoImport) => void;
 }) {
   const [url, setUrl] = useState("");
-  const [anteprima, setAnteprima] = useState<AnteprimaSpotify | null>(null);
-  const [piano, setPiano] = useState<EsitoSpotify | null>(null);
+  const [anteprima, setAnteprima] = useState<AnteprimaImport | null>(null);
+  const [piano, setPiano] = useState<EsitoImport | null>(null);
   const [creaPlaylist, setCreaPlaylist] = useState(true);
-  const [errore, setErrore] = useState<string | null>(null);
+  const [errore, setErrore] = useState<unknown>(null);
   const [inCorso, setInCorso] = useState(false);
+  /**
+   * La rete è in mezzo, adesso.
+   *
+   * Distinto da `inCorso`, che copre tutti e tre i tempi: il piano si rifà a
+   * ogni cambio della casella e **non tocca la rete** — il contenuto è già letto
+   * di là. Accendere la barra della lettura anche lì vorrebbe dire mostrare un
+   * avanzamento di pagine per un'operazione che di pagine non ne ha, e che dura
+   * meno del tempo di comparire.
+   */
+  const [leggendo, setLeggendo] = useState(false);
+  const avanzamento = useLetturaLink(leggendo);
+
+  /**
+   * Il fuoco, nei tre momenti in cui si sposta da sé.
+   *
+   * All'apertura sta nel campo del link — ci pensa `autoFocus`. Quando arriva
+   * l'anteprima **il campo non c'è più**: senza questo il fuoco cadrebbe sul
+   * `<body>`, e chi naviga con la tastiera dovrebbe ritabulare dall'inizio del
+   * documento per raggiungere «Importa», che è a due centimetri dai suoi occhi.
+   *
+   * Alla chiusura torna dov'era. Conta di più adesso che prima: con `Ctrl+l`
+   * questa finestrella si apre da qualunque pagina, e chi l'ha aperta da un
+   * elenco vuole ritrovarsi nell'elenco.
+   */
+  const primario = useRef<HTMLButtonElement>(null);
+  const chiAveva = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    chiAveva.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    return () => chiAveva.current?.focus();
+  }, []);
+  useEffect(() => {
+    if (anteprima !== null) primario.current?.focus();
+  }, [anteprima]);
 
   /**
    * Legge il link.
@@ -312,18 +396,20 @@ export function ImportaSpotify({
   const guarda = async (forza = false) => {
     if (!url.trim() || inCorso) return;
     setInCorso(true);
+    setLeggendo(true);
     setErrore(null);
     setPiano(null);
     try {
-      const a = await ipc.spotifyAnteprima(url.trim(), forza);
+      const a = await ipc.importAnteprima(url.trim(), forza);
       setAnteprima(a);
       // Un brano solo non diventa una playlist di uno: la casella parte spenta,
       // e chi la vuole lo stesso può accenderla.
       setCreaPlaylist(a.genere !== "brano");
     } catch (e) {
-      setErrore(testoErrore(e));
+      setErrore(e);
     } finally {
       setInCorso(false);
+      setLeggendo(false);
     }
   };
 
@@ -335,12 +421,12 @@ export function ImportaSpotify({
     let annullato = false;
     setInCorso(true);
     ipc
-      .spotifyPiano(url.trim(), creaPlaylist)
+      .importPiano(url.trim(), creaPlaylist)
       .then((p) => {
         if (!annullato) setPiano(p);
       })
       .catch((e: unknown) => {
-        if (!annullato) setErrore(testoErrore(e));
+        if (!annullato) setErrore(e);
       })
       .finally(() => {
         if (!annullato) setInCorso(false);
@@ -348,6 +434,9 @@ export function ImportaSpotify({
     return () => {
       annullato = true;
     };
+    // `url` non può cambiare mentre `anteprima` è attivo — l'input è
+    // nascosto — ma resta fra le dipendenze per robustezza: se la UI
+    // cambiasse, il piano dovrebbe rifarsi con l'indirizzo nuovo.
   }, [anteprima, creaPlaylist, url]);
 
   /**
@@ -362,10 +451,10 @@ export function ImportaSpotify({
     setInCorso(true);
     setErrore(null);
     try {
-      onImportato(await ipc.spotifyImporta(url.trim(), creaPlaylist));
+      onImportato(await ipc.importEsegui(url.trim(), creaPlaylist));
       onChiudi();
     } catch (e) {
-      setErrore(testoErrore(e));
+      setErrore(e);
       setInCorso(false);
     }
   };
@@ -378,6 +467,21 @@ export function ImportaSpotify({
   // la copertina, e i brani sono zero. Importare adesso creerebbe una playlist
   // vuota e nient'altro — cioè assomiglierebbe a un successo.
   const degradato = anteprima?.sorgente === "oembed";
+  /**
+   * Il nucleo ha rifiutato perché la playlist di destinazione è automatica.
+   *
+   * È l'unico guasto di questa finestrella che ha una **causa visibile sullo
+   * schermo**: la casella «Crea la playlist». Mostrarlo in cima con gli altri
+   * vorrebbe dire far cercare all'utente quale delle cose che ha davanti l'abbia
+   * provocato; attaccarlo alla casella lo dice senza spiegarlo.
+   *
+   * Non c'è uno scavalco. Un flag di forzatura non esiste nel nucleo, ed è
+   * deliberato: le righe messe a mano in una playlist automatica sparirebbero al
+   * primo ricalcolo delle regole, quindi «fallo lo stesso» sarebbe un tasto che
+   * promette una cosa che si disfa da sola.
+   */
+  const playlistAutomatica =
+    eErroreIpc(errore) && errore.code === "library.playlistIsSmart";
 
   /** Rilegge il link saltando la cella. Vedi `guarda`. */
   const riprova = (
@@ -387,36 +491,36 @@ export function ImportaSpotify({
       disabled={inCorso}
       onClick={() => void guarda(true)}
     >
-      {inCorso ? "Lettura…" : "Riprova"}
+      {inCorso ? t("link.retrying") : t("common.retry")}
     </button>
   );
 
   return (
     <div className="velo scuro" onClick={onChiudi}>
       <div
-        className="finestrella"
+        className="finestrella glass-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="Importa da Spotify"
+        aria-label={t("link.aria")}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2>{anteprima ? "Cosa verrebbe importato" : "Importa da Spotify"}</h2>
+        <h2>{anteprima ? t("legacy.preview") : t("link.title")}</h2>
 
         {!anteprima && (
           <>
             <p>
-              Incolla il link di un brano, di un album o di una playlist
-              pubblica. Non serve un account: Aether cerca in libreria i brani
-              che ci sono già e scarica gli altri <strong>da YouTube</strong>,
-              preferendo i canali ufficiali. Da Spotify si prendono solo i nomi.
+              <Trans
+                k="link.intro"
+                v={{ solo: <strong>{t("link.intro.only")}</strong> }}
+              />
             </p>
             <label>
-              Link
+              {t("link.label")}
               <input
                 type="url"
-                className="campo"
+                className="campo field-input"
                 autoFocus
-                placeholder="https://open.spotify.com/playlist/…"
+                placeholder={ESEMPI[0]}
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 onKeyDown={(e) => {
@@ -424,15 +528,26 @@ export function ImportaSpotify({
                 }}
               />
             </label>
+            {/* Sotto il campo e non dentro il segnaposto: nel segnaposto ce ne
+                starebbe uno solo, e il fatto che siano tre posti diversi — con
+                regole diverse su cosa si può tenere — è precisamente la cosa
+                che va vista prima di incollare. */}
+            <ul className="esempi-link">
+              {ESEMPI.map((esempio) => (
+                <li key={esempio} className="mono">
+                  {esempio}
+                </li>
+              ))}
+            </ul>
           </>
         )}
 
         {anteprima && (
-          <div className="anteprima-spotify">
+          <div className="scheda-anteprima">
             {anteprima.copertina && (
-              /* Un `data:` già scaricato dal nucleo, non un indirizzo di
-                 Spotify: la finestra non parla mai con Spotify, e la politica
-                 dei contenuti resta quella di prima. */
+              /* Un `data:` già scaricato dal nucleo, non un indirizzo del
+                 catalogo: la finestra non parla mai con nessuno di loro, e la
+                 politica dei contenuti resta quella di prima. */
               <img src={anteprima.copertina} alt="" />
             )}
             <div className="che-cosa">
@@ -440,121 +555,280 @@ export function ImportaSpotify({
               {anteprima.autore && (
                 <div className="autore">{anteprima.autore}</div>
               )}
-              <div className="nota">
-                {anteprima.genere} · {anteprima.brani}{" "}
-                {anteprima.brani === 1 ? "brano" : "brani"} ·{" "}
-                {nomeSorgente(anteprima.sorgente)}
+              {/* Le tacche prima della frase, e `aria-hidden`: chi legge con lo
+                  schermo sente già «dai soli titolo e copertina», che è la
+                  stessa cosa detta meglio. Servono a chi guarda, per vedere in
+                  un colpo che questa lettura vale meno della precedente. */}
+              <div className="nota provenienza">
+                <Tacche fiducia={fiduciaDi(anteprima.sorgente)} />
+                <span>
+                  {t("link.summary", {
+                    fonte: nomeFonte(anteprima.fonte),
+                    genere: anteprima.genere,
+                    brani: t("link.tracks", { n: anteprima.brani }),
+                    sorgente: nomeSorgente(anteprima.sorgente),
+                  })}
+                </span>
+              </div>
+              {/* Il numero che rende onesta questa schermata: quanti di quei
+                  brani si possono davvero tenere. Un elenco di venti di cui tre
+                  si prendono e diciassette si ascoltano e basta è una cosa da
+                  sapere **prima** di confermare, non da scoprire dalla coda che
+                  si riempie di righe introvabili. */}
+              {anteprima.brani > 0 && (
+                <div className="nota licenza-riga">
+                  {anteprima.scaricabili === anteprima.brani ? (
+                    t("link.allDownloadable")
+                  ) : anteprima.scaricabili === 0 ? (
+                    <Trans
+                      k="link.noneDownloadable"
+                      v={{
+                        nessuno: (
+                          <strong>{t("link.noneDownloadable.head")}</strong>
+                        ),
+                      }}
+                    />
+                  ) : (
+                    <Trans
+                      k="link.someDownloadable"
+                      n={{ totale: anteprima.brani }}
+                      v={{ quanti: <strong>{anteprima.scaricabili}</strong> }}
+                    />
+                  )}
+                </div>
+              )}
+              {/* L'attribuzione **si mostra**, sempre: nominare il catalogo da
+                  cui viene quel che si sta per portare dentro non è un
+                  dettaglio legale da tenere in un file di licenze, è una
+                  condizione d'uso, e nasconderla vorrebbe dire usare il
+                  catalogo senza rispettarne i termini. Composta qui e non dal
+                  nucleo perché è testo dell'interfaccia — la riga gemella che
+                  finisce **nei tag** di un file scaricato la scrive
+                  `prelievo.rs`, e quella non segue la lingua attiva. */}
+              <div className="nota attribuzione">
+                {anteprima.autore === null
+                  ? t("link.attribution", { fonte: nomeFonte(anteprima.fonte) })
+                  : t("link.attribution.by", {
+                      autore: anteprima.autore,
+                      fonte: nomeFonte(anteprima.fonte),
+                    })}
               </div>
             </div>
           </div>
         )}
 
-        {errore && (
-          <div className="errore">
-            <span>{errore}</span>
-            {url.trim() !== "" && riprova}
-          </div>
+        {/* Il rifiuto della playlist automatica **non** compare qui: è attaccato
+            alla casella che lo causa, più in basso. Un blocco in cima che parla
+            di una casella a mezzo schermo di distanza è un blocco che si legge
+            senza capire a cosa si riferisca. */}
+        {errore !== null && !playlistAutomatica && (
+          <AvvisoErrore
+            errore={errore}
+            {...(url.trim() !== ""
+              ? { onRiprova: () => void guarda(true) }
+              : {})}
+          />
         )}
         {/* Anche con un'anteprima in mano, quando è quella magra: è proprio il
             caso in cui sapere *dove* si è fermata la lettura serve a qualcosa. */}
-        {(errore || degradato) && <Diagnosi />}
-        {inCorso && !rapporto && <p>Lettura da Spotify…</p>}
+        {(errore !== null || degradato) && <Diagnosi />}
+        {/* Era `<p>Lettura in corso…</p>`, e per una playlist da trecento brani
+            erano duecento richieste dietro una frase che non cambiava mai: chi
+            aspettava non poteva distinguere una lettura lunga da una impiantata,
+            e l'unica risposta possibile era chiudere e rifare da capo la cosa
+            che stava quasi finendo. */}
+        {leggendo && <LetturaLink avanzamento={avanzamento} />}
 
+        {/* Blocco e non avviso, ed era ambra come tutto il resto: importare
+            adesso creerebbe una playlist **vuota**, cioè qualcosa che dal di
+            fuori assomiglia a un successo. Il primario è spento, e l'unica cosa
+            da fare — rileggere il link saltando la cella — sta dentro il
+            riquadro invece che in fondo alla finestrella accanto ad «Annulla». */}
         {degradato && (
-          <div className="avviso-monco">
-            Di questo link si sono ottenuti solo il <strong>titolo</strong> e la{" "}
-            <strong>copertina</strong>: l&apos;elenco dei brani non è arrivato.
-            Importarlo adesso creerebbe una playlist vuota. Può essere Spotify
-            che ha cambiato qualcosa, o un momento storto della rete.
-            {riprova}
-          </div>
+          <Avviso livello="blocco" azione={riprova}>
+            <Trans
+              k="link.degraded"
+              v={{
+                titolo: <strong>{t("link.degraded.title")}</strong>,
+                copertina: <strong>{t("link.degraded.cover")}</strong>,
+              }}
+            />
+          </Avviso>
         )}
 
-        {monco && (
-          <div className="avviso-monco">
-            Spotify ne dichiara <strong>{monco.attesi}</strong> ma ne ha mandati{" "}
-            <strong>{monco.letti}</strong>. Importando adesso, i{" "}
-            {monco.attesi - monco.letti} che mancano resterebbero fuori.
-          </div>
+        {/* Avviso e non blocco: importare adesso porta dentro qualcosa di
+            buono, solo non tutto. I due numeri in `stat-number` perché la
+            differenza fra 297 e 300 e quella fra 30 e 300 sono due notizie
+            diverse, e in mezzo a una frase si leggono uguali. */}
+        {monco && anteprima && (
+          <Avviso livello="avviso" azione={riprova}>
+            <Trans
+              k="link.truncated"
+              n={{
+                fonte: nomeFonte(anteprima.fonte),
+                mancanti: monco.attesi - monco.letti,
+              }}
+              v={{
+                attesi: <span className="stat-number">{monco.attesi}</span>,
+                letti: <span className="stat-number">{monco.letti}</span>,
+              }}
+            />
+          </Avviso>
         )}
 
         {anteprima && !degradato && (
-          <label className="scelta">
-            <input
-              type="checkbox"
-              checked={creaPlaylist}
-              onChange={(e) => setCreaPlaylist(e.target.checked)}
-            />
-            <span>
-              Crea la playlist «{anteprima.titolo}»
-              {piano?.playlistReplaced && (
-                <em> — esiste già, e il suo contenuto verrebbe sostituito</em>
-              )}
-            </span>
-          </label>
+          <>
+            <label className="scelta">
+              <input
+                type="checkbox"
+                checked={creaPlaylist}
+                onChange={(e) => setCreaPlaylist(e.target.checked)}
+              />
+              <span>
+                {t("link.createPlaylist", { nome: anteprima.titolo })}
+                {piano?.playlistReplaced && <em>{t("link.replaces")}</em>}
+              </span>
+            </label>
+            {/* Attaccato alla casella, e con l'unica uscita che esiste davvero:
+                importare i brani senza toccare la playlist. Spegnere la casella
+                rifà il piano da sé — l'effetto la guarda — quindi il tasto fa
+                una cosa sola e quella cosa si vede subito. */}
+            {playlistAutomatica && (
+              <Avviso
+                livello="blocco"
+                azione={
+                  <button
+                    type="button"
+                    className="bottone minuto btn-ghost"
+                    onClick={() => setCreaPlaylist(false)}
+                  >
+                    {t("link.smartEscape")}
+                  </button>
+                }
+              >
+                {testoErrore(errore)}
+              </Avviso>
+            )}
+          </>
         )}
 
         {rapporto && (
           <>
             <div className="rapporto">
+              <Voce etichetta={t("link.inLibrary")} valore={rapporto.matched} />
+              {/* La scomposizione esce dalla `nota` e diventa quattro pastiglie.
+                  Era una frase — «12 esatti, 3 con un altro album, 1 a titolo
+                  ripulito» — che elencava sempre tutti e tre i gradini, zeri
+                  compresi, e non diceva quale fosse il più solido. Le pastiglie
+                  portano il grado nel colore, spiegano al passaggio del
+                  puntatore, e i gradini a zero **non compaiono**: una voce
+                  fissa a zero è una voce che si impara a non leggere.
+
+                  L'ISRC compare qui e non nella frase di prima perché nella
+                  frase non c'era: `matchedIsrc` esisteva nel rapporto e non
+                  usciva da nessuna parte, cioè l'unico gradino senza margine di
+                  dubbio era l'unico che non si vedeva. */}
+              {rapporto.matched > 0 && (
+                <div className="scomposizione">
+                  {rapporto.matchedIsrc > 0 && (
+                    <span>
+                      <PastigliaGradino gradino="isrc" /> {rapporto.matchedIsrc}
+                    </span>
+                  )}
+                  {rapporto.matchedExact > 0 && (
+                    <span>
+                      <PastigliaGradino gradino="esatta" />{" "}
+                      {rapporto.matchedExact}
+                    </span>
+                  )}
+                  {rapporto.matchedByTitle > 0 && (
+                    <span>
+                      <PastigliaGradino gradino="artistaTitolo" />{" "}
+                      {rapporto.matchedByTitle}
+                    </span>
+                  )}
+                  {rapporto.matchedStripped > 0 && (
+                    <span>
+                      <PastigliaGradino gradino="ripulito" />{" "}
+                      {rapporto.matchedStripped}
+                    </span>
+                  )}
+                </div>
+              )}
               <Voce
-                etichetta="Brani già in libreria"
-                valore={rapporto.matched}
-                nota={
-                  rapporto.matched > 0
-                    ? `${rapporto.matchedExact} esatti, ${rapporto.matchedByTitle} con un altro album, ${rapporto.matchedStripped} a titolo ripulito`
-                    : undefined
-                }
-              />
-              <Voce
-                etichetta="Brani non trovati"
+                etichetta={t("link.notFound")}
                 valore={rapporto.missing}
-                nota="verranno scaricati da YouTube"
+                nota={t("link.notFound.note")}
               />
               {rapporto.playlistId !== null && (
                 <Voce
-                  etichetta="Voci in playlist"
+                  etichetta={t("link.entries")}
                   valore={rapporto.playlistEntries}
-                  nota={
+                  nota={t(
                     rapporto.playlistCreated
-                      ? `«${rapporto.playlistName ?? ""}», nuova`
-                      : `«${rapporto.playlistName ?? ""}», contenuto sostituito`
-                  }
+                      ? "link.entries.new"
+                      : "link.entries.replaced",
+                    { nome: rapporto.playlistName ?? "" },
+                  )}
                 />
               )}
-              <Voce
-                etichetta="Identificativi Spotify scritti"
-                valore={rapporto.spotifyAlbumIdsWritten}
-                nota="fondono le edizioni dello stesso album già in libreria"
-              />
+              {/* Solo quando ce n'è: da un catalogo quella colonna resta
+                  vuota, e una riga fissa a zero è una riga che si impara a non
+                  leggere — la stessa ragione per cui l'ISRC qui sotto compare a
+                  condizione. */}
+              {rapporto.spotifyAlbumIdsWritten > 0 && (
+                <Voce
+                  etichetta={t("link.spotifyIds")}
+                  valore={rapporto.spotifyAlbumIdsWritten}
+                  nota={t("link.spotifyIds.note")}
+                />
+              )}
               {/* Solo quando ce n'è: oggi Spotify non manda più l'ISRC, e una
                   riga fissa a zero è una riga che si impara a non leggere. */}
               {rapporto.isrcWritten > 0 && (
                 <Voce
-                  etichetta="Codici ISRC scritti"
+                  etichetta={t("link.isrc")}
                   valore={rapporto.isrcWritten}
                 />
               )}
             </div>
 
-            {/* L'elenco dei mancanti sta qui e non dopo: è l'ultimo momento per
+            {/* L'elenco dei mancanti sta qui perché è l'ultimo momento per
                 accorgersi che i file ci sono già in una cartella non
-                sorvegliata, e risparmiarsi di riscaricarli. Dopo la conferma
-                non c'è un «dopo» in questa finestrella — c'è l'elenco delle
-                importazioni in Impostazioni. */}
+                sorvegliata, e risparmiarsi di riscaricarli.
+
+                Non è più l'**unico** momento, ed è la differenza che il quarto
+                tempo ha portato: il rapporto adesso si salva, e la pagina
+                Importazioni lo riapre tre giorni dopo. Finché moriva con questa
+                finestrella, chi chiudeva senza copiare questi nomi li perdeva —
+                e la finestrella si chiude da sé alla conferma, perché il gesto
+                da rendere facile era il link successivo. */}
             {rapporto.missingTracks.length > 0 && (
               <details className="non-ritrovati">
-                <summary>
-                  {rapporto.missing}{" "}
-                  {rapporto.missing === 1 ? "brano non è" : "brani non sono"} in
-                  libreria
-                </summary>
+                <summary>{t("link.missing", { n: rapporto.missing })}</summary>
                 <p>
-                  Confermando, questi si scaricano da YouTube uno per uno, con i
-                  tag di Spotify scritti sopra. Se invece i file ci sono già ma
-                  in una cartella non sorvegliata, conviene aggiungerla e rifare
-                  una scansione — poi di nuovo qui: si scaricherà solo quel che
-                  manca davvero.
+                  <Trans
+                    k="link.missing.p1"
+                    v={{
+                      daComprare: (
+                        <strong>{t("settings.import.how.p2.toBuy")}</strong>
+                      ),
+                    }}
+                  />
+                </p>
+                <p>{t("link.missing.p2")}</p>
+                {/* La frase che rende innocua la chiusura automatica. Il difetto
+                    non era la finestrella che si chiude: era che chiudere
+                    costava questo elenco, e nessuno lo diceva. */}
+                <p>
+                  <Trans
+                    k="link.missing.p3"
+                    v={{
+                      importazioni: (
+                        <strong>{t("settings.queue.empty.link")}</strong>
+                      ),
+                    }}
+                  />
                 </p>
                 <ul>
                   {rapporto.missingTracks.map((b) => (
@@ -571,19 +845,20 @@ export function ImportaSpotify({
 
         <div className="tasti-finestrella">
           <button type="button" className="bottone" onClick={onChiudi}>
-            Annulla
+            {t("common.cancel")}
           </button>
           {anteprima ? (
             <button
               type="button"
               className="bottone primario"
+              ref={primario}
               // `degradato`: importare zero brani riesce, ed è il guasto
               // peggiore possibile qui perché assomiglia in tutto a un
               // successo. Meglio un tasto spento e una frase che lo spiega.
               disabled={inCorso || piano === null || degradato}
               onClick={() => void esegui()}
             >
-              {inCorso ? "Importazione…" : "Importa"}
+              {inCorso ? t("legacy.importing") : t("legacy.import")}
             </button>
           ) : (
             <button
@@ -592,7 +867,7 @@ export function ImportaSpotify({
               disabled={inCorso || url.trim() === ""}
               onClick={() => void guarda()}
             >
-              {inCorso ? "Lettura…" : "Guarda"}
+              {inCorso ? t("link.retrying") : t("link.look")}
             </button>
           )}
         </div>

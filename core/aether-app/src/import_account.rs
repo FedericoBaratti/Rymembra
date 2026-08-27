@@ -9,13 +9,13 @@
 //! per tutte e due le strade perché di codice ce n'è uno.
 //!
 //! Vale anche il verso della dipendenza di sempre: qui non si va a prendere
-//! niente. `aether-app` non conosce né `aether-spotify` né `aether-archivio`, e
+//! niente. `aether-app` non conosce `aether-archivio`, e
 //! quel silenzio è ciò che rende impossibile tenere una transazione SQLite
 //! aperta mentre si scompatta un archivio da trecento megabyte.
 //!
 //! # Il piano è l'esecuzione, annullata
 //!
-//! Come per [`crate::import_legacy`] e [`crate::import_spotify`]: [`plan`] fa
+//! Come per [`crate::import_legacy`] e [`crate::import_esterno`]: [`plan`] fa
 //! l'importazione **vera** dentro una transazione abbandonata. Qui il principio
 //! pesa più che altrove, perché quel che sta per succedere è la scrittura meno
 //! reversibile dell'applicazione: decine di migliaia di righe di cronologia in
@@ -44,18 +44,18 @@
 
 use std::collections::HashSet;
 
+use aether_domain::abbinamento::{Gradino, PianoAbbinamento};
 use aether_domain::errors::{AppError, ErrorCode};
+use aether_domain::esterno::{BranoEsterno, Fonte};
 use aether_domain::keys::PlaylistKey;
 use aether_domain::merge::{TrackStats, merge_stats};
-use aether_domain::spotify::SpotifyTrack;
 use aether_domain::spotify_account::{
     AccountSnapshot, AlbumSpotify, PlaylistSpotify, Scelte, plan_account_import,
 };
-use aether_domain::spotify_plan::{Gradino, SpotifyPlan};
 use rusqlite::{Connection, Transaction};
 
-use crate::import_spotify::{
-    MissingTrack, Sorgente, SpotifyImportReport, Truncation, leggi_libreria, prepara_playlist,
+use crate::import_esterno::{
+    MissingTrack, RapportoImport, Sorgente, Truncation, leggi_libreria, prepara_playlist,
     riempi_playlist, scrivi_desiderati, scrivi_identificativi,
 };
 use crate::library::{db_error, now_ms, rebuild_aggregates};
@@ -120,18 +120,18 @@ pub struct AccountImportReport {
     /// guasto il limite di un endpoint.
     pub full_history: bool,
     /// Un rapporto per playlist, nella forma che la finestra già conosce.
-    pub playlists: Vec<SpotifyImportReport>,
+    pub playlists: Vec<RapportoImport>,
     /// Le playlist saltate, con il perché.
     pub rejected_playlists: Vec<RejectedPlaylist>,
     /// I «Brani che ti piacciono».
-    pub liked: SpotifyImportReport,
+    pub liked: RapportoImport,
     /// Quanti brani sono stati segnati come preferiti **adesso**.
     ///
     /// Meno di `liked.matched` alla seconda passata, e zero alla terza: chi era
     /// già segnato non si conta due volte.
     pub liked_marked: usize,
     /// Un rapporto per album salvato che portava le proprie tracce.
-    pub albums: Vec<SpotifyImportReport>,
+    pub albums: Vec<RapportoImport>,
     /// Quanti album salvati si sono visti.
     pub albums_seen: usize,
     /// Su quanti brani si è scritto `spotify_album_id`.
@@ -176,7 +176,7 @@ impl AccountImportReport {
     }
 
     /// Tutti i rapporti per elenco: playlist, album e preferiti.
-    fn elenchi(&self) -> impl Iterator<Item = &SpotifyImportReport> {
+    fn elenchi(&self) -> impl Iterator<Item = &RapportoImport> {
         self.playlists
             .iter()
             .chain(self.albums.iter())
@@ -275,6 +275,7 @@ fn run(
             &snapshot.preferiti,
             &piano.preferiti,
             Sorgente {
+                fonte: Fonte::ArchivioSpotify,
                 kind: "preferiti",
                 id: SORGENTE_PREFERITI,
                 titolo: TITOLO_PREFERITI,
@@ -300,6 +301,7 @@ fn run(
             &album.brani,
             &voce.piano,
             Sorgente {
+                fonte: Fonte::ArchivioSpotify,
                 kind: "album",
                 id: &identita,
                 titolo: &album.titolo,
@@ -349,7 +351,7 @@ fn run(
 }
 
 /// L'identificativo con cui i «Brani che ti piacciono» compaiono in
-/// `spotify_wanted`.
+/// `desiderati`.
 ///
 /// Non è un identificativo di Spotify e non fa finta di esserlo: quell'elenco
 /// non ne ha uno, perché non è una playlist. Il prefisso `aether:` lo dichiara,
@@ -374,7 +376,7 @@ fn e_rifiuto(err: &AppError) -> bool {
     )
 }
 
-/// L'identificativo con cui una playlist compare in `spotify_wanted`.
+/// L'identificativo con cui una playlist compare in `desiderati`.
 ///
 /// `(track_key, source_id)` è l'indice unico di quella tabella: due playlist che
 /// condividessero l'identificativo diventerebbero una riga sola per ogni brano
@@ -409,14 +411,17 @@ fn identita_album(album: &AlbumSpotify) -> String {
 fn scrivi_playlist(
     tx: &Transaction<'_>,
     playlist: &PlaylistSpotify,
-    piano: &SpotifyPlan,
+    piano: &PianoAbbinamento,
     provenienza: &str,
-) -> Result<SpotifyImportReport, AppError> {
+) -> Result<RapportoImport, AppError> {
     let identita = identita_playlist(playlist);
     let (id, creata, sostituita) = prepara_playlist(
         tx,
         &playlist.nome,
-        playlist.spotify_id.as_deref(),
+        playlist
+            .spotify_id
+            .as_deref()
+            .map(|id| (Fonte::ArchivioSpotify, id)),
         playlist.troncatura(),
     )?;
     let voci = riempi_playlist(
@@ -434,6 +439,7 @@ fn scrivi_playlist(
         &playlist.brani,
         piano,
         Sorgente {
+            fonte: Fonte::ArchivioSpotify,
             kind: "playlist",
             id: &identita,
             titolo: &playlist.nome,
@@ -456,13 +462,13 @@ fn scrivi_playlist(
 /// identificativi esterni sui brani ritrovati, i desiderati su quelli no.
 fn scrivi_elenco(
     tx: &Transaction<'_>,
-    brani: &[SpotifyTrack],
-    piano: &SpotifyPlan,
+    brani: &[BranoEsterno],
+    piano: &PianoAbbinamento,
     sorgente: Sorgente<'_>,
     provenienza: &str,
     playlist_id: Option<i64>,
-) -> Result<SpotifyImportReport, AppError> {
-    let mut rapporto = SpotifyImportReport {
+) -> Result<RapportoImport, AppError> {
+    let mut rapporto = RapportoImport {
         kind: sorgente.kind.to_owned(),
         // Qui `source` è la strada dell'account — `api` o `archivio` — dove
         // nell'importazione da un link è il livello del lettore keyless. È lo
@@ -478,7 +484,7 @@ fn scrivi_elenco(
         matched_exact: piano.per_gradino(Gradino::ChiaveEsatta),
         matched_by_title: piano.per_gradino(Gradino::ArtistaTitolo),
         matched_stripped: piano.per_gradino(Gradino::Ripulito),
-        ..SpotifyImportReport::default()
+        ..RapportoImport::default()
     };
 
     for indice in &piano.mancanti {
@@ -525,7 +531,7 @@ fn scrivi_elenco(
 /// cosa.
 fn segna_preferiti(
     tx: &Transaction<'_>,
-    piano: &SpotifyPlan,
+    piano: &PianoAbbinamento,
     adesso: i64,
 ) -> Result<usize, AppError> {
     let mut segna = tx
@@ -946,13 +952,13 @@ mod prove {
         assert!(esito.is_ok(), "l'inserimento di prova deve riuscire");
     }
 
-    fn sp(artista: &str, titolo: &str, album: &str, durata: u64) -> SpotifyTrack {
-        SpotifyTrack {
+    fn sp(artista: &str, titolo: &str, album: &str, durata: u64) -> BranoEsterno {
+        BranoEsterno {
             title: titolo.to_owned(),
             artist: Some(artista.to_owned()),
             album: Some(album.to_owned()),
             duration_ms: Some(durata),
-            ..SpotifyTrack::default()
+            ..BranoEsterno::default()
         }
     }
 
@@ -1039,7 +1045,7 @@ mod prove {
             "le voci si sostituiscono, non si accodano"
         );
         assert_eq!(
-            conta(&db, "SELECT COUNT(*) FROM spotify_wanted"),
+            conta(&db, "SELECT COUNT(*) FROM desiderati"),
             1,
             "e i desiderati non si accumulano"
         );
@@ -1069,7 +1075,7 @@ mod prove {
 
         assert_eq!(conta(&db, "SELECT COUNT(*) FROM playlists"), 0);
         assert_eq!(conta(&db, "SELECT COUNT(*) FROM play_history"), 0);
-        assert_eq!(conta(&db, "SELECT COUNT(*) FROM spotify_wanted"), 0);
+        assert_eq!(conta(&db, "SELECT COUNT(*) FROM desiderati"), 0);
         assert_eq!(conta(&db, "SELECT COUNT(*) FROM spotify_account"), 0);
         assert_eq!(conta(&db, "SELECT SUM(liked) FROM tracks"), 0);
     }
@@ -1172,7 +1178,7 @@ mod prove {
 
     #[test]
     fn rinominare_una_playlist_su_spotify_non_ne_crea_una_seconda() {
-        // Il difetto che `playlists.spotify_playlist_id` esiste per togliere:
+        // Il difetto che `playlists.source_playlist_id` esiste per togliere:
         // `PlaylistKey` nasce dal nome, quindi senza l'identificativo la
         // playlist rinominata arriverebbe qui come una playlist nuova, accanto
         // alla vecchia col nome vecchio e i suoi brani.
@@ -1228,7 +1234,7 @@ mod prove {
         };
         assert_eq!(rapporto.wanted_rows(), 2);
         assert_eq!(
-            conta(&db, "SELECT COUNT(DISTINCT source_id) FROM spotify_wanted"),
+            conta(&db, "SELECT COUNT(DISTINCT source_id) FROM desiderati"),
             2,
             "lo stesso brano manca da due playlist, e sono due desideri"
         );
@@ -1270,7 +1276,7 @@ mod prove {
 
     #[test]
     fn un_elenco_monco_non_sostituisce_una_playlist_che_esiste() {
-        // La stessa guardia di `import_spotify`, che qui però non fa fallire
+        // La stessa guardia di `import_esterno`, che qui però non fa fallire
         // tutto: la playlist si salta e si dice quale.
         let mut db = database();
         libreria_di_prova(&db);

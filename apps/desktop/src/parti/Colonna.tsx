@@ -36,6 +36,8 @@ import { Icona } from "./Icone";
 import { Scrubber } from "./Scrubber";
 import { Segmentato } from "./Segmentato";
 import { Trasporto } from "./Trasporto";
+import { t } from "../lingue";
+import { nomeArtista, titoloAlbum } from "../formato";
 
 export function Colonna({
   stato,
@@ -63,7 +65,7 @@ export function Colonna({
   // Niente `app-shell`: quella classe dice «il contenitore di tutta la
   // finestra», e la porta la zona radice dello scafale.
   return (
-    <aside className="colonna" aria-label="In riproduzione">
+    <aside className="colonna" aria-label={t("column.aria")}>
       {/* Lo strato ambientale è un fratello e non uno sfondo: come sfondo
           dovrebbe stare su un elemento che ha anche del testo, e allora la
           tinta della copertina finirebbe sotto delle lettere. */}
@@ -72,12 +74,12 @@ export function Colonna({
       </div>
 
       <header className="testa">
-        <span className="occhiello hero-eyebrow">In riproduzione</span>
+        <span className="occhiello hero-eyebrow">{t("column.aria")}</span>
         <button
           type="button"
           className="tasto icon-btn"
-          aria-label="Apri a schermo intero"
-          title="A schermo intero · F"
+          aria-label={t("column.fullscreen")}
+          title={t("column.fullscreen.title")}
           disabled={!brano}
           onClick={onEspandi}
         >
@@ -86,8 +88,8 @@ export function Colonna({
         <button
           type="button"
           className="tasto icon-btn"
-          aria-label="Chiudi la colonna"
-          title="Chiudi"
+          aria-label={t("column.close")}
+          title={t("common.close")}
           onClick={onChiudi}
         >
           <Icona nome="i-x" dim={15} />
@@ -102,7 +104,7 @@ export function Colonna({
       {stato.audio !== null && (
         <div className="audio-perso">
           <div className="cosa">
-            <strong>Non c&apos;è audio.</strong> {stato.audio.causa}.
+            <strong>{t("audio.lost.what")}</strong> {stato.audio.causa}.
           </div>
           {stato.audio.riapribile && (
             <button
@@ -112,10 +114,10 @@ export function Colonna({
               /* Il brano riparte da capo, e va detto prima di premere: il
                  motore nuovo nasce senza niente aperto, e la posizione non
                  sopravvive. Coda, volume, curva e normalizzazione sì. */
-              title="Il brano riparte da capo. Coda, volume ed equalizzatore restano."
+              title={t("audio.lost.reopen.title")}
             >
               <Icona nome="i-repeat" dim={14} />
-              Riapri
+              {t("audio.lost.reopen")}
             </button>
           )}
         </div>
@@ -126,22 +128,20 @@ export function Colonna({
           <span className="empty-icon" aria-hidden="true">
             <Icona nome="i-album" dim={28} />
           </span>
-          <p>Non sta suonando niente.</p>
-          <p className="sotto">
-            Un clic su un brano fa partire l&apos;elenco che stai guardando.
-          </p>
+          <p>{t("nothing.playing")}</p>
+          <p className="sotto">{t("nothing.playing.hint")}</p>
         </div>
       ) : (
         <>
           <button
             type="button"
             className="apri-grande"
-            aria-label="Apri a schermo intero"
+            aria-label={t("column.fullscreen")}
             onClick={onEspandi}
           >
             <Copertina
               hash={brano.coverArtHash}
-              titolo={brano.album}
+              titolo={titoloAlbum(brano.album)}
               classe="hero-art"
               piena
             />
@@ -151,8 +151,11 @@ export function Colonna({
             <div className="titolo np-title" title={brano.title}>
               {brano.title}
             </div>
-            <div className="meta np-meta" title={`${brano.artist} · ${brano.album}`}>
-              {brano.artist} · {brano.album}
+            <div
+              className="meta np-meta"
+              title={`${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`}
+            >
+              {nomeArtista(brano.artist)} · {titoloAlbum(brano.album)}
             </div>
           </div>
 
@@ -174,13 +177,17 @@ export function Colonna({
       <div className="coda-in-colonna">
         <div className="testa-coda">
           <Segmentato
-            etichetta="Cosa mostrare sotto"
+            etichetta={t("column.tabs")}
             scelta={scheda}
             onScegli={setScheda}
             classe="minuto"
             voci={[
-              { chiave: "coda", etichetta: "Coda", conteggio: stato.coda.length },
-              { chiave: "cronologia", etichetta: "Cronologia" },
+              {
+                chiave: "coda",
+                etichetta: t("column.tab.queue"),
+                conteggio: stato.coda.length,
+              },
+              { chiave: "cronologia", etichetta: t("column.tab.history") },
             ]}
           />
           {/* «Svuota» è della coda, e con la cronologia aperta non avrebbe
@@ -194,7 +201,7 @@ export function Colonna({
               disabled={stato.coda.length === 0}
               onClick={() => comanda(ipc.codaSvuota())}
             >
-              Svuota
+              {t("queue.clear")}
             </button>
           )}
         </div>

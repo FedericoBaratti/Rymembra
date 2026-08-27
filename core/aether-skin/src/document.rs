@@ -28,8 +28,8 @@ use serde_json::{Map, Value};
 
 use crate::effects::{Corner, Effect, EffectTarget, Paint, RadialShape, Stop};
 use crate::layout::{
-    Align, GapStep, LayoutNode, LayoutZone, OptionKind, OptionValue, Spread, TrackSize, WidgetDef,
-    WidgetInstance, WidgetOption, ZoneKind, default_shell,
+    Align, GapStep, LayoutNode, LayoutZone, MAX_SHELL_NODES, OptionKind, OptionValue, Spread,
+    TrackSize, WidgetDef, WidgetInstance, WidgetOption, ZoneKind, default_shell,
 };
 use crate::parts::{
     PartAppearance, PartLayer, PartState, PartStates, PartStyle, TextTransform, nearest_parts, part,
@@ -645,10 +645,71 @@ fn valore_token(def: &TokenDef, value: &Value, path: &str) -> Esito<TokenValue> 
         TokenKind::FontStack => pila_caratteri(value, path).map(TokenValue::FontStack),
         TokenKind::Shadow => ombra(value, path).map(TokenValue::Shadow),
     };
+    let esito = esito.and_then(|valore| entro_gli_estremi(def, &valore, path).map(|()| valore));
     // Il messaggio preciso viene da sotto; qui si aggiunge soltanto il codice
     // che nomina il token, che è ciò che serve a chi legge un log invece del
     // documento.
     esito.map_err(|dentro| token_non_valido(&dentro.path, def.id, value, dentro.message))
+}
+
+/// Gli estremi di [`TokenDef::limiti`], quando ci sono.
+///
+/// # Perché una lunghezza limitata accetta solo `px` e `rem`
+///
+/// Un estremo su una lunghezza è un numero, e un numero senza unità non
+/// confronta niente: `64%` non è «più piccolo» di `64px`, è un'altra cosa. Le
+/// unità relative alla finestra sono anche esattamente il modo in cui la
+/// garanzia salterebbe — `space.5: 30vh` starebbe dentro qualunque estremo
+/// numerico e produrrebbe comunque un'aria che spinge il contenuto fuori dallo
+/// schermo. Quindi dove c'è un estremo l'unità è assoluta, e `rem` si converte
+/// alla sua radice di 16px per essere confrontabile.
+fn entro_gli_estremi(def: &TokenDef, valore: &TokenValue, path: &str) -> Esito<()> {
+    let Some((min, max)) = def.limiti else {
+        return Ok(());
+    };
+
+    let fuori = |n: f64| problema(path, format!("va fra {min} e {max}, non {n}"));
+
+    match *valore {
+        TokenValue::Number(n) => {
+            if n < min || n > max {
+                return Err(fuori(n));
+            }
+        }
+        TokenValue::Length(lunghezza) => {
+            let misure = match lunghezza {
+                LengthValue::Fixed(l) => vec![l],
+                LengthValue::Adaptive {
+                    min: a,
+                    preferred: b,
+                    max: c,
+                } => vec![a, b, c],
+            };
+            for misura in misure {
+                let px = match misura.unit {
+                    LengthUnit::Px => misura.value,
+                    LengthUnit::Rem => misura.value * 16.0,
+                    altra => {
+                        return Err(problema(
+                            path,
+                            format!(
+                                "qui ci va una misura assoluta, in px o rem, non in {}",
+                                altra.as_str()
+                            ),
+                        ));
+                    }
+                };
+                if px < min || px > max {
+                    return Err(fuori(px));
+                }
+            }
+        }
+        // Gli altri tipi non hanno estremi, e la tabella lo garantisce: c'è un
+        // test che rifiuta un `limiti` su un colore o su una curva.
+        _ => {}
+    }
+
+    Ok(())
 }
 
 fn insieme_token(value: &Value, path: &str, problemi: &mut Vec<SkinIssue>) -> Esito<TokenSet> {
@@ -1464,7 +1525,9 @@ fn impaginazione(value: &Value, path: &str, problemi: &mut Vec<SkinIssue>) -> Es
 
     let dentro = giu(path, "shell");
     let prima = problemi.len();
-    let albero = zona_scafale(grezzo, &dentro, &prefabs, problemi)?;
+    // La radice è già un nodo: il budget parte da uno in meno.
+    let mut restanti = MAX_SHELL_NODES.saturating_sub(1);
+    let albero = zona_scafale(grezzo, &dentro, &prefabs, &mut restanti, problemi)?;
 
     // Le regole si applicano soltanto se l'albero è arrivato intero. Un ramo
     // che non si è letto lascia un buco, e un buco produce «manca il fill», che
@@ -1506,7 +1569,12 @@ fn modelli(
                 "il nome di un prefab ammette minuscole, cifre e trattini",
             ));
         }
-        let mut corpo = zona_scafale(grezzo, &percorso, &[], problemi)?;
+        // Ogni corpo ha il suo budget, e non uno condiviso: un prefab è un pezzo
+        // di scafale, quindi da solo non può già sfondare il tetto dello
+        // scafale. Quanti prefab si dichiarano resta invece libero — quello
+        // cresce come il manifest, e il manifest ha già il suo tetto.
+        let mut restanti = MAX_SHELL_NODES.saturating_sub(1);
+        let mut corpo = zona_scafale(grezzo, &percorso, &[], &mut restanti, problemi)?;
         corpo.from_prefab = Some(nome.clone());
         elenco.push((nome.clone(), corpo));
     }
@@ -1643,10 +1711,48 @@ fn foglia_scafale(map: &Map<String, Value>, path: &str) -> Esito<WidgetInstance>
     })
 }
 
+/// L'albero non ci sta nel tetto.
+///
+/// Lo stesso messaggio di [`crate::layout::verifica`], perché è la stessa
+/// regola. Qui però si scopre **mentre** si costruisce, e la differenza non è di
+/// stile: `verifica` guarda un albero già in memoria, e per arrivarci bisogna
+/// averlo costruito.
+fn troppi_nodi(path: &str) -> SkinIssue {
+    problema(
+        path,
+        format!("lo scafale supera i {MAX_SHELL_NODES} nodi, che è il massimo"),
+    )
+}
+
+/// Prende dei nodi dal budget, o dice che l'albero non ci sta.
+///
+/// # Perché il tetto si spende invece di contarlo alla fine
+///
+/// Perché un prefab si espande dove è richiamato, quindi l'albero cresce come il
+/// **prodotto** fra la larghezza di un corpo e il numero dei richiami, mentre il
+/// manifest che li descrive cresce come la loro somma. Contare alla fine
+/// significa contare qualcosa che è già stato allocato: 129 KB di manifest
+/// bastavano a costruire nove milioni di nodi prima che qualcuno dicesse che il
+/// massimo è sessantaquattro, e mezzo megabyte — il tetto del manifest in
+/// `package.rs` — a esaurire la memoria della macchina.
+fn prendi(restanti: &mut usize, quanti: usize, path: &str) -> Esito<()> {
+    match restanti.checked_sub(quanti) {
+        Some(rimasti) => {
+            *restanti = rimasti;
+            Ok(())
+        }
+        None => {
+            *restanti = 0;
+            Err(troppi_nodi(path))
+        }
+    }
+}
+
 fn zona_scafale(
     value: &Value,
     path: &str,
     prefabs: &[(String, LayoutZone)],
+    restanti: &mut usize,
     problemi: &mut Vec<SkinIssue>,
 ) -> Esito<LayoutZone> {
     let map = oggetto(value, path)?;
@@ -1683,10 +1789,16 @@ fn zona_scafale(
     let mut figli = Vec::with_capacity(voci.len());
     for (indice, grezzo) in voci.iter().enumerate() {
         let percorso = giu(&dentro, &indice.to_string());
+        // Esaurito il tetto si smette del tutto, e non si segna un fratello alla
+        // volta: oltre il tetto ogni fratello direbbe la stessa cosa, ed è
+        // l'albero intero a non starci — non questo ramo.
+        if *restanti == 0 {
+            return Err(troppi_nodi(&dentro));
+        }
         // Un figlio malformato smette di scendere in **quel** ramo; i fratelli
         // proseguono. È la forma di `superfici()`, per la stessa ragione: chi
         // costruisce un layout corregge in una passata sola.
-        match nodo_scafale(grezzo, &percorso, prefabs, problemi) {
+        match nodo_scafale(grezzo, &percorso, prefabs, restanti, problemi) {
             Ok(figlio) => figli.push(figlio),
             Err(guasto) => problemi.push(guasto),
         }
@@ -1734,17 +1846,24 @@ fn nodo_scafale(
     value: &Value,
     path: &str,
     prefabs: &[(String, LayoutZone)],
+    restanti: &mut usize,
     problemi: &mut Vec<SkinIssue>,
 ) -> Esito<LayoutNode> {
+    // Un nodo costa uno prima ancora che si sappia cos'è. Il tetto vale
+    // sull'albero **scritto**, non su quello che si è riusciti a leggere: se un
+    // fratello malformato non costasse niente, un elenco di mille nodi rotti
+    // resterebbe mille giri di ciclo dopo che l'albero ha già sfondato.
+    prendi(restanti, 1, path)?;
+
     let map = oggetto(value, path)?;
     if campo(map, "widget").is_some() {
         return foglia_scafale(map, path).map(LayoutNode::Widget);
     }
     if campo(map, "zone").is_some() {
-        return zona_scafale(value, path, prefabs, problemi).map(LayoutNode::Zone);
+        return zona_scafale(value, path, prefabs, restanti, problemi).map(LayoutNode::Zone);
     }
     if campo(map, "prefab").is_some() {
-        return modello_richiamato(map, path, prefabs).map(LayoutNode::Zone);
+        return modello_richiamato(map, path, prefabs, restanti).map(LayoutNode::Zone);
     }
     Err(problema(
         path,
@@ -1758,6 +1877,7 @@ fn modello_richiamato(
     map: &Map<String, Value>,
     path: &str,
     prefabs: &[(String, LayoutZone)],
+    restanti: &mut usize,
 ) -> Esito<LayoutZone> {
     solo_chiavi(map, path, &["prefab", "size"])?;
     let percorso = giu(path, "prefab");
@@ -1780,6 +1900,11 @@ fn modello_richiamato(
             format!("prefab inesistente: «{nome}».{}", forse(&candidati)),
         ));
     };
+
+    // Il corpo intero, meno il nodo che `nodo_scafale` ha già pagato. È l'unico
+    // punto in cui l'albero cresce più del testo che lo descrive, ed è quindi
+    // l'unico in cui il tetto deve essere speso in blocco invece che a uno a uno.
+    prendi(restanti, corpo.conta_nodi().saturating_sub(1), path)?;
 
     Ok(LayoutZone {
         // La misura è l'unica cosa che il sito d'uso può dire: è **dove** sta il
@@ -2988,6 +3113,80 @@ mod tests {
     }
 
     #[test]
+    fn l_espansione_di_un_prefab_si_ferma_al_tetto_invece_che_alla_memoria() {
+        // La bomba: un prefab largo, richiamato tante volte. L'albero cresce
+        // come il **prodotto** dei due, il manifest che lo descrive come la
+        // loro somma — quindi il tetto del manifest (mezzo megabyte, in
+        // `package.rs`) non è un tetto sull'albero.
+        //
+        // Prima che il budget si spendesse mentre si costruisce, questo
+        // manifest da 64 KB montava 2 250 000 nodi e **poi** contava fino a
+        // sessantaquattro; a mezzo megabyte ne sarebbero stati 153 milioni,
+        // cioè più memoria di quanta ne abbia la macchina, per un pacchetto che
+        // basta posare nella cartella delle skin perché l'elenco lo apra.
+        let foglia = r##"{"zone":"row","children":[]}"##;
+        let corpo: Vec<&str> = std::iter::repeat_n(foglia, 1500).collect();
+        let usi: Vec<&str> = std::iter::repeat_n(r##"{"prefab":"barretta"}"##, 1500).collect();
+        let err = rifiuta(&minima(&format!(
+            r##", "layout": {{
+                "prefabs": {{ "barretta": {{"zone":"row","children":[{}]}} }},
+                "shell": {{ "zone": "row", "children": [{}] }}
+            }}"##,
+            corpo.join(","),
+            usi.join(",")
+        )));
+        let messaggio = err.message().unwrap_or_default();
+        // Il messaggio del tetto **speso**, non quello del tetto contato: il
+        // secondo nomina il numero di nodi, e per nominarlo bisogna averli
+        // costruiti tutti.
+        assert!(
+            messaggio.contains(&format!("supera i {MAX_SHELL_NODES} nodi")),
+            "{messaggio}"
+        );
+    }
+
+    #[test]
+    fn un_prefab_che_da_solo_ci_sta_non_ci_sta_due_volte() {
+        // Il tetto vale sull'albero **espanso**: due copie di un corpo che da
+        // solo entra nel tetto non ci entrano. È la stessa aritmetica della
+        // bomba, alla scala in cui la si scrive per sbaglio.
+        let larga = |quanti: usize| {
+            let foglie: Vec<&str> =
+                std::iter::repeat_n(r##"{"widget":"rating"}"##, quanti).collect();
+            format!(
+                r##"{{"zone":"row","size":"hug","children":[{},{{"widget":"transport","size":"fill"}}]}}"##,
+                foglie.join(",")
+            )
+        };
+        let scafale = |corpo: &str, usi: usize| {
+            let richiami: Vec<&str> =
+                std::iter::repeat_n(r##"{"prefab":"barretta"}"##, usi).collect();
+            minima(&format!(
+                r##", "layout": {{
+                    "prefabs": {{ "barretta": {corpo} }},
+                    "shell": {{ "zone": "row", "children": [
+                        {{ "widget": "navigation" }},
+                        {{ "widget": "content", "size": "fill" }},
+                        {}
+                    ] }}
+                }}"##,
+                richiami.join(",")
+            ))
+        };
+        // Trentadue nodi: una copia sta sotto il tetto, due lo sfondano.
+        let corpo = larga(30);
+        parse_skin_json(&scafale(&corpo, 1)).expect("una copia ci sta");
+        let err = rifiuta(&scafale(&corpo, 2));
+        assert!(
+            err.message()
+                .unwrap_or_default()
+                .contains(&format!("supera i {MAX_SHELL_NODES} nodi")),
+            "{:?}",
+            err.message()
+        );
+    }
+
+    #[test]
     fn l_espansione_conserva_gli_essenziali() {
         // Il trasporto sta **dentro** il prefab: se l'espansione lo perdesse,
         // il gruppo «playback» resterebbe vuoto e la skin verrebbe rifiutata.
@@ -3074,6 +3273,93 @@ mod tests {
                 .all(|a| a.kind == WarningKind::MissingRequiredToken)
         );
         assert!(avvisi.iter().any(|a| a.path == "tokens.color.surface.0"));
+    }
+
+    /// Un documento con un solo token dichiarato, per esercitare gli estremi.
+    fn con_token(id: &str, valore: &str) -> String {
+        format!(
+            r##"{{
+              "format": 1,
+              "id": "prova",
+              "meta": {{ "name": "Prova", "author": "Aether", "version": "1.0.0" }},
+              "tokens": {{ "{id}": {valore} }}
+            }}"##
+        )
+    }
+
+    #[test]
+    fn il_ritmo_dentro_gli_estremi_passa() {
+        for (id, valore) in [
+            ("space.1", r#""4px""#),
+            ("space.5", r#""64px""#),
+            ("space.3", r#""0px""#),
+            // 2rem = 32px, dentro i 64.
+            ("space.4", r#""2rem""#),
+            ("depth.edge", "0"),
+            ("depth.lift", "3"),
+            ("depth.sheen", r#""72px""#),
+            ("radius.inner", "0.6"),
+        ] {
+            parse_skin_json(&con_token(id, valore))
+                .unwrap_or_else(|e| panic!("{id}: {valore} rifiutato: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn il_ritmo_oltre_gli_estremi_e_un_errore() {
+        // Il caso che gli estremi esistono per fermare: un'aria che spinge il
+        // contenuto fuori dallo schermo.
+        let messaggio = rifiuta(&con_token("space.5", r#""400px""#)).to_string();
+        assert!(messaggio.contains("va fra 0 e 64"), "{messaggio}");
+
+        let messaggio = rifiuta(&con_token("depth.edge", "9")).to_string();
+        assert!(messaggio.contains("va fra 0 e 3"), "{messaggio}");
+
+        let messaggio = rifiuta(&con_token("radius.tiny", "-0.5")).to_string();
+        assert!(messaggio.contains("va fra 0 e 1"), "{messaggio}");
+
+        // `rem` si converte: 8rem = 128px, fuori.
+        let messaggio = rifiuta(&con_token("space.2", r#""8rem""#)).to_string();
+        assert!(messaggio.contains("va fra 0 e 64"), "{messaggio}");
+    }
+
+    #[test]
+    fn una_misura_limitata_rifiuta_le_unita_relative() {
+        // `30vh` starebbe dentro qualunque estremo numerico e sarebbe comunque
+        // un terzo dello schermo di aria fra due righe.
+        let messaggio = rifiuta(&con_token("space.3", r#""30vh""#)).to_string();
+        assert!(messaggio.contains("px o rem"), "{messaggio}");
+        assert!(messaggio.contains("vh"), "{messaggio}");
+    }
+
+    #[test]
+    fn una_misura_adattiva_si_controlla_in_tutti_e_tre_i_capi() {
+        // Il capo alto è quello che sfonda: se si guardasse solo il preferito,
+        // un `clamp()` passerebbe portandosi dietro il massimo che si voleva
+        // vietare.
+        let messaggio = rifiuta(&con_token(
+            "space.4",
+            r#"{ "min": "4px", "preferred": "8px", "max": "300px" }"#,
+        ))
+        .to_string();
+        assert!(messaggio.contains("va fra 0 e 64"), "{messaggio}");
+    }
+
+    #[test]
+    fn i_token_nuovi_non_aggiungono_avvisi_alle_skin_gia_scritte() {
+        // La prova che il formato non ha bisogno di salire a 2: nessuno degli
+        // undici token nuovi è obbligatorio, quindi nessuna skin esistente
+        // guadagna un avviso per non averli scritti.
+        let skin = parse_skin_json(&minima("")).expect("valida");
+        for avviso in check_skin(&skin) {
+            assert!(
+                !avviso.path.starts_with("tokens.space.")
+                    && !avviso.path.starts_with("tokens.depth.")
+                    && !avviso.path.starts_with("tokens.radius.inner")
+                    && !avviso.path.starts_with("tokens.radius.tiny"),
+                "{avviso:?}"
+            );
+        }
     }
 
     #[test]

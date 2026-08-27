@@ -38,7 +38,7 @@ use aether_domain::errors::{AppError, ErrorCode};
 /// (`google.refresh_token`, `spotify.refresh_token`), non per servizio, o
 /// nell'elenco del Credential Manager comparirebbero tre «Aether» diversi senza
 /// che nessuno sappia dire quale sia quale.
-pub const SERVIZIO: &str = "dev.aether.desktop";
+pub const SERVIZIO: &str = "io.github.federicobaratti.aether";
 
 /// Un posto dove tenere i segreti.
 ///

@@ -26,12 +26,9 @@ import { useCallback, useEffect, useState } from "react";
 import type { CollegamentoScrobble, EsitoInvio, StatoScrobble } from "../ipc";
 import { ipc } from "../ipc";
 import { Icona } from "./Icone";
-
-/** Quanti ascolti aspettano, detto in italiano. */
-function quanti(n: number, uno: string, molti: string): string {
-  if (n === 1) return `1 ${uno}`;
-  return `${n.toLocaleString("it")} ${molti}`;
-}
+import { numero } from "../formato";
+import { t } from "../lingue";
+import { Trans } from "../lingue/Trans";
 
 /** La riga di stato di una coda: quanti aspettano, quanti sono fermi. */
 function Coda({
@@ -43,28 +40,25 @@ function Coda({
   onRiprova: () => void;
   onDimentica: () => void;
 }) {
-  if (collegamento.inAttesa === 0 && collegamento.abbandonati === 0) return null;
+  if (collegamento.inAttesa === 0 && collegamento.abbandonati === 0)
+    return null;
   return (
     <p className="nota">
       {collegamento.inAttesa > 0 && (
-        <>{quanti(collegamento.inAttesa, "ascolto in coda", "ascolti in coda")}. </>
+        <>{t("scrobble.queued", { n: collegamento.inAttesa })}. </>
       )}
       {collegamento.abbandonati > 0 && (
         <>
           <strong>
-            {quanti(
-              collegamento.abbandonati,
-              "ascolto si è fermato",
-              "ascolti si sono fermati",
-            )}
-          </strong>{" "}
-          dopo dieci tentativi.{" "}
+            {t("scrobble.stuck", { n: collegamento.abbandonati })}
+          </strong>
+          {t("scrobble.stuck.after")}
           <button type="button" className="collegamento" onClick={onRiprova}>
-            Rimettili in fila
-          </button>{" "}
-          oppure{" "}
+            {t("scrobble.stuck.requeue")}
+          </button>
+          {t("scrobble.stuck.or")}
           <button type="button" className="collegamento" onClick={onDimentica}>
-            buttali
+            {t("scrobble.stuck.drop")}
           </button>
           .
         </>
@@ -116,13 +110,16 @@ export function Scrobbling({
       .scrobbleInvia()
       .then((esito: EsitoInvio) => {
         const pezzi: string[] = [];
-        if (esito.mandati > 0) pezzi.push(`${esito.mandati} mandati`);
-        if (esito.ignorati > 0) pezzi.push(`${esito.ignorati} scartati`);
-        if (esito.inAttesa > 0) pezzi.push(`${esito.inAttesa} ancora in coda`);
+        if (esito.mandati > 0)
+          pezzi.push(t("scrobble.sent", { n: esito.mandati }));
+        if (esito.ignorati > 0)
+          pezzi.push(t("scrobble.ignored", { n: esito.ignorati }));
+        if (esito.inAttesa > 0)
+          pezzi.push(t("scrobble.stillQueued", { n: esito.inAttesa }));
         onNotizia(
           pezzi.length > 0
             ? `${pezzi.join(", ")}${esito.motivi.length > 0 ? ` — ${esito.motivi.join("; ")}` : ""}`
-            : "Non c'era niente da mandare.",
+            : t("scrobble.nothingToSend"),
         );
         return ipc.scrobbleStato();
       })
@@ -139,8 +136,8 @@ export function Scrobbling({
         .then((accodati: number) => {
           onNotizia(
             accodati > 0
-              ? `${accodati.toLocaleString("it")} ascolti messi in coda verso ListenBrainz.`
-              : "Non c'era niente da accodare: erano già tutti in coda o già mandati.",
+              ? t("scrobble.enqueued", { n: numero(accodati) })
+              : t("scrobble.nothingToQueue"),
           );
           return ipc.scrobbleStato();
         })
@@ -158,24 +155,23 @@ export function Scrobbling({
   return (
     <>
       <p className="nota">
-        Manda quel che ascolti a un servizio che tiene la tua cronologia. Conta
-        con la stessa regola di tutto il resto di Aether — <strong>metà brano
-        o quattro minuti</strong>, quel che viene prima — quindi un brano saltato
-        dopo tre secondi non esce, esattamente come non finisce nei tuoi «più
-        ascoltati».
+        <Trans
+          k="scrobble.p1"
+          v={{ regola: <strong>{t("scrobble.p1.rule")}</strong> }}
+        />
       </p>
       <p className="nota">
-        Quel che non parte perché non c&apos;è rete <strong>non si perde</strong>:
-        resta in una coda su disco e riparte da solo, anche dopo una chiusura.
+        <Trans
+          k="scrobble.p2"
+          v={{ nonPerde: <strong>{t("scrobble.p2.notLost")}</strong> }}
+        />
       </p>
 
       <div className="riga-opzione">
         <div className="che-cosa">
-          <div className="etichetta">Manda quel che ascolto</div>
+          <div className="etichetta">{t("scrobble.toggle")}</div>
           <div className="spiegazione">
-            {collegato
-              ? "Spento, la coda smette di riempirsi: non ti ritrovi tre giorni di ascolti spediti insieme alla riaccensione."
-              : "Collega prima un servizio qui sotto"}
+            {collegato ? t("scrobble.toggle.on") : t("scrobble.toggle.off")}
           </div>
         </div>
         <button
@@ -183,7 +179,7 @@ export function Scrobbling({
           className="interruttore switch"
           role="switch"
           aria-checked={stato?.attivo ?? false}
-          aria-label="Manda quel che ascolto"
+          aria-label={t("scrobble.toggle")}
           disabled={!collegato || inVolo}
           onClick={() =>
             esegui(() => ipc.scrobbleAttivo(!(stato?.attivo ?? false)))
@@ -197,22 +193,20 @@ export function Scrobbling({
 
       {/* ── ListenBrainz ── */}
       <h3 className="titoletto">ListenBrainz</h3>
-      <p className="nota">
-        Di MetaBrainz, gli stessi di MusicBrainz. I dati sono pubblici e
-        scaricabili: la tua cronologia resta tua anche se un giorno il servizio
-        chiude. Serve solo un token, che sta nelle impostazioni del tuo account.
-      </p>
+      <p className="nota">{t("scrobble.lb.note")}</p>
 
       {lb?.collegato ? (
         <>
           <dl className="numeri">
             <div>
-              <dt>Account</dt>
-              <dd className="stat-number">{lb.utente ?? "collegato"}</dd>
+              <dt>{t("scrobble.account")}</dt>
+              <dd className="stat-number">
+                {lb.utente ?? t("scrobble.connected")}
+              </dd>
             </div>
             <div>
-              <dt>In coda</dt>
-              <dd className="stat-number">{lb.inAttesa.toLocaleString("it")}</dd>
+              <dt>{t("scrobble.inQueue")}</dt>
+              <dd className="stat-number">{numero(lb.inAttesa)}</dd>
             </div>
           </dl>
           <Coda
@@ -228,7 +222,7 @@ export function Scrobbling({
               onClick={invia}
             >
               <Icona nome="i-cloud" dim={15} />
-              {inVolo ? "Invio in corso…" : "Manda adesso"}
+              {inVolo ? t("scrobble.sending") : t("scrobble.sendNow")}
             </button>
             <button
               type="button"
@@ -236,7 +230,7 @@ export function Scrobbling({
               disabled={inVolo}
               onClick={() => esegui(ipc.scrobbleListenbrainzScollega)}
             >
-              Scollega
+              {t("scrobble.disconnect")}
             </button>
           </div>
         </>
@@ -244,8 +238,8 @@ export function Scrobbling({
         <div className="azioni">
           <input
             type="password"
-            className="campo"
-            placeholder="token utente"
+            className="campo field-input"
+            placeholder={t("scrobble.token")}
             value={token}
             onChange={(e) => setToken(e.target.value)}
           />
@@ -262,25 +256,16 @@ export function Scrobbling({
               )
             }
           >
-            {inVolo ? "Verifico…" : "Collega"}
+            {inVolo ? t("scrobble.checking") : t("scrobble.connect")}
           </button>
         </div>
       )}
 
       {lb?.collegato && (
         <details className="non-ritrovati">
-          <summary>Manda anche la cronologia che hai già</summary>
-          <p>
-            ListenBrainz è l&apos;unico dei due che accetta ascolti vecchi in
-            blocco: se hai importato la cronologia da Spotify, sono anni di
-            ascolti che possono diventare la tua cronologia su un servizio che
-            non appartiene a nessuna piattaforma.
-          </p>
-          <p className="nota">
-            Non manda niente due volte: quel che è già uscito non torna in coda.
-            Su Last.fm questo non si può fare — rifiuta gli ascolti con una data
-            vecchia e ha un tetto giornaliero.
-          </p>
+          <summary>{t("scrobble.backlog")}</summary>
+          <p>{t("scrobble.backlog.p1")}</p>
+          <p className="nota">{t("scrobble.backlog.p2")}</p>
           <div className="azioni">
             <button
               type="button"
@@ -288,7 +273,7 @@ export function Scrobbling({
               disabled={inVolo}
               onClick={() => importaCronologia(true)}
             >
-              Solo quella importata da Spotify
+              {t("scrobble.backlog.only")}
             </button>
             <button
               type="button"
@@ -296,7 +281,7 @@ export function Scrobbling({
               disabled={inVolo}
               onClick={() => importaCronologia(false)}
             >
-              Tutta
+              {t("scrobble.backlog.all")}
             </button>
           </div>
         </details>
@@ -305,22 +290,24 @@ export function Scrobbling({
       {/* ── Last.fm ── */}
       <h3 className="titoletto">Last.fm</h3>
       <p className="nota">
-        Serve un&apos;applicazione registrata a tuo nome — Last.fm non permette
-        di distribuirne una dentro un programma. Si crea in un minuto da{" "}
-        <code>last.fm/api/account/create</code>, e dà una chiave e un segreto da
-        incollare qui.
+        <Trans
+          k="scrobble.lfm.note"
+          v={{ sito: <code>last.fm/api/account/create</code> }}
+        />
       </p>
 
       {lfm?.collegato ? (
         <>
           <dl className="numeri">
             <div>
-              <dt>Account</dt>
-              <dd className="stat-number">{lfm.utente ?? "collegato"}</dd>
+              <dt>{t("scrobble.account")}</dt>
+              <dd className="stat-number">
+                {lfm.utente ?? t("scrobble.connected")}
+              </dd>
             </div>
             <div>
-              <dt>In coda</dt>
-              <dd className="stat-number">{lfm.inAttesa.toLocaleString("it")}</dd>
+              <dt>{t("scrobble.inQueue")}</dt>
+              <dd className="stat-number">{numero(lfm.inAttesa)}</dd>
             </div>
           </dl>
           <Coda
@@ -335,7 +322,7 @@ export function Scrobbling({
               disabled={inVolo}
               onClick={() => esegui(ipc.scrobbleLastfmScollega)}
             >
-              Scollega
+              {t("scrobble.disconnect")}
             </button>
           </div>
         </>
@@ -344,15 +331,15 @@ export function Scrobbling({
           <div className="azioni">
             <input
               type="text"
-              className="campo"
-              placeholder="chiave (api key)"
+              className="campo field-input"
+              placeholder={t("scrobble.lfm.key")}
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
             />
             <input
               type="password"
-              className="campo"
-              placeholder="segreto"
+              className="campo field-input"
+              placeholder={t("scrobble.lfm.secret")}
               value={segreto}
               onChange={(e) => setSegreto(e.target.value)}
             />
@@ -369,7 +356,7 @@ export function Scrobbling({
                 )
               }
             >
-              Usa queste
+              {t("scrobble.lfm.use")}
             </button>
           </div>
 
@@ -378,34 +365,32 @@ export function Scrobbling({
               type="button"
               className="bottone btn-ghost"
               disabled={!(lfm?.configurato ?? false) || inVolo}
-              title={
-                lfm?.configurato
-                  ? undefined
-                  : "Incolla prima chiave e segreto qui sopra"
-              }
+              title={lfm?.configurato ? undefined : t("scrobble.lfm.needCreds")}
               onClick={() => esegui(ipc.scrobbleLastfmCollega)}
             >
               <Icona nome="i-list" dim={15} />
-              Autorizza nel browser
+              {t("scrobble.lfm.authorize")}
             </button>
             {(stato?.attesaLastfm ?? false) && (
               <button
                 type="button"
-                className="bottone btn-primary"
+                className="bottone primario btn-accent"
                 disabled={inVolo}
                 onClick={() => esegui(ipc.scrobbleLastfmCompleta)}
               >
-                Ho autorizzato, completa
+                {t("scrobble.lfm.done")}
               </button>
             )}
           </div>
 
           {(stato?.attesaLastfm ?? false) && (
             <p className="nota">
-              Ho aperto la pagina di Last.fm nel <strong>browser di
-              sistema</strong>. Dai il consenso lì, poi torna qui e premi «Ho
-              autorizzato»: Last.fm non avvisa nessuno quando hai finito, quindi
-              questo passo va fatto a mano. Il permesso vale un&apos;ora.
+              <Trans
+                k="scrobble.lfm.waiting"
+                v={{
+                  browser: <strong>{t("scrobble.lfm.waiting.browser")}</strong>,
+                }}
+              />
             </p>
           )}
         </>

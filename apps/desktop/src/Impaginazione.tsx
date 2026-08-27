@@ -46,6 +46,7 @@ import { Ora } from "./parti/Ora";
 import { Scrubber } from "./parti/Scrubber";
 import { Trasporto, type TagliaTrasporto } from "./parti/Trasporto";
 import { Lettore } from "./Lettore";
+import { titoloAlbum } from "./formato";
 
 /**
  * Tutto quel che i widget sanno del mondo.
@@ -75,6 +76,12 @@ export interface ContestoWidget {
    * e quella schermata è il quarto: tenerli accesi sotto voleva dire la stessa
    * copertina, lo stesso titolo, lo stesso trasporto e la stessa coda disegnati
    * due volte affiancati, con lo schermo intero schiacciato in mezza finestra.
+   *
+   * Lo legge anche `page-header`, e per una ragione diversa: non è un doppione
+   * di quella schermata, è il titolo di **un'altra** pagina. Restando acceso
+   * teneva la copertina grande sotto una fascia che diceva «Importazioni», e la
+   * schermata intera cominciava un centimetro più in basso di dove finisce la
+   * finestra. Andandosene, il posto del contenuto riempie la sua zona.
    */
   grande: boolean;
   selezionati: number[];
@@ -203,7 +210,18 @@ const WIDGET: Record<string, ComponenteWidget> = {
     ),
   },
 
-  "page-header": { rende: ({ slot }) => slot.intestazione },
+  "page-header": {
+    // Via a schermo intero, per la stessa ragione degli altri quattro qui
+    // sotto: quella schermata **è** la pagina, e un'intestazione che nomina
+    // un'altra pagina — «Importazioni», con i suoi due tasti — sospesa sopra
+    // una copertina dice che sotto ce ne sono due, che è quel che sembrava.
+    //
+    // Togliendola, `content` resta l'unico figlio a riempimento della sua
+    // zona e la occupa tutta: la copertina grande arriva fin sotto la barra
+    // del titolo senza che nessuna misura sia scritta due volte.
+    visibile: (ctx) => !ctx.grande,
+    rende: ({ slot }) => slot.intestazione,
+  },
   content: { rende: ({ slot }) => slot.contenuto },
 
   player: {
@@ -315,7 +333,7 @@ const WIDGET: Record<string, ComponenteWidget> = {
       ctx.stato.brano && (
         <Copertina
           hash={ctx.stato.brano.coverArtHash}
-          titolo={ctx.stato.brano.album}
+          titolo={titoloAlbum(ctx.stato.brano.album)}
           classe="np-art"
           piena
         />

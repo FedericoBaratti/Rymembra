@@ -10,6 +10,7 @@ import { useState } from "react";
 
 import { brani_ } from "./formato";
 import { ipc, testoErrore, type Playlist } from "./ipc";
+import { t } from "./lingue";
 
 export function AggiungiAPlaylist({
   brani,
@@ -61,18 +62,18 @@ export function AggiungiAPlaylist({
   return (
     <div className="velo scuro" onClick={onChiudi}>
       <div
-        className="finestrella stretta"
+        className="finestrella stretta glass-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="Aggiungi a playlist"
+        aria-label={t("addTo.aria")}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2>Aggiungi {brani_(brani.length)} a…</h2>
+        <h2>{t("addTo.title", { quanti: brani_(brani.length) })}</h2>
 
         {errore && <div className="errore">{errore}</div>}
 
         {scegliibili.length === 0 ? (
-          <p>Non c&apos;è ancora nessuna playlist. Creane una qui sotto.</p>
+          <p>{t("addTo.empty")}</p>
         ) : (
           <div className="scelta-playlist">
             {scegliibili.map((p) => (
@@ -97,8 +98,8 @@ export function AggiungiAPlaylist({
           }}
         >
           <input
-            className="campo"
-            placeholder="Nuova playlist…"
+            className="campo field-input"
+            placeholder={t("addTo.newName")}
             value={nuova}
             spellCheck={false}
             onChange={(e) => setNuova(e.target.value)}
@@ -108,13 +109,13 @@ export function AggiungiAPlaylist({
             className="bottone primario"
             disabled={inCorso || nuova.trim().length === 0}
           >
-            Crea
+            {t("addTo.create")}
           </button>
         </form>
 
         <div className="tasti-finestrella">
           <button type="button" className="bottone" onClick={onChiudi}>
-            Annulla
+            {t("common.cancel")}
           </button>
         </div>
       </div>

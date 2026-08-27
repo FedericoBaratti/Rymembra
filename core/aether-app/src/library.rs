@@ -963,6 +963,31 @@ pub struct AlbumSummary {
     pub cover_art_hash: Option<String>,
 }
 
+/// Le colonne di [`AlbumSummary`], nell'ordine in cui le legge [`album_from_row`].
+///
+/// Qualificate con `a.`: una delle query che le usano ha un'altra tabella
+/// accanto, e `album_key` da solo diventerebbe ambiguo.
+pub(crate) const COLONNE_ALBUM: &str =
+    "a.album_key, a.title, a.artist, a.year, a.genre, a.total_tracks, a.cover_art_hash";
+
+/// Un album, da una riga di [`COLONNE_ALBUM`].
+///
+/// Era scritta tre volte identica — la griglia, gli album di un artista, i
+/// dischi entrati per ultimi. Tre copie di sette `row.get` numerati sono tre
+/// occasioni di sfasare un indice, e uno sfasamento fra `year` e `genre` non è
+/// un errore di compilazione: è una griglia che scrive «2019» dove va il genere.
+pub(crate) fn album_from_row(row: &Row<'_>) -> rusqlite::Result<AlbumSummary> {
+    Ok(AlbumSummary {
+        album_key: row.get(0)?,
+        title: row.get(1)?,
+        artist: row.get(2)?,
+        year: row.get(3)?,
+        genre: row.get(4)?,
+        total_tracks: row.get(5)?,
+        cover_art_hash: row.get(6)?,
+    })
+}
+
 /// Quanto c'è in libreria.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1011,6 +1036,13 @@ pub enum TrackOrder {
     RecentlyAdded,
     /// I più ascoltati in cima.
     MostPlayed,
+    /// Gli ascoltati più di recente in cima, i mai ascoltati in fondo.
+    ///
+    /// Diverso da `MostPlayed`, che ordina per **quante volte**: qui conta
+    /// **quando**, ed è la domanda a cui risponde la Home. Un brano suonato
+    /// una volta stamattina viene prima di uno suonato cento volte l'anno
+    /// scorso.
+    RecentlyPlayed,
     /// Titolo alfabetico.
     Title,
 }
@@ -1027,6 +1059,13 @@ impl TrackOrder {
             }
             Self::RecentlyAdded => "t.date_added DESC, t.id DESC",
             Self::MostPlayed => "t.play_count DESC, t.last_played_at DESC, t.title COLLATE NOCASE",
+            // `IS NULL` per primo, così i mai ascoltati finiscono in fondo
+            // invece che in cima: in SQLite `NULL` è più piccolo di tutto, e
+            // senza questa colonna un `DESC` li metterebbe per ultimi solo per
+            // caso — cioè li metterebbe per primi.
+            Self::RecentlyPlayed => {
+                "t.last_played_at IS NULL, t.last_played_at DESC, t.title COLLATE NOCASE"
+            }
             Self::Title => "t.title COLLATE NOCASE, t.artist COLLATE NOCASE",
         }
     }
@@ -1259,29 +1298,76 @@ pub fn list_albums(
     offset: i64,
     limit: i64,
 ) -> Result<Vec<AlbumSummary>, AppError> {
+    let sql = format!(
+        "SELECT {COLONNE_ALBUM} FROM albums a
+         ORDER BY a.artist COLLATE NOCASE, a.year, a.title COLLATE NOCASE
+         LIMIT ?1 OFFSET ?2"
+    );
     let mut statement = connection
-        .prepare_cached(
-            "SELECT album_key, title, artist, year, genre, total_tracks, cover_art_hash
-             FROM albums
-             ORDER BY artist COLLATE NOCASE, year, title COLLATE NOCASE
-             LIMIT ?1 OFFSET ?2",
-        )
+        .prepare_cached(&sql)
         .map_err(|err| db_error("elenco degli album", &err))?;
     let rows = statement
-        .query_map(rusqlite::params![limit, offset], |row| {
-            Ok(AlbumSummary {
-                album_key: row.get(0)?,
-                title: row.get(1)?,
-                artist: row.get(2)?,
-                year: row.get(3)?,
-                genre: row.get(4)?,
-                total_tracks: row.get(5)?,
-                cover_art_hash: row.get(6)?,
-            })
-        })
+        .query_map(rusqlite::params![limit, offset], album_from_row)
         .map_err(|err| db_error("elenco degli album", &err))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| db_error("elenco degli album", &err))
+}
+
+/// I dischi entrati in libreria per ultimi.
+///
+/// # Perché dischi e non brani
+///
+/// Il ripiano «aggiunti di recente» della Home chiedeva i dodici brani con la
+/// `date_added` più alta. Ma la musica non entra un brano alla volta: entra una
+/// cartella alla volta, e una cartella è un disco. Le dodici righe erano dodici
+/// tracce **dello stesso album** — per giunta in ordine arbitrario, perché
+/// condividono la `date_added` al secondo e il criterio di spareggio era l'id.
+/// Un ripiano che mostra dodici volte la stessa copertina non dice «cos'è
+/// entrato di nuovo»: dice «l'ultima cartella», e la dice dodici volte.
+///
+/// # L'ordine di spareggio, e perché non è il titolo
+///
+/// Uno spareggio ci vuole: due dischi entrati nello stesso istante devono
+/// presentarsi nello stesso ordine a ogni apertura, o il ripiano si riscrive da
+/// solo fra una visita e l'altra senza che sia successo niente. Il candidato
+/// ovvio era il titolo, e sarebbe stato sbagliato — su una libreria arrivata
+/// tutta in una volta (una cartella sola scansionata una volta sola: il caso
+/// normale al primo avvio, dove `date_added` ha *un* valore per migliaia di
+/// brani) il titolo diventa l'unico criterio, e «aggiunti di recente» mostra i
+/// dodici dischi che cominciano per A. Corretto e illeggibile.
+///
+/// Quindi `MAX(t.id)`: l'ordine in cui le righe sono state scritte, che è più
+/// fine della data al millisecondo e vuol dire la stessa cosa — chi è entrato
+/// per ultimo sta davanti. È stabile quanto il titolo, perché un id non cambia
+/// più, e non ha bisogno di essere letto dalla tabella: in SQLite l'id **è** il
+/// rowid, e sta dentro ogni voce dell'indice che serve il raggruppamento.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn recently_added_albums(
+    connection: &Connection,
+    limit: i64,
+) -> Result<Vec<AlbumSummary>, AppError> {
+    // Il raggruppamento in una sottoquery e non sull'esterna: così gira su
+    // `idx_tracks_album_added` e ne esce una riga per album, invece di tutte le
+    // tracce della libreria da scartare dopo.
+    let sql = format!(
+        "SELECT {COLONNE_ALBUM} FROM albums a
+         JOIN (SELECT album_key, MAX(date_added) AS entrato, MAX(id) AS ultima
+               FROM tracks WHERE album_key IS NOT NULL
+               GROUP BY album_key) u ON u.album_key = a.album_key
+         ORDER BY u.entrato DESC, u.ultima DESC
+         LIMIT ?1"
+    );
+    let mut statement = connection
+        .prepare_cached(&sql)
+        .map_err(|err| db_error("dischi aggiunti di recente", &err))?;
+    let rows = statement
+        .query_map(rusqlite::params![limit], album_from_row)
+        .map_err(|err| db_error("dischi aggiunti di recente", &err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("dischi aggiunti di recente", &err))
 }
 
 /// Una pagina degli album di un artista.
@@ -1300,27 +1386,17 @@ pub fn albums_by_artist(
     offset: i64,
     limit: i64,
 ) -> Result<Vec<AlbumSummary>, AppError> {
+    let sql = format!(
+        "SELECT {COLONNE_ALBUM} FROM albums a
+         WHERE a.artist = ?1
+         ORDER BY a.year, a.title COLLATE NOCASE
+         LIMIT ?2 OFFSET ?3"
+    );
     let mut statement = connection
-        .prepare_cached(
-            "SELECT album_key, title, artist, year, genre, total_tracks, cover_art_hash
-             FROM albums
-             WHERE artist = ?1
-             ORDER BY year, title COLLATE NOCASE
-             LIMIT ?2 OFFSET ?3",
-        )
+        .prepare_cached(&sql)
         .map_err(|err| db_error("album di un artista", &err))?;
     let rows = statement
-        .query_map(rusqlite::params![artist, limit, offset], |row| {
-            Ok(AlbumSummary {
-                album_key: row.get(0)?,
-                title: row.get(1)?,
-                artist: row.get(2)?,
-                year: row.get(3)?,
-                genre: row.get(4)?,
-                total_tracks: row.get(5)?,
-                cover_art_hash: row.get(6)?,
-            })
-        })
+        .query_map(rusqlite::params![artist, limit, offset], album_from_row)
         .map_err(|err| db_error("album di un artista", &err))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| db_error("album di un artista", &err))
@@ -2355,5 +2431,101 @@ mod tests {
             .query_row("SELECT cover_art_hash FROM albums", [], |r| r.get(0))
             .expect("album");
         assert!(hash.is_some(), "l'album deve avere la copertina dei brani");
+    }
+
+    #[test]
+    fn i_dischi_aggiunti_di_recente_sono_uno_per_album_col_piu_nuovo_in_cima() {
+        // Il difetto che questa query esiste per togliere: chiedendo i brani per
+        // data d'ingresso, le prime dodici righe sono dodici tracce dello stesso
+        // disco — perché la musica non entra un brano alla volta, entra una
+        // cartella alla volta.
+        let mut lib = Libreria::nuova();
+        for n in 1..=3 {
+            lib.brano(
+                &format!("Tale/Vecchio/{n:02}.wav"),
+                &format!("Pezzo {n}"),
+                "Tale",
+                "Vecchio",
+            );
+        }
+        for n in 1..=3 {
+            lib.brano(
+                &format!("Tale/Nuovo/{n:02}.wav"),
+                &format!("Brano {n}"),
+                "Tale",
+                "Nuovo",
+            );
+        }
+        lib.scansiona();
+
+        // Le date si scrivono a mano perché una scansione sola le mette tutte
+        // nello stesso istante: è esattamente il caso in cui l'ordinamento per
+        // brano non aveva niente da dire, e quello per disco deve averlo.
+        lib.connection
+            .execute(
+                "UPDATE tracks SET date_added = 100 WHERE album = 'Vecchio'",
+                [],
+            )
+            .expect("date del disco vecchio");
+        lib.connection
+            .execute(
+                "UPDATE tracks SET date_added = 200 WHERE album = 'Nuovo'",
+                [],
+            )
+            .expect("date del disco nuovo");
+
+        let dischi = recently_added_albums(&lib.connection, 12).expect("dischi recenti");
+
+        assert_eq!(dischi.len(), 2, "due dischi, non sei brani");
+        assert_eq!(
+            dischi.first().map(|a| a.title.as_str()),
+            Some("Nuovo"),
+            "l'ultimo entrato sta in cima"
+        );
+        assert_eq!(dischi.get(1).map(|a| a.title.as_str()), Some("Vecchio"));
+
+        // E il limite conta dischi, non tracce: è la misura del ripiano.
+        let uno = recently_added_albums(&lib.connection, 1).expect("dischi recenti");
+        assert_eq!(uno.len(), 1);
+        assert_eq!(uno.first().map(|a| a.title.as_str()), Some("Nuovo"));
+    }
+
+    #[test]
+    fn a_pari_data_conta_l_ordine_di_scrittura_e_non_il_titolo() {
+        // Il caso normale al primo avvio: una cartella sola, una scansione
+        // sola, e `date_added` con un valore solo per tutta la libreria. Lì lo
+        // spareggio **è** l'ordinamento, e in ordine alfabetico «aggiunti di
+        // recente» sarebbe la lettera A.
+        let mut lib = Libreria::nuova();
+        lib.brano("Tale/Zulu/01.wav", "Uno", "Tale", "Zulu");
+        lib.brano("Tale/Alfa/01.wav", "Uno", "Tale", "Alfa");
+        lib.scansiona();
+        lib.connection
+            .execute("UPDATE tracks SET date_added = 500", [])
+            .expect("stessa data per tutti");
+        // La riga scritta per ultima, qualunque sia il titolo del suo disco.
+        let ultimo: String = lib
+            .connection
+            .query_row(
+                "SELECT album FROM tracks ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("l'ultima riga");
+
+        let titoli =
+            |dischi: Vec<AlbumSummary>| dischi.into_iter().map(|a| a.title).collect::<Vec<_>>();
+        let primo = titoli(recently_added_albums(&lib.connection, 12).expect("dischi"));
+        let secondo = titoli(recently_added_albums(&lib.connection, 12).expect("dischi"));
+
+        assert_eq!(
+            primo.first().map(String::as_str),
+            Some(ultimo.as_str()),
+            "davanti va l'ultimo scritto, non il primo in alfabeto"
+        );
+        assert_eq!(primo.len(), 2);
+        // E due volte di fila la stessa risposta: un ripiano che si rimescola da
+        // solo fra una visita e l'altra sembra rotto anche quando non lo è.
+        assert_eq!(primo, secondo);
     }
 }

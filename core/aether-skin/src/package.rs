@@ -276,6 +276,7 @@ fn preflight(archivio: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Vec<Ammessa>, A
 fn leggi_voce(
     archivio: &mut ZipArchive<Cursor<&[u8]>>,
     ammessa: &Ammessa,
+    letti: &mut u64,
 ) -> Result<Vec<u8>, AppError> {
     let mut voce = archivio
         .by_index(ammessa.indice)
@@ -296,6 +297,24 @@ fn leggi_voce(
         return Err(rifiutata(
             &ammessa.nome,
             "la voce è più grande di quanto l'indice dichiarasse",
+        ));
+    }
+
+    // E la somma, sui byte **letti** e non su quelli dichiarati.
+    //
+    // Il conto di `preflight` è sull'indice, cioè su numeri che chi ha
+    // costruito l'archivio ha scritto lui: un indice che dichiara cento byte
+    // per voce passa il totale di sessanta megabyte qualunque cosa contenga.
+    // Con `deflate` un flusso rende fino a circa mille volte quel che occupa,
+    // quindi mezzo megabyte di archivio bastava a farne decomprimere cinquecento
+    // — sessantadue voci da otto megabyte ciascuna, ognuna sotto il proprio
+    // tetto, e la somma mai contata. Su Android è l'applicazione uccisa dal
+    // sistema, che è il caso che il tetto totale esiste per impedire.
+    *letti = letti.saturating_add(bytes.len() as u64);
+    if *letti > limits::MAX_TOTAL_BYTES {
+        return Err(rifiutata(
+            &ammessa.nome,
+            "il contenuto decompresso supera il limite totale",
         ));
     }
     Ok(bytes)
@@ -334,8 +353,9 @@ pub fn read_skin_package(archive: &[u8]) -> Result<SkinPackage, AppError> {
     let mut preview: Option<Vec<u8>> = None;
     let mut assets: Vec<SkinAsset> = Vec::new();
 
+    let mut letti: u64 = 0;
     for ammessa in &ammesse {
-        let bytes = leggi_voce(&mut archivio, ammessa)?;
+        let bytes = leggi_voce(&mut archivio, ammessa, &mut letti)?;
         match ammessa.voce {
             Voce::Manifest => {
                 source = Some(String::from_utf8(bytes).map_err(|_| {
@@ -585,6 +605,57 @@ mod tests {
         let err = read_skin_package(&dati).expect_err("accettato");
         let messaggio = format!("{:?}", err.code());
         assert!(messaggio.contains("compressione"), "{messaggio}");
+    }
+
+    /// Riscrive nell'indice la dimensione decompressa dichiarata di ogni voce.
+    ///
+    /// Serve a costruire quel che il nostro scrittore non produce mai: un
+    /// archivio che dichiara poco e contiene molto. I quattro byte stanno a
+    /// scarto 24 dentro un record dell'indice centrale, subito dopo il CRC e la
+    /// dimensione compressa.
+    fn indice_bugiardo(archivio: &mut [u8], dichiarata: u32) {
+        const FIRMA: &[u8] = &[0x50, 0x4b, 0x01, 0x02];
+        const SCARTO: usize = 24;
+        for inizio in 0..archivio.len() {
+            if archivio.get(inizio..inizio.saturating_add(4)) != Some(FIRMA) {
+                continue;
+            }
+            let da = inizio.saturating_add(SCARTO);
+            if let Some(campo) = archivio.get_mut(da..da.saturating_add(4)) {
+                campo.copy_from_slice(&dichiarata.to_le_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn un_indice_che_mente_non_fa_saltare_il_totale() {
+        // Otto voci da otto megabyte: ognuna sta sotto il **proprio** tetto, e
+        // insieme sfondano quello totale. L'indice ne dichiara cento byte
+        // l'una, quindi il conto di `preflight` — che legge l'indice — non le
+        // vede passare, e nemmeno il rapporto di compressione, che è anche lui
+        // un rapporto fra due numeri dichiarati.
+        //
+        // Con `deflate` un flusso rende fino a circa mille volte quel che
+        // occupa: questo archivio sta in poche decine di kilobyte.
+        let quanto = usize::try_from(limits::MAX_ENTRY_BYTES).unwrap_or(usize::MAX);
+        let mut grossa = vec![0_u8; quanto];
+        if let Some(testa) = grossa.get_mut(..PNG.len()) {
+            testa.copy_from_slice(PNG);
+        }
+
+        let nomi: Vec<String> = (0..8).map(|i| format!("assets/a{i}.png")).collect();
+        let mut voci: Vec<(&str, &[u8])> = vec![(MANIFEST_NAME, MANIFEST.as_bytes())];
+        voci.extend(nomi.iter().map(|nome| (nome.as_str(), grossa.as_slice())));
+        let mut dati = archivio(&voci);
+        assert!(
+            dati.len() as u64 <= limits::MAX_ARCHIVE_BYTES,
+            "l'archivio da solo sfora, e il test proverebbe un'altra guardia"
+        );
+        indice_bugiardo(&mut dati, 100);
+
+        let err = read_skin_package(&dati).expect_err("accettato");
+        let messaggio = format!("{:?}", err.code());
+        assert!(messaggio.contains("limite totale"), "{messaggio}");
     }
 
     #[test]

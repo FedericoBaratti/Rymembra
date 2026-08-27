@@ -23,6 +23,8 @@ import { Icona } from "../parti/Icone";
 import { Anteprima } from "./Anteprima";
 import { evidenzia, posizione, rigaDi } from "./evidenzia";
 import { contestoFinto } from "./finto";
+import { t, tSe } from "../lingue";
+import { Trans } from "../lingue/Trans";
 
 /** Le tre schede del riquadro centrale. */
 export type Scheda = "json" | "css" | "diff";
@@ -57,11 +59,13 @@ const SENZA_REGISTRO = new Map();
 const SLOT_DIAGNOSI = { intestazione: null, contenuto: null } as const;
 
 /** Le linguette, con l'etichetta che si legge. */
-const SCHEDE: readonly (readonly [Scheda, string])[] = [
-  ["json", "skin.json"],
-  ["css", "CSS compilato"],
-  ["diff", "Diff con l'originale"],
-];
+function schede(): readonly (readonly [Scheda, string])[] {
+  return [
+    ["json", "skin.json"],
+    ["css", t("studio.doc.css")],
+    ["diff", t("studio.doc.diff")],
+  ];
+}
 
 /** Il colore di un avviso, per gravità. */
 function tinta(kind: Avviso["kind"]): string {
@@ -83,7 +87,10 @@ function RigaContrasto({ c, soglia }: { c: Contrasto; soglia: number }) {
     <div className="riga-contrasto">
       <Icona nome={c.passa ? "i-check" : "i-alert"} dim={13} />
       <span className="coppia">
-        {c.davanti.replace("color.", "")} su {c.dietro.replace("color.", "")}
+        {t("studio.doc.pairOn", {
+          davanti: c.davanti.replace("color.", ""),
+          dietro: c.dietro.replace("color.", ""),
+        })}
       </span>
       <span className="rapporto" style={{ color: colore }}>
         {c.scuro.toFixed(2)}
@@ -131,8 +138,8 @@ export function Documento({
   soglia: number;
   /** Il documento da cui si è partiti, per il confronto. */
   originale: string;
-  /** Applica il suggerimento di `nearest_parts()`. */
-  onCorreggi: (sbagliato: string, giusto: string) => void;
+  /** Applica il suggerimento di `nearest_parts()`, al percorso dell'errore. */
+  onCorreggi: (percorso: string, giusto: string) => void;
   /** Per la striscia dei conteggi: quant'è grande il vocabolario. */
   registro: Registro | null;
   idSkin: string;
@@ -221,8 +228,12 @@ export function Documento({
         {/* Linguette vere e non un segmentato: si saldano al riquadro sotto,
             e la forma dice che quel che si sceglie è il contenuto di **quel**
             riquadro e non di tutta la vista. */}
-        <div className="linguette-editor" role="tablist" aria-label="Cosa mostrare">
-          {SCHEDE.map(([chiave, etichetta]) => (
+        <div
+          className="linguette-editor"
+          role="tablist"
+          aria-label={t("studio.doc.tabs")}
+        >
+          {schede().map(([chiave, etichetta]) => (
             <button
               key={chiave}
               type="button"
@@ -238,8 +249,14 @@ export function Documento({
           <span className="spinta" />
           <span className="misure">
             {scheda === "json"
-              ? `riga ${dove.riga} · col ${dove.colonna}`
-              : `${righe.length} righe · ${esito?.compilatoMs ?? 0} ms`}
+              ? t("studio.doc.rowCol", {
+                  riga: dove.riga,
+                  colonna: dove.colonna,
+                })
+              : t("studio.doc.lines", {
+                  n: righe.length,
+                  ms: esito?.compilatoMs ?? 0,
+                })}
           </span>
         </div>
 
@@ -284,7 +301,7 @@ export function Documento({
                   quale.scrollTop = e.currentTarget.scrollTop;
                   quale.scrollLeft = e.currentTarget.scrollLeft;
                 }}
-                aria-label="Il documento della skin"
+                aria-label={t("studio.doc.source")}
               />
             </div>
           )}
@@ -292,8 +309,7 @@ export function Documento({
             <pre className="uscita">
               <code>
                 {(esito?.errori.length ?? 0) > 0
-                  ? (ultimoValido?.css ??
-                    "/* Nessun foglio: il documento non è ancora valido. */")
+                  ? (ultimoValido?.css ?? t("studio.doc.noSheet"))
                   : (esito?.css ?? "")}
               </code>
             </pre>
@@ -317,27 +333,36 @@ export function Documento({
                   <code className="codice">{errore.code}</code>
                   {errore.path.length > 0 && <> · <code>{errore.path}</code></>}
                 </div>
-                <div className="cosa">{errore.message}</div>
+                {/* Il messaggio del nucleo è preciso ma italiano, e `path`
+                    e `forse` — le due parti che servono davvero — sono già
+                    estratte qui sopra. Quel che resta è la ragione, e la
+                    ragione sta nel catalogo degli errori, chiavata sul codice
+                    che il problema porta con sé. */}
+                <div className="cosa">
+                  {tSe(`errors.${errore.code}`, errore.message)}
+                </div>
                 {errore.forse.length > 0 && (
                   <div className="forse">
-                    Forse{" "}
+                    {t("studio.doc.maybe")}
                     {errore.forse.map((nome) => (
                       <button
                         key={nome}
                         type="button"
                         className="suggerimento"
-                        onClick={() => {
-                          const sbagliato = errore.path.split(".").pop() ?? "";
-                          onCorreggi(sbagliato, nome);
-                        }}
+                        // Il percorso intero, non l'ultimo pezzo: la correzione
+                        // avviene **lì**, e non alla prima parola uguale che
+                        // capita nel file.
+                        onClick={() => onCorreggi(errore.path, nome)}
                       >
                         {nome}
                       </button>
                     ))}
                     ?
                     <div className="da-dove">
-                      Il suggerimento viene da <code>nearest_parts()</code>: se non
-                      c&apos;è niente di simile non propone niente.
+                      <Trans
+                        k="studio.doc.suggestion"
+                        v={{ funzione: <code>nearest_parts()</code> }}
+                      />
                     </div>
                   </div>
                 )}
@@ -349,18 +374,36 @@ export function Documento({
               «47 token noti» è la risposta alla domanda che viene subito dopo
               «questo nome non esiste» — cioè quali esistono. */}
           <div className="piede-editor">
-            <span style={{ color: (esito?.errori.length ?? 0) > 0 ? "var(--danger)" : undefined }}>
-              {esito?.errori.length ?? 0} errori
+            <span
+              style={{
+                color:
+                  (esito?.errori.length ?? 0) > 0 ? "var(--danger)" : undefined,
+              }}
+            >
+              {t("studio.errors", { n: esito?.errori.length ?? 0 })}
             </span>
-            <span style={{ color: (esito?.avvisi.length ?? 0) > 0 ? "var(--warning)" : undefined }}>
-              {esito?.avvisi.length ?? 0} avvisi
+            <span
+              style={{
+                color:
+                  (esito?.avvisi.length ?? 0) > 0
+                    ? "var(--warning)"
+                    : undefined,
+              }}
+            >
+              {t("studio.warnings", { n: esito?.avvisi.length ?? 0 })}
             </span>
-            <span>{registro?.tokens.length ?? 0} token noti</span>
-            <span>{registro?.parts.length ?? 0} parti note</span>
-            <span>{registro?.effects.length ?? 0} effetti</span>
+            <span>
+              {t("studio.doc.knownTokens", { n: registro?.tokens.length ?? 0 })}
+            </span>
+            <span>
+              {t("studio.doc.knownParts", { n: registro?.parts.length ?? 0 })}
+            </span>
+            <span>
+              {t("studio.doc.effects", { n: registro?.effects.length ?? 0 })}
+            </span>
             <span className="spinta" />
-            <span className="deterministico">
-              l&apos;uscita è deterministica: stessa skin, stesso CSS
+            <span>
+              {t("studio.doc.deterministic")}
             </span>
           </div>
         </div>
@@ -373,10 +416,15 @@ export function Documento({
          * valido» smette di essere una promessa e diventa una cosa che si vede.
          */}
         <section className="anteprima-documento">
-          <h3>Anteprima · l&apos;ultimo stato valido</h3>
-          <div className="riquadro-fermo" data-in-pausa={errore !== null || undefined}>
+          <h3>{t("studio.doc.preview")}</h3>
+          <div
+            className="riquadro-fermo"
+            data-in-pausa={errore !== null || undefined}
+          >
             <Anteprima
-              css={errore !== null ? (ultimoValido?.css ?? "") : (esito?.css ?? "")}
+              css={
+                errore !== null ? (ultimoValido?.css ?? "") : (esito?.css ?? "")
+              }
               id={idSkin}
               parti={SENZA_REGISTRO}
               sondaAccesa={false}
@@ -395,16 +443,18 @@ export function Documento({
             </Anteprima>
             {errore !== null && (
               <span className="velo">
-                <span className="pillola-pausa">in pausa sull&apos;errore</span>
+                <span className="pillola-pausa">
+                  {t("studio.doc.pausedPill")}
+                </span>
               </span>
             )}
           </div>
         </section>
 
         <section>
-          <h3>check_skin() · {esito?.avvisi.length ?? 0} avvisi</h3>
+          <h3>{t("studio.doc.warnings", { n: esito?.avvisi.length ?? 0 })}</h3>
           {(esito?.avvisi.length ?? 0) === 0 ? (
-            <p className="niente">Nessun avviso.</p>
+            <p className="niente">{t("studio.doc.noWarnings")}</p>
           ) : (
             <div className="avvisi">
               {esito?.avvisi.map((a, i) => (
@@ -427,7 +477,8 @@ export function Documento({
 
         <section>
           <h3>
-            Contrasto <span className="temi">scuro / chiaro</span>
+            {t("studio.doc.contrast")}{" "}
+            <span className="temi">{t("studio.doc.themes")}</span>
           </h3>
           <div className="contrasti">
             {(esito?.contrasti ?? ultimoValido?.contrasti ?? []).map((c, i) => (
@@ -435,9 +486,14 @@ export function Documento({
             ))}
           </div>
           <p className="nota">
-            <code>contrast_ratio()</code> tiene conto dell&apos;opacità:{" "}
-            <code>text.3</code> è bianco al 46% <i>sopra</i> la superficie —
-            misurarlo pieno darebbe sempre 21:1.
+            <Trans
+              k="studio.doc.contrastNote"
+              v={{
+                funzione: <code>contrast_ratio()</code>,
+                token: <code>text.3</code>,
+                sopra: <i>{t("studio.doc.contrastNote.over")}</i>,
+              }}
+            />
           </p>
         </section>
       </aside>

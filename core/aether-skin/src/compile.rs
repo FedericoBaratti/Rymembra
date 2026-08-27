@@ -1016,6 +1016,32 @@ mod tests {
     }
 
     #[test]
+    fn il_ritmo_e_la_profondita_escono_coi_nomi_che_il_foglio_legge() {
+        // Questi undici token non hanno bisogno di una riga nel compilatore: il
+        // percorso generico li emette come qualunque altra lunghezza o numero.
+        // Quel che **non** ha nessun altro guardiano è il patto sui nomi — la
+        // composizione vera sta in `stile.css`, che chiede `var(--ritmo-3)` e
+        // `var(--profondita-spigolo)`. Rinominare un token qui e dimenticare il
+        // foglio spegnerebbe la manopola senza rompere niente che compili, e
+        // questo test è l'unico posto in cui i due file si guardano.
+        let css = compila(
+            r##"{
+                "space.3": "14px",
+                "depth.edge": 0.5,
+                "depth.sheen": "40px",
+                "radius.inner": 0.25
+            }"##,
+        );
+        assert!(css.contains("--ritmo-3: 14px;"), "{css}");
+        assert!(css.contains("--profondita-spigolo: 0.5;"), "{css}");
+        assert!(css.contains("--profondita-luce: 40px;"), "{css}");
+        assert!(css.contains("--raggio-fattore-interno: 0.25;"), "{css}");
+        // `--spazio-*` resta del motore: il foglio lo compone da ritmo e
+        // densità, e una skin che lo scrivesse scavalcherebbe la densità.
+        assert!(!css.contains("--spazio-"), "{css}");
+    }
+
+    #[test]
     fn i_calcolati_non_si_dichiarano() {
         let css = compila(
             r##"{ "layout.rail": "68px", "layout.playerHeight": "92px", "layout.playerGap": "14px", "motion.dur.1": "150ms" }"##,

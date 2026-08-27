@@ -16,6 +16,7 @@ import {
 
 import {
   ipc,
+  type Brano,
   type ErroreIpc,
   type GuastoAudio,
   type StatoEq,
@@ -52,9 +53,13 @@ const FERMO: StatoRiproduzione = {
   posizioneCoda: null,
   eqAttivo: false,
   eqGuadagni: [],
-  // Acceso, come il motore: il valore di ripiego finché il nucleo non risponde
-  // deve dire quel che sta succedendo davvero, non la posizione più prudente.
-  replaygain: true,
+  // `normale`, come il motore: il valore di ripiego finché il nucleo non
+  // risponde deve dire quel che sta succedendo davvero, non la posizione più
+  // prudente.
+  replaygain: "normale",
+  spegnimentoMs: null,
+  autoplay: false,
+  dissolvenzaS: 0,
   audio: null,
 };
 
@@ -145,6 +150,26 @@ export interface Riproduzione {
   errore: unknown;
   /** Scarta l'errore mostrato. */
   scartaErrore: () => void;
+  /**
+   * Ritocca il brano corrente senza aspettare il nucleo.
+   *
+   * # Perché serve
+   *
+   * Perché cuore e stelle si scrivono sul **brano**, e il brano che suona qui
+   * dentro è una copia che il nucleo compone quando ha una notizia sua da dare:
+   * `costruisci_stato` rilegge la riga dal database, ma lo fa in risposta a una
+   * pausa, a un brano nuovo, a un salto — non a un cuoricino. Fra un evento e
+   * l'altro la barra continuava a mostrare il valore di quando il brano era
+   * partito, e la prima pausa lo faceva saltare al valore vero: acceso o spento
+   * a seconda di com'era, cioè un cuore che si metteva e si toglieva da solo a
+   * ogni play/pausa.
+   *
+   * Gli elenchi non hanno questo problema perché `App` li aggiorna sul posto;
+   * questa è la stessa cura per l'unica copia che `App` non possiede.
+   *
+   * Non tocca niente se l'identificativo non è quello che sta suonando.
+   */
+  ritoccaBrano: (id: number, campi: Partial<Brano>) => void;
 }
 
 /** Segue la riproduzione per tutta la vita della finestra. */
@@ -282,5 +307,13 @@ export function useRiproduzione(): Riproduzione {
 
   const scartaErrore = useCallback(() => setErrore(null), []);
 
-  return { stato, disponibile, errore, scartaErrore };
+  const ritoccaBrano = useCallback((id: number, campi: Partial<Brano>) => {
+    setStato((prima) =>
+      prima.brano === null || prima.brano.id !== id
+        ? prima
+        : { ...prima, brano: { ...prima.brano, ...campi } },
+    );
+  }, []);
+
+  return { stato, disponibile, errore, scartaErrore, ritoccaBrano };
 }

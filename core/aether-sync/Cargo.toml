@@ -1,0 +1,36 @@
+[package]
+name = "aether-sync"
+description = "La sincronia fra dispositivi di Aether: un documento per dispositivo, e la fusione che li fa convergere."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Nessuno di questi crate va su crates.io.
+#
+# Non è modestia: sono i pezzi di un'applicazione, con nomi che occuperebbero
+# uno spazio dei nomi pubblico senza offrire niente a nessuno, e con un patto
+# di stabilità che non esiste — le firme qui dentro cambiano quando serve.
+# Senza questa riga un `cargo publish` distratto dalla radice li
+# pubblicherebbe tutti, e un nome preso su crates.io non si restituisce.
+publish = false
+
+[dependencies]
+# L'unica dipendenza di dominio, e l'unica che serve: `TrackStats` e
+# `merge_stats` sono già la fusione che qui si estende a N dispositivi, e
+# `AppError` è già il vocabolario dei guasti.
+aether-domain = { path = "../aether-domain" }
+blake3.workspace = true
+# Il documento viaggia compresso: settanta chilobyte di JSON diventano una
+# decina, e su una cartella condivisa da un telefono è la differenza fra una
+# passata e un'attesa.
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

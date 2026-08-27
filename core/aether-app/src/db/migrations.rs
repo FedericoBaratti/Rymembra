@@ -53,6 +53,46 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "scrobble",
         sql: include_str!("schema/006_scrobble.sql"),
     },
+    Migration {
+        version: 7,
+        name: "desiderati",
+        sql: include_str!("schema/007_desiderati.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "rapporti",
+        sql: include_str!("schema/008_rapporti.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "sincronia",
+        sql: include_str!("schema/009_sincronia.sql"),
+    },
+    Migration {
+        version: 10,
+        name: "cataloghi",
+        sql: include_str!("schema/010_cataloghi.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "testi",
+        sql: include_str!("schema/011_testi.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "home",
+        sql: include_str!("schema/012_home.sql"),
+    },
+    Migration {
+        version: 13,
+        name: "testi-senza-tempi",
+        sql: include_str!("schema/013_testi_senza_tempi.sql"),
+    },
+    Migration {
+        version: 14,
+        name: "home-dischi",
+        sql: include_str!("schema/014_home_dischi.sql"),
+    },
 ];
 
 /// La versione a cui questa build porta il database.

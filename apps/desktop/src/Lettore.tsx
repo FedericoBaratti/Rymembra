@@ -14,6 +14,7 @@ import { Icona } from "./parti/Icone";
 import { Ora } from "./parti/Ora";
 import { Scrubber } from "./parti/Scrubber";
 import { Trasporto } from "./parti/Trasporto";
+import { t } from "./lingue";
 
 export function Lettore({
   stato,
@@ -57,8 +58,8 @@ export function Lettore({
         <button
           type="button"
           className="tasto icon-btn"
-          aria-label="Riapri la colonna In riproduzione"
-          title="In riproduzione"
+          aria-label={t("player.reopenColumn")}
+          title={t("player.nowPlaying")}
           onClick={onColonna}
         >
           <Icona nome="i-expand" dim={17} />
@@ -67,8 +68,8 @@ export function Lettore({
           type="button"
           className="tasto icon-btn"
           aria-pressed={codaAperta}
-          aria-label={`Coda di riproduzione, ${stato.coda.length} brani`}
-          title="Coda"
+          aria-label={t("player.queue.aria", { n: stato.coda.length })}
+          title={t("player.queue")}
           onClick={onCoda}
         >
           <Icona nome="i-queue" dim={17} />
@@ -82,8 +83,8 @@ export function Lettore({
             className="tasto icon-btn"
             aria-pressed={eqAperto}
             aria-expanded={eqAperto}
-            aria-label="Equalizzatore"
-            title="Equalizzatore"
+            aria-label={t("player.eq")}
+            title={t("player.eq")}
             data-acceso={stato.eqAttivo || undefined}
             onClick={() => setEqAperto((prima) => !prima)}
           >
@@ -102,8 +103,8 @@ export function Lettore({
           type="button"
           className="tasto icon-btn"
           aria-pressed={stato.muto}
-          aria-label={stato.muto ? "Riattiva l'audio" : "Silenzia"}
-          title={stato.muto ? "Riattiva" : "Silenzia"}
+          aria-label={stato.muto ? t("player.unmute") : t("player.mute")}
+          title={stato.muto ? t("player.unmute.short") : t("player.mute")}
           onClick={() => comanda(ipc.volume(stato.volume, !stato.muto))}
         >
           {/* Erano due emoji a colori: `🔇` e `🔊` si disegnavano con la
@@ -119,7 +120,7 @@ export function Lettore({
           step={0.01}
           value={stato.volume}
           style={{ "--avanzamento": `${stato.volume * 100}%` } as CSSProperties}
-          aria-label="Volume"
+          aria-label={t("player.volume")}
           /* Muovere il volume toglie il silenziamento: chi trascina la manopola
              sta chiedendo di sentire, e lasciarla muta gli farebbe credere che
              il comando sia rotto. */

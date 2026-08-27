@@ -17,7 +17,7 @@
 //!     cargo run -p aether-cloud --example nuvola -- ripristina --dati <cartella> --davvero
 //!
 //! `--dati` è la cartella dell'applicazione, quella che la riga di avvio stampa:
-//! su Windows `%APPDATA%\dev.aether.desktop`.
+//! su Windows `%APPDATA%\io.github.federicobaratti.aether`.
 //!
 //! `piano` stampa e non applica. `ripristina` **rifiuta** di fare qualcosa senza
 //! `--davvero`: è il comando che tocca il database vero di chi lo lancia, e la
@@ -101,7 +101,7 @@ fn cartella_dati() -> PathBuf {
         _ => {
             eprintln!("manca --dati <cartella>.");
             eprintln!("È la cartella che la riga di avvio di Aether stampa,");
-            eprintln!("su Windows di solito %APPDATA%\\dev.aether.desktop");
+            eprintln!("su Windows di solito %APPDATA%\\io.github.federicobaratti.aether");
             std::process::exit(2);
         }
     }

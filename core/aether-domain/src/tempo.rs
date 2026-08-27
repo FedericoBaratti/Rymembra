@@ -4,7 +4,7 @@
 //!
 //! È nato dentro `aether-archivio`, quando l'unico posto in cui Aether leggeva
 //! una data di Spotify era lo zip che Spotify manda per posta. Con la via OAuth
-//! i lettori sono due — `aether_spotify::account::web` legge il `played_at` di
+//! i lettori erano due — la Web API leggeva il `played_at` di
 //! `/me/player/recently-played` — e due implementazioni di un lettore di date
 //! divergono in silenzio: la seconda sbaglia un caso limite che la prima
 //! trattava, e nessuno se ne accorge finché una cronologia non finisce datata

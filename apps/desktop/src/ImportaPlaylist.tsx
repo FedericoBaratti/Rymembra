@@ -10,19 +10,22 @@
  *
  * # I mancanti si dicono con il percorso
  *
- * Un brano di un M3U che qui non c'è **non** finisce nella coda di
- * scaricamento, al contrario di quel che succede importando da Spotify. La
- * differenza è nella domanda: un link di Spotify è un elenco di canzoni che
- * l'utente vuole avere, un file M3U è la fotografia di una libreria che
- * qualcuno aveva già. Andare a cercare su YouTube un file che esiste sul
- * computer di chi ha esportato la playlist è una risposta a una domanda che
- * nessuno ha fatto — e il percorso, che si mostra, è l'unica cosa utile per
- * andarselo a prendere dov'è davvero.
+ * Un brano di un M3U che qui non c'è **non** finisce nella coda, al contrario
+ * di quel che succede importando un archivio o un link. La differenza è nella
+ * domanda: quelli sono elenchi di canzoni che l'utente vuole avere, un file M3U
+ * è la fotografia di una libreria che qualcuno aveva già. Andare a cercare nei
+ * cataloghi un file che esiste sul computer di chi ha esportato la playlist è
+ * una risposta a una domanda che nessuno ha fatto — e il percorso, che si
+ * mostra, è l'unica cosa utile per andarselo a prendere dov'è davvero.
  */
 import { useEffect, useState } from "react";
 
 import { ipc, testoErrore, type EsitoFilePlaylist } from "./ipc";
+import { Avviso } from "./parti/Avvisi";
 import { Icona } from "./parti/Icone";
+import { numero } from "./formato";
+import { t } from "./lingue";
+import { Trans } from "./lingue/Trans";
 
 export function ImportaPlaylist({
   percorso,
@@ -82,23 +85,25 @@ export function ImportaPlaylist({
   return (
     <div className="velo scuro" onClick={inCorso ? undefined : onChiudi}>
       <div
-        className="finestrella"
+        className="finestrella glass-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="Importa una playlist da file"
+        aria-label={t("plfile.aria")}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2>Importa una playlist</h2>
+        <h2>{t("plfile.title")}</h2>
         <div className="percorso">{percorso}</div>
 
         {errore && <div className="errore">{errore}</div>}
 
         {rapporto === null ? (
-          <p className="nota">{inCorso ? "Leggo il file…" : "Niente da leggere."}</p>
+          <p className="nota">
+            {inCorso ? t("plfile.reading") : t("plfile.nothing")}
+          </p>
         ) : (
           <>
             <label>
-              Nome della playlist
+              {t("plfile.name")}
               <input
                 type="text"
                 value={nome}
@@ -108,63 +113,61 @@ export function ImportaPlaylist({
 
             <dl className="numeri">
               <div>
-                <dt>Righe nel file</dt>
+                <dt>{t("plfile.rows")}</dt>
+                <dd className="stat-number">{numero(rapporto.entries)}</dd>
+              </div>
+              <div>
+                <dt>{t("plfile.byPath")}</dt>
                 <dd className="stat-number">
-                  {rapporto.entries.toLocaleString("it")}
+                  {numero(rapporto.matchedByPath)}
                 </dd>
               </div>
               <div>
-                <dt>Trovate dal percorso</dt>
+                <dt>{t("plfile.byTags")}</dt>
                 <dd className="stat-number">
-                  {rapporto.matchedByPath.toLocaleString("it")}
+                  {numero(rapporto.matchedByTags)}
                 </dd>
               </div>
               <div>
-                <dt>Trovate dai tag</dt>
+                <dt>{t("plfile.notInLib")}</dt>
                 <dd className="stat-number">
-                  {rapporto.matchedByTags.toLocaleString("it")}
-                </dd>
-              </div>
-              <div>
-                <dt>Non in libreria</dt>
-                <dd className="stat-number">
-                  {rapporto.missing.length.toLocaleString("it")}
+                  {numero(rapporto.missing.length)}
                 </dd>
               </div>
             </dl>
 
+            {/* Avviso: qualcosa viene distrutto, e un gesto lo evita. Il gesto
+                è cambiare il nome nel campo qui sopra, quindi non c'è un tasto
+                da mettere dentro il riquadro — la frase indica dove. */}
             {rapporto.replaced && (
-              <div className="avviso-monco">
-                Una playlist chiamata <strong>{nome}</strong> c&apos;è già, e
-                verrà <strong>sostituita</strong>: i suoi brani di adesso
-                spariscono e restano quelli di questo file. Cambia il nome qui
-                sopra se vuoi tenerle tutte e due.
-              </div>
+              <Avviso livello="avviso">
+                <Trans
+                  k="plfile.replaced"
+                  v={{
+                    nome: <strong>{nome}</strong>,
+                    sostituita: <strong>{t("plfile.replaced.word")}</strong>,
+                  }}
+                />
+              </Avviso>
             )}
 
-            {vuota && (
-              <div className="avviso-monco">
-                Nessuna riga di questo file corrisponde a un brano in libreria.
-                Se la playlist viene da un altro computer è normale: i percorsi
-                non esistono qui, e senza titolo e interprete scritti nel file
-                non c&apos;è altro con cui cercare.
-              </div>
-            )}
+            {/* Blocco: importare produrrebbe una playlist vuota, e il primario è
+                spento. Era ambra accanto all'altro, e i due dicevano cose
+                opposte con lo stesso colore — «attento» e «non si può». */}
+            {vuota && <Avviso livello="blocco">{t("plfile.empty")}</Avviso>}
 
+            {/* Nota: righe che non si sono capite sono un fatto del file, non
+                un guasto di Aether, e non c'è niente da fare. */}
             {rapporto.unreadable > 0 && (
-              <p className="nota">
-                {rapporto.unreadable}{" "}
-                {rapporto.unreadable === 1 ? "riga" : "righe"} del file non si
-                {rapporto.unreadable === 1 ? " è capita" : " sono capite"}. Le
-                altre ci sono tutte.
-              </p>
+              <Avviso livello="nota">
+                {t("plfile.unreadable", { n: rapporto.unreadable })}
+              </Avviso>
             )}
 
             {rapporto.missing.length > 0 && (
               <details className="mancanti-account">
                 <summary>
-                  {rapporto.missing.length.toLocaleString("it")}{" "}
-                  {rapporto.missing.length === 1 ? "brano" : "brani"} che non hai
+                  {t("plfile.missing", { n: rapporto.missing.length })}
                 </summary>
                 <ul>
                   {rapporto.missing.slice(0, 50).map((m) => (
@@ -185,7 +188,7 @@ export function ImportaPlaylist({
                 </ul>
                 {rapporto.missing.length > 50 && (
                   <p className="nota">
-                    …e altri {(rapporto.missing.length - 50).toLocaleString("it")}.
+                    {t("plfile.andMore", { n: rapporto.missing.length - 50 })}
                   </p>
                 )}
               </details>
@@ -193,23 +196,28 @@ export function ImportaPlaylist({
           </>
         )}
 
-        <div className="in-fondo">
+        <div className="tasti-finestrella">
           <button
             type="button"
             className="bottone btn-ghost"
             disabled={inCorso}
             onClick={onChiudi}
           >
-            Annulla
+            {t("common.cancel")}
           </button>
           <button
             type="button"
             className="bottone primario btn-accent"
-            disabled={inCorso || rapporto === null || nome.trim().length === 0}
+            // `vuota`: la playlist verrebbe creata e sarebbe vuota, cioè un
+            // successo apparente. Il riquadro qui sopra è un blocco e questo
+            // tasto deve dirlo anche lui, o il blocco è solo un colore.
+            disabled={
+              inCorso || rapporto === null || nome.trim().length === 0 || vuota
+            }
             onClick={conferma}
           >
             <Icona nome="i-import" dim={15} />
-            {inCorso ? "Un momento…" : "Importa"}
+            {inCorso ? t("plfile.working") : t("legacy.import")}
           </button>
         </div>
       </div>

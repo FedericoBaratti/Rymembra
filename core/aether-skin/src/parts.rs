@@ -151,6 +151,7 @@ pub static PARTS: &[PartDef] = &[
     parte!("np-scrim", NowPlaying, false, "Il velo sopra la copertina, per leggere il testo."),
     parte!("lyrics-screen", NowPlaying, true, "La schermata del testo."),
     parte!("lyric-line", NowPlaying, false, "La riga di testo, attiva e non."),
+    parte!("lyric-word", NowPlaying, false, "La parola del testo, quando i tempi ci sono."),
     parte!("viz-screen", NowPlaying, true, "La schermata del visualizer."),
     parte!("viz-title", NowPlaying, false, "Il titolo sopra il visualizer."),
     parte!("eq-bars", NowPlaying, false, "Le barre dell'equalizzatore."),

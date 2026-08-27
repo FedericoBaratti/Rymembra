@@ -9,6 +9,8 @@
 import { Copertina } from "../Copertina";
 import type { Brano } from "../ipc";
 import { Icona } from "./Icone";
+import { t } from "../lingue";
+import { nomeArtista, titoloAlbum } from "../formato";
 
 export function Ora({
   brano,
@@ -26,14 +28,21 @@ export function Ora({
   return (
     <div className="ora">
       {conCopertina && (
-        <Copertina hash={brano.coverArtHash} titolo={brano.album} classe="miniatura" />
+        <Copertina
+          hash={brano.coverArtHash}
+          titolo={titoloAlbum(brano.album)}
+          classe="miniatura"
+        />
       )}
       <div className="chi">
         <div className="nome" title={brano.title}>
           {brano.title}
         </div>
-        <div className="autore" title={`${brano.artist} · ${brano.album}`}>
-          {brano.artist} · {brano.album}
+        <div
+          className="autore"
+          title={`${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`}
+        >
+          {nomeArtista(brano.artist)} · {titoloAlbum(brano.album)}
         </div>
       </div>
       {conCuore && (
@@ -41,7 +50,7 @@ export function Ora({
           type="button"
           className="cuore icon-btn"
           aria-pressed={brano.liked}
-          aria-label={brano.liked ? "Togli dai preferiti" : "Aggiungi ai preferiti"}
+          aria-label={brano.liked ? t("track.unlike") : t("track.like")}
           onClick={() => onPreferito(brano)}
         >
           <Icona nome={brano.liked ? "i-heart-f" : "i-heart"} dim={17} />

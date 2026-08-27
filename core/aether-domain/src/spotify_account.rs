@@ -16,12 +16,12 @@
 //!
 //! # Perché l'abbinamento non è scritto qui
 //!
-//! Perché esiste già, in [`crate::spotify_plan`], ed è la parte più guardata di
+//! Perché esiste già, in [`crate::abbinamento`], ed è la parte più guardata di
 //! tutto il sistema: la scala a quattro gradini con la durata a sorvegliare
 //! quelli larghi, e il rifiuto di indovinare quando due candidati si somigliano.
 //! Un account intero è tanti elenchi, non un problema diverso. Quel che serviva
 //! era poterla chiamare molte volte senza rifare l'indice ogni volta, ed è
-//! [`crate::spotify_plan::Indice`].
+//! [`crate::abbinamento::Indice`].
 //!
 //! # La cronologia, e il millisecondo che sposta tutto
 //!
@@ -35,10 +35,10 @@
 
 use std::collections::HashSet;
 
+use crate::abbinamento::{Indice, LibraryTrack, PianoAbbinamento};
+use crate::esterno::BranoEsterno;
 use crate::keys::{TrackKey, TrackKeyInput};
 use crate::listen::counts_as_play;
-use crate::spotify::SpotifyTrack;
-use crate::spotify_plan::{Indice, LibraryTrack, SpotifyPlan};
 
 /// Da dove è arrivato uno snapshot.
 ///
@@ -90,11 +90,11 @@ pub struct PlaylistSpotify {
     /// sincronizzazione successiva ne creerebbe una seconda accanto alla prima.
     pub spotify_id: Option<String>,
     /// I brani, nell'ordine in cui stanno su Spotify.
-    pub brani: Vec<SpotifyTrack>,
+    pub brani: Vec<BranoEsterno>,
     /// Quanti brani Spotify **dichiara** che ce ne siano.
     ///
     /// Separato da `brani.len()` per la stessa ragione di
-    /// [`crate::spotify::SpotifyContent::declared_total`]: la differenza fra i
+    /// [`crate::esterno::ContenutoEsterno::declared_total`]: la differenza fra i
     /// due è l'unico modo di accorgersi che un elenco è arrivato monco.
     pub dichiarati: Option<u32>,
 }
@@ -102,7 +102,7 @@ pub struct PlaylistSpotify {
 impl PlaylistSpotify {
     /// Quanti brani mancano all'appello, se ne mancano.
     ///
-    /// `(letti, attesi)`, come [`crate::spotify::SpotifyContent::truncation`].
+    /// `(letti, attesi)`, come [`crate::esterno::ContenutoEsterno::truncation`].
     #[must_use]
     pub fn troncatura(&self) -> Option<(u32, u32)> {
         let attesi = self.dichiarati?;
@@ -126,7 +126,7 @@ pub struct AlbumSpotify {
     /// loro tracce, e chiederle una per una all'API costerebbe una richiesta per
     /// album. Un album senza brani porta comunque il suo `spotify_id`, che è
     /// quel che [`crate::album`] usa per fondere le edizioni.
-    pub brani: Vec<SpotifyTrack>,
+    pub brani: Vec<BranoEsterno>,
 }
 
 /// Un artista seguito.
@@ -151,7 +151,7 @@ pub struct AscoltoSpotify {
     /// Quanti millisecondi è stato suonato davvero.
     pub ms_ascoltati: u64,
     /// Che brano era.
-    pub brano: SpotifyTrack,
+    pub brano: BranoEsterno,
 }
 
 impl AscoltoSpotify {
@@ -224,7 +224,7 @@ pub struct AccountSnapshot {
     /// Le playlist, con i loro brani.
     pub playlist: Vec<PlaylistSpotify>,
     /// I «Brani che ti piacciono».
-    pub preferiti: Vec<SpotifyTrack>,
+    pub preferiti: Vec<BranoEsterno>,
     /// Gli album salvati.
     pub album: Vec<AlbumSpotify>,
     /// Gli artisti seguiti.
@@ -306,7 +306,7 @@ pub struct PianoPlaylist {
     /// Il nome della playlist su Spotify.
     pub nome: String,
     /// Quali brani ci sono già e quali no.
-    pub piano: SpotifyPlan,
+    pub piano: PianoAbbinamento,
 }
 
 /// Un ascolto della cronologia che è stato ricondotto a un brano in libreria.
@@ -358,7 +358,7 @@ pub struct AccountPlan {
     /// Una voce per playlist scelta.
     pub playlist: Vec<PianoPlaylist>,
     /// I preferiti ritrovati in libreria, e quelli no.
-    pub preferiti: SpotifyPlan,
+    pub preferiti: PianoAbbinamento,
     /// I brani degli album salvati.
     pub album: Vec<PianoPlaylist>,
     /// Gli ascolti pronti da scrivere, in ordine di tempo.
@@ -531,17 +531,17 @@ mod prove {
         }
     }
 
-    fn sp(artista: &str, titolo: &str, album: &str, durata: u64) -> SpotifyTrack {
-        SpotifyTrack {
+    fn sp(artista: &str, titolo: &str, album: &str, durata: u64) -> BranoEsterno {
+        BranoEsterno {
             title: titolo.to_owned(),
             artist: Some(artista.to_owned()),
             album: Some(album.to_owned()),
             duration_ms: Some(durata),
-            ..SpotifyTrack::default()
+            ..BranoEsterno::default()
         }
     }
 
-    fn ascolto(brano: SpotifyTrack, finito_ms: i64, ms: u64) -> AscoltoSpotify {
+    fn ascolto(brano: BranoEsterno, finito_ms: i64, ms: u64) -> AscoltoSpotify {
         AscoltoSpotify {
             finito_ms,
             ms_ascoltati: ms,
@@ -587,9 +587,9 @@ mod prove {
         // archivio: l'archivio la durata non la scrive **mai**, e senza il
         // ripiego `counts_as_play` ricade sui quattro minuti — cioè scarta come
         // «troppo breve» una canzone di tre minuti ascoltata per intero.
-        let senza_durata = SpotifyTrack {
+        let senza_durata = BranoEsterno {
             title: "Ignoto".to_owned(),
-            ..SpotifyTrack::default()
+            ..BranoEsterno::default()
         };
         let tre_minuti = ascolto(senza_durata.clone(), 0, 180_000);
         assert!(
@@ -622,11 +622,11 @@ mod prove {
         // La prova dall'alto della stessa cosa: uno snapshot fatto come lo fa
         // `aether-archivio` — nessuna durata da nessuna parte — deve produrre un
         // ascolto, non uno scarto.
-        let senza_durata = SpotifyTrack {
+        let senza_durata = BranoEsterno {
             title: "Song 2".to_owned(),
             artist: Some("Blur".to_owned()),
             album: Some("Blur".to_owned()),
-            ..SpotifyTrack::default()
+            ..BranoEsterno::default()
         };
         let snapshot = AccountSnapshot {
             cronologia: vec![ascolto(senza_durata, 1_000_000, 180_000)],
@@ -763,7 +763,7 @@ mod prove {
     fn un_elenco_monco_si_vede_anche_qui() {
         let playlist = PlaylistSpotify {
             nome: "Lunga".to_owned(),
-            brani: vec![SpotifyTrack::default(); 142],
+            brani: vec![BranoEsterno::default(); 142],
             dichiarati: Some(300),
             ..PlaylistSpotify::default()
         };
@@ -771,7 +771,7 @@ mod prove {
 
         let intera = PlaylistSpotify {
             dichiarati: Some(2),
-            brani: vec![SpotifyTrack::default(); 2],
+            brani: vec![BranoEsterno::default(); 2],
             ..PlaylistSpotify::default()
         };
         assert_eq!(intera.troncatura(), None);

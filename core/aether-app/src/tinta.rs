@@ -233,11 +233,7 @@ mod tests {
     }
 
     /// Un fondo con dentro un rettangolo di un altro colore.
-    fn con_soggetto(
-        fondo: [u8; 3],
-        soggetto: [u8; 3],
-        larghezza_soggetto: u32,
-    ) -> image::RgbImage {
+    fn con_soggetto(fondo: [u8; 3], soggetto: [u8; 3], larghezza_soggetto: u32) -> image::RgbImage {
         let mut buffer = image::RgbImage::from_pixel(100, 100, image::Rgb(fondo));
         for (x, _y, pixel) in buffer.enumerate_pixels_mut() {
             if x < larghezza_soggetto {
@@ -344,7 +340,11 @@ mod tests {
         ] {
             let [r, g, b] = campione;
             let (h, s, v) = hsv(r, g, b);
-            assert_eq!(da_hsv(h, s, v), campione, "andata e ritorno su {campione:?}");
+            assert_eq!(
+                da_hsv(h, s, v),
+                campione,
+                "andata e ritorno su {campione:?}"
+            );
         }
     }
 

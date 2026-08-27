@@ -29,8 +29,9 @@
  */
 import { useCallback, useEffect, useState } from "react";
 
-import { durata } from "../formato";
+import { data, dataOra, durata, nomeArtista, numero } from "../formato";
 import { ipc, type StatoRiproduzione, type VoceCronologia } from "../ipc";
+import { locale, t } from "../lingue";
 import { Icona } from "./Icone";
 
 /** Quante righe per volta. Una schermata piena più un po' di margine. */
@@ -45,17 +46,18 @@ const PAGINA = 50;
  */
 function quando(ms: number): string {
   const passati = Date.now() - ms;
-  if (passati < 0) return new Date(ms).toLocaleDateString("it");
-  if (passati < 60_000) return "adesso";
-  if (passati < 3_600_000) return `${Math.round(passati / 60_000)} min fa`;
+  if (passati < 0) return data(ms);
+  if (passati < 60_000) return t("history.now");
+  if (passati < 3_600_000)
+    return t("history.minutesAgo", { n: Math.round(passati / 60_000) });
   if (passati < 86_400_000)
-    return new Date(ms).toLocaleTimeString("it", {
+    return new Date(ms).toLocaleTimeString(locale(), {
       hour: "2-digit",
       minute: "2-digit",
     });
   if (passati < 7 * 86_400_000)
-    return new Date(ms).toLocaleDateString("it", { weekday: "short" });
-  return new Date(ms).toLocaleDateString("it", {
+    return new Date(ms).toLocaleDateString(locale(), { weekday: "short" });
+  return new Date(ms).toLocaleDateString(locale(), {
     day: "numeric",
     month: "short",
     ...(passati > 300 * 86_400_000 ? { year: "2-digit" } : {}),
@@ -104,16 +106,11 @@ export function Cronologia({
   useEffect(() => carica(quante), [carica, quante, corrente]);
 
   if (caricando && voci.length === 0) {
-    return <p className="vuota-coda empty-state">Un momento…</p>;
+    return <p className="vuota-coda empty-state">{t("history.loading")}</p>;
   }
 
   if (voci.length === 0) {
-    return (
-      <p className="vuota-coda empty-state">
-        Non c&apos;è ancora niente da ricordare. Ogni brano ascoltato per metà —
-        o per quattro minuti — lascia una riga qui.
-      </p>
-    );
+    return <p className="vuota-coda empty-state">{t("history.empty")}</p>;
   }
 
   return (
@@ -138,15 +135,16 @@ export function Cronologia({
               /* Fa partire quel brano da solo, non una coda: la cronologia è
                  un elenco di momenti, non una scaletta da rimettere. */
               onClick={() => comanda(ipc.suona([voce.brano.id], 0))}
-              title={
+              title={t(
                 voce.sorgente === "local"
-                  ? `${voce.brano.title} — ${new Date(voce.quandoMs).toLocaleString("it")}`
-                  : `${voce.brano.title} — ${new Date(voce.quandoMs).toLocaleString("it")} · importato da Spotify`
-              }
+                  ? "history.entry.title"
+                  : "history.entry.title.imported",
+                { titolo: voce.brano.title, quando: dataOra(voce.quandoMs) },
+              )}
             >
               <span className="nome">{voce.brano.title}</span>
               <span className="autore">
-                {voce.brano.artist} · {durata(voce.msAscoltati)}
+                {nomeArtista(voce.brano.artist)} · {durata(voce.msAscoltati)}
               </span>
             </button>
             <span className="durata">{quando(voce.quandoMs)}</span>
@@ -162,8 +160,11 @@ export function Cronologia({
           onClick={() => setQuante((q) => q + PAGINA)}
         >
           {caricando
-            ? "…"
-            : `Altri ${Math.min(PAGINA, totale - voci.length)} di ${totale.toLocaleString("it")}`}
+            ? t("common.loading")
+            : t("history.more", {
+                quanti: Math.min(PAGINA, totale - voci.length),
+                totale: numero(totale),
+              })}
         </button>
       )}
     </div>

@@ -21,14 +21,18 @@ import {
   type EsitoRiordino,
   type PianoRiordino,
 } from "./ipc";
+import { t } from "./lingue";
+import { Trans } from "./lingue/Trans";
 
 /** Come si legge un motivo per cui un brano resta dov'è. */
-const MOTIVI: Record<string, string> = {
-  alreadyInPlace: "già al posto giusto",
-  outsideRoot: "fuori dalla cartella scelta",
-  needsReview: "il suo gruppo è da rivedere",
-  destinationTaken: "la destinazione è già occupata",
-};
+function motivi(): Record<string, string> {
+  return {
+    alreadyInPlace: t("organize.reason.alreadyInPlace"),
+    outsideRoot: t("organize.reason.outsideRoot"),
+    needsReview: t("organize.reason.needsReview"),
+    destinationTaken: t("organize.reason.destinationTaken"),
+  };
+}
 
 /** Il percorso senza la radice, che è uguale per tutti e ruba larghezza. */
 function breve(percorso: string, radice: string): string {
@@ -117,13 +121,13 @@ export function Riordino({
   return (
     <div className="velo scuro" onClick={inCorso ? undefined : onChiudi}>
       <div
-        className="finestrella larga"
+        className="finestrella larga glass-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="Riordina la libreria"
+        aria-label={t("organize.aria")}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2>{esito ? "Riordino concluso" : "Riordina la libreria"}</h2>
+        <h2>{esito ? t("organize.done.title") : t("organize.aria")}</h2>
         <div className="percorso">{radice}</div>
 
         {errore && <div className="errore">{errore}</div>}
@@ -139,23 +143,25 @@ export function Riordino({
           </>
         )}
 
-        {!piano && !esito && inCorso && <p>Calcolo del piano…</p>}
+        {!piano && !esito && inCorso && <p>{t("organize.planning")}</p>}
 
         {esito && (
           <>
             <div className="rapporto">
               <div className="voce-rapporto">
-                <span>File spostati</span>
+                <span>{t("organize.moved")}</span>
                 <span className="conteggio">{esito.spostati}</span>
               </div>
               <div className="voce-rapporto">
-                <span>Cartelle vuote rimosse</span>
+                <span>{t("organize.emptyDirs")}</span>
                 <span className="conteggio">{esito.cartelleRimosse}</span>
               </div>
             </div>
             {esito.falliti.length > 0 && (
               <details className="non-ritrovati" open>
-                <summary>{esito.falliti.length} spostamenti non riusciti</summary>
+                <summary>
+                  {t("organize.failed", { n: esito.falliti.length })}
+                </summary>
                 <ul>
                   {esito.falliti.slice(0, 200).map((f) => (
                     <li key={f.da}>
@@ -166,10 +172,12 @@ export function Riordino({
               </details>
             )}
             <p>
-              I file sono in cartelle nuove, ma il database ha ancora i percorsi
-              vecchi. <strong>Fai una scansione</strong>: gli spostamenti vengono
-              riconosciuti come tali, quindi ascolti, preferiti, valutazioni e
-              playlist restano attaccati ai loro brani.
+              <Trans
+                k="organize.afterNote"
+                v={{
+                  scansiona: <strong>{t("organize.afterNote.cta")}</strong>,
+                }}
+              />
             </p>
           </>
         )}
@@ -178,16 +186,20 @@ export function Riordino({
           <>
             <div className="rapporto">
               <div className="voce-rapporto">
-                <span>Brani considerati</span>
+                <span>{t("organize.considered")}</span>
                 <span className="conteggio">{piano.letti}</span>
               </div>
               <div className="voce-rapporto">
-                <span>Da spostare</span>
+                <span>{t("organize.toMove")}</span>
                 <span className="conteggio">{piano.spostamenti.length}</span>
               </div>
               {piano.fermi.map((f) => (
                 <div className="voce-rapporto" key={f.motivo}>
-                  <span>Fermi — {MOTIVI[f.motivo] ?? f.motivo}</span>
+                  <span>
+                    {t("organize.still", {
+                      motivo: motivi()[f.motivo] ?? f.motivo,
+                    })}
+                  </span>
                   <span className="conteggio">{f.quanti}</span>
                 </div>
               ))}
@@ -196,19 +208,20 @@ export function Riordino({
             {piano.daRivedere.length > 0 && (
               <details className="non-ritrovati">
                 <summary>
-                  {piano.daRivedere.length} gruppi che Aether non sa dove mettere
+                  {t("organize.toReview", { n: piano.daRivedere.length })}
                 </summary>
-                <p>
-                  Album i cui tag non concordano abbastanza per decidere un
-                  artista. Non vengono toccati: sistemare i tag e rifare il piano
-                  è l&apos;unico modo di includerli, ed è meglio di indovinare.
-                </p>
+                <p>{t("organize.toReview.note")}</p>
                 <ul>
                   {piano.daRivedere.slice(0, 100).map((r) => (
                     <li key={r.album}>
-                      «{r.album}» — {r.brani} brani, {r.artisti.length} artisti:{" "}
-                      {r.artisti.slice(0, 3).join(", ")}
-                      {r.artisti.length > 3 ? ", …" : ""}
+                      {t("organize.reviewItem", {
+                        album: r.album,
+                        brani: r.brani,
+                        quanti: r.artisti.length,
+                        artisti:
+                          r.artisti.slice(0, 3).join(", ") +
+                          (r.artisti.length > 3 ? ", …" : ""),
+                      })}
                     </li>
                   ))}
                 </ul>
@@ -217,7 +230,9 @@ export function Riordino({
 
             {piano.spostamenti.length > 0 && (
               <details className="spostamenti" open>
-                <summary>{piano.spostamenti.length} spostamenti</summary>
+                <summary>
+                  {t("organize.moves", { n: piano.spostamenti.length })}
+                </summary>
                 <ul>
                   {piano.spostamenti.slice(0, 500).map((s) => (
                     <li key={s.da}>
@@ -231,8 +246,9 @@ export function Riordino({
                 </ul>
                 {piano.spostamenti.length > 500 && (
                   <p>
-                    Mostrati i primi 500 di {piano.spostamenti.length}. Verranno
-                    spostati tutti.
+                    {t("organize.shownFirst", {
+                      totale: piano.spostamenti.length,
+                    })}
                   </p>
                 )}
               </details>
@@ -248,7 +264,7 @@ export function Riordino({
               disabled={inCorso}
               onClick={() => void annulla()}
             >
-              Annulla l&apos;ultimo riordino
+              {t("organize.undo")}
             </button>
           )}
           <button
@@ -257,7 +273,7 @@ export function Riordino({
             disabled={inCorso}
             onClick={onChiudi}
           >
-            {esito ? "Chiudi" : "Non fare niente"}
+            {esito ? t("common.close") : t("organize.doNothing")}
           </button>
           {!esito && (
             <button
@@ -267,8 +283,8 @@ export function Riordino({
               onClick={() => void esegui()}
             >
               {inCorso
-                ? "Sposto…"
-                : `Sposta ${piano?.spostamenti.length ?? 0} file`}
+                ? t("organize.moving")
+                : t("organize.go", { n: piano?.spostamenti.length ?? 0 })}
             </button>
           )}
         </div>

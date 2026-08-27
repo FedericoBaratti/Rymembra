@@ -358,7 +358,7 @@ mod tests {
         db.connection
             .execute_batch(
                 "INSERT INTO playlists (playlist_key, name, created_at, updated_at,
-                                        spotify_playlist_id)
+                                        source_playlist_id)
                  VALUES ('corsa', 'Corsa', 0, 0, '37i9dQZF1DXcBWIGoYBM5M');
                  -- Due playlist senza identificativo non si pestano i piedi:
                  -- l'indice è parziale apposta.
@@ -372,7 +372,7 @@ mod tests {
         let quante: i64 = db
             .connection
             .query_row(
-                "SELECT COUNT(*) FROM playlists WHERE spotify_playlist_id IS NOT NULL",
+                "SELECT COUNT(*) FROM playlists WHERE source_playlist_id IS NOT NULL",
                 [],
                 |r| r.get(0),
             )

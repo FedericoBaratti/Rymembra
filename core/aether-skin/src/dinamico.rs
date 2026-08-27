@@ -233,12 +233,7 @@ fn regge(colore: Rgba, superfici: &[Rgba], sopra: Rgba, minimo: f64) -> bool {
 /// l'ha guardato, ed è sempre meglio di un colore che qui non ha passato il
 /// controllo.
 #[must_use]
-pub fn accento_sicuro(
-    tinta: Rgba,
-    superfici: &[Rgba],
-    sopra: Rgba,
-    minimo: f64,
-) -> Option<Rgba> {
+pub fn accento_sicuro(tinta: Rgba, superfici: &[Rgba], sopra: Rgba, minimo: f64) -> Option<Rgba> {
     let base = in_oklch(tinta);
     let croma = base.c.min(TETTO_CROMA);
 
@@ -382,18 +377,58 @@ mod tests {
 
     /// Le quattro superfici del tema scuro di serie, dal foglio generato.
     const SCURE: [Rgba; 4] = [
-        Rgba { r: 9, g: 9, b: 13, a: 1.0 },
-        Rgba { r: 14, g: 14, b: 20, a: 1.0 },
-        Rgba { r: 22, g: 22, b: 31, a: 1.0 },
-        Rgba { r: 30, g: 30, b: 42, a: 1.0 },
+        Rgba {
+            r: 9,
+            g: 9,
+            b: 13,
+            a: 1.0,
+        },
+        Rgba {
+            r: 14,
+            g: 14,
+            b: 20,
+            a: 1.0,
+        },
+        Rgba {
+            r: 22,
+            g: 22,
+            b: 31,
+            a: 1.0,
+        },
+        Rgba {
+            r: 30,
+            g: 30,
+            b: 42,
+            a: 1.0,
+        },
     ];
 
     /// E quelle del tema chiaro.
     const CHIARE: [Rgba; 4] = [
-        Rgba { r: 251, g: 251, b: 253, a: 1.0 },
-        Rgba { r: 243, g: 243, b: 247, a: 1.0 },
-        Rgba { r: 235, g: 235, b: 241, a: 1.0 },
-        Rgba { r: 226, g: 226, b: 236, a: 1.0 },
+        Rgba {
+            r: 251,
+            g: 251,
+            b: 253,
+            a: 1.0,
+        },
+        Rgba {
+            r: 243,
+            g: 243,
+            b: 247,
+            a: 1.0,
+        },
+        Rgba {
+            r: 235,
+            g: 235,
+            b: 241,
+            a: 1.0,
+        },
+        Rgba {
+            r: 226,
+            g: 226,
+            b: 236,
+            a: 1.0,
+        },
     ];
 
     fn colore(r: u8, g: u8, b: u8) -> Rgba {
@@ -430,7 +465,11 @@ mod tests {
         let grigio = in_oklch(colore(128, 128, 128));
         assert!(grigio.c < 0.001, "un grigio non è colorato: {}", grigio.c);
         let bianco = in_oklch(colore(255, 255, 255));
-        assert!((bianco.l - 1.0).abs() < 0.001, "il bianco è 1: {}", bianco.l);
+        assert!(
+            (bianco.l - 1.0).abs() < 0.001,
+            "il bianco è 1: {}",
+            bianco.l
+        );
         let nero = in_oklch(colore(0, 0, 0));
         assert!(nero.l.abs() < 0.001, "il nero è 0: {}", nero.l);
     }
@@ -439,7 +478,11 @@ mod tests {
     fn una_tinta_impossibile_rientra_senza_cambiare_colore() {
         // Croma 0,4 non esiste in sRGB a nessuna tonalità: si deve ridurre, e
         // la tonalità deve restare quella.
-        let assurda = Oklch { l: 0.6, c: 0.4, h: 150.0 };
+        let assurda = Oklch {
+            l: 0.6,
+            c: 0.4,
+            h: 150.0,
+        };
         let ridotta = dentro_srgb(assurda);
         assert!(ridotta.c < assurda.c, "il croma doveva scendere");
         assert!(dentro_il_gamut(ridotta), "e finire dentro sRGB");
@@ -539,7 +582,11 @@ mod tests {
 
     #[test]
     fn l_accento_non_diventa_fluorescente() {
-        let neon = in_rgba(dentro_srgb(Oklch { l: 0.7, c: 0.35, h: 30.0 }));
+        let neon = in_rgba(dentro_srgb(Oklch {
+            l: 0.7,
+            c: 0.35,
+            h: 30.0,
+        }));
         let sicuro = accento_sicuro(neon, &SCURE, SCURE[0], CONTRASTO_MINIMO).unwrap();
         assert!(
             in_oklch(sicuro).c <= TETTO_CROMA + 0.001,

@@ -30,17 +30,41 @@ import { useState } from "react";
 
 import type { Playlist } from "../ipc";
 import { Icona, type NomeIcona } from "./Icone";
+import { t } from "../lingue";
 
 /** Dove si può andare. */
-export type Vista = "album" | "artisti" | "brani" | "preferiti" | "impostazioni";
+export type Vista =
+  | "home"
+  | "album"
+  | "artisti"
+  | "brani"
+  | "preferiti"
+  | "impostazioni"
+  // Una destinazione senza voce nella barra: per quasi tutto il tempo non c'è
+  // niente da vedere, e una voce che non risponde è una voce che si impara a
+  // saltare. Ci si arriva dal toast, dalle impostazioni e dalla tastiera.
+  | "importazioni";
 
-/** Le quattro destinazioni della libreria, nell'ordine in cui si guardano. */
-const DESTINAZIONI: readonly (readonly [Vista, string, NomeIcona])[] = [
-  ["album", "Album", "i-album"],
-  ["artisti", "Artisti", "i-artist"],
-  ["brani", "Brani", "i-track"],
-  ["preferiti", "Preferiti", "i-heart"],
-];
+/**
+ * Le destinazioni della libreria, nell'ordine in cui si guardano.
+ *
+ * La prima non è un elenco e non ha un conteggio: è la porta d'ingresso, e
+ * risponde alla domanda che uno si fa aprendo un lettore — «cosa stavo
+ * ascoltando» — che nessuno dei quattro elenchi sa fare.
+ *
+ * Una funzione perché porta testo: una costante di modulo si fisserebbe sulla
+ * lingua che c'era al primo `import`, e cambiare lingua dalle impostazioni
+ * lascerebbe la barra in quella di prima fino al riavvio.
+ */
+function destinazioni(): readonly (readonly [Vista, string, NomeIcona])[] {
+  return [
+    ["home", t("nav.home"), "i-home"],
+    ["album", t("nav.albums"), "i-album"],
+    ["artisti", t("nav.artists"), "i-artist"],
+    ["brani", t("nav.tracks"), "i-track"],
+    ["preferiti", t("nav.favorites"), "i-heart"],
+  ];
+}
 
 export function Navigazione({
   vista,
@@ -91,7 +115,7 @@ export function Navigazione({
       className={inFondo ? "navigazione bottom-nav" : "navigazione"}
       data-stretta={(!inFondo && stretta) || undefined}
       data-fondo={inFondo || undefined}
-      aria-label="Navigazione"
+      aria-label={t("nav.aria")}
     >
       {/* In fondo il marchio non ci sta e non serve: la finestra è già aperta,
           e chi la guarda sa in quale programma si trova. */}
@@ -103,9 +127,9 @@ export function Navigazione({
         <button
           type="button"
           className="tasto icon-btn richiudi"
-          aria-label={stretta ? "Allarga la barra" : "Restringi la barra"}
+          aria-label={stretta ? t("nav.expand") : t("nav.collapse")}
           aria-expanded={!stretta}
-          title={stretta ? "Allarga" : "Restringi"}
+          title={stretta ? t("nav.expand.short") : t("nav.collapse.short")}
           onClick={() => setStretta((prima) => !prima)}
         >
           <Icona nome={stretta ? "i-chev-r" : "i-chev-l"} dim={15} />
@@ -113,7 +137,7 @@ export function Navigazione({
       </div>
 
       <div className="destinazioni">
-        {DESTINAZIONI.map(([chiave, etichetta, icona]) => {
+        {destinazioni().map(([chiave, etichetta, icona]) => {
           const qui = inLibreria && vista === chiave && playlistAperta === null;
           return (
             <button
@@ -135,7 +159,7 @@ export function Navigazione({
 
       <div className="gruppo" hidden={inFondo}>
         <div className="titolo-gruppo">
-          <span>Playlist</span>
+          <span>{t("playlist.group")}</span>
           {/* Tre tasti e non un menù: sono tre cose che si fanno di rado ma
               che, quando si fanno, si sanno già — e un menù a tendina per tre
               voci è un clic in più per ognuna delle tre. L'ordine è quello
@@ -143,8 +167,8 @@ export function Navigazione({
           <button
             type="button"
             className="tasto icon-btn"
-            aria-label="Importa una playlist da file"
-            title="Da un file M3U, PLS o XSPF…"
+            aria-label={t("playlist.importFile")}
+            title={t("playlist.importFile.title")}
             onClick={onImportaFile}
           >
             <Icona nome="i-import" dim={14} />
@@ -152,8 +176,8 @@ export function Navigazione({
           <button
             type="button"
             className="tasto icon-btn"
-            aria-label="Nuova playlist intelligente"
-            title="Nuova playlist intelligente: si riempie da sé"
+            aria-label={t("playlist.newSmart")}
+            title={t("playlist.newSmart.title")}
             onClick={onNuovaSmart}
           >
             <Icona nome="i-settings" dim={14} />
@@ -161,15 +185,15 @@ export function Navigazione({
           <button
             type="button"
             className="tasto icon-btn"
-            aria-label="Nuova playlist"
-            title="Nuova playlist"
+            aria-label={t("playlist.new")}
+            title={t("playlist.new")}
             onClick={onNuovaPlaylist}
           >
             <Icona nome="i-plus" dim={14} />
           </button>
         </div>
         {playlist.length === 0 ? (
-          <p className="niente">Nessuna playlist.</p>
+          <p className="niente">{t("playlist.none")}</p>
         ) : (
           playlist.map((p) => {
             const qui = playlistAperta === p.id && inLibreria;
@@ -180,7 +204,11 @@ export function Navigazione({
                 className="voce nav-pill playlist"
                 aria-current={qui ? "page" : undefined}
                 data-active={qui || undefined}
-                title={p.isSmart ? `${p.name} — automatica` : p.name}
+                title={
+                  p.isSmart
+                    ? t("playlist.smart.title", { nome: p.name })
+                    : p.name
+                }
                 onClick={() => onPlaylist(p)}
                 onContextMenu={(e) => onMenuPlaylist(e, p)}
               >
@@ -205,11 +233,11 @@ export function Navigazione({
           className="voce nav-pill"
           aria-current={vista === "impostazioni" ? "page" : undefined}
           data-active={vista === "impostazioni" || undefined}
-          title={stretta ? "Impostazioni" : undefined}
+          title={stretta ? t("nav.settings") : undefined}
           onClick={() => onVista("impostazioni")}
         >
           <Icona nome="i-settings" dim={19} />
-          <span className="etichetta">Impostazioni</span>
+          <span className="etichetta">{t("nav.settings")}</span>
         </button>
       </div>
     </nav>

@@ -23,9 +23,10 @@
  */
 import { useEffect, useState } from "react";
 
-import { durata } from "./formato";
+import { durata, nomeArtista, titoloAlbum } from "./formato";
 import { ipc, type Brano, type StatoRiproduzione } from "./ipc";
 import { Icona } from "./parti/Icone";
+import { t } from "./lingue";
 
 /**
  * Le righe della coda, per identificativo.
@@ -135,11 +136,7 @@ export function RigheCoda({
   };
 
   if (stato.coda.length === 0) {
-    return (
-      <p className="vuota-coda empty-state">
-        Non c&apos;è niente in coda. Un clic su un brano ne mette una nuova.
-      </p>
-    );
+    return <p className="vuota-coda empty-state">{t("queue.empty")}</p>;
   }
 
   return (
@@ -180,10 +177,12 @@ export function RigheCoda({
               disabled={!brano}
             >
               <span className="nome">
-                {brano ? brano.title : "brano non più in libreria"}
+                {brano ? brano.title : t("queue.goneTrack")}
               </span>
               <span className="autore">
-                {brano ? `${brano.artist} · ${brano.album}` : `id ${id}`}
+                {brano
+                  ? `${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`
+                  : `id ${id}`}
               </span>
             </button>
             {!compatta && (
@@ -194,7 +193,7 @@ export function RigheCoda({
             <button
               type="button"
               className="tasto icon-btn"
-              aria-label="Togli dalla coda"
+              aria-label={t("queue.remove")}
               onClick={() => comanda(ipc.codaTogli(indice))}
             >
               <Icona nome="i-x" dim={14} />
@@ -225,9 +224,12 @@ export function Coda({
   const righe = useRigheCoda(stato.coda, onErrore);
 
   return (
-    <aside className="pannello-coda glass-modal" aria-label="Coda di riproduzione">
+    <aside
+      className="pannello-coda glass-modal"
+      aria-label={t("queue.panel.aria")}
+    >
       <header>
-        <h2>In coda</h2>
+        <h2>{t("queue.panel.title")}</h2>
         <span className="conteggio">{stato.coda.length}</span>
         <button
           type="button"
@@ -237,12 +239,12 @@ export function Coda({
             ipc.codaSvuota().catch(onErrore);
           }}
         >
-          Svuota
+          {t("queue.clear")}
         </button>
         <button
           type="button"
           className="tasto icon-btn"
-          aria-label="Chiudi la coda"
+          aria-label={t("queue.close")}
           onClick={onChiudi}
         >
           <Icona nome="i-x" dim={15} />

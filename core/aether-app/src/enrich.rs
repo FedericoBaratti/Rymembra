@@ -654,9 +654,9 @@ fn campi_da_candidato(candidato: &Candidate) -> Fields {
 /// Il nome della fonte, per `tracks.enrich_source`.
 fn fonte_di(candidato: &Candidate) -> &'static str {
     match candidato.fonte {
-        Some(aether_domain::enrich::Fonte::MusicBrainz) => "mb-recording",
-        Some(aether_domain::enrich::Fonte::Itunes) => "itunes",
-        Some(aether_domain::enrich::Fonte::Deezer) => "deezer",
+        Some(aether_domain::enrich::FonteMeta::MusicBrainz) => "mb-recording",
+        Some(aether_domain::enrich::FonteMeta::Itunes) => "itunes",
+        Some(aether_domain::enrich::FonteMeta::Deezer) => "deezer",
         None => "ignota",
     }
 }

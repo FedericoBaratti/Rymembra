@@ -16,6 +16,7 @@
  * due icone hanno lo stesso `viewBox`, quindi la fila non si muove più.
  */
 import { Icona } from "./parti/Icone";
+import { t } from "./lingue";
 
 const STELLE = [1, 2, 3, 4, 5] as const;
 
@@ -30,7 +31,9 @@ export function Stelle({
     <div
       className="stelle"
       role="group"
-      aria-label={valore > 0 ? `Valutazione: ${valore} su 5` : "Non valutato"}
+      aria-label={
+        valore > 0 ? t("rating.label", { n: valore }) : t("rating.none")
+      }
     >
       {STELLE.map((n) => (
         <button
@@ -38,7 +41,9 @@ export function Stelle({
           type="button"
           className="stella"
           aria-pressed={n <= valore}
-          aria-label={n === valore ? "Togli la valutazione" : `${n} stelle`}
+          aria-label={
+            n === valore ? t("rating.clear") : t("rating.stars", { n })
+          }
           onClick={() => onVoto(n === valore ? 0 : n)}
         >
           <Icona nome={n <= valore ? "i-star" : "i-star-o"} dim={13} />

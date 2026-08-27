@@ -261,7 +261,11 @@ pub fn collega(
     let invito = invito(credenziali, &pkce, &redirect_uri)?;
 
     apri_browser(&invito.url)?;
-    let risposta = attesa.aspetta(&invito.state, ATTESA_CONSENSO)?;
+    // Nessun annullamento da qui: il collegamento a Drive non ha una superficie
+    // che lo offra, e passare un `fermare` che non lo chiede nessuno vorrebbe
+    // dire cablare un tasto inesistente. Il giorno in cui quella superficie
+    // arriva, la firma è già pronta di là.
+    let risposta = attesa.aspetta(&invito.state, ATTESA_CONSENSO, &|| false)?;
     scambia(rete, credenziali, &pkce, &redirect_uri, &risposta.code)
 }
 

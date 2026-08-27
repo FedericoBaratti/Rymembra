@@ -29,6 +29,8 @@ import { useMemo } from "react";
 import { Copertina } from "../Copertina";
 import type { Artista } from "../ipc";
 import { Icona } from "../parti/Icone";
+import { t } from "../lingue";
+import { brani_, nomeArtista } from "../formato";
 
 /** L'alfabeto dell'indice, più il cestino di chi non comincia per lettera. */
 const LETTERE = "abcdefghijklmnopqrstuvwxyz".split("");
@@ -78,8 +80,8 @@ export function Artisti({
         <span className="empty-icon" aria-hidden="true">
           <Icona nome="i-artist" dim={30} />
         </span>
-        <h2>Nessun artista</h2>
-        <p>Gli artisti nascono dai brani: appena c&apos;è una scansione, ci sono.</p>
+        <h2>{t("artists.empty.title")}</h2>
+        <p>{t("artists.empty.hint")}</p>
       </div>
     );
   }
@@ -107,29 +109,36 @@ export function Artisti({
                 </span>
               ) : (
                 a.covers.map((hash) => (
-                  <Copertina key={hash} hash={hash} titolo={a.name} classe="tassello" />
+                  <Copertina
+                    key={hash}
+                    hash={hash}
+                    titolo={nomeArtista(a.name)}
+                    classe="tassello"
+                  />
                 ))
               )}
             </span>
-            <span className="nome" title={a.name}>
-              {a.name}
+            <span className="nome" title={nomeArtista(a.name)}>
+              {nomeArtista(a.name)}
             </span>
             <span className="quanti">
-              {a.albums === 1 ? "1 album" : `${a.albums} album`} ·{" "}
-              {a.tracks === 1 ? "1 brano" : `${a.tracks} brani`}
+              {t("artists.counts", {
+                album: t("artists.albums", { n: a.albums }),
+                brani: brani_(a.tracks),
+              })}
             </span>
           </button>
         ))}
       </div>
 
-      <nav className="indice-alfabetico" aria-label="Salta a una lettera">
+      <nav className="indice-alfabetico" aria-label={t("artists.index.aria")}>
         {LETTERE.map((l) => (
           <button
             key={l}
             type="button"
             className="lettera"
             disabled={!piene.has(l)}
-            aria-label={`Salta agli artisti con la ${l.toUpperCase()}`}
+            aria-label={t("artists.index.letter", { lettera: l.toUpperCase() })}
             onClick={() => salta(l)}
           >
             {l.toUpperCase()}
@@ -139,7 +148,7 @@ export function Artisti({
           <button
             type="button"
             className="lettera"
-            aria-label="Salta agli artisti che non cominciano per lettera"
+            aria-label={t("artists.index.other")}
             onClick={() => salta("#")}
           >
             #

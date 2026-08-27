@@ -14,17 +14,17 @@ members = [
     "core/aether-skin",
     "core/aether-net",
     "core/aether-meta",
+    "core/aether-catalogo",
     "core/aether-oauth",
     "core/aether-archivio",
+    "core/aether-sync",
     "core/aether-cloud",
     "core/aether-scrobble",
-    "core/aether-spotify",
-    "core/aether-yt",
     "apps/desktop/src-tauri",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -48,6 +48,12 @@ serde_json = "1"
 # cos'è un timeout e di chi possiede un thread.
 ureq = "3"
 flate2 = "1"
+# L'impronta del contenuto. Sta qui e non più nel solo `aether-app` da quando la
+# calcolano in due: il backup, per sapere se quei byte sono già lassù, e la
+# sincronia, per sapere quali documenti degli altri dispositivi vale la pena
+# scaricare. È la stessa domanda, e due implementazioni diverse della stessa
+# domanda darebbero due risposte diverse sullo stesso file.
+blake3 = "1.8.5"
 sha2 = "0.10"
 getrandom = "0.3"
 keyring = { version = "3", features = ["windows-native"] }

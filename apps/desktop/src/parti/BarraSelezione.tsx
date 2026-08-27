@@ -23,6 +23,7 @@
  */
 import { brani_ } from "../formato";
 import { Icona } from "./Icone";
+import { t } from "../lingue";
 
 export function BarraSelezione({
   quanti,
@@ -44,29 +45,55 @@ export function BarraSelezione({
   onChiudi: () => void;
 }) {
   return (
-    <div className="barra-selezione selection-bar" role="toolbar" aria-label="Selezione">
+    <div
+      className="barra-selezione selection-bar"
+      role="toolbar"
+      aria-label={t("selection.aria")}
+    >
       <span className="quanti">{brani_(quanti)}</span>
 
-      <button type="button" className="bottone minuto btn-ghost" onClick={onTuttiOAnnulla}>
-        {tuttiSelezionati ? "Deseleziona tutto" : "Seleziona tutto"}
+      <button
+        type="button"
+        className="bottone minuto btn-ghost"
+        onClick={onTuttiOAnnulla}
+      >
+        {tuttiSelezionati
+          ? t("selection.deselectAll")
+          : t("selection.selectAll")}
       </button>
 
       <div className="separatore" aria-hidden="true" />
 
-      <button type="button" className="bottone minuto btn-accent" onClick={onRiproduci}>
+      <button
+        type="button"
+        className="bottone minuto btn-accent"
+        onClick={onRiproduci}
+      >
         <Icona nome="i-play" dim={14} />
-        Riproduci
+        {t("action.play")}
       </button>
-      <button type="button" className="bottone minuto btn-ghost" onClick={onDopo}>
-        Riproduci dopo
+      <button
+        type="button"
+        className="bottone minuto btn-ghost"
+        onClick={onDopo}
+      >
+        {t("action.playNext")}
       </button>
-      <button type="button" className="bottone minuto btn-ghost" onClick={onAccoda}>
+      <button
+        type="button"
+        className="bottone minuto btn-ghost"
+        onClick={onAccoda}
+      >
         <Icona nome="i-queue" dim={14} />
-        Accoda
+        {t("action.enqueue")}
       </button>
-      <button type="button" className="bottone minuto btn-ghost" onClick={onPlaylist}>
+      <button
+        type="button"
+        className="bottone minuto btn-ghost"
+        onClick={onPlaylist}
+      >
         <Icona nome="i-plus" dim={14} />
-        Aggiungi a playlist…
+        {t("action.addToPlaylist")}
       </button>
 
       <div className="spinta" />
@@ -74,8 +101,8 @@ export function BarraSelezione({
       <button
         type="button"
         className="tasto icon-btn"
-        aria-label="Annulla la selezione"
-        title="Annulla · Esc"
+        aria-label={t("selection.clear")}
+        title={t("selection.clear.title")}
         onClick={onChiudi}
       >
         <Icona nome="i-x" dim={15} />

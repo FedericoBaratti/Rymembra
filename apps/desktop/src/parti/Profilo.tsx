@@ -26,11 +26,13 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import type { PianoProfilo } from "../ipc";
 import { ipc } from "../ipc";
 import { Icona } from "./Icone";
+import { t } from "../lingue";
+import { Trans } from "../lingue/Trans";
+import { dataOra } from "../formato";
 
 /** Come si legge una data del profilo. */
 function quandoScritto(ms: number): string {
-  if (ms <= 0) return "in un momento imprecisato";
-  return new Date(ms).toLocaleString();
+  return ms <= 0 ? t("profile.unknownDate") : dataOra(ms);
 }
 
 /** Un valore, accorciato quanto basta a stare su una riga. */
@@ -61,15 +63,13 @@ export function Profilo({
     try {
       const scelta = await save({
         defaultPath: "aether-profilo.json",
-        filters: [{ name: "Profilo di Aether", extensions: ["json"] }],
+        filters: [{ name: t("profile.file"), extensions: ["json"] }],
       });
       if (typeof scelta !== "string") return;
       setInVolo(true);
       const esito = await ipc.profiloEsporta(scelta);
       setLasciate(esito.lasciate);
-      onNotizia(
-        `${esito.voci} ${esito.voci === 1 ? "impostazione scritta" : "impostazioni scritte"} in ${scelta}`,
-      );
+      onNotizia(t("profile.exported", { n: esito.voci, dove: scelta }));
     } catch (e) {
       onErrore(e);
     } finally {
@@ -81,7 +81,7 @@ export function Profilo({
     try {
       const scelta = await open({
         multiple: false,
-        filters: [{ name: "Profilo di Aether", extensions: ["json"] }],
+        filters: [{ name: t("profile.file"), extensions: ["json"] }],
       });
       if (typeof scelta !== "string") return;
       setInVolo(true);
@@ -101,8 +101,8 @@ export function Profilo({
       setDaApplicare(null);
       onNotizia(
         fatto.cambi.length === 0
-          ? "Il profilo non ha cambiato niente: era già tutto così."
-          : `${fatto.cambi.length} ${fatto.cambi.length === 1 ? "impostazione applicata" : "impostazioni applicate"}`,
+          ? t("profile.nothingChanged")
+          : t("profile.applied", { n: fatto.cambi.length }),
       );
       onImportato();
     } catch (e) {
@@ -115,11 +115,10 @@ export function Profilo({
   return (
     <>
       <p className="nota">
-        Un file solo con le tue scelte — tema, skin, equalizzatore, scorciatoie,
-        cartelle — da riaprire su un altro computer o dopo una
-        reinstallazione. <strong>Non</strong> contiene la libreria, né i token
-        dei servizi collegati: quelli stanno nel portachiavi di sistema e da lì
-        non escono.
+        <Trans
+          k="profile.note"
+          v={{ non: <strong>{t("profile.note.not")}</strong> }}
+        />
       </p>
 
       <div className="azioni">
@@ -130,7 +129,7 @@ export function Profilo({
           onClick={() => void esporta()}
         >
           <Icona nome="i-import" dim={15} />
-          Esporta il profilo…
+          {t("profile.export")}
         </button>
         <button
           type="button"
@@ -139,37 +138,43 @@ export function Profilo({
           onClick={() => void leggi()}
         >
           <Icona nome="i-import" dim={15} />
-          Leggi un profilo…
+          {t("profile.read")}
         </button>
       </div>
 
       {lasciate.length > 0 && (
         <p className="nota">
-          Rimaste qui: {lasciate.map(breve).join(", ")}. Sono chiavi che
-          identificano <em>questo</em> computer o che nominano righe di{" "}
-          <em>questa</em> libreria — su un&apos;altra macchina direbbero cose
-          sbagliate invece di niente.
+          <Trans
+            k="profile.leftHere"
+            n={{ chiavi: lasciate.map(breve).join(", ") }}
+            v={{
+              questo: <em>{t("profile.leftHere.this")}</em>,
+              questa: <em>{t("profile.leftHere.thisLib")}</em>,
+            }}
+          />
         </p>
       )}
 
       {daApplicare && (
-        <div className="anteprima-spotify">
+        <div className="scheda-anteprima">
           <h3 className="titoletto">
-            Profilo scritto {quandoScritto(daApplicare.piano.creatoMs)}
+            {t("profile.writtenOn", {
+              quando: quandoScritto(daApplicare.piano.creatoMs),
+            })}
           </h3>
 
           {daApplicare.piano.cambi.length === 0 ? (
-            <p className="niente empty-state">
-              Non cambierebbe niente: le impostazioni di questo computer sono già
-              quelle del file.
-            </p>
+            <p className="niente empty-state">{t("profile.noChanges")}</p>
           ) : (
             <ul className="cartelle">
               {daApplicare.piano.cambi.map((c) => (
                 <li className="cartella" key={c.chiave}>
-                  <span className="percorso" title={`${c.prima ?? "(assente)"} → ${c.dopo}`}>
-                    <code>{c.chiave}</code>: {c.prima === null ? "—" : breve(c.prima)} →{" "}
-                    {breve(c.dopo)}
+                  <span
+                    className="percorso"
+                    title={`${c.prima ?? t("profile.absent")} → ${c.dopo}`}
+                  >
+                    <code>{c.chiave}</code>:{" "}
+                    {c.prima === null ? "—" : breve(c.prima)} → {breve(c.dopo)}
                   </span>
                 </li>
               ))}
@@ -178,36 +183,35 @@ export function Profilo({
 
           {daApplicare.piano.invariate > 0 && (
             <p className="nota">
-              {daApplicare.piano.invariate}{" "}
-              {daApplicare.piano.invariate === 1
-                ? "impostazione è già uguale"
-                : "impostazioni sono già uguali"}
-              .
+              {t("profile.same", { n: daApplicare.piano.invariate })}
             </p>
           )}
 
           {daApplicare.piano.percorsiMancanti.length > 0 && (
             <p className="nota">
-              <strong>Questi percorsi non esistono su questo computer</strong>:{" "}
-              {daApplicare.piano.percorsiMancanti.map(breve).join(", ")}. Si
-              scrivono lo stesso — una cartella può essere su un disco staccato
-              adesso e attaccato domani — ma la scansione non troverà niente
-              finché non ci sono.
+              <Trans
+                k="profile.missingPaths"
+                n={{
+                  percorsi: daApplicare.piano.percorsiMancanti
+                    .map(breve)
+                    .join(", "),
+                }}
+                v={{
+                  titolo: <strong>{t("profile.missingPaths.title")}</strong>,
+                }}
+              />
             </p>
           )}
 
           {daApplicare.piano.sconosciute.length > 0 && (
             <p className="nota">
-              Chiavi che questa versione non porta, e che verranno ignorate:{" "}
-              {daApplicare.piano.sconosciute.map(breve).join(", ")}.
+              {t("profile.unknownKeys", {
+                chiavi: daApplicare.piano.sconosciute.map(breve).join(", "),
+              })}
             </p>
           )}
 
-          <p className="nota">
-            Tema, skin e scorciatoie si vedono subito. Il volume,
-            l&apos;equalizzatore e la normalizzazione li legge il motore quando
-            si apre: quelli cambiano alla prossima apertura.
-          </p>
+          <p className="nota">{t("profile.whenApplied")}</p>
 
           <div className="azioni">
             <button
@@ -216,7 +220,7 @@ export function Profilo({
               disabled={inVolo || daApplicare.piano.cambi.length === 0}
               onClick={() => void applica()}
             >
-              {inVolo ? "Applico…" : "Applica"}
+              {inVolo ? t("profile.applying") : t("profile.apply")}
             </button>
             <button
               type="button"
@@ -224,7 +228,7 @@ export function Profilo({
               disabled={inVolo}
               onClick={() => setDaApplicare(null)}
             >
-              Lascia stare
+              {t("profile.leaveIt")}
             </button>
           </div>
         </div>

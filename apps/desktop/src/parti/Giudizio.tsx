@@ -11,6 +11,7 @@ import type { CSSProperties } from "react";
 import { Stelle } from "../Stelle";
 import { ipc, type Brano, type StatoRiproduzione } from "../ipc";
 import { Icona } from "./Icone";
+import { t } from "../lingue";
 
 /** Dove sta il giudizio, e quindi quanto è grande il cuore. */
 export type TagliaGiudizio = "colonna" | "grande";
@@ -48,23 +49,32 @@ export function Giudizio({
         type="button"
         className="cuore icon-btn"
         aria-pressed={brano.liked}
-        aria-label={brano.liked ? "Togli dai preferiti" : "Aggiungi ai preferiti"}
+        aria-label={brano.liked ? t("track.unlike") : t("track.like")}
         onClick={() => onPreferito(brano)}
       >
-        <Icona nome={brano.liked ? "i-heart-f" : "i-heart"} dim={CUORE[taglia]} />
+        <Icona
+          nome={brano.liked ? "i-heart-f" : "i-heart"}
+          dim={CUORE[taglia]}
+        />
       </button>
       {conStelle && (
-        <Stelle valore={brano.rating} onVoto={(stelle) => onVoto(brano, stelle)} />
+        <Stelle
+          valore={brano.rating}
+          onVoto={(stelle) => onVoto(brano, stelle)}
+        />
       )}
       <div className="volume" hidden={!conVolume}>
         <button
           type="button"
           className="tasto icon-btn"
           aria-pressed={stato.muto}
-          aria-label={stato.muto ? "Riattiva l'audio" : "Silenzia"}
+          aria-label={stato.muto ? t("player.unmute") : t("player.mute")}
           onClick={() => comanda(ipc.volume(stato.volume, !stato.muto))}
         >
-          <Icona nome={stato.muto || stato.volume === 0 ? "i-vol-x" : "i-vol"} dim={16} />
+          <Icona
+            nome={stato.muto || stato.volume === 0 ? "i-vol-x" : "i-vol"}
+            dim={16}
+          />
         </button>
         <input
           type="range"
@@ -74,7 +84,7 @@ export function Giudizio({
           step={0.01}
           value={stato.volume}
           style={{ "--avanzamento": `${stato.volume * 100}%` } as CSSProperties}
-          aria-label="Volume"
+          aria-label={t("player.volume")}
           /* Muovere il volume toglie il silenziamento: chi trascina la manopola
              sta chiedendo di sentire, e lasciarla muta gli farebbe credere che
              il comando sia rotto. */

@@ -1,0 +1,245 @@
+//! I cataloghi liberi: leggere che cosa c'è, e prenderne i byte dove è permesso.
+//!
+//! Sostituisce `aether-yt`, e la differenza che conta non è quale servizio si
+//! interroga. È che **da qui non si prende niente che non si possa prendere**:
+//! ogni brano che esce da questo crate porta con sé la sua
+//! [`aether_domain::esterno::Licenza`] e la sua
+//! [`aether_domain::esterno::Disponibilita`], e [`prelievo::preleva`] rifiuta di
+//! scrivere sul disco quel che la seconda non consente — prima di fare la
+//! richiesta, non dopo.
+//!
+//! Il crate di prima non poteva avere quella proprietà, e non per come era
+//! scritto: la fonte da cui prendeva non dichiara nessuna licenza, perché non
+//! era una fonte da cui prendere.
+//!
+//! # Le due metà
+//!
+//! **Cercare** ([`cerca`]) — da un brano che qualcun altro ha nominato a un
+//! elenco di file che potrebbero essere quello. È la metà che serve alla coda:
+//! l'archivio di Spotify dice *cosa* si vuole e non dà nessun modo di sentirlo.
+//!
+//! **Leggere** ([`risolvi`], [`riferimento::riconosci`]) — da un link a un
+//! elenco di brani. È la metà che serve a chi incolla l'indirizzo di un
+//! concerto.
+//!
+//! Poi c'è [`prelievo`], che è il momento in cui i byte diventano un file.
+//!
+//! # Niente processi figli, niente binari
+//!
+//! Tutto passa da `aether-net`, cioè da `ureq`. Non c'è nessun eseguibile da
+//! impacchettare nell'installer, nessuna cartella `resources/bin`, nessun
+//! `std::process::Command`. Non è un'economia: un binario di terze parti dentro
+//! un installer è una cosa che si distribuisce, e distribuire ha delle
+//! conseguenze che il codice non può prevedere.
+//!
+//! # La regola di dipendenza
+//!
+//! ```text
+//! aether-catalogo  ──►  aether-net  ──►  aether-domain
+//! ```
+//!
+//! Qui dentro non passa mai una `rusqlite::Connection`, come in `aether-cloud` e
+//! `aether-archivio`. È il verso della dipendenza a rendere impossibile — e non
+//! solo sconsigliato — tenere preso il lucchetto della libreria per il minuto
+//! che dura un prelievo. La differenza pesa più che altrove: una richiesta di
+//! rete dura un secondo, un concerto in FLAC dura minuti.
+//!
+//! # Tutto bloccante, come il resto
+//!
+//! Nessun runtime asincrono — la ragione sta in `Cargo.toml:38-44` della radice.
+//! L'annullamento non è un segnale ma una chiusura `Fn() -> bool` che chi chiama
+//! collega al proprio `AtomicBool`, interrogata fra un blocco e l'altro.
+
+pub mod archivio_org;
+pub mod prelievo;
+pub mod riferimento;
+
+use aether_domain::errors::{AppError, ErrorCode};
+use aether_domain::esterno::{BranoEsterno, ContenutoEsterno, Fonte};
+use aether_domain::scelta::Candidato;
+
+pub use archivio_org::ArchivioOrg;
+pub use prelievo::{Prelevato, Richiesta, attribuzione, preleva};
+pub use riferimento::{Riferimento, riconosci};
+
+/// Che cosa risponde, e che cosa no.
+///
+/// Serve alla finestra che spiega perché qualcosa non funziona. Un catalogo che
+/// non risponde e un brano che non c'è sono due cose diverse, e senza questa
+/// struttura si presentano a chi guarda con la stessa faccia.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Diagnostica {
+    /// L'Internet Archive risponde.
+    pub internet_archive: bool,
+}
+
+/// I cataloghi attivi, con la loro riserva di connessioni.
+///
+/// Uno per applicazione, tenuto vivo fra una passata e l'altra: costruirne uno
+/// nuovo a ogni brano vorrebbe dire un saluto TLS per brano invece che uno per
+/// sessione, contro un servizio pubblico che ci ospita gratis.
+#[derive(Debug, Clone)]
+pub struct Cataloghi {
+    archivio: ArchivioOrg,
+}
+
+impl Default for Cataloghi {
+    fn default() -> Self {
+        Self::nuovi()
+    }
+}
+
+impl Cataloghi {
+    /// I cataloghi di serie.
+    #[must_use]
+    pub fn nuovi() -> Self {
+        Self {
+            archivio: ArchivioOrg::nuovo(),
+        }
+    }
+
+    /// L'Internet Archive, per chi deve prelevare con la stessa rete.
+    #[must_use]
+    pub const fn archivio(&self) -> &ArchivioOrg {
+        &self.archivio
+    }
+
+    /// Che cosa risponde adesso.
+    ///
+    /// Fa richieste vere: è l'unico modo di distinguere «è giù» da «non ce l'ha»,
+    /// e una diagnostica che non chiede niente non diagnostica niente.
+    #[must_use]
+    pub fn diagnostica(&self) -> Diagnostica {
+        Diagnostica {
+            internet_archive: self.archivio.risponde(),
+        }
+    }
+
+    /// I file che potrebbero essere il brano chiesto, da tutti i cataloghi.
+    ///
+    /// # Errori
+    ///
+    /// Solo se **nessun** catalogo ha risposto: finché uno risponde, il guasto
+    /// di un altro è un risultato in meno, non un fallimento. Con un catalogo
+    /// solo attivo le due cose coincidono; con più di uno la differenza è fra
+    /// «non l'ho trovato» e «sono tutti giù», e sono due frasi diverse.
+    pub fn cerca(
+        &self,
+        brano: &BranoEsterno,
+        annullato: &dyn Fn() -> bool,
+    ) -> Result<Vec<Candidato>, AppError> {
+        let mut trovati = Vec::new();
+        let mut guasti: Vec<AppError> = Vec::new();
+
+        match self.archivio.cerca(brano, annullato) {
+            Ok(suoi) => trovati.extend(suoi),
+            Err(err) => guasti.push(err),
+        }
+
+        if trovati.is_empty()
+            && let Some(primo) = guasti.into_iter().next()
+        {
+            return Err(primo);
+        }
+        Ok(trovati)
+    }
+
+    /// Da un riferimento a un contenuto con i suoi brani.
+    ///
+    /// # Errori
+    ///
+    /// `catalogo.notPublic` se non c'è, `catalogo.resolveFailed` se c'è ma non
+    /// se ne cava niente di ascoltabile, `download.unrecognizedUrl` per una
+    /// fonte che non si legge da un link.
+    pub fn risolvi(&self, riferimento: &Riferimento) -> Result<ContenutoEsterno, AppError> {
+        match riferimento.fonte {
+            Fonte::InternetArchive => self.archivio.risolvi(&riferimento.id),
+            // Jamendo e Audius arrivano con la metà «in ascolto»: leggerne un
+            // elenco senza saperlo suonare darebbe una playlist di brani che
+            // non partono, che è peggio di non leggerla.
+            Fonte::Jamendo | Fonte::Audius => Err(AppError::new(ErrorCode::CatalogoNotAvailable)
+                .with_cause(format!(
+                    "{} non è ancora fra i cataloghi che Aether sa suonare",
+                    riferimento.fonte.etichetta()
+                ))),
+            Fonte::ArchivioSpotify | Fonte::FilePlaylist => {
+                Err(AppError::new(ErrorCode::DownloadUnrecognizedUrl)
+                    .with_cause("questa non è una fonte che si legga da un indirizzo".to_owned()))
+            }
+        }
+    }
+
+    /// Prende un candidato e lo scrive dove gli si dice.
+    ///
+    /// # Errori
+    ///
+    /// Vedi [`prelievo::preleva`]. In particolare `download.notPermitted`,
+    /// che non è un guasto: è un no.
+    pub fn preleva(
+        &self,
+        candidato: &Candidato,
+        richiesta: &Richiesta<'_>,
+        annullato: &dyn Fn() -> bool,
+        avanzamento: &mut dyn FnMut(f32),
+    ) -> Result<Prelevato, AppError> {
+        let rete = match candidato.fonte {
+            Fonte::InternetArchive => self.archivio.rete(),
+            altra => {
+                return Err(AppError::new(ErrorCode::DownloadNotPermitted {
+                    licenza: Some(candidato.licenza.nome()),
+                })
+                .with_cause(format!(
+                    "da {} non si tiene niente sul disco",
+                    altra.etichetta()
+                )));
+            }
+        };
+        prelievo::preleva(rete, candidato, richiesta, annullato, avanzamento)
+    }
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+    use aether_domain::esterno::{Disponibilita, GenereContenuto, Licenza};
+
+    #[test]
+    fn da_un_catalogo_di_solo_ascolto_non_si_preleva() {
+        let cataloghi = Cataloghi::nuovi();
+        let temporanea = std::env::temp_dir().join("aether-prova-catalogo");
+        let esito = cataloghi.preleva(
+            &Candidato {
+                fonte: Fonte::Jamendo,
+                licenza: Licenza::CreativeCommons("by".to_owned()),
+                disponibilita: Disponibilita::SoloAscolto,
+                url: "https://prod-1.storage.jamendo.com/x.mp3".to_owned(),
+                ..Candidato::default()
+            },
+            &Richiesta {
+                cartella_download: &temporanea,
+                cartella_temporanea: &temporanea,
+                base_relativa: "A/B/01 - C",
+            },
+            &|| false,
+            &mut |_| {},
+        );
+        assert!(matches!(
+            esito.as_ref().map_err(AppError::code),
+            Err(ErrorCode::DownloadNotPermitted { .. })
+        ));
+    }
+
+    #[test]
+    fn una_fonte_che_non_si_legge_da_un_link_lo_dice() {
+        let cataloghi = Cataloghi::nuovi();
+        let esito = cataloghi.risolvi(&Riferimento {
+            fonte: Fonte::ArchivioSpotify,
+            genere: GenereContenuto::Playlist,
+            id: "x".to_owned(),
+        });
+        assert!(matches!(
+            esito.as_ref().map_err(AppError::code),
+            Err(ErrorCode::DownloadUnrecognizedUrl)
+        ));
+    }
+}

@@ -18,16 +18,18 @@
  */
 import type { Istantanea, VoceFile } from "../ipc";
 import { Icona } from "../parti/Icone";
+import { t } from "../lingue";
+import { Trans } from "../lingue/Trans";
 
 /** Quanto tempo fa, in parole corte. */
 function quandoFa(quando: number, adesso: number): string {
   const secondi = Math.max(0, Math.round((adesso - quando) / 1000));
-  if (secondi < 60) return "adesso";
+  if (secondi < 60) return t("studio.pkg.now");
   const minuti = Math.round(secondi / 60);
-  if (minuti < 60) return `${minuti} min fa`;
+  if (minuti < 60) return t("studio.pkg.minAgo", { n: minuti });
   const ore = Math.round(minuti / 60);
-  if (ore < 24) return `${ore} h fa`;
-  return `${Math.round(ore / 24)} g fa`;
+  if (ore < 24) return t("studio.pkg.hourAgo", { n: ore });
+  return t("studio.pkg.dayAgo", { n: Math.round(ore / 24) });
 }
 
 /** Quanto pesa, in unità che si leggono. */
@@ -38,12 +40,14 @@ function quantoPesa(byte: number): string {
 }
 
 /** Come si chiama una causa, per chi legge. */
-const COME_SI_LEGGE: Record<Istantanea["causa"], string> = {
-  derivata: "Derivata",
-  salvata: "Salvata e usata",
-  esportata: "Esportata",
-  manuale: "Presa a mano",
-};
+function comeSiLegge(): Record<Istantanea["causa"], string> {
+  return {
+    derivata: t("studio.pkg.snap.derivata"),
+    salvata: t("studio.pkg.snap.salvata"),
+    esportata: t("studio.pkg.snap.esportata"),
+    manuale: t("studio.pkg.snap.manuale"),
+  };
+}
 
 export function Pacchetto({
   id,
@@ -52,8 +56,10 @@ export function Pacchetto({
   parti,
   token,
   sporca,
+  derivata,
   onIstantanea,
   onRipristina,
+  onScarta,
 }: {
   id: string;
   voci: readonly VoceFile[];
@@ -61,10 +67,14 @@ export function Pacchetto({
   /** Quante parti e token ha il documento **adesso**, non su disco. */
   parti: number;
   token: number;
-  /** Il buffer non combacia col disco. */
+  /** Il buffer non combacia con la **bozza su disco**: c'è del lavoro non scritto. */
   sporca: boolean;
+  /** Il documento si è staccato dal pacchetto: c'è una bozza da poter buttare. */
+  derivata: boolean;
   onIstantanea: () => void;
   onRipristina: (quando: number) => void;
+  /** Butta la bozza e torna al documento del pacchetto. */
+  onScarta: () => void;
 }) {
   const adesso = Date.now();
   const risorse = voci.filter((v) => v.genere === "risorsa");
@@ -107,12 +117,12 @@ export function Pacchetto({
 
       <div className="blocco-pacchetto">
         <div className="testa-istantanee">
-          <span className="titolino">Istantanee</span>
+          <span className="titolino">{t("studio.pkg.snapshots")}</span>
           <button
             type="button"
             className="prendi icon-btn"
-            aria-label="Prendi un'istantanea adesso"
-            title="Prendi un'istantanea adesso"
+            aria-label={t("studio.pkg.takeSnap")}
+            title={t("studio.pkg.takeSnap")}
             onClick={onIstantanea}
           >
             <Icona nome="i-plus" dim={13} />
@@ -122,9 +132,15 @@ export function Pacchetto({
           {/* La prima riga è sempre adesso: è l'unica che non è su disco, e
               dirlo è il modo di non far credere che sia già salvata. */}
           <div className="istantanea adesso">
-            <div className="quale">Ora · {sporca ? "non salvata" : "come su disco"}</div>
+            <div className="quale">
+              {t("studio.pkg.nowRow", {
+                stato: sporca
+                  ? t("studio.pkg.unsaved")
+                  : t("studio.pkg.asOnDisk"),
+              })}
+            </div>
             <div className="quanto">
-              {parti} parti · {token} token
+              {t("studio.pkg.counts", { parti, token })}
             </div>
           </div>
           {istantanee.map((presa) => (
@@ -134,10 +150,13 @@ export function Pacchetto({
               className="istantanea"
               onClick={() => onRipristina(presa.quando)}
             >
-              <div className="quale">{COME_SI_LEGGE[presa.causa]}</div>
+              <div className="quale">{comeSiLegge()[presa.causa]}</div>
               <div className="quanto">
-                {presa.parti} parti · {presa.token} token ·{" "}
-                {quandoFa(presa.quando, adesso)}
+                {t("studio.pkg.countsWhen", {
+                  parti: presa.parti,
+                  token: presa.token,
+                  quando: quandoFa(presa.quando, adesso),
+                })}
               </div>
             </button>
           ))}
@@ -146,9 +165,23 @@ export function Pacchetto({
 
       <div className="spinta" />
 
+      {/* Buttare la bozza è l'unica azione irreversibile dello Studio, quindi
+          sta in fondo e dice cosa fa prima di farlo. Le istantanee restano: sono
+          la rete sotto questo bottone, e portarle via insieme alla bozza
+          lascerebbe chi si pente senza niente. */}
+      <button
+        type="button"
+        className="pillola btn-ghost scarta-bozza"
+        disabled={!derivata}
+        title={derivata ? t("studio.pkg.drop.can") : t("studio.pkg.drop.none")}
+        onClick={onScarta}
+      >
+        <Icona nome="i-x" dim={14} />
+        {t("studio.pkg.drop")}
+      </button>
+
       <p className="nota-pacchetto">
-        Il pacchetto è uno zip con un rapporto di compressione massimo di 200:1 —{" "}
-        <code>package.rs</code> rifiuta le bombe.
+        <Trans k="studio.pkg.note" v={{ file: <code>package.rs</code> }} />
       </p>
     </aside>
   );

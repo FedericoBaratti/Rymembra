@@ -146,9 +146,33 @@ impl Attesa {
     /// - `net.badSchema` se lo `state` non corrisponde. Vuol dire che a questa
     ///   porta ha bussato qualcosa che non è la nostra richiesta, e l'unica
     ///   risposta sicura è buttare via tutto e ricominciare.
-    pub fn aspetta(self, state: &str, entro: Duration) -> Result<Risposta, AppError> {
+    ///
+    /// # `fermare`
+    ///
+    /// Chiesto **una volta per giro**, accanto alla scadenza. Il ciclo esisteva
+    /// già e girava a `RESPIRO` per volta perché il socket è `set_nonblocking`:
+    /// il punto in cui chiedere «è stato annullato?» c'era, e non lo chiedeva
+    /// nessuno. Senza, chi apriva il consenso per sbaglio restava tre minuti
+    /// davanti a un tasto spento — e chiudere la finestrella non fermava niente,
+    /// perché il turno restava preso fino allo scadere.
+    ///
+    /// L'annullamento esce come `internal.aborted`, che nel catalogo è `Info`:
+    /// non è un guasto, è una risposta. La stessa forma di
+    /// `aether_catalogo::cerca`, e per la stessa ragione — chi chiede di fermarsi
+    /// non deve mettersi in coda dietro ciò che vuole fermare.
+    pub fn aspetta(
+        self,
+        state: &str,
+        entro: Duration,
+        fermare: &dyn Fn() -> bool,
+    ) -> Result<Risposta, AppError> {
         let scadenza = Instant::now() + entro;
         loop {
+            if fermare() {
+                return Err(AppError::new(ErrorCode::InternalAborted {
+                    what: Some(format!("consenso {}", self.servizio.nome)),
+                }));
+            }
             if Instant::now() >= scadenza {
                 return Err(AppError::new(ErrorCode::InternalTimeout {
                     what: format!("consenso {}", self.servizio.nome),
@@ -385,7 +409,7 @@ mod prove {
         let filo = std::thread::spawn(move || bussa(porta, "/?code=4%2F0Ab_c-d&state=abc"));
 
         let risposta = attesa
-            .aspetta("abc", Duration::from_secs(10))
+            .aspetta("abc", Duration::from_secs(10), &|| false)
             .expect("il codice arriva");
         assert_eq!(risposta.code, "4/0Ab_c-d");
         assert!(filo.join().expect("filo").contains("200 OK"));
@@ -401,7 +425,7 @@ mod prove {
         let filo = std::thread::spawn(move || bussa(porta, "/?code=rubato&state=altro"));
 
         let err = attesa
-            .aspetta("nostro", Duration::from_secs(10))
+            .aspetta("nostro", Duration::from_secs(10), &|| false)
             .expect_err("non è la nostra");
         assert_eq!(err.code().kind().code(), "net.badSchema");
         // Il codice ricevuto non finisce mai nel messaggio: ricopiarlo in un
@@ -417,7 +441,7 @@ mod prove {
         let filo = std::thread::spawn(move || bussa(porta, "/?error=access_denied&state=s"));
 
         let err = attesa
-            .aspetta("s", Duration::from_secs(10))
+            .aspetta("s", Duration::from_secs(10), &|| false)
             .expect_err("l'utente ha detto di no");
         assert_eq!(err.code().kind().code(), "internal.aborted");
         assert!(
@@ -437,7 +461,7 @@ mod prove {
         let filo = std::thread::spawn(move || bussa(porta, "/?error=access_denied&state=finto"));
 
         let err = attesa
-            .aspetta("vero", Duration::from_secs(10))
+            .aspetta("vero", Duration::from_secs(10), &|| false)
             .expect_err("respinta");
         assert_eq!(err.code().kind().code(), "net.badSchema");
         filo.join().expect("filo");
@@ -456,7 +480,7 @@ mod prove {
         });
 
         let risposta = attesa
-            .aspetta("s", Duration::from_secs(10))
+            .aspetta("s", Duration::from_secs(10), &|| false)
             .expect("il codice arriva lo stesso");
         assert_eq!(risposta.code, "quello_vero");
         filo.join().expect("filo");
@@ -468,7 +492,7 @@ mod prove {
         let porta = attesa.porta();
         let filo = std::thread::spawn(move || bussa(porta, "/?code=x&state=s"));
         attesa
-            .aspetta("s", Duration::from_secs(10))
+            .aspetta("s", Duration::from_secs(10), &|| false)
             .expect("codice");
         filo.join().expect("filo");
 
@@ -486,7 +510,7 @@ mod prove {
         // filo appeso per sempre.
         let attesa = Attesa::apri(PROVA).expect("apertura");
         let err = attesa
-            .aspetta("s", Duration::from_millis(300))
+            .aspetta("s", Duration::from_millis(300), &|| false)
             .expect_err("scaduta");
         assert_eq!(err.code().kind().code(), "internal.timeout");
     }
@@ -502,7 +526,7 @@ mod prove {
         })
         .expect("apertura");
         let err = attesa
-            .aspetta("s", Duration::from_millis(200))
+            .aspetta("s", Duration::from_millis(200), &|| false)
             .expect_err("scaduta");
         assert!(
             format!("{err}").contains("Spotify") || err.code().kind().code() == "internal.timeout"

@@ -9,6 +9,15 @@ authors.workspace = true
 
 # Il binario si chiama `aether`, non `aether-desktop`: è il nome che l'utente
 # vede nel gestore attività e nella barra delle applicazioni.
+# Nessuno di questi crate va su crates.io.
+#
+# Non è modestia: sono i pezzi di un'applicazione, con nomi che occuperebbero
+# uno spazio dei nomi pubblico senza offrire niente a nessuno, e con un patto
+# di stabilità che non esiste — le firme qui dentro cambiano quando serve.
+# Senza questa riga un `cargo publish` distratto dalla radice li
+# pubblicherebbe tutti, e un nome preso su crates.io non si restituisce.
+publish = false
+
 [[bin]]
 name = "aether"
 path = "src/main.rs"
@@ -21,9 +30,14 @@ aether-app = { path = "../../../core/aether-app" }
 aether-play = { path = "../../../core/aether-play" }
 aether-cloud = { path = "../../../core/aether-cloud" }
 aether-domain = { path = "../../../core/aether-domain" }
-# Per portare dentro la copertina di Spotify da incorporare nei tag di un brano
-# appena scaricato. Stessa `Rete` che usa `aether-spotify`, così l'agente e i
-# timeout sono quelli, non una seconda idea di cosa sia una richiesta HTTP.
+# Il motore della sincronia. Serve qui per due cose sole: costruire il deposito
+# — una cartella o il Drive di `aether-cloud` — e tenere in vita la memoria della
+# passata fra un giro e l'altro. Tutto il resto di cosa sopravvive quando due
+# dispositivi si incontrano è deciso là dentro, senza disco e senza rete.
+aether-sync = { path = "../../../core/aether-sync" }
+# Per portare dentro la copertina da incorporare nei tag di un brano appena
+# preso. Stessa `Rete` che usa `aether-catalogo`, così l'agente e i timeout sono
+# quelli, non una seconda idea di cosa sia una richiesta HTTP.
 aether-net = { path = "../../../core/aether-net" }
 # La lettura dell'archivio che Spotify manda per posta: la via che non chiede
 # nessuna chiave e nessun abbonamento. Non vede `rusqlite`, ed e` quel che rende
@@ -44,8 +58,10 @@ aether-meta = { path = "../../../core/aether-meta" }
 # rete; questo crate mette in mezzo le credenziali e il filo che svuota.
 aether-scrobble = { path = "../../../core/aether-scrobble" }
 aether-skin = { path = "../../../core/aether-skin" }
-aether-spotify = { path = "../../../core/aether-spotify" }
-aether-yt = { path = "../../../core/aether-yt" }
+# I cataloghi liberi: l'unico posto dell'albero che va a prendere dei byte
+# musicali, e lo fa solo dove prenderli è espressamente permesso. Nessun
+# processo figlio, nessun binario impacchettato.
+aether-catalogo = { path = "../../../core/aether-catalogo" }
 # La stessa versione che usa `aether-app`: due `rusqlite` diversi nell'albero
 # darebbero due tipi `Connection` incompatibili, e l'errore che ne esce parla di
 # tratti non implementati invece che di versioni.
@@ -63,6 +79,37 @@ tauri-plugin-dialog = "2"
 # una superficie di phishing, e allargare il CSP per sempre per un'operazione da
 # cinque minuti l'anno non si fa.
 tauri-plugin-opener = "2"
+# L'aggiornamento automatico. L'obiezione ovvia — «porta dentro `reqwest` e
+# `tokio`, e la radice del workspace spiega per bene perché Aether usa `ureq`» —
+# non si applica qui: `tauri 2.11.5` dipende **già** da entrambi in modo
+# diretto, e stanno nel binario da quando esiste questa finestra. Il plugin non
+# aggiunge un secondo stack HTTP, usa quello che c'era.
+#
+# Quel che aggiunge davvero è la verifica minisign della firma, ed è l'unica
+# ragione per cui vale la pena dipendere da qualcosa invece di scaricare un
+# `.json` con la `Rete` che abbiamo: un updater che non verifica la firma è un
+# canale per cui chiunque sappia rispondere al posto di GitHub installa un
+# eseguibile sul computer di chi ci si fida.
+tauri-plugin-updater = "2"
+# I controlli multimediali del sistema operativo: su Windows le
+# `SystemMediaTransportControls`, cioè la scheda che compare nel riquadro del
+# volume, l'anteprima sulla barra delle applicazioni e — la cosa che si sente
+# ogni giorno — i tasti play/pausa/avanti della tastiera.
+#
+# Una dipendenza e non quattro chiamate a mano al crate `windows`, che pure
+# c'è già nell'albero, per una ragione sola: la radice del workspace vieta
+# `unsafe` con `forbid`, che non si scavalca con un `#[allow]`, e parlare di
+# COM col sistema operativo è `unsafe` per definizione. `souvlaki` quel codice
+# ce l'ha dentro, provato e usato da altri; scriverlo qui vorrebbe dire
+# declassare a `deny` un principio che vale per tutto il resto del programma,
+# e cambiare quella riga per l'unico modulo che ne avrebbe bisogno è il modo
+# di scoprire fra un anno che ne ha bisogno anche un altro.
+#
+# Non serve **anche** `tauri-plugin-global-shortcut`: registrando SMTC è
+# Windows a instradare i tasti multimediali all'applicazione che sta
+# suonando. Un tasto registrato come scorciatoia globale lo ruberebbe invece a
+# tutte le altre, per sempre, anche a lettore fermo.
+souvlaki = { version = "0.8", default-features = false }
 
 [dev-dependencies]
 # Installare una skin scrive un file: provarlo vuol dire una cartella vera che

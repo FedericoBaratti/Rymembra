@@ -35,7 +35,7 @@
 //! libreria musicale, e la differenza fra «ne ho ignorati 3.400» e il silenzio è
 //! che nel secondo caso qualcuno passa una sera a cercare gli ascolti mancanti.
 
-use aether_domain::spotify::SpotifyTrack;
+use aether_domain::esterno::BranoEsterno;
 use aether_domain::spotify_account::AscoltoSpotify;
 use serde_json::Value;
 
@@ -144,12 +144,12 @@ fn riga_ad_ascolto(riga: &Value) -> Esito {
     Esito::Ascolto(AscoltoSpotify {
         finito_ms,
         ms_ascoltati: ms.unwrap_or(0),
-        brano: SpotifyTrack {
+        brano: BranoEsterno {
             title: titolo,
             artist: artista,
             album,
             spotify_track_id: uri.as_deref().and_then(id_da_uri),
-            ..SpotifyTrack::default()
+            ..BranoEsterno::default()
         },
     })
 }

@@ -65,21 +65,17 @@ const IMPRONTA: &str = "impronta";
 const LIMITE_MULTIPART: usize = 5 * 1024 * 1024;
 
 /// Un file nella cartella privata dell'applicazione.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileRemoto {
-    /// L'identificativo su Drive.
-    pub id: String,
-    /// Il nome.
-    pub nome: String,
-    /// Quanto pesa.
-    pub byte: u64,
-    /// L'impronta che **noi** abbiamo scritto quando l'abbiamo caricato.
-    ///
-    /// `None` per un file caricato da una versione che non la scriveva, o da
-    /// qualcosa che non siamo noi. Vale «non si sa», e chi legge ricarica: è la
-    /// direzione che non salta un caricamento.
-    pub impronta: Option<String>,
-}
+///
+/// Il tipo vive ora in `aether-sync`, che l'ha ereditato da qui: era già la
+/// forma esatta che serve a un deposito qualunque — un identificativo, un nome,
+/// quanto pesa, e l'impronta di quel che ci abbiamo messo dentro. Tenerne due
+/// copie identiche voleva dire due posti in cui aggiungere un campo, e uno dei
+/// due sarebbe rimasto indietro.
+///
+/// L'impronta è `None` per un file caricato da una versione che non la scriveva,
+/// o da qualcosa che non siamo noi. Vale «non si sa», e chi legge ricarica: è la
+/// direzione che non salta un caricamento.
+pub use aether_sync::FileRemoto;
 
 /// Il client di Drive, con un access token già valido.
 ///
@@ -378,6 +374,46 @@ impl Drive {
         } else {
             Err(self.rete.stato_a_errore(&risposta, url))
         }
+    }
+}
+
+/// Drive come deposito qualunque per la sincronia.
+///
+/// Non c'è nessun adattamento: le cinque operazioni che `aether-sync` chiede
+/// sono, una per una, i cinque metodi che questo modulo aveva già. Non è una
+/// coincidenza — il tratto è stato ricavato da qui, dopo aver constatato che la
+/// forma che il backup usava da mesi era già quella giusta per un deposito
+/// qualunque.
+///
+/// Quel che il tratto aggiunge davvero è la possibilità di sostituire Drive con
+/// una cartella condivisa senza che il motore della sincronia se ne accorga. È
+/// la ragione per cui la fusione si prova senza rete e senza account.
+impl aether_sync::Magazzino for Drive {
+    fn elenca(&self) -> Result<Vec<FileRemoto>, AppError> {
+        Self::elenca(self)
+    }
+
+    fn leggi(&self, id: &str) -> Result<Vec<u8>, AppError> {
+        self.scarica(id)
+    }
+
+    fn scrivi(
+        &self,
+        nome: &str,
+        esistente: Option<&str>,
+        tipo: &str,
+        dati: &[u8],
+        impronta: &str,
+    ) -> Result<FileRemoto, AppError> {
+        self.carica(nome, esistente, tipo, dati, impronta)
+    }
+
+    fn rinomina(&self, id: &str, nome: &str) -> Result<(), AppError> {
+        Self::rinomina(self, id, nome)
+    }
+
+    fn cancella(&self, id: &str) -> Result<(), AppError> {
+        Self::cancella(self, id)
     }
 }
 

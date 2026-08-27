@@ -2,9 +2,9 @@
 //!
 //! # Il modulo che mancava
 //!
-//! `spotify_wanted` esiste dalla migrazione 2 e fino a oggi era una tabella in
+//! `desiderati` esiste dalla migrazione 2 e fino a oggi era una tabella in
 //! **sola scrittura**: fuori da `legacy/` compariva in due file soli — quello
-//! che ci inserisce dentro ([`crate::import_spotify`]) e la sua stessa DDL.
+//! che ci inserisce dentro ([`crate::import_esterno`]) e la sua stessa DDL.
 //! Nessuna `SELECT`, nessun comando, nessuna interfaccia. L'importazione da
 //! Spotify ci depositava i brani mancanti e terminava, ed è letteralmente il
 //! punto in cui il lavoro si fermava.
@@ -25,13 +25,13 @@
 //!
 //! Non questo modulo: il catalogo. [`segna_fallito`] riceve la ritentabilità già
 //! decisa da [`aether_domain::AppError::is_retryable`] e si limita a contare i
-//! tentativi. È la stessa disciplina di `aether_yt::errori`, e per la stessa
+//! tentativi. È la stessa disciplina di `aether_catalogo`, e per la stessa
 //! ragione: la ritentabilità dev'essere una proprietà del guasto, non
 //! un'opinione del punto in cui lo si scopre.
 //!
 //! # Il viaggio di ritorno
 //!
-//! Una riga di `spotify_wanted` porta `playlist_id` e `position` fin dalla
+//! Una riga di `desiderati` porta `playlist_id` e `position` fin dalla
 //! migrazione 2. Servono a una cosa sola — rimettere il brano nella playlist da
 //! cui mancava, una volta che è arrivato — e per parecchio tempo **nessuno li ha
 //! mai riletti**: l'importazione creava la playlist con i soli brani già in
@@ -48,12 +48,13 @@
 use std::collections::HashMap;
 
 use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::SpotifyTrack;
+use aether_domain::esterno::{Disponibilita, Licenza};
+use aether_domain::{BranoEsterno, Fonte};
 use rusqlite::Connection;
 
 /// Quante volte si riprova un brano prima di dichiararlo fallito.
 ///
-/// Tre, e i tre non sono i tre profili di client di `aether_yt` — quelli girano
+/// Tre, e i tre non sono i livelli di `aether_catalogo` — quelli girano
 /// dentro un solo tentativo. Questi sono passaggi della coda distanti nel tempo,
 /// e servono a coprire il caso in cui a essere rotta era la rete e non il video.
 pub const MASSIMI_TENTATIVI: u32 = 3;
@@ -67,7 +68,12 @@ pub enum Stato {
     Fatto,
     /// Non preso, e non si riprova più.
     Fallito,
-    /// Su YouTube non c'è. Terminale, e diverso da [`Stato::Fallito`].
+    /// Nessuna fonte lecita ce l'ha.
+    ///
+    /// Terminale, e diverso da [`Stato::Fallito`]. **Non** vuol dire «non
+    /// esiste»: vuol dire che non esiste in nessun posto da cui sia lecito
+    /// prenderlo, il che è un'informazione — è quella che riempie la lista di
+    /// cosa resta da comprare. Vedi [`da_comprare`].
     Introvabile,
 }
 
@@ -102,13 +108,20 @@ impl Stato {
 /// Un brano da scaricare, con quel che serve per farlo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Desiderato {
-    /// La chiave della riga in `spotify_wanted`.
+    /// La chiave della riga in `desiderati`.
     pub id: i64,
-    /// I metadati autorevoli di Spotify.
-    pub brano: SpotifyTrack,
+    /// I metadati autorevoli della fonte da cui viene.
+    ///
+    /// Compreso [`BranoEsterno::fonte_url`], che è il campo su cui la coda
+    /// decide se cercare il file o se ce l'ha già, e
+    /// [`BranoEsterno::disponibilita`], che è quello su cui decide se andarlo a
+    /// prendere affatto.
+    pub brano: BranoEsterno,
+    /// Da quale fonte.
+    pub fonte: Fonte,
     /// Da quale playlist o album veniva, per poterlo dire all'utente.
     pub provenienza: String,
-    /// L'identificativo di quel contenitore su Spotify.
+    /// L'identificativo di quel contenitore presso la fonte.
     ///
     /// È la chiave dell'importazione: `provenienza` è un nome, e due playlist
     /// possono chiamarsi uguale. Serve a chi mostra la coda per attaccare il
@@ -118,8 +131,6 @@ pub struct Desiderato {
     pub posizione: u32,
     /// Quante volte ci si è già provati.
     pub tentativi: u32,
-    /// Il video già scelto in un tentativo precedente, se c'è.
-    pub youtube_url: Option<String>,
 }
 
 /// Traduce un guasto di SQLite nominando l'operazione.
@@ -140,7 +151,8 @@ fn adesso() -> i64 {
 /// Le colonne lette da [`leggi_da_scaricare`], in un posto solo.
 const COLONNE: &str = "id, title, artist, album, album_artist, duration_ms, isrc,
      spotify_track_id, spotify_album_id, cover_url, track_number, disc_number, year,
-     source_title, position, download_attempts, youtube_url, source_id";
+     source_title, position, download_attempts, fonte_url, source_id, source_service,
+     licenza, disponibilita";
 
 /// La condizione che tiene fuori dalla coda ciò che non va scaricato.
 ///
@@ -155,15 +167,15 @@ const COLONNE: &str = "id, title, artist, album, album_artist, duration_ms, isrc
 /// **Una riga sola per brano.** L'identità di una riga è `(track_key,
 /// source_id)`: lo stesso brano in due playlist sono **due** righe. Senza questa
 /// clausola verrebbero scaricate tutte e due, e siccome
-/// [`aether_domain::yt_match::destinazione`] calcola il percorso dai soli
-/// metadati, tutte e due finiscono sullo **stesso file** — con due yt-dlp che ci
-/// scrivono dentro insieme, se le due righe capitano nello stesso lotto. Si
-/// scarica la più vecchia; [`segna_fatto`] chiude le altre.
+/// [`aether_domain::destinazione::destinazione`] calcola il percorso dai soli
+/// metadati, tutte e due finiscono sullo **stesso file** — con due prelievi che
+/// ci scrivono dentro insieme, se le due righe capitano nello stesso lotto. Si
+/// prende la più vecchia; [`segna_fatto`] chiude le altre.
 const SOLO_DA_PRENDERE: &str = "
     w.download_state = ?1 AND w.download_attempts < ?2
     AND NOT EXISTS (SELECT 1 FROM tracks AS t WHERE t.track_key = w.track_key)
     AND w.id = (
-        SELECT MIN(g.id) FROM spotify_wanted AS g
+        SELECT MIN(g.id) FROM desiderati AS g
          WHERE g.track_key = w.track_key
            AND g.download_state = ?1 AND g.download_attempts < ?2
     )";
@@ -187,7 +199,7 @@ pub fn leggi_da_scaricare(
     limite: usize,
 ) -> Result<Vec<Desiderato>, AppError> {
     let sql = format!(
-        "SELECT {COLONNE} FROM spotify_wanted AS w
+        "SELECT {COLONNE} FROM desiderati AS w
          WHERE {SOLO_DA_PRENDERE}
          ORDER BY w.id LIMIT ?3"
     );
@@ -224,7 +236,7 @@ fn riga(riga: &rusqlite::Row<'_>) -> rusqlite::Result<Desiderato> {
 
     Ok(Desiderato {
         id: riga.get(0)?,
-        brano: SpotifyTrack {
+        brano: BranoEsterno {
             title: riga.get(1)?,
             artist: riga.get(2)?,
             album: riga.get(3)?,
@@ -240,12 +252,23 @@ fn riga(riga: &rusqlite::Row<'_>) -> rusqlite::Result<Desiderato> {
             spotify_track_id: riga.get(7)?,
             spotify_album_id: riga.get(8)?,
             cover_url: riga.get(9)?,
+            fonte_url: riga.get(16)?,
+            // Una riga in attesa non ha ancora una licenza: nessuno è andato a
+            // chiederla. Quella che c'è, quando c'è, è quella sotto cui il file
+            // è stato preso davvero, ed è l'unica traccia che resta del patto
+            // per cui quel file sta sul disco.
+            licenza: riga
+                .get::<_, Option<String>>(19)?
+                .as_deref()
+                .map_or(Licenza::Sconosciuta, licenza_da_testo),
+            disponibilita: Disponibilita::da_testo(&riga.get::<_, String>(20)?),
+            ..BranoEsterno::default()
         },
         provenienza: riga.get(13)?,
         posizione: posizione.and_then(|p| u32::try_from(p).ok()).unwrap_or(0),
         tentativi: u32::try_from(tentativi).unwrap_or(u32::MAX),
-        youtube_url: riga.get(16)?,
         sorgente_id: riga.get(17)?,
+        fonte: Fonte::da_testo(&riga.get::<_, String>(18)?),
     })
 }
 
@@ -261,9 +284,7 @@ fn riga(riga: &rusqlite::Row<'_>) -> rusqlite::Result<Desiderato> {
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn conta_in_attesa(connection: &Connection) -> Result<u32, AppError> {
-    let sql = format!(
-        "SELECT COUNT(*) FROM spotify_wanted AS w WHERE {SOLO_DA_PRENDERE}"
-    );
+    let sql = format!("SELECT COUNT(*) FROM desiderati AS w WHERE {SOLO_DA_PRENDERE}");
     let quanti: i64 = connection
         .query_row(
             &sql,
@@ -295,38 +316,75 @@ pub fn segna_fatto(
     connection: &Connection,
     id: i64,
     percorso: &str,
-    youtube_url: &str,
+    fonte_url: &str,
+    licenza: &Licenza,
 ) -> Result<(), AppError> {
     let quando = adesso();
+    let licenza = licenza.nome();
+    let scaricabile = Disponibilita::Scaricabile.nome();
     connection
         .execute(
-            "UPDATE spotify_wanted
-             SET download_state = ?2, download_path = ?3, youtube_url = ?4,
-                 download_error = NULL, updated_at = ?5
+            "UPDATE desiderati
+             SET download_state = ?2, download_path = ?3, fonte_url = ?4,
+                 licenza = ?5, disponibilita = ?6,
+                 download_error = NULL, updated_at = ?7
              WHERE id = ?1",
-            rusqlite::params![id, Stato::Fatto.come_testo(), percorso, youtube_url, quando],
-        )
-        .map_err(|err| db_error("registrazione di uno scaricamento riuscito", &err))?;
-
-    connection
-        .execute(
-            "UPDATE spotify_wanted
-             SET download_state = ?2, download_path = ?3, youtube_url = ?4,
-                 download_error = NULL, updated_at = ?5
-             WHERE id <> ?1
-               AND download_state = ?6
-               AND track_key = (SELECT track_key FROM spotify_wanted WHERE id = ?1)",
             rusqlite::params![
                 id,
                 Stato::Fatto.come_testo(),
                 percorso,
-                youtube_url,
+                fonte_url,
+                licenza,
+                scaricabile,
+                quando
+            ],
+        )
+        .map_err(|err| db_error("registrazione di un prelievo riuscito", &err))?;
+
+    connection
+        .execute(
+            "UPDATE desiderati
+             SET download_state = ?2, download_path = ?3, fonte_url = ?4,
+                 licenza = ?5, disponibilita = ?6,
+                 download_error = NULL, updated_at = ?7
+             WHERE id <> ?1
+               AND download_state = ?8
+               AND track_key = (SELECT track_key FROM desiderati WHERE id = ?1)",
+            rusqlite::params![
+                id,
+                Stato::Fatto.come_testo(),
+                percorso,
+                fonte_url,
+                licenza,
+                scaricabile,
                 quando,
                 Stato::Attesa.come_testo(),
             ],
         )
         .map(|_| ())
         .map_err(|err| db_error("chiusura delle righe sorelle", &err))
+}
+
+/// Rilegge una licenza dal nome con cui era stata scritta.
+///
+/// Il verso opposto di [`Licenza::nome`], e sta qui e non nel dominio per una
+/// ragione: il dominio non serializza niente da sé, e questa è una lettura di
+/// colonna. Tutto ciò che non si riconosce vale «non lo so», che è la variante
+/// che **non** permette di copiare — un valore storto in quella colonna deve
+/// stringere i permessi, non allargarli.
+fn licenza_da_testo(grezzo: &str) -> Licenza {
+    match grezzo {
+        "pubblicoDominio" => Licenza::PubblicoDominio,
+        "oml" => Licenza::OpenMusicLicense,
+        "liberaNonCommerciale" => Licenza::LiberaNonCommerciale,
+        "tutteRiservate" => Licenza::TutteRiservate,
+        altro => altro
+            .strip_prefix("cc-")
+            .filter(|codice| !codice.is_empty())
+            .map_or(Licenza::Sconosciuta, |codice| {
+                Licenza::CreativeCommons(codice.to_owned())
+            }),
+    }
 }
 
 /// Segna un tentativo andato male.
@@ -351,7 +409,7 @@ pub fn segna_fallito(
     // regalerebbe un tentativo in più (o in meno) a seconda del tempismo.
     connection
         .execute(
-            "UPDATE spotify_wanted
+            "UPDATE desiderati
              SET download_attempts = download_attempts + 1,
                  download_error = ?3,
                  download_state = CASE
@@ -385,7 +443,7 @@ pub fn segna_fallito(
 pub fn segna_introvabile(connection: &Connection, id: i64, motivo: &str) -> Result<(), AppError> {
     connection
         .execute(
-            "UPDATE spotify_wanted
+            "UPDATE desiderati
              SET download_state = ?2, download_error = ?3, updated_at = ?4
              WHERE id = ?1",
             rusqlite::params![id, Stato::Introvabile.come_testo(), motivo, adesso()],
@@ -409,7 +467,7 @@ pub fn segna_introvabile(connection: &Connection, id: i64, motivo: &str) -> Resu
 pub fn riprova_falliti(connection: &Connection) -> Result<u32, AppError> {
     let quanti = connection
         .execute(
-            "UPDATE spotify_wanted
+            "UPDATE desiderati
              SET download_state = ?1, download_attempts = 0, updated_at = ?3
              WHERE download_state = ?2",
             rusqlite::params![
@@ -434,12 +492,12 @@ pub struct Riconciliazione {
     pub righe_chiuse: usize,
 }
 
-/// Come si ritrova in `tracks` il brano di una riga di `spotify_wanted`.
+/// Come si ritrova in `tracks` il brano di una riga di `desiderati`.
 ///
 /// Due strade, e la seconda non è ridondanza.
 ///
 /// La **chiave d'identità** è la strada normale, ed è quella per cui
-/// `spotify_wanted.track_key` esiste fin dalla migrazione 2: il file scaricato
+/// `desiderati.track_key` esiste fin dalla migrazione 2: il file scaricato
 /// riceve i tag di Spotify da `tag_scrittura`, la scansione li rilegge e ne
 /// ricava la stessa chiave.
 ///
@@ -492,7 +550,7 @@ pub fn riconcilia(
          SELECT w.playlist_id,
                 (SELECT MIN(t.id) FROM tracks AS t WHERE {STESSO_BRANO}),
                 w.position
-           FROM spotify_wanted AS w
+           FROM desiderati AS w
           WHERE w.playlist_id IS NOT NULL
             AND w.position IS NOT NULL
             AND (?1 IS NULL OR w.source_id = ?1)
@@ -507,12 +565,12 @@ pub fn riconcilia(
     // Senza `format!`, a differenza della query qui sopra: questa non interpola
     // nessuna costante, e un `format!` che non formatta niente fa credere a chi
     // legge che da qualche parte ci sia un pezzo di SQL costruito a mano.
-    const SQL_RIGHE: &str = "UPDATE spotify_wanted
+    const SQL_RIGHE: &str = "UPDATE desiderati
             SET download_state = ?2, download_error = NULL, updated_at = ?3
           WHERE download_state = ?4
             AND (?1 IS NULL OR source_id = ?1)
             AND EXISTS (SELECT 1 FROM tracks AS t
-                         WHERE t.track_key = spotify_wanted.track_key)";
+                         WHERE t.track_key = desiderati.track_key)";
     let righe_chiuse = connection
         .execute(
             SQL_RIGHE,
@@ -529,7 +587,7 @@ pub fn riconcilia(
         connection
             .execute(
                 "UPDATE playlists SET updated_at = ?2
-                  WHERE id IN (SELECT DISTINCT playlist_id FROM spotify_wanted
+                  WHERE id IN (SELECT DISTINCT playlist_id FROM desiderati
                                 WHERE playlist_id IS NOT NULL
                                   AND (?1 IS NULL OR source_id = ?1))",
                 rusqlite::params![sorgente, adesso()],
@@ -550,7 +608,7 @@ pub fn riconcilia(
 /// `db.queryFailed` se il database non risponde.
 pub fn conteggi(connection: &Connection) -> Result<Conteggi, AppError> {
     let mut query = connection
-        .prepare("SELECT download_state, COUNT(*) FROM spotify_wanted GROUP BY download_state")
+        .prepare("SELECT download_state, COUNT(*) FROM desiderati GROUP BY download_state")
         .map_err(|err| db_error("conteggio dei desiderati", &err))?;
     let righe = query
         .query_map([], |riga| {
@@ -581,7 +639,7 @@ pub struct Conteggi {
     pub fatto: u32,
     /// Non presi, e non si riprova.
     pub fallito: u32,
-    /// Su YouTube non ci sono.
+    /// Nessuna fonte lecita ce li ha. Vedi [`Stato::Introvabile`].
     pub introvabile: u32,
 }
 
@@ -589,7 +647,7 @@ pub struct Conteggi {
 ///
 /// # Perché non c'è una tabella delle importazioni
 ///
-/// Perché ce n'è già una. `spotify_wanted` porta `source_kind`, `source_id` e
+/// Perché ce n'è già una. `desiderati` porta `source_kind`, `source_id` e
 /// `source_title` su **ogni** riga fin dalla migrazione 2, e nessuna riga si
 /// cancella mai: un'importazione *è* il gruppo delle righe con lo stesso
 /// `source_id`. Il che vuol dire anche che l'elenco sopravvive alla chiusura
@@ -598,12 +656,20 @@ pub struct Conteggi {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sorgente {
-    /// L'identificativo del contenitore su Spotify.
+    /// L'identificativo del contenitore sul servizio da cui viene.
     pub source_id: String,
     /// `brano`, `album`, `playlist` o `artista`.
     pub source_kind: String,
     /// Come si chiama.
     pub source_title: String,
+    /// Il nome stabile della [`Fonte`] da cui è stata importata.
+    ///
+    /// Serve a chi disegna la coda per una ragione sola, e non cosmetica: da un
+    /// link di un catalogo il file **non si sceglie** — è quello che l'utente
+    /// ha incollato — quindi la riga in volo non ha un candidato da mostrare, e
+    /// senza questo campo non saprebbe distinguere «non l'ho ancora scelto» da
+    /// «non c'era niente da scegliere».
+    pub source_service: String,
     /// Come stanno i suoi brani.
     pub conteggi: Conteggi,
     /// Quando è stata importata.
@@ -625,13 +691,17 @@ pub struct Sorgente {
 pub fn per_sorgente(connection: &Connection) -> Result<Vec<Sorgente>, AppError> {
     let mut query = connection
         .prepare(
-            // `source_kind` e `source_title` senza aggregato: dentro un gruppo
-            // sono lo stesso valore su tutte le righe. Se un titolo è cambiato
-            // su Spotify fra due importazioni, SQLite ne sceglie uno dei due —
-            // che è un nome leggermente vecchio, non un numero sbagliato.
-            "SELECT source_id, source_kind, source_title, download_state, COUNT(*),
-                    MIN(added_at), MAX(COALESCE(updated_at, added_at))
-             FROM spotify_wanted
+            // `source_kind`, `source_title` e `source_service` senza aggregato:
+            // dentro un gruppo sono lo stesso valore su tutte le righe. Se un
+            // titolo è cambiato sul servizio fra due importazioni, SQLite ne
+            // sceglie uno dei due — che è un nome leggermente vecchio, non un
+            // numero sbagliato. Nemmeno `source_service` entra nel `GROUP BY`,
+            // e per una ragione più forte: un `source_id` viene da un servizio
+            // solo, quindi raggrupparci sopra non spezzerebbe niente ma
+            // suggerirebbe che possa spezzare.
+            "SELECT source_id, source_kind, source_title, source_service, download_state,
+                    COUNT(*), MIN(added_at), MAX(COALESCE(updated_at, added_at))
+             FROM desiderati
              GROUP BY source_id, download_state",
         )
         .map_err(|err| db_error("elenco delle importazioni", &err))?;
@@ -642,22 +712,24 @@ pub fn per_sorgente(connection: &Connection) -> Result<Vec<Sorgente>, AppError> 
                 riga.get::<_, String>(1)?,
                 riga.get::<_, String>(2)?,
                 riga.get::<_, String>(3)?,
-                riga.get::<_, i64>(4)?,
+                riga.get::<_, String>(4)?,
                 riga.get::<_, i64>(5)?,
                 riga.get::<_, i64>(6)?,
+                riga.get::<_, i64>(7)?,
             ))
         })
         .map_err(|err| db_error("elenco delle importazioni", &err))?;
 
     let mut per_id: HashMap<String, Sorgente> = HashMap::new();
     for trovato in righe {
-        let (id, genere, titolo, stato, quanti, aggiunta, aggiornata) =
+        let (id, genere, titolo, servizio, stato, quanti, aggiunta, aggiornata) =
             trovato.map_err(|err| db_error("elenco delle importazioni", &err))?;
         let quanti = u32::try_from(quanti).unwrap_or(u32::MAX);
         let sorgente = per_id.entry(id.clone()).or_insert_with(|| Sorgente {
             source_id: id,
             source_kind: genere,
             source_title: titolo,
+            source_service: servizio,
             conteggi: Conteggi::default(),
             aggiunta_ms: aggiunta,
             aggiornata_ms: aggiornata,
@@ -688,6 +760,92 @@ pub fn per_sorgente(connection: &Connection) -> Result<Vec<Sorgente>, AppError> 
     Ok(esito)
 }
 
+/// Un brano che nessuna fonte lecita ha, e che quindi si compra.
+///
+/// # Perché è un tipo suo e non un [`Desiderato`]
+///
+/// Perché un `Desiderato` porta tutto quel che serve a **prenderlo** — la
+/// licenza, la disponibilità, il numero di tentativi, l'indirizzo del file — e
+/// qui non si prende niente. Quel che serve è quel che serve a **cercarlo in un
+/// negozio**: chi lo canta, come si chiama, e in che disco stava. Portarsi
+/// dietro il resto vorrebbe dire suggerire che da questa riga si possa ancora
+/// scaricare, che è precisamente la cosa che non si può fare.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaComprare {
+    /// Il titolo, come la fonte l'ha nominato.
+    pub titolo: String,
+    /// Chi lo canta. Vuoto quando la fonte non l'ha dato.
+    pub artista: String,
+    /// In che disco stava. Vuoto quando la fonte non l'ha dato.
+    pub album: String,
+    /// Da quale importazione veniva, per dire dove manca.
+    pub provenienza: String,
+    /// Perché nessuno ce l'ha: il codice del catalogo degli errori.
+    ///
+    /// Distingue le due ragioni, che sono cose diverse per chi legge:
+    /// `download.noResults` è «non l'ho trovato da nessuna parte»,
+    /// `download.notPermitted` è «l'ho trovato e la licenza non me lo lascia
+    /// prendere». La seconda vuol dire che da qualche parte si **ascolta**.
+    pub motivo: String,
+}
+
+/// I brani che restano da comprare, il più recente per primo.
+///
+/// # Perché esiste
+///
+/// Perché la sostituzione onesta di uno scaricamento che non si può fare non è
+/// un errore rosso: è dire **dove** prendere quel brano. Le righe
+/// [`Stato::Introvabile`] sono esattamente quelle, e fino a qui restavano un
+/// numero in un conteggio — cioè un'informazione che c'era e non usciva.
+///
+/// Distinte per titolo e artista: lo stesso brano mancante da tre playlist è un
+/// brano che non hai, non tre. È la stessa regola di `mancantiAccount` di là, e
+/// per la stessa ragione — una lista della spesa con tre volte la stessa riga
+/// fa sembrare il problema tre volte più grande.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn da_comprare(connection: &Connection, limite: u32) -> Result<Vec<DaComprare>, AppError> {
+    let mut query = connection
+        .prepare(
+            // `MAX(updated_at)` e non `updated_at`: il gruppo raccoglie le
+            // righe dello stesso brano in playlist diverse, e la data che conta
+            // è quella dell'ultima volta che si è provato — è quella che mette
+            // in cima quel che si è appena scoperto di non avere.
+            "SELECT title, COALESCE(artist, ''), COALESCE(album, ''),
+                    source_title, COALESCE(download_error, ''),
+                    MAX(COALESCE(updated_at, added_at)) AS quando
+             FROM desiderati
+             WHERE download_state = ?1
+             GROUP BY LOWER(title), LOWER(COALESCE(artist, ''))
+             ORDER BY quando DESC
+             LIMIT ?2",
+        )
+        .map_err(|err| db_error("elenco di quel che resta da comprare", &err))?;
+    let righe = query
+        .query_map(
+            rusqlite::params![Stato::Introvabile.come_testo(), limite],
+            |riga| {
+                Ok(DaComprare {
+                    titolo: riga.get(0)?,
+                    artista: riga.get(1)?,
+                    album: riga.get(2)?,
+                    provenienza: riga.get(3)?,
+                    motivo: riga.get(4)?,
+                })
+            },
+        )
+        .map_err(|err| db_error("elenco di quel che resta da comprare", &err))?;
+
+    let mut esito = Vec::new();
+    for trovato in righe {
+        esito.push(trovato.map_err(|err| db_error("elenco di quel che resta da comprare", &err))?);
+    }
+    Ok(esito)
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;
@@ -712,7 +870,7 @@ mod prove {
     ) -> i64 {
         connection
             .execute(
-                "INSERT INTO spotify_wanted
+                "INSERT INTO desiderati
                  (track_key, title, artist, album, duration_ms, track_number,
                   source_kind, source_id, source_title, position, added_at)
                  VALUES (?1, ?2, 'Un artista', 'Un album', 200000, 4,
@@ -743,7 +901,7 @@ mod prove {
     ) -> i64 {
         connection
             .execute(
-                "INSERT INTO spotify_wanted
+                "INSERT INTO desiderati
                  (track_key, title, artist, source_kind, source_id, source_title,
                   playlist_id, position, added_at)
                  VALUES (?1, ?2, 'Un artista', 'playlist', ?3, 'La playlist', ?4, ?5, 0)",
@@ -863,7 +1021,7 @@ mod prove {
         let id = inserisci_in_playlist(&connection, "Alpha", "una", p, 0);
         connection
             .execute(
-                "UPDATE spotify_wanted SET download_state = 'fatto', download_path = ?2
+                "UPDATE desiderati SET download_state = 'fatto', download_path = ?2
                  WHERE id = ?1",
                 rusqlite::params![id, "C:/M/alpha.m4a"],
             )
@@ -921,7 +1079,7 @@ mod prove {
         let condiviso = |sorgente: &str| {
             connection
                 .execute(
-                    "INSERT INTO spotify_wanted
+                    "INSERT INTO desiderati
                      (track_key, title, artist, source_kind, source_id, source_title, added_at)
                      VALUES ('chiave-Alpha', 'Alpha', 'Un artista', 'playlist', ?1, 'P', 0)",
                     [sorgente],
@@ -942,11 +1100,18 @@ mod prove {
         );
 
         // Preso: si chiude anche la riga dell'altra importazione.
-        segna_fatto(&connection, primo, "C:/M/alpha.m4a", "https://y/1").expect("segna");
+        segna_fatto(
+            &connection,
+            primo,
+            "C:/M/alpha.m4a",
+            "https://archive.org/download/x/t01.flac",
+            &Licenza::LiberaNonCommerciale,
+        )
+        .expect("segna");
         assert_eq!(conta_in_attesa(&connection), Ok(0));
         let stato: String = connection
             .query_row(
-                "SELECT download_state FROM spotify_wanted WHERE id = ?1",
+                "SELECT download_state FROM desiderati WHERE id = ?1",
                 [secondo],
                 |r| r.get(0),
             )
@@ -1001,7 +1166,14 @@ mod prove {
         let preso = inserisci_da(&connection, "Preso", "una", "La prima", 10);
         inserisci_da(&connection, "Atteso", "una", "La prima", 10);
         let perso = inserisci_da(&connection, "Perso", "due", "La seconda", 20);
-        segna_fatto(&connection, preso, "C:/M/a.m4a", "https://y/1").expect("segna");
+        segna_fatto(
+            &connection,
+            preso,
+            "C:/M/a.m4a",
+            "https://archive.org/download/x/t01.flac",
+            &Licenza::LiberaNonCommerciale,
+        )
+        .expect("segna");
         segna_introvabile(&connection, perso, "DL_NO_RESULTS").expect("segna");
 
         let elenco = per_sorgente(&connection).expect("elenco");
@@ -1045,7 +1217,14 @@ mod prove {
     fn un_brano_preso_esce_dalla_coda() {
         let connection = connessione();
         let id = inserisci(&connection, "Preso");
-        segna_fatto(&connection, id, "C:/M/a.m4a", "https://y/1").expect("segna");
+        segna_fatto(
+            &connection,
+            id,
+            "C:/M/a.m4a",
+            "https://archive.org/download/x/t01.flac",
+            &Licenza::LiberaNonCommerciale,
+        )
+        .expect("segna");
 
         assert_eq!(conta_in_attesa(&connection), Ok(0));
         assert!(

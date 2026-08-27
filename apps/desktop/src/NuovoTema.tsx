@@ -25,6 +25,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { VoceSkin } from "./ipc";
 import { idDa, type DatiTema } from "./studio/nuovo";
+import { t } from "./lingue";
 
 /** Le tre fasce di una skin, col ripiego di `Impostazioni`. */
 function bande(skin: VoceSkin): readonly string[] {
@@ -35,11 +36,21 @@ function bande(skin: VoceSkin): readonly string[] {
 
 export function NuovoTema({
   skin,
+  baseIniziale,
   onCrea,
   onChiudi,
 }: {
   /** Le skin fra cui scegliere la base, e gli id già presi. */
   skin: VoceSkin[];
+  /**
+   * Da quale skin partire, quando si arriva da «Deriva…».
+   *
+   * Chi preme «Deriva…» sulla scheda di una skin ha già detto da quale vuole
+   * partire: richiederglielo con la skin attiva preselezionata sarebbe un modo
+   * di fargli rifare una scelta appena fatta, e di fargliela sbagliare se non
+   * si accorge del campo.
+   */
+  baseIniziale?: string | null | undefined;
   onCrea: (dati: DatiTema) => void;
   onChiudi: () => void;
 }) {
@@ -47,7 +58,8 @@ export function NuovoTema({
   const [autore, setAutore] = useState("");
   const [descrizione, setDescrizione] = useState("");
   const [base, setBase] = useState(
-    () => skin.find((s) => s.attiva)?.id ?? skin[0]?.id ?? "plain",
+    () =>
+      baseIniziale ?? skin.find((s) => s.attiva)?.id ?? skin[0]?.id ?? "plain",
   );
   const campo = useRef<HTMLInputElement>(null);
 
@@ -89,8 +101,8 @@ export function NuovoTema({
   return (
     <div className="velo scuro" onClick={onChiudi}>
       <form
-        className="finestrella nuovo-tema"
-        aria-label="Crea un tema"
+        className="finestrella nuovo-tema glass-modal"
+        aria-label={t("newtheme.aria")}
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault();
@@ -98,23 +110,26 @@ export function NuovoTema({
           onCrea({
             id,
             nome: pulito,
-            autore: autore.trim().length > 0 ? autore.trim() : "Io",
+            autore:
+              autore.trim().length > 0
+                ? autore.trim()
+                : t("newtheme.author.me"),
             descrizione: descrizione.trim(),
             base,
           });
         }}
       >
-        <h2>Crea un tema</h2>
+        <h2>{t("newtheme.aria")}</h2>
 
         <div className="campo-con-nota">
           <label>
-            Nome
+            {t("newtheme.name")}
             <input
               ref={campo}
-              className="campo"
+              className="campo field-input"
               value={nome}
               spellCheck={false}
-              placeholder="Notturno"
+              placeholder={t("newtheme.name.hint")}
               onChange={(e) => setNome(e.target.value)}
             />
           </label>
@@ -122,34 +137,37 @@ export function NuovoTema({
               accessibile del campo, e chi non vede il modulo si sentirebbe
               leggere «Nome l'identificatore viene dal nome». */}
           <p className="nota-id">
-            {vuoto ? "l'identificatore viene dal nome" : `id: ${id}`}
+            {vuoto ? t("newtheme.id.fromName") : t("newtheme.id", { id })}
           </p>
         </div>
 
         <label>
-          Autore
+          {t("newtheme.author")}
           <input
-            className="campo"
+            className="campo field-input"
             value={autore}
             spellCheck={false}
-            placeholder="Io"
+            placeholder={t("newtheme.author.me")}
             onChange={(e) => setAutore(e.target.value)}
           />
         </label>
 
         <label>
-          Descrizione <span className="facoltativo">facoltativa</span>
+          {t("newtheme.description")}{" "}
+          <span className="facoltativo">
+            {t("newtheme.description.optional")}
+          </span>
           <input
-            className="campo"
+            className="campo field-input"
             value={descrizione}
-            placeholder="A cosa somiglia"
+            placeholder={t("newtheme.description.hint")}
             onChange={(e) => setDescrizione(e.target.value)}
           />
         </label>
 
         <div className="scelta-base">
           <span className="etichetta-gruppo" id="da-quale-skin">
-            Parti da
+            {t("newtheme.basedOn")}
           </span>
           {/* `radiogroup` e non un elenco di bottoni, per la stessa ragione del
               segmentato: sono opzioni che si escludono, e il tabulatore deve
@@ -184,10 +202,10 @@ export function NuovoTema({
 
         <div className="tasti-finestrella">
           <button type="button" className="bottone" onClick={onChiudi}>
-            Annulla
+            {t("common.cancel")}
           </button>
           <button type="submit" className="bottone primario" disabled={vuoto}>
-            Crea e apri lo Studio
+            {t("newtheme.create")}
           </button>
         </div>
       </form>

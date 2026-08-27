@@ -36,6 +36,11 @@
  * giusta — nessuno scrive `Ctrl+F` dentro una parola. `Shift` non basta a
  * concederlo, perché `Shift+a` è una lettera.
  *
+ * Passano anche i tasti funzione, per la stessa ragione detta al contrario:
+ * `F11` non è un carattere, e in nessuna lingua finisce dentro una parola.
+ * Senza questa seconda eccezione, lo schermo intero sarebbe l'unico comando
+ * della finestra che smette di funzionare mentre si cerca un disco.
+ *
  * `Escape` è l'eccezione voluta, e **non è configurabile**: funziona anche
  * mentre si scrive, perché in un campo pieno il primo significato di Escape è
  * «lascia stare», e chi lo preme dentro la ricerca vuole uscirne. Lasciarlo
@@ -44,6 +49,7 @@
 import { useEffect, useRef } from "react";
 
 import { posizioneAdesso } from "./riproduzione";
+import { t, type Chiave } from "./lingue";
 
 /** Di quanto si sposta il cursore con una freccia. */
 const PASSO_MS = 5_000;
@@ -54,40 +60,43 @@ export type Comando =
   | "cerca"
   | "avanti"
   | "indietro"
-  | "inRiproduzione";
+  | "inRiproduzione"
+  | "schermoIntero"
+  | "importazioni"
+  | "incollaLink";
 
-/** Come si chiamano a schermo, e cosa fanno. */
-export const COMANDI: readonly {
+/**
+ * Come si chiamano a schermo, e cosa fanno.
+ *
+ * Una funzione e non una costante: i titoli sono testo, e una tabella costruita
+ * all'apertura del modulo resterebbe nella lingua di quel momento.
+ *
+ * L'ordine è quello con cui la scheda delle scorciatoie li elenca: le due
+ * dell'importazione stanno in fondo perché sono le due che si usano meno.
+ */
+const CHIAVI: readonly Comando[] = [
+  "alterna",
+  "cerca",
+  "avanti",
+  "indietro",
+  "inRiproduzione",
+  "schermoIntero",
+  "importazioni",
+  "incollaLink",
+];
+
+export function comandi(): readonly {
   chiave: Comando;
   titolo: string;
   spiegazione: string;
-}[] = [
-  {
-    chiave: "alterna",
-    titolo: "Pausa e ripresa",
-    spiegazione: "Ferma quel che suona, o lo riprende da dov'era.",
-  },
-  {
-    chiave: "cerca",
-    titolo: "Cerca",
-    spiegazione: "Porta il cursore nel campo di ricerca, tornando in libreria se serve.",
-  },
-  {
-    chiave: "avanti",
-    titolo: "Avanti di cinque secondi",
-    spiegazione: "Sposta la posizione nel brano, senza uscirne.",
-  },
-  {
-    chiave: "indietro",
-    titolo: "Indietro di cinque secondi",
-    spiegazione: "Come sopra, dall'altra parte.",
-  },
-  {
-    chiave: "inRiproduzione",
-    titolo: "Apri «In riproduzione»",
-    spiegazione: "Il brano a tutto schermo, e di nuovo per chiuderlo.",
-  },
-];
+}[] {
+  const c = (chiave: Comando) => ({
+    chiave,
+    titolo: t(`cmd.${chiave}.title` as Chiave),
+    spiegazione: t(`cmd.${chiave}.hint` as Chiave),
+  });
+  return CHIAVI.map(c);
+}
 
 /** Le associazioni di serie. */
 export const DI_SERIE: Readonly<Record<Comando, readonly string[]>> = {
@@ -96,6 +105,17 @@ export const DI_SERIE: Readonly<Record<Comando, readonly string[]>> = {
   avanti: ["ArrowRight"],
   indietro: ["ArrowLeft"],
   inRiproduzione: ["f"],
+  // `F11` e non altro: è il tasto che ogni programma con una finestra usa per
+  // questo, e chi lo preme qui dentro non sta imparando niente di nuovo. Non
+  // collide con le lettere perché non è una lettera, e resta riassegnabile come
+  // gli altri — la tabella qui sopra è l'unico posto dove guardarlo.
+  schermoIntero: ["F11"],
+  // `Ctrl` e non `Meta`: `tastoDi` scarta il tasto Windows apposta, quindi qui
+  // non esiste una variante per Mac da tenere allineata. Le associazioni assenti
+  // in `ui.shortcuts` cadono su queste, quindi nessuna migrazione: chi ha già
+  // personalizzato i cinque comandi di prima si ritrova questi due di serie.
+  importazioni: ["Ctrl+i"],
+  incollaLink: ["Ctrl+l"],
 };
 
 /** Le associazioni in uso: per ogni comando, i tasti che lo eseguono. */
@@ -103,6 +123,9 @@ export type Associazioni = Record<Comando, string[]>;
 
 /** I tasti che da soli non sono un tasto. */
 const SOLO_MODIFICATORI = new Set(["Control", "Shift", "Alt", "Meta", "OS"]);
+
+/** I tasti che non sono un carattere: `F1`…`F12`. */
+const FUNZIONE = /^F\d{1,2}$/;
 
 /**
  * Il nome stabile di un tasto premuto, modificatori compresi.
@@ -134,14 +157,16 @@ export function tastoDi(e: {
 
 /** Come si legge un tasto a schermo. */
 export function tastoScritto(tasto: string): string {
+  // Le frecce non si traducono: sono glifi, e in ogni lingua dicono la stessa
+  // cosa meglio di qualunque parola.
   const nomi: Record<string, string> = {
-    Space: "Spazio",
+    Space: t("keys.space"),
     ArrowRight: "→",
     ArrowLeft: "←",
     ArrowUp: "↑",
     ArrowDown: "↓",
-    Enter: "Invio",
-    Escape: "Esc",
+    Enter: t("keys.enter"),
+    Escape: t("keys.esc"),
   };
   return tasto
     .split("+")
@@ -157,6 +182,9 @@ export function serieMutabile(): Associazioni {
     avanti: [...DI_SERIE.avanti],
     indietro: [...DI_SERIE.indietro],
     inRiproduzione: [...DI_SERIE.inRiproduzione],
+    schermoIntero: [...DI_SERIE.schermoIntero],
+    importazioni: [...DI_SERIE.importazioni],
+    incollaLink: [...DI_SERIE.incollaLink],
   };
 }
 
@@ -179,7 +207,7 @@ export function leggiAssociazioni(json: string | null): Associazioni {
     return associazioni;
   }
   if (typeof letto !== "object" || letto === null) return associazioni;
-  for (const { chiave } of COMANDI) {
+  for (const chiave of CHIAVI) {
     const valore = (letto as Record<string, unknown>)[chiave];
     // Assente ⇒ quella di serie. Un elenco vuoto ⇒ nessuna, ed è una scelta
     // che va rispettata: vedi il preambolo.
@@ -205,14 +233,14 @@ export function scriviAssociazioni(associazioni: Associazioni): string {
  */
 export function conflitti(associazioni: Associazioni): Map<string, Comando[]> {
   const di = new Map<string, Comando[]>();
-  for (const { chiave } of COMANDI) {
+  for (const chiave of CHIAVI) {
     for (const tasto of associazioni[chiave]) {
       const gia = di.get(tasto);
       if (gia) gia.push(chiave);
       else di.set(tasto, [chiave]);
     }
   }
-  for (const [tasto, comandi] of di) if (comandi.length < 2) di.delete(tasto);
+  for (const [tasto, quali] of di) if (quali.length < 2) di.delete(tasto);
   return di;
 }
 
@@ -228,6 +256,12 @@ export type Azioni = {
   chiudi: () => boolean;
   /** «In riproduzione» a tutto schermo. */
   inRiproduzione: () => void;
+  /** La finestra a schermo intero, e di nuovo per tornare com'era. */
+  schermoIntero: () => void;
+  /** La pagina delle importazioni. */
+  importazioni: () => void;
+  /** La finestrella che legge un link, da qualunque pagina. */
+  incollaLink: () => void;
   /** La durata del brano, per non uscirne. */
   durataMs: number;
 };
@@ -273,6 +307,15 @@ function esegui(comando: Comando, azioni: Azioni): void {
     case "inRiproduzione":
       azioni.inRiproduzione();
       break;
+    case "schermoIntero":
+      azioni.schermoIntero();
+      break;
+    case "importazioni":
+      azioni.importazioni();
+      break;
+    case "incollaLink":
+      azioni.incollaLink();
+      break;
   }
 }
 
@@ -288,11 +331,12 @@ export function useScorciatoie(azioni: Azioni, associazioni: Associazioni): void
   // La mappa si ricostruisce quando cambiano le associazioni, non a ogni
   // pressione: cinque comandi sono pochi, ma la ricerca per tasto deve essere
   // una lettura sola anche quando saranno cinquanta. In caso di conflitto vince
-  // il primo dichiarato in `COMANDI`, che è l'ordine che la scheda mostra.
+  // il primo dichiarato in `CHIAVI`, che è l'ordine che la scheda mostra.
   mappa.current = (() => {
     const di = new Map<string, Comando>();
-    for (const { chiave } of COMANDI) {
-      for (const tasto of associazioni[chiave]) if (!di.has(tasto)) di.set(tasto, chiave);
+    for (const chiave of CHIAVI) {
+      for (const tasto of associazioni[chiave])
+        if (!di.has(tasto)) di.set(tasto, chiave);
     }
     return di;
   })();
@@ -318,9 +362,11 @@ export function useScorciatoie(azioni: Azioni, associazioni: Associazioni): void
       const comando = mappa.current.get(tasto);
       if (comando === undefined) return;
 
-      // Un accordo con `Ctrl` o `Alt` passa anche mentre si scrive; un tasto
-      // nudo no. Vedi il preambolo.
-      if (!e.ctrlKey && !e.altKey && siStaScrivendo(e.target)) return;
+      // Un accordo con `Ctrl` o `Alt` passa anche mentre si scrive, e con esso
+      // i tasti funzione, che nessuna parola contiene; un tasto nudo no. Vedi il
+      // preambolo.
+      if (!e.ctrlKey && !e.altKey && !FUNZIONE.test(e.key) && siStaScrivendo(e.target))
+        return;
 
       // `preventDefault` sempre, e non solo per lo Spazio: un tasto che
       // abbiamo preso non deve fare anche il suo mestiere di serie — lo Spazio
