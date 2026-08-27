@@ -30,12 +30,38 @@ Cosa incrementa cosa:
 
 ## [Non rilasciato]
 
+Niente, per ora.
+
+## [0.2.0] — 2026-08-27
+
+**La prima versione che si può dare a qualcuno.**
+
 Tre riscritture in fila, sullo stesso ramo di lavoro. La prima
 (`aether/skin-system-e-core`, dal 26 luglio 2026) ha rifatto nucleo e sistema
 delle skin; la seconda (`aether/rust-core`) ha portato tutto in Rust dietro una
 finestra Tauri; la terza ha tolto tutto quel che rendeva Aether non
-distribuibile. **Non è ancora rilasciabile**: il lato mobile non esiste, e
-manca la firma del codice.
+distribuibile — `yt-dlp` impacchettato nell'installer e lo scraping degli
+endpoint privati di Spotify — e ha messo al loro posto i cataloghi liberi.
+
+Due cose restano fuori, e sono dichiarate invece che nascoste.
+
+**L'installer non è firmato.** Windows SmartScreen mostrerà «Windows ha
+protetto il PC», e per procedere serve *Ulteriori informazioni* → *Esegui
+comunque*. Non è una formalità da liquidare: un installer non firmato è un
+installer di cui non si può verificare la provenienza, e l'unica cosa che si
+può offrire in cambio è che il sorgente sta qui e si compila da sé. Un
+certificato OV richiede la validazione dell'identità e un costo annuo.
+
+**Il lato mobile non esiste.** Nel vecchio albero c'era; qui non è stato
+riscritto, e `bundle.targets` produce solo NSIS — cioè Windows.
+
+Quel che invece **c'è** e regge: 1264 prove che girano senza rete, un motore
+audio gapless con ReplayGain ed equalizzatore, una libreria su SQLite che
+riconosce i file spostati, il riordino con anteprima e annullamento,
+l'arricchimento da MusicBrainz che davanti a prove insufficienti non scrive
+niente, le skin col loro editor, il backup e la sincronia, lo scrobbling, i
+testi da LRCLIB, gli aggiornamenti con verifica della firma, e due cataloghi
+liberi da cui prendere musica che si può prendere.
 
 ### Aggiunto — un file remoto che si legge e si posiziona, e il client di Jamendo
 

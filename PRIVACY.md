@@ -40,8 +40,8 @@ un'importazione che mette dei brani in coda.
 | Host | Quando | Cosa gli arriva |
 | --- | --- | --- |
 | `archive.org` | Ricerca di un brano, lettura di un item, prelievo di un file | Il titolo e l'artista che stai cercando, o l'identificativo dell'item; il tuo indirizzo IP |
-| `www.jamendo.com`, `prod-1.storage.jamendo.com` | *(Fase 2, non ancora attivo)* Ricerca e riproduzione | Come sopra, più il `client_id` che avrai configurato tu |
-| `audius.co`, `api.audius.co` | *(Fase 2, non ancora attivo)* Ricerca e riproduzione | Come sopra |
+| `api.jamendo.com`, `prod-1.storage.jamendo.com` | *(non compilato in questa versione)* Ricerca e ascolto | Come sopra, più il `client_id` che avrai configurato tu |
+| `api.audius.co`, e il *discovery node* che risponde | Ricerca di un brano, lettura di un link, prelievo di un file | Il titolo e l'artista che stai cercando, o l'identificativo; `app_name=Aether`, che è uguale per ogni copia del programma; il tuo indirizzo IP |
 
 Un link che non appartiene a uno di questi tre domini **non viene tentato**: il
 programma rifiuta prima di aprire qualunque connessione. Non è prudenza

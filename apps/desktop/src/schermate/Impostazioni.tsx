@@ -2117,8 +2117,7 @@ export function Impostazioni({
                       k="settings.import.link.hint"
                       v={{
                         a: <span className="mono">archive.org</span>,
-                        b: <span className="mono">jamendo.com</span>,
-                        c: <span className="mono">audius.co</span>,
+                        b: <span className="mono">audius.co</span>,
                       }}
                     />
                   </div>

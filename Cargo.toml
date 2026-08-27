@@ -29,7 +29,12 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 authors = ["Federico Baratti"]
-repository = "https://github.com/federicobaratti/aether"
+# La grafia è quella vera del repository, maiuscole comprese. GitHub
+# reindirizza comunque, ma questa riga è il ripiego che `strumenti/manifesto.js`
+# usa fuori dalla CI — dove l'indirizzo lo dice `GITHUB_REPOSITORY` — e due
+# indirizzi diversi per la stessa release sono due modi di scoprire fra un anno
+# quale dei due qualcuno aveva salvato.
+repository = "https://github.com/FedericoBaratti/Aether"
 
 [workspace.dependencies]
 unicode-normalization = "0.1"

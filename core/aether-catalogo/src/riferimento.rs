@@ -61,6 +61,13 @@ pub fn riconosci(input: &str) -> Option<Riferimento> {
     if dominio.ends_with("archive.org") {
         return archivio_org(&percorso);
     }
+    // Senza la feature, un link di Jamendo **non si riconosce affatto**, e non è
+    // una svista da correggere. Riconoscerlo vorrebbe dire accettarlo e poi
+    // fallire con «questo catalogo non risponde» — che è falso: Jamendo
+    // risponde benissimo, è Aether che non lo porta. Non riconoscendolo,
+    // l'errore che esce è `download.unrecognizedUrl`, che elenca i cataloghi
+    // che ci sono davvero ed è l'unica frase vera delle due.
+    #[cfg(feature = "jamendo")]
     if dominio.ends_with("jamendo.com") {
         return jamendo(&percorso);
     }
@@ -109,6 +116,7 @@ fn archivio_org(percorso: &[String]) -> Option<Riferimento> {
 }
 
 /// `jamendo.com/track/<id>[/<slug>]`, `/album/<id>`, `/artist/<id>`.
+#[cfg(feature = "jamendo")]
 fn jamendo(percorso: &[String]) -> Option<Riferimento> {
     // Le pagine di Jamendo hanno una lingua davanti su certi mercati:
     // `jamendo.com/it/track/…`. Saltarla quando c'è costa due righe; non
@@ -236,6 +244,7 @@ mod prove {
     }
 
     #[test]
+    #[cfg(feature = "jamendo")]
     fn jamendo_si_riconosce_anche_con_la_lingua_davanti() {
         let atteso = Riferimento {
             fonte: Fonte::Jamendo,

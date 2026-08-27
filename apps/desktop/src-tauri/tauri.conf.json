@@ -38,7 +38,7 @@
     "copyright": "Copyright (c) 2026 Federico Baratti",
     "category": "Music",
     "shortDescription": "Un lettore musicale per la musica che possiedi.",
-    "longDescription": "Aether suona i file che hai gia sul disco, e sa procurarti quel che manca dai cataloghi liberi: Internet Archive, Jamendo, Audius. Ogni brano porta con se la licenza sotto cui e stato preso. Quel che nessun catalogo libero ha finisce in una lista d'acquisto, con i link ai negozi dove l'artista viene pagato.",
+    "longDescription": "Aether suona i file che hai gia sul disco, e sa procurarti quel che manca dai cataloghi liberi: Internet Archive e Audius. Ogni brano porta con se la licenza sotto cui e stato preso. Quel che nessun catalogo libero ha finisce in una lista d'acquisto, con i link ai negozi dove l'artista viene pagato.",
     "licenseFile": "../../../LICENSE",
     "resources": {
       "../../../LICENSE": "LICENSE.txt",

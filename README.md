@@ -5,8 +5,7 @@ quella che non hai.
 
 Aether suona i file che hai già sul disco. Quando gli dai una playlist — dal tuo
 archivio Spotify, da un file M3U, da un link — guarda cosa hai già in libreria e
-va a cercare il resto **nei cataloghi liberi**: Internet Archive, e in seguito
-Jamendo e Audius. Ogni brano che entra porta con sé la licenza sotto cui è stato
+va a cercare il resto **nei cataloghi liberi**: Internet Archive e Audius. Ogni brano che entra porta con sé la licenza sotto cui è stato
 preso. Quel che nessun catalogo libero ha finisce in una lista d'acquisto, con i
 link ai negozi dove chi l'ha fatto viene pagato.
 
@@ -25,14 +24,22 @@ documento.
 | --- | --- | --- |
 | **I tuoi file** | La libreria vera. Scansione delle cartelle che scegli. | Sono già tuoi |
 | **Internet Archive** | Live Music Archive (oltre 250 000 concerti di artisti che lo consentono), netlabel, pubblico dominio | Sì, quando la licenza dell'item lo dice |
+| **Audius** | Quel che gli artisti ci pubblicano sotto licenza aperta | Sì, quando l'artista ha acceso lo scarico **e** la licenza lo consente |
 | **Archivio GDPR di Spotify** | Le tue playlist, i preferiti, gli album, e la cronologia d'ascolto per intero | Sono metadati, non audio |
 | **File di playlist** | M3U, M3U8, PLS: la fotografia di una libreria che qualcuno aveva | Il percorso, non il file |
 | **MusicBrainz + Cover Art Archive** | Tag e copertine | Metadati liberi |
 
-In arrivo (Fase 2): **Jamendo** e **Audius** in streaming. Jamendo vieta
-esplicitamente la cache e l'accesso offline nei suoi termini, quindi da lì si
-ascolta e basta — e Aether lo rispetta invece di scoprire se il server glielo
-lascerebbe fare.
+Su Audius decide l'artista, brano per brano: c'è un interruttore per lo scarico,
+e sopra di lui ci sono i *cancelli* — un brano può essere chiuso dietro un
+seguito o il possesso di un gettone. Aether guarda tutti e tre, e il permesso
+che ne esce è l'intersezione dei no, non la somma dei sì.
+
+**Jamendo** è scritto e provato ma **non è acceso** in questa versione, e la
+ragione non è tecnica: la loro API è gratuita per i soli usi non commerciali, e
+i termini definiscono l'uso commerciale come «any monetary compensation». Vedi
+*Cosa manca*. Il modulo sa già che da lì si ascolta e basta — i loro termini
+vietano la cache e l'accesso offline — e `aether-net::FlussoHttp` è la parte che
+suona un brano senza scriverlo da nessuna parte.
 
 ### Il punto onesto
 
@@ -193,7 +200,15 @@ termini apposta perché non si perda per strada.
   singolo motivo per cui la maggior parte delle applicazioni indipendenti non
   viene installata. Un certificato OV richiede validazione dell'identità e un
   costo annuo.
-- **Jamendo e Audius** in streaming, con la superficie «Esplora».
+- **Jamendo**: il codice c'è e le prove passano (`cargo test -p aether-catalogo
+  --features jamendo`), ma la feature nasce spenta finché
+  `licensing@jamendo.com` non dice se le donazioni contino come uso
+  commerciale. Vedi sotto.
+- **La riproduzione dei brani di solo ascolto.** `FlussoHttp` sa leggere un
+  file remoto posizionandosi, e il motore audio accetta già un flusso invece di
+  un percorso; quel che manca è il posto in libreria per un brano che non è un
+  file, e la superficie «Esplora» da cui cercarli. Oggi un brano Audius non
+  scaricabile si vede in elenco e non parte.
 - **macOS e Linux**: oggi l'unico bersaglio dell'installer è NSIS, quindi
   Windows.
 - **Il lato mobile**, che nel vecchio albero esisteva e qui non è ancora stato

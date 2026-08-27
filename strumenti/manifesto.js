@@ -177,13 +177,23 @@ function note(v) {
   if (!fs.existsSync(CHANGELOG)) return "";
   const testo = fs.readFileSync(CHANGELOG, "utf8");
   const righe = testo.split("\n");
-  // La sezione di questa versione, o quella non ancora rilasciata: al momento
-  // in cui si taglia un tag il changelog di solito ha ancora l'intestazione
-  // vecchia, e pubblicare una release senza note perché mancava una parentesi
-  // quadra sarebbe un modo curioso di essere rigorosi.
-  const inizio = righe.findIndex(
-    (r) => r.startsWith(`## [${v}]`) || r.startsWith("## [Non rilasciato]"),
-  );
+  // La sezione di questa versione, e **solo se non c'è** quella non ancora
+  // rilasciata: al momento in cui si taglia un tag il changelog di solito ha
+  // ancora l'intestazione vecchia, e pubblicare una release senza note perché
+  // mancava una parentesi quadra sarebbe un modo curioso di essere rigorosi.
+  //
+  // # Perché due ricerche e non un `||` dentro una sola
+  //
+  // Perché `findIndex` restituisce la **prima** riga che soddisfa la
+  // condizione, e «Non rilasciato» sta sopra a ogni versione: con un `||` la
+  // fallback vinceva sempre sulla cosa che doveva sostituire. Finché il
+  // changelog non aveva una sezione chiusa non si vedeva, ed è esattamente il
+  // genere di difetto che si scopre la sera del primo rilascio — con in mano
+  // una release le cui note sono la stringa vuota.
+  let inizio = righe.findIndex((r) => r.startsWith(`## [${v}]`));
+  if (inizio < 0) {
+    inizio = righe.findIndex((r) => r.startsWith("## [Non rilasciato]"));
+  }
   if (inizio < 0) return "";
   const titoli = [];
   for (let i = inizio + 1; i < righe.length; i++) {
