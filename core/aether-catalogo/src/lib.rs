@@ -51,6 +51,7 @@
 //! collega al proprio `AtomicBool`, interrogata fra un blocco e l'altro.
 
 pub mod archivio_org;
+pub mod audius;
 pub mod prelievo;
 pub mod riferimento;
 
@@ -59,6 +60,7 @@ use aether_domain::esterno::{BranoEsterno, ContenutoEsterno, Fonte};
 use aether_domain::scelta::Candidato;
 
 pub use archivio_org::ArchivioOrg;
+pub use audius::Audius;
 pub use prelievo::{Prelevato, Richiesta, attribuzione, preleva};
 pub use riferimento::{Riferimento, riconosci};
 
@@ -71,6 +73,8 @@ pub use riferimento::{Riferimento, riconosci};
 pub struct Diagnostica {
     /// L'Internet Archive risponde.
     pub internet_archive: bool,
+    /// Audius risponde.
+    pub audius: bool,
 }
 
 /// I cataloghi attivi, con la loro riserva di connessioni.
@@ -81,6 +85,7 @@ pub struct Diagnostica {
 #[derive(Debug, Clone)]
 pub struct Cataloghi {
     archivio: ArchivioOrg,
+    audius: Audius,
 }
 
 impl Default for Cataloghi {
@@ -95,6 +100,7 @@ impl Cataloghi {
     pub fn nuovi() -> Self {
         Self {
             archivio: ArchivioOrg::nuovo(),
+            audius: Audius::nuovo(),
         }
     }
 
@@ -102,6 +108,12 @@ impl Cataloghi {
     #[must_use]
     pub const fn archivio(&self) -> &ArchivioOrg {
         &self.archivio
+    }
+
+    /// Audius, per chi deve prelevare con la stessa rete.
+    #[must_use]
+    pub const fn audius(&self) -> &Audius {
+        &self.audius
     }
 
     /// Che cosa risponde adesso.
@@ -112,6 +124,7 @@ impl Cataloghi {
     pub fn diagnostica(&self) -> Diagnostica {
         Diagnostica {
             internet_archive: self.archivio.risponde(),
+            audius: self.audius.risponde(),
         }
     }
 
@@ -136,6 +149,19 @@ impl Cataloghi {
             Err(err) => guasti.push(err),
         }
 
+        // Audius **dopo** l'Internet Archive, e non è un ordine casuale: solo
+        // una parte dei brani di Audius si può tenere, mentre quasi tutto quel
+        // che sta nelle tre collezioni dell'Archive sì. `scegli_candidato`
+        // giudica poi il mucchio intero — l'ordine non decide il vincitore —
+        // ma `annullato()` fra i due sì: chi ferma la coda mentre il primo
+        // catalogo sta rispondendo non paga anche il secondo.
+        if !annullato() {
+            match self.audius.cerca(brano, annullato) {
+                Ok(suoi) => trovati.extend(suoi),
+                Err(err) => guasti.push(err),
+            }
+        }
+
         if trovati.is_empty()
             && let Some(primo) = guasti.into_iter().next()
         {
@@ -154,14 +180,16 @@ impl Cataloghi {
     pub fn risolvi(&self, riferimento: &Riferimento) -> Result<ContenutoEsterno, AppError> {
         match riferimento.fonte {
             Fonte::InternetArchive => self.archivio.risolvi(&riferimento.id),
-            // Jamendo e Audius arrivano con la metà «in ascolto»: leggerne un
-            // elenco senza saperlo suonare darebbe una playlist di brani che
-            // non partono, che è peggio di non leggerla.
-            Fonte::Jamendo | Fonte::Audius => Err(AppError::new(ErrorCode::CatalogoNotAvailable)
-                .with_cause(format!(
+            Fonte::Audius => self.audius.risolvi(riferimento),
+            // Jamendo arriva con la sola metà «in ascolto»: leggerne un elenco
+            // senza saperlo suonare darebbe una playlist di brani che non
+            // partono, che è peggio di non leggerla.
+            Fonte::Jamendo => Err(AppError::new(ErrorCode::CatalogoNotAvailable).with_cause(
+                format!(
                     "{} non è ancora fra i cataloghi che Aether sa suonare",
                     riferimento.fonte.etichetta()
-                ))),
+                ),
+            )),
             Fonte::ArchivioSpotify | Fonte::FilePlaylist => {
                 Err(AppError::new(ErrorCode::DownloadUnrecognizedUrl)
                     .with_cause("questa non è una fonte che si legga da un indirizzo".to_owned()))
@@ -182,19 +210,44 @@ impl Cataloghi {
         annullato: &dyn Fn() -> bool,
         avanzamento: &mut dyn FnMut(f32),
     ) -> Result<Prelevato, AppError> {
-        let rete = match candidato.fonte {
-            Fonte::InternetArchive => self.archivio.rete(),
-            altra => {
-                return Err(AppError::new(ErrorCode::DownloadNotPermitted {
-                    licenza: Some(candidato.licenza.nome()),
-                })
-                .with_cause(format!(
-                    "da {} non si tiene niente sul disco",
-                    altra.etichetta()
-                )));
+        match candidato.fonte {
+            Fonte::InternetArchive => prelievo::preleva(
+                self.archivio.rete(),
+                candidato,
+                richiesta,
+                annullato,
+                avanzamento,
+            ),
+            // Audius passa da `prepara`, che è il momento in cui il percorso
+            // conservato in tabella incontra un nodo che risponde **adesso**.
+            //
+            // Ma solo se c'è qualcosa da prendere. `prepara` chiede l'elenco
+            // dei nodi — cioè tocca la rete — e farlo prima che `preleva`
+            // guardi `si_puo_tenere()` vorrebbe dire una richiesta uscita per
+            // un brano che stiamo per rifiutare noi. Il rifiuto viene prima
+            // della rete, qui come in ogni altro catalogo.
+            Fonte::Audius => {
+                let pronto = if candidato.si_puo_tenere() {
+                    self.audius.prepara(candidato)?
+                } else {
+                    candidato.clone()
+                };
+                prelievo::preleva(
+                    self.audius.rete(),
+                    &pronto,
+                    richiesta,
+                    annullato,
+                    avanzamento,
+                )
             }
-        };
-        prelievo::preleva(rete, candidato, richiesta, annullato, avanzamento)
+            altra => Err(AppError::new(ErrorCode::DownloadNotPermitted {
+                licenza: Some(candidato.licenza.nome()),
+            })
+            .with_cause(format!(
+                "da {} non si tiene niente sul disco",
+                altra.etichetta()
+            ))),
+        }
     }
 }
 
@@ -202,6 +255,42 @@ impl Cataloghi {
 mod prove {
     use super::*;
     use aether_domain::esterno::{Disponibilita, GenereContenuto, Licenza};
+
+    #[test]
+    fn da_audius_un_brano_di_solo_ascolto_si_rifiuta_senza_toccare_la_rete() {
+        // Le prove girano senza rete, ed è esattamente ciò che rende questa
+        // prova capace di dire qualcosa: se `preleva` chiedesse a Audius
+        // l'elenco dei nodi prima di guardare il permesso, qui uscirebbe un
+        // errore di trasporto invece del rifiuto. Il codice che torna è la
+        // dimostrazione che nessuna richiesta è partita.
+        let cataloghi = Cataloghi::nuovi();
+        let temporanea = std::env::temp_dir().join("aether-prova-audius");
+        let esito = cataloghi.preleva(
+            &Candidato {
+                fonte: Fonte::Audius,
+                licenza: Licenza::TutteRiservate,
+                disponibilita: Disponibilita::SoloAscolto,
+                url: "/v1/tracks/aB3/stream".to_owned(),
+                titolo: "una canzone".to_owned(),
+                ..Candidato::default()
+            },
+            &Richiesta {
+                cartella_download: &temporanea,
+                cartella_temporanea: &temporanea,
+                base_relativa: "A/B/01 - C",
+            },
+            &|| false,
+            &mut |_| {},
+        );
+        assert!(
+            matches!(
+                esito.as_ref().map_err(AppError::code),
+                Err(ErrorCode::DownloadNotPermitted { .. })
+            ),
+            "invece di rifiutare ha risposto: {:?}",
+            esito.map(|_| ()).map_err(|e| e.code().kind().code())
+        );
+    }
 
     #[test]
     fn da_un_catalogo_di_solo_ascolto_non_si_preleva() {

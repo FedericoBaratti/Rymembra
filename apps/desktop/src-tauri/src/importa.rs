@@ -463,11 +463,18 @@ pub fn import_rapporti(stato: State<'_, Stato>, limite: u32) -> Esito<Vec<Rappor
 pub fn import_diagnostica(importa: State<'_, StatoImport>) -> Esito<Diagnostica> {
     let d = importa.cataloghi.diagnostica();
     Ok(Diagnostica {
-        cataloghi: vec![DiagnosticaCatalogo {
-            nome: Fonte::InternetArchive.nome().to_owned(),
-            risponde: d.internet_archive,
-            consegna: Fonte::InternetArchive.puo_consegnare(),
-        }],
+        cataloghi: vec![
+            DiagnosticaCatalogo {
+                nome: Fonte::InternetArchive.nome().to_owned(),
+                risponde: d.internet_archive,
+                consegna: Fonte::InternetArchive.puo_consegnare(),
+            },
+            DiagnosticaCatalogo {
+                nome: Fonte::Audius.nome().to_owned(),
+                risponde: d.audius,
+                consegna: Fonte::Audius.puo_consegnare(),
+            },
+        ],
     })
 }
 

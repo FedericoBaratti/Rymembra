@@ -37,6 +37,62 @@ finestra Tauri; la terza ha tolto tutto quel che rendeva Aether non
 distribuibile. **Non è ancora rilasciabile**: il lato mobile non esiste, e
 manca la firma del codice.
 
+### Aggiunto — Audius, il secondo catalogo
+
+Aether ne aveva uno solo. `Cataloghi::cerca` raccoglieva i guasti in un vettore
+e falliva «solo se nessuno ha risposto»; il pannello «Perché non funziona?»
+distingueva «non risponde nessuno» da «chi risponde funziona»; la finestra
+mappava già i nomi di tre fonti. Tutto scritto al plurale, per un catalogo solo.
+
+Adesso sono due. Audius entra **senza toccare il motore audio**, e la ragione
+sta nel dominio: `Fonte::puo_consegnare()` dice `true` per Audius perché là è
+l'artista a decidere, brano per brano, se il suo pezzo si scarichi o si ascolti
+soltanto. Quando dice di sì, il brano fa la stessa strada di un item
+dell'Internet Archive — `preleva` scrive un file, la scansione lo porta in
+libreria, e da lì è un brano come gli altri.
+
+**I permessi si moltiplicano, non si sommano.** `Disponibilita::decidi` mette
+insieme quel che la fonte consente e quel che la licenza consente; sopra i due
+c'è un terzo veto che la licenza non conosce, e sono i brani **con cancello**.
+Audius permette di chiudere lo streaming o lo scarico dietro un seguito o il
+possesso di un gettone: un brano col cancello sullo streaming non entra
+nemmeno nell'elenco — non lo si potrebbe sentire, e una playlist di brani che
+non partono è peggio di una playlist più corta — e uno col cancello sullo
+scarico scende a solo ascolto qualunque cosa dica la sua licenza. Il permesso
+di un catalogo non è la somma dei suoi sì: è l'intersezione dei suoi no.
+
+La licenza di Audius è un **campo di testo** che scrive l'artista, non un
+codice: quel che arriva è «Attribution ShareAlike CC BY-SA», e il `by-sa` va
+estratto da lì. Una prova percorre tutte le voci del loro menu, perché se una
+smettesse di essere riconosciuta i brani che la portano diventerebbero
+silenziosamente non scaricabili. Quel che non si riconosce vale
+`Licenza::Sconosciuta`, che non permette la copia — il verso giusto in cui
+sbagliare.
+
+**Il nodo si sceglie una volta.** Audius non ha un server ma una rete di
+discovery node, e `api.audius.co` dice quali sono in salute. Se ne prende uno e
+lo si tiene per la sessione; se tace lo si dimentica e se ne prende un altro,
+una volta sola. Il secondo silenzio non è del catalogo — è della rete di chi
+ascolta — e insistere su venti nodi vorrebbe dire venti timeout prima di
+poterglielo dire.
+
+Da lì è venuta la cosa meno ovvia di tutto il modulo. Quel che finisce in
+`desiderati.fonte_url` **non è un indirizzo**: è un percorso. Un indirizzo con
+dentro il nodo di oggi, riletto fra un mese dalla coda che procura, punterebbe
+a una macchina che non c'è più. Il nodo lo rimette `prepara`, al momento di
+andare a prendere i byte, e sarà uno che risponde adesso.
+
+Nello stesso percorso viaggia l'estensione del file originale, e anche questo
+non è un vezzo: `Candidato::estensione` non sopravvive al giro in tabella —
+la coda ricostruisce il candidato con `..Default::default()` — e il punto di
+scarico di Audius finisce per `/download`, senza estensione. Senza il
+suggerimento, un wav originale sarebbe finito sul disco chiamato `.mp3`. Il
+suggerimento non viene spedito: serviva a noi.
+
+Resta fuori Jamendo, che è solo ascolto e quindi vuole lo streaming — cioè un
+lettore che sappia suonare qualcosa che non è un file sul disco. È il pezzo
+dopo.
+
 ### Aggiunto — un diario, perché «non si apre» diventi una diagnosi
 
 In rilascio Aether non aveva **nessun** modo di raccontare cos'era andato

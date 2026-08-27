@@ -477,10 +477,20 @@ pub fn riprova_falliti(app: AppHandle, stato: State<'_, Stato>) -> Esito<u32> {
 /// fatto che spegnerne uno è una decisione — quella di Jamendo, per esempio, è
 /// legata a una clausola non commerciale e va presa da chi distribuisce.
 fn cataloghi_attivi() -> Vec<CatalogoAttivo> {
-    vec![CatalogoAttivo {
-        nome: Fonte::InternetArchive.nome(),
-        consegna: Fonte::InternetArchive.puo_consegnare(),
-    }]
+    vec![
+        CatalogoAttivo {
+            nome: Fonte::InternetArchive.nome(),
+            consegna: Fonte::InternetArchive.puo_consegnare(),
+        },
+        // `consegna` è `true` per Audius, e vuol dire «può, in generale»: là
+        // decide l'artista brano per brano, quindi questa riga dice cosa la
+        // fonte permette e non cosa permetterà quel singolo pezzo. È la stessa
+        // distinzione che `Disponibilita::decidi` fa un gradino più sotto.
+        CatalogoAttivo {
+            nome: Fonte::Audius.nome(),
+            consegna: Fonte::Audius.puo_consegnare(),
+        },
+    ]
 }
 
 /// Si accettano registrazioni diverse da quella chiesta.
