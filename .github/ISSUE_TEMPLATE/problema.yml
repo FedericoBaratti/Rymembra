@@ -1,0 +1,70 @@
+name: Qualcosa non funziona
+description: Un guasto, un comportamento sbagliato, una schermata che non fa quel che dice.
+labels: ["problema"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Grazie per il tempo. Quattro campi, e il terzo è quello che di solito
+        risolve la segnalazione da solo.
+
+  - type: textarea
+    id: cosa
+    attributes:
+      label: Cosa è successo
+      description: >-
+        Cosa ti aspettavi e cosa hai visto invece. Non serve che sia ordinato.
+      placeholder: |
+        Ho premuto «riordina», ha mostrato il piano, ho confermato, e tre album
+        sono spariti dalla libreria.
+    validations:
+      required: true
+
+  - type: textarea
+    id: come
+    attributes:
+      label: Come ci si arriva
+      description: >-
+        I passi, anche approssimativi. Se succede una volta su dieci scrivilo:
+        è un'informazione, non una scusa.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diario
+    attributes:
+      label: Il diario
+      description: >-
+        In Aether: **Impostazioni → Aggiornamenti → «Apri la cartella dei log»**.
+        Dentro c'è `aether.log`: incollane le ultime righe, o allega il file.
+
+        Non contiene i titoli dei tuoi brani né i percorsi della tua libreria —
+        `PRIVACY.md` § 8 dice cosa ci finisce e cosa no. L'unica cosa tua che
+        c'è dentro è il percorso della cartella dell'applicazione, che contiene
+        il nome del tuo account di Windows: se preferisci, cancellalo prima di
+        incollare.
+
+        **Se Aether non si apre affatto** la cartella è
+        `%APPDATA%\io.github.federicobaratti.aether\diario` — incollalo nella
+        barra degli indirizzi di Esplora risorse.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: versione
+    attributes:
+      label: Quale versione
+      description: >-
+        In Aether: **Impostazioni → Aggiornamenti → «Versione installata»**.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Quale Windows
+      placeholder: "Windows 11 Pro 24H2"
+    validations:
+      required: false

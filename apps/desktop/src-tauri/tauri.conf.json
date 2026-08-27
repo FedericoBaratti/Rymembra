@@ -43,6 +43,8 @@
     "resources": {
       "../../../LICENSE": "LICENSE.txt",
       "../../../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md",
+      "../../../PRIVACY.md": "PRIVACY.md",
+      "../../../TERMS.md": "TERMS.md",
       "../src/font/OFL.txt": "font-OFL.txt"
     },
     "icon": [

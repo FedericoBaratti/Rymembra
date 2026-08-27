@@ -136,7 +136,7 @@ jobs:
       - name: I documenti pubblici ci sono
         run: |
           for f in LICENSE THIRD-PARTY-NOTICES.md README.md PRIVACY.md TERMS.md \
-                   apps/desktop/src/font/OFL.txt; do
+                   SECURITY.md apps/desktop/src/font/OFL.txt; do
             if [ ! -s "$f" ]; then
               echo "manca o è vuoto: $f"
               exit 1

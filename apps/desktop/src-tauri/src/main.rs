@@ -467,6 +467,7 @@ fn main() {
             aggiornamenti::aggiornamenti_salta,
             aggiornamenti::aggiornamenti_installa,
             diario::diario_apri,
+            comandi::apri_documento,
         ])
         .run(tauri::generate_context!());
 

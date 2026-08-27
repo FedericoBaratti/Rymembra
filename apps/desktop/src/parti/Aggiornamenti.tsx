@@ -224,6 +224,13 @@ export function Aggiornamenti({
     ipc.diarioApri().catch(onErrore);
   }, [onErrore]);
 
+  const apriDocumento = useCallback(
+    (quale: Parameters<typeof ipc.apriDocumento>[0]) => {
+      ipc.apriDocumento(quale).catch(onErrore);
+    },
+    [onErrore],
+  );
+
   return (
     <>
       <p className="nota">{t("settings.update.p1")}</p>
@@ -286,6 +293,34 @@ export function Aggiornamenti({
       </div>
 
       <p className="nota">{t("settings.diary.hint")}</p>
+
+      {/* I documenti, qui e non in una scheda loro: è la sezione in cui si
+          legge quale versione è installata, cioè dove arriva chi sta per
+          raccontare che qualcosa non va — e le due cose che gli servono, il
+          numero di versione e il posto dove scrivere, stanno così accanto. */}
+      <h3>{t("settings.docs.title")}</h3>
+      <div className="azioni">
+        {(
+          [
+            ["repository", "settings.docs.repository"],
+            ["segnalazioni", "settings.docs.issues"],
+            ["licenza", "settings.docs.license"],
+            ["terze", "settings.docs.thirdParty"],
+            ["privacy", "settings.docs.privacy"],
+            ["condizioni", "settings.docs.terms"],
+          ] as const
+        ).map(([quale, chiave]) => (
+          <button
+            key={quale}
+            type="button"
+            className="bottone btn-ghost"
+            onClick={() => apriDocumento(quale)}
+          >
+            {t(chiave)}
+          </button>
+        ))}
+      </div>
+      <p className="nota">{t("settings.docs.hint")}</p>
     </>
   );
 }

@@ -12,7 +12,7 @@ use aether_app::library::{
     counts, list_albums, list_artists, list_tracks, recently_added_albums, search,
 };
 use aether_app::settings::CHIAVE_CARTELLE;
-use aether_domain::errors::AppError;
+use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::paths::PathRules;
 use serde::Serialize;
 use tauri::{Emitter as _, State};
@@ -754,4 +754,103 @@ pub fn casa(stato: State<'_, Stato>) -> Esito<Casa> {
         })
     })
     .map_err(errore)
+}
+/// I documenti pubblici, e dove stanno.
+///
+/// # Perché un elenco chiuso e non un indirizzo qualunque
+///
+/// Perché un comando che apre l'indirizzo che gli si passa è un comando che
+/// apre **qualunque** indirizzo, e dall'altra parte c'è il browser di sistema.
+/// Una pagina compromessa dentro la finestra — una skin con un `<script>` che
+/// non doveva passare, un giorno storto — potrebbe mandare chiunque ovunque,
+/// dall'interno di un programma di cui ci si fida. Con un elenco chiuso il
+/// peggio che può fare è aprire la licenza.
+///
+/// # Perché sul sito e non i file impacchettati
+///
+/// I file ci sono — `bundle.resources` mette `LICENSE.txt`,
+/// `THIRD-PARTY-NOTICES.md`, `PRIVACY.md`, `TERMS.md` e `font-OFL.txt` accanto
+/// all'eseguibile — ma un `.md` aperto col gestore file finisce in un editor di
+/// testo o in niente, a seconda di cosa è associato su quella macchina. Il
+/// documento sul repository è lo stesso testo, impaginato, e soprattutto è
+/// quello **aggiornato**: chi apre la licenza da una versione di un anno fa non
+/// ha motivo di leggere la licenza di un anno fa.
+#[derive(Debug, Clone, Copy)]
+enum Documento {
+    /// Il repository.
+    Repository,
+    /// Dove si segnala un problema.
+    Segnalazioni,
+    /// La licenza di Aether.
+    Licenza,
+    /// Gli avvisi sulle dipendenze.
+    Terze,
+    /// Cosa viaggia in rete.
+    Privacy,
+    /// Cosa si può fare della musica.
+    Condizioni,
+}
+
+impl Documento {
+    /// Il nome stabile che attraversa l'IPC.
+    fn da_nome(grezzo: &str) -> Option<Self> {
+        match grezzo {
+            "repository" => Some(Self::Repository),
+            "segnalazioni" => Some(Self::Segnalazioni),
+            "licenza" => Some(Self::Licenza),
+            "terze" => Some(Self::Terze),
+            "privacy" => Some(Self::Privacy),
+            "condizioni" => Some(Self::Condizioni),
+            _ => None,
+        }
+    }
+
+    /// Dove sta.
+    fn indirizzo(self) -> String {
+        // La radice viene da `Cargo.toml`, che `strumenti/versione.js` tiene
+        // allineato al resto: un indirizzo scritto a mano qui sarebbe il quarto
+        // posto in cui la stessa cosa può divergere.
+        let radice = env!("CARGO_PKG_REPOSITORY");
+        match self {
+            Self::Repository => radice.to_owned(),
+            Self::Segnalazioni => format!("{radice}/issues"),
+            Self::Licenza => format!("{radice}/blob/main/LICENSE"),
+            Self::Terze => format!("{radice}/blob/main/THIRD-PARTY-NOTICES.md"),
+            Self::Privacy => format!("{radice}/blob/main/PRIVACY.md"),
+            Self::Condizioni => format!("{radice}/blob/main/TERMS.md"),
+        }
+    }
+}
+
+/// Apre uno dei documenti pubblici nel browser di sistema.
+///
+/// Mai nella webview: una finestra dell'applicazione che sa disegnare pagine
+/// altrui è una superficie di phishing, ed è la stessa ragione per cui il
+/// consenso di Google si apre di là. Il CSP di `tauri.conf.json` resta identico.
+///
+/// # Errori
+///
+/// `internal.aborted` per un nome che non è nell'elenco — non può succedere
+/// dalla finestra, che li scrive tutti a mano, e succede subito se qualcuno ne
+/// aggiunge uno di là e si dimentica di qua — o se il browser rifiuta di
+/// aprirsi.
+#[tauri::command]
+pub fn apri_documento(quale: String) -> Esito<()> {
+    let Some(documento) = Documento::da_nome(&quale) else {
+        return Err(errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("apertura di un documento".to_owned()),
+            })
+            .with_cause(format!("«{quale}» non è uno dei documenti pubblici")),
+        ));
+    };
+    let indirizzo = documento.indirizzo();
+    tauri_plugin_opener::open_url(&indirizzo, None::<&str>).map_err(|err| {
+        errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("apertura del browser".to_owned()),
+            })
+            .with_cause(err.to_string()),
+        )
+    })
 }

@@ -1,0 +1,13 @@
+# Niente issue vuote: il modulo qui accanto chiede le quattro cose senza cui una
+# segnalazione non si può usare, e un campo di testo bianco le fa dimenticare
+# tutte e quattro.
+blank_issues_enabled: false
+contact_links:
+  - name: Ho trovato un problema di sicurezza
+    url: https://github.com/FedericoBaratti/Aether/security/advisories/new
+    about: >-
+      Non aprire una issue pubblica. Le issue sono indicizzate, e la prima
+      persona a leggerla non sarebbe chi può correggerla. Vedi SECURITY.md.
+  - name: Voglio chiedere una cosa, non segnalare un guasto
+    url: https://github.com/FedericoBaratti/Aether/discussions
+    about: Le domande, le idee e i «si potrebbe» stanno meglio nelle discussioni.

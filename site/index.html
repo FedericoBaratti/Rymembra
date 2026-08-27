@@ -143,7 +143,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
     <a href="#access" data-magnet style="display:flex;align-items:center;gap:9px;height:46px;padding:0 22px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
       <span data-i18n="hero.cta1">See where it stands</span><svg width="16" height="16"><use href="#a-chev-r"></use></svg>
     </a>
-    <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" data-magnet style="display:flex;align-items:center;gap:9px;height:46px;padding:0 20px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));background:var(--ae-surf,#0e0e14);color:var(--ae-t1,rgba(255,255,255,.94));font:550 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease,border-color .7s ease">
+    <a href="https://github.com/FedericoBaratti/Aether/releases/latest" target="_blank" rel="noopener" data-magnet style="display:flex;align-items:center;gap:9px;height:46px;padding:0 20px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));background:var(--ae-surf,#0e0e14);color:var(--ae-t1,rgba(255,255,255,.94));font:550 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease,border-color .7s ease">
       <svg width="16" height="16" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-star"></use></svg><span data-i18n="nav.star">Star on GitHub</span>
       <span style="font:500 11.5px/1 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">FedericoBaratti/Aether</span>
     </a>
@@ -563,8 +563,8 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
     <div style="position:absolute;inset:-40% -10% auto;height:120%;background:radial-gradient(60% 60% at 50% 0%,var(--ae-glowA,rgba(139,124,246,.30)),transparent 70%);animation:ae-drift 18s ease-in-out infinite;pointer-events:none"></div>
     <div style="position:relative">
       <svg width="30" height="30" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mark"></use></svg>
-      <h2 style="margin:22px auto 0;max-width:17ch;font:600 clamp(32px,4.2vw,54px)/1.04 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="access.h2">Not released yet. Watch the repository.</h2>
-      <p style="margin:16px auto 0;max-width:52ch;font:300 15.5px/1.62 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="access.p">Aether is not signed and ships no builds yet. The source is there, it compiles on Windows, and the skin format spec is in the tree while it's still rough enough to argue with. Everything happens at github.com/FedericoBaratti/Aether.</p>
+      <h2 style="margin:22px auto 0;max-width:17ch;font:600 clamp(32px,4.2vw,54px)/1.04 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="access.h2">It is out. Windows, and unsigned.</h2>
+      <p style="margin:16px auto 0;max-width:52ch;font:300 15.5px/1.62 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="access.p">The installer is on the releases page. It is not code-signed, so SmartScreen will say «Windows protected your PC»: More info, then Run anyway. That warning is honest — you cannot check who built it — and the only thing offered in exchange is that the source is right there and compiles on its own. Everything happens at github.com/FedericoBaratti/Aether.</p>
       <!-- Qui c'era un modulo che chiedeva un indirizzo email, prometteva «una
            mail quando si apre la tua ondata» e poi **non lo mandava da nessuna
            parte**: nessun backend, nessuna informativa, e il tasto diventava
@@ -572,7 +572,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
            che non chiederlo, quindi non lo si chiede più. Chi vuole sapere
            quando esce guarda il repository, che è un posto vero. -->
       <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" data-magnet style="margin:32px auto 0;display:inline-flex;align-items:center;gap:9px;height:50px;padding:0 26px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
-        <svg width="16" height="16"><use href="#a-star"></use></svg><span data-i18n="access.btn">Watch the repository</span>
+        <svg width="16" height="16"><use href="#a-star"></use></svg><span data-i18n="access.btn">Download for Windows</span>
       </a>
       <div data-i18n="access.note" style="margin:14px 0 0;font:11.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">No mailing list, no signup form. Nothing to collect.</div>
       <div style="margin:30px 0 0;display:flex;justify-content:center;gap:12px;flex-wrap:wrap">
@@ -686,9 +686,9 @@ const I18N = {
     's5.eyebrow': '05 — Roadmap', 's5.h2': "What isn't there yet, and why.",
     's5.p': "Five of the 52 registered parts don't render today, and one of them on purpose. They stay in the registry so that skins written now still fit the app later.",
     'win.h3': 'Windows — implementation order', 'win.meta': '13 items · 10 done · 1 in progress · 77%',
-    'access.h2': 'Not released yet. Watch the repository.',
-    'access.p': "Aether is not signed and ships no builds yet. The source is there, it compiles on Windows, and the skin format spec is in the tree while it's still rough enough to argue with. Everything happens at github.com/FedericoBaratti/Aether.",
-    'access.btn': 'Watch the repository', 'access.note': 'No mailing list, no signup form. Nothing to collect.',
+    'access.h2': 'It is out. Windows, and unsigned.',
+    'access.p': "The installer is on the releases page. It is not code-signed, so SmartScreen will say «Windows protected your PC»: More info, then Run anyway. That warning is honest — you cannot check who built it — and the only thing offered in exchange is that the source is right there and compiles on its own. Everything happens at github.com/FedericoBaratti/Aether.",
+    'access.btn': 'Download for Windows', 'access.note': 'No mailing list, no signup form. Nothing to collect.',
     'access.spec': 'Read the skin spec',
     'footer.tag': 'Local-first music player · In development', 'footer.updated': 'Last updated',
     marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'OPUS', 'Gapless playback', 'Crossfade', 'ReplayGain', '10-band EQ', 'Synced lyrics', 'Scrobbling', 'Smart playlists', 'Drive backup', 'Embedded art', 'Rust core', '5 000 tracks, no lag', 'Local-first', 'No telemetry'],
@@ -757,9 +757,9 @@ const I18N = {
     's5.eyebrow': '05 — Roadmap', 's5.h2': "Cosa non c'è ancora, e perché.",
     's5.p': "Cinque delle 52 parti registrate oggi non vengono disegnate, e una apposta. Restano nel registro perché le skin scritte adesso continuino a calzare l'app domani.",
     'win.h3': 'Windows — ordine di implementazione', 'win.meta': '13 voci · 10 chiuse · 1 in corso · 77%',
-    'access.h2': 'Non è ancora uscito. Guarda il repository.',
-    'access.p': "Aether non è firmato e non distribuisce ancora nessuna build. Il sorgente c'è, compila su Windows, e le specifiche del formato skin stanno nell'albero finché sono ancora abbastanza grezze da poterci discutere. Tutto succede su github.com/FedericoBaratti/Aether.",
-    'access.btn': 'Guarda il repository', 'access.note': "Nessuna lista, nessun modulo d'iscrizione. Niente da raccogliere.",
+    'access.h2': 'È uscito. Windows, e non firmato.',
+    'access.p': "L'installer sta nella pagina delle release. Non è firmato, quindi SmartScreen dirà «Windows ha protetto il PC»: Ulteriori informazioni, poi Esegui comunque. Quell'avviso è onesto — non puoi verificare chi l'ha costruito — e l'unica cosa che si può offrire in cambio è che il sorgente sta lì e si compila da sé. Tutto succede su github.com/FedericoBaratti/Aether.",
+    'access.btn': 'Scarica per Windows', 'access.note': "Nessuna lista, nessun modulo d'iscrizione. Niente da raccogliere.",
     'access.spec': 'Leggi le specifiche skin',
     'footer.tag': 'Lettore musicale local-first · In sviluppo', 'footer.updated': 'Ultimo aggiornamento',
     marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'OPUS', 'Riproduzione gapless', 'Dissolvenza incrociata', 'ReplayGain', 'Equalizzatore a 10 bande', 'Testi sincronizzati', 'Scrobbling', 'Playlist intelligenti', 'Backup su Drive', 'Copertine incorporate', 'Core in Rust', '5 000 brani, zero lag', 'Locale come prima scelta', 'Nessuna telemetria'],
@@ -828,9 +828,9 @@ const I18N = {
     's5.eyebrow': '05 — Feuille de route', 's5.h2': "Ce qui n'est pas encore là, et pourquoi.",
     's5.p': "Cinq des 52 parties enregistrées ne s'affichent pas aujourd'hui, dont une volontairement. Elles restent dans le registre pour que les skins écrites maintenant conviennent encore à l'app plus tard.",
     'win.h3': "Windows — ordre d'implémentation", 'win.meta': '13 entrées · 10 terminées · 1 en cours · 77 %',
-    'access.h2': "Pas encore publié. Suivez le dépôt.",
-    'access.p': "Aether n'est pas signé et ne distribue encore aucune build. Le source est là, il compile sous Windows, et la spécification du format de skin est dans l'arbre tant qu'elle est encore assez brute pour qu'on en débatte. Tout se passe sur github.com/FedericoBaratti/Aether.",
-    'access.btn': 'Suivre le dépôt', 'access.note': "Pas de liste de diffusion, pas de formulaire. Rien à collecter.",
+    'access.h2': "C'est sorti. Windows, et non signé.",
+    'access.p': "L'installateur est sur la page des releases. Il n'est pas signé, donc SmartScreen dira «Windows a protégé votre ordinateur» : Informations complémentaires, puis Exécuter quand même. Cet avertissement est honnête — vous ne pouvez pas vérifier qui l'a compilé — et la seule chose offerte en échange est que le source est là et se compile tout seul. Tout se passe sur github.com/FedericoBaratti/Aether.",
+    'access.btn': 'Télécharger pour Windows', 'access.note': "Pas de liste de diffusion, pas de formulaire. Rien à collecter.",
     'access.spec': 'Lire la spec des skins',
     'footer.tag': 'Lecteur de musique local-first · Accès anticipé', 'footer.updated': 'Dernière mise à jour',
     marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'OPUS', 'Lecture sans blanc', 'Fondu enchaîné', 'ReplayGain', 'Égaliseur 10 bandes', 'Paroles synchronisées', 'Scrobbling', 'Listes intelligentes', 'Sauvegarde Drive', 'Pochettes intégrées', 'Cœur en Rust', '5 000 titres, sans lag', 'Local-first', 'Pas de télémétrie'],
@@ -899,9 +899,9 @@ const I18N = {
     's5.eyebrow': '05 — Roadmap', 's5.h2': 'Was noch fehlt, und warum.',
     's5.p': 'Fünf der 52 registrierten Teile werden heute nicht gerendert, eines davon absichtlich. Sie bleiben im Register, damit heute geschriebene Skins später noch zur App passen.',
     'win.h3': 'Windows — Implementierungsreihenfolge', 'win.meta': '13 Einträge · 10 erledigt · 1 laufend · 77 %',
-    'access.h2': 'Noch nicht veröffentlicht. Beobachte das Repository.',
-    'access.p': 'Aether ist nicht signiert und liefert noch keine Builds aus. Der Quelltext ist da, er kompiliert unter Windows, und die Spezifikation des Skin-Formats liegt im Baum, solange sie noch roh genug ist, um darüber zu streiten. Alles passiert auf github.com/FedericoBaratti/Aether.',
-    'access.btn': 'Repository beobachten', 'access.note': 'Keine Mailingliste, kein Formular. Nichts zu sammeln.',
+    'access.h2': 'Es ist da. Windows, und unsigniert.',
+    'access.p': 'Der Installer liegt auf der Releases-Seite. Er ist nicht signiert, also sagt SmartScreen «Der Computer wurde durch Windows geschützt»: Weitere Informationen, dann Trotzdem ausführen. Diese Warnung ist ehrlich — du kannst nicht prüfen, wer ihn gebaut hat — und das Einzige, was dafür geboten wird, ist, dass der Quelltext da liegt und sich selbst kompiliert. Alles passiert auf github.com/FedericoBaratti/Aether.',
+    'access.btn': 'Für Windows herunterladen', 'access.note': 'Keine Mailingliste, kein Formular. Nichts zu sammeln.',
     'access.spec': 'Skin-Spezifikation lesen',
     'footer.tag': 'Local-First-Musikplayer · In Entwicklung', 'footer.updated': 'Zuletzt aktualisiert',
     marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'OPUS', 'Lückenlose Wiedergabe', 'Crossfade', 'ReplayGain', '10-Band-EQ', 'Synchroner Songtext', 'Scrobbling', 'Intelligente Playlists', 'Drive-Backup', 'Eingebettete Cover', 'Rust-Core', '5 000 Titel, kein Lag', 'Local-First', 'Keine Telemetrie'],

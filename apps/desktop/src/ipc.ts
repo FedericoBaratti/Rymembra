@@ -2470,6 +2470,20 @@ export const ipc = {
   // cartella nel gestore file, e cosa farne lo decide chi guarda.
   diarioApri: () => invoke<void>("diario_apri"),
 
+  // I documenti pubblici, nel browser di sistema. Il nome e non l'indirizzo: di
+  // là c'è un elenco chiuso, e un comando che aprisse l'indirizzo che gli si
+  // passa sarebbe un comando che apre qualunque indirizzo — dall'interno di un
+  // programma di cui ci si fida.
+  apriDocumento: (
+    quale:
+      | "repository"
+      | "segnalazioni"
+      | "licenza"
+      | "terze"
+      | "privacy"
+      | "condizioni",
+  ) => invoke<void>("apri_documento", { quale }),
+
   // ── l'account Spotify intero ───────────────────────────────
   // Il flusso è a tre tempi come per un link — anteprima, piano, conferma — ma
   // quel che si legge resta di là, in una cella. Qui viaggiano solo i conteggi:

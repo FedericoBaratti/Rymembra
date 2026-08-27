@@ -1,0 +1,71 @@
+# Il sito, su GitHub Pages.
+#
+# # Perché non parte da un push
+#
+# Perché la pagina dice «è uscito», e finché non è uscito sarebbe una bugia.
+# Un workflow legato a `push` la manderebbe online nel momento in cui qualcuno
+# committa una virgola in `site/`, che è un momento scelto a caso rispetto a
+# quello in cui esiste davvero un installer da scaricare — e il bottone
+# «Scarica per Windows» punterebbe a `/releases/latest`, che senza release
+# pubblicate è una pagina vuota.
+#
+# Parte quindi da `release: published`, che è lo stesso gesto che spedisce
+# l'aggiornamento a tutti (vedi il preambolo di `release.yml`): una persona
+# guarda la bozza, la pubblica, e da lì il sito e l'installer diventano veri
+# nello stesso istante.
+#
+# `workflow_dispatch` resta per le correzioni al sito fra una release e
+# l'altra: un refuso non deve aspettare la versione dopo.
+#
+# # Prima che funzioni
+#
+# In *Settings → Pages* del repository, «Source» va messo su **GitHub Actions**.
+# Senza, questo lavoro fallisce all'ultimo passo con un messaggio che parla di
+# permessi e non di configurazione.
+
+name: sito
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# Le due che Pages vuole, e nient'altro: `contents: read` per leggere l'albero,
+# `pages` e `id-token` per il caricamento firmato.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Una pubblicazione alla volta, e senza annullare quella in corso: interrompere
+# un caricamento a metà lascerebbe il sito nello stato di nessuno dei due.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  pubblica:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.pubblicazione.outputs.page_url }}
+
+    steps:
+      # Inchiodate a un hash come tutte le altre, e il perché sta per esteso nel
+      # preambolo di `release.yml`: un'etichetta si può spostare, un hash no.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+
+      # Si carica `site/` e basta. Non la radice: là dentro ci sono il sorgente,
+      # il changelog e i documenti, e Pages li servirebbe tutti a chiunque
+      # indovini un percorso. Sono già pubblici sul repository — ma pubblicarli
+      # due volte da due indirizzi diversi è il modo di averne una copia vecchia
+      # in giro per sempre.
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: site
+
+      - id: pubblicazione
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
