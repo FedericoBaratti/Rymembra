@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap" rel="stylesheet">
 <title>Aether — A local music player with a skin engine</title>
-<meta name="description" content="Aether plays the files you already own, and finds what you are missing in the free catalogues — the Internet Archive today, Jamendo and Audius next — carrying each track's licence with it. No telemetry, no account required. A validated skin engine restyles the whole app from a data file.">
+<meta name="description" content="Aether plays the files you already own, and finds what you are missing in the free catalogues — the Internet Archive and Audius — carrying each track's licence with it. No telemetry, no account required. A validated skin engine restyles the whole app from a data file.">
 <meta name="theme-color" content="#09090d">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2309090d'/%3E%3Cpath d='M32 8a24 24 0 0 1 0 48' fill='none' stroke='%238b7cf6' stroke-width='7' stroke-linecap='round'/%3E%3Cpath d='M32 56a24 24 0 0 1 0-48' fill='none' stroke='%234fd6e0' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
@@ -51,6 +51,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
 <symbol id="a-artist" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="6.6" r="3"></circle><path d="M4.2 16.6c0-3 2.6-4.7 5.8-4.7s5.8 1.7 5.8 4.7"></path></symbol>
 <symbol id="a-track" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7.4 14.6V5.2l8-1.6v9.2"></path><circle cx="5.4" cy="14.6" r="2"></circle><circle cx="13.4" cy="12.8" r="2"></circle></symbol>
 <symbol id="a-heart" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 16.3S3.4 12.4 3.4 8a3.5 3.5 0 0 1 6.6-1.8A3.5 3.5 0 0 1 16.6 8c0 4.4-6.6 8.3-6.6 8.3Z"></path></symbol>
+<symbol id="a-mail" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.8" y="4.9" width="14.4" height="10.2" rx="2.2"></rect><path d="m3.6 6.6 6.4 4.5 6.4-4.5"></path></symbol>
 <symbol id="a-list" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h12M4 10h12M4 14h8"></path></symbol>
 <symbol id="a-search" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="5"></circle><path d="m12.8 12.8 3.6 3.6"></path></symbol>
 <symbol id="a-settings" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.6 6.4h7.4M16.2 6.4h.2M3.6 13.6h2.4M11.2 13.6h5.2"></path><circle cx="13.3" cy="6.4" r="2.3"></circle><circle cx="8.4" cy="13.6" r="2.3"></circle></symbol>
@@ -71,6 +72,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
 <symbol id="a-code" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m7 6.4-3.6 3.6L7 13.6M13 6.4l3.6 3.6L13 13.6"></path></symbol>
 <symbol id="a-lock" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4.4" y="8.6" width="11.2" height="7.4" rx="2"></rect><path d="M7 8.6V6.8a3 3 0 0 1 6 0v1.8"></path></symbol>
 <symbol id="a-bolt" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2.6 4.8 11.4h4.4L9 17.4l6.2-8.8h-4.4L11 2.6Z"></path></symbol>
+<symbol id="a-down" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.4v8.8"></path><path d="m6.3 8.9 3.7 3.5 3.7-3.5"></path><path d="M4.3 15.8h11.4"></path></symbol>
 </defs></svg>
 
 <div ref="{{ setRoot }}" style="position:relative;background:var(--ae-bg,#09090d);color:var(--ae-t1,rgba(255,255,255,.94));transition:background-color .7s ease,color .7s ease;overflow-x:clip">
@@ -90,7 +92,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
     <svg data-logo width="20" height="20" style="color:var(--ae-acc,#8b7cf6);transition:transform .4s cubic-bezier(.2,.8,.2,1)"><use href="#a-mark"></use></svg>
     <span style="font:600 15px/1 Geist,sans-serif;letter-spacing:-.01em">Aether</span>
   </a>
-  <span data-navbadge data-i18n="nav.badge" style="padding:3px 8px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:500 9.5px/1.4 'Geist Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">In development</span>
+  <span data-navbadge data-i18n="nav.badge" style="padding:3px 8px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:500 9.5px/1.4 'Geist Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">Out now · Windows</span>
   <div style="flex:1"></div>
   <div data-navlinks style="display:flex;gap:22px;align-items:center">
     <a href="#tour" data-i18n="nav.app" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">The app</a>
@@ -136,21 +138,21 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
   </h1>
 
   <p data-rv data-i18n="hero.lede" data-d="340" style="margin:26px 0 0;max-width:52ch;font:300 clamp(15.5px,4.1vw,18.5px)/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">
-    Aether plays the files you already own — no telemetry, no account required. What you are missing, it fetches from the free catalogues — the Internet Archive today, Jamendo and Audius next — and every track it brings in carries the licence it came under. Every surface it draws is a token you can redefine, in a skin file the app validates before it renders a single pixel.
+    Aether plays the files you already own — no telemetry, no account required. What you are missing, it fetches from the free catalogues — the Internet Archive and Audius — and every track it brings in carries the licence it came under. Every surface it draws is a token you can redefine, in a skin file the app validates before it renders a single pixel.
   </p>
 
   <div data-rv data-d="430" style="margin:34px 0 0;display:flex;flex-wrap:wrap;gap:12px;justify-content:center;align-items:center">
     <a href="#access" data-magnet style="display:flex;align-items:center;gap:9px;height:46px;padding:0 22px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
       <span data-i18n="hero.cta1">See where it stands</span><svg width="16" height="16"><use href="#a-chev-r"></use></svg>
     </a>
-    <a href="https://github.com/FedericoBaratti/Aether/releases/latest" target="_blank" rel="noopener" data-magnet style="display:flex;align-items:center;gap:9px;height:46px;padding:0 20px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));background:var(--ae-surf,#0e0e14);color:var(--ae-t1,rgba(255,255,255,.94));font:550 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease,border-color .7s ease">
+    <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" data-magnet style="display:flex;align-items:center;gap:9px;height:46px;padding:0 20px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));background:var(--ae-surf,#0e0e14);color:var(--ae-t1,rgba(255,255,255,.94));font:550 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease,border-color .7s ease">
       <svg width="16" height="16" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-star"></use></svg><span data-i18n="nav.star">Star on GitHub</span>
       <span style="font:500 11.5px/1 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">FedericoBaratti/Aether</span>
     </a>
   </div>
 
   <div data-rv data-d="520" style="margin:18px 0 0;display:flex;gap:18px;flex-wrap:wrap;justify-content:center;font:500 11.5px/1 'Geist Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">
-    <span data-i18n="hero.m1">Windows · macOS and Linux in progress</span><span>FLAC ALAC WAV MP3 OGG</span><span data-i18n="hero.m3">Licence-aware by design</span>
+    <span data-i18n="hero.m1">Out for Windows · still in development</span><span>FLAC ALAC WAV MP3 OGG</span><span data-i18n="hero.m3">Licence-aware by design</span>
   </div>
 
   <div data-hero-stage style="position:relative;width:min(1240px,96vw);margin:clamp(40px,7vw,66px) auto 0;perspective:1800px">
@@ -279,7 +281,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
         <div style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s2.eyebrow">02 — The app</div>
         <div style="display:flex;gap:8px">
           <span data-tab="0" data-i18n="ui.library" style="padding:6px 13px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:550 11.5px/1.3 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));transition:all .4s ease">Library</span>
-          <span data-tab="1" data-i18n="ui.nowplaying" style="padding:6px 13px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:550 11.5px/1.3 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));transition:all .4s ease">Now Playing</span>
+          <span data-tab="1" data-i18n="ui.nowplaying" style="padding:6px 13px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:550 11.5px/1.3 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));transition:all .4s ease">Now playing</span>
           <span data-tab="2" data-i18n="ui.artists" style="padding:6px 13px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:550 11.5px/1.3 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));transition:all .4s ease">Artists</span>
         </div>
       </div>
@@ -404,7 +406,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
     <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s3.eyebrow">03 — Skin Studio</div>
     <div data-stack data-cols="1fr minmax(280px,420px)" style="margin-top:18px;display:grid;grid-template-columns:1fr minmax(280px,420px);gap:clamp(18px,3vw,46px);align-items:end">
       <h2 data-rv data-d="70" style="margin:0;max-width:20ch;font:600 clamp(34px,4.6vw,62px)/1.02 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="s3.h2">Pick a skin. Watch this whole page obey it.</h2>
-      <p data-rv data-d="140" style="margin:0;font:300 15.5px/1.65 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="s3.p">A skin is a validated data document, not a stylesheet. 47 tokens, 48 named parts, 11 effects with a declared cost. The app parses it, warns you about it, and compiles it to deterministic CSS.</p>
+      <p data-rv data-d="140" style="margin:0;font:300 15.5px/1.65 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="s3.p">A skin is a validated data document, not a stylesheet. 47 tokens, 52 named parts, 11 effects with a declared cost. The app parses it, warns you about it, and compiles it to deterministic CSS.</p>
     </div>
 
     <div data-skins data-rv data-d="200" style="margin-top:40px;display:flex;flex-wrap:wrap;gap:12px">
@@ -522,7 +524,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
     <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s5.eyebrow">05 — Roadmap</div>
     <div data-stack data-cols="1fr minmax(280px,400px)" style="margin-top:18px;display:grid;grid-template-columns:1fr minmax(280px,400px);gap:clamp(18px,3vw,46px);align-items:end">
       <h2 data-rv data-d="70" style="margin:0;max-width:20ch;font:600 clamp(34px,4.4vw,58px)/1.03 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="s5.h2">What isn't there yet, and why.</h2>
-      <p data-rv data-d="130" style="margin:0;font:300 15px/1.65 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="s5.p">Nine of the 48 registered parts don't render today. They stay in the registry so that skins written now still fit the app later.</p>
+      <p data-rv data-d="130" style="margin:0;font:300 15px/1.65 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="s5.p">Five of the 52 registered parts don't render today, and one of them on purpose. They stay in the registry so that skins written now still fit the app later.</p>
     </div>
     <div data-rv data-d="60" style="margin-top:44px;display:grid;grid-template-columns:repeat(auto-fit,minmax(238px,1fr));gap:14px">
       <sc-for list="{{ platforms }}" as="p" hint-placeholder-count="4">
@@ -543,7 +545,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
 
     <div data-rv data-d="80" style="margin-top:clamp(44px,7vw,72px);display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
       <h3 data-i18n="win.h3" style="margin:0;font:600 clamp(21px,2.4vw,28px)/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Windows — implementation order</h3>
-      <span data-i18n="win.meta" style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">14 items · 2 done · 2 in progress · 21%</span>
+      <span data-i18n="win.meta" style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">13 items · 9 done · 1 in progress · 3 to go</span>
     </div>
     <div style="margin-top:22px;display:flex;flex-direction:column">
       <sc-for list="{{ winRoadmap }}" as="r" hint-placeholder-count="13">
@@ -571,15 +573,33 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
            verde lo stesso. Raccogliere un indirizzo e buttarlo via è peggio
            che non chiederlo, quindi non lo si chiede più. Chi vuole sapere
            quando esce guarda il repository, che è un posto vero. -->
-      <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" data-magnet style="margin:32px auto 0;display:inline-flex;align-items:center;gap:9px;height:50px;padding:0 26px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
-        <svg width="16" height="16"><use href="#a-star"></use></svg><span data-i18n="access.btn">Download for Windows</span>
+      <a href="https://github.com/FedericoBaratti/Aether/releases/latest" target="_blank" rel="noopener" data-magnet style="margin:32px auto 0;display:inline-flex;align-items:center;gap:9px;height:50px;padding:0 26px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
+        <svg width="16" height="16"><use href="#a-down"></use></svg><span data-i18n="access.btn">Download for Windows</span>
       </a>
-      <div data-i18n="access.note" style="margin:14px 0 0;font:11.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">No mailing list, no signup form. Nothing to collect.</div>
+      <div data-i18n="access.note" style="margin:14px 0 0;font:11.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">No mailing list, no signup form. An address, and you are the one who writes.</div>
       <div style="margin:30px 0 0;display:flex;justify-content:center;gap:12px;flex-wrap:wrap">
         <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" data-magnet style="display:flex;align-items:center;gap:9px;height:42px;padding:0 20px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));color:var(--ae-t1,rgba(255,255,255,.94));font:550 13.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),border-color .3s ease">
           <svg width="15" height="15" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-star"></use></svg><span data-i18n="nav.star">Star on GitHub</span><span style="font:11px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">FedericoBaratti/Aether</span>
         </a>
         <a href="#format" style="display:flex;align-items:center;gap:8px;height:42px;padding:0 20px;border-radius:99px;color:var(--ae-t2,rgba(255,255,255,.62));font:500 13.5px/1 Geist,sans-serif"><span data-i18n="access.spec">Read the skin spec</span><svg width="14" height="14"><use href="#a-chev-r"></use></svg></a>
+      </div>
+      <div style="margin:34px 0 0;padding-top:30px;border-top:1px solid var(--ae-line,rgba(255,255,255,.10));display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));gap:14px;text-align:left;transition:border-color .7s ease">
+        <div style="padding:22px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf2,#16161f);transition:background-color .7s ease,border-color .7s ease">
+          <svg width="20" height="20" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mail"></use></svg>
+          <div data-i18n="access.bugs.h" style="margin-top:14px;font:600 15.5px/1.25 Geist,sans-serif;letter-spacing:-.01em">Bugs and ideas</div>
+          <p data-i18n="access.bugs.p" style="margin:8px 0 0;font:300 13.5px/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">It is out, and it is still being built. If something breaks, or you know what it should do next, write to me — the same address for both.</p>
+          <a href="mailto:barattifederico@gmail.com" data-magnet style="margin:16px 0 0;display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 16px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));color:var(--ae-t1,rgba(255,255,255,.94));font:500 12px/1 'Geist Mono',monospace;transition:transform .25s cubic-bezier(.2,.8,.2,1),border-color .3s ease">
+            <svg width="14" height="14" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mail"></use></svg>barattifederico@gmail.com
+          </a>
+        </div>
+        <div style="padding:22px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf2,#16161f);transition:background-color .7s ease,border-color .7s ease">
+          <svg width="20" height="20" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-heart"></use></svg>
+          <div data-i18n="access.donate.h" style="margin-top:14px;font:600 15.5px/1.25 Geist,sans-serif;letter-spacing:-.01em">Free, and it stays free</div>
+          <p data-i18n="access.donate.p" style="margin:8px 0 0;font:300 13.5px/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">There will be no paid version: the Live Music Archive carries a non-commercial clause, and charging for the app would break it. Donations support the work, never the music.</p>
+          <a href="https://github.com/sponsors/FedericoBaratti" target="_blank" rel="noopener" data-magnet style="margin:16px 0 0;display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 18px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 13px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
+            <svg width="14" height="14"><use href="#a-heart"></use></svg><span data-i18n="access.donate.btn">Support the development</span>
+          </a>
+        </div>
       </div>
     </div>
   </div>
@@ -588,13 +608,15 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
 <footer style="position:relative;z-index:1;padding:30px clamp(16px,4vw,34px) 44px;padding-bottom:calc(44px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--ae-line,rgba(255,255,255,.08));transition:border-color .7s ease">
   <div style="max-width:1180px;margin:0 auto;display:flex;flex-wrap:wrap;gap:14px 18px;align-items:center">
     <div style="display:flex;align-items:center;gap:9px"><svg width="17" height="17" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mark"></use></svg><span style="font:600 13px/1 Geist,sans-serif">Aether</span></div>
-    <span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="footer.tag">Local-first music player · In development</span>
+    <span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="footer.tag">Local-first music player · Out for Windows, in development</span>
     <div style="flex:1"></div>
     <div style="display:flex;flex-wrap:wrap;gap:12px 20px;font:500 12.5px/1 Geist,sans-serif">
       <a href="#tour" data-i18n="nav.app" style="color:var(--ae-t2,rgba(255,255,255,.62))">The app</a>
       <a href="#studio" data-i18n="nav.studio" style="color:var(--ae-t2,rgba(255,255,255,.62))">Skin Studio</a>
       <a href="#roadmap" data-i18n="nav.roadmap" style="color:var(--ae-t2,rgba(255,255,255,.62))">Roadmap</a>
-      <a href="#access" data-i18n="nav.badge" style="color:var(--ae-t2,rgba(255,255,255,.62))">In development</a>
+      <a href="#access" data-i18n="nav.badge" style="color:var(--ae-t2,rgba(255,255,255,.62))">Out now · Windows</a>
+      <a href="mailto:barattifederico@gmail.com" data-i18n="footer.bugs" style="color:var(--ae-t2,rgba(255,255,255,.62))">Contact</a>
+      <a href="https://github.com/sponsors/FedericoBaratti" target="_blank" rel="noopener" data-i18n="footer.donate" style="color:var(--ae-t2,rgba(255,255,255,.62))">Donate</a>
       <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" style="color:var(--ae-t2,rgba(255,255,255,.62))">GitHub</a>
       <a href="https://github.com/FedericoBaratti/Aether/releases" target="_blank" rel="noopener" style="color:var(--ae-t2,rgba(255,255,255,.62))">Releases</a>
     </div>
@@ -664,16 +686,16 @@ const TOKEN_VARS = ['--ae-bg', '--ae-surf', '--ae-raise', '--ae-line', '--ae-t1'
 
 const I18N = {
   en: {
-    'nav.badge': 'In development', 'nav.app': 'The app', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Roadmap', 'nav.star': 'Star on GitHub',
+    'nav.badge': 'Out now · Windows', 'nav.app': 'The app', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Roadmap', 'nav.star': 'Star on GitHub',
     'hero.badge': 'A local music player with a skin engine',
     'hero.l1': 'Your library.', 'hero.l2': 'Your machine.', 'hero.l3': 'Your look.',
-    'hero.lede': 'Aether plays the files you already own — no telemetry, no account required. What you are missing, it fetches from the free catalogues — the Internet Archive today, Jamendo and Audius next — and every track it brings in carries the licence it came under. Every surface it draws is a token you can redefine, in a skin file the app validates before it renders a single pixel.',
-    'hero.cta1': 'See where it stands', 'hero.m1': 'Windows · macOS and Linux planned', 'hero.m3': 'Licence-aware by design',
+    'hero.lede': 'Aether plays the files you already own — no telemetry, no account required. What you are missing, it fetches from the free catalogues — the Internet Archive and Audius — and every track it brings in carries the licence it came under. Every surface it draws is a token you can redefine, in a skin file the app validates before it renders a single pixel.',
+    'hero.cta1': 'See where it stands', 'hero.m1': 'Out for Windows · still in development', 'hero.m3': 'Licence-aware by design',
     'ui.albums': 'Albums', 'ui.albumsLow': 'albums', 'ui.tracks': 'Tracks', 'ui.artists': 'Artists', 'ui.fav': 'Favourites', 'ui.settings': 'Settings',
     'ui.playlists': 'Playlists', 'ui.pl1': 'Late shift', 'ui.pl2': 'Vinyl rips 2019', 'ui.pl3': 'Kitchen, loud', 'ui.pl4': 'Ambient, long',
     'ui.scan': 'Scan complete', 'ui.scanmeta': '5 108 tracks · 41 min ago', 'ui.library': 'Library', 'ui.libmeta': '5 108 · 14 d 6 h',
     'ui.colTitle': 'Title', 'ui.colAlbum': 'Album', 'ui.colTime': 'Time', 'ui.upnext': 'Up next', 'ui.search': 'Search…',
-    'ui.nowplaying': 'Now Playing', 'ui.sortedadded': '412 · sorted by added', 'ui.gapless': 'Gapless',
+    'ui.nowplaying': 'Now playing', 'ui.sortedadded': '412 · sorted by added', 'ui.gapless': 'Gapless',
     'ui.npx': 'Synced lyrics, and the room behind them', 'ui.npxb': 'The words come from LRCLIB — no key, no account. Behind them is the spectrum, which is the same scene running behind this page.',
     'ui.artistmeta': '9 albums · 118 tracks · 8 h 12 m',
     'ui.artistnote': 'No biography, no similar-artist grid. Every number on this screen comes from your own files — nothing here is fetched to draw it.',
@@ -685,13 +707,19 @@ const I18N = {
     's4.eyebrow': '04 — The contract', 's4.h2': "A skin cannot break the app. That's a property of the format, not a promise.",
     's5.eyebrow': '05 — Roadmap', 's5.h2': "What isn't there yet, and why.",
     's5.p': "Five of the 52 registered parts don't render today, and one of them on purpose. They stay in the registry so that skins written now still fit the app later.",
-    'win.h3': 'Windows — implementation order', 'win.meta': '13 items · 10 done · 1 in progress · 77%',
+    'win.h3': 'Windows — implementation order', 'win.meta': '13 items · 9 done · 1 in progress · 3 to go',
     'access.h2': 'It is out. Windows, and unsigned.',
     'access.p': "The installer is on the releases page. It is not code-signed, so SmartScreen will say «Windows protected your PC»: More info, then Run anyway. That warning is honest — you cannot check who built it — and the only thing offered in exchange is that the source is right there and compiles on its own. Everything happens at github.com/FedericoBaratti/Aether.",
-    'access.btn': 'Download for Windows', 'access.note': 'No mailing list, no signup form. Nothing to collect.',
+    'access.btn': 'Download for Windows', 'access.note': 'No mailing list, no signup form. An address, and you are the one who writes.',
     'access.spec': 'Read the skin spec',
-    'footer.tag': 'Local-first music player · In development', 'footer.updated': 'Last updated',
-    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'OPUS', 'Gapless playback', 'Crossfade', 'ReplayGain', '10-band EQ', 'Synced lyrics', 'Scrobbling', 'Smart playlists', 'Drive backup', 'Embedded art', 'Rust core', '5 000 tracks, no lag', 'Local-first', 'No telemetry'],
+    'access.bugs.h': 'Bugs and ideas',
+    'access.bugs.p': 'It is out, and it is still being built. If something breaks, or you know what it should do next, write to me — the same address for both.',
+    'access.donate.h': 'Free, and it stays free',
+    'access.donate.p': 'There will be no paid version: the Live Music Archive carries a non-commercial clause, and charging for the app would break it. Donations support the work, never the music.',
+    'access.donate.btn': 'Support the development',
+    'footer.bugs': 'Contact', 'footer.donate': 'Donate',
+    'footer.tag': 'Local-first music player · Out for Windows, in development', 'footer.updated': 'Last updated',
+    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Gapless playback', 'Crossfade', 'ReplayGain', '10-band EQ', 'Synced lyrics', 'Scrobbling', 'Smart playlists', 'Drive backup', 'Embedded art', 'Rust core', '5 000 tracks, no lag', 'Local-first', 'No telemetry'],
     pillars: [
       { t: 'Nothing leaves the machine', b: 'No account required, no analytics. Your library stays on your disk. When you ask for a missing track, Aether fetches it from a free catalogue and brings back the licence — nothing else.' },
       { t: 'Dense where it counts', b: '40px rows, air above the list and not between its lines. A library of five thousand tracks scrolls at frame rate, because it is meant to be scrolled.' },
@@ -716,7 +744,7 @@ const I18N = {
       { t: 'Effects', b: 'Blur, glow, grain, noise — each with a declared render cost out of ten.' },
       { t: 'Warning kinds', b: 'Contrast, cost budget, unused pattern, unused prefab, unkept promise, missing required token — all checked before compile.' }
     ],
-    platStatus: { prog: 'In progress', none: 'Not started' },
+    platStatus: { out: 'Available', prog: 'In progress', none: 'Not started' },
     road: { done: 'Done', prog: 'In progress', todo: 'To do' },
     roadItems: [
       'implement Google Drive backup for metadata and skins, so a user can recover everything after a reset.',
@@ -735,11 +763,11 @@ const I18N = {
     ]
   },
   it: {
-    'nav.badge': 'In sviluppo', 'nav.app': "L'app", 'nav.studio': 'Skin Studio', 'nav.format': 'Formato', 'nav.roadmap': 'Roadmap', 'nav.star': 'Star su GitHub',
+    'nav.badge': 'Uscito · Windows', 'nav.app': "L'app", 'nav.studio': 'Skin Studio', 'nav.format': 'Formato', 'nav.roadmap': 'Roadmap', 'nav.star': 'Star su GitHub',
     'hero.badge': 'Un lettore musicale locale con un motore di skin',
     'hero.l1': 'La tua libreria.', 'hero.l2': 'Il tuo computer.', 'hero.l3': 'Il tuo aspetto.',
-    'hero.lede': "Aether riproduce i file che possiedi già — nessuna telemetria, nessun account obbligatorio. Quel che ti manca lo prende dai cataloghi liberi — oggi l'Internet Archive, poi Jamendo e Audius — e ogni brano che porta dentro si tiene addosso la licenza sotto cui è arrivato. Ogni superficie che disegna è un token che puoi ridefinire, in un file skin che l'app valida prima di disegnare un solo pixel.",
-    'hero.cta1': "Guarda a che punto è", 'hero.m1': 'Windows · macOS e Linux previsti', 'hero.m3': 'Le licenze, per progetto',
+    'hero.lede': "Aether riproduce i file che possiedi già — nessuna telemetria, nessun account obbligatorio. Quel che ti manca lo prende dai cataloghi liberi — l'Internet Archive e Audius — e ogni brano che porta dentro si tiene addosso la licenza sotto cui è arrivato. Ogni superficie che disegna è un token che puoi ridefinire, in un file skin che l'app valida prima di disegnare un solo pixel.",
+    'hero.cta1': "Guarda a che punto è", 'hero.m1': 'Uscito per Windows · ancora in sviluppo', 'hero.m3': 'Le licenze, per progetto',
     'ui.albums': 'Album', 'ui.albumsLow': 'album', 'ui.tracks': 'Brani', 'ui.artists': 'Artisti', 'ui.fav': 'Preferiti', 'ui.settings': 'Impostazioni',
     'ui.playlists': 'Playlist', 'ui.pl1': 'Turno di notte', 'ui.pl2': 'Rip da vinile 2019', 'ui.pl3': 'Cucina, alto volume', 'ui.pl4': 'Ambient, lunghi',
     'ui.scan': 'Scansione completata', 'ui.scanmeta': '5 108 brani · 41 min fa', 'ui.library': 'Libreria', 'ui.libmeta': '5 108 · 14 g 6 h',
@@ -756,13 +784,19 @@ const I18N = {
     's4.eyebrow': '04 — Il contratto', 's4.h2': "Una skin non può rompere l'app. È una proprietà del formato, non una promessa.",
     's5.eyebrow': '05 — Roadmap', 's5.h2': "Cosa non c'è ancora, e perché.",
     's5.p': "Cinque delle 52 parti registrate oggi non vengono disegnate, e una apposta. Restano nel registro perché le skin scritte adesso continuino a calzare l'app domani.",
-    'win.h3': 'Windows — ordine di implementazione', 'win.meta': '13 voci · 10 chiuse · 1 in corso · 77%',
+    'win.h3': 'Windows — ordine di implementazione', 'win.meta': '13 voci · 9 chiuse · 1 in corso · 3 da fare',
     'access.h2': 'È uscito. Windows, e non firmato.',
     'access.p': "L'installer sta nella pagina delle release. Non è firmato, quindi SmartScreen dirà «Windows ha protetto il PC»: Ulteriori informazioni, poi Esegui comunque. Quell'avviso è onesto — non puoi verificare chi l'ha costruito — e l'unica cosa che si può offrire in cambio è che il sorgente sta lì e si compila da sé. Tutto succede su github.com/FedericoBaratti/Aether.",
-    'access.btn': 'Scarica per Windows', 'access.note': "Nessuna lista, nessun modulo d'iscrizione. Niente da raccogliere.",
+    'access.btn': 'Scarica per Windows', 'access.note': "Nessuna lista, nessun modulo d'iscrizione. Un indirizzo, e a scrivere sei tu.",
     'access.spec': 'Leggi le specifiche skin',
-    'footer.tag': 'Lettore musicale local-first · In sviluppo', 'footer.updated': 'Ultimo aggiornamento',
-    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'OPUS', 'Riproduzione gapless', 'Dissolvenza incrociata', 'ReplayGain', 'Equalizzatore a 10 bande', 'Testi sincronizzati', 'Scrobbling', 'Playlist intelligenti', 'Backup su Drive', 'Copertine incorporate', 'Core in Rust', '5 000 brani, zero lag', 'Locale come prima scelta', 'Nessuna telemetria'],
+    'access.bugs.h': 'Segnalazioni e idee',
+    'access.bugs.p': "È uscito, e si sta ancora facendo. Se qualcosa si rompe, o se sai cosa dovrebbe fare dopo, scrivimi — stesso indirizzo per tutte e due.",
+    'access.donate.h': 'Gratuito, e resta gratuito',
+    'access.donate.p': "Non ci sarà una versione a pagamento: il Live Music Archive ha una clausola non commerciale, e far pagare il programma la violerebbe. Le donazioni sostengono il lavoro, mai la musica.",
+    'access.donate.btn': 'Sostieni lo sviluppo',
+    'footer.bugs': 'Contatti', 'footer.donate': 'Donazioni',
+    'footer.tag': 'Lettore musicale local-first · Uscito per Windows, in sviluppo', 'footer.updated': 'Ultimo aggiornamento',
+    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Riproduzione gapless', 'Dissolvenza incrociata', 'ReplayGain', 'Equalizzatore a 10 bande', 'Testi sincronizzati', 'Scrobbling', 'Playlist intelligenti', 'Backup su Drive', 'Copertine incorporate', 'Core in Rust', '5 000 brani, zero lag', 'Locale come prima scelta', 'Nessuna telemetria'],
     pillars: [
       { t: 'Niente lascia il computer', b: "Nessun account obbligatorio, nessuna analitica. La tua libreria resta sul tuo disco. Quando chiedi un brano mancante, Aether lo prende da un catalogo libero e porta con sé la licenza — nient'altro." },
       { t: 'Densa dove serve', b: 'Righe da 40px, aria sopra la lista e non tra le sue linee. Una libreria da cinquemila brani scorre a frame rate, perché è fatta per essere scorsa.' },
@@ -787,7 +821,7 @@ const I18N = {
       { t: 'Effetti', b: 'Sfocatura, bagliore, grana, rumore — ognuno con un costo di rendering dichiarato su dieci.' },
       { t: 'Tipi di avviso', b: 'Contrasto, budget di costo, motivo inutilizzato, prefab inutilizzato, promessa non mantenuta, token obbligatorio mancante — controllati prima della compilazione.' }
     ],
-    platStatus: { prog: 'In corso', none: 'Non iniziato' },
+    platStatus: { out: 'Disponibile', prog: 'In corso', none: 'Non iniziato' },
     road: { done: 'Fatto', prog: 'In corso', todo: 'Da fare' },
     roadItems: [
       'implementare il backup su Google Drive per metadati e skin, così un utente può ripristinare tutto dopo un reset.',
@@ -806,11 +840,11 @@ const I18N = {
     ]
   },
   fr: {
-    'nav.badge': 'En développement', 'nav.app': "L'app", 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Feuille de route', 'nav.star': 'Star sur GitHub',
+    'nav.badge': 'Disponible · Windows', 'nav.app': "L'app", 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Feuille de route', 'nav.star': 'Star sur GitHub',
     'hero.badge': 'Un lecteur de musique local avec un moteur de skins',
     'hero.l1': 'Votre bibliothèque.', 'hero.l2': 'Votre machine.', 'hero.l3': 'Votre style.',
-    'hero.lede': "Aether lit les fichiers que vous possédez déjà — pas de télémétrie, pas de compte obligatoire. Ce qui vous manque, il le récupère dans les catalogues libres — Internet Archive aujourd'hui, Jamendo et Audius ensuite — et chaque morceau qu'il ramène garde la licence sous laquelle il est arrivé. Chaque surface qu'il dessine est un token que vous pouvez redéfinir, dans un fichier de skin que l'app valide avant d'afficher le moindre pixel.",
-    'hero.cta1': "Voir où ça en est", 'hero.m1': 'Windows · macOS et Linux prévus', 'hero.m3': 'Les licences, par conception',
+    'hero.lede': "Aether lit les fichiers que vous possédez déjà — pas de télémétrie, pas de compte obligatoire. Ce qui vous manque, il le récupère dans les catalogues libres — Internet Archive et Audius — et chaque morceau qu'il ramène garde la licence sous laquelle il est arrivé. Chaque surface qu'il dessine est un token que vous pouvez redéfinir, dans un fichier de skin que l'app valide avant d'afficher le moindre pixel.",
+    'hero.cta1': "Voir où ça en est", 'hero.m1': 'Sorti pour Windows · encore en développement', 'hero.m3': 'Les licences, par conception',
     'ui.albums': 'Albums', 'ui.albumsLow': 'albums', 'ui.tracks': 'Titres', 'ui.artists': 'Artistes', 'ui.fav': 'Favoris', 'ui.settings': 'Réglages',
     'ui.playlists': 'Playlists', 'ui.pl1': 'Poste de nuit', 'ui.pl2': 'Rips vinyle 2019', 'ui.pl3': 'Cuisine, fort', 'ui.pl4': 'Ambient, long',
     'ui.scan': 'Analyse terminée', 'ui.scanmeta': '5 108 titres · il y a 41 min', 'ui.library': 'Bibliothèque', 'ui.libmeta': '5 108 · 14 j 6 h',
@@ -827,13 +861,19 @@ const I18N = {
     's4.eyebrow': '04 — Le contrat', 's4.h2': "Une skin ne peut pas casser l'app. C'est une propriété du format, pas une promesse.",
     's5.eyebrow': '05 — Feuille de route', 's5.h2': "Ce qui n'est pas encore là, et pourquoi.",
     's5.p': "Cinq des 52 parties enregistrées ne s'affichent pas aujourd'hui, dont une volontairement. Elles restent dans le registre pour que les skins écrites maintenant conviennent encore à l'app plus tard.",
-    'win.h3': "Windows — ordre d'implémentation", 'win.meta': '13 entrées · 10 terminées · 1 en cours · 77 %',
+    'win.h3': "Windows — ordre d'implémentation", 'win.meta': '13 entrées · 9 terminées · 1 en cours · 3 à faire',
     'access.h2': "C'est sorti. Windows, et non signé.",
     'access.p': "L'installateur est sur la page des releases. Il n'est pas signé, donc SmartScreen dira «Windows a protégé votre ordinateur» : Informations complémentaires, puis Exécuter quand même. Cet avertissement est honnête — vous ne pouvez pas vérifier qui l'a compilé — et la seule chose offerte en échange est que le source est là et se compile tout seul. Tout se passe sur github.com/FedericoBaratti/Aether.",
-    'access.btn': 'Télécharger pour Windows', 'access.note': "Pas de liste de diffusion, pas de formulaire. Rien à collecter.",
+    'access.btn': 'Télécharger pour Windows', 'access.note': "Pas de liste de diffusion, pas de formulaire. Une adresse, et c'est vous qui écrivez.",
     'access.spec': 'Lire la spec des skins',
-    'footer.tag': 'Lecteur de musique local-first · Accès anticipé', 'footer.updated': 'Dernière mise à jour',
-    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'OPUS', 'Lecture sans blanc', 'Fondu enchaîné', 'ReplayGain', 'Égaliseur 10 bandes', 'Paroles synchronisées', 'Scrobbling', 'Listes intelligentes', 'Sauvegarde Drive', 'Pochettes intégrées', 'Cœur en Rust', '5 000 titres, sans lag', 'Local-first', 'Pas de télémétrie'],
+    'access.bugs.h': 'Bugs et idées',
+    'access.bugs.p': "C'est sorti, et ça se construit encore. Si quelque chose casse, ou si vous savez ce qu'il devrait faire ensuite, écrivez-moi — la même adresse pour les deux.",
+    'access.donate.h': 'Gratuit, et ça le reste',
+    'access.donate.p': "Il n'y aura pas de version payante : le Live Music Archive porte une clause non commerciale, et faire payer l'app l'enfreindrait. Les dons soutiennent le travail, jamais la musique.",
+    'access.donate.btn': 'Soutenir le développement',
+    'footer.bugs': 'Contact', 'footer.donate': 'Faire un don',
+    'footer.tag': 'Lecteur de musique local-first · Sorti pour Windows, en développement', 'footer.updated': 'Dernière mise à jour',
+    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Lecture sans blanc', 'Fondu enchaîné', 'ReplayGain', 'Égaliseur 10 bandes', 'Paroles synchronisées', 'Scrobbling', 'Listes intelligentes', 'Sauvegarde Drive', 'Pochettes intégrées', 'Cœur en Rust', '5 000 titres, sans lag', 'Local-first', 'Pas de télémétrie'],
     pillars: [
       { t: 'Rien ne quitte la machine', b: "Pas de compte obligatoire, pas d'analytique. Votre bibliothèque reste sur votre disque. Quand vous demandez un morceau manquant, Aether le récupère dans un catalogue libre et ramène la licence — rien d'autre." },
       { t: "Dense là où il faut", b: "Des lignes de 40px, de l'air au-dessus de la liste et non entre ses lignes. Une bibliothèque de cinq mille titres défile à pleine cadence, parce qu'elle est faite pour être parcourue." },
@@ -858,7 +898,7 @@ const I18N = {
       { t: 'Effets', b: 'Flou, halo, grain, bruit — chacun avec un coût de rendu déclaré sur dix.' },
       { t: "Types d'avertissement", b: 'Contraste, budget de coût, motif inutilisé, prefab inutilisé, promesse non tenue, token requis manquant — vérifiés avant compilation.' }
     ],
-    platStatus: { prog: 'En cours', none: 'Pas commencé' },
+    platStatus: { out: 'Disponible', prog: 'En cours', none: 'Pas commencé' },
     road: { done: 'Terminé', prog: 'En cours', todo: 'À faire' },
     roadItems: [
       "implémenter la sauvegarde Google Drive pour les métadonnées et les skins, afin qu'un utilisateur puisse tout récupérer après une réinitialisation.",
@@ -877,11 +917,11 @@ const I18N = {
     ]
   },
   de: {
-    'nav.badge': 'In Entwicklung', 'nav.app': 'Die App', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Roadmap', 'nav.star': 'Star auf GitHub',
+    'nav.badge': 'Erschienen · Windows', 'nav.app': 'Die App', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Roadmap', 'nav.star': 'Star auf GitHub',
     'hero.badge': 'Ein lokaler Musikplayer mit Skin-Engine',
     'hero.l1': 'Deine Bibliothek.', 'hero.l2': 'Dein Rechner.', 'hero.l3': 'Dein Look.',
-    'hero.lede': 'Aether spielt die Dateien, die dir bereits gehören — keine Telemetrie, kein Konto nötig. Was dir fehlt, holt er aus den freien Katalogen — heute dem Internet Archive, später Jamendo und Audius — und jeder Titel, den er hereinholt, trägt die Lizenz mit sich, unter der er kam. Jede Fläche, die er zeichnet, ist ein Token, das du neu definieren kannst, in einer Skin-Datei, die die App prüft, bevor sie ein einziges Pixel rendert.',
-    'hero.cta1': 'Sieh, wo es steht', 'hero.m1': 'Windows · macOS und Linux geplant', 'hero.m3': 'Lizenzbewusst von Grund auf',
+    'hero.lede': 'Aether spielt die Dateien, die dir bereits gehören — keine Telemetrie, kein Konto nötig. Was dir fehlt, holt er aus den freien Katalogen — dem Internet Archive und Audius — und jeder Titel, den er hereinholt, trägt die Lizenz mit sich, unter der er kam. Jede Fläche, die er zeichnet, ist ein Token, das du neu definieren kannst, in einer Skin-Datei, die die App prüft, bevor sie ein einziges Pixel rendert.',
+    'hero.cta1': 'Sieh, wo es steht', 'hero.m1': 'Für Windows da · noch in Entwicklung', 'hero.m3': 'Lizenzbewusst von Grund auf',
     'ui.albums': 'Alben', 'ui.albumsLow': 'Alben', 'ui.tracks': 'Titel', 'ui.artists': 'Künstler', 'ui.fav': 'Favoriten', 'ui.settings': 'Einstellungen',
     'ui.playlists': 'Playlists', 'ui.pl1': 'Nachtschicht', 'ui.pl2': 'Vinyl-Rips 2019', 'ui.pl3': 'Küche, laut', 'ui.pl4': 'Ambient, lang',
     'ui.scan': 'Scan abgeschlossen', 'ui.scanmeta': '5 108 Titel · vor 41 Min.', 'ui.library': 'Bibliothek', 'ui.libmeta': '5 108 · 14 T 6 Std',
@@ -898,15 +938,21 @@ const I18N = {
     's4.eyebrow': '04 — Der Vertrag', 's4.h2': 'Eine Skin kann die App nicht kaputt machen. Das ist eine Eigenschaft des Formats, kein Versprechen.',
     's5.eyebrow': '05 — Roadmap', 's5.h2': 'Was noch fehlt, und warum.',
     's5.p': 'Fünf der 52 registrierten Teile werden heute nicht gerendert, eines davon absichtlich. Sie bleiben im Register, damit heute geschriebene Skins später noch zur App passen.',
-    'win.h3': 'Windows — Implementierungsreihenfolge', 'win.meta': '13 Einträge · 10 erledigt · 1 laufend · 77 %',
+    'win.h3': 'Windows — Implementierungsreihenfolge', 'win.meta': '13 Einträge · 9 erledigt · 1 laufend · 3 offen',
     'access.h2': 'Es ist da. Windows, und unsigniert.',
     'access.p': 'Der Installer liegt auf der Releases-Seite. Er ist nicht signiert, also sagt SmartScreen «Der Computer wurde durch Windows geschützt»: Weitere Informationen, dann Trotzdem ausführen. Diese Warnung ist ehrlich — du kannst nicht prüfen, wer ihn gebaut hat — und das Einzige, was dafür geboten wird, ist, dass der Quelltext da liegt und sich selbst kompiliert. Alles passiert auf github.com/FedericoBaratti/Aether.',
-    'access.btn': 'Für Windows herunterladen', 'access.note': 'Keine Mailingliste, kein Formular. Nichts zu sammeln.',
+    'access.btn': 'Für Windows herunterladen', 'access.note': 'Keine Mailingliste, kein Formular. Eine Adresse, und du schreibst.',
     'access.spec': 'Skin-Spezifikation lesen',
-    'footer.tag': 'Local-First-Musikplayer · In Entwicklung', 'footer.updated': 'Zuletzt aktualisiert',
-    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'OPUS', 'Lückenlose Wiedergabe', 'Crossfade', 'ReplayGain', '10-Band-EQ', 'Synchroner Songtext', 'Scrobbling', 'Intelligente Playlists', 'Drive-Backup', 'Eingebettete Cover', 'Rust-Core', '5 000 Titel, kein Lag', 'Local-First', 'Keine Telemetrie'],
+    'access.bugs.h': 'Fehler und Ideen',
+    'access.bugs.p': 'Es ist da, und es wird weiter gebaut. Wenn etwas kaputtgeht, oder du weißt, was als Nächstes kommen sollte: schreib mir — dieselbe Adresse für beides.',
+    'access.donate.h': 'Kostenlos, und bleibt es',
+    'access.donate.p': 'Es wird keine kostenpflichtige Version geben: Das Live Music Archive trägt eine nicht-kommerzielle Klausel, und Geld für die App zu nehmen würde sie verletzen. Spenden unterstützen die Arbeit, nie die Musik.',
+    'access.donate.btn': 'Entwicklung unterstützen',
+    'footer.bugs': 'Kontakt', 'footer.donate': 'Spenden',
+    'footer.tag': 'Local-First-Musikplayer · Für Windows da, in Entwicklung', 'footer.updated': 'Zuletzt aktualisiert',
+    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Lückenlose Wiedergabe', 'Crossfade', 'ReplayGain', '10-Band-EQ', 'Synchroner Songtext', 'Scrobbling', 'Intelligente Playlists', 'Drive-Backup', 'Eingebettete Cover', 'Rust-Core', '5 000 Titel, kein Lag', 'Local-First', 'Keine Telemetrie'],
     pillars: [
-      { t: 'Nichts verlässt den Rechner', b: 'Kein Konto nötig, keine Analyse. Deine Bibliothörung bleibt auf deiner Platte. Wenn du einen fehlenden Titel anforderst, holt ihn Aether aus einem freien Katalog und bringt die Lizenz mit — nichts weiter.' },
+      { t: 'Nichts verlässt den Rechner', b: 'Kein Konto nötig, keine Analyse. Deine Bibliothek bleibt auf deiner Platte. Wenn du einen fehlenden Titel anforderst, holt ihn Aether aus einem freien Katalog und bringt die Lizenz mit — nichts weiter.' },
       { t: 'Dicht, wo es zählt', b: '40px-Zeilen, Luft über der Liste und nicht zwischen ihren Zeilen. Eine Bibliothek mit fünftausend Titeln scrollt in voller Bildrate, weil sie zum Scrollen gemacht ist.' },
       { t: 'Das Markup benennt seine Teile', b: 'Jede Fläche, die die App zeichnet, trägt einen Teilnamen. Daran bindet sich eine Skin — nicht an eine aus den Devtools geratene Klasse.' },
       { t: 'Zwei Türen pro Befehl', b: 'Rechtsklick ist nie der einzige Weg hinein. Daneben gibt es immer ein sichtbares Bedienelement oder ein angekündigtes Tastenkürzel.' }
@@ -929,7 +975,7 @@ const I18N = {
       { t: 'Effekte', b: 'Blur, Glow, Grain, Noise — jeweils mit deklarierten Renderkosten von zehn.' },
       { t: 'Warnungsarten', b: 'Kontrast, Kostenbudget, ungenutztes Muster, ungenutztes Prefab, nicht gehaltenes Versprechen, fehlendes Pflicht-Token — vor dem Kompilieren geprüft.' }
     ],
-    platStatus: { prog: 'Läuft', none: 'Nicht begonnen' },
+    platStatus: { out: 'Verfügbar', prog: 'Läuft', none: 'Nicht begonnen' },
     road: { done: 'Erledigt', prog: 'Läuft', todo: 'Offen' },
     roadItems: [
       'Google-Dienste mit Google Drive implementieren, um Metadaten und Skins als Backup hochzuladen, falls ein Nutzer den Rechner zurücksetzen und die ganze Musik und Skins wiederherstellen muss.',
@@ -1814,7 +1860,7 @@ class Component extends DCLogic {
       studioPoints: L.studioPoints.map((p, k) => ({ n: L.ruleWord + ' 0' + (k + 1), t: p.t, b: p.b })),
       stats: [47, 52, 11, 6].map((n, k) => ({ n, t: L.stats[k].t, b: L.stats[k].b })),
       platforms: [
-        { n: 'Desktop · Windows', pct: 77, c: '#8b7cf6', s: L.platStatus.prog, d: '10 / 13' },
+        { n: 'Desktop · Windows', pct: 69, c: '#4ade80', s: L.platStatus.out, d: '9 / 13' },
         { n: 'Android', pct: 0, c: 'var(--ae-t3,rgba(255,255,255,.46))', s: L.platStatus.none, d: '0 / —' },
         { n: 'Linux', pct: 0, c: 'var(--ae-t3,rgba(255,255,255,.46))', s: L.platStatus.none, d: '0 / —' },
         { n: 'macOS', pct: 0, c: 'var(--ae-t3,rgba(255,255,255,.46))', s: L.platStatus.none, d: '0 / —' }

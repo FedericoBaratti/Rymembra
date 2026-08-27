@@ -74,6 +74,8 @@
   "home.neglected": "You haven't played these in a while",
   "home.empty.title": "Nothing to pick up yet",
   "home.empty.hint": "Add a music folder from the settings: as soon as the library fills up, what you were listening to shows up here.",
+  "nav.donate": "Support",
+  "nav.donate.title": "Support the development · opens in your browser",
   "nav.settings": "Settings",
   "nav.expand": "Widen the sidebar",
   "nav.collapse": "Narrow the sidebar",

@@ -2481,7 +2481,11 @@ export const ipc = {
       | "licenza"
       | "terze"
       | "privacy"
-      | "condizioni",
+      | "condizioni"
+      // Non un documento, ma la stessa serratura: l'elenco di là non tiene «i
+      // testi legali», tiene gli indirizzi che questa finestra ha il permesso
+      // di far aprire.
+      | "donazioni",
   ) => invoke<void>("apri_documento", { quale }),
 
   // ── l'account Spotify intero ───────────────────────────────

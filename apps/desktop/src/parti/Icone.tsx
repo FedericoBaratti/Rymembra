@@ -1,10 +1,10 @@
 /**
- * Le icone: quarantadue simboli disegnati apposta, montati una volta sola.
+ * Le icone: quarantaquattro simboli disegnati apposta, montati una volta sola.
  *
  * # Perché uno sprite e non una libreria
  *
  * L'applicazione non ha dipendenze di componenti, di icone o di animazione, e
- * questo file è il motivo per cui può continuare a non averne: quarantadue
+ * questo file è il motivo per cui può continuare a non averne: quarantaquattro
  * `<symbol>` in un `<defs>` nascosto costano meno di sei chilobyte e non portano
  * dietro un albero di pacchetti da aggiornare. La CSP è chiusa
  * (`default-src 'self'`), quindi un font di icone remoto non sarebbe nemmeno
@@ -38,6 +38,7 @@ export type NomeIcona =
   | "i-track"
   | "i-heart"
   | "i-heart-f"
+  | "i-donate"
   | "i-list"
   | "i-queue"
   | "i-search"
@@ -123,6 +124,13 @@ export function Simboli() {
         </symbol>
         <symbol id="i-heart-f" viewBox="0 0 20 20" {...PIENO}>
           <path d="M10 16.3S3.4 12.4 3.4 8a3.5 3.5 0 0 1 6.6-1.8A3.5 3.5 0 0 1 16.6 8c0 4.4-6.6 8.3-6.6 8.3Z" />
+        </symbol>
+        {/* Un cuore **offerto**: lo stesso disegno degli altri due rimpicciolito,
+            sopra l'arco di una mano aperta. Il cuore da solo non bastava — nella
+            barra ce n'è già uno, due righe più su, e vuol dire «preferiti». */}
+        <symbol id="i-donate" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M10 10.6S6.4 8.5 6.4 6.1a1.9 1.9 0 0 1 3.6-1A1.9 1.9 0 0 1 13.6 6.1c0 2.4-3.6 4.5-3.6 4.5Z" />
+          <path d="M4.4 12.4a7 7 0 0 0 11.2 0" />
         </symbol>
         <symbol id="i-list" viewBox="0 0 20 20" {...TRATTO}>
           <path d="M4 6h12M4 10h12M4 14h8" />

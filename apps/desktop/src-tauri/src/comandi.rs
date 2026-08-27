@@ -789,6 +789,14 @@ enum Documento {
     Privacy,
     /// Cosa si può fare della musica.
     Condizioni,
+    /// Dove sostenere il lavoro.
+    ///
+    /// Non è un documento e sta fra i documenti: quel che questo elenco tiene
+    /// davvero non è «i testi legali», sono **gli indirizzi che la finestra ha
+    /// il permesso di far aprire**. Una seconda porta accanto a questa, con la
+    /// stessa cautela e un nome diverso, sarebbe stata la stessa serratura
+    /// montata due volte.
+    Donazioni,
 }
 
 impl Documento {
@@ -801,6 +809,7 @@ impl Documento {
             "terze" => Some(Self::Terze),
             "privacy" => Some(Self::Privacy),
             "condizioni" => Some(Self::Condizioni),
+            "donazioni" => Some(Self::Donazioni),
             _ => None,
         }
     }
@@ -818,6 +827,22 @@ impl Documento {
             Self::Terze => format!("{radice}/blob/main/THIRD-PARTY-NOTICES.md"),
             Self::Privacy => format!("{radice}/blob/main/PRIVACY.md"),
             Self::Condizioni => format!("{radice}/blob/main/TERMS.md"),
+            // Le donazioni non stanno **dentro** il repository: stanno accanto,
+            // sotto il profilo di chi lo tiene — `github.com/OWNER/REPO` diventa
+            // `github.com/sponsors/OWNER`. Il proprietario si ricava da quella
+            // stessa riga invece di riscriverlo qui, per la ragione di sopra: un
+            // indirizzo scritto a mano è un posto in più da cui divergere.
+            //
+            // Il ripiego è il repository, non una pagina inventata: se un domani
+            // quella riga non avesse più la forma attesa, chi clicca finisce
+            // dove il progetto sta davvero invece che su un 404.
+            Self::Donazioni => radice
+                .rsplit_once('/')
+                .and_then(|(fino_al_proprietario, _repo)| fino_al_proprietario.rsplit_once('/'))
+                .map_or_else(
+                    || radice.to_owned(),
+                    |(host, proprietario)| format!("{host}/sponsors/{proprietario}"),
+                ),
         }
     }
 }
@@ -853,4 +878,57 @@ pub fn apri_documento(quale: String) -> Esito<()> {
             .with_cause(err.to_string()),
         )
     })
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    /// Tutti i nomi che la finestra scrive a mano, in un posto solo.
+    const TUTTI: &[&str] = &[
+        "repository",
+        "segnalazioni",
+        "licenza",
+        "terze",
+        "privacy",
+        "condizioni",
+        "donazioni",
+    ];
+
+    /// La prova che avrebbe visto il difetto che c'era qui.
+    ///
+    /// `CARGO_PKG_REPOSITORY` esiste sempre, e quando il pacchetto non dichiara
+    /// `repository` vale la **stringa vuota**: non è un errore di compilazione,
+    /// è un indirizzo che diventa `/issues` e un browser che si apre su
+    /// niente. Il crate della finestra non la ereditava, quindi ogni tasto dei
+    /// documenti pubblici era rotto senza che niente lo dicesse.
+    #[test]
+    fn ogni_documento_ha_un_indirizzo_vero() {
+        for nome in TUTTI {
+            let documento = Documento::da_nome(nome).expect("un nome dell'elenco");
+            let indirizzo = documento.indirizzo();
+            assert!(
+                indirizzo.starts_with("https://"),
+                "«{nome}» apre «{indirizzo}», che non è un indirizzo"
+            );
+        }
+    }
+
+    /// Un nome fuori elenco non ha un indirizzo, e non lo inventa.
+    #[test]
+    fn un_nome_inventato_non_apre_niente() {
+        assert!(Documento::da_nome("qualunque-cosa").is_none());
+        assert!(Documento::da_nome("").is_none());
+    }
+
+    /// Le donazioni stanno sul profilo, non dentro il repository.
+    #[test]
+    fn le_donazioni_vanno_agli_sponsor() {
+        let indirizzo = Documento::Donazioni.indirizzo();
+        assert!(
+            indirizzo.contains("/sponsors/"),
+            "le donazioni aprono «{indirizzo}»"
+        );
+        assert!(!indirizzo.ends_with("/sponsors/"), "manca il proprietario");
+    }
 }

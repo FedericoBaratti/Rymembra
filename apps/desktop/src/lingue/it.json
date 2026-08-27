@@ -74,6 +74,8 @@
   "home.neglected": "Non li ascolti da un po'",
   "home.empty.title": "Non c'è ancora niente da riprendere",
   "home.empty.hint": "Aggiungi una cartella di musica dalle impostazioni: appena la libreria si riempie, qui trovi quel che stavi ascoltando.",
+  "nav.donate": "Sostieni",
+  "nav.donate.title": "Sostieni lo sviluppo · si apre nel browser",
   "nav.settings": "Impostazioni",
   "nav.expand": "Allarga la barra",
   "nav.collapse": "Restringi la barra",

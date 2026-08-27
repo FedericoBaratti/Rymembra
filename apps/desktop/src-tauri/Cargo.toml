@@ -6,6 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+# Ereditato perché finisce in `CARGO_PKG_REPOSITORY`, che `comandi.rs` legge
+# per costruire gli indirizzi dei documenti pubblici e delle donazioni. Senza
+# questa riga cargo definisce la variabile lo stesso, **vuota**: i tasti della
+# licenza e delle segnalazioni chiedevano al browser di aprire `/issues`.
+repository.workspace = true
 
 # Il binario si chiama `aether`, non `aether-desktop`: è il nome che l'utente
 # vede nel gestore attività e nella barra delle applicazioni.

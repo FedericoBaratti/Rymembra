@@ -94,6 +94,8 @@ export interface ContestoWidget {
   onNuovaSmart: () => void;
   /** Sceglie un file M3U, PLS o XSPF da portare dentro. */
   onImportaFile: () => void;
+  /** Apre la pagina delle donazioni nel browser di sistema. */
+  onDona: () => void;
   onColonna: (aperta: boolean) => void;
   onCoda: (aperta: boolean) => void;
   onGrande: () => void;
@@ -187,6 +189,7 @@ const WIDGET: Record<string, ComponenteWidget> = {
         onNuovaPlaylist={ctx.onNuovaPlaylist}
         onNuovaSmart={ctx.onNuovaSmart}
         onImportaFile={ctx.onImportaFile}
+        onDona={ctx.onDona}
       />
     ),
   },
@@ -206,6 +209,7 @@ const WIDGET: Record<string, ComponenteWidget> = {
         onNuovaPlaylist={ctx.onNuovaPlaylist}
         onNuovaSmart={ctx.onNuovaSmart}
         onImportaFile={ctx.onImportaFile}
+        onDona={ctx.onDona}
       />
     ),
   },

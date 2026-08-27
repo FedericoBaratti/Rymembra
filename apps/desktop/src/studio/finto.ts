@@ -286,6 +286,7 @@ export function contestoFinto(
     onNuovaPlaylist: niente,
     onNuovaSmart: niente,
     onImportaFile: niente,
+    onDona: niente,
     onColonna: niente,
     onCoda: niente,
     onGrande: niente,

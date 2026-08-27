@@ -32,6 +32,62 @@ Cosa incrementa cosa:
 
 Niente, per ora.
 
+## [2.0.1] — 2026-08-27
+
+**Il numero salta da 0.2.0, e non perché sia cambiato qualcosa di
+incompatibile.** `SKIN_FORMAT_VERSION` e `SKIN_TRANSFER_PROTOCOL` sono quelli
+della 0.2.0, il database non ha migrazioni nuove, e una copia ferma continua a
+capirsi con una aggiornata. È una scelta di numerazione — la 1.0.0 del vecchio
+albero sta più in basso in questo stesso file, e due alberi che si contendono la
+stessa riga di versioni non è una cosa che si spiega due volte. Le regole di
+sopra valgono da qui in avanti.
+
+È anche la **prima release che passa dall'updater**: chi ha la 0.2.0 installata
+la vede comparire da sé entro mezz'ora, e da quel momento la catena — tag, CI,
+firma, `latest.json` — è quella che porterà tutte le prossime.
+
+### Aggiunto — un posto per sostenere il lavoro
+
+Un tasto **Sostieni** in fondo alla barra di navigazione, sopra Impostazioni e
+sotto la riga sottile che separa «dove sono» dalle cose che non sono pagine.
+Porta a `github.com/sponsors/…` nel browser di sistema.
+
+Non apre niente dentro la finestra, e infatti non ha mai lo stato attivo né
+`aria-current`: annunciarlo come «pagina corrente» a un lettore di schermo
+sarebbe dire una cosa falsa. Nella barra in fondo — quella stretta, cinque voci
+su una riga — il tasto non c'è: là lo spazio serve a chi sta andando da qualche
+parte.
+
+L'indirizzo non è scritto a mano. `Documento::Donazioni` lo ricava da
+`CARGO_PKG_REPOSITORY` (`github.com/OWNER/REPO` → `github.com/sponsors/OWNER`),
+cioè dalla stessa riga da cui vengono gli altri link pubblici, e se un domani
+quella riga non avesse più la forma attesa il ripiego è il repository — non una
+pagina inventata, non un 404. Le donazioni stanno nell'elenco chiuso dei
+documenti pur non essendo un documento: quel che l'elenco tiene davvero non sono
+i testi legali, sono **gli indirizzi che la finestra ha il permesso di far
+aprire**, e una seconda serratura identica accanto alla prima sarebbe stata la
+stessa cosa montata due volte.
+
+Sul sito la stessa cosa, detta per esteso: «Gratuito, e resta gratuito», col
+motivo — il Live Music Archive ha una clausola non commerciale, e far pagare il
+programma la violerebbe. Le donazioni sostengono il lavoro, mai la musica. In
+tutte e quattro le lingue del sito, più la voce nel piè di pagina.
+
+### Corretto — i tasti dei documenti aprivano il vuoto
+
+Il crate della finestra non ereditava `repository` dal workspace. Cargo non se
+ne lamenta: definisce `CARGO_PKG_REPOSITORY` lo stesso, **vuota**. Il risultato
+è che ogni indirizzo costruito da quella riga era un percorso senza radice —
+licenza, avvisi sulle licenze, privacy, condizioni e segnalazioni chiedevano al
+browser di aprire `/issues` e simili, e nessuno di quei tasti portava da nessuna
+parte.
+
+Una riga di manifesto per la correzione, e tre prove perché non torni: ogni nome
+dell'elenco deve produrre un indirizzo che comincia per `https://`, un nome
+fuori elenco non deve produrne nessuno, e le donazioni devono finire sul profilo
+con un proprietario dentro. È il genere di guasto che il compilatore non vede e
+che nessuno segnala, perché chi clicca pensa di aver sbagliato lui.
+
 ## [0.2.0] — 2026-08-27
 
 **La prima versione che si può dare a qualcuno.**

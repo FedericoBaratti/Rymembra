@@ -2163,6 +2163,11 @@ export function App() {
       onNuovaPlaylist: () => setCreandoPlaylist(true),
       onNuovaSmart: () => setRegoleAperte({ playlist: null }),
       onImportaFile: () => void scegliFilePlaylist(),
+      // Fuori, nel browser di sistema, e per nome: l'indirizzo lo conosce solo
+      // il nucleo, che ne tiene un elenco chiuso — vedi `apri_documento`.
+      onDona: () => {
+        ipc.apriDocumento("donazioni").catch(segnalaErrore);
+      },
       onColonna: setColonnaAperta,
       onCoda: setCodaAperta,
       onGrande: () => setGrande(true),

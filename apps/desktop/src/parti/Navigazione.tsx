@@ -15,9 +15,17 @@
  * avanzamento. Ora **a sinistra c'è solo navigazione**, e tutto il resto sta in
  * una pagina che si apre come le altre.
  *
- * Ne resta una sola voce che non è una destinazione della libreria —
- * Impostazioni — ed è appuntata in fondo, sotto una riga sottile, perché quello
- * *è* il posto dove tutti la cercano.
+ * In fondo, sotto una riga sottile, ne restano due che non sono destinazioni
+ * della libreria: Impostazioni, perché quello *è* il posto dove tutti la cercano,
+ * e sopra di lei le donazioni. Stanno separate dalle altre proprio per questo —
+ * la riga sottile è il confine fra «dove sono» e le due cose che non sono
+ * pagine — e le donazioni non hanno mai lo stato attivo perché non aprono
+ * niente qui dentro: portano fuori, nel browser di sistema.
+ *
+ * Nella barra in fondo alla finestra il tasto non c'è. Non è una dimenticanza:
+ * là le voci stanno in fila su una riga sola, e la settima toglierebbe spazio
+ * alle cinque che servono ad andare da qualche parte per chiedere una cosa che
+ * si chiede una volta.
  *
  * # Perché la richiusura è un bottone e non una soglia
  *
@@ -80,6 +88,7 @@ export function Navigazione({
   onNuovaPlaylist,
   onNuovaSmart,
   onImportaFile,
+  onDona,
 }: {
   vista: Vista;
   playlistAperta: number | null;
@@ -104,6 +113,8 @@ export function Navigazione({
   onNuovaSmart: () => void;
   /** Sceglie un file M3U, PLS o XSPF da portare dentro. */
   onImportaFile: () => void;
+  /** Apre la pagina delle donazioni nel browser di sistema. */
+  onDona: () => void;
 }) {
   const [stretta, setStretta] = useState(!larga);
 
@@ -228,6 +239,21 @@ export function Navigazione({
       <div className="spinta" hidden={inFondo} />
 
       <div className="fondo">
+        {/* Sopra Impostazioni e non sotto: è l'ordine in cui si guardano — chi
+            scende fin qui sta cercando l'ingranaggio, e una voce *dopo* quella
+            che si stava cercando è una voce che non si legge mai. Niente
+            `aria-current`: non è una pagina, e un lettore di schermo che la
+            annunciasse come «pagina corrente» direbbe una cosa falsa. */}
+        <button
+          type="button"
+          className="voce nav-pill dona"
+          hidden={inFondo}
+          title={stretta ? t("nav.donate") : t("nav.donate.title")}
+          onClick={onDona}
+        >
+          <Icona nome="i-donate" dim={19} />
+          <span className="etichetta">{t("nav.donate")}</span>
+        </button>
         <button
           type="button"
           className="voce nav-pill"

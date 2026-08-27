@@ -999,6 +999,14 @@ body {
   flex: 1;
   min-height: var(--spazio-3);
 }
+/* Il cuore porta l'accento, l'etichetta no: una riga in più identica alle
+   altre, appena sopra Impostazioni, si legge come una sesta pagina che non
+   esiste — e una riga tutta colorata avrebbe gridato più di quanto una richiesta
+   che si fa una volta sola abbia diritto di gridare. */
+.navigazione .dona .icona {
+  color: var(--accent);
+}
+
 /* Una colonna flex come `.destinazioni`, non un blocco: era l'unico genitore di
    una voce che non la stirava, e un `<button>` largo quanto il suo contenuto
    dava a Impostazioni una pillola di hover lunga come la parola invece che
