@@ -1,0 +1,2371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap" rel="stylesheet">
+<title>Aether — A local music player with a skin engine</title>
+<meta name="description" content="Aether plays the files you already own, and finds what you are missing in the free catalogues — the Internet Archive today, Jamendo and Audius next — carrying each track's licence with it. No telemetry, no account required. A validated skin engine restyles the whole app from a data file.">
+<meta name="theme-color" content="#09090d">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2309090d'/%3E%3Cpath d='M32 8a24 24 0 0 1 0 48' fill='none' stroke='%238b7cf6' stroke-width='7' stroke-linecap='round'/%3E%3Cpath d='M32 56a24 24 0 0 1 0-48' fill='none' stroke='%234fd6e0' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+html{scroll-behavior:smooth}
+body{margin:0;background:#09090d;font-family:Geist,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--ae-acc,#8b7cf6);text-decoration:none}a:hover{filter:brightness(1.18)}
+::selection{background:color-mix(in srgb,var(--ae-acc,#8b7cf6) 32%,transparent)}
+@keyframes ae-drift{0%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(4%,-3%,0) scale(1.12)}100%{transform:translate3d(0,0,0) scale(1)}}
+@keyframes ae-drift2{0%{transform:translate3d(0,0,0) scale(1.05)}50%{transform:translate3d(-5%,4%,0) scale(.95)}100%{transform:translate3d(0,0,0) scale(1.05)}}
+@keyframes ae-float{0%{transform:translateY(0)}50%{transform:translateY(-14px)}100%{transform:translateY(0)}}
+@keyframes ae-spin{to{transform:rotate(360deg)}}
+@keyframes ae-marq{to{transform:translateX(-50%)}}
+@keyframes ae-eq{0%{transform:scaleY(.25)}100%{transform:scaleY(1)}}
+@keyframes ae-sweep{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}
+@keyframes ae-blink{0%,100%{opacity:1}50%{opacity:0}}
+@keyframes ae-prog{0%{width:14%}100%{width:86%}}
+@keyframes ae-aurora{to{transform:rotate(360deg)}}
+@keyframes ae-pulse{0%,100%{opacity:.35;transform:scale(1)}50%{opacity:.7;transform:scale(1.06)}}
+[id]{scroll-margin-top:94px}
+*{-webkit-tap-highlight-color:transparent}
+a,button,input{touch-action:manipulation}
+:focus-visible{outline:2px solid var(--ae-acc,#8b7cf6);outline-offset:2px}
+html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-width:thin}
+::-webkit-scrollbar{width:11px;height:11px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--ae-raise,#1e1e2a);border-radius:99px;border:3px solid var(--ae-bg,#09090d)}
+::-webkit-scrollbar-thumb:hover{background:var(--ae-acc,#8b7cf6)}
+[data-marq]{-webkit-mask-image:linear-gradient(90deg,transparent,#000 9%,#000 91%,transparent);mask-image:linear-gradient(90deg,transparent,#000 9%,#000 91%,transparent)}
+@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+</style>
+</helmet>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="a-album" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="6.8"></circle><circle cx="10" cy="10" r="1.9"></circle></symbol>
+<symbol id="a-artist" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="6.6" r="3"></circle><path d="M4.2 16.6c0-3 2.6-4.7 5.8-4.7s5.8 1.7 5.8 4.7"></path></symbol>
+<symbol id="a-track" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7.4 14.6V5.2l8-1.6v9.2"></path><circle cx="5.4" cy="14.6" r="2"></circle><circle cx="13.4" cy="12.8" r="2"></circle></symbol>
+<symbol id="a-heart" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 16.3S3.4 12.4 3.4 8a3.5 3.5 0 0 1 6.6-1.8A3.5 3.5 0 0 1 16.6 8c0 4.4-6.6 8.3-6.6 8.3Z"></path></symbol>
+<symbol id="a-list" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h12M4 10h12M4 14h8"></path></symbol>
+<symbol id="a-search" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="5"></circle><path d="m12.8 12.8 3.6 3.6"></path></symbol>
+<symbol id="a-settings" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.6 6.4h7.4M16.2 6.4h.2M3.6 13.6h2.4M11.2 13.6h5.2"></path><circle cx="13.3" cy="6.4" r="2.3"></circle><circle cx="8.4" cy="13.6" r="2.3"></circle></symbol>
+<symbol id="a-play" viewBox="0 0 20 20" fill="currentColor"><path d="M6.6 4.3 15.8 10l-9.2 5.7V4.3Z"></path></symbol>
+<symbol id="a-pause" viewBox="0 0 20 20" fill="currentColor"><rect x="5.6" y="4.4" width="3.1" height="11.2" rx="1.1"></rect><rect x="11.3" y="4.4" width="3.1" height="11.2" rx="1.1"></rect></symbol>
+<symbol id="a-prev" viewBox="0 0 20 20" fill="currentColor"><path d="M15.2 4.8v10.4L7.4 10l7.8-5.2Z"></path><rect x="4.2" y="4.8" width="1.9" height="10.4" rx=".95"></rect></symbol>
+<symbol id="a-next" viewBox="0 0 20 20" fill="currentColor"><path d="M4.8 4.8v10.4L12.6 10 4.8 4.8Z"></path><rect x="13.9" y="4.8" width="1.9" height="10.4" rx=".95"></rect></symbol>
+<symbol id="a-shuffle" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.4 5.6h2.8l7.2 8.8h3.2M3.4 14.4h2.8l2.1-2.6M12 7.7l1.4-2.1h3.2"></path><path d="m14.4 3.4 2.2 2.2-2.2 2.2M14.4 12.2l2.2 2.2-2.2 2.2"></path></symbol>
+<symbol id="a-repeat" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.2 8.6V7.4a2 2 0 0 1 2-2h7.4"></path><path d="m12.4 3.2 2.4 2.2-2.4 2.2"></path><path d="M14.8 11.4v1.2a2 2 0 0 1-2 2H5.4"></path><path d="m7.6 16.8-2.4-2.2 2.4-2.2"></path></symbol>
+<symbol id="a-skin" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.4s5 5.3 5 8.1a5 5 0 0 1-10 0c0-2.8 5-8.1 5-8.1Z"></path></symbol>
+<symbol id="a-check" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m4.6 10.4 3.6 3.6 7.2-7.8"></path></symbol>
+<symbol id="a-alert" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4.2 3.6 15.4h12.8L10 4.2Z"></path><path d="M10 8.6v3.1M10 13.7v.1"></path></symbol>
+<symbol id="a-chev-r" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7.8 5.6 12.2 10l-4.4 4.4"></path></symbol>
+<symbol id="a-chev-d" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5.6 7.8 4.4 4.4 4.4-4.4"></path></symbol>
+<symbol id="a-expand" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11.8 4.4h3.8v3.8M8.2 15.6H4.4v-3.8"></path><path d="M15.6 4.4 11 9M4.4 15.6 9 11"></path></symbol>
+<symbol id="a-star" viewBox="0 0 20 20" fill="currentColor"><path d="m10 3.4 2.06 4.18 4.61.67-3.34 3.25.79 4.59L10 13.92l-4.12 2.17.79-4.59L3.33 8.25l4.61-.67L10 3.4Z"></path></symbol>
+<symbol id="a-mark" viewBox="0 0 20 20" fill="none" stroke-width="2.6"><path d="M10 2.4a7.6 7.6 0 0 1 0 15.2" stroke="currentColor"></path><path d="M10 17.6a7.6 7.6 0 0 1 0-15.2" stroke="var(--ae-acc2,#4fd6e0)"></path></symbol>
+<symbol id="a-code" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m7 6.4-3.6 3.6L7 13.6M13 6.4l3.6 3.6L13 13.6"></path></symbol>
+<symbol id="a-lock" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4.4" y="8.6" width="11.2" height="7.4" rx="2"></rect><path d="M7 8.6V6.8a3 3 0 0 1 6 0v1.8"></path></symbol>
+<symbol id="a-bolt" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2.6 4.8 11.4h4.4L9 17.4l6.2-8.8h-4.4L11 2.6Z"></path></symbol>
+</defs></svg>
+
+<div ref="{{ setRoot }}" style="position:relative;background:var(--ae-bg,#09090d);color:var(--ae-t1,rgba(255,255,255,.94));transition:background-color .7s ease,color .7s ease;overflow-x:clip">
+
+<div style="position:fixed;inset:0;pointer-events:none;z-index:0">
+  <div data-amb style="position:absolute;top:-22vh;left:-12vw;width:74vw;height:74vw;border-radius:50%;background:radial-gradient(circle,var(--ae-glowA,rgba(139,124,246,.30)),transparent 62%);filter:blur(24px);animation:ae-drift 22s ease-in-out infinite;opacity:.75"></div>
+  <div data-amb style="position:absolute;bottom:-30vh;right:-16vw;width:70vw;height:70vw;border-radius:50%;background:radial-gradient(circle,var(--ae-glowB,rgba(79,214,224,.20)),transparent 62%);filter:blur(28px);animation:ae-drift2 28s ease-in-out infinite;opacity:.6"></div>
+  <div style="position:absolute;top:50%;left:50%;width:150vmax;height:150vmax;margin:-75vmax 0 0 -75vmax;animation:ae-aurora 46s linear infinite;will-change:transform">
+    <div data-aurora style="position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 0deg,transparent 0deg,var(--ae-glowA,rgba(139,124,246,.30)) 60deg,transparent 130deg,var(--ae-glowB,rgba(79,214,224,.20)) 220deg,transparent 300deg);filter:blur(90px);opacity:.28;transition:transform .5s cubic-bezier(.2,.8,.2,1);will-change:transform"></div>
+  </div>
+  <canvas data-spettro aria-hidden="true" style="position:absolute;left:0;right:0;bottom:0;display:block;width:100%;height:66%;opacity:0;-webkit-mask-image:linear-gradient(180deg,transparent 0,transparent 6%,#000 64%);mask-image:linear-gradient(180deg,transparent 0,transparent 6%,#000 64%)"></canvas>
+  <div data-cursor-glow style="position:absolute;top:0;left:0;width:640px;height:640px;margin:-320px 0 0 -320px;border-radius:50%;background:radial-gradient(circle,var(--ae-glowA,rgba(139,124,246,.30)),transparent 60%);filter:blur(30px);opacity:.5;transition:opacity .5s ease;will-change:transform"></div>
+</div>
+
+<nav data-nav style="position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;gap:12px;padding:12px clamp(14px,4vw,34px);padding-top:calc(12px + env(safe-area-inset-top,0px));backdrop-filter:blur(18px);background:transparent;border-bottom:1px solid transparent;transition:background-color .4s ease,border-color .4s ease,padding .4s ease">
+  <a href="#top" style="display:flex;align-items:center;gap:9px;color:var(--ae-t1,rgba(255,255,255,.94))">
+    <svg data-logo width="20" height="20" style="color:var(--ae-acc,#8b7cf6);transition:transform .4s cubic-bezier(.2,.8,.2,1)"><use href="#a-mark"></use></svg>
+    <span style="font:600 15px/1 Geist,sans-serif;letter-spacing:-.01em">Aether</span>
+  </a>
+  <span data-navbadge data-i18n="nav.badge" style="padding:3px 8px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:500 9.5px/1.4 'Geist Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">In development</span>
+  <div style="flex:1"></div>
+  <div data-navlinks style="display:flex;gap:22px;align-items:center">
+    <a href="#tour" data-i18n="nav.app" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">The app</a>
+    <a href="#studio" data-i18n="nav.studio" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">Skin Studio</a>
+    <a href="#format" data-i18n="nav.format" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">Format</a>
+    <a href="#roadmap" data-i18n="nav.roadmap" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">Roadmap</a>
+  </div>
+  <div data-langsel style="display:flex;gap:2px;padding:3px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .7s ease">
+    <button type="button" data-lang="en" style="height:26px;padding:0 9px;border-radius:99px;font:600 10.5px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">EN</button><button type="button" data-lang="it" style="height:26px;padding:0 9px;border-radius:99px;font:600 10.5px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">IT</button><button type="button" data-lang="fr" style="height:26px;padding:0 9px;border-radius:99px;font:600 10.5px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">FR</button><button type="button" data-lang="de" style="height:26px;padding:0 9px;border-radius:99px;font:600 10.5px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">DE</button>
+  </div>
+  <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" data-navcta data-magnet style="display:flex;align-items:center;gap:7px;height:34px;padding:0 15px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 12.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
+    <svg width="14" height="14"><use href="#a-star"></use></svg><span data-i18n="nav.star">Star on GitHub</span>
+  </a>
+  <button type="button" data-burger aria-label="Menu" style="display:none;width:44px;height:44px;margin-right:-10px;align-items:center;justify-content:center;border:0;background:transparent;color:var(--ae-t1,rgba(255,255,255,.94));cursor:pointer;-webkit-tap-highlight-color:transparent">
+    <span style="position:relative;display:block;width:20px;height:14px"><span data-bar style="position:absolute;left:0;top:0px;width:100%;height:1.8px;border-radius:2px;background:currentColor;transition:transform .35s cubic-bezier(.2,.8,.2,1),opacity .2s ease"></span><span data-bar style="position:absolute;left:0;top:6.1px;width:100%;height:1.8px;border-radius:2px;background:currentColor;transition:transform .35s cubic-bezier(.2,.8,.2,1),opacity .2s ease"></span><span data-bar style="position:absolute;left:0;top:12.2px;width:100%;height:1.8px;border-radius:2px;background:currentColor;transition:transform .35s cubic-bezier(.2,.8,.2,1),opacity .2s ease"></span></span>
+  </button>
+</nav>
+
+<div data-mobmenu style="position:fixed;inset:0;z-index:48;display:none;flex-direction:column;justify-content:center;gap:2px;padding:92px 26px 40px;padding-top:calc(92px + env(safe-area-inset-top,0px));padding-bottom:calc(40px + env(safe-area-inset-bottom,0px));background:var(--ae-bg,#09090d);opacity:0;transition:opacity .35s ease">
+  <a href="#tour" data-i18n="nav.app" style="display:flex;align-items:center;min-height:54px;font:600 28px/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em;color:var(--ae-t1,rgba(255,255,255,.94))">The app</a>
+  <a href="#studio" data-i18n="nav.studio" style="display:flex;align-items:center;min-height:54px;font:600 28px/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em;color:var(--ae-t1,rgba(255,255,255,.94))">Skin Studio</a>
+  <a href="#format" data-i18n="nav.format" style="display:flex;align-items:center;min-height:54px;font:600 28px/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em;color:var(--ae-t1,rgba(255,255,255,.94))">Format</a>
+  <a href="#roadmap" data-i18n="nav.roadmap" style="display:flex;align-items:center;min-height:54px;font:600 28px/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em;color:var(--ae-t1,rgba(255,255,255,.94))">Roadmap</a>
+  <div style="height:1px;margin:24px 0 18px;background:var(--ae-line,rgba(255,255,255,.10))"></div>
+  <div data-langsel style="display:flex;gap:8px">
+    <button type="button" data-lang="en" style="flex:1;min-height:46px;border-radius:12px;font:600 14px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">EN</button><button type="button" data-lang="it" style="flex:1;min-height:46px;border-radius:12px;font:600 14px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">IT</button><button type="button" data-lang="fr" style="flex:1;min-height:46px;border-radius:12px;font:600 14px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">FR</button><button type="button" data-lang="de" style="flex:1;min-height:46px;border-radius:12px;font:600 14px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">DE</button>
+  </div>
+  <a href="#access" style="margin-top:18px;display:flex;align-items:center;justify-content:center;gap:9px;min-height:52px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 15px/1 Geist,sans-serif"><span data-i18n="hero.cta1">See where it stands</span></a>
+  <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" style="margin-top:10px;display:flex;align-items:center;justify-content:center;gap:9px;min-height:52px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));color:var(--ae-t1,rgba(255,255,255,.94));font:550 15px/1 Geist,sans-serif"><svg width="16" height="16" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-star"></use></svg><span data-i18n="nav.star">Star on GitHub</span></a>
+</div>
+
+<section id="top" style="position:relative;z-index:1;padding:clamp(104px,17vw,150px) clamp(16px,4vw,34px) 0;display:flex;flex-direction:column;align-items:center;text-align:center">
+  <div data-rv style="display:flex;align-items:center;gap:9px;padding:6px 8px 6px 14px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .7s ease">
+    <span style="width:6px;height:6px;border-radius:50%;background:var(--ae-acc,#8b7cf6);animation:ae-blink 2.4s ease-in-out infinite"></span>
+    <span data-i18n="hero.badge" style="font:500 12px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">A local music player with a skin engine</span>
+    <span style="padding:3px 9px;border-radius:99px;background:var(--ae-raise,#1e1e2a);font:500 10.5px/1.3 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46));transition:background-color .7s ease">Rust · Tauri</span>
+  </div>
+
+  <h1 style="margin:26px 0 0;max-width:16ch;font:600 clamp(38px,8.8vw,108px)/0.94 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em;text-wrap:balance">
+    <span data-split data-i18n="hero.l1" data-d="80" style="display:block">Your library.</span>
+    <span data-split data-i18n="hero.l2" data-d="220" style="display:block">Your machine.</span>
+    <span data-split data-i18n="hero.l3" data-d="360" style="display:block;color:var(--ae-acc,#8b7cf6);transition:color .7s ease">Your look.</span>
+  </h1>
+
+  <p data-rv data-i18n="hero.lede" data-d="340" style="margin:26px 0 0;max-width:52ch;font:300 clamp(15.5px,4.1vw,18.5px)/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">
+    Aether plays the files you already own — no telemetry, no account required. What you are missing, it fetches from the free catalogues — the Internet Archive today, Jamendo and Audius next — and every track it brings in carries the licence it came under. Every surface it draws is a token you can redefine, in a skin file the app validates before it renders a single pixel.
+  </p>
+
+  <div data-rv data-d="430" style="margin:34px 0 0;display:flex;flex-wrap:wrap;gap:12px;justify-content:center;align-items:center">
+    <a href="#access" data-magnet style="display:flex;align-items:center;gap:9px;height:46px;padding:0 22px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
+      <span data-i18n="hero.cta1">See where it stands</span><svg width="16" height="16"><use href="#a-chev-r"></use></svg>
+    </a>
+    <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" data-magnet style="display:flex;align-items:center;gap:9px;height:46px;padding:0 20px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));background:var(--ae-surf,#0e0e14);color:var(--ae-t1,rgba(255,255,255,.94));font:550 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease,border-color .7s ease">
+      <svg width="16" height="16" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-star"></use></svg><span data-i18n="nav.star">Star on GitHub</span>
+      <span style="font:500 11.5px/1 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">FedericoBaratti/Aether</span>
+    </a>
+  </div>
+
+  <div data-rv data-d="520" style="margin:18px 0 0;display:flex;gap:18px;flex-wrap:wrap;justify-content:center;font:500 11.5px/1 'Geist Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">
+    <span data-i18n="hero.m1">Windows · macOS and Linux in progress</span><span>FLAC ALAC WAV MP3 OGG</span><span data-i18n="hero.m3">Licence-aware by design</span>
+  </div>
+
+  <div data-hero-stage style="position:relative;width:min(1240px,96vw);margin:clamp(40px,7vw,66px) auto 0;perspective:1800px">
+    <div data-hero-tilt style="transform-origin:50% 0%;will-change:transform;height:662px;overflow:hidden;border-radius:16px">
+      <div data-hero-fixed style="width:1240px;transform-origin:0 0;will-change:transform">
+      <div data-screen="library" style="position:relative;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.10));overflow:hidden;box-shadow:0 60px 140px -40px rgba(0,0,0,.9),0 0 0 1px rgba(255,255,255,.02);background:var(--ae-bg,#09090d);transition:background-color .7s ease,border-color .7s ease">
+        <div style="display:grid;grid-template-columns:216px 1fr 300px;height:660px;text-align:left">
+
+          <div style="background:var(--ae-surf,#0e0e14);border-right:1px solid var(--ae-line,rgba(255,255,255,.08));padding:14px 10px;display:flex;flex-direction:column;gap:14px;transition:background-color .7s ease,border-color .7s ease">
+            <div style="display:flex;align-items:center;gap:8px;padding:0 6px">
+              <svg width="16" height="16" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mark"></use></svg>
+              <span style="font:600 13px/1 Geist,sans-serif">Aether</span>
+              <div style="flex:1"></div>
+              <svg width="14" height="14" style="color:var(--ae-t3,rgba(255,255,255,.46))"><use href="#a-search"></use></svg>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:2px">
+              <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="14" height="14"><use href="#a-album"></use></svg><span data-i18n="ui.albums" style="flex:1;font-size:12.5px">Albums</span><span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">412</span></div>
+              <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;background:var(--ae-accSoft,rgba(139,124,246,.16));color:var(--ae-acc,#8b7cf6);transition:background-color .7s ease,color .7s ease"><svg width="14" height="14"><use href="#a-track"></use></svg><span data-i18n="ui.tracks" style="flex:1;font-size:12.5px;font-weight:600">Tracks</span><span style="font:10.5px 'Geist Mono',monospace">5 108</span></div>
+              <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="14" height="14"><use href="#a-artist"></use></svg><span data-i18n="ui.artists" style="flex:1;font-size:12.5px">Artists</span><span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">287</span></div>
+              <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="14" height="14"><use href="#a-heart"></use></svg><span data-i18n="ui.fav" style="flex:1;font-size:12.5px">Favourites</span></div>
+              <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="14" height="14"><use href="#a-settings"></use></svg><span data-i18n="ui.settings" style="flex:1;font-size:12.5px">Settings</span></div>
+            </div>
+            <div style="font:600 9px/1 'Geist Mono',monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46));padding:0 8px" data-i18n="ui.playlists">Playlists</div>
+            <div style="display:flex;flex-direction:column;gap:1px">
+              <div style="display:flex;align-items:center;gap:8px;padding:5px 10px;border-radius:8px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="12" height="12"><use href="#a-list"></use></svg><span data-i18n="ui.pl1" style="font-size:11.5px">Late shift</span></div>
+              <div style="display:flex;align-items:center;gap:8px;padding:5px 10px;border-radius:8px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="12" height="12"><use href="#a-list"></use></svg><span data-i18n="ui.pl2" style="font-size:11.5px">Vinyl rips 2019</span></div>
+              <div style="display:flex;align-items:center;gap:8px;padding:5px 10px;border-radius:8px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="12" height="12"><use href="#a-list"></use></svg><span data-i18n="ui.pl3" style="font-size:11.5px">Kitchen, loud</span></div>
+              <div style="display:flex;align-items:center;gap:8px;padding:5px 10px;border-radius:8px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="12" height="12"><use href="#a-list"></use></svg><span data-i18n="ui.pl4" style="font-size:11.5px">Ambient, long</span></div>
+            </div>
+            <div style="flex:1"></div>
+            <div style="padding:9px 10px;border-radius:11px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf2,#16161f);transition:background-color .7s ease,border-color .7s ease">
+              <div style="display:flex;align-items:center;gap:7px;font:500 10.5px/1 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))"><svg width="12" height="12"><use href="#a-bolt"></use></svg><span data-i18n="ui.scan">Scan complete</span></div>
+              <div style="margin-top:6px;font-size:11px;color:var(--ae-t2,rgba(255,255,255,.62))" data-i18n="ui.scanmeta">5 108 tracks · 41 min ago</div>
+            </div>
+          </div>
+
+          <div style="padding:20px 22px 0;overflow:hidden">
+            <div style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="ui.library">Library</div>
+            <div style="margin-top:8px;display:flex;align-items:baseline;gap:12px">
+              <div data-i18n="ui.tracks" style="font:600 30px/1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Tracks</div>
+              <span style="font:11.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="ui.libmeta">5 108 · 14 d 6 h</span>
+            </div>
+            <div style="margin-top:16px;display:grid;grid-template-columns:24px 34px 1fr 150px 46px;gap:12px;padding:0 8px 8px;border-bottom:1px solid var(--ae-line,rgba(255,255,255,.08));font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">
+              <span style="text-align:right">#</span><span></span><span data-i18n="ui.colTitle">Title</span><span data-i18n="ui.colAlbum">Album</span><span data-i18n="ui.colTime" style="text-align:right">Time</span>
+            </div>
+            <div style="margin-top:6px;display:flex;flex-direction:column;gap:1px">
+              <sc-for list="{{ rows }}" as="r" hint-placeholder-count="11">
+                <div data-row style="display:grid;grid-template-columns:24px 34px 1fr 150px 46px;gap:12px;align-items:center;padding:6px 8px;border-radius:9px;transition:background-color .2s ease">
+                  <span style="text-align:right;font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">{{ r.n }}</span>
+                  <div style="width:34px;height:34px;border-radius:6px;background:linear-gradient(145deg,{{ r.c1 }},{{ r.c2 }})"></div>
+                  <div style="min-width:0"><div style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.t }}</div><div style="font-size:11px;color:var(--ae-t2,rgba(255,255,255,.62));white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.a }}</div></div>
+                  <div style="font-size:11.5px;color:var(--ae-t2,rgba(255,255,255,.62));white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.al }}</div>
+                  <span style="text-align:right;font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">{{ r.d }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="background:var(--ae-surf,#0e0e14);border-left:1px solid var(--ae-line,rgba(255,255,255,.08));padding:16px;position:relative;transition:background-color .7s ease,border-color .7s ease">
+            <div style="position:absolute;inset:0 0 auto;height:230px;background:radial-gradient(120% 100% at 50% 0%,rgba(217,123,58,.24),transparent 72%)"></div>
+            <div style="position:relative">
+              <div style="width:100%;aspect-ratio:1;border-radius:12px;background:linear-gradient(145deg,#7a2f2f,#d97b3a);box-shadow:0 18px 46px rgba(0,0,0,.5)"></div>
+              <div style="margin-top:14px;font:600 15px/1.25 Geist,sans-serif">Weird Fishes / Arpeggi</div>
+              <div style="margin-top:3px;font-size:12px;color:var(--ae-t2,rgba(255,255,255,.62))">Radiohead · In Rainbows</div>
+              <div style="margin-top:14px;height:4px;border-radius:99px;background:var(--ae-raise,#1e1e2a);overflow:hidden"><div style="height:100%;border-radius:99px;background:var(--ae-acc,#8b7cf6);animation:ae-prog 26s linear infinite alternate;transition:background-color .7s ease"></div></div>
+              <div style="margin-top:6px;display:flex;justify-content:space-between;font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))"><span>3:12</span><span>5:18</span></div>
+              <div style="margin-top:14px;display:flex;align-items:center;justify-content:center;gap:14px">
+                <svg width="15" height="15" style="color:var(--ae-t2,rgba(255,255,255,.62))"><use href="#a-shuffle"></use></svg>
+                <svg width="16" height="16"><use href="#a-prev"></use></svg>
+                <span style="width:40px;height:40px;border-radius:50%;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);display:grid;place-items:center;transition:background-color .7s ease"><svg width="17" height="17"><use href="#a-pause"></use></svg></span>
+                <svg width="16" height="16"><use href="#a-next"></use></svg>
+                <svg width="15" height="15" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-repeat"></use></svg>
+              </div>
+              <div style="margin-top:18px;display:flex;align-items:flex-end;gap:3px;height:34px">
+                <sc-for list="{{ bars }}" as="b" hint-placeholder-count="28">
+                  <span style="flex:1;height:100%;transform-origin:bottom;border-radius:2px;background:var(--ae-accSoft,rgba(139,124,246,.16));animation:ae-eq {{ b.dur }} ease-in-out infinite alternate;animation-delay:{{ b.del }}"></span>
+                </sc-for>
+              </div>
+              <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--ae-line,rgba(255,255,255,.08))">
+                <div style="font:600 9px/1 'Geist Mono',monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="ui.upnext">Up next</div>
+                <div style="margin-top:9px;display:flex;flex-direction:column;gap:8px">
+                  <div style="display:flex;gap:9px;align-items:center"><div style="width:26px;height:26px;border-radius:5px;background:linear-gradient(145deg,#2a3a5e,#5b8ac9)"></div><div style="min-width:0"><div style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">All I Need</div><div style="font-size:10px;color:var(--ae-t3,rgba(255,255,255,.46))">Radiohead</div></div></div>
+                  <div style="display:flex;gap:9px;align-items:center"><div style="width:26px;height:26px;border-radius:5px;background:linear-gradient(145deg,#3d2f4a,#8a6fb0)"></div><div style="min-width:0"><div style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Faust Arp</div><div style="font-size:10px;color:var(--ae-t3,rgba(255,255,255,.46))">Radiohead</div></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div data-sweep style="position:absolute;top:0;bottom:0;width:22%;pointer-events:none;background:linear-gradient(100deg,transparent,rgba(255,255,255,.055),transparent);animation:ae-sweep 7.5s ease-in-out infinite"></div>
+      </div>
+      </div>
+    </div>
+
+    <div data-par data-speed="-0.16" style="position:absolute;left:-6%;top:14%;width:132px;height:132px;border-radius:16px;background:linear-gradient(145deg,#3a2a6e,#8b7cf6);box-shadow:0 26px 60px rgba(0,0,0,.55);animation:ae-float 9s ease-in-out infinite"></div>
+    <div data-par data-speed="0.22" style="position:absolute;right:-5%;top:34%;width:108px;height:108px;border-radius:14px;background:linear-gradient(145deg,#0d4a4f,#4fd6e0);box-shadow:0 26px 60px rgba(0,0,0,.55);animation:ae-float 11s ease-in-out infinite .8s"></div>
+    <div data-par data-speed="-0.1" style="position:absolute;right:6%;bottom:-7%;width:86px;height:86px;border-radius:50%;background:linear-gradient(145deg,#5c2b18,#d97b3a);box-shadow:0 20px 44px rgba(0,0,0,.5);animation:ae-spin 26s linear infinite"></div>
+  </div>
+</section>
+
+<section style="position:relative;z-index:1;margin-top:96px;padding:16px 0;border-top:1px solid var(--ae-line,rgba(255,255,255,.08));border-bottom:1px solid var(--ae-line,rgba(255,255,255,.08));overflow:hidden;transition:border-color .7s ease">
+  <div data-marq style="display:flex;width:max-content;animation:ae-marq 34s linear infinite">
+    <sc-for list="{{ marquee }}" as="m" hint-placeholder-count="20">
+      <span style="display:flex;align-items:center;gap:26px;padding-right:26px;font:500 13px/1 'Geist Mono',monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46));white-space:nowrap">{{ m.t }}<span style="width:4px;height:4px;border-radius:50%;background:var(--ae-acc,#8b7cf6)"></span></span>
+    </sc-for>
+  </div>
+</section>
+
+<section style="position:relative;z-index:1;padding:clamp(70px,11vw,110px) clamp(16px,4vw,34px);max-width:1180px;margin:0 auto">
+  <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s1.eyebrow">01 — The idea</div>
+  <h2 data-rv data-d="80" style="margin:18px 0 0;max-width:22ch;font:600 clamp(34px,4.4vw,60px)/1.04 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em" data-i18n="s1.h2">A player that answers to the person who owns the files.</h2>
+  <div style="margin-top:52px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:22px">
+    <sc-for list="{{ pillars }}" as="p" hint-placeholder-count="4">
+      <div data-rv data-tilt style="padding:26px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .35s ease,transform .35s cubic-bezier(.2,.8,.2,1);will-change:transform">
+        <svg width="22" height="22" style="color:var(--ae-acc,#8b7cf6)"><use href="{{ p.i }}"></use></svg>
+        <div style="margin-top:18px;font:600 17px/1.25 Geist,sans-serif;letter-spacing:-.01em">{{ p.t }}</div>
+        <p style="margin:9px 0 0;font:300 14px/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">{{ p.b }}</p>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<section id="tour" data-tour style="position:relative;z-index:1;height:300vh">
+  <div data-tour-sticky style="position:sticky;top:0;height:100vh;display:flex;flex-direction:column;justify-content:center;overflow:hidden;padding:0 clamp(16px,4vw,34px)">
+    <div style="max-width:1180px;margin:0 auto;width:100%">
+      <div style="display:flex;align-items:baseline;gap:16px;flex-wrap:wrap">
+        <div style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s2.eyebrow">02 — The app</div>
+        <div style="display:flex;gap:8px">
+          <span data-tab="0" data-i18n="ui.library" style="padding:6px 13px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:550 11.5px/1.3 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));transition:all .4s ease">Library</span>
+          <span data-tab="1" data-i18n="ui.nowplaying" style="padding:6px 13px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:550 11.5px/1.3 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));transition:all .4s ease">Now Playing</span>
+          <span data-tab="2" data-i18n="ui.artists" style="padding:6px 13px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:550 11.5px/1.3 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));transition:all .4s ease">Artists</span>
+        </div>
+      </div>
+
+      <div data-stack data-cols="minmax(240px,340px) 1fr" style="margin-top:22px;display:grid;grid-template-columns:minmax(240px,340px) 1fr;gap:clamp(18px,3vw,46px);align-items:center">
+        <div data-chapters style="position:relative;min-height:250px">
+          <sc-for list="{{ chapters }}" as="c" hint-placeholder-count="3">
+            <div data-chapter style="position:absolute;inset:0;opacity:0;transform:translateY(24px);transition:opacity .5s ease,transform .5s cubic-bezier(.2,.8,.2,1)">
+              <div style="font:600 clamp(28px,3vw,40px)/1.06 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">{{ c.t }}</div>
+              <p style="margin:14px 0 0;font:300 15px/1.62 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">{{ c.b }}</p>
+              <div style="margin-top:18px;display:flex;flex-direction:column;gap:9px">
+                <sc-for list="{{ c.pts }}" as="pt" hint-placeholder-count="3">
+                  <div style="display:flex;gap:10px;align-items:flex-start">
+                    <svg width="14" height="14" style="flex:none;margin-top:3px;color:var(--ae-acc,#8b7cf6)"><use href="#a-check"></use></svg>
+                    <span style="font:400 13.5px/1.5 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">{{ pt.t }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+
+        <div data-tour-stage style="position:relative;height:min(62vh,600px);min-width:0;overflow:hidden;border-radius:14px">
+
+          <div data-tscreen="0" style="position:absolute;left:50%;top:50%;width:1000px;height:620px;transform-origin:50% 50%;border-radius:14px;border:1px solid var(--ae-line,rgba(255,255,255,.10));overflow:hidden;background:var(--ae-bg,#09090d);box-shadow:0 50px 110px -34px rgba(0,0,0,.9);will-change:transform,opacity;transition:background-color .7s ease,border-color .7s ease">
+            <div style="display:grid;grid-template-columns:180px 1fr;height:100%">
+              <div style="background:var(--ae-surf,#0e0e14);border-right:1px solid var(--ae-line,rgba(255,255,255,.08));padding:12px 8px;display:flex;flex-direction:column;gap:10px;transition:background-color .7s ease">
+                <div style="display:flex;align-items:center;gap:7px;padding:0 6px"><svg width="14" height="14" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mark"></use></svg><span style="font:600 12px/1 Geist,sans-serif">Aether</span></div>
+                <div style="display:flex;align-items:center;gap:7px;height:26px;padding:0 9px;border-radius:99px;background:var(--ae-surf2,#16161f);color:var(--ae-t3,rgba(255,255,255,.46));transition:background-color .7s ease"><svg width="12" height="12"><use href="#a-search"></use></svg><span data-i18n="ui.search" style="font-size:11px">Search…</span><span style="margin-left:auto;font:9.5px 'Geist Mono',monospace">/</span></div>
+                <div style="display:flex;flex-direction:column;gap:1px">
+                  <div style="display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:8px;background:var(--ae-accSoft,rgba(139,124,246,.16));color:var(--ae-acc,#8b7cf6);transition:background-color .7s ease,color .7s ease"><svg width="12" height="12"><use href="#a-album"></use></svg><span data-i18n="ui.albums" style="font-size:11.5px;font-weight:600">Albums</span></div>
+                  <div style="display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:8px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="12" height="12"><use href="#a-track"></use></svg><span data-i18n="ui.tracks" style="font-size:11.5px">Tracks</span></div>
+                  <div style="display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:8px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="12" height="12"><use href="#a-artist"></use></svg><span data-i18n="ui.artists" style="font-size:11.5px">Artists</span></div>
+                  <div style="display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:8px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="12" height="12"><use href="#a-heart"></use></svg><span data-i18n="ui.fav" style="font-size:11.5px">Favourites</span></div>
+                </div>
+              </div>
+              <div style="padding:16px 18px;overflow:hidden">
+                <div style="display:flex;align-items:baseline;gap:10px"><div data-i18n="ui.albums" style="font:600 22px/1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Albums</div><span data-i18n="ui.sortedadded" style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">412 · sorted by added</span></div>
+                <div style="margin-top:14px;display:grid;grid-template-columns:repeat(5,1fr);gap:12px">
+                  <sc-for list="{{ covers }}" as="c" hint-placeholder-count="10">
+                    <div>
+                      <div style="width:100%;aspect-ratio:1;border-radius:8px;background:linear-gradient(145deg,{{ c.c1 }},{{ c.c2 }});box-shadow:0 10px 24px rgba(0,0,0,.4)"></div>
+                      <div style="margin-top:7px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.t }}</div>
+                      <div style="font-size:10px;color:var(--ae-t3,rgba(255,255,255,.46));white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.a }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div data-tscreen="1" style="position:absolute;left:50%;top:50%;width:1000px;height:620px;transform-origin:50% 50%;border-radius:14px;border:1px solid var(--ae-line,rgba(255,255,255,.10));overflow:hidden;background:var(--ae-bg,#09090d);box-shadow:0 50px 110px -34px rgba(0,0,0,.9);will-change:transform,opacity;transition:background-color .7s ease,border-color .7s ease">
+            <div style="position:absolute;inset:0;background:radial-gradient(90% 70% at 50% 0%,rgba(217,123,58,.30),transparent 70%)"></div>
+            <div style="position:relative;height:100%;display:grid;grid-template-columns:1fr 1fr;gap:26px;padding:30px 34px;align-items:center">
+              <div style="display:flex;flex-direction:column;align-items:center;gap:16px">
+                <div style="width:min(230px,60%);aspect-ratio:1;border-radius:14px;background:linear-gradient(145deg,#7a2f2f,#d97b3a);box-shadow:0 34px 70px rgba(0,0,0,.6)"></div>
+                <div style="display:flex;align-items:center;gap:16px">
+                  <svg width="17" height="17" style="color:var(--ae-t2,rgba(255,255,255,.62))"><use href="#a-shuffle"></use></svg>
+                  <svg width="19" height="19"><use href="#a-prev"></use></svg>
+                  <span style="width:48px;height:48px;border-radius:50%;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);display:grid;place-items:center;transition:background-color .7s ease"><svg width="20" height="20"><use href="#a-pause"></use></svg></span>
+                  <svg width="19" height="19"><use href="#a-next"></use></svg>
+                  <svg width="17" height="17" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-repeat"></use></svg>
+                </div>
+              </div>
+              <div>
+                <div style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="ui.nowplaying">Now playing</div>
+                <div style="margin-top:10px;font:600 26px/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Weird Fishes / Arpeggi</div>
+                <div style="margin-top:6px;font-size:13px;color:var(--ae-t2,rgba(255,255,255,.62))">Radiohead · In Rainbows · 2007</div>
+                <div style="margin-top:16px;display:flex;gap:7px;flex-wrap:wrap">
+                  <span style="padding:4px 10px;border-radius:99px;background:var(--ae-surf2,#16161f);font:10.5px 'Geist Mono',monospace;color:var(--ae-t2,rgba(255,255,255,.62));transition:background-color .7s ease">FLAC 24/96</span>
+                  <span style="padding:4px 10px;border-radius:99px;background:var(--ae-surf2,#16161f);font:10.5px 'Geist Mono',monospace;color:var(--ae-t2,rgba(255,255,255,.62));transition:background-color .7s ease">2 341 kbps</span>
+                  <span style="padding:4px 10px;border-radius:99px;background:var(--ae-surf2,#16161f);font:10.5px 'Geist Mono',monospace;color:var(--ae-t2,rgba(255,255,255,.62));transition:background-color .7s ease" data-i18n="ui.gapless">Gapless</span>
+                </div>
+                <div style="margin-top:20px;height:4px;border-radius:99px;background:var(--ae-raise,#1e1e2a);overflow:hidden"><div style="height:100%;width:58%;border-radius:99px;background:var(--ae-acc,#8b7cf6);transition:background-color .7s ease"></div></div>
+                <div style="margin-top:7px;display:flex;justify-content:space-between;font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))"><span>3:12</span><span>5:18</span></div>
+                <div style="margin-top:22px;padding:13px 15px;border-radius:12px;border:1px solid var(--ae-line,rgba(255,255,255,.14));display:flex;gap:11px;align-items:flex-start;transition:border-color .7s ease">
+                  <svg width="15" height="15" style="flex:none;margin-top:2px;color:var(--ae-acc,#8b7cf6)"><use href="#a-bolt"></use></svg>
+                  <div><div style="font:550 12px/1.3 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))" data-i18n="ui.npx">Synced lyrics, and the room behind them</div><div data-i18n="ui.npxb" style="margin-top:3px;font-size:11px;color:var(--ae-t3,rgba(255,255,255,.46))">The words come from LRCLIB — no key, no account. Behind them is the spectrum, which is the same scene running behind this page.</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div data-tscreen="2" style="position:absolute;left:50%;top:50%;width:1000px;height:620px;transform-origin:50% 50%;border-radius:14px;border:1px solid var(--ae-line,rgba(255,255,255,.10));overflow:hidden;background:var(--ae-bg,#09090d);box-shadow:0 50px 110px -34px rgba(0,0,0,.9);will-change:transform,opacity;transition:background-color .7s ease,border-color .7s ease">
+            <div style="display:grid;grid-template-columns:1fr 280px;height:100%">
+              <div style="padding:20px 22px;overflow:hidden">
+                <div style="display:flex;align-items:baseline;gap:10px"><div data-i18n="ui.artists" style="font:600 22px/1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Artists</div><span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">287</span></div>
+                <div style="margin-top:16px;display:flex;flex-direction:column;gap:2px">
+                  <sc-for list="{{ artists }}" as="ar" hint-placeholder-count="8">
+                    <div style="display:grid;grid-template-columns:38px 1fr 90px 60px;gap:12px;align-items:center;padding:7px 9px;border-radius:10px;background:{{ ar.bg }}">
+                      <div style="width:38px;height:38px;border-radius:50%;background:linear-gradient(145deg,{{ ar.c1 }},{{ ar.c2 }})"></div>
+                      <div style="font-size:13px;font-weight:{{ ar.fw }}">{{ ar.t }}</div>
+                      <div style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">{{ ar.al }}</div>
+                      <div style="text-align:right;font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">{{ ar.tr }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+              <div style="background:var(--ae-surf,#0e0e14);border-left:1px solid var(--ae-line,rgba(255,255,255,.08));padding:18px;transition:background-color .7s ease">
+                <div style="width:88px;height:88px;border-radius:50%;background:linear-gradient(145deg,#2a3a5e,#5b8ac9)"></div>
+                <div style="margin-top:14px;font:600 19px/1.15 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.02em">Radiohead</div>
+                <div style="margin-top:5px;font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="ui.artistmeta">9 albums · 118 tracks · 8 h 12 m</div>
+                <div style="margin-top:18px;font:600 9px/1 'Geist Mono',monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="ui.albums">Albums</div>
+                <div style="margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:9px">
+                  <sc-for list="{{ small }}" as="s" hint-placeholder-count="6">
+                    <div style="width:100%;aspect-ratio:1;border-radius:7px;background:linear-gradient(145deg,{{ s.c1 }},{{ s.c2 }})"></div>
+                  </sc-for>
+                </div>
+                <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--ae-line,rgba(255,255,255,.08));font-size:11.5px;color:var(--ae-t2,rgba(255,255,255,.62));line-height:1.55" data-i18n="ui.artistnote">No biography, no similar-artist grid. Every number on this screen comes from your own files — nothing here is fetched to draw it.</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="studio" style="position:relative;z-index:1;padding:clamp(80px,12vw,120px) clamp(16px,4vw,34px) clamp(70px,11vw,110px)">
+  <div style="max-width:1180px;margin:0 auto">
+    <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s3.eyebrow">03 — Skin Studio</div>
+    <div data-stack data-cols="1fr minmax(280px,420px)" style="margin-top:18px;display:grid;grid-template-columns:1fr minmax(280px,420px);gap:clamp(18px,3vw,46px);align-items:end">
+      <h2 data-rv data-d="70" style="margin:0;max-width:20ch;font:600 clamp(34px,4.6vw,62px)/1.02 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="s3.h2">Pick a skin. Watch this whole page obey it.</h2>
+      <p data-rv data-d="140" style="margin:0;font:300 15.5px/1.65 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="s3.p">A skin is a validated data document, not a stylesheet. 47 tokens, 48 named parts, 11 effects with a declared cost. The app parses it, warns you about it, and compiles it to deterministic CSS.</p>
+    </div>
+
+    <div data-skins data-rv data-d="200" style="margin-top:40px;display:flex;flex-wrap:wrap;gap:12px">
+      <sc-for list="{{ skins }}" as="s" hint-placeholder-count="4">
+        <button data-skin="{{ s.id }}" style="display:flex;align-items:center;gap:12px;padding:11px 18px 11px 12px;border-radius:14px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf,#0e0e14);color:var(--ae-t1,rgba(255,255,255,.94));font:inherit;cursor:pointer;transition:transform .3s cubic-bezier(.2,.8,.2,1),border-color .3s ease,background-color .7s ease">
+          <span style="display:flex;gap:3px">
+            <span style="width:14px;height:26px;border-radius:4px;background:{{ s.sw1 }}"></span>
+            <span style="width:14px;height:26px;border-radius:4px;background:{{ s.sw2 }}"></span>
+            <span style="width:14px;height:26px;border-radius:4px;background:{{ s.sw3 }}"></span>
+          </span>
+          <span style="text-align:left">
+            <span style="display:block;font:600 13.5px/1.2 Geist,sans-serif">{{ s.name }}</span>
+            <span style="display:block;margin-top:2px;font:10.5px/1.2 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">{{ s.meta }}</span>
+          </span>
+        </button>
+      </sc-for>
+    </div>
+
+    <div data-stack data-cols="1fr 1fr" style="margin-top:34px;display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start">
+
+      <div data-rv style="border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf,#0e0e14);overflow:hidden;transition:background-color .7s ease,border-color .7s ease">
+        <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--ae-line,rgba(255,255,255,.08));transition:border-color .7s ease">
+          <svg width="15" height="15" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-code"></use></svg>
+          <span style="font:550 12.5px/1 Geist,sans-serif">skin.json</span>
+          <span data-skin-file style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">midnight.aeskin</span>
+          <div style="flex:1"></div>
+          <span style="padding:3px 9px;border-radius:99px;background:rgba(74,222,128,.14);color:#4ade80;font:600 9.5px/1.4 'Geist Mono',monospace;letter-spacing:.08em;text-transform:uppercase" data-i18n="studio.valid">valid</span>
+        </div>
+        <pre data-code style="margin:0;padding:18px 16px;font:11.5px/1.75 'Geist Mono',monospace;color:var(--ae-t2,rgba(255,255,255,.62));overflow:auto;max-height:326px;white-space:pre">loading…</pre>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:20px">
+        <div data-rv data-d="80" style="border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf,#0e0e14);padding:18px;transition:background-color .7s ease,border-color .7s ease">
+          <div style="display:flex;align-items:center;gap:9px">
+            <svg width="15" height="15" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-skin"></use></svg>
+            <span data-i18n="studio.tokenreg" style="font:550 12.5px/1 Geist,sans-serif">Token registry</span>
+            <div style="flex:1"></div>
+            <span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="studio.tokenmeta">47 tokens · 21 required</span>
+          </div>
+          <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:8px">
+            <sc-for list="{{ tokens }}" as="t" hint-placeholder-count="12">
+              <div style="padding:8px;border-radius:10px;background:var(--ae-surf2,#16161f);transition:background-color .7s ease">
+                <span data-swatch="{{ t.v }}" style="display:block;height:24px;border-radius:6px;border:1px solid var(--ae-line,rgba(255,255,255,.08))"></span>
+                <span style="display:block;margin-top:7px;font:9.5px/1.3 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46));white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ t.k }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+
+        <div data-rv data-d="140" style="border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf,#0e0e14);padding:18px;transition:background-color .7s ease,border-color .7s ease">
+          <div style="display:flex;align-items:center;gap:9px">
+            <svg width="15" height="15" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-check"></use></svg>
+            <span data-i18n="studio.contrast" style="font:550 12.5px/1 Geist,sans-serif">Contrast &amp; cost, checked live</span>
+          </div>
+          <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;align-items:center;gap:11px">
+              <span style="flex:none;width:112px;font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">text.2 on bg</span>
+              <span style="flex:1;height:6px;border-radius:99px;background:var(--ae-raise,#1e1e2a);overflow:hidden"><span data-contrast="t2" style="display:block;height:100%;width:70%;border-radius:99px;background:#4ade80;transition:width .6s ease,background-color .6s ease"></span></span>
+              <span data-contrast-v="t2" style="flex:none;width:52px;text-align:right;font:10.5px 'Geist Mono',monospace;color:var(--ae-t2,rgba(255,255,255,.62))">7.1:1</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:11px">
+              <span style="flex:none;width:112px;font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">text.3 on bg</span>
+              <span style="flex:1;height:6px;border-radius:99px;background:var(--ae-raise,#1e1e2a);overflow:hidden"><span data-contrast="t3" style="display:block;height:100%;width:52%;border-radius:99px;background:#facc15;transition:width .6s ease,background-color .6s ease"></span></span>
+              <span data-contrast-v="t3" style="flex:none;width:52px;text-align:right;font:10.5px 'Geist Mono',monospace;color:var(--ae-t2,rgba(255,255,255,.62))">4.6:1</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:11px">
+              <span style="flex:none;width:112px;font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">accent on ink</span>
+              <span style="flex:1;height:6px;border-radius:99px;background:var(--ae-raise,#1e1e2a);overflow:hidden"><span data-contrast="acc" style="display:block;height:100%;width:80%;border-radius:99px;background:#4ade80;transition:width .6s ease,background-color .6s ease"></span></span>
+              <span data-contrast-v="acc" style="flex:none;width:52px;text-align:right;font:10.5px 'Geist Mono',monospace;color:var(--ae-t2,rgba(255,255,255,.62))">8.4:1</span>
+            </div>
+          </div>
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--ae-line,rgba(255,255,255,.08));display:flex;align-items:center;gap:11px;transition:border-color .7s ease">
+            <span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="studio.budget">Effect budget</span>
+            <span style="flex:1;display:flex;gap:3px">
+              <sc-for list="{{ budget }}" as="b" hint-placeholder-count="10">
+                <span data-cost="{{ b.i }}" style="flex:1;height:8px;border-radius:3px;background:var(--ae-raise,#1e1e2a);transition:background-color .4s ease"></span>
+              </sc-for>
+            </span>
+            <span data-cost-v style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t2,rgba(255,255,255,.62))">4 / 10</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:20px;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px">
+      <sc-for list="{{ studioPoints }}" as="p" hint-placeholder-count="3">
+        <div data-rv data-tilt style="padding:22px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .35s ease,transform .35s cubic-bezier(.2,.8,.2,1);will-change:transform">
+          <div style="font:600 10px/1 'Geist Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)">{{ p.n }}</div>
+          <div style="margin-top:12px;font:600 15.5px/1.3 Geist,sans-serif;letter-spacing:-.01em">{{ p.t }}</div>
+          <p style="margin:8px 0 0;font:300 13.5px/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">{{ p.b }}</p>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+</section>
+
+<section id="format" style="position:relative;z-index:1;padding:0 clamp(16px,4vw,34px) clamp(80px,12vw,120px)">
+  <div style="max-width:1180px;margin:0 auto;padding:clamp(26px,5vw,52px);border-radius:22px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .7s ease">
+    <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s4.eyebrow">04 — The contract</div>
+    <h2 data-rv data-d="70" style="margin:16px 0 0;max-width:24ch;font:600 clamp(30px,3.6vw,46px)/1.06 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em" data-i18n="s4.h2">A skin cannot break the app. That's a property of the format, not a promise.</h2>
+    <div style="margin-top:40px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:26px">
+      <sc-for list="{{ stats }}" as="s" hint-placeholder-count="4">
+        <div data-rv>
+          <div data-count="{{ s.n }}" style="font:600 clamp(40px,4.6vw,58px)/1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.04em;color:var(--ae-acc,#8b7cf6);transition:color .7s ease">0</div>
+          <div style="margin-top:8px;font:550 13px/1.35 Geist,sans-serif">{{ s.t }}</div>
+          <div style="margin-top:5px;font:300 12.5px/1.55 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">{{ s.b }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+</section>
+
+<section id="roadmap" style="position:relative;z-index:1;padding:0 clamp(16px,4vw,34px) clamp(84px,13vw,130px)">
+  <div style="max-width:1180px;margin:0 auto">
+    <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s5.eyebrow">05 — Roadmap</div>
+    <div data-stack data-cols="1fr minmax(280px,400px)" style="margin-top:18px;display:grid;grid-template-columns:1fr minmax(280px,400px);gap:clamp(18px,3vw,46px);align-items:end">
+      <h2 data-rv data-d="70" style="margin:0;max-width:20ch;font:600 clamp(34px,4.4vw,58px)/1.03 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="s5.h2">What isn't there yet, and why.</h2>
+      <p data-rv data-d="130" style="margin:0;font:300 15px/1.65 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="s5.p">Nine of the 48 registered parts don't render today. They stay in the registry so that skins written now still fit the app later.</p>
+    </div>
+    <div data-rv data-d="60" style="margin-top:44px;display:grid;grid-template-columns:repeat(auto-fit,minmax(238px,1fr));gap:14px">
+      <sc-for list="{{ platforms }}" as="p" hint-placeholder-count="4">
+        <div style="padding:20px 20px 18px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .7s ease">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px">
+            <span style="font:550 14.5px/1 Geist,sans-serif;letter-spacing:-.01em">{{ p.n }}</span>
+            <span style="font:500 13px/1 'Geist Mono',monospace;color:{{ p.c }}"><span data-count="{{ p.pct }}">0</span>%</span>
+          </div>
+          <div style="margin-top:14px;height:5px;border-radius:99px;overflow:hidden;background:var(--ae-line,rgba(255,255,255,.10))">
+            <div data-fill data-pct="{{ p.pct }}" style="height:100%;width:0;border-radius:99px;background:{{ p.c }}"></div>
+          </div>
+          <div style="margin-top:11px;display:flex;justify-content:space-between;gap:10px;font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">
+            <span>{{ p.s }}</span><span>{{ p.d }}</span>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div data-rv data-d="80" style="margin-top:clamp(44px,7vw,72px);display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+      <h3 data-i18n="win.h3" style="margin:0;font:600 clamp(21px,2.4vw,28px)/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Windows — implementation order</h3>
+      <span data-i18n="win.meta" style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">14 items · 2 done · 2 in progress · 21%</span>
+    </div>
+    <div style="margin-top:22px;display:flex;flex-direction:column">
+      <sc-for list="{{ winRoadmap }}" as="r" hint-placeholder-count="13">
+        <div data-rv data-road style="display:flex;flex-wrap:wrap;gap:6px clamp(10px,2vw,22px);align-items:baseline;padding:15px 6px;border-top:1px solid var(--ae-line,rgba(255,255,255,.08));transition:background-color .3s ease,border-color .7s ease,padding-left .3s ease">
+          <span style="flex:none;width:26px;font:500 10.5px/1.4 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">{{ r.n }}</span>
+          <span style="flex:none;min-width:96px;font:500 10.5px/1.4 'Geist Mono',monospace;letter-spacing:.1em;text-transform:uppercase;color:{{ r.sc }}">{{ r.s }}</span>
+          <div style="flex:1 1 320px;min-width:0;font:400 clamp(13.5px,3.4vw,14.5px)/1.5 Geist,sans-serif;letter-spacing:-.005em;color:var(--ae-t1,rgba(255,255,255,.94));text-wrap:pretty">{{ r.t }}</div>
+        </div>
+      </sc-for>
+      <div style="border-top:1px solid var(--ae-line,rgba(255,255,255,.08))"></div>
+    </div>
+  </div>
+</section>
+
+<section id="access" style="position:relative;z-index:1;padding:0 clamp(16px,4vw,34px) clamp(80px,12vw,120px)">
+  <div data-rv style="position:relative;max-width:1180px;margin:0 auto;padding:clamp(44px,8vw,70px) clamp(20px,5vw,52px);border-radius:24px;overflow:hidden;border:1px solid var(--ae-line,rgba(255,255,255,.12));background:var(--ae-surf,#0e0e14);text-align:center;transition:background-color .7s ease,border-color .7s ease">
+    <div style="position:absolute;inset:-40% -10% auto;height:120%;background:radial-gradient(60% 60% at 50% 0%,var(--ae-glowA,rgba(139,124,246,.30)),transparent 70%);animation:ae-drift 18s ease-in-out infinite;pointer-events:none"></div>
+    <div style="position:relative">
+      <svg width="30" height="30" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mark"></use></svg>
+      <h2 style="margin:22px auto 0;max-width:17ch;font:600 clamp(32px,4.2vw,54px)/1.04 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="access.h2">Not released yet. Watch the repository.</h2>
+      <p style="margin:16px auto 0;max-width:52ch;font:300 15.5px/1.62 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="access.p">Aether is not signed and ships no builds yet. The source is there, it compiles on Windows, and the skin format spec is in the tree while it's still rough enough to argue with. Everything happens at github.com/FedericoBaratti/Aether.</p>
+      <!-- Qui c'era un modulo che chiedeva un indirizzo email, prometteva «una
+           mail quando si apre la tua ondata» e poi **non lo mandava da nessuna
+           parte**: nessun backend, nessuna informativa, e il tasto diventava
+           verde lo stesso. Raccogliere un indirizzo e buttarlo via è peggio
+           che non chiederlo, quindi non lo si chiede più. Chi vuole sapere
+           quando esce guarda il repository, che è un posto vero. -->
+      <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" data-magnet style="margin:32px auto 0;display:inline-flex;align-items:center;gap:9px;height:50px;padding:0 26px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
+        <svg width="16" height="16"><use href="#a-star"></use></svg><span data-i18n="access.btn">Watch the repository</span>
+      </a>
+      <div data-i18n="access.note" style="margin:14px 0 0;font:11.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">No mailing list, no signup form. Nothing to collect.</div>
+      <div style="margin:30px 0 0;display:flex;justify-content:center;gap:12px;flex-wrap:wrap">
+        <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" data-magnet style="display:flex;align-items:center;gap:9px;height:42px;padding:0 20px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));color:var(--ae-t1,rgba(255,255,255,.94));font:550 13.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),border-color .3s ease">
+          <svg width="15" height="15" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-star"></use></svg><span data-i18n="nav.star">Star on GitHub</span><span style="font:11px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">FedericoBaratti/Aether</span>
+        </a>
+        <a href="#format" style="display:flex;align-items:center;gap:8px;height:42px;padding:0 20px;border-radius:99px;color:var(--ae-t2,rgba(255,255,255,.62));font:500 13.5px/1 Geist,sans-serif"><span data-i18n="access.spec">Read the skin spec</span><svg width="14" height="14"><use href="#a-chev-r"></use></svg></a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer style="position:relative;z-index:1;padding:30px clamp(16px,4vw,34px) 44px;padding-bottom:calc(44px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--ae-line,rgba(255,255,255,.08));transition:border-color .7s ease">
+  <div style="max-width:1180px;margin:0 auto;display:flex;flex-wrap:wrap;gap:14px 18px;align-items:center">
+    <div style="display:flex;align-items:center;gap:9px"><svg width="17" height="17" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mark"></use></svg><span style="font:600 13px/1 Geist,sans-serif">Aether</span></div>
+    <span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="footer.tag">Local-first music player · In development</span>
+    <div style="flex:1"></div>
+    <div style="display:flex;flex-wrap:wrap;gap:12px 20px;font:500 12.5px/1 Geist,sans-serif">
+      <a href="#tour" data-i18n="nav.app" style="color:var(--ae-t2,rgba(255,255,255,.62))">The app</a>
+      <a href="#studio" data-i18n="nav.studio" style="color:var(--ae-t2,rgba(255,255,255,.62))">Skin Studio</a>
+      <a href="#roadmap" data-i18n="nav.roadmap" style="color:var(--ae-t2,rgba(255,255,255,.62))">Roadmap</a>
+      <a href="#access" data-i18n="nav.badge" style="color:var(--ae-t2,rgba(255,255,255,.62))">In development</a>
+      <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" style="color:var(--ae-t2,rgba(255,255,255,.62))">GitHub</a>
+      <a href="https://github.com/FedericoBaratti/Aether/releases" target="_blank" rel="noopener" style="color:var(--ae-t2,rgba(255,255,255,.62))">Releases</a>
+    </div>
+  </div>
+  <div data-rv data-d="80" style="width:100%;margin-top:24px;display:flex;align-items:center;justify-content:center;gap:9px;flex-wrap:wrap;text-align:center">
+    <span style="width:5px;height:5px;border-radius:50%;background:var(--ae-acc,#8b7cf6);opacity:.75"></span>
+    <span style="font:500 10.5px/1.6 'Geist Mono',monospace;letter-spacing:.04em;color:var(--ae-t3,rgba(255,255,255,.46))"><span data-i18n="footer.updated">Last updated</span>&nbsp;·&nbsp;<span data-updated>—</span></span>
+  </div>
+</footer>
+
+<div data-progress style="position:fixed;top:0;left:0;height:2px;width:0;background:var(--ae-acc,#8b7cf6);z-index:60;transition:background-color .7s ease"></div>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;skin&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;midnight&quot;,&quot;rust&quot;,&quot;chlorophyll&quot;,&quot;paper&quot;],&quot;default&quot;:&quot;midnight&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;ambient&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;min&quot;:0,&quot;max&quot;:100,&quot;step&quot;:5,&quot;default&quot;:70,&quot;unit&quot;:&quot;%&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;motion&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Motion&quot;}}">
+const SKINS = {
+  midnight: {
+    name: 'Midnight', meta: 'default · 4 effects', file: 'midnight.aeskin', cost: 4,
+    sw: ['#09090d', '#1e1e2a', '#8b7cf6'],
+    v: {
+      '--ae-bg': '#09090d', '--ae-surf': '#0e0e14', '--ae-surf2': '#16161f', '--ae-raise': '#1e1e2a',
+      '--ae-line': 'rgba(255,255,255,.10)', '--ae-t1': 'rgba(255,255,255,.94)', '--ae-t2': 'rgba(255,255,255,.62)',
+      '--ae-t3': 'rgba(255,255,255,.46)', '--ae-acc': '#8b7cf6', '--ae-acc2': '#4fd6e0', '--ae-ink': '#09090d',
+      '--ae-accSoft': 'rgba(139,124,246,.16)', '--ae-glowA': 'rgba(139,124,246,.30)', '--ae-glowB': 'rgba(79,214,224,.20)'
+    },
+    ratios: { t2: 7.1, t3: 4.6, acc: 8.4 }
+  },
+  rust: {
+    name: 'Rust', meta: 'warm · 6 effects', file: 'rust.aeskin', cost: 6,
+    sw: ['#0d0a08', '#241a13', '#d97b3a'],
+    v: {
+      '--ae-bg': '#0d0a08', '--ae-surf': '#141010', '--ae-surf2': '#1c1614', '--ae-raise': '#241a13',
+      '--ae-line': 'rgba(255,232,214,.11)', '--ae-t1': 'rgba(255,244,236,.94)', '--ae-t2': 'rgba(255,236,222,.64)',
+      '--ae-t3': 'rgba(255,232,214,.48)', '--ae-acc': '#d97b3a', '--ae-acc2': '#f2c14e', '--ae-ink': '#180f08',
+      '--ae-accSoft': 'rgba(217,123,58,.18)', '--ae-glowA': 'rgba(217,123,58,.28)', '--ae-glowB': 'rgba(242,193,78,.16)'
+    },
+    ratios: { t2: 7.4, t3: 4.9, acc: 6.8 }
+  },
+  chlorophyll: {
+    name: 'Chlorophyll', meta: 'cold · 3 effects', file: 'chlorophyll.aeskin', cost: 3,
+    sw: ['#05100c', '#13241c', '#5fe3a1'],
+    v: {
+      '--ae-bg': '#05100c', '--ae-surf': '#081a13', '--ae-surf2': '#0d2119', '--ae-raise': '#13241c',
+      '--ae-line': 'rgba(190,255,224,.12)', '--ae-t1': 'rgba(235,255,244,.95)', '--ae-t2': 'rgba(214,255,234,.64)',
+      '--ae-t3': 'rgba(200,255,228,.48)', '--ae-acc': '#5fe3a1', '--ae-acc2': '#a6f0c6', '--ae-ink': '#04140d',
+      '--ae-accSoft': 'rgba(95,227,161,.16)', '--ae-glowA': 'rgba(95,227,161,.24)', '--ae-glowB': 'rgba(64,180,255,.14)'
+    },
+    ratios: { t2: 8.2, t3: 5.4, acc: 12.1 }
+  },
+  paper: {
+    name: 'Paper', meta: 'light · 2 effects', file: 'paper.aeskin', cost: 2,
+    sw: ['#f4f2ed', '#e2ded5', '#3b4cca'],
+    v: {
+      '--ae-bg': '#f4f2ed', '--ae-surf': '#ffffff', '--ae-surf2': '#edeae3', '--ae-raise': '#e2ded5',
+      '--ae-line': 'rgba(16,16,22,.12)', '--ae-t1': 'rgba(16,16,22,.94)', '--ae-t2': 'rgba(16,16,22,.64)',
+      '--ae-t3': 'rgba(16,16,22,.52)', '--ae-acc': '#3b4cca', '--ae-acc2': '#0f9d8f', '--ae-ink': '#ffffff',
+      '--ae-accSoft': 'rgba(59,76,202,.13)', '--ae-glowA': 'rgba(59,76,202,.16)', '--ae-glowB': 'rgba(15,157,143,.12)'
+    },
+    ratios: { t2: 6.9, t3: 5.1, acc: 8.9 }
+  }
+};
+
+const TOKENS = ['color.bg', 'color.surface', 'color.raised', 'color.hairline', 'color.text.1', 'color.text.2', 'color.text.3', 'color.accent', 'color.accent.soft', 'color.accent.alt', 'color.ink', 'color.glow'];
+const TOKEN_VARS = ['--ae-bg', '--ae-surf', '--ae-raise', '--ae-line', '--ae-t1', '--ae-t2', '--ae-t3', '--ae-acc', '--ae-accSoft', '--ae-acc2', '--ae-ink', '--ae-glowA'];
+
+
+const I18N = {
+  en: {
+    'nav.badge': 'In development', 'nav.app': 'The app', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Roadmap', 'nav.star': 'Star on GitHub',
+    'hero.badge': 'A local music player with a skin engine',
+    'hero.l1': 'Your library.', 'hero.l2': 'Your machine.', 'hero.l3': 'Your look.',
+    'hero.lede': 'Aether plays the files you already own — no telemetry, no account required. What you are missing, it fetches from the free catalogues — the Internet Archive today, Jamendo and Audius next — and every track it brings in carries the licence it came under. Every surface it draws is a token you can redefine, in a skin file the app validates before it renders a single pixel.',
+    'hero.cta1': 'See where it stands', 'hero.m1': 'Windows · macOS and Linux planned', 'hero.m3': 'Licence-aware by design',
+    'ui.albums': 'Albums', 'ui.albumsLow': 'albums', 'ui.tracks': 'Tracks', 'ui.artists': 'Artists', 'ui.fav': 'Favourites', 'ui.settings': 'Settings',
+    'ui.playlists': 'Playlists', 'ui.pl1': 'Late shift', 'ui.pl2': 'Vinyl rips 2019', 'ui.pl3': 'Kitchen, loud', 'ui.pl4': 'Ambient, long',
+    'ui.scan': 'Scan complete', 'ui.scanmeta': '5 108 tracks · 41 min ago', 'ui.library': 'Library', 'ui.libmeta': '5 108 · 14 d 6 h',
+    'ui.colTitle': 'Title', 'ui.colAlbum': 'Album', 'ui.colTime': 'Time', 'ui.upnext': 'Up next', 'ui.search': 'Search…',
+    'ui.nowplaying': 'Now Playing', 'ui.sortedadded': '412 · sorted by added', 'ui.gapless': 'Gapless',
+    'ui.npx': 'Synced lyrics, and the room behind them', 'ui.npxb': 'The words come from LRCLIB — no key, no account. Behind them is the spectrum, which is the same scene running behind this page.',
+    'ui.artistmeta': '9 albums · 118 tracks · 8 h 12 m',
+    'ui.artistnote': 'No biography, no similar-artist grid. Every number on this screen comes from your own files — nothing here is fetched to draw it.',
+    's1.eyebrow': '01 — The idea', 's1.h2': 'A player that answers to the person who owns the files.',
+    's2.eyebrow': '02 — The app',
+    's3.eyebrow': '03 — Skin Studio', 's3.h2': 'Pick a skin. Watch this whole page obey it.',
+    's3.p': 'A skin is a validated data document, not a stylesheet. 47 tokens, 52 named parts, 11 effects with a declared cost. The app parses it, warns you about it, and compiles it to deterministic CSS.',
+    'studio.valid': 'valid', 'studio.tokenreg': 'Token registry', 'studio.tokenmeta': '47 tokens · 21 required', 'studio.contrast': 'Contrast & cost, checked live', 'studio.budget': 'Effect budget',
+    's4.eyebrow': '04 — The contract', 's4.h2': "A skin cannot break the app. That's a property of the format, not a promise.",
+    's5.eyebrow': '05 — Roadmap', 's5.h2': "What isn't there yet, and why.",
+    's5.p': "Five of the 52 registered parts don't render today, and one of them on purpose. They stay in the registry so that skins written now still fit the app later.",
+    'win.h3': 'Windows — implementation order', 'win.meta': '13 items · 10 done · 1 in progress · 77%',
+    'access.h2': 'Not released yet. Watch the repository.',
+    'access.p': "Aether is not signed and ships no builds yet. The source is there, it compiles on Windows, and the skin format spec is in the tree while it's still rough enough to argue with. Everything happens at github.com/FedericoBaratti/Aether.",
+    'access.btn': 'Watch the repository', 'access.note': 'No mailing list, no signup form. Nothing to collect.',
+    'access.spec': 'Read the skin spec',
+    'footer.tag': 'Local-first music player · In development', 'footer.updated': 'Last updated',
+    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'OPUS', 'Gapless playback', 'Crossfade', 'ReplayGain', '10-band EQ', 'Synced lyrics', 'Scrobbling', 'Smart playlists', 'Drive backup', 'Embedded art', 'Rust core', '5 000 tracks, no lag', 'Local-first', 'No telemetry'],
+    pillars: [
+      { t: 'Nothing leaves the machine', b: 'No account required, no analytics. Your library stays on your disk. When you ask for a missing track, Aether fetches it from a free catalogue and brings back the licence — nothing else.' },
+      { t: 'Dense where it counts', b: '40px rows, air above the list and not between its lines. A library of five thousand tracks scrolls at frame rate, because it is meant to be scrolled.' },
+      { t: 'The markup names its parts', b: 'Every surface the app paints carries a part name. That is what a skin binds to — not a class you guessed from devtools.' },
+      { t: 'Two doors per command', b: 'Right-click is never the only way in. Beside it there is always a visible control or an announced shortcut.' }
+    ],
+    chapters: [
+      { t: 'Library', b: 'Navigate on the left, look in the middle, listen on the right. The three columns never trade places.', pts: [{ t: '412 albums, 5 108 tracks, sorted locally' }, { t: 'Right column is the home of Now Playing' }, { t: 'Search from anywhere with /' }] },
+      { t: 'Now Playing', b: 'Not a second screen — the same part, grown. Cover art is the only coloured thing in the app, and it tints the room.', pts: [{ t: 'Opens from the art, the ⤢ button, or F' }, { t: 'Closes with Esc, the chevron, or the same door' }, { t: 'Behind it, half a minute of spectrum, receding' }] },
+      { t: 'Artists', b: 'Every number on this screen came off your own disk. Nothing is fetched, so nothing is wrong.', pts: [{ t: '287 artists, counted from tags' }, { t: 'No biography, no similar-artist grid' }, { t: 'Albums ordered by year, not by popularity' }] }
+    ],
+    skinMeta: { midnight: 'default · 4 effects', rust: 'warm · 6 effects', chlorophyll: 'cold · 3 effects', paper: 'light · 2 effects' },
+    ruleWord: 'Rule',
+    studioPoints: [
+      { t: 'You cannot write what the format refuses', b: 'Every control is the shape of a type in the crate. No free-text field where the document wants an enum — that is why a skin cannot break the app.' },
+      { t: 'The preview is the app, not a swatch', b: 'It is the real window with the skin applied. Screens you cannot reach by listening — modal, empty, loading — come from a picker.' },
+      { t: 'Cost is visible while you spend it', b: 'Each effect carries its weight next to its name and the surface counts to ten. You find out here, not on a phone dropping frames.' }
+    ],
+    stats: [
+      { t: 'Tokens', b: 'Each with a description and a required flag, read straight from the registry.' },
+      { t: 'Named parts', b: 'Every part declares its layers. Misspell one and the parser suggests the nearest.' },
+      { t: 'Effects', b: 'Blur, glow, grain, noise — each with a declared render cost out of ten.' },
+      { t: 'Warning kinds', b: 'Contrast, cost budget, unused pattern, unused prefab, unkept promise, missing required token — all checked before compile.' }
+    ],
+    platStatus: { prog: 'In progress', none: 'Not started' },
+    road: { done: 'Done', prog: 'In progress', todo: 'To do' },
+    roadItems: [
+      'implement Google Drive backup for metadata and skins, so a user can recover everything after a reset.',
+      'implement Spotify account import from the GDPR archive.',
+      'finish Skin Studio.',
+      'implement automatic metadata management and enrichment.',
+      'make layout and graphics fully modular and editable in Skin Studio.',
+      'implement a 10-band octave equalizer with presets.',
+      'implement a graphic enhancement to playback, inspired by SoundCloud.',
+      'implement an automatic lyrics fetching system that builds a synced lyrics database, keyless.',
+      'implement in Skin Studio a system for creating animations anywhere in the app.',
+      'implement smart playlists with rule-based filtering.',
+      'add OpenRouter key in settings for free AI models to generate recommended playlists.',
+      'implement in Skin Studio a tool chat with an LLM for assisted skin creation.',
+      'fix graphic bugs and inconsistencies for a more premium look.'
+    ]
+  },
+  it: {
+    'nav.badge': 'In sviluppo', 'nav.app': "L'app", 'nav.studio': 'Skin Studio', 'nav.format': 'Formato', 'nav.roadmap': 'Roadmap', 'nav.star': 'Star su GitHub',
+    'hero.badge': 'Un lettore musicale locale con un motore di skin',
+    'hero.l1': 'La tua libreria.', 'hero.l2': 'Il tuo computer.', 'hero.l3': 'Il tuo aspetto.',
+    'hero.lede': "Aether riproduce i file che possiedi già — nessuna telemetria, nessun account obbligatorio. Quel che ti manca lo prende dai cataloghi liberi — oggi l'Internet Archive, poi Jamendo e Audius — e ogni brano che porta dentro si tiene addosso la licenza sotto cui è arrivato. Ogni superficie che disegna è un token che puoi ridefinire, in un file skin che l'app valida prima di disegnare un solo pixel.",
+    'hero.cta1': "Guarda a che punto è", 'hero.m1': 'Windows · macOS e Linux previsti', 'hero.m3': 'Le licenze, per progetto',
+    'ui.albums': 'Album', 'ui.albumsLow': 'album', 'ui.tracks': 'Brani', 'ui.artists': 'Artisti', 'ui.fav': 'Preferiti', 'ui.settings': 'Impostazioni',
+    'ui.playlists': 'Playlist', 'ui.pl1': 'Turno di notte', 'ui.pl2': 'Rip da vinile 2019', 'ui.pl3': 'Cucina, alto volume', 'ui.pl4': 'Ambient, lunghi',
+    'ui.scan': 'Scansione completata', 'ui.scanmeta': '5 108 brani · 41 min fa', 'ui.library': 'Libreria', 'ui.libmeta': '5 108 · 14 g 6 h',
+    'ui.colTitle': 'Titolo', 'ui.colAlbum': 'Album', 'ui.colTime': 'Durata', 'ui.upnext': 'In coda', 'ui.search': 'Cerca…',
+    'ui.nowplaying': 'In riproduzione', 'ui.sortedadded': '412 · ordinati per aggiunta', 'ui.gapless': 'Senza pause',
+    'ui.npx': 'I testi sincronizzati, e la stanza dietro', 'ui.npxb': 'Le parole arrivano da LRCLIB — nessuna chiave, nessun account. Dietro c\'è lo spettro, che è la stessa scena che gira dietro a questa pagina.',
+    'ui.artistmeta': '9 album · 118 brani · 8 h 12 m',
+    'ui.artistnote': 'Nessuna biografia, nessuna griglia di artisti simili. Ogni numero di questa schermata viene dai tuoi file — per disegnarla non si scarica niente.',
+    's1.eyebrow': "01 — L'idea", 's1.h2': 'Un lettore che risponde a chi possiede i file.',
+    's2.eyebrow': "02 — L'app",
+    's3.eyebrow': '03 — Skin Studio', 's3.h2': 'Scegli una skin. Guarda tutta questa pagina obbedirle.',
+    's3.p': "Una skin è un documento dati validato, non un foglio di stile. 47 token, 52 parti con nome, 11 effetti con un costo dichiarato. L'app la analizza, ti avverte e la compila in CSS deterministico.",
+    'studio.valid': 'valida', 'studio.tokenreg': 'Registro dei token', 'studio.tokenmeta': '47 token · 21 obbligatori', 'studio.contrast': 'Contrasto e costo, verificati dal vivo', 'studio.budget': 'Budget effetti',
+    's4.eyebrow': '04 — Il contratto', 's4.h2': "Una skin non può rompere l'app. È una proprietà del formato, non una promessa.",
+    's5.eyebrow': '05 — Roadmap', 's5.h2': "Cosa non c'è ancora, e perché.",
+    's5.p': "Cinque delle 52 parti registrate oggi non vengono disegnate, e una apposta. Restano nel registro perché le skin scritte adesso continuino a calzare l'app domani.",
+    'win.h3': 'Windows — ordine di implementazione', 'win.meta': '13 voci · 10 chiuse · 1 in corso · 77%',
+    'access.h2': 'Non è ancora uscito. Guarda il repository.',
+    'access.p': "Aether non è firmato e non distribuisce ancora nessuna build. Il sorgente c'è, compila su Windows, e le specifiche del formato skin stanno nell'albero finché sono ancora abbastanza grezze da poterci discutere. Tutto succede su github.com/FedericoBaratti/Aether.",
+    'access.btn': 'Guarda il repository', 'access.note': "Nessuna lista, nessun modulo d'iscrizione. Niente da raccogliere.",
+    'access.spec': 'Leggi le specifiche skin',
+    'footer.tag': 'Lettore musicale local-first · In sviluppo', 'footer.updated': 'Ultimo aggiornamento',
+    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'OPUS', 'Riproduzione gapless', 'Dissolvenza incrociata', 'ReplayGain', 'Equalizzatore a 10 bande', 'Testi sincronizzati', 'Scrobbling', 'Playlist intelligenti', 'Backup su Drive', 'Copertine incorporate', 'Core in Rust', '5 000 brani, zero lag', 'Locale come prima scelta', 'Nessuna telemetria'],
+    pillars: [
+      { t: 'Niente lascia il computer', b: "Nessun account obbligatorio, nessuna analitica. La tua libreria resta sul tuo disco. Quando chiedi un brano mancante, Aether lo prende da un catalogo libero e porta con sé la licenza — nient'altro." },
+      { t: 'Densa dove serve', b: 'Righe da 40px, aria sopra la lista e non tra le sue linee. Una libreria da cinquemila brani scorre a frame rate, perché è fatta per essere scorsa.' },
+      { t: 'Il markup dà un nome alle sue parti', b: "Ogni superficie che l'app disegna porta il nome di una parte. È a quello che si aggancia una skin — non a una classe indovinata nei devtools." },
+      { t: 'Due porte per ogni comando', b: "Il tasto destro non è mai l'unica via d'accesso. Accanto c'è sempre un controllo visibile o una scorciatoia annunciata." }
+    ],
+    chapters: [
+      { t: 'Libreria', b: 'Naviga a sinistra, guarda al centro, ascolta a destra. Le tre colonne non si scambiano mai di posto.', pts: [{ t: '412 album, 5 108 brani, ordinati in locale' }, { t: 'La colonna destra è la casa di In riproduzione' }, { t: 'Cerca da ovunque con /' }] },
+      { t: 'In riproduzione', b: "Non una seconda schermata — la stessa parte, cresciuta. La copertina è l'unica cosa colorata nell'app, e tinge la stanza.", pts: [{ t: 'Si apre dalla copertina, dal pulsante ⤢ o con F' }, { t: 'Si chiude con Esc, con il chevron o dalla stessa porta' }, { t: 'Dietro, mezzo minuto di spettro che arretra' }] },
+      { t: 'Artisti', b: 'Ogni numero in questa schermata viene dal tuo disco. Niente viene scaricato, quindi niente è sbagliato.', pts: [{ t: '287 artisti, contati dai tag' }, { t: 'Nessuna biografia, nessuna griglia di artisti simili' }, { t: 'Album ordinati per anno, non per popolarità' }] }
+    ],
+    skinMeta: { midnight: 'predefinita · 4 effetti', rust: 'calda · 6 effetti', chlorophyll: 'fredda · 3 effetti', paper: 'chiara · 2 effetti' },
+    ruleWord: 'Regola',
+    studioPoints: [
+      { t: 'Non puoi scrivere ciò che il formato rifiuta', b: "Ogni controllo ha la forma di un tipo nel crate. Nessun campo di testo libero dove il documento vuole un enum — per questo una skin non può rompere l'app." },
+      { t: "L'anteprima è l'app, non un campione", b: 'È la finestra vera con la skin applicata. Le schermate che non puoi raggiungere ascoltando — modale, vuota, in caricamento — arrivano da un selettore.' },
+      { t: 'Il costo è visibile mentre lo spendi', b: 'Ogni effetto porta il suo peso accanto al nome e la superficie conta fino a dieci. Lo scopri qui, non su un telefono che perde frame.' }
+    ],
+    stats: [
+      { t: 'Token', b: 'Ognuno con una descrizione e un flag di obbligatorietà, letti direttamente dal registro.' },
+      { t: 'Parti con nome', b: 'Ogni parte dichiara i suoi livelli. Sbagliane il nome e il parser suggerisce il più vicino.' },
+      { t: 'Effetti', b: 'Sfocatura, bagliore, grana, rumore — ognuno con un costo di rendering dichiarato su dieci.' },
+      { t: 'Tipi di avviso', b: 'Contrasto, budget di costo, motivo inutilizzato, prefab inutilizzato, promessa non mantenuta, token obbligatorio mancante — controllati prima della compilazione.' }
+    ],
+    platStatus: { prog: 'In corso', none: 'Non iniziato' },
+    road: { done: 'Fatto', prog: 'In corso', todo: 'Da fare' },
+    roadItems: [
+      'implementare il backup su Google Drive per metadati e skin, così un utente può ripristinare tutto dopo un reset.',
+      "implementare l'importazione dell'account Spotify dall'archivio GDPR.",
+      'finire Skin Studio.',
+      'implementare la gestione e l\'arricchimento automatico dei metadati.',
+      'rendere layout e grafica completamente modulare e modificabili in Skin Studio.',
+      'implementare un equalizzatore a 10 bande con preset.',
+      'implementare un miglioramento grafico alla riproduzione, ispirato a SoundCloud.',
+      'implementare un sistema automatico di recupero testi che costruisce un database di testi sincronizzati, sempre keyless.',
+      "implementare in Skin Studio un sistema per creare animazioni da inserire in qualsiasi punto dell'app",
+      'implementare playlist intelligenti con filtraggio basato su regole.',
+      'aggiungere la chiave OpenRouter in impostazioni per usare modelli IA gratuiti per generare playlist consigliate.',
+      'implementare in Skin Studio una chat con strumenti e un LLM per la creazione assistita delle skin.',
+      'fixare bug grafici e incoerenze per un look più premium.'
+    ]
+  },
+  fr: {
+    'nav.badge': 'En développement', 'nav.app': "L'app", 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Feuille de route', 'nav.star': 'Star sur GitHub',
+    'hero.badge': 'Un lecteur de musique local avec un moteur de skins',
+    'hero.l1': 'Votre bibliothèque.', 'hero.l2': 'Votre machine.', 'hero.l3': 'Votre style.',
+    'hero.lede': "Aether lit les fichiers que vous possédez déjà — pas de télémétrie, pas de compte obligatoire. Ce qui vous manque, il le récupère dans les catalogues libres — Internet Archive aujourd'hui, Jamendo et Audius ensuite — et chaque morceau qu'il ramène garde la licence sous laquelle il est arrivé. Chaque surface qu'il dessine est un token que vous pouvez redéfinir, dans un fichier de skin que l'app valide avant d'afficher le moindre pixel.",
+    'hero.cta1': "Voir où ça en est", 'hero.m1': 'Windows · macOS et Linux prévus', 'hero.m3': 'Les licences, par conception',
+    'ui.albums': 'Albums', 'ui.albumsLow': 'albums', 'ui.tracks': 'Titres', 'ui.artists': 'Artistes', 'ui.fav': 'Favoris', 'ui.settings': 'Réglages',
+    'ui.playlists': 'Playlists', 'ui.pl1': 'Poste de nuit', 'ui.pl2': 'Rips vinyle 2019', 'ui.pl3': 'Cuisine, fort', 'ui.pl4': 'Ambient, long',
+    'ui.scan': 'Analyse terminée', 'ui.scanmeta': '5 108 titres · il y a 41 min', 'ui.library': 'Bibliothèque', 'ui.libmeta': '5 108 · 14 j 6 h',
+    'ui.colTitle': 'Titre', 'ui.colAlbum': 'Album', 'ui.colTime': 'Durée', 'ui.upnext': 'À suivre', 'ui.search': 'Rechercher…',
+    'ui.nowplaying': 'Lecture en cours', 'ui.sortedadded': '412 · triés par ajout', 'ui.gapless': 'Sans blanc',
+    'ui.npx': 'Les paroles synchronisées, et la pièce derrière', 'ui.npxb': "Les mots viennent de LRCLIB — sans clé, sans compte. Derrière, le spectre : la même scène qui tourne derrière cette page.",
+    'ui.artistmeta': '9 albums · 118 titres · 8 h 12',
+    'ui.artistnote': "Pas de biographie, pas de grille d'artistes similaires. Chaque chiffre de cet écran vient de vos propres fichiers — rien n'est téléchargé pour le dessiner.",
+    's1.eyebrow': "01 — L'idée", 's1.h2': 'Un lecteur qui obéit à la personne qui possède les fichiers.',
+    's2.eyebrow': "02 — L'app",
+    's3.eyebrow': '03 — Skin Studio', 's3.h2': 'Choisissez une skin. Regardez toute cette page lui obéir.',
+    's3.p': "Une skin est un document de données validé, pas une feuille de style. 47 tokens, 52 parties nommées, 11 effets au coût déclaré. L'app l'analyse, vous avertit et la compile en CSS déterministe.",
+    'studio.valid': 'valide', 'studio.tokenreg': 'Registre des tokens', 'studio.tokenmeta': '47 tokens · 21 requis', 'studio.contrast': 'Contraste et coût, vérifiés en direct', 'studio.budget': "Budget d'effets",
+    's4.eyebrow': '04 — Le contrat', 's4.h2': "Une skin ne peut pas casser l'app. C'est une propriété du format, pas une promesse.",
+    's5.eyebrow': '05 — Feuille de route', 's5.h2': "Ce qui n'est pas encore là, et pourquoi.",
+    's5.p': "Cinq des 52 parties enregistrées ne s'affichent pas aujourd'hui, dont une volontairement. Elles restent dans le registre pour que les skins écrites maintenant conviennent encore à l'app plus tard.",
+    'win.h3': "Windows — ordre d'implémentation", 'win.meta': '13 entrées · 10 terminées · 1 en cours · 77 %',
+    'access.h2': "Pas encore publié. Suivez le dépôt.",
+    'access.p': "Aether n'est pas signé et ne distribue encore aucune build. Le source est là, il compile sous Windows, et la spécification du format de skin est dans l'arbre tant qu'elle est encore assez brute pour qu'on en débatte. Tout se passe sur github.com/FedericoBaratti/Aether.",
+    'access.btn': 'Suivre le dépôt', 'access.note': "Pas de liste de diffusion, pas de formulaire. Rien à collecter.",
+    'access.spec': 'Lire la spec des skins',
+    'footer.tag': 'Lecteur de musique local-first · Accès anticipé', 'footer.updated': 'Dernière mise à jour',
+    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'OPUS', 'Lecture sans blanc', 'Fondu enchaîné', 'ReplayGain', 'Égaliseur 10 bandes', 'Paroles synchronisées', 'Scrobbling', 'Listes intelligentes', 'Sauvegarde Drive', 'Pochettes intégrées', 'Cœur en Rust', '5 000 titres, sans lag', 'Local-first', 'Pas de télémétrie'],
+    pillars: [
+      { t: 'Rien ne quitte la machine', b: "Pas de compte obligatoire, pas d'analytique. Votre bibliothèque reste sur votre disque. Quand vous demandez un morceau manquant, Aether le récupère dans un catalogue libre et ramène la licence — rien d'autre." },
+      { t: "Dense là où il faut", b: "Des lignes de 40px, de l'air au-dessus de la liste et non entre ses lignes. Une bibliothèque de cinq mille titres défile à pleine cadence, parce qu'elle est faite pour être parcourue." },
+      { t: 'Le markup nomme ses parties', b: "Chaque surface que l'app dessine porte un nom de partie. C'est à cela qu'une skin se lie — pas à une classe devinée dans les devtools." },
+      { t: 'Deux portes par commande', b: "Le clic droit n'est jamais la seule entrée. À côté, il y a toujours un contrôle visible ou un raccourci annoncé." }
+    ],
+    chapters: [
+      { t: 'Bibliothèque', b: 'Naviguez à gauche, regardez au milieu, écoutez à droite. Les trois colonnes ne changent jamais de place.', pts: [{ t: '412 albums, 5 108 titres, triés en local' }, { t: 'La colonne de droite est la maison de Lecture en cours' }, { t: 'Cherchez de partout avec /' }] },
+      { t: 'Lecture en cours', b: "Pas un second écran — la même partie, agrandie. La pochette est la seule chose colorée de l'app, et elle teinte la pièce.", pts: [{ t: "S'ouvre depuis la pochette, le bouton ⤢ ou F" }, { t: 'Se ferme avec Échap, le chevron ou la même porte' }, { t: 'Derrière, trente secondes de spectre qui reculent' }] },
+      { t: 'Artistes', b: "Chaque chiffre de cet écran vient de votre propre disque. Rien n'est téléchargé, donc rien n'est faux.", pts: [{ t: '287 artistes, comptés depuis les tags' }, { t: "Pas de biographie, pas de grille d'artistes similaires" }, { t: 'Albums classés par année, pas par popularité' }] }
+    ],
+    skinMeta: { midnight: 'par défaut · 4 effets', rust: 'chaude · 6 effets', chlorophyll: 'froide · 3 effets', paper: 'claire · 2 effets' },
+    ruleWord: 'Règle',
+    studioPoints: [
+      { t: 'Vous ne pouvez pas écrire ce que le format refuse', b: "Chaque contrôle a la forme d'un type dans le crate. Aucun champ libre là où le document attend une énumération — c'est pourquoi une skin ne peut pas casser l'app." },
+      { t: "L'aperçu est l'app, pas un échantillon", b: "C'est la vraie fenêtre avec la skin appliquée. Les écrans qu'on ne peut atteindre en écoutant — modale, vide, chargement — viennent d'un sélecteur." },
+      { t: 'Le coût est visible pendant que vous le dépensez', b: "Chaque effet porte son poids à côté de son nom et la surface compte jusqu'à dix. Vous le découvrez ici, pas sur un téléphone qui perd des images." }
+    ],
+    stats: [
+      { t: 'Tokens', b: "Chacun avec une description et un indicateur d'obligation, lus directement dans le registre." },
+      { t: 'Parties nommées', b: "Chaque partie déclare ses couches. Faites une faute et l'analyseur propose la plus proche." },
+      { t: 'Effets', b: 'Flou, halo, grain, bruit — chacun avec un coût de rendu déclaré sur dix.' },
+      { t: "Types d'avertissement", b: 'Contraste, budget de coût, motif inutilisé, prefab inutilisé, promesse non tenue, token requis manquant — vérifiés avant compilation.' }
+    ],
+    platStatus: { prog: 'En cours', none: 'Pas commencé' },
+    road: { done: 'Terminé', prog: 'En cours', todo: 'À faire' },
+    roadItems: [
+      "implémenter la sauvegarde Google Drive pour les métadonnées et les skins, afin qu'un utilisateur puisse tout récupérer après une réinitialisation.",
+      "implémenter l'import d'un compte Spotify depuis l'archive GDPR.",
+      'terminer Skin Studio.',
+      "implémenter la gestion et l'enrichissement automatique des métadonnées.",
+      'rendre la mise en page et le graphisme entièrement modulaires et modifiables dans Skin Studio.',
+      "implémenter un égaliseur à 10 bandes avec des préréglages.",
+      "implémenter une amélioration graphique de la lecture, inspirée de SoundCloud.",
+      "implémenter un système automatique de récupération des paroles qui construit une base de paroles synchronisées, toujours sans clé.",
+      "implémenter dans Skin Studio un système de création d'animations à inserer n'importe où dans l'app.",
+      'implémenter des playlists intelligentes avec filtrage basé sur des règles.',
+      "ajouter la clé OpenRouter dans les réglages pour utiliser des modèles d'IA gratuits et générer des playlists recommandées.",
+      "implémenter dans Skin Studio un chat avec des outils et un LLM pour la création assistée de skins.",
+      'corriger les bugs graphiques et incohérences pour un rendu plus premium.'
+    ]
+  },
+  de: {
+    'nav.badge': 'In Entwicklung', 'nav.app': 'Die App', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Roadmap', 'nav.star': 'Star auf GitHub',
+    'hero.badge': 'Ein lokaler Musikplayer mit Skin-Engine',
+    'hero.l1': 'Deine Bibliothek.', 'hero.l2': 'Dein Rechner.', 'hero.l3': 'Dein Look.',
+    'hero.lede': 'Aether spielt die Dateien, die dir bereits gehören — keine Telemetrie, kein Konto nötig. Was dir fehlt, holt er aus den freien Katalogen — heute dem Internet Archive, später Jamendo und Audius — und jeder Titel, den er hereinholt, trägt die Lizenz mit sich, unter der er kam. Jede Fläche, die er zeichnet, ist ein Token, das du neu definieren kannst, in einer Skin-Datei, die die App prüft, bevor sie ein einziges Pixel rendert.',
+    'hero.cta1': 'Sieh, wo es steht', 'hero.m1': 'Windows · macOS und Linux geplant', 'hero.m3': 'Lizenzbewusst von Grund auf',
+    'ui.albums': 'Alben', 'ui.albumsLow': 'Alben', 'ui.tracks': 'Titel', 'ui.artists': 'Künstler', 'ui.fav': 'Favoriten', 'ui.settings': 'Einstellungen',
+    'ui.playlists': 'Playlists', 'ui.pl1': 'Nachtschicht', 'ui.pl2': 'Vinyl-Rips 2019', 'ui.pl3': 'Küche, laut', 'ui.pl4': 'Ambient, lang',
+    'ui.scan': 'Scan abgeschlossen', 'ui.scanmeta': '5 108 Titel · vor 41 Min.', 'ui.library': 'Bibliothek', 'ui.libmeta': '5 108 · 14 T 6 Std',
+    'ui.colTitle': 'Titel', 'ui.colAlbum': 'Album', 'ui.colTime': 'Dauer', 'ui.upnext': 'Als Nächstes', 'ui.search': 'Suchen…',
+    'ui.nowplaying': 'Läuft gerade', 'ui.sortedadded': '412 · nach Hinzugefügt sortiert', 'ui.gapless': 'Lückenlos',
+    'ui.npx': 'Synchroner Songtext, und der Raum dahinter', 'ui.npxb': 'Die Worte kommen von LRCLIB — kein Schlüssel, kein Konto. Dahinter das Spektrum: dieselbe Szene, die hinter dieser Seite läuft.',
+    'ui.artistmeta': '9 Alben · 118 Titel · 8 Std 12 Min',
+    'ui.artistnote': 'Keine Biografie, kein Raster ähnlicher Künstler. Jede Zahl auf diesem Bildschirm stammt aus deinen eigenen Dateien — zum Zeichnen wird nichts geladen.',
+    's1.eyebrow': '01 — Die Idee', 's1.h2': 'Ein Player, der der Person gehorcht, der die Dateien gehören.',
+    's2.eyebrow': '02 — Die App',
+    's3.eyebrow': '03 — Skin Studio', 's3.h2': 'Wähle eine Skin. Sieh zu, wie diese ganze Seite ihr gehorcht.',
+    's3.p': 'Eine Skin ist ein validiertes Datendokument, kein Stylesheet. 47 Tokens, 52 benannte Teile, 11 Effekte mit deklarierten Kosten. Die App parst sie, warnt dich und kompiliert sie zu deterministischem CSS.',
+    'studio.valid': 'gültig', 'studio.tokenreg': 'Token-Register', 'studio.tokenmeta': '47 Tokens · 21 erforderlich', 'studio.contrast': 'Kontrast & Kosten, live geprüft', 'studio.budget': 'Effekt-Budget',
+    's4.eyebrow': '04 — Der Vertrag', 's4.h2': 'Eine Skin kann die App nicht kaputt machen. Das ist eine Eigenschaft des Formats, kein Versprechen.',
+    's5.eyebrow': '05 — Roadmap', 's5.h2': 'Was noch fehlt, und warum.',
+    's5.p': 'Fünf der 52 registrierten Teile werden heute nicht gerendert, eines davon absichtlich. Sie bleiben im Register, damit heute geschriebene Skins später noch zur App passen.',
+    'win.h3': 'Windows — Implementierungsreihenfolge', 'win.meta': '13 Einträge · 10 erledigt · 1 laufend · 77 %',
+    'access.h2': 'Noch nicht veröffentlicht. Beobachte das Repository.',
+    'access.p': 'Aether ist nicht signiert und liefert noch keine Builds aus. Der Quelltext ist da, er kompiliert unter Windows, und die Spezifikation des Skin-Formats liegt im Baum, solange sie noch roh genug ist, um darüber zu streiten. Alles passiert auf github.com/FedericoBaratti/Aether.',
+    'access.btn': 'Repository beobachten', 'access.note': 'Keine Mailingliste, kein Formular. Nichts zu sammeln.',
+    'access.spec': 'Skin-Spezifikation lesen',
+    'footer.tag': 'Local-First-Musikplayer · In Entwicklung', 'footer.updated': 'Zuletzt aktualisiert',
+    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'OPUS', 'Lückenlose Wiedergabe', 'Crossfade', 'ReplayGain', '10-Band-EQ', 'Synchroner Songtext', 'Scrobbling', 'Intelligente Playlists', 'Drive-Backup', 'Eingebettete Cover', 'Rust-Core', '5 000 Titel, kein Lag', 'Local-First', 'Keine Telemetrie'],
+    pillars: [
+      { t: 'Nichts verlässt den Rechner', b: 'Kein Konto nötig, keine Analyse. Deine Bibliothörung bleibt auf deiner Platte. Wenn du einen fehlenden Titel anforderst, holt ihn Aether aus einem freien Katalog und bringt die Lizenz mit — nichts weiter.' },
+      { t: 'Dicht, wo es zählt', b: '40px-Zeilen, Luft über der Liste und nicht zwischen ihren Zeilen. Eine Bibliothek mit fünftausend Titeln scrollt in voller Bildrate, weil sie zum Scrollen gemacht ist.' },
+      { t: 'Das Markup benennt seine Teile', b: 'Jede Fläche, die die App zeichnet, trägt einen Teilnamen. Daran bindet sich eine Skin — nicht an eine aus den Devtools geratene Klasse.' },
+      { t: 'Zwei Türen pro Befehl', b: 'Rechtsklick ist nie der einzige Weg hinein. Daneben gibt es immer ein sichtbares Bedienelement oder ein angekündigtes Tastenkürzel.' }
+    ],
+    chapters: [
+      { t: 'Bibliothek', b: 'Links navigieren, in der Mitte schauen, rechts hören. Die drei Spalten tauschen nie die Plätze.', pts: [{ t: '412 Alben, 5 108 Titel, lokal sortiert' }, { t: 'Die rechte Spalte ist das Zuhause von Läuft gerade' }, { t: 'Von überall suchen mit /' }] },
+      { t: 'Läuft gerade', b: 'Kein zweiter Bildschirm — dasselbe Teil, gewachsen. Das Cover ist das einzig Farbige in der App, und es färbt den Raum.', pts: [{ t: 'Öffnet über das Cover, die ⤢-Taste oder F' }, { t: 'Schließt mit Esc, dem Chevron oder derselben Tür' }, { t: 'Dahinter eine halbe Minute Spektrum, die zurückweicht' }] },
+      { t: 'Künstler', b: 'Jede Zahl auf diesem Bildschirm stammt von deiner eigenen Platte. Nichts wird geladen, also ist nichts falsch.', pts: [{ t: '287 Künstler, aus den Tags gezählt' }, { t: 'Keine Biografie, kein Raster ähnlicher Künstler' }, { t: 'Alben nach Jahr geordnet, nicht nach Beliebtheit' }] }
+    ],
+    skinMeta: { midnight: 'Standard · 4 Effekte', rust: 'warm · 6 Effekte', chlorophyll: 'kalt · 3 Effekte', paper: 'hell · 2 Effekte' },
+    ruleWord: 'Regel',
+    studioPoints: [
+      { t: 'Du kannst nicht schreiben, was das Format ablehnt', b: 'Jedes Bedienelement hat die Form eines Typs im Crate. Kein Freitextfeld, wo das Dokument ein Enum will — deshalb kann eine Skin die App nicht kaputt machen.' },
+      { t: 'Die Vorschau ist die App, kein Farbmuster', b: 'Es ist das echte Fenster mit angewandter Skin. Bildschirme, die man beim Hören nicht erreicht — Modal, Leer, Laden — kommen aus einer Auswahl.' },
+      { t: 'Kosten sind sichtbar, während du sie ausgibst', b: 'Jeder Effekt trägt sein Gewicht neben seinem Namen, und die Fläche zählt bis zehn. Du erfährst es hier, nicht auf einem Handy, das Frames verliert.' }
+    ],
+    stats: [
+      { t: 'Tokens', b: 'Jedes mit Beschreibung und Pflicht-Flag, direkt aus dem Register gelesen.' },
+      { t: 'Benannte Teile', b: 'Jedes Teil deklariert seine Ebenen. Vertipp dich und der Parser schlägt das nächste vor.' },
+      { t: 'Effekte', b: 'Blur, Glow, Grain, Noise — jeweils mit deklarierten Renderkosten von zehn.' },
+      { t: 'Warnungsarten', b: 'Kontrast, Kostenbudget, ungenutztes Muster, ungenutztes Prefab, nicht gehaltenes Versprechen, fehlendes Pflicht-Token — vor dem Kompilieren geprüft.' }
+    ],
+    platStatus: { prog: 'Läuft', none: 'Nicht begonnen' },
+    road: { done: 'Erledigt', prog: 'Läuft', todo: 'Offen' },
+    roadItems: [
+      'Google-Dienste mit Google Drive implementieren, um Metadaten und Skins als Backup hochzuladen, falls ein Nutzer den Rechner zurücksetzen und die ganze Musik und Skins wiederherstellen muss.',
+      'den Import eines Spotify-Kontos aus dem GDPR-Archiv implementieren',
+      'Skin Studio fertigstellen',
+      'ein System zur automatischen Metadatenverwaltung und -anreicherung implementieren',
+      'Layout und Grafik vollständig modular und in Skin Studio bearbeitbar machen',
+      'einen 10-Band-Oktav-Equalizer mit Presets implementieren',
+      'eine grafische Aufwertung der Wiedergabe implementieren, inspiriert von SoundCloud',
+      'ein System zum automatischen Abrufen von Songtexten implementieren, das eine synchronisierte Textdatenbank aufbaut, weiterhin keyless',
+      'in Skin Studio ein System implementieren, das die Erstellung von Animationen für beliebige Orte in der App erlaubt',
+      'Smart-Playlists mit regelbasiertem Filtern implementieren',
+      'in den Einstellungen den OpenRouter-Schlüssel hinzufügen, um kostenlose KI-Modelle für empfohlene Playlists zu nutzen.',
+      'in Skin Studio einen Chat mit Tools und einem LLM für die assistierte Skin-Erstellung implementieren.',
+      'grafische Bugs und Inkonsistenzen für einen hochwertigeren Look beheben.'
+    ]
+  }
+};
+
+/* ── Lo spettro, la stessa scena dell'app ───────────────────────────────────
+ *
+ * È `apps/desktop/src/parti/Spettro3D.tsx` portato qui dentro senza cambiarne
+ * la sostanza: una griglia di barre in profondità, mezzo minuto di memoria in
+ * una cascata di anelli, il riflesso sotto il pavimento, la camera che oscilla
+ * con l'energia delle bande basse. Gli shader sono gli stessi carattere per
+ * carattere — se cambiano là, si copiano qua, e non c'è una seconda versione da
+ * tenere allineata a mano.
+ *
+ * # L'unica differenza, ed è quella che conta
+ *
+ * Nell'app le file arrivano dal motore audio trenta volte al secondo. Qui non
+ * suona niente: una pagina non ha una canzone da guardare, e un `<audio>` che
+ * parte da solo è la cosa peggiore che un sito possa fare a chi lo apre. Le
+ * scrive `sorgente()`, che non è rumore — è una grancassa, un rullante, un
+ * basso e un pad su una griglia di battute, perché quel che la scena mostra è
+ * il **ritmo** che arretra, e un rumore bianco che arretra non è un ritmo.
+ *
+ * # Quanto costa, e quanto è giusto che costi
+ *
+ * Centoventotto barre per cinquantasei file sono settemila scatole in due
+ * chiamate di disegno, cioè meno di quel che paga l'app. La tela sta a un pixel
+ * per pixel CSS e non a due — è uno sfondo dietro del testo, non una superficie
+ * da leggere — e il ciclo si ferma del tutto quando la scheda passa in secondo
+ * piano: un fondale che continua a girare in una scheda che nessuno guarda è
+ * ventola e batteria spese per niente.
+ *
+ * Col movimento ridotto la scena non si anima affatto: si riempie mezzo minuto
+ * di storia in un colpo, si disegna un fotogramma e ci si ferma lì. Resta un
+ * paesaggio, che è quel che la preferenza chiede — non una versione più lenta
+ * della stessa animazione.
+ */
+
+/** Ogni quanto cade una fila, in millisecondi. È `PASSO_SPETTRO` del nucleo. */
+const SP_PASSO_MS = 33;
+
+/** Quanto passato tiene la scena. */
+const SP_MEMORIA_EVENTI = Math.round(30000 / SP_PASSO_MS);
+
+/** Il tetto di scatole per fotogramma: decide quante file per piano ci stanno. */
+const SP_SCATOLE = 32768;
+
+/** Quanti piani al massimo. È la misura di `cursori[]` nello shader. */
+const SP_PIANI_MAX = 8;
+
+/** Per quanti piani si disegna il riflesso. */
+const SP_PIANI_RIFLESSI = 3;
+
+/** Quanto è profonda la stanza, in unità di mondo. */
+const SP_PROFONDITA = 5.2;
+
+/**
+ * Com'è fatta la cascata, per quante barre ci sono in larghezza.
+ *
+ * Il piano zero tiene `perPiano` file a dettaglio pieno; ogni piano sopra prende
+ * il massimo a due a due di quello sotto, quindi copre il doppio del tempo con
+ * lo stesso numero di file. Sette piani da otto file coprono 1016 eventi —
+ * trentatré secondi — con cinquantasei file da disegnare.
+ */
+function spStruttura(barre) {
+  const perPiano = Math.max(4, Math.min(8, Math.floor(SP_SCATOLE / (barre * SP_PIANI_MAX))));
+  const piani = Math.max(1, Math.min(SP_PIANI_MAX, Math.round(Math.log2(SP_MEMORIA_EVENTI / perPiano + 1))));
+  return { perPiano, piani, file: perPiano * piani, copertura: perPiano * ((1 << piani) - 1) };
+}
+
+const SP_VERTICE = `#version 300 es
+precision highp float;
+
+in vec3 posizione;
+in vec3 normale;
+
+uniform mat4 camera;
+uniform sampler2D altezze;
+uniform int colonne;
+uniform int perPiano;
+uniform int piani;
+uniform int cursori[8];
+uniform int fase;
+uniform float frazione;
+uniform float prof;
+uniform float larghezza;
+uniform float spessore;
+uniform float alta;
+uniform float specchio;
+
+out float vLivello;
+out float vSu;
+out float vLuce;
+out float vAlfa;
+
+// Dove sta un'età, in profondità. L'età è in eventi e non in secondi, perché è
+// in eventi che la cascata conta.
+//
+// Il logaritmo non è una curva scelta a occhio: il piano l finisce all'età
+// perPiano*(2^(l+1)-1), dove 1 + età/perPiano fa esattamente 2^(l+1) - quindi
+// log2 vale l+1, e ogni piano si prende la stessa fetta di profondità mentre il
+// tempo che porta raddoppia.
+float zDi(float eta) {
+  return -prof * log2(1.0 + eta / float(perPiano)) / float(piani);
+}
+
+// L'età del fronte di una fila, in eventi. Il progresso per piano è ciò che
+// tiene lo scorrimento continuo: quando un piano chiude una fila il contenuto
+// arretra di un posto e il progresso torna a zero, e le due cose si annullano.
+float etaDi(int fila) {
+  int piano = fila / perPiano;
+  int dentro = fila - piano * perPiano;
+  int passo = 1 << piano;
+  return float(perPiano * (passo - 1) + dentro * passo + fase % passo) + frazione;
+}
+
+void main() {
+  int colonna = gl_InstanceID % colonne;
+  int fila = gl_InstanceID / colonne;
+
+  int piano = fila / perPiano;
+  int dentro = fila - piano * perPiano;
+  // Nella texture le righe non scorrono: scorre il cursore del piano, e qui si
+  // torna indietro di «dentro» partendo da lui.
+  int riga = piano * perPiano + (cursori[piano] - dentro + perPiano) % perPiano;
+  float livello = texelFetch(altezze, ivec2(colonna, riga), 0).r;
+
+  // La fila davanti non compare: cresce da quella dietro. Nasce con l'altezza
+  // che aveva la precedente e nei trentatré millesimi prima della prossima
+  // diventa la sua.
+  if (fila == 0) {
+    int dietro = (cursori[0] - 1 + perPiano) % perPiano;
+    float precedente = texelFetch(altezze, ivec2(colonna, dietro), 0).r;
+    livello = mix(precedente, livello, smoothstep(0.0, 1.0, frazione));
+  }
+
+  // Il fondo di una fila è il fronte di quella dietro, e non la fine della
+  // propria fetta di tempo: le due cose non coincidono, e prendendo il fondo da
+  // chi sta dietro le file piastrellano per costruzione - nessun buco e nessuna
+  // compenetrazione, a ogni fase.
+  float zFronte = zDi(etaDi(fila));
+  float zFondo = zDi(etaDi(fila + 1));
+
+  // Un fondo visibile anche a zero: una griglia che sparisce del tutto lascia un
+  // rettangolo vuoto che sembra un guasto.
+  float altezza = max(livello * alta, 0.004);
+
+  float passoX = larghezza / float(colonne);
+  float x = (float(colonna) + 0.5) * passoX - larghezza * 0.5;
+
+  vec3 locale = posizione;
+  locale.x *= passoX * spessore;
+  locale.z *= zFronte - zFondo;
+  locale.y *= altezza;
+  vec3 mondo = vec3(
+    x + locale.x,
+    locale.y * specchio,
+    (zFronte + zFondo) * 0.5 + locale.z
+  );
+
+  // La luce: una direzionale da sopra-davanti più un ambiente. Nel vertice e non
+  // nel frammento perché le facce sono piatte.
+  vec3 luce = normalize(vec3(-0.35, 0.85, 0.4));
+  vec3 n = vec3(normale.x, normale.y * specchio, normale.z);
+  vLuce = 0.42 + 0.58 * max(dot(n, luce), 0.0);
+
+  // Quanto è lontana la fila, da zero a uno - e si misura in profondità, non in
+  // file: è il modo in cui la scena si fonde con lo sfondo invece di finire con
+  // un muro all'orizzonte.
+  float lontananza = -mondo.z / prof;
+  vAlfa = 1.0 - smoothstep(0.55, 0.98, lontananza);
+  // Il riflesso è un accenno, non una copia.
+  if (specchio < 0.0) vAlfa *= 0.22;
+
+  vLivello = livello;
+  vSu = posizione.y;
+  gl_Position = camera * vec4(mondo, 1.0);
+}`;
+
+const SP_FRAMMENTO = `#version 300 es
+precision mediump float;
+
+in float vLivello;
+in float vSu;
+in float vLuce;
+in float vAlfa;
+
+uniform vec3 primario;
+uniform vec3 secondario;
+uniform vec3 alone;
+uniform float velo;
+
+out vec4 fuori;
+
+void main() {
+  // Il colore dice l'altezza: in basso il secondario, in cima il primario. Sono
+  // i due token d'accento della skin, e cambiare skin cambia la scena.
+  vec3 colore = mix(secondario, primario, clamp(vLivello * 1.3, 0.0, 1.0));
+  // La cima si accende con il colore d'alone: è il bagliore che una sfocatura
+  // avrebbe dato, pagato zero.
+  colore = mix(colore, alone, smoothstep(0.72, 1.0, vSu) * 0.55);
+  colore *= vLuce;
+
+  float alfa = vAlfa * velo;
+  if (alfa <= 0.004) discard;
+  // Premoltiplicato: la tela è trasparente e il compositore del browser la posa
+  // sopra il fondo della pagina.
+  fuori = vec4(colore * alfa, alfa);
+}`;
+
+/** Compila uno shader, o restituisce `null` dicendo alla console perché no. */
+function spCompila(gl, tipo, sorgente) {
+  const shader = gl.createShader(tipo);
+  if (!shader) return null;
+  gl.shaderSource(shader, sorgente);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    console.error('spettro:', gl.getShaderInfoLog(shader));
+    gl.deleteShader(shader);
+    return null;
+  }
+  return shader;
+}
+
+/**
+ * La scatola unitaria: x e z in `[-0.5, 0.5]`, y in `[0, 1]`.
+ *
+ * Quattro facce e non sei. Quella di sotto poggia sul pavimento; quella di
+ * dietro la butta già il culling, perché la camera sta sempre a `z > 0` e le
+ * file a `z <= 0` - e trentamila quadrati che il culling butta restano
+ * trentamila quadrati da trasformare.
+ */
+function spScatola() {
+  const facce = [
+    [[0, 0, 1], [-0.5, 0, 0.5, 0.5, 0, 0.5, 0.5, 1, 0.5, -0.5, 1, 0.5]],
+    [[1, 0, 0], [0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 1, -0.5, 0.5, 1, 0.5]],
+    [[-1, 0, 0], [-0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 1, 0.5, -0.5, 1, -0.5]],
+    [[0, 1, 0], [-0.5, 1, 0.5, 0.5, 1, 0.5, 0.5, 1, -0.5, -0.5, 1, -0.5]]
+  ];
+  const vertici = [];
+  const indici = [];
+  facce.forEach(([normale, punti], faccia) => {
+    for (let i = 0; i < 4; i += 1) {
+      vertici.push(punti[i * 3], punti[i * 3 + 1], punti[i * 3 + 2], normale[0], normale[1], normale[2]);
+    }
+    const base = faccia * 4;
+    indici.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  });
+  return { vertici: new Float32Array(vertici), indici: new Uint16Array(indici) };
+}
+
+/**
+ * Proiezione per vista, già moltiplicate.
+ *
+ * Una matrice sola e non due: è l'unica cosa che lo shader deve sapere della
+ * camera, e farne il prodotto qui costa sedici moltiplicazioni al fotogramma
+ * invece di settemila.
+ */
+function spCamera(aspetto, occhio, mira) {
+  const vicino = 0.1;
+  const lontano = 24;
+  const f = 1 / Math.tan((52 * Math.PI) / 180 / 2);
+
+  const [ox, oy, oz] = occhio;
+  const verso = [ox - mira[0], oy - mira[1], oz - mira[2]];
+  const lunghezza = Math.hypot(verso[0], verso[1], verso[2]) || 1;
+  const zx = verso[0] / lunghezza;
+  const zy = verso[1] / lunghezza;
+  const zz = verso[2] / lunghezza;
+  // L'asse x è l'alto del mondo per lo z della vista. Sta scritto per esteso
+  // perché due delle tre componenti sono zero.
+  const orizzontale = Math.hypot(zz, zx) || 1;
+  const xx = zz / orizzontale;
+  const xy = 0;
+  const xz = -zx / orizzontale;
+  const yx = zy * xz - zz * xy;
+  const yy = zz * xx - zx * xz;
+  const yz = zx * xy - zy * xx;
+
+  const tx = -(xx * ox + xy * oy + xz * oz);
+  const ty = -(yx * ox + yy * oy + yz * oz);
+  const tz = -(zx * ox + zy * oy + zz * oz);
+
+  const a = f / aspetto;
+  const c = (lontano + vicino) / (vicino - lontano);
+  const d = (2 * lontano * vicino) / (vicino - lontano);
+  return new Float32Array([
+    a * xx, f * yx, c * zx, -zx,
+    a * xy, f * yy, c * zy, -zy,
+    a * xz, f * yz, c * zz, -zz,
+    a * tx, f * ty, c * tz + d, -tz
+  ]);
+}
+
+/**
+ * Un colore CSS qualunque, in tre numeri fra zero e uno.
+ *
+ * Passa da una canvas di un pixel e non da un'espressione regolare: un token può
+ * essere `#abc`, `rgba(…)` o `oklch(…)`, e l'unica cosa che sa leggerli tutti è
+ * il parser del browser. Si paga solo quando la skin cambia davvero.
+ */
+function spTinta(pennello, colore) {
+  pennello.clearRect(0, 0, 1, 1);
+  // Due assegnazioni: `fillStyle` ignora in silenzio un colore che non sa
+  // leggere, e senza il nero davanti si dipingerebbe con quel che c'era prima.
+  pennello.fillStyle = '#000';
+  pennello.fillStyle = colore;
+  pennello.fillRect(0, 0, 1, 1);
+  const dati = pennello.getImageData(0, 0, 1, 1).data;
+  return [dati[0] / 255, dati[1] / 255, dati[2] / 255];
+}
+
+/**
+ * Da dove vengono le bande, qui che non suona niente.
+ *
+ * Non è rumore filtrato: è un arrangiamento. Una battuta sono 64 eventi — 33
+ * millesimi l'uno, cioè 113 battiti al minuto — con la grancassa sui tempi
+ * forti, il rullante sul due e sul quattro, il charleston sugli ottavi, un
+ * basso che segue quattro accordi e un pad che respira sopra. Ogni otto battute
+ * ne salta una: senza uno stacco, mezzo minuto di terreno alle spalle diventa
+ * un tessuto regolare, e il punto della scena è che il passato **si legge**.
+ *
+ * Le frequenze si convertono in indici di banda con l'inversa della scala del
+ * motore — logaritmica fra 20 Hz e 20 kHz — così la grancassa sta dove starebbe
+ * una grancassa vera e il charleston in fondo a destra.
+ */
+function spSorgente(barre) {
+  const dove = (hz) => (Math.log(hz / 20) / Math.log(1000)) * (barre - 1);
+  /** Quanto è larga una banda «stretta», per il numero di barre che c'è. */
+  const largo = Math.max(0.9, barre / 96);
+
+  const perc = new Float32Array(barre);
+  const pad = new Float32Array(barre);
+  const fuori = new Uint8Array(barre);
+  /** I quattro accordi, in Hz della fondamentale. Due battute l'uno. */
+  const radici = [55, 43.65, 65.41, 49];
+  /** La pentatonica sopra, per la melodia. */
+  const scala = [440, 493.88, 587.33, 659.25, 783.99, 880, 987.77];
+  let n = 0;
+
+  const monta = (dest, centro, larghezza, forza) => {
+    const w = Math.max(0.6, larghezza);
+    const da = Math.max(0, Math.floor(centro - w * 2.4));
+    const a = Math.min(barre - 1, Math.ceil(centro + w * 2.4));
+    for (let i = da; i <= a; i += 1) {
+      const d = (i - centro) / w;
+      dest[i] = Math.min(1.4, dest[i] + forza * Math.exp(-d * d));
+    }
+  };
+
+  /** Una nota con le sue armoniche: è quel che rende un basso un basso. */
+  const nota = (dest, hz, forza, quante) => {
+    for (let k = 1; k <= quante; k += 1) {
+      const f = hz * k;
+      if (f > 19000) break;
+      monta(dest, dove(f), largo * (1 + k * 0.22), forza / (1 + (k - 1) * 1.5));
+    }
+  };
+
+  /** Una fascia di rumore: il rullante, il charleston, i piatti. */
+  const rumore = (dest, daHz, aHz, forza) => {
+    const da = Math.max(0, Math.round(dove(daHz)));
+    const a = Math.min(barre - 1, Math.round(dove(aHz)));
+    for (let i = da; i <= a; i += 1) {
+      const p = a > da ? (i - da) / (a - da) : 0;
+      dest[i] = Math.min(1.4, dest[i] + forza * (1 - p * 0.55) * (0.62 + Math.random() * 0.76));
+    }
+  };
+
+  return function prossima() {
+    // Il decadimento, prima dei colpi di questo evento: l'acuto se ne va in
+    // fretta e il basso resta, che è la differenza fra un charleston e una nota.
+    for (let i = 0; i < barre; i += 1) {
+      perc[i] *= 0.905 - (i / (barre - 1)) * 0.2;
+    }
+
+    const b = n % 64;
+    const battuta = Math.floor(n / 64) % 8;
+    const stacco = battuta === 6;
+    const radice = radici[Math.floor(n / 128) % 4];
+
+    // Grancassa. Il primo e il terzo tempo sempre; i due sincopati saltano lo
+    // stacco, che è ciò che rende lo stacco riconoscibile da lontano.
+    if (b === 0 || b === 32 || (!stacco && (b === 24 || b === 56))) {
+      const forza = b === 0 || b === 32 ? 1.05 : 0.62;
+      monta(perc, dove(48), largo * 1.7, forza);
+      monta(perc, dove(96), largo * 1.3, forza * 0.4);
+      nota(perc, radice, forza * 0.42, 5);
+    }
+    // Rullante: un corpo basso e una coda di rumore.
+    if (!stacco && (b === 16 || b === 48)) {
+      monta(perc, dove(196), largo * 2.4, 0.5);
+      rumore(perc, 1400, 9000, 0.34);
+    }
+    // Charleston sugli ottavi, accentato sui quarti.
+    if (b % 8 === 0) rumore(perc, 7000, 17000, b % 16 === 0 ? 0.3 : 0.17);
+    if (b === 60 && battuta === 7) rumore(perc, 4000, 18000, 0.42);
+    // La melodia: una nota ogni due ottavi, dalla pentatonica, e non sempre.
+    if (b % 16 === 4 && Math.random() > 0.32) {
+      nota(perc, scala[Math.floor(Math.random() * scala.length)], 0.34, 4);
+    }
+
+    // Il pad si ricalcola invece di decadere: è il fondo continuo, e un fondo
+    // che decade è un fondo che si spegne.
+    const t = (n * SP_PASSO_MS) / 1000;
+    for (let i = 0; i < barre; i += 1) {
+      const x = i / (barre - 1);
+      // Il velo d'aria: pende verso l'acuto, come pende lo spettro di qualunque
+      // cosa suoni davvero, e respira piano.
+      pad[i] = (0.13 - x * 0.1) * (0.7 + 0.3 * Math.sin(t * 0.31 + x * 3.1));
+    }
+    const ampiezza = 0.16 * (stacco ? 1.35 : 1);
+    [1, 1.5, 2, 3].forEach((r, k) => nota(pad, radice * r, ampiezza / (1 + k * 0.6), 3));
+    // Il filtro che passa: una risonanza che sale e scende in undici secondi. È
+    // la cosa che fa sembrare che qualcuno stia girando una manopola.
+    monta(pad, dove(300 * Math.pow(7, 0.5 + 0.5 * Math.sin(t * 0.57))), largo * 6, 0.14);
+
+    for (let i = 0; i < barre; i += 1) {
+      const v = perc[i] + pad[i];
+      fuori[i] = v <= 0 ? 0 : Math.min(255, Math.round(v * 232));
+    }
+    n += 1;
+    return fuori;
+  };
+}
+
+/**
+ * Accende la scena su una tela, e restituisce come spegnerla.
+ *
+ * Restituisce `null` se non c'è WebGL 2, e non succede altro: lo sfondo resta
+ * il campo di aloni che c'era prima. Un ripiego in 2D sarebbe una seconda
+ * implementazione da tenere allineata per una macchina che, se non ha WebGL 2,
+ * non ha nemmeno il fiato per settemila rettangoli disegnati a mano.
+ */
+function spAvvia(canvas, opzioni) {
+  const moto = opzioni.moto;
+  const barre = opzioni.barre;
+  const gl = canvas.getContext('webgl2', {
+    alpha: true,
+    antialias: true,
+    depth: true,
+    // Su un portatile con due schede, uno sfondo non è il motivo per svegliare
+    // quella grossa.
+    powerPreference: 'low-power',
+    premultipliedAlpha: true
+  });
+  if (!gl) return null;
+
+  const programma = gl.createProgram();
+  const vertice = spCompila(gl, gl.VERTEX_SHADER, SP_VERTICE);
+  const frammento = spCompila(gl, gl.FRAGMENT_SHADER, SP_FRAMMENTO);
+  if (!programma || !vertice || !frammento) return null;
+  gl.attachShader(programma, vertice);
+  gl.attachShader(programma, frammento);
+  gl.linkProgram(programma);
+  if (!gl.getProgramParameter(programma, gl.LINK_STATUS)) {
+    console.error('spettro:', gl.getProgramInfoLog(programma));
+    return null;
+  }
+  gl.useProgram(programma);
+
+  const { vertici, indici } = spScatola();
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, vertici, gl.STATIC_DRAW);
+  const posizione = gl.getAttribLocation(programma, 'posizione');
+  const normale = gl.getAttribLocation(programma, 'normale');
+  gl.enableVertexAttribArray(posizione);
+  gl.vertexAttribPointer(posizione, 3, gl.FLOAT, false, 24, 0);
+  gl.enableVertexAttribArray(normale);
+  gl.vertexAttribPointer(normale, 3, gl.FLOAT, false, 24, 12);
+  const elementi = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, elementi);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indici, gl.STATIC_DRAW);
+
+  const { perPiano, piani, file, copertura } = spStruttura(barre);
+  // Un byte per banda: la cascata intera sta nella stessa texture che servirebbe
+  // a una fila per evento - la memoria non cresce con i secondi, cresce con le
+  // file disegnate.
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8, barre, file);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, barre, file, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array(barre * file));
+  // `NEAREST` perché il vertice legge con `texelFetch`: nessun filtro entra in
+  // gioco, e chiederne uno lineare vorrebbe dire un'estensione da sperare.
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  const dove = (nome) => gl.getUniformLocation(programma, nome);
+  const uCamera = dove('camera');
+  const uCursori = dove('cursori');
+  const uFase = dove('fase');
+  const uFrazione = dove('frazione');
+  const uSpecchio = dove('specchio');
+  const uPrimario = dove('primario');
+  const uSecondario = dove('secondario');
+  const uAlone = dove('alone');
+  const uVelo = dove('velo');
+  const uLarghezza = dove('larghezza');
+  gl.uniform1i(dove('altezze'), 0);
+  gl.uniform1i(dove('colonne'), barre);
+  gl.uniform1i(dove('perPiano'), perPiano);
+  gl.uniform1i(dove('piani'), piani);
+  gl.uniform1f(dove('prof'), SP_PROFONDITA);
+  gl.uniform1f(uLarghezza, 4.6);
+  gl.uniform1f(dove('spessore'), barre > 256 ? 0.88 : 0.7);
+  // Più basse che nell'app: là la scena ha lo schermo tutto per sé, qui ci sta
+  // sopra del testo, e barre alte quanto quelle sono un muro dietro una frase.
+  gl.uniform1f(dove('alta'), 0.52);
+
+  // Nessuna miscelazione: la profondità basta a dire chi sta davanti, e le barre
+  // non sono trasparenti fra loro. L'alfa che esce dal frammento serve al
+  // compositore del browser, che posa la tela sopra il fondo della pagina.
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.clearColor(0, 0, 0, 0);
+
+  // ── La cascata, dal lato della CPU ────────────────────────────────────────
+  const anelli = [];
+  const parziali = [];
+  const cursori = new Int32Array(SP_PIANI_MAX);
+  const conta = new Int32Array(SP_PIANI_MAX);
+  for (let p = 0; p < piani; p += 1) {
+    anelli.push(new Uint8Array(barre * perPiano));
+    parziali.push(new Uint8Array(barre));
+  }
+  let fase = 0;
+
+  /**
+   * Il massimo di due file del piano di sotto diventa una fila di questo.
+   *
+   * Il massimo e non la media: due file riassunte devono dire «qui c'è stato un
+   * colpo», e la media di un colpo e di un silenzio è un mezzo colpo che non è
+   * mai suonato.
+   */
+  const accumula = (piano, fila) => {
+    const parziale = parziali[piano];
+    if (!parziale) return;
+    for (let i = 0; i < barre; i += 1) {
+      if (fila[i] > parziale[i]) parziale[i] = fila[i];
+    }
+    conta[piano] += 1;
+    if (conta[piano] >= 2) {
+      spingi(piano, parziale);
+      parziale.fill(0);
+      conta[piano] = 0;
+    }
+  };
+
+  /**
+   * Mette una fila in cima a un piano, e manda su quella che cade dal fondo.
+   *
+   * Della texture si scrive una riga sola: quella nuova. Le altre restano dov'erano,
+   * e la fila che avanza è il cursore che cambia.
+   */
+  const spingi = (piano, fila) => {
+    const anello = anelli[piano];
+    if (!anello) return;
+    const cursore = (cursori[piano] + 1) % perPiano;
+    const base = cursore * barre;
+    // Prima di sovrascriverlo: quel che sta in questo posto è la fila che esce
+    // dalla finestra del piano, e quello di sopra la sta aspettando.
+    if (piano + 1 < piani) accumula(piano + 1, anello.subarray(base, base + barre));
+    anello.set(fila, base);
+    cursori[piano] = cursore;
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, piano * perPiano + cursore, barre, 1, gl.RED, gl.UNSIGNED_BYTE, fila);
+  };
+
+  // Il pennello di un pixel per leggere i token della skin: vedi `spTinta`.
+  const pipetta = document.createElement('canvas');
+  pipetta.width = 1;
+  pipetta.height = 1;
+  const pennello = pipetta.getContext('2d', { willReadFrequently: true });
+  // Viva e non una fotografia: `getComputedStyle` torna una dichiarazione legata
+  // all'elemento, quindi rileggerla dentro il ciclo basta perché una skin nuova
+  // arrivi qui senza rimontare niente.
+  const stile = getComputedStyle(canvas);
+  let ultimiColori = '';
+
+  const prossimaFila = spSorgente(barre);
+  /** Il colpo: l'energia delle bande basse, con la sua inerzia. */
+  let colpo = 0;
+  /** Il colpo come lo vede la camera, inseguito nel tempo vero. */
+  let seguito = 0;
+  let precedente = 0;
+  let fotogramma = 0;
+  let vivo = true;
+  /** Il contesto se n'è andato: vedi `perso`, più sotto. */
+  let perduto = false;
+  let nato = performance.now();
+  /** Quando cade la prossima fila. */
+  let scadenza = nato;
+  // Il riflesso solo per i primi piani: più in fondo, a 0,22 di alfa, non si
+  // vede. Basta un `instanceCount` più piccolo, perché `fila = id / colonne`
+  // mette già le file vicine per prime.
+  const istanzeRiflesso = barre * Math.min(file, perPiano * SP_PIANI_RIFLESSI);
+
+  const misuraColpo = (dati) => {
+    // Le prime bande sono i bassi, e i bassi sono il tempo. Un ottavo delle
+    // barre, qualunque sia il loro numero.
+    const quante = Math.max(1, dati.length >> 3);
+    let bassi = 0;
+    for (let i = 0; i < quante; i += 1) bassi += dati[i] / 255;
+    bassi /= quante;
+    // Sale di scatto e scende piano, come le barre: un colpo di grancassa deve
+    // spingere la camera, non farla vibrare.
+    colpo = bassi > colpo ? bassi : colpo + (bassi - colpo) * 0.08;
+  };
+
+  /** Riempie la storia senza disegnare: la stanza si apre già abitata. */
+  const riempi = (quanti) => {
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    for (let i = 0; i < quanti; i += 1) {
+      const dati = prossimaFila();
+      spingi(0, dati);
+      fase = (fase + 1) % (1 << piani);
+      misuraColpo(dati);
+    }
+  };
+
+  const misura = () => {
+    // Un pixel per pixel CSS, e non due: è uno sfondo dietro del testo, non una
+    // superficie da leggere, e su uno schermo denso il doppio dei pixel qui non
+    // si vede e si sente.
+    const larghezzaPx = Math.round(canvas.clientWidth);
+    const altezzaPx = Math.round(canvas.clientHeight);
+    if (larghezzaPx < 2 || altezzaPx < 2) return false;
+    if (canvas.width !== larghezzaPx || canvas.height !== altezzaPx) {
+      canvas.width = larghezzaPx;
+      canvas.height = altezzaPx;
+      gl.viewport(0, 0, larghezzaPx, altezzaPx);
+      // Il terreno si allarga con la finestra, e il numero non è a occhio: la
+      // finestra dell'app è larga 1,88 volte la sua altezza e la sua stanza è 4,6
+      // unità, cioè 2,45 per unità di rapporto. Tenendo quella costante la scena
+      // copre lo stesso angolo di là — un tappeto in mezzo allo schermo se si
+      // lascia 4,6 su una tela larga il doppio, un muro se la si allarga a caso.
+      gl.uniform1f(uLarghezza, Math.max(4.6, 2.45 * (larghezzaPx / altezzaPx)));
+    }
+    return true;
+  };
+
+  const colori = () => {
+    // I colori si rileggono a ogni fotogramma come stringhe, che costa niente, e
+    // si riconvertono solo quando sono cambiate davvero: è così che una skin
+    // nuova arriva qui senza pagare un `getImageData` sessanta volte al secondo.
+    const primario = stile.getPropertyValue('--ae-acc').trim() || '#8b7cf6';
+    const secondario = stile.getPropertyValue('--ae-acc2').trim() || primario;
+    const alone = stile.getPropertyValue('--ae-glowA').trim() || primario;
+    const firma = primario + '|' + secondario + '|' + alone;
+    if (pennello && firma !== ultimiColori) {
+      ultimiColori = firma;
+      gl.uniform3fv(uPrimario, spTinta(pennello, primario));
+      gl.uniform3fv(uSecondario, spTinta(pennello, secondario));
+      gl.uniform3fv(uAlone, spTinta(pennello, alone));
+    }
+  };
+
+  const inquadra = (adesso, frazione) => {
+    const dt = precedente > 0 ? Math.min(adesso - precedente, 100) : 16.7;
+    precedente = adesso;
+    // L'attacco più svelto del rilascio, come per le barre: il colpo deve
+    // arrivare, e poi andarsene con calma.
+    const inerzia = colpo > seguito ? 120 : 450;
+    seguito += (colpo - seguito) * (1 - Math.exp(-dt / inerzia));
+
+    const tempo = (adesso - nato) / 1000;
+    // L'oscillazione: lentissima, e la sua ampiezza cresce col colpo. Quel che
+    // deve portare il movimento è il girare lento; il colpo lo accompagna.
+    const oscilla = moto ? Math.sin(tempo * 0.21) * (0.16 + seguito * 0.22) : 0;
+    const avvicina = moto ? seguito * 0.06 : 0;
+    // La stessa dell'app, e sta qui la ragione per cui la tela occupa i due
+    // terzi bassi della finestra invece di tutta: da quest'altezza l'orizzonte
+    // cade poco sopra il bordo alto della tela, e quel che resta sopra — dove
+    // sta il titolo — è pagina vuota, non un terreno da attraversare a nuoto.
+    const occhio = [Math.sin(oscilla) * 1.5, 0.72 + seguito * 0.03, 1.45 - avvicina];
+    const mira = [Math.sin(oscilla) * 0.4, 0.02, -2.2];
+    gl.uniformMatrix4fv(uCamera, false, spCamera(canvas.width / canvas.height, occhio, mira));
+    // Mezzo secondo di dissolvenza all'apertura: la scena arriva dietro una
+    // pagina che sta già ferma sullo schermo, e comparire di colpo la farebbe
+    // sembrare un guasto invece di una cosa che si accende.
+    gl.uniform1f(uVelo, Math.min(1, (adesso - nato) / 500));
+
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.bindVertexArray(vao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1iv(uCursori, cursori);
+    gl.uniform1i(uFase, fase);
+    gl.uniform1f(uFrazione, frazione);
+
+    // Il riflesso per primo: sta sotto il pavimento, quindi non copre niente. Le
+    // facce si rovesciano perché lo specchio inverte il verso, e senza questa
+    // riga la scheda butterebbe via proprio quelle che si vedono.
+    gl.frontFace(gl.CW);
+    gl.uniform1f(uSpecchio, -1);
+    gl.drawElementsInstanced(gl.TRIANGLES, indici.length, gl.UNSIGNED_SHORT, 0, istanzeRiflesso);
+    gl.frontFace(gl.CCW);
+    gl.uniform1f(uSpecchio, 1);
+    gl.drawElementsInstanced(gl.TRIANGLES, indici.length, gl.UNSIGNED_SHORT, 0, barre * file);
+  };
+
+  const disegna = (adesso) => {
+    if (!vivo) return;
+    fotogramma = requestAnimationFrame(disegna);
+    if (!misura()) return;
+    colori();
+
+    // Le file cadono a passo fisso, non una per fotogramma: a 144 hertz la scena
+    // andrebbe al doppio della velocità, e a 30 alla metà. Il tetto di quattro
+    // recuperi serve a chi torna su una scheda rimasta indietro di un minuto —
+    // si riparte da adesso invece di macinare duemila file in un fotogramma.
+    let quante = 0;
+    while (adesso >= scadenza && quante < 4) {
+      const dati = prossimaFila();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      spingi(0, dati);
+      // La fase resta dentro un giro completo della cascata: `2^piani` è il
+      // minimo comune multiplo di tutti i passi.
+      fase = (fase + 1) % (1 << piani);
+      misuraColpo(dati);
+      scadenza += SP_PASSO_MS;
+      quante += 1;
+    }
+    if (adesso - scadenza > SP_PASSO_MS * 8) scadenza = adesso;
+
+    inquadra(adesso, Math.max(0, Math.min(1, 1 - (scadenza - adesso) / SP_PASSO_MS)));
+  };
+
+  const ferma = () => {
+    if (!vivo) return;
+    vivo = false;
+    cancelAnimationFrame(fotogramma);
+  };
+
+  const riparti = () => {
+    if (vivo || !moto || perduto) return;
+    vivo = true;
+    const adesso = performance.now();
+    scadenza = adesso;
+    precedente = 0;
+    fotogramma = requestAnimationFrame(disegna);
+  };
+
+  // Una scheda in secondo piano non guarda niente. `requestAnimationFrame` di
+  // suo già rallenta, ma «rallenta» non è «si ferma», e il generatore continua a
+  // scrivere file che nessuno vede.
+  const visibilita = () => {
+    if (document.visibilityState === 'hidden') ferma();
+    else riparti();
+  };
+  document.addEventListener('visibilitychange', visibilita);
+
+  // Il contesto può andarsene — la scheda si riavvia, il portatile passa
+  // all'altra — e senza questo il ciclo continuerebbe a chiamare una scheda che
+  // non risponde più. Il flag serve al ritorno dalla scheda in secondo piano:
+  // senza, tornare qui riaccenderebbe il ciclo su un contesto morto, dove le
+  // chiamate non falliscono — non fanno niente — e si pagherebbero sessanta
+  // fotogrammi al secondo di niente. Rimetterlo in piedi vorrebbe dire
+  // ricostruire shader, texture e cascata: lo fa il ricaricamento della pagina,
+  // che è quel che uno fa comunque quando lo sfondo sparisce.
+  const perso = (e) => {
+    e.preventDefault();
+    perduto = true;
+    ferma();
+  };
+  canvas.addEventListener('webglcontextlost', perso);
+
+  /**
+   * Ridisegna il fotogramma fermo.
+   *
+   * Serve solo col movimento ridotto: là non c'è un ciclo che rilegga i token a
+   * ogni giro, quindi una skin nuova lascerebbe la scena del colore di prima e
+   * una finestra ridimensionata la lascerebbe stirata. Mentre la scena si anima
+   * non fa niente, perché il ciclo fa già tutte e due le cose.
+   */
+  const aggiorna = () => {
+    if (vivo || !misura()) return;
+    colori();
+    inquadra(performance.now(), 1);
+  };
+  let attesa = 0;
+  const ridimensiona = () => {
+    clearTimeout(attesa);
+    attesa = setTimeout(aggiorna, 140);
+  };
+  if (!moto) window.addEventListener('resize', ridimensiona);
+
+  if (moto) {
+    // Otto secondi di storia prima del primo fotogramma: la pagina si apre su
+    // una stanza già abitata invece che su un pavimento piatto che si riempie
+    // mentre qualcuno legge il titolo.
+    riempi(240);
+    nato = performance.now();
+    scadenza = nato;
+    fotogramma = requestAnimationFrame(disegna);
+  } else {
+    // Movimento ridotto: mezzo minuto di storia in un colpo, un fotogramma, e
+    // basta. Resta un paesaggio - che è quel che la preferenza chiede, non una
+    // versione più lenta della stessa animazione.
+    riempi(copertura);
+    vivo = false;
+    nato = performance.now() - 600;
+    if (misura()) {
+      colori();
+      seguito = colpo;
+      inquadra(performance.now(), 1);
+    }
+  }
+
+  return {
+    aggiorna,
+    chiudi() {
+      vivo = false;
+      cancelAnimationFrame(fotogramma);
+      clearTimeout(attesa);
+      window.removeEventListener('resize', ridimensiona);
+      document.removeEventListener('visibilitychange', visibilita);
+      canvas.removeEventListener('webglcontextlost', perso);
+      gl.deleteTexture(texture);
+      gl.deleteBuffer(buffer);
+      gl.deleteBuffer(elementi);
+      gl.deleteVertexArray(vao);
+      gl.deleteProgram(programma);
+      gl.deleteShader(vertice);
+      gl.deleteShader(frammento);
+    }
+  };
+}
+
+function detectLang() {
+  try {
+    const s = localStorage.getItem('aether-lang');
+    if (s && I18N[s]) return s;
+  } catch (e) {}
+  const n = ((navigator.languages && navigator.languages[0]) || navigator.language || 'en').slice(0, 2).toLowerCase();
+  return I18N[n] ? n : 'en';
+}
+
+class Component extends DCLogic {
+  state = { lang: detectLang() };
+  renderVals() {
+    const L = I18N[this.state.lang] || I18N.en;
+    const g = ['#3a2a6e,#8b7cf6', '#0d4a4f,#4fd6e0', '#5c2b18,#d97b3a', '#2a3a5e,#5b8ac9', '#3d2f4a,#8a6fb0', '#1d3a2a,#4f9e6a', '#4a2030,#c05070', '#22303c,#5f7d94', '#40331a,#b08a3c', '#2b2340,#6b5bb0'];
+    const pair = i => ({ c1: g[i % g.length].split(',')[0], c2: g[i % g.length].split(',')[1] });
+    const T = [['Weird Fishes / Arpeggi', 'Radiohead', 'In Rainbows', '5:18'], ['Nude', 'Radiohead', 'In Rainbows', '4:15'], ['Teardrop', 'Massive Attack', 'Mezzanine', '5:29'], ['Svefn-g-englar', 'Sigur Rós', 'Ágætis byrjun', '10:04'], ['An Ending (Ascent)', 'Brian Eno', 'Apollo', '4:24'], ['Untrue', 'Burial', 'Untrue', '6:19'], ['Windowlicker', 'Aphex Twin', 'Windowlicker', '6:07'], ['Sea Change', 'Beck', 'Sea Change', '4:41'], ['A Walk', 'Tycho', 'Dive', '5:37'], ['Alice', 'Tom Waits', 'Alice', '4:29'], ['Lift Your Skinny Fists', 'Godspeed', 'Lift Your…', '9:12']];
+
+    return {
+      rows: T.map((r, i) => Object.assign({ n: String(i + 1).padStart(2, '0'), t: r[0], a: r[1], al: r[2], d: r[3] }, pair(i))),
+      bars: Array.from({ length: 28 }, (_, i) => ({ dur: (0.5 + (i % 7) * 0.13).toFixed(2) + 's', del: (i * 0.045).toFixed(2) + 's' })),
+      marquee: Array.from({ length: 2 }).flatMap(() => L.marquee.map(t => ({ t }))),
+      pillars: ['#a-lock', '#a-bolt', '#a-skin', '#a-code'].map((i, k) => ({ i, t: L.pillars[k].t, b: L.pillars[k].b })),
+      chapters: L.chapters,
+      covers: Array.from({ length: 10 }, (_, i) => Object.assign({ t: ['In Rainbows', 'Mezzanine', 'Untrue', 'Dive', 'Apollo', 'Kid A', 'Alice', 'Sea Change', 'Ágætis', 'Blue Lines', 'Selected Works', 'Vespertine', 'Bloom', 'Ambient 1', 'Moon Safari'][i], a: ['Radiohead', 'Massive Attack', 'Burial', 'Tycho', 'Eno', 'Radiohead', 'Tom Waits', 'Beck', 'Sigur Rós', 'Massive Attack', 'Aphex Twin', 'Björk', 'Beach House', 'Eno', 'Air'][i] }, pair(i + 2))),
+      artists: Array.from({ length: 8 }, (_, i) => Object.assign({
+        t: ['Radiohead', 'Massive Attack', 'Brian Eno', 'Burial', 'Sigur Rós', 'Aphex Twin', 'Tycho', 'Björk'][i],
+        al: [9, 5, 24, 3, 8, 13, 6, 10][i] + ' ' + L['ui.albumsLow'], tr: [118, 62, 291, 34, 76, 154, 71, 122][i] + ' tr',
+        bg: i === 0 ? 'var(--ae-accSoft,rgba(139,124,246,.16))' : 'transparent', fw: i === 0 ? 600 : 400
+      }, pair(i + 3))),
+      small: Array.from({ length: 6 }, (_, i) => pair(i + 1)),
+      skins: Object.keys(SKINS).map(id => ({ id, name: SKINS[id].name, meta: L.skinMeta[id], sw1: SKINS[id].sw[0], sw2: SKINS[id].sw[1], sw3: SKINS[id].sw[2] })),
+      tokens: TOKENS.map((k, i) => ({ k, v: TOKEN_VARS[i] })),
+      budget: Array.from({ length: 10 }, (_, i) => ({ i })),
+      studioPoints: L.studioPoints.map((p, k) => ({ n: L.ruleWord + ' 0' + (k + 1), t: p.t, b: p.b })),
+      stats: [47, 52, 11, 6].map((n, k) => ({ n, t: L.stats[k].t, b: L.stats[k].b })),
+      platforms: [
+        { n: 'Desktop · Windows', pct: 77, c: '#8b7cf6', s: L.platStatus.prog, d: '10 / 13' },
+        { n: 'Android', pct: 0, c: 'var(--ae-t3,rgba(255,255,255,.46))', s: L.platStatus.none, d: '0 / —' },
+        { n: 'Linux', pct: 0, c: 'var(--ae-t3,rgba(255,255,255,.46))', s: L.platStatus.none, d: '0 / —' },
+        { n: 'macOS', pct: 0, c: 'var(--ae-t3,rgba(255,255,255,.46))', s: L.platStatus.none, d: '0 / —' }
+      ],
+      winRoadmap: ['done', 'done', 'done', 'done', 'done', 'done', 'done', 'done', 'todo', 'done', 'todo', 'todo', 'prog'].map((k, i) => ({
+        n: String(i + 1).padStart(2, '0'),
+        s: L.road[k],
+        sc: k === 'done' ? '#4ade80' : k === 'prog' ? 'var(--ae-acc,#8b7cf6)' : 'var(--ae-t3,rgba(255,255,255,.46))',
+        t: L.roadItems[i]
+      })),
+      setRoot: el => { this.root = el; }
+    };
+  }
+
+  componentDidMount() {
+    const root = this.root;
+    if (!root) return;
+    const amb = Number(this.props.ambient != null ? this.props.ambient : 70) / 100;
+    this._amb = amb;
+    this.applySkin(this.props.skin || 'midnight');
+
+    root.querySelectorAll('[data-amb]').forEach((el, i) => { el.style.opacity = String((i ? 0.6 : 0.75) * amb); });
+    const cg = root.querySelector('[data-cursor-glow]');
+    if (cg) cg.style.opacity = String(0.5 * amb);
+
+    const motion = this.props.motion !== false && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const fine = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+    this._fine = fine;
+    this._motion = motion;
+    this._aurora = root.querySelector('[data-aurora]');
+    this._logo = root.querySelector('[data-logo]');
+    if (this._aurora) this._aurora.style.opacity = String(0.28 * amb);
+
+    // Lo spettro dietro a tutto: è la scena di `parti/Spettro3D.tsx`, e le
+    // bande qui se le inventa un generatore. Meno barre su uno schermo stretto,
+    // che è dove sta la scheda video che se ne accorge.
+    const tela = root.querySelector('[data-spettro]');
+    if (tela) {
+      const largo = window.innerWidth;
+      this._spettro = spAvvia(tela, { moto: motion, barre: largo < 700 ? 48 : largo < 1200 ? 96 : 128 });
+      // L'opacità la mette `applySkin`, che sa se la skin è chiara. Ma solo se
+      // la scena c'è davvero: senza WebGL 2 la tela resta una tela vuota.
+      if (this._spettro) this.applySkin(this.props.skin || 'midnight');
+    }
+
+    this._modified = (() => {
+      const m = String(document.lastModified || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if (m) return new Date(+m[3], +m[1] - 1, +m[2]);
+      const n = new Date();
+      return Number.isNaN(n.getTime()) ? null : n;
+    })();
+
+    this.applyLang(this.state.lang, motion);
+
+    const ts = root.querySelector('[data-tour-sticky]');
+    if (ts) this.setSvh(ts, '100vh', '100svh');
+    const mm = root.querySelector('[data-mobmenu]');
+    if (mm) {
+      mm.style.paddingTop = 'calc(92px + env(safe-area-inset-top,0px))';
+      mm.style.paddingBottom = 'calc(40px + env(safe-area-inset-bottom,0px))';
+    }
+    const marq = root.querySelector('[data-marq]');
+    if (marq) {
+      marq.addEventListener('mouseenter', () => { marq.style.animationPlayState = motion ? 'paused' : 'running'; });
+      marq.addEventListener('mouseleave', () => { marq.style.animationPlayState = 'running'; });
+    }
+    this._onResizeDeb = () => { if (this._rt) clearTimeout(this._rt); this._rt = setTimeout(() => this.fitChapters(), 120); };
+    window.addEventListener('resize', this._onResizeDeb);
+
+    // reveals
+    const rvs = Array.from(root.querySelectorAll('[data-rv]'));
+    rvs.forEach(el => {
+      const d = el.getAttribute('data-d') || 0;
+      el.style.opacity = '0';
+      el.style.transform = 'translateY(38px) scale(.975)';
+      el.style.filter = 'blur(9px)';
+      el.style.clipPath = 'inset(0 0 12% 0)';
+      el.style.willChange = 'transform,opacity,filter';
+      el.style.transition = 'opacity .9s cubic-bezier(.16,1,.3,1) ' + d + 'ms, transform 1.05s cubic-bezier(.16,1,.3,1) ' + d + 'ms, filter .9s ease ' + d + 'ms, clip-path 1.05s cubic-bezier(.16,1,.3,1) ' + d + 'ms';
+    });
+    const show = el => {
+      el.style.opacity = '1'; el.style.transform = 'none';
+      el.style.filter = 'none'; el.style.clipPath = 'inset(0 0 0 0)';
+      setTimeout(() => { el.style.willChange = 'auto'; el.style.clipPath = 'none'; }, 1600);
+    };
+    if (!motion) { rvs.forEach(show); } else {
+      const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { show(e.target); io.unobserve(e.target); } }), { rootMargin: '0px 0px -12% 0px' });
+      rvs.forEach(el => io.observe(el));
+      this._io = io;
+      this._safety = setTimeout(() => rvs.forEach(show), 4000);
+    }
+
+    // counters
+    const counters = Array.from(root.querySelectorAll('[data-count]'));
+    const cio = new IntersectionObserver(es => es.forEach(e => {
+      if (!e.isIntersecting) return;
+      cio.unobserve(e.target);
+      const target = Number(e.target.getAttribute('data-count')); const t0 = performance.now();
+      const step = now => {
+        const p = Math.min(1, (now - t0) / 1100); const eased = 1 - Math.pow(1 - p, 3);
+        e.target.textContent = String(Math.round(target * eased));
+        if (p < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }), { rootMargin: '0px 0px -15% 0px' });
+    counters.forEach(el => cio.observe(el));
+    this._cio = cio;
+
+    // progress bars
+    const fills = Array.from(root.querySelectorAll('[data-fill]'));
+    fills.forEach(f => { f.style.transition = 'width 1.2s cubic-bezier(.16,1,.3,1)'; });
+    const setFill = f => { f.style.width = (Number(f.getAttribute('data-pct')) || 0) + '%'; };
+    if (!motion) { fills.forEach(setFill); } else {
+      const fio = new IntersectionObserver(es => es.forEach(e => {
+        if (!e.isIntersecting) return;
+        fio.unobserve(e.target);
+        setTimeout(() => setFill(e.target), 160);
+      }), { rootMargin: '0px 0px -15% 0px' });
+      fills.forEach(f => fio.observe(f));
+      this._fio = fio;
+    }
+
+    // row hover
+    root.querySelectorAll('[data-row]').forEach(r => {
+      r.addEventListener('mouseenter', () => { r.style.background = 'var(--ae-surf2,#16161f)'; });
+      r.addEventListener('mouseleave', () => { r.style.background = 'transparent'; });
+    });
+    root.querySelectorAll('[data-tilt]').forEach(c => {
+      c.style.transition = (c.style.transition || '') + ',transform .5s cubic-bezier(.16,1,.3,1),box-shadow .5s ease';
+      c.addEventListener('mousemove', ev => {
+        if (!motion || !fine) return;
+        const b = c.getBoundingClientRect();
+        const px = (ev.clientX - b.left) / b.width, py = (ev.clientY - b.top) / b.height;
+        const rx = (py - 0.5) * -11, ry = (px - 0.5) * 11;
+        c.style.transition = 'transform .12s linear,box-shadow .3s ease,background-color .7s ease,border-color .3s ease';
+        c.style.transform = 'perspective(900px) rotateX(' + rx + 'deg) rotateY(' + ry + 'deg) translateY(-10px) scale(1.025)';
+        c.style.borderColor = 'var(--ae-acc,#8b7cf6)';
+        c.style.boxShadow = '0 34px 70px -34px var(--ae-glowA,rgba(139,124,246,.30))';
+        c.style.backgroundImage = 'radial-gradient(420px circle at ' + (px * 100) + '% ' + (py * 100) + '%,var(--ae-accSoft,rgba(139,124,246,.16)),transparent 62%)';
+      });
+      c.addEventListener('mouseleave', () => {
+        c.style.transition = 'transform .7s cubic-bezier(.16,1,.3,1),box-shadow .5s ease,background-color .7s ease,border-color .5s ease';
+        c.style.transform = 'none'; c.style.borderColor = 'var(--ae-line,rgba(255,255,255,.08))';
+        c.style.boxShadow = 'none'; c.style.backgroundImage = 'none';
+      });
+    });
+    root.querySelectorAll('[data-magnet]').forEach(m => {
+      m.style.willChange = 'transform';
+      m.addEventListener('mousemove', ev => {
+        if (!motion || !fine) return;
+        const b = m.getBoundingClientRect();
+        const dx = (ev.clientX - b.left - b.width / 2) / b.width;
+        const dy = (ev.clientY - b.top - b.height / 2) / b.height;
+        m.style.transition = 'transform .18s cubic-bezier(.2,.8,.2,1),box-shadow .3s ease,background-color .7s ease';
+        m.style.transform = 'translate(' + (dx * 16) + 'px,' + (dy * 12 - 3) + 'px) scale(1.07)';
+        m.style.boxShadow = '0 22px 50px -20px var(--ae-glowA,rgba(139,124,246,.45))';
+      });
+      m.addEventListener('mouseleave', () => {
+        m.style.transition = 'transform .8s cubic-bezier(.16,1,.3,1),box-shadow .5s ease,background-color .7s ease';
+        m.style.transform = 'none'; m.style.boxShadow = 'none';
+      });
+    });
+    if (fine) root.querySelectorAll('[data-road]').forEach(r => {
+      r.addEventListener('mouseenter', () => { r.style.background = 'var(--ae-surf,#0e0e14)'; r.style.paddingLeft = '18px'; });
+      r.addEventListener('mouseleave', () => { r.style.background = 'transparent'; r.style.paddingLeft = '6px'; });
+    });
+
+    // skin picker
+    const picker = root.querySelector('[data-skins]');
+    if (picker) picker.addEventListener('click', ev => {
+      const b = ev.target.closest('[data-skin]');
+      if (!b) return;
+      const r = b.getBoundingClientRect();
+      this.ripple(r.left + r.width / 2, r.top + r.height / 2, b.getAttribute('data-skin'));
+      this.applySkin(b.getAttribute('data-skin'));
+    });
+
+    // language picker
+    root.addEventListener('click', ev => {
+      const b = ev.target.closest('[data-lang]');
+      if (!b) return;
+      const lg = b.getAttribute('data-lang');
+      if (this._setMenu) this._setMenu(false);
+      if (lg === this.state.lang) return;
+      this.setState({ lang: lg }, () => this.applyLang(lg, false));
+    });
+
+    // mobile menu
+    const burger = root.querySelector('[data-burger]');
+    const menu = root.querySelector('[data-mobmenu]');
+    if (burger && menu) {
+      const bars = Array.from(burger.querySelectorAll('[data-bar]'));
+      this._menuOpen = false;
+      const setMenu = on => {
+        if (on === this._menuOpen) return;
+        this._menuOpen = on;
+        if (on) {
+          menu.style.display = 'flex';
+          requestAnimationFrame(() => { menu.style.opacity = '1'; });
+          document.body.style.overflow = 'hidden';
+        } else {
+          menu.style.opacity = '0';
+          setTimeout(() => { if (!this._menuOpen) menu.style.display = 'none'; }, 360);
+          document.body.style.overflow = '';
+        }
+        if (bars.length === 3) {
+          bars[0].style.transform = on ? 'translateY(6.1px) rotate(45deg)' : 'none';
+          bars[1].style.opacity = on ? '0' : '1';
+          bars[2].style.transform = on ? 'translateY(-6.1px) rotate(-45deg)' : 'none';
+        }
+      };
+      this._setMenu = setMenu;
+      burger.addEventListener('click', () => setMenu(!this._menuOpen));
+      menu.querySelectorAll('a').forEach(a => a.addEventListener('click', () => setMenu(false)));
+      this._onKey = e => { if (e.key === 'Escape') setMenu(false); };
+      window.addEventListener('keydown', this._onKey);
+    }
+
+    // La lista d'attesa non c'è più: vedi il commento accanto alla sezione
+    // #access. Un modulo che finge di iscrivere qualcuno è l'unica cosa su
+    // questa pagina che poteva danneggiare chi la legge.
+
+    // scroll
+    const nav = root.querySelector('[data-nav]');
+    const prog = root.querySelector('[data-progress]');
+    const tilt = root.querySelector('[data-hero-tilt]');
+    const heroStage = root.querySelector('[data-hero-stage]');
+    const heroFixed = root.querySelector('[data-hero-fixed]');
+    const tour = root.querySelector('[data-tour]');
+    const screens = Array.from(root.querySelectorAll('[data-tscreen]'));
+    const chapters = Array.from(root.querySelectorAll('[data-chapter]'));
+    const tabs = Array.from(root.querySelectorAll('[data-tab]'));
+    const pars = Array.from(root.querySelectorAll('[data-par]'));
+    let active = -1;
+
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const setActive = i => {
+      if (i === active) return; active = i;
+      chapters.forEach((c, k) => {
+        c.style.opacity = k === i ? '1' : '0';
+        c.style.transform = k === i ? 'none' : 'translateY(24px)';
+      });
+      tabs.forEach((t, k) => {
+        t.style.background = k === i ? 'var(--ae-acc,#8b7cf6)' : 'transparent';
+        t.style.color = k === i ? 'var(--ae-ink,#09090d)' : 'var(--ae-t2,rgba(255,255,255,.62))';
+        t.style.borderColor = k === i ? 'var(--ae-acc,#8b7cf6)' : 'var(--ae-line,rgba(255,255,255,.10))';
+      });
+    };
+
+    const frame = () => {
+      this._q = false;
+      const y = window.scrollY || document.documentElement.scrollTop;
+      const vh = window.innerHeight;
+      const docH = document.documentElement.scrollHeight - vh;
+      const pTotal = clamp(y / Math.max(1, docH), 0, 1);
+      if (prog) prog.style.width = pTotal * 100 + '%';
+      this.velaSpettro();
+      // scroll velocity drives the ambient field, the aurora and the progress glow
+      const vel = clamp(Math.abs(y - (this._lastY || 0)) / 60, 0, 1);
+      this._lastY = y;
+      if (motion) {
+        if (prog) { prog.style.height = (2 + vel * 3) + 'px'; prog.style.boxShadow = '0 0 ' + (10 + vel * 34) + 'px var(--ae-acc,#8b7cf6)'; }
+        if (this._aurora) this._aurora.style.transform = 'rotate(' + (pTotal * 220) + 'deg) scale(' + (1 + vel * 0.16) + ')';
+        if (this._logo) this._logo.style.transform = 'rotate(' + (pTotal * 540) + 'deg)';
+        root.querySelectorAll('[data-amb]').forEach((el, i) => {
+          el.style.filter = 'blur(' + ((i ? 28 : 24) + vel * 26) + 'px)';
+        });
+      }
+      if (nav) {
+        const on = y > 40;
+        nav.style.background = on ? 'var(--ae-navBg,rgba(9,9,13,.72))' : 'transparent';
+        nav.style.borderBottomColor = on ? 'var(--ae-line,rgba(255,255,255,.08))' : 'transparent';
+        nav.style.padding = on ? '9px clamp(14px,4vw,34px)' : '12px clamp(14px,4vw,34px)';
+        nav.style.paddingTop = 'calc(' + (on ? 9 : 12) + 'px + env(safe-area-inset-top,0px))';
+      }
+      const cw = root.clientWidth;
+      const mob = cw < 800, nrw = cw < 1000;
+      if (mob !== this._mob || nrw !== this._nrw) { this._mob = mob; this._nrw = nrw; this.layout(mob, nrw); }
+      if (heroStage && heroFixed && tilt) {
+        const sw = heroStage.clientWidth;
+        // mobile crops the left rail and scales a 1024px window; desktop fits all 1240px
+        const design = mob ? 1024 : 1240;
+        const ratio = mob ? Math.max(0.54, Math.min(1, (sw - 18) / design)) : Math.min(1, (sw - 18) / design);
+        const offset = mob ? -216 * ratio + 9 : (sw - 1240 * ratio) / 2;
+        heroFixed.style.transform = 'translateX(' + offset + 'px) scale(' + ratio + ')';
+        tilt.style.height = Math.round(662 * ratio) + 'px';
+      }
+      if (tilt && motion) {
+        const p = clamp(y / (vh * 0.8), 0, 1);
+        tilt.style.transform = 'rotateX(' + (16 * (1 - p)) + 'deg) translateY(' + (44 * (1 - p)) + 'px) scale(' + (0.94 + 0.06 * p) + ')';
+      }
+      if (motion) pars.forEach(el => {
+        const s = Number(el.getAttribute('data-speed')) || 0;
+        el.style.marginTop = (y * s) + 'px';
+      });
+      if (tour && screens.length) {
+        const r = tour.getBoundingClientRect();
+        const total = tour.offsetHeight - vh;
+        const p = clamp(-r.top / Math.max(1, total), 0, 1);
+        const seg = p * 3;
+        const stg = root.querySelector('[data-tour-stage]');
+        // never shrink below a legible size: past that point the stage crops instead
+        const raw = stg ? Math.min(1, stg.clientWidth / 1000, stg.clientHeight / 620) : 1;
+        const fit = stg ? Math.max(raw, Math.min(0.78, stg.clientWidth / 520)) : 1;
+        screens.forEach((sc, i) => {
+          const d = clamp(seg - i, -1, 2);
+          let op, tx, scl;
+          if (d <= 0) { op = 1 + d; tx = -d * 42; scl = 1 + d * 0.06; }
+          else if (d < 1) { op = 1; tx = 0; scl = 1; }
+          else { const o = clamp(d - 1, 0, 1); op = 1 - o; tx = -o * 46; scl = 1 - o * 0.07; }
+          if (i === screens.length - 1 && d >= 1) { op = 1; tx = 0; scl = 1; }
+          sc.style.opacity = String(clamp(op, 0, 1));
+          sc.style.transform = 'translate(-50%,-50%) translateY(' + tx + 'px) scale(' + (fit * scl) + ')';
+          sc.style.pointerEvents = op > 0.5 ? 'auto' : 'none';
+          sc.style.zIndex = String(Math.round(op * 10));
+        });
+        setActive(clamp(Math.floor(seg), 0, 2));
+      }
+    };
+    this._onScroll = () => { if (!this._q) { this._q = true; requestAnimationFrame(frame); } };
+    window.addEventListener('scroll', this._onScroll, { passive: true });
+    window.addEventListener('resize', this._onScroll);
+    setActive(0);
+    frame();
+
+    if (motion && cg) {
+      const st = { x: window.innerWidth / 2, y: window.innerHeight / 2, cx: window.innerWidth / 2, cy: window.innerHeight / 2 };
+      this._onMove = e => { st.x = e.clientX; st.y = e.clientY; };
+      window.addEventListener('mousemove', this._onMove, { passive: true });
+      const loop = () => {
+        const dx = st.x - st.cx, dy = st.y - st.cy;
+        st.cx += dx * 0.09; st.cy += dy * 0.09;
+        const sp = Math.min(1, Math.hypot(dx, dy) / 220);
+        const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+        cg.style.transform = 'translate3d(' + st.cx + 'px,' + st.cy + 'px,0) rotate(' + ang + 'deg) scale(' + (1 + sp * 0.85) + ',' + (1 - sp * 0.32) + ')';
+        this._raf = requestAnimationFrame(loop);
+      };
+      loop();
+    }
+  }
+
+  layout(mob, nrw) {
+    const root = this.root;
+    if (!root) return;
+    const set = (sel, v) => { const el = root.querySelector(sel); if (el) el.style.display = v; };
+    set('[data-navlinks]', nrw ? 'none' : 'flex');
+    set('[data-navbadge]', nrw ? 'none' : 'inline-block');
+    set('[data-navcta]', nrw ? 'none' : 'flex');
+    set('[data-nav] [data-langsel]', nrw ? 'none' : 'flex');
+    set('[data-burger]', nrw ? 'flex' : 'none');
+    if (!nrw && this._setMenu) this._setMenu(false);
+    root.querySelectorAll('[data-stack]').forEach(el => {
+      el.style.gridTemplateColumns = mob ? '1fr' : el.getAttribute('data-cols');
+    });
+    const stage = root.querySelector('[data-tour-stage]');
+    if (stage) { if (mob) this.setSvh(stage, '46vh', '46svh'); else stage.style.height = 'min(62vh,600px)'; }
+    this.fitChapters();
+    const f2 = root.querySelector('[data-formrow]');
+    if (f2) f2.style.flexDirection = mob ? 'column' : 'row';
+    root.querySelectorAll('[data-par]').forEach(el => { el.style.display = mob ? 'none' : 'block'; });
+    set('[data-cursor-glow]', this._fine && !mob ? 'block' : 'none');
+    set('[data-aurora]', mob ? 'none' : 'block');
+  }
+
+  /**
+   * Quanto si vede la scena, adesso.
+   *
+   * Piena sopra la piega e poco più di metà sotto. Non è timidezza: dalla
+   * seconda schermata in giù la pagina è testo su fondo trasparente — le righe
+   * della roadmap non hanno una scheda sotto — e un pavimento di barre alle
+   * spalle di un elenco è esattamente il caso in cui uno sfondo smette di essere
+   * uno sfondo. Nella prima schermata invece non c'è niente da leggere che non
+   * sia il titolo, ed è lì che la scena serve.
+   *
+   * Nessuna transizione CSS: la chiama lo scorrimento a ogni fotogramma, e una
+   * transizione le starebbe dietro con mezzo secondo di ritardo.
+   */
+  velaSpettro() {
+    const tela = this.root && this.root.querySelector('[data-spettro]');
+    if (!tela || !this._spettro) return;
+    const y = window.scrollY || document.documentElement.scrollTop || 0;
+    const giu = Math.max(0, Math.min(1, y / Math.max(1, window.innerHeight)));
+    tela.style.opacity = String((this._spettroBase || 0.3) * (1 - 0.44 * giu));
+  }
+
+  setSvh(el, vh, svh) {
+    el.style.height = vh;
+    try { if (window.CSS && CSS.supports('height', svh)) el.style.height = svh; } catch (e) {}
+  }
+
+  fitChapters() {
+    const root = this.root;
+    if (!root) return;
+    const ch = root.querySelector('[data-chapters]');
+    if (!ch) return;
+    if ((root.clientWidth || 0) >= 800) { ch.style.minHeight = '250px'; return; }
+    let h = 0;
+    ch.querySelectorAll('[data-chapter]').forEach(c => {
+      c.style.top = 'auto'; c.style.bottom = 'auto';
+      h = Math.max(h, c.offsetHeight);
+      c.style.top = '0'; c.style.bottom = '0';
+    });
+    if (h > 0) ch.style.minHeight = h + 'px';
+  }
+
+  fmtDate() {
+    if (!this._modified) return '';
+    try { return new Intl.DateTimeFormat(this.state.lang, { day: 'numeric', month: 'long', year: 'numeric' }).format(this._modified); } catch (e) { return String(this._modified.getFullYear()); }
+  }
+
+  ripple(x, y, id) {
+    if (!this._motion) return;
+    const s = SKINS[id] || SKINS.midnight;
+    const d = document.createElement('div');
+    const R = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
+    d.style.cssText = 'position:fixed;left:' + x + 'px;top:' + y + 'px;width:' + (R * 2) + 'px;height:' + (R * 2) + 'px;margin:' + (-R) + 'px 0 0 ' + (-R) + 'px;border-radius:50%;pointer-events:none;z-index:70;opacity:.9;transform:scale(0);transition:transform 1.05s cubic-bezier(.16,1,.3,1),opacity .95s ease .25s;background:radial-gradient(circle,' + s.v['--ae-acc'] + '55,' + s.v['--ae-bg'] + '00 68%);box-shadow:inset 0 0 120px ' + s.v['--ae-acc'] + '44';
+    document.body.appendChild(d);
+    requestAnimationFrame(() => { d.style.transform = 'scale(1)'; d.style.opacity = '0'; });
+    setTimeout(() => d.remove(), 1500);
+  }
+
+  componentWillUnmount() {
+    if (this._spettro) this._spettro.chiudi();
+    if (this._raf) cancelAnimationFrame(this._raf);
+    window.removeEventListener('scroll', this._onScroll);
+    window.removeEventListener('resize', this._onScroll);
+    if (this._onMove) window.removeEventListener('mousemove', this._onMove);
+    if (this._io) this._io.disconnect();
+    if (this._cio) this._cio.disconnect();
+    if (this._safety) clearTimeout(this._safety);
+    if (this._onKey) window.removeEventListener('keydown', this._onKey);
+    if (this._onResizeDeb) window.removeEventListener('resize', this._onResizeDeb);
+    if (this._rt) clearTimeout(this._rt);
+    document.body.style.overflow = '';
+  }
+
+  componentDidUpdate(prev, prevState) {
+    if (prev.skin !== this.props.skin) this.applySkin(this.props.skin || 'midnight');
+    if (prevState && prevState.lang !== this.state.lang) this.applyLang(this.state.lang, false);
+  }
+
+  buildSplit(el, animate) {
+    const base = Number(el.getAttribute('data-d')) || 0;
+    const words = (el.getAttribute('data-text') || el.textContent || '').trim().split(/\s+/);
+    el.textContent = '';
+    el.style.perspective = '900px';
+    words.forEach((w, i) => {
+      const mask = document.createElement('span');
+      mask.style.display = 'inline-block';
+      mask.style.overflow = 'hidden';
+      mask.style.verticalAlign = 'bottom';
+      mask.style.padding = '0 0 .08em';
+      const inner = document.createElement('span');
+      inner.textContent = w;
+      inner.setAttribute('data-word', '');
+      inner.style.display = 'inline-block';
+      if (animate) {
+        inner.style.willChange = 'transform';
+        inner.style.transform = 'translateY(108%) rotateX(-62deg) scale(1.12)';
+        inner.style.opacity = '0';
+        inner.style.filter = 'blur(12px)';
+        const d = base + i * 95;
+        inner.style.transition = 'transform 1.15s cubic-bezier(.16,1,.3,1) ' + d + 'ms, opacity .8s ease ' + d + 'ms, filter .9s ease ' + d + 'ms';
+      }
+      mask.appendChild(inner);
+      el.appendChild(mask);
+      if (i < words.length - 1) el.appendChild(document.createTextNode(' '));
+    });
+    if (animate) requestAnimationFrame(() => requestAnimationFrame(() => {
+      el.querySelectorAll('[data-word]').forEach(x => { x.style.transform = 'none'; x.style.opacity = '1'; x.style.filter = 'none'; });
+    }));
+  }
+
+  applyLang(lang, animateSplit) {
+    const L = I18N[lang] || I18N.en;
+    const root = this.root;
+    if (!root) return;
+    document.documentElement.lang = lang;
+    root.querySelectorAll('[data-i18n]').forEach(el => {
+      const v = L[el.getAttribute('data-i18n')];
+      if (v == null) return;
+      if (el.hasAttribute('data-split')) { el.setAttribute('data-text', v); this.buildSplit(el, !!animateSplit); }
+      else el.textContent = v;
+    });
+    root.querySelectorAll('[data-lang]').forEach(b => {
+      const on = b.getAttribute('data-lang') === lang;
+      b.style.background = on ? 'var(--ae-acc,#8b7cf6)' : 'transparent';
+      b.style.color = on ? 'var(--ae-ink,#09090d)' : 'var(--ae-t2,rgba(255,255,255,.62))';
+    });
+    try { localStorage.setItem('aether-lang', lang); } catch (e) {}
+    const upd = root.querySelector('[data-updated]');
+    if (upd) upd.textContent = this.fmtDate();
+    this.fitChapters();
+  }
+
+  applySkin(id) {
+    const s = SKINS[id] || SKINS.midnight;
+    const root = this.root;
+    if (!root) return;
+    Object.keys(s.v).forEach(k => root.style.setProperty(k, s.v[k]));
+    Object.keys(s.v).forEach(k => document.documentElement.style.setProperty(k, s.v[k]));
+    const light = id === 'paper';
+    root.style.setProperty('--ae-navBg', light ? 'rgba(244,242,237,.76)' : 'rgba(9,9,13,.72)');
+    document.body.style.background = s.v['--ae-bg'];
+    document.documentElement.style.colorScheme = light ? 'light' : 'dark';
+    const tc = document.head.querySelector('meta[name="theme-color"]');
+    if (tc) tc.setAttribute('content', s.v['--ae-bg']);
+
+    root.querySelectorAll('[data-skin]').forEach(b => {
+      const on = b.getAttribute('data-skin') === id;
+      b.style.borderColor = on ? 'var(--ae-acc,#8b7cf6)' : 'var(--ae-line,rgba(255,255,255,.10))';
+      b.style.transform = on ? 'translateY(-3px)' : 'none';
+      b.style.boxShadow = on ? '0 12px 30px -12px var(--ae-glowA,rgba(139,124,246,.30))' : 'none';
+    });
+    root.querySelectorAll('[data-swatch]').forEach(el => {
+      el.style.background = s.v[el.getAttribute('data-swatch')] || 'transparent';
+    });
+    // Le barre su un fondo chiaro sono scure, e una macchia scura sotto del
+    // testo scuro si legge peggio di un alone chiaro sotto del testo chiaro.
+    this._spettroBase = (0.15 + 0.27 * (this._amb == null ? 0.7 : this._amb)) * (light ? 0.5 : 1);
+    this.velaSpettro();
+    // Col movimento ridotto la scena è un fotogramma fermo: i colori nuovi non
+    // ce li porta nessuno se non glieli si va a dire.
+    if (this._spettro) this._spettro.aggiorna();
+
+    const f = root.querySelector('[data-skin-file]');
+    if (f) f.textContent = s.file;
+
+    Object.keys(s.ratios).forEach(k => {
+      const bar = root.querySelector('[data-contrast="' + k + '"]');
+      const val = root.querySelector('[data-contrast-v="' + k + '"]');
+      const r = s.ratios[k];
+      if (bar) { bar.style.width = Math.min(100, (r / 12) * 100) + '%'; bar.style.background = r >= 7 ? '#4ade80' : r >= 4.5 ? '#facc15' : '#f87171'; }
+      if (val) val.textContent = r.toFixed(1) + ':1';
+    });
+    root.querySelectorAll('[data-cost]').forEach(el => {
+      const i = Number(el.getAttribute('data-cost'));
+      el.style.background = i < s.cost ? 'var(--ae-acc,#8b7cf6)' : 'var(--ae-raise,#1e1e2a)';
+    });
+    const cv = root.querySelector('[data-cost-v]');
+    if (cv) cv.textContent = s.cost + ' / 10';
+
+    const code = root.querySelector('[data-code]');
+    if (code) {
+      code.textContent = '{\n  "id": "' + id + '",\n  "name": "' + s.name + '",\n  "version": "1.0.0",\n  "tokens": {\n' +
+        TOKENS.slice(0, 8).map((k, i) => '    "' + k + '": "' + s.v[TOKEN_VARS[i]] + '"').join(',\n') +
+        '\n  },\n  "parts": {\n    "list-row": { "layers": ["bg", "hairline"] },\n    "np-art":   { "layers": ["bg", "shadow"] }\n  },\n  "effects": [' + (s.cost >= 4 ? '"glow", "grain"' : '"grain"') + '],\n  "cost": ' + s.cost + '\n}';
+    }
+  }
+}
+
+</script>
+</body>
+</html>

@@ -15,13 +15,20 @@ release/
 *.tsbuildinfo
 *.log
 
-# ── Binari esterni e strumenti vendorizzati ──────────────────────────────────
-# resources/bin: yt-dlp/spotdl/ffmpeg/fpcalc, scaricati durante il setup.
-# Il `**/` non è ornamento: una regola con uno slash in mezzo git la ancora alla
-# cartella del .gitignore, quindi `resources/bin/` da solo copriva soltanto una
-# cartella in radice che non esiste — e lasciava scoperta quella vera, che sta in
-# `apps/desktop/src-tauri/`. Se ne accorge chi guarda un `git status` con dentro
-# diciotto megabyte di yt-dlp.exe, cioè nessuno finché non è troppo tardi.
+# ── Binari esterni ───────────────────────────────────────────────────────────
+# La regola resta anche se la cartella non esiste più, ed è deliberato.
+#
+# Qui dentro stavano diciotto megabyte di `yt-dlp.exe`, impacchettati
+# nell'installer. Non ci stanno più: il modulo che li invocava è stato
+# cancellato, e Aether adesso parla solo HTTP. **Nessun eseguibile di terze
+# parti finisce nel pacchetto**, ed è una delle due cose che lo rendevano
+# indistribuibile.
+#
+# Questa riga è la rete che impedisce di rifarlo per sbaglio. Il `**/` non è
+# ornamento: una regola con uno slash in mezzo git la ancora alla cartella del
+# .gitignore, quindi `resources/bin/` da solo coprirebbe soltanto una cartella
+# in radice che non esiste — e lascerebbe scoperta quella vera, sotto
+# `apps/desktop/src-tauri/`.
 **/resources/bin/
 # platform-tools: adb e compagnia, dall'Android SDK.
 platform-tools/
@@ -83,3 +90,27 @@ Thumbs.db
 # Google Cloud Console e farne uno nuovo. Togliere le righe non le de-pubblica
 # dalla storia di git.
 apps/desktop/src-tauri/oauth.local.toml
+
+# -- Le chiavi di firma degli aggiornamenti -------------------------------------
+# `npm run tauri signer generate -- -w ../../.chiavi/aether.key` scrive qui
+# dentro. La `.pub` non e' un segreto — il suo contenuto sta gia' in
+# `tauri.conf.json` — ma la privata firma gli eseguibili che si installano da
+# soli sui computer altrui, e per quella non c'e' un rimedio dopo: le
+# installazioni esistenti si fidano solo di quella chiave, quindi rifarla
+# significa che nessuna di loro si aggiornera' mai piu'. Va tenuta fuori dal
+# repository e fuori da questo disco: una copia nel gestore di password, e il
+# contenuto nei segreti di GitHub come TAURI_SIGNING_PRIVATE_KEY.
+.chiavi/
+
+# -- Quel che sta sulla scrivania e non nel programma ---------------------------
+# Roba che serve a chi sviluppa e a nessun altro, e che senza queste righe un
+# `git add -A` porterebbe dentro senza chiedere. Non e' pigrizia di chi committa:
+# `rustup-init.exe` da solo pesa dodici megabyte, e un binario in un commit non
+# si toglie piu' — la storia se lo porta dietro anche dopo un `git rm`.
+rustup-init.exe
+# Gli scatti presi per guardare una modifica: si rifanno in un secondo, e
+# nessuno che scarichi il sorgente ha bisogno di vedere com'era la finestra un
+# martedi' di agosto.
+shot*.png
+# Una pagina buttata giu' per provare a mano la catena delle skin.
+catena-prova.html
