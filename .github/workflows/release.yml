@@ -130,6 +130,25 @@ jobs:
           # gli output del passo.
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      # Prima di compilare, e non dopo.
+      #
+      # `tauri build` la chiave la guarda per ultima: compila in release, scarica
+      # NSIS, produce l'installer, e **poi** prova a firmare. Alla v2.0.1 il
+      # segreto era arrivato spezzato, e la corsa è morta dopo tredici minuti
+      # dicendo «Missing comment in secret key» — un guasto da incollatura,
+      # scoperto al prezzo di una compilazione intera. Qui costa un secondo.
+      #
+      # Non guarda che la password sia giusta né che la chiave sia *quella*: la
+      # prima si saprebbe solo aprendo la chiave, la seconda solo dopo aver
+      # firmato, ed è il mestiere di `manifesto.js` più sotto. Qui si tolgono di
+      # mezzo gli errori di forma, che sono quelli che si fanno davvero.
+      - name: La chiave di firma è quella che sembra
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node strumenti/firma.js
+
       # Gli avvisi sulle licenze si rigenerano **qui** e si confrontano: un
       # `THIRD-PARTY-NOTICES.md` vecchio di tre aggiornamenti di dipendenze è un
       # obbligo di attribuzione non rispettato, e non se ne accorge nessuno

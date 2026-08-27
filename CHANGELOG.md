@@ -30,7 +30,14 @@ Cosa incrementa cosa:
 
 ## [Non rilasciato]
 
-Niente, per ora.
+- **La chiave di firma si guarda prima di compilare** (`strumenti/firma.js`, un
+  passo nuovo in `release.yml`). `tauri build` la tocca per ultima: alla 2.0.1 il
+  segreto era arrivato spezzato e la corsa è morta dopo tredici minuti, con un
+  messaggio che parlava di password mentre il guasto era nella chiave. Adesso
+  quel che si può controllare senza compilare — che sia base64 intera e non
+  mandata a capo, che dentro ci sia una chiave *privata* e non la pubblica, che
+  la password non porti un a capo in coda — si controlla in un secondo. Non
+  stampa mai niente che venga dai segreti.
 
 ## [2.0.1] — 2026-08-27
 
