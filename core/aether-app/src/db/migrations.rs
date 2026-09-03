@@ -93,6 +93,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "home-dischi",
         sql: include_str!("schema/014_home_dischi.sql"),
     },
+    Migration {
+        version: 15,
+        name: "riconcilia",
+        sql: include_str!("schema/015_riconcilia.sql"),
+    },
+    Migration {
+        version: 16,
+        name: "metadati",
+        sql: include_str!("schema/016_metadati.sql"),
+    },
 ];
 
 /// La versione a cui questa build porta il database.

@@ -361,6 +361,68 @@ pub fn diario_apri() -> Esito<()> {
     })
 }
 
+/// Quanto si tiene di un messaggio arrivato dalla finestra.
+///
+/// Abbastanza per riconoscere il guasto, poco abbastanza da non trascinarsi
+/// dietro mezzo stack trace. Un `TypeError` utile sta in una riga.
+const QUANTO_DAL_DAVANTI: usize = 300;
+
+/// Prende una riga sola, e non troppo lunga.
+///
+/// # Perché il taglio non è un vezzo
+///
+/// Perché quel che arriva da JavaScript è uno stack trace, e uno stack trace
+/// del davanti porta dentro gli URL dei moduli — e in sviluppo quegli URL sono
+/// percorsi del disco di chi sta lavorando. Il diario si spedisce; il vincolo
+/// scritto in cima a questo file dice che dentro non ci finiscono percorsi. La
+/// prima riga di un errore JavaScript è il messaggio, che è la parte che serve
+/// a capire, e le righe dopo sono la parte che serve a nessuno che non abbia
+/// già i sorgenti davanti.
+///
+/// Si taglia sui **caratteri**, non sui byte: `«…»` e gli accenti dei messaggi
+/// italiani sono più di un byte l'uno, e un taglio a metà di un carattere
+/// scriverebbe nel diario un rombo con il punto interrogativo.
+fn una_riga_sola(testo: &str) -> String {
+    let prima = testo.lines().next().unwrap_or("").trim();
+    if prima.chars().count() <= QUANTO_DAL_DAVANTI {
+        return prima.to_owned();
+    }
+    let corto: String = prima.chars().take(QUANTO_DAL_DAVANTI).collect();
+    format!("{corto}…")
+}
+
+/// Scrive nel diario un guasto arrivato dalla finestra.
+///
+/// # Perché esiste
+///
+/// Perché un errore JavaScript non catturato, in rilascio, non lascia niente:
+/// la console non c'è, la finestra resta bianca, e di quel guasto non resta
+/// traccia da nessuna parte. Il diario del nucleo raccoglie tutto quel che
+/// succede sotto e niente di quel che succede sopra, che è metà
+/// dell'applicazione.
+///
+/// # Cosa ci arriva
+///
+/// `dove` dice chi ha chiamato — `finestra`, `promessa`, `recinto` — e finisce
+/// nella parentesi quadra, così il diario resta leggibile in diagonale come il
+/// resto. `cosa` è il messaggio, che viene ridotto a una riga sola da
+/// [`una_riga_sola`] prima di toccare il file, per la ragione di privacy
+/// scritta là.
+///
+/// # Perché non restituisce errori
+///
+/// Perché è il diario, e «il diario non fa mai cadere niente» (vedi la testa di
+/// questo file). Un `Esito` qui vorrebbe dire una finestra già in avaria che
+/// riceve un secondo errore dal codice chiamato a raccontare il primo.
+#[tauri::command]
+pub fn diario_annota(dove: String, cosa: String) {
+    nota(format_args!(
+        "[{}] {}",
+        una_riga_sola(&dove),
+        una_riga_sola(&cosa)
+    ));
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;
@@ -488,6 +550,43 @@ mod prove {
                 "il quarto file non doveva sopravvivere: la rotazione non dimentica"
             );
         });
+    }
+
+    #[test]
+    fn dallo_stack_trace_resta_solo_il_messaggio() {
+        // Il danno che questa prova tiene chiuso: un diario che si spedisce e
+        // che porta dentro i percorsi del disco di chi lo spedisce. Le righe
+        // dopo la prima di un errore JavaScript sono tutte URL di moduli.
+        let dentro = una_riga_sola(
+            "TypeError: x is not a function
+    at suona (http://localhost:1420/src/App.tsx:12:3)",
+        );
+        assert_eq!(
+            dentro, "TypeError: x is not a function",
+            "lo stack trace è finito nel diario insieme ai percorsi che si porta dietro"
+        );
+    }
+
+    #[test]
+    fn un_messaggio_lunghissimo_si_taglia_senza_rompere_gli_accenti() {
+        // Tagliare sui byte spezzerebbe una «à» a metà e scriverebbe un rombo.
+        let lungo = "à".repeat(QUANTO_DAL_DAVANTI + 50);
+        let corto = una_riga_sola(&lungo);
+        assert_eq!(
+            corto.chars().count(),
+            QUANTO_DAL_DAVANTI + 1,
+            "il taglio non ha lasciato la lunghezza che dice di lasciare"
+        );
+        assert!(
+            corto.chars().take(QUANTO_DAL_DAVANTI).all(|c| c == 'à'),
+            "il taglio ha rotto un carattere a metà"
+        );
+    }
+
+    #[test]
+    fn una_riga_corta_resta_com_e() {
+        assert_eq!(una_riga_sola("  recinto  "), "recinto");
+        assert_eq!(una_riga_sola(""), "");
     }
 
     /// Mette il contatore a un byte dal tetto, così la riga dopo trabocca.

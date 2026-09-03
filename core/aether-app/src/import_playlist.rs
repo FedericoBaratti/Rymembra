@@ -263,12 +263,9 @@ fn chiave_percorso(scritto: &str, accanto_a: Option<&Path>) -> String {
 
 /// Toglie `file://` e scioglie le sequenze `%NN`.
 fn da_url(scritto: &str) -> String {
-    let senza_schema = scritto
-        .strip_prefix("file:///")
-        .or_else(|| scritto.strip_prefix("file://"))
-        .unwrap_or(scritto);
+    let senza_schema = senza_schema(scritto);
     if !senza_schema.contains('%') {
-        return senza_schema.to_owned();
+        return senza_schema;
     }
     let byte = senza_schema.as_bytes();
     let mut fuori: Vec<u8> = Vec::with_capacity(byte.len());
@@ -289,6 +286,56 @@ fn da_url(scritto: &str) -> String {
     String::from_utf8_lossy(&fuori).into_owned()
 }
 
+/// Da `file://…` al percorso che il sistema sa aprire.
+///
+/// # Le quattro forme, e perché sono quattro
+///
+/// `file://` ha un host fra le due barre e il percorso: `file://HOST/percorso`.
+/// Quando l'host è vuoto — `file:///…` — il percorso comincia subito, e le tre
+/// barre di fila sono la ragione per cui questa funzione esiste. I programmi che
+/// scrivono M3U però non concordano, e le forme che arrivano davvero sono:
+///
+/// 1. `file:///C:/musica/a.mp3` → `C:/musica/a.mp3`. La barra in testa fa parte
+///    della grammatica dell'URL, non del percorso, e lasciarla renderebbe il
+///    percorso relativo — per poi incollarlo alla cartella della playlist, cioè
+///    a un posto sbagliato.
+/// 2. `file://C:/musica/a.mp3` → invariato. Fuori standard ma diffuso: è già un
+///    percorso Windows, e anteporgli qualcosa lo trasformerebbe in un nome di
+///    server.
+/// 3. `file:///home/x` → `/home/x`, e `file:////server/share/x` →
+///    `//server/share/x`. Comincia con una barra: è già assoluto, non si tocca.
+/// 4. `file://server/share/a.mp3` → `//server/share/a.mp3`. Questa è la forma
+///    dello standard con l'host valorizzato, ed è **il caso di rete**: `server`
+///    è una macchina, e il percorso sul disco è `\\server\share\a.mp3`. Prima
+///    restava `server/share/a.mp3` — un percorso relativo — che
+///    [`chiave_percorso`] incollava alla cartella della playlist: la voce non
+///    trovava niente e ripiegava sul nome del file, agganciandosi in silenzio a
+///    un brano che poteva essere un altro.
+///
+/// `localhost` come host è il modo lungo di dire «questa macchina»: si toglie e
+/// si riapplicano le regole di sopra.
+fn senza_schema(scritto: &str) -> String {
+    let Some(resto) = scritto.strip_prefix("file://") else {
+        return scritto.to_owned();
+    };
+    let resto = match resto.strip_prefix("localhost") {
+        // Solo se `localhost` è l'host **intero**: una macchina che si chiama
+        // `localhostdue` è una macchina come le altre.
+        Some(dopo) if dopo.is_empty() || dopo.starts_with('/') => dopo,
+        _ => resto,
+    };
+    let byte = resto.as_bytes();
+    match (byte.first(), byte.get(1), byte.get(2)) {
+        (Some(b'/'), Some(lettera), Some(b':')) if lettera.is_ascii_alphabetic() => {
+            resto.get(1..).unwrap_or(resto).to_owned()
+        }
+        (Some(lettera), Some(b':'), _) if lettera.is_ascii_alphabetic() => resto.to_owned(),
+        (Some(b'/'), _, _) => resto.to_owned(),
+        (None, _, _) => String::new(),
+        _ => format!("//{resto}"),
+    }
+}
+
 const fn esadecimale(c: u8) -> Option<u8> {
     match c {
         b'0'..=b'9' => Some(c - b'0'),
@@ -298,12 +345,18 @@ const fn esadecimale(c: u8) -> Option<u8> {
     }
 }
 
-/// Barre in un verso solo, tutto minuscolo, niente barra finale.
+/// Barre in un verso solo, niente barra finale, e le maiuscole piegate **solo
+/// dove il filesystem le ignora**.
+///
+/// È la stessa regola — la stessa funzione — con cui la scansione confronta i
+/// percorsi: piegare sempre, come si faceva qui, su un filesystem
+/// case-sensitive faceva collidere `Song.flac` e `song.flac` nell'indice, e
+/// una voce dell'M3U finiva abbinata al brano sbagliato.
 fn normalizza(percorso: &str) -> String {
-    percorso
-        .replace('\\', "/")
-        .trim_end_matches('/')
-        .to_lowercase()
+    aether_domain::paths::path_key(
+        percorso,
+        aether_domain::paths::PathRules::for_current_platform(),
+    )
 }
 
 /// Il solo nome del file, normalizzato.
@@ -576,5 +629,78 @@ mod prove {
                 formato.nome()
             );
         }
+    }
+
+    // ── i `file://` e le loro quattro forme ─────────────────────────────────
+
+    #[test]
+    fn un_file_url_con_host_e_un_percorso_di_rete() {
+        // La forma dello standard con l'host valorizzato. Prima diventava
+        // `server/share/a.mp3` — un percorso **relativo** — che veniva incollato
+        // alla cartella della playlist: la voce non trovava niente e ripiegava
+        // sul nome del file, agganciandosi in silenzio a un brano qualunque che
+        // si chiamasse così.
+        assert_eq!(
+            da_url("file://server/share/a.mp3"),
+            "//server/share/a.mp3",
+            "l'host è una macchina, non una cartella"
+        );
+        // La scrittura con l'host vuoto e il percorso già UNC arriva alla stessa
+        // forma: due grafie, un percorso solo.
+        assert_eq!(
+            da_url("file:////server/share/a.mp3"),
+            "//server/share/a.mp3"
+        );
+    }
+
+    #[test]
+    fn localhost_e_il_modo_lungo_di_dire_questa_macchina() {
+        assert_eq!(da_url("file://localhost/C:/m/a.mp3"), "C:/m/a.mp3");
+        assert_eq!(da_url("file://localhost/home/x/a.mp3"), "/home/x/a.mp3");
+        // …ma solo se è l'host intero: `localhostdue` è una macchina come le
+        // altre, e trattarla come questa manderebbe a cercare sul disco locale.
+        assert_eq!(
+            da_url("file://localhostdue/share/a.mp3"),
+            "//localhostdue/share/a.mp3"
+        );
+    }
+
+    #[test]
+    fn le_forme_di_prima_restano_come_erano() {
+        // Le regressioni: qui non si è aggiustato un caso rompendone tre.
+        assert_eq!(da_url("file:///C:/musica/a.mp3"), "C:/musica/a.mp3");
+        assert_eq!(da_url("file:///home/x/a.mp3"), "/home/x/a.mp3");
+        // Fuori standard ma diffuso: è già un percorso Windows.
+        assert_eq!(da_url("file://C:/musica/a.mp3"), "C:/musica/a.mp3");
+        // Senza schema non si tocca niente.
+        assert_eq!(da_url(r"D:\musica\a.mp3"), r"D:\musica\a.mp3");
+        assert_eq!(da_url("file://"), "");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn una_riga_m3u_di_rete_si_aggancia_per_percorso_pieno() {
+        // Il giro completo, che è quel che conta: un brano che in libreria sta
+        // su una share, e una riga M3U che lo nomina nella forma RFC. Deve
+        // agganciarsi **per percorso**, non per nome del file — l'aggancio per
+        // nome è l'ultimo ripiego, e sbaglia in silenzio.
+        let mut c = crate::db::open_in_memory().expect("database").connection;
+        c.execute_batch(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album,
+                                 duration_ms, file_size, date_added, date_modified)
+             VALUES (1, '\\\\server\\share\\a.mp3', 'k1', 'A', 'Uno', 'AA', 1000, 1, 1, 1);",
+        )
+        .expect("brano");
+        let letta = PlaylistLetta {
+            nome: None,
+            voci: vec![voce("file://server/share/a.mp3", None, None)],
+            illeggibili: 0,
+        };
+        let r = plan(&mut c, &letta, "Di rete", Some(Path::new(r"C:\altrove"))).expect("piano");
+        assert_eq!(
+            r.matched_by_path, 1,
+            "la riga di rete deve trovare il suo brano"
+        );
+        assert!(r.missing.is_empty());
     }
 }

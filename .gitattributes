@@ -8,10 +8,12 @@
 *.png binary
 *.jpg binary
 *.jpeg binary
+*.webp binary
 *.ico binary
 *.icns binary
 *.woff2 binary
 *.wasm binary
+*.flac binary
 *.so binary
 *.node binary
 *.jks binary

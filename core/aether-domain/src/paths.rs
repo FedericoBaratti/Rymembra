@@ -133,6 +133,21 @@ pub fn is_supported_audio_path(path: &str) -> bool {
 /// appena prodotto dalla camminata: un confronto esatto fra i due li vedrebbe
 /// diversi per una barra, e la scansione cancellerebbe la riga di un file che
 /// sta ancora lì.
+///
+/// # Quel che questa chiave NON riconcilia
+///
+/// `Z:\musica\a.mp3` e `\\server\share\musica\a.mp3` possono essere lo stesso
+/// file — la lettera è una condivisione mappata — e qui restano due chiavi
+/// diverse. Non è una dimenticanza: risalire dalla lettera alla condivisione
+/// vuol dire chiedere a Windows (le API `WNet*`), cioè `unsafe` o un crate in
+/// più, oppure interpretare l'uscita di `net use`, che è testo tradotto nella
+/// lingua del sistema. Il prezzo è una libreria che, se la stessa cartella viene
+/// aggiunta due volte nelle due grafie, tiene due righe per lo stesso brano.
+///
+/// Il prezzo era molto più alto finché la scansione poteva **cancellare** le
+/// righe dell'altra grafia: adesso non può — una radice che non risponde non
+/// giudica nessuno (`aether_app::library::plan`) — e quel che resta è una
+/// duplicazione visibile, non una perdita silenziosa.
 #[must_use]
 pub fn path_key(path: &str, rules: PathRules) -> String {
     // Barre unificate e code di separatori tolte: `C:\Music\` e `C:/Music` sono
@@ -215,6 +230,28 @@ mod tests {
     #[test]
     fn radice_vuota_non_contiene_niente() {
         assert!(!is_under(r"C:\Music\a.mp3", "", WIN));
+    }
+
+    #[test]
+    fn i_percorsi_unc_hanno_una_sola_chiave() {
+        // Una libreria su una condivisione si nomina in due modi — con le barre
+        // rovesce come le scrive Esplora risorse, o dritte come le scrive un
+        // M3U — e le due grafie devono restare lo stesso posto. Se non lo
+        // fossero, la scansione vedrebbe sparire ogni brano che il database ha
+        // salvato nell'altra forma.
+        assert_eq!(
+            path_key(r"\\srv\musica\a.mp3", WIN),
+            path_key("//SRV/Musica/A.MP3", WIN)
+        );
+        // E la radice di rete contiene i suoi brani, con lo stesso confine di
+        // separatore di tutte le altre: `\\srv\musicali` non sta dentro
+        // `\\srv\musica`.
+        assert!(is_under(r"\\srv\musica\a.mp3", "//srv/musica", WIN));
+        assert!(is_under("//srv/musica/a.mp3", r"\\srv\musica", WIN));
+        assert!(!is_under(r"\\srv\musicali\a.mp3", r"\\srv\musica", WIN));
+        // Due server diversi non si contengono a vicenda, nemmeno quando il nome
+        // dell'uno comincia come quello dell'altro.
+        assert!(!is_under(r"\\srv2\musica\a.mp3", r"\\srv\musica", WIN));
     }
 
     #[test]

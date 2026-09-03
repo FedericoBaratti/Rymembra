@@ -253,7 +253,9 @@ impl Audius {
             id: riferimento.id.clone(),
             title: brano.title.clone(),
             author: autore,
-            cover_url: brano.cover_url.clone(),
+            // Dalla risposta del catalogo, non dal brano: `brano_da` non porta
+            // mai una copertina, e `artwork` sta sull'oggetto della traccia.
+            cover_url: copertina(&primo),
             declared_total: Some(1),
             tracks: vec![brano],
             source: Livello::Audius,

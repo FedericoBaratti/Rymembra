@@ -43,9 +43,12 @@ export function Scrubber({
   const rilascia = async () => {
     if (trascinato === null) return;
     try {
-      // `vai_a` manda lo stato prima di rispondere: quando questa promessa si
-      // risolve la posizione nuova è già arrivata, e togliere il trascinamento
-      // non fa lampeggiare il cursore su quella vecchia.
+      // `vai_a` manda lo stato prima di rispondere, e con dentro i millisecondi
+      // **richiesti**: il motore ci arriva sul filo suo poco dopo, ma quando
+      // questa promessa si risolve la posizione nuova è già stata annunciata.
+      // Togliere il trascinamento non fa quindi lampeggiare il cursore sul
+      // punto di partenza — che è quel che succedeva finché lo stato portava
+      // la posizione letta dal motore, cioè quella di prima del salto.
       await ipc.vaiA(trascinato);
     } catch (e) {
       onErrore(e);

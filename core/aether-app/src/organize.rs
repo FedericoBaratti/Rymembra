@@ -134,7 +134,11 @@ fn decode(line: &str) -> Option<JournalEntry> {
     fn field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
         let at = line.find(&format!("\"{name}\":\""))? + name.len() + 4;
         let rest = line.get(at..)?;
-        let mut end = 0;
+        // `None` e non `end = 0` quando la virgoletta di chiusura non c'è:
+        // è il caso esatto della riga tagliata a metà scrittura, e
+        // restituire un campo vuoto fabbricherebbe una voce con un `to`
+        // inesistente invece di saltare la riga come promesso.
+        let mut end = None;
         let mut chars = rest.char_indices();
         while let Some((i, c)) = chars.next() {
             if c == '\\' {
@@ -142,11 +146,11 @@ fn decode(line: &str) -> Option<JournalEntry> {
                 continue;
             }
             if c == '"' {
-                end = i;
+                end = Some(i);
                 break;
             }
         }
-        rest.get(..end)
+        rest.get(..end?)
     }
     fn unesc(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
@@ -377,6 +381,14 @@ fn radice_di<'a>(percorsi: impl Iterator<Item = &'a str>) -> PathBuf {
 /// nessun file può mai essere coinvolto. `radice` è la seconda fermata, quella
 /// che impedisce di uscire dall'albero della libreria.
 fn pulisci<'a>(percorsi: impl Iterator<Item = &'a str>, radice: &Path) -> usize {
+    // Una radice vuota è «nessun antenato comune»: succede quando i percorsi
+    // stanno su dischi diversi. `starts_with("")` è vero per qualunque
+    // cartella, e la risalita non avrebbe più la seconda fermata: salirebbe
+    // cancellando cartelle vuote fino alla radice del disco. Meglio non
+    // potare affatto.
+    if radice.as_os_str().is_empty() {
+        return 0;
+    }
     // Ordinate dalla più profonda: una cartella d'artista si può togliere solo
     // dopo che tutti i suoi album se ne sono andati. `BTreeSet` deduplica per
     // davvero — `dedup()` su un vettore ordinato per sola lunghezza toglie solo
@@ -572,6 +584,28 @@ mod tests {
         let entries = read_journal(&path).expect("rilettura");
         assert_eq!(entries.len(), 2, "le due righe intere restano");
         assert_eq!(entries.first().map(|e| e.track_id), Some(1));
+    }
+
+    #[test]
+    fn una_riga_troncata_dentro_il_valore_si_salta() {
+        // Il taglio può cadere DOPO l'apertura del valore di `to`: senza la
+        // virgoletta di chiusura il campo non c'è, e decodificare un `to`
+        // vuoto fabbricherebbe uno spostamento fantasma che l'annullamento
+        // riporterebbe come fallito.
+        assert_eq!(
+            decode("{\"track_id\":3,\"from\":\"C:/c\",\"to\":\"C:/x"),
+            None
+        );
+    }
+
+    #[test]
+    fn senza_antenato_comune_non_si_pota_niente() {
+        // Due dischi diversi non hanno un antenato comune: la radice esce
+        // vuota, `starts_with("")` sarebbe vero per qualunque cartella, e la
+        // risalita cancellerebbe cartelle vuote fino alla radice del disco.
+        let radice = radice_di(["C:/musica/a.mp3", "D:/altra/b.mp3"].into_iter());
+        assert!(radice.as_os_str().is_empty(), "nessuna radice: {radice:?}");
+        assert_eq!(pulisci(["C:/musica/a.mp3"].into_iter(), &radice), 0);
     }
 
     #[test]

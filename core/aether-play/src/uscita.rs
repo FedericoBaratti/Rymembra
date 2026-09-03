@@ -56,11 +56,19 @@ pub struct FormatoUscita {
     pub canali: u16,
 }
 
-/// Quanto suono tenere pronto davanti alla callback.
+/// Quanto suono tenere pronto davanti alla callback, nel caso peggiore.
 ///
 /// Duecento millisecondi: abbastanza perché una pausa dello scheduler o una
 /// lettura lenta dal disco non si sentano, poco abbastanza perché il cursore
 /// non menta di più di così su dove siamo arrivati.
+///
+/// **Duecento è il minimo garantito, non la riserva vera.** L'anello si
+/// dimensiona prima di sapere come si aprirà il dispositivo, quindi su questo
+/// numero moltiplica il caso peggiore — 192 kHz per otto canali, vedi
+/// `Motore::avvia`. Su un'uscita normale, 48 kHz stereo, quegli stessi campioni
+/// sono **circa tre secondi e due decimi** di musica. È il margine su cui si
+/// giudica se uno stallo del filo di decodifica si sente o no, e vale la pena
+/// leggerlo di lì e non da qui.
 pub const RISERVA_MS: u64 = 200;
 
 /// Quanto in fretta il guadagno raggiunge il valore voluto, per campione.

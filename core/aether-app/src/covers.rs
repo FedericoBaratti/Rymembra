@@ -168,10 +168,16 @@ impl CoverStore {
                     )
                 })
                 .unwrap_or((0, 0));
+            // Le dimensioni da riportare sono quelle del file sul disco —
+            // passato da `fit`, che scala in proporzione — non quelle
+            // dell'originale schiacciate per asse: un originale 2000×1000 sta
+            // sul disco come 640×320, e dirlo 640×640 falserebbe lo spareggio
+            // con cui `pick_album_cover` sceglie la copertina di un album.
+            let (width, height) = dimensioni_ridotte(width, height, MAX_LATO);
             return Ok(StoredCover {
                 hash,
-                width: width.min(MAX_LATO),
-                height: height.min(MAX_LATO),
+                width,
+                height,
                 byte_size: meta.len(),
                 mime_type: "image/jpeg",
                 already_present: true,
@@ -213,6 +219,26 @@ fn decode_error(hash: &str, detail: &str) -> AppError {
     AppError::new(ErrorCode::MetadataTagReadFailed { path: None })
         .with_message(format!("copertina {hash} non decodificabile"))
         .with_cause(detail.to_owned())
+}
+
+/// Le dimensioni che [`fit`] produrrebbe, senza decodificare niente.
+///
+/// Stessi conti di `image::DynamicImage::resize`: rapporto minimo fra i due
+/// assi, arrotondamento, mai sotto il pixel. Serve al ramo «già presente» di
+/// [`CoverStore::store`], che deve dichiarare le dimensioni del file già sul
+/// disco potendo leggere solo quelle dell'originale.
+fn dimensioni_ridotte(width: u32, height: u32, lato: u32) -> (u32, u32) {
+    if (width <= lato && height <= lato) || width == 0 || height == 0 {
+        return (width, height);
+    }
+    let rapporto = f64::from(lato) / f64::from(width.max(height));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "il prodotto è al più `lato`, finito e non negativo per costruzione"
+    )]
+    let ridotta = |dim: u32| ((f64::from(dim) * rapporto).round() as u32).max(1);
+    (ridotta(width), ridotta(height))
 }
 
 /// Riduce l'immagine perché stia in un quadrato di `lato`, senza deformarla.
@@ -436,5 +462,21 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn le_dimensioni_dichiarate_senza_decodificare_sono_quelle_vere() {
+        // Il ramo «già presente» dichiara le dimensioni del file sul disco
+        // potendo leggere solo l'originale: i suoi conti devono coincidere con
+        // quelli di `fit`, o una copertina panoramica verrebbe registrata
+        // quadrata — e `pick_album_cover` sceglie per area.
+        for (w, h) in [(2000, 1000), (1000, 2000), (300, 300), (641, 640)] {
+            let vera = fit(&image::DynamicImage::new_rgb8(w, h), MAX_LATO);
+            assert_eq!(
+                dimensioni_ridotte(w, h, MAX_LATO),
+                (vera.width(), vera.height()),
+                "su {w}×{h}"
+            );
+        }
     }
 }

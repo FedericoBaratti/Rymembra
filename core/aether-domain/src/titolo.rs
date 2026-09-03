@@ -115,6 +115,10 @@ pub fn senza_ciarpame(titolo: &str) -> String {
     let mut fuori = String::with_capacity(titolo.len());
     let mut gruppo = String::new();
     let mut profondita = 0_usize;
+    // La parentesi con cui il gruppo si è aperto: quella da rimettere se il
+    // gruppo si tiene. Dedurla dalla chiusura scambierebbe il tipo quando le
+    // due non combaciano.
+    let mut apertura = '(';
 
     for c in titolo.chars() {
         match c {
@@ -122,6 +126,7 @@ pub fn senza_ciarpame(titolo: &str) -> String {
                 profondita = profondita.saturating_add(1);
                 if profondita == 1 {
                     gruppo.clear();
+                    apertura = c;
                 } else {
                     gruppo.push(c);
                 }
@@ -133,7 +138,7 @@ pub fn senza_ciarpame(titolo: &str) -> String {
                     if e_ciarpame(&gruppo) {
                         fuori.push(' ');
                     } else {
-                        fuori.push(if c == ')' { '(' } else { '[' });
+                        fuori.push(apertura);
                         fuori.push_str(&gruppo);
                         fuori.push(c);
                     }

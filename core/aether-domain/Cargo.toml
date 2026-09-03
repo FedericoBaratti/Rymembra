@@ -18,6 +18,9 @@ publish = false
 
 [dependencies]
 unicode-normalization.workspace = true
+# La riparazione del testo illeggibile (`codifica`): un `Ã¨` che era un `è`.
+# Serve solo a decodificare — vedi il commento nel `Cargo.toml` della radice.
+encoding_rs.workspace = true
 
 [dev-dependencies]
 # Servono ai soli vettori dorati: il dominio non serializza nulla da sé.

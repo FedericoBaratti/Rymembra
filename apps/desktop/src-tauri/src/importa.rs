@@ -311,7 +311,11 @@ fn avvelenato() -> AppError {
 /// una lettura andata male sarebbe **definitiva**: lo stesso link darebbe quella
 /// stessa risposta magra per tutto il tempo in cui l'applicazione resta aperta,
 /// e «Riprova» non riproverebbe niente.
-#[tauri::command]
+///
+/// `(async)`: parla con la rete — più pagine, e una copertina da scaricare — e
+/// un comando normale terrebbe fermo il filo principale della finestra per
+/// tutto quel tempo.
+#[tauri::command(async)]
 pub fn import_anteprima(
     app: AppHandle,
     importa: State<'_, StatoImport>,
@@ -344,7 +348,9 @@ pub fn import_anteprima(
 }
 
 /// Cosa porterebbe l'importazione, senza scrivere niente.
-#[tauri::command]
+///
+/// `(async)` come [`import_anteprima`]: può dover risolvere il link.
+#[tauri::command(async)]
 pub fn import_piano(
     app: AppHandle,
     stato: State<'_, Stato>,
@@ -368,7 +374,11 @@ pub fn import_piano(
 /// questo comando risponde con il rapporto mentre il primo brano si sta già
 /// cercando. Se una coda sta già girando non ne parte una seconda: quella in
 /// corso rilegge la tabella a ogni lotto.
-#[tauri::command]
+///
+/// `(async)` come [`import_anteprima`]: la risoluzione del link e la scrittura
+/// di trecento righe non stanno sul filo della finestra — è la ragione per cui
+/// `import:avanzamento` esiste.
+#[tauri::command(async)]
 pub fn import_esegui(
     app: AppHandle,
     stato: State<'_, Stato>,
@@ -459,7 +469,10 @@ pub fn import_rapporti(stato: State<'_, Stato>, limite: u32) -> Esito<Vec<Rappor
 /// «il catalogo è giù», e una diagnostica che non chiede niente non diagnostica
 /// niente. Per la stessa ragione non la si chiama a ogni apertura di finestra:
 /// `scarico_stato` dà l'elenco dei cataloghi senza toccare la rete.
-#[tauri::command]
+///
+/// `(async)`, proprio perché fa richieste vere: due cataloghi che non
+/// rispondono sarebbero due timeout consumati sul filo della finestra.
+#[tauri::command(async)]
 pub fn import_diagnostica(importa: State<'_, StatoImport>) -> Esito<Diagnostica> {
     let d = importa.cataloghi.diagnostica();
     Ok(Diagnostica {

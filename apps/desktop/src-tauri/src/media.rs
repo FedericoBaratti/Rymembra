@@ -87,9 +87,18 @@ pub struct StatoMedia {
     ///
     /// Serve solo ai salti relativi, che il sistema manda senza dire da dove.
     /// In un atomico e non dentro il mutex perché chi lo legge è la chiusura
-    /// degli eventi, che gira su un filo suo mentre lo scrive
-    /// [`aggiorna`] — e prendere un lucchetto per leggere un intero
+    /// degli eventi, che gira su un filo suo mentre lo scrivono [`aggiorna`] e
+    /// [`segna_posizione`] — e prendere un lucchetto per leggere un intero
     /// significherebbe che un tasto premuto aspetta il disegno di uno stato.
+    ///
+    /// Lo scrivono in due, e non è la doppia sorgente che il modulo evita
+    /// altrove: la scheda che si **vede** la compone solo [`aggiorna`]. Questo
+    /// numero è un'altra cosa — dove sta il brano adesso — e lo stato completo
+    /// parte a ogni cambio, non mentre la musica scorre. Con il solo
+    /// [`aggiorna`] restava quindi fermo al valore dell'ultimo cambio, di
+    /// solito lo zero dell'inizio del brano, e ogni «avanti di dieci secondi»
+    /// dalle cuffie riportava a dieci secondi dall'inizio invece che dieci
+    /// secondi più avanti.
     posizione_ms: AtomicU64,
 }
 
@@ -243,6 +252,21 @@ pub fn aggiorna(app: &tauri::AppHandle, stato: &StatoRiproduzione) {
         MediaPlayback::Playing { progress: dove }
     };
     let _ = controlli.controlli.set_playback(riproduzione);
+}
+
+/// Aggiorna dove sta il brano, senza toccare la scheda.
+///
+/// La chiama l'orologio di [`crate::riproduzione`], lo stesso giro che manda
+/// `riproduzione:tempo` alla finestra: quattro volte al secondo, e senza
+/// ricomporre niente. Serve ai salti relativi — vedi
+/// [`StatoMedia::posizione_ms`] — e non ridisegna la scheda del sistema, che
+/// interpola per conto suo dall'ultimo [`MediaPlayback`] ricevuto.
+pub fn segna_posizione(app: &tauri::AppHandle, ms: u64) {
+    // `try_state` per la stessa ragione di [`aggiorna`]: l'orologio parte
+    // insieme al lettore, e questo modulo può non essere ancora registrato.
+    if let Some(media) = app.try_state::<StatoMedia>() {
+        media.posizione_ms.store(ms, Ordering::Relaxed);
+    }
 }
 
 /// Un `file://` che Windows sappia aprire.

@@ -512,7 +512,17 @@ pub struct LocalTrack {
     /// Ha già una copertina.
     pub has_cover: bool,
     /// Porta già un identificativo MusicBrainz della registrazione.
-    pub has_mb_id: bool,
+    pub has_mb_recording_id: bool,
+    /// Porta già un identificativo MusicBrainz della pubblicazione.
+    ///
+    /// Tre guardie distinte, non una: un file taggato con Picard porta spesso
+    /// la registrazione ma non il gruppo di pubblicazione, e sono proprio gli
+    /// identificativi di pubblicazione a permettere di fondere le edizioni
+    /// dello stesso disco. Un veto unico li condannerebbe a mancare per sempre
+    /// esattamente sui file taggati meglio.
+    pub has_mb_release_id: bool,
+    /// Porta già un identificativo MusicBrainz del gruppo di pubblicazione.
+    pub has_mb_release_group_id: bool,
 }
 
 /// Un gruppo d'album della libreria, da abbinare a una pubblicazione.
@@ -1205,10 +1215,13 @@ pub fn resolve_track(brano: &LocalTrack, candidati: &[Candidate]) -> Option<Trac
     let (best, score) = migliore?;
     let candidato = candidati.get(best)?;
 
-    let consensus = candidati
-        .iter()
-        .enumerate()
-        .any(|(altro, c)| altro != best && c.fonte != candidato.fonte && concordano(c, candidato));
+    let consensus = candidati.iter().enumerate().any(|(altro, c)| {
+        altro != best
+            // Due fonti **dichiarate** e diverse: un candidato senza fonte non
+            // può fare consenso con nessuno, come promette la doc del modulo.
+            && matches!((c.fonte, candidato.fonte), (Some(a), Some(b)) if a != b)
+            && concordano(c, candidato)
+    });
 
     let artista_noto = !brano.artist.trim().is_empty() && brano.artist != UNKNOWN_ARTIST;
     let album_noto = brano
@@ -1245,6 +1258,34 @@ pub fn resolve_track(brano: &LocalTrack, candidati: &[Candidate]) -> Option<Trac
 }
 
 // ── il piano di scrittura ───────────────────────────────────────────────────
+
+/// Da dove vengono i quattro campi su cui l'arricchimento decide.
+///
+/// È il gemello di [`Fields`] per la provenienza: gli stessi quattro campi di
+/// testo, e per ognuno da chi era stato scritto. Serve a distinguere un titolo
+/// che il file dichiarava da uno che Aether ha dedotto dalla cartella — il primo
+/// è la parola del file e non si tocca, il secondo è un'ipotesi che un catalogo
+/// può correggere — e soprattutto a non riscrivere mai
+/// [`Origine::Manuale`](crate::ricostruzione::Origine::Manuale), che è la parola
+/// di chi ascolta.
+///
+/// Il valore predefinito è «tutto dai tag», che è la lettura prudente: le righe
+/// scritte prima che questa provenienza esistesse non dichiarano niente, e non
+/// devono per questo diventare riscrivibili.
+///
+/// Lo costruisce `aether_app::provenienza::Origini::per_arricchimento` a partire
+/// dal JSON di `tracks.meta_origine`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OrigineCampi {
+    /// Da dove viene il titolo.
+    pub titolo: crate::ricostruzione::Origine,
+    /// Da dove viene l'interprete.
+    pub artista: crate::ricostruzione::Origine,
+    /// Da dove viene l'album.
+    pub album: crate::ricostruzione::Origine,
+    /// Da dove viene l'interprete dell'album.
+    pub album_artist: crate::ricostruzione::Origine,
+}
 
 /// I campi che si possono scrivere su un brano.
 ///
@@ -1431,9 +1472,15 @@ pub fn plan_write(brano: &LocalTrack, trovati: &Fields, sostituisci: bool) -> Fi
             (Some(attuale), Some(nuovo)) if sostituisci && attuale != nuovo => Some(nuovo),
             _ => None,
         },
-        mb_recording_id: identificativo(brano.has_mb_id, trovati.mb_recording_id.as_ref()),
-        mb_release_id: identificativo(brano.has_mb_id, trovati.mb_release_id.as_ref()),
-        mb_release_group_id: identificativo(brano.has_mb_id, trovati.mb_release_group_id.as_ref()),
+        mb_recording_id: identificativo(
+            brano.has_mb_recording_id,
+            trovati.mb_recording_id.as_ref(),
+        ),
+        mb_release_id: identificativo(brano.has_mb_release_id, trovati.mb_release_id.as_ref()),
+        mb_release_group_id: identificativo(
+            brano.has_mb_release_group_id,
+            trovati.mb_release_group_id.as_ref(),
+        ),
     }
 }
 
@@ -1964,7 +2011,7 @@ mod tests {
     fn un_identificativo_gia_presente_non_si_sostituisce() {
         // Ce l'ha messo chi ha taggato il file con Picard, e ne sa più di noi.
         let locale = LocalTrack {
-            has_mb_id: true,
+            has_mb_recording_id: true,
             ..brano("Poetica", "Cesare Cremonini", 297_000)
         };
         let trovati = Fields {
@@ -1972,6 +2019,26 @@ mod tests {
             ..Fields::default()
         };
         assert_eq!(plan_write(&locale, &trovati, true).mb_recording_id, None);
+    }
+
+    #[test]
+    fn la_registrazione_presente_non_veta_gli_id_di_pubblicazione() {
+        // Picard scrive spesso la registrazione senza il gruppo di
+        // pubblicazione: quel che manca si può ancora riempire.
+        let locale = LocalTrack {
+            has_mb_recording_id: true,
+            ..brano("Poetica", "Cesare Cremonini", 297_000)
+        };
+        let trovati = Fields {
+            mb_recording_id: Some("altro".to_owned()),
+            mb_release_id: Some("rel-1".to_owned()),
+            mb_release_group_id: Some("rg-1".to_owned()),
+            ..Fields::default()
+        };
+        let piano = plan_write(&locale, &trovati, true);
+        assert_eq!(piano.mb_recording_id, None);
+        assert_eq!(piano.mb_release_id.as_deref(), Some("rel-1"));
+        assert_eq!(piano.mb_release_group_id.as_deref(), Some("rg-1"));
     }
 
     #[test]

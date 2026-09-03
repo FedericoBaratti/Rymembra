@@ -30,6 +30,7 @@
 //! due cose per cui il catalogo esiste.
 
 mod catalog;
+pub mod rete;
 
 pub use catalog::{Domain, ErrorCode, ErrorCodeKind, RetryRule, Severity};
 

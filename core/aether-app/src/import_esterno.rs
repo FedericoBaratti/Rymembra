@@ -791,9 +791,13 @@ pub(crate) fn scrivi_desiderati(
         .map_err(|err| db_error("registrazione dei brani desiderati", &err))?;
 
     // Due brani della stessa playlist possono avere la stessa chiave — una
-    // playlist può ripetere una canzone. `INSERT OR REPLACE` sull'indice unico
-    // ne terrebbe una sola: si contano le righe davvero distinte, così il
-    // rapporto non promette più righe di quante ne scrive.
+    // playlist può ripetere una canzone — ma la riga di `desiderati` è una per
+    // `(track_key, source_id)`. La ripetizione si SALTA invece di riscriverla:
+    // così la riga tiene la prima posizione — l'upsert terrebbe l'ultima, e su
+    // una reimportazione della stessa playlist vincerebbe comunque la prima
+    // occorrenza nuova — e il conteggio dice le righe davvero scritte, così il
+    // rapporto non promette più righe di quante ne scrive. Che uno dei due
+    // posti del doppione vada perso è nel disegno: due slot, una riga.
     let mut viste: HashMap<String, ()> = HashMap::new();
     let mut quante = 0_usize;
     for indice in mancanti {
@@ -805,6 +809,9 @@ pub(crate) fn scrivi_desiderati(
             title: Some(&brano.title),
             album: brano.album.as_deref(),
         });
+        if viste.contains_key(chiave.as_str()) {
+            continue;
+        }
         inserisci
             .execute(rusqlite::params![
                 chiave.as_str(),
@@ -831,9 +838,8 @@ pub(crate) fn scrivi_desiderati(
                 adesso,
             ])
             .map_err(|err| db_error("registrazione dei brani desiderati", &err))?;
-        if viste.insert(chiave.into_string(), ()).is_none() {
-            quante = quante.saturating_add(1);
-        }
+        viste.insert(chiave.into_string(), ());
+        quante = quante.saturating_add(1);
     }
     Ok(quante)
 }

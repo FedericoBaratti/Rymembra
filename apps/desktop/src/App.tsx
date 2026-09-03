@@ -39,6 +39,7 @@ import { brani_, durata, nomeArtista, numero, titoloAlbum } from "./formato";
 import {
   applicaAccento,
   applicaSkin,
+  eRitentabile,
   ipc,
   testoErrore,
   type Album,
@@ -2092,6 +2093,15 @@ export function App() {
   const inAscolto = riproduzione.stato.brano?.id ?? null;
   const messaggio =
     errore ?? (riproduzione.errore ? testoErrore(riproduzione.errore) : null);
+  /**
+   * Il guasto in fascia si può riprovare.
+   *
+   * Solo quello che viene dal lettore: `errore` è già una stringa — di lui non
+   * resta il codice, e senza codice non si sa se riprovare ha senso — mentre
+   * `riproduzione.errore` arriva intero dal nucleo. È anche l'unico dei due che
+   * abbia un gesto da offrire: la cartella di rete che sparisce a metà brano.
+   */
+  const ritentabile = errore === null && eRitentabile(riproduzione.errore);
 
   /**
    * Quale elenco sta aspettando la sua prima pagina.
@@ -3004,6 +3014,25 @@ export function App() {
                   <div className="errore toast-card" role="alert">
                     <Icona nome="i-alert" dim={16} />
                     <span>{messaggio}</span>
+                    {/* «Riprova» compare solo quando il catalogo dice che
+                        riprovare ha senso, e il caso per cui esiste è la
+                        cartella di rete che non risponde: lì il gesto non è
+                        «rifai quel che hai chiesto», è «rimetti la puntina
+                        dov'era», e il nucleo si è annotato il punto. La stessa
+                        forma della fascia dell'audio perso qui sopra: un
+                        `bottone minuto` in linea, senza CSS nuovo. */}
+                    {ritentabile && (
+                      <button
+                        type="button"
+                        className="bottone minuto btn-ghost"
+                        onClick={() => {
+                          riproduzione.scartaErrore();
+                          ipc.riprovaCorrente().catch(segnalaErrore);
+                        }}
+                      >
+                        {t("common.retry")}
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="tasto icon-btn"

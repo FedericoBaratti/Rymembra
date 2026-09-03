@@ -40,6 +40,19 @@ export function eErroreIpc(value: unknown): value is ErroreIpc {
 }
 
 /**
+ * Riprovare ha senso?
+ *
+ * La regola sta qui e non accanto a ogni tasto «Riprova» perché a deciderlo è
+ * il catalogo del nucleo — `is_retryable` in `errors/catalog.rs` — e chi la
+ * ricopia a mano la ricopia sbagliata alla terza volta. Un `unknown` che non è
+ * un errore del nucleo non è ritentabile: di lui non si sa niente, e offrire di
+ * rifare un gesto di cui non si conosce l'esito è peggio che non offrirlo.
+ */
+export function eRitentabile(value: unknown): boolean {
+  return eErroreIpc(value) && value.retryable;
+}
+
+/**
  * Il testo da mostrare per un errore qualsiasi.
  *
  * # La tabella che c'era qui, e perché non c'è più
@@ -197,18 +210,121 @@ export interface PianoProfilo {
   invariate: number;
 }
 
+/**
+ * Un file che non è entrato come ci si aspettava, e il perché.
+ *
+ * Il motivo è un codice — `metadata.tagReadFailed`, `nonAudio`, `tooSmall` — e
+ * non una frase: la frase la compone `t()`, così resta una sola per lingua.
+ */
+export interface FileSaltato {
+  percorso: string;
+  motivo: string;
+}
+
 /** Cosa ha fatto una scansione. */
 export interface EsitoScansione {
   inseriti: number;
   aggiornati: number;
   spostati: number;
   tolti: number;
+  /**
+   * Quanti file non si sono potuti leggere.
+   *
+   * Entrano comunque in libreria, marcati «degradato»: si vedono, si sa perché
+   * sono messi male, e la scansione dopo non ci ritorna.
+   */
   illeggibili: number;
+  /** Quali, fino a cinquanta. Il numero intero resta in `illeggibili`. */
+  illeggibiliQuali: FileSaltato[];
+  /** Copertine che non si sono potute salvare: il brano c'è, l'immagine no. */
+  copertineFallite: FileSaltato[];
+  /** File che il piano ha lasciato fuori, e perché. */
+  saltati: FileSaltato[];
   copertineNuove: number;
   durataMs: number;
   /** È stata fermata a metà: quel che ha letto è scritto, il resto no. */
   annullata: boolean;
+  /**
+   * Le cartelle che non hanno risposto, e che quindi non sono state guardate.
+   *
+   * Va mostrato. Una scansione che non ha visto la cartella sul NAS ha fatto un
+   * lavoro parziale, e un «completata» che non lo dice fa credere che i brani
+   * che mancano non ci siano più — mentre stanno esattamente dov'erano, dietro
+   * un cavo staccato.
+   */
+  radiciSaltate: string[];
+  /**
+   * Righe che il piano toglierebbe e che la guardia ha lasciato stare.
+   *
+   * Diverso da zero solo nelle scansioni che nessuno sta guardando: davanti a
+   * una strage, non si distrugge e si aspetta la passata dopo.
+   */
+  rimozioniRinviate: number;
   numeri: Numeri;
+}
+
+/**
+ * Da dove viene il valore di un campo, e com'era prima se è stato riparato.
+ *
+ * `da` vale `tag`, `tag-riparato`, `percorso`, `ripiego` o `manuale`. Un campo
+ * che non compare fra le `Origini` viene dai tag: è il caso normale, e non si
+ * annota.
+ */
+export interface Origine {
+  da: string;
+  prima?: string;
+}
+
+/** La provenienza di ogni campo di un brano. */
+export interface Origini {
+  titolo?: Origine;
+  artista?: Origine;
+  album?: Origine;
+  albumArtist?: Origine;
+  genere?: Origine;
+  anno?: Origine;
+  traccia?: Origine;
+  disco?: Origine;
+}
+
+/** Un brano con i metadati da guardare. */
+export interface TracciaIncerta {
+  id: number;
+  /** Il percorso: l'unica cosa sempre vera di un brano messo male. */
+  path: string;
+  title: string;
+  artist: string;
+  album: string;
+  albumArtist: string | null;
+  genre: string | null;
+  year: number | null;
+  trackNumber: number | null;
+  discNumber: number | null;
+  /** Zero su un brano degradato: la durata non si è potuta leggere. */
+  durationMs: number;
+  coverArtHash: string | null;
+  /** `dedotto` o `degradato`. */
+  health: string;
+  /** I nomi dei problemi: `senza-tag`, `mojibake`, `segnaposto-artista`… */
+  problems: string[];
+  origins: Origini;
+}
+
+/**
+ * Quel che l'utente corregge a mano.
+ *
+ * Un campo assente vuol dire «non l'ho toccato», mai «svuotalo»: non esiste un
+ * modo di dire «cancellalo», e non deve esistere.
+ */
+export interface CorrezioniMetadati {
+  titolo?: string;
+  artista?: string;
+  album?: string;
+  albumArtist?: string;
+  genere?: string;
+  anno?: number;
+  traccia?: number;
+  disco?: number;
 }
 
 /** L'avanzamento di una scansione. */
@@ -2023,6 +2139,18 @@ export const ipc = {
     invoke<VoceCronologia[]>("cronologia", { offset, limite }),
   cronologiaConteggio: () => invoke<number>("cronologia_conteggio"),
   scansiona: () => invoke<EsitoScansione>("scansiona"),
+  // ── i brani con i metadati messi male ──
+  // Il conteggio sta a parte dall'elenco per la stessa ragione di
+  // `cercaConteggio`: il numero si chiede a ogni scansione per la pastiglia,
+  // l'elenco solo quando qualcuno apre la sezione.
+  metadatiConteggio: () => invoke<number>("metadati_conteggio"),
+  metadatiIncerti: (offset: number, limite: number) =>
+    invoke<TracciaIncerta[]>("metadati_incerti", { offset, limite }),
+  // Restituisce la traccia com'è rimasta: se è tornata a posto arriva `null`,
+  // e la riga sparisce dall'elenco senza doverlo ricaricare tutto.
+  metadatiCorreggi: (id: number, campi: CorrezioniMetadati) =>
+    invoke<TracciaIncerta | null>("metadati_correggi", { id, campi }),
+  metadatiConferma: (id: number) => invoke<void>("metadati_conferma", { id }),
   // Torna subito: fermarsi vuol dire «alla fine del lotto in corso», non
   // «adesso». Che sia successo lo dice `EsitoScansione.annullata`.
   annullaScansione: () => invoke<void>("annulla_scansione"),
@@ -2353,6 +2481,11 @@ export const ipc = {
   // uscire la musica dagli altoparlanti — in ufficio, di notte, in riunione.
   // Sopravvivono coda, volume, curva e normalizzazione; la posizione no.
   riapriAudio: () => invoke<void>("riapri_audio"),
+  // Riprende il brano che una cartella di rete aveva interrotto, dal punto in
+  // cui la musica si era fermata. È il tasto «Riprova» dell'avviso di rete: se
+  // il NAS è ancora spento fallisce con lo stesso errore ritentabile e si può
+  // premere di nuovo, se nel frattempo si è ascoltato altro non fa niente.
+  riprovaCorrente: () => invoke<void>("riprova_corrente"),
   // Lo spettro si accende e si spegne: acceso, la callback audio scrive i
   // campioni in un terzo anello e un filo manda `riproduzione:spettro` trenta
   // volte al secondo. Spento non costa niente da nessuna delle due parti, ed è
@@ -2469,6 +2602,18 @@ export const ipc = {
   // sé è telemetria, e `PRIVACY.md` dice che non ce n'è. Qui si apre la
   // cartella nel gestore file, e cosa farne lo decide chi guarda.
   diarioApri: () => invoke<void>("diario_apri"),
+  // L'altra metà: scriverci dentro un guasto del davanti. Il diario del nucleo
+  // raccoglieva tutto quel che succede sotto e niente di quel che succede
+  // sopra, e in rilascio non c'è una console: un errore JavaScript non
+  // catturato lasciava la finestra bianca e nessuna traccia. `dove` finisce
+  // nella parentesi quadra del diario («finestra», «promessa», «recinto»),
+  // `cosa` è il messaggio — che il nucleo riduce a una riga sola prima di
+  // scriverlo, perché uno stack trace si porta dietro i percorsi del disco.
+  //
+  // Non restituisce errori e non ne lancia: è chiamato da un gestore di errori,
+  // e un gestore di errori che fallisce non ha nessuno a cui dirlo.
+  diarioAnnota: (dove: string, cosa: string) =>
+    invoke<void>("diario_annota", { dove, cosa }).catch(() => {}),
 
   // I documenti pubblici, nel browser di sistema. Il nome e non l'indirizzo: di
   // là c'è un elenco chiuso, e un comando che aprisse l'indirizzo che gli si

@@ -47,7 +47,7 @@ pub mod uscita;
 
 pub use decodifica::{Flusso, Sorgente};
 pub use equalizzatore::{BANDE, CENTRI_HZ, LIMITE_DB, PRESET_DI_SERIE};
-pub use motore::{Evento, Motore, Posizione};
+pub use motore::{BranoAperto, Evento, Motore, Posizione};
 pub use spettro::{
     Bande, RISOLUZIONE_DI_SERIE, RISOLUZIONE_MAX, RISOLUZIONE_MIN, RISOLUZIONI, Spettro,
 };

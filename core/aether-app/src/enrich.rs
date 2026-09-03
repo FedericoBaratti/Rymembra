@@ -219,13 +219,20 @@ pub struct Decisione {
 ///
 /// I due segnaposto sono le scadenze di ritentativo: `?1` per gli incerti, `?2`
 /// per quelli che nessuno ha riconosciuto.
+///
+/// Gli stati che non compaiono qui — `ok`, e `undone` scritto da [`annulla`] —
+/// sono **terminali**: il gruppo di condizioni sugli stati li esclude tutti.
+/// Per `undone` è la sostanza dell'annullamento: riportare lo stato a `NULL`
+/// farebbe riqualificare il brano come «mai provato», e la passata automatica
+/// successiva riapplicherebbe — dalla cache, con la stessa confidenza — proprio
+/// ciò che l'utente ha appena disfatto.
 fn candidato_where() -> String {
     format!(
         "t.mb_recording_id IS NULL
          AND (
            t.artist = '{UNKNOWN_ARTIST}' OR t.album = '{UNKNOWN_ALBUM}'
            OR t.cover_art_hash IS NULL
-           OR t.source = 'youtube'
+           OR t.source = 'catalogo'
          )
          AND (
            t.enrich_status IS NULL
@@ -316,7 +323,7 @@ pub fn leggi_gruppo(connection: &Connection, album_key: &str) -> Result<Option<G
         .prepare(
             "SELECT id, path, title, artist, album, album_artist, duration_ms,
                     track_number, disc_number, year, genre, cover_art_hash,
-                    mb_recording_id, enrich_status
+                    mb_recording_id, enrich_status, mb_release_id, mb_release_group_id
              FROM tracks
              WHERE album_key = ?1
              ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 0), id",
@@ -337,6 +344,8 @@ pub fn leggi_gruppo(connection: &Connection, album_key: &str) -> Result<Option<G
             let cover: Option<String> = row.get(11)?;
             let mb: Option<String> = row.get(12)?;
             let stato: Option<String> = row.get(13)?;
+            let mb_release: Option<String> = row.get(14)?;
+            let mb_release_group: Option<String> = row.get(15)?;
             Ok(BranoDaArricchire {
                 brano: LocalTrack {
                     id: row.get(0)?,
@@ -351,7 +360,9 @@ pub fn leggi_gruppo(connection: &Connection, album_key: &str) -> Result<Option<G
                     genre: genre.clone(),
                     file_stem: Some(file_stem(&path).to_owned()),
                     has_cover: cover.is_some(),
-                    has_mb_id: mb.is_some(),
+                    has_mb_recording_id: mb.is_some(),
+                    has_mb_release_id: mb_release.is_some(),
+                    has_mb_release_group_id: mb_release_group.is_some(),
                 },
                 path,
                 gia_arricchito: stato.as_deref() == Some("ok"),
@@ -1159,8 +1170,7 @@ fn ripristina_riga(
            track_key = ?10,
            album_key = CASE WHEN ?11 = '' THEN album_key ELSE ?11 END,
            date_modified = ?12, file_size = ?13,
-           enrich_status = NULL, enrich_attempted_at = NULL,
-           enrich_source = NULL, enrich_confidence = NULL
+           enrich_status = 'undone', enrich_source = NULL, enrich_confidence = NULL
          WHERE id = ?1",
     )
     .and_then(|mut statement| {
@@ -1486,6 +1496,11 @@ mod prove {
     }
 
     #[test]
+    #[expect(
+        clippy::integer_division,
+        reason = "`i64::MAX / 2` è solo un «adesso» lontanissimo che non trabocca \
+                  quando ci si somma una scadenza: il resto non esiste"
+    )]
     fn l_annullamento_riporta_i_tag_e_la_riga() {
         let (cartella, mut connection, percorso) = libreria();
         applica(
@@ -1526,7 +1541,23 @@ mod prove {
             )
             .expect("lettura");
         assert_eq!(titolo, "Titolo vecchio");
-        assert_eq!(stato, None, "il brano torna candidato");
+        // Uno stato terminale, non un ritorno a «mai provato»: i tag sono
+        // tornati quelli di prima, e con la riga azzerata la passata automatica
+        // successiva rimetterebbe — dalla cache, con la stessa confidenza —
+        // proprio quel che è appena stato disfatto.
+        assert_eq!(
+            stato.as_deref(),
+            Some("undone"),
+            "l'annullamento si ricorda"
+        );
+        // Con un «adesso» lontanissimo anche le scadenze di ritentativo sono
+        // passate: quel che resta fuori dal conteggio è fuori perché il suo
+        // stato è terminale, non perché è ancora presto per riprovarci.
+        assert_eq!(
+            quanti_mancano(&connection, i64::MAX / 2).expect("conteggio"),
+            0,
+            "un brano annullato non torna candidato"
+        );
         let rimaste: i64 = connection
             .query_row("SELECT COUNT(*) FROM enrich_undo", [], |row| row.get(0))
             .expect("conteggio");

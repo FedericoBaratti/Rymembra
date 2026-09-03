@@ -5,16 +5,29 @@ quella che non hai.
 
 Aether suona i file che hai già sul disco. Quando gli dai una playlist — dal tuo
 archivio Spotify, da un file M3U, da un link — guarda cosa hai già in libreria e
-va a cercare il resto **nei cataloghi liberi**: Internet Archive e Audius. Ogni brano che entra porta con sé la licenza sotto cui è stato
-preso. Quel che nessun catalogo libero ha finisce in una lista d'acquisto, con i
-link ai negozi dove chi l'ha fatto viene pagato.
+va a cercare il resto **nei cataloghi liberi**: Internet Archive e Audius. Ogni
+brano che entra porta con sé la licenza sotto cui è stato preso. Quel che nessun
+catalogo libero ha finisce in una lista d'acquisto, con i link ai negozi dove
+chi l'ha fatto viene pagato.
 
 Non scarica da YouTube, non fa scraping di Spotify, non impacchetta binari di
 terze parti. Il perché è scritto sotto, ed è la cosa più importante di questo
 documento.
 
 > **Stato:** in sviluppo. Compila e funziona su Windows; non è ancora firmato e
-> il lato mobile non esiste. Vedi *Cosa manca*.
+> il lato mobile non esiste. Vedi *Cosa manca* — e *Installare*, se sei qui per
+> quello.
+
+![La schermata d'apertura di Aether](immagini/casa.webp)
+
+L'apertura non è un elenco alfabetico. «Riprendi dov'eri» ritrova il brano **e
+il secondo** in cui l'avevi lasciato; sotto stanno gli ascoltati di recente,
+gli album appena entrati, e i dischi che hai in libreria da mesi e non hai mai
+aperto — l'unico ripiano che un servizio in streaming non può avere, perché per
+lui non possiedi niente.
+
+*Gli scatti di questo documento vengono da una libreria vera: millequattrocento
+brani, novecentotrentacinque album.*
 
 ---
 
@@ -40,6 +53,14 @@ i termini definiscono l'uso commerciale come «any monetary compensation». Vedi
 *Cosa manca*. Il modulo sa già che da lì si ascolta e basta — i loro termini
 vietano la cache e l'accesso offline — e `aether-net::FlussoHttp` è la parte che
 suona un brano senza scriverlo da nessuna parte.
+
+![La sezione «Da dove arriva la musica», nelle impostazioni](immagini/fonti.webp)
+
+Le stesse fonti, dentro il programma. «Da un link» accetta un indirizzo di
+archive.org o audius.co e basta: nessun account, nessuna chiave, nessun
+incollaggio di gettoni. «Il tuo archivio Spotify» legge lo zip che Spotify ti
+consegna su richiesta, e lo legge qui — non viaggia da nessuna parte. Non c'è
+un terzo campo dove mettere altro, perché non c'è altro che si possa mettere.
 
 ### Il punto onesto
 
@@ -90,6 +111,65 @@ cronologia di quanta ne desse l'API.
   verifica la firma dell'installer prima di eseguirlo. Si spegne in
   Impostazioni; `PRIVACY.md` § 6 dice cosa viaggia, che è niente.
 
+### Come si vede
+
+![L'elenco dei brani, con copertina, album, voto e durata](immagini/brani.webp)
+
+L'elenco si scorre e non si sfoglia: non c'è una «pagina 2», perché per
+chiederla bisognerebbe già sapere dove sta la cosa che si sta cercando — che è
+esattamente quel che non si sa. La pagina successiva se la chiede da sé quando
+il fondo si avvicina.
+
+![In riproduzione, con lo spettro tridimensionale acceso](immagini/riproduzione.webp)
+
+Lo spettro prende i campioni **dopo** l'equalizzatore e **prima** del volume:
+alzare i bassi si vede nelle barre, abbassare la manopola no — uno spettro che
+si abbassa con la manopola descrive la manopola, non la musica. Le bande
+arrivano dal motore su un anello che, quando è pieno, **perde**: la callback
+che suona non aspetta un disegno, mai.
+
+### Le skin non sono un tema scuro
+
+| Plain, quella di serie | «Cyberpunk Edge», installata |
+| --- | --- |
+| ![La griglia degli album con la skin Plain](immagini/album.webp) | ![La stessa griglia con la skin Cyberpunk Edge](immagini/skin.webp) |
+
+La stessa schermata, due skin: cambiano i colori d'accento, i bordi, le ombre,
+il peso dei caratteri e il raggio degli angoli — cinquantadue parti in tutto,
+non un interruttore chiaro/scuro.
+
+![Lo Studio: albero delle parti, anteprima viva, ispettore](immagini/studio.webp)
+
+Lo Studio è dove si scrivono. A sinistra le parti e i cinquantotto token, al
+centro l'anteprima viva — che gira su una libreria finta, non sulla tua — a
+destra l'ispettore, con la sonda che illumina la superficie sotto il puntatore
+e ne dice il nome: il problema di chi fa una skin non è scegliere un colore, è
+sapere come si chiama la cosa che sta guardando.
+
+In fondo quattro numeri. Uno conta le coppie di colori che stanno **sotto
+4,5:1**, cioè sotto la soglia di leggibilità: una skin che esce con sedici
+avvisi l'ha deciso, non l'ha subito.
+
+---
+
+## Installare
+
+L'installer per Windows sta fra gli allegati dell'[ultima
+release](https://github.com/FedericoBaratti/Aether/releases/latest): un `.exe`
+NSIS. Da lì in avanti Aether guarda le release ogni mezz'ora e dice quando ne
+esce una nuova — installarla parte sempre da un tasto, mai da sé.
+
+**SmartScreen lo bloccherà**, ed è giusto che lo faccia: il programma non è
+firmato con un certificato, e Windows dice quel che sa, cioè niente. Si passa
+da «Ulteriori informazioni» → «Esegui comunque». Il perché non ci sia di meglio
+sta in *Cosa manca*, ed è una cifra, non una svista.
+
+Quel che cambia da una versione all'altra sta in `CHANGELOG.md`, per intero e
+col motivo accanto. La regola dei numeri è scritta in cima a quel file: una
+versione che porta una migrazione del database è sempre una *minor*, perché le
+migrazioni vanno solo avanti e tornare indietro vuol dire ripristinare una
+copia, non disinstallare.
+
 ---
 
 ## Compilare
@@ -97,7 +177,7 @@ cronologia di quanta ne desse l'API.
 Serve Rust (la versione sta in `rust-toolchain.toml`) e Node 20 o più recente.
 
 ```bash
-# Le prove: circa 1 260, e girano senza rete
+# Le prove: circa 1 370, e girano senza rete
 cargo test --workspace
 
 # L'applicazione, in sviluppo

@@ -24,7 +24,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
-use aether_domain::errors::{AppError, ErrorCode};
+use aether_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 
 use crate::decodifica::{Decodificatore, Sorgente};
 use crate::equalizzatore::{BANDE, Coefficienti};
@@ -87,8 +87,8 @@ pub struct Posizione {
 
 /// Quel che si può chiedere al motore.
 enum Comando {
-    Suona(Box<Sorgente>),
-    Prepara(Option<Box<Sorgente>>),
+    Suona(Box<BranoAperto>),
+    Prepara(Option<Box<BranoAperto>>),
     Ferma,
     VaiA(u64),
     Volume {
@@ -257,11 +257,13 @@ impl Motore {
     }
 
     /// Comincia a suonare questo brano, adesso, scartando quel che c'era.
-    pub fn suona(&self, sorgente: Sorgente) {
+    ///
+    /// Il brano arriva **già aperto**: il perché sta in [`BranoAperto`].
+    pub fn suona(&self, brano: BranoAperto) {
         // Abbassato qui e non all'apertura del file, per la ragione — e per
         // l'ordine — scritti in [`Motore::pausa`].
         self.condiviso.in_pausa.store(false, Ordering::Release);
-        self.manda(Comando::Suona(Box::new(sorgente)));
+        self.manda(Comando::Suona(Box::new(brano)));
     }
 
     /// Tiene pronto il brano dopo, per attaccarlo senza buco.
@@ -269,8 +271,8 @@ impl Motore {
     /// È tutto il gapless: quando il corrente finisce, i campioni del prossimo
     /// sono già in coda per entrare nell'anello, e fra i due non c'è nessuna
     /// apertura di file da aspettare.
-    pub fn prepara(&self, sorgente: Option<Sorgente>) {
-        self.manda(Comando::Prepara(sorgente.map(Box::new)));
+    pub fn prepara(&self, brano: Option<BranoAperto>) {
+        self.manda(Comando::Prepara(brano.map(Box::new)));
     }
 
     /// Riprende.
@@ -423,16 +425,70 @@ impl Drop for Motore {
     }
 }
 
-/// Un brano già aperto in attesa di attaccarsi al corrente.
+/// Un brano già aperto, pronto da dare al motore.
+///
+/// # Perché il motore riceve un brano aperto e non una sorgente da aprire
+///
+/// Perché aprire **legge**, e su una condivisione di rete legge molto più di
+/// quanto sembri: il riconoscimento del contenitore si porta dietro tutti i
+/// blocchi di metadati, e su un FLAC anche la copertina incorporata, che sono
+/// spesso centinaia di kilobyte. Finché quel lavoro stava dentro il filo di
+/// decodifica non c'era nessun posto in cui infilargli una scadenza — il filo
+/// era già dentro la `ReadFile`, e da lì non lo tira fuori nessun sistema
+/// operativo. La scadenza dei cinque secondi copriva la sola `File::open`, cioè
+/// la parte veloce.
+///
+/// Spostando l'apertura di qua dal confine, chi chiama la può mandare su un filo
+/// suo con una scadenza addosso — è quel che fa `sorgente_di` nell'applicazione
+/// — e il filo di decodifica riceve qualcosa che è già pronto a consegnare
+/// campioni.
 ///
 /// Porta con sé durata e ReplayGain: quando toccherà a lui, la [`Sorgente`] da
 /// cui vengono non esisterà più — è stata consumata dall'apertura — e senza
 /// questi due campi il brano attaccato in gapless arriverebbe in interfaccia
 /// con durata zero e senza correzione di volume.
-struct Preparato {
+pub struct BranoAperto {
     decodificatore: Decodificatore,
     durata_ms: u64,
     replaygain_db: Option<f32>,
+}
+
+impl BranoAperto {
+    /// Apre una sorgente per un'uscita di questo formato.
+    ///
+    /// Il formato lo dice [`Motore::formato`]: è quello con cui il dispositivo
+    /// si è aperto davvero, e il decodificatore ci ricampiona sopra.
+    ///
+    /// # Errori
+    ///
+    /// `playback.formatUnsupported` per un contenitore che non si riconosce,
+    /// `fs.networkUnavailable` se a non rispondere è la condivisione —
+    /// ritentabile, e chi chiama ci mette accanto il tasto «Riprova».
+    pub fn apri(sorgente: Sorgente, formato: FormatoUscita) -> Result<Self, AppError> {
+        let durata_ms = sorgente.durata_ms;
+        let replaygain_db = sorgente.replaygain_db;
+        let decodificatore = Decodificatore::apri(sorgente, formato.frequenza, formato.canali)?;
+        Ok(Self {
+            decodificatore,
+            durata_ms,
+            replaygain_db,
+        })
+    }
+
+    /// Quale brano.
+    #[must_use]
+    pub const fn track_id(&self) -> i64 {
+        self.decodificatore.track_id()
+    }
+}
+
+impl std::fmt::Debug for BranoAperto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BranoAperto")
+            .field("track_id", &self.decodificatore.track_id())
+            .field("durata_ms", &self.durata_ms)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Un brano che comincerà a sentirsi a un certo fotogramma d'uscita.
@@ -454,7 +510,7 @@ struct Contesto {
     osservatore: Box<dyn Fn(Evento) + Send>,
     formato: FormatoUscita,
     corrente: Option<Decodificatore>,
-    prossimo: Option<Preparato>,
+    prossimo: Option<BranoAperto>,
     /// Dove comincia ogni brano, in fotogrammi d'uscita.
     segni: VecDeque<Segno>,
     /// Campioni decodificati che non sono ancora entrati nell'anello.
@@ -506,7 +562,7 @@ struct Contesto {
     /// quello: chi ascoltava sentiva gracchiare e si ritrovava un brano più
     /// avanti nella coda. Qui il brano che entra è al riparo, e `prossimo`
     /// torna a essere quel che dice di essere.
-    entrante: Option<Preparato>,
+    entrante: Option<BranoAperto>,
     /// Il blocco appena uscito dal decodificatore del brano che entra.
     blocco_entrante: Vec<f32>,
     /// I campioni dell'entrante decodificati e non ancora mescolati.
@@ -623,8 +679,8 @@ impl Contesto {
 
     fn esegui(&mut self, comando: Comando) {
         match comando {
-            Comando::Suona(sorgente) => self.avvia_brano(*sorgente),
-            Comando::Prepara(sorgente) => self.prepara(sorgente.map(|s| *s)),
+            Comando::Suona(brano) => self.avvia_brano(*brano),
+            Comando::Prepara(brano) => self.prepara(brano.map(|b| *b)),
             Comando::Ferma => self.ferma(),
             Comando::VaiA(ms) => self.vai_a(ms),
             Comando::Volume { volume, muto } => {
@@ -727,65 +783,44 @@ impl Contesto {
         self.segni.clear();
     }
 
-    fn avvia_brano(&mut self, sorgente: Sorgente) {
-        let track_id = sorgente.track_id;
-        let durata_ms = sorgente.durata_ms;
-        let replaygain_db = sorgente.replaygain_db;
-        let aperto = Decodificatore::apri(sorgente, self.formato.frequenza, self.formato.canali);
-        match aperto {
-            Ok(decodificatore) => {
-                self.scarta_in_volo();
-                self.corrente = Some(decodificatore);
-                self.prossimo = None;
-                self.annunciato = None;
-                self.fine_dichiarata = false;
-                self.rg_decodifica = replaygain_db;
-                self.durata_corrente_ms = durata_ms;
-                self.azzera_dissolvenza();
-                self.applica_guadagno();
-                self.segni.push_back(Segno {
-                    da: 0,
-                    track_id,
-                    durata_ms,
-                    offset_ms: 0,
-                    replaygain_db,
-                });
-            }
-            Err(err) => {
-                // Il brano non si apre: si dice, e ci si ferma. Andare avanti da
-                // soli al successivo è una decisione della coda, non del motore.
-                //
-                // Il bit torna su qui: l'aveva abbassato [`Motore::suona`] al
-                // clic, e lasciarlo giù vorrebbe dire una finestra che dice «in
-                // riproduzione» per un file che non si è mai aperto.
-                self.condiviso.in_pausa.store(true, Ordering::Release);
-                (self.osservatore)(Evento::Errore(Box::new(err)));
-            }
-        }
+    /// Installa un brano già aperto e comincia a consegnarne i campioni.
+    ///
+    /// Non c'è nessun ramo d'errore, e non è una dimenticanza: il brano è
+    /// arrivato aperto, quindi tutto quel che poteva andare storto — il
+    /// contenitore irriconoscibile, la rete che non risponde — è già andato
+    /// storto dall'altra parte del confine, dove c'era una scadenza a
+    /// raccoglierlo e un `Result` da restituire a chi aveva premuto play. Vedi
+    /// [`BranoAperto`].
+    fn avvia_brano(&mut self, brano: BranoAperto) {
+        let track_id = brano.decodificatore.track_id();
+        let durata_ms = brano.durata_ms;
+        let replaygain_db = brano.replaygain_db;
+        self.scarta_in_volo();
+        self.corrente = Some(brano.decodificatore);
+        self.prossimo = None;
+        self.annunciato = None;
+        self.fine_dichiarata = false;
+        self.rg_decodifica = replaygain_db;
+        self.durata_corrente_ms = durata_ms;
+        self.azzera_dissolvenza();
+        self.applica_guadagno();
+        self.segni.push_back(Segno {
+            da: 0,
+            track_id,
+            durata_ms,
+            offset_ms: 0,
+            replaygain_db,
+        });
     }
 
-    fn prepara(&mut self, sorgente: Option<Sorgente>) {
-        self.prossimo = match sorgente {
-            None => None,
-            Some(s) => {
-                let durata_ms = s.durata_ms;
-                let replaygain_db = s.replaygain_db;
-                match Decodificatore::apri(s, self.formato.frequenza, self.formato.canali) {
-                    Ok(decodificatore) => Some(Preparato {
-                        decodificatore,
-                        durata_ms,
-                        replaygain_db,
-                    }),
-                    Err(err) => {
-                        // Il prossimo non si apre: si segnala ora, mentre il
-                        // corrente suona ancora, invece di scoprirlo nel
-                        // silenzio fra i due.
-                        (self.osservatore)(Evento::Errore(Box::new(err)));
-                        None
-                    }
-                }
-            }
-        };
+    /// Mette in canna il brano dopo, o toglie quello che c'era.
+    ///
+    /// Anche qui niente ramo d'errore: chi apre è chi chiama, e un successivo
+    /// che non si apre lo scopre **lui**, mentre il corrente suona ancora — che
+    /// era già il momento giusto per scoprirlo, solo dall'altra parte del
+    /// confine. Vedi [`BranoAperto`].
+    fn prepara(&mut self, brano: Option<BranoAperto>) {
+        self.prossimo = brano;
     }
 
     fn ferma(&mut self) {
@@ -807,6 +842,18 @@ impl Contesto {
         };
         let track_id = decodificatore.track_id();
         if let Err(err) = decodificatore.cerca(ms) {
+            // Si annuncia e si torna indietro, **senza** fermare: un salto che
+            // non riesce lascia la puntina dov'era, e dov'era è ancora un posto
+            // buono da cui continuare.
+            //
+            // Vale anche quando il guasto viene dalla rete, ed è voluto:
+            // `Decodificatore::cerca` lo riconosce per quel che è, quindi il
+            // codice che esce di qui è già ritentabile — la finestra si annota
+            // il punto e disegna «Riprova». Se poi la share è davvero morta, la
+            // prima lettura che segue lo scopre e **là** il motore si ferma, dal
+            // ramo di rete di [`Contesto::decodifica_un_blocco`]. Fermarsi già
+            // qui vorrebbe dire buttare via un brano per un salto fallito su una
+            // rete che magari sta solo respirando male.
             (self.osservatore)(Evento::Errore(Box::new(err)));
             return;
         }
@@ -910,7 +957,30 @@ impl Contesto {
             }
             Ok(false) => self.passa_al_prossimo(),
             Err(err) => {
+                // # Perché un guasto di rete non fa passare al brano dopo
+                //
+                // Perché il brano dopo, con ogni probabilità, sta sulla stessa
+                // condivisione che è appena morta. Passare a lui vuol dire
+                // un'altra attesa di quaranta secondi, un altro errore, e così
+                // via lungo tutta la coda: in un minuto l'utente ha perso il
+                // punto in cui stava ascoltando, ha ricevuto una raffica di
+                // avvisi e si ritrova la coda finita. Un cavo staccato non deve
+                // costare la serata.
+                //
+                // Fermarsi invece la conserva: il brano resta quello, la
+                // posizione pure, e la finestra offre «Riprova» perché il codice
+                // che arriva è ritentabile. Vedi `Decodificatore::guasto`.
+                //
+                // Ogni altro guasto continua a far saltare il brano, ed è
+                // giusto: un file davvero rotto non si aggiusta aspettando, e
+                // fermare la riproduzione su di lui vorrebbe dire che un album
+                // con un file corrotto in mezzo non arriva più in fondo.
+                let di_rete = err.code().kind() == ErrorCodeKind::FsNetworkUnavailable;
                 (self.osservatore)(Evento::Errore(Box::new(err)));
+                if di_rete {
+                    self.ferma();
+                    return false;
+                }
                 self.passa_al_prossimo()
             }
         }
@@ -1245,6 +1315,18 @@ impl Contesto {
     /// dell'anello. Dichiarare la fine quando finisce la decodifica taglierebbe
     /// la coda di ogni brano — e con una coda che avanza da sola, la
     /// taglierebbe a ogni brano dell'album.
+    ///
+    /// # Perché azzera la posizione
+    ///
+    /// Per la stessa ragione di [`Contesto::ferma`], che è l'altro modo in cui
+    /// la musica finisce: dichiarata la fine non c'è più nessun brano nel
+    /// motore, e lasciare l'ultimo `track_id` scritto nella posizione vorrebbe
+    /// dire un motore che si dice fermo su un brano che non ha più. Chi sta
+    /// sopra legge quel campo per distinguere «in pausa a metà» da «non ho
+    /// niente in mano»: con l'ultimo brano ancora lì, «riprendi» chiedeva al
+    /// motore vuoto di ripartire — cioè non faceva niente — mentre il pulsante
+    /// diventava «pausa». I segni se ne vanno con lui: sono la mappa fra
+    /// fotogrammi e brani, e i fotogrammi ricominceranno da zero.
     fn forse_fine(&mut self, suonati: u64) {
         if self.fine_dichiarata || self.corrente.is_some() || self.prossimo.is_some() {
             return;
@@ -1252,6 +1334,9 @@ impl Contesto {
         if suonati >= self.spinti && self.resto.is_empty() {
             self.fine_dichiarata = true;
             self.condiviso.in_pausa.store(true, Ordering::Release);
+            self.segni.clear();
+            self.annunciato = None;
+            self.scrivi_posizione(Posizione::default());
             (self.osservatore)(Evento::Fermato);
         }
     }
@@ -1456,6 +1541,17 @@ mod prove {
         }
     }
 
+    /// Apre una sorgente di prova per l'uscita di questo contesto.
+    ///
+    /// Da quando il motore riceve brani già aperti (vedi [`BranoAperto`]), le
+    /// prove devono fare quel che fa l'applicazione: aprire di qua dal confine.
+    /// Il `expect` è a posto perché queste sorgenti sono WAV costruiti due
+    /// funzioni più su — se non si aprissero, il guasto sarebbe nel banco di
+    /// prova e non in quel che si sta provando.
+    fn aperto(ctx: &Contesto, sorgente: Sorgente) -> BranoAperto {
+        BranoAperto::apri(sorgente, ctx.formato).expect("la sorgente di prova si apre")
+    }
+
     /// Il filo della decodifica senza il filo e senza il dispositivo.
     struct Banco {
         ctx: Contesto,
@@ -1467,6 +1563,11 @@ mod prove {
     }
 
     fn banco(frequenza: u32) -> Banco {
+        banco_con(frequenza, Box::new(|_| {}))
+    }
+
+    /// Come [`banco`], ma con un osservatore che si sceglie.
+    fn banco_con(frequenza: u32, osservatore: Box<dyn Fn(Evento) + Send>) -> Banco {
         let (manda, ricevi) = std::sync::mpsc::channel();
         let (produttore, consumatore) = rtrb::RingBuffer::<f32>::new(16_384);
         let (curve, prese) = rtrb::RingBuffer::<Coefficienti>::new(32);
@@ -1480,7 +1581,7 @@ mod prove {
                 frequenza,
                 canali: 1,
             },
-            Box::new(|_| {}),
+            osservatore,
         );
         Banco {
             ctx,
@@ -1533,15 +1634,14 @@ mod prove {
         // Chi ascoltava sentiva gracchiare e si ritrovava un brano più avanti.
         let mut banco = banco(48_000);
         banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
-        banco
-            .ctx
-            .esegui(Comando::Suona(Box::new(brano(1, 48_000, 0.8))));
-        banco
-            .ctx
-            .esegui(Comando::Prepara(Some(Box::new(brano(2, 24_000, 0.4)))));
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        let secondo = aperto(&banco.ctx, brano(2, 24_000, 0.4));
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
         let fuori = suona_tutto(&mut banco, |ctx| {
-            ctx.esegui(Comando::Prepara(Some(Box::new(brano(3, 48_000, 0.1)))));
+            let terzo = aperto(ctx, brano(3, 48_000, 0.1));
+            ctx.esegui(Comando::Prepara(Some(Box::new(terzo))));
         });
 
         // Il secondo brano deve sentirsi **da solo**, cioè al suo livello: fra
@@ -1568,12 +1668,10 @@ mod prove {
         // modo più semplice di accorgersene.
         let mut banco = banco(48_000);
         banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
-        banco
-            .ctx
-            .esegui(Comando::Suona(Box::new(brano(1, 48_000, 0.8))));
-        banco
-            .ctx
-            .esegui(Comando::Prepara(Some(Box::new(brano(2, 24_000, 0.4)))));
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        let secondo = aperto(&banco.ctx, brano(2, 24_000, 0.4));
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
         let fuori = suona_tutto(&mut banco, |_| {});
 
@@ -1597,12 +1695,10 @@ mod prove {
         // solo a mezza ampiezza. Senza la ripresa salterebbe di colpo a tutta.
         let mut banco = banco(48_000);
         banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
-        banco
-            .ctx
-            .esegui(Comando::Suona(Box::new(brano_da(1, 48_000, 0.8, 800))));
-        banco
-            .ctx
-            .esegui(Comando::Prepara(Some(Box::new(brano(2, 48_000, 0.4)))));
+        let primo = aperto(&banco.ctx, brano_da(1, 48_000, 0.8, 800));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
 
         let fuori = suona_tutto(&mut banco, |_| {});
 
@@ -1631,6 +1727,533 @@ mod prove {
                 .fold(0.0_f32, f32::max)
         });
         assert!(salto < 0.005, "gradino di {salto} dentro la ripresa");
+    }
+
+    // ── la condivisione che muore a metà brano ──────────────────────────────
+
+    /// Byte che a un certo punto smettono di rispondere.
+    ///
+    /// I primi `soglia` byte arrivano interi, poi ogni lettura restituisce il
+    /// numero di Windows che si è scelto. Con il 64 —
+    /// `ERROR_NETNAME_DELETED` — è una condivisione che è morta a metà brano:
+    /// il modo in cui una VPN che cade o un NAS spento si presentano, e
+    /// l'unico modo di riprodurre quel guasto senza un NAS vero. Con un numero
+    /// qualunque che non sia di rete è invece un settore illeggibile del disco
+    /// di casa. Le due prove che seguono si distinguono **solo** per quel
+    /// numero, che è esattamente la distinzione che il motore deve saper fare.
+    struct ByteCheFalliscono {
+        dentro: std::io::Cursor<Vec<u8>>,
+        soglia: u64,
+        letti: u64,
+        numero: i32,
+    }
+
+    impl std::io::Read for ByteCheFalliscono {
+        fn read(&mut self, dove: &mut [u8]) -> std::io::Result<usize> {
+            if self.letti >= self.soglia {
+                return Err(std::io::Error::from_raw_os_error(self.numero));
+            }
+            let quanti = std::io::Read::read(&mut self.dentro, dove)?;
+            self.letti = self
+                .letti
+                .saturating_add(u64::try_from(quanti).unwrap_or(0));
+            Ok(quanti)
+        }
+    }
+
+    impl std::io::Seek for ByteCheFalliscono {
+        fn seek(&mut self, da: std::io::SeekFrom) -> std::io::Result<u64> {
+            std::io::Seek::seek(&mut self.dentro, da)
+        }
+    }
+
+    impl crate::decodifica::Flusso for ByteCheFalliscono {
+        fn lunghezza(&self) -> Option<u64> {
+            // Il file **dichiara** la sua lunghezza vera: la share è morta dopo
+            // che il sistema l'aveva già detta, ed è proprio questo a rendere
+            // il guasto invisibile finché non si legge.
+            u64::try_from(self.dentro.get_ref().len()).ok()
+        }
+    }
+
+    /// Un brano che si interrompe a metà con il numero d'errore dato.
+    ///
+    /// La soglia sta a metà dei byte perché symphonia deve fare in tempo a
+    /// riconoscere il WAV e a leggerne qualche pacchetto: un guasto che
+    /// arrivasse subito verrebbe scambiato per un file di formato ignoto, che è
+    /// un'altra strada e un altro errore, e la prova non guarderebbe più il
+    /// punto che deve guardare.
+    fn brano_che_si_interrompe(track_id: i64, frequenza: u32, numero: i32) -> Sorgente {
+        let quanti = fotogrammi_da_ms(1_000, frequenza);
+        let campioni = vec![0.5f32; usize::try_from(quanti).unwrap_or(48_000)];
+        let byte = wav(frequenza, &campioni);
+        let soglia = u64::try_from(byte.len().div_ceil(2)).unwrap_or(0);
+        Sorgente {
+            track_id,
+            media: Box::new(ByteCheFalliscono {
+                dentro: std::io::Cursor::new(byte),
+                soglia,
+                letti: 0,
+                numero,
+            }),
+            estensione: Some("wav".to_owned()),
+            durata_ms: 1_000,
+            replaygain_db: None,
+        }
+    }
+
+    /// La condivisione che sparisce: `ERROR_NETNAME_DELETED`.
+    fn brano_che_muore(track_id: i64, frequenza: u32) -> Sorgente {
+        brano_che_si_interrompe(track_id, frequenza, 64)
+    }
+
+    /// Il file davvero rotto sul disco di casa: `ERROR_CRC`, un settore che non
+    /// si legge più. Aspettare non lo aggiusta, e infatti va saltato.
+    fn brano_rotto(track_id: i64, frequenza: u32) -> Sorgente {
+        brano_che_si_interrompe(track_id, frequenza, 23)
+    }
+
+    /// Gli eventi annunciati, in ordine, riletti dalla prova che li ha chiesti.
+    type Registro = Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// La stessa scatola che il motore vero riceve dall'applicazione.
+    type Osservatore = Box<dyn Fn(Evento) + Send>;
+
+    /// Raccoglie gli eventi che il motore annuncia, per poterli leggere dopo.
+    fn spia() -> (Registro, Osservatore) {
+        let registro = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dentro = Arc::clone(&registro);
+        let osservatore: Osservatore = Box::new(move |evento| {
+            let riga = match evento {
+                Evento::Iniziato { track_id } => format!("iniziato:{track_id}"),
+                Evento::Fermato => "fermato".to_owned(),
+                Evento::Errore(err) => format!(
+                    "errore:{}:{}",
+                    err.code().kind().code(),
+                    if err.is_retryable() {
+                        "riprovabile"
+                    } else {
+                        "definitivo"
+                    }
+                ),
+            };
+            if let Ok(mut elenco) = dentro.lock() {
+                elenco.push(riga);
+            }
+        });
+        (registro, osservatore)
+    }
+
+    fn eventi(registro: &Registro) -> Vec<String> {
+        registro.lock().map(|e| e.clone()).unwrap_or_default()
+    }
+
+    // ── il FLAC vero ──────────────────────────────────────────────────────
+
+    /// Mezzo secondo a 44100, mono, a livello costante.
+    ///
+    /// # Perché un file e non dei byte costruiti qui
+    ///
+    /// Perché fino a ieri nessuna prova di questo crate decodificava un FLAC, e
+    /// il FLAC è il formato su cui pesano le due cose che questo giro ha
+    /// toccato: il riconoscimento del contenitore, che si porta dietro tutti i
+    /// blocchi di metadati, e il salto, che passa per la seek table. Costruire
+    /// un FLAC in memoria vorrebbe dire scrivere un codificatore — cioè provare
+    /// il proprio codificatore contro il decodificatore di symphonia, che non
+    /// dice niente su nessuno dei due.
+    ///
+    /// Sono centocinquantaquattro byte: un livello costante si comprime quasi a
+    /// niente, ed è quel che serve a un campione che deve stare in un
+    /// repository.
+    ///
+    /// 44100 e non 48000 apposta: così passa anche dal ricampionatore, che è la
+    /// strada di tutti i file veri di questa libreria.
+    const FLAC_COSTANTE: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/campioni/costante.flac"
+    ));
+
+    fn flac(track_id: i64) -> Sorgente {
+        Sorgente {
+            track_id,
+            media: Box::new(Byte(std::io::Cursor::new(FLAC_COSTANTE.to_vec()))),
+            estensione: Some("flac".to_owned()),
+            durata_ms: 500,
+            replaygain_db: None,
+        }
+    }
+
+    /// Tutti i campioni che un decodificatore consegna, fino alla fine.
+    fn tutto(decodificatore: &mut crate::decodifica::Decodificatore) -> Vec<f32> {
+        let mut fuori = Vec::new();
+        let mut blocco = Vec::new();
+        while decodificatore.prossimo(&mut blocco).expect("decodifica") {
+            fuori.extend(blocco.iter().copied());
+        }
+        fuori
+    }
+
+    #[test]
+    fn un_flac_vero_si_decodifica_e_si_ricampiona() {
+        let mut decodificatore =
+            crate::decodifica::Decodificatore::apri(flac(1), 48_000, 1).expect("il FLAC si apre");
+
+        let campioni = tutto(&mut decodificatore);
+
+        // Mezzo secondo a 44100 riportato a 48000 fa ventiquattromila
+        // fotogrammi. Il ricampionatore lavora a blocchi e può consegnarne
+        // qualcuno in meno o in più agli estremi: la tolleranza copre quello,
+        // non un errore di frequenza — che sarebbe di migliaia di campioni.
+        let attesi = 24_000_i64;
+        let scarto = (i64::try_from(campioni.len()).unwrap_or(0) - attesi).abs();
+        assert!(
+            scarto < 500,
+            "attesi ~{attesi} campioni a 48 kHz, ne sono arrivati {}",
+            campioni.len()
+        );
+
+        // E il suono è quello che c'era dentro: un livello costante resta
+        // costante, salvo le code del ricampionatore ai due estremi.
+        let dentro = &campioni[1_000..campioni.len().saturating_sub(1_000)];
+        assert!(
+            quanti_a(dentro, 0.5) * 10 > dentro.len() * 9,
+            "il livello non è quello inciso nel file"
+        );
+    }
+
+    #[test]
+    fn un_flac_vero_si_puo_saltare() {
+        // Il salto su FLAC è la strada che [`Decodificatore::cerca`] percorre
+        // davvero, ed è quella che nessun'altra prova di questo crate tocca: sul
+        // WAV il punto si calcola, qui si cerca fra i blocchi.
+        let intero = {
+            let mut d = crate::decodifica::Decodificatore::apri(flac(1), 48_000, 1)
+                .expect("il FLAC si apre");
+            tutto(&mut d).len()
+        };
+
+        let mut decodificatore =
+            crate::decodifica::Decodificatore::apri(flac(1), 48_000, 1).expect("il FLAC si apre");
+        decodificatore.cerca(250).expect("il salto riesce");
+        let dopo = tutto(&mut decodificatore).len();
+
+        // Si confronta con il decodificato intero, non con un numero scritto a
+        // mano, e la tolleranza è larga per una ragione precisa: **non si
+        // atterra a metà esatta**. Questo campione non porta una `SEEKTABLE` —
+        // è troppo corto perché il codificatore ne scriva una — quindi
+        // symphonia si ferma al confine del blocco FLAC più vicino, che sono
+        // 4096 fotogrammi alla volta. Su mezzo secondo la granularità si vede,
+        // ed è il comportamento giusto: quel che conta è che il salto abbia
+        // spostato la puntina e non l'abbia buttata fuori dal brano.
+        assert!(
+            dopo < intero,
+            "dopo un salto in avanti deve uscire meno musica: {dopo} contro {intero}"
+        );
+        assert!(
+            dopo * 4 > intero,
+            "il salto ha portato quasi alla fine del brano: {dopo} contro {intero}"
+        );
+    }
+
+    #[test]
+    fn un_flac_su_una_share_che_muore_non_diventa_un_formato_ignoto() {
+        // Il caso vero, e il più caro proprio su FLAC: il riconoscimento del
+        // contenitore legge **tutti** i blocchi di metadati prima di poter dire
+        // di che formato si tratta — su un disco con la copertina incorporata
+        // sono centinaia di kilobyte, tutti dalla rete. Se la share cade lì in
+        // mezzo, symphonia dice soltanto «nessun lettore adatto» e butta via il
+        // numero del sistema: senza il testimone in `decodifica.rs` l'utente si
+        // sentirebbe dire che il suo FLAC è di un formato che Aether non sa
+        // leggere.
+        let sorgente = Sorgente {
+            track_id: 1,
+            media: Box::new(ByteCheFalliscono {
+                // Solo i primi quaranta byte esistono: l'intestazione `fLaC` e
+                // l'inizio dello `STREAMINFO`. Il resto è la share che se n'è
+                // andata mentre si leggevano i blocchi di metadati — che sul
+                // FLAC sono la parte lunga della lettura.
+                dentro: std::io::Cursor::new(FLAC_COSTANTE[..40].to_vec()),
+                soglia: 40,
+                letti: 0,
+                numero: 64,
+            }),
+            estensione: Some("flac".to_owned()),
+            durata_ms: 500,
+            replaygain_db: None,
+        };
+
+        let Err(err) = crate::decodifica::Decodificatore::apri(sorgente, 48_000, 1) else {
+            panic!("con la rete giù a metà intestazione non si apre niente");
+        };
+
+        assert_eq!(
+            err.code().kind(),
+            ErrorCodeKind::FsNetworkUnavailable,
+            "un FLAC su share morta deve dire «rete» (causa: {:?})",
+            err.cause()
+        );
+        assert!(err.code().is_retryable(), "la rete torna: si ritenta");
+    }
+
+    /// Byte che smettono di rispondere **quando lo si decide**.
+    ///
+    /// A differenza di [`ByteCheFalliscono`], che cade dopo un tot di byte, qui
+    /// l'interruttore è in mano alla prova: serve a far morire la share in un
+    /// punto preciso della vita del decodificatore — fra l'apertura e il salto,
+    /// per esempio, che non è un momento riproducibile contando i byte letti.
+    ///
+    /// Fallisce anche il riposizionamento, e non è un dettaglio: un salto su una
+    /// condivisione morta è proprio una `SetFilePointer` che non torna.
+    struct ByteCheMuoiono {
+        dentro: std::io::Cursor<Vec<u8>>,
+        morta: Arc<std::sync::atomic::AtomicBool>,
+        numero: i32,
+    }
+
+    impl ByteCheMuoiono {
+        fn e_morta(&self) -> bool {
+            self.morta.load(Ordering::Relaxed)
+        }
+    }
+
+    impl std::io::Read for ByteCheMuoiono {
+        fn read(&mut self, dove: &mut [u8]) -> std::io::Result<usize> {
+            if self.e_morta() {
+                return Err(std::io::Error::from_raw_os_error(self.numero));
+            }
+            std::io::Read::read(&mut self.dentro, dove)
+        }
+    }
+
+    impl std::io::Seek for ByteCheMuoiono {
+        fn seek(&mut self, da: std::io::SeekFrom) -> std::io::Result<u64> {
+            if self.e_morta() {
+                return Err(std::io::Error::from_raw_os_error(self.numero));
+            }
+            std::io::Seek::seek(&mut self.dentro, da)
+        }
+    }
+
+    impl crate::decodifica::Flusso for ByteCheMuoiono {
+        fn lunghezza(&self) -> Option<u64> {
+            // Dichiarata sempre, anche da morta: il sistema l'aveva già detta
+            // quando la share rispondeva ancora, ed è proprio questo a rendere
+            // il flusso «saltabile» agli occhi di symphonia.
+            u64::try_from(self.dentro.get_ref().len()).ok()
+        }
+    }
+
+    /// Un brano con l'interruttore della rete, e l'interruttore.
+    fn brano_con_interruttore(
+        track_id: i64,
+        frequenza: u32,
+        numero: i32,
+    ) -> (Sorgente, Arc<std::sync::atomic::AtomicBool>) {
+        let quanti = fotogrammi_da_ms(2_000, frequenza);
+        let campioni = vec![0.5f32; usize::try_from(quanti).unwrap_or(96_000)];
+        let morta = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sorgente = Sorgente {
+            track_id,
+            media: Box::new(ByteCheMuoiono {
+                dentro: std::io::Cursor::new(wav(frequenza, &campioni)),
+                morta: Arc::clone(&morta),
+                numero,
+            }),
+            estensione: Some("wav".to_owned()),
+            durata_ms: 2_000,
+            replaygain_db: None,
+        };
+        (sorgente, morta)
+    }
+
+    #[test]
+    fn una_share_morta_all_apertura_non_dice_che_il_formato_e_ignoto() {
+        // La rete cade fra la `File::open` e il riconoscimento del contenitore.
+        // symphonia non riesce a leggere nemmeno l'intestazione, e il guasto
+        // usciva come `playback.formatUnsupported` — che il catalogo dichiara
+        // mai ritentabile, cioè niente «Riprova» per un file che non ha niente
+        // che non va. Il percorso più caro è proprio quello del FLAC, dove il
+        // riconoscimento legge anche la copertina incorporata prima di dire di
+        // che formato si tratta.
+        let (sorgente, morta) = brano_con_interruttore(1, 48_000, 64);
+        morta.store(true, Ordering::Relaxed);
+
+        let Err(err) = crate::decodifica::Decodificatore::apri(sorgente, 48_000, 1) else {
+            panic!("con la rete giù non si apre niente");
+        };
+
+        assert_eq!(
+            err.code().kind(),
+            ErrorCodeKind::FsNetworkUnavailable,
+            "la share morta all'apertura deve dire «rete», non «formato» (causa: {:?})",
+            err.cause()
+        );
+        assert!(err.code().is_retryable(), "la rete torna: si ritenta");
+    }
+
+    #[test]
+    fn un_contenitore_davvero_ignoto_resta_un_formato_non_supportato() {
+        // Il contrappeso della prova qui sopra: il ramo di rete non deve
+        // inghiottire il caso normale. Dei byte che non sono un formato audio
+        // restano un formato che non si sa suonare, e riprovare non serve.
+        let sorgente = Sorgente {
+            track_id: 1,
+            media: Box::new(Byte(std::io::Cursor::new(vec![0u8; 4_096]))),
+            estensione: Some("wav".to_owned()),
+            durata_ms: 0,
+            replaygain_db: None,
+        };
+
+        let Err(err) = crate::decodifica::Decodificatore::apri(sorgente, 48_000, 1) else {
+            panic!("dei byte a zero non sono un file audio");
+        };
+
+        assert_eq!(
+            err.code().kind(),
+            ErrorCodeKind::PlaybackFormatUnsupported,
+            "senza rete di mezzo il codice resta quello del formato"
+        );
+    }
+
+    #[test]
+    fn una_share_che_muore_durante_un_salto_non_dice_che_il_file_e_rotto() {
+        // Il buco più stretto e il più insidioso: il brano si è aperto quando la
+        // rete c'era, si sente, e la share muore mentre qualcuno trascina il
+        // cursore. Il salto è il momento peggiore in cui trovarsela morta —
+        // `SeekMode::Accurate` va al punto e poi ridecodifica fino al fotogramma
+        // esatto, e su FLAC ci mette in mezzo pure la seek table — e finché il
+        // guasto usciva come `playback.decodeFailed`, l'utente si sentiva dire
+        // che il file era danneggiato mentre gli mancava solo il cavo.
+        let (sorgente, morta) = brano_con_interruttore(1, 48_000, 64);
+        let mut decodificatore = crate::decodifica::Decodificatore::apri(sorgente, 48_000, 1)
+            .expect("con la rete viva si apre");
+
+        morta.store(true, Ordering::Relaxed);
+        let err = decodificatore
+            .cerca(1_000)
+            .expect_err("su una share morta il salto non riesce");
+
+        assert_eq!(
+            err.code().kind(),
+            ErrorCodeKind::FsNetworkUnavailable,
+            "un salto a rete giù deve dire «rete», non «file danneggiato»"
+        );
+        assert!(
+            err.code().is_retryable(),
+            "senza questo la finestra non offre «Riprova» e non si annota dove tornare"
+        );
+    }
+
+    #[test]
+    fn un_salto_fallito_su_un_disco_rotto_resta_un_guasto_di_decodifica() {
+        // Stessa prova, un numero diverso: `ERROR_CRC`, cioè un settore che non
+        // si legge più sul disco di casa. Aspettare non lo aggiusta, e il codice
+        // deve restare quello che non offre «Riprova».
+        let (sorgente, morta) = brano_con_interruttore(1, 48_000, 23);
+        let mut decodificatore = crate::decodifica::Decodificatore::apri(sorgente, 48_000, 1)
+            .expect("con il disco sano si apre");
+
+        morta.store(true, Ordering::Relaxed);
+        let err = decodificatore
+            .cerca(1_000)
+            .expect_err("il salto non riesce");
+
+        assert_eq!(err.code().kind(), ErrorCodeKind::PlaybackDecodeFailed);
+        assert!(
+            !err.code().is_retryable(),
+            "rileggere un settore rotto dà lo stesso esito"
+        );
+    }
+
+    #[test]
+    fn la_share_che_muore_a_meta_brano_non_dice_che_il_file_e_rotto() {
+        // Il danno che questa prova tiene chiuso: `playback.decodeFailed` in
+        // italiano dice «questo file è danneggiato, sostituiscilo e rifai la
+        // scansione». Detto per un cavo staccato è il consiglio peggiore
+        // possibile — manda l'utente a buttare un file sano. Deve arrivare
+        // invece l'errore di rete, che è ritentabile e dice la verità.
+        let (registro, osservatore) = spia();
+        let mut banco = banco_con(48_000, osservatore);
+        let primo = aperto(&banco.ctx, brano_che_muore(1, 48_000));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+
+        let _ = suona_tutto(&mut banco, |_| {});
+
+        let visti = eventi(&registro);
+        assert!(
+            visti
+                .iter()
+                .any(|e| e == "errore:fs.networkUnavailable:riprovabile"),
+            "la share morta non si annuncia come guasto di rete ritentabile: {visti:?}"
+        );
+        assert!(
+            !visti
+                .iter()
+                .any(|e| e.starts_with("errore:playback.decode")),
+            "l'utente si sente dire che il file è danneggiato: {visti:?}"
+        );
+    }
+
+    #[test]
+    fn la_share_che_muore_non_brucia_la_coda() {
+        // Il brano dopo sta sulla stessa condivisione morta: passare a lui vuol
+        // dire un'altra attesa e un altro avviso, e così via fino in fondo alla
+        // coda. Il motore deve fermarsi sul brano dove si era, non scorrere.
+        let (registro, osservatore) = spia();
+        let mut banco = banco_con(48_000, osservatore);
+        let primo = aperto(&banco.ctx, brano_che_muore(1, 48_000));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.2));
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
+
+        let fuori = suona_tutto(&mut banco, |_| {});
+
+        let visti = eventi(&registro);
+        // Il brano dopo sta a un livello suo: se se ne sente anche solo un
+        // pezzo, il motore è passato a lui invece di fermarsi.
+        assert!(
+            quanti_a(&fuori, 0.2) == 0,
+            "la coda è scorsa lo stesso sulla share morta: si sente il brano dopo"
+        );
+        assert!(
+            visti.iter().any(|e| e == "fermato"),
+            "il motore non ha dichiarato di essersi fermato: {visti:?}"
+        );
+        assert!(
+            banco.ctx.corrente.is_none() && banco.ctx.prossimo.is_none(),
+            "il motore ha lasciato roba in canna invece di fermarsi"
+        );
+    }
+
+    #[test]
+    fn un_file_davvero_rotto_continua_a_far_saltare_il_brano() {
+        // Il rovescio della medaglia: un album con dentro un file corrotto deve
+        // arrivare in fondo lo stesso. La distinzione la fa il codice
+        // dell'errore, non il fatto che ci sia un errore.
+        let (registro, osservatore) = spia();
+        let mut banco = banco_con(48_000, osservatore);
+        let primo = aperto(&banco.ctx, brano_rotto(1, 48_000));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.2));
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
+
+        let fuori = suona_tutto(&mut banco, |_| {});
+
+        let visti = eventi(&registro);
+        assert!(
+            visti
+                .iter()
+                .any(|e| e == "errore:playback.decodeFailed:definitivo"),
+            "un settore illeggibile si annuncia come guasto di rete: {visti:?}"
+        );
+        assert!(
+            !visti.iter().any(|e| e == "fermato"),
+            "un file rotto ferma l'album invece di costare un fruscio: {visti:?}"
+        );
+        assert!(
+            quanti_a(&fuori, 0.2) > 5_000,
+            "il brano dopo quello rotto non si sente: la coda si è bruciata su di lui"
+        );
     }
 
     #[test]

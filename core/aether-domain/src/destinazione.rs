@@ -47,14 +47,21 @@ pub fn segmento_sicuro(grezzo: &str) -> String {
         .chars()
         .take(LUNGHEZZA_MASSIMA)
         .collect();
-    // Il taglio può lasciare uno spazio in coda, e un nome di cartella che
-    // finisce con uno spazio su Windows si crea ma non si riapre.
-    let pulito = pulito.trim_end().to_owned();
+    // Spazi **e punti** in coda: Windows li toglie da solo alla creazione, e il
+    // percorso che poi si prova a riaprire non è quello che si è chiesto. Vale
+    // per gli spazi lasciati dal taglio come per un album «Vol. 1.».
+    let mut pulito = pulito.trim_end_matches([' ', '.']).to_owned();
     if pulito.is_empty() {
-        "Senza titolo".to_owned()
-    } else {
-        pulito
+        return "Senza titolo".to_owned();
     }
+    // Un nome riservato da Windows (`CON`, `AUX`…) si disinnesca con un
+    // suffisso, non cancellandolo: la stessa regola di
+    // [`crate::organize::sanitize_component`].
+    let radice = pulito.split('.').next().unwrap_or(&pulito).to_lowercase();
+    if crate::organize::NOMI_RISERVATI.contains(&radice.as_str()) {
+        pulito.push('_');
+    }
+    pulito
 }
 
 /// Dove va a finire un brano preso, relativamente alla cartella dei download.
@@ -163,7 +170,25 @@ mod prove {
         };
         let d = destinazione(&b, 99);
         assert_eq!(d.cartella_artista, "Gorillaz");
-        assert_eq!(d.relativo(), "Gorillaz/Demon Days/06 - Feel Good Inc.");
+        // Senza il punto finale: Windows lo toglierebbe da solo alla creazione,
+        // e qui l'estensione aggiungerà comunque il suo.
+        assert_eq!(d.relativo(), "Gorillaz/Demon Days/06 - Feel Good Inc");
+    }
+
+    #[test]
+    fn i_punti_in_coda_se_ne_vanno() {
+        // «Live at Leeds.» creerebbe su Windows una cartella SENZA il punto, e
+        // il percorso che Aether prova poi a riaprire non sarebbe quello.
+        assert_eq!(segmento_sicuro("Live at Leeds."), "Live at Leeds");
+        assert_eq!(segmento_sicuro("Vol. 1..."), "Vol. 1");
+    }
+
+    #[test]
+    fn i_nomi_riservati_di_windows_si_disinnescano() {
+        assert_eq!(segmento_sicuro("AUX"), "AUX_");
+        assert_eq!(segmento_sicuro("con"), "con_");
+        // Un nome che li contiene soltanto non si tocca.
+        assert_eq!(segmento_sicuro("Console"), "Console");
     }
 
     #[test]

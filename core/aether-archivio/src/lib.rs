@@ -149,6 +149,14 @@ pub fn leggi(percorso: &Path) -> Result<Lettura, AppError> {
             }
         };
 
+        // Una voce di cartella non è un file: passarla dal riconoscimento del
+        // nome la farebbe finire fra gli illeggibili con «non è JSON valido»,
+        // che è un guasto inventato.
+        if nome.ends_with('/') {
+            lettura.ignorati.push(nome);
+            continue;
+        }
+
         let Some(genere) = Genere::dal_nome(&nome) else {
             lettura.ignorati.push(nome);
             continue;
@@ -173,7 +181,21 @@ pub fn leggi(percorso: &Path) -> Result<Lettura, AppError> {
                 lettura.snapshot.preferiti.extend(letta.preferiti);
                 lettura.snapshot.album.extend(letta.album);
                 lettura.snapshot.artisti.extend(letta.artisti);
-                lettura.non_musica = letta.non_musica;
+                // Si accumula, come fanno `playlist` e `ascolti`: Spotify ha
+                // già numerato altri file, e un secondo `YourLibrary` non deve
+                // cancellare i conteggi del primo.
+                lettura.non_musica.podcast = lettura
+                    .non_musica
+                    .podcast
+                    .saturating_add(letta.non_musica.podcast);
+                lettura.non_musica.al_bando = lettura
+                    .non_musica
+                    .al_bando
+                    .saturating_add(letta.non_musica.al_bando);
+                lettura.non_musica.altro = lettura
+                    .non_musica
+                    .altro
+                    .saturating_add(letta.non_musica.altro);
             }
             Genere::Identita => {
                 lettura.snapshot.profilo = lettura

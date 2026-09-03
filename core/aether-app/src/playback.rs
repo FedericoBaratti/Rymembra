@@ -13,7 +13,7 @@
 //! cronologia d'ascolto è, con voti e preferiti, l'unica cosa in tutta la
 //! libreria che una scansione non può ricostruire.
 
-use aether_domain::errors::{AppError, ErrorCode};
+use aether_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use aether_domain::listen::Listen;
 use aether_domain::queue::{QueueSnapshot, RepeatMode};
 use aether_play::{BANDE, LIMITE_DB, Sorgente};
@@ -56,18 +56,35 @@ fn db_error(cosa: &str, err: &rusqlite::Error) -> AppError {
     .with_cause(err.to_string())
 }
 
-/// Prepara un brano per il motore.
+/// Quel che il database sa di un brano da suonare.
 ///
-/// Legge dal database quel che il motore non può sapere — il percorso, la durata
-/// dichiarata, il guadagno ReplayGain — e apre il file attraverso
-/// [`MusicFiles`], non con `std::fs`. Quella indirezione è ciò che permetterà
-/// alla stessa funzione di girare su Android, dove non c'è un percorso da
-/// aprire ma una concessione del sistema.
-pub fn sorgente(
-    connection: &Connection,
-    files: &dyn MusicFiles,
-    track_id: i64,
-) -> Result<Sorgente, AppError> {
+/// # Perché è un tipo e non tre variabili dentro una funzione
+///
+/// Perché separa le due metà di «prepara un brano»: la prima è una query, dura
+/// microsecondi e vuole il lucchetto della libreria; la seconda apre un file, su
+/// una condivisione morta dura quaranta secondi e non deve tenere in mano
+/// **niente**. Finché erano una funzione sola, chi apriva un brano teneva il
+/// lucchetto per tutta la durata dell'apertura — e con la share giù restavano
+/// fermi anche tutti i fili di sottofondo.
+#[derive(Debug, Clone)]
+pub struct SchedaSorgente {
+    /// Quale brano.
+    pub track_id: i64,
+    /// Dove sta il file.
+    pub path: String,
+    /// La durata secondo il database, per quando il file non la dichiara.
+    pub durata_ms: i64,
+    /// Il guadagno ReplayGain scritto nei tag, se c'era.
+    pub replaygain_db: Option<f64>,
+}
+
+/// La sola query: cosa dice il database di questo brano.
+///
+/// # Errori
+///
+/// `playback.sourceUnavailable` se la riga non c'è più, `db.queryFailed` se il
+/// database non risponde.
+pub fn scheda_sorgente(connection: &Connection, track_id: i64) -> Result<SchedaSorgente, AppError> {
     let (path, durata_ms, replaygain_db): (String, i64, Option<f64>) = connection
         .query_row(
             "SELECT path, duration_ms, replaygain_track_db FROM tracks WHERE id = ?1",
@@ -86,20 +103,55 @@ pub fn sorgente(
             }
             altro => db_error("lettura del brano da suonare", &altro),
         })?;
+    Ok(SchedaSorgente {
+        track_id,
+        path,
+        durata_ms,
+        replaygain_db,
+    })
+}
 
-    let media = files.open(&path).map_err(|err| {
+/// La sola apertura: dalla scheda ai byte pronti per il motore.
+///
+/// Il file si apre attraverso [`MusicFiles`], non con `std::fs`. Quella
+/// indirezione è ciò che permetterà alla stessa funzione di girare su Android,
+/// dove non c'è un percorso da aprire ma una concessione del sistema.
+///
+/// **Non tocca il database**, ed è tutto il punto: questa è la metà lenta, la
+/// sola che può restare appesa su una share morta, e chi la chiama può quindi
+/// mandarla su un altro filo con una scadenza addosso (vedi
+/// [`crate::scadenza::con_scadenza`]) senza avere in mano nessun lucchetto.
+///
+/// # Errori
+///
+/// `fs.networkUnavailable` se il guasto viene dalla rete — e passa **intero**,
+/// perché è ritentabile; `playback.sourceUnavailable` per ogni altro modo in cui
+/// il file non si apre.
+pub fn sorgente_da_scheda(
+    files: &dyn MusicFiles,
+    scheda: &SchedaSorgente,
+) -> Result<Sorgente, AppError> {
+    let media = files.open(&scheda.path).map_err(|err| {
+        // La rete giù si propaga **così com'è**: è ritentabile, e la finestra
+        // ci mette accanto il tasto «Riprova». Impacchettarla in
+        // `playback.sourceUnavailable` — che il catalogo dichiara mai
+        // ritentabile, perché rileggere un file rotto non cambia esito — vorrebbe
+        // dire dire a chi ha staccato il cavo che il brano è irrecuperabile.
+        if err.code().kind() == ErrorCodeKind::FsNetworkUnavailable {
+            return err;
+        }
         AppError::new(ErrorCode::PlaybackSourceUnavailable {
-            track_id: Some(track_id),
-            path: Some(path.clone()),
+            track_id: Some(scheda.track_id),
+            path: Some(scheda.path.clone()),
         })
         .with_cause(err.cause().unwrap_or(err.code().kind().code()).to_owned())
     })?;
 
     Ok(Sorgente {
-        track_id,
+        track_id: scheda.track_id,
         media: Box::new(Adattatore::nuovo(media)),
-        estensione: estensione_di(&path),
-        durata_ms: u64::try_from(durata_ms).unwrap_or(0),
+        estensione: estensione_di(&scheda.path),
+        durata_ms: u64::try_from(scheda.durata_ms).unwrap_or(0),
         // `f64` nel database perché SQLite non ha i float a 32 bit; il motore
         // lavora in `f32`, che per dei decibel è largamente sufficiente — la
         // correzione viene poi tagliata fra −24 e +12 dB comunque.
@@ -107,8 +159,20 @@ pub fn sorgente(
             clippy::cast_possible_truncation,
             reason = "sono decibel: la precisione di un f32 è un milionesimo di dB"
         )]
-        replaygain_db: replaygain_db.map(|db| db as f32),
+        replaygain_db: scheda.replaygain_db.map(|db| db as f32),
     })
+}
+
+/// Prepara un brano per il motore: la scheda e poi l'apertura, di fila.
+///
+/// L'involucro delle due metà, per chi non ha lucchetti da mollare in mezzo —
+/// gli esempi, le prove, e in generale chi chiama da un filo suo.
+pub fn sorgente(
+    connection: &Connection,
+    files: &dyn MusicFiles,
+    track_id: i64,
+) -> Result<Sorgente, AppError> {
+    sorgente_da_scheda(files, &scheda_sorgente(connection, track_id)?)
 }
 
 /// L'estensione di un percorso, in minuscolo e senza il punto.
@@ -1211,6 +1275,77 @@ mod prove {
         let c = db();
         brano(&c, 1, 1000);
         let err = sorgente(&c, &crate::files::LocalFiles, 1).expect_err("deve fallire");
+        assert_eq!(err.code().kind(), ErrorCodeKind::PlaybackSourceUnavailable);
+    }
+
+    /// Un `MusicFiles` che non apre niente e fallisce sempre allo stesso modo.
+    ///
+    /// Serve a provare la **traduzione** del guasto, che è tutta la decisione
+    /// presa qui: con `LocalFiles` non c'è modo di far arrivare un errore di
+    /// rete senza una share vera.
+    struct FintiFile(ErrorCode);
+
+    impl MusicFiles for FintiFile {
+        fn walk(&self, _root: &str) -> Result<crate::files::Camminata, AppError> {
+            // Vuota e intera: questo doppio non ha un disco da perdere pezzi.
+            Ok(crate::files::Camminata {
+                file: Vec::new(),
+                completa: true,
+            })
+        }
+
+        fn open(
+            &self,
+            _path: &str,
+        ) -> Result<Box<dyn crate::files::ReadSeek + Send + Sync>, AppError> {
+            Err(AppError::new(self.0.clone()))
+        }
+    }
+
+    #[test]
+    fn la_rete_giu_attraversa_intera_e_resta_ritentabile() {
+        // Il punto: `playback.sourceUnavailable` non è mai ritentabile, quindi
+        // impacchettarci dentro una share caduta vorrebbe dire dire a chi ha
+        // staccato il cavo che il brano è perso. Deve passare com'è.
+        let c = db();
+        brano(&c, 1, 1000);
+        let files = FintiFile(ErrorCode::FsNetworkUnavailable {
+            path: Some("//srv/musica/1.mp3".to_owned()),
+        });
+        let err = sorgente(&c, &files, 1).expect_err("deve fallire");
+        assert_eq!(err.code().kind(), ErrorCodeKind::FsNetworkUnavailable);
+        assert!(
+            err.code().is_retryable(),
+            "la finestra deve offrire «Riprova»"
+        );
+    }
+
+    #[test]
+    fn l_apertura_da_scheda_non_tocca_il_database_e_propaga_la_rete_giu() {
+        // La metà lenta, provata da sola: è quella che chi sta sopra manda su un
+        // filo con la scadenza addosso, senza nessun lucchetto in mano.
+        let files = FintiFile(ErrorCode::FsNetworkUnavailable {
+            path: Some("//srv/musica/1.mp3".to_owned()),
+        });
+        let scheda = SchedaSorgente {
+            track_id: 1,
+            path: "//srv/musica/1.mp3".to_owned(),
+            durata_ms: 1_000,
+            replaygain_db: None,
+        };
+        let err = sorgente_da_scheda(&files, &scheda).expect_err("deve fallire");
+        assert_eq!(err.code().kind(), ErrorCodeKind::FsNetworkUnavailable);
+        assert!(err.code().is_retryable());
+    }
+
+    #[test]
+    fn ogni_altro_guasto_di_apertura_resta_sorgente_non_disponibile() {
+        let c = db();
+        brano(&c, 1, 1000);
+        let files = FintiFile(ErrorCode::FsNotFound {
+            path: "C:/m/1.mp3".to_owned(),
+        });
+        let err = sorgente(&c, &files, 1).expect_err("deve fallire");
         assert_eq!(err.code().kind(), ErrorCodeKind::PlaybackSourceUnavailable);
     }
 }

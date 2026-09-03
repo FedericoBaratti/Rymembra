@@ -40,7 +40,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
@@ -122,7 +122,35 @@ pub struct StatoSincronia {
     /// È la cosa che rende una passata a vuoto gratuita: senza, ogni cinque
     /// minuti si riscaricherebbero tutti i documenti di tutti i dispositivi per
     /// poi constatare che non è cambiato niente.
+    ///
+    /// **Il lucchetto non si tiene mentre si va in rete.** Vedi
+    /// [`StatoSincronia::epoca_memoria`].
     memoria: Mutex<Memoria>,
+
+    /// Quante volte la memoria è stata buttata via.
+    ///
+    /// # Il problema che risolve
+    ///
+    /// La passata dura quanto dura la rete: due minuti su Drive, senza limite
+    /// su un deposito che sta in una cartella di rete. Finché il lucchetto della
+    /// memoria restava in mano per tutto quel tempo, `sincronia_magazzino` e
+    /// `sincronia_dimentica` — che lo vogliono per svuotarla — aspettavano lì, e
+    /// con loro la finestra: cambiare deposito durante una sincronizzazione era
+    /// un'applicazione che smetteva di rispondere.
+    ///
+    /// # Perché un'epoca e non un lucchetto più fine
+    ///
+    /// Perché la memoria **è una cache**: buttarla via costa una rilettura, non
+    /// un dato. Quindi la passata se ne prende una copia e lascia subito il
+    /// lucchetto; alla fine lo ripiglia e riscrive la copia **solo se nessuno ha
+    /// dimenticato niente nel frattempo**. Se l'epoca è cambiata, quella copia
+    /// contiene documenti di un deposito che non è più quello, o di un
+    /// dispositivo che l'utente ha appena tolto: si lascia cadere, ed è
+    /// esattamente quel che «dimentica» voleva dire.
+    ///
+    /// `Relaxed` basta: il lucchetto della memoria è la barriera vera, e questo
+    /// numero viaggia sempre dentro di essa.
+    epoca_memoria: AtomicU64,
 
     /// L'ultima passata, per raccontarla alla finestra.
     ultima: Mutex<Option<Resoconto>>,
@@ -139,10 +167,26 @@ impl StatoSincronia {
                 in_corso: AtomicBool::new(false),
                 ultimo_errore: Mutex::new(None),
                 memoria: Mutex::new(Memoria::nuova()),
+                epoca_memoria: AtomicU64::new(0),
                 ultima: Mutex::new(None),
             },
             orecchio,
         )
+    }
+
+    /// Butta via i documenti già letti, e lo dice a chi li sta usando.
+    ///
+    /// Le due righe stanno insieme in un metodo e non sparse nei due comandi che
+    /// le chiamano perché dimenticare **senza** far avanzare l'epoca sarebbe un
+    /// guasto silenzioso: la passata in corso ha in mano una copia di quel che si
+    /// è appena buttato, e alla fine la riscriverebbe al suo posto. Dimenticato
+    /// per un istante, e poi di nuovo lì.
+    fn dimentica_la_memoria(&self) {
+        self.epoca_memoria.fetch_add(1, Ordering::Relaxed);
+        self.memoria
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dimentica();
     }
 }
 
@@ -241,7 +285,7 @@ pub fn sincronia_stato(
 /// # Errori
 ///
 /// `db.queryFailed` se la scrittura fallisce.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sincronia_attiva(
     app: AppHandle,
     stato: State<'_, Stato>,
@@ -274,7 +318,7 @@ pub fn sincronia_attiva(
 ///
 /// `fs.pathInvalid` se il percorso non è una cartella utilizzabile.
 /// `db.queryFailed` se la scrittura fallisce.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sincronia_magazzino(
     stato: State<'_, Stato>,
     sincronia: State<'_, StatoSincronia>,
@@ -314,20 +358,20 @@ pub fn sincronia_magazzino(
     })()
     .map_err(errore)?;
 
-    sincronia
-        .memoria
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .dimentica();
+    sincronia.dimentica_la_memoria();
     stato_ipc(&stato, &sincronia).map_err(errore)
 }
 
 /// Sincronizza adesso.
 ///
+/// `(async)`: la passata parla con Drive, e la scadenza di quelle richieste è
+/// di due minuti — un comando normale li passerebbe sul filo principale della
+/// finestra.
+///
 /// # Errori
 ///
 /// `sync.busy` se una passata è già in corso; i codici del deposito altrimenti.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sincronia_adesso(app: AppHandle, sincronia: State<'_, StatoSincronia>) -> Esito<Resoconto> {
     if sincronia
         .in_corso
@@ -383,7 +427,7 @@ pub fn sincronia_accoppia(
 /// # Errori
 ///
 /// `db.queryFailed` se la scrittura fallisce.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sincronia_dimentica(
     stato: State<'_, Stato>,
     sincronia: State<'_, StatoSincronia>,
@@ -395,11 +439,7 @@ pub fn sincronia_dimentica(
         Ok(in_ipc(sincronia::dispositivi(&libreria.connection)?, &io))
     })
     .map_err(errore)?;
-    sincronia
-        .memoria
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .dimentica();
+    sincronia.dimentica_la_memoria();
     Ok(elenco)
 }
 
@@ -506,11 +546,20 @@ fn passata_vera(app: &AppHandle) -> Result<Resoconto, AppError> {
 
     // ── senza nessun lucchetto: da qui in poi si legge il deposito. ─────────
     let deposito = magazzino(app, &dove, cartella.as_deref(), credenziali.as_ref())?;
+    // La memoria si prende **in copia**, e il lucchetto si lascia sulla riga
+    // dopo. Quel che segue è rete — due minuti su Drive, senza limite su un
+    // deposito che sta in una cartella di rete — e per tutto quel tempo il
+    // lucchetto deve essere libero, o `sincronia_magazzino` e
+    // `sincronia_dimentica` restano lì ad aspettarlo con la finestra dietro.
+    // L'epoca si legge adesso: dirà, alla fine, se questa copia ha ancora senso.
+    let epoca = sincronia_stato.epoca_memoria.load(Ordering::Relaxed);
+    let mut memoria = sincronia_stato
+        .memoria
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+
     let esito = {
-        let mut memoria = sincronia_stato
-            .memoria
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // La fiducia si esercita **prima** della fusione, perché dopo non c'è
         // più modo di dire da chi veniva un voto. Il proprio dispositivo non
         // compare in `fidati` e non serve: il motore fonde comunque il proprio
@@ -523,8 +572,29 @@ fn passata_vera(app: &AppHandle) -> Result<Resoconto, AppError> {
                 "sincronia:avanzamento",
                 serde_json::json!({ "fatti": passo.fatti, "totale": passo.totale }),
             );
-        })?
+        })
     };
+
+    // E quel che si è letto torna a disposizione della passata dopo — ma solo se
+    // nel frattempo nessuno ha chiesto di dimenticare. Se l'epoca è avanzata,
+    // questa copia parla di un deposito che non è più quello o di un dispositivo
+    // che l'utente ha appena tolto, e rimetterla al suo posto vorrebbe dire
+    // annullare quel gesto senza dirlo a nessuno.
+    //
+    // Si riscrive anche quando la passata è **fallita**: i documenti già scaricati
+    // prima del guasto sono buoni, e buttarli vorrebbe dire riscaricarli tutti al
+    // primo tentativo dopo — cioè far pagare di più proprio la rete che sta già
+    // andando male.
+    {
+        let mut in_carica = sincronia_stato
+            .memoria
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sincronia_stato.epoca_memoria.load(Ordering::Relaxed) == epoca {
+            *in_carica = memoria;
+        }
+    }
+    let esito = esito?;
 
     // ── finestra 3: applicare quel che è stato deciso. ──────────────────────
     let cambiamenti = con_libreria(&stato, |libreria| {

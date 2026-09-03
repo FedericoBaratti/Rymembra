@@ -521,18 +521,24 @@ const STESSO_BRANO: &str = "
 ///
 /// # Perché si può chiamare a vuoto
 ///
-/// Perché ogni scrittura è idempotente: la `INSERT` è `OR IGNORE` sulla chiave
-/// primaria `(playlist_id, position)`, e le `UPDATE` guardano lo stato di
-/// partenza. Chiamarla due volte di fila dà zero la seconda volta. È voluto: i
-/// due chiamanti non si coordinano, e non devono.
+/// Perché ogni riga si considera **una volta sola**: `placed_at` marca quelle
+/// già passate di qui, e la `INSERT` guarda solo le altre. Chiamarla due volte
+/// di fila dà zero la seconda volta. È voluto: i due chiamanti non si
+/// coordinano, e non devono. L'`OR IGNORE` sulla chiave primaria
+/// `(playlist_id, position)` resta come seconda rete, ma non è più l'unica:
+/// da sola non bastava, perché le posizioni scritte all'importazione sono gli
+/// indici sparsi di Spotify mentre togliere o riordinare un brano le
+/// ricompatta — e appena uno slot si liberava, un brano che l'utente aveva
+/// tolto ci rientrava alla passata dopo.
 ///
 /// # Cosa **non** fa
 ///
 /// Non tocca una posizione già occupata. Se dopo l'importazione l'utente ha
 /// riordinato la playlist a mano, `playlists::riscrivi_ordine` ha ricompattato
 /// le posizioni e quella del brano in arrivo può essere di qualcun altro: in quel
-/// caso la voce non entra. Perdere l'aggiunta è il male minore rispetto a
-/// spostare un brano che l'utente aveva messo lì di proposito.
+/// caso la voce non entra — e non riproverà, perché `placed_at` si scrive
+/// anche per lei. Perdere l'aggiunta è il male minore rispetto a spostare un
+/// brano che l'utente aveva messo lì di proposito.
 ///
 /// # Errori
 ///
@@ -545,22 +551,72 @@ pub fn riconcilia(
     // inverso funzionerebbe lo stesso — nessuna delle due condizioni guarda
     // quel che tocca l'altra — ma così il conteggio delle voci rimesse resta
     // leggibile anche se la seconda fallisce.
+    // La clausola comune alle tre scritture qui sotto: le righe che questa
+    // passata considera. Deve restare identica nelle tre, o una riga marcata
+    // e una riga rimessa smettono di essere la stessa riga.
+    let righe_da_considerare = format!(
+        "w.playlist_id IS NOT NULL
+            AND w.position IS NOT NULL
+            AND w.placed_at IS NULL
+            AND (?1 IS NULL OR w.source_id = ?1)
+            AND EXISTS (SELECT 1 FROM tracks AS t WHERE {STESSO_BRANO})
+            AND EXISTS (SELECT 1 FROM playlists AS p
+                         WHERE p.id = w.playlist_id AND p.is_smart = 0)"
+    );
+
     let sql_voci = format!(
         "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position)
          SELECT w.playlist_id,
                 (SELECT MIN(t.id) FROM tracks AS t WHERE {STESSO_BRANO}),
                 w.position
            FROM desiderati AS w
-          WHERE w.playlist_id IS NOT NULL
-            AND w.position IS NOT NULL
-            AND (?1 IS NULL OR w.source_id = ?1)
-            AND EXISTS (SELECT 1 FROM tracks AS t WHERE {STESSO_BRANO})
-            AND EXISTS (SELECT 1 FROM playlists AS p
-                         WHERE p.id = w.playlist_id AND p.is_smart = 0)"
+          WHERE {righe_da_considerare}"
     );
     let voci_rimesse = connection
         .execute(&sql_voci, rusqlite::params![sorgente])
         .map_err(|err| db_error("ritorno dei brani nelle playlist", &err))?;
+
+    if voci_rimesse > 0 {
+        // Solo le playlist con righe considerate in QUESTA passata: toccare
+        // `updated_at` di una playlist non modificata può farle vincere una
+        // fusione di sincronia che avrebbe perso, o resuscitarla dopo una
+        // cancellazione remota. Va fatto prima della marcatura qui sotto,
+        // finché `placed_at` è ancora NULL.
+        let sql_playlist = format!(
+            "UPDATE playlists SET updated_at = ?2
+              WHERE id IN (SELECT DISTINCT w.playlist_id FROM desiderati AS w
+                            WHERE {righe_da_considerare})"
+        );
+        connection
+            .execute(&sql_playlist, rusqlite::params![sorgente, adesso()])
+            .map_err(|err| db_error("aggiornamento delle playlist riconciliate", &err))?;
+    }
+
+    // La marcatura che rende tutto questo irripetibile. Anche per le righe la
+    // cui posizione era occupata: la voce non è entrata, e non riproverà.
+    let sql_marcatura = format!(
+        "UPDATE desiderati SET placed_at = ?2
+          WHERE id IN (SELECT w.id FROM desiderati AS w WHERE {righe_da_considerare})"
+    );
+    connection
+        .execute(&sql_marcatura, rusqlite::params![sorgente, adesso()])
+        .map_err(|err| db_error("marcatura dei desiderati riconciliati", &err))?;
+
+    // Il marchio d'origine sui file arrivati da un prelievo. La scansione li
+    // inserisce con `source = 'scan'` — non sa da dove vengono — ma qui il
+    // percorso di scaricamento lo dice. È il valore che `enrich` interroga per
+    // sapere quali brani hanno metadati da ricontrollare anche quando i tag
+    // sembrano completi: senza questa riga la clausola `t.source = 'catalogo'`
+    // non troverebbe mai niente di più recente della migrazione 10.
+    connection
+        .execute(
+            "UPDATE tracks SET source = 'catalogo'
+              WHERE source = 'scan'
+                AND path IN (SELECT w.download_path FROM desiderati AS w
+                              WHERE w.download_path IS NOT NULL)",
+            [],
+        )
+        .map_err(|err| db_error("marchio d'origine dei brani prelevati", &err))?;
 
     // Senza `format!`, a differenza della query qui sopra: questa non interpola
     // nessuna costante, e un `format!` che non formatta niente fa credere a chi
@@ -582,18 +638,6 @@ pub fn riconcilia(
             ],
         )
         .map_err(|err| db_error("chiusura dei desiderati già in libreria", &err))?;
-
-    if voci_rimesse > 0 {
-        connection
-            .execute(
-                "UPDATE playlists SET updated_at = ?2
-                  WHERE id IN (SELECT DISTINCT playlist_id FROM desiderati
-                                WHERE playlist_id IS NOT NULL
-                                  AND (?1 IS NULL OR source_id = ?1))",
-                rusqlite::params![sorgente, adesso()],
-            )
-            .map_err(|err| db_error("aggiornamento delle playlist riconciliate", &err))?;
-    }
 
     Ok(Riconciliazione {
         voci_rimesse,
@@ -1008,6 +1052,38 @@ mod prove {
         assert_eq!(seconda.voci_rimesse, 0);
         assert_eq!(seconda.righe_chiuse, 0);
         assert_eq!(voci_di(&connection, p).len(), 1);
+    }
+
+    #[test]
+    fn un_brano_tolto_dalla_playlist_non_ci_rientra() {
+        // Le righe di `desiderati` non si cancellano mai, e le posizioni
+        // registrate sono gli indici sparsi di Spotify: quando l'utente toglie
+        // un brano e le posizioni si ricompattano, lo slot registrato torna
+        // libero — e prima di `placed_at` il brano tolto ci rientrava alla
+        // passata dopo, per sempre.
+        let connection = connessione();
+        let p = playlist(&connection, "La playlist");
+        inserisci_in_playlist(&connection, "Alpha", "una", p, 0);
+        inserisci_in_playlist(&connection, "Bravo", "una", p, 9);
+        let alpha = in_libreria(&connection, "Alpha", "C:/M/alpha.m4a");
+        let bravo = in_libreria(&connection, "Bravo", "C:/M/bravo.m4a");
+
+        let prima = riconcilia(&connection, None).expect("prima");
+        assert_eq!(prima.voci_rimesse, 2);
+
+        // L'utente toglie Bravo. Qui basta la cancellazione: la ricompattazione
+        // di `riscrivi_ordine` renderebbe lo scenario solo più favorevole al
+        // vecchio difetto, non meno.
+        connection
+            .execute(
+                "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
+                rusqlite::params![p, bravo],
+            )
+            .expect("rimozione");
+
+        let dopo = riconcilia(&connection, None).expect("dopo");
+        assert_eq!(dopo.voci_rimesse, 0, "il brano tolto non rientra");
+        assert_eq!(voci_di(&connection, p), vec![(0, alpha)]);
     }
 
     #[test]

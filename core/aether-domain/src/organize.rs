@@ -54,7 +54,7 @@ pub const MAX_SEGMENTO: usize = 60;
 /// Una cartella chiamata `CON` non si può creare, e il guasto arriva come un
 /// errore di permessi che manda a cercare nel posto sbagliato. Un artista
 /// chiamato `AUX` o un album `NUL` sono rari ma esistono.
-const NOMI_RISERVATI: [&str; 22] = [
+pub(crate) const NOMI_RISERVATI: [&str; 22] = [
     "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
@@ -297,8 +297,13 @@ pub fn plan_organize(tracks: &[TrackToOrganize], root: &str, rules: PathRules) -
         }
 
         let artist_dir = sanitize_component(&winner);
+        // Il nome della cartella si decide **una volta per gruppo**, dal titolo
+        // dominante: il gruppo è nato da una chiave piegata (maiuscole e spazi
+        // via), e ricalcolare il nome per traccia dal titolo grezzo spezzerebbe
+        // lo stesso album in `Abbey Road/` e `Abbey road/` — il contrario di
+        // quel che questo modulo esiste per garantire.
+        let album_dir = sanitize_component(dominant_album(group).trim());
         for track in group {
-            let album_dir = sanitize_component(strip_edition_suffix(&track.album).trim());
             let destination = format!(
                 "{}/{artist_dir}/{album_dir}/{}",
                 root.trim_end_matches(['/', '\\']),
@@ -357,6 +362,27 @@ pub fn plan_organize(tracks: &[TrackToOrganize], root: &str, rules: PathRules) -
     plan.moves.sort_by(|a, b| a.to.cmp(&b.to));
     plan.skipped.sort_by_key(|s| s.track_id);
     plan
+}
+
+/// Il titolo d'album più frequente di un gruppo, già senza suffisso d'edizione.
+///
+/// Lo spareggio è lo stesso di [`dominant_artist`]: a pari conteggio vince il
+/// titolo alfabeticamente minore, così il piano è deterministico.
+fn dominant_album(group: &[&TrackToOrganize]) -> String {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for track in group {
+        let album = strip_edition_suffix(&track.album).trim().to_owned();
+        if !album.is_empty() {
+            *counts.entry(album).or_insert(0) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|(album_a, count_a), (album_b, count_b)| {
+            (count_a, std::cmp::Reverse(album_a.as_str()))
+                .cmp(&(count_b, std::cmp::Reverse(album_b.as_str())))
+        })
+        .map_or_else(String::new, |(album, _)| album)
 }
 
 /// L'artista dominante di un gruppo e la sua quota, fra 0 e 1.

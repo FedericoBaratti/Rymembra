@@ -33,7 +33,7 @@ fn main() {
 
     let files = LocalFiles;
     let store = CoverStore::open(&store_dir).expect("store");
-    let trovati = files.walk(&root).expect("camminata");
+    let trovati = files.walk(&root).expect("camminata").file;
 
     let mut brani = 0usize;
     let mut con_copertina = 0usize;

@@ -29,7 +29,13 @@ use crate::stato::Stato;
 /// Il controllo è sull'alfabeto e non sui separatori: elencare i caratteri
 /// vietati è una lista da tenere aggiornata (`/`, `\`, `..`, `%2e`, gli
 /// equivalenti Unicode…), elencare quelli permessi no.
-fn e_un_impronta(value: &str) -> bool {
+///
+/// Sta qui e non è privata perché il protocollo non è l'unica porta d'ingresso:
+/// anche [`crate::skin::accento_copertina`] riceve un'impronta dalla finestra e
+/// la dà allo store, che con essa compone un percorso. Due controlli scritti
+/// due volte sono due controlli che possono divergere, e quello che divergesse
+/// sarebbe una lettura di file arbitraria.
+pub(crate) fn e_un_impronta(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 

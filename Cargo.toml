@@ -24,7 +24,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.0.1"
+version = "2.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -38,6 +38,13 @@ repository = "https://github.com/FedericoBaratti/Aether"
 
 [workspace.dependencies]
 unicode-normalization = "0.1"
+# La riparazione del testo illeggibile (`aether_domain::codifica`). Serve solo a
+# DECODIFICARE: la strada di ritorno — dai caratteri ai byte che li avevano
+# prodotti — è una tabella scritta a mano di trentadue voci, perché il
+# codificatore di questa libreria sostituisce l'inrappresentabile con un
+# riferimento numerico HTML invece di dire di no, e un "&#1057;" dentro un tag
+# sarebbe un guasto peggiore di quello che si stava riparando.
+encoding_rs = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

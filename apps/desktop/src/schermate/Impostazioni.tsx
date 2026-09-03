@@ -1047,6 +1047,41 @@ export function Impostazioni({
                     {t("settings.scan.stopped.rest")}
                   </>
                 )}
+                {/* Una radice che non ha risposto è tutta la differenza fra
+                    «quei brani non ci sono più» e «quei brani non li ho
+                    guardati». Senza questa riga la scansione dice
+                    «completata», e chi la legge conclude la prima delle due
+                    mentre è vera la seconda. I percorsi si scrivono per
+                    intero: sapere che *una* cartella manca non serve a
+                    niente se non si sa quale ricollegare. */}
+                {esito.radiciSaltate.length > 0 && (
+                  <>
+                    {" · "}
+                    <strong>
+                      {t("settings.scan.skipped.strong", {
+                        n: esito.radiciSaltate.length,
+                      })}
+                    </strong>
+                    {t("settings.scan.skipped.rest")}{" "}
+                    {esito.radiciSaltate.join(" · ")}
+                  </>
+                )}
+                {/* Non capita in questa schermata — la scansione a mano non è
+                    prudente, perché qualcuno la sta guardando — ma il campo
+                    arriva lo stesso, e una scansione che ha trattenuto delle
+                    rimozioni non deve poterlo tacere se un giorno passasse
+                    di qui. */}
+                {esito.rimozioniRinviate > 0 && (
+                  <>
+                    {" · "}
+                    <strong>
+                      {t("settings.scan.held.strong", {
+                        n: esito.rimozioniRinviate,
+                      })}
+                    </strong>
+                    {t("settings.scan.held.rest")}
+                  </>
+                )}
               </p>
             )}
           </Scheda>

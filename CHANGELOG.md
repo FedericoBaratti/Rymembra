@@ -28,7 +28,242 @@ Cosa incrementa cosa:
   del protocollo di trasporto (`SKIN_TRANSFER_PROTOCOL`), cioè i due punti in cui
   un dispositivo aggiornato smetterebbe di capirsi con uno fermo.
 
-## [Non rilasciato]
+## [2.1.0] — 2026-09-03
+
+**Minor e non patch, per via del database.** Questa versione porta due
+migrazioni, `015_riconcilia` e `016_metadati`, e per la regola in cima a questo
+file ogni migrazione impone una minor. Non è un dettaglio contabile: le
+migrazioni vanno solo avanti, quindi tornare da qui alla 2.0.1 non è
+disinstallare e reinstallare — è ripristinare una copia del database fatta
+prima di aggiornare. Il numero è l'unico posto in cui quella differenza si vede
+senza aver letto questo file.
+
+`SKIN_FORMAT_VERSION` resta 1, come nella 2.0.1: una skin scritta da una copia
+aggiornata si apre ancora su una ferma.
+
+### Corretto — la rete che se ne va non racconta più di essere un file rotto
+
+Il giro precedente aveva chiuso le tre strade da cui il guasto di rete entrava
+dichiarandosi altro. Ne restavano cinque aperte, e tre di loro riaprivano
+esattamente il difetto che si era appena chiuso.
+
+**Il salto diceva «file danneggiato».** Trascinare il cursore mentre la share
+moriva usciva come `playback.decodeFailed`, che il catalogo dichiara mai
+ritentabile: niente «Riprova», nessun punto annotato a cui tornare, e il
+consiglio di sostituire un file sano. Su FLAC è la strada più esposta —
+`SeekMode::Accurate` va al punto e poi ridecodifica fino al fotogramma esatto,
+passando anche per la seek table — ed era pure la strada che «Riprova» stesso
+percorre. Adesso il salto passa dallo stesso riconoscimento della lettura.
+
+**E l'apertura diceva «formato non supportato».** Peggio: symphonia, quando il
+riconoscimento del contenitore non riesce, dice «nessun lettore adatto» e
+**butta via** l'errore di sistema che glielo ha impedito. Da fuori, una
+condivisione morta e un file che non è musica arrivavano identici. Adesso il
+numero del sistema viene conservato di lato mentre il flusso passa, e alla fine
+si guarda: se sotto c'era la rete, la rete si dice.
+
+**Il riconoscimento del contenitore stava fuori dalla scadenza.** I cinque
+secondi coprivano la `File::open` e basta, cioè la parte veloce; tutta la
+lettura dell'intestazione — su FLAC anche la copertina incorporata, spesso
+centinaia di kilobyte — avveniva dopo, sul filo della decodifica, dove non c'è
+nessun posto in cui infilare una deadline. Il motore adesso riceve un brano
+**già aperto**: aprirlo è passato di qua dal confine, dentro la scadenza.
+
+**Il brano successivo si apriva sul filo che suona.** L'osservatore degli
+eventi gira sul filo della decodifica, e a ogni cambio di traccia chiedeva di
+preparare il prossimo: fino a cinque secondi di stallo contro un anello che a
+48 kHz stereo vale poco più di tre secondi, cioè un buco udibile a ogni cambio
+di traccia su una rete che risponde male. Adesso è un colpetto su un canale, e
+il lavoro lo fa un filo suo. Per la stessa ragione `avvia_corrente` non tiene
+più il lucchetto del lettore mentre apre: decide, lascia, apre, riprende e
+controlla che la coda non sia cambiata nel frattempo.
+
+**Una scansione a metà cancellava brani.** `walkdir` salta in silenzio i rami
+che non rispondono, e la risonda che protegge le radici morte scattava **solo
+se la camminata era tornata completamente vuota**. Su una libreria grande la
+share fa in tempo a rispondere per i primi mille file e a morire sugli altri
+centomila: quei centomila diventavano «spariti», cioè da cancellare, voti e
+cronologia compresi — e la scansione chiesta a mano non ha guardia anti-strage,
+apposta. Adesso una camminata dichiara se ha perso dei rami, e una parziale
+vale come una vuota: si risonda, e se la radice non risponde più non si toglie
+niente. Nello stesso giro, una radice che muore a lettura iniziata viene
+**abbandonata** al primo guasto invece di essere interrogata file per file: una
+sola attesa lunga invece di una per ognuno dei file rimasti.
+
+**E le prove.** Nessuna decodificava un FLAC vero: adesso c'è un campione da
+centocinquantaquattro byte in `aether-play/tests/campioni`, e tre prove che ci
+passano sopra — decodifica con ricampionamento, salto, e share che muore a metà
+intestazione. Più: la sonda delle radici, quella vera con la scadenza, che i
+doppi in memoria avevano sempre sovrascritto; e un controllo che ogni `.sql`
+sul disco stia davvero nell'elenco delle migrazioni — il verso che mancava, ed
+è quello da cui era passata `016_metadati`.
+
+### Corretto — un cavo di rete staccato non porta più via né la finestra né la libreria
+
+Aether apre i file musicali con `std::fs`. Su una condivisione SMB che smette di
+rispondere — server spento, VPN caduta, lettera di unità mappata senza più
+niente dietro — quelle chiamate non falliscono: **aspettano**, per i quaranta
+secondi del timeout di Windows. Per tutti e quaranta la finestra era dichiarata
+«non risponde». Questo giro chiude il buco da tutti i lati da cui entrava.
+
+**La libreria non si svuota più per un NAS spento.** Una scansione che non
+trovava più la cartella del NAS concludeva che i brani lì dentro non
+esistevano, e li cancellava. Adesso una radice che non risponde viene
+**saltata** invece che considerata vuota, e la scansione non automatica lo dice
+a schermo: quali radici non hanno risposto e quante rimozioni ha trattenuto. Le
+scansioni che nessuno sta guardando — quella che parte da sé dopo gli
+scaricamenti — sono per di più *prudenti*: nel dubbio non cancellano niente e lo
+lasciano scritto nel diario. Una libreria persa per un cavo staccato costa ore
+di rifacimento; una riga in più nel diario non costa niente.
+
+**La finestra non si pianta più aprendo un brano.** L'apertura del file usciva
+da sotto i due lucchetti — libreria e lettore — e girava sul filo principale:
+premere play su un brano di un NAS spento congelava tutto per quaranta secondi.
+Adesso la riga di database si legge sotto lucchetto, il file si apre **fuori**,
+con una scadenza di cinque secondi, e i comandi che possono finire su un
+percorso di rete girano su un filo di lavoro: riproduzione, testi, tag,
+copertine, skin, Studio, sincronia. Passata la scadenza compare l'avviso di
+rete, e la finestra ha risposto tutto il tempo.
+
+**Una condivisione che muore a metà brano non dice più che il file è rotto.**
+L'errore 64 di Windows (`ERROR_NETNAME_DELETED`) arrivava fino in fondo travestito
+da «questo file è danneggiato: sostituiscilo e rifai la scansione» — il
+consiglio peggiore possibile, perché manda a buttare un file sano. E subito
+dopo il motore passava al brano successivo, che sta sulla stessa condivisione
+morta: altri quaranta secondi, un altro avviso, e così via **lungo tutta la
+coda**. Adesso il guasto di rete si riconosce per quel che è, la riproduzione si
+**ferma** dove stava invece di scorrere, e l'avviso porta un «Riprova» che
+riprende dal punto in cui la musica si era interrotta — non dall'inizio del
+brano. Un file davvero rotto continua a costare un fruscio e a far saltare al
+brano dopo: la distinzione la fa il codice dell'errore, non il fatto che ci sia
+un errore.
+
+**Quel che resta fuori, dichiarato:** i quaranta secondi di silenzio prima che
+l'errore arrivi, quando la share muore **mentre si legge un brano già
+avviato**. Quella lettura è dentro il decodificatore, non c'è un punto in cui
+infilare una scadenza, e interrompere un filo fermo in una `ReadFile` non lo
+consente nessun sistema operativo. Sta scritto anche nel commento del codice,
+dove qualcuno lo cercherà. L'apertura, invece, adesso è coperta: vedi il giro
+successivo qui sotto.
+
+**Il messaggio mancava.** Dei 107 codici del catalogo, `fs.networkUnavailable`
+era l'unico senza una frase tradotta: chi lo incontrava leggeva il testo di
+sistema di Windows invece della frase che dice cosa fare. `strumenti/lingue.js`
+adesso confronta il catalogo Rust con `it.json` e fa fallire `verify` se un
+codice resta senza frase — prima confrontava solo le lingue fra loro, e una
+chiave mancante da *tutte* era invisibile.
+
+### Aggiunto — la finestra lascia scritto anche quando è lei a cadere
+
+Il diario raccoglieva tutto quel che succede nel nucleo e niente di quel che
+succede nell'interfaccia. Un errore JavaScript non catturato smontava l'albero
+React e lasciava una finestra **bianca**: nessun messaggio, nessun tasto, e in
+rilascio nemmeno una console da aprire.
+
+Adesso c'è un recinto attorno all'applicazione, che al posto della finestra
+bianca disegna cos'è successo e un tasto per ricaricare, e due ascoltatori
+globali per i guasti che il recinto non può vedere — quelli dei gestori d'evento
+e le promesse rifiutate. Tutti e tre scrivono nel diario attraverso lo stesso
+comando.
+
+Il recinto sta attorno alla sola applicazione: i simboli e i tre comandi della
+finestra restano fuori, perché una finestra che perde il tasto di chiusura
+entrando in una schermata di guasto sarebbe un guasto peggiore di quello che sta
+raccontando. E quel che finisce nel diario è **una riga sola**, tagliata sui
+caratteri: uno stack trace del davanti si porta dietro gli URL dei moduli, che
+in sviluppo sono percorsi del disco di chi sta lavorando, e `PRIVACY.md` promette
+che nel diario i percorsi non ci finiscono.
+
+### Corretto — le copertine che non si salvano tornano a contarsi
+
+La schermata di scansione ha sempre avuto una riga per le copertine che non si è
+riusciti a salvare, e da qualche tempo quella riga non compariva mai: l'errore
+veniva buttato via appena sotto, e il conto arrivava a zero per costruzione. La
+strada è stata rimessa in piedi per intero, dalla lettura del tag fino al numero
+a schermo.
+
+Nello stesso giro, la migrazione `016_metadati` — le colonne su cui poggia la
+scheda della salute dei metadati — era sul disco ma non nell'elenco di quelle da
+applicare: esisteva come file e non è mai stata eseguita da nessuna libreria.
+Adesso c'è.
+
+### Corretto — trentotto guasti, trovati leggendo invece che aspettando
+
+Una passata su tutto l'albero, crate per crate, con una regola sola: niente
+stile, solo cose che si comportano diversamente da come sono scritte. Quel che
+segue è raggruppato per quanto costa a chi ascolta, non per file.
+
+**Perdita di dati.** Il backup su Drive rifondeva solo i file firmati da un
+altro dispositivo: dopo la prima fusione l'unione portava la *propria* firma, e
+la volta dopo veniva sovrascritta invece che fusa — i conteggi degli altri
+dispositivi sparivano al secondo salvataggio. Adesso si fonde sempre, che è
+un'operazione idempotente e non aveva mai avuto bisogno di quella guardia. Nello
+stesso file, un backup remoto illeggibile veniva messo da parte come
+`.corrotto-…` e poi sovrascritto dal salvataggio successivo, che puntava ancora
+al suo identificativo: la copia di sicurezza durava meno di un minuto. Ora un
+remoto messo da parte fa nascere un file nuovo, e la copia resta.
+
+`riconcilia` — il passo che rimette in playlist i brani arrivati dalla coda di
+scarico — non aveva modo di sapere quali righe avesse già ricollocato: nessun
+filtro sullo stato, nessun controllo di presenza. Un brano tolto a mano da una
+playlist ci rientrava alla riconciliazione dopo, per sempre, e con le posizioni
+compattate ci rientrava *due volte*. La migrazione `015_riconcilia` aggiunge
+`desiderati.placed_at` (le righe già chiuse vengono marcate all'aggiornamento,
+così nessuna libreria esistente si trova i brani rimessi tutti insieme), e
+adesso ogni riga ricolloca al più una volta. Nello stesso giro, l'`updated_at`
+delle playlist si tocca solo se qualcosa è davvero rientrato — prima bastava una
+riconciliazione a vuoto per far vincere il lato sbagliato della sincronia.
+
+La potatura delle cartelle vuote dopo un riordino risaliva da una radice comune
+che, per due brani su dischi diversi, è il percorso **vuoto**: `starts_with("")`
+è vero per tutti, e la risalita arrivava alla radice del disco. Una radice vuota
+adesso non pota niente. E il nome del file scaricato passava da
+`with_extension`, che tratta come estensione tutto quel che segue l'ultimo
+punto: «02 - Mr. Brightside» diventava «02 - Mr.mp3», e il ramo anti-collisione
+generava novantotto volte lo stesso percorso.
+
+**La finestra che si congela.** Quindici comandi lunghi — scansione, riordino,
+importazioni, testi, sincronia — erano dichiarati senza `(async)`, cioè giravano
+sul filo principale della finestra. La regola sta scritta da sempre in
+`nuvola.rs` e non era applicata: per i venti secondi della prima scansione gli
+eventi di avanzamento partivano e nessuno li disegnava, e `annulla_scansione`
+non veniva nemmeno ricevuto finché la scansione non era finita da sola.
+
+**La riproduzione che diceva una cosa e ne faceva un'altra.** Togliere dalla
+coda il brano in corso mostrava subito il titolo del successivo mentre le casse
+continuavano con quello tolto — e alla sua fine la coda avanzava ancora,
+saltando il brano appena annunciato. A coda finita il motore lasciava scritto
+l'ultimo `track_id`: «riprendi» chiedeva a un motore vuoto di ripartire, cioè
+non faceva niente, mentre il pulsante diventava «pausa». Lo scrubber rimbalzava
+al punto di partenza a ogni trascinamento, perché i comandi al motore sono
+accodati e lo stato partiva con la posizione *di prima* del salto. I salti
+relativi dalle cuffie tornavano a inizio brano, perché la posizione che il
+sistema operativo usa come «da dove» la scriveva solo il cambio di stato. E il
+timer di spegnimento, nel quarto di secondo fra la scadenza e la sua raccolta,
+mostrava lo zero che significa «alla fine di questo brano».
+
+**Cataloghi e metadati.** Su Archive.org le durate `H:MM:SS` non si leggevano —
+il veto sulla durata non si applicava proprio ai concerti interi in cui serve —,
+due tracce omonime dello stesso item collassavano in una, e l'album veniva
+calcolato e poi buttato: tutto quel che veniva dall'archivio finiva in
+«Singoli». Un 503 su una scheda buttava via i candidati già raccolti invece di
+proseguire. Il riconoscimento dei domini si faceva per suffisso, quindi
+`evilarchive.org` passava per `archive.org`. Su Audius la copertina dei brani
+risolti da link era sempre assente. Nell'arricchimento, due fonti potevano
+«concordare» quando una delle due era `None`, e l'identificativo MusicBrainz
+della *registrazione* faceva da veto anche a quelli di pubblicazione: le
+edizioni non si fondevano mai.
+
+**Il resto.** Le playlist legacy si importavano senza cancellare prima, creando
+playlist ibride; un `file://` POSIX perdeva la barra iniziale e diventava
+relativo; il giornale del riordino, su una riga troncata a metà valore,
+restituiva stringa vuota invece di dire che non si leggeva; le miniature già
+presenti dichiaravano dimensioni quadrate fittizie; `create_smart` scriveva due
+statement senza transazione; un'impronta di copertina arrivava a comporre un
+percorso senza essere validata, mentre il controllo esisteva già a due file di
+distanza; e l'unica cosa che la schermata delle importazioni sapeva dire di un
+guasto della coda era «non è partita», perché leggeva il carico con nomi di
+campo che quel record non ha.
 
 - **La chiave di firma si guarda prima di compilare** (`strumenti/firma.js`, un
   passo nuovo in `release.yml`). `tauri build` la tocca per ultima: alla 2.0.1 il
@@ -38,6 +273,24 @@ Cosa incrementa cosa:
   mandata a capo, che dentro ci sia una chiave *privata* e non la pubblica, che
   la password non porti un a capo in coda — si controlla in un secondo. Non
   stampa mai niente che venga dai segreti.
+
+### Aggiunto — il README fa vedere il programma invece di descriverlo
+
+Un lettore musicale con zero immagini nel documento che lo presenta: chi
+arrivava dal motore di ricerca doveva fidarsi di duecento righe di prosa per
+sapere se valeva la pena scaricare un `.exe` non firmato. Adesso in
+`immagini/` ci sono sette scatti presi da una libreria vera — millequattrocento
+brani — e ognuno porta accanto la cosa che l'immagine da sola non dice: perché
+la home non è un elenco alfabetico, perché lo spettro si legge dopo
+l'equalizzatore e prima del volume, cosa cambia una skin che non è un tema
+scuro.
+
+Insieme a loro, la sezione che mancava del tutto: **«Installare»**. Il
+documento spiegava come si compila e non dove si scarica, e non diceva da
+nessuna parte che SmartScreen blocca l'installer — che è il primo schermo che
+una persona vede, e senza una riga che lo preveda sembra un antivirus che ha
+trovato qualcosa. Il conteggio delle prove, fermo a «circa 1 260», è tornato
+vero.
 
 ## [2.0.1] — 2026-08-27
 

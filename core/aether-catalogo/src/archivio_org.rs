@@ -155,6 +155,11 @@ impl ArchivioOrg {
         let item = self.cerca_item(&query, ITEM_TROVATI)?;
 
         let mut candidati = Vec::new();
+        // Un item che non risponde è un risultato in meno, non un fallimento:
+        // buttare i candidati già raccolti per un 503 su una scheda qualunque
+        // sarebbe il contrario della disciplina di `Cataloghi::cerca`. Il primo
+        // guasto si conserva, e si riporta solo se non è rimasto niente.
+        let mut primo_guasto: Option<AppError> = None;
         for doc in item.iter().take(ITEM_DA_APRIRE) {
             if annullato() {
                 return Ok(candidati);
@@ -162,11 +167,22 @@ impl ArchivioOrg {
             let Some(identificativo) = testo_di(doc, "identifier") else {
                 continue;
             };
-            let scheda = self.scheda(&identificativo)?;
+            let scheda = match self.scheda(&identificativo) {
+                Ok(scheda) => scheda,
+                Err(guasto) => {
+                    primo_guasto.get_or_insert(guasto);
+                    continue;
+                }
+            };
             candidati.extend(brani_dalla_scheda(&identificativo, &scheda, Some(brano)));
             if primo_sicuro(&candidati, brano) {
                 break;
             }
+        }
+        if candidati.is_empty()
+            && let Some(guasto) = primo_guasto
+        {
+            return Err(guasto);
         }
         Ok(candidati)
     }
@@ -198,12 +214,13 @@ impl ArchivioOrg {
         }
 
         let autore = testo_di(metadati, "creator");
+        let album = testo_di(metadati, "title");
         let licenza = licenza_da(metadati);
         let disponibilita = disponibilita_da(metadati, &licenza);
         let tracce: Vec<BranoEsterno> = candidati
             .into_iter()
             .enumerate()
-            .map(|(n, c)| brano_da_candidato(c, autore.as_deref(), n))
+            .map(|(n, c)| brano_da_candidato(c, autore.as_deref(), album.as_deref(), n))
             .collect();
 
         Ok(ContenutoEsterno {
@@ -391,10 +408,24 @@ fn durata_di(file: &Value) -> Option<u32> {
     if grezza.is_empty() {
         return None;
     }
-    if let Some((minuti, secondi)) = grezza.split_once(':') {
+    if grezza.contains(':') {
+        // `MM:SS` oppure `H:MM:SS`: i file «concerto intero in un file»
+        // superano l'ora, e scartarli qui toglierebbe proprio a loro il veto
+        // di durata che questo campo esiste per applicare.
+        let pezzi: Vec<&str> = grezza.split(':').collect();
+        let (ore, minuti, secondi) = match pezzi[..] {
+            [minuti, secondi] => ("0", minuti, secondi),
+            [ore, minuti, secondi] => (ore, minuti, secondi),
+            _ => return None,
+        };
+        let h: u32 = ore.trim().parse().ok()?;
         let m: u32 = minuti.trim().parse().ok()?;
         let s: f64 = secondi.trim().parse().ok()?;
-        return Some(m.saturating_mul(60).saturating_add(s.round() as u32));
+        return Some(
+            h.saturating_mul(3600)
+                .saturating_add(m.saturating_mul(60))
+                .saturating_add(s.round() as u32),
+        );
     }
     let secondi: f64 = grezza.parse().ok()?;
     (secondi.is_finite() && secondi >= 0.0).then(|| secondi.round() as u32)
@@ -414,7 +445,6 @@ fn brani_dalla_scheda(
     let licenza = licenza_da(metadati);
     let disponibilita = disponibilita_da(metadati, &licenza);
     let autore = testo_di(metadati, "creator");
-    let album = testo_di(metadati, "title");
     let dal_vivo = collezioni_di(metadati).iter().any(|c| c == "etree");
 
     let Some(file) = scheda.get("files").and_then(Value::as_array) else {
@@ -424,8 +454,12 @@ fn brani_dalla_scheda(
     // Un brano può stare nello stesso item in FLAC e in MP3. Si tiene il
     // migliore per titolo, non tutti e due: due candidati identici tranne che
     // per il formato farebbero perdere tempo alla scelta e, a pari merito,
-    // deciderebbe l'ordine di arrivo, cioè il caso.
-    let mut migliori: Vec<(String, usize, Candidato)> = Vec::new();
+    // deciderebbe l'ordine di arrivo, cioè il caso. La chiave comprende anche
+    // la radice del nome del file: i derivati dello stesso brano la
+    // condividono, mentre due «Jam» diversi dello stesso concerto no — e
+    // collassarli per solo titolo farebbe sparire tracce senza che niente lo
+    // dica.
+    let mut migliori: Vec<((String, String), usize, Candidato)> = Vec::new();
 
     for voce in file {
         let Some((rango, estensione)) = formato_di(voce) else {
@@ -446,7 +480,7 @@ fn brani_dalla_scheda(
             continue;
         }
 
-        let chiave = fold_text(&titolo);
+        let chiave = (fold_text(&titolo), fold_text(&nome_pulito(nome)));
         let natura = if dal_vivo {
             Natura::DalVivo
         } else {
@@ -484,7 +518,6 @@ fn brani_dalla_scheda(
         }
     }
 
-    let _ = album;
     migliori.into_iter().map(|(_, _, c)| c).collect()
 }
 
@@ -533,15 +566,21 @@ fn primo_sicuro(candidati: &[Candidato], brano: &BranoEsterno) -> bool {
 }
 
 /// Da un candidato al brano che finirà in libreria.
+///
+/// `album` è il titolo dell'item: senza, ogni concerto finirebbe in `Singoli/`
+/// mescolato a tutto il resto preso dallo stesso artista, e il raggruppamento
+/// per album non avrebbe niente su cui lavorare.
 fn brano_da_candidato(
     candidato: Candidato,
     autore: Option<&str>,
+    album: Option<&str>,
     posizione: usize,
 ) -> BranoEsterno {
     BranoEsterno {
         title: candidato.titolo,
         artist: candidato.autore.or_else(|| autore.map(ToOwned::to_owned)),
         album_artist: autore.map(ToOwned::to_owned),
+        album: album.map(ToOwned::to_owned),
         track_number: u32::try_from(posizione.saturating_add(1)).ok(),
         duration_ms: candidato
             .durata_sec
@@ -655,6 +694,47 @@ mod prove {
         assert_eq!(durata_di(&scheda(r#"{"length":"5:12"}"#)), Some(312));
         assert_eq!(durata_di(&scheda(r#"{"length":""}"#)), None);
         assert_eq!(durata_di(&scheda("{}")), None);
+    }
+
+    #[test]
+    fn la_durata_in_ore_dei_concerti_interi_si_legge() {
+        // I file «concerto intero in un file» superano l'ora: senza questa
+        // forma il veto di durata non si applicherebbe proprio a loro.
+        assert_eq!(durata_di(&scheda(r#"{"length":"1:02:33"}"#)), Some(3753));
+        assert_eq!(durata_di(&scheda(r#"{"length":"1:00:00"}"#)), Some(3600));
+        assert_eq!(durata_di(&scheda(r#"{"length":"1:2:3:4"}"#)), None);
+    }
+
+    #[test]
+    fn due_tracce_omonime_nello_stesso_item_restano_due() {
+        // «Jam» nel primo set e «Jam» nel secondo sono due brani: la deduplica
+        // dei formati non deve mangiarsene uno.
+        let s = scheda(
+            r#"{
+              "metadata": {"identifier":"gd77","collection":["etree"],"creator":"Grateful Dead"},
+              "files": [
+                {"name":"gd77d1t05.flac","format":"Flac","title":"Jam","length":"300"},
+                {"name":"gd77d2t03.flac","format":"Flac","title":"Jam","length":"420"}
+              ]
+            }"#,
+        );
+        assert_eq!(brani_dalla_scheda("gd77", &s, None).len(), 2);
+    }
+
+    #[test]
+    fn i_brani_di_un_item_portano_lalbum() {
+        // Senza album finirebbero tutti in `Singoli/`, mescolati a tutto il
+        // resto preso dallo stesso artista.
+        let brano = brano_da_candidato(
+            Candidato {
+                titolo: "Sugaree".to_owned(),
+                ..Candidato::default()
+            },
+            Some("Grateful Dead"),
+            Some("Barton Hall 1977-05-08"),
+            0,
+        );
+        assert_eq!(brano.album.as_deref(), Some("Barton Hall 1977-05-08"));
     }
 
     #[test]

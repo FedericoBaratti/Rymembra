@@ -150,4 +150,62 @@ if (codici.length === 1) {
   console.log(`solo ${RIFERIMENTO}.json: niente da confrontare`);
 }
 
+/*
+ * E poi il confronto che le lingue fra loro non possono fare.
+ *
+ * Il controllo qui sopra mette `de.json` accanto a `it.json` e dice cosa manca
+ * all'uno rispetto all'altro. Per costruzione non può accorgersi di una chiave
+ * che manca a **tutti e due**: una chiave che non esiste da nessuna parte è, per
+ * quel confronto, una chiave che non esiste e basta.
+ *
+ * È precisamente il buco da cui è passato `errors.fs.networkUnavailable`. Il
+ * catalogo del nucleo genera per ogni codice la chiave `errors.<codice>`
+ * (`aether-domain/src/errors/catalog.rs`), la finestra la cerca, e quando non la
+ * trova ripiega sul `message` — che è il dettaglio tecnico scritto per chi legge
+ * i registri, non per chi ascolta musica. Il guasto non si vede: non c'è nessun
+ * errore, c'è una frase sbagliata, e la si scopre solo capitandoci sopra.
+ *
+ * Quindi il catalogo diventa la seconda sorgente della verità, accanto a
+ * `it.json`. Si legge con un'espressione regolare invece che compilando Rust
+ * perché questo strumento gira anche dove `cargo` non c'è, e perché la forma di
+ * quelle righe è dichiarativa apposta.
+ */
+const CATALOGO = "core/aether-domain/src/errors/catalog.rs";
+
+/** I codici dichiarati dal nucleo, nell'ordine in cui stanno scritti. */
+function codiciDelNucleo() {
+  let sorgente;
+  try {
+    sorgente = fs.readFileSync(CATALOGO, "utf8");
+  } catch (err) {
+    console.error(`${CATALOGO}: ${err.message}`);
+    process.exit(1);
+  }
+  const trovati = [...sorgente.matchAll(/=\s*"([a-z]+\.[A-Za-z]+)"/g)].map((m) => m[1]);
+  if (trovati.length === 0) {
+    console.error(
+      `${CATALOGO}: nessun codice riconosciuto.
+` +
+        `      La forma delle righe del catalogo è cambiata: aggiorna l'espressione qui sopra,` +
+        ` o questo controllo passerà per sempre senza guardare niente.`,
+    );
+    process.exit(1);
+  }
+  return [...new Set(trovati)].sort();
+}
+
+const senzaFrase = codiciDelNucleo().filter((c) => !(`errors.${c}` in riferimento));
+if (senzaFrase.length > 0) {
+  console.error(
+    `${RIFERIMENTO}.json: ${senzaFrase.length} codici del catalogo non hanno una frase
+` +
+      `${primeVoci(senzaFrase.map((c) => `errors.${c}`))}
+` +
+      `      Chi li incontra legge il dettaglio tecnico del nucleo al posto di una spiegazione.`,
+  );
+  storto = true;
+} else {
+  console.log(`${CATALOGO}: tutti i codici hanno la loro frase`);
+}
+
 process.exit(storto ? 1 : 0);

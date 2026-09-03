@@ -145,7 +145,13 @@ impl From<testi::TestoBrano> for TestoIpc {
 ///
 /// `library.trackNotFound` se il brano non c'è più, `db.queryFailed` se la
 /// lettura fallisce.
-#[tauri::command]
+///
+/// `(async)`: prima del database questa lettura guarda se accanto al file c'è
+/// un `.lrc`, e «accanto al file» può voler dire su una cartella di rete. Un
+/// comando normale gira sul filo principale, e lì una condivisione che non
+/// risponde vale quaranta secondi di finestra ferma per aprire il pannello del
+/// testo.
+#[tauri::command(async)]
 pub fn testo_brano(stato: State<'_, Stato>, id: i64) -> Esito<TestoIpc> {
     con_libreria(&stato, |libreria| {
         testi::per_brano(&libreria.connection, id).map(TestoIpc::from)
@@ -162,7 +168,7 @@ pub fn testo_brano(stato: State<'_, Stato>, id: i64) -> Esito<TestoIpc> {
 /// # Errori
 ///
 /// `library.trackNotFound`, `db.queryFailed`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn testo_scarto(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
@@ -339,7 +345,10 @@ fn stato_adesso(stato: &Stato, testi: &StatoTesti) -> Result<StatoTestiIpc, AppE
 ///
 /// `library.trackNotFound`, l'errore di rete quando il catalogo non risponde,
 /// `db.queryFailed`.
-#[tauri::command]
+///
+/// `(async)`: la richiesta al catalogo ha una scadenza di venti secondi, e un
+/// comando normale la consumerebbe sul filo principale della finestra.
+#[tauri::command(async)]
 pub fn testo_cerca(
     app: AppHandle,
     stato: State<'_, Stato>,
@@ -395,7 +404,7 @@ pub fn testi_stato(stato: State<'_, Stato>, testi: State<'_, StatoTesti>) -> Esi
 /// # Errori
 ///
 /// `db.queryFailed`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn testi_rete(
     stato: State<'_, Stato>,
     testi: State<'_, StatoTesti>,
@@ -565,11 +574,16 @@ fn passata(app: &AppHandle) {
                 .fatti
                 .fetch_add(1, Ordering::Relaxed)
                 .saturating_add(1);
+            // `fetch_update` restituisce il valore PRECEDENTE, come il
+            // `fetch_add` qui sopra: senza la sottrazione l'evento direbbe
+            // sempre un rimasto di troppo, e la barra non arriverebbe mai a
+            // zero prima di `testi:finito`.
             let rimasti = testi
                 .rimasti
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |r| {
                     Some(r.saturating_sub(1))
                 })
+                .map(|precedente| precedente.saturating_sub(1))
                 .unwrap_or(0);
             let _ = app.emit("testi:avanzamento", Avanzamento { fatti, rimasti });
         }
@@ -603,9 +617,10 @@ fn segnala(app: &AppHandle, err: &AppError) {
 /// i tempi raddrizzati — e la regola che li produce sta in
 /// `aether_domain::testo::aggancia`, che è pura e provata senza aprire un file.
 ///
-/// Decodifica il brano per intero: uno o due secondi su quattro minuti. È un
-/// comando sincrono come `scansiona`, che ne blocca venti, e per la stessa
-/// ragione: Tauri li serve su un filo suo, e la finestra intanto disegna.
+/// Decodifica il brano per intero: uno o due secondi su quattro minuti. Per
+/// questo è `(async)`: un comando normale gira sul **filo principale** della
+/// finestra — è la regola annotata in `nuvola`, e vale qui come per
+/// `scansiona` — e due secondi lì sopra sono due secondi di editor congelato.
 ///
 /// # Errori
 ///
@@ -613,15 +628,21 @@ fn segnala(app: &AppHandle, err: &AppError) {
 /// `playback.formatUnsupported` per un formato che il motore non sa leggere.
 /// Un brano di cui non si trova nessun attacco **non** è un errore: le battute
 /// tornano com'erano, ed è quel che `aggancia` fa senza candidati.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn testo_aggancia(stato: State<'_, Stato>, id: i64, battute: Vec<u32>) -> Esito<Vec<u32>> {
-    // La sorgente si costruisce sotto lucchetto — è una lettura di una riga —
-    // e la decodifica avviene fuori: il file lo si è già aperto, e il
+    // Sotto lucchetto ci va **solo** la riga di database. L'apertura del file no:
+    // su una condivisione di rete morta dura quaranta secondi, e tenerci dentro
+    // il lucchetto della libreria vorrebbe dire fermare la scansione,
+    // l'arricchimento e il backup perché qualcuno ha chiesto di agganciare un
+    // testo. La decodifica vera avviene poi ancora più fuori: il
     // `Decodificatore` non sa niente del database.
-    let sorgente = con_libreria(&stato, |libreria| {
-        aether_app::playback::sorgente(&libreria.connection, &aether_app::files::LocalFiles, id)
+    let scheda = con_libreria(&stato, |libreria| {
+        aether_app::playback::scheda_sorgente(&libreria.connection, id)
     })
     .map_err(errore)?;
+    let sorgente =
+        aether_app::playback::sorgente_da_scheda(&aether_app::files::LocalFiles, &scheda)
+            .map_err(errore)?;
     let attacchi = aether_play::attacchi::attacchi(sorgente).map_err(errore)?;
     Ok(aether_domain::testo::aggancia(&battute, &attacchi))
 }
@@ -644,7 +665,11 @@ pub fn testo_aggancia(stato: State<'_, Stato>, id: i64, battute: Vec<u32>) -> Es
 ///
 /// `library.trackNotFound`, `fs.writeFailed` se la cartella è di sola lettura,
 /// `db.queryFailed`.
-#[tauri::command]
+///
+/// `(async)`: scrive un `.lrc` accanto al file musicale, che può stare su una
+/// cartella di rete. Stessa ragione di [`testo_brano`], e qui è una scrittura:
+/// costa di più di una lettura anche quando la rete c'è.
+#[tauri::command(async)]
 pub fn testo_salva(
     app: AppHandle,
     stato: State<'_, Stato>,
@@ -699,14 +724,16 @@ pub fn testo_salva(
 /// # Quanto ci mette
 ///
 /// Qualche secondo, e la finestra deve dirlo prima: LRCLIB chiede una prova di
-/// lavoro, cioè del calcolo, non dell'attesa di rete.
+/// lavoro, cioè del calcolo, non dell'attesa di rete. Per questo è `(async)`:
+/// quei secondi di calcolo più la richiesta non stanno sul filo principale
+/// della finestra.
 ///
 /// # Errori
 ///
 /// `metadata.lyricsPublishRefused` se non c'è niente da mandare o se il catalogo
 /// dice di no; l'errore di trasporto se la rete non risponde; `db.queryFailed`
 /// se il brano non si legge.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn testo_pubblica(
     app: AppHandle,
     stato: State<'_, Stato>,

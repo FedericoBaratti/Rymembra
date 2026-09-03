@@ -43,6 +43,7 @@ import {
   ipc,
   testoErrore,
   type BranoScarico,
+  type ErroreIpc,
   type EsitoImport,
   type SorgenteScarico,
   type StatoScarico,
@@ -269,14 +270,14 @@ export function useImportazioni(): UsoImportazioni {
           .then(setStato)
           .catch(() => {});
       }),
-      listen<{ codice?: string; messaggio?: string }>(
-        "scarico:guasto",
-        (evento) =>
-          setErrore(
-            evento.payload.messaggio ??
-              evento.payload.codice ??
-              t("queue.didNotStart"),
-          ),
+      // Il carico è un `ErroreIpc` — `procura.rs` lo compone con
+      // `crate::errore::errore`, e i suoi campi sono quelli inglesi di `ipc.ts`,
+      // non `codice`/`messaggio`. Letto con i nomi sbagliati era sempre
+      // `undefined`, e ogni guasto della coda diventava lo stesso «non è
+      // partita»: `testoErrore` è la stessa strada di tutti gli altri errori di
+      // questa schermata, chiave di traduzione compresa.
+      listen<ErroreIpc>("scarico:guasto", (evento) =>
+        setErrore(testoErrore(evento.payload)),
       ),
     ];
     return () => {

@@ -49,18 +49,45 @@ const EDITION_KEYWORDS: [&str; 21] = [
     "volume",
 ];
 
-/// `cd 1`, `disc2`, `disco 3`… già piegato in minuscolo.
-fn looks_like_disc_marker(folded: &str) -> bool {
+/// Le cifre che un indicatore di disco porta in coda, già piegato in minuscolo.
+///
+/// `cd 1`, `disc2`, `disco 3`… e `None` per tutto il resto.
+fn cifre_del_disco(folded: &str) -> Option<&str> {
     let rest = ["cd", "disc", "disco", "disk"]
         .into_iter()
         // Il più lungo per primo: con `disc` davanti, `disco 1` lascerebbe
         // `o 1` e non verrebbe riconosciuto.
         .filter(|prefix| folded.starts_with(prefix))
         .max_by_key(|prefix| prefix.len())
-        .and_then(|prefix| folded.get(prefix.len()..));
-    let Some(rest) = rest else { return false };
+        .and_then(|prefix| folded.get(prefix.len()..))?;
     let digits = rest.trim_start_matches(is_js_whitespace);
-    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(digits)
+}
+
+/// `cd 1`, `disc2`, `disco 3`… già piegato in minuscolo.
+fn looks_like_disc_marker(folded: &str) -> bool {
+    cifre_del_disco(folded).is_some()
+}
+
+/// Il numero che un indicatore di disco porta con sé: `CD1` → 1, `Disc 2` → 2.
+///
+/// È la stessa domanda che [`album_folder`] si fa per far collassare una
+/// cartella foglia nella superiore, con il numero al posto del sì o del no:
+/// [`crate::indizi`] deve poterlo scrivere nel campo «disco» di un brano che i
+/// tag non numerano, e un secondo elenco di parole scritto là sarebbe un elenco
+/// che un giorno dirà una cosa diversa da questo.
+///
+/// A differenza di quella domanda, qui il nome arriva **come sta sul disco**: i
+/// due punti di chiamata di `indizi` gli passano il contenuto di una parentesi e
+/// il nome di una cartella, e piegarlo prima toccherebbe a tutti e due.
+///
+/// `None` quando non è un indicatore di disco, e anche quando le cifre ci sono
+/// ma non stanno in un `u32`: una cartella `CD99999999999` non è l'undicesimo
+/// disco di niente, è una cartella che si chiama così.
+#[must_use]
+pub fn numero_disco(segmento: &str) -> Option<u32> {
+    let folded = fold_text(segmento.trim_matches(is_js_whitespace));
+    cifre_del_disco(&folded).and_then(|cifre| cifre.parse().ok())
 }
 
 /// Il contenuto di una parentesi finale è un'indicazione di edizione?

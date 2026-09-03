@@ -17,6 +17,7 @@ mod diario;
 mod errore;
 mod importa;
 mod media;
+mod metadati;
 mod nuvola;
 mod playlist;
 mod procura;
@@ -233,9 +234,14 @@ fn main() {
             // vuoto costa un mutex e un intero.
             app.manage(media::StatoMedia::nuovo());
 
-            let lettore = riproduzione::StatoLettore::avvia(app.handle());
+            let (lettore, orecchio) = riproduzione::StatoLettore::avvia(app.handle());
             riproduzione::riga_di_avvio_lettore(&lettore);
             app.manage(lettore);
+            // Il filo che apre il brano successivo, insieme agli altri del
+            // lettore. L'ordine fra questi quattro non conta: il canale del
+            // preparatore non ha limite, quindi una spinta che arrivasse prima
+            // che il filo sia in piedi lo aspetta lì invece di perdersi.
+            riproduzione::avvia_preparatore(app.handle().clone(), orecchio);
             riproduzione::riprendi_coda(app.handle());
             riproduzione::avvia_orologio(app.handle().clone());
             riproduzione::avvia_spettro(app.handle().clone());
@@ -357,6 +363,10 @@ fn main() {
             riordino::piano_riordino,
             riordino::esegui_riordino,
             riordino::annulla_riordino,
+            metadati::metadati_conteggio,
+            metadati::metadati_incerti,
+            metadati::metadati_correggi,
+            metadati::metadati_conferma,
             playlist::playlist_elenco,
             playlist::playlist_brani,
             playlist::playlist_crea,
@@ -405,6 +415,7 @@ fn main() {
             riproduzione::autoplay,
             riproduzione::dissolvenza,
             riproduzione::riapri_audio,
+            riproduzione::riprova_corrente,
             riproduzione::spettro,
             riproduzione::spettro_bande,
             riproduzione::spettro_bande_scegli,
@@ -467,6 +478,7 @@ fn main() {
             aggiornamenti::aggiornamenti_salta,
             aggiornamenti::aggiornamenti_installa,
             diario::diario_apri,
+            diario::diario_annota,
             comandi::apri_documento,
         ])
         .run(tauri::generate_context!());

@@ -36,7 +36,7 @@
  */
 import type { ReactNode } from "react";
 
-import { eErroreIpc, testoErrore } from "../ipc";
+import { eErroreIpc, eRitentabile, testoErrore } from "../ipc";
 import { Icona, type NomeIcona } from "./Icone";
 import { t } from "../lingue";
 
@@ -147,7 +147,7 @@ export function AvvisoErrore({
   errore: unknown;
   onRiprova?: (() => void) | undefined;
 }) {
-  const ritentabile = eErroreIpc(errore) && errore.retryable;
+  const ritentabile = eRitentabile(errore);
   return (
     <Avviso
       livello={livelloDi(errore)}

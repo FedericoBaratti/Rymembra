@@ -28,6 +28,37 @@ use aether_domain::scan_plan::DiscoveredFile;
 pub trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
 
+/// L'esito di una camminata: quel che si è trovato, e se si è trovato tutto.
+///
+/// # Perché «completa» viaggia insieme ai file
+///
+/// Perché senza, un elenco parziale e un elenco intero si assomigliano come una
+/// radice morta e una radice vuota — ed è lo stesso errore, un passo più in là.
+/// La sonda di [`MusicFiles::radice_raggiungibile`] guarda la cartella *prima*
+/// di camminarci dentro; se la rete cade **durante** la camminata di una
+/// libreria grande, quella sonda ha già detto sì, `walkdir` salta in silenzio i
+/// rami che non risponde più, e quel che torna è una fotografia di mezza
+/// libreria che il piano legge come «l'altra metà è sparita».
+///
+/// Non è un caso di scuola: è la stessa cancellazione che la sonda esiste per
+/// impedire, con la rete caduta un momento più tardi.
+/// Niente `Default`, e apposta: il suo `completa` sarebbe `false`, cioè
+/// «parziale», che è il valore su cui a valle si decide di non cancellare
+/// niente. Un campo del genere va scritto da chi sa com'è andata la camminata,
+/// non ereditato per distrazione da chi non ci ha pensato.
+#[derive(Debug, Clone)]
+pub struct Camminata {
+    /// I file trovati.
+    pub file: Vec<DiscoveredFile>,
+    /// Nessun ramo è andato perso.
+    ///
+    /// `false` dice soltanto «questo elenco è parziale», non «la rete è giù»:
+    /// una sottocartella a permessi negati su un disco locale lo abbassa
+    /// esattamente come una share che muore. A distinguere i due casi è chi
+    /// chiama, risondando la radice — vedi [`crate::library::plan`].
+    pub completa: bool,
+}
+
 /// Da dove arrivano i file musicali.
 pub trait MusicFiles: Send + Sync {
     /// Elenca ricorsivamente i file sotto una radice.
@@ -40,7 +71,33 @@ pub trait MusicFiles: Send + Sync {
     ///
     /// Una radice illeggibile non è un errore fatale: si riporta vuota, perché
     /// un disco esterno staccato non deve impedire la scansione degli altri.
-    fn walk(&self, root: &str) -> Result<Vec<DiscoveredFile>, AppError>;
+    ///
+    /// **Ma «vuota» non vuol dire «da svuotare»**: chi chiama deve prima chiedere
+    /// a [`Self::radice_raggiungibile`] se quella cartella esiste ancora, perché
+    /// una camminata vuota su una radice morta e una su una radice davvero
+    /// svuotata si assomigliano come due gocce d'acqua, e trattarle uguali
+    /// significa cancellare l'intera libreria di chi ha staccato il NAS.
+    ///
+    /// **E «parziale» non vuol dire «completa»**: chi implementa deve abbassare
+    /// [`Camminata::completa`] appena perde un ramo, per lo stesso motivo un
+    /// passo più in là. Vedi [`Camminata`].
+    fn walk(&self, root: &str) -> Result<Camminata, AppError>;
+
+    /// La radice esiste ed è leggibile **adesso**?
+    ///
+    /// Distingue «radice vuota» da «NAS spento»: trattarle uguali significava
+    /// marcare «sparito» ogni brano della seconda alla prima scansione a rete
+    /// giù, e con lui portarsi via voti, preferiti e cronologia — le sole cose
+    /// in tutta la libreria che una riscansione non sa ricostruire.
+    ///
+    /// Il valore di serie è `true`, cioè «non lo so, fai come prima»: le
+    /// implementazioni che non hanno un modo di chiederlo — un doppio in
+    /// memoria, un provider Android — non devono per questo bloccare la
+    /// scansione.
+    fn radice_raggiungibile(&self, root: &str) -> bool {
+        let _ = root;
+        true
+    }
 
     /// Apre un file in lettura.
     ///
@@ -62,6 +119,17 @@ pub trait MusicFiles: Send + Sync {
 /// vecchio albero li appiattiva entrambi in un avviso nel log.
 pub fn io_error(path: &str, err: &std::io::Error) -> AppError {
     use std::io::ErrorKind as K;
+    // Prima di tutto il resto: i guasti di rete arrivano da Windows come codici
+    // grezzi che `ErrorKind` non sa nominare — diventerebbero un generico
+    // `fs.readFailed`, cioè «questo file non si legge», quando la verità è «la
+    // condivisione non c'è più». Le due frasi mandano a cercare il guasto in due
+    // posti diversi, e solo una delle due offre «Riprova».
+    if errore_di_rete(err) {
+        return AppError::new(ErrorCode::FsNetworkUnavailable {
+            path: Some(path.to_owned()),
+        })
+        .with_cause(err.to_string());
+    }
     let code = match err.kind() {
         K::NotFound => ErrorCode::FsNotFound {
             path: path.to_owned(),
@@ -83,13 +151,28 @@ pub fn io_error(path: &str, err: &std::io::Error) -> AppError {
     AppError::new(code).with_cause(err.to_string())
 }
 
+/// Il guasto viene dalla rete, non dal file?
+///
+/// L'elenco dei numeri di sistema e il perché di ognuno stanno in
+/// [`aether_domain::errors::rete`], e non qui, perché la stessa domanda se la
+/// fa anche il motore audio quando la condivisione muore **a metà** di un
+/// brano: due elenchi separati sarebbero due elenchi che un giorno diranno
+/// cose diverse sullo stesso guasto.
+fn errore_di_rete(err: &std::io::Error) -> bool {
+    aether_domain::errors::rete::e_di_rete(err)
+}
+
 /// I file musicali sul filesystem locale.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LocalFiles;
 
 impl MusicFiles for LocalFiles {
-    fn walk(&self, root: &str) -> Result<Vec<DiscoveredFile>, AppError> {
+    fn walk(&self, root: &str) -> Result<Camminata, AppError> {
         let mut found = Vec::new();
+        // Ogni ramo perso abbassa questo, e non è pignoleria: è l'unica
+        // differenza fra «qui non c'è più niente» e «di qui non si è visto
+        // tutto», e a valle decide se dei brani si cancellano.
+        let mut completa = true;
         // `walkdir` con i link simbolici non seguiti: seguirli permetterebbe a
         // un anello di far girare la scansione all'infinito, e a un link verso
         // la cartella superiore di contare ogni brano due volte.
@@ -97,13 +180,20 @@ impl MusicFiles for LocalFiles {
             let entry = match entry {
                 Ok(entry) => entry,
                 // Una sottocartella illeggibile non ferma la camminata: si perde
-                // quel ramo, non l'intera libreria.
-                Err(_) => continue,
+                // quel ramo, non l'intera libreria. Ma **si dice**.
+                Err(_) => {
+                    completa = false;
+                    continue;
+                }
             };
             if !entry.file_type().is_file() {
                 continue;
             }
             let Ok(metadata) = entry.metadata() else {
+                // Un file elencato di cui non si legge la data è un file su cui
+                // non si può decidere niente: sparisce dall'elenco, quindi
+                // l'elenco non è più intero.
+                completa = false;
                 continue;
             };
             let path = entry.path().to_string_lossy().into_owned();
@@ -113,14 +203,45 @@ impl MusicFiles for LocalFiles {
                 modified_ms: modified_ms(&metadata),
             });
         }
-        Ok(found)
+        Ok(Camminata {
+            file: found,
+            completa,
+        })
     }
 
     fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send + Sync>, AppError> {
         let file = std::fs::File::open(Path::new(path)).map_err(|err| io_error(path, &err))?;
         Ok(Box::new(std::io::BufReader::new(file)))
     }
+
+    fn radice_raggiungibile(&self, root: &str) -> bool {
+        let percorso = root.to_owned();
+        // Con la scadenza e non con una `metadata` nuda: su una share morta
+        // quella chiamata non fallisce, aspetta il timeout di SMB — e la sonda
+        // che serve a proteggere la libreria diventerebbe essa stessa il motivo
+        // per cui la scansione si pianta.
+        //
+        // Scaduta vale **irraggiungibile**: la radice che non risponde in otto
+        // secondi non è una radice da cui si possa concludere che dei brani sono
+        // spariti.
+        crate::scadenza::con_scadenza(SONDA_RADICE_NOME, SONDA_RADICE, move || {
+            std::fs::metadata(Path::new(&percorso)).is_ok()
+        })
+        .unwrap_or(false)
+    }
 }
+
+/// Quanto si aspetta una radice prima di dichiararla irraggiungibile.
+///
+/// Otto secondi: molto più di quel che serve a un disco locale (microsecondi) o
+/// a una share viva (millisecondi), molto meno dei quaranta e passa che Windows
+/// impiega a rinunciare da solo su un percorso di rete morto. Il numero non deve
+/// essere preciso — deve solo stare largo sul caso buono e stretto sul caso
+/// cattivo.
+const SONDA_RADICE: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Il nome che il filo della sonda porta nel diario dei panici.
+const SONDA_RADICE_NOME: &str = "sonda-radice";
 
 /// La data di modifica in millisecondi interi.
 ///
@@ -163,8 +284,11 @@ mod tests {
         // Anche il .txt: filtrare è una decisione, e sta nel dominio. Qui si
         // riporta quel che c'è, altrimenti il piano non potrebbe dire PERCHÉ un
         // file non è entrato in libreria.
-        assert_eq!(found.len(), 3);
-        assert!(found.iter().any(|f| f.path.ends_with("b.txt")));
+        assert_eq!(found.file.len(), 3);
+        assert!(found.file.iter().any(|f| f.path.ends_with("b.txt")));
+        // Niente si è perso per strada: è la condizione che permette al piano di
+        // fidarsi di questo elenco per decidere delle rimozioni.
+        assert!(found.completa, "una cartella sana si cammina per intero");
     }
 
     #[test]
@@ -172,7 +296,53 @@ mod tests {
         // Il disco esterno staccato: si riporta vuoto, e le altre radici
         // vengono scansionate lo stesso.
         let found = LocalFiles.walk("Z:/non/esiste").expect("nessun errore");
-        assert!(found.is_empty());
+        assert!(found.file.is_empty());
+        // Vuota **e** dichiarata parziale: non aver potuto guardare non è la
+        // stessa cosa di aver guardato e non aver trovato niente, ed è la
+        // differenza su cui il piano decide se cancellare.
+        assert!(
+            !found.completa,
+            "una radice che non si apre non produce un elenco su cui fidarsi"
+        );
+    }
+
+    #[test]
+    fn la_sonda_delle_radici_distingue_quel_che_ce_da_quel_che_non_ce() {
+        // La sonda vera, non quella dei doppi: tutte le prove sulle radici morte
+        // in `library.rs` girano su `FintoDisco`, che sovrascrive
+        // `radice_raggiungibile` — quindi l'implementazione che poi gira in
+        // produzione, con il filo e la scadenza, non era esercitata da niente.
+        //
+        // Quel che si può provare senza una share vera è il resto: che la sonda
+        // risponda, e che risponda giusto nei due casi normali. Il ramo della
+        // scadenza scaduta è provato in `scadenza.rs`, dove non serve un NAS.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let root = dir.path().to_string_lossy().into_owned();
+        assert!(
+            LocalFiles.radice_raggiungibile(&root),
+            "una cartella che esiste deve rispondere"
+        );
+        assert!(
+            !LocalFiles.radice_raggiungibile("Z:/non/esiste/di/sicuro"),
+            "e una che non esiste no: da qui passa la decisione di non cancellare"
+        );
+    }
+
+    #[test]
+    fn la_sonda_di_una_radice_viva_non_ci_mette_niente() {
+        // Il numero che conta non è otto secondi, è «molto meno di otto
+        // secondi»: la sonda gira una volta per radice a ogni scansione, e se
+        // costasse gira sull'ordine dei secondi anche a disco sano sarebbe lei
+        // il motivo per cui una scansione parte tardi.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let root = dir.path().to_string_lossy().into_owned();
+        let prima = std::time::Instant::now();
+        assert!(LocalFiles.radice_raggiungibile(&root));
+        let passato = prima.elapsed();
+        assert!(
+            passato < std::time::Duration::from_secs(1),
+            "la sonda su un disco locale ci ha messo {passato:?}"
+        );
     }
 
     #[test]
@@ -182,13 +352,13 @@ mod tests {
         std::fs::write(&path, b"x").expect("scrittura");
         let root = dir.path().to_string_lossy().into_owned();
         let found = LocalFiles.walk(&root).expect("camminata");
-        let file = found.first().expect("un file");
+        let file = found.file.first().expect("un file");
         assert!(file.modified_ms > 0, "l'orologio deve essere leggibile qui");
         // Due camminate di fila devono dare lo stesso valore: se il troncamento
         // non fosse stabile, ogni passata vedrebbe «cambiato» ogni file.
         let ancora = LocalFiles.walk(&root).expect("camminata");
         assert_eq!(
-            ancora.first().map(|f| f.modified_ms),
+            ancora.file.first().map(|f| f.modified_ms),
             Some(file.modified_ms)
         );
     }
@@ -206,5 +376,30 @@ mod tests {
         // appiattiva entrambi in un avviso nel log.
         assert_eq!(not_found.code().kind(), ErrorCodeKind::FsNotFound);
         assert_eq!(denied.code().kind(), ErrorCodeKind::FsPermissionDenied);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn i_guasti_della_share_si_riconoscono_dal_numero() {
+        use aether_domain::errors::ErrorCodeKind;
+        // Questi tre sono quelli che si vedono davvero staccando la rete mentre
+        // Aether legge: senza il ramo dei codici grezzi arriverebbero tutti come
+        // `fs.readFailed`, cioè «il file è rotto» invece di «la share non c'è».
+        for numero in [53, 59, 64] {
+            let err = io_error(
+                "//srv/musica/a.mp3",
+                &std::io::Error::from_raw_os_error(numero),
+            );
+            assert_eq!(
+                err.code().kind(),
+                ErrorCodeKind::FsNetworkUnavailable,
+                "il codice {numero} deve dire «rete», non «file»"
+            );
+            assert!(err.code().is_retryable(), "la rete torna: si ritenta");
+        }
+        // …e un file che davvero non c'è resta un file che non c'è: il ramo
+        // nuovo non deve inghiottire il caso normale.
+        let mancante = io_error("C:/m/a.mp3", &std::io::Error::from_raw_os_error(2));
+        assert_eq!(mancante.code().kind(), ErrorCodeKind::FsNotFound);
     }
 }

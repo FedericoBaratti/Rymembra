@@ -25,7 +25,7 @@ fn main() {
 
     let files = LocalFiles;
     let found = match files.walk(&root) {
-        Ok(found) => found,
+        Ok(camminata) => camminata.file,
         Err(err) => {
             eprintln!("camminata fallita: {err}");
             std::process::exit(1);

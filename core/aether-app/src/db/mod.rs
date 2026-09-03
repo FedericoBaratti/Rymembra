@@ -519,6 +519,54 @@ mod tests {
     }
 
     #[test]
+    fn ogni_migrazione_sul_disco_sta_anche_nell_elenco() {
+        // Il difetto che questa prova tiene chiuso è già successo:
+        // `016_metadati.sql` è stato scritto, salvato, e **mai eseguito da
+        // nessuna libreria** — esisteva come file e non era in `MIGRATIONS`. Le
+        // colonne su cui poggiava la scheda della salute dei metadati non
+        // c'erano da nessuna parte, e non c'era niente che se ne accorgesse:
+        // `le_versioni_delle_migrazioni_sono_crescenti_e_uniche` guarda solo
+        // l'elenco, e un file dimenticato dall'elenco è invisibile all'elenco.
+        //
+        // Si contano i file, non i nomi: un `include_str!` che punta a un file
+        // che non c'è non compila nemmeno, quindi il verso «elenco → disco» è
+        // già garantito dal compilatore. Quello che manca è il verso opposto.
+        let cartella = concat!(env!("CARGO_MANIFEST_DIR"), "/src/db/schema");
+        let mut sul_disco: Vec<String> = std::fs::read_dir(cartella)
+            .expect("la cartella dello schema")
+            .filter_map(|voce| {
+                let nome = voce.ok()?.file_name().to_string_lossy().into_owned();
+                nome.ends_with(".sql").then_some(nome)
+            })
+            .collect();
+        sul_disco.sort();
+
+        assert_eq!(
+            sul_disco.len(),
+            MIGRATIONS.len(),
+            "sul disco ci sono {} migrazioni e nell'elenco {}: {:?}",
+            sul_disco.len(),
+            MIGRATIONS.len(),
+            sul_disco
+        );
+
+        // E i nomi corrispondono uno a uno, in ordine: contarle sole lascerebbe
+        // passare un file aggiunto insieme a uno tolto.
+        for (voce, migrazione) in sul_disco.iter().zip(MIGRATIONS) {
+            let atteso = format!("{:03}_{}.sql", migrazione.version, migrazione.name);
+            // Il nome del file usa i trattini bassi dove il nome della
+            // migrazione usa quelli alti: `013_testi_senza_tempi.sql` sta in
+            // elenco come `testi-senza-tempi`.
+            assert_eq!(
+                voce,
+                &atteso.replace('-', "_"),
+                "il file {voce} non corrisponde alla migrazione {}",
+                migrazione.name
+            );
+        }
+    }
+
+    #[test]
     fn le_versioni_delle_migrazioni_sono_crescenti_e_uniche() {
         let mut atteso = 0;
         for migration in MIGRATIONS {

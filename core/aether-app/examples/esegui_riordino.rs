@@ -50,7 +50,7 @@ fn ora() -> u64 {
 /// un'operazione sui soli metadati del filesystem.
 fn istantanea(root: &str) -> BTreeMap<String, (u64, i64)> {
     let mut out = BTreeMap::new();
-    for file in LocalFiles.walk(root).unwrap_or_default() {
+    for file in LocalFiles.walk(root).map(|c| c.file).unwrap_or_default() {
         if !is_supported_audio_path(&file.path) {
             continue;
         }
@@ -100,7 +100,7 @@ fn main() {
 
     // ── il piano ──
     let files = LocalFiles;
-    let trovati = files.walk(&root).expect("camminata");
+    let trovati = files.walk(&root).expect("camminata").file;
     let mut tracks = Vec::new();
     let mut illeggibili = 0usize;
     for (index, file) in trovati

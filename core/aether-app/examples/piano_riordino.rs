@@ -24,10 +24,11 @@ fn main() {
     };
 
     let files = LocalFiles;
-    let Ok(found) = files.walk(&root) else {
+    let Ok(camminata) = files.walk(&root) else {
         eprintln!("camminata fallita");
         std::process::exit(1);
     };
+    let found = camminata.file;
 
     let mut tracks = Vec::new();
     let mut illeggibili = 0usize;

@@ -76,6 +76,49 @@ impl std::fmt::Debug for Sorgente {
     }
 }
 
+/// L'ultimo numero di sistema che il flusso ha incontrato.
+///
+/// # Perché il guasto va conservato di lato
+///
+/// Perché symphonia, quando il riconoscimento del contenitore non riesce, dice
+/// «nessun lettore adatto» e **butta via** l'errore di lettura che glielo ha
+/// impedito. Da fuori, una condivisione morta e un file che non è musica
+/// arrivano identici: `Error::Unsupported`, senza causa. Ed è il caso peggiore
+/// in cui confonderli, perché «formato non supportato» il catalogo lo dichiara
+/// mai ritentabile — cioè niente «Riprova» per un FLAC intatto a cui manca solo
+/// il cavo.
+///
+/// Questa casella è l'unico posto in cui quel numero sopravvive al passaggio.
+/// Zero vuol dire «niente»: `ERROR_SUCCESS` non è un errore che qualcuno possa
+/// restituire, quindi non serve un `Option` dentro un atomico.
+#[derive(Clone, Default)]
+struct Guasto(std::sync::Arc<std::sync::atomic::AtomicI32>);
+
+impl Guasto {
+    /// Prende nota, se il sistema ha dato un numero.
+    fn segna(&self, err: &std::io::Error) {
+        if let Some(numero) = err.raw_os_error() {
+            self.0.store(numero, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Il guasto annotato era di rete? Allora ecco l'errore da raccontare.
+    fn di_rete(&self) -> Option<AppError> {
+        let numero = self.0.load(std::sync::atomic::Ordering::Relaxed);
+        if numero == 0 {
+            return None;
+        }
+        let err = std::io::Error::from_raw_os_error(numero);
+        if !aether_domain::errors::rete::e_di_rete(&err) {
+            return None;
+        }
+        Some(
+            AppError::new(ErrorCode::FsNetworkUnavailable { path: None })
+                .with_cause(err.to_string()),
+        )
+    }
+}
+
 /// Da [`Flusso`] al `MediaSource` di symphonia.
 ///
 /// Il punto in cui il tratto pubblico di questo crate incontra quello della
@@ -84,17 +127,23 @@ impl std::fmt::Debug for Sorgente {
 struct Ponte {
     interno: Box<dyn Flusso>,
     lunghezza: Option<u64>,
+    /// Dove finisce il numero di sistema dell'ultimo guasto. Vedi [`Guasto`].
+    guasto: Guasto,
 }
 
 impl std::io::Read for Ponte {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.interno.read(buf)
+        self.interno
+            .read(buf)
+            .inspect_err(|err| self.guasto.segna(err))
     }
 }
 
 impl std::io::Seek for Ponte {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-        self.interno.seek(pos)
+        self.interno
+            .seek(pos)
+            .inspect_err(|err| self.guasto.segna(err))
     }
 }
 
@@ -146,13 +195,26 @@ impl Decodificatore {
             }
         }
 
+        let guasto = Guasto::default();
         let flusso = MediaSourceStream::new(
             Box::new(Ponte {
                 lunghezza: sorgente.media.lunghezza(),
                 interno: sorgente.media,
+                guasto: guasto.clone(),
             }),
             symphonia::core::io::MediaSourceStreamOptions::default(),
         );
+        // Il ripiego di tutti e tre i modi in cui il contenitore può non
+        // riconoscersi. Guarda **prima** se sotto c'era la rete, perché il
+        // guasto di rete è ritentabile e questo no.
+        let non_supportato = |causa: String| {
+            guasto.di_rete().unwrap_or_else(|| {
+                AppError::new(ErrorCode::PlaybackFormatUnsupported {
+                    format: formato_dichiarato(),
+                })
+                .with_cause(causa)
+            })
+        };
         let mut suggerimento = Hint::new();
         if let Some(ext) = sorgente.estensione.as_deref() {
             suggerimento.with_extension(ext);
@@ -172,36 +234,27 @@ impl Decodificatore {
                 },
                 &MetadataOptions::default(),
             )
-            .map_err(|err| {
-                AppError::new(ErrorCode::PlaybackFormatUnsupported {
-                    format: formato_dichiarato(),
-                })
-                .with_cause(err.to_string())
-            })?;
+            // Il riconoscimento del contenitore **legge**, e su un percorso di
+            // rete quella lettura può fallire per la rete e non per il formato:
+            // senza questo ramo un FLAC intero su una share appena caduta
+            // veniva dichiarato «formato non supportato», che il catalogo
+            // dichiara mai ritentabile — cioè niente «Riprova», per un file che
+            // non ha niente che non va.
+            .map_err(|err| se_di_rete(&err).unwrap_or_else(|| non_supportato(err.to_string())))?;
 
         let formato = riconosciuto.format;
         let traccia = formato
             .tracks()
             .iter()
             .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-            .ok_or_else(|| {
-                AppError::new(ErrorCode::PlaybackFormatUnsupported {
-                    format: formato_dichiarato(),
-                })
-                .with_cause("nessuna traccia audio nel contenitore".to_owned())
-            })?;
+            .ok_or_else(|| non_supportato("nessuna traccia audio nel contenitore".to_owned()))?;
 
         let parametri = traccia.codec_params.clone();
         let numero_traccia = traccia.id;
 
         let decodificatore = symphonia::default::get_codecs()
             .make(&parametri, &DecoderOptions::default())
-            .map_err(|err| {
-                AppError::new(ErrorCode::PlaybackFormatUnsupported {
-                    format: formato_dichiarato(),
-                })
-                .with_cause(err.to_string())
-            })?;
+            .map_err(|err| non_supportato(err.to_string()))?;
 
         let frequenza_sorgente = parametri.sample_rate.ok_or_else(|| {
             AppError::new(ErrorCode::PlaybackDecodeFailed {
@@ -251,23 +304,31 @@ impl Decodificatore {
     }
 
     /// Si riposiziona. La coda interna del ricampionatore va buttata.
+    ///
+    /// # Perché il guasto passa da [`Decodificatore::guasto`]
+    ///
+    /// Perché un salto **legge**, e su una condivisione di rete legge parecchio:
+    /// `SeekMode::Accurate` va al punto e poi ridecodifica fino al fotogramma
+    /// esatto, e su FLAC ci mette in mezzo anche la seek table. È quindi uno dei
+    /// punti in cui la share morente si fa sentire per prima — e finché
+    /// l'errore diventava un `playback.decodeFailed` qualunque, trascinare il
+    /// cursore a rete giù raccontava che il file era danneggiato, senza offrire
+    /// «Riprova» e senza lasciare annotato il punto a cui tornare.
     pub fn cerca(&mut self, ms: u64) -> Result<(), AppError> {
         let secondi = ms_in_secondi(ms);
-        self.formato
-            .seek(
-                SeekMode::Accurate,
-                SeekTo::Time {
-                    time: Time::from(secondi),
-                    track_id: Some(self.traccia),
-                },
-            )
-            .map_err(|err| {
-                AppError::new(ErrorCode::PlaybackDecodeFailed {
-                    track_id: Some(self.track_id),
-                    format: None,
-                })
-                .with_cause(err.to_string())
-            })?;
+        // L'esito si lega prima: `self.formato` è preso in prestito mutabile
+        // dalla `seek`, e chiamare `self.guasto` dentro il `map_err` vorrebbe
+        // dire prenderlo una seconda volta.
+        let esito = self.formato.seek(
+            SeekMode::Accurate,
+            SeekTo::Time {
+                time: Time::from(secondi),
+                track_id: Some(self.traccia),
+            },
+        );
+        if let Err(err) = esito {
+            return Err(self.guasto(&err));
+        }
         // Lo stato interno del decodificatore contiene fotogrammi che
         // appartengono al punto di prima: tenerli produrrebbe uno schiocco.
         self.decodificatore.reset();
@@ -284,6 +345,34 @@ impl Decodificatore {
             Some(r) => r.frequenza_uscita,
             None => self.frequenza_sorgente,
         }
+    }
+
+    /// Che guasto è, per chi sta sopra.
+    ///
+    /// # La distinzione che questa funzione esiste per fare
+    ///
+    /// Un errore che sale da symphonia può essere due cose molto diverse, e
+    /// finché erano la stessa l'utente leggeva la peggiore delle due: che il
+    /// suo file era danneggiato e conveniva sostituirlo.
+    ///
+    /// Il file è davvero rotto quando il decodificatore non riesce a farne dei
+    /// campioni. Ma se il brano sta su una condivisione di rete e la
+    /// condivisione muore mentre suona, quel che arriva qui è un errore di
+    /// **lettura** — su Windows il 64, `ERROR_NETNAME_DELETED` — e il file è
+    /// intatto: manca il cavo. Il primo non si ritenta, perché rileggere un
+    /// file rotto dà lo stesso esito; il secondo sì, perché la rete torna.
+    ///
+    /// L'elenco dei numeri sta in [`aether_domain::errors::rete`], dov'è
+    /// condiviso con chi apre il file invece di leggerlo: la stessa share deve
+    /// raccontare la stessa cosa a metà brano e all'apertura.
+    fn guasto(&self, err: &symphonia::core::errors::Error) -> AppError {
+        se_di_rete(err).unwrap_or_else(|| {
+            AppError::new(ErrorCode::PlaybackDecodeFailed {
+                track_id: Some(self.track_id),
+                format: None,
+            })
+            .with_cause(err.to_string())
+        })
     }
 
     /// Il blocco successivo, interlacciato e pronto per la scheda.
@@ -317,11 +406,7 @@ impl Decodificatore {
                 }
                 Err(err) => {
                     self.esaurito = true;
-                    return Err(AppError::new(ErrorCode::PlaybackDecodeFailed {
-                        track_id: Some(self.track_id),
-                        format: None,
-                    })
-                    .with_cause(err.to_string()));
+                    return Err(self.guasto(&err));
                 }
             };
 
@@ -334,11 +419,7 @@ impl Decodificatore {
                 Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
                 Err(err) => {
                     self.esaurito = true;
-                    return Err(AppError::new(ErrorCode::PlaybackDecodeFailed {
-                        track_id: Some(self.track_id),
-                        format: None,
-                    })
-                    .with_cause(err.to_string()));
+                    return Err(self.guasto(&err));
                 }
             };
 
@@ -374,6 +455,35 @@ impl Decodificatore {
             }
         }
     }
+}
+
+/// Il guasto viene dalla rete? Allora il codice è quello della rete.
+///
+/// # Perché è una funzione libera e non un metodo
+///
+/// Perché i tre punti che se la chiedono non hanno tutti un `self` da cui
+/// partire: [`Decodificatore::apri`] sta ancora costruendo l'oggetto quando il
+/// riconoscimento del contenitore fallisce. Tenerla fuori è ciò che permette
+/// alle tre strade — apertura, salto, lettura — di dare la stessa risposta sullo
+/// stesso guasto, che è tutto il punto: una share caduta non deve raccontare
+/// «formato non supportato» all'apertura, «file danneggiato» al salto e «la rete
+/// non risponde» in lettura.
+///
+/// Quando torna `Some`, la distinzione fra «formato ignoto» e «decodifica
+/// fallita» si perde apposta: a rete giù nessuna delle due è vera, e tutte e due
+/// sono `Never` ritentabili nel catalogo — cioè manderebbero via il tasto
+/// «Riprova» proprio nel caso in cui riprovare è l'unica cosa da fare.
+///
+/// L'elenco dei numeri di sistema sta in [`aether_domain::errors::rete`], dov'è
+/// condiviso con chi apre il file invece di leggerlo.
+fn se_di_rete(err: &symphonia::core::errors::Error) -> Option<AppError> {
+    let symphonia::core::errors::Error::IoError(io) = err else {
+        return None;
+    };
+    if !aether_domain::errors::rete::e_di_rete(io) {
+        return None;
+    }
+    Some(AppError::new(ErrorCode::FsNetworkUnavailable { path: None }).with_cause(io.to_string()))
 }
 
 /// Quanti fotogrammi ci sono in un blocco interlacciato.

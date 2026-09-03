@@ -875,7 +875,7 @@ fn da_lavorare(data_dir: &Path, id: &str) -> Result<DaLavorare, AppError> {
 }
 
 /// Il testo di una skin da aprire nello Studio.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn studio_documento(stato: State<'_, Stato>, id: String) -> Esito<String> {
     con_libreria(&stato, |libreria| {
         da_lavorare(&libreria.data_dir, &id).map(|da| da.sorgente)
@@ -901,7 +901,7 @@ pub struct VoceFileIpc {
 /// ammette, cioè esattamente quel che `studio_esporta` rimetterà nell'archivio.
 /// Mostrare un file che l'esportazione butterebbe via sarebbe peggio che non
 /// mostrare niente.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn studio_pacchetto(stato: State<'_, Stato>, id: String) -> Esito<Vec<VoceFileIpc>> {
     con_libreria(&stato, |libreria| {
         let da = da_lavorare(&libreria.data_dir, &id)?;
@@ -933,7 +933,7 @@ pub fn studio_pacchetto(stato: State<'_, Stato>, id: String) -> Esito<Vec<VoceFi
 /// Si salva **anche se non è valida**: una bozza è un lavoro in corso, e
 /// rifiutare di scrivere un documento a metà vorrebbe dire perderlo chiudendo la
 /// finestra. È la validazione a dire cosa non va, non il salvataggio.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn studio_salva(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
@@ -970,7 +970,7 @@ pub fn studio_salva(
 /// Restituisce la sorgente del pacchetto, cioè quel che l'editor deve mostrare
 /// da qui in poi: farsela ridire con una seconda chiamata lascerebbe un istante
 /// in cui la finestra mostra un documento che non esiste più da nessuna parte.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn studio_scarta(stato: State<'_, Stato>, id: String) -> Esito<String> {
     con_libreria(&stato, |libreria| {
         if !id_sicuro(&id) {
@@ -1000,7 +1000,7 @@ pub fn studio_scarta(stato: State<'_, Stato>, id: String) -> Esito<String> {
 /// Il manifest è quello dell'editor, le risorse quelle del pacchetto: chi aveva
 /// una skin con un carattere dentro lo perdeva esportandola da qui, e l'albero
 /// della vista Documento avrebbe mostrato file che l'esportazione buttava via.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn studio_esporta(
     stato: State<'_, Stato>,
     id: String,
@@ -1142,7 +1142,7 @@ fn elenco_istantanee(cartella: &Path) -> Vec<IstantaneaIpc> {
 }
 
 /// Le istantanee di una bozza.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn studio_istantanee(stato: State<'_, Stato>, id: String) -> Esito<Vec<IstantaneaIpc>> {
     con_libreria(&stato, |libreria| {
         if !id_sicuro(&id) {
@@ -1212,7 +1212,7 @@ fn prendi_istantanea(cartella: &Path, sorgente: &str, causa: Causa) -> Result<()
 }
 
 /// Prende un'istantanea del documento com'è adesso.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn studio_istantanea(
     stato: State<'_, Stato>,
     id: String,
@@ -1248,7 +1248,7 @@ fn ripristina_istantanea(cartella: &Path, quando: u64) -> Result<String, AppErro
 }
 
 /// Riporta il documento a com'era in un'istantanea.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn studio_ripristina(stato: State<'_, Stato>, id: String, quando: u64) -> Esito<String> {
     con_libreria(&stato, |libreria| {
         if !id_sicuro(&id) {

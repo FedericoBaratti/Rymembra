@@ -69,10 +69,11 @@ fn main() {
     let quanti: usize = args.next().and_then(|n| n.parse().ok()).unwrap_or(60);
 
     let files = LocalFiles;
-    let Ok(trovati) = files.walk(&sorgente) else {
+    let Ok(camminata) = files.walk(&sorgente) else {
         eprintln!("camminata fallita");
         std::process::exit(1);
     };
+    let trovati = camminata.file;
 
     // ── 1. copia in una cartella temporanea ──
     let banco = std::env::temp_dir().join(format!("aether-prova-{}", std::process::id()));
@@ -96,6 +97,7 @@ fn main() {
     let mut tracks = Vec::new();
     for (index, file) in files
         .walk(&root)
+        .map(|c| c.file)
         .unwrap_or_default()
         .iter()
         .filter(|f| is_supported_audio_path(&f.path))

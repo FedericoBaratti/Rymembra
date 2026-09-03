@@ -63,10 +63,17 @@ fn main() {
         covers: &store,
         roots: &roots,
         rules: PathRules::for_current_platform(),
+        // Un esempio lo si lancia a mano e se ne legge l'esito: la guardia
+        // contro le stragi non presidiate qui non serve.
+        prudente: false,
     };
 
     // ── il piano, prima ──
-    let piano = aether_app::library::plan(&scan, &connection).expect("piano");
+    let esplorazione = aether_app::library::plan(&scan, &connection).expect("piano");
+    let piano = &esplorazione.piano;
+    for saltata in &esplorazione.radici_saltate {
+        println!("radice non raggiungibile, saltata: {saltata}");
+    }
     println!("\n── piano ──");
     println!("da inserire   {}", piano.to_insert.len());
     println!("da aggiornare {}", piano.to_update.len());

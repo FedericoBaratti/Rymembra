@@ -29,10 +29,12 @@
 
 pub mod abbinamento;
 pub mod album;
+pub mod codifica;
 pub mod destinazione;
 pub mod enrich;
 pub mod errors;
 pub mod esterno;
+pub mod indizi;
 pub mod keys;
 pub mod listen;
 pub mod merge;
@@ -42,6 +44,7 @@ pub mod playlist_file;
 pub mod queue;
 pub mod regole;
 pub mod restore;
+pub mod ricostruzione;
 pub mod scan_plan;
 pub mod scelta;
 pub mod scrobble;

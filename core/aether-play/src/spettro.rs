@@ -451,9 +451,7 @@ impl Spettro {
             self.fini();
             self.ottave()
         } else {
-            for db in &mut self.grezze_fini {
-                *db = FONDO_DB;
-            }
+            self.grezze_fini.fill(FONDO_DB);
             [FONDO_DB; BANDE]
         };
 

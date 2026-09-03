@@ -207,29 +207,111 @@ pub struct EsitoScansione {
     pub spostati: usize,
     /// Righe tolte.
     pub tolti: usize,
-    /// File saltati perché illeggibili.
+    /// File che non si sono potuti leggere.
+    ///
+    /// Entrano comunque in libreria, marcati «degradato»: qui c'è il numero, e
+    /// in [`EsitoScansione::illeggibili_quali`] ci sono i percorsi.
     pub illeggibili: usize,
+    /// Quali, fino a [`QUANTI_DETTAGLI`].
+    ///
+    /// # Perché adesso e non prima
+    ///
+    /// Perché fin qui questa struttura portava **solo** il numero: l'utente
+    /// leggeva «40 illeggibili» e non aveva modo, da dentro l'applicazione, di
+    /// sapere quali. Il nucleo li aveva tutti — `ScanReport::unreadable` porta
+    /// percorso e codice d'errore per ognuno — e si fermavano qui.
+    pub illeggibili_quali: Vec<FileSaltato>,
+    /// Copertine che non si sono potute salvare.
+    ///
+    /// A parte dagli illeggibili perché la reazione è diversa: un'immagine rotta
+    /// riguarda quel brano, un disco pieno riguarda tutta la scansione.
+    pub copertine_fallite: Vec<FileSaltato>,
+    /// File che il piano ha lasciato fuori, e perché.
+    ///
+    /// `SkipReason::as_str` è documentato «per l'interfaccia» dal giorno in cui
+    /// è stato scritto, e nessuna interfaccia lo leggeva.
+    pub saltati: Vec<FileSaltato>,
     /// Copertine ricodificate ora.
     pub copertine_nuove: usize,
     /// Quanto è durata, in millisecondi.
     pub durata_ms: u128,
     /// È stata fermata a metà.
     pub annullata: bool,
+    /// Le cartelle che non hanno risposto, e che quindi non sono state guardate.
+    ///
+    /// # Perché arriva fino a qui
+    ///
+    /// Perché senza, una scansione fatta con il NAS spento è indistinguibile da
+    /// una fatta con il NAS acceso e la cartella davvero vuota: in tutti e due i
+    /// casi la finestra scrive «completata». Il nucleo la differenza la sa —
+    /// `ScanReport::radici_saltate` è documentato «va mostrato» dal giorno in cui
+    /// è stato scritto — e si fermava qui.
+    pub radici_saltate: Vec<String>,
+    /// Righe che il piano toglierebbe e che la guardia ha lasciato stare.
+    ///
+    /// Zero nelle scansioni chieste a mano, che non sono prudenti apposta: chi
+    /// le ha chieste è davanti alla finestra e legge l'esito.
+    pub rimozioni_rinviate: usize,
     /// I numeri della libreria dopo.
     pub numeri: Counts,
 }
 
+/// Un file che non è entrato come ci si aspettava, e il perché.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSaltato {
+    /// Il percorso.
+    pub percorso: String,
+    /// Il motivo: un codice del catalogo, o un nome di `SkipReason`.
+    pub motivo: String,
+}
+
+/// Quanti percorsi si mandano alla finestra, per elenco.
+///
+/// Cinquanta. Una prima scansione su una cartella di scaricati può produrne
+/// migliaia, e mandarli tutti vorrebbe dire spedire qualche megabyte di stringhe
+/// per riempire una lista che nessuno scorre fino in fondo. Il numero intero
+/// resta in `illeggibili`, quindi l'interfaccia può dire «e altri 1.312».
+pub const QUANTI_DETTAGLI: usize = 50;
+
 impl EsitoScansione {
     fn da(report: &ScanReport, numeri: Counts) -> Self {
+        let quali = |elenco: &[aether_app::library::Unreadable]| -> Vec<FileSaltato> {
+            elenco
+                .iter()
+                .take(QUANTI_DETTAGLI)
+                .map(|guasto| FileSaltato {
+                    percorso: guasto.path.clone(),
+                    motivo: guasto.error.code().kind().code().to_owned(),
+                })
+                .collect()
+        };
         Self {
             inseriti: report.inserted,
             aggiornati: report.updated,
             spostati: report.moved,
             tolti: report.removed,
             illeggibili: report.unreadable.len(),
+            illeggibili_quali: quali(&report.unreadable),
+            copertine_fallite: quali(&report.cover_failures),
+            saltati: report
+                .plan
+                .skipped
+                .iter()
+                .take(QUANTI_DETTAGLI)
+                .map(|salto| FileSaltato {
+                    percorso: salto.file.path.clone(),
+                    motivo: salto.reason.as_str().to_owned(),
+                })
+                .collect(),
             copertine_nuove: report.covers_stored,
             durata_ms: report.elapsed_ms,
             annullata: report.cancelled,
+            // Per intero e non i primi `QUANTI_DETTAGLI`: le cartelle sorvegliate
+            // sono una manciata, non un file per brano, e troncarle vorrebbe dire
+            // non dire quale ricollegare.
+            radici_saltate: report.radici_saltate.clone(),
+            rimozioni_rinviate: report.rimozioni_rinviate,
             numeri,
         }
     }
@@ -241,7 +323,12 @@ impl EsitoScansione {
 /// un istante, ed è il motivo per cui l'avanzamento esiste: sulla libreria vera
 /// la prima passata sono venti secondi, e venti secondi senza un segno di vita
 /// sono venti secondi in cui l'applicazione sembra bloccata.
-#[tauri::command]
+///
+/// `(async)`, e non per eleganza: un comando normale gira sul filo principale
+/// (vedi la nota in `nuvola`), e venti secondi lì sopra congelano la webview —
+/// gli eventi di avanzamento partono ma nessuno li disegna, e il comando
+/// `annulla_scansione` non viene nemmeno ricevuto finché questo non ritorna.
+#[tauri::command(async)]
 pub fn scansiona(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito<EsitoScansione> {
     // Prima di prendere il lucchetto: un annullamento arrivato dopo la fine
     // della scansione precedente fermerebbe questa al primo file.
@@ -254,6 +341,12 @@ pub fn scansiona(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito<EsitoS
             covers: &libreria.covers,
             roots: &roots,
             rules: PathRules::for_current_platform(),
+            // Questa scansione l'ha chiesta qualcuno che è davanti alla finestra
+            // e ne legge l'esito riga per riga: se togliesse troppo, se ne
+            // accorgerebbe subito. La guardia serve all'altra — quella che parte
+            // da sola quando la coda dei download ha finito — e accenderla anche
+            // qui vorrebbe dire rifiutarsi di fare quel che è stato chiesto.
+            prudente: false,
         };
         let mut ultimo = 0usize;
         let report = scan.run(&mut libreria.connection, |fatti, totale| {
@@ -480,7 +573,10 @@ pub fn valutazione(
 }
 
 /// Cosa porterebbe l'importazione dal vecchio database.
-#[tauri::command]
+///
+/// `(async)`: apre e legge un intero database dal disco, e la regola dei
+/// comandi che toccano il filesystem vale anche per lui.
+#[tauri::command(async)]
 pub fn piano_importazione(
     stato: State<'_, Stato>,
     percorso: String,
@@ -489,7 +585,9 @@ pub fn piano_importazione(
 }
 
 /// Importa dal vecchio database.
-#[tauri::command]
+///
+/// `(async)` per la stessa ragione di [`piano_importazione`].
+#[tauri::command(async)]
 pub fn importa(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
@@ -575,7 +673,12 @@ pub fn imposta_scorciatoie(
 }
 
 /// Scrive il profilo su un file.
-#[tauri::command]
+///
+/// `(async)`: il percorso lo sceglie chi esporta, e una chiavetta o una
+/// cartella di rete sono i due posti più naturali in cui mettere un profilo da
+/// portarsi altrove. Sul filo principale una scrittura là sopra sarebbe la
+/// finestra ferma per tutto il tempo del salvataggio.
+#[tauri::command(async)]
 pub fn profilo_esporta(
     stato: State<'_, Stato>,
     percorso: String,
@@ -597,7 +700,10 @@ pub fn profilo_esporta(
 }
 
 /// Cosa cambierebbe importare questo profilo. Non scrive niente.
-#[tauri::command]
+///
+/// `(async)`: legge il file dal percorso scelto, con la stessa ragione di
+/// [`profilo_esporta`].
+#[tauri::command(async)]
 pub fn profilo_piano(
     stato: State<'_, Stato>,
     percorso: String,
@@ -612,7 +718,9 @@ pub fn profilo_piano(
 }
 
 /// Applica il profilo.
-#[tauri::command]
+///
+/// `(async)`: rilegge il file, come [`profilo_piano`].
+#[tauri::command(async)]
 pub fn profilo_importa(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,

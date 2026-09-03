@@ -422,7 +422,7 @@ fn skin_scelta(connection: &rusqlite::Connection) -> String {
 /// codici della validazione se il manifest non è valido — cosa che per una skin
 /// di serie sarebbe un guasto nostro, e che il test di fedeltà del nucleo scopre
 /// prima di qui.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skin(stato: State<'_, Stato>, id: Option<String>) -> Esito<SkinIpc> {
     con_libreria(&stato, |libreria| {
         let id = id
@@ -439,7 +439,7 @@ pub fn skin(stato: State<'_, Stato>, id: Option<String>) -> Esito<SkinIpc> {
 /// formato futuro — **non fa fallire l'elenco**: sparisce da sola. Un selettore
 /// che non si apre perché uno dei suoi elementi è rotto è il modo di rendere
 /// irrecuperabile un guasto che riguardava una skin sola.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skin_elenco(stato: State<'_, Stato>) -> Esito<Vec<VoceSkin>> {
     con_libreria(&stato, |libreria| {
         let scelta = skin_scelta(&libreria.connection);
@@ -526,7 +526,7 @@ fn installa(data_dir: &Path, bytes: &[u8]) -> Result<VoceSkin, AppError> {
 }
 
 /// Installa una skin da un file `.aeskin`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skin_installa(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
@@ -556,7 +556,7 @@ pub fn skin_installa(
 /// che si è appena scritto sembra uno spreco e non lo è: è la stessa porta da
 /// cui entra una skin arrivata dalla rete, e passarci vuol dire che il giro
 /// completo attraverso il formato è provato prima che il file esista.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skin_installa_sorgente(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
@@ -592,7 +592,7 @@ pub fn skin_installa_sorgente(
 /// un'operazione che ne ha uno; lasciare la scelta puntata su un file che non
 /// c'è più darebbe invece una finestra senza foglio al riavvio, che è il caso
 /// che `skin_scegli` sta attento a non produrre mai.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skin_disinstalla(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
@@ -633,7 +633,7 @@ pub fn skin_disinstalla(
 /// La scelta si scrive **dopo** che la compilazione è riuscita: salvare prima
 /// vorrebbe dire poter rendere l'applicazione illeggibile al riavvio scegliendo
 /// una skin rotta.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skin_scegli(app: tauri::AppHandle, stato: State<'_, Stato>, id: String) -> Esito<SkinIpc> {
     let esito = con_libreria(&stato, |libreria| {
         let compilata = compila(&libreria.data_dir, &id)?;
@@ -685,7 +685,7 @@ pub fn accento_dinamico(stato: State<'_, Stato>) -> Esito<bool> {
 }
 
 /// Accende o spegne l'accento dinamico. Riporta com'è rimasto.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn accento_dinamico_attiva(stato: State<'_, Stato>, attivo: bool) -> Esito<bool> {
     con_libreria(&stato, |libreria| {
         aether_app::settings::write_json(&libreria.connection, CHIAVE_ACCENTO_DINAMICO, &attivo)?;
@@ -707,7 +707,16 @@ pub fn accento_dinamico_attiva(stato: State<'_, Stato>, attivo: bool) -> Esito<b
 ///
 /// Solo quelli del database e della lettura della skin. Una copertina che non
 /// si decodifica non è un errore: è un disco senza tinta.
-#[tauri::command]
+///
+/// # L'impronta si controlla
+///
+/// `covers.tinta` compone un percorso dall'impronta e apre quel file, quindi
+/// un'impronta che sia in realtà `../../qualcosa` è una lettura arbitraria di
+/// file chiesta dalla finestra. Il controllo è lo stesso del protocollo
+/// `aether-cover` — [`crate::copertine::e_un_impronta`] — e un'impronta che non
+/// lo passa vale come una copertina che non c'è: nessuna tinta, nessun errore
+/// da mostrare.
+#[tauri::command(async)]
 pub fn accento_copertina(
     stato: State<'_, Stato>,
     copertina: Option<String>,
@@ -717,6 +726,9 @@ pub fn accento_copertina(
         let (Some(impronta), true) = (copertina, accento_scelto(&libreria.connection)) else {
             return Ok(None);
         };
+        if !crate::copertine::e_un_impronta(&impronta) {
+            return Ok(None);
+        }
         let Some([r, g, b]) = libreria.covers.tinta(&impronta) else {
             return Ok(None);
         };

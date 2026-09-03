@@ -192,7 +192,11 @@ fn traduci(plan: &OrganizePlan, radice: String, letti: usize, annullabile: bool)
 }
 
 /// Calcola il piano senza toccare niente.
-#[tauri::command]
+///
+/// `(async)`: legge la libreria intera e interroga il filesystem, e un comando
+/// normale girerebbe sul filo principale della finestra (vedi la nota in
+/// `nuvola`).
+#[tauri::command(async)]
 pub fn piano_riordino(stato: State<'_, Stato>, radice: String) -> Esito<Piano> {
     con_libreria(&stato, |libreria| {
         let tracks = tracks_to_organize(&libreria.connection)?;
@@ -208,7 +212,10 @@ pub fn piano_riordino(stato: State<'_, Stato>, radice: String) -> Esito<Piano> {
 /// Il piano si **ricalcola** invece di ricevere quello mostrato: fra l'anteprima
 /// e la conferma può essere passato del tempo, e muovere file secondo un piano
 /// vecchio è il modo di scoprire che una destinazione nel frattempo è occupata.
-#[tauri::command]
+///
+/// `(async)`: sposta migliaia di file, e sul filo principale gli eventi
+/// `riordino:avanzamento` partirebbero senza che la finestra possa disegnarli.
+#[tauri::command(async)]
 pub fn esegui_riordino(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
@@ -245,7 +252,9 @@ pub fn esegui_riordino(
 }
 
 /// Rimette tutto com'era, leggendo l'ultimo giornale al contrario.
-#[tauri::command]
+///
+/// `(async)` per la stessa ragione di [`esegui_riordino`]: sposta file veri.
+#[tauri::command(async)]
 pub fn annulla_riordino(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito<EsitoRiordino> {
     con_libreria(&stato, |libreria| {
         let Some(giornale) = ultimo_giornale(&libreria.data_dir) else {

@@ -219,13 +219,20 @@ pub fn salva(
             remoto.id.clone()
         }
         Some(remoto) => {
-            if let Some(loro) = leggi_remoto(drive, remoto)? {
-                if loro.generated_by != dispositivo {
-                    // L'ha scritto un altro computer: si fonde in memoria e si
-                    // carica l'unione. Il database locale resta intatto.
-                    contenuto = backup::fondi(&contenuto, &loro.content);
-                    nostra = backup::impronta(&backup::canonico(&contenuto)?);
-                }
+            let loro = leggi_remoto(drive, remoto)?;
+            // `None` vuol dire che il remoto era corrotto ed è stato messo da
+            // parte: aggiornarne l'id lo rinominerebbe indietro e ne
+            // riscriverebbe il contenuto, distruggendo l'unica copia di ciò
+            // che è andato storto. Si crea un file nuovo.
+            let esistente_id = loro.is_some().then(|| remoto.id.clone());
+            if let Some(loro) = loro {
+                // Si fonde SEMPRE, anche col proprio contenuto: la fusione è
+                // idempotente, e la guardia «l'ha scritto un altro computer»
+                // sarebbe falsa proprio dopo una fusione — il file A∪B è
+                // firmato da questo dispositivo, e non rifonderlo caricherebbe
+                // solo A, facendo sparire i dati di B dal backup.
+                contenuto = backup::fondi(&contenuto, &loro.content);
+                nostra = backup::impronta(&backup::canonico(&contenuto)?);
             }
             let salvataggio = Salvataggio::nuovo(contenuto, adesso_ms, dispositivo.to_owned());
             let byte = comprimi(&backup::serializza(&salvataggio)?)?;
@@ -233,7 +240,7 @@ pub fn salva(
             drive
                 .carica(
                     NOME_LIBRERIA,
-                    Some(&remoto.id),
+                    esistente_id.as_deref(),
                     "application/gzip",
                     &byte,
                     &nostra,
@@ -447,7 +454,10 @@ fn per_nome(file: Vec<FileRemoto>) -> BTreeMap<String, FileRemoto> {
 ///
 /// `None` quando il file c'era ma era illeggibile: in quel caso lo si
 /// **rinomina** invece di sovrascriverlo, e chi chiama procede come se non ci
-/// fosse.
+/// fosse — cioè crea un file **nuovo**, senza riusare l'identificativo: un
+/// `PATCH` su quello riporterebbe il file messo da parte al nome di prima e ne
+/// riscriverebbe il contenuto, distruggendo l'unica copia di ciò che è andato
+/// storto.
 ///
 /// # Perché rinominare e non cancellare
 ///

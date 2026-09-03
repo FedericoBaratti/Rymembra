@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-use aether_play::{Evento, Sorgente};
+use aether_play::{BranoAperto, Evento, FormatoUscita, Sorgente};
 
 #[expect(
     clippy::integer_division,
@@ -50,14 +50,14 @@ fn main() {
     let Some(primo) = da_suonare.next() else {
         return;
     };
-    let Some(sorgente) = apri(&primo) else {
+    let Some(brano) = apri(&primo, formato) else {
         std::process::exit(1);
     };
     println!("[suona] {}", primo.display());
-    motore.suona(sorgente);
+    motore.suona(brano);
     // Il secondo si prepara subito: è così che si attacca senza buco.
     if let Some(dopo) = da_suonare.next() {
-        motore.prepara(apri(&dopo));
+        motore.prepara(apri(&dopo, formato));
     }
 
     let mut ultimo_secondo = u64::MAX;
@@ -94,8 +94,13 @@ fn main() {
     }
 }
 
-/// Apre un file come sorgente. `None` se non si può.
-fn apri(percorso: &std::path::Path) -> Option<Sorgente> {
+/// Apre un file, pronto per il motore. `None` se non si può.
+///
+/// Il motore vuole un brano già aperto, non un percorso da aprire: qui la cosa
+/// non cambia niente — l'esempio è solo, e nessuno aspetta la finestra — ma
+/// nell'applicazione è ciò che permette di mettere una scadenza sopra questa
+/// riga. Vedi `BranoAperto`.
+fn apri(percorso: &std::path::Path, formato: FormatoUscita) -> Option<BranoAperto> {
     let file = match std::fs::File::open(percorso) {
         Ok(f) => f,
         Err(err) => {
@@ -103,7 +108,7 @@ fn apri(percorso: &std::path::Path) -> Option<Sorgente> {
             return None;
         }
     };
-    Some(Sorgente {
+    let sorgente = Sorgente {
         // Fuori da una libreria un identificativo vero non c'è: qui serve solo
         // a distinguere un brano dall'altro negli eventi.
         track_id: 0,
@@ -114,5 +119,16 @@ fn apri(percorso: &std::path::Path) -> Option<Sorgente> {
             .map(str::to_owned),
         durata_ms: 0,
         replaygain_db: None,
-    })
+    };
+    match BranoAperto::apri(sorgente, formato) {
+        Ok(brano) => Some(brano),
+        Err(err) => {
+            eprintln!(
+                "[errore] {}: {}",
+                percorso.display(),
+                err.code().kind().code()
+            );
+            None
+        }
+    }
 }

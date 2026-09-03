@@ -240,14 +240,16 @@ fn posto_libero(
     base_relativa: &str,
     estensione: &str,
 ) -> Result<PathBuf, AppError> {
+    // L'estensione si ATTACCA, mai con `with_extension`: quella sostituisce
+    // tutto ciò che segue l'ultimo punto del nome, e i punti nei titoli sono
+    // comuni — «02 - Mr. Brightside» diventerebbe «02 - Mr.mp3».
     let radice = cartella.join(base_relativa.replace('/', std::path::MAIN_SEPARATOR_STR));
-    let candidato = radice.with_extension(estensione);
+    let candidato = PathBuf::from(format!("{}.{estensione}", radice.display()));
     if !candidato.exists() {
         return Ok(candidato);
     }
     for n in 2_u32..=99 {
-        let alternativo =
-            PathBuf::from(format!("{} ({n})", radice.display())).with_extension(estensione);
+        let alternativo = PathBuf::from(format!("{} ({n}).{estensione}", radice.display()));
         if !alternativo.exists() {
             return Ok(alternativo);
         }
@@ -391,6 +393,37 @@ mod prove {
         let secondo = posto_libero(&radice, "A/B/01 - C", "mp3").expect("e un secondo pure");
         assert_ne!(primo, secondo);
         assert!(secondo.display().to_string().contains("(2)"));
+        let _ = std::fs::remove_dir_all(&radice);
+    }
+
+    #[test]
+    fn un_punto_nel_titolo_non_mangia_il_nome() {
+        // `with_extension` avrebbe fatto di «02 - Mr. Brightside» un
+        // «02 - Mr.mp3», e del ramo anti-collisione un ciclo che produce cento
+        // volte lo stesso percorso.
+        let radice = std::env::temp_dir().join(format!("aether-punto-{}", nome_temporaneo("x")));
+        std::fs::create_dir_all(radice.join("A").join("B")).expect("la cartella di prova si crea");
+        let primo =
+            posto_libero(&radice, "A/B/02 - Mr. Brightside", "mp3").expect("un posto libero c'è");
+        assert!(
+            primo
+                .display()
+                .to_string()
+                .ends_with("02 - Mr. Brightside.mp3"),
+            "nome sbagliato: {}",
+            primo.display()
+        );
+        std::fs::write(&primo, b"x").expect("il file di prova si scrive");
+        let secondo =
+            posto_libero(&radice, "A/B/02 - Mr. Brightside", "mp3").expect("e un secondo pure");
+        assert!(
+            secondo
+                .display()
+                .to_string()
+                .ends_with("02 - Mr. Brightside (2).mp3"),
+            "alternativo sbagliato: {}",
+            secondo.display()
+        );
         let _ = std::fs::remove_dir_all(&radice);
     }
 }

@@ -1075,6 +1075,12 @@ fn rientra_in_libreria(app: &AppHandle) {
             covers: &libreria.covers,
             roots: &roots,
             rules: PathRules::for_current_platform(),
+            // Questa non la guarda nessuno: parte da sé quando la coda ha finito
+            // di scaricare. È il caso per cui la guardia è stata scritta — se
+            // una radice è appena diventata irraggiungibile, una passata muta
+            // toglierebbe mezza libreria e se ne accorgerebbe il giorno dopo chi
+            // non trova più i suoi brani.
+            prudente: true,
         };
         scan.run(&mut libreria.connection, |_, _| {
             std::ops::ControlFlow::Continue(())
@@ -1082,6 +1088,23 @@ fn rientra_in_libreria(app: &AppHandle) {
     });
     match esito {
         Ok(report) => {
+            // Le due cose che questa scansione può aver taciuto finiscono nel
+            // diario, perché è l'unico posto che le raccoglie: nessuno sta
+            // guardando la finestra quando gira, e l'evento qui sotto porta un
+            // numero solo. Sono anche le due domande a cui si vuole rispondere
+            // dopo, davanti a «mi mancano dei brani».
+            if !report.radici_saltate.is_empty() {
+                nota!(
+                    "[procura] scansione automatica: {} radici non hanno risposto, i loro brani non sono stati giudicati",
+                    report.radici_saltate.len()
+                );
+            }
+            if report.rimozioni_rinviate > 0 {
+                nota!(
+                    "[procura] scansione automatica: {} rimozioni trattenute dalla guardia, niente è stato tolto",
+                    report.rimozioni_rinviate
+                );
+            }
             let _ = app.emit("scarico:in_libreria", report.inserted);
         }
         Err(guasto) => nota!("[procura] la scansione finale è fallita: {guasto}"),

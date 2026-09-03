@@ -194,7 +194,13 @@ impl Drive {
         impronta: &str,
     ) -> Result<FileRemoto, AppError> {
         let metadati = metadati(nome, impronta, esistente.is_none());
-        if dati.len() <= LIMITE_MULTIPART {
+        // Il limite di Google è sul CORPO della richiesta, non sul payload:
+        // separatori, intestazioni di parte e metadati JSON si aggiungono ai
+        // dati, e un payload esattamente al limite sforerebbe con un 413 senza
+        // mai provare la strada ripartibile. Il margine copre tutto quel
+        // contorno con spazio d'avanzo.
+        let contorno = metadati.len().saturating_add(1024);
+        if dati.len().saturating_add(contorno) <= LIMITE_MULTIPART {
             self.multipart(esistente, &metadati, tipo, dati)
         } else {
             self.ripartibile(esistente, &metadati, tipo, dati)

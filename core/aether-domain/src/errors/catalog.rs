@@ -211,6 +211,10 @@ catalogo! {
     FsReadFailed = "fs.readFailed", Fs, Warning, Always, None, { path: String, detail: Option<String> };
     /// Scrittura fallita.
     FsWriteFailed = "fs.writeFailed", Fs, Error, Always, None, { path: String, detail: Option<String> };
+    /// La condivisione di rete che ospita il file non risponde: server spento,
+    /// VPN caduta, lettera mappata senza più niente dietro. Ritentabile sempre,
+    /// perché la rete torna — a differenza di un file danneggiato.
+    FsNetworkUnavailable = "fs.networkUnavailable", Fs, Warning, Always, None, { path: Option<String> };
 
     // ── playback ────────────────────────────────────────────────────────────
     // Nel vecchio albero TUTTO questo arrivava come una stringa opaca: Howler

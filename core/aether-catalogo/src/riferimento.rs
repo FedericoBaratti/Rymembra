@@ -58,7 +58,7 @@ pub fn riconosci(input: &str) -> Option<Riferimento> {
     }
     let (dominio, percorso) = spezza_indirizzo(pulito)?;
 
-    if dominio.ends_with("archive.org") {
+    if e_dominio(&dominio, "archive.org") {
         return archivio_org(&percorso);
     }
     // Senza la feature, un link di Jamendo **non si riconosce affatto**, e non è
@@ -68,13 +68,25 @@ pub fn riconosci(input: &str) -> Option<Riferimento> {
     // l'errore che esce è `download.unrecognizedUrl`, che elenca i cataloghi
     // che ci sono davvero ed è l'unica frase vera delle due.
     #[cfg(feature = "jamendo")]
-    if dominio.ends_with("jamendo.com") {
+    if e_dominio(&dominio, "jamendo.com") {
         return jamendo(&percorso);
     }
-    if dominio.ends_with("audius.co") || dominio.ends_with("audius.org") {
+    if e_dominio(&dominio, "audius.co") || e_dominio(&dominio, "audius.org") {
         return audius(&percorso);
     }
     None
+}
+
+/// Il dominio è esattamente `base`, o un suo sottodominio.
+///
+/// Un semplice `ends_with` accetterebbe `evilarchive.org`: il modulo esiste per
+/// dire «un link che non si riconosce è un link a cui non si bussa», e un
+/// suffisso non è un riconoscimento.
+fn e_dominio(dominio: &str, base: &str) -> bool {
+    dominio == base
+        || dominio
+            .strip_suffix(base)
+            .is_some_and(|resto| resto.ends_with('.'))
 }
 
 /// Dominio e percorso, senza schema, senza `www.`, senza query.
@@ -238,9 +250,18 @@ mod prove {
             "non un indirizzo",
             "",
             "   ",
+            // Un suffisso non è un riconoscimento: questi somigliano ai
+            // cataloghi veri ma non lo sono.
+            "https://evilarchive.org/details/x",
+            "https://notaudius.co/artista/brano",
         ] {
             assert_eq!(riconosci(url), None, "su «{url}»");
         }
+    }
+
+    #[test]
+    fn i_sottodomini_veri_si_riconoscono_ancora() {
+        assert!(riconosci("https://web.archive.org/details/gd77").is_some());
     }
 
     #[test]

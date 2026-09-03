@@ -58,8 +58,9 @@ const GRIGIO: f64 = 0.20;
 
 /// Quanta parte della copertina deve portare una tonalità perché ce ne sia una.
 ///
-/// Un quinto: sotto, si sta guardando il logo dell'etichetta in un angolo, non
-/// il colore del disco.
+/// Un ventesimo: sotto, si sta guardando il logo dell'etichetta in un angolo,
+/// non il colore del disco. (Le prove qui sotto contano su questo valore: chi
+/// lo alza deve rivederle.)
 const QUOTA_MINIMA: f64 = 0.05;
 
 /// La saturazione che si restituisce, al massimo.

@@ -383,14 +383,37 @@ pub fn create_smart(
     insieme: &Insieme,
 ) -> Result<PlaylistSummary, AppError> {
     let regole = crate::smart::a_json(insieme)?;
-    let id = crea_riga(connection, name)?;
+    // Un savepoint tiene insieme i due passi: se la scrittura delle regole
+    // fallisse dopo la creazione della riga, resterebbe una playlist A MANO
+    // vuota col nome richiesto — e il nome, ormai occupato, farebbe fallire
+    // anche il tentativo successivo. Savepoint e non `transaction()`, che
+    // vorrebbe una connessione mutabile che nessun chiamante ha.
     connection
-        .execute(
-            "UPDATE playlists SET is_smart = 1, rules = ?2 WHERE id = ?1",
-            rusqlite::params![id, regole],
-        )
-        .map_err(|err| db_error("regole di una playlist nuova", &err))?;
-    read_one(connection, id)
+        .execute_batch("SAVEPOINT crea_smart")
+        .map_err(|err| db_error("apertura della creazione di una playlist", &err))?;
+    let esito = crea_riga(connection, name).and_then(|id| {
+        connection
+            .execute(
+                "UPDATE playlists SET is_smart = 1, rules = ?2 WHERE id = ?1",
+                rusqlite::params![id, regole],
+            )
+            .map_err(|err| db_error("regole di una playlist nuova", &err))?;
+        read_one(connection, id)
+    });
+    match esito {
+        Ok(riassunto) => {
+            connection
+                .execute_batch("RELEASE crea_smart")
+                .map_err(|err| db_error("chiusura della creazione di una playlist", &err))?;
+            Ok(riassunto)
+        }
+        Err(err) => {
+            // Best-effort: l'errore da riportare è quello vero, non quello
+            // del disfacimento.
+            let _ = connection.execute_batch("ROLLBACK TO crea_smart; RELEASE crea_smart");
+            Err(err)
+        }
+    }
 }
 
 /// Riscrive le regole di una playlist intelligente.

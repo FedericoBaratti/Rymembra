@@ -575,6 +575,17 @@ fn import_playlists(
             })
             .map_err(|err| db_error("lettura delle voci di playlist", &err))?;
 
+        // Prima si svuota: è quel che fanno tutti gli altri scrittori di
+        // playlist (`riscrivi_ordine`, il ripristino, la sincronia). Senza, una
+        // playlist omonima già presente con più voci di quante la legacy ne
+        // porti sopravvivrebbe oltre l'ultima riga scritta, e il risultato
+        // sarebbe un ibrido di due fonti che nessuno ha chiesto.
+        tx.execute(
+            "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+            [nuovo_id],
+        )
+        .map_err(|err| db_error("svuotamento di una playlist da migrare", &err))?;
+
         // Le posizioni si rinumerano da zero e non si copiano: saltando i brani
         // che non ci sono più resterebbero dei buchi, e `position` è parte della
         // chiave primaria — una playlist con posizioni 0, 3, 7 non è rotta, ma
