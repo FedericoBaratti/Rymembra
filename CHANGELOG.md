@@ -28,6 +28,27 @@ Cosa incrementa cosa:
   del protocollo di trasporto (`SKIN_TRANSFER_PROTOCOL`), cioè i due punti in cui
   un dispositivo aggiornato smetterebbe di capirsi con uno fermo.
 
+## [Non rilasciato]
+
+### Modificato — il README passa dal saggio alla documentazione
+
+Il documento diceva le cose giuste nel registro sbagliato. Era scritto in
+seconda persona, si rivolgeva al lettore, e affidava i fatti tecnici ad aforismi
+che li illustravano invece di enunciarli: circa quaranta trattini lunghi in
+trecento righe, e paragrafi costruiti come argomentazioni anziché come voci di
+manuale. Su un lettore musicale che chiede di installare un eseguibile non
+firmato, quel tono lavora contro il contenuto — che è, per la maggior parte,
+una motivazione legale verificabile.
+
+Stesso contenuto, registro impersonale: nessun fatto tolto, le citazioni delle
+policy di YouTube e l'articolo 20 del GDPR al loro posto, i trattini lunghi
+scesi a sei. In più le tre cose che a un README mancavano per essere
+consultabile: un indice, una sottosezione **Requisiti** in testa alla
+compilazione, e una tabella dei **documenti correlati** che collega
+`CHANGELOG`, `PRIVACY`, `TERMS`, `SECURITY`, `THIRD-PARTY-NOTICES` e
+`STUDIO-STREAMING`, finora raggiungibili solo sfogliando la radice del
+repository.
+
 ## [2.1.0] — 2026-09-03
 
 **Minor e non patch, per via del database.** Questa versione porta due
