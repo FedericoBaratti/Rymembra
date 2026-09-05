@@ -103,6 +103,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "metadati",
         sql: include_str!("schema/016_metadati.sql"),
     },
+    Migration {
+        version: 17,
+        name: "affinita",
+        sql: include_str!("schema/017_affinita.sql"),
+    },
+    Migration {
+        version: 18,
+        name: "settimana",
+        sql: include_str!("schema/018_settimana.sql"),
+    },
 ];
 
 /// La versione a cui questa build porta il database.

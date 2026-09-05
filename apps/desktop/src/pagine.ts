@@ -23,6 +23,7 @@
  * vecchio e viene buttata invece di accodarsi a un elenco che non è più il suo.
  * È lo stesso motivo per cui la ricerca aveva già un `annullato`.
  */
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
@@ -184,4 +185,57 @@ export function usePigro<T>(valore: T, ritardoMs: number): T {
     return () => clearTimeout(attesa);
   }, [valore, ritardoMs]);
   return pigro;
+}
+
+/**
+ * Ascolta un evento del nucleo per tutta la vita del componente.
+ *
+ * # Perché non basta `useEffect` con `listen` dentro
+ *
+ * Per due ragioni, e tutte e due si sono viste in `App.tsx`.
+ *
+ * La prima è che `listen` restituisce una **promessa**, e la pulizia di un
+ * effetto è sincrona: `promessa.then((stop) => stop())` scioglie l'ascolto
+ * quando la promessa si risolve, che può essere dopo che l'effetto è già
+ * ripartito. Nel mezzo gli ascoltatori vivi sono due, e l'evento arriva a tutti
+ * e due. Per `tauri://drag-drop` questo voleva dire che una skin trascinata
+ * nella finestra si installava **due volte**.
+ *
+ * La seconda è che il gestore quasi sempre legge lo stato di adesso, e metterlo
+ * nelle dipendenze fa registrare e sciogliere l'ascolto a ogni cambio di quello
+ * stato — che è insieme lo spreco e il modo di innescare la prima ragione.
+ *
+ * Qui il gestore sta dietro un riferimento tenuto aggiornato a ogni disegno:
+ * l'ascolto si apre una volta, e chi lo riceve è sempre l'ultima versione. La
+ * pulizia ricorda se il componente è ancora vivo, così una promessa che si
+ * risolve in ritardo scioglie subito invece di lasciare un ascoltatore orfano.
+ *
+ * `evento` deve essere costante: è la sola dipendenza, ed è il nome di un
+ * canale, non un valore.
+ */
+export function useAscolto<T>(evento: string, gestore: (carico: T) => void): void {
+  const ultimo = useRef(gestore);
+  // Senza array di dipendenze: gira dopo ogni disegno, che è precisamente
+  // quando `gestore` può essere cambiato.
+  useEffect(() => {
+    ultimo.current = gestore;
+  });
+  useEffect(() => {
+    let vivo = true;
+    let sciogli: (() => void) | null = null;
+    void listen<T>(evento, (arrivato) => ultimo.current(arrivato.payload)).then((stop) => {
+      if (vivo) {
+        sciogli = stop;
+      } else {
+        // La promessa si è risolta dopo lo smontaggio: l'ascoltatore esiste già
+        // ed è orfano. Si scioglie qui, che è l'unico posto in cui lo si ha in
+        // mano.
+        stop();
+      }
+    });
+    return () => {
+      vivo = false;
+      sciogli?.();
+    };
+  }, [evento]);
 }

@@ -43,6 +43,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
+use crate::spegnimento::Emette as _;
 use aether_app::backup::{self, StatoLocale};
 use aether_app::settings;
 use aether_cloud::drive::{self, Drive};
@@ -55,7 +56,7 @@ use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::paths::PathRules;
 use aether_domain::restore::{RestoreInput, RestorePlan, plan_restore};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter as _, Manager as _, State};
+use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
@@ -789,7 +790,7 @@ fn passata_vera(app: &AppHandle) -> Result<(), AppError> {
 /// Un evento che non parte non è una ragione per far fallire un caricamento
 /// riuscito: la finestra può essersi chiusa mentre il filo lavorava.
 fn avanza(app: &AppHandle, passo: servizio::Avanzamento) {
-    let _ = app.emit(
+    app.emetti(
         "nuvola:avanzamento",
         serde_json::json!({
             "fatti": passo.fatti,
@@ -806,7 +807,7 @@ fn riferisci(app: &AppHandle) {
         return;
     };
     if let Ok(ipc) = stato_ipc(&stato, &nuvola) {
-        drop(app.emit("nuvola:stato", ipc));
+        app.emetti("nuvola:stato", ipc);
     }
 }
 

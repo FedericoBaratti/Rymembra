@@ -28,6 +28,7 @@
 //! Separata, la stessa decisione si prova come una chiamata di funzione.
 
 pub mod abbinamento;
+pub mod affinita;
 pub mod album;
 pub mod codifica;
 pub mod destinazione;
@@ -48,6 +49,7 @@ pub mod ricostruzione;
 pub mod scan_plan;
 pub mod scelta;
 pub mod scrobble;
+pub mod settimana;
 pub mod spotify_account;
 pub mod tempo;
 pub mod testo;

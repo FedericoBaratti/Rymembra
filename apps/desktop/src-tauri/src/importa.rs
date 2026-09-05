@@ -36,13 +36,14 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::spegnimento::Emette as _;
 use aether_app::import_esterno::{self, RapportoImport};
 use aether_catalogo::Cataloghi;
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::esterno::{AvanzamentoLettura, ContenutoEsterno, Fonte};
 use aether_net::Rete;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter as _, State};
+use tauri::{AppHandle, State};
 
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, con_libreria};
@@ -198,7 +199,7 @@ struct EventoLettura {
 
 /// Inoltra alla finestra quel che il lettore racconta.
 fn inoltra(app: &AppHandle, avanzamento: AvanzamentoLettura) {
-    let _ = app.emit(
+    app.emetti(
         "import:avanzamento",
         EventoLettura {
             sorgente: avanzamento.livello.nome().to_owned(),

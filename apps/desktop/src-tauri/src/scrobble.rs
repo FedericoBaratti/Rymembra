@@ -40,6 +40,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
+use crate::spegnimento::Emette as _;
 use aether_app::scrobble::{self as coda, Voce};
 use aether_app::settings;
 use aether_domain::errors::{AppError, ErrorCode};
@@ -48,7 +49,7 @@ use aether_domain::scrobble::{Ascolto, Servizio};
 use aether_oauth::portachiavi::{DiSistema, Portachiavi as _};
 use aether_scrobble::{LastFm, ListenBrainz, per_richiesta};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter as _, Manager as _, State};
+use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
@@ -519,7 +520,7 @@ pub fn avvia(app: &AppHandle) {
                     };
                     let esito = passata(&manico);
                     if esito.mandati > 0 || esito.guasto.is_some() {
-                        let _ = manico.emit("scrobble:passata", &esito);
+                        manico.emetti("scrobble:passata", &esito);
                     }
                 }
                 aspetta(&manico);

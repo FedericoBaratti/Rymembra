@@ -48,14 +48,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
+use crate::spegnimento::Emette as _;
 use aether_app::covers::CoverStore;
 use aether_app::enrich::{self, DepositoSqlite, Gruppo};
 use aether_app::settings;
+use aether_app::vicinanza;
 use aether_domain::enrich::Verdetto;
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_meta::Fornitori;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter as _, Manager as _, State};
+use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
@@ -419,7 +421,7 @@ fn passata(app: &AppHandle, fornitori: &mut Option<Fornitori>) {
     }
     match &esito {
         Ok(Some(bilancio)) => {
-            let _ = app.emit("arricchimento:esito", *bilancio);
+            app.emetti("arricchimento:esito", *bilancio);
         }
         // Niente da fare, o interruttore spento: nessun evento. Una riga di
         // «zero applicati» ogni mezz'ora addestrerebbe chi guarda a ignorarle.
@@ -445,6 +447,8 @@ struct Bilancio {
     senza_corrispondenza: usize,
     /// Copertine nuove salvate.
     copertine: usize,
+    /// Righe di somiglianza culturale raccolte.
+    vicini: usize,
 }
 
 /// Quel che serve a una passata, letto sotto il lucchetto e portato fuori.
@@ -568,6 +572,31 @@ fn passata_vera(
     }
     avanza(app, totale, totale);
 
+    // ── le somiglianze culturali, in coda alla stessa passata. ──────────────
+    //
+    // Qui e non su un filo suo per tre ragioni che si sommano. La prima è che
+    // dipende da quel che l'arricchimento ha appena fatto: senza un
+    // `mb_recording_id` non c'è niente da chiedere, e chiederlo un istante dopo
+    // che è stato scritto è il momento migliore possibile. La seconda è che ha
+    // già il `Fornitori` in mano, con la sua cadenza e il suo interruttore. La
+    // terza è che così eredita l'interruttore dell'utente: chi spegne
+    // l'arricchimento in Impostazioni › Metadati spegne anche questo, che è
+    // esattamente quel che `PRIVACY.md` gli promette.
+    //
+    // Un guasto non fa cadere la passata: i metadati sono già scritti, e
+    // perderli per una domanda sulle somiglianze sarebbe il torto sbagliato.
+    bilancio.vicini = match vicini(&stato, servizi) {
+        Ok(quanti) => quanti,
+        Err(err) => {
+            nota!(
+                "[arricchimento] vicini non raccolti codice={} causa={}",
+                err.code().kind().code(),
+                err.cause().unwrap_or("—")
+            );
+            0
+        }
+    };
+
     // ── finestra 3: gli aggregati, una volta sola. ──────────────────────────
     //
     // Qui e non dentro il ciclo: `rebuild_aggregates` riscrive `albums` e
@@ -624,7 +653,7 @@ fn apri_passata(stato: &Stato) -> Result<Option<DaFare>, AppError> {
 /// Un evento che non parte non è una ragione per far fallire una passata
 /// riuscita: la finestra può essersi chiusa mentre il filo lavorava.
 fn avanza(app: &AppHandle, fatti: usize, totale: usize) {
-    let _ = app.emit(
+    app.emetti(
         "arricchimento:avanzamento",
         serde_json::json!({ "fatti": fatti, "totale": totale }),
     );
@@ -639,7 +668,7 @@ fn riferisci(app: &AppHandle) {
         return;
     };
     if let Ok(ipc) = stato_ipc(&stato, &arricchimento) {
-        drop(app.emit("arricchimento:stato", ipc));
+        app.emetti("arricchimento:stato", ipc);
     }
 }
 
@@ -670,6 +699,37 @@ fn scorda_errore(arricchimento: &StatoArricchimento) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     *ultimo = None;
+}
+
+/// Chiede a ListenBrainz i vicini di un lotto di brani, e li scrive.
+///
+/// Le tre finestre di sempre, nell'ordine di sempre: si legge chi manca, si
+/// rilascia il lucchetto, si chiede alla rete, lo si riprende per scrivere.
+/// Restituisce quante righe di somiglianza sono entrate — che è molto meno dei
+/// vicini ricevuti, perché `vicinanza` tiene solo i brani che sono già in
+/// libreria.
+fn vicini(stato: &State<'_, Stato>, servizi: &Fornitori) -> Result<usize, AppError> {
+    let lotto = con_libreria(stato, |libreria| {
+        vicinanza::candidati(&libreria.connection, adesso_ms(), vicinanza::LOTTO)
+    })?;
+    if lotto.is_empty() {
+        return Ok(0);
+    }
+
+    // ── senza lucchetto: al più quattro richieste, una al secondo. ──────────
+    let trovati = vicinanza::chiedi(servizi, &lotto)?;
+
+    let scritte = con_libreria(stato, |libreria| {
+        let tx = libreria
+            .connection
+            .transaction()
+            .map_err(|err| db_errore("apertura della transazione dei vicini", &err))?;
+        let scritte = vicinanza::registra(&tx, &trovati, adesso_ms())?;
+        tx.commit()
+            .map_err(|err| db_errore("chiusura della transazione dei vicini", &err))?;
+        Ok(scritte)
+    })?;
+    Ok(scritte)
 }
 
 /// Un guasto del database, nella forma del catalogo.

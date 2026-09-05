@@ -135,6 +135,27 @@ export interface Numeri {
 }
 
 /** Lo stato all'avvio. */
+/**
+ * Una cartella che il sistema dichiara musicale e che contiene davvero qualcosa.
+ *
+ * Serve alla schermata di primo avvio, che le propone già spuntate invece di
+ * chiedere all'utente di andarle a cercare in un dialogo.
+ */
+export interface CartellaCandidata {
+  percorso: string;
+  /** Quanti brani ci si sono contati, fermandosi al tetto del nucleo. */
+  brani: number;
+  /** Il conteggio si è fermato: ce n'erano altri, e il numero va scritto «2000+». */
+  troncato: boolean;
+  /**
+   * La camminata ha perso dei rami — permessi negati, un disco che si sveglia.
+   *
+   * Il numero è quindi una sottostima. La cartella si propone lo stesso: chi ha
+   * un disco esterno che sta partendo non deve vedersela sparire.
+   */
+  parziale: boolean;
+}
+
 export interface Avvio {
   dataDir: string;
   migrazioni: number;
@@ -414,6 +435,31 @@ export interface Casa {
 }
 
 /**
+ * Una raccolta del lunedì.
+ *
+ * Il nome non arriva dal nucleo: arriva `etichetta` — un genere, un artista, o
+ * niente — e la frase si compone qui, nella lingua di chi legge. Un titolo già
+ * scritto in italiano dentro il database sarebbe un titolo italiano anche per
+ * chi ha l'interfaccia in inglese.
+ */
+export interface Raccolta {
+  /** La riga, per marcarla aperta. */
+  id: number;
+  /** `ripescati` o `ancora`. */
+  genere: string;
+  /** Quale delle «Ancora» è. Zero per i ripescati. */
+  ordine: number;
+  /** Il materiale del nome, o niente se il gruppo non ha una maggioranza. */
+  etichetta: string | null;
+  /** Come leggerlo: `genere` o `artista`. */
+  etichettaTipo: string | null;
+  /** Se è già stata aperta almeno una volta. */
+  aperta: boolean;
+  /** I brani, nell'ordine deciso dal calcolo. */
+  brani: Brano[];
+}
+
+/**
  * Il valore di `spegnimento` che dice «quando finisce questo brano».
  *
  * Non è una durata, quindi non può essere un numero di minuti. Il nucleo lo
@@ -474,6 +520,14 @@ export interface StatoRiproduzione {
   dissolvenzaS: number;
   /** Il motore audio non c'è: perché, e se vale la pena riaprire. */
   audio: GuastoAudio | null;
+  /**
+   * Perché il brano dopo è quello, quando l'ha scelto l'autoplay.
+   *
+   * Un **codice** — `album`, `suono`, `ascolti`, `datanto`… — e non una frase:
+   * la frase sta in `lingue/`, sotto `queue.why.<codice>`. `null` quando il
+   * brano dopo l'hai messo tu, e allora non c'è niente da spiegare.
+   */
+  motivoProssimo: string | null;
 }
 
 /**
@@ -2107,6 +2161,12 @@ export const ipc = {
   avvio: () => invoke<Avvio>("avvio"),
   impostaCartelle: (cartelle: string[]) =>
     invoke<void>("imposta_cartelle", { cartelle }),
+  // Le cartelle musicali del sistema che contengono davvero qualcosa. Elenco
+  // vuoto anche quando la ricerca è scaduta: per la finestra i due casi si
+  // disegnano uguali — non c'è niente da proporre — e distinguerli vorrebbe
+  // dire un messaggio in più che non porta a nessuna azione diversa.
+  cartelleCandidate: () =>
+    invoke<CartellaCandidata[]>("cartelle_candidate"),
   // Stringa vuota = rimetti il valore di serie, cioè la prima cartella
   // sorvegliata. Il nucleo **toglie** la riga invece di scriverci dentro il
   // vuoto: «mai scelta» e «scelta vuota» devono restare la stessa cosa.
@@ -2162,6 +2222,16 @@ export const ipc = {
   cercaConteggio: (query: string) =>
     invoke<number>("cerca_conteggio", { query }),
   casa: () => invoke<Casa>("casa"),
+  // Il fuso lo sa solo la finestra: il nucleo tiene il tempo in millisecondi
+  // universali, e il lunedì comincia sette ore prima a Roma che a Los Angeles.
+  // Il segno è quello che si legge — minuti da AGGIUNGERE all'universale — cioè
+  // l'opposto di `getTimezoneOffset()`.
+  settimana: () =>
+    invoke<Raccolta[]>("settimana", {
+      scostamentoMinuti: -new Date().getTimezoneOffset(),
+    }),
+  settimanaApri: (raccolta: number) =>
+    invoke<void>("settimana_apri", { raccolta }),
   brani: (ordine: Ordine, offset: number, limite: number) =>
     invoke<Brano[]>("brani", { ordine, offset, limite }),
   album: (offset: number, limite: number) =>
@@ -2435,6 +2505,10 @@ export const ipc = {
   // impedisce alla finestra di credersi in pausa mentre il motore suona.
   suona: (brani: number[], indice: number) =>
     invoke<void>("suona", { brani, indice }),
+  // La coda la costruisce il nucleo: sono trenta identificativi che la finestra
+  // non guarda mai, e farseli mandare per rimandarli indietro sarebbe un
+  // viaggio dell'IPC per niente.
+  radio: (brano: number) => invoke<void>("radio", { brano }),
   pausa: () => invoke<void>("pausa"),
   riprendi: () => invoke<void>("riprendi"),
   alterna: () => invoke<void>("alterna"),

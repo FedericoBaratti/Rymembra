@@ -72,6 +72,31 @@ pub const RITMO_DEEZER: Duration = Duration::from_millis(220);
 /// una volta sola.
 pub const RITMO_LRCLIB: Duration = Duration::from_millis(250);
 
+/// Il ritmo di ListenBrainz Labs.
+///
+/// Un secondo, ed è lo stesso identico argomento scritto sopra
+/// [`RITMO_LRCLIB`]: il servizio non dichiara nessun limite, e un catalogo che
+/// ci ospita gratis e non si difende è quello a cui è più facile fare male
+/// senza accorgersene. Qui però il numero è quattro volte più prudente, per due
+/// ragioni che si sommano.
+///
+/// La prima è chi c'è dietro. `labs.api.listenbrainz.org` è la stessa
+/// fondazione — MetaBrainz — che per MusicBrainz chiede **una richiesta al
+/// secondo** e lo scrive nero su bianco. Un limite non dichiarato non è un
+/// permesso: è una politica che nessuno ha ancora avuto bisogno di scrivere, e
+/// prendere quella del fratello che l'ha scritta è l'unica lettura onesta.
+///
+/// La seconda è quanto costa una richiesta. Non è la lettura di una riga: è una
+/// interrogazione su una tabella di somiglianze costruita da anni di ascolti
+/// aggregati, e la risposta a un lotto di venticinque identificativi sono
+/// duemilacinquecento righe, mezzo megabyte di JSON. Vale molte volte una
+/// ricerca di testi, e il ritmo lo deve dire.
+///
+/// Non costa niente, del resto: i lotti fanno sì che una libreria di
+/// millequattrocento brani siano cinquantasei richieste, cioè meno di un
+/// minuto — per una cosa che il deposito ricorda per tre mesi.
+pub const RITMO_LISTENBRAINZ: Duration = Duration::from_millis(1000);
+
 /// Quel che la cadenza tiene fra una richiesta e l'altra.
 #[derive(Debug)]
 struct Stato {

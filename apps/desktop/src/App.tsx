@@ -31,6 +31,7 @@ import { ImportaPlaylist } from "./ImportaPlaylist";
 import { Regole } from "./Regole";
 import { Menu, type Apertura } from "./Menu";
 import { NuovoTema } from "./NuovoTema";
+import { Primo } from "./Primo";
 import { Riordino } from "./Riordino";
 import { Ripristino } from "./Ripristino";
 import { Stelle } from "./Stelle";
@@ -45,6 +46,7 @@ import {
   type Album,
   type Artista,
   type Casa,
+  type Raccolta,
   type Avanzamento,
   type AvanzamentoArricchimento,
   type Avvio,
@@ -60,7 +62,7 @@ import {
   type VoceSkin,
 } from "./ipc";
 import { applicaLingua, scegli, t, useLingua } from "./lingue";
-import { usePagine, usePigro } from "./pagine";
+import { useAscolto, usePagine, usePigro } from "./pagine";
 import { AvvisoAggiornamento } from "./parti/Aggiornamenti";
 import { Icona } from "./parti/Icone";
 import { useImportazioni } from "./parti/Importazioni";
@@ -463,6 +465,10 @@ export function App() {
   // diverso da «vuota»: la schermata mostra i suoi segnaposto finché il nucleo
   // non ha risposto, invece dello stato vuoto per un fotogramma.
   const [casa, setCasa] = useState<Casa | null>(null);
+  // Le raccolte del lunedì. Vuoto e non `null`: qui «non ancora chieste» e
+  // «questa settimana non ce ne sono» si disegnano uguale — niente ripiano — e
+  // distinguerle costerebbe uno stato in più per non mostrare niente in due modi.
+  const [settimana, setSettimana] = useState<Raccolta[]>([]);
   /**
    * Di quale brano corrente parla la `casa` che si ha in mano.
    *
@@ -477,6 +483,16 @@ export function App() {
   const [braniAperto, setBraniAperto] = useState<Brano[]>([]);
   const [ordine, setOrdine] = useState<Ordine>("scaffale");
   const [scansione, setScansione] = useState<Avanzamento | null>(null);
+  /**
+   * Il primo avvio è stato chiuso a mano.
+   *
+   * Non va nel database: la condizione vera è «non c'è nessuna cartella
+   * sorvegliata», e quella il database ce l'ha già. Questo serve solo a chi ha
+   * premuto «Lo faccio dopo» e non vuole rivedere la schermata finché la
+   * finestra resta aperta — riaprendo il programma senza aver scelto niente, la
+   * proposta è ancora la risposta giusta.
+   */
+  const [primoChiuso, setPrimoChiuso] = useState(false);
   const [esito, setEsito] = useState<EsitoScansione | null>(null);
   const [colonnaAperta, setColonnaAperta] = useState(
     () => window.innerWidth >= LARGHEZZA_TRE_COLONNE,
@@ -1036,14 +1052,7 @@ export function App() {
     }
   };
 
-  useEffect(() => {
-    const promessa = listen<Avanzamento>("scansione:avanzamento", (evento) =>
-      setScansione(evento.payload),
-    );
-    return () => {
-      void promessa.then((stop) => stop());
-    };
-  }, []);
+  useAscolto<Avanzamento>("scansione:avanzamento", setScansione);
 
   /**
    * Lo stato del backup: una sola sorgente, come per la riproduzione.
@@ -1292,6 +1301,55 @@ export function App() {
   }, [vista, cercando, segnalaErrore]);
 
   /*
+   * Le raccolte del lunedì, entrando nella Home.
+   *
+   * In una chiamata sua e non dentro `ipc.casa()`, che è il comando aggregato:
+   * `casa` si rifà a ogni cambio di brano corrente — è la riga «riprendi dov'eri»
+   * che deve restare vera — e la generazione delle raccolte apre una
+   * transazione. Metterla lì dentro vorrebbe dire aprirne una a ogni cambio di
+   * brano per riscoprire ogni volta che il lunedì c'è già.
+   *
+   * Non dipende dal brano corrente proprio per questo: entra nella vista, chiede
+   * una volta, e per il resto della settimana la risposta è la stessa.
+   *
+   * «Una volta» però va fatto succedere, e le dipendenze da sole non bastano:
+   * `vista` e `cercando` cambiano decine di volte in una sera — ogni giro fra
+   * Home, Album e Artisti, ogni apertura e chiusura della ricerca — e ognuno
+   * rifaceva la domanda per intero. Il lunedì chiesto si ricorda qui: finché è
+   * lo stesso, la risposta che si ha in mano è già quella giusta.
+   */
+  const settimanaChiesta = useRef<number | null>(null);
+  useEffect(() => {
+    if (vista !== "home" || cercando) return;
+    // Lo stesso lunedì che il nucleo calcolerebbe, e con lo stesso fuso: qui
+    // serve solo a riconoscere che è cambiato, e a mezzanotte di domenica
+    // cambia da sé senza che nessuno debba svegliare niente.
+    const adesso = new Date();
+    const giorno = (adesso.getDay() + 6) % 7;
+    const lunedi = new Date(
+      adesso.getFullYear(),
+      adesso.getMonth(),
+      adesso.getDate() - giorno,
+    ).getTime();
+    if (settimanaChiesta.current === lunedi) return;
+
+    let annullato = false;
+    ipc
+      .settimana()
+      .then((arrivate) => {
+        if (annullato) return;
+        // Si segna **dopo** la risposta, non prima della domanda: una chiamata
+        // fallita deve poter essere rifatta entrando di nuovo nella Home.
+        settimanaChiesta.current = lunedi;
+        setSettimana(arrivate);
+      })
+      .catch(segnalaErrore);
+    return () => {
+      annullato = true;
+    };
+  }, [vista, cercando, segnalaErrore]);
+
+  /*
    * E la Home, restando.
    *
    * «Riprendi dov'eri» fa partire **la coda del nucleo**, non il brano che ha
@@ -1374,15 +1432,10 @@ export function App() {
    * sono appena arrivati quaranta brani che non compaiono finché non si cambia
    * schermata.
    */
-  useEffect(() => {
-    const promessa = listen("scarico:in_libreria", () => {
-      void ricarica();
-      void caricaVista();
-    });
-    return () => {
-      void promessa.then((stop) => stop());
-    };
-  }, [ricarica, caricaVista]);
+  useAscolto("scarico:in_libreria", () => {
+    void ricarica();
+    void caricaVista();
+  });
 
   useEffect(() => {
     if (!aperto) return;
@@ -1416,6 +1469,66 @@ export function App() {
 
   const apriArtista = useCallback((quale: Artista | null) => {
     cambiandoVista(() => setArtistaAperto(quale));
+  }, []);
+
+  /**
+   * Il primo avvio: scrive le cartelle scelte e comincia subito a leggere.
+   *
+   * Le due cose insieme e non due pulsanti: fra «ho detto dove sta la musica» e
+   * «voglio che la legga» non c'è nessuna decisione in mezzo, e il secondo
+   * pulsante esisteva solo perché il primo non sapeva cosa fare dopo.
+   */
+  const primoConferma = useCallback(
+    async (cartelle: string[]) => {
+      try {
+        await ipc.impostaCartelle(cartelle);
+        await ricarica();
+        await scansiona();
+      } catch (e) {
+        segnalaErrore(e);
+      }
+    },
+    // `scansiona` e `ricarica` sono definite in questo corpo e cambiano identità
+    // a ogni disegno: entrarci nelle dipendenze farebbe rifare questa lambda
+    // sessanta volte al secondo per niente. Chi la riceve non la confronta.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  /** Il dialogo di sistema, per chi la musica la tiene altrove. */
+  const primoScegli = useCallback(async () => {
+    try {
+      const scelta = await open({ directory: true, multiple: false });
+      return typeof scelta === "string" ? scelta : null;
+    } catch (e) {
+      segnalaErrore(e);
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * L'ultimo clic prima del suono.
+   *
+   * Prende la prima pagina della libreria e la suona dall'inizio. Non un brano
+   * solo: mettere in coda un brano soltanto vorrebbe dire che tre minuti dopo
+   * la coda finisce, che è il difetto che `suonaDa` documenta altrove.
+   */
+  const primoAscolta = useCallback(() => {
+    void (async () => {
+      try {
+        const elenco = await ipc.brani("recenti", 0, 200);
+        if (elenco.length === 0) return;
+        await ipc.suona(
+          elenco.map((b) => b.id),
+          0,
+        );
+        setPrimoChiuso(true);
+      } catch (e) {
+        segnalaErrore(e);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const scegliCartella = async () => {
@@ -1615,10 +1728,24 @@ export function App() {
   const apriMenu = useCallback(
     (e: React.MouseEvent, elenco: number[]) => {
       e.preventDefault();
+      // La radio ha **un** seme, e con più brani selezionati non si sa quale:
+      // la voce sparisce invece di far finta di scegliere. È lo stesso motivo
+      // per cui «rinomina» non compare su una selezione multipla.
+      const primo = elenco.length === 1 ? elenco[0] : undefined;
       setMenu({
         x: e.clientX,
         y: e.clientY,
         voci: [
+          ...(primo === undefined
+            ? []
+            : [
+                {
+                  etichetta: t("action.radio"),
+                  azione: () => {
+                    ipc.radio(primo).catch(segnalaErrore);
+                  },
+                },
+              ]),
           {
             etichetta: t("action.playNext"),
             azione: () => {
@@ -1718,6 +1845,18 @@ export function App() {
         x: e.clientX,
         y: e.clientY,
         voci: [
+          // Il seme è la **prima traccia** e non un brano a caso del disco: è
+          // quella che chi apre un album sente per prima, quindi è quella di
+          // cui sta chiedendo «portami dove porta questo».
+          {
+            etichetta: t("action.radio"),
+            azione: conBrani((ids) => {
+              const primo = ids[0];
+              return primo === undefined
+                ? Promise.resolve()
+                : ipc.radio(primo);
+            }),
+          },
           { etichetta: t("action.playNext"), azione: conBrani(ipc.codaDopo) },
           { etichetta: t("action.enqueue"), azione: conBrani(ipc.codaAccoda) },
         ],
@@ -2056,36 +2195,30 @@ export function App() {
    * mostra il risultato — perché un'azione che avviene fuori dallo schermo è
    * un'azione che sembra non essere avvenuta.
    */
-  useEffect(() => {
-    const promessa = listen<{ paths: string[] }>("tauri://drag-drop", (evento) => {
-      const arrivati = evento.payload.paths;
-      const skinLasciata = arrivati.find((p) => p.toLowerCase().endsWith(".aeskin"));
-      if (skinLasciata !== undefined) {
-        // `vaiA` e non `setVista`: quello nudo lasciava in piedi l'album, la
-        // playlist e la ricerca di prima, cioè uno stato in cui l'intestazione
-        // e il corpo rispondono a due domande diverse.
-        vaiA("impostazioni");
-        setSezione("aspetto");
-        ipc
-          .skinInstalla(skinLasciata)
-          .then((installata) => scegliSkin(installata.id))
-          .catch(segnalaErrore);
-        return;
-      }
-      // Tutto il resto si prova come cartella: `imposta_cartelle` accetta dei
-      // percorsi, e la scansione salta da sé quel che non è musica. Distinguere
-      // qui una cartella da un file vorrebbe dire chiedere al filesystem
-      // dall'interfaccia, cioè mettere una regola dove non deve stare.
-      if (arrivati.length === 0 || !avvio) return;
+  useAscolto<{ paths: string[] }>("tauri://drag-drop", ({ paths: arrivati }) => {
+    const skinLasciata = arrivati.find((p) => p.toLowerCase().endsWith(".aeskin"));
+    if (skinLasciata !== undefined) {
+      // `vaiA` e non `setVista`: quello nudo lasciava in piedi l'album, la
+      // playlist e la ricerca di prima, cioè uno stato in cui l'intestazione
+      // e il corpo rispondono a due domande diverse.
       vaiA("impostazioni");
-      setSezione("cartelle");
-      const unite = [...new Set([...avvio.cartelle, ...arrivati])];
-      ipc.impostaCartelle(unite).then(ricarica).catch(segnalaErrore);
-    });
-    return () => {
-      void promessa.then((stop) => stop());
-    };
-  }, [avvio, ricarica, segnalaErrore, scegliSkin, vaiA]);
+      setSezione("aspetto");
+      ipc
+        .skinInstalla(skinLasciata)
+        .then((installata) => scegliSkin(installata.id))
+        .catch(segnalaErrore);
+      return;
+    }
+    // Tutto il resto si prova come cartella: `imposta_cartelle` accetta dei
+    // percorsi, e la scansione salta da sé quel che non è musica. Distinguere
+    // qui una cartella da un file vorrebbe dire chiedere al filesystem
+    // dall'interfaccia, cioè mettere una regola dove non deve stare.
+    if (arrivati.length === 0 || !avvio) return;
+    vaiA("impostazioni");
+    setSezione("cartelle");
+    const unite = [...new Set([...avvio.cartelle, ...arrivati])];
+    ipc.impostaCartelle(unite).then(ricarica).catch(segnalaErrore);
+  });
 
   const numeri = avvio?.numeri;
   const senzaCartelle = avvio !== null && avvio.cartelle.length === 0;
@@ -2806,7 +2939,22 @@ export function App() {
       return (
         <Home
           casa={casa}
+          settimana={settimana}
           onSuona={(elenco, indice) => void suonaDa(elenco, indice)}
+          onApriRaccolta={(raccolta) => {
+            void (async () => {
+              await suonaDa(raccolta.brani, 0);
+              // Segnata aperta **dopo** che è partita: se il comando di
+              // riproduzione fallisce, la raccolta è ancora nuova — e il
+              // pallino che dice «non l'hai ancora sentita» dice il vero.
+              await ipc.settimanaApri(raccolta.id).catch(segnalaErrore);
+              setSettimana((prima) =>
+                prima.map((r) =>
+                  r.id === raccolta.id ? { ...r, aperta: true } : r,
+                ),
+              );
+            })();
+          }}
           onRiprendi={(ms) => {
             void (async () => {
               // `riprendi` e non `suona`: la coda conservata è già in piedi —
@@ -2943,6 +3091,19 @@ export function App() {
 
   return (
     <>
+      {/* Prima di tutto il resto e sopra tutto il resto: al primo avvio non c'è
+          una libreria da guardare dietro, e la schermata che chiede dove sta la
+          musica è l'unica cosa che ha senso leggere. */}
+      {avvio !== null && avvio.cartelle.length === 0 && !primoChiuso && (
+        <Primo
+          onCartelle={primoConferma}
+          onScegliCartella={primoScegli}
+          scansione={scansione}
+          brani={numeri?.tracks ?? 0}
+          onAscolta={primoAscolta}
+          onSalta={() => setPrimoChiuso(true)}
+        />
+      )}
       <Impaginazione
         albero={skinAttiva?.layout.shell ?? null}
         contesto={contesto}

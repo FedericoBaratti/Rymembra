@@ -12,8 +12,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap" rel="stylesheet">
-<title>Aether — A local music player with a skin engine</title>
-<meta name="description" content="Aether plays the files you already own, and finds what you are missing in the free catalogues — the Internet Archive and Audius — carrying each track's licence with it. No telemetry, no account required. A validated skin engine restyles the whole app from a data file.">
+<title>Aether — A music player for Windows, written in Rust</title>
+<meta name="description" content="Aether plays the audio files already present on the disk and integrates the local library with the free-access music catalogues: Internet Archive and Audius. Every track acquired keeps the licence of the source it came from. No telemetry, no account required. Version 2.1.0, for Windows.">
 <meta name="theme-color" content="#09090d">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2309090d'/%3E%3Cpath d='M32 8a24 24 0 0 1 0 48' fill='none' stroke='%238b7cf6' stroke-width='7' stroke-linecap='round'/%3E%3Cpath d='M32 56a24 24 0 0 1 0-48' fill='none' stroke='%234fd6e0' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
@@ -92,13 +92,13 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
     <svg data-logo width="20" height="20" style="color:var(--ae-acc,#8b7cf6);transition:transform .4s cubic-bezier(.2,.8,.2,1)"><use href="#a-mark"></use></svg>
     <span style="font:600 15px/1 Geist,sans-serif;letter-spacing:-.01em">Aether</span>
   </a>
-  <span data-navbadge data-i18n="nav.badge" style="padding:3px 8px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:500 9.5px/1.4 'Geist Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">Out now · Windows</span>
+  <span data-navbadge data-i18n="nav.badge" style="padding:3px 8px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:500 9.5px/1.4 'Geist Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">2.1.0 · Windows</span>
   <div style="flex:1"></div>
   <div data-navlinks style="display:flex;gap:22px;align-items:center">
-    <a href="#tour" data-i18n="nav.app" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">The app</a>
+    <a href="#sources" data-i18n="nav.sources" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">Sources</a>
+    <a href="#tour" data-i18n="nav.app" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">The program</a>
     <a href="#studio" data-i18n="nav.studio" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">Skin Studio</a>
-    <a href="#format" data-i18n="nav.format" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">Format</a>
-    <a href="#roadmap" data-i18n="nav.roadmap" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">Roadmap</a>
+    <a href="#roadmap" data-i18n="nav.roadmap" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">Limits</a>
   </div>
   <div data-langsel style="display:flex;gap:2px;padding:3px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .7s ease">
     <button type="button" data-lang="en" style="height:26px;padding:0 9px;border-radius:99px;font:600 10.5px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">EN</button><button type="button" data-lang="it" style="height:26px;padding:0 9px;border-radius:99px;font:600 10.5px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">IT</button><button type="button" data-lang="fr" style="height:26px;padding:0 9px;border-radius:99px;font:600 10.5px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">FR</button><button type="button" data-lang="de" style="height:26px;padding:0 9px;border-radius:99px;font:600 10.5px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">DE</button>
@@ -112,38 +112,38 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
 </nav>
 
 <div data-mobmenu style="position:fixed;inset:0;z-index:48;display:none;flex-direction:column;justify-content:center;gap:2px;padding:92px 26px 40px;padding-top:calc(92px + env(safe-area-inset-top,0px));padding-bottom:calc(40px + env(safe-area-inset-bottom,0px));background:var(--ae-bg,#09090d);opacity:0;transition:opacity .35s ease">
-  <a href="#tour" data-i18n="nav.app" style="display:flex;align-items:center;min-height:54px;font:600 28px/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em;color:var(--ae-t1,rgba(255,255,255,.94))">The app</a>
+  <a href="#sources" data-i18n="nav.sources" style="display:flex;align-items:center;min-height:54px;font:600 28px/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em;color:var(--ae-t1,rgba(255,255,255,.94))">Sources</a>
+  <a href="#tour" data-i18n="nav.app" style="display:flex;align-items:center;min-height:54px;font:600 28px/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em;color:var(--ae-t1,rgba(255,255,255,.94))">The program</a>
   <a href="#studio" data-i18n="nav.studio" style="display:flex;align-items:center;min-height:54px;font:600 28px/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em;color:var(--ae-t1,rgba(255,255,255,.94))">Skin Studio</a>
-  <a href="#format" data-i18n="nav.format" style="display:flex;align-items:center;min-height:54px;font:600 28px/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em;color:var(--ae-t1,rgba(255,255,255,.94))">Format</a>
-  <a href="#roadmap" data-i18n="nav.roadmap" style="display:flex;align-items:center;min-height:54px;font:600 28px/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em;color:var(--ae-t1,rgba(255,255,255,.94))">Roadmap</a>
+  <a href="#roadmap" data-i18n="nav.roadmap" style="display:flex;align-items:center;min-height:54px;font:600 28px/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em;color:var(--ae-t1,rgba(255,255,255,.94))">Limits</a>
   <div style="height:1px;margin:24px 0 18px;background:var(--ae-line,rgba(255,255,255,.10))"></div>
   <div data-langsel style="display:flex;gap:8px">
     <button type="button" data-lang="en" style="flex:1;min-height:46px;border-radius:12px;font:600 14px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">EN</button><button type="button" data-lang="it" style="flex:1;min-height:46px;border-radius:12px;font:600 14px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">IT</button><button type="button" data-lang="fr" style="flex:1;min-height:46px;border-radius:12px;font:600 14px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">FR</button><button type="button" data-lang="de" style="flex:1;min-height:46px;border-radius:12px;font:600 14px/1 Geist,sans-serif;border:0;background:transparent;color:var(--ae-t2,rgba(255,255,255,.62));cursor:pointer;letter-spacing:.06em;transition:background-color .3s ease,color .3s ease">DE</button>
   </div>
-  <a href="#access" style="margin-top:18px;display:flex;align-items:center;justify-content:center;gap:9px;min-height:52px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 15px/1 Geist,sans-serif"><span data-i18n="hero.cta1">See where it stands</span></a>
+  <a href="#access" style="margin-top:18px;display:flex;align-items:center;justify-content:center;gap:9px;min-height:52px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 15px/1 Geist,sans-serif"><span data-i18n="hero.cta1">Installation</span></a>
   <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" style="margin-top:10px;display:flex;align-items:center;justify-content:center;gap:9px;min-height:52px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));color:var(--ae-t1,rgba(255,255,255,.94));font:550 15px/1 Geist,sans-serif"><svg width="16" height="16" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-star"></use></svg><span data-i18n="nav.star">Star on GitHub</span></a>
 </div>
 
 <section id="top" style="position:relative;z-index:1;padding:clamp(104px,17vw,150px) clamp(16px,4vw,34px) 0;display:flex;flex-direction:column;align-items:center;text-align:center">
   <div data-rv style="display:flex;align-items:center;gap:9px;padding:6px 8px 6px 14px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .7s ease">
     <span style="width:6px;height:6px;border-radius:50%;background:var(--ae-acc,#8b7cf6);animation:ae-blink 2.4s ease-in-out infinite"></span>
-    <span data-i18n="hero.badge" style="font:500 12px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">A local music player with a skin engine</span>
+    <span data-i18n="hero.badge" style="font:500 12px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">Music player for Windows, written in Rust</span>
     <span style="padding:3px 9px;border-radius:99px;background:var(--ae-raise,#1e1e2a);font:500 10.5px/1.3 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46));transition:background-color .7s ease">Rust · Tauri</span>
   </div>
 
-  <h1 style="margin:26px 0 0;max-width:16ch;font:600 clamp(38px,8.8vw,108px)/0.94 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em;text-wrap:balance">
-    <span data-split data-i18n="hero.l1" data-d="80" style="display:block">Your library.</span>
-    <span data-split data-i18n="hero.l2" data-d="220" style="display:block">Your machine.</span>
-    <span data-split data-i18n="hero.l3" data-d="360" style="display:block;color:var(--ae-acc,#8b7cf6);transition:color .7s ease">Your look.</span>
+  <h1 style="margin:26px 0 0;max-width:20ch;font:600 clamp(34px,7.6vw,100px)/0.96 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em;text-wrap:balance">
+    <span data-split data-i18n="hero.l1" data-d="80" style="display:block">A music player</span>
+    <span data-split data-i18n="hero.l2" data-d="220" style="display:block">for Windows,</span>
+    <span data-split data-i18n="hero.l3" data-d="360" style="display:block;color:var(--ae-acc,#8b7cf6);transition:color .7s ease">written in Rust.</span>
   </h1>
 
-  <p data-rv data-i18n="hero.lede" data-d="340" style="margin:26px 0 0;max-width:52ch;font:300 clamp(15.5px,4.1vw,18.5px)/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">
-    Aether plays the files you already own — no telemetry, no account required. What you are missing, it fetches from the free catalogues — the Internet Archive and Audius — and every track it brings in carries the licence it came under. Every surface it draws is a token you can redefine, in a skin file the app validates before it renders a single pixel.
+  <p data-rv data-i18n="hero.lede" data-d="340" style="margin:26px 0 0;max-width:58ch;font:300 clamp(15.5px,4.1vw,18px)/1.62 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">
+    Aether plays the audio files already present on the disk. Starting from a playlist — exported from a Spotify archive, read from an M3U file or given as a link — it compares the tracks against the local library and retrieves the missing ones from the free-access catalogues: Internet Archive and Audius. Every track acquired keeps the licence of the source it came from. Tracks unavailable in any free catalogue are collected in a purchase list, with links to the shops that pay the authors.
   </p>
 
   <div data-rv data-d="430" style="margin:34px 0 0;display:flex;flex-wrap:wrap;gap:12px;justify-content:center;align-items:center">
     <a href="#access" data-magnet style="display:flex;align-items:center;gap:9px;height:46px;padding:0 22px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
-      <span data-i18n="hero.cta1">See where it stands</span><svg width="16" height="16"><use href="#a-chev-r"></use></svg>
+      <span data-i18n="hero.cta1">Installation</span><svg width="16" height="16"><use href="#a-chev-r"></use></svg>
     </a>
     <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" data-magnet style="display:flex;align-items:center;gap:9px;height:46px;padding:0 20px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));background:var(--ae-surf,#0e0e14);color:var(--ae-t1,rgba(255,255,255,.94));font:550 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease,border-color .7s ease">
       <svg width="16" height="16" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-star"></use></svg><span data-i18n="nav.star">Star on GitHub</span>
@@ -152,7 +152,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
   </div>
 
   <div data-rv data-d="520" style="margin:18px 0 0;display:flex;gap:18px;flex-wrap:wrap;justify-content:center;font:500 11.5px/1 'Geist Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">
-    <span data-i18n="hero.m1">Out for Windows · still in development</span><span>FLAC ALAC WAV MP3 OGG</span><span data-i18n="hero.m3">Licence-aware by design</span>
+    <span data-i18n="hero.m1">Version 2.1.0 · Windows · in development</span><span>FLAC ALAC WAV MP3 OGG</span><span data-i18n="hero.m3">Each track keeps the licence of its source</span>
   </div>
 
   <div data-hero-stage style="position:relative;width:min(1240px,96vw);margin:clamp(40px,7vw,66px) auto 0;perspective:1800px">
@@ -169,9 +169,9 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
               <svg width="14" height="14" style="color:var(--ae-t3,rgba(255,255,255,.46))"><use href="#a-search"></use></svg>
             </div>
             <div style="display:flex;flex-direction:column;gap:2px">
-              <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="14" height="14"><use href="#a-album"></use></svg><span data-i18n="ui.albums" style="flex:1;font-size:12.5px">Albums</span><span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">412</span></div>
-              <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;background:var(--ae-accSoft,rgba(139,124,246,.16));color:var(--ae-acc,#8b7cf6);transition:background-color .7s ease,color .7s ease"><svg width="14" height="14"><use href="#a-track"></use></svg><span data-i18n="ui.tracks" style="flex:1;font-size:12.5px;font-weight:600">Tracks</span><span style="font:10.5px 'Geist Mono',monospace">5 108</span></div>
-              <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="14" height="14"><use href="#a-artist"></use></svg><span data-i18n="ui.artists" style="flex:1;font-size:12.5px">Artists</span><span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">287</span></div>
+              <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="14" height="14"><use href="#a-album"></use></svg><span data-i18n="ui.albums" style="flex:1;font-size:12.5px">Albums</span><span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">935</span></div>
+              <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;background:var(--ae-accSoft,rgba(139,124,246,.16));color:var(--ae-acc,#8b7cf6);transition:background-color .7s ease,color .7s ease"><svg width="14" height="14"><use href="#a-track"></use></svg><span data-i18n="ui.tracks" style="flex:1;font-size:12.5px;font-weight:600">Tracks</span><span style="font:10.5px 'Geist Mono',monospace">1 465</span></div>
+              <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="14" height="14"><use href="#a-artist"></use></svg><span data-i18n="ui.artists" style="flex:1;font-size:12.5px">Artists</span></div>
               <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="14" height="14"><use href="#a-heart"></use></svg><span data-i18n="ui.fav" style="flex:1;font-size:12.5px">Favourites</span></div>
               <div style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:9px;color:var(--ae-t2,rgba(255,255,255,.62))"><svg width="14" height="14"><use href="#a-settings"></use></svg><span data-i18n="ui.settings" style="flex:1;font-size:12.5px">Settings</span></div>
             </div>
@@ -185,7 +185,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
             <div style="flex:1"></div>
             <div style="padding:9px 10px;border-radius:11px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf2,#16161f);transition:background-color .7s ease,border-color .7s ease">
               <div style="display:flex;align-items:center;gap:7px;font:500 10.5px/1 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))"><svg width="12" height="12"><use href="#a-bolt"></use></svg><span data-i18n="ui.scan">Scan complete</span></div>
-              <div style="margin-top:6px;font-size:11px;color:var(--ae-t2,rgba(255,255,255,.62))" data-i18n="ui.scanmeta">5 108 tracks · 41 min ago</div>
+              <div style="margin-top:6px;font-size:11px;color:var(--ae-t2,rgba(255,255,255,.62))" data-i18n="ui.scanmeta">1 465 tracks · 41 min ago</div>
             </div>
           </div>
 
@@ -193,7 +193,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
             <div style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="ui.library">Library</div>
             <div style="margin-top:8px;display:flex;align-items:baseline;gap:12px">
               <div data-i18n="ui.tracks" style="font:600 30px/1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Tracks</div>
-              <span style="font:11.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="ui.libmeta">5 108 · 14 d 6 h</span>
+              <span style="font:11.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="ui.libmeta">1 465 · 4 d 2 h</span>
             </div>
             <div style="margin-top:16px;display:grid;grid-template-columns:24px 34px 1fr 150px 46px;gap:12px;padding:0 8px 8px;border-bottom:1px solid var(--ae-line,rgba(255,255,255,.08));font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">
               <span style="text-align:right">#</span><span></span><span data-i18n="ui.colTitle">Title</span><span data-i18n="ui.colAlbum">Album</span><span data-i18n="ui.colTime" style="text-align:right">Time</span>
@@ -250,6 +250,8 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
     <div data-par data-speed="0.22" style="position:absolute;right:-5%;top:34%;width:108px;height:108px;border-radius:14px;background:linear-gradient(145deg,#0d4a4f,#4fd6e0);box-shadow:0 26px 60px rgba(0,0,0,.55);animation:ae-float 11s ease-in-out infinite .8s"></div>
     <div data-par data-speed="-0.1" style="position:absolute;right:6%;bottom:-7%;width:86px;height:86px;border-radius:50%;background:linear-gradient(145deg,#5c2b18,#d97b3a);box-shadow:0 20px 44px rgba(0,0,0,.5);animation:ae-spin 26s linear infinite"></div>
   </div>
+
+  <p data-i18n="ui.mocknote" style="margin:22px auto 0;max-width:62ch;font:300 12.5px/1.6 Geist,sans-serif;color:var(--ae-t3,rgba(255,255,255,.46));text-wrap:pretty">The screens on this page are a reproduction of the interface. The figures are those of the library used for the screenshots in the README: 935 albums, 1 465 tracks.</p>
 </section>
 
 <section style="position:relative;z-index:1;margin-top:96px;padding:16px 0;border-top:1px solid var(--ae-line,rgba(255,255,255,.08));border-bottom:1px solid var(--ae-line,rgba(255,255,255,.08));overflow:hidden;transition:border-color .7s ease">
@@ -261,8 +263,8 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
 </section>
 
 <section style="position:relative;z-index:1;padding:clamp(70px,11vw,110px) clamp(16px,4vw,34px);max-width:1180px;margin:0 auto">
-  <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s1.eyebrow">01 — The idea</div>
-  <h2 data-rv data-d="80" style="margin:18px 0 0;max-width:22ch;font:600 clamp(34px,4.4vw,60px)/1.04 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em" data-i18n="s1.h2">A player that answers to the person who owns the files.</h2>
+  <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s1.eyebrow">01 — Overview</div>
+  <h2 data-rv data-d="80" style="margin:18px 0 0;max-width:24ch;font:600 clamp(32px,4.2vw,56px)/1.04 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em" data-i18n="s1.h2">The files already present on the disk, and the catalogues that allow a copy.</h2>
   <div style="margin-top:52px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:22px">
     <sc-for list="{{ pillars }}" as="p" hint-placeholder-count="4">
       <div data-rv data-tilt style="padding:26px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .35s ease,transform .35s cubic-bezier(.2,.8,.2,1);will-change:transform">
@@ -274,11 +276,64 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
   </div>
 </section>
 
+<section id="sources" style="position:relative;z-index:1;padding:0 clamp(16px,4vw,34px) clamp(80px,12vw,120px)">
+  <div style="max-width:1180px;margin:0 auto">
+    <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="src.eyebrow">02 — Where the music comes from</div>
+    <h2 data-rv data-d="70" style="margin:18px 0 0;max-width:24ch;font:600 clamp(32px,4.2vw,56px)/1.04 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em" data-i18n="src.h2">Six sources. Each one declares what it holds and whether a local copy is permitted.</h2>
+
+    <div data-rv data-d="60" style="margin-top:44px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf,#0e0e14);overflow:hidden;transition:background-color .7s ease,border-color .7s ease">
+      <div data-stack data-hidemob="grid" data-cols="minmax(150px,210px) 1fr minmax(170px,230px)" style="display:grid;grid-template-columns:minmax(150px,210px) 1fr minmax(170px,230px);gap:clamp(12px,2vw,24px);padding:13px clamp(16px,2.4vw,24px);border-bottom:1px solid var(--ae-line,rgba(255,255,255,.08));font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">
+        <span data-i18n="src.colSource">Source</span><span data-i18n="src.colContent">Contents</span><span data-i18n="src.colCopy">Local copy</span>
+      </div>
+      <sc-for list="{{ sources }}" as="s" hint-placeholder-count="6">
+        <div data-stack data-cols="minmax(150px,210px) 1fr minmax(170px,230px)" style="display:grid;grid-template-columns:minmax(150px,210px) 1fr minmax(170px,230px);gap:6px clamp(12px,2vw,24px);padding:16px clamp(16px,2.4vw,24px);border-bottom:1px solid var(--ae-line,rgba(255,255,255,.06));transition:border-color .7s ease">
+          <div style="font:600 14px/1.35 Geist,sans-serif;letter-spacing:-.01em">{{ s.n }}</div>
+          <div style="font:300 13.5px/1.55 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">{{ s.c }}</div>
+          <div style="display:flex;gap:8px;align-items:flex-start;font:400 12px/1.5 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">
+            <svg width="13" height="13" style="flex:none;margin-top:3px;color:var(--ae-acc,#8b7cf6)"><use href="#a-check"></use></svg><span>{{ s.l }}</span>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="margin-top:20px;display:grid;grid-template-columns:repeat(auto-fit,minmax(272px,1fr));gap:20px">
+      <div data-rv data-tilt style="padding:22px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .35s ease,transform .35s cubic-bezier(.2,.8,.2,1);will-change:transform">
+        <svg width="20" height="20" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-lock"></use></svg>
+        <div data-i18n="src.audius.h" style="margin-top:14px;font:600 15.5px/1.25 Geist,sans-serif;letter-spacing:-.01em">Audius: three distinct permissions</div>
+        <p data-i18n="src.audius.p" style="margin:9px 0 0;font:300 13.5px/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">On Audius the permission is determined by the artist for each individual track. There are three distinct controls: the download switch and two gates, which can make access conditional on following the artist or on holding a token. Aether checks all three and considers permission granted only in the absence of prohibitions.</p>
+      </div>
+      <div data-rv data-tilt data-d="70" style="padding:22px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .35s ease,transform .35s cubic-bezier(.2,.8,.2,1);will-change:transform">
+        <svg width="20" height="20" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-code"></use></svg>
+        <div data-i18n="src.jamendo.h" style="margin-top:14px;font:600 15.5px/1.25 Geist,sans-serif;letter-spacing:-.01em">Jamendo: implemented, disabled</div>
+        <p data-i18n="src.jamendo.p" style="margin:9px 0 0;font:300 13.5px/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">The module is implemented and covered by tests, but disabled in this version. The cause is not technical: the API is free for non-commercial uses only, and the terms define commercial use as «any monetary compensation». The module is already arranged for streaming playback alone — the terms prohibit caching and offline access — through aether-net::FlussoHttp, which plays a track without writing it to disk.</p>
+      </div>
+      <div data-rv data-tilt data-d="140" style="padding:22px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .35s ease,transform .35s cubic-bezier(.2,.8,.2,1);will-change:transform">
+        <svg width="20" height="20" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-alert"></use></svg>
+        <div data-i18n="src.gap.h" style="margin-top:14px;font:600 15.5px/1.25 Geist,sans-serif;letter-spacing:-.01em">What no free source covers</div>
+        <p data-i18n="src.gap.p" style="margin:9px 0 0;font:300 13.5px/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">No free-access source distributes the commercial catalogue. This is not a technical limit that can be worked around: it is the reason other programs carry out operations not permitted by the terms of the services they use. Aether covers what it can through lawful channels and, for the rest of the catalogue, indicates where to buy it.</p>
+      </div>
+    </div>
+
+    <h3 data-rv data-i18n="src.excl.h" style="margin:clamp(44px,7vw,68px) 0 0;font:600 clamp(21px,2.4vw,28px)/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Excluded sources</h3>
+    <div style="margin-top:22px;display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px">
+      <sc-for list="{{ excluded }}" as="e" hint-placeholder-count="2">
+        <div data-rv style="padding:24px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf2,#16161f);transition:background-color .7s ease,border-color .7s ease">
+          <div style="display:flex;align-items:center;gap:9px">
+            <svg width="16" height="16" style="color:var(--ae-t3,rgba(255,255,255,.46))"><use href="#a-alert"></use></svg>
+            <span style="font:600 15.5px/1.2 Geist,sans-serif;letter-spacing:-.01em">{{ e.t }}</span>
+          </div>
+          <p style="margin:11px 0 0;font:300 13.5px/1.68 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">{{ e.b }}</p>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+</section>
+
 <section id="tour" data-tour style="position:relative;z-index:1;height:300vh">
   <div data-tour-sticky style="position:sticky;top:0;height:100vh;display:flex;flex-direction:column;justify-content:center;overflow:hidden;padding:0 clamp(16px,4vw,34px)">
     <div style="max-width:1180px;margin:0 auto;width:100%">
       <div style="display:flex;align-items:baseline;gap:16px;flex-wrap:wrap">
-        <div style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s2.eyebrow">02 — The app</div>
+        <div style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s2.eyebrow">03 — The interface</div>
         <div style="display:flex;gap:8px">
           <span data-tab="0" data-i18n="ui.library" style="padding:6px 13px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:550 11.5px/1.3 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));transition:all .4s ease">Library</span>
           <span data-tab="1" data-i18n="ui.nowplaying" style="padding:6px 13px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:550 11.5px/1.3 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));transition:all .4s ease">Now playing</span>
@@ -319,7 +374,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
                 </div>
               </div>
               <div style="padding:16px 18px;overflow:hidden">
-                <div style="display:flex;align-items:baseline;gap:10px"><div data-i18n="ui.albums" style="font:600 22px/1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Albums</div><span data-i18n="ui.sortedadded" style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">412 · sorted by added</span></div>
+                <div style="display:flex;align-items:baseline;gap:10px"><div data-i18n="ui.albums" style="font:600 22px/1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Albums</div><span data-i18n="ui.sortedadded" style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">935 · sorted by date added</span></div>
                 <div style="margin-top:14px;display:grid;grid-template-columns:repeat(5,1fr);gap:12px">
                   <sc-for list="{{ covers }}" as="c" hint-placeholder-count="10">
                     <div>
@@ -359,7 +414,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
                 <div style="margin-top:7px;display:flex;justify-content:space-between;font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))"><span>3:12</span><span>5:18</span></div>
                 <div style="margin-top:22px;padding:13px 15px;border-radius:12px;border:1px solid var(--ae-line,rgba(255,255,255,.14));display:flex;gap:11px;align-items:flex-start;transition:border-color .7s ease">
                   <svg width="15" height="15" style="flex:none;margin-top:2px;color:var(--ae-acc,#8b7cf6)"><use href="#a-bolt"></use></svg>
-                  <div><div style="font:550 12px/1.3 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))" data-i18n="ui.npx">Synced lyrics, and the room behind them</div><div data-i18n="ui.npxb" style="margin-top:3px;font-size:11px;color:var(--ae-t3,rgba(255,255,255,.46))">The words come from LRCLIB — no key, no account. Behind them is the spectrum, which is the same scene running behind this page.</div></div>
+                  <div><div style="font:550 12px/1.3 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))" data-i18n="ui.npx">Spectrum analyser</div><div data-i18n="ui.npxb" style="margin-top:3px;font-size:11px;color:var(--ae-t3,rgba(255,255,255,.46))">The samples are taken after the equaliser and before the volume control: changes to the equalisation curve are visible in the bars, changes to the volume are not.</div></div>
                 </div>
               </div>
             </div>
@@ -368,7 +423,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
           <div data-tscreen="2" style="position:absolute;left:50%;top:50%;width:1000px;height:620px;transform-origin:50% 50%;border-radius:14px;border:1px solid var(--ae-line,rgba(255,255,255,.10));overflow:hidden;background:var(--ae-bg,#09090d);box-shadow:0 50px 110px -34px rgba(0,0,0,.9);will-change:transform,opacity;transition:background-color .7s ease,border-color .7s ease">
             <div style="display:grid;grid-template-columns:1fr 280px;height:100%">
               <div style="padding:20px 22px;overflow:hidden">
-                <div style="display:flex;align-items:baseline;gap:10px"><div data-i18n="ui.artists" style="font:600 22px/1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Artists</div><span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">287</span></div>
+                <div style="display:flex;align-items:baseline;gap:10px"><div data-i18n="ui.artists" style="font:600 22px/1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Artists</div></div>
                 <div style="margin-top:16px;display:flex;flex-direction:column;gap:2px">
                   <sc-for list="{{ artists }}" as="ar" hint-placeholder-count="8">
                     <div style="display:grid;grid-template-columns:38px 1fr 90px 60px;gap:12px;align-items:center;padding:7px 9px;border-radius:10px;background:{{ ar.bg }}">
@@ -390,7 +445,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
                     <div style="width:100%;aspect-ratio:1;border-radius:7px;background:linear-gradient(145deg,{{ s.c1 }},{{ s.c2 }})"></div>
                   </sc-for>
                 </div>
-                <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--ae-line,rgba(255,255,255,.08));font-size:11.5px;color:var(--ae-t2,rgba(255,255,255,.62));line-height:1.55" data-i18n="ui.artistnote">No biography, no similar-artist grid. Every number on this screen comes from your own files — nothing here is fetched to draw it.</div>
+                <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--ae-line,rgba(255,255,255,.08));font-size:11.5px;color:var(--ae-t2,rgba(255,255,255,.62));line-height:1.55" data-i18n="ui.artistnote">No biography, no similar-artist grid. Every figure on this screen is counted from the tags of the local files; nothing is downloaded in order to draw it.</div>
               </div>
             </div>
           </div>
@@ -403,10 +458,10 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
 
 <section id="studio" style="position:relative;z-index:1;padding:clamp(80px,12vw,120px) clamp(16px,4vw,34px) clamp(70px,11vw,110px)">
   <div style="max-width:1180px;margin:0 auto">
-    <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s3.eyebrow">03 — Skin Studio</div>
+    <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s3.eyebrow">04 — Personalisation</div>
     <div data-stack data-cols="1fr minmax(280px,420px)" style="margin-top:18px;display:grid;grid-template-columns:1fr minmax(280px,420px);gap:clamp(18px,3vw,46px);align-items:end">
-      <h2 data-rv data-d="70" style="margin:0;max-width:20ch;font:600 clamp(34px,4.6vw,62px)/1.02 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="s3.h2">Pick a skin. Watch this whole page obey it.</h2>
-      <p data-rv data-d="140" style="margin:0;font:300 15.5px/1.65 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="s3.p">A skin is a validated data document, not a stylesheet. 47 tokens, 52 named parts, 11 effects with a declared cost. The app parses it, warns you about it, and compiles it to deterministic CSS.</p>
+      <h2 data-rv data-d="70" style="margin:0;max-width:20ch;font:600 clamp(34px,4.6vw,62px)/1.02 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="s3.h2">A skin redefines 52 components. It is not an alternation between a light theme and a dark one.</h2>
+      <p data-rv data-d="140" style="margin:0;font:300 15.5px/1.65 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="s3.p">A skin is a validated data document, not a stylesheet: 47 tokens, 52 named parts and 11 effects with a declared cost. The program parses it, reports its warnings and compiles it to deterministic CSS.</p>
     </div>
 
     <div data-skins data-rv data-d="200" style="margin-top:40px;display:flex;flex-wrap:wrap;gap:12px">
@@ -459,7 +514,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
         <div data-rv data-d="140" style="border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf,#0e0e14);padding:18px;transition:background-color .7s ease,border-color .7s ease">
           <div style="display:flex;align-items:center;gap:9px">
             <svg width="15" height="15" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-check"></use></svg>
-            <span data-i18n="studio.contrast" style="font:550 12.5px/1 Geist,sans-serif">Contrast &amp; cost, checked live</span>
+            <span data-i18n="studio.contrast" style="font:550 12.5px/1 Geist,sans-serif">Contrast and cost, computed before export</span>
           </div>
           <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
             <div style="display:flex;align-items:center;gap:11px">
@@ -505,8 +560,8 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
 
 <section id="format" style="position:relative;z-index:1;padding:0 clamp(16px,4vw,34px) clamp(80px,12vw,120px)">
   <div style="max-width:1180px;margin:0 auto;padding:clamp(26px,5vw,52px);border-radius:22px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf,#0e0e14);transition:background-color .7s ease,border-color .7s ease">
-    <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s4.eyebrow">04 — The contract</div>
-    <h2 data-rv data-d="70" style="margin:16px 0 0;max-width:24ch;font:600 clamp(30px,3.6vw,46px)/1.06 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em" data-i18n="s4.h2">A skin cannot break the app. That's a property of the format, not a promise.</h2>
+    <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s4.eyebrow">05 — The format</div>
+    <h2 data-rv data-d="70" style="margin:16px 0 0;max-width:24ch;font:600 clamp(30px,3.6vw,46px)/1.06 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em" data-i18n="s4.h2">A skin document cannot break the program: the format does not permit it.</h2>
     <div style="margin-top:40px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:26px">
       <sc-for list="{{ stats }}" as="s" hint-placeholder-count="4">
         <div data-rv>
@@ -521,10 +576,10 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
 
 <section id="roadmap" style="position:relative;z-index:1;padding:0 clamp(16px,4vw,34px) clamp(84px,13vw,130px)">
   <div style="max-width:1180px;margin:0 auto">
-    <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s5.eyebrow">05 — Roadmap</div>
+    <div data-rv style="font:500 9.5px/1 'Geist Mono',monospace;letter-spacing:.2em;text-transform:uppercase;color:var(--ae-acc,#8b7cf6)" data-i18n="s5.eyebrow">06 — Known limits and planned work</div>
     <div data-stack data-cols="1fr minmax(280px,400px)" style="margin-top:18px;display:grid;grid-template-columns:1fr minmax(280px,400px);gap:clamp(18px,3vw,46px);align-items:end">
-      <h2 data-rv data-d="70" style="margin:0;max-width:20ch;font:600 clamp(34px,4.4vw,58px)/1.03 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="s5.h2">What isn't there yet, and why.</h2>
-      <p data-rv data-d="130" style="margin:0;font:300 15px/1.65 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="s5.p">Five of the 52 registered parts don't render today, and one of them on purpose. They stay in the registry so that skins written now still fit the app later.</p>
+      <h2 data-rv data-d="70" style="margin:0;max-width:20ch;font:600 clamp(34px,4.4vw,58px)/1.03 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="s5.h2">What does not exist yet, and for what reason.</h2>
+      <p data-rv data-d="130" style="margin:0;font:300 15px/1.65 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="s5.p">Two questions require a written clarification before publication: whether donations constitute commercial use for the purposes of Jamendo&#39;s terms, and of the Deezer API used for metadata. In the absence of an answer the Jamendo module stays behind a Cargo feature that can be switched off.</p>
     </div>
     <div data-rv data-d="60" style="margin-top:44px;display:grid;grid-template-columns:repeat(auto-fit,minmax(238px,1fr));gap:14px">
       <sc-for list="{{ platforms }}" as="p" hint-placeholder-count="4">
@@ -541,6 +596,20 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
           </div>
         </div>
       </sc-for>
+    </div>
+
+    <h3 data-rv data-i18n="lim.h3" style="margin:clamp(44px,7vw,72px) 0 0;font:600 clamp(21px,2.4vw,28px)/1.1 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">Known limits</h3>
+    <div style="margin-top:22px;display:flex;flex-direction:column">
+      <sc-for list="{{ limits }}" as="l" hint-placeholder-count="5">
+        <div data-rv data-stack data-cols="minmax(190px,270px) 1fr" style="display:grid;grid-template-columns:minmax(190px,270px) 1fr;gap:8px clamp(14px,2.6vw,30px);padding:20px 6px;border-top:1px solid var(--ae-line,rgba(255,255,255,.08));transition:border-color .7s ease">
+          <div style="display:flex;gap:10px;align-items:flex-start">
+            <svg width="14" height="14" style="flex:none;margin-top:4px;color:var(--ae-t3,rgba(255,255,255,.46))"><use href="#a-alert"></use></svg>
+            <span style="font:600 15px/1.35 Geist,sans-serif;letter-spacing:-.01em">{{ l.t }}</span>
+          </div>
+          <p style="margin:0;font:300 13.5px/1.65 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">{{ l.b }}</p>
+        </div>
+      </sc-for>
+      <div style="border-top:1px solid var(--ae-line,rgba(255,255,255,.08))"></div>
     </div>
 
     <div data-rv data-d="80" style="margin-top:clamp(44px,7vw,72px);display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
@@ -565,8 +634,8 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
     <div style="position:absolute;inset:-40% -10% auto;height:120%;background:radial-gradient(60% 60% at 50% 0%,var(--ae-glowA,rgba(139,124,246,.30)),transparent 70%);animation:ae-drift 18s ease-in-out infinite;pointer-events:none"></div>
     <div style="position:relative">
       <svg width="30" height="30" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mark"></use></svg>
-      <h2 style="margin:22px auto 0;max-width:17ch;font:600 clamp(32px,4.2vw,54px)/1.04 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="access.h2">It is out. Windows, and unsigned.</h2>
-      <p style="margin:16px auto 0;max-width:52ch;font:300 15.5px/1.62 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="access.p">The installer is on the releases page. It is not code-signed, so SmartScreen will say «Windows protected your PC»: More info, then Run anyway. That warning is honest — you cannot check who built it — and the only thing offered in exchange is that the source is right there and compiles on its own. Everything happens at github.com/FedericoBaratti/Aether.</p>
+      <h2 style="margin:22px auto 0;max-width:19ch;font:600 clamp(32px,4.2vw,54px)/1.04 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="access.h2">Version 2.1.0, for Windows, unsigned.</h2>
+      <p style="margin:16px auto 0;max-width:56ch;font:300 15.5px/1.62 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="access.p">The installer for Windows is available among the assets of the latest release: an NSIS executable. It is not signed with a code-signing certificate, so SmartScreen blocks its execution on first launch: «More info», then «Run anyway». The reasons for the absence of the signature are stated among the known limits.</p>
       <!-- Qui c'era un modulo che chiedeva un indirizzo email, prometteva «una
            mail quando si apre la tua ondata» e poi **non lo mandava da nessuna
            parte**: nessun backend, nessuna informativa, e il tasto diventava
@@ -574,20 +643,38 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
            che non chiederlo, quindi non lo si chiede più. Chi vuole sapere
            quando esce guarda il repository, che è un posto vero. -->
       <a href="https://github.com/FedericoBaratti/Aether/releases/latest" target="_blank" rel="noopener" data-magnet style="margin:32px auto 0;display:inline-flex;align-items:center;gap:9px;height:50px;padding:0 26px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
-        <svg width="16" height="16"><use href="#a-down"></use></svg><span data-i18n="access.btn">Download for Windows</span>
+        <svg width="16" height="16"><use href="#a-down"></use></svg><span data-i18n="access.btn">Download 2.1.0 for Windows</span>
       </a>
-      <div data-i18n="access.note" style="margin:14px 0 0;font:11.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">No mailing list, no signup form. An address, and you are the one who writes.</div>
+      <p data-i18n="access.note" style="margin:16px auto 0;max-width:56ch;font:300 12.5px/1.6 Geist,sans-serif;color:var(--ae-t3,rgba(255,255,255,.46));text-wrap:pretty">The changes introduced by each version are listed in CHANGELOG.md. Every version that introduces a database migration entails an increment of the minor number, because migrations are not reversible.</p>
+
+      <div data-rv style="margin:34px auto 0;max-width:820px;padding:24px clamp(18px,3vw,28px);border-radius:18px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf2,#16161f);text-align:left;transition:background-color .7s ease,border-color .7s ease">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <h3 data-i18n="rel.h" style="margin:0;font:600 clamp(19px,2.2vw,25px)/1.15 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">What 2.1.0 changes</h3>
+          <span data-i18n="rel.meta" style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">Released 3 September 2026 · two database migrations</span>
+        </div>
+        <div style="margin-top:18px;display:flex;flex-direction:column;gap:11px">
+          <sc-for list="{{ release }}" as="r" hint-placeholder-count="6">
+            <div style="display:flex;gap:11px;align-items:flex-start">
+              <svg width="14" height="14" style="flex:none;margin-top:4px;color:var(--ae-acc,#8b7cf6)"><use href="#a-check"></use></svg>
+              <span style="font:300 13.5px/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">{{ r.t }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <a href="https://github.com/FedericoBaratti/Aether/blob/main/CHANGELOG.md" target="_blank" rel="noopener" style="margin:18px 0 0;display:inline-flex;align-items:center;gap:8px;font:500 12.5px/1 Geist,sans-serif">
+          <span data-i18n="rel.link">Read the full changelog</span><svg width="14" height="14"><use href="#a-chev-r"></use></svg>
+        </a>
+      </div>
       <div style="margin:30px 0 0;display:flex;justify-content:center;gap:12px;flex-wrap:wrap">
         <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" data-magnet style="display:flex;align-items:center;gap:9px;height:42px;padding:0 20px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));color:var(--ae-t1,rgba(255,255,255,.94));font:550 13.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),border-color .3s ease">
           <svg width="15" height="15" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-star"></use></svg><span data-i18n="nav.star">Star on GitHub</span><span style="font:11px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">FedericoBaratti/Aether</span>
         </a>
-        <a href="#format" style="display:flex;align-items:center;gap:8px;height:42px;padding:0 20px;border-radius:99px;color:var(--ae-t2,rgba(255,255,255,.62));font:500 13.5px/1 Geist,sans-serif"><span data-i18n="access.spec">Read the skin spec</span><svg width="14" height="14"><use href="#a-chev-r"></use></svg></a>
+        <a href="#format" style="display:flex;align-items:center;gap:8px;height:42px;padding:0 20px;border-radius:99px;color:var(--ae-t2,rgba(255,255,255,.62));font:500 13.5px/1 Geist,sans-serif"><span data-i18n="access.spec">Read the skin format</span><svg width="14" height="14"><use href="#a-chev-r"></use></svg></a>
       </div>
       <div style="margin:34px 0 0;padding-top:30px;border-top:1px solid var(--ae-line,rgba(255,255,255,.10));display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));gap:14px;text-align:left;transition:border-color .7s ease">
         <div style="padding:22px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf2,#16161f);transition:background-color .7s ease,border-color .7s ease">
           <svg width="20" height="20" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mail"></use></svg>
-          <div data-i18n="access.bugs.h" style="margin-top:14px;font:600 15.5px/1.25 Geist,sans-serif;letter-spacing:-.01em">Bugs and ideas</div>
-          <p data-i18n="access.bugs.p" style="margin:8px 0 0;font:300 13.5px/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">It is out, and it is still being built. If something breaks, or you know what it should do next, write to me — the same address for both.</p>
+          <div data-i18n="access.bugs.h" style="margin-top:14px;font:600 15.5px/1.25 Geist,sans-serif;letter-spacing:-.01em">Reports and proposals</div>
+          <p data-i18n="access.bugs.p" style="margin:8px 0 0;font:300 13.5px/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">The program is released and still under development. Reports of failures and proposals for what it should do next are received at the same address. The procedure for reporting vulnerabilities is in SECURITY.md.</p>
           <a href="mailto:barattifederico@gmail.com" data-magnet style="margin:16px 0 0;display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 16px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.14));color:var(--ae-t1,rgba(255,255,255,.94));font:500 12px/1 'Geist Mono',monospace;transition:transform .25s cubic-bezier(.2,.8,.2,1),border-color .3s ease">
             <svg width="14" height="14" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mail"></use></svg>barattifederico@gmail.com
           </a>
@@ -595,7 +682,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
         <div style="padding:22px;border-radius:16px;border:1px solid var(--ae-line,rgba(255,255,255,.08));background:var(--ae-surf2,#16161f);transition:background-color .7s ease,border-color .7s ease">
           <svg width="20" height="20" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-heart"></use></svg>
           <div data-i18n="access.donate.h" style="margin-top:14px;font:600 15.5px/1.25 Geist,sans-serif;letter-spacing:-.01em">Free, and it stays free</div>
-          <p data-i18n="access.donate.p" style="margin:8px 0 0;font:300 13.5px/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">There will be no paid version: the Live Music Archive carries a non-commercial clause, and charging for the app would break it. Donations support the work, never the music.</p>
+          <p data-i18n="access.donate.p" style="margin:8px 0 0;font:300 13.5px/1.6 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty">There is no paid version and none is planned: two of the integrated sources, the Live Music Archive and Jamendo, are subject to non-commercial clauses that a paid version would violate. The constraint is stated explicitly in the terms of use.</p>
           <a href="https://github.com/sponsors/FedericoBaratti" target="_blank" rel="noopener" data-magnet style="margin:16px 0 0;display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 18px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 13px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
             <svg width="14" height="14"><use href="#a-heart"></use></svg><span data-i18n="access.donate.btn">Support the development</span>
           </a>
@@ -608,17 +695,22 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
 <footer style="position:relative;z-index:1;padding:30px clamp(16px,4vw,34px) 44px;padding-bottom:calc(44px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--ae-line,rgba(255,255,255,.08));transition:border-color .7s ease">
   <div style="max-width:1180px;margin:0 auto;display:flex;flex-wrap:wrap;gap:14px 18px;align-items:center">
     <div style="display:flex;align-items:center;gap:9px"><svg width="17" height="17" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mark"></use></svg><span style="font:600 13px/1 Geist,sans-serif">Aether</span></div>
-    <span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="footer.tag">Local-first music player · Out for Windows, in development</span>
+    <span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="footer.tag">Music player for Windows, written in Rust · version 2.1.0</span>
     <div style="flex:1"></div>
     <div style="display:flex;flex-wrap:wrap;gap:12px 20px;font:500 12.5px/1 Geist,sans-serif">
-      <a href="#tour" data-i18n="nav.app" style="color:var(--ae-t2,rgba(255,255,255,.62))">The app</a>
+      <a href="#sources" data-i18n="nav.sources" style="color:var(--ae-t2,rgba(255,255,255,.62))">Sources</a>
+      <a href="#tour" data-i18n="nav.app" style="color:var(--ae-t2,rgba(255,255,255,.62))">The program</a>
       <a href="#studio" data-i18n="nav.studio" style="color:var(--ae-t2,rgba(255,255,255,.62))">Skin Studio</a>
-      <a href="#roadmap" data-i18n="nav.roadmap" style="color:var(--ae-t2,rgba(255,255,255,.62))">Roadmap</a>
-      <a href="#access" data-i18n="nav.badge" style="color:var(--ae-t2,rgba(255,255,255,.62))">Out now · Windows</a>
+      <a href="#format" data-i18n="nav.format" style="color:var(--ae-t2,rgba(255,255,255,.62))">Format</a>
+      <a href="#roadmap" data-i18n="nav.roadmap" style="color:var(--ae-t2,rgba(255,255,255,.62))">Limits</a>
       <a href="mailto:barattifederico@gmail.com" data-i18n="footer.bugs" style="color:var(--ae-t2,rgba(255,255,255,.62))">Contact</a>
       <a href="https://github.com/sponsors/FedericoBaratti" target="_blank" rel="noopener" data-i18n="footer.donate" style="color:var(--ae-t2,rgba(255,255,255,.62))">Donate</a>
       <a href="https://github.com/FedericoBaratti/Aether" target="_blank" rel="noopener" style="color:var(--ae-t2,rgba(255,255,255,.62))">GitHub</a>
       <a href="https://github.com/FedericoBaratti/Aether/releases" target="_blank" rel="noopener" style="color:var(--ae-t2,rgba(255,255,255,.62))">Releases</a>
+      <a href="https://github.com/FedericoBaratti/Aether/blob/main/CHANGELOG.md" target="_blank" rel="noopener" data-i18n="footer.changelog" style="color:var(--ae-t2,rgba(255,255,255,.62))">Changelog</a>
+      <a href="https://github.com/FedericoBaratti/Aether/blob/main/PRIVACY.md" target="_blank" rel="noopener" data-i18n="footer.privacy" style="color:var(--ae-t2,rgba(255,255,255,.62))">Privacy</a>
+      <a href="https://github.com/FedericoBaratti/Aether/blob/main/TERMS.md" target="_blank" rel="noopener" data-i18n="footer.terms" style="color:var(--ae-t2,rgba(255,255,255,.62))">Terms</a>
+      <a href="https://github.com/FedericoBaratti/Aether/blob/main/LICENSE" target="_blank" rel="noopener" data-i18n="footer.licence" style="color:var(--ae-t2,rgba(255,255,255,.62))">Licence · MIT</a>
     </div>
   </div>
   <div data-rv data-d="80" style="width:100%;margin-top:24px;display:flex;align-items:center;justify-content:center;gap:9px;flex-wrap:wrap;text-align:center">
@@ -686,311 +778,475 @@ const TOKEN_VARS = ['--ae-bg', '--ae-surf', '--ae-raise', '--ae-line', '--ae-t1'
 
 const I18N = {
   en: {
-    'nav.badge': 'Out now · Windows', 'nav.app': 'The app', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Roadmap', 'nav.star': 'Star on GitHub',
-    'hero.badge': 'A local music player with a skin engine',
-    'hero.l1': 'Your library.', 'hero.l2': 'Your machine.', 'hero.l3': 'Your look.',
-    'hero.lede': 'Aether plays the files you already own — no telemetry, no account required. What you are missing, it fetches from the free catalogues — the Internet Archive and Audius — and every track it brings in carries the licence it came under. Every surface it draws is a token you can redefine, in a skin file the app validates before it renders a single pixel.',
-    'hero.cta1': 'See where it stands', 'hero.m1': 'Out for Windows · still in development', 'hero.m3': 'Licence-aware by design',
+    'nav.badge': '2.1.0 · Windows', 'nav.sources': 'Sources', 'nav.app': 'The program', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Limits', 'nav.star': 'Star on GitHub',
+    'hero.badge': 'Music player for Windows, written in Rust',
+    'hero.l1': 'A music player', 'hero.l2': 'for Windows,', 'hero.l3': 'written in Rust.',
+    'hero.lede': "Aether plays the audio files already present on the disk. Starting from a playlist — exported from a Spotify archive, read from an M3U file or given as a link — it compares the tracks against the local library and retrieves the missing ones from the free-access catalogues: Internet Archive and Audius. Every track acquired keeps the licence of the source it came from. Tracks unavailable in any free catalogue are collected in a purchase list, with links to the shops that pay the authors.",
+    'hero.cta1': 'Installation', 'hero.m1': 'Version 2.1.0 · Windows · in development', 'hero.m3': 'Each track keeps the licence of its source',
     'ui.albums': 'Albums', 'ui.albumsLow': 'albums', 'ui.tracks': 'Tracks', 'ui.artists': 'Artists', 'ui.fav': 'Favourites', 'ui.settings': 'Settings',
     'ui.playlists': 'Playlists', 'ui.pl1': 'Late shift', 'ui.pl2': 'Vinyl rips 2019', 'ui.pl3': 'Kitchen, loud', 'ui.pl4': 'Ambient, long',
-    'ui.scan': 'Scan complete', 'ui.scanmeta': '5 108 tracks · 41 min ago', 'ui.library': 'Library', 'ui.libmeta': '5 108 · 14 d 6 h',
+    'ui.scan': 'Scan complete', 'ui.scanmeta': '1 465 tracks · 41 min ago', 'ui.library': 'Library', 'ui.libmeta': '1 465 · 4 d 2 h',
     'ui.colTitle': 'Title', 'ui.colAlbum': 'Album', 'ui.colTime': 'Time', 'ui.upnext': 'Up next', 'ui.search': 'Search…',
-    'ui.nowplaying': 'Now playing', 'ui.sortedadded': '412 · sorted by added', 'ui.gapless': 'Gapless',
-    'ui.npx': 'Synced lyrics, and the room behind them', 'ui.npxb': 'The words come from LRCLIB — no key, no account. Behind them is the spectrum, which is the same scene running behind this page.',
+    'ui.nowplaying': 'Now playing', 'ui.sortedadded': '935 · sorted by date added', 'ui.gapless': 'Gapless',
+    'ui.npx': 'Spectrum analyser', 'ui.npxb': 'The samples are taken after the equaliser and before the volume control: changes to the equalisation curve are visible in the bars, changes to the volume are not.',
     'ui.artistmeta': '9 albums · 118 tracks · 8 h 12 m',
-    'ui.artistnote': 'No biography, no similar-artist grid. Every number on this screen comes from your own files — nothing here is fetched to draw it.',
-    's1.eyebrow': '01 — The idea', 's1.h2': 'A player that answers to the person who owns the files.',
-    's2.eyebrow': '02 — The app',
-    's3.eyebrow': '03 — Skin Studio', 's3.h2': 'Pick a skin. Watch this whole page obey it.',
-    's3.p': 'A skin is a validated data document, not a stylesheet. 47 tokens, 52 named parts, 11 effects with a declared cost. The app parses it, warns you about it, and compiles it to deterministic CSS.',
-    'studio.valid': 'valid', 'studio.tokenreg': 'Token registry', 'studio.tokenmeta': '47 tokens · 21 required', 'studio.contrast': 'Contrast & cost, checked live', 'studio.budget': 'Effect budget',
-    's4.eyebrow': '04 — The contract', 's4.h2': "A skin cannot break the app. That's a property of the format, not a promise.",
-    's5.eyebrow': '05 — Roadmap', 's5.h2': "What isn't there yet, and why.",
-    's5.p': "Five of the 52 registered parts don't render today, and one of them on purpose. They stay in the registry so that skins written now still fit the app later.",
+    'ui.artistnote': 'No biography, no similar-artist grid. Every figure on this screen is counted from the tags of the local files; nothing is downloaded in order to draw it.',
+    'ui.mocknote': 'The screens on this page are a reproduction of the interface. The figures are those of the library used for the screenshots in the README: 935 albums, 1 465 tracks.',
+    's1.eyebrow': '01 — Overview', 's1.h2': 'The files already present on the disk, and the catalogues that allow a copy.',
+    'src.eyebrow': '02 — Where the music comes from',
+    'src.h2': 'Six sources. Each one declares what it holds and whether a local copy is permitted.',
+    'src.colSource': 'Source', 'src.colContent': 'Contents', 'src.colCopy': 'Local copy',
+    'src.audius.h': 'Audius: three distinct permissions',
+    'src.audius.p': 'On Audius the permission is determined by the artist for each individual track. There are three distinct controls: the download switch and two gates, which can make access conditional on following the artist or on holding a token. Aether checks all three and considers permission granted only in the absence of prohibitions.',
+    'src.jamendo.h': 'Jamendo: implemented, disabled',
+    'src.jamendo.p': 'The module is implemented and covered by tests, but disabled in this version. The cause is not technical: the API is free for non-commercial uses only, and the terms define commercial use as «any monetary compensation». The module is already arranged for streaming playback alone — the terms prohibit caching and offline access — through aether-net::FlussoHttp, which plays a track without writing it to disk.',
+    'src.gap.h': 'What no free source covers',
+    'src.gap.p': 'No free-access source distributes the commercial catalogue. This is not a technical limit that can be worked around: it is the reason other programs carry out operations not permitted by the terms of the services they use. Aether covers what it can through lawful channels and, for the rest of the catalogue, indicates where to buy it.',
+    'src.excl.h': 'Excluded sources',
+    's2.eyebrow': '03 — The interface',
+    's3.eyebrow': '04 — Personalisation', 's3.h2': 'A skin redefines 52 components. It is not an alternation between a light theme and a dark one.',
+    's3.p': 'A skin is a validated data document, not a stylesheet: 47 tokens, 52 named parts and 11 effects with a declared cost. The program parses it, reports its warnings and compiles it to deterministic CSS.',
+    'studio.valid': 'valid', 'studio.tokenreg': 'Token registry', 'studio.tokenmeta': '47 tokens · 21 required', 'studio.contrast': 'Contrast and cost, computed before export', 'studio.budget': 'Effect budget',
+    's4.eyebrow': '05 — The format', 's4.h2': 'A skin document cannot break the program: the format does not permit it.',
+    's5.eyebrow': '06 — Known limits and planned work', 's5.h2': 'What does not exist yet, and for what reason.',
+    's5.p': "Two questions require a written clarification before publication: whether donations constitute commercial use for the purposes of Jamendo's terms, and of the Deezer API used for metadata. In the absence of an answer the Jamendo module stays behind a Cargo feature that can be switched off.",
+    'lim.h3': 'Known limits',
     'win.h3': 'Windows — implementation order', 'win.meta': '13 items · 9 done · 1 in progress · 3 to go',
-    'access.h2': 'It is out. Windows, and unsigned.',
-    'access.p': "The installer is on the releases page. It is not code-signed, so SmartScreen will say «Windows protected your PC»: More info, then Run anyway. That warning is honest — you cannot check who built it — and the only thing offered in exchange is that the source is right there and compiles on its own. Everything happens at github.com/FedericoBaratti/Aether.",
-    'access.btn': 'Download for Windows', 'access.note': 'No mailing list, no signup form. An address, and you are the one who writes.',
-    'access.spec': 'Read the skin spec',
-    'access.bugs.h': 'Bugs and ideas',
-    'access.bugs.p': 'It is out, and it is still being built. If something breaks, or you know what it should do next, write to me — the same address for both.',
+    'access.h2': 'Version 2.1.0, for Windows, unsigned.',
+    'access.p': 'The installer for Windows is available among the assets of the latest release: an NSIS executable. It is not signed with a code-signing certificate, so SmartScreen blocks its execution on first launch: «More info», then «Run anyway». The reasons for the absence of the signature are stated among the known limits.',
+    'access.btn': 'Download 2.1.0 for Windows',
+    'access.note': 'The changes introduced by each version are listed in CHANGELOG.md. Every version that introduces a database migration entails an increment of the minor number, because migrations are not reversible.',
+    'rel.h': 'What 2.1.0 changes', 'rel.meta': 'Released 3 September 2026 · two database migrations', 'rel.link': 'Read the full changelog',
+    'access.spec': 'Read the skin format',
+    'access.bugs.h': 'Reports and proposals',
+    'access.bugs.p': 'The program is released and still under development. Reports of failures and proposals for what it should do next are received at the same address. The procedure for reporting vulnerabilities is in SECURITY.md.',
     'access.donate.h': 'Free, and it stays free',
-    'access.donate.p': 'There will be no paid version: the Live Music Archive carries a non-commercial clause, and charging for the app would break it. Donations support the work, never the music.',
+    'access.donate.p': 'There is no paid version and none is planned: two of the integrated sources, the Live Music Archive and Jamendo, are subject to non-commercial clauses that a paid version would violate. The constraint is stated explicitly in the terms of use.',
     'access.donate.btn': 'Support the development',
-    'footer.bugs': 'Contact', 'footer.donate': 'Donate',
-    'footer.tag': 'Local-first music player · Out for Windows, in development', 'footer.updated': 'Last updated',
-    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Gapless playback', 'Crossfade', 'ReplayGain', '10-band EQ', 'Synced lyrics', 'Scrobbling', 'Smart playlists', 'Drive backup', 'Embedded art', 'Rust core', '5 000 tracks, no lag', 'Local-first', 'No telemetry'],
+    'footer.bugs': 'Contact', 'footer.donate': 'Donate', 'footer.changelog': 'Changelog', 'footer.privacy': 'Privacy', 'footer.terms': 'Terms', 'footer.licence': 'Licence · MIT',
+    'footer.tag': 'Music player for Windows, written in Rust · version 2.1.0', 'footer.updated': 'Last updated',
+    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Gapless playback', 'Crossfade', 'ReplayGain', 'Ten-band equaliser', 'Synced lyrics', 'Scrobbling', 'Smart playlists', 'Drive backup', 'Embedded cover art', 'SQLite', 'MusicBrainz', 'Internet Archive', 'Audius', 'No telemetry', 'MIT'],
     pillars: [
-      { t: 'Nothing leaves the machine', b: 'No account required, no analytics. Your library stays on your disk. When you ask for a missing track, Aether fetches it from a free catalogue and brings back the licence — nothing else.' },
-      { t: 'Dense where it counts', b: '40px rows, air above the list and not between its lines. A library of five thousand tracks scrolls at frame rate, because it is meant to be scrolled.' },
-      { t: 'The markup names its parts', b: 'Every surface the app paints carries a part name. That is what a skin binds to — not a class you guessed from devtools.' },
-      { t: 'Two doors per command', b: 'Right-click is never the only way in. Beside it there is always a visible control or an announced shortcut.' }
+      { t: 'Gapless playback', b: 'A single audio engine, cpal and symphonia, distributed over three threads, with no lock shared between the decoder and the audio callback. ReplayGain, equaliser and a persistent queue.' },
+      { t: 'Library on SQLite', b: 'Incremental scanning with recognition of moved files. Manual and automatic playlists, ratings, favourites and listening history. Reorganisation of the files on disk, with a preview of the rename plan and undo.' },
+      { t: 'No telemetry, no account', b: 'The program communicates with no servers other than those expressly queried by the user: the music catalogues, MusicBrainz, and Google Drive and the scrobbling service only if connected. Every network request the program can make is listed in PRIVACY.md.' },
+      { t: 'Skins, with an integrated editor', b: 'A skin redefines colours, borders, shadows, type weights and corner radii across 52 interface components. The Studio edits it and reports its warnings before export.' }
+    ],
+    sources: [
+      { n: 'Local files', c: 'The main library. The folders indicated by the user are scanned.', l: 'Already in the possession of the user' },
+      { n: 'Internet Archive', c: 'Live Music Archive: over 250 000 concerts by artists who authorised the recording. Netlabels and public domain.', l: "Yes, when the item's licence allows it" },
+      { n: 'Audius', c: 'Tracks published by artists under an open licence.', l: 'Yes, when the artist has enabled downloading and the licence allows it' },
+      { n: 'Spotify GDPR archive', c: 'Playlists, saved tracks and albums, followed artists, complete listening history.', l: 'Metadata, not audio' },
+      { n: 'Playlist files', c: 'M3U, M3U8, PLS.', l: 'The path, not the file' },
+      { n: 'MusicBrainz + Cover Art Archive', c: 'Tags and cover art.', l: 'Free metadata' }
+    ],
+    excluded: [
+      { t: 'YouTube', b: "The YouTube API Developer Policies prohibit the downloading and storage of audiovisual content (§ III.E.1.a: «You must not… download, import, backup, cache, or store copies of YouTube audiovisual content without YouTube's prior written approval»). The same policies further prohibit the separation of the audio from the video (§ III.I.7), playback from a player that is not visible (§ III.I.9) and the retention of metadata beyond thirty days (§ III.E.4). A music player that maintains a persistent library is incompatible with all three clauses. The source is therefore excluded entirely, and not in a reduced version." },
+      { t: 'Unauthorised access to Spotify', b: 'The use of Spotify private endpoints, of reconstructed tokens and of the web player client id constitutes unauthorised access to the service and is excluded. What remains available is the GDPR archive, which Spotify is obliged to supply to the user on request under Article 20 of Regulation (EU) 2016/679, and which contains a listening history more extensive than the one offered by the public API.' }
     ],
     chapters: [
-      { t: 'Library', b: 'Navigate on the left, look in the middle, listen on the right. The three columns never trade places.', pts: [{ t: '412 albums, 5 108 tracks, sorted locally' }, { t: 'Right column is the home of Now Playing' }, { t: 'Search from anywhere with /' }] },
-      { t: 'Now Playing', b: 'Not a second screen — the same part, grown. Cover art is the only coloured thing in the app, and it tints the room.', pts: [{ t: 'Opens from the art, the ⤢ button, or F' }, { t: 'Closes with Esc, the chevron, or the same door' }, { t: 'Behind it, half a minute of spectrum, receding' }] },
-      { t: 'Artists', b: 'Every number on this screen came off your own disk. Nothing is fetched, so nothing is wrong.', pts: [{ t: '287 artists, counted from tags' }, { t: 'No biography, no similar-artist grid' }, { t: 'Albums ordered by year, not by popularity' }] }
+      { t: 'Library', b: 'Navigation on the left, list in the middle, playback on the right. The three columns do not change places.', pts: [{ t: 'Loading is progressive: the following pages are requested automatically' }, { t: 'No numbered pagination' }, { t: 'Search from any screen with /' }] },
+      { t: 'Now playing', b: 'The same part as the right-hand column, enlarged. The spectrum analyser reads the samples after the equaliser and before the volume control.', pts: [{ t: 'Changes to the equalisation curve are visible in the bars, changes to the volume are not' }, { t: 'The bands arrive through a ring buffer that discards excess samples when full' }, { t: 'Synced lyrics from LRCLIB, with no key and no account' }] },
+      { t: 'Artists', b: 'The counts are taken from the tags of the local files.', pts: [{ t: 'No biography, no similar-artist grid' }, { t: 'Albums ordered by year' }, { t: 'Nothing is downloaded in order to draw this screen' }] }
     ],
     skinMeta: { midnight: 'default · 4 effects', rust: 'warm · 6 effects', chlorophyll: 'cold · 3 effects', paper: 'light · 2 effects' },
     ruleWord: 'Rule',
     studioPoints: [
-      { t: 'You cannot write what the format refuses', b: 'Every control is the shape of a type in the crate. No free-text field where the document wants an enum — that is why a skin cannot break the app.' },
-      { t: 'The preview is the app, not a swatch', b: 'It is the real window with the skin applied. Screens you cannot reach by listening — modal, empty, loading — come from a picker.' },
-      { t: 'Cost is visible while you spend it', b: 'Each effect carries its weight next to its name and the surface counts to ten. You find out here, not on a phone dropping frames.' }
+      { t: 'The format refuses what it does not define', b: 'Every control has the shape of a type in the crate. Where the document requires an enum there is no free-text field.' },
+      { t: 'The preview is the program', b: 'It is the real window with the skin applied, and it operates on a test library, not on the library of the user. The screens that cannot be reached by listening, such as modal, empty and loading, are chosen from a picker.' },
+      { t: 'Contrast is counted before export', b: 'The lower bar reports errors, warnings, redrawn components and the number of colour pairs with a contrast ratio below 4.5:1, the recommended legibility threshold. A skin distributed with contrast warnings is therefore the result of a deliberate choice.' }
     ],
     stats: [
-      { t: 'Tokens', b: 'Each with a description and a required flag, read straight from the registry.' },
-      { t: 'Named parts', b: 'Every part declares its layers. Misspell one and the parser suggests the nearest.' },
-      { t: 'Effects', b: 'Blur, glow, grain, noise — each with a declared render cost out of ten.' },
-      { t: 'Warning kinds', b: 'Contrast, cost budget, unused pattern, unused prefab, unkept promise, missing required token — all checked before compile.' }
+      { t: 'Tokens', b: 'Each with a description and a required flag, read from the registry the Studio serves.' },
+      { t: 'Named parts', b: 'Every part declares its layers. A misspelt name makes the parser suggest the nearest one.' },
+      { t: 'Effects', b: 'Solid tint, gradients, hairline grid, scanlines, stripes, dot grid, vignette, chamfer and blur behind: each with a render cost declared out of ten.' },
+      { t: 'Warning kinds', b: 'Contrast, cost budget, unused pattern, unused prefab, unkept promise and missing required token, all checked before compilation.' }
+    ],
+    limits: [
+      { t: 'Code signing for Windows', b: 'In the absence of a certificate, SmartScreen blocks the execution of the installer, which is the main cause of failed installation of independent applications. An OV certificate requires validation of the identity of the applicant and an annual cost.' },
+      { t: 'Jamendo', b: 'The code is present and the tests pass — cargo test -p aether-catalogo --features jamendo — but the feature is disabled pending a formal clarification from licensing@jamendo.com on the treatment of donations as commercial use.' },
+      { t: 'Streaming-only playback', b: 'FlussoHttp is able to read a remote file with positional access, and the audio engine already accepts a stream in place of a path. What is missing is the representation in the library of a track without a local file, and the «Explore» section from which to search for one. As things stand, an Audius track that cannot be downloaded appears in the list but is not played.' },
+      { t: 'macOS and Linux', b: 'The only target of the installer is NSIS: the supported platform is therefore Windows.' },
+      { t: 'Mobile application', b: 'Present in the previous version of the project, not yet rewritten.' }
+    ],
+    release: [
+      { t: 'A network share that stops responding is declared a network failure and no longer a damaged file. Playback stops where it was, and «Retry» resumes from the point at which the music was interrupted.' },
+      { t: 'A scan no longer deletes tracks because a root did not answer: a partial walk counts as an empty one, and nothing is removed.' },
+      { t: 'Opening a file happens outside the library and player locks, with a five-second deadline. The window answers throughout.' },
+      { t: 'An uncaught error in the interface draws what happened and offers a button to reload, instead of leaving a white window, and leaves one line in the log.' },
+      { t: 'A further thirty-eight defects, grouped in the changelog by what they cost the listener rather than by file.' },
+      { t: 'Two migrations, 015_riconcilia and 016_metadati. Migrations only go forward: returning to 2.0.1 requires restoring a copy of the database made before the update.' }
     ],
     platStatus: { out: 'Available', prog: 'In progress', none: 'Not started' },
     road: { done: 'Done', prog: 'In progress', todo: 'To do' },
     roadItems: [
-      'implement Google Drive backup for metadata and skins, so a user can recover everything after a reset.',
-      'implement Spotify account import from the GDPR archive.',
-      'finish Skin Studio.',
-      'implement automatic metadata management and enrichment.',
-      'make layout and graphics fully modular and editable in Skin Studio.',
-      'implement a 10-band octave equalizer with presets.',
-      'implement a graphic enhancement to playback, inspired by SoundCloud.',
-      'implement an automatic lyrics fetching system that builds a synced lyrics database, keyless.',
-      'implement in Skin Studio a system for creating animations anywhere in the app.',
-      'implement smart playlists with rule-based filtering.',
-      'add OpenRouter key in settings for free AI models to generate recommended playlists.',
-      'implement in Skin Studio a tool chat with an LLM for assisted skin creation.',
-      'fix graphic bugs and inconsistencies for a more premium look.'
+      'Google Drive backup for metadata and skins, in order to restore everything after a reset.',
+      'Import of the Spotify account from the GDPR archive.',
+      'Skin Studio, completed.',
+      'Automatic management and enrichment of the metadata.',
+      'Layout and graphics fully modular and editable in the Studio.',
+      'Ten-band octave equaliser with presets.',
+      'Graphic enhancement of the playback screen, on the model of SoundCloud.',
+      'Automatic retrieval of lyrics, building a synced lyrics database, without a key.',
+      'Creation of animations, in the Studio, for any point of the interface.',
+      'Smart playlists with rule-based filtering.',
+      'OpenRouter key in the settings, for free AI models generating recommended playlists.',
+      'A chat with an LLM in the Studio, equipped with tools, for assisted skin creation.',
+      'Graphic defects and inconsistencies, corrected.'
     ]
   },
   it: {
-    'nav.badge': 'Uscito · Windows', 'nav.app': "L'app", 'nav.studio': 'Skin Studio', 'nav.format': 'Formato', 'nav.roadmap': 'Roadmap', 'nav.star': 'Star su GitHub',
-    'hero.badge': 'Un lettore musicale locale con un motore di skin',
-    'hero.l1': 'La tua libreria.', 'hero.l2': 'Il tuo computer.', 'hero.l3': 'Il tuo aspetto.',
-    'hero.lede': "Aether riproduce i file che possiedi già — nessuna telemetria, nessun account obbligatorio. Quel che ti manca lo prende dai cataloghi liberi — l'Internet Archive e Audius — e ogni brano che porta dentro si tiene addosso la licenza sotto cui è arrivato. Ogni superficie che disegna è un token che puoi ridefinire, in un file skin che l'app valida prima di disegnare un solo pixel.",
-    'hero.cta1': "Guarda a che punto è", 'hero.m1': 'Uscito per Windows · ancora in sviluppo', 'hero.m3': 'Le licenze, per progetto',
+    'nav.badge': '2.1.0 · Windows', 'nav.sources': 'Fonti', 'nav.app': 'Il programma', 'nav.studio': 'Skin Studio', 'nav.format': 'Formato', 'nav.roadmap': 'Limiti', 'nav.star': 'Star su GitHub',
+    'hero.badge': 'Lettore musicale per Windows, scritto in Rust',
+    'hero.l1': 'Lettore musicale', 'hero.l2': 'per Windows,', 'hero.l3': 'scritto in Rust.',
+    'hero.lede': "Aether riproduce i file audio già presenti sul disco. A partire da una playlist — esportata dall'archivio Spotify, letta da un file M3U o indicata tramite un collegamento — confronta i brani con la libreria locale e recupera quelli mancanti dai cataloghi ad accesso libero: Internet Archive e Audius. Ogni brano acquisito conserva la licenza della fonte da cui proviene. I brani non disponibili in alcun catalogo libero vengono raccolti in una lista d'acquisto, con i collegamenti ai negozi che remunerano gli autori.",
+    'hero.cta1': 'Installazione', 'hero.m1': 'Versione 2.1.0 · Windows · in sviluppo', 'hero.m3': 'Ogni brano conserva la licenza della fonte',
     'ui.albums': 'Album', 'ui.albumsLow': 'album', 'ui.tracks': 'Brani', 'ui.artists': 'Artisti', 'ui.fav': 'Preferiti', 'ui.settings': 'Impostazioni',
     'ui.playlists': 'Playlist', 'ui.pl1': 'Turno di notte', 'ui.pl2': 'Rip da vinile 2019', 'ui.pl3': 'Cucina, alto volume', 'ui.pl4': 'Ambient, lunghi',
-    'ui.scan': 'Scansione completata', 'ui.scanmeta': '5 108 brani · 41 min fa', 'ui.library': 'Libreria', 'ui.libmeta': '5 108 · 14 g 6 h',
+    'ui.scan': 'Scansione completata', 'ui.scanmeta': '1465 brani · 41 min fa', 'ui.library': 'Libreria', 'ui.libmeta': '1465 · 4 g 2 h',
     'ui.colTitle': 'Titolo', 'ui.colAlbum': 'Album', 'ui.colTime': 'Durata', 'ui.upnext': 'In coda', 'ui.search': 'Cerca…',
-    'ui.nowplaying': 'In riproduzione', 'ui.sortedadded': '412 · ordinati per aggiunta', 'ui.gapless': 'Senza pause',
-    'ui.npx': 'I testi sincronizzati, e la stanza dietro', 'ui.npxb': 'Le parole arrivano da LRCLIB — nessuna chiave, nessun account. Dietro c\'è lo spettro, che è la stessa scena che gira dietro a questa pagina.',
+    'ui.nowplaying': 'In riproduzione', 'ui.sortedadded': '935 · ordinati per aggiunta', 'ui.gapless': 'Senza pause',
+    'ui.npx': 'Analizzatore di spettro', 'ui.npxb': "I campioni sono prelevati dopo l'equalizzatore e prima del controllo di volume: le modifiche alla curva di equalizzazione sono visibili nelle barre, quelle al volume no.",
     'ui.artistmeta': '9 album · 118 brani · 8 h 12 m',
-    'ui.artistnote': 'Nessuna biografia, nessuna griglia di artisti simili. Ogni numero di questa schermata viene dai tuoi file — per disegnarla non si scarica niente.',
-    's1.eyebrow': "01 — L'idea", 's1.h2': 'Un lettore che risponde a chi possiede i file.',
-    's2.eyebrow': "02 — L'app",
-    's3.eyebrow': '03 — Skin Studio', 's3.h2': 'Scegli una skin. Guarda tutta questa pagina obbedirle.',
-    's3.p': "Una skin è un documento dati validato, non un foglio di stile. 47 token, 52 parti con nome, 11 effetti con un costo dichiarato. L'app la analizza, ti avverte e la compila in CSS deterministico.",
-    'studio.valid': 'valida', 'studio.tokenreg': 'Registro dei token', 'studio.tokenmeta': '47 token · 21 obbligatori', 'studio.contrast': 'Contrasto e costo, verificati dal vivo', 'studio.budget': 'Budget effetti',
-    's4.eyebrow': '04 — Il contratto', 's4.h2': "Una skin non può rompere l'app. È una proprietà del formato, non una promessa.",
-    's5.eyebrow': '05 — Roadmap', 's5.h2': "Cosa non c'è ancora, e perché.",
-    's5.p': "Cinque delle 52 parti registrate oggi non vengono disegnate, e una apposta. Restano nel registro perché le skin scritte adesso continuino a calzare l'app domani.",
+    'ui.artistnote': 'Nessuna biografia, nessuna griglia di artisti simili. Ogni numero di questa schermata è contato dai tag dei file locali; per disegnarla non viene scaricato niente.',
+    'ui.mocknote': "Le schermate di questa pagina sono una riproduzione dell'interfaccia. I numeri sono quelli della libreria usata per le immagini del README: 935 album, 1465 brani.",
+    's1.eyebrow': '01 — Panoramica', 's1.h2': 'I file già presenti sul disco, e i cataloghi che consentono una copia.',
+    'src.eyebrow': '02 — Da dove arriva la musica',
+    'src.h2': 'Sei fonti. Ognuna dichiara cosa contiene e se è ammessa una copia locale.',
+    'src.colSource': 'Fonte', 'src.colContent': 'Contenuti', 'src.colCopy': 'Copia locale',
+    'src.audius.h': 'Audius: tre permessi distinti',
+    'src.audius.p': "Su Audius il permesso è determinato dall'artista per singolo brano. Esistono tre controlli distinti: l'interruttore del download e due cancelli, che possono subordinare l'accesso al seguito dell'artista o al possesso di un token. Aether li verifica tutti e tre e considera il permesso concesso solo in assenza di divieti.",
+    'src.jamendo.h': 'Jamendo: implementato, disabilitato',
+    'src.jamendo.p': "Il modulo è implementato e coperto da test, ma disabilitato in questa versione. La causa non è tecnica: l'API è gratuita per i soli usi non commerciali e i termini definiscono l'uso commerciale come «any monetary compensation». Il modulo è già predisposto per il solo ascolto in streaming — i termini vietano la cache e l'accesso offline — attraverso aether-net::FlussoHttp, che riproduce un brano senza scriverlo su disco.",
+    'src.gap.h': 'Cosa non copre nessuna fonte libera',
+    'src.gap.p': 'Nessuna fonte ad accesso libero distribuisce il catalogo commerciale. Non si tratta di un limite tecnico aggirabile: è la ragione per cui altri programmi svolgono operazioni non consentite dai termini dei servizi che utilizzano. Aether copre il fabbisogno attraverso canali leciti e, per il resto del catalogo, indica dove acquistarlo.',
+    'src.excl.h': 'Fonti escluse',
+    's2.eyebrow': "03 — L'interfaccia",
+    's3.eyebrow': '04 — Personalizzazione', 's3.h2': "Una skin ridefinisce 52 componenti. Non è un'alternanza fra tema chiaro e tema scuro.",
+    's3.p': 'Una skin è un documento dati validato, non un foglio di stile: 47 token, 52 parti con nome e 11 effetti con un costo dichiarato. Il programma la analizza, ne riporta gli avvisi e la compila in CSS deterministico.',
+    'studio.valid': 'valida', 'studio.tokenreg': 'Registro dei token', 'studio.tokenmeta': '47 token · 21 obbligatori', 'studio.contrast': "Contrasto e costo, calcolati prima dell'esportazione", 'studio.budget': 'Budget degli effetti',
+    's4.eyebrow': '05 — Il formato', 's4.h2': 'Un documento skin non può rompere il programma: il formato non lo consente.',
+    's5.eyebrow': '06 — Limiti noti e sviluppi previsti', 's5.h2': "Cosa non c'è ancora, e per quale ragione.",
+    's5.p': "Due questioni richiedono un chiarimento scritto prima della pubblicazione: se le donazioni costituiscano uso commerciale ai fini dei termini di Jamendo e dell'API Deezer impiegata per i metadati. In assenza di risposta il modulo Jamendo resta dietro una feature Cargo disattivabile.",
+    'lim.h3': 'Limiti noti',
     'win.h3': 'Windows — ordine di implementazione', 'win.meta': '13 voci · 9 chiuse · 1 in corso · 3 da fare',
-    'access.h2': 'È uscito. Windows, e non firmato.',
-    'access.p': "L'installer sta nella pagina delle release. Non è firmato, quindi SmartScreen dirà «Windows ha protetto il PC»: Ulteriori informazioni, poi Esegui comunque. Quell'avviso è onesto — non puoi verificare chi l'ha costruito — e l'unica cosa che si può offrire in cambio è che il sorgente sta lì e si compila da sé. Tutto succede su github.com/FedericoBaratti/Aether.",
-    'access.btn': 'Scarica per Windows', 'access.note': "Nessuna lista, nessun modulo d'iscrizione. Un indirizzo, e a scrivere sei tu.",
-    'access.spec': 'Leggi le specifiche skin',
-    'access.bugs.h': 'Segnalazioni e idee',
-    'access.bugs.p': "È uscito, e si sta ancora facendo. Se qualcosa si rompe, o se sai cosa dovrebbe fare dopo, scrivimi — stesso indirizzo per tutte e due.",
+    'access.h2': 'Versione 2.1.0, per Windows, non firmata.',
+    'access.p': "L'installer per Windows è disponibile fra gli allegati dell'ultima release: un eseguibile NSIS. Non è firmato con un certificato di code signing, quindi SmartScreen ne blocca l'esecuzione al primo avvio: «Ulteriori informazioni», poi «Esegui comunque». Le ragioni dell'assenza della firma sono indicate fra i limiti noti.",
+    'access.btn': 'Scarica la 2.1.0 per Windows',
+    'access.note': "Le modifiche introdotte da ciascuna versione sono elencate in CHANGELOG.md. Ogni versione che introduce una migrazione del database comporta l'incremento del numero minor, poiché le migrazioni non sono reversibili.",
+    'rel.h': 'Cosa cambia la 2.1.0', 'rel.meta': 'Rilasciata il 3 settembre 2026 · due migrazioni del database', 'rel.link': 'Leggi il changelog completo',
+    'access.spec': 'Leggi il formato delle skin',
+    'access.bugs.h': 'Segnalazioni e proposte',
+    'access.bugs.p': 'Il programma è rilasciato ed è ancora in sviluppo. Le segnalazioni di guasti e le proposte su cosa dovrebbe fare dopo si ricevono allo stesso indirizzo. La procedura per segnalare vulnerabilità è in SECURITY.md.',
     'access.donate.h': 'Gratuito, e resta gratuito',
-    'access.donate.p': "Non ci sarà una versione a pagamento: il Live Music Archive ha una clausola non commerciale, e far pagare il programma la violerebbe. Le donazioni sostengono il lavoro, mai la musica.",
+    'access.donate.p': "Non esiste una versione a pagamento e non ne è prevista una: due delle fonti integrate, il Live Music Archive e Jamendo, sono soggette a clausole non commercial che una versione a pagamento violerebbe. Il vincolo è riportato esplicitamente nelle condizioni d'uso.",
     'access.donate.btn': 'Sostieni lo sviluppo',
-    'footer.bugs': 'Contatti', 'footer.donate': 'Donazioni',
-    'footer.tag': 'Lettore musicale local-first · Uscito per Windows, in sviluppo', 'footer.updated': 'Ultimo aggiornamento',
-    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Riproduzione gapless', 'Dissolvenza incrociata', 'ReplayGain', 'Equalizzatore a 10 bande', 'Testi sincronizzati', 'Scrobbling', 'Playlist intelligenti', 'Backup su Drive', 'Copertine incorporate', 'Core in Rust', '5 000 brani, zero lag', 'Locale come prima scelta', 'Nessuna telemetria'],
+    'footer.bugs': 'Contatti', 'footer.donate': 'Donazioni', 'footer.changelog': 'Changelog', 'footer.privacy': 'Privacy', 'footer.terms': "Condizioni d'uso", 'footer.licence': 'Licenza · MIT',
+    'footer.tag': 'Lettore musicale per Windows, scritto in Rust · versione 2.1.0', 'footer.updated': 'Ultimo aggiornamento',
+    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Riproduzione gapless', 'Dissolvenza incrociata', 'ReplayGain', 'Equalizzatore a dieci bande', 'Testi sincronizzati', 'Scrobbling', 'Playlist intelligenti', 'Backup su Drive', 'Copertine incorporate', 'SQLite', 'MusicBrainz', 'Internet Archive', 'Audius', 'Nessuna telemetria', 'MIT'],
     pillars: [
-      { t: 'Niente lascia il computer', b: "Nessun account obbligatorio, nessuna analitica. La tua libreria resta sul tuo disco. Quando chiedi un brano mancante, Aether lo prende da un catalogo libero e porta con sé la licenza — nient'altro." },
-      { t: 'Densa dove serve', b: 'Righe da 40px, aria sopra la lista e non tra le sue linee. Una libreria da cinquemila brani scorre a frame rate, perché è fatta per essere scorsa.' },
-      { t: 'Il markup dà un nome alle sue parti', b: "Ogni superficie che l'app disegna porta il nome di una parte. È a quello che si aggancia una skin — non a una classe indovinata nei devtools." },
-      { t: 'Due porte per ogni comando', b: "Il tasto destro non è mai l'unica via d'accesso. Accanto c'è sempre un controllo visibile o una scorciatoia annunciata." }
+      { t: 'Riproduzione gapless', b: 'Un solo motore audio, cpal e symphonia, distribuito su tre thread, senza alcun lock condiviso fra il decodificatore e la callback audio. ReplayGain, equalizzatore e coda persistente.' },
+      { t: 'Libreria su SQLite', b: "Scansione incrementale con riconoscimento dei file spostati. Playlist manuali e automatiche, valutazioni, preferiti e cronologia d'ascolto. Riorganizzazione dei file sul disco, con anteprima del piano di rinomina e annullamento." },
+      { t: 'Nessuna telemetria, nessun account', b: "Il programma non comunica con server diversi da quelli espressamente interrogati dall'utente: i cataloghi musicali, MusicBrainz, e Google Drive e il servizio di scrobbling solo se collegati. Ogni richiesta di rete che il programma può effettuare è elencata in PRIVACY.md." },
+      { t: 'Skin, con editor integrato', b: "Una skin ridefinisce colori, bordi, ombre, pesi tipografici e raggi di curvatura su 52 componenti dell'interfaccia. Lo Studio la modifica e ne riporta gli avvisi prima dell'esportazione." }
+    ],
+    sources: [
+      { n: 'File locali', c: "La libreria principale. Vengono scansionate le cartelle indicate dall'utente.", l: "Già in possesso dell'utente" },
+      { n: 'Internet Archive', c: 'Live Music Archive: oltre 250 000 concerti di artisti che ne hanno autorizzato la registrazione. Netlabel e pubblico dominio.', l: "Sì, quando la licenza dell'item lo consente" },
+      { n: 'Audius', c: 'Brani pubblicati dagli artisti sotto licenza aperta.', l: "Sì, quando l'artista ha abilitato il download e la licenza lo consente" },
+      { n: 'Archivio GDPR di Spotify', c: "Playlist, brani e album salvati, artisti seguiti, cronologia d'ascolto completa.", l: 'Metadati, non audio' },
+      { n: 'File di playlist', c: 'M3U, M3U8, PLS.', l: 'Il percorso, non il file' },
+      { n: 'MusicBrainz + Cover Art Archive', c: 'Tag e copertine.', l: 'Metadati liberi' }
+    ],
+    excluded: [
+      { t: 'YouTube', b: "Le YouTube API Developer Policies vietano lo scaricamento e la memorizzazione dei contenuti audiovisivi (§ III.E.1.a: «You must not… download, import, backup, cache, or store copies of YouTube audiovisual content without YouTube's prior written approval»). Le stesse policy vietano inoltre la separazione dell'audio dal video (§ III.I.7), la riproduzione da un player non visibile (§ III.I.9) e la conservazione dei metadati oltre trenta giorni (§ III.E.4). Un lettore musicale che mantiene una libreria persistente è incompatibile con tutte e tre le clausole. La fonte è quindi esclusa integralmente, e non in una versione ridotta." },
+      { t: 'Accesso non autorizzato a Spotify', b: "L'uso degli endpoint privati di Spotify, di token ricostruiti e del client id del player web costituisce accesso non autorizzato al servizio ed è escluso. Resta disponibile l'archivio GDPR, che Spotify è tenuto a consegnare all'utente su richiesta ai sensi dell'art. 20 del Regolamento UE 2016/679, e che contiene una cronologia d'ascolto più estesa di quella offerta dall'API pubblica." }
     ],
     chapters: [
-      { t: 'Libreria', b: 'Naviga a sinistra, guarda al centro, ascolta a destra. Le tre colonne non si scambiano mai di posto.', pts: [{ t: '412 album, 5 108 brani, ordinati in locale' }, { t: 'La colonna destra è la casa di In riproduzione' }, { t: 'Cerca da ovunque con /' }] },
-      { t: 'In riproduzione', b: "Non una seconda schermata — la stessa parte, cresciuta. La copertina è l'unica cosa colorata nell'app, e tinge la stanza.", pts: [{ t: 'Si apre dalla copertina, dal pulsante ⤢ o con F' }, { t: 'Si chiude con Esc, con il chevron o dalla stessa porta' }, { t: 'Dietro, mezzo minuto di spettro che arretra' }] },
-      { t: 'Artisti', b: 'Ogni numero in questa schermata viene dal tuo disco. Niente viene scaricato, quindi niente è sbagliato.', pts: [{ t: '287 artisti, contati dai tag' }, { t: 'Nessuna biografia, nessuna griglia di artisti simili' }, { t: 'Album ordinati per anno, non per popolarità' }] }
+      { t: 'Libreria', b: 'Navigazione a sinistra, elenco al centro, riproduzione a destra. Le tre colonne non si scambiano di posto.', pts: [{ t: 'Il caricamento è progressivo: le pagine successive vengono richieste automaticamente' }, { t: 'Nessuna paginazione numerata' }, { t: 'Ricerca da qualsiasi schermata con /' }] },
+      { t: 'In riproduzione', b: "La stessa parte della colonna destra, ingrandita. L'analizzatore di spettro legge i campioni dopo l'equalizzatore e prima del controllo di volume.", pts: [{ t: 'Le modifiche alla curva di equalizzazione sono visibili nelle barre, quelle al volume no' }, { t: 'Le bande arrivano attraverso un buffer circolare che scarta i campioni in eccesso quando è pieno' }, { t: 'Testi sincronizzati da LRCLIB, senza chiave e senza account' }] },
+      { t: 'Artisti', b: 'I conteggi sono presi dai tag dei file locali.', pts: [{ t: 'Nessuna biografia, nessuna griglia di artisti simili' }, { t: 'Album ordinati per anno' }, { t: 'Per disegnare questa schermata non viene scaricato niente' }] }
     ],
     skinMeta: { midnight: 'predefinita · 4 effetti', rust: 'calda · 6 effetti', chlorophyll: 'fredda · 3 effetti', paper: 'chiara · 2 effetti' },
     ruleWord: 'Regola',
     studioPoints: [
-      { t: 'Non puoi scrivere ciò che il formato rifiuta', b: "Ogni controllo ha la forma di un tipo nel crate. Nessun campo di testo libero dove il documento vuole un enum — per questo una skin non può rompere l'app." },
-      { t: "L'anteprima è l'app, non un campione", b: 'È la finestra vera con la skin applicata. Le schermate che non puoi raggiungere ascoltando — modale, vuota, in caricamento — arrivano da un selettore.' },
-      { t: 'Il costo è visibile mentre lo spendi', b: 'Ogni effetto porta il suo peso accanto al nome e la superficie conta fino a dieci. Lo scopri qui, non su un telefono che perde frame.' }
+      { t: 'Il formato rifiuta quel che non definisce', b: 'Ogni controllo ha la forma di un tipo nel crate. Dove il documento vuole un enum non esiste un campo di testo libero.' },
+      { t: "L'anteprima è il programma", b: "È la finestra vera con la skin applicata, e opera su una libreria di prova, non su quella dell'utente. Le schermate che non si raggiungono ascoltando, come la modale, la vuota e quella in caricamento, si scelgono da un selettore." },
+      { t: "Il contrasto si conta prima dell'esportazione", b: 'La barra inferiore riporta errori, avvisi, componenti ridisegnati e il numero di coppie di colori con rapporto di contrasto inferiore a 4,5:1, la soglia di leggibilità raccomandata. Una skin distribuita con avvisi di contrasto è quindi il risultato di una scelta consapevole.' }
     ],
     stats: [
-      { t: 'Token', b: 'Ognuno con una descrizione e un flag di obbligatorietà, letti direttamente dal registro.' },
-      { t: 'Parti con nome', b: 'Ogni parte dichiara i suoi livelli. Sbagliane il nome e il parser suggerisce il più vicino.' },
-      { t: 'Effetti', b: 'Sfocatura, bagliore, grana, rumore — ognuno con un costo di rendering dichiarato su dieci.' },
-      { t: 'Tipi di avviso', b: 'Contrasto, budget di costo, motivo inutilizzato, prefab inutilizzato, promessa non mantenuta, token obbligatorio mancante — controllati prima della compilazione.' }
+      { t: 'Token', b: 'Ognuno con una descrizione e un flag di obbligatorietà, letti dal registro che lo Studio serve.' },
+      { t: 'Parti con nome', b: 'Ogni parte dichiara i suoi livelli. Un nome sbagliato fa suggerire al parser quello più vicino.' },
+      { t: 'Effetti', b: 'Tinta piatta, gradienti, griglia a linee sottili, scanline, strisce, matrice di punti, vignettatura, smusso e sfocatura dietro: ognuno con un costo di rendering dichiarato su dieci.' },
+      { t: 'Tipi di avviso', b: 'Contrasto, budget di costo, motivo inutilizzato, prefab inutilizzato, promessa non mantenuta e token obbligatorio mancante, tutti controllati prima della compilazione.' }
+    ],
+    limits: [
+      { t: 'Firma del codice per Windows', b: "In assenza di un certificato, SmartScreen blocca l'esecuzione dell'installer, che è la principale causa di mancata installazione delle applicazioni indipendenti. Un certificato OV richiede la validazione dell'identità del richiedente e un costo annuale." },
+      { t: 'Jamendo', b: 'Il codice è presente e i test passano — cargo test -p aether-catalogo --features jamendo — ma la funzionalità è disabilitata in attesa di un chiarimento formale da parte di licensing@jamendo.com sul trattamento delle donazioni come uso commerciale.' },
+      { t: 'Riproduzione in solo streaming', b: "FlussoHttp è in grado di leggere un file remoto con accesso posizionale e il motore audio accetta già un flusso al posto di un percorso. Mancano la rappresentazione in libreria di un brano privo di file locale e la sezione «Esplora» da cui effettuarne la ricerca. Allo stato attuale un brano Audius non scaricabile compare nell'elenco ma non viene riprodotto." },
+      { t: 'macOS e Linux', b: "L'unico bersaglio dell'installer è NSIS: la piattaforma supportata è pertanto Windows." },
+      { t: 'Applicazione mobile', b: 'Presente nella versione precedente del progetto, non ancora riscritta.' }
+    ],
+    release: [
+      { t: 'Una condivisione di rete che smette di rispondere viene dichiarata come guasto di rete e non più come file danneggiato. La riproduzione si ferma dove stava, e «Riprova» riprende dal punto in cui la musica si era interrotta.' },
+      { t: 'Una scansione non cancella più brani perché una radice non ha risposto: una camminata parziale vale come una vuota, e non viene rimosso niente.' },
+      { t: "L'apertura di un file avviene fuori dai lucchetti di libreria e lettore, con una scadenza di cinque secondi. La finestra risponde per tutto il tempo." },
+      { t: "Un errore non catturato nell'interfaccia disegna cos'è successo e offre un tasto per ricaricare, invece di lasciare una finestra bianca, e lascia una riga nel diario." },
+      { t: 'Altri trentotto difetti, raggruppati nel changelog per quanto costano a chi ascolta anziché per file.' },
+      { t: "Due migrazioni, 015_riconcilia e 016_metadati. Le migrazioni vanno solo avanti: tornare alla 2.0.1 richiede il ripristino di una copia del database fatta prima dell'aggiornamento." }
     ],
     platStatus: { out: 'Disponibile', prog: 'In corso', none: 'Non iniziato' },
     road: { done: 'Fatto', prog: 'In corso', todo: 'Da fare' },
     roadItems: [
-      'implementare il backup su Google Drive per metadati e skin, così un utente può ripristinare tutto dopo un reset.',
-      "implementare l'importazione dell'account Spotify dall'archivio GDPR.",
-      'finire Skin Studio.',
-      'implementare la gestione e l\'arricchimento automatico dei metadati.',
-      'rendere layout e grafica completamente modulare e modificabili in Skin Studio.',
-      'implementare un equalizzatore a 10 bande con preset.',
-      'implementare un miglioramento grafico alla riproduzione, ispirato a SoundCloud.',
-      'implementare un sistema automatico di recupero testi che costruisce un database di testi sincronizzati, sempre keyless.',
-      "implementare in Skin Studio un sistema per creare animazioni da inserire in qualsiasi punto dell'app",
-      'implementare playlist intelligenti con filtraggio basato su regole.',
-      'aggiungere la chiave OpenRouter in impostazioni per usare modelli IA gratuiti per generare playlist consigliate.',
-      'implementare in Skin Studio una chat con strumenti e un LLM per la creazione assistita delle skin.',
-      'fixare bug grafici e incoerenze per un look più premium.'
+      'Backup su Google Drive di metadati e skin, per ripristinare tutto dopo un reset.',
+      "Importazione dell'account Spotify dall'archivio GDPR.",
+      'Skin Studio, completato.',
+      'Gestione e arricchimento automatico dei metadati.',
+      'Layout e grafica completamente modulari e modificabili nello Studio.',
+      "Equalizzatore a dieci bande d'ottava con preset.",
+      'Miglioramento grafico della schermata di riproduzione, sul modello di SoundCloud.',
+      'Recupero automatico dei testi, con costruzione di un database di testi sincronizzati e senza chiave.',
+      "Creazione di animazioni, nello Studio, per qualsiasi punto dell'interfaccia.",
+      'Playlist intelligenti con filtraggio basato su regole.',
+      'Chiave OpenRouter nelle impostazioni, per modelli IA gratuiti che generino playlist consigliate.',
+      'Chat con un LLM nello Studio, dotata di strumenti, per la creazione assistita delle skin.',
+      'Difetti grafici e incoerenze, corretti.'
     ]
   },
   fr: {
-    'nav.badge': 'Disponible · Windows', 'nav.app': "L'app", 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Feuille de route', 'nav.star': 'Star sur GitHub',
-    'hero.badge': 'Un lecteur de musique local avec un moteur de skins',
-    'hero.l1': 'Votre bibliothèque.', 'hero.l2': 'Votre machine.', 'hero.l3': 'Votre style.',
-    'hero.lede': "Aether lit les fichiers que vous possédez déjà — pas de télémétrie, pas de compte obligatoire. Ce qui vous manque, il le récupère dans les catalogues libres — Internet Archive et Audius — et chaque morceau qu'il ramène garde la licence sous laquelle il est arrivé. Chaque surface qu'il dessine est un token que vous pouvez redéfinir, dans un fichier de skin que l'app valide avant d'afficher le moindre pixel.",
-    'hero.cta1': "Voir où ça en est", 'hero.m1': 'Sorti pour Windows · encore en développement', 'hero.m3': 'Les licences, par conception',
+    'nav.badge': '2.1.0 · Windows', 'nav.sources': 'Sources', 'nav.app': 'Le programme', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Limites', 'nav.star': 'Star sur GitHub',
+    'hero.badge': 'Lecteur de musique pour Windows, écrit en Rust',
+    'hero.l1': 'Lecteur de musique', 'hero.l2': 'pour Windows,', 'hero.l3': 'écrit en Rust.',
+    'hero.lede': "Aether lit les fichiers audio déjà présents sur le disque. À partir d'une liste de lecture — exportée de l'archive Spotify, lue depuis un fichier M3U ou indiquée par un lien — il compare les morceaux à la bibliothèque locale et récupère ceux qui manquent dans les catalogues en accès libre : Internet Archive et Audius. Chaque morceau acquis conserve la licence de la source dont il provient. Les morceaux disponibles dans aucun catalogue libre sont réunis dans une liste d'achat, avec les liens vers les boutiques qui rémunèrent les auteurs.",
+    'hero.cta1': 'Installation', 'hero.m1': 'Version 2.1.0 · Windows · en développement', 'hero.m3': 'Chaque morceau conserve la licence de sa source',
     'ui.albums': 'Albums', 'ui.albumsLow': 'albums', 'ui.tracks': 'Titres', 'ui.artists': 'Artistes', 'ui.fav': 'Favoris', 'ui.settings': 'Réglages',
     'ui.playlists': 'Playlists', 'ui.pl1': 'Poste de nuit', 'ui.pl2': 'Rips vinyle 2019', 'ui.pl3': 'Cuisine, fort', 'ui.pl4': 'Ambient, long',
-    'ui.scan': 'Analyse terminée', 'ui.scanmeta': '5 108 titres · il y a 41 min', 'ui.library': 'Bibliothèque', 'ui.libmeta': '5 108 · 14 j 6 h',
+    'ui.scan': 'Analyse terminée', 'ui.scanmeta': '1 465 titres · il y a 41 min', 'ui.library': 'Bibliothèque', 'ui.libmeta': '1 465 · 4 j 2 h',
     'ui.colTitle': 'Titre', 'ui.colAlbum': 'Album', 'ui.colTime': 'Durée', 'ui.upnext': 'À suivre', 'ui.search': 'Rechercher…',
-    'ui.nowplaying': 'Lecture en cours', 'ui.sortedadded': '412 · triés par ajout', 'ui.gapless': 'Sans blanc',
-    'ui.npx': 'Les paroles synchronisées, et la pièce derrière', 'ui.npxb': "Les mots viennent de LRCLIB — sans clé, sans compte. Derrière, le spectre : la même scène qui tourne derrière cette page.",
+    'ui.nowplaying': 'Lecture en cours', 'ui.sortedadded': "935 · triés par date d'ajout", 'ui.gapless': 'Sans blanc',
+    'ui.npx': 'Analyseur de spectre', 'ui.npxb': "Les échantillons sont prélevés après l'égaliseur et avant le contrôle du volume : les modifications de la courbe d'égalisation sont visibles dans les barres, celles du volume ne le sont pas.",
     'ui.artistmeta': '9 albums · 118 titres · 8 h 12',
-    'ui.artistnote': "Pas de biographie, pas de grille d'artistes similaires. Chaque chiffre de cet écran vient de vos propres fichiers — rien n'est téléchargé pour le dessiner.",
-    's1.eyebrow': "01 — L'idée", 's1.h2': 'Un lecteur qui obéit à la personne qui possède les fichiers.',
-    's2.eyebrow': "02 — L'app",
-    's3.eyebrow': '03 — Skin Studio', 's3.h2': 'Choisissez une skin. Regardez toute cette page lui obéir.',
-    's3.p': "Une skin est un document de données validé, pas une feuille de style. 47 tokens, 52 parties nommées, 11 effets au coût déclaré. L'app l'analyse, vous avertit et la compile en CSS déterministe.",
-    'studio.valid': 'valide', 'studio.tokenreg': 'Registre des tokens', 'studio.tokenmeta': '47 tokens · 21 requis', 'studio.contrast': 'Contraste et coût, vérifiés en direct', 'studio.budget': "Budget d'effets",
-    's4.eyebrow': '04 — Le contrat', 's4.h2': "Une skin ne peut pas casser l'app. C'est une propriété du format, pas une promesse.",
-    's5.eyebrow': '05 — Feuille de route', 's5.h2': "Ce qui n'est pas encore là, et pourquoi.",
-    's5.p': "Cinq des 52 parties enregistrées ne s'affichent pas aujourd'hui, dont une volontairement. Elles restent dans le registre pour que les skins écrites maintenant conviennent encore à l'app plus tard.",
+    'ui.artistnote': "Pas de biographie, pas de grille d'artistes similaires. Chaque chiffre de cet écran est compté depuis les tags des fichiers locaux ; rien n'est téléchargé pour le dessiner.",
+    'ui.mocknote': "Les écrans de cette page sont une reproduction de l'interface. Les chiffres sont ceux de la bibliothèque utilisée pour les captures du README : 935 albums, 1 465 titres.",
+    's1.eyebrow': "01 — Vue d'ensemble", 's1.h2': 'Les fichiers déjà présents sur le disque, et les catalogues qui autorisent une copie.',
+    'src.eyebrow': "02 — D'où vient la musique",
+    'src.h2': 'Six sources. Chacune déclare ce qu\'elle contient et si une copie locale est permise.',
+    'src.colSource': 'Source', 'src.colContent': 'Contenus', 'src.colCopy': 'Copie locale',
+    'src.audius.h': 'Audius : trois permissions distinctes',
+    'src.audius.p': "Sur Audius la permission est déterminée par l'artiste pour chaque morceau. Il existe trois contrôles distincts : l'interrupteur de téléchargement et deux portails, qui peuvent subordonner l'accès au suivi de l'artiste ou à la détention d'un jeton. Aether les vérifie tous les trois et ne considère la permission accordée qu'en l'absence d'interdictions.",
+    'src.jamendo.h': 'Jamendo : implémenté, désactivé',
+    'src.jamendo.p': "Le module est implémenté et couvert par des tests, mais désactivé dans cette version. La cause n'est pas technique : l'API est gratuite pour les seuls usages non commerciaux, et les conditions définissent l'usage commercial comme «any monetary compensation». Le module est déjà prévu pour la seule écoute en streaming — les conditions interdisent le cache et l'accès hors ligne — via aether-net::FlussoHttp, qui lit un morceau sans l'écrire sur le disque.",
+    'src.gap.h': 'Ce qu\'aucune source libre ne couvre',
+    'src.gap.p': "Aucune source en accès libre ne distribue le catalogue commercial. Il ne s'agit pas d'une limite technique contournable : c'est la raison pour laquelle d'autres programmes effectuent des opérations que les conditions des services qu'ils utilisent n'autorisent pas. Aether couvre le besoin par des canaux licites et, pour le reste du catalogue, indique où l'acheter.",
+    'src.excl.h': 'Sources exclues',
+    's2.eyebrow': "03 — L'interface",
+    's3.eyebrow': '04 — Personnalisation', 's3.h2': "Une skin redéfinit 52 composants. Ce n'est pas une alternance entre thème clair et thème sombre.",
+    's3.p': "Une skin est un document de données validé, pas une feuille de style : 47 tokens, 52 parties nommées et 11 effets au coût déclaré. Le programme l'analyse, en rapporte les avertissements et la compile en CSS déterministe.",
+    'studio.valid': 'valide', 'studio.tokenreg': 'Registre des tokens', 'studio.tokenmeta': '47 tokens · 21 requis', 'studio.contrast': "Contraste et coût, calculés avant l'export", 'studio.budget': "Budget d'effets",
+    's4.eyebrow': '05 — Le format', 's4.h2': "Un document de skin ne peut pas casser le programme : le format ne le permet pas.",
+    's5.eyebrow': '06 — Limites connues et développements prévus', 's5.h2': "Ce qui n'existe pas encore, et pour quelle raison.",
+    's5.p': "Deux questions exigent une clarification écrite avant publication : si les dons constituent un usage commercial au sens des conditions de Jamendo, et de l'API Deezer employée pour les métadonnées. Sans réponse, le module Jamendo reste derrière une feature Cargo désactivable.",
+    'lim.h3': 'Limites connues',
     'win.h3': "Windows — ordre d'implémentation", 'win.meta': '13 entrées · 9 terminées · 1 en cours · 3 à faire',
-    'access.h2': "C'est sorti. Windows, et non signé.",
-    'access.p': "L'installateur est sur la page des releases. Il n'est pas signé, donc SmartScreen dira «Windows a protégé votre ordinateur» : Informations complémentaires, puis Exécuter quand même. Cet avertissement est honnête — vous ne pouvez pas vérifier qui l'a compilé — et la seule chose offerte en échange est que le source est là et se compile tout seul. Tout se passe sur github.com/FedericoBaratti/Aether.",
-    'access.btn': 'Télécharger pour Windows', 'access.note': "Pas de liste de diffusion, pas de formulaire. Une adresse, et c'est vous qui écrivez.",
-    'access.spec': 'Lire la spec des skins',
-    'access.bugs.h': 'Bugs et idées',
-    'access.bugs.p': "C'est sorti, et ça se construit encore. Si quelque chose casse, ou si vous savez ce qu'il devrait faire ensuite, écrivez-moi — la même adresse pour les deux.",
-    'access.donate.h': 'Gratuit, et ça le reste',
-    'access.donate.p': "Il n'y aura pas de version payante : le Live Music Archive porte une clause non commerciale, et faire payer l'app l'enfreindrait. Les dons soutiennent le travail, jamais la musique.",
+    'access.h2': 'Version 2.1.0, pour Windows, non signée.',
+    'access.p': "L'installateur pour Windows est disponible parmi les fichiers joints de la dernière release : un exécutable NSIS. Il n'est pas signé avec un certificat de code signing, donc SmartScreen en bloque l'exécution au premier lancement : «Informations complémentaires», puis «Exécuter quand même». Les raisons de l'absence de signature figurent parmi les limites connues.",
+    'access.btn': 'Télécharger la 2.1.0 pour Windows',
+    'access.note': "Les modifications apportées par chaque version sont listées dans CHANGELOG.md. Toute version qui introduit une migration de la base de données entraîne l'incrément du numéro mineur, car les migrations ne sont pas réversibles.",
+    'rel.h': 'Ce que change la 2.1.0', 'rel.meta': 'Publiée le 3 septembre 2026 · deux migrations de la base', 'rel.link': 'Lire le changelog complet',
+    'access.spec': 'Lire le format des skins',
+    'access.bugs.h': 'Signalements et propositions',
+    'access.bugs.p': "Le programme est publié et encore en développement. Les signalements de pannes et les propositions sur ce qu'il devrait faire ensuite sont reçus à la même adresse. La procédure de signalement des vulnérabilités est dans SECURITY.md.",
+    'access.donate.h': 'Gratuit, et il le reste',
+    'access.donate.p': "Il n'existe pas de version payante et il n'en est pas prévu : deux des sources intégrées, le Live Music Archive et Jamendo, sont soumises à des clauses non commerciales qu'une version payante enfreindrait. La contrainte est indiquée explicitement dans les conditions d'utilisation.",
     'access.donate.btn': 'Soutenir le développement',
-    'footer.bugs': 'Contact', 'footer.donate': 'Faire un don',
-    'footer.tag': 'Lecteur de musique local-first · Sorti pour Windows, en développement', 'footer.updated': 'Dernière mise à jour',
-    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Lecture sans blanc', 'Fondu enchaîné', 'ReplayGain', 'Égaliseur 10 bandes', 'Paroles synchronisées', 'Scrobbling', 'Listes intelligentes', 'Sauvegarde Drive', 'Pochettes intégrées', 'Cœur en Rust', '5 000 titres, sans lag', 'Local-first', 'Pas de télémétrie'],
+    'footer.bugs': 'Contact', 'footer.donate': 'Faire un don', 'footer.changelog': 'Changelog', 'footer.privacy': 'Confidentialité', 'footer.terms': "Conditions", 'footer.licence': 'Licence · MIT',
+    'footer.tag': 'Lecteur de musique pour Windows, écrit en Rust · version 2.1.0', 'footer.updated': 'Dernière mise à jour',
+    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Lecture sans blanc', 'Fondu enchaîné', 'ReplayGain', 'Égaliseur dix bandes', 'Paroles synchronisées', 'Scrobbling', 'Listes intelligentes', 'Sauvegarde Drive', 'Pochettes intégrées', 'SQLite', 'MusicBrainz', 'Internet Archive', 'Audius', 'Pas de télémétrie', 'MIT'],
     pillars: [
-      { t: 'Rien ne quitte la machine', b: "Pas de compte obligatoire, pas d'analytique. Votre bibliothèque reste sur votre disque. Quand vous demandez un morceau manquant, Aether le récupère dans un catalogue libre et ramène la licence — rien d'autre." },
-      { t: "Dense là où il faut", b: "Des lignes de 40px, de l'air au-dessus de la liste et non entre ses lignes. Une bibliothèque de cinq mille titres défile à pleine cadence, parce qu'elle est faite pour être parcourue." },
-      { t: 'Le markup nomme ses parties', b: "Chaque surface que l'app dessine porte un nom de partie. C'est à cela qu'une skin se lie — pas à une classe devinée dans les devtools." },
-      { t: 'Deux portes par commande', b: "Le clic droit n'est jamais la seule entrée. À côté, il y a toujours un contrôle visible ou un raccourci annoncé." }
+      { t: 'Lecture sans blanc', b: "Un seul moteur audio, cpal et symphonia, réparti sur trois threads, sans aucun verrou partagé entre le décodeur et le callback audio. ReplayGain, égaliseur et file d'attente persistante." },
+      { t: 'Bibliothèque sur SQLite', b: "Analyse incrémentale avec reconnaissance des fichiers déplacés. Playlists manuelles et automatiques, notes, favoris et historique d'écoute. Réorganisation des fichiers sur le disque, avec aperçu du plan de renommage et annulation." },
+      { t: 'Pas de télémétrie, pas de compte', b: "Le programme ne communique avec aucun serveur autre que ceux expressément interrogés par l'utilisateur : les catalogues musicaux, MusicBrainz, et Google Drive et le service de scrobbling seulement s'ils sont connectés. Chaque requête réseau que le programme peut effectuer est listée dans PRIVACY.md." },
+      { t: 'Skins, avec éditeur intégré', b: "Une skin redéfinit couleurs, bordures, ombres, graisses typographiques et rayons de courbure sur 52 composants de l'interface. Le Studio la modifie et en rapporte les avertissements avant l'export." }
+    ],
+    sources: [
+      { n: 'Fichiers locaux', c: "La bibliothèque principale. Les dossiers indiqués par l'utilisateur sont analysés.", l: "Déjà en possession de l'utilisateur" },
+      { n: 'Internet Archive', c: "Live Music Archive : plus de 250 000 concerts d'artistes qui en ont autorisé l'enregistrement. Netlabels et domaine public.", l: "Oui, quand la licence de l'item l'autorise" },
+      { n: 'Audius', c: 'Morceaux publiés par les artistes sous licence ouverte.', l: "Oui, quand l'artiste a activé le téléchargement et que la licence l'autorise" },
+      { n: 'Archive GDPR de Spotify', c: "Playlists, morceaux et albums enregistrés, artistes suivis, historique d'écoute complet.", l: 'Métadonnées, pas audio' },
+      { n: 'Fichiers de playlist', c: 'M3U, M3U8, PLS.', l: 'Le chemin, pas le fichier' },
+      { n: 'MusicBrainz + Cover Art Archive', c: 'Tags et pochettes.', l: 'Métadonnées libres' }
+    ],
+    excluded: [
+      { t: 'YouTube', b: "Les YouTube API Developer Policies interdisent le téléchargement et la conservation des contenus audiovisuels (§ III.E.1.a : «You must not… download, import, backup, cache, or store copies of YouTube audiovisual content without YouTube's prior written approval»). Les mêmes règles interdisent en outre la séparation de l'audio et de la vidéo (§ III.I.7), la lecture depuis un player non visible (§ III.I.9) et la conservation des métadonnées au-delà de trente jours (§ III.E.4). Un lecteur de musique qui tient une bibliothèque persistante est incompatible avec ces trois clauses. La source est donc exclue intégralement, et non dans une version réduite." },
+      { t: 'Accès non autorisé à Spotify', b: "L'usage des endpoints privés de Spotify, de jetons reconstruits et du client id du player web constitue un accès non autorisé au service et est exclu. Reste disponible l'archive GDPR, que Spotify est tenu de remettre à l'utilisateur sur demande au titre de l'article 20 du Règlement UE 2016/679, et qui contient un historique d'écoute plus étendu que celui offert par l'API publique." }
     ],
     chapters: [
-      { t: 'Bibliothèque', b: 'Naviguez à gauche, regardez au milieu, écoutez à droite. Les trois colonnes ne changent jamais de place.', pts: [{ t: '412 albums, 5 108 titres, triés en local' }, { t: 'La colonne de droite est la maison de Lecture en cours' }, { t: 'Cherchez de partout avec /' }] },
-      { t: 'Lecture en cours', b: "Pas un second écran — la même partie, agrandie. La pochette est la seule chose colorée de l'app, et elle teinte la pièce.", pts: [{ t: "S'ouvre depuis la pochette, le bouton ⤢ ou F" }, { t: 'Se ferme avec Échap, le chevron ou la même porte' }, { t: 'Derrière, trente secondes de spectre qui reculent' }] },
-      { t: 'Artistes', b: "Chaque chiffre de cet écran vient de votre propre disque. Rien n'est téléchargé, donc rien n'est faux.", pts: [{ t: '287 artistes, comptés depuis les tags' }, { t: "Pas de biographie, pas de grille d'artistes similaires" }, { t: 'Albums classés par année, pas par popularité' }] }
+      { t: 'Bibliothèque', b: 'Navigation à gauche, liste au centre, lecture à droite. Les trois colonnes ne changent jamais de place.', pts: [{ t: 'Le chargement est progressif : les pages suivantes sont demandées automatiquement' }, { t: 'Pas de pagination numérotée' }, { t: "Recherche depuis n'importe quel écran avec /" }] },
+      { t: 'Lecture en cours', b: "La même partie que la colonne de droite, agrandie. L'analyseur de spectre lit les échantillons après l'égaliseur et avant le contrôle du volume.", pts: [{ t: "Les modifications de la courbe d'égalisation sont visibles dans les barres, celles du volume ne le sont pas" }, { t: 'Les bandes arrivent par un tampon circulaire qui écarte les échantillons en excès quand il est plein' }, { t: 'Paroles synchronisées depuis LRCLIB, sans clé et sans compte' }] },
+      { t: 'Artistes', b: 'Les comptages sont pris dans les tags des fichiers locaux.', pts: [{ t: "Pas de biographie, pas de grille d'artistes similaires" }, { t: 'Albums classés par année' }, { t: "Rien n'est téléchargé pour dessiner cet écran" }] }
     ],
     skinMeta: { midnight: 'par défaut · 4 effets', rust: 'chaude · 6 effets', chlorophyll: 'froide · 3 effets', paper: 'claire · 2 effets' },
     ruleWord: 'Règle',
     studioPoints: [
-      { t: 'Vous ne pouvez pas écrire ce que le format refuse', b: "Chaque contrôle a la forme d'un type dans le crate. Aucun champ libre là où le document attend une énumération — c'est pourquoi une skin ne peut pas casser l'app." },
-      { t: "L'aperçu est l'app, pas un échantillon", b: "C'est la vraie fenêtre avec la skin appliquée. Les écrans qu'on ne peut atteindre en écoutant — modale, vide, chargement — viennent d'un sélecteur." },
-      { t: 'Le coût est visible pendant que vous le dépensez', b: "Chaque effet porte son poids à côté de son nom et la surface compte jusqu'à dix. Vous le découvrez ici, pas sur un téléphone qui perd des images." }
+      { t: "Le format refuse ce qu'il ne définit pas", b: "Chaque contrôle a la forme d'un type dans le crate. Là où le document attend une énumération, il n'y a pas de champ de texte libre." },
+      { t: "L'aperçu est le programme", b: "C'est la vraie fenêtre avec la skin appliquée, et elle opère sur une bibliothèque de test, pas sur celle de l'utilisateur. Les écrans qu'on n'atteint pas en écoutant, comme la modale, la vide et celle en chargement, se choisissent depuis un sélecteur." },
+      { t: "Le contraste se compte avant l'export", b: 'La barre inférieure rapporte erreurs, avertissements, composants redessinés et le nombre de paires de couleurs dont le rapport de contraste est inférieur à 4,5:1, le seuil de lisibilité recommandé. Une skin distribuée avec des avertissements de contraste est donc le résultat d\'un choix conscient.' }
     ],
     stats: [
-      { t: 'Tokens', b: "Chacun avec une description et un indicateur d'obligation, lus directement dans le registre." },
-      { t: 'Parties nommées', b: "Chaque partie déclare ses couches. Faites une faute et l'analyseur propose la plus proche." },
-      { t: 'Effets', b: 'Flou, halo, grain, bruit — chacun avec un coût de rendu déclaré sur dix.' },
-      { t: "Types d'avertissement", b: 'Contraste, budget de coût, motif inutilisé, prefab inutilisé, promesse non tenue, token requis manquant — vérifiés avant compilation.' }
+      { t: 'Tokens', b: "Chacun avec une description et un indicateur d'obligation, lus dans le registre que le Studio sert." },
+      { t: 'Parties nommées', b: 'Chaque partie déclare ses couches. Un nom mal écrit fait proposer par l\'analyseur le plus proche.' },
+      { t: 'Effets', b: 'Teinte pleine, dégradés, grille de lignes fines, scanlines, rayures, matrice de points, vignettage, chanfrein et flou derrière : chacun avec un coût de rendu déclaré sur dix.' },
+      { t: "Types d'avertissement", b: 'Contraste, budget de coût, motif inutilisé, prefab inutilisé, promesse non tenue et token requis manquant, tous vérifiés avant la compilation.' }
+    ],
+    limits: [
+      { t: 'Signature du code pour Windows', b: "En l'absence de certificat, SmartScreen bloque l'exécution de l'installateur, ce qui est la principale cause d'installation manquée des applications indépendantes. Un certificat OV exige la validation de l'identité du demandeur et un coût annuel." },
+      { t: 'Jamendo', b: 'Le code est présent et les tests passent — cargo test -p aether-catalogo --features jamendo — mais la fonctionnalité est désactivée dans l\'attente d\'une clarification formelle de licensing@jamendo.com sur le traitement des dons comme usage commercial.' },
+      { t: 'Lecture en streaming seul', b: "FlussoHttp est capable de lire un fichier distant avec accès positionnel et le moteur audio accepte déjà un flux à la place d'un chemin. Manquent la représentation en bibliothèque d'un morceau dépourvu de fichier local et la section «Explorer» d'où en effectuer la recherche. En l'état, un morceau Audius non téléchargeable apparaît dans la liste mais n'est pas lu." },
+      { t: 'macOS et Linux', b: "La seule cible de l'installateur est NSIS : la plateforme prise en charge est donc Windows." },
+      { t: 'Application mobile', b: 'Présente dans la version précédente du projet, pas encore réécrite.' }
+    ],
+    release: [
+      { t: "Un partage réseau qui cesse de répondre est déclaré comme panne de réseau et non plus comme fichier endommagé. La lecture s'arrête où elle était, et «Réessayer» reprend au point où la musique s'était interrompue." },
+      { t: "Une analyse ne supprime plus de morceaux parce qu'une racine n'a pas répondu : un parcours partiel vaut un parcours vide, et rien n'est retiré." },
+      { t: "L'ouverture d'un fichier se fait hors des verrous de la bibliothèque et du lecteur, avec un délai de cinq secondes. La fenêtre répond pendant tout ce temps." },
+      { t: "Une erreur non interceptée dans l'interface dessine ce qui s'est passé et offre un bouton pour recharger, au lieu de laisser une fenêtre blanche, et laisse une ligne dans le journal." },
+      { t: 'Trente-huit autres défauts, regroupés dans le changelog selon ce qu\'ils coûtent à celui qui écoute plutôt que par fichier.' },
+      { t: 'Deux migrations, 015_riconcilia et 016_metadati. Les migrations ne vont que vers l\'avant : revenir à la 2.0.1 exige la restauration d\'une copie de la base faite avant la mise à jour.' }
     ],
     platStatus: { out: 'Disponible', prog: 'En cours', none: 'Pas commencé' },
     road: { done: 'Terminé', prog: 'En cours', todo: 'À faire' },
     roadItems: [
-      "implémenter la sauvegarde Google Drive pour les métadonnées et les skins, afin qu'un utilisateur puisse tout récupérer après une réinitialisation.",
-      "implémenter l'import d'un compte Spotify depuis l'archive GDPR.",
-      'terminer Skin Studio.',
-      "implémenter la gestion et l'enrichissement automatique des métadonnées.",
-      'rendre la mise en page et le graphisme entièrement modulaires et modifiables dans Skin Studio.',
-      "implémenter un égaliseur à 10 bandes avec des préréglages.",
-      "implémenter une amélioration graphique de la lecture, inspirée de SoundCloud.",
-      "implémenter un système automatique de récupération des paroles qui construit une base de paroles synchronisées, toujours sans clé.",
-      "implémenter dans Skin Studio un système de création d'animations à inserer n'importe où dans l'app.",
-      'implémenter des playlists intelligentes avec filtrage basé sur des règles.',
-      "ajouter la clé OpenRouter dans les réglages pour utiliser des modèles d'IA gratuits et générer des playlists recommandées.",
-      "implémenter dans Skin Studio un chat avec des outils et un LLM pour la création assistée de skins.",
-      'corriger les bugs graphiques et incohérences pour un rendu plus premium.'
+      'Sauvegarde Google Drive des métadonnées et des skins, pour tout restaurer après une réinitialisation.',
+      "Import du compte Spotify depuis l'archive GDPR.",
+      'Skin Studio, achevé.',
+      'Gestion et enrichissement automatiques des métadonnées.',
+      'Mise en page et graphisme entièrement modulaires et modifiables dans le Studio.',
+      "Égaliseur à dix bandes d'octave avec préréglages.",
+      'Amélioration graphique de l\'écran de lecture, sur le modèle de SoundCloud.',
+      'Récupération automatique des paroles, construisant une base de paroles synchronisées, sans clé.',
+      "Création d'animations, dans le Studio, pour n'importe quel point de l'interface.",
+      'Playlists intelligentes avec filtrage basé sur des règles.',
+      'Clé OpenRouter dans les réglages, pour des modèles IA gratuits générant des playlists recommandées.',
+      'Un chat avec un LLM dans le Studio, doté d\'outils, pour la création assistée de skins.',
+      'Défauts graphiques et incohérences, corrigés.'
     ]
   },
   de: {
-    'nav.badge': 'Erschienen · Windows', 'nav.app': 'Die App', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Roadmap', 'nav.star': 'Star auf GitHub',
-    'hero.badge': 'Ein lokaler Musikplayer mit Skin-Engine',
-    'hero.l1': 'Deine Bibliothek.', 'hero.l2': 'Dein Rechner.', 'hero.l3': 'Dein Look.',
-    'hero.lede': 'Aether spielt die Dateien, die dir bereits gehören — keine Telemetrie, kein Konto nötig. Was dir fehlt, holt er aus den freien Katalogen — dem Internet Archive und Audius — und jeder Titel, den er hereinholt, trägt die Lizenz mit sich, unter der er kam. Jede Fläche, die er zeichnet, ist ein Token, das du neu definieren kannst, in einer Skin-Datei, die die App prüft, bevor sie ein einziges Pixel rendert.',
-    'hero.cta1': 'Sieh, wo es steht', 'hero.m1': 'Für Windows da · noch in Entwicklung', 'hero.m3': 'Lizenzbewusst von Grund auf',
+    'nav.badge': '2.1.0 · Windows', 'nav.sources': 'Quellen', 'nav.app': 'Das Programm', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Grenzen', 'nav.star': 'Star auf GitHub',
+    'hero.badge': 'Musikplayer für Windows, in Rust geschrieben',
+    'hero.l1': 'Musikplayer', 'hero.l2': 'für Windows,', 'hero.l3': 'in Rust geschrieben.',
+    'hero.lede': 'Aether spielt die Audiodateien, die bereits auf der Festplatte liegen. Ausgehend von einer Playlist — exportiert aus dem Spotify-Archiv, aus einer M3U-Datei gelesen oder über einen Link angegeben — vergleicht das Programm die Titel mit der lokalen Bibliothek und holt die fehlenden aus den frei zugänglichen Katalogen: Internet Archive und Audius. Jeder erworbene Titel behält die Lizenz der Quelle, aus der er stammt. Titel, die in keinem freien Katalog verfügbar sind, werden in einer Kaufliste gesammelt, mit den Links zu den Shops, die die Urheber vergüten.',
+    'hero.cta1': 'Installation', 'hero.m1': 'Version 2.1.0 · Windows · in Entwicklung', 'hero.m3': 'Jeder Titel behält die Lizenz seiner Quelle',
     'ui.albums': 'Alben', 'ui.albumsLow': 'Alben', 'ui.tracks': 'Titel', 'ui.artists': 'Künstler', 'ui.fav': 'Favoriten', 'ui.settings': 'Einstellungen',
     'ui.playlists': 'Playlists', 'ui.pl1': 'Nachtschicht', 'ui.pl2': 'Vinyl-Rips 2019', 'ui.pl3': 'Küche, laut', 'ui.pl4': 'Ambient, lang',
-    'ui.scan': 'Scan abgeschlossen', 'ui.scanmeta': '5 108 Titel · vor 41 Min.', 'ui.library': 'Bibliothek', 'ui.libmeta': '5 108 · 14 T 6 Std',
+    'ui.scan': 'Scan abgeschlossen', 'ui.scanmeta': '1 465 Titel · vor 41 Min.', 'ui.library': 'Bibliothek', 'ui.libmeta': '1 465 · 4 T 2 Std',
     'ui.colTitle': 'Titel', 'ui.colAlbum': 'Album', 'ui.colTime': 'Dauer', 'ui.upnext': 'Als Nächstes', 'ui.search': 'Suchen…',
-    'ui.nowplaying': 'Läuft gerade', 'ui.sortedadded': '412 · nach Hinzugefügt sortiert', 'ui.gapless': 'Lückenlos',
-    'ui.npx': 'Synchroner Songtext, und der Raum dahinter', 'ui.npxb': 'Die Worte kommen von LRCLIB — kein Schlüssel, kein Konto. Dahinter das Spektrum: dieselbe Szene, die hinter dieser Seite läuft.',
+    'ui.nowplaying': 'Läuft gerade', 'ui.sortedadded': '935 · nach Hinzufügedatum sortiert', 'ui.gapless': 'Lückenlos',
+    'ui.npx': 'Spektrumanalyse', 'ui.npxb': 'Die Abtastwerte werden nach dem Equalizer und vor der Lautstärkeregelung entnommen: Änderungen an der Entzerrungskurve sind in den Balken sichtbar, Änderungen an der Lautstärke nicht.',
     'ui.artistmeta': '9 Alben · 118 Titel · 8 Std 12 Min',
-    'ui.artistnote': 'Keine Biografie, kein Raster ähnlicher Künstler. Jede Zahl auf diesem Bildschirm stammt aus deinen eigenen Dateien — zum Zeichnen wird nichts geladen.',
-    's1.eyebrow': '01 — Die Idee', 's1.h2': 'Ein Player, der der Person gehorcht, der die Dateien gehören.',
-    's2.eyebrow': '02 — Die App',
-    's3.eyebrow': '03 — Skin Studio', 's3.h2': 'Wähle eine Skin. Sieh zu, wie diese ganze Seite ihr gehorcht.',
-    's3.p': 'Eine Skin ist ein validiertes Datendokument, kein Stylesheet. 47 Tokens, 52 benannte Teile, 11 Effekte mit deklarierten Kosten. Die App parst sie, warnt dich und kompiliert sie zu deterministischem CSS.',
-    'studio.valid': 'gültig', 'studio.tokenreg': 'Token-Register', 'studio.tokenmeta': '47 Tokens · 21 erforderlich', 'studio.contrast': 'Kontrast & Kosten, live geprüft', 'studio.budget': 'Effekt-Budget',
-    's4.eyebrow': '04 — Der Vertrag', 's4.h2': 'Eine Skin kann die App nicht kaputt machen. Das ist eine Eigenschaft des Formats, kein Versprechen.',
-    's5.eyebrow': '05 — Roadmap', 's5.h2': 'Was noch fehlt, und warum.',
-    's5.p': 'Fünf der 52 registrierten Teile werden heute nicht gerendert, eines davon absichtlich. Sie bleiben im Register, damit heute geschriebene Skins später noch zur App passen.',
+    'ui.artistnote': 'Keine Biografie, kein Raster ähnlicher Künstler. Jede Zahl auf diesem Bildschirm wird aus den Tags der lokalen Dateien gezählt; zum Zeichnen wird nichts geladen.',
+    'ui.mocknote': 'Die Bildschirme auf dieser Seite sind eine Nachbildung der Oberfläche. Die Zahlen sind die der Bibliothek, die für die Aufnahmen im README verwendet wurde: 935 Alben, 1 465 Titel.',
+    's1.eyebrow': '01 — Überblick', 's1.h2': 'Die Dateien, die schon auf der Festplatte liegen, und die Kataloge, die eine Kopie erlauben.',
+    'src.eyebrow': '02 — Woher die Musik kommt',
+    'src.h2': 'Sechs Quellen. Jede erklärt, was sie enthält und ob eine lokale Kopie zulässig ist.',
+    'src.colSource': 'Quelle', 'src.colContent': 'Inhalte', 'src.colCopy': 'Lokale Kopie',
+    'src.audius.h': 'Audius: drei getrennte Erlaubnisse',
+    'src.audius.p': 'Auf Audius wird die Erlaubnis vom Künstler für jeden einzelnen Titel bestimmt. Es gibt drei getrennte Regler: den Download-Schalter und zwei Schranken, die den Zugang davon abhängig machen können, dass dem Künstler gefolgt wird oder ein Token gehalten wird. Aether prüft alle drei und betrachtet die Erlaubnis nur bei Abwesenheit von Verboten als erteilt.',
+    'src.jamendo.h': 'Jamendo: implementiert, deaktiviert',
+    'src.jamendo.p': 'Das Modul ist implementiert und von Tests abgedeckt, in dieser Version aber deaktiviert. Die Ursache ist nicht technisch: die API ist nur für nicht-kommerzielle Nutzung kostenlos, und die Bedingungen definieren kommerzielle Nutzung als «any monetary compensation». Das Modul ist bereits auf reines Streaming eingerichtet — die Bedingungen verbieten Cache und Offline-Zugriff — über aether-net::FlussoHttp, das einen Titel spielt, ohne ihn auf die Festplatte zu schreiben.',
+    'src.gap.h': 'Was keine freie Quelle abdeckt',
+    'src.gap.p': 'Keine frei zugängliche Quelle verteilt den kommerziellen Katalog. Das ist keine umgehbare technische Grenze: es ist der Grund, aus dem andere Programme Handlungen ausführen, die die Bedingungen der von ihnen genutzten Dienste nicht erlauben. Aether deckt den Bedarf über rechtmäßige Kanäle und weist für den übrigen Katalog darauf hin, wo er zu kaufen ist.',
+    'src.excl.h': 'Ausgeschlossene Quellen',
+    's2.eyebrow': '03 — Die Oberfläche',
+    's3.eyebrow': '04 — Anpassung', 's3.h2': 'Eine Skin definiert 52 Komponenten neu. Es ist kein Wechsel zwischen hellem und dunklem Thema.',
+    's3.p': 'Eine Skin ist ein validiertes Datendokument, kein Stylesheet: 47 Tokens, 52 benannte Teile und 11 Effekte mit deklarierten Kosten. Das Programm liest sie ein, berichtet ihre Warnungen und kompiliert sie zu deterministischem CSS.',
+    'studio.valid': 'gültig', 'studio.tokenreg': 'Token-Register', 'studio.tokenmeta': '47 Tokens · 21 erforderlich', 'studio.contrast': 'Kontrast und Kosten, vor dem Export berechnet', 'studio.budget': 'Effekt-Budget',
+    's4.eyebrow': '05 — Das Format', 's4.h2': 'Ein Skin-Dokument kann das Programm nicht beschädigen: das Format erlaubt es nicht.',
+    's5.eyebrow': '06 — Bekannte Grenzen und geplante Arbeit', 's5.h2': 'Was noch nicht existiert, und aus welchem Grund.',
+    's5.p': 'Zwei Fragen erfordern vor der Veröffentlichung eine schriftliche Klärung: ob Spenden im Sinne der Bedingungen von Jamendo und der für Metadaten eingesetzten Deezer-API eine kommerzielle Nutzung darstellen. Ohne Antwort bleibt das Jamendo-Modul hinter einem abschaltbaren Cargo-Feature.',
+    'lim.h3': 'Bekannte Grenzen',
     'win.h3': 'Windows — Implementierungsreihenfolge', 'win.meta': '13 Einträge · 9 erledigt · 1 laufend · 3 offen',
-    'access.h2': 'Es ist da. Windows, und unsigniert.',
-    'access.p': 'Der Installer liegt auf der Releases-Seite. Er ist nicht signiert, also sagt SmartScreen «Der Computer wurde durch Windows geschützt»: Weitere Informationen, dann Trotzdem ausführen. Diese Warnung ist ehrlich — du kannst nicht prüfen, wer ihn gebaut hat — und das Einzige, was dafür geboten wird, ist, dass der Quelltext da liegt und sich selbst kompiliert. Alles passiert auf github.com/FedericoBaratti/Aether.',
-    'access.btn': 'Für Windows herunterladen', 'access.note': 'Keine Mailingliste, kein Formular. Eine Adresse, und du schreibst.',
-    'access.spec': 'Skin-Spezifikation lesen',
-    'access.bugs.h': 'Fehler und Ideen',
-    'access.bugs.p': 'Es ist da, und es wird weiter gebaut. Wenn etwas kaputtgeht, oder du weißt, was als Nächstes kommen sollte: schreib mir — dieselbe Adresse für beides.',
+    'access.h2': 'Version 2.1.0, für Windows, unsigniert.',
+    'access.p': 'Der Installer für Windows liegt unter den Anhängen der letzten Release: eine NSIS-Datei. Er ist nicht mit einem Code-Signing-Zertifikat signiert, daher blockiert SmartScreen die Ausführung beim ersten Start: «Weitere Informationen», dann «Trotzdem ausführen». Die Gründe für die fehlende Signatur stehen unter den bekannten Grenzen.',
+    'access.btn': '2.1.0 für Windows herunterladen',
+    'access.note': 'Die Änderungen jeder Version sind in CHANGELOG.md aufgeführt. Jede Version, die eine Datenbankmigration einführt, erhöht die Minor-Nummer, weil Migrationen nicht umkehrbar sind.',
+    'rel.h': 'Was 2.1.0 ändert', 'rel.meta': 'Veröffentlicht am 3. September 2026 · zwei Datenbankmigrationen', 'rel.link': 'Das vollständige Changelog lesen',
+    'access.spec': 'Das Skin-Format lesen',
+    'access.bugs.h': 'Meldungen und Vorschläge',
+    'access.bugs.p': 'Das Programm ist veröffentlicht und wird weiter entwickelt. Fehlermeldungen und Vorschläge dazu, was als Nächstes kommen sollte, werden unter derselben Adresse entgegengenommen. Das Verfahren zur Meldung von Sicherheitslücken steht in SECURITY.md.',
     'access.donate.h': 'Kostenlos, und bleibt es',
-    'access.donate.p': 'Es wird keine kostenpflichtige Version geben: Das Live Music Archive trägt eine nicht-kommerzielle Klausel, und Geld für die App zu nehmen würde sie verletzen. Spenden unterstützen die Arbeit, nie die Musik.',
+    'access.donate.p': 'Es gibt keine kostenpflichtige Version und es ist keine geplant: zwei der eingebundenen Quellen, das Live Music Archive und Jamendo, unterliegen nicht-kommerziellen Klauseln, die eine kostenpflichtige Version verletzen würde. Die Bindung ist in den Nutzungsbedingungen ausdrücklich festgehalten.',
     'access.donate.btn': 'Entwicklung unterstützen',
-    'footer.bugs': 'Kontakt', 'footer.donate': 'Spenden',
-    'footer.tag': 'Local-First-Musikplayer · Für Windows da, in Entwicklung', 'footer.updated': 'Zuletzt aktualisiert',
-    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Lückenlose Wiedergabe', 'Crossfade', 'ReplayGain', '10-Band-EQ', 'Synchroner Songtext', 'Scrobbling', 'Intelligente Playlists', 'Drive-Backup', 'Eingebettete Cover', 'Rust-Core', '5 000 Titel, kein Lag', 'Local-First', 'Keine Telemetrie'],
+    'footer.bugs': 'Kontakt', 'footer.donate': 'Spenden', 'footer.changelog': 'Changelog', 'footer.privacy': 'Datenschutz', 'footer.terms': 'Bedingungen', 'footer.licence': 'Lizenz · MIT',
+    'footer.tag': 'Musikplayer für Windows, in Rust geschrieben · Version 2.1.0', 'footer.updated': 'Zuletzt aktualisiert',
+    marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Lückenlose Wiedergabe', 'Crossfade', 'ReplayGain', 'Zehn-Band-Equalizer', 'Synchroner Songtext', 'Scrobbling', 'Intelligente Playlists', 'Drive-Backup', 'Eingebettete Cover', 'SQLite', 'MusicBrainz', 'Internet Archive', 'Audius', 'Keine Telemetrie', 'MIT'],
     pillars: [
-      { t: 'Nichts verlässt den Rechner', b: 'Kein Konto nötig, keine Analyse. Deine Bibliothek bleibt auf deiner Platte. Wenn du einen fehlenden Titel anforderst, holt ihn Aether aus einem freien Katalog und bringt die Lizenz mit — nichts weiter.' },
-      { t: 'Dicht, wo es zählt', b: '40px-Zeilen, Luft über der Liste und nicht zwischen ihren Zeilen. Eine Bibliothek mit fünftausend Titeln scrollt in voller Bildrate, weil sie zum Scrollen gemacht ist.' },
-      { t: 'Das Markup benennt seine Teile', b: 'Jede Fläche, die die App zeichnet, trägt einen Teilnamen. Daran bindet sich eine Skin — nicht an eine aus den Devtools geratene Klasse.' },
-      { t: 'Zwei Türen pro Befehl', b: 'Rechtsklick ist nie der einzige Weg hinein. Daneben gibt es immer ein sichtbares Bedienelement oder ein angekündigtes Tastenkürzel.' }
+      { t: 'Lückenlose Wiedergabe', b: 'Eine einzige Audio-Engine, cpal und symphonia, verteilt auf drei Threads, ohne gemeinsames Lock zwischen Decoder und Audio-Callback. ReplayGain, Equalizer und dauerhafte Warteschlange.' },
+      { t: 'Bibliothek auf SQLite', b: 'Inkrementeller Scan mit Erkennung verschobener Dateien. Manuelle und automatische Playlists, Bewertungen, Favoriten und Hörverlauf. Neuordnung der Dateien auf der Festplatte, mit Vorschau des Umbenennungsplans und Rücknahme.' },
+      { t: 'Keine Telemetrie, kein Konto', b: 'Das Programm kommuniziert mit keinen anderen Servern als denen, die der Nutzer ausdrücklich anfragt: den Musikkatalogen, MusicBrainz, sowie Google Drive und dem Scrobbling-Dienst, und diese beiden nur wenn verbunden. Jede Netzanfrage, die das Programm stellen kann, ist in PRIVACY.md aufgeführt.' },
+      { t: 'Skins, mit integriertem Editor', b: 'Eine Skin definiert Farben, Ränder, Schatten, Schriftgewichte und Rundungsradien auf 52 Komponenten der Oberfläche neu. Das Studio bearbeitet sie und berichtet ihre Warnungen vor dem Export.' }
+    ],
+    sources: [
+      { n: 'Lokale Dateien', c: 'Die Hauptbibliothek. Die vom Nutzer angegebenen Ordner werden gescannt.', l: 'Bereits im Besitz des Nutzers' },
+      { n: 'Internet Archive', c: 'Live Music Archive: über 250 000 Konzerte von Künstlern, die die Aufnahme genehmigt haben. Netlabels und gemeinfreies Material.', l: 'Ja, wenn die Lizenz des Items es erlaubt' },
+      { n: 'Audius', c: 'Von Künstlern unter offener Lizenz veröffentlichte Titel.', l: 'Ja, wenn der Künstler den Download freigegeben hat und die Lizenz es erlaubt' },
+      { n: 'Spotify-GDPR-Archiv', c: 'Playlists, gespeicherte Titel und Alben, gefolgte Künstler, vollständiger Hörverlauf.', l: 'Metadaten, kein Audio' },
+      { n: 'Playlist-Dateien', c: 'M3U, M3U8, PLS.', l: 'Der Pfad, nicht die Datei' },
+      { n: 'MusicBrainz + Cover Art Archive', c: 'Tags und Cover.', l: 'Freie Metadaten' }
+    ],
+    excluded: [
+      { t: 'YouTube', b: "Die YouTube API Developer Policies verbieten das Herunterladen und Speichern audiovisueller Inhalte (§ III.E.1.a: «You must not… download, import, backup, cache, or store copies of YouTube audiovisual content without YouTube's prior written approval»). Dieselben Richtlinien verbieten darüber hinaus das Trennen des Audios vom Video (§ III.I.7), die Wiedergabe aus einem nicht sichtbaren Player (§ III.I.9) und das Aufbewahren von Metadaten über dreißig Tage hinaus (§ III.E.4). Ein Musikplayer, der eine dauerhafte Bibliothek führt, ist mit allen drei Klauseln unvereinbar. Die Quelle ist daher vollständig ausgeschlossen, und nicht in einer reduzierten Fassung." },
+      { t: 'Unbefugter Zugriff auf Spotify', b: 'Die Nutzung der privaten Endpunkte von Spotify, rekonstruierter Tokens und der Client-ID des Web-Players stellt einen unbefugten Zugriff auf den Dienst dar und ist ausgeschlossen. Verfügbar bleibt das GDPR-Archiv, das Spotify dem Nutzer auf Anfrage nach Artikel 20 der Verordnung (EU) 2016/679 herausgeben muss, und das einen umfangreicheren Hörverlauf enthält als die öffentliche API.' }
     ],
     chapters: [
-      { t: 'Bibliothek', b: 'Links navigieren, in der Mitte schauen, rechts hören. Die drei Spalten tauschen nie die Plätze.', pts: [{ t: '412 Alben, 5 108 Titel, lokal sortiert' }, { t: 'Die rechte Spalte ist das Zuhause von Läuft gerade' }, { t: 'Von überall suchen mit /' }] },
-      { t: 'Läuft gerade', b: 'Kein zweiter Bildschirm — dasselbe Teil, gewachsen. Das Cover ist das einzig Farbige in der App, und es färbt den Raum.', pts: [{ t: 'Öffnet über das Cover, die ⤢-Taste oder F' }, { t: 'Schließt mit Esc, dem Chevron oder derselben Tür' }, { t: 'Dahinter eine halbe Minute Spektrum, die zurückweicht' }] },
-      { t: 'Künstler', b: 'Jede Zahl auf diesem Bildschirm stammt von deiner eigenen Platte. Nichts wird geladen, also ist nichts falsch.', pts: [{ t: '287 Künstler, aus den Tags gezählt' }, { t: 'Keine Biografie, kein Raster ähnlicher Künstler' }, { t: 'Alben nach Jahr geordnet, nicht nach Beliebtheit' }] }
+      { t: 'Bibliothek', b: 'Navigation links, Liste in der Mitte, Wiedergabe rechts. Die drei Spalten tauschen nie die Plätze.', pts: [{ t: 'Das Laden erfolgt fortschreitend: die folgenden Seiten werden automatisch angefordert' }, { t: 'Keine nummerierte Seitenaufteilung' }, { t: 'Suche von jedem Bildschirm aus mit /' }] },
+      { t: 'Läuft gerade', b: 'Dasselbe Teil wie die rechte Spalte, vergrößert. Die Spektrumanalyse liest die Abtastwerte nach dem Equalizer und vor der Lautstärkeregelung.', pts: [{ t: 'Änderungen an der Entzerrungskurve sind in den Balken sichtbar, Änderungen an der Lautstärke nicht' }, { t: 'Die Bänder kommen über einen Ringpuffer, der überzählige Abtastwerte verwirft, wenn er voll ist' }, { t: 'Synchroner Songtext von LRCLIB, ohne Schlüssel und ohne Konto' }] },
+      { t: 'Künstler', b: 'Die Zählungen stammen aus den Tags der lokalen Dateien.', pts: [{ t: 'Keine Biografie, kein Raster ähnlicher Künstler' }, { t: 'Alben nach Jahr geordnet' }, { t: 'Zum Zeichnen dieses Bildschirms wird nichts geladen' }] }
     ],
     skinMeta: { midnight: 'Standard · 4 Effekte', rust: 'warm · 6 Effekte', chlorophyll: 'kalt · 3 Effekte', paper: 'hell · 2 Effekte' },
     ruleWord: 'Regel',
     studioPoints: [
-      { t: 'Du kannst nicht schreiben, was das Format ablehnt', b: 'Jedes Bedienelement hat die Form eines Typs im Crate. Kein Freitextfeld, wo das Dokument ein Enum will — deshalb kann eine Skin die App nicht kaputt machen.' },
-      { t: 'Die Vorschau ist die App, kein Farbmuster', b: 'Es ist das echte Fenster mit angewandter Skin. Bildschirme, die man beim Hören nicht erreicht — Modal, Leer, Laden — kommen aus einer Auswahl.' },
-      { t: 'Kosten sind sichtbar, während du sie ausgibst', b: 'Jeder Effekt trägt sein Gewicht neben seinem Namen, und die Fläche zählt bis zehn. Du erfährst es hier, nicht auf einem Handy, das Frames verliert.' }
+      { t: 'Das Format lehnt ab, was es nicht definiert', b: 'Jedes Bedienelement hat die Form eines Typs im Crate. Wo das Dokument ein Enum verlangt, gibt es kein Freitextfeld.' },
+      { t: 'Die Vorschau ist das Programm', b: 'Es ist das echte Fenster mit angewandter Skin, und es arbeitet auf einer Testbibliothek, nicht auf der des Nutzers. Bildschirme, die sich beim Hören nicht erreichen lassen, etwa Modal, Leer und Laden, werden aus einer Auswahl gewählt.' },
+      { t: 'Der Kontrast wird vor dem Export gezählt', b: 'Die untere Leiste berichtet Fehler, Warnungen, neu gezeichnete Komponenten und die Zahl der Farbpaare mit einem Kontrastverhältnis unter 4,5:1, der empfohlenen Lesbarkeitsschwelle. Eine mit Kontrastwarnungen verteilte Skin ist daher das Ergebnis einer bewussten Wahl.' }
     ],
     stats: [
-      { t: 'Tokens', b: 'Jedes mit Beschreibung und Pflicht-Flag, direkt aus dem Register gelesen.' },
-      { t: 'Benannte Teile', b: 'Jedes Teil deklariert seine Ebenen. Vertipp dich und der Parser schlägt das nächste vor.' },
-      { t: 'Effekte', b: 'Blur, Glow, Grain, Noise — jeweils mit deklarierten Renderkosten von zehn.' },
-      { t: 'Warnungsarten', b: 'Kontrast, Kostenbudget, ungenutztes Muster, ungenutztes Prefab, nicht gehaltenes Versprechen, fehlendes Pflicht-Token — vor dem Kompilieren geprüft.' }
+      { t: 'Tokens', b: 'Jedes mit einer Beschreibung und einem Pflicht-Flag, gelesen aus dem Register, das das Studio ausliefert.' },
+      { t: 'Benannte Teile', b: 'Jedes Teil deklariert seine Ebenen. Ein falsch geschriebener Name lässt den Parser den nächstliegenden vorschlagen.' },
+      { t: 'Effekte', b: 'Volltonfläche, Gradienten, Feinlinienraster, Scanlines, Streifen, Punktmatrix, Vignette, Fase und Unschärfe dahinter: jeder mit deklarierten Renderkosten von zehn.' },
+      { t: 'Warnungsarten', b: 'Kontrast, Kostenbudget, ungenutztes Muster, ungenutztes Prefab, nicht gehaltenes Versprechen und fehlendes Pflicht-Token, alle vor dem Kompilieren geprüft.' }
+    ],
+    limits: [
+      { t: 'Code-Signatur für Windows', b: 'Ohne Zertifikat blockiert SmartScreen die Ausführung des Installers, was die Hauptursache für gescheiterte Installationen unabhängiger Anwendungen ist. Ein OV-Zertifikat erfordert die Prüfung der Identität des Antragstellers und laufende Jahreskosten.' },
+      { t: 'Jamendo', b: 'Der Code ist vorhanden und die Tests laufen durch — cargo test -p aether-catalogo --features jamendo — die Funktion ist jedoch deaktiviert, solange eine formelle Klärung von licensing@jamendo.com zur Behandlung von Spenden als kommerzielle Nutzung aussteht.' },
+      { t: 'Wiedergabe nur als Stream', b: 'FlussoHttp kann eine entfernte Datei mit positionsgenauem Zugriff lesen, und die Audio-Engine nimmt bereits einen Stream anstelle eines Pfades an. Es fehlen die Darstellung eines Titels ohne lokale Datei in der Bibliothek und der Bereich «Erkunden», aus dem heraus gesucht wird. Derzeit erscheint ein nicht herunterladbarer Audius-Titel in der Liste, wird aber nicht gespielt.' },
+      { t: 'macOS und Linux', b: 'Das einzige Ziel des Installers ist NSIS: die unterstützte Plattform ist daher Windows.' },
+      { t: 'Mobile Anwendung', b: 'In der vorherigen Fassung des Projekts vorhanden, noch nicht neu geschrieben.' }
+    ],
+    release: [
+      { t: 'Eine Netzfreigabe, die nicht mehr antwortet, wird als Netzstörung erklärt und nicht länger als beschädigte Datei. Die Wiedergabe hält an, wo sie war, und «Wiederholen» setzt an der Stelle an, an der die Musik abbrach.' },
+      { t: 'Ein Scan löscht keine Titel mehr, weil eine Wurzel nicht geantwortet hat: ein teilweiser Durchlauf gilt wie ein leerer, und es wird nichts entfernt.' },
+      { t: 'Das Öffnen einer Datei geschieht außerhalb der Locks von Bibliothek und Player, mit einer Frist von fünf Sekunden. Das Fenster antwortet die ganze Zeit.' },
+      { t: 'Ein nicht abgefangener Fehler in der Oberfläche zeichnet, was geschehen ist, und bietet eine Schaltfläche zum Neuladen, anstatt ein weißes Fenster zu hinterlassen, und schreibt eine Zeile ins Protokoll.' },
+      { t: 'Weitere achtunddreißig Defekte, im Changelog danach gruppiert, was sie den Hörenden kosten, und nicht nach Datei.' },
+      { t: 'Zwei Migrationen, 015_riconcilia und 016_metadati. Migrationen gehen nur vorwärts: die Rückkehr zu 2.0.1 erfordert das Wiederherstellen einer vor dem Update angelegten Kopie der Datenbank.' }
     ],
     platStatus: { out: 'Verfügbar', prog: 'Läuft', none: 'Nicht begonnen' },
     road: { done: 'Erledigt', prog: 'Läuft', todo: 'Offen' },
     roadItems: [
-      'Google-Dienste mit Google Drive implementieren, um Metadaten und Skins als Backup hochzuladen, falls ein Nutzer den Rechner zurücksetzen und die ganze Musik und Skins wiederherstellen muss.',
-      'den Import eines Spotify-Kontos aus dem GDPR-Archiv implementieren',
-      'Skin Studio fertigstellen',
-      'ein System zur automatischen Metadatenverwaltung und -anreicherung implementieren',
-      'Layout und Grafik vollständig modular und in Skin Studio bearbeitbar machen',
-      'einen 10-Band-Oktav-Equalizer mit Presets implementieren',
-      'eine grafische Aufwertung der Wiedergabe implementieren, inspiriert von SoundCloud',
-      'ein System zum automatischen Abrufen von Songtexten implementieren, das eine synchronisierte Textdatenbank aufbaut, weiterhin keyless',
-      'in Skin Studio ein System implementieren, das die Erstellung von Animationen für beliebige Orte in der App erlaubt',
-      'Smart-Playlists mit regelbasiertem Filtern implementieren',
-      'in den Einstellungen den OpenRouter-Schlüssel hinzufügen, um kostenlose KI-Modelle für empfohlene Playlists zu nutzen.',
-      'in Skin Studio einen Chat mit Tools und einem LLM für die assistierte Skin-Erstellung implementieren.',
-      'grafische Bugs und Inkonsistenzen für einen hochwertigeren Look beheben.'
+      'Google-Drive-Backup für Metadaten und Skins, um nach einem Zurücksetzen alles wiederherzustellen.',
+      'Import des Spotify-Kontos aus dem GDPR-Archiv.',
+      'Skin Studio, fertiggestellt.',
+      'Automatische Verwaltung und Anreicherung der Metadaten.',
+      'Layout und Grafik vollständig modular und im Studio bearbeitbar.',
+      'Zehn-Band-Oktav-Equalizer mit Presets.',
+      'Grafische Aufwertung des Wiedergabebildschirms, nach dem Vorbild von SoundCloud.',
+      'Automatisches Abrufen von Songtexten, mit Aufbau einer synchronisierten Textdatenbank, ohne Schlüssel.',
+      'Erstellung von Animationen, im Studio, für jeden Punkt der Oberfläche.',
+      'Intelligente Playlists mit regelbasiertem Filtern.',
+      'OpenRouter-Schlüssel in den Einstellungen, für kostenlose KI-Modelle, die empfohlene Playlists erzeugen.',
+      'Ein Chat mit einem LLM im Studio, mit Werkzeugen, für die assistierte Erstellung von Skins.',
+      'Grafische Defekte und Unstimmigkeiten, behoben.'
     ]
   }
 };
@@ -1845,7 +2101,11 @@ class Component extends DCLogic {
       rows: T.map((r, i) => Object.assign({ n: String(i + 1).padStart(2, '0'), t: r[0], a: r[1], al: r[2], d: r[3] }, pair(i))),
       bars: Array.from({ length: 28 }, (_, i) => ({ dur: (0.5 + (i % 7) * 0.13).toFixed(2) + 's', del: (i * 0.045).toFixed(2) + 's' })),
       marquee: Array.from({ length: 2 }).flatMap(() => L.marquee.map(t => ({ t }))),
-      pillars: ['#a-lock', '#a-bolt', '#a-skin', '#a-code'].map((i, k) => ({ i, t: L.pillars[k].t, b: L.pillars[k].b })),
+      pillars: ['#a-bolt', '#a-code', '#a-lock', '#a-skin'].map((i, k) => ({ i, t: L.pillars[k].t, b: L.pillars[k].b })),
+      sources: L.sources,
+      excluded: L.excluded,
+      limits: L.limits,
+      release: L.release,
       chapters: L.chapters,
       covers: Array.from({ length: 10 }, (_, i) => Object.assign({ t: ['In Rainbows', 'Mezzanine', 'Untrue', 'Dive', 'Apollo', 'Kid A', 'Alice', 'Sea Change', 'Ágætis', 'Blue Lines', 'Selected Works', 'Vespertine', 'Bloom', 'Ambient 1', 'Moon Safari'][i], a: ['Radiohead', 'Massive Attack', 'Burial', 'Tycho', 'Eno', 'Radiohead', 'Tom Waits', 'Beck', 'Sigur Rós', 'Massive Attack', 'Aphex Twin', 'Björk', 'Beach House', 'Eno', 'Air'][i] }, pair(i + 2))),
       artists: Array.from({ length: 8 }, (_, i) => Object.assign({
@@ -2214,6 +2474,11 @@ class Component extends DCLogic {
     if (!nrw && this._setMenu) this._setMenu(false);
     root.querySelectorAll('[data-stack]').forEach(el => {
       el.style.gridTemplateColumns = mob ? '1fr' : el.getAttribute('data-cols');
+    });
+    // L'intestazione della tabella delle fonti: su una colonna sola sarebbero
+    // tre parole in fila che non intestano più niente.
+    root.querySelectorAll('[data-hidemob]').forEach(el => {
+      el.style.display = mob ? 'none' : el.getAttribute('data-hidemob');
     });
     const stage = root.querySelector('[data-tour-stage]');
     if (stage) { if (mob) this.setSvh(stage, '46vh', '46svh'); else stage.style.height = 'min(62vh,600px)'; }

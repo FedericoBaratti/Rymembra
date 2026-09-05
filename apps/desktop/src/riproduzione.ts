@@ -61,6 +61,7 @@ const FERMO: StatoRiproduzione = {
   autoplay: false,
   dissolvenzaS: 0,
   audio: null,
+  motivoProssimo: null,
 };
 
 // ── La posizione, fuori da React ────────────────────────────────────────────

@@ -60,6 +60,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::spegnimento::Emette as _;
 use aether_app::desiderati::{self, Desiderato};
 use aether_app::settings;
 use aether_app::tag_scrittura::scrivi_tag;
@@ -70,7 +71,7 @@ use aether_domain::esterno::{Disponibilita, Fonte};
 use aether_domain::paths::PathRules;
 use aether_domain::scelta::{Candidato, affidabilita, scarto_durata, scegli_candidato};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter as _, Manager as _, State};
+use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
@@ -543,7 +544,7 @@ pub fn avvia(app: &AppHandle) {
         .spawn(move || {
             passata(&manico);
             manico.state::<StatoProcura>().lascia_posto();
-            let _ = manico.emit("scarico:finito", ());
+            manico.emetti("scarico:finito", ());
         });
     if let Err(err) = avviato {
         nota!("[procura] il filo della coda non è partito: {err}");
@@ -943,7 +944,7 @@ fn emetti_brano(
     guasto: Option<&AppError>,
     scelto: Option<Scelto>,
 ) {
-    let _ = app.emit(
+    app.emetti(
         "scarico:brano",
         EventoBrano {
             titolo: desiderato.brano.title.clone(),
@@ -968,7 +969,7 @@ pub fn annuncia(app: &AppHandle) {
     let (rimasti, sorgenti) = situazione(app);
     procura.rimasti.store(rimasti, Ordering::Relaxed);
     let fatti = procura.fatti.load(Ordering::Relaxed);
-    let _ = app.emit(
+    app.emetti(
         "scarico:avanzamento",
         Avanzamento {
             fatti,
@@ -981,7 +982,7 @@ pub fn annuncia(app: &AppHandle) {
 /// Fa sapere alla finestra che la coda non può partire.
 fn segnala_guasto(app: &AppHandle, guasto: &AppError) {
     nota!("[procura] la coda non parte: {guasto}");
-    let _ = app.emit("scarico:guasto", crate::errore::errore(guasto.clone()));
+    app.emetti("scarico:guasto", crate::errore::errore(guasto.clone()));
 }
 
 /// Quanti ne restano in tabella.
@@ -1105,7 +1106,7 @@ fn rientra_in_libreria(app: &AppHandle) {
                     report.rimozioni_rinviate
                 );
             }
-            let _ = app.emit("scarico:in_libreria", report.inserted);
+            app.emetti("scarico:in_libreria", report.inserted);
         }
         Err(guasto) => nota!("[procura] la scansione finale è fallita: {guasto}"),
     }
@@ -1119,7 +1120,7 @@ fn rientra_in_libreria(app: &AppHandle) {
     });
     match ritorno {
         Ok(fatto) if fatto.voci_rimesse > 0 || fatto.righe_chiuse > 0 => {
-            let _ = app.emit("scarico:riconciliato", fatto);
+            app.emetti("scarico:riconciliato", fatto);
         }
         Ok(_) => {}
         Err(guasto) => nota!("[procura] il ritorno nelle playlist è fallito: {guasto}"),
@@ -1131,6 +1132,7 @@ fn rientra_in_libreria(app: &AppHandle) {
     // di un catalogo entra col titolo che gli ha dato chi l'ha caricato, che
     // spesso è il nome del file.
     crate::arricchimento::sporca(app);
+    crate::analisi::sporca(app);
 }
 
 #[cfg(test)]

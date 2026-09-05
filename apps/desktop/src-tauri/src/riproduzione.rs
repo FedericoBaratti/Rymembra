@@ -17,6 +17,31 @@
 //! l'unica difesa che regge è una regola sola: **prima il lettore, poi la
 //! libreria, mai il contrario**. Ogni funzione di questo file la rispetta.
 //!
+//! # E la terza attesa, che non è un lucchetto: la rete
+//!
+//! Da quando un brano può non essere un file, aprirlo può voler dire aprire una
+//! **connessione**: una richiesta `Range` da 256 KiB verso un catalogo pubblico
+//! che ci ospita gratis, con dentro — per Audius — anche la scelta del nodo che
+//! risponde adesso. Sono secondi, non microsecondi, e la regola che ne discende
+//! è la stessa già scritta per l'apertura di un file, estesa: **nessun lucchetto
+//! si tiene mentre si aspetta la rete**.
+//!
+//! In pratica vuol dire che [`brano_di`] resta com'era — si legge la riga sotto
+//! il lucchetto della libreria, lo si lascia, e l'apertura va su un filo suo con
+//! i cinque secondi di [`APERTURA_BRANO`] addosso — e che il ramo nuovo sta
+//! **dentro** quella scadenza, non accanto. Vale anche per il gapless: il
+//! [`filo del preparatore`](avvia_preparatore) apre il brano successivo in
+//! anticipo, e da oggi «in anticipo» può voler dire una connessione aperta
+//! mentre il corrente suona ancora. Quella connessione la apre lui, sul suo
+//! filo, senza niente in mano — che è esattamente la ragione per cui quel filo
+//! esiste.
+//!
+//! La riserva di connessioni è quella dei cataloghi ([`Cataloghi`]), non una
+//! nuova per brano: sono i cataloghi a portarsi dietro l'agente, le scadenze e
+//! il modo di trattare un `429` per ogni servizio, e aprirne una seconda idea
+//! qui vorrebbe dire un saluto TLS per canzone contro un servizio che nessuno
+//! paga.
+//!
 //! # Perché il conteggio d'ascolto si scrive qui e non nel motore
 //!
 //! Perché il motore non sa se quel che ha suonato conta. La regola —
@@ -26,14 +51,19 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::spegnimento::Emette as _;
 use aether_app::library::TrackSummary;
-use aether_app::playback::{self, Equalizzazione, Normalizzazione, Volume};
+use aether_app::playback::{self, Equalizzazione, Normalizzazione, SchedaSorgente, Volume};
+use aether_catalogo::Cataloghi;
 use aether_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
+use aether_domain::esterno::Fonte;
 use aether_domain::listen::ListenTracker;
 use aether_domain::queue::{Queue, RepeatMode, Step};
+use aether_domain::scelta::Candidato;
+use aether_net::FlussoHttp;
 use aether_play::{Evento, Motore, PRESET_DI_SERIE};
 use serde::Serialize;
-use tauri::{Emitter as _, Manager as _, State};
+use tauri::{Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
@@ -189,6 +219,15 @@ pub struct StatoRiproduzione {
     /// il dispositivo è sparito deve trovarlo detto, non aspettare che sparisca
     /// una seconda volta.
     pub audio: Option<GuastoAudio>,
+    /// Perché il brano dopo è quello, quando l'ha scelto l'autoplay.
+    ///
+    /// Il **codice** e non la frase: la frase va tradotta, e una stringa
+    /// italiana che attraversa l'IPC resta italiana anche per chi ha
+    /// l'interfaccia in inglese. Vedi [`aether_app::autoplay::Motivo::codice`].
+    ///
+    /// `None` quando il brano dopo l'hai messo tu, e allora non c'è niente da
+    /// spiegare.
+    pub motivo_prossimo: Option<String>,
 }
 
 /// Il motore audio non c'è: perché, e da quando.
@@ -281,6 +320,18 @@ pub struct Lettore {
     /// domanda — e senza questa copia il cursore delle impostazioni tornerebbe
     /// a zero a ogni ridisegno della finestra.
     dissolvenza_s: u64,
+    /// Perché il brano che l'autoplay ha accodato è quello.
+    ///
+    /// Solo l'ultimo, e solo quello scelto **da solo**: quel che si è messo in
+    /// coda a mano non ha un perché da spiegare — l'hai messo tu. `None`
+    /// significa quindi «questo lo hai scelto», che è già l'informazione giusta
+    /// e non ha bisogno di una frase.
+    ///
+    /// Un campo e non una colonna: è vero finché quel brano è in coda, si
+    /// ricalcola gratis alla scelta successiva, e conservarlo attraverso i
+    /// riavvii vorrebbe dire spiegare una scelta che il programma non ricorda
+    /// più di aver fatto.
+    motivo_prossimo: Option<(i64, &'static str)>,
 }
 
 /// Il lettore, o il motivo per cui non c'è.
@@ -354,6 +405,60 @@ pub struct StatoLettore {
     /// Fuori dal lucchetto del lettore per la stessa ragione degli atomici qui
     /// sopra: chi manda la spinta il lucchetto ce l'ha già in mano.
     pub prepara: std::sync::mpsc::Sender<()>,
+    /// Il volume in memoria non è ancora quello sul disco.
+    ///
+    /// # Perché il salvataggio non sta più nel comando
+    ///
+    /// Perché `volume` ed `equalizzatore` arrivano da un `<input type="range">`,
+    /// cioè **a ogni pixel** in cui il cursore si muove: una dozzina al secondo
+    /// finché resta sotto il dito. Scrivere lì dentro voleva dire, dodici volte
+    /// al secondo, prendere il lucchetto della libreria e aprire una
+    /// transazione su SQLite — sul filo principale, che è quello che disegna la
+    /// finestra, e tenendo già in mano il lucchetto del lettore. Dietro quei due
+    /// lucchetti si accodano l'orologio, lo spettro e ogni altro comando: una
+    /// manciata di secondi di cursore bastava a far sembrare la finestra morta.
+    ///
+    /// Quel che chi ascolta deve sentire subito è il **suono**, e quello cambia
+    /// nel comando come prima. Quel che può aspettare un quarto di secondo è la
+    /// riga nel database, che serve solo alla prossima apertura.
+    ///
+    /// Una bandiera e non una copia del valore: il valore vero sta già in
+    /// `Lettore`, e tenerne due vorrebbe dire poterli far divergere. Qui si dice
+    /// soltanto «va riletto di là e scritto», e chi scrive rilegge l'ultimo —
+    /// che è il solo che interessi. Dodici cambi in un secondo diventano una
+    /// scrittura sola.
+    ///
+    /// Fuori dal lucchetto del lettore come gli altri atomici qui sopra, e per
+    /// il motivo di sempre: chi la alza il lucchetto ce l'ha già in mano.
+    pub volume_da_salvare: std::sync::atomic::AtomicBool,
+    /// La curva in memoria non è ancora quella sul disco.
+    ///
+    /// Vedi [`StatoLettore::volume_da_salvare`]: stessa ragione, stesso cursore.
+    pub eq_da_salvare: std::sync::atomic::AtomicBool,
+    /// I cataloghi da cui arrivano i byte di un brano che non è un file.
+    ///
+    /// # Perché una terza copia, e non quella della coda
+    ///
+    /// Perché nell'albero ce ne sono già due, e la ragione della seconda vale
+    /// identica per questa: `StatoImport` li tiene separati da quelli di
+    /// `StatoProcura` perché «la coda tiene tre fili occupati per minuti, e una
+    /// lettura fatta da chi sta guardando la finestra non deve mettersi dietro
+    /// di loro». Qui la frase diventa più netta ancora: dietro non c'è qualcuno
+    /// che guarda una schermata, c'è **la musica che sta suonando**. Un brano
+    /// che aspetta il suo turno in fila dietro a un prelievo da centoventi
+    /// megabyte è un silenzio fra due canzoni.
+    ///
+    /// # Perché fuori dal lucchetto del lettore
+    ///
+    /// Per la stessa ragione degli atomici qui sopra, più una: chi lo usa lo usa
+    /// **mentre non ha il lucchetto**, ed è tutto il punto — vedi il preambolo
+    /// del modulo. Tenerlo dentro `Lettore` vorrebbe dire prendere il lucchetto
+    /// per poter aprire una connessione, cioè esattamente ciò che non si fa.
+    ///
+    /// Il clone costa niente: l'agente di `ureq` sta dentro un `Arc` e la
+    /// riserva di connessioni si condivide fra le copie. È così che il filo del
+    /// preparatore se lo porta dentro la scadenza senza portarci uno `State`.
+    cataloghi: Cataloghi,
 }
 
 /// Il punto in cui la musica si è interrotta per colpa della rete.
@@ -406,6 +511,7 @@ impl StatoLettore {
             normalizzazione: Normalizzazione::default(),
             autoplay: false,
             dissolvenza_s: 0,
+            motivo_prossimo: None,
         });
         let (prepara, orecchio) = std::sync::mpsc::channel();
         (
@@ -416,6 +522,9 @@ impl StatoLettore {
                 spegnimento: std::sync::atomic::AtomicI64::new(0),
                 ripresa: Mutex::new(None),
                 prepara,
+                volume_da_salvare: std::sync::atomic::AtomicBool::new(false),
+                eq_da_salvare: std::sync::atomic::AtomicBool::new(false),
+                cataloghi: Cataloghi::nuovi(),
             },
             orecchio,
         )
@@ -536,6 +645,255 @@ const APERTURA_BRANO: Duration = Duration::from_secs(5);
 /// Il nome che il filo dell'apertura porta nel diario dei panici.
 const APERTURA_BRANO_NOME: &str = "apertura-brano";
 
+/// Il riferimento a un brano che non è un file.
+///
+/// Due campi e nient'altro, perché due sono le domande: **quale catalogo** — che
+/// decide da quale [`aether_net::Rete`] escono i byte, con le sue scadenze, il
+/// suo modo di trattare un `429` e la sua riserva di connessioni — e **a che
+/// indirizzo**.
+///
+/// Non c'è la licenza e non c'è la disponibilità, e non è una dimenticanza: qui
+/// non si scrive niente sul disco. Il cancello che le guarda è quello di
+/// `aether_catalogo::prelievo`, e sta prima della rete perché prima della rete
+/// deve stare; ascoltare mentre arriva è la cosa che [`Disponibilita::SoloAscolto`]
+/// **permette**, e chiederne il permesso una seconda volta qui vorrebbe dire
+/// due implementazioni della stessa regola.
+///
+/// [`Disponibilita::SoloAscolto`]: aether_domain::esterno::Disponibilita::SoloAscolto
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RiferimentoFlusso {
+    /// Da quale catalogo, cioè con quale rete si apre.
+    fonte: Fonte,
+    /// L'indirizzo dei byte. Per Audius un percorso, che vuole ancora un nodo
+    /// davanti: vedi [`apri_flusso`].
+    url: String,
+}
+
+/// Il percorso con cui Audius conserva un brano invece di un indirizzo.
+///
+/// `aether_catalogo::audius` scrive `/v1/tracks/<id>/stream` e non un URL
+/// intero, e la ragione sta scritta là: Audius non ha un server ma una rete di
+/// nodi che entrano ed escono, e un indirizzo con dentro il nodo di oggi fra un
+/// mese punta a una macchina che non c'è più. Il nodo lo rimette
+/// `Audius::prepara` al momento di andare a prendere i byte.
+const PERCORSO_AUDIUS: &str = "/v1/tracks/";
+
+/// Questo brano è un flusso? Allora ecco da dove.
+///
+/// # Quale campo si legge, e quale si leggerà
+///
+/// Oggi `path`, perché in [`SchedaSorgente`] non c'è altro: `tracks.path` è
+/// `NOT NULL UNIQUE` e la libreria non ha ancora un posto per una traccia che
+/// non è un file — è il buco dichiarato nel README, e chiuderlo è la fase 2 di
+/// `STUDIO-STREAMING.md`, che vuole una migrazione e quindi `aether-app`.
+///
+/// Quando quella migrazione arriverà, i campi da guardare sono già scritti nella
+/// migrazione 10 e vivono su `desiderati`: `fonte_url` per l'indirizzo,
+/// `source_service` per la fonte, `disponibilita` per il resto. **Cambia solo
+/// questa funzione**: tutto quel che sta a valle — [`apri_flusso`],
+/// [`sorgente_da_flusso`], il ramo dentro [`brano_di`] — riceve un
+/// [`RiferimentoFlusso`] e non sa da quale colonna sia uscito.
+///
+/// # Perché il riconoscimento passa dal catalogo e non da un elenco di qui
+///
+/// Perché un elenco di domini scritto qui sarebbe il **secondo**:
+/// `aether_catalogo::riconosci` è una allowlist rigida, e il suo modulo dice
+/// perché — «un link che non si riconosce è un link a cui non si va, ed è la
+/// garanzia che Aether non vada mai a bussare dove non è invitato». Due copie di
+/// quella regola sono due copie che un giorno diranno cose diverse, e il giorno
+/// in cui succede si va a bussare da qualche parte per sbaglio.
+///
+/// Di quel che `riconosci` restituisce serve solo la **fonte**: l'indirizzo
+/// resta quello che c'era scritto, perché quello sono i byte, mentre l'`id` che
+/// il catalogo ne ricava nomina il concerto e non il file. È un cancello, non un
+/// traduttore.
+fn riferimento_di(scheda: &SchedaSorgente) -> Option<RiferimentoFlusso> {
+    riferimento_da_testo(&scheda.path)
+}
+
+/// Il riconoscimento vero e proprio, su una stringa sola.
+///
+/// Separata da [`riferimento_di`] per poterla provare senza un database e senza
+/// una finestra: è una decisione su del testo, e le decisioni su del testo si
+/// provano come chiamate di funzione.
+fn riferimento_da_testo(testo: &str) -> Option<RiferimentoFlusso> {
+    let pulito = testo.trim();
+    // Il percorso di Audius prima di tutto, perché non è un indirizzo e
+    // `riconosci` — che di indirizzi si occupa — non lo vedrebbe. Non si
+    // confonde con un percorso di disco: su Windows un percorso comincia con
+    // una lettera di unità o con due barre rovesce, mai con `/v1/`.
+    if pulito.starts_with(PERCORSO_AUDIUS) {
+        return Some(RiferimentoFlusso {
+            fonte: Fonte::Audius,
+            url: pulito.to_owned(),
+        });
+    }
+    // `https://` e non anche `http://`: `Rete` nasce con `https_only`, quindi un
+    // indirizzo in chiaro non partirebbe comunque, e riconoscerlo qui vorrebbe
+    // dire promettere un'apertura che fallirà più in là con un errore che parla
+    // d'altro.
+    if !pulito.starts_with("https://") {
+        return None;
+    }
+    Some(RiferimentoFlusso {
+        fonte: aether_catalogo::riconosci(pulito)?.fonte,
+        url: pulito.to_owned(),
+    })
+}
+
+/// Apre il flusso di un riferimento, con la rete del catalogo che lo ha dato.
+///
+/// **Va in rete**, e quindi va chiamata dove la rete si può aspettare: dentro la
+/// scadenza di [`brano_di`], senza nessun lucchetto in mano. Costa una richiesta
+/// `Range` da [`aether_net::flusso::FINESTRA`] byte — l'inizio del brano, che è
+/// la prima cosa che il decodificatore chiederà — più, su Audius, la scelta del
+/// nodo.
+///
+/// # Perché la rete è quella del catalogo e non una nuova
+///
+/// Perché in quella `Rete` ci sono lo `User-Agent` con cui Aether si presenta,
+/// la scadenza che quel servizio merita, il modo di leggere un `Retry-After` e
+/// la riserva di connessioni già calda. Una `Rete` nuova per brano sarebbe un
+/// saluto TLS per canzone e un limite di frequenza contato da capo ogni volta,
+/// contro archivi pubblici che ci ospitano gratis — cioè il modo di farsi
+/// bloccare per maleducazione.
+///
+/// # Errori
+///
+/// Quelli di `Rete::intervallo` (`net.*`, `download.*`) e, per Audius,
+/// `catalogo.notAvailable` se non risponde nessun nodo.
+/// `playback.sourceUnavailable` per una fonte che di byte non ne dà: è il caso
+/// dell'archivio di Spotify e di un file di playlist, che nominano un brano e
+/// non lo consegnano.
+fn apri_flusso(cataloghi: &Cataloghi, rif: &RiferimentoFlusso) -> Result<FlussoHttp, AppError> {
+    match rif.fonte {
+        Fonte::InternetArchive => {
+            FlussoHttp::nuovo(cataloghi.archivio().rete().clone(), rif.url.clone())
+        }
+        // Il nodo si sceglie **adesso**: è lo stesso passo che fa il prelievo, e
+        // per la stessa ragione. Un `Candidato` con il solo indirizzo dentro
+        // perché è tutto quel che `prepara` guarda, e perché costruirne uno
+        // finto completo vorrebbe dire inventare una licenza per una funzione
+        // che non la legge.
+        Fonte::Audius => {
+            let pronto = cataloghi.audius().prepara(&Candidato {
+                url: rif.url.clone(),
+                ..Candidato::default()
+            })?;
+            FlussoHttp::nuovo(cataloghi.audius().rete().clone(), pronto.url)
+        }
+        // Il catalogo per cui `FlussoHttp` è nato: da Jamendo non si tiene
+        // niente, e ascoltare mentre arriva è l'unico modo lecito che c'è. Senza
+        // la feature il ramo non esiste e la fonte cade nel caso generale, che è
+        // la verità: questa copia di Aether Jamendo non ce l'ha.
+        #[cfg(feature = "jamendo")]
+        Fonte::Jamendo => FlussoHttp::nuovo(cataloghi.jamendo().rete().clone(), rif.url.clone()),
+        altra => Err(AppError::new(ErrorCode::PlaybackSourceUnavailable {
+            track_id: None,
+            path: Some(rif.url.clone()),
+        })
+        .with_cause(format!(
+            "da {} non arrivano byte da suonare",
+            altra.etichetta()
+        ))),
+    }
+}
+
+/// Un flusso di rete, vestito da [`aether_play::Flusso`].
+///
+/// # Perché serve un involucro
+///
+/// Perché il tratto è di `aether-play` e il tipo è di `aether-net`, e nessuno
+/// dei due è di qui: la regola dell'orfano vieta di scrivere quell'`impl` in un
+/// terzo crate. È la stessa ragione per cui `aether-app` ne ha uno suo
+/// (`playback::Adattatore`) per i file, e la stessa forma.
+///
+/// Non è però solo una formalità del compilatore. Questo modulo è **l'unico
+/// posto dell'albero che conosce tutti e due i lati**: `aether-app` non vede la
+/// rete e `aether-catalogo` non vede il motore. Il punto in cui un flusso HTTP
+/// diventa qualcosa che si può suonare non poteva stare altrove.
+struct FlussoDiRete(FlussoHttp);
+
+impl std::io::Read for FlussoDiRete {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl std::io::Seek for FlussoDiRete {
+    fn seek(&mut self, verso: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(verso)
+    }
+}
+
+impl aether_play::Flusso for FlussoDiRete {
+    /// Quanto è lungo, se il servizio lo ha dichiarato.
+    ///
+    /// Non è un di più: `MediaSource::is_seekable` di symphonia risponde
+    /// guardando questo, e un `None` qui vuol dire il cursore che sparisce dalla
+    /// barra prima ancora che il brano cominci.
+    fn lunghezza(&self) -> Option<u64> {
+        self.0.lunghezza()
+    }
+}
+
+/// Da un flusso aperto alla sorgente che il motore sa suonare.
+///
+/// Quel che il motore riceve è indistinguibile da un file: stesso `track_id`,
+/// stessa durata dichiarata dal database, stesso guadagno ReplayGain. È il
+/// motivo per cui gapless, dissolvenza, equalizzatore e spettro funzionano senza
+/// una riga in più — il motore non ha mai saputo cosa ci fosse dietro i byte.
+fn sorgente_da_flusso(
+    scheda: &SchedaSorgente,
+    url: &str,
+    flusso: FlussoHttp,
+) -> aether_play::Sorgente {
+    aether_play::Sorgente {
+        track_id: scheda.track_id,
+        media: Box::new(FlussoDiRete(flusso)),
+        estensione: estensione_da_url(url),
+        durata_ms: u64::try_from(scheda.durata_ms).unwrap_or(0),
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "sono decibel: la precisione di un f32 è un milionesimo di dB"
+        )]
+        replaygain_db: scheda.replaygain_db.map(|db| db as f32),
+    }
+}
+
+/// Il suggerimento di formato ricavato da un indirizzo.
+///
+/// # Perché la query si butta prima di guardare il punto
+///
+/// Perché su Audius la query **mente, apposta**: `/v1/tracks/<id>/stream?ext=wav`
+/// dice l'estensione del file che l'artista ha caricato, e serve al prelievo per
+/// non chiamare `.mp3` un wav. Ma il punto di ascolto restituisce un mp3
+/// transcodificato, non quel wav: passare `wav` a symphonia come suggerimento
+/// vuol dire farle provare per primo il lettore sbagliato. Un suggerimento
+/// assente è meglio di uno falso — symphonia riconosce comunque il contenitore
+/// dai marcatori, ed è la strada che prende ogni volta che l'estensione non c'è.
+///
+/// Le stesse regole di `aether_app::playback::estensione_di`, che per i file fa
+/// questo identico mestiere: l'ultimo segmento, dopo l'ultimo punto, in
+/// minuscolo, e niente se è vuoto o più lungo di cinque caratteri.
+fn estensione_da_url(url: &str) -> Option<String> {
+    let senza_query = url.split(['?', '#']).next().unwrap_or(url);
+    // Il nome del file sta nel **percorso**, e un URL senza percorso non ne ha
+    // nessuno. Senza questi due passaggi `https://archive.org` avrebbe come
+    // estensione il proprio dominio di primo livello — e il motore si vedrebbe
+    // suggerire un contenitore «org» che non esiste.
+    let dopo_schema = senza_query
+        .split_once("://")
+        .map_or(senza_query, |(_, resto)| resto);
+    let (_, percorso) = dopo_schema.split_once('/')?;
+    let ultimo = percorso.rsplit('/').next().unwrap_or(percorso);
+    let (_, ext) = ultimo.rsplit_once('.')?;
+    if ext.is_empty() || ext.len() > 5 || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(ext.to_ascii_lowercase())
+}
+
 /// Apre la sorgente di un brano, senza tenere in mano la libreria mentre aspetta.
 ///
 /// # Perché due metà e non una chiamata sola
@@ -571,12 +929,29 @@ const APERTURA_BRANO_NOME: &str = "apertura-brano";
 /// secondi di Windows. Adesso `BranoAperto::apri` sta qui dentro, e la scadenza
 /// vale per tutto quel che legge.
 ///
+/// # I due modi in cui un brano si apre
+///
+/// Un file, oppure un **flusso**. La differenza sta tutta dentro la chiusura, e
+/// non è un caso: la scadenza deve coprire tutte e due, e una richiesta HTTP che
+/// non torna è la stessa attesa di una share che non risponde — cinque secondi
+/// dopo, chi ha premuto play deve avere una risposta. Il ramo lo sceglie
+/// [`riferimento_di`], che è l'unico posto che sa distinguere le due cose.
+///
+/// La rete, dentro la chiusura, si può aspettare: qui non c'è più nessun
+/// lucchetto in mano, ed è la stessa proprietà per cui l'apertura di un file era
+/// stata spostata qui. Vedi il preambolo del modulo.
+///
 /// # Errori
 ///
 /// `fs.networkUnavailable` quando la scadenza passa — ed è il codice giusto e
 /// non un ripiego: un'apertura che non finisce in cinque secondi su un percorso
-/// che il database conosce è una share che non risponde, ed è ritentabile.
-/// `playback.formatUnsupported` per un contenitore che non si riconosce.
+/// che il database conosce è una share che non risponde, ed è ritentabile. Vale
+/// identico per un flusso: un catalogo che non consegna 256 kilobyte in cinque
+/// secondi è, dal punto di vista di chi ascolta, la stessa cosa — e la stessa
+/// cosa deve avere lo stesso tasto «Riprova» accanto.
+/// `playback.formatUnsupported` per un contenitore che non si riconosce, e i
+/// `net.*` di [`apri_flusso`] quando la rete risponde prima della scadenza per
+/// dire di no.
 fn brano_di(
     app: &tauri::AppHandle,
     track_id: i64,
@@ -586,17 +961,36 @@ fn brano_di(
     let scheda = con_libreria(&stato, |libreria| {
         playback::scheda_sorgente(&libreria.connection, track_id)
     })?;
-    // Il percorso si copia prima: la scheda entra nella chiusura e da lì non
-    // torna, e senza di lui l'errore direbbe «la rete non risponde» senza dire
-    // quale cartella andare a ricollegare.
+    // Il riferimento si ricava **prima** della chiusura, che si porta via la
+    // scheda: da qui in giù serve solo per sapere che faccia dare a una scadenza
+    // passata, e chiederlo di nuovo dopo non si potrebbe.
+    let remoto = riferimento_di(&scheda);
+    // Il percorso si copia prima per la stessa ragione: senza di lui l'errore
+    // direbbe «la rete non risponde» senza dire quale cartella andare a
+    // ricollegare.
     let percorso = scheda.path.clone();
+    // I cataloghi si clonano fuori dallo stato: un `State` non attraversa il
+    // confine di un filo, e il clone è quasi gratis — l'agente sta in un `Arc` e
+    // la riserva di connessioni resta la stessa (vedi [`StatoLettore::cataloghi`]).
+    let cataloghi = app.state::<StatoLettore>().cataloghi.clone();
+    let riferimento = remoto.clone();
     aether_app::scadenza::con_scadenza(APERTURA_BRANO_NOME, APERTURA_BRANO, move || {
-        let sorgente = playback::sorgente_da_scheda(&aether_app::files::LocalFiles, &scheda)?;
+        let sorgente = match riferimento {
+            Some(rif) => {
+                let flusso = apri_flusso(&cataloghi, &rif)?;
+                sorgente_da_flusso(&scheda, &rif.url, flusso)
+            }
+            None => playback::sorgente_da_scheda(&aether_app::files::LocalFiles, &scheda)?,
+        };
         aether_play::BranoAperto::apri(sorgente, formato)
     })
     .unwrap_or_else(|| {
         Err(AppError::new(ErrorCode::FsNetworkUnavailable {
-            path: Some(percorso),
+            // Per un flusso il campo resta vuoto, e non per pudore: la finestra
+            // lo mostra per dire *quale cartella* andare a ricollegare, e una
+            // cartella non c'è. Un indirizzo al posto di un percorso sarebbe un
+            // consiglio che non si può seguire.
+            path: remoto.is_none().then_some(percorso),
         })
         .with_cause(format!(
             "l'apertura non è finita entro {} secondi",
@@ -690,6 +1084,21 @@ pub fn avvia_preparatore(app: tauri::AppHandle, orecchio: std::sync::mpsc::Recei
 /// lo rivuole e dura di nuovo microsecondi. Tenerli insieme vorrebbe dire il
 /// lucchetto del lettore in mano per tutta l'apertura — e allora tanto varrebbe
 /// essere rimasti sul filo della decodifica.
+///
+/// # Quando il brano dopo è un flusso
+///
+/// Il secondo tempo diventa una **connessione aperta in anticipo**: 256 kilobyte
+/// chiesti a un catalogo mentre il brano corrente suona ancora. La divisione in
+/// tre tempi, che era nata per le share lente, è quel che rende la cosa
+/// sostenibile — l'attesa avviene qui, su questo filo, con le mani vuote.
+///
+/// L'antirimbalzo di [`RAFFICA_PREPARA`] conta il doppio in questo caso: dieci
+/// file aperti per buttarne nove erano dieci `open` sul disco di chi ascolta,
+/// dieci flussi aperti per buttarne nove sono dieci richieste a un archivio
+/// pubblico che nessuno paga. Il terzo tempo lascia comunque cadere quel che non
+/// serve più — un successivo sbagliato attaccato in gapless si sente — ma la
+/// richiesta, a quel punto, è già partita: è la raffica a doverla evitare, non
+/// il controllo finale.
 fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
     let stato = app.state::<StatoLettore>();
 
@@ -713,8 +1122,9 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
         // nessun istante in cui l'applicazione si sia fermata. Reagire a
         // `Fermato` vorrebbe dire ripartire *dopo* il silenzio.
         if lettore.coda.peek_next().is_none() && lettore.autoplay {
-            if let Some(scelto) = scegli_da_solo(app, lettore) {
-                lettore.coda.enqueue(&[scelto]);
+            if let Some(scelta) = scegli_da_solo(app, lettore) {
+                lettore.coda.enqueue(&[scelta.id]);
+                lettore.motivo_prossimo = Some((scelta.id, scelta.motivo.codice()));
             }
         }
 
@@ -750,7 +1160,7 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
                 err.code().kind().code(),
                 err.cause().unwrap_or("—")
             );
-            let _ = app.emit("riproduzione:errore", crate::errore::errore(err));
+            app.emetti("riproduzione:errore", crate::errore::errore(err));
             return;
         }
     };
@@ -775,7 +1185,10 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
 /// la regola di questo file è che lo si prenda **dopo** quello del lettore —
 /// che a questo punto è già in mano a chi ci ha chiamati. Tenerla separata
 /// rende la sequenza leggibile invece che implicita.
-fn scegli_da_solo(app: &tauri::AppHandle, lettore: &Lettore) -> Option<i64> {
+fn scegli_da_solo(
+    app: &tauri::AppHandle,
+    lettore: &Lettore,
+) -> Option<aether_app::autoplay::Scelta> {
     let corrente = lettore.coda.current()?;
     // Tutto quel che è già in coda, così l'autoplay non ripropone quel che si
     // è appena sentito.
@@ -807,7 +1220,7 @@ fn salva_coda(app: &tauri::AppHandle, lettore: &Lettore) {
 fn manda_stato(app: &tauri::AppHandle, lettore: &Lettore) {
     let stato = costruisci_stato(app, lettore);
     crate::media::aggiorna(app, &stato);
-    let _ = app.emit("riproduzione:stato", stato);
+    app.emetti("riproduzione:stato", stato);
 }
 
 /// Come [`manda_stato`], ma dicendo dove il brano *sarà* invece che dov'è.
@@ -827,7 +1240,7 @@ fn manda_stato_con_posizione(app: &tauri::AppHandle, lettore: &Lettore, ms: u64)
     let mut stato = costruisci_stato(app, lettore);
     stato.posizione_ms = ms;
     crate::media::aggiorna(app, &stato);
-    let _ = app.emit("riproduzione:stato", stato);
+    app.emetti("riproduzione:stato", stato);
 }
 
 fn costruisci_stato(app: &tauri::AppHandle, lettore: &Lettore) -> StatoRiproduzione {
@@ -876,6 +1289,14 @@ fn costruisci_stato(app: &tauri::AppHandle, lettore: &Lettore) -> StatoRiproduzi
         spegnimento_ms: quanto_manca(&app.state::<StatoLettore>()),
         autoplay: lettore.autoplay,
         dissolvenza_s: lettore.dissolvenza_s,
+        // Il motivo vale per il brano che **verrà**, non per uno qualunque: se
+        // nel frattempo la coda è cambiata, la frase parlerebbe di un brano che
+        // non c'è più. Confrontare costa un `Option<i64>` e toglie l'unico modo
+        // in cui questa riga poteva mentire.
+        motivo_prossimo: lettore
+            .motivo_prossimo
+            .filter(|(id, _)| Some(*id) == lettore.coda.peek_next())
+            .map(|(_, codice)| codice.to_owned()),
         audio: guasto,
     }
 }
@@ -1032,10 +1453,18 @@ fn su_evento(app: &tauri::AppHandle, evento: Evento) {
             // qui si annota **dove**, finché quel dove esiste ancora: la
             // fermata azzera la posizione subito dopo, e questa chiusura gira
             // sul filo della decodifica un istante prima che succeda.
+            //
+            // Vale identico per un flusso, e senza una riga in più: una
+            // connessione che cade a metà canzone arriva fin qui con lo stesso
+            // codice, perché `aether_net::flusso` la traduce in un numero di
+            // sistema che `aether_domain::errors::rete` riconosce. La strada del
+            // «Riprova» è quindi una sola per tutti e due i casi — che è il
+            // punto: un brano interrotto dalla rete non deve raccontare due
+            // storie diverse a seconda di dove stavano i byte.
             if err.code().kind() == ErrorCodeKind::FsNetworkUnavailable {
                 annota_ripresa(&stato_lettore);
             }
-            let _ = app.emit("riproduzione:errore", crate::errore::errore(*err));
+            app.emetti("riproduzione:errore", crate::errore::errore(*err));
         }
     }
 }
@@ -1238,6 +1667,73 @@ fn scade_il_timer(app: &tauri::AppHandle, stato_lettore: &StatoLettore) {
     });
 }
 
+/// Scrive sul disco volume e curva, se sono cambiati da quando li si è scritti.
+///
+/// # Chi la chiama, e perché non il comando
+///
+/// La chiama il filo dell'orologio a ogni giro, e il `RunEvent` d'uscita in
+/// `main` un'ultima volta. I comandi `volume` ed `equalizzatore` alzano soltanto
+/// una bandiera: la ragione per esteso sta su
+/// [`StatoLettore::volume_da_salvare`], e in breve è che quei due comandi
+/// arrivano una dozzina di volte al secondo da un cursore sotto un dito, e che
+/// aprire una transazione su SQLite dodici volte al secondo dal filo che disegna
+/// la finestra è il modo di far sembrare morta la finestra.
+///
+/// # Perché prende le bandiere prima del lucchetto
+///
+/// Perché `swap` le abbassa e dice com'erano in un colpo solo: se un comando
+/// arriva mentre questa scrive, rialza la sua e il giro dopo la riscrive. Il
+/// contrario — leggere, scrivere, poi abbassare — perderebbe quel cambio.
+///
+/// Quattro volte al secondo si legge una coppia di atomici rilassati e quasi
+/// sempre si scopre che non c'è niente da fare, che è il costo che questo
+/// modulo paga già per `spettro` e per `spegnimento`.
+fn salva_quel_che_manca(app: &tauri::AppHandle, stato: &StatoLettore) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let volume = stato.volume_da_salvare.swap(false, Relaxed);
+    let eq = stato.eq_da_salvare.swap(false, Relaxed);
+    if !volume && !eq {
+        return;
+    }
+    // Una lettura sola sotto il lucchetto del lettore, e poi lo si molla: il
+    // database si tocca **fuori**, che è la regola di tutto questo modulo.
+    let valori = con_lettore(stato, |lettore| Ok((lettore.volume, lettore.eq.clone())));
+    let Ok((salva_volume, salva_eq)) = valori else {
+        return;
+    };
+    let Some(stato_app) = app.try_state::<Stato>() else {
+        return;
+    };
+    let esito = con_libreria(&stato_app, |libreria| {
+        if volume {
+            playback::save_volume(&libreria.connection, salva_volume)?;
+        }
+        if eq {
+            playback::save_eq(&libreria.connection, &salva_eq)?;
+        }
+        Ok(())
+    });
+    if let Err(err) = esito {
+        nota!(
+            "[riproduzione] preferenze audio non salvate codice={} causa={}",
+            err.code().kind().code(),
+            err.cause().unwrap_or("—")
+        );
+    }
+}
+
+/// L'ultimo giro di [`salva_quel_che_manca`], mentre si chiude.
+///
+/// Il filo dell'orologio esce appena la bandiera dello spegnimento si alza, e
+/// senza questa chiamata l'ultima posizione di un cursore mosso un attimo prima
+/// di chiudere sarebbe l'unica a non arrivare mai sul disco. Qui lo stato c'è
+/// ancora: il `RunEvent` d'uscita arriva mentre la finestra esiste.
+pub fn salva_uscendo(app: &tauri::AppHandle) {
+    if let Some(stato) = app.try_state::<StatoLettore>() {
+        salva_quel_che_manca(app, &stato);
+    }
+}
+
 /// Avvia il filo che manda la posizione alla finestra.
 ///
 /// Manda solo mentre suona: un'applicazione ferma in secondo piano non deve
@@ -1258,7 +1754,23 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
             let mut gia_perso = false;
             loop {
                 std::thread::sleep(PASSO_TEMPO);
-                let stato_lettore = app.state::<StatoLettore>();
+                // Prima di qualunque cosa che tocchi l'`AppHandle`: se la
+                // finestra si sta chiudendo, un `emit` da qui fa panicare il
+                // ciclo degli eventi. Vedi `crate::spegnimento`.
+                if crate::spegnimento::in_uscita() {
+                    return;
+                }
+                // `try_state` e non `state`: `state` panica se lo stato non
+                // c'è, e questo filo gira anche mentre lo stato viene lasciato
+                // cadere. Nessuno stato vuol dire che non c'è più niente da
+                // raccontare a nessuno.
+                let Some(stato_lettore) = app.try_state::<StatoLettore>() else {
+                    return;
+                };
+
+                // Le preferenze audio che i cursori hanno lasciato in sospeso.
+                // Quasi sempre non c'è niente da fare: due letture rilassate.
+                salva_quel_che_manca(&app, &stato_lettore);
 
                 // Prima della posizione, perché è la ragione per cui la
                 // posizione ha smesso di muoversi. Un dispositivo sparito
@@ -1270,7 +1782,7 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                 match (&perso, gia_perso) {
                     (Some(guasto), false) => {
                         nota!("[riproduzione] dispositivo audio perso: {}", guasto.causa);
-                        let _ = app.emit("riproduzione:audio", guasto.clone());
+                        app.emetti("riproduzione:audio", guasto.clone());
                         // E lo stato intero, perché chi non stava ascoltando
                         // l'evento — una schermata aperta dopo — lo trovi lì.
                         let _ = con_lettore(&stato_lettore, |lettore| {
@@ -1297,6 +1809,12 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                     })
                 });
                 let Ok(tempo) = tempo else { continue };
+                // Il filo dell'analisi sonora legge da qui se può leggere dal
+                // disco. Passa da un'atomica e non da `con_lettore` perché
+                // chiedere al lettore come sta, per sapere se disturbarlo,
+                // sarebbe gia` disturbarlo: la ragione per esteso sta in testa
+                // a `analisi.rs`.
+                crate::analisi::segna_riproduzione(!tempo.in_pausa && perso.is_none());
                 // Anche al sistema operativo, che dei salti relativi delle
                 // cuffie sa solo il «di quanto» e mai il «da dove»: senza
                 // questa riga il suo «da dove» resterebbe quello dell'ultimo
@@ -1311,7 +1829,7 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                 // Un colpo anche quando si è appena fermato, per non lasciare il
                 // cursore a interpolare nel vuoto.
                 if !tempo.in_pausa || !ultimo_fermo {
-                    let _ = app.emit("riproduzione:tempo", tempo);
+                    app.emetti("riproduzione:tempo", tempo);
                 }
                 ultimo_fermo = tempo.in_pausa;
 
@@ -1349,7 +1867,16 @@ pub fn avvia_spettro(app: tauri::AppHandle) {
         .name("aether-spettro".to_owned())
         .spawn(move || {
             loop {
-                let stato_lettore = app.state::<StatoLettore>();
+                // Trenta giri al secondo: è il filo che ha più probabilità di
+                // tutti di avere un messaggio in volo nell'istante in cui la
+                // finestra si smonta, ed è per questo che il controllo sta in
+                // cima. Vedi `crate::spegnimento`.
+                if crate::spegnimento::in_uscita() {
+                    return;
+                }
+                let Some(stato_lettore) = app.try_state::<StatoLettore>() else {
+                    return;
+                };
                 if !stato_lettore
                     .spettro
                     .load(std::sync::atomic::Ordering::Relaxed)
@@ -1364,7 +1891,7 @@ pub fn avvia_spettro(app: tauri::AppHandle) {
                     Ok(lettore.motore.spettro(BandeIpc::da))
                 });
                 if let Ok(Some(bande)) = bande {
-                    let _ = app.emit("riproduzione:spettro", bande);
+                    app.emetti("riproduzione:spettro", bande);
                 }
                 std::thread::sleep(PASSO_SPETTRO);
             }
@@ -1526,6 +2053,43 @@ pub fn suona(
     gesto_di_coda(&app, &stato, |lettore| {
         chiudi_ascolto(&app, lettore);
         lettore.coda.play_tracks(brani, indice, seme());
+        Ok(true)
+    })
+    .map_err(errore)
+}
+
+/// Fa partire una radio seminata da un brano.
+///
+/// # Perché non è `suona` con una lista più lunga
+///
+/// Perché la lista la costruisce il nucleo, e costruirla vuol dire prendere il
+/// lucchetto della libreria e leggere impronte e cronologie per qualche
+/// migliaio di candidati. Farlo dalla finestra vorrebbe dire un `invoke` per
+/// chiedere la radio e un secondo per suonarla, con in mezzo un viaggio
+/// dell'IPC per un elenco di trenta numeri che alla finestra non serve.
+///
+/// Il seme sta in testa alla coda perché è il brano che si è premuto: una radio
+/// che comincia da un altro brano è una radio che ha ignorato il gesto.
+#[tauri::command(async)]
+pub fn radio(app: tauri::AppHandle, stato: State<'_, StatoLettore>, brano: i64) -> Esito<()> {
+    let stato_app = app.state::<Stato>();
+    let coda = con_libreria(&stato_app, |libreria| {
+        aether_app::autoplay::radio(
+            &libreria.connection,
+            brano,
+            aether_app::autoplay::RADIO,
+            adesso_ms(),
+        )
+    })
+    .map_err(errore)?;
+
+    let mut brani = Vec::with_capacity(coda.len().saturating_add(1));
+    brani.push(brano);
+    brani.extend(coda);
+
+    gesto_di_coda(&app, &stato, |lettore| {
+        chiudi_ascolto(&app, lettore);
+        lettore.coda.play_tracks(brani, 0, seme());
         Ok(true)
     })
     .map_err(errore)
@@ -1727,11 +2291,11 @@ pub fn volume(
         lettore
             .motore
             .volume(lettore.volume.volume, lettore.volume.muto);
-        let salvato = lettore.volume;
-        let stato_app = app.state::<Stato>();
-        let _ = con_libreria(&stato_app, |libreria| {
-            playback::save_volume(&libreria.connection, salvato)
-        });
+        // Il disco lo aggiorna il filo dell'orologio, entro un quarto di
+        // secondo. Vedi `StatoLettore::volume_da_salvare`.
+        stato
+            .volume_da_salvare
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         manda_stato(&app, lettore);
         Ok(())
     })
@@ -1755,22 +2319,19 @@ pub fn equalizzatore(
 ) -> Esito<()> {
     con_lettore(&stato, |lettore| {
         lettore.motore.equalizzatore(&guadagni, attivo);
-        let stato_app = app.state::<Stato>();
-        // Il taglio e la normalizzazione li fa `save_eq`; si rilegge quel che ha
-        // scritto invece di fidarsi di quel che è arrivato, così la finestra
-        // vede lo stesso valore che rivedrà alla prossima apertura.
-        let salvata = con_libreria(&stato_app, |libreria| {
-            playback::save_eq(
-                &libreria.connection,
-                &Equalizzazione {
-                    attivo,
-                    guadagni: guadagni.clone(),
-                },
-            )?;
-            playback::load_eq(&libreria.connection)
-        });
-        lettore.eq = salvata.unwrap_or(Equalizzazione { attivo, guadagni });
-        let _ = app.emit(
+        // `playback::normalizza` fa qui il taglio che prima si andava a
+        // rileggere dal database: è **la stessa** funzione che usa `save_eq`,
+        // chiamata dove il valore nasce invece che dopo un giro su SQLite. La
+        // finestra vede subito quel che rivedrà alla prossima apertura, e non
+        // c'è più una scrittura più una rilettura per ogni pixel di cursore.
+        lettore.eq = Equalizzazione {
+            attivo,
+            guadagni: playback::normalizza(&guadagni),
+        };
+        stato
+            .eq_da_salvare
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        app.emetti(
             "riproduzione:eq",
             StatoEq {
                 attivo: lettore.eq.attivo,
@@ -1874,6 +2435,7 @@ pub fn riapri_audio(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Es
                 // con quel che c'è scritto in `settings`.
                 autoplay: false,
                 dissolvenza_s: 0,
+                motivo_prossimo: None,
             });
             drop(guardia);
             riprendi_coda(&app);
@@ -2099,6 +2661,7 @@ pub fn riproduzione_stato(
             spegnimento_ms: None,
             autoplay: false,
             dissolvenza_s: 0,
+            motivo_prossimo: None,
             audio: Some(guasto_di_apertura(err)),
         }),
     }
@@ -2327,5 +2890,202 @@ mod prove {
             "spento ha lasciato un bersaglio insensato: {}",
             spento.bersaglio_db
         );
+    }
+
+    // ── il brano che non è un file ──────────────────────────────────────────
+
+    /// Un percorso resta un percorso.
+    ///
+    /// La prova che conta di più delle altre: qui dentro passa **ogni** brano
+    /// della libreria, e un riconoscimento troppo largo vorrebbe dire un file
+    /// del disco mandato a cercare in rete. Le forme sono quelle vere di
+    /// Windows, più le due che somigliano di più a un indirizzo.
+    #[test]
+    fn un_percorso_di_disco_non_diventa_mai_un_flusso() {
+        for percorso in [
+            r"C:\Musica\Pink Floyd\Animals\01 - Pigs on the Wing.flac",
+            r"\\nas\musica\raccolta\02 - Dogs.mp3",
+            r"D:\archive.org\download\gd77\t01.flac",
+            "C:/Musica/https/brano.mp3",
+            "",
+            "   ",
+        ] {
+            assert_eq!(
+                riferimento_da_testo(percorso),
+                None,
+                "«{percorso}» è un file, non un flusso"
+            );
+        }
+    }
+
+    /// Un indirizzo di catalogo sì, e con l'indirizzo intatto.
+    ///
+    /// L'indirizzo **non** si riscrive: `riconosci` sa ricavare da un link
+    /// l'identificativo del concerto, ma i byte da suonare sono quel file lì, e
+    /// sostituirlo con la pagina dell'item vorrebbe dire suonare dell'HTML.
+    #[test]
+    fn un_indirizzo_di_catalogo_diventa_un_flusso_senza_essere_riscritto() {
+        let file = "https://archive.org/download/gd1977-05-08/gd77-05-08d1t01.flac";
+        assert_eq!(
+            riferimento_da_testo(file),
+            Some(RiferimentoFlusso {
+                fonte: Fonte::InternetArchive,
+                url: file.to_owned(),
+            })
+        );
+
+        // Audius conserva un percorso e non un indirizzo, apposta: il nodo di
+        // oggi fra un mese non c'è più. Vedi [`PERCORSO_AUDIUS`].
+        let percorso = "/v1/tracks/aB3dE/stream?ext=wav";
+        assert_eq!(
+            riferimento_da_testo(percorso),
+            Some(RiferimentoFlusso {
+                fonte: Fonte::Audius,
+                url: percorso.to_owned(),
+            })
+        );
+    }
+
+    /// Dove non si è invitati non si bussa.
+    ///
+    /// Compreso il suffisso che somiglia: `evilarchive.org` finisce per
+    /// `archive.org`, e la ragione per cui non passa sta in
+    /// `aether_catalogo::riferimento`. Questa prova esiste per accorgersi il
+    /// giorno in cui questo modulo smettesse di passare da quel cancello.
+    #[test]
+    fn un_dominio_che_non_ci_ha_invitati_non_diventa_un_flusso() {
+        for indirizzo in [
+            "https://esempio.invalido/musica/brano.mp3",
+            "https://evilarchive.org/download/gd77/t01.flac",
+            "https://archive.org/",
+            // In chiaro non si esce: `Rete` nasce `https_only`, e riconoscerlo
+            // qui vorrebbe dire promettere un'apertura che fallirebbe più in là
+            // dicendo un'altra cosa.
+            "http://archive.org/download/gd77/t01.flac",
+        ] {
+            assert_eq!(
+                riferimento_da_testo(indirizzo),
+                None,
+                "«{indirizzo}» non è un posto dove Aether sia invitato"
+            );
+        }
+    }
+
+    /// Il suggerimento di formato viene dal percorso, mai dalla query.
+    ///
+    /// Il caso che conta è il terzo: su Audius `?ext=wav` dice il formato del
+    /// file **originale**, mentre dal punto di ascolto arriva un mp3
+    /// transcodificato. Un suggerimento falso è peggio di nessun suggerimento.
+    #[test]
+    fn il_formato_si_indovina_dal_percorso_e_non_dalla_query() {
+        assert_eq!(
+            estensione_da_url("https://archive.org/download/gd77/t01.FLAC").as_deref(),
+            Some("flac")
+        );
+        assert_eq!(
+            estensione_da_url("https://archive.org/download/gd77/t01.mp3?x=1").as_deref(),
+            Some("mp3")
+        );
+        assert_eq!(
+            estensione_da_url("https://nodo.esempio/v1/tracks/aB3/stream?ext=wav"),
+            None
+        );
+        assert_eq!(estensione_da_url("https://archive.org/download/gd77"), None);
+        // Un «punto» che è in mezzo al dominio e non nel nome del file.
+        assert_eq!(estensione_da_url("https://archive.org"), None);
+    }
+
+    /// Una fonte che non consegna byte lo dice, senza chiedere niente a nessuno.
+    ///
+    /// Le prove girano senza rete, ed è ciò che rende questa prova capace di
+    /// dire qualcosa: se il rifiuto arrivasse *dopo* la richiesta, qui uscirebbe
+    /// un errore di trasporto invece di `playback.sourceUnavailable`.
+    #[test]
+    fn da_una_fonte_che_non_consegna_non_parte_nessuna_richiesta() {
+        let cataloghi = Cataloghi::nuovi();
+        let esito = apri_flusso(
+            &cataloghi,
+            &RiferimentoFlusso {
+                fonte: Fonte::ArchivioSpotify,
+                url: "https://archivio.esempio/brano".to_owned(),
+            },
+        );
+        assert!(
+            matches!(
+                esito.as_ref().map_err(AppError::code),
+                Err(ErrorCode::PlaybackSourceUnavailable { .. })
+            ),
+            "invece di rifiutare ha risposto: {:?}",
+            esito.map(|_| ()).map_err(|e| e.code().kind().code())
+        );
+    }
+
+    /// Un file finto in memoria, al posto di un catalogo.
+    ///
+    /// Passa dal tratto `Sorgente` di `aether-net`, che esiste esattamente per
+    /// questo: provare il cablaggio contro un servizio vero vorrebbe dire non
+    /// provarlo.
+    #[derive(Debug)]
+    struct FintaRete(Vec<u8>);
+
+    impl aether_net::flusso::Sorgente for FintaRete {
+        fn pezzo(&self, da: u64, quanti: u64) -> Result<aether_net::Pezzo, AppError> {
+            let inizio = usize::try_from(da).unwrap_or(usize::MAX);
+            let fine = inizio
+                .saturating_add(usize::try_from(quanti).unwrap_or(0))
+                .min(self.0.len());
+            Ok(aether_net::Pezzo {
+                byte: self.0.get(inizio..fine).unwrap_or(&[]).to_vec(),
+                totale: Some(u64::try_from(self.0.len()).unwrap_or(0)),
+            })
+        }
+    }
+
+    /// Quel che arriva al motore è indistinguibile da un file.
+    ///
+    /// È la prova del cablaggio intero, meno la rete: identificativo, durata dal
+    /// database, guadagno, suggerimento di formato, lunghezza dichiarata — e i
+    /// byte, che devono essere quelli e nell'ordine giusto. La lunghezza in
+    /// particolare non è un di più: `MediaSource::is_seekable` di symphonia
+    /// risponde guardando quella, e senza il cursore sparisce dalla barra.
+    #[test]
+    fn un_flusso_diventa_una_sorgente_che_il_motore_sa_suonare() {
+        let byte: Vec<u8> = (0..3000_u32)
+            .map(|n| u8::try_from(n % 251).unwrap_or(0))
+            .collect();
+        let Ok(flusso) = FlussoHttp::da(Box::new(FintaRete(byte.clone()))) else {
+            panic!("la finta non fallisce mai");
+        };
+        let scheda = SchedaSorgente {
+            track_id: 4242,
+            path: "https://archive.org/download/gd1977-05-08/gd77d1t01.flac".to_owned(),
+            durata_ms: 754_000,
+            replaygain_db: Some(-7.5),
+        };
+
+        let mut sorgente = sorgente_da_flusso(&scheda, &scheda.path, flusso);
+        assert_eq!(sorgente.track_id, 4242, "il brano ha perso il suo nome");
+        assert_eq!(
+            sorgente.durata_ms, 754_000,
+            "la durata la dice il database, non il flusso"
+        );
+        assert_eq!(sorgente.estensione.as_deref(), Some("flac"));
+        assert!(
+            sorgente
+                .replaygain_db
+                .is_some_and(|db| (db + 7.5).abs() < 0.001),
+            "il guadagno non è arrivato: {:?}",
+            sorgente.replaygain_db
+        );
+        assert_eq!(
+            sorgente.media.lunghezza(),
+            Some(3000),
+            "senza lunghezza il cursore sparisce dalla barra"
+        );
+
+        let mut letti = Vec::new();
+        let quanti = std::io::Read::read_to_end(&mut sorgente.media, &mut letti).unwrap_or(0);
+        assert_eq!(quanti, 3000);
+        assert_eq!(letti, byte, "i byte non sono quelli, o sono spostati");
     }
 }

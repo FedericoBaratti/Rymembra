@@ -38,11 +38,27 @@
 //! chiede abbastanza informazioni da poter scrivere a qualcuno invece di
 //! limitarsi a bloccare, e un client anonimo viene servito peggio.
 
+//! # Il vicinato è un metadato come gli altri
+//!
+//! [`listenbrainz`] non identifica niente e non corregge niente: dice quali
+//! altri brani ascolta chi ascolta questo. Sta qui e non in un crate nuovo per
+//! la stessa ragione di [`lrclib`] — è un servizio senza chiave, senza account
+//! e senza segreti, che eredita gratis il deposito, la cadenza, l'interruttore
+//! e la distinzione fra «non ce l'ha» e «non si sa». Aether parla già con
+//! MusicBrainz e già manda ascolti a ListenBrainz: questo è lo stesso genere di
+//! vicino, non un genere nuovo di rapporto.
+//!
+//! È anche l'unico di questi servizi le cui richieste non seguono più il ritmo
+//! «una domanda, una risposta»: i suoi punti accettano molti identificativi per
+//! volta, e quel dettaglio si porta dietro tutto il resto del suo progetto —
+//! vedi [`listenbrainz`] e [`Fornitori::json_senza_memoria`].
+
 pub mod cadenza;
 pub mod copertine;
 pub mod deezer;
 pub mod deposito;
 pub mod itunes;
+pub mod listenbrainz;
 pub mod lrclib;
 pub mod musicbrainz;
 
@@ -105,6 +121,14 @@ pub struct Fornitori {
     pub deezer: Cadenza,
     /// Il cancello del catalogo dei testi.
     pub lrclib: Cadenza,
+    /// Il cancello di ListenBrainz Labs, cioè delle affinità.
+    ///
+    /// Separato da quello dello scrobbling, che vive in `aether-scrobble` e
+    /// parla con un altro host (`api.listenbrainz.org`): sono due servizi con
+    /// due limiti e due modi di cadere, e un cancello solo per tutti e due
+    /// vorrebbe dire che una coda di ascolti da mandare rallenta il calcolo
+    /// delle somiglianze, o peggio che l'interruttore di uno spegne l'altro.
+    pub listenbrainz: Cadenza,
 }
 
 impl std::fmt::Debug for Fornitori {
@@ -117,7 +141,7 @@ impl std::fmt::Debug for Fornitori {
 }
 
 impl Fornitori {
-    /// I quattro servizi, che ricordano nel deposito dato.
+    /// I servizi, che ricordano nel deposito dato.
     #[must_use]
     pub fn nuovo(deposito: Box<dyn Deposito>) -> Self {
         Self {
@@ -128,17 +152,38 @@ impl Fornitori {
             itunes: Cadenza::nuova("itunes", cadenza::RITMO_ITUNES),
             deezer: Cadenza::nuova("deezer", cadenza::RITMO_DEEZER),
             lrclib: Cadenza::nuova("lrclib", cadenza::RITMO_LRCLIB),
+            listenbrainz: Cadenza::nuova("listenbrainz-labs", cadenza::RITMO_LISTENBRAINZ),
         }
     }
 
-    /// Vale la pena cominciare una passata.
+    /// Vale la pena cominciare una passata **di arricchimento**.
     ///
     /// MusicBrainz è l'unica fonte da cui arrivano gli identificativi e la
     /// catena delle copertine: con il suo interruttore aperto le altre due
     /// possono al massimo correggere un titolo, e non vale il traffico.
+    ///
+    /// # Perché non parla per tutto il crate
+    ///
+    /// Perché guarda **solo** MusicBrainz, e questo era vero senza conseguenze
+    /// finché ogni cosa qui dentro dipendeva da MusicBrainz. Le affinità no:
+    /// arrivano da un altro host, con un altro interruttore, e chiedono
+    /// identificativi che in libreria ci sono già. Usare questa come cancello
+    /// anche per loro vorrebbe dire spegnere il vicinato perché il catalogo è
+    /// giù — cioè legare due guasti che non hanno niente in comune.
+    ///
+    /// Chi chiama le affinità usa [`Self::affinita_in_piedi`].
     #[must_use]
     pub fn in_piedi(&self) -> bool {
         !self.musicbrainz.aperta()
+    }
+
+    /// Vale la pena chiedere delle affinità.
+    ///
+    /// Guarda l'interruttore di ListenBrainz Labs e nient'altro: vedi la nota
+    /// in [`Self::in_piedi`] sul perché i due cancelli sono due.
+    #[must_use]
+    pub fn affinita_in_piedi(&self) -> bool {
+        !self.listenbrainz.aperta()
     }
 
     /// Chiede un JSON a un servizio, passando dal deposito e dalla cadenza.
@@ -160,6 +205,52 @@ impl Fornitori {
             Some(Voce::Niente) => return Ok(None),
             None => {}
         }
+        match self.json_senza_memoria(cadenza, url)? {
+            Some(corpo) => {
+                self.deposito
+                    .scrivi(servizio, chiave, &Voce::Corpo(corpo.clone()), vive_ms);
+                Ok(Some(corpo))
+            }
+            None => {
+                self.deposito
+                    .scrivi(servizio, chiave, &Voce::Niente, deposito::VIVE_NIENTE_MS);
+                Ok(None)
+            }
+        }
+    }
+
+    /// Come [`Self::json`], ma senza toccare il deposito.
+    ///
+    /// # Perché esiste
+    ///
+    /// Perché [`Self::json`] scrive **una voce di cache per chiamata**, e quella
+    /// è la forma giusta finché una richiesta corrisponde a una domanda. I punti
+    /// delle affinità non funzionano così: una richiesta porta gli
+    /// identificativi di venticinque brani e torna con una risposta sola, da
+    /// dividere e ricordare **per brano**.
+    ///
+    /// Ricordarla intera sotto una chiave che descrive il lotto sarebbe la cosa
+    /// peggiore che si possa fare a una cache: la chiave dipenderebbe da *come*
+    /// i brani sono stati raggruppati, e un lotto composto anche solo in un
+    /// ordine diverso — cioè quasi sempre, perché i lotti li compone chi chiama
+    /// scorrendo una libreria che intanto cambia — sarebbe un errore in cache a
+    /// ogni passata. Il deposito si riempirebbe di risposte che non verranno
+    /// mai più rilette.
+    ///
+    /// Quindi il cancello di ritmo e l'interruttore restano qui — sono
+    /// proprietà del **servizio**, e vanno rispettati da chiunque gli parli — e
+    /// la memoria se la gestisce chi sa dividere la risposta, con la chiave che
+    /// deve avere: il singolo identificativo. Vedi [`listenbrainz`].
+    ///
+    /// # Errori
+    ///
+    /// Gli stessi di [`Self::json`], con la stessa distinzione: `Ok(None)` è un
+    /// `404`, cioè «non ce l'ho», ed `Err` è «non si sa».
+    fn json_senza_memoria(
+        &self,
+        cadenza: &Cadenza,
+        url: &str,
+    ) -> Result<Option<Vec<u8>>, AppError> {
         if cadenza.aperta() {
             return Err(AppError::new(
                 aether_domain::errors::ErrorCode::NetCircuitOpen {
@@ -188,8 +279,6 @@ impl Fornitori {
         // funzionando meglio di tutti, cioè quello che risponde subito di no.
         if risposta.stato == 404 {
             cadenza.riuscita();
-            self.deposito
-                .scrivi(servizio, chiave, &Voce::Niente, deposito::VIVE_NIENTE_MS);
             return Ok(None);
         }
         if !risposta.e_andata() {
@@ -207,12 +296,6 @@ impl Fornitori {
         }
 
         cadenza.riuscita();
-        self.deposito.scrivi(
-            servizio,
-            chiave,
-            &Voce::Corpo(risposta.corpo.clone()),
-            vive_ms,
-        );
         Ok(Some(risposta.corpo))
     }
 

@@ -10,6 +10,7 @@
 
 mod account;
 mod aggiornamenti;
+mod analisi;
 mod arricchimento;
 mod comandi;
 mod copertine;
@@ -26,6 +27,7 @@ mod riproduzione;
 mod scrobble;
 mod sincronia;
 mod skin;
+mod spegnimento;
 mod stato;
 mod studio;
 mod testi;
@@ -154,10 +156,19 @@ fn finestra_chiudi(finestra: tauri::Window) {
 }
 
 /// Mostra la finestra fra due secondi, qualunque cosa succeda di là.
+///
+/// Salvo che di là si sia deciso di chiudere: due secondi sono lunghi
+/// abbastanza perché qualcuno apra e richiuda subito, e far riapparire una
+/// finestra che sta morendo vuol dire toccare l'`AppHandle` durante la
+/// demolizione del ciclo degli eventi — che è esattamente il modo in cui questa
+/// applicazione moriva. Vedi [`spegnimento`].
 fn rete_di_sicurezza(app: &tauri::AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(ATTESA_PRIMO_COLORE);
+        if spegnimento::in_uscita() {
+            return;
+        }
         if let Some(finestra) = app.get_webview_window("main") {
             let _ = finestra.show();
         }
@@ -173,7 +184,7 @@ fn main() {
     // riesce a raccontare.
     diario::installa_gancio_dei_panici();
 
-    let esito = tauri::Builder::default()
+    let costruita = tauri::Builder::default()
         // Scegliere la cartella della musica è la prima cosa che fa chi apre
         // Aether: un campo di testo in cui incollare un percorso funziona, e
         // sbaglia al primo spazio o alla prima barra rovesciata.
@@ -280,6 +291,15 @@ fn main() {
             app.manage(arricchimento);
             arricchimento::avvia_filo(app.handle().clone(), orecchio);
 
+            // L'analisi sonora **dopo** l'arricchimento, e il suo filo aspetta
+            // due minuti. È l'unica cosa qui dentro che legge dal disco a tutta
+            // velocità senza che nessuno l'abbia chiesta, e cede alla
+            // riproduzione: se in quei due minuti parte una canzone, non
+            // comincia affatto.
+            let (analisi, orecchio) = analisi::StatoAnalisi::nuovo();
+            app.manage(analisi);
+            analisi::avvia_filo(app.handle().clone(), orecchio);
+
             // Lo scrobbling **dopo** la libreria, perché la prima cosa che fa è
             // guardare se è rimasto qualcosa in coda dalla sessione precedente.
             // Il suo filo dorme finché non lo si chiama: a servizi scollegati
@@ -317,6 +337,7 @@ fn main() {
             finestra_chiudi,
             comandi::avvio,
             comandi::imposta_cartelle,
+            comandi::cartelle_candidate,
             comandi::imposta_cartella_download,
             comandi::cronologia,
             comandi::cronologia_conteggio,
@@ -326,6 +347,8 @@ fn main() {
             comandi::cerca_conteggio,
             comandi::brani,
             comandi::casa,
+            comandi::settimana,
+            comandi::settimana_apri,
             comandi::album,
             comandi::album_artista,
             comandi::artisti,
@@ -402,6 +425,7 @@ fn main() {
             studio::studio_istantanea,
             studio::studio_ripristina,
             riproduzione::suona,
+            riproduzione::radio,
             riproduzione::pausa,
             riproduzione::riprendi,
             riproduzione::alterna,
@@ -481,21 +505,56 @@ fn main() {
             diario::diario_annota,
             comandi::apri_documento,
         ])
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!());
 
-    // `run` restituisce un `Result` e il modo normale di trattarlo negli esempi
-    // di Tauri è `.expect(…)`. Qui i panici sono vietati per un motivo che vale
-    // anche all'avvio: un messaggio di panico è un messaggio per chi ha scritto
-    // il codice, e chi apre l'applicazione merita di leggere cos'è andato
-    // storto invece di una traccia di stack.
-    if let Err(err) = esito {
-        // Nel diario e non solo su `stderr`: questo è il ramo in cui la
-        // finestra non è mai comparsa, cioè l'unico caso in cui chi guarda non
-        // ha nient'altro da leggere. Se `setup` era arrivato ad aprire il
-        // diario, la riga resta sul disco; se non ci era arrivato, resta
-        // almeno in sviluppo.
-        nota!("[avvio] Aether non è riuscito ad avviarsi: {err}");
-        std::process::exit(1);
+    // `build` e non `run`, per una riga sola: quella che segue.
+    //
+    // `run(context)` avvia il ciclo degli eventi e non lascia nessun posto in
+    // cui accorgersi che sta finendo. `build` restituisce l'applicazione, e
+    // `App::run` prende una callback che riceve ogni `RunEvent` — compresi i
+    // tre che dicono «si chiude». È l'unico punto del programma in cui la
+    // chiusura è un fatto osservabile invece che una cosa che succede.
+    //
+    // Il `Result` si tratta come prima, e per lo stesso motivo: un messaggio di
+    // panico è un messaggio per chi ha scritto il codice, e chi apre
+    // l'applicazione merita di leggere cos'è andato storto invece di una
+    // traccia di stack.
+    match costruita {
+        Ok(app) => app.run(|mano, evento| {
+            // `CloseRequested` è la presa più precoce che Tauri offra: arriva
+            // mentre la finestra c'è ancora, prima che `tao` dichiari il ciclo
+            // distrutto. Gli altri due sono la cintura oltre le bretelle — se
+            // un giorno si uscisse per una strada che non passa dalla finestra
+            // (l'aggiornatore che riavvia, un `exit()` da qualche parte), la
+            // bandiera si alza lo stesso.
+            if matches!(
+                evento,
+                tauri::RunEvent::WindowEvent {
+                    event: tauri::WindowEvent::CloseRequested { .. },
+                    ..
+                } | tauri::RunEvent::ExitRequested { .. }
+                    | tauri::RunEvent::Exit
+            ) {
+                spegnimento::chiedi();
+                // L'ultima posizione di un cursore mosso un attimo prima di
+                // chiudere: il filo dell'orologio, che di solito la scrive, è
+                // appena uscito per via della riga qui sopra.
+                riproduzione::salva_uscendo(mano);
+                // Poi la scheda del sistema. Il distacco parla all'`HWND` della
+                // finestra, e questo è l'ultimo momento in cui quell'`HWND`
+                // esiste ancora.
+                media::stacca(mano);
+            }
+        }),
+        Err(err) => {
+            // Nel diario e non solo su `stderr`: questo è il ramo in cui la
+            // finestra non è mai comparsa, cioè l'unico caso in cui chi guarda
+            // non ha nient'altro da leggere. Se `setup` era arrivato ad aprire
+            // il diario, la riga resta sul disco; se non ci era arrivato, resta
+            // almeno in sviluppo.
+            nota!("[avvio] Aether non è riuscito ad avviarsi: {err}");
+            std::process::exit(1);
+        }
     }
 }
 

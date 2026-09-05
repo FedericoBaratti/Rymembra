@@ -188,6 +188,35 @@ pub fn avvia(app: &tauri::AppHandle) {
     });
 }
 
+/// Stacca la scheda del sistema, mentre la finestra c'è ancora.
+///
+/// # Perché non basta lasciarli cadere da soli
+///
+/// Perché i controlli stanno in uno stato **gestito**, e uno stato gestito
+/// viene lasciato cadere alla fine di tutto — dopo che il ciclo degli eventi si
+/// è dichiarato distrutto e `DestroyWindow` ha smontato la finestra. Ma questi
+/// controlli non sono un oggetto qualunque: su Windows sono agganciati
+/// all'`HWND` della finestra, che `souvlaki` si è fatto dare all'avvio
+/// (`GetForWindow`), e il loro `Drop` chiama `detach` su quella finestra. Cioè
+/// parla a una finestra che non c'è più.
+///
+/// Chiamata dal `RunEvent` d'uscita in `main`, il distacco succede quando la
+/// finestra è ancora al suo posto e la domanda ha ancora una risposta.
+/// Lasciarli cadere una seconda volta dopo non fa niente: il posto è già vuoto.
+pub fn stacca(app: &tauri::AppHandle) {
+    let Some(stato) = app.try_state::<StatoMedia>() else {
+        return;
+    };
+    let mut dentro = stato
+        .controlli
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    // `take` e non `as_mut().detach()`: il `Drop` di `MediaControls` fa già il
+    // distacco, e farlo due volte vorrebbe dire fidarsi di come `souvlaki`
+    // tratta il secondo. Portarli via è l'unico modo che non dipende da quello.
+    drop(dentro.take());
+}
+
 /// Rispecchia lo stato del lettore nella scheda del sistema.
 ///
 /// Chiamata da [`crate::riproduzione::manda_stato`] con lo stato **già

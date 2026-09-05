@@ -48,7 +48,7 @@
  */
 import { Copertina } from "../Copertina";
 import { brani_, durata, titoloAlbum } from "../formato";
-import type { Album, Brano, Casa } from "../ipc";
+import type { Album, Brano, Casa, Raccolta } from "../ipc";
 import { t } from "../lingue";
 import { Icona } from "../parti/Icone";
 import { Intestazione } from "../parti/Intestazione";
@@ -222,6 +222,108 @@ function RipianoAlbum({
 }
 
 /**
+ * Come si chiama una raccolta del lunedì.
+ *
+ * Il nucleo manda il **materiale** — un genere, un artista, o niente — e la
+ * frase si compone qui. Un titolo già scritto in italiano dentro il database
+ * sarebbe un titolo italiano anche per chi ha l'interfaccia in inglese, e
+ * resterebbe tale per sempre: le raccolte non si rigenerano quando si cambia
+ * lingua.
+ */
+function nomeRaccolta(raccolta: Raccolta): string {
+  if (raccolta.genere === "ripescati") return t("home.week.rescued");
+  if (raccolta.etichetta !== null && raccolta.etichettaTipo === "genere") {
+    return t("home.week.genre", { nome: raccolta.etichetta });
+  }
+  if (raccolta.etichetta !== null && raccolta.etichettaTipo === "artista") {
+    return t("home.week.artist", { nome: raccolta.etichetta });
+  }
+  // Nessuna maggioranza dentro il gruppo: non c'è niente di vero da dire, e il
+  // numero è l'unica cosa che distingue questa raccolta dalle altre due.
+  return t("home.week.mix", { numero: String(raccolta.ordine + 1) });
+}
+
+/**
+ * Il ripiano del lunedì: la sola cosa nella Home che cambia da sola.
+ *
+ * # Perché sta in cima
+ *
+ * Gli altri quattro ripiani rispondono a domande che uno si fa già — «cosa
+ * stavo ascoltando», «cosa è appena entrato». Questo risponde a una che non si
+ * era fatto, ed è l'unica ragione ricorrente per riaprire il programma: se non
+ * è la prima cosa che si vede non esiste.
+ *
+ * # Cosa sparisce quando le raccolte sono state aperte
+ *
+ * **L'annuncio**, non il ripiano. Il progetto diceva che spariva tutto, e non
+ * regge: le raccolte restano l'unico modo di arrivare a quei brani per i sette
+ * giorni successivi, e farle sparire perché le hai guardate una volta vorrebbe
+ * dire che aprirle è il modo di perderle. Quindi resta il ripiano — che è
+ * contenuto — e se ne va la riga «Nuove questa settimana» col suo pallino, che
+ * è l'annuncio. Aperte tutte e quattro, il lunedì diventa un ripiano come gli
+ * altri fino al lunedì dopo.
+ *
+ * # Perché un clic fa partire la raccolta e non la apre
+ *
+ * Perché una raccolta è una playlist, non un disco: non c'è niente da guardare
+ * dentro che non sia già scritto sulla scheda. È la stessa distinzione fra
+ * `Scheda` e `SchedaAlbum` qui sopra, dalla parte del brano.
+ */
+function RipianoSettimana({
+  raccolte,
+  onApri,
+}: {
+  raccolte: Raccolta[];
+  onApri: (raccolta: Raccolta) => void;
+}) {
+  if (raccolte.length === 0) return null;
+  const nuove = raccolte.filter((r) => !r.aperta);
+  const ripescati = raccolte.find((r) => r.genere === "ripescati");
+
+  return (
+    <section className="casa-ripiano settimana">
+      <h2 className="casa-titolo">
+        {t("home.week.title")}
+        {nuove.length > 0 && (
+          <span className="annuncio">
+            {ripescati && !ripescati.aperta
+              ? t("home.week.rescuedHint", {
+                  quanti: brani_(ripescati.brani.length),
+                })
+              : t("home.week.fresh")}
+          </span>
+        )}
+      </h2>
+      <div className="casa-raccolte track-grid">
+        {raccolte.map((raccolta) => (
+          <button
+            type="button"
+            key={raccolta.id}
+            className="scheda-raccolta list-row"
+            onClick={() => onApri(raccolta)}
+            title={nomeRaccolta(raccolta)}
+          >
+            <Copertina
+              hash={raccolta.brani[0]?.coverArtHash ?? null}
+              titolo={nomeRaccolta(raccolta)}
+            />
+            <span className="titolo">{nomeRaccolta(raccolta)}</span>
+            <span className="sotto">
+              {t("home.week.count", {
+                quanti: String(raccolta.brani.length),
+              })}
+            </span>
+            {!raccolta.aperta && (
+              <span className="pallino" aria-label={t("home.week.new")} />
+            )}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
  * Quanti riquadri finti stanno in un ripiano in attesa.
  *
  * Dodici, cioè quanti ne ha un ripiano vero (`RIPIANO` in `comandi.rs`): un
@@ -282,15 +384,21 @@ function CasaFinta() {
 
 export function Home({
   casa,
+  settimana,
   onSuona,
+  onApriRaccolta,
   onRiprendi,
   onMenu,
   onApriAlbum,
   onMenuAlbum,
 }: {
   casa: Casa | null;
+  /** Le raccolte di questa settimana. Vuoto finché non arrivano. */
+  settimana: Raccolta[];
   /** Fa partire un ripiano a partire da uno dei suoi brani. */
   onSuona: (brani: Brano[], indice: number) => void;
+  /** Fa partire una raccolta del lunedì e la segna aperta. */
+  onApriRaccolta: (raccolta: Raccolta) => void;
   /** Riprende la coda conservata dalla sua posizione. */
   onRiprendi: (ms: number) => void;
   onMenu: (e: React.MouseEvent, brano: Brano) => void;
@@ -303,7 +411,8 @@ export function Home({
     casa.riprendi === null &&
     casa.recenti.length === 0 &&
     casa.aggiunti.length === 0 &&
-    casa.trascurati.length === 0;
+    casa.trascurati.length === 0 &&
+    settimana.length === 0;
 
   // Una rete di sicurezza più che una schermata: chi non ha ancora cartelle o
   // ha la libreria vuota incontra prima le due schermate d'ingresso, che sanno
@@ -323,6 +432,8 @@ export function Home({
 
   return (
     <div className="casa">
+      <RipianoSettimana raccolte={settimana} onApri={onApriRaccolta} />
+
       {casa.riprendi !== null && (
         <section className="casa-ripiano">
           <h2 className="casa-titolo">{t("home.resume")}</h2>

@@ -1877,6 +1877,111 @@ body {
   text-wrap: pretty;
 }
 
+/* ── il primo avvio ─────────────────────────────────────────────────────────
+   Copre tutto invece di stare dentro la colonna centrale: al primo avvio non
+   c'è ancora una libreria da guardare dietro, e una scheda che galleggia sopra
+   una griglia vuota chiede di capire cosa sia quella griglia prima di leggere
+   cosa c'è scritto sopra. */
+.primo {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: var(--spazio-4);
+  background: var(--color-surface-0);
+}
+.primo-scheda {
+  display: grid;
+  gap: var(--spazio-3);
+  width: min(560px, 100%);
+  padding: var(--spazio-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-1);
+}
+.primo-scheda h1 {
+  margin: 0;
+  color: var(--color-text-1);
+  font-family: var(--font-dot), var(--font-sans);
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+.primo-scheda p {
+  margin: 0;
+  max-width: 52ch;
+  color: var(--color-text-2);
+  text-wrap: pretty;
+}
+.primo-sotto {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 17px;
+}
+.primo-attesa {
+  color: var(--color-text-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.primo-cartelle {
+  display: grid;
+  gap: var(--spazio-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.primo-cartella {
+  display: flex;
+  gap: var(--spazio-2);
+  align-items: center;
+  padding: var(--spazio-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+.primo-cartella:hover {
+  background: var(--color-surface-3);
+}
+/* Il percorso può essere lunghissimo e non deve spingere via il conteggio:
+   `min-width: 0` è quel che permette al troncamento di avvenire dentro un
+   contenitore flessibile invece di allargarlo. */
+.primo-percorso {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.primo-conto {
+  flex: none;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+.primo-avviso {
+  margin: var(--spazio-1) 0 0 var(--spazio-3);
+  color: var(--warning);
+  font-size: 11px;
+}
+.primo-pronto {
+  color: var(--accent);
+  font-size: 13px;
+}
+.primo-tasti {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-2);
+  align-items: center;
+  margin-top: var(--spazio-2);
+}
+
 .errore {
   display: flex;
   align-items: flex-start;
@@ -9852,4 +9957,122 @@ body {
 .casa-riprendi.finta .che-cosa,
 .scheda-brano.finta {
   gap: 7px;
+}
+/* Il ripiano del lunedì.
+ *
+ * L'unica cosa della Home che cambia da sola, e l'unica che ha diritto a un
+ * accento. Gli altri quattro ripiani sono contenuto e si somigliano apposta;
+ * questo è un annuncio, e un annuncio che pesa come tutto il resto non è un
+ * annuncio.
+ *
+ * L'accento è una riga sopra e un po' d'aria — non uno sfondo colorato: una
+ * skin può decidere che il proprio accento sia rosso acceso, e un blocco di
+ * quel colore in cima alla schermata d'apertura sarebbe il primo posto in cui
+ * la finestra smette di essere di chi l'ha vestita.
+ */
+.casa-ripiano.settimana {
+  padding-top: 18px;
+  border-top: 1px solid var(--hairline);
+}
+
+/* Il titolo del lunedì porta l'annuncio accanto, sulla stessa riga: sotto
+   sarebbe un sottotitolo, cioè una cosa da leggere, e questo è una cosa da
+   vedere con la coda dell'occhio. */
+.casa-ripiano.settimana .casa-titolo {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.casa-titolo .annuncio {
+  font-size: 12.5px;
+  font-weight: 450;
+  color: var(--accent);
+}
+
+/* Le raccolte sono più larghe dei brani: dentro ce n'è venti, e un riquadro
+   della misura di un brano solo direbbe che è un brano solo. */
+.casa-raccolte {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 18px 14px;
+  align-content: start;
+}
+
+.scheda-raccolta {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.scheda-raccolta .copertina {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: var(--radius-card);
+}
+
+.scheda-raccolta:hover .copertina {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.scheda-raccolta .titolo,
+.scheda-raccolta .sotto {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.scheda-raccolta .titolo {
+  font-size: 13.5px;
+  font-weight: 550;
+}
+
+.scheda-raccolta .sotto {
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+/* Il pallino di «non l'hai ancora aperta»: sopra la copertina e non accanto al
+   titolo, perché la copertina è la cosa che si guarda. Sparisce da solo appena
+   la raccolta parte — non c'è niente da chiudere. */
+.scheda-raccolta .pallino {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--color-surface-0);
+}
+/* Il perché di un brano accodato da solo.
+ *
+ * Sotto artista e album, in piccolo e in accento: è una nota a margine, non una
+ * riga di contenuto. Sta dentro il bottone «salta» perché appartiene a quel
+ * brano — spostarla fuori la farebbe scivolare a fine riga, dove sembrerebbe
+ * una proprietà della coda invece che di quella traccia.
+ *
+ * Una riga sola come le altre due: la coda ha righe di altezza fissa, e una
+ * frase che va a capo sfalserebbe tutto quel che c'è sotto. */
+.riga-coda .perche {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--accent);
 }

@@ -716,42 +716,72 @@ pub fn accento_dinamico_attiva(stato: State<'_, Stato>, attivo: bool) -> Esito<b
 /// `aether-cover` — [`crate::copertine::e_un_impronta`] — e un'impronta che non
 /// lo passa vale come una copertina che non c'è: nessuna tinta, nessun errore
 /// da mostrare.
+/// # Perché il lucchetto si molla a metà
+///
+/// Perché di tutto quel che c'è qui dentro, al database servono due domande da
+/// una riga: quale skin è scelta e se l'accento dinamico è acceso. Tutto il
+/// resto — aprire e decodificare la copertina, leggere il file della skin,
+/// analizzarlo, calcolare la tinta — è disco e processore, e non tocca la
+/// connessione nemmeno una volta.
+///
+/// Tenerlo dentro `con_libreria` voleva dire tenere il lucchetto **globale**
+/// della libreria — quello che è uno solo, perché la connessione è una sola —
+/// per tutta la durata di due letture da disco e di un parsing. Dietro ci si
+/// accodava ogni comando e ogni filo di sottofondo: su un disco lento, o su una
+/// copertina grande, quella è una finestra che non risponde. Ed è chiamata a
+/// ogni cambio di brano.
+///
+/// `covers` e `data_dir` si copiano perché costano niente: il primo è un
+/// maniglione clonabile sulla cartella, il secondo un `PathBuf`.
 #[tauri::command(async)]
 pub fn accento_copertina(
     stato: State<'_, Stato>,
     copertina: Option<String>,
     chiaro: bool,
 ) -> Esito<Option<Vec<VariabileIpc>>> {
-    con_libreria(&stato, |libreria| {
-        let (Some(impronta), true) = (copertina, accento_scelto(&libreria.connection)) else {
-            return Ok(None);
-        };
-        if !crate::copertine::e_un_impronta(&impronta) {
-            return Ok(None);
-        }
-        let Some([r, g, b]) = libreria.covers.tinta(&impronta) else {
-            return Ok(None);
-        };
+    let Some(impronta) = copertina else {
+        return Ok(None);
+    };
+    if !crate::copertine::e_un_impronta(&impronta) {
+        return Ok(None);
+    }
 
-        // La skin si rilegge a ogni brano invece di tenerla in memoria: è un
-        // file da qualche kilobyte letto una volta ogni tre minuti, e tenerne
-        // una copia vorrebbe dire tenerla allineata a `skin_scegli` — cioè
-        // aggiungere uno stato che può divergere per risparmiare un microsecondo
-        // ogni canzone.
-        let sorgente = sorgente(&libreria.data_dir, &skin_scelta(&libreria.connection))?;
-        let documento = aether_skin::parse_skin_json(&sorgente)?;
-
-        let tinta = aether_skin::values::Rgba { r, g, b, a: 1.0 };
-        Ok(
-            aether_skin::dinamico::accento_dinamico(&documento, tinta, chiaro).map(|variabili| {
-                variabili
-                    .into_iter()
-                    .map(|(nome, valore)| VariabileIpc { nome, valore })
-                    .collect()
-            }),
-        )
+    // ── col lucchetto: due domande e due copie. ─────────────────────────────
+    let chiesto = con_libreria(&stato, |libreria| {
+        Ok(accento_scelto(&libreria.connection).then(|| {
+            (
+                libreria.covers.clone(),
+                libreria.data_dir.clone(),
+                skin_scelta(&libreria.connection),
+            )
+        }))
     })
-    .map_err(errore)
+    .map_err(errore)?;
+    let Some((copertine, data_dir, skin)) = chiesto else {
+        return Ok(None);
+    };
+
+    // ── senza lucchetto: il disco e il processore. ──────────────────────────
+    let Some([r, g, b]) = copertine.tinta(&impronta) else {
+        return Ok(None);
+    };
+    // La skin si rilegge a ogni brano invece di tenerla in memoria: è un file
+    // da qualche kilobyte, e tenerne una copia vorrebbe dire tenerla allineata
+    // a `skin_scegli` — cioè aggiungere uno stato che può divergere per
+    // risparmiare un microsecondo ogni canzone. Adesso che la lettura non è più
+    // sotto il lucchetto, quel microsecondo lo paga solo chi chiama.
+    let sorgente = sorgente(&data_dir, &skin).map_err(errore)?;
+    let documento = aether_skin::parse_skin_json(&sorgente).map_err(errore)?;
+
+    let tinta = aether_skin::values::Rgba { r, g, b, a: 1.0 };
+    Ok(
+        aether_skin::dinamico::accento_dinamico(&documento, tinta, chiaro).map(|variabili| {
+            variabili
+                .into_iter()
+                .map(|(nome, valore)| VariabileIpc { nome, valore })
+                .collect()
+        }),
+    )
 }
 
 #[cfg(test)]

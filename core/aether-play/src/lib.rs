@@ -41,6 +41,7 @@ use aether_domain::errors::AppError;
 pub mod attacchi;
 pub mod decodifica;
 pub mod equalizzatore;
+pub mod impronta;
 pub mod motore;
 pub mod spettro;
 pub mod uscita;

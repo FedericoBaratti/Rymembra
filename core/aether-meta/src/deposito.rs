@@ -66,6 +66,39 @@ pub const VIVE_PUBBLICAZIONE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 /// e ricordare per una settimana che non c'è vorrebbe dire non accorgersene.
 pub const VIVE_NIENTE_MS: i64 = 3 * 24 * 60 * 60 * 1000;
 
+/// Per quanto si ricordano i vicini di un brano o di un artista.
+///
+/// Tre mesi, che è molto più di una pubblicazione letta per intero, e non è una
+/// distrazione. Un'affinità non è un fatto sul brano: è il residuo di **anni**
+/// di ascolti aggregati di tutta ListenBrainz, e non cambia perché qualcuno
+/// oggi ha ascoltato qualcosa. Cambia quando la fondazione rigenera l'intera
+/// base dati, cioè su una scala di mesi.
+///
+/// Richiederla ogni settimana vorrebbe dire pagare cinquantasei richieste per
+/// riavere lo stesso numero identico. La cosa che la fa scadere davvero non è
+/// il tempo, è il cambio dell'algoritmo: e quello si vede nel codice, non
+/// nell'orologio (vedi la nota sul nome del servizio in
+/// [`crate::listenbrainz`]).
+pub const VIVE_AFFINITA_MS: i64 = 90 * 24 * 60 * 60 * 1000;
+
+/// Per quanto si ricorda che di un brano non si sa niente.
+///
+/// Un mese, cioè dieci volte [`VIVE_NIENTE_MS`], e l'asimmetria è rovesciata di
+/// proposito rispetto a quella di MusicBrainz.
+///
+/// Là un «non ce l'ho» dura poco perché **un collaboratore può riempirlo
+/// stanotte**: una registrazione che oggi manca domani c'è, e ricordarla assente
+/// per una settimana vuol dire non accorgersene. Qui quel meccanismo non
+/// esiste. Un brano assente dalla base dati delle somiglianze non ci entra
+/// perché qualcuno lo aggiunge: ci entra quando la base dati viene ricalcolata
+/// da capo, insieme a tutto il resto.
+///
+/// Tenere tre giorni sarebbe quindi il difetto peggiore possibile — la maggior
+/// parte di una libreria vera **non** sta in quella base dati, e la metà
+/// negativa è quella che risparmia di più. Vorrebbe dire rifare ogni tre giorni
+/// tutte le richieste che questa cache esiste per non fare.
+pub const VIVE_AFFINITA_NIENTE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
 /// Un deposito che non ricorda niente.
 ///
 /// Serve alle prove e a chi vuole una passata che parli davvero con la rete —

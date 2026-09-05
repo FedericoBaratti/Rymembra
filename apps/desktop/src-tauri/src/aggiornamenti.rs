@@ -47,10 +47,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant};
 
+use crate::spegnimento::Emette as _;
 use aether_app::settings;
 use aether_domain::errors::{AppError, ErrorCode};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter as _, Manager as _, State};
+use tauri::{AppHandle, Manager as _, State};
 use tauri_plugin_updater::{Update, Updater, UpdaterExt as _};
 
 use crate::errore::{ErroreIpc, Esito, errore};
@@ -519,10 +520,10 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
         let finito = totale.is_some_and(|totale| scaricati >= totale);
         if finito || adesso.duration_since(ultimo_detto) >= RESPIRO_AVANZAMENTO {
             ultimo_detto = adesso;
-            drop(app.emit(
+            app.emetti(
                 "aggiornamenti:avanzamento",
                 AvanzamentoIpc { scaricati, totale },
-            ));
+            );
         }
     };
 
@@ -571,7 +572,7 @@ fn riferisci(app: &AppHandle) {
         return;
     };
     if let Ok(ipc) = stato_ipc(app, &stato, &aggiornamenti) {
-        drop(app.emit("aggiornamenti:stato", ipc));
+        app.emetti("aggiornamenti:stato", ipc);
     }
 }
 

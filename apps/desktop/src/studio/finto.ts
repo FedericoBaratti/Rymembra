@@ -228,6 +228,9 @@ const STATO: StatoRiproduzione = {
   autoplay: false,
   dissolvenzaS: 0,
   audio: null,
+  // Lo Studio mostra la coda con la sua nota: chi disegna una skin deve
+  // poter vedere anche `.perche`, o la disegnerebbe alla cieca.
+  motivoProssimo: "suono",
 };
 
 /** Un comando che non fa niente: nell'anteprima non c'è niente da comandare. */

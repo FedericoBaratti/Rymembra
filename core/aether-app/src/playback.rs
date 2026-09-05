@@ -656,7 +656,11 @@ pub struct PresetEq {
 /// valori non finiti valgono zero. È la stessa cautela con cui [`load_volume`]
 /// taglia fra zero e uno, e per lo stesso motivo: questo valore sta in un file
 /// che si può aprire e correggere a mano.
-fn normalizza(guadagni: &[f32]) -> Vec<f32> {
+///
+/// Pubblica perché la chiama anche il comando `equalizzatore`, che ha smesso di
+/// scrivere e rileggere il database a ogni pixel di cursore e ha bisogno dello
+/// stesso taglio senza passarci in mezzo. Averne due sarebbe averne due diverse.
+pub fn normalizza(guadagni: &[f32]) -> Vec<f32> {
     (0..BANDE)
         .map(|banda| {
             let grezzo = guadagni.get(banda).copied().unwrap_or(0.0);

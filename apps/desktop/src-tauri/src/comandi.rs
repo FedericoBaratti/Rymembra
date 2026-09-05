@@ -6,16 +6,17 @@
 //! momento in cui quella scelta smette di essere provabile senza aprire una
 //! finestra, e ricomincia a poter divergere da quella di Android.
 
+use crate::spegnimento::Emette as _;
 use aether_app::import_legacy;
 use aether_app::library::{
     AlbumSummary, ArtistSummary, Counts, Scan, ScanReport, TrackOrder, TrackSummary, album_tracks,
-    counts, list_albums, list_artists, list_tracks, recently_added_albums, search,
+    counts, list_albums, list_artists, list_tracks, recently_added_albums, search, summaries_by_id,
 };
 use aether_app::settings::CHIAVE_CARTELLE;
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::paths::PathRules;
 use serde::Serialize;
-use tauri::{Emitter as _, State};
+use tauri::State;
 
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, adesso_ms, con_libreria};
@@ -355,7 +356,7 @@ pub fn scansiona(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito<EsitoS
             // meno di un pixel per volta.
             if fatti == totale || fatti.saturating_sub(ultimo) >= 25 {
                 ultimo = fatti;
-                let _ = app.emit("scansione:avanzamento", Avanzamento { fatti, totale });
+                app.emetti("scansione:avanzamento", Avanzamento { fatti, totale });
             }
             if fermare.scansione_fermata() {
                 std::ops::ControlFlow::Break(())
@@ -372,6 +373,7 @@ pub fn scansiona(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito<EsitoS
     // sono precisamente quelli con «Album sconosciuto» e nessuna copertina.
     if esito.is_ok() {
         crate::arricchimento::sporca(&app);
+        crate::analisi::sporca(&app);
     }
     // Una scansione cambia quali brani esistono, quindi quali statistiche il
     // backup può ancorare: un brano ritrovato dopo una reinstallazione va
@@ -863,6 +865,93 @@ pub fn casa(stato: State<'_, Stato>) -> Esito<Casa> {
     })
     .map_err(errore)
 }
+/// Una raccolta del lunedì, coi suoi brani già risolti.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RaccoltaSettimana {
+    /// La riga, per marcarla aperta.
+    pub id: i64,
+    /// `ripescati` o `ancora`.
+    pub genere: String,
+    /// Quale delle «Ancora» è. Zero per i ripescati.
+    pub ordine: i64,
+    /// Il materiale del nome: un genere, un artista, o niente.
+    pub etichetta: Option<String>,
+    /// Come leggerlo: `genere` o `artista`.
+    pub etichetta_tipo: Option<String>,
+    /// Se è già stata aperta.
+    pub aperta: bool,
+    /// I brani, nell'ordine deciso dal calcolo.
+    pub brani: Vec<TrackSummary>,
+}
+
+/// Le raccolte di questa settimana, generandole se è lunedì di nuovo.
+///
+/// # Perché il fuso arriva dall'interfaccia
+///
+/// Perché il nucleo non ha un fuso: `aether-domain` non guarda l'orologio e
+/// `aether-app` tiene il tempo in millisecondi universali, che è l'unica forma
+/// che sopravvive a una sincronizzazione fra dispositivi in due paesi. Il
+/// lunedì invece è un fatto locale — comincia sette ore prima a Roma che a Los
+/// Angeles — e l'unico posto che sa dove si trova la finestra è la finestra.
+///
+/// `scostamento_minuti` sono i minuti da **aggiungere** all'universale per
+/// avere l'ora locale: è il contrario del segno di `getTimezoneOffset()`, e il
+/// verso si legge senza doverci pensare. Vedi
+/// [`aether_domain::settimana::lunedi`].
+///
+/// # Perché `(async)` e non un comando qualunque
+///
+/// Perché «decine di millisecondi una volta a settimana» era vero del lavoro e
+/// falso del costo. Un comando sincrono lo esegue **il filo principale**, che è
+/// quello che disegna la finestra: per tutto il tempo della generazione la
+/// finestra non risponde, e siccome la generazione tiene il lucchetto della
+/// libreria, dietro ci si accoda anche la riproduzione — che quel lucchetto lo
+/// vuole a ogni cambio di stato.
+///
+/// `(async)` non cambia una riga del corpo: dice a Tauri di eseguirlo su un
+/// filo del suo pool invece che sul principale. Il lucchetto della libreria
+/// resta, e resta giusto che resti — è la connessione, ed è una sola — ma
+/// aspettarlo non ferma più il disegno.
+///
+/// Il filo in più che questo commento diceva di non volere non c'è comunque:
+/// il pool esiste già, ed è dove girano di già tutti i comandi `(async)`.
+#[tauri::command(async)]
+pub fn settimana(
+    stato: State<'_, Stato>,
+    scostamento_minuti: i32,
+) -> Esito<Vec<RaccoltaSettimana>> {
+    let adesso = adesso_ms();
+    let lunedi = aether_domain::settimana::lunedi(adesso, scostamento_minuti);
+
+    con_libreria(&stato, |libreria| {
+        let raccolte = aether_app::settimana::aggiorna(&mut libreria.connection, lunedi, adesso)?;
+        let mut fuori = Vec::with_capacity(raccolte.len());
+        for raccolta in raccolte {
+            fuori.push(RaccoltaSettimana {
+                id: raccolta.id,
+                genere: raccolta.genere,
+                ordine: raccolta.ordine,
+                etichetta: raccolta.etichetta,
+                etichetta_tipo: raccolta.etichetta_tipo,
+                aperta: raccolta.aperta,
+                brani: summaries_by_id(&libreria.connection, &raccolta.brani)?,
+            });
+        }
+        Ok(fuori)
+    })
+    .map_err(errore)
+}
+
+/// Segna una raccolta come aperta, così l'annuncio smette di annunciarla.
+#[tauri::command]
+pub fn settimana_apri(stato: State<'_, Stato>, raccolta: i64) -> Esito<()> {
+    con_libreria(&stato, |libreria| {
+        aether_app::settimana::apri(&libreria.connection, raccolta, adesso_ms())
+    })
+    .map_err(errore)
+}
+
 /// I documenti pubblici, e dove stanno.
 ///
 /// # Perché un elenco chiuso e non un indirizzo qualunque
@@ -1039,4 +1128,96 @@ mod prove {
         );
         assert!(!indirizzo.ends_with("/sponsors/"), "manca il proprietario");
     }
+}
+
+/// Le cartelle musicali del sistema che contengono davvero qualcosa.
+///
+/// Serve al primo avvio, e la decisione di cosa proporre sta in
+/// `aether_app::primo`: qui si traduce soltanto, come ogni altra riga di questo
+/// file. Quali siano le cartelle musicali di un sistema però lo sa il sistema, e
+/// **questo** lo si può chiedere solo da qui: `aether-app` non conosce Tauri e
+/// non deve conoscerlo.
+///
+/// # La scadenza
+///
+/// Attraversare la cartella Musica di qualcuno può durare, e su una cartella
+/// sincronizzata che non risponde può durare i quaranta secondi di Windows. È
+/// il primo avvio, cioè il momento in cui un'attesa senza spiegazione fa
+/// chiudere il programma: alla scadenza si restituisce un elenco vuoto, che la
+/// finestra sa già disegnare — è lo stato «nessuna cartella trovata», che deve
+/// esistere comunque per chi la musica la tiene altrove.
+#[tauri::command(async)]
+pub fn cartelle_candidate(app: tauri::AppHandle) -> Esito<Vec<CartellaCandidata>> {
+    let percorsi = percorsi_musicali(&app);
+    let trovate =
+        aether_app::scadenza::con_scadenza(RICERCA_CARTELLE_NOME, RICERCA_CARTELLE, move || {
+            aether_app::primo::esamina(&aether_app::files::LocalFiles, &percorsi)
+        })
+        .unwrap_or_default();
+
+    Ok(trovate
+        .into_iter()
+        .map(|c| CartellaCandidata {
+            percorso: c.percorso,
+            brani: u32::try_from(c.brani).unwrap_or(u32::MAX),
+            troncato: c.troncato,
+            parziale: c.parziale,
+        })
+        .collect())
+}
+
+/// Quanto si aspetta prima di rinunciare a cercare le cartelle musicali.
+///
+/// Sei secondi. Più della sonda delle radici, che deve solo dire se una cartella
+/// esiste, e meno di quanto qualcuno resti a guardare una schermata di benvenuto
+/// senza capire se il programma è vivo.
+const RICERCA_CARTELLE: std::time::Duration = std::time::Duration::from_secs(6);
+/// Il nome del filo che cerca, per il registro diagnostico.
+const RICERCA_CARTELLE_NOME: &str = "cartelle-candidate";
+
+/// Una cartella da proporre al primo avvio.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CartellaCandidata {
+    /// Dove.
+    pub percorso: String,
+    /// Quanti brani ci si sono contati.
+    pub brani: u32,
+    /// Il conteggio si è fermato al tetto: ce n'erano altri.
+    pub troncato: bool,
+    /// La camminata ha perso dei rami: il numero è una sottostima.
+    pub parziale: bool,
+}
+
+/// Dove un sistema tiene la musica, in ordine di probabilità.
+///
+/// La cartella dichiarata dal sistema per prima, poi la sua copia dentro
+/// OneDrive — che su Windows è dove finisce davvero la musica di chi ha il
+/// backup acceso, e che il sistema **non** dichiara come cartella musicale.
+///
+/// Non si aggiunge la cartella dei download: contiene musica per qualcuno e
+/// tutto il resto per tutti, e una radice sorvegliata sbagliata si paga a ogni
+/// scansione successiva.
+fn percorsi_musicali(app: &tauri::AppHandle) -> Vec<String> {
+    use tauri::Manager as _;
+
+    let mut fuori = Vec::new();
+    let percorsi = app.path();
+    if let Ok(musica) = percorsi.audio_dir() {
+        fuori.push(musica.to_string_lossy().into_owned());
+    }
+    if let Ok(casa) = percorsi.home_dir() {
+        for nome in ["Music", "Musica"] {
+            let dentro_onedrive = casa.join("OneDrive").join(nome);
+            fuori.push(dentro_onedrive.to_string_lossy().into_owned());
+        }
+    }
+    // Due percorsi che puntano allo stesso posto capitano — la cartella
+    // musicale *è* dentro OneDrive quando il backup è acceso — e proporli due
+    // volte sarebbe una schermata che si contraddice. Si toglie il secondo e
+    // non si ordina: l'ordine è quello della probabilità, e ordinarli
+    // alfabeticamente lo butterebbe via.
+    let mut visti = std::collections::HashSet::new();
+    fuori.retain(|percorso| visti.insert(percorso.clone()));
+    fuori
 }

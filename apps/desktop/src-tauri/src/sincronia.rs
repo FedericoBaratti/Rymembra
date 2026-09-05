@@ -44,6 +44,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
+use crate::spegnimento::Emette as _;
 use aether_app::settings;
 use aether_app::sincronia::{self, Cambiamenti, Dispositivo};
 use aether_cloud::http::Rete;
@@ -53,7 +54,7 @@ use aether_cloud::portachiavi::{self, DiSistema, Portachiavi as _};
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_sync::{Cartella, Magazzino, Memoria, Motore};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter as _, Manager as _, State};
+use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
@@ -568,7 +569,7 @@ fn passata_vera(app: &AppHandle) -> Result<Resoconto, AppError> {
         let mut motore =
             Motore::nuovo(deposito.as_ref(), io.clone(), &mut memoria).fidandosi_di(fidati);
         motore.passata(&mio, adesso, &|passo| {
-            let _ = app.emit(
+            app.emetti(
                 "sincronia:avanzamento",
                 serde_json::json!({ "fatti": passo.fatti, "totale": passo.totale }),
             );
@@ -684,7 +685,7 @@ fn riferisci(app: &AppHandle) {
         return;
     };
     if let Ok(ipc) = stato_ipc(&stato, &sincronia) {
-        drop(app.emit("sincronia:stato", ipc));
+        app.emetti("sincronia:stato", ipc);
     }
 }
 

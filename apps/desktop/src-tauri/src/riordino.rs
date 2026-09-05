@@ -16,12 +16,13 @@
 
 use std::path::PathBuf;
 
+use crate::spegnimento::Emette as _;
 use aether_app::organize::{execute, read_journal, tracks_to_organize, undo};
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::organize::{OrganizePlan, plan_organize};
 use aether_domain::paths::PathRules;
 use serde::Serialize;
-use tauri::{Emitter as _, State};
+use tauri::State;
 
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, adesso_ms, con_libreria};
@@ -237,7 +238,7 @@ pub fn esegui_riordino(
             // canale per muovere una barra di meno di un pixel per volta.
             if fatti == totale || fatti.saturating_sub(ultimo) >= 25 {
                 ultimo = fatti;
-                let _ = app.emit("riordino:avanzamento", Avanzamento { fatti, totale });
+                app.emetti("riordino:avanzamento", Avanzamento { fatti, totale });
             }
         })?;
 
@@ -269,7 +270,7 @@ pub fn annulla_riordino(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito
         let esito = undo(&righe, |fatti, totale| {
             if fatti == totale || fatti.saturating_sub(ultimo) >= 25 {
                 ultimo = fatti;
-                let _ = app.emit("riordino:avanzamento", Avanzamento { fatti, totale });
+                app.emetti("riordino:avanzamento", Avanzamento { fatti, totale });
             }
         });
 

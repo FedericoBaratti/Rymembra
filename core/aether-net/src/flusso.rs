@@ -36,10 +36,11 @@
 //! # Cosa succede quando la rete cade a metà canzone
 //!
 //! Un errore di lettura, che risale al decodificatore e da lì al motore come un
-//! brano che finisce male. Non si ritenta qui dentro: `Rete` ha già i suoi
-//! tentativi per i guasti che si ritentano, e un secondo ciclo qui vorrebbe
-//! dire una canzone che resta ferma per un minuto invece di dire che non c'è
-//! rete.
+//! brano che si interrompe — e che **dice di essere la rete**, non un file
+//! rotto. Come, e perché è la parte difficile, sta scritto su [`da_app`]. Non si
+//! ritenta qui dentro: `Rete` ha già i suoi tentativi per i guasti che si
+//! ritentano, e un secondo ciclo qui vorrebbe dire una canzone che resta ferma
+//! per un minuto invece di dire che non c'è rete.
 
 use std::io::{Read, Seek, SeekFrom};
 
@@ -247,25 +248,76 @@ impl Seek for FlussoHttp {
     }
 }
 
+/// Il numero che Windows dà quando il nome di rete non è più disponibile.
+///
+/// `ERROR_NETNAME_DELETED`. È il più comune dei guasti di rete a metà lettura,
+/// ed è quello che si sceglie quando non c'è niente di più preciso da dire.
+const NOME_DI_RETE_SPARITO: i32 = 64;
+
+/// Il numero che Windows dà quando la lettura è scaduta.
+///
+/// `ERROR_SEM_TIMEOUT`: «ha smesso di rispondere mentre si leggeva», che è
+/// esattamente quel che è successo quando la scadenza di [`Rete`] scatta a metà
+/// di un intervallo.
+const SEMAFORO_SCADUTO: i32 = 121;
+
+/// Il numero che Windows dà quando la rete non si raggiunge affatto.
+///
+/// `ERROR_NETWORK_UNREACHABLE`, per il caso in cui non c'era nessuna
+/// connessione da usare.
+const RETE_IRRAGGIUNGIBILE: i32 = 1231;
+
 /// Da un errore di Aether a uno di `std::io`.
 ///
-/// Il codice non si perde: finisce nel testo, che è l'unico posto in cui
-/// `io::Error` sappia portarlo. Risalirà fino al motore come «decodifica
-/// fallita», e la causa dirà che era la rete.
+/// # Perché un numero di sistema e non un messaggio
+///
+/// Perché il messaggio non arriva. Fra questa riga e chi deve decidere che
+/// faccia mostrare all'utente ci sono due passaggi che non lasciano passare
+/// niente:
+///
+/// - **symphonia**, che quando il riconoscimento del contenitore non riesce
+///   dice «nessun lettore adatto» e *butta via* l'errore di lettura che glielo
+///   ha impedito;
+/// - **`aether_play::decodifica`**, che per distinguere una condivisione morta
+///   da un file rotto guarda una cosa sola, `raw_os_error()`, perché è l'unica
+///   che `std::io::Error` porti fino in fondo. L'elenco dei numeri sta in
+///   `aether_domain::errors::rete::e_di_rete`, ed è condiviso fra chi apre un
+///   file e chi lo sta già leggendo, apposta perché la stessa causa racconti la
+///   stessa cosa da tutte e due le parti.
+///
+/// Un `io::Error` costruito con `Error::new` non ha nessun numero. Arriverebbe
+/// di là indistinguibile da un settore rovinato, cioè come
+/// `playback.decodeFailed`: «questo file è danneggiato, sostituiscilo» — per un
+/// brano che non è un file e che sta benissimo dov'è, mentre a mancare è il
+/// cavo. La versione 2.1.0 è stata una campagna intera per chiudere le otto
+/// strade da cui quella bugia entrava; questo modulo non ne apre una nona.
+///
+/// # Perché *tutti* i guasti di qui sono di rete
+///
+/// Perché di file non ce n'è. Le uniche letture che possono fallire sono le
+/// richieste `Range` di [`Sorgente::pezzo`] — un flusso finito restituisce zero
+/// byte, non un guasto — quindi quel che passa da qui viene sempre dal cavo, e
+/// non esiste il caso in cui la risposta giusta sia «sostituisci il file».
+/// Ecco perché il ramo predefinito non è un ripiego prudente: è la regola.
+///
+/// # Che cosa si perde
+///
+/// Il testo. `std::io::Error` porta *o* un numero di sistema *o* un messaggio,
+/// mai tutti e due, e fra i due quello che serve è il numero: il codice del
+/// catalogo lo ricostruisce `e_di_rete` di là, mentre un messaggio che non
+/// sopravvive al viaggio non lo legge nessuno. Chi vuole sapere *quale*
+/// richiesta è andata male ce l'ha ancora davanti al motore — l'apertura del
+/// flusso restituisce l'[`AppError`] intero, con il suo codice e la sua causa.
+///
+/// Fuori da Windows `e_di_rete` risponde sempre `false` — la ragione sta scritta
+/// nel suo modulo — e il numero resta lì senza che nessuno lo interroghi. È il
+/// limite dichiarato di quel modulo, non uno nuovo di questo.
 fn da_app(err: AppError) -> std::io::Error {
-    let genere = match err.code().kind().code() {
-        "net.offline" => std::io::ErrorKind::NotConnected,
-        "net.timeout" => std::io::ErrorKind::TimedOut,
-        _ => std::io::ErrorKind::Other,
-    };
-    std::io::Error::new(
-        genere,
-        format!(
-            "{}: {}",
-            err.code().kind().code(),
-            err.cause().unwrap_or("nessuna causa")
-        ),
-    )
+    std::io::Error::from_raw_os_error(match err.code().kind().code() {
+        "net.offline" => RETE_IRRAGGIUNGIBILE,
+        "net.timeout" => SEMAFORO_SCADUTO,
+        _ => NOME_DI_RETE_SPARITO,
+    })
 }
 
 /// Un guasto di lettura, per chi costruisce una sorgente propria.
@@ -465,6 +517,112 @@ mod prove {
         let mut letti = Vec::new();
         std::io::Read::read_to_end(&mut flusso, &mut letti).unwrap_or(0);
         assert_eq!(letti.len(), quanti);
+    }
+
+    /// Una sorgente che dà la prima finestra e poi non risponde più.
+    ///
+    /// È la rete che se ne va **a metà canzone**, che è il caso difficile: la
+    /// prima richiesta riesce — altrimenti il brano non partirebbe nemmeno e
+    /// l'errore lo vedrebbe chi ha premuto play, non il decodificatore — e la
+    /// seconda no.
+    #[derive(Debug)]
+    struct CadeDopo {
+        byte: Vec<u8>,
+        codice: &'static str,
+        servite: Mutex<usize>,
+    }
+
+    impl CadeDopo {
+        fn nuova(codice: &'static str) -> Self {
+            Self {
+                byte: vec![7; usize::try_from(FINESTRA).unwrap_or(0)],
+                codice,
+                servite: Mutex::new(0),
+            }
+        }
+    }
+
+    impl Sorgente for CadeDopo {
+        fn pezzo(&self, _: u64, _: u64) -> Result<Pezzo, AppError> {
+            let mut servite = self
+                .servite
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *servite = servite.saturating_add(1);
+            if *servite > 1 {
+                return Err(match self.codice {
+                    "net.offline" => AppError::new(ErrorCode::NetOffline { url: None }),
+                    "net.timeout" => AppError::new(ErrorCode::NetTimeout {
+                        url: None,
+                        timeout_ms: None,
+                    }),
+                    _ => lettura_interrotta("la connessione è caduta".to_owned()),
+                }
+                .with_cause("caduta a metà brano".to_owned()));
+            }
+            Ok(Pezzo {
+                byte: self.byte.clone(),
+                // Una lunghezza che vale il doppio della finestra: così la fine
+                // non è ancora arrivata e la seconda richiesta parte davvero.
+                totale: Some(FINESTRA.saturating_mul(2)),
+            })
+        }
+    }
+
+    /// Legge finché non si rompe, e restituisce il guasto.
+    fn leggi_finche_cade(flusso: &mut FlussoHttp) -> Option<std::io::Error> {
+        let mut blocco = [0_u8; 8192];
+        for _ in 0..1000 {
+            match std::io::Read::read(flusso, &mut blocco) {
+                Ok(0) => return None,
+                Ok(_) => {}
+                Err(err) => return Some(err),
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn la_rete_che_cade_a_meta_canzone_non_si_traveste_da_file_rotto() {
+        // Il punto di tutta la conversione: quel che risale al decodificatore
+        // deve portare un **numero di sistema**, perché è l'unica cosa che
+        // `aether_domain::errors::rete::e_di_rete` sappia leggere — e senza,
+        // una connessione caduta arriverebbe all'utente come «questo file è
+        // danneggiato, sostituiscilo», per un brano che nemmeno è un file.
+        for (codice, atteso) in [
+            ("net.offline", RETE_IRRAGGIUNGIBILE),
+            ("net.timeout", SEMAFORO_SCADUTO),
+            ("download.network", NOME_DI_RETE_SPARITO),
+        ] {
+            let mut flusso =
+                FlussoHttp::da(Box::new(CadeDopo::nuova(codice))).unwrap_or_else(|_| unreachable());
+            let guasto = leggi_finche_cade(&mut flusso);
+            assert_eq!(
+                guasto.as_ref().and_then(std::io::Error::raw_os_error),
+                Some(atteso),
+                "«{codice}» ha perso per strada il numero che lo racconta"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn e_il_numero_lo_riconosce_chi_dovra_leggerlo() {
+        // La prova che chiude il giro: non basta che ci sia *un* numero, deve
+        // essere uno dei numeri che l'altra metà interroga. Le due liste stanno
+        // in due crate che non si conoscono, e questa è la riga che le tiene
+        // d'accordo.
+        for codice in ["net.offline", "net.timeout", "download.network"] {
+            let mut flusso =
+                FlussoHttp::da(Box::new(CadeDopo::nuova(codice))).unwrap_or_else(|_| unreachable());
+            let guasto = leggi_finche_cade(&mut flusso);
+            assert!(
+                guasto
+                    .as_ref()
+                    .is_some_and(aether_domain::errors::rete::e_di_rete),
+                "«{codice}» non viene riconosciuto come guasto di rete"
+            );
+        }
     }
 
     /// Un valore che non si userà mai: le finte non falliscono.

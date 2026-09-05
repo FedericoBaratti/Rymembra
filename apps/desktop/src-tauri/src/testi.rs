@@ -22,6 +22,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use crate::spegnimento::Emette as _;
 use aether_app::enrich::DepositoSqlite;
 use aether_app::settings;
 use aether_app::testi::{self, Copertura, Fonte};
@@ -29,7 +30,7 @@ use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::testo::{Aderenza, Riga, Testo};
 use aether_meta::Fornitori;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter as _, Manager as _, State};
+use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
@@ -474,7 +475,7 @@ fn avvia(app: &AppHandle) {
         .name("aether-testi".to_owned())
         .spawn(move || {
             passata(&manico);
-            let _ = manico.emit("testi:finito", ());
+            manico.emetti("testi:finito", ());
         });
     if let Err(err) = avviato {
         nota!("[testi] il filo della passata non è partito: {err}");
@@ -585,7 +586,7 @@ fn passata(app: &AppHandle) {
                 })
                 .map(|precedente| precedente.saturating_sub(1))
                 .unwrap_or(0);
-            let _ = app.emit("testi:avanzamento", Avanzamento { fatti, rimasti });
+            app.emetti("testi:avanzamento", Avanzamento { fatti, rimasti });
         }
     }
 }
@@ -602,7 +603,7 @@ struct Avanzamento {
 
 /// Manda un guasto alla finestra, che decide se e come mostrarlo.
 fn segnala(app: &AppHandle, err: &AppError) {
-    let _ = app.emit("testi:guasto", crate::errore::ErroreIpc::from(err.clone()));
+    app.emetti("testi:guasto", crate::errore::ErroreIpc::from(err.clone()));
 }
 
 // ── sincronizzare a mano ────────────────────────────────────────────────────

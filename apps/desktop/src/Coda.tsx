@@ -26,7 +26,7 @@ import { useEffect, useState } from "react";
 import { durata, nomeArtista, titoloAlbum } from "./formato";
 import { ipc, type Brano, type StatoRiproduzione } from "./ipc";
 import { Icona } from "./parti/Icone";
-import { t } from "./lingue";
+import { t, tSe } from "./lingue";
 
 /**
  * Le righe della coda, per identificativo.
@@ -144,6 +144,21 @@ export function RigheCoda({
       {stato.coda.map((id, indice) => {
         const brano = righe.get(id);
         const inAscolto = indice === stato.posizioneCoda;
+        /* Il perché sta solo sul brano **subito dopo** quello in ascolto, ed è
+           l'unico che ce l'ha: il nucleo spiega la scelta che ha appena fatto,
+           non tutta la coda. Le righe più in là le hai messe tu, o le sceglierà
+           quando ci arriverà — e una frase su una scelta non ancora presa
+           sarebbe inventata. */
+        const codice =
+          stato.posizioneCoda !== null &&
+          indice === stato.posizioneCoda + 1
+            ? stato.motivoProssimo
+            : null;
+        /* `tSe` e non `t`: il codice arriva dal nucleo, quindi TypeScript non
+           può verificarlo. Il ripiego è la stringa vuota, e una stringa vuota
+           non disegna niente — un motivo che l'interfaccia non conosce si tace
+           invece di mostrare la propria chiave. */
+        const perche = codice === null ? "" : tSe(`queue.why.${codice}`, "");
         return (
           <li
             /* L'indice fa parte della chiave: la stessa canzone può stare due
@@ -184,6 +199,9 @@ export function RigheCoda({
                   ? `${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`
                   : `id ${id}`}
               </span>
+              {perche !== "" && !compatta && (
+                <span className="perche">{perche}</span>
+              )}
             </button>
             {!compatta && (
               <span className="durata">

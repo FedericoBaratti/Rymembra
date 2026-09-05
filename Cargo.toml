@@ -24,7 +24,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.1.0"
+version = "2.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -102,4 +102,24 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
-panic = "abort"
+# `unwind`, e non `abort`, per tre ragioni che si sono viste tutte e tre.
+#
+# 1. Il database. Con `abort` un panico qualunque, su un filo qualunque, ferma
+#    il processo senza eseguire nessun `Drop`: la connessione SQLite non si
+#    chiude, il WAL non si consolida. È così che nella cartella dell'utente si
+#    è trovato un `aether.db-wal` da quattro megabyte e mezzo mai riassorbito.
+#
+# 2. Il codice si è documentato assumendo `unwind`. `analisi::misura_lotto`
+#    scrive che un filo caduto perde solo il suo lotto, e lo scrive perché fa
+#    `join().ok()` su fili di scope — che sotto `abort` non viene raggiunto
+#    mai, perché il processo è già morto. Delle due andava cambiata una: o la
+#    promessa o il profilo. Vale più la promessa.
+#
+# 3. La decodifica. `symphonia` gira su file che arrivano dal disco di
+#    chiunque, e un file malformato che lo faccia panicare, sotto `abort`,
+#    porta via l'applicazione intera — e lo rifà a ogni avvio, perché quel
+#    brano resta candidato.
+#
+# Costa qualche decina di kilobyte di tabelle di unwinding. Non cambia le
+# prestazioni del codice che non panica, che è tutto quello che gira di solito.
+panic = "unwind"

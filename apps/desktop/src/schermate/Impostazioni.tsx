@@ -350,6 +350,16 @@ function SchedaTesti() {
       listen("testi:finito", () => {
         if (!annullato) aggiorna();
       }),
+      // Una passata caduta a metà — la rete che se ne va, il servizio che dice
+      // di no — non manda «finito», e senza questa riga la barra resterebbe a
+      // «in corso» per sempre. È la stessa disciplina dell'arricchimento in
+      // `App.tsx`: lo stato riletto dal nucleo è l'ultima parola su «sta
+      // girando», e rileggerlo è quel che serve. Il guasto in sé non si mostra
+      // qui — chi ha chiesto i testi non ha chiesto una finestra rossa — ma il
+      // numero dei coperti torna vero, che è quello che si stava guardando.
+      listen("testi:guasto", () => {
+        if (!annullato) aggiorna();
+      }),
     ];
     return () => {
       annullato = true;
