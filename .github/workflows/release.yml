@@ -226,34 +226,35 @@ jobs:
           body: |
             ## Aether ${{ steps.versione.outputs.tag }}
 
-            Vedi `CHANGELOG.md` per cosa è cambiato.
+            See `CHANGELOG.md` for what changed.
 
-            ### Prima di installare
+            ### Before installing
 
-            **Questo installer non è firmato.** Windows SmartScreen mostrerà un
-            avviso: «Windows ha protetto il PC». Per procedere: *Ulteriori
-            informazioni* → *Esegui comunque*.
+            **This installer is not signed.** Windows SmartScreen will show a
+            warning: «Windows protected your PC». To proceed: *More info* →
+            *Run anyway*.
 
-            Non è una formalità e non va data per scontata. Un installer non
-            firmato è un installer di cui non puoi verificare la provenienza,
-            e l'unica cosa che posso offrire in cambio è che il sorgente sta
-            qui e si compila da sé. Un certificato OV richiede validazione
-            dell'identità e un costo annuo: quando ci sarà, questo avviso
-            sparirà da queste note.
+            It isn't a formality and shouldn't be taken for granted. An
+            unsigned installer is an installer whose provenance you cannot
+            verify, and the only thing I can offer in exchange is that the
+            source is here and builds itself. An OV certificate requires
+            identity validation and an annual cost: when there is one, this
+            warning will disappear from these notes.
 
-            ### Da dove arriva la musica
+            ### Where the music comes from
 
-            Aether suona i tuoi file, e quel che manca lo cerca nei **cataloghi
-            liberi**. Non scarica da YouTube e non fa scraping di Spotify: il
-            perché sta in `README.md`. Quel che nessun catalogo libero ha
-            finisce in una lista d'acquisto, non in un errore.
+            Aether plays your files, and looks for what's missing in the
+            **free catalogs**. It doesn't download from YouTube and doesn't
+            scrape Spotify: the why is in `README.md`. What no free catalog
+            has ends up in a shopping list, not in an error.
 
-            ### Licenze
+            ### Licenses
 
-            `LICENSE` (MIT), `THIRD-PARTY-NOTICES.md` (le dipendenze, con i
-            loro testi), `PRIVACY.md` (ogni richiesta di rete che il programma
-            può fare), `TERMS.md` (cosa puoi fare della musica che scarichi —
-            compreso il vincolo **non commerciale** del Live Music Archive).
+            `LICENSE` (MIT), `THIRD-PARTY-NOTICES.md` (the dependencies, with
+            their texts), `PRIVACY.md` (every network request the program can
+            make), `TERMS.md` (what you can do with the music you download —
+            including the Live Music Archive's **non-commercial**
+            constraint).
 
       # ── e adesso la bozza va guardata ────────────────────────────────────
       # Restano due gesti a mano, e sono entrambi voluti:

@@ -130,19 +130,19 @@ function main() {
   );
 
   const righe = [];
-  righe.push("# Avvisi sulle componenti di terze parti");
+  righe.push("# Third-party component notices");
   righe.push("");
   righe.push(
-    "Aether è distribuito sotto licenza MIT (vedi `LICENSE`). Il programma però",
-    "non è fatto solo del codice scritto qui: incorpora software libero di altri,",
-    "e le loro licenze chiedono che il testo viaggi insieme al binario. Questo",
-    "file è quel testo.",
+    "Aether is distributed under the MIT license (see `LICENSE`). The program,",
+    "however, is not made only of the code written here: it incorporates other",
+    "people's free software, and their licenses ask for the text to travel",
+    "together with the binary. This file is that text.",
   );
   righe.push("");
   righe.push(
-    "**Non è scritto a mano.** Lo genera `strumenti/licenze.js` da `cargo",
-    "metadata`, andando a leggere i testi dove `cargo` li ha già scaricati. Si",
-    "rifà con:",
+    "**It is not written by hand.** `strumenti/licenze.js` generates it from",
+    "`cargo metadata`, reading the texts where `cargo` has already downloaded",
+    "them. It is remade with:",
   );
   righe.push("");
   righe.push("```");
@@ -150,103 +150,105 @@ function main() {
   righe.push("```");
   righe.push("");
   righe.push(
-    `L'elenco copre l'intero grafo delle dipendenze per \`${PIATTAFORMA}\`,`,
-    "compreso quel che serve solo a compilare o a provare. È più di quanto",
-    "finisca nel binario, ed è deliberato: attribuire in più non costa niente a",
-    "nessuno, attribuire in meno è la sola cosa che si paga.",
+    `The list covers the whole dependency graph for \`${PIATTAFORMA}\`,`,
+    "including what is needed only to build or to test. It is more than what",
+    "ends up in the binary, and that is deliberate: over-attributing costs",
+    "nobody anything, under-attributing is the only thing you pay for.",
   );
   righe.push("");
-  righe.push("## Le due licenze da guardare per prime");
+  righe.push("## The two licenses to look at first");
   righe.push("");
   righe.push(
-    "**MPL-2.0** — tutta la famiglia `symphonia`, che è il motore di decodifica",
-    "audio, più `cssparser` e `selectors`. La MPL è *file-based*: obbliga a",
-    "distribuire il sorgente dei **file coperti** che si modificano. Aether non",
-    "ne modifica nessuno — li usa come crate dal registro, alle versioni scritte",
-    "in `Cargo.lock` — quindi l'obbligo si assolve dicendolo e indicando dove sta",
-    "l'originale. Se un giorno se ne forcasse uno, quel fork andrebbe pubblicato.",
-  );
-  righe.push("");
-  righe.push(
-    "**Apache-2.0 senza alternativa** — `cpal` (il dispositivo audio), `tao` (la",
-    "finestra), `ring` (`Apache-2.0 AND ISC`), `zopfli`, `sync_wrapper`. Quasi",
-    "tutto il resto dell'ecosistema Rust è `MIT OR Apache-2.0`, e per quei crate",
-    "si può scegliere; per questi no. La § 4 della Apache-2.0 chiede di",
-    "consegnare una copia della licenza a chi riceve il programma e di conservare",
-    "gli avvisi `NOTICE`: entrambe le cose stanno qui sotto.",
+    "**MPL-2.0** — the whole `symphonia` family, which is the audio decoding",
+    "engine, plus `cssparser` and `selectors`. The MPL is *file-based*: it",
+    "requires the source of the **covered files** you modify to be distributed.",
+    "Aether modifies none of them — it uses them as crates from the registry, at",
+    "the versions written in `Cargo.lock` — so the obligation is discharged by",
+    "saying so and pointing at where the original is. If one were ever forked,",
+    "that fork would have to be published.",
   );
   righe.push("");
   righe.push(
-    "**Unicode-3.0** — i crate `icu4x` e `unicode-ident`. Licenza permissiva con",
-    "obbligo di attribuzione, assolto da questo file.",
+    "**Apache-2.0 with no alternative** — `cpal` (the audio device), `tao` (the",
+    "window), `ring` (`Apache-2.0 AND ISC`), `zopfli`, `sync_wrapper`. Almost",
+    "all the rest of the Rust ecosystem is `MIT OR Apache-2.0`, and for those",
+    "crates you can choose; for these you cannot. Apache-2.0 § 4 asks for a copy",
+    "of the license to be delivered to whoever receives the program and for the",
+    "`NOTICE` notices to be kept: both are below.",
   );
   righe.push("");
-  righe.push("## I font");
-  righe.push("");
   righe.push(
-    "**Geist** e **Bricolage Grotesque** sono impacchettati dentro",
-    "l'applicazione, sotto **SIL Open Font License 1.1**, il cui testo sta in",
-    "`apps/desktop/src/font/OFL.txt`. La OFL obbliga a distribuire la licenza",
-    "insieme ai font, e a non venderli da soli: nessuna delle due cose è un",
-    "problema qui, ma la prima va fatta e fino a poco fa non si faceva.",
+    "**Unicode-3.0** — the `icu4x` and `unicode-ident` crates. A permissive",
+    "license with an attribution requirement, discharged by this file.",
   );
   righe.push("");
-  righe.push("## L'audio");
+  righe.push("## The fonts");
   righe.push("");
   righe.push(
-    "La decodifica **AAC** avviene tramite `symphonia-codec-aac`, che è",
-    "un'implementazione indipendente. I brevetti fondamentali su AAC-LC sono",
-    "scaduti fra il 2017 e il 2023, e il programma di licenza Via LA fattura",
-    "sulla **vendita** di codificatori e decodificatori: Aether è gratuito e non",
-    "vende nulla. Non c'è quindi niente da pagare né da chiedere.",
+    "**Geist** and **Bricolage Grotesque** are packaged inside the application,",
+    "under the **SIL Open Font License 1.1**, whose text is in",
+    "`apps/desktop/src/font/OFL.txt`. The OFL requires the license to be",
+    "distributed together with the fonts, and forbids selling them on their",
+    "own: neither is a problem here, but the first has to be done and until",
+    "recently it was not.",
+  );
+  righe.push("");
+  righe.push("## The audio");
+  righe.push("");
+  righe.push(
+    "**AAC** decoding happens through `symphonia-codec-aac`, which is an",
+    "independent implementation. The fundamental patents on AAC-LC expired",
+    "between 2017 and 2023, and the Via LA licensing program bills on the",
+    "**sale** of encoders and decoders: Aether is free and sells nothing. There",
+    "is therefore nothing to pay and nothing to ask for.",
   );
   righe.push("");
   righe.push("---");
   righe.push("");
-  righe.push(`## L'elenco: ${esterni.length} crate`);
+  righe.push(`## The list: ${esterni.length} crates`);
   righe.push("");
   righe.push(
-    "I testi identici sono raccolti una volta sola, con sotto l'elenco dei crate",
-    "che li portano. Chi cerca un crate preciso lo trova con la ricerca del",
-    "proprio lettore: compare nel gruppo della sua licenza.",
+    "Identical texts are collected once only, with the list of the crates that",
+    "carry them underneath. Anyone looking for a specific crate finds it with",
+    "their reader's search: it appears in its license's group.",
   );
   righe.push("");
 
   // La tabella dei crate, per chi cerca il singolo nome.
-  righe.push("| Crate | Versione | Licenza | Dove sta |");
+  righe.push("| Crate | Version | License | Where it lives |");
   righe.push("| --- | --- | --- | --- |");
   for (const p of esterni) {
     const repo = p.repository ? `<${p.repository}>` : "—";
     righe.push(
-      `| \`${p.name}\` | ${p.version} | ${p.license || "(non dichiarata)"} | ${repo} |`,
+      `| \`${p.name}\` | ${p.version} | ${p.license || "(not declared)"} | ${repo} |`,
     );
   }
   righe.push("");
 
   if (senzaTesto.length > 0) {
-    righe.push("### Crate senza un file di licenza nel pacchetto");
+    righe.push("### Crates with no license file in the package");
     righe.push("");
     righe.push(
-      "Dichiarano la licenza nel manifesto ma non ne allegano il testo. Vale il",
-      "testo standard della licenza dichiarata, riportato più sotto per gli altri",
-      "crate che la usano.",
+      "They declare the license in the manifest but do not attach its text. The",
+      "standard text of the declared license applies, reproduced further down",
+      "for the other crates that use it.",
     );
     righe.push("");
     for (const p of senzaTesto) {
-      righe.push(`- \`${p.name}\` ${p.version} — ${p.license || "(non dichiarata)"}`);
+      righe.push(`- \`${p.name}\` ${p.version} — ${p.license || "(not declared)"}`);
     }
     righe.push("");
   }
 
   righe.push("---");
   righe.push("");
-  righe.push("## I testi");
+  righe.push("## The texts");
   righe.push("");
 
   for (const [chiave, gruppo] of ordinati) {
-    righe.push(`### Testo \`${chiave}\` — ${gruppo.crate.length} crate`);
+    righe.push(`### Text \`${chiave}\` — ${gruppo.crate.length} crates`);
     righe.push("");
-    righe.push("<details><summary>Quali crate</summary>");
+    righe.push("<details><summary>Which crates</summary>");
     righe.push("");
     for (const c of gruppo.crate) righe.push(`- \`${c}\``);
     righe.push("");
@@ -260,8 +262,8 @@ function main() {
 
   fs.writeFileSync(USCITA, righe.join("\n") + "\n");
   console.log(
-    `${USCITA}: ${esterni.length} crate, ${testi.size} testi distinti, ` +
-      `${senzaTesto.length} senza testo allegato.`,
+    `${USCITA}: ${esterni.length} crates, ${testi.size} distinct texts, ` +
+      `${senzaTesto.length} with no text attached.`,
   );
 }
 

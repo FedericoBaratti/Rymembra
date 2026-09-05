@@ -1,67 +1,69 @@
-# Avvisi sulle componenti di terze parti
+# Third-party component notices
 
-Aether è distribuito sotto licenza MIT (vedi `LICENSE`). Il programma però
-non è fatto solo del codice scritto qui: incorpora software libero di altri,
-e le loro licenze chiedono che il testo viaggi insieme al binario. Questo
-file è quel testo.
+Aether is distributed under the MIT license (see `LICENSE`). The program,
+however, is not made only of the code written here: it incorporates other
+people's free software, and their licenses ask for the text to travel
+together with the binary. This file is that text.
 
-**Non è scritto a mano.** Lo genera `strumenti/licenze.js` da `cargo
-metadata`, andando a leggere i testi dove `cargo` li ha già scaricati. Si
-rifà con:
+**It is not written by hand.** `strumenti/licenze.js` generates it from
+`cargo metadata`, reading the texts where `cargo` has already downloaded
+them. It is remade with:
 
 ```
 node strumenti/licenze.js
 ```
 
-L'elenco copre l'intero grafo delle dipendenze per `x86_64-pc-windows-msvc`,
-compreso quel che serve solo a compilare o a provare. È più di quanto
-finisca nel binario, ed è deliberato: attribuire in più non costa niente a
-nessuno, attribuire in meno è la sola cosa che si paga.
+The list covers the whole dependency graph for `x86_64-pc-windows-msvc`,
+including what is needed only to build or to test. It is more than what
+ends up in the binary, and that is deliberate: over-attributing costs
+nobody anything, under-attributing is the only thing you pay for.
 
-## Le due licenze da guardare per prime
+## The two licenses to look at first
 
-**MPL-2.0** — tutta la famiglia `symphonia`, che è il motore di decodifica
-audio, più `cssparser` e `selectors`. La MPL è *file-based*: obbliga a
-distribuire il sorgente dei **file coperti** che si modificano. Aether non
-ne modifica nessuno — li usa come crate dal registro, alle versioni scritte
-in `Cargo.lock` — quindi l'obbligo si assolve dicendolo e indicando dove sta
-l'originale. Se un giorno se ne forcasse uno, quel fork andrebbe pubblicato.
+**MPL-2.0** — the whole `symphonia` family, which is the audio decoding
+engine, plus `cssparser` and `selectors`. The MPL is *file-based*: it
+requires the source of the **covered files** you modify to be distributed.
+Aether modifies none of them — it uses them as crates from the registry, at
+the versions written in `Cargo.lock` — so the obligation is discharged by
+saying so and pointing at where the original is. If one were ever forked,
+that fork would have to be published.
 
-**Apache-2.0 senza alternativa** — `cpal` (il dispositivo audio), `tao` (la
-finestra), `ring` (`Apache-2.0 AND ISC`), `zopfli`, `sync_wrapper`. Quasi
-tutto il resto dell'ecosistema Rust è `MIT OR Apache-2.0`, e per quei crate
-si può scegliere; per questi no. La § 4 della Apache-2.0 chiede di
-consegnare una copia della licenza a chi riceve il programma e di conservare
-gli avvisi `NOTICE`: entrambe le cose stanno qui sotto.
+**Apache-2.0 with no alternative** — `cpal` (the audio device), `tao` (the
+window), `ring` (`Apache-2.0 AND ISC`), `zopfli`, `sync_wrapper`. Almost
+all the rest of the Rust ecosystem is `MIT OR Apache-2.0`, and for those
+crates you can choose; for these you cannot. Apache-2.0 § 4 asks for a copy
+of the license to be delivered to whoever receives the program and for the
+`NOTICE` notices to be kept: both are below.
 
-**Unicode-3.0** — i crate `icu4x` e `unicode-ident`. Licenza permissiva con
-obbligo di attribuzione, assolto da questo file.
+**Unicode-3.0** — the `icu4x` and `unicode-ident` crates. A permissive
+license with an attribution requirement, discharged by this file.
 
-## I font
+## The fonts
 
-**Geist** e **Bricolage Grotesque** sono impacchettati dentro
-l'applicazione, sotto **SIL Open Font License 1.1**, il cui testo sta in
-`apps/desktop/src/font/OFL.txt`. La OFL obbliga a distribuire la licenza
-insieme ai font, e a non venderli da soli: nessuna delle due cose è un
-problema qui, ma la prima va fatta e fino a poco fa non si faceva.
+**Geist** and **Bricolage Grotesque** are packaged inside the application,
+under the **SIL Open Font License 1.1**, whose text is in
+`apps/desktop/src/font/OFL.txt`. The OFL requires the license to be
+distributed together with the fonts, and forbids selling them on their
+own: neither is a problem here, but the first has to be done and until
+recently it was not.
 
-## L'audio
+## The audio
 
-La decodifica **AAC** avviene tramite `symphonia-codec-aac`, che è
-un'implementazione indipendente. I brevetti fondamentali su AAC-LC sono
-scaduti fra il 2017 e il 2023, e il programma di licenza Via LA fattura
-sulla **vendita** di codificatori e decodificatori: Aether è gratuito e non
-vende nulla. Non c'è quindi niente da pagare né da chiedere.
+**AAC** decoding happens through `symphonia-codec-aac`, which is an
+independent implementation. The fundamental patents on AAC-LC expired
+between 2017 and 2023, and the Via LA licensing program bills on the
+**sale** of encoders and decoders: Aether is free and sells nothing. There
+is therefore nothing to pay and nothing to ask for.
 
 ---
 
-## L'elenco: 429 crate
+## The list: 429 crates
 
-I testi identici sono raccolti una volta sola, con sotto l'elenco dei crate
-che li portano. Chi cerca un crate preciso lo trova con la ricerca del
-proprio lettore: compare nel gruppo della sua licenza.
+Identical texts are collected once only, with the list of the crates that
+carry them underneath. Anyone looking for a specific crate finds it with
+their reader's search: it appears in its license's group.
 
-| Crate | Versione | Licenza | Dove sta |
+| Crate | Version | License | Where it lives |
 | --- | --- | --- | --- |
 | `adler2` | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | <https://github.com/oyvindln/adler2> |
 | `aho-corasick` | 1.1.4 | Unlicense OR MIT | <https://github.com/BurntSushi/aho-corasick> |
@@ -493,11 +495,11 @@ proprio lettore: compare nel gruppo della sua licenza.
 | `zune-inflate` | 0.2.54 | MIT OR Apache-2.0 OR Zlib | — |
 | `zune-jpeg` | 0.5.15 | MIT OR Apache-2.0 OR Zlib | <https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg> |
 
-### Crate senza un file di licenza nel pacchetto
+### Crates with no license file in the package
 
-Dichiarano la licenza nel manifesto ma non ne allegano il testo. Vale il
-testo standard della licenza dichiarata, riportato più sotto per gli altri
-crate che la usano.
+They declare the license in the manifest but do not attach its text. The
+standard text of the declared license applies, reproduced further down
+for the other crates that use it.
 
 - `alloc-stdlib` 0.2.4 — BSD-3-Clause
 - `dasp_sample` 0.11.0 — MIT OR Apache-2.0
@@ -536,11 +538,11 @@ crate che la usano.
 
 ---
 
-## I testi
+## The texts
 
-### Testo `769f80b5bcb4` — 96 crate
+### Text `769f80b5bcb4` — 96 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `aligned 0.4.3`
 - `arrayvec 0.7.8`
@@ -845,9 +847,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `30fefc3a7d6a` — 42 crate
+### Text `30fefc3a7d6a` — 42 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `adler2 2.0.1`
 - `anyhow 1.0.104`
@@ -920,9 +922,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `95bd3988beee` — 32 crate
+### Text `95bd3988beee` — 32 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `anyhow 1.0.104`
 - `constant_time_eq 0.4.2`
@@ -1138,9 +1140,9 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-### Testo `72de958052e4` — 26 crate
+### Text `72de958052e4` — 26 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `windows 0.44.0`
 - `windows 0.54.0`
@@ -1375,9 +1377,9 @@ END OF TERMS AND CONDITIONS
    limitations under the License.
 ```
 
-### Testo `d9a1b1e30d63` — 26 crate
+### Text `d9a1b1e30d63` — 26 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `windows 0.44.0`
 - `windows 0.54.0`
@@ -1432,9 +1434,9 @@ END OF TERMS AND CONDITIONS
     SOFTWARE
 ```
 
-### Testo `0cec06e0e55f` — 21 crate
+### Text `0cec06e0e55f` — 21 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `fdeflate 0.3.7`
 - `image 0.25.9`
@@ -1640,9 +1642,9 @@ END OF TERMS AND CONDITIONS
    END OF TERMS AND CONDITIONS
 ```
 
-### Testo `cde87abe221f` — 18 crate
+### Text `cde87abe221f` — 18 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `icu_collections 2.1.1`
 - `icu_locale_core 2.1.1`
@@ -1714,9 +1716,9 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
-### Testo `c5accbbd8546` — 17 crate
+### Text `c5accbbd8546` — 17 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `bit_field 0.10.3`
 - `crc32fast 1.5.0`
@@ -1942,9 +1944,9 @@ ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation a
    limitations under the License.
 ```
 
-### Testo `14435fbcd271` — 13 crate
+### Text `14435fbcd271` — 13 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `bitflags 1.3.2`
 - `bitflags 2.13.1`
@@ -1990,9 +1992,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `84e1bbfebd74` — 11 crate
+### Text `84e1bbfebd74` — 11 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `cc 1.4.0`
 - `cfg-if 1.0.4`
@@ -2036,9 +2038,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `89ff9689dcf9` — 11 crate
+### Text `89ff9689dcf9` — 11 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tauri 2.11.5`
 - `tauri-build 2.6.3`
@@ -2078,9 +2080,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `43070e2d4e53` — 8 crate
+### Text `43070e2d4e53` — 8 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `cpal 0.15.3`
 - `imgref 1.12.2`
@@ -2297,9 +2299,9 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### Testo `ca2abdf69588` — 7 crate
+### Text `ca2abdf69588` — 7 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `aho-corasick 1.1.4`
 - `byteorder 1.5.0`
@@ -2338,9 +2340,9 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
-### Testo `59013a5c8d3a` — 7 crate
+### Text `59013a5c8d3a` — 7 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `block-buffer 0.10.4`
 - `cpufeatures 0.2.17`
@@ -2556,9 +2558,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `ca1991cda75e` — 7 crate
+### Text `ca1991cda75e` — 7 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `futures-channel 0.3.33`
 - `futures-core 0.3.33`
@@ -2775,9 +2777,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `b420d8add23b` — 7 crate
+### Text `b420d8add23b` — 7 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `futures-channel 0.3.33`
 - `futures-core 0.3.33`
@@ -2818,9 +2820,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `4498464c2864` — 7 crate
+### Text `4498464c2864` — 7 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `serde_spanned 1.1.1`
 - `toml 0.9.12+spec-1.1.0`
@@ -2854,9 +2856,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `65314a6c9668` — 6 crate
+### Text `65314a6c9668` — 6 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `aho-corasick 1.1.4`
 - `byteorder 1.5.0`
@@ -2873,9 +2875,9 @@ This project is dual-licensed under the Unlicense and MIT licenses.
 You may use this code under the terms of either license.
 ```
 
-### Testo `6dc0e068dcf3` — 6 crate
+### Text `6dc0e068dcf3` — 6 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `ctor 0.8.0`
 - `ctor-proc-macro 0.0.7`
@@ -3090,9 +3092,9 @@ Apache License
    limitations under the License.
 ```
 
-### Testo `154c1af2b38e` — 5 crate
+### Text `154c1af2b38e` — 5 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `aho-corasick 1.1.4`
 - `byteorder 1.5.0`
@@ -3126,9 +3128,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `bccaa8b6c09f` — 5 crate
+### Text `bccaa8b6c09f` — 5 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `ctor 0.8.0`
 - `ctor-proc-macro 0.0.7`
@@ -3146,9 +3148,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `ec5d7c323662` — 5 crate
+### Text `ec5d7c323662` — 5 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `phf 0.13.1`
 - `phf_codegen 0.13.1`
@@ -3181,9 +3183,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `6d489af62926` — 4 crate
+### Text `6d489af62926` — 4 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `blake3 1.8.5`
 - `constant_time_eq 0.4.2`
@@ -3316,9 +3318,9 @@ express Statement of Purpose.
     this CC0 or use of the Work.
 ```
 
-### Testo `5a7d13c6710c` — 4 crate
+### Text `5a7d13c6710c` — 4 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `crossbeam-channel 0.5.16`
 - `crossbeam-deque 0.8.7`
@@ -3357,9 +3359,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `fdd1c2117bcf` — 4 crate
+### Text `fdd1c2117bcf` — 4 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `either 1.17.0`
 - `itertools 0.14.0`
@@ -3396,9 +3398,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `58d1e17ffe51` — 4 crate
+### Text `58d1e17ffe51` — 4 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `encoding_rs 0.8.35`
 - `tinyvec 1.12.0`
@@ -3612,9 +3614,9 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### Testo `8d1f81ea4e87` — 4 crate
+### Text `8d1f81ea4e87` — 4 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `lock_api 0.4.14`
 - `parking_lot 0.12.5`
@@ -3651,9 +3653,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `1ddb39b2b497` — 4 crate
+### Text `1ddb39b2b497` — 4 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `schemars 0.8.22`
 - `schemars 0.9.0`
@@ -3686,9 +3688,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `eb8a6c846304` — 4 crate
+### Text `eb8a6c846304` — 4 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tauri-plugin-dialog 2.7.2`
 - `tauri-plugin-fs 2.5.1`
@@ -3720,9 +3722,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### Testo `6c91ec82929f` — 3 crate
+### Text `6c91ec82929f` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `alloc-no-stdlib 2.0.4`
 - `brotli 8.0.4`
@@ -3745,9 +3747,9 @@ Redistribution and use in source and binary forms, with or without modification,
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `c144680885b2` — 3 crate
+### Text `c144680885b2` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `bit-set 0.8.0`
 - `bit-vec 0.8.0`
@@ -3959,9 +3961,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `cc8f3c8ab396` — 3 crate
+### Text `cc8f3c8ab396` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `darling 0.21.3`
 - `darling_core 0.21.3`
@@ -3993,9 +3995,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `77949ead506e` — 3 crate
+### Text `77949ead506e` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `fdeflate 0.3.7`
 - `image 0.25.9`
@@ -4031,9 +4033,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `2f7ce0f0ada1` — 3 crate
+### Text `2f7ce0f0ada1` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `getrandom 0.2.17`
 - `getrandom 0.3.4`
@@ -4245,9 +4247,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `ae9791f02f2b` — 3 crate
+### Text `ae9791f02f2b` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `hashbrown 0.12.3`
 - `hashbrown 0.15.5`
@@ -4283,9 +4285,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `033a9383ff21` — 3 crate
+### Text `033a9383ff21` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `heck 0.5.0`
 - `unicode-normalization 0.1.25`
@@ -4321,9 +4323,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `35af0fd88338` — 3 crate
+### Text `35af0fd88338` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `html5ever 0.38.0`
 - `markup5ever 0.38.0`
@@ -4359,9 +4361,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `7a8093fb4a93` — 3 crate
+### Text `7a8093fb4a93` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `idna 1.1.0`
 - `percent-encoding 2.3.2`
@@ -4397,9 +4399,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `9e0027807b0c` — 3 crate
+### Text `9e0027807b0c` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `lazy_static 1.5.0`
 - `rayon 1.12.0`
@@ -4435,9 +4437,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `7fdbca77dec6` — 3 crate
+### Text `7fdbca77dec6` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `time 0.3.45`
 - `time-core 0.1.7`
@@ -4467,9 +4469,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `da6b30502bad` — 3 crate
+### Text `da6b30502bad` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tower 0.5.3`
 - `tower-layer 0.3.3`
@@ -4505,9 +4507,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `c1e08ee9a728` — 3 crate
+### Text `c1e08ee9a728` — 3 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tracing 0.1.44`
 - `tracing-attributes 0.1.31`
@@ -4543,9 +4545,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `3c160092b803` — 2 crate
+### Text `3c160092b803` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `adler2 2.0.1`
 - `cargo-platform 0.1.9`
@@ -4756,9 +4758,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `f3d5a6ab65e6` — 2 crate
+### Text `f3d5a6ab65e6` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `aligned-vec 0.6.4`
 - `reborrow 0.5.5`
@@ -4789,9 +4791,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `4c4e6eed8b86` — 2 crate
+### Text `4c4e6eed8b86` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `bit-set 0.8.0`
 - `bit-vec 0.8.0`
@@ -4826,9 +4828,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `943f36fd309f` — 2 crate
+### Text `943f36fd309f` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `bytemuck 1.25.2`
 - `tinyvec 1.12.0`
@@ -4849,9 +4851,9 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### Testo `6334e52844d6` — 2 crate
+### Text `6334e52844d6` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `cpufeatures 0.2.17`
 - `cpufeatures 0.3.0`
@@ -4886,9 +4888,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `c76f740d1521` — 2 crate
+### Text `c76f740d1521` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `cssparser 0.36.0`
 - `cssparser-macros 0.6.1`
@@ -5271,9 +5273,9 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-### Testo `4a4d43f3f90d` — 2 crate
+### Text `4a4d43f3f90d` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `derive_more 2.1.1`
 - `derive_more-impl 2.1.1`
@@ -5304,9 +5306,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `96bb3c3b6301` — 2 crate
+### Text `96bb3c3b6301` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `dirs 6.0.0`
 - `dirs-sys 0.5.0`
@@ -5490,9 +5492,9 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
    of your accepting any such warranty or additional liability.
 ```
 
-### Testo `f25a5b606859` — 2 crate
+### Text `f25a5b606859` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `dirs 6.0.0`
 - `dirs-sys 0.5.0`
@@ -5521,9 +5523,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `7dc2f6402447` — 2 crate
+### Text `7dc2f6402447` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `encoding_rs 0.8.35`
 - `utf8_iter 1.0.4`
@@ -5558,9 +5560,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `fcda9ee8d6c9` — 2 crate
+### Text `fcda9ee8d6c9` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `equator 0.4.2`
 - `equator-macro 0.4.2`
@@ -5591,9 +5593,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `b1181a40b2a7` — 2 crate
+### Text `b1181a40b2a7` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `foldhash 0.1.5`
 - `foldhash 0.2.0`
@@ -5622,9 +5624,9 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### Testo `1847e0e06981` — 2 crate
+### Text `1847e0e06981` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `half 2.7.1`
 - `ident_case 1.0.1`
@@ -5653,9 +5655,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `57f841bc9767` — 2 crate
+### Text `57f841bc9767` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `http-body 1.1.0`
 - `http-body-util 0.1.4`
@@ -5690,9 +5692,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `af6da3f3f6b4` — 2 crate
+### Text `af6da3f3f6b4` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `hyper-rustls 0.27.9`
 - `rustls 0.23.43`
@@ -5717,9 +5719,9 @@ ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
 
-### Testo `a3320aa8d192` — 2 crate
+### Text `a3320aa8d192` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `hyper-rustls 0.27.9`
 - `rustls 0.23.43`
@@ -5754,9 +5756,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `4f2ac128e429` — 2 crate
+### Text `4f2ac128e429` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `indexmap 1.9.3`
 - `indexmap 2.14.0`
@@ -5791,9 +5793,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `6061b8ea5b16` — 2 crate
+### Text `6061b8ea5b16` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `libsqlite3-sys 0.35.0`
 - `rusqlite 0.37.0`
@@ -5822,9 +5824,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `4031faf6212e` — 2 crate
+### Text `4031faf6212e` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `md-5 0.10.6`
 - `sha2 0.10.9`
@@ -5861,9 +5863,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `5fef7bba6620` — 2 crate
+### Text `5fef7bba6620` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `moxcms 0.7.11`
 - `pxfm 0.1.30`
@@ -6074,9 +6076,9 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### Testo `2aa92cada643` — 2 crate
+### Text `2aa92cada643` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `moxcms 0.7.11`
 - `pxfm 0.1.30`
@@ -6112,9 +6114,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `859a90323b68` — 2 crate
+### Text `859a90323b68` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `muda 0.19.3`
 - `tray-icon 0.24.2`
@@ -6145,9 +6147,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `80cdd90699e4` — 2 crate
+### Text `80cdd90699e4` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `png 0.17.16`
 - `png 0.18.1`
@@ -6182,9 +6184,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `c79d4b24c568` — 2 crate
+### Text `c79d4b24c568` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `rustfft 6.4.1`
 - `strength_reduce 0.2.4`
@@ -6213,9 +6215,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `739620ea44ad` — 2 crate
+### Text `739620ea44ad` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `same-file 1.0.6`
 - `winapi-util 0.1.11`
@@ -6246,9 +6248,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `777eb7417541` — 2 crate
+### Text `777eb7417541` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `serialize-to-javascript 0.1.2`
 - `serialize-to-javascript-impl 0.1.2`
@@ -6279,9 +6281,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `3bfacc197ff2` — 2 crate
+### Text `3bfacc197ff2` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `string_cache 0.9.0`
 - `string_cache_codegen 0.6.1`
@@ -6316,9 +6318,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `3e1bef82aa0d` — 2 crate
+### Text `3e1bef82aa0d` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tokio 1.53.1`
 - `tokio-util 0.7.19`
@@ -6349,9 +6351,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `b9720ca7a91f` — 2 crate
+### Text `b9720ca7a91f` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `vswhom 0.1.0`
 - `vswhom-sys 0.1.3`
@@ -6382,9 +6384,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `8793aa4141de` — 2 crate
+### Text `8793aa4141de` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `winnow 0.7.15`
 - `winnow 1.0.4`
@@ -6412,9 +6414,9 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `75a373c5dfcd` — 2 crate
+### Text `75a373c5dfcd` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `zerocopy 0.8.55`
 - `zerocopy-derive 0.8.55`
@@ -6625,9 +6627,9 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### Testo `47248d1ec833` — 2 crate
+### Text `47248d1ec833` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `zerocopy 0.8.55`
 - `zerocopy-derive 0.8.55`
@@ -6661,9 +6663,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `a03d4daa4f46` — 2 crate
+### Text `a03d4daa4f46` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `zerocopy 0.8.55`
 - `zerocopy-derive 0.8.55`
@@ -6698,9 +6700,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `04dc52136d82` — 2 crate
+### Text `04dc52136d82` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `zip 4.6.1`
 - `zip 6.0.0`
@@ -6734,9 +6736,9 @@ Some files in the "tests/data" subdirectory of this repository are under other
 licences; see files named LICENSE.*.txt for details.
 ```
 
-### Testo `4ae441972cdd` — 2 crate
+### Text `4ae441972cdd` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `zune-core 0.5.1`
 - `zune-jpeg 0.5.15`
@@ -6767,9 +6769,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `b8cba0284c86` — 2 crate
+### Text `b8cba0284c86` — 2 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `zune-core 0.5.1`
 - `zune-jpeg 0.5.15`
@@ -6798,9 +6800,9 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### Testo `a21c914647d3` — 1 crate
+### Text `a21c914647d3` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `adler2 2.0.1`
 
@@ -6821,9 +6823,9 @@ AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### Testo `8adee6e9dc6d` — 1 crate
+### Text `8adee6e9dc6d` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `aligned 0.4.3`
 
@@ -6857,9 +6859,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `d35b20f68e40` — 1 crate
+### Text `d35b20f68e40` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `arg_enum_proc_macro 0.3.4`
 
@@ -6889,9 +6891,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `112d1beb5fcb` — 1 crate
+### Text `112d1beb5fcb` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `arrayref 0.3.9`
 
@@ -6926,9 +6928,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `92c666480f81` — 1 crate
+### Text `92c666480f81` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `arrayvec 0.7.8`
 
@@ -6962,9 +6964,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `42926e590380` — 1 crate
+### Text `42926e590380` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `as-slice 0.2.1`
 
@@ -6998,9 +7000,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `20746cc8a2fd` — 1 crate
+### Text `20746cc8a2fd` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `atomic-waker 1.1.2`
 
@@ -7054,9 +7056,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `99afaa30c178` — 1 crate
+### Text `99afaa30c178` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `autocfg 1.5.1`
 
@@ -7090,9 +7092,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `1adaa62299b4` — 1 crate
+### Text `1adaa62299b4` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `av-scenechange 0.14.1`
 
@@ -7122,9 +7124,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `c65bfe3f2047` — 1 crate
+### Text `c65bfe3f2047` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `av1-grain 0.2.5`
 
@@ -7158,9 +7160,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `a0d6ea9932a4` — 1 crate
+### Text `a0d6ea9932a4` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `avif-serialize 0.8.9`
 
@@ -7198,9 +7200,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `6a8da4c78c72` — 1 crate
+### Text `6a8da4c78c72` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `base64 0.22.1`
 
@@ -7230,9 +7232,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `3e772b508808` — 1 crate
+### Text `3e772b508808` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `bit_field 0.10.3`
 
@@ -7262,9 +7264,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `39cf2da102e4` — 1 crate
+### Text `39cf2da102e4` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `bitstream-io 4.10.0`
 
@@ -7298,9 +7300,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `ca60a70998de` — 1 crate
+### Text `ca60a70998de` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `blake3 1.8.5`
 
@@ -7511,9 +7513,9 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### Testo `735c49ab66ae` — 1 crate
+### Text `735c49ab66ae` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `blake3 1.8.5`
 
@@ -7740,9 +7742,9 @@ the License, but only in their entirety and only with respect to the Combined
 Software.
 ```
 
-### Testo `5ff5253f2cb9` — 1 crate
+### Text `5ff5253f2cb9` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `block-buffer 0.10.4`
 
@@ -7776,9 +7778,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `2a57418d6b10` — 1 crate
+### Text `2a57418d6b10` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `brotli 8.0.4`
 
@@ -7806,9 +7808,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `20005777a5fe` — 1 crate
+### Text `20005777a5fe` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `built 0.8.0`
 
@@ -7838,9 +7840,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `5662394bebb1` — 1 crate
+### Text `5662394bebb1` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `bumpalo 3.20.3`
 
@@ -7874,9 +7876,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `0e3cbff251c1` — 1 crate
+### Text `0e3cbff251c1` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `bytemuck 1.25.2`
 
@@ -7946,9 +7948,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `dfbd1c2a36dc` — 1 crate
+### Text `dfbd1c2a36dc` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `bytemuck 1.25.2`
 
@@ -7966,9 +7968,9 @@ The above copyright notice and this permission notice (including the next paragr
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `51f778ffff2c` — 1 crate
+### Text `51f778ffff2c` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `bytes 1.12.1`
 
@@ -8002,9 +8004,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `fa4363848a0f` — 1 crate
+### Text `fa4363848a0f` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `cargo_toml 0.22.3`
 
@@ -8215,9 +8217,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `3ce3e2561c6a` — 1 crate
+### Text `3ce3e2561c6a` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `cfb 0.7.3`
 
@@ -8247,9 +8249,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `ce4a94c006fa` — 1 crate
+### Text `ce4a94c006fa` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `chrono 0.4.45`
 
@@ -8497,9 +8499,9 @@ limitations under the License.
 ~~~~
 ```
 
-### Testo `a24abca538cd` — 1 crate
+### Text `a24abca538cd` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `color_quant 1.1.0`
 
@@ -8529,9 +8531,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `ee3c852dd133` — 1 crate
+### Text `ee3c852dd133` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `constant_time_eq 0.4.2`
 
@@ -8554,9 +8556,9 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `7db0bcff78e7` — 1 crate
+### Text `7db0bcff78e7` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `cookie 0.18.1`
 
@@ -8767,9 +8769,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `47c8d25246e6` — 1 crate
+### Text `47c8d25246e6` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `cookie 0.18.1`
 
@@ -8804,9 +8806,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `9599127e421e` — 1 crate
+### Text `9599127e421e` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `crc32fast 1.5.0`
 
@@ -8836,9 +8838,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `692b1604961d` — 1 crate
+### Text `692b1604961d` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `crypto-common 0.1.7`
 
@@ -8872,9 +8874,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `9db9de9edfd0` — 1 crate
+### Text `9db9de9edfd0` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `data-encoding 2.11.0`
 
@@ -8905,9 +8907,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `06c9885a0128` — 1 crate
+### Text `06c9885a0128` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `deranged 0.5.8`
 
@@ -9118,9 +9120,9 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### Testo `1b66e3be6894` — 1 crate
+### Text `1b66e3be6894` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `deranged 0.5.8`
 
@@ -9148,9 +9150,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `9c5127ab88e8` — 1 crate
+### Text `9c5127ab88e8` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `digest 0.10.7`
 
@@ -9184,9 +9186,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `7554701d1e74` — 1 crate
+### Text `7554701d1e74` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `dom_query 0.27.0`
 
@@ -9222,9 +9224,9 @@ derived from the "nipper" project (https://github.com/importcjj/nipper),
 developed by Chen Jiaju, licensed under the MIT License and the Apache License 2.0 (dual licensed).
 ```
 
-### Testo `e07664cb9e31` — 1 crate
+### Text `e07664cb9e31` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `dpi 0.1.2`
 
@@ -9284,9 +9286,9 @@ have been licensed under extremely permissive terms.
 ------------------------------------------------------------------------------
 ```
 
-### Testo `4b89d4518bd1` — 1 crate
+### Text `4b89d4518bd1` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `dtoa-short 0.3.5`
 
@@ -9668,9 +9670,9 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-### Testo `c4be15bd543a` — 1 crate
+### Text `c4be15bd543a` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `embed-resource 3.0.11`
 
@@ -9700,9 +9702,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `b1d6d97b0476` — 1 crate
+### Text `b1d6d97b0476` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `encoding_rs 0.8.35`
 
@@ -9737,9 +9739,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `4428cd87371a` — 1 crate
+### Text `4428cd87371a` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `equivalent 1.0.2`
 
@@ -9773,9 +9775,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `50cca25ab13f` — 1 crate
+### Text `50cca25ab13f` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `exr 1.74.2`
 
@@ -9817,9 +9819,9 @@ Redistribution and use in source and binary forms, with or without modification,
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `968761f09aa8` — 1 crate
+### Text `968761f09aa8` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `extended 0.1.0`
 
@@ -9847,9 +9849,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `2ff0b8901359` — 1 crate
+### Text `2ff0b8901359` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `fallible-iterator 0.3.0`
 
@@ -9877,9 +9879,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `dfc632cd74cc` — 1 crate
+### Text `dfc632cd74cc` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `fallible-streaming-iterator 0.1.9`
 
@@ -9907,9 +9909,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `1b7402ea003f` — 1 crate
+### Text `1b7402ea003f` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `flate2 1.1.9`
 
@@ -9943,9 +9945,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `c48b7333c00b` — 1 crate
+### Text `c48b7333c00b` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `fnv 1.0.7`
 
@@ -9979,9 +9981,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `33ed9a8ecf55` — 1 crate
+### Text `33ed9a8ecf55` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `form_urlencoded 1.2.2`
 
@@ -10015,9 +10017,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `ad4fcfaf8d5b` — 1 crate
+### Text `ad4fcfaf8d5b` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `generic-array 0.14.7`
 
@@ -10047,9 +10049,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `478d530cbce7` — 1 crate
+### Text `478d530cbce7` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `getrandom 0.2.17`
 
@@ -10084,9 +10086,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `73af2019a565` — 1 crate
+### Text `73af2019a565` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `getrandom 0.3.4`
 
@@ -10121,9 +10123,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `94b1870d380c` — 1 crate
+### Text `94b1870d380c` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `getrandom 0.4.3`
 
@@ -10158,9 +10160,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `1b6f7ab81ae2` — 1 crate
+### Text `1b6f7ab81ae2` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `gif 0.14.2`
 
@@ -10190,9 +10192,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `59899c6091b5` — 1 crate
+### Text `59899c6091b5` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `half 2.7.1`
 
@@ -10377,9 +10379,9 @@ SOFTWARE.
    END OF TERMS AND CONDITIONS
 ```
 
-### Testo `e915669a595b` — 1 crate
+### Text `e915669a595b` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `hashlink 0.10.0`
 
@@ -10414,9 +10416,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `9dde4a6ad496` — 1 crate
+### Text `9dde4a6ad496` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `hex 0.4.3`
 
@@ -10445,9 +10447,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `a7e117f398da` — 1 crate
+### Text `a7e117f398da` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `http 1.5.0`
 
@@ -10657,9 +10659,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `f47894ff9c86` — 1 crate
+### Text `f47894ff9c86` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `http 1.5.0`
 
@@ -10693,9 +10695,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `8502803cebb3` — 1 crate
+### Text `8502803cebb3` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `httparse 1.10.1`
 
@@ -10723,9 +10725,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `05f344491a7d` — 1 crate
+### Text `05f344491a7d` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `hyper 1.11.0`
 
@@ -10753,9 +10755,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `e7d622e4783e` — 1 crate
+### Text `e7d622e4783e` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `hyper-util 0.1.20`
 
@@ -10783,9 +10785,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `95573f040b56` — 1 crate
+### Text `95573f040b56` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `ico 0.5.0`
 
@@ -10815,9 +10817,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `0d8a0aecbcba` — 1 crate
+### Text `0d8a0aecbcba` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `idna_adapter 1.2.1`
 
@@ -10851,9 +10853,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `46404bc95dfc` — 1 crate
+### Text `46404bc95dfc` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `imagesize 0.15.0`
 
@@ -10883,9 +10885,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `7804ded9273b` — 1 crate
+### Text `7804ded9273b` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `infer 0.19.0`
 
@@ -10915,9 +10917,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `66b593f9d328` — 1 crate
+### Text `66b593f9d328` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `ipnet 2.12.0`
 
@@ -11127,9 +11129,9 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### Testo `c935506fff2e` — 1 crate
+### Text `c935506fff2e` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `ipnet 2.12.0`
 
@@ -11145,9 +11147,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `19328c46c44f` — 1 crate
+### Text `19328c46c44f` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `json-patch 3.0.1`
 
@@ -11177,9 +11179,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `ae8de7e1b783` — 1 crate
+### Text `ae8de7e1b783` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `jsonptr 0.6.3`
 
@@ -11389,9 +11391,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `055a17110636` — 1 crate
+### Text `055a17110636` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `jsonptr 0.6.3`
 
@@ -11421,9 +11423,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `31dbbab009f1` — 1 crate
+### Text `31dbbab009f1` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `keyboard-types 0.7.0`
 
@@ -11451,9 +11453,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `6f77b6a48094` — 1 crate
+### Text `6f77b6a48094` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `keyring 3.6.3`
 
@@ -11663,9 +11665,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `b5e6923cd7c0` — 1 crate
+### Text `b5e6923cd7c0` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `keyring 3.6.3`
 
@@ -11699,9 +11701,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `2ac8da4536fb` — 1 crate
+### Text `2ac8da4536fb` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `lebe 0.5.3`
 
@@ -11736,9 +11738,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `c96302294382` — 1 crate
+### Text `c96302294382` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `libc 0.2.189`
 
@@ -11772,9 +11774,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `5f5535fee8ec` — 1 crate
+### Text `5f5535fee8ec` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `libm 0.2.16`
 
@@ -12041,9 +12043,9 @@ have been licensed under extremely permissive terms.
 Copyright notices are retained in src/* files where relevant.
 ```
 
-### Testo `e8b343631bd8` — 1 crate
+### Text `e8b343631bd8` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `loop9 0.1.5`
 
@@ -12059,9 +12061,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `0492c8a4e61d` — 1 crate
+### Text `0492c8a4e61d` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `maybe-rayon 0.1.1`
 
@@ -12091,9 +12093,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `a302dc760d97` — 1 crate
+### Text `a302dc760d97` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `mime 0.3.17`
 
@@ -12121,9 +12123,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `58f66933c7bb` — 1 crate
+### Text `58f66933c7bb` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `minisign-verify 0.2.5`
 
@@ -12191,9 +12193,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `7427abc63036` — 1 crate
+### Text `7427abc63036` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `miniz_oxide 0.8.9`
 
@@ -12227,9 +12229,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `ac9859ce4e9a` — 1 crate
+### Text `ac9859ce4e9a` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `miniz_oxide 0.8.9`
 
@@ -12262,9 +12264,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `eac3911cc3d4` — 1 crate
+### Text `eac3911cc3d4` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `miniz_oxide 0.8.9`
 
@@ -12287,9 +12289,9 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### Testo `c804065b0956` — 1 crate
+### Text `c804065b0956` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `mio 1.2.2`
 
@@ -12317,9 +12319,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `b99f9d43803f` — 1 crate
+### Text `b99f9d43803f` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `muda 0.19.3`
 
@@ -12347,9 +12349,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/muda.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### Testo `42d8a095dbff` — 1 crate
+### Text `42d8a095dbff` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `new_debug_unreachable 1.0.6`
 
@@ -12383,9 +12385,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `8b36c5b71ae0` — 1 crate
+### Text `8b36c5b71ae0` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `no_std_io2 0.9.4`
 
@@ -12413,9 +12415,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `e9f8a16f9ed6` — 1 crate
+### Text `e9f8a16f9ed6` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `nom 8.0.0`
 
@@ -12444,9 +12446,9 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `c458d35c33fe` — 1 crate
+### Text `c458d35c33fe` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `noop_proc_macro 0.3.0`
 
@@ -12476,9 +12478,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `4e06fbf6c41b` — 1 crate
+### Text `4e06fbf6c41b` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `num-conv 0.1.0`
 
@@ -12689,9 +12691,9 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### Testo `d79406a9ad24` — 1 crate
+### Text `d79406a9ad24` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `num-conv 0.1.0`
 
@@ -12719,9 +12721,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `c3ca23514163` — 1 crate
+### Text `c3ca23514163` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `open 5.4.0`
 
@@ -12755,9 +12757,9 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `fb72181dd024` — 1 crate
+### Text `fb72181dd024` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `option-ext 0.2.0`
 
@@ -13139,9 +13141,9 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-### Testo `5b0ae40d1a35` — 1 crate
+### Text `5b0ae40d1a35` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `plist 1.8.0`
 
@@ -13169,9 +13171,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `583e9c5fd9a9` — 1 crate
+### Text `583e9c5fd9a9` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `powerfmt 0.2.0`
 
@@ -13382,9 +13384,9 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### Testo `6e972f314e81` — 1 crate
+### Text `6e972f314e81` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `powerfmt 0.2.0`
 
@@ -13412,9 +13414,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `695de7436b47` — 1 crate
+### Text `695de7436b47` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `precomputed-hash 0.1.1`
 
@@ -13444,9 +13446,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `6d3a9431e65e` — 1 crate
+### Text `6d3a9431e65e` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `primal-check 0.3.4`
 
@@ -13480,9 +13482,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `5c04b92aec59` — 1 crate
+### Text `5c04b92aec59` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `pulp 0.22.3`
 
@@ -13512,9 +13514,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `cf798811e9a0` — 1 crate
+### Text `cf798811e9a0` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `quick-error 2.0.1`
 
@@ -13542,9 +13544,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `12bfa73c9eac` — 1 crate
+### Text `12bfa73c9eac` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `quick-xml 0.38.4`
 
@@ -13576,9 +13578,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `c0333bf27066` — 1 crate
+### Text `c0333bf27066` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `rav1e 0.8.1`
 
@@ -13612,9 +13614,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `15422e729573` — 1 crate
+### Text `15422e729573` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `ravif 0.12.0`
 
@@ -13652,9 +13654,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `cdd45f4d0c55` — 1 crate
+### Text `cdd45f4d0c55` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `raw-cpuid 11.6.0`
 
@@ -13684,9 +13686,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `aa69fda6dd94` — 1 crate
+### Text `aa69fda6dd94` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `raw-window-handle 0.6.2`
 
@@ -13716,9 +13718,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `81976b4834c3` — 1 crate
+### Text `81976b4834c3` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `raw-window-handle 0.6.2`
 
@@ -13738,9 +13740,9 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### Testo `2db114247fb5` — 1 crate
+### Text `2db114247fb5` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `reqwest 0.13.4`
 
@@ -13950,9 +13952,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `bde59a7e336f` — 1 crate
+### Text `bde59a7e336f` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `reqwest 0.13.4`
 
@@ -13980,9 +13982,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `1a6dd9555214` — 1 crate
+### Text `1a6dd9555214` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `rfd 0.16.0`
 
@@ -14012,9 +14014,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `c7d50fa44b04` — 1 crate
+### Text `c7d50fa44b04` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `rgb 0.8.53`
 
@@ -14044,9 +14046,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `edb9c6dbff46` — 1 crate
+### Text `edb9c6dbff46` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `ring 0.17.14`
 
@@ -14064,9 +14066,9 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ```
 
-### Testo `f3ba8fc296a9` — 1 crate
+### Text `f3ba8fc296a9` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `ring 0.17.14`
 
@@ -14347,9 +14349,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `07414b6c33f3` — 1 crate
+### Text `07414b6c33f3` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `ring 0.17.14`
 
@@ -14371,9 +14373,9 @@ OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### Testo `36dbd32f27ad` — 1 crate
+### Text `36dbd32f27ad` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `rubato 0.16.2`
 
@@ -14401,9 +14403,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `925e846006fd` — 1 crate
+### Text `925e846006fd` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `rustls-pki-types 1.15.1`
 
@@ -14613,9 +14615,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `c5e7f780f961` — 1 crate
+### Text `c5e7f780f961` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `rustls-pki-types 1.15.1`
 
@@ -14649,9 +14651,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `6205904d5539` — 1 crate
+### Text `6205904d5539` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `rustls-platform-verifier 0.7.0`
 
@@ -14681,9 +14683,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `3ac27594ed56` — 1 crate
+### Text `3ac27594ed56` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `rustls-webpki 0.103.13`
 
@@ -14711,9 +14713,9 @@ The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 ```
 
-### Testo `1a6aa2616e74` — 1 crate
+### Text `1a6aa2616e74` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `scopeguard 1.2.0`
 
@@ -14747,9 +14749,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `a759ce38c686` — 1 crate
+### Text `a759ce38c686` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `shlex 2.0.1`
 
@@ -14771,9 +14773,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `cc5ba5589dfb` — 1 crate
+### Text `cc5ba5589dfb` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `shlex 2.0.1`
 
@@ -14803,9 +14805,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `627eff66d6c4` — 1 crate
+### Text `627eff66d6c4` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `simd-adler32 0.3.10`
 
@@ -14835,9 +14837,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `24e26e8fb783` — 1 crate
+### Text `24e26e8fb783` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `siphasher 1.0.3`
 
@@ -14853,9 +14855,9 @@ http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 option.
 ```
 
-### Testo `12c7116c4425` — 1 crate
+### Text `12c7116c4425` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `slab 0.4.12`
 
@@ -14889,9 +14891,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `7f194ae45c25` — 1 crate
+### Text `7f194ae45c25` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `smallvec 1.15.2`
 
@@ -14925,9 +14927,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `1fc3bc7f4a1b` — 1 crate
+### Text `1fc3bc7f4a1b` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `softbuffer 0.4.8`
 
@@ -15137,9 +15139,9 @@ Apache License
    limitations under the License.
 ```
 
-### Testo `f8babf2965a4` — 1 crate
+### Text `f8babf2965a4` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `softbuffer 0.4.8`
 
@@ -15167,9 +15169,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `51259c0c1b29` — 1 crate
+### Text `51259c0c1b29` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `souvlaki 0.8.3`
 
@@ -15199,9 +15201,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `5e05b024f653` — 1 crate
+### Text `5e05b024f653` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `stable_deref_trait 1.2.1`
 
@@ -15235,9 +15237,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `8fd8980cab89` — 1 crate
+### Text `8fd8980cab89` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `strsim 0.11.1`
 
@@ -15269,9 +15271,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `24fa06d8eae3` — 1 crate
+### Text `24fa06d8eae3` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `subtle 2.6.1`
 
@@ -15309,9 +15311,9 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `3a036676ec8c` — 1 crate
+### Text `3a036676ec8c` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `synstructure 0.13.2`
 
@@ -15327,9 +15329,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `28694f36acab` — 1 crate
+### Text `28694f36acab` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tao 0.35.3`
 
@@ -15356,9 +15358,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tao.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### Testo `a2c382fbddcc` — 1 crate
+### Text `a2c382fbddcc` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tauri-winres 0.3.6`
 
@@ -15395,9 +15397,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `7bdd5c5e8ad0` — 1 crate
+### Text `7bdd5c5e8ad0` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tempfile 3.27.0`
 
@@ -15431,9 +15433,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `dfa7fbad0178` — 1 crate
+### Text `dfa7fbad0178` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tendril 0.5.1`
 
@@ -15467,9 +15469,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `4cc06db819dd` — 1 crate
+### Text `4cc06db819dd` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tinyvec_macros 0.1.1`
 
@@ -15679,9 +15681,9 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### Testo `d9ec1d89801f` — 1 crate
+### Text `d9ec1d89801f` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tinyvec_macros 0.1.1`
 
@@ -15711,9 +15713,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `26d1e12fda78` — 1 crate
+### Text `26d1e12fda78` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tinyvec_macros 0.1.1`
 
@@ -15741,9 +15743,9 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### Testo `720304e6515d` — 1 crate
+### Text `720304e6515d` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tokio-rustls 0.26.4`
 
@@ -15953,9 +15955,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `1b0258c48739` — 1 crate
+### Text `1b0258c48739` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tokio-rustls 0.26.4`
 
@@ -15989,9 +15991,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `edd4b164997f` — 1 crate
+### Text `edd4b164997f` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tower-http 0.6.11`
 
@@ -16025,9 +16027,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `f0316f582940` — 1 crate
+### Text `f0316f582940` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `transpose 0.2.3`
 
@@ -16237,9 +16239,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `3e9dd76b7180` — 1 crate
+### Text `3e9dd76b7180` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `transpose 0.2.3`
 
@@ -16273,9 +16275,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `6c1e5d0ccf5e` — 1 crate
+### Text `6c1e5d0ccf5e` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `tray-icon 0.24.2`
 
@@ -16303,9 +16305,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tray-icon.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### Testo `381f992f70f7` — 1 crate
+### Text `381f992f70f7` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `try-lock 0.2.5`
 
@@ -16334,9 +16336,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `db11fec99467` — 1 crate
+### Text `db11fec99467` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `typenum 1.20.1`
 
@@ -16346,9 +16348,9 @@ THE SOFTWARE.
 MIT OR Apache-2.0
 ```
 
-### Testo `516b24e051bf` — 1 crate
+### Text `516b24e051bf` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `typenum 1.20.1`
 
@@ -16558,9 +16560,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Testo `87ebb37988ef` — 1 crate
+### Text `87ebb37988ef` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `typenum 1.20.1`
 
@@ -16590,9 +16592,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `361d79129578` — 1 crate
+### Text `361d79129578` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `unicode-ident 1.0.24`
 
@@ -16640,9 +16642,9 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### Testo `a1fff3442978` — 1 crate
+### Text `a1fff3442978` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `untrusted 0.9.0`
 
@@ -16664,9 +16666,9 @@ authorization of the copyright holder.
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### Testo `299aa079a485` — 1 crate
+### Text `299aa079a485` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `ureq 3.3.0`
 
@@ -16696,9 +16698,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `bdcf37a4554a` — 1 crate
+### Text `bdcf37a4554a` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `ureq-proto 0.6.0`
 
@@ -16714,9 +16716,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `f2459c4b106b` — 1 crate
+### Text `f2459c4b106b` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `urlpattern 0.3.0`
 
@@ -16746,9 +16748,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `11cd7e6caed4` — 1 crate
+### Text `11cd7e6caed4` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `uuid 1.24.0`
 
@@ -16783,9 +16785,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `615e13b59408` — 1 crate
+### Text `615e13b59408` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `v_frame 0.3.9`
 
@@ -16819,9 +16821,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Testo `6196143cbaf5` — 1 crate
+### Text `6196143cbaf5` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `vcpkg 0.2.15`
 
@@ -16855,9 +16857,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `ed2fda479dac` — 1 crate
+### Text `ed2fda479dac` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `version_check 0.9.5`
 
@@ -16885,9 +16887,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `f7dfffe03f9f` — 1 crate
+### Text `f7dfffe03f9f` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `want 0.3.1`
 
@@ -16915,9 +16917,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `d30183ec6610` — 1 crate
+### Text `d30183ec6610` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `webpki-roots 1.0.9`
 
@@ -16987,9 +16989,9 @@ of Data, including for example machine learning models and models'
 insights.
 ```
 
-### Testo `603c83c4c200` — 1 crate
+### Text `603c83c4c200` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `weezl 0.1.12`
 
@@ -17019,9 +17021,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `b46700117441` — 1 crate
+### Text `b46700117441` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `window-vibrancy 0.6.0`
 
@@ -17051,9 +17053,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `bb8278137f73` — 1 crate
+### Text `bb8278137f73` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `window-vibrancy 0.6.0`
 
@@ -17081,9 +17083,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/window-vibrancy.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### Testo `d9ba37d9bbdf` — 1 crate
+### Text `d9ba37d9bbdf` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `winreg 0.55.0`
 
@@ -17111,9 +17113,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Testo `86eb6a41ef64` — 1 crate
+### Text `86eb6a41ef64` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `wry 0.55.1`
 
@@ -17143,9 +17145,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `26235c41e314` — 1 crate
+### Text `26235c41e314` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `wry 0.55.1`
 
@@ -17174,9 +17176,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/wry.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### Testo `6e2d308b0350` — 1 crate
+### Text `6e2d308b0350` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `y4m 0.8.0`
 
@@ -17207,9 +17209,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Testo `836ed921bbad` — 1 crate
+### Text `836ed921bbad` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `zeroize 1.9.0`
 
@@ -17243,9 +17245,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Testo `1a7d409d5142` — 1 crate
+### Text `1a7d409d5142` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `zlib-rs 0.6.6`
 
@@ -17273,9 +17275,9 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### Testo `ce5a157710ee` — 1 crate
+### Text `ce5a157710ee` — 1 crates
 
-<details><summary>Quali crate</summary>
+<details><summary>Which crates</summary>
 
 - `zopfli 0.8.3`
 

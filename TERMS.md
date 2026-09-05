@@ -1,181 +1,178 @@
-# Condizioni d'uso di Aether
+# Aether terms of use
 
-Ultimo aggiornamento: 19 agosto 2026.
+Last updated: 19 August 2026.
 
-Aether è un programma gratuito, distribuito sotto licenza MIT. Questo documento
-non è il contratto fra te e me — quello è il `LICENSE`, e dice che il programma
-è dato «così com'è». Questo documento riguarda una cosa diversa e più concreta:
-**cosa puoi fare con la musica che Aether ti procura**, perché quelle condizioni
-non le stabilisco io e non posso rinunciarci per tuo conto.
+Aether is a free program, distributed under the MIT license. This document is
+not the contract between you and me — that's `LICENSE`, and it says the program
+is given «as is». This document is about something different and more concrete:
+**what you can do with the music Aether gets for you**, because those terms
+aren't set by me and I can't waive them on your behalf.
 
-Vale la pena leggerlo una volta. È corto.
-
----
-
-## 1. Il programma è tuo, la musica no
-
-Il codice di Aether è MIT: fanne quello che vuoi.
-
-La musica che scarichi attraverso Aether **non è coperta da quella licenza**.
-Ogni brano arriva da un catalogo, e porta con sé le condizioni che quel catalogo
-e quell'artista gli hanno messo addosso. Aether registra la licenza di ogni
-brano accanto al brano stesso, e la mostra nella coda, esattamente perché questa
-distinzione non si perda.
-
-Il caso normale è semplice: quel che scarichi lo puoi ascoltare, tenere,
-mettere sul telefono, masterizzare su un CD per te. Le condizioni sotto
-riguardano il **ridistribuire** e il **guadagnarci**.
+It's worth reading once. It's short.
 
 ---
 
-## 2. Il vincolo non commerciale, che vale anche per te
+## 1. The program is yours, the music isn't
 
-Due delle fonti che Aether usa hanno una clausola *non commercial*, e non è una
-formalità.
+Aether's code is MIT: do what you like with it.
+
+The music you download through Aether is **not covered by that license**. Every
+track comes from a catalog, and carries with it the conditions that catalog
+and that artist put on it. Aether records each track's license next to the track
+itself, and shows it in the queue, precisely so this distinction doesn't get
+lost.
+
+The normal case is simple: what you download you can listen to, keep, put on
+your phone, burn to a CD for yourself. The conditions below are about
+**redistributing** and **making money**.
+
+---
+
+## 2. The non-commercial constraint, which applies to you too
+
+Two of the sources Aether uses carry a *non commercial* clause, and it isn't a
+formality.
 
 ### Live Music Archive (archive.org/details/etree)
 
-I termini della collezione dicono che l'accesso e ogni ulteriore distribuzione
-del materiale devono essere «**strictly noncommercial**». Gli artisti presenti
-lì hanno dato il permesso di registrare e scambiare i loro concerti a quella
-condizione, e a nessun'altra.
+The collection's terms say that access to and any further distribution of the
+material must be «**strictly noncommercial**». The artists there gave permission
+to record and trade their concerts on that condition, and on no other.
 
-In pratica, per quel che scarichi da lì:
+In practice, for what you download from there:
 
-- puoi ascoltarlo, copiarlo per te, condividerlo con qualcuno senza chiedere
-  soldi;
-- **non** puoi venderlo, né inserirlo in qualcosa che vendi, né usarlo per fare
-  pubblicità, né monetizzarlo in nessuna forma;
-- **non** puoi caricarlo su una piattaforma che ci mette la pubblicità sopra.
+- you may listen to it, copy it for yourself, share it with someone without
+  asking for money;
+- you may **not** sell it, nor put it inside something you sell, nor use it for
+  advertising, nor monetize it in any form;
+- you may **not** upload it to a platform that puts advertising on top of it.
 
-### Jamendo (quando sarà attivo)
+### Jamendo (once it's enabled)
 
-I *Jamendo API Terms of Use* definiscono «uso commerciale» come «any monetary
+The *Jamendo API Terms of Use* define «commercial use» as «any monetary
 compensation, including any revenue arising from affiliation programs or
-advertising». Dalla loro API si **ascolta**: i termini vietano esplicitamente di
-mettere il contenuto in cache o di offrirne un accesso offline, e Aether non lo
-fa. Il modulo Jamendo esiste dietro una feature che si può spegnere proprio per
-questo.
+advertising». From their API you **listen**: the terms explicitly forbid caching
+the content or offering offline access to it, and Aether does neither. The
+Jamendo module sits behind a feature that can be switched off for exactly this
+reason.
 
-### E per Aether stesso
+### And for Aether itself
 
-È la ragione per cui **Aether è e resta gratuito**. Una versione a pagamento
-violerebbe quelle clausole. Le donazioni sono accettate come sostegno allo
-sviluppo del programma, non come pagamento per la musica — nessuna donazione
-sblocca contenuti, nessun brano è dietro un pagamento.
-
----
-
-## 3. Cosa Aether si rifiuta di fare, e perché
-
-Alcune cose che un programma del genere *potrebbe* fare, e che Aether non fa:
-
-- **Non scarica da YouTube.** Le loro *API Developer Policies* § III.E.1.a lo
-  vietano; § III.I.7 vieta di separare l'audio dal video; § III.I.9 vieta di
-  riprodurlo da un player non visibile. Un lettore musicale con una libreria è
-  precisamente quel che quelle regole escludono.
-- **Non fa scraping di Spotify.** Niente endpoint privati, niente gettoni
-  ricostruiti, niente client id altrui. L'unica cosa che legge di Spotify è
-  l'archivio che Spotify consegna **a te** su richiesta, che è tuo per diritto
-  di portabilità dei dati.
-- **Non scarica ciò che la licenza non consente.** Il controllo avviene prima di
-  qualunque richiesta di rete: un brano marcato solo-ascolto non viene nemmeno
-  chiesto. Se un catalogo dice «si ascolta e non si porta via», Aether non prova
-  se il server glielo lascerebbe fare.
-- **Non aggira misure di protezione.** Nessun DRM viene toccato, in nessuna
-  forma.
-
-Se trovi un modo di far fare a Aether una di queste cose, è un difetto. Segnalalo.
+It's the reason **Aether is and stays free**. A paid version would violate those
+clauses. Donations are accepted as support for the program's development, not as
+payment for the music — no donation unlocks content, no track sits behind a
+payment.
 
 ---
 
-## 3-bis. I testi, e cosa LRCLIB è
+## 3. What Aether refuses to do, and why
 
-I testi delle canzoni sono opere protette, come le canzoni. Aether ne prende
-tre strade, e nessuna delle tre è «li abbiamo in licenza»:
+Some things a program like this *could* do, and that Aether does not:
 
-1. **Quel che è già nei tuoi file** — un `.lrc` accanto al brano, o il tag
-   dentro il file. È tuo, ed è la prima fonte che si guarda.
-2. **LRCLIB**, un catalogo pubblico e gratuito alimentato da chi lo usa. Ha
-   un'API aperta, fatta apposta per i lettori musicali: Aether la interroga
-   come farebbe un browser con un sito, senza chiavi, senza raschiare pagine e
-   senza aggirare niente.
-3. **Quel che sincronizzi tu**, che resta un file sul tuo disco.
+- **It doesn't download from YouTube.** Their *API Developer Policies*
+  § III.E.1.a forbid it; § III.I.7 forbids separating the audio from the video;
+  § III.I.9 forbids playing it from a player that isn't visible. A music player
+  with a library is precisely what those rules rule out.
+- **It doesn't scrape Spotify.** No private endpoints, no reconstructed tokens,
+  no one else's client id. The only Spotify thing it reads is the export Spotify
+  hands **you** on request, which is yours by right of data portability.
+- **It doesn't download what the license doesn't allow.** The check happens
+  before any network request: a track marked listen-only isn't even asked for.
+  If a catalog says «you listen and you don't carry it away», Aether doesn't
+  test whether the server would let it.
+- **It doesn't circumvent protection measures.** No DRM is touched, in any form.
 
-La parte che di solito si tace, e che qui si dice: LRCLIB **non è un
-distributore con contratti di sotto-edizione**. È una base dati costruita dalla
-comunità. Aether non infrange nessuna regola nel leggerla, e questo non rende
-«licenziati» i testi che ne escono. Chi ospita quel catalogo risponde alle
-richieste di rimozione degli aventi diritto; Aether non ridistribuisce niente,
-non ne tiene copie altrove e non li carica nel tuo backup.
-
-Musixmatch, Genius, AZLyrics, LyricFind e i cataloghi cinesi restano fuori, e
-non per pigrizia: o vogliono una licenza che un lettore locale non ha, o si
-leggono soltanto raschiando una pagina scritta per un browser. La CI del
-progetto verifica a ogni modifica che nessuno di quei nomi sia rientrato nel
-codice — la stessa regola che tiene fuori gli strumenti di scaricamento.
-
-### Se scegli di restituire
-
-Dopo aver sincronizzato un testo a mano puoi mandarlo a LRCLIB. È un pulsante,
-si preme uno per volta, e la quarta strada — «i testi di qualcun altro» — non
-esiste: si pubblica **solo** quel che hai sincronizzato tu, mai quel che stava
-nel tag di un file e mai quel che dal catalogo è appena arrivato.
-
-Va detto chiaramente cosa stai facendo quando lo premi. Il testo di una canzone
-resta dell'avente diritto anche quando le battute le hai messe tu: quel che
-metti in comune sono i **tempi**, e i tempi arrivano insieme alle parole perché
-separati non servono a niente. Se le parole di quel testo non le hai né scritte
-né il diritto di diffonderle, mandarle a un catalogo pubblico è una tua
-decisione e non una che Aether prende al posto tuo — ed è la ragione per cui
-non c'è nessun modo di farlo accadere senza averlo deciso.
-
-Quello che va a LRCLIB ci va con la licenza di LRCLIB, non con quella di
-Aether: è il catalogo a ospitarlo e a rispondere di quel che ospita. Aether non
-ne tiene copia, non lo rivende e non lo rimette in circolo altrove. Il tuo
-`.lrc` resta sul tuo disco, identico, che tu prema quel pulsante o no.
+If you find a way to make Aether do one of these things, that's a defect. Report
+it.
 
 ---
 
-## 4. Quel che resta da comprare
+## 3-bis. Lyrics, and what LRCLIB is
 
-Quando nessun catalogo libero ha un brano, Aether non ci riprova all'infinito e
-non finge che sia un guasto: lo mette in «Da comprare», con i link a Bandcamp,
-Qobuz e Discogs.
+Song lyrics are protected works, like the songs. Aether takes three routes to
+them, and none of the three is «we have them under license»:
 
-Non guadagno niente da quei link. Non sono affiliati, non c'è tracciamento, e
-l'indirizzo lo costruisce il programma da un elenco chiuso di tre domini —
-proprio perché non ci si possa infilare altro.
+1. **What's already in your files** — an `.lrc` next to the track, or the tag
+   inside the file. It's yours, and it's the first source looked at.
+2. **LRCLIB**, a public and free catalog fed by the people who use it. It has
+   an open API, made for music players: Aether queries it the way a browser
+   queries a site, with no keys, no page scraping and no circumventing anything.
+3. **What you sync yourself**, which stays a file on your disk.
+
+The part usually left unsaid, and said here: LRCLIB **is not a distributor with
+sub-publishing contracts**. It's a database built by the community. Aether
+breaks no rule by reading it, and that doesn't make the lyrics that come out of
+it «licensed». Whoever hosts that catalog answers takedown requests from
+rights holders; Aether redistributes nothing, keeps no copies elsewhere and does
+not upload them into your backup.
+
+Musixmatch, Genius, AZLyrics, LyricFind and the Chinese catalogs stay out, and
+not out of laziness: either they want a license a local player doesn't have, or
+they can only be read by scraping a page written for a browser. The project's CI
+verifies on every change that none of those names has crept back into the code —
+the same rule that keeps the downloader tools out.
+
+### If you choose to give back
+
+After syncing a lyric by hand you can send it to LRCLIB. It's a button, pressed
+one at a time, and the fourth route — «somebody else's lyrics» — doesn't exist:
+**only** what you synced yourself gets published, never what was in a file's tag
+and never what has just arrived from the catalog.
+
+It's worth saying plainly what you're doing when you press it. A song's lyric
+stays the rights holder's even when you were the one who put the timings in:
+what you're sharing are the **timings**, and the timings travel with the words
+because separated they're no use to anyone. If you neither wrote those words nor
+have the right to distribute them, sending them to a public catalog is your
+decision and not one Aether takes for you — and that's the reason there's no way
+for it to happen without your having decided it.
+
+What goes to LRCLIB goes there under LRCLIB's license, not Aether's: the
+catalog hosts it and answers for what it hosts. Aether keeps no copy, doesn't
+resell it and doesn't put it back into circulation elsewhere. Your `.lrc` stays
+on your disk, identical, whether you press that button or not.
 
 ---
 
-## 5. La tua libreria è tua
+## 4. What's left to buy
 
-Aether lavora su file che stanno sul tuo disco e su un database SQLite che sta
-nella tua cartella dati. Non c'è un server, non c'è un account, non c'è niente
-che io possa disattivare.
+When no free catalog has a track, Aether doesn't retry forever and doesn't
+pretend it's a fault: it puts it in «To buy», with links to Bandcamp, Qobuz and
+Discogs.
 
-Alcune operazioni **modificano i tuoi file**: la scrittura dei tag durante
-l'arricchimento dei metadati, e il riordino che sposta i file sul disco.
-Entrambe mostrano un piano prima di agire ed entrambe sanno tornare indietro,
-ma un backup dei file a cui tieni resta una buona idea — vale per qualunque
-programma che scrive sui tuoi dati, incluso questo.
+I earn nothing from those links. They aren't affiliate links, there's no
+tracking, and the address is built by the program from a closed list of three
+domains — precisely so nothing else can be slipped in.
 
 ---
 
-## 6. Nessuna garanzia
+## 5. Your library is yours
 
-Come dice il `LICENSE`: il programma è fornito «così com'è», senza garanzia di
-alcun tipo. Non rispondo di dati persi, file danneggiati o dischi pieni.
+Aether works on files that sit on your disk and on an SQLite database that sits
+in your data folder. There's no server, there's no account, there's nothing I
+can switch off.
 
-Non rispondo nemmeno di quel che fai con la musica che scarichi. Le condizioni
-di ogni brano te le mostro; rispettarle è cosa tua.
+Some operations **modify your files**: writing tags during metadata enrichment,
+and the reorganization that moves files on disk. Both show a plan before acting
+and both know how to go back, but a backup of the files you care about remains a
+good idea — that goes for any program that writes to your data, this one
+included.
 
 ---
 
-## 7. Se qualcosa qui è sbagliato
+## 6. No warranty
 
-Se rappresenti un catalogo, un'etichetta o un artista e ritieni che Aether stia
-facendo qualcosa che non deve, scrivi. Non c'è una procedura formale perché non
-c'è un'azienda: c'è una persona, e la risposta a una segnalazione fondata è
-sistemare il codice.
+As `LICENSE` says: the program is provided «as is», without warranty of any
+kind. I'm not answerable for lost data, damaged files or full disks.
+
+I'm not answerable either for what you do with the music you download. I show
+you each track's conditions; respecting them is your business.
+
+---
+
+## 7. If something here is wrong
+
+If you represent a catalog, a label or an artist and you believe Aether is
+doing something it shouldn't, write. There's no formal procedure because there's
+no company: there's a person, and the answer to a well-founded report is fixing
+the code.

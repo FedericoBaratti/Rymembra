@@ -1,52 +1,52 @@
-name: Qualcosa non funziona
-description: Un guasto, un comportamento sbagliato, una schermata che non fa quel che dice.
+name: Something doesn't work
+description: A fault, a wrong behavior, a screen that doesn't do what it says.
 labels: ["problema"]
 body:
   - type: markdown
     attributes:
       value: |
-        Grazie per il tempo. Quattro campi, e il terzo è quello che di solito
-        risolve la segnalazione da solo.
+        Thanks for the time. Four fields, and the third one is usually the one
+        that solves the report on its own.
 
   - type: textarea
     id: cosa
     attributes:
-      label: Cosa è successo
+      label: What happened
       description: >-
-        Cosa ti aspettavi e cosa hai visto invece. Non serve che sia ordinato.
+        What you expected and what you saw instead. It doesn't have to be tidy.
       placeholder: |
-        Ho premuto «riordina», ha mostrato il piano, ho confermato, e tre album
-        sono spariti dalla libreria.
+        I pressed «Tidy this folder», it showed the plan, I confirmed, and
+        three albums disappeared from the library.
     validations:
       required: true
 
   - type: textarea
     id: come
     attributes:
-      label: Come ci si arriva
+      label: How to get there
       description: >-
-        I passi, anche approssimativi. Se succede una volta su dieci scrivilo:
-        è un'informazione, non una scusa.
+        The steps, even roughly. If it happens one time in ten, write that down:
+        it's information, not an excuse.
     validations:
       required: true
 
   - type: textarea
     id: diario
     attributes:
-      label: Il diario
+      label: The log
       description: >-
-        In Aether: **Impostazioni → Aggiornamenti → «Apri la cartella dei log»**.
-        Dentro c'è `aether.log`: incollane le ultime righe, o allega il file.
+        In Aether: **Settings → Updates → «Open the log folder»**. Inside there
+        is `aether.log`: paste its last lines, or attach the file.
 
-        Non contiene i titoli dei tuoi brani né i percorsi della tua libreria —
-        `PRIVACY.md` § 8 dice cosa ci finisce e cosa no. L'unica cosa tua che
-        c'è dentro è il percorso della cartella dell'applicazione, che contiene
-        il nome del tuo account di Windows: se preferisci, cancellalo prima di
-        incollare.
+        It doesn't contain your track titles or the paths of your library —
+        `PRIVACY.md` § 8 says what ends up in there and what doesn't. The only
+        thing of yours in it is the path of the application folder, which
+        contains your Windows account name: if you'd rather, delete it before
+        pasting.
 
-        **Se Aether non si apre affatto** la cartella è
-        `%APPDATA%\io.github.federicobaratti.aether\diario` — incollalo nella
-        barra degli indirizzi di Esplora risorse.
+        **If Aether doesn't open at all**, the folder is
+        `%APPDATA%\io.github.federicobaratti.aether\diario` — paste that into
+        File Explorer's address bar.
       render: text
     validations:
       required: false
@@ -54,17 +54,17 @@ body:
   - type: input
     id: versione
     attributes:
-      label: Quale versione
+      label: Which version
       description: >-
-        In Aether: **Impostazioni → Aggiornamenti → «Versione installata»**.
-      placeholder: "0.2.0"
+        In Aether: **Settings → Updates → «Installed version»**.
+      placeholder: "2.2.0"
     validations:
       required: true
 
   - type: input
     id: windows
     attributes:
-      label: Quale Windows
+      label: Which Windows
       placeholder: "Windows 11 Pro 24H2"
     validations:
       required: false

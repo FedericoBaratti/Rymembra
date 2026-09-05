@@ -1,88 +1,87 @@
-# Segnalare una vulnerabilità
+# Reporting a vulnerability
 
-## Come
+## How
 
-Usa la **segnalazione privata di GitHub**: nella pagina del repository,
-*Security* → *Report a vulnerability*. Arriva solo a chi mantiene il progetto e
-non è pubblica finché non lo decidiamo insieme.
+Use **GitHub's private reporting**: on the repository page, *Security* →
+*Report a vulnerability*. It reaches only the people who maintain the project
+and stays private until we decide together to open it.
 
-Non aprire una issue pubblica per una vulnerabilità. Non è cerimonia: le issue
-sono indicizzate, e la prima persona che leggerebbe una segnalazione aperta non
-sarebbe chi può correggerla.
+Don't open a public issue for a vulnerability. This isn't ceremony: issues are
+indexed, and the first person to read a report filed in the open wouldn't be
+the person who can fix it.
 
-Se la segnalazione privata non è attiva sul repository, aprine una pubblica che
-dice soltanto «ho trovato un problema di sicurezza, come te lo mando?» — senza
-dettagli — e ci si organizza da lì.
+If private reporting isn't enabled on the repository, open a public issue that
+says only «I found a security problem, how do I send it to you?» — no details —
+and we'll sort it out from there.
 
-## Cosa aspettarsi
+## What to expect
 
-Aether lo mantiene una persona sola, nel tempo che avanza. Quindi: **risposta
-entro una settimana**, e se non arriva insisti pure, perché vuol dire che la
-notifica si è persa. Non c'è un premio in denaro e non c'è un programma di
-bug bounty.
+Aether is maintained by one person, in spare time. So: **a reply within a
+week**, and if it doesn't arrive, push — it means the notification got lost.
+There's no cash reward and there's no bug bounty program.
 
-Quando la correzione esce, la release la nomina e il tuo nome ci sta accanto se
-lo vuoi.
+When the fix ships, the release names it, and your name goes next to it if you
+want it there.
 
-## Le versioni che ricevono correzioni
+## Which versions get fixes
 
-L'ultima pubblicata, e nient'altro. Non ci sono rami di manutenzione: chi ha una
-versione più vecchia si aggiorna, e l'updater lo dice da sé entro mezz'ora.
+The latest published one, and nothing else. There are no maintenance branches:
+anyone on an older version updates, and the updater says so on its own within
+half an hour.
 
-## Cosa conta come vulnerabilità, qui
+## What counts as a vulnerability here
 
-Aether è un'applicazione locale senza account e senza server. Non c'è una
-superficie di rete in ascolto — con **una** eccezione, e vale la pena dirla — e
-non ci sono dati di altri utenti da esporre. Le cose che contano davvero sono
-quattro, e sono quelle che possono far eseguire codice o portare via qualcosa
-che non è nostro.
+Aether is a local application with no account and no server. There's no network
+surface listening — with **one** exception, and it's worth naming — and there
+is no other user's data to expose. The things that really matter are four, and
+they're the ones that can get code executed or carry off something that isn't
+ours.
 
-**La catena degli aggiornamenti.** È l'unica parte di Aether che scarica un
-eseguibile e lo lancia. L'installer viene verificato con minisign contro la
-chiave pubblica compilata dentro il binario (`plugins.updater.pubkey` in
-`tauri.conf.json`) e se la firma non torna non viene eseguito. Qualunque modo di
-far installare qualcosa saltando quella verifica — o di far accettare un
-`latest.json` che non viene da noi — è la segnalazione più importante che si
-possa mandare.
+**The update chain.** It's the only part of Aether that downloads an executable
+and launches it. The installer is verified with minisign against the public key
+compiled into the binary (`plugins.updater.pubkey` in `tauri.conf.json`), and
+if the signature doesn't check out it isn't run. Any way of getting something
+installed while skipping that verification — or of getting a `latest.json` that
+doesn't come from us accepted — is the most important report anyone can send.
 
-**Il porto di ritorno di OAuth.** Il consenso di Google si apre nel browser di
-sistema e torna su `127.0.0.1`, su una porta aperta per il tempo di
-un'autorizzazione (`aether-oauth::loopback`). È l'unica cosa che ascolta, ed è
-in ascolto per pochi secondi: se si riesce a farle accettare un codice che
-arriva da qualcun altro, o a tenerla aperta oltre, è un problema.
+**The OAuth return port.** Google's consent screen opens in the system browser
+and comes back to `127.0.0.1`, on a port open for the length of one
+authorization (`aether-oauth::loopback`). It's the only thing that listens, and
+it listens for a few seconds: if you can get it to accept a code that came from
+someone else, or keep it open beyond that, it's a problem.
 
-**Gli ingressi non fidati.** Una skin `.aeskin` è un archivio zip che qualcuno ti
-manda, e l'archivio GDPR di Spotify pure. `aether-skin::package` ha dei tetti
-espliciti — sul manifest, sui file, sui percorsi — e servono a impedire che
-scompattare qualcosa scriva fuori dalla sua cartella o riempia il disco. Un
-percorso che esce dalla cartella d'installazione, uno zip che esplode, un
-manifest che manda in ricorsione il compilatore: sono tutti problemi.
+**Untrusted input.** An `.aeskin` skin is a zip archive somebody sends you, and
+so is the Spotify GDPR export. `aether-skin::package` has explicit ceilings —
+on the manifest, on the files, on the paths — and they exist to stop unpacking
+something from writing outside its own folder or filling the disk. A path that
+escapes the install folder, a zip that explodes, a manifest that sends the
+compiler into recursion: all problems.
 
-**I segreti a riposo.** I token OAuth stanno nel portachiavi di sistema
-(`aether-oauth::portachiavi`), non nel database. Se finiscono da qualche altra
-parte — in un log, nel database, in un file temporaneo — è un problema, e
-lo è anche se «solo» in chiaro sul disco dell'utente stesso.
+**Secrets at rest.** OAuth tokens live in the system keychain
+(`aether-oauth::portachiavi`), not in the database. If they end up anywhere else
+— in a log, in the database, in a temporary file — that's a problem, and it
+stays one even if it's «only» in the clear on the user's own disk.
 
-Il diario (`PRIVACY.md` § 8) è scritto per non contenere niente di personale, e
-non viene mandato a nessuno. Se ci finisce dentro qualcosa che non dovrebbe,
-dillo: è la stessa promessa, e vale anche quando a romperla è una riga scritta
-per sbaglio.
+The log (`PRIVACY.md` § 8) is written so as to contain nothing personal, and it
+isn't sent to anyone. If something ends up in there that shouldn't, say so: it's
+the same promise, and it holds even when the thing breaking it is a line written
+by mistake.
 
-## Cosa invece non lo è
+## What isn't one
 
-- **L'installer non firmato.** È noto e dichiarato: `README.md`, il corpo di
-  ogni release e la finestra degli aggiornamenti lo dicono. Un certificato OV
-  richiede la validazione dell'identità e un costo annuo, e finché non c'è,
-  SmartScreen avvisa. Non serve segnalarlo.
-- **«Aether parla con `archive.org`».** Sì, quando glielo chiedi.
-  `PRIVACY.md` elenca ogni richiesta che il programma può fare e cosa ci mette
-  dentro. Se ne trovi **una che non è in quell'elenco**, quella sì.
-- **Le dipendenze con un avviso aperto ma non raggiungibile.** Utile saperlo, e
-  si aggiornano comunque; ma una segnalazione con scritto «`cargo audit` dice
-  qualcosa» senza un percorso che ci arrivi non è una vulnerabilità di Aether.
+- **The unsigned installer.** It's known and declared: `README.md`, the body of
+  every release and the updates window all say so. An OV certificate requires
+  identity validation and an annual cost, and until there is one, SmartScreen
+  warns. No need to report it.
+- **«Aether talks to `archive.org`».** Yes, when you ask it to. `PRIVACY.md`
+  lists every request the program can make and what it puts inside. If you find
+  **one that isn't on that list**, that one counts.
+- **Dependencies with an open but unreachable advisory.** Useful to know, and
+  they get updated anyway; but a report saying «`cargo audit` says something»
+  without a path that reaches it is not a vulnerability in Aether.
 
-## Se hai trovato qualcosa mentre ci giocavi
+## If you found something while playing around
 
-Va benissimo. Non serve un preambolo, non serve una prova di concetto elegante,
-e non serve scusarsi per aver guardato. Mandami cosa hai fatto e cosa è
-successo, anche in tre righe.
+That's perfectly fine. No preamble needed, no elegant proof of concept needed,
+and no apology needed for having looked. Send me what you did and what happened,
+even in three lines.

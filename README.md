@@ -1,380 +1,377 @@
 # Aether
 
-Lettore musicale per Windows, scritto in Rust. Riproduce i file audio presenti
-sul disco e integra la libreria locale con i cataloghi musicali ad accesso
-libero.
+A music player for Windows, written in Rust. It plays the audio files on your
+disk and joins your local library up with the freely accessible music catalogs.
 
-> **Stato del progetto:** in sviluppo. Compila e funziona su Windows.
-> L'eseguibile non è firmato digitalmente e le versioni per macOS, Linux e
-> dispositivi mobili non esistono. Vedi [Limiti noti e sviluppi
-> previsti](#limiti-noti-e-sviluppi-previsti).
+> **Project status:** under development. It builds and runs on Windows. The
+> executable is not digitally signed, and the macOS, Linux and mobile versions
+> do not exist. See [Known limits and planned
+> work](#known-limits-and-planned-work).
 
-## Indice
+## Contents
 
-- [Panoramica](#panoramica)
-- [Fonti della musica](#fonti-della-musica)
-- [Fonti escluse](#fonti-escluse)
-- [Funzionalità](#funzionalità)
-- [Interfaccia](#interfaccia)
-- [Personalizzazione](#personalizzazione)
-- [Installazione](#installazione)
-- [Compilazione](#compilazione)
-- [Architettura](#architettura)
-- [Licenze](#licenze)
+- [Overview](#overview)
+- [Where the music comes from](#where-the-music-comes-from)
+- [Sources that are excluded](#sources-that-are-excluded)
+- [Features](#features)
+- [Interface](#interface)
+- [Customization](#customization)
+- [Installation](#installation)
+- [Building](#building)
+- [Architecture](#architecture)
+- [Licenses](#licenses)
 - [Privacy](#privacy)
-- [Sostenibilità del progetto](#sostenibilità-del-progetto)
-- [Limiti noti e sviluppi previsti](#limiti-noti-e-sviluppi-previsti)
-- [Documenti correlati](#documenti-correlati)
+- [Keeping the project going](#keeping-the-project-going)
+- [Known limits and planned work](#known-limits-and-planned-work)
+- [Related documents](#related-documents)
 
 ---
 
-## Panoramica
+## Overview
 
-Aether riproduce i file audio già presenti sul disco. A partire da una playlist
-— esportata dall'archivio Spotify, letta da un file M3U o indicata tramite un
-collegamento — confronta i brani con la libreria locale e recupera quelli
-mancanti dai cataloghi ad accesso libero: Internet Archive e Audius. Ogni brano
-acquisito conserva la licenza della fonte da cui proviene. I brani non
-disponibili in alcun catalogo libero vengono raccolti in una lista d'acquisto,
-con i collegamenti ai negozi che remunerano gli autori.
+Aether plays the audio files already on your disk. Starting from a playlist —
+exported from your Spotify archive, read from an M3U file, or given as a link —
+it matches the tracks against your local library and fetches the missing ones
+from the freely accessible catalogs: Internet Archive and Audius. Every track it
+acquires keeps the license of the source it came from. Tracks that no free
+catalog has end up in a shopping list, with links to the shops that pay the
+artists.
 
-Il programma non scarica contenuti da YouTube, non effettua scraping di Spotify
-e non distribuisce binari di terze parti. Le motivazioni sono documentate in
-[Fonti escluse](#fonti-escluse) e costituiscono un vincolo di progetto, non una
-limitazione temporanea.
+The program does not download content from YouTube, does not scrape Spotify and
+does not ship third-party binaries. The reasons are documented in [Sources that
+are excluded](#sources-that-are-excluded) and are a project constraint, not a
+temporary limitation.
 
-![La schermata iniziale di Aether](immagini/casa.webp)
+![Aether's home screen](immagini/casa.webp)
 
-La schermata iniziale. Il riquadro «Riprendi dov'eri» ripristina l'ultimo brano
-interrotto e la posizione esatta al suo interno. Sotto sono elencati i brani
-ascoltati di recente, gli album aggiunti per ultimi e i dischi presenti in
-libreria da tempo e mai riprodotti.
+The home screen. The «Pick up where you left off» panel restores the last
+interrupted track and the exact position inside it. Below are the recently
+played tracks, the most recently added albums, and the records that have been in
+the library a long time and never played.
 
-*Le immagini di questo documento provengono da una libreria reale di 1465 brani
-e 935 album.*
+*The images in this document come from a real library of 1465 tracks and 935
+albums.*
 
 ---
 
-## Fonti della musica
+## Where the music comes from
 
-| Fonte | Contenuti | Copia locale |
+| Source | Content | Local copy |
 | --- | --- | --- |
-| **File locali** | La libreria principale. Scansione delle cartelle indicate dall'utente. | Già in possesso dell'utente |
-| **Internet Archive** | Live Music Archive (oltre 250 000 concerti di artisti che ne hanno autorizzato la registrazione), netlabel, pubblico dominio | Sì, quando la licenza dell'item lo consente |
-| **Audius** | Brani pubblicati dagli artisti sotto licenza aperta | Sì, quando l'artista ha abilitato il download **e** la licenza lo consente |
-| **Archivio GDPR di Spotify** | Playlist, brani e album salvati, artisti seguiti, cronologia d'ascolto completa | Metadati, non audio |
-| **File di playlist** | M3U, M3U8, PLS | Il percorso, non il file |
-| **MusicBrainz + Cover Art Archive** | Tag e copertine | Metadati liberi |
+| **Local files** | The main library. Scanning of the folders you point at. | Already yours |
+| **Internet Archive** | Live Music Archive (over 250,000 concerts by artists who authorized the recording), netlabels, public domain | Yes, when the item's license allows it |
+| **Audius** | Tracks published by artists under an open license | Yes, when the artist has enabled downloading **and** the license allows it |
+| **Spotify GDPR archive** | Playlists, saved tracks and albums, followed artists, complete listening history | Metadata, not audio |
+| **Playlist files** | M3U, M3U8, PLS | The path, not the file |
+| **MusicBrainz + Cover Art Archive** | Tags and cover art | Free metadata |
 
-Su Audius il permesso è determinato dall'artista per singolo brano. Esistono tre
-controlli distinti: l'interruttore del download e due *cancelli*, che possono
-subordinare l'accesso al seguito dell'artista o al possesso di un token. Aether
-li verifica tutti e tre e considera il permesso concesso solo in assenza di
-divieti.
+On Audius, permission is set by the artist per individual track. There are three
+distinct controls: the download switch and two *gates*, which can make access
+conditional on following the artist or on holding a token. Aether checks all
+three and considers permission granted only in the absence of any prohibition.
 
-**Jamendo** è implementato e coperto da test, ma disabilitato in questa
-versione. La causa non è tecnica: l'API è gratuita per i soli usi non
-commerciali e i termini definiscono l'uso commerciale come «any monetary
-compensation». Il modulo è già predisposto per il solo ascolto in streaming — i
-termini vietano la cache e l'accesso offline — attraverso `aether-net::FlussoHttp`,
-che riproduce un brano senza scriverlo su disco. Vedi [Limiti
-noti](#limiti-noti-e-sviluppi-previsti).
+**Jamendo** is implemented and covered by tests, but disabled in this version.
+The cause isn't technical: the API is free for non-commercial use only, and the
+terms define commercial use as «any monetary compensation». The module is
+already set up for streaming-only listening — the terms forbid caching and
+offline access — through `aether-net::FlussoHttp`, which plays a track without
+writing it to disk. See [Known limits](#known-limits-and-planned-work).
 
-![La sezione «Da dove arriva la musica» nelle impostazioni](immagini/fonti.webp)
+![The «Where the music comes from» section in the settings](immagini/fonti.webp)
 
-Le stesse fonti nell'interfaccia del programma. Il campo «Da un link» accetta
-indirizzi di archive.org e audius.co senza richiedere account o chiavi API. «Il
-tuo archivio Spotify» elabora localmente l'archivio ZIP che Spotify consegna
-all'utente su richiesta.
+The same sources in the program's interface. The «From a link» field accepts
+archive.org and audius.co addresses without requiring accounts or API keys.
+«Your Spotify archive» processes locally the ZIP archive Spotify hands you on
+request.
 
-### Cosa non copre
+### What it doesn't cover
 
-Nessuna fonte ad accesso libero distribuisce il catalogo commerciale. Non si
-tratta di un limite tecnico aggirabile: è la ragione per cui altri programmi
-svolgono operazioni non consentite dai termini dei servizi che utilizzano.
-Aether copre il fabbisogno attraverso canali leciti e, per il resto del
-catalogo, indica dove acquistarlo. Chi cerca uno strumento per ottenere
-gratuitamente discografie commerciali non troverà in Aether questa funzione.
+No freely accessible source distributes the commercial catalog. This is not a
+technical limitation to be worked around: it is the reason other programs carry
+out operations the terms of the services they use do not permit. Aether covers
+what it can through lawful channels and, for the rest of the catalog, points at
+where to buy it. Anyone looking for a tool to obtain commercial discographies
+for free will not find that feature in Aether.
 
 ---
 
-## Fonti escluse
+## Sources that are excluded
 
 ### YouTube
 
-Le *YouTube API Developer Policies* vietano lo scaricamento e la memorizzazione
-dei contenuti audiovisivi (§ III.E.1.a: «You must not… download, import, backup,
-cache, or store copies of YouTube audiovisual content without YouTube's prior
-written approval»). Non esiste una configurazione che renda l'operazione
-conforme.
+The *YouTube API Developer Policies* forbid downloading and storing audiovisual
+content (§ III.E.1.a: «You must not… download, import, backup, cache, or store
+copies of YouTube audiovisual content without YouTube's prior written
+approval»). There is no configuration that would make the operation compliant.
 
-Le stesse policy vietano inoltre la separazione dell'audio dal video
-(§ III.I.7), la riproduzione da un player non visibile (§ III.I.9) e la
-conservazione dei metadati oltre trenta giorni (§ III.E.4). Un lettore musicale
-che mantiene una libreria persistente è incompatibile con tutte e tre le
-clausole. La fonte è quindi esclusa integralmente, e non in una versione
-ridotta.
+The same policies also forbid separating the audio from the video (§ III.I.7),
+playback from a player that isn't visible (§ III.I.9) and retaining metadata for
+more than thirty days (§ III.E.4). A music player that keeps a persistent
+library is incompatible with all three clauses. The source is therefore excluded
+entirely, and not in a reduced form.
 
-### Accesso non autorizzato a Spotify
+### Unauthorized access to Spotify
 
-L'uso degli endpoint privati di Spotify, di token ricostruiti e del client id
-del player web costituisce accesso non autorizzato al servizio ed è escluso.
+Using Spotify's private endpoints, reconstructed tokens or the web player's
+client id constitutes unauthorized access to the service and is excluded.
 
-Resta disponibile l'archivio GDPR, che Spotify è tenuto a consegnare all'utente
-su richiesta ai sensi dell'art. 20 del Regolamento UE 2016/679, e che contiene
-una cronologia d'ascolto più estesa di quella offerta dall'API pubblica.
+What remains available is the GDPR archive, which Spotify is required to hand to
+the user on request under art. 20 of EU Regulation 2016/679, and which contains
+a longer listening history than the public API offers.
 
 ---
 
-## Funzionalità
+## Features
 
-- **Riproduzione gapless** con ReplayGain, equalizzatore e coda persistente. Un
-  solo motore audio (`cpal` + `symphonia`) distribuito su tre thread, senza
-  alcun lock condiviso fra il decodificatore e la callback audio.
-- **Libreria su SQLite**: scansione incrementale con riconoscimento dei file
-  spostati, playlist manuali e automatiche, valutazioni, preferiti e cronologia
-  d'ascolto.
-- **Riorganizzazione dei file** sul disco secondo lo schema
-  `Artista/Album/NN - Titolo`, con anteprima del piano di rinomina e
-  annullamento.
-- **Arricchimento dei metadati** da MusicBrainz. La ricerca è effettuata
-  sull'album completo anziché sul singolo brano; in assenza di corrispondenze
-  sufficientemente affidabili non viene scritto alcun dato.
-- **Skin** con editor visuale integrato (lo Studio) e formato di distribuzione
-  pacchettizzato.
-- **Backup e sincronizzazione** su Google Drive o su una cartella condivisa.
-- **Scrobbling** verso Last.fm e ListenBrainz.
-- **Aggiornamenti automatici**: verifica delle release su GitHub ogni trenta
-  minuti, con notifica all'utente. L'installazione richiede sempre una conferma
-  esplicita e la firma dell'installer viene verificata prima dell'esecuzione. La
-  funzione è disattivabile dalle impostazioni; il traffico generato è
-  documentato in [`PRIVACY.md`](PRIVACY.md) § 6.
-
----
-
-## Interfaccia
-
-![L'elenco dei brani](immagini/brani.webp)
-
-L'elenco dei brani, con copertina, album, valutazione e durata. Il caricamento è
-progressivo: le pagine successive vengono richieste automaticamente
-all'avvicinarsi della fine dell'elenco, senza paginazione numerata.
-
-![La schermata di riproduzione con l'analizzatore di spettro](immagini/riproduzione.webp)
-
-La schermata di riproduzione con l'analizzatore di spettro attivo. I campioni
-sono prelevati dopo l'equalizzatore e prima del controllo di volume: le
-modifiche alla curva di equalizzazione sono visibili nelle barre, quelle al
-volume no. Le bande raggiungono l'interfaccia attraverso un buffer circolare che
-scarta i campioni in eccesso quando è pieno, in modo da non introdurre attese
-nella callback audio.
+- **Gapless playback** with ReplayGain, an equalizer and a persistent queue. A
+  single audio engine (`cpal` + `symphonia`) spread over three threads, with no
+  shared lock at all between the decoder and the audio callback.
+- **A library on SQLite**: incremental scanning with detection of moved files,
+  manual and automatic playlists, ratings, favorites and listening history.
+- **Reorganizing the files** on disk into the `Artist/Album/NN - Title` scheme,
+  with a preview of the rename plan and an undo.
+- **Metadata enrichment** from MusicBrainz. The search is carried out on the
+  complete album rather than on the individual track; in the absence of matches
+  that are reliable enough, nothing is written.
+- **Affinity**: what plays after a record ends is chosen from three independent
+  layers — the sound of your files, analyzed locally; what you have listened to;
+  and the cultural proximity read from ListenBrainz. Each missing layer removes
+  itself without breaking the others, and underneath everything the old rule
+  cascade remains as a floor. The queue says which layer chose each track.
+- **Monday**: up to four collections of twenty tracks, computed locally while
+  the machine is idle, which stay put for seven days and then become other ones.
+  What came out last week does not come out again.
+- **Skins** with a built-in visual editor (the Studio) and a packaged
+  distribution format.
+- **Backup and synchronization** to Google Drive or to a shared folder.
+- **Scrobbling** to Last.fm and ListenBrainz.
+- **Automatic updates**: a check for releases on GitHub every thirty minutes,
+  with a notification. Installing always requires an explicit confirmation, and
+  the installer's signature is verified before it runs. The feature can be
+  switched off in the settings; the traffic it generates is documented in
+  [`PRIVACY.md`](PRIVACY.md) § 6.
 
 ---
 
-## Personalizzazione
+## Interface
 
-| Skin «Plain», predefinita | Skin «Cyberpunk Edge», installata |
+![The track list](immagini/brani.webp)
+
+The track list, with cover art, album, rating and duration. Loading is
+progressive: further pages are requested automatically as the end of the list
+approaches, with no numbered pagination.
+
+![The playback screen with the spectrum analyzer](immagini/riproduzione.webp)
+
+The playback screen with the spectrum analyzer on. The samples are taken after
+the equalizer and before the volume control: changes to the equalization curve
+are visible in the bars, changes to the volume are not. The bands reach the
+interface through a ring buffer that discards excess samples when it is full, so
+as not to introduce any wait in the audio callback.
+
+---
+
+## Customization
+
+| «Plain» skin, the default | «Cyberpunk Edge» skin, installed |
 | --- | --- |
-| ![La griglia degli album con la skin Plain](immagini/album.webp) | ![La stessa griglia con la skin Cyberpunk Edge](immagini/skin.webp) |
+| ![The album grid with the Plain skin](immagini/album.webp) | ![The same grid with the Cyberpunk Edge skin](immagini/skin.webp) |
 
-La stessa schermata con due skin differenti. Una skin ridefinisce colori,
-bordi, ombre, pesi tipografici e raggi di curvatura su 52 componenti
-dell'interfaccia: non si tratta di un'alternanza fra tema chiaro e tema scuro.
+The same screen with two different skins. A skin redefines colors, borders,
+shadows, type weights and corner radii across 52 interface components: this is
+not a matter of switching between a light theme and a dark one.
 
-![Lo Studio, l'editor delle skin](immagini/studio.webp)
+![The Studio, the skin editor](immagini/studio.webp)
 
-Lo Studio è l'editor integrato. A sinistra l'albero dei componenti e dei 58
-token; al centro l'anteprima aggiornata in tempo reale, che opera su una
-libreria di prova e non su quella dell'utente; a destra l'ispettore, con una
-sonda che identifica il componente sotto il puntatore.
+The Studio is the built-in editor. On the left, the tree of components and of
+the 58 tokens; in the middle, the preview updated in real time, which works on a
+sample library and not on yours; on the right, the inspector of the selected
+component, with its states and its layers. The probe lights up whatever sits
+under the pointer, so that a surface can be found without knowing its name.
 
-La barra inferiore riporta errori, avvisi, componenti ridisegnati e il numero di
-coppie di colori con rapporto di contrasto inferiore a 4,5:1, la soglia di
-leggibilità raccomandata. Il dato è calcolato prima dell'esportazione, così che
-una skin distribuita con avvisi di contrasto sia il risultato di una scelta
-consapevole.
-
----
-
-## Installazione
-
-L'installer per Windows è disponibile fra gli allegati dell'[ultima
-release](https://github.com/FedericoBaratti/Aether/releases/latest): un
-eseguibile NSIS.
-
-**Avviso di Windows SmartScreen.** L'eseguibile non è firmato con un
-certificato di code signing, quindi SmartScreen ne blocca l'esecuzione al primo
-avvio. Per procedere: «Ulteriori informazioni» → «Esegui comunque». Le ragioni
-dell'assenza della firma sono indicate in [Limiti
-noti](#limiti-noti-e-sviluppi-previsti).
-
-Le modifiche introdotte da ciascuna versione sono elencate in
-[`CHANGELOG.md`](CHANGELOG.md). Il criterio di numerazione è descritto in cima a
-quel file: ogni versione che introduce una migrazione del database comporta
-l'incremento del numero *minor*, poiché le migrazioni non sono reversibili e il
-ritorno a una versione precedente richiede il ripristino di una copia del
-database antecedente all'aggiornamento.
+The bottom bar reports errors, warnings, redrawn components and the number of
+color pairs with a contrast ratio below 4.5:1, the recommended legibility
+threshold. The figure is computed before export, so that a skin distributed with
+contrast warnings is the result of a deliberate choice.
 
 ---
 
-## Compilazione
+## Installation
 
-### Requisiti
+The Windows installer is available among the assets of the [latest
+release](https://github.com/FedericoBaratti/Aether/releases/latest): an NSIS
+executable.
 
-- **Rust** — versione indicata in `rust-toolchain.toml`
-- **Node.js** 20 o superiore
-- **Windows** — unica piattaforma supportata dall'installer
+**Windows SmartScreen warning.** The executable is not signed with a code
+signing certificate, so SmartScreen blocks it on first launch. To proceed: «More
+info» → «Run anyway». The reasons for the missing signature are given in [Known
+limits](#known-limits-and-planned-work).
 
-### Comandi
+The changes introduced by each version are listed in
+[`CHANGELOG.md`](CHANGELOG.md). The numbering rule is described at the top of
+that file: every version that introduces a database migration entails an
+increment of the *minor* number, because migrations are not reversible and going
+back to an earlier version requires restoring a copy of the database from before
+the update.
+
+---
+
+## Building
+
+### Requirements
+
+- **Rust** — the version given in `rust-toolchain.toml`
+- **Node.js** 20 or later
+- **Windows** — the only platform the installer supports
+
+### Commands
 
 ```bash
-# Suite di test: circa 1370 test, eseguibili senza connessione di rete
+# The test suite: about 1530 tests, runnable with no network connection
 cargo test --workspace
 ```
 
 ```bash
-# Avvio in modalità sviluppo
+# Start in development mode
 cd apps/desktop
 npm install
 npm run dev
 ```
 
 ```bash
-# Compilazione dell'installer NSIS
+# Build the NSIS installer
 cd apps/desktop
 npm run build
 ```
 
 ```bash
-# Rigenerazione degli avvisi sulle licenze di terze parti
+# Regenerate the third-party license notices
 node strumenti/licenze.js
 ```
 
-### Chiavi di firma dell'updater
+### Updater signing keys
 
-Il sistema di aggiornamento richiede una coppia di chiavi, generata una sola
-volta. Le chiavi non vengono versionate: la cartella `.chiavi/` è esclusa
-tramite `.gitignore`.
+The update system requires a key pair, generated once. The keys are not
+versioned: the `.chiavi/` folder is excluded through `.gitignore`.
 
 ```bash
 cd apps/desktop
 npm run tauri signer generate -- -w ../../.chiavi/aether.key
 ```
 
-Il contenuto del file `.pub` va inserito in `plugins.updater.pubkey` all'interno
-di `tauri.conf.json`; la chiave privata va registrata fra i segreti del
-repository con il nome `TAURI_SIGNING_PRIVATE_KEY`.
+The contents of the `.pub` file go into `plugins.updater.pubkey` inside
+`tauri.conf.json`; the private key goes into the repository secrets under the
+name `TAURI_SIGNING_PRIVATE_KEY`.
 
-La chiave privata firma gli eseguibili che vengono installati automaticamente
-sui sistemi degli utenti: la sua perdita impedisce definitivamente
-l'aggiornamento di tutte le installazioni esistenti. Lo script
-`strumenti/manifesto.js` confronta gli identificativi delle due metà a ogni
-release, in modo che un eventuale disallineamento emerga in CI.
+The private key signs the executables that get installed automatically on users'
+systems: losing it permanently prevents every existing installation from
+updating. The `strumenti/manifesto.js` script compares the identifiers of the
+two halves on every release, so that any mismatch surfaces in CI.
 
 ---
 
-## Architettura
+## Architecture
 
 ```
 core/
-  aether-domain     logica pura: nessun I/O, nessun accesso all'orologio,
-                    nessuno stato globale
-  aether-play       motore audio (cpal + symphonia)
-  aether-app        libreria: SQLite, scansione, importazioni, coda
-  aether-catalogo   cataloghi ad accesso libero; unico modulo che scarica audio
-  aether-net        HTTP bloccante (ureq), rate limiting, circuit breaker
+  aether-domain     pure logic: no I/O, no access to the clock,
+                    no global state
+  aether-play       audio engine (cpal + symphonia)
+  aether-app        the library: SQLite, scanning, imports, queue
+  aether-catalogo   the free-access catalogs; the only module that
+                    downloads audio
+  aether-net        blocking HTTP (ureq), rate limiting, circuit breaker
   aether-meta       MusicBrainz, Cover Art Archive, Deezer, iTunes
-  aether-archivio   lettura dell'archivio GDPR di Spotify
-  aether-skin       formato delle skin e relativo compilatore
-  aether-oauth      PKCE e portachiavi di sistema
+  aether-archivio   reading the Spotify GDPR archive
+  aether-skin       the skin format and its compiler
+  aether-oauth      PKCE and the system keychain
   aether-cloud      Google Drive
-  aether-sync       sincronizzazione fra dispositivi
-  aether-scrobble   Last.fm e ListenBrainz
-apps/desktop        interfaccia: Tauri 2 + React 19
+  aether-sync       synchronization between devices
+  aether-scrobble   Last.fm and ListenBrainz
+apps/desktop        the interface: Tauri 2 + React 19
 ```
 
-La direzione delle dipendenze è vincolante. `aether-catalogo` non ha accesso a
-`rusqlite`: è quindi strutturalmente impossibile, e non semplicemente
-sconsigliato, mantenere il lock della libreria per l'intera durata di un
-download.
+The direction of the dependencies is binding. `aether-catalogo` has no access to
+`rusqlite`: it is therefore structurally impossible, and not merely inadvisable,
+to hold the library lock for the whole duration of a download.
 
 ---
 
-## Licenze
+## Licenses
 
-Il codice di Aether è distribuito sotto licenza **MIT** ([`LICENSE`](LICENSE)).
+Aether's code is distributed under the **MIT** license
+([`LICENSE`](LICENSE)).
 
-Le dipendenze adottano licenze differenti: la famiglia `symphonia` è
-**MPL-2.0**, `cpal` è **Apache-2.0**. L'elenco completo con i testi integrali è
-in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md), rigenerabile con lo
-script indicato in [Compilazione](#compilazione). I font Geist e Bricolage
-Grotesque sono distribuiti sotto **SIL OFL 1.1**
-(`apps/desktop/src/font/OFL.txt`).
+The dependencies use different licenses: the `symphonia` family is **MPL-2.0**,
+`cpal` is **Apache-2.0**. The complete list with the full texts is in
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md), regenerable with the script
+given in [Building](#building). The Geist and Bricolage Grotesque fonts are
+distributed under **SIL OFL 1.1** (`apps/desktop/src/font/OFL.txt`).
 
-La musica acquisita tramite Aether è soggetta alla licenza della fonte di
-provenienza, distinta da quella del programma. Le implicazioni sono descritte in
-[`TERMS.md`](TERMS.md), inclusa la clausola **non commerciale** del Live Music
-Archive, che vincola anche l'ascoltatore.
+The music acquired through Aether is subject to the license of the source it
+came from, which is distinct from the program's. The implications are described
+in [`TERMS.md`](TERMS.md), including the Live Music Archive's **non-commercial**
+clause, which binds the listener too.
 
 ---
 
 ## Privacy
 
-Aether non raccoglie dati di telemetria, non richiede la creazione di un account
-e non comunica con server diversi da quelli espressamente interrogati
-dall'utente: i cataloghi musicali, MusicBrainz, Google Drive e il servizio di
-scrobbling, questi ultimi due solo se collegati.
+Aether collects no telemetry, requires no account and talks to no servers other
+than the ones the user explicitly queries: the music catalogs, MusicBrainz,
+Google Drive and the scrobbling service, the last two only if connected.
 
-[`PRIVACY.md`](PRIVACY.md) elenca ogni singola richiesta di rete che il
-programma può effettuare e i dati che ciascuna trasmette.
-
----
-
-## Sostenibilità del progetto
-
-Aether è gratuito e finanziato tramite donazioni. Non esiste una versione a
-pagamento e non ne è prevista una: due delle fonti integrate, il Live Music
-Archive e Jamendo, sono soggette a clausole *non commercial* che una versione a
-pagamento violerebbe. Il vincolo è riportato esplicitamente nelle condizioni
-d'uso.
+[`PRIVACY.md`](PRIVACY.md) lists every single network request the program can
+make and the data each one transmits.
 
 ---
 
-## Limiti noti e sviluppi previsti
+## Keeping the project going
 
-- **Firma del codice per Windows.** In assenza di un certificato, SmartScreen
-  blocca l'esecuzione dell'installer, che è la principale causa di mancata
-  installazione delle applicazioni indipendenti. Un certificato OV richiede la
-  validazione dell'identità del richiedente e un costo annuale.
-- **Jamendo.** Il codice è presente e i test passano
-  (`cargo test -p aether-catalogo --features jamendo`), ma la funzionalità è
-  disabilitata in attesa di un chiarimento formale da parte di
-  `licensing@jamendo.com` sul trattamento delle donazioni come uso commerciale.
-- **Riproduzione dei brani in solo streaming.** `FlussoHttp` è in grado di
-  leggere un file remoto con accesso posizionale e il motore audio accetta già
-  un flusso al posto di un percorso. Mancano la rappresentazione in libreria di
-  un brano privo di file locale e la sezione «Esplora» da cui effettuarne la
-  ricerca. Allo stato attuale un brano Audius non scaricabile compare
-  nell'elenco ma non viene riprodotto.
-- **macOS e Linux.** L'unico bersaglio dell'installer è NSIS: la piattaforma
-  supportata è pertanto Windows.
-- **Applicazione mobile.** Presente nella versione precedente del progetto, non
-  ancora riscritta.
-
-Due questioni richiedono un chiarimento scritto prima della pubblicazione: se le
-**donazioni** costituiscano uso commerciale ai fini dei termini di Jamendo
-(`licensing@jamendo.com`) e dell'API Deezer impiegata per i metadati. In assenza
-di risposta il modulo Jamendo resta dietro una feature Cargo disattivabile.
+Aether is free and funded by donations. There is no paid version and none is
+planned: two of the integrated sources, the Live Music Archive and Jamendo, are
+subject to *non commercial* clauses that a paid version would violate. The
+constraint is stated explicitly in the terms of use.
 
 ---
 
-## Documenti correlati
+## Known limits and planned work
 
-| Documento | Contenuto |
+- **Code signing for Windows.** Without a certificate, SmartScreen blocks the
+  installer, which is the main reason independent applications fail to get
+  installed. An OV certificate requires validation of the applicant's identity
+  and an annual cost.
+- **Jamendo.** The code is there and the tests pass
+  (`cargo test -p aether-catalogo --features jamendo`), but the feature is
+  disabled pending formal clarification from `licensing@jamendo.com` on whether
+  donations count as commercial use.
+- **Streaming-only tracks.** Since 2.2.0 a track whose path is a catalog address
+  does play: `FlussoHttp` reads it from the network with positional access, and
+  what reaches the audio engine is indistinguishable from a file. What is still
+  missing is a place of its own in the library — `tracks.path` is `NOT NULL
+  UNIQUE`, so a track that is not a file has to borrow the column meant for one
+  — and the «Explore» section from which to search for such tracks. The
+  migration that closes the gap is phase 2 of
+  [`STUDIO-STREAMING.md`](STUDIO-STREAMING.md).
+- **macOS and Linux.** The installer's only target is NSIS: the supported
+  platform is therefore Windows.
+- **Mobile application.** Present in the previous version of the project, not
+  yet rewritten.
+
+Two questions require a written clarification before publication: whether
+**donations** constitute commercial use for the purposes of Jamendo's terms
+(`licensing@jamendo.com`) and of the Deezer API used for metadata. Failing a
+reply, the Jamendo module stays behind a Cargo feature that can be switched off.
+
+---
+
+## Related documents
+
+| Document | Content |
 | --- | --- |
-| [`CHANGELOG.md`](CHANGELOG.md) | Modifiche di ogni versione e criterio di numerazione |
-| [`PRIVACY.md`](PRIVACY.md) | Informativa sul trattamento dei dati e richieste di rete |
-| [`TERMS.md`](TERMS.md) | Condizioni d'uso e licenze dei contenuti acquisiti |
-| [`SECURITY.md`](SECURITY.md) | Procedura di segnalazione delle vulnerabilità |
-| [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | Licenze delle dipendenze |
-| [`STUDIO-STREAMING.md`](STUDIO-STREAMING.md) | Analisi progettuale sull'integrazione dello streaming nella libreria |
+| [`CHANGELOG.md`](CHANGELOG.md) | The changes in each version and the numbering rule |
+| [`PRIVACY.md`](PRIVACY.md) | How data is handled and every network request |
+| [`TERMS.md`](TERMS.md) | Terms of use and the licenses of acquired content |
+| [`SECURITY.md`](SECURITY.md) | How to report a vulnerability |
+| [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | The dependencies' licenses |
+| [`STUDIO-STREAMING.md`](STUDIO-STREAMING.md) | A design study on integrating streaming into the library |
