@@ -244,8 +244,8 @@ policies and article 20 of the GDPR in their place, the em dashes down to six.
 Plus the three things a README was missing to be consultable: a table of
 contents, a **Requirements** subsection at the head of the build instructions,
 and a table of **related documents** linking `CHANGELOG`, `PRIVACY`, `TERMS`,
-`SECURITY`, `THIRD-PARTY-NOTICES` and `STUDIO-STREAMING`, until now reachable
-only by browsing the repository root.
+`SECURITY` and `THIRD-PARTY-NOTICES`, until now reachable only by browsing the
+repository root.
 
 ### Changed — the documentation is in English
 
@@ -254,9 +254,9 @@ it was not the language a repository on GitHub is read in. Whoever lands on the
 README from a search decides in half a minute whether the program does what they
 need, and that decision does not get made in a language one does not have.
 
-`README.md`, `PRIVACY.md`, `TERMS.md`, `SECURITY.md`, `STUDIO-STREAMING.md`, the
-whole of this file from 0.2.0 onwards, the two issue templates and the release
-notes in `release.yml` are now in English, as is the header that
+`README.md`, `PRIVACY.md`, `TERMS.md`, `SECURITY.md`, the whole of this file
+from 0.2.0 onwards, the two issue templates and the release notes in
+`release.yml` are now in English, as is the header that
 `strumenti/licenze.js` writes at the top of `THIRD-PARTY-NOTICES.md` — a file
 regenerated for the occasion, 429 crates and 249 distinct license texts.
 
@@ -277,6 +277,20 @@ registry that the Studio prints in its tree. That vocabulary is the domain
 language of this project — it is what `riproduzione.rs` and `niente-di-vietato`
 are called — and translating half of it would leave a codebase speaking two
 languages badly instead of one well.
+
+### Removed — the study on streaming leaves the repository
+
+`STUDIO-STREAMING.md` was a design study: an analysis of a list of free
+streaming apps, a triage of how they actually get their audio, and a four-phase
+road for bringing that experience into Aether without breaking the terms. It
+described no existing code — it proposed one — and a document that proposes is
+read as a promise by whoever finds it in the repository root.
+
+Its first phase is done and is written above; the rest was a plan, and a plan
+that is not a commitment does not belong next to `LICENSE` and `PRIVACY.md`.
+What still needs saying is said where it is checked: the limit is in the README's
+known limits, and the reason `riproduzione.rs` reads `tracks.path` and not a
+column of its own is in the comment on the function that reads it.
 
 ## [2.1.0] — 2026-09-03
 

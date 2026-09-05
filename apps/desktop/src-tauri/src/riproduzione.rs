@@ -684,8 +684,8 @@ const PERCORSO_AUDIUS: &str = "/v1/tracks/";
 ///
 /// Oggi `path`, perché in [`SchedaSorgente`] non c'è altro: `tracks.path` è
 /// `NOT NULL UNIQUE` e la libreria non ha ancora un posto per una traccia che
-/// non è un file — è il buco dichiarato nel README, e chiuderlo è la fase 2 di
-/// `STUDIO-STREAMING.md`, che vuole una migrazione e quindi `aether-app`.
+/// non è un file — è il buco dichiarato fra i limiti noti del README, e
+/// chiuderlo vuole una migrazione, quindi `aether-app` e una minor in più.
 ///
 /// Quando quella migrazione arriverà, i campi da guardare sono già scritti nella
 /// migrazione 10 e vivono su `desiderati`: `fonte_url` per l'indirizzo,

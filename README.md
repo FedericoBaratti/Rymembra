@@ -350,9 +350,8 @@ constraint is stated explicitly in the terms of use.
   what reaches the audio engine is indistinguishable from a file. What is still
   missing is a place of its own in the library — `tracks.path` is `NOT NULL
   UNIQUE`, so a track that is not a file has to borrow the column meant for one
-  — and the «Explore» section from which to search for such tracks. The
-  migration that closes the gap is phase 2 of
-  [`STUDIO-STREAMING.md`](STUDIO-STREAMING.md).
+  — and the «Explore» section from which to search for such tracks. Closing the
+  gap takes a migration, and therefore a further minor version.
 - **macOS and Linux.** The installer's only target is NSIS: the supported
   platform is therefore Windows.
 - **Mobile application.** Present in the previous version of the project, not
@@ -374,4 +373,3 @@ reply, the Jamendo module stays behind a Cargo feature that can be switched off.
 | [`TERMS.md`](TERMS.md) | Terms of use and the licenses of acquired content |
 | [`SECURITY.md`](SECURITY.md) | How to report a vulnerability |
 | [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | The dependencies' licenses |
-| [`STUDIO-STREAMING.md`](STUDIO-STREAMING.md) | A design study on integrating streaming into the library |
