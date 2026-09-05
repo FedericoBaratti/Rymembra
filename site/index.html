@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap" rel="stylesheet">
 <title>Aether — A music player for Windows, written in Rust</title>
-<meta name="description" content="Aether plays the audio files already present on the disk and integrates the local library with the free-access music catalogues: Internet Archive and Audius. Every track acquired keeps the licence of the source it came from. No telemetry, no account required. Version 2.1.0, for Windows.">
+<meta name="description" content="Aether plays the audio files already present on the disk and integrates the local library with the free-access music catalogues: Internet Archive and Audius. Every track acquired keeps the licence of the source it came from. No telemetry, no account required. Version 2.2.0, for Windows.">
 <meta name="theme-color" content="#09090d">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2309090d'/%3E%3Cpath d='M32 8a24 24 0 0 1 0 48' fill='none' stroke='%238b7cf6' stroke-width='7' stroke-linecap='round'/%3E%3Cpath d='M32 56a24 24 0 0 1 0-48' fill='none' stroke='%234fd6e0' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
@@ -92,7 +92,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
     <svg data-logo width="20" height="20" style="color:var(--ae-acc,#8b7cf6);transition:transform .4s cubic-bezier(.2,.8,.2,1)"><use href="#a-mark"></use></svg>
     <span style="font:600 15px/1 Geist,sans-serif;letter-spacing:-.01em">Aether</span>
   </a>
-  <span data-navbadge data-i18n="nav.badge" style="padding:3px 8px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:500 9.5px/1.4 'Geist Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">2.1.0 · Windows</span>
+  <span data-navbadge data-i18n="nav.badge" style="padding:3px 8px;border-radius:99px;border:1px solid var(--ae-line,rgba(255,255,255,.10));font:500 9.5px/1.4 'Geist Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">2.2.0 · Windows</span>
   <div style="flex:1"></div>
   <div data-navlinks style="display:flex;gap:22px;align-items:center">
     <a href="#sources" data-i18n="nav.sources" style="font:500 13px/1 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62))">Sources</a>
@@ -152,7 +152,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
   </div>
 
   <div data-rv data-d="520" style="margin:18px 0 0;display:flex;gap:18px;flex-wrap:wrap;justify-content:center;font:500 11.5px/1 'Geist Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--ae-t3,rgba(255,255,255,.46))">
-    <span data-i18n="hero.m1">Version 2.1.0 · Windows · in development</span><span>FLAC ALAC WAV MP3 OGG</span><span data-i18n="hero.m3">Each track keeps the licence of its source</span>
+    <span data-i18n="hero.m1">Version 2.2.0 · Windows · in development</span><span>FLAC ALAC WAV MP3 OGG</span><span data-i18n="hero.m3">Each track keeps the licence of its source</span>
   </div>
 
   <div data-hero-stage style="position:relative;width:min(1240px,96vw);margin:clamp(40px,7vw,66px) auto 0;perspective:1800px">
@@ -634,7 +634,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
     <div style="position:absolute;inset:-40% -10% auto;height:120%;background:radial-gradient(60% 60% at 50% 0%,var(--ae-glowA,rgba(139,124,246,.30)),transparent 70%);animation:ae-drift 18s ease-in-out infinite;pointer-events:none"></div>
     <div style="position:relative">
       <svg width="30" height="30" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mark"></use></svg>
-      <h2 style="margin:22px auto 0;max-width:19ch;font:600 clamp(32px,4.2vw,54px)/1.04 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="access.h2">Version 2.1.0, for Windows, unsigned.</h2>
+      <h2 style="margin:22px auto 0;max-width:19ch;font:600 clamp(32px,4.2vw,54px)/1.04 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.035em" data-i18n="access.h2">Version 2.2.0, for Windows, unsigned.</h2>
       <p style="margin:16px auto 0;max-width:56ch;font:300 15.5px/1.62 Geist,sans-serif;color:var(--ae-t2,rgba(255,255,255,.62));text-wrap:pretty" data-i18n="access.p">The installer for Windows is available among the assets of the latest release: an NSIS executable. It is not signed with a code-signing certificate, so SmartScreen blocks its execution on first launch: «More info», then «Run anyway». The reasons for the absence of the signature are stated among the known limits.</p>
       <!-- Qui c'era un modulo che chiedeva un indirizzo email, prometteva «una
            mail quando si apre la tua ondata» e poi **non lo mandava da nessuna
@@ -643,14 +643,14 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
            che non chiederlo, quindi non lo si chiede più. Chi vuole sapere
            quando esce guarda il repository, che è un posto vero. -->
       <a href="https://github.com/FedericoBaratti/Aether/releases/latest" target="_blank" rel="noopener" data-magnet style="margin:32px auto 0;display:inline-flex;align-items:center;gap:9px;height:50px;padding:0 26px;border-radius:99px;background:var(--ae-acc,#8b7cf6);color:var(--ae-ink,#09090d);font:600 14.5px/1 Geist,sans-serif;transition:transform .25s cubic-bezier(.2,.8,.2,1),background-color .7s ease">
-        <svg width="16" height="16"><use href="#a-down"></use></svg><span data-i18n="access.btn">Download 2.1.0 for Windows</span>
+        <svg width="16" height="16"><use href="#a-down"></use></svg><span data-i18n="access.btn">Download 2.2.0 for Windows</span>
       </a>
       <p data-i18n="access.note" style="margin:16px auto 0;max-width:56ch;font:300 12.5px/1.6 Geist,sans-serif;color:var(--ae-t3,rgba(255,255,255,.46));text-wrap:pretty">The changes introduced by each version are listed in CHANGELOG.md. Every version that introduces a database migration entails an increment of the minor number, because migrations are not reversible.</p>
 
       <div data-rv style="margin:34px auto 0;max-width:820px;padding:24px clamp(18px,3vw,28px);border-radius:18px;border:1px solid var(--ae-line,rgba(255,255,255,.10));background:var(--ae-surf2,#16161f);text-align:left;transition:background-color .7s ease,border-color .7s ease">
         <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
-          <h3 data-i18n="rel.h" style="margin:0;font:600 clamp(19px,2.2vw,25px)/1.15 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">What 2.1.0 changes</h3>
-          <span data-i18n="rel.meta" style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">Released 3 September 2026 · two database migrations</span>
+          <h3 data-i18n="rel.h" style="margin:0;font:600 clamp(19px,2.2vw,25px)/1.15 'Bricolage Grotesque',Geist,sans-serif;letter-spacing:-.03em">What 2.2.0 changes</h3>
+          <span data-i18n="rel.meta" style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))">Released 5 September 2026 · two database migrations</span>
         </div>
         <div style="margin-top:18px;display:flex;flex-direction:column;gap:11px">
           <sc-for list="{{ release }}" as="r" hint-placeholder-count="6">
@@ -695,7 +695,7 @@ html{scrollbar-color:var(--ae-raise,#1e1e2a) var(--ae-bg,#09090d);scrollbar-widt
 <footer style="position:relative;z-index:1;padding:30px clamp(16px,4vw,34px) 44px;padding-bottom:calc(44px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--ae-line,rgba(255,255,255,.08));transition:border-color .7s ease">
   <div style="max-width:1180px;margin:0 auto;display:flex;flex-wrap:wrap;gap:14px 18px;align-items:center">
     <div style="display:flex;align-items:center;gap:9px"><svg width="17" height="17" style="color:var(--ae-acc,#8b7cf6)"><use href="#a-mark"></use></svg><span style="font:600 13px/1 Geist,sans-serif">Aether</span></div>
-    <span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="footer.tag">Music player for Windows, written in Rust · version 2.1.0</span>
+    <span style="font:10.5px 'Geist Mono',monospace;color:var(--ae-t3,rgba(255,255,255,.46))" data-i18n="footer.tag">Music player for Windows, written in Rust · version 2.2.0</span>
     <div style="flex:1"></div>
     <div style="display:flex;flex-wrap:wrap;gap:12px 20px;font:500 12.5px/1 Geist,sans-serif">
       <a href="#sources" data-i18n="nav.sources" style="color:var(--ae-t2,rgba(255,255,255,.62))">Sources</a>
@@ -778,11 +778,11 @@ const TOKEN_VARS = ['--ae-bg', '--ae-surf', '--ae-raise', '--ae-line', '--ae-t1'
 
 const I18N = {
   en: {
-    'nav.badge': '2.1.0 · Windows', 'nav.sources': 'Sources', 'nav.app': 'The program', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Limits', 'nav.star': 'Star on GitHub',
+    'nav.badge': '2.2.0 · Windows', 'nav.sources': 'Sources', 'nav.app': 'The program', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Limits', 'nav.star': 'Star on GitHub',
     'hero.badge': 'Music player for Windows, written in Rust',
     'hero.l1': 'A music player', 'hero.l2': 'for Windows,', 'hero.l3': 'written in Rust.',
     'hero.lede': "Aether plays the audio files already present on the disk. Starting from a playlist — exported from a Spotify archive, read from an M3U file or given as a link — it compares the tracks against the local library and retrieves the missing ones from the free-access catalogues: Internet Archive and Audius. Every track acquired keeps the licence of the source it came from. Tracks unavailable in any free catalogue are collected in a purchase list, with links to the shops that pay the authors.",
-    'hero.cta1': 'Installation', 'hero.m1': 'Version 2.1.0 · Windows · in development', 'hero.m3': 'Each track keeps the licence of its source',
+    'hero.cta1': 'Installation', 'hero.m1': 'Version 2.2.0 · Windows · in development', 'hero.m3': 'Each track keeps the licence of its source',
     'ui.albums': 'Albums', 'ui.albumsLow': 'albums', 'ui.tracks': 'Tracks', 'ui.artists': 'Artists', 'ui.fav': 'Favourites', 'ui.settings': 'Settings',
     'ui.playlists': 'Playlists', 'ui.pl1': 'Late shift', 'ui.pl2': 'Vinyl rips 2019', 'ui.pl3': 'Kitchen, loud', 'ui.pl4': 'Ambient, long',
     'ui.scan': 'Scan complete', 'ui.scanmeta': '1 465 tracks · 41 min ago', 'ui.library': 'Library', 'ui.libmeta': '1 465 · 4 d 2 h',
@@ -812,11 +812,11 @@ const I18N = {
     's5.p': "Two questions require a written clarification before publication: whether donations constitute commercial use for the purposes of Jamendo's terms, and of the Deezer API used for metadata. In the absence of an answer the Jamendo module stays behind a Cargo feature that can be switched off.",
     'lim.h3': 'Known limits',
     'win.h3': 'Windows — implementation order', 'win.meta': '13 items · 9 done · 1 in progress · 3 to go',
-    'access.h2': 'Version 2.1.0, for Windows, unsigned.',
+    'access.h2': 'Version 2.2.0, for Windows, unsigned.',
     'access.p': 'The installer for Windows is available among the assets of the latest release: an NSIS executable. It is not signed with a code-signing certificate, so SmartScreen blocks its execution on first launch: «More info», then «Run anyway». The reasons for the absence of the signature are stated among the known limits.',
-    'access.btn': 'Download 2.1.0 for Windows',
+    'access.btn': 'Download 2.2.0 for Windows',
     'access.note': 'The changes introduced by each version are listed in CHANGELOG.md. Every version that introduces a database migration entails an increment of the minor number, because migrations are not reversible.',
-    'rel.h': 'What 2.1.0 changes', 'rel.meta': 'Released 3 September 2026 · two database migrations', 'rel.link': 'Read the full changelog',
+    'rel.h': 'What 2.2.0 changes', 'rel.meta': 'Released 5 September 2026 · two database migrations', 'rel.link': 'Read the full changelog',
     'access.spec': 'Read the skin format',
     'access.bugs.h': 'Reports and proposals',
     'access.bugs.p': 'The program is released and still under development. Reports of failures and proposals for what it should do next are received at the same address. The procedure for reporting vulnerabilities is in SECURITY.md.',
@@ -824,7 +824,7 @@ const I18N = {
     'access.donate.p': 'There is no paid version and none is planned: two of the integrated sources, the Live Music Archive and Jamendo, are subject to non-commercial clauses that a paid version would violate. The constraint is stated explicitly in the terms of use.',
     'access.donate.btn': 'Support the development',
     'footer.bugs': 'Contact', 'footer.donate': 'Donate', 'footer.changelog': 'Changelog', 'footer.privacy': 'Privacy', 'footer.terms': 'Terms', 'footer.licence': 'Licence · MIT',
-    'footer.tag': 'Music player for Windows, written in Rust · version 2.1.0', 'footer.updated': 'Last updated',
+    'footer.tag': 'Music player for Windows, written in Rust · version 2.2.0', 'footer.updated': 'Last updated',
     marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Gapless playback', 'Crossfade', 'ReplayGain', 'Ten-band equaliser', 'Synced lyrics', 'Scrobbling', 'Smart playlists', 'Drive backup', 'Embedded cover art', 'SQLite', 'MusicBrainz', 'Internet Archive', 'Audius', 'No telemetry', 'MIT'],
     pillars: [
       { t: 'Gapless playback', b: 'A single audio engine, cpal and symphonia, distributed over three threads, with no lock shared between the decoder and the audio callback. ReplayGain, equaliser and a persistent queue.' },
@@ -870,12 +870,12 @@ const I18N = {
       { t: 'Mobile application', b: 'Present in the previous version of the project, not yet rewritten.' }
     ],
     release: [
-      { t: 'A network share that stops responding is declared a network failure and no longer a damaged file. Playback stops where it was, and «Retry» resumes from the point at which the music was interrupted.' },
-      { t: 'A scan no longer deletes tracks because a root did not answer: a partial walk counts as an empty one, and nothing is removed.' },
-      { t: 'Opening a file happens outside the library and player locks, with a five-second deadline. The window answers throughout.' },
-      { t: 'An uncaught error in the interface draws what happened and offers a button to reload, instead of leaving a white window, and leaves one line in the log.' },
-      { t: 'A further thirty-eight defects, grouped in the changelog by what they cost the listener rather than by file.' },
-      { t: 'Two migrations, 015_riconcilia and 016_metadati. Migrations only go forward: returning to 2.0.1 requires restoring a copy of the database made before the update.' }
+      { t: "Affinity: what plays after a record ends comes from three independent layers — the sound of your files, analysed locally and without a byte of audio leaving the house; what you have listened to, and for how long; the cultural proximity read from ListenBrainz. A missing layer takes itself out of the reckoning instead of lowering everyone's score." },
+      { t: 'Monday: up to four collections of twenty tracks, computed locally while the machine is idle, which stay put for seven days and then become other ones. What came out last week does not come out again.' },
+      { t: "«Radio from here» on any track or album, and a queue that says why it chose what it queued: «continues the record», «sounds like this one», «you haven't heard it for months»." },
+      { t: 'The first launch now reaches as far as the first note: the music folders the system declares are counted and offered already ticked, instead of an empty room asking you to add one from the settings.' },
+      { t: 'Listen-only tracks from Audius and the Internet Archive play: what reaches the audio engine is indistinguishable from a file.' },
+      { t: 'The application no longer dies while being closed, and the window no longer freezes while you use it. Two migrations, 017_affinita and 018_settimana. Migrations only go forward: returning to 2.1.0 requires restoring a copy of the database made before the update.' }
     ],
     platStatus: { out: 'Available', prog: 'In progress', none: 'Not started' },
     road: { done: 'Done', prog: 'In progress', todo: 'To do' },
@@ -896,11 +896,11 @@ const I18N = {
     ]
   },
   it: {
-    'nav.badge': '2.1.0 · Windows', 'nav.sources': 'Fonti', 'nav.app': 'Il programma', 'nav.studio': 'Skin Studio', 'nav.format': 'Formato', 'nav.roadmap': 'Limiti', 'nav.star': 'Star su GitHub',
+    'nav.badge': '2.2.0 · Windows', 'nav.sources': 'Fonti', 'nav.app': 'Il programma', 'nav.studio': 'Skin Studio', 'nav.format': 'Formato', 'nav.roadmap': 'Limiti', 'nav.star': 'Star su GitHub',
     'hero.badge': 'Lettore musicale per Windows, scritto in Rust',
     'hero.l1': 'Lettore musicale', 'hero.l2': 'per Windows,', 'hero.l3': 'scritto in Rust.',
     'hero.lede': "Aether riproduce i file audio già presenti sul disco. A partire da una playlist — esportata dall'archivio Spotify, letta da un file M3U o indicata tramite un collegamento — confronta i brani con la libreria locale e recupera quelli mancanti dai cataloghi ad accesso libero: Internet Archive e Audius. Ogni brano acquisito conserva la licenza della fonte da cui proviene. I brani non disponibili in alcun catalogo libero vengono raccolti in una lista d'acquisto, con i collegamenti ai negozi che remunerano gli autori.",
-    'hero.cta1': 'Installazione', 'hero.m1': 'Versione 2.1.0 · Windows · in sviluppo', 'hero.m3': 'Ogni brano conserva la licenza della fonte',
+    'hero.cta1': 'Installazione', 'hero.m1': 'Versione 2.2.0 · Windows · in sviluppo', 'hero.m3': 'Ogni brano conserva la licenza della fonte',
     'ui.albums': 'Album', 'ui.albumsLow': 'album', 'ui.tracks': 'Brani', 'ui.artists': 'Artisti', 'ui.fav': 'Preferiti', 'ui.settings': 'Impostazioni',
     'ui.playlists': 'Playlist', 'ui.pl1': 'Turno di notte', 'ui.pl2': 'Rip da vinile 2019', 'ui.pl3': 'Cucina, alto volume', 'ui.pl4': 'Ambient, lunghi',
     'ui.scan': 'Scansione completata', 'ui.scanmeta': '1465 brani · 41 min fa', 'ui.library': 'Libreria', 'ui.libmeta': '1465 · 4 g 2 h',
@@ -930,11 +930,11 @@ const I18N = {
     's5.p': "Due questioni richiedono un chiarimento scritto prima della pubblicazione: se le donazioni costituiscano uso commerciale ai fini dei termini di Jamendo e dell'API Deezer impiegata per i metadati. In assenza di risposta il modulo Jamendo resta dietro una feature Cargo disattivabile.",
     'lim.h3': 'Limiti noti',
     'win.h3': 'Windows — ordine di implementazione', 'win.meta': '13 voci · 9 chiuse · 1 in corso · 3 da fare',
-    'access.h2': 'Versione 2.1.0, per Windows, non firmata.',
+    'access.h2': 'Versione 2.2.0, per Windows, non firmata.',
     'access.p': "L'installer per Windows è disponibile fra gli allegati dell'ultima release: un eseguibile NSIS. Non è firmato con un certificato di code signing, quindi SmartScreen ne blocca l'esecuzione al primo avvio: «Ulteriori informazioni», poi «Esegui comunque». Le ragioni dell'assenza della firma sono indicate fra i limiti noti.",
-    'access.btn': 'Scarica la 2.1.0 per Windows',
+    'access.btn': 'Scarica la 2.2.0 per Windows',
     'access.note': "Le modifiche introdotte da ciascuna versione sono elencate in CHANGELOG.md. Ogni versione che introduce una migrazione del database comporta l'incremento del numero minor, poiché le migrazioni non sono reversibili.",
-    'rel.h': 'Cosa cambia la 2.1.0', 'rel.meta': 'Rilasciata il 3 settembre 2026 · due migrazioni del database', 'rel.link': 'Leggi il changelog completo',
+    'rel.h': 'Cosa cambia la 2.2.0', 'rel.meta': 'Rilasciata il 5 settembre 2026 · due migrazioni del database', 'rel.link': 'Leggi il changelog completo',
     'access.spec': 'Leggi il formato delle skin',
     'access.bugs.h': 'Segnalazioni e proposte',
     'access.bugs.p': 'Il programma è rilasciato ed è ancora in sviluppo. Le segnalazioni di guasti e le proposte su cosa dovrebbe fare dopo si ricevono allo stesso indirizzo. La procedura per segnalare vulnerabilità è in SECURITY.md.',
@@ -942,7 +942,7 @@ const I18N = {
     'access.donate.p': "Non esiste una versione a pagamento e non ne è prevista una: due delle fonti integrate, il Live Music Archive e Jamendo, sono soggette a clausole non commercial che una versione a pagamento violerebbe. Il vincolo è riportato esplicitamente nelle condizioni d'uso.",
     'access.donate.btn': 'Sostieni lo sviluppo',
     'footer.bugs': 'Contatti', 'footer.donate': 'Donazioni', 'footer.changelog': 'Changelog', 'footer.privacy': 'Privacy', 'footer.terms': "Condizioni d'uso", 'footer.licence': 'Licenza · MIT',
-    'footer.tag': 'Lettore musicale per Windows, scritto in Rust · versione 2.1.0', 'footer.updated': 'Ultimo aggiornamento',
+    'footer.tag': 'Lettore musicale per Windows, scritto in Rust · versione 2.2.0', 'footer.updated': 'Ultimo aggiornamento',
     marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Riproduzione gapless', 'Dissolvenza incrociata', 'ReplayGain', 'Equalizzatore a dieci bande', 'Testi sincronizzati', 'Scrobbling', 'Playlist intelligenti', 'Backup su Drive', 'Copertine incorporate', 'SQLite', 'MusicBrainz', 'Internet Archive', 'Audius', 'Nessuna telemetria', 'MIT'],
     pillars: [
       { t: 'Riproduzione gapless', b: 'Un solo motore audio, cpal e symphonia, distribuito su tre thread, senza alcun lock condiviso fra il decodificatore e la callback audio. ReplayGain, equalizzatore e coda persistente.' },
@@ -988,12 +988,12 @@ const I18N = {
       { t: 'Applicazione mobile', b: 'Presente nella versione precedente del progetto, non ancora riscritta.' }
     ],
     release: [
-      { t: 'Una condivisione di rete che smette di rispondere viene dichiarata come guasto di rete e non più come file danneggiato. La riproduzione si ferma dove stava, e «Riprova» riprende dal punto in cui la musica si era interrotta.' },
-      { t: 'Una scansione non cancella più brani perché una radice non ha risposto: una camminata parziale vale come una vuota, e non viene rimosso niente.' },
-      { t: "L'apertura di un file avviene fuori dai lucchetti di libreria e lettore, con una scadenza di cinque secondi. La finestra risponde per tutto il tempo." },
-      { t: "Un errore non catturato nell'interfaccia disegna cos'è successo e offre un tasto per ricaricare, invece di lasciare una finestra bianca, e lascia una riga nel diario." },
-      { t: 'Altri trentotto difetti, raggruppati nel changelog per quanto costano a chi ascolta anziché per file.' },
-      { t: "Due migrazioni, 015_riconcilia e 016_metadati. Le migrazioni vanno solo avanti: tornare alla 2.0.1 richiede il ripristino di una copia del database fatta prima dell'aggiornamento." }
+      { t: "L'affinità: il brano dopo un disco esce da tre strati indipendenti — il suono dei file, analizzato in locale e senza che un byte di audio esca di casa; l'ascolto, e per quanto; la vicinanza culturale letta da ListenBrainz. Lo strato che manca si toglie di mezzo invece di abbassare il punteggio di tutti." },
+      { t: "Il lunedì: fino a quattro raccolte da venti brani, calcolate in locale a macchina ferma, che restano ferme per sette giorni e poi diventano altre. Quel che è uscito la settimana scorsa non riesce." },
+      { t: "«Radio da qui» su qualsiasi brano o album, e una coda che dice perché ha scelto quel brano: «continua il disco», «somiglia a questo», «non lo ascolti da mesi»." },
+      { t: "Il primo avvio arriva fino alla prima nota: le cartelle di musica che il sistema dichiara si contano e si offrono già spuntate, invece di una stanza vuota che chiede di aggiungerne una dalle impostazioni." },
+      { t: "I brani di solo ascolto di Audius e dell'Internet Archive adesso suonano: quel che arriva al motore audio è indistinguibile da un file." },
+      { t: "L'applicazione non muore più mentre si chiude, e la finestra non si blocca più mentre la si usa. Due migrazioni, 017_affinita e 018_settimana. Le migrazioni vanno solo avanti: tornare alla 2.1.0 richiede il ripristino di una copia del database fatta prima di aggiornare." }
     ],
     platStatus: { out: 'Disponibile', prog: 'In corso', none: 'Non iniziato' },
     road: { done: 'Fatto', prog: 'In corso', todo: 'Da fare' },
@@ -1014,11 +1014,11 @@ const I18N = {
     ]
   },
   fr: {
-    'nav.badge': '2.1.0 · Windows', 'nav.sources': 'Sources', 'nav.app': 'Le programme', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Limites', 'nav.star': 'Star sur GitHub',
+    'nav.badge': '2.2.0 · Windows', 'nav.sources': 'Sources', 'nav.app': 'Le programme', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Limites', 'nav.star': 'Star sur GitHub',
     'hero.badge': 'Lecteur de musique pour Windows, écrit en Rust',
     'hero.l1': 'Lecteur de musique', 'hero.l2': 'pour Windows,', 'hero.l3': 'écrit en Rust.',
     'hero.lede': "Aether lit les fichiers audio déjà présents sur le disque. À partir d'une liste de lecture — exportée de l'archive Spotify, lue depuis un fichier M3U ou indiquée par un lien — il compare les morceaux à la bibliothèque locale et récupère ceux qui manquent dans les catalogues en accès libre : Internet Archive et Audius. Chaque morceau acquis conserve la licence de la source dont il provient. Les morceaux disponibles dans aucun catalogue libre sont réunis dans une liste d'achat, avec les liens vers les boutiques qui rémunèrent les auteurs.",
-    'hero.cta1': 'Installation', 'hero.m1': 'Version 2.1.0 · Windows · en développement', 'hero.m3': 'Chaque morceau conserve la licence de sa source',
+    'hero.cta1': 'Installation', 'hero.m1': 'Version 2.2.0 · Windows · en développement', 'hero.m3': 'Chaque morceau conserve la licence de sa source',
     'ui.albums': 'Albums', 'ui.albumsLow': 'albums', 'ui.tracks': 'Titres', 'ui.artists': 'Artistes', 'ui.fav': 'Favoris', 'ui.settings': 'Réglages',
     'ui.playlists': 'Playlists', 'ui.pl1': 'Poste de nuit', 'ui.pl2': 'Rips vinyle 2019', 'ui.pl3': 'Cuisine, fort', 'ui.pl4': 'Ambient, long',
     'ui.scan': 'Analyse terminée', 'ui.scanmeta': '1 465 titres · il y a 41 min', 'ui.library': 'Bibliothèque', 'ui.libmeta': '1 465 · 4 j 2 h',
@@ -1048,11 +1048,11 @@ const I18N = {
     's5.p': "Deux questions exigent une clarification écrite avant publication : si les dons constituent un usage commercial au sens des conditions de Jamendo, et de l'API Deezer employée pour les métadonnées. Sans réponse, le module Jamendo reste derrière une feature Cargo désactivable.",
     'lim.h3': 'Limites connues',
     'win.h3': "Windows — ordre d'implémentation", 'win.meta': '13 entrées · 9 terminées · 1 en cours · 3 à faire',
-    'access.h2': 'Version 2.1.0, pour Windows, non signée.',
+    'access.h2': 'Version 2.2.0, pour Windows, non signée.',
     'access.p': "L'installateur pour Windows est disponible parmi les fichiers joints de la dernière release : un exécutable NSIS. Il n'est pas signé avec un certificat de code signing, donc SmartScreen en bloque l'exécution au premier lancement : «Informations complémentaires», puis «Exécuter quand même». Les raisons de l'absence de signature figurent parmi les limites connues.",
-    'access.btn': 'Télécharger la 2.1.0 pour Windows',
+    'access.btn': 'Télécharger la 2.2.0 pour Windows',
     'access.note': "Les modifications apportées par chaque version sont listées dans CHANGELOG.md. Toute version qui introduit une migration de la base de données entraîne l'incrément du numéro mineur, car les migrations ne sont pas réversibles.",
-    'rel.h': 'Ce que change la 2.1.0', 'rel.meta': 'Publiée le 3 septembre 2026 · deux migrations de la base', 'rel.link': 'Lire le changelog complet',
+    'rel.h': 'Ce que change la 2.2.0', 'rel.meta': 'Publiée le 5 septembre 2026 · deux migrations de la base', 'rel.link': 'Lire le changelog complet',
     'access.spec': 'Lire le format des skins',
     'access.bugs.h': 'Signalements et propositions',
     'access.bugs.p': "Le programme est publié et encore en développement. Les signalements de pannes et les propositions sur ce qu'il devrait faire ensuite sont reçus à la même adresse. La procédure de signalement des vulnérabilités est dans SECURITY.md.",
@@ -1060,7 +1060,7 @@ const I18N = {
     'access.donate.p': "Il n'existe pas de version payante et il n'en est pas prévu : deux des sources intégrées, le Live Music Archive et Jamendo, sont soumises à des clauses non commerciales qu'une version payante enfreindrait. La contrainte est indiquée explicitement dans les conditions d'utilisation.",
     'access.donate.btn': 'Soutenir le développement',
     'footer.bugs': 'Contact', 'footer.donate': 'Faire un don', 'footer.changelog': 'Changelog', 'footer.privacy': 'Confidentialité', 'footer.terms': "Conditions", 'footer.licence': 'Licence · MIT',
-    'footer.tag': 'Lecteur de musique pour Windows, écrit en Rust · version 2.1.0', 'footer.updated': 'Dernière mise à jour',
+    'footer.tag': 'Lecteur de musique pour Windows, écrit en Rust · version 2.2.0', 'footer.updated': 'Dernière mise à jour',
     marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Lecture sans blanc', 'Fondu enchaîné', 'ReplayGain', 'Égaliseur dix bandes', 'Paroles synchronisées', 'Scrobbling', 'Listes intelligentes', 'Sauvegarde Drive', 'Pochettes intégrées', 'SQLite', 'MusicBrainz', 'Internet Archive', 'Audius', 'Pas de télémétrie', 'MIT'],
     pillars: [
       { t: 'Lecture sans blanc', b: "Un seul moteur audio, cpal et symphonia, réparti sur trois threads, sans aucun verrou partagé entre le décodeur et le callback audio. ReplayGain, égaliseur et file d'attente persistante." },
@@ -1106,12 +1106,12 @@ const I18N = {
       { t: 'Application mobile', b: 'Présente dans la version précédente du projet, pas encore réécrite.' }
     ],
     release: [
-      { t: "Un partage réseau qui cesse de répondre est déclaré comme panne de réseau et non plus comme fichier endommagé. La lecture s'arrête où elle était, et «Réessayer» reprend au point où la musique s'était interrompue." },
-      { t: "Une analyse ne supprime plus de morceaux parce qu'une racine n'a pas répondu : un parcours partiel vaut un parcours vide, et rien n'est retiré." },
-      { t: "L'ouverture d'un fichier se fait hors des verrous de la bibliothèque et du lecteur, avec un délai de cinq secondes. La fenêtre répond pendant tout ce temps." },
-      { t: "Une erreur non interceptée dans l'interface dessine ce qui s'est passé et offre un bouton pour recharger, au lieu de laisser une fenêtre blanche, et laisse une ligne dans le journal." },
-      { t: 'Trente-huit autres défauts, regroupés dans le changelog selon ce qu\'ils coûtent à celui qui écoute plutôt que par fichier.' },
-      { t: 'Deux migrations, 015_riconcilia et 016_metadati. Les migrations ne vont que vers l\'avant : revenir à la 2.0.1 exige la restauration d\'une copie de la base faite avant la mise à jour.' }
+      { t: "L'affinité : le morceau qui suit un disque provient de trois couches indépendantes — le son de vos fichiers, analysé en local et sans qu'un octet d'audio quitte la maison ; vos écoutes, et leur durée ; la proximité culturelle lue chez ListenBrainz. Une couche absente se retire du calcul au lieu d'abaisser le score de tout le monde." },
+      { t: "Le lundi : jusqu'à quatre collections de vingt morceaux, calculées en local pendant que la machine est au repos, qui restent en place sept jours puis deviennent autres. Ce qui est sorti la semaine passée ne ressort pas." },
+      { t: "«Radio d'ici» sur n'importe quel morceau ou album, et une file d'attente qui dit pourquoi elle a choisi ce morceau : «poursuit le disque», «ressemble à celui-ci», «vous ne l'avez pas écouté depuis des mois»." },
+      { t: "Le premier lancement va désormais jusqu'à la première note : les dossiers de musique déclarés par le système sont comptés et proposés déjà cochés, au lieu d'une pièce vide demandant d'en ajouter un depuis les réglages." },
+      { t: "Les morceaux en écoute seule d'Audius et d'Internet Archive se lisent : ce qui parvient au moteur audio est indiscernable d'un fichier." },
+      { t: "L'application ne meurt plus pendant sa fermeture, et la fenêtre ne se fige plus pendant qu'on l'utilise. Deux migrations, 017_affinita et 018_settimana. Les migrations ne vont que vers l'avant : revenir à la 2.1.0 exige de restaurer une copie de la base faite avant la mise à jour." }
     ],
     platStatus: { out: 'Disponible', prog: 'En cours', none: 'Pas commencé' },
     road: { done: 'Terminé', prog: 'En cours', todo: 'À faire' },
@@ -1132,11 +1132,11 @@ const I18N = {
     ]
   },
   de: {
-    'nav.badge': '2.1.0 · Windows', 'nav.sources': 'Quellen', 'nav.app': 'Das Programm', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Grenzen', 'nav.star': 'Star auf GitHub',
+    'nav.badge': '2.2.0 · Windows', 'nav.sources': 'Quellen', 'nav.app': 'Das Programm', 'nav.studio': 'Skin Studio', 'nav.format': 'Format', 'nav.roadmap': 'Grenzen', 'nav.star': 'Star auf GitHub',
     'hero.badge': 'Musikplayer für Windows, in Rust geschrieben',
     'hero.l1': 'Musikplayer', 'hero.l2': 'für Windows,', 'hero.l3': 'in Rust geschrieben.',
     'hero.lede': 'Aether spielt die Audiodateien, die bereits auf der Festplatte liegen. Ausgehend von einer Playlist — exportiert aus dem Spotify-Archiv, aus einer M3U-Datei gelesen oder über einen Link angegeben — vergleicht das Programm die Titel mit der lokalen Bibliothek und holt die fehlenden aus den frei zugänglichen Katalogen: Internet Archive und Audius. Jeder erworbene Titel behält die Lizenz der Quelle, aus der er stammt. Titel, die in keinem freien Katalog verfügbar sind, werden in einer Kaufliste gesammelt, mit den Links zu den Shops, die die Urheber vergüten.',
-    'hero.cta1': 'Installation', 'hero.m1': 'Version 2.1.0 · Windows · in Entwicklung', 'hero.m3': 'Jeder Titel behält die Lizenz seiner Quelle',
+    'hero.cta1': 'Installation', 'hero.m1': 'Version 2.2.0 · Windows · in Entwicklung', 'hero.m3': 'Jeder Titel behält die Lizenz seiner Quelle',
     'ui.albums': 'Alben', 'ui.albumsLow': 'Alben', 'ui.tracks': 'Titel', 'ui.artists': 'Künstler', 'ui.fav': 'Favoriten', 'ui.settings': 'Einstellungen',
     'ui.playlists': 'Playlists', 'ui.pl1': 'Nachtschicht', 'ui.pl2': 'Vinyl-Rips 2019', 'ui.pl3': 'Küche, laut', 'ui.pl4': 'Ambient, lang',
     'ui.scan': 'Scan abgeschlossen', 'ui.scanmeta': '1 465 Titel · vor 41 Min.', 'ui.library': 'Bibliothek', 'ui.libmeta': '1 465 · 4 T 2 Std',
@@ -1166,11 +1166,11 @@ const I18N = {
     's5.p': 'Zwei Fragen erfordern vor der Veröffentlichung eine schriftliche Klärung: ob Spenden im Sinne der Bedingungen von Jamendo und der für Metadaten eingesetzten Deezer-API eine kommerzielle Nutzung darstellen. Ohne Antwort bleibt das Jamendo-Modul hinter einem abschaltbaren Cargo-Feature.',
     'lim.h3': 'Bekannte Grenzen',
     'win.h3': 'Windows — Implementierungsreihenfolge', 'win.meta': '13 Einträge · 9 erledigt · 1 laufend · 3 offen',
-    'access.h2': 'Version 2.1.0, für Windows, unsigniert.',
+    'access.h2': 'Version 2.2.0, für Windows, unsigniert.',
     'access.p': 'Der Installer für Windows liegt unter den Anhängen der letzten Release: eine NSIS-Datei. Er ist nicht mit einem Code-Signing-Zertifikat signiert, daher blockiert SmartScreen die Ausführung beim ersten Start: «Weitere Informationen», dann «Trotzdem ausführen». Die Gründe für die fehlende Signatur stehen unter den bekannten Grenzen.',
-    'access.btn': '2.1.0 für Windows herunterladen',
+    'access.btn': '2.2.0 für Windows herunterladen',
     'access.note': 'Die Änderungen jeder Version sind in CHANGELOG.md aufgeführt. Jede Version, die eine Datenbankmigration einführt, erhöht die Minor-Nummer, weil Migrationen nicht umkehrbar sind.',
-    'rel.h': 'Was 2.1.0 ändert', 'rel.meta': 'Veröffentlicht am 3. September 2026 · zwei Datenbankmigrationen', 'rel.link': 'Das vollständige Changelog lesen',
+    'rel.h': 'Was 2.2.0 ändert', 'rel.meta': 'Veröffentlicht am 5. September 2026 · zwei Datenbankmigrationen', 'rel.link': 'Das vollständige Changelog lesen',
     'access.spec': 'Das Skin-Format lesen',
     'access.bugs.h': 'Meldungen und Vorschläge',
     'access.bugs.p': 'Das Programm ist veröffentlicht und wird weiter entwickelt. Fehlermeldungen und Vorschläge dazu, was als Nächstes kommen sollte, werden unter derselben Adresse entgegengenommen. Das Verfahren zur Meldung von Sicherheitslücken steht in SECURITY.md.',
@@ -1178,7 +1178,7 @@ const I18N = {
     'access.donate.p': 'Es gibt keine kostenpflichtige Version und es ist keine geplant: zwei der eingebundenen Quellen, das Live Music Archive und Jamendo, unterliegen nicht-kommerziellen Klauseln, die eine kostenpflichtige Version verletzen würde. Die Bindung ist in den Nutzungsbedingungen ausdrücklich festgehalten.',
     'access.donate.btn': 'Entwicklung unterstützen',
     'footer.bugs': 'Kontakt', 'footer.donate': 'Spenden', 'footer.changelog': 'Changelog', 'footer.privacy': 'Datenschutz', 'footer.terms': 'Bedingungen', 'footer.licence': 'Lizenz · MIT',
-    'footer.tag': 'Musikplayer für Windows, in Rust geschrieben · Version 2.1.0', 'footer.updated': 'Zuletzt aktualisiert',
+    'footer.tag': 'Musikplayer für Windows, in Rust geschrieben · Version 2.2.0', 'footer.updated': 'Zuletzt aktualisiert',
     marquee: ['FLAC', 'ALAC', 'WAV', 'AIFF', 'MP3', 'OGG', 'AAC', 'Lückenlose Wiedergabe', 'Crossfade', 'ReplayGain', 'Zehn-Band-Equalizer', 'Synchroner Songtext', 'Scrobbling', 'Intelligente Playlists', 'Drive-Backup', 'Eingebettete Cover', 'SQLite', 'MusicBrainz', 'Internet Archive', 'Audius', 'Keine Telemetrie', 'MIT'],
     pillars: [
       { t: 'Lückenlose Wiedergabe', b: 'Eine einzige Audio-Engine, cpal und symphonia, verteilt auf drei Threads, ohne gemeinsames Lock zwischen Decoder und Audio-Callback. ReplayGain, Equalizer und dauerhafte Warteschlange.' },
@@ -1224,12 +1224,12 @@ const I18N = {
       { t: 'Mobile Anwendung', b: 'In der vorherigen Fassung des Projekts vorhanden, noch nicht neu geschrieben.' }
     ],
     release: [
-      { t: 'Eine Netzfreigabe, die nicht mehr antwortet, wird als Netzstörung erklärt und nicht länger als beschädigte Datei. Die Wiedergabe hält an, wo sie war, und «Wiederholen» setzt an der Stelle an, an der die Musik abbrach.' },
-      { t: 'Ein Scan löscht keine Titel mehr, weil eine Wurzel nicht geantwortet hat: ein teilweiser Durchlauf gilt wie ein leerer, und es wird nichts entfernt.' },
-      { t: 'Das Öffnen einer Datei geschieht außerhalb der Locks von Bibliothek und Player, mit einer Frist von fünf Sekunden. Das Fenster antwortet die ganze Zeit.' },
-      { t: 'Ein nicht abgefangener Fehler in der Oberfläche zeichnet, was geschehen ist, und bietet eine Schaltfläche zum Neuladen, anstatt ein weißes Fenster zu hinterlassen, und schreibt eine Zeile ins Protokoll.' },
-      { t: 'Weitere achtunddreißig Defekte, im Changelog danach gruppiert, was sie den Hörenden kosten, und nicht nach Datei.' },
-      { t: 'Zwei Migrationen, 015_riconcilia und 016_metadati. Migrationen gehen nur vorwärts: die Rückkehr zu 2.0.1 erfordert das Wiederherstellen einer vor dem Update angelegten Kopie der Datenbank.' }
+      { t: 'Die Affinität: Was nach einem Album folgt, ergibt sich aus drei unabhängigen Schichten — dem Klang der eigenen Dateien, lokal analysiert und ohne dass ein Byte Audio das Haus verlässt; dem Gehörten und wie lange; der kulturellen Nähe, gelesen bei ListenBrainz. Eine fehlende Schicht nimmt sich aus der Rechnung, statt die Bewertung aller zu senken.' },
+      { t: 'Der Montag: bis zu vier Sammlungen von zwanzig Titeln, lokal berechnet, während die Maschine ruht, die sieben Tage bestehen bleiben und dann andere werden. Was vorige Woche kam, kommt nicht wieder.' },
+      { t: '«Radio von hier» auf jedem Titel und jedem Album, und eine Warteschlange, die sagt, warum sie gewählt hat, was sie gewählt hat: «setzt das Album fort», «klingt wie dieser», «seit Monaten nicht gehört».' },
+      { t: 'Der erste Start reicht nun bis zum ersten Ton: Die vom System gemeldeten Musikordner werden gezählt und bereits angehakt angeboten, statt eines leeren Raums, der bittet, in den Einstellungen einen hinzuzufügen.' },
+      { t: 'Nur-Hören-Titel von Audius und dem Internet Archive spielen: Was die Audio-Engine erreicht, ist von einer Datei nicht zu unterscheiden.' },
+      { t: 'Die Anwendung stirbt nicht mehr während des Schließens, und das Fenster friert nicht mehr ein, während man es benutzt. Zwei Migrationen, 017_affinita und 018_settimana. Migrationen gehen nur vorwärts: eine Rückkehr zu 2.1.0 erfordert das Wiederherstellen einer vor dem Update angefertigten Kopie der Datenbank.' }
     ],
     platStatus: { out: 'Verfügbar', prog: 'Läuft', none: 'Nicht begonnen' },
     road: { done: 'Erledigt', prog: 'Läuft', todo: 'Offen' },
