@@ -205,6 +205,8 @@ function Fermate({
   return (
     <div className="fermate">
       {fermate.map((fermata, indice) => (
+        // L'indice è la chiave perché è l'identità: una fermata è il suo posto
+        // nel gradiente, e due dello stesso colore non sono la stessa.
         <div key={indice} className="una-fermata">
           <ValoreColore
             valore={fermata.color ?? null}

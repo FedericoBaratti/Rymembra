@@ -20,6 +20,7 @@ use aether_play::{BANDE, LIMITE_DB, Sorgente};
 use rusqlite::Connection;
 
 use crate::files::MusicFiles;
+use crate::library::db_error;
 
 /// La chiave con cui la coda sta in `settings`.
 pub const CHIAVE_CODA: &str = "player.queue";
@@ -44,17 +45,34 @@ pub const CHIAVE_REPLAYGAIN: &str = "player.replaygain";
 /// La chiave con cui sta quante barre disegna lo spettro.
 ///
 /// In `settings` e non in `localStorage`, come tutto il resto delle preferenze
-/// da quando il tema si è spostato qui: `localStorage` non finisce né nel
-/// backup né nella sincronia, e una scelta che sparisce cambiando dispositivo è
-/// una scelta che va rifatta ogni volta.
+/// da quando il tema si è spostato qui: `localStorage` non sopravvive a una
+/// reinstallazione, e una scelta che sparisce cambiando computer è una scelta
+/// che va rifatta ogni volta.
+///
+/// Qui c'era scritto che le preferenze «viaggiano con il backup e con la
+/// sincronia»: non era vero per questa chiave, e non lo è per quasi nessuna. Il
+/// backup su Drive copia **due** righe di `settings` (le cartelle sorvegliate e
+/// la skin attiva) e la sincronia **tre**. L'unico meccanismo che porta una
+/// preferenza da un computer a un altro è il [profilo](crate::profilo), che è
+/// un elenco di inclusioni — e fino a oggi questa chiave in quell'elenco non
+/// c'era. Adesso c'è, insieme a [`CHIAVE_SPETTRO_VISIBILE`].
 pub const CHIAVE_SPETTRO_BANDE: &str = "player.spectrum.bands";
 
-fn db_error(cosa: &str, err: &rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(cosa.to_owned()),
-    })
-    .with_cause(err.to_string())
-}
+/// La chiave con cui sta se la scena dello spettro parte accesa.
+///
+/// Di serie **spenta** — chi apre «In riproduzione» è venuto a guardare la
+/// copertina — ma la scelta si ricorda, e viaggia nel profilo: «voglio vedere
+/// lo spettro» è un gusto di chi ascolta, non un fatto di questa macchina, e
+/// resta vero su qualunque computer.
+pub const CHIAVE_SPETTRO_VISIBILE: &str = "player.spectrum.visible";
+
+/// La chiave con cui sta il tetto di qualità della scena dello spettro.
+///
+/// **Non** viaggia nel profilo, ed è deliberato: è la terza omissione di
+/// `crate::profilo`, dopo la coda e l'uscita audio, e per la stessa ragione —
+/// «alta» descrive quel che *questa* scheda video regge. La prova che tiene
+/// deliberata l'omissione sta in fondo a quel file.
+pub const CHIAVE_SPETTRO_QUALITA: &str = "player.spectrum.quality";
 
 /// Quel che il database sa di un brano da suonare.
 ///
@@ -176,6 +194,12 @@ pub fn sorgente(
 }
 
 /// L'estensione di un percorso, in minuscolo e senza il punto.
+///
+/// La sorella su indirizzi è `aether_domain::indirizzo::estensione_da_url`,
+/// e le due regole si somigliano senza coincidere: quella butta prima query
+/// e schema e scarta le code non alfanumeriche, questa spezza anche sulla
+/// barra rovesciata perché i percorsi che le arrivano vengono dal disco di
+/// Windows. Restano due funzioni perché sono due domande diverse.
 fn estensione_di(path: &str) -> Option<String> {
     let ultimo = path.rsplit(['/', '\\']).next().unwrap_or(path);
     let (_, ext) = ultimo.rsplit_once('.')?;
@@ -558,6 +582,48 @@ pub fn load_crossfade(connection: &Connection) -> Result<u64, AppError> {
     )
 }
 
+// ── da quale scheda esce il suono ───────────────────────────────────────────
+
+/// Il nome dell'uscita audio scelta a mano. Assente: quella di sistema.
+pub const CHIAVE_USCITA: &str = "player.output";
+
+/// Conserva su quale uscita si vuole sentire Aether.
+///
+/// `None` non è «non lo so»: è la scelta esplicita «quella che usa il sistema»,
+/// e va scritta come le altre — cancellare la chiave e riscriverla sono la
+/// stessa cosa per chi legge, ma un `null` in `settings` dice che qualcuno c'è
+/// passato, e nel dubbio è quel che si vuole trovare.
+///
+/// # Perché il nome e non un identificativo
+///
+/// Perché cpal non ne ha uno: `Device` sa dire soltanto `name()`. Il prezzo è
+/// scritto in testa a `aether_play::dispositivi` — nomi tradotti, ripetuti, che
+/// un aggiornamento del driver può riscrivere — e si paga con il ripiego:
+/// `dispositivi::scegli` torna al predefinito quando il nome non corrisponde a
+/// niente, senza chiamarlo errore.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn save_uscita(connection: &Connection, id: Option<&str>) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_USCITA, &id)
+}
+
+/// Rilegge l'uscita scelta. Assente, o illeggibile, vale «quella di sistema».
+///
+/// Illeggibile **non** è un errore, ed è voluto: questa chiave arriva anche da
+/// un database ripristinato da un backup fatto su un altro computer, dove il
+/// nome scritto qui non nomina niente. Rifiutare di partire per una preferenza
+/// che non si può onorare vorrebbe dire un'applicazione muta al posto di
+/// un'applicazione che suona dagli altoparlanti.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn load_uscita(connection: &Connection) -> Result<Option<String>, AppError> {
+    Ok(crate::settings::read_json::<Option<String>>(connection, CHIAVE_USCITA)?.flatten())
+}
+
 /// Conserva quante barre disegna lo spettro.
 ///
 /// # Errori
@@ -612,6 +678,105 @@ fn sana(normalizzazione: Normalizzazione) -> Normalizzazione {
             BERSAGLIO_PREDEFINITO_DB
         },
     }
+}
+
+// ── lo spettro: se si vede, e quanto può costare ────────────────────────────
+
+/// Quanto la scena dello spettro può spendere su questa macchina.
+///
+/// Una skin dice come la scena **appare**; questa dice quanto questo computer è
+/// disposto a pagarla. Sono due domande diverse, e tenerle separate è ciò che
+/// permette alla prima di viaggiare in un profilo mentre la seconda resta qui.
+///
+/// # Perché non c'è nessun `sane()` a mano
+///
+/// Perché il ritaglio esiste già, scritto una volta sola e più in alto.
+/// `#[serde(rename_all = "lowercase")]` significa che nel database finiscono
+/// esattamente tre parole — `"auto"`, `"alta"`, `"bassa"` — e che qualunque
+/// altra cosa, `"ultra"` compreso, **non si deserializza**.
+/// [`crate::settings::read_json`] dichiara già che un valore che non si
+/// interpreta vale *come se non ci fosse*, e assente vale [`Qualita::Auto`].
+/// Il ritaglio cade fuori da quella regola invece di essere una seconda regola
+/// che qualcuno dovrà ricordarsi di tenere allineata alla prima.
+///
+/// Per le barre è diverso, e [`sane`] resta dov'è: là i valori validi sono otto
+/// numeri fra i quali non c'è niente, e un `100` scritto da una versione con un
+/// altro elenco di risoluzioni **si deserializza benissimo** — il tipo è `u16`,
+/// non un'enumerazione. Là il ritaglio va scritto perché serde non lo fa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Qualita {
+    /// Lo decide la scena, guardando quel che questa macchina riesce a fare.
+    Auto,
+    /// Il massimo che la scena sa disegnare, costi quel che costi.
+    Alta,
+    /// Il minimo indispensabile: ventola ferma e batteria che dura.
+    Bassa,
+}
+
+impl Qualita {
+    /// Il livello che porta questo nome; ogni altro nome vale [`Qualita::Auto`].
+    ///
+    /// È l'ingresso dal filo: la finestra manda una stringa, e una stringa può
+    /// essere qualunque cosa. I nomi sono gli **stessi** che serde scrive nel
+    /// database — se i due elenchi divergessero, la preferenza di ieri
+    /// diventerebbe illeggibile oggi, in silenzio — e c'è una prova che lo
+    /// tiene vero: `il_nome_sul_filo_e_il_nome_nel_database`.
+    #[must_use]
+    pub fn da_nome(nome: &str) -> Self {
+        match nome {
+            "alta" => Self::Alta,
+            "bassa" => Self::Bassa,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// Conserva se la scena dello spettro parte accesa.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn save_spettro_visibile(connection: &Connection, acceso: bool) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_SPETTRO_VISIBILE, &acceso)
+}
+
+/// Rilegge se la scena dello spettro parte accesa. Mai scelta, è spenta.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde. Un valore illeggibile vale
+/// come assente, cioè spento: la stessa regola del resto del modulo, e qui la
+/// più conservativa delle due — una scena che non si accende si accende con un
+/// click, una che si accende da sola su un dato storto costa una GPU a chi non
+/// l'aveva chiesta.
+pub fn load_spettro_visibile(connection: &Connection) -> Result<bool, AppError> {
+    Ok(crate::settings::read_json::<bool>(connection, CHIAVE_SPETTRO_VISIBILE)?.unwrap_or(false))
+}
+
+/// Conserva il tetto di qualità della scena dello spettro.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn save_spettro_qualita(connection: &Connection, qualita: Qualita) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_SPETTRO_QUALITA, &qualita)
+}
+
+/// Rilegge il tetto di qualità. Mai scelto, o illeggibile, è [`Qualita::Auto`].
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde. Un nome che questa versione
+/// non conosce non è un errore, e la ragione sta nella carta di [`Qualita`]:
+/// serde rifiuta di leggerlo, `read_json` lo tratta come assente, e assente è
+/// «lo decide la scena» — che è la risposta giusta anche quando la preferenza
+/// arriva da una versione che aveva un livello in più.
+pub fn load_spettro_qualita(connection: &Connection) -> Result<Qualita, AppError> {
+    Ok(
+        crate::settings::read_json::<Qualita>(connection, CHIAVE_SPETTRO_QUALITA)?
+            .unwrap_or(Qualita::Auto),
+    )
 }
 
 // ── l'equalizzatore ─────────────────────────────────────────────────────────
@@ -1085,6 +1250,36 @@ mod prove {
     }
 
     #[test]
+    fn l_uscita_mai_scelta_e_quella_di_sistema() {
+        let c = db();
+        assert_eq!(load_uscita(&c).expect("riletta"), None);
+    }
+
+    #[test]
+    fn l_uscita_scelta_torna_com_era() {
+        let c = db();
+        save_uscita(&c, Some("FiiO K11")).expect("scritta");
+        assert_eq!(
+            load_uscita(&c).expect("riletta"),
+            Some("FiiO K11".to_owned())
+        );
+        // E si torna indietro: «predefinito di sistema» è una scelta, non
+        // l'assenza di una scelta, e deve poter cancellare quella di prima.
+        save_uscita(&c, None).expect("scritta");
+        assert_eq!(load_uscita(&c).expect("riletta"), None);
+    }
+
+    #[test]
+    fn un_uscita_illeggibile_non_impedisce_l_avvio() {
+        // Il caso vero: un database ripristinato da un'altra macchina, o una
+        // versione futura che scrive qui dentro qualcos'altro. Muti si resta
+        // solo se non c'è nessuna scheda, mai per una preferenza storta.
+        let c = db();
+        crate::settings::write(&c, CHIAVE_USCITA, "{non è json").expect("scritta");
+        assert_eq!(load_uscita(&c).expect("riletta"), None);
+    }
+
+    #[test]
     fn le_barre_dello_spettro_mai_scelte_sono_quelle_di_serie() {
         let c = db();
         assert_eq!(
@@ -1122,6 +1317,88 @@ mod prove {
             load_spettro_bande(&c).expect("riletta"),
             aether_play::RISOLUZIONE_DI_SERIE
         );
+    }
+
+    #[test]
+    fn uno_spettro_mai_scelto_e_spento() {
+        // Chi apre «In riproduzione» per la prima volta è venuto a guardare la
+        // copertina, e una scena WebGL accesa di serie è una ventola accesa di
+        // serie.
+        let c = db();
+        assert!(!load_spettro_visibile(&c).expect("riletta"));
+    }
+
+    #[test]
+    fn uno_spettro_acceso_resta_acceso() {
+        // Il difetto vero che questa prova impedisce: un `unwrap_or(false)`
+        // messo sul ramo sbagliato si mangia un `true` scritto davvero, e la
+        // preferenza sembra non salvarsi mai — senza nessun errore, perché
+        // «spento» è anche il valore di serie.
+        let c = db();
+        save_spettro_visibile(&c, true).expect("scritta");
+        assert!(load_spettro_visibile(&c).expect("riletta"));
+        save_spettro_visibile(&c, false).expect("scritta");
+        assert!(!load_spettro_visibile(&c).expect("riletta"));
+    }
+
+    #[test]
+    fn una_visibilita_illeggibile_lascia_la_scena_com_era() {
+        // Un database ripristinato da un'altra macchina, o una versione futura
+        // che scrive qui dentro qualcos'altro: si resta spenti, che è il caso
+        // conservativo — accendere una GPU su un dato storto è il difetto.
+        let c = db();
+        crate::settings::write(&c, CHIAVE_SPETTRO_VISIBILE, "{non è json").expect("scritta");
+        assert!(!load_spettro_visibile(&c).expect("riletta"));
+    }
+
+    #[test]
+    fn una_qualita_mai_scelta_e_automatica() {
+        let c = db();
+        assert_eq!(load_spettro_qualita(&c).expect("riletta"), Qualita::Auto);
+    }
+
+    #[test]
+    fn una_qualita_che_non_esiste_diventa_automatica() {
+        // È il ritaglio che non abbiamo scritto: il `rename_all` fa fallire la
+        // deserializzazione di `"ultra"`, `read_json` tratta il malformato come
+        // assente, e assente è «lo decide la scena». Se qualcuno togliesse il
+        // `rename_all`, o accettasse la stringa grezza, questa prova cade.
+        let c = db();
+        crate::settings::write(&c, CHIAVE_SPETTRO_QUALITA, r#""ultra""#).expect("scritta");
+        assert_eq!(load_spettro_qualita(&c).expect("riletta"), Qualita::Auto);
+        crate::settings::write(&c, CHIAVE_SPETTRO_QUALITA, "{non è json").expect("scritta");
+        assert_eq!(load_spettro_qualita(&c).expect("riletta"), Qualita::Auto);
+        // E il nome giusto con la maiuscola sbagliata è un nome sbagliato.
+        crate::settings::write(&c, CHIAVE_SPETTRO_QUALITA, r#""Alta""#).expect("scritta");
+        assert_eq!(load_spettro_qualita(&c).expect("riletta"), Qualita::Auto);
+    }
+
+    #[test]
+    fn i_tre_livelli_fanno_andata_e_ritorno() {
+        let c = db();
+        for livello in [Qualita::Auto, Qualita::Alta, Qualita::Bassa] {
+            save_spettro_qualita(&c, livello).expect("scritta");
+            assert_eq!(load_spettro_qualita(&c).expect("riletta"), livello);
+        }
+    }
+
+    #[test]
+    fn il_nome_sul_filo_e_il_nome_nel_database() {
+        // Due elenchi di nomi per la stessa enumerazione: quello di serde, che
+        // finisce nel database, e quello di `da_nome`, che arriva dalla
+        // finestra. Il giorno in cui divergono, la preferenza di ieri diventa
+        // illeggibile oggi — e in silenzio, perché il ripiego è `Auto`.
+        for livello in [Qualita::Auto, Qualita::Alta, Qualita::Bassa] {
+            let scritto = serde_json::to_string(&livello).expect("serializzata");
+            let nome = scritto.trim_matches('"');
+            assert_eq!(
+                Qualita::da_nome(nome),
+                livello,
+                "serde scrive «{nome}» e `da_nome` non lo riconosce"
+            );
+        }
+        assert_eq!(Qualita::da_nome("ultra"), Qualita::Auto);
+        assert_eq!(Qualita::da_nome(""), Qualita::Auto);
     }
 
     #[test]

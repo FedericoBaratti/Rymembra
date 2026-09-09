@@ -62,6 +62,10 @@ aether-meta = { path = "../../../core/aether-meta" }
 # I due protocolli di scrobbling. La coda sta in `aether-app` e non conosce la
 # rete; questo crate mette in mezzo le credenziali e il filo che svuota.
 aether-scrobble = { path = "../../../core/aether-scrobble" }
+# Il client dei modelli di linguaggio. Non conosce le skin — le istruzioni che
+# descrivono i token gliele passa la finestra — e non conosce il portachiavi: la
+# chiave la prende `ia.rs`, un istante prima della richiesta.
+aether-ia = { path = "../../../core/aether-ia" }
 aether-skin = { path = "../../../core/aether-skin" }
 # I cataloghi liberi: l'unico posto dell'albero che va a prendere dei byte
 # musicali, e lo fa solo dove prenderli è espressamente permesso. Nessun
@@ -77,7 +81,13 @@ serde_json.workspace = true
 # un'impronta e non un percorso. Il protocollo generale servirebbe file
 # arbitrari dietro una lista di cartelle permesse — più superficie, per una cosa
 # che non ci serve.
-tauri = { version = "2", features = [] }
+#
+# Con `tray-icon`: l'icona nell'area di notifica è il modo di tornare da una
+# finestra nascosta, e senza un modo di tornare «chiudi senza spegnere» sarebbe
+# un programma che si perde. La feature accende `tray-icon` e `muda`, che erano
+# **già** nel grafo delle dipendenze di `tauri` — non entra niente di nuovo nel
+# `Cargo.lock`, si accende quel che c'era spento.
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 # La schermata di consenso di Google si apre nel browser di **sistema**, mai
 # nella webview: una finestra dell'app che sa disegnare `accounts.google.com` è

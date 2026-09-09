@@ -79,6 +79,8 @@ export type NomeIcona =
   | "i-sort"
   | "i-eq"
   | "i-text"
+  | "i-ia"
+  | "i-chat"
   | "i-mark";
 
 /** Le proprietà comuni ai simboli col tratto. */
@@ -299,6 +301,19 @@ export function Simboli() {
           strokeLinecap="round"
         >
           <path d="M4 5.4h12M4 9h9M4 12.6h11M4 16.2h6" />
+        </symbol>
+        {/*
+          * I modelli di linguaggio: la stella a quattro punte, che è il glifo
+          * che tutti hanno imparato a leggere come «questo lo fa un modello».
+          * Due e non una, di misure diverse: una sola sembra un preferito.
+          */}
+        <symbol id="i-ia" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M9 4.4 10.3 8.6 14.5 9.9 10.3 11.2 9 15.4 7.7 11.2 3.5 9.9 7.7 8.6Z" />
+          <path d="M15.2 3.4 15.8 5.2 17.6 5.8 15.8 6.4 15.2 8.2 14.6 6.4 12.8 5.8 14.6 5.2Z" />
+        </symbol>
+        <symbol id="i-chat" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M17 11.4a1.6 1.6 0 0 1-1.6 1.6H8.2L5 16v-3h-.4A1.6 1.6 0 0 1 3 11.4V5a1.6 1.6 0 0 1 1.6-1.6h10.8A1.6 1.6 0 0 1 17 5Z" />
+          <path d="M6.6 6.8h6.8M6.6 9.6h4.4" />
         </symbol>
         {/*
          * Il marchio: due archi che non si chiudono, uno del colore del testo e

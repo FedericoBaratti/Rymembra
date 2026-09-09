@@ -333,14 +333,14 @@ fn run(
 ///
 /// Un rapporto che non si serializza non fa fallire l'importazione: la scrittura
 /// vera è già stata fatta, e buttarla via per un problema di serializzazione
-/// sarebbe perdere il molto per il poco. Si annota e si prosegue — la stessa
-/// scelta che `scarica` fa per i tag non scritti.
+/// sarebbe perdere il molto per il poco. Il `let Ok(payload) = … else { return
+/// Ok(()) }` qui sotto **è** tutta la politica — la stessa scelta che `scarica`
+/// fa per i tag non scritti.
+///
+/// Si prosegue in silenzio, e non perché non valga la pena dirlo: questa cassa
+/// non ha un diario. Chi annota è la finestra, e il nucleo non le parla.
 fn salva_rapporto(tx: &Transaction<'_>, rapporto: &RapportoImport) -> Result<(), AppError> {
     let Ok(payload) = serde_json::to_string(rapporto) else {
-        eprintln!(
-            "[import] il rapporto di «{}» non si serializza: l'importazione resta, il rapporto no",
-            rapporto.source_id
-        );
         return Ok(());
     };
     tx.execute(

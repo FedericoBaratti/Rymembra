@@ -47,7 +47,7 @@
 
 use std::collections::HashMap;
 
-use aether_domain::errors::{AppError, ErrorCode};
+use aether_domain::errors::AppError;
 use aether_meta::Fornitori;
 use aether_meta::listenbrainz::{self, MBID_PER_RICHIESTA};
 use rusqlite::{Connection, Transaction};
@@ -381,21 +381,6 @@ pub fn quanti_vicini(connection: &Connection) -> Result<HashMap<i64, usize>, App
         fuori.insert(id, usize::try_from(quanti).unwrap_or(0));
     }
     Ok(fuori)
-}
-
-/// Un guasto che non è del database ma della forma della risposta.
-///
-/// Non si usa oggi: esiste perché `ErrorCode` non ha una variante «il servizio
-/// ha risposto una cosa che non capisco», e il giorno in cui servirà è meglio
-/// che sia già chiaro quale sia.
-#[allow(
-    dead_code,
-    reason = "il posto dove andrà l'errore di forma, quando servirà"
-)]
-fn errore_forma(cosa: &str) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(cosa.to_owned()),
-    })
 }
 
 #[cfg(test)]

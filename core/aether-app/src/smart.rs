@@ -32,7 +32,7 @@ use aether_domain::regole::{
 use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
 
-use crate::library::{COLONNE_BRANO, TrackSummary, track_from_row};
+use crate::library::{COLONNE_BRANO, TrackSummary, db_error, track_from_row};
 
 /// Il tetto oltre cui una playlist intelligente non va, comunque.
 ///
@@ -41,13 +41,6 @@ use crate::library::{COLONNE_BRANO, TrackSummary, track_from_row};
 /// produrrebbe centomila righe da mandare attraverso l'IPC, e chi l'ha scritta
 /// voleva quasi certamente altro. Il limite dell'utente, se c'è, è più stretto.
 pub const TETTO: u32 = 5_000;
-
-fn db_error(cosa: &str, err: &rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(cosa.to_owned()),
-    })
-    .with_cause(err.to_string())
-}
 
 // ── come stanno su disco ────────────────────────────────────────────────────
 //

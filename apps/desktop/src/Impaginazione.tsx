@@ -11,8 +11,10 @@
  * precisamente ciò che la decisione sui prefab rifiuta.
  *
  * Tutto il resto rende da `contesto`, un oggetto solo costruito in `App.tsx`. È
- * anche l'unico imbuto per i ventisei `useState` che stavano passando di mano in
- * mano: `Lettore` prendeva sette prop, `Colonna` sette, `Coda` tre.
+ * anche l'unico imbuto per gli `useState` di `App` — il conteggio sta nel
+ * commento gemello in `App.tsx`, e tenerlo in un posto solo è il modo di non
+ * avere due numeri che divergono — che stavano passando di mano in mano:
+ * `Lettore` prende sei prop, `Colonna` sei, `Coda` tre.
  *
  * # Le sovrapposizioni non sono qui
  *
@@ -361,9 +363,6 @@ const WIDGET: Record<string, ComponenteWidget> = {
       ),
   },
 };
-
-/** I nomi che questo lato sa rendere. Lo Studio li confronta col registro. */
-export const NOMI_WIDGET: readonly string[] = Object.keys(WIDGET);
 
 /**
  * Un widget che il nucleo conosce e questo lato no.

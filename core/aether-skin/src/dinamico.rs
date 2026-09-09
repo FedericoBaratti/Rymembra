@@ -169,7 +169,7 @@ fn dentro_il_gamut(tinta: Oklch) -> bool {
 /// [`Rgba::with_alpha`], e un accento semitrasparente non sarebbe misurabile
 /// contro le superfici senza sapere quale ha sotto.
 #[must_use]
-pub fn in_rgba(tinta: Oklch) -> Rgba {
+pub(crate) fn in_rgba(tinta: Oklch) -> Rgba {
     let (r, g, b) = oklch_in_lineare(tinta);
     Rgba {
         r: byte(gamma(r)),
@@ -181,7 +181,7 @@ pub fn in_rgba(tinta: Oklch) -> Rgba {
 
 /// La tinta di un colore.
 #[must_use]
-pub fn in_oklch(colore: Rgba) -> Oklch {
+pub(crate) fn in_oklch(colore: Rgba) -> Oklch {
     lineare_in_oklch(lineare(colore.r), lineare(colore.g), lineare(colore.b))
 }
 
@@ -192,7 +192,7 @@ pub fn in_oklch(colore: Rgba) -> Oklch {
 /// tonalità fisse — se un croma ci sta, ci stanno tutti quelli sotto. Venti
 /// bisezioni portano l'errore sotto un milionesimo, cioè molto sotto un canale.
 #[must_use]
-pub fn dentro_srgb(tinta: Oklch) -> Oklch {
+pub(crate) fn dentro_srgb(tinta: Oklch) -> Oklch {
     if dentro_il_gamut(tinta) {
         return tinta;
     }

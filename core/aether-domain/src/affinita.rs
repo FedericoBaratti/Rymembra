@@ -256,9 +256,9 @@ impl Scala {
 /// così arrivano i descrittori. I valori in gioco — medie e scarti di
 /// descrittori acustici — stanno comodamente nell'intervallo di `f32`, e quel
 /// che si perde è oltre la sesta cifra.
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
-    reason = "restringimento voluto e discusso qui sopra"
+    reason = "da f64 a f32: medie e scarti di descrittori acustici stanno molto dentro l'intervallo di f32, e il troncamento è quello discusso qui sopra"
 )]
 fn stretta(x: f64) -> f32 {
     x as f32

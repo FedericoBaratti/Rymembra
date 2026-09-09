@@ -40,7 +40,7 @@
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
@@ -666,46 +666,25 @@ fn sporca_subito(nuvola: &StatoNuvola) {
 
 /// Avvia il filo che salva da solo.
 ///
-/// Modellato su `avvia_orologio`: un thread nominato, `recv_timeout` che fa da
-/// periodicità **e** da antirimbalzo, nessun timer e nessun runtime asincrono.
-/// Fare quattro richieste HTTP ogni quarto d'ora non giustifica tokio, e con
+/// Il ciclo — thread nominato, `recv_timeout` che fa da periodicità **e** da
+/// antirimbalzo — sta in [`crate::stato::avvia_filo_periodico`], accanto agli
+/// altri due che hanno la stessa forma. Nessun timer e nessun runtime asincrono:
+/// fare quattro richieste HTTP ogni quarto d'ora non giustifica tokio, e con
 /// tokio arriverebbe una seconda idea di cos'è un errore e di chi possiede un
 /// thread.
 pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
-    let avviato = std::thread::Builder::new()
-        .name("aether-nuvola".to_owned())
-        .spawn(move || {
-            let mut motivo = match orecchio.recv_timeout(ATTESA_AVVIO) {
-                // Canale chiuso: l'applicazione sta uscendo.
-                Err(RecvTimeoutError::Disconnected) => return,
-                Ok(sveglia) => sveglia,
-                Err(RecvTimeoutError::Timeout) => Sveglia::Subito,
-            };
-            loop {
-                if motivo == Sveglia::Sporca {
-                    // Si aspetta che la raffica finisca: dieci cuoricini di fila
-                    // sono un salvataggio, non dieci. Si esce da qui quando per
-                    // due minuti non arriva più niente — oppure subito, se nel
-                    // frattempo il canale si è chiuso.
-                    //
-                    // I due esiti si distinguono, e non è pedanteria: un
-                    // `while … .is_ok()` li confonde, e alla chiusura
-                    // dell'applicazione uscirebbe dall'attesa per poi fare una
-                    // passata **intera** — cioè un caricamento su Drive mentre il
-                    // processo sta uscendo.
-                    if crate::stato::aspetta_la_raffica(&orecchio, RAFFICA).is_break() {
-                        return;
-                    }
-                }
-                passata(&app);
-                motivo = match orecchio.recv_timeout(INTERVALLO) {
-                    Err(RecvTimeoutError::Disconnected) => return,
-                    Ok(sveglia) => sveglia,
-                    // Il timeout **è** il battito periodico: nessun timer.
-                    Err(RecvTimeoutError::Timeout) => Sveglia::Subito,
-                };
-            }
-        });
+    let avviato = crate::stato::avvia_filo_periodico(
+        "aether-nuvola",
+        orecchio,
+        ATTESA_AVVIO,
+        RAFFICA,
+        INTERVALLO,
+        // Solo `Sporca` fa aspettare: dieci cuoricini di fila sono un
+        // salvataggio, non dieci — vedi [`RAFFICA`]. Chi ha chiesto di salvare
+        // adesso, invece, sta guardando la finestra.
+        |sveglia| *sveglia == Sveglia::Sporca,
+        move || passata(&app),
+    );
     if let Err(err) = avviato {
         nota!("[avvio] il filo del backup non è partito: {err}");
     }

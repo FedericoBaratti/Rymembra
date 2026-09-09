@@ -68,7 +68,7 @@ export function senzaNodo(radice: NodoScafale, via: Via): NodoScafale {
 }
 
 /** Lo stesso albero con un nodo infilato a un indice dentro una zona. */
-export function conInserito(
+function conInserito(
   radice: NodoScafale,
   dove: Via,
   indice: number,

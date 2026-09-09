@@ -155,10 +155,23 @@
   --dur-2: 280ms;
   --dur-3: 450ms;
   --viz-primary: var(--accent);
-  --viz-primary-rgb: var(--accent-rgb);
-  --viz-secondary: var(--accent);
-  --viz-secondary-rgb: var(--accent-rgb);
+  --viz-secondary: rgb(29 27 58);
+  --viz-tip: rgb(232 226 255);
   --viz-glow: 20;
+  --viz-width: 4.6;
+  --viz-depth: 5.2;
+  --viz-height: 0.62;
+  --viz-fill: 0.7;
+  --viz-lens: 52;
+  --viz-eye: 0.72;
+  --viz-haze: 0.55;
+  --viz-reflection: 0.22;
+  --viz-ambient: 0.42;
+  --viz-sway: 1;
+  --viz-beat: 1;
+  --viz-attack: 41;
+  --viz-release: 258;
+  --viz-floor: -70;
   --scrubber-glow: 6;
   --scrubber-rest: rgb(255 255 255 / 0.18);
   --shell-left: var(--rail-w);
@@ -194,6 +207,8 @@
   --shadow-2: 0px 1px 2px rgb(16 16 22 / 0.06), 0px 8px 20px -4px rgb(16 16 22 / 0.1);
   --shadow-3: 0px 2px 6px -1px rgb(16 16 22 / 0.07), 0px 20px 48px -10px rgb(16 16 22 / 0.14);
   --shadow-player: inset 0px 1px 0px rgb(255 255 255 / 0.85), 0px 1px 3px rgb(16 16 22 / 0.07), 0px 10px 30px -8px rgb(16 16 22 / 0.11);
+  --viz-secondary: rgb(61 52 136);
+  --viz-tip: rgb(255 255 255);
   --scrubber-rest: rgb(16 16 22 / 0.16);
   --surface-0-rgb: 251 251 253;
   color-scheme: light;
@@ -514,6 +529,11 @@ body {
   --barra-titolo-h: 60px;
   /* Quel che i vicini lasciano libero nell'angolo. */
   --controlli-w: calc(var(--controllo-w) * 3);
+  /* Quanto largo è il pannello della chat dello Studio. Sta qui perché lo
+     chiedono in due — il pannello, per la sua larghezza, e `.studio.con-chat`,
+     per il margine che gli fa spazio — e due numeri scritti a mano che devono
+     essere lo stesso numero sono due numeri che prima o poi non lo sono. */
+  --chat-w: 360px;
 }
 
 /* Sopra ogni altro strato — il velo di una finestrella è a 2, la barra della
@@ -1263,21 +1283,6 @@ body {
   font-size: 10.5px;
 }
 
-/* ── blocchi ─────────────────────────────────────────────────────────────── */
-.blocco {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spazio-2);
-}
-.blocco > h2 {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--color-text-3);
-}
-
 .cartella {
   display: flex;
   align-items: center;
@@ -1844,7 +1849,12 @@ body {
    168, `h1` e riga di metadati. Non la emetteva più nessuno da quando l'album
    aperto usa `Intestazione`, cioè la stessa testata di tutte le altre pagine —
    erano ventisette righe che nessun selettore poteva raggiungere. La copertina
-   è tornata lassù, in `.intestazione-pagina .hero-art`. */
+   è tornata lassù, in `.intestazione-pagina .hero-art`.
+
+   Le è sopravvissuto per un po' il solo `.intestazione.playlist`, che alzava
+   in cima la testata senza copertina: un modificatore rimasto senza la classe
+   che modificava, cioè un selettore che non poteva colpire niente nemmeno lui.
+   Adesso non c'è più neanche quello. */
 
 /* ── stati ───────────────────────────────────────────────────────────────── */
 .vuoto {
@@ -2135,9 +2145,81 @@ body {
   flex: 1;
   min-width: 0;
 }
+/* Il suono che si è spostato non è un guasto: è la riapertura automatica che
+   ha funzionato. Stessa forma della fascia rossa — così non salta la riga
+   sotto quando l'una sostituisce l'altra — e la tinta dell'accento al posto di
+   quella dell'avviso. Dare le due notizie con lo stesso colore insegnerebbe a
+   ignorare quella che conta. */
+.audio-spostato {
+  border-color: var(--accent);
+  background: var(--color-surface-2);
+}
+.audio-spostato > svg {
+  color: var(--accent);
+}
+.colonna .audio-spostato {
+  border-color: var(--accent);
+  background: var(--color-surface-2);
+}
+
+/* L'elenco delle uscite audio. Righe intere cliccabili: il pallino da solo è
+   un bersaglio da tredici pixel, e questa è una schermata in cui si arriva
+   quando qualcosa non si sente — cioè già infastiditi. */
+.uscite {
+  list-style: none;
+  margin: 0 0 var(--spazio-3);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.uscite label {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: var(--spazio-2) var(--spazio-2);
+  border-radius: var(--radius-card);
+  cursor: pointer;
+  font-size: 13px;
+}
+.uscite label:hover {
+  background: var(--color-surface-2);
+}
+.uscite input {
+  flex: none;
+  accent-color: var(--accent);
+  margin: 0;
+}
+.uscite .nome {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Le etichette a destra dicono un fatto, non un'azione: piccole, spente, e
+   mai più larghe del nome che accompagnano. */
+.uscite .stato {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-text-2);
+}
+.uscite .stato.in-uso {
+  color: var(--accent);
+}
+/* Scelto ma staccato. Spento e non tolto: una riga che sparisce racconta che
+   la preferenza è stata dimenticata, e invece è ancora lì. */
+.uscite .assente label {
+  opacity: 0.55;
+}
+
 .errore > span {
   flex: 1;
   user-select: text;
+}
+/* Nel toast il dettaglio sta dentro la stessa colonna della frase, sotto. */
+.errore .dettaglio-errore {
+  color: var(--color-text-2);
 }
 .errore code {
   font-family: var(--font-mono);
@@ -2436,13 +2518,18 @@ body {
   gap: var(--spazio-1);
 }
 
-/* Un bottone spento che porta la sua ragione. Il suggerimento appare al
-   passaggio **e al fuoco da tastiera**: un motivo raggiungibile solo col mouse
-   è un motivo che una parte delle persone non legge mai. */
-.con-suggerimento {
-  position: relative;
-  display: inline-flex;
-}
+/*
+ * Il suggerimento al passaggio. `tooltip-pill` è una parte del registro delle
+ * skin, e la regola resta perché chi ridipinge abbia una superficie da
+ * ridipingere: la pastiglia sa già dove mettersi e come stare zitta.
+ *
+ * Chi la scopriva non c'è più. Era un contenitore attorno al bottone spento,
+ * che la faceva salire al passaggio **e al fuoco da tastiera**; è sparito
+ * quando i comandi spenti hanno smesso di aver bisogno di una ragione a parte,
+ * perché i loro testi adesso si leggono. Finché nessuno la monta, `opacity: 0`
+ * è tutto ciò che questa regola fa — ed è quel che `strumenti/classi.js`
+ * dichiara in `ATTESE`, alla voce `tooltip-pill`.
+ */
 .tooltip-pill {
   position: absolute;
   top: calc(100% + 6px);
@@ -2462,10 +2549,6 @@ body {
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--transition-fast);
-}
-.con-suggerimento:hover .tooltip-pill,
-.con-suggerimento:focus-within .tooltip-pill {
-  opacity: 1;
 }
 
 .in-riproduzione .comandi .tasto:disabled {
@@ -2843,7 +2926,7 @@ body {
    (0,1,0), esattamente quanto il selettore che il compilatore delle skin emette;
    quel che dà aspetto alla riga accesa sta su `.lyric-line[data-attiva]`, cioè
    (0,2,0), quanto `[data-active], .is-active`. Il foglio della skin si appende in
-   fondo a `<head>` — `applicaSkin`, in `ipc.ts` — quindi a parità di peso vince
+   fondo a `<head>` — `applicaSkin`, in `aspetto.ts` — quindi a parità di peso vince
    lui, che è la condizione perché una skin possa ridipingere davvero.
 
    Le regole scoperchiate con `.testo-np …` sono solo quelle d'impianto: dove sta
@@ -3735,11 +3818,41 @@ body {
 }
 
 /* ── lo Skin Studio ──────────────────────────────────────────────────────── */
+/*
+ * Quattro righe, e ognuna assegnata per nome.
+ *
+ * Erano tre, e i figli si posavano da soli. Funzionava finché i figli erano
+ * tre — testata, vista, piede — e la fascia `.testo-rotto` entra e esce: cioè
+ * appena il JSON si rompe, che è a ogni parentesi aperta. Con
+ * l'auto-posizionamento la fascia prendeva la riga `minmax(0, 1fr)` e si
+ * stirava a tutta l'altezza in ambra piena, la vista scivolava nella riga da
+ * 34 px, e il piede finiva in una riga implicita fuori dal contenitore alto
+ * `100%`. Lo Studio diventava una banda gialla con sotto un francobollo di
+ * editor, e tornava normale quando si rimetteva la virgola.
+ *
+ * `grid-row` esplicito su tutti e quattro è quel che lo impedisce, e non
+ * dipende da quanti figli ci sono in questo momento: la riga 2 senza niente
+ * dentro è alta zero.
+ */
 .studio {
   display: grid;
-  grid-template-rows: 52px minmax(0, 1fr) 34px;
+  grid-template-rows: 52px auto minmax(0, 1fr) 34px;
   height: 100%;
   background: var(--color-surface-0);
+}
+.studio > .testa-studio {
+  grid-row: 1;
+}
+.studio > .testo-rotto {
+  grid-row: 2;
+}
+.studio > .studio-documento,
+.studio > .corpo-studio,
+.studio > .studio-tavolozza {
+  grid-row: 3;
+}
+.studio > .piede-studio {
+  grid-row: 4;
 }
 
 .testa-studio,
@@ -4445,231 +4558,6 @@ body {
   background: rgb(0 0 0 / 0.22);
 }
 
-.mini {
-  position: relative;
-  display: grid;
-  grid-template-columns: 82px minmax(0, 1fr);
-  height: 100%;
-  font-size: 0;
-}
-.mini-ambiente {
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(80% 60% at 50% 0%, var(--ambient-1), transparent 70%);
-}
-.mini-nav {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 10px 8px;
-  background: var(--color-surface-1);
-  border-right: 1px solid var(--hairline);
-}
-.mini-voce {
-  height: 9px;
-  border-radius: 4px;
-  background: var(--color-surface-2);
-}
-.mini-main {
-  position: relative;
-  padding: 12px;
-  min-width: 0;
-  overflow: hidden;
-}
-.mini-main.sfocata {
-  opacity: 0.4;
-}
-.mini-testa {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding-bottom: 8px;
-  margin-bottom: 8px;
-  border-bottom: 1px solid var(--hairline);
-}
-.mini-riga {
-  display: block;
-  height: 7px;
-  border-radius: 3px;
-  background: var(--color-text-3);
-  opacity: 0.5;
-}
-.mini-riga.corta {
-  width: 40%;
-  height: 10px;
-  opacity: 0.8;
-}
-.mini-riga.cortissima {
-  width: 24%;
-  height: 6px;
-}
-.mini-campo {
-  height: 12px;
-  width: 90px;
-  border-radius: 99px;
-  background: var(--color-surface-2);
-  border: 1px solid var(--hairline);
-}
-.mini-elenco {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.mini-riga-elenco {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
-  gap: 6px;
-  align-items: center;
-  height: 20px;
-  padding: 0 5px;
-  border-radius: 6px;
-}
-.mini-quadro {
-  width: 14px;
-  height: 14px;
-  border-radius: 3px;
-  background: var(--color-surface-3);
-}
-.mini-scheletro {
-  height: 18px;
-  margin-bottom: 5px;
-  border-radius: 6px;
-  background: linear-gradient(
-    90deg,
-    var(--color-surface-1),
-    var(--color-surface-3),
-    var(--color-surface-1)
-  );
-}
-.mini-scheletro.largo {
-  height: 26px;
-}
-.mini-vuoto {
-  display: grid;
-  place-items: center;
-  gap: 6px;
-  height: 100%;
-}
-.mini-icona-vuota {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: var(--color-surface-2);
-  color: var(--color-text-3);
-}
-.mini-modale {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  width: 240px;
-  padding: 14px;
-  background: var(--color-surface-2);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-panel);
-  box-shadow: var(--shadow-3);
-}
-.mini-bottoni {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
-}
-.mini-bottone {
-  width: 46px;
-  height: 15px;
-  border-radius: 6px;
-  background: var(--color-surface-3);
-}
-.mini-bottone.btn-accent {
-  background: var(--accent);
-}
-.mini-lettore {
-  position: absolute;
-  left: 90px;
-  right: 8px;
-  bottom: 8px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  height: 34px;
-  padding: 0 8px;
-  background: var(--color-surface-2);
-  border: 1px solid var(--hairline);
-  border-radius: 12px;
-  box-shadow: var(--shadow-player);
-}
-.mini-cursore {
-  flex: 1;
-  height: 3px;
-  border-radius: 99px;
-  background: var(--scrubber-rest);
-}
-.mini-np {
-  grid-template-columns: 82px minmax(0, 1fr) 120px;
-}
-.mini-velo {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    180deg,
-    rgb(var(--surface-0-rgb) / 0.42),
-    rgb(var(--surface-0-rgb) / 0.8)
-  );
-}
-.mini-np-corpo {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 14px;
-}
-.mini-copertona {
-  width: 110px;
-  height: 110px;
-  border-radius: 12px;
-  background: var(--color-surface-2);
-  box-shadow: var(--shadow-3);
-}
-.mini-trasporto {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.mini-tondo {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--color-surface-3);
-}
-.mini-tondo.grande {
-  width: 22px;
-  height: 22px;
-  background: var(--accent);
-  box-shadow: var(--glow-accent);
-}
-.mini-coda {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 10px 8px;
-  background: var(--color-surface-1);
-  border-left: 1px solid var(--hairline);
-}
-.mini-riga-coda {
-  height: 14px;
-  border-radius: 5px;
-  background: var(--color-surface-2);
-}
-
 .briciole {
   display: flex;
   align-items: center;
@@ -5319,7 +5207,16 @@ body {
 .editor-token .proprieta-riga[data-spento] .che {
   opacity: 0.45;
 }
-.patto-token {
+/*
+ * Il patto del token e la striscia dei preset: la stessa scatola.
+ *
+ * Sono due riquadri diversi per contenuto e uguali per rango — due blocchi
+ * secondari sotto i controlli, che si leggono dopo e non prima — e dare al
+ * secondo una scatola sua vorrebbe dire un secondo padding, un secondo gap e un
+ * secondo posto in cui accorgersi che i due non sono più allineati.
+ */
+.patto-token,
+.preset-token {
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -5338,11 +5235,18 @@ body {
   font-size: 10.5px;
   color: var(--accent);
 }
-.patto-token .nota {
+.patto-token .nota,
+.preset-token .nota {
   margin: 2px 0 0;
   font-size: 10.5px;
   line-height: 1.45;
   color: var(--color-text-3);
+}
+/* I bottoni si staccano dalla didascalia: `.azioni-nodo` porta il proprio gap
+   fra l'uno e l'altro e non quello dalla riga di sopra, e senza questo la
+   striscia sembra appesa al titolino invece che una riga sua. */
+.preset-token .azioni-nodo {
+  margin-top: 1px;
 }
 
 /* ── identità e motivi ────────────────────────────────────────────────────── */
@@ -5522,10 +5426,22 @@ body {
 .testo-rotto > span {
   flex: 1;
   min-width: 0;
+  /* Una riga sola, e il resto in ellissi: il testo cambia a ogni battuta e una
+     fascia che si riavvolge su due righe fa saltare l'editor di quindici pixel
+     mentre ci si scrive dentro. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .testo-rotto > svg {
   color: var(--warning);
   flex: none;
+}
+.testo-rotto .dove-rotto {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-2);
 }
 
 .scarta-bozza {
@@ -5578,8 +5494,11 @@ body {
  *
  * Restano due cose. La prima è la pagina dei tre pannelli, che nell'app non
  * esiste come pagina — là si accendono uno alla volta dentro la schermata
- * grande — e qui è un ripiano su cui stanno fermi e affiancati, perché per
- * ridipingerli bisogna vederli. La seconda è la testata degli interruttori.
+ * grande — e qui è un ripiano su cui stanno affiancati, perché per ridipingerli
+ * bisogna vederli. Fermi lo sono in due su tre: il testo e l'equalizzatore
+ * mostrano uno stato scelto, mentre lo spettro è la scena vera che gira su una
+ * sorgente sintetica, perché una scena ferma non direbbe niente di metà dei
+ * token che la governano. La seconda è la testata degli interruttori.
  */
 
 /*
@@ -5612,13 +5531,25 @@ body {
   min-width: 0;
 }
 /*
- * La tela dello spettro, ferma.
+ * La tela dello spettro, che qui si muove.
  *
- * Vuota non avrebbe altezza — nell'applicazione la prende da `inset: 0` dentro
- * la schermata grande, e qui quella regola non arriva — e non avrebbe nemmeno
- * un contorno: la tela è trasparente, e quel che ci si vede dentro lo disegna
- * una GPU leggendo il suono. Con `plain`, che non la ridipinge, sarebbe un
- * rettangolo invisibile: chi cerca `viz-screen` non saprebbe dove guardare.
+ * È il componente vero, montato con la sorgente sintetica (`studio/scene.tsx`):
+ * la scena è la stessa dell'applicazione, e le manca soltanto il suono. Da qui
+ * discendono le due righe di misura. L'altezza, perché nella schermata grande
+ * la prende da `inset: 0` e qui quella regola non arriva: senza, la tela avrebbe
+ * zero pixel e il `ResizeObserver` non le darebbe mai un buffer da riempire —
+ * cioè non ci sarebbe niente da guardare. E la larghezza piena, perché il
+ * pannello è una colonna e una tela è un elemento in linea per natura.
+ *
+ * # Perché il contorno resta, adesso che dentro c'è un'immagine
+ *
+ * Perché quel che si accorda non è solo la scena: `viz-screen` è **una parte**,
+ * e una skin le può dare un fondo e un raggio. Quel fondo si vede dietro le
+ * barre, dove sono basse, e il raggio taglia gli angoli di quel che la GPU
+ * disegna — cioè sono due cose che si giudicano solo sapendo dove finisce la
+ * superficie. Con `plain`, che non la ridipinge, il bordo di quella superficie
+ * coincide col nero: senza il tratteggio, chi cerca `viz-screen` starebbe
+ * accordando un rettangolo di cui non vede i lati.
  *
  * Il segno è un `outline` e non un bordo o un fondo, ed è la ragione per cui è
  * accettabile: l'outline si disegna **fuori** dalla scatola e non tocca
@@ -6173,35 +6104,89 @@ body {
   color: var(--color-text-3);
 }
 
-.pannello-errore {
-  display: flex;
-  gap: 9px;
-  padding: 10px 12px;
+/*
+ * L'elenco degli errori, sotto l'editor.
+ *
+ * Era un pannello per **un** errore, perché il nucleo ne consegnava uno solo:
+ * venti problemi arrivavano uniti da punti e virgola dentro un messaggio unico,
+ * e quel messaggio non aveva un tetto. Un documento con dieci token sbagliati
+ * riempiva il riquadro di prosa e spingeva l'editor fuori dalla vista.
+ *
+ * Adesso i problemi sono problemi, uno per riga; il tetto è qui e non nella
+ * prosa, e la scrollbar è il posto dove va a finire il decimo.
+ */
+.elenco-errori {
   border-top: 1px solid var(--hairline);
   background: var(--danger-soft);
   border-left: 2px solid var(--danger);
+  max-height: 28vh;
+  overflow-y: auto;
+  flex: none;
 }
-.pannello-errore > .icona {
+.riga-errore {
+  display: flex;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-top: 1px solid var(--hairline);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.riga-errore:first-child {
+  border-top: none;
+}
+.riga-errore:hover,
+.riga-errore:focus-visible {
+  background: var(--danger-soft);
+}
+.riga-errore > .icona {
   color: var(--danger);
   margin-top: 2px;
+  flex: none;
 }
-.pannello-errore .dove code {
+.riga-errore .dentro {
+  min-width: 0;
+  flex: 1;
+}
+.riga-errore .dove {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.riga-errore .dove code {
   font-family: var(--font-mono);
   font-size: 11.5px;
 }
-.pannello-errore .dove .codice {
+.riga-errore .dove .codice {
   color: var(--danger);
 }
-.pannello-errore .cosa {
+.riga-errore .dove .riga-numero {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-3);
+}
+.riga-errore .cosa {
   margin-top: 2px;
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-2);
 }
-.pannello-errore .forse {
+.riga-errore .forse {
   margin-top: 4px;
   font-size: 12px;
   color: var(--color-text-2);
+}
+.ancora-errori {
+  padding: 7px 12px;
+  border-top: 1px solid var(--hairline);
+  font-size: 11.5px;
+  color: var(--color-text-3);
 }
 .suggerimento {
   border: none;
@@ -6215,7 +6200,7 @@ body {
   cursor: pointer;
   margin: 0 2px;
 }
-.pannello-errore .da-dove {
+.riga-errore .da-dove {
   margin-top: 3px;
   font-size: 11px;
   color: var(--color-text-3);
@@ -6680,6 +6665,28 @@ body {
   padding: 7px 10px;
 }
 
+/* L'intestazione di un gruppo dell'indice.
+
+   Piccola, spaziata e smorzata: deve dividere, non farsi leggere prima delle
+   voci. Un titolo grosso quanto le voci che introduce le farebbe sembrare
+   tredici titoli invece di quattro gruppi.
+
+   L'aria sta **sopra**, ed è quel che separa i gruppi fra loro; sulla prima si
+   toglie, perché lassù non c'è niente da cui staccarsi — c'è il campo di
+   ricerca, che ha già il suo margine. */
+.impostazioni .indice .titolo-gruppo {
+  margin-top: var(--spazio-3);
+  padding: 0 10px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.impostazioni .indice .filtro-impostazioni + .titolo-gruppo {
+  margin-top: 0;
+}
+
 /* Il filtro sopra l'indice.
 
    Dentro il `nav` e non sopra la pagina: quel che filtra è l'indice, e un campo
@@ -6986,6 +6993,67 @@ body {
   to {
     transform: translateX(100%);
   }
+}
+
+/* I profili dei modelli: una riga per profilo, con quello in uso segnato dal
+   bordo d'accento. Riusa `.che-cosa` e `.azioni` di `.riga-opzione` invece di
+   inventare due nomi nuovi — la forma è la stessa, e quel che cambia è solo che
+   qui i figli stanno in colonna quando la scheda si stringe. */
+/* La casella «solo gratis», sotto il campo del modello. */
+.filtro-modelli {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  margin-top: var(--spazio-2);
+  font-size: 12px;
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+
+.elenco-profili {
+  list-style: none;
+  margin: var(--spazio-3) 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.profilo-ia {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  flex-wrap: wrap;
+  padding: var(--spazio-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-interno);
+  background: var(--color-surface-1);
+}
+.profilo-ia[data-active] {
+  border-color: var(--accent);
+  background: var(--color-surface-2);
+}
+.profilo-ia .che-cosa {
+  flex: 1;
+  min-width: 0;
+}
+.profilo-ia .etichetta {
+  font-size: 13px;
+}
+.profilo-ia .etichetta .quante {
+  margin-left: var(--spazio-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--accent);
+}
+/* L'indirizzo e il nome del modello vanno a capo invece di allargare la riga:
+   `openrouter.ai/api/v1` più un nome di modello sono facilmente ottanta
+   caratteri, e su una scheda stretta spingerebbero i bottoni fuori. */
+.profilo-ia .spiegazione {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--color-text-2);
+  overflow-wrap: anywhere;
 }
 
 .riga-opzione {
@@ -7590,6 +7658,205 @@ body {
 /* Fissato come il lettore e allineato ai suoi margini: si apre sopra il
    contenuto invece di restringerlo, così l'elenco che si stava guardando non
    si riflow-a sotto le dita mentre si trascina un brano nella coda. */
+/*
+ * ── Studio · la chat ────────────────────────────────────────────────────────
+ *
+ * Un `<aside>` fisso, come `.pannello-coda`, e non un quinto figlio della
+ * griglia di `.studio`: quella dichiara tre righe e ha già una fascia che entra
+ * ed esce, quindi le righe non si contano guardando il markup.
+ *
+ * A differenza della coda, però, il contenuto sotto si **restringe** invece di
+ * essere coperto: `.studio.con-chat` prende un `padding-right` pari alla
+ * larghezza del pannello. La coda galleggia di proposito — «così l'elenco che si
+ * stava guardando non si riflow-a sotto le dita» — ma qui sotto c'è l'anteprima,
+ * cioè esattamente la cosa che si sta giudicando, e coprirla a metà renderebbe
+ * inutile la risposta che ci si legge dentro.
+ */
+.chat-studio {
+  position: fixed;
+  top: var(--barra-titolo-h);
+  right: 0;
+  bottom: 0;
+  width: var(--chat-w);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-1);
+  border-left: 1px solid var(--hairline);
+}
+.studio.con-chat {
+  padding-right: var(--chat-w);
+}
+
+.testa-chat {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: var(--spazio-2) var(--spazio-3);
+  border-bottom: 1px solid var(--hairline);
+}
+.testa-chat strong {
+  font-size: 12.5px;
+}
+
+.nota-chat {
+  margin: 0;
+  padding: 6px var(--spazio-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+  border-bottom: 1px solid var(--hairline);
+  overflow-wrap: anywhere;
+}
+
+/* La conversazione è l'unica parte che scorre: la testata resta, e il campo in
+   cui si scrive resta — un campo che scappa in fondo alla pagina mentre la
+   risposta arriva è il modo di far perdere il segno a chi stava scrivendo. */
+.chat-conversazione {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--spazio-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+
+.chat-messaggio {
+  padding: var(--spazio-2) var(--spazio-3);
+  border-radius: var(--raggio-interno);
+  background: var(--color-surface-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+  /* Il testo di un modello arriva con i suoi a capo e i suoi blocchi di codice:
+     `pre-wrap` li tiene senza costringere a un renderer di markdown. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Quel che si è scritto sta a destra e in accento tenue: è la convenzione di
+   ogni chat, e senza di essa una conversazione lunga diventa un muro unico. */
+.chat-messaggio.mio {
+  align-self: flex-end;
+  max-width: 88%;
+  background: color-mix(in srgb, var(--accent) 18%, var(--color-surface-2));
+}
+
+/* Il ragionamento di un modello che pensa prima di rispondere.
+
+   Sta dentro la battuta e non accanto perché è la stessa voce: quel che cambia
+   è il peso, non chi parla. Chiuso di suo — un ragionamento è lungo dieci volte
+   la risposta che giustifica, e aprire il pannello su un muro di testo che
+   nessuno ha chiesto renderebbe illeggibile la conversazione. Mentre arriva,
+   invece, è aperto e mostra solo la coda: lì serve come prova che il modello
+   sta ancora scrivendo, ed è l'unica cosa che si abbia da guardare finché la
+   prima parola della risposta non arriva. */
+.chat-pensiero {
+  margin: 0 0 var(--spazio-2);
+  padding: var(--spazio-1) var(--spazio-2);
+  border-left: 2px solid var(--hairline);
+  color: var(--color-text-2);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-pensiero summary {
+  cursor: pointer;
+  color: var(--color-text-2);
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+  list-style: none;
+}
+.chat-pensiero summary::marker,
+.chat-pensiero summary::-webkit-details-marker {
+  display: none;
+}
+.chat-pensiero summary::before {
+  content: "› ";
+}
+.chat-pensiero[open] summary::before {
+  content: "⌄ ";
+}
+.chat-pensiero.vivo {
+  margin-bottom: var(--spazio-1);
+  max-height: 7.5em;
+  overflow: hidden;
+  /* La coda è la parte che conta: il testo cresce verso il basso e il bordo
+     alto sfuma, così quel che si legge è sempre l'ultima riga scritta. */
+  mask-image: linear-gradient(to bottom, transparent, #000 2.5em);
+}
+.chat-pensiero.vivo strong {
+  display: block;
+  color: var(--color-text-2);
+  font-weight: 500;
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+}
+
+.chat-vuota {
+  margin: 0;
+  padding: var(--spazio-3);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-text-2);
+  text-wrap: pretty;
+}
+
+.chat-proposta {
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-interno);
+  background: var(--color-surface-0);
+  padding: var(--spazio-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.chat-proposta .riassunto {
+  font-size: 11.5px;
+  color: var(--color-text-2);
+}
+/* Il confronto è alto al massimo un terzo del pannello: una proposta da
+   quaranta righe non deve spingere fuori vista i due bottoni con cui la si
+   accetta o la si rifiuta. */
+.chat-proposta .differenze {
+  margin: 0;
+  max-height: 30vh;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre;
+}
+.chat-proposta .differenze code {
+  font: inherit;
+}
+.chat-proposta .scartate {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--warning);
+}
+
+.chat-scrivi {
+  padding: var(--spazio-3);
+  border-top: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-2);
+}
+.chat-scrivi textarea {
+  resize: vertical;
+  min-height: 56px;
+  font-family: inherit;
+}
+.chat-scrivi .giro {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+  align-self: center;
+}
+
 .pannello-coda {
   position: fixed;
   /* Sotto la fascia dei tre bottoni, non a `--player-gap` dal bordo: è l'unico
@@ -8549,12 +8816,6 @@ body {
   white-space: nowrap;
 }
 
-/* Una playlist non ha copertina propria: l'intestazione è solo testo, e senza
-   l'immagine l'allineamento in fondo del blocco album non ha più senso. */
-.intestazione.playlist {
-  align-items: flex-start;
-}
-
 .nota {
   margin: 0 0 var(--spazio-4);
   padding: var(--spazio-2) var(--spazio-3);
@@ -8995,6 +9256,30 @@ body {
 .avviso .dentro p {
   margin: 0;
 }
+/*
+ * Quel che il servizio ha scritto, sotto quel che dice il catalogo.
+ *
+ * Due frasi e non una, perché rispondono a due domande: la prima dice cosa è
+ * successo ed è tradotta; la seconda dice cosa fare e arriva dal fornitore,
+ * quasi sempre in inglese. Farne una sola vorrebbe dire scegliere quale delle
+ * due buttare — e per mesi è stata buttata la seconda, che era l'unica a
+ * contenere «use this slug instead: minimax/minimax-m3».
+ *
+ * Più piccola e monospaziata: si legge che è una citazione e non una voce
+ * dell'applicazione.
+ */
+.dettaglio-errore {
+  /* Un blocco benché sia uno `<span>`: dentro `.avviso` sta in un `<p>`, e un
+     `<p>` dentro un `<p>` non è HTML valido. */
+  display: block;
+  margin: var(--spazio-1) 0 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-text-3);
+  user-select: text;
+  overflow-wrap: anywhere;
+}
 /* L'azione sta **dentro** il riquadro e a capo: è la risposta a quel che il
    riquadro dice, e in fondo alla finestrella — accanto ad «Annulla» — andrebbe
    cercata. È la regola che `.avviso-monco` aveva già trovato da sé. */
@@ -9085,18 +9370,6 @@ body {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   cursor: help;
-}
-
-/* Il testo che si sente e non si vede: l'angolo di una tabella di confronto,
-   l'etichetta di una colonna che a vedersi è ovvia. `clip-path` e non
-   `display: none`, perché quel che è nascosto così resta letto. */
-.solo-voce {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
 }
 
 /*

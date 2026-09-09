@@ -293,7 +293,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
 // La divisione fra interi qui e deliberata: sono rapporti fra dimensioni in
 // pixel e in byte, dove il resto non interessa. Il lint serve nel codice di
 // produzione, dove una divisione troncata puo essere un calcolo sbagliato.
-#[allow(clippy::integer_division)]
+#[expect(
+    clippy::integer_division,
+    reason = "rapporti fra pixel e byte: il resto non interessa, come sopra"
+)]
 mod tests {
     use super::*;
 

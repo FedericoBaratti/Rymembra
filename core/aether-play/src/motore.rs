@@ -19,8 +19,9 @@
 //! non c'è nessun evento, nessuna riapertura, nessuna pausa. C'è un segno.
 
 use std::collections::VecDeque;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
@@ -49,6 +50,42 @@ const PASSI_EQ: u8 = 10;
 /// gradino. Il perché di una ripresa breve invece del resto della dissolvenza
 /// sta in [`risali`].
 const RIPRESA_MS: u64 = 40;
+
+/// Il codice di [`Condiviso::causa_perdita`] per il filo di decodifica caduto.
+///
+/// Uno e due li assegna la callback dell'uscita ai due `StreamError` di cpal
+/// (vedi `crate::uscita::codice_errore`); il tre è di qua, e vale «il motore c'è
+/// ancora, il dispositivo pure, ma non arriva più un campione». Un numero e non
+/// un `enum` perché deve stare in un `AtomicU32` che la callback audio può
+/// leggere senza lucchetti.
+const CAUSA_FILO_CADUTO: u32 = 3;
+
+/// Quante volte, in questa sessione, il filo della decodifica è caduto.
+///
+/// # Perché un contatore globale e non un campo del motore
+///
+/// Perché chi se ne serve arriva **dopo** che quel motore è stato buttato via:
+/// il sorvegliante ricostruisce il motore e poi rimette la puntina dov'era, e
+/// deve poter distinguere «il dispositivo era sparito» — dove rimettere la
+/// puntina è la cosa giusta — da «quel file ha fatto cadere il decodificatore»,
+/// dove rimetterla vuol dire un motore ricostruito ogni due secondi. Fra i due
+/// istanti il motore in cui il conteggio sarebbe vissuto non esiste più.
+///
+/// Cresce e basta; nessuno lo azzera. Chi lo legge confronta il valore con
+/// quello che aveva la volta scorsa, non con lo zero.
+static CADUTI: AtomicU32 = AtomicU32::new(0);
+
+/// Quante volte il filo della decodifica è caduto da quando l'applicazione è
+/// aperta.
+///
+/// Serve a chi ricostruisce il motore per non rimettere la puntina nello stesso
+/// solco: se il numero è cresciuto da quando quel brano era stato aperto
+/// l'ultima volta, è quel brano ad aver fatto cadere il filo. Vedi la casella
+/// `CADUTI` qui sopra.
+#[must_use]
+pub fn fili_caduti() -> u32 {
+    CADUTI.load(Ordering::Acquire)
+}
 
 /// Cosa è successo, per chi sta sopra.
 #[derive(Debug, Clone)]
@@ -125,13 +162,23 @@ pub struct Motore {
     /// comandi, non la callback audio. Il lucchetto sta **fuori** dal percorso
     /// in tempo reale, che è l'unico posto in cui non poteva stare.
     spettro: std::sync::Mutex<crate::spettro::Spettro>,
+    /// Il nome dell'uscita su cui si è aperto davvero. Vedi
+    /// [`Motore::dispositivo`].
+    dispositivo: String,
     /// Tenerla viva tiene acceso il flusso.
     _uscita: Uscita,
 }
 
 impl Motore {
     /// Apre il dispositivo e avvia i fili.
-    pub fn avvia(osservatore: impl Fn(Evento) + Send + 'static) -> Result<Self, AppError> {
+    ///
+    /// `voluto` è il nome dell'uscita da aprire, `None` per quella predefinita
+    /// di sistema. Chiedere un nome che non c'è **non** fallisce: si ripiega
+    /// sul predefinito, e [`Motore::dispositivo`] dice dove si è finiti.
+    pub fn avvia(
+        osservatore: impl Fn(Evento) + Send + 'static,
+        voluto: Option<String>,
+    ) -> Result<Self, AppError> {
         let condiviso = Condiviso::nuovo();
 
         // L'anello si dimensiona prima di sapere la frequenza vera, quindi si
@@ -166,8 +213,10 @@ impl Motore {
             ricevi_coefficienti,
             manda_spettro,
             Arc::clone(&condiviso),
+            voluto,
         )?;
         let formato = uscita.formato;
+        let dispositivo = uscita.dispositivo.clone();
         condiviso
             .canali
             .store(u32::from(formato.canali), Ordering::Relaxed);
@@ -187,7 +236,7 @@ impl Motore {
 
         std::thread::Builder::new()
             .name("aether-decodifica".to_owned())
-            .spawn(move || filo(contesto))
+            .spawn(move || filo_sorvegliato(contesto))
             .map_err(|err| {
                 AppError::new(ErrorCode::PlaybackEngineUnavailable)
                     .with_cause(format!("filo della decodifica: {err}"))
@@ -202,6 +251,7 @@ impl Motore {
                 ricevi_spettro,
                 formato.frequenza,
             )),
+            dispositivo,
             _uscita: uscita,
         })
     }
@@ -240,9 +290,13 @@ impl Motore {
     /// serve — di solito la forma che va sul filo verso la finestra — e il
     /// lucchetto si chiude appena finito.
     ///
-    /// Restituisce `None` solo se il lucchetto è avvelenato — cioè se qualcuno
-    /// è caduto tenendolo, che in questo crate non può succedere ma non si
-    /// dichiara impossibile con un `unwrap`.
+    /// Restituisce `None` se il lucchetto è avvelenato — cioè se qualcuno è
+    /// caduto tenendolo. Non è più un'ipotesi di scuola: il filo della
+    /// decodifica **può** cadere, e cadere è un fatto previsto da quando lo
+    /// sorveglia `filo_sorvegliato`. Quel filo questo lucchetto non lo
+    /// prende, quindi in pratica il `None` resta il caso che non arriva mai; ma
+    /// la ragione per non dichiararlo impossibile con un `unwrap` adesso è un
+    /// fatto e non una prudenza.
     pub fn spettro<R>(&self, prendi: impl FnOnce(&crate::spettro::Bande) -> R) -> Option<R> {
         self.spettro
             .lock()
@@ -254,6 +308,18 @@ impl Motore {
     #[must_use]
     pub const fn formato(&self) -> FormatoUscita {
         self.formato
+    }
+
+    /// Su quale uscita si sta suonando.
+    ///
+    /// È il nome del dispositivo **davvero** aperto, che può non essere quello
+    /// chiesto: una preferenza che punta a una scheda staccata ripiega sul
+    /// predefinito. Chi sorveglia i dispositivi confronta questa stringa con
+    /// quel che l'utente voleva e con il predefinito di adesso: sono i tre
+    /// termini che dicono se vale la pena riaprire.
+    #[must_use]
+    pub fn dispositivo(&self) -> &str {
+        &self.dispositivo
     }
 
     /// Comincia a suonare questo brano, adesso, scartando quel che c'era.
@@ -380,28 +446,106 @@ impl Motore {
         }
     }
 
-    /// Il dispositivo è sparito da sotto i piedi.
+    /// Il motore non suona più, e non ricomincerà da solo.
+    ///
+    /// # Perché il nome parla del dispositivo e la bandiera no
+    ///
+    /// Perché le cause sono diventate tre e la conseguenza è rimasta una. Due
+    /// vengono dal dispositivo — sparito, o guasto nel backend — e la terza dal
+    /// filo della decodifica che è caduto: là il dispositivo c'è ancora e
+    /// funziona, ma nessuno riempie più l'anello e dalle casse esce silenzio.
+    /// Per chi legge questa risposta la differenza non conta: in tutti e tre i
+    /// casi la cura è un motore nuovo, e la strada che lo costruisce è quella
+    /// del sorvegliante delle uscite. A distinguere serve
+    /// [`Motore::causa_perdita`], o [`Motore::filo_caduto`] per la sola domanda
+    /// che cambia una decisione.
+    ///
+    /// Il nome è rimasto quello per non riscrivere i venti punti che lo
+    /// chiamano; la bandiera sotto è documentata in `Condiviso::perso`.
     #[must_use]
     pub fn dispositivo_perso(&self) -> bool {
         self.condiviso.perso.load(Ordering::Acquire)
     }
 
+    /// La perdita viene dal filo della decodifica caduto, non dal dispositivo.
+    ///
+    /// L'unica domanda che cambia una decisione invece di una frase: chi
+    /// compone il banner sceglie fra `playback.deviceLost` — «l'audio se n'è
+    /// andato» — e `playback.stalled`, che dice la verità di questo caso, cioè
+    /// che il dispositivo c'è e la musica no.
+    #[must_use]
+    pub fn filo_caduto(&self) -> bool {
+        self.dispositivo_perso()
+            && self.condiviso.causa_perdita.load(Ordering::Acquire) == CAUSA_FILO_CADUTO
+    }
+
+    /// La causa della perdita nelle due forme in cui serve: la frase italiana
+    /// per il diario, la chiave da tradurre per la finestra.
+    ///
+    /// Una tabella sola, perché le due forme sono la stessa informazione detta
+    /// a due destinatari diversi. Il giorno in cui `cpal` aggiunge un terzo
+    /// tipo di `StreamError` c'è un `match` solo da toccare — prima erano due,
+    /// affiancati da un commento che chiedeva di ricordarsene, ed è
+    /// precisamente il genere di richiesta che prima o poi qualcuno non
+    /// esaudisce.
+    ///
+    /// I primi due codici li scrive la callback dell'uscita, il terzo il filo
+    /// della decodifica quando cade: è l'unica riga della tabella che non parli
+    /// del dispositivo, e la sua frase lo dice invece di nasconderlo dietro un
+    /// «audio non disponibile» che manderebbe l'utente a controllare i cavi.
+    const fn perdita(codice: u32) -> (&'static str, &'static str) {
+        match codice {
+            1 => ("dispositivo non più disponibile", "deviceNotAvailable"),
+            2 => ("guasto del sistema audio", "systemFailure"),
+            CAUSA_FILO_CADUTO => ("il decodificatore si è interrotto", "decoderCrashed"),
+            _ => ("causa sconosciuta", "unknown"),
+        }
+    }
+
     /// Perché è sparito, in una parola che si può mettere in un registro.
     ///
-    /// `None` finché non è sparito. Le due cause non sono la stessa cosa per chi
-    /// legge: «non c'è più» è un cavo staccato o un dispositivo predefinito
-    /// cambiato — riaprire funziona quasi sempre — mentre un guasto del backend
-    /// è tutto il resto, e riaprire è un tentativo, non una cura.
+    /// `None` finché il motore suona. Le tre cause non sono la stessa cosa per
+    /// chi legge: «non c'è più» è un cavo staccato o un dispositivo predefinito
+    /// cambiato — riaprire funziona quasi sempre — un guasto del backend è
+    /// tutto il resto del dispositivo, e riaprire è un tentativo e non una
+    /// cura, mentre «il decodificatore si è interrotto» non parla del
+    /// dispositivo affatto: quello è al suo posto, ed è il filo che leggeva i
+    /// byte a essere caduto su un file. Riaprire rimette in piedi il motore in
+    /// tutti e tre i casi; solo nel terzo rimettere la puntina **sullo stesso
+    /// brano** rifà cadere tutto, ed è per questo che la causa va detta e non
+    /// solo contata.
+    ///
+    /// La frase è **italiana** e resta tale: il diario è italiano tutto, e una
+    /// riga tradotta in mezzo alle altre sarebbe l'unica fuori posto. Chi deve
+    /// invece mostrare la causa in finestra prende [`Motore::codice_perdita`].
     #[must_use]
     pub fn causa_perdita(&self) -> Option<&'static str> {
         if !self.dispositivo_perso() {
             return None;
         }
-        Some(match self.condiviso.causa_perdita.load(Ordering::Acquire) {
-            1 => "dispositivo non più disponibile",
-            2 => "guasto del sistema audio",
-            _ => "causa sconosciuta",
-        })
+        Some(Self::perdita(self.condiviso.causa_perdita.load(Ordering::Acquire)).0)
+    }
+
+    /// La stessa causa, ma come chiave da tradurre.
+    ///
+    /// # Perché non basta [`Motore::causa_perdita`]
+    ///
+    /// Perché quella restituisce una frase italiana, e quella frase attraversa
+    /// l'IPC e finisce stampata cruda nella finestra **accanto** a una stringa
+    /// tradotta: chi ha l'interfaccia in inglese legge «There is no audio.
+    /// dispositivo non più disponibile.» Mezza riga in una lingua e mezza
+    /// nell'altra, con la minuscola in mezzo.
+    ///
+    /// Il diario continua a usare la frase, perché il diario è italiano tutto;
+    /// alla finestra serve il codice, che si traduce. È la stessa regola che
+    /// `riproduzione/mod.rs` scrive per `motivo_prossimo`: il codice e non la
+    /// frase.
+    #[must_use]
+    pub fn codice_perdita(&self) -> Option<&'static str> {
+        if !self.dispositivo_perso() {
+            return None;
+        }
+        Some(Self::perdita(self.condiviso.causa_perdita.load(Ordering::Acquire)).1)
     }
 
     /// Quanti campioni sono stati serviti a vuoto: se cresce, il disco non sta
@@ -412,15 +556,33 @@ impl Motore {
     }
 
     fn manda(&self, comando: Comando) {
-        // Un motore morto non deve far fallire un clic: l'utente riceve già la
-        // diagnosi dal fatto che non si sente niente, e propagare un errore da
-        // ogni pulsante riempirebbe la finestra di avvisi identici.
+        // Il canale è chiuso quando il filo della decodifica non c'è più, e da
+        // qui non c'è niente di utile da farne: chi doveva accorgersene lo ha
+        // già fatto dall'altra parte, dove il filo cadendo alza `perso` e
+        // annuncia `playback.stalled`. Propagare un errore da ogni pulsante
+        // riempirebbe la finestra di avvisi identici per un guasto già
+        // raccontato una volta, e il pulsante che non si può premere sarebbe
+        // l'ultimo posto in cui raccontarlo.
         let _ = self.comandi.send(comando);
     }
 }
 
 impl Drop for Motore {
+    /// # Perché la bandiera prima del comando
+    ///
+    /// Perché fra il `Chiudi` e la morte del filo passa un giro di ciclo, e in
+    /// quel giro il filo può ancora annunciare qualcosa: un `Fermato` perché
+    /// l'ultimo brano è finito proprio adesso, un `Iniziato` perché un segno è
+    /// stato raggiunto. L'osservatore, però, non è morto con il motore — parla
+    /// allo stato dell'applicazione, che nel frattempo ha già in mano il motore
+    /// **nuovo**. Quell'annuncio in ritardo verrebbe letto come un fatto del
+    /// motore nuovo: un `Fermato` che chiude l'ascolto in corso e fa avanzare
+    /// una coda che sta suonando altrove.
+    ///
+    /// Alzando `abbandonato` per primo, ogni annuncio di questo motore da qui
+    /// in poi cade nel vuoto. Vedi `Condiviso::abbandonato`.
     fn drop(&mut self) {
+        self.condiviso.abbandonato.store(true, Ordering::Release);
         self.manda(Comando::Chiudi);
     }
 }
@@ -598,7 +760,76 @@ struct Contesto {
     eq_in_attesa: Option<Coefficienti>,
 }
 
-fn filo(mut ctx: Contesto) {
+/// Il filo della decodifica, dentro la rete che lo raccoglie se cade.
+///
+/// # Perché un `catch_unwind` in un albero senza `unwrap`
+///
+/// Perché la regola che vieta `unwrap`, `expect`, `panic!` e l'indicizzazione
+/// vale sul **nostro** codice, e questo filo passa la sua vita dentro codice di
+/// terzi: symphonia decodifica byte arrivati da un disco o da una condivisione
+/// di rete, rubato ricampiona. Un pacchetto troncato a metà da una Wi-Fi che
+/// respira male è un ingresso che quei due non hanno mai visto, e un `assert!`
+/// dentro un decodificatore è un modo perfettamente normale di reagirvi. La
+/// regola ci difende da quel che scriviamo noi; questa funzione da quel che
+/// chiamiamo.
+///
+/// # Cosa succedeva senza
+///
+/// Il `JoinHandle` di questo filo viene buttato via — nessuno lo aspetta — e il
+/// profilo di rilascio è `panic = "unwind"`: il filo si smontava in silenzio, e
+/// da fuori non cambiava **niente**. La callback di cpal continuava a girare su
+/// un anello che nessuno riempiva più, cioè a consegnare zeri al dispositivo
+/// per sempre; `perso` restava basso, quindi il sorvegliante delle uscite non
+/// vedeva niente da riaprire; i comandi finivano in un canale senza ricevitore
+/// e sparivano. L'utente premeva pausa e non succedeva nulla, premeva
+/// «prossimo» e non succedeva nulla. Nel registro eventi di Windows non
+/// compariva niente, perché il processo era vivo.
+///
+/// # Perché il contesto si presta invece di essere consumato
+///
+/// Perché quel che serve **dopo** la caduta sta tutto dentro: l'osservatore, per
+/// annunciare il guasto a chi sta sopra, e `condiviso`, per alzare la bandiera
+/// che fa ricostruire il motore. Passando `ctx` per valore dentro la chiusura,
+/// dopo l'unwind sarebbe irraggiungibile — sarebbe stato smontato con lo stack
+/// — e non resterebbe nessuno a dire cos'è successo. Prestandolo, il contesto
+/// vive qui fuori e la chiusura lo tocca soltanto.
+///
+/// # Cosa dichiara `AssertUnwindSafe`
+///
+/// Che un `Contesto` osservato **dopo** un unwind è ancora buono da leggere. È
+/// vero per quel poco che se ne fa: [`Contesto::caduto`] tocca la posizione — un
+/// mutex, e un mutex avvelenato lo recupera — e l'osservatore, che è una
+/// `Fn` senza stato mutabile suo. I decodificatori, le code e i buffer possono
+/// benissimo essere rimasti a metà: nessuno li guarda più, perché questo filo
+/// non decodificherà più niente e il motore intero verrà buttato.
+///
+/// La traccia del panico non si raccoglie: la stampa il gancio globale
+/// installato da `crate::diario`, che gira **prima** dell'unwind e quindi prima
+/// di qui. Di qua passa solo il messaggio, che è quel che va nel banner.
+fn filo_sorvegliato(mut ctx: Contesto) {
+    let esito = std::panic::catch_unwind(AssertUnwindSafe(|| filo(&mut ctx)));
+    if let Err(carico) = esito {
+        ctx.caduto(&messaggio_del_panico(carico.as_ref()));
+    }
+}
+
+/// Il messaggio di un panico, che è tutto quel che se ne può raccontare.
+///
+/// `panic!("…")` con una stringa letterale consegna un `&'static str`, uno con
+/// argomenti da formattare una `String`, e un panico che arriva da altrove può
+/// portare qualunque cosa. I primi due si leggono, il terzo no: dire «causa
+/// sconosciuta» è meglio che stampare l'indirizzo di una scatola.
+fn messaggio_del_panico(carico: &(dyn std::any::Any + Send)) -> String {
+    if let Some(testo) = carico.downcast_ref::<&'static str>() {
+        return (*testo).to_owned();
+    }
+    if let Some(testo) = carico.downcast_ref::<String>() {
+        return testo.clone();
+    }
+    "causa sconosciuta".to_owned()
+}
+
+fn filo(ctx: &mut Contesto) {
     loop {
         // I comandi in attesa, tutti, prima di lavorare: fra un «pausa» e un
         // «riprendi» arrivati insieme deve vincere il secondo, non il primo.
@@ -831,7 +1062,7 @@ impl Contesto {
         self.annunciato = None;
         if !self.fine_dichiarata {
             self.fine_dichiarata = true;
-            (self.osservatore)(Evento::Fermato);
+            self.annuncia(Evento::Fermato);
         }
         self.scrivi_posizione(Posizione::default());
     }
@@ -854,9 +1085,14 @@ impl Contesto {
             // ramo di rete di [`Contesto::decodifica_un_blocco`]. Fermarsi già
             // qui vorrebbe dire buttare via un brano per un salto fallito su una
             // rete che magari sta solo respirando male.
-            (self.osservatore)(Evento::Errore(Box::new(err)));
+            self.annuncia(Evento::Errore(Box::new(err)));
             return;
         }
+        // Dove si è atterrati, che non è sempre dove si era chiesto: sopra la
+        // fine del flusso `Decodificatore::cerca` mette un tetto invece di
+        // fallire, e scrivere qui il millisecondo **chiesto** manderebbe il
+        // cursore fuori dalla barra per gli ultimi istanti del brano.
+        let raggiunto_ms = ms_da_fotogrammi(decodificatore.consegnati(), self.formato.frequenza);
         // Il segno del brano corrente, per non perderne durata e ReplayGain.
         let (durata_ms, replaygain_db) = self
             .segni
@@ -892,7 +1128,7 @@ impl Contesto {
             da: 0,
             track_id,
             durata_ms,
-            offset_ms: ms,
+            offset_ms: raggiunto_ms,
             replaygain_db,
         });
         self.fine_dichiarata = false;
@@ -976,7 +1212,7 @@ impl Contesto {
                 // fermare la riproduzione su di lui vorrebbe dire che un album
                 // con un file corrotto in mezzo non arriva più in fondo.
                 let di_rete = err.code().kind() == ErrorCodeKind::FsNetworkUnavailable;
-                (self.osservatore)(Evento::Errore(Box::new(err)));
+                self.annuncia(Evento::Errore(Box::new(err)));
                 if di_rete {
                     self.ferma();
                     return false;
@@ -1293,7 +1529,7 @@ impl Contesto {
             // riapplicata **adesso** — al fotogramma in cui il brano nuovo
             // cominciava a sentirsi — ed era l'unica ragione per cui `Segno`
             // portava con sé un `replaygain_db`.
-            (self.osservatore)(Evento::Iniziato { track_id });
+            self.annuncia(Evento::Iniziato { track_id });
         }
         let _ = replaygain_db;
 
@@ -1337,7 +1573,7 @@ impl Contesto {
             self.segni.clear();
             self.annunciato = None;
             self.scrivi_posizione(Posizione::default());
-            (self.osservatore)(Evento::Fermato);
+            self.annuncia(Evento::Fermato);
         }
     }
 
@@ -1346,6 +1582,82 @@ impl Contesto {
             Ok(mut g) => *g = nuova,
             Err(avvelenato) => *avvelenato.into_inner() = nuova,
         }
+    }
+
+    /// Dice a chi sta sopra cos'è successo — se questo motore ha ancora voce.
+    ///
+    /// L'unico punto da cui gli eventi escono, e la ragione è che un motore
+    /// sostituito non deve più parlare: il suo osservatore è vivo e parla allo
+    /// stato dell'applicazione, che nel frattempo ha in mano il motore nuovo.
+    /// Vedi [`Condiviso::abbandonato`], che [`Motore::drop`] alza prima ancora
+    /// di chiedere la chiusura.
+    ///
+    /// Tacere e non accodare: quel che questo motore aveva da dire riguardava
+    /// dei campioni che non usciranno mai dalle casse.
+    fn annuncia(&self, evento: Evento) {
+        if self.condiviso.abbandonato.load(Ordering::Acquire) {
+            return;
+        }
+        (self.osservatore)(evento);
+    }
+
+    /// Il filo della decodifica è caduto: lo dice, e lascia il motore in uno
+    /// stato da cui si può ricostruire.
+    ///
+    /// # Perché `playback.stalled` e non gli altri due candidati
+    ///
+    /// `playback.decodeFailed` dice all'utente che il file è danneggiato e
+    /// conviene sostituirlo: qui non lo sappiamo: un decodificatore che cade su
+    /// byte troncati dalla rete parla di un cavo, non di un file da buttare, e
+    /// il codice non è ritentabile — cioè niente «Riprova» proprio dove
+    /// riprovare è l'unica mossa. `playback.engineUnavailable` è `Fatal`: non
+    /// c'è nessun motore audio, chiudi e riapri l'applicazione — ed è falso,
+    /// perché il dispositivo è aperto e a un motore nuovo risponderebbe subito.
+    ///
+    /// `playback.stalled` è invece esattamente questo fatto: la riproduzione si
+    /// è impantanata. `Warning`, sempre ritentabile, già nel catalogo e già
+    /// tradotto in tutte e due le lingue, con dentro i due campi che servono a
+    /// tornare dov'era la puntina.
+    ///
+    /// # Perché la stessa bandiera del dispositivo perso
+    ///
+    /// Perché la cura è la stessa — un motore nuovo — e la via che lo
+    /// ricostruisce è già scritta: il sorvegliante delle uscite legge `perso`,
+    /// annota dove eravamo e riapre. Una seconda bandiera avrebbe voluto dire
+    /// una seconda via di riapertura da tenere in pari con la prima.
+    ///
+    /// # Perché la causa **prima** della bandiera
+    ///
+    /// Perché il sorvegliante gira su un altro filo e legge le due caselle in
+    /// quest'ordine: vista `perso` alta, va a chiedere la causa. Scrivendola
+    /// dopo ci sarebbe una finestra — piccola, e larga abbastanza — in cui la
+    /// causa è ancora zero, cioè «causa sconosciuta» nel diario e nel banner
+    /// proprio nel caso che il banner esiste per raccontare.
+    ///
+    /// # Perché non tocca `in_pausa`
+    ///
+    /// Perché `annota_ripresa`, nell'applicazione, legge quel bit **grezzo**
+    /// per decidere se la musica dovrà ripartire da sola dopo la riapertura.
+    /// Alzarlo qui vorrebbe dire raccontargli che l'utente aveva messo in
+    /// pausa, e un brano che stava suonando resterebbe fermo dopo un guasto che
+    /// nessuno ha chiesto.
+    fn caduto(&mut self, panico: &str) {
+        CADUTI.fetch_add(1, Ordering::AcqRel);
+        let istantanea = self
+            .posizione
+            .lock()
+            .map_or_else(|avvelenato| *avvelenato.into_inner(), |g| *g);
+        self.condiviso
+            .causa_perdita
+            .store(CAUSA_FILO_CADUTO, Ordering::Release);
+        self.condiviso.perso.store(true, Ordering::Release);
+        self.annuncia(Evento::Errore(Box::new(
+            AppError::new(ErrorCode::PlaybackStalled {
+                track_id: istantanea.track_id,
+                position_ms: Some(istantanea.ms),
+            })
+            .with_cause(format!("il filo della decodifica è caduto: {panico}")),
+        )));
     }
 }
 
@@ -1556,6 +1868,10 @@ mod prove {
     struct Banco {
         ctx: Contesto,
         consumatore: rtrb::Consumer<f32>,
+        /// Le caselle che il contesto condivide con la callback che qui non
+        /// c'è: le prove del filo caduto ci leggono `perso` e la causa, quelle
+        /// del motore abbandonato ci scrivono la bandiera.
+        condiviso: Arc<Condiviso>,
         /// Da tenere vivi: il canale dei comandi e l'anello delle curve non
         /// vengono usati, ma se cadessero il contesto parlerebbe con dei morti.
         _manda: Sender<Comando>,
@@ -1571,11 +1887,12 @@ mod prove {
         let (manda, ricevi) = std::sync::mpsc::channel();
         let (produttore, consumatore) = rtrb::RingBuffer::<f32>::new(16_384);
         let (curve, prese) = rtrb::RingBuffer::<Coefficienti>::new(32);
+        let condiviso = Condiviso::nuovo();
         let ctx = Contesto::nuovo(
             ricevi,
             produttore,
             curve,
-            Condiviso::nuovo(),
+            Arc::clone(&condiviso),
             Arc::new(std::sync::Mutex::new(Posizione::default())),
             FormatoUscita {
                 frequenza,
@@ -1586,6 +1903,7 @@ mod prove {
         Banco {
             ctx,
             consumatore,
+            condiviso,
             _manda: manda,
             _curve: prese,
         }
@@ -1956,6 +2274,47 @@ mod prove {
     }
 
     #[test]
+    fn un_salto_oltre_la_fine_non_dice_che_il_file_e_danneggiato() {
+        // Trascinare il cursore fino in fondo. Prima diceva che il file era
+        // danneggiato: symphonia rifiuta con `SeekError(OutOfRange)` appena
+        // `ts > n_frames`, il ripiego lo traduceva in `playback.decodeFailed`,
+        // e il catalogo dichiara quel codice `Warning, Never` ritentabile —
+        // cioè all'utente arrivava «questo file è danneggiato, sostituiscilo».
+        // Su un FLAC succedeva **sempre**, perché il cursore arriva in fondo
+        // ogni volta che qualcuno ce lo trascina.
+        let mut decodificatore =
+            crate::decodifica::Decodificatore::apri(flac(1), 48_000, 1).expect("il FLAC si apre");
+
+        // Cinque secondi oltre la fine dichiarata: nessun dubbio che sia fuori.
+        decodificatore
+            .cerca(500 + 5_000)
+            .expect("saltare oltre la fine non è un guasto");
+
+        // Il tetto di `cerca` ferma il salto poco prima dell'ultimo fotogramma,
+        // quindi quel che resta è la manciata di millisecondi del margine: si
+        // consuma, e deve finire da sé.
+        let resto = tutto(&mut decodificatore);
+        assert!(
+            // Ventiquattromila campioni a 48 kHz sono il mezzo secondo che il
+            // file contiene per intero: restarne così tanti vorrebbe dire che
+            // il salto non è avvenuto.
+            resto.len() < 24_000,
+            "dopo un salto in fondo non deve restare mezzo secondo di musica: {}",
+            resto.len()
+        );
+
+        // E il giro dopo il brano è finito, senza errore: è così che la coda
+        // avanza al brano successivo invece di fermarsi con un avviso.
+        let mut blocco = Vec::new();
+        assert!(
+            !decodificatore
+                .prossimo(&mut blocco)
+                .expect("dopo la fine non c'è niente da leggere, e non è un guasto"),
+            "il brano doveva dichiararsi finito"
+        );
+    }
+
+    #[test]
     fn un_flac_su_una_share_che_muore_non_diventa_un_formato_ignoto() {
         // Il caso vero, e il più caro proprio su FLAC: il riconoscimento del
         // contenitore legge **tutti** i blocchi di metadati prima di poter dire
@@ -2253,6 +2612,190 @@ mod prove {
         assert!(
             quanti_a(&fuori, 0.2) > 5_000,
             "il brano dopo quello rotto non si sente: la coda si è bruciata su di lui"
+        );
+    }
+
+    // ── il filo che cade, e il motore che è stato sostituito ────────────────
+
+    /// Byte che a metà lettura non restituiscono un errore: **panicano**.
+    ///
+    /// Il gemello di [`ByteCheFalliscono`], e la differenza è tutta lì. Quello
+    /// riproduce una share che muore, cioè un guasto che sale come `Result` e
+    /// che il motore sa raccontare. Questo riproduce l'altro modo in cui un
+    /// file troncato può finire: un `assert` dentro il codice che lo legge.
+    /// Nel nostro albero `unwrap`, `expect`, `panic!` e l'indicizzazione sono
+    /// vietati, ma symphonia e rubato non sono il nostro albero — e byte
+    /// arrivati a metà da una Wi-Fi che respira male sono esattamente
+    /// l'ingresso che nessuno dei due ha mai visto.
+    struct BytePanicanti {
+        dentro: std::io::Cursor<Vec<u8>>,
+        soglia: u64,
+        letti: u64,
+    }
+
+    impl std::io::Read for BytePanicanti {
+        fn read(&mut self, dove: &mut [u8]) -> std::io::Result<usize> {
+            assert!(
+                self.letti < self.soglia,
+                "i byte finiscono qui, e non con garbo"
+            );
+            let quanti = std::io::Read::read(&mut self.dentro, dove)?;
+            self.letti = self
+                .letti
+                .saturating_add(u64::try_from(quanti).unwrap_or(0));
+            Ok(quanti)
+        }
+    }
+
+    impl std::io::Seek for BytePanicanti {
+        fn seek(&mut self, da: std::io::SeekFrom) -> std::io::Result<u64> {
+            std::io::Seek::seek(&mut self.dentro, da)
+        }
+    }
+
+    impl crate::decodifica::Flusso for BytePanicanti {
+        fn lunghezza(&self) -> Option<u64> {
+            u64::try_from(self.dentro.get_ref().len()).ok()
+        }
+    }
+
+    /// Un brano che fa cadere chi lo legge, a metà.
+    ///
+    /// La soglia sta a metà per la stessa ragione di
+    /// [`brano_che_si_interrompe`]: symphonia deve fare in tempo ad aprire il
+    /// file, altrimenti la caduta arriverebbe dentro [`BranoAperto::apri`] —
+    /// che è un altro filo e un altro discorso.
+    fn brano_che_panica(track_id: i64, frequenza: u32) -> Sorgente {
+        let quanti = fotogrammi_da_ms(1_000, frequenza);
+        let campioni = vec![0.5f32; usize::try_from(quanti).unwrap_or(48_000)];
+        let byte = wav(frequenza, &campioni);
+        let soglia = u64::try_from(byte.len().div_ceil(2)).unwrap_or(0);
+        Sorgente {
+            track_id,
+            media: Box::new(BytePanicanti {
+                dentro: std::io::Cursor::new(byte),
+                soglia,
+                letti: 0,
+            }),
+            estensione: Some("wav".to_owned()),
+            durata_ms: 1_000,
+            replaygain_db: None,
+        }
+    }
+
+    #[test]
+    fn un_filo_che_cade_non_lascia_il_motore_muto() {
+        // Il guasto che questa prova tiene chiuso, ed è il peggiore da
+        // diagnosticare perché somiglia a niente: il filo della decodifica si
+        // smontava in silenzio — il suo `JoinHandle` lo butta via nessuno — e
+        // da fuori non cambiava una virgola. La callback continuava a servire
+        // zeri, `perso` restava basso, il sorvegliante non vedeva niente da
+        // riaprire, i comandi finivano in un canale senza ricevitore. L'utente
+        // premeva pausa e non succedeva nulla.
+        //
+        // La traccia del panico compare su stderr durante questa prova: è il
+        // gancio del diario che fa il suo lavoro, non un guasto della prova.
+        let (registro, osservatore) = spia();
+        let mut banco = banco_con(48_000, osservatore);
+        let condiviso = Arc::clone(&banco.condiviso);
+        let primo = aperto(&banco.ctx, brano_che_panica(1, 48_000));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+
+        let Banco {
+            ctx,
+            mut consumatore,
+            condiviso: _,
+            _manda,
+            _curve,
+        } = banco;
+
+        // Qualcuno deve svuotare l'anello, altrimenti il filo si addormenta su
+        // un anello pieno molto prima di arrivare ai byte che lo fanno cadere:
+        // sono le casse, che qui non ci sono.
+        let basta = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ferma = Arc::clone(&basta);
+        let casse = std::thread::spawn(move || {
+            while !ferma.load(Ordering::Relaxed) {
+                while consumatore.pop().is_ok() {}
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        let (fatto, aspetta) = std::sync::mpsc::channel();
+        let decodifica = std::thread::spawn(move || {
+            filo_sorvegliato(ctx);
+            let _ = fatto.send(());
+        });
+
+        // Dieci secondi sono un'eternità per un brano da un secondo: se
+        // scadono, il filo si è appeso invece di cadere, ed è comunque un
+        // guasto da vedere.
+        let tornato = aspetta.recv_timeout(Duration::from_secs(10));
+        basta.store(true, Ordering::Relaxed);
+        let _ = casse.join();
+        let _ = decodifica.join();
+        assert!(
+            tornato.is_ok(),
+            "il filo sorvegliato non è mai tornato: la rete non l'ha raccolto"
+        );
+
+        assert!(
+            condiviso.perso.load(Ordering::Acquire),
+            "il filo è caduto e nessuno ha alzato la bandiera: il sorvegliante \
+             non avrà niente da riaprire"
+        );
+        assert_eq!(
+            condiviso.causa_perdita.load(Ordering::Acquire),
+            CAUSA_FILO_CADUTO,
+            "la causa non distingue un decodificatore caduto da un cavo staccato"
+        );
+
+        let visti = eventi(&registro);
+        assert!(
+            visti
+                .iter()
+                .any(|e| e == "errore:playback.stalled:riprovabile"),
+            "la caduta non si annuncia come riproduzione impantanata: {visti:?}"
+        );
+        assert!(
+            !visti
+                .iter()
+                .any(|e| e.starts_with("errore:playback.decode")),
+            "l'utente si sente dire che il file è danneggiato: {visti:?}"
+        );
+    }
+
+    #[test]
+    fn un_motore_abbandonato_non_fa_avanzare_la_coda_di_chi_lo_ha_sostituito() {
+        let (registro, osservatore) = spia();
+        let mut banco = banco_con(48_000, osservatore);
+
+        // Il contrappeso: da vivo il motore parla. Senza questa metà la prova
+        // passerebbe anche con un osservatore mai collegato.
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.5));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(Comando::Ferma);
+        assert_eq!(
+            eventi(&registro),
+            vec!["fermato".to_owned()],
+            "un motore vivo deve dire quando si ferma"
+        );
+
+        // Il motore è stato sostituito: `Motore::drop` alza questa bandiera
+        // **prima** di chiedere la chiusura, perché fra il comando e la morte
+        // del filo passa un giro di ciclo — e in quel giro un `Fermato` in
+        // ritardo chiuderebbe l'ascolto e farebbe avanzare la coda del motore
+        // nuovo, che sta suonando.
+        banco.condiviso.abbandonato.store(true, Ordering::Release);
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.5));
+        banco.ctx.esegui(Comando::Suona(Box::new(secondo)));
+        banco.ctx.esegui(Comando::Ferma);
+
+        assert_eq!(
+            eventi(&registro),
+            vec!["fermato".to_owned()],
+            "un motore abbandonato parla ancora allo stato di quello che lo ha \
+             sostituito"
         );
     }
 

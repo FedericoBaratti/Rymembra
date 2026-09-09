@@ -405,9 +405,10 @@ fn dominant_artist(group: &[&TrackToOrganize]) -> (String, f64) {
         .map_or_else(
             || (UNKNOWN_ARTIST.to_owned(), 1.0),
             |(artist, count)| {
-                // `as` su usize piccoli: i conteggi sono al più il numero di
-                // brani di un album, molto sotto la precisione di f64.
-                #[allow(clippy::cast_precision_loss)]
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "`as` su usize piccoli: i conteggi sono al più il numero di brani di un album, molto sotto i 2^53 che f64 rappresenta esatti"
+                )]
                 let share = count as f64 / total as f64;
                 (artist.to_owned(), share)
             },

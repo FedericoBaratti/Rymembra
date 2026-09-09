@@ -229,7 +229,7 @@ pub enum Esito {
     clippy::integer_division,
     reason = "il millisecondo dispari a metà di un brano non interessa nessuno"
 )]
-pub const fn inizio(durata_ms: u64) -> u64 {
+pub(crate) const fn inizio(durata_ms: u64) -> u64 {
     durata_ms.saturating_sub(DURATA_MS) / 2
 }
 
@@ -255,7 +255,17 @@ fn leggi(sorgente: Sorgente, durata_ms: u64) -> Result<Vec<f32>, AppError> {
     // Due canali e non uno: vedi l'intestazione del modulo.
     let mut decodificatore = Decodificatore::apri(sorgente, FREQUENZA, 2)?;
 
-    let da = inizio(durata_ms);
+    // La durata vera quando il file la dichiara, e non quella del database.
+    //
+    // È il difetto che questa riga chiude: per un brano registrato nel database
+    // molto più lungo del file — un MP3 a bitrate variabile senza intestazione
+    // Xing, un tag riscritto male — `inizio(durata_ms)` cadeva oltre la fine, il
+    // salto falliva, e l'errore diventava `Misurato::Negata{ILLEGGIBILE}` in
+    // `aether-app`: un brano sano fuori dall'affinità e dall'autoplay, e senza
+    // una riga di registro che lo dicesse. Con il tetto di `decodifica::cerca`
+    // il salto adesso riesce, ma atterrerebbe negli ultimi millisecondi e
+    // l'esito sarebbe [`Esito::Corto`] — sano, ma sempre senza impronta.
+    let da = inizio(decodificatore.fine_flusso_ms().unwrap_or(durata_ms));
     if da > 0 {
         decodificatore.cerca(da)?;
     }
@@ -1367,5 +1377,115 @@ mod prove {
             diversi > DIMENSIONI / 2,
             "solo {diversi} descrittori diversi"
         );
+    }
+
+    // ── il file vero, con la durata sbagliata ───────────────────────────────
+    //
+    // Le prove qui sopra lavorano tutte su [`misura`], che è pura e non apre
+    // niente. Questa deve invece passare da [`leggi`], perché il difetto che
+    // difende sta nel salto e non nei numeri.
+
+    /// Byte in memoria che si comportano come un file.
+    struct Byte(std::io::Cursor<Vec<u8>>);
+
+    impl std::io::Read for Byte {
+        fn read(&mut self, dove: &mut [u8]) -> std::io::Result<usize> {
+            std::io::Read::read(&mut self.0, dove)
+        }
+    }
+
+    impl std::io::Seek for Byte {
+        fn seek(&mut self, da: std::io::SeekFrom) -> std::io::Result<u64> {
+            std::io::Seek::seek(&mut self.0, da)
+        }
+    }
+
+    impl crate::decodifica::Flusso for Byte {
+        fn lunghezza(&self) -> Option<u64> {
+            u64::try_from(self.0.get_ref().len()).ok()
+        }
+    }
+
+    /// Un WAV mono a 16 bit a [`FREQUENZA`], così non passa dal ricampionatore.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "i campioni di prova stanno fra -1 e 1: per costruzione il \
+                  prodotto entra in un i16"
+    )]
+    fn wav(campioni: &[f32]) -> Vec<u8> {
+        let dati = u32::try_from(campioni.len() * 2).unwrap_or(0);
+        let mut byte = Vec::with_capacity(44 + campioni.len() * 2);
+        byte.extend_from_slice(b"RIFF");
+        byte.extend_from_slice(&(36 + dati).to_le_bytes());
+        byte.extend_from_slice(b"WAVEfmt ");
+        byte.extend_from_slice(&16u32.to_le_bytes());
+        byte.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        byte.extend_from_slice(&1u16.to_le_bytes()); // un canale
+        byte.extend_from_slice(&FREQUENZA.to_le_bytes());
+        byte.extend_from_slice(&(FREQUENZA * 2).to_le_bytes());
+        byte.extend_from_slice(&2u16.to_le_bytes()); // allineamento
+        byte.extend_from_slice(&16u16.to_le_bytes()); // bit per campione
+        byte.extend_from_slice(b"data");
+        byte.extend_from_slice(&dati.to_le_bytes());
+        for campione in campioni {
+            byte.extend_from_slice(&((campione * 32_767.0) as i16).to_le_bytes());
+        }
+        byte
+    }
+
+    /// Una sorgente lunga `veri_ms`, che il database crede lunga `dichiarati_ms`.
+    fn sorgente_che_mente(veri_ms: u64, dichiarati_ms: u64) -> Sorgente {
+        Sorgente {
+            track_id: 1,
+            media: Box::new(Byte(std::io::Cursor::new(wav(&rumore(quanti_campioni(
+                veri_ms,
+            )))))),
+            estensione: Some("wav".to_owned()),
+            durata_ms: dichiarati_ms,
+            replaygain_db: None,
+        }
+    }
+
+    #[test]
+    fn una_durata_dichiarata_troppo_lunga_non_impedisce_l_impronta() {
+        // Il difetto, per intero: il database dice dieci minuti, il file ne
+        // contiene quaranta secondi. La finestra si prendeva dal centro dei
+        // dieci minuti — `inizio(600_000)` sono quattro minuti e mezzo — cioè
+        // ben oltre la fine, il salto veniva rifiutato, e in `aether-app`
+        // l'errore diventava `Misurato::Negata{ILLEGGIBILE}`: un brano sano
+        // marcato illeggibile, fuori dall'affinità e dall'autoplay, senza una
+        // riga di registro.
+        //
+        // Non è un caso raro: è l'MP3 a bitrate variabile senza intestazione
+        // Xing, dove la durata registrata alla scansione è una stima.
+        let esito = calcola(sorgente_che_mente(40_000, 600_000), 600_000)
+            .expect("un file sano non deve diventare un guasto");
+
+        assert!(
+            matches!(esito, Esito::Fatta(_)),
+            "atteso un'impronta, arrivato {esito:?}"
+        );
+    }
+
+    #[test]
+    fn con_la_durata_giusta_l_impronta_e_la_stessa() {
+        // Il contrappeso: la correzione non deve cambiare quel che si misura
+        // sui brani la cui durata è registrata bene. Quaranta secondi
+        // dichiarati quaranta e dichiarati dieci minuti devono dare gli stessi
+        // numeri, perché la finestra è la stessa — presa dal file.
+        let Ok(Esito::Fatta(onesta)) = calcola(sorgente_che_mente(40_000, 40_000), 40_000) else {
+            panic!("un file sano con la durata giusta deve dare un'impronta");
+        };
+        let Ok(Esito::Fatta(bugiarda)) = calcola(sorgente_che_mente(40_000, 600_000), 600_000)
+        else {
+            panic!("un file sano con la durata sbagliata deve dare un'impronta");
+        };
+
+        for (i, (a, b)) in onesta.iter().zip(bugiarda.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "il descrittore {i} cambia con la durata dichiarata: {a} contro {b}"
+            );
+        }
     }
 }

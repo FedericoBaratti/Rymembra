@@ -17,7 +17,6 @@
  * 1100 pixel si chiude da sé. È il patto che rende la scelta reversibile invece
  * che imposta.
  */
-import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -36,34 +35,31 @@ import { Riordino } from "./Riordino";
 import { Ripristino } from "./Ripristino";
 import { Stelle } from "./Stelle";
 import { cambiandoVista } from "./transizione";
+import { applicaAccento, applicaSkin } from "./aspetto";
 import { brani_, durata, nomeArtista, numero, titoloAlbum } from "./formato";
 import {
-  applicaAccento,
-  applicaSkin,
   eRitentabile,
+  guastoDa,
   ipc,
-  testoErrore,
+  type Guasto,
   type Album,
   type Artista,
   type Casa,
   type Raccolta,
   type Avanzamento,
-  type AvanzamentoArricchimento,
   type Avvio,
   type Brano,
-  type EsitoArricchimento,
   type EsitoScansione,
   type Ordine,
   type Playlist,
   type Skin,
-  type StatoArricchimento,
-  type StatoNuvola,
-  type StatoSincronia,
   type VoceSkin,
 } from "./ipc";
 import { applicaLingua, scegli, t, useLingua } from "./lingue";
+import { useNuvola } from "./nuvola";
 import { useAscolto, usePagine, usePigro } from "./pagine";
 import { AvvisoAggiornamento } from "./parti/Aggiornamenti";
+import { AvvisoAudio } from "./parti/AvvisoAudio";
 import { Icona } from "./parti/Icone";
 import { useImportazioni } from "./parti/Importazioni";
 import { Intestazione } from "./parti/Intestazione";
@@ -446,7 +442,7 @@ function Sentinella({
 
 export function App() {
   const [avvio, setAvvio] = useState<Avvio | null>(null);
-  const [errore, setErrore] = useState<string | null>(null);
+  const [errore, setErrore] = useState<Guasto | null>(null);
   /**
    * Una notizia riuscita, non un guasto.
    *
@@ -529,20 +525,8 @@ export function App() {
   const [daRinominare, setDaRinominare] = useState<Playlist | null>(null);
   const [creandoPlaylist, setCreandoPlaylist] = useState(false);
   const [daRiordinare, setDaRiordinare] = useState<string | null>(null);
-  /** Lo stato del backup su Drive, o `null` finché non è stato chiesto. */
-  const [nuvola, setNuvola] = useState<StatoNuvola | null>(null);
-  const [sincronia, setSincronia] = useState<StatoSincronia | null>(null);
   /** La finestrella del ripristino è aperta. */
   const [ripristinando, setRipristinando] = useState(false);
-  /** Lo stato dell'arricchimento, o `null` finché non è stato chiesto. */
-  const [arricchimento, setArricchimento] =
-    useState<StatoArricchimento | null>(null);
-  /** A che punto è la passata in corso, o `null` quando non ne gira nessuna. */
-  const [avanzaArricchimento, setAvanzaArricchimento] =
-    useState<AvanzamentoArricchimento | null>(null);
-  /** Cosa ha prodotto l'ultima passata di questa sessione. */
-  const [esitoArricchimento, setEsitoArricchimento] =
-    useState<EsitoArricchimento | null>(null);
   const [skin, setSkin] = useState<VoceSkin[]>([]);
   const [skinAttiva, setSkinAttiva] = useState<Skin | null>(null);
   /**
@@ -600,14 +584,14 @@ export function App() {
    */
   const importazioni = useImportazioni();
 
-  const segnalaErrore = useCallback((e: unknown) => setErrore(testoErrore(e)), []);
+  const segnalaErrore = useCallback((e: unknown) => setErrore(guastoDa(e)), []);
 
   const ricarica = useCallback(async () => {
     try {
       setAvvio(await ipc.avvio());
       setErrore(null);
     } catch (e) {
-      setErrore(testoErrore(e));
+      segnalaErrore(e);
     }
   }, []);
 
@@ -626,7 +610,7 @@ export function App() {
         applicaSkin(s);
         setSkinAttiva(s);
       })
-      .catch((e: unknown) => setErrore(testoErrore(e)));
+      .catch((e: unknown) => segnalaErrore(e));
   }, []);
 
   // Il tema si riapplica quando cambia la scelta **o** quando cambia la skin:
@@ -708,6 +692,29 @@ export function App() {
     linguaDecisa.current = true;
     applicaLingua(scegli(avvio.lingua, navigator.language));
   }, [avvio]);
+
+  /**
+   * Le due voci del menù dell'icona nell'area di notifica.
+   *
+   * Scendono da qui perché i testi che si leggono stanno in `lingue/`, dove
+   * `strumenti/lingue.js` controlla che ogni lingua le abbia tutte. Scritte in
+   * Rust sarebbero le uniche due fuori da quel controllo, e il sintomo — un
+   * menù metà in una lingua e metà nell'altra — somiglia troppo a una svista di
+   * traduzione perché qualcuno lo segnali.
+   *
+   * Sull'iscrizione alla lingua e non su `avvio`: parte a ogni cambio, che è
+   * esattamente quando il menù andrebbe altrimenti alla deriva. È anche il
+   * momento in cui l'icona compare la prima volta — senza etichette non c'è un
+   * menù da costruire, e `vassoio.rs` aspetta questa chiamata.
+   */
+  useEffect(() => {
+    ipc.vassoioLingua(t("tray.show"), t("tray.quit")).catch(() => {
+      /* Un menù che non si rietichetta non è una cosa da annunciare: chi non ha
+         acceso il secondo piano non ha nemmeno un'icona, e chi l'ha acceso la
+         ritrova nella lingua di prima. Segnalarlo sarebbe un errore rosso per
+         una cosa che nessuno stava guardando. */
+    });
+  }, [lingua]);
 
   /**
    * Cambia la lingua, e la scrive.
@@ -897,7 +904,7 @@ export function App() {
     try {
       setSkin(await ipc.skinElenco());
     } catch (e) {
-      setErrore(testoErrore(e));
+      segnalaErrore(e);
     }
   }, []);
 
@@ -940,7 +947,7 @@ export function App() {
         setSkinAttiva(scelta);
         await ricaricaSkin();
       } catch (e) {
-        setErrore(testoErrore(e));
+        segnalaErrore(e);
       }
     },
     [ricaricaSkin],
@@ -965,7 +972,7 @@ export function App() {
         setSkinAttiva(resta);
         await ricaricaSkin();
       } catch (e) {
-        setErrore(testoErrore(e));
+        segnalaErrore(e);
       }
     },
     [ricaricaSkin],
@@ -1014,7 +1021,7 @@ export function App() {
       // di skin vuole vederla.
       await scegliSkin(installata.id);
     } catch (e) {
-      setErrore(testoErrore(e));
+      segnalaErrore(e);
     }
   };
 
@@ -1036,7 +1043,10 @@ export function App() {
       const sorgente = sorgenteNuova(await ipc.studioDocumento(dati.base), dati);
       if (sorgente === null) {
         const quale = skin.find((s) => s.id === dati.base)?.nome ?? dati.base;
-        setErrore(`«${quale}» non è un documento leggibile: correggilo nello Studio prima di derivarne un tema.`);
+        setErrore({
+          testo: `«${quale}» non è un documento leggibile: correggilo nello Studio prima di derivarne un tema.`,
+          dettaglio: null,
+        });
         return;
       }
       await ipc.skinInstallaSorgente(sorgente);
@@ -1048,116 +1058,33 @@ export function App() {
       setCreandoTema(false);
       setStudioAperto(dati.id);
     } catch (e) {
-      setErrore(testoErrore(e));
+      segnalaErrore(e);
     }
   };
 
   useAscolto<Avanzamento>("scansione:avanzamento", setScansione);
 
   /**
-   * Lo stato del backup: una sola sorgente, come per la riproduzione.
+   * Backup, sincronia e arricchimento, che adesso stanno in `nuvola.ts`.
    *
-   * Si chiede una volta all'avvio e poi si **ascolta**: il filo di sottofondo
-   * salva per conto suo, e una schermata che si aggiornasse solo quando la si
-   * apre mostrerebbe l'ora dell'ultimo salvataggio di quando l'hai guardata,
-   * non di adesso.
+   * La chiamata è qui e non fra le dichiarazioni in cima perché è questa riga a
+   * registrare le tre letture d'avvio e i cinque ascolti: li registra nel punto
+   * in cui stavano — dopo `scansione:avanzamento`, prima di tutto quel che
+   * viene sotto — e spostarla vorrebbe dire cambiare l'ordine in cui gli
+   * effetti girano al primo disegno. Perché il grappolo viva di là, e perché il
+   * tema e la selezione siano rimasti di qua, sta scritto in testa a quel file.
    */
-  useEffect(() => {
-    ipc.nuvolaStato().then(setNuvola).catch(segnalaErrore);
-    const promessa = listen<StatoNuvola>("nuvola:stato", (evento) =>
-      setNuvola(evento.payload),
-    );
-    return () => {
-      void promessa.then((stop) => stop());
-    };
-  }, [segnalaErrore]);
-
-  /**
-   * Lo stato della sincronia, con la stessa disciplina del backup.
-   *
-   * Si chiede una volta e poi si **ascolta**, e qui conta più che altrove: la
-   * sincronia scrive nella libreria da sola, e la schermata deve poter dire
-   * cosa è arrivato mentre la si guardava.
-   */
-  useEffect(() => {
-    ipc.sincroniaStato().then(setSincronia).catch(segnalaErrore);
-    const promessa = listen<StatoSincronia>("sincronia:stato", (evento) =>
-      setSincronia(evento.payload),
-    );
-    return () => {
-      void promessa.then((stop) => stop());
-    };
-  }, [segnalaErrore]);
-
-  /**
-   * Lo stato dell'arricchimento, con la stessa disciplina del backup.
-   *
-   * Si chiede una volta e poi si **ascolta**, per la stessa ragione: il filo
-   * lavora per conto suo, e la sezione aperta mentre una passata gira deve
-   * vedere i numeri salire invece di restare a quelli di quando l'hai aperta.
-   */
-  useEffect(() => {
-    ipc.arricchimentoStato().then(setArricchimento).catch(segnalaErrore);
-    const promesse = [
-      listen<StatoArricchimento>("arricchimento:stato", (evento) => {
-        setArricchimento(evento.payload);
-        // Lo stato è l'ultima parola su «sta girando»: una passata caduta a
-        // metà — il database che non risponde, la finestra che si chiude —
-        // non manda l'ultimo passo, e senza questa riga la barra resterebbe
-        // ferma a 3/12 per sempre.
-        if (!evento.payload.inCorso) setAvanzaArricchimento(null);
-      }),
-      listen<AvanzamentoArricchimento>("arricchimento:avanzamento", (evento) =>
-        // L'ultimo passo di una passata è `fatti === totale`, ed è anche il
-        // segnale che è finita: tenerlo mostrato lascerebbe una barra piena
-        // sotto uno stato che dice «ferma».
-        setAvanzaArricchimento(
-          evento.payload.fatti >= evento.payload.totale ? null : evento.payload,
-        ),
-      ),
-      listen<EsitoArricchimento>("arricchimento:esito", (evento) => {
-        setEsitoArricchimento(evento.payload);
-        setAvanzaArricchimento(null);
-      }),
-    ];
-    return () => {
-      for (const promessa of promesse) void promessa.then((stop) => stop());
-    };
-  }, [segnalaErrore]);
-
-  /** Un comando del backup: aggiorna lo stato, o mostra perché non ci riesce. */
-  const conNuvola = useCallback(
-    (azione: () => Promise<StatoNuvola>) => {
-      // Ottimistico su `inCorso`: `nuvolaCollega` apre un browser e può metterci
-      // tre minuti, e senza questo il tasto resterebbe premibile per tutto quel
-      // tempo — con il risultato che chi non vede succedere niente clicca due
-      // volte e si prende un `sync.busy`.
-      setNuvola((prima) => (prima ? { ...prima, inCorso: true } : prima));
-      azione()
-        .then(setNuvola)
-        .catch((e: unknown) => {
-          setNuvola((prima) => (prima ? { ...prima, inCorso: false } : prima));
-          segnalaErrore(e);
-        });
-    },
-    [segnalaErrore],
-  );
-
-  /** Un comando della sincronia: aggiorna lo stato, o mostra perché non ci riesce. */
-  const conSincronia = useCallback(
-    (azione: () => Promise<StatoSincronia>) => {
-      setSincronia((prima) => (prima ? { ...prima, inCorso: true } : prima));
-      azione()
-        .then(setSincronia)
-        .catch((e: unknown) => {
-          setSincronia((prima) =>
-            prima ? { ...prima, inCorso: false } : prima,
-          );
-          segnalaErrore(e);
-        });
-    },
-    [segnalaErrore],
-  );
+  const {
+    nuvola,
+    sincronia,
+    setSincronia,
+    arricchimento,
+    setArricchimento,
+    avanzaArricchimento,
+    esitoArricchimento,
+    conNuvola,
+    conSincronia,
+  } = useNuvola(segnalaErrore);
 
   // La ricerca ha la precedenza su qualunque vista: quel che si sta cercando è
   // ciò che si vuole vedere. Il passaggio in modalità ricerca è **immediato**,
@@ -1398,7 +1325,8 @@ export function App() {
    *
    * Dipende dalle due `ricarica` e non dai due oggetti: quelle sono stabili,
    * gli oggetti cambiano identità a ogni riga che arriva — e `caricaVista` sta
-   * nelle dipendenze di un `listen`, che si riscriverebbe di continuo.
+   * a sua volta nelle dipendenze di due `useCallback`, che si riscriverebbero
+   * di continuo.
    */
   const ricaricaBrani = elencoBrani.ricarica;
   const ricaricaAlbum = elencoAlbum.ricarica;
@@ -1442,7 +1370,7 @@ export function App() {
     ipc
       .braniAlbum(aperto.albumKey)
       .then(setBraniAperto)
-      .catch((e: unknown) => setErrore(testoErrore(e)));
+      .catch((e: unknown) => segnalaErrore(e));
   }, [aperto]);
 
   /** Porta in una vista, azzerando tutto quel che le sta sopra. */
@@ -1667,7 +1595,7 @@ export function App() {
       await ricarica();
       await caricaVista();
     } catch (e) {
-      setErrore(testoErrore(e));
+      segnalaErrore(e);
     } finally {
       setScansione(null);
     }
@@ -1687,7 +1615,7 @@ export function App() {
         indice,
       );
     } catch (e) {
-      setErrore(testoErrore(e));
+      segnalaErrore(e);
     }
   }, []);
 
@@ -1898,7 +1826,7 @@ export function App() {
       try {
         await ipc.valutazione(brano.id, stelle);
       } catch (e) {
-        setErrore(testoErrore(e));
+        segnalaErrore(e);
         // La copia del nucleo si rimette a mano: `caricaVista` rimedia agli
         // elenchi, non a lei, e senza questa riga il valore sbagliato resterebbe
         // nella barra fino al prossimo evento della riproduzione.
@@ -1938,7 +1866,7 @@ export function App() {
             : prima,
         );
       } catch (e) {
-        setErrore(testoErrore(e));
+        segnalaErrore(e);
         riproduzione.ritoccaBrano(brano.id, { liked: brano.liked });
         await caricaVista();
       }
@@ -2224,8 +2152,8 @@ export function App() {
   const senzaCartelle = avvio !== null && avvio.cartelle.length === 0;
   const vuota = numeri !== undefined && numeri.tracks === 0;
   const inAscolto = riproduzione.stato.brano?.id ?? null;
-  const messaggio =
-    errore ?? (riproduzione.errore ? testoErrore(riproduzione.errore) : null);
+  const guasto = errore ?? guastoDa(riproduzione.errore);
+  const messaggio = guasto?.testo ?? null;
   /**
    * Il guasto in fascia si può riprovare.
    *
@@ -2267,10 +2195,10 @@ export function App() {
   /**
    * Tutto quel che i widget sanno del mondo, in un oggetto solo.
    *
-   * È l'unico imbuto per i ventisei `useState` di questo componente. Prima
-   * scendevano a mano: `Lettore` prendeva sette prop, `Colonna` sette, `Coda`
-   * tre, e aggiungere un widget voleva dire farne passare un'altra attraverso
-   * tre livelli che non la usavano. Qui la lista si scrive una volta.
+   * È l'unico imbuto per i quarantotto `useState` di questo componente. Prima
+   * scendevano a mano: `Lettore` prende sei prop, `Colonna` sei, `Coda` tre, e
+   * aggiungere un widget voleva dire farne passare un'altra attraverso tre
+   * livelli che non la usavano. Qui la lista si scrive una volta.
    */
   const contesto: ContestoWidget = useMemo(
     () => ({
@@ -3084,6 +3012,16 @@ export function App() {
         // «Salva e usa» ridipinge la finestra intera, non solo l'anteprima
         // dentro lo Studio: è la stessa strada di quando si sceglie una skin.
         onInstallata={(id) => void scegliSkin(id)}
+        // La chat dello Studio, senza un modello configurato, non promette
+        // niente e porta qui: la scheda sta in una finestra che lo Studio
+        // nasconde per intero, e dire «configurane uno» senza portarci
+        // lascerebbe da cercare.
+        onModelli={() => {
+          setStudioAperto(null);
+          void ricaricaSkin();
+          vaiA("impostazioni");
+          setSezione("modelli");
+        }}
         onErrore={segnalaErrore}
       />
     );
@@ -3128,28 +3066,16 @@ export function App() {
                     chiudere, e il lettore flottante sparisce quando non c'è un
                     brano — cioè proprio nei due casi in cui il dispositivo
                     manca da prima che si provasse a suonare qualcosa. Una
-                    fascia che si può non vedere non è una fascia. */}
-                {riproduzione.stato.audio !== null && (
-                  <div className="errore audio-perso toast-card" role="alert">
-                    <Icona nome="i-alert" dim={16} />
-                    <span>
-                      <strong>{t("audio.lost.what")}</strong>{" "}
-                      {riproduzione.stato.audio.causa}.
-                    </span>
-                    {riproduzione.stato.audio.riapribile && (
-                      <button
-                        type="button"
-                        className="bottone minuto btn-ghost"
-                        title={t("audio.lost.reopen.title")}
-                        onClick={() => {
-                          ipc.riapriAudio().catch(segnalaErrore);
-                        }}
-                      >
-                        {t("audio.lost.reopen")}
-                      </button>
-                    )}
-                  </div>
-                )}
+                    fascia che si può non vedere non è una fascia.
+
+                    Il componente decide da sé se disegnarsi, e cosa: il rosso
+                    di «non c'è audio», l'avviso che passa da sé quando il
+                    suono si è spostato su un'altra uscita, o niente. */}
+                <AvvisoAudio
+                  stato={riproduzione.stato}
+                  dove="fascia"
+                  onErrore={segnalaErrore}
+                />
                 {/* Sopra la notizia e sotto il dispositivo audio perso, che è
                     l'ordine della fretta: l'audio che non si sente è adesso,
                     una versione nuova può aspettare che si finisca di
@@ -3174,7 +3100,17 @@ export function App() {
                 {messaggio && (
                   <div className="errore toast-card" role="alert">
                     <Icona nome="i-alert" dim={16} />
-                    <span>{messaggio}</span>
+                    <span>
+                      {messaggio}
+                      {/* Quel che il servizio ha scritto con parole sue: la
+                          frase del catalogo dice cosa è successo, questa dice
+                          cosa fare. Vedi `dettaglioErrore`. */}
+                      {guasto?.dettaglio != null && (
+                        <span className="dettaglio-errore">
+                          {guasto.dettaglio}
+                        </span>
+                      )}
+                    </span>
                     {/* «Riprova» compare solo quando il catalogo dice che
                         riprovare ha senso, e il caso per cui esiste è la
                         cartella di rete che non risponde: lì il gesto non è

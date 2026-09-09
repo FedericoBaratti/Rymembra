@@ -396,7 +396,7 @@ pub fn similarity(a: &str, b: &str) -> f64 {
 /// vorrebbe dire rifare centoquarantaquattro volte un lavoro che si fa
 /// ventiquattro.
 #[must_use]
-pub fn dice(a: &str, b: &str) -> f64 {
+pub(crate) fn dice(a: &str, b: &str) -> f64 {
     if a == b {
         return if a.is_empty() { 0.0 } else { 1.0 };
     }
@@ -1120,7 +1120,7 @@ pub struct TrackEvidence {
 /// durata entro [`ANCORA_DURATA_SEC`]. Senza, «Yesterday» in libreria si
 /// aggancerebbe a «Yesterday» di chiunque.
 #[must_use]
-pub fn decide_track(prove: &TrackEvidence, punteggio: f64) -> Verdetto {
+pub(crate) fn decide_track(prove: &TrackEvidence, punteggio: f64) -> Verdetto {
     if punteggio < SOGLIA_CANDIDATO {
         return Verdetto::Nessuno;
     }
@@ -1158,7 +1158,7 @@ pub struct TrackMatch {
 /// (`match.ts:156`), e come là un interprete ignoto o una durata mancante valgono
 /// il neutro 0.5. Serve a **ordinare**, non a decidere.
 #[must_use]
-pub fn score_candidate(brano: &LocalTrack, candidato: &Candidate) -> f64 {
+pub(crate) fn score_candidate(brano: &LocalTrack, candidato: &Candidate) -> f64 {
     let titolo = similarity(&brano.title, &candidato.title);
     let artista_noto = !brano.artist.trim().is_empty() && brano.artist != UNKNOWN_ARTIST;
     let artista = if artista_noto && !candidato.artist.is_empty() {
@@ -1177,7 +1177,7 @@ pub fn score_candidate(brano: &LocalTrack, candidato: &Candidate) -> f64 {
 /// una raccolta karaoke dello stesso interprete — e il consenso, che qui è la
 /// prova principale, si fonderebbe su un accordo che non dice niente.
 #[must_use]
-pub fn concordano(a: &Candidate, b: &Candidate) -> bool {
+pub(crate) fn concordano(a: &Candidate, b: &Candidate) -> bool {
     if normalize_for_match(&a.title) != normalize_for_match(&b.title) {
         return false;
     }
@@ -1354,7 +1354,7 @@ fn e_segnaposto(valore: Option<&str>, segnaposto: &str) -> bool {
 /// quando il tag non ha un titolo; oppure porta il rumore di un caricamento su
 /// YouTube, che [`titolo_da_cercare`] sa togliere.
 #[must_use]
-pub fn titolo_di_ripiego(titolo: &str, radice_del_file: Option<&str>) -> bool {
+pub(crate) fn titolo_di_ripiego(titolo: &str, radice_del_file: Option<&str>) -> bool {
     let rifilato = titolo.trim_matches(is_js_whitespace);
     if rifilato.is_empty() {
         return true;

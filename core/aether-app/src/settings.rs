@@ -35,6 +35,12 @@
 use aether_domain::errors::{AppError, ErrorCode};
 use rusqlite::Connection;
 
+// Il dettaglio che questo modulo passa a `db_error` è sempre **la chiave** che
+// ha causato il guasto, e non un messaggio generico: `settings.corrupt` su una
+// riga qualunque non dice niente a chi legge un registro, mentre
+// «`player.queue`» dice subito quale funzione smetterà di ricordarsi le cose.
+use crate::library::db_error;
+
 /// La chiave con cui le cartelle sorvegliate stanno in `settings`.
 ///
 /// Qui e non nei comandi della finestra perché ora la leggono in due: chi
@@ -98,18 +104,6 @@ pub const CHIAVE_CARTELLA_DOWNLOAD: &str = "download.folder";
 ///
 /// Assente vale **acceso**: è il valore con cui un catalogo di concerti è utile.
 pub const CHIAVE_ALTERNATIVE: &str = "catalogo.alternative";
-
-/// Traduce un guasto di SQLite nominando la chiave che lo ha causato.
-///
-/// La chiave nel dettaglio e non un messaggio generico: `settings.corrupt` su
-/// una riga qualunque non dice niente a chi legge un registro, mentre
-/// «`player.queue`» dice subito quale funzione smetterà di ricordarsi le cose.
-fn db_error(chiave: &str, err: &rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(chiave.to_owned()),
-    })
-    .with_cause(err.to_string())
-}
 
 /// Legge un'impostazione.
 ///

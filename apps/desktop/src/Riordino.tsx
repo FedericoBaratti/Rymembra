@@ -11,7 +11,6 @@
  * numero — e i gruppi «da rivedere» sono esattamente la parte che un conteggio
  * nasconderebbe.
  */
-import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 
 import {
@@ -23,6 +22,7 @@ import {
 } from "./ipc";
 import { t } from "./lingue";
 import { Trans } from "./lingue/Trans";
+import { useAscolto } from "./pagine";
 
 /** Come si legge un motivo per cui un brano resta dov'è. */
 function motivi(): Record<string, string> {
@@ -57,14 +57,7 @@ export function Riordino({
   const [inCorso, setInCorso] = useState(true);
   const [avanzamento, setAvanzamento] = useState<Avanzamento | null>(null);
 
-  useEffect(() => {
-    const promessa = listen<Avanzamento>("riordino:avanzamento", (evento) =>
-      setAvanzamento(evento.payload),
-    );
-    return () => {
-      void promessa.then((stop) => stop());
-    };
-  }, []);
+  useAscolto<Avanzamento>("riordino:avanzamento", setAvanzamento);
 
   useEffect(() => {
     let annullato = false;

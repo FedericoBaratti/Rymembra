@@ -172,7 +172,7 @@ fn scarica(fornitori: &Fornitori, url: &str) -> Option<Copertina> {
 
 /// La copertina scelta per un gruppo di pubblicazione, se ne ha una.
 #[must_use]
-pub fn per_gruppo(fornitori: &Fornitori, id: &str) -> Option<Copertina> {
+pub(crate) fn per_gruppo(fornitori: &Fornitori, id: &str) -> Option<Copertina> {
     scarica(
         fornitori,
         &format!("{BASE}/release-group/{}/{LATO}", percento(id)),
@@ -181,7 +181,7 @@ pub fn per_gruppo(fornitori: &Fornitori, id: &str) -> Option<Copertina> {
 
 /// La copertina di una singola pubblicazione, se ne ha una.
 #[must_use]
-pub fn per_pubblicazione(fornitori: &Fornitori, id: &str) -> Option<Copertina> {
+pub(crate) fn per_pubblicazione(fornitori: &Fornitori, id: &str) -> Option<Copertina> {
     scarica(
         fornitori,
         &format!("{BASE}/release/{}/{LATO}", percento(id)),

@@ -10,9 +10,13 @@
 //! - **niente allocazioni** — `malloc` può prendere un lucchetto globale;
 //! - **niente lucchetti** — il filo che lo tiene può essere sospeso dallo
 //!   scheduler, e la callback lo aspetterebbe oltre la sua scadenza;
-//! - **niente panici** — il workspace compila con `panic = "abort"`, quindi un
-//!   `unwrap` andato male qui non fa cadere una funzione: chiude l'applicazione
-//!   mentre l'utente sta ascoltando.
+//! - **niente panici** — non perché il processo cadrebbe (il profilo è
+//!   `panic = "unwind"`), ma perché questo filo è del dispositivo audio, non
+//!   nostro: un panico qui srotola dentro `cpal`, il flusso muore e i `Drop` di
+//!   quel che la callback teneva in mano si eseguono su un filo di cui non
+//!   sappiamo niente. E non c'è nessuno a raccogliere i pezzi:
+//!   `motore::filo_sorvegliato` sorveglia il filo di **decodifica**, che è un
+//!   altro.
 //!
 //! Per questo la comunicazione con il resto del motore passa solo da atomiche e
 //! da un anello senza lucchetti, e ogni lettura dall'anello ha un valore di
@@ -87,6 +91,18 @@ const RAMPA: f32 = 0.0005;
 pub struct Uscita {
     /// Come si è aperto il dispositivo.
     pub formato: FormatoUscita,
+    /// Su quale uscita si è aperto **davvero**.
+    ///
+    /// Non è per forza quella che si era chiesta: un nome che non c'è più fa
+    /// ripiegare sul predefinito (vedi [`crate::dispositivi::scegli`]), e chi
+    /// sorveglia deve poter confrontare questo con quel che si voleva per
+    /// sapere se vale la pena riaprire quando il dispositivo torna.
+    pub dispositivo: String,
+    /// Quello aperto era il predefinito di sistema nell'istante dell'apertura.
+    ///
+    /// Serve a distinguere «sto sul predefinito perché è quel che volevo» da
+    /// «sto sul predefinito perché quel che volevo non c'era».
+    pub era_predefinito: bool,
     /// Chiudendolo, il filo del flusso esce e il flusso si ferma.
     _spegni: std::sync::mpsc::Sender<()>,
 }
@@ -103,6 +119,7 @@ pub(crate) fn apri(
     coefficienti: rtrb::Consumer<Coefficienti>,
     campioni_spettro: rtrb::Producer<f32>,
     condiviso: Arc<Condiviso>,
+    voluto: Option<String>,
 ) -> Result<Uscita, AppError> {
     let (manda_formato, ricevi_formato) = std::sync::mpsc::channel();
     let (spegni, attendi_spegnimento) = std::sync::mpsc::channel::<()>();
@@ -110,10 +127,16 @@ pub(crate) fn apri(
     std::thread::Builder::new()
         .name("aether-uscita".to_owned())
         .spawn(move || {
-            let costruito = costruisci(anello, coefficienti, campioni_spettro, &condiviso);
+            let costruito = costruisci(
+                anello,
+                coefficienti,
+                campioni_spettro,
+                &condiviso,
+                voluto.as_deref(),
+            );
             match costruito {
-                Ok((flusso, formato)) => {
-                    if manda_formato.send(Ok(formato)).is_err() {
+                Ok((flusso, aperta)) => {
+                    if manda_formato.send(Ok(aperta)).is_err() {
                         return;
                     }
                     // Il flusso deve restare vivo qui: è la ragione per cui
@@ -132,15 +155,28 @@ pub(crate) fn apri(
                 .with_cause(format!("filo dell'uscita: {err}"))
         })?;
 
-    let formato = ricevi_formato.recv().map_err(|_| {
+    let aperta = ricevi_formato.recv().map_err(|_| {
         AppError::new(ErrorCode::PlaybackEngineUnavailable)
             .with_cause("il filo dell'uscita è morto prima di aprire".to_owned())
     })??;
 
     Ok(Uscita {
-        formato,
+        formato: aperta.formato,
+        dispositivo: aperta.dispositivo,
+        era_predefinito: aperta.era_predefinito,
         _spegni: spegni,
     })
+}
+
+/// Quel che il filo dell'uscita rimanda indietro appena ha aperto.
+///
+/// Tre campi e non uno perché il filo che apre è l'unico che vede il
+/// dispositivo: dopo, il `Device` di cpal è già dentro il flusso, e il flusso
+/// non attraversa i fili — nessuno può più chiedergli come si chiama.
+struct Aperta {
+    formato: FormatoUscita,
+    dispositivo: String,
+    era_predefinito: bool,
 }
 
 fn costruisci(
@@ -148,12 +184,42 @@ fn costruisci(
     coefficienti: rtrb::Consumer<Coefficienti>,
     campioni_spettro: rtrb::Producer<f32>,
     condiviso: &Arc<Condiviso>,
-) -> Result<(cpal::Stream, FormatoUscita), AppError> {
+    voluto: Option<&str>,
+) -> Result<(cpal::Stream, Aperta), AppError> {
     let host = cpal::default_host();
-    let dispositivo = host.default_output_device().ok_or_else(|| {
+    // L'elenco intero e non `default_output_device()`: da quando l'uscita si
+    // può scegliere, il predefinito è soltanto il ripiego. La regola di quale
+    // prendere sta tutta in `dispositivi::scegli`, che è pura e provata — qui
+    // resta il lavoro che una funzione pura non può fare, cioè aprire.
+    let uscite = crate::dispositivi::elenco();
+    let scelta = crate::dispositivi::scegli(&uscite, voluto).ok_or_else(|| {
         AppError::new(ErrorCode::PlaybackEngineUnavailable)
-            .with_cause("nessun dispositivo di uscita predefinito".to_owned())
+            .with_cause("nessun dispositivo di uscita".to_owned())
     })?;
+    let nome = scelta.id.clone();
+    let era_predefinito = scelta.predefinito;
+
+    // Dal nome al `Device`, che è l'unica strada che cpal offre: `elenco` ha
+    // consumato il suo iteratore per leggere i nomi, e un `Device` non si
+    // ricava da una stringa. Fra le due enumerazioni il mondo può essere
+    // cambiato — una scheda staccata proprio adesso — e in quel caso si
+    // ripiega sul predefinito invece di dire di no: è la stessa regola di
+    // `scegli`, un istante più tardi.
+    let dispositivo = host
+        .output_devices()
+        .ok()
+        .and_then(|mut uscite| uscite.find(|d| d.name().is_ok_and(|suo| suo == nome)))
+        .or_else(|| host.default_output_device())
+        .ok_or_else(|| {
+            AppError::new(ErrorCode::PlaybackEngineUnavailable)
+                .with_cause(format!("l'uscita «{nome}» è sparita mentre la si apriva"))
+        })?;
+    // Il nome si rilegge dal dispositivo davvero preso: se il ramo di ripiego
+    // qui sopra ha scelto il predefinito, `nome` mentirebbe — e chi sorveglia
+    // confronta proprio questa stringa per decidere se riaprire, quindi una
+    // bugia qui vale un anello di riaperture che non finisce.
+    let nome = dispositivo.name().unwrap_or(nome);
+
     let configurazione = dispositivo.default_output_config().map_err(|err| {
         AppError::new(ErrorCode::PlaybackEngineUnavailable).with_cause(err.to_string())
     })?;
@@ -189,10 +255,18 @@ fn costruisci(
             // Il dispositivo è sparito: cuffie staccate, scheda cambiata. Non
             // c'è niente da fare qui dentro se non lasciarne traccia, perché
             // riaprire va fatto da un filo che può bloccarsi.
-            stato.perso.store(true, Ordering::Release);
+            //
+            // La causa **prima** della bandiera, e nell'ordine di
+            // `Contesto::caduto`, che scrive le stesse due caselle per l'altra
+            // causa: chi legge arriva dall'altra parte — vista `perso` alta, va
+            // a chiedere perché — e scrivendole al contrario ci sarebbe una
+            // finestra in cui la risposta è ancora zero, cioè «causa
+            // sconosciuta» nel diario e nel banner proprio nell'istante che
+            // esistono per raccontare.
             stato
                 .causa_perdita
                 .store(codice_errore(&err), Ordering::Release);
+            stato.perso.store(true, Ordering::Release);
         }
     };
 
@@ -258,7 +332,14 @@ fn costruisci(
         AppError::new(ErrorCode::PlaybackEngineUnavailable).with_cause(err.to_string())
     })?;
 
-    Ok((flusso, formato))
+    Ok((
+        flusso,
+        Aperta {
+            formato,
+            dispositivo: nome,
+            era_predefinito,
+        },
+    ))
 }
 
 /// Da campione normalizzato a campione normalizzato, ma tagliato.
@@ -528,6 +609,7 @@ mod prove {
             canali: AtomicU32::new(u32::from(canali)),
             perso: AtomicBool::new(false),
             causa_perdita: AtomicU32::new(0),
+            abbandonato: AtomicBool::new(false),
             spettro: AtomicBool::new(false),
         })
     }

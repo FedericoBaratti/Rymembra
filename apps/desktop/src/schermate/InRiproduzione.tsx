@@ -28,8 +28,9 @@
  *
  * Acceso lo spettro, si ritira **in alto a sinistra** e la copertina si fa
  * piccola: la fascia centrale è quella in cui la scena si legge meglio, e il
- * sommario in mezzo la coprirebbe proprio lì. Spento — cioè all'apertura — quel
- * vuoto non lo guarda nessuno, e tenerlo libero per una scena che non c'è
+ * sommario in mezzo la coprirebbe proprio lì. Spento — che è come si apre
+ * finché nessuno ha scelto il contrario — quel vuoto non lo guarda nessuno, e
+ * tenerlo libero per una scena che non c'è
  * vorrebbe dire mostrare la copertina in un angolo con mezzo schermo intorno.
  * Allora torna **al centro**, e grande: chi apre questa schermata è venuto a
  * guardarla.
@@ -49,7 +50,12 @@ import { useEffect, useState } from "react";
 
 import { Copertina, Sfocata } from "../Copertina";
 import { RigheCoda, useRigheCoda } from "../Coda";
-import { ipc, type Brano, type StatoRiproduzione } from "../ipc";
+import {
+  ipc,
+  type Brano,
+  type QualitaSpettro,
+  type StatoRiproduzione,
+} from "../ipc";
 import { DettaglioSpettro } from "../parti/DettaglioSpettro";
 import { Giudizio } from "../parti/Giudizio";
 import { Icona } from "../parti/Icone";
@@ -78,16 +84,40 @@ export function InRiproduzione({
   // questa schermata è venuto a guardare la copertina. Il testo è una seconda
   // cosa da guardare, e chi la vuole la accende.
   const [testoVisibile, setTestoVisibile] = useState(false);
-  // Spento all'apertura, e di proposito: chi apre questa schermata è venuto a
-  // guardare la copertina. Lo spettro è una seconda cosa da guardare, e chi la
-  // vuole la accende — accendendola si accende anche la presa nel motore.
+  // Spento all'apertura, e la ragione non è più «di proposito, ogni volta»: la
+  // scelta adesso si ricorda. Sta in `settings` sotto `player.spectrum.visible`,
+  // vale `false` per chi non l'ha mai fatta — chi apre questa schermata la prima
+  // volta è venuto a guardare la copertina — e viaggia nel profilo, perché
+  // «voglio vedere lo spettro» è un gusto di chi ascolta e resta vero su
+  // qualunque computer.
+  //
+  // Si parte comunque da `false` e si semina con un effetto, come per le barre:
+  // così un avvio da spento a spento non costa un montaggio e uno smontaggio
+  // della scena — cioè un contesto WebGL creato e distrutto per niente.
   const [spettroVisibile, setSpettroVisibile] = useState(false);
+  useEffect(() => {
+    ipc.spettroVisibile().then(setSpettroVisibile).catch(onErrore);
+  }, [onErrore]);
   // Quante barre disegna la scena. Parte da quel che dice il nucleo — la
   // preferenza sta in `settings`, non qui — e si chiede una volta sola,
   // all'apertura: è una lettura da una tabella di chiavi, non da mezza libreria.
   const [barre, setBarre] = useState(64);
   useEffect(() => {
     ipc.spettroBande().then(setBarre).catch(onErrore);
+  }, [onErrore]);
+  // Quanto la scena può costare a questa macchina. Stessa forma degli altri due:
+  // si parte dal valore di serie e si semina con un effetto, perché è una
+  // lettura da una tabella di chiavi e non da mezza libreria.
+  //
+  // Si legge **qui** e non dentro la scena, che pure sarebbe il posto in cui
+  // serve: la tela nasce e muore con l'interruttore, e leggerla di là vorrebbe
+  // dire una chiamata IPC a ogni accensione dello spettro invece di una a ogni
+  // apertura della schermata. La scheda in Impostazioni scrive nel database, e
+  // quel che si vede qui si aggiorna alla riapertura — che è il momento in cui
+  // la scena rinasce comunque.
+  const [qualitaSpettro, setQualitaSpettro] = useState<QualitaSpettro>("auto");
+  useEffect(() => {
+    ipc.spettroQualita().then(setQualitaSpettro).catch(onErrore);
   }, [onErrore]);
   const scegliBarre = (quante: number) => {
     // Si prende quel che è rimasto e non quel che si è chiesto: fra le potenze
@@ -125,8 +155,29 @@ export function InRiproduzione({
           sarebbe schiacciata dal nero verticale che rende leggibile il titolo,
           e sopra il testo lo coprirebbe. Montata solo quando lo spettro è
           acceso: spenta non costa né una texture né un fotogramma, e nemmeno la
-          presa nel motore — quella nasce e muore con questa tela. */}
-      {spettroVisibile && <Spettro3D barre={barre} onErrore={onErrore} />}
+          presa nel motore — quella nasce e muore con questa tela.
+
+          `inPausa` non ferma la scena: mezzo minuto di passato deve finire di
+          uscire invece di congelarsi a metà strada. Serve alla macchina del
+          riposo, che quando la scena si assopisce nel silenzio può chiudere
+          anche la presa nel motore — ma solo se non sta suonando niente, perché
+          altrimenti chiuderebbe l'unica cosa che sa svegliarla.
+
+          `qualita` è l'altra metà della linea che separa una skin da
+          un'impostazione: la skin dice come la scena appare, questa dice quanto
+          questa macchina è disposta a spenderci. Cambiarla non rimonta niente —
+          la densità passa per il ridimensionamento, il riflesso è un `if` — e
+          l'unico caso che ricostruisce la texture è il passaggio da o verso
+          «bassa», che si paga una volta e non si può evitare: la larghezza di
+          una texture si decide alla sua nascita. */}
+      {spettroVisibile && (
+        <Spettro3D
+          barre={barre}
+          inPausa={stato.inPausa}
+          qualita={qualitaSpettro}
+          onErrore={onErrore}
+        />
+      )}
 
       <header className="testa">
         <div className="chi-suona">
@@ -156,7 +207,16 @@ export function InRiproduzione({
             className="tasto icon-btn"
             aria-pressed={spettroVisibile}
             aria-label={t("np.spectrum.toggle")}
-            onClick={() => setSpettroVisibile((prima) => !prima)}
+            onClick={() => {
+              // Si scrive e si dipinge dalla risposta, non dal click: la
+              // preferenza sta nel database, e l'unico modo di non mentire su
+              // quel che ci sarà alla prossima apertura è mostrare quel che ci
+              // è finito davvero.
+              ipc
+                .spettroVisibileScegli(!spettroVisibile)
+                .then(setSpettroVisibile)
+                .catch(onErrore);
+            }}
           >
             <Icona nome="i-eq" dim={16} titolo={t("np.spectrum")} />
           </button>

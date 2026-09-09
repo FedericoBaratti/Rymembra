@@ -100,7 +100,12 @@ fn channel(value: f64) -> u8 {
         return 255;
     }
     // Qui `rounded` sta in (0, 255) ed è intero: la conversione non perde nulla.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "i due rami sopra hanno già tolto di mezzo tutto ciò che sta fuori da (0, 255), \
+                  e `round` ha reso intero il resto"
+    )]
     {
         rounded as u8
     }

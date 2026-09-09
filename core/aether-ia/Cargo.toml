@@ -1,0 +1,24 @@
+[package]
+name = "aether-ia"
+description = "I modelli di linguaggio di Aether: un client OpenAI-compatibile, e niente che sappia cos'è una skin."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Nessuno di questi crate va su crates.io. Vedi la nota in `aether-scrobble`.
+publish = false
+
+[dependencies]
+# Il catalogo degli errori e il client HTTP, e basta. Non `aether-skin`, e non
+# per pigrizia: il giorno in cui questo crate sapesse cos'è un token di una skin
+# sarebbe il giorno in cui andava scritto come modulo di `src-tauri`. Vedi il
+# preambolo di `lib.rs`.
+aether-domain = { path = "../aether-domain" }
+aether-net = { path = "../aether-net" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

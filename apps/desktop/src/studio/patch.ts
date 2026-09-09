@@ -22,6 +22,32 @@
  * vuole un valore chiuso — ed è la prima delle tre regole dello Studio. Queste
  * funzioni sono il ponte fra quei controlli e il testo.
  *
+ * # Le posizioni, e perché sono arrivate dopo
+ *
+ * Per tutta la vita dello Studio queste funzioni hanno saputo attraversare solo
+ * oggetti, e non era una dimenticanza: **nessun controllo indirizza una
+ * posizione**. La pila degli effetti si riscrive intera — `Livelli` passa a
+ * `onCambia` l'array completo — e lo scafale pure: `layout.shell` si sostituisce
+ * da un albero già clonato, senza mai nominare una posizione per strada.
+ *
+ * La chat ha cambiato la domanda. Un modello che ha in mano il documento e deve
+ * scaldare una fermata di un gradiente scrive
+ * `["parts", "section-card", "background", "0", "stops", "0", "color"]`, ed è il
+ * percorso giusto: `operazioni.rs` accetta i passi numerici apposta, perché «un
+ * modello che scrive `["tokens", 0]` intende il passo 0». Quel che succedeva qui
+ * è che l'array incontrato per strada diventava `{}` — la copia di livello era
+ * uno `spread` di oggetto, e per un array cadeva nel ramo vuoto — e la pila
+ * spariva dal documento senza che niente lo dicesse. È lo stesso guasto di
+ * `__proto__` qui sotto con un'altra causa: una perdita di dati in fondo a una
+ * scrittura che sembrava riuscita.
+ *
+ * Adesso un passo numerico dentro un elenco è una posizione; scrivere alla
+ * posizione pari alla lunghezza aggiunge in fondo — che è come si mette un
+ * livello in cima a una pila — e togliere una posizione fa scalare le altre.
+ * Quel che non si può onorare non si onora a metà: la funzione dice **di no**,
+ * e dice perché, perché quella frase è insieme quel che si mostra a chi guarda
+ * e quel che torna al modello per correggersi.
+ *
  * # L'ordine delle chiavi
  *
  * `JSON.stringify` conserva l'ordine di inserimento, quindi una chiave nuova
@@ -29,6 +55,22 @@
  * alfabetico produrrebbe un diff che tocca tutto il file a ogni modifica, e il
  * documento è testo apposta perché git ci lavori sopra.
  */
+import type { OperazioneIa } from "../ipc";
+
+/** Un contenitore del documento: un oggetto, oppure un elenco. */
+type Contenitore = Record<string, unknown> | unknown[];
+
+/**
+ * Com'è andata una modifica, e perché no quando no.
+ *
+ * La ragione non è per il diario: è la stessa frase che il pannello mostra
+ * sotto la proposta e che `correzione()` rimanda al modello in modalità agent.
+ * Un `null` al posto suo costringerebbe a ricostruirla ripercorrendo il
+ * percorso una seconda volta, cioè a scrivere due volte questa traversata.
+ */
+type Esito =
+  | { readonly fatto: true; readonly documento: Contenitore }
+  | { readonly fatto: false; readonly perche: string };
 
 /** Il documento come oggetto, o `null` se il testo non è JSON. */
 export function leggi(sorgente: string): Record<string, unknown> | null {
@@ -41,8 +83,14 @@ export function leggi(sorgente: string): Record<string, unknown> | null {
   }
 }
 
-/** Come si riscrive: due spazi, come `plain.json`. */
-export function scrivi(documento: Record<string, unknown>): string {
+/**
+ * Come si riscrive: due spazi, come `plain.json`.
+ *
+ * Il tipo è largo quanto quel che la traversata restituisce, non quanto la
+ * radice di un manifest: la radice arriva sempre da `leggi`, che rifiuta tutto
+ * quel che non è un oggetto, e un elenco qui non ci arriva mai.
+ */
+export function scrivi(documento: Contenitore): string {
   return `${JSON.stringify(documento, null, 2)}\n`;
 }
 
@@ -97,57 +145,162 @@ function preso(dentro: unknown, chiave: string): unknown {
     : undefined;
 }
 
-/** Il valore in un percorso, o `undefined`. */
-export function valoreIn(
-  documento: Record<string, unknown>,
-  percorso: readonly string[],
-): unknown {
-  let dove: unknown = documento;
-  for (const passo of percorso) {
-    dove = preso(dove, passo);
-  }
-  return dove;
+/** Vero per i due contenitori. `null` non lo è, benché `typeof` dica di sì. */
+function contenitore(cosa: unknown): cosa is Contenitore {
+  return cosa !== null && typeof cosa === "object";
 }
 
 /**
- * Scrive un valore in un percorso, creando gli oggetti che mancano.
+ * La posizione che un passo indirizza, o `null` se quel passo non è una
+ * posizione.
  *
- * Restituisce il testo nuovo, e lascia quello vecchio intatto se non è JSON:
- * un documento a metà di una parentesi non si modifica a colpi di controlli —
- * l'editor lo dice e non tocca niente, invece di riscrivere sopra il lavoro di
- * chi stava scrivendo.
+ * Scritta per esteso e in forma canonica: `"0"`, `"7"`, `"12"`. Non `"01"`, non
+ * `" 1"`, non `"1.0"`, non `"1e1"`, non `"-1"` — che `Number` accetterebbe
+ * tutte. Il confronto `String(n) === passo` dice in una riga la cosa giusta: un
+ * passo è una posizione **solo se** riscriverlo dà di nuovo se stesso. Senza,
+ * `"1e1"` diventerebbe la posizione dieci, e un nome di chiave che somiglia a
+ * un numero verrebbe scambiato per un indice.
  */
-export function scriviIn(
-  sorgente: string,
+function posizione(passo: string): number | null {
+  const n = Number(passo);
+  return Number.isInteger(n) && n >= 0 && String(n) === passo ? n : null;
+}
+
+/** Copia superficiale, che resta un elenco se era un elenco. */
+function copiaDi(cosa: Contenitore): Contenitore {
+  return Array.isArray(cosa) ? [...cosa] : { ...cosa };
+}
+
+/**
+ * Il valore di un passo dentro un contenitore, e `undefined` per tutto il resto.
+ *
+ * Dentro un elenco vale **solo** una posizione: `preso` da solo direbbe di sì
+ * anche a `"length"`, che è una proprietà propria di ogni array e non è mai un
+ * passo di un percorso. Quel che ne uscirebbe è un numero, cioè qualcosa su cui
+ * i controlli si metterebbero a disegnare.
+ */
+function dentroA(dove: unknown, passo: string): unknown {
+  if (!contenitore(dove)) return undefined;
+  if (!Array.isArray(dove)) return preso(dove, passo);
+  const dritto = posizione(passo);
+  return dritto === null ? undefined : dove[dritto];
+}
+
+/** Il percorso, o un suo prefisso, come lo legge un modello. */
+function via(percorso: readonly string[], fino?: number): string {
+  return JSON.stringify(fino === undefined ? percorso : percorso.slice(0, fino));
+}
+
+/**
+ * Scrive un passo dentro un contenitore. La ragione, quando non si può.
+ *
+ * Dentro un elenco si sostituisce una posizione che c'è, oppure si **aggiunge**
+ * scrivendo alla posizione pari alla lunghezza — che è il modo in cui si mette
+ * un livello in cima a una pila. Una posizione più in là aprirebbe dei buchi, e
+ * un buco `JSON.stringify` lo stampa `null`: il documento ne uscirebbe con un
+ * livello nullo dentro la pila, e il validatore direbbe una cosa vera su una
+ * modifica che nessuno ha chiesto.
+ */
+function poniIn(
+  dove: Contenitore,
+  passo: string,
+  valore: unknown,
+  percorso: readonly string[],
+  fino: number,
+): string | null {
+  if (!Array.isArray(dove)) {
+    poni(dove, passo, valore);
+    return null;
+  }
+  const dritto = posizione(passo);
+  if (dritto === null) {
+    return `${via(percorso, fino)} è un elenco, e «${passo}» non è una posizione`;
+  }
+  if (dritto > dove.length) {
+    return `${via(percorso, fino)} ha ${dove.length} voci: alla posizione ${dritto} resterebbe un buco (per aggiungere in fondo, scrivi alla ${dove.length})`;
+  }
+  dove[dritto] = valore;
+  return null;
+}
+
+/**
+ * Toglie un passo da un contenitore. La ragione, quando non c'era niente.
+ *
+ * `splice` e non `delete`: un `delete` su una posizione lascia un buco, e i
+ * buchi `JSON.stringify` li stampa `null`. Togliere il primo livello di una
+ * pila deve far scalare gli altri, non lasciare un `null` al suo posto.
+ */
+function togliIn(
+  dove: Contenitore,
+  passo: string,
+  percorso: readonly string[],
+  fino: number,
+): string | null {
+  if (!Array.isArray(dove)) {
+    if (!Object.prototype.hasOwnProperty.call(dove, passo)) {
+      return `${via(percorso, fino)} non ha «${passo}»`;
+    }
+    delete dove[passo];
+    return null;
+  }
+  const dritto = posizione(passo);
+  if (dritto === null) {
+    return `${via(percorso, fino)} è un elenco, e «${passo}» non è una posizione`;
+  }
+  if (dritto >= dove.length) {
+    return `${via(percorso, fino)} ha ${dove.length} voci: la posizione ${dritto} non c'è`;
+  }
+  dove.splice(dritto, 1);
+  return null;
+}
+
+/**
+ * Scrive un valore in un percorso, dentro una copia del documento.
+ *
+ * Copia superficiale a ogni livello lungo il percorso: modificare in posto
+ * andrebbe bene qui — l'oggetto arriva da `JSON.parse` e non lo condivide
+ * nessuno — ma renderebbe questa funzione un'eccezione fra funzioni che non
+ * mutano, e le eccezioni si scoprono al primo riuso.
+ *
+ * Quel che **manca** lungo la strada si crea, ed è il caso di chi scrive il
+ * primo aspetto di una parte che non c'era. Quel che c'è si copia com'è, e un
+ * elenco resta un elenco. Quel che c'è e non è un contenitore — un colore, un
+ * numero — ferma tutto: sostituirlo con un oggetto vuoto cancellerebbe un
+ * valore del documento per arrivare a scriverne un altro, che è la stessa
+ * perdita di dati silenziosa che questa riscrittura esiste per togliere.
+ */
+function scriviNel(
+  documento: Contenitore,
   percorso: readonly string[],
   valore: unknown,
-): string {
-  const documento = leggi(sorgente);
-  if (documento === null || percorso.length === 0) return sorgente;
-
-  // Copia superficiale a ogni livello lungo il percorso: modificare in posto
-  // andrebbe bene qui — l'oggetto arriva da `JSON.parse` e non lo condivide
-  // nessuno — ma renderebbe questa funzione un'eccezione fra funzioni che non
-  // mutano, e le eccezioni si scoprono al primo riuso.
-  const radice: Record<string, unknown> = { ...documento };
-  let dove = radice;
-  for (const passo of percorso.slice(0, -1)) {
-    const dentro = preso(dove, passo);
-    const copia: Record<string, unknown> =
-      dentro !== null && typeof dentro === "object" && !Array.isArray(dentro)
-        ? { ...(dentro as Record<string, unknown>) }
-        : {};
-    poni(dove, passo, copia);
-    dove = copia;
-  }
+): Esito {
   const ultimo = percorso[percorso.length - 1];
-  if (ultimo === undefined) return sorgente;
-  poni(dove, ultimo, valore);
-  return scrivi(radice);
+  if (ultimo === undefined) return { fatto: false, perche: "il percorso è vuoto" };
+
+  const radice = copiaDi(documento);
+  let dove: Contenitore = radice;
+  for (const [quanti, passo] of percorso.slice(0, -1).entries()) {
+    const dentro = dentroA(dove, passo);
+    if (dentro !== undefined && !contenitore(dentro)) {
+      return {
+        fatto: false,
+        perche: `${via(percorso, quanti + 1)} è un valore, non un contenitore: non ci si può scrivere dentro`,
+      };
+    }
+    const passa: Contenitore = dentro === undefined ? {} : copiaDi(dentro);
+    const perche = poniIn(dove, passo, passa, percorso, quanti);
+    if (perche !== null) return { fatto: false, perche };
+    dove = passa;
+  }
+
+  const perche = poniIn(dove, ultimo, valore, percorso, percorso.length - 1);
+  return perche === null
+    ? { fatto: true, documento: radice }
+    : { fatto: false, perche };
 }
 
 /**
- * Toglie un valore, e con lui gli oggetti che restano vuoti.
+ * Toglie un valore, e con lui i contenitori che restano vuoti.
  *
  * La ripulitura conta: togliere l'ultimo aspetto di una parte deve togliere
  * anche la parte, altrimenti il documento si riempie di `"section-card": {}` —
@@ -155,9 +308,47 @@ export function scriviIn(
  * niente, e che nell'albero del registro accendono il pallino dell'accento su
  * una parte intatta.
  *
- * Vale anche per gli array: `"background": []` è la stessa dichiarazione a vuoto
- * di `{}`, e la lascia chi toglie l'ultimo livello di una pila.
+ * Vale anche per gli elenchi: `"background": []` è la stessa dichiarazione a
+ * vuoto di `{}`, e la lascia chi toglie l'ultimo livello di una pila.
+ *
+ * `fino` invece della coda del percorso perché le ragioni nominano il prefisso,
+ * e un percorso che a ogni giro perde la testa non saprebbe più dire da dove
+ * era partito.
  */
+function togliNel(
+  documento: Contenitore,
+  percorso: readonly string[],
+  fino = 0,
+): Esito {
+  const testa = percorso[fino];
+  if (testa === undefined) return { fatto: false, perche: "il percorso è vuoto" };
+
+  const copia = copiaDi(documento);
+  if (fino < percorso.length - 1) {
+    const sotto = dentroA(copia, testa);
+    if (!contenitore(sotto)) {
+      return {
+        fatto: false,
+        perche: `${via(percorso, fino + 1)} non c'è, o non è un contenitore`,
+      };
+    }
+    const dentro = togliNel(sotto, percorso, fino + 1);
+    if (!dentro.fatto) return dentro;
+    if (!vuoto(dentro.documento)) {
+      const perche = poniIn(copia, testa, dentro.documento, percorso, fino);
+      return perche === null
+        ? { fatto: true, documento: copia }
+        : { fatto: false, perche };
+    }
+    // Il contenitore è rimasto vuoto: cade nel ramo qui sotto, che lo toglie.
+  }
+
+  const perche = togliIn(copia, testa, percorso, fino);
+  return perche === null
+    ? { fatto: true, documento: copia }
+    : { fatto: false, perche };
+}
+
 /**
  * Una dichiarazione che non dichiara niente: `{}` oppure `[]`.
  *
@@ -173,34 +364,118 @@ export function vuoto(cosa: unknown): boolean {
   return Object.keys(cosa).length === 0;
 }
 
+/** Il valore in un percorso, o `undefined`. */
+export function valoreIn(
+  documento: Record<string, unknown>,
+  percorso: readonly string[],
+): unknown {
+  let dove: unknown = documento;
+  for (const passo of percorso) {
+    dove = dentroA(dove, passo);
+  }
+  return dove;
+}
+
+/**
+ * Scrive un valore in un percorso, creando quel che manca.
+ *
+ * Restituisce il testo nuovo, e lascia quello vecchio intatto se non è JSON o
+ * se il percorso non si può onorare: un documento a metà di una parentesi non
+ * si modifica a colpi di controlli — l'editor lo dice e non tocca niente,
+ * invece di riscrivere sopra il lavoro di chi stava scrivendo.
+ *
+ * La ragione del rifiuto si perde qui, e va bene: un controllo che chiede una
+ * cosa impossibile è un difetto dello Studio, non una frase da mostrare. Chi la
+ * ragione la vuole — la chat — passa da [`applicaOperazioni`].
+ */
+export function scriviIn(
+  sorgente: string,
+  percorso: readonly string[],
+  valore: unknown,
+): string {
+  const documento = leggi(sorgente);
+  if (documento === null) return sorgente;
+  const esito = scriviNel(documento, percorso, valore);
+  return esito.fatto ? scrivi(esito.documento) : sorgente;
+}
+
+/** Toglie un valore, e con lui i contenitori che restano vuoti. */
 export function togliDa(sorgente: string, percorso: readonly string[]): string {
   const documento = leggi(sorgente);
-  if (documento === null || percorso.length === 0) return sorgente;
+  if (documento === null) return sorgente;
+  const esito = togliNel(documento, percorso);
+  return esito.fatto ? scrivi(esito.documento) : sorgente;
+}
 
-  const pulisci = (
-    dentro: Record<string, unknown>,
-    resto: readonly string[],
-  ): Record<string, unknown> => {
-    const [testa, ...coda] = resto;
-    if (testa === undefined) return dentro;
-    const copia = { ...dentro };
-    if (coda.length === 0) {
-      delete copia[testa];
-      return copia;
-    }
-    const sotto = preso(copia, testa);
-    if (sotto === null || typeof sotto !== "object" || Array.isArray(sotto)) return copia;
-    const ripulito = pulisci(sotto as Record<string, unknown>, coda);
-    if (vuoto(ripulito)) {
-      delete copia[testa];
-    } else {
-      poni(copia, testa, ripulito);
-    }
-    return copia;
-  };
+/**
+ * Le operazioni di un modello, applicate al documento in un colpo solo.
+ *
+ * # Perché qui e non nella chat
+ *
+ * Perché è la stessa traversata dei controlli, e la promessa scritta in `ia.rs`
+ * è che una proposta non abbia poteri che un cursore non abbia: quel che
+ * `scriviNel` rifiuta a un controllo lo rifiuta anche a un modello, e quel che
+ * passa finisce nello stesso `scriviSorgente`, cioè nello stesso annulla.
+ *
+ * # Perché una lettura sola e una scrittura sola
+ *
+ * Perché prima erano una per operazione. Dieci modifiche su un manifest da
+ * trenta kilobyte volevano dire venti attraversamenti del documento intero per
+ * cambiare venti caratteri, e ogni giro ripassava dal testo — cioè da un
+ * `JSON.parse` di quel che si era appena stampato.
+ *
+ * # Perché quel che non si applica si nomina
+ *
+ * Per la stessa ragione di `operazioni::estrai`: nove modifiche buone e una
+ * storta valgono nove. Le ragioni tornano indietro per due usi — mostrarle a chi
+ * guarda, e rimandarle al modello in modalità agent, dove sono esattamente
+ * l'informazione che gli serve per correggersi. Sono in italiano come quelle del
+ * nucleo, e per lo stesso motivo: finiscono nello stesso elenco, e un elenco in
+ * due lingue si legge peggio di uno in una sola.
+ */
+export function applicaOperazioni(
+  sorgente: string,
+  operazioni: readonly OperazioneIa[],
+): { testo: string; scartate: string[] } {
+  const documento = leggi(sorgente);
+  if (documento === null) {
+    // Prima lo si scopriva applicando, e non lo si scopriva: `scriviIn`
+    // restituiva la sorgente intatta, il confronto usciva vuoto e il pannello
+    // mostrava «N modifiche» con un «Applica» che non faceva niente. In
+    // modalità agent erano quattro giri a rimandare lo stesso documento
+    // immutato.
+    return {
+      testo: sorgente,
+      scartate: [
+        "il documento non è JSON valido: non si è applicato niente. Chiudi la parentesi che manca e riprova.",
+      ],
+    };
+  }
 
-  const ripulito = pulisci(documento, percorso);
-  return scrivi(ripulito);
+  const scartate: string[] = [];
+  let dove: Contenitore = documento;
+  let qualcosa = false;
+  for (const op of operazioni) {
+    // Il tipo scritto, e non dedotto: `dove` si riassegna da `esito.documento`,
+    // quindi dedurre `esito` vorrebbe dire dedurre prima `dove` — che dipende da
+    // `esito`. TypeScript chiude il giro con un `any` implicito e un TS7022.
+    const esito: Esito = op.togli
+      ? togliNel(dove, op.percorso)
+      : scriviNel(dove, op.percorso, op.valore);
+    if (!esito.fatto) {
+      scartate.push(
+        `«${op.togli ? "togli" : "scrivi"} ${via(op.percorso)}»: ${esito.perche}`,
+      );
+      continue;
+    }
+    dove = esito.documento;
+    qualcosa = true;
+  }
+
+  // La sorgente intatta, e non una ristampa identica: `scrivi` normalizza il
+  // rientro, e un testo riscritto senza che nessuna modifica sia passata
+  // aprirebbe un passo di annullo che non annulla niente.
+  return { testo: qualcosa ? scrivi(dove) : sorgente, scartate };
 }
 
 /**
@@ -221,32 +496,6 @@ export function percorsoParte(
 }
 
 /**
- * Il percorso JSON di un nodo dello scafale.
- *
- * `via` è il percorso di indici dei figli — lo stesso che il compilatore
- * trasforma in `data-nodo='0-1-2'` — quindi questa funzione è **formattazione**,
- * non ricerca: fra i due modi di scrivere lo stesso cammino non c'è una tabella
- * di corrispondenza da tenere allineata.
- *
- * Serve a **leggere**: portare il cursore su un errore, sapere dove si è. Le
- * modifiche riscrivono `layout.shell` intero da un albero clonato, e non hanno
- * bisogno che `patch.ts` impari a indicizzare gli array.
- */
-export function percorsoNodo(via: readonly number[], campo?: string): string[] {
-  const passi = ["layout", "shell"];
-  for (const indice of via) {
-    passi.push("children", String(indice));
-  }
-  if (campo !== undefined) passi.push(campo);
-  return passi;
-}
-
-/** L'indirizzo `data-nodo` di un percorso di indici. */
-export function indirizzoNodo(via: readonly number[]): string {
-  return via.length === 0 ? "radice" : via.join("-");
-}
-
-/**
  * Il percorso di un errore, sciolto in passi veri.
  *
  * Il validatore scrive i percorsi col punto — `parts.section-card.radius` — e i
@@ -258,8 +507,11 @@ export function indirizzoNodo(via: readonly number[]): string {
  * Si scioglie guardando il documento, non indovinando: a ogni livello si prende
  * il prefisso **più lungo** che è davvero una chiave lì dentro. `null` se il
  * percorso non porta da nessuna parte.
+ *
+ * Gli elenchi non si attraversano, e qui è giusto così: l'unico chiamante è la
+ * rinomina di una chiave sbagliata, e una posizione non ha un nome da correggere.
  */
-export function passiDi(
+function passiDi(
   documento: Record<string, unknown>,
   percorso: string,
 ): string[] | null {

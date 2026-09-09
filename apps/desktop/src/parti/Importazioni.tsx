@@ -37,7 +37,6 @@
  * scende in silenzio.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 
 import {
   ipc,
@@ -49,6 +48,7 @@ import {
   type StatoScarico,
 } from "../ipc";
 import { t } from "../lingue";
+import { useAscolto } from "../pagine";
 
 /** Un'importazione confermata in questa sessione. */
 interface Sessione {
@@ -228,62 +228,57 @@ export function useImportazioni(): UsoImportazioni {
 
   // E poi solo eventi: interrogare a ripetizione darebbe numeri in ritardo su
   // quel che gli eventi già raccontano.
-  useEffect(() => {
-    const promesse = [
-      listen<{ fatti: number; totale: number; sorgenti: SorgenteScarico[] }>(
-        "scarico:avanzamento",
-        (evento) => {
-          setStato((prima) =>
-            prima
-              ? {
-                  ...prima,
-                  attiva: true,
-                  fatti: evento.payload.fatti,
-                  rimasti: evento.payload.totale - evento.payload.fatti,
-                  sorgenti: evento.payload.sorgenti,
-                }
-              : prima,
-          );
-        },
-      ),
-      listen<BranoScarico>("scarico:brano", (evento) =>
-        setBrano(evento.payload),
-      ),
-      // La coda è finita: si rilegge lo stato una volta sola, per avere i
-      // conteggi definitivi senza tenere un interrogatorio acceso.
-      listen("scarico:finito", () => {
-        setBrano(null);
-        void ipc
-          .scaricoStato()
-          .then(setStato)
-          .catch(() => {});
-      }),
-      // Il viaggio di ritorno. Non è solo una notizia da mostrare: `riconcilia`
-      // **chiude** delle righe di `spotify_wanted` senza passare per la coda,
-      // quindi i conteggi in mano qui sono già vecchi nell'istante in cui
-      // questo evento arriva. Senza la rilettura, un'importazione conclusa
-      // resterebbe a mostrare dei brani «in attesa» che non esistono più.
-      listen<Rientro>("scarico:riconciliato", (evento) => {
-        setRientro(evento.payload);
-        void ipc
-          .scaricoStato()
-          .then(setStato)
-          .catch(() => {});
-      }),
-      // Il carico è un `ErroreIpc` — `procura.rs` lo compone con
-      // `crate::errore::errore`, e i suoi campi sono quelli inglesi di `ipc.ts`,
-      // non `codice`/`messaggio`. Letto con i nomi sbagliati era sempre
-      // `undefined`, e ogni guasto della coda diventava lo stesso «non è
-      // partita»: `testoErrore` è la stessa strada di tutti gli altri errori di
-      // questa schermata, chiave di traduzione compresa.
-      listen<ErroreIpc>("scarico:guasto", (evento) =>
-        setErrore(testoErrore(evento.payload)),
-      ),
-    ];
-    return () => {
-      for (const p of promesse) void p.then((stop) => stop());
-    };
-  }, []);
+  useAscolto<{ fatti: number; totale: number; sorgenti: SorgenteScarico[] }>(
+    "scarico:avanzamento",
+    (carico) => {
+      setStato((prima) =>
+        prima
+          ? {
+              ...prima,
+              attiva: true,
+              fatti: carico.fatti,
+              rimasti: carico.totale - carico.fatti,
+              sorgenti: carico.sorgenti,
+            }
+          : prima,
+      );
+    },
+  );
+
+  useAscolto<BranoScarico>("scarico:brano", setBrano);
+
+  // La coda è finita: si rilegge lo stato una volta sola, per avere i
+  // conteggi definitivi senza tenere un interrogatorio acceso.
+  useAscolto("scarico:finito", () => {
+    setBrano(null);
+    void ipc
+      .scaricoStato()
+      .then(setStato)
+      .catch(() => {});
+  });
+
+  // Il viaggio di ritorno. Non è solo una notizia da mostrare: `riconcilia`
+  // **chiude** delle righe di `spotify_wanted` senza passare per la coda,
+  // quindi i conteggi in mano qui sono già vecchi nell'istante in cui
+  // questo evento arriva. Senza la rilettura, un'importazione conclusa
+  // resterebbe a mostrare dei brani «in attesa» che non esistono più.
+  useAscolto<Rientro>("scarico:riconciliato", (carico) => {
+    setRientro(carico);
+    void ipc
+      .scaricoStato()
+      .then(setStato)
+      .catch(() => {});
+  });
+
+  // Il carico è un `ErroreIpc` — `procura.rs` lo compone con
+  // `crate::errore::errore`, e i suoi campi sono quelli inglesi di `ipc.ts`,
+  // non `codice`/`messaggio`. Letto con i nomi sbagliati era sempre
+  // `undefined`, e ogni guasto della coda diventava lo stesso «non è
+  // partita»: `testoErrore` è la stessa strada di tutti gli altri errori di
+  // questa schermata, chiave di traduzione compresa.
+  useAscolto<ErroreIpc>("scarico:guasto", (carico) =>
+    setErrore(testoErrore(carico)),
+  );
 
   // Chi passa dalla coda resta nell'elenco anche dopo aver finito. Senza,
   // un'importazione sparirebbe nell'istante in cui si conclude — proprio

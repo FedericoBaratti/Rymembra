@@ -95,7 +95,7 @@ export type Accese = ReadonlySet<Sovrapposizione>;
  * `useMemo`, e un `Set` nuovo a ogni disegno rifarebbe il contesto — e con lui
  * tutto l'albero — sessanta volte al secondo.
  */
-export const NESSUNA: Accese = new Set();
+const NESSUNA: Accese = new Set();
 
 /** Le pagine, nell'ordine in cui si guardano. */
 export function pagine(): readonly (readonly [Pagina, string])[] {
@@ -231,6 +231,10 @@ const STATO: StatoRiproduzione = {
   // Lo Studio mostra la coda con la sua nota: chi disegna una skin deve
   // poter vedere anche `.perche`, o la disegnerebbe alla cieca.
   motivoProssimo: "suono",
+  // Un nome qualunque ma non nullo: le skin possono scrivere da dove esce il
+  // suono, e un `null` nell'anteprima mostrerebbe il caso del motore che non
+  // si è aperto invece del caso normale.
+  uscita: "Altoparlanti",
 };
 
 /** Un comando che non fa niente: nell'anteprima non c'è niente da comandare. */

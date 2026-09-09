@@ -72,25 +72,25 @@ const LIMITE_DECOMPRESSO: u64 = 64 * 1024 * 1024;
 
 /// Il nome su Drive del pacchetto di una skin.
 #[must_use]
-pub fn nome_skin(id: &str) -> String {
+pub(crate) fn nome_skin(id: &str) -> String {
     format!("{PREFISSO_SKIN}{id}.aeskin")
 }
 
 /// Il nome su Drive del manifest di una bozza.
 #[must_use]
-pub fn nome_bozza(id: &str) -> String {
+pub(crate) fn nome_bozza(id: &str) -> String {
     format!("{PREFISSO_BOZZA}{id}.json.gz")
 }
 
 /// L'identificatore dentro il nome di un pacchetto di skin.
 #[must_use]
-pub fn id_da_nome_skin(nome: &str) -> Option<&str> {
+pub(crate) fn id_da_nome_skin(nome: &str) -> Option<&str> {
     nome.strip_prefix(PREFISSO_SKIN)?.strip_suffix(".aeskin")
 }
 
 /// L'identificatore dentro il nome di un manifest di bozza.
 #[must_use]
-pub fn id_da_nome_bozza(nome: &str) -> Option<&str> {
+pub(crate) fn id_da_nome_bozza(nome: &str) -> Option<&str> {
     nome.strip_prefix(PREFISSO_BOZZA)?.strip_suffix(".json.gz")
 }
 
@@ -518,7 +518,7 @@ fn segnala(avanzamento: &mut impl FnMut(Avanzamento), fatti: usize, totale: usiz
 ///
 /// `internal.unexpected`: comprimere in memoria non ha un modo di fallire che
 /// non sia un guasto nostro.
-pub fn comprimi(dati: &[u8]) -> Result<Vec<u8>, AppError> {
+pub(crate) fn comprimi(dati: &[u8]) -> Result<Vec<u8>, AppError> {
     let mut compressore = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     compressore
         .write_all(dati)

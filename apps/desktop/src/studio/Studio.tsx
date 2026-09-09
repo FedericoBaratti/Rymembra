@@ -5,10 +5,10 @@
  *
  * Una skin è un documento di dati validato. `parse_skin` lo legge, `check_skin`
  * avvisa, `compile_skin` lo trasforma in CSS deterministico. Tutto quel che
- * serve a un editor **esiste già nel crate**: quarantasette token con la loro
- * descrizione e il flag di obbligatorietà, cinquantuno parti coi loro gruppi,
- * undici effetti col costo dichiarato, un vocabolario chiuso per parte, e
- * `nearest_parts()` per i refusi.
+ * serve a un editor **esiste già nel crate**: settantatré token con la loro
+ * descrizione, i loro estremi e il flag di obbligatorietà, cinquantuno parti
+ * coi loro gruppi, undici effetti col costo dichiarato, un vocabolario chiuso
+ * per parte, e `nearest_parts()` per i refusi.
  *
  * Lo Studio non aggiunge potere: rende visibile un contratto che oggi si scopre
  * leggendo Rust.
@@ -41,6 +41,7 @@ import {
   ipc,
   type Istantanea,
   type NodoScafale,
+  type PresetRegistro,
   type Registro,
   type Validazione,
   type VoceFile,
@@ -49,6 +50,7 @@ import { Impaginazione } from "../Impaginazione";
 import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
 import { Anteprima, MISURA } from "./Anteprima";
+import { Chat } from "./Chat";
 import { Documento, type Scheda } from "./Documento";
 import { Ispettore } from "./Ispettore";
 import { IspettoreNodo, Scafale } from "./Scafale";
@@ -205,6 +207,7 @@ export function Studio({
   id,
   onEsci,
   onInstallata,
+  onModelli,
   onErrore,
 }: {
   /** La skin da aprire: una bozza, una installata, o quella di serie. */
@@ -212,6 +215,14 @@ export function Studio({
   onEsci: () => void;
   /** La skin è stata installata da qui: la finestra intera va ridipinta. */
   onInstallata: (id: string) => void;
+  /**
+   * Esci dallo Studio e apri Impostazioni › Modelli IA.
+   *
+   * Serve alla chat quando non c'è nessun modello configurato: dire «configurane
+   * uno» senza portarci lascerebbe da cercare la scheda in una finestra che
+   * questa nasconde per intero.
+   */
+  onModelli: () => void;
   onErrore: (e: unknown) => void;
 }) {
   const [registro, setRegistro] = useState<Registro | null>(null);
@@ -300,10 +311,20 @@ export function Studio({
   const [istantanee, setIstantanee] = useState<Istantanea[]>([]);
   /** Il percorso su cui portare il cursore, alla prossima apertura del testo. */
   const [vaiAlla, setVaiAlla] = useState<string | null>(null);
+  /** Come `vaiAlla`, ma per quel che una riga ce l'ha e un percorso no. */
+  const [vaiAllaRiga, setVaiAllaRiga] = useState<number | null>(null);
   /** Il nodo scelto nella vista Impagina, come percorso di indici. */
   const [nodoScelto, setNodoScelto] = useState<Via | null>(null);
   /** L'indirizzo del nodo sotto il puntatore: la seconda briciola di pane. */
   const [nodoSotto, setNodoSotto] = useState<string | null>(null);
+  /**
+   * La chat è aperta.
+   *
+   * Chiusa di serie, e non è timidezza: il pannello prende trecentosessanta
+   * pixel all'anteprima, che è la cosa che si sta guardando. Chi non ha
+   * configurato nessun modello non deve pagarli mai.
+   */
+  const [chat, setChat] = useState(false);
 
   /** La stessa misura, letta come percentuale della finestra vera. */
   const scala = Math.round((larghezza / MISURA.larghezza) * 100);
@@ -526,6 +547,57 @@ export function Studio({
     [tokenScelto],
   );
 
+  /**
+   * Un preset: fino a diciotto scritture, **un** passo di annullo.
+   *
+   * # Perché una `setSorgente` sola, e non una per voce
+   *
+   * Perché l'accorpamento della storia è **a tempo** (`storia.ts`, «l'accorpamento
+   * è a tempo, e non per provenienza»), e a tempo è la regola giusta per un
+   * trascinamento — trenta scritture in mezzo secondo sono un gesto — ma è una
+   * garanzia statistica, non una promessa. Una `setSorgente` per voce, in fila,
+   * cadrebbe quasi sempre dentro la stessa pausa e ogni tanto no: un
+   * `JSON.parse` più lungo del solito su un manifest grosso, un fotogramma
+   * perso, una macchina carica, e «annulla» tornerebbe a metà preset — cioè a
+   * una scena che nessuno ha mai scelto e che non è né quella di prima né quella
+   * di dopo. Un preset è un gesto per costruzione, e va scritto come tale invece
+   * che sperare che il cronometro lo riconosca.
+   *
+   * # Perché `scriviIn` in una piega, e non un secondo scrittore
+   *
+   * Perché è **la stessa** funzione che usa il cursore qui sopra: quel che un
+   * preset può scrivere è esattamente quel che un controllo può scrivere, che è
+   * la promessa che questo Studio fa da tre revisioni — la stessa che vale per
+   * le proposte del modello in `patch.ts`. Il prezzo è che il testo si attraversa
+   * una volta per voce; è un clic, non un trascinamento, e la chiarezza vale più
+   * dei giri risparmiati.
+   *
+   * # Perché un frammento che non si legge si salta
+   *
+   * Il valore arriva dal crate come **testo**, ed è il testo che finisce nel
+   * documento: è la ragione per cui la tabella dei preset sta in Rust, dove
+   * `ogni_preset_applicato_a_plain_da_una_skin_valida_e_senza_avvisi` la fa
+   * passare dalle guardie vere. Quindi un frammento illeggibile non è un caso da
+   * gestire, è un crate cambiato sotto i piedi — e allora le voci rimaste sono
+   * comunque quel che l'autore ha chiesto. Fermare tutto per la prima
+   * riga storta lascerebbe una skin invariata e nessuna spiegazione; scrivere
+   * le altre lascia una skin coerente e una riga in console.
+   */
+  const applicaPreset = useCallback((preset: PresetRegistro) => {
+    setSorgente((prima) =>
+      preset.valori.reduce((testo, [token, frammento]) => {
+        let valore: unknown;
+        try {
+          valore = JSON.parse(frammento);
+        } catch (e: unknown) {
+          console.error(`preset «${preset.id}», token «${token}»:`, e);
+          return testo;
+        }
+        return scriviIn(testo, ["tokens", token], valore);
+      }, prima),
+    );
+  }, []);
+
   /** La skin promette un tema chiaro: solo allora la seconda colonna serve. */
   const chiaroPromesso =
     valoreIn(documento ?? {}, ["capabilities", "light"]) === true;
@@ -620,14 +692,36 @@ export function Studio({
    *
    * Prima cambiava vista e buttava via il percorso, che è la metà di quel che un
    * bottone «vai» promette: si finiva sul documento giusto e poi bisognava
-   * cercare la riga a mano. La riga la sa già `rigaDi()`, che è la stessa
-   * funzione che sottolinea l'errore — così il bottone e la sottolineatura non
-   * possono indicare due punti diversi.
+   * cercare la riga a mano. La riga adesso la dice il nucleo, ed è la stessa
+   * che sottolinea l'errore — così il bottone e la sottolineatura non possono
+   * indicare due punti diversi.
    */
   const vaiA = (percorso: string) => {
     setVista("documento");
     setScheda("json");
     setVaiAlla(percorso);
+  };
+
+  /**
+   * L'errore di sintassi, quando è quello a tenere fermo il documento.
+   *
+   * Uno solo per costruzione: se il testo non è JSON, `leggi_skin` si ferma lì
+   * e non ha nessuno schema da controllare. Si riconosce dal fatto che porta una
+   * riga senza portare un percorso — un problema di schema ha tutti e due.
+   */
+  const sintassi =
+    esito?.errori.length === 1 &&
+    esito.errori[0] !== undefined &&
+    esito.errori[0].path === "" &&
+    esito.errori[0].riga !== null
+      ? esito.errori[0]
+      : null;
+
+  /** Porta il cursore dove il documento si è rotto. */
+  const vaiAllaRottura = () => {
+    setVista("documento");
+    setScheda("json");
+    if (sintassi !== null) setVaiAllaRiga(sintassi.riga);
   };
 
   const errori = esito?.errori.length ?? 0;
@@ -697,6 +791,22 @@ export function Studio({
   const albero = impaginazione?.shell ?? null;
 
   /**
+   * Il foglio della skin in prova, con la stessa regola dell'impaginazione qui
+   * sopra: mentre si scrive del JSON rotto si guarda l'ultimo che stava in
+   * piedi, perché un'anteprima che sbianca a metà di una parentesi non dice
+   * niente a nessuno.
+   *
+   * Stava scritto due volte, una per ognuna delle due `Anteprima`. Adesso ha un
+   * lettore in più — lo slot della pagina dei pannelli, che lo passa alla scena
+   * dello spettro — e tre copie della stessa espressione sono tre occasioni di
+   * farne divergere una.
+   */
+  const cssAnteprima =
+    (esito?.errori.length ?? 0) > 0
+      ? (ultimoValido?.css ?? "")
+      : (esito?.css ?? "");
+
+  /**
    * Ogni gesto è una `scriviIn` sola.
    *
    * Strutturale o scalare non fa differenza: si riscrive `layout.shell` intero
@@ -755,7 +865,10 @@ export function Studio({
    * scena — e una parte che non si vede non si può ridipingere. Adesso ogni
    * pagina porta il markup vero di quella schermata.
    */
-  const slot = useMemo(() => slotDellaPagina(pagina, finto), [pagina, finto]);
+  const slot = useMemo(
+    () => slotDellaPagina(pagina, finto, cssAnteprima),
+    [pagina, finto, cssAnteprima],
+  );
 
   /**
    * Accende o spegne una sovrapposizione.
@@ -796,7 +909,10 @@ export function Studio({
       .length ?? 0;
 
   return (
-    <section className="studio" aria-label={t("studio.title")}>
+    <section
+      className={chat ? "studio con-chat" : "studio"}
+      aria-label={t("studio.title")}
+    >
       <header className="testa-studio">
         <button
           type="button"
@@ -904,6 +1020,18 @@ export function Studio({
             <kbd className="scorciatoia">I</kbd>
           </button>
         )}
+        {/* La chat sta prima di «Salva e usa» e non in fondo: è la cosa che si
+            apre **mentre** si lavora, e le due in fondo sono le due con cui si
+            finisce. */}
+        <button
+          type="button"
+          className="pillola btn-ghost"
+          aria-pressed={chat}
+          onClick={() => setChat((prima) => !prima)}
+        >
+          <Icona nome="i-chat" dim={15} />
+          {t("studio.chat.open")}
+        </button>
         <button
           type="button"
           className="pillola btn-accent"
@@ -961,17 +1089,36 @@ export function Studio({
         <div className="testo-rotto" role="status">
           <Icona nome="i-alert" dim={15} />
           <span>
-            <Trans
-              k="studio.broken"
-              v={{
-                nonScrivono: <strong>{t("studio.broken.controls")}</strong>,
-              }}
-            />
+            {/*
+              * Quando il nucleo dice **dove**, lo dice la fascia: «riga 42 ·
+              * colonna 7 — manca una virgola fra due campi» invece di «il
+              * documento non è JSON valido», che è la stessa frase per tutte le
+              * ragioni possibili. Il ripiego resta per l'istante fra la battuta
+              * e la validazione, che arriva centoventi millisecondi dopo.
+              */}
+            {sintassi === null ? (
+              <Trans
+                k="studio.broken"
+                v={{
+                  nonScrivono: <strong>{t("studio.broken.controls")}</strong>,
+                }}
+              />
+            ) : (
+              sintassi.message
+            )}
           </span>
+          {sintassi?.riga != null && (
+            <span className="dove-rotto">
+              {t("studio.doc.rowCol", {
+                riga: sintassi.riga,
+                colonna: sintassi.colonna ?? 1,
+              })}
+            </span>
+          )}
           <button
             type="button"
             className="pillola btn-ghost"
-            onClick={() => setVista("documento")}
+            onClick={() => vaiAllaRottura()}
           >
             <Icona nome="i-text" dim={14} />
             {t("studio.broken.goText")}
@@ -1001,7 +1148,11 @@ export function Studio({
           registro={registro}
           idSkin={String(documento?.["id"] ?? id)}
           vaiAlla={vaiAlla}
-          onArrivato={() => setVaiAlla(null)}
+          vaiAllaRiga={vaiAllaRiga}
+          onArrivato={() => {
+            setVaiAlla(null);
+            setVaiAllaRiga(null);
+          }}
           onCorreggi={(percorso, giusto) =>
             setSorgente((prima) => rinominaChiave(prima, percorso, giusto))
           }
@@ -1133,9 +1284,9 @@ export function Studio({
                             : descrizioneToken(voce.id, voce.description)
                         }
                             // Un token si apre come si apre una parte. Prima questo
-                            // ramo restituiva `undefined`: l'albero mostrava
-                            // cinquantotto voci e nessuna di esse era un bottone che
-                            // portasse da qualche parte.
+                            // ramo restituiva `undefined`: l'albero mostrava tutte
+                            // le voci del registro — oggi settantatré — e nessuna
+                            // di esse era un bottone che portasse da qualche parte.
                             onClick={() =>
                               "name" in voce
                                 ? setParteScelta(voce.name)
@@ -1249,7 +1400,7 @@ export function Studio({
               </span>
             </TestaScene>
             <Anteprima
-              css={(esito?.errori.length ?? 0) > 0 ? (ultimoValido?.css ?? "") : (esito?.css ?? "")}
+              css={cssAnteprima}
               id={String(documento?.["id"] ?? id)}
               parti={parti}
               sondaAccesa={sonda}
@@ -1367,7 +1518,14 @@ export function Studio({
               }
               chiaroPromesso={chiaroPromesso}
               tokens={registro?.tokens ?? []}
+              /* Tutti, non quelli del gruppo giusto: la scelta la fa `Token`
+                 confrontando `preset.group` col gruppo del token aperto, ed è
+                 lì che deve stare — filtrarli qui vorrebbe dire che questo file
+                 sa quale gruppo si sta guardando, cioè la conoscenza che quel
+                 componente esiste per non avere. */
+              presets={registro?.presets ?? []}
               tavolozza={tavolozza}
+              onPreset={applicaPreset}
               onScrivi={(v) => scriviToken(["tokens"], v)}
               onScriviChiaro={(v) => scriviToken(["themes", "light"], v)}
               onVaiAlJson={vaiA}
@@ -1420,11 +1578,7 @@ export function Studio({
               </span>
             </TestaScene>
             <Anteprima
-              css={
-                (esito?.errori.length ?? 0) > 0
-                  ? (ultimoValido?.css ?? "")
-                  : (esito?.css ?? "")
-              }
+              css={cssAnteprima}
               id={String(documento?.["id"] ?? id)}
               parti={parti}
               sondaAccesa={sonda}
@@ -1465,6 +1619,35 @@ export function Studio({
       {/* Quattro numeri e non tre: gli errori dicono se si esporta, gli altri
           tre dicono cosa si sta per esportare. «Fuori budget» e «sotto 4,5:1»
           erano già calcolati e si vedevano solo entrando in un'altra vista. */}
+      {/*
+        Fuori dai quattro rami di `vista`, o andrebbe scritto quattro volte; e
+        fuori dalla griglia di `.studio`, che dichiara tre righe e ha già un
+        quarto figlio che entra ed esce — la fascia `.testo-rotto`. Un quinto
+        figlio è il modo di scoprirlo nel posto sbagliato. È quindi un `<aside>`
+        fisso, e `.studio.con-chat` guadagna un `padding-right` pari alla sua
+        larghezza: nessuna riga si sposta, e tutte e quattro le viste si
+        restringono da sole.
+
+        Il `padding` è la differenza che conta rispetto al pannello della coda,
+        che galleggia sopra il contenuto di proposito. Qui sotto c'è
+        l'anteprima, cioè esattamente la cosa che si sta giudicando: coprirla a
+        metà renderebbe inutile la risposta che ci si legge dentro.
+      */}
+      {chat && (
+        <Chat
+          sorgente={sorgente}
+          onSorgente={setSorgente}
+          registro={registro}
+          esito={esito}
+          onIstantanea={() => {
+            void ipc.studioIstantanea(id, sorgente, "manuale").catch(onErrore);
+          }}
+          onErrore={onErrore}
+          onChiudi={() => setChat(false)}
+          onVaiAImpostazioni={onModelli}
+        />
+      )}
+
       <footer className="piede-studio">
         <span className="voce-piede" data-esito={errori > 0 ? "male" : "bene"}>
           <Icona nome={errori > 0 ? "i-alert" : "i-check"} dim={14} />

@@ -355,9 +355,9 @@ fn ripescati(
     // troncamento è esattamente ciò che si vuole: la soglia SQL taglia un po'
     // più larga della curva dell'oblio, e un candidato in più che poi prende
     // punteggio zero è preferibile a un candidato in meno che non si vede.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
-        reason = "troncamento voluto e discusso qui sopra"
+        reason = "troncamento voluto e discusso qui sopra: OBLIO_MINIMO_GIORNI vale 60"
     )]
     let giorni = OBLIO_MINIMO_GIORNI.trunc() as i64;
     let soglia = lunedi.saturating_sub(giorni.saturating_mul(GIORNO_MS));

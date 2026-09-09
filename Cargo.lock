@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aether-app"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "aether-archivio",
  "aether-domain",
@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "aether-archivio"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "aether-domain",
  "serde_json",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "aether-catalogo"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "aether-domain",
  "aether-net",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "aether-cloud"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "aether-app",
  "aether-domain",
@@ -68,13 +68,14 @@ dependencies = [
 
 [[package]]
 name = "aether-desktop"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "aether-app",
  "aether-archivio",
  "aether-catalogo",
  "aether-cloud",
  "aether-domain",
+ "aether-ia",
  "aether-meta",
  "aether-net",
  "aether-oauth",
@@ -96,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "aether-domain"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "encoding_rs",
  "serde",
@@ -105,8 +106,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-ia"
+version = "2.3.0"
+dependencies = [
+ "aether-domain",
+ "aether-net",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "aether-meta"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "aether-domain",
  "aether-net",
@@ -116,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "aether-net"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "aether-domain",
  "ureq",
@@ -124,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "aether-oauth"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "aether-domain",
  "getrandom 0.3.4",
@@ -134,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "aether-play"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "aether-domain",
  "cpal",
@@ -146,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "aether-scrobble"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "aether-domain",
  "aether-net",
@@ -157,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "aether-skin"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "aether-domain",
  "serde_json",
@@ -166,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "aether-sync"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "aether-domain",
  "blake3",

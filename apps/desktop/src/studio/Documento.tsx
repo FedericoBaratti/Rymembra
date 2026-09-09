@@ -21,9 +21,10 @@ import { Impaginazione } from "../Impaginazione";
 import type { Avviso, Contrasto, Problema, Registro, Validazione } from "../ipc";
 import { Icona } from "../parti/Icone";
 import { Anteprima } from "./Anteprima";
-import { evidenzia, posizione, rigaDi } from "./evidenzia";
+import { differenze } from "./differenze";
+import { evidenzia, posizione } from "./evidenzia";
 import { contestoFinto } from "./finto";
-import { t, tSe } from "../lingue";
+import { t } from "../lingue";
 import { Trans } from "../lingue/Trans";
 
 /** Le tre schede del riquadro centrale. */
@@ -37,6 +38,23 @@ export type Scheda = "json" | "css" | "diff";
  * così senza misurare un elemento che potrebbe non essere ancora disegnato.
  */
 const ALTEZZA_RIGA = 12 * 1.72;
+
+/** L'a capo, scritto una volta: dentro un template literal si legge male. */
+const A_CAPO = "\n";
+
+/** Quante righe di errore si mostrano prima di dire soltanto quante sono. */
+const ERRORI_IN_VISTA = 20;
+
+/**
+ * Porta una riga in vista dentro la textarea.
+ *
+ * Un terzo dall'alto e non in cima: quel che si è venuti a leggere ha quasi
+ * sempre un contesto sopra — la chiave dell'oggetto a cui appartiene — e una
+ * riga incollata al bordo superiore lo taglia via.
+ */
+function portaInVista(nodo: HTMLTextAreaElement, riga: number) {
+  nodo.scrollTop = Math.max(0, riga * ALTEZZA_RIGA - nodo.clientHeight / 3);
+}
 
 /**
  * Il registro vuoto per l'anteprima ferma di questa vista.
@@ -126,6 +144,7 @@ export function Documento({
   idSkin,
   colonnaSinistra,
   vaiAlla,
+  vaiAllaRiga,
   onArrivato,
 }: {
   sorgente: string;
@@ -138,7 +157,7 @@ export function Documento({
   soglia: number;
   /** Il documento da cui si è partiti, per il confronto. */
   originale: string;
-  /** Applica il suggerimento di `nearest_parts()`, al percorso dell'errore. */
+  /** Applica il suggerimento di `vicini()`, al percorso dell'errore. */
   onCorreggi: (percorso: string, giusto: string) => void;
   /** Per la striscia dei conteggi: quant'è grande il vocabolario. */
   registro: Registro | null;
@@ -147,23 +166,68 @@ export function Documento({
   colonnaSinistra: React.ReactNode;
   /** Un percorso da raggiungere col cursore, da un bottone «vai». */
   vaiAlla: string | null;
+  /**
+   * Una riga da raggiungere, quando quel che si è venuti a vedere non ha un
+   * percorso: un errore di sintassi sta in un punto del **testo** e non in un
+   * punto del documento, che a quel punto non esiste ancora.
+   */
+  vaiAllaRiga: number | null;
   onArrivato: () => void;
 }) {
-  const errore: Problema | null = esito?.errori[0] ?? null;
+  const errori: readonly Problema[] = esito?.errori ?? [];
+  const rotto = errori.length > 0;
   const editor = useRef<HTMLTextAreaElement>(null);
   const sotto = useRef<HTMLPreElement>(null);
   const [dove, setDove] = useState({ riga: 1, colonna: 1 });
 
   const righe = useMemo(() => sorgente.split("\n"), [sorgente]);
-  const rigaRotta = useMemo(
-    () => (errore === null ? null : rigaDi(sorgente, errore.path)),
-    [sorgente, errore],
+  /**
+   * Le righe da sottolineare, contando da zero.
+   *
+   * **Tutte** quelle nominate, non una: gli errori sono tornati a essere un
+   * elenco, e chi ne ha tre li vuole vedere tutti e tre nel margine invece di
+   * scoprirli uno per correzione. E vengono dal nucleo, che sa dove ha letto —
+   * prima le indovinava `rigaDi()`, cercando l'ultimo pezzo del percorso col
+   * primo `indexOf` che corrispondeva.
+   */
+  const righeRotte = useMemo(
+    () =>
+      new Set(
+        errori
+          .map((e) => e.riga)
+          .filter((riga): riga is number => riga !== null)
+          .map((riga) => riga - 1),
+      ),
+    [errori],
   );
 
   /** Il cursore si legge dopo ogni cosa che lo può muovere. */
   const segnaPosizione = () => {
     const nodo = editor.current;
     if (nodo) setDove(posizione(sorgente, nodo.selectionStart));
+  };
+
+  /**
+   * Cliccare un errore porta il cursore dove è scritto.
+   *
+   * Per **riga e colonna**, che adesso arrivano dal nucleo, e non cercando il
+   * nome nel testo: la ricerca sbagliava proprio nei casi in cui serviva, cioè
+   * quando l'ultimo pezzo del percorso è una parola comune. Un errore di
+   * sintassi non ha nemmeno un percorso da cercare, e prima finiva a
+   * selezionare i due caratteri `""`.
+   */
+  const vaiA = (errore: Problema) => {
+    const nodo = editor.current;
+    if (!nodo || errore.riga === null) return;
+    const prima = righe.slice(0, errore.riga - 1);
+    const inizio =
+      prima.reduce((somma, riga) => somma + riga.length + 1, 0) +
+      ((errore.colonna ?? 1) - 1);
+    const dentro = Math.min(inizio, sorgente.length);
+    nodo.focus();
+    nodo.setSelectionRange(dentro, dentro);
+    portaInVista(nodo, errore.riga - 1);
+    setDove(posizione(sorgente, dentro));
   };
 
   /**
@@ -174,7 +238,7 @@ export function Documento({
    * clic che si farebbe comunque.
    */
   useEffect(() => {
-    if (vaiAlla === null || scheda !== "json") return;
+    if (vaiAlla === null || vaiAlla === "" || scheda !== "json") return;
     const nodo = editor.current;
     if (!nodo) return;
     const pezzi = vaiAlla.split(".");
@@ -186,39 +250,42 @@ export function Documento({
       nodo.setSelectionRange(dove, dove + cercato.length);
       // Portare la riga in vista: `setSelectionRange` da solo non scorre se la
       // textarea aveva già il fuoco.
-      const riga = sorgente.slice(0, dove).split("\n").length - 1;
-      nodo.scrollTop = Math.max(0, riga * ALTEZZA_RIGA - nodo.clientHeight / 3);
+      portaInVista(nodo, sorgente.slice(0, dove).split(A_CAPO).length - 1);
       setDove(posizione(sorgente, dove));
       break;
     }
     onArrivato();
   }, [vaiAlla, scheda, sorgente, onArrivato]);
 
+  /** Lo stesso, quando quel che si sa è una riga e basta. */
+  useEffect(() => {
+    if (vaiAllaRiga === null || scheda !== "json") return;
+    const nodo = editor.current;
+    if (!nodo) return;
+    const prima = sorgente.split(A_CAPO).slice(0, vaiAllaRiga - 1);
+    const dentro = Math.min(
+      prima.reduce((somma, riga) => somma + riga.length + 1, 0),
+      sorgente.length,
+    );
+    nodo.focus();
+    nodo.setSelectionRange(dentro, dentro);
+    portaInVista(nodo, vaiAllaRiga - 1);
+    setDove(posizione(sorgente, dentro));
+    onArrivato();
+  }, [vaiAllaRiga, scheda, sorgente, onArrivato]);
+
   /**
    * Il confronto con l'originale, riga per riga.
    *
-   * Un confronto vero — con le mosse e i blocchi — sarebbe una dipendenza in
-   * più per una scheda che serve a rispondere a una domanda sola: «cosa ho
-   * cambiato». Riga per riga la risponde, e il documento è testo apposta perché
-   * quando la domanda diventa più grande ci sia già `git diff`.
+   * La funzione sta in `differenze.ts` da quando se la chiedono in due: qui,
+   * per dire «cosa ho cambiato» rispetto alla skin installata, e la chat, per
+   * dire «cosa cambierebbe» applicando quel che un modello propone. Vedi il
+   * preambolo di quel file.
    */
-  const differenze = useMemo(() => {
-    const prima = originale.split("\n");
-    const dopo = sorgente.split("\n");
-    const quante = Math.max(prima.length, dopo.length);
-    const righe: { segno: "=" | "+" | "-"; testo: string }[] = [];
-    for (let i = 0; i < quante; i += 1) {
-      const a = prima[i];
-      const b = dopo[i];
-      if (a === b) {
-        if (a !== undefined) righe.push({ segno: "=", testo: a });
-        continue;
-      }
-      if (a !== undefined) righe.push({ segno: "-", testo: a });
-      if (b !== undefined) righe.push({ segno: "+", testo: b });
-    }
-    return righe;
-  }, [originale, sorgente]);
+  const confronto = useMemo(
+    () => differenze(originale, sorgente),
+    [originale, sorgente],
+  );
 
   return (
     <div className="studio-documento">
@@ -272,7 +339,7 @@ export function Documento({
             <div className="editor-doppio">
               <pre className="sotto-editor" ref={sotto} aria-hidden="true">
                 {righe.map((riga, i) => (
-                  <div key={i} className="riga-json" data-rotta={i === rigaRotta || undefined}>
+                  <div key={i} className="riga-json" data-rotta={righeRotte.has(i) || undefined}>
                     <span className="numero">{i + 1}</span>
                     <span className="testo">
                       {evidenzia(riga).map((pezzo, j) => (
@@ -308,7 +375,7 @@ export function Documento({
           {scheda === "css" && (
             <pre className="uscita">
               <code>
-                {(esito?.errori.length ?? 0) > 0
+                {rotto
                   ? (ultimoValido?.css ?? t("studio.doc.noSheet"))
                   : (esito?.css ?? "")}
               </code>
@@ -316,7 +383,7 @@ export function Documento({
           )}
           {scheda === "diff" && (
             <pre className="uscita differenze">
-              {differenze.map((r, i) => (
+              {confronto.map((r, i) => (
                 <div key={i} className={`d-${r.segno === "=" ? "uguale" : r.segno === "+" ? "piu" : "meno"}`}>
                   <span className="segno">{r.segno === "=" ? " " : r.segno}</span>
                   <code>{r.testo}</code>
@@ -325,48 +392,92 @@ export function Documento({
             </pre>
           )}
 
-          {errore && (
-            <div className="pannello-errore">
-              <Icona nome="i-alert" dim={14} />
-              <div className="dentro">
-                <div className="dove">
-                  <code className="codice">{errore.code}</code>
-                  {errore.path.length > 0 && <> · <code>{errore.path}</code></>}
-                </div>
-                {/* Il messaggio del nucleo è preciso ma italiano, e `path`
-                    e `forse` — le due parti che servono davvero — sono già
-                    estratte qui sopra. Quel che resta è la ragione, e la
-                    ragione sta nel catalogo degli errori, chiavata sul codice
-                    che il problema porta con sé. */}
-                <div className="cosa">
-                  {tSe(`errors.${errore.code}`, errore.message)}
-                </div>
-                {errore.forse.length > 0 && (
-                  <div className="forse">
-                    {t("studio.doc.maybe")}
-                    {errore.forse.map((nome) => (
-                      <button
-                        key={nome}
-                        type="button"
-                        className="suggerimento"
-                        // Il percorso intero, non l'ultimo pezzo: la correzione
-                        // avviene **lì**, e non alla prima parola uguale che
-                        // capita nel file.
-                        onClick={() => onCorreggi(errore.path, nome)}
-                      >
-                        {nome}
-                      </button>
-                    ))}
-                    ?
-                    <div className="da-dove">
-                      <Trans
-                        k="studio.doc.suggestion"
-                        v={{ funzione: <code>nearest_parts()</code> }}
-                      />
+          {/*
+            * Un elenco, e non più un pannello per il primo errore.
+            *
+            * Il nucleo ne consegnava uno solo — venti problemi uniti da punti e
+            * virgola dentro un messaggio unico — e quel messaggio non aveva un
+            * tetto: dieci token sbagliati riempivano il riquadro di prosa e
+            * spingevano l'editor fuori dalla vista. Adesso i problemi sono
+            * problemi, il tetto sta nel foglio (`max-height` più scorrimento),
+            * e ogni riga porta il cursore dove serve.
+            */}
+          {rotto && (
+            <div
+              className="elenco-errori"
+              role="list"
+              aria-label={t("studio.doc.errors", { n: errori.length })}
+            >
+              {errori.slice(0, ERRORI_IN_VISTA).map((errore, i) => (
+                <button
+                  key={`${errore.path}-${i}`}
+                  type="button"
+                  role="listitem"
+                  className="riga-errore"
+                  onClick={() => vaiA(errore)}
+                >
+                  <Icona nome="i-alert" dim={14} />
+                  <div className="dentro">
+                    <div className="dove">
+                      <code className="codice">{errore.code}</code>
+                      {errore.path.length > 0 && <code>{errore.path}</code>}
+                      {errore.riga !== null && (
+                        <span className="riga-numero">
+                          {t("studio.doc.atLine", { riga: errore.riga })}
+                        </span>
+                      )}
                     </div>
+                    {/*
+                      * Il messaggio del **nucleo**, e non la frase del catalogo.
+                      *
+                      * `tSe(\`errors.${errore.code}\`, …)` stava qui e non poteva
+                      * funzionare: `errors.skin.manifestInvalid` esiste, quindi
+                      * vinceva sempre, e quella frase è scritta per il toast
+                      * dell'applicazione — dice «Aprila nello Studio: i problemi
+                      * vengono elencati riga per riga», che letta da dentro lo
+                      * Studio prometteva esattamente quel che non succedeva.
+                      * Quel che serve qui è «`14pt` non è una lunghezza», che il
+                      * nucleo scrive apposta.
+                      */}
+                    <div className="cosa">{errore.message}</div>
+                    {errore.forse.length > 0 && (
+                      <div className="forse">
+                        {t("studio.doc.maybe")}
+                        {errore.forse.map((nome) => (
+                          <button
+                            key={nome}
+                            type="button"
+                            className="suggerimento"
+                            // Il percorso intero, non l'ultimo pezzo: la
+                            // correzione avviene **lì**, e non alla prima parola
+                            // uguale che capita nel file.
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onCorreggi(errore.path, nome);
+                            }}
+                          >
+                            {nome}
+                          </button>
+                        ))}
+                        ?
+                        <div className="da-dove">
+                          <Trans
+                            k="studio.doc.suggestion"
+                            v={{ funzione: <code>vicini()</code> }}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                </button>
+              ))}
+              {errori.length > ERRORI_IN_VISTA && (
+                <div className="ancora-errori">
+                  {t("studio.doc.moreErrors", {
+                    n: errori.length - ERRORI_IN_VISTA,
+                  })}
+                </div>
+              )}
             </div>
           )}
 
@@ -374,13 +485,8 @@ export function Documento({
               «47 token noti» è la risposta alla domanda che viene subito dopo
               «questo nome non esiste» — cioè quali esistono. */}
           <div className="piede-editor">
-            <span
-              style={{
-                color:
-                  (esito?.errori.length ?? 0) > 0 ? "var(--danger)" : undefined,
-              }}
-            >
-              {t("studio.errors", { n: esito?.errori.length ?? 0 })}
+            <span style={{ color: rotto ? "var(--danger)" : undefined }}>
+              {t("studio.errors", { n: errori.length })}
             </span>
             <span
               style={{
@@ -419,12 +525,10 @@ export function Documento({
           <h3>{t("studio.doc.preview")}</h3>
           <div
             className="riquadro-fermo"
-            data-in-pausa={errore !== null || undefined}
+            data-in-pausa={rotto || undefined}
           >
             <Anteprima
-              css={
-                errore !== null ? (ultimoValido?.css ?? "") : (esito?.css ?? "")
-              }
+              css={rotto ? (ultimoValido?.css ?? "") : (esito?.css ?? "")}
               id={idSkin}
               parti={SENZA_REGISTRO}
               sondaAccesa={false}
@@ -433,7 +537,7 @@ export function Documento({
             >
               <Impaginazione
                 albero={
-                  errore !== null
+                  rotto
                     ? (ultimoValido?.layout?.shell ?? null)
                     : (esito?.layout?.shell ?? null)
                 }
@@ -441,7 +545,7 @@ export function Documento({
                 slot={SLOT_DIAGNOSI}
               />
             </Anteprima>
-            {errore !== null && (
+            {rotto && (
               <span className="velo">
                 <span className="pillola-pausa">
                   {t("studio.doc.pausedPill")}

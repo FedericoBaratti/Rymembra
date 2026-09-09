@@ -218,7 +218,7 @@ fn posizione(at: Option<(Length, Length)>) -> String {
 
 /// Un effetto, come valore CSS. `target()` dice in quale proprietà va.
 #[must_use]
-pub fn compile_effect(effect: &Effect) -> String {
+pub(crate) fn compile_effect(effect: &Effect) -> String {
     match *effect {
         Effect::Solid { ref color } => risolvi_colore(color),
 

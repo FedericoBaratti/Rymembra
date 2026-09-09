@@ -39,6 +39,10 @@ export function Scrubber({
 }) {
   const posizioneMs = usePosizioneMs();
   const [trascinato, setTrascinato] = useState<number | null>(null);
+  // Sopra `rilascia` perché la legge anche lei, e non solo il disegno: il tetto
+  // del salto e il tetto di quel che si vede sono lo stesso numero, e tenerli a
+  // due righe di distanza è il modo di non correggerne uno solo.
+  const durataMs = stato.durataMs;
 
   const rilascia = async () => {
     if (trascinato === null) return;
@@ -49,14 +53,19 @@ export function Scrubber({
       // Togliere il trascinamento non fa quindi lampeggiare il cursore sul
       // punto di partenza — che è quel che succedeva finché lo stato portava
       // la posizione letta dal motore, cioè quella di prima del salto.
-      await ipc.vaiA(trascinato);
+      // Con lo stesso tetto del numero *mostrato* qui sotto, e non con quello
+      // grezzo: `max` è `durataMs`, quindi il cursore tirato fino in fondo
+      // manda esattamente la durata dichiarata dal database. Su un flusso —
+      // dove la durata vera la conosce solo il decodificatore — quel numero è
+      // spesso oltre l'ultimo campione, e chiedere un salto oltre la fine è
+      // chiedere la fine: il gesto «vai in fondo» diventava «brano successivo».
+      await ipc.vaiA(Math.min(trascinato, durataMs));
     } catch (e) {
       onErrore(e);
     }
     setTrascinato(null);
   };
 
-  const durataMs = stato.durataMs;
   const dove = trascinato ?? posizioneMs;
   const avanzamento = durataMs > 0 ? (dove / durataMs) * 100 : 0;
 

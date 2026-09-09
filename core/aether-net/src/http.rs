@@ -170,6 +170,14 @@ impl Risposta {
 pub struct Rete {
     agente: ureq::Agent,
     servizio: &'static str,
+    /// Se questo client può parlare in chiaro con questa macchina.
+    ///
+    /// Non basta averlo deciso alla costruzione: `https_only(false)` vale per
+    /// **ogni** indirizzo che passa da questo agente, e un client nato per
+    /// `127.0.0.1:11434` uscirebbe in chiaro verso chiunque gli si desse dopo.
+    /// La bandiera esiste perché [`Rete::consenti`] possa rifare la domanda a
+    /// ogni richiesta, che è l'unico momento in cui la risposta conta.
+    chiaro_locale: bool,
 }
 
 /// Come Aether si presenta, sempre, a chiunque.
@@ -189,7 +197,17 @@ pub struct Rete {
 /// a chi gestisce un servizio pubblico di scrivere a qualcuno invece di
 /// limitarsi a bloccare — ed è la cosa che rende sostenibile interrogare
 /// archivi che nessuno paga.
-const AGENTE: &str = "Aether/0.1 (+https://github.com/federicobaratti/aether)";
+///
+/// La versione la scrive il compilatore, non una mano: un numero tenuto a mano
+/// dove nessuno lo rilegge è un numero che mente, e questo diceva «0.1» mentre
+/// il programma era alla 2.3. Chi gestisce MusicBrainz una versione
+/// riconoscibile la chiede, e presentarne una che non esiste è il modo di
+/// finire limitati.
+const AGENTE: &str = concat!(
+    "Aether/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/federicobaratti/aether)"
+);
 
 /// Un pezzo di un file, con quanto è lungo il file intero.
 ///
@@ -254,7 +272,80 @@ impl Rete {
         Self {
             agente: configurazione.into(),
             servizio,
+            chiaro_locale: false,
         }
+    }
+
+    /// Un client verso un indirizzo preciso, che sa se quell'indirizzo può
+    /// essere in chiaro.
+    ///
+    /// # Perché esiste accanto a [`Self::nuova`]
+    ///
+    /// Perché `nuova` impone `https_only`, e ci sono due servizi con cui si
+    /// parla in chiaro senza che un solo byte esca da questo computer: un
+    /// modello di linguaggio servito da Ollama su `127.0.0.1:11434`, e lo stesso
+    /// servito dal server locale di LM Studio su `127.0.0.1:1234`. Nessuno dei
+    /// due ha un certificato, e nessuno dei due potrebbe averne uno.
+    ///
+    /// Le due strade sbagliate erano togliere `https_only` a tutti — buttare via
+    /// la protezione per riparare un caso — e chiamare quei servizi dalla
+    /// finestra, che oltre a rompere la politica dei contenuti farebbe della
+    /// finestra l'unico posto dell'applicazione che parla da solo con la rete.
+    ///
+    /// Qui l'apertura è **una sola**, verificata prima che la richiesta parta, e
+    /// nominata. La promessa che resta vera è che nessuna richiesta in chiaro
+    /// **esce da questo computer**, ed è più debole di quella di prima: sta
+    /// scritta così anche in `PRIVACY.md`, che è il posto dove conta.
+    ///
+    /// # Errori
+    ///
+    /// `net.badSchema` per qualunque indirizzo che non sia `https://`, oppure
+    /// `http://` verso questa macchina.
+    pub fn verso(servizio: &'static str, scadenza: Duration, url: &str) -> Result<Self, AppError> {
+        if url.starts_with("https://") {
+            return Ok(Self::nuova(servizio, scadenza));
+        }
+        if !in_chiaro_ammesso(url) {
+            return Err(non_in_casa(servizio, url));
+        }
+        let configurazione = ureq::Agent::config_builder()
+            .timeout_global(Some(scadenza))
+            .http_status_as_error(false)
+            // L'unica riga di tutto l'albero che apre il chiaro, e sopra c'è la
+            // sola condizione in cui è lecita: l'indirizzo è questa macchina.
+            .https_only(false)
+            // Zero salti, e non è prudenza generica: senza, un server locale
+            // che risponde «302 http://esterno/» porterebbe fuori di casa, in
+            // chiaro, una richiesta partita per la macchina di chi la manda —
+            // cioè esattamente la cosa che il controllo sull'ospite impedisce
+            // di scrivere e che un reindirizzamento rimetterebbe in piedi.
+            .max_redirects(0)
+            .user_agent(AGENTE)
+            .build();
+        Ok(Self {
+            agente: configurazione.into(),
+            servizio,
+            chiaro_locale: true,
+        })
+    }
+
+    /// La domanda che si rifà a ogni richiesta: questo indirizzo può uscire?
+    ///
+    /// Su un client normale non c'è niente da chiedere — `https_only` risponde
+    /// da sé, e in chiaro non parte niente. Su quello di [`Self::verso`] la
+    /// risposta è «solo verso questa macchina», e va data **qui** e non alla
+    /// costruzione: il permesso è dell'indirizzo, non del client, e un client
+    /// nato per `127.0.0.1` a cui più tardi si passi un altro indirizzo non
+    /// deve poterlo raggiungere leggibile.
+    ///
+    /// # Errori
+    ///
+    /// `net.badSchema`, nominando l'indirizzo che non si è potuto chiamare.
+    fn consenti(&self, url: &str) -> Result<(), AppError> {
+        if !self.chiaro_locale || url.starts_with("https://") || in_chiaro_ammesso(url) {
+            return Ok(());
+        }
+        Err(non_in_casa(self.servizio, url))
     }
 
     /// Esegue una richiesta.
@@ -264,6 +355,7 @@ impl Rete {
     /// `net.offline`, `net.timeout` o `net.http` per i guasti di **trasporto**.
     /// Uno stato di errore non produce un `Err`: arriva dentro la [`Risposta`].
     pub fn esegui(&self, richiesta: Richiesta<'_>) -> Result<Risposta, AppError> {
+        self.consenti(richiesta.url)?;
         // I due rami non si possono unire: `ureq` distingue nel **tipo** un
         // costruttore che può portare un corpo da uno che non può, e ci si
         // guadagna che `GET` con un corpo non è una cosa che si possa scrivere
@@ -358,6 +450,7 @@ impl Rete {
         annullato: &dyn Fn() -> bool,
         avanzamento: &mut dyn FnMut(u64, Option<u64>),
     ) -> Result<u64, AppError> {
+        self.consenti(url)?;
         let mut costruttore = self.agente.get(url);
         for (nome, valore) in intestazioni {
             costruttore = costruttore.header(*nome, *valore);
@@ -434,6 +527,92 @@ impl Rete {
         Ok(scritti)
     }
 
+    /// Manda qualcosa e legge la risposta **mentre arriva**, un pezzo per volta.
+    ///
+    /// # Perché non basta né [`Self::esegui`] né [`Self::preleva`]
+    ///
+    /// `esegui` raccoglie tutto il corpo prima di restituirlo. Con una risposta
+    /// che si scrive parola per parola vorrebbe dire aspettare in silenzio la
+    /// fine e poi mostrarla tutta insieme, cioè buttare via l'unica cosa che
+    /// rende sopportabile l'attesa di un modello lento.
+    ///
+    /// `preleva` legge a pezzi, ma è un `GET` e soprattutto **butta via il corpo
+    /// di un errore**. È giusto per un file che non c'è; è sbagliato qui, dove
+    /// un 400 porta con sé la frase che dice quale campo non andava — e senza
+    /// quella frase all'utente resta il numero.
+    ///
+    /// # Errori
+    ///
+    /// `net.*` per i guasti di trasporto e per uno stato fuori dal 2xx, con il
+    /// corpo dell'errore nella causa; `internal.aborted` se chi chiama ha smesso
+    /// di volerla; e quel che restituisce `pezzo`, che ferma la lettura al primo
+    /// pezzo rifiutato invece di continuare a leggere per nessuno.
+    pub fn flusso(
+        &self,
+        url: &str,
+        intestazioni: &[(&str, &str)],
+        corpo: Corpo<'_>,
+        annullato: &dyn Fn() -> bool,
+        pezzo: &mut dyn FnMut(&[u8]) -> Result<(), AppError>,
+    ) -> Result<(), AppError> {
+        self.consenti(url)?;
+        let mut costruttore = self.agente.post(url);
+        for (nome, valore) in intestazioni {
+            costruttore = costruttore.header(*nome, *valore);
+        }
+        let esito = match corpo {
+            Corpo::Niente => costruttore.send_empty(),
+            Corpo::Byte { tipo, dati } => costruttore.content_type(tipo).send(dati),
+            Corpo::Modulo(campi) => costruttore
+                .content_type("application/x-www-form-urlencoded")
+                .send(modulo_urlencoded(campi).as_bytes()),
+        };
+        let mut risposta = esito.map_err(|err| self.trasporto(&err, url))?;
+
+        let stato = risposta.status().as_u16();
+        if !(200..300).contains(&stato) {
+            let riprova_fra_ms = quanto_ha_chiesto(risposta.headers());
+            // Il corpo si legge **prima** di tradurre lo stato: è lì che il
+            // servizio scrive che quel modello non esiste, e senza resterebbe
+            // un «400» buono per qualunque cosa.
+            let corpo = risposta.body_mut().read_to_vec().unwrap_or_default();
+            return Err(self.stato_a_errore(
+                &Risposta {
+                    stato,
+                    corpo,
+                    riprova_fra_ms,
+                    posizione: None,
+                    url_finale: url.to_owned(),
+                },
+                url,
+            ));
+        }
+
+        let mut lettore = risposta.body_mut().as_reader();
+        let mut blocco = vec![0_u8; BLOCCO_PRELIEVO];
+        loop {
+            if annullato() {
+                return Err(AppError::new(ErrorCode::InternalAborted {
+                    what: Some("flusso".to_owned()),
+                }));
+            }
+            let quanti = match std::io::Read::read(&mut lettore, &mut blocco) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) => {
+                    return Err(AppError::new(ErrorCode::NetHttp {
+                        status: stato,
+                        url: Some(url.to_owned()),
+                    })
+                    .with_cause(format!("lettura interrotta: {err}")));
+                }
+            };
+            pezzo(blocco.get(..quanti).unwrap_or(&[]))?;
+        }
+        Ok(())
+    }
+
     /// Un pezzo di un file, chiesto per intervallo.
     ///
     /// # Perché esiste accanto a [`Self::preleva`]
@@ -455,6 +634,7 @@ impl Rete {
     /// perché vuol dire che quel flusso non si può posizionare. `net.*` per i
     /// guasti di trasporto, `download.*` per gli stati di errore.
     pub fn intervallo(&self, url: &str, da: u64, quanti: u64) -> Result<Pezzo, AppError> {
+        self.consenti(url)?;
         let fino = da.saturating_add(quanti.max(1)).saturating_sub(1);
         let mut risposta = self
             .agente
@@ -505,15 +685,21 @@ impl Rete {
     /// pignoleria: la prima si dice all'utente («sei senza connessione»), la
     /// seconda si ritenta da sola.
     fn trasporto(&self, err: &ureq::Error, url: &str) -> AppError {
+        let host = ospite(url).map(ToOwned::to_owned);
         let url = Some(url.to_owned());
         match err {
             ureq::Error::Timeout(_) => AppError::new(ErrorCode::NetTimeout {
                 url,
                 timeout_ms: None,
             }),
-            ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => {
-                AppError::new(ErrorCode::NetOffline { url })
+            // Il nome prima della connessione: se non si risolve, non si è
+            // nemmeno provato a connettersi, e dire «sei senza rete» manda a
+            // controllare la cosa sbagliata.
+            ureq::Error::HostNotFound => AppError::new(ErrorCode::NetHostUnknown { host }),
+            ureq::Error::Io(io) if dns_fallito(io) => {
+                AppError::new(ErrorCode::NetHostUnknown { host })
             }
+            ureq::Error::ConnectionFailed => AppError::new(ErrorCode::NetOffline { url }),
             ureq::Error::Io(io) if senza_rete(io.kind()) => {
                 AppError::new(ErrorCode::NetOffline { url })
             }
@@ -598,14 +784,12 @@ impl Rete {
 /// due che sa quando smetterà di dire di no. Il nostro serve quando non l'ha
 /// detto.
 ///
-/// Pubblica perché non tutti i cicli di tentativi possono passare da
-/// [`Rete::con_tentativi`]: quello di un catalogo porta con sé
-/// un `&mut Sessione` da invalidare sul 401, che in una chiusura `FnMut` non ci
-/// sta. Quel ciclo resta scritto a mano, ma l'attesa la calcola qui — o
-/// riprenderebbe un `429` all'istante, che è il modo più diretto di prenderne un
-/// secondo.
+/// A sé, e non dentro [`Rete::ritenta`], perché è la sola parte di `ritenta`
+/// che decide un numero: tutto il resto lì è chiamare l'operazione e dormire.
+/// Estratta, la si mette alla prova con un errore costruito a mano — senza una
+/// richiesta vera e senza aspettare davvero i secondi che risponde.
 #[must_use]
-pub fn quanto_aspettare(err: &AppError, predefinita: Duration) -> Duration {
+fn quanto_aspettare(err: &AppError, predefinita: Duration) -> Duration {
     let chiesto = match err.code() {
         ErrorCode::NetRateLimited {
             retry_after_ms: Some(ms),
@@ -659,6 +843,41 @@ fn secondi_in_ms(valore: &str) -> Option<u64> {
         .map(|secondi| secondi.saturating_mul(1000))
 }
 
+/// I guasti di I/O che significano «quel nome non si risolve».
+///
+/// # Perché si guarda il numero e non il genere
+///
+/// Perché un fallimento di risoluzione non ha un `ErrorKind` suo. Su Windows
+/// arriva come `Uncategorized` — che è instabile e non si può nemmeno nominare
+/// in un `match` — con dentro il codice di Winsock; il genere quindi non dice
+/// niente, e il numero dice tutto. È il difetto che si leggeva nel diario:
+///
+/// ```text
+/// [errore] net.badSchema gravita=error ritentabile=false
+///          causa=io: Host sconosciuto. (os error 11001)
+/// ```
+///
+/// cioè un indirizzo sbagliato raccontato come «la risposta del servizio non ha
+/// la forma attesa», per un servizio che non aveva risposto.
+///
+/// I quattro numeri sono `WSAHOST_NOT_FOUND`, `WSATRY_AGAIN`, `WSANO_RECOVERY`
+/// e `WSANO_DATA`: le quattro risposte possibili di un resolver che non ce l'ha
+/// fatta. Fuori da Windows la stessa cosa arriva come `NotFound`, oppure come un
+/// `Other` il cui testo nomina la ricerca — l'ultima è una lettura di stringhe,
+/// e sta per ultima apposta.
+fn dns_fallito(err: &std::io::Error) -> bool {
+    if matches!(err.raw_os_error(), Some(11001..=11004)) {
+        return true;
+    }
+    if err.kind() == std::io::ErrorKind::NotFound {
+        return true;
+    }
+    let testo = err.to_string().to_lowercase();
+    testo.contains("failed to lookup")
+        || testo.contains("name or service not known")
+        || testo.contains("nodename nor servname")
+}
+
 /// I guasti di I/O che significano «la rete non c'è».
 fn senza_rete(genere: std::io::ErrorKind) -> bool {
     matches!(
@@ -700,6 +919,73 @@ fn modulo_urlencoded(campi: &[(&str, String)]) -> String {
     fuori
 }
 
+/// Il rifiuto di un indirizzo che uscirebbe leggibile da questo computer.
+fn non_in_casa(servizio: &str, url: &str) -> AppError {
+    AppError::new(ErrorCode::NetBadSchema {
+        service: Some(servizio.to_owned()),
+        detail: Some(format!(
+            "in chiaro si parla solo con questo computer, non con «{}»",
+            accorcia(url, 120)
+        )),
+    })
+}
+
+/// Se con questo indirizzo si può parlare in chiaro: cioè se è questo computer.
+///
+/// # Perché è pubblica, e non un dettaglio di [`Rete::verso`]
+///
+/// Perché la stessa domanda se la fa anche chi **salva** un indirizzo, per dire
+/// di no mentre lo si scrive invece che al primo messaggio. Due implementazioni
+/// della stessa domanda sono due risposte diverse alla stessa domanda: qui ce
+/// n'è una sola, e `Rete::verso` è soltanto il punto in cui è obbligatoria.
+///
+/// `http://localhost@esempio.com/` **non** è questo computer. Quel che conta è
+/// l'ultima chiocciola, non la prima, e senza guardarla si aprirebbe il chiaro
+/// verso chiunque sappia scrivere un indirizzo.
+#[must_use]
+pub fn in_chiaro_ammesso(url: &str) -> bool {
+    ospite_in_chiaro(url).is_some_and(|ospite| {
+        ospite.eq_ignore_ascii_case("localhost") || ospite == "127.0.0.1" || ospite == "::1"
+    })
+}
+
+/// L'ospite di un `http://`, e soltanto di un `http://`.
+///
+/// Il filtro sullo schema è il punto: `in_chiaro_ammesso` risponde «sì» a
+/// `http://localhost` e deve rispondere «no» a `ftp://localhost`, che non è un
+/// indirizzo per Aether.
+fn ospite_in_chiaro(url: &str) -> Option<&str> {
+    url.starts_with("http://").then(|| ospite(url)).flatten()
+}
+
+/// L'ospite di un indirizzo, comunque cominci.
+///
+/// Serve a due cose che leggono l'autorità per ragioni opposte:
+/// [`in_chiaro_ammesso`], che deve sapere se è questo computer, e
+/// [`Rete::trasporto`], che quando il nome non si risolve deve poterlo nominare
+/// — «esempio.com non esiste» è la frase che dice cosa correggere, mentre
+/// l'indirizzo intero con percorso e query è quel che si scrive in un log.
+///
+/// `http://localhost@esempio.com/` risponde `esempio.com`: conta l'**ultima**
+/// chiocciola, e guardare la prima è il modo di farsi passare per casa da
+/// chiunque sappia scrivere un indirizzo.
+fn ospite(url: &str) -> Option<&str> {
+    let resto = url
+        .split_once("://")
+        .map_or(url, |(_, dopo_schema)| dopo_schema);
+    let fine = resto.find(['/', '?', '#']).unwrap_or(resto.len());
+    let autorita = resto.get(..fine)?;
+    let dopo_utente = autorita.rsplit('@').next()?;
+    // `[::1]:1234`: le parentesi quadre tengono insieme i due punti
+    // dell'indirizzo, che senza sarebbero quelli della porta.
+    let nudo = if let Some(dentro) = dopo_utente.strip_prefix('[') {
+        dentro.split(']').next()?
+    } else {
+        dopo_utente.split(':').next()?
+    };
+    (!nudo.is_empty()).then_some(nudo)
+}
+
 /// Codifica una stringa per una `query` o un modulo.
 ///
 /// L'insieme di caratteri non riservati è quello della RFC 3986. Lo spazio
@@ -722,6 +1008,99 @@ pub fn percento(input: &str) -> String {
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    #[test]
+    fn in_chiaro_si_parla_solo_con_questo_computer() {
+        assert!(in_chiaro_ammesso("http://localhost:11434/v1"));
+        assert!(in_chiaro_ammesso("http://127.0.0.1:1234/v1/models"));
+        assert!(in_chiaro_ammesso("http://[::1]:11434/v1"));
+        assert!(
+            in_chiaro_ammesso("http://LocalHost/v1"),
+            "nel nome di un ospite le maiuscole non contano"
+        );
+
+        assert!(!in_chiaro_ammesso("http://esempio.com/v1"));
+        assert!(
+            !in_chiaro_ammesso("http://localhost@esempio.com/v1"),
+            "l'ospite sta dopo l'ultima chiocciola: è il modo di travestire da locale un indirizzo che non lo è"
+        );
+        assert!(
+            !in_chiaro_ammesso("http://127.0.0.1.esempio.com/v1"),
+            "un ospite che comincia per 127.0.0.1 non è 127.0.0.1"
+        );
+        assert!(
+            !in_chiaro_ammesso("http://"),
+            "un ospite vuoto non è questo computer"
+        );
+        assert!(
+            !in_chiaro_ammesso("https://openrouter.ai/api/v1"),
+            "la domanda vale solo per il chiaro: chi cifra non passa di qui"
+        );
+    }
+
+    #[test]
+    fn il_permesso_del_chiaro_e_dellindirizzo_e_non_del_client() {
+        // Il difetto che questa prova chiude: `verso` guardava l'indirizzo una
+        // volta sola, alla costruzione. L'agente che ne usciva aveva
+        // `https_only(false)` per **qualunque** indirizzo, quindi bastava
+        // riusarlo con un altro per uscire in chiaro verso il mondo. Adesso la
+        // domanda si rifà a ogni richiesta, e questa non tocca la rete: il
+        // rifiuto arriva prima del socket.
+        let locale = Rete::verso(
+            "ollama",
+            Duration::from_secs(1),
+            "http://127.0.0.1:11434/v1",
+        )
+        .expect("un indirizzo di casa costruisce");
+
+        let fuori = locale
+            .esegui(Richiesta {
+                metodo: Metodo::Get,
+                url: "http://esempio.com/v1/models",
+                intestazioni: &[],
+                corpo: Corpo::Niente,
+            })
+            .unwrap_err();
+        assert_eq!(fuori.code().kind().code(), "net.badSchema");
+
+        let ancora_a_casa = locale.esegui(Richiesta {
+            metodo: Metodo::Get,
+            url: "http://127.0.0.1:11434/v1/models",
+            intestazioni: &[],
+            corpo: Corpo::Niente,
+        });
+        assert!(
+            !matches!(
+                &ancora_a_casa,
+                Err(err) if err.code().kind().code() == "net.badSchema"
+            ),
+            "verso casa la guardia non deve dire niente: quel che risponde qui              è la rete, ed è un'altra domanda"
+        );
+    }
+
+    #[test]
+    fn un_client_verso_un_indirizzo_rifiuta_quel_che_uscirebbe_leggibile() {
+        let scadenza = Duration::from_secs(1);
+        assert!(Rete::verso("openrouter", scadenza, "https://openrouter.ai/api/v1").is_ok());
+        assert!(
+            Rete::verso("ollama", scadenza, "http://127.0.0.1:11434/v1").is_ok(),
+            "l'eccezione voluta: un modello servito da questa macchina"
+        );
+
+        let fuori = Rete::verso("personalizzato", scadenza, "http://esempio.com/v1").unwrap_err();
+        assert_eq!(fuori.code().kind().code(), "net.badSchema");
+        assert!(
+            matches!(fuori.code(), ErrorCode::NetBadSchema { detail: Some(d), .. } if d.contains("esempio.com")),
+            "il messaggio nomina l'indirizzo: «schema non valido» da solo non dice cosa correggere"
+        );
+
+        let altro = Rete::verso("personalizzato", scadenza, "ftp://esempio.com").unwrap_err();
+        assert_eq!(
+            altro.code().kind().code(),
+            "net.badSchema",
+            "quel che non è né http né https non è un indirizzo per Aether"
+        );
+    }
 
     #[test]
     fn lo_spazio_non_diventa_un_piu() {
@@ -821,6 +1200,59 @@ mod prove {
         assert!(guasto.cause().is_some_and(|c| c.contains("qualcosa")));
     }
 
+    /// Il difetto che il diario mostrava per intero:
+    ///
+    /// ```text
+    /// [errore] net.badSchema gravita=error ritentabile=false
+    ///          causa=io: Host sconosciuto. (os error 11001)
+    /// ```
+    ///
+    /// Un nome che non si risolve finiva nel ripiego di `trasporto`, che è
+    /// «guasto di trasporto che non è la rete giù» — cioè un certificato
+    /// scaduto o un'intestazione mostruosa — e usciva come errore grave, non
+    /// ritentabile, con la frase sbagliata.
+    #[test]
+    fn un_nome_che_non_si_risolve_non_e_uno_schema_sbagliato() {
+        for numero in [11001, 11002, 11003, 11004] {
+            let io = std::io::Error::from_raw_os_error(numero);
+            assert!(dns_fallito(&io), "os error {numero}");
+            assert!(
+                !senza_rete(io.kind()),
+                "os error {numero} non è «la rete non c'è»"
+            );
+        }
+        // Le due forme che arrivano fuori da Windows.
+        assert!(dns_fallito(&std::io::Error::other(
+            "failed to lookup address information: Name or service not known",
+        )));
+        assert!(dns_fallito(&std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no such host",
+        )));
+        // E quel che non c'entra resta fuori: una connessione rifiutata è il
+        // servizio spento, non il nome sbagliato.
+        assert!(!dns_fallito(&std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        )));
+    }
+
+    #[test]
+    fn lospite_e_quello_dopo_lultima_chiocciola() {
+        assert_eq!(
+            ospite("https://openrouter.ai/api/v1"),
+            Some("openrouter.ai")
+        );
+        assert_eq!(ospite("http://127.0.0.1:11434/v1"), Some("127.0.0.1"));
+        assert_eq!(ospite("http://[::1]:1234/v1"), Some("::1"));
+        assert_eq!(
+            ospite("http://localhost@esempio.com/x"),
+            Some("esempio.com"),
+            "l'ultima chiocciola, non la prima"
+        );
+        assert_eq!(ospite("http:///niente"), None);
+    }
+
     #[test]
     fn si_ritenta_solo_quel_che_si_puo_ritentare() {
         let rete = Rete::nuova("drive", Duration::from_secs(1));
@@ -858,5 +1290,18 @@ mod prove {
         let corto = accorcia(&lungo, 10);
         assert_eq!(corto.chars().count(), 11, "dieci più i puntini");
         assert_eq!(accorcia("corto", 10), "corto");
+    }
+
+    #[test]
+    fn lo_user_agent_dice_il_nome_la_versione_e_dove_scrivere() {
+        assert!(AGENTE.starts_with("Aether/"));
+        assert!(
+            AGENTE.contains(env!("CARGO_PKG_VERSION")),
+            "scritta a mano era ferma alla 0.1: MusicBrainz limita chi si presenta con una versione che non esiste"
+        );
+        assert!(
+            AGENTE.contains("+https://github.com/federicobaratti/aether"),
+            "l'indirizzo è quel che permette a un servizio di scrivere invece di bloccare"
+        );
     }
 }

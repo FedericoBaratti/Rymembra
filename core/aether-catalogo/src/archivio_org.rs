@@ -401,7 +401,7 @@ fn formato_di(file: &Value) -> Option<(usize, &'static str)> {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "i secondi sono già vincolati a finiti e non negativi, e un brano               che durasse più di 4 miliardi di secondi non è un brano"
+    reason = "i secondi sono già vincolati a finiti e non negativi, e un brano che durasse più di 4 miliardi di secondi non è un brano"
 )]
 fn durata_di(file: &Value) -> Option<u32> {
     let grezza = file.get("length")?.as_str()?.trim();

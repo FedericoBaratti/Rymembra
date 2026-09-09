@@ -20,7 +20,6 @@
  * mostrato: `nuvolaRipristina` riscarica e ricalcola. Fra il momento in cui si
  * guarda e quello in cui si conferma può essere finita una scansione.
  */
-import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 
 import {
@@ -34,6 +33,7 @@ import {
 import { t } from "./lingue";
 import { Trans } from "./lingue/Trans";
 import { dataOra } from "./formato";
+import { useAscolto } from "./pagine";
 
 /** Come si legge una fase dell'avanzamento. */
 function fasi(): Record<AvanzamentoNuvola["cosa"], string> {
@@ -94,15 +94,7 @@ export function Ripristino({
   const [inCorso, setInCorso] = useState(true);
   const [avanzamento, setAvanzamento] = useState<AvanzamentoNuvola | null>(null);
 
-  useEffect(() => {
-    const promessa = listen<AvanzamentoNuvola>(
-      "nuvola:avanzamento",
-      (evento) => setAvanzamento(evento.payload),
-    );
-    return () => {
-      void promessa.then((stop) => stop());
-    };
-  }, []);
+  useAscolto<AvanzamentoNuvola>("nuvola:avanzamento", setAvanzamento);
 
   useEffect(() => {
     let annullato = false;

@@ -30,6 +30,7 @@ import { useState } from "react";
 import { Copertina, Sfocata } from "../Copertina";
 import { RigheCoda, useRigheCoda } from "../Coda";
 import { ipc, type Brano, type StatoRiproduzione } from "../ipc";
+import { AvvisoAudio } from "./AvvisoAudio";
 import { Cronologia } from "./Cronologia";
 import { Giudizio } from "./Giudizio";
 import { Icona } from "./Icone";
@@ -101,27 +102,7 @@ export function Colonna({
           qualunque cosa ci sia da guardare. Prima di questa fascia il nucleo
           alzava un bit che nessuno leggeva, e staccare le cuffie voleva dire
           premere play senza sentire niente, per sempre. */}
-      {stato.audio !== null && (
-        <div className="audio-perso">
-          <div className="cosa">
-            <strong>{t("audio.lost.what")}</strong> {stato.audio.causa}.
-          </div>
-          {stato.audio.riapribile && (
-            <button
-              type="button"
-              className="bottone minuto btn-ghost"
-              onClick={() => comanda(ipc.riapriAudio())}
-              /* Il brano riparte da capo, e va detto prima di premere: il
-                 motore nuovo nasce senza niente aperto, e la posizione non
-                 sopravvive. Coda, volume, curva e normalizzazione sì. */
-              title={t("audio.lost.reopen.title")}
-            >
-              <Icona nome="i-repeat" dim={14} />
-              {t("audio.lost.reopen")}
-            </button>
-          )}
-        </div>
-      )}
+      <AvvisoAudio stato={stato} dove="colonna" onErrore={onErrore} />
 
       {brano === null ? (
         <div className="niente-in-ascolto empty-state">

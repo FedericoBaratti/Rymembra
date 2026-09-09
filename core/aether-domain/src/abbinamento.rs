@@ -334,7 +334,7 @@ fn scegli(candidati: &[&LibraryTrack], durata: Option<u64>) -> Option<i64> {
 /// c'entrano niente — sul gradino che per costruzione non passa dal controllo
 /// della durata, cioè quello dove un errore non ha nessuna rete sotto.
 #[must_use]
-pub fn normalizza_isrc(grezzo: &str) -> Option<String> {
+pub(crate) fn normalizza_isrc(grezzo: &str) -> Option<String> {
     let pulito: String = grezzo
         .chars()
         .filter(char::is_ascii_alphanumeric)

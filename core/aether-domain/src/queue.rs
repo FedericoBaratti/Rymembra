@@ -24,7 +24,7 @@
 //!
 //! # Il mescolamento prende un seme
 //!
-//! [`shuffled_order`] non chiama un generatore globale: riceve un `seed`. Il
+//! `shuffled_order` non chiama un generatore globale: riceve un `seed`. Il
 //! dominio non guarda l'orologio e non tiene stato nascosto, e la conseguenza
 //! pratica è che un ordine mescolato è riproducibile — cioè provabile. Il seme
 //! lo procura chi ha un orologio, che è il livello sopra.
@@ -509,7 +509,7 @@ pub struct QueueSnapshot {
 /// numeri distribuiti bene per rimescolare un elenco, non numeri
 /// imprevedibili, e questo crate ha una dipendenza sola.
 #[must_use]
-pub fn shuffled_order(len: usize, first: usize, seed: u64) -> Vec<usize> {
+pub(crate) fn shuffled_order(len: usize, first: usize, seed: u64) -> Vec<usize> {
     if len == 0 {
         return Vec::new();
     }

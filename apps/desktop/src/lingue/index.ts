@@ -172,22 +172,14 @@ function leggi(): string {
 }
 
 /**
- * La lingua **adesso**, senza iscriversi.
- *
- * Per chi la legge in risposta a un gesto o dentro un calcolo, non per
- * disegnarla: `formato.ts` la chiede a ogni numero che formatta.
- */
-export function linguaAttiva(): string {
-  return attiva;
-}
-
-/**
  * Il codice da passare a `Intl`.
  *
- * È lo stesso della lingua attiva, e ha un nome suo perché il posto in cui si
- * chiede «come si scrive un numero» non è lo stesso in cui si chiede «in che
- * lingua parliamo»: se un giorno le due cose divergeranno — un'interfaccia in
- * inglese con i numeri all'italiana — divergeranno qui e in nessun altro punto.
+ * La legge **adesso**, senza iscriversi: `formato.ts` la chiede a ogni numero
+ * che formatta, e formattare non è disegnare. Restituisce la lingua attiva, ma
+ * ha un nome suo perché il posto in cui si chiede «come si scrive un numero»
+ * non è lo stesso in cui si chiede «in che lingua parliamo»: se un giorno le
+ * due cose divergeranno — un'interfaccia in inglese con i numeri all'italiana —
+ * divergeranno qui e in nessun altro punto.
  */
 export function locale(): string {
   return attiva;

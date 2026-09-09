@@ -5,7 +5,6 @@
  * questo modulo lo conserva. L'unica cosa che aggiunge è il tempo fra un colpo
  * e l'altro, per il motivo scritto sotto.
  */
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   useCallback,
   useEffect,
@@ -23,13 +22,14 @@ import {
   type StatoRiproduzione,
   type Tempo,
 } from "./ipc";
+import { useAscolto } from "./pagine";
 
 /**
  * Ogni quanto la posizione interpolata arriva a React.
  *
  * Il nucleo manda la posizione quattro volte al secondo — `PASSO_TEMPO` in
- * `riproduzione.rs` — e lascia alla finestra il compito di riempire i buchi:
- * sessanta eventi al secondo attraverso l'IPC sarebbero sessanta
+ * `riproduzione/mod.rs` — e lascia alla finestra il compito di riempire i
+ * buchi: sessanta eventi al secondo attraverso l'IPC sarebbero sessanta
  * serializzazioni per spostare un pixel.
  *
  * Riempirli a ogni fotogramma però sarebbe lo stesso spreco spostato di un
@@ -62,6 +62,7 @@ const FERMO: StatoRiproduzione = {
   dissolvenzaS: 0,
   audio: null,
   motivoProssimo: null,
+  uscita: null,
 };
 
 // ── La posizione, fuori da React ────────────────────────────────────────────
@@ -257,40 +258,33 @@ export function useRiproduzione(): Riproduzione {
       });
   }, [ancoraggio]);
 
-  useEffect(() => {
-    const iscrizioni: Promise<UnlistenFn>[] = [
-      listen<StatoRiproduzione>("riproduzione:stato", (evento) => {
-        setStato(evento.payload);
-        ancoraggio(evento.payload);
-      }),
-      listen<Tempo>("riproduzione:tempo", (evento) => ancoraggio(evento.payload)),
-      // La curva da sola. Non tocca l'ancora del tempo: il nucleo la manda
-      // proprio per non dover comporre lo stato intero a ogni cursore mosso, e
-      // riancorare qui rifarebbe il lavoro dall'altro lato.
-      listen<StatoEq>("riproduzione:eq", (evento) =>
-        setStato((prima) => ({
-          ...prima,
-          eqAttivo: evento.payload.attivo,
-          eqGuadagni: evento.payload.guadagni,
-        })),
-      ),
-      listen<ErroreIpc>("riproduzione:errore", (evento) =>
-        setErrore(evento.payload),
-      ),
-      // Il dispositivo sparito. Arriva **una volta** — l'orologio annuncia il
-      // passaggio, non lo stato — e va nello stato invece che fra gli errori:
-      // non è un'operazione fallita da mostrare e poi scordare, è una
-      // condizione che dura finché qualcuno non riapre.
-      listen<GuastoAudio>("riproduzione:audio", (evento) =>
-        setStato((prima) => ({ ...prima, audio: evento.payload, inPausa: true })),
-      ),
-    ];
-    return () => {
-      for (const iscrizione of iscrizioni) {
-        void iscrizione.then((stop) => stop());
-      }
-    };
-  }, [ancoraggio]);
+  useAscolto<StatoRiproduzione>("riproduzione:stato", (carico) => {
+    setStato(carico);
+    ancoraggio(carico);
+  });
+
+  useAscolto<Tempo>("riproduzione:tempo", ancoraggio);
+
+  // La curva da sola. Non tocca l'ancora del tempo: il nucleo la manda
+  // proprio per non dover comporre lo stato intero a ogni cursore mosso, e
+  // riancorare qui rifarebbe il lavoro dall'altro lato.
+  useAscolto<StatoEq>("riproduzione:eq", (carico) =>
+    setStato((prima) => ({
+      ...prima,
+      eqAttivo: carico.attivo,
+      eqGuadagni: carico.guadagni,
+    })),
+  );
+
+  useAscolto<ErroreIpc>("riproduzione:errore", setErrore);
+
+  // Il dispositivo sparito. Arriva **una volta** — l'orologio annuncia il
+  // passaggio, non lo stato — e va nello stato invece che fra gli errori:
+  // non è un'operazione fallita da mostrare e poi scordare, è una
+  // condizione che dura finché qualcuno non riapre.
+  useAscolto<GuastoAudio>("riproduzione:audio", (carico) =>
+    setStato((prima) => ({ ...prima, audio: carico, inPausa: true })),
+  );
 
   // Il ciclo non si avvia qui: lo accende `ancoraggio` quando il nucleo dice
   // che si sta suonando. Questo effetto esiste solo per spegnerlo alla chiusura

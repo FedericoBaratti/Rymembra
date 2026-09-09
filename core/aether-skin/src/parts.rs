@@ -153,7 +153,6 @@ pub static PARTS: &[PartDef] = &[
     parte!("lyric-line", NowPlaying, false, "La riga di testo, attiva e non."),
     parte!("lyric-word", NowPlaying, false, "La parola del testo, quando i tempi ci sono."),
     parte!("viz-screen", NowPlaying, true, "La schermata del visualizer."),
-    parte!("viz-title", NowPlaying, false, "Il titolo sopra il visualizer."),
     parte!("eq-bars", NowPlaying, false, "Le barre dell'equalizzatore."),
     parte!("eq-slider", NowPlaying, false, "Il cursore di una banda dell'equalizzatore."),
 
@@ -165,7 +164,45 @@ pub static PARTS: &[PartDef] = &[
     parte!("tour-tooltip", Overlays, true, "Il fumetto della presentazione guidata."),
 ];
 
+/// Le parti ritirate: si accettano e non fanno niente.
+///
+/// Una parte è un nome pubblico. Sta nelle skin che qualcuno ha già scritto e
+/// spedito, e il lettore di documenti tratta un nome sconosciuto come un
+/// **errore duro**, non come un avviso: chi ha stilato `viz-title` nel 2.2.0 si
+/// troverebbe una skin che non si apre più, per una riga che non disegnava
+/// niente neanche prima. Togliere la voce dal registro senza questo elenco
+/// sarebbe quindi una rottura di compatibilità travestita da pulizia.
+///
+/// Il patto è: il nome continua a essere accettato dal lettore, non compare
+/// nell'editor, non genera CSS e non suggerisce nulla ai refusi. Sparisce dal
+/// futuro senza rompere il passato — che è la sola forma di ritiro che si possa
+/// fare su un formato spedito.
+///
+/// La seconda voce della coppia è il perché, in una riga, ed è ciò che si
+/// mostra a chi chiede conto del nome. Se il perché non si riesce a scrivere,
+/// molto probabilmente la parte non va ritirata: va disegnata.
+/// È una tabella come [`PARTS`], e per la stessa ragione porta il
+/// `rustfmt::skip`: una riga per nome ritirato, col perché accanto.
+#[rustfmt::skip]
+pub static RITIRATE: &[(&str, &str)] = &[
+    ("viz-title", "il visualizer non ha un titolo, e non l'avrà: vedi DettaglioSpettro."),
+];
+
+/// Perché questa parte è stata ritirata, se lo è.
+#[must_use]
+pub fn ritirata(name: &str) -> Option<&'static str> {
+    RITIRATE
+        .iter()
+        .find(|(nome, _)| *nome == name)
+        .map(|(_, perche)| *perche)
+}
+
 /// La parte con questo nome, se esiste.
+///
+/// Una parte ritirata non esiste: questa funzione dice `None`, ed è giusto così
+/// — l'editor, il compilatore e i suggerimenti sui refusi devono ignorarla. Chi
+/// deve invece *accettarla* è il solo lettore di documenti, che per questo
+/// chiede a [`ritirata`] prima di dichiarare un errore.
 #[must_use]
 pub fn part(name: &str) -> Option<&'static PartDef> {
     PARTS.iter().find(|def| def.name == name)
@@ -441,6 +478,26 @@ mod tests {
         for def in PARTS {
             assert!(visti.insert(def.name), "parte ripetuta: {}", def.name);
         }
+    }
+
+    #[test]
+    fn una_parte_ritirata_non_e_anche_viva() {
+        for (nome, perche) in RITIRATE {
+            // Se un nome stesse in tutti e due gli elenchi il lettore
+            // prenderebbe il ramo del ritiro e la parte smetterebbe di
+            // disegnarsi, restando visibile nell'editor: la peggiore delle due
+            // risposte sbagliate, perché sembra che la skin non funzioni.
+            assert!(
+                part(nome).is_none(),
+                "«{nome}» è ritirata e insieme viva nel registro"
+            );
+            assert!(!perche.is_empty(), "«{nome}» è ritirata senza un perché");
+            // Nemmeno come suggerimento: chi sbaglia a scrivere una parte viva
+            // non va mandato su un nome che non fa niente.
+            assert!(!nearest_parts(nome).contains(nome));
+        }
+        assert!(ritirata("viz-title").is_some_and(|perche| perche.contains("DettaglioSpettro")));
+        assert_eq!(ritirata("viz-screen"), None);
     }
 
     #[test]

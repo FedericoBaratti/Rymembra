@@ -40,8 +40,45 @@
 //! proprio nel caso in cui gli spostamenti ci sono, cioè dopo un riordino, dove
 //! riguardano ogni file della libreria. L'appaiamento avviene quindi lotto per
 //! lotto, contro l'insieme delle sparizioni ancora libere.
+//!
+//! # Il lucchetto, non solo la transazione
+//!
+//! Le sezioni qui sopra parlano di transazioni: quanto a lungo si tiene aperta
+//! una scrittura su SQLite. C'è una seconda cosa che dura, e per l'utente conta
+//! di più: **il permesso di parlare con la libreria**. Sul desktop la
+//! connessione sta dietro un mutex che duecento chiamanti si contendono, e
+//! quello che lo tiene fermo ferma anche la finestra, l'audio e la chiusura
+//! dell'applicazione.
+//!
+//! Per questo la scansione non riceve una `Connection`: riceve un [`Deposito`],
+//! e gliela chiede una fase per volta. Fra una fase e l'altra il lucchetto è di
+//! chi lo vuole. Nelle due fasi lunghe — la camminata sul disco e la lettura dei
+//! file — il deposito non viene toccato affatto, ed è la ragione per cui
+//! esistono: sono i minuti in cui una share lenta può far aspettare, e in cui
+//! nessun altro deve pagare quell'attesa.
+//!
+//! La contropartita è che fra due prese il database può cambiare sotto i piedi.
+//! Le conseguenze sono elencate su [`Scan::run_su`], che è dove si trattano.
+//!
+//! # Nessuna attesa senza scadenza
+//!
+//! Camminare e aprire file sono le due cose che su una condivisione di rete non
+//! falliscono mai: aspettano. Passano quindi entrambe da
+//! [`crate::scadenza`] — la camminata a rate, contando il silenzio fra due file;
+//! la lettura su un [`crate::scadenza::Operaio`], che riusa lo stesso filo
+//! finché uno non gli si appende addosso. I due numeri stanno in [`Scadenze`],
+//! e si possono cambiare da fuori perché le prove non aspettino quindici
+//! secondi per dimostrare che qualcosa scade.
+//!
+//! Una scadenza sola non è però una diagnosi: un file può essere grosso, o il
+//! disco pigro. Tre di fila sulla stessa radice sì, e allora la radice si
+//! abbandona anche se alla sonda risponde ancora — vedi [`SCADENZE_DI_FILA`].
+//! Senza quella regola una share viva ma esausta si farebbe pagare
+//! venticinque secondi per ogni file rimasto, uno dopo l'altro.
 
 use std::ops::ControlFlow;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use aether_domain::album::{AlbumMember, AlbumRow, album_group_key, build_album_groups};
 use aether_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
@@ -81,6 +118,77 @@ const SOGLIA_RIMOZIONI: usize = 50;
 /// vale la pena aspettare che qualcuno guardi.
 const FRAZIONE_SOSPETTA: usize = 5;
 
+/// Quanto silenzio si sopporta fra due file durante una camminata.
+///
+/// **Non** la durata della camminata: quella su una libreria da centomila file
+/// dura legittimamente dei minuti, e limitarla vorrebbe dire dichiarare morto un
+/// NAS grande. Quel che si misura è l'intervallo fra due consegne, che su un
+/// disco che risponde è dell'ordine dei microsecondi.
+///
+/// Quindici secondi: molto sopra il singhiozzo di un Wi-Fi che rinegozia — che
+/// dura al più qualche secondo — e sotto i quaranta e passa che Windows impiega
+/// a rinunciare da solo su un percorso di rete morto. Fra i due estremi il
+/// numero non deve essere preciso, deve solo starci in mezzo.
+const SILENZIO_CAMMINATA: Duration = Duration::from_secs(15);
+
+/// Quanto si aspetta la lettura di un singolo brano.
+///
+/// Venticinque secondi, che è lo stesso numero della scadenza sull'analisi di un
+/// brano nel livello desktop, e non per caso: è la stessa domanda — «quanto può
+/// legittimamente durare l'apertura e la lettura di un file audio prima che
+/// convenga concludere che non arriverà?» — e due risposte diverse alla stessa
+/// domanda sarebbero due numeri da tenere allineati a mano.
+const LETTURA_BRANO: Duration = Duration::from_secs(25);
+
+/// Quante letture scadute di fila bastano a condannare una radice.
+///
+/// Tre file di fila che non arrivano in venticinque secondi non sono tre file
+/// lenti, è una condivisione che non ce la fa. Una sola potrebbe essere una
+/// copertina da dieci megabyte in coda a un FLAC, ed è per questo che il numero
+/// non è uno: un disco USB pigro non deve poter far sparire dall'esito tutto
+/// quel che ci sta sopra.
+///
+/// La regola vale **in aggiunta** alla sonda di [`Scan::file_illeggibile`], non
+/// al suo posto: la sonda riconosce la radice che non risponde più, questo
+/// contatore riconosce quella che risponde e non serve. Senza, ogni file
+/// rimasto costerebbe venticinque secondi di attesa più otto di sonda, per
+/// sempre, e ognuno lascerebbe dietro di sé un filo appeso.
+const SCADENZE_DI_FILA: usize = 3;
+
+/// Ogni quanto si guarda se qualcuno ha chiesto di smettere.
+///
+/// Duecentocinquanta millisecondi: sotto la soglia in cui un «Annulla» sembra
+/// non aver funzionato, sopra quella in cui il ciclo d'attesa diventa esso
+/// stesso un costo. È il passo con cui la camminata si sveglia mentre non arriva
+/// niente, quindi decide anche con quale grana si misura il silenzio.
+const BATTITO: Duration = Duration::from_millis(250);
+
+/// I due tempi che una scansione è disposta ad aspettare.
+///
+/// Un tipo e non due costanti perché devono poter essere **iniettati**: una
+/// prova che dimostri cosa succede a una radice arenata non può aspettarne
+/// quindici secondi reali, e una che aspetti quindici secondi reali è una prova
+/// che nessuno lancerà più.
+///
+/// Chi non ha opinioni usa [`Scadenze::default`], che sono i numeri pensati per
+/// una condivisione SMB su Wi-Fi — il caso peggiore che si sia visto davvero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scadenze {
+    /// Silenzio massimo fra due file durante la camminata.
+    pub camminata: Duration,
+    /// Attesa massima per la lettura di un singolo brano.
+    pub brano: Duration,
+}
+
+impl Default for Scadenze {
+    fn default() -> Self {
+        Self {
+            camminata: SILENZIO_CAMMINATA,
+            brano: LETTURA_BRANO,
+        }
+    }
+}
+
 /// Traduce un errore di SQLite nel catalogo, tenendo il testo originale.
 pub(crate) fn db_error(detail: &str, err: &rusqlite::Error) -> AppError {
     AppError::new(ErrorCode::DbQueryFailed {
@@ -90,6 +198,19 @@ pub(crate) fn db_error(detail: &str, err: &rusqlite::Error) -> AppError {
 }
 
 /// L'ora attuale in millisecondi. Zero se l'orologio è dietro l'epoca.
+///
+/// # Perché ce n'è una sola per tutta la cassa
+///
+/// Perché ce n'erano tre — questa, `desiderati::adesso` e la sua gemella in
+/// `scrobble` — e le tre si comportavano diversamente su un caso solo: che i
+/// millisecondi dall'epoca non entrino in un `i64`. Le altre due rispondevano
+/// `i64::MAX`, questa risponde `0`, e resta la risposta di questa.
+///
+/// La differenza non è osservabile: `i64::MAX` millisecondi cadono nell'anno
+/// 292 milioni, mentre l'orologio di sistema più capiente su cui Aether gira —
+/// il `FILETIME` di Windows, un `u64` di centinaia di nanosecondi dal 1601 — si
+/// esaurisce prima dell'anno 60 000. Sul caso che invece capita davvero, un
+/// orologio regolato prima del 1970, tutte e tre dicevano già `0`.
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -450,14 +571,30 @@ fn update_track(
 /// propaga al telefono la cancellazione di trecento brani che nessuno ha chiesto
 /// di cancellare — e le lapidi, per come funzionano, impedirebbero pure di
 /// riaverli riattaccando il disco.
-fn remove_tracks(tx: &Transaction<'_>, ids: &[i64]) -> Result<usize, AppError> {
+///
+/// # Perché anche il percorso, e non il solo identificativo
+///
+/// Perché fra il momento in cui il piano ha deciso «questa riga va tolta» e il
+/// momento in cui la si toglie, la libreria è **stata di qualcun altro**: la
+/// scansione lascia il deposito fra una fase e l'altra apposta, e in quel mezzo
+/// una sincronizzazione o un'importazione possono aver cancellato quella riga e
+/// inserito qualcos'altro. SQLite riusa gli identificativi liberi: la riga 412
+/// che il piano voleva togliere può non essere più la riga 412 che c'è adesso.
+///
+/// Il percorso rende la cancellazione **una domanda sulla riga che si è vista**,
+/// non sul numero che aveva. Se non combacia più non si toglie niente, il
+/// conteggio lo dice, e la passata dopo — che guarda di nuovo il disco — decide
+/// da capo con i fatti aggiornati.
+///
+/// Le coppie arrivano da `ScanPlan::to_remove`, che porta già entrambi.
+fn remove_tracks(tx: &Transaction<'_>, righe: &[(i64, &str)]) -> Result<usize, AppError> {
     let mut statement = tx
-        .prepare_cached("DELETE FROM tracks WHERE id = ?1")
+        .prepare_cached("DELETE FROM tracks WHERE id = ?1 AND path = ?2")
         .map_err(|err| db_error("rimozione di un brano", &err))?;
     let mut removed = 0;
-    for id in ids {
+    for (id, path) in righe {
         removed += statement
-            .execute([id])
+            .execute(rusqlite::params![id, path])
             .map_err(|err| db_error("rimozione di un brano", &err))?;
     }
     Ok(removed)
@@ -682,15 +819,43 @@ pub struct Esplorazione {
     pub piano: ScanPlan,
     /// Le radici che non hanno risposto: nessun brano loro è stato giudicato.
     pub radici_saltate: Vec<String>,
+    /// Qualcuno ha chiesto di smettere mentre si camminava.
+    ///
+    /// Quando è `true` il piano è **vuoto**, non parziale, e va letto come «non
+    /// si è deciso niente». Un piano calcolato su mezza camminata sarebbe
+    /// peggio: le radici non ancora guardate non entrano fra quelle viste, e i
+    /// loro brani risulterebbero «fuori competenza» — un numero che chi guarda
+    /// la finestra leggerebbe come un fatto sul disco invece che come la
+    /// conseguenza di aver premuto Annulla.
+    pub fermata: bool,
 }
 
 /// Una scansione da eseguire.
-#[derive(Clone, Copy)]
+///
+/// # Perché niente è in prestito
+///
+/// `files` sta dietro un [`Arc`] e `covers` è posseduto, invece dei riferimenti
+/// che sarebbero bastati a leggerli. La ragione è la scadenza: quando un file su
+/// una share morta non si apre, il filo che ci sta dentro **non si può
+/// interrompere**, si abbandona — e un filo abbandonato sopravvive a chi l'ha
+/// lanciato. Tutto quel che gli si è dato in mano deve quindi essere `'static`,
+/// cioè posseduto, altrimenti non compila. Non è un dettaglio di firma: è la
+/// forma che la struttura prende per poter rinunciare ad aspettare.
+///
+/// Per la stessa ragione questa non è più una struttura `Copy`: un `Arc` e un
+/// [`CoverStore`] si clonano — e i cloni costano un contatore e un `PathBuf` —
+/// ma non si copiano da soli.
 pub struct Scan<'a> {
     /// Da dove arrivano i file: disco locale o Storage Access Framework.
-    pub files: &'a dyn MusicFiles,
+    pub files: Arc<dyn MusicFiles>,
     /// Dove finiscono le copertine.
-    pub covers: &'a CoverStore,
+    ///
+    /// Per valore, e non in prestito: è un `PathBuf` dietro un `Clone`, quindi
+    /// costa quanto una stringa, e il filo che legge un brano deve poterselo
+    /// portare via. Sul desktop questo è anche ciò che permette di prenderlo
+    /// **fuori** dal lucchetto della libreria, dove sta insieme alla
+    /// connessione pur non cambiando mai.
+    pub covers: CoverStore,
     /// Le cartelle da guardare.
     pub roots: &'a [String],
     /// Come si confrontano i percorsi su questo filesystem.
@@ -708,6 +873,35 @@ pub struct Scan<'a> {
     /// qui dentro: è la stessa cautela di `cancelled`, cioè «nel dubbio, non
     /// distruggere; la passata dopo ci ripensa».
     pub prudente: bool,
+    /// Quanto si è disposti ad aspettare il disco.
+    ///
+    /// [`Scadenze::default`] per il codice vero; numeri piccoli nelle prove, che
+    /// altrimenti dovrebbero aspettare quindici secondi per dimostrare che
+    /// qualcosa scade.
+    pub scadenze: Scadenze,
+    /// Qualcuno ha chiesto di smettere?
+    ///
+    /// Letta nelle due fasi lunghe: **durante la camminata**, dove
+    /// `on_progress` non viene chiamato affatto — non c'è ancora niente da
+    /// contare — e **fra un file e l'altro** durante la lettura. Senza la
+    /// prima, premere Annulla mentre si enumera un NAS non farebbe niente fino
+    /// al primo file letto, che potrebbe non arrivare mai; senza la seconda,
+    /// fermare la scansione dipenderebbe da cosa risponde il chiamante, e chi
+    /// non offre un Annulla — la scansione automatica, che passa un
+    /// `Continue` fisso — non riuscirebbe a fermarla nemmeno per chiudere il
+    /// programma.
+    ///
+    /// `on_progress` resta quel che è sempre stato: i numeri dell'avanzamento,
+    /// e la facoltà di dire «basta» a chi quei numeri li sta guardando. Le due
+    /// cose convivono perché rispondono a domande diverse, e in [`Scan::run_su`]
+    /// basta una delle due.
+    ///
+    /// `None` vuol dire «nessuno può fermarla», ed è la risposta giusta per un
+    /// esempio da riga di comando. Chi la offre all'utente passa la stessa
+    /// bandiera che legge anche il callback di avanzamento: due bandiere diverse
+    /// sarebbero un Annulla che ferma la camminata e non la lettura, o
+    /// viceversa.
+    pub fermati: Option<&'a dyn Fn() -> bool>,
 }
 
 impl std::fmt::Debug for Scan<'_> {
@@ -716,6 +910,7 @@ impl std::fmt::Debug for Scan<'_> {
             .field("roots", &self.roots)
             .field("rules", &self.rules)
             .field("prudente", &self.prudente)
+            .field("scadenze", &self.scadenze)
             .finish_non_exhaustive()
     }
 }
@@ -731,71 +926,351 @@ enum Destinazione {
     Sposta(i64),
 }
 
+/// Com'è andata la camminata su **una** radice.
+///
+/// I tre casi sono tre reazioni diverse, ed è per questo che sono un tipo e non
+/// un `Result<Camminata, _>`: visto si giudica, arenato si salta, fermato si
+/// smette del tutto.
+enum Passeggiata {
+    /// La camminata è finita e ha consegnato quel che ha trovato.
+    Vista {
+        /// I file consegnati.
+        file: Vec<DiscoveredFile>,
+        /// Nessun ramo perso: vedi [`crate::files::Camminata::completa`].
+        completa: bool,
+    },
+    /// La camminata non è finita: da troppo non arriva più niente.
+    ///
+    /// Non è «vuota» e non è «parziale», è **non tornata**. Su una condivisione
+    /// che non risponde è la forma che prende il guasto, perché il filesystem
+    /// non dà nessun errore: resta lì.
+    Arenata,
+    /// Qualcuno ha chiesto di smettere.
+    Fermata,
+}
+
+/// Quel che la camminata consegna, un pezzo per volta.
+enum Passo {
+    /// Un file.
+    Trovato(DiscoveredFile),
+    /// Non ce ne sono altri.
+    Fine {
+        /// Nessun ramo perso.
+        completa: bool,
+    },
+    /// La camminata è fallita.
+    ///
+    /// L'errore viaggia col passo e non lo legge nessuno, ed è una scelta: chi
+    /// consuma reagisce a qualunque guasto allo stesso modo — salta la radice —
+    /// e non ha dove scriverlo, perché [`ScanReport::unreadable`] è un elenco di
+    /// **file** e questo è un guasto che riguarda una cartella intera. Resta
+    /// attaccato al passo perché è la sola cosa che dica *perché* quella radice
+    /// è uscita dall'esito, e il giorno in cui la si vorrà mettere nel diario
+    /// dev'essere già lì invece che ricostruita da capo.
+    #[expect(
+        dead_code,
+        reason = "la causa se la porta appresso il passo che l'ha prodotta; chi salta la radice non ha dove scriverla"
+    )]
+    Caduta(AppError),
+}
+
+/// Cammina una radice sola, smettendo di aspettare se smette di arrivare roba.
+///
+/// La camminata gira su un filo suo e consegna un [`Passo`] per file; qui si
+/// consuma con un `recv_timeout` da un [`BATTITO`], e ogni file che arriva
+/// rimanda in avanti la scadenza. Quel che si misura è quindi il **silenzio**,
+/// non la durata: una libreria enorme su un disco sano non scade mai, una share
+/// morta scade sempre.
+///
+/// # Un guasto non abortisce le altre radici
+///
+/// Un [`Passo::Caduta`] — la camminata che restituisce un errore invece di
+/// finire — vale [`Passeggiata::Arenata`], cioè «di questa radice non si è
+/// visto niente», e la scansione prosegue con le altre.
+///
+/// È un **cambio deliberato**: prima l'errore risaliva con un `?` fino a far
+/// fallire l'intera scansione, e il risultato era che una cartella illeggibile
+/// sul NAS impediva di scansionare anche il disco interno. La stessa regola che
+/// vale per una radice spenta — «si salta quella, non si rinuncia a tutto» —
+/// non aveva motivo di non valere anche qui.
+fn cammina_una_radice(scan: &Scan<'_>, root: &str) -> Passeggiata {
+    let disco = Arc::clone(&scan.files);
+    let percorso = root.to_owned();
+    let Some(passi) = crate::scadenza::a_rate("camminata", move |manda| {
+        // La `send` che fallisce vuol dire che chi ascoltava se n'è andato:
+        // niente da consegnare e niente da dire, si smette.
+        let mut consegna = |file| {
+            if manda.send(Passo::Trovato(file)).is_ok() {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        };
+        let ultimo = match disco.walk_a_rate(&percorso, &mut consegna) {
+            Ok(completa) => Passo::Fine { completa },
+            Err(err) => Passo::Caduta(err),
+        };
+        let _ = manda.send(ultimo);
+    }) else {
+        // Il sistema non dà più fili: per chi chiama è la stessa cosa di una
+        // radice che non risponde, e la reazione giusta è la stessa.
+        return Passeggiata::Arenata;
+    };
+
+    let mut file = Vec::new();
+    let mut ultima_consegna = Instant::now();
+    // Il primo file ha diritto al doppio, e solo lui: il cronometro parte prima
+    // che il produttore abbia fatto la sua prima `read_dir`, quindi quell'attesa
+    // comprende l'apertura della radice — su una VPN lenta, un giro di rete che
+    // col silenzio fra due file non c'entra niente. Dal secondo in poi si misura
+    // quel che la scadenza vuole misurare, e vale il numero pieno.
+    let mut margine = scan.scadenze.camminata.saturating_mul(2);
+    loop {
+        if scan.fermato() {
+            return Passeggiata::Fermata;
+        }
+        match passi.recv_timeout(BATTITO) {
+            Ok(Passo::Trovato(trovato)) => {
+                file.push(trovato);
+                ultima_consegna = Instant::now();
+                margine = scan.scadenze.camminata;
+            }
+            Ok(Passo::Fine { completa }) => return Passeggiata::Vista { file, completa },
+            Ok(Passo::Caduta(_)) => return Passeggiata::Arenata,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if ultima_consegna.elapsed() >= margine {
+                    return Passeggiata::Arenata;
+                }
+            }
+            // Il filo è finito senza dire come: o è caduto, o non è riuscito a
+            // mandare l'ultimo passo. In nessuno dei due casi si sa di aver
+            // visto tutto, quindi vale come arenata.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Passeggiata::Arenata,
+        }
+    }
+}
+
+/// Cosa si è visto guardando il disco, e cosa no.
+#[derive(Debug, Default)]
+pub struct Ricognizione {
+    /// Tutti i file trovati, di tutte le radici che hanno risposto.
+    pub trovati: Vec<DiscoveredFile>,
+    /// Le radici su cui si è guardato davvero, e su cui quindi si può decidere.
+    ///
+    /// È l'elenco che va nel piano: una riga che non sta sotto nessuna di queste
+    /// è «fuori competenza», non «sparita».
+    pub viste: Vec<String>,
+    /// Le radici che non hanno risposto, o che si sono arenate a metà.
+    pub radici_saltate: Vec<String>,
+    /// Qualcuno ha chiesto di smettere prima della fine.
+    ///
+    /// Quando è `true` le altre tre vanno lette come parziali: la camminata si è
+    /// interrotta, e le radici che non si sono ancora guardate non sono né viste
+    /// né saltate.
+    pub fermata: bool,
+}
+
+/// Guarda tutte le radici, senza toccare il database.
+///
+/// È la prima metà di [`Scan::run_su`], estratta perché è anche la metà lunga:
+/// su una libreria di rete può durare minuti, e in quei minuti nessun lucchetto
+/// dev'essere in mano a nessuno.
+///
+/// # Le radici che non rispondono restano fuori
+///
+/// Una cartella su una condivisione spenta cammina «vuota»: la camminata non
+/// fallisce, restituisce zero file. Passata così al dominio, quella radice
+/// risulta **guardata e trovata deserta**, e ogni brano che ci stava sotto
+/// diventa da cancellare, con dentro voti, preferiti e cronologia.
+///
+/// La correzione non tocca il dominio: le radici morte semplicemente non entrano
+/// in [`Ricognizione::viste`]. Il meccanismo che serve c'è già — una riga che non
+/// sta sotto nessuna radice sorvegliata è `untouched`, cioè «fuori competenza» —
+/// ed è lo stesso che impedisce a una scansione della sola cartella dei download
+/// di svuotare il resto della libreria.
+pub fn cammina(scan: &Scan<'_>) -> Ricognizione {
+    let mut esito = Ricognizione::default();
+    for root in scan.roots {
+        if scan.fermato() {
+            esito.fermata = true;
+            return esito;
+        }
+        if !scan.files.radice_raggiungibile(root) {
+            esito.radici_saltate.push(root.clone());
+            continue;
+        }
+        match cammina_una_radice(scan, root) {
+            Passeggiata::Fermata => {
+                esito.fermata = true;
+                return esito;
+            }
+            // Saltata **senza risondare**, e la differenza conta. Il gate qui
+            // sotto esiste perché una camminata vuota o monca può essere una
+            // share morta, e la sonda lo dice; una camminata arenata invece è
+            // già la prova, e la sonda a quel punto è una domanda a cui il
+            // sistema risponde male: la cartella si apre — dalla cache, o
+            // perché è solo il contenuto a non arrivare — e il «sì» farebbe
+            // passare per completo un elenco che non è nemmeno finito.
+            Passeggiata::Arenata => {
+                esito.radici_saltate.push(root.clone());
+                continue;
+            }
+            Passeggiata::Vista { file, completa } => {
+                // La rete può cadere **fra** la sonda e la camminata, e in quel
+                // caso la camminata non lo dice da sé: torna vuota, o torna
+                // monca. Le due si trattano uguali, e si risonda: se adesso la
+                // radice non risponde più, quel vuoto non era un vuoto e quella
+                // metà non era la libreria.
+                //
+                // Il caso monco è il più insidioso dei due, perché ha l'aria di
+                // essere andato bene: su una libreria grande la share fa in
+                // tempo a rispondere per i primi mille file e a morire sugli
+                // altri centomila, e quei centomila — senza questo controllo —
+                // diventano «spariti», cioè da cancellare, con dentro voti,
+                // preferiti e cronologia.
+                //
+                // La sonda resta il giudice, e non `completa` da sé: una
+                // sottocartella a permessi negati sul disco di casa abbassa
+                // `completa` esattamente come una share morta, ma risponde alla
+                // sonda — e lì la scansione deve proseguire come ha sempre
+                // fatto.
+                if (!completa || file.is_empty()) && !scan.files.radice_raggiungibile(root) {
+                    esito.radici_saltate.push(root.clone());
+                    continue;
+                }
+                esito.trovati.extend(file);
+                esito.viste.push(root.clone());
+            }
+        }
+    }
+    esito
+}
+
 /// Calcola il piano senza toccare niente.
 ///
 /// È la chiamata che precede [`Scan::run`] quando si vuole mostrare all'utente
 /// cosa sta per succedere — «sto per togliere 340 brani» — e lasciargli dire di
 /// no prima che succeda.
 ///
-/// # Le radici che non rispondono restano fuori dal piano
+/// La camminata è la stessa di [`cammina`], scadenze comprese: le radici che non
+/// rispondono restano fuori dal piano, quelle che si arenano pure. Se qualcuno
+/// ha chiesto di smettere, il piano che torna è **vuoto** e
+/// [`Esplorazione::fermata`] lo dichiara.
 ///
-/// Una cartella su una condivisione spenta cammina «vuota»: `walk` non fallisce,
-/// restituisce zero file. Passata così al dominio, quella radice risulta
-/// **guardata e trovata deserta**, e ogni brano che ci stava sotto diventa
-/// `Disappeared` — cioè da cancellare, con dentro voti, preferiti e cronologia.
-///
-/// La correzione non tocca il dominio: le radici morte semplicemente non entrano
-/// in [`ScanInput::roots`]. Il meccanismo che serve c'è già — una riga che non
-/// sta sotto nessuna radice sorvegliata è `untouched`, cioè «fuori competenza» —
-/// ed è lo stesso che impedisce a una scansione della sola cartella dei download
-/// di svuotare il resto della libreria.
+/// Dalla finestra non si passa di qui ma da [`Scan::run_su`], che il piano se lo
+/// calcola da sé: questa prende una `Connection` in prestito per tutta la
+/// durata, camminata inclusa, ed è esattamente la cosa che sul desktop non si
+/// può fare.
 pub fn plan(scan: &Scan<'_>, connection: &Connection) -> Result<Esplorazione, AppError> {
-    let mut found = Vec::new();
-    let mut viste: Vec<String> = Vec::with_capacity(scan.roots.len());
-    let mut radici_saltate = Vec::new();
-    for root in scan.roots {
-        if !scan.files.radice_raggiungibile(root) {
-            radici_saltate.push(root.clone());
-            continue;
-        }
-        let sotto = scan.files.walk(root)?;
-        // La rete può cadere **fra** la sonda e la camminata, e in quel caso la
-        // camminata non lo dice da sé: torna vuota, o torna monca. Le due si
-        // trattano uguali, e si risonda: se adesso la radice non risponde più,
-        // quel vuoto non era un vuoto e quella metà non era la libreria.
-        //
-        // Il caso monco è il più insidioso dei due, perché ha l'aria di essere
-        // andato bene: su una libreria grande la share fa in tempo a rispondere
-        // per i primi mille file e a morire sugli altri centomila, e quei
-        // centomila — senza questo controllo — diventano «spariti», cioè da
-        // cancellare, con dentro voti, preferiti e cronologia.
-        //
-        // La sonda resta il giudice, e non `completa` da sé: una sottocartella a
-        // permessi negati sul disco di casa abbassa `completa` esattamente come
-        // una share morta, ma risponde alla sonda — e lì la scansione deve
-        // proseguire come ha sempre fatto.
-        if (!sotto.completa || sotto.file.is_empty()) && !scan.files.radice_raggiungibile(root) {
-            radici_saltate.push(root.clone());
-            continue;
-        }
-        found.extend(sotto.file);
-        viste.push(root.clone());
+    let ricognizione = cammina(scan);
+    if ricognizione.fermata {
+        return Ok(Esplorazione {
+            piano: ScanPlan::default(),
+            radici_saltate: ricognizione.radici_saltate,
+            fermata: true,
+        });
     }
     let known = known_tracks(connection)?;
     Ok(Esplorazione {
         piano: plan_scan(
             ScanInput {
-                roots: &viste,
-                found: &found,
+                roots: &ricognizione.viste,
+                found: &ricognizione.trovati,
                 known: &known,
             },
             scan.rules,
         ),
-        radici_saltate,
+        radici_saltate: ricognizione.radici_saltate,
+        fermata: false,
     })
 }
 
+/// Chi custodisce la connessione, e la presta una fase per volta.
+///
+/// # Perché un tratto e non una `&mut Connection`
+///
+/// Perché sul desktop la connessione non è di nessuno: sta dietro un mutex che
+/// duecento chiamanti si contendono, e chi lo tiene ferma la finestra, l'audio e
+/// la chiusura dell'applicazione. Una scansione che ricevesse `&mut Connection`
+/// obbligherebbe chi la chiama a prendere quel lucchetto **prima** e a
+/// restituirlo **dopo**, cioè a tenerlo per tutta la camminata e tutta la
+/// lettura dei file: i minuti in cui una share lenta fa aspettare.
+///
+/// Con un deposito la scansione chiede la connessione quando le serve
+/// davvero — cinque o sei volte in tutto, ognuna per il tempo di una
+/// transazione — e fra una richiesta e l'altra il lucchetto è di chi lo vuole.
+///
+/// # Perché un metodo generico e non una chiusura
+///
+/// Perché la connessione non può uscire dal metodo: chi implementa questo tratto
+/// sul desktop tiene una guardia di mutex viva per la durata della chiamata, e
+/// un `fn connessione(&mut self) -> &mut Connection` non avrebbe modo di dire
+/// quando quella guardia si può lasciare andare. Il prezzo è che il tratto non è
+/// oggetto-sicuro — niente `dyn Deposito` — e per questo [`Scan::run_su`] è
+/// generica.
+///
+/// # Il contratto
+///
+/// - **Può aspettare.** Una chiamata a [`Self::con_connessione`] può bloccare
+///   quanto serve; è chi la chiama a fare in modo che non ce ne siano dentro le
+///   fasi lunghe.
+/// - **Fra due chiamate il database cambia.** Il deposito non promette nessuna
+///   continuità: un'altra scrittura può essere passata in mezzo. Vedi
+///   [`Scan::run_su`] per cosa comporta.
+/// - **L'esclusione di una seconda scansione non spetta a qui.** Il nucleo non
+///   sa quante scansioni ci sono: prima l'esclusione era un effetto collaterale
+///   del lucchetto tenuto tutto il tempo, e togliendo quello va rimessa dove
+///   deve stare, cioè in chi decide di avviarne una.
+pub trait Deposito {
+    /// Presta la connessione per il tempo di `azione`.
+    fn con_connessione<T, F>(&mut self, azione: F) -> Result<T, AppError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, AppError>;
+}
+
+/// Il deposito più semplice che ci sia: la connessione è già in mano.
+///
+/// È il caso della riga di comando e delle prove, dove nessuno contende niente.
+/// Sul desktop l'implementazione vera avvolge il mutex della libreria.
+impl Deposito for Connection {
+    fn con_connessione<T, F>(&mut self, azione: F) -> Result<T, AppError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, AppError>,
+    {
+        azione(self)
+    }
+}
+
+/// Un file che non è arrivato in tempo.
+///
+/// `FsNetworkUnavailable` e non un codice suo: per chi legge l'esito è la stessa
+/// cosa — «questo file non si è potuto leggere, e la colpa non è del file» — e
+/// soprattutto è la stessa cosa per [`Scan::file_illeggibile`], che su questo
+/// codice fa la sonda e decide se abbandonare la radice. Un codice nuovo
+/// vorrebbe dire ripetere lì la stessa domanda con un altro nome.
+///
+/// La causa dice quanto si è aspettato, con lo stesso lessico con cui il motore
+/// audio racconta un'apertura scaduta: chi legge il diario incontra la stessa
+/// frase per lo stesso guasto.
+fn scaduto(path: &str, scadenza: Duration) -> AppError {
+    AppError::new(ErrorCode::FsNetworkUnavailable {
+        path: Some(path.to_owned()),
+    })
+    .with_cause(format!(
+        "la lettura non è finita entro {} secondi",
+        scadenza.as_secs()
+    ))
+}
+
 impl Scan<'_> {
+    /// Qualcuno ha chiesto di smettere?
+    ///
+    /// `false` quando nessuno può chiederlo, che è il caso di chi non offre un
+    /// Annulla.
+    fn fermato(&self) -> bool {
+        self.fermati.is_some_and(|chiedi| chiedi())
+    }
+
     /// La radice sorvegliata sotto cui sta questo file, se ce n'è una.
     ///
     /// Serve a due domande sole — «questa radice l'ho già dichiarata morta?» e
@@ -815,8 +1290,17 @@ impl Scan<'_> {
     /// La distinzione costa una sonda — una sola, la prima volta che una radice
     /// dà guai — e vale l'intera scansione: un guasto di rete non è un file
     /// illeggibile da elencare a schermo, è una cartella da smettere di
-    /// interrogare. Continuare significherebbe un timeout di sistema per ogni
-    /// file rimasto, e un elenco di «illeggibili» lungo quanto la libreria.
+    /// interrogare. Continuare significherebbe una scadenza per ogni file
+    /// rimasto, e un elenco di «illeggibili» lungo quanto la libreria.
+    ///
+    /// Ci passa anche il file che non è arrivato **in tempo**: una lettura
+    /// scaduta è indistinguibile da un guasto di rete finché non si chiede alla
+    /// radice come sta, ed è esattamente la domanda che si fa qui.
+    ///
+    /// Con una risposta sola, però, non si conclude tutto: una radice che alla
+    /// sonda risponde e alle letture no resta qui un file illeggibile per volta.
+    /// A contare quante volte di fila accade — e a smettere alla terza — è
+    /// [`Scan::run_su`], che ha il conto sott'occhio; vedi [`SCADENZE_DI_FILA`].
     fn file_illeggibile(
         &self,
         file: &DiscoveredFile,
@@ -840,62 +1324,129 @@ impl Scan<'_> {
         });
     }
 
-    /// Esegue la scansione: cammina, decide, legge, scrive, ricostruisce.
+    /// Esegue la scansione chiedendo la connessione una fase per volta.
     ///
     /// `on_progress` riceve `(fatti, totale)` sui soli file da leggere, che sono
     /// la parte lenta. Rimozioni e aggregati non entrano nel conteggio perché
     /// non hanno una durata percepibile.
     ///
+    /// # Le fasi, e quali non toccano il deposito
+    ///
+    /// I numeri sono quelli che ritrovi nei commenti del corpo.
+    ///
+    /// 1. **La camminata.** Nessuna connessione in mano: è la fase che su una
+    ///    share lenta dura minuti. Chi si ferma qui non ha deciso niente, e
+    ///    infatti non scrive niente — nemmeno una presa.
+    /// 2. **Il piano.** Una presa per leggere le righe note, poi una funzione
+    ///    pura del dominio che decide.
+    /// 3. **Le righe doppie e le sparizioni in sospeso.** Una presa sola.
+    /// 4. **La lettura dei file.** Di nuovo niente in mano, e ogni file con una
+    ///    scadenza addosso: è l'altra fase lunga.
+    /// 5. **La scrittura di ogni lotto.** Una presa per lotto, una transazione
+    ///    dentro.
+    /// 6. **Le rimozioni rimaste.** Una presa.
+    /// 7. **Gli aggregati.** Una presa.
+    ///
+    /// # Cosa può cambiare sotto i piedi
+    ///
+    /// Lasciando il deposito fra una fase e l'altra si accetta che il database
+    /// cambi in mezzo. Le conseguenze sono quattro, e sono tutte trattate:
+    ///
+    /// - **Gli identificativi si riusano.** SQLite riassegna i numeri liberi:
+    ///   la riga 412 che il piano voleva togliere può essere stata cancellata e
+    ///   rimpiazzata da un'altra. Per questo si cancella per identificativo
+    ///   **e** percorso — vedi `remove_tracks`.
+    /// - **Una riga può essere sparita.** Non è un errore: `track_keys_of` la
+    ///   salta, una cancellazione che non trova niente conta zero, e la passata
+    ///   dopo decide da capo.
+    /// - **`tracks.path` è UNIQUE.** Se un'altra scansione stesse inserendo gli
+    ///   stessi file, un inserimento potrebbe fallire. È il motivo per cui
+    ///   l'esclusione di una seconda scansione spetta a chi le avvia: qui non
+    ///   c'è più il lucchetto tenuto tutto il tempo a garantirla per sbaglio.
+    /// - **Le copertine no.** Lo store è indirizzato per contenuto e si scrive
+    ///   in modo atomico: due scansioni che salvano la stessa immagine scrivono
+    ///   lo stesso file, e `INSERT OR IGNORE` fa il resto.
+    ///
     /// # Fermarsi
     ///
-    /// `on_progress` restituisce un [`ControlFlow`]: chi la chiama può dire di
-    /// smettere. Non è un annullamento nel senso di «disfare» — quel che è già
-    /// scritto resta — ma nel senso di «basta così»: la scansione si ferma alla
-    /// fine del lotto in corso, e la passata dopo trova una libreria giusta e
-    /// incompleta che finisce da sé.
+    /// Durante la camminata risponde [`Scan::fermati`]: non si è ancora deciso
+    /// niente, quindi non si scrive niente e l'esito è un `cancelled` con il
+    /// piano vuoto.
     ///
-    /// È il contrario di come si annulla di solito, e il motivo sta nella forma
-    /// della scansione: ogni lotto sta nella sua transazione, apposta perché
+    /// Durante la lettura rispondono in due, e basta uno: `on_progress` che
+    /// restituisce [`ControlFlow::Break`], o la stessa [`Scan::fermati`]. La
+    /// scansione si ferma allora **alla fine del file in corso**: il lotto
+    /// chiude la sua transazione con le righe che ha già letto, e lì si
+    /// smette. Non alla fine del lotto — su una share dove ogni apertura costa
+    /// mezzo minuto, i quattrocentonovantanove file rimasti sarebbero ore fra
+    /// l'Annulla e il momento in cui succede qualcosa. Quel che è stato scritto
+    /// resta.
+    ///
+    /// Non è un annullamento nel senso di «disfare» — è «basta così»: la passata
+    /// dopo trova una libreria giusta e incompleta e la finisce da sé. È il
+    /// contrario di come si annulla di solito, e il motivo sta nella forma della
+    /// scansione: ogni lotto sta nella sua transazione, apposta perché
     /// un'interruzione qualunque — un crollo, una chiusura, una macchina che si
     /// spegne — non lasci niente a metà. Un annullamento è solo l'interruzione
     /// che qualcuno ha chiesto, e trattarla diversamente vorrebbe dire scrivere
     /// un secondo percorso per lo stesso caso.
-    pub fn run(
+    pub fn run_su<D: Deposito>(
         &self,
-        connection: &mut Connection,
+        deposito: &mut D,
         mut on_progress: impl FnMut(usize, usize) -> ControlFlow<()>,
     ) -> Result<ScanReport, AppError> {
-        let started = std::time::Instant::now();
-        let esplorazione = plan(self, connection)?;
+        let started = Instant::now();
+
+        // ── 1. il disco, senza niente in mano ──
+        let ricognizione = cammina(self);
+
+        // ── 1 bis. chi si è fermato camminando non ha deciso niente ──
+        //
+        // E quindi non scrive niente: nessuna presa del deposito, nessuna
+        // transazione. Il piano resta vuoto perché un piano calcolato su mezza
+        // camminata direbbe «spariti» dei brani che stanno sotto radici che non
+        // si è fatto in tempo a guardare.
+        if ricognizione.fermata {
+            return Ok(ScanReport {
+                cancelled: true,
+                radici_saltate: ricognizione.radici_saltate,
+                elapsed_ms: started.elapsed().as_millis(),
+                ..ScanReport::default()
+            });
+        }
+
+        // ── 2. le righe note, e il piano, che è una funzione pura ──
+        let known = deposito.con_connessione(|connection| known_tracks(connection))?;
         let mut report = ScanReport {
-            plan: esplorazione.piano,
-            radici_saltate: esplorazione.radici_saltate,
+            plan: plan_scan(
+                ScanInput {
+                    roots: &ricognizione.viste,
+                    found: &ricognizione.trovati,
+                    known: &known,
+                },
+                self.rules,
+            ),
+            radici_saltate: ricognizione.radici_saltate,
             ..ScanReport::default()
         };
 
-        // ── le righe doppie se ne vanno subito ──
+        // ── 3. una presa sola: le doppie se ne vanno, le sparizioni si tengono ──
+        //
         // Due righe che nominano lo stesso file: quella che sopravvive sta per
         // ricevere il percorso come la camminata l'ha scritto, e `tracks.path` è
         // UNIQUE — se la doppia fosse ancora lì, l'aggiornamento fallirebbe.
         // Non sono candidate a essere spostamenti: il loro file non si è mosso,
         // è la riga a essere di troppo.
-        let doppie: Vec<i64> = report
+        //
+        // Le sparizioni invece restano in sospeso: qualcuna è uno spostamento, e
+        // lo si scopre solo leggendo i file nuovi.
+        let doppie: Vec<(i64, String)> = report
             .plan
             .to_remove
             .iter()
             .filter(|r| r.reason == RemoveReason::DuplicateRow)
-            .map(|r| r.track.id)
+            .map(|r| (r.track.id, r.track.path.clone()))
             .collect();
-        if !doppie.is_empty() {
-            let tx = connection
-                .transaction()
-                .map_err(|err| db_error("apertura della transazione", &err))?;
-            report.removed += remove_tracks(&tx, &doppie)?;
-            tx.commit()
-                .map_err(|err| db_error("chiusura della transazione", &err))?;
-        }
-
-        // ── le sparizioni restano in sospeso: qualcuna è uno spostamento ──
         let spariti: Vec<i64> = report
             .plan
             .to_remove
@@ -903,7 +1454,24 @@ impl Scan<'_> {
             .filter(|r| r.reason == RemoveReason::Disappeared)
             .map(|r| r.track.id)
             .collect();
-        let mut sospese = track_keys_of(connection, &spariti)?;
+        let (tolte, mut sospese) = deposito.con_connessione(|connection| {
+            let mut tolte = 0;
+            if !doppie.is_empty() {
+                let tx = connection
+                    .transaction()
+                    .map_err(|err| db_error("apertura della transazione", &err))?;
+                let elenco: Vec<(i64, &str)> = doppie
+                    .iter()
+                    .map(|(id, path)| (*id, path.as_str()))
+                    .collect();
+                tolte = remove_tracks(&tx, &elenco)?;
+                tx.commit()
+                    .map_err(|err| db_error("chiusura della transazione", &err))?;
+            }
+            let sospese = track_keys_of(connection, &spariti)?;
+            Ok((tolte, sospese))
+        })?;
+        report.removed += tolte;
 
         // ── quel che va letto, in un elenco solo ──
         // Inserimenti e aggiornamenti differiscono solo per la presenza di una
@@ -925,24 +1493,59 @@ impl Scan<'_> {
         let mut fatti = 0;
         // Le radici che hanno smesso di rispondere **mentre** si leggeva.
         //
-        // La sonda di `plan` guarda le radici prima di cominciare; questa è la
-        // rete che se ne va dopo, a lettura iniziata. Senza, una share caduta a
-        // metà costava un timeout di sistema per ogni file rimasto — e i suoi
+        // La sonda della camminata guarda le radici prima di cominciare; questa
+        // è la rete che se ne va dopo, a lettura iniziata. Senza, una share
+        // caduta a metà costava una scadenza per ogni file rimasto — e i suoi
         // brani, non riletti, restavano candidati alla rimozione.
         let mut abbandonate: Vec<String> = Vec::new();
+        // Quante letture di fila sono scadute su ciascuna radice.
+        //
+        // Solo le scadenze: un errore vero — un file rotto, un permesso negato
+        // — non dice niente sulla salute della condivisione, e non conta né in
+        // un senso né nell'altro. Una lettura riuscita azzera il conto della
+        // sua radice, perché quel che si sta cercando è una **serie**: alla
+        // [`SCADENZE_DI_FILA`]-esima la radice si abbandona anche se alla sonda
+        // risponde ancora. I file che hanno pagato la scadenza restano
+        // nell'elenco degli illeggibili, detti per nome: sono stati tentati.
+        let mut scadenze_di_fila: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        // ── 4. la lettura, di nuovo senza niente in mano ──
+        //
+        // Un filo solo per tutte le letture, riusato finché uno non gli si
+        // appende addosso: centomila file non sono centomila fili.
+        let mut operaio = crate::scadenza::Operaio::nuovo("lettura");
         for lotto in da_leggere.chunks(LOTTO) {
             let mut righe: Vec<(TrackRow, Destinazione)> = Vec::with_capacity(lotto.len());
             for (file, destinazione) in lotto {
                 // Su una radice già dichiarata morta non si tenta nemmeno: ogni
-                // apertura su una share che non risponde costa il timeout di
-                // sistema, e su una libreria vera i file rimasti sono decine di
+                // apertura su una share che non risponde costa la scadenza
+                // intera, e su una libreria vera i file rimasti sono decine di
                 // migliaia. Il primo file paga l'attesa e la scopre per tutti.
                 let su_radice_morta = self
                     .radice_di(&file.path)
                     .is_some_and(|root| abbandonate.iter().any(|a| a == root));
                 if !su_radice_morta {
-                    match read_track(self.files, self.covers, file) {
-                        Ok(mut row) => {
+                    // Il deposito non è in mano a nessuno qui dentro, ed è il
+                    // punto di tutto: è la fase che su una share lenta dura, e
+                    // se la connessione fosse presa la finestra aspetterebbe.
+                    //
+                    // Tutto quel che serve al filo se lo porta via: l'`Arc` dei
+                    // file, la cartella delle copertine, il file da leggere. Un
+                    // filo che si appende sopravvive a questa iterazione, e non
+                    // può tenere in mano niente che appartenga a `self`.
+                    let disco = Arc::clone(&self.files);
+                    let copertine = self.covers.clone();
+                    let quale = file.clone();
+                    let letto = operaio.esegui(self.scadenze.brano, move || {
+                        read_track(disco.as_ref(), &copertine, &quale)
+                    });
+                    match letto {
+                        Some(Ok(mut row)) => {
+                            // La radice ha risposto: la serie di scadenze, se
+                            // ce n'era una cominciata, non è una serie.
+                            if let Some(root) = self.radice_di(&file.path) {
+                                scadenze_di_fila.remove(root);
+                            }
                             // Si prende invece di clonarla: la riga sta per essere
                             // consegnata al lotto, e da lì in poi la copertina persa
                             // non serve più a nessuno.
@@ -961,21 +1564,59 @@ impl Scan<'_> {
                             }
                             righe.push((row, *destinazione));
                         }
-                        Err(error) => self.file_illeggibile(
+                        Some(Err(error)) => self.file_illeggibile(
                             file,
                             error,
                             &mut abbandonate,
                             &mut report.unreadable,
                         ),
+                        // Non è tornato in tempo: il filo è ancora dentro la
+                        // `open`, e da qui in poi non lo si aspetta più. Vale un
+                        // guasto di rete, e come tale fa scattare la sonda della
+                        // radice — perché la domanda è la stessa: è lento questo
+                        // file, o è morta la cartella?
+                        None => {
+                            self.file_illeggibile(
+                                file,
+                                scaduto(&file.path, self.scadenze.brano),
+                                &mut abbandonate,
+                                &mut report.unreadable,
+                            );
+                            // E poi la seconda domanda, quella che la sonda non
+                            // fa: non «la radice risponde?» ma «la radice serve
+                            // a qualcosa?». Alla terza scadenza di fila la
+                            // risposta è no, e insistere costerebbe una
+                            // scadenza e una sonda per ognuno dei file rimasti.
+                            if let Some(root) = self.radice_di(&file.path) {
+                                let di_fila = scadenze_di_fila.entry(root).or_insert(0);
+                                *di_fila += 1;
+                                if *di_fila >= SCADENZE_DI_FILA
+                                    && !abbandonate.iter().any(|a| a == root)
+                                {
+                                    abbandonate.push(root.to_owned());
+                                }
+                            }
+                        }
                     }
                 }
                 fatti += 1;
-                if on_progress(fatti, totale).is_break() {
+                // Due modi di sentirsi dire «basta», e ne basta uno. Il callback
+                // parla per chi sta guardando la barra; la bandiera parla per
+                // tutti gli altri — l'uscita del programma, un chiamante che di
+                // avanzamento non sa che farsene e passa un `Continue` fisso.
+                if on_progress(fatti, totale).is_break() || self.fermato() {
                     report.cancelled = true;
+                    // E si smette **qui**, non alla fine del lotto: le righe già
+                    // lette scendono nella transazione qui sotto, e i file
+                    // rimasti del lotto — fino a cinquecento, a mezzo minuto
+                    // l'uno su una share stanca — non si leggono affatto.
+                    break;
                 }
             }
 
             // ── quali di questi file nuovi sono righe che si sono spostate ──
+            //
+            // Decisione pura: nessun disco, nessun database.
             if !sospese.is_empty() {
                 let posizioni: Vec<usize> = righe
                     .iter()
@@ -1010,28 +1651,38 @@ impl Scan<'_> {
                 sospese.retain(|(track_id, _)| !appaiate.contains(track_id));
             }
 
+            // ── 5. e solo adesso si scrive: una presa, una transazione ──
             let now = now_ms();
-            let tx = connection
-                .transaction()
-                .map_err(|err| db_error("apertura della transazione", &err))?;
-            for (row, destinazione) in &righe {
-                match *destinazione {
-                    Destinazione::Nuova => {
-                        insert_track(&tx, row, now)?;
-                        report.inserted += 1;
-                    }
-                    Destinazione::Aggiorna(id) => {
-                        update_track(&tx, id, row, now)?;
-                        report.updated += 1;
-                    }
-                    Destinazione::Sposta(id) => {
-                        update_track(&tx, id, row, now)?;
-                        report.moved += 1;
+            let scritte = deposito.con_connessione(|connection| {
+                let tx = connection
+                    .transaction()
+                    .map_err(|err| db_error("apertura della transazione", &err))?;
+                let mut inserite = 0_usize;
+                let mut aggiornate = 0_usize;
+                let mut spostate = 0_usize;
+                for (row, destinazione) in &righe {
+                    match *destinazione {
+                        Destinazione::Nuova => {
+                            insert_track(&tx, row, now)?;
+                            inserite += 1;
+                        }
+                        Destinazione::Aggiorna(id) => {
+                            update_track(&tx, id, row, now)?;
+                            aggiornate += 1;
+                        }
+                        Destinazione::Sposta(id) => {
+                            update_track(&tx, id, row, now)?;
+                            spostate += 1;
+                        }
                     }
                 }
-            }
-            tx.commit()
-                .map_err(|err| db_error("chiusura della transazione", &err))?;
+                tx.commit()
+                    .map_err(|err| db_error("chiusura della transazione", &err))?;
+                Ok((inserite, aggiornate, spostate))
+            })?;
+            report.inserted += scritte.0;
+            report.updated += scritte.1;
+            report.moved += scritte.2;
 
             // Il lotto è chiuso e scritto: è l'unico punto in cui fermarsi non
             // lascia niente a metà.
@@ -1044,7 +1695,7 @@ impl Scan<'_> {
         //
         // I loro brani non hanno avuto la loro occasione: non sono stati riletti
         // perché la share non risponde più, non perché non ci siano. Toglierli
-        // sarebbe la stessa cancellazione che la sonda di `plan` impedisce
+        // sarebbe la stessa cancellazione che la sonda della camminata impedisce
         // all'inizio della passata, spostata di qualche minuto più in là — e a
         // quel punto costerebbe di più, perché una scansione arrivata a metà ha
         // già scritto tutto il resto.
@@ -1072,7 +1723,7 @@ impl Scan<'_> {
             }
         }
 
-        // ── le sparizioni che nessun file nuovo ha reclamato ──
+        // ── 6. le sparizioni che nessun file nuovo ha reclamato ──
         //
         // **Saltate** se ci si è fermati a metà, ed è la parte che rende
         // l'annullamento sicuro invece che distruttivo. Queste righe sono brani
@@ -1110,26 +1761,64 @@ impl Scan<'_> {
             if strage {
                 report.rimozioni_rinviate = sospese.len();
             } else {
-                let ids: Vec<i64> = sospese.iter().map(|(id, _)| *id).collect();
-                let tx = connection
-                    .transaction()
-                    .map_err(|err| db_error("apertura della transazione", &err))?;
-                report.removed += remove_tracks(&tx, &ids)?;
-                tx.commit()
-                    .map_err(|err| db_error("chiusura della transazione", &err))?;
+                // Il percorso viene dal piano, cioè da com'era la riga quando la
+                // si è giudicata: se nel frattempo qualcuno l'ha cambiata, la
+                // cancellazione non la riconosce e non la tocca.
+                let elenco: Vec<(i64, String)> = sospese
+                    .iter()
+                    .filter_map(|(id, _)| {
+                        report
+                            .plan
+                            .to_remove
+                            .iter()
+                            .find(|r| r.track.id == *id)
+                            .map(|r| (*id, r.track.path.clone()))
+                    })
+                    .collect();
+                let tolte = deposito.con_connessione(|connection| {
+                    let tx = connection
+                        .transaction()
+                        .map_err(|err| db_error("apertura della transazione", &err))?;
+                    let coppie: Vec<(i64, &str)> = elenco
+                        .iter()
+                        .map(|(id, path)| (*id, path.as_str()))
+                        .collect();
+                    let tolte = remove_tracks(&tx, &coppie)?;
+                    tx.commit()
+                        .map_err(|err| db_error("chiusura della transazione", &err))?;
+                    Ok(tolte)
+                })?;
+                report.removed += tolte;
             }
         }
 
-        // ── gli aggregati, quando i brani sono tutti al loro posto ──
-        let tx = connection
-            .transaction()
-            .map_err(|err| db_error("apertura della transazione", &err))?;
-        report.aggregates = rebuild_aggregates(&tx)?;
-        tx.commit()
-            .map_err(|err| db_error("chiusura della transazione", &err))?;
+        // ── 7. gli aggregati, quando i brani sono tutti al loro posto ──
+        report.aggregates = deposito.con_connessione(|connection| {
+            let tx = connection
+                .transaction()
+                .map_err(|err| db_error("apertura della transazione", &err))?;
+            let aggregati = rebuild_aggregates(&tx)?;
+            tx.commit()
+                .map_err(|err| db_error("chiusura della transazione", &err))?;
+            Ok(aggregati)
+        })?;
 
         report.elapsed_ms = started.elapsed().as_millis();
         Ok(report)
+    }
+
+    /// Esegue la scansione su una connessione che si ha già in mano.
+    ///
+    /// La forma comoda per chi la connessione ce l'ha per sé — la riga di
+    /// comando, le prove, il ponte Android. Sul desktop non si passa di qui:
+    /// prendere il lucchetto della libreria prima di chiamare e restituirlo dopo
+    /// è esattamente ciò che [`Scan::run_su`] esiste per non fare.
+    pub fn run(
+        &self,
+        connection: &mut Connection,
+        on_progress: impl FnMut(usize, usize) -> ControlFlow<()>,
+    ) -> Result<ScanReport, AppError> {
+        self.run_su(connection, on_progress)
     }
 }
 
@@ -1932,11 +2621,13 @@ mod tests {
         fn scansiona(&mut self) -> ScanReport {
             let roots = vec![self.root()];
             let scan = Scan {
-                files: &LocalFiles,
-                covers: &self.store,
+                files: Arc::new(LocalFiles),
+                covers: self.store.clone(),
                 roots: &roots,
                 rules: PathRules::for_current_platform(),
                 prudente: false,
+                scadenze: Scadenze::default(),
+                fermati: None,
             };
             scan.run(&mut self.connection, |_, _| ControlFlow::Continue(()))
                 .expect("scansione")
@@ -1946,11 +2637,13 @@ mod tests {
         fn scansiona_e_ferma(&mut self, quanti: usize) -> ScanReport {
             let roots = vec![self.root()];
             let scan = Scan {
-                files: &LocalFiles,
-                covers: &self.store,
+                files: Arc::new(LocalFiles),
+                covers: self.store.clone(),
                 roots: &roots,
                 rules: PathRules::for_current_platform(),
                 prudente: false,
+                scadenze: Scadenze::default(),
+                fermati: None,
             };
             scan.run(&mut self.connection, |fatti, _| {
                 if fatti >= quanti {
@@ -2816,7 +3509,9 @@ mod tests {
         /// Quante volte è stato chiesto di aprire un file.
         ///
         /// È il numero che dice se la scansione ha smesso di insistere: su una
-        /// share vera ogni tentativo in più costa il timeout di sistema.
+        /// share vera ogni tentativo in più costa una scadenza intera, e le
+        /// scadenze non si sommano su un filo solo — si sommano in fili
+        /// abbandonati, uno per file.
         aperture: std::sync::atomic::AtomicUsize,
         /// Radici che rispondono ma di cui si vede solo un pezzo.
         ///
@@ -2824,6 +3519,32 @@ mod tests {
         /// che non rispondono più e prosegue in silenzio, quindi torna un elenco
         /// che sembra buono e non lo è.
         monche: std::collections::HashSet<String>,
+        /// Radici la cui camminata consegna quel che ha e poi **non finisce**.
+        ///
+        /// Il guasto che nessun `Result` sa dire: la share non fallisce, resta
+        /// lì. Un `walk` intero non tornerebbe mai; a rate, il silenzio si vede.
+        arenate: std::collections::HashSet<String>,
+        /// Radici i cui file si aprono, ma con comodo.
+        lente: std::collections::HashSet<String>,
+        /// Quanto dorme il disco dove ha promesso di essere lento o arenato.
+        ///
+        /// Uno solo per tutto il doppio: le prove che lo usano ne hanno bisogno
+        /// di un valore solo, e due manopole per la stessa attesa sarebbero due
+        /// numeri da tenere allineati a mano.
+        attesa: std::time::Duration,
+        /// La bandiera che il deposito alza mentre presta la connessione.
+        ///
+        /// Quando c'è, il disco la guarda a ogni camminata e a ogni apertura:
+        /// se la trova alzata, qualcuno sta tenendo il lucchetto mentre si fa
+        /// I/O — cioè esattamente il difetto che tutto questo lavoro toglie.
+        prestata: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        /// Il disco ha trovato la connessione prestata mentre lavorava.
+        ///
+        /// Una bandiera e non un `assert!`, perché la camminata gira su un filo
+        /// suo: un panico là dentro chiuderebbe il canale, la scansione lo
+        /// leggerebbe come «radice arenata» e la prova passerebbe verde senza
+        /// aver provato niente.
+        sorpresa: std::sync::atomic::AtomicBool,
     }
 
     impl FintoDisco {
@@ -2834,6 +3555,11 @@ mod tests {
                 cade_in_corsa: std::collections::HashSet::new(),
                 monche: std::collections::HashSet::new(),
                 rete_giu: std::collections::HashSet::new(),
+                arenate: std::collections::HashSet::new(),
+                lente: std::collections::HashSet::new(),
+                attesa: std::time::Duration::ZERO,
+                prestata: None,
+                sorpresa: std::sync::atomic::AtomicBool::new(false),
                 aperture: std::sync::atomic::AtomicUsize::new(0),
                 sonde: std::sync::atomic::AtomicUsize::new(0),
             }
@@ -2867,17 +3593,87 @@ mod tests {
             self
         }
 
+        /// La camminata su questa radice consegna quel che ha e poi si pianta.
+        fn si_arena(mut self, root: &str, attesa: std::time::Duration) -> Self {
+            self.arenate.insert(root.to_owned());
+            self.attesa = attesa;
+            self
+        }
+
+        /// I file di questa radice si aprono, ma dopo `attesa`.
+        fn apre_lentamente(mut self, root: &str, attesa: std::time::Duration) -> Self {
+            self.lente.insert(root.to_owned());
+            self.attesa = attesa;
+            self
+        }
+
+        /// Tiene d'occhio la bandiera del deposito mentre lavora.
+        fn sorveglia(mut self, prestata: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+            self.prestata = Some(std::sync::Arc::clone(prestata));
+            self
+        }
+
         fn aperture(&self) -> usize {
             self.aperture.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        /// Il disco ha lavorato mentre la connessione era prestata?
+        fn sorpresa(&self) -> bool {
+            self.sorpresa.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// Da chiamare in ogni punto in cui il disco fa I/O.
+        fn guarda_il_lucchetto(&self) {
+            if let Some(prestata) = self.prestata.as_ref()
+                && prestata.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                self.sorpresa
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        /// Dorme, se la radice di questo percorso ha promesso di essere lenta.
+        fn forse_dormi(&self, path: &str) {
+            if self
+                .lente
+                .iter()
+                .any(|root| path.to_lowercase().starts_with(&root.to_lowercase()))
+            {
+                std::thread::sleep(self.attesa);
+            }
         }
     }
 
     impl MusicFiles for FintoDisco {
         fn walk(&self, root: &str) -> Result<crate::files::Camminata, AppError> {
+            self.guarda_il_lucchetto();
             Ok(crate::files::Camminata {
                 file: self.trovati.get(root).cloned().unwrap_or_default(),
                 completa: !self.monche.contains(root),
             })
+        }
+
+        /// Consegna i file uno per uno e, sulle radici arenate, non finisce.
+        ///
+        /// L'ordine conta: prima si consegna, poi ci si pianta. È il caso vero —
+        /// la share risponde per i primi file e poi smette — ed è anche l'unico
+        /// che distingua «arenata» da «morta», perché una morta non consegna
+        /// niente e la sonda basterebbe a scoprirla.
+        fn walk_a_rate(
+            &self,
+            root: &str,
+            su_file: &mut dyn FnMut(DiscoveredFile) -> ControlFlow<()>,
+        ) -> Result<bool, AppError> {
+            self.guarda_il_lucchetto();
+            for file in self.trovati.get(root).cloned().unwrap_or_default() {
+                if su_file(file).is_break() {
+                    return Ok(false);
+                }
+            }
+            if self.arenate.contains(root) {
+                std::thread::sleep(self.attesa);
+            }
+            Ok(!self.monche.contains(root))
         }
 
         fn open(
@@ -2886,6 +3682,8 @@ mod tests {
         ) -> Result<Box<dyn crate::files::ReadSeek + Send + Sync>, AppError> {
             self.aperture
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.guarda_il_lucchetto();
+            self.forse_dormi(path);
             if self
                 .rete_giu
                 .iter()
@@ -2949,18 +3747,22 @@ mod tests {
         riga(&connection, 2, r"\\nas\musica\b.mp3", 10);
         riga(&connection, 3, r"C:\musica\c.mp3", 10);
 
-        let disco = FintoDisco::nuovo()
-            .con_file(r"C:\musica", vec![trovato(r"C:\musica\c.mp3", 10)])
-            .morta(r"\\nas\musica");
+        let disco = Arc::new(
+            FintoDisco::nuovo()
+                .con_file(r"C:\musica", vec![trovato(r"C:\musica\c.mp3", 10)])
+                .morta(r"\\nas\musica"),
+        );
         let roots = vec![r"\\nas\musica".to_owned(), r"C:\musica".to_owned()];
         let scan = Scan {
-            files: &disco,
-            covers: &store,
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
             roots: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
             prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
         };
 
         let esplorazione = plan(&scan, &connection).expect("piano");
@@ -2992,16 +3794,18 @@ mod tests {
         let (_dir, store, connection) = banco();
         riga(&connection, 1, r"\\nas\musica\a.mp3", 10);
 
-        let disco = FintoDisco::nuovo().cade_dopo_la_sonda(r"\\nas\musica");
+        let disco = Arc::new(FintoDisco::nuovo().cade_dopo_la_sonda(r"\\nas\musica"));
         let roots = vec![r"\\nas\musica".to_owned()];
         let scan = Scan {
-            files: &disco,
-            covers: &store,
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
             roots: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
             prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
         };
 
         let esplorazione = plan(&scan, &connection).expect("piano");
@@ -3025,19 +3829,21 @@ mod tests {
         riga(&connection, 2, r"\\nas\musica\non-visto.mp3", 10);
         riga(&connection, 3, r"\\nas\musica\nemmeno-questo.mp3", 10);
 
-        let disco = FintoDisco::nuovo()
-            // Di tre file ne torna uno: gli altri due stanno nei rami che
-            // `walkdir` ha perso quando la rete se n'è andata.
-            .con_file(
-                r"\\nas\musica",
-                vec![trovato(r"\\nas\musica\visto.mp3", 10)],
-            )
-            .cammina_a_meta(r"\\nas\musica")
-            .cade_dopo_la_sonda(r"\\nas\musica");
+        let disco = Arc::new(
+            FintoDisco::nuovo()
+                // Di tre file ne torna uno: gli altri due stanno nei rami che
+                // `walkdir` ha perso quando la rete se n'è andata.
+                .con_file(
+                    r"\\nas\musica",
+                    vec![trovato(r"\\nas\musica\visto.mp3", 10)],
+                )
+                .cammina_a_meta(r"\\nas\musica")
+                .cade_dopo_la_sonda(r"\\nas\musica"),
+        );
         let roots = vec![r"\\nas\musica".to_owned()];
         let scan = Scan {
-            files: &disco,
-            covers: &store,
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
             roots: &roots,
             rules: PathRules {
                 case_insensitive: true,
@@ -3046,6 +3852,8 @@ mod tests {
             // chiesto guardando la finestra, quella senza guardia anti-strage.
             // Se la protezione non stesse qui, sotto non ci sarebbe niente.
             prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
         };
 
         let esplorazione = plan(&scan, &connection).expect("piano");
@@ -3077,18 +3885,22 @@ mod tests {
         riga(&connection, 1, r"C:\musica\c-e.mp3", 10);
         riga(&connection, 2, r"C:\musica\non-c-e-piu.mp3", 10);
 
-        let disco = FintoDisco::nuovo()
-            .con_file(r"C:\musica", vec![trovato(r"C:\musica\c-e.mp3", 10)])
-            .cammina_a_meta(r"C:\musica");
+        let disco = Arc::new(
+            FintoDisco::nuovo()
+                .con_file(r"C:\musica", vec![trovato(r"C:\musica\c-e.mp3", 10)])
+                .cammina_a_meta(r"C:\musica"),
+        );
         let roots = vec![r"C:\musica".to_owned()];
         let scan = Scan {
-            files: &disco,
-            covers: &store,
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
             roots: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
             prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
         };
 
         let esplorazione = plan(&scan, &connection).expect("piano");
@@ -3106,35 +3918,40 @@ mod tests {
         // iniziale aveva detto sì, la camminata ha trovato i file, e il guasto
         // arriva alla prima apertura. Due cose devono succedere, e nessuna delle
         // due succedeva: non si insiste sugli altri file — su una share vera
-        // ognuno costerebbe una quarantina di secondi — e i brani di quella
-        // radice non si cancellano, perché non è stato dimostrato che non ci
-        // siano, solo che non si riesce a guardarli.
+        // ognuno costerebbe la scadenza di lettura per intero, e un filo
+        // abbandonato a testa — e i brani di quella radice non si cancellano,
+        // perché non è stato dimostrato che non ci siano, solo che non si
+        // riesce a guardarli.
         let (_dir, store, mut connection) = banco();
         riga(&connection, 1, r"\\nas\musica\sparito-1.mp3", 10);
         riga(&connection, 2, r"\\nas\musica\sparito-2.mp3", 10);
 
-        let disco = FintoDisco::nuovo()
-            .con_file(
-                r"\\nas\musica",
-                vec![
-                    trovato(r"\\nas\musica\nuovo-1.mp3", 10),
-                    trovato(r"\\nas\musica\nuovo-2.mp3", 10),
-                    trovato(r"\\nas\musica\nuovo-3.mp3", 10),
-                ],
-            )
-            .senza_rete(r"\\nas\musica")
-            // La sonda risponde la prima volta — quella di `plan` — e non la
-            // seconda, che è quella chiesta dal guasto in lettura.
-            .cade_dopo_la_sonda(r"\\nas\musica");
+        let disco = Arc::new(
+            FintoDisco::nuovo()
+                .con_file(
+                    r"\\nas\musica",
+                    vec![
+                        trovato(r"\\nas\musica\nuovo-1.mp3", 10),
+                        trovato(r"\\nas\musica\nuovo-2.mp3", 10),
+                        trovato(r"\\nas\musica\nuovo-3.mp3", 10),
+                    ],
+                )
+                .senza_rete(r"\\nas\musica")
+                // La sonda risponde la prima volta — quella della camminata — e
+                // non la seconda, che è quella chiesta dal guasto in lettura.
+                .cade_dopo_la_sonda(r"\\nas\musica"),
+        );
         let roots = vec![r"\\nas\musica".to_owned()];
         let scan = Scan {
-            files: &disco,
-            covers: &store,
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
             roots: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
             prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
         };
 
         let report = scan
@@ -3170,24 +3987,28 @@ mod tests {
         // per nome invece di dichiarare morta l'intera cartella.
         let (_dir, store, mut connection) = banco();
 
-        let disco = FintoDisco::nuovo()
-            .con_file(
-                r"\\nas\musica",
-                vec![
-                    trovato(r"\\nas\musica\a.mp3", 10),
-                    trovato(r"\\nas\musica\b.mp3", 10),
-                ],
-            )
-            .senza_rete(r"\\nas\musica");
+        let disco = Arc::new(
+            FintoDisco::nuovo()
+                .con_file(
+                    r"\\nas\musica",
+                    vec![
+                        trovato(r"\\nas\musica\a.mp3", 10),
+                        trovato(r"\\nas\musica\b.mp3", 10),
+                    ],
+                )
+                .senza_rete(r"\\nas\musica"),
+        );
         let roots = vec![r"\\nas\musica".to_owned()];
         let scan = Scan {
-            files: &disco,
-            covers: &store,
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
             roots: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
             prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
         };
 
         let report = scan
@@ -3207,16 +4028,18 @@ mod tests {
         let (_dir, store, connection) = banco();
         riga(&connection, 1, r"C:\musica\a.mp3", 10);
 
-        let disco = FintoDisco::nuovo();
+        let disco = Arc::new(FintoDisco::nuovo());
         let roots = vec![r"C:\musica".to_owned()];
         let scan = Scan {
-            files: &disco,
-            covers: &store,
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
             roots: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
             prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
         };
 
         let esplorazione = plan(&scan, &connection).expect("piano");
@@ -3234,16 +4057,18 @@ mod tests {
             riga(&connection, id, &format!(r"C:\musica\{id}.mp3"), 10);
         }
 
-        let disco = FintoDisco::nuovo();
+        let disco = Arc::new(FintoDisco::nuovo());
         let roots = vec![r"C:\musica".to_owned()];
         let prudente = Scan {
-            files: &disco,
-            covers: &store,
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
             roots: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
             prudente: true,
+            scadenze: Scadenze::default(),
+            fermati: None,
         };
 
         let esito = prudente
@@ -3283,16 +4108,18 @@ mod tests {
         let presenti: Vec<DiscoveredFile> = (1..=90)
             .map(|id| trovato(&format!(r"C:\musica\{id}.mp3"), 10))
             .collect();
-        let disco = FintoDisco::nuovo().con_file(r"C:\musica", presenti);
+        let disco = Arc::new(FintoDisco::nuovo().con_file(r"C:\musica", presenti));
         let roots = vec![r"C:\musica".to_owned()];
         let scan = Scan {
-            files: &disco,
-            covers: &store,
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
             roots: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
             prudente: true,
+            scadenze: Scadenze::default(),
+            fermati: None,
         };
 
         let esito = scan
@@ -3300,5 +4127,470 @@ mod tests {
             .expect("scansione");
         assert_eq!(esito.removed, 10);
         assert_eq!(esito.rimozioni_rinviate, 0);
+    }
+    // ── il tempo, e il lucchetto ────────────────────────────────────────────
+    //
+    // Le prove qui sopra tengono chiuso il guasto in cui la rete **fallisce**.
+    // Queste tengono chiuso quello in cui la rete **aspetta**, che è più
+    // insidioso perché non produce nessun errore: la finestra si ferma, Windows
+    // dichiara «non risponde», e l'utente termina il processo.
+
+    /// Un deposito che conta le prese e dice quando è in mano a qualcuno.
+    ///
+    /// Le due cose insieme, perché la domanda è una sola: la scansione chiede la
+    /// connessione **abbastanza spesso** da lavorare, e **mai** mentre guarda il
+    /// disco.
+    struct DepositoContato {
+        connection: Connection,
+        /// Alzata per tutta la durata di una presa.
+        ///
+        /// La legge il finto disco: se la trova alzata mentre cammina o mentre
+        /// apre un file, qualcuno sta tenendo il lucchetto durante l'I/O — cioè
+        /// esattamente il difetto per cui esiste [`Deposito`].
+        prestata: Arc<std::sync::atomic::AtomicBool>,
+        /// Quante volte la connessione è stata chiesta.
+        prestiti: usize,
+    }
+
+    impl DepositoContato {
+        fn nuovo(connection: Connection) -> Self {
+            Self {
+                connection,
+                prestata: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                prestiti: 0,
+            }
+        }
+    }
+
+    impl Deposito for DepositoContato {
+        fn con_connessione<T, F>(&mut self, azione: F) -> Result<T, AppError>
+        where
+            F: FnOnce(&mut Connection) -> Result<T, AppError>,
+        {
+            self.prestiti += 1;
+            self.prestata
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let esito = azione(&mut self.connection);
+            self.prestata
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            esito
+        }
+    }
+
+    /// Un deposito che cambia le carte in tavola fra due prese.
+    ///
+    /// È il mondo vero, non un dispetto: lasciare la connessione fra una fase e
+    /// l'altra significa che un'altra scrittura può passare in mezzo, e questa
+    /// prova mette quella scrittura esattamente dove fa più danno.
+    struct DepositoDispettoso {
+        connection: Connection,
+        prestiti: usize,
+        /// Dopo la presa numero questa, la riga 1 cambia percorso.
+        quando: usize,
+    }
+
+    impl Deposito for DepositoDispettoso {
+        fn con_connessione<T, F>(&mut self, azione: F) -> Result<T, AppError>
+        where
+            F: FnOnce(&mut Connection) -> Result<T, AppError>,
+        {
+            self.prestiti += 1;
+            let esito = azione(&mut self.connection);
+            if self.prestiti == self.quando {
+                self.connection
+                    .execute(
+                        "UPDATE tracks SET path = ?1 WHERE id = 1",
+                        [r"C:\musica\rinominato.mp3"],
+                    )
+                    .expect("rinomina");
+            }
+            esito
+        }
+    }
+
+    /// Scadenze cortissime: una prova non può aspettare quindici secondi.
+    fn svelte() -> Scadenze {
+        Scadenze {
+            camminata: Duration::from_millis(100),
+            brano: Duration::from_millis(100),
+        }
+    }
+
+    #[test]
+    fn una_camminata_che_si_arena_non_fa_sparire_i_suoi_brani() {
+        // Il guasto nuovo, e il più caro: la share non è spenta — risponde alla
+        // sonda — ma la camminata dentro non finisce. Con un `walk` intero la
+        // scansione starebbe lì finché Windows non rinuncia da solo, tenendo
+        // ferma la finestra; e se qualcuno la interrompesse, i brani non
+        // enumerati diventerebbero «spariti».
+        let (_dir, store, mut connection) = banco();
+        riga(&connection, 1, r"\\nas\musica\a.mp3", 10);
+        riga(&connection, 2, r"\\nas\musica\b.mp3", 10);
+        riga(&connection, 3, r"\\nas\musica\c.mp3", 10);
+
+        // Nessun file consegnato, e poi il silenzio. La sonda dice sempre di sì:
+        // è il punto: la radice **risponde**, quindi risondarla non scoprirebbe
+        // niente.
+        let disco = Arc::new(FintoDisco::nuovo().si_arena(r"\\nas\musica", Duration::from_secs(5)));
+        let roots = vec![r"\\nas\musica".to_owned()];
+        let scan = Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
+            roots: &roots,
+            rules: PathRules {
+                case_insensitive: true,
+            },
+            prudente: false,
+            scadenze: svelte(),
+            fermati: None,
+        };
+
+        let prima = std::time::Instant::now();
+        let report = scan
+            .run(&mut connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione");
+        let passato = prima.elapsed();
+
+        assert!(
+            passato < Duration::from_secs(1),
+            "ha aspettato la fine della camminata: {passato:?}"
+        );
+        assert_eq!(
+            report.radici_saltate,
+            vec![r"\\nas\musica".to_owned()],
+            "una radice che non finisce di camminare è una radice non vista"
+        );
+        assert_eq!(
+            report.removed, 0,
+            "i suoi brani non sono spariti: non si è potuto guardare"
+        );
+        assert_eq!(
+            report.plan.untouched, 3,
+            "tutti e tre fuori competenza, non da cancellare"
+        );
+        let rimasti: i64 = connection
+            .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(rimasti, 3, "le righe sono ancora tutte lì");
+    }
+
+    #[test]
+    fn un_brano_che_non_si_apre_in_tempo_vale_una_radice_che_non_risponde() {
+        // La share che smette **dopo** la camminata: i file sono stati elencati,
+        // e poi le aperture non tornano più. Un'attesa che non finisce non è un
+        // errore che qualcuno riporti, quindi va trasformata in uno — e da lì in
+        // poi vale quel che vale un guasto di rete: si chiede alla radice come
+        // sta, e se non risponde si smette di insistere.
+        let (_dir, store, mut connection) = banco();
+
+        let disco = Arc::new(
+            FintoDisco::nuovo()
+                .con_file(
+                    r"\\nas\musica",
+                    vec![
+                        trovato(r"\\nas\musica\uno.mp3", 10),
+                        trovato(r"\\nas\musica\due.mp3", 10),
+                        trovato(r"\\nas\musica\tre.mp3", 10),
+                    ],
+                )
+                .apre_lentamente(r"\\nas\musica", Duration::from_secs(5))
+                // La sonda risponde alla camminata e non alla domanda che nasce
+                // dalla lettura scaduta: la rete se n'è andata in mezzo.
+                .cade_dopo_la_sonda(r"\\nas\musica"),
+        );
+        let roots = vec![r"\\nas\musica".to_owned()];
+        let scan = Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
+            roots: &roots,
+            rules: PathRules {
+                case_insensitive: true,
+            },
+            prudente: false,
+            scadenze: svelte(),
+            fermati: None,
+        };
+
+        let report = scan
+            .run(&mut connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione");
+
+        assert_eq!(
+            disco.aperture(),
+            1,
+            "il primo file paga l'attesa e la scopre per tutti"
+        );
+        assert!(
+            report.unreadable.is_empty(),
+            "una share morta non è un elenco di file illeggibili: {:?}",
+            report.unreadable
+        );
+        assert_eq!(
+            report.radici_saltate,
+            vec![r"\\nas\musica".to_owned()],
+            "e la passata deve dire che non ha guardato lì"
+        );
+    }
+
+    #[test]
+    fn un_brano_lento_su_una_radice_viva_resta_un_file_illeggibile() {
+        // Il contrappeso, e serve quanto la prova qui sopra: un file che non si
+        // apre in tempo su una cartella che risponde è un incidente di quel
+        // file, non una diagnosi sulla cartella. Se la scadenza abbandonasse la
+        // radice da sé, un disco lento — una chiavetta USB, un file enorme —
+        // farebbe sparire dalla scansione tutto quel che ci sta sopra.
+        let (_dir, store, mut connection) = banco();
+
+        let disco = Arc::new(
+            FintoDisco::nuovo()
+                .con_file(
+                    r"\\nas\musica",
+                    vec![
+                        trovato(r"\\nas\musica\a.mp3", 10),
+                        trovato(r"\\nas\musica\b.mp3", 10),
+                    ],
+                )
+                // Lento, ma vivo: la sonda dice sempre di sì.
+                .apre_lentamente(r"\\nas\musica", Duration::from_secs(5)),
+        );
+        let roots = vec![r"\\nas\musica".to_owned()];
+        let scan = Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
+            roots: &roots,
+            rules: PathRules {
+                case_insensitive: true,
+            },
+            prudente: false,
+            scadenze: svelte(),
+            fermati: None,
+        };
+
+        let report = scan
+            .run(&mut connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione");
+
+        assert_eq!(disco.aperture(), 2, "si prova ogni file, non solo il primo");
+        assert_eq!(
+            report.unreadable.len(),
+            2,
+            "due file che non sono arrivati in tempo, detti per nome"
+        );
+        assert!(
+            report.radici_saltate.is_empty(),
+            "la cartella risponde: non si abbandona"
+        );
+    }
+
+    #[test]
+    fn tre_scadenze_di_fila_valgono_una_radice_che_non_risponde() {
+        // Dove finisce la pazienza della prova qui sopra. Un file lento è un
+        // incidente, due sono una coincidenza; tre di fila sulla stessa radice
+        // sono una condivisione che non ce la fa, e la sonda non se ne accorge —
+        // risponde, e continuerà a rispondere. Senza questa regola il quarto
+        // file, e ognuno dei diecimila dopo di lui, costerebbe la scadenza
+        // intera più la sonda, e lascerebbe dietro di sé un filo appeso.
+        let (_dir, store, mut connection) = banco();
+
+        let disco = Arc::new(
+            FintoDisco::nuovo()
+                .con_file(
+                    r"\\nas\musica",
+                    vec![
+                        trovato(r"\\nas\musica\a.mp3", 10),
+                        trovato(r"\\nas\musica\b.mp3", 10),
+                        trovato(r"\\nas\musica\c.mp3", 10),
+                        trovato(r"\\nas\musica\d.mp3", 10),
+                    ],
+                )
+                // Viva alla sonda, inutile alle letture: il caso che il
+                // contatore esiste per riconoscere.
+                .apre_lentamente(r"\\nas\musica", Duration::from_secs(5)),
+        );
+        let roots = vec![r"\\nas\musica".to_owned()];
+        let scan = Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
+            roots: &roots,
+            rules: PathRules {
+                case_insensitive: true,
+            },
+            prudente: false,
+            scadenze: svelte(),
+            fermati: None,
+        };
+
+        let report = scan
+            .run(&mut connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione");
+
+        assert_eq!(
+            disco.aperture(),
+            3,
+            "il quarto file non si tenta nemmeno: la radice è già stata dichiarata inutile"
+        );
+        assert_eq!(
+            report.unreadable.len(),
+            3,
+            "i tre che hanno pagato la scadenza restano detti per nome: {:?}",
+            report.unreadable
+        );
+        assert_eq!(
+            report.radici_saltate,
+            vec![r"\\nas\musica".to_owned()],
+            "e la passata deve dire che di lì in poi non ha guardato"
+        );
+        assert_eq!(
+            report.removed, 0,
+            "una radice abbandonata non fa sparire i suoi brani"
+        );
+    }
+
+    #[test]
+    fn la_scansione_non_tiene_la_connessione_mentre_guarda_il_disco() {
+        // La prova che riassume tutto il lavoro. Non conta quanto duri una
+        // scansione: conta che mentre dura, il lucchetto della libreria sia di
+        // chi lo vuole — la finestra che si ridisegna, l'audio, la chiusura
+        // dell'applicazione.
+        let (_dir, store, connection) = banco();
+        // Una riga che sul disco non c'è più: serve a far accadere anche la fase
+        // delle rimozioni, così le prese da contare sono tutte.
+        riga(&connection, 1, r"C:\musica\sparito.mp3", 10);
+
+        let mut deposito = DepositoContato::nuovo(connection);
+        let disco = Arc::new(
+            FintoDisco::nuovo()
+                .con_file(
+                    r"C:\musica",
+                    vec![
+                        trovato(r"C:\musica\a.mp3", 10),
+                        trovato(r"C:\musica\b.mp3", 10),
+                    ],
+                )
+                .sorveglia(&deposito.prestata),
+        );
+        let roots = vec![r"C:\musica".to_owned()];
+        let scan = Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
+            roots: &roots,
+            rules: PathRules {
+                case_insensitive: true,
+            },
+            prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
+        };
+
+        let report = scan
+            .run_su(&mut deposito, |_, _| ControlFlow::Continue(()))
+            .expect("scansione");
+
+        assert!(
+            !disco.sorpresa(),
+            "il disco ha lavorato mentre la connessione era prestata"
+        );
+        // E il contrario della stessa medaglia: la connessione va chiesta e
+        // restituita più volte, non presa una volta sola e tenuta. Le prese sono
+        // il piano, le doppie e le sparizioni, il lotto, le rimozioni e gli
+        // aggregati.
+        assert!(
+            deposito.prestiti >= 4,
+            "la scansione ha preso la connessione {} volte: se fossero una o \
+             due, la starebbe tenendo",
+            deposito.prestiti
+        );
+        assert_eq!(report.removed, 1, "e il lavoro l'ha fatto lo stesso");
+    }
+
+    #[test]
+    fn annullare_durante_la_camminata_non_scrive_niente() {
+        // Premere Annulla mentre si enumera un NAS: prima non succedeva niente
+        // fino al primo file letto, che su una share lenta poteva non arrivare
+        // mai. Adesso la camminata guarda la bandiera a ogni battito — e chi si
+        // ferma lì non ha deciso niente, quindi non scrive niente.
+        let (_dir, store, connection) = banco();
+        riga(&connection, 1, r"C:\musica\a.mp3", 10);
+
+        let mut deposito = DepositoContato::nuovo(connection);
+        let disco = Arc::new(FintoDisco::nuovo());
+        let roots = vec![r"C:\musica".to_owned()];
+        let basta: &dyn Fn() -> bool = &|| true;
+        let scan = Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
+            roots: &roots,
+            rules: PathRules {
+                case_insensitive: true,
+            },
+            prudente: false,
+            scadenze: svelte(),
+            fermati: Some(basta),
+        };
+
+        let report = scan
+            .run_su(&mut deposito, |_, _| ControlFlow::Continue(()))
+            .expect("scansione");
+
+        assert!(report.cancelled, "l'esito deve dire che è stata fermata");
+        assert_eq!(
+            deposito.prestiti, 0,
+            "non si è deciso niente: la connessione non serviva nemmeno"
+        );
+        assert!(
+            report.plan.to_remove.is_empty(),
+            "il piano di una camminata interrotta è vuoto, non parziale"
+        );
+        let rimasti: i64 = deposito
+            .connection
+            .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(rimasti, 1, "la riga è ancora lì");
+    }
+
+    #[test]
+    fn la_cancellazione_guarda_anche_il_percorso() {
+        // Il prezzo di lasciare la connessione fra una fase e l'altra: fra il
+        // momento in cui il piano dice «togli la riga 1» e il momento in cui la
+        // si toglie, quella riga può essere diventata un'altra cosa. SQLite
+        // riusa gli identificativi liberi, quindi il numero da solo non è una
+        // prova d'identità: il percorso sì.
+        let (_dir, store, connection) = banco();
+        riga(&connection, 1, r"C:\musica\a.mp3", 10);
+
+        // Il piano si calcola alla prima presa e le sparizioni alla seconda;
+        // subito dopo la seconda, qualcun altro rinomina la riga.
+        let mut deposito = DepositoDispettoso {
+            connection,
+            prestiti: 0,
+            quando: 2,
+        };
+        let disco = Arc::new(FintoDisco::nuovo());
+        let roots = vec![r"C:\musica".to_owned()];
+        let scan = Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
+            roots: &roots,
+            rules: PathRules {
+                case_insensitive: true,
+            },
+            prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
+        };
+
+        let report = scan
+            .run_su(&mut deposito, |_, _| ControlFlow::Continue(()))
+            .expect("scansione");
+
+        assert_eq!(
+            report.removed, 0,
+            "la riga da togliere non è più quella che si era vista"
+        );
+        let rimasti: i64 = deposito
+            .connection
+            .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(rimasti, 1, "e quella che c'è adesso non si tocca");
     }
 }

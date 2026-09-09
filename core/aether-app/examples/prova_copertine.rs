@@ -13,7 +13,10 @@ use aether_app::metadata::read_tags;
 use aether_domain::paths::is_supported_audio_path;
 
 fn mb(bytes: u64) -> String {
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "byte da stampare con un decimale: un f64 li tiene esatti fino a otto petabyte"
+    )]
     let value = bytes as f64 / 1_048_576.0;
     format!("{value:.1} MB")
 }
@@ -78,7 +81,10 @@ fn main() {
     println!("byte incorporati nei file {}", mb(byte_originali));
     println!("byte nello store          {}", mb(byte_salvati));
     if byte_salvati > 0 {
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "byte da stampare con un decimale: un f64 li tiene esatti fino a otto petabyte"
+        )]
         let fattore = byte_originali as f64 / byte_salvati as f64;
         println!("risparmio                 {fattore:.1}x");
     }

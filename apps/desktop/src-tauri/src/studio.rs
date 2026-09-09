@@ -3,10 +3,11 @@
 //! # Lo Studio non aggiunge potere
 //!
 //! Rende visibile un contratto che oggi si scopre leggendo Rust. Tutto quel che
-//! serve a un editor di skin esiste già nel crate: quarantasette token con la
-//! loro descrizione e il flag di obbligatorietà, cinquantuno parti con i loro
-//! gruppi, undici effetti col costo dichiarato, un vocabolario chiuso per parte,
-//! e `nearest_parts()` per i refusi. Nessuno di questi dati usciva dal processo.
+//! serve a un editor di skin esiste già nel crate: settantatré token con la
+//! loro descrizione, i loro estremi e il flag di obbligatorietà, quattro preset
+//! che ne scrivono blocchi coerenti, cinquantuno parti coi loro gruppi, undici
+//! effetti col costo dichiarato, un vocabolario chiuso per parte, e
+//! `nearest_parts()` per i refusi. Nessuno di questi dati usciva dal processo.
 //!
 //! Questo modulo non decide niente: legge il registro e chiama `parse_skin`,
 //! `check_skin`, `compile_skin`. È la stessa regola dei comandi — nessuna
@@ -64,6 +65,34 @@ pub struct TokenIpc {
     pub max: Option<f64>,
     /// A cosa serve. È il testo che chi scrive una skin legge nell'editor.
     pub description: &'static str,
+}
+
+/// Un preset, come lo mostra l'editor.
+///
+/// # Perché viaggia come testo e non come valori
+///
+/// Perché è testo anche all'arrivo. Lo Studio non ha un modello del documento da
+/// aggiornare: ha il JSON scritto dall'autore, e applicare un preset vuol dire
+/// innestare dei frammenti dentro quel testo con lo stesso `scriviIn` che usa un
+/// cursore. Un valore già scritto non ha bisogno che nessuno lo riscriva — e
+/// riscriverlo, come dice `document.rs` sopra `SkinDocument`, produrrebbe forme
+/// che la validazione rifiuta in ingresso.
+///
+/// Il gruppo arriva col nome che portano già le righe dei token, dalla stessa
+/// funzione: la striscia si costruisce dal gruppo del token selezionato, e due
+/// vocabolari diversi vorrebbero dire un confronto fra stringhe che oggi
+/// combaciano per caso.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresetIpc {
+    /// `classico`. Quel che l'interfaccia rimanda indietro.
+    pub id: &'static str,
+    /// «Classico». Quel che si legge sul bottone.
+    pub nome: &'static str,
+    /// Il gruppo di token su cui agisce, nel vocabolario di [`TokenIpc::group`].
+    pub group: &'static str,
+    /// Le scritture: l'id del token, e il suo valore come frammento JSON.
+    pub valori: Vec<(&'static str, &'static str)>,
 }
 
 /// Una parte, come la mostra l'editor.
@@ -385,6 +414,8 @@ pub struct VocabolarioIpc {
 pub struct RegistroIpc {
     /// I token.
     pub tokens: Vec<TokenIpc>,
+    /// I blocchi di valori pronti, per gruppo di token.
+    pub presets: Vec<PresetIpc>,
     /// Le parti.
     pub parts: Vec<ParteIpc>,
     /// Gli effetti.
@@ -468,6 +499,15 @@ pub fn studio_registro() -> RegistroIpc {
                 min: def.limiti.map(|(min, _)| min),
                 max: def.limiti.map(|(_, max)| max),
                 description: def.description,
+            })
+            .collect(),
+        presets: aether_skin::PRESETS
+            .iter()
+            .map(|def| PresetIpc {
+                id: def.id,
+                nome: def.nome,
+                group: nome_gruppo_token(def.group),
+                valori: def.valori.to_vec(),
             })
             .collect(),
         parts: aether_skin::parts::PARTS
@@ -613,6 +653,16 @@ pub struct ProblemaIpc {
     pub message: String,
     /// Il nome che forse si voleva scrivere, quando ce n'è uno vicino.
     pub forse: Vec<String>,
+    /// La riga in cui è scritto, da uno.
+    ///
+    /// `None` soltanto quando nemmeno la radice del documento esiste, cioè su un
+    /// testo vuoto. Prima non c'era affatto, e la finestra la indovinava
+    /// cercando l'ultimo pezzo del percorso col primo `indexOf` che
+    /// corrispondeva: su `parts.x.background.0.stops.1.color` finiva a
+    /// sottolineare la prima riga che nominasse un colore qualunque.
+    pub riga: Option<u32>,
+    /// La colonna, da uno, in unità UTF-16 come le conta la `<textarea>`.
+    pub colonna: Option<u32>,
 }
 
 /// Un avviso, che non blocca.
@@ -626,6 +676,11 @@ pub struct AvvisoIpc {
     pub path: String,
     /// Cosa.
     pub message: String,
+    /// La riga in cui è scritto, da uno. Come per [`ProblemaIpc`]: un avviso ha
+    /// un percorso, quindi ha un posto, e il bottone che ci porta è lo stesso.
+    pub riga: Option<u32>,
+    /// La colonna, da uno.
+    pub colonna: Option<u32>,
 }
 
 /// Una coppia di colori misurata.
@@ -712,13 +767,26 @@ pub fn studio_valida(sorgente: String) -> ValidazioneIpc {
         compilato_ms: 0,
     };
 
-    let documento = match aether_skin::parse_skin_json(&sorgente) {
+    // Le posizioni si calcolano una volta per validazione e non una per
+    // problema: è una passata sola sul testo, e sono venti token sbagliati che
+    // chiedono la stessa mappa.
+    let dove = aether_skin::posizioni(&sorgente);
+
+    let documento = match aether_skin::leggi_skin(&sorgente) {
         Ok(documento) => documento,
-        Err(err) => {
-            return ValidazioneIpc {
-                errori: vec![problema_da(&err, &sorgente)],
-                ..vuoto
-            };
+        Err(problemi) => {
+            let mut errori: Vec<ProblemaIpc> =
+                problemi.iter().map(|p| problema_da(p, &dove)).collect();
+            // In ordine di riga, e non è cosmesi. I token e le parti si leggono
+            // da una mappa di `serde_json`, che li ordina per nome: un elenco
+            // così esce alfabetico, e chi lo scorre accanto al file salta su e
+            // giù per il documento a ogni riga. Chi ha scritto tre token
+            // sbagliati li corregge dall'alto in basso.
+            //
+            // Ordinamento stabile: a parità di posizione — due problemi sulla
+            // stessa riga — resta l'ordine in cui il nucleo li ha trovati.
+            errori.sort_by_key(|e| (e.riga.unwrap_or(u32::MAX), e.colonna.unwrap_or(u32::MAX)));
+            return ValidazioneIpc { errori, ..vuoto };
         }
     };
 
@@ -727,12 +795,17 @@ pub fn studio_valida(sorgente: String) -> ValidazioneIpc {
         errori: Vec::new(),
         avvisi: aether_skin::check_skin(&documento)
             .into_iter()
-            .map(|a| AvvisoIpc {
-                kind: nome_avviso(a.kind),
-                path: a.path,
-                message: a.message,
+            .map(|a| {
+                let punto = dove.di(&a.path);
+                AvvisoIpc {
+                    kind: nome_avviso(a.kind),
+                    path: a.path,
+                    message: a.message,
+                    riga: punto.map(|p| p.riga),
+                    colonna: punto.map(|p| p.colonna),
+                }
             })
-            .collect(),
+            .collect::<Vec<_>>(),
         contrasti: aether_skin::contrast_pairs(&documento)
             .into_iter()
             .map(|c| ContrastoIpc {
@@ -758,38 +831,54 @@ pub fn studio_valida(sorgente: String) -> ValidazioneIpc {
     }
 }
 
-/// Traduce un errore di validazione in qualcosa che l'editor può mostrare.
+/// I nomi suggeriti dal nucleo, presi dal messaggio come dati.
 ///
-/// Il suggerimento di `nearest_parts()` esiste già nel messaggio, ma dentro una
-/// frase: qui si estrae anche come dato, perché nell'editor diventa un bottone
-/// che corregge, e un bottone non si costruisce da una frase.
-fn problema_da(err: &AppError, _sorgente: &str) -> ProblemaIpc {
-    let messaggio = err.message().unwrap_or_default().to_owned();
-    let codice = err.code().kind().code().to_owned();
-    // Il percorso sta in testa al messaggio, prima dei due punti: è la forma che
-    // `in_errore` produce, e leggerla qui evita di far attraversare all'IPC una
-    // struttura che serve solo a questo.
-    let percorso = messaggio
-        .split_once(':')
-        .map(|(prima, _)| prima.trim().to_owned())
-        .unwrap_or_default();
-    let forse = if codice == "skin.manifestInvalid" || codice == "skin.unknownEffect" {
-        // «Forse `section-card`?» — la parte suggerita sta fra virgolette
-        // basse nel messaggio del nucleo.
-        messaggio
-            .split('«')
-            .skip(1)
-            .filter_map(|pezzo| pezzo.split_once('»').map(|(dentro, _)| dentro.to_owned()))
-            .filter(|nome| aether_skin::parts::part(nome).is_some())
-            .collect()
-    } else {
-        Vec::new()
-    };
+/// Il suggerimento di `vicini()` esiste già dentro la frase — «Forse intendevi
+/// «color.accent»?» — ma una frase non è un bottone. Qui si rileggono le
+/// virgolette basse e si tiene quel che è davvero un nome del registro, così
+/// l'editor può offrirlo come correzione da premere.
+///
+/// # Perché tre registri e non solo le parti
+///
+/// Perché il filtro era `parts::part(nome).is_some()`, e i refusi sui **token**
+/// sono i più frequenti di tutti: `color.accents` per `color.accent`. Il
+/// suggerimento c'era, il bottone no, e la differenza la vedeva solo chi sapeva
+/// già cosa scrivere. `rinominaChiave` — quel che il bottone chiama — lavora sul
+/// percorso del problema, quindi non gli importa di che registro sia il nome.
+fn suggeriti(messaggio: &str) -> Vec<String> {
+    messaggio
+        .split('«')
+        .skip(1)
+        .filter_map(|pezzo| pezzo.split_once('»').map(|(dentro, _)| dentro.to_owned()))
+        .filter(|nome| {
+            aether_skin::parts::part(nome).is_some()
+                || aether_skin::tokens::token(nome).is_some()
+                || aether_skin::effects::Effect::NAMES.contains(&nome.as_str())
+        })
+        .collect()
+}
+
+/// Traduce un problema di validazione in qualcosa che l'editor può mostrare.
+///
+/// # Cosa faceva prima, e perché non poteva funzionare
+///
+/// Prendeva un `AppError` — cioè i venti problemi già uniti da `in_errore` con
+/// dei punti e virgola — e si riprendeva il percorso facendo `split_once(':')`
+/// sulla prosa. Ne usciva **un** problema con dentro venti frasi, un percorso
+/// che era quello del primo, e un pannello che cresceva finché non aveva mangiato
+/// l'editor. Adesso il percorso, il messaggio e il codice arrivano dai campi di
+/// [`aether_skin::SkinIssue`], che li ha sempre avuti.
+fn problema_da(guasto: &aether_skin::SkinIssue, dove: &aether_skin::Posizioni) -> ProblemaIpc {
+    // Il punto scritto nel problema vince su quello dedotto dal percorso: ce
+    // l'ha soltanto l'errore di sintassi, che un percorso non ce l'ha affatto.
+    let punto = guasto.punto.or_else(|| dove.di(&guasto.path));
     ProblemaIpc {
-        code: codice,
-        path: percorso,
-        message: messaggio,
-        forse,
+        code: guasto.code.kind().code().to_owned(),
+        path: guasto.path.clone(),
+        message: guasto.message.clone(),
+        forse: suggeriti(&guasto.message),
+        riga: punto.map(|p| p.riga),
+        colonna: punto.map(|p| p.colonna),
     }
 }
 
@@ -1307,6 +1396,100 @@ mod tests {
         let esito = studio_valida("{ \"format\": 1, ".to_owned());
         assert_eq!(esito.errori.len(), 1);
         assert!(esito.css.is_empty(), "niente foglio da un documento rotto");
+    }
+
+    /// Il difetto che si vedeva peggio: un errore di sintassi arrivava come
+    /// `{ code, path: "", message: "", forse: [] }`, cioè un pannello rosso
+    /// permanente che non diceva né dove né cosa. La frase che l'editor mostrava
+    /// al suo posto veniva dal catalogo ed era scritta per il toast dell'app:
+    /// «Aprila nello Studio: i problemi vengono elencati riga per riga» —
+    /// letta da dentro lo Studio, e falsa.
+    #[test]
+    fn un_errore_di_sintassi_dice_dove_e_cosa() {
+        // Una virgola che manca fra due campi, alla riga tre.
+        let json = "{
+  \"format\": 1
+  \"id\": \"prova\"
+}";
+        let esito = studio_valida(json.to_owned());
+        let solo = match esito.errori.as_slice() {
+            [solo] => solo,
+            altri => panic!("un errore di sintassi è uno solo: {altri:#?}"),
+        };
+        assert_eq!(solo.code, "skin.manifestInvalid");
+        assert_eq!(solo.riga, Some(3), "{solo:#?}");
+        assert!(solo.colonna.is_some());
+        assert!(
+            solo.message.contains("virgola"),
+            "il messaggio dice cosa manca, non «il manifest non è JSON»: {solo:#?}"
+        );
+    }
+
+    /// Venti problemi erano venti frasi dentro **un** messaggio, unite da punti
+    /// e virgola, con il percorso del primo. Il piede che conta «{n} errori»,
+    /// l'elenco che li mostra e il giro di correzione della chat sono tutti e
+    /// tre scritti per una lista: adesso ne ricevono una.
+    #[test]
+    fn ogni_problema_e_un_problema_e_porta_la_sua_riga() {
+        let json = aether_skin::PLAIN_SOURCE.replace(
+            "\"tokens\": {",
+            "\"tokens\": {
+    \"color.accents\": \"#ff0000\",
+    \"radius.cards\": \"4px\",
+    \"font.mainly\": [\"X\"],",
+        );
+        let esito = studio_valida(json);
+        assert_eq!(
+            esito.errori.len(),
+            3,
+            "tre token inesistenti sono tre errori: {:#?}",
+            esito.errori
+        );
+
+        // Nell'ordine del **documento**, non in quello alfabetico in cui li
+        // consegna la mappa di `serde_json`: si correggono dall'alto in basso.
+        let percorsi: Vec<&str> = esito.errori.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            percorsi,
+            [
+                "tokens.color.accents",
+                "tokens.radius.cards",
+                "tokens.font.mainly"
+            ]
+        );
+
+        // Righe vere, crescenti, e distinte: è quel che l'euristica a `indexOf`
+        // non sapeva dare — cercando `"cards"` o `"accents"` prendeva la prima
+        // occorrenza del file, che è quasi sempre un'altra riga.
+        let righe: Vec<Option<u32>> = esito.errori.iter().map(|e| e.riga).collect();
+        assert!(righe.iter().all(Option::is_some), "{righe:?}");
+        assert!(righe.windows(2).all(|due| due[0] < due[1]), "{righe:?}");
+
+        // E il suggerimento arriva come dato anche per un token, non solo per
+        // una parte: senza, il bottone che corregge non si può costruire.
+        let accento = &esito.errori[0];
+        assert!(
+            accento.forse.contains(&"color.accent".to_owned()),
+            "{accento:#?}"
+        );
+    }
+
+    /// Un avviso ha un percorso come un errore, quindi ha un posto: il bottone
+    /// che ci porta il cursore è lo stesso, e non aveva un numero da usare.
+    #[test]
+    fn anche_un_avviso_sa_su_che_riga_sta() {
+        let json = aether_skin::PLAIN_SOURCE.replace(
+            "\"capabilities\": {",
+            "\"patterns\": { \"mai-usato\": { \"effect\": \"vignette\", \"color\": \"#000\" } }, \"capabilities\": {",
+        );
+        let esito = studio_valida(json);
+        let avviso = esito
+            .avvisi
+            .iter()
+            .find(|a| a.kind == "unusedPattern")
+            .unwrap_or_else(|| panic!("{:#?}", esito.avvisi));
+        assert_eq!(avviso.path, "patterns.mai-usato");
+        assert!(avviso.riga.is_some(), "{avviso:#?}");
     }
 
     #[test]

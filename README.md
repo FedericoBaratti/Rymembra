@@ -142,7 +142,11 @@ a longer listening history than the public API offers.
   the machine is idle, which stay put for seven days and then become other ones.
   What came out last week does not come out again.
 - **Skins** with a built-in visual editor (the Studio) and a packaged
-  distribution format.
+  distribution format. Inside the Studio, a side chat can ask a language model
+  to make the change for you — a model running on your own machine (Ollama, or
+  LM Studio's local server, the one the Bionic app sits on) or a remote one
+  through OpenRouter. It is off until you configure a provider, and what it
+  sends is documented in [`PRIVACY.md`](PRIVACY.md) § 2-quater.
 - **Backup and synchronization** to Google Drive or to a shared folder.
 - **Scrobbling** to Last.fm and ListenBrainz.
 - **Automatic updates**: a check for releases on GitHub every thirty minutes,
@@ -178,13 +182,16 @@ as not to introduce any wait in the audio callback.
 | ![The album grid with the Plain skin](immagini/album.webp) | ![The same grid with the Cyberpunk Edge skin](immagini/skin.webp) |
 
 The same screen with two different skins. A skin redefines colors, borders,
-shadows, type weights and corner radii across 52 interface components: this is
-not a matter of switching between a light theme and a dark one.
+shadows, type weights and corner radii across 51 interface components — and,
+since 2.3.0, the visualizer's scene as well: not only its colors, but its
+geometry and its behavior, from the depth of the room and the aperture of the
+lens down to how fast a bar falls. This is not a matter of switching between a
+light theme and a dark one.
 
 ![The Studio, the skin editor](immagini/studio.webp)
 
 The Studio is the built-in editor. On the left, the tree of components and of
-the 58 tokens; in the middle, the preview updated in real time, which works on a
+the 73 tokens; in the middle, the preview updated in real time, which works on a
 sample library and not on yours; on the right, the inspector of the selected
 component, with its states and its layers. The probe lights up whatever sits
 under the pointer, so that a surface can be found without knowing its name.
@@ -193,6 +200,27 @@ The bottom bar reports errors, warnings, redrawn components and the number of
 color pairs with a contrast ratio below 4.5:1, the recommended legibility
 threshold. The figure is computed before export, so that a skin distributed with
 contrast warnings is the result of a deliberate choice.
+
+### Asking instead of writing
+
+The Studio also has a chat, and it works because of three properties the skin
+format already had: the vocabulary is **closed and declared** — 73 tokens, 51
+components, 11 effects, each with a valid example produced by the real parser —
+the source of truth is **text**, edited by path; and validation **never fails**,
+answering instead with positioned errors and a «did you mean» for every
+misspelled name. Those three are exactly what a language model needs to work on
+a document and to correct itself when it gets a name wrong.
+
+There are two modes, switched in the panel's header. In *Proposal*, the model
+proposes, you read the diff, and you press Apply. In *Agent*, the model applies,
+re-reads the validation of the result, and fixes what it broke — at most four
+rounds, with a Stop button. Either way the change goes through the same path a
+dragged slider does, so Ctrl+Z takes it back; in Agent mode a snapshot is taken
+before the first round.
+
+You configure the model in Settings › AI Models. Several named profiles can
+coexist; each key lives in the operating system's keychain, never in the library
+database, and never passes through the window.
 
 ---
 
@@ -288,6 +316,8 @@ core/
   aether-cloud      Google Drive
   aether-sync       synchronization between devices
   aether-scrobble   Last.fm and ListenBrainz
+  aether-ia         an OpenAI-compatible client for language models,
+                    which knows nothing about skins
 apps/desktop        the interface: Tauri 2 + React 19
 ```
 
@@ -319,7 +349,9 @@ clause, which binds the listener too.
 
 Aether collects no telemetry, requires no account and talks to no servers other
 than the ones the user explicitly queries: the music catalogs, MusicBrainz,
-Google Drive and the scrobbling service, the last two only if connected.
+Google Drive, the scrobbling service, and the language model configured for the
+Skin Studio — the last three only if you connect them, and the last one possibly
+not a server at all, since Ollama and LM Studio run on your own machine.
 
 [`PRIVACY.md`](PRIVACY.md) lists every single network request the program can
 make and the data each one transmits.

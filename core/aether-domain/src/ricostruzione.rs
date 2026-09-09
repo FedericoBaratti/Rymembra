@@ -6,7 +6,7 @@
 //! **Un campo di metadati porta con sé la propria provenienza.**
 //!
 //! Fin qui Aether salvava una stringa e più tardi *ri-indovinava* se fosse vera:
-//! [`crate::enrich::titolo_di_ripiego`] deduce che un titolo è un ripiego
+//! `crate::enrich::titolo_di_ripiego` deduce che un titolo è un ripiego
 //! confrontandolo con la radice del nome del file, perché è l'unico indizio che
 //! gli resta. Funziona, ed è una supposizione fatta a valle su un dato che a
 //! monte si conosceva con certezza.

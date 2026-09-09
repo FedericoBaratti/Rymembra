@@ -3,21 +3,39 @@
  *
  * # Il buco che chiude
  *
- * L'albero di sinistra elencava i cinquantotto token per gruppo, col pallino
+ * L'albero di sinistra elencava i token del registro per gruppo, col pallino
  * «dichiarato» e il segno dell'obbligatorietà, **e cliccarli non faceva niente**:
  * il gestore era `"name" in voce ? setParteScelta(voce.name) : undefined`, e per
  * i token quel ramo restituiva `undefined`. Cambiare il colore d'accento — che è
  * la prima cosa che chiunque voglia fare a una skin — richiedeva di scendere
  * nella vista Documento e scrivere JSON a mano.
  *
- * # Perché non c'è una tabella di cinquantotto voci
+ * # Perché non c'è una tabella di settantatré voci
  *
  * Perché sarebbe una seconda copia del registro, e le due copie divergono al
  * primo token aggiunto. Qui non si nomina nessun token: si legge `kind`,
  * `min`/`max`, `required` e `description`, che il registro dichiara già e che
  * `studio_registro` porta di là. `ControlloPerTipo` sceglie il controllo. Gli
  * undici token del ritmo e della profondità sono arrivati senza che questo file
- * li conoscesse, ed è la prova che il meccanismo funziona.
+ * li conoscesse, e i quindici della scena dello spettro dopo di loro: sono la
+ * prova che il meccanismo funziona.
+ *
+ * # La striscia dei preset, e perché non nomina neanche quelli
+ *
+ * Stessa regola, un giro più in là. Un preset porta con sé il `group` su cui
+ * agisce — nello stesso vocabolario di `TokenRegistro.group`, che è la sola
+ * ragione per cui quel campo esiste — e la striscia si costruisce confrontando
+ * quel campo col gruppo del token aperto. Quindi qui dentro non compare né
+ * «Classico» né `canvas.viz.haze`: compare «i preset di questo gruppo», e il
+ * giorno che qualcuno scriverà in `preset.rs` un blocco per il ritmo o per le
+ * superfici, quel blocco apparirà da solo sotto i token del ritmo e delle
+ * superfici, senza che questo file cambi di una riga.
+ *
+ * La striscia sta sotto i due controlli e non sopra, ed è deliberato: un preset
+ * riscrive **tutto il gruppo**, cioè anche il token che si sta guardando e ogni
+ * altro che gli sta accanto nell'albero, aperto o no. È un gesto più grosso di
+ * quello per cui si è aperto questo pannello, e va incontrato dopo aver visto
+ * cosa c'è, non prima.
  *
  * # Le due colonne
  *
@@ -28,12 +46,12 @@
  * dichiara la capacità, perché altrimenti quel che ci si scrive non lo legge
  * nessuno.
  */
-import type { TokenRegistro } from "../ipc";
+import type { PresetRegistro, TokenRegistro } from "../ipc";
 import { Icona } from "../parti/Icone";
 import { ControlloPerTipo } from "./controlli";
 import { t } from "../lingue";
 import { Trans } from "../lingue/Trans";
-import { descrizioneToken } from "./vocabolario";
+import { descrizionePreset, descrizioneToken } from "./vocabolario";
 
 /** Come si legge un tipo, per chi non conosce i nomi del crate. */
 function comeSiChiama(): Readonly<Record<string, string>> {
@@ -54,7 +72,9 @@ export function Token({
   valoreChiaro,
   chiaroPromesso,
   tokens,
+  presets,
   tavolozza,
+  onPreset,
   onScrivi,
   onScriviChiaro,
   onVaiAlJson,
@@ -65,7 +85,18 @@ export function Token({
   /** La skin dichiara `capabilities.light`. */
   chiaroPromesso: boolean;
   tokens: readonly TokenRegistro[];
+  /**
+   * Tutti i preset del registro, non quelli di questo gruppo.
+   *
+   * Arrivano interi apposta: il filtro è una riga sola e sta qui, dove si sa
+   * qual è il gruppo aperto. Chiederlo già filtrato a chi monta il componente
+   * vorrebbe dire che anche lui deve saperlo, cioè due posti che sanno la stessa
+   * cosa invece di uno.
+   */
+  presets: readonly PresetRegistro[];
   tavolozza: Readonly<Record<string, string>>;
+  /** Applica un blocco di valori: è **un** passo di annullo, non uno per voce. */
+  onPreset: (preset: PresetRegistro) => void;
   onScrivi: (valore: unknown) => void;
   onScriviChiaro: (valore: unknown) => void;
   onVaiAlJson: (percorso: string) => void;
@@ -84,6 +115,10 @@ export function Token({
   const dichiarato = valore !== undefined;
   const dichiaratoChiaro = valoreChiaro !== undefined;
   const limitato = definizione.min !== null && definizione.max !== null;
+  /* Il filtro, che è tutto il meccanismo: il confronto è fra due stringhe che
+     escono dalla stessa funzione di `studio.rs`, quindi non c'è una tabella da
+     tenere allineata — c'è un `===`. */
+  const pronti = presets.filter((p) => p.group === definizione.group);
 
   return (
     <aside className="ispettore editor-token">
@@ -179,6 +214,42 @@ export function Token({
             <p className="nota">{t("studio.token.undeclared")}</p>
           )}
         </div>
+
+        {/* I blocchi pronti per il gruppo aperto.
+
+            Non si disegna la striscia vuota: dodici gruppi su tredici non
+            hanno preset, e una riga che dice «nessun preset» ripetuta sotto ogni
+            colore sarebbe rumore permanente per un'informazione che non serve a
+            nessuno — chi cerca un preset e non lo trova ha già la risposta.
+
+            I nomi passano da `descrizionePreset`, non da `preset.nome`: il nome
+            del crate è il ripiego, e la riga del catalogo — quando c'è — è
+            quella che parla la lingua di chi guarda. */}
+        {pronti.length > 0 && (
+          <div className="preset-token section-card">
+            <span className="titolino">{t("studio.preset.title")}</span>
+            <div className="azioni-nodo">
+              {pronti.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className="pillola btn-ghost"
+                  title={t("studio.preset.apply.title", {
+                    quanti: preset.valori.length,
+                  })}
+                  onClick={() => onPreset(preset)}
+                >
+                  {descrizionePreset(preset.id, preset.nome)}
+                </button>
+              ))}
+            </div>
+            {/* Quel che il bottone fa oltre a quel che si vede: riscrive anche i
+                token che non sono aperti. Detto prima, non scoperto dopo. */}
+            <p className="nota">
+              {t("studio.preset.hint", { gruppo: definizione.group })}
+            </p>
+          </div>
+        )}
 
         <div className="azioni-nodo">
           <button

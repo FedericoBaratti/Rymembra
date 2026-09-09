@@ -33,10 +33,13 @@
 //!
 //! - [`values`]: cosa può valere un campo. È la sicurezza del formato.
 //! - [`tokens`]: il contratto fra le skin e i componenti.
+//! - [`preset`]: blocchi di valori pronti, per chi non vuole muovere quindici
+//!   cursori.
 //! - [`effects`]: gli undici effetti, e quanto costano.
 //! - [`parts`]: le superfici ridisegnabili.
 //! - [`layout`]: dove stanno le cose — il vocabolario dello scafale.
 //! - [`document`]: la forma di `skin.json`, e la validazione.
+//! - [`posizioni`]: dal percorso di un problema alla riga in cui è scritto.
 //! - [`compile`]: l'unico autore di CSS.
 //! - [`package`]: il formato `.aeskin`, e le difese contro un archivio ostile.
 //!
@@ -47,6 +50,22 @@
 //! validazione e compilatore si derivano dal registro. Se il token è
 //! obbligatorio, la skin di riferimento deve dichiararlo — è quello che il test
 //! di fedeltà verifica.
+//!
+//! # Come si aggiunge un preset
+//!
+//! Si aggiunge la voce a [`preset::PRESETS`] con il suo gruppo e l'elenco dei
+//! token che scrive, e ogni valore si scrive **com'è nel documento**: un
+//! frammento JSON dentro una stringa. Non serve altro nemmeno qui — la striscia
+//! nello Studio si costruisce dal gruppo del token selezionato, e non nomina
+//! nessun preset.
+//!
+//! La regola che vale la pena ricordare è la seconda: un preset scrive soltanto
+//! quel che deve **cambiare**. Ripetere un valore che è già quello di serie non
+//! rende il preset più esplicito, lo rende una seconda copia di un numero che
+//! vive nel registro — cioè la prima cosa che divergerà il giorno che quel
+//! numero cambia. Sono due prove: una fonde ogni preset in [`PLAIN_SOURCE`] e
+//! pretende una skin valida e senza avvisi, l'altra che ogni token nominato
+//! esista davvero e appartenga al gruppo dichiarato.
 //!
 //! # Come si aggiunge un effetto
 //!
@@ -61,6 +80,8 @@ pub mod effects;
 pub mod layout;
 pub mod package;
 pub mod parts;
+pub mod posizioni;
+pub mod preset;
 pub mod tokens;
 pub mod values;
 mod vicini;
@@ -69,13 +90,16 @@ pub use compile::{CompiledSkin, compile_skin};
 pub use dinamico::{Oklch, accento_sicuro};
 pub use document::{
     CONTRASTO_MINIMO, ContrastPair, SKIN_FORMAT_VERSION, SkinDocument, SkinIssue, SkinWarning,
-    WarningKind, check_skin, contrast_pairs, palette_usage, parse_skin, parse_skin_json,
+    WarningKind, check_skin, contrast_pairs, leggi_skin, palette_usage, parse_skin,
+    parse_skin_json,
 };
 pub use effects::{Effect, SURFACE_COST_BUDGET, exceeds_budget, stack_cost};
 pub use layout::{
     LayoutNode, LayoutZone, SHELL_COST_BUDGET, WIDGETS, WidgetDef, WidgetInstance, default_shell,
 };
 pub use package::{SkinPackage, read_skin_package, write_skin_package};
+pub use posizioni::{Posizioni, Punto, posizioni};
+pub use preset::{PRESETS, PresetDef};
 pub use tokens::{TOKENS, TokenDef};
 
 /// La skin di riferimento, come è scritta.

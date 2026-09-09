@@ -9,17 +9,19 @@
 use crate::spegnimento::Emette as _;
 use aether_app::import_legacy;
 use aether_app::library::{
-    AlbumSummary, ArtistSummary, Counts, Scan, ScanReport, TrackOrder, TrackSummary, album_tracks,
-    counts, list_albums, list_artists, list_tracks, recently_added_albums, search, summaries_by_id,
+    AlbumSummary, ArtistSummary, Counts, Scadenze, Scan, ScanReport, TrackOrder, TrackSummary,
+    album_tracks, counts, list_albums, list_artists, list_tracks, recently_added_albums, search,
+    summaries_by_id,
 };
 use aether_app::settings::CHIAVE_CARTELLE;
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::paths::PathRules;
 use serde::Serialize;
-use tauri::State;
+use tauri::{Manager as _, State};
 
+use crate::disparte::in_disparte;
 use crate::errore::{Esito, errore};
-use crate::stato::{Stato, adesso_ms, con_libreria};
+use crate::stato::{DepositoStato, Stato, adesso_ms, con_libreria};
 
 /// Quel che la finestra deve sapere appena si apre.
 #[derive(Debug, Clone, Serialize)]
@@ -325,49 +327,39 @@ impl EsitoScansione {
 /// la prima passata sono venti secondi, e venti secondi senza un segno di vita
 /// sono venti secondi in cui l'applicazione sembra bloccata.
 ///
-/// `(async)`, e non per eleganza: un comando normale gira sul filo principale
-/// (vedi la nota in `nuvola`), e venti secondi lì sopra congelano la webview —
-/// gli eventi di avanzamento partono ma nessuno li disegna, e il comando
-/// `annulla_scansione` non viene nemmeno ricevuto finché questo non ritorna.
-#[tauri::command(async)]
-pub fn scansiona(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito<EsitoScansione> {
-    // Prima di prendere il lucchetto: un annullamento arrivato dopo la fine
-    // della scansione precedente fermerebbe questa al primo file.
-    stato.riprendi_scansioni();
-    let fermare = &*stato;
-    let esito = con_libreria(&stato, |libreria| {
-        let roots = leggi_cartelle(&libreria.connection)?;
-        let scan = Scan {
-            files: &aether_app::files::LocalFiles,
-            covers: &libreria.covers,
-            roots: &roots,
-            rules: PathRules::for_current_platform(),
-            // Questa scansione l'ha chiesta qualcuno che è davanti alla finestra
-            // e ne legge l'esito riga per riga: se togliesse troppo, se ne
-            // accorgerebbe subito. La guardia serve all'altra — quella che parte
-            // da sola quando la coda dei download ha finito — e accenderla anche
-            // qui vorrebbe dire rifiutarsi di fare quel che è stato chiesto.
-            prudente: false,
-        };
-        let mut ultimo = 0usize;
-        let report = scan.run(&mut libreria.connection, |fatti, totale| {
-            // Non a ogni file: mandare un evento per ognuno di 1421 file
-            // inonderebbe il canale IPC per disegnare una barra che si muove di
-            // meno di un pixel per volta.
-            if fatti == totale || fatti.saturating_sub(ultimo) >= 25 {
-                ultimo = fatti;
-                app.emetti("scansione:avanzamento", Avanzamento { fatti, totale });
-            }
-            if fermare.scansione_fermata() {
-                std::ops::ControlFlow::Break(())
-            } else {
-                std::ops::ControlFlow::Continue(())
-            }
-        })?;
-        let numeri = counts(&libreria.connection)?;
-        Ok(EsitoScansione::da(&report, numeri))
-    })
-    .map_err(errore);
+/// # Dove gira
+///
+/// Sul pool bloccante, via [`in_disparte`]. Non sul filo principale, dove venti
+/// secondi congelano la webview; e nemmeno su un worker del runtime, che è quel
+/// che `#[tauri::command(async)]` farebbe da solo: i worker sono tanti quanti i
+/// processori, e una scansione ferma su una condivisione di rete se ne
+/// prenderebbe uno per tutto il tempo del timeout di sistema, insieme a ogni
+/// altro comando asincrono che nel frattempo si è messo in coda.
+///
+/// # Cosa non tiene mentre legge
+///
+/// Il lucchetto della libreria. Il nucleo lo chiede attraverso [`DepositoStato`]
+/// una transazione alla volta e lo lascia subito: fra un lotto e l'altro la
+/// finestra può leggere, `annulla_scansione` risponde, la chiusura si chiude. La
+/// camminata sulle cartelle — la parte che su una share lenta è quasi tutta la
+/// durata — non lo chiede affatto.
+///
+/// Il prezzo è che due scansioni insieme si intreccerebbero davvero, e
+/// `tracks.path` è UNIQUE: per questo la prima cosa che si prende è il turno.
+///
+/// # Errori
+///
+/// `library.scanBusy` se una scansione è già in corso — a mano, o quella
+/// automatica che parte quando la coda dei download ha finito. `internal.aborted`
+/// se lo stato non c'è più. Poi quel che riporta il nucleo: `db.*` per il
+/// database, `fs.*` per il disco. Una radice che non risponde **non** è un
+/// errore: finisce in `radiciSaltate`, e i suoi brani restano dove sono.
+#[tauri::command]
+pub async fn scansiona(app: tauri::AppHandle) -> Esito<EsitoScansione> {
+    let mano = app.clone();
+    let esito = in_disparte("scansione", move || scansiona_ora(&mano))
+        .await
+        .map_err(errore)?;
     // Una scansione porta dentro brani che nessuno ha mai tentato di
     // arricchire, ed è il momento in cui hanno più bisogno: appena importati
     // sono precisamente quelli con «Album sconosciuto» e nessuna copertina.
@@ -381,14 +373,116 @@ pub fn scansiona(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito<EsitoS
     crate::nuvola::se_riuscito(&app, esito)
 }
 
+/// Il corpo di [`scansiona`], sul filo che l'ha presa in disparte.
+///
+/// Una funzione a parte e non una chiusura dentro il comando perché quel che si
+/// muove nel pool dev'essere `'static`, mentre qui dentro si prendono prestiti —
+/// dello stato, delle cartelle, della bandiera d'annullamento — che vivono per la
+/// durata di questa chiamata e non oltre.
+fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
+    // `try_state` e non `state`: `state` panica se lo stato non c'è, e questo
+    // corpo gira su un filo suo, che può ritrovarsi vivo mentre la finestra si
+    // chiude e gli stati gestiti vengono lasciati cadere.
+    let Some(stato) = app.try_state::<Stato>() else {
+        return Err(errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("scansione".to_owned()),
+            })
+            .with_cause("la libreria non è più fra gli stati gestiti"),
+        ));
+    };
+    // Il turno prima di tutto: due scansioni intrecciate si contendono
+    // l'inserimento della stessa riga in `tracks`, dove `path` è UNIQUE. Si
+    // libera da sé quando la guardia cade, anche uscendo per un `?`.
+    let Some(_turno) = stato.turno_di_scansione() else {
+        return Err(errore(AppError::new(ErrorCode::LibraryScanBusy)));
+    };
+    // Ma se il programma si sta chiudendo, non si comincia affatto: una
+    // scansione chiesta mentre si esce non deve azzerare la bandiera che
+    // l'uscita ha appena alzato, cioè far ripartire proprio il filo che tutto il
+    // resto sta aspettando che se ne vada.
+    if crate::spegnimento::in_uscita() {
+        return Err(errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("scansione".to_owned()),
+            })
+            .with_cause("il programma si sta chiudendo"),
+        ));
+    }
+    // Dopo il turno e il controllo d'uscita, e prima di leggere: un annullamento
+    // arrivato dopo la fine della scansione precedente fermerebbe questa al
+    // primo file.
+    stato.riprendi_scansioni();
+
+    // Lo store delle copertine si copia **fuori** dal lucchetto: è un percorso, e
+    // il nucleo se lo porta dietro su fili che possono sopravvivere alla scadenza
+    // del file che stavano leggendo.
+    let copertine = stato.copertine().map_err(errore)?;
+    let roots =
+        con_libreria(&stato, |libreria| leggi_cartelle(&libreria.connection)).map_err(errore)?;
+
+    let fermare = &*stato;
+    // La stessa bandiera che legge il callback dell'avanzamento, più l'uscita.
+    // Il nucleo la guarda durante la camminata, dove di avanzamento non ce n'è
+    // perché non c'è ancora niente da contare — ed è la parte che su una share
+    // lenta dura di più — e poi fra un file e l'altro. L'uscita entra qui e non
+    // solo nella bandiera perché una chiusura arrivata a scansione già partita
+    // deve fermarla anche se nessuno ha premuto «Annulla».
+    let fermati = || fermare.scansione_fermata() || crate::spegnimento::in_uscita();
+    let scan = Scan {
+        files: std::sync::Arc::new(aether_app::files::LocalFiles),
+        covers: copertine,
+        roots: &roots,
+        rules: PathRules::for_current_platform(),
+        // Questa scansione l'ha chiesta qualcuno che è davanti alla finestra
+        // e ne legge l'esito riga per riga: se togliesse troppo, se ne
+        // accorgerebbe subito. La guardia serve all'altra — quella che parte
+        // da sola quando la coda dei download ha finito — e accenderla anche
+        // qui vorrebbe dire rifiutarsi di fare quel che è stato chiesto.
+        prudente: false,
+        scadenze: Scadenze::default(),
+        fermati: Some(&fermati),
+    };
+    let mut deposito = DepositoStato::nuovo(&stato);
+    let mut ultimo = 0usize;
+    let report = scan
+        .run_su(&mut deposito, |fatti, totale| {
+            // Non a ogni file: mandare un evento per ognuno di 1421 file
+            // inonderebbe il canale IPC per disegnare una barra che si muove di
+            // meno di un pixel per volta.
+            if fatti == totale || fatti.saturating_sub(ultimo) >= 25 {
+                ultimo = fatti;
+                app.emetti("scansione:avanzamento", Avanzamento { fatti, totale });
+            }
+            if fermare.scansione_fermata() {
+                std::ops::ControlFlow::Break(())
+            } else {
+                std::ops::ControlFlow::Continue(())
+            }
+        })
+        .map_err(errore)?;
+    // I numeri in una presa a parte, dopo: il deposito è appena stato
+    // restituito, e chiederli da dentro la scansione vorrebbe dire tenerlo per
+    // una `COUNT(*)` che con la scrittura non c'entra niente.
+    let numeri = con_libreria(&stato, |libreria| counts(&libreria.connection)).map_err(errore)?;
+    Ok(EsitoScansione::da(&report, numeri))
+}
+
 /// Chiede alla scansione in corso di fermarsi.
 ///
-/// Non chiede il lucchetto della libreria — e non può: quel lucchetto ce l'ha
-/// la scansione che deve fermare, per tutta la sua durata. Alza un bit, e la
-/// scansione lo legge fra un file e l'altro.
+/// Non chiede il lucchetto della libreria, e non perché non potrebbe: la
+/// scansione ormai lo prende e lo lascia lotto per lotto, quindi lo otterrebbe.
+/// È che questo comando è **sincrono**, cioè gira sul filo principale, e il filo
+/// principale è quello che ridisegna la finestra: qualunque attesa lì è la
+/// finestra ferma. Alza un bit, e la scansione lo legge fra un file e l'altro —
+/// e anche durante la camminata sulle cartelle, dove un lucchetto non c'è.
 ///
-/// Torna subito: fermarsi vuol dire «alla fine del lotto in corso», non
-/// «adesso». Chi la mostra lo sa dall'esito, che dirà `annullata`.
+/// Torna subito: fermarsi vuol dire «alla fine del file che si sta leggendo»,
+/// non «adesso». Il lotto scrive quel che ha già letto e la scansione smette lì:
+/// quel che è entrato in libreria resta, e la passata dopo finisce il lavoro.
+/// L'attesa che resta, quindi, è quella di un'apertura sola — fino alla sua
+/// scadenza, se il file è su una condivisione che non risponde. Chi lo mostra lo
+/// sa dall'esito, che dirà `annullata`.
 #[tauri::command]
 pub fn annulla_scansione(stato: State<'_, Stato>) -> Esito<()> {
     stato.ferma_scansione();
@@ -1138,7 +1232,7 @@ mod prove {
 /// **questo** lo si può chiedere solo da qui: `aether-app` non conosce Tauri e
 /// non deve conoscerlo.
 ///
-/// # La scadenza
+/// # La scadenza dice quanto, la riserva dice dove
 ///
 /// Attraversare la cartella Musica di qualcuno può durare, e su una cartella
 /// sincronizzata che non risponde può durare i quaranta secondi di Windows. È
@@ -1146,14 +1240,26 @@ mod prove {
 /// chiudere il programma: alla scadenza si restituisce un elenco vuoto, che la
 /// finestra sa già disegnare — è lo stato «nessuna cartella trovata», che deve
 /// esistere comunque per chi la musica la tiene altrove.
-#[tauri::command(async)]
-pub fn cartelle_candidate(app: tauri::AppHandle) -> Esito<Vec<CartellaCandidata>> {
+///
+/// Quella scadenza dice **quanto** si aspetta. [`in_disparte`] dice **dove**
+/// l'attesa succede: sul pool bloccante e non su un worker del runtime, che sono
+/// tanti quanti i processori e che qui verrebbero occupati da un'attesa di rete
+/// mentre servono a ogni altro comando asincrono. Le due cose non si sostituiscono
+/// a vicenda, e la documentazione di [`crate::disparte`] dice perché.
+///
+/// Prende un `AppHandle` e non uno `State`: il lavoro va mosso dentro una
+/// chiusura `'static`, e un prestito dello stato lì dentro non entra.
+#[tauri::command]
+pub async fn cartelle_candidate(app: tauri::AppHandle) -> Esito<Vec<CartellaCandidata>> {
     let percorsi = percorsi_musicali(&app);
-    let trovate =
+    let trovate = in_disparte("cartelle candidate", move || {
         aether_app::scadenza::con_scadenza(RICERCA_CARTELLE_NOME, RICERCA_CARTELLE, move || {
             aether_app::primo::esamina(&aether_app::files::LocalFiles, &percorsi)
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+    })
+    .await
+    .map_err(errore)?;
 
     Ok(trovate
         .into_iter()
@@ -1199,8 +1305,6 @@ pub struct CartellaCandidata {
 /// tutto il resto per tutti, e una radice sorvegliata sbagliata si paga a ogni
 /// scansione successiva.
 fn percorsi_musicali(app: &tauri::AppHandle) -> Vec<String> {
-    use tauri::Manager as _;
-
     let mut fuori = Vec::new();
     let percorsi = app.path();
     if let Ok(musica) = percorsi.audio_dir() {

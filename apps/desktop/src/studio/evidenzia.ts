@@ -107,34 +107,6 @@ export function evidenzia(riga: string): Pezzo[] {
   return pezzi;
 }
 
-/**
- * Su quale riga sta l'errore, contando da zero.
- *
- * Il nucleo dà il percorso nel documento (`parts.section-cards`), non una
- * posizione nel testo: `SkinDocument` è un albero e non sa più da che carattere
- * veniva. Una chiave del percorso però è scritta nel file **fra virgolette**, e
- * cercarla è il modo più corto per arrivare alla riga giusta.
- *
- * # Perché non basta l'ultimo pezzo
- *
- * Perché i punti nel percorso separano i livelli, ma stanno **anche dentro** i
- * nomi: `tokens.color.accent` è il token `color.accent` dentro `tokens`, non un
- * `accent` dentro un `color`. Prendere l'ultimo pezzo e basta cercherebbe
- * `"accent"`, che nel file non c'è.
- *
- * Quindi si provano tutti i sotto-percorsi dal più lungo al più corto e si tiene
- * il primo che si trova: il più lungo è anche il più specifico, quindi il primo
- * a corrispondere è quello giusto.
- */
-export function rigaDi(sorgente: string, percorso: string): number | null {
-  const pezzi = percorso.split(".");
-  for (let da = 0; da < pezzi.length; da += 1) {
-    const dove = sorgente.indexOf(`"${pezzi.slice(da).join(".")}"`);
-    if (dove >= 0) return sorgente.slice(0, dove).split("\n").length - 1;
-  }
-  return null;
-}
-
 /** Riga e colonna di un carattere, contando da uno: è come si leggono. */
 export function posizione(sorgente: string, indice: number): {
   riga: number;

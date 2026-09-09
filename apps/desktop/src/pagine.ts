@@ -212,8 +212,25 @@ export function usePigro<T>(valore: T, ritardoMs: number): T {
  *
  * `evento` deve essere costante: è la sola dipendenza, ed è il nome di un
  * canale, non un valore.
+ *
+ * # `acceso`, e perché non basta non chiamare l'hook
+ *
+ * Chi non vuole l'ascolto lo dice con `acceso = false` invece di saltare la
+ * chiamata: gli hook si contano per posizione, e un `useAscolto` dietro un `if`
+ * cambierebbe l'ordine fra un disegno e l'altro — che React tratta, a ragione,
+ * come un errore duro. Qui l'hook si chiama sempre, e a spegnersi è l'effetto,
+ * con un'uscita anticipata e `acceso` fra le dipendenze: passando a `false`
+ * l'ascolto si scioglie, tornando a `true` si riapre.
+ *
+ * Serve allo spettro con la sorgente sintetica (`Spettro3D`, `sorgente:
+ * "finto"`), che le sue file se le fabbrica e non deve né ricevere né chiedere
+ * quelle del motore.
  */
-export function useAscolto<T>(evento: string, gestore: (carico: T) => void): void {
+export function useAscolto<T>(
+  evento: string,
+  gestore: (carico: T) => void,
+  acceso = true,
+): void {
   const ultimo = useRef(gestore);
   // Senza array di dipendenze: gira dopo ogni disegno, che è precisamente
   // quando `gestore` può essere cambiato.
@@ -221,6 +238,7 @@ export function useAscolto<T>(evento: string, gestore: (carico: T) => void): voi
     ultimo.current = gestore;
   });
   useEffect(() => {
+    if (!acceso) return;
     let vivo = true;
     let sciogli: (() => void) | null = null;
     void listen<T>(evento, (arrivato) => ultimo.current(arrivato.payload)).then((stop) => {
@@ -237,5 +255,5 @@ export function useAscolto<T>(evento: string, gestore: (carico: T) => void): voi
       vivo = false;
       sciogli?.();
     };
-  }, [evento]);
+  }, [evento, acceso]);
 }

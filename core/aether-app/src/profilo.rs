@@ -48,6 +48,7 @@ use aether_domain::errors::{AppError, ErrorCode};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use crate::library::db_error;
 use crate::settings;
 
 /// Cosa rappresenta una chiave, e quindi come la si tratta.
@@ -75,6 +76,10 @@ const CATALOGO: &[(&str, Genere)] = &[
     (crate::preferenze::CHIAVE_LINGUA, Genere::Preferenza),
     ("skin.active", Genere::Preferenza),
     ("skin.dynamicAccent", Genere::Preferenza),
+    // Viaggia: «la X non spegne» è un'abitudine di chi ascolta, non un fatto di
+    // questa macchina — al contrario di `player.output`, che è il nome di una
+    // scheda audio. Su un altro computer nomina lo stesso vassoio.
+    (crate::preferenze::CHIAVE_SECONDO_PIANO, Genere::Preferenza),
     // ── la riproduzione ──
     // `player.queue` **non** c'è, ed è la seconda ragione per cui questo elenco
     // è di inclusioni: contiene identificativi di righe di `tracks`, che su
@@ -91,6 +96,33 @@ const CATALOGO: &[(&str, Genere)] = &[
     // Viaggia per la stessa ragione: quanto si vuole che due brani si
     // sovrappongano è un gusto d'ascolto, non un fatto di questa macchina.
     ("player.crossfade", Genere::Preferenza),
+    // Viaggiano tutte e due: quante barre si vogliono vedere e se la scena
+    // parte accesa sono gusti di chi guarda, e restano veri su qualunque
+    // computer. Le barre erano una promessa che il codice faceva senza
+    // mantenerla — la carta di `CHIAVE_SPETTRO_BANDE` diceva che la scelta non
+    // sparisce cambiando dispositivo, e l'unico meccanismo che la può portare
+    // altrove è questo elenco, dove non c'era.
+    (crate::playback::CHIAVE_SPETTRO_BANDE, Genere::Preferenza),
+    (crate::playback::CHIAVE_SPETTRO_VISIBILE, Genere::Preferenza),
+    // `player.output` **non** c'è, ed è l'altra faccia di `player.queue`: è il
+    // nome di una scheda audio, cioè il fatto di questa macchina per
+    // eccellenza. Portarlo altrove vorrebbe dire arrivare su un computer con
+    // scritto «FiiO K11» in una preferenza che là non nomina niente — non
+    // rotto, perché `dispositivi::scegli` ripiega sul predefinito, ma una
+    // riga di impostazioni che indica un oggetto inesistente. L'omissione qui
+    // è deliberata: la prova che la tiene tale sta in fondo al file.
+    // `player.spectrum.quality` **non** c'è, ed è la terza omissione
+    // deliberata di questo elenco. La ragione è quella di `player.output`: è un
+    // fatto di questa macchina, non un gusto di chi ascolta — «alta» vuol dire
+    // «quel che questa scheda video regge», e portata da un fisso a un
+    // portatile descrive un hardware che di là non esiste.
+    //
+    // A differenza delle altre due, però, il danno sarebbe **invisibile**. Una
+    // coda che nomina righe sbagliate si vede subito; un'uscita audio che non
+    // c'è ripiega sul predefinito e si nota. Qui la scena continua a
+    // disegnarsi: solo peggio, e più calda, su una macchina che nessuno ha
+    // misurato. Un difetto che non si manifesta è un difetto che non si
+    // corregge, ed è la ragione per cui l'omissione qui conta più delle altre.
     // ── la tastiera ──
     (crate::preferenze::CHIAVE_SCORCIATOIE, Genere::Preferenza),
     // ── gli automatismi ──
@@ -173,14 +205,6 @@ pub struct Piano {
     pub percorsi_mancanti: Vec<String>,
     /// Quante chiavi sono già uguali a quel che c'è.
     pub invariate: usize,
-}
-
-/// Traduce un guasto di SQLite nominando l'operazione.
-fn db_error(cosa: &str, err: &rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(cosa.to_owned()),
-    })
-    .with_cause(err.to_string())
 }
 
 /// Il profilo di questo computer.
@@ -390,6 +414,21 @@ mod prove {
     }
 
     #[test]
+    fn l_uscita_audio_non_esce() {
+        // L'omissione da `CATALOGO` è deliberata, e senza questa prova
+        // sarebbe indistinguibile da una dimenticanza — che è esattamente il
+        // difetto che un elenco di inclusioni si porta dietro.
+        let c = libreria();
+        settings::write(&c, "player.output", r#""FiiO K11""#).expect("scrittura");
+        let uscito = esporta(&c, 0).expect("esportazione");
+        assert!(
+            !uscito.json.contains("FiiO K11"),
+            "è il nome di una scheda audio: su un altro computer non nomina niente"
+        );
+        assert!(uscito.lasciate.contains(&"player.output".to_owned()));
+    }
+
+    #[test]
     fn la_coda_non_esce() {
         let c = libreria();
         settings::write(&c, "player.queue", r#"{"tracks":[1,2,3]}"#).expect("scrittura");
@@ -399,6 +438,45 @@ mod prove {
             "sono identificativi di righe: su un'altra libreria nominano canzoni diverse"
         );
         assert!(uscito.lasciate.contains(&"player.queue".to_owned()));
+    }
+
+    #[test]
+    fn la_qualita_dello_spettro_non_esce() {
+        // La terza omissione deliberata, e senza questa prova sarebbe
+        // indistinguibile da una dimenticanza — il difetto che un elenco di
+        // inclusioni si porta dietro, e che qui costerebbe più che altrove:
+        // una qualità sbagliata non rompe niente, la scena continua a
+        // disegnarsi, e nessuno si accorge mai di cosa la sta rallentando.
+        let c = libreria();
+        settings::write(&c, "player.spectrum.quality", r#""alta""#).expect("scrittura");
+        let uscito = esporta(&c, 0).expect("esportazione");
+        assert!(
+            !uscito.json.contains("player.spectrum.quality"),
+            "«alta» descrive questa scheda video: su un altro computer descrive un hardware che non c'è"
+        );
+        assert!(
+            uscito
+                .lasciate
+                .contains(&"player.spectrum.quality".to_owned())
+        );
+    }
+
+    #[test]
+    fn le_barre_e_la_visibilita_dello_spettro_escono() {
+        // L'altra metà della stessa decisione: quante barre e se la scena parte
+        // accesa sono gusti di chi guarda. Per le barre chiude anche una
+        // promessa che il codice faceva e non manteneva.
+        let c = libreria();
+        settings::write(&c, "player.spectrum.bands", "256").expect("scrittura");
+        settings::write(&c, "player.spectrum.visible", "true").expect("scrittura");
+        let uscito = esporta(&c, 0).expect("esportazione");
+        assert!(uscito.json.contains("player.spectrum.bands"));
+        assert!(uscito.json.contains("player.spectrum.visible"));
+        assert!(
+            uscito.lasciate.is_empty(),
+            "e non restano qui: {:?}",
+            uscito.lasciate
+        );
     }
 
     #[test]

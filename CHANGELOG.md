@@ -29,6 +29,838 @@ What increments what:
   (`SKIN_TRANSFER_PROTOCOL`), that is, the two points at which an updated device
   would stop understanding one that stayed put.
 
+## [Unreleased]
+
+**Nothing is pending.** Everything that was waiting here went out in 2.3.0.
+
+## [2.3.0] — 2026-09-09
+
+**Minor and not patch, because it is a new feature — but no migration.**
+`ui.closeToTray` is one more row in the `settings` table, and the profiles of
+the configured models live as JSON in that same table, which is key/value:
+coming back from here to 2.2.0 costs nothing, the unread keys stay where they
+are. The refinement pass that ships in the same release changes neither the
+appearance nor the shape of the data — by the rule above that is a patch — and
+rides along with the minor.
+
+**And skins keep loading.** The `canvas.viz.*` block holds eighteen tokens now,
+fifteen of them new, and every one of them is non-required: a skin that has
+never heard of them declares none, an undeclared token inherits the base value,
+and `check_skin` warns only about the required ones — so a skin written for
+2.2.x opens unchanged and gets the scene this version ships.
+`SKIN_FORMAT_VERSION` stays 1, which by the rule above is the whole reason this
+is a minor and not a major. The one thing that did go away is
+the part `viz-title`, and it was **retired rather than removed**: there is a
+`RITIRATE` list, and both `stile_parte` and the `part` field of a shelf node
+accept a retired name and draw nothing. Deleting it outright would have been a
+hard error rather than a warning, that is, a third-party skin that styles a
+component the application never drew would have stopped opening — which is a
+strange way to punish somebody for being thorough.
+
+### Added — the visualiser stopped being a fixed picture
+
+The spectrum in «Now playing» was the last surface in the application that a
+skin could not touch. Three variables reached the scene — `--viz-primary`,
+`--viz-secondary` and `--accent-glow` — and in a stock skin **all three were the
+same colour**: the first two both compiled to `var(--accent)`, and `tinta()`
+throws the alpha away, so the third came back as that same RGB. Both `mix()` in
+the fragment shader were therefore no-ops, and the whole scene reduced to
+«accent times light» — a picture with one colour in it, inside the part of the
+program whose entire point is that you choose the colours. A fourth variable,
+`--viz-glow`, was declared, compiled into every sheet, checked by a fidelity
+test, and **read by nobody**.
+
+There are eighteen `canvas.viz.*` tokens now, and they are not all colours.
+Three say what the scene is painted with: `primary` at the top of a bar,
+`secondary` at its base — a dark value now, so that the gradient which used to
+be a no-op is a gradient — and `tip`, the lit crest, which used to borrow the
+accent's glow and is now a colour of its own. Six say what the room is shaped
+like: `width`, `depth`, `height`, `fill`, the `lens` in degrees and the height
+of the `eye`. Nine say how it behaves: where the `haze` starts, how strong the
+`reflection` is, how much `ambient` light there is, how far the camera `sway`s
+and how hard the `beat` pushes it, the `attack` and `release` of a bar in
+milliseconds, and the `floor` in decibels.
+
+Every numeric one carries bounds, and that is not tidiness. The Studio's slider
+falls back to `min ?? 0` and `max ?? 1`, so a `Number` with no limits gets a
+0..1 control that silently truncates whatever you drag onto it — which is
+exactly why `canvas.viz.glow`, whose value is 20, could not be edited at all
+until today. `canvas.scrubber.glow` gains bounds for the same reason, 0..40;
+the two skins in this repository hold 6 and 10, so nothing that ships from here
+has to move.
+
+**The Studio shows the scene moving while you paint it.** Until now the preview
+mounted an empty `<canvas>` with a dashed outline and a comment saying the scene
+could not be lit «because there is no audio». That was a reason about the
+*source* and not about the renderer, and the doctrine of that file is that where
+a component can be mounted it is used and not imitated. So the real one is
+mounted, on a synthetic source: a bass drum, a snare, a hi-hat, a bass line and
+a pad on a grid of bars, written closed-form in the event number and allocating
+nothing — which means two authors on two machines see the same image, and a
+screenshot becomes a review document instead of an anecdote. It stops on three
+conditions, and the second is not optional: unmount, a hidden window, and the
+canvas scrolled out of view. The real scene falls asleep on silence; a synthetic
+signal never falls silent, so without that guard the Studio left open behind
+another window would burn a GPU indefinitely. With reduced motion it pushes one
+row and stops: a still, correct picture of the colours.
+
+**Four ready-made blocks** — «Classic», «Curated», «Flat» and «Deep» — each
+applied in a single undo step. The strip that offers them is drawn generically
+from the group of the token you have open, so the panel still names no token;
+the blocks themselves live in Rust next to the registry, so the existing
+validator owns them. One test applies each of them to `plain` and asserts the
+result parses and warns about nothing, which catches both a token that has
+disappeared and a number that has fallen outside its bounds — the two ways a
+table of presets rots.
+
+It is worth saying exactly what «Classic» does and does not do. It writes two
+values, putting `canvas.viz.secondary` and `canvas.viz.tip` back onto
+`color.accent`, and that is enough: both `mix()` collapse again and the 2.2.x
+palette is back. It does not repeat the other sixteen, because they are already
+at yesterday's number — the registry's defaults were *measured* off the 2.2.x
+renderer rather than chosen, and repeating one here would be a second copy of a
+default, the first thing to diverge the day the default moves. What «Classic»
+cannot bring back is the reflection. That used to be a flat alpha, identical
+from the floor to the top of a bar; it now fades upward, and it changed for
+**every** skin, because it is the renderer drawing a reflection differently and
+not a value that somebody moved. A knob for «draw it the old way» would be a
+token that describes a version instead of describing an image, which is the kind
+of knob this registry does not keep.
+
+*Deliberately not done: no enumerated `TokenKind` for the presets.* It was the
+obvious shape — a token whose value is one of four names — and it would have
+made the presets the first entry in the registry to hold a **choice** rather
+than a **value**. Everything downstream of `TOKENS` assumes a value: the
+compiler writes it into a sheet, the Studio picks a control from its type, the
+validator checks it against limits. A choice would have needed a fifth answer at
+each of those points, in exchange for something a bundle of ordinary values
+already expresses exactly. The four blocks write ordinary values, and a skin
+that has applied one is indistinguishable from a skin whose author typed them.
+
+*Deliberately not tokens, and it is a short list with one rule behind it:* a
+number that is a budget, a correctness rule or a guarantee is not an appearance.
+The half minute of memory, the number of floors in the cascade, the box budget
+and the 33-millisecond step are the module's thesis; the 1.5 cap on device pixel
+ratio defends somebody else's fan and battery; the lowest eighth of the bands
+that drives the camera is a correctness rule; and the 0.004 minimum bar height
+is the guarantee that says «it is there, and right now it is at zero» — a
+guarantee with a knob on it is a guarantee somebody can take away.
+
+**One thing came free.** The opening fade was a literal 500 milliseconds. It
+reads `motion.dur.3` now, which is 450 by default: fifty milliseconds shorter,
+imperceptible, and a skin that declares its long overlays slow gets a spectrum
+that arrives slowly to match.
+
+### Added — Settings › Playback: whether the spectrum shows, and what it may cost
+
+The scene still starts off — somebody who opens «Now playing» came to look at
+the cover — but the `i-eq` button used to forget the answer at every launch, and
+now the choice sticks. `player.spectrum.visible` is a row in `settings` like
+every other preference, and it **travels in a profile**, because «I want to see
+the spectrum» is a taste of the person listening and stays true on any computer.
+
+Beside it, `player.spectrum.quality`: automatic, high or low, automatic by
+default, and the **third key deliberately kept out** of the profile's inclusion
+list, after `player.queue` and `player.output`. The reason is `player.output`'s:
+it describes this machine's graphics card, and «high» carried from a desktop to
+a laptop names hardware that is not there. What makes this one worth arguing
+about is that, unlike the other two, the damage would be **invisible**. A queue
+naming rows that do not exist shows up immediately; an audio output that is gone
+falls back to the system default and you notice. Here the scene simply keeps
+drawing — worse, and hotter, on a machine nobody measured. A defect that never
+surfaces is a defect that never gets fixed, which is why this omission needed
+more argument than the two before it, not less.
+
+There is no `sane()` clamping the value by hand. `Qualita` is
+`#[serde(rename_all = "lowercase")]`, an «ultra» simply fails to deserialise,
+and `read_json` already declares that malformed counts as absent — so the clamp
+falls out of a rule written once instead of being re-implemented here. The
+setter takes a `String` and gives back a `Qualita`, and that asymmetry in the
+signature **is** the clamp, made visible to whoever calls it.
+
+The card went into **Playback** and not «Appearance», and the line behind that
+is worth stating because it is the one that divides this work in two: a skin
+says how the scene looks, a setting says how much *this machine* is willing to
+spend on it and whether it starts lit. The key's domain is `player.*` like
+every other resident of that section, and «Appearance» is where the look lives
+— which, by that line, is precisely the half that is not a setting. The card
+brings no new CSS with it, and its entry in the settings search carries
+symptoms among its synonyms — fan, battery, GPU, power draw — because those are
+the words somebody types when they arrive here.
+
+**And a promise nobody was keeping is now kept.** The comment on
+`player.spectrum.bands` said the number of bars does not disappear when you
+change device, «because preferences travel with the backup and with the sync».
+That was not true of this key, and it is not true of nearly any key: the Drive
+backup copies **two** rows of `settings` — the watched folders and the active
+skin — and the sync copies **three**. The only mechanism that carries a
+preference from one computer to another is the profile, and this key was not in
+its list. It is now, next to `player.spectrum.visible`, and both comments have
+been rewritten to describe what happens rather than what would have been nice.
+
+*Deliberately not done: the bar count did not move into Settings.* The
+difference between sixty-four bars and five hundred and twelve is not something
+you can imagine from a number on another screen — you choose it while looking at
+it, which is the argument already written where the control lives. The card in
+Settings says where it is, and leaves it there.
+
+### Added — Settings › Playback: choose the output, and a player that follows the cable
+
+Until now the audio output was not managed at all: `uscita.rs` opened
+`default_output_device()` and that was the whole of it. No list, no choice, no
+way to send Aether to a USB DAC while the system stayed on the speakers —
+`output_devices()` was not called anywhere in the workspace. What existed was
+only fault *detection*: cpal signalled a dead stream, and a red band offered
+**Reopen**, to be pressed by hand.
+
+Three things were wrong with that, and all three are fixed.
+
+**The band was a dead end.** Nothing ever looked to see whether a device had
+come *back*: plugging the headphones in again did nothing, and the application
+started without a sound card stayed a browsable catalogue until the next
+restart. A new thread, `aether-dispositivi`, now re-reads the list every two
+seconds and reopens by itself. It is a thread of its own and not the clock's:
+enumerating WASAPI is a system call that a misbehaving driver can sit on for
+hundreds of milliseconds, and the clock moves the scrubber four times a second.
+
+**A changed default was invisible.** Switching output from the Windows settings
+does not invalidate the endpoint that is already open: cpal raises no
+`StreamError`, the `perso` flag stays down, the position keeps advancing, and
+the sound keeps coming out of the previous card with nothing saying so. There
+was no fault to see, which is why the comment in `uscita.rs` claiming to cover
+«headphones unplugged, card changed» only ever covered the first. The watcher
+does not look for faults: it asks `dispositivi::scegli` — **the same function
+that decides at open time** — what it would open now, and compares that with
+what is open. One line, and all four cases fall out of it.
+
+**And now you can choose.** Settings › Playback grows an *Audio output* card:
+system default, or a card by name, saved in `player.output`. The list keeps
+itself up to date — there is no «refresh» button, because a refresh button is
+the admission that a list can be stale. A device that is chosen and then
+unplugged stays in the list, greyed out: removing the row would put the dot back
+on «system default», that is, would claim the preference had been forgotten when
+it is still written and will hold again as soon as the cable goes back in.
+
+`player.output` deliberately stays **out** of `profilo.rs`'s inclusion list: it
+is the name of a sound card, the machine-specific fact par excellence, and a
+profile carrying «FiiO K11» to another computer would name nothing there. A test
+holds the omission in place, because in an inclusion list a deliberate omission
+and a forgotten one look exactly alike.
+
+### Added — a chat inside the Skin Studio: ask for the change instead of writing it
+
+The Studio already knew everything a language model needs in order to work
+inside it, and told nobody. The vocabulary of what a skin may repaint is
+**closed and declared** — 58 tokens with their type, 52 components, 11 effects
+each with a minimal example produced by the real parser, the words allowed in a
+shell node. Validation is **complete and never fails**: it answers with
+positioned errors, warnings, measured contrasts, and a «did you mean» for every
+misspelled name. And the source of truth is **text**, edited by path through six
+pure functions with undo already wired to every write.
+
+That is exactly the shape a model works well on: a closed schema to put in the
+prompt, a textual format to edit by paths, and a validator that says what is
+wrong in words the model can use to correct itself. All that was missing was
+somebody to ask.
+
+There are **two modes**, switched in the panel's header, and they are two cuts
+of the same gesture — who presses Apply:
+
+- **Agent** (the one it opens on) — the model applies, re-reads the validation
+  **of the result**, and fixes what it broke. At most four rounds, with a Stop
+  button that interrupts within a beat. Warnings do not restart a round: in the
+  Studio a warning does not block an export, and it must not block this either.
+  Neither does a round that changed nothing, nor one that produced the same
+  document as the round before: a model that has dug its heels in would
+  otherwise cost four paid requests for one result.
+- **Proposal** — the model proposes, the panel shows the diff between what you
+  have and what you would get, and you decide. It is the mode in which you learn
+  what a request actually does.
+
+It opens on Agent and not on Proposal, because Agent is the answer to the
+question the panel exists for — «change this». Opening on Proposal would put a
+step in front of every edit to guard against a gesture that is already reversible
+twice over.
+
+Either way the change goes through the same path a dragged slider does, so
+**Ctrl+Z takes it back in one go**; in Agent mode a snapshot is taken before the
+first round, because four rounds are four edits and undoing them one at a time
+would be the wrong punishment for having tried.
+
+The changes travel inside a fenced `aether-patch` block rather than through tool
+calls, and that is not a shortcut: small local models get tool calling wrong far
+more often than they get a fenced code block wrong. Reading that block is done
+in Rust, in `aether-ia`, because it is the function that receives the least
+predictable input in the whole application and `npm run verify` has no
+TypeScript tests. Nine well-formed operations and one crooked one are worth
+nine: what is rejected is named, not thrown away with the rest.
+
+A step of a path is an object key **or a position in a list**, and that is the
+difference between a chat that can repaint a gradient and one that cannot. A
+skin manifest is full of lists — `parts.<name>.background` is a stack of layers,
+every gradient carries its `stops`, a shell node carries its `children` — so the
+most ordinary request there is («warm up the card's gradient») lands on
+`["parts","section-card","background","0","stops","0","color"]`. Writing at the
+position equal to a list's length appends to it; removing a position shifts the
+rest down; a position further out is refused, because a hole in a list is a
+`null` in the document. What cannot be honoured is not honoured halfway: the
+operation is rejected **by name**, in the same list of reasons the model gets
+back in Agent mode.
+
+### Added — Settings › AI Models: four providers, several saved profiles
+
+- **OpenRouter** for remote models — the only one that wants a key.
+- **Ollama** (`http://localhost:11434/v1`) and **Bionic / LM Studio**
+  (`http://localhost:1234/v1`) for models running on your own machine. Bionic is
+  LM Studio's new agent app; it exposes no HTTP API of its own, so what Aether
+  calls is LM Studio's local server — Developer tab, Start server.
+- **Custom**, for any other OpenAI-compatible endpoint.
+
+Several named profiles can coexist and one is active at a time. Each key lives
+in the **operating system's keychain**, one entry per profile, never in the
+library database and never crossing the IPC boundary: the core reads it an
+instant before each request. Deleting a profile deletes the secret first and
+stops if it cannot — otherwise the list would lose the only place where the name
+of that keychain entry was written.
+
+The «Test» button and the model list are the same request (`GET /models`): a
+service that answers it answers everything — right address, process running, key
+accepted.
+
+OpenRouter counts tokens while streaming, but only tells whoever asks: Aether
+asks, so the count under a finished answer is a real number on the one provider
+of the four that charges for it.
+
+### Added — models that think out loud, and the panel that shows it
+
+A model that reasons before answering writes in two places. The OpenAI protocol
+has `delta.content`; the ones that think add `delta.reasoning` — OpenRouter,
+vLLM — or `delta.reasoning_content` — DeepSeek, LM Studio, part of Ollama — and
+put **all** the reasoning there, which on a large model runs for a minute before
+the first real word arrives in `content`.
+
+Reading only `content` gives a panel that sits silent for that minute: anyone
+watching concludes it is broken and presses Stop long before the answer. Mixing
+the two gives a block of changes with the model's own discarded attempts inside
+it, which does not apply. So the two travel separately all the way to the
+window, which draws the reasoning in its own dimmed block — open and showing its
+tail while it arrives, closed inside the message once the answer is there — and
+never sends it back to the model or through the operation extractor.
+
+### Added — two more ways for a service to be honest about failing
+
+- A service that **ignores `stream: true`** and answers with the whole document
+  at once is now read instead of refused. The answer is there and identical; a
+  request that worked, and on a paid provider one already paid for, should not
+  come back as an error.
+- `ia.noAnswer`, for a service that accepts the request and closes without
+  saying anything. It used to come out as `ia.badResponse` — «that was not an
+  event stream» — which sends you to check the address, the one thing that is
+  right. It happens on free models when the provider's queue expires before your
+  turn, so it is retryable, and the sentence says to try again or pick a less
+  crowded model.
+
+### Added — `PRIVACY.md` § 2-quater
+
+What the chat sends, and to whom. With a local model, nothing leaves the
+machine. With OpenRouter or an address of your own, what leaves is **the skin
+document you have open and what you type in the chat** — a design file and a
+conversation. No track, no album, no playlist, no listening history, no file
+name, no identifier of you or of this installation. And the note that choosing a
+provider is choosing a privacy policy: Aether can tell you what it sends, not
+what the other end keeps.
+
+### Added — `aether-ia`
+
+A new crate, and it earns its place by what it does **not** know: what a skin
+is. It speaks the OpenAI-compatible dialect, decodes the event stream, and
+recognizes a block of operations on any JSON document. The instructions that
+describe tokens and components are built by the window, where the registry and
+the document already are, and arrive as a message like any other.
+
+The two pieces that get things wrong are the two that test without a network:
+the stream decoder — because chunk boundaries have nothing to do with event
+boundaries, and the resulting defect only shows up on long answers — and the
+operation extractor. Both have a test for every way they can fail, one byte at
+a time included.
+
+No new dependency: `THIRD-PARTY-NOTICES.md` is unchanged.
+
+### Added — Settings › Closing and background: the X can stop quitting
+
+The window has no decorations, so the three buttons in the corner are React
+(`BarraTitolo.tsx`) and the X goes through `finestra_chiudi`, which calls
+`close()` and not `exit()` — «the same road as the system button, the event and
+whoever listens to it, instead of going around it». That choice was made for
+another reason, and it is what made this possible without touching the title bar
+at all: something finally listens on that road.
+
+With the switch on, closing **hides** the window and the music keeps playing.
+Nothing had to be moved to make that true: the audio has always lived entirely
+in the Rust process — `aether-play`, threads `aether-uscita` and
+`aether-decodifica` — and the page does not contain a single `<audio>`,
+`AudioContext` or `mediaSession`. There is nothing, on the window's side, that
+hiding it stops. The OS media card keeps working for the same kind of reason:
+SMTC is attached to the window's `HWND`, and `hide()` does not destroy it, which
+is also why hiding is right where destroying the window would have orphaned the
+session.
+
+An icon appears in the notification area: left click reopens, right click offers
+**Show Aether** and **Quit**. It is not decoration — a hidden window with no way
+back is a lost program — and that is why `vassoio::nasconde` does not ask only
+whether the preference is on: it asks whether the icon actually exists. If the
+system refused it, or if the labels have not come down from the window yet, the
+X goes back to closing. That is the right failure of the two available.
+
+The menu labels travel **from** the window (`vassoio_lingua`), because every
+text the user reads lives in `lingue/` where `strumenti/lingue.js` checks that
+each language has them all. Written in Rust they would have been the only two
+outside that check, and the symptom — a menu half in one language and half in
+the other — looks too much like a translation slip for anyone to report it.
+
+The `tray-icon` cargo feature is now on. `tray-icon` and `muda` were already in
+`Cargo.lock`'s graph: nothing new is downloaded, something that was there gets
+switched on.
+
+Minimize is unchanged, and off is the default. An update that turned this on by
+itself would make a program someone believed they had closed vanish into the
+tray, with the only evidence being music that will not stop — the same doctrine
+as `player.autoplay`, seen from the other side.
+
+### Added — the sheet is checked in both directions now
+
+`strumenti/classi.js` already refused a class in the markup with no rule behind
+it; it now also fails on a rule in `stile.css` that no markup and no part of the
+registry ever names, with `ATTESE_FOGLIO` as the allowlist for the names that
+are composed far from where they are written. It paid for itself at once: it is
+what found `.blocco` and `.intestazione.playlist`, and what noticed that
+`playlist` in `parti/Navigazione.tsx` had never had a rule of its own — now
+declared in `ATTESE_CLASSI`, where a deliberate absence is written down instead
+of looking like an oversight.
+
+`verify.yml` runs `strumenti/classi.js`. The `verify` npm script already did and
+CI did not, which is the half of the check that catches nobody.
+
+New tests: twelve on `aether-skin::document::effetto`, five on `media.rs`, four
+on `vassoio.rs` — with `deve_esserci` pulled out so there was something to test
+— and three plus three on the predicates of `aggiornamenti.rs` and
+`sincronia.rs`.
+
+### Changed — the spectrum costs a fraction of what it cost, and stops when nobody is looking
+
+The drawing loop never idled, and the reason was one line in the wrong place: it
+rearmed itself with `requestAnimationFrame` **before** its own early return, so
+the branch that existed precisely to stop drawing an empty room during a pause
+returned from a frame that had already booked the next one. A full frame at
+every refresh, for a scene with nothing in it, for as long as the window stayed
+open.
+
+Around that, the loop paid for the same things over and over. `camera()`
+returned a fresh `Float32Array(16)` on every call, and it was called once per
+frame.
+Reduced motion was asked by constructing a new `MediaQueryList` every frame
+instead of subscribing once. The canvas size was taken from `clientWidth` and
+`clientHeight` inside the loop, which is a layout read. And three tokens were
+read off a live `CSSStyleDeclaration` every frame, under a comment claiming that
+«costs nothing»: it does not — `getPropertyValue` on a live declaration forces a
+style recalculation if the style is dirty, and the scrubber dirties it twenty
+times a second.
+
+None of that happens any more. Nothing is allocated per frame: the matrix is
+written into a preallocated array, and the camera's direction is three scalars
+instead of two arrays. The size arrives from a `ResizeObserver` on the canvas,
+computed from `contentBoxSize` without touching layout, with `onScaleChanged`
+covering the move to a monitor of a different density. The tokens are read **on
+invalidation** and not per frame, and compared one at a time rather than as one
+signature — so dragging a slider in the Studio costs one eyedropper and not
+eighteen. The flag that asks for a re-read is raised by three narrow
+`MutationObserver`s and a half-second safety net, and never by a `subtree`
+observer on `document`, which would have fired for every row of every list that
+repaints — that is, it would have been the cost this work exists to remove.
+
+**And there is a rest machine, with four states:** alive, dozing, hidden and
+lost. Alive goes to dozing on the silence rule that was already there, once the
+past has finished leaving the room. Dozing goes back to alive on **any** event
+whose maximum is above four, unconditionally and before every other check: that
+is the strap that prevents the one failure worse than any waste this entry is
+about, a black scene with the music playing. Hidden comes from
+`visibilitychange` **or** from a resize to zero area confirmed by
+`isMinimized()` — on Tauri
+`document.visibilityState` is not reliable enough to be the only signal, and on
+Windows a minimised window announces itself as a resize to nothing.
+
+Being hidden **closes the tap**. `ipc.spettro(false)` shuts the emitter thread
+and the tap inside the engine: thirty 4096-point transforms a second that stop
+happening while nobody is looking at their result. It is the largest single item
+of processor time in this release and it costs four lines, with one owner
+remembering the tap's state so that unmounting cannot turn it off twice. If
+WebGL 2 is missing the tap is never opened at all — until now it stayed open in
+a different effect, and the engine transformed audio thirty times a second for a
+canvas that drew nothing.
+
+Rust got lighter in two places. `trasformata()` allocated a 4096-element vector
+of complex numbers on every call — 32 KB, thirty times a second — while the
+comment directly above it claimed to work «in the same space». The bit-reverse
+permutation is now composed with the windowing in a single pass into a buffer
+allocated at birth, guarded by the test asserting that the transform conserves
+energy, which falls over immediately if that composition is wrong. And the ten
+octave bands are behind a switch that is off by default: the ten-bar strip under
+the cover art that used to draw them is gone, nothing else has ever received
+them, and computing them was a scan of every bin and ten logarithms, thirty
+times a second, for a number that landed in a field and died there. The function
+is not deleted — the reduction is correct and belongs to the equaliser — so the
+day a ten-bar strip comes back it gets switched on instead of rewritten.
+
+**A lost context now comes back.** `webglcontextrestored` was not listened for
+at all, so a driver restart or a laptop switching cards left a dead canvas until
+the screen was closed and reopened. It rebuilds the two resource records and
+**reloads the texture from the CPU-side rings**, which survived because they
+live in ordinary memory and not on the card: half a minute of history comes back
+with the picture.
+
+Two smaller things in the shader belong here because they are behaviour and not
+tidying. The `discard` is gone — with blending off and the colour premultiplied,
+writing a near-zero `vec4` composites identically, but it also writes depth, and
+a `discard` anywhere in a shader disables early-Z for the entire draw call. On a
+grid seen edge-on, where overlap is nearly everything, that was the largest win
+this shader had to give. And below a reflection strength of 0.004 the first
+`drawElementsInstanced` is skipped outright: half the draw calls, free, for any
+skin that asked for no reflection at all.
+
+### Changed — reopening now resumes, and 2.3.0 says the opposite of 2.2.0 on purpose
+
+2.2.0 wrote, in `riapri_audio` and in `ipc.ts`, that reopening had to be a
+command and never automatic: cpal opened the system default, so unplugged
+headphones meant a default back on the speakers, that is music in an office, at
+night, in a meeting. It was right for as long as the output could not be chosen.
+
+It can be chosen now, so the reasoning is reversed and the comments that carried
+it have been rewritten rather than left to contradict the code. Whoever does not
+want the sound to move pins their card, and the preference outranks the system
+default; whoever stays on «system default» has asked precisely to follow the
+system. What survives is the other half, and it still holds: the position is
+restored, and the music restarts **only if it was playing**. Somebody who had
+paused and then unplugged the headphones asked for nothing, and `Ripresa` now
+carries that bit, read in the instant of the fault — the engine that reopens is
+a new engine, and knows nothing of what the old one was doing.
+
+**And the window says where the sound went.** Pressing Reopen used to say by
+itself that something had changed; now the sound moves on its own, and without a
+line saying so you hear the music come out of the speakers without knowing why.
+There are two bands instead of one: `role="alert"` in warning colours for «there
+is no audio», which stays and has a button, and `role="status"` in the accent
+colour for «the sound moved to X», which leaves by itself after six seconds.
+Giving both pieces of news in the same red would teach people to ignore the one
+that matters.
+
+The manual button stays. The watcher looks at the *list*, and there are faults a
+list does not tell: a driver that wedges leaving the endpoint in place, an
+exclusive-mode open stolen by another application. There the device is still
+there with the same name, and there is nothing to compare — the button is the
+last word.
+
+**Deduplicated on the way past.** The band was written twice, in `App.tsx` and
+in `parti/Colonna.tsx`, with the same `tSe` fallback and the same button in two
+copies written months apart. Needing a third for the moved-device message meant
+three places to update one sentence, so it is now one component,
+`parti/AvvisoAudio.tsx`.
+
+### Changed — what a 27B model on this machine taught the reader
+
+Everything below was written against a real local model answering real requests,
+not against a guess at what a model does. Five things, and each one was a round
+that produced nothing until it was fixed:
+
+- **The output contract is repeated after the document.** In front of it alone
+  it lost: between the rules and the answer sit the vocabulary and twenty
+  kilobytes of manifest, and the last shape a model sees is the shape it
+  imitates — it answered with a ```json block holding a rewritten fragment.
+  With eight lines at the end, the same model and the same question produce an
+  `aether-patch` block.
+- **JSON Patch spellings are read, not refused.** A model that has read ten
+  thousand JSON Patches writes `path`, `value`, `replace`, `set`. Nothing in
+  those is ambiguous inside a list of operations, and refusing them cost a round
+  for a word. The protocol is still the Italian one; these are spellings that
+  are read, never taught.
+- **`add`, `push`, `append`, `insert`, `prepend` are the exception, and are
+  refused** — they mean «insert before», which is not what "scrivi" does, and
+  accepting them would silently overwrite the layer the model meant to push
+  down. So the reason does not only say no: it says how, which in Agent mode is
+  all the next round needs.
+- **A rejected operation is named by its path**, not only by its number. Told
+  «operation 1 was rejected», the model replied that it no longer knew which one
+  that was and asked for it again — a correction round spent asking.
+- **A round where nothing applied says so**, and asks for the whole change
+  again. «Do not repeat what already works» after a round in which nothing
+  worked told the model something was worth keeping, and it concluded there was
+  nothing left to write.
+
+With those five in, the request «warm the section-card gradient towards the
+palette's brass, and add a vignette on top of that stack» comes back in one
+round as three well-formed operations, applies, keeps the stack a stack, and
+validates.
+
+### Changed — the promise about requests in the clear, rewritten to be true
+
+`PRIVACY.md` § 7 said: «No request in the clear. The HTTP client refuses
+`http://` by construction.» Ollama and LM Studio speak plain HTTP on loopback
+and cannot do otherwise — they have no certificate and cannot have one.
+
+There were three ways out and two were wrong: dropping `https_only` (throwing
+away the protection for everyone to fix one case), or calling those services
+from the window with `fetch` (which would break the content policy and make the
+window the one place in Aether that talks to the network on its own).
+
+The third: a client that accepts `http://` **only towards this machine**, with
+the host checked **on every request** and not once when the profile is saved,
+and with redirects disabled — otherwise a local server answering «302
+`http://elsewhere/`» would carry the request out of the house in the clear,
+which is exactly what the host check exists to prevent. `localhost@evil.com` is
+not this machine, and the check knows it.
+
+The sentence in § 7 now reads: no request in the clear **leaves this computer**.
+It is a weaker promise, and it is written out loud, because a strong promise
+quietly worked around is worth less than a weaker one you can check.
+
+### Changed — the settings index has groups, and AI Models moved
+
+Thirteen entries in a column are not an index. The index now carries four
+headings — **Preferences** (folders, appearance, AI models, closing),
+**Listening**, **Services**, **The program** — and the sections themselves are
+unchanged: same cards, same order inside each group.
+
+*AI Models* was first placed after *Scrobbling*, and the comment defending that
+was a good one: three cards in a row about a service Aether exchanges something
+with, and models are the only setting in the whole program that can send
+something the **user wrote** off this computer. What that ordering was
+protecting, though, was that the question «what leaves, and towards whom» got
+read — and an index is not where anyone reads it. It now sits inside the models
+card, where the key gets pasted. The comment was rewritten rather than left to
+contradict the code.
+
+`ui.closeToTray` travels in `profilo.rs`'s inclusion list: how someone wants the
+close button to behave is a habit, not a fact about this machine — the opposite
+of `player.output`.
+
+### Changed — the shape of the code, with the behaviour left alone
+
+`apps/desktop/src-tauri/src/riproduzione.rs` was 3803 lines. It is now the
+`riproduzione/` folder: `mod.rs` (the player, the state, the basic commands, the
+two-locks rule), `flusso.rs` (the track that is not a file), `fili.rs` (the
+preparer, the clock, the spectrum, the saves), `uscite.rs` (devices), `suono.rs`
+(volume, EQ, normalisation), `riapertura.rs`, `coda.rs`. `main.rs` is untouched:
+the commands still arrive through `mod.rs`'s `pub use`, so the split is
+invisible from the side that registers them.
+
+The three identical periodic threads — cloud, sync, enrichment — now come from
+`stato::avvia_filo_periodico`, next to `Turno` and `aspetta_la_raffica`, where
+that kind of timing already lived. `analisi` and `aggiornamenti` deliberately do
+not, and the docblock says why rather than leaving the next reader to decide
+whether they were forgotten.
+
+«The extension you can get out of a URL» was written three times — the window,
+the catalogue fetch, and a fresh copy that had just been born in `aether-app`.
+Three copies of one rule are three answers waiting to diverge, so it now lives
+once, in `aether_domain::indirizzo`. In the same spirit `aether-app` had nine identical
+`db_error` and two «now in milliseconds»; they are `library::db_error` and
+`library::now_ms`. In `aether-play`, `causa_perdita` and `codice_perdita` are
+derived from one table instead of two lists that had to be kept in step by hand.
+
+About forty items in `core/`'s crates became `pub(crate)` — each was used only
+inside its own file — and every remaining `#[allow]` in `core/` is now
+`#[expect(…, reason)]`, which fails when the thing it excuses goes away. The one
+exception lives inside the `catalogo!` macro and is documented there. This does
+narrow the public API of `core/`'s crates for anyone consuming them from outside
+the repository: nothing in the tree did.
+
+In `App.tsx` the cloud/sync/enrichment cluster is a `useNuvola` hook in
+`nuvola.ts`, and `ipc.ts`'s DOM side effects — `applicaSkin`, `applicaAccento`,
+`urlCopertina` — are in `aspetto.ts`, which leaves `ipc.ts` about talking to the
+core. Four dead exports went with them: `linguaAttiva`, `indirizzoNodo`,
+`percorsoNodo`, `NOMI_WIDGET`.
+
+`stile.css` lost 252 lines of rules no markup wore any more — the `.mini*`
+family of a miniature player that no longer exists, `.solo-voce`,
+`.con-suggerimento`, `.blocco`, `.intestazione.playlist`. 10 557 lines to
+10 305.
+
+### Fixed — a fault that was perfectly recorded and perfectly mute
+
+`ia.badResponse` carried the service's own explanation in a field of the error
+code, and the fields of an error code do not cross the IPC boundary and are not
+written to the diary. The line in the log read `ia.badResponse cause=—`: the one
+piece of information that says whether the fault is theirs or ours, collected
+and then dropped one step short. It now travels in the cause, where both the
+diary and the window can see it.
+
+### Fixed — the cursor dragged to the end said the file was damaged
+
+**Dragging the cursor all the way to the end of a FLAC answered «This file is
+damaged and cannot be decoded. If you have another copy, replace it and scan
+again.»** On a file with nothing wrong with it, and with no «Retry», because the
+catalog declares `playback.decodeFailed` never retryable. Not now and then:
+every time.
+
+`Decodificatore::cerca` handed symphonia the millisecond it had been asked for
+without ever comparing it to the real length of the stream. symphonia 0.5.5
+refuses with `SeekError(OutOfRange)` the moment `ts > n_frames` — FLAC, WAV,
+AIFF, Ogg, MP4 — and `codec_params.n_frames` **was read nowhere in this
+project**. The fallback translated that refusal into `playback.decodeFailed`.
+
+The two numbers don't agree, and by construction they can't, which is the heart
+of it: the duration the window shows comes from the **database** — written by
+lofty at scan time, or taken from a remote catalog's metadata for a streamed
+track, or rewritten by an import from outside — while the length symphonia
+accepts is the container's, which `enable_gapless: true` shortens further still
+by dropping the encoder's padding. The cursor dragged to the end sent
+**exactly** the database's duration.
+
+Eight routes arrived there with no ceiling over them: the cursor, synced lyrics
+(where an `.lrc`'s timings are allowed to overrun the end by **ten seconds** and
+stay clickable), the sync editor, the media keys, the keyboard, «resume where
+you left off», the network's own «Retry», and the fingerprint pass.
+
+So the ceiling lives in the **decoder**, the one place that holds the format
+reader and therefore the only length symphonia will agree with; from there it
+covers all eight. A margin of 120 ms, which sits under the granularity that
+seeking already has — a FLAC block is 4096 frames, about 93 ms at 44.1 kHz.
+Where the ceiling can't reach — MP3 declares no `n_frames` and runs out of bytes
+scanning forward, that is `IoError(UnexpectedEof)` — the refusal is taken for
+what it is, a track that has ended: the queue moves on instead of stopping with
+a warning. **The network is looked at first**, and that needs saying: a share
+that dies during a seek arrives as an `IoError` too, and taken for «end of
+track» it would vanish in silence, with no «Retry» and no point to come back to
+— that is, it would reopen exactly the wound 2.1.0 had closed.
+
+**And the silent damage, which is worth a paragraph of its own.** On the
+fingerprint route the same seek became `Misurato::Negata{ILLEGGIBILE}`: a
+healthy track with a wrong duration in store was marked **unreadable**,
+disappeared from affinity and from autoplay, and left not one line in the diary.
+The fingerprint's window is now measured on the real length of the stream when
+there is one.
+
+Two callers took a ceiling of their own anyway, because the one at the bottom
+would have saved them by changing what the gesture meant. «Forward five seconds»
+from the media keys, pressed three seconds from the end, would have become «next
+track» instead of «go to the end» — `apps/desktop/src-tauri/src/media.rs`, where
+the function's own comment already promised «without leaving the track» and the
+code did nothing but `saturating_add`. And the window's cursor now sends the
+number it was already *showing* (`apps/desktop/src/parti/Scrubber.tsx`).
+
+### Fixed — a reopened device puts the needle back in the groove
+
+2.1.0 taught the application to say that the sound card had gone and to offer
+**Reopen**. What was left was that reopening **lost the position**: the new
+engine is born with nothing open, and the track started over — a twenty-minute
+song unplugged at the fourteenth minute began again from the top. It was
+declared in the tooltip, as a thing given up on.
+
+Now the clock thread, in the exact instant it sees the device disappear, notes
+the track and the millisecond with the **same** function the network branch was
+already using — a note that lives outside the player's lock precisely so that it
+survives the engine being replaced — and «Reopen» opens that track at that
+point. **Playing again — but only if it was playing**: the note carries that bit
+too, read in the same instant. This paragraph used to say «paused, always», and
+the reason was a good one: `cpal` opens the system's *default* device, which
+after an unplugged cable may be the laptop's speakers, and hearing the music
+start on its own in a meeting is a defect. That reason fell with the output
+picker, for the reasons set out under *reopening now resumes* — whoever does not
+want the sound to move pins their card. What is left of it is the other half,
+and it still holds: somebody who had paused and then unplugged asked for
+nothing, and stays paused. `riapertura.rs` records the superseded rule next to
+the branch that replaced it, rather than leaving the comment to contradict the
+code. The tooltip in `it.json` and `en.json` has been rewritten, because it
+promised the opposite.
+
+**And the band no longer speaks two languages.** The cause of the fault was born
+as an Italian sentence inside the engine, crossed the IPC boundary, and was
+printed raw next to a translated string: with the interface in English it read
+**«There is no audio. dispositivo non più disponibile.»** — half a line in one
+language and half in the other, in the one panel that opens when something has
+already gone wrong. What crosses the boundary now is a code, which gets
+translated; the diary goes on writing the Italian sentence, because the diary is
+Italian all the way through. It is the rule the same file already wrote for
+`motivo_prossimo`: the code and not the sentence.
+
+### Fixed — Aether introduced itself as version 0.1
+
+To MusicBrainz, the Cover Art Archive, iTunes, Deezer, LRCLIB and ListenBrainz,
+Aether said it was **`Aether/0.1`**, and had done since the beginning: the string
+was written by hand in `core/aether-net/src/http.rs`, and
+`strumenti/versione.js`, which keeps the other three declarations of the version
+in step, never looked at it. Whoever runs MusicBrainz asks for a recognizable
+version, and presenting one that doesn't exist is the way to get rate-limited —
+that is, to trip exactly the switch that then stops an enrichment pass. The
+compiler writes it now.
+
+### Fixed — a prevented close no longer shuts down half the program
+
+`main.rs`'s run loop raised `spegnimento::chiedi()` on *every* `CloseRequested`,
+and that flag never comes back down by declared design. Left as it was, hiding
+the window would have produced the worst of the two possible failures: music
+still playing while the clock, the spectrum, the device watcher, the resume
+position, scrobbling and the system media card all stopped for good — a live
+program behaving like a dead one. The block is now guarded, and a close that was
+prevented is not an exit.
+
+### Fixed — one door for every core event, and dialogs that answer the keyboard
+
+`useAscolto` (`pagine.ts`) carries a docblock that names the bug it exists to
+prevent: a bare `listen()` cleaned up with `promessa.then(stop => stop())`
+subscribes a second time when the effect restarts before the promise resolves,
+and from then on the event arrives twice. Roughly twenty places in the frontend
+were still writing exactly that pattern — the description of the mistake and the
+mistake itself living in the same tree. All of them go through the hook now. On
+`tauri://drag-drop` the second copy was not merely noise: a dropped skin
+installed itself twice.
+
+The worst case was `parti/LetturaLink.tsx`, which resubscribed at every open.
+Fixing it has a declared side effect: the link bar can now appear already filled
+in rather than empty. That is what subscribing once and keeping the subscription
+costs, and it is the smaller of the two behaviours.
+
+**Dialogs and menus can be driven from the keyboard.** `Chiedi.tsx` declares
+`role="dialog"` and `aria-modal`, traps Tab inside itself, and gives the focus
+back on close — when whoever opened it is still mounted and still focusable,
+which is the only case in which handing focus back lands anywhere. `Menu.tsx`
+walks with the arrows, Home and End, and restores focus too. The equalizer panel
+declares `aria-modal`. A dialog that cannot be left without a mouse is a trap,
+and these were.
+
+**`import_esterno::salva_rapporto` no longer writes to stderr.** It held the
+core's only `eprintln!`, and it announced a policy the code already states
+better: the «carry on anyway» is right there in the `let … else`.
+
+### Fixed — a library on a network share no longer freezes the window
+
+Three Windows `Application Hang` events in one morning, the music on an SMB
+share over Wi-Fi, and not one line in the diary. A scan held the library's lock
+from beginning to end while opening files that, on a share which is slow rather
+than broken, never fail — they wait — and every synchronous command waited with
+it, the covers the window asks for and the shutdown included. The scan now asks
+for the connection one phase at a time and holds nothing at all while it reads
+the disk, and every step on the filesystem has a deadline: fifteen seconds of
+silence between two files while walking, twenty-five to read one track. A root
+that stalls is skipped without deleting anything — files nobody managed to
+enumerate are not files that vanished — Cancel is heard during the walk too,
+removals match the path as well as the id, and one unreachable root no longer
+aborts the roots that still answer.
+
+Around that: covers are read without the lock, a second scan is refused with
+`library.scanBusy` instead of queueing, quitting gives the library 400 ms and
+then leaves anyway after telling the scan to stop, and the diary finally says
+`[stato] lucchetto della libreria non preso in 2 s: filo «…»` when someone
+waits. Playback had the same silence in another shape: the decode thread was
+spawned and its handle thrown away, so a panic on truncated bytes left the
+output feeding zeros with «playing» still on the screen. It is watched now — a
+fall raises the same reopen flag with a cause of its own, «the decoder stopped»,
+and the engine gets rebuilt instead of staying mute; a replaced engine no longer
+announces events, a track that has already brought the thread down is not put
+back on, and the sample rate and channel count a file declares are checked
+instead of standing in for an invented 44 100.
+
+---
+
 ## [2.2.0] — 2026-09-05
 
 **Minor and not patch, because of the database.** This version brings two

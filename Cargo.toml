@@ -20,11 +20,12 @@ members = [
     "core/aether-sync",
     "core/aether-cloud",
     "core/aether-scrobble",
+    "core/aether-ia",
     "apps/desktop/src-tauri",
 ]
 
 [workspace.package]
-version = "2.2.0"
+version = "2.3.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"

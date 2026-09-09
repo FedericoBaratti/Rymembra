@@ -45,7 +45,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
@@ -343,10 +343,11 @@ fn subito(arricchimento: &StatoArricchimento) {
 
 /// Avvia il filo che arricchisce da solo.
 ///
-/// Modellato su `nuvola::avvia_filo`: un thread nominato, `recv_timeout` che fa
-/// da periodicità **e** da antirimbalzo, nessun timer e nessun runtime
-/// asincrono. Con tokio arriverebbe una seconda idea di cos'è un errore e di chi
-/// possiede un thread, per fare qualche richiesta HTTP ogni mezz'ora.
+/// Il ciclo sta in [`crate::stato::avvia_filo_periodico`], insieme a quello
+/// della nuvola e della sincronia: un thread nominato, `recv_timeout` che fa da
+/// periodicità **e** da antirimbalzo, nessun timer e nessun runtime asincrono.
+/// Con tokio arriverebbe una seconda idea di cos'è un errore e di chi possiede un
+/// thread, per fare qualche richiesta HTTP ogni mezz'ora.
 ///
 /// # Un filo, non tre
 ///
@@ -355,47 +356,27 @@ fn subito(arricchimento: &StatoArricchimento) {
 /// sovrapporre, e tre fili si metterebbero soltanto in coda sullo stesso cancello
 /// da una richiesta al secondo — pagando tre lucchetti per la velocità di uno.
 pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
-    let avviato = std::thread::Builder::new()
-        .name("aether-arricchimento".to_owned())
-        .spawn(move || {
-            // I fornitori vivono qui, sullo stack del filo, e non nello stato
-            // condiviso: dentro ci sono la riserva di connessioni di `ureq` e lo
-            // stato degli interruttori, che devono sopravvivere fra una passata
-            // e l'altra — ma nessun altro filo li guarda, e metterli dietro un
-            // mutex vorrebbe dire un lucchetto tenuto per minuti che nessuno
-            // aspetta.
+    let avviato = crate::stato::avvia_filo_periodico(
+        "aether-arricchimento",
+        orecchio,
+        ATTESA_AVVIO,
+        RAFFICA,
+        INTERVALLO,
+        // Solo `Sporca` aspetta la raffica: venti brani scaricati sono una
+        // passata, non venti — vedi [`RAFFICA`]. `Subito` è una richiesta a
+        // mano, e chi l'ha fatta sta guardando la finestra.
+        |sveglia| *sveglia == Sveglia::Sporca,
+        {
+            // I fornitori vivono qui, catturati dalla passata e quindi sul filo,
+            // e non nello stato condiviso: dentro ci sono la riserva di
+            // connessioni di `ureq` e lo stato degli interruttori, che devono
+            // sopravvivere fra una passata e l'altra — ma nessun altro filo li
+            // guarda, e metterli dietro un mutex vorrebbe dire un lucchetto
+            // tenuto per minuti che nessuno aspetta.
             let mut fornitori: Option<Fornitori> = None;
-
-            let mut motivo = match orecchio.recv_timeout(ATTESA_AVVIO) {
-                // Canale chiuso: l'applicazione sta uscendo.
-                Err(RecvTimeoutError::Disconnected) => return,
-                Ok(sveglia) => sveglia,
-                Err(RecvTimeoutError::Timeout) => Sveglia::Subito,
-            };
-            loop {
-                if motivo == Sveglia::Sporca {
-                    // Si aspetta che la raffica finisca: venti brani scaricati
-                    // sono una passata, non venti. Si esce da qui quando per due
-                    // minuti non arriva più niente — oppure subito, se nel
-                    // frattempo il canale si è chiuso.
-                    //
-                    // Distinguere i due esiti è ciò che impedisce a una chiusura
-                    // dell'applicazione di far cominciare **adesso** una passata
-                    // intera: minuti di richieste di rete e, soprattutto, tag
-                    // riscritti sui file dell'utente mentre il processo esce.
-                    if crate::stato::aspetta_la_raffica(&orecchio, RAFFICA).is_break() {
-                        return;
-                    }
-                }
-                passata(&app, &mut fornitori);
-                motivo = match orecchio.recv_timeout(INTERVALLO) {
-                    Err(RecvTimeoutError::Disconnected) => return,
-                    Ok(sveglia) => sveglia,
-                    // Il timeout **è** il battito periodico: nessun timer.
-                    Err(RecvTimeoutError::Timeout) => Sveglia::Subito,
-                };
-            }
-        });
+            move || passata(&app, &mut fornitori)
+        },
+    );
     if let Err(err) = avviato {
         nota!("[avvio] il filo dell'arricchimento non è partito: {err}");
     }

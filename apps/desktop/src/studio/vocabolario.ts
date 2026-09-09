@@ -5,7 +5,7 @@
  *
  * Perché il registro non è interfaccia: è il **vocabolario** di quel che una
  * skin può ridisegnare, e vive in `aether-skin` — cinquantuno parti,
- * cinquantotto token, quattordici widget, le loro manopole e i parametri degli
+ * settantatré token, quattordici widget, le loro manopole e i parametri degli
  * effetti. Ogni voce porta una frase che dice a cosa serve, e quelle frasi si
  * leggono nello Studio: nell'albero, nell'ispettore, sulle manopole di un
  * livello. Sono interfaccia a tutti gli effetti.
@@ -22,6 +22,12 @@
  * È la stessa forma con cui `testoErrore` legge `i18nKey` e ripiega su
  * `message`, e per la stessa ragione: una voce nuova nel registro si vede
  * subito, in italiano, invece di sparire.
+ *
+ * L'ultima delle funzioni qui sotto non traduce una descrizione ma il nome di un
+ * preset. Sta qui lo stesso, e non fra le chiavi dell'interfaccia, perché la
+ * domanda a cui risponde è identica — «il nucleo ha mandato una parola: il
+ * catalogo ne ha una sua?» — e la risposta sbagliata sarebbe la stessa: un
+ * bottone senza scritta.
  */
 import { tSe } from "../lingue";
 
@@ -33,6 +39,23 @@ export function descrizioneParte(nome: string, ripiego: string): string {
 /** Cosa governa un token: `skin.token.color.surface.0`. */
 export function descrizioneToken(id: string, ripiego: string): string {
   return tSe(`skin.token.${id}`, ripiego);
+}
+
+/**
+ * Come si chiama un preset: `skin.preset.classico`.
+ *
+ * L'unica di queste funzioni che non traduce una descrizione ma un **nome**, e
+ * la ragione per cui passa lo stesso di qui è quella del saggio: il nome sta in
+ * `preset.rs` accanto ai valori, perché è là che si legge cos'è «Profondo» —
+ * sei numeri e il commento che dice perché sono quelli. Farlo nascere nel
+ * catalogo delle lingue vorrebbe dire che un preset aggiunto in Rust compare
+ * nello Studio come un bottone senza scritta.
+ *
+ * Con il ripiego, invece, compare col suo nome italiano il giorno stesso, e la
+ * riga inglese può arrivare dopo senza che nel frattempo manchi niente.
+ */
+export function descrizionePreset(id: string, ripiego: string): string {
+  return tSe(`skin.preset.${id}`, ripiego);
 }
 
 /** Cos'è un widget dello scafale: `skin.widget.navigation`. */

@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::esterno::Licenza;
+use aether_domain::indirizzo::estensione_da_url;
 use aether_domain::scelta::Candidato;
 use aether_net::Rete;
 
@@ -268,25 +269,6 @@ fn nome_temporaneo(estensione: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     format!("aether-{quando:x}-{n:x}.{estensione}.parziale")
-}
-
-/// L'estensione ricavata dall'indirizzo, quando il catalogo non la dichiara.
-///
-/// Si guarda **solo** dentro il percorso, mai nell'host: `archive.org` finisce
-/// con un punto e tre lettere esattamente come `t01.mp3`, e senza questa
-/// distinzione un indirizzo senza percorso produrrebbe l'estensione `org`.
-fn estensione_da_url(url: &str) -> Option<String> {
-    let senza_query = url.split(['?', '#']).next().unwrap_or(url);
-    let senza_schema = senza_query
-        .strip_prefix("https://")
-        .or_else(|| senza_query.strip_prefix("http://"))
-        .unwrap_or(senza_query);
-    let (_, percorso) = senza_schema.split_once('/')?;
-    let ultimo = percorso.rsplit('/').next()?;
-    let (_, coda) = ultimo.rsplit_once('.')?;
-    let pulita = coda.to_ascii_lowercase();
-    (!pulita.is_empty() && pulita.len() <= 5 && pulita.chars().all(|c| c.is_ascii_alphanumeric()))
-        .then_some(pulita)
 }
 
 /// Un guasto del disco, con dentro il percorso che lo ha prodotto.

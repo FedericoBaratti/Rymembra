@@ -58,6 +58,9 @@ pub const CHIAVE_SCORCIATOIE: &str = "ui.shortcuts";
 /// La lingua dell'interfaccia, come codice ISO: `it`, `en`, `de`.
 pub const CHIAVE_LINGUA: &str = "ui.language";
 
+/// Se la X chiude davvero, o manda in secondo piano.
+pub const CHIAVE_SECONDO_PIANO: &str = "ui.closeToTray";
+
 /// Le tre scelte del tema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tema {
@@ -219,6 +222,31 @@ pub fn imposta_scorciatoie(connection: &Connection, json: &str) -> Result<(), Ap
     settings::write(connection, CHIAVE_SCORCIATOIE, json)
 }
 
+/// Se il tasto di chiusura manda in secondo piano invece di spegnere.
+///
+/// # Perché assente vuol dire `false`
+///
+/// Perché è la stessa ragione di `player.autoplay`, vista dall'altro verso: un
+/// aggiornamento che accendesse questa da sé farebbe sparire nel vassoio un
+/// programma che qualcuno credeva di aver chiuso, e la prova che è ancora
+/// acceso arriverebbe dalla musica che non smette. Chi la vuole la accende.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn secondo_piano(connection: &Connection) -> Result<bool, AppError> {
+    Ok(settings::read_json::<bool>(connection, CHIAVE_SECONDO_PIANO)?.unwrap_or(false))
+}
+
+/// Scrive se la X manda in secondo piano.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn imposta_secondo_piano(connection: &Connection, attivo: bool) -> Result<(), AppError> {
+    settings::write_json(connection, CHIAVE_SECONDO_PIANO, &attivo)
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;
@@ -336,5 +364,19 @@ mod prove {
             Ok(None),
             "assente vuol dire «quelle di serie»; una stringa vuota vorrebbe dire «nessuna»"
         );
+    }
+
+    #[test]
+    fn il_secondo_piano_parte_spento() {
+        let c = libreria();
+        assert_eq!(
+            secondo_piano(&c),
+            Ok(false),
+            "un aggiornamento non deve far sparire nel vassoio un programma che si credeva chiuso"
+        );
+        imposta_secondo_piano(&c, true).expect("scrittura");
+        assert_eq!(secondo_piano(&c), Ok(true));
+        imposta_secondo_piano(&c, false).expect("scrittura");
+        assert_eq!(secondo_piano(&c), Ok(false));
     }
 }

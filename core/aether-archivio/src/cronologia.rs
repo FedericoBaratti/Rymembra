@@ -97,7 +97,11 @@ pub fn leggi(corpo: &Value) -> Letti {
 /// costerebbe **un'allocazione per riga**: su un archivio da quarantamila
 /// ascolti sono quarantamila `malloc` per risparmiare duecento byte di pila su
 /// un valore che vive lo spazio di un'iterazione e finisce comunque in un `Vec`.
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "pareggiare le varianti vorrebbe dire incassare l'ascolto, cioè un'allocazione per \
+              riga su un archivio da quarantamila: la pila che si risparmia costa meno di quelle"
+)]
 enum Esito {
     Ascolto(AscoltoSpotify),
     Podcast,
@@ -160,7 +164,7 @@ fn riga_ad_ascolto(riga: &Value) -> Esito {
 /// `spotify:local:…` — i file che l'utente aveva aggiunto a Spotify dal proprio
 /// disco — e quelli un identificativo di catalogo non ce l'hanno.
 #[must_use]
-pub fn id_da_uri(uri: &str) -> Option<String> {
+pub(crate) fn id_da_uri(uri: &str) -> Option<String> {
     let resto = uri.strip_prefix("spotify:track:")?;
     (!resto.is_empty()).then(|| resto.to_owned())
 }

@@ -32,7 +32,8 @@ use crate::layout::{
     TrackSize, WidgetDef, WidgetInstance, WidgetOption, ZoneKind, default_shell,
 };
 use crate::parts::{
-    PartAppearance, PartLayer, PartState, PartStates, PartStyle, TextTransform, nearest_parts, part,
+    PartAppearance, PartLayer, PartState, PartStates, PartStyle, TextTransform, nearest_parts,
+    part, ritirata,
 };
 use crate::tokens::{
     ColorValue, DynamicSource, ShadowLayer, ShadowValue, TOKENS, TokenDef, TokenKind, TokenSet,
@@ -56,6 +57,14 @@ pub struct SkinIssue {
     pub message: String,
     /// Il codice del catalogo che descrive questo problema.
     pub code: ErrorCode,
+    /// Riga e colonna, quando si sanno **senza** il percorso.
+    ///
+    /// `None` per tutti i problemi di schema, e non è una mancanza: il loro
+    /// posto lo dice `path`, e chi ha il testo sottomano lo traduce in una riga
+    /// con [`crate::posizioni`]. L'unico che lo porta scritto è l'errore di
+    /// sintassi — un documento che non è JSON non ha percorsi, ha solo un
+    /// carattere in cui si è rotto, e quello lo sa soltanto `serde_json`.
+    pub punto: Option<crate::posizioni::Punto>,
 }
 
 /// Il tipo di risultato dei parser interni.
@@ -69,6 +78,7 @@ fn problema(path: &str, message: impl Into<String>) -> SkinIssue {
         },
         path: path.to_owned(),
         message,
+        punto: None,
     }
 }
 
@@ -88,6 +98,7 @@ fn token_non_valido(
         },
         path: path.to_owned(),
         message,
+        punto: None,
     }
 }
 
@@ -366,7 +377,13 @@ fn easing(value: &Value, path: &str) -> Esito<Easing> {
                 &[("start", StepPosition::Start), ("end", StepPosition::End)],
             )?;
             Ok(Easing::Steps {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "`numero_fra` ha già rifiutato tutto ciò che non sta fra 1 e 60, e \
+                              `round` toglie i decimali: qui non c'è niente da troncare né un \
+                              segno da perdere"
+                )]
                 count: conta.round() as u32,
                 position,
             })
@@ -628,6 +645,7 @@ fn effetto(value: &Value, path: &str) -> Esito<Effect> {
                 },
                 path: percorso.clone(),
                 message: format!("effetto sconosciuto: «{altro}».{}", forse(&candidati)),
+                punto: None,
             })
         }
     }
@@ -879,8 +897,22 @@ fn stile_parte(
     value: &Value,
     path: &str,
     motivi: &[(String, Effect)],
-) -> Esito<PartStyle> {
+) -> Esito<Option<PartStyle>> {
     let Some(def) = part(nome) else {
+        // Una parte ritirata si accetta e non fa niente. Il nome è pubblico: sta
+        // nelle skin già spedite, e qui sotto un nome sconosciuto è un errore
+        // che **ferma il caricamento** dell'intera skin, non un avviso. Senza
+        // questo ramo, ritirare `viz-title` — che non disegnava niente neanche
+        // prima — spegnerebbe la skin di qualcun altro per intero.
+        //
+        // Torna `None` e non un `PartStyle` vuoto perché un `PartStyle` porta il
+        // suo `PartDef`, e una parte ritirata non ne ha uno: è precisamente ciò
+        // che vuol dire ritirarla. Non finendo nell'elenco, non produce
+        // selettori, non conta nel costo e non compare nell'editor — cioè
+        // esattamente «si accetta e non fa niente».
+        if ritirata(nome).is_some() {
+            return Ok(None);
+        }
         let candidati = nearest_parts(nome);
         return Err(problema(
             path,
@@ -948,12 +980,12 @@ fn stile_parte(
         }
     }
 
-    Ok(PartStyle {
+    Ok(Some(PartStyle {
         def,
         appearance,
         layer,
         states,
-    })
+    }))
 }
 
 // ── I blocchi del documento ─────────────────────────────────────────────────
@@ -1616,6 +1648,7 @@ fn problema_scafale(prefisso: &str, guasto: &crate::layout::ShellIssue) -> SkinI
         },
         path: percorso,
         message: guasto.message.clone(),
+        punto: None,
     }
 }
 
@@ -1773,14 +1806,28 @@ fn zona_scafale(
         Some(grezzo) => {
             let percorso = giu(path, "part");
             let nome = testo(grezzo, &percorso)?;
-            let Some(def) = crate::parts::part(nome) else {
-                let candidati = crate::parts::nearest_parts(nome);
-                return Err(problema(
-                    &percorso,
-                    format!("parte inesistente: «{nome}».{}", forse(&candidati)),
-                ));
-            };
-            Some(def)
+            match crate::parts::part(nome) {
+                Some(def) => Some(def),
+                // È la stessa decisione di `stile_parte`, presa sulla seconda
+                // porta. Una parte si può nominare in due punti — sotto `parts`
+                // per stilarla, e qui per appenderla a un nodo dello scafale — e
+                // accettarla ritirata solo nel primo lascerebbe la serratura
+                // sull'altro: una skin di terzi che mette `viz-title` su una
+                // zona continuerebbe a non caricarsi affatto, che è
+                // esattamente il difetto che `RITIRATE` esiste per evitare.
+                //
+                // `None`, e non un `PartDef` finto: il nodo resta, con la sua
+                // zona e i suoi figli, e semplicemente non porta nessuna classe
+                // di parte. Cioè «si accetta e non fa niente», come promesso.
+                None if crate::parts::ritirata(nome).is_some() => None,
+                None => {
+                    let candidati = crate::parts::nearest_parts(nome);
+                    return Err(problema(
+                        &percorso,
+                        format!("parte inesistente: «{nome}».{}", forse(&candidati)),
+                    ));
+                }
+            }
         }
     };
 
@@ -1945,7 +1992,11 @@ fn superfici(
     let mut stili = Vec::with_capacity(map.len());
     for (nome, grezzo) in map {
         match stile_parte(nome, grezzo, &giu(path, nome), motivi) {
-            Ok(stile) => stili.push(stile),
+            Ok(Some(stile)) => stili.push(stile),
+            // Una parte ritirata: letta, accettata, e lasciata cadere qui. Non
+            // è un problema da segnalare — la skin è valida — e non è uno stile
+            // da compilare, perché non c'è più niente da vestire.
+            Ok(None) => {}
             Err(guasto) => problemi.push(guasto),
         }
     }
@@ -2091,10 +2142,19 @@ fn versione_formato(raw: &Value) -> Option<u64> {
 /// `skin.formatUnsupported` se la versione non è la nostra; altrimenti il codice
 /// del primo problema trovato, col messaggio che li elenca tutti.
 pub fn parse_skin(raw: &Value) -> Result<SkinDocument, AppError> {
+    valida(raw).map_err(|problemi| in_errore(&problemi))
+}
+
+/// La sequenza vera: versione, migrazione, schema — e l'elenco dei problemi.
+///
+/// Sta sotto tutti e tre gli ingressi pubblici ([`parse_skin`],
+/// [`parse_skin_json`], [`leggi_skin`]) perché scriverla due volte, una che
+/// schiaccia e una che elenca, vorrebbe dire due ordini di controlli che possono
+/// divergere: il giorno in cui il formato 2 arriva, la migrazione girerebbe in
+/// uno dei due rami e non nell'altro.
+fn valida(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
     let Some(trovata) = versione_formato(raw) else {
-        return Err(AppError::new(ErrorCode::SkinManifestInvalid {
-            detail: Some("manca il campo «format»".to_owned()),
-        }));
+        return Err(solo(problema("format", "campo obbligatorio, manca")));
     };
     let nostra = u64::from(SKIN_FORMAT_VERSION);
 
@@ -2104,17 +2164,24 @@ pub fn parse_skin(raw: &Value) -> Result<SkinDocument, AppError> {
     // niente da fare e che esiste perché il giorno in cui ne avrà, ci sia già.
     if trovata > nostra {
         let found = u32::try_from(trovata).unwrap_or(u32::MAX);
-        return Err(AppError::new(ErrorCode::SkinFormatUnsupported {
-            found,
-            supported: SKIN_FORMAT_VERSION,
+        return Err(solo(SkinIssue {
+            code: ErrorCode::SkinFormatUnsupported {
+                found,
+                supported: SKIN_FORMAT_VERSION,
+            },
+            path: "format".to_owned(),
+            message: format!(
+                "è del formato {found}, e questa versione di Aether legge il {SKIN_FORMAT_VERSION}"
+            ),
+            punto: None,
         }));
     }
     if trovata < nostra {
-        let migrato = migra(raw, trovata).map_err(|problemi| in_errore(&problemi))?;
-        return documento(&migrato).map_err(|problemi| in_errore(&problemi));
+        let migrato = migra(raw, trovata)?;
+        return documento(&migrato);
     }
 
-    documento(raw).map_err(|problemi| in_errore(&problemi))
+    documento(raw)
 }
 
 // ── Le migrazioni ───────────────────────────────────────────────────────────
@@ -2173,6 +2240,114 @@ fn migra(raw: &Value, da: u64) -> Result<Value, Vec<SkinIssue>> {
     Ok(Value::Object(map))
 }
 
+/// Cosa dire di un testo che non è JSON, in italiano e senza la coda.
+///
+/// # Perché non basta il messaggio di serde
+///
+/// Perché è inglese, tecnico, e finisce con «at line 42 column 7» — cioè
+/// **ripete** dentro la frase i due numeri che qui viaggiano come numeri, e che
+/// l'editor mostra accanto alla riga. Lasciarlo intero vorrebbe dire scrivere la
+/// posizione due volte in due grafie diverse nello stesso pannello.
+///
+/// I casi tradotti sono quelli che si producono scrivendo: le altre categorie
+/// tengono il testo di serde, ripulito dalla coda. Meglio una frase inglese
+/// precisa di una italiana inventata.
+fn perche_non_e_json(err: &serde_json::Error) -> String {
+    let inglese = err.to_string();
+    // «at line N column M» lo dicono già `riga` e `colonna`.
+    let nudo = match inglese.find(" at line ") {
+        Some(taglio) => inglese.get(..taglio).unwrap_or(&inglese),
+        None => &inglese,
+    };
+
+    if err.classify() == serde_json::error::Category::Eof {
+        return "il documento finisce prima di chiudersi: manca una parentesi, o una virgoletta"
+            .to_owned();
+    }
+    // In ordine di quanto capitano scrivendo, e le due coppie prima delle
+    // singole: «expected `,` or `}`» contiene «expected `,`».
+    for (segno, detto) in [
+        (
+            "expected `,` or `}`",
+            "manca una virgola fra due campi, o la graffa che chiude l'oggetto",
+        ),
+        (
+            "expected `,` or `]`",
+            "manca una virgola fra due voci, o la quadra che chiude la lista",
+        ),
+        (
+            "expected `:`",
+            "dopo il nome di un campo ci va un due punti",
+        ),
+        (
+            "key must be a string",
+            "il nome di un campo va fra virgolette",
+        ),
+        (
+            "trailing comma",
+            "c'è una virgola di troppo prima della chiusura",
+        ),
+        (
+            "trailing characters",
+            "c'è altro dopo la fine del documento, o una parentesi che chiude due volte",
+        ),
+        (
+            "control character while parsing a string",
+            "una stringa non è chiusa: c'è un a capo dentro le virgolette",
+        ),
+        (
+            "invalid escape",
+            "dentro una stringa, una barra rovescia che non introduce niente",
+        ),
+        ("expected value", "qui ci vuole un valore, e non ce n'è uno"),
+    ] {
+        if nudo.contains(segno) {
+            return detto.to_owned();
+        }
+    }
+    format!("il documento non è JSON: {nudo}")
+}
+
+/// Valida un documento skin scritto come testo JSON, elencando tutto.
+///
+/// # Perché esiste accanto a [`parse_skin_json`]
+///
+/// Perché [`in_errore`] schiaccia: prende fino a venti problemi e li unisce con
+/// dei punti e virgola dentro **un** `AppError`, che è la forma giusta per un
+/// pacchetto rifiutato — lì di errore ce n'è uno, «questa skin non si installa»
+/// — e quella sbagliata per un editor. Lo Studio vuole l'elenco: una riga per
+/// problema, ognuna col suo percorso e il suo codice, perché ognuna diventa una
+/// riga cliccabile e un punto nel documento.
+///
+/// Ed è l'unica delle due che sa dire **dove** quando il testo non è nemmeno
+/// JSON: [`SkinIssue::punto`] porta riga e colonna prese da `serde_json`, che
+/// `AppError` non ha un campo per contenere.
+///
+/// # Errori
+///
+/// Un problema solo — quello di sintassi, con la posizione — se il testo non è
+/// JSON; l'elenco intero altrimenti.
+pub fn leggi_skin(sorgente: &str) -> Result<SkinDocument, Vec<SkinIssue>> {
+    let raw: Value = match serde_json::from_str(sorgente) {
+        Ok(raw) => raw,
+        Err(err) => {
+            let message = perche_non_e_json(&err);
+            return Err(solo(SkinIssue {
+                code: ErrorCode::SkinManifestInvalid {
+                    detail: Some(message.clone()),
+                },
+                path: String::new(),
+                message,
+                punto: Some(crate::posizioni::Punto {
+                    riga: u32::try_from(err.line()).unwrap_or(1).max(1),
+                    colonna: u32::try_from(err.column()).unwrap_or(1).max(1),
+                }),
+            }));
+        }
+    };
+    valida(&raw)
+}
+
 /// Valida un documento skin scritto come testo JSON.
 ///
 /// # Errori
@@ -2180,13 +2355,7 @@ fn migra(raw: &Value, da: u64) -> Result<Value, Vec<SkinIssue>> {
 /// `skin.manifestInvalid` se il testo non è JSON; per il resto come
 /// [`parse_skin`].
 pub fn parse_skin_json(text: &str) -> Result<SkinDocument, AppError> {
-    let raw: Value = serde_json::from_str(text).map_err(|err| {
-        AppError::new(ErrorCode::SkinManifestInvalid {
-            detail: Some("il manifest non è JSON valido".to_owned()),
-        })
-        .with_cause(err.to_string())
-    })?;
-    parse_skin(&raw)
+    leggi_skin(text).map_err(|problemi| in_errore(&problemi))
 }
 
 // ── Gli avvisi ──────────────────────────────────────────────────────────────
@@ -2750,6 +2919,66 @@ mod tests {
     }
 
     #[test]
+    fn una_parte_ritirata_si_legge_e_non_disegna() {
+        // La skin del 2.2.0 che stilava `viz-title` deve continuare ad aprirsi:
+        // un nome sconosciuto qui è un errore duro, e ritirare una parte non
+        // deve valere più di quel che valeva disegnarla — cioè niente.
+        let skin = parse_skin_json(&minima(
+            r##", "parts": {
+                "viz-title": { "opacity": 1, "textColor": "#fff" },
+                "viz-screen": { "opacity": 1 }
+            }"##,
+        ))
+        .expect("una parte ritirata non ferma la lettura");
+        let ordine: Vec<&str> = skin.parts.iter().map(|s| s.def.name).collect();
+        assert_eq!(ordine, ["viz-screen"]);
+        // E non lascia dietro nemmeno un problema: la skin è valida com'è
+        // scritta, e chi l'ha scritta non ha niente da correggere.
+        assert!(crate::compile_skin(&skin).css.contains("viz-screen"));
+    }
+
+    #[test]
+    fn una_parte_ritirata_su_un_nodo_dello_scafale_si_accetta_e_non_veste_niente() {
+        // La stessa serratura, sulla seconda porta. Una parte si nomina in due
+        // punti — sotto `parts` per stilarla, e su un nodo dello scafale per
+        // appendergliela — e accettarla ritirata solo nel primo avrebbe salvato
+        // metà dei casi: la skin che mette `viz-title` su una zona avrebbe
+        // continuato a non aprirsi affatto.
+        let skin = parse_skin_json(&minima(
+            r##", "layout": { "shell": { "zone": "row", "children": [
+                { "widget": "navigation" },
+                { "zone": "column", "part": "viz-title", "children": [
+                    { "widget": "content" },
+                    { "widget": "transport" }
+                ] }
+            ] } }"##,
+        ))
+        .expect("una parte ritirata non ferma la lettura dello scafale");
+        let shell = skin.layout.expect("dichiara layout").shell;
+        let LayoutNode::Zone(dentro) = &shell.children[1] else {
+            panic!("il secondo figlio non è una zona");
+        };
+        // Il nodo resta con i suoi figli: perde soltanto la parte, che è quel
+        // che vuol dire «si accetta e non fa niente».
+        assert!(dentro.part.is_none());
+        assert!(shell.monta("content"));
+
+        // E la porta resta chiusa per chi sbaglia a scrivere: ritirata non vuol
+        // dire che qui dentro va bene qualunque nome.
+        let err = rifiuta(&minima(
+            r##", "layout": { "shell": { "zone": "row", "children": [
+                { "widget": "navigation" },
+                { "zone": "column", "part": "viz-titel", "children": [
+                    { "widget": "content" },
+                    { "widget": "transport" }
+                ] }
+            ] } }"##,
+        ));
+        let messaggio = err.message().unwrap_or_default();
+        assert!(messaggio.contains("«viz-titel»"), "{messaggio}");
+    }
+
+    #[test]
     fn le_parti_escono_in_ordine_di_registro() {
         let skin = parse_skin_json(&minima(
             r##", "parts": {
@@ -2865,6 +3094,333 @@ mod tests {
                 .iter()
                 .any(|a| a.kind == WarningKind::UnusedPattern)
         );
+    }
+
+    // ── Gli effetti ─────────────────────────────────────────────────────────
+
+    /// Un effetto scritto per esteso, letto come lo legge il documento.
+    ///
+    /// Il percorso è `prova` per tutti: gli errori qui sotto lo citano, e averlo
+    /// sempre uguale rende leggibile il confronto.
+    fn effetto_letto(scritto: &str) -> Effect {
+        let grezzo: Value = serde_json::from_str(scritto).expect("json ben formato");
+        effetto(&grezzo, "prova").expect("effetto valido")
+    }
+
+    /// Lo stesso, quando ci si aspetta che venga rifiutato.
+    fn effetto_storto(scritto: &str) -> SkinIssue {
+        let grezzo: Value = serde_json::from_str(scritto).expect("json ben formato");
+        match effetto(&grezzo, "prova") {
+            Ok(_) => panic!("accettato quel che andava rifiutato: {scritto}"),
+            Err(guaio) => guaio,
+        }
+    }
+
+    /// Un colore letterale opaco, come esce dal parser.
+    fn tinta(r: u8, g: u8, b: u8) -> ColorValue {
+        ColorValue::Literal(Rgba { r, g, b, a: 1.0 })
+    }
+
+    #[test]
+    fn una_tinta_piatta_torna_col_colore_che_e_stato_scritto() {
+        assert_eq!(
+            effetto_letto(r##"{ "effect": "solid", "color": "#8b7cf6" }"##),
+            Effect::Solid {
+                color: tinta(0x8b, 0x7c, 0xf6),
+            }
+        );
+    }
+
+    #[test]
+    fn un_gradiente_lineare_senza_angolo_scende_dall_alto() {
+        // 180 gradi è il difetto scritto accanto al campo, ed è quello del CSS.
+        // Le fermate tornano nell'ordine in cui sono state scritte, e un `at`
+        // assente resta assente invece di diventare un numero.
+        assert_eq!(
+            effetto_letto(
+                r##"{ "effect": "linearGradient",
+                      "stops": [{ "color": "#000" }, { "color": "#fff", "at": "80%" }] }"##
+            ),
+            Effect::LinearGradient {
+                angle: 180.0,
+                stops: vec![
+                    Stop {
+                        color: tinta(0, 0, 0),
+                        at: None,
+                    },
+                    Stop {
+                        color: tinta(255, 255, 255),
+                        at: Some(Length {
+                            value: 80.0,
+                            unit: LengthUnit::Percent,
+                        }),
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn i_due_gradienti_col_centro_hanno_i_difetti_documentati() {
+        let fermate = || {
+            vec![
+                Stop {
+                    color: tinta(0, 0, 0),
+                    at: None,
+                },
+                Stop {
+                    color: tinta(255, 255, 255),
+                    at: None,
+                },
+            ]
+        };
+
+        // Il radiale senza forma è un'ellisse, e quel che non è scritto resta
+        // `None`: il ripiego lo mette il compilatore, non il documento.
+        assert_eq!(
+            effetto_letto(
+                r##"{ "effect": "radialGradient",
+                      "stops": [{ "color": "#000" }, { "color": "#fff" }] }"##
+            ),
+            Effect::RadialGradient {
+                shape: RadialShape::Ellipse,
+                at: None,
+                size: None,
+                stops: fermate(),
+            }
+        );
+
+        // Il conico parte da zero, e il centro sono due lunghezze in ordine.
+        assert_eq!(
+            effetto_letto(
+                r##"{ "effect": "conicGradient", "at": ["50%", "0px"],
+                      "stops": [{ "color": "#000" }, { "color": "#fff" }] }"##
+            ),
+            Effect::ConicGradient {
+                from: 0.0,
+                at: Some((
+                    Length {
+                        value: 50.0,
+                        unit: LengthUnit::Percent,
+                    },
+                    Length::px(0.0),
+                )),
+                stops: fermate(),
+            }
+        );
+    }
+
+    #[test]
+    fn una_griglia_a_linee_sottili_ricorda_soltanto_quel_che_e_scritto() {
+        assert_eq!(
+            effetto_letto(r##"{ "effect": "hairlineGrid", "color": "#fff", "cell": "36px" }"##),
+            Effect::HairlineGrid {
+                color: tinta(255, 255, 255),
+                cell: Length::px(36.0),
+                cell_y: None,
+                thickness: None,
+            }
+        );
+        // È il caso di `--cyber-grid`: il passo verticale diverso da quello
+        // orizzontale è un parametro, non una seconda dichiarazione copiata.
+        assert_eq!(
+            effetto_letto(
+                r##"{ "effect": "hairlineGrid", "color": "#fff", "cell": "36px",
+                      "cellY": "12px", "thickness": "2px" }"##
+            ),
+            Effect::HairlineGrid {
+                color: tinta(255, 255, 255),
+                cell: Length::px(36.0),
+                cell_y: Some(Length::px(12.0)),
+                thickness: Some(Length::px(2.0)),
+            }
+        );
+    }
+
+    #[test]
+    fn un_angolo_smussato_senza_elenco_taglia_i_due_di_serie() {
+        assert_eq!(
+            effetto_letto(r##"{ "effect": "chamfer", "size": "12px" }"##),
+            Effect::Chamfer {
+                size: Length::px(12.0),
+                corners: vec![Corner::TopRight, Corner::BottomLeft],
+            }
+        );
+        // E quando l'elenco c'è, torna nell'ordine scritto: il registro dice
+        // quali nomi esistono, non in che ordine si scrivono.
+        assert_eq!(
+            effetto_letto(
+                r##"{ "effect": "chamfer", "size": "12px", "corners": ["bottomRight", "topLeft"] }"##
+            ),
+            Effect::Chamfer {
+                size: Length::px(12.0),
+                corners: vec![Corner::BottomRight, Corner::TopLeft],
+            }
+        );
+    }
+
+    #[test]
+    fn la_vignetta_e_la_sfocatura_hanno_i_difetti_documentati() {
+        assert_eq!(
+            effetto_letto(r##"{ "effect": "vignette", "color": "#000" }"##),
+            Effect::Vignette {
+                color: tinta(0, 0, 0),
+                start: 60.0,
+            }
+        );
+        // La saturazione della sfocatura non ha un difetto numerico: assente
+        // vuol dire «non toccarla», che non è «lasciala a 100».
+        assert_eq!(
+            effetto_letto(r##"{ "effect": "blurBehind", "radius": "18px" }"##),
+            Effect::BlurBehind {
+                radius: Length::px(18.0),
+                saturate: None,
+            }
+        );
+    }
+
+    #[test]
+    fn un_motivo_letto_dalla_porta_e_lo_stesso_letto_a_mano() {
+        // Non si prova qui `effetto` — lo provano i casi qui sopra — ma il
+        // cablaggio attorno: `parse_skin_json` mette in `skin.patterns` la
+        // chiave scritta e l'effetto com'è uscito da `effetto`, senza
+        // normalizzarlo per strada. Perciò il lato atteso è scritto a mano.
+        const SCRITTO: &str = r##"{ "effect": "stripes", "angle": 30, "color": "#fff",
+                                    "background": "#000", "width": "6px" }"##;
+        let skin = parse_skin_json(&minima(&format!(
+            r##", "patterns": {{ "righe": {SCRITTO} }}"##
+        )))
+        .expect("valida");
+        assert_eq!(
+            skin.patterns,
+            vec![(
+                "righe".to_owned(),
+                Effect::Stripes {
+                    angle: 30.0,
+                    color: tinta(255, 255, 255),
+                    background: tinta(0, 0, 0),
+                    width: Length::px(6.0),
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn le_liste_di_un_effetto_hanno_una_misura_e_lo_dicono() {
+        // Una fermata sola non è un gradiente, ed è il tipo di svista che in CSS
+        // dava una superficie storta invece di un errore.
+        let poche =
+            effetto_storto(r##"{ "effect": "linearGradient", "stops": [{ "color": "#000" }] }"##);
+        assert_eq!(poche.path, "prova.stops");
+        assert!(
+            poche.message.contains("da 2 a 8 voci, non 1"),
+            "{}",
+            poche.message
+        );
+
+        // Il centro sono esattamente due lunghezze: una sola non è un punto.
+        let centro = effetto_storto(
+            r##"{ "effect": "radialGradient", "at": ["50%"],
+                  "stops": [{ "color": "#000" }, { "color": "#fff" }] }"##,
+        );
+        assert_eq!(centro.path, "prova.at");
+        assert!(
+            centro.message.contains("da 2 a 2 voci, non 1"),
+            "{}",
+            centro.message
+        );
+    }
+
+    #[test]
+    fn una_chiave_di_troppo_dentro_un_effetto_riceve_un_suggerimento() {
+        // L'unione è chiusa anche dentro un effetto: una chiave in più è la
+        // svista che nel vecchio albero passava in silenzio.
+        let coda = effetto_storto(r##"{ "effect": "solid", "color": "#fff", "colors": "#000" }"##);
+        assert_eq!(coda.path, "prova.colors");
+        assert!(
+            coda.message.contains("chiave sconosciuta"),
+            "{}",
+            coda.message
+        );
+        assert!(coda.message.contains("«color»"), "{}", coda.message);
+
+        // E il limite del suggerimento, fissato com'è oggi: `vicini` riconosce
+        // la testa e la coda, non una lettera cambiata in mezzo. `colour` non
+        // comincia per `color`, quindi resta senza candidati — l'errore c'è
+        // lo stesso, ma non porta niente da leggere.
+        let dentro =
+            effetto_storto(r##"{ "effect": "solid", "color": "#fff", "colour": "#000" }"##);
+        assert_eq!(dentro.path, "prova.colour");
+        assert_eq!(dentro.message, "chiave sconosciuta.");
+    }
+
+    #[test]
+    fn quel_che_manca_a_un_effetto_si_dice_col_percorso() {
+        // Non è un oggetto: ci si ferma prima ancora di cercare il nome.
+        let stringa = effetto_storto(r##""solid""##);
+        assert_eq!(stringa.path, "prova");
+        assert_eq!(stringa.message, "qui ci va un oggetto");
+
+        // Un oggetto senza discriminante non è «effetto sconosciuto»: è un campo
+        // obbligatorio che manca, e il percorso lo nomina.
+        let vuoto = effetto_storto("{}");
+        assert_eq!(vuoto.path, "prova.effect");
+        assert_eq!(vuoto.message, "campo obbligatorio, manca");
+
+        // E il campo che manca è quello che manca, non il primo dell'elenco.
+        let senza_passo =
+            effetto_storto(r##"{ "effect": "scanlines", "color": "#fff", "line": "1px" }"##);
+        assert_eq!(senza_passo.path, "prova.gap");
+        assert_eq!(senza_passo.message, "campo obbligatorio, manca");
+    }
+
+    #[test]
+    fn una_parola_fuori_vocabolario_dentro_un_effetto_elenca_le_ammesse() {
+        let forma = effetto_storto(
+            r##"{ "effect": "radialGradient", "shape": "square",
+                  "stops": [{ "color": "#000" }, { "color": "#fff" }] }"##,
+        );
+        assert_eq!(forma.path, "prova.shape");
+        assert!(
+            forma.message.contains("ammessi soltanto: circle, ellipse"),
+            "{}",
+            forma.message
+        );
+
+        // Gli angoli sono un elenco, e l'indice della voce sbagliata sta nel
+        // percorso: con quattro angoli scritti, «uno non va» non basta.
+        let angolo = effetto_storto(
+            r##"{ "effect": "chamfer", "size": "12px",
+                  "corners": ["topLeft", "bottomRight", "topRigth", "bottomLeft"] }"##,
+        );
+        assert_eq!(angolo.path, "prova.corners.2");
+        assert!(
+            angolo
+                .message
+                .contains("topLeft, topRight, bottomRight, bottomLeft"),
+            "{}",
+            angolo.message
+        );
+    }
+
+    #[test]
+    fn un_numero_fuori_scala_dice_fra_quali_estremi_sta() {
+        for (scritto, percorso, estremi) in [
+            (
+                r##"{ "effect": "vignette", "color": "#000", "start": 120 }"##,
+                "prova.start",
+                "va fra 0 e 100, non 120",
+            ),
+            (
+                r##"{ "effect": "blurBehind", "radius": "18px", "saturate": 500 }"##,
+                "prova.saturate",
+                "va fra 0 e 400, non 500",
+            ),
+        ] {
+            let guaio = effetto_storto(scritto);
+            assert_eq!(guaio.path, percorso);
+            assert_eq!(guaio.message, estremi);
+        }
     }
 
     // ── Lo scafale ──────────────────────────────────────────────────────────

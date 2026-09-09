@@ -41,6 +41,7 @@
  * mostrarle, e `strumenti/classi.js` controlla che questo elenco e il suo —
  * `ATTESE` — restino la stessa cosa.
  */
+import { useRef } from "react";
 import type { CSSProperties, ReactNode } from "react";
 
 import { Copertina } from "../Copertina";
@@ -51,6 +52,7 @@ import { Intestazione } from "../parti/Intestazione";
 import { Interruttore } from "../parti/Interruttore";
 import { Scrubber } from "../parti/Scrubber";
 import { Segmentato } from "../parti/Segmentato";
+import { Spettro3D } from "../parti/Spettro3D";
 import { Stelle } from "../Stelle";
 import { Trasporto } from "../parti/Trasporto";
 import type { Accese, Pagina, Sovrapposizione } from "./finto";
@@ -59,6 +61,40 @@ import { t, type Chiave } from "../lingue";
 /** Un comando che non fa niente: nell'anteprima non c'è niente da comandare. */
 const niente = () => {
   /* apposta */
+};
+
+/**
+ * Quante barre disegna la scena dell'anteprima.
+ *
+ * Sessantaquattro, cioè `RISOLUZIONE_DI_SERIE` del nucleo, e non le 1024 che il
+ * cursore in «In riproduzione» arriva a chiedere. Due ragioni, e la seconda è
+ * quella che conta qui dentro: è il numero che vede chi non ha mai scelto,
+ * quindi è la scena su cui una skin va accordata; e sopra le 256 la tela
+ * infittisce apposta le barre — `barre > 256 ? min(1, fill + 0.18) : fill` — al
+ * punto che `canvas.viz.fill` smette di leggersi come «quanto una barra riempie
+ * la sua fetta» e diventa un nastro continuo, cioè il cursore che si sta
+ * trascinando non si vedrebbe più muovere.
+ *
+ * Non arriva da `ipc.spettroBande()`: quel numero è la preferenza di **questa**
+ * macchina, e lo Studio non dipinge per questa macchina.
+ */
+const BARRE_ANTEPRIMA = 64;
+
+/**
+ * Un guasto della tela, nell'anteprima, si scrive e non si annuncia.
+ *
+ * Nell'applicazione `onErrore` risale fino agli avvisi, ed è giusto: se la scena
+ * non parte, chi ascolta ha un buco nero al posto di quel che ha appena acceso.
+ * Qui no. La tela è **un terzo di un pannello** dentro una miniatura, montata da
+ * una vista che sta facendo un altro mestiere, e una macchina senza WebGL2 ne
+ * ricaverebbe un avviso a livello di applicazione ogni volta che apre la pagina
+ * dei pannelli — un allarme per una cosa che non è successa a nessuno.
+ *
+ * La console resta perché il difetto va comunque visto da chi sviluppa: il
+ * silenzio completo è l'altra metà dello stesso sbaglio.
+ */
+const guastoDellaScena = (e: unknown) => {
+  console.error("anteprima dello spettro:", e);
 };
 
 /** I brani finti degli elenchi. Tre, che bastano a vedere una riga accesa. */
@@ -523,10 +559,13 @@ function Importazioni() {
  * scafale toglie di mezzo lettore, colonna e coda esattamente come nell'app,
  * perché è lo stesso predicato a decidere.
  *
- * Lo spettro non c'è: è una `<canvas>` che una GPU riempie a sessanta
- * fotogrammi al secondo leggendo il suono che sta uscendo, e qui non ne esce.
- * La sua superficie si vede nella pagina dei pannelli, ferma, che è l'unico modo
- * di ridipingerla guardandola.
+ * Lo spettro non c'è, e qui la ragione è la stessa che vale per il lettore e per
+ * la coda: **una** scena per volta. La tela è cara — un contesto WebGL2, un
+ * programma, una texture di mezzo minuto di storia — e montarla due volte
+ * vorrebbe dire pagarla due volte per mostrarla in due riquadri di cui uno solo
+ * si guarda. Sta nella pagina dei pannelli, dove si muove: là il riquadro è
+ * grande abbastanza da giudicare un colore, e là accanto ci sono il testo e
+ * l'equalizzatore, cioè le altre due superfici che si accordano con lei.
  */
 function Schermo({ ctx }: { ctx: ContestoWidget }) {
   const brano = ctx.stato.brano;
@@ -622,14 +661,47 @@ function Schermo({ ctx }: { ctx: ContestoWidget }) {
 // ── i tre pannelli grandi ───────────────────────────────────────────────────
 
 /**
- * Testo, spettro ed equalizzatore, affiancati e fermi.
+ * Testo, spettro ed equalizzatore, affiancati — e quello di mezzo si muove.
  *
  * Nell'applicazione si accendono uno per volta dentro la schermata grande, e
  * durano quanto una canzone. Qui stanno insieme perché per ridipingerli bisogna
  * vederli, e uno alla volta vorrebbe dire tre pagine per tre pannelli — con in
  * più il fatto che due dei tre, spenti, non esistono affatto.
+ *
+ * # Il foglio in prova, portato accanto alla tela
+ *
+ * `foglio` non si disegna: è il CSS della skin in prova, e serve a **datarlo**.
+ * La tela legge i suoi diciotto token da una `CSSStyleDeclaration` viva, ma li
+ * rilegge solo quando qualcosa le dice che sono cambiati, e uno dei segnali che
+ * ascolta è la comparsa o la riscrittura di un `<style>` dentro il proprio
+ * genitore. Nello Studio quel foglio esiste — `Anteprima` lo inietta a ogni
+ * validazione — ma sta in `.anteprima-guscio`, cioè **fuori** dal genitore della
+ * tela di quattro livelli: l'osservatore non lo vede, e trascinare un cursore si
+ * vedrebbe sulla scena solo alla prossima passata della rete di sicurezza, mezzo
+ * secondo dopo. Mezzo secondo di ritardo su un cursore che si trascina non è un
+ * ritardo: è un controllo che sembra rotto.
+ *
+ * Quindi accanto alla tela va un foglio suo, che non dipinge niente e porta un
+ * numero: cambia esattamente quando cambia quello vero, e cambiando fa scattare
+ * l'osservatore che sta già lì. Le due alternative erano peggiori — allargare
+ * l'osservatore a `document` con `subtree` vuol dire farlo scattare a ogni riga
+ * di ogni lista che si ridisegna, cioè il costo che tutto questo lavoro è
+ * servito a togliere; e ricopiare qui il foglio vero vorrebbe dire far analizzare
+ * al browser due volte qualche decina di kilobyte a ogni battuta di tasto.
  */
-function Pannelli() {
+function Pannelli({ foglio }: { foglio: string }) {
+  /*
+   * La revisione del foglio: quante volte è cambiato da quando questa pagina è
+   * aperta. Un contatore e non il testo, perché è il testo del `<style>` a
+   * dover cambiare e non a dover dire qualcosa — e un numero che cresce cambia
+   * sempre, mentre la lunghezza del foglio no: portare un cursore da 0,42 a
+   * 0,43 riscrive il CSS senza spostarne un carattere.
+   */
+  const revisione = useRef({ foglio, n: 0 });
+  if (revisione.current.foglio !== foglio) {
+    revisione.current = { foglio, n: revisione.current.n + 1 };
+  }
+
   return (
     <div className="dentro tre-schermate">
       <aside className="testo-np lyrics-screen">
@@ -714,11 +786,51 @@ function Pannelli() {
 
       <div className="pannello-finto">
         <span className="occhiello hero-eyebrow">{t("np.spectrum")}</span>
-        {/* La tela vera, vuota. Quel che la GPU ci disegna dentro una skin non
-            lo tocca — quello viene dal suono e dal token `viz.primary` — ma la
-            superficie sotto sì: fondo, raggio, contorno. Vederla ferma è
-            l'unico modo di accordarli. */}
-        <canvas className="scena-spettro viz-screen" aria-hidden="true" />
+        {/* Il foglio che non dipinge: vedi il saggio qui sopra. Sta prima della
+            tela e non dopo perché l'osservatore guarda il genitore intero, e
+            l'ordine dei fratelli non gli dice niente — ma a chi legge sì: la
+            datazione arriva prima della cosa datata. */}
+        <style>{`.pannello-finto{--revisione-anteprima:${revisione.current.n}}`}</style>
+        {/* La scena vera, che si muove.
+
+            Per una revisione qui c'era una `<canvas>` vuota, e il commento
+            diceva che la scena non si poteva accendere «perché non c'è audio».
+            Era vero a metà: senza audio resta la **sorgente**, non il renderer,
+            e la dottrina di questo file — scritta in cima — è che dove il
+            componente si può montare non lo si copia, lo si usa. `sorgente
+            finto` è esattamente questo: nessuna presa nel motore, nessun evento
+            ascoltato, e un generatore deterministico che scrive nello stesso
+            posto in cui scriverebbero le bande vere. Tutto quel che viene dopo —
+            smorzamento, cascata, texture, seguipulsazioni, e la lettura dei
+            diciotto token — è la stessa strada, quindi quel che si vede qui è
+            quel che si vedrà là.
+
+            E siccome è la scena vera, la superficie sotto si accorda insieme al
+            resto invece che da sola: fondo, raggio e contorno di `viz-screen` si
+            giudicano con dentro l'immagine che ci starà davvero. */}
+        <Spettro3D
+          barre={BARRE_ANTEPRIMA}
+          /* Nello Studio non suona niente, ed è la verità che questa prop
+             chiede. È anche inerte: con la sorgente sintetica il rubinetto non
+             si apre mai — `inPausa` decide solo se chiuderlo — quindi il valore
+             non cambia un fotogramma. Passare `false` direbbe una cosa falsa in
+             cambio di niente. */
+          inPausa
+          /* «Alta», non «automatica». L'automatica misura questa macchina e
+             taglia quel che costa: prima la densità dei pixel, poi il riflesso.
+             Su un portatile lento vorrebbe dire che il riflesso si spegne da sé
+             **mentre** qualcuno trascina `canvas.viz.reflection` — cioè che si
+             accorda un numero guardando un'immagine che il controllore ha
+             cambiato sotto, e che l'autore attribuirebbe al proprio cursore.
+             Uno strumento di disegno vuole tetti fissi, per la stessa ragione
+             per cui il generatore è in forma chiusa sul numero dell'evento: due
+             autori su due macchine devono vedere la stessa immagine, o una
+             schermata non è un documento di revisione. Il costo è un riquadro
+             piccolo dentro una miniatura, non uno sfondo a tutto schermo. */
+          qualita="alta"
+          sorgente="finto"
+          onErrore={guastoDellaScena}
+        />
       </div>
 
       {/* L'equalizzatore intero e non le sole bande: l'altezza dei cursori
@@ -867,10 +979,17 @@ export function Sovrapposte({ accese }: { accese: Accese }) {
  * posto in cui vivono `field-input` e uno dei `btn-ghost`, e non passandoli
  * l'anteprima mostrava una testata che nell'applicazione non esiste — senza
  * ricerca, cioè senza il campo di testo che una skin deve poter ridipingere.
+ *
+ * `foglio` è il CSS della skin in prova, e attraversa di qui per una pagina
+ * sola: la scena dello spettro se ne serve per sapere **quando** rileggere i
+ * suoi token, e il perché sta scritto sopra `Pannelli`. Passa come argomento e
+ * non per contesto perché è quel che fanno già gli altri due, e un terzo
+ * meccanismo per il terzo dato sarebbe un meccanismo di troppo.
  */
 export function slotDellaPagina(
   pagina: Pagina,
   ctx: ContestoWidget,
+  foglio: string,
 ): SlotScafale {
   const cercabile = {
     query: "",
@@ -962,7 +1081,7 @@ export function slotDellaPagina(
             sottotitolo="Anna Vestri"
           />
         ),
-        contenuto: <Pannelli />,
+        contenuto: <Pannelli foglio={foglio} />,
       };
 
     case "vuoto":
@@ -1027,7 +1146,6 @@ export const NON_ANCORA: Readonly<Record<string, Chiave>> = {
   "home-shortcuts": "studio.notYet.homeShortcuts",
   "tour-tooltip": "studio.notYet.tourTooltip",
   "tooltip-pill": "studio.notYet.tooltipPill",
-  "viz-title": "studio.notYet.vizTitle",
 };
 
 /**

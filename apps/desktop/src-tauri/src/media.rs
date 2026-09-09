@@ -53,7 +53,7 @@ use tauri::Manager as _;
 
 use crate::nota;
 use crate::riproduzione::{StatoLettore, StatoRiproduzione};
-use crate::stato::{Stato, con_libreria};
+use crate::stato::Stato;
 
 /// Di quanto si sposta un `Seek` senza durata.
 ///
@@ -100,6 +100,19 @@ pub struct StatoMedia {
     /// dalle cuffie riportava a dieci secondi dall'inizio invece che dieci
     /// secondi più avanti.
     posizione_ms: AtomicU64,
+    /// Quanto dura il brano corrente, in millisecondi.
+    ///
+    /// Accanto alla posizione, e per la stessa ragione: la legge la chiusura
+    /// degli eventi, sul filo del sistema operativo, e serve a non far uscire
+    /// dal brano un gesto che voleva restarci. «Avanti di cinque secondi» a
+    /// tre secondi dalla fine chiedeva un salto oltre l'ultimo campione, e un
+    /// salto oltre la fine è la fine: il gesto diventava «brano successivo»
+    /// senza che nessuno l'avesse chiesto.
+    ///
+    /// `0` vuol dire **non si sa** — niente è ancora partito — e non «lungo
+    /// zero»: con un tetto a zero ogni salto in avanti tornerebbe all'inizio,
+    /// che è un difetto peggiore di quello che il tetto viene a togliere.
+    durata_ms: AtomicU64,
 }
 
 /// I due pezzi che stanno insieme o non stanno affatto.
@@ -117,6 +130,7 @@ impl StatoMedia {
         Self {
             controlli: Mutex::new(None),
             posizione_ms: AtomicU64::new(0),
+            durata_ms: AtomicU64::new(0),
         }
     }
 }
@@ -167,12 +181,13 @@ pub fn avvia(app: &tauri::AppHandle) {
     }
 
     // Lo `CoverStore` si prende una volta sola, qui: la cartella non cambia
-    // per tutta la vita del processo.
+    // per tutta la vita del processo. E si prende **accanto** al mutex, non
+    // dentro: questa funzione gira mentre la finestra si costruisce, e mettersi
+    // in coda dietro il database per copiare un percorso vorrebbe dire ritardare
+    // la comparsa della finestra di quanto dura la prima passata di qualcun
+    // altro.
     let stato_app = app.state::<Stato>();
-    let copertine = con_libreria(&stato_app, |libreria| {
-        Ok::<CoverStore, aether_domain::errors::AppError>(libreria.covers.clone())
-    });
-    let Ok(copertine) = copertine else {
+    let Ok(copertine) = stato_app.copertine() else {
         nota!("[media] la libreria non è aperta: niente copertine nella scheda");
         return;
     };
@@ -236,6 +251,10 @@ pub fn aggiorna(app: &tauri::AppHandle, stato: &StatoRiproduzione) {
     media
         .posizione_ms
         .store(stato.posizione_ms, Ordering::Relaxed);
+    // Da qui e non dalla scheda del sistema: la scheda la si riempie qualche
+    // riga più giù e non la si può rileggere — `souvlaki` prende e non
+    // racconta. Questo è lo stesso numero, tenuto dove serve ai salti.
+    media.durata_ms.store(stato.durata_ms, Ordering::Relaxed);
 
     let mut dentro = media
         .controlli
@@ -329,8 +348,13 @@ fn su_evento(app: &tauri::AppHandle, evento: MediaControlEvent) {
         // posizione, e il tasto stop di una tastiera lo si preme per
         // interrompere, non per perdere il segno.
         MediaControlEvent::Stop => crate::riproduzione::pausa(app.clone(), lettore),
+        // Anche questo passa dal tetto, che pure arriva già come posizione
+        // assoluta: il numero lo sceglie il sistema operativo — una barra
+        // trascinata nel riquadro del volume, un'auto collegata in Bluetooth —
+        // e la durata che quel sistema crede di avere è quella dell'ultimo
+        // [`aggiorna`], che può essere del brano di prima.
         MediaControlEvent::SetPosition(MediaPosition(dove)) => {
-            crate::riproduzione::vai_a(app.clone(), lettore, ms_di(dove))
+            crate::riproduzione::vai_a(app.clone(), lettore, dentro_il_brano(app, ms_di(dove)))
         }
         MediaControlEvent::Seek(verso) => {
             let dove = salto(app, verso, PASSO_SALTO_MS);
@@ -359,18 +383,108 @@ fn su_evento(app: &tauri::AppHandle, evento: MediaControlEvent) {
 }
 
 /// Dove finisce un salto relativo, senza uscire dal brano.
+///
+/// I due versi non sono simmetrici, e non è una svista: indietro il fondo è lo
+/// zero, e `saturating_sub` ce lo tiene da sé. Avanti il fondo è la durata, che
+/// `saturating_add` non conosce — protegge dal trabocco di un `u64`, cioè da un
+/// brano lungo cinquecento milioni di anni, non dalla fine di questo.
 fn salto(app: &tauri::AppHandle, verso: SeekDirection, quanto_ms: u64) -> u64 {
     let adesso = app
         .state::<StatoMedia>()
         .posizione_ms
         .load(Ordering::Relaxed);
     match verso {
-        SeekDirection::Forward => adesso.saturating_add(quanto_ms),
+        SeekDirection::Forward => dentro_il_brano(app, adesso.saturating_add(quanto_ms)),
         SeekDirection::Backward => adesso.saturating_sub(quanto_ms),
     }
+}
+
+/// Lo stesso millisecondo, ma non oltre la fine del brano.
+///
+/// # Perché un tetto anche qui
+///
+/// Il tetto vero sta nel decodificatore e vale per tutti; questo sta prima, e
+/// serve a non **chiedergli** una cosa diversa da quella che il gesto voleva
+/// dire. Le due strade che passano di qui sono le uniche che mandano numeri
+/// composti da chi non guarda la finestra — il sistema operativo, un tasto
+/// delle cuffie, un'auto — e un «avanti di cinque secondi» premuto a tre
+/// secondi dalla fine non è una richiesta di cambiare canzone.
+///
+/// Con durata sconosciuta non si limita niente: `0` significa che nessun brano
+/// è ancora partito, e trattarlo come una lunghezza vera manderebbe ogni salto
+/// all'inizio.
+fn dentro_il_brano(app: &tauri::AppHandle, ms: u64) -> u64 {
+    let durata = app.state::<StatoMedia>().durata_ms.load(Ordering::Relaxed);
+    entro_la_durata(ms, durata)
+}
+
+/// La regola di [`dentro_il_brano`], senza il posto da cui viene la durata.
+///
+/// Una funzione a sé unicamente perché si possa provare: leggere `durata_ms`
+/// vuole un `AppHandle`, e un `AppHandle` vuole un ciclo degli eventi. La riga
+/// è la stessa di prima, spostata di un livello.
+fn entro_la_durata(ms: u64, durata: u64) -> u64 {
+    if durata == 0 { ms } else { ms.min(durata) }
 }
 
 /// I millisecondi di una durata, senza traboccare.
 fn ms_di(durata: Duration) -> u64 {
     u64::try_from(durata.as_millis()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    #[test]
+    fn un_percorso_di_windows_diventa_un_indirizzo_che_il_sistema_apre() {
+        // La lettera di unità e le barre rovesce sono la sola stranezza che
+        // conta: `C:\…` deve uscire come `file:///C:/…`, con tre barre.
+        assert_eq!(
+            url_di_file(std::path::Path::new(r"C:\Users\ada\copertine\ab.jpg")).as_deref(),
+            Some("file:///C:/Users/ada/copertine/ab.jpg")
+        );
+    }
+
+    #[test]
+    fn gli_spazi_e_i_caratteri_non_ascii_si_lasciano_stare() {
+        // Documentato in [`url_di_file`]: niente codifica percentuale. Uno
+        // spazio o una lettera accentata passano tali e quali, e al massimo la
+        // scheda del sistema resta senza immagine — che è quel che succedeva
+        // prima che questo modulo esistesse. La prova sta qui perché il giorno
+        // in cui qualcuno aggiungesse una codifica a metà, se ne accorgerebbe.
+        assert_eq!(
+            url_di_file(std::path::Path::new(r"D:\Musica mia\Björk\è così.png")).as_deref(),
+            Some("file:///D:/Musica mia/Björk/è così.png")
+        );
+    }
+
+    #[test]
+    fn una_durata_sconosciuta_non_mette_nessun_tetto() {
+        // `0` vuol dire «non si sa», non «lungo zero»: con un tetto a zero ogni
+        // salto in avanti tornerebbe all'inizio del brano.
+        assert_eq!(entro_la_durata(93_000, 0), 93_000);
+        assert_eq!(entro_la_durata(0, 0), 0);
+    }
+
+    #[test]
+    fn un_salto_oltre_la_fine_si_ferma_alla_fine() {
+        // Il difetto che il tetto toglie: «avanti di cinque secondi» premuto a
+        // tre secondi dalla fine chiedeva un salto oltre l'ultimo campione, e
+        // un salto oltre la fine è la fine — cioè il brano successivo, che
+        // nessuno aveva chiesto.
+        assert_eq!(entro_la_durata(200_000, 187_000), 187_000);
+        assert_eq!(entro_la_durata(187_000, 187_000), 187_000);
+        // Dentro al brano non si tocca niente.
+        assert_eq!(entro_la_durata(12_500, 187_000), 12_500);
+    }
+
+    #[test]
+    fn una_durata_troppo_grande_satura_invece_di_traboccare() {
+        assert_eq!(ms_di(Duration::from_millis(0)), 0);
+        assert_eq!(ms_di(Duration::from_secs(5)), 5_000);
+        // `Duration::as_millis` è un `u128`: il massimo non ci sta in un `u64`,
+        // e la conversione deve fermarsi lì invece di girare intorno.
+        assert_eq!(ms_di(Duration::MAX), u64::MAX);
+    }
 }

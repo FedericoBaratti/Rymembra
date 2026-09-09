@@ -134,7 +134,7 @@ pub struct Invito {
 /// # Errori
 ///
 /// `internal.unexpected` se il sistema non fornisce casualità per lo `state`.
-pub fn invito(
+pub(crate) fn invito(
     credenziali: &Credenziali,
     pkce: &Pkce,
     redirect_uri: &str,
@@ -166,7 +166,7 @@ pub fn invito(
 ///
 /// `sync.authExpired` se Google rifiuta la concessione, `net.*` per i guasti di
 /// rete e di protocollo.
-pub fn scambia(
+pub(crate) fn scambia(
     rete: &Rete,
     credenziali: &Credenziali,
     pkce: &Pkce,

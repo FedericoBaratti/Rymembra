@@ -24,11 +24,11 @@
  * chiude: la lettura continua di là, e la si ritrova fatta.
  */
 import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 
 import type { AvanzamentoImport } from "../ipc";
 import { numero } from "../formato";
 import { t } from "../lingue";
+import { useAscolto } from "../pagine";
 
 /** Le frasi di `nomeSorgente()`, al presente: la stessa scala, in corso d'opera. */
 function staLeggendo(sorgente: string): string {
@@ -47,26 +47,38 @@ function staLeggendo(sorgente: string): string {
 /**
  * L'avanzamento della lettura in corso, o `null` quando non ce n'è una.
  *
- * Si sottoscrive **solo** mentre serve, e azzera quando `attivo` torna falso:
- * l'avanzamento della lettura di prima, lasciato in piedi, farebbe cominciare la
- * barra nuova dal punto in cui era arrivata quella vecchia.
+ * La sottoscrizione dura quanto il componente; a essere filtrata da `attivo` è
+ * la **lettura**, non l'ascolto. Legarla al toggle voleva dire sciogliere e
+ * riaprire l'ascolto a ogni apertura della finestrella, cioè il caso preciso in
+ * cui la promessa di `listen` si risolve dopo che l'effetto è già ripartito e
+ * gli ascoltatori vivi diventano due (`useAscolto` in `pagine.ts`).
+ *
+ * L'azzeramento quando `attivo` torna falso resta, e resta per la ragione di
+ * prima: l'avanzamento della lettura passata, lasciato in piedi, farebbe
+ * cominciare la barra nuova dal punto in cui era arrivata quella vecchia.
+ *
+ * Due effetti osservabili vengono con lo scambio, e vale la pena averli
+ * scritti. Il primo: l'ascolto è già aperto quando `attivo` diventa vero,
+ * quindi gli eventi del tick fra l'attivazione e la vecchia risoluzione della
+ * promessa di `listen()` adesso arrivano invece di cadere — la barra può
+ * comparire già valorizzata, dove prima compariva sempre vuota. Il secondo:
+ * l'ascoltatore resta registrato anche mentre la finestrella non legge, e
+ * quello che si paga è un gestore che scarta il carico.
  */
 export function useLetturaLink(attivo: boolean): AvanzamentoImport | null {
   const [avanzamento, setAvanzamento] = useState<AvanzamentoImport | null>(
     null,
   );
 
+  // La guardia sta dentro il gestore e non attorno alla chiamata: gli hook non
+  // si possono condizionare, e il gestore dietro riferimento vede comunque
+  // l'ultimo `attivo`.
+  useAscolto<AvanzamentoImport>("import:avanzamento", (carico) => {
+    if (attivo) setAvanzamento(carico);
+  });
+
   useEffect(() => {
-    if (!attivo) {
-      setAvanzamento(null);
-      return;
-    }
-    const promessa = listen<AvanzamentoImport>("import:avanzamento", (evento) =>
-      setAvanzamento(evento.payload),
-    );
-    return () => {
-      void promessa.then((stop) => stop());
-    };
+    if (!attivo) setAvanzamento(null);
   }, [attivo]);
 
   return avanzamento;

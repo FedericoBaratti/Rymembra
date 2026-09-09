@@ -36,7 +36,7 @@
  */
 import type { ReactNode } from "react";
 
-import { eErroreIpc, eRitentabile, testoErrore } from "../ipc";
+import { dettaglioErrore, eErroreIpc, eRitentabile, testoErrore } from "../ipc";
 import { Icona, type NomeIcona } from "./Icone";
 import { t } from "../lingue";
 
@@ -51,7 +51,7 @@ export type Livello = "nota" | "avviso" | "blocco" | "esito";
  * per prudenza: di un guasto che non sappiamo leggere non possiamo promettere
  * che riprovare basti.
  */
-export function livelloDi(errore: unknown): Livello {
+function livelloDi(errore: unknown): Livello {
   if (!eErroreIpc(errore)) return "blocco";
   switch (errore.severity) {
     case "info":
@@ -148,6 +148,10 @@ export function AvvisoErrore({
   onRiprova?: (() => void) | undefined;
 }) {
   const ritentabile = eRitentabile(errore);
+  // Quel che il servizio ha scritto, quando ha scritto qualcosa. Vedi
+  // `dettaglioErrore`: la frase del catalogo dice cosa è successo, questa dice
+  // cosa fare, e per mesi è stata la seconda a non arrivare mai.
+  const dettaglio = dettaglioErrore(errore);
   return (
     <Avviso
       livello={livelloDi(errore)}
@@ -164,6 +168,7 @@ export function AvvisoErrore({
       }
     >
       {testoErrore(errore)}
+      {dettaglio !== null && <span className="dettaglio-errore">{dettaglio}</span>}
     </Avviso>
   );
 }

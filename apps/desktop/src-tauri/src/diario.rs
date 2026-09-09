@@ -290,13 +290,24 @@ macro_rules! nota {
 /// arriva qui viene da un decodificatore audio davanti a un file storto, da un
 /// parser davanti a una risposta che non si aspettava, da un backend audio.
 ///
-/// # Perché è l'unica occasione
+/// # Perché è l'unica occasione in cui resta la traccia
 ///
-/// Perché il profilo di rilascio dichiara `panic = "abort"`. Non c'è
-/// svolgimento dello stack, non c'è un `catch_unwind` che possa raccogliere i
-/// pezzi, non c'è un `Drop` che venga eseguito: il processo termina qui. Questo
-/// gancio è letteralmente l'ultimo codice nostro che gira, e se non scrive lui,
-/// non scrive nessuno.
+/// Il profilo di rilascio dichiara `panic = "unwind"` — la ragione sta in
+/// `Cargo.toml`, ed è che un panico su un filo qualunque non deve portarsi via
+/// il database di chi ascolta musica. Lo svolgimento dello stack quindi c'è, e
+/// il processo non termina qui.
+///
+/// Resta però che questo è l'unico posto in cui si sappia **da dove** il panico
+/// veniva. Il gancio gira prima dello svolgimento, cioè mentre lo stack esiste
+/// ancora: la posizione nel sorgente e il messaggio sono qui, e da qui in poi
+/// non li ha più nessuno. Un `catch_unwind` riceve il carico — una `String` o
+/// uno `&str` — e nient'altro: né file, né riga, né la catena delle chiamate.
+///
+/// Nell'albero ce n'è **uno**, `aether_play::motore::filo_sorvegliato`, che
+/// raccoglie i pezzi del filo di decodifica per ricostruire il motore invece di
+/// lasciarlo suonare zeri; quel che ne ricava è il messaggio, e lo mette in un
+/// evento per la finestra. Il perché il filo era caduto lì lo scrive questo
+/// gancio, e se non scrive lui non scrive nessuno.
 ///
 /// Va installato per primo in `main`, prima ancora di costruire la finestra.
 /// Finché il diario non è aperto le righe finiscono su `stderr` e basta — cioè

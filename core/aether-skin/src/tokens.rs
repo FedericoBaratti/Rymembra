@@ -131,12 +131,17 @@ macro_rules! token {
     };
 }
 
-/// Come [`token!`], per i pochi token che hanno estremi.
+/// Come [`token!`], per i token che hanno estremi.
 ///
 /// È una macro a parte e non un ottavo argomento di `token!` perché gli estremi
-/// riguardano undici voci su cinquantotto: aggiungere un `None` alle altre
-/// quarantasette metterebbe due `None` di fila su ogni riga della tabella, e da
-/// lì in poi nessuno saprebbe più a vista quale dei due è la tripla.
+/// riguardano ventisette voci su settantatré: aggiungere un `None` alle altre
+/// quarantasei metterebbe due `None` di fila su ogni riga della tabella, e da lì
+/// in poi nessuno saprebbe più a vista quale dei due è la tripla.
+///
+/// Le voci limitate erano undici, ed erano davvero «poche». Sono diventate
+/// ventisette con il blocco dei canvas, dove ogni numero ha estremi per una
+/// ragione che non è la difesa del motore ma l'usabilità del cursore — sta
+/// scritta lì.
 macro_rules! token_limitato {
     ($id:literal, $css:literal, $kind:ident, $group:ident, $min:literal, $max:literal, $desc:literal) => {
         TokenDef {
@@ -327,14 +332,105 @@ pub static TOKENS: &[TokenDef] = &[
     // ── Canvas ──────────────────────────────────────────────────────────────
     // Non sono decorazione: sono il contratto che permette al visualizer e allo
     // scrubber, che disegnano su canvas in JavaScript, di seguire la skin senza
-    // una riga di codice che sappia quale skin è attiva.
-    token!("canvas.viz.primary", "--viz-primary", Color, Canvas, false, Some("--viz-primary-rgb"),
-        "Barre dello spettro nel visualizer."),
-    token!("canvas.viz.secondary", "--viz-secondary", Color, Canvas, false, Some("--viz-secondary-rgb"),
-        "Anello dei bassi nel visualizer."),
-    token!("canvas.viz.glow", "--viz-glow", Number, Canvas, false, None,
-        "Raggio dell'alone del visualizer, in pixel. Numero nudo: lo legge il JavaScript."),
-    token!("canvas.scrubber.glow", "--scrubber-glow", Number, Canvas, false, None,
+    // una riga di codice che sappia quale skin è attiva. Fino alla 2.2.x quel
+    // contratto era di tre voci, e nelle skin di serie due di loro —
+    // `--viz-primary` e `--viz-secondary` — valevano lo stesso colore: le due
+    // `mix()` dello shader erano due operazioni nulle, e la scena si riduceva
+    // all'accento moltiplicato per la luce. Un contratto che non permette una
+    // differenza non è un contratto: è una dichiarazione di intenti.
+    //
+    // # Perché qui c'è la geometria, e alle parti si nega
+    //
+    // `PartAppearance` rifiuta apposta `width`, `height`, `position` e i
+    // margini: una skin che può spostare le cose può anche sovrapporle o
+    // portarle fuori schermo, e il risultato non è una skin brutta ma un'app
+    // inservibile che sembra un bug dell'app. Quel ragionamento vale perché lì
+    // c'è un layout da rompere. Qui non c'è. La tela occupa il rettangolo che
+    // la schermata le assegna, e larghezza della stanza, profondità, apertura
+    // dell'obiettivo e altezza dell'occhio non spostano nessun bottone:
+    // descrivono la stanza **dentro** l'immagine. Il caso peggiore di un valore
+    // assurdo è un quadro brutto — che si vede subito, e si disfa trascinando
+    // indietro lo stesso cursore.
+    //
+    // # Inerzia e fondo scala: cosa passa di qua e cosa resta in Rust
+    //
+    // `canvas.viz.attack` e `canvas.viz.release` sono i due tempi con cui una
+    // barra sale e scende. Erano due coefficienti dentro `aether-play`; qui
+    // sono millisecondi, perché un tempo si sceglie a orecchio e un
+    // coefficiente no, e perché il filtro che li consuma lavora sulla cadenza
+    // misurata degli eventi — quindi il valore significa la stessa cosa a
+    // qualunque frequenza di schermo. I valori di serie sono i coefficienti di
+    // ieri riscritti nell'altra unità, quindi il comportamento non cambia.
+    // `canvas.viz.floor` dice a quanti decibel sotto il massimo comincia il
+    // nero. Ciò che **non** si sposta è `FONDO_DB`: quello definisce cosa
+    // significa il byte che viaggia sul filo, e cambiarlo vorrebbe dire un
+    // secondo formato di trasporto. Per questo il minimo del token è
+    // esattamente −70: sotto non c'è informazione da rinormalizzare, e un token
+    // che promette quel che non può dare è il difetto che questo blocco toglie,
+    // non uno da aggiungere.
+    //
+    // # Perché ogni numero ha gli estremi
+    //
+    // Perché il controllo che lo Studio monta per un `Number` legge gli estremi
+    // come `min ?? 0` e `max ?? 1`. Un numero senza estremi non prende un
+    // cursore generoso: ne prende uno da 0 a 1, che tronca in silenzio
+    // qualunque valore più grande. È esattamente il motivo per cui `--viz-glow`,
+    // che vale 20, in due versioni non si è mai potuta modificare. Gli estremi
+    // qui non difendono il motore da un valore ostile: rendono il token
+    // raggiungibile.
+    //
+    // # Cosa è rimasto fuori, e perché
+    //
+    // Non sono token, e non è una dimenticanza. `MEMORIA_MS`, `PIANI_MAX`,
+    // `PIANI_RIFLESSI`, `SCATOLE` e `PASSO_MS` sono i budget e le tesi del
+    // modulo che disegna, e sono anche gli unici valori che per cambiare
+    // vorrebbero ricostruire texture e buffer — cioè un rimontaggio a ogni
+    // scatto di cursore. Il tetto di 1,5 sul rapporto di pixel difende la
+    // ventola e la batteria di qualcun altro, e non si mette in mano a un
+    // foglio di stile. L'ottavo basso che alimenta il seguipulsazioni è una
+    // regola di correttezza, non un gusto. La direzione della luce sono tre
+    // numeri per cui non esiste un controllo che ci calzi, e una direzione
+    // sbagliata dà una scena nera. L'altezza minima di una barra è la garanzia
+    // «c'è, ed è a zero», che a zero sparirebbe. Le fermate della maschera CSS
+    // al 16 % e al 42 % tengono leggibile ciò che sta sopra la scena — ed è la
+    // stessa ragione per cui le parti non ricevono la geometria.
+    token!("canvas.viz.primary", "--viz-primary", Color, Canvas, false, None,
+        "Colore in cima alle barre: è quello che si legge come «il colore» della scena."),
+    token!("canvas.viz.secondary", "--viz-secondary", Color, Canvas, false, None,
+        "Colore alla base delle barre. Più è lontano da quello in cima, più la fila ha rilievo."),
+    token!("canvas.viz.tip", "--viz-tip", Color, Canvas, false, None,
+        "La cresta accesa sull'ultimo tratto di ogni barra, dove il colore va in luce."),
+    token_limitato!("canvas.viz.glow", "--viz-glow", Number, Canvas, 0.0, 100.0,
+        "Quanto la cresta si accende: a 0 la barra ha un colore solo, a 100 la punta è tutta luce."),
+    token_limitato!("canvas.viz.width", "--viz-width", Number, Canvas, 1.0, 12.0,
+        "Larghezza della stanza in cui sta la fila: più è grande, più la fila si allarga e si abbassa."),
+    token_limitato!("canvas.viz.depth", "--viz-depth", Number, Canvas, 1.0, 16.0,
+        "Quanto lontano va indietro il passato: la profondità della stanza, cioè quanta storia si vede."),
+    token_limitato!("canvas.viz.height", "--viz-height", Number, Canvas, 0.0, 3.0,
+        "Quanto cresce una barra quando la sua banda è al massimo. A 0 resta un pavimento che cambia colore."),
+    token_limitato!("canvas.viz.fill", "--viz-fill", Number, Canvas, 0.1, 1.0,
+        "Quanta parte della sua fetta occupa una barra: verso 1 le barre si toccano, verso 0,1 diventano aghi."),
+    token_limitato!("canvas.viz.lens", "--viz-lens", Number, Canvas, 24.0, 90.0,
+        "Apertura dell'obiettivo, in gradi. Sotto i 35 la prospettiva si schiaccia, sopra i 70 si esagera."),
+    token_limitato!("canvas.viz.eye", "--viz-eye", Number, Canvas, 0.0, 2.0,
+        "Altezza da cui si guarda: a 0 si è sul pavimento, a 2 la fila si vede dall'alto."),
+    token_limitato!("canvas.viz.haze", "--viz-haze", Number, Canvas, 0.0, 0.9,
+        "Da che punto della profondità il passato comincia a sfumare nel fondo. Alto: la storia resta nitida fino in fondo."),
+    token_limitato!("canvas.viz.reflection", "--viz-reflection", Number, Canvas, 0.0, 1.0,
+        "Quanto il pavimento riflette la fila. A 0 il riflesso non si disegna affatto."),
+    token_limitato!("canvas.viz.ambient", "--viz-ambient", Number, Canvas, 0.0, 1.0,
+        "Luce diffusa: quanto si vede la faccia che non guarda la luce. A 1 la scena è piatta e senza ombre."),
+    token_limitato!("canvas.viz.sway", "--viz-sway", Number, Canvas, 0.0, 2.0,
+        "Quanto la camera oscilla da sola, senza che il suono la spinga. A 0 il punto di vista sta fermo."),
+    token_limitato!("canvas.viz.beat", "--viz-beat", Number, Canvas, 0.0, 2.0,
+        "Quanto il colpo di cassa spinge la camera. A 0 la scena segue il volume e ignora il ritmo."),
+    token_limitato!("canvas.viz.attack", "--viz-attack", Number, Canvas, 0.0, 400.0,
+        "Millisecondi che una barra impiega a salire. Corto: la scena scatta. Lungo: si muove come un vúmetro."),
+    token_limitato!("canvas.viz.release", "--viz-release", Number, Canvas, 20.0, 2000.0,
+        "Millisecondi che una barra impiega a scendere. È il tempo che decide se il silenzio arriva di colpo o svanisce."),
+    token_limitato!("canvas.viz.floor", "--viz-floor", Number, Canvas, -70.0, -24.0,
+        "Fondo scala in decibel: quanto piano deve essere un suono per non disegnare niente. Verso −24 restano solo i colpi."),
+    token_limitato!("canvas.scrubber.glow", "--scrubber-glow", Number, Canvas, 0.0, 40.0,
         "Alone del playhead. Le skin piatte lo azzerano."),
     token!("canvas.scrubber.rest", "--scrubber-rest", Color, Canvas, false, None,
         "Onda non ancora riprodotta nello scrubber."),

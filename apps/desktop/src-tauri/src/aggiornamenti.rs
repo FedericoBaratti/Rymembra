@@ -715,3 +715,48 @@ fn stato_ipc(
         errore,
     })
 }
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    /// Un database vero, migrato, in memoria: la fixture di `aether-app`.
+    fn libreria() -> rusqlite::Connection {
+        aether_app::db::open_in_memory()
+            .expect("un database in memoria si apre sempre")
+            .connection
+    }
+
+    #[test]
+    fn senza_nessuna_preferenza_scritta_il_controllo_e_acceso() {
+        // È il confronto scritto al contrario — `!= Some("0")` e non
+        // `== Some("1")` — e la differenza si vede solo qui: su un'installazione
+        // nuova la chiave non esiste, e chi non ha mai detto niente deve sapere
+        // che è uscita una versione nuova.
+        let connection = libreria();
+        assert!(attivo(&connection).expect("la lettura riesce"));
+    }
+
+    #[test]
+    fn solo_uno_zero_esplicito_spegne_il_controllo() {
+        let connection = libreria();
+        settings::write(&connection, CHIAVE_ATTIVO, "0").expect("la scrittura riesce");
+        assert!(!attivo(&connection).expect("la lettura riesce"));
+
+        settings::write(&connection, CHIAVE_ATTIVO, "1").expect("la scrittura riesce");
+        assert!(attivo(&connection).expect("la lettura riesce"));
+    }
+
+    #[test]
+    fn un_valore_che_nessuno_scrive_non_spegne_niente() {
+        // Il default è acceso, e resta acceso per qualunque cosa che non sia
+        // lo zero: una chiave rimasta lì da una versione vecchia, o scritta a
+        // mano nel database, non deve poter zittire gli aggiornamenti di
+        // sicurezza per distrazione.
+        let connection = libreria();
+        settings::write(&connection, CHIAVE_ATTIVO, "").expect("la scrittura riesce");
+        assert!(attivo(&connection).expect("la lettura riesce"));
+        settings::write(&connection, CHIAVE_ATTIVO, "no").expect("la scrittura riesce");
+        assert!(attivo(&connection).expect("la lettura riesce"));
+    }
+}

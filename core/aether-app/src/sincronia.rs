@@ -41,7 +41,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aether_domain::errors::{AppError, ErrorCode};
+use aether_domain::errors::AppError;
 use aether_sync::contatore::IMPORTAZIONE;
 use aether_sync::{
     Contenuto, Elemento, Fuso, Identita, Interruttore, Lapidi, Momento, PlaylistSincronizzata,
@@ -49,6 +49,7 @@ use aether_sync::{
 };
 use rusqlite::{Connection, Transaction};
 
+use crate::library::db_error;
 use crate::settings::{
     self, CHIAVE_CARTELLE, CHIAVE_CARTELLE_SINCRONIA, CHIAVE_SKIN, CHIAVE_SKIN_QUANDO,
 };
@@ -70,14 +71,6 @@ use crate::settings::{
 /// a vuoto, e la playlist resta di dieci. Dove i due elenchi differiscono davvero
 /// resta la parte comune e si aggiunge il resto, che è il comportamento voluto.
 const ORIGINE: &str = "origine";
-
-/// Traduce un guasto di SQLite nominando cosa si stava facendo.
-fn db_error(cosa: &str, err: &rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(cosa.to_owned()),
-    })
-    .with_cause(err.to_string())
-}
 
 // ── il conteggio d'ascolto ──────────────────────────────────────────────────
 

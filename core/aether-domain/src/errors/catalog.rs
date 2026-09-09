@@ -40,6 +40,14 @@ pub enum Domain {
     Sync,
     /// Impostazioni e segreti.
     Settings,
+    /// I modelli di linguaggio.
+    ///
+    /// Non `Net` e non `Settings`, benché passi da tutti e due: quel che va
+    /// storto qui — una chiave rifiutata, un modello che non esiste, una
+    /// risposta che non contiene quel che si era chiesto — si racconta a chi
+    /// legge in un modo che non somiglia né a «la rete non c'è» né a «questa
+    /// impostazione è illeggibile».
+    Ia,
     /// Confine fra interfaccia e nucleo.
     Ipc,
     /// Guasti interni.
@@ -72,7 +80,7 @@ pub enum RetryRule {
 
 /// Un 5xx, un 408 o un 429 valgono un altro tentativo; un 4xx «colpa nostra» no.
 #[must_use]
-pub const fn http_retryable(status: u16) -> bool {
+pub(crate) const fn http_retryable(status: u16) -> bool {
     status == 408 || status == 429 || status >= 500
 }
 
@@ -94,6 +102,13 @@ macro_rules! catalogo {
         // percorso» sopra un campo che si chiama `path` sono rumore che rende
         // più difficile leggere il catalogo — cioè l'unica cosa che questo file
         // deve permettere di fare bene.
+        //
+        // Resta un `allow` e non diventa un `expect`: l'attributo esce
+        // dall'espansione della macro una volta per ogni invocazione di
+        // `catalogo!`, e un'espansione che non generasse nessun campo — o una
+        // futura in cui i campi arrivassero già documentati — lascerebbe
+        // l'aspettativa inevasa, cioè un `unfulfilled_lint_expectations` che
+        // con `-D warnings` è un errore di compilazione.
         #[allow(missing_docs)]
         #[derive(Debug, Clone, PartialEq, Eq)]
         #[non_exhaustive]
@@ -168,6 +183,20 @@ catalogo! {
     // ── net ─────────────────────────────────────────────────────────────────
     /// Nessuna connessione.
     NetOffline = "net.offline", Net, Warning, Always, None, { url: Option<String> };
+    /// Il nome non si risolve: o non esiste, o il DNS non risponde.
+    ///
+    /// Distinto da [`ErrorCode::NetOffline`] perché il rimedio è un altro. «Non
+    /// c'è rete» manda a guardare il cavo; qui la rete quasi sempre c'è, ed è
+    /// l'indirizzo a essere scritto male — il caso normale di un endpoint
+    /// personalizzato battuto a mano nelle impostazioni dei modelli.
+    ///
+    /// Prima cadeva in [`ErrorCode::NetBadSchema`], che è il ripiego di
+    /// `Rete::trasporto` per «un guasto di trasporto che non è la rete giù»:
+    /// gravità `Error`, non ritentabile, e la frase «la risposta del servizio
+    /// non ha la forma attesa» per un servizio che non aveva risposto affatto.
+    /// Ritentabile perché un DNS che non risponde è quasi sempre una cosa di
+    /// pochi secondi.
+    NetHostUnknown = "net.hostUnknown", Net, Warning, Always, None, { host: Option<String> };
     /// Scaduto il tempo massimo.
     NetTimeout = "net.timeout", Net, Warning, Always, None, { url: Option<String>, timeout_ms: Option<u64> };
     /// Risposta con stato di errore.
@@ -239,6 +268,20 @@ catalogo! {
     // ── library ─────────────────────────────────────────────────────────────
     /// La scansione è fallita.
     LibraryScanFailed = "library.scanFailed", Library, Warning, Always, None, { path: Option<String>, detail: Option<String> };
+    /// Una scansione è già in corso.
+    ///
+    /// `Info` e ritentabile, come `sync.busy` e `metadata.enrichBusy`: non è un
+    /// guasto, è che due scansioni non devono intrecciarsi. La ragione qui è più
+    /// dura che altrove: `tracks.path` è UNIQUE, e due passate che leggono lo
+    /// stesso disco nello stesso istante si contendono l'inserimento della
+    /// stessa riga — una delle due lo vedrebbe fallire su un vincolo, cioè un
+    /// brano che esiste sul disco e non entra in libreria senza che nessuno
+    /// abbia sbagliato niente.
+    ///
+    /// La seconda scansione è spesso quella **automatica**, quella che parte da
+    /// sé quando la coda dei download ha finito: chi la riceve non ha fatto
+    /// niente di strano, e il messaggio glielo dice.
+    LibraryScanBusy = "library.scanBusy", Library, Info, Always, None;
     /// Il brano non è in libreria.
     LibraryTrackNotFound = "library.trackNotFound", Library, Warning, Never, Some("TRACK_NOT_FOUND"), { track_id: Option<i64> };
     /// La playlist non esiste.
@@ -523,6 +566,61 @@ catalogo! {
     /// lo stesso rifiuto per sempre, quindi non si rimanda — si dice quale e
     /// perché.
     SettingsScrobbleRejected = "settings.scrobbleRejected", Settings, Warning, Never, None, { service: String, detail: Option<String> };
+
+    // ── ia ──────────────────────────────────────────────────────────────────
+    /// Nessun modello configurato.
+    ///
+    /// `Info` e non `Warning`: non è un guasto, è la condizione di chiunque non
+    /// sia mai passato da Impostazioni › Modelli IA — cioè quella normale.
+    IaNotConfigured = "ia.notConfigured", Ia, Info, Never, None;
+    /// Il fornitore ha rifiutato la chiave.
+    ///
+    /// Un codice suo invece del `net.http` con dentro un 401, perché è l'unico
+    /// guasto di questa famiglia che ha un rimedio preciso: la chiave si
+    /// riscrive, e la frase deve dire quella e non «errore 401».
+    IaUnauthorized = "ia.unauthorized", Ia, Warning, Never, None, { provider: String };
+    /// Il fornitore non conosce quel modello.
+    IaModelUnknown = "ia.modelUnknown", Ia, Warning, Never, None, { model: String };
+    /// La risposta non ha la forma attesa.
+    ///
+    /// Un servizio che dice di parlare come OpenAI e non lo fa, oppure un flusso
+    /// che finisce a metà di un evento. Il dettaglio porta il pezzo che non si è
+    /// capito, accorciato: è l'unica informazione che permetta di distinguere un
+    /// difetto del servizio da uno nostro.
+    IaBadResponse = "ia.badResponse", Ia, Warning, Never, None, { detail: Option<String> };
+    /// Un indirizzo in chiaro che non è questo computer.
+    ///
+    /// `Error` e non `Warning`: non è un tentativo andato male, è una
+    /// configurazione che chiederebbe di mandare il documento di una skin in
+    /// chiaro a un estraneo. Non parte, e lo dice nominando l'ospite.
+    IaNotLoopback = "ia.notLoopback", Ia, Error, Never, None, { host: String };
+    /// Il servizio locale non risponde.
+    ///
+    /// Ollama e LM Studio non sono servizi remoti: sono programmi che girano su
+    /// questo computer e che possono semplicemente non essere accesi. Dirlo con
+    /// `net.offline` — «non c'è rete» — manderebbe a controllare il router chi
+    /// deve invece premere Avvia in un'altra finestra. `Always` perché il rimedio
+    /// è accendere e riprovare, e allora funziona davvero.
+    IaLocalServerDown = "ia.localServerDown", Ia, Warning, Always, None, { url: String };
+    /// C'è già una conversazione in corso.
+    ///
+    /// Una alla volta di proposito: due generazioni sullo stesso documento si
+    /// scriverebbero addosso a vicenda, e chi guarda non saprebbe quale delle due
+    /// ha vinto. `Info` e `Always`: non è un guasto, è un «aspetta che finisca», e
+    /// appena la prima finisce la stessa richiesta passa.
+    IaBusy = "ia.busy", Ia, Info, Always, None;
+
+    /// Il servizio ha accettato la richiesta e ha chiuso senza rispondere.
+    ///
+    /// Distinto da [`ErrorCode::IaBadResponse`] perché il rimedio è l'opposto.
+    /// `badResponse` vuol dire che dall'altra parte non c'era un flusso — un
+    /// indirizzo che punta a una pagina web, un servizio che parla un altro
+    /// protocollo — ed è inutile riprovare finché non si cambia qualcosa.
+    /// Questo vuol dire che il flusso c'era, ben formato, e dentro non è
+    /// arrivato niente: succede sui modelli gratuiti quando la coda del
+    /// fornitore a valle scade, e la stessa richiesta un minuto dopo funziona.
+    /// `Always`, quindi: è la differenza fra «riprova» e «cambia indirizzo».
+    IaNoAnswer = "ia.noAnswer", Ia, Warning, Always, None;
 
     // ── ipc ─────────────────────────────────────────────────────────────────
     /// Nessun gestore registrato per questo canale.

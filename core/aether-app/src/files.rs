@@ -16,6 +16,7 @@
 //! finti, compresi quelli che un filesystem vero non lascerebbe costruire.
 
 use std::io::{Read, Seek};
+use std::ops::ControlFlow;
 use std::path::Path;
 
 use aether_domain::errors::{AppError, ErrorCode};
@@ -46,6 +47,20 @@ impl<T: Read + Seek> ReadSeek for T {}
 /// «parziale», che è il valore su cui a valle si decide di non cancellare
 /// niente. Un campo del genere va scritto da chi sa com'è andata la camminata,
 /// non ereditato per distrazione da chi non ci ha pensato.
+///
+/// # Il terzo caso, che qui dentro non c'è
+///
+/// Una camminata **arenata** — la share che non fallisce e non finisce, che
+/// resta lì — non è né completa né parziale: è una camminata che non è tornata.
+/// Questo tipo non sa esprimerla, perché per esistere bisogna che la funzione
+/// che lo costruisce sia rientrata.
+///
+/// Il terzo caso vive quindi un piano più in su, in [`crate::library::cammina`],
+/// che consuma [`MusicFiles::walk_a_rate`] a rate e conta il silenzio fra due
+/// consegne. Lì una radice arenata si salta **senza risondare**: la sonda
+/// risponderebbe «sì» — dalla cache del sistema, o perché la cartella si apre e
+/// solo il contenuto non arriva — e quel «sì» farebbe passare l'elenco monco
+/// per un elenco vero.
 #[derive(Debug, Clone)]
 pub struct Camminata {
     /// I file trovati.
@@ -55,7 +70,11 @@ pub struct Camminata {
     /// `false` dice soltanto «questo elenco è parziale», non «la rete è giù»:
     /// una sottocartella a permessi negati su un disco locale lo abbassa
     /// esattamente come una share che muore. A distinguere i due casi è chi
-    /// chiama, risondando la radice — vedi [`crate::library::plan`].
+    /// chiama, risondando la radice — vedi [`crate::library::cammina`].
+    ///
+    /// È lo stesso `bool` che [`MusicFiles::walk_a_rate`] restituisce alla fine
+    /// della sua consegna, e i due non devono mai divergere: chi implementa
+    /// l'uno implementa l'altro.
     pub completa: bool,
 }
 
@@ -81,7 +100,58 @@ pub trait MusicFiles: Send + Sync {
     /// **E «parziale» non vuol dire «completa»**: chi implementa deve abbassare
     /// [`Camminata::completa`] appena perde un ramo, per lo stesso motivo un
     /// passo più in là. Vedi [`Camminata`].
+    ///
+    /// **Torna quando ha finito**, e su una share che non risponde «quando ha
+    /// finito» può voler dire mai: chi non se lo può permettere — la scansione,
+    /// che gira mentre la finestra deve restare viva — passa da
+    /// [`Self::walk_a_rate`], che consegna man mano e a cui si può smettere di
+    /// dare ascolto.
     fn walk(&self, root: &str) -> Result<Camminata, AppError>;
+
+    /// Come [`Self::walk`], ma consegnando ogni file appena lo si trova.
+    ///
+    /// # Perché a rate
+    ///
+    /// Perché la domanda che serve alla scansione non è «quanto è durata
+    /// l'enumerazione», che su una libreria da centomila file dura
+    /// legittimamente dei minuti, ma «da quanto non arriva più niente». Le due
+    /// si somigliano solo finché il disco risponde: una share viva e lenta
+    /// consegna piano ma consegna, una share morta smette e basta. Con un
+    /// [`Self::walk`] intero le due sono la stessa attesa, e limitarla vorrebbe
+    /// dire scegliere fra dichiarare morta una libreria grande e non accorgersi
+    /// mai di una share caduta.
+    ///
+    /// `su_file` viene chiamato una volta per file, nell'ordine in cui la
+    /// camminata li incontra; restituendo [`ControlFlow::Break`] dice «basta
+    /// così» e la camminata si ferma lì.
+    ///
+    /// # Il `bool`
+    ///
+    /// È [`Camminata::completa`], con lo stesso significato e lo stesso peso a
+    /// valle: `true` vuol dire «nessun ramo è andato perso», e solo su un `true`
+    /// chi chiama si può permettere di concludere che quel che non è arrivato
+    /// non c'è. Una camminata **interrotta** da `su_file` restituisce quindi
+    /// `false`: chi ha detto basta non ha visto tutto, per definizione.
+    ///
+    /// Il corpo di serie chiama [`Self::walk`] e consegna quel che ha
+    /// restituito: è corretto per ogni implementazione — i doppi di prova, un
+    /// provider Android — e sbagliato per una cosa sola, il tempo. Chi cammina
+    /// su un filesystem che può non rispondere lo sovrascrive consegnando
+    /// davvero man mano, altrimenti il silenzio che chi consuma sta misurando è
+    /// un silenzio che comincia soltanto alla fine.
+    fn walk_a_rate(
+        &self,
+        root: &str,
+        su_file: &mut dyn FnMut(DiscoveredFile) -> ControlFlow<()>,
+    ) -> Result<bool, AppError> {
+        let camminata = self.walk(root)?;
+        for file in camminata.file {
+            if su_file(file).is_break() {
+                return Ok(false);
+            }
+        }
+        Ok(camminata.completa)
+    }
 
     /// La radice esiste ed è leggibile **adesso**?
     ///
@@ -167,8 +237,26 @@ fn errore_di_rete(err: &std::io::Error) -> bool {
 pub struct LocalFiles;
 
 impl MusicFiles for LocalFiles {
+    /// Ricostruita sopra [`MusicFiles::walk_a_rate`], e non il contrario.
+    ///
+    /// Il ciclo su `walkdir` sta di là perché è di là che serve consegnare man
+    /// mano; qui si raccoglie quel che quello consegna. Due cicli sarebbero due
+    /// idee su cosa conta come ramo perso, e prima o poi una camminata intera e
+    /// una a rate direbbero due cose diverse sulla stessa cartella.
     fn walk(&self, root: &str) -> Result<Camminata, AppError> {
-        let mut found = Vec::new();
+        let mut file = Vec::new();
+        let completa = self.walk_a_rate(root, &mut |trovato| {
+            file.push(trovato);
+            ControlFlow::Continue(())
+        })?;
+        Ok(Camminata { file, completa })
+    }
+
+    fn walk_a_rate(
+        &self,
+        root: &str,
+        su_file: &mut dyn FnMut(DiscoveredFile) -> ControlFlow<()>,
+    ) -> Result<bool, AppError> {
         // Ogni ramo perso abbassa questo, e non è pignoleria: è l'unica
         // differenza fra «qui non c'è più niente» e «di qui non si è visto
         // tutto», e a valle decide se dei brani si cancellano.
@@ -197,21 +285,25 @@ impl MusicFiles for LocalFiles {
                 continue;
             };
             let path = entry.path().to_string_lossy().into_owned();
-            found.push(DiscoveredFile {
+            let trovato = DiscoveredFile {
                 path,
                 size_bytes: metadata.len(),
                 modified_ms: modified_ms(&metadata),
-            });
+            };
+            // Chi ha detto basta non ha visto tutto: `false`, non `completa`.
+            if su_file(trovato).is_break() {
+                return Ok(false);
+            }
         }
-        Ok(Camminata {
-            file: found,
-            completa,
-        })
+        Ok(completa)
     }
 
     fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send + Sync>, AppError> {
         let file = std::fs::File::open(Path::new(path)).map_err(|err| io_error(path, &err))?;
-        Ok(Box::new(std::io::BufReader::new(file)))
+        Ok(Box::new(std::io::BufReader::with_capacity(
+            BUFFER_LETTURA,
+            file,
+        )))
     }
 
     fn radice_raggiungibile(&self, root: &str) -> bool {
@@ -242,6 +334,21 @@ const SONDA_RADICE: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Il nome che il filo della sonda porta nel diario dei panici.
 const SONDA_RADICE_NOME: &str = "sonda-radice";
+
+/// Quanti byte alla volta si chiedono al filesystem leggendo un brano.
+///
+/// Sessantaquattro kibibyte, e il numero conta soltanto sulla rete. Su un disco
+/// locale la dimensione del buffer sposta qualche microsecondo; su SMB **ogni
+/// riempimento è un giro di rete**, e con gli otto kibibyte di serie di
+/// `BufReader` un file da mezzo megabyte diventa una sessantina di andate e
+/// ritorni con la latenza del Wi-Fi addosso a ognuna.
+///
+/// Sessantaquattro e non di più perché è la lettura massima che SMB2 negozia di
+/// suo con Windows: chiederne di più non fa meno giri, li fa uguali con un
+/// buffer più grosso. E per un lettore di tag il buffer grosso è sprecato due
+/// volte, perché `lofty` guarda la testa del file e poi salta in coda: quel che
+/// si legge in mezzo lo si è letto per niente.
+const BUFFER_LETTURA: usize = 64 * 1024;
 
 /// La data di modifica in millisecondi interi.
 ///
@@ -289,6 +396,68 @@ mod tests {
         // Niente si è perso per strada: è la condizione che permette al piano di
         // fidarsi di questo elenco per decidere delle rimozioni.
         assert!(found.completa, "una cartella sana si cammina per intero");
+    }
+
+    #[test]
+    fn la_camminata_a_rate_consegna_gli_stessi_file_di_quella_intera() {
+        // Le due non devono divergere mai, e non per eleganza: la scansione
+        // cammina a rate, ogni altro chiamante cammina intero, e se le due
+        // vedessero cartelle diverse la libreria dipenderebbe da chi l'ha
+        // guardata.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let nested = dir.path().join("Album").join("CD2");
+        std::fs::create_dir_all(&nested).expect("cartelle");
+        for name in ["a.mp3", "b.txt", "c.flac"] {
+            let mut f = std::fs::File::create(nested.join(name)).expect("file");
+            f.write_all(b"x").expect("scrittura");
+        }
+        let root = dir.path().to_string_lossy().into_owned();
+
+        let mut a_rate = Vec::new();
+        let completa = LocalFiles
+            .walk_a_rate(&root, &mut |trovato| {
+                a_rate.push(trovato);
+                ControlFlow::Continue(())
+            })
+            .expect("camminata a rate");
+        let intera = LocalFiles.walk(&root).expect("camminata intera");
+
+        assert_eq!(completa, intera.completa);
+        assert!(completa, "una cartella sana si cammina per intero");
+        let percorsi: Vec<&str> = a_rate.iter().map(|f| f.path.as_str()).collect();
+        let attesi: Vec<&str> = intera.file.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(percorsi, attesi, "stessi file, stesso ordine");
+    }
+
+    #[test]
+    fn chi_dice_basta_ferma_la_camminata_a_rate() {
+        // Il patto dell'annullamento visto da qui: chi smette di ascoltare
+        // ferma l'enumerazione invece di lasciarla girare per nessuno. E quel
+        // che torna è `false`, cioè «parziale»: chi ha detto basta non ha
+        // visto tutto, e su un elenco così non si cancella niente.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        for name in ["a.mp3", "b.mp3", "c.mp3", "d.mp3"] {
+            std::fs::write(dir.path().join(name), b"x").expect("file");
+        }
+        let root = dir.path().to_string_lossy().into_owned();
+
+        let mut quanti = 0_usize;
+        let completa = LocalFiles
+            .walk_a_rate(&root, &mut |_| {
+                quanti += 1;
+                if quanti >= 2 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .expect("camminata a rate");
+
+        assert_eq!(quanti, 2, "si ferma al secondo, non arriva al quarto");
+        assert!(
+            !completa,
+            "una camminata interrotta non è un elenco su cui fidarsi"
+        );
     }
 
     #[test]

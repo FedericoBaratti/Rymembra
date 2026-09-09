@@ -111,7 +111,12 @@
 
     "canvas.viz.primary": { "$token": "color.accent" },
     "canvas.viz.secondary": { "$palette": "brace" },
-    "canvas.viz.glow": 24,
+    "canvas.viz.tip": { "$palette": "ottone" },
+    "canvas.viz.glow": 34,
+    "canvas.viz.lens": 46,
+    "canvas.viz.ambient": 0.55,
+    "canvas.viz.reflection": 0.35,
+    "canvas.viz.sway": 0.6,
     "canvas.scrubber.glow": 10,
     "canvas.scrubber.rest": "rgba(255, 249, 240, 0.16)"
   },

@@ -258,8 +258,22 @@ pub(crate) fn trasforma(dati: &mut [C]) {
 #[derive(Debug, Clone)]
 pub struct Bande {
     /// Le dieci d'ottava, nell'ordine di [`CENTRI_HZ`], ognuna in `0..=1`.
+    ///
+    /// Smorzate da [`inerzia`], e aggiornate solo a interruttore acceso.
     pub ottave: [f32; BANDE],
     /// Le fini, dalla più bassa alla più alta, ognuna in `0..=1`.
+    ///
+    /// **Grezze**: è la potenza misurata in questo mezzo secondo, riportata
+    /// sulla scala di [`FONDO_DB`], e nient'altro. Nessuna inerzia, nessuna
+    /// memoria del valore di prima — a flusso fermo tornano a zero alla prima
+    /// lettura invece di scendere piano.
+    ///
+    /// Non è una semplificazione: è che lo smorzamento ha cambiato posto. Lo fa
+    /// la finestra, nel gestore dell'evento, con due costanti di tempo che una
+    /// skin può cambiare — e per farlo deve ricevere il valore vero, non uno
+    /// già smorzato da qualcun altro con costanti che non conosce. Due filtri in
+    /// serie non sono un filtro con due manopole: sono un filtro con una
+    /// manopola e una coda che nessuno ha chiesto.
     pub fini: Vec<f32>,
 }
 
@@ -301,14 +315,42 @@ fn bordi_di(quante: usize, frequenza: f32) -> Vec<(f32, f32)> {
         .collect()
 }
 
+/// Quanto vale un decibel, in `0..=1`, senza nessuna inerzia.
+///
+/// È la sola definizione di cosa significhi il numero che esce di qui:
+/// [`FONDO_DB`] è lo zero e il fondo scala è l'uno. Sta in una funzione perché
+/// la usano due strade che ormai sono diverse — le ottave la passano
+/// all'inerzia, le fini la spediscono così com'è — e due copie di questa riga
+/// sarebbero due definizioni della stessa scala, cioè il modo di farle
+/// divergere.
+fn livello_di(db: f32) -> f32 {
+    ((db - FONDO_DB) / -FONDO_DB).clamp(0.0, 1.0)
+}
+
 /// L'inerzia di una barra: sale quasi di colpo, scende piano.
 ///
-/// Una funzione e non due copie del calcolo: le ottave e le fini devono salire
-/// e scendere con lo **stesso** passo, altrimenti le dieci barre sotto la
-/// copertina e la scena dietro descriverebbero lo stesso colpo di rullante in
-/// due momenti diversi — che è la cosa che si nota per prima e non si sa dire.
+/// **La usano solo le ottave.** Fino alla 2.2 la usavano tutte e due le
+/// riduzioni, e la ragione scritta qui era che dovevano salire e scendere con
+/// lo stesso passo, o le dieci barre sotto la copertina e la scena dietro
+/// avrebbero descritto lo stesso colpo di rullante in due momenti diversi.
+/// Quell'argomento non ha più un consumatore: la striscia a dieci barre non
+/// c'è più, le ottave non attraversano l'IPC e di serie non si calcolano
+/// nemmeno ([`Spettro::guarda_ottave`]).
+///
+/// Le bande fini escono adesso **grezze**, e a smorzarle è la finestra, con due
+/// costanti di tempo che una skin può cambiare (`canvas.viz.attack` e
+/// `canvas.viz.release`). Il filtro di là è della stessa forma di questo — una
+/// media esponenziale con un passo per la salita e uno per la discesa — ma il
+/// passo lo ricava dall'intervallo **misurato** fra due eventi invece di darlo
+/// per scontato, quindi è indipendente dalla cadenza per costruzione. Con i
+/// valori di serie, 41 ms di salita e 258 ms di discesa a 33 ms di cadenza,
+/// riproduce [`SALITA`] e [`DISCESA`] a meno di mezzo centesimo.
+///
+/// Questa resta perché la riduzione a ottave resta, e resta provata: il giorno
+/// che qualcosa dentro il motore vuole di nuovo dieci barre smorzate, le trova
+/// qui invece di doverle riscrivere.
 fn inerzia(livello: f32, db: f32) -> f32 {
-    let voluto = ((db - FONDO_DB) / -FONDO_DB).clamp(0.0, 1.0);
+    let voluto = livello_di(db);
     let passo = if voluto > livello { SALITA } else { DISCESA };
     livello + (voluto - livello) * passo
 }
@@ -320,9 +362,28 @@ fn inerzia(livello: f32, db: f32) -> f32 {
 /// interroga. Nessuno dei divieti di `uscita.rs` vale qui — e nessuno di quelli
 /// che valgono lì è stato attraversato per costruirlo.
 ///
-/// «Alloca alla nascita e non più» ha un'eccezione dichiarata: cambiare
-/// risoluzione rifà tre vettori. Succede quando un dito preme una linguetta,
-/// non trenta volte al secondo.
+/// «Alloca alla nascita e non più» ha un'eccezione dichiarata, e **una sola**:
+/// cambiare risoluzione rifà tre vettori. Succede quando un dito preme una
+/// linguetta, non trenta volte al secondo.
+///
+/// La frase è stata a lungo mezza falsa: [`Self::trasformata`] allocava una
+/// `Vec` di quattromila numeri complessi a ogni chiamata, per un rimescolamento
+/// di bit che si scriveva in un passaggio solo insieme alla finestratura. Adesso
+/// lo fa, e la promessa è di nuovo intera: dal secondo campione in poi lo
+/// spettro gira dentro la memoria che si è preso alla nascita.
+///
+/// # Le ottave sono spente di serie
+///
+/// [`Self::ottave`] costa una scansione di tutti i bin più dieci logaritmi, e
+/// nella finestra non la riceve più nessuno da quando la striscia a dieci barre
+/// sotto la copertina non c'è più (`riproduzione/mod.rs`, la prosa di
+/// `BandeIpc`). È rimasta un calcolo per nessuno, trenta volte al secondo.
+///
+/// Un interruttore e non una cancellazione: [`Self::guarda_ottave`] la riaccende
+/// quando qualcuno le vuole di nuovo — e qualcuno potrebbe, perché sono le
+/// bande dell'equalizzatore e la striscia può tornare. Spenta, `ottave` resta
+/// ferma sui suoi zeri: chi la legge senza aver acceso l'interruttore vede un
+/// silenzio, non un valore vecchio.
 pub struct Spettro {
     ricevi: rtrb::Consumer<f32>,
     /// Gli ultimi [`FINESTRA`] campioni, come anello.
@@ -337,16 +398,18 @@ pub struct Spettro {
     ordine: Vec<usize>,
     /// Lo spazio di lavoro della trasformata.
     lavoro: Vec<C>,
-    /// I livelli mostrati, con la loro inerzia.
+    /// I livelli come escono: le ottave smorzate, le fini grezze.
     bande: Bande,
     /// I bordi delle bande fini, in bin. Cambiano solo con la risoluzione.
     bordi: Vec<(f32, f32)>,
-    /// I decibel delle bande fini prima dell'inerzia.
+    /// I decibel delle bande fini, prima di diventare un livello.
     ///
     /// Un vettore tenuto invece di uno restituito: è l'unico modo di calcolare
     /// 1024 numeri trenta volte al secondo senza allocare 1024 numeri trenta
     /// volte al secondo.
     grezze_fini: Vec<f32>,
+    /// Se calcolare anche le dieci d'ottava. Di serie no: vedi sopra.
+    ottave_accese: bool,
     frequenza: f32,
 }
 
@@ -393,8 +456,30 @@ impl Spettro {
             },
             bordi: bordi_di(quante, frequenza),
             grezze_fini: vec![FONDO_DB; quante],
+            // Spente: chi le vuole lo dice, e oggi non le vuole nessuno.
+            ottave_accese: false,
             frequenza,
         }
+    }
+
+    /// Accende o spegne il calcolo delle dieci bande d'ottava.
+    ///
+    /// Di serie sono **spente**, ed è una scelta di costo, non di gusto: sono le
+    /// stesse dieci dell'equalizzatore, le disegnava la striscia sotto la
+    /// copertina, e quella striscia non c'è più. Calcolarle voleva dire
+    /// scandire tutti i bin e prendere dieci logaritmi trenta volte al secondo
+    /// per un numero che nessuno legge.
+    ///
+    /// Un interruttore e non una riga cancellata: la riduzione a ottave è
+    /// giusta, provata, e legata all'equalizzatore per costruzione. Il giorno
+    /// che una striscia a dieci barre torna — o che qualcosa dentro il motore
+    /// vuole sapere dov'è l'energia per ottava — si riaccende da qui, invece di
+    /// riscriverla.
+    ///
+    /// A interruttore spento [`Bande::ottave`] non si aggiorna: resta com'era,
+    /// cioè a zero se non è mai stata accesa. Chi la legge deve averla chiesta.
+    pub fn guarda_ottave(&mut self, acceso: bool) {
+        self.ottave_accese = acceso;
     }
 
     /// Cambia quante bande fini si calcolano.
@@ -404,10 +489,12 @@ impl Spettro {
     /// preferenza vecchia o storta deve valere «il più vicino che so fare», non
     /// «lo spettro non funziona più».
     ///
-    /// Le barre ripartono da zero e risalgono con la loro inerzia: tenere i
-    /// livelli di prima vorrebbe dire spalmare dieci vecchie altezze su cento
-    /// barre nuove, cioè mostrare per un istante uno spettro che non è mai
-    /// esistito.
+    /// Le barre ripartono da zero: tenere i livelli di prima vorrebbe dire
+    /// spalmare dieci vecchie altezze su cento barre nuove, cioè mostrare per un
+    /// istante uno spettro che non è mai esistito. Le fini risalgono già alla
+    /// prima lettura piena — sono grezze — e a smorzare quel gradino è la
+    /// finestra, che azzera la propria memoria insieme alla risoluzione per la
+    /// stessa ragione.
     pub fn dettaglio(&mut self, quante: u16) {
         let quante = usize::from(quante.clamp(RISOLUZIONE_MIN, RISOLUZIONE_MAX));
         if quante == self.bande.fini.len() {
@@ -426,8 +513,12 @@ impl Spettro {
 
     /// Ritira i campioni arrivati e restituisce le bande, ognuna in `0..=1`.
     ///
-    /// Restituisce sempre qualcosa: a flusso fermo le barre **scendono** invece
-    /// di sparire di colpo, che è la stessa inerzia che hanno mentre suona.
+    /// Restituisce sempre qualcosa, anche a flusso fermo — e le due riduzioni si
+    /// comportano lì in modo diverso, di proposito. Le ottave **scendono** con
+    /// la loro inerzia, che è la stessa che hanno mentre suona. Le fini vanno a
+    /// zero subito, perché a zero ci sono davvero: la coda di rilascio che le fa
+    /// scendere piano la mette la finestra, che è dove adesso vive quella
+    /// manopola.
     pub fn leggi(&mut self) -> &Bande {
         // Si svuota tutto quel che c'è: la callback ne produce quarantottomila
         // al secondo e questo si chiama trenta volte, quindi ogni giro ne trova
@@ -446,20 +537,37 @@ impl Spettro {
 
         // Una trasformata sola per tutte e due le riduzioni: è la ragione per
         // cui la finestra si trasforma qui e non dentro chi somma i bin.
-        let grezze = if self.piena {
+        if self.piena {
             self.trasformata();
             self.fini();
-            self.ottave()
         } else {
             self.grezze_fini.fill(FONDO_DB);
-            [FONDO_DB; BANDE]
-        };
-
-        for (livello, db) in self.bande.ottave.iter_mut().zip(grezze) {
-            *livello = inerzia(*livello, db);
         }
+
+        // Le ottave solo se qualcuno le guarda. La scansione dei bin e i dieci
+        // logaritmi che seguono sono il pezzo di lavoro più facile da non fare:
+        // il risultato oggi non attraversa l'IPC e non lo legge nessuno. Il
+        // ramo resta perché la riduzione resta — vedi `guarda_ottave`.
+        if self.ottave_accese {
+            let grezze = if self.piena {
+                self.ottave()
+            } else {
+                [FONDO_DB; BANDE]
+            };
+            for (livello, db) in self.bande.ottave.iter_mut().zip(grezze) {
+                *livello = inerzia(*livello, db);
+            }
+        }
+
+        // Le fini escono grezze: la scala, e basta. Lo smorzamento sta dalla
+        // parte di chi disegna, dove due token — `canvas.viz.attack` e
+        // `canvas.viz.release` — lo misurano in millisecondi invece che in
+        // coefficienti, e dove l'intervallo fra un evento e l'altro si conosce
+        // perché si misura. Smorzare anche qui vorrebbe dire due filtri in
+        // serie: chi gira la manopola dell'attacco troverebbe una coda che non
+        // ha messo lui e che non può togliere.
         for (livello, db) in self.bande.fini.iter_mut().zip(self.grezze_fini.iter()) {
-            *livello = inerzia(*livello, *db);
+            *livello = livello_di(*db);
         }
         &self.bande
     }
@@ -547,21 +655,50 @@ impl Spettro {
         // come un basso enorme che non c'è.
         let media = self.finestra.iter().sum::<f32>() / FINESTRA as f32;
 
-        // La finestra è un anello: si legge dal più vecchio, cioè dal cursore.
-        for (posto, i) in self.lavoro.iter_mut().zip(0..FINESTRA) {
-            let da = (self.cursore + i) % FINESTRA;
-            let campione = self.finestra.get(da).copied().unwrap_or(0.0) - media;
-            let peso = self.hann.get(i).copied().unwrap_or(0.0);
+        // Quattro prestiti separati e non `self`, per la stessa ragione scritta
+        // in `fini()`: il compilatore sa dividere i campi di una struttura
+        // dentro una funzione, ed è questo che permette di scrivere in `lavoro`
+        // mentre si leggono `finestra`, `hann` e `ordine`.
+        let finestra = &self.finestra;
+        let hann = &self.hann;
+        let ordine = &self.ordine;
+        let cursore = self.cursore;
+        let lavoro = &mut self.lavoro;
+
+        // Finestratura e rimescolamento dei bit **nello stesso passaggio**, ed è
+        // il motivo per cui questa funzione non alloca niente.
+        //
+        // Erano due cicli: il primo scriveva `lavoro[i] = hann[i] · campione(i)`
+        // e il secondo permutava `lavoro[j] = lavoro[ordine[j]]`. Una
+        // permutazione in posto non si scrive con un ciclo solo senza scambiare
+        // a coppie, quindi il secondo passaggio raccoglieva in una `Vec` nuova e
+        // la sostituiva al campo: quattromila numeri complessi — trentadue
+        // kilobyte — allocati e buttati trenta volte al secondo, cioè circa un
+        // megabyte al secondo di traffico sull'allocatore per non calcolare
+        // niente di nuovo. Il commento che stava qui diceva «dentro lo stesso
+        // spazio», e non era vero.
+        //
+        // Ma le due operazioni si **compongono**: la permutazione è una lettura
+        // e la finestratura è una scrittura, quindi basta leggere l'ingresso
+        // all'indice già rovesciato. `lavoro[j]` vale
+        // `hann[ordine[j]] · (finestra[(cursore + ordine[j]) mod N] − media)`,
+        // che è esattamente quel che i due cicli producevano insieme. Nessun
+        // secondo vettore, nessuna copia, e un passaggio in meno sulla memoria.
+        //
+        // La finestra è un anello: `cursore` è il posto del prossimo campione,
+        // cioè anche il più vecchio, e la somma modulo `FINESTRA` srotola
+        // l'anello a partire da lì.
+        for (posto, j) in lavoro.iter_mut().zip(0..FINESTRA) {
+            // `unwrap_or(j)` e non un panico: `ordine` è lungo `FINESTRA` per
+            // costruzione, e l'identità è il ripiego che lascia la trasformata
+            // definita anche se un giorno non lo fosse più.
+            let i = ordine.get(j).copied().unwrap_or(j);
+            let da = (cursore + i) % FINESTRA;
+            let campione = finestra.get(da).copied().unwrap_or(0.0) - media;
+            let peso = hann.get(i).copied().unwrap_or(0.0);
             *posto = C::nuovo(campione * peso, 0.0);
         }
-        // Il rimescolamento dei bit, dentro lo stesso spazio.
-        let mescolato: Vec<C> = self
-            .ordine
-            .iter()
-            .map(|&da| self.lavoro.get(da).copied().unwrap_or_default())
-            .collect();
-        self.lavoro = mescolato;
-        trasforma(&mut self.lavoro);
+        trasforma(lavoro);
     }
 
     /// La potenza di ogni banda d'ottava, in decibel.
@@ -630,11 +767,17 @@ mod prove {
     fn misura_a(frequenza: u32, quante: u16, mut genera: impl FnMut(usize) -> f32) -> Bande {
         let (mut manda, ricevi) = rtrb::RingBuffer::<f32>::new(FINESTRA * 2);
         let mut spettro = Spettro::nuovo(ricevi, frequenza);
+        // Le prove guardano anche le ottave, che l'app non guarda più: qui
+        // l'interruttore si accende apposta, ed è quel che tiene provata una
+        // riduzione che di serie non gira.
+        spettro.guarda_ottave(true);
         spettro.dettaglio(quante);
         let mut t = 0usize;
         let mut bande = spettro.leggi().clone();
-        // Parecchi giri: le barre hanno un'inerzia, e la prima lettura sarebbe
-        // il valore a metà della salita invece di quello a regime.
+        // Parecchi giri: le ottave hanno un'inerzia, e la prima lettura sarebbe
+        // il valore a metà della salita invece di quello a regime. Alle fini,
+        // che sono grezze, basterebbe una finestra piena — ma questo aiutante
+        // serve tutte e due, e il giro in più non costa niente.
         for _ in 0..60 {
             for _ in 0..FINESTRA {
                 let _ = manda.push(genera(t));
@@ -748,11 +891,17 @@ mod prove {
 
     #[test]
     fn le_barre_scendono_quando_il_suono_finisce() {
-        // A flusso fermo le barre non spariscono di colpo: la discesa ha la sua
-        // inerzia, ed è quel che rende lo spettro guardabile invece che a
-        // scatti.
+        // A flusso fermo le **ottave** non spariscono di colpo: la discesa ha la
+        // sua inerzia, ed è quel che le rende guardabili invece che a scatti.
+        //
+        // Sono le ottave e non le fini perché è lì che l'inerzia è rimasta: le
+        // fini escono grezze e le smorza la finestra. Questa prova è ciò che
+        // tiene viva `inerzia()` adesso che di serie non la chiama nessuno — se
+        // qualcuno la cancellasse credendola morta, cadrebbe qui.
         let (mut manda, ricevi) = rtrb::RingBuffer::<f32>::new(FINESTRA * 2);
         let mut spettro = Spettro::nuovo(ricevi, 48_000);
+        // La discesa si misura sulle ottave: vanno chieste.
+        spettro.guarda_ottave(true);
         let mut suona = seno(1_000.0, 48_000);
         let mut t = 0usize;
         for _ in 0..60 {
@@ -776,6 +925,40 @@ mod prove {
     }
 
     #[test]
+    fn le_bande_fini_arrivano_senza_inerzia() {
+        // Il contrario esatto della prova qui sopra, sull'altra riduzione. Le
+        // fini non hanno più una coda di rilascio: la mette la finestra, con due
+        // token in millisecondi, e per poterlo fare deve ricevere il livello
+        // vero. Il difetto che questa prova impedisce è il ritorno di un
+        // secondo filtro qui dentro — due filtri in serie non sono un filtro con
+        // due manopole, sono un filtro con una manopola e una coda che chi gira
+        // la manopola non può togliere.
+        let (mut manda, ricevi) = rtrb::RingBuffer::<f32>::new(FINESTRA * 2);
+        let mut spettro = Spettro::nuovo(ricevi, 48_000);
+        spettro.dettaglio(64);
+        let mut suona = seno(1_000.0, 48_000);
+        let mut t = 0usize;
+        for _ in 0..8 {
+            for _ in 0..FINESTRA {
+                let _ = manda.push(suona(t));
+                t += 1;
+            }
+            spettro.leggi();
+        }
+        let (_, acceso) = piu_alta(&spettro.leggi().fini);
+        assert!(acceso > 0.4, "la banda del tono è a {acceso}");
+
+        // Una finestra intera di silenzio, e **una sola** lettura. Con la
+        // discesa di ieri sarebbe scesa del dodici per cento e sarebbe rimasta
+        // lassù; senza, è già a zero.
+        for _ in 0..FINESTRA {
+            let _ = manda.push(0.0);
+        }
+        let dopo = spettro.leggi().fini.iter().copied().fold(0.0_f32, f32::max);
+        assert!(dopo < 0.02, "da {acceso} doveva andare a zero, è a {dopo}");
+    }
+
+    #[test]
     fn le_bande_fini_sono_quante_ne_ho_chieste() {
         for quante in RISOLUZIONI {
             let bande = misura_a(48_000, quante, |_| 0.0);
@@ -790,6 +973,7 @@ mod prove {
         // valere «il più vicino che so fare».
         let (_manda, ricevi) = rtrb::RingBuffer::<f32>::new(FINESTRA);
         let mut spettro = Spettro::nuovo(ricevi, 48_000);
+        spettro.guarda_ottave(true);
         spettro.dettaglio(0);
         assert_eq!(spettro.quante_fini(), usize::from(RISOLUZIONE_MIN));
         spettro.dettaglio(u16::MAX);

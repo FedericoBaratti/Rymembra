@@ -126,7 +126,10 @@ pub const LATEST_VERSION: u32 = {
         // `indexing_slicing` è vietato nel codice normale, ma in un contesto
         // `const` non esistono ancora `get()` fallibili: l'indice è comunque
         // limitato dalla condizione del ciclo.
-        #[allow(clippy::indexing_slicing)]
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "in const non esiste un get() fallibile, e i < MIGRATIONS.len()"
+        )]
         let version = MIGRATIONS[i].version;
         if version > max {
             max = version;

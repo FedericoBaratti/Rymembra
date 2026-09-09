@@ -38,13 +38,7 @@ use aether_domain::keys::{PlaylistKey, TrackKey, TrackKeyInput};
 use aether_domain::merge::{TrackStats, collapse_duplicates, merge_stats};
 use rusqlite::{Connection, OpenFlags, Transaction};
 
-/// Traduce un errore di SQLite nel catalogo, tenendo il testo originale.
-fn db_error(detail: &str, err: &rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(detail.to_owned()),
-    })
-    .with_cause(err.to_string())
-}
+use crate::library::db_error;
 
 /// Una riga del vecchio database, ridotta a ciò che vale la pena portare.
 #[derive(Debug, Clone)]

@@ -84,6 +84,57 @@ export function testoErrore(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
+/**
+ * La riga in più: quel che il servizio ha scritto, con parole sue.
+ *
+ * # Perché `testoErrore` da sola non bastava
+ *
+ * Perché `tSe` usa il ripiego **solo quando la chiave manca**, e per un codice
+ * del catalogo la chiave c'è sempre. Quindi `message` — l'unico campo che porta
+ * qualcosa di specifico a questo guasto — non arrivava mai a schermo: restava
+ * scritto in un record che l'interfaccia riceveva e non leggeva.
+ *
+ * Il caso che lo rendeva evidente è OpenRouter. La frase del catalogo dice
+ * «questo fornitore non conosce quel modello», che è vero e non serve; il
+ * servizio aveva scritto «use this slug instead: minimax/minimax-m3», che è la
+ * correzione da copiare. Sono due frasi diverse e servono tutte e due — quella
+ * generale spiega cosa è successo, questa dice cosa fare.
+ *
+ * `null` quando non c'è niente da aggiungere, o quando quel che ci sarebbe
+ * ripete la frase del catalogo: due volte la stessa cosa in due riquadri
+ * insegna a non leggere il secondo.
+ */
+export function dettaglioErrore(value: unknown): string | null {
+  if (!eErroreIpc(value) || value.message === null) return null;
+  const dettaglio = value.message.trim();
+  if (dettaglio === "" || dettaglio === testoErrore(value)) return null;
+  return dettaglio;
+}
+
+/** Un guasto pronto da disegnare: la frase, e la riga in più. */
+export interface Guasto {
+  /** Quel che dice il catalogo, tradotto. */
+  testo: string;
+  /** Quel che ha scritto il servizio, quando ha scritto qualcosa. */
+  dettaglio: string | null;
+}
+
+/**
+ * Le due frasi di un guasto, insieme.
+ *
+ * # Perché una coppia e non una stringa
+ *
+ * Perché la fascia dell'applicazione teneva `testoErrore(e)` in uno stato di
+ * tipo `string`, e da lì in poi del guasto non restava altro: né il codice, né
+ * il dettaglio. Era una scelta ragionevole finché il dettaglio non esisteva —
+ * e quando ha cominciato a esistere, l'unico posto dove non poteva arrivare era
+ * proprio quello che si vede più spesso.
+ */
+export function guastoDa(value: unknown): Guasto | null {
+  if (value === null || value === undefined) return null;
+  return { testo: testoErrore(value), dettaglio: dettaglioErrore(value) };
+}
+
 /** Un brano, come lo mostra una lista. */
 export interface Brano {
   id: number;
@@ -521,6 +572,14 @@ export interface StatoRiproduzione {
   /** Il motore audio non c'è: perché, e se vale la pena riaprire. */
   audio: GuastoAudio | null;
   /**
+   * Da quale uscita esce il suono adesso.
+   *
+   * `null` quando il motore non si è aperto. È il nome del dispositivo
+   * **davvero** aperto, che può non essere quello scelto: una preferenza che
+   * punta a una scheda staccata ripiega sul predefinito.
+   */
+  uscita: string | null;
+  /**
    * Perché il brano dopo è quello, quando l'ha scelto l'autoplay.
    *
    * Un **codice** — `album`, `suono`, `ascolti`, `datanto`… — e non una frase:
@@ -549,6 +608,21 @@ export interface BandeSpettro {
 }
 
 /**
+ * Quanto la scena dello spettro può costare a questa macchina.
+ *
+ * Un'unione di tre stringhe e non un `string`, ed è onesta per costruzione: in
+ * Rust `Qualita` porta `#[serde(rename_all = "lowercase")]`, quindi queste tre
+ * parole sono **esattamente** quel che arriva sul filo e quel che finisce nel
+ * database. Un quarto livello aggiunto di là senza aggiungerlo di qua è un
+ * errore di compilazione qui, che è il posto giusto per accorgersene.
+ *
+ * Al contrario di quante barre disegnare e di se la scena parte accesa, questa
+ * **non** viaggia nel profilo: descrive quel che questo computer regge, non
+ * quel che chi ascolta preferisce.
+ */
+export type QualitaSpettro = "auto" | "alta" | "bassa";
+
+/**
  * Il dispositivo audio non c'è, o non si è mai aperto.
  *
  * Prima di esistere, un dispositivo perso era indistinguibile da un brano che
@@ -559,10 +633,59 @@ export interface BandeSpettro {
 export interface GuastoAudio {
   /** `playback.deviceLost` o `playback.engineUnavailable`. */
   codice: string;
-  /** Cosa è successo, in una frase. */
+  /**
+   * Cosa è successo, in una frase **italiana**.
+   *
+   * Nasce dentro il motore, e da lì non può che uscire in una lingua sola: è
+   * il ripiego di `causaCodice`, non quel che si disegna quando c'è di meglio.
+   */
   causa: string;
+  /**
+   * Perché il dispositivo è sparito, in un codice traducibile.
+   *
+   * `deviceNotAvailable`, `systemFailure`, `unknown`. Sta accanto a `causa` per
+   * la stessa ragione per cui `motivoProssimo` è un codice: una frase italiana
+   * che attraversa l'IPC resta italiana anche con l'interfaccia in inglese, e
+   * qui si leggeva «There is no audio. dispositivo non più disponibile.»
+   *
+   * `null` quando il motore non si è mai aperto: là la causa è un errore del
+   * nucleo, e il suo codice sta già in `codice`.
+   */
+  causaCodice: string | null;
   /** Riaprire ha senso provarlo. */
   riapribile: boolean;
+}
+
+/**
+ * Un'uscita audio.
+ *
+ * # Perché c'è `presente`, invece di elencare solo quel che esiste
+ *
+ * Perché una scelta che sparisce dall'elenco racconta una bugia. Staccato il
+ * DAC, la schermata mostrerebbe «predefinito di sistema» selezionato — cioè
+ * che la preferenza è stata dimenticata — mentre invece è ancora scritta e
+ * tornerà buona appena si riattacca il cavo. Un rigo spento dice la verità.
+ */
+export interface DispositivoAudio {
+  /** L'identità, che è il nome che dà il sistema. */
+  id: string;
+  /** Come chiamarlo a schermo. */
+  nome: string;
+  /** È quello che il sistema usa di suo. */
+  predefinito: boolean;
+  /** C'è adesso. Falso per la scelta rimasta scritta di un cavo staccato. */
+  presente: boolean;
+  /** È quello da cui sta uscendo il suono in questo momento. */
+  attivo: boolean;
+  /**
+   * È quello chiesto per nome, e non «quello che il sistema usa».
+   *
+   * Lo dice il nucleo invece di ricavarlo da `attivo` e `predefinito`, perché
+   * da quei due non si ricava: chi ha fissato la scheda che *è anche* la
+   * predefinita ha fatto una scelta diversa da chi ha lasciato «segui il
+   * sistema», e dall'esterno le due si vedono identiche.
+   */
+  scelto: boolean;
 }
 
 /** Solo il tempo che passa: arriva quattro volte al secondo mentre suona. */
@@ -665,7 +788,8 @@ export interface AnteprimaImport {
    * (`tauri.conf.json`) ammette fra le immagini solo `data:` e il protocollo
    * locale delle copertine, e allargarla per sempre a un dominio esterno per una
    * miniatura è quel che questa applicazione non fa. Va quindi in `src` così
-   * com'è, senza passare da `urlCopertina` — quella serve la libreria.
+   * com'è, senza passare da `urlCopertina`, in `aspetto.ts` — quella serve la
+   * libreria.
    */
   copertina: string | null;
   brani: number;
@@ -1517,6 +1641,41 @@ export interface TokenRegistro {
   description: string;
 }
 
+/**
+ * Un preset del registro: un blocco di valori che si scrive in un colpo solo.
+ *
+ * Non è un oggetto che la skin ricorda di aver applicato — non c'è nessun campo
+ * `preset` nel documento, nessun riferimento da risolvere, nessuna eredità. È
+ * una scrittura: si applica, e da quel momento la skin è indistinguibile da una
+ * in cui qualcuno avesse battuto a mano gli stessi numeri.
+ *
+ * Per questo `valori` porta dei frammenti JSON e non dei valori tipizzati: la
+ * sorgente di verità dello Studio è il testo del documento, e applicare un
+ * preset è innestare quei frammenti con lo stesso `scriviIn` di `patch.ts` che
+ * usa un cursore. Il tipo giusto non è quello del valore, è `string`.
+ *
+ * La tabella vive in Rust perché lì è il validatore a possederla: un token
+ * rinominato o un numero fuori dai `limiti` cadono in una prova del crate,
+ * invece che addosso a un autore che si vede rifiutare il salvataggio per un
+ * valore che non ha scelto lui.
+ */
+export interface PresetRegistro {
+  id: string;
+  /** Il nome sul bottone. Arriva già tradotto dal nucleo, come le descrizioni. */
+  nome: string;
+  /**
+   * Il gruppo di token su cui agisce, nello stesso vocabolario di
+   * `TokenRegistro.group`.
+   *
+   * È l'unico campo che l'interfaccia confronta: la striscia si costruisce dal
+   * gruppo del token selezionato, così nessun componente dello Studio deve
+   * nominare un preset o un token per nome.
+   */
+  group: string;
+  /** Le scritture, in coppie `[id del token, frammento JSON]`. */
+  valori: [string, string][];
+}
+
 /** Una parte del registro. */
 export interface ParteRegistro {
   name: string;
@@ -1602,6 +1761,7 @@ export interface VocabolarioRegistro {
 /** Il vocabolario che una skin può usare. Statico: si chiede una volta. */
 export interface Registro {
   tokens: TokenRegistro[];
+  presets: PresetRegistro[];
   parts: ParteRegistro[];
   effects: EffettoRegistro[];
   widgets: WidgetRegistro[];
@@ -1618,8 +1778,20 @@ export interface Problema {
   code: string;
   path: string;
   message: string;
-  /** Il nome che forse si voleva scrivere, da `nearest_parts()`. */
+  /** Il nome che forse si voleva scrivere, da `vicini()`. */
   forse: string[];
+  /**
+   * La riga in cui è scritto, da uno.
+   *
+   * La calcola il nucleo (`aether_skin::posizioni`) su una passata sola del
+   * testo. Prima non c'era, e la finestra la indovinava cercando l'ultimo pezzo
+   * del percorso col primo `indexOf` che corrispondeva — su
+   * `parts.x.background.0.stops.1.color` finiva a sottolineare la prima riga
+   * che nominasse un colore qualunque.
+   */
+  riga: number | null;
+  /** La colonna, da uno, nelle stesse unità che conta la `<textarea>`. */
+  colonna: number | null;
 }
 
 /** Un avviso, che non blocca. */
@@ -1633,6 +1805,10 @@ export interface Avviso {
     | "contrast";
   path: string;
   message: string;
+  /** La riga in cui è scritto, come per {@link Problema}. */
+  riga: number | null;
+  /** La colonna, da uno. */
+  colonna: number | null;
 }
 
 /** Una coppia di colori misurata. */
@@ -1907,6 +2083,146 @@ export interface EsitoInvio {
   guasto: string | null;
 }
 
+/** Chi serve un modello di linguaggio. */
+export type FornitoreIa = "openrouter" | "ollama" | "bionic" | "custom";
+
+/**
+ * Un modello configurato.
+ *
+ * La chiave non è qui e non ci sarà mai: sta nel portachiavi del sistema, e
+ * quel che attraversa l'IPC è `conChiave`, cioè la risposta alla domanda «ce
+ * n'è una?». Un profilo che viaggia verso la finestra non porta con sé niente
+ * da nascondere.
+ */
+export interface ProfiloIa {
+  /** Stabile per tutta la vita del profilo. Lo genera il nucleo. */
+  id: string;
+  nome: string;
+  fornitore: FornitoreIa;
+  /** L'indirizzo di base, senza `/chat/completions`. */
+  urlBase: string;
+  modello: string;
+  /** Una chiave per questo profilo sta nel portachiavi. */
+  conChiave: boolean;
+}
+
+/** Quanto costa un modello, per quel che il servizio ne dichiara. */
+export type PrezzoIa = "sconosciuto" | "gratis" | "apagamento";
+
+/**
+ * Un modello offerto da un fornitore.
+ *
+ * Non è più solo lo slug. Con OpenRouter l'elenco è di centinaia di righe e uno
+ * slug da solo non dice niente di quel che serve a sceglierne una — quanto
+ * costa, e quanto contesto regge — così chi lo scriveva a mano lo scopriva da
+ * un 404.
+ */
+export interface ModelloIa {
+  /** Lo slug: è quel che va scritto nel campo Modello. */
+  id: string;
+  /** Il nome leggibile, quando il servizio ne dichiara uno diverso dall'id. */
+  nome: string | null;
+  /** Quanti gettoni di contesto, quando lo dichiara. */
+  contesto: number | null;
+  /** `"sconosciuto"` per i locali, che non mandano nessun prezzo. */
+  prezzo: PrezzoIa;
+}
+
+/** Un profilo come lo manda la finestra: senza id se è nuovo. */
+export interface ProfiloIaDaSalvare {
+  /** `null` per crearne uno. */
+  id: string | null;
+  nome: string;
+  fornitore: FornitoreIa;
+  urlBase: string;
+  modello: string;
+}
+
+/** I profili e quale è scelto. */
+export interface StatoIa {
+  profili: ProfiloIa[];
+  /** L'id di quello scelto, `null` se non ce n'è nessuno. */
+  attivo: string | null;
+  /** C'è una conversazione in corso: una alla volta. */
+  occupato: boolean;
+}
+
+/** Chi parla, in un messaggio. */
+export type RuoloIa = "system" | "user" | "assistant";
+
+/** Una battuta. */
+export interface MessaggioIa {
+  ruolo: RuoloIa;
+  testo: string;
+}
+
+/** Perché il modello ha smesso di parlare. */
+export type MotivoFineIa = "finito" | "tagliato" | "fermato" | "troncato";
+
+/** Un pezzo di risposta, sull'evento `ia:pezzo`. */
+export interface PezzoIa {
+  turno: number;
+  testo: string;
+  /**
+   * È ragionamento e non risposta.
+   *
+   * I modelli che pensano prima di rispondere lo scrivono in un campo suo, e
+   * può durare un minuto prima che arrivi la prima parola vera. Si mostra —
+   * altrimenti il pannello sembra fermo — ma non entra nella conversazione che
+   * torna al modello, e soprattutto non passa dall'estrattore delle modifiche:
+   * dentro un ragionamento ci sono i blocchi che il modello ha scritto per poi
+   * cambiare idea.
+   */
+  pensiero: boolean;
+}
+
+/**
+ * La fine di un turno, sull'evento `ia:fine`.
+ *
+ * I conteggi sono `null` quando il servizio non li manda — Ollama e LM Studio
+ * spesso non lo fanno — e non zero: uno zero farebbe credere che una richiesta
+ * a pagamento sia stata gratis.
+ */
+export interface FineIa {
+  turno: number;
+  motivo: MotivoFineIa;
+  gettoniIn: number | null;
+  gettoniOut: number | null;
+}
+
+/**
+ * Una modifica che un modello ha proposto.
+ *
+ * L'estrazione dal testo la fa il nucleo: è la funzione che riceve l'ingresso
+ * meno prevedibile dell'applicazione, e di qua non avrebbe nessuna prova.
+ */
+export interface OperazioneIa {
+  /** Toglie invece di scrivere. */
+  togli: boolean;
+  /** Dove, un passo per livello. */
+  percorso: string[];
+  /** Cosa scrivere. Assente per una che toglie. */
+  valore: unknown;
+}
+
+/** Quel che si è capito di una risposta, e quel che no. */
+export interface OperazioniIa {
+  operazioni: OperazioneIa[];
+  /**
+   * Perché il resto è stato scartato, una riga per pezzo.
+   *
+   * Nove modifiche buone e una storta valgono nove: buttare via tutto
+   * costringerebbe a rifare la stessa domanda sperando in un'altra fortuna.
+   */
+  ragioni: string[];
+}
+
+/** Un turno finito male, sull'evento `ia:errore`. */
+export interface GuastoIa {
+  turno: number;
+  errore: ErroreIpc;
+}
+
 /** Un brano che il ripristino cambierebbe, o che nel backup non ha un file qui. */
 export interface CambioBrano {
   /** I tre pezzi della chiave: sono la forma **normalizzata** dei tag. */
@@ -2157,6 +2473,21 @@ export const ipc = {
   // desktop. Torna com'è rimasta, come `finestraIngrandisci`.
   finestraSchermoIntero: () => invoke<boolean>("finestra_schermo_intero"),
   finestraChiudi: () => invoke<void>("finestra_chiudi"),
+
+  // ── il secondo piano ──────────────────────────────────────────────────────
+  // Se `finestraChiudi` spenga il programma o nasconda soltanto la finestra. La
+  // barra del titolo non lo sa e non deve saperlo: chiede di chiudere, e chi
+  // ascolta l'evento decide — vedi `vassoio.rs`.
+  secondoPiano: () => invoke<boolean>("secondo_piano"),
+  // Torna com'è rimasto, riletto dal database: l'interruttore si disegna da lì
+  // e non dal click, come `accentoDinamicoAttiva`.
+  secondoPianoAttiva: (attivo: boolean) =>
+    invoke<boolean>("secondo_piano_attiva", { attivo }),
+  // Le due voci del menù dell'icona, nella lingua della finestra. Vanno mandate
+  // perché i testi che si leggono stanno in `lingue/`, dove `lingue.js` li
+  // controlla, e non in Rust dove nessuno li terrebbe allineati.
+  vassoioLingua: (mostra: string, esci: string) =>
+    invoke<void>("vassoio_lingua", { mostra, esci }),
 
   avvio: () => invoke<Avvio>("avvio"),
   impostaCartelle: (cartelle: string[]) =>
@@ -2549,12 +2880,23 @@ export const ipc = {
   // `DISSOLVENZA_MASSIMA_S` e rilegge quel che ha scritto, quindi il valore
   // che torna sull'evento è quello vero, non quello chiesto.
   dissolvenza: (secondi: number) => invoke<void>("dissolvenza", { secondi }),
-  // Riapre il dispositivo audio. È un comando e non un tentativo automatico
-  // perché `cpal` apre il predefinito di **sistema**: staccate le cuffie, il
-  // predefinito torna agli altoparlanti, e riaprire da soli vorrebbe dire far
-  // uscire la musica dagli altoparlanti — in ufficio, di notte, in riunione.
-  // Sopravvivono coda, volume, curva e normalizzazione; la posizione no.
+  // Riapre il dispositivo audio a mano. Il nucleo lo fa già da sé quando
+  // l'elenco delle uscite cambia; questo tasto resta per i guasti che
+  // dall'elenco non si vedono — un driver piantato, un'apertura esclusiva
+  // rubata da un'altra applicazione — dove il dispositivo c'è ancora e ha
+  // ancora lo stesso nome. Sopravvivono coda, volume, curva, normalizzazione
+  // **e** la posizione; la musica riparte se stava andando.
   riapriAudio: () => invoke<void>("riapri_audio"),
+  // Le uscite che ci sono, più quella scelta che adesso non c'è. Serve al
+  // primo disegno: dopo, l'elenco arriva da sé sull'evento
+  // `riproduzione:dispositivi`, e non c'è nessun tasto «aggiorna» da premere.
+  dispositiviAudio: () => invoke<DispositivoAudio[]>("dispositivi_audio"),
+  // Da quale uscita far sentire Aether. `null` è «quella di sistema», ed è una
+  // scelta come le altre: dice di seguire il sistema quando cambia, non di non
+  // avere preferenze. Il dispositivo si riapre subito, e il brano riparte da
+  // dov'era.
+  scegliDispositivoAudio: (id: string | null) =>
+    invoke<void>("scegli_dispositivo_audio", { id }),
   // Riprende il brano che una cartella di rete aveva interrotto, dal punto in
   // cui la musica si era fermata. È il tasto «Riprova» dell'avviso di rete: se
   // il NAS è ancora spento fallisce con lo stesso errore ritentabile e si può
@@ -2566,14 +2908,38 @@ export const ipc = {
   // la ragione per cui è un comando invece di essere sempre acceso.
   spettro: (attivo: boolean) => invoke<void>("spettro", { attivo }),
   // Quante barre disegna la scena dello spettro. La scelta sta in `settings`,
-  // non in `localStorage`: è una preferenza, e le preferenze viaggiano con il
-  // backup e con la sincronia.
+  // non in `localStorage`, perché `localStorage` non sopravvive a una
+  // reinstallazione.
+  //
+  // Qui c'era scritto che «le preferenze viaggiano con il backup e con la
+  // sincronia»: non era vero per questa chiave. Il backup su Drive copia due
+  // righe di `settings`, la sincronia tre, e nessuna delle due è questa.
+  // L'unico meccanismo che porta una preferenza su un altro computer è il
+  // profilo, ed è un elenco di inclusioni in cui questa chiave non c'era.
+  // Adesso c'è, insieme a `player.spectrum.visible`.
   spettroBande: () => invoke<number>("spettro_bande"),
   // Riporta quante ne sono rimaste: fra le potenze di due non c'è niente, e un
   // numero che non è una di quelle si porta alla più vicina invece di essere
   // rifiutato. Chi ha premuto deve vedere accesa la linguetta vera.
   spettroBandeScegli: (quante: number) =>
     invoke<number>("spettro_bande_scegli", { quante }),
+  // Se la scena parte accesa. Di serie no — chi apre «In riproduzione» è venuto
+  // a guardare la copertina — ma la scelta si ricorda, e viaggia nel profilo:
+  // «voglio vedere lo spettro» resta vero su qualunque computer.
+  spettroVisibile: () => invoke<boolean>("spettro_visibile"),
+  // Riporta com'è rimasta: il nucleo scrive, rilegge e risponde con quel che
+  // c'è nel database. L'interruttore si dipinge da lì e non dal click, così una
+  // scrittura fallita non lascia acceso qualcosa che domani sarà spento.
+  spettroVisibileScegli: (acceso: boolean) =>
+    invoke<boolean>("spettro_visibile_scegli", { acceso }),
+  // Il tetto di qualità della scena. Questa **non** viaggia nel profilo: è un
+  // fatto di questa macchina, come l'uscita audio.
+  spettroQualita: () => invoke<QualitaSpettro>("spettro_qualita"),
+  // Entra una stringa ed esce un livello, e l'asimmetria è il ritaglio reso
+  // visibile: un nome che non è uno dei tre vale `auto`, e la risposta è il
+  // livello vero — non quello chiesto.
+  spettroQualitaScegli: (livello: QualitaSpettro) =>
+    invoke<QualitaSpettro>("spettro_qualita_scegli", { livello }),
   eqPresetElenco: () => invoke<VocePreset[]>("eq_preset_elenco"),
   // Salva la curva **corrente**, quella che si sta ascoltando: il nome è
   // l'unica cosa che serve passare. `false` se il nome era vuoto; un nome che
@@ -2833,90 +3199,39 @@ export const ipc = {
   // righe di cronologia là comparirebbero come «ignorate».
   scrobbleImportaCronologia: (soloImportati: boolean) =>
     invoke<number>("scrobble_importa_cronologia", { soloImportati }),
+
+  // ── i modelli di linguaggio ──────────────────────────────────────────────
+  // Spenti finché non si salva un profilo: senza, nessuno di questi comandi
+  // apre un socket. Le chiavi stanno nel portachiavi del sistema e non
+  // attraversano mai questo confine — quel che passa è `conChiave`.
+  iaProfili: () => invoke<StatoIa>("ia_profili"),
+  // `chiave`: `null` lascia stare quella che c'è, `""` la cancella, un valore
+  // la sostituisce. Tre casi e non due, o cambiare il modello di un profilo
+  // costringerebbe a reincollare il segreto.
+  iaSalvaProfilo: (profilo: ProfiloIaDaSalvare, chiave: string | null) =>
+    invoke<StatoIa>("ia_salva_profilo", { profilo, chiave }),
+  // Cancella prima il segreto, e si ferma se non ci riesce: togliere il profilo
+  // dall'elenco lascerebbe nel portachiavi una voce che nessuno sa più a chi
+  // apparteneva.
+  iaEliminaProfilo: (id: string) =>
+    invoke<StatoIa>("ia_elimina_profilo", { id }),
+  iaScegliProfilo: (id: string) => invoke<StatoIa>("ia_scegli_profilo", { id }),
+  // È anche la prova di connessione: un servizio che risponde a questa risponde
+  // a tutto — indirizzo giusto, processo acceso, chiave che passa.
+  iaModelli: (id: string) => invoke<ModelloIa[]>("ia_modelli", { id }),
+  // Torna **subito** il numero del turno, non la risposta: quella arriva a
+  // pezzi sugli eventi `ia:pezzo`, chiusi da `ia:fine` o da `ia:errore`. Il
+  // numero serve a riconoscere i propri: una risposta cominciata prima di un
+  // «Ferma» può consegnare un blocco dopo.
+  iaConversa: (messaggi: MessaggioIa[]) =>
+    invoke<number>("ia_conversa", { messaggi }),
+  // `false` se quel turno era già finito, e non è un errore: chi preme «Ferma»
+  // un istante dopo l'ultimo gettone ha fatto la cosa giusta con un tempismo
+  // sfortunato.
+  iaFerma: (turno: number) => invoke<boolean>("ia_ferma", { turno }),
+  // Non tocca niente: né rete, né disco, né documento. Le operazioni le applica
+  // la finestra con le stesse funzioni pure che usano i controlli, e finiscono
+  // quindi nello stesso annullo.
+  iaOperazioni: (testo: string) =>
+    invoke<OperazioniIa>("ia_operazioni", { testo }),
 };
-
-/**
- * Applica una skin alla finestra.
- *
- * Un foglio a parte e non le proprietà scritte una a una su `style`: sostituire
- * il testo di un `<style>` è **un'unica** invalidazione per il motore di
- * rendering, mentre cinquanta `setProperty` sono cinquanta ricalcoli sull'intero
- * albero. Conta quando la skin cambierà dal vivo mentre la si costruisce.
- *
- * `data-skin` va messo dopo: il selettore del foglio è
- * `:root[data-skin='<id>']`, e metterlo prima significherebbe un fotogramma in
- * cui l'attributo c'è e le regole no.
- */
-/**
- * I nomi scritti a mano sulla radice dall'ultimo accento dinamico.
- *
- * Fuori da React perché non è stato dell'interfaccia: è quel che c'è
- * sull'elemento, e serve solo a poterlo togliere. Tenerlo in uno `useState`
- * vorrebbe dire un disegno in più per una lista che nessuno guarda.
- */
-let accentoScritto: readonly string[] = [];
-
-/**
- * Scrive — o toglie — l'accento che segue la copertina.
- *
- * Sulla radice e non nel foglio della skin: così sopravvive a un cambio di
- * tema, e soprattutto **vince** sul foglio senza doverne toccare il testo.
- *
- * Con `null` rimette le cose com'erano. È il caso normale, non l'eccezione:
- * un disco senza copertina, una skin che non lo vuole, la preferenza spenta.
- */
-export function applicaAccento(variabili: readonly Variabile[] | null): void {
-  const radice = document.documentElement;
-  // Prima si toglie quel che c'era: le variabili di un disco non sono
-  // necessariamente le stesse del successivo — una skin può dichiarare
-  // `--accent-soft` e un'altra no — e lasciarne indietro una vorrebbe dire un
-  // accento mezzo vecchio e mezzo nuovo.
-  for (const nome of accentoScritto) radice.style.removeProperty(nome);
-  accentoScritto = [];
-  if (!variabili) return;
-  for (const { nome, valore } of variabili) radice.style.setProperty(nome, valore);
-  accentoScritto = variabili.map((v) => v.nome);
-}
-
-export function applicaSkin(skin: Skin): void {
-  // Un accento tagliato sul contrasto della skin di prima non vale niente su
-  // quella di adesso: si toglie subito, e chi guarda il brano in riproduzione
-  // lo rimette con le superfici giuste. Vale anche per l'anteprima di una skin
-  // che non è stata scelta, dove mostrare l'accento suo è la cosa onesta.
-  applicaAccento(null);
-  const id = "skin-attiva";
-  const foglio =
-    document.getElementById(id) ?? document.createElement("style");
-  foglio.id = id;
-  foglio.textContent = skin.css;
-  if (!foglio.isConnected) document.head.append(foglio);
-  const radice = document.documentElement;
-  radice.dataset.skin = skin.id;
-  // Le quattro scelte di impaginazione erano dichiarabili e non lette: il
-  // formato le accettava, il compilatore ne scriveva una in un foglio che
-  // nessuna regola interrogava, e le altre tre non uscivano nemmeno dal crate.
-  // Da qui in giù sono attributi, quindi sono selettori, quindi contano.
-  radice.dataset.player = skin.layout.player;
-  radice.dataset.sidebar = skin.layout.sidebar;
-  radice.dataset.density = skin.layout.density;
-  radice.dataset.motion = skin.layout.motion;
-}
-
-/**
- * L'indirizzo di una copertina.
- *
- * Non passa dall'IPC: le immagini le chiede il motore di rendering al
- * protocollo `aether-cover`, in parallelo e con la sua cache. Novecento
- * copertine in base64 dentro delle risposte JSON sarebbero novecento stringhe
- * da tenere vive in memoria per disegnare dei quadratini.
- *
- * Su Windows il protocollo si raggiunge come `http://<schema>.localhost/…`.
- */
-export function urlCopertina(
-  hash: string | null,
-  miniatura = true,
-): string | null {
-  if (!hash) return null;
-  const nome = miniatura ? `${hash}.t` : hash;
-  return `http://aether-cover.localhost/${nome}`;
-}

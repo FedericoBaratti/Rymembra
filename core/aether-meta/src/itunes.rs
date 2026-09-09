@@ -85,7 +85,7 @@ pub fn interpreta(corpo: &[u8]) -> Vec<Candidate> {
 /// riscritto a caso non darebbe un'immagine più grande: darebbe un `403`, cioè
 /// nessuna copertina dove ce n'era una piccola.
 #[must_use]
-pub fn ingrandisci(url: &str) -> String {
+pub(crate) fn ingrandisci(url: &str) -> String {
     let Some(taglio) = url.rfind('/') else {
         return url.to_owned();
     };

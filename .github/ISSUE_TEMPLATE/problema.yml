@@ -57,7 +57,7 @@ body:
       label: Which version
       description: >-
         In Aether: **Settings → Updates → «Installed version»**.
-      placeholder: "2.2.0"
+      placeholder: "2.3.0"
     validations:
       required: true
 

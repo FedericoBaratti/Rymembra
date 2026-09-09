@@ -47,10 +47,12 @@
 
 use std::collections::HashMap;
 
-use aether_domain::errors::{AppError, ErrorCode};
+use aether_domain::errors::AppError;
 use aether_domain::esterno::{Disponibilita, Licenza};
 use aether_domain::{BranoEsterno, Fonte};
 use rusqlite::Connection;
+
+use crate::library::{db_error, now_ms};
 
 /// Quante volte si riprova un brano prima di dichiararlo fallito.
 ///
@@ -131,21 +133,6 @@ pub struct Desiderato {
     pub posizione: u32,
     /// Quante volte ci si è già provati.
     pub tentativi: u32,
-}
-
-/// Traduce un guasto di SQLite nominando l'operazione.
-fn db_error(cosa: &str, err: &rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(cosa.to_owned()),
-    })
-    .with_cause(err.to_string())
-}
-
-/// L'orologio, in millisecondi dall'epoca.
-fn adesso() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 /// Le colonne lette da [`leggi_da_scaricare`], in un posto solo.
@@ -319,7 +306,7 @@ pub fn segna_fatto(
     fonte_url: &str,
     licenza: &Licenza,
 ) -> Result<(), AppError> {
-    let quando = adesso();
+    let quando = now_ms();
     let licenza = licenza.nome();
     let scaricabile = Disponibilita::Scaricabile.nome();
     connection
@@ -425,7 +412,7 @@ pub fn segna_fallito(
                 i32::from(ritentabile),
                 MASSIMI_TENTATIVI,
                 Stato::Attesa.come_testo(),
-                adesso(),
+                now_ms(),
             ],
         )
         .map(|_| ())
@@ -446,7 +433,7 @@ pub fn segna_introvabile(connection: &Connection, id: i64, motivo: &str) -> Resu
             "UPDATE desiderati
              SET download_state = ?2, download_error = ?3, updated_at = ?4
              WHERE id = ?1",
-            rusqlite::params![id, Stato::Introvabile.come_testo(), motivo, adesso()],
+            rusqlite::params![id, Stato::Introvabile.come_testo(), motivo, now_ms()],
         )
         .map(|_| ())
         .map_err(|err| db_error("registrazione di un brano introvabile", &err))
@@ -473,7 +460,7 @@ pub fn riprova_falliti(connection: &Connection) -> Result<u32, AppError> {
             rusqlite::params![
                 Stato::Attesa.come_testo(),
                 Stato::Fallito.come_testo(),
-                adesso()
+                now_ms()
             ],
         )
         .map_err(|err| db_error("rimessa in coda dei falliti", &err))?;
@@ -588,7 +575,7 @@ pub fn riconcilia(
                             WHERE {righe_da_considerare})"
         );
         connection
-            .execute(&sql_playlist, rusqlite::params![sorgente, adesso()])
+            .execute(&sql_playlist, rusqlite::params![sorgente, now_ms()])
             .map_err(|err| db_error("aggiornamento delle playlist riconciliate", &err))?;
     }
 
@@ -599,7 +586,7 @@ pub fn riconcilia(
           WHERE id IN (SELECT w.id FROM desiderati AS w WHERE {righe_da_considerare})"
     );
     connection
-        .execute(&sql_marcatura, rusqlite::params![sorgente, adesso()])
+        .execute(&sql_marcatura, rusqlite::params![sorgente, now_ms()])
         .map_err(|err| db_error("marcatura dei desiderati riconciliati", &err))?;
 
     // Il marchio d'origine sui file arrivati da un prelievo. La scansione li
@@ -633,7 +620,7 @@ pub fn riconcilia(
             rusqlite::params![
                 sorgente,
                 Stato::Fatto.come_testo(),
-                adesso(),
+                now_ms(),
                 Stato::Attesa.come_testo(),
             ],
         )

@@ -120,7 +120,11 @@ pub fn leggi(corpo: &Value) -> Lette {
 /// in [`crate::cronologia`]: incassare il brano costerebbe un'allocazione per
 /// voce di playlist, e a guadagnarci sarebbe soltanto la dimensione di un valore
 /// che vive un'iterazione.
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "incassare il brano costerebbe un'allocazione per voce di playlist, e a guadagnarci \
+              sarebbe soltanto la dimensione di un valore che vive un'iterazione"
+)]
 enum Esito {
     Brano(BranoEsterno),
     Podcast,

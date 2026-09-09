@@ -32,7 +32,7 @@ import { tinta } from "./valori";
 import { t } from "../lingue";
 
 /** Le unità che il formato accetta per una lunghezza. Vengono da `LengthUnit`. */
-export const UNITA = [
+const UNITA = [
   "px",
   "rem",
   "em",
@@ -45,7 +45,7 @@ export const UNITA = [
 ] as const;
 
 /** Le curve con un nome, come le riconosce `EasingKeyword`. */
-export const CURVE = [
+const CURVE = [
   "linear",
   "ease",
   "easeIn",
@@ -58,7 +58,7 @@ export const CURVE = [
 /** In che forma è scritto un colore. */
 export type Modo = "niente" | "token" | "tavolozza" | "letterale";
 
-export function modoDi(valore: unknown): Modo {
+function modoDi(valore: unknown): Modo {
   if (typeof valore === "string") return "letterale";
   if (valore !== null && typeof valore === "object") {
     if ("$token" in valore) return "token";
@@ -68,7 +68,7 @@ export function modoDi(valore: unknown): Modo {
 }
 
 /** Il numero dentro un valore, comunque sia scritto. `NaN` se non ce n'è uno. */
-export function numeroDi(valore: unknown): number {
+function numeroDi(valore: unknown): number {
   if (typeof valore === "number") return valore;
   if (typeof valore === "string") return Number.parseFloat(valore);
   return Number.NaN;
@@ -82,7 +82,7 @@ export function numeroDi(valore: unknown): number {
  * in avanti finisce per rifare `parse_length` in TypeScript. Il suffisso invece
  * è chiuso — sono le nove unità di `LengthUnit` — quindi si cerca quello.
  */
-export function unitaDi(valore: unknown): string | null {
+function unitaDi(valore: unknown): string | null {
   if (typeof valore !== "string") return null;
   const testo = valore.trim();
   // Dalla più lunga: `cqw` prima di `w`… e soprattutto `rem` prima di `em`, che
@@ -508,7 +508,7 @@ export function ValoreCurva({
  * `monospace` o quel che corrisponde al genere del token — quindi qui si
  * scrivono solo i nomi veri, e nessuno deve ricordarsi di chiudere la pila.
  */
-export function PilaCaratteri({
+function PilaCaratteri({
   valore,
   onCambia,
 }: {
@@ -527,6 +527,8 @@ export function PilaCaratteri({
   return (
     <div className="pila-caratteri">
       {famiglie.map((famiglia, indice) => (
+        // L'indice è la chiave perché è l'identità: la pila è un ordine, e la
+        // stessa famiglia scritta due volte sono due posti, non uno.
         <div key={indice} className="una-famiglia">
           <span className="posto">{indice + 1}</span>
           <input
@@ -610,6 +612,8 @@ export function ValoreOmbra({
   return (
     <div className="valore-ombra">
       {livelli.map((livello, indice) => (
+        // L'indice è la chiave perché è l'identità: un'ombra non ha un nome, e
+        // due uguali nella stessa pila restano due livelli.
         <div key={indice} className="un-livello-ombra">
           <div className="testa-livello-ombra">
             <label className="interruttore" title={t("studio.ctl.inward")}>
@@ -700,7 +704,7 @@ export function Riga({
  * Il controllo che corrisponde a un tipo del registro.
  *
  * È il cuore della faccenda: l'editor dei token non ha una tabella di
- * cinquantotto voci con scritto quale controllo montare per ciascuna, perché una
+ * settantatré voci con scritto quale controllo montare per ciascuna, perché una
  * tabella del genere è una seconda copia del registro — e le due copie divergono
  * al primo token aggiunto. Ha invece questa funzione, che guarda `kind` e
  * `min`/`max`, cioè quel che il registro dichiara già. Un token nuovo nel crate

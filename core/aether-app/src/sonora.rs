@@ -29,9 +29,9 @@
 //! [`misura`] apre un file: su una condivisione morta sono i quaranta secondi di
 //! Windows. Non prende il lucchetto della libreria e non lo deve prendere — e
 //! chi la chiama deve metterle addosso una scadenza, come fa `brano_di` in
-//! `riproduzione.rs`. La scadenza non sta qui dentro per la stessa ragione per
-//! cui non sta dentro [`crate::playback::sorgente_da_scheda`]: è una decisione
-//! di chi ha un orologio e un filo da spendere, non di chi apre.
+//! `riproduzione/mod.rs`. La scadenza non sta qui dentro per la stessa ragione
+//! per cui non sta dentro [`crate::playback::sorgente_da_scheda`]: è una
+//! decisione di chi ha un orologio e un filo da spendere, non di chi apre.
 //!
 //! # La rete che cade non è una proprietà del brano
 //!
@@ -47,10 +47,11 @@ use std::collections::HashSet;
 use rusqlite::{Connection, Transaction};
 
 use aether_domain::affinita::Scala;
-use aether_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
+use aether_domain::errors::{AppError, ErrorCodeKind};
 use aether_play::impronta::{self, Esito};
 
 use crate::files::MusicFiles;
+use crate::library::db_error;
 use crate::playback::{SchedaSorgente, sorgente_da_scheda};
 
 /// Quanti brani per passata.
@@ -518,16 +519,10 @@ fn da_byte(byte: &[u8]) -> Option<Vec<f32>> {
     Some(fuori)
 }
 
-/// L'errore del database, con il verbo giusto.
-fn db_error(cosa: &str, err: &rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(cosa.to_owned()),
-    })
-    .with_cause(err.to_string())
-}
-
 #[cfg(test)]
 mod prove {
+    use aether_domain::errors::ErrorCode;
+
     use super::*;
     use crate::db;
 

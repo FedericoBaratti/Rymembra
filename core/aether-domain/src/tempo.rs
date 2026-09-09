@@ -31,7 +31,7 @@
 //!
 //! # La conversione
 //!
-//! [`giorni_dall_epoca`] è l'algoritmo `days_from_civil` di Howard Hinnant: la
+//! `giorni_dall_epoca` è l'algoritmo `days_from_civil` di Howard Hinnant: la
 //! stessa aritmetica che sta sotto `<chrono>` di C++ e sotto la maggior parte
 //! delle librerie di date. Vale per ogni data dopo il 1º marzo del -32768, che
 //! copre comodamente Spotify.
@@ -115,9 +115,12 @@ pub fn istante_ms(testo: &str) -> Option<i64> {
 // bisestili di un'era, `/5` distribuisce i mesi di 30 e 31 giorni. Il troncamento
 // non è una perdita di precisione da evitare, è il conto. Con i decimali il
 // risultato sarebbe sbagliato, non più preciso.
-#[allow(clippy::integer_division)]
+#[expect(
+    clippy::integer_division,
+    reason = "il troncamento è l'algoritmo: /4 e /100 contano i bisestili di un'era, /5 distribuisce i mesi di 30 e 31 giorni"
+)]
 #[must_use]
-pub fn giorni_dall_epoca(anno: i64, mese: u32, giorno: u32) -> i64 {
+pub(crate) fn giorni_dall_epoca(anno: i64, mese: u32, giorno: u32) -> i64 {
     let mese = i64::from(mese);
     let giorno = i64::from(giorno);
     // L'anno comincia a marzo: gennaio e febbraio appartengono a quello prima.
@@ -144,9 +147,12 @@ pub fn giorni_dall_epoca(anno: i64, mese: u32, giorno: u32) -> i64 {
 // Le divisioni intere qui **sono** l'algoritmo, come nella funzione inversa:
 // contano gli anni bisestili di un'era e ridistribuiscono i mesi di 30 e 31
 // giorni. Il troncamento è il conto, non una perdita da evitare.
-#[allow(clippy::integer_division)]
+#[expect(
+    clippy::integer_division,
+    reason = "il troncamento è l'algoritmo inverso: /1460, /36524 e /365 contano gli anni di un'era, /153 e /5 i mesi di 30 e 31 giorni"
+)]
 #[must_use]
-pub fn data_dall_epoca(giorni: i64) -> (i64, u32, u32) {
+pub(crate) fn data_dall_epoca(giorni: i64) -> (i64, u32, u32) {
     // Si riporta l'origine al 1º marzo dell'anno 0, dove il 29 febbraio cade in
     // fondo all'anno e smette di essere un caso speciale.
     let spostato = giorni + 719_468;
@@ -193,7 +199,10 @@ pub fn data_dall_epoca(giorni: i64) -> (i64, u32, u32) {
 /// non cambiano verso sotto lo zero, quindi non escono ore negative.
 // Le divisioni qui sono conversioni fra unità di tempo, non misure: i
 // millisecondi in un secondo sono mille esatti.
-#[allow(clippy::integer_division)]
+#[expect(
+    clippy::integer_division,
+    reason = "conversioni fra unità di tempo, non misure: i millisecondi in un secondo sono mille esatti, i secondi in un minuto sessanta"
+)]
 #[must_use]
 pub fn istante_iso(ms: i64) -> String {
     let giorni = ms.div_euclid(MS_AL_GIORNO);
@@ -313,7 +322,10 @@ mod prove {
                     .expect("una data del primo del mese si legge");
                 if let Some(prima) = precedente {
                     // Divisione intera voluta: si stanno contando giorni interi.
-                    #[allow(clippy::integer_division)]
+                    #[expect(
+                        clippy::integer_division,
+                        reason = "divisione intera voluta: si stanno contando giorni interi"
+                    )]
                     let giorni = (ms - prima) / MS_AL_GIORNO;
                     assert!(
                         (28..=31).contains(&giorni),

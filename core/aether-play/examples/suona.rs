@@ -26,9 +26,14 @@ fn main() {
     }
 
     let (manda, eventi) = mpsc::channel();
-    let motore = match aether_play::avvia(move |evento| {
-        let _ = manda.send(evento);
-    }) {
+    // `None`: l'esempio suona sul predefinito di sistema. Scegliere un'uscita
+    // è una preferenza dell'applicazione, e questo binario non ne ha nessuna.
+    let motore = match aether_play::avvia(
+        move |evento| {
+            let _ = manda.send(evento);
+        },
+        None,
+    ) {
         Ok(m) => m,
         Err(err) => {
             eprintln!(

@@ -7,8 +7,8 @@
  * compare sopra qualunque schermata quando c'è una versione nuova; la scheda
  * sta in Impostazioni e serve a spegnere il controllo, a farne partire uno a
  * mano, e a vedere quale versione è installata — che, fino a oggi, l'interfaccia
- * non diceva da nessuna parte. Tenerle in due file vorrebbe dire due copie del
- * `listen` e due idee di quando l'avviso vada nascosto.
+ * non diceva da nessuna parte. Tenerle in due file vorrebbe dire due copie
+ * dell'ascolto e due idee di quando l'avviso vada nascosto.
  *
  * # Perché lo stato non passa da `App`
  *
@@ -24,12 +24,12 @@
  * cosa detta più spesso — è un avviso che si impara a chiudere senza leggerlo.
  */
 import { useCallback, useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 
 import type { AvanzamentoAggiornamento, StatoAggiornamenti } from "../ipc";
 import { ipc, testoErrore } from "../ipc";
 import { dataOra } from "../formato";
 import { t } from "../lingue";
+import { useAscolto } from "../pagine";
 import { Icona } from "./Icone";
 import { Interruttore } from "./Interruttore";
 
@@ -49,15 +49,7 @@ function useAggiornamenti(
     ipc.aggiornamentiStato().then(setStato).catch(onErrore);
   }, [onErrore]);
 
-  useEffect(() => {
-    const promessa = listen<StatoAggiornamenti>(
-      "aggiornamenti:stato",
-      (evento) => setStato(evento.payload),
-    );
-    return () => {
-      void promessa.then((stop) => stop());
-    };
-  }, []);
+  useAscolto<StatoAggiornamenti>("aggiornamenti:stato", setStato);
 
   return [stato, setStato];
 }
@@ -84,15 +76,10 @@ export function AvvisoAggiornamento({
   const [avanzamento, setAvanzamento] =
     useState<AvanzamentoAggiornamento | null>(null);
 
-  useEffect(() => {
-    const promessa = listen<AvanzamentoAggiornamento>(
-      "aggiornamenti:avanzamento",
-      (evento) => setAvanzamento(evento.payload),
-    );
-    return () => {
-      void promessa.then((stop) => stop());
-    };
-  }, []);
+  useAscolto<AvanzamentoAggiornamento>(
+    "aggiornamenti:avanzamento",
+    setAvanzamento,
+  );
 
   const disponibile = stato?.disponibile ?? null;
 

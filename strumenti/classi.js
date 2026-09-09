@@ -1,5 +1,6 @@
 /*
- * Ogni classe scritta nel markup ha una regola che la disegna.
+ * Ogni classe scritta nel markup ha una regola che la disegna, e ogni regola del
+ * foglio veste qualcosa.
  *
  * # Il problema che risolve
  *
@@ -9,7 +10,7 @@
  * c'è niente che si accenda di rosso — l'unico modo di accorgersene è aprire
  * quella schermata e guardarla, e sono ottanta schermate.
  *
- * È successo in due modi, e questo strumento cerca tutti e due.
+ * È successo in tre modi, e questo strumento cerca tutti e tre.
  *
  * **Un nome che il foglio non conosce.** `in-fondo` dove sei modali su otto
  * dicono `tasti-finestrella`; `campo-ispettore` dove il gemello dice
@@ -25,12 +26,25 @@
  * assonanza che `aether-skin::vicini` esiste per correggere a chi fa le skin, e
  * che qui l'aveva fatto l'app.
  *
+ * **Una regola che non veste più niente.** Il rovescio del primo, e si nota
+ * ancora meno, perché quel che sbaglia non si vede: non si vede *niente*. Il
+ * foglio disegnava un lettore in miniatura intero — `.mini`, `.mini-copertona`,
+ * `.mini-trasporto`, duecento righe — sopravvissuto alla schermata che lo
+ * montava. Chi apre il foglio per capire come si disegna una miniatura lo legge
+ * come se fosse vivo, e chi cerca di capire quanto pesa il foglio conta anche
+ * quello.
+ *
  * # Cosa non sa fare
  *
  * Le classi che si compongono lontano dal `className` — `zona-${nodo.name}`,
  * che in `Impaginazione.tsx` nasce in una funzione a parte — non le vede, e va
  * bene: meglio qualche difetto non trovato che una lista di falsi allarmi che
  * si impara a saltare.
+ *
+ * Nel verso inverso quello stesso limite cambia di segno: la regola che disegna
+ * un nome composto a distanza esiste e serve, ma il markup che la giustifica
+ * questo strumento non lo sa leggere, e senza un elenco a parte la
+ * dichiarerebbe morta. È per quello che c'è `ATTESE_FOGLIO`.
  *
  * Legge però `className={a ? "x" : "y"}` e `classe: "…"`, perché una prima
  * versione che leggeva solo `className="…"` dichiarava morte `bottom-nav`,
@@ -39,9 +53,10 @@
  *
  * # Le attese dichiarate
  *
- * In fondo ai due elenchi ci sono `ATTESE` e `ATTESE_CLASSI`: quel che manca
- * **e va bene**, ognuno col suo motivo. Senza quelle liste lo strumento avrebbe
- * ragione cinque volte su dieci, che è il modo di non averla mai.
+ * In fondo ai tre elenchi ci sono `ATTESE`, `ATTESE_CLASSI` e `ATTESE_FOGLIO`:
+ * quel che manca **e va bene**, ognuno col suo motivo. Senza quelle liste lo
+ * strumento avrebbe ragione cinque volte su dieci, che è il modo di non averla
+ * mai.
  *
  *   node strumenti/classi.js     controlla, esce con 1 se qualcosa non torna
  */
@@ -72,9 +87,7 @@ const ATTESE = {
   "home-shortcuts": "Non c'è ancora una schermata iniziale con le scorciatoie.",
   "tour-tooltip": "Non c'è ancora un giro guidato.",
   "tooltip-pill":
-    "`.con-suggerimento` è nel foglio ma nessun bottone spento la usa più: i testi adesso si leggono.",
-  "viz-title":
-    "DettaglioSpettro non ha un titolo visibile, di proposito: è un comando smorzato in un angolo.",
+    "Nessun bottone spento monta più la pastiglia — i testi adesso si leggono da soli — e il contenitore che la scopriva al passaggio non c'è più. Il foglio tiene `.tooltip-pill`: è una parte, e una skin deve poterla ridipingere.",
 };
 
 /*
@@ -86,6 +99,38 @@ const ATTESE = {
 const ATTESE_CLASSI = {
   "d-uguale":
     "La riga immutata del confronto non prende colore: è il fondo su cui si leggono `.d-piu` e `.d-meno`, e dipingerla toglierebbe il contrasto che serve.",
+  playlist:
+    "Dice che cosa è la riga nella navigazione — `voce nav-pill playlist`, in `parti/Navigazione.tsx` — e non la dipinge: a dipingerla è `.voce`, e a distinguerla dalle destinazioni fisse è l'icona. Come `.dona` e `.trovata`, ma senza il ritocco che quelle due hanno.",
+};
+
+/*
+ * Le regole del foglio che nessun markup **visibile da qui** indossa, col perché.
+ *
+ * Sono l'altra faccia di `ATTESE_CLASSI`, e la stessa disciplina: una voce qui
+ * è una decisione, non un rinvio. Tutte dicono la stessa cosa da angoli diversi
+ * — il nome si compone lontano dal `className`, e la sua metà che cambia arriva
+ * da un campo o da Rust — cioè sono esattamente il limite dichiarato là sopra,
+ * in «Cosa non sa fare», riletto dal lato del foglio.
+ *
+ * Se un giorno capita una voce che non si riesce a scrivere così, quella non è
+ * un'attesa: è una regola morta, e la strada è toglierla da `stile.css`, non
+ * iscriverla qui. Ci sono già passate `.blocco` e `.intestazione.playlist`,
+ * scritte qui per una revisione e poi tolte dal foglio, che era il punto.
+ */
+const ATTESE_FOGLIO = {
+  zona: "La metà fissa di `zona zona-${nodo.name}`, che `Impaginazione.tsx` compone in `classi()` — una funzione a parte, lontano da qualunque `className`.",
+  "posto-content":
+    "`Impaginazione.tsx` compone `posto posto-${nodo.name}` in `classi()`, e `content` è un nome di posto dello scafale: viene dalla skin, cioè da Rust, non da un letterale del markup.",
+  "posto-player": "Come `posto-content`: il posto `player` dello scafale.",
+  "posto-queue": "Come `posto-content`: il posto `queue` dello scafale.",
+  "posto-selection-bar":
+    "Come `posto-content`: il posto `selection-bar` dello scafale.",
+  "t-chiave":
+    "`studio/Documento.tsx` scrive `` `t-${pezzo.genere}` ``, e il genere è un campo — non un ternario di letterali, che è l'unica forma di buco che si sa leggere. I cinque generi li elenca `studio/evidenzia.ts`.",
+  "t-stringa": "Come `t-chiave`: un genere di `studio/evidenzia.ts`.",
+  "t-numero": "Come `t-chiave`: un genere di `studio/evidenzia.ts`.",
+  "t-letterale": "Come `t-chiave`: un genere di `studio/evidenzia.ts`.",
+  "t-segno": "Come `t-chiave`: un genere di `studio/evidenzia.ts`.",
 };
 
 /** I nomi di stato e i valori d'enumerazione, che non sono parti. */
@@ -326,23 +371,66 @@ if (soloAttese.length > 0 || soloStudio.length > 0) {
   );
 }
 
-// 4. Un'attesa che non è più tale: adesso quel nome si disegna.
+// 4. Una regola del foglio che non veste niente.
+//
+// Il verso opposto del primo controllo, e vale la pena dire perché le fonti da
+// cui si guarda sono tre e non una. Il markup è l'ovvia. Il registro conta
+// perché una parte è un bersaglio legittimo di selettore anche prima che l'app
+// la emetta — è tutto il senso di `ATTESE` qui sopra, e contarla morta sarebbe
+// chiedere di cancellare proprio le regole che tengono in piedi la promessa
+// alle skin. I nomi di stato contano perché non sono classi di nessuno.
+const senzaMarkup = [...foglio]
+  .filter((nome) => !dove.has(nome))
+  .filter((nome) => !parti.has(nome))
+  .filter((nome) => !NON_PARTI.has(nome))
+  .filter((nome) => !(nome in ATTESE_FOGLIO))
+  .sort();
+
+if (senzaMarkup.length > 0) {
+  guai += senzaMarkup.length;
+  console.log(`\n${senzaMarkup.length} regole del foglio non vestono niente:\n`);
+  for (const nome of senzaMarkup) console.log(`  .${nome}`);
+  console.log(
+    "\n  Nessun elemento porta questi nomi, quindi queste regole non si vedono:\n" +
+      "  o sono sopravvissute alla schermata che le montava e vanno tolte da\n" +
+      "  stile.css, o il nome si compone lontano dal `className` e la voce va in\n" +
+      "  ATTESE_FOGLIO, qui dentro, col motivo scritto.",
+  );
+}
+
+// 5. Un'attesa che non è più tale: quel che aspettava è arrivato.
 const atteseScadute = [
-  ...Object.keys(ATTESE).filter((nome) => nellApp.has(nome)),
-  ...Object.keys(ATTESE_CLASSI).filter((nome) => foglio.has(nome)),
+  ...Object.keys(ATTESE)
+    .filter((nome) => nellApp.has(nome))
+    .map((nome) => `${nome} — adesso l'app la emette, togliela da ATTESE.`),
+  ...Object.keys(ATTESE_CLASSI)
+    .filter((nome) => foglio.has(nome))
+    .map((nome) => `${nome} — adesso il foglio la disegna, togliela da ATTESE_CLASSI.`),
+  // Una voce del foglio scade in due modi opposti: la regola è stata tolta, o
+  // il markup ha smesso di nascondere il nome. In tutti e due i casi la riga
+  // qui dentro racconta un albero che non c'è più.
+  ...Object.keys(ATTESE_FOGLIO)
+    .filter((nome) => !foglio.has(nome) || dove.has(nome))
+    .map((nome) =>
+      foglio.has(nome)
+        ? `${nome} — adesso il markup la scrive per intero, togliela da ATTESE_FOGLIO.`
+        : `${nome} — il foglio non la disegna più, togliela da ATTESE_FOGLIO.`,
+    ),
 ];
 if (atteseScadute.length > 0) {
   guai += atteseScadute.length;
   console.log(`\n${atteseScadute.length} attese non servono più:\n`);
-  for (const nome of atteseScadute) {
-    console.log(`  ${nome} — adesso si disegna, togliela dalla lista.`);
-  }
+  for (const riga of atteseScadute) console.log(`  ${riga}`);
 }
 
 if (guai === 0) {
-  const attese = Object.keys(ATTESE).length + Object.keys(ATTESE_CLASSI).length;
+  const attese =
+    Object.keys(ATTESE).length +
+    Object.keys(ATTESE_CLASSI).length +
+    Object.keys(ATTESE_FOGLIO).length;
   console.log(
-    `Tutto a posto: ${dove.size} classi, ${parti.size} parti nel registro, ` +
+    `Tutto a posto: ${dove.size} classi nel markup, ${foglio.size} nomi ` +
+      `disegnati dal foglio, ${parti.size} parti nel registro, ` +
       `${attese} attese dichiarate.`,
   );
 }

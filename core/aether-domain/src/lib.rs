@@ -35,6 +35,7 @@ pub mod destinazione;
 pub mod enrich;
 pub mod errors;
 pub mod esterno;
+pub mod indirizzo;
 pub mod indizi;
 pub mod keys;
 pub mod listen;

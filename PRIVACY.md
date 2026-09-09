@@ -1,6 +1,6 @@
 # Privacy
 
-Last updated: 4 September 2026.
+Last updated: 6 September 2026.
 
 **Aether has no telemetry, no analytics, no crash reporting, and sends nothing
 to me.** There is no Aether server. There is no account to create. There is
@@ -22,9 +22,9 @@ Everything Aether knows about you:
   ratings, favorites, listening history, play counts.
 - **The settings**, in the same folder.
 - **The cover art**, in a file cache next to the database.
-- **The secrets** — the Google Drive tokens and the scrobbling credentials — in
-  the **operating system's keychain**, not in a file. On Windows that's
-  Credential Manager.
+- **The secrets** — the Google Drive tokens, the scrobbling credentials and the
+  API keys of any language model you configure — in the **operating system's
+  keychain**, not in a file. On Windows that's Credential Manager.
 
 None of this leaves your computer, except for the backup if you turn it on
 yourself (§ 4).
@@ -202,6 +202,61 @@ completely anonymously, because there's no account for it to lean on.
 
 ---
 
+## 2-quater. The language model in the Skin Studio
+
+This starts **only if you configure one**, in Settings › AI Models. Until you
+do, the Skin Studio chat talks to nobody: there is no default provider, no
+built-in key, and no request.
+
+There are two very different situations here, and the difference is the whole
+point of this section.
+
+| Host | When | What reaches it |
+| --- | --- | --- |
+| `localhost:11434` (Ollama) | If you configure a local model | The skin document and what you type in the chat |
+| `localhost:1234` (Bionic / LM Studio) | As above | As above |
+| `openrouter.ai` | If you configure an OpenRouter profile | The skin document and what you type in the chat, plus your API key |
+| an address you write yourself | If you configure a custom profile | As above |
+
+**With a local model, nothing leaves this computer.** Ollama and LM Studio are
+programs running on your own machine; the request goes to `127.0.0.1` and stops
+there. This is the reason Aether allows an unencrypted `http://` in exactly one
+case — see the rewritten point in § 7.
+
+**With OpenRouter, or any address of your own, something does leave.** Namely:
+
+- **the skin document you have open** — the JSON manifest: colors, spacing,
+  effects, layout. It is a design file, not your data;
+- **what you type in the chat**, and what the model has already answered in the
+  same conversation;
+- **your API key**, in the `Authorization` header, because that is how the
+  service knows who is asking;
+- two courtesy headers naming the application (`Aether`, and this repository's
+  address), the same information the `User-Agent` already carries.
+
+**What does not go, ever.** No track, no album, no artist, no playlist, no
+listening history, no play count, no file name, no path, no identifier of you or
+of this installation. The chat has no access to your library, and the request is
+built by the core from the skin document and the conversation — nothing else is
+in scope to add.
+
+**The key lives in the operating system's keychain**, one entry per profile
+(`ia.<profile>.chiave` under the usual Aether service), never in the library
+database. The window never receives it: the core reads it an instant before each
+request and drops it afterwards.
+
+**A whole conversation is one request per turn.** There is no background thread,
+nothing periodic, and nothing that starts on its own — every request is one you
+made by pressing Send. Closing the window stops a generation in progress.
+
+**Choosing a provider is choosing a privacy policy.** Aether can tell you what
+it sends; it cannot tell you what the other end keeps. OpenRouter routes your
+request to a third-party model provider of its own, each with its own retention
+rules. If that matters to you, a local model is the option where the question
+does not arise.
+
+---
+
 ## 3. Scrobbling
 
 This starts **only if you connect it**, and it sends exactly what a scrobble is.
@@ -299,9 +354,20 @@ that's months out of date.
 - **No request at startup, except the one in § 6.** Opening Aether sends nothing
   to anyone for the first two minutes, and after that sends a GET to a public
   file. There's no other ping, and nothing goes out on closing.
-- **No request in the clear.** The HTTP client refuses `http://` by
-  construction: if a wrong constant ended up in the code, the request wouldn't
-  go out instead of going out readable.
+- **No request in the clear leaves this computer.** The HTTP client refuses
+  `http://` by construction, with exactly one exception: a language model
+  running on your own machine (§ 2-quater). Ollama and LM Studio have no
+  certificate and cannot have one, so a client built for one of them accepts
+  plain HTTP — and only towards `localhost`, `127.0.0.1` or `[::1]`. The check
+  is redone **on every request**, not once when the profile is saved, and that
+  client follows no redirects: a local server answering «go to
+  `http://somewhere-else/`» cannot use it to carry your request out of the house
+  in the clear. Every other address, for every other feature, is still refused
+  unless it is `https://`.
+
+  This is a weaker promise than the one that used to be written here, and it is
+  written out loud on purpose: a strong promise quietly worked around is worth
+  less than a weaker one you can check.
 - **No external domain in the window.** The content policy (`tauri.conf.json`)
   admits only `'self'` and `data:`. The preview cover art arrives as `data:`
   URIs already downloaded by the core: the page never talks to a catalog

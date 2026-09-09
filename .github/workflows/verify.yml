@@ -59,6 +59,12 @@ jobs:
       - name: Le lingue dicono tutte le stesse cose
         run: node strumenti/lingue.js
 
+      # Lo script `verify` di `package.json` lo esegue da sempre; qui mancava, e
+      # una classe che nessun foglio disegna passava `tsc`, passava `vite build`
+      # e arrivava fino alla schermata storta.
+      - name: Le classi CSS esistono
+        run: node strumenti/classi.js
+
       - name: Formattazione
         run: cargo fmt --all --check
 

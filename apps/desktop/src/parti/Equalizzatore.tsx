@@ -369,6 +369,7 @@ export function PannelloEq({
       <div
         className="pannello-eq menu-pop"
         role="dialog"
+        aria-modal="true"
         aria-label={t("player.eq")}
       >
         <Equalizzatore

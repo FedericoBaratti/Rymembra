@@ -22,7 +22,7 @@
  * copertina **è** il soggetto» — schermo intero, terza colonna, testata di un
  * album — e miniatura dove è un'etichetta.
  */
-import { urlCopertina } from "./ipc";
+import { urlCopertina } from "./aspetto";
 
 export function Copertina({
   hash,

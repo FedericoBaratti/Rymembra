@@ -44,10 +44,10 @@
 //! beneficio è che non si sente mai. Fra le due, è la riproduzione che è il
 //! programma.
 //!
-//! Il segnale arriva da [`segna_riproduzione`], che il battito di
-//! `riproduzione.rs` chiama quattro volte al secondo. Un `AtomicBool` e non un
-//! lucchetto sul lettore, per la ragione scritta qui sopra: chiedere al lettore
-//! come sta, per sapere se disturbarlo, sarebbe già disturbarlo.
+//! Il segnale arriva da [`segna_riproduzione`], che l'orologio di
+//! `riproduzione::fili` chiama quattro volte al secondo. Un `AtomicBool` e non
+//! un lucchetto sul lettore, per la ragione scritta qui sopra: chiedere al
+//! lettore come sta, per sapere se disturbarlo, sarebbe già disturbarlo.
 //!
 //! # Tre fili, non uno per core
 //!
@@ -113,8 +113,8 @@ const SCADENZA_NOME: &str = "impronta";
 
 /// Vero mentre il lettore sta suonando.
 ///
-/// Statico e non dentro [`StatoAnalisi`] perché chi lo scrive è il battito di
-/// `riproduzione.rs`, che gira quattro volte al secondo e non deve fare una
+/// Statico e non dentro [`StatoAnalisi`] perché chi lo scrive è l'orologio di
+/// `riproduzione::fili`, che gira quattro volte al secondo e non deve fare una
 /// ricerca nel registro degli stati di Tauri per farlo. `Relaxed` basta: non
 /// protegge nessun altro dato, e leggerlo con un battito di ritardo vuol dire al
 /// più un lotto analizzato mentre parte una canzone.
@@ -122,9 +122,9 @@ static SUONA: AtomicBool = AtomicBool::new(false);
 
 /// Il battito della riproduzione dice se c'è musica.
 ///
-/// La chiama `riproduzione::avvia_battito`. Non è un comando e non passa dalla
-/// finestra: è il lettore che parla al filo dell'analisi, e l'unica cosa che si
-/// dicono.
+/// La chiama `avvia_orologio`, in `riproduzione::fili`. Non è un comando e non
+/// passa dalla finestra: è il lettore che parla al filo dell'analisi, e l'unica
+/// cosa che si dicono.
 pub fn segna_riproduzione(suona: bool) {
     SUONA.store(suona, Ordering::Relaxed);
 }
@@ -167,9 +167,12 @@ pub fn sporca(app: &AppHandle) {
 
 /// Avvia il filo che analizza da solo.
 ///
-/// Modellato su `arricchimento::avvia_filo`: un thread nominato, `recv_timeout`
-/// che fa da periodicità **e** da antirimbalzo, nessun timer e nessun runtime
-/// asincrono.
+/// Della stessa forma di [`crate::stato::avvia_filo_periodico`], da cui passano
+/// nuvola, sincronia e arricchimento: un thread nominato, `recv_timeout` che fa
+/// da periodicità **e** da antirimbalzo, nessun timer e nessun runtime
+/// asincrono. Il ciclo però resta scritto qui, e il docblock di là dice perché:
+/// quanto si aspetta dopo una passata lo decide il suo esito, e la raffica si
+/// lascia passare a qualunque sveglia invece che a una di un tipo particolare.
 pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
     let avviato = std::thread::Builder::new()
         .name("aether-analisi".to_owned())

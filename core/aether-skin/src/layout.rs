@@ -628,7 +628,7 @@ pub fn nearest_widgets(unknown: &str) -> Vec<&'static str> {
 
 /// I widget di un gruppo di essenzialità, per dire *quali* mancano.
 #[must_use]
-pub fn widgets_essenziali(gruppo: &str) -> Vec<&'static str> {
+pub(crate) fn widgets_essenziali(gruppo: &str) -> Vec<&'static str> {
     WIDGETS
         .iter()
         .filter(|def| matches!(def.essential, Essential::OneOf(g) if g == gruppo))

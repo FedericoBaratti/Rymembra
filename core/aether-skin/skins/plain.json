@@ -97,8 +97,23 @@
     "motion.dur.3": "450ms",
 
     "canvas.viz.primary": { "$token": "color.accent" },
-    "canvas.viz.secondary": { "$token": "color.accent" },
+    "canvas.viz.secondary": "#1d1b3a",
+    "canvas.viz.tip": "#e8e2ff",
     "canvas.viz.glow": 20,
+    "canvas.viz.width": 4.6,
+    "canvas.viz.depth": 5.2,
+    "canvas.viz.height": 0.62,
+    "canvas.viz.fill": 0.7,
+    "canvas.viz.lens": 52,
+    "canvas.viz.eye": 0.72,
+    "canvas.viz.haze": 0.55,
+    "canvas.viz.reflection": 0.22,
+    "canvas.viz.ambient": 0.42,
+    "canvas.viz.sway": 1,
+    "canvas.viz.beat": 1,
+    "canvas.viz.attack": 41,
+    "canvas.viz.release": 258,
+    "canvas.viz.floor": -70,
     "canvas.scrubber.glow": 6,
     "canvas.scrubber.rest": "rgba(255, 255, 255, 0.18)"
   },
@@ -155,6 +170,8 @@
         ]
       },
 
+      "canvas.viz.secondary": "#3d3488",
+      "canvas.viz.tip": "#ffffff",
       "canvas.scrubber.rest": "rgba(16, 16, 22, 0.16)"
     }
   },

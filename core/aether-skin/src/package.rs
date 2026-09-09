@@ -249,7 +249,12 @@ fn preflight(archivio: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Vec<Ammessa>, A
         }
 
         if compressa > 0 {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "il rapporto serve a confrontarlo con una soglia e a stamparlo senza \
+                          decimali: i bit che un u64 enorme perderebbe in fondo non spostano né \
+                          l'una né l'altro"
+            )]
             let rapporto = dichiarata as f64 / compressa as f64;
             if rapporto > limits::MAX_COMPRESSION_RATIO {
                 return Err(rifiutata(

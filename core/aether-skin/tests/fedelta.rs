@@ -111,9 +111,14 @@ const IDENTICI: &[(&str, &str)] = &[
     ("--dur-2", "280ms"),
     ("--dur-3", "450ms"),
     ("--viz-primary", "var(--accent)"),
-    ("--viz-primary-rgb", "var(--accent-rgb)"),
-    ("--viz-secondary", "var(--accent)"),
-    ("--viz-secondary-rgb", "var(--accent-rgb)"),
+    // Le due triple `--viz-primary-rgb` e `--viz-secondary-rgb` stavano qui, e
+    // non ci stanno più: non erano soltanto lette da nessuno, erano sbagliate.
+    // Il compilatore sa derivare una tripla da un colore letterale e ripiega
+    // sull'accento per tutto il resto, quindi la tripla di un colore preso
+    // dalla tavolozza descriveva l'accento e non quel colore.
+    // `--viz-secondary` stava qui a `var(--accent)`, ed era la prova che le due
+    // `mix()` dello shader non facevano niente: adesso è un letterale apposta,
+    // e la sua prova è che la scena ha due colori.
     ("--viz-glow", "20"),
     ("--scrubber-glow", "6"),
 ];

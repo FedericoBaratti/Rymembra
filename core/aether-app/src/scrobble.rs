@@ -41,9 +41,11 @@
 //! venti minuti fa — cioè direbbe il falso. Si manda subito o non si manda, e
 //! quel gesto sta nella finestra, non in questa tabella.
 
-use aether_domain::errors::{AppError, ErrorCode};
+use aether_domain::errors::AppError;
 use aether_domain::scrobble::{Ascolto, Servizio};
 use rusqlite::Connection;
+
+use crate::library::{db_error, now_ms};
 
 /// Quante volte si riprova un ascolto prima di lasciarlo perdere.
 ///
@@ -97,21 +99,6 @@ pub struct Conteggi {
     pub abbandonati: i64,
 }
 
-/// Traduce un guasto di SQLite nominando l'operazione.
-fn db_error(cosa: &str, err: &rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(cosa.to_owned()),
-    })
-    .with_cause(err.to_string())
-}
-
-/// L'orologio, in millisecondi dall'epoca.
-fn adesso() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-}
-
 /// Da millisecondi a secondi, che è l'unità dei due protocolli.
 ///
 /// `div_euclid` e non `/`: la divisione fra interi è un avviso di questo
@@ -140,7 +127,7 @@ pub fn accoda(
         return Ok(0);
     }
     let quando_ms = ascolto.quando_s.saturating_mul(1000);
-    let ora = adesso();
+    let ora = now_ms();
     let mut scritte = 0;
     for servizio in servizi {
         scritte += connection
@@ -262,7 +249,7 @@ pub fn accoda_cronologia(
                 AND trim(t.title) <> ''
                 AND h.played_at >= ?3
                 AND (?4 IS NULL OR h.source = ?4)",
-            rusqlite::params![servizio.chiave(), adesso(), da_ms, sorgente],
+            rusqlite::params![servizio.chiave(), now_ms(), da_ms, sorgente],
         )
         .map_err(|err| db_error("accodamento della cronologia", &err))
 }

@@ -402,7 +402,7 @@ fn come_numero(punteggio: i64) -> f64 {
 /// da normalizzare e ogni affinità è zero — mai una divisione per zero, mai un
 /// `NaN` che attraverserebbe in silenzio tutto lo strato di punteggio.
 #[must_use]
-pub fn affinita(punteggio: i64, massimo: i64) -> f64 {
+pub(crate) fn affinita(punteggio: i64, massimo: i64) -> f64 {
     let alto = come_numero(massimo).ln_1p();
     if alto <= 0.0 {
         return 0.0;

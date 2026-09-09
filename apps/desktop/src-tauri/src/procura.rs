@@ -75,7 +75,7 @@ use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
-use crate::stato::{Stato, con_libreria};
+use crate::stato::{DepositoStato, Stato, con_libreria};
 
 /// Quanti brani si procurano insieme.
 const FILI: usize = 3;
@@ -1029,7 +1029,12 @@ fn codice_e_causa(guasto: &AppError) -> String {
 /// che non si vede comparire — indistinguibile, da fuori, da uno fallito. Meglio
 /// non partire e dirlo.
 fn cartella_download(app: &AppHandle) -> Option<PathBuf> {
-    con_libreria(&app.state::<Stato>(), |libreria| {
+    // `try_state` e non `state`: `state` panica se lo stato non c'è, e questa
+    // funzione la chiama il filo della coda, che gira anche mentre la finestra
+    // si chiude e gli stati gestiti vengono lasciati cadere. Nessuno stato vuol
+    // dire nessuna cartella dove scaricare, che è già uno degli esiti previsti.
+    let stato = app.try_state::<Stato>()?;
+    con_libreria(&stato, |libreria| {
         let scelta: Option<String> =
             settings::read(&libreria.connection, settings::CHIAVE_CARTELLA_DOWNLOAD)?;
         if let Some(scelta) = scelta.filter(|s| !s.trim().is_empty()) {
@@ -1051,42 +1056,97 @@ fn cartella_download(app: &AppHandle) -> Option<PathBuf> {
 /// si sente. È la stessa ragione per cui `MIN_TRACK_BYTES` esiste, presa
 /// dall'altro capo.
 fn cartella_temporanea(app: &AppHandle) -> PathBuf {
-    let dati = con_libreria(&app.state::<Stato>(), |libreria| {
-        Ok(libreria.data_dir.clone())
-    })
-    .unwrap_or_else(|_| std::env::temp_dir());
+    // `try_state` e non `state`, per la stessa ragione di [`cartella_download`].
+    // Qui però un ripiego c'è già: la cartella temporanea del sistema, che è quel
+    // che si usa anche quando la libreria non si è aperta.
+    let dati = app
+        .try_state::<Stato>()
+        .and_then(|stato| con_libreria(&stato, |libreria| Ok(libreria.data_dir.clone())).ok())
+        .unwrap_or_else(std::env::temp_dir);
     dati.join("procura")
 }
 
-/// Una scansione delle cartelle sorvegliate, così i file entrano in libreria.
+/// La scansione che parte da sé quando la coda ha finito di scaricare.
 ///
-/// E subito dopo il **viaggio di ritorno**: i brani appena entrati vanno rimessi
-/// nelle playlist da cui mancavano. Qui e non altrove perché è l'unico momento in
-/// cui esistono tutti e due i capi — la riga di `desiderati` che dice «questa
-/// playlist, questo posto» e la riga di `tracks` che il file ha appena creato.
-/// Senza questo passo la coda finisce, i file ci sono, e la playlist è ancora
-/// quella con i soli brani che c'erano già.
-fn rientra_in_libreria(app: &AppHandle) {
-    let esito = con_libreria(&app.state::<Stato>(), |libreria| {
-        let roots: Vec<String> =
+/// # Perché può non partire affatto
+///
+/// Perché il turno può essere di qualcun altro: [`crate::comandi::scansiona`],
+/// cioè qualcuno che ha premuto «Scansiona» mentre i download finivano. Le due
+/// passate farebbero lo stesso lavoro sulle stesse cartelle, e insieme si
+/// contenderebbero l'inserimento della stessa riga in `tracks`, dove `path` è
+/// UNIQUE. Chi arriva secondo lascia perdere: quella già in corso guarda le
+/// stesse radici, quindi troverà anche i file appena scaricati.
+///
+/// Il fatto finisce nel diario e non in un errore: non c'è nessuno davanti alla
+/// finestra a cui dirlo, e l'unico posto dove la domanda «perché quella volta non
+/// sono comparsi subito» trova risposta è il diario.
+///
+/// # Dove non tiene il lucchetto
+///
+/// Il nucleo lo chiede a [`DepositoStato`] una transazione alla volta. Fra un
+/// lotto e l'altro la finestra resta viva, ed è quel che rende sopportabile una
+/// passata su una condivisione di rete lenta cominciata senza che nessuno
+/// l'abbia chiesta.
+fn scansione_automatica(app: &AppHandle, stato: &Stato) {
+    let Some(_turno) = stato.turno_di_scansione() else {
+        nota!("[procura] scansione automatica saltata: ce n'è già una in corso");
+        return;
+    };
+    // Dopo il controllo d'uscita di chi chiama, e non prima: azzerare la
+    // bandiera mentre il programma si chiude vorrebbe dire cancellare la
+    // richiesta di fermarsi che l'uscita ha appena alzato, cioè una scansione
+    // che riparte proprio mentre tutto il resto se ne va.
+    stato.riprendi_scansioni();
+
+    let copertine = match stato.copertine() {
+        Ok(copertine) => copertine,
+        Err(guasto) => {
+            nota!("[procura] la scansione automatica non parte: {guasto}");
+            return;
+        }
+    };
+    let roots = con_libreria(stato, |libreria| {
+        Ok::<Vec<String>, AppError>(
             settings::read_json(&libreria.connection, settings::CHIAVE_CARTELLE)?
-                .unwrap_or_default();
-        let scan = aether_app::library::Scan {
-            files: &aether_app::files::LocalFiles,
-            covers: &libreria.covers,
-            roots: &roots,
-            rules: PathRules::for_current_platform(),
-            // Questa non la guarda nessuno: parte da sé quando la coda ha finito
-            // di scaricare. È il caso per cui la guardia è stata scritta — se
-            // una radice è appena diventata irraggiungibile, una passata muta
-            // toglierebbe mezza libreria e se ne accorgerebbe il giorno dopo chi
-            // non trova più i suoi brani.
-            prudente: true,
-        };
-        scan.run(&mut libreria.connection, |_, _| {
-            std::ops::ControlFlow::Continue(())
-        })
+                .unwrap_or_default(),
+        )
     });
+    let roots = match roots {
+        Ok(roots) => roots,
+        Err(guasto) => {
+            nota!("[procura] la scansione automatica non parte: {guasto}");
+            return;
+        }
+    };
+
+    // Due ragioni per fermarsi, la stessa domanda: «questa passata deve ancora
+    // andare avanti?». L'annullamento a mano non arriva mai qui — nessuno sta
+    // guardando — ma l'uscita sì, e senza questa riga una chiusura resterebbe
+    // ferma su una radice di rete che non risponde.
+    //
+    // È l'unico modo che questa scansione ha di fermarsi, e per questo dev'essere
+    // letto ovunque: il callback dell'avanzamento qui sotto dice sempre
+    // `Continue`, perché non c'è nessuna barra da muovere. Il nucleo guarda
+    // questa bandiera durante la camminata **e** fra un file e l'altro, quindi
+    // basta lei.
+    let fermati = || stato.scansione_fermata() || crate::spegnimento::in_uscita();
+    let scan = aether_app::library::Scan {
+        files: Arc::new(aether_app::files::LocalFiles),
+        covers: copertine,
+        roots: &roots,
+        rules: PathRules::for_current_platform(),
+        // Questa non la guarda nessuno: parte da sé quando la coda ha finito
+        // di scaricare. È il caso per cui la guardia è stata scritta — se
+        // una radice è appena diventata irraggiungibile, una passata muta
+        // toglierebbe mezza libreria e se ne accorgerebbe il giorno dopo chi
+        // non trova più i suoi brani.
+        prudente: true,
+        scadenze: aether_app::library::Scadenze::default(),
+        fermati: Some(&fermati),
+    };
+    let mut deposito = DepositoStato::nuovo(stato);
+    let esito = scan.run_su(&mut deposito, |_, _| std::ops::ControlFlow::Continue(()));
+
     match esito {
         Ok(report) => {
             // Le due cose che questa scansione può aver taciuto finiscono nel
@@ -1110,12 +1170,47 @@ fn rientra_in_libreria(app: &AppHandle) {
         }
         Err(guasto) => nota!("[procura] la scansione finale è fallita: {guasto}"),
     }
+}
 
-    // `None`: la scansione ha guardato tutte le cartelle, quindi possono essere
-    // arrivati brani di qualunque importazione — anche di una vecchia, se i file
-    // sono stati messi a mano nel frattempo. Un guasto qui si annota e basta: i
-    // file sono al loro posto, e la passata successiva riprova.
-    let ritorno = con_libreria(&app.state::<Stato>(), |libreria| {
+/// Quel che si fa quando la coda ha finito di scaricare.
+///
+/// Due gesti, e il secondo non dipende dal primo. Una scansione delle cartelle
+/// sorvegliate — [`scansione_automatica`], che può anche non partire — così i
+/// file entrano in libreria.
+///
+/// E poi il **viaggio di ritorno**: i brani appena entrati vanno rimessi nelle
+/// playlist da cui mancavano. Qui e non altrove perché è l'unico momento in cui
+/// esistono tutti e due i capi — la riga di `desiderati` che dice «questa
+/// playlist, questo posto» e la riga di `tracks` che il file ha appena creato.
+/// Senza questo passo la coda finisce, i file ci sono, e la playlist è ancora
+/// quella con i soli brani che c'erano già.
+fn rientra_in_libreria(app: &AppHandle) {
+    // `try_state` e non `state`, per la stessa ragione di [`cartella_download`]:
+    // questo gira sul filo della coda, che può ritrovarsi vivo mentre gli stati
+    // gestiti vengono lasciati cadere.
+    let Some(stato) = app.try_state::<Stato>() else {
+        return;
+    };
+    // Prima di qualunque cosa che duri: se il programma sta uscendo, cominciare
+    // adesso una passata su tutte le cartelle vuol dire una chiusura che aspetta
+    // un disco di rete. La scansione automatica non ha nessuno che la guardi, e
+    // la prossima apertura la rifarà.
+    if crate::spegnimento::in_uscita() {
+        return;
+    }
+    scansione_automatica(app, &stato);
+
+    // Il ritorno nelle playlist si fa **anche** se la scansione è stata saltata:
+    // i brani che mancavano possono essere entrati con la passata precedente, o
+    // con quella a mano che sta girando adesso, e questa riconciliazione è una
+    // query sul database — non tocca il disco, non dura, e rimandarla vorrebbe
+    // dire una playlist che resta incompleta fino al prossimo download.
+    //
+    // `None`: possono essere arrivati brani di qualunque importazione — anche di
+    // una vecchia, se i file sono stati messi a mano nel frattempo. Un guasto qui
+    // si annota e basta: i file sono al loro posto, e la passata successiva
+    // riprova.
+    let ritorno = con_libreria(&stato, |libreria| {
         aether_app::desiderati::riconcilia(&libreria.connection, None)
     });
     match ritorno {

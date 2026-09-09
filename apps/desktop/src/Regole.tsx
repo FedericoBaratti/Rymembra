@@ -317,6 +317,8 @@ export function Regole({
           {insieme.regole.map((regola, indice) => {
             const genere = genereDi(regola.campo);
             return (
+              // L'indice è la chiave perché è l'identità: due condizioni sullo
+              // stesso campo sono due regole diverse e nient'altro le distingue.
               <li className="regola" key={indice}>
                 <select
                   aria-label={t("rules.field")}

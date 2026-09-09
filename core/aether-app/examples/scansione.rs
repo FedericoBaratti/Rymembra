@@ -18,14 +18,19 @@
 
 use std::io::Write as _;
 
+use std::sync::Arc;
+
 use aether_app::covers::CoverStore;
 use aether_app::files::LocalFiles;
-use aether_app::library::{Scan, search};
+use aether_app::library::{Scadenze, Scan, search};
 use aether_domain::paths::PathRules;
 use aether_domain::scan_plan::{RemoveReason, SkipReason};
 
 fn secondi(ms: u128) -> String {
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "millisecondi di una scansione, stampati con un decimale: un f64 li tiene esatti per trecentomila anni"
+    )]
     let value = ms as f64 / 1000.0;
     format!("{value:.1}s")
 }
@@ -59,13 +64,16 @@ fn main() {
 
     let roots = vec![root.clone()];
     let scan = Scan {
-        files: &LocalFiles,
-        covers: &store,
+        files: Arc::new(LocalFiles),
+        covers: store.clone(),
         roots: &roots,
         rules: PathRules::for_current_platform(),
         // Un esempio lo si lancia a mano e se ne legge l'esito: la guardia
         // contro le stragi non presidiate qui non serve.
         prudente: false,
+        scadenze: Scadenze::default(),
+        // Da riga di comando si annulla con Ctrl+C, che non passa di qui.
+        fermati: None,
     };
 
     // ── il piano, prima ──

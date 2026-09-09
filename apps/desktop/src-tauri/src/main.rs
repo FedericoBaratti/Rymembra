@@ -15,7 +15,9 @@ mod arricchimento;
 mod comandi;
 mod copertine;
 mod diario;
+mod disparte;
 mod errore;
+mod ia;
 mod importa;
 mod media;
 mod metadati;
@@ -31,6 +33,7 @@ mod spegnimento;
 mod stato;
 mod studio;
 mod testi;
+mod vassoio;
 
 use tauri::Manager as _;
 
@@ -146,10 +149,15 @@ fn finestra_schermo_intero(finestra: tauri::Window) -> bool {
     finestra.is_fullscreen().unwrap_or(false)
 }
 
-/// Chiude la finestra, cioè l'applicazione.
+/// Chiude la finestra, cioè l'applicazione — o la nasconde.
 ///
 /// `close()` e non `exit()`: fa la stessa strada del tasto di sistema — l'evento
 /// di chiusura, e chi lo ascolta — invece di scavalcarla.
+///
+/// Quella scelta, fatta quando l'unico ascoltatore spegneva i fili, è ciò che
+/// permette adesso a `on_window_event` di **impedire** questa chiusura quando il
+/// secondo piano è acceso. La X di `BarraTitolo.tsx` non sa niente della
+/// preferenza, e non deve: chiede di chiudere, e chi ascolta decide.
 #[tauri::command]
 fn finestra_chiudi(finestra: tauri::Window) {
     let _ = finestra.close();
@@ -245,7 +253,8 @@ fn main() {
             // vuoto costa un mutex e un intero.
             app.manage(media::StatoMedia::nuovo());
 
-            let (lettore, orecchio) = riproduzione::StatoLettore::avvia(app.handle());
+            let (lettore, orecchio, orecchio_dispositivi) =
+                riproduzione::StatoLettore::avvia(app.handle());
             riproduzione::riga_di_avvio_lettore(&lettore);
             app.manage(lettore);
             // Il filo che apre il brano successivo, insieme agli altri del
@@ -256,6 +265,11 @@ fn main() {
             riproduzione::riprendi_coda(app.handle());
             riproduzione::avvia_orologio(app.handle().clone());
             riproduzione::avvia_spettro(app.handle().clone());
+            // Il filo che guarda le uscite audio andare e venire. Ultimo dei
+            // quattro, e non conta nemmeno qui: la prima passata la fa da sé
+            // appena parte, e chi la pungola prima che sia in piedi trova un
+            // canale che tiene la spinta finché non c'è nessuno a raccoglierla.
+            riproduzione::avvia_sorveglianza(app.handle().clone(), orecchio_dispositivi);
 
             // I controlli veri **dopo** il lettore, e per una ragione che non è
             // l'ordine di dipendenza ma quello della finestra: su Windows le
@@ -307,6 +321,12 @@ fn main() {
             app.manage(scrobble::StatoScrobble::nuovo());
             scrobble::avvia(app.handle());
 
+            // I modelli di linguaggio: un lucchetto vuoto e un contatore, e
+            // nessun filo. Qui non parte niente da solo — non c'e` niente da
+            // riprendere e nessuna coda da svuotare — e finche' nessuno apre la
+            // chat dello Studio questo stato non tocca ne' rete ne' disco.
+            app.manage(ia::StatoIa::nuovo());
+
             // Gli aggiornamenti **dopo tutti gli altri**, e il suo filo aspetta
             // due minuti: è la cosa meno urgente che l'applicazione possa fare
             // all'apertura, ed è anche l'unica che parla con la rete senza che
@@ -317,10 +337,41 @@ fn main() {
             app.manage(aggiornamenti);
             aggiornamenti::avvia_filo(app.handle().clone(), orecchio);
 
+            // Il vassoio **dopo** la libreria, perché la prima cosa che fa è
+            // leggere la preferenza da lì. Non compare ancora niente nell'area
+            // di notifica: le due etichette del menù arrivano dalla finestra
+            // qualche decina di millisecondi più tardi, e senza di quelle non
+            // c'è un menù da costruire. Vedi `vassoio`.
+            app.manage(vassoio::StatoVassoio::nuovo());
+            vassoio::avvia(app.handle());
+
             // Per ultima, e dopo tutto il resto: quel che conta è che parta a
             // finestra già costruita, non prima di aprire il database.
             rete_di_sicurezza(app.handle());
             Ok(())
+        })
+        // La chiusura, prima che diventi un'uscita.
+        //
+        // `on_window_event` e non il `RunEvent` in fondo a questo file: là
+        // `CloseRequested` arriva senza la maniglia che permette di impedirlo,
+        // e impedirlo è tutto il punto. I due gestori guardano lo stesso
+        // evento da due posti diversi e fanno due cose diverse — questo decide
+        // se la chiusura succede, quello decide cosa spegnere quando succede.
+        .on_window_event(|finestra, evento| {
+            let tauri::WindowEvent::CloseRequested { api, .. } = evento else {
+                return;
+            };
+            // Chi sta uscendo davvero passa di qui: «Esci» dal vassoio alza la
+            // bandiera prima di chiamare `exit`, e impedirgli la chiusura
+            // vorrebbe dire un programma che non si spegne più.
+            if spegnimento::in_uscita() {
+                return;
+            }
+            if !vassoio::nasconde(finestra.app_handle()) {
+                return;
+            }
+            api.prevent_close();
+            let _ = finestra.hide();
         })
         // La variante asincrona: consegna un `responder` invece di pretendere
         // la risposta subito. Serve perché la lettura dal disco possa avvenire
@@ -335,6 +386,9 @@ fn main() {
             finestra_ingrandita,
             finestra_schermo_intero,
             finestra_chiudi,
+            vassoio::secondo_piano,
+            vassoio::secondo_piano_attiva,
+            vassoio::vassoio_lingua,
             comandi::avvio,
             comandi::imposta_cartelle,
             comandi::cartelle_candidate,
@@ -424,6 +478,14 @@ fn main() {
             studio::studio_istantanee,
             studio::studio_istantanea,
             studio::studio_ripristina,
+            ia::ia_profili,
+            ia::ia_salva_profilo,
+            ia::ia_elimina_profilo,
+            ia::ia_scegli_profilo,
+            ia::ia_modelli,
+            ia::ia_conversa,
+            ia::ia_operazioni,
+            ia::ia_ferma,
             riproduzione::suona,
             riproduzione::radio,
             riproduzione::pausa,
@@ -439,10 +501,16 @@ fn main() {
             riproduzione::autoplay,
             riproduzione::dissolvenza,
             riproduzione::riapri_audio,
+            riproduzione::dispositivi_audio,
+            riproduzione::scegli_dispositivo_audio,
             riproduzione::riprova_corrente,
             riproduzione::spettro,
             riproduzione::spettro_bande,
             riproduzione::spettro_bande_scegli,
+            riproduzione::spettro_visibile,
+            riproduzione::spettro_visibile_scegli,
+            riproduzione::spettro_qualita,
+            riproduzione::spettro_qualita_scegli,
             riproduzione::eq_preset_elenco,
             riproduzione::eq_preset_salva,
             riproduzione::eq_preset_cancella,
@@ -527,24 +595,62 @@ fn main() {
             // un giorno si uscisse per una strada che non passa dalla finestra
             // (l'aggiornatore che riavvia, un `exit()` da qualche parte), la
             // bandiera si alza lo stesso.
-            if matches!(
+            //
+            let chiusura = matches!(
                 evento,
                 tauri::RunEvent::WindowEvent {
                     event: tauri::WindowEvent::CloseRequested { .. },
                     ..
-                } | tauri::RunEvent::ExitRequested { .. }
-                    | tauri::RunEvent::Exit
-            ) {
-                spegnimento::chiedi();
-                // L'ultima posizione di un cursore mosso un attimo prima di
-                // chiudere: il filo dell'orologio, che di solito la scrive, è
-                // appena uscito per via della riga qui sopra.
-                riproduzione::salva_uscendo(mano);
-                // Poi la scheda del sistema. Il distacco parla all'`HWND` della
-                // finestra, e questo è l'ultimo momento in cui quell'`HWND`
-                // esiste ancora.
-                media::stacca(mano);
+                }
+            );
+            if !chiusura
+                && !matches!(
+                    evento,
+                    tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+                )
+            {
+                return;
             }
+
+            // Con il secondo piano acceso, però, una chiusura non è un'uscita:
+            // `on_window_event` l'ha appena impedita, e la finestra si è solo
+            // nascosta. Alzare qui la bandiera darebbe il guasto peggiore dei
+            // due possibili — musica che continua mentre si ferma tutto il
+            // resto, perché `spegnimento` non torna mai indietro: orologio,
+            // spettro, sorveglianza dei dispositivi, posizione di ripresa,
+            // scrobbling e scheda del sistema, spenti per sempre dentro un
+            // programma vivo.
+            if chiusura && !spegnimento::in_uscita() && vassoio::nasconde(mano) {
+                return;
+            }
+
+            spegnimento::chiedi();
+            // E poi si dice alla scansione di smettere, se ce n'è una. Non è un
+            // di più rispetto alla riga qui sopra: `spegnimento` ferma i fili
+            // che guardano la sua bandiera, e la scansione guarda la propria —
+            // quella che alza anche «Annulla». Senza questa riga una scansione
+            // che sta leggendo una condivisione di rete continuerebbe a leggerla
+            // mentre il resto del programma se ne va, e le due righe che
+            // seguono aspetterebbero il suo lucchetto.
+            //
+            // `try_state` e non `state`: `state` panica se lo stato non c'è, e
+            // qui si sta smontando tutto. Nessuno stato vuol dire nessuna
+            // scansione da fermare.
+            if let Some(stato) = mano.try_state::<stato::Stato>() {
+                stato.ferma_scansione();
+            }
+            // L'ultima posizione di un cursore mosso un attimo prima di
+            // chiudere: il filo dell'orologio, che di solito la scrive, è
+            // appena uscito per via della riga qui sopra.
+            riproduzione::salva_uscendo(mano);
+            // Poi la scheda del sistema. Il distacco parla all'`HWND` della
+            // finestra, e questo è l'ultimo momento in cui quell'`HWND` esiste
+            // ancora.
+            media::stacca(mano);
+            // E l'icona dell'area di notifica, per la stessa ragione: anche lei
+            // se ne va parlando col sistema operativo, e lasciarla cadere da
+            // sola vorrebbe dire farlo a ciclo degli eventi già smontato.
+            vassoio::stacca(mano);
         }),
         Err(err) => {
             // Nel diario e non solo su `stderr`: questo è il ramo in cui la

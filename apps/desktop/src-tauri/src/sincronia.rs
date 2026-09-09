@@ -41,7 +41,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
@@ -457,29 +457,21 @@ pub fn sporca(app: &AppHandle) {
 }
 
 /// Avvia il filo che sincronizza da solo.
+///
+/// Il ciclo sta in [`crate::stato::avvia_filo_periodico`]: è lo stesso della
+/// nuvola e dell'arricchimento, con altre tre durate.
 pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
-    let avviato = std::thread::Builder::new()
-        .name("aether-sincronia".to_owned())
-        .spawn(move || {
-            let mut motivo = match orecchio.recv_timeout(ATTESA_AVVIO) {
-                Err(RecvTimeoutError::Disconnected) => return,
-                Ok(sveglia) => sveglia,
-                Err(RecvTimeoutError::Timeout) => Sveglia::Subito,
-            };
-            loop {
-                if motivo == Sveglia::Sporca
-                    && crate::stato::aspetta_la_raffica(&orecchio, RAFFICA).is_break()
-                {
-                    return;
-                }
-                passata(&app);
-                motivo = match orecchio.recv_timeout(INTERVALLO) {
-                    Err(RecvTimeoutError::Disconnected) => return,
-                    Ok(sveglia) => sveglia,
-                    Err(RecvTimeoutError::Timeout) => Sveglia::Subito,
-                };
-            }
-        });
+    let avviato = crate::stato::avvia_filo_periodico(
+        "aether-sincronia",
+        orecchio,
+        ATTESA_AVVIO,
+        RAFFICA,
+        INTERVALLO,
+        // Solo `Sporca` aspetta la raffica; `Subito` è una richiesta a mano, e
+        // chi l'ha fatta sta guardando la finestra.
+        |sveglia| *sveglia == Sveglia::Sporca,
+        move || passata(&app),
+    );
     if let Err(err) = avviato {
         nota!("[avvio] il filo della sincronia non è partito: {err}");
     }
@@ -751,4 +743,42 @@ fn in_ipc(elenco: Vec<Dispositivo>, io: &str) -> Vec<DispositivoIpc> {
             visto_ms: dispositivo.visto_ms,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    /// Un database vero, migrato, in memoria: la fixture di `aether-app`.
+    fn libreria() -> rusqlite::Connection {
+        aether_app::db::open_in_memory()
+            .expect("un database in memoria si apre sempre")
+            .connection
+    }
+
+    #[test]
+    fn su_una_libreria_nuova_la_sincronia_e_spenta() {
+        // Il confronto opposto a quello degli aggiornamenti, e di proposito:
+        // questa scrive nella libreria da sé, e una cosa che scrive nella
+        // libreria non si accende perché nessuno ha detto il contrario.
+        let connection = libreria();
+        assert!(!attiva(&connection).expect("la lettura riesce"));
+    }
+
+    #[test]
+    fn solo_un_uno_esplicito_la_accende() {
+        let connection = libreria();
+        settings::write(&connection, CHIAVE_ATTIVA, "1").expect("la scrittura riesce");
+        assert!(attiva(&connection).expect("la lettura riesce"));
+
+        settings::write(&connection, CHIAVE_ATTIVA, "0").expect("la scrittura riesce");
+        assert!(!attiva(&connection).expect("la lettura riesce"));
+    }
+
+    #[test]
+    fn un_valore_storto_lascia_la_sincronia_spenta() {
+        let connection = libreria();
+        settings::write(&connection, CHIAVE_ATTIVA, "true").expect("la scrittura riesce");
+        assert!(!attiva(&connection).expect("la lettura riesce"));
+    }
 }

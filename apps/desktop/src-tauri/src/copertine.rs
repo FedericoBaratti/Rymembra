@@ -76,28 +76,30 @@ pub fn servi(
         return;
     };
 
-    let file = {
-        let guardia = stato
-            .libreria
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match guardia.as_ref() {
-            Ok(libreria) => {
-                if miniatura {
-                    libreria.covers.thumbnail_path_for(&impronta)
-                } else {
-                    libreria.covers.path_for(&impronta)
-                }
-            }
-            Err(_) => {
-                responder.respond(risposta(503, "text/plain", b"libreria non aperta".to_vec()));
-                return;
-            }
-        }
+    let Ok(copertine) = stato.copertine() else {
+        responder.respond(risposta(503, "text/plain", b"libreria non aperta".to_vec()));
+        return;
+    };
+    let file = if miniatura {
+        copertine.thumbnail_path_for(&impronta)
+    } else {
+        copertine.path_for(&impronta)
     };
 
-    // Il lucchetto è già rilasciato, e la lettura va su un altro thread: non
-    // deve tenere fermo né lo stato né chi ha mandato la richiesta.
+    // Nessun lucchetto è stato preso, e la lettura va comunque su un altro
+    // thread. Le due cose sono separate e servono a due guasti diversi.
+    //
+    // Il lucchetto: WebView2 dispatcha questo gestore sul filo della finestra, e
+    // una griglia di novecento album lo chiama novecento volte. Chiederlo qui
+    // vorrebbe dire che ogni immagine si mette in coda dietro chiunque stia
+    // usando il database — e mentre una scansione legge una condivisione di rete
+    // vorrebbe dire una finestra che il sistema dichiara «non risponde», per
+    // calcolare un nome di file da una cartella che non cambia mai. Da qui in
+    // giù non c'è più niente che il mutex debba proteggere: [`CoverStore`] è un
+    // percorso, e il percorso è già stato copiato.
+    //
+    // Il thread: la lettura è un `read` su disco, e questo resta il filo della
+    // finestra. Non deve tenere fermo né lo stato né chi ha mandato la richiesta.
     tauri::async_runtime::spawn_blocking(move || {
         match std::fs::read(&file) {
             Ok(bytes) => responder.respond(risposta(200, "image/jpeg", bytes)),

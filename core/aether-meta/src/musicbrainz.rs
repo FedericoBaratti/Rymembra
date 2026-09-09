@@ -115,7 +115,7 @@ fn anno(data: Option<&str>) -> Option<i32> {
 
 /// Interpreta la risposta di una ricerca di pubblicazioni. Funzione pura.
 #[must_use]
-pub fn interpreta_ricerca(corpo: &[u8]) -> Vec<Stub> {
+pub(crate) fn interpreta_ricerca(corpo: &[u8]) -> Vec<Stub> {
     let Ok(letto) = serde_json::from_slice::<Value>(corpo) else {
         return Vec::new();
     };
@@ -168,7 +168,7 @@ fn somma_tracce(media: Option<&Value>) -> Option<usize> {
 /// risolve `CD1` nella cartella superiore — quindi il gruppo da abbinare è uno
 /// e le tracce sono tutte.
 #[must_use]
-pub fn interpreta_pubblicazione(corpo: &[u8]) -> Option<RemoteRelease> {
+pub(crate) fn interpreta_pubblicazione(corpo: &[u8]) -> Option<RemoteRelease> {
     let letto: Value = serde_json::from_slice(corpo).ok()?;
     let titolo = letto.get("title").and_then(Value::as_str)?;
 
@@ -248,7 +248,7 @@ pub fn interpreta_pubblicazione(corpo: &[u8]) -> Option<RemoteRelease> {
 
 /// Interpreta una ricerca di registrazioni. Funzione pura.
 #[must_use]
-pub fn interpreta_registrazioni(corpo: &[u8]) -> Vec<Candidate> {
+pub(crate) fn interpreta_registrazioni(corpo: &[u8]) -> Vec<Candidate> {
     let Ok(letto) = serde_json::from_slice::<Value>(corpo) else {
         return Vec::new();
     };
@@ -412,7 +412,10 @@ pub fn pubblicazioni(
 /// # Errori
 ///
 /// `metadata.musicbrainzUnavailable` quando il servizio non risponde.
-pub fn pubblicazione(fornitori: &Fornitori, id: &str) -> Result<Option<RemoteRelease>, AppError> {
+pub(crate) fn pubblicazione(
+    fornitori: &Fornitori,
+    id: &str,
+) -> Result<Option<RemoteRelease>, AppError> {
     let url = format!(
         "{BASE}/release/{}?inc=recordings+artist-credits+release-groups&fmt=json",
         percento(id)
@@ -467,10 +470,11 @@ pub fn registrazioni(
 
 /// Le query da provare, dalla più stretta alla più larga, senza ripetizioni.
 ///
-/// Funzione pura, esposta perché è la parte che decide **quanto** si allarga —
-/// cioè quante richieste costa un file taggato male — e si prova senza rete.
+/// Funzione pura e tenuta a sé, perché è la parte che decide **quanto** si
+/// allarga — cioè quante richieste costa un file taggato male — e si prova
+/// senza rete.
 #[must_use]
-pub fn scaglioni(titolo: &str, artista: &str) -> Vec<String> {
+pub(crate) fn scaglioni(titolo: &str, artista: &str) -> Vec<String> {
     let grezzo_titolo = termine_lucene(titolo);
     let pulito_titolo = {
         let pulito = termine_lucene(&titolo_da_cercare(titolo));

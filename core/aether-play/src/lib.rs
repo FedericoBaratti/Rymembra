@@ -25,6 +25,12 @@
 //!
 //! 1. **Chi comanda** — chiunque, attraverso [`Motore`], che manda messaggi.
 //! 2. **Chi decodifica** — un filo che possiede symphonia e riempie un anello.
+//!    È l'unico dei tre che tocchi codice di terze parti su byte arrivati da un
+//!    disco o da una rete, quindi è l'unico che possa cadere: gira dentro un
+//!    `catch_unwind` — vedi [`motore::fili_caduti`] — e, cadendo, alza la stessa
+//!    bandiera con cui si annuncia un dispositivo sparito. Un motore muto che
+//!    non lo dice a nessuno era il modo peggiore in cui questo filo poteva
+//!    morire.
 //! 3. **Chi suona** — la callback di cpal, che svuota l'anello e basta.
 //!
 //! Fra il secondo e il terzo ci sono due anelli senza lucchetti, e la ragione è
@@ -40,6 +46,7 @@ use aether_domain::errors::AppError;
 
 pub mod attacchi;
 pub mod decodifica;
+pub mod dispositivi;
 pub mod equalizzatore;
 pub mod impronta;
 pub mod motore;
@@ -47,6 +54,7 @@ pub mod spettro;
 pub mod uscita;
 
 pub use decodifica::{Flusso, Sorgente};
+pub use dispositivi::Dispositivo;
 pub use equalizzatore::{BANDE, CENTRI_HZ, LIMITE_DB, PRESET_DI_SERIE};
 pub use motore::{BranoAperto, Evento, Motore, Posizione};
 pub use spettro::{
@@ -109,10 +117,48 @@ pub(crate) struct Condiviso {
     pub vuoti: AtomicU64,
     /// Quanti canali ha l'uscita, per contare i fotogrammi.
     pub canali: AtomicU32,
-    /// Il dispositivo è sparito.
+    /// Il motore non suona più, e non ricomincerà da solo.
+    ///
+    /// Due cause, una bandiera sola: il dispositivo che sparisce da sotto i
+    /// piedi — la callback di cpal riceve uno `StreamError` — e il filo della
+    /// decodifica che cade. Sono guasti diversi ma chiedono la stessa cosa,
+    /// cioè un motore ricostruito, e la via che lo ricostruisce è già scritta
+    /// una volta sola: il sorvegliante delle uscite legge questa bandiera,
+    /// annota dov'era la puntina e riapre. Duplicarla per la seconda causa
+    /// avrebbe voluto dire una seconda strada di riapertura da tenere in pari
+    /// con la prima.
+    ///
+    /// A dire **quale** delle due è [`Condiviso::causa_perdita`], che è
+    /// l'unica cosa che chi legge il diario o guarda il banner deve
+    /// distinguere.
     pub perso: AtomicBool,
-    /// Perché è sparito.
+    /// Quale delle cause ha alzato [`Condiviso::perso`].
+    ///
+    /// Uno e due li scrive la callback dell'uscita, per i due `StreamError` di
+    /// cpal; il tre il filo della decodifica quando cade, ed è l'unico che non
+    /// parli del dispositivo. La tabella che li traduce in una frase e in una
+    /// chiave sta in `Motore::perdita`, una sola volta.
+    ///
+    /// Si scrive **prima** della bandiera: chi legge le due caselle arriva
+    /// dall'altra parte e in quest'ordine, e scriverle al contrario lascerebbe
+    /// una finestra in cui la causa è ancora zero — «causa sconosciuta»
+    /// proprio nell'istante che c'è da raccontare.
     pub causa_perdita: AtomicU32,
+    /// Questo motore è stato sostituito: qualunque cosa dica, non la dica più.
+    ///
+    /// # Perché serve
+    ///
+    /// Perché l'osservatore di un motore sostituito è ancora **vivo** e parla
+    /// allo stato dell'applicazione, che nel frattempo è passato al motore
+    /// nuovo. Un filo di decodifica che finisce di morire mezzo secondo dopo la
+    /// sostituzione annuncerebbe un `Fermato` — e chi sta sopra lo leggerebbe
+    /// come «l'ultimo brano è uscito per intero», chiudendo l'ascolto e
+    /// facendo avanzare una coda che sta suonando altrove.
+    ///
+    /// La alza [`Motore::drop`] prima ancora di mandare il comando di
+    /// chiusura, la legge `Contesto::annuncia`, e non torna indietro: un motore
+    /// abbandonato non si riprende.
+    pub abbandonato: AtomicBool,
     /// Qualcuno sta guardando lo spettro.
     ///
     /// Spento, la callback non scrive niente nel terzo anello: chi non guarda
@@ -134,6 +180,7 @@ impl Condiviso {
             canali: AtomicU32::new(2),
             perso: AtomicBool::new(false),
             causa_perdita: AtomicU32::new(0),
+            abbandonato: AtomicBool::new(false),
             spettro: AtomicBool::new(false),
         })
     }
@@ -329,8 +376,18 @@ pub fn risali(blocco: &mut [f32], da: f32, fatti: u64, durata: u64, canali: u16)
 /// L'osservatore viene chiamato da un filo del motore, mai da quello della
 /// callback audio: può prendere lucchetti, scrivere su disco e mandare eventi
 /// alla finestra senza rischiare di interrompere il suono.
-pub fn avvia(osservatore: impl Fn(Evento) + Send + 'static) -> Result<Motore, AppError> {
-    Motore::avvia(osservatore)
+///
+/// `voluto` è il nome dell'uscita su cui aprire — `None` per quella predefinita
+/// di sistema. Un nome che non corrisponde a niente **non è un errore**: si
+/// ripiega sul predefinito, e chi ha chiamato lo scopre da
+/// [`Motore::dispositivo`], che dice su cosa si è aperto davvero. Vedi
+/// [`dispositivi`] per il perché l'identità sia una stringa e quanto poco
+/// regga.
+pub fn avvia(
+    osservatore: impl Fn(Evento) + Send + 'static,
+    voluto: Option<String>,
+) -> Result<Motore, AppError> {
+    Motore::avvia(osservatore, voluto)
 }
 
 #[cfg(test)]

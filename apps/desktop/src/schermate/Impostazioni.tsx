@@ -14,8 +14,14 @@
  * cosa fanno. Un comando che sposta dei file merita una riga di testo accanto;
  * in una colonna da 240 pixel quella riga non ci stava, quindi non c'era.
  */
-import { useEffect, useState, type CSSProperties } from "react";
-import { listen } from "@tauri-apps/api/event";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 
 import type {
   Avanzamento,
@@ -41,67 +47,144 @@ import {
 } from "../ipc";
 import { dataOra, durata, numero, ore } from "../formato";
 import { DISPONIBILI, t, type Chiave } from "../lingue";
+import { useAscolto } from "../pagine";
 import { Aggiornamenti } from "../parti/Aggiornamenti";
 import { Equalizzatore } from "../parti/Equalizzatore";
 import { Icona, type NomeIcona } from "../parti/Icone";
 import { Interruttore } from "../parti/Interruttore";
+import { ModelliIA } from "../parti/ModelliIA";
 import type { UsoImportazioni } from "../parti/Importazioni";
 import type { Vista } from "../parti/Navigazione";
 import { Profilo } from "../parti/Profilo";
 import { Scorciatoie } from "../parti/Scorciatoie";
 import { Scrobbling } from "../parti/Scrobbling";
+import { SchedaSpettro } from "../parti/SchedaSpettro";
+import { SchedaUscita } from "../parti/UscitaAudio";
 import { Segmentato } from "../parti/Segmentato";
 import type { Associazioni } from "../tastiera";
 import type { Tema } from "../tema";
 import { Trans } from "../lingue/Trans";
 import { nomeFonte } from "../parti/Incertezza";
 
-/** Le undici sezioni, nell'ordine in cui si visitano la prima volta. */
+/** Le tredici sezioni, nell'ordine in cui si visitano la prima volta. */
 export type Sezione =
   | "cartelle"
   | "aspetto"
+  | "modelli"
+  | "chiusura"
   | "riproduzione"
   | "movimento"
   | "nuvola"
   | "sincronia"
-  | "legacy"
-  | "esterno"
   | "scrobbling"
+  | "esterno"
+  | "legacy"
   | "dati"
   | "aggiornamenti";
 
-// «Backup su Drive» sta fra «movimento» e «legacy»: parla di dati che si
-// spostano da un computer all'altro, e i suoi due vicini sono l'importazione
-// dalla versione precedente e le statistiche della libreria. «Importa da un
-// servizio» sta accanto a «Dalla versione precedente» perché è la stessa cosa
-// da un'altra parte: portare dentro qualcosa che l'utente ha già altrove.
-// «Scrobbling» le sta subito dopo perché è il verso opposto dello stesso
-// rapporto con i servizi esterni — quel che esce invece di quel che entra — e
-// perché il gesto che le unisce è uno solo: la cronologia importata si manda a
-// ListenBrainz.
-//
-// La chiave è `esterno` e non `spotify`: Spotify è **una** delle sorgenti, e
-// l'etichetta lo dice adesso quanto la chiave. Si chiamava «Da un link», che
-// era il nome di **una** delle due strade — l'account intero stava nella scheda
-// accanto — e prometteva quindi metà di quel che la sezione fa.
-function sezioni(): readonly (readonly [Sezione, string, NomeIcona])[] {
+/**
+ * L'indice, a gruppi.
+ *
+ * # Perché a gruppi e non più di fila
+ *
+ * Perché tredici voci in colonna non sono un indice: sono un elenco che si
+ * rilegge dall'alto ogni volta, e la sola cosa che vi si trova a colpo d'occhio
+ * è quella che si era già trovata l'ultima volta. Le intestazioni non tolgono
+ * niente — le sezioni restano quelle, con dentro le stesse schede — e danno
+ * quattro punti di appoggio invece di uno.
+ *
+ * # Cosa sta con cosa
+ *
+ * **Preferenze** è quel che si decide una volta e vale sempre: dove sta la
+ * musica, come si vede il programma, con quale modello parla, e cosa fa la X.
+ * Sono le quattro sezioni in cui non succede niente — nessuna passata, nessun
+ * trasferimento, nessun account: si sceglie e si chiude.
+ *
+ * **Ascolto** è quel che tocca il suono mentre suona.
+ *
+ * **Servizi** sono i posti fuori da questo computer, e la domanda che li unisce
+ * è una sola: cosa esce, e verso chi. Backup su Drive, sincronia fra
+ * dispositivi, scrobbling, importazione da un servizio, e l'importazione dalla
+ * versione precedente — che è la stessa cosa da vicinissimo.
+ *
+ * **Il programma** è Aether che parla di sé.
+ *
+ * # «Modelli IA» sotto Preferenze
+ *
+ * Stava dopo «Scrobbling», e la ragione scritta qui era buona: sono le tre
+ * schede di fila che parlano di un servizio con cui Aether scambia qualcosa, e
+ * i modelli sono l'unica impostazione di tutto il programma che possa far
+ * uscire da questo computer una cosa **scritta dall'utente**.
+ *
+ * Quel che quell'ordine difendeva non era però la vicinanza: era che la
+ * domanda «cosa esce, e verso chi» si leggesse. Un indice non è il posto dove
+ * leggerla — ci si passa di corsa — e adesso sta dove serve, dentro la scheda
+ * dei modelli, che è dove si incolla la chiave. La vicinanza da sola non ha
+ * mai detto niente a nessuno.
+ *
+ * # `esterno` e non `spotify`
+ *
+ * Spotify è **una** delle sorgenti, e l'etichetta lo dice adesso quanto la
+ * chiave. Si chiamava «Da un link», che era il nome di **una** delle due
+ * strade — l'account intero stava nella scheda accanto — e prometteva quindi
+ * metà di quel che la sezione fa.
+ */
+function gruppi(): readonly (readonly [
+  string,
+  readonly (readonly [Sezione, string, NomeIcona])[],
+])[] {
   return [
-    ["cartelle", t("settings.section.cartelle"), "i-folder"],
-    ["aspetto", t("settings.section.aspetto"), "i-skin"],
-    ["riproduzione", t("settings.section.riproduzione"), "i-play"],
-    ["movimento", t("settings.section.movimento"), "i-eq"],
-    ["nuvola", t("settings.section.nuvola"), "i-cloud"],
-    ["sincronia", t("settings.section.sincronia"), "i-cloud"],
-    ["legacy", t("settings.section.legacy"), "i-import"],
-    ["esterno", t("settings.section.esterno"), "i-list"],
-    ["scrobbling", t("settings.section.scrobbling"), "i-cloud"],
-    ["dati", t("settings.section.dati"), "i-album"],
-    // Per ultima, e non perché avanzasse: è l'unica sezione che parla di
-    // qualcosa che il programma fa **senza** che nessuno gliel'abbia chiesto, e
-    // chi la cerca la cerca apposta. Metterla in alto vorrebbe dire darle il
-    // posto di «Cartelle», che è invece la prima cosa che serve a chiunque.
-    ["aggiornamenti", t("settings.section.aggiornamenti"), "i-cloud"],
+    [
+      t("settings.group.preferenze"),
+      [
+        ["cartelle", t("settings.section.cartelle"), "i-folder"],
+        ["aspetto", t("settings.section.aspetto"), "i-skin"],
+        ["modelli", t("settings.section.modelli"), "i-ia"],
+        ["chiusura", t("settings.section.chiusura"), "i-x"],
+      ],
+    ],
+    [
+      t("settings.group.ascolto"),
+      [
+        ["riproduzione", t("settings.section.riproduzione"), "i-play"],
+        ["movimento", t("settings.section.movimento"), "i-eq"],
+      ],
+    ],
+    [
+      t("settings.group.servizi"),
+      [
+        ["nuvola", t("settings.section.nuvola"), "i-cloud"],
+        ["sincronia", t("settings.section.sincronia"), "i-cloud"],
+        ["scrobbling", t("settings.section.scrobbling"), "i-cloud"],
+        ["esterno", t("settings.section.esterno"), "i-list"],
+        ["legacy", t("settings.section.legacy"), "i-import"],
+      ],
+    ],
+    [
+      t("settings.group.programma"),
+      [
+        ["dati", t("settings.section.dati"), "i-album"],
+        // Per ultima, e non perché avanzasse: è l'unica sezione che parla di
+        // qualcosa che il programma fa **senza** che nessuno gliel'abbia
+        // chiesto, e chi la cerca la cerca apposta. Metterla in alto vorrebbe
+        // dire darle il posto di «Cartelle», che è invece la prima cosa che
+        // serve a chiunque.
+        ["aggiornamenti", t("settings.section.aggiornamenti"), "i-cloud"],
+      ],
+    ],
   ];
+}
+
+/**
+ * Le sezioni spianate, senza i gruppi.
+ *
+ * Serve a chi cerca una sezione per chiave — la ricerca, per l'icona e per il
+ * «dove» — e non a chi disegna l'indice. Una funzione invece di due `flatMap`
+ * scritti nei due punti: sono lo stesso elenco, e due copie sono due occasioni
+ * di aggiungere una sezione a una sola delle due.
+ */
+function sezioni(): readonly (readonly [Sezione, string, NomeIcona])[] {
+  return gruppi().flatMap(([, dentro]) => dentro);
 }
 
 /**
@@ -146,11 +229,13 @@ function voci(): readonly {
     v("aspetto", "theme"),
     v("aspetto", "skin"),
     v("aspetto", "accent"),
+    v("riproduzione", "output"),
     v("riproduzione", "eq"),
     v("riproduzione", "replaygain"),
     v("riproduzione", "sleep"),
     v("riproduzione", "autoplay"),
     v("riproduzione", "crossfade"),
+    v("riproduzione", "spectrum"),
     v("riproduzione", "enrich"),
     v("movimento", "motion"),
     v("movimento", "shortcuts"),
@@ -164,6 +249,14 @@ function voci(): readonly {
     // scrivendo «coda»: la voce ci porta, il rimando dentro la scheda la apre.
     v("esterno", "importQueue"),
     v("scrobbling", "scrobbling"),
+    v("modelli", "models"),
+    // «Chiave API» è una voce sua e non un sinonimo: chi la cerca non sta
+    // cercando un modello — sta cercando dove si incolla il segreto, e una riga
+    // intitolata «Modelli IA» non gli dice che è lì dentro.
+    v("modelli", "apikey"),
+    // Nessuno cerca «secondo piano»: si cerca «chiudi», «x», «tray», o
+    // «continua a suonare». I sinonimi qui sono la voce, più del titolo.
+    v("chiusura", "background"),
     v("dati", "numbers"),
     v("dati", "profile"),
     v("aggiornamenti", "update"),
@@ -262,14 +355,7 @@ function fasiNuvola(): Record<AvanzamentoNuvola["cosa"], string> {
 function useAvanzamentoNuvola(inCorso: boolean): AvanzamentoNuvola | null {
   const [avanzamento, setAvanzamento] = useState<AvanzamentoNuvola | null>(null);
 
-  useEffect(() => {
-    const promessa = listen<AvanzamentoNuvola>("nuvola:avanzamento", (evento) =>
-      setAvanzamento(evento.payload),
-    );
-    return () => {
-      void promessa.then((stop) => stop());
-    };
-  }, []);
+  useAscolto<AvanzamentoNuvola>("nuvola:avanzamento", setAvanzamento);
 
   useEffect(() => {
     if (!inCorso) setAvanzamento(null);
@@ -309,7 +395,7 @@ function Scheda({
  *
  * # Perché si gestisce da sé
  *
- * Perché `Impostazioni` riceve già sessantuno prop, e quattro in più per una
+ * Perché `Impostazioni` riceve già sessantasette prop, e quattro in più per una
  * scheda che nessun'altra parte del programma guarda sarebbero quattro in più
  * da far scendere attraverso `App` a ogni ridisegno. Quel che serve a questa
  * scheda lo chiede lei quando viene montata, cioè quando qualcuno apre le
@@ -322,52 +408,56 @@ function Scheda({
 function SchedaTesti() {
   const [stato, setStato] = useState<StatoTesti | null>(null);
 
+  /**
+   * La scheda è ancora montata.
+   *
+   * Serve alla lettura e non agli ascolti: quelli li chiude `useAscolto`,
+   * mentre `ipc.testiStato()` è una promessa in volo che può tornare dopo che
+   * qualcuno ha già chiuso le Impostazioni. Si rimette a `true` al montaggio
+   * perché in `StrictMode` il primo montaggio viene disfatto e rifatto, e un
+   * riferimento che ricordasse solo lo smontaggio resterebbe spento per sempre.
+   */
+  const montata = useRef(true);
   useEffect(() => {
-    let annullato = false;
-    const aggiorna = () => {
-      ipc
-        .testiStato()
-        .then((letto) => {
-          if (!annullato) setStato(letto);
-        })
-        .catch(() => {
-          /* Una scheda che non sa dire i suoi numeri li lascia a zero: qui non
-             c'è niente di distruttivo da annunciare, e un errore rosso nelle
-             Impostazioni per una conta fallita sarebbe rumore. */
-        });
-    };
-    aggiorna();
-
-    const iscritti = [
-      listen<AvanzamentoTesti>("testi:avanzamento", (evento) => {
-        if (annullato) return;
-        setStato((prima) =>
-          prima === null
-            ? prima
-            : { ...prima, inCorso: true, ...evento.payload },
-        );
-      }),
-      listen("testi:finito", () => {
-        if (!annullato) aggiorna();
-      }),
-      // Una passata caduta a metà — la rete che se ne va, il servizio che dice
-      // di no — non manda «finito», e senza questa riga la barra resterebbe a
-      // «in corso» per sempre. È la stessa disciplina dell'arricchimento in
-      // `App.tsx`: lo stato riletto dal nucleo è l'ultima parola su «sta
-      // girando», e rileggerlo è quel che serve. Il guasto in sé non si mostra
-      // qui — chi ha chiesto i testi non ha chiesto una finestra rossa — ma il
-      // numero dei coperti torna vero, che è quello che si stava guardando.
-      listen("testi:guasto", () => {
-        if (!annullato) aggiorna();
-      }),
-    ];
+    montata.current = true;
     return () => {
-      annullato = true;
-      for (const iscritto of iscritti) {
-        iscritto.then((smetti) => smetti()).catch(() => {});
-      }
+      montata.current = false;
     };
   }, []);
+
+  const aggiorna = useCallback(() => {
+    ipc
+      .testiStato()
+      .then((letto) => {
+        if (montata.current) setStato(letto);
+      })
+      .catch(() => {
+        /* Una scheda che non sa dire i suoi numeri li lascia a zero: qui non
+           c'è niente di distruttivo da annunciare, e un errore rosso nelle
+           Impostazioni per una conta fallita sarebbe rumore. */
+      });
+  }, []);
+
+  useEffect(() => {
+    aggiorna();
+  }, [aggiorna]);
+
+  useAscolto<AvanzamentoTesti>("testi:avanzamento", (passo) => {
+    setStato((prima) =>
+      prima === null ? prima : { ...prima, inCorso: true, ...passo },
+    );
+  });
+
+  useAscolto("testi:finito", aggiorna);
+
+  // Una passata caduta a metà — la rete che se ne va, il servizio che dice di
+  // no — non manda «finito», e senza questa riga la barra resterebbe a «in
+  // corso» per sempre. È la stessa disciplina dell'arricchimento in `App.tsx`:
+  // lo stato riletto dal nucleo è l'ultima parola su «sta girando», e
+  // rileggerlo è quel che serve. Il guasto in sé non si mostra qui — chi ha
+  // chiesto i testi non ha chiesto una finestra rossa — ma il numero dei
+  // coperti torna vero, che è quello che si stava guardando.
+  useAscolto("testi:guasto", aggiorna);
 
   const copertura = stato?.copertura ?? {
     sincronizzati: 0,
@@ -605,6 +695,66 @@ function SchedaSpegnimento({
   );
 }
 
+/**
+ * La scheda della chiusura: cosa fa la X.
+ *
+ * # Perché si gestisce da sé
+ *
+ * La stessa ragione di `SchedaTesti`: `Impostazioni` riceve già sessantasette
+ * prop, e questa preferenza non la guarda nessun'altra parte del programma —
+ * la legge il gestore della chiusura, che sta in Rust e non passa di qui.
+ * Passarla da `App` vorrebbe dire due prop in più lungo tutta la catena per un
+ * booleano che vive dentro una scheda sola.
+ *
+ * # Perché l'interruttore è pessimistico
+ *
+ * Perché lo stato arriva dal **ritorno** del comando e non dal click. È la
+ * disciplina di `accentoDinamicoAttiva`, e non quella del tema o della lingua,
+ * che si accendono subito. Quelle si vedono succedere: la finestra cambia
+ * colore, e una scrittura fallita si nota perché il colore non è cambiato. Qui
+ * non c'è niente da vedere — l'effetto è quel che farà la X fra tre ore — e un
+ * interruttore acceso su una scrittura fallita mentirebbe fino alla prima volta
+ * che qualcuno chiude Aether credendo di nasconderlo.
+ */
+function SchedaChiusura({ onErrore }: { onErrore: (e: unknown) => void }) {
+  const [acceso, setAcceso] = useState(false);
+
+  useEffect(() => {
+    let annullato = false;
+    ipc
+      .secondoPiano()
+      .then((letto) => {
+        if (!annullato) setAcceso(letto);
+      })
+      .catch(() => {
+        /* Spento, che è il valore di serie e il comportamento di sempre: una
+           preferenza che non si legge non deve poter far sparire la finestra. */
+      });
+    return () => {
+      annullato = true;
+    };
+  }, []);
+
+  return (
+    <Scheda
+      icona="i-x"
+      titolo={t("settings.background.title")}
+      nota={t("settings.background.note")}
+    >
+      <p className="nota">{t("settings.background.p1")}</p>
+      <p className="nota">{t("settings.background.p2")}</p>
+      <Interruttore
+        etichetta={t("settings.background.toggle")}
+        spiegazione={t("settings.background.toggle.hint")}
+        acceso={acceso}
+        onCambia={(valore) => {
+          ipc.secondoPianoAttiva(valore).then(setAcceso).catch(onErrore);
+        }}
+      />
+    </Scheda>
+  );
+}
+
 export function Impostazioni({
   sezione,
   onSezione,
@@ -835,7 +985,7 @@ export function Impostazioni({
    * qui per incollarle — non per rileggere come si ottengono.
    */
   const [guidaDrive, setGuidaDrive] = useState(false);
-  /** Il filtro sopra l'indice. Nove sezioni sono oltre il punto in cui si scorre. */
+  /** Il filtro sopra l'indice. Tredici sezioni sono oltre il punto in cui si scorre. */
   const [filtro, setFiltro] = useState("");
   const trovate = cerca(filtro);
   const attiva = skin.find((s) => s.attiva);
@@ -894,18 +1044,26 @@ export function Impostazioni({
         </div>
 
         {filtro.trim() === "" ? (
-          sezioni().map(([chiave, etichetta, icona]) => (
-            <button
-              key={chiave}
-              type="button"
-              className="voce nav-pill"
-              aria-current={sezione === chiave ? "true" : undefined}
-              data-active={sezione === chiave || undefined}
-              onClick={() => onSezione(chiave)}
-            >
-              <Icona nome={icona} dim={16} />
-              <span>{etichetta}</span>
-            </button>
+          gruppi().map(([titolo, dentro]) => (
+            /* Un frammento e non un `<div>`: l'indice è una colonna sola, e un
+               contenitore per gruppo vorrebbe dire quattro scatole da far
+               comportare come se non ci fossero. */
+            <Fragment key={titolo}>
+              <div className="titolo-gruppo">{titolo}</div>
+              {dentro.map(([chiave, etichetta, icona]) => (
+                <button
+                  key={chiave}
+                  type="button"
+                  className="voce nav-pill"
+                  aria-current={sezione === chiave ? "true" : undefined}
+                  data-active={sezione === chiave || undefined}
+                  onClick={() => onSezione(chiave)}
+                >
+                  <Icona nome={icona} dim={16} />
+                  <span>{etichetta}</span>
+                </button>
+              ))}
+            </Fragment>
           ))
         ) : trovate.length === 0 ? (
           <p className="niente empty-state">{t("settings.index.nothing")}</p>
@@ -1577,6 +1735,14 @@ export function Impostazioni({
                 onCambia={onAutoplay}
               />
             </Scheda>
+            {/* Prima della dissolvenza e dopo l'equalizzatore, che è l'ordine
+                di quanto spesso ci si torna: da quale scheda esce il suono è
+                la prima cosa che si viene a cercare qui quando qualcosa non si
+                sente, e la dissolvenza è una preferenza che si decide una
+                volta. */}
+            <Scheda icona="i-play" titolo={t("settings.output.title")}>
+              <SchedaUscita onErrore={onErrore} />
+            </Scheda>
             <SchedaDissolvenza
               dissolvenzaS={dissolvenzaS}
               onDissolvenza={onDissolvenza}
@@ -1585,6 +1751,14 @@ export function Impostazioni({
               spegnimentoMs={spegnimentoMs}
               onSpegnimento={onSpegnimento}
             />
+            {/* In «Riproduzione» e non in «Aspetto»: il dominio delle
+                chiavi è `player.*`, come ogni altro residente di questa
+                sezione. «Aspetto» è dove vive il look — che per la linea di
+                questa scheda è esattamente la metà che non è
+                un'impostazione, ma un blocco di token dello Studio. */}
+            <Scheda icona="i-eq" titolo={t("settings.spectrum.title")}>
+              <SchedaSpettro onErrore={onErrore} />
+            </Scheda>
           </>
         )}
 
@@ -2318,6 +2492,16 @@ export function Impostazioni({
             <Scrobbling onErrore={onErrore} onNotizia={onNotizia} />
           </Scheda>
         )}
+        {sezione === "modelli" && (
+          <Scheda
+            icona="i-ia"
+            titolo={t("settings.models.title")}
+            nota={t("settings.models.note")}
+          >
+            <ModelliIA onErrore={onErrore} onNotizia={onNotizia} />
+          </Scheda>
+        )}
+        {sezione === "chiusura" && <SchedaChiusura onErrore={onErrore} />}
 
         {sezione === "dati" && avvio && (
           <Scheda icona="i-album" titolo={t("settings.data.title")}>

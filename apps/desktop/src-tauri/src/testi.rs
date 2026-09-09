@@ -32,6 +32,7 @@ use aether_meta::Fornitori;
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
+use crate::disparte::in_disparte;
 use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::stato::{NOME_DATABASE, Stato, Turno, adesso_ms, con_libreria};
@@ -147,17 +148,49 @@ impl From<testi::TestoBrano> for TestoIpc {
 /// `library.trackNotFound` se il brano non c'è più, `db.queryFailed` se la
 /// lettura fallisce.
 ///
-/// `(async)`: prima del database questa lettura guarda se accanto al file c'è
-/// un `.lrc`, e «accanto al file» può voler dire su una cartella di rete. Un
-/// comando normale gira sul filo principale, e lì una condivisione che non
-/// risponde vale quaranta secondi di finestra ferma per aprire il pannello del
-/// testo.
-#[tauri::command(async)]
-pub fn testo_brano(stato: State<'_, Stato>, id: i64) -> Esito<TestoIpc> {
-    con_libreria(&stato, |libreria| {
+/// # Dove gira
+///
+/// Prima del database questa lettura guarda se accanto al file c'è un `.lrc`, e
+/// «accanto al file» può voler dire su una cartella di rete. Un comando normale
+/// gira sul filo principale, e lì una condivisione che non risponde vale quaranta
+/// secondi di finestra ferma per aprire il pannello del testo.
+///
+/// Passa quindi da [`in_disparte`], cioè dal pool bloccante, e non dal semplice
+/// `(async)`: quello manderebbe il corpo su un worker del runtime, che sono tanti
+/// quanti i processori, e tre pannelli aperti su una share morta li
+/// occuperebbero tutti — fermando ogni altro comando asincrono, anche quelli che
+/// il disco non lo toccano.
+///
+/// Prende un `AppHandle` e non uno `State`: il lavoro va mosso dentro una
+/// chiusura `'static`, e un prestito dello stato lì dentro non entra.
+#[tauri::command]
+pub async fn testo_brano(app: AppHandle, id: i64) -> Esito<TestoIpc> {
+    let mano = app.clone();
+    in_disparte("testo del brano", move || {
+        let Some(stato) = mano.try_state::<Stato>() else {
+            return Err(AppError::new(ErrorCode::InternalAborted {
+                what: Some("lettura del testo".to_owned()),
+            })
+            .with_cause("la libreria non è più fra gli stati gestiti"));
+        };
+        testo_gia_saputo(&stato, id)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+/// Quel che si sa già del testo di un brano, senza toccare la rete.
+///
+/// Separata dal comando perché la chiamano in due: [`testo_brano`], che la manda
+/// in disparte, e [`testo_cerca`] quando la rete è spenta — e quella è già su un
+/// filo suo, con il brano appena letto sotto lo stesso lucchetto. Due copie della
+/// stessa lettura sarebbero due copie che divergono il giorno in cui qualcuno
+/// cambia cosa vuol dire «il testo che si ha».
+fn testo_gia_saputo(stato: &Stato, id: i64) -> Result<TestoIpc, AppError> {
+    con_libreria(stato, |libreria| {
         testi::per_brano(&libreria.connection, id).map(TestoIpc::from)
     })
-    .map_err(errore)
 }
 
 /// Sposta il testo di questo brano avanti o indietro, e se lo ricorda.
@@ -368,7 +401,7 @@ pub fn testo_cerca(
     if !rete {
         // Non è un errore: è una scelta di chi usa il programma, e la risposta
         // giusta è quel che si sa senza rete.
-        return testo_brano(stato, id);
+        return testo_gia_saputo(&stato, id).map_err(errore);
     }
 
     // ── senza nessun lucchetto ──────────────────────────────────────────────
