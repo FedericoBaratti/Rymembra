@@ -96,6 +96,9 @@ changed what was on your disk: enrichment rewrote tags every half hour, and the
 reorganizer moved files into `Artist/Album`. One has been rewritten so that it
 touches nothing, and the other has been retired. What Aether still writes is
 now short enough to list, and it is listed, in [`PRIVACY.md`](PRIVACY.md) § 8.
+[`TERMS.md`](TERMS.md) § 5 promised the opposite — «some operations modify your
+files» — and has been rewritten to say what is true now instead of being left
+to contradict, in the same download, the document beside it.
 
 It is also a long entry carrying a patch number. Both of the clauses that
 would have argued with that — «minor for every migration» and «minor for new

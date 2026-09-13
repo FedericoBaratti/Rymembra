@@ -1,6 +1,6 @@
 # Aether terms of use
 
-Last updated: 19 August 2026.
+Last updated: 10 September 2026.
 
 Aether is a free program, distributed under the MIT license. This document is
 not the contract between you and me — that's `LICENSE`, and it says the program
@@ -152,11 +152,20 @@ Aether works on files that sit on your disk and on an SQLite database that sits
 in your data folder. There's no server, there's no account, there's nothing I
 can switch off.
 
-Some operations **modify your files**: writing tags during metadata enrichment,
-and the reorganization that moves files on disk. Both show a plan before acting
-and both know how to go back, but a backup of the files you care about remains a
-good idea — that goes for any program that writes to your data, this one
-included.
+**Aether does not modify your music files.** It opens them to read — to scan
+them, to decode them, to measure them — and never to write. Up to 2.3.0 that
+was not true, and this section used to say so: enrichment rewrote the tags in
+your files, and a reorganizer moved them into `Artist/Album` folders. From
+2.3.1 neither does. What Aether works out about a track lives in the library
+database beside your own corrections, where a re-scan cannot silently undo it.
+
+What it does write is a short list, and `PRIVACY.md` § 8 carries all of it: the
+files Aether downloaded itself, the `.lrc` it saves beside a track, the
+playlists and the profile archive you ask it to export, and its own data
+folder. Nothing on that list is a file you already had.
+
+A backup of what you care about remains a good idea all the same — that goes
+for any program that reads your disk, this one included.
 
 ---
 
