@@ -139,7 +139,16 @@ pub fn nasconde(app: &tauri::AppHandle) -> bool {
 /// Tutti e tre i gesti, e in quest'ordine: una finestra nascosta **e** ridotta a
 /// icona torna visibile con `show()` e resta ridotta, cioè si riaprirebbe in un
 /// modo che somiglia molto al non essersi riaperta.
-fn mostra(app: &tauri::AppHandle) {
+///
+/// # Perché non è più privata
+///
+/// Perché ha un secondo chiamante fuori da qui, e fa la stessa cosa per la stessa
+/// ragione: [`crate::una_sola_istanza`], quando qualcuno riapre Aether mentre
+/// Aether è già aperta. Quel gesto e il clic sull'icona nel vassoio sono la
+/// stessa richiesta — «rimettimi davanti la finestra» — e due funzioni che la
+/// soddisfano sono due funzioni che il giorno in cui i gesti giusti diventano
+/// quattro ne fanno tre.
+pub(crate) fn mostra(app: &tauri::AppHandle) {
     let Some(finestra) = app.get_webview_window("main") else {
         return;
     };

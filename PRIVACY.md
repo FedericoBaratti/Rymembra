@@ -1,6 +1,6 @@
 # Privacy
 
-Last updated: 6 September 2026.
+Last updated: 10 September 2026.
 
 **Aether has no telemetry, no analytics, no crash reporting, and sends nothing
 to me.** There is no Aether server. There is no account to create. There is
@@ -270,6 +270,18 @@ Only listens that got at least halfway through the track count. The queue of
 what's still to be sent lives on your disk, and there's a button that empties it
 without sending it.
 
+**Your Last.fm application key lives in the operating system's keychain**, next
+to the secret that goes with it. Up to 2.3.0 it sat in the settings table
+instead, on the grounds that it is not a secret — it travels in the clear in the
+consent URL, so that part was true. The conclusion was wrong: the question is
+not whether it is secret but *whose it is*. It is a personal credential you
+registered in your own name, and anyone holding it scrobbles as you until you
+revoke it. That did not matter while the settings table stayed on one machine;
+it started mattering in 2.3.1, when the profile archive became something you put
+on a USB stick. Aether moves the key across once, at startup. If the keychain
+does not answer, the key **stays where it is** rather than being lost, and the
+profile leaves it out either way.
+
 ---
 
 ## 4. The Google Drive backup
@@ -294,6 +306,47 @@ The alternative that touches no network exists: syncing to a shared folder.
 
 ---
 
+## 4-bis. The profile archive
+
+This touches no network at all. It is here because it is the one file Aether
+writes that is *meant* to be carried somewhere else, and you should know what
+is inside it before you hand it to anyone.
+
+*Settings › Profile › Export* writes an `aether-profilo.aeprofile` where you ask
+for it. It is a zip; you can open it with any archive manager and read what it
+holds:
+
+| Inside | What it is |
+| --- | --- |
+| `manifesto.json` | What the archive claims to be, and an explicit list of what it left out |
+| `preferenze.json` | Your settings — theme, skin, equalizer, shortcuts, watched folders |
+| `sincronia/aether-<device>.v1.json.gz` | Play counts, ratings, favourites, resume positions, playlists |
+| `biblioteca.v1.json` | Listening history, your metadata corrections, lyrics, the "to buy" list |
+| `copertine/…` | The cover art cache |
+| `skin/…` | Installed skins and Skin Studio drafts |
+
+What is **not** inside, and cannot be:
+
+- **Your music files.** The archive names tracks, it does not carry them.
+- **Any token, session key or credential.** Those live in the operating
+  system's keychain, and the code that writes the profile cannot see it. That
+  includes the Last.fm application key, from 2.3.1 (§ 3).
+- **This computer's backup device identifier**, its audio output, its measured
+  output latency, its spectrum quality setting, and the open nodes of the
+  Folders panel. These describe a machine, not a person.
+- **Similarity data and the weekly picks**, which are derived and are
+  recomputed from whatever library they land in.
+
+Importing one **adds and never removes**: listens are summed, playlists merged,
+covers and skins written only where none exist, and a lyric you synced by hand
+is never overwritten. Before writing anything, Aether saves what your computer
+looks like right now to `<data folder>\profilo\prima-<timestamp>.aeprofile`,
+keeping the last three. That backup restores your settings — not the merged
+history, which is additive and has no undo, and which the interface says so
+rather than promising a return that does not exist.
+
+---
+
 ## 5. The shops, when you press the button
 
 In the «To buy» list there are three buttons — Bandcamp, Qobuz, Discogs — that
@@ -314,8 +367,14 @@ that's why it gets its own section instead of a line at the bottom of a list.
 
 | Host | When | What reaches it |
 | --- | --- | --- |
-| `github.com` | Two minutes after startup, then every thirty minutes | Nothing: a GET to a public file |
+| `github.com` | Forty-five seconds after startup, then every thirty minutes | Nothing: a GET to a public file |
 | `objects.githubusercontent.com` | Only if you press «Update» | The request for the installer file |
+
+**At most one check every half hour, no matter how often you open Aether.** The
+startup check looks at when the last successful one happened, and if that was
+less than thirty minutes ago it doesn't run: opening and closing Aether ten times
+in an hour makes one request, not ten. Pressing «Check now» is the exception, and
+deliberately so — a button you pressed has to do something.
 
 The file it downloads is called `latest.json`, sits among the latest release's
 assets, and is public: it's the same one you'd see opening the releases page in
@@ -324,9 +383,11 @@ a browser. Inside are a version number, two lines of notes and an address.
 **Nothing of yours goes into the request.** No identifier, no serial number, no
 counter, no information about your library. Not even the version you have
 installed travels: the comparison is done by the program on your computer, after
-reading the file. What GitHub can infer is that somebody, from a certain IP
-address, asked for a public file — exactly what it would know about anyone
-opening that page with a browser.
+reading the file. The request doesn't even carry a `User-Agent` naming Aether,
+and that is deliberate rather than forgotten — the code says so where the request
+is built. What GitHub can infer is that somebody, from a certain IP address,
+asked for a public file — exactly what it would know about anyone opening that
+page with a browser.
 
 **It installs nothing on its own.** When it finds a new version it says so and
 stops. Downloading and installing start from a button, because installing means
@@ -352,8 +413,9 @@ that's months out of date.
 ## 7. What *doesn't* happen, and is worth saying
 
 - **No request at startup, except the one in § 6.** Opening Aether sends nothing
-  to anyone for the first two minutes, and after that sends a GET to a public
-  file. There's no other ping, and nothing goes out on closing.
+  to anyone for the first forty-five seconds, and after that sends a GET to a
+  public file — or not even that, if it already did less than half an hour ago.
+  There's no other ping, and nothing goes out on closing.
 - **No request in the clear leaves this computer.** The HTTP client refuses
   `http://` by construction, with exactly one exception: a language model
   running on your own machine (§ 2-quater). Ollama and LM Studio have no
@@ -378,17 +440,57 @@ that's months out of date.
 
 ---
 
-## 8. The files Aether modifies
+## 8. What Aether does *not* touch
 
-Two features write into your files, and it's worth knowing:
+**Your music files are not modified.** Aether opens them to read them — to
+scan them, to decode them, to measure them — and never to write. Up to 2.3.0
+that was not true, and this section used to say so; from 2.3.1 the complete
+list of what Aether writes is the one below, and your `.flac` and `.mp3` files
+are not on it.
 
-- **Metadata enrichment** rewrites the tags (and the embedded cover art) of the
-  tracks it identifies with certainty. It can be switched off, and it knows how
-  to go back.
-- **Reorganization** moves files on disk into `Artist/Album/NN - Title`. It
-  shows the plan first, and it has an undo.
+What Aether writes, and where:
 
-Neither of the two sends anything anywhere: it's all local.
+- **Files it downloaded itself**, in the download folder you chose. Aether
+  writes the tags and the cover art into those, because it is the one that
+  created them: a file that arrived a minute ago with no artist and no title
+  is not "your file" in the sense this section is about.
+- **The lyrics files it saves next to a track** — `name.lrc` and, when you
+  time the words, `name.a2.lrc`. These are *new* files, written beside the
+  track; the track itself is not opened.
+- **The playlists you export**, `.m3u` and `.pls`, where you ask for them.
+- **The profile archive** (`.aeprofile`), where you ask for it.
+- **The application's data folder** —
+  `%APPDATA%\io.github.federicobaratti.aether` — which holds the library
+  database, the cover art cache, the installed skins and the log described
+  below.
+
+Nothing on that list leaves your computer, and nothing on it is a file you
+already had.
+
+### Why there is no "write the tags into my files" button
+
+It would be an easy feature to add, and it is missing on purpose.
+
+Writing a tag changes the file's modification date. The next scan sees a file
+that changed, reads it again, and takes the tags in it as the truth — so
+whatever Aether wrote comes back in through the front door, and the library
+starts depending on the contents of your files again. That loop is exactly what
+2.3.1 closed: what Aether works out about a track now lives in its own database
+table, your correction always wins over it, and neither of them can be silently
+undone by a re-scan.
+
+Interoperability does not need that button. Everything another program needs to
+read is already produced as a **new file** rather than as a change to yours:
+`.m3u` and `.pls` playlists, `.lrc` and `.a2.lrc` lyrics, and the profile
+archive.
+
+**One exception, and it is on its way out.** Versions up to 2.3.0 *did* rewrite
+your tags during enrichment, and kept a copy of what was there before. So that
+you can still undo those old writes, *Settings → Metadata* offers a button
+whose label says it writes into the files. It is the only thing in Aether that
+opens your music for writing, it only appears while there is something left to
+undo, it never runs by itself, and it will be removed in a future release once
+those records are gone.
 
 ### The log
 

@@ -63,7 +63,7 @@ use std::time::Duration;
 
 use aether_app::playback::SchedaSorgente;
 use aether_app::sonora::{self, Misurato};
-use aether_domain::errors::{AppError, ErrorCode};
+use aether_domain::errors::AppError;
 use tauri::{AppHandle, Manager as _};
 
 use crate::nota;
@@ -421,11 +421,14 @@ fn misura_uno(scheda: &SchedaSorgente) -> Misurato {
 }
 
 /// Un guasto del database, nella forma del catalogo.
+///
+/// Delega a [`aether_app::db::codice_da_sqlite`], che guarda il codice di SQLite
+/// e distingue un database occupato — che si riprova — da una share che non
+/// risponde. Prima rispondeva `db.queryFailed` a qualunque guasto, e chi la
+/// leggeva si trovava consigliato di riavviare Aether per un file che era
+/// occupato da mezzo secondo dalla scansione.
 fn db_errore(cosa: &str, err: &rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(cosa.to_owned()),
-    })
-    .with_cause(err.to_string())
+    aether_app::db::codice_da_sqlite(cosa, err)
 }
 
 #[cfg(test)]

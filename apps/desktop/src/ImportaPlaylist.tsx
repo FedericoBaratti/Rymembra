@@ -20,6 +20,7 @@
  */
 import { useEffect, useState } from "react";
 
+import { useFinestrella } from "./finestrella";
 import { ipc, testoErrore, type EsitoFilePlaylist } from "./ipc";
 import { Avviso } from "./parti/Avvisi";
 import { Icona } from "./parti/Icone";
@@ -42,6 +43,10 @@ export function ImportaPlaylist({
   const [nome, setNome] = useState("");
   const [errore, setErrore] = useState<string | null>(null);
   const [inCorso, setInCorso] = useState(true);
+  // Si apre con tutti i comandi spenti, perché il piano non è ancora arrivato:
+  // il fuoco va sulla radice, che è l'unico posto che c'è in quell'istante, e
+  // l'Escape funziona anche durante la lettura del file.
+  const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
 
   useEffect(() => {
     let annullato = false;
@@ -85,6 +90,7 @@ export function ImportaPlaylist({
   return (
     <div className="velo scuro" onClick={inCorso ? undefined : onChiudi}>
       <div
+        ref={finestrella}
         className="finestrella glass-modal"
         role="dialog"
         aria-modal="true"

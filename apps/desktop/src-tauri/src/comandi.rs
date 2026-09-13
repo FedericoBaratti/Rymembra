@@ -366,6 +366,13 @@ pub async fn scansiona(app: tauri::AppHandle) -> Esito<EsitoScansione> {
     if esito.is_ok() {
         crate::arricchimento::sporca(&app);
         crate::analisi::sporca(&app);
+        // Una scansione cambia quali cartelle esistono e cosa c'è dentro:
+        // l'albero del pannello «Cartelle» è derivato da `tracks`, quindi non
+        // si aggiorna, si butta. Costa un contatore atomico, e non ricostruisce
+        // niente — se il pannello non è aperto non c'è nemmeno un albero.
+        if let Some(indice) = app.try_state::<std::sync::Arc<crate::cartelle::IndiceCartelle>>() {
+            indice.invalida();
+        }
     }
     // Una scansione cambia quali brani esistono, quindi quali statistiche il
     // backup può ancorare: un brano ritrovato dopo una reinstallazione va
@@ -708,7 +715,7 @@ fn importa_interno(
     .map_err(errore)
 }
 
-// ── le preferenze della finestra, e il profilo ──────────────────────────────
+// ── le preferenze della finestra ────────────────────────────────────────────
 
 /// Scrive il tema.
 ///
@@ -729,6 +736,51 @@ pub fn imposta_tema(app: tauri::AppHandle, stato: State<'_, Stato>, tema: String
         &app,
         con_libreria(&stato, |libreria| {
             aether_app::preferenze::imposta_tema(&libreria.connection, scelto)
+        })
+        .map_err(errore),
+    )
+}
+
+/// Se chi guarda ha chiesto meno movimento di quanto la skin ne dichiari.
+///
+/// # Perché un comando suo e non un campo di [`Avvio`]
+///
+/// Il tema sta in [`Avvio`] perché ha un passato da riconciliare: la finestra
+/// deve distinguere «mai scelto» da «scelto sistema» per sapere se ripiegare
+/// sulla riga rimasta in `localStorage`, e quella decisione va presa nello
+/// stesso istante in cui l'avvio risponde. Qui non c'è niente da riconciliare
+/// — la chiave nasce adesso, e assente vuol dire spento — quindi non c'è
+/// ragione di far crescere la struttura che ogni apertura riempie sempre. È la
+/// stessa regola di [`cartelle_ui`], scritta per esteso là sopra.
+///
+/// La finestra la chiede una volta e la passa ad `applicaMovimento`, che
+/// scrive `data-motion-utente` sulla radice: il rimedio è già in `stile.css`,
+/// accanto a quello di `prefers-reduced-motion`, e non se ne scrive un
+/// secondo.
+#[tauri::command]
+pub fn movimento_ridotto(stato: State<'_, Stato>) -> Esito<bool> {
+    con_libreria(&stato, |libreria| {
+        aether_app::preferenze::movimento_ridotto(&libreria.connection)
+    })
+    .map_err(errore)
+}
+
+/// Scrive se chi guarda ha chiesto meno movimento.
+///
+/// Passa da `nuvola::se_riuscito` come il tema, e con una ragione in più: una
+/// preferenza di accessibilità è precisamente quella che deve ritrovarsi
+/// identica su un altro computer, e l'unico meccanismo che la porta là è il
+/// backup — più la riga nel catalogo del profilo.
+#[tauri::command]
+pub fn imposta_movimento_ridotto(
+    app: tauri::AppHandle,
+    stato: State<'_, Stato>,
+    ridotto: bool,
+) -> Esito<()> {
+    crate::nuvola::se_riuscito(
+        &app,
+        con_libreria(&stato, |libreria| {
+            aether_app::preferenze::imposta_movimento_ridotto(&libreria.connection, ridotto)
         })
         .map_err(errore),
     )
@@ -768,87 +820,56 @@ pub fn imposta_scorciatoie(
     )
 }
 
-/// Scrive il profilo su un file.
-///
-/// `(async)`: il percorso lo sceglie chi esporta, e una chiavetta o una
-/// cartella di rete sono i due posti più naturali in cui mettere un profilo da
-/// portarsi altrove. Sul filo principale una scrittura là sopra sarebbe la
-/// finestra ferma per tutto il tempo del salvataggio.
-#[tauri::command(async)]
-pub fn profilo_esporta(
-    stato: State<'_, Stato>,
-    percorso: String,
-) -> Esito<aether_app::profilo::Esportazione> {
-    let esito = (|| {
-        let profilo = con_libreria(&stato, |libreria| {
-            aether_app::profilo::esporta(&libreria.connection, adesso_ms())
-        })?;
-        std::fs::write(&percorso, profilo.json.as_bytes()).map_err(|err| {
-            AppError::new(aether_domain::errors::ErrorCode::FsWriteFailed {
-                path: percorso.clone(),
-                detail: Some(err.kind().to_string()),
-            })
-            .with_cause(err.to_string())
-        })?;
-        Ok(profilo)
-    })();
-    esito.map_err(errore)
+/// Com'era rimasto il pannello «Cartelle».
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatoUiCartelle {
+    /// I nodi aperti, dal meno recente al più recente.
+    pub aperte: Vec<String>,
+    /// Il nodo su cui stava il fuoco, se ce n'era uno.
+    pub scelta: Option<String>,
 }
 
-/// Cosa cambierebbe importare questo profilo. Non scrive niente.
+/// Com'era rimasto il pannello «Cartelle»: i nodi aperti e quello col fuoco.
 ///
-/// `(async)`: legge il file dal percorso scelto, con la stessa ragione di
-/// [`profilo_esporta`].
-#[tauri::command(async)]
-pub fn profilo_piano(
-    stato: State<'_, Stato>,
-    percorso: String,
-) -> Esito<aether_app::profilo::Piano> {
-    let esito = (|| {
-        let json = leggi_profilo(&percorso)?;
-        con_libreria(&stato, |libreria| {
-            aether_app::profilo::piano(&libreria.connection, &json, &esiste)
-        })
-    })();
-    esito.map_err(errore)
-}
-
-/// Applica il profilo.
+/// # Perché un comando suo e non un campo di [`Avvio`]
 ///
-/// `(async)`: rilegge il file, come [`profilo_piano`].
-#[tauri::command(async)]
-pub fn profilo_importa(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    percorso: String,
-) -> Esito<aether_app::profilo::Piano> {
-    let esito = (|| {
-        let json = leggi_profilo(&percorso)?;
-        con_libreria(&stato, |libreria| {
-            aether_app::profilo::importa(&mut libreria.connection, &json, &esiste)
+/// Perché chi non apre mai quel pannello non deve pagarlo, ed è la stessa
+/// regola con cui `cartelle::IndiceCartelle` costruisce l'albero alla prima
+/// domanda invece che all'avvio. Due letture di `settings` sono poca cosa, ma
+/// `Avvio` è la struttura che ogni avvio riempie **sempre**: quel che ci entra
+/// smette di essere facoltativo, e il modo di tenerla parsimoniosa è non
+/// mettercelo.
+#[tauri::command]
+pub fn cartelle_ui(stato: State<'_, Stato>) -> Esito<StatoUiCartelle> {
+    con_libreria(&stato, |libreria| {
+        Ok(StatoUiCartelle {
+            aperte: aether_app::preferenze::cartelle_aperte(&libreria.connection)?,
+            scelta: aether_app::preferenze::cartella_scelta(&libreria.connection)?,
         })
-    })();
-    crate::nuvola::se_riuscito(&app, esito.map_err(errore))
-}
-
-/// Legge il file del profilo, nominandolo se non si apre.
-fn leggi_profilo(percorso: &str) -> Result<String, AppError> {
-    std::fs::read_to_string(percorso).map_err(|err| {
-        AppError::new(aether_domain::errors::ErrorCode::FsReadFailed {
-            path: percorso.to_owned(),
-            detail: Some(err.kind().to_string()),
-        })
-        .with_cause(err.to_string())
     })
+    .map_err(errore)
 }
 
-/// Questo percorso esiste su questo computer?
+/// Scrive com'è rimasto il pannello «Cartelle».
 ///
-/// Il modulo del profilo non guarda il disco da sé — la si passa come funzione,
-/// così le sue prove girano senza avere le cartelle di nessuno. Qui il disco
-/// c'è, ed è questa riga.
-fn esiste(percorso: &str) -> bool {
-    std::path::Path::new(percorso).exists()
+/// # Perché non passa da `nuvola::se_riuscito`
+///
+/// Perché sono percorsi di *questa* macchina — vedi il preambolo di
+/// `aether_app::preferenze` — e una passata di backup vale quel che porta
+/// altrove. Farla partire a ogni nodo aperto vorrebbe dire svegliare la rete
+/// per un dato che sull'altro computer non si può nemmeno usare.
+#[tauri::command]
+pub fn imposta_cartelle_ui(
+    stato: State<'_, Stato>,
+    aperte: Vec<String>,
+    scelta: String,
+) -> Esito<()> {
+    con_libreria(&stato, |libreria| {
+        aether_app::preferenze::imposta_cartelle_aperte(&libreria.connection, &aperte)?;
+        aether_app::preferenze::imposta_cartella_scelta(&libreria.connection, &scelta)
+    })
+    .map_err(errore)
 }
 
 /// Quanti brani sta in un ripiano della Home.

@@ -9,17 +9,30 @@
  * posto, guardare la copertina grande e passare agli Album sono due gesti
  * indipendenti, e nessuno dei due annulla l'altro.
  *
- * # Il velo è piatto, e non è un dettaglio
+ * # Lo scrim è piatto, e non è un dettaglio
  *
  * Dietro c'è l'ambiente: due sfumature radiali che prendono il colore dalla
  * copertina. Sopra c'è `np-scrim`, che **non** è colorato — è un nero verticale
  * dal 42% all'80%, scritto con `--surface-0-rgb` così che una skin chiara ne
  * ottenga uno bianco.
  *
- * Sono due strati e non uno perché fare del velo una versione più scura della
- * tinta vorrebbe dire che il testo sta sopra un colore imprevedibile: con una
- * copertina gialla il titolo si leggerebbe su giallo scuro, che è ancora giallo.
- * Con due strati il testo sta sopra un velo neutro, e la tinta si vede intorno.
+ * Sono due strati e non uno perché fare dello scrim una versione più scura
+ * della tinta vorrebbe dire che il testo sta sopra un colore imprevedibile: con
+ * una copertina gialla il titolo si leggerebbe su giallo scuro, che è ancora
+ * giallo. Con due strati il testo sta sopra un nero neutro, e la tinta si vede
+ * intorno.
+ *
+ * # E si chiama `np-scrim`, non «velo»
+ *
+ * Le ha portate tutte e due, e per un po' non è costato niente. Poi `.velo` ha
+ * preso lo strato che gli spetta — un velo è la superficie che prende il clic
+ * per chiudere, e deve stare davanti a quel che chiude — e questo, che non
+ * chiude niente, si è ritrovato davanti alla schermata: slavata dal suo stesso
+ * gradiente e sorda a ogni clic, e senza una riga nei log, perché un
+ * `aria-hidden` senza gestori che intercetta tutto non ha niente da raccontare.
+ *
+ * Il nome che resta è quello del registro delle skin: dice cos'è a chi
+ * ridipinge, e non promette niente a chi clicca.
  *
  * # Dove stanno le cose, e perché dipende
  *
@@ -145,13 +158,16 @@ export function InRiproduzione({
   return (
     <section
       className="np-screen in-riproduzione"
+      // L'ancora del giro guidato: la schermata intera, che è quel che il
+      // passo racconta — copertina, spettro e testo nello stesso posto.
+      data-giro="in-riproduzione"
       aria-label={t("column.aria")}
     >
       <div className="ambiente ambient-backdrop" aria-hidden="true">
         <Sfocata hash={brano.coverArtHash} classe="tinta" />
       </div>
-      <div className="velo np-scrim" aria-hidden="true" />
-      {/* La scena sta **sopra** il velo e sotto tutto il resto: sotto il velo
+      <div className="np-scrim" aria-hidden="true" />
+      {/* La scena sta **sopra** lo scrim e sotto tutto il resto: sotto di lui
           sarebbe schiacciata dal nero verticale che rende leggibile il titolo,
           e sopra il testo lo coprirebbe. Montata solo quando lo spettro è
           acceso: spenta non costa né una texture né un fotogramma, e nemmeno la

@@ -328,6 +328,7 @@ function Riga({
           <div
             className="barra"
             role="progressbar"
+            aria-label={t("imports.row.progress", { titolo: riga.titolo })}
             aria-valuenow={percento}
             aria-valuemin={0}
             aria-valuemax={100}
@@ -496,6 +497,11 @@ function DaComprareSezione({ quanti }: { quanti: number }) {
                         key={negozio}
                         type="button"
                         className="bottone minuto btn-ghost"
+                        /* Il nome del negozio è tutto quel che si legge sul
+                           tasto, e su duecento righe sono seicento tasti che si
+                           chiamano alla stessa maniera: l'etichetta dice anche
+                           che cosa si va a cercare. */
+                        aria-label={t("buy.searchOn", { cosa, negozio })}
                         onClick={() =>
                           void ipc.cercaDoveComprare(negozio, cosa)
                         }
@@ -595,6 +601,7 @@ export function SchermataImportazioni({
               <div
                 className="barra"
                 role="progressbar"
+                aria-label={t("imports.state.progress")}
                 aria-valuenow={fatti}
                 aria-valuemin={0}
                 aria-valuemax={totale}

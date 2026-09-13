@@ -15,6 +15,12 @@
 //! 2. [`contenuto`] costruisce il documento da pubblicare. Sola lettura.
 //! 3. [`applica`] scrive quel che la fusione ha deciso.
 //!
+//! La terza è in due pezzi, e non è una quarta funzione: [`applica_in`] fa le
+//! scritture dentro una transazione **già aperta**, e [`applica`] è l'involucro
+//! che quella transazione la apre e la chiude. Serve al profilo, che deve poter
+//! eseguire le stesse scritture dentro un punto di salvataggio e abbandonarlo
+//! per mostrare un piano — vedi il `//!` di [`crate::profilo`].
+//!
 //! Fra la seconda e la terza c'è la rete, e il lucchetto della libreria **non**
 //! ci sta attorno. È la stessa disciplina che `nuvola.rs` documenta da tempo, e
 //! la ragione per cui queste sono tre funzioni invece di una.
@@ -801,23 +807,50 @@ pub fn applica(
         .transaction()
         .map_err(|err| db_error("apertura della sincronia", &err))?;
 
-    let mut cambiamenti = Cambiamenti {
-        ascolti: applica_ascolti(&tx, fuso)?,
-        voti: applica_voti(&tx, fuso)?,
-        preferiti: applica_preferiti(&tx, fuso)?,
-        posizioni: applica_posizioni(&tx, fuso)?,
-        ..Cambiamenti::default()
-    };
-    applica_ultimi(&tx, fuso)?;
-    applica_lapidi(&tx, fuso)?;
-    cambiamenti.playlist_tolte = togli_playlist(&tx, fuso)?;
-    cambiamenti.playlist = applica_playlist(&tx, fuso)?;
-    cambiamenti.cartelle = applica_cartelle(&tx, fuso)?;
-    applica_skin(&tx, fuso)?;
-    cambiamenti.dispositivi = applica_dispositivi(&tx, fuso, adesso_ms)?;
+    let cambiamenti = applica_in(&tx, fuso, adesso_ms)?;
 
     tx.commit()
         .map_err(|err| db_error("chiusura della sincronia", &err))?;
+    Ok(cambiamenti)
+}
+
+/// Le stesse scritture di [`applica`], dentro una transazione già aperta.
+///
+/// # Perché esiste, e chi la usa
+///
+/// La sincronia non ne aveva bisogno: apre la sua transazione, scrive, chiude.
+/// Il **profilo** sì. Un profilo importato mostra prima un piano — «cosa
+/// cambierebbe» — e la regola di questo programma è che il piano non sia una
+/// previsione scritta altrove ma *l'esecuzione annullata*: si esegue davvero,
+/// dentro un punto di salvataggio, e lo si abbandona. Perché quella regola
+/// resti vera anche per la parte di libreria del profilo, le scritture devono
+/// poter girare dentro una transazione che decide **chi le chiama** se
+/// confermare o buttare.
+///
+/// [`applica`] resta l'involucro di sempre, e chi sincronizza non cambia riga.
+///
+/// # Errori
+///
+/// `db.queryFailed` se una scrittura fallisce.
+pub fn applica_in(
+    tx: &Transaction<'_>,
+    fuso: &Fuso,
+    adesso_ms: i64,
+) -> Result<Cambiamenti, AppError> {
+    let mut cambiamenti = Cambiamenti {
+        ascolti: applica_ascolti(tx, fuso)?,
+        voti: applica_voti(tx, fuso)?,
+        preferiti: applica_preferiti(tx, fuso)?,
+        posizioni: applica_posizioni(tx, fuso)?,
+        ..Cambiamenti::default()
+    };
+    applica_ultimi(tx, fuso)?;
+    applica_lapidi(tx, fuso)?;
+    cambiamenti.playlist_tolte = togli_playlist(tx, fuso)?;
+    cambiamenti.playlist = applica_playlist(tx, fuso)?;
+    cambiamenti.cartelle = applica_cartelle(tx, fuso)?;
+    applica_skin(tx, fuso)?;
+    cambiamenti.dispositivi = applica_dispositivi(tx, fuso, adesso_ms)?;
     Ok(cambiamenti)
 }
 

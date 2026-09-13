@@ -74,6 +74,20 @@ pub const CHIAVE_SPETTRO_VISIBILE: &str = "player.spectrum.visible";
 /// deliberata l'omissione sta in fondo a quel file.
 pub const CHIAVE_SPETTRO_QUALITA: &str = "player.spectrum.quality";
 
+/// La chiave con cui sta se i dati tecnici del file si mostrano.
+///
+/// Di serie **accesa**, al contrario dello spettro: quella riga non costa né
+/// una GPU né un filo — è una query su una riga sola, fatta quando il brano
+/// cambia — e chi apre «In riproduzione» ha il diritto di sapere cosa sta
+/// sentendo senza prima scoprire che esiste un interruttore. Assente vuol dire
+/// accesa, come per `aggiornamenti.attivo`: scrivere `true` al primo avvio
+/// vorrebbe dire una riga in `settings` per non dire niente di nuovo.
+///
+/// Viaggia nel profilo, accanto a [`CHIAVE_SPETTRO_VISIBILE`] e per la stessa
+/// ragione: «voglio leggere com'è fatto il file» è un gusto di chi ascolta, non
+/// un fatto di questa macchina, e resta vero su qualunque computer.
+pub const CHIAVE_FORMATO_VISIBILE: &str = "player.fileFormat.visible";
+
 /// Quel che il database sa di un brano da suonare.
 ///
 /// # Perché è un tipo e non tre variabili dentro una funzione
@@ -582,6 +596,68 @@ pub fn load_crossfade(connection: &Connection) -> Result<u64, AppError> {
     )
 }
 
+// ── quanto il suono esce dopo ───────────────────────────────────────────────
+
+/// Di quanti millisecondi la catena d'uscita ritarda il suono, dichiarati a mano.
+///
+/// # Perché `audio.` e non `player.`
+///
+/// Perché non descrive il lettore: descrive **questa uscita su questo computer**.
+/// Le chiavi `player.*` sono scelte di chi ascolta — il volume, la curva, se
+/// l'autoplay continua — e viaggiano nel profilo; questa è una proprietà del
+/// cavo, del driver e del DAC che ci sono attaccati, e cambia quando cambia
+/// l'hardware, non quando cambia il gusto.
+pub const CHIAVE_LATENZA: &str = "audio.latenza_ms";
+
+/// Il massimo che si può dichiarare, in valore assoluto.
+///
+/// Mezzo secondo. Non è un limite tecnico — una catena Bluetooth scadente ci
+/// arriva — è il limite oltre il quale la compensazione smette di correggere e
+/// diventa un'altra cosa: a mezzo secondo il cursore sta già mezzo pollice dietro
+/// la musica, e chi continuasse ad alzare sarebbe uno che sta cercando di
+/// risolvere un problema diverso.
+///
+/// Si applica **ai due versi**: negativo anticipa la posizione raccontata, ed è
+/// il verso che serve a chi trova che i testi arrivino tardi comunque.
+pub const LATENZA_MASSIMA_MS: i64 = 500;
+
+/// Riporta i millisecondi dentro il consentito.
+fn sana_latenza(ms: i64) -> i64 {
+    ms.clamp(-LATENZA_MASSIMA_MS, LATENZA_MASSIMA_MS)
+}
+
+/// Conserva la latenza d'uscita dichiarata a mano, in millisecondi.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn save_latenza(connection: &Connection, ms: i64) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_LATENZA, &sana_latenza(ms))
+}
+
+/// Legge la latenza dichiarata. Assente vale **zero**.
+///
+/// Zero di serie, e non una stima: una correzione che nessuno ha chiesto
+/// sposterebbe il cursore di tutti per sistemare l'uscita di qualcuno. Il pezzo
+/// di catena che si può misurare lo misura già il motore
+/// (`aether_play::uscita::annota_latenza`); questo numero esiste per il pezzo che
+/// nessuno misura, e chi lo tocca lo fa guardando l'effetto.
+///
+/// Un valore fuori scala si stringe **in lettura** oltre che in scrittura: questa
+/// riga può arrivare da un database scritto a mano o da un backup, e un numero
+/// assurdo non deve poter spostare la posizione di mezz'ora.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn load_latenza(connection: &Connection) -> Result<i64, AppError> {
+    Ok(
+        crate::settings::read_json::<i64>(connection, CHIAVE_LATENZA)?
+            .map(sana_latenza)
+            .unwrap_or(0),
+    )
+}
+
 // ── da quale scheda esce il suono ───────────────────────────────────────────
 
 /// Il nome dell'uscita audio scelta a mano. Assente: quella di sistema.
@@ -777,6 +853,38 @@ pub fn load_spettro_qualita(connection: &Connection) -> Result<Qualita, AppError
         crate::settings::read_json::<Qualita>(connection, CHIAVE_SPETTRO_QUALITA)?
             .unwrap_or(Qualita::Auto),
     )
+}
+
+// ── i dati tecnici del file: se si mostrano ─────────────────────────────────
+
+/// Conserva se i dati tecnici del file si mostrano.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn save_formato_visibile(connection: &Connection, acceso: bool) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_FORMATO_VISIBILE, &acceso)
+}
+
+/// Rilegge se i dati tecnici del file si mostrano. Mai scelta, è accesa.
+///
+/// # Perché il valore di serie è l'opposto di quello dello spettro
+///
+/// Perché il costo è l'opposto. Una scena WebGL che si accende da sola su un
+/// valore illeggibile costa una GPU a chi non l'aveva chiesta, e lì «assente
+/// vale spento» è la più conservativa delle due risposte. Qui la riga costa una
+/// `SELECT` su quattro colonne di una riga sola, una volta per cambio di brano:
+/// il danno di un'accensione indesiderata è una riga di testo in più, e il
+/// danno di uno spegnimento indesiderato è che la funzione non esiste per chi
+/// non sa di doverla cercare.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde. Un valore illeggibile vale
+/// come assente, cioè acceso: la stessa regola del resto del modulo, applicata
+/// al valore di serie che questa chiave ha.
+pub fn load_formato_visibile(connection: &Connection) -> Result<bool, AppError> {
+    Ok(crate::settings::read_json::<bool>(connection, CHIAVE_FORMATO_VISIBILE)?.unwrap_or(true))
 }
 
 // ── l'equalizzatore ─────────────────────────────────────────────────────────
@@ -1352,6 +1460,39 @@ mod prove {
     }
 
     #[test]
+    fn il_formato_parte_acceso() {
+        // L'opposto dello spettro, e la prova esiste per tenere l'asimmetria
+        // deliberata invece che accidentale: due chiavi vicine con due valori
+        // di serie diversi sono esattamente il posto in cui un
+        // copia-e-incolla mette `unwrap_or(false)` anche qui.
+        let c = db();
+        assert!(load_formato_visibile(&c).expect("riletta"));
+    }
+
+    #[test]
+    fn il_formato_scelto_si_rilegge() {
+        // Spento **e** riacceso: con il valore di serie acceso, una prova che
+        // scrive solo `true` passerebbe anche se la scrittura non funzionasse
+        // affatto. Lo spegnimento è l'unico che distingue le due cose, e la
+        // riaccensione verifica che non sia un viaggio senza ritorno.
+        let c = db();
+        save_formato_visibile(&c, false).expect("scritta");
+        assert!(!load_formato_visibile(&c).expect("riletta"));
+        save_formato_visibile(&c, true).expect("scritta");
+        assert!(load_formato_visibile(&c).expect("riletta"));
+    }
+
+    #[test]
+    fn un_formato_illeggibile_resta_visibile() {
+        // Un valore che non si interpreta vale come assente, e assente qui è
+        // acceso: è la regola del modulo, e il caso conservativo è l'opposto di
+        // quello dello spettro perché il costo è una riga di testo, non una GPU.
+        let c = db();
+        crate::settings::write(&c, CHIAVE_FORMATO_VISIBILE, "{non è json").expect("scritta");
+        assert!(load_formato_visibile(&c).expect("riletta"));
+    }
+
+    #[test]
     fn una_qualita_mai_scelta_e_automatica() {
         let c = db();
         assert_eq!(load_spettro_qualita(&c).expect("riletta"), Qualita::Auto);
@@ -1433,6 +1574,48 @@ mod prove {
         let c = db();
         crate::settings::write(&c, CHIAVE_CROSSFADE, "{non è json").expect("scritta");
         assert_eq!(load_crossfade(&c).expect("riletta"), 0);
+    }
+
+    #[test]
+    fn una_latenza_mai_scelta_e_zero() {
+        let c = db();
+        assert_eq!(load_latenza(&c).expect("riletta"), 0);
+    }
+
+    #[test]
+    fn la_latenza_resta_scritta_nei_due_versi() {
+        let c = db();
+        save_latenza(&c, 120).expect("scritta");
+        assert_eq!(load_latenza(&c).expect("riletta"), 120);
+        // Il verso negativo non è un caso limite: è la correzione di chi trova
+        // che i testi arrivino tardi comunque.
+        save_latenza(&c, -80).expect("scritta");
+        assert_eq!(load_latenza(&c).expect("riletta"), -80);
+    }
+
+    #[test]
+    fn una_latenza_fuori_scala_si_taglia_dai_due_lati() {
+        let c = db();
+        save_latenza(&c, 5_000).expect("scritta");
+        assert_eq!(load_latenza(&c).expect("riletta"), LATENZA_MASSIMA_MS);
+        save_latenza(&c, -5_000).expect("scritta");
+        assert_eq!(load_latenza(&c).expect("riletta"), -LATENZA_MASSIMA_MS);
+    }
+
+    #[test]
+    fn una_latenza_scritta_a_mano_fuori_scala_si_taglia_in_lettura() {
+        // Questa riga può arrivare da un backup o da un database ritoccato a
+        // mano: un'ora di compensazione non deve poter entrare nel motore.
+        let c = db();
+        crate::settings::write(&c, CHIAVE_LATENZA, "3600000").expect("scritta");
+        assert_eq!(load_latenza(&c).expect("riletta"), LATENZA_MASSIMA_MS);
+    }
+
+    #[test]
+    fn una_latenza_illeggibile_non_impedisce_l_avvio() {
+        let c = db();
+        crate::settings::write(&c, CHIAVE_LATENZA, "{non è json").expect("scritta");
+        assert_eq!(load_latenza(&c).expect("riletta"), 0);
     }
 
     #[test]

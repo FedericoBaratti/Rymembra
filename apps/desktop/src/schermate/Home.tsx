@@ -47,7 +47,7 @@
  * momento in cui l'applicazione ha già tutto il resto da fare.
  */
 import { Copertina } from "../Copertina";
-import { brani_, durata, titoloAlbum } from "../formato";
+import { brani_, durata, nomeArtista, titoloAlbum } from "../formato";
 import type { Album, Brano, Casa, Raccolta } from "../ipc";
 import { t } from "../lingue";
 import { Icona } from "../parti/Icone";
@@ -100,11 +100,11 @@ function Scheda({
       className="scheda-brano list-row"
       onClick={onSuona}
       onContextMenu={(e) => onMenu(e, brano)}
-      title={`${brano.title} — ${brano.artist}`}
+      title={`${brano.title} — ${nomeArtista(brano.artist)}`}
     >
-      <Copertina hash={brano.coverArtHash} titolo={brano.album} />
+      <Copertina hash={brano.coverArtHash} titolo={titoloAlbum(brano.album)} />
       <span className="titolo">{brano.title}</span>
-      <span className="artista">{brano.artist}</span>
+      <span className="artista">{nomeArtista(brano.artist)}</span>
     </button>
   );
 }
@@ -178,7 +178,7 @@ function SchedaAlbum({
       className="scheda list-row"
       onClick={() => onApri(album)}
       onContextMenu={(e) => onMenu(e, album)}
-      title={`${titolo} — ${album.artist}`}
+      title={`${titolo} — ${nomeArtista(album.artist)}`}
     >
       <Copertina hash={album.coverArtHash} titolo={titolo} />
       <div className="titolo">{titolo}</div>
@@ -314,7 +314,14 @@ function RipianoSettimana({
               })}
             </span>
             {!raccolta.aperta && (
-              <span className="pallino" aria-label={t("home.week.new")} />
+              <span
+                className="pallino"
+                /* `role="img"`, perché un `aria-label` su uno `span` nudo
+                   non arriva a nessuno: senza ruolo il nodo resta generico e
+                   l'etichetta si perde. Come `.lyric-breath` in `Testo.tsx`. */
+                role="img"
+                aria-label={t("home.week.new")}
+              />
             )}
           </button>
         ))}
@@ -447,11 +454,13 @@ export function Home({
           >
             <Copertina
               hash={casa.riprendi.coverArtHash}
-              titolo={casa.riprendi.album}
+              titolo={titoloAlbum(casa.riprendi.album)}
             />
             <span className="che-cosa">
               <span className="titolo">{casa.riprendi.title}</span>
-              <span className="artista">{casa.riprendi.artist}</span>
+              <span className="artista">
+                {nomeArtista(casa.riprendi.artist)}
+              </span>
             </span>
             {/* Il segno si mostra solo se vale la pena riprenderlo: sotto i
                 dieci secondi «riprendi» e «dall'inizio» sono la stessa cosa, e

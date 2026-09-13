@@ -8,6 +8,7 @@
  */
 import { useState } from "react";
 
+import { useFinestrella } from "./finestrella";
 import { brani_ } from "./formato";
 import { ipc, testoErrore, type Playlist } from "./ipc";
 import { t } from "./lingue";
@@ -26,6 +27,7 @@ export function AggiungiAPlaylist({
   const [nuova, setNuova] = useState("");
   const [errore, setErrore] = useState<string | null>(null);
   const [inCorso, setInCorso] = useState(false);
+  const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
 
   // Le automatiche non compaiono: la loro appartenenza la decidono le regole, e
   // un brano aggiunto a mano sparirebbe al primo ricalcolo. Il nucleo lo
@@ -62,6 +64,7 @@ export function AggiungiAPlaylist({
   return (
     <div className="velo scuro" onClick={onChiudi}>
       <div
+        ref={finestrella}
         className="finestrella stretta glass-modal"
         role="dialog"
         aria-modal="true"

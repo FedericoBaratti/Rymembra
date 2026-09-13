@@ -17,7 +17,7 @@
 
 use std::io::{Read, Seek};
 use std::ops::ControlFlow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::scan_plan::DiscoveredFile;
@@ -232,6 +232,172 @@ fn errore_di_rete(err: &std::io::Error) -> bool {
     aether_domain::errors::rete::e_di_rete(err)
 }
 
+/// Il percorso sta su una condivisione di rete?
+///
+/// # A cosa serve, e a cosa no
+///
+/// Serve al **messaggio**, non alla decisione. Un `true` cambia la frase che
+/// l'utente legge — «questa cartella sta su una condivisione, e il database lì
+/// non ce la fa» invece di «il disco ha rifiutato una lettura» — e nient'altro:
+/// niente si rifiuta e niente si sposta in base a questo `bool`.
+///
+/// E non potrebbe essere altrimenti, perché la risposta è **incompleta per
+/// costruzione**: riconosce un percorso UNC dalla sua forma, e non ha modo di
+/// sapere che `Z:\Musica` è una lettera mappata su `\\nas\musica`. Per saperlo
+/// servirebbe `GetDriveTypeW`, cioè `unsafe` — che la radice del workspace
+/// vieta con `forbid` — oppure una dipendenza nuova per leggere una lettera di
+/// unità. Un riconoscimento che sbaglia per difetto va bene per scegliere una
+/// frase; non andrebbe bene per decidere se aprire una libreria.
+///
+/// # Le forme riconosciute
+///
+/// - `\\server\condivisione\…`, e `//server/condivisione/…` con gli slash, che
+///   Windows accetta uguale;
+/// - `\\?\UNC\server\condivisione\…`, la stessa cosa in forma verbatim.
+///
+/// **Non** di rete: `C:\…`; `\\?\C:\…`, che è il prefisso scritto da
+/// [`percorso_lungo`] su un disco locale — prenderlo per un UNC vorrebbe dire
+/// che allungare un percorso locale lo fa diventare di rete; e `\\.\…`, che è
+/// lo spazio dei nomi dei dispositivi e non ha un server dietro.
+#[must_use]
+pub fn percorso_di_rete(path: &Path) -> bool {
+    // Su un percorso che non è UTF-8 non si risponde. Costa una frase meno
+    // precisa, e una frase meno precisa è meglio di un percorso ricostruito a
+    // tentoni per rispondere a una domanda che non decide niente.
+    let Some(testo) = path.to_str() else {
+        return false;
+    };
+    let separatore = |c: char| c == '\\' || c == '/';
+    let mut inizio = testo.chars();
+    if !matches!(inizio.next(), Some(c) if separatore(c))
+        || !matches!(inizio.next(), Some(c) if separatore(c))
+    {
+        return false;
+    }
+    // I due separatori sono ASCII: tagliare a due byte non spezza un carattere.
+    let resto = &testo[2..];
+    let mut marcatore = resto.chars();
+    match (marcatore.next(), marcatore.next()) {
+        // `\\?\…`: verbatim. Di rete solo nella forma `\\?\UNC\server\…`.
+        (Some('?'), Some(c)) if separatore(c) => {
+            let dopo = &resto[2..];
+            dopo.get(..3).is_some_and(|s| s.eq_ignore_ascii_case("UNC"))
+                && dopo.chars().nth(3).is_some_and(separatore)
+        }
+        // `\\.\PhysicalDrive0`: un dispositivo, non un server.
+        (Some('.'), Some(c)) if separatore(c) => false,
+        // Dopo due separatori, quel che resta è un nome di server.
+        _ => !resto.is_empty(),
+    }
+}
+
+/// Quanti caratteri bastano a mettersi al sicuro da `MAX_PATH`.
+///
+/// Windows taglia a 260 **compreso** il terminatore, e quei 260 sono il tetto
+/// del percorso intero: un nome di file lungo appeso a una cartella già
+/// profonda ci arriva senza che nessuno dei due sembri lungo da solo.
+/// Duecentoquaranta lascia venti caratteri di margine per il nome che si sta
+/// per appendere — `aether.db-wal` sono tredici — e sta abbastanza sopra i
+/// percorsi veri (un album annidato su una share ne usa centoventi) perché il
+/// ramo verbatim resti l'eccezione.
+///
+/// Si contano i **byte** di UTF-8 e non i caratteri, e la differenza è nella
+/// direzione giusta: `MAX_PATH` conta unità UTF-16, che per i nomi accentati
+/// sono meno dei byte UTF-8, quindi un percorso pieno di accenti supera la
+/// soglia un po' prima del necessario. Prefissare presto non costa niente;
+/// prefissare tardi costa il guasto che questa costante esiste per evitare.
+const SOGLIA_PERCORSO_LUNGO: usize = 240;
+
+/// Il percorso in forma verbatim (`\\?\`), quando è lungo e si può fare senza
+/// cambiargli significato.
+///
+/// Fuori da Windows, e sotto la soglia, restituisce il percorso com'era: è il
+/// caso normale, e deve costare una `to_path_buf` e nient'altro.
+///
+/// # Perché non basta appiccicare il prefisso
+///
+/// Perché `\\?\` **disattiva la normalizzazione** del sistema. Dentro un
+/// percorso verbatim lo slash non è più un separatore, `.` e `..` non si
+/// risolvono, i doppi separatori non si fondono, i punti e gli spazi in coda a
+/// un nome non si tagliano più, e la cartella di lavoro non si consulta. Un
+/// percorso che aveva bisogno di una di quelle cose, prefissato, **punta a un
+/// file diverso** da quello che si voleva aprire — e il guasto che ne viene non
+/// somiglia a «percorso troppo lungo», somiglia a «il file non c'è».
+///
+/// Quindi il prefisso si mette solo su un percorso che è già assoluto e già
+/// canonico, e in ogni altro caso si restituisce il percorso intatto. Rinunciare
+/// lascia un errore su un percorso lungo, che è il guasto che c'era prima;
+/// sbagliare ne introdurrebbe uno su un percorso che funzionava.
+///
+/// **Non si canonicalizza per riuscirci.** `std::fs::canonicalize` tocca il
+/// disco, e su una share morta è esattamente la chiamata che non torna — cioè
+/// il guasto che tutto il resto di questo modulo è costruito per evitare.
+#[must_use]
+pub fn percorso_lungo(path: &Path) -> PathBuf {
+    // `cfg!` e non `#[cfg]`: il corpo si compila su ogni piattaforma, così le
+    // prove di `con_prefisso_verbatim` girano anche dove Windows non c'è.
+    if cfg!(windows)
+        && let Some(verbatim) = path.to_str().and_then(con_prefisso_verbatim)
+    {
+        return PathBuf::from(verbatim);
+    }
+    path.to_path_buf()
+}
+
+/// La decisione di [`percorso_lungo`], senza il filesystem e senza la
+/// piattaforma: `None` vuol dire «lascialo com'è».
+///
+/// Separata perché è l'unica parte che può sbagliare, ed è provabile ovunque.
+fn con_prefisso_verbatim(testo: &str) -> Option<String> {
+    if testo.len() < SOGLIA_PERCORSO_LUNGO {
+        return None;
+    }
+    // Gli slash: verbatim non li riconosce come separatori, e un `C:/a/b`
+    // prefissato diventa un unico nome di file con degli slash dentro.
+    if testo.contains('/') {
+        return None;
+    }
+    // Già verbatim, o nello spazio dei nomi dei dispositivi: non si prefissa
+    // due volte e non si prefissa un dispositivo.
+    if testo.starts_with(r"\\?\") || testo.starts_with(r"\\.\") {
+        return None;
+    }
+    let unc = testo.starts_with(r"\\");
+    if !unc && !lettera_di_unita(testo) {
+        return None;
+    }
+    // I segmenti, saltando i due vuoti che il doppio separatore iniziale di un
+    // UNC produce. Per la forma con lettera di unità il primo segmento è `C:`,
+    // che passa i controlli come tutti gli altri.
+    for segmento in testo.split('\\').skip(if unc { 2 } else { 0 }) {
+        // Vuoto: un doppio separatore in mezzo, che il sistema fonderebbe e
+        // verbatim no. `.` e `..`: un percorso relativo travestito da assoluto.
+        if segmento.is_empty() || segmento == "." || segmento == ".." {
+            return None;
+        }
+        // Punto o spazio in coda: il sistema li taglia, verbatim li tiene, e il
+        // nome che ne esce non è più il nome del file che c'è sul disco.
+        if segmento.ends_with('.') || segmento.ends_with(' ') {
+            return None;
+        }
+    }
+    Some(if unc {
+        // `\\server\cond` → `\\?\UNC\server\cond`: si mangia **uno** dei due
+        // separatori iniziali, perché `UNC` prende il posto del primo.
+        format!(r"\\?\UNC{}", &testo[1..])
+    } else {
+        format!(r"\\?\{testo}")
+    })
+}
+
+/// Il percorso comincia con `X:\`?
+fn lettera_di_unita(testo: &str) -> bool {
+    let mut caratteri = testo.chars();
+    matches!(caratteri.next(), Some(c) if c.is_ascii_alphabetic())
+        && matches!(caratteri.next(), Some(':'))
+        && matches!(caratteri.next(), Some('\\'))
+}
+
 /// I file musicali sul filesystem locale.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LocalFiles;
@@ -299,7 +465,13 @@ impl MusicFiles for LocalFiles {
     }
 
     fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send + Sync>, AppError> {
-        let file = std::fs::File::open(Path::new(path)).map_err(|err| io_error(path, &err))?;
+        // `percorso_lungo` e non `Path::new` nudo: un album annidato su una
+        // share può sfondare i 260 caratteri di `MAX_PATH`, e da lì l'apertura
+        // fallisce con «nome del file non valido» su un file che esiste. Il
+        // percorso dell'errore resta quello originale — è quello che l'utente
+        // riconosce, e un prefisso `\\?\` in un avviso non spiega niente a nessuno.
+        let file = std::fs::File::open(percorso_lungo(Path::new(path)))
+            .map_err(|err| io_error(path, &err))?;
         Ok(Box::new(std::io::BufReader::with_capacity(
             BUFFER_LETTURA,
             file,
@@ -317,7 +489,7 @@ impl MusicFiles for LocalFiles {
         // secondi non è una radice da cui si possa concludere che dei brani sono
         // spariti.
         crate::scadenza::con_scadenza(SONDA_RADICE_NOME, SONDA_RADICE, move || {
-            std::fs::metadata(Path::new(&percorso)).is_ok()
+            std::fs::metadata(percorso_lungo(Path::new(&percorso))).is_ok()
         })
         .unwrap_or(false)
     }
@@ -530,6 +702,125 @@ mod tests {
             ancora.file.first().map(|f| f.modified_ms),
             Some(file.modified_ms)
         );
+    }
+
+    #[test]
+    fn un_percorso_unc_si_riconosce() {
+        // Le tre forme che si vedono davvero: quella normale, quella con gli
+        // slash (che Windows accetta, e che i percorsi scritti a mano dentro
+        // questo repository usano) e quella verbatim.
+        assert!(percorso_di_rete(Path::new(r"\\nas\musica\Album\a.flac")));
+        assert!(percorso_di_rete(Path::new("//nas/musica/Album/a.flac")));
+        assert!(percorso_di_rete(Path::new(r"\\?\UNC\nas\musica\a.flac")));
+        // Minuscolo uguale: il prefisso verbatim non è sensibile al caso, e un
+        // percorso che arriva da un file di configurazione può averlo scritto
+        // come gli pare.
+        assert!(percorso_di_rete(Path::new(r"\\?\unc\nas\musica")));
+        // Il solo nome del server, senza condivisione: è già di rete, e la
+        // frase da mostrare è la stessa.
+        assert!(percorso_di_rete(Path::new(r"\\nas")));
+    }
+
+    #[test]
+    fn un_percorso_locale_non_e_di_rete() {
+        assert!(!percorso_di_rete(Path::new(r"C:\Users\tizio\Musica")));
+        assert!(!percorso_di_rete(Path::new("/home/tizio/musica")));
+        assert!(!percorso_di_rete(Path::new("Musica/a.flac")));
+        // Il prefisso che `percorso_lungo` scrive su un disco locale: se questo
+        // passasse per UNC, allungare un percorso lo farebbe diventare di rete,
+        // e il messaggio parlerebbe di condivisioni a chi non ne ha.
+        assert!(!percorso_di_rete(Path::new(r"\\?\C:\Users\tizio\Musica")));
+        // Lo spazio dei nomi dei dispositivi: due separatori in testa e nessun
+        // server dietro.
+        assert!(!percorso_di_rete(Path::new(r"\\.\PhysicalDrive0")));
+        // E una lettera mappata resta **non** riconosciuta, che è il limite
+        // dichiarato nella documentazione della funzione: se un giorno
+        // qualcuno la facesse rispondere `true` a tentoni, questa riga cade e
+        // lo si vede prima di spedirlo.
+        assert!(!percorso_di_rete(Path::new(r"Z:\Musica")));
+    }
+
+    #[test]
+    fn percorso_lungo_non_tocca_i_corti() {
+        // Il caso normale, che è tutti i casi tranne uno: il percorso torna
+        // identico, e nessun `\\?\` va a finire dentro un nome salvato in
+        // database o mostrato in un avviso.
+        for corto in [
+            r"C:\Users\tizio\Musica\Album\a.flac",
+            r"\\nas\musica\a.flac",
+            "/home/tizio/musica/a.flac",
+            "a.flac",
+        ] {
+            assert_eq!(
+                percorso_lungo(Path::new(corto)),
+                PathBuf::from(corto),
+                "«{corto}» non è lungo e non va toccato"
+            );
+        }
+        // E la decisione pura dice la stessa cosa, anche dove Windows non c'è.
+        assert_eq!(con_prefisso_verbatim(r"C:\Musica\a.flac"), None);
+    }
+
+    #[test]
+    fn percorso_lungo_prefissa_solo_quel_che_resta_se_stesso() {
+        // Trenta cartelle annidate, senza separatore in coda: duecentosessanta
+        // e passa caratteri, che è il caso vero di un album dentro un box set
+        // dentro una discografia su una share.
+        let lungo = vec!["cartella"; 30].join("\\");
+
+        // Oltre la soglia e già canonico: il prefisso si mette.
+        let profondo = format!(r"C:\Musica\{lungo}\a.flac");
+        assert!(profondo.len() > SOGLIA_PERCORSO_LUNGO);
+        assert_eq!(
+            con_prefisso_verbatim(&profondo),
+            Some(format!(r"\\?\{profondo}"))
+        );
+
+        // UNC: `UNC` prende il posto di **uno** dei due separatori iniziali. Se
+        // se li mangiasse entrambi, o nessuno, il percorso non si aprirebbe.
+        let condiviso = format!(r"\\nas\musica\{lungo}\a.flac");
+        assert_eq!(
+            con_prefisso_verbatim(&condiviso).as_deref(),
+            Some(format!(r"\\?\UNC\nas\musica\{lungo}\a.flac").as_str())
+        );
+
+        // E i cinque casi in cui si rinuncia, perché il prefisso cambierebbe il
+        // significato del percorso invece di allungarlo. Rinunciare lascia il
+        // guasto che c'era prima; sbagliare ne introduce uno nuovo su un
+        // percorso che funzionava.
+        let con_slash = lungo.replace('\\', "/");
+        for (percorso, motivo) in [
+            (
+                format!("C:/Musica/{con_slash}/a.flac"),
+                "gli slash non sono separatori dentro un verbatim",
+            ),
+            (
+                format!(r"C:\Musica\..\{lungo}\a.flac"),
+                "verbatim non risolve `..`",
+            ),
+            (
+                format!(r"Musica\{lungo}\a.flac"),
+                "un relativo non si risolve rispetto a niente",
+            ),
+            (
+                format!(r"C:\Musica\{lungo}\cartella.\a.flac"),
+                "il punto in coda, che il sistema taglia e verbatim tiene",
+            ),
+            (
+                format!(r"C:\Musica\{lungo}\\a.flac"),
+                "il doppio separatore, che il sistema fonde e verbatim no",
+            ),
+            (
+                format!(r"\\?\C:\Musica\{lungo}\a.flac"),
+                "è già verbatim, e non si prefissa due volte",
+            ),
+        ] {
+            assert_eq!(
+                con_prefisso_verbatim(&percorso),
+                None,
+                "si doveva rinunciare: {motivo}"
+            );
+        }
     }
 
     #[test]

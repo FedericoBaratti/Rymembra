@@ -21,8 +21,9 @@
  * comporre a mano, e mostrarlo senza chiederlo è quel che serve a non
  * sorprendere chi poi lo ritrova nella cartella delle skin.
  */
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
+import { useFinestrella } from "./finestrella";
 import type { VoceSkin } from "./ipc";
 import { idDa, type DatiTema } from "./studio/nuovo";
 import { t } from "./lingue";
@@ -61,19 +62,12 @@ export function NuovoTema({
     () =>
       baseIniziale ?? skin.find((s) => s.attiva)?.id ?? skin[0]?.id ?? "plain",
   );
-  const campo = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    campo.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const suTasto = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onChiudi();
-    };
-    window.addEventListener("keydown", suTasto);
-    return () => window.removeEventListener("keydown", suTasto);
-  }, [onChiudi]);
+  // Il fuoco sul campo del nome, la trappola del Tab, l'Escape e il ritorno
+  // del fuoco a chi l'aveva: sta in `finestrella.ts`. L'Escape che c'era qui
+  // ascoltava su `window`, quindi arrivava dopo la scala di `tastiera.ts` e le
+  // faceva consumare un livello di troppo; il fuoco sul campo lo prende ora
+  // l'hook, che il primo focalizzabile lo trova da sé.
+  const finestrella = useFinestrella<HTMLFormElement>(onChiudi);
 
   /** Le frecce girano dentro il gruppo, come nel segmentato. */
   const daTastiera = (e: React.KeyboardEvent, indice: number) => {
@@ -101,7 +95,10 @@ export function NuovoTema({
   return (
     <div className="velo scuro" onClick={onChiudi}>
       <form
+        ref={finestrella}
         className="finestrella nuovo-tema glass-modal"
+        role="dialog"
+        aria-modal="true"
         aria-label={t("newtheme.aria")}
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
@@ -125,7 +122,6 @@ export function NuovoTema({
           <label>
             {t("newtheme.name")}
             <input
-              ref={campo}
               className="campo field-input"
               value={nome}
               spellCheck={false}

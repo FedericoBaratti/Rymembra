@@ -1,6 +1,6 @@
 //! L'arricchimento dei metadati, dal lato della finestra.
 //!
-//! Tre comandi, due eventi e un filo di sottofondo. Le decisioni stanno in
+//! Quattro comandi, due eventi e un filo di sottofondo. Le decisioni stanno in
 //! `aether-domain`, le richieste in `aether-meta`, l'orchestrazione in
 //! `aether_app::enrich`: qui si tiene il tempo e si prende il lucchetto — le due
 //! cose che nessuno di quei tre sa fare, e le due che possono far impuntare la
@@ -17,30 +17,49 @@
 //!
 //! Le finestre sono: leggere un lotto di gruppi candidati, e riscrivere le righe
 //! di un gruppo appena deciso. Tutto quel che sta in mezzo — le ricerche su
-//! MusicBrainz, le copertine che scendono dal Cover Art Archive, i tag riscritti
-//! sui file — dura da secondi a minuti e avviene **senza nessun lucchetto**.
+//! MusicBrainz, le copertine che scendono dal Cover Art Archive e finiscono
+//! nello store — dura da secondi a minuti e avviene **senza nessun
+//! lucchetto**.
 //!
 //! Che sia vero non è affidato all'attenzione di chi legge: `aether-meta` non
 //! riceve mai una `rusqlite::Connection`, quindi il codice che terrebbe il
 //! lucchetto durante una richiesta di rete non si può nemmeno scrivere.
 //!
-//! # Perché l'interruttore e l'annullamento sono qui
+//! # Perché l'interruttore e il ritorno indietro sono qui
 //!
-//! Questo è l'unico filo di Aether che **scrive nei file dell'utente senza che
-//! nessuno guardi prima**. È una scelta deliberata — la revisione a mano
-//! trasformerebbe millequattrocento brani in millequattrocento decisioni, che
-//! nessuno prende — e regge su due garanzie, non su una:
+//! Fino alla 2.3.0 questo era l'unico filo di Aether che **scriveva nei file
+//! dell'utente senza che nessuno guardasse prima**, e questa nota argomentava
+//! perché fosse accettabile. Dalla 2.3.1 la domanda non si pone: quel che
+//! l'arricchimento decide finisce nelle righe di `tracks` e in
+//! `track_meta_arricchita`, e i file restano quelli che erano — nemmeno
+//! aperti. Il valore di serie dell'interruttore, acceso, è finalmente
+//! difendibile per la ragione più semplice che ci sia: **non c'è niente di
+//! irreversibile da difendere.**
+//!
+//! Restano due garanzie, e sono le stesse di prima lette in un'altra luce:
 //!
 //! * si scrive solo su verdetto `Applica`, e astenersi è il comportamento
 //!   normale (la ragione per esteso sta in testa a `aether_domain::enrich`);
-//! * ogni scrittura è annullabile, perché i tag di prima finiscono in
-//!   `enrich_undo` la prima volta che si tocca un file, e una volta sola.
+//! * quel che si scrive si dimentica con un clic, perché sta in una tabella e
+//!   non dentro migliaia di file: `aether_app::enrich::dimentica` la svuota e
+//!   rilegge i tag dai file, che sono intatti.
 //!
-//! Da qui i due comandi che sembrano accessori e non lo sono: [`arricchimento_attiva`]
-//! per spegnerlo e [`arricchimento_annulla`] per disfare. Un sistema che lavora
-//! da solo sui file di qualcun altro deve essere spegnibile e reversibile da un
-//! posto che quel qualcuno trova — e il posto sono le Impostazioni, accanto alle
-//! cartelle sorvegliate.
+//! Da qui i due comandi che sembrano accessori e non lo sono:
+//! [`arricchimento_attiva`] per spegnerlo e [`arricchimento_annulla`] per
+//! dimenticare. Un sistema che lavora da solo sulla libreria di qualcun altro
+//! deve essere spegnibile e reversibile da un posto che quel qualcuno trova —
+//! e il posto sono le Impostazioni, accanto alle cartelle sorvegliate.
+//!
+//! # Il terzo comando, che è un'uscita a termine
+//!
+//! [`arricchimento_riporta_nei_file`] è l'unica cosa in tutta Aether che
+//! riscriva ancora i tag dentro i file dell'utente, ed è lì solo per **disfare
+//! quel che hanno fatto le versioni passate**: le righe di `enrich_undo` che
+//! la 2.3.0 e prima di lei hanno lasciato in tabella. Non si può chiamare per
+//! sbaglio — è un comando a parte, con la sua etichetta che dice che scrive nei
+//! file — non ha un valore di serie, e il CHANGELOG dichiara che sparirà in una
+//! release futura, quando quelle righe non serviranno più a nessuno. È una via
+//! d'uscita a termine, non una funzione del programma.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -109,9 +128,9 @@ const RAFFICA: Duration = Duration::from_secs(2 * 60);
 /// Il filo si ferma quando il canale si chiude, cioè quando [`StatoArricchimento`]
 /// viene lasciato cadere insieme al resto dello stato dell'applicazione. Una
 /// passata interrotta a metà non lascia niente di scritto per metà: ogni gruppo
-/// si registra nella sua transazione, e i file si scrivono prima delle righe che
-/// li descrivono — quindi al massimo si perde il lavoro di rete già fatto sul
-/// gruppo in corso, che la passata dopo rifà.
+/// si registra nella sua transazione, e fuori dalle transazioni non si scrive
+/// più niente da nessuna parte — quindi al massimo si perde il lavoro di rete
+/// già fatto sul gruppo in corso, che la passata dopo rifà.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sveglia {
     /// Sono entrati brani nuovi: aspetta che la raffica finisca.
@@ -180,25 +199,34 @@ pub struct StatoArricchimentoIpc {
     pub senza_corrispondenza: i64,
     /// Quanti brani aspettano ancora il loro turno.
     pub da_fare: i64,
-    /// Quante scritture si possono ancora riportare indietro.
+    /// Quanti brani portano metadati messi dall'arricchimento.
     ///
     /// È il numero che decide se il pulsante «annulla» abbia senso: a zero non
-    /// c'è niente da disfare, e mostrarlo attivo prometterebbe qualcosa che non
-    /// succede.
+    /// c'è niente da dimenticare, e mostrarlo attivo prometterebbe qualcosa che
+    /// non succede.
     pub annullabili: i64,
+    /// Quanti file le versioni passate hanno riscritto e non hanno mai disfatto.
+    ///
+    /// Conta le righe di `enrich_undo`, che dalla 2.3.1 nessuno scrive più: può
+    /// solo calare, e a zero l'uscita a termine di
+    /// [`arricchimento_riporta_nei_file`] non ha più niente da riportare. È un
+    /// campo a parte da `annullabili` perché sono due gesti diversi — uno
+    /// dimentica una tabella, l'altro riapre migliaia di file — e mostrarli
+    /// sotto lo stesso numero farebbe premere il secondo a chi voleva il primo.
+    pub nei_file: i64,
     /// Quando è finita l'ultima passata.
     pub ultimo_ms: Option<i64>,
     /// Com'è andata l'ultima passata automatica.
     pub errore: Option<ErroreIpc>,
 }
 
-/// Com'è andato un annullamento.
+/// Com'è andato un ritorno indietro, dell'uno o dell'altro tipo.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EsitoAnnullamentoIpc {
-    /// Quanti brani sono tornati ai tag di prima.
+    /// Quanti brani sono tornati a quel che dice il loro file.
     pub riportati: usize,
-    /// Quanti file non si sono potuti riscrivere.
+    /// Quanti brani non si sono potuti riportare.
     pub falliti: usize,
     /// Lo stato dopo, per non doverlo richiedere.
     pub stato: StatoArricchimentoIpc,
@@ -244,29 +272,27 @@ pub fn arricchimento_attiva(
     concludi(&app, &stato, &arricchimento, esito)
 }
 
-/// Riporta indietro tutto quel che l'arricchimento ha scritto.
+/// Dimentica quel che l'arricchimento ha deciso, e rimette le righe sui tag dei file.
 ///
 /// # Perché spegne anche l'interruttore
 ///
-/// Perché altrimenti non servirebbe a niente. L'annullamento rimette
-/// `enrich_status` a `NULL` su ogni brano che tocca — deve, o la riga resterebbe
-/// a dire «già arricchito» mentre il file è tornato com'era — e un brano con
-/// `enrich_status` nullo è di nuovo un candidato. Con l'automatico acceso, la
-/// passata successiva riscriverebbe entro mezz'ora esattamente quel che l'utente
-/// ha appena chiesto di disfare.
-///
-/// Spegnere è quindi l'unica lettura onesta del gesto: chi annulla sta dicendo
-/// «non era quello che volevo», non «rifallo fra poco». Riaccenderlo è un clic
-/// nello stesso pannello.
+/// Perché chi dimentica sta dicendo «non era quello che volevo», non «rifallo
+/// fra poco», e con l'automatico acceso la passata successiva ricomincerebbe da
+/// quei brani entro mezz'ora. Non basterebbe lo stato terminale a fermarla per
+/// sempre: `enrich_status` torna a `undone`, che la clausola dei candidati
+/// esclude, ma il primo brano che una scansione tocca davvero — o una riga
+/// aggiunta a mano — la rimetterebbe in moto sul resto della libreria. Spegnere
+/// è quindi l'unica lettura onesta del gesto; riaccenderlo è un clic nello
+/// stesso pannello.
 ///
 /// # Perché `(async)` su una funzione che non è `async`
 ///
 /// Perché un `#[tauri::command]` normale gira sul filo dell'anello degli eventi
-/// della finestra. Questo riapre e riscrive un file per ogni brano arricchito —
-/// su una libreria vera possono essere centinaia, cioè decine di secondi in cui
-/// l'applicazione sarebbe congelata. `(async)` su una funzione sincrona la manda
-/// sulla riserva di fili di Tauri: il corpo resta bloccante e ordinario, cambia
-/// solo **dove** gira.
+/// della finestra. Questo **rilegge** un file per ogni brano arricchito — su
+/// una libreria vera possono essere centinaia, e su una radice di rete lenta
+/// sono secondi. `(async)` su una funzione sincrona la manda sulla riserva di
+/// fili di Tauri: il corpo resta bloccante e ordinario, cambia solo **dove**
+/// gira.
 #[tauri::command(async)]
 pub fn arricchimento_annulla(
     app: AppHandle,
@@ -274,16 +300,16 @@ pub fn arricchimento_annulla(
     arricchimento: State<'_, StatoArricchimento>,
 ) -> Esito<EsitoAnnullamentoIpc> {
     let annullati = (|| {
-        // Il turno prima di tutto: una passata in corso sta riscrivendo tag
-        // proprio mentre questo li riporterebbe indietro, e quale dei due vinca
-        // dipenderebbe dall'ordine in cui i due fili arrivano al file.
+        // Il turno prima di tutto: una passata in corso sta scrivendo sulle
+        // stesse righe che questo riporta indietro, e quale dei due vinca
+        // dipenderebbe dall'ordine in cui i due fili arrivano alla transazione.
         let _turno = Turno::prendi(&arricchimento.in_corso).ok_or_else(occupato)?;
 
         con_libreria(&stato, |libreria| {
             settings::write(&libreria.connection, CHIAVE_ATTIVO, "0")
         })?;
         con_libreria(&stato, |libreria| {
-            enrich::annulla(&mut libreria.connection, true)
+            enrich::dimentica(&mut libreria.connection)
         })
     })();
     // Fuori dalla chiusura, cioè con il turno ormai lasciato cadere: qui dentro
@@ -295,6 +321,53 @@ pub fn arricchimento_annulla(
         Ok(EsitoAnnullamentoIpc {
             riportati: annullati.riportati,
             falliti: annullati.falliti,
+            stato: stato_ipc(&stato, &arricchimento)?,
+        })
+    });
+    riferisci(&app);
+    esito.map_err(errore)
+}
+
+/// Riscrive nei file i tag di prima, per quel che le versioni passate hanno già toccato.
+///
+/// # Che cosa fa che nessun altro comando fa
+///
+/// **Apre e riscrive i file dell'utente.** È l'unico che lo faccia in tutta
+/// Aether, esiste solo per disfare le scritture della 2.3.0 e di prima, e lo
+/// dice l'etichetta del bottone che lo chiama: senza quella scritta, un utente
+/// che ha appena letto «Aether non modifica i tuoi file» premerebbe un pulsante
+/// che glieli modifica. Vedi la nota in testa al modulo: è una via d'uscita a
+/// termine, e il CHANGELOG la dà per rimossa in una release futura.
+///
+/// Non spegne l'interruttore, e non deve: non sta dicendo «l'arricchimento ha
+/// sbagliato», sta dicendo «togli dai miei file quel che una vecchia versione
+/// ci ha messo». Chi vuole anche l'altra cosa preme anche l'altro pulsante.
+///
+/// # Perché `(async)`
+///
+/// La stessa ragione di [`arricchimento_annulla`], moltiplicata: qui i file si
+/// riaprono **in scrittura**, uno per uno, e su una libreria vera sono decine
+/// di secondi in cui la finestra sarebbe congelata.
+#[tauri::command(async)]
+pub fn arricchimento_riporta_nei_file(
+    app: AppHandle,
+    stato: State<'_, Stato>,
+    arricchimento: State<'_, StatoArricchimento>,
+) -> Esito<EsitoAnnullamentoIpc> {
+    let riportati = (|| {
+        // Come sopra: una passata in corso non deve incrociare una riscrittura
+        // di file a metà.
+        let _turno = Turno::prendi(&arricchimento.in_corso).ok_or_else(occupato)?;
+        con_libreria(&stato, |libreria| {
+            enrich::riporta_nei_file(&mut libreria.connection)
+        })
+    })();
+    scorda_errore(&arricchimento);
+
+    let esito = riportati.and_then(|riportati| {
+        Ok(EsitoAnnullamentoIpc {
+            riportati: riportati.riportati,
+            falliti: riportati.falliti,
             stato: stato_ipc(&stato, &arricchimento)?,
         })
     });
@@ -461,8 +534,9 @@ fn passata_vera(
         return Ok(None);
     };
     let Some(_turno) = Turno::prendi(&arricchimento.in_corso) else {
-        // Un annullamento a mano sta riscrivendo i file. La passata successiva
-        // arriva fra mezz'ora: non c'è niente da segnalare.
+        // Qualcuno sta dimenticando l'arricchimento a mano, o riportando i tag
+        // nei file. La passata successiva arriva fra mezz'ora: non c'è niente
+        // da segnalare.
         return Ok(None);
     };
 
@@ -507,13 +581,15 @@ fn passata_vera(
             break;
         }
 
-        let (esiti, guasti) = enrich::scrivi_file(&da_fare.covers, &decisione.scritture, true);
+        // I file dell'utente non si toccano: qui si salvano soltanto le
+        // copertine nello store di Aether. Vedi la nota in testa al modulo.
+        let (esiti, guasti) = enrich::applica(&da_fare.covers, &decisione.scritture);
         for guasto in &guasti {
-            // Un file bloccato — su Windows basta che sia in riproduzione — non
-            // ferma la passata: si dice e si va avanti. La riga resta candidata,
-            // e la si ritenta fra una settimana.
+            // Un'immagine che non si salva — disco pieno, byte illeggibili —
+            // non ferma la passata e non butta via titolo e anno del brano a
+            // cui apparteneva: si dice e si va avanti.
             nota!(
-                "[arricchimento] file non scritto codice={} causa={}",
+                "[arricchimento] copertina non salvata codice={} causa={}",
                 guasto.code().kind().code(),
                 guasto.cause().unwrap_or("—")
             );
@@ -525,16 +601,14 @@ fn passata_vera(
                 .connection
                 .transaction()
                 .map_err(|err| db_errore("apertura della transazione di arricchimento", &err))?;
+            // Ogni scrittura ha il suo esito, sempre: la fase tre non può più
+            // fallire su un brano, perché non apre più nessun file. Fin qui
+            // c'era un secondo giro che segnava `enrich_status = 'error'` sulle
+            // scritture rimaste senza esito — non ne resta nessuna, e tenere
+            // quel giro vorrebbe dire tenere un rimedio a un guasto che non
+            // esiste più.
             let conto =
                 enrich::registra(&tx, &decisione, &decisione.scritture, &esiti, adesso_ms())?;
-            // Le scritture senza un esito sono quelle che non si sono potute
-            // fare. Vanno segnate, o resterebbero con `enrich_status` nullo e
-            // la passata dopo le ritenterebbe subito, per sempre.
-            for scrittura in &decisione.scritture {
-                if !esiti.iter().any(|e| e.track_id == scrittura.track_id) {
-                    enrich::segna_errore(&tx, scrittura.track_id, adesso_ms())?;
-                }
-            }
             tx.commit()
                 .map_err(|err| db_errore("chiusura della transazione di arricchimento", &err))?;
             Ok(conto)
@@ -666,8 +740,13 @@ fn riferisci(app: &AppHandle) {
 /// vorrebbe dire che il caso normale è quello in cui non succede niente finché
 /// qualcuno non trova un pannello.
 ///
-/// Quel che rende accettabile il valore di serie non è questa riga: è che si
-/// scrive solo su verdetto `Applica`, e che ogni scrittura è annullabile. Vedi la
+/// Quel che rende accettabile il valore di serie non è questa riga, ed è
+/// cambiato con la 2.3.1: prima era che si scrivesse solo su verdetto `Applica`
+/// e che ogni scrittura fosse annullabile riaprendo i file. Adesso è molto più
+/// semplice — **l'arricchimento non tocca i file dell'utente**, quel che decide
+/// sta in due tabelle, e dimenticarlo è una `DELETE` più una rilettura. Un
+/// interruttore acceso di serie che non produce niente di irreversibile non ha
+/// bisogno di essere difeso: ha bisogno di essere spegnibile, e lo è. Vedi la
 /// nota in testa al modulo.
 fn attivo(connection: &rusqlite::Connection) -> Result<bool, AppError> {
     Ok(settings::read(connection, CHIAVE_ATTIVO)?.as_deref() != Some("0"))
@@ -714,11 +793,14 @@ fn vicini(stato: &State<'_, Stato>, servizi: &Fornitori) -> Result<usize, AppErr
 }
 
 /// Un guasto del database, nella forma del catalogo.
+///
+/// Delega a [`aether_app::db::codice_da_sqlite`]: è la seconda connessione allo
+/// stesso file, quindi è anche il punto da cui arriva il `SQLITE_BUSY` più
+/// frequente di tutta l'applicazione — l'arricchimento che legge mentre la
+/// scansione scrive. Raccontarlo come «il database ha rifiutato una richiesta»
+/// era dire all'utente di riavviare per una coda di mezzo secondo.
 fn db_errore(cosa: &str, err: &rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(cosa.to_owned()),
-    })
-    .with_cause(err.to_string())
+    aether_app::db::codice_da_sqlite(cosa, err)
 }
 
 /// Lo stato, nella forma che la finestra riceve.
@@ -745,7 +827,11 @@ fn stato_ipc(
                 "SELECT COUNT(*) FROM tracks WHERE enrich_status = 'no-match'",
             )?,
             da_fare: enrich::quanti_mancano(&libreria.connection, adesso_ms())?,
-            annullabili: quanti(&libreria.connection, "SELECT COUNT(*) FROM enrich_undo")?,
+            annullabili: quanti(
+                &libreria.connection,
+                "SELECT COUNT(*) FROM track_meta_arricchita",
+            )?,
+            nei_file: quanti(&libreria.connection, "SELECT COUNT(*) FROM enrich_undo")?,
             ultimo_ms: settings::read(&libreria.connection, CHIAVE_ULTIMO)?
                 .and_then(|quando| quando.parse().ok()),
             errore,

@@ -143,21 +143,36 @@ pub fn scrivi_tag(
 /// modo in cui questa funzione andrebbe storta senza che nessun test dei campi
 /// scritti se ne accorga.
 ///
-/// # La copertina sostituisce, non si aggiunge
+/// # Nessuna copertina, e non è una dimenticanza
 ///
-/// Un `push_picture` su un tag che ha già una copertina frontale lascia il file
-/// con due, e [`crate::metadata::pick_cover`] ne sceglierebbe una delle due
-/// senza un criterio stabile. Si toglie prima quella che c'è.
+/// Fino alla 2.3.0 questa funzione sapeva anche incorporare un'immagine, e
+/// l'unico a chiederglielo era l'arricchimento. Incorporare una copertina in un
+/// file dell'utente è la più invadente delle scritture — cambia la dimensione
+/// del file di qualche centinaio di kilobyte, e la si paga a ogni lettura per
+/// sempre — e dalla 2.3.1 l'arricchimento non scrive più niente nei file: le
+/// copertine che trova stanno nello store di Aether, dove si tolgono senza
+/// riaprire nulla.
+///
+/// Quel che **resta** è la lettura: `metadata::pick_cover` continua a
+/// preferire la copertina incorporata quando c'è, perché le immagini già dentro
+/// i file dell'utente sono un dato suo e nessuno le tocca. E chi una copertina
+/// deve scriverla ce l'ha ancora: è [`scrivi_tag`], che lavora sui file appena
+/// scaricati — file che non sono dell'utente, li ha appena creati Aether.
+///
+/// # Nessun chiamante, oggi
+///
+/// Va detto perché non sembri una svista: dalla 2.3.1 nessuna passata chiama
+/// questa funzione. Resta perché è il gemello esatto di [`ripristina_campi`],
+/// che la via di ritorno per i file già riscritti usa ancora, e perché sono le
+/// sue prove a tenere onesta l'asimmetria fra le due — un `None` che qui non
+/// tocca niente e là svuota. Il giorno in cui anche quella via sparisce, le due
+/// spariscono insieme.
 ///
 /// # Errori
 ///
 /// `metadata.tagWriteFailed` se il file non si apre, non si interpreta o non si
 /// riscrive.
-pub fn scrivi_campi(
-    percorso: &std::path::Path,
-    campi: &Fields,
-    copertina: Option<&[u8]>,
-) -> Result<(), AppError> {
+pub fn scrivi_campi(percorso: &std::path::Path, campi: &Fields) -> Result<(), AppError> {
     let fallito = |dettaglio: String| {
         AppError::new(ErrorCode::MetadataTagWriteFailed {
             path: Some(percorso.display().to_string()),
@@ -222,13 +237,6 @@ pub fn scrivi_campi(
             // ragione sta in [`salva`], insieme al resto di questa storia.
             tag.insert_unchecked(TagItem::new(chiave, ItemValue::Text(identificativo)));
         }
-    }
-
-    if let Some(byte) = copertina.filter(|b| plausibile(b))
-        && let Some(immagine) = immagine(byte)
-    {
-        tag.remove_picture_type(PictureType::CoverFront);
-        tag.push_picture(immagine);
     }
 
     salva(percorso, tipo, tag, campi).map_err(|err| fallito(err.to_string()))
@@ -388,59 +396,6 @@ pub fn ripristina_campi(percorso: &std::path::Path, originali: &Fields) -> Resul
 
     tag.save_to_path(percorso, WriteOptions::default())
         .map_err(|err| fallito(err.to_string()))
-}
-
-/// Rilegge il file e nomina i campi che non corrispondono a quel che si è scritto.
-///
-/// # Perché si rilegge, e perché non si fallisce
-///
-/// Si rilegge perché una scrittura riuscita non è una scrittura avvenuta: un
-/// formato che `lofty` sa aprire ma non riscrivere per intero restituisce `Ok`
-/// e lascia il file com'era. Senza la rilettura, l'arricchimento direbbe di aver
-/// corretto dei brani che alla scansione successiva risultano ancora sbagliati —
-/// e il difetto si presenterebbe come «l'arricchimento non funziona», senza un
-/// punto a cui ricondurlo.
-///
-/// Non si fallisce perché su Windows un file in riproduzione è bloccato, e
-/// questo è codice che gira in sottofondo mentre l'utente ascolta. Un elenco di
-/// campi discordi è un avviso da registrare, non una ragione per fermare una
-/// passata.
-///
-/// Elenco vuoto significa «tutto corrisponde», ed è anche quel che si ottiene da
-/// un file illeggibile: non si sa niente, e non si accusa nessuno.
-#[must_use]
-pub fn rileggi_e_confronta(percorso: &std::path::Path, campi: &Fields) -> Vec<&'static str> {
-    let Ok(riletti) =
-        crate::metadata::read_tags(&crate::files::LocalFiles, &percorso.display().to_string())
-    else {
-        return Vec::new();
-    };
-    let mut discordi = Vec::new();
-    let confronta = |atteso: Option<&str>, trovato: Option<&str>| -> bool {
-        match pulito(atteso) {
-            None => true,
-            Some(atteso) => trovato.map(str::trim) == Some(atteso.as_str()),
-        }
-    };
-    if !confronta(campi.title.as_deref(), riletti.title.as_deref()) {
-        discordi.push("titolo");
-    }
-    if !confronta(campi.artist.as_deref(), riletti.artist.as_deref()) {
-        discordi.push("interprete");
-    }
-    if !confronta(campi.album.as_deref(), riletti.album.as_deref()) {
-        discordi.push("album");
-    }
-    if !confronta(campi.genre.as_deref(), riletti.genre.as_deref()) {
-        discordi.push("genere");
-    }
-    if campi.year.is_some() && campi.year != riletti.year {
-        discordi.push("anno");
-    }
-    if campi.track_number.is_some() && campi.track_number != riletti.track_number {
-        discordi.push("numero di traccia");
-    }
-    discordi
 }
 
 /// Un valore di tag ripulito: vuoto vale come assente.
@@ -651,7 +606,7 @@ mod prove {
             year: Some(2018),
             ..Fields::default()
         };
-        scrivi_campi(&percorso, &campi, None).expect("scrittura selettiva");
+        scrivi_campi(&percorso, &campi).expect("scrittura selettiva");
 
         let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
         assert_eq!(letti.album.as_deref(), Some("Possibili scenari (Deluxe)"));
@@ -676,7 +631,7 @@ mod prove {
             mb_release_group_id: Some("grp-1".to_owned()),
             ..Fields::default()
         };
-        scrivi_campi(&percorso, &campi, None).expect("scrittura");
+        scrivi_campi(&percorso, &campi).expect("scrittura");
 
         let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
         assert_eq!(letti.mb_recording_id.as_deref(), Some("rec-1"));
@@ -685,68 +640,57 @@ mod prove {
     }
 
     #[test]
-    fn una_copertina_nuova_sostituisce_quella_che_ce_ra() {
-        // Con `push_picture` e basta il file resterebbe con due copertine
-        // frontali, e quale delle due si vede non sarebbe più deciso da niente.
-        let (_cartella, percorso) = file_di_prova();
-        let mut prima = vec![0xFF_u8, 0xD8, 0xFF, 0xE0];
-        prima.resize(64, 1);
-        scrivi_tag(&percorso, &brano(), 1, Some(&prima)).expect("prima copertina");
+    fn scrivi_campi_non_aggiunge_immagini() {
+        // La prova del pacchetto P4: la scrittura selettiva non ha più un modo
+        // di incorporare una copertina, e non deve acquisirne uno per sbaglio.
+        // Un file che ne portava una se la tiene — è un dato dell'utente — e un
+        // file che non ne aveva non se ne ritrova una addosso.
+        let (_cartella, senza) = file_di_prova();
+        scrivi_tag(&senza, &brano(), 1, None).expect("tag di partenza");
+        scrivi_campi(
+            &senza,
+            &Fields {
+                album: Some("Possibili scenari (Deluxe)".to_owned()),
+                ..Fields::default()
+            },
+        )
+        .expect("scrittura selettiva");
+        let letti = read_tags(&LocalFiles, &senza.display().to_string()).expect("rilettura");
+        assert!(
+            letti.cover.is_none(),
+            "la scrittura selettiva non incorpora immagini"
+        );
+        assert_eq!(letti.album.as_deref(), Some("Possibili scenari (Deluxe)"));
 
-        let mut dopo = vec![0xFF_u8, 0xD8, 0xFF, 0xE0];
-        dopo.resize(96, 2);
-        scrivi_campi(&percorso, &Fields::default(), Some(&dopo)).expect("seconda copertina");
-
-        let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
-        let copertina = letti.cover.expect("la copertina c'è");
-        assert_eq!(copertina.data.len(), 96, "deve essere la seconda");
+        let (_altra, con) = file_di_prova();
+        let mut immagine = vec![0xFF_u8, 0xD8, 0xFF, 0xE0];
+        immagine.resize(64, 1);
+        scrivi_tag(&con, &brano(), 1, Some(&immagine)).expect("copertina di partenza");
+        scrivi_campi(
+            &con,
+            &Fields {
+                year: Some(2018),
+                ..Fields::default()
+            },
+        )
+        .expect("scrittura selettiva");
+        let letti = read_tags(&LocalFiles, &con.display().to_string()).expect("rilettura");
+        assert_eq!(
+            letti.cover.map(|c| c.data.len()),
+            Some(64),
+            "quella che c'era resta, e resta una sola"
+        );
     }
 
     #[test]
     fn un_campo_nullo_non_svuota_niente() {
         let (_cartella, percorso) = file_di_prova();
         scrivi_tag(&percorso, &brano(), 1, None).expect("tag di partenza");
-        scrivi_campi(&percorso, &Fields::default(), None).expect("scrittura a vuoto");
+        scrivi_campi(&percorso, &Fields::default()).expect("scrittura a vuoto");
 
         let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
         assert_eq!(letti.title.as_deref(), Some("Poetica"));
         assert_eq!(letti.album.as_deref(), Some("Possibili scenari"));
-    }
-
-    #[test]
-    fn la_rilettura_nomina_i_campi_discordi() {
-        let (_cartella, percorso) = file_di_prova();
-        let campi = Fields {
-            title: Some("Poetica".to_owned()),
-            year: Some(2017),
-            ..Fields::default()
-        };
-        scrivi_campi(&percorso, &campi, None).expect("scrittura");
-        assert!(
-            rileggi_e_confronta(&percorso, &campi).is_empty(),
-            "quel che si è scritto si deve rileggere"
-        );
-
-        // Un campo che nessuno ha scritto: la rilettura lo trova diverso.
-        let mai_scritti = Fields {
-            title: Some("Un altro titolo".to_owned()),
-            ..Fields::default()
-        };
-        assert_eq!(rileggi_e_confronta(&percorso, &mai_scritti), vec!["titolo"]);
-    }
-
-    #[test]
-    fn un_file_illeggibile_non_accusa_nessuno() {
-        // Su Windows un file in riproduzione è bloccato, e questo codice gira
-        // mentre l'utente ascolta: «non lo so» non deve diventare «è sbagliato».
-        let campi = Fields {
-            title: Some("Poetica".to_owned()),
-            ..Fields::default()
-        };
-        assert!(
-            rileggi_e_confronta(std::path::Path::new("C:/non/esiste/proprio.mp3"), &campi)
-                .is_empty()
-        );
     }
 
     #[test]

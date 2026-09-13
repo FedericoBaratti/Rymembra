@@ -27,14 +27,29 @@
  * riattacca il cavo. Il nucleo la manda comunque, con `presente: false`, e qui
  * si disegna spenta.
  */
-import { useCallback, useEffect, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useState } from "react";
 
-import { ipc, type DispositivoAudio } from "../ipc";
+import {
+  LATENZA_MASSIMA_MS,
+  ipc,
+  type DispositivoAudio,
+  type StatoRiproduzione,
+} from "../ipc";
 import { t } from "../lingue";
 import { useAscolto } from "../pagine";
 
 /** Il valore del gruppo di scelte che vuol dire «quella di sistema». */
 const SISTEMA = "";
+
+/**
+ * Di quanto sposta una tacca del cursore della latenza.
+ *
+ * Dieci millisecondi. Sotto, una tacca non si sente — dieci millisecondi sono
+ * già il limite di quel che l'orecchio distingue su uno sfasamento fra immagine
+ * e suono — e cento tacche per mezzo secondo sono una corsa ragionevole col
+ * dito o con le frecce.
+ */
+const PASSO_LATENZA = 10;
 
 export function SchedaUscita({
   onErrore,
@@ -142,6 +157,116 @@ export function SchedaUscita({
         </ul>
       )}
       <p className="nota">{t("settings.output.hint")}</p>
+      <Latenza onErrore={onErrore} />
+    </>
+  );
+}
+
+/**
+ * Di quanto la catena d'uscita ritarda il suono, dichiarato a mano.
+ *
+ * # Perché un cursore e non una misura
+ *
+ * Perché la misura esiste già e copre solo un pezzo. Il motore legge da `cpal`
+ * quanto vale il buffer del dispositivo — una decina di millisecondi — e lo
+ * compensa da sé; quel che resta è tutto ciò che `cpal` non vede: il mixer di
+ * sistema, il driver, la conversione digitale-analogica, e su un'uscita senza
+ * fili la radio, che da sola vale più di tutto il resto insieme. Nessuna API
+ * dice quel numero, e indovinarlo per tutti vorrebbe dire sbagliarlo per
+ * ciascuno.
+ *
+ * Si regola guardando l'effetto: si apre un brano con un testo sincronizzato e si
+ * sposta il cursore finché la riga si accende quando la voce attacca.
+ *
+ * # Perché sta dentro la scheda dell'uscita
+ *
+ * Perché **è** una proprietà dell'uscita, non del lettore: cambiando scheda
+ * cambia, e trovarla accanto all'elenco delle uscite è trovarla dove si era
+ * appena cambiata la cosa che l'ha fatta sbagliare. Per la stessa ragione non
+ * viaggia nel profilo, come `player.output`.
+ *
+ * # Perché si gestisce da sé
+ *
+ * Come la scheda che la contiene: il valore vero sta nello stato della
+ * riproduzione, e passarlo per prop vorrebbe dire allungare di uno le
+ * sessantasette di `Impostazioni`.
+ */
+function Latenza({ onErrore }: { onErrore: (e: unknown) => void }) {
+  const [scritta, setScritta] = useState<number | null>(null);
+  const [trascinato, setTrascinato] = useState<number | null>(null);
+
+  useEffect(() => {
+    let annullato = false;
+    ipc
+      .riproduzioneStato()
+      .then((stato) => {
+        if (!annullato) setScritta(stato.latenzaMs);
+      })
+      .catch(() => {
+        /* Senza scheda audio lo stato non si legge, e non c'è niente da
+           correggere: il cursore resta a zero invece di mostrare un errore rosso
+           accanto alla riga che già dice che non c'è nessuna uscita. */
+        if (!annullato) setScritta(0);
+      });
+    return () => {
+      annullato = true;
+    };
+  }, []);
+
+  // Il valore vero arriva da qui in poi: il comando scrive, rilegge e manda lo
+  // stato, quindi questo evento porta il numero **rimasto scritto** e non quello
+  // chiesto. Serve anche quando il cursore non l'ha mosso nessuno — una
+  // riapertura del dispositivo rimanda lo stato — e per questo non basta la
+  // risposta del comando.
+  useAscolto<StatoRiproduzione>("riproduzione:stato", (stato) =>
+    setScritta(stato.latenzaMs),
+  );
+
+  const dove = trascinato ?? scritta ?? 0;
+
+  const rilascia = () => {
+    if (trascinato === null) return;
+    // Solo se è davvero cambiato, come per la dissolvenza: toccare il cursore e
+    // rimetterlo dov'era è un gesto frequente e non deve costare una scrittura.
+    if (trascinato !== scritta) ipc.latenza(trascinato).catch(onErrore);
+    setTrascinato(null);
+  };
+
+  // Il cursore va da −massimo a +massimo, quindi l'avanzamento per il tracciato
+  // si misura da sinistra e non dal valore: a zero il riempimento sta a metà.
+  const avanzamento =
+    ((dove + LATENZA_MASSIMA_MS) / (2 * LATENZA_MASSIMA_MS)) * 100;
+  const etichetta =
+    dove === 0
+      ? t("settings.output.latency.none")
+      : t("settings.output.latency.ms", { n: dove });
+
+  return (
+    <>
+      {/* `titolo-gruppo` e non una classe nuova: è già il modo in cui questo
+          albero intitola un gruppo dentro una scheda — lo fa l'elenco delle
+          scorciatoie in `Impostazioni` — e un cursore senza titolo, in una
+          scheda che parla di elenchi di uscite, sembrerebbe un residuo. */}
+      <div className="titolo-gruppo">{t("settings.output.latency.title")}</div>
+      <div className="latenza">
+        <input
+          type="range"
+          className="scorrimento range-accent"
+          min={-LATENZA_MASSIMA_MS}
+          max={LATENZA_MASSIMA_MS}
+          step={PASSO_LATENZA}
+          value={dove}
+          style={{ "--avanzamento": `${avanzamento}%` } as CSSProperties}
+          aria-label={t("settings.output.latency.title")}
+          aria-valuetext={etichetta}
+          onChange={(e) => setTrascinato(Number(e.target.value))}
+          onPointerUp={rilascia}
+          onKeyUp={rilascia}
+          onBlur={rilascia}
+        />
+        <span className="valore">{etichetta}</span>
+      </div>
+      <p className="nota">{t("settings.output.latency.hint")}</p>
     </>
   );
 }

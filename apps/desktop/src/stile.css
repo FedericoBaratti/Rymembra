@@ -120,15 +120,15 @@
   --color-surface-3: rgb(30 30 42);
   --color-text-1: rgb(255 255 255 / 0.92);
   --color-text-2: rgb(255 255 255 / 0.6);
-  --color-text-3: rgb(255 255 255 / 0.46);
+  --color-text-3: rgb(255 255 255 / 0.52);
   --accent: rgb(139 124 246);
   --accent-rgb: 139 124 246;
   --accent-soft: rgb(139 124 246 / 0.16);
   --accent-glow: rgb(139 124 246 / 0.35);
   --accent-like: var(--accent);
   --hero-rgb: var(--accent-rgb);
-  --danger: rgb(229 72 77);
-  --danger-soft: rgb(229 72 77 / 0.14);
+  --danger: rgb(236 93 94);
+  --danger-soft: rgb(236 93 94 / 0.14);
   --success: rgb(52 211 153);
   --success-soft: rgb(52 211 153 / 0.14);
   --warning: rgb(250 204 21);
@@ -188,7 +188,7 @@
   --color-surface-3: rgb(226 226 236);
   --color-text-1: rgb(16 16 22 / 0.92);
   --color-text-2: rgb(16 16 22 / 0.68);
-  --color-text-3: rgb(16 16 22 / 0.6);
+  --color-text-3: rgb(16 16 22 / 0.64);
   --accent: rgb(103 82 214);
   --accent-rgb: 103 82 214;
   --accent-soft: rgb(103 82 214 / 0.14);
@@ -214,6 +214,84 @@
   color-scheme: light;
 }
 /* ── fine blocco generato ──────────────────────────────────────────────────── */
+
+/*
+ * La scala degli strati.
+ *
+ * Erano undici numeri scelti uno alla volta — 1, 2, 3, 4, 5, 9, 40 — e undici
+ * decisioni locali non fanno una scala: ognuna era stata presa guardando il
+ * vicino di quel momento, e nessuna guardando le altre dieci. Si vedeva da due
+ * cose. Il menù contestuale stava a 1, cioè **sotto** la barra della selezione
+ * (4): il tasto destro su una riga selezionata apriva un menù che si disegnava
+ * dietro la barra che lo aveva fatto aprire. E `.velo` non aveva strato
+ * affatto, quindi il velo di una finestrella si appoggiava dove capitava
+ * nell'ordine del DOM invece che dove gli serve stare.
+ *
+ * Con dei nomi il confronto si fa leggendo il selettore, senza tenere a mente
+ * dodici interi: «la pastiglia sta sopra il velo» è scritto. I salti di dieci
+ * non sono vezzo — lasciano posto a chi arriva senza rinumerare nessuno, e chi
+ * arriva è arrivato: il giro guidato si è seduto sull'80 che il salto fra la
+ * pastiglia e i comandi della finestra gli teneva libero, e nessuno degli altri
+ * undici numeri ha dovuto cambiare di un'unità.
+ *
+ * Nessun `z-index` letterale resta nel foglio, e non per disciplina: lo verifica
+ * `strumenti/classi.js`, con l'elenco delle eccezioni vuoto.
+ *
+ * Sta **dopo** il blocco generato apposta, e non è una sfumatura: quel blocco lo
+ * riscrive `cargo run -p aether-skin --example compila` e lo confrontano riga
+ * per riga due prove del crate desktop, quindi una dichiarazione lassù
+ * sparirebbe alla prima rigenerazione portandosi dietro i due test.
+ */
+:root {
+  /* Dentro una scatola, sopra la cosa che segna: l'alone che l'anteprima dello
+     Studio disegna attorno alla zona sorvolata. */
+  --strato-decoro: 1;
+  /* Appoggiato al contenuto che scorre, dentro il suo pannello. */
+  --strato-aderente: 5;
+  /* Una schermata che copre la pagina restando dentro il flusso
+     dell'applicazione: la navigazione e il lettore restano dove sono. */
+  --strato-contenuto: 10;
+  /* I pannelli ancorati a un tasto: l'equalizzatore, la chat dello Studio. */
+  --strato-pannello: 20;
+  /* Le barre che galleggiano sopra il contenuto. */
+  --strato-barra: 30;
+  /* Il velo di una finestrella, che oscura, e quello trasparente che chiude un
+     menù: sono lo stesso ruolo — «il clic fuori vale chiudi» — e lo stesso
+     strato. */
+  --strato-velo: 40;
+  /* Il menù è **fratello** del suo velo, non figlio: un gradino solo sopra, e
+     non uno dei salti da dieci, perché i due stanno o non stanno insieme. */
+  --strato-menu: 41;
+  /* Le notifiche. Sopra tutto quel che si sta guardando, e anche sopra un menù:
+     un toast racconta una cosa già avvenuta e non si può richiedere, un menù lo
+     si è appena aperto e si chiude con Esc. */
+  --strato-toast: 50;
+  /* Il primo avvio, che copre la finestra intera perché dietro non c'è ancora
+     niente da guardare. */
+  --strato-primo: 60;
+  /* La pastiglia che spiega perché un comando è spento: sopra qualunque cosa la
+     possa sollevare, altrimenti spiega a metà. */
+  --strato-pastiglia: 70;
+  /* Il giro guidato: il velo che buca, il riflettore e il fumetto.
+
+     **Sopra la pastiglia**, e questa è la ragione per cui non poteva stare a 65
+     o a 69: il giro accende un riflettore su comandi veri, e un comando vero a
+     volte è spento — la pastiglia che spiega perché uscirebbe dal buco e
+     spiegherebbe dal lato sbagliato, cioè sopra il riflettore invece che dentro.
+     Sopra i toast e sopra i menù per la stessa ragione detta una volta sola:
+     finché un giro è in corso, non c'è niente sopra il giro.
+
+     **Sotto i comandi della finestra**, e questo è il vincolo dall'altra parte.
+     Chiudere, ridurre e spostare la finestra devono funzionare anche a metà di
+     un passo: un velo che copre anche quei tre trasforma un giro che non si
+     capisce in una finestra che non si chiude, ed è l'unico modo in cui questa
+     funzione può fare un danno vero. Il velo prende i clic — è il suo mestiere
+     — quindi l'unica difesa è lo strato. */
+  --strato-giro: 80;
+  /* I tre comandi della finestra, in cima alla scala. Il perché sta accanto a
+     `.controlli-finestra`, dove la regola si legge. */
+  --strato-finestra: 90;
+}
 
 /*
  * Il ritmo: i cinque gradini della spaziatura.
@@ -400,6 +478,36 @@
   box-sizing: border-box;
 }
 
+/*
+ * `[hidden]` vale davvero.
+ *
+ * L'attributo ha una regola nel foglio dell'user-agent — `display: none` — e
+ * quella regola la batte **qualunque** dichiarazione d'autore: basta un
+ * `display: flex` su una classe perché `hidden` diventi decorativo. Nel foglio
+ * succedeva in quattro punti, tutti con un `hidden={…}` vero nel markup sopra:
+ * `.volume` dentro `.colonna .giudizio` e dentro `.in-riproduzione .giudizio`,
+ * `.marchio`, `.navigazione .gruppo` e `.voce.dona` — cinque regole, tutte con un
+ * `display: flex` dentro.
+ *
+ * Due conseguenze vere, non ipotetiche. Il cursore del volume restava visibile
+ * anche con la skin che lo spegne (`parti/Giudizio.tsx`, `hidden={!conVolume}`).
+ * E in modalità barra in fondo restavano nella barra marchio, playlist e «Dona»,
+ * che `parti/Navigazione.tsx` nasconde con `hidden={inFondo}` proprio perché là
+ * non ci stanno: la peggiore è la playlist, perché l'override a
+ * `.navigazione[data-fondo]` mette in riga `.destinazioni` e `.fondo` ma **non**
+ * `.gruppo`, che resta `flex-direction: column` — cioè una barra che dovrebbe
+ * essere una riga cresceva in altezza di una riga per playlist.
+ *
+ * `!important` è la forma minima che regge: senza, questa riga perderebbe
+ * contro ogni `display` d'autore esattamente come perdeva quella
+ * dell'user-agent, e l'alternativa — rincorrere ogni classe con un
+ * `:not([hidden])` — è la stessa regola scritta cinque volte, da riscrivere
+ * alla sesta.
+ */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body,
 #radice {
@@ -451,6 +559,36 @@ body {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/*
+ * L'unica eccezione, e il suo prezzo.
+ *
+ * La radice di una finestrella porta `tabindex="-1"`, e non è un vezzo: `Riordino`,
+ * `Ripristino` e `ImportaPlaylist` si aprono con tutti i comandi spenti, quindi
+ * senza un posto dove mettere il fuoco — e senza fuoco dentro il nodo né Escape
+ * né la trappola del Tab di `useFinestrella` ricevono un evento. Quel tabindex è
+ * il prezzo di un Escape che funziona al primo colpo, e questa regola è la sua
+ * contropartita: Chromium fa combaciare `:focus-visible` anche su un fuoco dato
+ * dal programma quando l'ultima interazione è stata da tastiera, quindi chi apre
+ * la finestrella premendo Invio su un tasto vedeva l'anello d'accento **attorno
+ * all'intera finestrella**, finché non tabulava dentro.
+ *
+ * Si spegne sul solo nodo che porta `role="dialog"` insieme alla classe: i
+ * comandi dentro conservano l'anello esattamente com'è, ed è lì che il fuoco
+ * deve essere visibile. `.primo` ha la stessa struttura con un nome
+ * diverso — `role="dialog"` e `data-fuoco-iniziale` sulla radice — quindi la
+ * stessa eccezione, elencata e non generalizzata a `[role='dialog']`: il
+ * pannello dell'equalizzatore è anche lui un dialogo, non prende il fuoco sulla
+ * radice, e non deve perdere il suo anello per sbaglio.
+ *
+ * Vale anche in contrasto elevato: il blocco `forced-colors` in fondo al foglio
+ * ripete l'esclusione accanto al suo anello `Highlight`. Due righe in due posti,
+ * perché l'anello è dichiarato in due posti.
+ */
+.finestrella[role='dialog']:focus-visible,
+.primo[role='dialog']:focus-visible {
+  outline: none;
 }
 
 /* ── le barre di scorrimento ──────────────────────────────────────────────────
@@ -536,20 +674,34 @@ body {
   --chat-w: 360px;
 }
 
-/* Sopra ogni altro strato — il velo di una finestrella è a 2, la barra della
-   selezione a 4, i toast a 5 — e non per vezzo: chiudere la finestra è l'unico
-   comando che deve funzionare anche quando l'applicazione sta chiedendo
-   qualcosa e non ascolta nient'altro. */
+/* In cima alla scala, e non per vezzo: chiudere la finestra è l'unico comando
+   che deve funzionare anche quando l'applicazione sta chiedendo qualcosa e non
+   ascolta nient'altro. `--strato-finestra` è il numero più alto che il foglio
+   dichiara — sopra il velo di una finestrella (`--strato-velo`), la barra della
+   selezione (`--strato-barra`), i toast (`--strato-toast`) e la schermata del
+   primo avvio (`--strato-primo`), che col vecchio 9 contro il suo 40 copriva
+   proprio questi tre bottoni.
+
+   `pointer-events: none` sul contenitore e `auto` sui figli: la fascia è un
+   rettangolo di centotrentotto per sessanta pixel col fondo trasparente, e quei
+   pixel mangiavano i clic di tutto ciò che ci passava sotto — la barra di
+   scorrimento di una finestrella alta, per prima. È la terza via per cedere
+   l'angolo, dopo le due per posizione (`.in-riproduzione .testa` e
+   `.pannello-coda`, più sotto): quelle funzionano perché sanno dove sono, e una
+   finestrella centrata di altezza variabile non lo sa. */
 .controlli-finestra {
   position: fixed;
   top: 0;
   right: 0;
-  z-index: 9;
+  z-index: var(--strato-finestra);
   display: flex;
   height: var(--barra-titolo-h);
+  pointer-events: none;
 }
 .controlli-finestra .controllo {
   position: relative;
+  /* Il bersaglio torna: a non prendere i clic è il contenitore, non i bottoni. */
+  pointer-events: auto;
   display: grid;
   place-items: center;
   width: var(--controllo-w);
@@ -797,6 +949,21 @@ body {
   flex-direction: row;
   align-items: center;
   gap: var(--spazio-2);
+}
+/*
+ * Niente qui calcola lo spazio a mano — è una riga flex centrata, e le sei
+ * destinazioni più Impostazioni ci stanno anche alla larghezza minima vera
+ * della finestra. Ci stanno però con poco avanzo, e da quando le destinazioni
+ * sono sei l'avanzo è quello che una traduzione più lunga o una skin con il
+ * carattere più grande si mangia. `min-width: 0` non cambia niente finché lo
+ * spazio c'è, e quando finisce fa troncare le etichette — che l'ellissi di
+ * `.voce .etichetta` sa già fare — invece di spingere la barra fuori dalla
+ * finestra, che è l'unico esito da cui non si torna indietro.
+ */
+.navigazione[data-fondo] .destinazioni,
+.navigazione[data-fondo] .fondo,
+.navigazione[data-fondo] .voce {
+  min-width: 0;
 }
 /* In orizzontale il conteggio accanto a ogni voce è rumore: la barra è larga
    quanto la finestra e i numeri la riempirebbero al posto dei nomi. */
@@ -1247,7 +1414,14 @@ body {
   cursor: pointer;
   white-space: nowrap;
 }
-.segmentato .linguetta:hover:not(:disabled) {
+/* `:not([aria-disabled])` e non `:not(:disabled)`: le linguette spente non sono
+   più `disabled`, sono `aria-disabled` — restano focalizzabili apposta, perché
+   la ragione per cui una linguetta è spenta è la sola cosa che chi la trova
+   spenta vuole sapere, e un `disabled` la toglie dal giro del tabulatore
+   insieme alla sua spiegazione. Il motivo lungo sta in `parti/Segmentato.tsx`.
+   Qui conta che i due pseudo non sono sinonimi: lasciati com'erano, una
+   linguetta spenta si accendeva al sorvolo e si disegnava come le accese. */
+.segmentato .linguetta:not([aria-disabled]):hover {
   color: var(--color-text-1);
 }
 .segmentato .linguetta[data-active] {
@@ -1256,7 +1430,7 @@ body {
   font-weight: 550;
   box-shadow: var(--filo), var(--shadow-1);
 }
-.segmentato .linguetta:disabled {
+.segmentato .linguetta[aria-disabled] {
   opacity: 0.45;
   cursor: default;
 }
@@ -1282,6 +1456,20 @@ body {
   border-radius: var(--raggio-minuto);
   font-size: 10.5px;
 }
+/* Il guscio si spartisce lo spazio al posto della linguetta che avvolge.
+   In `denso` la spartizione la fa il `flex: 1` qui sopra, e quello sta sulla
+   `.linguetta`: quando la linguetta è spenta però non è più figlia del
+   segmentato — in mezzo c'è `.con-ragione`, il guscio che regge la pastiglia
+   col motivo — e un figlio senza `flex` fra quattro che ce l'hanno si prende la
+   sua larghezza naturale e stringe gli altri tre. Il `flex` va quindi anche sul
+   guscio, che è il figlio vero. `min-width: 0` perché il minimo di un flex è il
+   suo contenuto: senza, il guscio non scenderebbe sotto la larghezza della
+   linguetta e le quattro linguette tornerebbero a traboccare dai centonovanta
+   pixel della riga. */
+.segmentato.denso .con-ragione {
+  flex: 1;
+  min-width: 0;
+}
 
 .cartella {
   display: flex;
@@ -1294,7 +1482,10 @@ body {
   padding: 6px var(--spazio-2);
   overflow: hidden;
 }
+/* Un percorso si copia: è quel che si incolla nell'Esplora file, o in una
+   segnalazione quando una radice non si raggiunge più. */
 .cartella .percorso {
+  user-select: text;
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -1660,15 +1851,64 @@ body {
   text-align: right;
 }
 
+/*
+ * `min-height` e non `height`, ed è una sottrazione.
+ *
+ * Quaranta pixel meno i dieci del padding (`box-sizing: border-box`) lasciano
+ * trenta di contenuto, e `.riga .chi` ne impila due: 13,5px e 12px a
+ * `line-height: 1.25`, cioè 31,9. L'artista sbordava sotto il bordo arrotondato
+ * di un pixel e nove, su ogni riga dell'elenco.
+ *
+ * Quaranta diventa quindi il **pavimento** e la riga si assesta a 41,9. Il
+ * numero nuovo conta meno del fatto che sia **uno solo per tutte**, perché la
+ * finestra virtuale misura l'altezza della prima `.riga` disegnata e con quella
+ * calcola dove stanno le altre diciottomila: righe di altezza diversa la
+ * farebbero saltare. Quel che le tiene uguali sono due cose, e nessuna delle due
+ * si tocca: l'`white-space: nowrap` con l'ellissi su `.nome` e `.autore` qui
+ * sotto, che impedisce a un titolo lungo di andare a capo, e il fatto che
+ * `.autore` abbia sempre un testo — `formato.ts:nomeArtista` restituisce
+ * «Artista sconosciuto» e mai la stringa vuota, quindi la seconda riga c'è
+ * sempre e misura sempre quanto l'altra.
+ *
+ * Resta una riga di scarto dichiarata: `.riga.finta`, il segnaposto, impila due
+ * barre da 11 con 5 di stacco e si ferma al pavimento, cioè a quaranta contro i
+ * 41,9 della riga vera. Sono due pixel di salto all'arrivo dei dati, ed è il
+ * difetto che il commento di `.scheda.finta` dice di non voler avere — qui si
+ * accetta perché la finestra virtuale rimisura con un `ResizeObserver`, quindi
+ * il salto è visibile una volta e non sfalsa il calcolo.
+ */
 .riga {
   display: grid;
   grid-template-columns: var(--colonne-riga);
   align-items: center;
   gap: 12px;
-  height: 40px;
+  min-height: 40px;
   padding: 5px var(--spazio-2);
   border-radius: var(--radius-card);
   cursor: default;
+}
+/* Le celle che non sono una scatola.
+ *
+ * In un `role="grid"` i figli di una riga devono essere celle, e i comandi non
+ * lo erano: un `role="gridcell"` messo **sul** bottone gli toglie il ruolo
+ * nativo, e chi ascolta lo schermo sentirebbe «cella» dove oggi sente
+ * «bottone» — cioè perderebbe proprio la cosa per cui questo elenco è una
+ * griglia e non un `listbox`. La cella quindi avvolge il comando invece di
+ * esserlo.
+ *
+ * `display: contents` è ciò che rende l'involucro gratuito: `--colonne-riga`
+ * assegna sette o otto colonne **per ordine dei figli**, e un contenitore vero
+ * conterebbe per uno — le sette colonne collasserebbero in una. Con `contents`
+ * la scatola sparisce dalla disposizione e resta il ruolo, che è l'unica cosa
+ * per cui l'elemento esiste.
+ *
+ * Due nomi e una regola sola: quel che avvolgono non è la stessa cosa — un
+ * comando l'una, la copertina l'altra — e un nome che mente su cosa contiene è
+ * un nome che al primo ritocco manda a ridipingere la cella sbagliata. La
+ * regola invece è la stessa, e scriverla due volte sarebbe una copia. */
+.cella-comando,
+.cella-miniatura {
+  display: contents;
 }
 /* Il sorvolo è un velo, non una superficie.
    `--color-surface-1` sopra `--color-surface-0` sono due grigi a cinque unità
@@ -1895,7 +2135,7 @@ body {
 .primo {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: var(--strato-primo);
   display: grid;
   place-items: center;
   padding: var(--spazio-4);
@@ -1992,7 +2232,15 @@ body {
   margin-top: var(--spazio-2);
 }
 
+/* Si seleziona e si copia, tutta. `body` dichiara `user-select: none` perché
+   l'interfaccia è cromo, ma un messaggio di guasto non è cromo: è l'unico posto
+   in cui l'applicazione dice una cosa che va incollata altrove — in una
+   segnalazione, in una ricerca. Ventidue elementi del foglio fanno già questo
+   rientro, e stava proprio dove serviva di più. Sull'intera fascia e non solo su
+   `> span`, così vengono anche `.dettaglio-errore` e il `<code>` della causa
+   tecnica: è il pezzo che si cerca di copiare, non la frase. */
 .errore {
+  user-select: text;
   display: flex;
   align-items: flex-start;
   gap: var(--spazio-2);
@@ -2213,9 +2461,11 @@ body {
   opacity: 0.55;
 }
 
+/* Il `user-select: text` che stava qui è salito su `.errore`: lì copre anche il
+   dettaglio e il codice, e ripeterlo qui sarebbe una dichiarazione che non fa
+   niente e che un giorno qualcuno sposterebbe credendola portante. */
 .errore > span {
   flex: 1;
-  user-select: text;
 }
 /* Nel toast il dettaglio sta dentro la stessa colonna della frase, sotto. */
 .errore .dettaglio-errore {
@@ -2375,8 +2625,12 @@ body {
   color: var(--color-surface-0);
 }
 
+/* `flex-wrap` perché la fascia ha un quarto figlio che deve stare da solo:
+   `.formato`, i dati tecnici del file. La regola che lo manda a capo sta con
+   lui, più sotto, accanto all'altra fascia che lo ospita. */
 .colonna .giudizio {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--spazio-2);
   padding-bottom: var(--spazio-3);
@@ -2450,27 +2704,40 @@ body {
 .in-riproduzione {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: var(--strato-contenuto);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: var(--color-surface-0);
 }
 
-/* Due strati e non uno. L'ambiente prende il colore dalla copertina; il velo è
-   neutro, e sopra il velo sta il testo. Se il velo fosse una versione scura
-   della tinta, con una copertina gialla il titolo si leggerebbe su giallo
-   scuro — che è ancora giallo. */
+/* Due strati e non uno. L'ambiente prende il colore dalla copertina; lo scrim
+   è neutro, e sopra lo scrim sta il testo. Se fosse una versione scura della
+   tinta, con una copertina gialla il titolo si leggerebbe su giallo scuro —
+   che è ancora giallo.
+
+   Nessuno dei due prende il puntatore. Sono `aria-hidden` e grandi quanto la
+   schermata: un divieto dimenticato qui non si vede, si sente — smette di
+   rispondere tutto quel che c'è sotto. */
 .in-riproduzione .ambiente {
   position: absolute;
   inset: 0;
+  pointer-events: none;
   background:
     radial-gradient(60% 60% at 22% 18%, rgb(var(--hero-rgb) / 0.45), transparent 70%),
     radial-gradient(70% 70% at 82% 78%, rgb(var(--hero-rgb) / 0.28), transparent 72%);
 }
-.in-riproduzione .velo {
+/* `np-scrim` e non `velo`. Un velo, in questo foglio, è una superficie che
+   prende il clic per chiudere qualcosa, ed è per quello che sta su
+   `--strato-velo`. Questo non chiude niente — è il nero verticale che rende
+   leggibile il titolo — e portare quel nome gli faceva ereditare quello strato:
+   si dipingeva sopra la testata e il corpo, che sono `position: relative` e
+   nient'altro, e si mangiava ogni clic della schermata. Il nome che resta è
+   quello del registro delle skin, come per `.tooltip-pill` qui sotto. */
+.in-riproduzione .np-scrim {
   position: absolute;
   inset: 0;
+  pointer-events: none;
   background: linear-gradient(
     180deg,
     rgb(var(--surface-0-rgb) / 0.42),
@@ -2523,18 +2790,35 @@ body {
  * skin, e la regola resta perché chi ridipinge abbia una superficie da
  * ridipingere: la pastiglia sa già dove mettersi e come stare zitta.
  *
- * Chi la scopriva non c'è più. Era un contenitore attorno al bottone spento,
- * che la faceva salire al passaggio **e al fuoco da tastiera**; è sparito
- * quando i comandi spenti hanno smesso di aver bisogno di una ragione a parte,
- * perché i loro testi adesso si leggono. Finché nessuno la monta, `opacity: 0`
- * è tutto ciò che questa regola fa — ed è quel che `strumenti/classi.js`
- * dichiara in `ATTESE`, alla voce `tooltip-pill`.
+ * # Chi la scopre
+ *
+ * `.con-ragione`, qui sotto: il guscio che si mette attorno a un comando spento
+ * perché la pastiglia abbia un riferimento da cui pendere e un gesto che la
+ * alzi. C'era, è sparito quando i comandi spenti hanno smesso di aver bisogno di
+ * una ragione a parte, ed è tornato con le linguette spente del pannello dei
+ * comandi, che la ragione ce l'hanno di nuovo — la regola era arrivata **prima**
+ * del markup che la usa, e adesso il markup c'è: `parti/Segmentato.tsx` avvolge
+ * ogni linguetta `aria-disabled` nel guscio e ci appende la pastiglia.
+ *
+ * Le due regole che la portano a 1 stanno accanto alla pastiglia e non al
+ * guscio, apposta: chi legge `opacity: 0` deve trovare nella stessa schermata
+ * chi la accende, altrimenti quello zero si legge come «disattivata» invece che
+ * come «in attesa di un gesto».
+ *
+ * Con quel markup la voce `tooltip-pill` è uscita da `ATTESE` di
+ * `strumenti/classi.js` e da `NON_ANCORA` di `studio/scene.tsx`: la parte adesso
+ * si vede nell'applicazione, e non solo nell'anteprima dello Studio.
+ *
+ * `:focus-within` accanto a `:hover`, e non è simmetria per bellezza: un comando
+ * spento che spiega perché è spento solo a chi ha il mouse non spiega niente a
+ * chi naviga col tabulatore, cioè proprio a chi non può provare a premerlo per
+ * scoprirlo.
  */
 .tooltip-pill {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  z-index: 2;
+  z-index: var(--strato-pastiglia);
   width: max-content;
   max-width: 260px;
   padding: 6px 10px;
@@ -2549,6 +2833,20 @@ body {
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--transition-fast);
+}
+
+/* Il guscio. `inline-flex` perché sta in linea dov'era il comando che avvolge e
+   non deve occupare la riga; `relative` perché la pastiglia è `absolute` e senza
+   questo si aggancerebbe al primo antenato posizionato, che può essere il
+   pannello intero — e una pastiglia ancorata al pannello finisce lontana dal
+   comando che spiega. */
+.con-ragione {
+  position: relative;
+  display: inline-flex;
+}
+.con-ragione:hover .tooltip-pill,
+.con-ragione:focus-within .tooltip-pill {
+  opacity: 1;
 }
 
 .in-riproduzione .comandi .tasto:disabled {
@@ -2691,9 +2989,20 @@ body {
  * e scriverlo qui vinceva per specificità sul `display: grid` di `.vuota` —
  * cioè, senza copertina, la nota finiva nell'angolo in alto a sinistra del
  * quadrato invece che in mezzo.
+ *
+ * # Perché anche `cqw`, e non solo `cqh`
+ *
+ * Con `flex: none` e una misura che dipende dalla sola altezza, la copertina non
+ * si stringe mai: su una finestra alta e stretta con la coda aperta questa
+ * colonna ne è larga duecentoventi e il quadrato ne chiedeva trecentosessanta,
+ * che `.corpo { overflow: hidden }` tagliava — cioè la copertina si perdeva
+ * proprio nel caso in cui era l'unica cosa da guardare. Il `min()` ha tre
+ * termini perché i vincoli sono tre: il tetto voluto, l'altezza disponibile e la
+ * larghezza disponibile; il novantasei per cento lascia il respiro che il
+ * centoperento toglierebbe.
  */
 .in-riproduzione .np-art {
-  width: min(360px, 40cqh);
+  width: min(360px, 40cqh, 96cqw);
   aspect-ratio: 1;
   flex: none;
   border-radius: var(--radius-panel);
@@ -2784,6 +3093,7 @@ body {
 }
 .in-riproduzione .giudizio {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--spazio-3);
 }
@@ -2796,6 +3106,44 @@ body {
 .in-riproduzione .giudizio .volume .scorrimento {
   flex: 1;
   min-width: 0;
+}
+
+/* ── i dati tecnici del file ──────────────────────────────────────────────────
+ *
+ * «FLAC · 44,1 kHz · Stereo · 1058 kbps», ultimo figlio di `.giudizio`. Una
+ * regola sola perché il componente è uno solo: `parti/Giudizio.tsx` è la fascia
+ * che la colonna e lo schermo intero condividono già, e questa riga sta lì
+ * dentro — vederla scritta due volte vorrebbe dire che le due fasce hanno
+ * ricominciato a divergere.
+ *
+ * `flex: 0 0 100%` la manda a capo da sola invece di farla stare in fila con
+ * cuore, stelle e volume. Non è gusto: la fascia è una riga flex, e un quarto
+ * elemento in fila si prenderebbe lo spazio del cursore del volume, che è
+ * l'unico dei quattro che si trascina.
+ *
+ * `min-width: 0` e l'ellissi non sono cosmetici. `.colonna .giudizio` sta in
+ * una colonna larga **348 px fissi** — è `core/aether-skin/src/layout.rs`, non
+ * una percentuale — e il contenuto minimo di una riga di testo senza `min-width:
+ * 0` è la riga intera: spingerebbe fuori la coda invece di accorciarsi. Con
+ * un'edizione dal nome lungo il bitrate finisce sotto i puntini, e il markup
+ * porta apposta un `title` con la riga intera.
+ *
+ * Il colore è quello di `.np-meta`, il vicino di peso: è testo secondario, e
+ * un secondo livello di grigio in una fascia che ne ha già uno farebbe tre
+ * gerarchie dove ce ne sono due. Il corpo è un gradino sotto — dodici pixel,
+ * gli stessi dei due tempi ai lati della barra, che sono l'altro dato tecnico
+ * presente in tutte e due le fasce — perché questa riga è la meno importante
+ * delle quattro e alla misura di `.np-meta` sembrerebbe dire qualcosa sul brano
+ * invece che sul file.
+ */
+.formato {
+  flex: 0 0 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-text-2);
 }
 
 /* ── quante barre ─────────────────────────────────────────────────────────────
@@ -2835,13 +3183,13 @@ body {
 
 /* ── la scena dello spettro ───────────────────────────────────────────────────
  *
- * La tela sta fra il velo e il contenuto, e le tre cose sono in quest'ordine
- * nel DOM: l'ambiente e il velo prima, la scena, poi testa e corpo — che sono
+ * La tela sta fra lo scrim e il contenuto, e le tre cose sono in quest'ordine
+ * nel DOM: l'ambiente e lo scrim prima, la scena, poi testa e corpo — che sono
  * posizionati, quindi si disegnano sopra senza bisogno di un `z-index` che poi
  * qualcuno dovrebbe tenere allineato agli altri quattro di questo file.
  *
- * Sopra il velo e non sotto: sotto sarebbe schiacciata dal nero verticale che
- * rende leggibile il titolo — quel velo arriva all'ottanta per cento in basso,
+ * Sopra lo scrim e non sotto: sotto sarebbe schiacciata dal nero verticale che
+ * rende leggibile il titolo — quel nero arriva all'ottanta per cento in basso,
  * cioè esattamente dove stanno le barre.
  *
  * La maschera è ciò che tiene leggibile il testo: la scena si spegne salendo, e
@@ -3353,9 +3701,38 @@ body {
 .testo-np .niente-testo span {
   font-size: 12px;
 }
+/*
+ * I due bottoni che restano quando il testo non c'è, o c'è senza tempi.
+ *
+ * Stanno in due posti — dentro `.niente-testo` e dentro `.testo-piatto` — e
+ * l'allineamento cambia con il posto, perché è il posto a dire dov'è il
+ * margine: sotto la colonna centrata stanno in mezzo, sotto il blocco a
+ * bandiera stanno a sinistra, attaccati alla frase che li ha chiesti.
+ * Centrarli sempre li staccherebbe da metà delle volte in cui compaiono.
+ *
+ * `flex-wrap` perché la terza colonna si stringe fino a 348 pixel e i due
+ * bottoni non hanno un ordine di importanza: vanno a capo insieme.
+ */
+.testo-np .scelte-testo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-1);
+  margin-top: var(--spazio-2);
+}
+.testo-np .niente-testo .scelte-testo {
+  justify-content: center;
+}
+.testo-np .testo-piatto .scelte-testo {
+  justify-content: flex-start;
+}
 
-/* La striscia della correzione: compare solo quando i tempi non tornano con la
-   durata del file, cioè quando c'è davvero qualcosa da correggere. */
+/* La striscia della correzione, che c'è **sempre** che ci siano righe.
+   Diceva «compare solo quando i tempi non tornano con la durata del file», e
+   non è più vero: uno sfasamento costante su un testo dichiarato buono esiste
+   eccome, e finché la striscia compariva solo sui testi sospetti quel caso era
+   irraggiungibile. Ciò che dipende dall'aderenza è soltanto la frase del perché
+   e la classe `discreta` qui sotto, che la fa da parte quando non c'è niente
+   da segnalare. */
 .testo-np .scarto-testo {
   display: flex;
   align-items: center;
@@ -3380,6 +3757,46 @@ body {
   color: var(--color-text-2);
 }
 
+/* Quando non c'è niente da segnalare, la striscia si fa da parte.
+ *
+ * La striscia adesso c'è **sempre** che ci siano righe con un tempo, ed è
+ * giusto: uno sfasamento costante su un testo che il controllo di durata chiama
+ * «buono» esiste — un `.lrc` battuto su un'altra edizione, un master con mezzo
+ * secondo di silenzio in testa — e prima quei due bottoni erano irraggiungibili
+ * proprio nel caso più comune. Ma un comando che c'è sempre, a piena voce,
+ * compete con le righe cantate, che sono la cosa per cui questo pannello è
+ * aperto. Quindi a riposo si spegne e al passaggio si riaccende: il gesto la
+ * trova, l'occhio no.
+ *
+ * `:focus-within` accanto a `:hover` per la stessa ragione di `.con-ragione`:
+ * un comando che si mostra solo a chi ha il mouse è un comando che chi naviga
+ * col tabulatore non incontra mai — e la sua fermata di tabulazione c'è
+ * comunque, quindi senza questa riga arriverebbe il fuoco su qualcosa di
+ * invisibile.
+ *
+ * Via il fondo e il bordo: senza la frase del perché restano due bottoncini e
+ * un numero, e un riquadro a tutta larghezza attorno a tre cose piccole è una
+ * scatola in cerca di un contenuto. Il `padding` scende a metà per lo stesso
+ * motivo — quel che teneva distante il testo dai bordi non ha più né testo né
+ * bordi da tenere distanti.
+ *
+ * `justify-content: flex-end` perché a spingere i bottoni a destra era
+ * `.perche`, con il suo `flex: 1`: tolta la frase, senza questa riga i tre
+ * elementi si accatastano a sinistra e la striscia sembra rotta invece che
+ * discreta. */
+.testo-np .scarto-testo.discreta {
+  justify-content: flex-end;
+  padding: var(--spazio-1);
+  background: none;
+  border-color: transparent;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.testo-np .scarto-testo.discreta:hover,
+.testo-np .scarto-testo.discreta:focus-within {
+  opacity: 1;
+}
+
 /* ── la pausa dello scorrimento ───────────────────────────────────────────
    Quando hai scorso a mano, il pannello smette di inseguire la riga accesa per
    qualche secondo. Prima quella pausa non si vedeva: chi tornava a guardare
@@ -3394,7 +3811,7 @@ body {
   position: absolute;
   bottom: var(--spazio-3);
   left: 50%;
-  z-index: 1;
+  z-index: var(--strato-aderente);
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -3500,25 +3917,54 @@ body {
 
 /* Nella revisione i ritocchi compaiono solo sulla riga sotto il puntatore:
    quattro pulsanti per riga su sessanta righe sarebbero duecentoquaranta
-   bersagli visibili insieme, cioè nessun bersaglio. */
-.sincronizza .elenco-battute.rivedi .ritocco {
+   bersagli visibili insieme, cioè nessun bersaglio.
+
+   `:is(.rivedi, .parole)` e non un secondo blocco copiato: la revisione delle
+   parole è lo stesso elenco con le parole al posto dei versi — stesse due
+   colonne, stessi `data-attesa` e `data-fatta` — e lì il conto dei bersagli è
+   peggiore, non migliore, perché le parole sono cinque volte le righe. Due
+   copie divergerebbero alla prima modifica, e quella che si dimentica è sempre
+   la seconda. */
+.sincronizza .elenco-battute:is(.rivedi, .parole) .ritocco {
   display: flex;
   gap: 2px;
   opacity: 0;
   transition: opacity var(--transition-fast);
 }
-.sincronizza .elenco-battute.rivedi li:hover .ritocco,
-.sincronizza .elenco-battute.rivedi li:focus-within .ritocco {
+.sincronizza .elenco-battute:is(.rivedi, .parole) li:hover .ritocco,
+.sincronizza .elenco-battute:is(.rivedi, .parole) li:focus-within .ritocco {
   opacity: 1;
 }
-.sincronizza .elenco-battute.rivedi li:hover {
+.sincronizza .elenco-battute:is(.rivedi, .parole) li:hover {
   background: rgb(var(--surface-0-rgb) / 0.5);
+}
+/*
+ * Dove finisce un verso e comincia l'altro.
+ *
+ * Le parole stanno in fila, una per riga: senza un segno, un ritornello è una
+ * colonna indistinta di parole uguali e chi batte perde il posto. `data-capo`
+ * — un attributo e non una classe, perché lo porta la prima parola di ogni
+ * verso e non un elemento a sé — è l'unica cosa che lo dice. Un filo e un po'
+ * d'aria, non un titolo: quel che si conta mentre la canzone suona sono le
+ * parole, non i versi.
+ */
+.sincronizza .elenco-battute.parole li[data-capo] {
+  margin-top: var(--spazio-1);
+  padding-top: var(--spazio-1);
+  border-top: 1px solid var(--hairline);
+}
+/* Tranne la prima, che non separa due versi: separerebbe l'elenco da quel che
+   sta sopra, cioè direbbe una cosa che non è vera. */
+.sincronizza .elenco-battute.parole li[data-capo]:first-child {
+  margin-top: 0;
+  padding-top: 4px;
+  border-top: none;
 }
 /* Chi naviga da tastiera non ha un puntatore: i ritocchi restano raggiungibili
    perché `:focus-within` li mostra, e finché non lo sono occupano comunque il
    loro spazio — così la riga non si allarga sotto il dito. */
 @media (prefers-reduced-motion: reduce) {
-  .sincronizza .elenco-battute.rivedi .ritocco {
+  .sincronizza .elenco-battute:is(.rivedi, .parole) .ritocco {
     transition: none;
   }
 }
@@ -3568,7 +4014,7 @@ body {
   left: calc(var(--nav-w) + var(--player-gap));
   right: var(--player-gap);
   bottom: var(--player-gap);
-  z-index: 4;
+  z-index: var(--strato-barra);
   display: flex;
   align-items: center;
   /* Va a capo per righe intere invece di comprimere i tasti: con la terza
@@ -3707,9 +4153,20 @@ body {
   grid-column: span 2;
   grid-row: span 2;
 }
+/* Lo stesso difetto delle schede album, e lo stesso rimedio — vedi «La scheda di
+   un album si solleva», più sotto nel foglio. Il sorvolo disegnava un contorno
+   d'accento a due pixel con due di stacco, cioè **esattamente** l'anello del
+   fuoco della regola globale: due stati diversi con lo stesso segno, e chi
+   naviga col tabulatore non poteva distinguere dove era arrivato da dove stava il
+   puntatore. Il puntatore alza il mosaico e ne approfondisce l'ombra — la
+   risposta di un oggetto — e l'anello d'accento torna a significare una cosa
+   sola. */
+.scheda-artista .mosaico {
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
 .scheda-artista:hover .mosaico {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-3);
 }
 .scheda-artista .nome {
   font-size: 13.5px;
@@ -3759,6 +4216,107 @@ body {
   cursor: default;
 }
 
+/* ── il pannello Cartelle ─────────────────────────────────────────────────────
+ *
+ * Un albero virtualizzato, e da lì viene il vincolo che governa tutto il resto:
+ * **nessuna `gap` fra le righe**. Le righe non disegnate sono due `.paglia`
+ * alte `sopra × altezza` e `sotto × altezza`, cioè un prodotto in cui uno
+ * spazio fra le righe non entra: bastano quei pochi pixel per riga saltata
+ * perché in fondo a tremila cartelle l'albero sia sfasato di uno schermo. La
+ * distanza, dove serve, la fa il `padding` della riga — che nel prodotto ci
+ * sta, perché è dentro l'altezza che la finestra misura.
+ */
+.albero-cartelle {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+/*
+ * La riga: il triangolo, il nome che si allunga, il conteggio in fondo.
+ *
+ * `min-height` e non `height`, come `.riga`: la finestra virtuale rimisura la
+ * prima riga disegnata con un `ResizeObserver`, quindi la riga può crescere con
+ * la densità o col ritmo della skin senza che nessuno riscriva un numero.
+ *
+ * Il rientro arriva da `--livello-nodo`, che la riga scrive in linea — 1 per le
+ * radici. Quanto valga un livello lo dice il foglio e non il TypeScript, perché
+ * è ritmo, e il ritmo è della skin. La dichiarazione sta **dopo** `padding`:
+ * nell'ordine inverso sarebbe la scorciatoia a scavalcarla, e il rientro non si
+ * vedrebbe.
+ */
+.nodo-cartella {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  min-height: 30px;
+  padding: 3px var(--spazio-2);
+  padding-inline-start: calc(
+    var(--spazio-3) + (var(--livello-nodo) - 1) * var(--spazio-4)
+  );
+  border-radius: var(--raggio-minuto);
+  cursor: default;
+}
+.nodo-cartella:hover {
+  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
+}
+/* Scelto: la stessa forma della riga scelta nell'elenco dei brani, perché è la
+   stessa notizia detta in una schermata diversa. Il fuoco da tastiera non ha
+   bisogno di niente qui: l'anello globale di `:focus-visible` lo disegna già,
+   ed è la regola che esiste apposta per non riscriverlo ottanta volte. */
+.nodo-cartella[aria-selected="true"] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+/* Larga anche da vuota. Le foglie il triangolo non lo disegnano, e senza questa
+   misura il loro nome si allineerebbe più a sinistra di quello dei fratelli che
+   ce l'hanno: il rientro direbbe un livello che non è il loro. */
+.freccia-nodo {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+/* Su una radice il nome è il percorso intero: qui il troncamento è la regola e
+   non il caso limite, e il percorso per esteso resta nel `title`. */
+.nome-nodo {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+/* Lo stesso peso del conteggio della barra di navigazione: è lo stesso numero
+   detto nello stesso modo, e due mono di misura diversa per la stessa cosa si
+   leggono come due cose diverse. */
+.conteggio-nodo {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+/*
+ * La radice che non risponde.
+ *
+ * L'opacità dice «spenta» a chi guarda, e da sola non basta: `forced-colors`
+ * impone i colori ma non tocca l'opacità, quindi in contrasto elevato un testo
+ * smorzato è solo un testo meno leggibile — cioè il difetto al posto del segno,
+ * proprio per chi ha chiesto più contrasto. Il corsivo porta la stessa notizia
+ * senza toglierne, e là sotto l'opacità torna piena e resta lui.
+ */
+.nodo-spento {
+  opacity: 0.55;
+}
+.nodo-spento .nome-nodo {
+  font-style: italic;
+}
+
 /* ── notifiche ───────────────────────────────────────────────────────────── */
 /* La pila porta la posizione, i toast portano l'aspetto.
    Un toast solo poteva essere `fixed` da sé; due allo stesso angolo si
@@ -3768,7 +4326,7 @@ body {
   position: fixed;
   right: var(--player-gap);
   bottom: calc(var(--player-clearance) + var(--player-gap));
-  z-index: 5;
+  z-index: var(--strato-toast);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -3797,7 +4355,10 @@ body {
   flex: 1;
   min-width: 0;
 }
+/* Nel toast la causa tecnica sta qui, in carattere a spaziatura fissa: si copia,
+   per la stessa ragione di `.errore`. */
 .toast .cosa {
+  user-select: text;
   font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--color-text-2);
@@ -3814,7 +4375,11 @@ body {
   display: block;
   height: 100%;
   background: var(--accent);
-  transition: width 120ms linear;
+  /* `calc` e non `var(--transition-med)`: quella porta `--ease-out-expo`, e una
+     barra che si riempie frenando dice «sta per finire» a ogni aggiornamento.
+     Qui serviva la scala del movimento, non la curva — e la durata è tarata
+     sulla cadenza con cui questa fonte annuncia il suo avanzamento. */
+  transition: width calc(120ms * var(--motion-scale, 1)) linear;
 }
 
 /* ── lo Skin Studio ──────────────────────────────────────────────────────── */
@@ -4165,6 +4730,15 @@ body {
   font: inherit;
   font-size: 12.5px;
   outline: none;
+}
+/* L'`outline: none` qui sopra spegneva la regola globale del fuoco e non metteva
+   niente al suo posto: chi arriva col tabulatore non vedeva dove era arrivato.
+   Il sostituto è quello che il foglio usa già per ogni campo di testo — bordo
+   d'accento più l'anello morbido di `.campo:focus` — e non il contorno, perché
+   su un campo il contorno è il segno che `outline: none` è lì per togliere. */
+.registro .filtro:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .registro .albero {
   flex: 1;
@@ -4518,7 +5092,7 @@ body {
   border: 1.5px dashed var(--accent);
   background: var(--accent-soft);
   pointer-events: none;
-  z-index: 2;
+  z-index: var(--strato-decoro);
 }
 /* La targhetta è il cuore: dice il nome, il gruppo e se c'è uno strato libero.
    Sapere come si chiama la cosa che si sta guardando è il problema vero. */
@@ -4573,6 +5147,32 @@ body {
   color: var(--color-text-3);
   font-family: var(--font-sans);
   font-size: 12px;
+}
+/*
+ * Il tasto che rimonta la scena.
+ *
+ * Sta in testa alla riga delle briciole, e non altrove, perché è della stessa
+ * riga che fa parte: sotto l'anteprima c'è già il posto in cui si dice cosa si
+ * sta guardando, e un tasto che dice «guardala di nuovo» appartiene a quello.
+ * La veste è quella di `.via` — un tondo trasparente che si accende sotto il
+ * dito — perché `icon-btn` è un nome del registro delle skin e non una regola
+ * del foglio: dà alla skin il bersaglio, non il disegno di partenza.
+ */
+.briciole .rigioca {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.briciole .rigioca:hover {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
 }
 .briciola {
   display: inline-flex;
@@ -4997,6 +5597,40 @@ body {
   font-family: var(--font-mono);
   font-size: 10px;
 }
+/*
+ * La curva a scatti: quanti passi, e dove salta.
+ *
+ * Occupa la riga sotto l'anteprima come `.quattro`, e per la stessa ragione —
+ * i campi di una curva stanno sotto il suo ritratto, non accanto. Si chiama
+ * `scala-passi` e non `passi` perché `.passi` è già la lista numerata di
+ * `.archivio-spotify` e `.credenziali`, con il selettore nudo: due significati
+ * su un nome solo qui vorrebbe dire una lista ordinata che diventa una griglia
+ * di due campi in fondo a una pagina che non c'entra niente.
+ */
+.scala-passi {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+.scala-passi input,
+.scala-passi select {
+  height: 24px;
+  min-width: 0;
+  padding: 0 6px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--color-text-1);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  outline: none;
+}
+.scala-passi input:focus,
+.scala-passi select:focus {
+  border-color: var(--accent);
+}
 
 /* La pila dei caratteri: l'ordine è il significato, quindi il posto si numera. */
 .pila-caratteri {
@@ -5389,6 +6023,11 @@ body {
   font-size: 10.5px;
   outline: none;
 }
+/* Il gemello di `.manopole-livello select:focus`, che questo aveva dimenticato:
+   stessa scatola, stesso segno. */
+.manopole-motivo > .una-manopola select:focus-visible {
+  border-color: var(--accent);
+}
 .manopole-motivo .manopole-livello {
   padding: 0;
   background: transparent;
@@ -5577,9 +6216,12 @@ body {
  * `.velo` dovunque, e la superficie sotto, che è quella che si sta
  * ridipingendo, diventerebbe irraggiungibile col puntatore.
  *
- * Solo i figli diretti del riquadro: `np-scrim` porta la stessa classe ma sta
- * dentro la schermata grande, dove il velo copre l'ambiente e basta — lì
- * pareggia con l'applicazione e va lasciato com'è.
+ * Solo i figli diretti del riquadro, che sono i veli veri delle scene: quello
+ * trasparente del menù e quello scuro di una finestrella, montati da
+ * `Sovrapposte` in `studio/scene.tsx`. Lo scrim della schermata grande qui non
+ * c'entra più — portava la stessa classe, e il giorno in cui `.velo` ha preso
+ * uno strato si è ritrovato sopra la scena che doveva velare. Adesso si chiama
+ * `np-scrim` e basta, e il divieto se lo scrive da sé.
  *
  * Quel che il velo contiene torna a prenderlo: senza questa seconda regola la
  * finestrella dentro il velo scuro erediterebbe il divieto, e sarebbe l'unica
@@ -5672,20 +6314,6 @@ body {
   border-color: color-mix(in srgb, var(--warning) 32%, var(--hairline));
 }
 
-
-/* ── le due manopole che lo scafale scavalca ──────────────────────────────── */
-.scelta-impaginazione[data-spenta] .valori {
-  opacity: 0.4;
-}
-.scelta-impaginazione[data-spenta] .valore {
-  cursor: default;
-}
-.scelta-impaginazione .perche {
-  margin-left: 6px;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  color: var(--color-text-3);
-}
 
 /* ── disinstallare una skin ───────────────────────────────────────────────── */
 .azioni-skin {
@@ -6038,6 +6666,17 @@ body {
   outline: none;
   user-select: text;
 }
+/* Il fuoco si segna sui **due strati insieme**, non sulla textarea: la textarea
+   è trasparente e sta sopra, quindi un suo contorno taglierebbe in mezzo al
+   testo colorato che si legge. `outline-offset` negativo perché la coppia occupa
+   tutto il riquadro (`inset: 0`) e un anello esterno finirebbe sotto il bordo del
+   pannello. Senza questa regola l'`outline: none` qui sopra lasciava l'editor
+   grande dello Studio senza alcun segno di fuoco. */
+.editor-doppio:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: var(--raggio-interno);
+}
 .editor-doppio .editor::selection {
   background: var(--accent-soft);
 }
@@ -6088,6 +6727,15 @@ body {
   user-select: text;
   white-space: pre;
   tab-size: 2;
+}
+/* Un `<pre>` che scorre lo raggiunge il tabulatore — Chromium rende
+   focalizzabili i contenitori scorrevoli proprio perché con la tastiera non
+   sarebbero leggibili altrimenti — quindi l'`outline: none` qui sopra gli
+   toglieva il segno di fuoco senza dargliene un altro. Anello interno, come
+   l'editor doppio: il riquadro arriva al bordo del pannello. */
+.uscita:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .uscita code {
   font: inherit;
@@ -6377,9 +7025,20 @@ body {
 }
 
 /* ── la vista Tavolozza ──────────────────────────────────────────────────── */
+/*
+ * Due colonne finché ci stanno, una quando non ci stanno più.
+ *
+ * Erano `1fr 1fr` fissi, e con il pannello Movimento la colonna di destra è
+ * passata da tre schede a otto: su una finestra stretta le due metà scendevano
+ * sotto i trecento pixel e i cursori diventavano scaglie. `auto-fit` con un
+ * minimo dichiarato non cambia niente dove c'era spazio — due tracce da 1fr,
+ * come prima — e dove non ce n'è impila invece di stringere. Il `min()`
+ * protegge il caso limite: senza, un contenitore più stretto del minimo
+ * traboccherebbe.
+ */
 .studio-tavolozza {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
   gap: 18px;
   padding: 18px 24px;
   overflow-y: auto;
@@ -6557,34 +7216,6 @@ body {
   grid-template-columns: 1fr 1fr;
   gap: 9px;
 }
-.scelta-impaginazione .che {
-  font-size: 11px;
-  color: var(--color-text-2);
-  margin-bottom: 5px;
-}
-.scelta-impaginazione .valori {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--color-surface-2);
-  border-radius: 9px;
-}
-.scelta-impaginazione .valore {
-  flex: 1;
-  padding: 5px 0;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--color-text-3);
-  font: inherit;
-  font-size: 10.5px;
-  cursor: pointer;
-}
-.scelta-impaginazione .valore[data-active] {
-  background: var(--color-surface-3);
-  color: var(--color-text-1);
-  font-weight: 550;
-}
 .prima-di-esportare {
   border-color: var(--accent) !important;
 }
@@ -6643,6 +7274,317 @@ body {
   padding: 8px 10px;
   border-radius: 10px;
   background: var(--warning-soft);
+}
+
+/* ── il pannello Movimento ────────────────────────────────────────────────────
+ *
+ * Cinque schede in fondo alla colonna di destra della Tavolozza: l'intensità
+ * (che veniva da sopra, in mezzo alle scelte d'impaginazione, dov'era
+ * l'anomalia), le curve nominate, la transizione di pagina, le animazioni e il
+ * loro budget.
+ *
+ * Non c'è un primitivo nuovo. Ogni blocco è una `.scheda` con dentro delle
+ * `.proprieta-riga`, e quel che segue sono soltanto le disposizioni: quante
+ * colonne, quanto rientro, e dove sta la «×». Le forme sono prese dai vicini
+ * che fanno la stessa cosa — `.motivi` e `.un-motivo` per gli elenchi di cose
+ * nominate, `.costo` per il misuratore — perché un elenco di cose nominate che
+ * si disegna in due modi diversi nella stessa vista si legge come due elenchi.
+ */
+
+/* Le curve. Colonna, come `.motivi`: sono la stessa cosa — un elenco di
+   dichiarazioni con un nome, un valore e una «×». */
+.elenco-curve {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* Il nome a misura fissa e il controllo che si prende il resto: i nomi delle
+   curve sono corti per costruzione (`is_easing_name` vuole minuscole e cifre),
+   e incolonnarli fa vedere le curve una sotto l'altra invece di farle ballare
+   dietro nomi di lunghezza diversa. */
+.una-curva {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) 20px;
+  gap: 7px;
+  align-items: center;
+}
+.una-curva .nome {
+  height: 24px;
+  min-width: 0;
+  padding: 0 7px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--color-text-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  outline: none;
+}
+.una-curva .nome:hover,
+.una-curva .nome:focus {
+  background: var(--color-surface-1);
+  border-color: var(--hairline);
+}
+.una-curva .via {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.una-curva .via:hover {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
+}
+
+/* La transizione di pagina: chi esce e chi entra, affiancati. Affiancati e non
+   in fila perché sono due metà della stessa scelta, e leggerle insieme è il
+   modo in cui si scopre di aver dichiarato un'uscita senza l'entrata. */
+.due-rotte {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.una-rotta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* Mezza colonna è mezza colonna: l'etichetta lascia sei pixel al cursore
+   invece dei sessantasei di serie, che qui gli lascerebbero un moncone. */
+.una-rotta .proprieta-riga {
+  grid-template-columns: 52px minmax(0, 1fr);
+}
+
+/* Le animazioni. */
+.elenco-animazioni {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Un blocco con la cornice, come `.un-motivo`: dentro ci sono cinque proprietà
+   e un elenco di fotogrammi, cioè abbastanza roba perché senza un contorno due
+   animazioni di fila diventino una lista sola. */
+.una-animazione {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 9px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--raggio-interno);
+  overflow: hidden;
+}
+/* Tutto rientra di nove pixel tranne la testa, che è a filo perché ha un fondo
+   suo: è la stessa scelta di `.un-motivo`, dove la testa fa da etichetta al
+   blocco e il resto sta dentro. */
+.una-animazione > .proprieta-riga,
+.una-animazione > .fotogrammi {
+  margin-inline: 9px;
+}
+/*
+ * Dichiarata e mai richiamata.
+ *
+ * Come `.colore[data-mai]`, e per la stessa ragione: non è un errore — il
+ * compilatore la salta e non costa niente — ma è precisamente la cosa che si è
+ * venuti a vedere quando si apre questo pannello. Il colore lo dice prima del
+ * testo. Qui la tinta sta sulla testa e non su tutto il blocco: un rettangolo
+ * giallo alto duecento pixel griderebbe «errore» per una cosa che errore non è.
+ */
+.una-animazione[data-mai] {
+  border-color: color-mix(in srgb, var(--warning) 32%, var(--hairline));
+}
+.una-animazione[data-mai] .testa-animazione {
+  background: var(--warning-soft);
+}
+.una-animazione[data-mai] .uso {
+  color: var(--warning);
+}
+.testa-animazione {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto 20px;
+  gap: var(--spazio-2);
+  align-items: center;
+  padding: 7px 8px;
+  background: var(--color-surface-2);
+}
+.testa-animazione .nome {
+  height: 24px;
+  min-width: 0;
+  padding: 0 7px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--color-text-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  outline: none;
+}
+.testa-animazione .nome:hover,
+.testa-animazione .nome:focus {
+  background: var(--color-surface-1);
+  border-color: var(--hairline);
+}
+.testa-animazione .uso {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-3);
+}
+.testa-animazione .via {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.testa-animazione .via:hover {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
+}
+
+/* I fotogrammi, rientrati sotto le proprietà: sono dentro l'animazione, non
+   accanto, e il filo a sinistra lo dice senza chiedere di ricordarselo. */
+.fotogrammi {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 3px;
+  padding-left: 9px;
+  border-left: 1px solid var(--hairline);
+}
+/*
+ * Una fermata.
+ *
+ * Il fondo la stacca dalla sorella: due fermate di fila hanno gli stessi
+ * cinque cursori con gli stessi nomi, e senza un contorno si legge una lista
+ * di dieci righe invece di due blocchi da cinque — cioè si perde proprio la
+ * cosa che i fotogrammi sono.
+ */
+.un-fotogramma {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 8px;
+  background: var(--color-surface-2);
+  border-radius: var(--raggio-minuto);
+}
+/* La «×» all'angolo, e il posto che le si lascia sulla prima riga: senza il
+   `padding` la casella «at» ci finirebbe sotto. */
+.un-fotogramma > .via {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.un-fotogramma > .via:hover:not(:disabled) {
+  background: var(--color-surface-3);
+  color: var(--color-text-1);
+}
+.un-fotogramma > .via:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.quando-fotogramma {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 22px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+/* Stretta perché il valore è una percentuale intera: un campo largo quanto la
+   riga prometterebbe che ci si può scrivere dentro qualcosa di più lungo. */
+.quando-fotogramma input {
+  width: 54px;
+  height: 24px;
+  padding: 0 6px;
+  background: var(--color-surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--color-text-1);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  outline: none;
+}
+.quando-fotogramma input:focus {
+  border-color: var(--accent);
+}
+/* Il primo fotogramma sta a 0 e il formato lo pretende: il campo resta lì,
+   spento, invece di sparire — una riga che manca sulla prima fermata e c'è
+   sulle altre si legge come un difetto del disegno. */
+.quando-fotogramma input:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Il budget, riga per riga. Il misuratore è quello del costo delle superfici —
+   stessa barra, stessa lettura — perché è la stessa domanda posta su un altro
+   conto, e due barre diverse per «quanto ne hai speso» sarebbero due lingue. */
+.budget-movimento {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.riga-budget {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(40px, 1.4fr) auto auto;
+  gap: 7px;
+  align-items: center;
+}
+.riga-budget .nome {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-2);
+}
+.riga-budget .uso {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+}
+.riga-budget .misuratore {
+  min-width: 0;
+}
+.riga-budget strong {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.riga-budget .su {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-3);
+}
+/* Fuori budget. `data-sopra` sta sulla riga e non sulla barra — è la parte a
+   sforare, non il misuratore — e il segno è quello di `.misuratore[data-sopra]`
+   perché la notizia è la stessa. */
+.riga-budget[data-sopra] .misuratore {
+  outline: 1px solid var(--danger);
+  outline-offset: 1px;
 }
 
 /* ── impostazioni ────────────────────────────────────────────────────────── */
@@ -6713,6 +7655,14 @@ body {
   font: inherit;
   font-size: 12.5px;
   outline: none;
+}
+/* Il campo non ha bordo suo — lo ha il guscio attorno — quindi il fuoco si
+   segna sul guscio, come fa già `.intestazione-pagina .cerca`:`focus-within` è
+   la forma giusta quando l'elemento che prende il fuoco e quello che si vede
+   sono due. */
+.impostazioni .filtro-impostazioni:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 /* La crocetta che i browser mettono dentro un `search` è di un altro disegno e
    di un altro colore: si toglie, e a svuotare basta Esc — che qui esce dal
@@ -6963,7 +7913,11 @@ body {
   position: relative;
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
-  transition: width 120ms linear;
+  /* `calc` e non `var(--transition-med)`: quella porta `--ease-out-expo`, e una
+     barra che si riempie frenando dice «sta per finire» a ogni aggiornamento.
+     Qui serviva la scala del movimento, non la curva — e la durata è tarata
+     sulla cadenza con cui questa fonte annuncia il suo avanzamento. */
+  transition: width calc(120ms * var(--motion-scale, 1)) linear;
   overflow: hidden;
 }
 /* Il riflesso che scorre. Dice che qualcosa sta succedendo anche quando la
@@ -6978,6 +7932,10 @@ body {
 .avanzamento-scansione .riflesso {
   position: absolute;
   inset: 0;
+  /* Non prende il puntatore: è un riflesso sopra una barra, e non ha niente da
+     prendere. Vale la regola generale di chi copre tutto — la sorveglia il
+     controllo n. 8 di `strumenti/classi.js`. */
+  pointer-events: none;
   background: linear-gradient(
     90deg,
     transparent,
@@ -7076,12 +8034,58 @@ body {
   text-wrap: pretty;
 }
 
+/* La riga di un interruttore si preme tutta.
+ *
+ * Il bersaglio grande di `.riga-opzione .interruttore::before` risolveva metà
+ * del problema — quarantaquattro pixel invece di quarantatré — e lasciava
+ * l'altra metà: in una riga larga seicento, cinquecentocinquanta non facevano
+ * niente. Adesso il clic vale su tutta la riga, e questa è la sola cosa che lo
+ * dice: senza il cursore, un'area cliccabile larga come il pannello è
+ * indistinguibile da una che non lo è, e chi non prova non lo scopre mai.
+ *
+ * `[data-impedito]` e non una classe condizionale: la riga spenta è uno stato,
+ * e uno stato scritto come classe costringerebbe il `className` a diventare un
+ * template — che è esattamente ciò che `strumenti/classi.js` non sa più
+ * leggere. L'attributo lo scrive `parti/Interruttore.tsx` insieme al motivo per
+ * cui la riga è spenta, quindi la verità sta scritta una volta sola. */
+.riga-interruttore {
+  cursor: pointer;
+}
+.riga-interruttore[data-impedito] {
+  cursor: default;
+}
+
 .interruttore {
   flex: none;
   border: none;
   background: transparent;
   padding: 0;
   cursor: pointer;
+}
+/*
+ * Il bersaglio cresce, la pista no.
+ *
+ * La pista misura quaranta per ventitré pixel, in fondo a una riga larga tutto
+ * il pannello: quarantatré pixel cliccabili in un'area di seicento, e il resto
+ * della riga non fa niente. Quarantaquattro per ventotto è il minimo sotto cui
+ * un bersaglio si sbaglia.
+ *
+ * Con uno pseudo-elemento e non con il `padding`, ed è il punto: il padding
+ * allargherebbe la scatola e la pista si sposterebbe di due pixel verso sinistra
+ * e l'interruttore verso il basso — un bersaglio più grande pagato con
+ * l'allineamento di ogni riga delle Impostazioni. Lo pseudo-elemento è fuori
+ * dalla disposizione, quindi quel che si vede non si muove di un pixel e quel
+ * che si clicca cresce. È trasparente: non ha nulla da dire, solo da prendere.
+ */
+.riga-opzione .interruttore {
+  position: relative;
+}
+.riga-opzione .interruttore::before {
+  content: '';
+  position: absolute;
+  /* −2 e −2,5: quaranta più quattro fa quarantaquattro, ventitré più cinque fa
+     ventotto. */
+  inset: -2.5px -2px;
 }
 .interruttore:disabled {
   cursor: default;
@@ -7241,7 +8245,24 @@ body {
   bottom: var(--player-gap);
   height: var(--player-h);
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(320px, 2fr) minmax(140px, 1fr);
+  /* I minimi erano tre pavimenti scritti a occhio — 180, 320, 140 — che fanno
+     640, più i due `gap` da 22 e i due `padding` da 22: settecentoventotto. La
+     finestra non scende sotto 880 (`minWidth` in `tauri.conf.json`), e con la
+     navigazione aperta a 240 alla barra ne restano 612. La griglia traboccava di
+     centosedici pixel, e quel che usciva era l'ultima colonna: muto e cursore
+     del volume oltre il bordo destro.
+
+     `min-content` al posto dei tre numeri, e non è una resa: il pavimento che
+     conta è quello del contenuto, ed è l'unico che non può essere sbagliato. Una
+     colonna non scende sotto quel che ci sta dentro — la miniatura, la fila dei
+     tasti di trasporto, i quattro bottoni del suono — e sopra quel pavimento le
+     tre frazioni si dividono lo spazio esattamente come prima, quindi su una
+     finestra larga la barra non cambia di un pixel e il trasporto resta al
+     centro. Quel che cambia è che a 612 pixel sta dentro invece di uscire. */
+  grid-template-columns:
+    minmax(min-content, 1fr)
+    minmax(min-content, 2fr)
+    minmax(min-content, 1fr);
   align-items: center;
   gap: var(--spazio-4);
   padding: 0 var(--spazio-4);
@@ -7253,6 +8274,82 @@ body {
      ed è un token — cioè una cosa che la skin ha deciso. Aggiungerne un secondo
      lo raddoppierebbe. */
   box-shadow: var(--shadow-player);
+  /* Un contenitore per sé, perché quel che si ritira deve dipendere dalla
+     larghezza che **la barra** ha davvero e non da quella della finestra: fra le
+     due c'è la navigazione, che si apre e si chiude di 172 pixel senza che la
+     finestra cambi misura. Un `@media` si accorgerebbe della seconda e non della
+     prima, che è lo stesso errore per cui `.elenco` usa `@container`.
+
+     `inline-size` e non `size`: l'altezza viene da `--player-h`, non dal
+     contenuto. Il contenimento di disposizione che porta con sé non cambia nulla
+     qui — la barra è già un contesto d'impilamento (`position: fixed` più
+     `view-transition-name`), e `inline-size` non contiene il **disegno**, quindi
+     il pannello dell'equalizzatore continua a uscirle da sopra. */
+  container: lettore / inline-size;
+}
+
+/* Sotto i settecentosessanta pixel di barra si ritira il cursore del volume, e
+   resta il tasto muto. Fra le cose che stanno in questa riga è la sola che si
+   può togliere senza togliere un comando: muto continua a funzionare, e il
+   livello lo si ritrova appena la barra ha spazio. Troncare il titolo del brano
+   o nascondere un tasto di trasporto sarebbe peggio di tutti e due.
+
+   Settecentosessanta non è un numero tondo preso a caso: è la soglia che separa
+   i due casi della finestra più piccola. A `minWidth: 880` con la navigazione
+   aperta la barra è larga 880 − 240 − 28 = 612, e con la navigazione richiusa
+   880 − 68 − 28 = 784. Cioè il cursore si ritira quando la barra laterale è
+   aperta su una finestra stretta, e torna richiudendola — che è il gesto che chi
+   ha poco spazio fa già per altri motivi, e l'unica via di ritorno che ci sia:
+   il volume non ha né scorciatoia da tastiera né rotella sull'icona. */
+@container lettore (max-width: 760px) {
+  .lettore .suono .scorrimento {
+    display: none;
+  }
+}
+
+/* La seconda tappa, che prima non serviva e adesso sì.
+ *
+ * Finché lo spazio lo toglieva solo la finestra, sotto la barra c'era un
+ * pavimento: `minWidth: 880` più la navigazione aperta dà 612 pixel di barra, e
+ * 612 è sopra la soglia qui sotto. Nessuna finestra ha mai potuto disegnare una
+ * barra più stretta di così, quindi una tappa sola bastava. L'ingrandimento
+ * toglie quel pavimento: a 1,25 la stessa finestra di 880 disegna in 704 pixel
+ * CSS, e alla barra ne restano 704 − 240 − 28 = 436. A 1,5 sono 347. Il
+ * `minWidth` non protegge più niente, perché non è più lui a decidere quanti
+ * pixel CSS ci sono.
+ *
+ * Il pavimento vero della griglia si conta, e sono tutti minimi di contenuto:
+ * `.ora` non scende sotto miniatura più cuore (52 + 32 e i due `gap`, ≈ 116),
+ * `.comandi` non scende sotto la fila del trasporto (quattro tasti da 32, il
+ * grande da 40 e quattro `gap`, ≈ 200), `.suono` — già ritirato il cursore del
+ * volume — non scende sotto i suoi quattro tasti (≈ 152). Con i due `gap` da 22
+ * e i due `padding` da 22 fa **≈ 556**, ed è lì che il gruppo del suono comincia
+ * a uscire dal bordo destro. Cinquecentosessanta è quel numero con quattro pixel
+ * di margine: la tappa scatta appena **prima** che la griglia trabocchi, non
+ * dopo.
+ *
+ * **Cosa si ritira, e perché proprio quello.** Il criterio è già scritto sulla
+ * tappa dei 760 e vale ancora: si può togliere un comando solo se la cosa che
+ * fa resta raggiungibile. Dei quattro tasti del suono, tre non lo passano — il
+ * tasto della colonna è l'unica via per riaprire la terza colonna, quello della
+ * coda è l'unica via per riaprire la coda (il giro guidato lo dice a parole:
+ * «da chiusa la coda si riapre dal tasto nella barra del lettore»), e muto è
+ * quel che è rimasto quando il cursore se n'è andato. L'equalizzatore invece ha
+ * una seconda casa **completa**: la scheda «Equalizzatore» in Impostazioni è lo
+ * stesso controllo con più spazio — `[data-taglia="pagina"]` è quella — e la
+ * ricerca delle impostazioni ci porta scrivendo «bassi» o «curva». Ritirarlo
+ * qui non toglie l'equalizzatore a nessuno: toglie la scorciatoia, che è
+ * esattamente quel che ha fatto la tappa dei 760 al cursore del volume.
+ *
+ * Si ritira il guscio `.con-pannello` e non il solo tasto, perché il pannello
+ * appeso gli sta dentro: uno aperto a barra larga e poi stretta sparisce
+ * insieme al suo tasto, e torna com'era appena c'è di nuovo posto. È lo stesso
+ * comportamento del cursore del volume, e per la stessa ragione — quel che si
+ * ritira non si perde. */
+@container lettore (max-width: 560px) {
+  .lettore .suono .con-pannello {
+    display: none;
+  }
 }
 
 .lettore .ora {
@@ -7634,7 +8731,7 @@ body {
 .con-pannello {
   position: relative;
   display: flex;
-  z-index: 3;
+  z-index: var(--strato-pannello);
 }
 .con-pannello .tasto[data-acceso] {
   color: var(--accent);
@@ -7678,7 +8775,7 @@ body {
   right: 0;
   bottom: 0;
   width: var(--chat-w);
-  z-index: 5;
+  z-index: var(--strato-pannello);
   display: flex;
   flex-direction: column;
   background: var(--color-surface-1);
@@ -8255,15 +9352,26 @@ body {
 }
 
 /* ── il menù contestuale ─────────────────────────────────────────────────── */
+/* Lo strato sta qui e non sulla variante scura, che prima era l'unica ad
+   averlo: i due veli fanno lo stesso lavoro — prendere il clic che chiude — e
+   quello del menù, senza strato, si appoggiava dove capitava nell'ordine del
+   DOM. `--strato-menu` è un gradino sopra questo, così il menù resta davanti
+   al suo velo senza che nessuno dei due debba conoscere l'altro.
+
+   Detto al rovescio, ed è la metà che costa: `.velo` vuol dire **bersaglio**, e
+   da quando ha uno strato non è più un nome che si possa prestare. Una
+   decorazione grande quanto lo schermo che lo indossasse salirebbe a quaranta
+   sopra il contenuto e se ne mangerebbe i clic — è successo, allo scrim di «In
+   riproduzione», che adesso si chiama `np-scrim` e basta. */
 .velo {
   position: fixed;
   inset: 0;
+  z-index: var(--strato-velo);
 }
 /* Il velo del menù è trasparente — serve solo a prendere il clic di chiusura —
    mentre quello di una finestrella oscura: lì l'attenzione deve stare tutta
-   sulla decisione da prendere. */
+   sulla decisione da prendere. Cambia quel che dipinge, non dove sta. */
 .velo.scuro {
-  z-index: 2;
   display: grid;
   place-items: center;
   background: rgb(var(--surface-0-rgb) / 0.72);
@@ -8504,6 +9612,30 @@ body {
    barra larga un terzo: deve leggersi come «continua», non come una riga che
    non è ancora arrivata. Lo spazio sotto è quello che separa due blocchi —
    senza, la barra toccherebbe il lettore flottante. */
+/*
+ * I due riempimenti della finestra virtuale.
+ *
+ * L'elenco disegna una trentina di righe su diciottomila, e sopra e sotto quelle
+ * mette un `<div className="paglia">` alto quanto le righe che non ci sono: è
+ * così che la barra di scorrimento resta lunga quanto l'elenco vero e che
+ * l'osservatore della sentinella scatta dove scattava prima.
+ *
+ * L'altezza **non** sta qui, e non è una dimenticanza: è geometria calcolata —
+ * numero di righe per altezza misurata della prima — quindi arriva da uno
+ * `style` in linea, che è il solo posto in cui un numero che cambia a ogni
+ * scorrimento può stare. Qui sta quel che non cambia: un blocco che non si
+ * stringe. `flex: none` perché `.elenco` è un flex in colonna e un figlio
+ * flessibile si lascerebbe schiacciare, cioè la paglia perderebbe proprio
+ * l'altezza che è tutto il suo mestiere.
+ *
+ * `role="presentation"` lo mette il markup: non è una riga, e un elenco con
+ * `aria-rowcount` non deve annunciare due caselle vuote.
+ */
+.paglia {
+  display: block;
+  flex: none;
+}
+
 .sentinella {
   display: flex;
   align-items: center;
@@ -8716,18 +9848,39 @@ body {
  * `MotionIntensity` e non era mai stato implementato: il compilatore scriveva
  * `--motion-scale` e nessuna regola lo leggeva.
  *
- * Basta azzerare la scala perché il foglio ha **due** variabili di transizione
- * — `--transition-fast` e `--transition-med` — e ogni `transition:` del file
- * passa da lì. `calc(var(--dur-1) * 0)` è `0s`, cioè lo stato nuovo compare
- * subito: niente si muove, e niente sparisce.
+ * Basta azzerare la scala perché ogni durata del foglio passa da lì: le due
+ * variabili di transizione — `--transition-fast` e `--transition-med` — e, dove
+ * la curva deve restare quella che è, un `calc(<n>ms * var(--motion-scale, 1))`
+ * scritto in chiaro. `calc(var(--dur-1) * 0)` è `0s`, cioè lo stato nuovo
+ * compare subito: niente si muove, e niente sparisce.
+ *
+ * Questa frase diceva «e ogni `transition:` del file passa da lì», e **non era
+ * vera**: sei barre di avanzamento portavano `120ms`, `160ms` e `200ms` scritti
+ * a mano, quindi continuavano a scorrere anche con l'interruttore di sistema
+ * acceso. Ora lo è, e non per buona volontà: `strumenti/classi.js` rifiuta ogni
+ * `transition:`/`animation:` del foglio che porti una durata letterale fuori da
+ * `--motion-scale`, con `ATTESE_MOVIMENTO` per le sole eccezioni motivate — le
+ * quattro animazioni infinite, che una scala a zero non fermerebbe e che sono
+ * spente una per una qui sotto. Una prosa che dice «tutte» e un controllo che lo
+ * verifica sono la stessa affermazione detta due volte, e la seconda non
+ * invecchia.
  *
  * `!important` perché il foglio della skin arriva **dopo** questo (è un `<style>`
  * appeso a `<head>` a runtime) e dichiara `--motion-scale` in
  * `:root[data-skin='…']`. Senza, la skin vincerebbe per ordine. È anche ciò che
  * lo fa arrivare al riquadro dell'anteprima dello Studio, che porta gli stessi
  * attributi della radice ma con i selettori riscritti.
+ *
+ * Il selettore elenca due posti, e il primo è quello che mancava:
+ * `aspetto.ts:89` scrive `data-motion` sulla radice **solo quando una skin è
+ * applicata**, cioè qualche millisecondo dopo il primo disegno e mai se l'utente
+ * non ne ha nessuna. Per tutto quel tempo la preferenza di sistema non aveva
+ * effetto. `:root` non è una cintura con le bretelle: è il caso normale, e
+ * `[data-motion]` resta perché serve all'anteprima dello Studio, che non è la
+ * radice.
  */
 @media (prefers-reduced-motion: reduce) {
+  :root,
   [data-motion] {
     --motion-scale: 0 !important;
   }
@@ -8750,9 +9903,89 @@ body {
   }
 
   /* La transizione di rotta la salta `cambiandoVista` in `transizione.ts`,
-     prima ancora di chiamare il motore: le regole che il compilatore emette per
-     `::view-transition-*` usano `var(--dur-2)` nudo, senza la scala, quindi
-     spegnerle da qui non basterebbe. */
+     prima ancora di chiamare il motore. Questa riga diceva che era **l'unico**
+     rimedio possibile, perché le due regole che il compilatore emette per
+     `::view-transition-*` scrivevano `var(--dur-2)` nudo: da quando
+     `compile.rs` le fa passare da `durata_scalata`, come ogni altra durata,
+     qui dentro durano zero da sé. Il salto in `transizione.ts` resta, e resta
+     una cintura in più invece dell'unica cosa che tiene. */
+}
+
+/* ── lo stesso movimento ridotto, chiesto da qui ──────────────────────────────
+ *
+ * `data-motion-utente='ridotto'` è la preferenza che si sceglie dentro Aether,
+ * in «Movimento e accesso». Fa **le stesse cose** del blocco qui sopra, ed è
+ * scritta una seconda volta perché una `@media` non si può allargare: le sue
+ * regole valgono quando il sistema lo chiede e mai altrimenti, e non c'è modo
+ * di aggiungere un attributo ai loro selettori dall'esterno. Quel che si ripete
+ * sono le **regole**, non il rimedio: se qui sotto comparisse un secondo modo
+ * di fermare la stessa cosa, sarebbe quello il difetto — e la prova che i due
+ * elenchi sono lo stesso elenco è che si leggono uno sotto l'altro.
+ *
+ * Le due preferenze si **compongono** invece di escludersi. Da qui si può solo
+ * ridurre — un livello «di più» contraddirebbe l'idea stessa di preferenza di
+ * accessibilità — quindi chi ha spento le animazioni nel sistema resta spento
+ * comunque, qualunque cosa dica la skin e qualunque cosa dica questa.
+ *
+ * **Le righe che spengono le animazioni infinite ci sono tutte e quattro, ed è
+ * l'unica ragione per cui questo blocco non è una riga sola.** Azzerare
+ * `--motion-scale` ferma ogni durata che passa di lì; un ciclo `infinite` di
+ * durata zero però non è un ciclo fermo, è un ciclo infinitamente veloce — cioè
+ * peggio del difetto che si voleva togliere. Le quattro che ripetono per sempre
+ * sono quelle elencate in `ATTESE_MOVIMENTO` di `strumenti/classi.js` — il
+ * riflesso della scansione, il luccichio dei segnaposto, la barra di un
+ * aggiornamento senza `Content-Length`, la barra indeterminata della lettura di
+ * un collegamento — e si spengono una per una. Dimenticarne una qui vorrebbe
+ * dire che «Riduci tutto» accelera proprio quel che doveva fermare.
+ *
+ * `!important` per la stessa ragione di sopra: il foglio della skin arriva
+ * dopo questo e dichiara `--motion-scale` in `:root[data-skin='…']`. Il
+ * secondo selettore è quello del riquadro dell'anteprima dello Studio, che
+ * porta gli attributi della radice senza esserlo: «riduci tutto» vale anche
+ * per quel che si sta guardando mentre lo si disegna.
+ */
+:root[data-motion-utente='ridotto'],
+:root[data-motion-utente='ridotto'] [data-motion] {
+  --motion-scale: 0 !important;
+}
+
+/* Le quattro che ripetono all'infinito, una per una. I motivi per cui si
+   spengono così — e non ferme a metà, che sarebbe una bugia invece di una
+   quiete — stanno accanto ai loro gemelli qui sopra. */
+:root[data-motion-utente='ridotto'] .avanzamento-scansione .riflesso {
+  display: none;
+}
+:root[data-motion-utente='ridotto'] .skeleton {
+  animation: none;
+}
+:root[data-motion-utente='ridotto']
+  .aggiornamento
+  .toast-progress
+  > span:not([style]) {
+  width: 100%;
+  animation: none;
+}
+:root[data-motion-utente='ridotto']
+  .lettura-link
+  .barra[data-indeterminata]
+  .riempimento {
+  animation: none;
+}
+
+/* E i due gemelli delle regole locali. Il `transform` conta quanto le altre:
+   non è una durata, quindi la scala non lo tocca, e la riga accesa del testo
+   continuerebbe a ingrandirsi di scatto anche a movimento spento. */
+:root[data-motion-utente='ridotto'] .lyric-line {
+  transition: none;
+}
+:root[data-motion-utente='ridotto'] .lyric-line[data-attiva] {
+  transform: none;
+}
+:root[data-motion-utente='ridotto']
+  .sincronizza
+  .elenco-battute:is(.rivedi, .parole)
+  .ritocco {
+  transition: none;
 }
 .nuovo-tema .nota-id {
   font-family: var(--font-mono);
@@ -9024,7 +10257,11 @@ body {
 .importazione .riempimento {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
-  transition: width 160ms linear;
+  /* `calc` e non `var(--transition-med)`: quella porta `--ease-out-expo`, e una
+     barra che si riempie frenando dice «sta per finire» a ogni aggiornamento.
+     Qui serviva la scala del movimento, non la curva — e la durata è tarata
+     sulla cadenza con cui questa fonte annuncia il suo avanzamento. */
+  transition: width calc(160ms * var(--motion-scale, 1)) linear;
 }
 .importazione .note {
   display: flex;
@@ -9054,10 +10291,26 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* L'altezza è l'altra metà del difetto del menù contestuale.
+ *
+ * La misura in `useLayoutEffect` di `Menu.tsx` sa **collocarlo** — lo tira su e
+ * a sinistra finché non tocca i bordi — ma non sa rimpicciolirlo: se il menù è
+ * più alto della finestra, non c'è posizione che lo faccia stare dentro, e le
+ * ultime voci finiscono sotto il fondo dello schermo senza modo di arrivarci.
+ * Con molte voci, o con la densità `spacious`, succede su una finestra normale
+ * e non su un caso estremo.
+ *
+ * I sedici pixel sono i due margini che quella stessa misura tiene ai bordi:
+ * scritti così il menù si ferma dove il collocatore lo avrebbe fermato, invece
+ * di combattere con lui per due pixel. `overflow-y: auto` e non `scroll`: la
+ * barra compare quando serve, e nel caso normale — che è il menù da sei voci —
+ * non c'è niente da vedere. */
 .menu {
   position: fixed;
-  z-index: 1;
+  z-index: var(--strato-menu);
   min-width: 200px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   padding: var(--spazio-1);
   background: var(--color-surface-3);
   background-image: var(--luce);
@@ -9077,11 +10330,20 @@ body {
   text-align: left;
   cursor: pointer;
 }
-.menu button:hover,
+.menu button:hover {
+  background: var(--accent-soft);
+  color: var(--color-text-1);
+}
+/* Il fuoco aveva lo stesso fondo del sorvolo e `outline: none`, cioè nel menù
+   contestuale i due stati erano lo stesso segno: col tabulatore non si capiva
+   dove si era. Il fondo resta — la voce sotto il dito o sotto il fuoco si
+   accende allo stesso modo, ed è giusto — e sopra ci va l'anello, interno perché
+   le voci si toccano fra loro e il padding del menù è di quattro pixel. */
 .menu button:focus-visible {
   background: var(--accent-soft);
   color: var(--color-text-1);
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 
@@ -9426,7 +10688,11 @@ body {
 .riepilogo-coda .riempimento {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
-  transition: width 160ms linear;
+  /* `calc` e non `var(--transition-med)`: quella porta `--ease-out-expo`, e una
+     barra che si riempie frenando dice «sta per finire» a ogni aggiornamento.
+     Qui serviva la scala del movimento, non la curva — e la durata è tarata
+     sulla cadenza con cui questa fonte annuncia il suo avanzamento. */
+  transition: width calc(160ms * var(--motion-scale, 1)) linear;
 }
 .riepilogo-coda .stato {
   color: var(--color-text-2);
@@ -9480,7 +10746,11 @@ body {
 .importazione-brano .riempimento {
   height: 100%;
   background: var(--accent);
-  transition: width 160ms linear;
+  /* `calc` e non `var(--transition-med)`: quella porta `--ease-out-expo`, e una
+     barra che si riempie frenando dice «sta per finire» a ogni aggiornamento.
+     Qui serviva la scala del movimento, non la curva — e la durata è tarata
+     sulla cadenza con cui questa fonte annuncia il suo avanzamento. */
+  transition: width calc(160ms * var(--motion-scale, 1)) linear;
 }
 
 /* La storia, chiusa di serie. Righe più magre di quelle della coda: non hanno
@@ -9605,7 +10875,11 @@ body {
 .lettura-link .riempimento {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
-  transition: width 200ms linear;
+  /* `calc` e non `var(--transition-med)`: quella porta `--ease-out-expo`, e una
+     barra che si riempie frenando dice «sta per finire» a ogni aggiornamento.
+     Qui serviva la scala del movimento, non la curva — e la durata è tarata
+     sulla cadenza con cui questa fonte annuncia il suo avanzamento. */
+  transition: width calc(200ms * var(--motion-scale, 1)) linear;
 }
 /* Quante pagine saranno non sempre si sa: il livello che risponde non lo
    dichiara. Allora la barra **non stima** — scorre, e dice «sto lavorando»
@@ -10023,30 +11297,50 @@ body {
   text-transform: lowercase;
 }
 
-/* ── La dissolvenza incrociata ──────────────────────────────────────────────
+/* ── La dissolvenza incrociata, e la latenza d'uscita ───────────────────────
  *
  * Cursore e numero sulla stessa riga, col numero a larghezza fissa: senza
  * quella, passando da «12 s» a «Spenta» il cursore si accorcerebbe e si
  * allungherebbe sotto il dito che lo sta trascinando.
+ *
+ * `.latenza` è la stessa forma e sta nei selettori invece di avere tre regole
+ * sue: è un cursore con accanto un numero a larghezza fissa che passa da «Nessuna
+ * correzione» a «−120 ms», cioè lo stesso problema e la stessa risposta. Tre
+ * regole copiate sarebbero tre posti in cui cambiare la prossima misura, e
+ * fondere i due nomi in uno solo direbbe il falso: sono due preferenze diverse,
+ * in due schede diverse, che si somigliano.
  */
-.dissolvenza {
+.dissolvenza,
+.latenza {
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
-.dissolvenza .scorrimento {
+.dissolvenza .scorrimento,
+.latenza .scorrimento {
   flex: 1;
   min-width: 0;
 }
 
-.dissolvenza .valore {
+.dissolvenza .valore,
+.latenza .valore {
   flex: 0 0 auto;
   min-width: 62px;
   text-align: right;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-2);
+}
+
+/* L'unica misura che i due non condividono, e la ragione è la stessa che ha
+   fatto nascere `min-width`. I sessantadue pixel sono tarati su «Spenta»; la
+   latenza a zero scrive «Nessuna correzione», che è tre volte più lunga, e
+   dentro sessantadue andrebbe a capo — cioè la riga cambierebbe **altezza**
+   attraversando lo zero, che è peggio di cambiare larghezza. La misura è quella
+   della frase più lunga delle due lingue. */
+.latenza .valore {
+  min-width: 128px;
 }
 
 /* ── La Home ────────────────────────────────────────────────────────────────
@@ -10348,4 +11642,498 @@ body {
   min-width: 0;
   font-size: 11px;
   color: var(--accent);
+}
+
+/*
+ * ── il giro guidato ───────────────────────────────────────────────────────
+ *
+ * Tre elementi, e una sola regola che li tiene onesti: **mai un velo senza
+ * buco**. Un giro che oscura la finestra senza dire su cosa è una finestra
+ * spenta, e chi la trova così non sta imparando niente — sta cercando come si
+ * chiude.
+ *
+ * Quella regola qui non è sorvegliata da un controllo: è vera **per
+ * costruzione**, e il modo in cui lo è vale la riga che ci vuole a spiegarlo.
+ * `.giro-velo` non dipinge niente. Tutto l'oscuramento è la `box-shadow` del
+ * buco, cioè un'ombra di novemilanovecentonovantanove pixel che parte dai
+ * bordi del riflettore e va in tutte le direzioni. Finché una misura non c'è,
+ * `Giro.tsx` non monta il buco — e senza buco non c'è ombra, quindi non c'è
+ * oscuramento. Lo schermo resta com'era, il velo prende comunque i clic perché
+ * quello è il suo mestiere, e il fotogramma in cui il riflettore si sta ancora
+ * cercando non è distinguibile da nessun altro. Se invece a dipingere fosse il
+ * velo, quello stesso fotogramma sarebbe una finestra nera senza spiegazione,
+ * e servirebbe un controllo a impedirlo.
+ */
+
+/* Il velo: uno strato, e i clic. Nient'altro — vedi sopra.
+
+   `aria-hidden` sta nel TSX e non qui perché è semantica e non aspetto: quel
+   che c'è da leggere sta nel fumetto, che è il dialogo vero. */
+.giro-velo {
+  position: fixed;
+  inset: 0;
+  z-index: var(--strato-giro);
+}
+
+/* Il riflettore.
+
+   `absolute` dentro un genitore `fixed`, quindi in coordinate di finestra: sono
+   le stesse che dà `getBoundingClientRect`, ed è per questo che `Giro.tsx` può
+   scrivere `top`/`left`/`width`/`height`/`border-radius` in linea senza
+   convertire niente. Quei cinque non si dichiarano qui: arrivano tutti dalla
+   misura, e un valore di riposo nel foglio sarebbe un riflettore su un punto
+   che nessuno ha misurato.
+
+   L'anello d'accento non è decorazione. Su una skin chiara l'ombra a 0,72 alza
+   il contrasto di poco — il fondo attorno era già chiaro — e il bersaglio si
+   distingue appena; il contorno lo chiude e dice «è questo», anche a chi guarda
+   di sfuggita. `outline` e non `border`: un bordo entrerebbe nel calcolo della
+   scatola e sposterebbe il buco di due pixel rispetto alla cosa che indica. */
+.giro-buco {
+  position: absolute;
+  pointer-events: none;
+  box-shadow: 0 0 0 9999px rgb(var(--surface-0-rgb) / 0.72);
+  outline: 2px solid rgb(var(--accent-rgb) / 0.9);
+  outline-offset: 2px;
+  /* Il riflettore **scivola** da un passo all'altro invece di saltare, e non è
+     un vezzo: fra due passi il bersaglio può stare ai due angoli opposti della
+     finestra, e un salto secco lascia chi guarda a cercare dove è finito. Lo
+     scivolamento è la frase «adesso guarda là».
+
+     `calc(… * var(--motion-scale, 1))` e non `var(--transition-med)` perché la
+     curva deve restare questa — expo, cioè parte in fretta e si posa — e perché
+     la scala del movimento è obbligatoria: con `prefers-reduced-motion` il
+     riflettore si mette dove deve stare senza attraversare la finestra, che è
+     esattamente il movimento che quella preferenza chiede di non fare. */
+  transition-property: top, left, width, height, border-radius;
+  transition-duration: calc(220ms * var(--motion-scale, 1));
+  transition-timing-function: var(--ease-out-expo);
+}
+
+/* Il fumetto: una scheda che si posa accanto al buco.
+
+   **Niente `transform` e niente `translate`**, ed è la cosa più facile da
+   sbagliare di tutto il blocco. `Giro.tsx` calcola l'angolo alto-sinistro
+   definitivo — ha già misurato il fumetto, e sceglie il lato del buco dove ci
+   sta — e lo scrive in `top`/`left`. Una traslazione di centratura, di quelle
+   che si mettono per riflesso su qualunque cosa `fixed`, sposterebbe il fumetto
+   di mezza sé stesso a ogni passo: sempre fuori posto, e sempre di una quantità
+   diversa perché il testo dei dieci passi non è lungo uguale.
+
+   `top: 50%; left: 50%` sono il riposo per il fotogramma prima della prima
+   misura, quando in linea non c'è ancora niente. Deliberatamente **non**
+   centrati — centrare vorrebbe dire la traslazione che non si può avere — e va
+   bene così: è un punto approssimativo, mai un punto sbagliato, e dura un
+   fotogramma. */
+.giro-fumetto {
+  position: fixed;
+  z-index: var(--strato-giro);
+  top: 50%;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+  /* La misura leggibile, meno i due distacchi dai bordi che `Giro.tsx` usa
+     quando deve incastrarlo in una finestra stretta. */
+  max-width: min(380px, calc(100vw - 24px));
+  padding: var(--spazio-4);
+  background: var(--color-surface-1);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--filo), var(--shadow-3);
+  /* Segue il riflettore con lo stesso passo: i due si muovono insieme o il
+     fumetto sembra rincorrerlo. */
+  transition-property: top, left;
+  transition-duration: calc(220ms * var(--motion-scale, 1));
+  transition-timing-function: var(--ease-out-expo);
+}
+.giro-fumetto h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.giro-fumetto p {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 13px;
+  /* Le dieci spiegazioni sono lunghe tre righe e vanno lette tutte: come nelle
+     finestrelle, `pretty` toglie le righe orfane senza cambiare l'altezza — e
+     qui l'altezza conta il doppio, perché è quella che decide da che lato del
+     buco il fumetto ci sta. */
+  text-wrap: pretty;
+}
+
+/* Il titolo a sinistra, il contatore a destra, sulla stessa linea di base: due
+   testi di corpo diverso allineati in alto o in mezzo si vedono che non sono
+   allineati, allineati alla base sembrano una riga sola. */
+.giro-testa {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spazio-3);
+}
+/* «3 / 10»: piccolo, e a cifre di larghezza fissa. Senza `tabular-nums` il
+   passaggio da «9 / 10» a «10 / 10» allarga il contatore e sposta il titolo
+   accanto, cioè fa ballare la testata a ogni passo — sempre di poco, sempre di
+   una quantità diversa, e sempre visibile perché è l'unica cosa che si muove. */
+.giro-passi {
+  flex: none;
+  color: var(--color-text-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+/* La riga in fondo. «Salta il giro» è primo nel DOM — chi vuole uscire lo trova
+   col primo Tab — e ultimo per importanza, quindi va all'estremo opposto degli
+   altri due: `margin-inline-end: auto` sul primo figlio spinge tutto il resto a
+   destra senza che nessuno dei tre debba sapere quanti sono. */
+.giro-tasti {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  margin-top: var(--spazio-1);
+}
+.giro-tasti > :first-child {
+  margin-inline-end: auto;
+}
+
+/*
+ * ── il profilo: quel che porta, e le radici da ritrovare ──────────────────
+ */
+
+/* L'elenco dei conteggi — «142 ascolti», «1.842 copertine» — sotto il titoletto
+   di una scheda d'anteprima. Righe compatte: sono numeri, non prosa, e il ritmo
+   di `.nota` fra una riga e l'altra le farebbe sembrare paragrafi.
+
+   Le colonne si fanno da sole, senza una soglia scritta: `auto-fit` con un
+   minimo di 220 pixel dà due colonne quando il pannello è largo — e quattordici
+   conteggi in due colonne sono metà altezza — e una sola quando non ci stanno.
+   Una soglia scritta qui sarebbe la larghezza della **finestra**, che non è
+   quella del pannello: fra le due c'è la barra di navigazione, che si apre e si
+   chiude. */
+.riepilogo-profilo {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 2px var(--spazio-3);
+  margin: 0 0 var(--spazio-3);
+  padding: 0;
+  list-style: none;
+}
+/* La singola riga. Il numero sta **dentro** la frase tradotta — «{n} ascolti» —
+   e non davanti in una colonna sua: per questo niente `::before` e niente
+   griglia a due colonne. In inglese il numero è nello stesso posto, ma in una
+   lingua che mette il conteggio in fondo una colonna fissa lo lascerebbe
+   vuota. */
+.voce-riepilogo {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  color: var(--color-text-2);
+  font-size: 13px;
+}
+
+/* Un modificatore, non una classe a sé: si scrive sempre accanto a `.nota`
+   (`<p className="nota avviso-profilo">`), e cambia solo la tinta.
+
+   Il colore d'avviso e **non** quello d'errore, e la differenza è la cosa che
+   questa regola esiste per dire. I tre usi sono un profilo che pesa più di
+   mezzo gigabyte, un profilo che viene da un'altra libreria, e l'annullamento
+   che rimette solo la configurazione: tre cose vere da sapere prima di premere,
+   nessuna delle quali è andata storta. In rosso direbbero «è successo qualcosa
+   di male», e chi le legge smetterebbe di leggere gli errori veri. */
+.avviso-profilo {
+  border-left-color: var(--warning);
+  background: var(--warning-soft);
+  color: var(--color-text-1);
+}
+
+/* Le radici che di qua non esistono, una per riga. */
+.rimappature {
+  display: grid;
+  gap: var(--spazio-2);
+  margin: 0 0 var(--spazio-3);
+  padding: 0;
+  list-style: none;
+}
+/* Una riga: il prefisso vecchio, quanti brani ci stanno sotto, e dove metterlo
+   adesso. In linea finché ci stanno, **a capo** quando no — e il campo di testo
+   è quel che va a capo, prendendosi tutta la riga.
+
+   Il capoverso lo decide il campo e non una soglia: `flex-wrap` sul genitore
+   più una base di quattordici rem sul campo vuol dire «se non restano quattordici
+   rem, vai sotto», e sotto è solo, quindi cresce fino al bordo. Una soglia
+   scritta avrebbe dovuto indovinare quanto è lungo un percorso, che è la sola
+   cosa qui dentro che non si può sapere. */
+.rimappatura {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+.rimappatura .campo {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+/* Il prefisso vecchio, in `<code>`. Si accorcia lui: un percorso di rete lungo
+   duecento caratteri, lasciato crescere, spingerebbe il campo fuori dalla riga
+   — e il campo è la sola cosa qui che si usa. Le ellissi non nascondono niente
+   di necessario, perché la fine di un percorso è la parte che si riconosce e
+   `breve()` l'ha già tenuta. */
+.rimappatura-da {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-1);
+}
+/* Il conteggio non si tronca mai: è corto, ed è il numero che dice se vale la
+   pena rimappare quella radice o lasciarla stare. */
+.rimappatura-brani {
+  flex: 0 0 auto;
+  color: var(--color-text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * ── due cose vecchie che il profilo ha portato alla luce ──────────────────
+ */
+
+/*
+ * La barra d'avanzamento che non si vedeva.
+ *
+ * `Ripristino.tsx` disegna `<div class="avanzamento"><div style="width:…%">`
+ * da sempre, e nel foglio `.avanzamento` esisteva **solo** dentro
+ * `.lettura-link`, dove per giunta vuol dire un'altra cosa: là è l'involucro di
+ * una barra, qui è la pista. Cioè il ripristino da Drive ha sempre disegnato
+ * due `div` senza altezza e senza fondo — una barra invisibile che avanza. Non
+ * si era mai visto perché `strumenti/classi.js` cerca il **nome** della classe
+ * in un selettore qualunque, e `.lettura-link .avanzamento` lo contiene: il
+ * controllo diceva vero, e aveva ragione secondo quel che sa guardare.
+ *
+ * `Profilo.tsx` ha copiato quelle sei righe da `Ripristino.tsx`, che è come si
+ * scopre una cosa del genere: il secondo posto in cui non funziona.
+ *
+ * Il figlio diretto e non `.finestrella .avanzamento`: `.lettura-link` sta
+ * **dentro** una finestrella (`Importa.tsx`), quindi la forma discendente lo
+ * prenderebbe e gli darebbe otto pixel d'altezza e un fondo, cioè romperebbe
+ * l'unico dei tre che oggi funziona. Le due che vanno vestite sono figlie
+ * dirette — della finestrella nel ripristino, della scheda nelle impostazioni —
+ * e il `>` è quel che distingue.
+ */
+.finestrella > .avanzamento,
+.scheda > .avanzamento {
+  height: 8px;
+  border-radius: 99px;
+  background: var(--color-surface-3);
+  box-shadow: inset 0 1px 2px var(--incavo);
+  overflow: hidden;
+}
+.finestrella > .avanzamento > div,
+.scheda > .avanzamento > div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--skin-color-ciano));
+  /* `calc` e non `var(--transition-med)`: quella porta `--ease-out-expo`, e una
+     barra che si riempie frenando dice «sta per finire» a ogni aggiornamento.
+     Qui serviva la scala del movimento, non la curva — e la durata è tarata
+     sulla cadenza con cui questa fonte annuncia il suo avanzamento. */
+  transition: width calc(160ms * var(--motion-scale, 1)) linear;
+}
+/* La riga «14 / 200» sotto la barra: è la stessa notizia detta in cifre, per chi
+   vuole sapere quanto manca e non solo quanto è fatto. */
+.finestrella > .conteggio,
+.scheda > .conteggio {
+  color: var(--color-text-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * La scheda d'anteprima quando non ha un'anteprima.
+ *
+ * `.scheda-anteprima` nasce a due colonne — l'immagine a sinistra, il testo a
+ * destra — e i due usi vecchi (l'account e l'importazione da un link) hanno
+ * esattamente quella forma: al più un `<img>`, e poi un solo `.che-cosa` che
+ * raccoglie tutto il resto. Il profilo la usa come **riquadro**: un titoletto,
+ * un elenco di conteggi, due o tre note, senza nessuna immagine. Quattro figli
+ * diretti dentro `auto 1fr` non fanno un riquadro — fanno una griglia a due
+ * colonne in cui il titolo e la seconda nota stanno a sinistra e l'elenco a
+ * destra, incolonnati con niente.
+ *
+ * Si riconosce dal titoletto, che è quel che la differenzia davvero: una scheda
+ * d'anteprima ha una copertina e un titolo dentro, un riquadro ha
+ * un'intestazione sopra. `:has(> .titoletto)` dice esattamente questo, e non
+ * può toccare i due usi vecchi, che un titoletto non ce l'hanno. */
+.scheda-anteprima:has(> .titoletto) {
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: start;
+  gap: var(--spazio-2);
+  padding: var(--spazio-3);
+}
+
+/*
+ * ── il contrasto elevato di Windows ───────────────────────────────────────────
+ *
+ * In `forced-colors: active` il sistema non suggerisce una tavolozza: la impone.
+ * Il motore riscrive `color`, `background-color`, `border-color` e
+ * `outline-color` coi colori di sistema e azzera le ombre. Quel che resta è
+ * leggibile per definizione — e in questo foglio è anche **piatto**, perché
+ * tutto il linguaggio dell'elevazione è fatto esattamente delle cose che
+ * spariscono: quattro superfici che si distinguono di cinque unità di grigio, il
+ * filo chiaro sul bordo alto (`--filo`) e la sfumatura di luce (`--luce`).
+ * Quattro pannelli impilati diventano un rettangolo, e in diecimila righe non
+ * c'era una riga che se ne accorgesse.
+ *
+ * # Le tre contromosse, in ordine di quanto pesano
+ *
+ * **`--hairline` diventa una linea vera.** È il token con cui questo foglio
+ * separa le cose — centoquattordici regole lo leggono — e al sette per cento
+ * d'opacità separa per differenza di luminanza, cioè per quel che il contrasto
+ * elevato toglie. `CanvasText` lo rende una linea piena: centoquattordici bordi
+ * compaiono insieme senza toccare una sola di quelle regole.
+ *
+ * **La luce si spegne: `--luce`, `--filo`, `--incavo`.** Sono i tre pezzi del
+ * modello di luce — la sfumatura dall'alto, il filo chiaro sullo spigolo, l'ombra
+ * interna di un campo affondato — e sono decorazione, non informazione. Il motore
+ * ne farebbe cose diverse a seconda di quel che sa forzare: una sfumatura
+ * appiattita su un colore di sistema, o un gradiente tolto del tutto. Nessuna
+ * delle due è quella che serve, e dichiararle qui rende il risultato lo stesso
+ * ovunque. `--filo` non diventa `none` ma un'ombra nulla, perché sta in liste
+ * (`box-shadow: var(--filo), var(--shadow-2)`) dove un `none` in mezzo
+ * invaliderebbe la dichiarazione intera.
+ *
+ * **Il fuoco passa a `Highlight`.** `var(--accent)` è il colore della skin, e il
+ * motore lo riscrive col colore del testo: l'anello resterebbe visibile ma
+ * identico a un bordo. `Highlight` è il colore che il sistema riserva a «questo è
+ * scelto», e chi usa il contrasto elevato lo riconosce prima di leggerlo.
+ * L'esclusione della radice delle finestrelle si ripete qui: il perché sta dove
+ * l'anello è dichiarato la prima volta.
+ *
+ * # Poi gli stati, che sono informazione e non veste
+ *
+ * La riga che suona, la linguetta scelta, l'interruttore acceso, la barra a
+ * metà: tutti e quattro dicono quel che dicono con un fondo tinto, e due fondi
+ * tinti in contrasto elevato sono lo stesso fondo. Una barra di avanzamento
+ * diventa perfino bugiarda — pista e riempimento dello stesso colore si leggono
+ * come «finito». Ognuno torna con un segno che il sistema non può appiattire: un
+ * anello, un bordo, `Highlight`.
+ *
+ * # L'unica eccezione
+ *
+ * `forced-color-adjust: none` sta sulla sola tela dello spettro, e si giustifica
+ * da sé: lì i colori **sono** il contenuto. Uno spettro ridipinto col bianco e
+ * il nero di sistema non è uno spettro ad alto contrasto, è un rettangolo. È
+ * anche l'unico posto del foglio in cui un'immagine la generiamo noi invece di
+ * caricarla da un file, cioè l'unico che il motore ridipingerebbe.
+ */
+@media (forced-colors: active) {
+  :root {
+    --hairline: CanvasText;
+    --luce: none;
+    --filo: 0 0 0 0 transparent;
+    --incavo: transparent;
+  }
+
+  /* Il fuoco, col colore che il sistema riserva alla scelta. */
+  :focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+  /* La stessa esclusione di sopra, per la stessa ragione. */
+  .finestrella[role='dialog']:focus-visible,
+  .primo[role='dialog']:focus-visible {
+    outline: none;
+  }
+
+  /* Il brano in riproduzione, nell'elenco e nella coda. `outline` rientrato e non
+     un bordo: un bordo cambierebbe l'altezza della riga, e l'altezza della riga
+     è quella che la finestra virtuale misura. */
+  .riga[aria-current='true'],
+  .riga-coda[aria-current='true'] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  /* La destinazione aperta nella navigazione e la linguetta scelta di un
+     segmentato: il fondo appena più chiaro con cui si distinguono è la prima
+     cosa che il contrasto elevato appiattisce. */
+  .voce[data-active],
+  .segmentato .linguetta[data-active] {
+    background: Highlight;
+    color: HighlightText;
+  }
+  /* I due numerini dentro quelle due: hanno un colore proprio, che il motore
+     forzerebbe a `CanvasText` — cioè al colore del **fondo** della finestra,
+     sopra `Highlight`. Si tirano dietro al loro genitore. */
+  .voce[data-active] .conteggio,
+  .segmentato .linguetta[data-active] .quante {
+    color: HighlightText;
+  }
+
+  /* L'interruttore. La pista prende un bordo perché vuota non si vedrebbe, e
+     accesa prende `Highlight`: acceso e spento restano due cose diverse anche
+     senza la tinta d'accento. */
+  .interruttore .pista {
+    border: 1px solid CanvasText;
+  }
+  .interruttore[aria-checked='true'] .pista {
+    background: Highlight;
+  }
+  .interruttore .pallina {
+    background: CanvasText;
+  }
+  .interruttore[aria-checked='true'] .pallina {
+    background: HighlightText;
+  }
+
+  /* Le sette barre di avanzamento: la pista si vede perché ha un bordo, il
+     riempimento perché è `Highlight`. Senza, la barra dice sempre «finito».
+     L'ultima è quella del ripristino e del profilo, che fino alla 2.3.1 non
+     aveva una regola nemmeno fuori di qui. */
+  .toast-progress,
+  .avanzamento-scansione .barra,
+  .importazione .barra,
+  .importazione-brano .barra,
+  .riepilogo-coda .barra,
+  .lettura-link .barra,
+  .finestrella > .avanzamento,
+  .scheda > .avanzamento {
+    border: 1px solid CanvasText;
+  }
+  .toast-progress > span,
+  .avanzamento-scansione .riempita,
+  .importazione .riempimento,
+  .importazione-brano .riempimento,
+  .riepilogo-coda .riempimento,
+  .lettura-link .riempimento,
+  .finestrella > .avanzamento > div,
+  .scheda > .avanzamento > div {
+    background: Highlight;
+  }
+
+  /* Il riflettore del giro guidato. L'oscuramento è una `box-shadow`, e le
+     ombre qui dentro il motore le azzera: resta l'anello sul bersaglio, che il
+     motore ricolora e che è la metà che conta — «guarda questo». Il buio
+     attorno era l'altra metà, e perderlo non toglie niente a chi ha chiesto più
+     contrasto: era un effetto, e questa modalità gli effetti li toglie apposta.
+     Non c'è quindi una regola da scrivere, e vale la pena dirlo qui invece di
+     lasciar credere che sia una dimenticanza. */
+
+  /* La cartella che non risponde. L'opacità il motore non la appiattisce, e
+     proprio per questo qui è dannosa: smorzerebbe un testo a chi ha chiesto più
+     contrasto, senza aggiungere niente. Torna piena, e a dire che la radice è
+     spenta resta il corsivo del nome — insieme alla striscia «Ricontrolla», che
+     è dove sta il comando. */
+  .nodo-spento {
+    opacity: 1;
+  }
+
+  /* Lo spettro: qui i colori sono il contenuto. */
+  .scena-spettro {
+    forced-color-adjust: none;
+  }
 }

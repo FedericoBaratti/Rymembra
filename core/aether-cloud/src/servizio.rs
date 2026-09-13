@@ -503,7 +503,7 @@ fn adesso_grezzo() -> u128 {
 /// libreria con quaranta skin manderebbe quaranta eventi alla finestra; senza
 /// «sempre l'ultimo», una barra di avanzamento si fermerebbe al 96%.
 fn segnala(avanzamento: &mut impl FnMut(Avanzamento), fatti: usize, totale: usize, cosa: Cosa) {
-    if fatti % 25 == 0 || fatti == totale {
+    if fatti.is_multiple_of(25) || fatti == totale {
         avanzamento(Avanzamento {
             fatti,
             totale,

@@ -59,6 +59,15 @@ pub struct Libreria {
     pub migrazioni: usize,
     /// FTS5 è disponibile.
     pub fts5: bool,
+    /// Il giornale del database: `wal`, `truncate`, `memory`, o
+    /// `<modo>-non-usabile`.
+    ///
+    /// Sta qui per un motivo solo: finire nella riga di avvio. È l'unica riga di
+    /// diario che distingue una libreria veloce da una che si impunta a ogni
+    /// scansione — `truncate` vuol dire che WAL non si è accesa, e che letture e
+    /// scritture vanno in fila. Il vocabolario completo e il perché stanno su
+    /// [`aether_app::db::Opened::giornale`].
+    pub giornale: String,
 }
 
 /// Lo stato condiviso fra i comandi.
@@ -221,6 +230,33 @@ impl aether_app::library::Deposito for DepositoStato<'_> {
 /// due copie di una guardia di concorrenza sono due copie che divergono il
 /// giorno in cui qualcuno ne aggiusta una sola, e il sintomo sarebbe una passata
 /// che si sovrappone a se stessa in uno dei due posti soltanto.
+///
+/// # Due modi di entrarci, e quale scegliere
+///
+/// Il turno si **prende** o si **adotta**, e la differenza non è di gusto: è chi
+/// alza la bandiera.
+///
+/// [`Turno::prendi`] la alza lui, in un colpo solo, e risponde `None` se era già
+/// alzata. È il modo di sempre, ed è quello giusto quando chi decide di
+/// cominciare e chi lavora sono la stessa funzione: un filo periodico che si
+/// sveglia, guarda se può, e fa la sua passata.
+///
+/// [`Turno::adotta`] non la alza: la trova alzata e si impegna ad abbassarla.
+/// Serve quando le due cose stanno in due posti diversi, e stanno in due posti
+/// diversi per una ragione — nel caso che l'ha fatta nascere, il bit di
+/// `StatoAggiornamenti::installazione` si alza nel **comando**, perché fra il
+/// clic su «Aggiorna» e l'avvio del filo che scarica c'è abbastanza tempo perché
+/// un secondo clic passi, mentre il lavoro da custodire è tutto sul filo. Con
+/// `prendi` quel filo non potrebbe mai entrare (la bandiera è già alzata, e
+/// giustamente); con due `store` a mano il bit resterebbe su per sempre se il
+/// lavoro panicasse, e il tasto resterebbe spento fino al riavvio.
+///
+/// La regola per scegliere, in una riga: **`prendi` quando la decisione è qui,
+/// `adotta` quando la decisione è già stata presa altrove e qui c'è solo la
+/// promessa di rilasciare.** Chi usa `adotta` si prende un obbligo che il tipo
+/// non può verificare — che la bandiera sia davvero alzata, e che nessun altro
+/// la stia già custodendo — ed è per questo che è la seconda scelta e non la
+/// prima.
 pub struct Turno<'a>(&'a AtomicBool);
 
 impl Turno<'_> {
@@ -230,6 +266,27 @@ impl Turno<'_> {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()
             .map(|_| Turno(bandiera))
+    }
+
+    /// Adotta un turno che qualcun altro ha già preso, per rilasciarlo qui.
+    ///
+    /// Non tocca la bandiera all'andata — chi chiama dichiara che è già alzata —
+    /// e la abbassa nel `Drop`, anche srotolando per un panico. È tutto il
+    /// guadagno: un lavoro che cade portandosi via il processo lascia comunque un
+    /// bit coerente, e l'interfaccia non resta a dire che sta facendo una cosa
+    /// che non sta più facendo.
+    ///
+    /// Quando si usa questo e non [`Turno::prendi`] sta scritto sul tipo.
+    ///
+    /// # Perché non torna `Option`
+    ///
+    /// Perché non c'è niente da decidere: la decisione è stata presa dal
+    /// `compare_exchange` di chi ha alzato la bandiera, e ripetere qui un
+    /// controllo darebbe un `None` che il chiamante potrebbe solo ignorare — cioè
+    /// un ramo morto e un bit mai più abbassato, che è esattamente il guasto che
+    /// questa funzione esiste per chiudere.
+    pub fn adotta(bandiera: &AtomicBool) -> Turno<'_> {
+        Turno(bandiera)
     }
 }
 
@@ -362,6 +419,7 @@ fn apri_libreria(data_dir: PathBuf) -> Result<Libreria, AppError> {
         data_dir,
         migrazioni: aperto.applied,
         fts5: aperto.fts5,
+        giornale: aperto.giornale,
     })
 }
 
@@ -376,11 +434,18 @@ pub fn riga_di_avvio(stato: &Stato) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match guardia.as_ref() {
+        // `giornale=` è l'ultimo arrivato, e l'unico campo di questa riga che
+        // spiega una **lentezza** invece di un guasto: `giornale=truncate` dice
+        // che WAL non si è accesa — quasi sempre perché la cartella dati sta su
+        // una condivisione di rete — e che da lì viene l'interfaccia che si
+        // impunta durante una scansione. Senza questo campo quella domanda non
+        // aveva risposta da nessuna parte nel diario.
         Ok(libreria) => nota!(
-            "[avvio] libreria aperta dati={} migrazioni={} fts5={}",
+            "[avvio] libreria aperta dati={} migrazioni={} fts5={} giornale={}",
             libreria.data_dir.display(),
             libreria.migrazioni,
-            libreria.fts5
+            libreria.fts5,
+            libreria.giornale
         ),
         Err(errore) => nota!(
             "[avvio] libreria NON aperta codice={} causa={}",
@@ -558,6 +623,59 @@ mod prove {
             !bandiera.load(Ordering::Acquire),
             "il turno è tornato libero"
         );
+    }
+
+    #[test]
+    fn un_turno_adottato_si_libera_anche_se_il_lavoro_panica() {
+        // È il caso per cui `adotta` è stata scritta: il bit l'alza un comando,
+        // il lavoro sta su un altro filo, e se quel lavoro cade srotolando il bit
+        // deve tornare giù comunque — altrimenti l'interfaccia resta a dire che
+        // sta scaricando qualcosa che non sta scaricando, fino al riavvio.
+        //
+        // `panic = "unwind"` è dichiarato nel `Cargo.toml` di radice, con tre
+        // ragioni di cui una è precisamente questa: sotto `abort` nessun `Drop`
+        // verrebbe eseguito, e questa prova non avrebbe senso.
+        let bandiera = AtomicBool::new(false);
+        // Come fa il comando: alzata qui, custodita là.
+        bandiera.store(true, Ordering::Release);
+
+        let caduto = std::panic::catch_unwind(|| {
+            let _turno = Turno::adotta(&bandiera);
+            assert!(
+                bandiera.load(Ordering::Acquire),
+                "adottata vuol dire alzata"
+            );
+            panic!("il plugin è caduto a metà dello scaricamento");
+        });
+
+        assert!(caduto.is_err(), "il panico è arrivato fin qui");
+        assert!(
+            !bandiera.load(Ordering::Acquire),
+            "il Drop ha abbassato la bandiera srotolando"
+        );
+        // E adesso `prendi` riesce di nuovo: è questo che rende il tasto
+        // «Aggiorna» riutilizzabile senza riavviare.
+        assert!(Turno::prendi(&bandiera).is_some());
+    }
+
+    #[test]
+    fn adottare_non_alza_niente_da_se() {
+        // La differenza fra i due costruttori, scritta come prova: `prendi`
+        // decide e alza, `adotta` si fida e non tocca. Se un giorno `adotta`
+        // cominciasse ad alzare la bandiera, il comando che l'ha già alzata non
+        // se ne accorgerebbe — ma il suo `compare_exchange`, che è la difesa dal
+        // doppio clic, diventerebbe una cerimonia.
+        let bandiera = AtomicBool::new(false);
+        {
+            let _turno = Turno::adotta(&bandiera);
+            assert!(
+                !bandiera.load(Ordering::Acquire),
+                "adotta non alza: la bandiera è come l'ha trovata"
+            );
+        }
+        // E all'uscita la abbassa comunque, che da `false` vuol dire lasciarla
+        // dov'era: la promessa è «a valle è bassa», non «è stata cambiata».
+        assert!(!bandiera.load(Ordering::Acquire));
     }
 
     #[test]

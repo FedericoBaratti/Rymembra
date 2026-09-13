@@ -71,9 +71,27 @@ pub const CHIAVE_LFM_UTENTE: &str = "scrobble.lastfm.utente";
 
 /// La chiave dell'applicazione Last.fm, scritta dall'utente.
 ///
-/// In `settings` per la stessa ragione del `client_id` di Spotify: viaggia in
-/// chiaro nell'indirizzo del consenso, quindi non è un segreto. Il **segreto**
-/// che le sta accanto, quello sì, sta nel portachiavi.
+/// # Dov'è, e perché si è spostata
+///
+/// **Nel portachiavi di sistema, dalla 2.3.1.** Questa costante resta perché
+/// resta la riga di `settings` da cui la chiave viene travasata all'avvio, e
+/// perché una macchina il cui portachiavi non risponde continua a leggerla da
+/// lì — vedi `apps/desktop/src-tauri/src/scrobble.rs::travasa_chiave_lastfm`,
+/// che è l'unico posto in cui la si sposta.
+///
+/// Fin qui il commento diceva che stava in `settings` «perché viaggia in chiaro
+/// nell'indirizzo del consenso, quindi non è un segreto». La premessa è vera e
+/// la conclusione era sbagliata: la domanda giusta non è se sia segreta, ma **di
+/// chi sia**. È una credenziale personale, registrata da una persona a suo
+/// nome, e chi la ottiene manda scrobble come lei finché non gliela si revoca a
+/// mano.
+///
+/// Finché il database restava su una macchina la differenza non si vedeva.
+/// Dalla 2.3.1 il profilo esporta la libreria in un archivio che si mette su una
+/// chiavetta e si passa in giro, e una credenziale personale dentro un file che
+/// si passa in giro è la definizione del guasto. Il profilo la lascia comunque
+/// fuori — non sta in `aether_app::profilo::CATALOGO`, e una prova lo tiene
+/// vero — ma un'allowlist e un portachiavi sono due difese e non una.
 pub const CHIAVE_LFM_API_KEY: &str = "scrobble.lastfm.api_key";
 
 /// Mandare quel che si ascolta è acceso.

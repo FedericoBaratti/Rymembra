@@ -154,11 +154,12 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
         // gli altri: viene aperto in anticipo, attacca senza stacco, e non c'è
         // nessun istante in cui l'applicazione si sia fermata. Reagire a
         // `Fermato` vorrebbe dire ripartire *dopo* il silenzio.
-        if lettore.coda.peek_next().is_none() && lettore.autoplay {
-            if let Some(scelta) = scegli_da_solo(app, lettore) {
-                lettore.coda.enqueue(&[scelta.id]);
-                lettore.motivo_prossimo = Some((scelta.id, scelta.motivo.codice()));
-            }
+        if lettore.coda.peek_next().is_none()
+            && lettore.autoplay
+            && let Some(scelta) = scegli_da_solo(app, lettore)
+        {
+            lettore.coda.enqueue(&[scelta.id]);
+            lettore.motivo_prossimo = Some((scelta.id, scelta.motivo.codice()));
         }
 
         let formato = lettore.motore.formato();
@@ -549,7 +550,7 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                 // riprende a mano — e chi chiude a metà brano ritrova il segno
                 // a cinque secondi da dove l'aveva lasciato, non all'inizio.
                 battiti = battiti.wrapping_add(1);
-                if !tempo.in_pausa && battiti % BATTITI_PER_SEGNO == 0 {
+                if !tempo.in_pausa && battiti.is_multiple_of(BATTITI_PER_SEGNO) {
                     let stato_app = app.state::<Stato>();
                     let _ = con_libreria(&stato_app, |libreria| {
                         playback::save_posizione(&libreria.connection, tempo.posizione_ms)

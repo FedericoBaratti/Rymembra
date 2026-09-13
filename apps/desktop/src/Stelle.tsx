@@ -14,6 +14,16 @@
  * seconda del carattere di sistema la stella piena e quella vuota avevano
  * larghezze diverse: cambiare voto faceva saltare la riga di qualche pixel. Le
  * due icone hanno lo stesso `viewBox`, quindi la fila non si muove più.
+ *
+ * # Perché `raggiungibile`
+ *
+ * Perché cinque bottoni sono cinque fermate di tabulazione, e dentro un elenco di
+ * 18.534 righe sono 92.670. Là la fila di stelle non è una fermata: si arriva
+ * alla riga con Tab e alle stelle con ←→ (vedi `fuoco.ts`), quindi le cinque
+ * passano a `tabIndex={-1}` — raggiungibili col fuoco programmatico, non con
+ * Tab. Fuori dall'elenco — la fascia del lettore, la terza colonna — la fila è
+ * un comando come gli altri e la fermata ce l'ha: per questo il valore di serie è
+ * `true`, cioè il comportamento di prima per chi non dice niente.
  */
 import { Icona } from "./parti/Icone";
 import { t } from "./lingue";
@@ -23,9 +33,12 @@ const STELLE = [1, 2, 3, 4, 5] as const;
 export function Stelle({
   valore,
   onVoto,
+  raggiungibile = true,
 }: {
   valore: number;
   onVoto: (stelle: number) => void;
+  /** Le cinque stelle sono fermate di tabulazione. Vedi la nota del modulo. */
+  raggiungibile?: boolean;
 }) {
   return (
     <div
@@ -40,6 +53,7 @@ export function Stelle({
           key={n}
           type="button"
           className="stella"
+          tabIndex={raggiungibile ? undefined : -1}
           aria-pressed={n <= valore}
           aria-label={
             n === valore ? t("rating.clear") : t("rating.stars", { n })

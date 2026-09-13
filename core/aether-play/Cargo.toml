@@ -29,8 +29,12 @@ publish = false
 aether-domain = { path = "../aether-domain" }
 
 # La decodifica. Le feature sono l'elenco chiuso di `SUPPORTED_EXTENSIONS` meno
-# i due che symphonia non sa fare (opus, wma): quelli si dichiarano non
-# supportati con un codice del catalogo, invece di fallire in silenzio.
+# l'unico che symphonia non sa fare — WMA, che si dichiara non supportato con un
+# codice del catalogo invece di fallire in silenzio.
+#
+# `ogg` vale per tre codec e non per uno: Vorbis, FLAC e Opus viaggiano tutti
+# dentro quel contenitore, e il demultiplatore di symphonia li distingue da sé.
+# È la ragione per cui `.oga` non è costato una riga di decodifica.
 symphonia = { version = "0.5", default-features = false, features = [
     "mp3",
     "flac",
@@ -43,6 +47,24 @@ symphonia = { version = "0.5", default-features = false, features = [
     "pcm",
     "aiff",
 ] }
+
+# Il decodificatore Opus, che symphonia 0.5 non ha. Il contenitore lo apre già
+# lei: riconosce `OpusHead`, misura la durata di ogni pacchetto, e col gapless
+# acceso dice quanto togliere in testa e in coda. Qui manca solo chi faccia
+# diventare campioni quei pacchetti.
+#
+# Rust e non C: niente cmake da installare, niente trenta megabyte di libopus da
+# compilare, e niente quattro cross-build in più il giorno che questo crate
+# suonerà su Android — che è la ragione per cui non dipende da `aether-app`.
+#
+# **Questo, e non uno degli altri due in Rust.** Sono stati provati tutti e tre
+# sullo stesso mazzo di quindici file incisi da libopus: `opus-decoder` va in
+# panico su cinque, tutti a bitrate basso; `rusty-opus` restituisce spazzatura
+# senza dirlo; `opus-pure` li decodifica tutti, con lo stesso valore efficace
+# che ne ricava libopus. La prova sta in `decodifica::opus`, che spiega anche
+# cosa si paga — a cominciare dal fatto che «Rust puro» qui non vuol dire
+# «senza unsafe».
+opus-pure = "0.2"
 
 # L'uscita. WASAPI qui, AAudio quando ci sarà Android: è la ragione per cui il
 # dispositivo sta dietro questa libreria e non dietro una chiamata di sistema.

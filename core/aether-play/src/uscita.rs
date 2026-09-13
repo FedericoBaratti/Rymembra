@@ -44,6 +44,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use aether_domain::errors::{AppError, ErrorCode};
 use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
@@ -74,6 +75,21 @@ pub struct FormatoUscita {
 /// giudica se uno stallo del filo di decodifica si sente o no, e vale la pena
 /// leggerlo di lì e non da qui.
 pub const RISERVA_MS: u64 = 200;
+
+/// Oltre quanti millisecondi la latenza misurata non si crede più.
+///
+/// Duecentocinquanta. Non è il tetto di una catena d'uscita vera — un'uscita
+/// Bluetooth ne fa molti di più — è il tetto di quel che *questa misura* può
+/// dire sensatamente: il numero che arriva da [`annota_latenza`] è la durata del
+/// buffer del dispositivo, cioè qualche decina di millisecondi nel caso
+/// peggiore. Un quarto di secondo lì dentro non è una catena lenta, è un
+/// orologio del dispositivo che ha riportato una sciocchezza — e compensare una
+/// sciocchezza sposta il cursore e i testi di un quarto di secondo senza che
+/// nessuno possa capire perché.
+///
+/// Sopra questa soglia la misura si butta e resta solo la correzione a mano, che
+/// è un numero che qualcuno ha scelto guardando l'effetto.
+pub const LATENZA_MASSIMA_MS: u64 = 250;
 
 /// Quanto in fretta il guadagno raggiunge il valore voluto, per campione.
 ///
@@ -270,10 +286,16 @@ fn costruisci(
         }
     };
 
+    // La frequenza serve nelle tre callback per tradurre in fotogrammi la
+    // latenza che `cpal` riporta in tempo. È un `u32` `Copy`, quindi ognuna delle
+    // tre se ne prende la sua copia e nessuna la condivide con le altre.
+    let frequenza = formato.frequenza;
+
     let flusso = match campione {
         cpal::SampleFormat::F32 => dispositivo.build_output_stream(
             &configurazione,
-            move |dati: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            move |dati: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                annota_latenza(info, frequenza, &stato);
                 riempi(
                     dati,
                     &mut lettore,
@@ -289,7 +311,8 @@ fn costruisci(
         ),
         cpal::SampleFormat::I16 => dispositivo.build_output_stream(
             &configurazione,
-            move |dati: &mut [i16], _: &cpal::OutputCallbackInfo| {
+            move |dati: &mut [i16], info: &cpal::OutputCallbackInfo| {
+                annota_latenza(info, frequenza, &stato);
                 riempi(
                     dati,
                     &mut lettore,
@@ -305,7 +328,8 @@ fn costruisci(
         ),
         cpal::SampleFormat::U16 => dispositivo.build_output_stream(
             &configurazione,
-            move |dati: &mut [u16], _: &cpal::OutputCallbackInfo| {
+            move |dati: &mut [u16], info: &cpal::OutputCallbackInfo| {
+                annota_latenza(info, frequenza, &stato);
                 riempi(
                     dati,
                     &mut lettore,
@@ -340,6 +364,74 @@ fn costruisci(
             era_predefinito,
         },
     ))
+}
+
+/// Annota quanti fotogrammi stanno fra questo blocco e le casse.
+///
+/// # Cosa misura, esattamente
+///
+/// `cpal` accompagna ogni blocco con due istanti: `callback`, «adesso», e
+/// `playback`, «quando si sentirà il primo campione di questo blocco». La loro
+/// differenza è la sola cosa che interessa, e usare **solo differenze** è il
+/// pregio di questa misura: `StreamInstant` non ha un'epoca che noi conosciamo —
+/// su Windows è il contatore di prestazioni del sistema — e nessuna epoca
+/// condivisa serve, perché i due istanti vengono dalla stessa sorgente nello
+/// stesso momento.
+///
+/// # Perché è una stima, e di che pezzo della catena
+///
+/// Su Windows `cpal` parla WASAPI, e `playback` non lo legge da nessuna parte:
+/// lo **costruisce**. Prende `callback` da `IAudioClock::GetPosition` e ci somma
+/// la durata dello spazio libero nel buffer del dispositivo, che ricava da
+/// `GetCurrentPadding`. Il commento di `cpal` su quella funzione lo dichiara
+/// espressamente una stima, e aggiunge che dopo il buffer c'è «probabilmente un
+/// altro po' di latenza» che non sa come determinare.
+///
+/// Quindi il numero che esce di qui è **un periodo di dispositivo** — una
+/// decina di millisecondi a 48 kHz in modalità condivisa — e non la catena
+/// d'uscita: non ci sono dentro il mixer di sistema, il driver, la conversione
+/// digitale-analogica, né i millisecondi di un DAC USB. Su un'uscita Bluetooth è
+/// gravemente sottostimato: là la latenza vera sta fra i cento e i duecento
+/// millisecondi, e questa misura continua a dire dieci.
+///
+/// Per questo non è da sola: è il primo addendo, e il secondo lo dichiara
+/// l'utente (la preferenza `audio.latenza_ms`). Quel che si guadagna misurando
+/// è la parte che cambia da sé — un buffer che il driver allarga sotto carico —
+/// senza chiedere a nessuno di riaggiustare un cursore.
+///
+/// # I tre divieti
+///
+/// Nessuna allocazione, nessun lucchetto, nessun panico: due letture di campi
+/// `Copy`, un'aritmetica intera e uno `store` rilassato. Vedi il `//!` in testa
+/// al file.
+fn annota_latenza(info: &cpal::OutputCallbackInfo, frequenza: u32, condiviso: &Condiviso) {
+    let tempi = info.timestamp();
+    // `None` quando `playback` precede `callback`, che non dovrebbe succedere e
+    // su un orologio costruito a mano non è impossibile. In quel caso si lascia
+    // l'ultimo valore noto invece di scrivere zero: zero direbbe «nessuna
+    // latenza», che è un'affermazione, mentre qui non si sa niente di nuovo.
+    let Some(anticipo) = tempi.playback.duration_since(&tempi.callback) else {
+        return;
+    };
+    condiviso
+        .latenza_fotogrammi
+        .store(fotogrammi_di(anticipo, frequenza), Ordering::Relaxed);
+}
+
+/// Quanti fotogrammi stanno in una durata, alla frequenza d'uscita.
+///
+/// In microsecondi e non in secondi in virgola mobile: la callback non deve
+/// toccare la FPU per una conversione che in interi è esatta, e un buffer da
+/// dieci millisecondi a 48 kHz fa 480 fotogrammi senza arrotondamenti da
+/// giustificare.
+#[expect(
+    clippy::integer_division,
+    reason = "il resto è meno di un fotogramma, cioè meno di un campione su \
+              quarantottomila al secondo"
+)]
+fn fotogrammi_di(anticipo: Duration, frequenza: u32) -> u64 {
+    let micro = u64::try_from(anticipo.as_micros()).unwrap_or(u64::MAX);
+    micro.saturating_mul(u64::from(frequenza)) / 1_000_000
 }
 
 /// Da campione normalizzato a campione normalizzato, ma tagliato.
@@ -607,6 +699,7 @@ mod prove {
             fotogrammi: AtomicU64::new(0),
             vuoti: AtomicU64::new(0),
             canali: AtomicU32::new(u32::from(canali)),
+            latenza_fotogrammi: AtomicU64::new(0),
             perso: AtomicBool::new(false),
             causa_perdita: AtomicU32::new(0),
             abbandonato: AtomicBool::new(false),
@@ -637,6 +730,25 @@ mod prove {
                 ricevi,
             },
         )
+    }
+
+    /// L'aritmetica della latenza, che è l'unica metà provabile.
+    ///
+    /// [`annota_latenza`] non ha una prova sua, e non è una dimenticanza:
+    /// `cpal::OutputCallbackInfo` non si costruisce da fuori — non ha campi
+    /// pubblici né costruttore, e gli istanti dentro li fa il backend audio.
+    /// Provarla vorrebbe dire un dispositivo vero, cioè una prova che sulla CI
+    /// non gira. Quel che si poteva separare è questa conversione; quel che resta
+    /// nella funzione è una lettura di due campi `Copy` e uno `store`.
+    #[test]
+    fn la_latenza_si_converte_in_fotogrammi() {
+        // Il buffer tipico di WASAPI in modalità condivisa: dieci millisecondi,
+        // che a 48 kHz sono 480 fotogrammi.
+        assert_eq!(fotogrammi_di(Duration::from_millis(10), 48_000), 480);
+        assert_eq!(fotogrammi_di(Duration::ZERO, 48_000), 0);
+        // E il resto si perde verso il basso: mezzo fotogramma non è un
+        // fotogramma.
+        assert_eq!(fotogrammi_di(Duration::from_micros(10), 48_000), 0);
     }
 
     #[test]

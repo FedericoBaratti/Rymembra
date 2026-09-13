@@ -12,11 +12,13 @@ mod account;
 mod aggiornamenti;
 mod analisi;
 mod arricchimento;
+mod cartelle;
 mod comandi;
 mod copertine;
 mod diario;
 mod disparte;
 mod errore;
+mod giro;
 mod ia;
 mod importa;
 mod media;
@@ -24,7 +26,7 @@ mod metadati;
 mod nuvola;
 mod playlist;
 mod procura;
-mod riordino;
+mod profilo;
 mod riproduzione;
 mod scrobble;
 mod sincronia;
@@ -34,6 +36,7 @@ mod stato;
 mod studio;
 mod testi;
 mod vassoio;
+mod zoom;
 
 use tauri::Manager as _;
 
@@ -192,7 +195,7 @@ fn main() {
     // riesce a raccontare.
     diario::installa_gancio_dei_panici();
 
-    let costruita = tauri::Builder::default()
+    let costruita = una_sola_istanza(tauri::Builder::default())
         // Scegliere la cartella della musica è la prima cosa che fa chi apre
         // Aether: un campo di testo in cui incollare un percorso funziona, e
         // sbaglia al primo spazio o alla prima barra rovesciata.
@@ -234,6 +237,18 @@ fn main() {
             // aprire il deposito all'avvio vorrebbe dire una connessione al
             // database in più per chi il pannello del testo non lo apre mai.
             app.manage(testi::StatoTesti::nuovo());
+
+            // L'albero delle cartelle: un percorso e tre parole di stato, e
+            // nient'altro. Non apre il database e non legge niente — lo fa alla
+            // prima volta che qualcuno apre il pannello, e lo lascia cadere
+            // cinque minuti dopo l'ultima domanda. Chi il pannello non lo apre
+            // mai non paga né la lettura né la memoria.
+            //
+            // Dentro un `Arc` perché il filo che sfratta l'albero se lo tiene
+            // per conto suo, senza dover passare da Tauri per ritrovarlo.
+            app.manage(std::sync::Arc::new(cartelle::IndiceCartelle::nuovo(
+                &data_dir,
+            )));
 
             let stato = stato::Stato::apri(data_dir);
             // La riga di avvio va stampata **prima** di disegnare: se
@@ -397,6 +412,11 @@ fn main() {
             comandi::cronologia_conteggio,
             comandi::scansiona,
             comandi::annulla_scansione,
+            cartelle::cartelle_figlie,
+            cartelle::cartelle_brani,
+            cartelle::cartelle_radici_vive,
+            comandi::cartelle_ui,
+            comandi::imposta_cartelle_ui,
             comandi::cerca,
             comandi::cerca_conteggio,
             comandi::brani,
@@ -413,11 +433,24 @@ fn main() {
             comandi::piano_importazione,
             comandi::importa,
             comandi::imposta_tema,
+            comandi::movimento_ridotto,
+            comandi::imposta_movimento_ridotto,
             comandi::imposta_lingua,
             comandi::imposta_scorciatoie,
-            comandi::profilo_esporta,
-            comandi::profilo_piano,
-            comandi::profilo_importa,
+            // Lo zoom della finestra. Tre gesti e nessun numero: la scala dei
+            // gradini vive in `aether_app::preferenze::SCALA_ZOOM` e di elenchi
+            // non ne esistono due — vedi il preambolo di `zoom.rs`.
+            zoom::zoom_avvio,
+            zoom::zoom_passo,
+            zoom::zoom_normale,
+            // Il giro guidato: qui c'è soltanto la memoria fra due avvii, il
+            // giro vero è in `Giro.tsx`.
+            giro::giro_da_fare,
+            giro::giro_fatto,
+            profilo::profilo_esporta,
+            profilo::profilo_piano,
+            profilo::profilo_importa,
+            profilo::profilo_annulla,
             importa::import_anteprima,
             importa::import_piano,
             importa::import_esegui,
@@ -437,9 +470,6 @@ fn main() {
             procura::da_comprare,
             procura::cerca_dove_comprare,
             procura::alternative_ammettile,
-            riordino::piano_riordino,
-            riordino::esegui_riordino,
-            riordino::annulla_riordino,
             metadati::metadati_conteggio,
             metadati::metadati_incerti,
             metadati::metadati_correggi,
@@ -500,6 +530,7 @@ fn main() {
             riproduzione::spegnimento,
             riproduzione::autoplay,
             riproduzione::dissolvenza,
+            riproduzione::latenza,
             riproduzione::riapri_audio,
             riproduzione::dispositivi_audio,
             riproduzione::scegli_dispositivo_audio,
@@ -511,6 +542,8 @@ fn main() {
             riproduzione::spettro_visibile_scegli,
             riproduzione::spettro_qualita,
             riproduzione::spettro_qualita_scegli,
+            riproduzione::formato_visibile,
+            riproduzione::formato_visibile_scegli,
             riproduzione::eq_preset_elenco,
             riproduzione::eq_preset_salva,
             riproduzione::eq_preset_cancella,
@@ -542,6 +575,7 @@ fn main() {
             testi::testo_brano,
             testi::testo_scarto,
             testi::testo_cerca,
+            testi::testo_cerca_di_nuovo,
             testi::testi_stato,
             testi::testi_rete,
             testi::testi_riempi,
@@ -552,6 +586,7 @@ fn main() {
             arricchimento::arricchimento_stato,
             arricchimento::arricchimento_attiva,
             arricchimento::arricchimento_annulla,
+            arricchimento::arricchimento_riporta_nei_file,
             scrobble::scrobble_stato,
             scrobble::scrobble_attivo,
             scrobble::scrobble_listenbrainz_collega,
@@ -664,6 +699,77 @@ fn main() {
     }
 }
 
+/// Registra il guardiano dell'istanza unica, se in questo avvio ha senso.
+///
+/// # Che problema risolve, e non è quello che sembra
+///
+/// Non è il doppio controllo degli aggiornamenti, che costerebbe trecento byte e
+/// nessun danno. Sono due cose che fanno male davvero:
+///
+/// 1. **Due processi sullo stesso database.** SQLite in WAL regge due scrittori,
+///    ma Aether non è scritta per questo: `Stato` tiene la libreria dietro un
+///    mutex *di processo*, e due processi hanno due mutex che non si vedono. Due
+///    scansioni in parallelo sulle stesse righe, due `rebuild_aggregates`, due
+///    code di ieri riprese insieme — e la cronologia d'ascolto è l'unica cosa in
+///    tutto il programma che una riscansione non sa ricostruire.
+/// 2. **Due icone nel vassoio**, di cui una riapre una finestra che non sta
+///    suonando. Chi chiude con la X e poi riapre Aether dal collegamento
+///    ottiene, oggi, un secondo processo muto accanto a quello che suona — e il
+///    gesto che voleva fare era «rimettimi davanti la finestra».
+///
+/// Il secondo è esattamente quel che fa il callback: [`vassoio::mostra`], che è
+/// già la risposta giusta e fa tutti e tre i gesti — mostra, de-riduce, dà il
+/// fuoco. Nessun controllo aggiornamenti in più e nessun altro effetto: il filo
+/// del primo processo batte anche a finestra nascosta, quindi non c'è niente da
+/// risvegliare.
+///
+/// # Perché `AETHER_DATI` e non `debug_assertions`
+///
+/// Perché la ragione di questo guardiano è **una cartella dati condivisa**, e
+/// `AETHER_DATI` è l'unico modo che esiste in questo programma per averne due
+/// diverse (vedi [`cartella_dati`]). Due Aether su due cartelle dati non sono
+/// due processi sullo stesso database: sono la prova che la scorciatoia di
+/// sviluppo esiste per fare, cioè la libreria vera da una parte e quella di
+/// prova dall'altra, aperte insieme per confrontarle.
+///
+/// `#[cfg(not(debug_assertions))]` sarebbe stato più corto e avrebbe sbagliato
+/// due volte: avrebbe **bloccato** le due cartelle dati in rilascio, che è il
+/// caso legittimo, e avrebbe reso il guardiano invisibile in sviluppo — cioè
+/// esattamente dove si prova l'updater con `npm run dev`, e dove un secondo
+/// `npm run dev` deve poter partire. Una funzione che non gira mai in sviluppo è
+/// una funzione che si scopre rotta dall'utente.
+///
+/// Il prezzo è dichiarato: chi tiene `AETHER_DATI` impostata di suo — in
+/// sviluppo, o perché i dati stanno su un altro disco — non ha il guardiano, e
+/// due avvii gli danno due processi come oggi. È il baratto giusto fra i due
+/// possibili, perché chi ha impostato quella variabile sa di averla impostata.
+///
+/// Il plugin, comunque, non distingue le cartelle da sé: la sua chiave è
+/// `config().identifier`, identico nei due processi. Senza questa riga sarebbe
+/// il comportamento più invadente dei due.
+///
+/// # Dove muore il secondo processo, che è la parte che conta
+///
+/// Dentro il `setup` del plugin, cioè **prima** di [`cartella_dati`] e di tutto
+/// quel che il `setup` qui sotto apre: il secondo processo non arriva mai a
+/// toccare il database, quindi non può lasciare un `-wal` da riassorbire né
+/// mettere mano alla cronologia d'ascolto. E non si vede niente lampeggiare,
+/// perché la finestra nasce nascosta (`visible: false` in `tauri.conf.json`) e a
+/// mostrarla è il frontend, che in quel processo non parte.
+fn una_sola_istanza(costruttore: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    if std::env::var_os("AETHER_DATI").is_some_and(|valore| !valore.is_empty()) {
+        return costruttore;
+    }
+    costruttore.plugin(tauri_plugin_single_instance::init(
+        |app, _argomenti, _da| {
+            // Gli argomenti e la cartella del secondo processo non servono: Aether
+            // non si apre con un file sulla riga di comando, e non c'è niente da
+            // consegnare. Quel che c'era da fare è riportare davanti la finestra.
+            vassoio::mostra(app);
+        },
+    ))
+}
+
 /// Dove stanno database, copertine e skin.
 ///
 /// Normalmente la cartella dati dell'applicazione, che su Windows è
@@ -672,8 +778,8 @@ fn main() {
 /// # Perché una scorciatoia del genere esiste
 ///
 /// Perché quasi tutto ciò che questa applicazione fa di irreversibile —
-/// riordinare i file sul disco, importare un account intero, ripristinare un
-/// backup — si può leggere in una prova unitaria e si può giudicare **solo**
+/// importare un account intero, ripristinare un backup, riscrivere i tag di
+/// migliaia di file — si può leggere in una prova unitaria e si può giudicare **solo**
 /// guardandolo succedere in una finestra vera, su una libreria che somiglia a
 /// quella di qualcuno. Senza questa variabile le due cose sono la stessa
 /// libreria: la sola, quella dell'utente. Provare un'importazione vorrebbe dire

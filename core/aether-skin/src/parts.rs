@@ -29,6 +29,7 @@
 //! dati e basta: ogni carattere di CSS esce da [`crate::compile`].
 
 use crate::effects::{Effect, Paint, paint_effects};
+use crate::movimento::PartAnimations;
 use crate::tokens::ColorValue;
 use crate::values::Length;
 
@@ -129,7 +130,6 @@ pub static PARTS: &[PartDef] = &[
     parte!("list-row", Lists, false,
         "La singola riga di un elenco, compresi lo stato attivo e quello selezionato."),
     parte!("queue-list", Lists, false, "La coda di riproduzione."),
-    parte!("home-shortcuts", Lists, false, "Le scorciatoie della schermata iniziale."),
     parte!("empty-state", Lists, true, "Il riquadro mostrato quando non c'è niente."),
     parte!("empty-icon", Lists, false, "L'icona dello stato vuoto."),
     parte!("skeleton", Lists, true,
@@ -147,6 +147,8 @@ pub static PARTS: &[PartDef] = &[
     parte!("np-art", NowPlaying, true, "La copertina in grande."),
     parte!("np-title", NowPlaying, false, "Il titolo del brano in riproduzione."),
     parte!("np-meta", NowPlaying, false, "Artista e album sotto il titolo."),
+    parte!("np-formato", NowPlaying, false,
+        "I dati tecnici del file sotto i comandi: formato, frequenza, canali, bitrate."),
     parte!("np-transport", NowPlaying, false, "I comandi di riproduzione."),
     parte!("np-scrim", NowPlaying, false, "Il velo sopra la copertina, per leggere il testo."),
     parte!("lyrics-screen", NowPlaying, true, "La schermata del testo."),
@@ -186,6 +188,7 @@ pub static PARTS: &[PartDef] = &[
 #[rustfmt::skip]
 pub static RITIRATE: &[(&str, &str)] = &[
     ("viz-title", "il visualizer non ha un titolo, e non l'avrà: vedi DettaglioSpettro."),
+    ("home-shortcuts", "la schermata iniziale non ha scorciatoie, e nessun pacchetto le prevede: un'attesa senza proprietario è una promessa che lo Studio non può mantenere."),
 ];
 
 /// Perché questa parte è stata ritirata, se lo è.
@@ -412,6 +415,15 @@ pub struct PartStyle {
     pub layer: Option<PartLayer>,
     /// Gli stati.
     pub states: PartStates,
+    /// Le animazioni assegnate, per trigger.
+    ///
+    /// Sta qui e non in [`PartAppearance`] perché un'animazione è un **legame**
+    /// e non un valore d'aspetto, e perché `PartAppearance` è la stessa
+    /// identica struttura per la base e per i quattro stati: un campo che lì
+    /// valesse solo alla base comparirebbe anche in `states.hover`, si potrebbe
+    /// scrivere, e non farebbe niente. L'argomento per esteso sta nel `//!` di
+    /// [`crate::movimento`].
+    pub animations: PartAnimations,
 }
 
 impl PartStyle {
@@ -433,6 +445,27 @@ impl PartStyle {
             tutti.push(filter.effect().clone());
         }
         tutti
+    }
+
+    /// Quanto costa il movimento di questa parte.
+    ///
+    /// Separato da [`Self::effects`] e mai sommato con quello: sono due budget
+    /// che misurano due cose diverse — quanto costa **disegnare** una
+    /// superficie e quanto costa **muoverla** — e una somma non risponderebbe a
+    /// nessuna delle due. È la stessa distinzione che
+    /// [`CompiledSkin`](crate::CompiledSkin) fa già fra `cost` e `shell_cost`.
+    #[must_use]
+    pub fn motion_cost(&self) -> u32 {
+        self.animations.costo()
+    }
+
+    /// Le animazioni che questa parte richiama, per trigger.
+    ///
+    /// Gemella di [`Self::patterns_used`], e serve alla stessa domanda su un
+    /// altro registro: quale animazione dichiarata non la usa nessuno.
+    #[must_use]
+    pub fn animations_used(&self) -> Vec<&str> {
+        self.animations.nomi_usati()
     }
 
     /// I motivi che questa parte richiama, base e stati.

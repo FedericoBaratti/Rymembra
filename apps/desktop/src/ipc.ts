@@ -207,6 +207,46 @@ export interface CartellaCandidata {
   parziale: boolean;
 }
 
+/**
+ * Una cartella dell'albero del pannello «Cartelle».
+ *
+ * Viene dal **database**, non dal disco: `cartelle.rs` spiega perché, e la
+ * conseguenza visibile qui è che una cartella senza brani indicizzati non
+ * compare, e che aprirne una non tocca mai la rete.
+ */
+export interface NodoCartella {
+  /** Il percorso, nella grafia con cui i brani stanno sul disco. È l'identità. */
+  percorso: string;
+  /**
+   * Quel che si scrive nella riga.
+   *
+   * L'ultimo segmento, tranne che sui nodi di primo livello, dove è il percorso
+   * intero: una radice che si annunciasse come «musica» non direbbe di quale
+   * disco sta parlando.
+   */
+  nome: string;
+  /** Quanti brani ci sono qui sotto, **sottocartelle comprese**. */
+  brani: number;
+  /** Quante sottocartelle dirette: è quel che dice se disegnare la freccia. */
+  sottocartelle: number;
+  /**
+   * È una delle cartelle sorvegliate.
+   *
+   * `false` sui nodi sintetici, cioè quelli nati per dare un posto a un brano
+   * che sotto nessuna radice sorvegliata non sta. Solo su una radice vera ha
+   * senso chiedersi se risponde ancora.
+   */
+  radice: boolean;
+}
+
+/** Com'era rimasto il pannello «Cartelle» all'ultima chiusura. */
+export interface StatoUiCartelle {
+  /** I nodi aperti, dal meno recente al più recente. */
+  aperte: string[];
+  /** Il nodo su cui stava il fuoco, se ce n'era uno. */
+  scelta: string | null;
+}
+
 export interface Avvio {
   dataDir: string;
   migrazioni: number;
@@ -242,11 +282,18 @@ export interface Avvio {
   numeri: Numeri;
 }
 
-/** Cosa ha portato via un'esportazione del profilo. */
+/**
+ * Cosa ha portato via un'esportazione del profilo.
+ *
+ * Dalla 2.3.1 il profilo non è più un JSON ma un archivio `.aeprofile`, e non
+ * c'è più nessun documento che passi di qui: il nucleo lo scrive direttamente
+ * sul file scelto, una voce alla volta, perché con le copertine dentro può
+ * pesare centinaia di megabyte.
+ */
 export interface EsportazioneProfilo {
-  /** Il documento, già scritto sul file scelto. */
-  json: string;
-  /** Quante chiavi ha portato via. */
+  /** Dove è finito. */
+  percorso: string;
+  /** Quante preferenze ha portato via. */
   voci: number;
   /**
    * Le chiavi presenti nel database e rimaste qui.
@@ -256,6 +303,18 @@ export interface EsportazioneProfilo {
    * essere silenzioso.
    */
   lasciate: string[];
+  /** Quante righe di cronologia d'ascolto. */
+  cronologia: number;
+  /** Quante copertine distinte. */
+  copertine: number;
+  /** Quanti pacchetti skin. */
+  skin: number;
+  /** Quante bozze dello Studio. */
+  bozze: number;
+  /** Quanto pesa il file. */
+  byte: number;
+  /** Pesa più di mezzo gigabyte, e vale la pena dirlo prima della chiavetta. */
+  pesante: boolean;
 }
 
 /** Una chiave che l'importazione di un profilo cambierebbe. */
@@ -269,10 +328,59 @@ export interface CambioProfilo {
   dopo: string;
 }
 
+/**
+ * Una radice del profilo che qui non c'è, e dove metterla.
+ *
+ * Il piano ne propone una per ogni radice mancante, con `a` vuoto; chi importa
+ * la compila e ripete il piano. Il confronto passa da `path_key`, quindi
+ * `D:\Musica`, `d:/musica` e `D:\Musica\` sono lo stesso prefisso.
+ */
+export interface RimappaturaRadice {
+  /** Il prefisso come sta nel profilo. */
+  da: string;
+  /** Il prefisso su questo computer. Vuoto = non ancora scelto. */
+  a: string;
+  /** Quanti brani di **questa** libreria stanno sotto `da`. */
+  brani: number;
+}
+
+/**
+ * Quante cose la parte di libreria porterebbe.
+ *
+ * Piatta e non annidata di proposito: sotto ci sono due strutture del nucleo
+ * con due convenzioni di nome diverse, e appiattirle di là evita che di qua si
+ * scriva un campo che non esiste.
+ */
+export interface PortatiProfilo {
+  ascolti: number;
+  voti: number;
+  preferiti: number;
+  posizioni: number;
+  playlist: number;
+  cartelle: number;
+  cronologia: number;
+  correzioni: number;
+  testi: number;
+  desiderati: number;
+  copertine: number;
+  /** File di copertina che qui non ci sono e si scriverebbero. */
+  fileCopertine: number;
+}
+
 /** Cosa farebbe importare un profilo. */
 export interface PianoProfilo {
   /** Quando il profilo è stato scritto. */
   creatoMs: number;
+  /** 1 il vecchio `.json`, 2 l'archivio. Il primo si legge e non si scrive più. */
+  versione: number;
+  /**
+   * Il profilo viene da un'altra libreria.
+   *
+   * Allora la parte di libreria **non** si applica: le chiavi di brano di là
+   * nominano canzoni che qui non ci sono. Preferenze, copertine e pacchetti
+   * skin passano lo stesso, perché non parlano di brani.
+   */
+  identitaDiversa: boolean;
   cambi: CambioProfilo[];
   /** Le chiavi del file che questa versione non porta. Non è un guasto. */
   sconosciute: string[];
@@ -280,6 +388,28 @@ export interface PianoProfilo {
   percorsiMancanti: string[];
   /** Quante chiavi sono già uguali a quel che c'è. */
   invariate: number;
+  /** Le radici da rimappare, con quanti brani di qui stanno sotto ciascuna. */
+  rimappature: RimappaturaRadice[];
+  /** Percorsi di brani riscritti dalla rimappatura. */
+  percorsiRiscritti: number;
+  /** Brani il cui file, sotto il prefisso nuovo, non si trova. */
+  braniIrrintracciabili: number;
+  /** Brani il cui percorso nuovo è già di un'altra riga. */
+  braniGiaPresenti: number;
+  portati: PortatiProfilo;
+}
+
+/**
+ * A che punto è un'esportazione o un'importazione del profilo.
+ *
+ * Stessa forma di `AvanzamentoNuvola`, perché è la stessa domanda e due forme
+ * diverse sarebbero due componenti da disegnare.
+ */
+export interface AvanzamentoProfilo {
+  fatti: number;
+  totale: number;
+  /** `archivio` mentre si scrive, `copia` per la copia di sicurezza, `copertine` in lettura. */
+  cosa: "archivio" | "copia" | "copertine";
 }
 
 /**
@@ -530,6 +660,46 @@ export const FINE_DEL_BRANO = -1;
 export const DISSOLVENZA_MASSIMA_S = 12;
 
 /**
+ * Il massimo di latenza d'uscita che si può dichiarare, in valore assoluto.
+ *
+ * Mezzo secondo, nei due versi. Non è un limite tecnico — una catena Bluetooth
+ * scadente ci arriva — è il punto oltre il quale la correzione smette di
+ * correggere: a mezzo secondo il cursore sta già visibilmente dietro la musica, e
+ * chi continuasse ad alzare starebbe cercando di risolvere un problema diverso.
+ * Il nucleo taglia comunque: questo serve al cursore per sapere dove finire.
+ */
+export const LATENZA_MASSIMA_MS = 500;
+
+/**
+ * Com'è fatto il file che sta suonando.
+ *
+ * Il **file**, non l'uscita: se la scheda audio sta ricampionando, questa riga
+ * non lo dice. È una decisione — la domanda a cui risponde è «com'è fatta
+ * questa edizione», e l'uscita reale non ci risponde: cambierebbe cambiando
+ * cuffia, mentre il file resta quello.
+ *
+ * Ogni campo può mancare, e non è un caso limite: le quattro colonne sono
+ * nullable, `lofty` non ricava le proprietà di tutti i contenitori allo stesso
+ * modo, e una libreria scansionata da una versione più vecchia le ha vuote. Chi
+ * disegna unisce i pezzi che ci sono e tace sugli altri.
+ */
+export interface FormatoFile {
+  /** «FLAC», «MP3», «M4A»: già tradotto dal nucleo, qui non si mappa niente. */
+  codec: string | null;
+  /** In hertz — 44100 — perché i kilohertz con la virgola sono lingua. */
+  sampleRate: number | null;
+  /** Il numero, non il nome: «stereo» e «5.1» sono parole, e si traducono. */
+  channels: number | null;
+  /**
+   * Il bitrate **medio**, in kbit/s.
+   *
+   * Medio e non dichiarato: su un VBR dice quel che il file pesa davvero, e su
+   * un FLAC — dove pure si mostra — dice quanto è densa l'edizione.
+   */
+  bitrate: number | null;
+}
+
+/**
  * Lo stato della riproduzione.
  *
  * `coda` sono solo identificativi, ed è voluto: mandare millequattrocento righe
@@ -569,6 +739,24 @@ export interface StatoRiproduzione {
    * mille per disegnare e moltiplicare per mille per chiedere.
    */
   dissolvenzaS: number;
+  /**
+   * Di quanti millisecondi la catena d'uscita ritarda il suono, dichiarati.
+   *
+   * La correzione a mano, non quella che il motore misura da sé: mixer di
+   * sistema, driver, DAC, e su un'uscita senza fili la radio. Positiva racconta
+   * la posizione più indietro, negativa più avanti. `0` è «nessuna correzione»,
+   * ed è il valore di serie.
+   */
+  latenzaMs: number;
+  /**
+   * Di quanto una riga di testo si accende prima del suo tempo, in millisecondi.
+   *
+   * Viene dal nucleo — è `aether_domain::testo::ANTICIPO_MS` — e non si ripete
+   * qui: la stessa ricerca della riga accesa esiste in Rust e in
+   * `parti/Testo.tsx`, e per un po' il numero è stato scritto a mano in tutti e
+   * due i posti. Chi lo legge passa da `riproduzione.ts::anticipoAdesso`.
+   */
+  anticipoMs: number;
   /** Il motore audio non c'è: perché, e se vale la pena riaprire. */
   audio: GuastoAudio | null;
   /**
@@ -587,6 +775,22 @@ export interface StatoRiproduzione {
    * brano dopo l'hai messo tu, e allora non c'è niente da spiegare.
    */
   motivoProssimo: string | null;
+  /**
+   * Com'è fatto il file che sta suonando, se si deve mostrare.
+   *
+   * `null` vuol dire «non si disegna», e nient'altro: non c'è nessun brano, il
+   * brano non è più in libreria, oppure la preferenza
+   * `player.fileFormat.visible` è spenta. **Qui non si legge nessuna
+   * preferenza**: il filtro sta nel nucleo, in un posto solo, e la riga si
+   * mostra se e solo se il dato è arrivato.
+   *
+   * È deliberato. Leggere la preferenza qui vorrebbe dire una copia per ogni
+   * schermata che disegna la riga, e chi spegne l'interruttore nelle
+   * Impostazioni non sta guardando «In riproduzione»: al ritorno troverebbe la
+   * riga ancora lì, disegnata da una copia stantia. Il setter nel nucleo rimanda
+   * lo stato, e le due viste cambiano insieme.
+   */
+  formato: FormatoFile | null;
 }
 
 /**
@@ -1475,31 +1679,6 @@ export interface BranoScarico {
   scelto: FileScelto | null;
 }
 
-/** Uno spostamento proposto dal riordino. */
-export interface Spostamento {
-  da: string;
-  a: string;
-}
-
-/** Cosa il riordino proporrebbe di fare. */
-export interface PianoRiordino {
-  radice: string;
-  letti: number;
-  spostamenti: Spostamento[];
-  /** I fermi per motivo: `alreadyInPlace`, `outsideRoot`, `needsReview`, `destinationTaken`. */
-  fermi: { motivo: string; quanti: number }[];
-  daRivedere: { album: string; brani: number; artisti: string[] }[];
-  annullabile: boolean;
-}
-
-/** Cosa il riordino ha fatto. */
-export interface EsitoRiordino {
-  spostati: number;
-  falliti: { da: string; a: string; errore: ErroreIpc }[];
-  cartelleRimosse: number;
-  annullabile: boolean;
-}
-
 /** Una skin compilata. */
 /** Quel che una skin dice sull'impaginazione e sul movimento. */
 /** Il valore di una manopola di widget. Il tipo segue quello dichiarato in Rust. */
@@ -1771,6 +1950,35 @@ export interface Registro {
   shellBudget: number;
   format: number;
   contrastoMinimo: number;
+
+  // I tetti del movimento, da `core/aether-skin/src/movimento.rs`. Stavano
+  // ricopiati a mano in cima a `studio/Movimento.tsx`, col commento che diceva
+  // che la strada giusta era farli passare di qui: sono gli stessi numeri con
+  // cui il validatore rifiuta, e due copie sono due copie che divergono.
+  /** `MAX_ANIMAZIONI`: quante un documento può dichiarare. */
+  maxAnimazioni: number;
+  /** `MIN_FOTOGRAMMI`: con uno solo non c'è interpolazione, c'è uno stato. */
+  minFotogrammi: number;
+  /** `MAX_FOTOGRAMMI`. */
+  maxFotogrammi: number;
+  /** `MAX_DURATA_MS`. */
+  maxDurataMs: number;
+  /** `MAX_RITARDO_MS`. */
+  maxRitardoMs: number;
+  /** `MAX_ITERAZIONI`: e mai «infinite». */
+  maxIterazioni: number;
+  /** `MAX_TRIGGER_PER_PARTE`. */
+  maxTriggerPerParte: number;
+  /** `MAX_PARTI_ANIMATE`. */
+  maxPartiAnimate: number;
+  /** `MOTION_COST_BUDGET`: per parte, e non si somma con gli altri due. */
+  motionBudget: number;
+  /** Il peso di `CostClass::Composited`: da qui parte `animation_cost`. */
+  pesoComposito: number;
+  /** I versi, da `AnimDirection::ALL`. */
+  versi: string[];
+  /** I trigger, da `AnimTrigger::nomi()`. `enter` è la regola base. */
+  trigger: string[];
 }
 
 /** Un problema che blocca. */
@@ -1801,6 +2009,7 @@ export interface Avviso {
     | "unkeptCapability"
     | "unusedPattern"
     | "unusedPrefab"
+    | "unusedAnimation"
     | "costBudget"
     | "contrast";
   path: string;
@@ -1865,6 +2074,14 @@ export interface Validazione {
   costo: number;
   /** Quanti pezzi dell'app lo scafale monta, sul suo budget separato. */
   costoScafale: number;
+  /**
+   * Quanto costa il movimento, sommato su tutte le parti animate.
+   *
+   * Terzo numero e terzo budget. Il verdetto resta del nucleo — l'avviso
+   * `costBudget` è **per parte** — e questo è il totale, cioè il numero che si
+   * legge accanto agli altri due.
+   */
+  costoMovimento: number;
   parti: number;
   dinamici: string[];
   compilatoMs: number;
@@ -1925,7 +2142,23 @@ export interface CambiamentiSincronia {
   preferiti: number;
   posizioni: number;
   playlist: number;
-  playlistTolte: number;
+  /**
+   * In `snake_case`, e non è una svista.
+   *
+   * Il `#[serde(rename_all = "camelCase")]` sta su `Resoconto`, che è il tipo
+   * **esterno**, e serde non lo propaga ai tipi annidati: `Cambiamenti` vive in
+   * `core/aether-app/src/sincronia.rs` e non ne ha uno suo, quindi serializza i
+   * propri campi com'è scritto in Rust. È l'unico campo di due parole qui
+   * dentro — tutti gli altri sono uguali nelle due grafie — ed è per questo che
+   * il difetto è passato inosservato: dichiarato `playlistTolte`, a runtime
+   * arrivava `undefined`, e «3 playlist cancellate altrove» non si è mai letto.
+   *
+   * Corretto di qua e non di là perché di là il nome è giusto: mettere un
+   * `rename_all` sul tipo del nucleo per compiacere una riga di TypeScript
+   * vorrebbe dire cambiare il formato di una struttura che il nucleo
+   * serializza e deserializza per conto suo, per un campo solo.
+   */
+  playlist_tolte: number;
   cartelle: number;
   dispositivi: number;
 }
@@ -2413,12 +2646,25 @@ export interface StatoArricchimento {
   /** Brani che aspettano ancora il loro turno. */
   daFare: number;
   /**
-   * Scritture che si possono ancora riportare indietro.
+   * Brani che portano metadati messi dall'arricchimento, e che si possono
+   * **dimenticare**.
    *
-   * A zero il pulsante «annulla» non ha niente da fare: mostrarlo attivo
-   * prometterebbe qualcosa che non succede.
+   * Sono righe di una tabella del database: dimenticarle rimette il brano ai
+   * tag del suo file, che è intatto. A zero il pulsante «annulla» non ha niente
+   * da fare, e mostrarlo attivo prometterebbe qualcosa che non succede.
    */
   annullabili: number;
+  /**
+   * File che le versioni fino alla 2.3.0 avevano già riscritto **dentro**.
+   *
+   * È l'altro numero, e non lo stesso visto da un'altra parte: dalla 2.3.1
+   * l'arricchimento non tocca più i file, quindi su una libreria nata da qui
+   * questo è zero e `annullabili` no, mentre su una che viene dalla 2.3.0 è il
+   * contrario. Uno dice quanto c'è da dimenticare in tabella, l'altro quanti
+   * file si possono ancora riaprire per rimetterci i tag di prima — due gesti
+   * diversi, e sotto un numero solo si premerebbe il secondo volendo il primo.
+   */
+  neiFile: number;
   /** Quando è finita l'ultima passata. */
   ultimoMs: number | null;
   /** Com'è andata l'ultima passata automatica. */
@@ -2504,10 +2750,48 @@ export const ipc = {
   impostaCartellaDownload: (percorso: string) =>
     invoke<void>("imposta_cartella_download", { percorso }),
 
+  // ── il pannello «Cartelle» ────────────────────────────────────────────────
+  // Tutti e tre girano **in disparte**, mai sotto il lucchetto della libreria:
+  // il pannello si apre e si espande anche durante una scansione. Le radici
+  // vanno mandate a ogni chiamata perché sono loro a decidere la forma
+  // dell'albero — aggiungerne una lo fa ricostruire, ed è il nucleo ad
+  // accorgersene confrontandole con quelle di prima.
+  //
+  // `percorso: null` chiede i nodi di primo livello.
+  cartelleFiglie: (radici: string[], percorso: string | null) =>
+    invoke<NodoCartella[]>("cartelle_figlie", { radici, percorso }),
+  // Gli identificativi, già nell'ordine in cui si riproducono: dentro una
+  // cartella è l'ordine dell'album, perché una cartella nel caso normale *è* un
+  // album. Ricorsivo, come il conteggio.
+  cartelleBrani: (radici: string[], percorso: string) =>
+    invoke<number[]>("cartelle_brani", { radici, percorso }),
+  // Quali radici rispondono adesso, una risposta per posto e nello stesso
+  // ordine. Una radice morta è `false`, non un errore: il pannello si disegna
+  // **prima** di chiamare questa, e questa arriva dopo a spegnere quel che non
+  // c'è. È il motivo per cui l'albero si apre col Wi-Fi staccato.
+  cartelleRadiciVive: (radici: string[]) =>
+    invoke<boolean[]>("cartelle_radici_vive", { radici }),
+  // Com'era rimasto il pannello. Un comando suo e non un campo di `avvio`: chi
+  // non apre mai quel pannello non deve pagarne la lettura.
+  cartelleUi: () => invoke<StatoUiCartelle>("cartelle_ui"),
+  // Stringa vuota in `scelta` = dimentica dov'era il fuoco. Il nucleo taglia
+  // l'elenco degli aperti a duecento tenendo i più recenti, cioè la coda.
+  impostaCartelleUi: (aperte: string[], scelta: string) =>
+    invoke<void>("imposta_cartelle_ui", { aperte, scelta }),
+
   // ── le preferenze della finestra, e il profilo ────────────────────────────
   // Il tema stava in `localStorage` e adesso sta in `settings`: era l'unica
   // preferenza che non finiva né nel backup su Drive né nel profilo.
   impostaTema: (tema: string) => invoke<void>("imposta_tema", { tema }),
+  // «Meno movimento di quanto la skin ne dichiari». Un comando suo e non un
+  // campo di `avvio`: al contrario del tema non ha una chiave vecchia da
+  // riconciliare, quindi non deve viaggiare insieme all'apertura.
+  movimentoRidotto: () => invoke<boolean>("movimento_ridotto"),
+  // Due valori e non tre: da qui si può solo **ridurre** sotto la skin. Un
+  // livello «di più» contraddirebbe la frase che l'interfaccia mostra sopra il
+  // comando.
+  impostaMovimentoRidotto: (ridotto: boolean) =>
+    invoke<void>("imposta_movimento_ridotto", { ridotto }),
   // Stringa vuota = rimetti il rilevamento dal sistema. Il nucleo non sa quali
   // lingue esistono — l'elenco è la cartella `src/lingue/` — e controlla
   // soltanto che il testo sia un codice di lingua.
@@ -2517,13 +2801,45 @@ export const ipc = {
   // validasse andrebbe ricompilato per aggiungere una scorciatoia.
   impostaScorciatoie: (scorciatoie: string) =>
     invoke<void>("imposta_scorciatoie", { scorciatoie }),
+  // Lo zoom della finestra. **Nessun numero attraversa questa interfaccia**:
+  // di qua partono tre gesti — apri, un gradino su o giù, torna al vero — e
+  // torna indietro il fattore che è stato applicato, buono solo da mostrare.
+  // La scala dei gradini vive in `aether_app::preferenze::SCALA_ZOOM` e di
+  // elenchi non ne esistono due: mandare un fattore da qui vorrebbe dire
+  // conoscerne almeno uno, e da lì a copiarli tutti è un passo.
+  //
+  // È il backend ad applicare `set_zoom`, non la pagina: vedi il preambolo di
+  // `zoom.rs` sul perché `core:webview` resta chiuso.
+  zoomAvvio: () => invoke<number>("zoom_avvio"),
+  zoomPasso: (su: boolean) => invoke<number>("zoom_passo", { su }),
+  zoomNormale: () => invoke<number>("zoom_normale"),
+  // Il giro guidato. Il confronto fra il copione visto e quello di oggi lo fa
+  // il nucleo — di qua arriva un sì o un no — perché il numero del copione
+  // deve stare in un posto solo.
+  giroDaFare: () => invoke<boolean>("giro_da_fare"),
+  // La chiama sia chi il giro lo finisce sia chi lo salta: sono due modi di
+  // dire «questo l'ho visto».
+  giroFatto: () => invoke<void>("giro_fatto"),
+  // Un archivio `.aeprofile`, non più un `.json`: dentro ci sono anche la
+  // libreria, le copertine e i pacchetti skin. Il vecchio formato si **legge**
+  // ancora e non si scrive più.
   profiloEsporta: (percorso: string) =>
     invoke<EsportazioneProfilo>("profilo_esporta", { percorso }),
-  // Il piano prima di applicare, come per ogni altra cosa irreversibile qui.
-  profiloPiano: (percorso: string) =>
-    invoke<PianoProfilo>("profilo_piano", { percorso }),
-  profiloImporta: (percorso: string) =>
-    invoke<PianoProfilo>("profilo_importa", { percorso }),
+  // Il piano prima di applicare, come per ogni altra cosa irreversibile qui —
+  // e qui più che altrove, perché non è più solo l'esecuzione annullata delle
+  // preferenze ma anche quella della fusione della libreria.
+  //
+  // `rimappature` è vuoto la prima volta: allora il piano ne **propone** una
+  // per ogni radice che di qua non esiste, e lo si richiama con quelle
+  // compilate per vedere quanti percorsi seguirebbero.
+  profiloPiano: (percorso: string, rimappature: RimappaturaRadice[] = []) =>
+    invoke<PianoProfilo>("profilo_piano", { percorso, rimappature }),
+  profiloImporta: (percorso: string, rimappature: RimappaturaRadice[] = []) =>
+    invoke<PianoProfilo>("profilo_importa", { percorso, rimappature }),
+  // Rimette **solo** le preferenze e la skin attiva dall'ultima copia di
+  // sicurezza. Il resto dell'importazione è additivo e non si annulla, e
+  // l'interfaccia lo dice invece di promettere un ritorno che non c'è.
+  profiloAnnulla: () => invoke<PianoProfilo>("profilo_annulla"),
   // La cronologia d'ascolto, dal più recente. Si scriveva dal primo giorno e
   // non la leggeva nessuno; dopo l'importazione di un account contiene anni.
   cronologia: (offset: number, limite: number) =>
@@ -2690,16 +3006,6 @@ export const ipc = {
 
   playlistRiordina: (id: number, da: number, a: number) =>
     invoke<Playlist>("playlist_riordina", { id, da, a }),
-
-  // ── riordino della libreria ──────────────────────────────────────────────
-  // L'unica famiglia di comandi che modifica i file dell'utente. `piano` non
-  // tocca niente; `esegui` ricalcola il piano invece di ricevere quello
-  // mostrato, perché fra l'anteprima e la conferma il disco può essere cambiato.
-  pianoRiordino: (radice: string) =>
-    invoke<PianoRiordino>("piano_riordino", { radice }),
-  eseguiRiordino: (radice: string) =>
-    invoke<EsitoRiordino>("esegui_riordino", { radice }),
-  annullaRiordino: () => invoke<EsitoRiordino>("annulla_riordino"),
 
   // ── importazione dal vecchio database ────────────────────────────────────
   // Due comandi e non uno con un booleano: il piano non tocca niente e
@@ -2880,6 +3186,15 @@ export const ipc = {
   // `DISSOLVENZA_MASSIMA_S` e rilegge quel che ha scritto, quindi il valore
   // che torna sull'evento è quello vero, non quello chiesto.
   dissolvenza: (secondi: number) => invoke<void>("dissolvenza", { secondi }),
+  // Di quanto la catena d'uscita ritarda il suono, in millisecondi: il pezzo che
+  // nessuna misura vede — mixer di sistema, driver, DAC, e su un'uscita senza
+  // fili la radio. Il motore ci somma quel che cpal gli riporta e toglie il
+  // totale dalla posizione raccontata, così cursore, testi e pannello di Windows
+  // parlano di quel che l'orecchio riceve adesso. Non tocca il suono e non
+  // sposta la fine di un brano. Risponde col numero **rimasto scritto**: il
+  // nucleo taglia a ±`LATENZA_MASSIMA_MS`, e il cursore deve fermarsi dove si è
+  // fermato davvero.
+  latenza: (ms: number) => invoke<number>("latenza", { ms }),
   // Riapre il dispositivo audio a mano. Il nucleo lo fa già da sé quando
   // l'elenco delle uscite cambia; questo tasto resta per i guasti che
   // dall'elenco non si vedono — un driver piantato, un'apertura esclusiva
@@ -2940,6 +3255,18 @@ export const ipc = {
   // livello vero — non quello chiesto.
   spettroQualitaScegli: (livello: QualitaSpettro) =>
     invoke<QualitaSpettro>("spettro_qualita_scegli", { livello }),
+  // Se i dati tecnici del file si mostrano sotto i comandi. Di serie **sì**, al
+  // contrario dello spettro: quella riga non costa né una GPU né un filo, e chi
+  // apre «In riproduzione» ha il diritto di sapere cosa sta sentendo senza prima
+  // scoprire che esiste un interruttore. Lo chiede solo l'interruttore delle
+  // Impostazioni: le due viste che disegnano la riga non leggono la preferenza,
+  // guardano `stato.formato`.
+  formatoVisibile: () => invoke<boolean>("formato_visibile"),
+  // Riporta com'è rimasta, come per lo spettro. In più rimanda lo stato della
+  // riproduzione: il nucleo decide se il dato viaggia, quindi senza quel rinvio
+  // la riga resterebbe com'era fino al prossimo cambio di brano.
+  formatoVisibileScegli: (acceso: boolean) =>
+    invoke<boolean>("formato_visibile_scegli", { acceso }),
   eqPresetElenco: () => invoke<VocePreset[]>("eq_preset_elenco"),
   // Salva la curva **corrente**, quella che si sta ascoltando: il nome è
   // l'unica cosa che serve passare. `false` se il nome era vuoto; un nome che
@@ -3122,6 +3449,14 @@ export const ipc = {
   // cosa si sta ascoltando. Con l'interruttore spento risponde quel che si sa
   // dal disco, senza fallire — spegnere non è un errore.
   testoCerca: (id: number) => invoke<TestoBrano>("testo_cerca", { id }),
+  // Il ritentativo esplicito, e non un doppione del precedente: fra il
+  // pannello e la rete ci sono due memorie — il deposito di `aether-meta` e la
+  // colonna `checked_at` — e con `testoCerca` tutt'e due risponderebbero prima
+  // che parta una richiesta. Chi preme «Cerca di nuovo» rivedrebbe lo stesso
+  // vuoto e concluderebbe che il pulsante è finto. Questo le salta entrambe.
+  // Va chiamato solo su un gesto: costa una richiesta a un servizio pubblico.
+  testoCercaDiNuovo: (id: number) =>
+    invoke<TestoBrano>("testo_cerca_di_nuovo", { id }),
   testiStato: () => invoke<StatoTesti>("testi_stato"),
   testiRete: (attivo: boolean) => invoke<StatoTesti>("testi_rete", { attivo }),
   // Torna subito: il lavoro va su un filo suo e l'avanzamento arriva con
@@ -3133,10 +3468,33 @@ export const ipc = {
   // niente: quel che serve è il risultato.
   testoAggancia: (id: number, battute: number[]) =>
     invoke<number[]>("testo_aggancia", { id, battute }),
-  // Scrive il `.lrc` accanto al brano e la riga in tabella. L'LRC lo compone il
-  // nucleo, con la stessa funzione che lo rilegge.
-  testoSalva: (id: number, righe: { ms: number; testo: string }[]) =>
-    invoke<TestoBrano>("testo_salva", { id, righe }),
+  // Scrive gli `.lrc` accanto al brano e la riga in tabella. L'LRC lo compone
+  // il nucleo, con la stessa funzione che lo rilegge.
+  //
+  // I file possono essere **due**: il `.lrc` di sempre, con i soli tempi di
+  // riga, e — quando l'editor ha battuto anche le parole — un `.a2.lrc` con i
+  // `<mm:ss.xx>` dentro la riga. Il secondo lo capiscono in pochi, e per tutti
+  // gli altri quei `<…>` sarebbero testo stampato in mezzo alle parole: per
+  // questo il primo resta, e non è un doppione ma la copia leggibile ovunque.
+  //
+  // `parole` non è facoltativo, e lo è di proposito **anche qui**: il campo in
+  // Rust non ha `serde(default)`, quindi una chiamata che lo omettesse non
+  // fallirebbe a compilazione ma alla deserializzazione, cioè col brano già
+  // sincronizzato e il salvataggio che non arriva. Vuoto è la risposta giusta
+  // per una riga di cui le parole non si sono battute — e va scritto.
+  //
+  // Nessun offset fra gli argomenti, e non è una svista: i due numeri che
+  // portano quel nome — lo `[offset:]` del file e lo `scartoMs` di chi ascolta —
+  // li azzera entrambi il nucleo, perché queste battute sono misurate sulla
+  // posizione **grezza**. Il perché per esteso sta su `testo_salva`.
+  testoSalva: (
+    id: number,
+    righe: {
+      ms: number;
+      testo: string;
+      parole: { ms: number; testo: string }[];
+    }[],
+  ) => invoke<TestoBrano>("testo_salva", { id, righe }),
   // Il verso opposto, e mai automatico: manda a LRCLIB il testo che si è
   // sincronizzato a mano, uno per volta e solo dopo averlo visto. Ci mette
   // secondi, e non per la rete — il catalogo chiede una prova di lavoro. Il
@@ -3157,6 +3515,23 @@ export const ipc = {
   // Può metterci decine di secondi: riapre e riscrive un file per brano.
   arricchimentoAnnulla: () =>
     invoke<EsitoAnnullamento>("arricchimento_annulla"),
+  // **Questo comando riscrive i file dell'utente, ed è l'unico in tutta Aether
+  // che lo faccia.** Non è una funzione del programma: è una via d'uscita a
+  // termine per chi vuole togliere dai propri file i tag che le versioni fino
+  // alla 2.3.0 ci avevano messo. Dalla 2.3.1 l'arricchimento scrive in una
+  // tabella e i file non li apre più, quindi quel che questo comando ha da
+  // disfare può solo calare — e quando `neiFile` è zero non ha più niente da
+  // fare. Il CHANGELOG lo dà per rimosso in una release futura.
+  //
+  // Chi lo chiama deve dirlo sull'etichetta del pulsante: chi ha appena letto
+  // «Aether non modifica i tuoi file» va avvisato prima, non dopo. Non è il
+  // gemello di `arricchimentoAnnulla` con un nome più lungo — quello dimentica
+  // una tabella e non tocca niente sul disco.
+  //
+  // Torna lo stesso tipo di `arricchimentoAnnulla`, e ci mette lo stesso
+  // tempo o di più: riapre e riscrive un file per brano.
+  arricchimentoRiportaNeiFile: () =>
+    invoke<EsitoAnnullamento>("arricchimento_riporta_nei_file"),
 
   // ── lo scrobbling ────────────────────────────────────────────────────────
   // Nessuno di questi comandi manda niente da sé, tranne `scrobbleInvia`: la

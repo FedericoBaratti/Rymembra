@@ -106,6 +106,30 @@ tauri-plugin-opener = "2"
 # canale per cui chiunque sappia rispondere al posto di GitHub installa un
 # eseguibile sul computer di chi ci si fida.
 tauri-plugin-updater = "2"
+# Una sola Aether per volta, e il perché sta su `main::una_sola_istanza`: due
+# processi sulla stessa cartella dati sono due mutex della libreria che non si
+# vedono, e due icone nel vassoio di cui una non sta suonando.
+#
+# Quel che aggiunge al programma è misurabile e piccolo: nel `Cargo.lock` una
+# riga sola, la sua (673 pacchetti → 674), perché tutto ciò da cui dipende c'era
+# già — `serde`, `serde_json`, `tauri`, `tracing`, `thiserror`, `tokio` e
+# `windows-sys 0.60`, quest'ultimo nella versione esatta. A regime, su Windows, un
+# mutex
+# nominato e una finestra di soli messaggi, cioè due handle del sistema
+# operativo. Nessun filo, nessun timer, nessuna richiesta: il suo codice gira una
+# volta nel `setup` e poi solo se qualcuno lancia un secondo processo.
+#
+# L'alternativa senza dipendenza — un file di lock nella cartella dati — sa dire
+# «c'è già qualcuno» e non sa fare la cosa per cui serve, cioè riportare davanti
+# la finestra che c'è già. Per farlo servirebbe parlare di `FindWindowW` e
+# `WM_COPYDATA` col sistema operativo, e la radice del workspace vieta `unsafe`
+# con `forbid`: è la stessa ragione per cui `souvlaki` è una dipendenza e non
+# quattro chiamate a mano.
+#
+# `default-features`: quelle di serie, che sono nessuna. `semver` farebbe
+# convivere due Aether di versione maggiore diversa — non è un caso che esista
+# qui — e `deep-link` riguarda un plugin che non c'è.
+tauri-plugin-single-instance = "2"
 # I controlli multimediali del sistema operativo: su Windows le
 # `SystemMediaTransportControls`, cioè la scheda che compare nel riquadro del
 # volume, l'anteprima sulla barra delle applicazioni e — la cosa che si sente

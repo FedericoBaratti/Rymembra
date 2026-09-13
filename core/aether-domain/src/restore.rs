@@ -7,8 +7,9 @@
 //!
 //! # Perché il piano è un valore, e non un effetto
 //!
-//! Perché lo si mostra prima. È la stessa forma del riordino della libreria:
-//! si vede l'elenco di ciò che accadrebbe, e solo dopo si conferma. Un
+//! Perché lo si mostra prima. È la stessa forma del piano di scansione
+//! ([`crate::scan_plan`]): si vede l'elenco di ciò che accadrebbe, e solo dopo
+//! si conferma. Un
 //! ripristino che partisse subito sarebbe indistinguibile, per chi lo guarda,
 //! da una perdita di dati — e non c'è modo di sapere in anticipo se la libreria
 //! che sta sul computer è più aggiornata di quella che sta nella nuvola.

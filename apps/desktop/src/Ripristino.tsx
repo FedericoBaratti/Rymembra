@@ -6,13 +6,17 @@
  * prima che torni, si conferma con un tasto che dice cosa fa, e quel che non si
  * può rimettere si **elenca** invece di sparire.
  *
- * # Perché è quasi una copia di `Riordino.tsx`
+ * # Perché la forma è `piano → conferma → rapporto`, e non un'altra
  *
- * Deliberatamente. Sono le due sole schermate di Aether che cambiano qualcosa
- * senza poterlo disfare con un tasto, e non esiste un runner di test per il
- * TypeScript: la sola verifica strutturale possibile è che le due si possano
- * leggere come un diff. Una terza forma inventata da capo qui sarebbe una cosa
- * in più da rivedere riga per riga.
+ * Fino alla 2.3.1 questa schermata era quasi una copia di `Riordino.tsx`,
+ * deliberatamente: erano le due sole di Aether che cambiassero qualcosa senza
+ * poterla disfare con un tasto, e non esistendo un runner di test per il
+ * TypeScript la sola verifica strutturale possibile era che le due si
+ * leggessero come un diff. Ritirato il riordino, di quelle due è rimasta
+ * questa — ma la forma resta la sua, perché è quella di `piano → esegui` in
+ * tutto il resto del programma (`nuvola_ripristina`, `account_importa`,
+ * `playlist_file_importa`), e inventarne una nuova qui vorrebbe dire una cosa
+ * in più da rivedere riga per riga senza che nessuno l'abbia chiesta.
  *
  * # Cosa non fa
  *
@@ -30,6 +34,7 @@ import {
   type EsitoRipristino,
   type PianoRipristino,
 } from "./ipc";
+import { useFinestrella } from "./finestrella";
 import { t } from "./lingue";
 import { Trans } from "./lingue/Trans";
 import { dataOra } from "./formato";
@@ -93,6 +98,7 @@ export function Ripristino({
   const [errore, setErrore] = useState<string | null>(null);
   const [inCorso, setInCorso] = useState(true);
   const [avanzamento, setAvanzamento] = useState<AvanzamentoNuvola | null>(null);
+  const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
 
   useAscolto<AvanzamentoNuvola>("nuvola:avanzamento", setAvanzamento);
 
@@ -136,6 +142,7 @@ export function Ripristino({
   return (
     <div className="velo scuro" onClick={inCorso ? undefined : onChiudi}>
       <div
+        ref={finestrella}
         className="finestrella larga glass-modal"
         role="dialog"
         aria-modal="true"

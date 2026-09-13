@@ -38,15 +38,39 @@ use crate::enrich::{VETO_DURATA_SEC, punteggio_durata, scarto_secondi, similarit
 
 /// Quanto prima del suo tempo una riga si accende.
 ///
-/// Centocinquanta millisecondi. Non è una correzione di sincronia — i tempi di
-/// un `.lrc` sono giusti — è il tempo che serve all'occhio per arrivare sulla
-/// riga prima che la voce ci arrivi. Senza, la riga si illumina *mentre* la
-/// parola è già cominciata, e la sensazione è di un testo che insegue.
+/// Centoventi millisecondi. Non è una correzione di sincronia — i tempi di un
+/// `.lrc` sono giusti — è il tempo che serve all'occhio per arrivare sulla riga
+/// prima che la voce ci arrivi. Senza, la riga si illumina *mentre* la parola è
+/// già cominciata, e la sensazione è di un testo che insegue.
 ///
 /// L'avanzamento dentro la riga si calcola invece dal tempo **vero**, quindi in
-/// questi centocinquanta millisecondi la riga è accesa e ferma a zero: si vede
-/// dove guardare, e non si vede scorrere niente che non stia scorrendo.
-pub const ANTICIPO_MS: i64 = 150;
+/// questi centoventi millisecondi la riga è accesa e ferma a zero: si vede dove
+/// guardare, e non si vede scorrere niente che non stia scorrendo.
+///
+/// # Perché centoventi e non centocinquanta
+///
+/// Erano centocinquanta, e dentro quel numero c'era **due cose mescolate**: il
+/// tempo dell'occhio e la latenza d'uscita che nessuno compensava. Adesso il
+/// motore compensa la parte che sa misurare — il buffer del dispositivo, una
+/// decina di millisecondi, vedi `aether_play::uscita::annota_latenza` — e quella
+/// che l'utente dichiara (`audio.latenza_ms`). Quel che la stima di `cpal` non
+/// vede resta qui dentro: su un'uscita cablata sono una trentina di
+/// millisecondi fra mixer di sistema, driver e conversione.
+///
+/// Centocinquanta per l'occhio meno quei trenta fa centoventi. È un conto, non
+/// una misura: il numero definitivo lo fissa l'autore contando i fotogrammi fra
+/// un click udibile e l'accensione della riga, e quando lo farà questa riga va
+/// riscritta con quel che ha visto — non cambiata in silenzio.
+///
+/// # Perché sta qui e non anche nel TypeScript
+///
+/// Perché era scritto in due posti, a mano, ed è durato finché nessuno ha
+/// toccato nessuno dei due: la ricerca della riga accesa esiste sia qui
+/// ([`riga_attiva`]) sia nel pannello dei testi, che gira venti volte al secondo
+/// e non può attraversare l'IPC per ogni riga. La copia però non serviva al
+/// **numero**: ora viaggia nello stato della riproduzione, e la finestra lo legge
+/// invece di ripeterlo.
+pub const ANTICIPO_MS: i64 = 120;
 
 /// Quanto silenzio in fondo rende sospetto un testo.
 ///
@@ -675,6 +699,55 @@ pub fn scegli(candidati: &[Candidato], cercato: &Cercato<'_>) -> Option<usize> {
 
 // ── sincronizzare a mano ────────────────────────────────────────────────────
 
+/// Le parole di una riga ricompongono la riga a cui sono attaccate.
+///
+/// # Il caso che questa funzione esiste per fermare
+///
+/// I tempi delle parole si battono su un testo, e quel testo può cambiare fra
+/// la battuta e il salvataggio: chi corregge un refuso in una riga già battuta
+/// si ritrova con dei tempi che non sanno più a cosa appartengono. Riassegnarli
+/// per posizione sarebbe la cosa peggiore possibile — i tempi resterebbero
+/// plausibili, il testo pure, e lo sfasamento si vedrebbe solo cantando —
+/// quindi quel che non combacia **si butta**, e la riga torna sincronizzata al
+/// verso e basta. Perdere i tempi delle parole di una riga è un lavoro da
+/// rifare; tenerli sbagliati è un file che mente.
+///
+/// # La regola, e perché è la concatenazione
+///
+/// Perché è l'inverso esatto di quel che fa [`leggi`]: `separa_parole` ricava
+/// la riga piatta **concatenando** i pezzi, quindi una riga e le sue parole
+/// combaciano se e solo se rimetterle in fila la ridà. Contare le parole non
+/// basterebbe — «due parole» è vero anche dopo che se ne è cambiata una — e
+/// confrontare parola per parola sarebbe la stessa cosa scritta più lunga.
+///
+/// Il confronto è sui bordi rifilati perché i bordi sono già rifilati da una
+/// parte sola: [`Riga::testo`] arriva senza spazi ai lati, mentre
+/// [`Parola::testo`] li conserva tutti — è la ragione scritta su [`Parola`].
+///
+/// Una riga **senza** parole combacia sempre: non c'è niente che possa
+/// contraddire.
+///
+/// ```
+/// use aether_domain::testo::{Parola, Riga, parole_combaciano};
+/// let riga = Riga {
+///     ms: 0,
+///     testo: "una due".to_owned(),
+///     parole: vec![
+///         Parola { ms: 0, testo: "una ".to_owned() },
+///         Parola { ms: 500, testo: "due".to_owned() },
+///     ],
+/// };
+/// assert!(parole_combaciano(&riga));
+/// ```
+#[must_use]
+pub fn parole_combaciano(riga: &Riga) -> bool {
+    if riga.parole.is_empty() {
+        return true;
+    }
+    let rimesse: String = riga.parole.iter().map(|p| p.testo.as_str()).collect();
+    rimesse.trim() == riga.testo.trim()
+}
+
 /// Raddrizza delle battute date a orecchio, usando gli attacchi del suono.
 ///
 /// # Il problema che risolve
@@ -957,6 +1030,102 @@ mod prove {
         assert_eq!(prima.parole.first().map(|p| p.ms), Some(10_000));
         assert_eq!(prima.parole.last().map(|p| p.ms), Some(10_500));
         assert_eq!(scrivi(&leggi(&scrivi(&testo))), scrivi(&testo));
+    }
+
+    #[test]
+    fn un_a2_salvato_si_rilegge_con_le_parole() {
+        // Il giro completo di quel che fa l'editor a livello di parola: si
+        // compone un testo con i tempi delle parole, lo si scrive come lo
+        // scriverebbe `testo_salva`, e lo si rilegge come lo rileggerà la
+        // catena delle fonti quando troverà il `.a2.lrc` accanto al brano.
+        let scritto_a_mano = Testo {
+            righe: vec![
+                Riga {
+                    ms: 10_000,
+                    testo: "prima riga qui".to_owned(),
+                    parole: vec![
+                        Parola {
+                            ms: 10_000,
+                            testo: "prima ".to_owned(),
+                        },
+                        Parola {
+                            ms: 10_400,
+                            testo: "riga ".to_owned(),
+                        },
+                        Parola {
+                            ms: 10_900,
+                            testo: "qui".to_owned(),
+                        },
+                    ],
+                },
+                Riga {
+                    ms: 20_000,
+                    testo: "seconda".to_owned(),
+                    parole: vec![Parola {
+                        ms: 20_000,
+                        testo: "seconda".to_owned(),
+                    }],
+                },
+            ],
+            ..Testo::default()
+        };
+
+        let a2 = scrivi(&scritto_a_mano);
+        assert_eq!(
+            a2,
+            concat!(
+                "[00:10.00]<00:10.00>prima <00:10.40>riga <00:10.90>qui
+",
+                "[00:20.00]<00:20.00>seconda
+",
+            )
+        );
+
+        let riletto = leggi(&a2);
+        assert_eq!(riletto, scritto_a_mano);
+        // E le parole ricompongono la riga: è la proprietà su cui
+        // `parole_combaciano` decide se tenerle.
+        assert!(riletto.righe.iter().all(parole_combaciano));
+    }
+
+    #[test]
+    fn le_parole_che_non_ricompongono_la_riga_non_combaciano() {
+        // Una riga senza parole non ha niente da contraddire.
+        assert!(parole_combaciano(&Riga {
+            ms: 0,
+            testo: "una due".to_owned(),
+            parole: Vec::new(),
+        }));
+        // Il caso vero: si è battuto su un testo e poi il testo è cambiato.
+        assert!(!parole_combaciano(&Riga {
+            ms: 0,
+            testo: "una tre".to_owned(),
+            parole: vec![
+                Parola {
+                    ms: 0,
+                    testo: "una ".to_owned(),
+                },
+                Parola {
+                    ms: 500,
+                    testo: "due".to_owned(),
+                },
+            ],
+        }));
+        // Contare non basterebbe: qui le parole sono due come i tempi.
+        assert!(!parole_combaciano(&Riga {
+            ms: 0,
+            testo: "una due".to_owned(),
+            parole: vec![
+                Parola {
+                    ms: 0,
+                    testo: "una ".to_owned(),
+                },
+                Parola {
+                    ms: 500,
+                    testo: "tre".to_owned(),
+                },
+            ],
+        }));
     }
 
     #[test]

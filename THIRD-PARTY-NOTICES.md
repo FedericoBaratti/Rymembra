@@ -57,7 +57,7 @@ is therefore nothing to pay and nothing to ask for.
 
 ---
 
-## The list: 429 crates
+## The list: 431 crates
 
 Identical texts are collected once only, with the list of the crates that
 carry them underneath. Anyone looking for a specific crate finds it with
@@ -252,6 +252,7 @@ their reader's search: it appears in its license's group.
 | `once_cell` | 1.21.4 | MIT OR Apache-2.0 | <https://github.com/matklad/once_cell> |
 | `open` | 5.4.0 | MIT | <https://github.com/Byron/open-rs> |
 | `option-ext` | 0.2.0 | MPL-2.0 | <https://github.com/soc/option-ext.git> |
+| `opus-pure` | 0.2.1 | BSD-3-Clause | <https://github.com/stephenberry/opus-pure> |
 | `parking_lot` | 0.12.5 | MIT OR Apache-2.0 | <https://github.com/Amanieu/parking_lot> |
 | `parking_lot_core` | 0.9.12 | MIT OR Apache-2.0 | <https://github.com/Amanieu/parking_lot> |
 | `paste` | 1.0.15 | MIT OR Apache-2.0 | <https://github.com/dtolnay/paste> |
@@ -371,6 +372,7 @@ their reader's search: it appears in its license's group.
 | `tauri-plugin-dialog` | 2.7.2 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/plugins-workspace> |
 | `tauri-plugin-fs` | 2.5.1 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/plugins-workspace> |
 | `tauri-plugin-opener` | 2.5.4 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/plugins-workspace> |
+| `tauri-plugin-single-instance` | 2.4.4 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/plugins-workspace> |
 | `tauri-plugin-updater` | 2.10.1 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/plugins-workspace> |
 | `tauri-runtime` | 2.11.3 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/tauri> |
 | `tauri-runtime-wry` | 2.11.4 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/tauri> |
@@ -1434,7 +1436,7 @@ END OF TERMS AND CONDITIONS
     SOFTWARE
 ```
 
-### Text `0cec06e0e55f` — 21 crates
+### Text `0cec06e0e55f` — 22 crates
 
 <details><summary>Which crates</summary>
 
@@ -1452,6 +1454,7 @@ END OF TERMS AND CONDITIONS
 - `tauri-plugin-dialog 2.7.2`
 - `tauri-plugin-fs 2.5.1`
 - `tauri-plugin-opener 2.5.4`
+- `tauri-plugin-single-instance 2.4.4`
 - `tauri-plugin-updater 2.10.1`
 - `tauri-runtime 2.11.3`
 - `tauri-runtime-wry 2.11.4`
@@ -3183,6 +3186,41 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
+### Text `eb8a6c846304` — 5 crates
+
+<details><summary>Which crates</summary>
+
+- `tauri-plugin-dialog 2.7.2`
+- `tauri-plugin-fs 2.5.1`
+- `tauri-plugin-opener 2.5.4`
+- `tauri-plugin-single-instance 2.4.4`
+- `tauri-plugin-updater 2.10.1`
+
+</details>
+
+```
+SPDXVersion: SPDX-2.1
+DataLicense: CC0-1.0
+PackageName: tauri
+DataFormat: SPDXRef-1
+PackageSupplier: Organization: The Tauri Programme in the Commons Conservancy
+PackageHomePage: https://tauri.app
+PackageLicenseDeclared: Apache-2.0
+PackageLicenseDeclared: MIT
+PackageCopyrightText: 2019-2022, The Tauri Programme in the Commons Conservancy
+PackageSummary: <text>Tauri is a rust project that enables developers to make secure
+and small desktop applications using a web frontend.
+                </text>
+PackageComment: <text>The package includes the following libraries; see
+Relationship information.
+                </text>
+Created: 2019-05-20T09:00:00Z
+PackageDownloadLocation: git://github.com/tauri-apps/tauri
+PackageDownloadLocation: git+https://github.com/tauri-apps/tauri.git
+PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
+Creator: Person: Daniel Thompson-Yvetot
+```
+
 ### Text `6d489af62926` — 4 crates
 
 <details><summary>Which crates</summary>
@@ -3686,40 +3724,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-```
-
-### Text `eb8a6c846304` — 4 crates
-
-<details><summary>Which crates</summary>
-
-- `tauri-plugin-dialog 2.7.2`
-- `tauri-plugin-fs 2.5.1`
-- `tauri-plugin-opener 2.5.4`
-- `tauri-plugin-updater 2.10.1`
-
-</details>
-
-```
-SPDXVersion: SPDX-2.1
-DataLicense: CC0-1.0
-PackageName: tauri
-DataFormat: SPDXRef-1
-PackageSupplier: Organization: The Tauri Programme in the Commons Conservancy
-PackageHomePage: https://tauri.app
-PackageLicenseDeclared: Apache-2.0
-PackageLicenseDeclared: MIT
-PackageCopyrightText: 2019-2022, The Tauri Programme in the Commons Conservancy
-PackageSummary: <text>Tauri is a rust project that enables developers to make secure
-and small desktop applications using a web frontend.
-                </text>
-PackageComment: <text>The package includes the following libraries; see
-Relationship information.
-                </text>
-Created: 2019-05-20T09:00:00Z
-PackageDownloadLocation: git://github.com/tauri-apps/tauri
-PackageDownloadLocation: git+https://github.com/tauri-apps/tauri.git
-PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
-Creator: Person: Daniel Thompson-Yvetot
 ```
 
 ### Text `6c91ec82929f` — 3 crates
@@ -13141,6 +13145,65 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
+### Text `c9fa68646ff1` — 1 crates
+
+<details><summary>Which crates</summary>
+
+- `opus-pure 0.2.1`
+
+</details>
+
+```
+Copyright 2026 Stephen Berry
+
+Copyright 2026 restsend.com
+
+Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic,
+                    Jean-Marc Valin, Timothy B. Terriberry,
+                    CSIRO, Gregory Maxwell, Mark Borgerding,
+                    Erik de Castro Lopo, Mozilla, Amazon
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+- Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+
+- Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+- Neither the name of Internet Society, IETF or IETF Trust, nor the
+names of specific contributors, may be used to endorse or promote
+products derived from this software without specific prior written
+permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER
+OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Opus is subject to the royalty-free patent licenses which are
+specified at:
+
+Xiph.Org Foundation:
+https://datatracker.ietf.org/ipr/1524/
+
+Microsoft Corporation:
+https://datatracker.ietf.org/ipr/1914/
+
+Broadcom Corporation:
+https://datatracker.ietf.org/ipr/1526/
+```
+
 ### Text `5b0ae40d1a35` — 1 crates
 
 <details><summary>Which crates</summary>
@@ -15356,6 +15419,38 @@ PackageDownloadLocation: git://github.com/tauri-apps/tao
 PackageDownloadLocation: git+https://github.com/tauri-apps/tao.git
 PackageDownloadLocation: git+ssh://github.com/tauri-apps/tao.git
 Creator: Person: Daniel Thompson-Yvetot
+```
+
+### Text `b7f455413bfe` — 1 crates
+
+<details><summary>Which crates</summary>
+
+- `tauri-plugin-single-instance 2.4.4`
+
+</details>
+
+```
+MIT License
+
+Copyright (c) 2017 - Present The Tauri Programme in the Commons Conservancy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ### Text `a2c382fbddcc` — 1 crates

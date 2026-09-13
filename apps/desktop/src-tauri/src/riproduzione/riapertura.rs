@@ -232,6 +232,17 @@ fn riapri_davvero(
                 lettore.normalizzazione.attivo,
                 lettore.normalizzazione.bersaglio_db,
             );
+            // La dissolvenza e la latenza: due manopole che il `Lettore` ricorda
+            // e il motore nuovo no. Senza queste due righe, staccare le cuffie
+            // spegneva la dissolvenza in silenzio — il cursore delle
+            // impostazioni continuava a dire «sei secondi» e il passaggio fra due
+            // brani tornava secco — e azzerava la compensazione di latenza,
+            // rimettendo i testi fuori fase esattamente quando si era appena
+            // cambiata uscita.
+            lettore
+                .motore
+                .dissolvenza(lettore.dissolvenza_s.saturating_mul(1000));
+            lettore.motore.latenza(lettore.latenza_ms);
             // Anche lo spettro: il lettore dentro il motore nuovo è nuovo pure
             // lui, e senza queste due righe chi stava guardando le barre le
             // vedrebbe fermarsi a zero dopo aver riaperto il dispositivo.
@@ -260,6 +271,7 @@ fn riapri_davvero(
                 // con quel che c'è scritto in `settings`.
                 autoplay: false,
                 dissolvenza_s: 0,
+                latenza_ms: 0,
                 motivo_prossimo: None,
             });
             drop(guardia);

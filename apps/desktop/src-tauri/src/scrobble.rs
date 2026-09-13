@@ -46,7 +46,7 @@ use aether_app::settings;
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::listen::Listen;
 use aether_domain::scrobble::{Ascolto, Servizio};
-use aether_oauth::portachiavi::{DiSistema, Portachiavi as _};
+use aether_oauth::portachiavi::{DiSistema, Portachiavi};
 use aether_scrobble::{LastFm, ListenBrainz, per_richiesta};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
@@ -59,10 +59,29 @@ use crate::stato::{Stato, Turno, con_libreria};
 const CHIAVE_LB_TOKEN: &str = "listenbrainz.token";
 
 /// Il segreto dell'applicazione Last.fm, nel portachiavi.
-///
-/// Accanto alla chiave, che invece sta in `settings`: la chiave viaggia in
-/// chiaro nell'indirizzo del consenso e non è un segreto, questo sì.
 const CHIAVE_LFM_SEGRETO: &str = "lastfm.segreto";
+
+/// La chiave dell'applicazione Last.fm, nel portachiavi.
+///
+/// # Perché ci si è spostata, e perché il vecchio commento era sbagliato
+///
+/// Fino alla 2.3.0 stava in `settings`, con scritto accanto che «non è un
+/// segreto»: viaggia in chiaro nell'indirizzo del consenso, quindi chiunque
+/// guardi la barra del browser la vede. La frase è vera e la conclusione era
+/// sbagliata, perché la domanda giusta non è se sia segreta ma **di chi sia**.
+///
+/// È una credenziale **personale**: la registra una persona a suo nome, e chi
+/// la ottiene manda scrobble come lei finché non gliela si revoca a mano.
+/// Finché stava soltanto nel database di questa macchina era una questione fra
+/// l'utente e il proprio disco; dalla 2.3.1 il profilo esporta la libreria e si
+/// mette su una chiavetta che si passa in giro, e una credenziale personale
+/// dentro un file che si passa in giro è la definizione del guasto.
+///
+/// Il travaso lo fa [`travasa_chiave_lastfm`] una volta sola all'avvio. Il
+/// profilo la lascia comunque fuori — `aether_app::profilo::CATALOGO` non la
+/// contiene, e una prova lo tiene vero — quindi anche una macchina su cui il
+/// portachiavi non risponde non la esporta.
+const CHIAVE_LFM_CHIAVE: &str = "lastfm.api_key";
 
 /// La chiave di sessione di Last.fm, nel portachiavi. Non scade mai.
 const CHIAVE_LFM_SESSIONE: &str = "lastfm.sessione";
@@ -266,12 +285,16 @@ pub fn scrobble_lastfm_credenziali(
     let esito = (|| {
         let api_key = api_key.trim();
         let segreto = segreto.trim();
+        // Nel portachiavi, accanto al segreto. E in `settings` si cancella
+        // comunque, anche quando la chiave nuova è vuota: è la riga che chiude
+        // il travaso per chi arriva qui prima che l'avvio l'abbia fatto.
+        if api_key.is_empty() {
+            portachiavi().cancella(CHIAVE_LFM_CHIAVE)?;
+        } else {
+            portachiavi().scrivi(CHIAVE_LFM_CHIAVE, api_key)?;
+        }
         con_libreria(&stato, |libreria| {
-            if api_key.is_empty() {
-                settings::forget(&libreria.connection, coda::CHIAVE_LFM_API_KEY)?;
-            } else {
-                settings::write(&libreria.connection, coda::CHIAVE_LFM_API_KEY, api_key)?;
-            }
+            settings::forget(&libreria.connection, coda::CHIAVE_LFM_API_KEY)?;
             Ok(())
         })?;
         if segreto.is_empty() {
@@ -505,6 +528,25 @@ pub fn sta_suonando(app: &AppHandle, track_id: i64) {
 
 /// Avvia il filo che svuota la coda. Uno solo, per tutta la vita del processo.
 pub fn avvia(app: &AppHandle) {
+    // Prima di tutto il resto, e una volta sola: la chiave Last.fm passa da
+    // `settings` al portachiavi. Sta qui e non in `main` perché è materia di
+    // questo modulo — è lui a sapere dove la chiave sta e chi la legge — e
+    // perché è già il posto in cui lo scrobbling si sveglia all'apertura.
+    //
+    // Un guasto **non ferma niente**: la chiave resta dov'è, Last.fm continua
+    // a funzionare, e l'unica conseguenza è una riga di diario. Vale la regola
+    // di `travasa_chiave_lastfm`: non si perde una credenziale per proteggerla.
+    if let Some(stato) = app.try_state::<Stato>() {
+        let esito = con_libreria(&stato, |libreria| {
+            travasa_chiave_lastfm(&portachiavi(), &libreria.connection)
+        });
+        match esito {
+            Ok(true) => nota!("[scrobble] la chiave Last.fm è passata nel portachiavi"),
+            Ok(false) => {}
+            Err(err) => lamenta("la chiave Last.fm non è passata nel portachiavi", &err),
+        }
+    }
+
     let manico = app.clone();
     let avviato = std::thread::Builder::new()
         .name("aether-scrobble".to_owned())
@@ -779,6 +821,67 @@ const fn portachiavi() -> DiSistema {
     DiSistema
 }
 
+/// Porta la chiave Last.fm da `settings` al portachiavi, una volta sola.
+///
+/// Restituisce `true` se ha spostato qualcosa. Una chiave che non c'è, o che è
+/// già nel portachiavi, dà `false` e non è un guasto: è la condizione normale
+/// di ogni avvio dopo il primo.
+///
+/// # Se il portachiavi non risponde, non si declassa
+///
+/// La chiave **resta dov'è** e l'errore torna al chiamante, che lo annota. Non
+/// si cancella da `settings` prima di aver visto la scrittura riuscire, o un
+/// portachiavi momentaneamente irraggiungibile all'avvio scollegherebbe
+/// Last.fm senza dire niente: l'utente si ritroverebbe da rifare il consenso e
+/// nessuno collegherebbe la cosa a un travaso.
+///
+/// È la stessa regola scritta in testa a `aether_oauth::portachiavi` — un
+/// declassamento silenzioso di una proprietà di sicurezza è peggio di una
+/// funzione che dice di non poter partire — applicata nel verso in cui qui
+/// serve: non si perde la credenziale per proteggerla.
+///
+/// # Errori
+///
+/// `settings.secretUnavailable` se il portachiavi non risponde;
+/// `db.queryFailed` se `settings` non si legge o non si scrive.
+pub fn travasa_chiave_lastfm(
+    portachiavi: &dyn Portachiavi,
+    connection: &rusqlite::Connection,
+) -> Result<bool, AppError> {
+    let Some(chiave) = settings::read(connection, coda::CHIAVE_LFM_API_KEY)?
+        .map(|chiave| chiave.trim().to_owned())
+        .filter(|chiave| !chiave.is_empty())
+    else {
+        // Niente in `settings`: o non è mai stata scritta, o il travaso è già
+        // avvenuto. In tutti e due i casi non c'è niente da fare, e la riga
+        // costa una lettura sulla chiave primaria.
+        return Ok(false);
+    };
+    portachiavi.scrivi(CHIAVE_LFM_CHIAVE, &chiave)?;
+    // E solo adesso, con la copia buona già al sicuro.
+    settings::forget(connection, coda::CHIAVE_LFM_API_KEY)?;
+    Ok(true)
+}
+
+/// La chiave dell'applicazione Last.fm: prima il portachiavi, poi `settings`.
+///
+/// Il ripiego su `settings` non è un declassamento — non si *scrive* mai là —
+/// ma la lettura della coda del travaso: su una macchina il cui portachiavi non
+/// ha risposto all'avvio la chiave è ancora nel database, e rifiutarsi di
+/// leggerla vorrebbe dire scollegare Last.fm a chi non ha fatto niente.
+fn chiave_lastfm(stato: &State<'_, Stato>) -> Result<Option<String>, AppError> {
+    if let Some(chiave) = leggi_segreto(CHIAVE_LFM_CHIAVE)
+        .unwrap_or_default()
+        .filter(|chiave| !chiave.trim().is_empty())
+    {
+        return Ok(Some(chiave));
+    }
+    con_libreria(stato, |libreria| {
+        settings::read(&libreria.connection, coda::CHIAVE_LFM_API_KEY)
+    })
+    .map(|chiave| chiave.filter(|chiave| !chiave.trim().is_empty()))
+}
+
 /// Lo scrobbling è acceso? Acceso di serie: chi collega un servizio vuole che
 /// mandi, e un interruttore che nasce spento sembra un guasto.
 fn acceso(stato: &State<'_, Stato>) -> bool {
@@ -833,11 +936,8 @@ fn listenbrainz(stato: &State<'_, Stato>) -> Result<ListenBrainz, AppError> {
 /// Il client di Last.fm, senza la sessione: serve al consenso, che la sessione
 /// non ce l'ha ancora.
 fn client_lastfm(stato: &State<'_, Stato>) -> Result<LastFm, AppError> {
-    let api_key = con_libreria(stato, |libreria| {
-        settings::read(&libreria.connection, coda::CHIAVE_LFM_API_KEY)
-    })?
-    .filter(|k| !k.trim().is_empty())
-    .ok_or_else(|| AppError::new(ErrorCode::SettingsLastfmNotConfigured))?;
+    let api_key = chiave_lastfm(stato)?
+        .ok_or_else(|| AppError::new(ErrorCode::SettingsLastfmNotConfigured))?;
     let segreto = leggi_segreto(CHIAVE_LFM_SEGRETO)?
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::new(ErrorCode::SettingsLastfmNotConfigured))?;
@@ -897,18 +997,20 @@ fn stato_ipc(
     stato: &State<'_, Stato>,
     scrobble: &State<'_, StatoScrobble>,
 ) -> Result<StatoScrobbleIpc, AppError> {
-    let (utente_lb, utente_lfm, api_key, attivo, conta_lb, conta_lfm) =
-        con_libreria(stato, |libreria| {
-            let c = &libreria.connection;
-            Ok((
-                settings::read(c, coda::CHIAVE_LB_UTENTE)?,
-                settings::read(c, coda::CHIAVE_LFM_UTENTE)?,
-                settings::read(c, coda::CHIAVE_LFM_API_KEY)?,
-                settings::read(c, coda::CHIAVE_ATTIVO)?,
-                coda::conteggi(c, Some(Servizio::ListenBrainz))?,
-                coda::conteggi(c, Some(Servizio::LastFm))?,
-            ))
-        })?;
+    let (utente_lb, utente_lfm, attivo, conta_lb, conta_lfm) = con_libreria(stato, |libreria| {
+        let c = &libreria.connection;
+        Ok((
+            settings::read(c, coda::CHIAVE_LB_UTENTE)?,
+            settings::read(c, coda::CHIAVE_LFM_UTENTE)?,
+            settings::read(c, coda::CHIAVE_ATTIVO)?,
+            coda::conteggi(c, Some(Servizio::ListenBrainz))?,
+            coda::conteggi(c, Some(Servizio::LastFm))?,
+        ))
+    })?;
+    // La chiave sta nel portachiavi dalla 2.3.1, con il ripiego su `settings`
+    // per chi non ha ancora travasato: `chiave_lastfm` conosce tutti e due i
+    // posti, e qui non se ne deve sapere nessuno.
+    let api_key = chiave_lastfm(stato).unwrap_or_default();
 
     // Un portachiavi che non risponde vale «non collegato» **solo qui**, dove
     // si sta disegnando una schermata: far fallire la lettura dello stato
@@ -950,4 +1052,73 @@ fn lamenta(cosa: &str, err: &AppError) {
         err.code().kind().code(),
         err.cause().unwrap_or("—")
     );
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+    use aether_oauth::portachiavi::{Guasto, InMemoria};
+
+    /// Una libreria vuota in memoria.
+    fn libreria() -> rusqlite::Connection {
+        aether_app::db::open_in_memory()
+            .expect("database")
+            .connection
+    }
+
+    #[test]
+    fn la_chiave_lastfm_migra_nel_portachiavi_e_sparisce_da_settings() {
+        let c = libreria();
+        settings::write(&c, coda::CHIAVE_LFM_API_KEY, "0123456789abcdef").expect("scrittura");
+
+        let anello = InMemoria::nuovo();
+        assert_eq!(travasa_chiave_lastfm(&anello, &c), Ok(true));
+        assert_eq!(
+            anello.leggi(CHIAVE_LFM_CHIAVE),
+            Ok(Some("0123456789abcdef".to_owned())),
+            "la chiave è nel portachiavi"
+        );
+        assert_eq!(
+            settings::read(&c, coda::CHIAVE_LFM_API_KEY),
+            Ok(None),
+            "e non è più nel database, che è il file che un profilo porterebbe in giro"
+        );
+
+        // Un secondo avvio non ha niente da fare, e non deve cancellare quel
+        // che ha appena messo al sicuro.
+        assert_eq!(travasa_chiave_lastfm(&anello, &c), Ok(false));
+        assert_eq!(
+            anello.leggi(CHIAVE_LFM_CHIAVE),
+            Ok(Some("0123456789abcdef".to_owned()))
+        );
+    }
+
+    #[test]
+    fn se_il_portachiavi_non_risponde_la_chiave_resta_dov_e() {
+        // La strada che conta: non si perde una credenziale per proteggerla.
+        // Senza questa prova, un portachiavi momentaneamente irraggiungibile
+        // all'avvio scollegherebbe Last.fm in silenzio, e nessuno collegherebbe
+        // la cosa al travaso.
+        let c = libreria();
+        settings::write(&c, coda::CHIAVE_LFM_API_KEY, "0123456789abcdef").expect("scrittura");
+
+        let err = travasa_chiave_lastfm(&Guasto, &c).expect_err("il portachiavi non risponde");
+        assert_eq!(err.code().kind().code(), "settings.secretUnavailable");
+        assert_eq!(
+            settings::read(&c, coda::CHIAVE_LFM_API_KEY),
+            Ok(Some("0123456789abcdef".to_owned())),
+            "la chiave resta dov'è, e il profilo la lascia comunque fuori"
+        );
+    }
+
+    #[test]
+    fn una_libreria_senza_chiave_non_ha_niente_da_travasare() {
+        let c = libreria();
+        assert_eq!(travasa_chiave_lastfm(&InMemoria::nuovo(), &c), Ok(false));
+        // Nemmeno una scritta a spazi: è il residuo di un campo svuotato a
+        // mano, e scriverla nel portachiavi vorrebbe dire far credere a
+        // `stato_ipc` che Last.fm è configurato.
+        settings::write(&c, coda::CHIAVE_LFM_API_KEY, "   ").expect("scrittura");
+        assert_eq!(travasa_chiave_lastfm(&InMemoria::nuovo(), &c), Ok(false));
+    }
 }

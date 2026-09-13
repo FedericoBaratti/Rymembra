@@ -2,9 +2,10 @@
 //!
 //! # Perché la cartella è una fonte, e non un ripiego qualsiasi
 //!
-//! Perché è **la stessa** che [`crate::organize`] scrive. Il riordino di Aether
-//! mette i file in `Artista/Album`, e mezzo mondo — Picard, EAC, dBpoweramp,
-//! foobar2000 — usa la stessa forma con l'anno davanti al titolo del disco.
+//! Perché è **la stessa** che scrive mezzo mondo: Picard, EAC, dBpoweramp,
+//! foobar2000 mettono i file in `Artista/Album`, con l'anno davanti al titolo
+//! del disco — ed è la forma che il riordino di Aether, finché è esistito,
+//! ha scritto a sua volta.
 //! Un file rippato senza tag sta quasi sempre dentro
 //! `Pink Floyd/1973 - The Dark Side of the Moon/01 - Speak to Me.flac`, e lì
 //! dentro c'è tutto quello che al brano manca.
@@ -191,7 +192,7 @@ pub struct Indizi {
     ///
     /// Serve a [`crate::ricostruzione`] per una domanda sola: se dedurre anche
     /// `album_artist`. Una cartella d'artista **è** l'artista dell'album — è la
-    /// forma che [`crate::organize`] scrive — mentre un interprete ricavato dal
+    /// forma che ogni taggatore scrive — mentre un interprete ricavato dal
     /// nome del file è quello di quel brano soltanto, e su una raccolta
     /// scriverlo come artista del disco lo spezzerebbe in una uscita per traccia.
     pub artista_da_cartella: bool,

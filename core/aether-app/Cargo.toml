@@ -48,6 +48,14 @@ rusqlite = { version = "0.37", features = ["bundled", "functions"] }
 serde.workspace = true
 serde_json.workspace = true
 walkdir = "2.5.0"
+# L'archivio del profilo (`.aeprofile`). Le opzioni sono quelle già scelte in
+# `[workspace.dependencies]` per `aether-skin`: `default-features = false` più
+# il solo `deflate`, così i cinque compressori che non useremmo mai non entrano
+# nel binario. Qui serve **anche** perché è l'unico formato che si sa scrivere e
+# rileggere in streaming senza tenere l'archivio in memoria: un profilo con le
+# copertine può pesare centinaia di megabyte, e il vincolo di questa release è
+# che la memoria a riposo non cambi.
+zip.workspace = true
 
 [dev-dependencies]
 # Solo per l'esempio `archivio`, che deve pur aprire uno zip da qualche parte.

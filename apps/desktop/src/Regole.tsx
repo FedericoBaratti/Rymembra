@@ -38,6 +38,7 @@ import {
   type OperatoreSmart,
   type RegolaSmart,
 } from "./ipc";
+import { useFinestrella } from "./finestrella";
 import { durata, nomeArtista, numero } from "./formato";
 import { Icona } from "./parti/Icone";
 import { t } from "./lingue";
@@ -162,6 +163,7 @@ export function Regole({
   const [errore, setErrore] = useState<string | null>(null);
   const [salvando, setSalvando] = useState(false);
   const [caricato, setCaricato] = useState(playlist === null);
+  const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
 
   // Le regole di una playlist che c'è già. Finché non arrivano non si mostra
   // l'insieme vuoto come se fosse suo: sarebbe «nessuna condizione», cioè
@@ -200,6 +202,24 @@ export function Regole({
   useEffect(() => {
     if (caricato) prova(scritte(insieme));
   }, [insieme, caricato, prova]);
+
+  // Il fuoco quando una condizione sparisce. La chiave della riga è l'indice
+  // (vedi il commento nel markup), quindi a sparire dal DOM non è la riga che si
+  // è premuta ma l'**ultima**: React riusa i nodi di quelle prima e smonta la
+  // coda. Togliendo l'ultima condizione — e con una condizione sola è sempre
+  // quel caso — il tasto appena premuto si smonta sotto il dito, e Chromium
+  // **non** emette `blur` né `focusout` per un nodo focalizzato che sparisce: il
+  // fuoco casca sul `<body>` senza che nessuno lo sappia. Si rimette sulla
+  // radice, che `useFinestrella` tiene focalizzabile di proposito; perché questo
+  // conti è scritto per esteso in `Sincronizza.tsx`, che ha lo stesso guaio a
+  // ogni cambio di momento. Negli altri casi — al montaggio, aggiungendo una
+  // condizione, togliendone una in mezzo — il fuoco è ancora dentro e qui non
+  // succede niente.
+  useEffect(() => {
+    const dentro = finestrella.current;
+    if (dentro !== null && !dentro.contains(document.activeElement))
+      dentro.focus();
+  }, [insieme.regole.length, finestrella]);
 
   const cambia = (indice: number, come: Partial<RegolaSmart>) => {
     setInsieme((prima) => ({
@@ -260,6 +280,7 @@ export function Regole({
   return (
     <div className="velo scuro" onClick={salvando ? undefined : onChiudi}>
       <div
+        ref={finestrella}
         className="finestrella media editor-regole glass-modal"
         role="dialog"
         aria-modal="true"

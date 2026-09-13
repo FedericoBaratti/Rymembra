@@ -40,7 +40,6 @@ pub mod indizi;
 pub mod keys;
 pub mod listen;
 pub mod merge;
-pub mod organize;
 pub mod paths;
 pub mod playlist_file;
 pub mod queue;
@@ -70,7 +69,7 @@ pub use esterno::{
     AvanzamentoLettura, BranoEsterno, ContenutoEsterno, Disponibilita, Fonte, GenereContenuto,
     Licenza, Livello,
 };
-pub use keys::{PlaylistKey, TrackKey, TrackKeyInput};
+pub use keys::{ContentKey, ContentKeyInput, PlaylistKey, TrackKey, TrackKeyInput};
 pub use listen::{Listen, ListenTracker, counts_as_play};
 pub use merge::{TrackStats, merge_stats};
 pub use paths::PathRules;

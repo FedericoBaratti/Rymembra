@@ -12,17 +12,22 @@
 //!
 //! # `--prova` prima, sempre
 //!
-//! Con `--prova` si decide e si stampa, e **non si scrive niente**: né i tag,
-//! né le righe, né `enrich_undo`. È il modo di guardare la taratura prima di
-//! affidarle millequattrocento file, e quel che conta guardare non sono gli
-//! applicati — sono gli **astenuti**: se un disco che riconosceresti a occhio
-//! finisce lì, la soglia è troppo stretta; se ce ne finisce dentro uno che non
-//! c'entra niente, è troppo larga.
+//! Con `--prova` si decide e si stampa, e **non si scrive niente**: né le
+//! righe, né le copertine. È il modo di guardare la taratura prima di affidarle
+//! millequattrocento brani, e quel che conta guardare non sono gli applicati —
+//! sono gli **astenuti**: se un disco che riconosceresti a occhio finisce lì,
+//! la soglia è troppo stretta; se ce ne finisce dentro uno che non c'entra
+//! niente, è troppo larga.
 //!
-//! Con l'applicazione **chiusa**. Due processi che scrivono sullo stesso
-//! database vanno d'accordo — sta in WAL — ma non sui file: una passata di qui
-//! e una di là riscriverebbero gli stessi tag, e i tag di prima finirebbero in
-//! `enrich_undo` una volta sola, cioè per uno dei due soltanto.
+//! # I file non si toccano, nemmeno senza `--prova`
+//!
+//! Dalla 2.3.1 l'arricchimento scrive in database e basta: questo esempio non
+//! apre nessun mp3, e la sola cosa che finisce su disco sono le copertine nello
+//! store di Aether. Conviene comunque lanciarlo con l'applicazione **chiusa** —
+//! due processi che scrivono sullo stesso database vanno d'accordo perché sta
+//! in WAL, ma decidere due volte le stesse righe è lavoro di rete buttato, e le
+//! passate si contenderebbero la quota da una richiesta al secondo di
+//! MusicBrainz.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::print_stdout)]
 
@@ -106,18 +111,13 @@ fn main() {
             continue;
         }
 
-        let (esiti, guasti) = enrich::scrivi_file(&covers, &decisione.scritture, true);
+        let (esiti, guasti) = enrich::applica(&covers, &decisione.scritture);
         for guasto in &guasti {
-            println!("   ! file non scritto: {guasto}");
+            println!("   ! copertina non salvata: {guasto}");
         }
         let tx = connection.transaction().expect("transazione");
         enrich::registra(&tx, &decisione, &decisione.scritture, &esiti, now_ms())
             .expect("registrazione");
-        for scrittura in &decisione.scritture {
-            if !esiti.iter().any(|e| e.track_id == scrittura.track_id) {
-                enrich::segna_errore(&tx, scrittura.track_id, now_ms()).expect("guasto annotato");
-            }
-        }
         tx.commit().expect("commit");
     }
 

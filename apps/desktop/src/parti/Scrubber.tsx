@@ -70,7 +70,12 @@ export function Scrubber({
   const avanzamento = durataMs > 0 ? (dove / durataMs) * 100 : 0;
 
   return (
-    <div className="cursore player-progress">
+    // L'ancora del giro guidato, che qui è un **ripiego**: nella barra è il
+    // guscio dei comandi a portarla, e quello contiene già trasporto e cursore
+    // insieme. Serve agli scafali che montano `scrubber` da solo, dove il
+    // guscio non c'è: `Giro` prende il primo disegnato nell'ordine del
+    // documento, quindi quando ci sono tutti e due vince il guscio.
+    <div className="cursore player-progress" data-giro="trasporto">
       {conTempi && <span className="tempo">{durata(dove)}</span>}
       <input
         type="range"
@@ -84,6 +89,17 @@ export function Scrubber({
            motore di rendering la risolve senza rileggere la regola. */
         style={{ "--avanzamento": `${avanzamento}%` } as CSSProperties}
         aria-label={t("player.position")}
+        /* Senza questo uno screen reader legge il valore grezzo: «124500», che
+           sono i millisecondi. È il cursore più usato dell'applicazione, e il
+           numero che annunciava non era sbagliato — era illeggibile. Il tempo si
+           scrive con `durata()`, la stessa funzione dei due tempi ai lati, così
+           quel che si sente e quel che si vede non possono divergere; la durata
+           totale ci sta dentro perché l'etichetta dice «posizione nel brano» e
+           una posizione senza il suo fondo non si colloca. */
+        aria-valuetext={t("player.position.value", {
+          posizione: durata(dove),
+          durata: durata(durataMs),
+        })}
         disabled={durataMs === 0}
         onChange={(e) => setTrascinato(Number(e.target.value))}
         onPointerUp={() => void rilascia()}

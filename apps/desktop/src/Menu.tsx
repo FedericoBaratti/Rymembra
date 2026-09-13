@@ -6,7 +6,15 @@
  * tasti da guardare mille volte per usarli una. Da qui passerà anche «aggiungi
  * a playlist», che è la stessa forma di comando.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+
+/**
+ * Quanto il menù sta lontano dal bordo della finestra.
+ *
+ * Otto pixel: lo stesso respiro che `--spazio-2` dà dentro il menù, perché un
+ * menù incollato al bordo si legge come tagliato anche quando è intero.
+ */
+const MARGINE = 8;
 
 /** Una voce del menù. */
 export interface Voce {
@@ -30,6 +38,45 @@ export function Menu({
 }) {
   const menu = useRef<HTMLDivElement>(null);
   const chiAveva = useRef<HTMLElement | null>(null);
+  const [posto, setPosto] = useState<{ left: number; top: number } | null>(null);
+
+  /**
+   * Dove sta il menù lo decide la sua misura, non un numero scritto qui.
+   *
+   * Prima lo decidevano due numeri a mano: `220px` di larghezza e `34px` per
+   * voce, dentro un `min()` nel foglio di stile. Erano giusti per il menù di
+   * allora e per la densità di allora, e sbagliati appena una cosa sola cambiava:
+   * un'etichetta lunga — «Aggiungi alla playlist…» in tedesco — supera i
+   * duecentoventi e il menù sborda a destra; `data-density='spacious'`, o un
+   * corpo del testo più grande, alza le voci sopra i trentaquattro e l'ultima
+   * finisce sotto il bordo inferiore. Il menù non ha una larghezza dichiarata
+   * (`min-width: 200px` e poi quel che serve) proprio perché non si vuole
+   * troncare un'etichetta: il numero, quindi, non si poteva sapere.
+   *
+   * Si misura. `useLayoutEffect` gira **dopo** il disegno e **prima** della
+   * pittura: lo stato che ne esce rientra nello stesso fotogramma, quindi il
+   * fotogramma nel posto sbagliato che il vecchio commento temeva non esiste.
+   * Nel primo passaggio il menù sta a zero e resta invisibile, e non è un
+   * dettaglio di prudenza: un elemento `fixed` ancorato a destra si **stringe**
+   * nello spazio che gli resta, e misurarlo là dove sborda darebbe una larghezza
+   * più piccola del vero e un'etichetta andata a capo. A zero ha davanti tutta la
+   * finestra, quindi quella che si legge è la sua misura naturale.
+   *
+   * Il ribaltamento resta il comportamento di prima — il menù si tira dentro dal
+   * bordo invece di andare sopra il puntatore — e in più non esce mai dall'alto
+   * né da sinistra, che `min()` da solo non garantiva.
+   */
+  useLayoutEffect(() => {
+    const nodo = menu.current;
+    if (nodo === null) return;
+    const { width, height } = nodo.getBoundingClientRect();
+    const dentro = (voluto: number, misura: number, quanto: number) =>
+      Math.max(MARGINE, Math.min(voluto, quanto - misura - MARGINE));
+    setPosto({
+      left: dentro(apertura.x, width, window.innerWidth),
+      top: dentro(apertura.y, height, window.innerHeight),
+    });
+  }, [apertura]);
 
   /**
    * Escape chiude, le frecce percorrono.
@@ -111,14 +158,14 @@ export function Menu({
         ref={menu}
         className="menu menu-pop"
         role="menu"
-        /* Il menù si ancora in alto a sinistra del puntatore e si ribalta da
-           solo con `translate` quando sborderebbe: calcolarlo in JavaScript
-           vorrebbe dire misurarlo dopo averlo disegnato, cioè un fotogramma nel
-           posto sbagliato. */
-        style={{
-          left: `min(${apertura.x}px, 100vw - 220px)`,
-          top: `min(${apertura.y}px, 100vh - ${apertura.voci.length * 34 + 16}px)`,
-        }}
+        /* Il menù si ancora in alto a sinistra del puntatore e si tira dentro dal
+           bordo quando sborderebbe. Il primo passaggio è la misura: vedi la nota
+           dell'effetto qui sopra. */
+        style={
+          posto === null
+            ? { left: 0, top: 0, visibility: "hidden" }
+            : { left: posto.left, top: posto.top }
+        }
       >
         {apertura.voci.map((voce) => (
           <button

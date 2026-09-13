@@ -43,6 +43,7 @@ import {
   type ScelteAccount,
   type StatoAccount,
 } from "./ipc";
+import { useFinestrella } from "./finestrella";
 import { ComeAvereLArchivio } from "./parti/ArchivioSpotify";
 import { Avviso } from "./parti/Avvisi";
 import { numero } from "./formato";
@@ -130,6 +131,7 @@ export function Account({
   const [errore, setErrore] = useState<string | null>(null);
   const [inCorso, setInCorso] = useState(false);
   const [dimenticati, setDimenticati] = useState<number | null>(null);
+  const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
 
   // Lo stato è la prima cosa: decide che cosa mostrare — le istruzioni per
   // ottenere l'archivio, o direttamente quel che è già in cella da un giro
@@ -236,9 +238,10 @@ export function Account({
   return (
     <div className="velo scuro" onClick={onChiudi}>
       <div
+        ref={finestrella}
         /* Larghezza normale e non `larga`: qui dentro c'è testo da leggere, e
            una riga di prosa lunga novecento pixel si legge peggio — l'occhio
-           perde il capo della riga successiva. `larga` serve al riordino, che
+           perde il capo della riga successiva. `larga` serve al ripristino, che
            mostra percorsi che non si possono accorciare. */
         className="finestrella glass-modal"
         role="dialog"

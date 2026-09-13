@@ -2543,6 +2543,23 @@ export function Spettro3D({
       if (!riquadro) return;
       larghezzaCss = riquadro.inlineSize;
       altezzaCss = riquadro.blockSize;
+      // La densità si rilegge **qui**, e non solo all'apertura dell'effetto.
+      // Lo zoom della WebView (`Ctrl++`, `Ctrl+-`, `Ctrl+0`) cambia il rapporto
+      // fra pixel CSS e pixel del dispositivo, cioè `devicePixelRatio`, e la
+      // tela disegna nei secondi mentre `contentBoxSize` la misura nei primi:
+      // senza questa riga, dopo un `Ctrl++` a 1,5 il riquadro cresce ma il
+      // buffer resta calcolato sulla densità di prima, e la scena continua a
+      // disegnarsi a risoluzione più bassa finché il componente non si rimonta.
+      // `onScaleChanged` non copre il caso: quello è il fattore del **monitor**
+      // e non si muove quando a cambiare è lo zoom della finestra.
+      //
+      // Il posto è questo perché lo zoom cambia sempre anche la misura in pixel
+      // CSS della tela — è la definizione dello zoom — quindi l'osservatore
+      // scatta comunque, e leggere il numero un attimo prima di `applicaMisura`
+      // vuol dire che larghezza, altezza e densità entrano insieme nello stesso
+      // conto invece che a due tempi.
+      densitaSistema = window.devicePixelRatio || 1;
+      scala = Math.min(densitaSistema, tettoDensita);
       applicaMisura(false);
       sveglia.current();
     });

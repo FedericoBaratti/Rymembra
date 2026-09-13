@@ -22,6 +22,7 @@ import {
   type StatoRiproduzione,
   type Tempo,
 } from "./ipc";
+import { ETA, FINESTRA, SALTO, creaOrologio } from "./orologio";
 import { useAscolto } from "./pagine";
 
 /**
@@ -60,10 +61,46 @@ const FERMO: StatoRiproduzione = {
   spegnimentoMs: null,
   autoplay: false,
   dissolvenzaS: 0,
+  latenzaMs: 0,
+  // Zero **non** è il valore vero dell'anticipo: è «il nucleo non l'ha ancora
+  // detto». Scriverlo qui sarebbe rimettere a mano la copia del numero che
+  // questo giro è venuto a togliere — vedi `anticipoAdesso` — e nei pochi
+  // millisecondi prima della prima risposta non anticipare niente è invisibile,
+  // mentre anticipare di un numero inventato qui durerebbe per sempre.
+  anticipoMs: 0,
   audio: null,
   motivoProssimo: null,
   uscita: null,
+  // Niente, perché non c'è nessun brano: la riga dei dati tecnici si disegna
+  // se e solo se il dato è arrivato, e finché il nucleo non risponde non è
+  // arrivato niente.
+  formato: null,
 };
+
+// ── L'anticipo dei testi, fuori da React ────────────────────────────────────
+//
+// Lo stesso schema della posizione qui sotto, e per una ragione più semplice: il
+// pannello dei testi cerca la riga accesa a ogni disegno, cioè venti volte al
+// secondo, e il numero gli serve **dentro** quel calcolo. Farlo scendere per
+// prop lo farebbe passare da `App`, che è precisamente la catena che l'archivio
+// esterno della posizione esiste per non risvegliare.
+//
+// È `aether_domain::testo::ANTICIPO_MS`, e arriva dentro `riproduzione:stato`:
+// fino a ieri stava scritto due volte, qui a mano e nel dominio, e la copia è
+// durata finché nessuno ha toccato nessuna delle due.
+
+let anticipoCorrente = 0;
+
+/**
+ * Di quanto una riga di testo si accende prima del suo tempo, in millisecondi.
+ *
+ * Zero finché il nucleo non ha risposto, e zero **vuol dire** «non anticipare»:
+ * non c'è nessun ripiego scritto qui, perché un ripiego scritto qui sarebbe la
+ * seconda copia del numero.
+ */
+export function anticipoAdesso(): number {
+  return anticipoCorrente;
+}
 
 // ── La posizione, fuori da React ────────────────────────────────────────────
 //
@@ -104,6 +141,20 @@ function pubblica(ms: number): void {
   if (ms === posizioneCorrente) return;
   posizioneCorrente = ms;
   for (const avvisa of ascoltatori) avvisa();
+}
+
+/**
+ * Porta una posizione stimata al passo con cui si pubblica.
+ *
+ * Il tetto e la quantizzazione in una funzione sola perché i due posti che
+ * pubblicano — il ciclo dei fotogrammi e l'arrivo di un colpo — devono accordarsi
+ * al millisecondo: se uno quantizza e l'altro no, la barra riceve un valore fuori
+ * passo a ogni colpo del nucleo, cioè quattro scatti al secondo dentro un
+ * meccanismo fatto per non averne.
+ */
+function alPasso(ms: number, durataMs: number): number {
+  const limitata = durataMs > 0 ? Math.min(ms, durataMs) : ms;
+  return Math.round(limitata / PASSO_INTERPOLAZIONE) * PASSO_INTERPOLAZIONE;
 }
 
 /**
@@ -180,9 +231,22 @@ export function useRiproduzione(): Riproduzione {
   const [disponibile, setDisponibile] = useState(true);
   const [errore, setErrore] = useState<unknown>(null);
 
-  // Da dove contare e da quando. In un ref e non nello stato: lo legge il ciclo
-  // dei fotogrammi, che non deve far ridisegnare niente per sapere che ora è.
-  const ancora = useRef({ ms: 0, quando: 0, inPausa: true, durataMs: 0 });
+  // L'orologio che tiene l'origine del brano. In un `useRef` e non in un
+  // `useMemo`: porta dentro la storia degli ancoraggi, e un `useMemo` React può
+  // ricalcolarlo quando gli pare — perderebbe la finestra dei campioni senza che
+  // niente lo dica. Il perché del meccanismo sta in `./orologio`.
+  const orologio = useRef(
+    creaOrologio({ finestra: FINESTRA, eta: ETA, salto: SALTO }),
+  );
+
+  // Quel che il ciclo dei fotogrammi deve sapere e l'orologio non dice: se si è
+  // fermi, e dove finisce il brano. In un ref e non nello stato, perché lo legge
+  // il ciclo e non deve far ridisegnare niente per sapere che ora è.
+  const ancora = useRef({ inPausa: true, durataMs: 0 });
+
+  // Quale brano era, per riconoscere il cambio. Un brano nuovo è un'origine
+  // nuova, e la storia di prima parlava di un'altra canzone.
+  const branoPrima = useRef<number | null>(null);
 
   // Il fotogramma in volo, o `0` quando il ciclo è spento.
   const fotogramma = useRef(0);
@@ -206,7 +270,7 @@ export function useRiproduzione(): Riproduzione {
     if (fotogramma.current !== 0) return;
     let ultima = -1;
     const passo = () => {
-      const { ms, quando, inPausa, durataMs } = ancora.current;
+      const { inPausa, durataMs } = ancora.current;
       // Fermo: la posizione è quella dell'ancora, e l'ha già scritta
       // `ancoraggio`. Non ci si riarma — riaccende lei quando riparte.
       if (inPausa) {
@@ -214,10 +278,14 @@ export function useRiproduzione(): Riproduzione {
         return;
       }
       fotogramma.current = requestAnimationFrame(passo);
-      const stimata = ms + (performance.now() - quando);
-      const limitata = durataMs > 0 ? Math.min(stimata, durataMs) : stimata;
-      const quantizzata =
-        Math.round(limitata / PASSO_INTERPOLAZIONE) * PASSO_INTERPOLAZIONE;
+      // Dall'orologio e non dall'ultimo colpo: `posizione + (adesso − arrivo)`
+      // portava dentro il ritardo di consegna di **quel** colpo, e siccome quel
+      // ritardo varia la stima scattava indietro a ogni messaggio arrivato
+      // tardi. Vedi `./orologio`.
+      const quantizzata = alPasso(
+        orologio.current.stima(performance.now()),
+        durataMs,
+      );
       if (quantizzata !== ultima) {
         ultima = quantizzata;
         pubblica(quantizzata);
@@ -226,20 +294,61 @@ export function useRiproduzione(): Riproduzione {
     fotogramma.current = requestAnimationFrame(passo);
   }, []);
 
+  /**
+   * Un colpo del nucleo arriva all'orologio.
+   *
+   * `nuovoBrano` lo sa solo chi guarda lo stato intero: i colpi dell'orologio
+   * portano il tempo e non il brano. La **transizione di pausa** invece si
+   * riconosce da qui, e vale come un brano nuovo: durante la pausa il tempo di
+   * parete avanza e la posizione no, quindi ogni campione di prima dichiarerebbe
+   * un'origine troppo indietro e la ripresa partirebbe avanti.
+   */
   const ancoraggio = useCallback(
-    (tempo: Tempo) => {
+    (tempo: Tempo, nuovoBrano: boolean) => {
+      const adesso = performance.now();
+      const transizione = tempo.inPausa !== ancora.current.inPausa;
+      orologio.current.ancora(tempo.posizioneMs, adesso, nuovoBrano || transizione);
       ancora.current = {
-        ms: tempo.posizioneMs,
-        quando: performance.now(),
         inPausa: tempo.inPausa,
         durataMs: tempo.durataMs,
       };
-      pubblica(tempo.posizioneMs);
+      // Mentre suona si pubblica la **stima**, non il numero arrivato: quel
+      // numero porta dentro il ritardo di consegna di questo colpo, ed è
+      // precisamente lo scatto indietro che l'orologio esiste per togliere.
+      // Pubblicarlo qui dopo averlo scartato là vorrebbe dire togliere lo
+      // strappo dall'interpolazione e rimetterlo a ogni messaggio.
+      //
+      // In pausa invece vale il numero arrivato, e non è un'incoerenza: la stima
+      // è «origine più tempo di parete», e in pausa il tempo di parete scorre
+      // mentre la musica no.
+      pubblica(
+        tempo.inPausa
+          ? alPasso(tempo.posizioneMs, tempo.durataMs)
+          : alPasso(orologio.current.stima(adesso), tempo.durataMs),
+      );
       // Riparte da qui, e solo da qui: è l'unico posto che sa che si è tornati
       // a suonare.
       if (!tempo.inPausa) accendi();
     },
     [accendi],
+  );
+
+  /**
+   * Quel che si fa di uno stato intero: l'anticipo, il brano, e poi l'ancora.
+   *
+   * In una funzione sola perché i due posti che ricevono uno stato intero — la
+   * prima lettura e l'evento — devono fare le stesse tre cose, e due copie di tre
+   * righe sono due occasioni di dimenticarne una.
+   */
+  const accogli = useCallback(
+    (carico: StatoRiproduzione) => {
+      anticipoCorrente = carico.anticipoMs;
+      const idOra = carico.brano?.id ?? null;
+      const nuovoBrano = idOra !== branoPrima.current;
+      branoPrima.current = idOra;
+      ancoraggio(carico, nuovoBrano);
+    },
+    [ancoraggio],
   );
 
   // Lo stato all'apertura. La coda di ieri è già stata ripresa dal nucleo in
@@ -250,20 +359,26 @@ export function useRiproduzione(): Riproduzione {
       .riproduzioneStato()
       .then((iniziale) => {
         setStato(iniziale);
-        ancoraggio(iniziale);
+        accogli(iniziale);
       })
       .catch((e: unknown) => {
         setDisponibile(false);
         setErrore(e);
       });
-  }, [ancoraggio]);
+    // `accogli` è stabile quanto `ancoraggio`, da cui dipende: la dipendenza è
+    // dichiarata e non elusa.
+  }, [accogli]);
 
   useAscolto<StatoRiproduzione>("riproduzione:stato", (carico) => {
     setStato(carico);
-    ancoraggio(carico);
+    accogli(carico);
   });
 
-  useAscolto<Tempo>("riproduzione:tempo", ancoraggio);
+  // I colpi dell'orologio non cambiano brano: il nucleo manda `riproduzione:stato`
+  // quando cambia, e lì il confronto si fa. Qui `false` non è una semplificazione
+  // — è quel che rende questi colpi i campioni **onesti** su cui l'orologio
+  // costruisce la sua finestra.
+  useAscolto<Tempo>("riproduzione:tempo", (carico) => ancoraggio(carico, false));
 
   // La curva da sola. Non tocca l'ancora del tempo: il nucleo la manda
   // proprio per non dover comporre lo stato intero a ogni cursore mosso, e

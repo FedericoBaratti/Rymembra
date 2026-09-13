@@ -11,6 +11,7 @@
 
 pub mod autoplay;
 pub mod backup;
+pub mod cartelle;
 pub mod covers;
 pub mod db;
 pub mod desiderati;
@@ -23,7 +24,6 @@ pub mod import_playlist;
 pub mod incerti;
 pub mod library;
 pub mod metadata;
-pub mod organize;
 pub mod playback;
 pub mod playlists;
 pub mod preferenze;

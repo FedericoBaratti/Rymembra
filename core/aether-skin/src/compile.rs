@@ -23,6 +23,7 @@ use std::fmt::Write as _;
 
 use crate::document::{RouteFrame, SkinDocument, SkinMotion};
 use crate::effects::{Effect, EffectTarget, Paint, stack_cost};
+use crate::movimento::{AnimFrame, AnimTrigger, Animation, AnimationRef};
 use crate::parts::{PartAppearance, PartState, PartStyle};
 use crate::tokens::{
     ColorValue, DynamicSource, ShadowValue, TokenDef, TokenKind, TokenSet, TokenValue,
@@ -46,6 +47,19 @@ pub struct CompiledSkin {
     /// Non entra in [`Self::cost`]: sono due budget di due cose diverse, e la
     /// somma non risponderebbe a nessuna delle due domande.
     pub shell_cost: u32,
+    /// Quanto costa il movimento, sommato su tutte le parti animate.
+    ///
+    /// Terzo numero e terzo budget, separato dagli altri due per la stessa
+    /// ragione: disegnare una superficie, montare mezza applicazione e muovere
+    /// una parte sono tre lavori diversi. Il budget vero
+    /// ([`MOTION_COST_BUDGET`](crate::movimento::MOTION_COST_BUDGET)) è **per
+    /// parte** e lo controlla [`check_skin`](crate::check_skin); questo è la
+    /// somma, cioè il numero da mostrare accanto agli altri due.
+    ///
+    /// Conta solo le animazioni **assegnate**: una dichiarata e mai richiamata
+    /// si compila in `@keyframes` inerti, che non costano niente per
+    /// fotogramma.
+    pub motion_cost: u32,
     /// I token che seguono la copertina: il runtime deve aggiornarli.
     pub dynamic_tokens: Vec<&'static str>,
 }
@@ -621,7 +635,16 @@ fn compila_aspetto(source: &PartAppearance) -> Vec<Dichiarazione> {
 /// proprietà che il compilatore dei token garantisce, estesa alle parti.
 fn compila_parte(id: &str, stile: &PartStyle) -> String {
     let base = format!(":root[data-skin='{id}'] .{}", stile.def.name);
-    let mut css = blocco(&base, &compila_aspetto(&stile.appearance));
+    // L'animazione dell'ingresso sta nella **stessa** regola dell'aspetto di
+    // base, e non in una sua: il trigger `enter` non è un gancio nuovo, è la
+    // regola base della parte. Una seconda regola con lo stesso selettore
+    // direbbe la stessa cosa in due posti, e a parità di specificità sarebbe
+    // anche una fonte di sorprese sull'ordine.
+    let mut dichiarazioni = compila_aspetto(&stile.appearance);
+    if let Some(riferimento) = stile.animations.get(AnimTrigger::Enter) {
+        dichiarazioni.push(dichiara("animation", scorciatoia(id, riferimento)));
+    }
+    let mut css = blocco(&base, &dichiarazioni);
 
     if let Some(layer) = stile.layer.as_ref() {
         // Lo pseudo-elemento ha bisogno di `content` e di essere posizionato, ma
@@ -649,15 +672,21 @@ fn compila_parte(id: &str, stile: &PartStyle) -> String {
     }
 
     for stato in PartState::ALL {
-        let Some(aspetto) = stile.states.get(*stato) else {
+        let aspetto = stile.states.get(*stato);
+        let animazione = stile.animations.get(AnimTrigger::State(*stato));
+        if aspetto.is_none() && animazione.is_none() {
             continue;
-        };
+        }
+        let mut dichiarazioni = aspetto.map(compila_aspetto).unwrap_or_default();
+        if let Some(riferimento) = animazione {
+            dichiarazioni.push(dichiara("animation", scorciatoia(id, riferimento)));
+        }
         // `:where()` mantiene la specificità del selettore di stato uguale a
         // quella della parte: senza, uno stato dichiarato da una skin
         // vincerebbe su una regola che il componente considera più importante.
         css.push_str(&blocco(
             &format!("{base}:where({})", stato.selector()),
-            &compila_aspetto(aspetto),
+            &dichiarazioni,
         ));
     }
 
@@ -665,6 +694,109 @@ fn compila_parte(id: &str, stile: &PartStyle) -> String {
 }
 
 // ── Il movimento ────────────────────────────────────────────────────────────
+
+/// Una durata come esce di qui, e come esce **sempre**.
+///
+/// Questa funzione è la regola scritta una volta sola: nessun ramo del
+/// compilatore emette una durata nuda dentro un `animation:` o un
+/// `transition:`. `prefers-reduced-motion` nell'app non spegne le animazioni a
+/// una a una — azzera `--motion-scale` su `:root` e su `[data-motion]`, e ogni
+/// durata del foglio passa da lì. Una durata letterale **aggira** quella
+/// preferenza, e una skin non può scrivere la media query che la rimedierebbe:
+/// il suo foglio arriva dopo, e non ha nessuna regola con cui spegnersi.
+///
+/// Il fallback `, 1` non è difensivo per abitudine: `--motion-scale` esiste
+/// solo se la skin dichiara `motion.intensity`, e senza fallback una skin che
+/// dichiara un'animazione ma non l'intensità otterrebbe un `calc()` invalido —
+/// cioè, ironicamente, nessuna animazione affatto.
+fn durata_scalata(tempo: &str) -> String {
+    format!("calc({tempo} * var(--motion-scale, 1))")
+}
+
+/// Il nome dei `@keyframes` di un'animazione nominata.
+///
+/// Il segmento `-anim-` non è decorazione: le transizioni di rotta si chiamano
+/// già `skin-<id>-out` e `skin-<id>-in`, e senza quel segmento un'animazione
+/// battezzata `out` produrrebbe **gli stessi** `@keyframes` — cioè, siccome i
+/// `@keyframes` sono globali e l'ultimo vince, farebbe sparire in silenzio la
+/// transizione di rotta della sua stessa skin. Il rimedio alternativo sarebbe
+/// vietare due nomi, cioè una lista da tenere allineata a mano con le due
+/// `write!` qui sotto; questo invece regge per costruzione, ed è la stessa
+/// preferenza che il compilatore applica dappertutto.
+fn nome_keyframes(id: &str, nome: &str) -> String {
+    format!("skin-{id}-anim-{nome}")
+}
+
+/// La scorciatoia `animation:` di un trigger.
+///
+/// `fill-mode` è sempre `both`, e non è dichiarabile: un'animazione che non
+/// tiene lo stato finale fa **saltare** la parte al valore di partenza
+/// nell'istante in cui finisce. Il verso e le iterazioni si scrivono sempre,
+/// anche quando sono quelli di serie, perché un output deterministico è più
+/// facile da leggere in un diff di uno che omette i valori di serie.
+fn scorciatoia(id: &str, riferimento: &AnimationRef) -> String {
+    let def = &riferimento.def;
+    let mut pezzi = vec![
+        nome_keyframes(id, &riferimento.name),
+        durata_scalata(&format_duration(def.duration)),
+        format_easing(def.easing),
+    ];
+    // Il ritardo esce solo se dichiarato: nella scorciatoia il **secondo**
+    // tempo è il ritardo, quindi scrivere `calc(0ms * …)` non aggiungerebbe
+    // niente se non una riga più lunga da leggere.
+    if let Some(ritardo) = def.delay {
+        pezzi.push(durata_scalata(&format_duration(ritardo)));
+    }
+    pezzi.push(def.iterations.to_string());
+    pezzi.push(def.direction.as_str().to_owned());
+    pezzi.push("both".to_owned());
+    pezzi.join(" ")
+}
+
+/// Una fermata di un'animazione nominata.
+///
+/// L'ordine delle trasformazioni è fisso — traslazione, rotazione, scala — e
+/// non quello in cui i campi sono scritti nel documento: `transform` non è
+/// commutativa, e lasciare che l'ordine dipendesse dalla scrittura vorrebbe
+/// dire che due documenti equivalenti danno due animazioni diverse.
+fn fermata(frame: AnimFrame) -> Vec<String> {
+    let mut dichiarazioni: Vec<String> = Vec::new();
+    if let Some(opacity) = frame.opacity {
+        dichiarazioni.push(format!("    opacity: {};", num(opacity)));
+    }
+    let mut trasformazioni: Vec<String> = Vec::new();
+    if let Some(x) = frame.translate_x {
+        trasformazioni.push(format!("translateX({}px)", num(x)));
+    }
+    if let Some(y) = frame.translate_y {
+        trasformazioni.push(format!("translateY({}px)", num(y)));
+    }
+    if let Some(gradi) = frame.rotate {
+        trasformazioni.push(format!("rotate({}deg)", num(gradi)));
+    }
+    if let Some(scale) = frame.scale {
+        trasformazioni.push(format!("scale({})", num(scale)));
+    }
+    if !trasformazioni.is_empty() {
+        dichiarazioni.push(format!("    transform: {};", trasformazioni.join(" ")));
+    }
+    dichiarazioni
+}
+
+/// I `@keyframes` di un'animazione nominata.
+fn keyframes(id: &str, nome: &str, def: &Animation) -> String {
+    let mut css = format!("@keyframes {} {{\n", nome_keyframes(id, nome));
+    for frame in &def.frames {
+        let _ = write!(
+            css,
+            "  {}% {{\n{}\n  }}\n",
+            num(frame.at),
+            fermata(*frame).join("\n")
+        );
+    }
+    css.push_str("}\n");
+    css
+}
 
 fn fotogramma(nome: &str, quando: &str, frame: RouteFrame) -> String {
     let mut dichiarazioni: Vec<String> = Vec::new();
@@ -704,24 +836,45 @@ fn compila_movimento(id: &str, motion: &SkinMotion) -> String {
 
     let mut css = blocco(&selettore(id, Variante::Base), &dichiarazioni);
 
-    let Some(transizione) = motion.route_transition else {
-        return css;
-    };
     // Solo `transform` e `opacity`: è il vincolo che il compilatore impone, e
     // non una raccomandazione scritta in un documento che nessuno rilegge.
-    if let Some(uscita) = transizione.out.filter(|f| !f.is_empty()) {
-        let _ = write!(
-            css,
-            ":root[data-skin='{id}']::view-transition-old(root) {{\n  animation: skin-{id}-out var(--dur-2) var(--ease-out-expo) both;\n}}\n"
-        );
-        css.push_str(&fotogramma(&format!("skin-{id}-out"), "to", uscita));
+    //
+    // La durata passa da `durata_scalata` come ogni altra. Queste due righe
+    // scrivevano `var(--dur-2)` nudo, ed erano le sole due animazioni del
+    // sistema che «Riduci il movimento» non toccava: `stile.css` se n'era
+    // accorto e aveva rimediato **altrove**, facendo saltare la transizione a
+    // `transizione.ts` prima ancora di chiamare il motore. Ora il rimedio è qui
+    // dov'è la causa, e quello lassù è una cintura in più invece dell'unica.
+    if let Some(transizione) = motion.route_transition {
+        let scala = durata_scalata("var(--dur-2)");
+        if let Some(uscita) = transizione.out.filter(|f| !f.is_empty()) {
+            let _ = write!(
+                css,
+                ":root[data-skin='{id}']::view-transition-old(root) {{\n  animation: skin-{id}-out {scala} var(--ease-out-expo) both;\n}}\n"
+            );
+            css.push_str(&fotogramma(&format!("skin-{id}-out"), "to", uscita));
+        }
+        if let Some(entrata) = transizione.enter.filter(|f| !f.is_empty()) {
+            let _ = write!(
+                css,
+                ":root[data-skin='{id}']::view-transition-new(root) {{\n  animation: skin-{id}-in {scala} var(--ease-out-expo) both;\n}}\n"
+            );
+            css.push_str(&fotogramma(&format!("skin-{id}-in"), "from", entrata));
+        }
     }
-    if let Some(entrata) = transizione.enter.filter(|f| !f.is_empty()) {
-        let _ = write!(
-            css,
-            ":root[data-skin='{id}']::view-transition-new(root) {{\n  animation: skin-{id}-in var(--dur-2) var(--ease-out-expo) both;\n}}\n"
-        );
-        css.push_str(&fotogramma(&format!("skin-{id}-in"), "from", entrata));
+
+    // I `@keyframes` delle animazioni nominate escono **dopo** quelli della
+    // rotta e in ordine di nome, che è l'ordine in cui `SkinMotion` li tiene:
+    // due compilazioni dello stesso documento devono dare lo stesso foglio,
+    // byte per byte, o il test di fedeltà misura il caso e non il codice.
+    //
+    // Escono tutte, anche quelle che nessuna parte richiama: un `@keyframes`
+    // inerte non costa niente per fotogramma, e toglierlo qui vorrebbe dire che
+    // l'anteprima dello Studio non può mostrare un'animazione appena
+    // dichiarata e non ancora assegnata. Che sia dichiarata a vuoto lo dice un
+    // avviso, che è il posto giusto.
+    for (nome, def) in &motion.animations {
+        css.push_str(&keyframes(id, nome, def));
     }
 
     css
@@ -926,8 +1079,10 @@ pub fn compile_skin(skin: &SkinDocument) -> CompiledSkin {
     }
 
     let mut costo_parti = 0;
+    let mut costo_movimento = 0;
     for stile in &skin.parts {
         costo_parti += stack_cost(&stile.effects());
+        costo_movimento += stile.motion_cost();
         css.push_str(&compila_parte(&skin.id, stile));
     }
 
@@ -951,6 +1106,7 @@ pub fn compile_skin(skin: &SkinDocument) -> CompiledSkin {
         // pezzi dell'app sono montati insieme. Sommarli darebbe un numero che
         // non risponde a nessuna delle due domande.
         shell_cost: layout.shell.costo(),
+        motion_cost: costo_movimento,
         dynamic_tokens: dinamici,
     }
 }
@@ -988,6 +1144,18 @@ mod tests {
     fn compila_documento(json: &str) -> CompiledSkin {
         let skin = parse_skin_json(json).expect("valida");
         compile_skin(&skin)
+    }
+
+    /// Il valore di una proprietà dentro un blocco, o niente.
+    fn valore(css: &str, selettore: &str, proprieta: &str) -> Option<String> {
+        let inizio = css.find(&format!("{selettore} {{"))?;
+        let corpo = css.get(inizio..)?;
+        let fine = corpo.find("\n}")?;
+        corpo
+            .get(..fine)?
+            .lines()
+            .find_map(|riga| riga.trim_start().strip_prefix(&format!("{proprieta}: ")))
+            .map(|resto| resto.trim_end_matches(';').to_owned())
     }
 
     #[test]
@@ -1520,6 +1688,279 @@ mod tests {
     fn due_compilazioni_danno_lo_stesso_scafale() {
         let skin = parse_skin_json(MINIMA).expect("valida");
         assert_eq!(compile_skin(&skin).css, compile_skin(&skin).css);
+    }
+
+    // ── Le animazioni nominate ──────────────────────────────────────────
+
+    /// Un documento col movimento scritto per intero.
+    fn con_movimento(motion: &str, parti: &str) -> CompiledSkin {
+        compila_documento(&MINIMA.replace(
+            "\"tokens\": {}",
+            &format!(
+                r##""tokens": {{ "motion.dur.1": "150ms", "motion.dur.2": "280ms" }},
+                   "motion": {motion},
+                   "parts": {parti}"##
+            ),
+        ))
+    }
+
+    const DUE_ANIMAZIONI: &str = r##"{
+      "intensity": "full",
+      "animations": {
+        "sbuca": {
+          "duration": "240ms", "delay": "60ms", "iterations": 2,
+          "direction": "alternate",
+          "frames": [
+            { "at": 0, "opacity": 0, "translateY": 8 },
+            { "at": 60, "opacity": 1, "translateX": -4, "rotate": 3 },
+            { "at": 100, "opacity": 1, "scale": 1.02 }
+          ]
+        },
+        "appare": {
+          "duration": "120ms",
+          "frames": [{ "at": 0, "opacity": 0 }, { "at": 100, "opacity": 1 }]
+        }
+      }
+    }"##;
+
+    #[test]
+    fn i_keyframes_portano_il_nome_della_skin_e_dell_animazione() {
+        let compilata = con_movimento(
+            DUE_ANIMAZIONI,
+            r##"{ "section-card": { "animations": { "enter": "appare", "hover": "sbuca" } } }"##,
+        );
+        // `appare` una volta (4) più `sbuca` due (5): nove, e in un campo suo.
+        // Il costo delle superfici resta zero: sono due conti diversi, e
+        // sommarli darebbe un numero che non risponde a nessuna delle due
+        // domande.
+        assert_eq!(compilata.motion_cost, 9);
+        assert_eq!(compilata.cost, 0);
+        let css = compilata.css;
+
+        // Il segmento `-anim-` tiene i nomi dichiarati fuori dallo spazio dei
+        // nomi delle transizioni di rotta, che sono `skin-<id>-out` e
+        // `skin-<id>-in`: senza, un'animazione chiamata `out` cancellerebbe in
+        // silenzio la transizione della sua stessa skin.
+        assert!(css.contains("@keyframes skin-prova-anim-appare {"), "{css}");
+        assert!(css.contains("@keyframes skin-prova-anim-sbuca {"), "{css}");
+
+        // Le fermate escono con la percentuale scritta, e le trasformazioni in
+        // ordine fisso: traslazione, rotazione, scala.
+        assert!(
+            css.contains(
+                "  60% {\n    opacity: 1;\n    transform: translateX(-4px) rotate(3deg);\n  }"
+            ),
+            "{css}"
+        );
+        assert!(
+            css.contains("  100% {\n    opacity: 1;\n    transform: scale(1.02);\n  }"),
+            "{css}"
+        );
+
+        // L'ingresso sta nella regola base della parte, lo stato nella sua.
+        assert_eq!(
+            valore(&css, ":root[data-skin='prova'] .section-card", "animation").as_deref(),
+            Some("skin-prova-anim-appare calc(120ms * var(--motion-scale, 1)) ease 1 normal both")
+        );
+        assert_eq!(
+            valore(
+                &css,
+                ":root[data-skin='prova'] .section-card:where(:hover)",
+                "animation"
+            )
+            .as_deref(),
+            Some(
+                "skin-prova-anim-sbuca calc(240ms * var(--motion-scale, 1)) ease \
+                 calc(60ms * var(--motion-scale, 1)) 2 alternate both"
+            )
+        );
+    }
+
+    #[test]
+    fn l_ordine_dell_emissione_non_dipende_da_come_e_scritto_il_documento() {
+        let primo = con_movimento(
+            DUE_ANIMAZIONI,
+            r##"{ "section-card": { "animations": { "hover": "sbuca", "enter": "appare" } } }"##,
+        )
+        .css;
+        // Le stesse cose scritte nell'ordine opposto danno lo stesso foglio.
+        let secondo = con_movimento(
+            &DUE_ANIMAZIONI.replace("\"sbuca\"", "\"zeta\""),
+            r##"{ "section-card": { "animations": { "enter": "appare", "hover": "zeta" } } }"##,
+        )
+        .css;
+        assert_eq!(primo.replace("sbuca", "zeta"), secondo);
+
+        // E i `@keyframes` escono in ordine di nome, non di scrittura:
+        // `appare` è dichiarato secondo nel documento e viene per primo.
+        let appare = primo.find("@keyframes skin-prova-anim-appare");
+        let sbuca = primo.find("@keyframes skin-prova-anim-sbuca");
+        assert!(appare < sbuca, "{primo}");
+        assert!(appare.is_some());
+
+        // La regola base viene prima di quella dello stato: a parità di
+        // specificità vince chi viene dopo, e lo stato deve poter dire
+        // l'ultima parola.
+        let base = primo.find(":root[data-skin='prova'] .section-card {");
+        let hover = primo.find(":root[data-skin='prova'] .section-card:where(:hover) {");
+        assert!(base < hover, "{primo}");
+        assert!(base.is_some());
+    }
+
+    /// I pezzi di un valore che stanno **fuori** da ogni `calc(…)`.
+    ///
+    /// Serve alla prova qui sotto: dentro un `calc()` una durata è scalata, e
+    /// fuori no. Conta le parentesi invece di cercare la chiusa più vicina,
+    /// perché `calc(var(--dur-2) * var(--motion-scale, 1))` ne ha tre annidate.
+    fn fuori_dai_calc(valore: &str) -> String {
+        let mut fuori = String::new();
+        let mut resto = valore;
+        while let Some(inizio) = resto.find("calc(") {
+            fuori.push_str(resto.get(..inizio).unwrap_or_default());
+            let mut profondita = 0_i32;
+            let mut fine = resto.len();
+            for (indice, carattere) in resto.char_indices().skip(inizio) {
+                match carattere {
+                    '(' => profondita += 1,
+                    ')' => {
+                        profondita -= 1;
+                        if profondita == 0 {
+                            fine = indice + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            resto = resto.get(fine..).unwrap_or_default();
+        }
+        fuori.push_str(resto);
+        fuori
+    }
+
+    /// Tutti i `calc(…)` di un valore, per esteso.
+    fn i_calc(valore: &str) -> Vec<String> {
+        let mut trovati = Vec::new();
+        let mut resto = valore;
+        while let Some(inizio) = resto.find("calc(") {
+            let mut profondita = 0_i32;
+            let mut fine = resto.len();
+            for (indice, carattere) in resto.char_indices().skip(inizio) {
+                match carattere {
+                    '(' => profondita += 1,
+                    ')' => {
+                        profondita -= 1;
+                        if profondita == 0 {
+                            fine = indice + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            trovati.push(resto.get(inizio..fine).unwrap_or_default().to_owned());
+            resto = resto.get(fine..).unwrap_or_default();
+        }
+        trovati
+    }
+
+    #[test]
+    fn nessuna_durata_esce_da_qui_fuori_da_var_motion_scale() {
+        // **La prova che difende la regola.** `prefers-reduced-motion` nell'app
+        // non spegne le animazioni una per una: azzera `--motion-scale`, e ogni
+        // durata del foglio passa da lì. Una durata letterale in un
+        // `animation:` o in un `transition:` aggira quell'interruttore, e una
+        // skin non può scrivere la media query che la rimedierebbe — quindi
+        // sarebbe l'unica cosa dell'applicazione che non si riesce a fermare.
+        //
+        // Guarda l'**output**, non l'intenzione: qualunque ramo nuovo del
+        // compilatore che emetta un tempo fuori da un `calc()` cade qui.
+        let fogli = [
+            compile_skin(&crate::plain().expect("la skin di serie")).css,
+            con_movimento(
+                DUE_ANIMAZIONI,
+                r##"{ "section-card": { "animations": { "enter": "appare", "hover": "sbuca" } },
+                      "nav-pill": { "animations": { "active": "sbuca", "focus": "appare" } } }"##,
+            )
+            .css,
+            compila_documento(&MINIMA.replace(
+                "\"tokens\": {}",
+                r##""tokens": { "motion.dur.1": "150ms", "motion.dur.2": "280ms" },
+                       "motion": { "routeTransition": {
+                           "out": { "opacity": 0, "scale": 0.99 },
+                           "in": { "opacity": 0, "translateY": 6 }
+                       } }"##,
+            ))
+            .css,
+        ];
+
+        let mut viste = 0_usize;
+        for css in &fogli {
+            for riga in css.lines() {
+                let riga = riga.trim();
+                let Some((proprieta, valore)) = riga.split_once(": ") else {
+                    continue;
+                };
+                if !matches!(proprieta, "animation" | "transition")
+                    && !proprieta.starts_with("--transition")
+                {
+                    continue;
+                }
+                viste += 1;
+                let valore = valore.trim_end_matches(';');
+                for calcolo in i_calc(valore) {
+                    assert!(
+                        calcolo.contains("var(--motion-scale"),
+                        "«{proprieta}: {valore}»: il calc «{calcolo}» non passa da --motion-scale"
+                    );
+                }
+                let nudo = fuori_dai_calc(valore);
+                assert!(
+                    !nudo.contains("ms") && !nudo.contains("var(--dur"),
+                    "«{proprieta}: {valore}»: c'è una durata fuori dal calc"
+                );
+                assert!(
+                    !nudo
+                        .as_bytes()
+                        .windows(2)
+                        .any(|coppia| coppia.first().is_some_and(u8::is_ascii_digit)
+                            && coppia.get(1) == Some(&b's')),
+                    "«{proprieta}: {valore}»: c'è una durata in secondi fuori dal calc"
+                );
+            }
+        }
+        // Se un giorno il compilatore smettesse di emettere queste proprietà,
+        // la prova passerebbe senza guardare niente: il conto lo impedisce.
+        assert!(viste >= 8, "solo {viste} dichiarazioni esaminate");
+    }
+
+    #[test]
+    fn anche_la_transizione_di_rotta_passa_dalla_scala() {
+        // Erano le due sole animazioni del sistema che «Riduci il movimento»
+        // non toccava, e `stile.css` aveva rimediato altrove — facendo saltare
+        // la transizione a `transizione.ts` prima ancora di chiamare il motore.
+        let css = compila_documento(&MINIMA.replace(
+            "\"tokens\": {}",
+            r##""tokens": { "motion.dur.2": "280ms" },
+               "motion": { "routeTransition": {
+                   "out": { "opacity": 0 }, "in": { "opacity": 0 }
+               } }"##,
+        ))
+        .css;
+        assert!(
+            css.contains(
+                "animation: skin-prova-out calc(var(--dur-2) * var(--motion-scale, 1)) \
+                 var(--ease-out-expo) both;"
+            ),
+            "{css}"
+        );
+        assert!(
+            css.contains(
+                "animation: skin-prova-in calc(var(--dur-2) * var(--motion-scale, 1)) \
+                 var(--ease-out-expo) both;"
+            ),
+            "{css}"
+        );
     }
 
     #[test]

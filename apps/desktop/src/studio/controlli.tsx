@@ -26,7 +26,7 @@
  * vuole davvero.
  */
 import type { TipoToken, TokenRegistro } from "../ipc";
-import { Icona } from "../parti/Icone";
+import { Icona, type NomeIcona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
 import { tinta } from "./valori";
 import { t } from "../lingue";
@@ -44,16 +44,51 @@ const UNITA = [
   "ch",
 ] as const;
 
-/** Le curve con un nome, come le riconosce `EasingKeyword`. */
-const CURVE = [
-  "linear",
-  "ease",
-  "easeIn",
-  "easeOut",
-  "easeInOut",
-  "stepStart",
-  "stepEnd",
-] as const;
+/**
+ * Le curve con un nome, come le scrive `EasingKeyword::as_str`.
+ *
+ * Erano sette e nessuna delle sette era giusta: `easeIn`, `easeOut`,
+ * `easeInOut` in cammello — il formato le vuole con i trattini — più
+ * `stepStart` e `stepEnd`, che nel formato non sono parole di curva ma la
+ * terza forma, `{ "kind": "steps", … }`. L'elenco veniva da come si scrivono in
+ * altri posti, non da `values.rs`, ed è il motivo per cui erano cinque e non
+ * cinque uguali.
+ */
+const CURVE = ["linear", "ease", "ease-in", "ease-out", "ease-in-out"] as const;
+
+/** In che forma è scritta una curva. Sono le tre di `document.rs::easing`. */
+type FormaCurva = "niente" | "parola" | "bezier" | "passi";
+
+/**
+ * Una curva del documento, letta.
+ *
+ * Il formato scrive una curva come **oggetto**, sempre: `{ "kind": "keyword",
+ * "keyword": "ease-out" }`, `{ "kind": "cubicBezier", "points": […] }` o
+ * `{ "kind": "steps", "count": …, "position": … }`. Non c'è nessuna forma
+ * abbreviata, e `sala.json` lo mostra alla riga di `motion.ease.outExpo`.
+ */
+function formaCurva(valore: unknown): FormaCurva {
+  if (valore === null || typeof valore !== "object" || Array.isArray(valore))
+    return "niente";
+  switch ((valore as Record<string, unknown>)["kind"]) {
+    case "keyword":
+      return "parola";
+    case "cubicBezier":
+      return "bezier";
+    case "steps":
+      return "passi";
+    default:
+      return "niente";
+  }
+}
+
+/** I quattro numeri di una `cubicBezier`, o `null` se non è quella la forma. */
+function puntiDi(valore: unknown): number[] | null {
+  if (formaCurva(valore) !== "bezier") return null;
+  const scritti = (valore as Record<string, unknown>)["points"];
+  if (!Array.isArray(scritti) || scritti.length !== 4) return null;
+  return scritti.map(Number);
+}
 
 /** In che forma è scritto un colore. */
 export type Modo = "niente" | "token" | "tavolozza" | "letterale";
@@ -412,27 +447,81 @@ export function ValoreDurata({
 }
 
 /**
- * Una curva: una parola dell'elenco, o quattro numeri.
+ * Una curva: una parola dell'elenco, quattro numeri, o una scala di passi.
  *
  * L'anteprima disegnata conta più dei numeri. `cubic-bezier(0.16, 1, 0.3, 1)`
  * non dice niente a nessuno; la stessa curva tracciata su venti pixel si legge a
  * colpo d'occhio, e due curve diverse si distinguono senza confrontare otto
  * cifre.
+ *
+ * # La forma è quella del documento, e prima non lo era
+ *
+ * Questo controllo leggeva una stringa nuda o un array di quattro numeri, e
+ * scriveva le stesse due cose. Il formato non accetta né l'una né l'altro:
+ * `document.rs::easing` vuole un oggetto con `kind`, e `sala.json` scrive
+ * `{ "kind": "cubicBezier", "points": [0.16, 1, 0.3, 1] }`. Il risultato era
+ * doppio e tutto sbagliato — una curva già scritta si leggeva «non
+ * dichiarata», e toccare il controllo scriveva un documento che il validatore
+ * rifiutava un istante dopo, cioè esattamente la cosa che la prima regola
+ * dell'ispettore promette di non far succedere.
+ *
+ * I `steps` ci sono per non perderli: sono una delle tre forme, e un controllo
+ * che non li sa leggere li mostrerebbe come «non dichiarata» — con la prima
+ * mossa di chi passa di lì a cancellarli.
  */
 export function ValoreCurva({
   valore,
   etichetta,
+  curveSkin = [],
   onCambia,
 }: {
   valore: unknown;
   etichetta: string;
+  /**
+   * Le curve che la skin dichiara in `motion.easings`, per copiarle.
+   *
+   * **Copia, non riferimento**, e la parola conta: il formato non ha un
+   * `{ "$easing": "…" }`. Le curve della skin diventano variabili CSS
+   * (`--skin-ease-<nome>`, in `compila_movimento`) e nessun campo del documento
+   * le sa richiamare per nome. Sceglierne una qui scrive il suo **valore** in
+   * questo punto, e da lì in poi le due vivono separate: è meno di un legame, ma
+   * è quel che c'è, e dirlo è meglio che offrire un elenco che sembra legare.
+   */
+  curveSkin?: readonly { nome: string; curva: unknown }[] | undefined;
   onCambia: (valore: unknown) => void;
 }) {
-  const punti =
-    Array.isArray(valore) && valore.length === 4 ? valore.map(Number) : null;
-  const parola = typeof valore === "string" ? valore : null;
-  const modo =
-    punti !== null ? "bezier" : parola !== null ? "parola" : "niente";
+  const forma = formaCurva(valore);
+  const punti = puntiDi(valore);
+  const dentro = (valore ?? {}) as Record<string, unknown>;
+  const parola = forma === "parola" ? String(dentro["keyword"] ?? "") : null;
+  const passi = forma === "passi" ? dentro : null;
+
+  /** Quel che sta scritto nel `<select>`: la forma, o la parola scelta. */
+  const scelta = forma === "parola" ? `parola:${parola ?? ""}` : forma;
+
+  const scegli = (quale: string) => {
+    if (quale === "niente") {
+      onCambia(null);
+      return;
+    }
+    if (quale.startsWith("parola:")) {
+      onCambia({ kind: "keyword", keyword: quale.slice("parola:".length) });
+      return;
+    }
+    if (quale.startsWith("skin:")) {
+      const nome = quale.slice("skin:".length);
+      const trovata = curveSkin.find((c) => c.nome === nome);
+      // Una curva della skin che non c'è più non si scrive: meglio lasciare
+      // quel che c'era che sostituirlo con `undefined`.
+      if (trovata !== undefined) onCambia(trovata.curva);
+      return;
+    }
+    if (quale === "bezier") {
+      onCambia({ kind: "cubicBezier", points: [0.16, 1, 0.3, 1] });
+      return;
+    }
+    if (quale === "passi") onCambia({ kind: "steps", count: 4, position: "end" });
+  };
 
   return (
     <div className="valore-curva">
@@ -453,21 +542,26 @@ export function ValoreCurva({
       <select
         className="modo field-input"
         aria-label={etichetta}
-        value={modo === "parola" ? String(parola) : modo}
-        onChange={(e) => {
-          const scelto = e.target.value;
-          if (scelto === "niente") onCambia(null);
-          else if (scelto === "bezier") onCambia([0.16, 1, 0.3, 1]);
-          else onCambia(scelto);
-        }}
+        value={scelta}
+        onChange={(e) => scegli(e.target.value)}
       >
         <option value="niente">{t("studio.ctl.undeclared.f")}</option>
         {CURVE.map((c) => (
-          <option key={c} value={c}>
+          <option key={c} value={`parola:${c}`}>
             {c}
           </option>
         ))}
         <option value="bezier">cubic-bezier…</option>
+        <option value="passi">steps…</option>
+        {curveSkin.length > 0 && (
+          <optgroup label={t("studio.ctl.curveFromSkin")}>
+            {curveSkin.map(({ nome }) => (
+              <option key={nome} value={`skin:${nome}`}>
+                {nome}
+              </option>
+            ))}
+          </optgroup>
+        )}
       </select>
 
       {punti !== null && (
@@ -484,17 +578,47 @@ export function ValoreCurva({
               })}
               step={0.01}
               // I due x stanno fra 0 e 1 per definizione; le y possono uscirne,
-              // ed è così che si ottiene un rimbalzo.
-              min={i % 2 === 0 ? 0 : -2}
-              max={i % 2 === 0 ? 1 : 2}
+              // ed è così che si ottiene un rimbalzo. Gli estremi sono quelli
+              // che `document.rs::easing` verifica: 0..1 e -5..5.
+              min={i % 2 === 0 ? 0 : -5}
+              max={i % 2 === 0 ? 1 : 5}
               value={p}
               onChange={(e) => {
                 const nuovi = [...punti];
                 nuovi[i] = Number.parseFloat(e.target.value);
-                onCambia(nuovi);
+                onCambia({ kind: "cubicBezier", points: nuovi });
               }}
             />
           ))}
+        </div>
+      )}
+
+      {passi !== null && (
+        <div className="scala-passi">
+          <input
+            className="field-input"
+            type="number"
+            aria-label={t("studio.ctl.stepCount")}
+            min={1}
+            max={60}
+            step={1}
+            value={Number(passi["count"] ?? 4)}
+            onChange={(e) =>
+              onCambia({
+                ...passi,
+                count: Number.parseInt(e.target.value, 10) || 1,
+              })
+            }
+          />
+          <select
+            className="field-input"
+            aria-label={t("studio.ctl.stepWhere")}
+            value={String(passi["position"] ?? "end")}
+            onChange={(e) => onCambia({ ...passi, position: e.target.value })}
+          >
+            <option value="start">start</option>
+            <option value="end">end</option>
+          </select>
         </div>
       )}
     </div>
@@ -681,6 +805,50 @@ export function ValoreOmbra({
         )}
       </button>
     </div>
+  );
+}
+
+/**
+ * Una scheda di sezione dello Studio.
+ *
+ * # Perché una funzione e non cinque volte lo stesso markup
+ *
+ * Perché era cinque volte lo stesso markup. `Tavolozza.tsx` apriva ogni
+ * pannello con le stesse sei righe — `<section className="scheda
+ * section-card">`, un `<header>`, l'involucro dell'icona, il titolo, la nota —
+ * e la sesta copia non era più uguale alle prime cinque: mancava
+ * l'`aria-hidden` sull'icona in tutte, e la nota compariva o no a seconda del
+ * pannello. `Impostazioni.tsx` ha la stessa funzione, e la ha da prima; qui non
+ * si può importarla — è locale a quel file, e quel file non è di questo
+ * pacchetto — quindi lo Studio ne tiene una sua, con le stesse classi.
+ *
+ * Il titolo è `h3` e non `h2` perché nello Studio queste schede stanno dentro
+ * una vista che ha già la sua intestazione: saltare un livello di titolo è la
+ * cosa che chi naviga per intestazioni sente per prima.
+ */
+export function Scheda({
+  icona,
+  titolo,
+  nota,
+  children,
+}: {
+  icona: NomeIcona;
+  titolo: string;
+  /** Il numero, o la mezza frase, che sta all'angolo destro della testata. */
+  nota?: string | undefined;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="scheda section-card">
+      <header>
+        <span className="section-icon" aria-hidden="true">
+          <Icona nome={icona} dim={16} />
+        </span>
+        <h3 className="section-heading">{titolo}</h3>
+        {nota !== undefined && <span className="nota-testa">{nota}</span>}
+      </header>
+      {children}
+    </section>
   );
 }
 

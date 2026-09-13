@@ -1,31 +1,54 @@
 /**
- * Il profilo: portare le proprie impostazioni su un altro computer.
+ * Il profilo: portarsi dietro Aether su un altro computer.
+ *
+ * # Cosa è cambiato, e cosa questo pannello deve dire adesso
+ *
+ * Fino alla 2.3.0 il profilo era un `.json` di diciassette preferenze, e questa
+ * schermata poteva dire «un file con le tue scelte» ed essere completa. Dalla
+ * 2.3.1 è un archivio `.aeprofile` che porta anche ascolti, voti, playlist,
+ * correzioni, testi, copertine e pacchetti skin — e allora tre cose che prima
+ * non c'erano diventano obbligatorie da mostrare:
+ *
+ * 1. **Quanto pesa.** Un file da trecento megabyte non si mette su una
+ *    chiavetta senza saperlo.
+ * 2. **Le radici che di qua non esistono, e dove metterle.** È il caso normale
+ *    quando il profilo arriva da un'altra macchina, e senza la rimappatura la
+ *    libreria che si importa nomina un disco che non c'è.
+ * 3. **Che l'annullamento rimette solo la configurazione.** Ascolti sommati e
+ *    playlist fuse non si disfano: dirlo dopo, o non dirlo, sarebbe una
+ *    promessa che il bottone non può mantenere.
  *
  * # Perché il piano, anche qui
  *
- * Importare un profilo sovrascrive delle scelte che qualcuno ha fatto a mano —
- * la skin, il volume, le cartelle sorvegliate — e non c'è nessun annullamento
- * dopo. È la stessa famiglia di `Ripristino.tsx` e `Importa.tsx`: prima si
- * **legge** cosa cambierebbe, poi si conferma. `profilo_piano` è la stessa
- * funzione di `profilo_importa` dentro una transazione che viene abbandonata,
- * quindi l'elenco che si legge qui non è una previsione: è il risultato.
+ * Importare un profilo cambia scelte fatte a mano — la skin, il volume, le
+ * cartelle sorvegliate — e adesso anche la libreria. È la stessa famiglia di
+ * `Ripristino.tsx` e `Importa.tsx`: prima si **legge** cosa cambierebbe, poi si
+ * conferma. `profilo_piano` è la stessa funzione di `profilo_importa` dentro
+ * una transazione che viene abbandonata, quindi l'elenco che si legge qui non è
+ * una previsione: è il risultato.
  *
  * # Perché l'elenco delle chiavi lasciate si mostra
  *
- * Il profilo porta un elenco di **inclusioni**: `nuvola.dispositivo` e la coda
- * di riproduzione non devono viaggiare, perché due computer con lo stesso
- * identificativo di dispositivo si rovinano il backup a vicenda, e gli
- * identificativi delle righe di `tracks` su un'altra libreria nominano canzoni
- * diverse. Il rovescio di un elenco di inclusioni è che dimenticarsi una chiave
- * è silenzioso — quindi non lo è: l'esportazione dice quali chiavi ha lasciato
- * indietro, e chi ne riconosce una che invece voleva può dirlo.
+ * Il profilo porta un elenco di **inclusioni**: `nuvola.dispositivo`, la coda
+ * di riproduzione, l'uscita audio e la latenza non devono viaggiare, perché
+ * descrivono questa macchina e non chi ascolta. Il rovescio di un elenco di
+ * inclusioni è che dimenticarsi una chiave è silenzioso — quindi non lo è:
+ * l'esportazione dice quali chiavi ha lasciato indietro, e chi ne riconosce una
+ * che invece voleva può dirlo.
  */
 import { useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
-import type { PianoProfilo } from "../ipc";
+import type {
+  AvanzamentoProfilo,
+  EsportazioneProfilo,
+  PianoProfilo,
+  RimappaturaRadice,
+} from "../ipc";
 import { ipc } from "../ipc";
+import { useAscolto } from "../pagine";
 import { Icona } from "./Icone";
+import type { Chiave } from "../lingue";
 import { t } from "../lingue";
 import { Trans } from "../lingue/Trans";
 import { dataOra } from "../formato";
@@ -35,9 +58,37 @@ function quandoScritto(ms: number): string {
   return ms <= 0 ? t("profile.unknownDate") : dataOra(ms);
 }
 
+/**
+ * Il peso di un file, in megabyte.
+ *
+ * Non in `formato.ts` perché è l'unico posto dell'interfaccia in cui un numero
+ * di byte si mostra a qualcuno, e una funzione condivisa con un solo chiamante
+ * è una funzione che si va a cercare per niente. Megabyte fissi e non l'unità
+ * più adatta: un profilo sta fra i cinque e i cinquecento, e un'unità che
+ * cambia da sola renderebbe due esportazioni non confrontabili a colpo
+ * d'occhio.
+ */
+function inMegabyte(byte: number): number {
+  return Math.round(byte / (1024 * 1024));
+}
+
 /** Un valore, accorciato quanto basta a stare su una riga. */
 function breve(valore: string): string {
   return valore.length > 60 ? `${valore.slice(0, 57)}…` : valore;
+}
+
+/**
+ * Le voci del riepilogo che hanno un numero diverso da zero.
+ *
+ * Solo quelle: un elenco di dodici righe di cui dieci dicono «0» è un elenco
+ * che non si legge, e la riga che conta ci si perde dentro.
+ *
+ * Si tiene la **chiave** e non la frase già tradotta, perché il numero deve
+ * entrare dentro `t()`: è l'unico modo perché «1 ascolto» e «2 ascolti» siano
+ * due frasi e non un numero appiccicato davanti a un plurale.
+ */
+function conta(voci: [Chiave, number][]): [Chiave, number][] {
+  return voci.filter(([, quanti]) => quanti > 0);
 }
 
 export function Profilo({
@@ -56,24 +107,39 @@ export function Profilo({
     piano: PianoProfilo;
   } | null>(null);
   const [inVolo, setInVolo] = useState(false);
-  /** Le chiavi che l'ultima esportazione ha lasciato qui. */
-  const [lasciate, setLasciate] = useState<string[]>([]);
+  /** L'ultima esportazione, per dire cosa ha portato e quanto pesa. */
+  const [uscito, setUscito] = useState<EsportazioneProfilo | null>(null);
+  /** Le destinazioni scelte per le radici che di qua non esistono. */
+  const [rimappature, setRimappature] = useState<RimappaturaRadice[]>([]);
+  /** Si può ancora tornare indietro dall'ultima importazione. */
+  const [annullabile, setAnnullabile] = useState(false);
+  const [avanzamento, setAvanzamento] = useState<AvanzamentoProfilo | null>(
+    null,
+  );
+
+  useAscolto<AvanzamentoProfilo>("profilo:avanzamento", setAvanzamento);
+
+  const percentuale =
+    avanzamento && avanzamento.totale > 0
+      ? Math.round((avanzamento.fatti / avanzamento.totale) * 100)
+      : 0;
 
   const esporta = async () => {
     try {
       const scelta = await save({
-        defaultPath: "aether-profilo.json",
-        filters: [{ name: t("profile.file"), extensions: ["json"] }],
+        defaultPath: "aether-profilo.aeprofile",
+        filters: [{ name: t("profile.file"), extensions: ["aeprofile"] }],
       });
       if (typeof scelta !== "string") return;
       setInVolo(true);
       const esito = await ipc.profiloEsporta(scelta);
-      setLasciate(esito.lasciate);
+      setUscito(esito);
       onNotizia(t("profile.exported", { n: esito.voci, dove: scelta }));
     } catch (e) {
       onErrore(e);
     } finally {
       setInVolo(false);
+      setAvanzamento(null);
     }
   };
 
@@ -81,11 +147,33 @@ export function Profilo({
     try {
       const scelta = await open({
         multiple: false,
-        filters: [{ name: t("profile.file"), extensions: ["json"] }],
+        // Tutte e due le estensioni: il `.json` della 2.2 si legge ancora, e un
+        // filtro che lo nascondesse renderebbe irraggiungibile un file che il
+        // programma sa aprire benissimo.
+        filters: [
+          { name: t("profile.file"), extensions: ["aeprofile", "json"] },
+        ],
       });
       if (typeof scelta !== "string") return;
       setInVolo(true);
-      setDaApplicare({ percorso: scelta, piano: await ipc.profiloPiano(scelta) });
+      const piano = await ipc.profiloPiano(scelta);
+      setRimappature(piano.rimappature);
+      setDaApplicare({ percorso: scelta, piano });
+    } catch (e) {
+      onErrore(e);
+    } finally {
+      setInVolo(false);
+      setAvanzamento(null);
+    }
+  };
+
+  /** Rifà il piano con le destinazioni scelte finora. */
+  const ripiana = async (prossime: RimappaturaRadice[]) => {
+    if (!daApplicare) return;
+    try {
+      setInVolo(true);
+      const piano = await ipc.profiloPiano(daApplicare.percorso, prossime);
+      setDaApplicare({ percorso: daApplicare.percorso, piano });
     } catch (e) {
       onErrore(e);
     } finally {
@@ -97,8 +185,12 @@ export function Profilo({
     if (!daApplicare) return;
     try {
       setInVolo(true);
-      const fatto = await ipc.profiloImporta(daApplicare.percorso);
+      const fatto = await ipc.profiloImporta(
+        daApplicare.percorso,
+        rimappature,
+      );
       setDaApplicare(null);
+      setAnnullabile(true);
       onNotizia(
         fatto.cambi.length === 0
           ? t("profile.nothingChanged")
@@ -109,8 +201,41 @@ export function Profilo({
       onErrore(e);
     } finally {
       setInVolo(false);
+      setAvanzamento(null);
     }
   };
+
+  const annulla = async () => {
+    try {
+      setInVolo(true);
+      await ipc.profiloAnnulla();
+      setAnnullabile(false);
+      onNotizia(t("profile.undone"));
+      onImportato();
+    } catch (e) {
+      onErrore(e);
+    } finally {
+      setInVolo(false);
+      setAvanzamento(null);
+    }
+  };
+
+  const piano = daApplicare?.piano;
+  const portati = piano
+    ? conta([
+        ["profile.brings.listens", piano.portati.ascolti],
+        ["profile.brings.history", piano.portati.cronologia],
+        ["profile.brings.ratings", piano.portati.voti],
+        ["profile.brings.loved", piano.portati.preferiti],
+        ["profile.brings.positions", piano.portati.posizioni],
+        ["profile.brings.playlists", piano.portati.playlist],
+        ["profile.brings.folders", piano.portati.cartelle],
+        ["profile.brings.fixes", piano.portati.correzioni],
+        ["profile.brings.lyrics", piano.portati.testi],
+        ["profile.brings.wanted", piano.portati.desiderati],
+        ["profile.brings.covers", piano.portati.fileCopertine],
+      ])
+    : [];
 
   return (
     <>
@@ -140,34 +265,124 @@ export function Profilo({
           <Icona nome="i-import" dim={15} />
           {t("profile.read")}
         </button>
+        {annullabile && (
+          <button
+            type="button"
+            className="bottone btn-ghost"
+            disabled={inVolo}
+            onClick={() => void annulla()}
+          >
+            {t("profile.undo")}
+          </button>
+        )}
       </div>
 
-      {lasciate.length > 0 && (
-        <p className="nota">
-          <Trans
-            k="profile.leftHere"
-            n={{ chiavi: lasciate.map(breve).join(", ") }}
-            v={{
-              questo: <em>{t("profile.leftHere.this")}</em>,
-              questa: <em>{t("profile.leftHere.thisLib")}</em>,
-            }}
-          />
-        </p>
+      {annullabile && <p className="nota">{t("profile.undo.note")}</p>}
+
+      {avanzamento && (
+        <>
+          <div className="avanzamento">
+            <div style={{ width: `${percentuale}%` }} />
+          </div>
+          <div className="conteggio">
+            {avanzamento.fatti} / {avanzamento.totale}
+          </div>
+        </>
       )}
 
-      {daApplicare && (
+      {uscito && (
+        <div className="scheda-anteprima">
+          <h3 className="titoletto">{t("profile.exported.title")}</h3>
+          <ul className="riepilogo-profilo">
+            {conta([
+              ["profile.brings.settings", uscito.voci],
+              ["profile.brings.history", uscito.cronologia],
+              ["profile.brings.covers", uscito.copertine],
+              ["profile.brings.skins", uscito.skin],
+              ["profile.brings.drafts", uscito.bozze],
+            ]).map(([cosa, quanti]) => (
+              <li className="voce-riepilogo" key={cosa}>
+                {t(cosa, { n: quanti })}
+              </li>
+            ))}
+          </ul>
+          <p className="nota">
+            {t("profile.weighs", { peso: inMegabyte(uscito.byte) })}
+          </p>
+          {uscito.pesante && (
+            <p className="nota avviso-profilo">{t("profile.heavy")}</p>
+          )}
+          {uscito.lasciate.length > 0 && (
+            <p className="nota">
+              <Trans
+                k="profile.leftHere"
+                n={{ chiavi: uscito.lasciate.map(breve).join(", ") }}
+                v={{
+                  questo: <em>{t("profile.leftHere.this")}</em>,
+                  questa: <em>{t("profile.leftHere.thisLib")}</em>,
+                }}
+              />
+            </p>
+          )}
+        </div>
+      )}
+
+      {daApplicare && piano && (
         <div className="scheda-anteprima">
           <h3 className="titoletto">
             {t("profile.writtenOn", {
-              quando: quandoScritto(daApplicare.piano.creatoMs),
+              quando: quandoScritto(piano.creatoMs),
             })}
           </h3>
 
-          {daApplicare.piano.cambi.length === 0 ? (
+          {piano.identitaDiversa && (
+            <p className="nota avviso-profilo">
+              {t("profile.otherLibrary")}
+            </p>
+          )}
+
+          {piano.rimappature.length > 0 && (
+            <>
+              <p className="nota">{t("profile.remap.note")}</p>
+              <ul className="rimappature">
+                {piano.rimappature.map((riga) => {
+                  const scelta =
+                    rimappature.find((r) => r.da === riga.da)?.a ?? "";
+                  return (
+                    <li className="rimappatura" key={riga.da}>
+                      <code className="rimappatura-da">{breve(riga.da)}</code>
+                      <span className="rimappatura-brani">
+                        {t("profile.remap.tracks", { n: riga.brani })}
+                      </span>
+                      <input
+                        type="text"
+                        className="campo field-input"
+                        value={scelta}
+                        placeholder={t("profile.remap.placeholder")}
+                        aria-label={t("profile.remap.aria", { da: riga.da })}
+                        onChange={(e) =>
+                          setRimappature((prima) =>
+                            prima.map((r) =>
+                              r.da === riga.da
+                                ? { ...r, a: e.target.value }
+                                : r,
+                            ),
+                          )
+                        }
+                        onBlur={() => void ripiana(rimappature)}
+                      />
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+
+          {piano.cambi.length === 0 ? (
             <p className="niente empty-state">{t("profile.noChanges")}</p>
           ) : (
             <ul className="cartelle">
-              {daApplicare.piano.cambi.map((c) => (
+              {piano.cambi.map((c) => (
                 <li className="cartella" key={c.chiave}>
                   <span
                     className="percorso"
@@ -181,20 +396,42 @@ export function Profilo({
             </ul>
           )}
 
-          {daApplicare.piano.invariate > 0 && (
+          {portati.length > 0 && (
+            <ul className="riepilogo-profilo">
+              {portati.map(([cosa, quanti]) => (
+                <li className="voce-riepilogo" key={cosa}>
+                  {t(cosa, { n: quanti })}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {piano.percorsiRiscritti > 0 && (
             <p className="nota">
-              {t("profile.same", { n: daApplicare.piano.invariate })}
+              {t("profile.remap.rewritten", { n: piano.percorsiRiscritti })}
+            </p>
+          )}
+          {piano.braniIrrintracciabili > 0 && (
+            <p className="nota">
+              {t("profile.remap.missing", { n: piano.braniIrrintracciabili })}
+            </p>
+          )}
+          {piano.braniGiaPresenti > 0 && (
+            <p className="nota">
+              {t("profile.remap.already", { n: piano.braniGiaPresenti })}
             </p>
           )}
 
-          {daApplicare.piano.percorsiMancanti.length > 0 && (
+          {piano.invariate > 0 && (
+            <p className="nota">{t("profile.same", { n: piano.invariate })}</p>
+          )}
+
+          {piano.percorsiMancanti.length > 0 && (
             <p className="nota">
               <Trans
                 k="profile.missingPaths"
                 n={{
-                  percorsi: daApplicare.piano.percorsiMancanti
-                    .map(breve)
-                    .join(", "),
+                  percorsi: piano.percorsiMancanti.map(breve).join(", "),
                 }}
                 v={{
                   titolo: <strong>{t("profile.missingPaths.title")}</strong>,
@@ -203,21 +440,22 @@ export function Profilo({
             </p>
           )}
 
-          {daApplicare.piano.sconosciute.length > 0 && (
+          {piano.sconosciute.length > 0 && (
             <p className="nota">
               {t("profile.unknownKeys", {
-                chiavi: daApplicare.piano.sconosciute.map(breve).join(", "),
+                chiavi: piano.sconosciute.map(breve).join(", "),
               })}
             </p>
           )}
 
           <p className="nota">{t("profile.whenApplied")}</p>
+          <p className="nota">{t("profile.additive")}</p>
 
           <div className="azioni">
             <button
               type="button"
               className="bottone primario btn-accent"
-              disabled={inVolo || daApplicare.piano.cambi.length === 0}
+              disabled={inVolo}
               onClick={() => void applica()}
             >
               {inVolo ? t("profile.applying") : t("profile.apply")}

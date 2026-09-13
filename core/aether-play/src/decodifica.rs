@@ -11,10 +11,11 @@
 //! dall'inizio alla fine della sessione, non una per brano.
 
 use std::collections::VecDeque;
+use std::sync::LazyLock;
 
 use aether_domain::errors::{AppError, ErrorCode};
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{Decoder, DecoderOptions};
+use symphonia::core::codecs::{CodecRegistry, Decoder, DecoderOptions};
 use symphonia::core::errors::SeekErrorKind;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
 use symphonia::core::io::MediaSourceStream;
@@ -23,6 +24,29 @@ use symphonia::core::probe::Hint;
 use symphonia::core::units::Time;
 
 use crate::Codec;
+
+mod opus;
+
+/// I codec che sappiamo costruire.
+///
+/// # Perché un registro nostro invece di `symphonia::default::get_codecs()`
+///
+/// Perché uno dei codec non è di symphonia. Opus lo decodifica
+/// [`opus::DecodificatoreOpus`], e symphonia lo scoprirebbe solo se glielo si
+/// dice: il registro predefinito è una costante della libreria, e `make()` su
+/// un `CODEC_TYPE_OPUS` risponderebbe «non supportato» dopo che il
+/// demultiplatore ha riconosciuto il flusso perfettamente.
+///
+/// Si costruisce una volta sola e per sempre: dentro ci sono tabelle di
+/// descrittori, non stato, e ogni [`Decodificatore::apri`] che se lo rifacesse
+/// pagherebbe la costruzione di tutta la catena di symphonia per ottenere la
+/// stessa cosa.
+static REGISTRO: LazyLock<CodecRegistry> = LazyLock::new(|| {
+    let mut registro = CodecRegistry::new();
+    symphonia::default::register_enabled_codecs(&mut registro);
+    registro.register_all::<opus::DecodificatoreOpus>();
+    registro
+});
 
 /// Da dove arrivano i byte di un brano.
 ///
@@ -247,12 +271,12 @@ impl Decodificatore {
         // il codice che esiste apposta nel catalogo. Lasciarlo arrivare al
         // riconoscitore darebbe un «decodifica fallita» generico, che manda a
         // cercare il guasto nel posto sbagliato.
-        if let Some(ext) = sorgente.estensione.as_deref() {
-            if Codec::da_estensione(ext) == Codec::NonSupportato {
-                return Err(AppError::new(ErrorCode::PlaybackFormatUnsupported {
-                    format: Some(ext.to_owned()),
-                }));
-            }
+        if let Some(ext) = sorgente.estensione.as_deref()
+            && Codec::da_estensione(ext) == Codec::NonSupportato
+        {
+            return Err(AppError::new(ErrorCode::PlaybackFormatUnsupported {
+                format: Some(ext.to_owned()),
+            }));
         }
 
         let guasto = Guasto::default();
@@ -312,7 +336,7 @@ impl Decodificatore {
         let parametri = traccia.codec_params.clone();
         let numero_traccia = traccia.id;
 
-        let decodificatore = symphonia::default::get_codecs()
+        let decodificatore = REGISTRO
             .make(&parametri, &DecoderOptions::default())
             .map_err(|err| non_supportato(err.to_string()))?;
 

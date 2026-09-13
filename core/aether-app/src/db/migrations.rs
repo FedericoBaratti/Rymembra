@@ -113,6 +113,21 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "settimana",
         sql: include_str!("schema/018_settimana.sql"),
     },
+    Migration {
+        version: 19,
+        name: "identita-e-metadati",
+        sql: include_str!("schema/019_identita_e_metadati.sql"),
+    },
+    Migration {
+        version: 20,
+        name: "cronologia-unica",
+        sql: include_str!("schema/020_cronologia_unica.sql"),
+    },
+    Migration {
+        version: 21,
+        name: "impronte-illeggibili",
+        sql: include_str!("schema/021_impronte_illeggibili.sql"),
+    },
 ];
 
 /// La versione a cui questa build porta il database.

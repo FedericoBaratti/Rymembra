@@ -36,6 +36,7 @@
 //! - [`preset`]: blocchi di valori pronti, per chi non vuole muovere quindici
 //!   cursori.
 //! - [`effects`]: gli undici effetti, e quanto costano.
+//! - [`movimento`]: le animazioni nominate, e quanto costano.
 //! - [`parts`]: le superfici ridisegnabili.
 //! - [`layout`]: dove stanno le cose — il vocabolario dello scafale.
 //! - [`document`]: la forma di `skin.json`, e la validazione.
@@ -72,12 +73,24 @@
 //! Si aggiunge la variante a [`effects::Effect`]. Il costo, la proprietà di
 //! destinazione, il nome e la compilazione sono quattro `match` esaustivi: il
 //! compilatore chiede tutti e quattro, e un effetto a metà non si compila.
+//!
+//! # Come si anima una parte
+//!
+//! L'animazione si dichiara **una volta** in `motion.animations`, con un nome,
+//! e la parte la richiama in `parts.<parte>.animations.<trigger>`. È la stessa
+//! forma dei motivi e delle curve, e per la stessa ragione: un valore scritto
+//! dove si usa è un valore che si ripete. Le due regole che
+//! [`movimento`] non lascia aggirare — ogni durata dentro
+//! `calc(… * var(--motion-scale, 1))`, e nessuna ripetizione infinita — non
+//! sono di stile: sono ciò che rende l'animazione di una skin fermabile da chi
+//! ha chiesto meno movimento.
 
 pub mod compile;
 pub mod dinamico;
 pub mod document;
 pub mod effects;
 pub mod layout;
+pub mod movimento;
 pub mod package;
 pub mod parts;
 pub mod posizioni;
@@ -96,6 +109,10 @@ pub use document::{
 pub use effects::{Effect, SURFACE_COST_BUDGET, exceeds_budget, stack_cost};
 pub use layout::{
     LayoutNode, LayoutZone, SHELL_COST_BUDGET, WIDGETS, WidgetDef, WidgetInstance, default_shell,
+};
+pub use movimento::{
+    AnimDirection, AnimFrame, AnimTrigger, Animation, AnimationRef, MOTION_COST_BUDGET,
+    PartAnimations, animation_cost, exceeds_motion_budget, motion_cost,
 };
 pub use package::{SkinPackage, read_skin_package, write_skin_package};
 pub use posizioni::{Posizioni, Punto, posizioni};

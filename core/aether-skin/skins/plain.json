@@ -29,7 +29,7 @@
 
     "color.text.1": "rgba(255, 255, 255, 0.92)",
     "color.text.2": "rgba(255, 255, 255, 0.6)",
-    "color.text.3": "rgba(255, 255, 255, 0.46)",
+    "color.text.3": "rgba(255, 255, 255, 0.52)",
 
     "color.accent": "#8b7cf6",
     "color.accent.soft": "rgba(139, 124, 246, 0.16)",
@@ -37,8 +37,8 @@
     "color.accent.like": { "$token": "color.accent" },
     "color.hero": { "$token": "color.accent" },
 
-    "color.danger": "#e5484d",
-    "color.danger.soft": "rgba(229, 72, 77, 0.14)",
+    "color.danger": "#ec5d5e",
+    "color.danger.soft": "rgba(236, 93, 94, 0.14)",
     "color.success": "#34d399",
     "color.success.soft": "rgba(52, 211, 153, 0.14)",
     "color.warning": "#facc15",
@@ -126,7 +126,7 @@
 
       "color.text.1": "rgba(16, 16, 22, 0.92)",
       "color.text.2": "rgba(16, 16, 22, 0.68)",
-      "color.text.3": "rgba(16, 16, 22, 0.6)",
+      "color.text.3": "rgba(16, 16, 22, 0.64)",
 
       "color.accent": "#6752d6",
       "color.accent.soft": "rgba(103, 82, 214, 0.14)",

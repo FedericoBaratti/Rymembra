@@ -32,10 +32,31 @@
  *
  * - `prefers-reduced-motion` del sistema, che è una condizione di chi guarda e
  *   non una preferenza estetica;
- * - `--motion-scale`, che è l'intensità dichiarata dalla skin. Qui va letta a
- *   mano perché le regole che il compilatore emette per la transizione di rotta
- *   usano `var(--dur-2)` nudo, senza la scala: una skin che si dichiara `none`
- *   avrebbe comunque animato. Leggerla da qui costa una riga e le ridà voce.
+ * - `--motion-scale`, che è l'intensità dichiarata dalla skin — e con lei, da
+ *   quando `applicaMovimento` scrive `data-motion-utente` sulla radice, quella
+ *   chiesta da chi guarda: il foglio azzera la scala sotto quel selettore, e
+ *   qui si legge il risultato senza sapere chi dei due l'ha deciso.
+ *
+ * # Perché `--motion-scale` si legge ancora a mano
+ *
+ * Non più perché il compilatore la dimenticava. Le due regole
+ * `::view-transition-*` scrivevano davvero `var(--dur-2)` nudo, ed era il
+ * motivo originale di questa lettura; adesso passano da `durata_scalata` come
+ * ogni altra durata del foglio (`compile.rs`, `compila_movimento`), quindi una
+ * skin a `none` non anima più nemmeno senza di noi.
+ *
+ * Restano due ragioni, e sono quelle vere:
+ *
+ * - **una durata a zero non è una transizione che non parte.**
+ *   `startViewTransition` fotografa la finestra, esegue il callback, la
+ *   rifotografa e tiene i due pseudo-elementi finché l'animazione non finisce.
+ *   A scala zero quel lavoro si fa tutto per non mostrare niente: chi ha
+ *   chiesto meno movimento merita il cambio istantaneo, non lo stesso costo
+ *   senza l'immagine.
+ * - **questa funzione non serve solo alle transizioni di vista.** Il pannello
+ *   del testo insegue la riga accesa scorrendo, e uno scorrimento lo decide
+ *   JavaScript: nessun `calc()` del foglio lo può fermare. È scritto anche
+ *   sopra `fermoRestando`, ed è la ragione per cui è esportata.
  */
 
 import { flushSync } from "react-dom";

@@ -18,9 +18,26 @@
 //! canonica che serve solo a rispondere «è lo stesso percorso?», e non deve mai
 //! finire in una `open()`.
 
-/// Le estensioni che consideriamo musica. Elenco chiuso, come nel vecchio albero.
-pub const SUPPORTED_EXTENSIONS: [&str; 10] = [
-    "mp3", "flac", "m4a", "aac", "ogg", "wav", "aiff", "aif", "opus", "wma",
+/// Le estensioni che consideriamo musica. Elenco chiuso.
+///
+/// # Perché non è più «come nel vecchio albero»
+///
+/// Perché una voce in più c'è: `oga`. La riga diceva «come nel vecchio albero»
+/// e quella parità è anche il senso di
+/// `tests/golden/scan.json`, che è generato eseguendo il `paths.ts` legacy —
+/// quindi questa divergenza va dichiarata qui, o il prossimo che legge i due
+/// file insieme trova una contraddizione e non sa da che parte stia il guasto.
+///
+/// **È voluta, e costa zero.** `.oga` è l'estensione che Xiph raccomanda per
+/// l'audio dentro Ogg: stesso contenitore di `.ogg`, stesso demultiplatore, e
+/// dentro ci può stare Vorbis, FLAC o Opus indifferentemente — tutti e tre già
+/// decodificabili. Escluderlo non proteggeva da niente: lasciava fuori dalla
+/// libreria dei file che l'app sa aprire, scrivere e suonare.
+///
+/// Nessuno dei casi del golden usa `.oga`, quindi la parità che quel file
+/// misura resta verde: quel che è cambiato è l'elenco, non il modo di leggerlo.
+pub const SUPPORTED_EXTENSIONS: [&str; 11] = [
+    "mp3", "flac", "m4a", "aac", "ogg", "oga", "wav", "aiff", "aif", "opus", "wma",
 ];
 
 /// La cartella dei doppioni scartati, dentro quella dei download.
@@ -199,6 +216,17 @@ mod tests {
     const NIX: PathRules = PathRules {
         case_insensitive: false,
     };
+
+    #[test]
+    fn oga_e_musica_come_ogg() {
+        // Il caso sta qui e non nel golden: quel file è il responso registrato
+        // del vecchio albero TypeScript, e aggiungerci a mano una riga vorrebbe
+        // dire inventare una risposta che quel ramo non ha mai dato.
+        assert!(is_supported_audio_path(r"C:\Music\a.oga"));
+        assert!(is_supported_audio_path(r"C:\Music\A.OGA"));
+        assert!(is_supported_audio_path(r"C:\Music\a.opus"));
+        assert!(!is_supported_audio_path(r"C:\Music\a.ogg.txt"));
+    }
 
     #[test]
     fn il_difetto_storico_del_prefisso() {

@@ -72,7 +72,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ipc, type Brano, type RigaTesto, type TestoBrano } from "../ipc";
 import { Sincronizza } from "../Sincronizza";
-import { usePosizioneMs } from "../riproduzione";
+import { anticipoAdesso, usePosizioneMs } from "../riproduzione";
 import { fermoRestando } from "../transizione";
 import { t, tSe } from "../lingue";
 import { Icona } from "./Icone";
@@ -156,13 +156,24 @@ const TASTI_CHE_SCORRONO = new Set([
  */
 const NESSUNA_RIGA: RigaTesto[] = [];
 
-/** Quale riga è accesa a questa posizione: la stessa ricerca binaria del nucleo. */
-function rigaAttiva(righe: TestoBrano["righe"], posizione: number): number {
-  // `ANTICIPO_MS` sta in `aether_domain::testo` e vale centocinquanta: la riga
-  // si accende un attimo prima del suo tempo perché l'occhio ci deve arrivare
-  // prima della voce. L'avanzamento invece parte dal tempo vero, quindi in
-  // quell'attimo la riga è accesa e ferma a zero.
-  const soglia = posizione + 150;
+/**
+ * Quale riga è accesa a questa posizione: la stessa ricerca binaria del nucleo.
+ *
+ * `anticipo` arriva da fuori, e fino a ieri era il numero `150` scritto qui. Due
+ * copie a mano della stessa costante — questa e `aether_domain::testo::ANTICIPO_MS`
+ * — sono durate finché nessuno ha toccato nessuna delle due; adesso il nucleo lo
+ * manda dentro lo stato della riproduzione e `anticipoAdesso` lo legge di lì.
+ *
+ * Serve perché la riga si accenda un attimo prima del suo tempo: l'occhio deve
+ * arrivarci prima della voce. L'avanzamento dentro la riga parte invece dal tempo
+ * vero, quindi in quell'attimo la riga è accesa e ferma a zero.
+ */
+function rigaAttiva(
+  righe: TestoBrano["righe"],
+  posizione: number,
+  anticipo: number,
+): number {
+  const soglia = posizione + anticipo;
   let basso = 0;
   let alto = righe.length;
   while (basso < alto) {
@@ -274,6 +285,12 @@ export function Testo({
 }) {
   const [testo, setTesto] = useState<TestoBrano | null>(null);
   const [cercando, setCercando] = useState(false);
+  // La richiesta al catalogo è caduta. Uno stato a parte da «non c'è», perché
+  // sono due cose diverse e chiedono due frasi diverse: «il catalogo non lo
+  // conosce» è una risposta e si accetta, «non si è potuto chiedere» è un
+  // guasto e si riprova. Confonderle era il difetto — il pannello diceva
+  // «Nessun testo per questo brano» anche quando il wifi era staccato.
+  const [guasto, setGuasto] = useState(false);
   const [editor, setEditor] = useState(false);
   // Che lo scorrimento sia fermo lo sa già `fermoFino`, che è un `ref` perché
   // lo legge un effetto che gira venti volte al secondo. Questo stato esiste
@@ -301,6 +318,47 @@ export function Testo({
     rigaAccesa.current = nodo;
   }, []);
 
+  /* Quale brano il pannello sta guardando adesso.
+     Serve alle richieste al catalogo, che possono partire anche da un bottone
+     e non solo dall'effetto qui sotto: là il guardiano è la chiusura di
+     `annullato`, qui non c'è nessuna chiusura da chiudere, e l'unica domanda
+     da fare quando la risposta arriva è «è ancora questo il brano?».
+
+     Sta in un effetto suo, dichiarato **prima** di quello che chiede: gli
+     effetti girano nell'ordine in cui stanno scritti, quindi al cambio di
+     brano questo riferimento è già aggiornato quando la richiesta parte, e una
+     risposta in ritardo del brano di prima trova un numero diverso. */
+  const branoOra = useRef(brano.id);
+  useEffect(() => {
+    branoOra.current = brano.id;
+  }, [brano.id]);
+
+  /* La domanda al catalogo, da qualunque parte arrivi.
+     Due vie, e la differenza non è di gusto: `testoCerca` è la domanda
+     normale, che passa dalle due memorie — il deposito e `checked_at` — e
+     `testoCercaDiNuovo` è il gesto di chi ha davanti un pannello vuoto e le
+     salta tutt'e due. Il perché per esteso sta su `testo_cerca_di_nuovo`.
+
+     Il guasto **non** sale a `onErrore`: una fascia rossa in cima
+     all'applicazione per un testo che non è arrivato è sproporzionata, e
+     soprattutto non offre l'unica cosa che serve, cioè riprovare. Il pannello
+     la offre, accanto al testo che manca. */
+  const chiedi = useCallback((id: number, diNuovo: boolean) => {
+    setCercando(true);
+    setGuasto(false);
+    const domanda = diNuovo ? ipc.testoCercaDiNuovo(id) : ipc.testoCerca(id);
+    return domanda
+      .then((dalla_rete) => {
+        if (branoOra.current === id) setTesto(dalla_rete);
+      })
+      .catch(() => {
+        if (branoOra.current === id) setGuasto(true);
+      })
+      .finally(() => {
+        if (branoOra.current === id) setCercando(false);
+      });
+  }, []);
+
   // Il testo si chiede a ogni cambio di brano. `annullato` è il guardiano
   // solito: chi cambia brano tre volte in due secondi ha tre richieste in volo,
   // e senza questo l'ultima a rispondere vincerebbe invece dell'ultima chiesta.
@@ -308,6 +366,7 @@ export function Testo({
     let annullato = false;
     setTesto(null);
     setCercando(false);
+    setGuasto(false);
     ipc
       .testoBrano(brano.id)
       .then((trovato) => {
@@ -323,23 +382,18 @@ export function Testo({
         // voci per brano e la prima che risponde non è sempre quella con i
         // tempi.
         if (!trovato.daChiedere) return;
-        setCercando(true);
-        return ipc
-          .testoCerca(brano.id)
-          .then((dalla_rete) => {
-            if (!annullato) setTesto(dalla_rete);
-          })
-          .finally(() => {
-            if (!annullato) setCercando(false);
-          });
+        return chiedi(brano.id, false);
       })
+      // Qui ci arriva solo `testoBrano`, che legge il disco e il database:
+      // `chiedi` i propri guasti se li tiene, perché sono l'unico caso in cui
+      // c'è qualcosa da riprovare. Un database che non risponde no.
       .catch((e: unknown) => {
         if (!annullato) onErrore(e);
       });
     return () => {
       annullato = true;
     };
-  }, [brano.id, onErrore]);
+  }, [brano.id, onErrore, chiedi]);
 
   // Un brano nuovo è un elenco nuovo: la riga da cui si arriva non esiste più,
   // e senza questo il primo inseguimento del brano nuovo si crederebbe vicino
@@ -361,7 +415,11 @@ export function Testo({
   const corretta =
     posizioneMs + (testo?.offsetMs ?? 0) + (testo?.scartoMs ?? 0);
   const righe = testo?.righe ?? NESSUNA_RIGA;
-  const attiva = righe.length > 0 ? rigaAttiva(righe, corretta) : -1;
+  // L'anticipo si legge a ogni disegno e non si memoizza: è una lettura di una
+  // variabile di modulo, e il numero può cambiare sotto — cambia quando il nucleo
+  // manda uno stato, cioè qualche volta per canzone.
+  const attiva =
+    righe.length > 0 ? rigaAttiva(righe, corretta, anticipoAdesso()) : -1;
   // Dove finisce l'ultima riga, e l'ultima parola dentro di lei. Un brano di
   // durata ignota — non capita, ma il tipo lo ammette — ricade sull'infinito,
   // che è il comportamento di prima: fermo invece che sbagliato.
@@ -539,6 +597,42 @@ export function Testo({
     </button>
   );
 
+  /* La riga dei ripieghi: quel che si può fare quando il testo non c'è, o
+     c'è ma senza tempi.
+
+     Sta in una variabile e non scritta due volte perché la mostrano due rami
+     diversi — il pannello vuoto e il testo piatto — e sono lo stesso gesto: in
+     tutt'e due i casi il catalogo potrebbe avere i tempi e non glieli si è
+     chiesti abbastanza. Fra i due bottoni cambia solo la parola: «Riprova»
+     quando la rete è caduta, «Cerca di nuovo» quando ha risposto e non aveva
+     niente. Sono due frasi perché sono due situazioni, e chiamarle allo stesso
+     modo direbbe a chi ha il wifi staccato che il catalogo non conosce la sua
+     canzone.
+
+     Mentre si cerca non compaiono: un bottone «Riprova» accanto a «Cerco il
+     testo…» offre di rifare quel che si sta già facendo. */
+  const scelte = !cercando && (
+    <div className="scelte-testo">
+      <button
+        type="button"
+        className="bottone minuto btn-ghost"
+        onClick={() => void chiedi(brano.id, true)}
+      >
+        {guasto ? t("np.lyrics.retry") : t("np.lyrics.again")}
+      </button>
+      {/* Qui il bottone è la risposta alla domanda che la schermata pone, non
+          un comando accessorio: è l'unica via che resta, ed è quella che
+          chiude la copertura fino in fondo. */}
+      <button
+        type="button"
+        className="bottone primario btn-accent"
+        onClick={() => setEditor(true)}
+      >
+        {t("np.lyrics.sync")}
+      </button>
+    </div>
+  );
+
   /* L'introduzione, quando è lunga abbastanza da essere un'attesa.
      Sta prima dell'elenco e non dentro, perché nell'LRC non è una riga: è il
      tempo che c'è prima della prima. Porta `rigaAccesa` come la porterebbe una
@@ -663,7 +757,13 @@ export function Testo({
   );
 
   return (
-    <aside className="testo-np lyrics-screen" aria-label={t("np.lyrics")}>
+    <aside
+      className="testo-np lyrics-screen"
+      // L'ancora del giro guidato: il ripiego della schermata a tutto schermo,
+      // per gli scafali che mostrano il testo senza di lei.
+      data-giro="testo"
+      aria-label={t("np.lyrics")}
+    >
       <header>
         <span className="occhiello hero-eyebrow">{t("np.lyrics")}</span>
         {/* La chiave si compone a runtime dal nome della fonte, quindi passa da
@@ -678,14 +778,39 @@ export function Testo({
         {bottoneSincronizza}
       </header>
 
-      {/* La striscia della correzione compare solo quando serve: sempre visibile
-          sarebbe un comando in cerca di un problema, e la maggior parte dei
-          testi non ne ha nessuno. */}
-      {testo?.aderenza !== "buona" && testo && righe.length > 0 && (
-        <div className="scarto-testo" role="group" aria-label={t("np.lyrics.check")}>
-          <span className="perche">
-            {tSe(`np.lyrics.check.${testo.aderenza}`, t("np.lyrics.check"))}
-          </span>
+      {/* La striscia della correzione c'è ogni volta che c'è qualcosa da
+          correggere, cioè ogni volta che ci sono righe con un tempo.
+
+          Qui stava scritto che «sempre visibile sarebbe un comando in cerca di
+          un problema», e la striscia compariva solo con l'aderenza diversa da
+          «buona». Era falso, e il falso costava una funzione. L'aderenza misura
+          una cosa sola: se i tempi **stanno dentro** la durata di questo file —
+          è `aether_domain::testo::verifica_durata`, e guarda dove finisce
+          l'ultima riga. Non dice niente su dove cadano. Un `.lrc` battuto su
+          un'altra edizione con la stessa lunghezza, un master con mezzo secondo
+          di silenzio in testa, una catena d'uscita che ritarda più di quanto il
+          motore sappia misurare: tutti e tre danno un testo sfasato di un tanto
+          costante e un'aderenza «buona», e tutti e tre si raddrizzano con questi
+          due bottoni. Che erano irraggiungibili proprio nel caso più comune.
+
+          Quel che dipende ancora dall'aderenza è la **frase**: dire perché la
+          striscia è lì serve quando c'è qualcosa da segnalare, e quando non c'è
+          niente da segnalare la striscia si fa da parte — `discreta`. */}
+      {testo && righe.length > 0 && (
+        <div
+          className={
+            testo.aderenza === "buona"
+              ? "scarto-testo discreta"
+              : "scarto-testo"
+          }
+          role="group"
+          aria-label={t("np.lyrics.nudge")}
+        >
+          {testo.aderenza !== "buona" && (
+            <span className="perche">
+              {tSe(`np.lyrics.check.${testo.aderenza}`, t("np.lyrics.check"))}
+            </span>
+          )}
           <button
             type="button"
             className="bottone minuto btn-ghost"
@@ -750,26 +875,26 @@ export function Testo({
                 {riga.trim() === "" ? " " : riga}
               </p>
             ))}
+            {/* Le parole ci sono, i tempi no: è il caso in cui il catalogo
+                può ancora avere qualcosa, perché tiene più voci per brano e
+                quella che ha risposto non è sempre quella con i tempi. */}
+            {scelte}
           </div>
         ) : (
           <div className="niente-testo">
             <Icona nome="i-text" dim={20} />
-            <p>{cercando ? t("np.lyrics.searching") : t("np.lyrics.none")}</p>
-            {!cercando && testo.cercato && (
+            <p>
+              {cercando
+                ? t("np.lyrics.searching")
+                : guasto
+                  ? t("np.lyrics.failed")
+                  : t("np.lyrics.none")}
+            </p>
+            {!cercando && guasto && <span>{t("np.lyrics.failed.hint")}</span>}
+            {!cercando && !guasto && testo.cercato && (
               <span>{t("np.lyrics.none.hint")}</span>
             )}
-            {/* Qui il bottone è la risposta alla domanda che la schermata
-                pone, non un comando accessorio: è l'unica via che resta, ed è
-                quella che chiude la copertura fino in fondo. */}
-            {!cercando && (
-              <button
-                type="button"
-                className="bottone primario btn-accent"
-                onClick={() => setEditor(true)}
-              >
-                {t("np.lyrics.sync")}
-              </button>
-            )}
+            {scelte}
           </div>
         )}
       </div>
@@ -797,6 +922,10 @@ export function Testo({
         <Sincronizza
           brano={brano}
           iniziale={daCuiPartire}
+          /* Solo le parole scendono: nessuno dei due scarti attraversa
+             l'editor. Le battute che ne escono sono misurate sulla posizione
+             grezza, e `testo_salva` spiega per esteso perché portarsi dietro un
+             offset le sfaserebbe tutte. */
           onChiudi={() => setEditor(false)}
           onSalvato={setTesto}
           onErrore={onErrore}

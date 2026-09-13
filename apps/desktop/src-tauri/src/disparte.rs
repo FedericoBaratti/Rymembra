@@ -32,15 +32,33 @@
 //!
 //! # Quanti comandi passano di qui
 //!
-//! Tre — `comandi::scansiona`, `comandi::cartelle_candidate`,
-//! `testi::testo_brano` — e sono i tre che aprono file di cui non si sa niente,
-//! in cartelle che l'utente ha scelto e che possono stare su una share. Gli altri
-//! settantacinque `#[tauri::command(async)]` restano dove sono: spostarli tutti
-//! insieme sarebbe un gesto che nessuna prova copre, e la maggior parte fa una
-//! query di microsecondi. Il prossimo candidato è `riordino::esegui_riordino`,
-//! che sposta file veri **dentro** il lucchetto della libreria: stesso difetto,
-//! dominio diverso, e va con lo stesso schema completo (`Deposito`, [`Turno`], un
-//! annullamento).
+//! Dieci. Tre aprono file di cui non si sa niente, in cartelle che l'utente ha
+//! scelto e che possono stare su una share: `comandi::scansiona`,
+//! `comandi::cartelle_candidate`, `testi::testo_brano`. Tre sono il
+//! pannello «Cartelle» — `cartelle::cartelle_figlie`, `cartelle::cartelle_brani`,
+//! `cartelle::cartelle_radici_vive` — e ci passano per due ragioni diverse: la
+//! sonda delle radici tocca il disco esattamente come la scansione, mentre le
+//! altre due leggono soltanto il database, e stanno qui perché la costruzione
+//! dell'albero vale una trentina di millisecondi che sul filo principale sono
+//! due fotogrammi persi.
+//!
+//! Gli ultimi quattro sono il profilo — `profilo::profilo_esporta`,
+//! `profilo::profilo_piano`, `profilo::profilo_importa`,
+//! `profilo::profilo_annulla` — e sono il caso peggiore di tutti: aprono un
+//! file che l'utente ha scelto, e le due destinazioni naturali di un profilo
+//! sono una chiavetta e una cartella di rete. Un archivio da trecento megabyte
+//! scritto su una share che smette di rispondere è la scansione lenta,
+//! moltiplicata per la quantità di byte.
+//!
+//! Gli altri settantanove `#[tauri::command(async)]` restano dove sono:
+//! spostarli tutti insieme sarebbe un gesto che nessuna prova copre, e la
+//! maggior parte fa una query di microsecondi. Il prossimo candidato è
+//! `arricchimento::arricchimento_riporta_nei_file`, che riapre in scrittura un
+//! file per ogni riga di `enrich_undo` **dentro** il lucchetto della libreria:
+//! stesso difetto, dominio diverso. Non lo si sposta perché il [`Turno`] ce
+//! l'ha già ed è una via d'uscita a termine, che il CHANGELOG dà per rimossa
+//! in una release futura: rifargli l'impianto costerebbe più di quanto valga
+//! qualcosa che deve sparire.
 //!
 //! [`Turno`]: crate::stato::Turno
 

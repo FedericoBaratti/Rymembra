@@ -265,7 +265,7 @@ fn current_stats(connection: &Connection) -> Result<HashMap<i64, TrackStats>, Ap
 
 /// Cosa succederebbe importando, senza scrivere niente.
 ///
-/// Il piano prima dell'esecuzione, come per la scansione e per il riordino. Qui
+/// Il piano prima dell'esecuzione, come per la scansione e per il ripristino. Qui
 /// serve soprattutto a una cosa: leggere l'elenco di [`ImportReport::unmatched`]
 /// **prima** di decidere, perché è l'unico momento in cui si può ancora andare a
 /// cercare quei file sul disco.

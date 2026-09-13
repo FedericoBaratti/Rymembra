@@ -221,8 +221,48 @@ catalogo! {
     /// Il database è stato scritto da una versione più nuova: indietro non si torna.
     DbVersionAhead = "db.versionAhead", Db, Fatal, Never, None, { db_version: u32, app_version: u32 };
     /// Database occupato da un altro scrittore.
+    ///
+    /// `Always` non è generosità: è il senso per cui questo codice esiste. Un
+    /// `SQLITE_BUSY` dice «qualcuno sta scrivendo adesso», ed è l'unico guasto
+    /// del database che passa da sé — di solito è la scansione che commette.
     DbLocked = "db.locked", Db, Warning, Always, None;
-    /// Una query è fallita.
+    /// Il database non si lascia scrivere: permessi, cartella di sola lettura,
+    /// supporto protetto.
+    ///
+    /// Separato da [`Self::DbLocked`] perché la reazione è opposta: là si
+    /// aspetta, qui aspettare non serve a niente finché qualcuno non cambia i
+    /// permessi. Nel vecchio comportamento arrivavano entrambi come
+    /// «il database ha rifiutato una richiesta».
+    DbReadOnly = "db.readOnly", Db, Error, Never, None;
+    /// La cartella dei dati sta su una condivisione di rete, e SQLite non ce la fa.
+    ///
+    /// È il guasto per cui questo codice è nato: un `disk I/O error` su un
+    /// percorso SMB non vuol dire «il disco è rotto», vuol dire «questo
+    /// database non può stare qui». Il giornale WAL ha bisogno di un file di
+    /// memoria condivisa (`-shm`) mappato in memoria, e una condivisione di
+    /// rete non lo offre; il ripiego su `TRUNCATE` fa funzionare la libreria,
+    /// ma serializza letture e scritture.
+    ///
+    /// `Always` per la stessa ragione di [`Self::FsNetworkUnavailable`]: il
+    /// Wi-Fi che cade torna, e il tentativo dopo riesce. Quel che *non* passa
+    /// da sé è la lentezza, e di quella parla il messaggio — che consiglia di
+    /// spostare la cartella dei dati su un disco locale.
+    DbNetworkPath = "db.networkPath", Db, Error, Always, None, { path: Option<String> };
+    /// Il disco ha rifiutato una lettura o una scrittura del database.
+    ///
+    /// Lo stesso `SQLITE_IOERR` di [`Self::DbNetworkPath`], ma su un percorso
+    /// locale: lì la colpa è del posto dove sta il file, qui del supporto.
+    /// `Never`, e non per pessimismo: un disco che sbaglia a leggere non
+    /// guarisce ritentando, e un ritentativo automatico nasconderebbe l'unico
+    /// momento in cui conviene fare un backup.
+    DbIoFailed = "db.ioFailed", Db, Error, Never, None, { detail: Option<String> };
+    /// Una query è fallita, e non si è saputo dire di più.
+    ///
+    /// Il ripiego di [`crate::errors::ErrorCode`] per il database: ci arriva
+    /// quel che `sqlite_error_code()` non sa classificare. Fino alla 2.3.1 ci
+    /// arrivava **tutto**, compresi i casi che i cinque codici qui sopra
+    /// distinguono — ed è il motivo per cui chi teneva la libreria su una share
+    /// leggeva «riavvia Aether» per un guasto che nessun riavvio risolveva.
     DbQueryFailed = "db.queryFailed", Db, Error, Never, None, { detail: Option<String> };
 
     // ── fs ──────────────────────────────────────────────────────────────────
@@ -695,5 +735,58 @@ impl ErrorCodeKind {
             .iter()
             .find(|k| k.legacy_code() == Some(prefix))
             .copied()
+    }
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    #[test]
+    fn db_locked_e_ritentabile() {
+        // Non è una tautologia sul catalogo: `db.locked` era dichiarato qui e
+        // **non prodotto da nessuna riga** — ogni `rusqlite::Error` diventava
+        // `db.queryFailed`, che è `Never`. Il risultato era che un database
+        // occupato per mezzo secondo dalla scansione si raccontava come un
+        // guasto definitivo con il consiglio di riavviare l'applicazione.
+        //
+        // Da qui passa la sola proprietà che giustifica l'esistenza del codice:
+        // chi lo riceve può ritentare. Se qualcuno lo portasse a `Never`, la
+        // distinzione introdotta da `codice_da_sqlite` non servirebbe più a
+        // niente e questa prova è l'unica cosa che se ne accorge.
+        assert!(ErrorCode::DbLocked.is_retryable());
+        assert_eq!(ErrorCodeKind::DbLocked.severity(), Severity::Warning);
+
+        // E i suoi tre vicini nuovi, che non sono ritentabili alla stessa
+        // maniera: sono i tre casi in cui aspettare non cambia l'esito.
+        assert!(!ErrorCode::DbReadOnly.is_retryable());
+        assert!(
+            !ErrorCode::DbIoFailed { detail: None }.is_retryable(),
+            "un disco che sbaglia a leggere non guarisce ritentando"
+        );
+        assert!(
+            !ErrorCode::DbQueryFailed { detail: None }.is_retryable(),
+            "il ripiego resta quel che era"
+        );
+        // La rete invece torna, ed è la stessa scelta di `fs.networkUnavailable`.
+        assert!(ErrorCode::DbNetworkPath { path: None }.is_retryable());
+        assert!(ErrorCode::FsNetworkUnavailable { path: None }.is_retryable());
+    }
+
+    #[test]
+    fn i_guasti_del_database_stanno_tutti_nel_dominio_del_database() {
+        // Il dominio guida il routing dei log e il raggruppamento nella UI: un
+        // codice `db.*` classificato `Fs` comparirebbe sotto «file» in ogni
+        // cruscotto, ed è il genere di svista che si nota un anno dopo.
+        for kind in ErrorCodeKind::ALL {
+            if kind.code().starts_with("db.") {
+                assert_eq!(
+                    kind.domain(),
+                    Domain::Db,
+                    "{} non è nel dominio del database",
+                    kind.code()
+                );
+            }
+        }
     }
 }

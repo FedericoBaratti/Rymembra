@@ -573,7 +573,8 @@ pub fn nuvola_piano_ripristino(
 ///
 /// **Ricalcola il piano** invece di fidarsi di quello mostrato: fra l'anteprima
 /// e la conferma può essere finita una scansione, e le skin appena scritte
-/// cambiano cosa resta da fare. È la stessa invariante di `esegui_riordino`.
+/// cambiano cosa resta da fare. È l'invariante di ogni `piano → esegui` di
+/// Aether: il piano si mostra, l'esecuzione lo rifà.
 ///
 /// `(async)`: scarica anche i pacchetti di skin, che arrivano a venti megabyte
 /// l'uno. Vedi [`nuvola_collega`].
@@ -856,10 +857,10 @@ fn accesso(nuvola: &StatoNuvola, credenziali: &Credenziali) -> Result<String, Ap
             .token
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(token) = cache.as_ref() {
-            if oauth::ancora_valido(token.scade_ms) {
-                return Ok(token.access_token.clone());
-            }
+        if let Some(token) = cache.as_ref()
+            && oauth::ancora_valido(token.scade_ms)
+        {
+            return Ok(token.access_token.clone());
         }
     }
 

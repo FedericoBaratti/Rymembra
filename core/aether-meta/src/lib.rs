@@ -80,6 +80,27 @@ pub use deposito::{Deposito, Senza, Voce};
 /// vivere per sempre una connessione che consegna un byte al secondo.
 const SCADENZA: Duration = Duration::from_secs(20);
 
+/// Se quel che il deposito ricorda vale ancora, o se la risposta si rivuole
+/// fresca.
+///
+/// Due valori e non un `bool` perché al punto di chiamata `Memoria::Salta` si
+/// legge, mentre `true` non dice di che cosa. La distinzione esiste per un caso
+/// solo: il ritentativo esplicito di chi guarda un pannello vuoto (vedi
+/// [`lrclib::cerca_di_nuovo`]). Ogni passata automatica usa [`Memoria::Vale`],
+/// perché ripetere una domanda già fatta a un servizio che ci ospita gratis è
+/// traffico che nessuno ha chiesto.
+///
+/// In **scrittura** il deposito si tocca sempre, in tutti e due i casi: saltare
+/// la memoria vuol dire non fidarsi di quel che si ricordava adesso, non
+/// smettere di ricordare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Memoria {
+    /// La risposta ricordata va bene: è il caso normale.
+    Vale,
+    /// La si rivuole dal servizio, comunque.
+    Salta,
+}
+
 /// Cosa si è ottenuto interrogando le fonti per un brano.
 ///
 /// # Perché «nessun candidato» e «nessuno ha risposto» sono due cose
@@ -200,10 +221,34 @@ impl Fornitori {
         url: &str,
         vive_ms: i64,
     ) -> Result<Option<Vec<u8>>, AppError> {
-        match self.deposito.leggi(servizio, chiave) {
-            Some(Voce::Corpo(corpo)) => return Ok(Some(corpo)),
-            Some(Voce::Niente) => return Ok(None),
-            None => {}
+        self.json_con_memoria(cadenza, servizio, chiave, url, vive_ms, Memoria::Vale)
+    }
+
+    /// Come [`Self::json`], ma potendo dire di **non rileggere** il deposito.
+    ///
+    /// Serve al ritentativo esplicito, ed è l'unico posto in cui la memoria si
+    /// salta: il perché sta su [`Memoria`]. Con [`Memoria::Vale`] è
+    /// [`Self::json`] parola per parola — le due non sono due strade, è una
+    /// sola con una condizione in cima.
+    ///
+    /// # Errori
+    ///
+    /// Gli stessi di [`Self::json`].
+    fn json_con_memoria(
+        &self,
+        cadenza: &Cadenza,
+        servizio: &str,
+        chiave: &str,
+        url: &str,
+        vive_ms: i64,
+        memoria: Memoria,
+    ) -> Result<Option<Vec<u8>>, AppError> {
+        if memoria == Memoria::Vale {
+            match self.deposito.leggi(servizio, chiave) {
+                Some(Voce::Corpo(corpo)) => return Ok(Some(corpo)),
+                Some(Voce::Niente) => return Ok(None),
+                None => {}
+            }
         }
         match self.json_senza_memoria(cadenza, url)? {
             Some(corpo) => {

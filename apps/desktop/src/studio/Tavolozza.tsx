@@ -18,7 +18,10 @@
  */
 import type { Registro, Validazione } from "../ipc";
 import { Icona } from "../parti/Icone";
+import { Segmentato } from "../parti/Segmentato";
+import { Riga, Scheda } from "./controlli";
 import { Manopole } from "./Livelli";
+import { Movimento } from "./Movimento";
 import { leggi, scrivi, scriviIn, togliDa } from "./patch";
 import {
   coloreCosto,
@@ -199,7 +202,6 @@ export function Tavolozza({
   const capacita = (documento?.capabilities ?? {}) as Record<string, boolean>;
   const tavolozza = (documento?.palette ?? {}) as Record<string, string>;
   const impaginazione = (documento?.layout ?? {}) as Record<string, string>;
-  const movimento = (documento?.motion ?? {}) as Record<string, unknown>;
   const tokens = (documento?.tokens ?? {}) as Record<string, unknown>;
   const chiaro = ((documento?.themes ?? {}) as Record<string, unknown>).light as
     | Record<string, unknown>
@@ -372,14 +374,11 @@ export function Tavolozza({
           correggono dopo, quando la skin ha preso una direzione diversa da
           quella che aveva il giorno in cui è nata.
         */}
-        <section className="scheda section-card">
-          <header>
-            <span className="section-icon">
-              <Icona nome="i-mark" dim={16} />
-            </span>
-            <h3 className="section-heading">{t("studio.palette.identity")}</h3>
-            <span className="nota-testa">{versione}</span>
-          </header>
+        <Scheda
+          icona="i-mark"
+          titolo={t("studio.palette.identity")}
+          nota={versione}
+        >
           <div className="identita">
             <label className="campo-identita">
               <span className="titolino">id</span>
@@ -431,18 +430,15 @@ export function Tavolozza({
               />
             ))}
           </div>
-        </section>
+        </Scheda>
 
-        <section className="scheda section-card">
-          <header>
-            <span className="section-icon">
-              <Icona nome="i-skin" dim={16} />
-            </span>
-            <h3 className="section-heading">{t("studio.palette.title")}</h3>
-            <span className="nota-testa">
-              {t("studio.palette.count", { n: Object.keys(tavolozza).length })}
-            </span>
-          </header>
+        <Scheda
+          icona="i-skin"
+          titolo={t("studio.palette.title")}
+          nota={t("studio.palette.count", {
+            n: Object.keys(tavolozza).length,
+          })}
+        >
           {Object.keys(tavolozza).length === 0 && (
             <p className="niente">{t("studio.palette.empty")}</p>
           )}
@@ -530,15 +526,9 @@ export function Tavolozza({
               />
             </p>
           )}
-        </section>
+        </Scheda>
 
-        <section className="scheda section-card">
-          <header>
-            <span className="section-icon">
-              <Icona nome="i-album" dim={16} />
-            </span>
-            <h3 className="section-heading">{t("studio.dynamic.title")}</h3>
-          </header>
+        <Scheda icona="i-album" titolo={t("studio.dynamic.title")}>
           <div className="dinamici">
             {CANDIDATI_DINAMICI.map((token) => {
               const valore = tokens[token];
@@ -587,7 +577,7 @@ export function Tavolozza({
               }}
             />
           </p>
-        </section>
+        </Scheda>
 
         {/*
           I motivi: un effetto dichiarato una volta e riusato per nome.
@@ -595,14 +585,11 @@ export function Tavolozza({
           modo di scriverne uno era il JSON, e l'unico modo di sapere che
           esistessero era leggere `sala.json`.
         */}
-        <section className="scheda section-card">
-          <header>
-            <span className="section-icon">
-              <Icona nome="i-list" dim={16} />
-            </span>
-            <h3 className="section-heading">{t("studio.patterns.title")}</h3>
-            <span className="nota-testa">{Object.keys(motivi).length}</span>
-          </header>
+        <Scheda
+          icona="i-list"
+          titolo={t("studio.patterns.title")}
+          nota={String(Object.keys(motivi).length)}
+        >
           {Object.keys(motivi).length === 0 && (
             <p className="niente">{t("studio.patterns.empty")}</p>
           )}
@@ -695,17 +682,11 @@ export function Tavolozza({
             <Icona nome="i-plus" dim={13} />
             <span>{t("studio.patterns.add")}</span>
           </button>
-        </section>
+        </Scheda>
       </div>
 
       <div className="colonna">
-        <section className="scheda section-card">
-          <header>
-            <span className="section-icon">
-              <Icona nome="i-check" dim={16} />
-            </span>
-            <h3 className="section-heading">{t("studio.caps.title")}</h3>
-          </header>
+        <Scheda icona="i-check" titolo={t("studio.caps.title")}>
 
           <div className="riga-opzione">
             <div className="che-cosa">
@@ -777,107 +758,79 @@ export function Tavolozza({
               onCambia={(v) => cambiaCapacita("dynamicAccent", v)}
             />
           </div>
-        </section>
+        </Scheda>
 
-        <section className="scheda section-card">
-          <header>
-            <span className="section-icon">
-              <Icona nome="i-settings" dim={16} />
-            </span>
-            <h3 className="section-heading">{t("studio.layout.title")}</h3>
-            <span className="nota-testa">
-              {conScafale
-                ? t("studio.layout.twoOfFour")
-                : t("studio.layout.allRead")}
-            </span>
-          </header>
-          <div className="quattro">
-            {(
+        {/*
+          Tre manopole e non più quattro: l'intensità del movimento se n'è
+          andata nel pannello «Movimento» qui sotto. Stare in mezzo a «lettore
+          flottante» e «barra stretta» era l'anomalia — «quanto si muove» non è
+          una scelta d'impaginazione, e chi la cercava la trovava per caso.
+
+          Le tre che restano passano da `Riga` + `Segmentato`, cioè dai
+          primitivi che l'app ha già: `.scelta-impaginazione` rifaceva a mano un
+          gruppo di linguette che esiste, senza il `radiogroup`, senza le
+          frecce, e con le voci spente scritte `disabled` invece che
+          `aria-disabled` — quindi con la ragione dello spegnimento raggiungibile
+          solo col puntatore.
+        */}
+        <Scheda
+          icona="i-settings"
+          titolo={t("studio.layout.title")}
+          nota={
+            conScafale
+              ? t("studio.layout.twoOfFour")
+              : t("studio.layout.allRead")
+          }
+        >
+          {(
+            [
               [
-                [
-                  "player",
-                  t("studio.layout.player"),
-                  ["floating", "bottom-bar", "compact"],
-                ],
-                [
-                  "sidebar",
-                  t("studio.layout.sidebar"),
-                  ["rail", "expanded", "hidden"],
-                ],
-                [
-                  "density",
-                  t("studio.layout.density"),
-                  ["comfortable", "compact", "spacious"],
-                ],
-              ] as const
-            ).map(([campo, etichetta, valori]) => {
-              // `player` e `sidebar` scelgono una variante dell'albero **di
-              // serie**, e contano solo finché `layout.shell` non c'è — sta
-              // scritto sulla loro definizione in `layout.rs`. Scritto lo
-              // scafale, girarle non fa più niente: erano due manopole vive
-              // sotto un titolo che prometteva che l'app le leggesse.
-              const spenta = conScafale && campo !== "density";
-              return (
-                <div
-                  key={campo}
-                  className="scelta-impaginazione"
-                  data-spenta={spenta || undefined}
-                >
-                  <div className="che">
-                    {etichetta}
-                    {spenta && (
-                      <span className="perche">
-                        {t("studio.layout.shellSays")}
-                      </span>
-                    )}
-                  </div>
-                  <div className="valori">
-                    {valori.map((v) => (
-                      <button
-                        key={v}
-                        type="button"
-                        className="valore"
-                        disabled={spenta}
-                        title={
-                          spenta ? t("studio.layout.shellWins") : undefined
-                        }
-                        data-active={
-                          (impaginazione[campo] ?? valori[0]) === v || undefined
-                        }
-                        onClick={() => cambiaImpaginazione(campo, v)}
-                      >
-                        {v}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-            <div className="scelta-impaginazione">
-              <div className="che">{t("studio.layout.motion")}</div>
-              <div className="valori">
-                {(["full", "essential", "none", "maximum"] as const).map(
-                  (v) => (
-                    <button
-                      key={v}
-                      type="button"
-                      className="valore"
-                      data-active={
-                        (movimento["intensity"] ?? "full") === v || undefined
-                      }
-                      onClick={() =>
-                        onSorgente(
-                          scriviIn(sorgente, ["motion", "intensity"], v),
-                        )
-                      }
-                    >
-                      {v}
-                    </button>
-                  ),
-                )}
-              </div>
-            </div>
-          </div>
+                "player",
+                t("studio.layout.player"),
+                ["floating", "bottom-bar", "compact"],
+              ],
+              [
+                "sidebar",
+                t("studio.layout.sidebar"),
+                ["rail", "expanded", "hidden"],
+              ],
+              [
+                "density",
+                t("studio.layout.density"),
+                ["comfortable", "compact", "spacious"],
+              ],
+            ] as const
+          ).map(([campo, etichetta, valori]) => {
+            // `player` e `sidebar` scelgono una variante dell'albero **di
+            // serie**, e contano solo finché `layout.shell` non c'è — sta
+            // scritto sulla loro definizione in `layout.rs`. Scritto lo
+            // scafale, girarle non fa più niente: erano due manopole vive
+            // sotto un titolo che prometteva che l'app le leggesse.
+            const spenta = conScafale && campo !== "density";
+            return (
+              <Riga
+                key={campo}
+                che={
+                  spenta ? `${etichetta} · ${t("studio.layout.shellSays")}` : etichetta
+                }
+              >
+                <Segmentato
+                  etichetta={etichetta}
+                  classe="minuto denso"
+                  scelta={String(impaginazione[campo] ?? valori[0])}
+                  onScegli={(v) => cambiaImpaginazione(campo, v)}
+                  // La ragione per cui una linguetta è spenta la porta la
+                  // linguetta: `Segmentato` la rende raggiungibile da tastiera e
+                  // la fa leggere, che è tutto il punto di `.con-ragione`.
+                  voci={valori.map((v) => ({
+                    chiave: v,
+                    etichetta: v,
+                    spenta: spenta ? t("studio.layout.shellWins") : undefined,
+                  }))}
+                />
+              </Riga>
+            );
+          })}
           <p className="nota">
             {conScafale ? (
               <Trans
@@ -897,13 +850,22 @@ export function Tavolozza({
                     <strong>{t("studio.layout.note.plain.nobody")}</strong>
                   ),
                   plain: <code>plain.json</code>,
-                  none: <code>motion: none</code>,
-                  ridotto: <code>prefers-reduced-motion</code>,
+                  movimento: <strong>{t("studio.motion.title")}</strong>,
                 }}
               />
             )}
           </p>
-        </section>
+        </Scheda>
+
+        {/* Il movimento, tutto insieme e in fondo alla colonna: l'intensità che
+            veniva da sopra, le curve nominate, la transizione di pagina, le
+            animazioni e il loro budget. */}
+        <Movimento
+          sorgente={sorgente}
+          onSorgente={onSorgente}
+          esito={esito}
+          registro={registro}
+        />
 
         <section className="scheda section-card prima-di-esportare">
           <header>

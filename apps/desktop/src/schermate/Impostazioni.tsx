@@ -62,6 +62,7 @@ import { SchedaSpettro } from "../parti/SchedaSpettro";
 import { SchedaUscita } from "../parti/UscitaAudio";
 import { Segmentato } from "../parti/Segmentato";
 import type { Associazioni } from "../tastiera";
+import type { MovimentoUtente } from "../aspetto";
 import type { Tema } from "../tema";
 import { Trans } from "../lingue/Trans";
 import { nomeFonte } from "../parti/Incertezza";
@@ -224,11 +225,12 @@ function voci(): readonly {
     v("cartelle", "roots"),
     v("cartelle", "scan"),
     v("cartelle", "downloads"),
-    v("cartelle", "organize"),
     v("aspetto", "language"),
     v("aspetto", "theme"),
     v("aspetto", "skin"),
     v("aspetto", "accent"),
+    // Nessuno cerca «onboarding»: si cerca «giro», «tour», «guida», «aiuto».
+    v("aspetto", "tour"),
     v("riproduzione", "output"),
     v("riproduzione", "eq"),
     v("riproduzione", "replaygain"),
@@ -236,9 +238,19 @@ function voci(): readonly {
     v("riproduzione", "autoplay"),
     v("riproduzione", "crossfade"),
     v("riproduzione", "spectrum"),
+    // Nessuno cerca «dati tecnici»: si cerca «bitrate», «flac», «kbps», o «khz»
+    // — cioè quel che c'è scritto nella riga, non come l'abbiamo intitolata.
+    // I sinonimi qui sono la voce più del titolo.
+    v("riproduzione", "fileFormat"),
     v("riproduzione", "enrich"),
     v("movimento", "motion"),
     v("movimento", "shortcuts"),
+    // Nessuno cerca «zoom» sapendo che si chiama così: si cerca «più
+    // grande», «testo piccolo», o il nome del tasto. E la si cerca proprio
+    // quando non si riesce a leggere, cioè nel momento in cui trovarla conta
+    // di più: una scheda che l'indice non conosce sarebbe raggiungibile solo
+    // dalle scorciatoie, che è esattamente quel che può mancare.
+    v("movimento", "zoom"),
     v("nuvola", "drive"),
     v("sincronia", "sync"),
     v("sincronia", "devices"),
@@ -318,7 +330,10 @@ function riassunto(r: Resoconto): string {
   conta(r.cambiamenti.preferiti, "likes");
   conta(r.cambiamenti.posizioni, "positions");
   conta(r.cambiamenti.playlist, "playlists");
-  conta(r.cambiamenti.playlistTolte, "playlistsGone");
+  // `playlist_tolte` e non `playlistTolte`: il `rename_all` del Rust sta sul
+  // `Resoconto` esterno e non scende nel tipo annidato — vedi la nota in
+  // `ipc.ts`. Prima di questa release qui arrivava sempre `undefined`.
+  conta(r.cambiamenti.playlist_tolte, "playlistsGone");
   conta(r.cambiamenti.cartelle, "folders");
   if (pezzi.length === 0) {
     // Una passata a vuoto va detta, e va detta come una cosa normale: è la
@@ -554,6 +569,65 @@ function SchedaTesti() {
 }
 
 /**
+ * L'interruttore dei dati tecnici del file, sotto i comandi di riproduzione.
+ *
+ * # Perché si gestisce da sé
+ *
+ * La stessa ragione di `SchedaSpettro`, `SchedaUscita` e `SchedaChiusura`:
+ * `Impostazioni` riceve già una sessantina di prop, e questa preferenza non la
+ * guarda nessun'altra parte di questa schermata. Quel che gli serve se lo chiede
+ * quando viene montato, e lo lascia andare quando si smonta.
+ *
+ * # Perché parte da acceso mentre quello dello spettro parte da spento
+ *
+ * Perché è il valore di serie della chiave, e questo è il valore che si mostra
+ * finché la lettura non è tornata. Sono i due millisecondi in cui un
+ * interruttore dipinto al contrario si vedrebbe lampeggiare.
+ *
+ * # Perché è pessimistico
+ *
+ * Perché lo stato arriva dal **ritorno** del comando e non dal click: il nucleo
+ * scrive, rilegge e risponde con quel che c'è nel database. Una scrittura
+ * fallita lascia l'interruttore dov'era invece di mostrarlo cambiato — e la
+ * disciplina è quella di `SchedaChiusura` e dell'equalizzatore.
+ */
+function InterruttoreFormato({
+  onErrore,
+}: {
+  /** La scelta scrive nel database: se non ci arriva, va detto. */
+  onErrore: (e: unknown) => void;
+}) {
+  const [visibile, setVisibile] = useState(true);
+
+  useEffect(() => {
+    let annullato = false;
+    ipc
+      .formatoVisibile()
+      .then((letto) => {
+        if (!annullato) setVisibile(letto);
+      })
+      .catch(() => {
+        /* Accesa, che è il valore di serie: una preferenza che non si legge non
+           deve poter far sparire una riga che c'era. */
+      });
+    return () => {
+      annullato = true;
+    };
+  }, []);
+
+  return (
+    <Interruttore
+      etichetta={t("settings.fileFormat.toggle")}
+      spiegazione={t("settings.fileFormat.hint")}
+      acceso={visibile}
+      onCambia={(valore) => {
+        ipc.formatoVisibileScegli(valore).then(setVisibile).catch(onErrore);
+      }}
+    />
+  );
+}
+
+/**
  * Il cursore della dissolvenza incrociata.
  *
  * # Perché un cursore e non delle linguette
@@ -767,12 +841,18 @@ export function Impostazioni({
   accentoDinamico,
   onAccentoDinamico,
   movimento,
+  movimentoUtente,
+  onMovimentoUtente,
+  zoom,
+  onZoom,
+  onZoomNormale,
   tema,
   onTema,
   lingua,
   onLingua,
   scorciatoie,
   onScorciatoie,
+  onGiro,
   onProfiloImportato,
   eqAttivo,
   eqGuadagni,
@@ -790,7 +870,6 @@ export function Impostazioni({
   onTogliCartella,
   onScegliCartellaDownload,
   onCartellaDownloadDiSerie,
-  onRiordina,
   onScansiona,
   onAnnullaScansione,
   onScegliSkin,
@@ -810,6 +889,7 @@ export function Impostazioni({
   esitoArricchimento,
   onArricchimentoAttiva,
   onArricchimentoAnnulla,
+  onArricchimentoRiportaNeiFile,
   nuvola,
   onNuvolaCollega,
   onNuvolaScollega,
@@ -844,6 +924,32 @@ export function Impostazioni({
   onAccentoDinamico: (attivo: boolean) => void;
   /** Il movimento che la skin dichiara: `none`, `essential`, `full`, `maximum`. */
   movimento: string;
+  /** Quanto movimento vuole chi guarda, **sotto** quello della skin. */
+  movimentoUtente: MovimentoUtente;
+  /** La scrive `App`, che è chi la fa valere sul documento. */
+  onMovimentoUtente: (scelta: MovimentoUtente) => void;
+  /**
+   * Di quanto è ingrandita l'interfaccia: 1 è la misura di serie.
+   *
+   * Un numero e non un `number | null`, al contrario dello stato che lo tiene
+   * in `App`: quando questa schermata si apre lo zoom è arrivato da un pezzo
+   * — la finestra non si mostra prima — e il caso che resta è quello in cui
+   * la lettura è fallita, dove la misura vera è davvero quella di serie.
+   * Farne un `null` di qua vorrebbe dire un secondo stato «non si sa ancora»
+   * in una schermata che non può vederlo.
+   */
+  zoom: number;
+  /**
+   * Un gradino in su (`true`) o in giù (`false`).
+   *
+   * Un verso e non un numero, come per la scorciatoia: la scala dei gradini
+   * vive in `preferenze::SCALA_ZOOM` e non attraversa l'IPC. Questa schermata
+   * non sa quali misure esistono, e non deve saperlo — sa che ce n'è una
+   * prima e una dopo, e che ai due capi non succede niente.
+   */
+  onZoom: (su: boolean) => void;
+  /** Torna alla misura di serie. */
+  onZoomNormale: () => void;
   tema: Tema;
   onTema: (t: Tema) => void;
   /** Il codice della lingua in uso. */
@@ -854,6 +960,14 @@ export function Impostazioni({
   scorciatoie: Associazioni;
   /** Le nuove, già intere: le scrive `App`, che è chi le fa valere. */
   onScorciatoie: (a: Associazioni) => void;
+  /**
+   * Rifà il giro guidato, subito.
+   *
+   * Una prop e non una chiamata da qui, per la stessa ragione per cui il giro
+   * non vive in questa schermata: i dieci riflettori puntano su comandi che
+   * stanno **fuori** dalle Impostazioni, e ad aprirli e chiuderli è `App`.
+   */
+  onGiro: () => void;
   /** Un profilo è stato applicato: quel che sta in `App` va riletto. */
   onProfiloImportato: () => void;
   /** L'equalizzatore è acceso, secondo il nucleo. */
@@ -881,7 +995,6 @@ export function Impostazioni({
   onScegliCartellaDownload: () => void;
   /** Rimette il valore di serie: la prima cartella sorvegliata. */
   onCartellaDownloadDiSerie: () => void;
-  onRiordina: (percorso: string) => void;
   onScansiona: () => void;
   onAnnullaScansione: () => void;
   onScegliSkin: (id: string) => void;
@@ -940,8 +1053,18 @@ export function Impostazioni({
   /** Cosa ha prodotto l'ultima passata di questa sessione. */
   esitoArricchimento: EsitoArricchimento | null;
   onArricchimentoAttiva: (attivo: boolean) => void;
-  /** Riporta indietro i tag, e spegne l'automatico. */
+  /** Dimentica quel che l'arricchimento ha dedotto, e spegne l'automatico. */
   onArricchimentoAnnulla: () => void;
+  /**
+   * Riscrive nei file i tag di prima, per quel che le versioni passate hanno
+   * già toccato.
+   *
+   * Una prop a parte e non un parametro della precedente: sono due gesti
+   * diversi — uno svuota una tabella, l'altro riapre in scrittura migliaia di
+   * file dell'utente — e un booleano che sceglie fra i due sarebbe la firma
+   * che poi nessuno ricorda in che verso va.
+   */
+  onArricchimentoRiportaNeiFile: () => void;
   /** Lo stato del backup, o `null` finché non è stato chiesto. */
   nuvola: StatoNuvola | null;
   onNuvolaCollega: () => void;
@@ -1110,18 +1233,6 @@ export function Impostazioni({
                     <span className="percorso" title={c}>
                       {c}
                     </span>
-                    <button
-                      type="button"
-                      className="tasto icon-btn"
-                      aria-label={t("settings.roots.reorder", { percorso: c })}
-                      /* Il riordino è per cartella e non per libreria:
-                         `plan_organize` ragiona su una radice sola, e quel che
-                         sta fuori lo lascia fermo. */
-                      title={t("settings.roots.reorder.title")}
-                      onClick={() => onRiordina(c)}
-                    >
-                      <Icona nome="i-sort" dim={14} />
-                    </button>
                     <button
                       type="button"
                       className="tasto icon-btn"
@@ -1451,6 +1562,29 @@ export function Impostazioni({
                       })
                     : t("settings.enrich.undo")}
               </button>
+
+              {/* Compare solo se c'è davvero qualcosa da riportare, e non
+                  compare spento: un pulsante disabilitato dice «un giorno
+                  potrai», e qui quel giorno non arriva mai — `neiFile` conta
+                  le righe di `enrich_undo`, che dalla 2.3.1 nessuno scrive
+                  più e che possono solo calare. Su una libreria nata da
+                  questa versione in poi questo bottone non deve esistere
+                  affatto. */}
+              {arricchimento !== null && arricchimento.neiFile > 0 && (
+                <button
+                  type="button"
+                  className="bottone btn-ghost"
+                  disabled={arricchimento.inCorso}
+                  onClick={onArricchimentoRiportaNeiFile}
+                >
+                  <Icona nome="i-import" dim={15} />
+                  {arricchimento.inCorso
+                    ? t("settings.enrich.passRunning")
+                    : t("settings.enrich.toFiles.count", {
+                        n: arricchimento.neiFile,
+                      })}
+                </button>
+              )}
             </div>
 
             <p className="nota">
@@ -1461,6 +1595,29 @@ export function Impostazioni({
                 }}
               />
             </p>
+
+            {/* Il salto che va spiegato, e che senza questa nota si legge come
+                un guasto: su una libreria che viene dalla 2.3.0 «Dimentica»
+                mostra **zero** finché non gira una passata nuova. È corretto —
+                quei brani hanno una riga in `enrich_undo` e non nella tabella
+                nuova, e i loro tag stanno dentro i file, non in una tabella di
+                Aether — ma nessuno può indovinarlo guardando un contatore a
+                zero accanto a una libreria che l'arricchimento ha
+                evidentemente toccato. La condizione è la stessa del bottone
+                qui sopra, ed è quella giusta: la nota c'è esattamente finché
+                esiste il caso che spiega, e sparisce da sé il giorno in cui la
+                tabella vecchia si svuota. */}
+            {arricchimento !== null && arricchimento.neiFile > 0 && (
+              <p className="nota">
+                <Trans
+                  k="settings.enrich.legacy.note"
+                  n={{ n: arricchimento.neiFile }}
+                  v={{
+                    riporta: <strong>{t("settings.enrich.toFiles")}</strong>,
+                  }}
+                />
+              </p>
+            )}
           </Scheda>
         )}
 
@@ -1634,7 +1791,11 @@ export function Impostazioni({
                   );
                 })}
               </div>
-              <div className="azioni">
+              {/* L'ancora del giro guidato: qui e non sulla griglia sopra,
+                  perché il passo racconta lo Studio — e la porta d'ingresso
+                  dello Studio per chi non ha ancora nessuna skin sua è «Crea
+                  tema», non una delle schede installate. */}
+              <div className="azioni" data-giro="studio">
                 {/* Prima di «Installa»: fare un tema è il comando principale di
                     questa scheda, installarne uno fatto da altri è il caso
                     raro. Il pulsante per-scheda qui sopra apre lo Studio su una
@@ -1656,6 +1817,26 @@ export function Impostazioni({
                   {t("settings.skin.install")}
                 </button>
                 <span className="oppure">{t("settings.skin.orDrop")}</span>
+              </div>
+            </Scheda>
+
+            {/* In «Aspetto» e non altrove: il giro guidato racconta com'è
+                fatta la finestra, ed è la stessa domanda a cui rispondono la
+                lingua, il tema e le skin. La sezione «Movimento e accesso» —
+                dove stanno le scorciatoie, che il decimo passo nomina —
+                sarebbe stata l'altra candidata, ma là dentro si dichiara una
+                condizione, non si chiede una presentazione. */}
+            <Scheda
+              icona="i-home"
+              titolo={t("settings.tour.title")}
+              nota={t("settings.tour.note")}
+            >
+              <p className="nota">{t("settings.tour.p1")}</p>
+              <div className="azioni">
+                <button type="button" className="bottone" onClick={onGiro}>
+                  <Icona nome="i-play" dim={15} />
+                  {t("settings.tour.redo")}
+                </button>
               </div>
             </Scheda>
           </>
@@ -1734,6 +1915,11 @@ export function Impostazioni({
                 acceso={autoplay}
                 onCambia={onAutoplay}
               />
+              {/* Qui e non in «Aspetto», per la regola di questa sezione: il
+                  dominio della chiave è `player.*`. E dentro questa scheda e
+                  non in una sua, perché una scheda intera per un interruttore
+                  solo sarebbe un titolo più alto di quel che contiene. */}
+              <InterruttoreFormato onErrore={onErrore} />
             </Scheda>
             {/* Prima della dissolvenza e dopo l'equalizzatore, che è l'ordine
                 di quanto spesso ci si torna: da quale scheda esce il suono è
@@ -1772,6 +1958,49 @@ export function Impostazioni({
           </Scheda>
         )}
 
+        {/* Fra le scorciatoie e il movimento, e in questa sezione e non in
+            «Aspetto»: ingrandire non è una scelta di look come il tema o la
+            skin — è la stessa domanda del movimento ridotto, cioè «fai in modo
+            che io ci arrivi». Sta sotto le scorciatoie perché è la scheda che
+            le spiega: quelle tre righe lì sopra dicono i tasti, questi tre
+            bottoni fanno la stessa cosa per chi i tasti li ha tolti. */}
+        {sezione === "movimento" && (
+          <Scheda
+            icona="i-expand"
+            titolo={t("settings.zoom.title")}
+            nota={t("settings.zoom.note")}
+          >
+            <p className="nota">{t("settings.zoom.p1")}</p>
+            {/* I tre bottoni e non un cursore o un elenco di misure: un
+                elenco vorrebbe i gradini scritti da questa parte, cioè un
+                secondo elenco di numeri accanto a quello del nucleo. Qui si
+                mandano gesti, e il numero che si legge è quello che il nucleo
+                ha risposto. */}
+            <div className="azioni">
+              <button
+                type="button"
+                className="bottone"
+                onClick={() => onZoom(false)}
+              >
+                {t("settings.zoom.smaller")}
+              </button>
+              <button type="button" className="bottone" onClick={onZoomNormale}>
+                {t("settings.zoom.reset")}
+              </button>
+              <button
+                type="button"
+                className="bottone"
+                onClick={() => onZoom(true)}
+              >
+                {t("settings.zoom.bigger")}
+              </button>
+            </div>
+            <p className="nota">
+              {t("settings.zoom.now", { quanto: Math.round(zoom * 100) })}
+            </p>
+          </Scheda>
+        )}
+
         {sezione === "movimento" && (
           <Scheda icona="i-eq" titolo={t("settings.motion.title")}>
             <p className="nota">
@@ -1789,6 +2018,23 @@ export function Impostazioni({
                 v={{ layout: <code>layout</code> }}
               />
             </p>
+
+            {/* Due voci e non tre. Da qui si può soltanto **ridurre** sotto
+                quel che la skin dichiara: un livello «di più» contraddirebbe
+                la frase qui sopra, che dice che una preferenza di
+                accessibilità sovrascrivibile non è una preferenza. Chi vuole
+                più movimento cambia skin, che è dove il movimento si
+                dichiara. */}
+            <Segmentato
+              etichetta={t("settings.motion.pref")}
+              scelta={movimentoUtente}
+              onScegli={onMovimentoUtente}
+              voci={[
+                { chiave: "sistema", etichetta: t("settings.motion.system") },
+                { chiave: "ridotto", etichetta: t("settings.motion.reduce") },
+              ]}
+            />
+            <p className="nota">{t("settings.motion.pref.why")}</p>
           </Scheda>
         )}
 

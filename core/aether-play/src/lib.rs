@@ -64,20 +64,24 @@ pub use uscita::FormatoUscita;
 
 /// Cosa sappiamo suonare.
 ///
-/// L'elenco chiuso di `aether_domain::paths::SUPPORTED_EXTENSIONS` meno i due
-/// che symphonia non decodifica. Averlo qui come tipo, invece che come confronto
-/// fra stringhe sparso per l'albero, serve a una cosa sola: quando arriverà un
-/// decodificatore per Opus, il compilatore indicherà i posti da toccare.
+/// L'elenco chiuso di `aether_domain::paths::SUPPORTED_EXTENSIONS` meno quello
+/// che non decodifichiamo. Averlo qui come tipo, invece che come confronto fra
+/// stringhe sparso per l'albero, è servito esattamente a quel che prometteva:
+/// il giorno che Opus ha avuto un decodificatore — `decodifica::opus`, che
+/// symphonia non porta e che si registra accanto ai suoi — il compilatore ha
+/// indicato i posti da toccare, e sono stati questi.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
     /// Un formato che il motore sa aprire.
     Supportato,
     /// Un formato che riconosciamo e non sappiamo suonare.
     ///
-    /// Opus e WMA. Non è una svista: symphonia 0.5 non ha un decodificatore né
-    /// per l'uno né per l'altro, e fingere di provarci darebbe un errore di
-    /// decodifica generico invece di una risposta. Sulla libreria misurata di
-    /// questo progetto — 1421 brani, tutti MP3 — non ce n'è nessuno dei due.
+    /// Rimasto in uno: WMA. Non è una svista — symphonia non ha un
+    /// decodificatore, e nessuna libreria in Rust puro lo porta — e fingere di
+    /// provarci darebbe un errore di decodifica generico invece di una
+    /// risposta. La variante resta anche se il suo elenco si è accorciato:
+    /// serve a distinguere «riconosciuto e non suonabile», che va detto
+    /// all'utente com'è, da «non è musica», che si tace.
     NonSupportato,
     /// Non è nemmeno un'estensione che consideriamo musica.
     Sconosciuto,
@@ -89,8 +93,10 @@ impl Codec {
     pub fn da_estensione(estensione: &str) -> Self {
         let pulita = estensione.trim_start_matches('.').to_ascii_lowercase();
         match pulita.as_str() {
-            "mp3" | "flac" | "m4a" | "aac" | "ogg" | "wav" | "aiff" | "aif" => Self::Supportato,
-            "opus" | "wma" => Self::NonSupportato,
+            "mp3" | "flac" | "m4a" | "aac" | "ogg" | "oga" | "wav" | "aiff" | "aif" | "opus" => {
+                Self::Supportato
+            }
+            "wma" => Self::NonSupportato,
             _ => Self::Sconosciuto,
         }
     }
@@ -111,12 +117,35 @@ pub(crate) struct Condiviso {
     pub svuota: AtomicBool,
     /// Il guadagno voluto, nei bit di un `f32`.
     pub guadagno: AtomicU32,
-    /// I fotogrammi davvero usciti dalle casse.
+    /// I fotogrammi consegnati al buffer del dispositivo.
+    ///
+    /// **Non** «usciti dalle casse», come diceva questa riga: fra la consegna e
+    /// il suono ci sono il buffer del dispositivo e tutta la catena d'uscita. I
+    /// tre termini li distingue il `//!` di [`crate::motore`], e quanti
+    /// fotogrammi valgano gli altri due lo dice
+    /// [`Condiviso::latenza_fotogrammi`].
     pub fotogrammi: AtomicU64,
     /// I campioni serviti a vuoto perché l'anello era secco.
     pub vuoti: AtomicU64,
     /// Quanti canali ha l'uscita, per contare i fotogrammi.
     pub canali: AtomicU32,
+    /// Quanti fotogrammi stanno fra il conteggio della callback e le casse.
+    ///
+    /// La callback conta i fotogrammi quando li consegna al buffer del
+    /// dispositivo, non quando si sentono: fra le due cose c'è quel buffer, e
+    /// `cpal` lo sa misurare — la differenza fra i due `StreamInstant` che
+    /// accompagnano ogni blocco. Qui ci finisce quel numero, convertito in
+    /// fotogrammi alla frequenza d'uscita.
+    ///
+    /// **Una stima, e solo di un pezzo della catena.** Quanto valga e quanto si
+    /// possa crederci è scritto una volta sola, in
+    /// `crate::uscita::annota_latenza`; chi la legge la tratta con il tetto di
+    /// [`crate::uscita::LATENZA_MASSIMA_MS`] e ci somma la correzione a mano.
+    ///
+    /// `Relaxed` da entrambe le parti: non ordina niente rispetto a nient'altro
+    /// — chi la legge vuole l'ultimo valore noto, e leggerne uno vecchio di un
+    /// blocco vale qualche millisecondo su un numero che è già una stima.
+    pub latenza_fotogrammi: AtomicU64,
     /// Il motore non suona più, e non ricomincerà da solo.
     ///
     /// Due cause, una bandiera sola: il dispositivo che sparisce da sotto i
@@ -178,6 +207,7 @@ impl Condiviso {
             fotogrammi: AtomicU64::new(0),
             vuoti: AtomicU64::new(0),
             canali: AtomicU32::new(2),
+            latenza_fotogrammi: AtomicU64::new(0),
             perso: AtomicBool::new(false),
             causa_perdita: AtomicU32::new(0),
             abbandonato: AtomicBool::new(false),
@@ -398,7 +428,10 @@ mod prove {
     fn i_formati_che_sappiamo_e_quelli_che_no() {
         assert_eq!(Codec::da_estensione("mp3"), Codec::Supportato);
         assert_eq!(Codec::da_estensione(".FLAC"), Codec::Supportato);
-        assert_eq!(Codec::da_estensione("opus"), Codec::NonSupportato);
+        assert_eq!(Codec::da_estensione("opus"), Codec::Supportato);
+        // `.oga` è Ogg come `.ogg`: stesso contenitore, stesso demultiplatore,
+        // e dentro ci può stare Vorbis, FLAC o Opus indifferentemente.
+        assert_eq!(Codec::da_estensione("oga"), Codec::Supportato);
         assert_eq!(Codec::da_estensione("wma"), Codec::NonSupportato);
         assert_eq!(Codec::da_estensione("txt"), Codec::Sconosciuto);
     }

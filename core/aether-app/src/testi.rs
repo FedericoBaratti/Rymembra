@@ -13,17 +13,21 @@
 //!    dover sapere che esiste una cache. L'unica eccezione è il sidecar
 //!    **senza tempi** davanti a una riga che i tempi ce li ha: la ragione sta
 //!    dov'è scritta l'eccezione, in `per_questo_brano`.
-//! 2. **La riga in `lyrics`**, che è dove vivono il testo scaricato e quello
+//! 2. **I tag sincronizzati del file**, cioè `SYLT` (ID3v2) e `SYNCEDLYRICS`
+//!    (Vorbis e APE): un LRC intero dentro il file musicale. Li legge
+//!    [`tag_sincronizzato`], **non** la scansione — vedi là il perché — e li si
+//!    guarda solo quando non si ha già qualcosa che scorre.
+//! 3. **La riga in `lyrics`**, che è dove vivono il testo scaricato e quello
 //!    sincronizzato a mano. È indicizzata su `track_key`: lo stesso brano in due
 //!    formati diversi condivide una riga sola, e spostare il file non la perde.
-//! 3. **Il tag del file**, cioè `tracks.lyrics`, che la scansione riempie da
-//!    `USLT`/`©lyr`/`LYRICS`. Ultimo perché è quasi sempre senza tempi — e
+//! 4. **Il tag piatto del file**, cioè `tracks.lyrics`, che la scansione riempie
+//!    da `USLT`/`©lyr`/`LYRICS`. Ultimo perché è quasi sempre senza tempi — e
 //!    quando invece i tempi ce li ha, perché qualcuno ci ha messo dentro un LRC
 //!    intero, [`aether_domain::testo::leggi`] se ne accorge da sé.
 //!
-//! Quel che si trova nelle fonti 1 e 3 si copia nella 2, che da lì in poi fa da
-//! cache. Quel che sta nella 2 non torna mai indietro da solo: scrivere nei file
-//! di qualcun altro è un gesto separato, e in questo modulo non c'è.
+//! Quel che si trova nelle fonti 1, 2 e 4 si copia nella 3, che da lì in poi fa
+//! da cache. Quel che sta nella 3 non torna mai indietro da solo: scrivere nei
+//! file di qualcun altro è un gesto separato, e in questo modulo non c'è.
 //!
 //! # Quattro esiti, e nessuna schermata bianca
 //!
@@ -35,7 +39,9 @@
 
 use std::path::{Path, PathBuf};
 
+use aether_domain::enrich::{GRAZIA_MS, titolo_da_cercare};
 use aether_domain::errors::{AppError, ErrorCode};
+use aether_domain::indizi::e_segnaposto;
 use aether_domain::testo::{self, Aderenza, Cercato, Testo};
 use aether_meta::Fornitori;
 use aether_meta::lrclib::{self, Voce};
@@ -52,6 +58,14 @@ use crate::library::{db_error, now_ms};
 #[serde(rename_all = "camelCase")]
 pub enum Fonte {
     /// Non se n'è trovato nessuno.
+    ///
+    /// È anche il valore **neutro** della colonna `source`: una riga di
+    /// `lyrics` può esistere prima di qualunque testo — la scrive
+    /// [`imposta_scarto`] quando si tocca il cursore della correzione a testo
+    /// non ancora arrivato — e in quel momento la provenienza non c'è perché
+    /// non c'è niente di cui dirla. Vale la stringa vuota, che `ricorda` e
+    /// [`ricorda_esito`] sovrascrivono come sovrascrivono `sidecar`, `tag` e
+    /// `lrclib`: quel che non si può toccare è `mano`, e solo quello.
     Nessuna,
     /// Un file `.lrc` accanto al brano.
     Sidecar,
@@ -221,7 +235,7 @@ pub fn per_questo_brano(connection: &Connection, brano: &BranoDaTestare) -> Test
     let riga = leggi_riga(connection, &brano.track_key);
 
     // Uno strumentale è una risposta, e vince su tutto: non c'è niente da
-    // cercare altrove, ed è la fonte 2 l'unica che possa saperlo.
+    // cercare altrove, ed è la riga in tabella l'unica che possa saperlo.
     if riga.as_ref().is_some_and(|r| r.strumentale) {
         return TestoBrano {
             testo: Testo {
@@ -263,17 +277,55 @@ pub fn per_questo_brano(connection: &Connection, brano: &BranoDaTestare) -> Test
         }
     }
 
-    // ── 2. la riga in tabella ───────────────────────────────────────────────
+    // ── 2. i tag sincronizzati del file ─────────────────────────────────────
+    // `SYLT` e `SYNCEDLYRICS`: un LRC intero dentro il file musicale. Non lo
+    // legge la scansione — quella tocca decine di migliaia di file e aprire
+    // ognuno una seconda volta per un frammento che quasi nessuno scrive
+    // costerebbe minuti su ogni libreria — quindi lo si legge qui, un file alla
+    // volta, e **solo quando non si ha già qualcosa che scorre**: chi ha già i
+    // tempi non ha niente da guadagnare da questa apertura.
+    //
+    // Sta prima della riga in tabella e dopo il sidecar per la stessa ragione
+    // per cui il tag piatto sta ultimo: il file dell'utente viene prima della
+    // copia, ma un sidecar è un gesto e un tag è quel che c'era nel file
+    // comprato. Quel che si trova si ricorda in tabella, così l'apertura si
+    // paga una volta sola.
+    if !riga.as_ref().is_some_and(Riga::ha_i_tempi)
+        && let Some(grezzo) = tag_sincronizzato(Path::new(&brano.path))
+    {
+        let testo = testo::leggi(&grezzo);
+        // Solo se i tempi ci sono davvero: un `SYLT` mal scritto che si legge
+        // come testo piatto non vale l'apertura, e soprattutto non vale una
+        // riscrittura della riga.
+        if testo.sincronizzato() {
+            if !riga.as_ref().is_some_and(|r| r.fonte.e_di_chi_ascolta()) {
+                ricorda(connection, brano, &grezzo, &testo, Fonte::Tag);
+            }
+            return finisci(testo, Fonte::Tag, scarto_ms, durata, cercato);
+        }
+    }
+
+    // ── 3. la riga in tabella ───────────────────────────────────────────────
     if let Some(riga) = riga
         && let Some(grezzo) = riga.grezzo()
     {
         let testo = testo::leggi(grezzo);
         if !testo.vuoto() {
-            return finisci(testo, riga.fonte, scarto_ms, durata, cercato);
+            let mut esito = finisci(testo, riga.fonte, scarto_ms, durata, cercato);
+            // È l'unico ramo in cui il confronto ha senso: qui il testo arriva
+            // da una riga scritta **per un altro momento**, e la durata che le
+            // sta accanto dice per quale. Nei rami del sidecar e del tag il
+            // testo esce dal file che si sta ascoltando, quindi confrontarlo
+            // con sé stesso non direbbe niente — e `ricorda` ha appena scritto
+            // in colonna la durata di questo file.
+            if esito.aderenza == Aderenza::Buona && riga.altra_edizione(durata) {
+                esito.aderenza = Aderenza::Sospetta;
+            }
+            return esito;
         }
     }
 
-    // ── 3. il tag ───────────────────────────────────────────────────────────
+    // ── 4. il tag piatto ────────────────────────────────────────────────────
     if let Some(grezzo) = brano.lyrics.as_deref().filter(|t| !t.trim().is_empty()) {
         let testo = testo::leggi(grezzo);
         if !testo.vuoto() {
@@ -356,6 +408,222 @@ pub fn leggi_sidecar(brano: &Path) -> Option<String> {
     None
 }
 
+// ── i tag sincronizzati ─────────────────────────────────────────────────────
+
+/// Il nome sotto cui Vorbis e APE tengono un LRC.
+///
+/// Non è uno standard: è la convenzione che hanno preso i taggatori — Mp3tag,
+/// MusicBee, foobar2000 con il suo componente — e che i lettori che i tempi li
+/// mostrano vanno a cercare. `UNSYNCEDLYRICS` è l'altro, ed è il testo piatto:
+/// quello lo legge già la scansione, mappato su `lofty::prelude::ItemKey`.
+const CHIAVE_SINCRONIZZATA: &str = "SYNCEDLYRICS";
+
+/// L'LRC che sta dentro il file musicale, se ce n'è uno.
+///
+/// # Perché non lo legge la scansione
+///
+/// Perché la scansione tocca decine di migliaia di file, e leggere questi
+/// frammenti costa un'apertura in più per file — su una libreria vera sono
+/// minuti, spesi su un tag che quasi nessuno scrive. Qui invece si apre **un**
+/// file, quello che si sta guardando, e quel che si trova finisce in tabella:
+/// l'apertura si paga una volta per brano, non una per scansione.
+///
+/// # Le due forme, e perché servono due strade
+///
+/// * **`SYLT`** è un frame ID3v2 binario, e in `lofty` 0.24 **non entra nel
+///   `Tag` unificato**: arriva come `Frame::Binary` e va interpretato a mano
+///   con `SynchronizedTextFrame::parse`. Vive solo dove vive ID3v2, cioè
+///   mp3, aiff e wav (più, fuori standard, flac e mpc).
+/// * **`SYNCEDLYRICS`** è una chiave di testo qualunque dentro Vorbis o APE, e
+///   nemmeno lei attraversa il `Tag` unificato: `ItemKey` è un'enumerazione
+///   chiusa e una chiave che non le corrisponde non ci finisce. Si legge dal
+///   tag concreto, che è l'unico che le chiavi le tiene tutte.
+///
+/// Da qui la forma di questa funzione: si apre il file **come quel che è**
+/// invece di passare da `Probe::read`, perché quel che serve sta esattamente
+/// nei pezzi che la lettura generica butta via.
+///
+/// Non fallisce mai: un file che non si apre, un frame illeggibile, un formato
+/// che questi tag non li ha, sono tutti «niente da qui», che è una fonte in
+/// meno e non un errore. È la stessa disciplina di [`leggi_sidecar`].
+///
+/// # Dove non va chiamata
+///
+/// Apre un file che può stare su una condivisione di rete, quindi vale la
+/// regola di `crate::testi`: questa catena non sta sul filo che disegna la
+/// finestra. Non allarga però la superficie del problema, e vale la pena
+/// dirlo: chi arriva fin qui su una share morta si è già fermato una riga più
+/// su, dentro [`leggi_sidecar`], che apre un file nella stessa cartella un
+/// istante prima.
+#[must_use]
+pub fn tag_sincronizzato(percorso: &Path) -> Option<String> {
+    use lofty::config::ParseOptions;
+    use lofty::file::{AudioFile as _, FileType};
+
+    let file = std::fs::File::open(percorso).ok()?;
+    let mut lettore = std::io::BufReader::new(file);
+    // Il tipo dal contenuto e non dall'estensione: un `.mp3` che dentro è un
+    // flac esiste, e sbagliare qui vorrebbe dire non trovare niente su un file
+    // che il testo ce l'ha.
+    //
+    // La sonda sta in un blocco suo perché tiene il prestito del lettore, e il
+    // lettore serve subito dopo per la lettura vera.
+    let tipo = {
+        let sonda = lofty::probe::Probe::new(&mut lettore)
+            .guess_file_type()
+            .ok()?;
+        sonda.file_type()?
+    };
+    std::io::Seek::rewind(&mut lettore).ok()?;
+
+    // Le proprietà audio non si leggono: sono la parte cara — su un VBR lungo
+    // vuol dire percorrere il file intero — e qui non servono a niente.
+    let opzioni = ParseOptions::new().read_properties(false);
+    match tipo {
+        FileType::Mpeg => {
+            let letto = lofty::mpeg::MpegFile::read_from(&mut lettore, opzioni).ok()?;
+            da_id3v2(letto.id3v2()).or_else(|| da_ape(letto.ape()))
+        }
+        FileType::Aiff => {
+            let letto = lofty::iff::aiff::AiffFile::read_from(&mut lettore, opzioni).ok()?;
+            da_id3v2(letto.id3v2())
+        }
+        FileType::Wav => {
+            let letto = lofty::iff::wav::WavFile::read_from(&mut lettore, opzioni).ok()?;
+            da_id3v2(letto.id3v2())
+        }
+        FileType::Flac => {
+            let letto = lofty::flac::FlacFile::read_from(&mut lettore, opzioni).ok()?;
+            da_vorbis(letto.vorbis_comments()).or_else(|| da_id3v2(letto.id3v2()))
+        }
+        FileType::Vorbis => {
+            let letto = lofty::ogg::VorbisFile::read_from(&mut lettore, opzioni).ok()?;
+            da_vorbis(Some(letto.vorbis_comments()))
+        }
+        FileType::Opus => {
+            let letto = lofty::ogg::OpusFile::read_from(&mut lettore, opzioni).ok()?;
+            da_vorbis(Some(letto.vorbis_comments()))
+        }
+        FileType::Speex => {
+            let letto = lofty::ogg::SpeexFile::read_from(&mut lettore, opzioni).ok()?;
+            da_vorbis(Some(letto.vorbis_comments()))
+        }
+        FileType::Ape => {
+            let letto = lofty::ape::ApeFile::read_from(&mut lettore, opzioni).ok()?;
+            da_ape(letto.ape())
+        }
+        FileType::WavPack => {
+            let letto = lofty::wavpack::WavPackFile::read_from(&mut lettore, opzioni).ok()?;
+            da_ape(letto.ape())
+        }
+        FileType::Mpc => {
+            let letto = lofty::musepack::MpcFile::read_from(&mut lettore, opzioni).ok()?;
+            da_ape(letto.ape()).or_else(|| da_id3v2(letto.id3v2()))
+        }
+        // Mp4 e aac non hanno un posto concordato dove mettere un LRC: `©lyr`
+        // è il testo piatto, e la scansione lo legge già. Inventarne uno qui
+        // vorrebbe dire cercare una chiave che nessun taggatore scrive.
+        _ => None,
+    }
+}
+
+/// L'LRC dal frame `SYLT` di un tag ID3v2.
+fn da_id3v2(tag: Option<&lofty::id3::v2::Id3v2Tag>) -> Option<String> {
+    use lofty::id3::v2::{Frame, FrameFlags, FrameId, SynchronizedTextFrame};
+
+    let frame = tag?.get(&FrameId::Valid(std::borrow::Cow::Borrowed("SYLT")))?;
+    let Frame::Binary(binario) = frame else {
+        return None;
+    };
+    let letto = SynchronizedTextFrame::parse(&binario.data, FrameFlags::default()).ok()?;
+    lrc_da_sylt(&letto)
+}
+
+/// Il testo di `SYNCEDLYRICS` in un tag Vorbis.
+fn da_vorbis(tag: Option<&lofty::ogg::VorbisComments>) -> Option<String> {
+    tag?.get(CHIAVE_SINCRONIZZATA)
+        .filter(|t| !t.trim().is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Il testo di `SYNCEDLYRICS` in un tag APE.
+fn da_ape(tag: Option<&lofty::ape::ApeTag>) -> Option<String> {
+    match tag?.get(CHIAVE_SINCRONIZZATA)?.value() {
+        lofty::tag::ItemValue::Text(testo) if !testo.trim().is_empty() => Some(testo.clone()),
+        _ => None,
+    }
+}
+
+/// Un `SYLT` riscritto come LRC.
+///
+/// # I due modi in cui un `SYLT` è scritto, e come si distinguono
+///
+/// Lo standard ID3v2 dice che il testo è **sillabato**: ogni voce è un
+/// frammento, e una nuova riga comincia dove il frammento porta un a capo in
+/// testa. Quasi nessuno lo scrive così: i taggatori veri mettono una riga
+/// intera per voce, e l'a capo non lo scrivono affatto.
+///
+/// Trattarli allo stesso modo rompe uno dei due — o si ottiene una canzone su
+/// una riga sola, o duecento righe di due sillabe. Quindi si guarda: se
+/// **almeno una** voce comincia con un a capo, il file è sillabato e si
+/// ricompongono le righe; se nessuna lo fa, ogni voce **è** una riga. Non è
+/// un'euristica su cosa il testo sembri: è la sola cosa che il formato lascia
+/// dire a chi scrive.
+///
+/// I tempi in fotogrammi MPEG si scartano: convertirli vorrebbe sapere la
+/// durata del fotogramma, cioè aver già decodificato il file, e sbagliarla
+/// darebbe un testo che scorre a una velocità inventata. Meglio nessun testo
+/// che un testo storto, che è la regola di tutto questo modulo.
+fn lrc_da_sylt(frame: &lofty::id3::v2::SynchronizedTextFrame<'_>) -> Option<String> {
+    use lofty::id3::v2::{SyncTextContentType, TimestampFormat};
+
+    if frame.timestamp_format != TimestampFormat::MS {
+        return None;
+    }
+    // Un `SYLT` può portare accordi, titoli di movimento o didascalie di scena:
+    // sono tutte cose sincronizzate, e nessuna è il testo della canzone.
+    if !matches!(
+        frame.content_type,
+        SyncTextContentType::Lyrics | SyncTextContentType::TextTranscription
+    ) {
+        return None;
+    }
+
+    let sillabato = frame
+        .content
+        .iter()
+        .any(|(_, pezzo)| pezzo.starts_with('\n') || pezzo.starts_with('\r'));
+
+    let mut righe: Vec<testo::Riga> = Vec::new();
+    for (ms, pezzo) in &frame.content {
+        let pulito = pezzo.trim_matches(['\n', '\r']);
+        let apre = !sillabato || pezzo.starts_with('\n') || pezzo.starts_with('\r');
+        match righe.last_mut() {
+            Some(ultima) if !apre => ultima.testo.push_str(pulito),
+            _ => righe.push(testo::Riga {
+                ms: *ms,
+                testo: pulito.to_owned(),
+                parole: Vec::new(),
+            }),
+        }
+    }
+    // Le righe vuote in coda e in testa non dicono niente, e una raccolta di
+    // sole righe vuote non è un testo.
+    if righe.iter().all(|r| r.testo.trim().is_empty()) {
+        return None;
+    }
+
+    // Si ricompone passando da `scrivi`, che è l'inverso provato di `leggi`:
+    // così questo tag entra nel resto del programma sotto la stessa forma di un
+    // `.lrc` sul disco, e non c'è un secondo formato interno da mantenere.
+    Some(testo::scrivi(&Testo {
+        righe,
+        piatto: None,
+        strumentale: false,
+        offset_ms: 0,
+    }))
+}
+
 // ── la riga in tabella ──────────────────────────────────────────────────────
 
 /// Quel che la tabella `lyrics` sa di un brano.
@@ -373,6 +641,18 @@ pub struct Riga {
     pub strumentale: bool,
     /// Si è già chiesto al catalogo.
     pub cercato: bool,
+    /// La durata del file su cui questi tempi sono stati battuti.
+    ///
+    /// È la colonna `duration_ms` di `011_testi.sql`, che esisteva da quella
+    /// migrazione e non era mai stata riletta: si scriveva a ogni `UPSERT` e
+    /// nessuna `SELECT` la prendeva, quindi la promessa scritta nel suo
+    /// commento — accorgersi che il testo è giusto ma l'edizione è un'altra —
+    /// non era mantenuta. La mantiene [`per_questo_brano`], che la confronta
+    /// con la durata del file che si sta ascoltando.
+    ///
+    /// `None` per le righe scritte prima che qualcuno la leggesse, e per
+    /// quelle nate da [`imposta_scarto`], che di testo non ne ha ancora uno.
+    pub durata_ms: Option<u64>,
 }
 
 impl Riga {
@@ -395,17 +675,45 @@ impl Riga {
     pub fn ha_i_tempi(&self) -> bool {
         self.synced.as_deref().is_some_and(|t| !t.trim().is_empty())
     }
+
+    /// Questi tempi sono stati battuti su un'edizione che dura un altro tanto.
+    ///
+    /// # Cosa aggiunge a [`aether_domain::testo::verifica_durata`]
+    ///
+    /// Quella guarda **dove finisce l'ultima riga**, e prende il caso in cui il
+    /// testo sborda o si ferma molto prima. Non prende il caso più insidioso: un
+    /// remaster che dura venti secondi in più dell'originale, con lo stesso
+    /// numero di strofe e l'ultima riga comodamente dentro tutt'e due le durate.
+    /// Lì l'aderenza è «buona» e il testo scorre sempre più in ritardo, e chi
+    /// guarda dà la colpa al lettore.
+    ///
+    /// Il termine di paragone è la durata scritta accanto al testo quando lo si
+    /// è preso — [`Self::durata_ms`] — contro la durata del file di adesso.
+    /// Sopra [`GRAZIA_MS`], cioè dieci secondi, non è più la stessa incisione.
+    /// Sotto, sono i mezzi secondi di silenzio che ogni codificatore aggiunge a
+    /// modo suo, e segnalarli vorrebbe dire una fascia gialla su tutta la
+    /// libreria.
+    ///
+    /// Falso quando una delle due durate non si conosce: «non si sa» non è «è
+    /// sbagliato», ed è la stessa regola di `verifica_durata`.
+    #[must_use]
+    pub fn altra_edizione(&self, durata_ms: u64) -> bool {
+        let Some(sua) = self.durata_ms.filter(|d| *d > 0) else {
+            return false;
+        };
+        durata_ms > 0 && sua.abs_diff(durata_ms) > GRAZIA_MS
+    }
 }
 
 /// La riga di `lyrics` per questa chiave, se c'è.
 ///
 /// Inghiotte i guasti: perdere questa lettura costa una fonte, e propagare
-/// l'errore costerebbe il testo che le altre due fonti avrebbero dato.
+/// l'errore costerebbe il testo che le altre fonti avrebbero dato.
 #[must_use]
 pub fn leggi_riga(connection: &Connection, track_key: &str) -> Option<Riga> {
     connection
         .prepare_cached(
-            "SELECT synced, plain, source, offset_ms, instrumental, checked_at
+            "SELECT synced, plain, source, offset_ms, instrumental, checked_at, duration_ms
              FROM lyrics WHERE track_key = ?1",
         )
         .ok()?
@@ -417,6 +725,11 @@ pub fn leggi_riga(connection: &Connection, track_key: &str) -> Option<Riga> {
                 scarto_ms: row.get(3)?,
                 strumentale: row.get::<_, i64>(4)? != 0,
                 cercato: row.get::<_, Option<i64>>(5)?.is_some(),
+                // Un numero negativo in colonna non è una durata: vale come
+                // «non si sa», che è l'unico modo onesto di trattarlo.
+                durata_ms: row
+                    .get::<_, Option<i64>>(6)?
+                    .and_then(|d| u64::try_from(d).ok()),
             })
         })
         .optional()
@@ -470,10 +783,31 @@ fn ricorda(
 /// [`aether_domain::testo::posizione_corretta`], che è l'unico posto in cui
 /// questo numero si somma a quello del file.
 ///
+/// # La riga che nasce per lo scarto non ha una provenienza
+///
+/// Questo `INSERT` può creare la riga **prima** che di testo ce ne sia uno: il
+/// cursore della correzione è raggiungibile appena ci sono delle righe, e
+/// basta toccarlo mentre il catalogo sta ancora rispondendo. In quel momento la
+/// provenienza è [`Fonte::Nessuna`], cioè la stringa vuota, e non `mano`.
+///
+/// La differenza non è di forma. `mano` vuol dire «l'ha scritto chi ascolta», e
+/// sia `ricorda` sia [`ricorda_esito`] lo rispettano con un `WHERE
+/// lyrics.source <> 'mano'` dentro l'`UPSERT` — nel database, non in un `if`.
+/// Scriverlo qui avrebbe voluto dire dichiarare fatto a mano un testo che non
+/// esiste, e da quel momento nessuna delle due funzioni avrebbe più scritto
+/// niente per quel brano: né il sidecar, né il tag, né la risposta del
+/// catalogo. Un testo mai più, e nessun modo di accorgersene — perché il
+/// sintomo è un pannello vuoto, che è esattamente quel che si vede anche quando
+/// il testo non c'è per davvero.
+///
+/// Lo scarto invece sopravvive comunque: `source` non si tocca sul ramo di
+/// conflitto, quindi il `mano` di chi ha sincronizzato a mano resta `mano`, e la
+/// stringa vuota lascia la riga aperta a chi arriverà dopo.
+///
 /// # Errori
 ///
 /// `db.queryFailed` se la scrittura non riesce. Qui l'errore si propaga, al
-/// contrario che in [`ricorda`]: è un gesto esplicito di chi ascolta, e uno
+/// contrario che in `ricorda`: è un gesto esplicito di chi ascolta, e uno
 /// spostamento che non si salva deve dirlo invece di tornare da solo a zero al
 /// prossimo brano.
 pub fn imposta_scarto(
@@ -484,11 +818,14 @@ pub fn imposta_scarto(
     connection
         .execute(
             "INSERT INTO lyrics (track_key, source, offset_ms, updated_at)
-             VALUES (?1, 'mano', ?2, ?3)
+             VALUES (?1, ?4, ?2, ?3)
              ON CONFLICT(track_key) DO UPDATE SET
                offset_ms = excluded.offset_ms,
                updated_at = excluded.updated_at",
-            rusqlite::params![track_key, scarto_ms, now_ms()],
+            // Il nome viene dall'enumerazione e non scritto a mano nella `SQL`:
+            // il valore neutro è una cosa sola, e se cambia deve cambiare in un
+            // posto solo.
+            rusqlite::params![track_key, scarto_ms, now_ms(), Fonte::Nessuna.nome()],
         )
         .map(|_| ())
         .map_err(|err| db_error("scrittura dello scarto di un testo", &err))
@@ -533,16 +870,137 @@ pub fn cerca_in_rete(
     fornitori: &Fornitori,
     brano: &BranoDaTestare,
 ) -> Result<Option<Voce>, AppError> {
+    con_ritentativi(|| {
+        let (titolo, album, durata_ms) = da_chiedere_al_catalogo(brano);
+        lrclib::cerca(
+            fornitori,
+            &Cercato {
+                titolo: &titolo,
+                artista: &brano.artist,
+                album,
+                durata_ms,
+            },
+        )
+    })
+}
+
+/// Come [`cerca_in_rete`], ma senza fidarsi di quel che il deposito ricorda.
+///
+/// La chiama il ritentativo esplicito, cioè il pulsante «Cerca di nuovo». Il
+/// perché per esteso sta su [`aether_meta::lrclib::cerca_di_nuovo`]; qui basta
+/// dire che chi preme quel pulsante ha davanti un pannello vuoto, e rileggere
+/// la risposta di ieri gli darebbe lo stesso pannello vuoto.
+///
+/// # Errori
+///
+/// Gli stessi di [`cerca_in_rete`].
+pub fn cerca_di_nuovo_in_rete(
+    fornitori: &Fornitori,
+    brano: &BranoDaTestare,
+) -> Result<Option<Voce>, AppError> {
+    con_ritentativi(|| {
+        let (titolo, album, durata_ms) = da_chiedere_al_catalogo(brano);
+        lrclib::cerca_di_nuovo(
+            fornitori,
+            &Cercato {
+                titolo: &titolo,
+                artista: &brano.artist,
+                album,
+                durata_ms,
+            },
+        )
+    })
+}
+
+/// Con che cosa si interroga il catalogo per questo brano.
+///
+/// # Il titolo si ripulisce prima di chiedere
+///
+/// [`titolo_da_cercare`] esisteva da quando esiste l'arricchimento e qui non
+/// era mai stata usata: si mandava `title` grezzo, quindi «Poetica (Official
+/// Video)» — cioè come si chiama il file di chi la sua libreria l'ha costruita
+/// scaricando — arrivava così com'era a un catalogo che quella voce non ce
+/// l'ha e non ce l'avrà mai.
+///
+/// Toglie solo il rumore di **pubblicazione**: i gruppi fra parentesi fatti
+/// interamente di parole come «official», «video», «lyrics», e la coda `-
+/// Topic` dei canali che YouTube genera da sé. `(Live)`, `- Remastered` e
+/// `feat.` **restano**, ed è giusto: cercare la versione dal vivo di un file
+/// dal vivo è quel che si vuole, e toglierlo dalla domanda farebbe trovare lo
+/// studio. La regola sta scritta per esteso sulla costante `RUMORE_DI_CARICAMENTO`.
+///
+/// # Cosa non cambia, e perché il rischio è piccolo
+///
+/// Né la chiave con cui la risposta si ricorda né i veti di
+/// [`aether_domain::testo::scegli`]: tutt'e due passano da
+/// `normalize_for_match`, che i gruppi fra parentesi li toglie **tutti** già
+/// da prima. Il peggio che può succedere è quindi una domanda esatta che
+/// fallisce su un titolo che il catalogo conosceva per intero, cioè una
+/// richiesta in più — e la domanda generosa, che è quella che poi decide, ci
+/// guadagna sempre.
+///
+/// Ripiego sul grezzo se la ripulitura non lascia niente: un brano che si
+/// chiama davvero «Video» esiste, e cercarne la stringa vuota non è cercare.
+fn da_chiedere_al_catalogo(brano: &BranoDaTestare) -> (String, Option<&str>, Option<u64>) {
+    let pulito = titolo_da_cercare(&brano.title);
+    let titolo = if pulito.trim().is_empty() {
+        brano.title.clone()
+    } else {
+        pulito
+    };
     let album = brano.album.trim();
-    lrclib::cerca(
-        fornitori,
-        &Cercato {
-            titolo: &brano.title,
-            artista: &brano.artist,
-            album: (!album.is_empty()).then_some(album),
-            durata_ms: u64::try_from(brano.duration_ms).ok().filter(|d| *d > 0),
-        },
+    (
+        titolo,
+        (!album.is_empty()).then_some(album),
+        u64::try_from(brano.duration_ms).ok().filter(|d| *d > 0),
     )
+}
+
+/// Quanto si aspetta prima del secondo e del terzo tentativo.
+///
+/// Mezzo secondo e un secondo e mezzo. Il primo prende il caso che capita più
+/// spesso di tutti — il wifi che si riaggancia, la connessione che cade sul
+/// primo pacchetto — e il secondo dà tempo a un servizio che sta ripartendo.
+/// Un quarto tentativo non c'è: oltre i due secondi non è più un inciampo, è
+/// «adesso non si può», e insistere vorrebbe dire tenere fermo il pannello del
+/// testo — o la passata — su un guasto che non passerà da solo.
+const RITENTATIVI_MS: [u64; 2] = [500, 1500];
+
+/// Ripete una domanda al catalogo quando il guasto è di quelli che passano.
+///
+/// # Cosa si ritenta, e cosa no
+///
+/// Solo `is_retryable`: un `400` è una domanda scritta male da noi e rifarla
+/// tre volte darebbe tre volte lo stesso `400`.
+///
+/// E **mai** l'interruttore aperto, che pure si dichiara ritentabile. Quel
+/// codice non descrive un guasto: descrive la [`aether_meta::Cadenza`] che ha
+/// **già** deciso di non parlare con quel servizio per qualche minuto, e
+/// riprovare significa ricevere lo stesso rifiuto in un microsecondo, tre
+/// volte, dopo due secondi di attesa buttati. Il ritentativo che serve lì è
+/// quello dell'interruttore, non il nostro.
+///
+/// `Ok(None)` — «il catalogo non ce l'ha» — non è un guasto e non si ripete:
+/// è una risposta, ed è arrivata.
+fn con_ritentativi<F>(mut chiedi: F) -> Result<Option<Voce>, AppError>
+where
+    F: FnMut() -> Result<Option<Voce>, AppError>,
+{
+    let mut fatti = 0_usize;
+    loop {
+        let err = match chiedi() {
+            Ok(voce) => return Ok(voce),
+            Err(err) => err,
+        };
+        let ancora = err.is_retryable()
+            && !matches!(err.code(), ErrorCode::NetCircuitOpen { .. })
+            && fatti < RITENTATIVI_MS.len();
+        let Some(attesa) = RITENTATIVI_MS.get(fatti).copied().filter(|_| ancora) else {
+            return Err(err);
+        };
+        std::thread::sleep(std::time::Duration::from_millis(attesa));
+        fatti = fatti.saturating_add(1);
+    }
 }
 
 /// Scrive quel che il catalogo ha risposto, sì o no che sia.
@@ -611,6 +1069,38 @@ pub fn ricorda_esito(
         rusqlite::params![brano.track_key, now_ms()],
     );
     Ok(())
+}
+
+/// Dimentica di aver già chiesto al catalogo per questo brano.
+///
+/// Azzera `checked_at`, e **solo** quello: il testo che c'è resta, la
+/// correzione di chi ascolta resta, la provenienza resta. Quel che se ne va è
+/// la frase «a questo brano si è già chiesto», che è ciò che tiene un brano
+/// fuori dalla coda della passata per [`RIPROVA_MS`] — quattordici giorni.
+///
+/// Serve al ritentativo esplicito, ed è la metà locale del gesto: l'altra metà
+/// è saltare il deposito, che sta in [`cerca_di_nuovo_in_rete`]. Servono tutt'e
+/// due, perché ricordano due cose diverse in due posti diversi — il deposito
+/// ricorda la *risposta*, questa colonna ricorda la *domanda* — e sanarne una
+/// sola lascerebbe il pulsante senza effetto.
+///
+/// Tocca anche la riga di `mano`, al contrario degli `UPSERT` di questo modulo:
+/// lì la protezione serve a non riscrivere il testo di chi ascolta, e qui il
+/// testo non si tocca. Non ha comunque conseguenze — una riga con i tempi in
+/// coda non ci torna — ma la regola va detta invece che dedotta.
+///
+/// # Errori
+///
+/// `db.queryFailed`. Si propaga: un ritentativo che crede di aver dimenticato
+/// senza averlo fatto rifà la stessa domanda alla stessa cache.
+pub fn dimentica_esito(connection: &Connection, track_key: &str) -> Result<(), AppError> {
+    connection
+        .execute(
+            "UPDATE lyrics SET checked_at = NULL WHERE track_key = ?1",
+            [track_key],
+        )
+        .map(|_| ())
+        .map_err(|err| db_error("azzeramento della memoria di una ricerca", &err))
 }
 
 /// Chi è in coda per il catalogo, come condizione `WHERE` su `tracks t`.
@@ -871,6 +1361,37 @@ pub struct DaRestituire {
 /// sempre, e quel che manca al mondo — quel che questa app produce e nessun
 /// altro — sono i tempi.
 ///
+/// # Le sentinelle non escono di qui
+///
+/// Un file senza tag `artist` non ha un artista vuoto: la scansione ci scrive
+/// `aether_domain::album::UNKNOWN_ARTIST`, cioè «Artista sconosciuto»
+/// (`library.rs`, dentro `read_track`). È un segnaposto utile in casa — tiene
+/// insieme la vista Artisti — e in un catalogo pubblico è una voce che nessuno
+/// troverà mai più, perché nessuno cercherà il testo di «Artista sconosciuto».
+/// Quel contributo non è rumore: è un contributo **perduto**, e lo scopre solo
+/// chi va a guardare sul sito.
+///
+/// Si rifiuta quindi su **titolo** e **artista**, che sono l'identità con cui il
+/// catalogo indicizza e con cui ogni altra persona ritroverà quel testo. Il
+/// controllo passa da [`aether_domain::indizi::e_segnaposto`] e non da un
+/// confronto con le due sentinelle: sul disco di chi ascolta i file arrivano già
+/// taggati da qualcun altro, e «Unknown Artist», «Various Artists», `<unknown>`,
+/// «Traccia 03» sono esattamente la stessa assenza scritta in un'altra lingua.
+/// Il confronto è sul **valore**, piegato e senza spazi doppi, non su una
+/// traduzione dell'interfaccia.
+///
+/// L'**album** invece non si rifiuta, si **svuota**. È facoltativo per il
+/// catalogo — `cerca` lo omette già dall'URL quando non c'è — e un singolo senza
+/// album esiste per davvero: rifiutare lì vorrebbe dire che un brano fuori da
+/// ogni disco non si può contribuire, cioè perdere una funzione per proteggere un
+/// campo che il catalogo accetta vuoto. Quel che non deve uscire è la stringa
+/// «Album sconosciuto», e a non farla uscire basta non scriverla.
+///
+/// Il costo, dichiarato: un disco che si chiama davvero «Untitled 3» passa per
+/// segnaposto e si rifiuta. È un rifiuto con la ragione scritta, non una perdita,
+/// e si risolve dando un titolo al brano — al contrario del verso opposto, che si
+/// risolve solo scrivendo a chi tiene il catalogo.
+///
 /// # Errori
 ///
 /// `metadata.lyricsPublishRefused` con il motivo dentro, quando non c'è niente
@@ -915,10 +1436,27 @@ pub fn da_restituire(connection: &Connection, id: i64) -> Result<DaRestituire, A
         .filter(|d| *d > 0)
         .ok_or_else(|| rifiuto("del brano non si conosce la durata"))?;
 
+    // L'identità con cui il catalogo indicizzerà questo testo. Il perché del
+    // rifiuto sta per esteso qui sopra: un segnaposto non è un nome sbagliato,
+    // è un contributo che nessuno ritroverà.
+    if e_segnaposto(Some(&brano.title)) {
+        return Err(rifiuto("di questo brano non si conosce il titolo"));
+    }
+    if e_segnaposto(Some(&brano.artist)) {
+        return Err(rifiuto("di questo brano non si conosce l'artista"));
+    }
+    // L'album si svuota invece di far cadere tutto: è facoltativo per il
+    // catalogo, e un brano fuori da ogni disco ha diritto di essere contribuito.
+    let album = if e_segnaposto(Some(&brano.album)) {
+        String::new()
+    } else {
+        brano.album
+    };
+
     Ok(DaRestituire {
         titolo: brano.title,
         artista: brano.artist,
-        album: brano.album,
+        album,
         durata_ms,
         piatto,
         sincronizzato,
@@ -1217,6 +1755,58 @@ mod prove {
     }
 
     #[test]
+    fn uno_scarto_messo_prima_del_testo_non_blocca_il_catalogo() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let id = inserisci(&connection, &brano, None);
+        let quale = super::brano(&connection, id).expect("brano");
+
+        // Il cursore della correzione si tocca mentre il catalogo sta ancora
+        // rispondendo: la riga nasce qui, e non ha ancora nessun testo.
+        imposta_scarto(&connection, "chiave", -300).expect("scarto");
+        let appena_nata = leggi_riga(&connection, "chiave").expect("riga");
+        assert_eq!(
+            appena_nata.fonte,
+            Fonte::Nessuna,
+            "una riga senza testo non è stata scritta da nessuno"
+        );
+
+        // E la risposta del catalogo, quando arriva, si scrive: era il difetto
+        // — con `source = 'mano'` la `WHERE` dell'`UPSERT` non lasciava
+        // scrivere più niente, e quel brano restava senza testo per sempre.
+        ricorda_esito(
+            &connection,
+            &quale,
+            Some(&Voce {
+                candidato: testo::Candidato {
+                    id: 7,
+                    titolo: "Titolo".to_owned(),
+                    artista: "Artista".to_owned(),
+                    album: Some("Album".to_owned()),
+                    durata_ms: Some(120_000),
+                    sincronizzato: true,
+                    strumentale: false,
+                },
+                piatto: Some("prima riga\nseconda riga".to_owned()),
+                sincronizzato: Some(LRC.to_owned()),
+            }),
+        )
+        .expect("esito");
+
+        let dopo = leggi_riga(&connection, "chiave").expect("riga");
+        assert_eq!(dopo.fonte, Fonte::Lrclib);
+        assert_eq!(dopo.synced.as_deref(), Some(LRC));
+        // E lo scarto che si era messo è ancora quello: `source` cambia, la
+        // correzione di chi ascolta no.
+        assert_eq!(dopo.scarto_ms, -300);
+
+        let esito = per_brano(&connection, id).expect("testo");
+        assert_eq!(esito.fonte, Fonte::Lrclib);
+        assert_eq!(esito.scarto_ms, -300);
+    }
+
+    #[test]
     fn quel_che_si_sincronizza_finisce_accanto_al_brano() {
         let (dir, connection) = libreria();
         let brano = dir.path().join("brano.mp3");
@@ -1325,6 +1915,312 @@ mod prove {
         assert_eq!(cosa.piatto, "prima riga\nseconda riga");
         assert_eq!(cosa.sincronizzato, LRC);
         assert_eq!(cosa.durata_ms, 120_000);
+    }
+
+    /// Un brano sincronizzato a mano e pronto da pubblicare, così le prove che
+    /// seguono possono guastare **un** campo alla volta.
+    fn pronto_da_pubblicare(dir: &tempfile::TempDir, connection: &Connection) -> i64 {
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let id = inserisci(connection, &brano, None);
+        let quale = super::brano(connection, id).expect("brano");
+        salva_a_mano(connection, &quale, LRC).expect("salvataggio");
+        id
+    }
+
+    #[test]
+    fn non_si_restituisce_un_brano_senza_artista() {
+        let (dir, connection) = libreria();
+        let id = pronto_da_pubblicare(&dir, &connection);
+        // Così com'è, si pubblica: è il termine di paragone di tutto il resto.
+        da_restituire(&connection, id).expect("pronto");
+
+        // Quel che la scansione scrive quando il tag `artist` non c'è.
+        for assente in [
+            aether_domain::album::UNKNOWN_ARTIST,
+            // E le stesse assenze scritte da un taggatore altrui: il confronto
+            // è sul valore, non su una traduzione.
+            "Unknown Artist",
+            "Various Artists",
+            "<unknown>",
+            "   ",
+        ] {
+            connection
+                .execute(
+                    "UPDATE tracks SET artist = ?1 WHERE id = ?2",
+                    rusqlite::params![assente, id],
+                )
+                .expect("artista assente");
+            let errore = da_restituire(&connection, id).err().unwrap_or_else(|| {
+                panic!("«{assente}» non è un artista da mandare in un catalogo pubblico")
+            });
+            assert_eq!(errore.code().kind().code(), "metadata.lyricsPublishRefused");
+        }
+    }
+
+    #[test]
+    fn non_si_restituisce_un_brano_senza_titolo() {
+        let (dir, connection) = libreria();
+        let id = pronto_da_pubblicare(&dir, &connection);
+
+        // `Traccia 01` è il ripiego dal nome del file, non un titolo.
+        for assente in ["Traccia 01", "Unknown Title", "Untitled", ""] {
+            connection
+                .execute(
+                    "UPDATE tracks SET title = ?1 WHERE id = ?2",
+                    rusqlite::params![assente, id],
+                )
+                .expect("titolo assente");
+            let errore = da_restituire(&connection, id)
+                .err()
+                .unwrap_or_else(|| panic!("«{assente}» non è un titolo"));
+            assert_eq!(errore.code().kind().code(), "metadata.lyricsPublishRefused");
+        }
+    }
+
+    #[test]
+    fn un_album_sconosciuto_si_manda_vuoto_invece_di_far_cadere_tutto() {
+        let (dir, connection) = libreria();
+        let id = pronto_da_pubblicare(&dir, &connection);
+        connection
+            .execute(
+                "UPDATE tracks SET album = ?1 WHERE id = ?2",
+                rusqlite::params![aether_domain::album::UNKNOWN_ALBUM, id],
+            )
+            .expect("album assente");
+
+        // Un singolo fuori da ogni disco si contribuisce comunque: l'album è
+        // facoltativo per il catalogo. Quel che non deve uscire è la sentinella.
+        let cosa = da_restituire(&connection, id).expect("si pubblica comunque");
+        assert_eq!(cosa.album, "");
+        assert_eq!(cosa.artista, "Artista");
+        assert_eq!(cosa.titolo, "Titolo");
+    }
+
+    #[test]
+    fn una_durata_diversa_rende_sospetto_un_testo_che_ci_sta_dentro() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let id = inserisci(&connection, &brano, None);
+
+        // Il file dura due minuti; questo testo finisce a un minuto e
+        // cinquanta, cioè comodamente dentro: `verifica_durata` non ha niente
+        // da ridire, ed è appunto il caso che non prendeva nessuno.
+        let dentro = "[00:10.00]prima riga\n[01:50.00]ultima riga\n";
+        connection
+            .execute(
+                "INSERT INTO lyrics (track_key, synced, source, duration_ms, checked_at, updated_at)
+                 VALUES ('chiave', ?1, 'lrclib', 120000, 1, 1)",
+                rusqlite::params![dentro],
+            )
+            .expect("riga della stessa edizione");
+        assert_eq!(
+            per_brano(&connection, id).expect("testo").aderenza,
+            Aderenza::Buona,
+            "stessa durata: non c'è niente da segnalare"
+        );
+
+        // La stessa riga, ma battuta su un'incisione che dura venticinque
+        // secondi in più. I tempi ci stanno dentro lo stesso, e il testo
+        // scorrerà sempre più in ritardo: è quel che la colonna `duration_ms`
+        // di `011_testi.sql` prometteva di far notare.
+        connection
+            .execute(
+                "UPDATE lyrics SET duration_ms = 145000 WHERE track_key = 'chiave'",
+                [],
+            )
+            .expect("altra edizione");
+        assert_eq!(
+            per_brano(&connection, id).expect("testo").aderenza,
+            Aderenza::Sospetta
+        );
+
+        // Mezzo secondo di differenza invece no: è quel che separa due
+        // codifiche dello stesso master, e segnalarlo tingerebbe di giallo
+        // mezza libreria.
+        connection
+            .execute(
+                "UPDATE lyrics SET duration_ms = 120500 WHERE track_key = 'chiave'",
+                [],
+            )
+            .expect("stessa incisione");
+        assert_eq!(
+            per_brano(&connection, id).expect("testo").aderenza,
+            Aderenza::Buona
+        );
+
+        // E una riga vecchia, scritta prima che qualcuno leggesse quella
+        // colonna, non diventa sospetta per il fatto di non saperlo.
+        connection
+            .execute(
+                "UPDATE lyrics SET duration_ms = NULL WHERE track_key = 'chiave'",
+                [],
+            )
+            .expect("durata ignota");
+        assert_eq!(
+            per_brano(&connection, id).expect("testo").aderenza,
+            Aderenza::Buona,
+            "«non si sa» non è «è sbagliato»"
+        );
+    }
+
+    #[test]
+    fn il_titolo_si_normalizza_prima_di_chiedere() {
+        let (dir, connection) = libreria();
+        let percorso = dir.path().join("brano.mp3");
+        std::fs::write(&percorso, b"finto").expect("file");
+        let id = inserisci(&connection, &percorso, None);
+        let mut quale = super::brano(&connection, id).expect("brano");
+
+        quale.title = "Poetica (Official Video)".to_owned();
+        let (titolo, album, durata) = da_chiedere_al_catalogo(&quale);
+        assert_eq!(titolo, "Poetica", "il rumore del caricamento non si cerca");
+        assert_eq!(album, Some("Album"));
+        assert_eq!(durata, Some(120_000));
+
+        // Quel che dice del brano invece resta: cercare la versione dal vivo
+        // di un file dal vivo è la cosa giusta.
+        quale.title = "Poetica (Live)".to_owned();
+        assert_eq!(da_chiedere_al_catalogo(&quale).0, "Poetica (Live)");
+
+        // Un titolo fatto di solo rumore torna com'era: cercare la stringa
+        // vuota non è cercare.
+        quale.title = "(Official Video)".to_owned();
+        assert_eq!(da_chiedere_al_catalogo(&quale).0, "(Official Video)");
+
+        // Un album vuoto non diventa una stringa vuota da mandare: diventa
+        // «non c'è», ed è `lrclib::url_esatta` a saltarlo.
+        quale.album = "   ".to_owned();
+        assert_eq!(da_chiedere_al_catalogo(&quale).1, None);
+    }
+
+    #[test]
+    fn un_sylt_diventa_un_lrc() {
+        use lofty::config::WriteOptions;
+        use lofty::id3::v2::{
+            FrameFlags, SyncTextContentType, SynchronizedTextFrame, TimestampFormat,
+        };
+
+        // Il caso comune: una riga intera per voce, nessun a capo in testa.
+        let per_righe = SynchronizedTextFrame::new(
+            lofty::TextEncoding::UTF8,
+            *b"ita",
+            TimestampFormat::MS,
+            SyncTextContentType::Lyrics,
+            None,
+            vec![
+                (1_000, "prima riga".to_owned()),
+                (2_000, "seconda".to_owned()),
+            ],
+        );
+        // Si passa dai byte, che è la forma in cui il frame arriva davvero:
+        // in lofty `SYLT` non entra nel `Tag` unificato, sta in un
+        // `Frame::Binary` e va interpretato a mano.
+        let byte = per_righe.as_bytes(WriteOptions::default()).expect("byte");
+        let riletto = SynchronizedTextFrame::parse(&byte, FrameFlags::default()).expect("frame");
+        assert_eq!(
+            lrc_da_sylt(&riletto).as_deref(),
+            Some("[00:01.00]prima riga\n[00:02.00]seconda\n")
+        );
+
+        // Il caso dello standard: sillabe, e l'a capo che dice dove comincia
+        // una riga. Le sillabe di una riga si ricompongono in una riga sola,
+        // col tempo della prima.
+        let sillabato = SynchronizedTextFrame::new(
+            lofty::TextEncoding::UTF8,
+            *b"eng",
+            TimestampFormat::MS,
+            SyncTextContentType::Lyrics,
+            None,
+            vec![
+                (1_000, "\nHel".to_owned()),
+                (1_200, "lo".to_owned()),
+                (2_000, "\nworld".to_owned()),
+            ],
+        );
+        assert_eq!(
+            lrc_da_sylt(&sillabato).as_deref(),
+            Some("[00:01.00]Hello\n[00:02.00]world\n")
+        );
+
+        // I tempi in fotogrammi MPEG non si convertono a occhio: senza la
+        // durata del fotogramma sarebbe un testo che scorre a una velocità
+        // inventata, e nessun testo è meglio di un testo storto.
+        let a_fotogrammi = SynchronizedTextFrame::new(
+            lofty::TextEncoding::UTF8,
+            *b"eng",
+            TimestampFormat::MPEG,
+            SyncTextContentType::Lyrics,
+            None,
+            vec![(1, "prima".to_owned())],
+        );
+        assert_eq!(lrc_da_sylt(&a_fotogrammi), None);
+
+        // E un `SYLT` che porta accordi non è il testo della canzone.
+        let accordi = SynchronizedTextFrame::new(
+            lofty::TextEncoding::UTF8,
+            *b"eng",
+            TimestampFormat::MS,
+            SyncTextContentType::Chord,
+            None,
+            vec![(1_000, "Bb F Fsus".to_owned())],
+        );
+        assert_eq!(lrc_da_sylt(&accordi), None);
+    }
+
+    #[test]
+    fn un_syncedlyrics_di_vorbis_si_legge() {
+        let mut tag = lofty::ogg::VorbisComments::default();
+        tag.push(CHIAVE_SINCRONIZZATA.to_owned(), LRC.to_owned());
+        assert_eq!(da_vorbis(Some(&tag)).as_deref(), Some(LRC));
+
+        // Un tag che quella chiave non ce l'ha è una fonte in meno, non un
+        // errore — e nemmeno una stringa vuota lo è.
+        let vuoto = lofty::ogg::VorbisComments::default();
+        assert_eq!(da_vorbis(Some(&vuoto)), None);
+        assert_eq!(da_vorbis(None), None);
+        let mut spazi = lofty::ogg::VorbisComments::default();
+        spazi.push(CHIAVE_SINCRONIZZATA.to_owned(), "  \n ".to_owned());
+        assert_eq!(da_vorbis(Some(&spazi)), None);
+    }
+
+    #[test]
+    fn un_file_che_non_e_musica_non_ha_tag_sincronizzati() {
+        // La catena delle fonti chiama `tag_sincronizzato` su ogni brano senza
+        // tempi, compresi quelli il cui file è sparito o illeggibile: deve
+        // rispondere «niente» invece di far cadere la lettura.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let finto = dir.path().join("brano.mp3");
+        std::fs::write(&finto, b"non e' un mp3").expect("file");
+        assert_eq!(tag_sincronizzato(&finto), None);
+        assert_eq!(tag_sincronizzato(&dir.path().join("non c'e'.mp3")), None);
+    }
+
+    #[test]
+    fn dimenticare_l_esito_rimette_il_brano_in_coda() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        inserisci(&connection, &brano, None);
+        connection
+            .execute(
+                "INSERT INTO lyrics (track_key, source, checked_at, updated_at)
+                 VALUES ('chiave', 'lrclib', 1000, 1000)",
+                [],
+            )
+            .expect("un «non ce l'ho» ricordato");
+        assert!(
+            da_cercare(&connection, 1_000, 10).expect("coda").is_empty(),
+            "gliel'abbiamo già chiesto"
+        );
+
+        dimentica_esito(&connection, "chiave").expect("dimenticato");
+        assert_eq!(
+            da_cercare(&connection, 1_000, 10).expect("coda").len(),
+            1,
+            "e adesso si può richiedere senza aspettare quattordici giorni"
+        );
     }
 
     #[test]

@@ -59,7 +59,8 @@ fn valore(css: &str, selettore: &str, proprieta: &str) -> Option<String> {
 const BASE: &str = ":root[data-skin='plain']";
 const CHIARO: &str = ":root[data-skin='plain'][data-theme='light']";
 
-/// I colori di `global.css`, copiati com'erano scritti.
+/// I colori di `global.css`, copiati com'erano scritti — salvo due, che sono
+/// cambiati apposta e dicono qui perché.
 const COLORI: &[(&str, &str)] = &[
     ("--color-surface-0", "#09090d"),
     ("--color-surface-1", "#0e0e14"),
@@ -73,8 +74,17 @@ const COLORI: &[(&str, &str)] = &[
     ("--accent", "#8b7cf6"),
     ("--accent-soft", "rgba(139, 124, 246, 0.16)"),
     ("--accent-glow", "rgba(139, 124, 246, 0.35)"),
-    ("--danger", "#e5484d"),
-    ("--danger-soft", "rgba(229, 72, 77, 0.14)"),
+    // La seconda dichiarazione che la conversione non conserva, e per la stessa
+    // ragione della prima: il rosso di `global.css` era `#e5484d`, e su
+    // `surface.3` faceva 4,21:1 — sotto la soglia. Un messaggio di guasto è il
+    // testo in cui la leggibilità conta di più, quindi il rosso è salito al
+    // gradino successivo della stessa scala, `#ec5d5e`, che su `surface.3` fa
+    // 4,94:1. Decisione dell'autore, presa insieme a quella opposta
+    // sull'accento — vedi `nel_tema_chiaro_il_testo_e_le_semantiche_si_leggono`.
+    // `--danger-soft` lo segue perché è lo stesso rosso al 14%: lasciarlo
+    // indietro farebbe due rossi dove il nome ne promette uno.
+    ("--danger", "#ec5d5e"),
+    ("--danger-soft", "rgba(236, 93, 94, 0.14)"),
     ("--success", "#34d399"),
     ("--success-soft", "rgba(52, 211, 153, 0.14)"),
     ("--warning", "#facc15"),
@@ -277,9 +287,12 @@ fn una_coppia_illeggibile_diventa_un_avviso() {
     // impedirlo.
     //
     // Qui si rimette il valore vecchio, quello di `global.css`, e si controlla
-    // che adesso qualcuno se ne accorga.
+    // che adesso qualcuno se ne accorga. La stringa cercata è il valore **di
+    // adesso**: se `plain` lo ritocca, questo test smette di trovarlo e cade — che
+    // è il modo giusto di accorgersene, perché un `replace` che non sostituisce
+    // nulla proverebbe il contrasto della skin vera invece di quello del difetto.
     let json = aether_skin::PLAIN_SOURCE.replace(
-        "\"color.text.3\": \"rgba(255, 255, 255, 0.46)\"",
+        "\"color.text.3\": \"rgba(255, 255, 255, 0.52)\"",
         "\"color.text.3\": \"rgba(255, 255, 255, 0.38)\"",
     );
     let skin =
@@ -386,6 +399,26 @@ fn il_terzo_livello_di_testo_non_e_piu_quello_di_global_css() {
     //
     // Il valore non si fissa: si fissa la proprietà che deve avere. Se un giorno
     // le superfici cambiano, questo test chiede che `text.3` le segua.
+    //
+    // # Perché le superfici sono quattro e non tre
+    //
+    // `surface.3` era fuori, con la ragione scritta accanto a `DIETRO` in
+    // `document.rs`: è un riempimento di sopraelevazione, non un letto di testo
+    // semantico. Per `text.3` non è vero, e si vede leggendo il foglio
+    // dell'applicazione: `.tooltip-pill`, `.menu` e `.pannello-eq` dipingono
+    // `--color-surface-3` e ci scrivono sopra `--color-text-3` a 11,5 px — cioè
+    // proprio il livello di testo più smorzato sulla superficie più chiara, che è
+    // la coppia peggiore delle dodici.
+    //
+    // Col valore di prima (0.46 scuro, 0.60 chiaro) quella coppia faceva 4,52:1 e
+    // 4,56:1: sopra la soglia di due centesimi, cioè un arrotondamento. Un test
+    // che passa per due centesimi non è una garanzia, è una coincidenza che il
+    // primo ritocco alle superfici trasforma in un errore. Alzare `text.3` a 0.52
+    // e 0.64 porta la coppia peggiore a 5,39:1 e 5,19:1, che è un margine che
+    // regge un ritocco.
+    //
+    // Le altre sei voci di `DAVANTI` restano misurate su tre superfici: il perché
+    // sta in `nel_tema_chiaro_il_testo_e_le_semantiche_si_leggono`, coi numeri.
     let skin = plain().expect("valida");
     let css = compile_skin(&skin).css;
 
@@ -395,6 +428,7 @@ fn il_terzo_livello_di_testo_non_e_piu_quello_di_global_css() {
             "--color-surface-0",
             "--color-surface-1",
             "--color-surface-2",
+            "--color-surface-3",
         ] {
             let fondo = colore(&css, selettore, superficie);
             let rapporto = contrast_ratio(testo, fondo);
@@ -475,11 +509,40 @@ fn il_tema_chiaro_esiste_davvero() {
 fn nel_tema_chiaro_il_testo_e_le_semantiche_si_leggono() {
     // La prova che il tema chiaro non ripete l'errore di `text.3`: ogni colore
     // che finisce **sul testo** deve stare sopra 4,5:1 su tutte e tre le
-    // superfici su cui il testo può stare. La quarta (`surface.3`) è
-    // deliberatamente fuori: è un riempimento di sopraelevazione — il fondo di
-    // un elemento di menù al passaggio del mouse — e non è un letto di testo
-    // semantico. La regola sta scritta qui perché è il posto in cui si scopre se
-    // qualcuno la cambia.
+    // superfici su cui il testo può stare.
+    //
+    // La quarta, `surface.3`, era «deliberatamente fuori» anche qui, e quella
+    // frase non si può più scrivere: per `text.3` la quarta superficie è dentro,
+    // e la misura sta in `il_terzo_livello_di_testo_non_e_piu_quello_di_global_css`.
+    // Il confine si è spostato da «quali superfici» a «quali colori davanti», ed è
+    // un confine che ha dei numeri:
+    //
+    // - `text.1` e `text.2` passerebbero su `surface.3` con margine largo
+    //   (14,08:1 e 6,72:1 al buio; 12,47:1 e 5,91:1 alla luce), quindi non sono
+    //   loro a tenere l'elenco a tre.
+    // - `danger` e `accent` erano tutti e due sotto: **4,21:1** il rosso al buio,
+    //   **4,35:1** il viola alla luce. Alzarli non era un ritocco di leggibilità
+    //   ma un ridipingere l'identità della skin, cioè una decisione dell'autore e
+    //   non di un test — e la decisione è arrivata, **spezzata in due**:
+    //   - il **rosso dei guasti si è alzato**, da `#e5484d` a `#ec5d5e`, e adesso
+    //     fa **4,94:1** su `surface.3` al buio. Il rosso porta un messaggio
+    //     d'errore, cioè il testo in cui la leggibilità conta di più, e nessuno
+    //     riconosce una skin dal suo rosso di guasto. La misura è fissata qui
+    //     sotto, dopo il giro sulle tre superfici, perché un numero scritto in un
+    //     commento e non provato da niente è il difetto che questo file esiste per
+    //     togliere.
+    //   - l'**accento resta dov'è**, a **4,35:1** su `surface.3` alla luce, e non
+    //     è una dimenticanza: il viola *è* l'identità di `plain`, e su
+    //     `surface.3` non ci finisce mai un paragrafo — ci finiscono un'etichetta
+    //     accesa e un bordo. Il giorno in cui qualcuno ci scriverà del testo
+    //     lungo, questo è il numero da guardare per primo.
+    //
+    // Perciò l'elenco resta a tre superfici per queste sei voci: a tenercelo è
+    // rimasto l'accento alla luce, da solo e per scelta.
+    //
+    // `sala`, l'altra skin impacchettata, passerebbe `text.3` su `surface.3` in
+    // tutti e due i temi (4,90:1 e 4,88:1) — misurato, non supposto — ma questo
+    // test guarda `plain` e solo `plain`, come tutto il file.
     let skin = plain().expect("valida");
     let css = compile_skin(&skin).css;
 
@@ -508,6 +571,19 @@ fn nel_tema_chiaro_il_testo_e_le_semantiche_si_leggono() {
             }
         }
 
+        // La quarta superficie, per il solo rosso dei guasti: è la metà
+        // realizzata della decisione raccontata qui sopra, e senza questa riga
+        // resterebbe un numero in un commento — cioè la cosa che questo file
+        // esiste per non lasciare in giro. Vale in tutti e due i temi: alla luce
+        // `#c41f26` faceva già 4,57:1 e non è stato toccato.
+        let rosso = colore(&css, selettore, "--danger");
+        let quarta = colore(&css, selettore, "--color-surface-3");
+        let rosso_sulla_quarta = contrast_ratio(rosso, quarta);
+        assert!(
+            rosso_sulla_quarta >= LEGGIBILE,
+            "tema {tema}: danger su surface.3 fa {rosso_sulla_quarta:.2}:1"
+        );
+
         // E la regola inversa, quella di §7 del brief: il testo che sta **sopra**
         // l'accento è `--color-surface-0`. Se l'accento si schiarisce, l'etichetta
         // di un bottone primario sparisce, e nessun altro test se ne accorge.
@@ -531,6 +607,38 @@ fn le_transizioni_di_rotta_sono_quelle_scritte_a_mano() {
     assert!(css.contains("transform: scale(0.992);"), "{css}");
     assert!(css.contains("@keyframes skin-plain-in"), "{css}");
     assert!(css.contains("transform: translateY(8px);"), "{css}");
+
+    // La durata **non** è più `var(--dur-2)` nudo, ed è l'unica riga in cui
+    // questo foglio si scosta da quello di prima. Erano le sole due animazioni
+    // del sistema che «Riduci il movimento» non toccava: `stile.css` se n'era
+    // accorto e aveva rimediato altrove, facendo saltare la transizione a
+    // `transizione.ts` prima ancora di chiamare il motore — cioè spegnendo la
+    // funzione invece della durata. Ora la scala passa di qui, dov'è la causa.
+    for verso in ["old", "new"] {
+        let regola = format!(":root[data-skin='plain']::view-transition-{verso}(root)");
+        let scritto = valore(&css, &regola, "animation").unwrap_or_else(|| panic!("{regola}"));
+        assert!(
+            scritto.contains("calc(var(--dur-2) * var(--motion-scale, 1))"),
+            "{regola}: «{scritto}» aggira --motion-scale"
+        );
+    }
+}
+
+#[test]
+fn plain_non_dichiara_animazioni_e_non_ne_compila() {
+    // La skin di riferimento resta quel che era: il blocco `:root` di
+    // `global.css` riga per riga. Le animazioni nominate sono una porta nuova
+    // del formato, non un pezzo di questa conversione — e aprirla qui vorrebbe
+    // dire misurare la fedeltà contro un foglio che nessuno ha mai spedito.
+    let skin = plain().expect("valida");
+    assert!(
+        skin.motion
+            .as_ref()
+            .is_some_and(|motion| motion.animations.is_empty())
+    );
+    let css = compile_skin(&skin).css;
+    assert!(!css.contains("-anim-"), "{css}");
+    assert!(!skin.parts.iter().any(|parte| !parte.animations.is_empty()));
 }
 
 #[test]

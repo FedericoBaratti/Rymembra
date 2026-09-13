@@ -35,7 +35,7 @@
 //! # Ogni file si legge una volta sola
 //!
 //! Riconoscere gli spostamenti (vedi [`match_moved_tracks`]) richiede la chiave
-//! dei file nuovi, che si conosce solo dopo averli letti. Farne un giro a parte
+//! di contenuto dei file nuovi, che si conosce solo dopo averli letti. Farne un giro a parte
 //! prima della scrittura raddoppierebbe la parte lenta della scansione — e
 //! proprio nel caso in cui gli spostamenti ci sono, cioè dopo un riordino, dove
 //! riguardano ogni file della libreria. L'appaiamento avviene quindi lotto per
@@ -82,7 +82,7 @@ use std::time::{Duration, Instant};
 
 use aether_domain::album::{AlbumMember, AlbumRow, album_group_key, build_album_groups};
 use aether_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
-use aether_domain::keys::{TrackKey, TrackKeyInput};
+use aether_domain::keys::{ContentKey, ContentKeyInput, TrackKey, TrackKeyInput};
 use aether_domain::paths::{PathRules, file_stem, is_under};
 use aether_domain::scan_plan::{
     DiscoveredFile, KnownTrack, RemoveReason, RemovedIdentity, ScanInput, ScanPlan,
@@ -190,11 +190,15 @@ impl Default for Scadenze {
 }
 
 /// Traduce un errore di SQLite nel catalogo, tenendo il testo originale.
+///
+/// Tre righe, e delega: la scelta del codice sta in
+/// [`crate::db::codice_da_sqlite`], che legge `sqlite_error_code()` e distingue
+/// un file occupato da un percorso di rete da un database corrotto. Questo
+/// helper è il punto da cui passano alcune centinaia di `map_err` di questo
+/// modulo, e **non si toccano**: l'unica cosa che doveva cambiare era cosa
+/// risponde questa funzione.
 pub(crate) fn db_error(detail: &str, err: &rusqlite::Error) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some(detail.to_owned()),
-    })
-    .with_cause(err.to_string())
+    crate::db::codice_da_sqlite(detail, err)
 }
 
 /// L'ora attuale in millisecondi. Zero se l'orologio è dietro l'epoca.
@@ -228,8 +232,21 @@ pub(crate) fn now_ms() -> i64 {
 pub struct TrackRow {
     /// Il percorso come sta sul disco.
     pub path: String,
-    /// L'identità fra dispositivi.
+    /// L'identità fra dispositivi, calcolata dai valori qui sotto.
+    ///
+    /// Segue le correzioni dell'utente: `incerti::applica_correzioni` la
+    /// ricalcola dai campi corretti, perché è la chiave con cui gli altri
+    /// dispositivi devono ritrovare questo brano.
     pub track_key: String,
+    /// L'identità di **contenuto**: vedi [`ContentKey`].
+    ///
+    /// Si calcola dove il file viene letto e da nessun'altra parte, **dai tag
+    /// grezzi e non dai campi qui accanto**: quelli portano già i ripieghi, e
+    /// un ripiego viene dal nome del file. Nessuna correzione la tocca, ed è
+    /// per questo che `scan_plan::match_moved_tracks` riconosce un file
+    /// spostato anche di un brano corretto dieci volte — o rinominato, se i
+    /// tag non ce li ha.
+    pub content_key: String,
     /// Il titolo, o la radice del nome del file se i tag non ne hanno uno.
     pub title: String,
     /// L'interprete.
@@ -305,6 +322,15 @@ pub struct TrackRow {
 /// indifferente: derivandola dai tag grezzi, ogni file senza tag avrebbe chiave
 /// `||`, e la sincronizzazione li tratterebbe tutti come lo stesso brano.
 ///
+/// In [`ContentKey`] invece **non entrano**, e la differenza è tutto il punto
+/// della colonna. Un ripiego dipende dal nome del file: se lo mettessimo dentro
+/// l'identità di contenuto, un file senza tag avrebbe chiave `radice del
+/// nome|artista sconosciuto|album sconosciuto`, e rinominarlo — la sola cosa
+/// che si può fare per distinguere un file che i tag non ce li ha, e quindi la
+/// prima che si fa — lo trasformerebbe in un brano nuovo, con la riga vecchia
+/// cancellata e via ascolti, voto e playlist. La chiave di contenuto di quel
+/// file è quindi `durata|dimensione`, che un rinomino non tocca.
+///
 /// Una copertina che non si decodifica non fa fallire il brano: si perde
 /// l'immagine, si tiene la musica.
 pub fn read_track(
@@ -313,6 +339,25 @@ pub fn read_track(
     file: &DiscoveredFile,
 ) -> Result<TrackRow, AppError> {
     let tags = read_tags(files, &file.path)?;
+
+    let file_size = i64::try_from(file.size_bytes).unwrap_or(i64::MAX);
+    let duration_ms = i64::try_from(tags.duration_ms).unwrap_or(0);
+
+    // L'identità di contenuto si calcola **prima dei ripieghi**, ed è per
+    // questo che sta sopra e non sotto: le riceve come `Option`, cioè come il
+    // file le ha dette. Passarle dopo — quando il titolo è già diventato la
+    // radice del nome — legherebbe l'identità di un file senza tag al suo
+    // **nome**, e rinominarlo lo duplicherebbe: che è esattamente quel che
+    // capita a un file senza tag, perché il nome è l'unica cosa che lo
+    // distingue e quindi l'unica che si ha voglia di sistemare.
+    let content_key = ContentKey::compute(ContentKeyInput {
+        artist: tags.artist.as_deref(),
+        title: tags.title.as_deref(),
+        album: tags.album.as_deref(),
+        duration_ms: Some(duration_ms),
+        file_size: Some(file_size),
+    })
+    .into_string();
 
     let title = tags
         .title
@@ -351,6 +396,7 @@ pub fn read_track(
     Ok(TrackRow {
         path: file.path.clone(),
         track_key,
+        content_key,
         title,
         artist,
         album,
@@ -360,7 +406,7 @@ pub fn read_track(
         track_number: tags.track_number.map(i64::from),
         disc_number: tags.disc_number.map(i64::from),
         genre: tags.genre,
-        duration_ms: i64::try_from(tags.duration_ms).unwrap_or(0),
+        duration_ms,
         bpm: tags.bpm,
         musical_key: tags.musical_key,
         comment: tags.comment,
@@ -371,7 +417,7 @@ pub fn read_track(
         sample_rate: tags.sample_rate.map(i64::from),
         channels: tags.channels.map(i64::from),
         codec: tags.codec,
-        file_size: i64::try_from(file.size_bytes).unwrap_or(i64::MAX),
+        file_size,
         date_modified: file.modified_ms,
         replaygain_track_db: tags.replaygain_track_db.map(f64::from),
         replaygain_album_db: tags.replaygain_album_db.map(f64::from),
@@ -402,14 +448,25 @@ pub fn known_tracks(connection: &Connection) -> Result<Vec<KnownTrack>, AppError
         .map_err(|err| db_error("elenco dei brani noti", &err))
 }
 
-/// Le chiavi di brano delle righe date, nello stesso ordine.
+/// Le chiavi di **contenuto** delle righe date, nello stesso ordine.
+///
+/// Servono a una cosa sola: chiedere a `match_moved_tracks` se una di queste
+/// righe è il file che è appena comparso altrove. La domanda va fatta sulla
+/// chiave che non cambia quando l'utente corregge un brano — vedi
+/// [`ContentKey`] — altrimenti proprio i brani a cui qualcuno ha dedicato
+/// attenzione sono quelli che, spostandosi, si duplicano.
+///
+/// `COALESCE` perché la migrazione 019 ha lasciato `content_key` a NULL sulle
+/// righe che avevano già una sovrascrittura: di quelle i tag grezzi non si
+/// conoscono finché non le si rilegge, e fino ad allora vale `track_key`, che è
+/// esattamente come si comportavano prima.
 ///
 /// Una riga sparita nel frattempo si salta invece di far fallire tutto: fra il
 /// calcolo del piano e questo momento un'altra scrittura può averla tolta, e
 /// non è un motivo per rinunciare alla scansione.
-fn track_keys_of(connection: &Connection, ids: &[i64]) -> Result<Vec<(i64, String)>, AppError> {
+fn content_keys_of(connection: &Connection, ids: &[i64]) -> Result<Vec<(i64, String)>, AppError> {
     let mut statement = connection
-        .prepare("SELECT track_key FROM tracks WHERE id = ?1")
+        .prepare("SELECT COALESCE(content_key, track_key) FROM tracks WHERE id = ?1")
         .map_err(|err| db_error("chiave di un brano", &err))?;
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
@@ -490,6 +547,11 @@ macro_rules! esegui_coi_campi {
             $row.mb_recording_id,
             $row.mb_release_group_id,
             $row.mb_release_id,
+            // In coda e non accanto a `track_key`, dove starebbe bene: mettercela
+            // lì avrebbe rinumerato a mano tutti i segnaposti che seguono, in
+            // due query, ed è il genere di modifica che ne sbaglia uno solo e
+            // lo sbaglia in silenzio.
+            $row.content_key,
             $coda,
         ])
     }};
@@ -506,11 +568,12 @@ fn insert_track(tx: &Transaction<'_>, row: &TrackRow, now: i64) -> Result<(), Ap
                musical_key, comment, lyrics, cover_art_hash, bitrate,
                sample_rate, channels, codec, file_size, date_modified,
                replaygain_track_db, replaygain_album_db, mb_recording_id,
-               mb_release_group_id, mb_release_id, date_added, source
+               mb_release_group_id, mb_release_id, content_key, date_added,
+               source
              ) VALUES (
                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26,
-               ?27, ?28, ?29, 'scan'
+               ?27, ?28, ?29, ?30, 'scan'
              )",
         )
         .map_err(|err| db_error("inserimento di un brano", &err))?;
@@ -531,6 +594,17 @@ fn insert_track(tx: &Transaction<'_>, row: &TrackRow, now: i64) -> Result<(), Ap
 /// una data di modifica cambiata: se sul disco il file ora si chiama `A.MP3` e
 /// nel database sta come `a.mp3`, questa è l'occasione in cui la deriva si
 /// chiude invece di accumularsi.
+///
+/// **Riscrive titolo, interprete e album dai tag del file**, e con essi le tre
+/// chiavi. Quel che l'utente ha corretto a mano sta in `track_overrides` e va
+/// rimesso sopra subito dopo, con [`crate::incerti::riapplica`]: non lo fa
+/// questa funzione perché la scansione è solo uno dei modi in cui una riga viene
+/// riscritta dai tag, e la regola è la stessa per tutti — chi riscrive rimette.
+///
+/// Di quelle tre, `content_key` è l'unica che `riapplica` **non** rimetterà a
+/// posto, e non deve: è l'identità del file, non della riga, e questo è il solo
+/// punto del programma in cui si scrive. Vedi il `//!` di
+/// [`crate::incerti`].
 fn update_track(
     tx: &Transaction<'_>,
     track_id: i64,
@@ -549,8 +623,8 @@ fn update_track(
                channels = ?20, codec = ?21, file_size = ?22, date_modified = ?23,
                replaygain_track_db = ?24, replaygain_album_db = ?25,
                mb_recording_id = ?26, mb_release_group_id = ?27,
-               mb_release_id = ?28
-             WHERE id = ?29",
+               mb_release_id = ?28, content_key = ?29
+             WHERE id = ?30",
         )
         .map_err(|err| db_error("aggiornamento di un brano", &err))?;
     esegui_coi_campi!(statement, row, track_id)
@@ -1356,7 +1430,7 @@ impl Scan<'_> {
     ///   la riga 412 che il piano voleva togliere può essere stata cancellata e
     ///   rimpiazzata da un'altra. Per questo si cancella per identificativo
     ///   **e** percorso — vedi `remove_tracks`.
-    /// - **Una riga può essere sparita.** Non è un errore: `track_keys_of` la
+    /// - **Una riga può essere sparita.** Non è un errore: `content_keys_of` la
     ///   salta, una cancellazione che non trova niente conta zero, e la passata
     ///   dopo decide da capo.
     /// - **`tracks.path` è UNIQUE.** Se un'altra scansione stesse inserendo gli
@@ -1468,7 +1542,7 @@ impl Scan<'_> {
                 tx.commit()
                     .map_err(|err| db_error("chiusura della transazione", &err))?;
             }
-            let sospese = track_keys_of(connection, &spariti)?;
+            let sospese = content_keys_of(connection, &spariti)?;
             Ok((tolte, sospese))
         })?;
         report.removed += tolte;
@@ -1627,13 +1701,13 @@ impl Scan<'_> {
                 let chiavi: Vec<&str> = posizioni
                     .iter()
                     .filter_map(|index| righe.get(*index))
-                    .map(|(row, _)| row.track_key.as_str())
+                    .map(|(row, _)| row.content_key.as_str())
                     .collect();
                 let identita: Vec<RemovedIdentity<'_>> = sospese
                     .iter()
-                    .map(|(track_id, track_key)| RemovedIdentity {
+                    .map(|(track_id, content_key)| RemovedIdentity {
                         track_id: *track_id,
-                        track_key: track_key.as_str(),
+                        content_key: content_key.as_str(),
                     })
                     .collect();
 
@@ -1664,14 +1738,31 @@ impl Scan<'_> {
                     match *destinazione {
                         Destinazione::Nuova => {
                             insert_track(&tx, row, now)?;
+                            // Nessun `riapplica` qui, e non è una dimenticanza:
+                            // `track_overrides` è agganciata all'`id` della riga,
+                            // e questa riga non esisteva un istante fa. Una
+                            // correzione per un brano che la libreria non
+                            // conosceva ancora non può esistere — se il file
+                            // è lo stesso di prima, il piano lo avrebbe
+                            // riconosciuto come `Sposta`.
                             inserite += 1;
                         }
                         Destinazione::Aggiorna(id) => {
                             update_track(&tx, id, row, now)?;
+                            // `update_track` ha appena rimesso i tag del file
+                            // sopra la riga: senza questa chiamata basta che
+                            // cambi la data di modifica di un file perché la
+                            // correzione dell'utente sparisca da `tracks`
+                            // restando orfana in `track_overrides`.
+                            crate::incerti::riapplica(&tx, id)?;
                             aggiornate += 1;
                         }
                         Destinazione::Sposta(id) => {
                             update_track(&tx, id, row, now)?;
+                            // Lo stesso, e qui conta doppio: un file spostato ha
+                            // anche un `album_key` nuovo, che si ricalcola dal
+                            // percorso d'arrivo e dall'album **corretto**.
+                            crate::incerti::riapplica(&tx, id)?;
                             spostate += 1;
                         }
                     }
@@ -2169,6 +2260,168 @@ pub fn read_summary(connection: &Connection, id: i64) -> Result<Option<TrackSumm
         .or_else(|err| match err {
             rusqlite::Error::QueryReturnedNoRows => Ok(None),
             altro => Err(db_error("lettura di un brano", &altro)),
+        })
+}
+
+/// I dati tecnici del file di un brano: cos'è il file, non cosa esce dalle casse.
+///
+/// La distinzione è una decisione, non una semplificazione. Quel che esce dalla
+/// scheda audio può essere ricampionato dal mixer di sistema, e questa struttura
+/// non lo sa e non lo dice: descrive il file che sta sul disco. Raccontare
+/// l'uscita reale vorrebbe dire una riga che cambia quando si cambia cuffia, per
+/// una domanda — «com'è fatta questa edizione» — a cui l'uscita non risponde.
+///
+/// # Perché non sta in [`TrackSummary`]
+///
+/// Perché `TrackSummary` è la riga di un elenco, e di righe ce ne sono qualche
+/// migliaio per volta, più tutta la coda. Quattro campi in più su ognuna
+/// sarebbero quattro campi spediti mille volte per disegnarne **uno**: quello
+/// del brano che sta suonando. La parsimonia di quella struttura è dichiarata
+/// nella sua carta, e questo tipo esiste per non smentirla.
+///
+/// # Perché ogni campo è un `Option`
+///
+/// Perché le quattro colonne sono nullable, e lo sono per forza: `lofty` non
+/// ricava le proprietà di tutti i contenitori allo stesso modo, e una libreria
+/// scansionata quando quelle colonne non si scrivevano ancora ha le righe vuote.
+/// Chi disegna unisce i pezzi che ci sono e tace sugli altri.
+///
+/// # Perché i numeri sono `i64` e non `u32`
+///
+/// Perché qui si **legge**, e leggere non deve poter fallire per un dato storto.
+/// Le colonne sono `INTEGER` senza `CHECK`: nessuno vi scrive un numero negativo
+/// — arrivano dai `u32` e `u8` di `lofty` — ma un `u32` chiesto a una riga
+/// negativa è un errore di rusqlite, e quell'errore butterebbe via tutti e
+/// quattro i campi per colpa di uno. Con un `i64` il valore assurdo arriva a chi
+/// disegna, che lo scarta perché non è positivo: lo stesso posto in cui si
+/// scarta un `NULL`, invece di un secondo cammino per il guasto.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormatoFile {
+    /// Il formato come si scrive a chi guarda: «FLAC», «MP3», «M4A».
+    ///
+    /// Già passato per [`etichetta_codec`]: in tabella c'è il `Debug` di
+    /// `lofty::FileType`, e quel che la finestra deve mostrare non è «Mpeg».
+    pub codec: Option<String>,
+    /// La frequenza di campionamento, in hertz: 44100, non 44,1.
+    ///
+    /// In hertz perché è così che sta in tabella e così che `lofty` la legge. I
+    /// kilohertz con la virgola sono una questione di lingua, e si fanno dove la
+    /// lingua si conosce — nella finestra.
+    pub sample_rate: Option<i64>,
+    /// Quanti canali: 1, 2, 6, 8.
+    ///
+    /// Il numero e non il nome. «Stereo» e «5.1» sono parole, e le parole si
+    /// traducono: mandarle da qui vorrebbe dire mandare italiano a chi ha
+    /// l'interfaccia in inglese.
+    pub channels: Option<i64>,
+    /// Il bitrate **medio**, in kbit/s, come l'ha calcolato `lofty`.
+    ///
+    /// Medio e non dichiarato, ed è la ragione per cui si mostra anche sui
+    /// formati senza perdita: su un VBR dice quel che il file pesa davvero
+    /// invece di quel che l'intestazione promette, e su un FLAC dice quanto è
+    /// densa l'edizione — che è l'unica differenza fra due FLAC dello stesso
+    /// brano.
+    pub bitrate: Option<i64>,
+}
+
+/// Il nome del formato come si scrive, dal `Debug` di `lofty::FileType`.
+///
+/// # Perché serve una mappa, e perché lavora in lettura
+///
+/// Perché la scansione scrive `format!("{:?}", tagged.file_type())` (vedi
+/// [`crate::metadata::read_tags`]), cioè i nomi delle varianti di
+/// un'enumerazione Rust: «Mpeg», «Vorbis», «Mp4». Sono nomi di codice, non nomi
+/// di formati, e nessuno dei tre è quel che chi ascolta si aspetta di leggere.
+///
+/// La correzione sta qui e non nella scansione perché **le librerie già
+/// scansionate hanno quel valore in tabella**. Tradurre in scrittura vorrebbe
+/// dire una migrazione per riscrivere una colonna che fino a oggi nessuno aveva
+/// mai letto, e anche dopo la migrazione le due forme convivrebbero comunque:
+/// basta un disco esterno ricollegato, o un profilo ripristinato da un backup
+/// più vecchio. Tradurre in lettura funziona su tutto quel che c'è già, e non
+/// costa niente.
+///
+/// # Cosa dice, e cosa non dice
+///
+/// Il **contenitore**, che è l'unica cosa che la colonna sa. `Mp4 → M4A` e non
+/// «AAC»: dentro un M4A ci può stare AAC o ALAC, la colonna non distingue, e
+/// scrivere «AAC» su un ALAC vorrebbe dire chiamare «con perdita» un file che
+/// non ne ha. Per la stessa ragione `Vorbis → Ogg Vorbis`, che è il nome con cui
+/// quel formato si conosce.
+///
+/// L'unica imprecisione che la mappa accetta è `Mpeg → MP3`. `lofty` tiene
+/// MPEG-1 Layer I, II e III in una variante sola, quindi un `.mp2` — che in una
+/// libreria di musica non c'è — si leggerebbe «MP3». L'alternativa sarebbe
+/// scrivere «MPEG», che è giusto e non dice niente a nessuno.
+///
+/// # Un nome sconosciuto resta com'è
+///
+/// `FileType` è `#[non_exhaustive]` e ha una variante `Custom`. Un valore fuori
+/// elenco si mostra **così come sta scritto**: è sempre meglio di niente, e non
+/// mente mai. Il giorno in cui `lofty` aggiunge un contenitore, Aether ne scrive
+/// il nome della variante invece di lasciare un buco — brutto e vero, che è
+/// l'ordine giusto fra le due cose.
+#[must_use]
+pub fn etichetta_codec(grezzo: &str) -> String {
+    match grezzo {
+        "Aac" => "AAC",
+        "Aiff" => "AIFF",
+        "Ape" => "APE",
+        "Flac" => "FLAC",
+        "Mpeg" => "MP3",
+        "Mp4" => "M4A",
+        "Mpc" => "Musepack",
+        "Opus" => "Opus",
+        "Vorbis" => "Ogg Vorbis",
+        "Speex" => "Speex",
+        "Wav" => "WAV",
+        "WavPack" => "WavPack",
+        altro => return altro.to_owned(),
+    }
+    .to_owned()
+}
+
+/// I dati tecnici del file di un brano, per identificativo.
+///
+/// `None` se la riga non c'è più, per la stessa ragione di [`read_summary`]: un
+/// brano può uscire dalla libreria mentre la coda lo tiene ancora, e non è un
+/// guasto da propagare. `Some` con i campi vuoti è un'altra cosa, e vuol dire
+/// che la riga c'è ma quei dati non si erano letti.
+///
+/// Una `SELECT` sulle quattro colonne e non [`COLONNE_BRANO`]: le quattro non
+/// stanno in quell'elenco, e metterle là vorrebbe dire spedirle con ogni riga di
+/// ogni elenco per disegnarle in un posto solo.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn read_formato(
+    connection: &Connection,
+    track_id: i64,
+) -> Result<Option<FormatoFile>, AppError> {
+    let mut statement = connection
+        .prepare_cached("SELECT codec, sample_rate, channels, bitrate FROM tracks WHERE id = ?1")
+        .map_err(|err| db_error("lettura del formato di un brano", &err))?;
+    statement
+        .query_row([track_id], |row| {
+            Ok(FormatoFile {
+                // Una stringa vuota vale come assente: «» non è un formato, e
+                // lasciarla passare vorrebbe dire un separatore senza niente
+                // davanti nella riga che chi disegna compone.
+                codec: row
+                    .get::<_, Option<String>>(0)?
+                    .filter(|grezzo| !grezzo.trim().is_empty())
+                    .map(|grezzo| etichetta_codec(grezzo.trim())),
+                sample_rate: row.get(1)?,
+                channels: row.get(2)?,
+                bitrate: row.get(3)?,
+            })
+        })
+        .map(Some)
+        .or_else(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            altro => Err(db_error("lettura del formato di un brano", &altro)),
         })
 }
 
@@ -2696,6 +2949,376 @@ mod tests {
             Some("Bachelorette"),
             "una ricerca si fa mentre si digita"
         );
+    }
+
+    #[test]
+    fn la_correzione_sopravvive_a_una_riscansione() {
+        // Il difetto che questa prova impedisce, ed è stato vero fino alla
+        // 2.3.1: `track_overrides` si riempiva e **nessuno** la rileggeva.
+        // Bastava che cambiasse la data di modifica di un file — ritaggarlo,
+        // copiarlo, toccarlo — perché la correzione dell'utente sparisse da
+        // `tracks` restando orfana nella sua tabella, senza che niente lo
+        // dicesse.
+        let mut lib = Libreria::nuova();
+        lib.brano("Senza/Nome/01.wav", "Traccia 01", "Unknown Artist", "Al");
+        assert_eq!(lib.scansiona().inserted, 1);
+        let id: i64 = lib
+            .connection
+            .query_row("SELECT id FROM tracks", [], |r| r.get(0))
+            .expect("identificativo");
+
+        crate::incerti::correggi(
+            &mut lib.connection,
+            id,
+            &crate::provenienza::Correzioni {
+                titolo: Some("Hey You".to_owned()),
+                artista: Some("Pink Floyd".to_owned()),
+                ..crate::provenienza::Correzioni::default()
+            },
+        )
+        .expect("correzione");
+
+        // Il file non si tocca: i suoi tag restano quelli sbagliati, ed è il
+        // punto. Quel che cambia è la sola cosa che serve a far rileggere la
+        // riga, cioè il confronto `existing.modified_ms == file.modified_ms` di
+        // `plan_scan`. Riscrivere i tag funzionerebbe anche, ma farebbe
+        // dipendere la prova dalla risoluzione dell'orologio del filesystem.
+        lib.connection
+            .execute("UPDATE tracks SET date_modified = 0 WHERE id = ?1", [id])
+            .expect("data di modifica");
+
+        let esito = lib.scansiona();
+        assert_eq!(
+            esito.updated, 1,
+            "la riga deve essere stata riletta, altrimenti la prova non prova niente"
+        );
+
+        let (titolo, artista, chiave): (String, String, String) = lib
+            .connection
+            .query_row(
+                "SELECT title, artist, track_key FROM tracks WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("riga");
+        assert_eq!(titolo, "Hey You", "il titolo corretto resta");
+        assert_eq!(artista, "Pink Floyd");
+        // E con esso l'identità: una chiave ricalcolata dai tag del file
+        // rilegherebbe in silenzio ascolti e posizioni di un altro brano.
+        assert!(chiave.contains("pink floyd"), "chiave: {chiave}");
+    }
+
+    #[test]
+    fn la_chiave_di_contenuto_ignora_la_correzione() {
+        // Le due chiavi fanno due mestieri diversi, e questa prova lo fissa:
+        // `track_key` segue quel che l'utente ha deciso — deve, o gli altri
+        // dispositivi cercano il brano sotto il nome sbagliato — mentre
+        // `content_key` resta quella dei tag del file, che nessuno ha toccato.
+        let mut lib = Libreria::nuova();
+        lib.brano("Senza/Nome/01.wav", "Traccia 01", "Unknown Artist", "Al");
+        assert_eq!(lib.scansiona().inserted, 1);
+
+        let (id, contenuto_prima, brano_prima): (i64, String, String) = lib
+            .connection
+            .query_row("SELECT id, content_key, track_key FROM tracks", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .expect("riga");
+        assert_eq!(
+            contenuto_prima, brano_prima,
+            "senza correzioni le due chiavi coincidono: la differenza nasce dopo"
+        );
+
+        crate::incerti::correggi(
+            &mut lib.connection,
+            id,
+            &crate::provenienza::Correzioni {
+                artista: Some("Pink Floyd".to_owned()),
+                ..crate::provenienza::Correzioni::default()
+            },
+        )
+        .expect("correzione");
+
+        let (contenuto, brano): (String, String) = lib
+            .connection
+            .query_row(
+                "SELECT content_key, track_key FROM tracks WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("riga");
+        assert!(
+            brano.contains("pink floyd"),
+            "la chiave di scambio segue la correzione: {brano}"
+        );
+        assert_eq!(
+            contenuto, contenuto_prima,
+            "la chiave di contenuto non si muove: la scrivono solo insert_track e update_track"
+        );
+        assert!(
+            contenuto.contains("unknown artist"),
+            "e resta quella dei tag del file: {contenuto}"
+        );
+
+        // E resiste anche a una riscansione, che ripassa da `update_track` e
+        // poi da `riapplica`: il primo la riscrive identica, il secondo non la
+        // guarda affatto.
+        lib.connection
+            .execute("UPDATE tracks SET date_modified = 0 WHERE id = ?1", [id])
+            .expect("data di modifica");
+        assert_eq!(lib.scansiona().updated, 1);
+        let dopo: String = lib
+            .connection
+            .query_row("SELECT content_key FROM tracks WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .expect("riga");
+        assert_eq!(dopo, contenuto_prima);
+    }
+
+    #[test]
+    fn un_file_spostato_si_ritrova_anche_se_lartista_e_stato_corretto() {
+        // **La** prova di questo pacchetto, e il difetto che chiude è perdita di
+        // dati: correggere l'artista di un brano gli cambiava l'identità, e da
+        // quel momento spostare il suo file non lo faceva più riconoscere. La
+        // riga veniva cancellata e reinserita — via ascolti, voto, preferiti,
+        // playlist — e con `ON DELETE CASCADE` se ne andava anche la
+        // sovrascrittura in `track_overrides`, cioè la correzione stessa.
+        //
+        // Con `track_key` al posto di `content_key` in `content_keys_of` e nelle
+        // chiavi passate a `match_moved_tracks`, qui sotto `moved` è 0 e
+        // `inserted` è 1: la prova fallisce, ed è il modo di verificare che
+        // stia provando qualcosa.
+        let mut lib = Libreria::nuova();
+        lib.brano("sfusi/traccia.wav", "Hey You", "unknown", "The Wall");
+        lib.scansiona();
+
+        let id: i64 = lib
+            .connection
+            .query_row("SELECT id FROM tracks", [], |r| r.get(0))
+            .expect("id");
+        lib.connection
+            .execute(
+                "UPDATE tracks SET play_count = 42, rating = 5 WHERE id = ?1",
+                [id],
+            )
+            .expect("storia d'ascolto");
+
+        // La correzione: da qui in poi `tracks.track_key` dice «pink floyd» e i
+        // tag del file dicono ancora «unknown».
+        crate::incerti::correggi(
+            &mut lib.connection,
+            id,
+            &crate::provenienza::Correzioni {
+                artista: Some("Pink Floyd".to_owned()),
+                ..crate::provenienza::Correzioni::default()
+            },
+        )
+        .expect("correzione");
+
+        // E lo spostamento, col file intatto: è il caso di ogni riordino, di
+        // ogni cartella trascinata altrove, di ogni disco rimontato con una
+        // lettera diversa.
+        let da = lib.musica().join("sfusi/traccia.wav");
+        let a = lib.musica().join("Pink Floyd/The Wall/01 Hey You.wav");
+        std::fs::create_dir_all(a.parent().expect("cartella")).expect("cartelle");
+        std::fs::rename(&da, &a).expect("spostamento");
+
+        let esito = lib.scansiona();
+
+        assert_eq!(esito.moved, 1, "il file si è spostato, non è nuovo");
+        assert_eq!(esito.inserted, 0, "un inserimento qui è un brano duplicato");
+        assert_eq!(esito.removed, 0);
+        assert_eq!(lib.conta("tracks"), 1);
+
+        let (stesso_id, ascolti, voto, artista, percorso): (i64, i64, i64, String, String) = lib
+            .connection
+            .query_row(
+                "SELECT id, play_count, rating, artist, path FROM tracks",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .expect("riga");
+        assert_eq!(stesso_id, id, "deve essere la stessa riga, non una nuova");
+        assert_eq!(ascolti, 42);
+        assert_eq!(voto, 5);
+        assert!(percorso.ends_with("01 Hey You.wav"), "percorso: {percorso}");
+        // E la correzione è ancora lì: `riapplica` gira dopo `update_track`
+        // anche sul ramo `Sposta`, e la riga di `track_overrides` non è stata
+        // portata via da nessuna cancellazione.
+        assert_eq!(artista, "Pink Floyd");
+        assert_eq!(lib.conta("track_overrides"), 1);
+    }
+
+    #[test]
+    fn senza_tag_la_chiave_e_durata_e_dimensione() {
+        // Attraverso la scansione vera, e non chiamando `compute` a mano:
+        // l'unica cosa che questa prova può dire e le prove di dominio no è
+        // **quali valori** `read_track` passa alla chiave. Se ci passasse i
+        // campi già ripiegati — la radice del nome, «Artista sconosciuto» —
+        // qui uscirebbero tre segmenti invece di due, e il ramo del ripiego
+        // resterebbe quel che era fino a un momento fa: codice che non gira.
+        let mut lib = Libreria::nuova();
+        let path = lib.musica().join("A/Al/07 Senza tag.wav");
+        wav(&path);
+        assert_eq!(lib.scansiona().inserted, 1);
+
+        let (contenuto, brano, durata, dimensione): (String, String, i64, i64) = lib
+            .connection
+            .query_row(
+                "SELECT content_key, track_key, duration_ms, file_size FROM tracks",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("riga");
+
+        assert_eq!(
+            contenuto,
+            format!("{durata}|{dimensione}"),
+            "un file senza tag si identifica da quanto dura e quanto pesa"
+        );
+        // E la dimensione è quella vera sul disco, non un numero qualunque che
+        // combacia con sé stesso.
+        assert_eq!(
+            dimensione,
+            i64::try_from(std::fs::metadata(&path).expect("stat").len()).expect("dimensione")
+        );
+
+        // `track_key` invece i ripieghi li usa, e deve: è la chiave con cui la
+        // sincronizzazione nomina il brano, e `||` renderebbe ogni file senza
+        // tag lo stesso brano su ogni dispositivo. Le due chiavi qui divergono
+        // apposta.
+        assert!(brano.contains("07 senza tag"), "chiave di brano: {brano}");
+        assert_ne!(contenuto, brano);
+    }
+
+    #[test]
+    fn un_file_senza_tag_rinominato_non_si_duplica() {
+        // Il caso d'uso vero, ed è quello che il ripiego esiste per servire.
+        //
+        // Un file senza tag si distingue solo dal nome, quindi il nome è la
+        // prima cosa che si sistema. Con l'identità di contenuto derivata dai
+        // ripieghi — cioè dalla radice del nome — rinominarlo lo rendeva un
+        // brano nuovo: riga cancellata, riga inserita, via ascolti, voto e
+        // playlist. Durata e dimensione un rinomino non le tocca.
+        //
+        // Con i campi ripiegati al posto dei tag grezzi in `read_track`, qui
+        // sotto `moved` è 0 e `inserted` è 1: la prova fallisce.
+        let mut lib = Libreria::nuova();
+        let da = lib.musica().join("sfusi/traccia 001.wav");
+        wav(&da);
+        lib.scansiona();
+
+        let id: i64 = lib
+            .connection
+            .query_row("SELECT id FROM tracks", [], |r| r.get(0))
+            .expect("id");
+        lib.connection
+            .execute_batch(&format!(
+                "UPDATE tracks SET play_count = 17, rating = 4 WHERE id = {id};
+                 INSERT INTO playlists (id, playlist_key, name, created_at, updated_at)
+                 VALUES (1, 'p', 'P', 1, 1);
+                 INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                 VALUES (1, {id}, 0);"
+            ))
+            .expect("storia d'ascolto");
+
+        // Il rinomino, fuori da Aether: stessa cartella, nome che dice
+        // finalmente qualcosa. Il contenuto del file non cambia di un byte.
+        let a = lib.musica().join("sfusi/Nick Drake - Pink Moon.wav");
+        std::fs::rename(&da, &a).expect("rinomino");
+
+        let esito = lib.scansiona();
+
+        assert_eq!(esito.moved, 1, "è lo stesso file con un nome nuovo");
+        assert_eq!(esito.inserted, 0, "un inserimento qui è un brano duplicato");
+        assert_eq!(esito.removed, 0);
+        assert_eq!(lib.conta("tracks"), 1);
+
+        let (stesso_id, ascolti, voto, titolo): (i64, i64, i64, String) = lib
+            .connection
+            .query_row(
+                "SELECT id, play_count, rating, title FROM tracks",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("riga");
+        assert_eq!(stesso_id, id, "deve essere la stessa riga, non una nuova");
+        assert_eq!(ascolti, 17);
+        assert_eq!(voto, 4);
+        assert_eq!(lib.conta("playlist_tracks"), 1, "la playlist regge");
+        // E il titolo mostrato segue il nome nuovo, che è quel che l'utente si
+        // aspetta: cambia l'etichetta, non l'identità.
+        assert_eq!(titolo, "Nick Drake - Pink Moon");
+    }
+
+    #[test]
+    fn la_migrazione_019_sblocca_i_testi_che_uno_scarto_aveva_congelato() {
+        // La riparazione dei dati che viaggia con la 019, provata dove sta il
+        // pacchetto che la porta.
+        //
+        // Il difetto: `imposta_scarto` scriveva `source = 'mano'` anche quando
+        // un testo non c'era ancora, e da lì gli `UPSERT` di `ricorda` e
+        // `ricorda_esito` — che hanno `WHERE lyrics.source <> 'mano'` per non
+        // calpestare mai un testo dell'utente — non scrivevano più niente per
+        // quel brano. Nessun testo, mai più.
+        let connection = rusqlite::Connection::open_in_memory().expect("database");
+        for migrazione in crate::db::MIGRATIONS.iter().filter(|m| m.version < 19) {
+            connection
+                .execute_batch(migrazione.sql)
+                .unwrap_or_else(|err| panic!("migrazione {}: {err}", migrazione.version));
+        }
+
+        connection
+            .execute_batch(
+                "INSERT INTO lyrics (track_key, source, offset_ms, updated_at)
+                   VALUES ('bloccato', 'mano', 250, 1);
+                 INSERT INTO lyrics (track_key, synced, source, offset_ms, updated_at)
+                   VALUES ('a mano', '[00:01.00]parole', 'mano', 0, 1);
+                 INSERT INTO lyrics (track_key, source, instrumental, offset_ms, updated_at)
+                   VALUES ('strumentale', 'mano', 1, 0, 1);
+                 INSERT INTO lyrics (track_key, plain, source, offset_ms, updated_at)
+                   VALUES ('piatto', 'parole', 'mano', 0, 1);",
+            )
+            .expect("righe di partenza");
+
+        let diciannove = crate::db::MIGRATIONS
+            .iter()
+            .find(|m| m.version == 19)
+            .expect("la 019 dev'essere nella catena");
+        connection
+            .execute_batch(diciannove.sql)
+            .expect("la 019 si applica");
+
+        let fonte = |chiave: &str| -> String {
+            connection
+                .query_row(
+                    "SELECT source FROM lyrics WHERE track_key = ?1",
+                    [chiave],
+                    |r| r.get(0),
+                )
+                .expect("riga")
+        };
+        assert_eq!(
+            fonte("bloccato"),
+            "",
+            "la riga nata da uno scarto torna al valore neutro"
+        );
+        // E lo scarto, che è la sola cosa che quella riga portava, resta.
+        let scarto: i64 = connection
+            .query_row(
+                "SELECT offset_ms FROM lyrics WHERE track_key = 'bloccato'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("scarto");
+        assert_eq!(scarto, 250);
+
+        // I tre casi che non vanno toccati, e sono la ragione per cui la
+        // condizione ha tre clausole invece di una.
+        assert_eq!(fonte("a mano"), "mano", "un testo sincronizzato a mano");
+        assert_eq!(fonte("strumentale"), "mano", "una risposta «non ha parole»");
+        assert_eq!(fonte("piatto"), "mano", "un testo piatto scritto a mano");
     }
 
     #[test]
@@ -4592,5 +5215,109 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
             .expect("conteggio");
         assert_eq!(rimasti, 1, "e quella che c'è adesso non si tocca");
+    }
+
+    // ── i dati tecnici del file ─────────────────────────────────────────────
+
+    /// Una riga di `tracks` con i quattro campi tecnici messi a mano.
+    ///
+    /// A mano e non per scansione: la scansione sa scrivere solo quel che
+    /// `lofty` legge da un WAV generato dalle prove, cioè un caso, mentre qui
+    /// servono i casi che in libreria ci sono davvero — un «Mpeg», un nome che
+    /// questa versione non conosce, e la riga con tutto a `NULL`.
+    fn riga_tecnica(
+        connection: &Connection,
+        id: i64,
+        codec: Option<&str>,
+        sample_rate: Option<i64>,
+        channels: Option<i64>,
+        bitrate: Option<i64>,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO tracks
+                   (id, path, track_key, title, artist, album, file_size,
+                    date_added, date_modified, codec, sample_rate, channels, bitrate)
+                 VALUES (?1, ?2, 'k', 'T', 'A', 'D', 1000, 1, 1, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    id,
+                    format!("C:/M/{id}.x"),
+                    codec,
+                    sample_rate,
+                    channels,
+                    bitrate
+                ],
+            )
+            .expect("riga di prova");
+    }
+
+    #[test]
+    fn il_formato_legge_i_quattro_campi() {
+        let db = crate::db::open_in_memory().expect("database");
+        riga_tecnica(
+            &db.connection,
+            1,
+            Some("Flac"),
+            Some(44_100),
+            Some(2),
+            Some(1058),
+        );
+
+        let formato = read_formato(&db.connection, 1)
+            .expect("lettura")
+            .expect("la riga c'è");
+        assert_eq!(formato.codec.as_deref(), Some("FLAC"));
+        assert_eq!(formato.sample_rate, Some(44_100));
+        assert_eq!(formato.channels, Some(2));
+        assert_eq!(formato.bitrate, Some(1058));
+    }
+
+    #[test]
+    fn il_formato_degrada_sui_nulli() {
+        // Il caso della libreria scansionata quando quelle colonne non si
+        // scrivevano: la riga c'è, i dati no. `Some` con tutto vuoto e non
+        // `None`, perché le due cose vogliono dire cose diverse — «non so
+        // com'è fatto» contro «questo brano non c'è più».
+        let db = crate::db::open_in_memory().expect("database");
+        riga_tecnica(&db.connection, 7, None, None, None, None);
+
+        let formato = read_formato(&db.connection, 7)
+            .expect("lettura")
+            .expect("la riga c'è comunque");
+        assert_eq!(formato.codec, None);
+        assert_eq!(formato.sample_rate, None);
+        assert_eq!(formato.channels, None);
+        assert_eq!(formato.bitrate, None);
+    }
+
+    #[test]
+    fn il_formato_di_un_brano_che_non_ce_piu_e_none() {
+        // La coda tiene gli identificativi, non le righe: un brano tolto dalla
+        // libreria mentre suonava arriva qui come un `id` che non esiste, e
+        // `None` è la risposta giusta — non un errore da mostrare.
+        let db = crate::db::open_in_memory().expect("database");
+        assert_eq!(read_formato(&db.connection, 404).expect("lettura"), None);
+    }
+
+    #[test]
+    fn etichetta_codec_traduce_mpeg_in_mp3() {
+        // I tre nomi che la mappa esiste per correggere: sono i soli in cui il
+        // `Debug` di `lofty::FileType` non somiglia a come il formato si
+        // chiama. «Mp4» diventa il contenitore e non il codec, perché dentro
+        // un M4A ci può stare ALAC.
+        assert_eq!(etichetta_codec("Mpeg"), "MP3");
+        assert_eq!(etichetta_codec("Mp4"), "M4A");
+        assert_eq!(etichetta_codec("Vorbis"), "Ogg Vorbis");
+        assert_eq!(etichetta_codec("Flac"), "FLAC");
+    }
+
+    #[test]
+    fn un_codec_sconosciuto_resta_scritto_come_sta() {
+        // `FileType` è `#[non_exhaustive]`: questa prova è il contratto con le
+        // versioni future di `lofty`. Un contenitore nuovo si mostra col nome
+        // della variante invece di sparire, e chi guarda legge qualcosa di
+        // brutto ma vero.
+        assert_eq!(etichetta_codec("Dsf"), "Dsf");
+        assert_eq!(etichetta_codec("Custom(\"tta\")"), "Custom(\"tta\")");
     }
 }

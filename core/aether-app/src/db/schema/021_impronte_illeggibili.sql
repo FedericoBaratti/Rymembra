@@ -1,0 +1,42 @@
+-- Le impronte che avevano fallito su un file illeggibile tornano in coda.
+--
+-- # Il guasto che questa migrazione ripara, e che non è un guasto del database
+--
+-- Fino a ieri il motore non sapeva decodificare Opus. Non era una svista: la
+-- variante `Codec::NonSupportato` lo dichiarava, e `decodifica.rs` rifiutava il
+-- file prima ancora di aprirlo, con un codice del catalogo invece che con un
+-- errore generico. Da oggi Opus si decodifica, e quei file suonano.
+--
+-- Solo che non erano stati rifiutati dal solo lettore. `sonora::misura` calcola
+-- l'impronta che alimenta l'affinità e la riproduzione automatica, e per farlo
+-- passa dallo stesso decodificatore: ogni Opus in libreria le ha risposto
+-- «formato non supportato», e `sonora::da_errore` ha scritto quel responso
+-- nella riga come `esito = 'illeggibile'`. Sono brani che da oggi suonano ma
+-- che nessuna radio interna proporrebbe, perché nella tabella delle impronte
+-- risultano già esaminati e già scartati.
+--
+-- # Perché una cancellazione, e perché non ci si perde niente
+--
+-- `'illeggibile'` è, per costruzione, l'esito **ritentabile**:
+-- `sonora::candidato_where` lo ripesca da solo quando `tentato_at` è più vecchio
+-- di `RITENTA_MS`. Cancellare quelle righe non butta via un dato — butta via
+-- l'attesa. Senza questa migrazione gli Opus rientrerebbero comunque, ma fra un
+-- mese, e nel frattempo l'utente vedrebbe l'affinità ignorare senza motivo
+-- apparente dei brani che ha appena sentito suonare.
+--
+-- `'muto'` e `'corto'` non si toccano, e la differenza è nel loro doc: `'muto'`
+-- è terminale — trenta secondi di silenzio oggi saranno trenta secondi di
+-- silenzio fra un mese — e `'corto'` non dipende da quale codec sappiamo
+-- aprire. Qui si rimette in coda solo ciò che è stato negato da una mancanza
+-- che non c'è più.
+--
+-- # Perché non si è alzato `VERSIONE_ESTRATTORE`
+--
+-- Perché quello è l'interruttore che invalida **tutte** le impronte, e serve
+-- quando cambia come si misura. Qui non è cambiato il metro: è cambiato
+-- l'elenco dei file che si riescono ad aprire. Alzarlo avrebbe rimisurato
+-- l'intera libreria — migliaia di brani, tutti già giusti — per recuperarne
+-- una manciata.
+DELETE FROM track_impronta
+ WHERE vettore IS NULL
+   AND esito = 'illeggibile';

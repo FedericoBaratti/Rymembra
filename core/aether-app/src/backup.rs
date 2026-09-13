@@ -947,6 +947,13 @@ pub fn applica(connection: &mut Connection, piano: &RestorePlan) -> Result<Appli
 /// `tracks.track_key` non è `UNIQUE` apposta, e due file dello stesso brano sono
 /// due copie di una storia d'ascolto sola. È idempotente perché il valore scritto
 /// è già un massimo: rileggere e rifondere dà lo stesso numero.
+///
+/// **Non tocca né i campi descrittivi né le chiavi**, e per questo — a differenza
+/// della scansione e dell'arricchimento — non chiama
+/// [`crate::incerti::riapplica`]: un ripristino rimette ascolti, voti e
+/// preferiti, cioè quel che il backup sa, e il backup non porta né i titoli né
+/// `track_overrides`. Non c'è niente da rimettere sopra perché niente è stato
+/// scavalcato.
 fn applica_brani(tx: &Transaction<'_>, cambi: &[TrackChange]) -> Result<usize, AppError> {
     if cambi.is_empty() {
         return Ok(0);

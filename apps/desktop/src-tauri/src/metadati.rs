@@ -1,9 +1,10 @@
 //! I brani con i metadati messi male: vederli, correggerli, chiudere la domanda.
 //!
-//! # La forma è quella del riordino
+//! # La forma è quella di ogni operazione che si può rifiutare
 //!
-//! `piano → esegui → annulla` è già il vocabolario dell'applicazione per le
-//! operazioni su cui l'utente deve poter dire di no. Qui la stessa forma diventa
+//! `piano → esegui → annulla` — la scansione, il ripristino, l'importazione di
+//! un account — è già il vocabolario dell'applicazione per le operazioni su
+//! cui l'utente deve poter dire di no. Qui la stessa forma diventa
 //! `elenco → correggi/conferma`, e l'annullamento non serve perché non si tocca
 //! niente sul disco: la correzione vive in `track_overrides` e si disfa
 //! riscrivendola.

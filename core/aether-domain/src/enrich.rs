@@ -3,9 +3,15 @@
 //! L'arricchimento va a cercare in rete il titolo giusto, l'anno giusto e la
 //! copertina di brani che i loro tag descrivono male o non descrivono affatto.
 //! Questo modulo è la parte che **decide**, e sta nel dominio per la ragione che
-//! [`crate`] scrive in testa: è una decisione che si può sbagliare in silenzio, e
-//! sbagliandola si riscrivono i tag dei file dell'utente con quelli di un'altra
-//! canzone. Provarla deve costare una chiamata di funzione.
+//! [`crate`] scrive in testa: è una decisione che si può sbagliare in silenzio,
+//! e sbagliandola una libreria intera prende il nome di un'altra canzone —
+//! titoli, anni e copertine di un disco che non è quello, su righe che nessuno
+//! rileggerà mai una per una. Provarla deve costare una chiamata di funzione.
+//!
+//! Dalla 2.3.1 quel che si decide qui finisce **in database e non nei file**
+//! (`aether_app::enrich`, e la nota in testa a quel modulo): l'errore si
+//! dimentica senza riaprire un mp3. Resta un errore che nessuno guarda prima, e
+//! le tre uscite qui sotto restano la ragione per cui è accettabile.
 //!
 //! # L'album prima del brano
 //!
@@ -28,7 +34,7 @@
 //! dentro ha tre uscite e non due: [`Verdetto::Applica`] quando le prove ci sono,
 //! [`Verdetto::DaRivedere`] quando c'è un candidato plausibile ma non provato, e
 //! [`Verdetto::Nessuno`] quando non c'è niente. **`DaRivedere` non scrive nulla**:
-//! né un tag, né una copertina, né un identificativo. È la regola che
+//! né un campo in libreria, né una copertina, né un identificativo. È la regola che
 //! `decision.ts` del vecchio albero aveva già capito, e vale la pena ripeterne il
 //! motivo — una corrispondenza plausibile applicata è un errore che nessuno
 //! troverà mai, perché il brano avrà l'aria di essere a posto.
@@ -1320,9 +1326,10 @@ pub struct Fields {
 impl Fields {
     /// Non c'è niente da scrivere.
     ///
-    /// Chi chiama la usa per non aprire un file, non toccarne la data di
-    /// modifica e non scrivere una riga di annullamento per una scrittura che
-    /// non cambierebbe niente.
+    /// Chi chiama la usa per non annotare come «arricchito» un brano che era
+    /// già a posto: la corrispondenza c'era, e non cambiava nulla. Contarlo
+    /// prometterebbe qualcosa da dimenticare dove non c'è niente da riportare
+    /// indietro.
     #[must_use]
     pub fn e_vuoto(&self) -> bool {
         self.title.is_none()
@@ -1376,7 +1383,8 @@ pub(crate) fn titolo_di_ripiego(titolo: &str, radice_del_file: Option<&str>) -> 
 ///    «Artista sconosciuto»;
 /// 2. un campo **già scritto** si sostituisce solo con `sostituisci`, cioè
 ///    quando il verdetto è [`Verdetto::Applica`] — chi ha taggato a mano i suoi
-///    file non deve vederseli riscrivere da una corrispondenza plausibile;
+///    file non deve vedersi riscrivere in libreria quel che ci ha messo, da una
+///    corrispondenza soltanto plausibile;
 /// 3. un campo che il candidato **non conosce** non si tocca **mai**. Non
 ///    esiste un modo di dire «svuotalo», e non deve esistere: perdere un genere
 ///    scritto a mano per averlo cercato e non trovato sarebbe il modo peggiore
@@ -1404,9 +1412,10 @@ pub fn plan_write(brano: &LocalTrack, trovati: &Fields, sostituisci: bool) -> Fi
             .map(str::trim)
             .filter(|n| !n.is_empty())?;
         if rimpiazzabile || sostituisci {
-            // Non si riscrive un valore identico: aprirebbe il file, ne
-            // cambierebbe la data di modifica e scriverebbe una riga di
-            // annullamento per non cambiare niente.
+            // Un valore identico non è una scrittura: tenerlo qui farebbe
+            // contare come «arricchito» un brano su cui non è cambiato niente,
+            // e il pannello prometterebbe di poter dimenticare qualcosa che
+            // nessuno ha mai deciso.
             if attuale.map(str::trim) == Some(nuovo) {
                 return None;
             }

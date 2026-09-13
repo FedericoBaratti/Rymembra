@@ -211,7 +211,18 @@ export function RigheCoda({
             <button
               type="button"
               className="tasto icon-btn"
-              aria-label={t("queue.remove")}
+              /* Col titolo dentro, come fa la × dell'elenco. «Togli dalla coda»
+                 era la stessa frase su tutte le righe: chi guarda sa quale × ha
+                 sotto il dito, chi ascolta sentiva cinquanta volte la stessa
+                 cosa senza sapere quale brano stava per perdere. Il brano non più
+                 in libreria si nomina come si nomina nella riga — non c'è altro
+                 nome da dargli. */
+              aria-label={t("queue.remove.aria", {
+                titolo: brano ? brano.title : t("queue.goneTrack"),
+              })}
+              /* Il `title` resta la frase corta: al passaggio del mouse il titolo
+                 del brano è già scritto accanto, a due centimetri dal puntatore. */
+              title={t("queue.remove")}
               onClick={() => comanda(ipc.codaTogli(indice))}
             >
               <Icona nome="i-x" dim={14} />
@@ -244,6 +255,9 @@ export function Coda({
   return (
     <aside
       className="pannello-coda glass-modal"
+      // L'ancora del giro guidato: il ripiego del passo della colonna, per chi
+      // la colonna la tiene chiusa.
+      data-giro="coda"
       aria-label={t("queue.panel.aria")}
     >
       <header>

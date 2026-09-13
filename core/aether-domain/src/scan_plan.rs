@@ -287,8 +287,14 @@ pub fn plan_scan(input: ScanInput<'_>, rules: PathRules) -> ScanPlan {
 pub struct RemovedIdentity<'a> {
     /// La riga.
     pub track_id: i64,
-    /// La sua chiave di brano, come sta nel database.
-    pub track_key: &'a str,
+    /// La sua chiave di **contenuto**, come sta nel database.
+    ///
+    /// Non `track_key`, ed è la differenza che fa funzionare l'appaiamento: la
+    /// chiave di brano si ricalcola dai valori che l'utente ha corretto, quindi
+    /// dopo una correzione non combacia più con quella del file appena letto,
+    /// che i tag li ha ancora sbagliati. Vedi
+    /// [`crate::keys::ContentKey`].
+    pub content_key: &'a str,
 }
 
 /// Una riga che sopravvive perché il suo file si è solo spostato.
@@ -302,14 +308,22 @@ pub struct Rematch {
 
 /// La chiave identifica davvero un brano?
 ///
-/// La forma è `artista|titolo|album`. Senza titolo non resta identità
-/// sufficiente: appaiare su una chiave del genere significherebbe dichiarare
-/// «stesso brano» due file che hanno in comune soltanto di non avere un nome.
-fn identifies_a_track(track_key: &str) -> bool {
-    track_key
+/// Le forme di [`crate::keys::ContentKey`] sono due, e la domanda si risolve
+/// per entrambe guardando il **secondo segmento**:
+///
+/// - `artista|titolo|album` — il secondo segmento è il titolo. Senza titolo non
+///   resta identità sufficiente: appaiare su una chiave del genere
+///   significherebbe dichiarare «stesso brano» due file che hanno in comune
+///   soltanto di non avere un nome.
+/// - `durata|dimensione` — il secondo segmento è la dimensione del file. Un
+///   file senza tag che si sposta resta lungo e pesante uguale, e quelle due
+///   cose insieme sono l'unica identità che gli è rimasta. Con `|` e basta non
+///   se ne conosce nessuna delle due, e allora non si appaia.
+fn identifies_a_track(content_key: &str) -> bool {
+    content_key
         .split('|')
         .nth(1)
-        .is_some_and(|title| !title.is_empty())
+        .is_some_and(|secondo| !secondo.is_empty())
 }
 
 /// Riconosce, fra le righe che sparirebbero, quelle il cui file è semplicemente
@@ -322,15 +336,27 @@ fn identifies_a_track(track_key: &str) -> bool {
 /// crea uno nuovo: il brano ricompare in libreria **senza niente di tutto
 /// quello**, e sparisce dalle playlist in cui stava.
 ///
-/// Non è un caso raro. È esattamente ciò che succede a **ogni file** dopo un
-/// riordino della libreria, che è la funzione appena costruita: senza questo
-/// passaggio, riordinare una volta azzera l'intera storia d'ascolto.
+/// Non è un caso raro. È esattamente ciò che succede a **ogni file** quando una
+/// libreria viene riordinata in cartelle — da Picard, da un altro lettore, o
+/// dal riordino che Aether stessa offriva fino alla 2.3.0: senza questo
+/// passaggio, un riordino solo azzera l'intera storia d'ascolto.
 ///
-/// L'appaiamento è sulla sola chiave di brano — non sulla dimensione — perché un
+/// L'appaiamento è sulla sola chiave — non sulla dimensione a parte — perché un
 /// file può essersi spostato *e* essere stato ritaggato nello stesso giro. A
 /// pari chiave si appaia in ordine: se due copie dello stesso brano si scambiano
 /// le statistiche fra loro il danno è nullo, mentre un appaiamento rifiutato
 /// costa la storia di entrambe.
+///
+/// # Perché la chiave è quella di contenuto
+///
+/// Perché è l'unica che le due parti calcolano allo stesso modo. Le righe che
+/// sparirebbero portano la chiave che sta nel database; i file appena letti
+/// quella calcolata adesso dai loro tag. Con `track_key` le due divergono
+/// appena l'utente corregge qualcosa — la riga ha la chiave dei valori
+/// corretti, il file quella dei tag grezzi — e l'appaiamento fallisce proprio
+/// sui brani a cui qualcuno ha dedicato attenzione: il brano si duplica, e la
+/// riga vecchia se ne va con ascolti, voto e playlist. [`crate::keys::ContentKey`]
+/// non cambia mai, e le due parti tornano a parlare la stessa lingua.
 #[must_use]
 pub fn match_moved_tracks(removed: &[RemovedIdentity<'_>], inserted_keys: &[&str]) -> Vec<Rematch> {
     let mut candidates: HashMap<&str, Vec<usize>> = HashMap::new();
@@ -343,13 +369,13 @@ pub fn match_moved_tracks(removed: &[RemovedIdentity<'_>], inserted_keys: &[&str
     let mut taken: HashMap<&str, usize> = HashMap::new();
     let mut matched = Vec::new();
     for row in removed {
-        if !identifies_a_track(row.track_key) {
+        if !identifies_a_track(row.content_key) {
             continue;
         }
-        let Some(free) = candidates.get(row.track_key) else {
+        let Some(free) = candidates.get(row.content_key) else {
             continue;
         };
-        let next = taken.entry(row.track_key).or_insert(0);
+        let next = taken.entry(row.content_key).or_insert(0);
         let Some(&index) = free.get(*next) else {
             continue;
         };
@@ -507,11 +533,11 @@ mod tests {
             &[
                 RemovedIdentity {
                     track_id: 1,
-                    track_key: "art|uno|alb",
+                    content_key: "art|uno|alb",
                 },
                 RemovedIdentity {
                     track_id: 2,
-                    track_key: "art|due|alb",
+                    content_key: "art|due|alb",
                 },
             ],
             &["art|due|alb", "art|uno|alb"],
@@ -538,11 +564,42 @@ mod tests {
         let rematch = match_moved_tracks(
             &[RemovedIdentity {
                 track_id: 1,
-                track_key: "art||",
+                content_key: "art||",
             }],
             &["art||"],
         );
         assert!(rematch.is_empty());
+    }
+
+    #[test]
+    fn un_file_senza_tag_si_appaia_su_durata_e_dimensione() {
+        // La forma di ripiego di `ContentKey`: due segmenti invece di tre. Un
+        // file che i tag non ce li ha resta lungo e pesante uguale quando lo si
+        // sposta, ed è l'unica identità che gli è rimasta.
+        let rematch = match_moved_tracks(
+            &[RemovedIdentity {
+                track_id: 1,
+                content_key: "283000|9000000",
+            }],
+            &["283000|9000000"],
+        );
+        assert_eq!(
+            rematch,
+            vec![Rematch {
+                track_id: 1,
+                insert_index: 0
+            }]
+        );
+
+        // Ma se non si conosce nemmeno quello, non si appaia niente.
+        let ignoto = match_moved_tracks(
+            &[RemovedIdentity {
+                track_id: 1,
+                content_key: "|",
+            }],
+            &["|"],
+        );
+        assert!(ignoto.is_empty());
     }
 
     #[test]
@@ -552,11 +609,11 @@ mod tests {
             &[
                 RemovedIdentity {
                     track_id: 1,
-                    track_key: "a|t|b",
+                    content_key: "a|t|b",
                 },
                 RemovedIdentity {
                     track_id: 2,
-                    track_key: "a|t|b",
+                    content_key: "a|t|b",
                 },
             ],
             &["a|t|b", "a|t|b", "a|t|b"],
@@ -574,7 +631,7 @@ mod tests {
         let rematch = match_moved_tracks(
             &[RemovedIdentity {
                 track_id: 1,
-                track_key: "a|sparito|b",
+                content_key: "a|sparito|b",
             }],
             &["a|altro|b"],
         );

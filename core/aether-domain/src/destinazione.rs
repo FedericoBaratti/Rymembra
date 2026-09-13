@@ -20,6 +20,20 @@ use crate::text::collapse_whitespace;
 /// I caratteri che nessun filesystem che ci interessa accetta in un nome.
 const VIETATI: [char; 9] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
 
+/// I nomi che Windows riserva ai dispositivi, a qualunque estensione.
+///
+/// Una cartella chiamata `CON` non si può creare, e il guasto arriva come un
+/// errore di permessi che manda a cercare nel posto sbagliato. Un artista
+/// chiamato `AUX` o un album `NUL` sono rari ma esistono.
+///
+/// Stavano in `organize`, che scriveva cartelle a partire dai tag; con il
+/// ritiro del riordino l'unico posto che costruisce ancora un percorso dai
+/// metadati è questo, e la costante lo ha seguito.
+const NOMI_RISERVATI: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
 /// Quanti caratteri al massimo può essere lungo un segmento di percorso.
 ///
 /// Centoventi e non 255: i segmenti sono tre — interprete, album, file — e su
@@ -55,10 +69,10 @@ pub fn segmento_sicuro(grezzo: &str) -> String {
         return "Senza titolo".to_owned();
     }
     // Un nome riservato da Windows (`CON`, `AUX`…) si disinnesca con un
-    // suffisso, non cancellandolo: la stessa regola di
-    // [`crate::organize::sanitize_component`].
+    // suffisso, non cancellandolo: cancellarlo lascerebbe un nome vuoto, e il
+    // ripiego «Senza titolo» qui sopra ha già consumato quel caso.
     let radice = pulito.split('.').next().unwrap_or(&pulito).to_lowercase();
-    if crate::organize::NOMI_RISERVATI.contains(&radice.as_str()) {
+    if NOMI_RISERVATI.contains(&radice.as_str()) {
         pulito.push('_');
     }
     pulito

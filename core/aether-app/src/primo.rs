@@ -259,9 +259,11 @@ mod prove {
             true,
         )]);
         let viste = esamina(&files, &["C:/M".to_owned()]);
-        // `opus` è fra le estensioni riconosciute anche se il decodificatore non
-        // lo suona: una cartella di opus contiene musica, e dirle vuota sarebbe
-        // una bugia peggiore del brano che poi non parte.
+        // `opus` conta come musica, e da quando c'è `decodifica::opus` si
+        // suona pure. Il caso resta qui perché la domanda di questa schermata
+        // non è «cosa so suonare» ma «questa cartella contiene musica»: le due
+        // risposte hanno coinciso per un po' e torneranno a divergere al primo
+        // formato riconosciuto che non decodifichiamo — oggi è `wma`.
         assert_eq!(viste.first().map(|c| c.brani), Some(2));
     }
 }

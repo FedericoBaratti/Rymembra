@@ -33,10 +33,20 @@ CREATE TABLE lyrics (
   -- più che oggi si ignora — un testo già letto non deve essere già perduto.
   synced       TEXT,
 
-  -- Da dove viene: 'sidecar' | 'tag' | 'lrclib' | 'mano'.
+  -- Da dove viene: '' (nessuna: la riga esiste solo per lo scarto) | 'sidecar' |
+  -- 'tag' | 'lrclib' | 'mano'.
   -- Testo e non un intero: una riga di database che si legge senza una tabella
   -- di traduzione a fianco è una riga che si può diagnosticare alle undici di
   -- sera, e questi valori li scrive solo il nostro codice.
+  --
+  -- La stringa vuota non è un valore mancante, è il valore **neutro**: una riga
+  -- può nascere prima di qualunque testo, perché chi tocca il cursore della
+  -- correzione ha diritto di farlo mentre il catalogo sta ancora rispondendo.
+  -- Scriverci 'mano' — come si faceva — voleva dire dichiarare fatto a mano un
+  -- testo che non c'è, e da quel momento la `WHERE source <> 'mano'` degli
+  -- `UPSERT` non lasciava più scrivere niente per quel brano: nessun testo, mai
+  -- più, e nessun modo di accorgersene. Vedi `aether_app::testi::Fonte::Nessuna`
+  -- e `imposta_scarto`.
   source       TEXT    NOT NULL,
 
   -- L'identificativo nel catalogo remoto, quando è di là che è arrivato. Serve

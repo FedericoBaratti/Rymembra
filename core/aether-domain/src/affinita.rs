@@ -503,11 +503,12 @@ pub fn punteggio(
         (vicinanza, pesi.vicinanza),
         (gusto, pesi.gusto),
     ] {
-        if let Some(v) = valore {
-            if v.is_finite() && quota > 0.0 {
-                somma += quota * v.clamp(0.0, 1.0);
-                peso += quota;
-            }
+        if let Some(v) = valore
+            && v.is_finite()
+            && quota > 0.0
+        {
+            somma += quota * v.clamp(0.0, 1.0);
+            peso += quota;
         }
     }
     if peso <= 0.0 {

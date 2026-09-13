@@ -8,12 +8,40 @@
 //! il 29,8. Dire all'utente «30» sarebbe mentire, e si vedrebbe: il cursore
 //! arriverebbe in fondo prima della fine del brano.
 //!
-//! La posizione vera la conosce solo la callback, che conta i fotogrammi che ha
-//! davvero consegnato al dispositivo. Questo filo li legge da un'atomica e li
-//! traduce in un brano e in un istante attraverso i **segni**: ogni volta che i
-//! campioni di un brano nuovo cominciano a entrare nell'anello, si annota a
-//! quale fotogramma d'uscita cominceranno. Quando il contatore della callback
-//! supera quel numero, quel brano sta suonando — non un istante prima.
+//! Fra il decodificatore e l'orecchio però non c'è un solo ritardo: ce ne sono
+//! **tre**, e distinguerli è tutto il mestiere di questo file.
+//!
+//! 1. **L'anello nostro**, fra il filo della decodifica e la callback. Duecento
+//!    millisecondi garantiti, qualche secondo su un'uscita normale — vedi
+//!    [`RISERVA_MS`]. Questo lo sappiamo esattamente, perché i fotogrammi che ne
+//!    escono li conta la callback: è il contatore
+//!    `Condiviso::fotogrammi`.
+//! 2. **Il buffer del dispositivo**, fra la callback e il convertitore. La
+//!    callback consegna i campioni *al driver*, non alle casse, e quel che
+//!    conta — i `suonati` — sono fotogrammi **entrati nel buffer del
+//!    dispositivo**. Fino a ieri questo file scriveva che erano «i fotogrammi
+//!    che la callback ha davvero consegnato al dispositivo», e la frase era
+//!    letteralmente giusta e praticamente falsa: consegnati al dispositivo non
+//!    vuol dire usciti dalle casse. Questo pezzo si **misura**:
+//!    `crate::uscita::annota_latenza` lo legge da `cpal` a ogni blocco e lo
+//!    scrive in `Condiviso::latenza_fotogrammi`.
+//! 3. **La catena d'uscita** — mixer di sistema, driver, DAC, e su un'uscita
+//!    senza fili la radio. Questo non si misura da nessuna parte: `cpal` non lo
+//!    vede, e su Bluetooth vale più degli altri due insieme. Si **dichiara a
+//!    mano**, con la preferenza `audio.latenza_ms`.
+//!
+//! Da qui i due nomi che [`Contesto::aggiorna`] usa e non confonde: i
+//! **`suonati`** sono i fotogrammi contati dalla callback (1), gli **`uditi`**
+//! sono i `suonati` meno la somma di (2) e (3). Gli `uditi` governano quel che
+//! si racconta — quale brano sta suonando e a che punto è — perché è quel che
+//! l'orecchio sta ricevendo adesso. I `suonati` grezzi governano una cosa sola,
+//! la fine del brano, per la ragione scritta in [`Contesto::forse_fine`].
+//!
+//! La traduzione da fotogrammi a brano e istante passa dai **segni**: ogni volta
+//! che i campioni di un brano nuovo cominciano a entrare nell'anello si annota a
+//! quale fotogramma d'uscita cominceranno, e da quale punto del brano. Quando il
+//! contatore raggiunge quel numero, quel brano sta suonando — non un istante
+//! prima.
 //!
 //! È lo stesso meccanismo che rende corretto il gapless: fra due brani attaccati
 //! non c'è nessun evento, nessuna riapertura, nessuna pausa. C'è un segno.
@@ -138,6 +166,9 @@ enum Comando {
     },
     Dissolvenza {
         ms: u64,
+    },
+    Latenza {
+        ms: i64,
     },
     Equalizzatore {
         guadagni: [f32; BANDE],
@@ -406,6 +437,27 @@ impl Motore {
         self.manda(Comando::Dissolvenza { ms });
     }
 
+    /// Di quanti millisecondi la catena d'uscita ritarda il suono, dichiarati.
+    ///
+    /// È il terzo dei tre ritardi elencati nel `//!` di questo modulo: quello che
+    /// nessuno misura — mixer di sistema, driver, DAC, e su un'uscita senza fili
+    /// la radio. Si somma alla latenza che `cpal` riporta e il totale si **toglie**
+    /// dalla posizione raccontata, così quel che il cursore e i testi dicono è
+    /// quel che l'orecchio sta ricevendo adesso.
+    ///
+    /// Positivo ritarda la posizione riportata, negativo la anticipa: il secondo
+    /// verso serve a chi trova che i testi arrivino **tardi** anche con la misura
+    /// in mano, cioè quando l'anticipo dei testi è già stato tarato per un'altra
+    /// uscita.
+    ///
+    /// Non tocca il suono, non tocca il gapless e non sposta la fine del brano:
+    /// vedi [`Contesto::forse_fine`]. Chi chiama ritaglia il valore — qui entra
+    /// quel che arriva da una preferenza, e un numero assurdo sposterebbe il
+    /// cursore e basta.
+    pub fn latenza(&self, ms: i64) {
+        self.manda(Comando::Latenza { ms });
+    }
+
     /// Cambia la curva dell'equalizzatore.
     ///
     /// I guadagni sono in decibel, uno per banda, nell'ordine di
@@ -654,12 +706,29 @@ impl std::fmt::Debug for BranoAperto {
 }
 
 /// Un brano che comincerà a sentirsi a un certo fotogramma d'uscita.
+///
+/// # La regola che lega i due numeri
+///
+/// `da` e `offset_ms` devono descrivere **lo stesso istante**: `da` dice quando
+/// si sente, contato in fotogrammi d'uscita, e `offset_ms` dice a che punto del
+/// brano si è in quel preciso momento. [`Contesto::aggiorna`] somma al secondo il
+/// tempo scorso dal primo, quindi due istanti diversi dentro lo stesso segno
+/// sfasano la posizione **per tutta la vita del segno**, cioè per tutto il brano.
+///
+/// I tre posti che annotano un segno lo fanno per tre istanti diversi, e ognuno
+/// scrive la coppia coerente: l'avvio di un brano (`0`, `0`), un salto (`0`, il
+/// millisecondo raggiunto), e metà dissolvenza (`spinti + meta`, mezza
+/// dissolvenza in millisecondi).
 struct Segno {
     /// Da quale fotogramma d'uscita in poi si sente questo brano.
     da: u64,
     track_id: i64,
     durata_ms: u64,
-    /// Quanto era già stato saltato quando è cominciato (per i salti).
+    /// A che punto del brano si è nell'istante indicato da `da`.
+    ///
+    /// Non è «quanto è stato saltato»: è la posizione dentro il brano in
+    /// quell'istante, che per un salto coincide col punto raggiunto e per una
+    /// dissolvenza vale mezza curva. Vedi la regola in testa al tipo.
     offset_ms: u64,
     replaygain_db: Option<f32>,
 }
@@ -697,6 +766,12 @@ struct Contesto {
     rg_decodifica: Option<f32>,
     /// Quanto dura la sovrapposizione fra due brani. Zero: nessuna.
     dissolvenza_ms: u64,
+    /// La latenza della catena d'uscita dichiarata a mano, in millisecondi.
+    ///
+    /// Il terzo dei tre ritardi del `//!`, quello che nessuna misura vede.
+    /// Positivo toglie alla posizione riportata, negativo le aggiunge. Vedi
+    /// [`Motore::latenza`].
+    latenza_manuale_ms: i64,
     /// La durata dichiarata del brano corrente, per sapere quando finisce.
     durata_corrente_ms: u64,
     /// Quanti fotogrammi di sovrapposizione sono già stati mescolati.
@@ -890,6 +965,7 @@ impl Contesto {
             bersaglio_db: -18.0,
             rg_decodifica: None,
             dissolvenza_ms: 0,
+            latenza_manuale_ms: 0,
             durata_corrente_ms: 0,
             dissolvenza_fatti: 0,
             dissolvenza_durata: 0,
@@ -932,6 +1008,13 @@ impl Contesto {
             }
             Comando::Dissolvenza { ms } => {
                 self.dissolvenza_ms = ms;
+            }
+            // Vale dal prossimo giro d'orologio, che è fra quattro millisecondi:
+            // non c'è niente da rifare e niente da svuotare, perché la latenza
+            // non tocca i campioni — sposta soltanto quel che si racconta di
+            // loro.
+            Comando::Latenza { ms } => {
+                self.latenza_manuale_ms = ms;
             }
             Comando::Equalizzatore { guadagni, attivo } => {
                 // Spegnere non è un salto a piatto: è una corsa verso lo zero,
@@ -1395,6 +1478,24 @@ impl Contesto {
         // ascoltando: prima è un sottofondo sotto quello vecchio, e annunciarlo
         // allora vorrebbe dire una finestra che cambia titolo mentre si sente
         // ancora l'altro — e uno scrobble attribuito al brano sbagliato.
+        //
+        // # `da` e `offset_ms` descrivono lo stesso istante
+        //
+        // È la regola di tutto il tipo [`Segno`], e qui era rotta. `da` dice
+        // *quando* si sente — il fotogramma d'uscita — e `offset_ms` dice *dove*
+        // si è, dentro il brano, in quell'istante. Devono parlare dello stesso
+        // momento, altrimenti `aggiorna` somma una posizione a un tempo scorso
+        // che parte da un'altra parte.
+        //
+        // Questo blocco è il primo che contiene audio dell'entrante: il suo
+        // fotogramma zero esce a `self.spinti`. Quindi quando il contatore
+        // arriva a `spinti + meta`, l'entrante ha già prodotto `meta`
+        // fotogrammi — è a metà dissolvenza del *suo* inizio, non al suo inizio.
+        // Con `offset_ms: 0`, com'era scritto qui, la posizione riportata
+        // restava indietro di mezza dissolvenza **per tutto il brano**: con sei
+        // secondi di dissolvenza, tre secondi, dal primo all'ultimo istante. È
+        // la causa numero uno dello sfasamento dei testi, e sballava insieme
+        // scrubber, «riprendi dov'eri» e il pannello di Windows.
         if !self.segno_dissolvenza {
             #[expect(
                 clippy::integer_division,
@@ -1407,7 +1508,7 @@ impl Contesto {
                     da: self.spinti.saturating_add(meta),
                     track_id: preparato.decodificatore.track_id(),
                     durata_ms: preparato.durata_ms,
-                    offset_ms: 0,
+                    offset_ms: ms_da_fotogrammi(meta, self.formato.frequenza),
                     replaygain_db: preparato.replaygain_db,
                 });
             }
@@ -1452,6 +1553,22 @@ impl Contesto {
                 // Con una dissolvenza in corso il segno è già stato annotato a
                 // metà sovrapposizione, e rimetterlo qui vorrebbe dire lo
                 // stesso brano che comincia due volte.
+                //
+                // # Perché qui `offset_ms` è zero, e non va «uniformato»
+                //
+                // Perché qui il brano attacca **dal suo primo campione**: senza
+                // dissolvenza il passaggio è un gapless, e il fotogramma zero
+                // dell'entrante esce esattamente a `self.spinti`. `da` e
+                // `offset_ms` descrivono lo stesso istante — la regola di
+                // [`Segno`] — e quell'istante è l'inizio del brano, quindi zero è
+                // la verità.
+                //
+                // In [`Contesto::forse_dissolvi`] lo stesso campo vale mezza
+                // dissolvenza, e non è un'incoerenza da appianare per simmetria:
+                // là il segno è puntato a `spinti + meta`, cioè a un istante in
+                // cui l'entrante ha già suonato `meta` fotogrammi. Chi
+                // uniformasse le due rimetterebbe il difetto che quel commento
+                // racconta.
                 if !self.segno_dissolvenza {
                     self.segni.push_back(Segno {
                         da: self.spinti,
@@ -1495,13 +1612,62 @@ impl Contesto {
         }
     }
 
+    /// Quanti fotogrammi separano il contatore della callback dall'orecchio.
+    ///
+    /// La somma dei due ritardi che la callback non conta: quello **misurato** —
+    /// il buffer del dispositivo, che `cpal` riporta a ogni blocco — e quello
+    /// **dichiarato a mano**, cioè tutto il resto della catena d'uscita. Il
+    /// `//!` in testa al modulo li distingue tutti e tre.
+    ///
+    /// Può uscire **negativo**, e non è un errore: una correzione a mano negativa
+    /// dice «la posizione raccontata arriva tardi, anticipala», ed è il verso che
+    /// serve a chi ha già tarato l'anticipo dei testi su un'altra uscita.
+    ///
+    /// # Perché una misura assurda si butta
+    ///
+    /// Perché quel che `cpal` riporta è la durata del buffer del dispositivo:
+    /// decine di millisecondi, non centinaia. Un quarto di secondo lì dentro non
+    /// è un'uscita lenta — è un orologio del dispositivo che ha risposto una
+    /// sciocchezza — e compensarlo sposterebbe cursore e testi di un quarto di
+    /// secondo senza che nessuno possa risalire al perché. Sopra
+    /// [`crate::uscita::LATENZA_MASSIMA_MS`] resta solo il numero che qualcuno ha
+    /// scelto guardando l'effetto.
+    fn ritardo_fotogrammi(&self) -> i64 {
+        let frequenza = self.formato.frequenza;
+        let misurata = self.condiviso.latenza_fotogrammi.load(Ordering::Relaxed);
+        let tetto = fotogrammi_da_ms(crate::uscita::LATENZA_MASSIMA_MS, frequenza);
+        let misurata = if misurata > tetto { 0 } else { misurata };
+        let misurata = i64::try_from(misurata).unwrap_or(i64::MAX);
+        misurata.saturating_add(fotogrammi_da_ms_con_segno(
+            self.latenza_manuale_ms,
+            frequenza,
+        ))
+    }
+
     /// Traduce i fotogrammi usciti in un brano e in un istante.
+    ///
+    /// Due contatori e non uno, ed è la distinzione che il `//!` del modulo
+    /// spiega: i **`suonati`** sono i fotogrammi che la callback ha consegnato al
+    /// buffer del dispositivo, gli **`uditi`** sono quelli che l'orecchio ha
+    /// davvero ricevuto. Gli `uditi` governano sia la scelta del segno sia i
+    /// millisecondi riportati — raccontare dove si è, per definizione, è
+    /// raccontare dov'è l'orecchio. I `suonati` grezzi vanno a
+    /// [`Contesto::forse_fine`], e il perché è scritto là.
     fn aggiorna(&mut self) {
         let suonati = self.condiviso.fotogrammi.load(Ordering::Relaxed);
+        let ritardo = self.ritardo_fotogrammi();
+        let uditi = if ritardo >= 0 {
+            suonati.saturating_sub(u64::try_from(ritardo).unwrap_or(0))
+        } else {
+            suonati.saturating_add(ritardo.unsigned_abs())
+        };
 
-        // Il segno valido è l'ultimo già raggiunto dal contatore.
+        // Il segno valido è l'ultimo già raggiunto da quel che si sente. Sui
+        // `suonati` si cambierebbe brano mentre dalle casse esce ancora il
+        // precedente, cioè si annuncerebbe un `Iniziato` in anticipo — e lo
+        // scrobble partirebbe prima del primo campione udibile.
         while self.segni.len() > 1 {
-            let prossimo_arrivato = self.segni.get(1).is_some_and(|s| s.da <= suonati);
+            let prossimo_arrivato = self.segni.get(1).is_some_and(|s| s.da <= uditi);
             if prossimo_arrivato {
                 self.segni.pop_front();
             } else {
@@ -1515,7 +1681,7 @@ impl Contesto {
             return;
         };
 
-        let scorsi = suonati.saturating_sub(segno.da);
+        let scorsi = uditi.saturating_sub(segno.da);
         let ms = segno
             .offset_ms
             .saturating_add(ms_da_fotogrammi(scorsi, self.formato.frequenza));
@@ -1551,6 +1717,21 @@ impl Contesto {
     /// dell'anello. Dichiarare la fine quando finisce la decodifica taglierebbe
     /// la coda di ogni brano — e con una coda che avanza da sola, la
     /// taglierebbe a ogni brano dell'album.
+    ///
+    /// # Perché legge i `suonati` e non gli `uditi`
+    ///
+    /// Perché la fine si dichiara quando l'ultimo campione ha lasciato **l'anello
+    /// nostro**, non quando ha lasciato le casse. Questo evento è il segnale con
+    /// cui chi sta sopra fa avanzare la coda e prepara il brano dopo, e ritardarlo
+    /// della latenza d'uscita vorrebbe dire ritardare di altrettanto il brano
+    /// successivo: su un album gapless si sentirebbe un buco fra una traccia e
+    /// l'altra, lungo esattamente la latenza compensata. La compensazione serve a
+    /// raccontare meglio dove si è, non a far suonare la musica più tardi.
+    ///
+    /// Il prezzo, dichiarato: il `Fermato` dell'ultimo brano della coda arriva una
+    /// latenza d'uscita prima che il suono finisca davvero. Sono i millisecondi in
+    /// cui il pulsante mostra già il triangolo mentre l'ultima coda esce dal DAC,
+    /// e nessuno li vede.
     ///
     /// # Perché azzera la posizione
     ///
@@ -1697,6 +1878,22 @@ fn fotogrammi(campioni: usize, canali: u16) -> u64 {
 )]
 fn fotogrammi_da_ms(ms: u64, frequenza: u32) -> u64 {
     ms.saturating_mul(u64::from(frequenza)) / 1000
+}
+
+/// Come [`fotogrammi_da_ms`], ma su un tempo che può essere negativo.
+///
+/// Serve alla correzione di latenza dichiarata a mano, che ha due versi: si può
+/// dire «il suono esce dopo» e «la posizione la racconti tardi». Il segno si
+/// porta fuori e si rimette dopo, invece di scrivere una seconda divisione, così
+/// la regola di arrotondamento resta una sola.
+fn fotogrammi_da_ms_con_segno(ms: i64, frequenza: u32) -> i64 {
+    let quanti = fotogrammi_da_ms(ms.unsigned_abs(), frequenza);
+    let quanti = i64::try_from(quanti).unwrap_or(i64::MAX);
+    if ms < 0 {
+        quanti.saturating_neg()
+    } else {
+        quanti
+    }
 }
 
 /// I millisecondi corrispondenti a tanti fotogrammi.
@@ -1943,6 +2140,254 @@ mod prove {
         fuori
     }
 
+    // ── il racconto, non i campioni ─────────────────────────────────────────
+    //
+    // Le prove qui sopra guardano la sequenza di campioni che *sarebbe* uscita.
+    // Quelle che seguono guardano l'altra metà del mestiere di questo file: cosa
+    // il motore **dice** di star suonando, e a che punto. Per vederlo serve la
+    // callback, che qui non c'è — e allora la si fa: i campioni che escono
+    // dall'anello si contano in `Condiviso::fotogrammi`, esattamente come fa
+    // lei, e `aggiorna` traduce quel conteggio in una posizione.
+    //
+    // Senza quel conteggio la posizione resta a zero per sempre, ed è la ragione
+    // per cui nessuna prova di questo file guardava la posizione: il bug del
+    // segno di dissolvenza è vissuto per mesi dentro un banco che non poteva
+    // vederlo.
+
+    /// Quanti fotogrammi la callback finta consuma per giro.
+    ///
+    /// Duecentocinquantasei: l'ordine di grandezza di quel che cpal chiede a
+    /// 48 kHz. Serve a rendere vera la tolleranza delle prove — «un blocco» è
+    /// cinque millisecondi e mezzo, non un margine scelto per far passare.
+    const BLOCCO_FINTO: u64 = 256;
+
+    /// Un giro di quel ciclo, visto da fuori.
+    struct Passo {
+        /// Quel che il motore raccontava in quell'istante.
+        posizione: Posizione,
+        /// I fotogrammi contati dalla callback finta, grezzi.
+        suonati: u64,
+        /// Quanti eventi erano stati annunciati fino a lì.
+        ///
+        /// Un conteggio e non l'elenco: serve a sapere **a quale giro** un
+        /// annuncio è arrivato, che è la domanda delle prove sulla latenza. Quale
+        /// annuncio sia lo dice la sequenza, che per un brano solo è
+        /// `iniziato`, `fermato`.
+        eventi: usize,
+    }
+
+    /// Fa girare il contesto con la callback finta, e raccoglie il racconto.
+    ///
+    /// I banchi di queste prove hanno un canale solo — vedi [`banco`] — quindi un
+    /// campione è un fotogramma e non serve nessuna conversione.
+    fn suona_raccontando(banco: &mut Banco, registro: &Registro) -> Vec<Passo> {
+        let mut storia = Vec::new();
+        // Lo stesso tetto di [`suona_tutto`], e per la stessa ragione: una prova
+        // che non finisce blocca la suite intera.
+        for _ in 0..200_000 {
+            let lavorato = banco.ctx.riempi();
+            let mut presi = 0u64;
+            while presi < BLOCCO_FINTO {
+                if banco.consumatore.pop().is_err() {
+                    break;
+                }
+                presi = presi.saturating_add(1);
+            }
+            banco
+                .condiviso
+                .fotogrammi
+                .fetch_add(presi, Ordering::Relaxed);
+            banco.ctx.aggiorna();
+            let posizione = banco
+                .ctx
+                .posizione
+                .lock()
+                .map_or_else(|avvelenato| *avvelenato.into_inner(), |g| *g);
+            storia.push(Passo {
+                posizione,
+                suonati: banco.condiviso.fotogrammi.load(Ordering::Relaxed),
+                eventi: quanti_eventi(registro),
+            });
+            if !lavorato && presi == 0 && banco.ctx.corrente.is_none() {
+                break;
+            }
+        }
+        storia
+    }
+
+    /// Il primo istante in cui il motore dice di star suonando questo brano.
+    fn primo_annuncio(storia: &[Passo], track_id: i64) -> Option<&Passo> {
+        storia
+            .iter()
+            .find(|p| p.posizione.track_id == Some(track_id))
+    }
+
+    #[test]
+    fn la_posizione_a_meta_dissolvenza_e_quella_del_brano_che_entra() {
+        // Il bug che questa prova chiude, e che valeva tutto il brano: il segno
+        // dell'entrante si annota a `spinti + meta`, cioè a un istante in cui
+        // l'entrante ha già prodotto `meta` fotogrammi, e dichiarava
+        // `offset_ms: 0`. Con quattrocento millisecondi di dissolvenza la
+        // posizione riportata partiva da zero invece che da duecento e restava
+        // indietro di duecento **fino alla fine del brano**. Con i sei secondi
+        // che si possono scegliere dalle impostazioni sono tre secondi.
+        let (registro, osservatore) = spia();
+        let mut banco = banco_con(48_000, osservatore);
+        banco.ctx.esegui(Comando::Dissolvenza { ms: 400 });
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
+
+        let storia = suona_raccontando(&mut banco, &registro);
+
+        let arrivo =
+            primo_annuncio(&storia, 2).expect("il secondo brano non è mai stato annunciato");
+        // Metà di quattrocento millisecondi, più al più il blocco che la
+        // callback finta consuma per giro.
+        assert!(
+            (190..=230).contains(&arrivo.posizione.ms),
+            "il brano che entra si annuncia a {} ms invece di ~200: il segno \
+             dice un istante e l'offset un altro",
+            arrivo.posizione.ms
+        );
+    }
+
+    #[test]
+    fn il_gapless_resta_a_zero_sul_primo_campione() {
+        // Il contrappeso della prova qui sopra, e la ragione per cui i due
+        // `offset_ms` di `forse_dissolvi` e `passa_al_prossimo` devono restare
+        // diversi: senza dissolvenza il brano nuovo attacca dal suo primo
+        // campione, e lì zero è la verità. Chi «uniformasse» le due per simmetria
+        // lo scoprirebbe qui.
+        let (registro, osservatore) = spia();
+        let mut banco = banco_con(48_000, osservatore);
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
+
+        let storia = suona_raccontando(&mut banco, &registro);
+
+        let arrivo =
+            primo_annuncio(&storia, 2).expect("il secondo brano non è mai stato annunciato");
+        assert!(
+            arrivo.posizione.ms <= 20,
+            "il gapless attacca a {} ms invece che da capo",
+            arrivo.posizione.ms
+        );
+    }
+
+    /// Un brano solo suonato fino in fondo, con le due latenze che si vogliono.
+    ///
+    /// `misurata` è quel che la callback avrebbe scritto in
+    /// `Condiviso::latenza_fotogrammi`; `manuale_ms` è la preferenza
+    /// `audio.latenza_ms`. Il brano e il numero di giri sono gli stessi in ogni
+    /// chiamata — la decodifica non guarda la latenza — quindi due storie si
+    /// possono confrontare **giro per giro**.
+    fn un_brano_con_latenza(manuale_ms: i64, misurata: u64) -> Vec<Passo> {
+        let (registro, osservatore) = spia();
+        let mut banco = banco_con(48_000, osservatore);
+        banco
+            .condiviso
+            .latenza_fotogrammi
+            .store(misurata, Ordering::Relaxed);
+        banco.ctx.esegui(Comando::Latenza { ms: manuale_ms });
+        let solo = aperto(&banco.ctx, brano(1, 48_000, 0.5));
+        banco.ctx.esegui(Comando::Suona(Box::new(solo)));
+        suona_raccontando(&mut banco, &registro)
+    }
+
+    /// Il giro di mezzo, dove il brano sta suonando e nessun estremo disturba.
+    #[expect(
+        clippy::integer_division,
+        reason = "metà di un elenco di giri: mezzo giro non esiste, e quale dei \
+                  due vicini si prenda non cambia niente"
+    )]
+    fn a_meta(storia: &[Passo]) -> &Passo {
+        storia
+            .get(storia.len() / 2)
+            .expect("una storia vuota vuol dire che il banco non ha suonato")
+    }
+
+    #[test]
+    fn la_latenza_dichiarata_sposta_indietro_la_posizione() {
+        let senza = un_brano_con_latenza(0, 0);
+        let con = un_brano_con_latenza(100, 0);
+        assert_eq!(
+            senza.len(),
+            con.len(),
+            "la latenza ha cambiato la decodifica: non deve toccare i campioni"
+        );
+
+        let qui = a_meta(&senza);
+        let la = a_meta(&con);
+        assert_eq!(
+            qui.suonati, la.suonati,
+            "i due giri non sono lo stesso giro"
+        );
+        let scarto = i64::try_from(qui.posizione.ms).unwrap_or(0)
+            - i64::try_from(la.posizione.ms).unwrap_or(0);
+        assert!(
+            (90..=110).contains(&scarto),
+            "cento millisecondi di latenza spostano la posizione di {scarto}"
+        );
+    }
+
+    #[test]
+    fn la_latenza_non_ritarda_la_fine() {
+        // La fine si dichiara quando l'ultimo campione ha lasciato **l'anello
+        // nostro**, non le casse: ritardarla della latenza vorrebbe dire
+        // ritardare di altrettanto il brano dopo, cioè un buco fra due tracce di
+        // un album gapless lungo esattamente la compensazione.
+        //
+        // Per un brano solo gli annunci sono due, in quest'ordine: `iniziato`,
+        // `fermato`. Il giro in cui il conteggio arriva a due è il giro del
+        // `Fermato`, e i fotogrammi contati lì devono essere gli stessi con e
+        // senza latenza.
+        let senza = un_brano_con_latenza(0, 0);
+        let con = un_brano_con_latenza(500, 0);
+
+        let fine = |storia: &[Passo]| {
+            storia
+                .iter()
+                .find(|p| p.eventi >= 2)
+                .map(|p| p.suonati)
+                .expect("il brano non si è mai dichiarato finito")
+        };
+        assert_eq!(
+            fine(&senza),
+            fine(&con),
+            "mezzo secondo di latenza ha spostato la fine del brano: il gapless \
+             guadagnerebbe un buco lungo altrettanto"
+        );
+    }
+
+    #[test]
+    fn una_latenza_assurda_si_ignora() {
+        // Quel che `cpal` riporta è la durata del buffer del dispositivo: decine
+        // di millisecondi. Un secondo lì dentro non è un'uscita lenta, è un
+        // orologio che ha risposto una sciocchezza — e compensarlo sposterebbe
+        // cursore e testi di un secondo senza che nessuno possa capire perché.
+        let senza = un_brano_con_latenza(0, 0);
+        let assurda = un_brano_con_latenza(0, fotogrammi_da_ms(1_000, 48_000));
+        assert_eq!(
+            a_meta(&senza).posizione.ms,
+            a_meta(&assurda).posizione.ms,
+            "una latenza oltre il tetto è stata compensata lo stesso"
+        );
+
+        // E l'altra metà della stessa decisione: sotto il tetto la misura si usa,
+        // altrimenti questa prova passerebbe anche con una misura ignorata sempre.
+        let buona = un_brano_con_latenza(0, fotogrammi_da_ms(100, 48_000));
+        let scarto = i64::try_from(a_meta(&senza).posizione.ms).unwrap_or(0)
+            - i64::try_from(a_meta(&buona).posizione.ms).unwrap_or(0);
+        assert!(
+            (90..=110).contains(&scarto),
+            "cento millisecondi misurati spostano la posizione di {scarto}"
+        );
+    }
+
     #[test]
     fn la_dissolvenza_manda_avanti_il_brano_dopo_non_quello_dopo_ancora() {
         // Il guasto che questa prova tiene chiuso: a metà sovrapposizione il
@@ -2166,6 +2611,16 @@ mod prove {
         registro.lock().map(|e| e.clone()).unwrap_or_default()
     }
 
+    /// Quanti annunci sono arrivati, senza copiarli.
+    ///
+    /// [`eventi`] clona l'elenco, che va benissimo a fine prova e non va bene
+    /// dentro un ciclo che gira qualche migliaio di volte: qui serve solo il
+    /// numero, e copiare delle stringhe per contarle sarebbe il genere di spreco
+    /// che rende lente le suite.
+    fn quanti_eventi(registro: &Registro) -> usize {
+        registro.lock().map(|e| e.len()).unwrap_or(0)
+    }
+
     // ── il FLAC vero ──────────────────────────────────────────────────────
 
     /// Mezzo secondo a 44100, mono, a livello costante.
@@ -2352,6 +2807,192 @@ mod prove {
             err.cause()
         );
         assert!(err.code().is_retryable(), "la rete torna: si ritenta");
+    }
+
+    // ── l'Opus vero ────────────────────────────────────────────────────────
+
+    /// Tre secondi di seno a 1 kHz, mono, ad ampiezza 0,5, a 16 kbit/s.
+    ///
+    /// # Perché un tono e non un livello costante come il FLAC
+    ///
+    /// Perché Opus la continua non la trasporta: SILK e CELT tolgono il DC
+    /// tutti e due, e un livello fisso si ricostruirebbe come quasi-silenzio.
+    /// Una prova che ci misurasse sopra un'ampiezza sarebbe verde per il motivo
+    /// sbagliato — verde su un decodificatore rotto quanto su uno giusto. Un
+    /// seno invece sopravvive, e il suo valore efficace è un numero che si può
+    /// confrontare con quello che ne ricava l'implementazione di riferimento.
+    ///
+    /// # Perché un file inciso da libopus
+    ///
+    /// Perché è l'unico modo di provare qualcosa sul **nostro** decodificatore.
+    /// `opus-decoder` è Rust puro e dichiara di passare i dodici vettori di
+    /// RFC 8251, ma quei vettori non viaggiano col crate: qui il campione lo ha
+    /// scritto l'implementazione di riferimento, quindi se il porto in Rust
+    /// sbagliasse in modo grossolano questa prova diventerebbe rossa.
+    /// Costruire i pacchetti a mano vorrebbe dire provare il proprio
+    /// codificatore contro il proprio decodificatore, che non dice niente su
+    /// nessuno dei due.
+    ///
+    /// # Perché tre secondi, che per un campione sono tanti
+    ///
+    /// Perché sotto non ci sono abbastanza **pagine Ogg**, e senza pagine il
+    /// gapless non si esercita. Mezzo secondo di tono entra tutto in una pagina
+    /// sola, e con una pagina sola symphonia non riesce a distinguere il
+    /// silenzio di testa da quello di coda: attribuisce l'imbottitura finale al
+    /// pre-skip, non taglia niente, e la prova finirebbe per misurare un caso
+    /// che a un file vero non capita. A tre secondi le pagine audio sono
+    /// quattro, `trim_start` e `trim_end` arrivano davvero a `decodifica::opus`,
+    /// e quel che si prova è la strada che percorre la musica di qualcuno.
+    ///
+    /// Sedici kilobit al secondo per tenerlo sotto i diecimila byte: un tono
+    /// puro si comprime bene, ed è quel che serve a un campione che deve stare
+    /// in un repository.
+    ///
+    /// 48000 e non 44100 come il FLAC, e non è una scelta: Opus decodifica
+    /// sempre a 48 kHz. Il ricampionatore, che il FLAC esercita, qui resta
+    /// fuori dai piedi apposta — quel che si prova è il codec.
+    const OPUS_TONO: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/campioni/tono.opus"
+    ));
+
+    /// Quanti fotogrammi dura [`OPUS_TONO`] una volta tolti pre-skip e coda.
+    const OPUS_FOTOGRAMMI: i64 = 144_000;
+
+    /// Il valore efficace che libopus ricava da [`OPUS_TONO`].
+    ///
+    /// Misurato decodificando quel file con l'implementazione di riferimento e
+    /// scartando cinquanta millesimi ai due estremi, dove il tono attacca e
+    /// smette. È il numero contro cui si confronta il nostro decodificatore.
+    const OPUS_EFFICACE: f32 = 0.3519;
+
+    fn opus(track_id: i64, estensione: &str) -> Sorgente {
+        Sorgente {
+            track_id,
+            media: Box::new(Byte(std::io::Cursor::new(OPUS_TONO.to_vec()))),
+            estensione: Some(estensione.to_owned()),
+            durata_ms: 3_000,
+            replaygain_db: None,
+        }
+    }
+
+    /// Il valore efficace di un blocco di campioni.
+    fn efficace(campioni: &[f32]) -> f32 {
+        if campioni.is_empty() {
+            return 0.0;
+        }
+        let somma: f32 = campioni.iter().map(|c| c * c).sum();
+        (somma / campioni.len() as f32).sqrt()
+    }
+
+    /// Il tono, misurato al netto degli estremi.
+    ///
+    /// Cinquemila campioni via da una parte e dall'altra: all'inizio c'è
+    /// l'attacco, in fondo la coda, e dopo un salto c'è anche il tratto in cui
+    /// un codec con stato si riallinea. Nessuno dei tre dice niente sul livello
+    /// del tono, che è quel che queste prove misurano.
+    fn tono_di(campioni: &[f32]) -> f32 {
+        if campioni.len() <= 10_000 {
+            return 0.0;
+        }
+        efficace(&campioni[5_000..campioni.len() - 5_000])
+    }
+
+    #[test]
+    fn un_opus_vero_si_decodifica_e_suona_il_tono_inciso() {
+        let mut decodificatore =
+            crate::decodifica::Decodificatore::apri(opus(1, "opus"), 48_000, 1)
+                .expect("l'Opus si apre");
+
+        let campioni = tutto(&mut decodificatore);
+
+        // Tre secondi a 48000 fanno centoquarantaquattromila fotogrammi, ed è
+        // un'uguaglianza **esatta**, non una tolleranza: non c'è ricampionatore
+        // di mezzo, e i due tagli sono l'uno il complemento dell'altro.
+        //
+        // È anche l'unica asserzione che li prova. Senza il taglio di coda ne
+        // arriverebbero 144648; senza quello di testa, 144312 — che è quel che
+        // arrivava davvero prima che `decodifica::opus` si contasse il pre-skip
+        // da sé, e che una tolleranza larga avrebbe lasciato passare. Un numero
+        // diverso da questo dice quale delle due mani ha smesso di lavorare.
+        assert_eq!(
+            i64::try_from(campioni.len()).unwrap_or(0),
+            OPUS_FOTOGRAMMI,
+            "tre secondi a 48 kHz sono {OPUS_FOTOGRAMMI} fotogrammi tondi"
+        );
+
+        // E il tono è quello inciso. La tolleranza è larga perché un codec con
+        // perdita non restituisce i campioni di partenza; è stretta abbastanza
+        // da accorgersi di un guadagno applicato male, di un canale scambiato o
+        // di rumore al posto della musica.
+        let tono = tono_di(&campioni);
+        assert!(
+            (tono - OPUS_EFFICACE).abs() < 0.03,
+            "il valore efficace dice {tono}, libopus su questo file dice {OPUS_EFFICACE}"
+        );
+        // E non è un livello continuo travestito da tono: un seno ha un picco
+        // che sta una spanna sopra il suo valore efficace, e sotto l'unità.
+        let picco = campioni.iter().fold(0.0_f32, |max, c| max.max(c.abs()));
+        assert!(
+            picco > tono && picco < 1.0,
+            "picco {picco} contro valore efficace {tono}: non è la forma di un seno"
+        );
+    }
+
+    #[test]
+    fn un_opus_vero_si_puo_saltare() {
+        // Il salto su Opus merita una prova sua: è un codec con stato — ogni
+        // pacchetto continua il precedente — quindi dopo aver spostato la
+        // puntina il decodificatore va azzerato, o quel che esce sono i resti
+        // della finestra di prima. È `Decoder::reset`, che `cerca` chiama e che
+        // qui si verifica che serva a qualcosa.
+        let intero = {
+            let mut d = crate::decodifica::Decodificatore::apri(opus(1, "opus"), 48_000, 1)
+                .expect("l'Opus si apre");
+            tutto(&mut d).len()
+        };
+
+        let mut decodificatore =
+            crate::decodifica::Decodificatore::apri(opus(1, "opus"), 48_000, 1)
+                .expect("l'Opus si apre");
+        decodificatore.cerca(1_500).expect("il salto riesce");
+        let dopo = tutto(&mut decodificatore);
+
+        assert!(
+            dopo.len() < intero,
+            "dopo un salto in avanti deve uscire meno musica: {} contro {intero}",
+            dopo.len()
+        );
+        // E quel che esce dopo il salto è ancora il tono, non il silenzio né il
+        // rumore che darebbe uno stato non azzerato.
+        let tono = tono_di(&dopo);
+        assert!(
+            (tono - OPUS_EFFICACE).abs() < 0.03,
+            "dopo il salto il tono dovrebbe continuare: valore efficace {tono}"
+        );
+    }
+
+    #[test]
+    fn un_opus_dentro_un_ogg_si_suona_lo_stesso() {
+        // Il caso che prima del decodificatore cadeva nel punto peggiore:
+        // `.ogg` era già fra le estensioni suonabili, quindi il file passava il
+        // cancello delle estensioni, il demultiplatore lo apriva, riconosceva
+        // il flusso Opus — e poi `make()` non trovava un decodificatore, e
+        // all'utente arrivava «formato non supportato» per un contenitore che
+        // l'app apre benissimo.
+        //
+        // Sono gli stessi byte: quel che cambia è solo l'estensione dichiarata,
+        // cioè il suggerimento che arriva al riconoscitore. Dentro un Ogg il
+        // codec lo dice la pagina, non il nome del file.
+        let mut decodificatore = crate::decodifica::Decodificatore::apri(opus(1, "ogg"), 48_000, 1)
+            .expect("un Ogg che dentro è Opus si apre");
+
+        let campioni = tutto(&mut decodificatore);
+        let tono = tono_di(&campioni);
+        assert!(
+            (tono - OPUS_EFFICACE).abs() < 0.03,
+            "il tono dentro l'Ogg dovrebbe essere lo stesso: valore efficace {tono}"
+        );
     }
 
     /// Byte che smettono di rispondere **quando lo si decide**.

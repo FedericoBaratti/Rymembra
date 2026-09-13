@@ -573,7 +573,7 @@ function Schermo({ ctx }: { ctx: ContestoWidget }) {
   return (
     <section className="np-screen in-riproduzione">
       <div className="ambiente ambient-backdrop" aria-hidden="true" />
-      <div className="velo np-scrim" aria-hidden="true" />
+      <div className="np-scrim" aria-hidden="true" />
 
       <header className="testa">
         <div className="chi-suona">
@@ -965,6 +965,62 @@ export function Sovrapposte({ accese }: { accese: Accese }) {
           </div>
         </div>
       )}
+
+      {/* Il giro guidato, cioè l'unico posto in cui si può ridipingere
+          `tour-tooltip` guardandola.
+
+          Le misure sono in percentuale e non misurate, ed è una differenza che
+          conta dirla: nell'applicazione il buco viene da un
+          `getBoundingClientRect` sull'elemento vero e il fumetto da un calcolo
+          che sceglie il lato dove ci sta, mentre qui sono un riflettore
+          plausibile sulla barra del lettore e un fumetto sopra. Quel che si
+          ridipinge — il fumetto, il colore dell'ombra, l'anello sul bersaglio —
+          è identico; quel che qui non si può provare è **dove** il fumetto va a
+          finire, perché dipende dalla finestra vera.
+
+          Il testo è quello del quarto passo e non un finto: le dieci
+          spiegazioni sono lunghe tre righe, e una skin che stringe il fumetto o
+          ne alza il corpo del testo deve poterlo vedere su una lunghezza
+          vera. */}
+      {accese.has("giro") && (
+        <>
+          <div className="giro-velo">
+            <div
+              className="giro-buco"
+              style={{
+                top: "70%",
+                left: "24%",
+                width: "52%",
+                height: "16%",
+                borderRadius: "16px",
+              }}
+            />
+          </div>
+          <div
+            className="giro-fumetto tour-tooltip"
+            style={{ top: "22%", left: "26%" }}
+          >
+            <div className="giro-testa">
+              <h2>{t("tour.step.trasporto.title")}</h2>
+              <span className="giro-passi">
+                {t("tour.progress", { n: 4, totale: 10 })}
+              </span>
+            </div>
+            <p>{t("tour.step.trasporto.body")}</p>
+            <div className="giro-tasti">
+              <button type="button" className="bottone minuto btn-ghost">
+                {t("tour.skip")}
+              </button>
+              <button type="button" className="bottone">
+                {t("tour.back")}
+              </button>
+              <button type="button" className="bottone primario btn-accent">
+                {t("tour.next")}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </>
   );
 }
@@ -1142,10 +1198,40 @@ export function slotDellaPagina(
  * chiave di traduzione da mostrare.
  */
 export const NON_ANCORA: Readonly<Record<string, Chiave>> = {
-  "app-shell": "studio.notYet.appShell",
-  "home-shortcuts": "studio.notYet.homeShortcuts",
-  "tour-tooltip": "studio.notYet.tourTooltip",
-  "tooltip-pill": "studio.notYet.tooltipPill",
+  // Ed è vuoto: **nessuna** parte del registro è più senza un posto dove si
+  // vede. Vale la pena tenerlo, vuoto, con le quattro ragioni scritte sotto:
+  // il valore di questa tabella non è la lista, è la terza risposta che rende
+  // possibile — «non la disegna ancora nessuno», accanto a «la tua skin non
+  // funziona» e «sta in un'altra scena» — e quella risposta deve restare
+  // disponibile per la prossima parte che arriva prima del suo markup.
+  //
+  // Quattro voci sono uscite di qui, e per quattro ragioni diverse. Tutte e
+  // quattro nello stesso passo in cui uscivano da `ATTESE` di
+  // `strumenti/classi.js`: i due elenchi devono dire la stessa cosa, e il
+  // controllo 3 lo verifica.
+  //
+  // `tour-tooltip`: il giro guidato è arrivato. `Giro.tsx` monta il fumetto
+  // come `.giro-fumetto.tour-tooltip`, quindi la parte si vede — e qui non
+  // bastava toglierla dall'elenco, perché «sta in un'altra scena» avrebbe
+  // rimandato a una scena che non la disegnava. L'interruttore «giro» in
+  // `finto.ts` e il velo qui sotto sono l'altra metà di questa riga.
+  //
+  // `tooltip-pill`: adesso l'applicazione la disegna — sono le linguette spente
+  // del pannello dei comandi, ognuna nel guscio `.con-ragione` — e una parte
+  // che si vede non è «non ancora costruita».
+  //
+  // `app-shell`: la disegnava già, e questo elenco diceva il falso. La radice
+  // dell'albero di serie porta `.parte("app-shell")` in
+  // `aether-skin::layout::default_shell`, su tutti e due i rami, e
+  // `Impaginazione.tsx` mette `nodo.part` in classe. Non si vedeva perché il
+  // controllo leggeva solo i `className` del TypeScript; adesso legge anche i
+  // letterali di `layout.rs`.
+  //
+  // `home-shortcuts`: non è arrivata, è **ritirata** — sta in
+  // `aether_skin::parts::RITIRATE`. Era l'unica delle quattro attese senza un
+  // proprietario, e un'attesa che nessun pacchetto ha preso in carico è una
+  // promessa che questa vista non può mantenere: dire «non ancora» per sempre
+  // è la peggiore delle due risposte sbagliate.
 };
 
 /**
@@ -1244,4 +1330,9 @@ export const DOVE_SI_VEDE: Readonly<Record<string, Dove>> = {
   "menu-pop": { accendi: ["menu"] },
   "toast-card": { accendi: ["avviso"] },
   "toast-progress": { accendi: ["avviso"] },
+  // Il fumetto del giro. Stava in `NON_ANCORA` — «non la disegna ancora
+  // nessuno» — e adesso ha un posto vero: l'interruttore la accende su
+  // qualunque pagina, perché nell'applicazione il giro attraversa dieci
+  // schermate e non ne ha una sua.
+  "tour-tooltip": { accendi: ["giro"] },
 };

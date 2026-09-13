@@ -20,18 +20,569 @@ artifacts.
 
 What increments what:
 
-- **patch** — fixes that change neither the appearance nor the shape of the
-  data;
-- **minor** — new features, and every database migration (migrations only go
-  forward: a minor is the signal that going back requires a restore);
+- **patch** — everything the application does to itself, however much of it
+  there is: fixes, and features too — see the second amendment below;
+- **minor** — a release after which something *outside* Aether has to keep up:
+  a skin that must declare a token it did not declare before, a phone that must
+  send a field it did not send before. Nothing breaks in the meantime — that is
+  what separates this from a major;
 - **major** — an incompatible change to the skin format
   (`SKIN_FORMAT_VERSION`) or to the transport protocol
   (`SKIN_TRANSFER_PROTOCOL`), that is, the two points at which an updated device
   would stop understanding one that stayed put.
 
+### Migrations and the number — amended in 2.3.1
+
+That list used to end the minor clause with «and every database migration
+(migrations only go forward: a minor is the signal that going back requires a
+restore)». 2.3.1 migrates the schema and is a patch, so rather than leave the
+document arguing with the release, here is what that clause was protecting and
+where it went.
+
+A migration cannot be undone. There is no `down` — a migration that claimed to
+know how to go back would be claiming to rebuild information it had just thrown
+away — and a database written by a newer version **refuses to open** in an
+older one, with `db.versionAhead`, instead of being «fixed». That is true of
+*every* migration, the purely additive ones included: a column nobody older
+reads is still a `user_version` nobody older accepts.
+
+Which is precisely why the number was the wrong place to say it. It made «this
+release adds a column» and «this release adds a feature» the same
+announcement, and it left no honest way to ship a fix that happens to need a
+column. So the warning moves out of the number and into the text: **every
+release that migrates names its migrations in its own entry and says what
+going back would cost.** The number goes on meaning what it means everywhere
+else. 2.3.1 is the first release under this rule, and its section is below.
+
+### Features and the number — also amended in 2.3.1
+
+The other clause in that list used to read «**minor** — new features», and
+2.3.1 argued with it just as loudly. This release adds a Folders panel, a
+window zoom, a guided tour, a word-level lyric editor, animations in the skin
+format and a profile that carries the whole library — and it is a patch. Same
+treatment: here is what that clause was protecting and where it went.
+
+It was protecting somebody deciding whether to update now, and the way it did
+that was by making the number a measure of **size**. Size is the one thing
+about a release that two honest readers score differently. Is a folder tree
+drawn from a column `tracks` has always had a new feature, or a second view of
+one that was already on screen? Is a window zoom a feature, or the fix that a
+laptop running at 1.75 had been owed since the first frame? Every release
+under that rule spent a paragraph arguing which half it was in — the 2.3.0
+entry below does it twice, in its first two sentences — and a rule that has to
+be re-argued every time is not doing the work of a rule.
+
+So the announcement moves out of the number and into the text, exactly as the
+warning about migrations did one paragraph ago. **What a release adds is what
+its entry says it adds**, and an entry is not shorter for the number in front
+of it being smaller — the 2.3.1 entry below is the proof. The number goes back
+to the single question it can answer the same way twice — whether a copy that
+updated and a copy that did not still understand each other — and that
+question is what `major` and `minor` were already about. `patch` gets
+everything else, which is most of what happens here.
+
+Entries older than 2.3.1 argue their number under the rule that was in force
+when they were written. They are a record of what shipped and are left as they
+were, not restated.
+
 ## [Unreleased]
 
-**Nothing is pending.** Everything that was waiting here went out in 2.3.0.
+**Nothing is pending.**
+
+## [2.3.1] — 2026-09-10
+
+**The release that stops writing in your files.** Up to 2.3.0 two features
+changed what was on your disk: enrichment rewrote tags every half hour, and the
+reorganizer moved files into `Artist/Album`. One has been rewritten so that it
+touches nothing, and the other has been retired. What Aether still writes is
+now short enough to list, and it is listed, in [`PRIVACY.md`](PRIVACY.md) § 8.
+
+It is also a long entry carrying a patch number. Both of the clauses that
+would have argued with that — «minor for every migration» and «minor for new
+features» — have been amended above, in the section where they live, rather
+than being quietly ignored down here. Alongside what it stops doing, it adds a
+Folders panel, a window zoom, a guided tour, word-level lyric timing,
+animations in the skin format and a profile that carries the whole library;
+and it fixes the two long-standing faults that were losing your data in
+silence — a hand-made correction that a re-scan threw away, and a nudge saved
+before the lyrics arrived that locked those lyrics for good.
+
+### Database
+
+They are the reason the clause about migrations moved out of the number. They
+are listed below rather than counted here, because a count in a paragraph goes
+stale the moment another one is added — which is exactly what happened to this
+sentence.
+
+`019_identita_e_metadati.sql` adds a `content_key` column and its index to
+`tracks`, repairs the `lyrics` rows that a stray offset had locked, and creates
+the `track_meta_arricchita` table. Nothing is dropped and nothing is rewritten
+in place.
+
+`020_cronologia_unica.sql` gives `play_history` the unique index on
+`(track_id, played_at)` it never had, after collapsing the duplicates already
+in it. It exists because from this release a profile carries the library, and
+the listening history with it: importing the same archive twice — which is the
+ordinary gesture of somebody who is not sure they already did — used to double
+the rows, silently, because neither of the two was wrong on its own. The
+counts were safe (those come from `sync_ascolti` and merge as a CRDT); the
+history, the year graph and «what did I listen to that afternoon» were not.
+The rule it encodes is that **two plays of the same track in the same
+millisecond are the same play**, and it is written where nobody can forget it
+rather than in the one importer that happened to guard against it. Which is
+why the deduplication runs before the index: on a library that has already
+been doubled, this migration is also the repair.
+
+`021_impronte_illeggibili.sql` deletes the rows of `track_impronta` that hold
+no vector and were filed as `illeggibile`. Until this release the engine could
+not decode Opus, and the fingerprinter goes through the same decoder: every
+Opus in the library had been examined, refused, and recorded as refused, which
+is why the affinity and the autoplay walked past those tracks. `illeggibile` is
+by construction the retryable verdict — the fingerprinter comes back to it on
+its own after a month — so deleting those rows throws nothing away. It only
+removes the wait. `muto` and `corto` are left alone: the first is terminal, and
+the second does not depend on which codecs we can open.
+
+The extractor version was **not** bumped, and that is the point of doing it this
+way. Bumping it invalidates every fingerprint in the library, which is the right
+move when the measurement changes; here the measurement did not change, only
+the list of files that can be opened. A few hundred rows are re-measured instead
+of several thousand.
+
+**Going back to 2.3.0 needs a backup.** Not because of what these migrations
+do, but because migrations only go forward: 2.3.0 opens a 2.3.1 database and
+refuses it, by design, rather than running queries against a schema it does not
+know. Restore a copy of the database from before the update and the old version
+opens it unchanged.
+
+### Added — a Folders panel, in the sidebar
+
+The library has always known where every file is; there was no screen that let
+you walk it. There is one now, next to Songs, and it is a tree: roots, folders,
+the tracks in them, expanded lazily, with the whole keyboard — arrows to move
+and to open, Home and End, `*` to open every sibling, type-ahead with an
+800 ms memory, Enter to play. Double-click or Enter on a folder plays it in
+order: by disc and track number, which is to say in album order, when the
+folder *is* an album.
+
+**It is drawn from the database, never from the disk.** That is the whole
+design and it is worth one paragraph. Walking the filesystem to draw a
+navigation panel means, on a network share, forty seconds of Windows timeout
+per expansion, and on a share that is switched off, a panel that never opens.
+The rows of `tracks` are already at home, so the tree comes out of them —
+about 10-20 ms for a library of eighteen thousand tracks, and no SMB traffic at
+all. The price is stated rather than hidden: a folder that exists on disk but
+has no indexed track in it does not appear. In a panel whose purpose is to
+play things, a node that cannot be played is a node you learn to skip.
+
+Whether the roots are actually *reachable* is a separate question, answered by
+a separate command, on the side: the roots draw immediately from the paths
+already known, and a probe with its own eight-second deadline marks the dead
+ones and offers «Check again». The window never waits for the network, because
+nothing it draws came from there.
+
+`ui.folders.open` and `ui.folders.selected` remember where you were. They stay
+**out of the profile** on purpose: they are paths on this machine, and on
+another computer they would reopen nodes that are not there.
+
+### Added — the window zooms, `Ctrl++` `Ctrl+-` `Ctrl+0`
+
+Seven steps between 90% and 200% — the same seven every browser offers, so
+that somebody who has pressed `Ctrl++` elsewhere already knows how many presses
+it takes. One step down and five up, and the asymmetry is deliberate: the
+smallest text the sheet uses is 10.5 px, which at 0.9 is 9.45 and one step
+further down would be 8.4 — and an interface you cannot read is one you cannot
+use to fix itself. Upward the failures are visible and `Ctrl+0` undoes them in
+a keystroke, so upward there is room.
+
+It is the **WebView's** zoom and not a scale in the stylesheet, and that is not
+an implementation detail: two modules in this release measure the DOM — the
+virtualised list and the tour's spotlight — and a CSS `zoom` would put them
+astride two coordinate systems, where a `getBoundingClientRect` carries the
+factor and a `scrollTop` does not. With the WebView's zoom neither notices
+anything, because there is nothing to notice: they go on working in CSS pixels,
+and the CSS pixels got bigger without changing their name.
+
+No number crosses the IPC boundary. Three gestures go out — one up, one down,
+back to true — and the scale of steps lives in one place, `preferenze::SCALA_ZOOM`.
+`ui.zoom` is remembered like any other preference and, like `player.output`,
+**does not travel in a profile**: it is the correction left over after
+Windows' own scaling on *this* monitor, and on another one it describes nothing.
+
+### Added — a guided tour, on the real interface
+
+Ten steps, on first run, once. It is not a carousel of screenshots: each step
+finds the actual element in the document, cuts a hole in the veil over it and
+puts the bubble beside it — so what you are being shown is the program, at the
+size and in the skin you are running it in. A step whose anchor is not on
+screen is **skipped**, and that is a designed outcome rather than a failure:
+the queue may be closed, nothing may be playing, the library may be empty.
+
+What is remembered is the version of the *script*, not the version of the
+application. The difference shows up at the first patch release: with the
+application's number, a 2.3.2 that fixes a typo would reopen the tour for
+everybody. The question worth asking is not «has the application changed» but
+«has the tour got anything new to say», and only whoever writes the tour can
+answer it. *Settings → Redo the tour* is the way back, and it is explicit.
+
+### Added — what the file actually is, under «Now playing»
+
+«FLAC · 44.1 kHz · Stereo · 1058 kbps». The four columns have been in the
+database since the first version and nothing had ever read them back.
+
+It says the **file**, not the output. If the sound card is resampling to
+48 kHz this line still says 44.1, because the question it answers is «how is
+this edition made», and the real output does not answer it — that would change
+when you changed headphones, while the file stays what it is. The bitrate shows
+even on lossless, because it is the true average and on a FLAC it tells you how
+dense the transfer is. Missing columns simply drop out: an old library shows
+what it has and nothing else, never a « · · ».
+
+`player.fileFormat.visible`, on by default — the opposite default to the
+spectrum's, for the opposite reason: this costs one `SELECT` on four columns
+once per track, and when it is off the query is not made at all and the field
+arrives empty. There is a new skin part, `np-formato`, so a skin can quieten it.
+
+### Added — skins can animate
+
+The skin format has had durations, curves and page transitions since it
+existed, and the Studio exposed none of them. It now has a Motion panel, and a
+skin can declare **named animations** — up to eight of them, two to six frames
+each, with opacity, scale, translation and rotation — and bind them to a part's
+`enter`, `hover`, `active`, `focus` or `disabled`. The line that decides what
+belongs here, and it is written into the module: *a skin animates states of the
+DOM, not events of the application.*
+
+Three rules that are not negotiable, and each is there because of something
+that would otherwise break:
+
+- **No `infinite`.** The four endless animations in the application are each
+  stopped by hand, one rule at a time, under `prefers-reduced-motion`. A skin
+  cannot write those rules, so a skin's endless animation would be the only
+  thing in Aether that cannot be stopped. A pulse is `direction: alternate`
+  with two iterations.
+- **Every emitted duration goes through `calc(… * var(--motion-scale))`**, or
+  reduced motion is simply routed around. A test asserts that no `animation:`
+  or `transition:` the compiler writes contains a duration outside that call —
+  which caught two `::view-transition-*` rules that were already writing a bare
+  `var(--dur-2)`.
+- **A cost budget**, which ships in the same release as the field and not one
+  later, so that no skin can ever have been written against its absence.
+
+`SKIN_FORMAT_VERSION` stays 1 and there is no migration: every field is
+optional, and a document that has never heard of `animations` was already
+valid.
+
+### Added — the profile carries the library, and it is a `.aeprofile`
+
+The profile used to be seventeen lines of JSON: openable in an editor,
+readable, and that was a property rather than an accident. It now carries the
+listening history, the lyrics, the corrections, the covers and the skin
+packages — hundreds of megabytes of binary — and a `.json` that contains three
+hundred megabytes of archive is lying about its own name. So: a container of
+its own, recognised by its **first bytes** and not by its extension, which
+anybody can rename. `PK\x03\x04` is the new one, `{` is the old one, and the
+old one is still **read** and no longer written.
+
+Two things it does that a bigger JSON could not:
+
+- **It never holds the archive in memory.** It is written from file to file
+  through a buffer and read back one entry at a time straight onto the disk.
+  There is no `Vec<u8>` in that module holding more than one entry.
+- **Names are a closed list.** An archive comes from outside, and the only
+  defence that holds against an entry called `../../.ssh/authorized_keys` is
+  not having a path to normalise. A name not on the list does not get skipped,
+  it gets the whole archive refused.
+
+Importing still shows you the plan before it does anything, and now the plan
+also covers merging the library: it proposes a remapping for every root that
+does not exist on this machine, and re-run with those filled in it tells you
+how many paths would follow. Migration `020` above is the other half of this
+feature: without it, importing the same profile twice doubled your listening
+history.
+
+### Added — lyrics can now be timed word by word
+
+The domain has been ready for a long time — `.a2.lrc` was already first in the
+list of sidecars Aether looks for, the writer already emitted `<mm:ss.xx>` and
+the reader already read them back — and the words were being thrown away in
+between. *Sync* gains a **fourth step, optional and skippable**: you tap once
+per word, and it reuses the same tap/redo/finish that the line step uses.
+
+It comes after the line step and not instead of it, because word times lean on
+line times. Saving writes `name.a2.lrc` **and** `name.lrc` without the words,
+because no other player knows what an `a2` is: the richer file wins here, the
+twin stays for everybody else.
+
+### Added — Opus plays, and `.oga` with it
+
+Aether already knew Opus and would not play it. The scan took the files —
+`opus` has been in the closed list of audio extensions since this Rust core's
+first commit, and was in the TypeScript tree before it, which is why the golden
+scan fixture expects one — the library held them, lofty read their tags, and the
+technical line under «Now playing» even knew how to write the word «Opus». Then
+you pressed play and got `playback.formatUnsupported`.
+
+The refusal was deliberate and it was written down: a `Codec` enum in
+`aether-play` whose only job was to say which recognised formats the engine
+could not decode, with a comment promising that the compiler would point at
+every place to touch on the day an Opus decoder turned up. This is that day, and
+the promise held — the places were exactly the ones it named.
+
+**The container was never the problem.** Symphonia demuxes Ogg Opus in full: it
+recognises the `OpusHead`, reads each packet's table of contents to get its
+duration, and with gapless enabled says how much to trim from the head and the
+tail. What it does not have is the codec. So there is no new file reader here,
+only a
+`Decoder` registered in a codec registry of our own, beside the ones symphonia
+ships. It also applies the three things symphonia reads and then does not use:
+the output gain, which RFC 7845 obliges a player to apply and which is where
+R128 normalisation lands when a file is re-gained without being re-encoded; the
+channel mapping family; and the pre-skip.
+
+**The pre-skip is the one that looked handled and was not.** Every Opus file
+opens with a few milliseconds the encoder produced only to prime its own
+filters, and `OpusHead` says how many. Trimming them is the demuxer's job and
+symphonia does it — with gapless on it puts a `trim_start` and a `trim_end` on
+every packet, and its Vorbis decoder simply obeys. On Opus the `trim_start`
+always comes through as zero. Measured: a fixture of exactly three seconds
+handed back 144312 frames instead of 144000, the 312 priming frames sitting at
+the head of every single track. The cause is that symphonia does not trust the
+pre-skip it has just read and tries to *deduce* it from the pages, comparing the
+first page's granule position against the duration of the packets in it — a sum
+that works out on Vorbis and cannot on Opus, where the Ogg granule position
+already counts the pre-skip, so the two numbers agree and the deduction
+concludes there is nothing to remove. The tail deduces correctly, which is why
+`trim_end` works. So the head is counted here instead, from the `OpusHead`, and
+the test asserts the frame count exactly rather than within a tolerance —
+because a tolerance wide enough to be comfortable is a tolerance wide enough to
+have hidden this.
+
+`.oga` comes with it for free. It is the extension Xiph recommends for audio in
+an Ogg container: same container, same demuxer, and Vorbis, FLAC and Opus inside
+one all play without a line of decoding of their own. It is the first entry in
+`SUPPORTED_EXTENSIONS` that the old TypeScript tree did not have, so the list no
+longer says «as in the old tree», and the constant says why.
+
+**Which decoder, and how it was chosen.** Symphonia has none, so this had to
+come from outside, and the choice was between binding libopus — the reference
+implementation, and cmake plus thirty megabytes of C to build, and four more
+cross-builds the day this crate runs on Android — and one of the three Opus
+decoders written in Rust. All three were measured against the same fifteen files
+cut by libopus, tone and noise, mono and stereo, 16 to 128 kbit/s:
+
+- `opus-decoder` **panics** on five of the fifteen, every one of them at a low
+  bitrate, on a shift overflow inside CELT's vector quantisation. In a debug
+  build that is a panic; in release, where overflow checks are off, it would
+  quietly be the wrong number instead — which is worse. And low bitrates are not
+  a laboratory case: they are speech, podcasts, and most of the Opus on the web;
+- `rusty-opus` does not panic and returns rubbish: it reports six times the
+  samples that exist, and what comes out has a root-mean-square of zero;
+- `opus-pure` decodes all fifteen, and the level it recovers matches what
+  libopus recovers from the same file.
+
+That is the one that ships. **The price is stated rather than hidden**: it is
+Rust rather than C, so there is no cmake and no system library and it
+cross-compiles for Android for free, but it is not «no unsafe» — it has some
+seventy blocks of it, all for AVX2 and NEON intrinsics. The workspace's
+`unsafe_code = "forbid"` governs our own code, not our dependencies, and the
+module says so where someone will find it. It also raises the workspace's
+minimum Rust to 1.88, which is now the true floor rather than an optimistic one.
+
+The test fixture is three seconds of a 1 kHz tone cut by libopus itself, and
+both of those choices are argued in place. A constant level — the trick that
+makes the FLAC fixture a hundred and fifty-four bytes — would be useless here,
+because Opus carries no DC and a fixed level comes back as near-silence: the
+test would be green for the wrong reason. And half a second would fit in a
+single Ogg page, where symphonia cannot tell head padding from tail padding and
+the gapless trim never runs, so the fixture would exercise a case no real file
+hits.
+
+### Changed — a failed query now says which failure it was
+
+Everything the database refused used to arrive as one code, `db.queryFailed`,
+whose message suggests restarting Aether. Four cases have been pulled out of
+it, and none of them is fixed by restarting:
+
+- `db.locked` — somebody else is writing right now, usually the scan.
+  Retryable, and it is the only database fault that clears on its own.
+- `db.readOnly` — permissions, a read-only folder, write-protected media.
+  Waiting achieves nothing until somebody changes something.
+- `db.networkPath` — the data folder is on a share, and WAL needs a shared
+  memory file that SMB does not provide. The message says to move the data
+  folder to a local disk, because that is the fix.
+- `db.ioFailed` — the same `SQLITE_IOERR` on a local path, which is the disk
+  and not the location. Not retried, deliberately: a disk that misreads does
+  not recover by being asked again, and an automatic retry would hide the one
+  moment when it is worth making a backup.
+
+None of the 477 call sites changed. The classification happens where the
+`rusqlite::Error` is turned into an `AppError`, once.
+
+**And WAL is now probed rather than assumed.** `PRAGMA journal_mode = WAL` on
+a network share frequently answers `wal` and leaves the failure for later: the
+`-shm` file is needed by the first *transaction*, not by the pragma, and on SMB
+that is where it does not get created. Without the probe the fallback was dead
+code precisely on the machines it was written for — you would have got the
+right message, half an hour later, in the middle of a scan, with nothing done
+about it. The probe is an empty `BEGIN IMMEDIATE; COMMIT;`: **5.5 microseconds**
+measured on a local disk, against the 22 milliseconds of a full open with
+migrations. `SQLITE_BUSY` and `SQLITE_LOCKED` count as **passed**, which is the
+part not to get wrong — another writer is exactly what WAL exists to allow, and
+treating it as a fault would make a healthy local library fall back to
+`TRUNCATE` because two instances started at the same moment. Which journal is
+in force is now printed in the startup log.
+
+### Removed — the reorganizer
+
+`Settings → Folders` no longer offers «Tidy this folder…», and the
+`piano_riordino` / `esegui_riordino` / `annulla_riordino` commands are gone
+along with the screen that drove them and the two modules behind it — about
+1,900 lines.
+
+It was removed rather than kept, and the reason is that it had stopped being
+worth its weight. What it produced was a tree of `Artist/Album` on disk — and
+the library already *is* that tree: the Albums and Artists screens group by
+exactly the same key, and from this release the Folders panel walks the real
+one. Keeping the feature meant keeping a JSONL journal, an undo, a plan screen
+and twenty-six translated strings so that a thousand files could be moved
+around to build a view that was already on the screen. It also meant keeping
+the one place in Aether that moved files across a network share **while
+holding the library lock**, which is to say the last thing that could freeze
+the window for a minute at a time.
+
+**Your files stay exactly where they are.** Nothing is moved back, nothing is
+renamed, nothing is deleted. A library that was tidied by an older version is
+still tidy, and a scan finds every one of those files where they are now — that
+is what scanning does. The `riordino-*.jsonl` journals in the application's
+data folder are kept as well: they are the record of what was moved and where
+from, and deleting them would be throwing away the only copy of it.
+
+### Changed — metadata live in the library, not in your files
+
+Enrichment no longer opens your music. What it works out from MusicBrainz goes
+into the row in `tracks` and is annotated in `track_meta_arricchita`, with its
+source and its confidence; the file on disk is not opened for writing and its
+modification date does not move.
+
+That last detail is the whole point, and it removes a defect rather than just a
+promise. Writing a tag changed the file's modification date, which meant the
+next scan saw a changed file, read it again, and took the tags in it as the
+truth — so unless the new date was read back and stored in the same
+transaction, every enriched file was re-read in full on every scan, for ever.
+There is now nothing to keep in step: `aggiorna_brano` does **not** write
+`date_modified` or `file_size`, and writing them would be the bug rather than
+the fix.
+
+Three consequences worth naming:
+
+- **Cover art is no longer embedded** into your files. Aether stores it in its
+  own cache and shows it from there. Cover art that is already inside a file is
+  still read and still used — nothing stopped working.
+- **Your corrections always win.** The order in which a track's fields are
+  resolved is written out once, in `aether_app::incerti`: raw tags, then
+  `track_meta_arricchita`, then `track_overrides`. A correction made by hand is
+  the last word, and — fixed in this release — it survives a re-scan, which it
+  did not before.
+- **«Forget the enrichment» is now one delete and a re-read.** It empties the
+  table and reads the tags back off the files, which are intact. It no longer
+  has thousands of files to rewrite in order to undo itself.
+
+**The tags older versions already wrote are treated as yours now.** They are
+not reverted on your behalf: rewriting thousands of files is exactly the thing
+this release stopped doing, and after months those tags may well have been
+approved, synced or edited somewhere else. The way back is still there, behind
+a button of its own in *Settings → Metadata* whose label says that it writes
+into the files. It appears only while there is something left to undo, and on a
+library that has never seen an older version it does not appear at all.
+
+**That button is going away.** `arricchimento_riporta_nei_file` is the only
+thing left in Aether that opens your music for writing, it is kept for one
+release as a way out and not as a feature, and it will be **removed in a future
+release** once the records it works from are gone. This line is the notice.
+
+**One thing that will look wrong and is not.** On a library coming from 2.3.0,
+«Forget the enrichment» will say **zero** until a new pass has run. Those
+tracks were enriched by the old code, so what changed them is in their files
+and in the old undo table, not in the new one — there is genuinely nothing for
+«forget» to forget. The Settings panel now says so on the spot, next to the
+count, for as long as the case exists.
+
+### Fixed — lyrics come up 30 ms later, and your own offsets did not move
+
+The anticipation with which a lyric line lights up went from 150 ms to 120 ms.
+It is a single constant in the core now — it used to be written by hand in two
+places, once in Rust and once in TypeScript, and only one of them ever got
+updated — and the new figure is the old one minus the output latency that this
+release started measuring and compensating for.
+
+**The per-track offsets you set by hand are untouched.** They live in
+`lyrics.offset_ms`, they are added on top of the anticipation rather than
+folded into it, and nothing in this change reads or writes them. A track you
+nudged by −300 ms is still nudged by −300 ms.
+
+### Fixed — with crossfade on, the reported position was wrong all the way through
+
+The engine marks the incoming track at the halfway point of the fade, but it
+declared that mark as starting from zero — while the incoming track had
+already played half a fade's worth of frames. With a six-second crossfade the
+position it reported was therefore three seconds behind, and it **stayed**
+three seconds behind until the track ended. That is the single largest cause
+of «the lyrics are out of step», and it was also wrong for the scrubber, the
+time display, the headphone keys and the Windows panel, «resume where you
+were», and the taps you make in *Sync* — a position that lies makes every
+hand-made `.lrc` come out crooked. The two figures now describe the same
+instant, and the comment beside them says that they must.
+
+### Fixed — a nudge saved before the lyrics arrived locked them out for ever
+
+Setting an offset on a track whose lyrics had not been fetched yet created the
+row with `source = 'mano'`. From that moment the two functions that store a
+fetched text both skip the row — they are written `WHERE source <> 'mano'`, so
+as not to overwrite something you typed — and no lyric ever appeared for that
+track again. It writes `source = ''` now, and migration `019` above repairs
+the rows that are already in this state.
+
+### Fixed — fine-tuning is reachable again
+
+The offset strip in the lyrics view appeared only when the fit was judged
+anything but «good», and the comment explaining that said an always-visible
+control would be «a control in search of a problem». It was not true, and the
+untruth cost a feature. The fit measures one thing: whether the times fall
+inside the length of *this* file. It says nothing about where they fall. An
+`.lrc` tapped against another edition of the same length, a master with half a
+second of silence at the front, an output chain that lags by more than the
+engine can measure — all three give a text that is out by a constant amount
+**and** a fit of «good», and all three are straightened by those two buttons,
+which were unreachable in exactly the commonest case.
+
+The strip now shows whenever there are timed lines. What still depends on the
+fit is the *sentence*: saying why the strip is there is worth it when there is
+something to report, and when there is not, the strip steps back into a
+quieter style instead of disappearing.
+
+### Changed — a surface that covers everything now has to say who takes the pointer
+
+`strumenti/classi.js` already held the stylesheet to two rules it had given
+itself: every `z-index` comes from the layer scale, and every duration goes
+through `--motion-scale`. A third one joins them. A rule that declares
+`inset: 0` on a positioned element covers its whole container, and from there
+two behaviours are possible with nothing in the CSS to tell them apart — the
+click goes through, or it stops. The check asks the block to say which
+(`pointer-events`, any value), or the selector to be listed in
+`ATTESE_PUNTATORE` with its one-line reason. There are six exceptions: two are
+the screen itself, three are veils — which exist to catch the click that closes
+them — and one is a rule shared by two layers that each decide in their own
+block.
+
+It is written from a real failure, caught before it shipped. The scrim over the
+cover in «Now playing» carried the class `.velo`, which is what a veil is called
+here; when veils were given their step in the layer scale, the scrim inherited
+it, rose above the header and the body, and swallowed every click on that
+screen. Nothing was logged, because nothing ran: an `aria-hidden` element with
+no handlers that intercepts everything has nothing to report. The scrim is now
+called `np-scrim` and nothing else, and the ambient layer behind it and the
+shimmer on the scan bar say `pointer-events: none` out loud.
 
 ## [2.3.0] — 2026-09-09
 

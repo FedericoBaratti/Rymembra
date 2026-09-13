@@ -92,7 +92,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
-use aether_app::library::TrackSummary;
+use aether_app::library::{FormatoFile, TrackSummary};
 use aether_app::playback::{self, Equalizzazione, Normalizzazione, Qualita, Volume};
 use aether_catalogo::Cataloghi;
 use aether_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
@@ -319,6 +319,32 @@ pub struct StatoRiproduzione {
     /// finestra divide per mille per disegnare e moltiplica per mille per
     /// chiedere, cioè due conversioni che possono divergere per niente.
     pub dissolvenza_s: u64,
+    /// Di quanti millisecondi la catena d'uscita ritarda il suono, dichiarati.
+    ///
+    /// La correzione a mano, non quella misurata: il pezzo di catena che `cpal`
+    /// non vede — mixer di sistema, driver, DAC, e su un'uscita senza fili la
+    /// radio. Positiva racconta la posizione più indietro, negativa più avanti.
+    /// Quel che il motore misura da sé non passa di qui: è già dentro
+    /// `posizione_ms`, e mandarlo anche sarebbe un secondo numero da spiegare
+    /// per una cosa su cui nessuno può agire.
+    pub latenza_ms: i64,
+    /// Quanto prima del suo tempo una riga di testo si accende.
+    ///
+    /// # Perché una costante viaggia dentro uno stato
+    ///
+    /// Perché l'alternativa era peggio: questo numero è
+    /// `aether_domain::testo::ANTICIPO_MS`, e fino a ieri stava scritto **due
+    /// volte** — là e a mano dentro `parti/Testo.tsx`, che cerca la riga accesa
+    /// venti volte al secondo e non può attraversare l'IPC per ogni riga. Due
+    /// copie a mano dello stesso numero sono durate finché nessuno ha toccato una
+    /// delle due.
+    ///
+    /// Costa due byte di JSON a ogni cambio di stato — non a ogni colpo
+    /// d'orologio, che viaggia su [`Tempo`] — e in cambio la finestra legge il
+    /// numero invece di ripeterlo. Sta qui e non nello stato d'avvio perché è di
+    /// questo modulo il mestiere di dire come la posizione riportata si lega a
+    /// quel che si sente, e l'anticipo è l'altra metà di quel legame.
+    pub anticipo_ms: i64,
     /// Il dispositivo audio non c'è più, o non si è mai aperto.
     ///
     /// Un campo dello stato e non solo un evento: chi apre la finestra dopo che
@@ -345,6 +371,33 @@ pub struct StatoRiproduzione {
     /// `None` quando il brano dopo l'hai messo tu, e allora non c'è niente da
     /// spiegare.
     pub motivo_prossimo: Option<String>,
+    /// Com'è fatto il file che sta suonando: formato, frequenza, canali, bitrate.
+    ///
+    /// Un campo dedicato e **non** quattro campi in più su [`TrackSummary`]: là
+    /// starebbero su ogni riga di ogni elenco e di tutta la coda, cioè spediti
+    /// qualche migliaio di volte per disegnarne uno solo. La parsimonia di quel
+    /// tipo è un impegno scritto nella sua carta, e qui sopra — nel commento di
+    /// `coda` — c'è la stessa decisione presa per gli identificativi.
+    ///
+    /// # `None` vuol dire «non si disegna», e nient'altro
+    ///
+    /// Tre cose diverse arrivano qui come `None`: non c'è nessun brano, il brano
+    /// non è più in libreria, oppure **la preferenza è spenta**. La finestra non
+    /// le distingue e non deve: mostra la riga se e solo se il dato c'è.
+    ///
+    /// È una decisione, e la ragione è che l'alternativa — mandare sempre il
+    /// dato e lasciare che la finestra legga `player.fileFormat.visible` —
+    /// obbligherebbe ogni schermata a tenersi una copia di quella preferenza e a
+    /// ricordarsi di rinfrescarla. Chi spegne l'interruttore nelle Impostazioni
+    /// non sta guardando «In riproduzione»: al ritorno troverebbe la riga
+    /// ancora lì, disegnata da una copia stantia. Il filtro sta in un posto
+    /// solo, e [`manda_stato`] lo fa arrivare a tutte e due le viste nello
+    /// stesso istante.
+    ///
+    /// Il dato è quello del **file**, non quello dell'uscita reale: se la scheda
+    /// audio sta ricampionando, non si dice. Il perché sta nella carta di
+    /// [`FormatoFile`].
+    pub formato: Option<FormatoFile>,
 }
 
 /// Il motore audio non c'è: perché, e da quando.
@@ -428,6 +481,12 @@ pub struct Lettore {
     /// domanda — e senza questa copia il cursore delle impostazioni tornerebbe
     /// a zero a ogni ridisegno della finestra.
     dissolvenza_s: u64,
+    /// La latenza d'uscita dichiarata a mano, in millisecondi.
+    ///
+    /// Una copia di quel che sta in `settings`, accanto a `dissolvenza_s` e per
+    /// la stessa ragione: il motore la usa e non la racconta, e senza questa
+    /// copia il cursore delle impostazioni tornerebbe a zero a ogni ridisegno.
+    latenza_ms: i64,
     /// Perché il brano che l'autoplay ha accodato è quello.
     ///
     /// Solo l'ultimo, e solo quello scelto **da solo**: quel che si è messo in
@@ -672,6 +731,7 @@ impl StatoLettore {
             normalizzazione: Normalizzazione::default(),
             autoplay: false,
             dissolvenza_s: 0,
+            latenza_ms: 0,
             motivo_prossimo: None,
         });
         let (prepara, orecchio) = std::sync::mpsc::channel();
@@ -969,13 +1029,27 @@ fn manda_stato_con_posizione(app: &tauri::AppHandle, lettore: &Lettore, ms: u64)
 
 fn costruisci_stato(app: &tauri::AppHandle, lettore: &Lettore) -> StatoRiproduzione {
     let posizione = lettore.motore.posizione();
-    let brano = lettore.coda.current().and_then(|id| {
+    // La riga e i suoi dati tecnici in **una** presa del lucchetto della
+    // libreria, non due. Due `con_libreria` di seguito per lo stesso brano
+    // sarebbero due attese su un mutex che la riapertura del database e la
+    // scansione si passano di mano, per due query che durano microsecondi.
+    //
+    // La preferenza si legge **prima** della seconda query, e non dopo: se è
+    // spenta la query non si fa affatto. Vale anche al contrario — la lettura
+    // della preferenza è un'altra riga di `settings`, e sta dentro la stessa
+    // presa per la stessa ragione.
+    let (brano, formato) = lettore.coda.current().map_or((None, None), |id| {
         let stato = app.state::<Stato>();
         con_libreria(&stato, |libreria| {
-            aether_app::library::read_summary(&libreria.connection, id)
+            let brano = aether_app::library::read_summary(&libreria.connection, id)?;
+            let formato = if playback::load_formato_visibile(&libreria.connection)? {
+                aether_app::library::read_formato(&libreria.connection, id)?
+            } else {
+                None
+            };
+            Ok((brano, formato))
         })
-        .ok()
-        .flatten()
+        .unwrap_or((None, None))
     });
     // Un dispositivo perso è fermo, comunque la pensi il motore.
     //
@@ -1013,6 +1087,11 @@ fn costruisci_stato(app: &tauri::AppHandle, lettore: &Lettore) -> StatoRiproduzi
         spegnimento_ms: quanto_manca(&app.state::<StatoLettore>()),
         autoplay: lettore.autoplay,
         dissolvenza_s: lettore.dissolvenza_s,
+        latenza_ms: lettore.latenza_ms,
+        // Dal dominio, non da qui: è la stessa costante che `riga_attiva` usa nel
+        // nucleo, e ripeterla qui sarebbe la terza copia di un numero che questa
+        // release esiste in parte per ridurre a una.
+        anticipo_ms: aether_domain::testo::ANTICIPO_MS,
         // Il motivo vale per il brano che **verrà**, non per uno qualunque: se
         // nel frattempo la coda è cambiata, la frase parlerebbe di un brano che
         // non c'è più. Confrontare costa un `Option<i64>` e toglie l'unico modo
@@ -1023,6 +1102,7 @@ fn costruisci_stato(app: &tauri::AppHandle, lettore: &Lettore) -> StatoRiproduzi
             .map(|(_, codice)| codice.to_owned()),
         audio: guasto,
         uscita: Some(lettore.motore.dispositivo().to_owned()),
+        formato,
     }
 }
 
@@ -1118,6 +1198,12 @@ fn su_evento(app: &tauri::AppHandle, evento: Evento) {
                 // richiesta HTTP dentro questa chiusura terrebbe fermo il brano
                 // successivo per il tempo di una risposta da Last.fm.
                 crate::scrobble::sta_suonando(app, track_id);
+
+                // Il testo del **prossimo**, chiesto adesso che c'è tempo:
+                // torna subito e il lavoro va su un filo suo, come la riga qui
+                // sopra e per la stessa ragione. Vedi
+                // `crate::testi::precarica_prossimo`.
+                crate::testi::precarica_prossimo(app, lettore.coda.peek_next());
 
                 prepara_prossimo(app, lettore);
                 salva_coda(app, lettore);
@@ -1263,6 +1349,52 @@ pub fn dissolvenza(
     .map_err(errore)
 }
 
+/// Dichiara di quanto la catena d'uscita ritarda il suono, in millisecondi.
+///
+/// È il terzo dei tre ritardi che il `//!` di `aether_play::motore` distingue:
+/// quello che nessuna misura vede — mixer di sistema, driver, DAC, e su un'uscita
+/// senza fili la radio. Il motore ci somma quel che `cpal` gli riporta e toglie
+/// il totale dalla posizione raccontata, così cursore, testi e pannello di
+/// Windows parlano di quel che l'orecchio sta ricevendo adesso.
+///
+/// # Perché risponde con un numero
+///
+/// Perché il nucleo lo taglia a ±`LATENZA_MASSIMA_MS`, e chi ha trascinato il
+/// cursore deve vederlo fermarsi dove si è fermato davvero: la stessa disciplina
+/// di [`spettro_bande_scegli`] e dell'equalizzatore — si scrive, si rilegge, si
+/// restituisce quel che è rimasto scritto.
+///
+/// # Cosa non fa
+///
+/// Non tocca il suono, non sposta la fine di un brano e non rimanda il gapless:
+/// la fine si dichiara quando l'ultimo campione ha lasciato l'anello del motore,
+/// e il perché sta in `aether_play::motore::Contesto::forse_fine`.
+///
+/// **Niente `nuvola::se_riuscito`**, come ogni altro setter di preferenze di
+/// questo modulo — e qui con una ragione in più: è un numero che descrive
+/// *questo* cavo e *questa* scheda, e portarlo su un altro computer ne
+/// descriverebbe un'altra. Per lo stesso motivo non entra in
+/// `profilo::CATALOGO`, accanto a `player.output`.
+#[tauri::command]
+pub fn latenza(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: i64) -> Esito<i64> {
+    con_lettore(&stato, |lettore| {
+        let stato_app = app.state::<Stato>();
+        // Riletta invece che ripetuta, come per la dissolvenza: `save_latenza`
+        // taglia, e senza rileggere il cursore resterebbe su un valore che il
+        // database ha rifiutato.
+        let salvato = con_libreria(&stato_app, |libreria| {
+            playback::save_latenza(&libreria.connection, ms)?;
+            playback::load_latenza(&libreria.connection)
+        })
+        .unwrap_or_else(|_| ms.clamp(-playback::LATENZA_MASSIMA_MS, playback::LATENZA_MASSIMA_MS));
+        lettore.motore.latenza(salvato);
+        lettore.latenza_ms = salvato;
+        manda_stato(&app, lettore);
+        Ok(salvato)
+    })
+    .map_err(errore)
+}
+
 // ── lo spettro ──────────────────────────────────────────────────────────────
 
 /// Accende o spegne lo spettro.
@@ -1397,6 +1529,66 @@ pub fn spettro_qualita_scegli(stato: State<'_, Stato>, livello: String) -> Esito
         playback::load_spettro_qualita(&libreria.connection)
     })
     .map_err(errore)
+}
+
+// ── i dati tecnici del file ─────────────────────────────────────────────────
+
+/// Se i dati tecnici del file si mostrano sotto i comandi.
+///
+/// Serve all'interruttore delle Impostazioni, che è l'unico a chiederlo: le due
+/// viste che disegnano la riga non leggono questa preferenza, e la ragione sta
+/// nella carta di [`StatoRiproduzione::formato`].
+#[tauri::command]
+pub fn formato_visibile(stato: State<'_, Stato>) -> Esito<bool> {
+    con_libreria(&stato, |libreria| {
+        playback::load_formato_visibile(&libreria.connection)
+    })
+    .map_err(errore)
+}
+
+/// Sceglie se i dati tecnici del file si mostrano. Riporta com'è rimasta.
+///
+/// Scrive, **rilegge** e restituisce quel che è rimasto scritto: la stessa
+/// disciplina di [`spettro_visibile_scegli`]. Un booleano non può cambiare
+/// passando dal database, ma la rilettura è ciò che fa dipingere l'interruttore
+/// dal database invece che dal click — e quindi ciò che impedisce a una
+/// scrittura fallita di lasciare acceso qualcosa che domani sarà spento.
+///
+/// # Perché questo setter manda lo stato e quello dello spettro no
+///
+/// Perché la preferenza dello spettro la legge la schermata, quando si apre;
+/// questa la legge [`costruisci_stato`], che decide se il dato viaggia. Senza
+/// [`manda_stato`] l'interruttore cambierebbe il database e non la finestra: la
+/// riga resterebbe disegnata — o resterebbe via — fino al prossimo cambio di
+/// brano, e sarebbe un interruttore che sembra rotto. Con la chiamata il cambio
+/// si vede subito **in entrambe** le viste, la colonna e lo schermo intero, che
+/// sono lo stesso stato.
+///
+/// **Niente `nuvola::se_riuscito`**, come nessun altro setter di preferenze di
+/// questo modulo: il backup su Drive copia due righe di `settings` e la
+/// sincronia tre, nessuna delle quali è questa. A portarla su un altro computer
+/// ci pensa il profilo, dove la chiave è in elenco.
+#[tauri::command]
+pub fn formato_visibile_scegli(
+    app: tauri::AppHandle,
+    stato: State<'_, StatoLettore>,
+    acceso: bool,
+) -> Esito<bool> {
+    let stato_app = app.state::<Stato>();
+    let rimasto = con_libreria(&stato_app, |libreria| {
+        playback::save_formato_visibile(&libreria.connection, acceso)?;
+        playback::load_formato_visibile(&libreria.connection)
+    })
+    .map_err(errore)?;
+    // Il lettore può non esserci — nessuna scheda audio, o nessun brano — e la
+    // preferenza resta comunque scritta: è una scelta di cosa si legge, e
+    // negarla perché le casse non rispondono sarebbe legare due cose che non
+    // c'entrano. La stessa clemenza di `spettro_bande_scegli`.
+    let _ = con_lettore(&stato, |lettore| {
+        manda_stato(&app, lettore);
+        Ok(())
+    });
+    Ok(rimasto)
 }
 
 // ── i comandi ───────────────────────────────────────────────────────────────
@@ -1656,10 +1848,15 @@ pub fn riproduzione_stato(
             spegnimento_ms: None,
             autoplay: false,
             dissolvenza_s: 0,
+            latenza_ms: 0,
+            anticipo_ms: aether_domain::testo::ANTICIPO_MS,
             motivo_prossimo: None,
             audio: Some(guasto_di_apertura(err)),
             // Nessuna uscita: non se n'è mai aperta una.
             uscita: None,
+            // E nessun formato: senza motore non c'è nessun brano, e senza
+            // brano non c'è nessun file di cui dire com'è fatto.
+            formato: None,
         }),
     }
 }

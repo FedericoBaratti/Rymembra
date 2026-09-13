@@ -200,13 +200,13 @@ pub fn prossimo(
     // Il primo gradino non lo tocca nessuno: un disco è un disco, e nessuna
     // affinità ha titolo per spezzarlo a metà. Il contesto si legge **dopo**,
     // così chi sta ascoltando un album non paga nemmeno le tre letture.
-    if let Some(brano) = brano.as_ref() {
-        if let Some(id) = resto_dell_album(connection, brano, esclusi)? {
-            return Ok(Some(Scelta {
-                id,
-                motivo: Motivo::Album,
-            }));
-        }
+    if let Some(brano) = brano.as_ref()
+        && let Some(id) = resto_dell_album(connection, brano, esclusi)?
+    {
+        return Ok(Some(Scelta {
+            id,
+            motivo: Motivo::Album,
+        }));
     }
 
     // Una lettura sola per tutti e quattro i passi che riordinano. `None`
@@ -330,10 +330,10 @@ pub fn radio(
         if fuori.len() >= quanti {
             break;
         }
-        if let Some(brano) = ammessi.get(*indice) {
-            if !fuori.contains(&brano.id) {
-                fuori.push(brano.id);
-            }
+        if let Some(brano) = ammessi.get(*indice)
+            && !fuori.contains(&brano.id)
+        {
+            fuori.push(brano.id);
         }
     }
     Ok(fuori)

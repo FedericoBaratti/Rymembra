@@ -64,18 +64,21 @@ export type Pagina =
  * Quel che sta **sopra** la pagina, e si accende a piacere.
  *
  * Le prime tre sono stato del mondo e le disegna lo scafale vero: la terza
- * colonna, il pannello della coda, la barra della selezione. Le altre tre sono
- * sovrapposizioni nel senso stretto — nell'applicazione stanno fuori
+ * colonna, il pannello della coda, la barra della selezione. Le altre quattro
+ * sono sovrapposizioni nel senso stretto — nell'applicazione stanno fuori
  * dall'albero, in `App.tsx`, perché si sovrappongono per definizione — e qui le
  * disegna `scene.tsx` con le classi vere.
  *
- * Tutte e sei insieme sono legali: nell'app un menù contestuale sopra la coda
+ * Tutte e sette insieme sono legali: nell'app un menù contestuale sopra la coda
  * aperta con tre brani selezionati è mercoledì pomeriggio.
  *
- * Il fumetto del giro guidato non c'è, e non è una dimenticanza: `tour-tooltip`
- * sta nel registro e nessuna schermata lo disegna — vedi `NON_ANCORA` in
- * `scene.tsx`. Un interruttore che accende una cosa che l'applicazione non ha
- * sarebbe la bugia peggiore che questa vista possa dire.
+ * L'ultima, il giro guidato, è arrivata per settima e la sua riga qui è una
+ * riga corretta, non aggiunta: fino alla 2.3.1 diceva che il fumetto non c'era
+ * — «`tour-tooltip` sta nel registro e nessuna schermata lo disegna» — e che un
+ * interruttore per una cosa che l'applicazione non ha sarebbe la bugia peggiore
+ * che questa vista possa dire. La regola vale ancora; è cambiato il fatto.
+ * `Giro.tsx` monta il fumetto, quindi l'interruttore adesso accende una cosa
+ * vera, e `tour-tooltip` è uscita da `NON_ANCORA` nello stesso passo.
  */
 export type Sovrapposizione =
   | "colonna"
@@ -83,7 +86,8 @@ export type Sovrapposizione =
   | "selezione"
   | "menu"
   | "avviso"
-  | "dialogo";
+  | "dialogo"
+  | "giro";
 
 /** Quali sovrapposizioni sono accese adesso. */
 export type Accese = ReadonlySet<Sovrapposizione>;
@@ -121,6 +125,7 @@ export function sovrapposizioni(): readonly (readonly [Sovrapposizione, string])
     ["menu", t("studio.over.menu")],
     ["avviso", t("studio.over.avviso")],
     ["dialogo", t("studio.over.dialogo")],
+    ["giro", t("studio.over.giro")],
   ];
 }
 
@@ -168,8 +173,10 @@ export function spentaPerche(
       if (aSchermoIntero) return t("studio.over.why.fullScreen");
       return undefined;
     default:
-      // Menù, notifica e finestrella galleggiano sopra qualunque cosa:
-      // nell'app non c'è una pagina che li vieti.
+      // Menù, notifica, finestrella e giro guidato galleggiano sopra qualunque
+      // cosa: nell'app non c'è una pagina che li vieti. Il giro in particolare
+      // **attraversa** le pagine — dieci passi, e alcuni cambiano schermata —
+      // quindi legarlo a una sarebbe più falso che lasciarlo libero.
       return undefined;
   }
 }
@@ -227,6 +234,13 @@ const STATO: StatoRiproduzione = {
   spegnimentoMs: null,
   autoplay: false,
   dissolvenzaS: 0,
+  // Zero e zero, e nessuna skin li disegna: la compensazione di latenza e
+  // l'anticipo dei testi sono numeri del motore, non elementi da vestire. Stanno
+  // qui perché il tipo li vuole, e a zero perché l'anteprima deve mostrare la
+  // posizione che dichiara — 96 secondi — e non quella corretta di un'uscita che
+  // nell'anteprima non esiste.
+  latenzaMs: 0,
+  anticipoMs: 0,
   audio: null,
   // Lo Studio mostra la coda con la sua nota: chi disegna una skin deve
   // poter vedere anche `.perche`, o la disegnerebbe alla cieca.
@@ -235,6 +249,21 @@ const STATO: StatoRiproduzione = {
   // suono, e un `null` nell'anteprima mostrerebbe il caso del motore che non
   // si è aperto invece del caso normale.
   uscita: "Altoparlanti",
+  // Tutti e quattro pieni, e non è un dettaglio: `np-formato` si disegna solo
+  // se il dato c'è — nell'app perché la preferenza filtra nel nucleo, qui
+  // perché il componente è lo stesso — e un campo vuoto vorrebbe dire una parte
+  // del registro che nello Studio non compare mai. Chi disegna una skin la
+  // vedrebbe in elenco e non saprebbe dove guardare.
+  //
+  // Un FLAC a 44,1/16 stereo: l'edizione più comune di tutte, e la riga più
+  // lunga fra quelle normali — se sta nella colonna a 348 px questa, ci stanno
+  // le altre.
+  formato: {
+    codec: "FLAC",
+    sampleRate: 44_100,
+    channels: 2,
+    bitrate: 1058,
+  },
 };
 
 /** Un comando che non fa niente: nell'anteprima non c'è niente da comandare. */

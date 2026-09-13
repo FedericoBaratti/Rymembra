@@ -281,6 +281,23 @@ export function Studio({
    */
   const [tokenScelto, setTokenScelto] = useState<string | null>(null);
   const [stato, setStato] = useState<string | null>(null);
+  /**
+   * Quante volte si è chiesto di rigiocare la scena.
+   *
+   * È una `key` su `<Impaginazione>`, e serve a una cosa sola: **un'animazione
+   * al montaggio non si vede mai se la scena non si rimonta.** Un'animazione su
+   * `enter` parte quando l'elemento entra nel documento, cioè una volta; da lì
+   * in poi si può ridipingere la skin quanto si vuole e quella regola resta
+   * ferma dov'era finita. Cambiare la chiave smonta e rimonta il sottoalbero,
+   * che è l'unico modo che il CSS offre di far ripartire un `animation` senza
+   * toccarlo.
+   *
+   * Un numero e non un `boolean` che si commuta: il rimontaggio deve poter
+   * succedere due volte di seguito, e un valore che alterna fra due stati
+   * darebbe la seconda pressione uguale alla prima ogni volta che le due si
+   * accorpano nello stesso disegno.
+   */
+  const [rigiocata, setRigiocata] = useState(0);
   const [filtro, setFiltro] = useState("");
   const [lato, setLato] = useState<"token" | "parti">("parti");
   /** Quale variante mostra l'anteprima. Cambia il riquadro, non la finestra. */
@@ -903,6 +920,50 @@ export function Studio({
 
   const definizione =
     registro?.parts.find((p) => p.name === parteScelta) ?? null;
+
+  /**
+   * Il trigger che corrisponde allo stato scelto nell'ispettore.
+   *
+   * `base` scrive `enter`, e non è una traduzione arbitraria: `enter` **è** la
+   * regola base della parte — la stessa che porta lo sfondo e il bordo — e
+   * un'animazione lì parte quando l'elemento entra nel documento. Gli altri
+   * quattro hanno lo stesso nome di là e di qua perché `AnimTrigger::State`
+   * riusa `PartState` invece di ricopiarlo.
+   */
+  const trigger = stato ?? "enter";
+
+  /** Le animazioni che il documento dichiara, in ordine di nome. */
+  const nomiAnimazioni = useMemo(() => {
+    const dichiarate = (documento?.["motion"] ?? {}) as Record<string, unknown>;
+    const elenco = dichiarate["animations"];
+    return elenco !== null && typeof elenco === "object"
+      ? Object.keys(elenco as Record<string, unknown>).sort()
+      : [];
+  }, [documento]);
+
+  const animazioneScelta =
+    parteScelta === null || documento === null
+      ? null
+      : ((): string | null => {
+          const scritta = valoreIn(documento, [
+            "parts",
+            parteScelta,
+            "animations",
+            trigger,
+          ]);
+          return typeof scritta === "string" ? scritta : null;
+        })();
+
+  const scriviAnimazione = useCallback(
+    (nome: string | null) => {
+      if (parteScelta === null) return;
+      const dove = ["parts", parteScelta, "animations", trigger];
+      setSorgente((prima) =>
+        nome === null ? togliDa(prima, dove) : scriviIn(prima, dove, nome),
+      );
+    },
+    [parteScelta, trigger],
+  );
   const obbligatori = registro?.tokens.filter((t) => t.required).length ?? 0;
   const mancanti =
     registro?.tokens.filter((t) => t.required && !dichiarati.has(t.id))
@@ -1417,13 +1478,19 @@ export function Studio({
                 setLato("parti");
               }}
               onQuante={setQuanteVolte}
+              onRigioca={() => setRigiocata((quante) => quante + 1)}
               onLarghezza={setLarghezza}
             >
               {/* L'applicazione, e accanto — non dentro il buco del contenuto
                   — le sovrapposizioni: nell'app stanno fuori dall'albero perché
                   si sovrappongono per definizione, e ficcarle nel contenuto
                   voleva dire mostrarle in un posto in cui non compaiono mai. */}
-              <Impaginazione albero={albero} contesto={finto} slot={slot} />
+              <Impaginazione
+                key={rigiocata}
+                albero={albero}
+                contesto={finto}
+                slot={slot}
+              />
               <Sovrapposte accese={attive} />
             </Anteprima>
 
@@ -1544,6 +1611,9 @@ export function Studio({
               tavolozza={tavolozza}
               motivi={motivi}
               budget={registro?.budget ?? 10}
+              animazioni={nomiAnimazioni}
+              animazione={animazioneScelta}
+              onAnimazione={scriviAnimazione}
             />
           )}
         </div>
@@ -1588,13 +1658,19 @@ export function Studio({
               movimento={impaginazione?.motion}
               onScegli={setParteScelta}
               onNodo={setNodoSotto}
+              onRigioca={() => setRigiocata((quante) => quante + 1)}
               onLarghezza={setLarghezza}
             >
               {/* L'applicazione, e accanto — non dentro il buco del contenuto
                   — le sovrapposizioni: nell'app stanno fuori dall'albero perché
                   si sovrappongono per definizione, e ficcarle nel contenuto
                   voleva dire mostrarle in un posto in cui non compaiono mai. */}
-              <Impaginazione albero={albero} contesto={finto} slot={slot} />
+              <Impaginazione
+                key={rigiocata}
+                albero={albero}
+                contesto={finto}
+                slot={slot}
+              />
               <Sovrapposte accese={attive} />
             </Anteprima>
             {documento !== null && documento["layout"] === undefined && (

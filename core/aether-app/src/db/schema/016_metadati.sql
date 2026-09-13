@@ -61,8 +61,16 @@ CREATE INDEX idx_tracks_meta_salute ON tracks(meta_salute) WHERE meta_salute <> 
 -- `update_track` riscrive titolo, artista e album **dai tag del file** ogni
 -- volta che la data di modifica cambia. Una correzione salvata nella sola
 -- `tracks` sopravviverebbe fino alla prima riscansione di quel file e poi
--- sparirebbe, senza che niente lo dica. Tenendola qui, la scansione la ritrova e
--- la riapplica: il file resta la fonte, la correzione resta l'ultima parola.
+-- sparirebbe, senza che niente lo dica. Tenendola qui resta da rimetterla
+-- sopra, e a farlo è `incerti::riapplica`: la scansione la chiama subito dopo
+-- ogni `update_track` — nei rami `Aggiorna` e `Sposta`, non su una riga nuova,
+-- che sovrascritture non ne ha — e l'arricchimento subito dopo
+-- `enrich::aggiorna_brano`. Il file resta la fonte, la correzione resta
+-- l'ultima parola.
+--
+-- Fino alla 2.3.1 questo commento prometteva una riapplicazione che nessuno
+-- faceva: la tabella si riempiva e `tracks` tornava ai tag. È il motivo per cui
+-- sta scritto, qui, **chi** la rimette.
 --
 -- # Perché l'identità è il brano e non il percorso
 --

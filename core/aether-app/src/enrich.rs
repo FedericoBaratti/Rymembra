@@ -7,8 +7,8 @@
 //! ```text
 //! candidati()   ──►  legge un lotto di gruppi          (lucchetto preso)
 //! decidi()      ──►  cerca, scarica, decide            (SENZA lucchetto)
-//! scrivi_file() ──►  tag sui file, copertine su disco  (SENZA lucchetto)
-//! registra()    ──►  righe, annullamento, aggregati    (lucchetto preso)
+//! applica()     ──►  copertine su disco                (SENZA lucchetto)
+//! registra()    ──►  righe, provenienza, aggregati     (lucchetto preso)
 //! ```
 //!
 //! La divisione non è organizzativa: è la ragione per cui l'applicazione
@@ -24,20 +24,35 @@
 //! # Che cosa si scrive, e cosa no
 //!
 //! Si scrive **solo** su verdetto [`Verdetto::Applica`]. Un candidato plausibile
-//! e non provato non lascia traccia sul file: si annota la data del tentativo e
-//! si passa oltre. È la scelta che rende accettabile una passata automatica su
-//! cui nessuno guarda prima — la ragione per esteso sta in testa a
+//! e non provato non lascia traccia: si annota la data del tentativo e si passa
+//! oltre. È la scelta che rende accettabile una passata automatica su cui
+//! nessuno guarda prima — la ragione per esteso sta in testa a
 //! `aether_domain::enrich`.
 //!
-//! # Il punto che si sbaglia una volta sola
+//! # Il file dell'utente non si tocca. Mai.
 //!
-//! Scrivere i tag cambia la data di modifica del file sul disco. Se non la si
-//! rilegge e non la si aggiorna in `tracks.date_modified` **nella stessa
-//! transazione**, la scansione successiva vede ogni file arricchito come
-//! «cambiato», lo rilegge per intero e lo riscrive dai tag — riportando
-//! `enrich_status` a uno stato che non riflette più la verità. E siccome anche
-//! quella scansione non aggiornerebbe niente di diverso, il ciclo si
-//! ripeterebbe a ogni passata, per sempre.
+//! Fino alla 2.3.0 questa era la sola scrittura automatica e non sorvegliata di
+//! tutta Aether: ogni mezz'ora si aprivano i file di qualcun altro e se ne
+//! riscrivevano i tag. Dalla 2.3.1 quel che si trova finisce **in database** —
+//! nelle colonne di `tracks`, e annotato in `track_meta_arricchita` — mentre il
+//! file resta byte per byte quello che era.
+//!
+//! Non è solo una promessa mantenuta: è ciò che fa cadere per intero il difetto
+//! più insidioso che questo modulo si portava dietro. Scrivere i tag cambiava
+//! la data di modifica sul disco, e bisognava ricordarsi di rileggerla e di
+//! riscriverla in `tracks.date_modified` **nella stessa transazione**;
+//! dimenticarlo faceva vedere alla scansione successiva ogni file arricchito
+//! come «cambiato», glielo faceva rileggere per intero e riscrivere dai tag — a
+//! ogni passata, per sempre. Oggi la data del file non cambia, quindi non c'è
+//! niente da rileggere e niente da tenere in passo: `aggiorna_brano` **non**
+//! scrive `date_modified` né `file_size`, e scriverli sarebbe il difetto, non
+//! il rimedio.
+//!
+//! Quel che l'arricchimento mette sulla riga si toglie con [`dimentica`], che
+//! rilegge i tag dal file — intatto, ed è tutto il punto — e ci rimette sopra
+//! le correzioni a mano. La via di ritorno per i **file già riscritti dalle
+//! versioni passate** esiste ancora e sta tutta in [`riporta_nei_file`]: è
+//! un'uscita a termine, non una funzione di questo modulo. Vedi la sua nota.
 
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
@@ -94,7 +109,7 @@ pub struct BranoDaArricchire {
     pub path: String,
     /// Ha già una corrispondenza applicata in passato.
     pub gia_arricchito: bool,
-    /// I tag di adesso, da fotografare prima di toccarli.
+    /// I tag di adesso, per i campi che la corrispondenza non copre.
     pub originali: TagOriginali,
 }
 
@@ -115,7 +130,16 @@ pub struct Gruppo {
     pub brani: Vec<BranoDaArricchire>,
 }
 
-/// I tag di un brano prima che l'arricchimento li tocchi.
+/// I tag di un brano, come la riga li porta prima di una passata.
+///
+/// # Non è più una fotografia
+///
+/// Si chiamava così perché era quel che finiva in `enrich_undo` prima che
+/// l'arricchimento riscrivesse il file: la copia da cui si tornava indietro.
+/// Dalla 2.3.1 il file non lo tocca nessuno, e per tornare indietro basta
+/// rileggerlo — quindi questi valori servono a due cose sole: riempire i campi
+/// che la corrispondenza non copre quando si ricalcolano le chiavi, e
+/// rileggere le fotografie che le versioni passate hanno lasciato in tabella.
 ///
 /// # Perché non è `Fields`
 ///
@@ -173,13 +197,16 @@ pub struct Scrittura {
     pub path: String,
     /// I campi da scrivere, già passati da `plan_write`.
     pub campi: Fields,
-    /// La copertina da salvare e incorporare, se se n'è trovata una.
+    /// La copertina da salvare nello store, se se n'è trovata una.
+    ///
+    /// Salvare, non incorporare: nel file non entra. Vedi la nota in testa a
+    /// [`crate::tag_scrittura::scrivi_campi`].
     pub copertina: Option<Copertina>,
     /// Chi ha deciso: `mb-release`, `mb-recording`, `itunes`, `deezer`.
     pub fonte: &'static str,
     /// Quanto ci si credeva, da 0 a 1.
     pub confidenza: f64,
-    /// I tag di prima, per poter tornare indietro.
+    /// I tag di adesso, per i campi che [`plan_write`] ha deciso di non toccare.
     pub originali: TagOriginali,
 }
 
@@ -220,8 +247,14 @@ pub struct Decisione {
 /// I due segnaposto sono le scadenze di ritentativo: `?1` per gli incerti, `?2`
 /// per quelli che nessuno ha riconosciuto.
 ///
-/// Gli stati che non compaiono qui — `ok`, e `undone` scritto da [`annulla`] —
-/// sono **terminali**: il gruppo di condizioni sugli stati li esclude tutti.
+/// `error` compare ancora fra gli stati da ritentare, e ci resta: dalla 2.3.1
+/// **nessuno lo scrive più** — la fase che poteva fallire su un brano era la
+/// scrittura dei tag sul file, e quella non c'è più — ma le librerie arricchite
+/// dalle versioni passate ne hanno in tabella, e toglierlo di qui lascerebbe
+/// quei brani fuori dai candidati per sempre.
+///
+/// Gli stati che non compaiono qui — `ok`, e `undone` scritto da [`dimentica`]
+/// — sono **terminali**: il gruppo di condizioni sugli stati li esclude tutti.
 /// Per `undone` è la sostanza dell'annullamento: riportare lo stato a `NULL`
 /// farebbe riqualificare il brano come «mai provato», e la passata automatica
 /// successiva riapplicherebbe — dalla cache, con la stessa confidenza — proprio
@@ -636,9 +669,10 @@ fn per_brano(fornitori: &Fornitori, brano: &BranoDaArricchire) -> Esito {
         originali: brano.originali.clone(),
     };
     // Anche quando non c'è niente da cambiare si restituisce un'applicazione, e
-    // non un'astensione: vuol dire che il file era già a posto, e registrarlo
+    // non un'astensione: vuol dire che il brano era già a posto, e registrarlo
     // come «riuscito» è ciò che impedisce di richiederlo a ogni passata per
-    // sempre. `scrivi_file` salterà la scrittura, perché i campi sono vuoti.
+    // sempre. `applica` lo segnerà come non applicato, perché i campi sono
+    // vuoti, e non nascerà nessuna annotazione da dimenticare.
     Esito::Applicato(Box::new(scrittura))
 }
 
@@ -672,69 +706,50 @@ fn fonte_di(candidato: &Candidate) -> &'static str {
     }
 }
 
-// ── fase tre: scrivere sui file ─────────────────────────────────────────────
+// ── fase tre: mettere a terra quel che si è deciso ──────────────────────────
 
-/// Cosa è successo scrivendo su un file.
+/// Cosa è successo applicando una decisione.
+///
+/// Il nome parla ancora di file perché questa è la fase che tocca il disco, ma
+/// dalla 2.3.1 l'unica cosa che ci finisce sopra è **una copertina nello store
+/// di Aether**: i file dell'utente non si aprono nemmeno. Vedi la nota in testa
+/// al modulo.
 #[derive(Debug)]
 pub struct EsitoFile {
     /// Quale riga.
     pub track_id: i64,
-    /// La data di modifica **dopo** la scrittura. Vedi la nota in testa.
-    pub date_modified: i64,
-    /// La dimensione dopo la scrittura: incorporare una copertina la cambia.
-    pub file_size: i64,
     /// La copertina salvata nello store.
     pub copertina: Option<StoredCover>,
     /// La provenienza della copertina, per `cover_art.source`.
     pub copertina_da: Option<&'static str>,
-    /// I campi che la rilettura non ha confermato.
-    pub discordi: Vec<&'static str>,
-    /// Il file è stato davvero riscritto.
+    /// C'era davvero qualcosa da applicare.
     ///
     /// Falso quando la corrispondenza c'era ma non cambiava niente: il brano era
-    /// già a posto. Serve a due cose che sarebbero difetti se mancassero — non
-    /// aprire e riscrivere un file per lasciarlo identico (cosa che ne
-    /// cambierebbe la data di modifica e farebbe rileggere tutto alla scansione
-    /// successiva), e non registrare una riga di annullamento per una scrittura
-    /// che non è avvenuta.
-    pub toccato: bool,
+    /// già a posto. Serve a non annotare in `track_meta_arricchita` un brano su
+    /// cui l'arricchimento non ha deciso nulla — «dimentica l'arricchimento» lo
+    /// riporterebbe indietro da un'ipotesi mai applicata, e il pannello
+    /// prometterebbe più brani da dimenticare di quanti ce ne siano.
+    pub applicato: bool,
 }
 
-/// Scrive i tag sui file e salva le copertine. **Non tocca il database.**
+/// Salva le copertine trovate. **Non tocca il database, e non tocca i file.**
 ///
-/// Restituisce un esito per ogni scrittura **riuscita**. Una fallita non compare:
-/// scriverne i campi nel database mentre il file è rimasto com'era produrrebbe
-/// una libreria che mostra un titolo che il file non ha — e la scansione
-/// successiva lo rimetterebbe com'era, cancellando l'arricchimento senza dire
-/// niente a nessuno.
+/// # Perché resta una fase a sé, ora che non scrive più tag
+///
+/// Perché è l'unica parte del lavoro che fa I/O su disco, e va fatta **senza il
+/// lucchetto della libreria**: ricodificare e scrivere una copertina costa
+/// millisecondi per brano, e farlo dentro la transazione vorrebbe dire tenere
+/// ferma la riproduzione per tutta la durata. La divisione delle fasi è quella
+/// di sempre; è la fase tre a essere diventata molto più piccola.
+///
+/// Restituisce un esito per ogni scrittura, e i guasti a parte: un'immagine
+/// illeggibile non butta via titolo e anno del brano a cui apparteneva.
 #[must_use]
-pub fn scrivi_file(
-    covers: &CoverStore,
-    scritture: &[Scrittura],
-    scrivi_tag: bool,
-) -> (Vec<EsitoFile>, Vec<AppError>) {
+pub fn applica(covers: &CoverStore, scritture: &[Scrittura]) -> (Vec<EsitoFile>, Vec<AppError>) {
     let mut esiti = Vec::with_capacity(scritture.len());
     let mut guasti = Vec::new();
 
     for scrittura in scritture {
-        let percorso = Path::new(&scrittura.path);
-        let byte_copertina = scrittura.copertina.as_ref().map(|c| c.byte.as_slice());
-        // Una corrispondenza che non cambia niente non apre il file. Aprirlo e
-        // riscriverlo identico ne cambierebbe la data di modifica, e la
-        // scansione successiva rileggerebbe per intero ogni brano che era già
-        // a posto — a ogni passata, per sempre.
-        let toccato = scrivi_tag && !scrittura.e_vuota();
-
-        if toccato
-            && let Err(err) =
-                tag_scrittura::scrivi_campi(percorso, &scrittura.campi, byte_copertina)
-        {
-            guasti.push(err);
-            continue;
-        }
-
-        // La copertina si salva **dopo** la scrittura dei tag: se quella
-        // fallisce, non si è ricodificata un'immagine per niente.
         let (copertina, copertina_da) = match scrittura.copertina.as_ref() {
             Some(trovata) => {
                 let fonte = match trovata.provenienza {
@@ -756,21 +771,11 @@ pub fn scrivi_file(
             None => (None, None),
         };
 
-        let (date_modified, file_size) = misura(percorso);
-        let discordi = if toccato {
-            tag_scrittura::rileggi_e_confronta(percorso, &scrittura.campi)
-        } else {
-            Vec::new()
-        };
-
         esiti.push(EsitoFile {
             track_id: scrittura.track_id,
-            date_modified,
-            file_size,
             copertina,
             copertina_da,
-            discordi,
-            toccato,
+            applicato: !scrittura.e_vuota(),
         });
     }
 
@@ -783,6 +788,11 @@ pub fn scrivi_file(
 /// valore con i decimali farebbe vedere «cambiato» lo stesso file a ogni
 /// passata. Un file che non si misura vale zero, che è quel che rende la
 /// scansione successiva un aggiornamento invece di un ciclo infinito.
+///
+/// L'unico uso rimasto è [`riporta_nei_file`], che i file li riscrive davvero.
+/// La passata normale non ne ha bisogno, e non deve averne: se ricomparisse
+/// dentro [`registra`] vorrebbe dire che qualcuno ha ricominciato a toccare i
+/// file dell'utente.
 fn misura(percorso: &Path) -> (i64, i64) {
     let Ok(dati) = std::fs::metadata(percorso) else {
         return (0, 0);
@@ -827,11 +837,12 @@ pub fn registra(
         let Some(scrittura) = scritture.iter().find(|s| s.track_id == esito.track_id) else {
             continue;
         };
-        // Solo per i file davvero riscritti: una riga di annullamento su un
-        // brano che nessuno ha toccato farebbe riscrivere, il giorno
-        // dell'annullamento, un file che l'arricchimento aveva lasciato stare.
-        if esito.toccato {
-            registra_annullamento(tx, scrittura, adesso)?;
+        // Solo per i brani su cui si è deciso davvero qualcosa: annotare un
+        // brano già a posto lo farebbe contare fra quelli «da dimenticare»,
+        // prometterebbe un ritorno che non ha niente da riportare indietro, e
+        // gonfierebbe il numero che il pannello mostra sul pulsante.
+        if esito.applicato {
+            registra_arricchimento(tx, scrittura, adesso)?;
         }
         if let Some(copertina) = esito.copertina.as_ref() {
             registra_copertina(tx, copertina, esito.copertina_da, adesso)?;
@@ -840,6 +851,14 @@ pub fn registra(
             }
         }
         aggiorna_brano(tx, scrittura, esito, adesso)?;
+        // E subito dopo si rimette sopra quel che l'utente aveva corretto a
+        // mano. `plan_write` non scrive un campo [`Origine::Manuale`], quindi i
+        // valori restano quelli giusti — ma `aggiorna_brano` ricalcola
+        // `track_key` e `album_key` dai tag **del file**, e quelli non sanno
+        // della correzione: senza questa riga il brano appena arricchito
+        // tornerebbe ad avere l'identità che aveva quando si chiamava «Artista
+        // sconosciuto». Gli aggregati li rifà [`ricostruisci`], a fine passata.
+        crate::incerti::riapplica(tx, scrittura.track_id)?;
         conto.applicati = conto.applicati.saturating_add(1);
     }
 
@@ -851,37 +870,121 @@ pub fn registra(
     Ok(conto)
 }
 
-/// Fotografa i tag di prima, una volta sola.
+/// I campi che l'arricchimento ha messo sulla riga, nella forma che va in JSON.
 ///
-/// `INSERT OR IGNORE`: la fotografia è quella di **prima che Aether ci mettesse
-/// le mani**, non quella del passo precedente. Sovrascriverla farebbe sì che
-/// «annulla» riporti il file a una versione che l'utente non ha mai visto —
-/// quella scritta da noi la volta prima.
-fn registra_annullamento(
+/// # Perché non è `Fields`
+///
+/// La stessa ragione di [`TagOriginali`], e vale la pena non farla dimenticare:
+/// `Fields` vive nel dominio, e il dominio non serializza niente da sé. Questa
+/// ha la stessa forma e sa diventare JSON, perché è questo crate a parlare col
+/// database.
+///
+/// Gli `Option` vuoti non si scrivono: la riga di `track_meta_arricchita` dice
+/// **cosa** viene dall'arricchimento, e un campo assente vuol dire «questo no».
+/// Serializzarli come `null` renderebbe indistinguibile «non l'ho scritto io»
+/// da «l'ho scritto vuoto», che è la distinzione per cui l'annotazione esiste.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CampiArricchiti {
+    /// Il titolo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// L'interprete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    /// L'album.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    /// L'interprete dell'album.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_artist: Option<String>,
+    /// L'anno.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<i32>,
+    /// Il genere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+    /// Il numero di traccia.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_number: Option<u32>,
+    /// Il numero di disco.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disc_number: Option<u32>,
+    /// L'identificativo MusicBrainz della registrazione.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mb_recording_id: Option<String>,
+    /// L'identificativo MusicBrainz della pubblicazione.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mb_release_id: Option<String>,
+    /// L'identificativo MusicBrainz del gruppo di pubblicazione.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mb_release_group_id: Option<String>,
+}
+
+impl From<&Fields> for CampiArricchiti {
+    fn from(campi: &Fields) -> Self {
+        Self {
+            title: campi.title.clone(),
+            artist: campi.artist.clone(),
+            album: campi.album.clone(),
+            album_artist: campi.album_artist.clone(),
+            year: campi.year,
+            genre: campi.genre.clone(),
+            track_number: campi.track_number,
+            disc_number: campi.disc_number,
+            mb_recording_id: campi.mb_recording_id.clone(),
+            mb_release_id: campi.mb_release_id.clone(),
+            mb_release_group_id: campi.mb_release_group_id.clone(),
+        }
+    }
+}
+
+/// Annota che questi campi della riga vengono dall'arricchimento.
+///
+/// # `ON CONFLICT DO UPDATE`, e non `INSERT OR IGNORE`
+///
+/// È il contrario di quel che faceva la fotografia dei tag in `enrich_undo`, e
+/// il contrario è giusto perché le due righe dicono due cose opposte. Quella
+/// diceva «com'era il file **prima** che Aether ci mettesse le mani», e andava
+/// scritta una volta sola: sovrascriverla avrebbe riportato il file a una
+/// versione che l'utente non aveva mai visto, cioè a quella scritta da noi il
+/// giro prima. Questa dice «cosa c'è **adesso** sulla riga che venga da un
+/// catalogo», e la verità è sempre l'ultima passata: una decisione più recente,
+/// da una fonte più sicura, sostituisce quella di prima.
+///
+/// Nessun percorso in tabella, per la stessa ragione: l'annotazione descrive la
+/// riga, non un file, e la riga la si ritrova per `track_id` anche dopo che il
+/// suo file è stato spostato.
+fn registra_arricchimento(
     tx: &Transaction<'_>,
     scrittura: &Scrittura,
     adesso: i64,
 ) -> Result<(), AppError> {
-    let tags = serde_json::to_string(&scrittura.originali).map_err(|err| {
+    let campi = serde_json::to_string(&CampiArricchiti::from(&scrittura.campi)).map_err(|err| {
         AppError::new(ErrorCode::InternalUnexpected {
-            detail: Some("serializzazione dei tag originali".to_owned()),
+            detail: Some("serializzazione dei campi arricchiti".to_owned()),
         })
         .with_cause(err.to_string())
     })?;
     tx.prepare_cached(
-        "INSERT OR IGNORE INTO enrich_undo (track_id, path, tags, written_at)
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO track_meta_arricchita (track_id, campi, fonte, confidenza, set_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(track_id) DO UPDATE SET
+           campi = excluded.campi,
+           fonte = excluded.fonte,
+           confidenza = excluded.confidenza,
+           set_at = excluded.set_at",
     )
     .and_then(|mut statement| {
         statement.execute(rusqlite::params![
             scrittura.track_id,
-            scrittura.path,
-            tags,
+            campi,
+            scrittura.fonte,
+            scrittura.confidenza,
             adesso
         ])
     })
     .map(|_| ())
-    .map_err(|err| db_error("fotografia dei tag originali", &err))
+    .map_err(|err| db_error("annotazione dei metadati arricchiti", &err))
 }
 
 /// Registra una copertina nello schema, se non c'era già.
@@ -911,7 +1014,18 @@ fn registra_copertina(
     .map_err(|err| db_error("registrazione di una copertina arricchita", &err))
 }
 
-/// Riscrive la riga con quel che si è appena scritto sul file.
+/// Riscrive la riga con quel che l'arricchimento ha deciso.
+///
+/// # `date_modified` e `file_size` non compaiono, ed è il cuore del pacchetto
+///
+/// Fin qui li scriveva, e **doveva**: i tag li aveva appena riscritti lui, la
+/// data sul disco era cambiata, e non riportarla in tabella avrebbe fatto
+/// rileggere per intero ogni file arricchito alla scansione successiva. Ora il
+/// file non lo tocca nessuno: la riga porta già la data e la dimensione vere, e
+/// riscriverle sarebbe nel migliore dei casi inutile e nel peggiore sbagliato —
+/// una misura presa mentre un altro programma sta salvando quel file
+/// dichiarerebbe «visto, è questo» un contenuto che nessuno ha letto, e la
+/// scansione dopo lo salterebbe.
 fn aggiorna_brano(
     tx: &Transaction<'_>,
     scrittura: &Scrittura,
@@ -964,12 +1078,10 @@ fn aggiorna_brano(
            cover_art_hash = COALESCE(?13, cover_art_hash),
            track_key = ?14,
            album_key = ?15,
-           date_modified = ?16,
-           file_size = ?17,
            enrich_status = 'ok',
-           enrich_attempted_at = ?18,
-           enrich_source = ?19,
-           enrich_confidence = ?20
+           enrich_attempted_at = ?16,
+           enrich_source = ?17,
+           enrich_confidence = ?18
          WHERE id = ?1",
     )
     .and_then(|mut statement| {
@@ -989,8 +1101,6 @@ fn aggiorna_brano(
             esito.copertina.as_ref().map(|c| c.hash.as_str()),
             track_key,
             album_key,
-            esito.date_modified,
-            esito.file_size,
             adesso,
             scrittura.fonte,
             scrittura.confidenza,
@@ -1023,20 +1133,6 @@ fn segna_astensione(
     .map_err(|err| db_error("annotazione di un'astensione", &err))
 }
 
-/// Segna un brano come fallito, senza toccarne i campi.
-///
-/// # Errori
-///
-/// `db.queryFailed` se il database non risponde.
-pub fn segna_errore(tx: &Transaction<'_>, track_id: i64, adesso: i64) -> Result<(), AppError> {
-    tx.prepare_cached(
-        "UPDATE tracks SET enrich_status = 'error', enrich_attempted_at = ?2 WHERE id = ?1",
-    )
-    .and_then(|mut statement| statement.execute(rusqlite::params![track_id, adesso]))
-    .map(|_| ())
-    .map_err(|err| db_error("annotazione di un guasto", &err))
-}
-
 /// Ricostruisce gli aggregati dopo una passata.
 ///
 /// Va chiamata, e non è un dettaglio di igiene: l'arricchimento scrive
@@ -1053,25 +1149,208 @@ pub fn ricostruisci(tx: &Transaction<'_>) -> Result<(), AppError> {
     rebuild_aggregates(tx).map(|_| ())
 }
 
-// ── l'annullamento ──────────────────────────────────────────────────────────
+// ── dimenticare l'arricchimento ─────────────────────────────────────────────
 
-/// Quanti brani un annullamento ha riportato indietro.
+/// Quanti brani un ritorno indietro ha riportato, e quanti no.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Annullati {
-    /// Brani riportati ai tag di prima.
+    /// Brani riportati a quel che dice il loro file.
     pub riportati: usize,
-    /// Righe di annullamento che non si sono potute applicare.
+    /// Brani che non si sono potuti riportare.
     pub falliti: usize,
 }
 
-/// Riporta indietro tutto quel che l'arricchimento ha scritto.
+/// Dimentica l'arricchimento e rimette ogni riga sui tag del suo file.
 ///
-/// # Perché esiste, e perché non è una comodità
+/// # Perché basta rileggere il file
 ///
-/// La passata è automatica e scrive nei file dell'utente senza che nessuno
-/// guardi prima. Una funzione che disfa non è un extra: è la metà che rende
-/// accettabile l'altra. Senza, l'unica risposta a «mi ha rovinato i tag»
-/// sarebbe «ripristina un backup».
+/// Perché il file non l'ha toccato nessuno, ed è tutto il punto della 2.3.1.
+/// Fino alla 2.3.0 disfare voleva dire **riscrivere** migliaia di file dai tag
+/// fotografati in `enrich_undo` prima di toccarli — un'operazione lunga,
+/// rischiosa (un file bloccato, una chiavetta staccata a metà) e con una
+/// fotografia da mantenere per sempre, perché senza di quella non si tornava
+/// indietro. Adesso la fotografia è il file stesso: si rilegge, e per
+/// costruzione dice esattamente quel che diceva prima della passata.
+///
+/// # L'ordine, e perché la correzione a mano viene per ultima
+///
+/// Per ogni brano: si cancella l'annotazione, si riscrive la riga dai tag
+/// grezzi, e **poi** [`crate::incerti::riapplica`] rimette sopra quel che
+/// l'utente aveva corretto. Dimenticare l'arricchimento non è dimenticare le
+/// correzioni a mano: quelle stanno in un'altra tabella proprio perché questo
+/// gesto non possa portarle via — vedi il commento della migrazione 019.
+///
+/// La copertina resta. Non sta nel file, sta nello store di Aether, e toglierla
+/// vorrebbe dire rendere grigio in griglia un disco che l'utente vede
+/// illustrato da mesi: è l'unica cosa che l'arricchimento aggiunge senza
+/// sostituire niente, e dimenticarla non riporterebbe indietro nessun dato.
+///
+/// La rilettura dei file avviene **fuori** dalla transazione, come in ogni
+/// altra passata di questo modulo: aprire migliaia di file tenendo il lucchetto
+/// della libreria vorrebbe dire un'applicazione ferma per tutto quel tempo.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde. Un file che non si rilegge —
+/// una radice di rete staccata, un disco esterno spento — **non** fa fallire
+/// il gesto: si conta fra i `falliti`, la sua annotazione **resta** dov'è, e
+/// riprovare quando quel disco c'è porta a termine il lavoro. Cancellarla
+/// lascerebbe la riga arricchita senza più niente che dica da dove viene.
+pub fn dimentica(connection: &mut Connection) -> Result<Annullati, AppError> {
+    let righe: Vec<(i64, String)> = {
+        let mut statement = connection
+            .prepare(
+                "SELECT m.track_id, t.path
+                 FROM track_meta_arricchita m
+                 JOIN tracks t ON t.id = m.track_id
+                 ORDER BY m.set_at DESC",
+            )
+            .map_err(|err| db_error("elenco dei brani arricchiti", &err))?;
+        let righe = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|err| db_error("elenco dei brani arricchiti", &err))?;
+        righe
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| db_error("elenco dei brani arricchiti", &err))?
+    };
+
+    let mut conto = Annullati::default();
+    let mut riletti: Vec<(i64, String, Fields)> = Vec::new();
+    for (track_id, percorso) in &righe {
+        let Ok(tags) = crate::metadata::read_tags(&crate::files::LocalFiles, percorso) else {
+            conto.falliti = conto.falliti.saturating_add(1);
+            continue;
+        };
+        riletti.push((
+            *track_id,
+            percorso.clone(),
+            Fields {
+                title: tags.title,
+                artist: tags.artist,
+                album: tags.album,
+                album_artist: tags.album_artist,
+                year: tags.year,
+                genre: tags.genre,
+                track_number: tags.track_number,
+                disc_number: tags.disc_number,
+                mb_recording_id: tags.mb_recording_id,
+                mb_release_id: tags.mb_release_id,
+                mb_release_group_id: tags.mb_release_group_id,
+            },
+        ));
+    }
+
+    let tx = connection
+        .transaction()
+        .map_err(|err| db_error("apertura della transazione di ritorno", &err))?;
+    for (track_id, percorso, grezzi) in &riletti {
+        rimetti_i_tag_del_file(&tx, *track_id, percorso, grezzi)?;
+        conto.riportati = conto.riportati.saturating_add(1);
+    }
+    ricostruisci(&tx)?;
+    tx.commit()
+        .map_err(|err| db_error("chiusura della transazione di ritorno", &err))?;
+
+    Ok(conto)
+}
+
+/// Riporta una riga ai tag grezzi del suo file, e toglie l'annotazione.
+///
+/// I ripieghi sono **gli stessi di `library::read_track`**, e devono esserlo:
+/// il titolo che diventa la radice del nome del file, «Artista sconosciuto»,
+/// «Album sconosciuto». Sceglierne altri qui vorrebbe dire che dimenticare
+/// l'arricchimento lascia una riga diversa da quella che una riscansione dello
+/// stesso file produrrebbe un minuto dopo — e la differenza si vedrebbe come un
+/// brano che cambia nome da solo.
+///
+/// `date_modified` e `file_size` non si toccano: il file non è cambiato né
+/// quando l'arricchimento ha deciso, né adesso.
+fn rimetti_i_tag_del_file(
+    tx: &Transaction<'_>,
+    track_id: i64,
+    percorso: &str,
+    grezzi: &Fields,
+) -> Result<(), AppError> {
+    let titolo = grezzi
+        .title
+        .clone()
+        .unwrap_or_else(|| file_stem(percorso).to_owned());
+    let artista = grezzi
+        .artist
+        .clone()
+        .unwrap_or_else(|| UNKNOWN_ARTIST.to_owned());
+    let album = grezzi
+        .album
+        .clone()
+        .unwrap_or_else(|| UNKNOWN_ALBUM.to_owned());
+    let track_key = TrackKey::compute(TrackKeyInput {
+        artist: Some(&artista),
+        title: Some(&titolo),
+        album: Some(&album),
+    })
+    .into_string();
+    let album_key = album_group_key(&album, percorso);
+
+    tx.prepare_cached(
+        "UPDATE tracks SET
+           title = ?2, artist = ?3, album = ?4, album_artist = ?5,
+           year = ?6, genre = ?7, track_number = ?8, disc_number = ?9,
+           mb_recording_id = ?10, mb_release_id = ?11, mb_release_group_id = ?12,
+           track_key = ?13, album_key = ?14,
+           enrich_status = 'undone', enrich_source = NULL, enrich_confidence = NULL
+         WHERE id = ?1",
+    )
+    .and_then(|mut statement| {
+        statement.execute(rusqlite::params![
+            track_id,
+            titolo,
+            artista,
+            album,
+            grezzi.album_artist,
+            grezzi.year,
+            grezzi.genre,
+            grezzi.track_number,
+            grezzi.disc_number,
+            grezzi.mb_recording_id,
+            grezzi.mb_release_id,
+            grezzi.mb_release_group_id,
+            track_key,
+            album_key,
+        ])
+    })
+    .map_err(|err| db_error("ritorno di un brano ai tag del file", &err))?;
+
+    // E subito dopo la parola dell'utente, che resta l'ultima: vedi il `//!` di
+    // [`crate::incerti`] per l'ordine di risoluzione per intero.
+    crate::incerti::riapplica(tx, track_id)?;
+
+    tx.prepare_cached("DELETE FROM track_meta_arricchita WHERE track_id = ?1")
+        .and_then(|mut statement| statement.execute([track_id]))
+        .map(|_| ())
+        .map_err(|err| db_error("cancellazione di un'annotazione di arricchimento", &err))
+}
+
+// ── la via d'uscita a termine: i file già riscritti ─────────────────────────
+
+/// Riscrive nei file i tag di prima, per quel che le versioni passate hanno già toccato.
+///
+/// # È un'uscita a termine, non una funzione
+///
+/// Fino alla 2.3.0 l'arricchimento riscriveva i tag dentro i file dell'utente, e
+/// fotografava in `enrich_undo` com'erano prima di toccarli. Quei file **sono
+/// già stati riscritti**: questa release non li riporta indietro d'ufficio, e
+/// non potrebbe farlo senza contraddirsi — riscrivere migliaia di file è
+/// esattamente la cosa che ha smesso di fare, e dopo mesi quei tag possono
+/// essere stati approvati, sincronizzati o rifatti altrove.
+///
+/// Resta quindi disponibile, ma solo dietro un gesto esplicito che dice a
+/// chiare lettere che **scrive nei file** (il comando
+/// `arricchimento_riporta_nei_file`), e solo finché ci sono righe in
+/// `enrich_undo`: la 2.3.0 è l'ultima versione che ne ha scritte, la tabella
+/// può solo svuotarsi, e il CHANGELOG dichiara che questa via sparirà in una
+/// release futura. Non è la metà che rende accettabile una scrittura
+/// automatica — quella scrittura non c'è più, ed è lei ad aver reso accettabile
+/// il valore di serie dell'interruttore.
 ///
 /// Si legge il percorso di **adesso** da `tracks` — fra la scrittura e questo
 /// momento può esserci passato un riordino — e si ripiega su quello registrato
@@ -1080,10 +1359,10 @@ pub struct Annullati {
 /// # Errori
 ///
 /// `db.queryFailed` se il database non risponde. Un singolo file che non si
-/// riscrive **non** fa fallire l'annullamento: si conta e si prosegue, perché
+/// riscrive **non** fa fallire il ritorno: si conta e si prosegue, perché
 /// arrendersi al primo file bloccato lascerebbe l'utente con metà libreria
 /// riportata indietro e nessun modo di finire il lavoro.
-pub fn annulla(connection: &mut Connection, scrivi_tag: bool) -> Result<Annullati, AppError> {
+pub fn riporta_nei_file(connection: &mut Connection) -> Result<Annullati, AppError> {
     let righe: Vec<(i64, String, String)> = {
         let mut statement = connection
             .prepare(
@@ -1110,7 +1389,7 @@ pub fn annulla(connection: &mut Connection, scrivi_tag: bool) -> Result<Annullat
             continue;
         };
         let path = Path::new(percorso);
-        if scrivi_tag && tag_scrittura::ripristina_campi(path, &originali.in_campi()).is_err() {
+        if tag_scrittura::ripristina_campi(path, &originali.in_campi()).is_err() {
             conto.falliti = conto.falliti.saturating_add(1);
             continue;
         }
@@ -1120,19 +1399,29 @@ pub fn annulla(connection: &mut Connection, scrivi_tag: bool) -> Result<Annullat
 
     let tx = connection
         .transaction()
-        .map_err(|err| db_error("apertura della transazione di annullamento", &err))?;
+        .map_err(|err| db_error("apertura della transazione di riscrittura", &err))?;
     for (track_id, originali, modificato, dimensione) in &riusciti {
         ripristina_riga(&tx, *track_id, originali, *modificato, *dimensione)?;
         conto.riportati = conto.riportati.saturating_add(1);
     }
     ricostruisci(&tx)?;
     tx.commit()
-        .map_err(|err| db_error("chiusura della transazione di annullamento", &err))?;
+        .map_err(|err| db_error("chiusura della transazione di riscrittura", &err))?;
 
     Ok(conto)
 }
 
-/// Riporta una riga ai valori di prima, e cancella la sua fotografia.
+/// Riporta una riga ai tag fotografati, e cancella la sua fotografia.
+///
+/// # La correzione a mano sopravvive anche a questo
+///
+/// I tag fotografati in `enrich_undo` sono quelli del **file**, e del file
+/// nessuno ha mai chiesto il parere all'utente: chi aveva corretto a mano un
+/// brano già arricchito e poi chiedeva di riportare i tag nei file si vedeva
+/// portare via anche la propria correzione, perché questa riscrittura rifà i
+/// campi descrittivi e `track_key` senza sapere che `track_overrides` esiste.
+/// Era lo stesso difetto della scansione, nello stesso modulo, e si chiude allo
+/// stesso modo: con [`crate::incerti::riapplica`] subito dopo l'`UPDATE`.
 fn ripristina_riga(
     tx: &Transaction<'_>,
     track_id: i64,
@@ -1191,6 +1480,10 @@ fn ripristina_riga(
         ])
     })
     .map_err(|err| db_error("ripristino di un brano", &err))?;
+
+    // La parola dell'utente resta l'ultima, anche quando si riportano indietro
+    // i tag del file: vedi la nota qui sopra.
+    crate::incerti::riapplica(tx, track_id)?;
 
     tx.prepare_cached("DELETE FROM enrich_undo WHERE track_id = ?1")
         .and_then(|mut statement| statement.execute([track_id]))
@@ -1324,7 +1617,6 @@ mod prove {
                 artist: Some(UNKNOWN_ARTIST.to_owned()),
                 ..Fields::default()
             },
-            None,
         )
         .expect("tag di partenza");
 
@@ -1362,15 +1654,11 @@ mod prove {
         }
     }
 
-    /// Esegue le due fasi di scrittura su una decisione già presa.
-    fn applica(
-        connection: &mut Connection,
-        cartella: &Path,
-        scritture: &[Scrittura],
-    ) -> Registrati {
+    /// Esegue le due fasi finali su una decisione già presa.
+    fn passa(connection: &mut Connection, cartella: &Path, scritture: &[Scrittura]) -> Registrati {
         let covers = CoverStore::open(cartella.join("copertine")).expect("store");
-        let (esiti, guasti) = scrivi_file(&covers, scritture, true);
-        assert!(guasti.is_empty(), "guasti in scrittura: {guasti:?}");
+        let (esiti, guasti) = applica(&covers, scritture);
+        assert!(guasti.is_empty(), "guasti sulle copertine: {guasti:?}");
         let decisione = Decisione {
             album_key: "gruppo".to_owned(),
             ..Decisione::default()
@@ -1381,70 +1669,128 @@ mod prove {
         conto
     }
 
+    /// I byte del file e la sua data di modifica, per confrontarli con quelli di dopo.
+    ///
+    /// Tutt'e due e non uno solo: i byte da soli non accorgerebbero di una
+    /// riscrittura che rimette lo stesso contenuto — e sarebbe comunque una
+    /// riscrittura, con la data di modifica cambiata e la scansione successiva
+    /// che rilegge tutto — mentre la data da sola non accorgerebbe di una
+    /// scrittura su un orologio a bassa risoluzione.
+    fn impronta(percorso: &Path) -> (Vec<u8>, std::time::SystemTime) {
+        let byte = std::fs::read(percorso).expect("lettura del file");
+        let quando = std::fs::metadata(percorso)
+            .expect("metadati")
+            .modified()
+            .expect("data di modifica");
+        (byte, quando)
+    }
+
     #[test]
-    fn la_data_di_modifica_si_aggiorna_dopo_la_scrittura() {
-        // Il difetto che questa prova impedisce, ed è il più insidioso di tutto
-        // il modulo: senza, la scansione successiva vede ogni file arricchito
-        // come «cambiato», lo rilegge per intero e lo riscrive dai tag —
-        // riportando `enrich_status` a uno stato che non riflette più la
-        // verità. E siccome anche quella scansione non aggiornerebbe niente di
-        // diverso, il ciclo si ripeterebbe a ogni passata, per sempre.
+    fn la_passata_non_tocca_il_file() {
+        // **La prova di questo pacchetto**, e la sola che valga da sola: una
+        // passata che applica titolo, interprete, genere e identificativo non
+        // deve lasciare sul file dell'utente né un byte diverso né un minuto
+        // diverso. Commentando la riga che toglie `tag_scrittura::scrivi_campi`
+        // da `applica`, questa prova fallisce su tutt'e due gli assert.
         let (cartella, mut connection, percorso) = libreria();
+        let prima = impronta(&percorso);
+
         let scritture = vec![scrittura(
             &percorso,
             Fields {
                 title: Some("Titolo nuovo".to_owned()),
+                artist: Some("Interprete nuovo".to_owned()),
+                genre: Some("Pop".to_owned()),
+                mb_recording_id: Some("rec-1".to_owned()),
                 ..Fields::default()
             },
         )];
-        applica(&mut connection, cartella.path(), &scritture);
+        let conto = passa(&mut connection, cartella.path(), &scritture);
+        assert_eq!(conto.applicati, 1);
 
-        let (in_riga, dimensione): (i64, i64) = connection
+        assert_eq!(
+            prima,
+            impronta(&percorso),
+            "il file dell'utente è cambiato: byte o data di modifica"
+        );
+        // E i tag sul disco dicono ancora quel che dicevano: non è che siano
+        // stati riscritti uguali, non sono stati riscritti.
+        let letti =
+            crate::metadata::read_tags(&crate::files::LocalFiles, &percorso.display().to_string())
+                .expect("rilettura");
+        assert_eq!(letti.title.as_deref(), Some("Titolo vecchio"));
+        assert_eq!(letti.genre, None);
+        assert_eq!(letti.mb_recording_id, None);
+
+        // La riga invece è arricchita davvero, ed è il punto: il dato c'è,
+        // semplicemente non sta dentro il file.
+        let (titolo, genere, stato, data, dimensione): (
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+        ) = connection
             .query_row(
-                "SELECT date_modified, file_size FROM tracks WHERE id = 1",
+                "SELECT title, genre, enrich_status, date_modified, file_size
+                 FROM tracks WHERE id = 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .expect("lettura della riga");
-        let sul_disco = std::fs::metadata(&percorso).expect("metadati");
-        assert!(in_riga > 0, "la data non è stata riletta dal disco");
-        assert_eq!(
-            dimensione,
-            i64::try_from(sul_disco.len()).unwrap_or(0),
-            "anche la dimensione cambia: scrivere un tag allunga il file"
-        );
+        assert_eq!(titolo, "Titolo nuovo");
+        assert_eq!(genere.as_deref(), Some("Pop"));
+        assert_eq!(stato.as_deref(), Some("ok"));
+        // E `date_modified` e `file_size` restano quelli che erano — 0 e 100,
+        // come li ha messi il fixture. Riscriverli farebbe rileggere il file
+        // alla scansione dopo, che è il difetto che il pacchetto chiude.
+        assert_eq!(data, 0, "la data del file non è cambiata: non si riscrive");
+        assert_eq!(dimensione, 100, "e nemmeno la dimensione");
+
+        // …e quel che si è applicato è annotato, con la sua fonte.
+        let (campi, fonte, confidenza): (String, Option<String>, Option<f64>) = connection
+            .query_row(
+                "SELECT campi, fonte, confidenza FROM track_meta_arricchita WHERE track_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("l'annotazione c'è");
+        let arricchiti: CampiArricchiti = serde_json::from_str(&campi).expect("json");
+        assert_eq!(arricchiti.title.as_deref(), Some("Titolo nuovo"));
+        assert_eq!(arricchiti.album, None, "l'album non lo ha deciso nessuno");
+        assert_eq!(fonte.as_deref(), Some("mb-release"));
+        assert!(confidenza.is_some_and(|c| c > 0.9));
     }
 
     #[test]
-    fn un_brano_gia_a_posto_non_si_riscrive_e_non_si_annulla() {
-        // Corrispondenza trovata, niente da cambiare. Il file non si apre —
-        // aprirlo ne cambierebbe la data di modifica per niente — e non nasce
-        // nessuna riga di annullamento, che il giorno dell'annullamento
-        // riscriverebbe un file che nessuno aveva toccato.
+    fn un_brano_gia_a_posto_non_si_annota() {
+        // Corrispondenza trovata, niente da cambiare. Il brano risulta fatto —
+        // altrimenti lo si richiederebbe a ogni passata per sempre — ma non
+        // nasce nessuna annotazione: non c'è niente da dimenticare, e contarlo
+        // gonfierebbe il numero che il pannello scrive sul pulsante.
         let (cartella, mut connection, percorso) = libreria();
-        let prima = std::fs::metadata(&percorso)
-            .expect("metadati")
-            .modified()
-            .ok();
+        let prima = impronta(&percorso);
 
         let scritture = vec![scrittura(&percorso, Fields::default())];
-        let conto = applica(&mut connection, cartella.path(), &scritture);
+        let conto = passa(&mut connection, cartella.path(), &scritture);
 
         assert_eq!(conto.applicati, 1);
-        let annullamenti: i64 = connection
-            .query_row("SELECT COUNT(*) FROM enrich_undo", [], |row| row.get(0))
+        let annotazioni: i64 = connection
+            .query_row("SELECT COUNT(*) FROM track_meta_arricchita", [], |row| {
+                row.get(0)
+            })
             .expect("conteggio");
-        assert_eq!(annullamenti, 0, "non si è scritto niente da annullare");
-        assert_eq!(
-            std::fs::metadata(&percorso)
-                .expect("metadati")
-                .modified()
-                .ok(),
-            prima,
-            "il file non doveva essere aperto"
-        );
-        // …e il brano risulta comunque fatto, altrimenti lo si richiederebbe a
-        // ogni passata per sempre.
+        assert_eq!(annotazioni, 0, "non si è deciso niente da dimenticare");
+        assert_eq!(prima, impronta(&percorso), "e il file men che meno");
+
         let stato: Option<String> = connection
             .query_row("SELECT enrich_status FROM tracks WHERE id = 1", [], |row| {
                 row.get(0)
@@ -1454,12 +1800,65 @@ mod prove {
     }
 
     #[test]
-    fn la_fotografia_si_scrive_una_volta_sola() {
-        // È lo stato **prima che Aether ci mettesse le mani**, non quello del
-        // passo precedente: sovrascriverla farebbe sì che «annulla» riporti il
-        // file a una versione che l'utente non ha mai visto.
+    fn l_arricchimento_non_scavalca_una_correzione_manuale() {
+        // `plan_write` non scrive un campo [`Origine::Manuale`], quindi
+        // `campi.title` arriva vuoto e la colonna si salva col `COALESCE`. Ma
+        // `aggiorna_brano` ricalcola `track_key` e `album_key` dai tag **del
+        // file**, che della correzione non sanno niente: senza
+        // `incerti::riapplica` il brano appena arricchito tornerebbe ad avere
+        // l'identità che aveva quando si chiamava «Artista sconosciuto», e la
+        // sincronizzazione lo cercherebbe con quel nome su ogni altro
+        // dispositivo.
         let (cartella, mut connection, percorso) = libreria();
-        applica(
+        crate::incerti::correggi(
+            &mut connection,
+            1,
+            &crate::provenienza::Correzioni {
+                titolo: Some("Comfortably Numb".to_owned()),
+                artista: Some("Pink Floyd".to_owned()),
+                ..crate::provenienza::Correzioni::default()
+            },
+        )
+        .expect("correzione");
+        let corretta: String = connection
+            .query_row("SELECT track_key FROM tracks WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("chiave corretta");
+
+        // L'arricchimento scrive quel che il manuale non copre: l'anno.
+        let scritture = vec![scrittura(
+            &percorso,
+            Fields {
+                year: Some(1979),
+                ..Fields::default()
+            },
+        )];
+        passa(&mut connection, cartella.path(), &scritture);
+
+        let (titolo, artista, chiave, anno): (String, String, String, Option<i64>) = connection
+            .query_row(
+                "SELECT title, artist, track_key, year FROM tracks WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("riga");
+        assert_eq!(titolo, "Comfortably Numb");
+        assert_eq!(artista, "Pink Floyd");
+        assert_eq!(chiave, corretta, "l'identità non torna ai tag del file");
+        // …e l'arricchimento fa comunque il suo lavoro su quel che nessuno aveva
+        // deciso a mano: la riapplicazione è l'ultima parola, non un divieto.
+        assert_eq!(anno, Some(1979));
+    }
+
+    #[test]
+    fn l_annotazione_dice_l_ultima_passata() {
+        // Il contrario esatto della fotografia che stava in `enrich_undo`, e
+        // il contrario è giusto: quella diceva «com'era prima», e sovrascriverla
+        // avrebbe riportato il file a una versione mai vista; questa dice «da
+        // dove viene quel che c'è adesso», e la verità è l'ultima passata.
+        let (cartella, mut connection, percorso) = libreria();
+        passa(
             &mut connection,
             cartella.path(),
             &[scrittura(
@@ -1477,22 +1876,22 @@ mod prove {
                 ..Fields::default()
             },
         );
-        seconda.originali.title = Some("Primo".to_owned());
-        applica(&mut connection, cartella.path(), &[seconda]);
+        seconda.fonte = "itunes";
+        seconda.confidenza = 0.72;
+        passa(&mut connection, cartella.path(), &[seconda]);
 
-        let tags: String = connection
+        let (quante, campi, fonte): (i64, String, Option<String>) = connection
             .query_row(
-                "SELECT tags FROM enrich_undo WHERE track_id = 1",
+                "SELECT (SELECT COUNT(*) FROM track_meta_arricchita), campi, fonte
+                 FROM track_meta_arricchita WHERE track_id = 1",
                 [],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .expect("la fotografia c'è");
-        let originali: TagOriginali = serde_json::from_str(&tags).expect("json");
-        assert_eq!(
-            originali.title.as_deref(),
-            Some("Titolo vecchio"),
-            "deve essere la prima fotografia, non la seconda"
-        );
+            .expect("l'annotazione c'è");
+        assert_eq!(quante, 1, "una riga per brano, non una per passata");
+        let arricchiti: CampiArricchiti = serde_json::from_str(&campi).expect("json");
+        assert_eq!(arricchiti.title.as_deref(), Some("Secondo"));
+        assert_eq!(fonte.as_deref(), Some("itunes"));
     }
 
     #[test]
@@ -1501,9 +1900,9 @@ mod prove {
         reason = "`i64::MAX / 2` è solo un «adesso» lontanissimo che non trabocca \
                   quando ci si somma una scadenza: il resto non esiste"
     )]
-    fn l_annullamento_riporta_i_tag_e_la_riga() {
+    fn dimenticare_riporta_la_riga_ai_tag_del_file() {
         let (cartella, mut connection, percorso) = libreria();
-        applica(
+        passa(
             &mut connection,
             cartella.path(),
             &[scrittura(
@@ -1517,51 +1916,199 @@ mod prove {
                 },
             )],
         );
+        let prima = impronta(&percorso);
 
-        let conto = annulla(&mut connection, true).expect("annullamento");
+        let conto = dimentica(&mut connection).expect("dimenticato");
         assert_eq!(conto.riportati, 1);
         assert_eq!(conto.falliti, 0);
 
+        // Non serve nessuna fotografia: la fotografia è il file, che è lì.
+        let (titolo, artista, genere, mb, stato): (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = connection
+            .query_row(
+                "SELECT title, artist, genre, mb_recording_id, enrich_status
+                 FROM tracks WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("lettura");
+        assert_eq!(titolo, "Titolo vecchio");
+        assert_eq!(artista, UNKNOWN_ARTIST);
+        // Il genere non c'era nel file: dimenticarlo vuol dire toglierlo. È il
+        // campo su cui un ritorno distratto lascerebbe indietro proprio quel
+        // che l'arricchimento aveva **aggiunto**.
+        assert_eq!(genere, None);
+        assert_eq!(mb, None);
+        // Uno stato terminale, non un ritorno a «mai provato»: con la riga
+        // azzerata la passata automatica successiva rimetterebbe — dalla cache,
+        // con la stessa confidenza — proprio quel che è appena stato disfatto.
+        assert_eq!(stato.as_deref(), Some("undone"));
+        assert_eq!(
+            quanti_mancano(&connection, i64::MAX / 2).expect("conteggio"),
+            0,
+            "un brano dimenticato non torna candidato"
+        );
+
+        let rimaste: i64 = connection
+            .query_row("SELECT COUNT(*) FROM track_meta_arricchita", [], |row| {
+                row.get(0)
+            })
+            .expect("conteggio");
+        assert_eq!(rimaste, 0);
+        // E nemmeno dimenticare tocca il file: né prima né adesso.
+        assert_eq!(prima, impronta(&percorso));
+    }
+
+    #[test]
+    fn dimenticare_non_cancella_le_correzioni_manuali() {
+        // È la ragione per cui `track_meta_arricchita` è una tabella sua e non
+        // una colonna dentro `track_overrides`: fuse, questa cancellazione
+        // porterebbe via anche la parola dell'utente.
+        let (cartella, mut connection, percorso) = libreria();
+        crate::incerti::correggi(
+            &mut connection,
+            1,
+            &crate::provenienza::Correzioni {
+                titolo: Some("Comfortably Numb".to_owned()),
+                artista: Some("Pink Floyd".to_owned()),
+                ..crate::provenienza::Correzioni::default()
+            },
+        )
+        .expect("correzione");
+        let corretta: String = connection
+            .query_row("SELECT track_key FROM tracks WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("chiave corretta");
+
+        passa(
+            &mut connection,
+            cartella.path(),
+            &[scrittura(
+                &percorso,
+                Fields {
+                    year: Some(1979),
+                    ..Fields::default()
+                },
+            )],
+        );
+        dimentica(&mut connection).expect("dimenticato");
+
+        let (titolo, artista, chiave, anno): (String, String, String, Option<i64>) = connection
+            .query_row(
+                "SELECT title, artist, track_key, year FROM tracks WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("riga");
+        assert_eq!(titolo, "Comfortably Numb");
+        assert_eq!(artista, "Pink Floyd");
+        assert_eq!(chiave, corretta);
+        // …e quel che veniva davvero dall'arricchimento se n'è andato.
+        assert_eq!(anno, None);
+        let salvate: i64 = connection
+            .query_row("SELECT COUNT(*) FROM track_overrides", [], |row| row.get(0))
+            .expect("conteggio");
+        assert_eq!(salvate, 1, "la correzione è ancora salvata dov'era");
+    }
+
+    #[test]
+    fn annullare_un_arricchimento_non_cancella_una_correzione_manuale() {
+        // Il lascito dell'ondata 1, e l'ultimo posto in cui viveva il bug 1:
+        // `ripristina_riga` rifà i campi descrittivi e `track_key` dai tag
+        // fotografati in `enrich_undo`, che di `track_overrides` non sanno
+        // niente. Chi aveva corretto a mano un brano già arricchito da una
+        // versione passata, e poi chiedeva di riportare i tag nei file, perdeva
+        // anche la propria correzione. Togliendo `incerti::riapplica` da
+        // `ripristina_riga`, questa prova fallisce.
+        let (_cartella, mut connection, percorso) = libreria();
+
+        // Una fotografia come la scriveva la 2.3.0, e i tag che quella versione
+        // aveva messo nel file.
+        let originali = TagOriginali {
+            title: Some("Titolo vecchio".to_owned()),
+            artist: Some(UNKNOWN_ARTIST.to_owned()),
+            ..TagOriginali::default()
+        };
+        connection
+            .execute(
+                "INSERT INTO enrich_undo (track_id, path, tags, written_at)
+                 VALUES (1, ?1, ?2, 0)",
+                rusqlite::params![
+                    percorso.display().to_string(),
+                    serde_json::to_string(&originali).expect("json")
+                ],
+            )
+            .expect("fotografia di una versione passata");
+        tag_scrittura::scrivi_campi(
+            &percorso,
+            &Fields {
+                title: Some("Titolo arricchito".to_owned()),
+                artist: Some("Interprete arricchito".to_owned()),
+                ..Fields::default()
+            },
+        )
+        .expect("tag come li aveva riscritti la 2.3.0");
+        connection
+            .execute(
+                "UPDATE tracks SET title = 'Titolo arricchito',
+                 artist = 'Interprete arricchito', enrich_status = 'ok' WHERE id = 1",
+                [],
+            )
+            .expect("riga come l'aveva lasciata la 2.3.0");
+
+        // …e poi l'utente corregge a mano.
+        crate::incerti::correggi(
+            &mut connection,
+            1,
+            &crate::provenienza::Correzioni {
+                titolo: Some("Comfortably Numb".to_owned()),
+                artista: Some("Pink Floyd".to_owned()),
+                ..crate::provenienza::Correzioni::default()
+            },
+        )
+        .expect("correzione");
+        let corretta: String = connection
+            .query_row("SELECT track_key FROM tracks WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("chiave corretta");
+
+        let conto = riporta_nei_file(&mut connection).expect("ritorno nei file");
+        assert_eq!(conto.riportati, 1);
+        assert_eq!(conto.falliti, 0);
+
+        // I tag del file sono tornati indietro — è quel che il comando promette.
         let letti =
             crate::metadata::read_tags(&crate::files::LocalFiles, &percorso.display().to_string())
                 .expect("rilettura");
         assert_eq!(letti.title.as_deref(), Some("Titolo vecchio"));
         assert_eq!(letti.artist.as_deref(), Some(UNKNOWN_ARTIST));
-        // Il genere non c'era prima: riportarcelo vuol dire toglierlo. È il
-        // campo su cui un annullamento distratto lascerebbe indietro proprio
-        // quel che l'arricchimento aveva **aggiunto**.
-        assert_eq!(letti.genre, None);
-        assert_eq!(letti.mb_recording_id, None);
 
-        let (titolo, stato): (String, Option<String>) = connection
+        // Ma la parola dell'utente è ancora l'ultima, sulla riga e sull'identità.
+        let (titolo, artista, chiave): (String, String, String) = connection
             .query_row(
-                "SELECT title, enrich_status FROM tracks WHERE id = 1",
+                "SELECT title, artist, track_key FROM tracks WHERE id = 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .expect("lettura");
-        assert_eq!(titolo, "Titolo vecchio");
-        // Uno stato terminale, non un ritorno a «mai provato»: i tag sono
-        // tornati quelli di prima, e con la riga azzerata la passata automatica
-        // successiva rimetterebbe — dalla cache, con la stessa confidenza —
-        // proprio quel che è appena stato disfatto.
-        assert_eq!(
-            stato.as_deref(),
-            Some("undone"),
-            "l'annullamento si ricorda"
-        );
-        // Con un «adesso» lontanissimo anche le scadenze di ritentativo sono
-        // passate: quel che resta fuori dal conteggio è fuori perché il suo
-        // stato è terminale, non perché è ancora presto per riprovarci.
-        assert_eq!(
-            quanti_mancano(&connection, i64::MAX / 2).expect("conteggio"),
-            0,
-            "un brano annullato non torna candidato"
-        );
-        let rimaste: i64 = connection
-            .query_row("SELECT COUNT(*) FROM enrich_undo", [], |row| row.get(0))
-            .expect("conteggio");
-        assert_eq!(rimaste, 0);
+            .expect("riga");
+        assert_eq!(titolo, "Comfortably Numb");
+        assert_eq!(artista, "Pink Floyd");
+        assert_eq!(chiave, corretta);
     }
 
     #[test]

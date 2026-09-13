@@ -23,6 +23,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AggiungiAPlaylist } from "./AggiungiAPlaylist";
 import { Chiedi } from "./Chiedi";
 import { Copertina } from "./Copertina";
+import { Giro, type NomePasso } from "./Giro";
 import { Impaginazione, type ContestoWidget } from "./Impaginazione";
 import { Account } from "./Account";
 import { Importa, ImportaLink } from "./Importa";
@@ -31,12 +32,17 @@ import { Regole } from "./Regole";
 import { Menu, type Apertura } from "./Menu";
 import { NuovoTema } from "./NuovoTema";
 import { Primo } from "./Primo";
-import { Riordino } from "./Riordino";
 import { Ripristino } from "./Ripristino";
 import { Stelle } from "./Stelle";
 import { cambiandoVista } from "./transizione";
-import { applicaAccento, applicaSkin } from "./aspetto";
+import {
+  applicaAccento,
+  applicaMovimento,
+  applicaSkin,
+  type MovimentoUtente,
+} from "./aspetto";
 import { brani_, durata, nomeArtista, numero, titoloAlbum } from "./formato";
+import { useFuoco } from "./fuoco";
 import {
   eRitentabile,
   guastoDa,
@@ -67,6 +73,7 @@ import type { Vista } from "./parti/Navigazione";
 import { ToastImportazioni } from "./parti/ToastImportazioni";
 import { useRiproduzione } from "./riproduzione";
 import { Artisti } from "./schermate/Artisti";
+import { Cartelle } from "./schermate/Cartelle";
 import { Home, TestaHome } from "./schermate/Home";
 import {
   SchermataImportazioni,
@@ -90,6 +97,7 @@ import {
   temaDiRipiego,
   type Tema,
 } from "./tema";
+import { useVirtuale } from "./virtuale";
 import { Trans } from "./lingue/Trans";
 
 /**
@@ -119,19 +127,55 @@ function ordinamenti(): readonly (readonly [Ordine, string])[] {
 const LARGHEZZA_TRE_COLONNE = 1100;
 
 /**
- * Una riga dell'elenco.
+ * Una riga dell'elenco: una `row` di una `grid`, non un `div` qualunque.
  *
  * `memo` e non una funzione nuda. Da sola non bastava — finché la posizione
  * viveva in `App`, i gestori scendevano in identità nuove venti volte al
  * secondo e nessun confronto poteva riuscire. Ora che la posizione sta nel suo
  * archivio, `App` si ridisegna solo quando cambia qualcosa di vero, e le
  * duecento righe che non sono cambiate saltano il giro invece di riconciliarsi.
+ *
+ * # Perché `role="row"`, e perché il ruolo mancava
+ *
+ * Perché senza di esso `aria-selected` **non esiste**. L'attributo è valido solo
+ * su pochi ruoli — `row`, `option`, `tab`, `gridcell` — e su un `div` generico
+ * viene scartato in silenzio: la selezione multipla, cioè tutto ciò che accende
+ * la barra di selezione e i suoi comandi, era visibile solo a chi guarda. Chi
+ * ascolta lo schermo sentiva dodici righe identiche e nessuna scelta.
+ *
+ * # Perché le celle sono otto, e perché sono involucri
+ *
+ * In una `grid` i figli di una `row` devono essere celle, e per un po' qui lo
+ * erano solo tre — titolo e artista, album, durata — mentre i quattro comandi e
+ * la miniatura stavano nella riga senza ruolo. Non era una dimenticanza: un
+ * `role` **sostituisce** quello nativo, quindi un `gridcell` scritto sul
+ * `<button>` farebbe annunciare «cella» dove si deve sentire «bottone», e i
+ * comandi di riga sono esattamente la ragione per cui questo elenco è una `grid`
+ * e non una `listbox`.
+ *
+ * L'involucro è il modo di avere le due cose: la cella è un `<div>` attorno al
+ * comando, il comando resta un bottone, e nessuno dei due ruoli paga per
+ * l'altro. `display: contents` nel foglio toglie l'involucro dalla
+ * disposizione — `--colonne-riga` continua a vedere otto figli come prima, non
+ * sette più un contenitore — e in WebView2 **non** lo toglie dall'albero di
+ * accessibilità: la cella compare col bottone dentro, verificato sull'albero vero
+ * della versione in uso prima di scriverlo. È il punto su cui questa forma
+ * stava o cadeva, perché una cella invisibile a chi ascolta sarebbe peggio di
+ * nessuna cella.
+ *
+ * Il conto torna anche con l'intestazione, che ha sempre avuto sette
+ * `columnheader` (otto dentro una playlist modificabile) contro le tre celle
+ * delle righe: adesso ogni colonna ha la sua intestazione **e** la sua cella, e
+ * «Durata, 3:41» si può dire di ogni riga e non solo di tre.
  */
 const RigaBrano = memo(function RigaBrano({
   brano,
   indice,
   attivo,
   suonabile,
+  colFuoco,
+  onSpostaFuoco,
+  onFuocoPreso,
   onSuona,
   onPreferito,
   onVoto,
@@ -150,6 +194,17 @@ const RigaBrano = memo(function RigaBrano({
   indice: number;
   attivo: boolean;
   suonabile: boolean;
+  /**
+   * È la riga col fuoco: la **sola** dell'elenco con `tabIndex={0}`.
+   *
+   * Vedi `fuoco.ts`: sette comandi per riga su diciottomila righe erano oltre
+   * centomila fermate di tabulazione, cioè un elenco da cui non si esce.
+   */
+  colFuoco: boolean;
+  /** Chiede che il fuoco vada su un'altra riga. Da `useFuoco().vaiA`. */
+  onSpostaFuoco: (indice: number) => void;
+  /** Dice che il fuoco è arrivato qui. Da `useFuoco().segna`. */
+  onFuocoPreso: (indice: number) => void;
   onSuona: (indice: number) => void;
   onPreferito: (b: Brano) => void;
   onVoto: (b: Brano, stelle: number) => void;
@@ -221,17 +276,34 @@ const RigaBrano = memo(function RigaBrano({
     // Il fuoco segue la riga spostata invece di restare sulla posizione: chi
     // tiene premuto Alt sta spostando **una** canzone, e lasciando il fuoco
     // fermo al colpo dopo scenderebbe quella che ha preso il suo posto.
-    const elenco = e.currentTarget.closest(".elenco");
-    window.requestAnimationFrame(() =>
-      elenco
-        ?.querySelectorAll<HTMLElement>(".riga .indice")
-        [indice + passo]?.focus(),
-    );
+    //
+    // Si chiede la **riga**, non il nodo. Prima qui c'era una ricerca di
+    // `.riga .indice` per posizione nel DOM, e con la finestra virtuale quella
+    // posizione non vuol più dire niente: il nodo numero `indice + passo` è il
+    // nodo numero `indice + passo` *della finestra*, e se la riga è appena
+    // uscita dalla finestra quel nodo non esiste affatto. `useFuoco` sa
+    // scorrere prima e focalizzare dopo, che è l'ordine giusto.
+    onSpostaFuoco(indice + passo);
   };
 
   return (
     <div
       className="riga list-row"
+      role="row"
+      /* L'ancora del giro guidato sta su **tutte** le righe e non solo sulla
+         prima: con l'elenco virtualizzato la riga numero zero non esiste nel
+         DOM appena si scorre, e un'ancora su quella sola avrebbe fatto saltare
+         il passo a chi ha la libreria a metà. `Giro` prende la prima
+         disegnata, che è quella in cima allo schermo. */
+      data-giro="riga-brano"
+      /* `+2` perché la riga 1 è l'intestazione di colonna. È l'attributo che
+         rende dicibile una finestra: «riga 12.004 di 18.535» si può dire anche
+         se nel DOM ce ne sono trenta, e senza di esso chi ascolta lo schermo
+         sentirebbe «riga 7 di 30» in mezzo a una libreria. */
+      aria-rowindex={indice + 2}
+      /* Una fermata di tabulazione per l'elenco intero: vedi `colFuoco`. */
+      tabIndex={colFuoco ? 0 : -1}
+      onFocus={() => onFuocoPreso(indice)}
       aria-current={attivo}
       aria-selected={selezionato}
       data-active={attivo || undefined}
@@ -261,32 +333,49 @@ const RigaBrano = memo(function RigaBrano({
       onClick={(e) => onSeleziona(e, indice)}
       onContextMenu={(e) => onMenu(e, [brano.id])}
     >
-      <button
-        type="button"
-        className="indice"
-        aria-label={`Riproduci ${brano.title}`}
-        /* Senza dispositivo audio il comando fallirebbe a ogni clic: meglio un
-           tasto spento e l'errore letto una volta, che un errore nuovo ogni
-           volta che si prova. */
-        disabled={!suonabile}
-        onClick={() => onSuona(indice)}
-      >
-        <span className="numero">
-          {numeroTraccia ? (brano.trackNumber ?? indice + 1) : indice + 1}
-        </span>
-        <span className="via" aria-hidden="true">
-          <Icona nome="i-play" dim={13} />
-        </span>
-      </button>
-      <Copertina
-        hash={brano.coverArtHash}
-        titolo={titoloAlbum(brano.album)}
-        classe="miniatura"
-      />
+      {/* La cella attorno al comando, non sul comando: vedi la nota del
+          componente. */}
+      <div role="gridcell" className="cella-comando">
+        <button
+          type="button"
+          className="indice"
+          /* Da `t()` come tutto il resto. Era l'**unica** etichetta di
+             accessibilità dell'albero scritta a mano in italiano: in interfaccia
+             inglese lo screen reader diceva «Riproduci …» su ognuna delle
+             diciottomila righe, e il difetto non si vedeva perché un'etichetta
+             non si guarda. */
+          aria-label={t("list.play", { titolo: brano.title })}
+          /* Il fuoco arriva con ←→ dalla riga, non con Tab: vedi `fuoco.ts`. */
+          tabIndex={-1}
+          /* Senza dispositivo audio il comando fallirebbe a ogni clic: meglio un
+             tasto spento e l'errore letto una volta, che un errore nuovo ogni
+             volta che si prova. */
+          disabled={!suonabile}
+          onClick={() => onSuona(indice)}
+        >
+          <span className="numero">
+            {numeroTraccia ? (brano.trackNumber ?? indice + 1) : indice + 1}
+          </span>
+          <span className="via" aria-hidden="true">
+            <Icona nome="i-play" dim={13} />
+          </span>
+        </button>
+      </div>
+      {/* La copertina non è un comando ma è una colonna, e una colonna senza
+          cella rompe il conteggio esattamente come lo rompeva un bottone. Ha una
+          classe sua perché quel che avvolge non è un comando: il foglio le dà la
+          stessa regola, il nome dice la verità. */}
+      <div role="gridcell" className="cella-miniatura">
+        <Copertina
+          hash={brano.coverArtHash}
+          titolo={titoloAlbum(brano.album)}
+          classe="miniatura"
+        />
+      </div>
       {/* Titolo e artista impilati in una cella sola, l'album nella sua: sono
           due informazioni di peso diverso, e dare all'artista una colonna larga
           quanto il titolo lo farebbe leggere come se lo fosse. */}
-      <div className="chi">
+      <div className="chi" role="gridcell">
         <div className="nome" title={brano.title}>
           {brano.title}
         </div>
@@ -294,52 +383,109 @@ const RigaBrano = memo(function RigaBrano({
           {nomeArtista(brano.artist)}
         </div>
       </div>
-      <div className="disco" title={titoloAlbum(brano.album)}>
+      <div className="disco" role="gridcell" title={titoloAlbum(brano.album)}>
         {titoloAlbum(brano.album)}
       </div>
-      <Stelle
-        valore={brano.rating}
-        onVoto={(stelle) => onVoto(brano, stelle)}
-      />
-      <div className="durata">{durata(brano.durationMs)}</div>
-      <button
-        type="button"
-        className="cuore icon-btn"
-        aria-pressed={brano.liked}
-        aria-label={brano.liked ? t("track.unlike") : t("track.like")}
-        onClick={() => onPreferito(brano)}
-      >
-        <Icona nome={brano.liked ? "i-heart-f" : "i-heart"} dim={15} />
-      </button>
-      {onTogli && (
+      <div role="gridcell" className="cella-comando">
+        <Stelle
+          valore={brano.rating}
+          onVoto={(stelle) => onVoto(brano, stelle)}
+          /* Cinque stelle × 18.534 righe erano 92.670 fermate di tabulazione. */
+          raggiungibile={false}
+        />
+      </div>
+      <div className="durata" role="gridcell">
+        {durata(brano.durationMs)}
+      </div>
+      <div role="gridcell" className="cella-comando">
         <button
           type="button"
-          className="tasto icon-btn"
-          aria-label={t("list.removeFromPlaylist", { titolo: brano.title })}
-          onClick={() => onTogli(indice)}
+          className="cuore icon-btn"
+          tabIndex={-1}
+          aria-pressed={brano.liked}
+          aria-label={brano.liked ? t("track.unlike") : t("track.like")}
+          onClick={() => onPreferito(brano)}
         >
-          <Icona nome="i-x" dim={14} />
+          <Icona nome={brano.liked ? "i-heart-f" : "i-heart"} dim={15} />
         </button>
+      </div>
+      {onTogli && (
+        <div role="gridcell" className="cella-comando">
+          <button
+            type="button"
+            className="tasto icon-btn"
+            tabIndex={-1}
+            aria-label={t("list.removeFromPlaylist", { titolo: brano.title })}
+            onClick={() => onTogli(indice)}
+          >
+            <Icona nome="i-x" dim={14} />
+          </button>
+        </div>
       )}
     </div>
   );
 });
 
-/** L'intestazione di colonna dell'elenco: la stessa griglia delle righe. */
-function TestaElenco({ conTogli }: { conTogli?: boolean | undefined }) {
+/**
+ * L'intestazione di colonna dell'elenco: la stessa griglia delle righe.
+ *
+ * # Perché non è più `aria-hidden`
+ *
+ * Perché nascondeva i nomi delle colonne a chi ha più bisogno di sentirli.
+ * Guardando l'elenco si vede che il numero a destra è una durata; ascoltandolo
+ * si sente «3:41» e basta. Era nascosta perché senza un ruolo di griglia era
+ * rumore — sei parole sciolte prima di un elenco di `div` — ma adesso le righe
+ * sono `row` e queste sono le loro `columnheader`: l'intestazione è la prima
+ * riga della griglia, e un lettore di schermo la usa per dire «Durata, 3:41»
+ * invece di «3:41».
+ *
+ * I due `<span />` vuoti sono celle anche loro: una `row` può contenere solo
+ * celle, e un figlio senza ruolo in mezzo a quelli che l'hanno romperebbe il
+ * conteggio delle colonne.
+ */
+function TestaElenco({
+  conTogli,
+  muta,
+}: {
+  conTogli?: boolean | undefined;
+  /**
+   * Senza ruoli e fuori dall'albero di accessibilità.
+   *
+   * Serve al solo `ElencoFinto`: là la griglia non esiste ancora — è un
+   * `role="status"` che dice «sto caricando» — e annunciare i nomi delle colonne
+   * di un elenco che non c'è sarebbe peggio che tacere.
+   */
+  muta?: boolean | undefined;
+}) {
+  // Un ruolo calcolato e non due alberi uguali: la griglia di colonne è una cosa
+  // sola, e copiarla per cambiarle gli attributi sarebbe tenerne allineate due.
+  const cella = muta ? undefined : ("columnheader" as const);
   return (
-    <div className="testa-elenco" aria-hidden="true">
-      <span className="indice">#</span>
-      <span />
-      <span>{t("list.title")}</span>
+    <div
+      className="testa-elenco"
+      aria-hidden={muta || undefined}
+      role={muta ? undefined : "row"}
+      aria-rowindex={muta ? undefined : 1}
+    >
+      <span className="indice" role={cella}>
+        #
+      </span>
+      <span role={cella} />
+      <span role={cella}>{t("list.title")}</span>
       {/* Le due colonne che si ritirano quando il contenuto si stringe portano un
           nome: nasconderle per posizione — `:nth-child(4)` — vorrebbe dire tenere
           allineati un numero qui e un numero nel foglio. */}
-      <span className="disco">{t("list.album")}</span>
-      <span className="voto">{t("list.rating")}</span>
-      <span className="durata">{t("list.duration")}</span>
-      <span />
-      {conTogli && <span />}
+      <span className="disco" role={cella}>
+        {t("list.album")}
+      </span>
+      <span className="voto" role={cella}>
+        {t("list.rating")}
+      </span>
+      <span className="durata" role={cella}>
+        {t("list.duration")}
+      </span>
+      <span role={cella} />
+      {conTogli && <span role={cella} />}
     </div>
   );
 }
@@ -389,7 +535,7 @@ function ElencoFinto() {
       role="status"
       aria-label={t("list.loading")}
     >
-      <TestaElenco />
+      <TestaElenco muta />
       {Array.from({ length: 10 }, (_, i) => (
         <div className="riga finta" key={i} aria-hidden="true">
           <span />
@@ -436,6 +582,207 @@ function Sentinella({
       aria-label={t("list.more")}
     >
       <span className="skeleton" aria-hidden="true" />
+    </div>
+  );
+}
+
+/**
+ * L'elenco dei brani: una griglia vera, e una finestra sulle sue righe.
+ *
+ * # Perché esiste un componente invece di quattro `map`
+ *
+ * Perché i punti che montano un elenco di brani sono **quattro** — la ricerca,
+ * la playlist, l'album aperto, la libreria — e finora ognuno ripeteva a mano lo
+ * stesso `div.elenco` con dentro la stessa intestazione e lo stesso `map`. Una
+ * finestra virtuale scritta quattro volte sarebbe quattro finestre da tenere
+ * d'accordo, e la prima a scollarsi lo farebbe in silenzio: si vede solo
+ * scorrendo fino in fondo *quella* vista.
+ *
+ * # Perché una finestra
+ *
+ * Il conto sta nel `//!` di `virtuale.ts`: 18.534 righe × una dozzina di nodi
+ * ciascuna sono oltre duecentomila nodi DOM, ed è la voce più grossa dei 521 MB
+ * che l'albero di processi occupava. Qui se ne disegnano una trentina, e sopra e
+ * sotto stanno due `.paglia` alte quanto le righe che non ci sono.
+ *
+ * # Perché la `Sentinella` resta fuori
+ *
+ * Perché la `.paglia` inferiore conserva **l'altezza vera** delle righe non
+ * disegnate: il fondo del documento è dove era prima della finestra, quindi
+ * l'`IntersectionObserver` di `pagine.ts:143-160`, col suo `rootMargin: 600px`,
+ * entra in vista allo stesso pixel di prima e chiede la pagina dopo nello stesso
+ * momento. Portarla dentro l'elenco non servirebbe a niente e la esporrebbe alla
+ * finestra; lasciarla fuori è ciò che rende la virtualizzazione invisibile alla
+ * paginazione, che è il patto: `pagine.ts` non si tocca.
+ *
+ * # Perché `grid` e non `listbox`
+ *
+ * Due ragioni, e nessuna delle due è di gusto.
+ *
+ * La prima: una `option` **non deve contenere comandi focalizzabili**, e qui ce
+ * ne sono sette per riga — l'indice, le cinque stelle, il cuore, più la × dentro
+ * una playlist. Dichiarare `listbox` vorrebbe dire dichiarare il falso su ogni
+ * riga, e i lettori di schermo che credono alla dichiarazione nascondono quel
+ * che sta dentro l'opzione: i comandi sparirebbero invece di essere annunciati.
+ *
+ * La seconda: solo `aria-rowindex`/`aria-rowcount` rendono **dicibile una
+ * finestra**. Con trenta righe nel DOM su diciottomila, una `listbox` direbbe
+ * «elemento 7 di 30» — cioè una bugia — mentre una `grid` dice «riga 12.004 di
+ * 18.535», che è la verità e per giunta l'unica informazione con cui ci si
+ * orienta in una libreria.
+ *
+ * `aria-rowcount` conta le righe **arrivate**, non quelle che esistono: la
+ * libreria è impaginata e nemmeno `usePagine` sa quante saranno. Un numero che
+ * cresce è più onesto del `-1` che l'attributo prevede per «non si sa», che
+ * cancellerebbe l'informazione proprio dove serve.
+ */
+function ElencoBrani({
+  righe,
+  scorrevole,
+  inAscolto,
+  suonabile,
+  selezione,
+  onSuona,
+  onPreferito,
+  onVoto,
+  onMenu,
+  onSeleziona,
+  onAlternaSelezione,
+  numeroTraccia,
+  conTogli,
+  chiaveConIndice,
+  onTogli,
+  onRiordina,
+  onPresa,
+  onMira,
+  onLascia,
+  mirata,
+  trascinata,
+}: {
+  righe: Brano[];
+  /** Lo scorrevole dentro cui l'elenco vive: `.dentro`. */
+  scorrevole: React.RefObject<HTMLDivElement | null>;
+  /** Quale brano sta suonando, per la riga in evidenza. */
+  inAscolto: number | null;
+  suonabile: boolean;
+  selezione: Set<number>;
+  onSuona: (indice: number) => void;
+  onPreferito: (b: Brano) => void;
+  onVoto: (b: Brano, stelle: number) => void;
+  onMenu: (e: React.MouseEvent, brani: number[]) => void;
+  onSeleziona: (e: React.MouseEvent, indice: number) => void;
+  /** Spazio sulla riga col fuoco: il Ctrl+clic detto da tastiera. */
+  onAlternaSelezione: (indice: number) => void;
+  numeroTraccia?: boolean | undefined;
+  /** La colonna in più della playlist a mano: il tasto che toglie la riga. */
+  conTogli?: boolean | undefined;
+  /**
+   * La chiave di React porta anche la posizione.
+   *
+   * Serve **solo** dentro una playlist, dove lo stesso brano può comparire due
+   * volte: l'identificativo da solo non sarebbe unico, e React accoppierebbe le
+   * due righe.
+   */
+  chiaveConIndice?: boolean | undefined;
+  onTogli?: ((indice: number) => void) | undefined;
+  onRiordina?: ((da: number, a: number) => void) | undefined;
+  onPresa?: ((indice: number | null) => void) | undefined;
+  onMira?: ((indice: number | null) => void) | undefined;
+  onLascia?: ((indice: number) => void) | undefined;
+  /** Dove cadrebbe il rilascio, durante un trascinamento. */
+  mirata?: number | null | undefined;
+  /** Quale riga si sta trascinando. */
+  trascinata?: number | null | undefined;
+}) {
+  const elenco = useRef<HTMLDivElement>(null);
+  const finestra = useVirtuale({
+    totale: righe.length,
+    contenitore: scorrevole,
+    ancora: elenco,
+  });
+
+  /*
+   * Invio suona, ma solo se c'è da suonare: è la stessa condizione che spegne il
+   * tasto dell'indice, detta per l'altra strada. Senza, il tasto spento e il
+   * tasto Invio farebbero due cose diverse sulla stessa riga.
+   */
+  const suona = useCallback(
+    (indice: number) => {
+      if (suonabile) onSuona(indice);
+    },
+    [suonabile, onSuona],
+  );
+
+  const fuoco = useFuoco({
+    totale: righe.length,
+    ancora: elenco,
+    finestra,
+    scorriA: finestra.scorriA,
+    onInvio: suona,
+    onSpazio: onAlternaSelezione,
+  });
+
+  return (
+    <div
+      className="elenco track-grid"
+      ref={elenco}
+      role="grid"
+      aria-multiselectable="true"
+      aria-label={t("list.grid")}
+      aria-rowcount={righe.length + 1}
+      /* Un gestore solo per tutte le righe: appenderne uno a ciascuna
+         darebbe a `RigaBrano` una prop con identità nuova a ogni disegno e
+         annullerebbe il suo `memo`, che è l'altro conto che questa release
+         paga. La riga da cui viene il tasto la dice il bersaglio dell'evento. */
+      onKeyDown={fuoco.daTastiera}
+      /* L'attributo, non solo la prop: la colonna in più la deve conoscere
+         anche la griglia del foglio, altrimenti l'ottavo figlio della riga
+         finisce a capo invece che in fondo. */
+      data-con-togli={conTogli || undefined}
+    >
+      <TestaElenco conTogli={conTogli} />
+      {/* Le righe che stanno sopra la finestra, come altezza e basta.
+          `role="presentation"` perché non sono una riga: sono il posto che le
+          righe assenti occuperebbero, e una `grid` con dentro due `div`
+          sconosciuti direbbe di avere due righe in più di quante ne ha. */}
+      <div
+        className="paglia"
+        style={{ height: finestra.sopra * finestra.altezza }}
+        role="presentation"
+      />
+      {righe.slice(finestra.primo, finestra.ultimo).map((b, k) => {
+        const i = finestra.primo + k;
+        return (
+          <RigaBrano
+            key={chiaveConIndice ? `${i}-${b.id}` : b.id}
+            brano={b}
+            indice={i}
+            attivo={b.id === inAscolto}
+            suonabile={suonabile}
+            colFuoco={i === fuoco.attivo}
+            onSpostaFuoco={fuoco.vaiA}
+            onFuocoPreso={fuoco.segna}
+            onSuona={onSuona}
+            onPreferito={onPreferito}
+            onVoto={onVoto}
+            onMenu={onMenu}
+            selezionato={selezione.has(b.id)}
+            onSeleziona={onSeleziona}
+            numeroTraccia={numeroTraccia}
+            onTogli={onTogli}
+            onRiordina={onRiordina}
+            onPresa={onPresa}
+            onMira={onMira}
+            onLascia={onLascia}
+            sopra={mirata === i && trascinata !== i}
+          />
+        );
+      })}
+      <div
+        className="paglia"
+        style={{ height: finestra.sotto * finestra.altezza }}
+        role="presentation"
+      />
     </div>
   );
 }
@@ -489,6 +836,18 @@ export function App() {
    * proposta è ancora la risposta giusta.
    */
   const [primoChiuso, setPrimoChiuso] = useState(false);
+  /**
+   * Il giro guidato di questa versione del copione non è ancora stato fatto.
+   *
+   * Non è «il giro è aperto»: è il permesso di aprirlo. Le due cose sono
+   * separate perché la seconda ha tre condizioni che il database non conosce —
+   * il primo avvio chiuso, la libreria non vuota, e nessun giro già in corso —
+   * e tenerle in un booleano solo vorrebbe dire ricalcolarle nel punto in cui
+   * si disegna.
+   */
+  const [giroDaFare, setGiroDaFare] = useState(false);
+  /** Il giro guidato è aperto adesso. */
+  const [giroAperto, setGiroAperto] = useState(false);
   const [esito, setEsito] = useState<EsitoScansione | null>(null);
   const [colonnaAperta, setColonnaAperta] = useState(
     () => window.innerWidth >= LARGHEZZA_TRE_COLONNE,
@@ -524,7 +883,6 @@ export function App() {
   const [daAggiungere, setDaAggiungere] = useState<number[] | null>(null);
   const [daRinominare, setDaRinominare] = useState<Playlist | null>(null);
   const [creandoPlaylist, setCreandoPlaylist] = useState(false);
-  const [daRiordinare, setDaRiordinare] = useState<string | null>(null);
   /** La finestrella del ripristino è aperta. */
   const [ripristinando, setRipristinando] = useState(false);
   const [skin, setSkin] = useState<VoceSkin[]>([]);
@@ -541,6 +899,31 @@ export function App() {
   const [tema, setTema] = useState<Tema>("sistema");
   /** Il tema è già stato deciso in questa sessione. Vedi l'effetto sotto. */
   const temaDeciso = useRef(false);
+  /**
+   * Quanto movimento vuole chi guarda, sotto quello che la skin dichiara.
+   *
+   * Si parte da «sistema» come per il tema, e per la stessa ragione: il valore
+   * vero è nel database e arriva con una chiamata. Il fotogramma prima che
+   * risponda è quello in cui vale la sola `prefers-reduced-motion`, che è il
+   * ripiego giusto — chi ha una condizione dichiarata al sistema operativo non
+   * vede movimento nemmeno lì.
+   */
+  const [movimentoUtente, setMovimentoUtente] =
+    useState<MovimentoUtente>("sistema");
+  /**
+   * Di quanto è ingrandita l'interfaccia, o `null` finché non si sa.
+   *
+   * `null` e non `1`, al contrario del movimento, e la differenza qui non è
+   * accademica: la finestra nasce nascosta e a mostrarla è `pronto`. Se lo
+   * zoom non fosse fra le cose che si aspettano, chi ha scelto 1,5 vedrebbe il
+   * primo fotogramma alla misura di serie e il secondo alla sua — lo stesso
+   * difetto del fotogramma scuro e di quello in italiano, con le misure.
+   *
+   * Il valore non si applica di qua: lo applica `zoom_avvio` alla finestra,
+   * perché è lo zoom della WebView e non una scala nel foglio. Qui serve solo
+   * a disegnarlo nelle impostazioni.
+   */
+  const [zoom, setZoom] = useState<number | null>(null);
   /**
    * La lingua in uso.
    *
@@ -630,6 +1013,106 @@ export function App() {
   useEffect(() => {
     setChiaro(applicaTema(tema, skinAttiva?.light ?? false));
   }, [tema, skinAttiva]);
+
+  /**
+   * Il movimento chiesto da chi guarda, sul documento e nel database.
+   *
+   * Due effetti e non uno, come per il tema: qui si **applica** — cioè si
+   * scrive l'attributo sulla radice a ogni cambio — e sotto si **legge** una
+   * volta sola all'apertura. Tenerli insieme vorrebbe dire riscrivere il
+   * documento anche quando non è cambiato niente.
+   */
+  useEffect(() => {
+    applicaMovimento(movimentoUtente);
+  }, [movimentoUtente]);
+
+  /**
+   * La preferenza, appena il database risponde.
+   *
+   * Non passa da `avvio`: è un comando suo, e la ragione sta scritta sopra
+   * `movimento_ridotto` in `comandi.rs`. Una volta sola per apertura — questo
+   * effetto non ha dipendenze — perché al contrario del tema non c'è nessuna
+   * chiave vecchia da riconciliare: si legge, si applica, e da lì in poi
+   * comanda il segmentato delle impostazioni.
+   *
+   * Un guasto qui non è un errore da mostrare: vorrebbe dire una finestra che
+   * si apre con un avviso rosso per dire che il movimento è rimasto quello del
+   * sistema, cioè per dire che non è successo niente.
+   */
+  useEffect(() => {
+    ipc
+      .movimentoRidotto()
+      .then((ridotto) => setMovimentoUtente(ridotto ? "ridotto" : "sistema"))
+      .catch(() => undefined);
+  }, []);
+
+  /**
+   * Cambia quanto movimento si vuole, e lo scrive.
+   *
+   * Lo stato locale si muove prima della scrittura, come per il tema: è un
+   * cambio che si vede: le transizioni si fermano, ed è quella la risposta al
+   * gesto.
+   */
+  /**
+   * Lo zoom, appena il database risponde — e applicato dall'altra parte.
+   *
+   * `zoomAvvio` legge **e** applica in un giro solo: lo zoom della WebView non
+   * sopravvive alla chiusura, e il numero che torna di qua serve a disegnarlo
+   * nelle impostazioni e a togliere l'attesa a `pronto`.
+   *
+   * Il `catch` scrive comunque il neutro invece di lasciare `null`, e non è
+   * una formalità: senza, un database che non risponde lascerebbe la finestra
+   * invisibile fino alla rete di sicurezza dei due secondi di `main.rs`, cioè
+   * trasformerebbe una preferenza illeggibile in un'applicazione che non si
+   * apre.
+   */
+  useEffect(() => {
+    ipc
+      .zoomAvvio()
+      .then(setZoom)
+      .catch(() => setZoom(1));
+  }, []);
+
+  /**
+   * Un gradino in su o in giù.
+   *
+   * Al contrario del tema e del movimento, lo stato locale si muove **dopo**
+   * la risposta e non prima: qui il valore che vale non lo decide questo
+   * componente ma il nucleo, che ai due estremi della scala restituisce quello
+   * di prima. Muoverlo prima vorrebbe dire mostrare per un fotogramma un
+   * gradino che non esiste, ogni volta che si preme il tasto contro il fondo.
+   * E non c'è niente da anticipare: quel che risponde al gesto è
+   * l'ingrandimento, e a farlo è la finestra.
+   */
+  const cambiaZoom = useCallback(
+    (su: boolean) => {
+      ipc.zoomPasso(su).then(setZoom).catch(segnalaErrore);
+    },
+    [segnalaErrore],
+  );
+
+  /**
+   * La misura di serie: `Ctrl+0`, e il bottone delle impostazioni.
+   *
+   * Nessun argomento, e non è una scorciatoia di scrittura: attraverso l'IPC
+   * dello zoom non passa **nessun numero**. Da questa parte si sanno i tre
+   * gesti, e la scala — quali gradini esistono e in che ordine — sta soltanto
+   * in `preferenze::SCALA_ZOOM`. Un secondo elenco di numeri qui sarebbe la
+   * cosa che si scosta senza dirlo.
+   */
+  const zoomNormale = useCallback(() => {
+    ipc.zoomNormale().then(setZoom).catch(segnalaErrore);
+  }, [segnalaErrore]);
+
+  const cambiaMovimentoUtente = useCallback(
+    (scelto: MovimentoUtente) => {
+      setMovimentoUtente(scelto);
+      ipc
+        .impostaMovimentoRidotto(scelto === "ridotto")
+        .catch(segnalaErrore);
+    },
+    [segnalaErrore],
+  );
 
   /**
    * Da dove viene il tema: dal database, o dalla chiave vecchia.
@@ -878,17 +1361,28 @@ export function App() {
    * lingua: la lingua salvata arriva di lì, e mostrare la finestra prima
    * vorrebbe dire far leggere a chi ha scelto l'inglese un fotogramma di
    * italiano — lo stesso difetto del colore, con le parole.
+   *
+   * E si aspetta anche lo zoom, per la terza volta la stessa ragione: chi ha
+   * scelto 1,5 non deve vedere un fotogramma alla misura di serie. Lo zoom
+   * arriva sempre, riuscito o no — vedi il suo effetto — quindi questa
+   * attesa non può diventare una finestra che non si apre.
    */
   const mostrata = useRef(false);
   useEffect(() => {
-    if (mostrata.current || skinAttiva === null || avvio === null) return;
+    if (
+      mostrata.current ||
+      skinAttiva === null ||
+      avvio === null ||
+      zoom === null
+    )
+      return;
     mostrata.current = true;
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         ipc.pronto().catch(segnalaErrore);
       }),
     );
-  }, [skinAttiva, avvio, segnalaErrore]);
+  }, [skinAttiva, avvio, zoom, segnalaErrore]);
 
   // La colonna si chiude da sé quando la finestra si stringe, e non si riapre
   // da sé quando torna larga: riaprirla annullerebbe una chiusura decisa a mano.
@@ -1383,6 +1877,121 @@ export function App() {
       setVista(dove);
     });
   }, []);
+
+  /*
+   * ── il giro guidato ────────────────────────────────────────────────────────
+   *
+   * Il perché della forma sta in `Giro.tsx`; qui c'è soltanto **quando** parte
+   * e **dove** si mette l'applicazione a ogni passo.
+   */
+
+  /**
+   * Il permesso, chiesto una volta all'apertura.
+   *
+   * Un guasto non si mostra: sarebbe un avviso rosso per dire che non è
+   * comparso un giro guidato, cioè per dire che non è successo niente. È la
+   * stessa scelta della preferenza del movimento qui sopra.
+   */
+  useEffect(() => {
+    ipc
+      .giroDaFare()
+      .then(setGiroDaFare)
+      .catch(() => undefined);
+  }, []);
+
+  /**
+   * Quando parte, e le due volte in cui **non** parte.
+   *
+   * **Dopo la chiusura del primo avvio, non dentro.** `Primo` chiede dove sta
+   * la musica e fa una scansione: un fumetto sopra quella schermata spiegherebbe
+   * una finestra che non si è ancora vista. Il giro aspetta che `Primo` se ne
+   * sia andato — cioè che una cartella ci sia, o che si sia premuto «Lo faccio
+   * dopo».
+   *
+   * **Libreria vuota: si rinvia, non si simula.** Illuminare una riga di brano
+   * che non esiste vorrebbe dire disegnarne una finta, e insegnare una libreria
+   * che non c'è; il finto di `studio/finto.ts` serve a chi disegna skin, non a
+   * chi ascolta. Senza brani il giro non parte e basta — e siccome questa
+   * condizione è uno stato e non un evento, riparte da sé alla prima scansione
+   * che finisce con qualcosa dentro, senza che nessuno debba ricordarsene.
+   *
+   * «Lo faccio dopo» non è quindi un rifiuto del giro: chiude `Primo` e lo
+   * rinvia, perché la libreria resta vuota.
+   */
+  useEffect(() => {
+    if (!giroDaFare || giroAperto) return;
+    if (avvio === null) return;
+    if (avvio.cartelle.length === 0 && !primoChiuso) return;
+    if (avvio.numeri.tracks === 0) return;
+    setGiroAperto(true);
+  }, [giroDaFare, giroAperto, avvio, primoChiuso]);
+
+  /**
+   * Mette l'applicazione dove il passo vive.
+   *
+   * Non è una simulazione: sono gli stessi `setStato` che premono i tasti veri,
+   * e quel che si illumina è quel che c'è. Dove la condizione non dipende da
+   * qui — non suona niente, quindi non c'è né colonna né schermo intero — il
+   * passo si salta da sé, ed è la regola dichiarata in `Giro.tsx`.
+   *
+   * `setGrande(false)` quasi ovunque perché la schermata a tutto schermo copre
+   * la barra laterale: senza, il passo dopo «In riproduzione» illuminerebbe una
+   * navigazione nascosta sotto una copertina.
+   */
+  const preparaGiro = useCallback(
+    (passo: NomePasso) => {
+      switch (passo) {
+        case "ricerca":
+        case "riga-brano":
+          setGrande(false);
+          vaiA("brani");
+          break;
+        case "giudizio":
+        case "colonna":
+          // La fascia del giudizio vive dentro la colonna e dentro lo schermo
+          // intero: si sceglie la colonna, che è quella che si vede senza
+          // coprire il resto.
+          setGrande(false);
+          setColonnaAperta(true);
+          break;
+        case "in-riproduzione":
+          // Solo se c'è qualcosa da vedere: `InRiproduzione` non si monta senza
+          // un brano, e accendere `grande` a vuoto lascerebbe la finestra in
+          // uno stato che l'utente non ha chiesto e che il passo non usa.
+          if (riproduzione.stato.brano !== null) setGrande(true);
+          break;
+        case "studio":
+          setGrande(false);
+          vaiA("impostazioni");
+          setSezione("aspetto");
+          break;
+        case "impostazioni":
+          setGrande(false);
+          vaiA("impostazioni");
+          break;
+        default:
+          setGrande(false);
+          break;
+      }
+    },
+    [vaiA, riproduzione.stato.brano],
+  );
+
+  /**
+   * Il giro è finito, saltato, o chiuso con Escape.
+   *
+   * Tutti e tre segnano «visto»: vedi il `//!` di `src-tauri/src/giro.rs`.
+   * `setGiroDaFare(false)` non aspetta la scrittura — se il database non
+   * risponde, riaprire il giro sarebbe il rimedio peggiore del male.
+   */
+  const chiudiGiro = useCallback(() => {
+    setGiroAperto(false);
+    setGiroDaFare(false);
+    ipc.giroFatto().catch(() => undefined);
+  }, []);
+
+  /** «Rifai il giro», dalle Impostazioni. */
+  const rifaiGiro = useCallback(() => setGiroAperto(true), []);
 
   /**
    * Apre un album, o torna indietro se è `null`.
@@ -1927,6 +2536,29 @@ export function App() {
     [elencoCorrente, ancora, selezione.size],
   );
 
+  /**
+   * Spazio sulla riga col fuoco: aggiunge o toglie quella riga dalla selezione.
+   *
+   * È il Ctrl+clic detto da tastiera, e non una seconda regola: `seleziona` ha
+   * bisogno di un evento del puntatore per leggere i modificatori, mentre da
+   * tastiera il modificatore **è** il tasto. Senza questo non c'era modo di
+   * costruire una selezione multipla senza mouse, cioè la barra di selezione e
+   * tutti i suoi comandi erano inaccessibili da tastiera.
+   */
+  const alternaSelezione = useCallback(
+    (indice: number) => {
+      const brano = elencoCorrente[indice];
+      if (!brano) return;
+      setSelezione((prima) => {
+        const dopo = new Set(prima);
+        if (!dopo.delete(brano.id)) dopo.add(brano.id);
+        return dopo;
+      });
+      setAncora(indice);
+    },
+    [elencoCorrente],
+  );
+
   // La selezione non sopravvive al cambio di elenco: cinquanta brani scelti fra
   // i Preferiti non significano niente dentro un album, e tenerli farebbe agire
   // i comandi su righe che non si vedono più.
@@ -2068,6 +2700,12 @@ export function App() {
       schermoIntero: () => {
         ipc.finestraSchermoIntero().catch(segnalaErrore);
       },
+      // Lo zoom della finestra. Passa un verso e non un numero: la scala sta
+      // nel nucleo, e ai due estremi non succede niente — vedi
+      // `preferenze::zoom_al_gradino` sul perché non gira.
+      zoom: cambiaZoom,
+      // La via di ritorno. Non porta un numero nemmeno lei: vedi sopra.
+      zoomNormale,
       // Alterna, come `inRiproduzione`: premuta due volte riporta dov'era, che è
       // quel che ci si aspetta da una scorciatoia che apre una pagina.
       importazioni: () => {
@@ -2183,10 +2821,15 @@ export function App() {
             album: numeri.albums,
             artisti: numeri.artists,
             brani: numeri.tracks,
+            // Le radici, non i brani: l'albero si costruisce alla prima
+            // apertura della vista, quindi finché nessuno l'ha aperta un
+            // conteggio di cartelle non esiste — e quello che esiste è pure
+            // quello giusto, perché dice quante cartelle sorvegliate ci sono.
+            cartelle: avvio?.cartelle.length ?? 0,
             preferiti: numeri.liked,
           }
         : {},
-    [numeri],
+    [numeri, avvio],
   );
 
   const etichettaOrdine =
@@ -2477,6 +3120,13 @@ export function App() {
         t("nav.tracks"),
         t("page.library.inLibrary", { n: numeri?.tracks ?? 0 }),
       ],
+      // Il sottotitolo conta le radici e non i brani, come il conteggio nella
+      // barra: qui il numero dei brani lo saprebbe solo l'albero, che a questo
+      // punto potrebbe non essere ancora stato costruito.
+      cartelle: [
+        t("nav.folders"),
+        t("page.folders.sub", { n: avvio?.cartelle.length ?? 0 }),
+      ],
       preferiti: [
         t("nav.favorites"),
         t("page.library.liked", { n: numeri?.liked ?? 0 }),
@@ -2524,10 +3174,16 @@ export function App() {
           movimento={skinAttiva?.layout.motion ?? "full"}
           tema={tema}
           onTema={cambiaTema}
+          movimentoUtente={movimentoUtente}
+          onMovimentoUtente={cambiaMovimentoUtente}
+          zoom={zoom ?? 1}
+          onZoom={cambiaZoom}
+          onZoomNormale={zoomNormale}
           lingua={lingua}
           onLingua={cambiaLingua}
           scorciatoie={scorciatoie}
           onScorciatoie={cambiaScorciatoie}
+          onGiro={rifaiGiro}
           onProfiloImportato={dopoProfilo}
           eqAttivo={riproduzione.stato.eqAttivo}
           eqGuadagni={riproduzione.stato.eqGuadagni}
@@ -2563,7 +3219,6 @@ export function App() {
               .then(ricarica)
               .catch(segnalaErrore);
           }}
-          onRiordina={setDaRiordinare}
           onScansiona={() => void scansiona()}
           onAnnullaScansione={() => {
             // Non si tocca `scansione`: la barra resta finché il nucleo non
@@ -2610,6 +3265,19 @@ export function App() {
             );
             ipc
               .arricchimentoAnnulla()
+              .then((esito) => setArricchimento(esito.stato))
+              .catch(segnalaErrore);
+          }}
+          onArricchimentoRiportaNeiFile={() => {
+            // Ottimistico come sopra, e qui serve ancora di più: questo riapre
+            // in scrittura un file per ogni riga di `enrich_undo`, e su una
+            // libreria vera sono decine di secondi in cui non si vede
+            // succedere niente.
+            setArricchimento((prima) =>
+              prima ? { ...prima, inCorso: true } : prima,
+            );
+            ipc
+              .arricchimentoRiportaNeiFile()
               .then((esito) => setArricchimento(esito.stato))
               .catch(segnalaErrore);
           }}
@@ -2724,24 +3392,20 @@ export function App() {
         </div>
       ) : (
         <>
-          <div className="elenco track-grid">
-            <TestaElenco />
-            {brani.map((b, i) => (
-              <RigaBrano
-                key={b.id}
-                brano={b}
-                indice={i}
-                attivo={b.id === inAscolto}
-                suonabile={riproduzione.disponibile}
-                onSuona={suonaQui}
-                onPreferito={cambiaPreferito}
-                onVoto={cambiaVoto}
-                onMenu={menuSuSelezione}
-                selezionato={selezione.has(b.id)}
-                onSeleziona={seleziona}
-              />
-            ))}
-          </div>
+          <ElencoBrani
+            key="cerca"
+            righe={brani}
+            scorrevole={contenuto}
+            inAscolto={inAscolto}
+            suonabile={riproduzione.disponibile}
+            selezione={selezione}
+            onSuona={suonaQui}
+            onPreferito={cambiaPreferito}
+            onVoto={cambiaVoto}
+            onMenu={menuSuSelezione}
+            onSeleziona={seleziona}
+            onAlternaSelezione={alternaSelezione}
+          />
           <Sentinella pagine={elencoBrani} />
         </>
       );
@@ -2758,70 +3422,61 @@ export function App() {
               />
             </p>
           )}
-          {/* L'attributo, non solo la prop: la colonna in più la deve
-              conoscere anche la griglia del foglio, altrimenti l'ottavo figlio
-              della riga finisce a capo invece che in fondo. */}
-          <div
-            className="elenco track-grid"
-            data-con-togli={!playlistAperta.isSmart || undefined}
-          >
-            <TestaElenco conTogli={!playlistAperta.isSmart} />
-            {braniPlaylist.map((b, i) => (
-              <RigaBrano
-                key={`${i}-${b.id}`}
-                brano={b}
-                indice={i}
-                attivo={b.id === inAscolto}
-                suonabile={riproduzione.disponibile}
-                onSuona={suonaQui}
-                onPreferito={cambiaPreferito}
-                onVoto={cambiaVoto}
-                onMenu={menuSuSelezione}
-                selezionato={selezione.has(b.id)}
-                onSeleziona={seleziona}
-                /* Solo in una playlist a mano: l'appartenenza di una
-                   automatica la decidono le sue regole, e un ordine deciso
-                   qui sarebbe cancellato dal primo ricalcolo. */
-                {...(playlistAperta.isSmart
-                  ? {}
-                  : {
-                      onTogli: togliDallaPlaylist,
-                      onRiordina: spostaNellaPlaylist,
-                      onPresa: presa,
-                      onMira: setMirata,
-                      onLascia: lascia,
-                      sopra: mirata === i && trascinata !== i,
-                    })}
-              />
-            ))}
-          </div>
+          <ElencoBrani
+            key="playlist"
+            righe={braniPlaylist}
+            scorrevole={contenuto}
+            inAscolto={inAscolto}
+            suonabile={riproduzione.disponibile}
+            selezione={selezione}
+            onSuona={suonaQui}
+            onPreferito={cambiaPreferito}
+            onVoto={cambiaVoto}
+            onMenu={menuSuSelezione}
+            onSeleziona={seleziona}
+            onAlternaSelezione={alternaSelezione}
+            /* Lo stesso brano può stare due volte in una playlist: la chiave
+               porta anche la posizione, o React accoppierebbe le due righe. */
+            chiaveConIndice
+            conTogli={!playlistAperta.isSmart}
+            /* Solo in una playlist a mano: l'appartenenza di una automatica la
+               decidono le sue regole, e un ordine deciso qui sarebbe cancellato
+               dal primo ricalcolo. */
+            {...(playlistAperta.isSmart
+              ? {}
+              : {
+                  onTogli: togliDallaPlaylist,
+                  onRiordina: spostaNellaPlaylist,
+                  onPresa: presa,
+                  onMira: setMirata,
+                  onLascia: lascia,
+                  mirata,
+                  trascinata,
+                })}
+          />
         </>
       );
     }
 
     if (aperto) {
       return (
-        <div className="elenco track-grid">
-          <TestaElenco />
-          {braniAperto.map((b, i) => (
-            <RigaBrano
-              key={b.id}
-              brano={b}
-              indice={i}
-              attivo={b.id === inAscolto}
-              suonabile={riproduzione.disponibile}
-              onSuona={suonaQui}
-              onPreferito={cambiaPreferito}
-              onVoto={cambiaVoto}
-              onMenu={menuSuSelezione}
-              selezionato={selezione.has(b.id)}
-              onSeleziona={seleziona}
-              /* L'unico posto in cui `#` è il numero del disco: qui la colonna
-                 dice dove sta il pezzo sulla custodia. */
-              numeroTraccia
-            />
-          ))}
-        </div>
+        <ElencoBrani
+          key="album-aperto"
+          righe={braniAperto}
+          scorrevole={contenuto}
+          inAscolto={inAscolto}
+          suonabile={riproduzione.disponibile}
+          selezione={selezione}
+          onSuona={suonaQui}
+          onPreferito={cambiaPreferito}
+          onVoto={cambiaVoto}
+          onMenu={menuSuSelezione}
+          onSeleziona={seleziona}
+          onAlternaSelezione={alternaSelezione}
+          /* L'unico posto in cui `#` è il numero del disco: qui la colonna dice
+             dove sta il pezzo sulla custodia. */
+          numeroTraccia
+        />
       );
     }
 
@@ -2904,6 +3559,21 @@ export function App() {
       );
     }
 
+    // Prima del segnaposto qui sotto, e non dopo: le Cartelle non passano da
+    // `usePagine` — l'albero se lo chiede da sé, un livello alla volta — quindi
+    // `caricandoBrani` parla di un elenco che qui non c'è, e uno scheletro di
+    // righe di brani sopra un albero sarebbe l'attesa di qualcos'altro.
+    if (vista === "cartelle") {
+      return (
+        <Cartelle
+          radici={avvio?.cartelle ?? []}
+          scorrevole={contenuto}
+          onMenu={setMenu}
+          onErrore={segnalaErrore}
+        />
+      );
+    }
+
     // Da qui in giù comanda `vista`. Le tre schermate qui sopra — album aperto,
     // playlist, artista — hanno una richiesta propria e un contenuto che resta
     // valido mentre arriva.
@@ -2974,24 +3644,20 @@ export function App() {
 
     return (
       <>
-        <div className="elenco track-grid">
-          <TestaElenco />
-          {brani.map((b, i) => (
-            <RigaBrano
-              key={b.id}
-              brano={b}
-              indice={i}
-              attivo={b.id === inAscolto}
-              suonabile={riproduzione.disponibile}
-              onSuona={suonaQui}
-              onPreferito={cambiaPreferito}
-              onVoto={cambiaVoto}
-              onMenu={menuSuSelezione}
-              selezionato={selezione.has(b.id)}
-              onSeleziona={seleziona}
-            />
-          ))}
-        </div>
+        <ElencoBrani
+          key="brani"
+          righe={brani}
+          scorrevole={contenuto}
+          inAscolto={inAscolto}
+          suonabile={riproduzione.disponibile}
+          selezione={selezione}
+          onSuona={suonaQui}
+          onPreferito={cambiaPreferito}
+          onVoto={cambiaVoto}
+          onMenu={menuSuSelezione}
+          onSeleziona={seleziona}
+          onAlternaSelezione={alternaSelezione}
+        />
         <Sentinella pagine={elencoBrani} />
       </>
     );
@@ -3287,20 +3953,6 @@ export function App() {
         />
       )}
 
-      {daRiordinare && (
-        <Riordino
-          radice={daRiordinare}
-          onChiudi={() => setDaRiordinare(null)}
-          onFatto={() => {
-            // I percorsi nel database sono vecchi finché non si riscansiona.
-            // Ricaricare i numeri è quel che si può fare subito; la scansione
-            // la chiede la schermata stessa, perché è una decisione dell'utente
-            // e dura venti secondi.
-            void ricarica();
-          }}
-        />
-      )}
-
       {ripristinando && (
         <Ripristino
           onChiudi={() => setRipristinando(false)}
@@ -3341,7 +3993,21 @@ export function App() {
                     })
                   : t("toast.scan.comparing")}
               </div>
-              <div className="toast-progress">
+              {/* L'avanzamento esisteva **solo a schermo**: una barra senza
+                  ruolo è un rettangolo che si allunga, e a chi ascolta lo
+                  schermo non diceva niente — né che c'è una scansione, né a che
+                  punto è. `aria-valuenow` manca finché il totale non si sa
+                  («confronto col disco…»), ed è il modo in cui si dichiara un
+                  avanzamento indeterminato: un `0` lì vorrebbe dire «non è
+                  ancora cominciato», che è un'altra cosa. */}
+              <div
+                className="toast-progress"
+                role="progressbar"
+                aria-label={t("toast.progress")}
+                aria-valuemin={0}
+                aria-valuemax={scansione.totale > 0 ? scansione.totale : undefined}
+                aria-valuenow={scansione.totale > 0 ? scansione.fatti : undefined}
+              >
                 <span
                   style={{
                     width:
@@ -3379,6 +4045,13 @@ export function App() {
       </div>
 
       {menu && <Menu apertura={menu} onChiudi={() => setMenu(null)} />}
+
+      {/* Ultimo figlio, e non per ordine di importanza: il velo del giro copre
+          la finestra intera, quindi deve stare **dopo** tutto quel che potrebbe
+          disegnarsi sopra di lui a parità di strato — il menù contestuale, i
+          toast. Lo strato vero lo dà il foglio, che è dove la scala vive; qui
+          si dice soltanto che viene per ultimo. */}
+      {giroAperto && <Giro onPrepara={preparaGiro} onChiudi={chiudiGiro} />}
     </>
   );
 }

@@ -66,7 +66,13 @@ export function Colonna({
   // Niente `app-shell`: quella classe dice «il contenitore di tutta la
   // finestra», e la porta la zona radice dello scafale.
   return (
-    <aside className="colonna" aria-label={t("column.aria")}>
+    <aside
+      className="colonna"
+      // L'ancora del giro guidato: la colonna intera, perché il passo parla di
+      // «cosa sta suonando, tutto in una striscia» e non di uno dei suoi pezzi.
+      data-giro="colonna"
+      aria-label={t("column.aria")}
+    >
       {/* Lo strato ambientale è un fratello e non uno sfondo: come sfondo
           dovrebbe stare su un elemento che ha anche del testo, e allora la
           tinta della copertina finirebbe sotto delle lettere. */}

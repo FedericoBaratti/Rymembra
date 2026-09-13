@@ -67,6 +67,9 @@ export function Ispettore({
   tavolozza,
   motivi,
   budget,
+  animazioni,
+  animazione,
+  onAnimazione,
 }: {
   definizione: ParteRegistro | null;
   stato: string | null;
@@ -82,6 +85,19 @@ export function Ispettore({
   /** I motivi dichiarati: si possono impilare, e portano il loro costo. */
   motivi: Motivi;
   budget: number;
+  /**
+   * Le animazioni che il documento dichiara, per nome.
+   *
+   * Un elenco chiuso e non un campo di testo: un nome che non è dichiarato è
+   * un errore duro del validatore — «animazione inesistente» — e offrire un
+   * posto in cui scriverlo a mano vorrebbe dire offrire un posto in cui
+   * sbagliarlo.
+   */
+  animazioni: readonly string[];
+  /** Quella assegnata al trigger che corrisponde allo stato scelto, se c'è. */
+  animazione: string | null;
+  /** Assegna, o toglie con `null`. */
+  onAnimazione: (nome: string | null) => void;
 }) {
   if (definizione === null) {
     return (
@@ -162,6 +178,49 @@ export function Ispettore({
           etichetta,
         }))}
       />
+
+      {/*
+        L'animazione, e perché sta **qui** e non fra le proprietà.
+
+        Perché non è una proprietà d'aspetto. `PartAppearance` è usata identica
+        per la base e per i quattro stati; `animations` sta su `PartStyle`, e il
+        `//!` di `movimento.rs` spiega per esteso il motivo: un'animazione non
+        dice com'è fatta la superficie adesso, dice come si arriva da un aspetto
+        a un altro. È un legame, e i legami stanno al livello di chi li usa.
+        Metterla in fondo alla tabella la farebbe leggere come l'undicesima
+        proprietà, e scrivere `states.hover.animations` è precisamente l'errore
+        che il formato non accetta.
+
+        E perché il selettore di stato **è già** la domanda giusta. I trigger
+        sono `enter` più i quattro stati del DOM, cioè `PartState` più uno: la
+        base scrive `enter`, che è la regola base della parte. Un secondo
+        selettore accanto a questo sarebbe la stessa scelta chiesta due volte,
+        con due risposte che possono divergere.
+      */}
+      <Riga che={t("studio.part.animation")}>
+        <select
+          className="field-input"
+          aria-label={t("studio.part.animation")}
+          value={animazione ?? ""}
+          // Senza animazioni dichiarate non c'è niente da scegliere, e il
+          // posto in cui dichiararle è il pannello Movimento della Tavolozza:
+          // lo dice il titolo dell'opzione, invece di lasciare un elenco vuoto.
+          disabled={animazioni.length === 0}
+          title={
+            animazioni.length === 0
+              ? t("studio.part.animation.none")
+              : t("studio.part.animation.hint")
+          }
+          onChange={(e) => onAnimazione(e.target.value === "" ? null : e.target.value)}
+        >
+          <option value="">{t("studio.ctl.undeclared.f")}</option>
+          {animazioni.map((nome) => (
+            <option key={nome} value={nome}>
+              {nome}
+            </option>
+          ))}
+        </select>
+      </Riga>
 
       <div className="corpo-ispettore">
         <Livelli

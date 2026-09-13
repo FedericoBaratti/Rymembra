@@ -22,21 +22,38 @@
  * agganciate. La regola sta in `aether_domain::testo::aggancia` e si prova
  * senza aprire una finestra; qui si raccolgono le pressioni di un tasto.
  *
- * # Tre momenti, e uno solo alla volta
+ * # I momenti, e uno solo alla volta
  *
  * 1. **Le righe** — si incolla o si corregge il testo, una riga per verso.
- * 2. **Le battute** — si suona e si preme.
+ * 2. **Le battute** — si suona e si preme, una volta per riga.
  * 3. **La revisione** — si guardano i tempi raddrizzati, si correggono a mano
  *    quelli che serve, si salva.
+ * 4. **Le parole** — *facoltativo*: si ribatte una volta per parola, e il testo
+ *    si accende parola per parola invece che verso per verso.
+ * 5. **Il dono** — è salvato, e c'è l'offerta di restituirlo a LRCLIB.
  *
- * Separati e non tutti in una schermata perché in ognuno dei tre la tastiera
- * vuol dire una cosa diversa: nel primo Spazio è uno spazio, nel secondo è una
- * battuta. Metterli insieme vorrebbe dire un editor in cui non si può scrivere.
+ * Separati e non tutti in una schermata perché in ognuno la tastiera vuol dire
+ * una cosa diversa: nel primo Spazio è uno spazio, nel secondo e nel quarto è
+ * una battuta. Metterli insieme vorrebbe dire un editor in cui non si può
+ * scrivere.
+ *
+ * # Perché il quarto è facoltativo, e perché sta dopo il terzo
+ *
+ * Facoltativo perché costa quanto il secondo moltiplicato per il numero di
+ * parole di un verso, e quel che si guadagna — l'illuminazione dentro la riga —
+ * è una rifinitura, non la funzione. Un testo sincronizzato al verso è già
+ * finito, e chiedere di battere trecento volte prima di poter salvare
+ * vorrebbe dire che nessuno arriva in fondo.
+ *
+ * Dopo il terzo perché i tempi delle parole si appoggiano a quelli delle righe:
+ * una parola non può cominciare prima del verso a cui appartiene, e finché i
+ * tempi dei versi si muovono quel confine si muove con loro.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { useFinestrella } from "./finestrella";
 import { ipc, type Brano, type TestoBrano } from "./ipc";
-import { durata } from "./formato";
+import { durata, nomeArtista } from "./formato";
 import { t } from "./lingue";
 import { Icona } from "./parti/Icone";
 import { posizioneAdesso } from "./riproduzione";
@@ -48,8 +65,25 @@ const RINCORSA_MS = 2000;
 const PASSO_FINE = 10;
 const PASSO_GROSSO = 100;
 
-/** In quale dei quattro momenti si è. */
-type Momento = "righe" | "battute" | "rivedi" | "dono";
+/** In quale dei cinque momenti si è. */
+type Momento = "righe" | "battute" | "rivedi" | "parole" | "dono";
+
+/**
+ * Le parole di una riga, con lo spazio che le segue attaccato a ciascuna.
+ *
+ * Gli spazi in coda non sono un dettaglio: concatenando le parole si deve
+ * riottenere la riga, ed è **esattamente** la verifica che il nucleo fa prima
+ * di scriverle (`aether_domain::testo::parole_combaciano`). Uno `split(" ")`
+ * che li butta darebbe parole che rimesse in fila si attaccano fra loro, e il
+ * nucleo le rifiuterebbe tutte — giustamente.
+ *
+ * Un `match` e non uno `split` per la stessa ragione: `split` su una riga con
+ * due spazi di fila produce una parola vuota, che non è una parola e non ha
+ * niente da battere.
+ */
+function spezza(riga: string): string[] {
+  return riga.match(/\S+\s*/g) ?? [];
+}
 
 export function Sincronizza({
   brano,
@@ -59,7 +93,15 @@ export function Sincronizza({
   onErrore,
 }: {
   brano: Brano;
-  /** Il testo da cui partire: quel che il pannello aveva, o niente. */
+  /**
+   * Il testo da cui partire: quel che il pannello aveva, o niente.
+   *
+   * Le **parole**, e soltanto quelle. Nessun offset arriva fin qui, e non
+   * serve: i tempi si ribattono tutti, quindi quel che un eventuale `.lrc` di
+   * partenza dichiarava in testa descriveva tempi che dopo questo passaggio non
+   * esistono più. Vedi `testo_salva`, che spiega perché conservarlo sfaserebbe
+   * ogni riga appena battuta.
+   */
   iniziale: string;
   onChiudi: () => void;
   onSalvato: (testo: TestoBrano) => void;
@@ -70,6 +112,13 @@ export function Sincronizza({
   const [righe, setRighe] = useState<string[]>([]);
   const [tempi, setTempi] = useState<number[]>([]);
   const [indice, setIndice] = useState(0);
+  // I tempi delle parole stanno in un vettore **piatto**, parallelo a `posti`,
+  // e non annidato per riga: così battere una parola e battere una riga sono la
+  // stessa operazione su due vettori diversi, e `batti`, `rifai` e `finisci`
+  // servono tutt'e due i momenti invece di essere scritti due volte. Il
+  // rimescolamento per riga si fa una volta sola, al salvataggio.
+  const [tempiParola, setTempiParola] = useState<number[]>([]);
+  const [indiceParola, setIndiceParola] = useState(0);
   const [raddrizzo, setRaddrizzo] = useState(false);
   const [salvando, setSalvando] = useState(false);
   // Il dono ha tre stati e non due: «non ancora», «sto mandando» e «mandato».
@@ -84,10 +133,29 @@ export function Sincronizza({
   // La riga su cui si sta battendo, per tenerla in vista senza ridisegnare
   // l'elenco a ogni fotogramma.
   const corrente = useRef<HTMLLIElement | null>(null);
+  const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
 
   useEffect(() => {
     corrente.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [indice]);
+  }, [indice, indiceParola]);
+
+  // È l'unica delle dieci finestrelle che si rifà il corpo da capo mentre è
+  // aperta: il tasto che ha fatto cambiare momento si smonta subito dopo averlo
+  // premuto, e Chromium **non** emette `blur` né `focusout` per un nodo
+  // focalizzato che sparisce — nessun ascoltatore può accorgersene, e per questo
+  // la cosa si rimedia qui e non dentro l'hook. Il fuoco casca sul `<body>`,
+  // cioè fuori dalla finestrella, dove non passa né l'Escape né la trappola del
+  // Tab, che `useFinestrella` ascolta sul nodo e non su `window`.
+  // Si rimette sulla radice, che l'hook tiene focalizzabile di proposito:
+  // non si vede (il contorno è `:focus-visible`, e un fuoco dato dal programma
+  // dopo un clic non lo accende) e i due tasti tornano a funzionare. Quel che
+  // resta su `window` — Spazio, Backspace, Invio del momento delle battute —
+  // non cambia: per quei tre la radice e il `<body>` sono la stessa cosa.
+  useEffect(() => {
+    const dentro = finestrella.current;
+    if (dentro !== null && !dentro.contains(document.activeElement))
+      dentro.focus();
+  }, [momento, finestrella]);
 
   // ── il momento delle righe ────────────────────────────────────────────────
 
@@ -102,51 +170,132 @@ export function Sincronizza({
     setRighe(pulite);
     setTempi([]);
     setIndice(0);
+    // I tempi delle parole se ne vanno con le righe, ed è la prima trappola di
+    // questo pacchetto: sono tempi battuti su un testo, e questo testo può non
+    // essere più quello. Riassegnarli per posizione darebbe un file che sembra
+    // giusto e canta storto — si buttano, e chi le vuole le ribatte.
+    setTempiParola([]);
+    setIndiceParola(0);
     setMomento("battute");
   }, [grezzo]);
 
-  // ── il momento delle battute ──────────────────────────────────────────────
+  // ── le parole da battere ──────────────────────────────────────────────────
+
+  /* L'elenco piatto di quel che si batte nel quarto momento: una voce per
+     parola, nell'ordine in cui si canta.
+
+     Le righe di **una parola sola** non ci sono, ed è la seconda trappola di
+     questo pacchetto: la loro unica parola comincia quando comincia la riga —
+     il tempo si sa già — e farla battere vorrebbe dire chiedere una pressione
+     che non aggiunge niente. Su un ritornello di monosillabi sarebbero decine.
+     Il tempo gliel'assegna il salvataggio, gratis.
+
+     Le righe vuote — le pause fra le strofe — non hanno parole e spariscono da
+     sé. */
+  const posti = useMemo(
+    () =>
+      righe.flatMap((riga, quale) => {
+        const parole = spezza(riga);
+        if (parole.length < 2) return [];
+        return parole.map((testo, dove) => ({ riga: quale, dove, testo }));
+      }),
+    [righe],
+  );
+
+  // ── il momento delle battute, e quello delle parole ───────────────────────
+
+  /* I tre gesti valgono in tutt'e due i momenti che si battono, e sono gli
+     stessi tre: si preme, si disfa l'ultima, si raddrizza. Quel che cambia è
+     **su quale vettore** si scrive — le righe o le parole — e le tre funzioni
+     lo scelgono da `momento` invece di esistere in due copie. La copia sarebbe
+     stata la strada breve, e sarebbe divergente al primo ritocco: il giorno in
+     cui la rincorsa di `rifai` cambia, cambierebbe in un momento solo. */
+
+  const siBattonoParole = momento === "parole";
 
   const batti = useCallback(() => {
-    if (indice >= righe.length) return;
+    const quante = siBattonoParole ? posti.length : righe.length;
+    const dove = siBattonoParole ? indiceParola : indice;
+    if (dove >= quante) return;
     // `posizioneAdesso` e non la posizione iscritta: qui non si disegna a venti
     // fotogrammi al secondo, si legge una volta in risposta a un tasto. È
     // esattamente il caso per cui quella funzione esiste.
+    //
+    // Ed è la posizione **grezza**, come al momento delle righe: né
+    // l'`[offset:]` del file né lo scarto di chi ascolta entrano qui dentro. Il
+    // perché per esteso sta su `testo_salva`, che li azzera tutt'e due per la
+    // stessa ragione — una battuta registrata su una posizione corretta nasce
+    // spostata della latenza, e resta spostata per sempre.
     const adesso = posizioneAdesso();
-    setTempi((prima) => [...prima.slice(0, indice), adesso]);
+    if (siBattonoParole) {
+      setTempiParola((prima) => [...prima.slice(0, dove), adesso]);
+      setIndiceParola((prima) => prima + 1);
+      return;
+    }
+    setTempi((prima) => [...prima.slice(0, dove), adesso]);
     setIndice((prima) => prima + 1);
-  }, [indice, righe.length]);
+  }, [siBattonoParole, indice, indiceParola, posti.length, righe.length]);
 
   const rifai = useCallback(() => {
-    if (indice === 0) return;
-    const precedente = indice - 1;
-    setIndice(precedente);
-    setTempi((prima) => prima.slice(0, precedente));
-    const da = Math.max(0, (tempi[precedente] ?? 0) - RINCORSA_MS);
+    const dove = siBattonoParole ? indiceParola : indice;
+    if (dove === 0) return;
+    const precedente = dove - 1;
+    const scorsi = siBattonoParole ? tempiParola : tempi;
+    if (siBattonoParole) {
+      setIndiceParola(precedente);
+      setTempiParola((prima) => prima.slice(0, precedente));
+    } else {
+      setIndice(precedente);
+      setTempi((prima) => prima.slice(0, precedente));
+    }
+    const da = Math.max(0, (scorsi[precedente] ?? 0) - RINCORSA_MS);
     ipc.vaiA(da).catch(onErrore);
-  }, [indice, tempi, onErrore]);
+  }, [siBattonoParole, indice, indiceParola, tempi, tempiParola, onErrore]);
 
+  /* Il raddrizzamento agli attacchi non sa cosa sia una riga: prende un vettore
+     di tempi e lo aggancia a dove il suono comincia davvero. Le parole sono
+     tempi come gli altri — anzi sono il caso per cui gli attacchi esistono —
+     quindi si manda lo stesso comando, e non ce n'è un secondo. */
   const finisci = useCallback(() => {
+    const perParole = siBattonoParole;
     setRaddrizzo(true);
     ipc
       .pausa()
       .catch(() => {})
       .finally(() => {
         ipc
-          .testoAggancia(brano.id, tempi)
+          .testoAggancia(brano.id, perParole ? tempiParola : tempi)
           .then((raddrizzati) => {
-            setTempi(raddrizzati);
-            setMomento("rivedi");
+            if (!perParole) {
+              setTempi(raddrizzati);
+              setMomento("rivedi");
+              return;
+            }
+            // Nessuna parola prima del suo verso: l'aggancio guarda gli
+            // attacchi del brano e delle righe non sa niente, quindi la prima
+            // parola di un verso può ritrovarsi un attimo prima di lui. Un
+            // tempo così non è sbagliato di molto, ma è un tempo che non vuol
+            // dire niente, e il file lo porterebbe in giro.
+            setTempiParola(
+              raddrizzati.map((ms, quale) =>
+                Math.max(ms, tempi[posti[quale]?.riga ?? 0] ?? 0),
+              ),
+            );
           })
           .catch(onErrore)
           .finally(() => setRaddrizzo(false));
       });
-  }, [brano.id, tempi, onErrore]);
+  }, [siBattonoParole, brano.id, tempi, tempiParola, posti, onErrore]);
 
-  // La tastiera vale solo mentre si batte: negli altri due momenti Spazio è uno
-  // spazio e le frecce muovono un cursore.
+  // La tastiera vale solo mentre si batte — righe o parole: negli altri momenti
+  // Spazio è uno spazio e le frecce muovono un cursore.
+  const tutteBattute =
+    momento === "parole"
+      ? indiceParola >= posti.length && posti.length > 0
+      : indice >= righe.length && righe.length > 0;
+
   useEffect(() => {
-    if (momento !== "battute") return;
+    if (momento !== "battute" && momento !== "parole") return;
     const alTasto = (evento: KeyboardEvent) => {
       if (evento.key === " ") {
         evento.preventDefault();
@@ -154,14 +303,14 @@ export function Sincronizza({
       } else if (evento.key === "Backspace") {
         evento.preventDefault();
         rifai();
-      } else if (evento.key === "Enter" && indice >= righe.length) {
+      } else if (evento.key === "Enter" && tutteBattute) {
         evento.preventDefault();
         finisci();
       }
     };
     window.addEventListener("keydown", alTasto);
     return () => window.removeEventListener("keydown", alTasto);
-  }, [momento, batti, rifai, finisci, indice, righe.length]);
+  }, [momento, batti, rifai, finisci, tutteBattute]);
 
   // ── il momento della revisione ────────────────────────────────────────────
 
@@ -171,12 +320,104 @@ export function Sincronizza({
     );
   }, []);
 
+  // ── il momento delle parole ───────────────────────────────────────────────
+
+  const cominciaLeParole = useCallback(() => {
+    setTempiParola([]);
+    setIndiceParola(0);
+    setMomento("parole");
+  }, []);
+
+  /* Il ritocco delle parole è **solo** ±10 ms, mentre quello delle righe ha
+     anche il passo da cento: dentro un verso cento millisecondi sono già una
+     sillaba, e un pulsante che salta la parola accanto non serve a nessuno. */
+  const spostaParola = useCallback(
+    (quale: number, quanto: number) => {
+      const minimo = tempi[posti[quale]?.riga ?? 0] ?? 0;
+      setTempiParola((prima) =>
+        prima.map((ms, i) =>
+          i === quale ? Math.max(minimo, ms + quanto) : ms,
+        ),
+      );
+    },
+    [tempi, posti],
+  );
+
+  /* Si riparte dall'inizio del verso su cui si sta battendo, con la rincorsa.
+
+     Senza rincorsa la prima parola sarebbe già passata nell'istante in cui il
+     suono comincia — comincia esattamente lì — e la si perderebbe ogni volta.
+     Due secondi sono la coda del verso precedente: si sente arrivare, e la mano
+     è pronta. È lo stesso numero della disfatta, e per la stessa ragione. */
+  const suonaDaQui = useCallback(() => {
+    const dove = Math.min(indiceParola, posti.length - 1);
+    const quale = posti[Math.max(0, dove)]?.riga ?? 0;
+    ipc
+      .vaiA(Math.max(0, (tempi[quale] ?? 0) - RINCORSA_MS))
+      .then(() => ipc.riprendi())
+      .catch(onErrore);
+  }, [indiceParola, posti, tempi, onErrore]);
+
+  /* Quali righe portano le parole, quando si salva.
+
+     **Solo quelle battute per intero**, ed è la prima trappola di questo
+     pacchetto. Una riga lasciata a metà avrebbe meno tempi che parole, e i
+     tempi che mancano non si inventano: distribuirli sarebbe plausibile a
+     leggerli e sbagliato ad ascoltarli. Il nucleo le butterebbe comunque —
+     `parole_combaciano` verifica che le parole ricompongano la riga — e mandare
+     qualcosa che si sa verrà buttato è solo un modo di non sapere cosa succede.
+
+     Le righe di **una parola sola** non si battono, ma la parola il suo tempo
+     ce l'ha: è quello della riga. Si scrive solo quando qualche altra riga le
+     parole le ha davvero, perché un `.a2.lrc` in cui l'unica cosa timbrata sono
+     i monosillabi non è un `a2` — è un `.lrc` con del rumore dentro. */
+  const parolePerRiga = useCallback((): {
+    ms: number;
+    testo: string;
+  }[][] => {
+    const per: { ms: number; testo: string }[][] = righe.map(() => []);
+    const ultimo = new Map<number, number>();
+    posti.forEach((posto, quale) => ultimo.set(posto.riga, quale));
+    const finite = new Set(
+      [...ultimo].filter(([, quale]) => quale < indiceParola).map(([riga]) => riga),
+    );
+    if (finite.size === 0) return per;
+    posti.forEach((posto, quale) => {
+      if (!finite.has(posto.riga)) return;
+      // Il confine si riapplica qui e non solo dopo l'aggancio: fra il quarto
+      // momento e il salvataggio si può tornare alla revisione e spostare un
+      // verso di cento millisecondi, e allora le sue parole starebbero prima
+      // di lui.
+      const inizio = tempi[posto.riga] ?? 0;
+      per[posto.riga]?.push({
+        ms: Math.max(inizio, tempiParola[quale] ?? inizio),
+        testo: posto.testo,
+      });
+    });
+    righe.forEach((riga, quale) => {
+      const sola = spezza(riga);
+      if (sola.length === 1)
+        per[quale] = [{ ms: tempi[quale] ?? 0, testo: sola[0] ?? riga }];
+    });
+    return per;
+  }, [righe, posti, tempi, tempiParola, indiceParola]);
+
+  const righeConParole = useMemo(
+    () => parolePerRiga().filter((quali) => quali.length > 0).length,
+    [parolePerRiga],
+  );
+
   const salva = useCallback(() => {
     setSalvando(true);
+    const parole = parolePerRiga();
     ipc
       .testoSalva(
         brano.id,
-        righe.map((testo, i) => ({ ms: tempi[i] ?? 0, testo })),
+        righe.map((testo, i) => ({
+          ms: tempi[i] ?? 0,
+          testo,
+          parole: parole[i] ?? [],
+        })),
       )
       .then((salvato) => {
         // Il pannello dietro si aggiorna subito, prima ancora che questa
@@ -191,7 +432,7 @@ export function Sincronizza({
       })
       .catch(onErrore)
       .finally(() => setSalvando(false));
-  }, [brano.id, righe, tempi, onSalvato, onErrore]);
+  }, [brano.id, righe, tempi, parolePerRiga, onSalvato, onErrore]);
 
   /* Restituire. È un gesto separato dal salvataggio per una ragione sola: si
      salva sempre, quindi tutto quel che sta attaccato al salvataggio è
@@ -207,11 +448,10 @@ export function Sincronizza({
       .finally(() => setDonando(false));
   }, [brano.id, onErrore]);
 
-  const battute = indice >= righe.length && righe.length > 0;
-
   return (
     <div className="velo scuro">
       <div
+        ref={finestrella}
         className="finestrella larga sincronizza glass-modal"
         role="dialog"
         aria-modal="true"
@@ -220,7 +460,7 @@ export function Sincronizza({
       >
         <h2>{t("sync.aria")}</h2>
         <div className="percorso">
-          {brano.title} · {brano.artist}
+          {brano.title} · {nomeArtista(brano.artist)}
         </div>
 
         {momento === "righe" && (
@@ -253,13 +493,18 @@ export function Sincronizza({
         {momento === "battute" && (
           <>
             <p className="nota">
-              {battute ? t("sync.tap.done") : t("sync.tap.help")}
+              {tutteBattute ? t("sync.tap.done") : t("sync.tap.help")}
             </p>
             <ol className="elenco-battute">
               {righe.map((riga, i) => (
                 <li
                   key={`${i}-${riga}`}
                   ref={i === indice ? corrente : undefined}
+                  /* La riga che aspetta la battuta si dice, non solo si
+                     dipinge: `data-attesa` la colora e a chi ascolta lo
+                     schermo non arriva. `aria-current` perché è la stessa
+                     informazione che `.riga` usa per il brano in corso. */
+                  aria-current={i === indice ? "true" : undefined}
                   data-attesa={i === indice || undefined}
                   data-fatta={i < indice || undefined}
                 >
@@ -291,7 +536,7 @@ export function Sincronizza({
               <button
                 type="button"
                 className="bottone primario btn-accent"
-                disabled={!battute || raddrizzo}
+                disabled={!tutteBattute || raddrizzo}
                 onClick={finisci}
               >
                 {raddrizzo ? t("sync.tap.straightening") : t("sync.tap.finish")}
@@ -346,6 +591,12 @@ export function Sincronizza({
                       type="button"
                       className="bottone minuto btn-ghost"
                       title={t("sync.review.hear")}
+                      /* Il titolo resta per il mouse; il nome porta il numero
+                         della riga, perché un elenco di trenta bottoni che si
+                         chiamano tutti «Senti da qui» non dice da dove. */
+                      aria-label={t("sync.review.hearLine", {
+                        riga: String(i + 1),
+                      })}
                       onClick={() =>
                         ipc
                           .vaiA(Math.max(0, (tempi[i] ?? 0) - 1000))
@@ -366,6 +617,10 @@ export function Sincronizza({
                 onClick={() => {
                   setIndice(0);
                   setTempi([]);
+                  // Anche qui: i tempi delle parole si appoggiano a quelli dei
+                  // versi, e i versi stanno per cambiare tutti.
+                  setTempiParola([]);
+                  setIndiceParola(0);
                   setMomento("battute");
                 }}
               >
@@ -378,6 +633,20 @@ export function Sincronizza({
               >
                 {t("common.cancel")}
               </button>
+              {/* Il quarto momento è una porta, non un passaggio obbligato:
+                  sta **prima** del primario, che resta «Salva». Chi non lo
+                  apre ha finito, e il testo che salva è completo. Se nessuna
+                  riga ha due parole il tasto non c'è affatto — un tasto
+                  perennemente spento è una promessa che non si mantiene. */}
+              {posti.length > 0 && (
+                <button
+                  type="button"
+                  className="bottone btn-ghost"
+                  onClick={cominciaLeParole}
+                >
+                  {t("sync.words.start")}
+                </button>
+              )}
               <button
                 type="button"
                 className="bottone primario btn-accent"
@@ -387,10 +656,115 @@ export function Sincronizza({
                 {salvando ? t("sync.review.saving") : t("sync.review.save")}
               </button>
             </div>
+            {righeConParole > 0 && (
+              <p className="nota">
+                {t("sync.words.attached", { n: righeConParole })}
+              </p>
+            )}
             {/* Dove finisce, detto prima di premere: un file accanto alla
                 musica lo leggono anche gli altri lettori, e chi non lo vuole
                 deve poterlo sapere adesso e non dopo. */}
             <p className="nota">{t("sync.review.where")}</p>
+          </>
+        )}
+
+        {momento === "parole" && (
+          <>
+            <p className="nota">
+              {tutteBattute ? t("sync.words.done") : t("sync.words.help")}
+            </p>
+            {/* Lo stesso elenco delle battute, con le parole al posto dei
+                versi: `data-attesa`, `data-fatta` e le due colonne vengono da
+                lì. `data-capo` marca la prima parola di ogni verso, ed è
+                l'unica cosa che dice dove finisce una riga e comincia
+                l'altra — le parole sono in fila, e senza quel segno un
+                ritornello sarebbe una colonna indistinta. */}
+            <ol className="elenco-battute parole">
+              {posti.map((posto, quale) => (
+                <li
+                  key={`${posto.riga}-${posto.dove}`}
+                  ref={quale === indiceParola ? corrente : undefined}
+                  aria-current={quale === indiceParola ? "true" : undefined}
+                  data-attesa={quale === indiceParola || undefined}
+                  data-fatta={quale < indiceParola || undefined}
+                  data-capo={posto.dove === 0 || undefined}
+                >
+                  <span className="quando">
+                    {quale < indiceParola ? durata(tempiParola[quale] ?? 0) : "—"}
+                  </span>
+                  <span className="cosa">{posto.testo}</span>
+                  <span className="ritocco">
+                    <button
+                      type="button"
+                      className="bottone minuto btn-ghost"
+                      title={t("sync.review.earlier.fine")}
+                      disabled={quale >= indiceParola}
+                      onClick={() => spostaParola(quale, -PASSO_FINE)}
+                    >
+                      −{PASSO_FINE}
+                    </button>
+                    <button
+                      type="button"
+                      className="bottone minuto btn-ghost"
+                      title={t("sync.review.later.fine")}
+                      disabled={quale >= indiceParola}
+                      onClick={() => spostaParola(quale, PASSO_FINE)}
+                    >
+                      +{PASSO_FINE}
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ol>
+            <div className="azioni">
+              <button
+                type="button"
+                className="bottone btn-ghost"
+                onClick={() => setMomento("rivedi")}
+              >
+                {t("sync.words.back")}
+              </button>
+              <button
+                type="button"
+                className="bottone btn-ghost"
+                onClick={suonaDaQui}
+              >
+                <Icona nome="i-play" dim={15} />
+                {t("sync.words.play")}
+              </button>
+              <button
+                type="button"
+                className="bottone btn-ghost"
+                disabled={indiceParola === 0}
+                onClick={rifai}
+              >
+                {t("sync.tap.undo")}
+                <kbd className="scorciatoia">⌫</kbd>
+              </button>
+              <button
+                type="button"
+                className="bottone btn-ghost"
+                disabled={!tutteBattute || raddrizzo}
+                onClick={finisci}
+              >
+                {raddrizzo ? t("sync.tap.straightening") : t("sync.tap.finish")}
+              </button>
+              {/* Salvare si può in qualunque momento, e non è una svista: quel
+                  che è battuto per intero si scrive, il resto resta
+                  sincronizzato al verso. Un passo facoltativo che tiene in
+                  ostaggio il salvataggio finché non è finito non è
+                  facoltativo. */}
+              <button
+                type="button"
+                className="bottone primario btn-accent"
+                disabled={salvando}
+                onClick={salva}
+              >
+                {salvando ? t("sync.review.saving") : t("sync.review.save")}
+              </button>
+            </div>
+            <p className="nota">{t("sync.words.key")}</p>
+            <p className="nota">{t("sync.words.where")}</p>
           </>
         )}
 
@@ -409,7 +783,17 @@ export function Sincronizza({
                 {/* Cosa esce di qui, per esteso e prima di premere: il titolo
                     che il catalogo userà per ritrovarlo, e le righe con i loro
                     tempi. Non c'è niente d'altro nell'invio — nessun percorso,
-                    nessun identificativo, niente sul dispositivo. */}
+                    nessun identificativo, niente sul dispositivo.
+
+                    Artista e album restano **grezzi**, e qui è giusto così:
+                    `nomeArtista` e `titoloAlbum` traducono le sentinelle del
+                    nucleo per chi guarda, ma quel che parte per LRCLIB è il
+                    valore in tabella — `testi::da_restituire` legge `tracks` e
+                    manda `brano.artist` come sta. Tradurli in questo elenco
+                    vorrebbe dire scrivere «Unknown artist» accanto a una
+                    richiesta che porta «Artista sconosciuto»: l'unico posto
+                    dell'interfaccia che promette di dire i byte esatti
+                    diventerebbe l'unico che non li dice. */}
                 <ul className="cosa-va">
                   <li>
                     {brano.title} · {brano.artist}

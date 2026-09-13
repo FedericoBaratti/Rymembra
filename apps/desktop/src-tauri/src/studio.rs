@@ -31,6 +31,7 @@
 use std::path::{Path, PathBuf};
 
 use aether_domain::errors::{AppError, ErrorCode};
+use aether_skin::movimento;
 use serde::Serialize;
 use tauri::State;
 
@@ -432,6 +433,47 @@ pub struct RegistroIpc {
     pub format: u32,
     /// La soglia di contrasto sotto cui parte un avviso.
     pub contrasto_minimo: f64,
+
+    // ── I tetti del movimento ───────────────────────────────────────────────
+    //
+    // Uno per uno da `aether_skin::movimento`, e non da una tabella scritta
+    // qui. È la stessa promessa di `TokenIpc::min`/`max`: il validatore rifiuta
+    // quel che esce da questi numeri, e un pannello che ne conoscesse di
+    // diversi offrirebbe valori che il documento poi respinge — cioè un errore
+    // che l'interfaccia ha suggerito. Finché non c'erano, lo Studio li teneva
+    // ricopiati a mano in cima a `studio/Movimento.tsx`, con scritto che la
+    // strada giusta era questa.
+    /// Quante animazioni un documento può dichiarare.
+    pub max_animazioni: usize,
+    /// Quanti fotogrammi ha un'animazione, al minimo.
+    pub min_fotogrammi: usize,
+    /// Quanti fotogrammi ha un'animazione, al massimo.
+    pub max_fotogrammi: usize,
+    /// Quanto può durare un'animazione, in millisecondi.
+    pub max_durata_ms: f64,
+    /// Quanto può attendere prima di partire, in millisecondi.
+    pub max_ritardo_ms: f64,
+    /// Quante volte può ripetersi. Mai «infinite».
+    pub max_iterazioni: u32,
+    /// Quanti trigger può assegnare una singola parte.
+    pub max_trigger_per_parte: usize,
+    /// Quante parti possono portare almeno un'animazione.
+    pub max_parti_animate: usize,
+    /// Il budget del movimento di una parte, che è un terzo budget ancora.
+    pub motion_budget: u32,
+    /// Quanto costa un'animazione prima delle ripetizioni.
+    ///
+    /// È il peso di [`CostClass::Composited`](aether_skin::effects::CostClass),
+    /// cioè la prima metà di `animation_cost`. Viaggia perché il pannello del
+    /// movimento mostra il costo di ogni animazione mentre la si scrive, e
+    /// senza questo numero se lo dovrebbe inventare: il verdetto resta del
+    /// nucleo — l'avviso `costBudget` — ma il numero che si legge accanto alla
+    /// manopola deve venire dallo stesso posto, o i due si contraddicono.
+    pub peso_composito: u32,
+    /// I versi ammessi, come li scrive `AnimDirection::as_str`.
+    pub versi: Vec<&'static str>,
+    /// I trigger ammessi, come li scrive `AnimTrigger::as_str`.
+    pub trigger: Vec<&'static str>,
 }
 
 const fn nome_gruppo_token(group: aether_skin::tokens::TokenGroup) -> &'static str {
@@ -529,6 +571,24 @@ pub fn studio_registro() -> RegistroIpc {
         shell_budget: aether_skin::SHELL_COST_BUDGET,
         format: aether_skin::SKIN_FORMAT_VERSION,
         contrasto_minimo: aether_skin::CONTRASTO_MINIMO,
+        max_animazioni: movimento::MAX_ANIMAZIONI,
+        min_fotogrammi: movimento::MIN_FOTOGRAMMI,
+        max_fotogrammi: movimento::MAX_FOTOGRAMMI,
+        max_durata_ms: movimento::MAX_DURATA_MS,
+        max_ritardo_ms: movimento::MAX_RITARDO_MS,
+        max_iterazioni: movimento::MAX_ITERAZIONI,
+        max_trigger_per_parte: movimento::MAX_TRIGGER_PER_PARTE,
+        max_parti_animate: movimento::MAX_PARTI_ANIMATE,
+        motion_budget: movimento::MOTION_COST_BUDGET,
+        peso_composito: aether_skin::effects::CostClass::Composited.weight(),
+        // Dagli `ALL` degli enum, come il vocabolario dello scafale poco più
+        // sotto: una parola nuova nel crate compare nell'editor senza che
+        // nessuno se ne ricordi.
+        versi: movimento::AnimDirection::ALL
+            .iter()
+            .map(|verso| verso.as_str())
+            .collect(),
+        trigger: movimento::AnimTrigger::nomi(),
     }
 }
 
@@ -670,7 +730,13 @@ pub struct ProblemaIpc {
 #[serde(rename_all = "camelCase")]
 pub struct AvvisoIpc {
     /// `missingRequiredToken`, `unkeptCapability`, `unusedPattern`,
-    /// `costBudget`, `contrast`.
+    /// `unusedPrefab`, `unusedAnimation`, `costBudget`, `contrast`.
+    ///
+    /// L'elenco è quello di `nome_avviso`, che è un `match` esaustivo: un
+    /// genere nuovo nel nucleo non compila finché non passa di là. Qui però
+    /// resta prosa, e questa riga era rimasta indietro di due generi — vale la
+    /// pena rileggerla insieme all'unione di `Avviso["kind"]` in `ipc.ts`, che
+    /// è l'unico posto dove la stessa svista non la vede nessun compilatore.
     pub kind: &'static str,
     /// Dove.
     pub path: String,
@@ -723,6 +789,15 @@ pub struct ValidazioneIpc {
     pub costo: u32,
     /// Quanti pezzi dell'app lo scafale monta, sul suo budget separato.
     pub costo_scafale: u32,
+    /// Quanto costa il movimento, sommato su tutte le parti animate.
+    ///
+    /// Terzo numero e terzo budget. Il compilatore lo calcolava da quando le
+    /// animazioni nominate esistono e non lo leggeva nessuno: un numero
+    /// prodotto e buttato via è una promessa che il crate faceva senza
+    /// mantenerla. Il verdetto resta di `check_skin`, che il budget lo applica
+    /// **per parte**; questa è la somma, cioè il numero che sta accanto agli
+    /// altri due.
+    pub costo_movimento: u32,
     /// Quante parti la skin ridisegna.
     pub parti: usize,
     /// I token che seguono la copertina.
@@ -738,6 +813,7 @@ const fn nome_avviso(kind: aether_skin::WarningKind) -> &'static str {
         W::UnkeptCapability => "unkeptCapability",
         W::UnusedPattern => "unusedPattern",
         W::UnusedPrefab => "unusedPrefab",
+        W::UnusedAnimation => "unusedAnimation",
         W::CostBudget => "costBudget",
         W::Contrast => "contrast",
     }
@@ -762,6 +838,7 @@ pub fn studio_valida(sorgente: String) -> ValidazioneIpc {
         layout: None,
         costo: 0,
         costo_scafale: 0,
+        costo_movimento: 0,
         parti: 0,
         dinamici: Vec::new(),
         compilato_ms: 0,
@@ -821,6 +898,7 @@ pub fn studio_valida(sorgente: String) -> ValidazioneIpc {
         layout: Some(crate::skin::impaginazione(&documento)),
         costo: compilata.cost,
         costo_scafale: compilata.shell_cost,
+        costo_movimento: compilata.motion_cost,
         parti: documento.parts.len(),
         dinamici: compilata
             .dynamic_tokens

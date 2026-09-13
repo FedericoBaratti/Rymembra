@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aether-app"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-archivio",
  "aether-domain",
@@ -28,11 +28,12 @@ dependencies = [
  "serde_json",
  "tempfile",
  "walkdir",
+ "zip 6.0.0",
 ]
 
 [[package]]
 name = "aether-archivio"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-domain",
  "serde_json",
@@ -42,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "aether-catalogo"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-domain",
  "aether-net",
@@ -51,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "aether-cloud"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-app",
  "aether-domain",
@@ -68,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "aether-desktop"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-app",
  "aether-archivio",
@@ -91,13 +92,14 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tempfile",
 ]
 
 [[package]]
 name = "aether-domain"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "encoding_rs",
  "serde",
@@ -107,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "aether-ia"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-domain",
  "aether-net",
@@ -117,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "aether-meta"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-domain",
  "aether-net",
@@ -127,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "aether-net"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-domain",
  "ureq",
@@ -135,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "aether-oauth"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-domain",
  "getrandom 0.3.4",
@@ -145,10 +147,11 @@ dependencies = [
 
 [[package]]
 name = "aether-play"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-domain",
  "cpal",
+ "opus-pure",
  "rtrb",
  "rubato",
  "symphonia",
@@ -157,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "aether-scrobble"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-domain",
  "aether-net",
@@ -168,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "aether-skin"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-domain",
  "serde_json",
@@ -177,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "aether-sync"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aether-domain",
  "blake3",
@@ -3444,6 +3447,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "opus-pure"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de6a3cef053e1fdea38a5e50edb0789590a31184c5a59f6cd5e462fe844793e7"
+
+[[package]]
 name = "ordered-stream"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5268,6 +5277,22 @@ dependencies = [
  "thiserror 2.0.19",
  "url",
  "windows 0.61.3",
+ "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-single-instance"
+version = "2.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cd0cb5c412a5071b69bab6a6df1583cbb89460d4a83b6a24769b08d15b6b1e1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "windows-sys 0.60.2",
  "zbus",
 ]
 

@@ -23,18 +23,50 @@
  * niente qui dentro: portano fuori, nel browser di sistema.
  *
  * Nella barra in fondo alla finestra il tasto non c'è. Non è una dimenticanza:
- * là le voci stanno in fila su una riga sola, e la settima toglierebbe spazio
- * alle cinque che servono ad andare da qualche parte per chiedere una cosa che
- * si chiede una volta.
+ * là le voci stanno in fila su una riga sola, e una in più toglierebbe spazio
+ * alle sei che servono ad andare da qualche parte per chiedere una cosa che si
+ * chiede una volta.
  *
- * # Perché la richiusura è un bottone e non una soglia
+ * # La richiusura è un bottone, **e** una soglia
  *
  * La barra si stringe a `--rail-w` e resta usabile: le icone bastano a
- * riconoscere quattro destinazioni. È l'utente a deciderlo, non la larghezza
- * della finestra, perché su un monitor grande c'è chi vuole comunque tutta la
- * larghezza per le colonne dell'elenco.
+ * riconoscere sei destinazioni. Su un monitor grande è l'utente a decidere,
+ * non la larghezza della finestra, perché c'è chi vuole comunque tutta la
+ * larghezza per le colonne dell'elenco: il bottone possiede la scelta e questa
+ * parte della frase resta vera.
+ *
+ * Quel che non era vero è «non la larghezza della finestra», detto senza
+ * condizioni. Lo stato nasceva dal solo flag della skin e non guardava la
+ * finestra mai: a `minWidth: 880` — il minimo vero, non un caso di scuola — la
+ * barra aperta si teneva duecentoquaranta pixel e al lettore ne restavano 612,
+ * sotto i 728 che la sua griglia chiede. Traboccava, e l'unico rimedio era un
+ * bottone che chi non lo conosce non cerca. Sotto i mille pixel, quindi, si
+ * stringe da sé.
+ *
+ * Si stringe e non si riallarga, come la terza colonna di `App.tsx`: riaprirla
+ * tornando larghi annullerebbe una richiusura decisa a mano, e il verso che
+ * conta è solo quello che evita il traboccamento.
+ *
+ * Si compone con il `@container` del lettore invece di combatterci: là sotto i
+ * 760 pixel di **barra** si ritira il cursore del volume, qui sotto i 1000 di
+ * **finestra** si stringe la navigazione. La seconda dà al lettore 172 pixel, e
+ * quei 172 sono esattamente quel che lo porta di là dalla soglia del volume —
+ * cioè stringere la barra laterale è la via per riavere il cursore, che è il
+ * gesto che il commento del foglio descrive già.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+/**
+ * Sotto questa larghezza di finestra la barra laterale si stringe da sé.
+ *
+ * Mille e non 880: a 880 il lettore trabocca già, e una soglia che coincide col
+ * minimo della finestra arriverebbe sempre un pixel dopo il difetto. Cento pixel
+ * di margine sopra il minimo sono il posto in cui la barra si ritira **prima**
+ * che qualcosa si rompa, e restano ben sotto i 1100 a cui si chiude la terza
+ * colonna: le due soglie non si accavallano, e fra l'una e l'altra c'è una
+ * finestra in cui si vede l'effetto di ognuna.
+ */
+const LARGHEZZA_NAV_LARGA = 1000;
 
 import type { Playlist } from "../ipc";
 import { Icona, type NomeIcona } from "./Icone";
@@ -46,6 +78,11 @@ export type Vista =
   | "album"
   | "artisti"
   | "brani"
+  // Dopo «Brani» e non altrove: le prime quattro sono i modi in cui la libreria
+  // si guarda **da dentro** — per disco, per chi suona, per traccia — e questa
+  // è il modo in cui si guarda da fuori, cioè come sta sul disco. È la stessa
+  // posizione che ha in foobar2000, e la si trova lì per abitudine.
+  | "cartelle"
   | "preferiti"
   | "impostazioni"
   // Una destinazione senza voce nella barra: per quasi tutto il tempo non c'è
@@ -70,6 +107,11 @@ function destinazioni(): readonly (readonly [Vista, string, NomeIcona])[] {
     ["album", t("nav.albums"), "i-album"],
     ["artisti", t("nav.artists"), "i-artist"],
     ["brani", t("nav.tracks"), "i-track"],
+    // Il conteggio qui è il **numero di radici**, non quello dei brani: è
+    // l'unica cosa che si sa senza aprire il pannello — l'albero si costruisce
+    // alla prima domanda — e per giunta è quella giusta, perché dice quante
+    // cartelle sorvegliate ci sono da guardare.
+    ["cartelle", t("nav.folders"), "i-folder"],
     ["preferiti", t("nav.favorites"), "i-heart"],
   ];
 }
@@ -116,7 +158,21 @@ export function Navigazione({
   /** Apre la pagina delle donazioni nel browser di sistema. */
   onDona: () => void;
 }) {
-  const [stretta, setStretta] = useState(!larga);
+  // La finestra conta già all'avvio: aprirsi larga su una finestra da 880 e
+  // stringersi al primo `resize` sarebbe un traboccamento che si vede e poi si
+  // corregge da solo, cioè la stessa cosa di prima con un fotogramma in più.
+  const [stretta, setStretta] = useState(
+    () => !larga || window.innerWidth < LARGHEZZA_NAV_LARGA,
+  );
+
+  // Vedi la nota del modulo: si stringe da sé, non si riallarga da sé.
+  useEffect(() => {
+    const guarda = () => {
+      if (window.innerWidth < LARGHEZZA_NAV_LARGA) setStretta(true);
+    };
+    window.addEventListener("resize", guarda);
+    return () => window.removeEventListener("resize", guarda);
+  }, []);
 
   return (
     // Niente `app-shell`: quella classe dice «il contenitore di tutta la
@@ -124,6 +180,12 @@ export function Navigazione({
     // voleva dire che una skin che la ridipingeva colorava due cose.
     <nav
       className={inFondo ? "navigazione bottom-nav" : "navigazione"}
+      /* L'ancora del giro guidato. Sta sul `nav` e non sulle voci: quel che il
+         primo passo racconta è «da qui si va da qualche parte», e illuminare
+         una pastiglia sola direbbe un'altra cosa. La porta anche la barra in
+         fondo, che è la stessa navigazione in un'altra forma: delle due ne
+         esiste una alla volta, e `Giro` prende comunque quella disegnata. */
+      data-giro="navigazione"
       data-stretta={(!inFondo && stretta) || undefined}
       data-fondo={inFondo || undefined}
       aria-label={t("nav.aria")}
@@ -168,7 +230,9 @@ export function Navigazione({
         })}
       </div>
 
-      <div className="gruppo" hidden={inFondo}>
+      {/* `hidden` in fondo, quindi senza rettangolo: il passo delle playlist
+          si salta da sé sulla barra bassa, dove le playlist non ci sono. */}
+      <div className="gruppo" hidden={inFondo} data-giro="playlist">
         <div className="titolo-gruppo">
           <span>{t("playlist.group")}</span>
           {/* Tre tasti e non un menù: sono tre cose che si fanno di rado ma
@@ -257,6 +321,7 @@ export function Navigazione({
         <button
           type="button"
           className="voce nav-pill"
+          data-giro="impostazioni"
           aria-current={vista === "impostazioni" ? "page" : undefined}
           data-active={vista === "impostazioni" || undefined}
           title={stretta ? t("nav.settings") : undefined}

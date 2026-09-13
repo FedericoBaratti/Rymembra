@@ -1,15 +1,15 @@
 /**
- * Quel che si scrive sul documento: il foglio della skin, l'accento,
- * l'indirizzo di una copertina.
+ * Quel che si scrive sul documento: il foglio della skin, l'accento, quanto
+ * movimento vuole chi guarda, l'indirizzo di una copertina.
  *
  * # Perché non stanno in `ipc.ts`
  *
  * Perché non attraversano il confine con il nucleo. `ipc.ts` è il contratto:
  * una riga per ogni comando del processo nativo, e la forma di quel che torna.
- * Queste tre funzioni non chiamano niente — sostituiscono il testo di un
- * `<style>`, mettono e tolgono proprietà personalizzate sulla radice,
- * compongono un indirizzo che poi il motore di rendering chiederà da sé.
- * Toccano il documento, e il documento non è il nucleo.
+ * Queste funzioni non chiamano niente — sostituiscono il testo di un
+ * `<style>`, mettono e tolgono proprietà personalizzate e attributi sulla
+ * radice, compongono un indirizzo che poi il motore di rendering chiederà da
+ * sé. Toccano il documento, e il documento non è il nucleo.
  *
  * Stavano in fondo a `ipc.ts` perché è dove erano finite crescendo, e il prezzo
  * era che il confine non si leggeva più tutto d'un fiato: in coda ai comandi
@@ -87,6 +87,60 @@ export function applicaSkin(skin: Skin): void {
   radice.dataset.sidebar = skin.layout.sidebar;
   radice.dataset.density = skin.layout.density;
   radice.dataset.motion = skin.layout.motion;
+}
+
+/**
+ * Quanto movimento vuole **chi guarda**, sotto quello che la skin dichiara.
+ *
+ * # Due valori, e non tre
+ *
+ * «Come il sistema» e «Riduci tutto». Non c'è un «di più», e non è una
+ * dimenticanza: la frase che sta già in `settings.motion.p1` dice che una
+ * preferenza di accessibilità che una skin può sovrascrivere non è una
+ * preferenza, e un terzo livello che *alza* direbbe l'opposto. Da qui si può
+ * solo scendere sotto la skin — mai salire — per la stessa ragione per cui
+ * `prefers-reduced-motion` del sistema vince su `MotionIntensity`: la skin è
+ * una scelta estetica di chi ha scritto il tema, questa è una condizione di chi
+ * guarda, e le condizioni non si negoziano al rialzo.
+ *
+ * «Come il sistema» è il valore di serie, e non è il difetto silenzioso: la
+ * scelta si vede tutta, con la voce giusta accesa, esattamente come per il
+ * tema.
+ */
+export type MovimentoUtente = "sistema" | "ridotto";
+
+/**
+ * Scrive la preferenza sulla radice, accanto agli altri dataset.
+ *
+ * # Perché un attributo e non una variabile
+ *
+ * Perché il rimedio è già scritto e legge un attributo. Il blocco
+ * `@media (prefers-reduced-motion: reduce)` di `stile.css` azzera
+ * `--motion-scale` su `:root, [data-motion]` e spegne a mano l'unica animazione
+ * infinita che una scala a zero non fermerebbe. La preferenza dell'utente vuole
+ * **esattamente quelle regole**, senza la media query: un secondo selettore
+ * accanto al primo, e non una seconda copia del rimedio.
+ *
+ * Il guadagno è che tutto il resto arriva gratis.
+ * `transizione.ts::fermoRestando()` legge `--motion-scale` e non sa nulla di
+ * questo attributo, quindi la transizione di rotta e l'inseguimento della riga
+ * del testo si fermano senza una riga in più; e il riquadro dell'anteprima
+ * dello Studio, che eredita le variabili dalla radice, si ferma con loro.
+ *
+ * # Cosa questo file non fa, e dove sta
+ *
+ * Non ricorda niente. È lo stesso confine di `applicaTema` in `tema.ts`: qui si
+ * tocca il documento, a ricordare è il nucleo. Chi chiama legge la preferenza e
+ * passa il valore.
+ */
+export function applicaMovimento(scelta: MovimentoUtente): void {
+  const radice = document.documentElement;
+  // Assente quando è «come il sistema», invece di scritto a `"sistema"`: un
+  // attributo che c'è sempre obbligherebbe ogni regola a confrontare un valore,
+  // mentre così il selettore è la presenza — ed è la forma che `data-theme` ha
+  // già, per la stessa ragione.
+  if (scelta === "ridotto") radice.dataset.motionUtente = "ridotto";
+  else delete radice.dataset.motionUtente;
 }
 
 /**

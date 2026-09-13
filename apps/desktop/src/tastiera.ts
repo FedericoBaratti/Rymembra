@@ -62,6 +62,9 @@ export type Comando =
   | "indietro"
   | "inRiproduzione"
   | "schermoIntero"
+  | "ingrandisci"
+  | "rimpicciolisci"
+  | "zoomNormale"
   | "importazioni"
   | "incollaLink";
 
@@ -71,8 +74,11 @@ export type Comando =
  * Una funzione e non una costante: i titoli sono testo, e una tabella costruita
  * all'apertura del modulo resterebbe nella lingua di quel momento.
  *
- * L'ordine è quello con cui la scheda delle scorciatoie li elenca: le due
- * dell'importazione stanno in fondo perché sono le due che si usano meno.
+ * L'ordine è quello con cui la scheda delle scorciatoie li elenca: i tre
+ * dello zoom stanno accanto allo schermo intero perché sono l'altra metà
+ * della stessa domanda — quanto della finestra si vede, e quanto grande — e
+ * le due dell'importazione restano in fondo perché sono le due che si usano
+ * meno.
  */
 const CHIAVI: readonly Comando[] = [
   "alterna",
@@ -81,6 +87,9 @@ const CHIAVI: readonly Comando[] = [
   "indietro",
   "inRiproduzione",
   "schermoIntero",
+  "ingrandisci",
+  "rimpicciolisci",
+  "zoomNormale",
   "importazioni",
   "incollaLink",
 ];
@@ -110,10 +119,34 @@ export const DI_SERIE: Readonly<Record<Comando, readonly string[]>> = {
   // collide con le lettere perché non è una lettera, e resta riassegnabile come
   // gli altri — la tabella qui sopra è l'unico posto dove guardarlo.
   schermoIntero: ["F11"],
+  // **Tre accordi, e nessuno è di troppo.** `tastoDi` registra il *carattere*
+  // arrivato, non il tasto premuto, e mette `Shift` fra le parti quando c'era:
+  // quindi lo stesso gesto dà tre nomi diversi a seconda della tastiera.
+  //
+  // - Tastiera italiana (e tedesca): `+` sta accanto a `ì` e non vuole
+  //   `Shift`, quindi arriva `Ctrl++`. Anche quello del tastierino numerico
+  //   arriva così, ed è il motivo per cui non gli serve una riga sua.
+  // - Tastiera americana (e francese): `+` è `Shift` sul tasto `=`. Chi non
+  //   preme `Shift` manda `Ctrl+=`; chi lo preme manda `Ctrl+Shift++`, perché
+  //   `e.key` è già diventato `+` **e** `shiftKey` è vero.
+  //
+  // Toglierne uno vuol dire una tastiera su cui la scorciatoia più famosa del
+  // mondo non fa niente, e nessuno che possa capire perché. È lo stesso
+  // motivo per cui `cerca` ne ha due.
+  ingrandisci: ["Ctrl++", "Ctrl+=", "Ctrl+Shift++"],
+  // Uno solo, e qui basta davvero: `-` non vuole `Shift` su nessuna delle
+  // tastiere di sopra, e quello del tastierino dà lo stesso carattere.
+  rimpicciolisci: ["Ctrl+-"],
+  // La via di ritorno. Chi ingrandisce di un gradino di troppo, senza questa,
+  // dovrebbe premere il tasto opposto contando i passi — e chi non li ha
+  // contati non sa quante volte premere. È la terza scorciatoia di ogni
+  // programma che ha le prime due, e costa una riga.
+  zoomNormale: ["Ctrl+0"],
   // `Ctrl` e non `Meta`: `tastoDi` scarta il tasto Windows apposta, quindi qui
   // non esiste una variante per Mac da tenere allineata. Le associazioni assenti
   // in `ui.shortcuts` cadono su queste, quindi nessuna migrazione: chi ha già
-  // personalizzato i cinque comandi di prima si ritrova questi due di serie.
+  // personalizzato le sue si ritrova di serie tutte quelle arrivate dopo —
+  // questi due, e i tre dello zoom qui sopra.
   importazioni: ["Ctrl+i"],
   incollaLink: ["Ctrl+l"],
 };
@@ -183,6 +216,9 @@ export function serieMutabile(): Associazioni {
     indietro: [...DI_SERIE.indietro],
     inRiproduzione: [...DI_SERIE.inRiproduzione],
     schermoIntero: [...DI_SERIE.schermoIntero],
+    ingrandisci: [...DI_SERIE.ingrandisci],
+    rimpicciolisci: [...DI_SERIE.rimpicciolisci],
+    zoomNormale: [...DI_SERIE.zoomNormale],
     importazioni: [...DI_SERIE.importazioni],
     incollaLink: [...DI_SERIE.incollaLink],
   };
@@ -258,6 +294,16 @@ export type Azioni = {
   inRiproduzione: () => void;
   /** La finestra a schermo intero, e di nuovo per tornare com'era. */
   schermoIntero: () => void;
+  /**
+   * L'interfaccia di un gradino più grande, o più piccola.
+   *
+   * Una sola azione con un verso e non due: la scala sta nel nucleo, e la
+   * finestra non ha nessun motivo di conoscerla — chiedere «uno in più» è
+   * tutto quel che una pressione sa dire.
+   */
+  zoom: (su: boolean) => void;
+  /** L'interfaccia alla misura di serie. */
+  zoomNormale: () => void;
   /** La pagina delle importazioni. */
   importazioni: () => void;
   /** La finestrella che legge un link, da qualunque pagina. */
@@ -309,6 +355,15 @@ function esegui(comando: Comando, azioni: Azioni): void {
       break;
     case "schermoIntero":
       azioni.schermoIntero();
+      break;
+    case "ingrandisci":
+      azioni.zoom(true);
+      break;
+    case "rimpicciolisci":
+      azioni.zoom(false);
+      break;
+    case "zoomNormale":
+      azioni.zoomNormale();
       break;
     case "importazioni":
       azioni.importazioni();

@@ -54,6 +54,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ParteRegistro } from "../ipc";
+import { Icona } from "../parti/Icone";
 import { t } from "../lingue";
 
 /**
@@ -100,6 +101,7 @@ export function Anteprima({
   onLarghezza,
   onQuante,
   ingrandimento,
+  onRigioca,
   children,
 }: {
   css: string;
@@ -159,6 +161,20 @@ export function Anteprima({
    * giudicare, e giudicarli è tutto il mestiere.
    */
   ingrandimento?: number | null | undefined;
+  /**
+   * Rimonta la scena, per rivedere quel che succede al montaggio.
+   *
+   * Non è un vezzo: **un'animazione all'ingresso non si vede mai** se la scena
+   * non si rimonta. Il trigger `enter` delle animazioni nominate è la regola
+   * base della parte, e parte quando l'elemento entra nel documento — cioè una
+   * volta sola, prima che chi la sta scrivendo abbia finito di scriverla. Senza
+   * questo tasto l'unico modo di rivederla è cambiare scena e tornare
+   * indietro, che è un modo di dire che non c'è.
+   *
+   * Il tasto sta qui e la `key` sta in chi monta il contenuto: questo
+   * componente non sa cosa gli è stato dato dentro, e non deve saperlo.
+   */
+  onRigioca?: (() => void) | undefined;
   /**
    * Cosa mostrare dentro: l'applicazione, con dati finti.
    */
@@ -417,6 +433,17 @@ export function Anteprima({
       </div>
 
       <div className="briciole">
+        {onRigioca !== undefined && (
+          <button
+            type="button"
+            className="rigioca icon-btn"
+            title={t("studio.preview.replay.why")}
+            aria-label={t("studio.preview.replay")}
+            onClick={onRigioca}
+          >
+            <Icona nome="i-repeat" dim={13} />
+          </button>
+        )}
         {sotto.length === 0 && nonParte === null ? (
           <span className="niente">
             {sondaAccesa

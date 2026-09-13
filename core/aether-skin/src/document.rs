@@ -31,6 +31,11 @@ use crate::layout::{
     Align, GapStep, LayoutNode, LayoutZone, MAX_SHELL_NODES, OptionKind, OptionValue, Spread,
     TrackSize, WidgetDef, WidgetInstance, WidgetOption, ZoneKind, default_shell,
 };
+use crate::movimento::{
+    AnimDirection, AnimFrame, AnimTrigger, Animation, AnimationRef, MAX_ANIMAZIONI, MAX_DURATA_MS,
+    MAX_FOTOGRAMMI, MAX_ITERAZIONI, MAX_PARTI_ANIMATE, MAX_RITARDO_MS, MAX_TRIGGER_PER_PARTE,
+    MIN_FOTOGRAMMI, PartAnimations,
+};
 use crate::parts::{
     PartAppearance, PartLayer, PartState, PartStates, PartStyle, TextTransform, nearest_parts,
     part, ritirata,
@@ -897,6 +902,7 @@ fn stile_parte(
     value: &Value,
     path: &str,
     motivi: &[(String, Effect)],
+    animazioni: &[(String, Animation)],
 ) -> Esito<Option<PartStyle>> {
     let Some(def) = part(nome) else {
         // Una parte ritirata si accetta e non fa niente. Il nome è pubblico: sta
@@ -927,6 +933,7 @@ fn stile_parte(
     let mut solo_aspetto = map.clone();
     solo_aspetto.remove("layer");
     solo_aspetto.remove("states");
+    solo_aspetto.remove("animations");
     let appearance = aspetto(&Value::Object(solo_aspetto), path, motivi)?;
 
     let layer = match campo(map, "layer") {
@@ -980,11 +987,78 @@ fn stile_parte(
         }
     }
 
+    let mut animations = PartAnimations::default();
+    if let Some(grezzo) = campo(map, "animations") {
+        let dentro = giu(path, "animations");
+        let blocco = oggetto(grezzo, &dentro)?;
+        for chiave in blocco.keys() {
+            if AnimTrigger::parse(chiave).is_some() {
+                continue;
+            }
+            // `exit` ha una risposta sua perché è la prima cosa che si prova
+            // dopo aver scritto `enter`, e «chiave sconosciuta» manderebbe a
+            // cercare un refuso invece di leggere il motivo.
+            let perche = if chiave == "exit" {
+                " In CSS puro l'uscita non esiste: perché una parte che se ne va                  possa animarsi qualcuno deve tenerla montata finché l'animazione                  finisce, e quel qualcuno è il renderer, non il foglio."
+            } else {
+                ""
+            };
+            return Err(problema(
+                &giu(&dentro, chiave),
+                format!(
+                    "trigger sconosciuto: «{chiave}». Ammessi soltanto: {}.{perche}",
+                    AnimTrigger::nomi().join(", ")
+                ),
+            ));
+        }
+        if blocco.len() > MAX_TRIGGER_PER_PARTE {
+            return Err(problema(
+                &dentro,
+                format!(
+                    "al massimo {MAX_TRIGGER_PER_PARTE} trigger per parte, non {}: \
+                     una superficie che si muove a ogni stato non si legge più come una \
+                     superficie, si legge come un guasto",
+                    blocco.len()
+                ),
+            ));
+        }
+        for trigger in AnimTrigger::ALL {
+            let Some(valore) = campo(blocco, trigger.as_str()) else {
+                continue;
+            };
+            let percorso = giu(&dentro, trigger.as_str());
+            let richiamata = testo(valore, &percorso)?;
+            let Some((_, def)) = animazioni.iter().find(|(nome, _)| nome == richiamata) else {
+                // Stesso trattamento del nome di una parte sbagliato: chi
+                // sbaglia sbaglia per assonanza, e l'elenco completo delle
+                // animazioni dichiarate è il modo educato di non dire niente.
+                let candidati =
+                    vicini(richiamata, animazioni.iter().map(|(nome, _)| nome.as_str()));
+                return Err(problema(
+                    &percorso,
+                    format!(
+                        "animazione inesistente: «{richiamata}». \
+                         Le animazioni si dichiarano in `motion.animations`.{}",
+                        forse(&candidati)
+                    ),
+                ));
+            };
+            animations.set(
+                *trigger,
+                AnimationRef {
+                    name: richiamata.to_owned(),
+                    def: def.clone(),
+                },
+            );
+        }
+    }
+
     Ok(Some(PartStyle {
         def,
         appearance,
         layer,
         states,
+        animations,
     }))
 }
 
@@ -1125,6 +1199,16 @@ pub struct SkinMotion {
     pub easings: Vec<(String, Easing)>,
     /// Le transizioni di rotta.
     pub route_transition: Option<RouteTransition>,
+    /// Le animazioni nominate, in ordine di nome.
+    ///
+    /// In ordine per la stessa ragione di [`Self::easings`]: il foglio prodotto
+    /// dev'essere lo stesso a ogni compilazione, e l'ordine delle chiavi di un
+    /// oggetto JSON non e' qualcosa su cui fare affidamento.
+    ///
+    /// Sono **dichiarazioni**, non assegnazioni: chi le usa sono le parti, e
+    /// una dichiarata e mai richiamata si compila in `@keyframes` che nessuno
+    /// legge - un avviso, come per un motivo o un prefab, non un errore.
+    pub animations: Vec<(String, Animation)>,
 }
 
 /// Dove sta il player.
@@ -1427,9 +1511,207 @@ fn fotogramma(value: &Value, path: &str) -> Esito<RouteFrame> {
     })
 }
 
+/// Le iterazioni: da 1 a [`MAX_ITERAZIONI`], e mai «infinite».
+///
+/// La stringa `"infinite"` ha un ramo suo perché è **l'errore che si fa
+/// davvero**: chi arriva dal CSS scrive quella parola prima di chiedersi se sia
+/// ammessa, e riceverla come «qui ci va un numero» manderebbe a cercare un
+/// refuso invece di leggere il divieto. Il divieto ha una ragione, e vale la
+/// pena spenderla qui piuttosto che in un documento che nessuno riapre.
+fn iterazioni(value: &Value, path: &str) -> Esito<u32> {
+    if value.as_str() == Some("infinite") {
+        return Err(problema(
+            path,
+            format!(
+                "«infinite» non è ammesso: un'animazione che non finisce non la ferma nemmeno \
+                 «Riduci il movimento» — una scala a zero la rende infinitamente lenta invece \
+                 di spegnerla, e la regola che la spegnerebbe una skin non la può scrivere. \
+                 Per un pulsare: \"direction\": \"alternate\" con \"iterations\": 2. \
+                 Al massimo {MAX_ITERAZIONI}."
+            ),
+        ));
+    }
+    let quante = value
+        .as_u64()
+        .filter(|n| *n >= 1 && *n <= u64::from(MAX_ITERAZIONI))
+        .ok_or_else(|| {
+            problema(
+                path,
+                format!("va da 1 a {MAX_ITERAZIONI}, e «infinite» non è ammesso"),
+            )
+        })?;
+    u32::try_from(quante).map_err(|_| problema(path, "iterazioni fuori scala"))
+}
+
+/// Una durata con un tetto suo, più basso di quello dei token.
+fn durata_fino_a(value: &Value, path: &str, massimo: f64) -> Esito<Duration> {
+    let letta = durata(value, path)?;
+    if letta.ms > massimo {
+        return Err(problema(
+            path,
+            format!("al massimo {massimo}ms, non {}ms", letta.ms),
+        ));
+    }
+    Ok(letta)
+}
+
+/// I fotogrammi di un'animazione: da due a sei, in ordine, il primo a 0.
+///
+/// L'ordine lo deve scrivere **chi dichiara**, e la lettura non lo raddrizza:
+/// un elenco che si lascia riordinare in silenzio è un elenco in cui un `at`
+/// battuto storto produce un'animazione diversa da quella scritta, e chi la
+/// guarda nell'editor vede il risultato del riordino invece dell'errore.
+/// Rifiutare costa un messaggio; riordinare costa la fiducia nell'anteprima.
+fn fotogrammi_animazione(value: &Value, path: &str) -> Esito<Vec<AnimFrame>> {
+    let voci = lista_fra(value, path, MIN_FOTOGRAMMI, MAX_FOTOGRAMMI)?;
+    let mut fermate: Vec<AnimFrame> = Vec::with_capacity(voci.len());
+    for (indice, grezzo) in voci.iter().enumerate() {
+        let dentro = giu(path, &indice.to_string());
+        let map = oggetto(grezzo, &dentro)?;
+        solo_chiavi(
+            map,
+            &dentro,
+            &[
+                "at",
+                "opacity",
+                "scale",
+                "translateX",
+                "translateY",
+                "rotate",
+            ],
+        )?;
+        let fermata = AnimFrame {
+            at: numero_fra(
+                richiesto(map, &dentro, "at")?,
+                &giu(&dentro, "at"),
+                0.0,
+                100.0,
+            )?,
+            opacity: campo(map, "opacity")
+                .map(|v| numero_fra(v, &giu(&dentro, "opacity"), 0.0, 1.0))
+                .transpose()?,
+            scale: campo(map, "scale")
+                .map(|v| numero_fra(v, &giu(&dentro, "scale"), 0.5, 1.5))
+                .transpose()?,
+            translate_x: campo(map, "translateX")
+                .map(|v| numero_fra(v, &giu(&dentro, "translateX"), -100.0, 100.0))
+                .transpose()?,
+            translate_y: campo(map, "translateY")
+                .map(|v| numero_fra(v, &giu(&dentro, "translateY"), -100.0, 100.0))
+                .transpose()?,
+            rotate: campo(map, "rotate")
+                .map(|v| numero_fra(v, &giu(&dentro, "rotate"), -30.0, 30.0))
+                .transpose()?,
+        };
+        if fermata.is_empty() {
+            return Err(problema(
+                &dentro,
+                "un fotogramma che non dichiara niente non è una fermata: \
+                 togli la voce, o scrivi che cosa cambia qui",
+            ));
+        }
+        if indice == 0 && fermata.at != 0.0 {
+            return Err(problema(
+                &giu(&dentro, "at"),
+                "il primo fotogramma sta a 0: senza, il motore lo ricava dallo stato in cui \
+                 la parte si trova, e l'animazione parte da un punto diverso ogni volta",
+            ));
+        }
+        if let Some(precedente) = fermate.last().filter(|p| p.at >= fermata.at) {
+            return Err(problema(
+                &giu(&dentro, "at"),
+                format!(
+                    "i fotogrammi vanno in ordine crescente: {} non viene dopo {}",
+                    fermata.at, precedente.at
+                ),
+            ));
+        }
+        fermate.push(fermata);
+    }
+    Ok(fermate)
+}
+
+fn animazione(value: &Value, path: &str) -> Esito<Animation> {
+    let map = oggetto(value, path)?;
+    solo_chiavi(
+        map,
+        path,
+        &[
+            "duration",
+            "easing",
+            "delay",
+            "iterations",
+            "direction",
+            "frames",
+        ],
+    )?;
+    Ok(Animation {
+        duration: durata_fino_a(
+            richiesto(map, path, "duration")?,
+            &giu(path, "duration"),
+            MAX_DURATA_MS,
+        )?,
+        // Assente: `ease`, il default del CSS. La curva il compilatore la
+        // scrive sempre per esteso, quindi non esiste un caso in cui il valore
+        // di serie del motore e quello del formato possano divergere.
+        easing: campo(map, "easing")
+            .map(|v| easing(v, &giu(path, "easing")))
+            .transpose()?
+            .unwrap_or(Easing::Keyword(EasingKeyword::Ease)),
+        delay: campo(map, "delay")
+            .map(|v| durata_fino_a(v, &giu(path, "delay"), MAX_RITARDO_MS))
+            .transpose()?,
+        iterations: campo(map, "iterations")
+            .map(|v| iterazioni(v, &giu(path, "iterations")))
+            .transpose()?
+            .unwrap_or(1),
+        direction: campo(map, "direction")
+            .map(|v| {
+                let nomi: Vec<(&str, AnimDirection)> = AnimDirection::ALL
+                    .iter()
+                    .map(|d| (d.as_str(), *d))
+                    .collect();
+                parola(v, &giu(path, "direction"), &nomi)
+            })
+            .transpose()?
+            .unwrap_or_default(),
+        frames: fotogrammi_animazione(richiesto(map, path, "frames")?, &giu(path, "frames"))?,
+    })
+}
+
+fn animazioni(value: &Value, path: &str) -> Esito<Vec<(String, Animation)>> {
+    let map = oggetto(value, path)?;
+    if map.len() > MAX_ANIMAZIONI {
+        return Err(problema(
+            path,
+            format!(
+                "al massimo {MAX_ANIMAZIONI} animazioni dichiarate, non {}",
+                map.len()
+            ),
+        ));
+    }
+    let mut elenco = Vec::with_capacity(map.len());
+    for (nome, grezzo) in map {
+        let percorso = giu(path, nome);
+        if !is_local_name(nome) {
+            return Err(problema(
+                &percorso,
+                "il nome di un'animazione ammette minuscole, cifre e trattini",
+            ));
+        }
+        elenco.push((nome.clone(), animazione(grezzo, &percorso)?));
+    }
+    elenco.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(elenco)
+}
+
 fn movimento(value: &Value, path: &str) -> Esito<SkinMotion> {
     let map = oggetto(value, path)?;
-    solo_chiavi(map, path, &["intensity", "easings", "routeTransition"])?;
+    solo_chiavi(
+        map,
+        path,
+        &["intensity", "easings", "routeTransition", "animations"],
+    )?;
 
     let intensity = match campo(map, "intensity") {
         None => MotionIntensity::Full,
@@ -1475,10 +1757,16 @@ fn movimento(value: &Value, path: &str) -> Esito<SkinMotion> {
         }
     };
 
+    let animations = match campo(map, "animations") {
+        None => Vec::new(),
+        Some(grezzo) => animazioni(grezzo, &giu(path, "animations"))?,
+    };
+
     Ok(SkinMotion {
         intensity,
         easings,
         route_transition,
+        animations,
     })
 }
 
@@ -1986,12 +2274,13 @@ fn superfici(
     value: &Value,
     path: &str,
     motivi: &[(String, Effect)],
+    animazioni: &[(String, Animation)],
     problemi: &mut Vec<SkinIssue>,
 ) -> Esito<Vec<PartStyle>> {
     let map = oggetto(value, path)?;
     let mut stili = Vec::with_capacity(map.len());
     for (nome, grezzo) in map {
-        match stile_parte(nome, grezzo, &giu(path, nome), motivi) {
+        match stile_parte(nome, grezzo, &giu(path, nome), motivi, animazioni) {
             Ok(Some(stile)) => stili.push(stile),
             // Una parte ritirata: letta, accettata, e lasciata cadere qui. Non
             // è un problema da segnalare — la skin è valida — e non è uno stile
@@ -2012,6 +2301,24 @@ fn superfici(
             .position(|def| def.name == stile.def.name)
             .unwrap_or(usize::MAX)
     });
+
+    // Il tetto sulle parti animate è un limite d'insieme, non di costo: dieci
+    // superfici che si muovono possono stare ognuna nel suo budget e comporre
+    // lo stesso una finestra irrequieta. È la stessa distinzione fra
+    // `SURFACE_COST_BUDGET` e `SHELL_COST_BUDGET` — quanto costa una cosa, e
+    // quante ce ne sono — e per questo è un errore e non un avviso: un budget
+    // sforato si vede su un telefono, una finestra che vibra si vede su tutti.
+    let animate = stili
+        .iter()
+        .filter(|stile| !stile.animations.is_empty())
+        .count();
+    if animate > MAX_PARTI_ANIMATE {
+        return Err(problema(
+            path,
+            format!("al massimo {MAX_PARTI_ANIMATE} parti animate, non {animate}"),
+        ));
+    }
+
     Ok(stili)
 }
 
@@ -2084,9 +2391,16 @@ fn documento(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
         None => Vec::new(),
         Some(grezzo) => motivi(grezzo, "patterns").map_err(solo)?,
     };
+    // Le animazioni si leggono **prima** delle parti perché le parti le
+    // richiamano per nome: è lo stesso ordine, e la stessa ragione, per cui i
+    // motivi si leggono prima delle superfici che li usano.
+    let dichiarate: &[(String, Animation)] =
+        motion.as_ref().map_or(&[], |blocco| &blocco.animations);
     let parts = match campo(map, "parts") {
         None => Vec::new(),
-        Some(grezzo) => superfici(grezzo, "parts", &patterns, &mut problemi).map_err(solo)?,
+        Some(grezzo) => {
+            superfici(grezzo, "parts", &patterns, dichiarate, &mut problemi).map_err(solo)?
+        }
     };
 
     if !problemi.is_empty() {
@@ -2388,7 +2702,21 @@ pub enum WarningKind {
     /// sottoalbero nominato che nessuno monta non fa niente e non si vede, e
     /// quasi sempre è il pezzo che si è dimenticato di collegare.
     UnusedPrefab,
-    /// Una superficie che sfora il budget di costo.
+    /// Un'animazione dichiarata e mai richiamata da nessuna parte.
+    ///
+    /// Terza voce della stessa idea di [`Self::UnusedPattern`] e
+    /// [`Self::UnusedPrefab`], sul terzo registro nominato del formato. Una
+    /// variante sua e non una delle altre due perché il rimedio è diverso e il
+    /// messaggio deve dirlo: un motivo si collega con `{"$pattern": …}`, un
+    /// prefab con `{"prefab": …}`, un'animazione assegnandola a un trigger.
+    ///
+    /// Non è un costo: un'animazione mai assegnata si compila in un
+    /// `@keyframes` che nessuno usa, e i `@keyframes` inerti non costano niente
+    /// per fotogramma. Per questo il budget del movimento conta **solo** le
+    /// assegnate.
+    UnusedAnimation,
+    /// Una superficie che sfora il budget di costo, o una parte che sfora
+    /// quello del movimento.
     CostBudget,
     /// Una coppia testo/superficie sotto la soglia di leggibilità.
     Contrast,
@@ -2566,10 +2894,10 @@ pub fn palette_usage(skin: &SkinDocument) -> Vec<(String, usize)> {
         skin.palette.iter().map(|(n, _)| (n.clone(), 0)).collect();
 
     let mut conta = |colore: &ColorValue| {
-        if let ColorValue::Palette { name, .. } = colore {
-            if let Some(voce) = conteggi.iter_mut().find(|(n, _)| n == name) {
-                voce.1 += 1;
-            }
+        if let ColorValue::Palette { name, .. } = colore
+            && let Some(voce) = conteggi.iter_mut().find(|(n, _)| n == name)
+        {
+            voce.1 += 1;
         }
     };
 
@@ -2759,6 +3087,54 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
                  scrivi {{\"$pattern\": \"{nome}\"}} dove serve, o toglilo."
             ),
         });
+    }
+
+    // Un'animazione dichiarata e mai assegnata: stessa storia del motivo qui
+    // sopra, sull'altro registro. Il `@keyframes` esce lo stesso — è inerte,
+    // non costa niente — e quasi sempre è il trigger che si è dimenticato di
+    // scrivere, non una scelta.
+    let animate: Vec<&str> = skin
+        .parts
+        .iter()
+        .flat_map(crate::parts::PartStyle::animations_used)
+        .collect();
+    for (nome, _) in skin
+        .motion
+        .as_ref()
+        .map(|blocco| blocco.animations.as_slice())
+        .unwrap_or_default()
+    {
+        if animate.contains(&nome.as_str()) {
+            continue;
+        }
+        avvisi.push(SkinWarning {
+            kind: WarningKind::UnusedAnimation,
+            path: format!("motion.animations.{nome}"),
+            message: format!(
+                "l'animazione «{nome}» non è assegnata a nessuna parte: \
+                 scrivi \"animations\": {{\"enter\": \"{nome}\"}} sulla parte che deve \
+                 muoversi, o toglila."
+            ),
+        });
+    }
+
+    // Il movimento di una parte ha un budget suo, contato **solo** sulle
+    // animazioni assegnate e mai sommato a quello delle superfici: disegnare e
+    // muovere sono due lavori diversi, e un numero solo non risponderebbe a
+    // nessuna delle due domande.
+    for stile in &skin.parts {
+        let costo = stile.motion_cost();
+        if costo > crate::movimento::MOTION_COST_BUDGET {
+            avvisi.push(SkinWarning {
+                kind: WarningKind::CostBudget,
+                path: format!("parts.{}.animations", stile.def.name),
+                message: format!(
+                    "il movimento costa {costo} sul budget di {}: \
+                     togli una ripetizione, o un trigger.",
+                    crate::movimento::MOTION_COST_BUDGET
+                ),
+            });
+        }
     }
 
     // Una superficie che sfora il budget non è illegale: è una superficie che
@@ -3928,6 +4304,237 @@ mod tests {
                 .iter()
                 .any(|a| a.kind == WarningKind::UnkeptCapability && a.path == "themes.light")
         );
+    }
+
+    // ── Le animazioni nominate ──────────────────────────────────────────
+
+    /// Un documento con una tabella di animazioni e le parti che le usano.
+    fn con_animazioni(animazioni: &str, parti: &str) -> String {
+        minima(&format!(
+            r##", "motion": {{ "intensity": "full", "animations": {animazioni} }},
+                 "parts": {parti}"##
+        ))
+    }
+
+    /// L'animazione d'esempio: entra salendo, in due fermate.
+    const SALE: &str = r##"{
+      "duration": "240ms",
+      "easing": { "kind": "keyword", "keyword": "ease-out" },
+      "delay": "60ms",
+      "iterations": 1,
+      "direction": "normal",
+      "frames": [
+        { "at": 0, "opacity": 0, "translateY": 8 },
+        { "at": 100, "opacity": 1, "translateY": 0, "scale": 1, "rotate": 0 }
+      ]
+    }"##;
+
+    #[test]
+    fn un_animazione_nominata_si_dichiara_una_volta_e_si_richiama() {
+        let skin = parse_skin_json(&con_animazioni(
+            &format!(r##"{{ "sale": {SALE} }}"##),
+            r##"{ "section-card": { "animations": { "enter": "sale", "hover": "sale" } } }"##,
+        ))
+        .expect("valida");
+
+        let motion = skin.motion.as_ref().expect("il blocco del movimento");
+        assert_eq!(motion.animations.len(), 1);
+        let (nome, def) = motion.animations.first().expect("l'animazione");
+        assert_eq!(nome, "sale");
+        assert_eq!(def.duration.ms, 240.0);
+        assert_eq!(def.delay.map(|d| d.ms), Some(60.0));
+        assert_eq!(def.iterations, 1);
+        assert_eq!(def.direction, AnimDirection::Normal);
+        assert_eq!(def.frames.len(), 2);
+        assert_eq!(def.frames.first().map(|f| f.translate_y), Some(Some(8.0)));
+
+        // Il legame sta in `PartStyle`, e la definizione viaggia col nome: chi
+        // deve sapere quanto costa non deve tenersi accanto la tabella.
+        let parte = skin.parts.first().expect("la parte");
+        assert_eq!(parte.animations_used(), ["sale", "sale"]);
+        assert_eq!(
+            parte
+                .animations
+                .get(AnimTrigger::Enter)
+                .map(|r| r.def.duration.ms),
+            Some(240.0)
+        );
+        // Due animazioni suonate una volta: otto sul budget di dodici.
+        assert_eq!(parte.motion_cost(), 8);
+        // E l'aspetto non ne sa niente: `animations` non è un valore d'aspetto.
+        assert!(parte.appearance.is_empty());
+    }
+
+    #[test]
+    fn i_fotogrammi_fuori_ordine_si_rifiutano_invece_di_essere_riordinati() {
+        let guasto = rifiuta(&con_animazioni(
+            r##"{ "sale": { "duration": "240ms", "frames": [
+                { "at": 0, "opacity": 0 },
+                { "at": 80, "opacity": 1 },
+                { "at": 40, "opacity": 0.5 }
+            ] } }"##,
+            "{}",
+        ));
+        assert!(guasto.to_string().contains("ordine crescente"), "{guasto}");
+
+        // E il primo deve stare a 0: senza, il motore ricava la partenza dallo
+        // stato in cui la parte si trova, che cambia da un'esecuzione all'altra.
+        let guasto = rifiuta(&con_animazioni(
+            r##"{ "sale": { "duration": "240ms", "frames": [
+                { "at": 10, "opacity": 0 },
+                { "at": 100, "opacity": 1 }
+            ] } }"##,
+            "{}",
+        ));
+        assert!(guasto.to_string().contains("sta a 0"), "{guasto}");
+    }
+
+    #[test]
+    fn infinite_non_e_un_numero_di_ripetizioni() {
+        // Il divieto è la ragione per cui esiste il tetto: una scala a zero non
+        // ferma un ciclo infinito, lo rende infinitamente lento — e la regola
+        // che lo spegnerebbe una skin non la può scrivere.
+        let guasto = rifiuta(&con_animazioni(
+            r##"{ "pulsa": { "duration": "240ms", "iterations": "infinite", "frames": [
+                { "at": 0, "scale": 1 },
+                { "at": 100, "scale": 1.1 }
+            ] } }"##,
+            "{}",
+        ));
+        let detto = guasto.to_string();
+        assert!(detto.contains("«infinite» non è ammesso"), "{detto}");
+        // Il messaggio dice anche come si fa un pulsare, che è la domanda vera.
+        assert!(detto.contains("alternate"), "{detto}");
+
+        // E nemmeno la quinta ripetizione, che «infinite» non la scrive.
+        assert!(
+            rifiuta(&con_animazioni(
+                r##"{ "pulsa": { "duration": "240ms", "iterations": 5, "frames": [
+                    { "at": 0, "scale": 1 },
+                    { "at": 100, "scale": 1.1 }
+                ] } }"##,
+                "{}",
+            ))
+            .to_string()
+            .contains("va da 1 a 4")
+        );
+    }
+
+    #[test]
+    fn un_nome_di_animazione_inesistente_riceve_un_suggerimento() {
+        let guasto = rifiuta(&con_animazioni(
+            &format!(r##"{{ "sale": {SALE} }}"##),
+            r##"{ "section-card": { "animations": { "enter": "sales" } } }"##,
+        ));
+        let detto = guasto.to_string();
+        assert!(detto.contains("animazione inesistente: «sales»"), "{detto}");
+        assert!(detto.contains("Forse intendevi «sale»?"), "{detto}");
+
+        // Un trigger fuori elenco è un errore duro, e `exit` è quello che si
+        // prova per primo: in CSS puro non esiste senza che il renderer tenga
+        // montato l'elemento uscente.
+        assert!(
+            rifiuta(&con_animazioni(
+                &format!(r##"{{ "sale": {SALE} }}"##),
+                r##"{ "section-card": { "animations": { "exit": "sale" } } }"##,
+            ))
+            .to_string()
+            .contains("l'uscita non esiste")
+        );
+    }
+
+    #[test]
+    fn il_movimento_di_una_parte_ha_un_budget_suo() {
+        // Tre trigger, e uno che pulsa: 4 + 4 + 5 = 13 sul budget di 12. È
+        // esattamente la riga che la taratura di `MOTION_COST_BUDGET` descrive.
+        let pulsa = r##"{
+          "duration": "160ms", "iterations": 2, "direction": "alternate",
+          "frames": [{ "at": 0, "scale": 1 }, { "at": 100, "scale": 1.08 }]
+        }"##;
+        let skin = parse_skin_json(&con_animazioni(
+            &format!(r##"{{ "sale": {SALE}, "pulsa": {pulsa} }}"##),
+            r##"{ "section-card": { "animations": {
+                "enter": "sale", "hover": "sale", "active": "pulsa"
+            } } }"##,
+        ))
+        .expect("valida");
+        assert_eq!(
+            skin.parts.first().map(crate::parts::PartStyle::motion_cost),
+            Some(13)
+        );
+        let avvisi = check_skin(&skin);
+        assert!(
+            avvisi
+                .iter()
+                .any(|a| a.kind == WarningKind::CostBudget
+                    && a.path == "parts.section-card.animations"),
+            "{avvisi:?}"
+        );
+
+        // Il quarto trigger non arriva nemmeno al budget: è un errore duro,
+        // perché una superficie che si muove a ogni stato non si legge più.
+        assert!(
+            rifiuta(&con_animazioni(
+                &format!(r##"{{ "sale": {SALE} }}"##),
+                r##"{ "section-card": { "animations": {
+                    "enter": "sale", "hover": "sale", "active": "sale", "focus": "sale"
+                } } }"##,
+            ))
+            .to_string()
+            .contains("al massimo 3 trigger")
+        );
+    }
+
+    #[test]
+    fn un_animazione_dichiarata_e_mai_assegnata_e_un_avviso_non_un_costo() {
+        let skin = parse_skin_json(&con_animazioni(
+            &format!(r##"{{ "sale": {SALE} }}"##),
+            r##"{ "section-card": { "opacity": 0.9 } }"##,
+        ))
+        .expect("valida");
+        assert_eq!(
+            skin.parts.first().map(crate::parts::PartStyle::motion_cost),
+            Some(0)
+        );
+        let avvisi = check_skin(&skin);
+        assert!(
+            avvisi
+                .iter()
+                .any(|a| a.kind == WarningKind::UnusedAnimation
+                    && a.path == "motion.animations.sale"),
+            "{avvisi:?}"
+        );
+    }
+
+    #[test]
+    fn un_animazione_su_una_parte_ritirata_si_accetta_e_cade() {
+        // Stessa regola dell'aspetto: il nome è pubblico, sta nelle skin già
+        // spedite, e ritirare una parte non deve spegnere la skin di qualcuno.
+        // Il legame sparisce con la parte, quindi non costa e non si compila.
+        let skin = parse_skin_json(&con_animazioni(
+            &format!(r##"{{ "sale": {SALE} }}"##),
+            r##"{ "viz-title": { "animations": { "enter": "sale" } } }"##,
+        ))
+        .expect("valida: una parte ritirata si accetta");
+        assert!(skin.parts.is_empty());
+        assert!(
+            !crate::compile::compile_skin(&skin)
+                .css
+                .contains("viz-title")
+        );
+    }
+
+    #[test]
+    fn il_formato_resta_1_e_nessuna_migrazione_serve() {
+        // `MIGRAZIONI` risponde alla domanda «documento vecchio, app nuova», e
+        // un documento senza `animations` è già valido così com'è: non c'è
+        // niente da migrare. La domanda opposta — documento nuovo, app vecchia
+        // — nessuna migrazione la risolve, ed è giusto che `solo_chiavi` la
+        // fermi. Alzare a 2 costerebbe una migrazione identità e la riscrittura
+        // di `format` nelle due skin, senza che cambi nulla.
+        assert_eq!(SKIN_FORMAT_VERSION, 1);
+        assert!(MIGRAZIONI.is_empty());
+        assert!(parse_skin_json(&minima("")).is_ok());
     }
 
     #[test]

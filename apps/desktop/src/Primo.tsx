@@ -31,6 +31,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 
+import { useFinestrella } from "./finestrella";
 import { ipc, type CartellaCandidata } from "./ipc";
 import { t } from "./lingue";
 import { Icona } from "./parti/Icone";
@@ -70,6 +71,24 @@ export function Primo({
   const [candidate, setCandidate] = useState<CartellaCandidata[] | null>(null);
   const [scelte, setScelte] = useState<Set<string>>(new Set());
   const [inCorso, setInCorso] = useState(false);
+  /*
+   * Anche qui, e per il motivo più forte di tutti: questa non è una finestrella
+   * sopra una pagina, è una schermata piena — e sotto, montata e raggiungibile
+   * col tabulatore, c'è tutta l'applicazione (`App.tsx` disegna
+   * l'`Impaginazione` subito dopo). Il Tab uscito da qui finiva su una libreria
+   * vuota che non si vede nemmeno, con lo sfondo opaco di `.primo` sopra.
+   *
+   * E non è una trappola vera: la via d'uscita c'è ed è dichiarata, ed è
+   * «Lo faccio dopo» — cioè `onSalta`, che è quel che Escape deve fare qui. Chi
+   * tiene la musica su un NAS spento stasera non resta chiuso dentro.
+   *
+   * Il `data-fuoco-iniziale` sulla radice dice all'hook di fermare il fuoco lì
+   * invece di darlo a un comando: nell'istante in cui questa schermata si apre
+   * le cartelle non sono ancora state contate, quindi «Continua» è spento, e i
+   * due che restano aprono un dialogo di sistema o saltano il primo avvio. Un
+   * Invio battuto per caso non deve fare nessuna delle due cose.
+   */
+  const finestrella = useFinestrella<HTMLDivElement>(onSalta);
 
   // Si guarda una volta sola, all'apertura. La ricerca ha una scadenza dalla
   // parte del nucleo: se una cartella sincronizzata non risponde, torna un
@@ -131,7 +150,14 @@ export function Primo({
   const puoAscoltare = brani > 0;
 
   return (
-    <div className="primo" role="dialog" aria-modal="true" aria-labelledby="primo-titolo">
+    <div
+      ref={finestrella}
+      className="primo"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="primo-titolo"
+      data-fuoco-iniziale
+    >
       <div className="primo-scheda">
         <p className="occhiello">{t("primo.eyebrow")}</p>
         <h1 id="primo-titolo">{t("primo.title")}</h1>

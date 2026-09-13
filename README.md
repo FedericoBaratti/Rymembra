@@ -128,11 +128,24 @@ a longer listening history than the public API offers.
   shared lock at all between the decoder and the audio callback.
 - **A library on SQLite**: incremental scanning with detection of moved files,
   manual and automatic playlists, ratings, favorites and listening history.
-- **Reorganizing the files** on disk into the `Artist/Album/NN - Title` scheme,
-  with a preview of the rename plan and an undo.
-- **Metadata enrichment** from MusicBrainz. The search is carried out on the
-  complete album rather than on the individual track; in the absence of matches
-  that are reliable enough, nothing is written.
+- **Metadata enrichment** from MusicBrainz, written **into the library and
+  never into your files**. The search is carried out on the complete album
+  rather than on the individual track; in the absence of matches that are
+  reliable enough, nothing is written at all. What it works out is annotated in
+  a table of its own, so a correction you made by hand always wins over it and
+  forgetting the whole thing is one button — see
+  [`PRIVACY.md`](PRIVACY.md) § 8. Tags an older version already wrote into your
+  files are left alone rather than reverted on your behalf; the way back is a
+  separate button of its own, labelled with the fact that it writes into the
+  files, and it is kept for one release and then removed.
+- **A folder panel** that reads the tree out of the library instead of the
+  disk, so it opens instantly and never touches a network share.
+- **Synced lyrics** from LRCLIB, with no key and no account, and a way to time
+  them yourself when nobody has: you tap once per line, and then — optionally —
+  once per word, which writes an `.a2.lrc` beside the ordinary `.lrc` that
+  every other player can still read. A constant drift is corrected with two
+  buttons that are **always** reachable, not only when the fit is judged poor:
+  a text that sits inside the right duration can still be half a second early.
 - **Affinity**: what plays after a record ends is chosen from three independent
   layers — the sound of your files, analyzed locally; what you have listened to;
   and the cultural proximity read from ListenBrainz. Each missing layer removes
@@ -147,7 +160,14 @@ a longer listening history than the public API offers.
   LM Studio's local server, the one the Bionic app sits on) or a remote one
   through OpenRouter. It is off until you configure a provider, and what it
   sends is documented in [`PRIVACY.md`](PRIVACY.md) § 2-quater.
-- **Backup and synchronization** to Google Drive or to a shared folder.
+- **Backup and synchronization** to Google Drive or to a shared folder, plus a
+  **profile** you can carry by hand: a `.aeprofile` archive with the settings,
+  the library, the listening history, the lyrics, your corrections, the covers
+  and the skin packages in it. It is written and read straight onto the disk,
+  one entry at a time, so a profile of several hundred megabytes never sits in
+  memory; importing shows you the plan first and proposes a remapping for every
+  root that does not exist on this machine. The old seventeen-line JSON is
+  still read, and no longer written.
 - **Scrobbling** to Last.fm and ListenBrainz.
 - **Automatic updates**: a check for releases on GitHub every thirty minutes,
   with a notification. Installing always requires an explicit confirmation, and
@@ -158,6 +178,13 @@ a longer listening history than the public API offers.
 ---
 
 ## Interface
+
+On first run a guided tour runs once, in ten steps. It is not a carousel of
+pictures: each step finds the real element in the window, cuts a hole in the
+veil over it and puts the bubble beside it, so what you are shown is the
+program at the size and in the skin you are running it in. A step whose anchor
+is not on screen — the queue is closed, nothing is playing — is skipped rather
+than faked. *Settings → Redo the tour* brings it back.
 
 ![The track list](immagini/brani.webp)
 
@@ -171,7 +198,18 @@ The playback screen with the spectrum analyzer on. The samples are taken after
 the equalizer and before the volume control: changes to the equalization curve
 are visible in the bars, changes to the volume are not. The bands reach the
 interface through a ring buffer that discards excess samples when it is full, so
-as not to introduce any wait in the audio callback.
+as not to introduce any wait in the audio callback. Under the rating there is a
+line saying what the file is — «FLAC · 44.1 kHz · Stereo · 1058 kbps» — read
+from four columns that had been in the database since the first version and
+that nothing had ever read back. It describes the **file** and not the output:
+if the sound card is resampling, this line still says what the edition is.
+
+The whole window zooms, `Ctrl++`, `Ctrl+-` and `Ctrl+0`, over the same seven
+steps between 90% and 200% that every browser offers. It is the WebView's zoom
+and not a scale in the stylesheet, so the two places that measure the DOM — the
+virtualized list and the tour's spotlight — go on working in CSS pixels and
+never notice. The step is remembered; it does not travel in a profile, because
+it is the correction left over after Windows' own scaling on this monitor.
 
 ---
 
@@ -187,6 +225,18 @@ since 2.3.0, the visualizer's scene as well: not only its colors, but its
 geometry and its behavior, from the depth of the room and the aperture of the
 lens down to how fast a bar falls. This is not a matter of switching between a
 light theme and a dark one.
+
+Since 2.3.1 a skin also declares **named animations** — up to eight of them,
+two to six frames each, bound to a part's `enter`, `hover`, `active`, `focus`
+or `disabled` state — and the Studio has a Motion panel for them, with the
+curves, the page transition and a cost budget. The line that decides what
+belongs there is that a skin animates **states of the DOM, not events of the
+application**. `iterations: infinite` is refused without exception, because the
+rules that stop an endless animation under «reduced motion» are written by
+hand, one at a time, and a skin cannot write them: a skin's endless animation
+would be the only thing in Aether nobody could stop. Every duration the
+compiler emits passes through `calc(… * var(--motion-scale))`, and a test
+asserts that none escapes.
 
 ![The Studio, the skin editor](immagini/studio.webp)
 
@@ -237,10 +287,18 @@ limits](#known-limits-and-planned-work).
 
 The changes introduced by each version are listed in
 [`CHANGELOG.md`](CHANGELOG.md). The numbering rule is described at the top of
-that file: every version that introduces a database migration entails an
-increment of the *minor* number, because migrations are not reversible and going
-back to an earlier version requires restoring a copy of the database from before
-the update.
+that file, and 2.3.1 amended it: the number no longer tries to say how much a
+release contains, because that turned out to be a thing two readers score
+differently. What it does say is whether a copy that updated and a copy that
+did not still understand each other.
+
+Migrations are not reversible, and that warning moved out of the number and
+into the text. **Every release that migrates the database names its migrations
+in its own entry and says what going back would cost** — which is always the
+same thing: a copy of the database taken before the update, because an older
+version refuses to open a newer database rather than guessing at it. 2.3.1
+migrates twice, `019_identita_e_metadati.sql` and `020_cronologia_unica.sql`,
+and it is a patch.
 
 ---
 
@@ -255,7 +313,7 @@ the update.
 ### Commands
 
 ```bash
-# The test suite: about 1530 tests, runnable with no network connection
+# The test suite: about 1840 tests, runnable with no network connection
 cargo test --workspace
 ```
 
@@ -383,7 +441,8 @@ constraint is stated explicitly in the terms of use.
   missing is a place of its own in the library — `tracks.path` is `NOT NULL
   UNIQUE`, so a track that is not a file has to borrow the column meant for one
   — and the «Explore» section from which to search for such tracks. Closing the
-  gap takes a migration, and therefore a further minor version.
+  gap takes a migration, which since 2.3.1 no longer implies a minor version but
+  does imply a line in that release's entry saying what going back would cost.
 - **macOS and Linux.** The installer's only target is NSIS: the supported
   platform is therefore Windows.
 - **Mobile application.** Present in the previous version of the project, not

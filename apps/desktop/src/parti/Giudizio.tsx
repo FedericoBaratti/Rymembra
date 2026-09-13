@@ -5,11 +5,24 @@
  * cuore — il che è precisamente il motivo per cui erano due copie: nessuno
  * estrae trentacinque righe per un `16` che diventa `18`, e così le altre
  * trentaquattro si correggono in un posto e restano sbagliate nell'altro.
+ *
+ * # Perché i dati tecnici del file stanno qui dentro
+ *
+ * Perché questa fascia è l'unico pezzo che la colonna e lo schermo intero
+ * condividono già, sotto i comandi di trasporto in tutte e due. Aggiungere la
+ * riga qui vuol dire scriverla una volta e vederla nei due posti; aggiungerla
+ * nelle due schermate vorrebbe dire due copie che divergono al primo ritocco —
+ * cioè esattamente il difetto per cui questo componente è stato estratto.
+ *
+ * Il dato arriva da `stato.formato`, che è già qui: non serve una prop in più.
+ * `Formato` non disegna niente quando il dato manca, quindi la fascia resta
+ * quella di prima per chi ha spento l'interruttore o ha una libreria vecchia.
  */
 import type { CSSProperties } from "react";
 
 import { Stelle } from "../Stelle";
 import { ipc, type Brano, type StatoRiproduzione } from "../ipc";
+import { Formato } from "./Formato";
 import { Icona } from "./Icone";
 import { t } from "../lingue";
 
@@ -44,7 +57,10 @@ export function Giudizio({
   };
 
   return (
-    <div className="giudizio">
+    // L'ancora del giro guidato. Sta qui e non nelle due schermate che montano
+    // questa fascia, per la stessa ragione per cui ci sta il formato del file:
+    // scritta una volta, illuminata in tutti e due i posti.
+    <div className="giudizio" data-giro="giudizio">
       <button
         type="button"
         className="cuore icon-btn"
@@ -91,6 +107,11 @@ export function Giudizio({
           onChange={(e) => comanda(ipc.volume(Number(e.target.value), false))}
         />
       </div>
+      {/* Ultimo figlio, e a capo da solo: nella colonna la fascia è larga
+          348 px fissi, e una quinta cosa in fila spingerebbe fuori il cursore
+          del volume. Il foglio la manda a capo dentro `.giudizio` e la tronca
+          con i puntini, così nessun genitore deve cambiare misura. */}
+      <Formato formato={stato.formato} classe="formato np-formato" />
     </div>
   );
 }

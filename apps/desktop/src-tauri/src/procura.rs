@@ -93,7 +93,7 @@ const LOTTO: usize = 24;
 /// Un prelievo annuncia l'avanzamento a ogni blocco da 64 KiB, cioè decine di
 /// volte al secondo. Mandarne uno per annuncio inonderebbe il canale IPC per
 /// muovere una barra di meno di un pixel — è la stessa strozzatura di
-/// `riordino` e `comandi`, con la stessa ragione.
+/// `comandi`, con la stessa ragione.
 const PASSO_FRAZIONE: u32 = 2;
 
 // ── lo stato condiviso ──────────────────────────────────────────────────────
@@ -755,7 +755,7 @@ fn un_brano(
     if let Err(guasto) = scrivi_tag(&preso.percorso, &da_scrivere, numero, copertina.as_deref()) {
         // L'estensione e non il percorso: il diario si spedisce, e un percorso
         // di download porta dentro il nome dell'account di Windows e — visto
-        // come `riordino` costruisce le cartelle — l'artista e l'album. Quel
+        // come `destinazione` costruisce le cartelle — l'artista e l'album. Quel
         // che serve a capire perché un tag non si scrive è **quale formato**
         // era, che è la differenza fra un FLAC e un contenitore che `lofty` non
         // sa riscrivere. Il resto lo dice `{guasto}`.

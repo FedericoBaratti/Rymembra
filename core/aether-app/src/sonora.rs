@@ -16,13 +16,26 @@
 //! registra()   ──►  le righe, in una transazione  (lucchetto preso)
 //! ```
 //!
-//! Tre e non quattro: manca `scrivi_file`, perché **questa passata non tocca
-//! mai i file dell'utente**. È la differenza che conta rispetto
-//! all'arricchimento, e ne discende tutto il resto: non serve un giornale di
-//! annullamento, non serve fotografare lo stato di prima, non serve un comando
-//! «annulla». L'intestazione di `arricchimento.rs` esiste per giustificare una
-//! passata che scrive dentro i file di qualcun altro; questa non ha niente da
-//! giustificare.
+//! Tre e non quattro: manca l'`applica()` dell'arricchimento, che fra la
+//! decisione e la riga posa le copertine nello store su disco. Qui non c'è
+//! niente da posare da nessuna parte — un'impronta è un pugno di numeri, e sta
+//! nella riga stessa — quindi la fase lenta consegna già il risultato finito e
+//! non esiste un terzo momento in cui qualcosa possa restare a metà.
+//!
+//! Fino alla 2.3.0 qui era scritta un'altra cosa: che la differenza che conta
+//! è che questa passata non tocca mai i file dell'utente, mentre
+//! l'arricchimento li riscrive. **Quella differenza non c'è più**: dalla 2.3.1
+//! l'arricchimento i file non li apre nemmeno, e quel che decide finisce in
+//! `track_meta_arricchita`. Se ne è aperta una opposta, e vale la pena
+//! scriverla per intero, perché è il contrario di quel che si ricorda: delle
+//! due passate, l'unica che apra ancora i file di qualcun altro è **questa** —
+//! in lettura, per decodificarli, perché un'impronta sonora non si ricava dai
+//! tag.
+//!
+//! Da lì non discende un annullamento: una lettura non si disfa, e nessuna
+//! riga di `tracks` cambia per colpa di una misura. Ne discende invece tutto
+//! il resto di questa nota — la scadenza che chi chiama deve mettere addosso a
+//! [`misura`], e la terza risposta per quando il file non si raggiunge.
 //!
 //! # La fase di mezzo è lenta e non tiene niente in mano
 //!
@@ -508,9 +521,8 @@ fn da_byte(byte: &[u8]) -> Option<Vec<f32>> {
         return None;
     }
     let mut fuori = Vec::with_capacity(impronta::DIMENSIONI);
-    for pezzo in byte.chunks_exact(4) {
-        let quattro: [u8; 4] = pezzo.try_into().ok()?;
-        let valore = f32::from_le_bytes(quattro);
+    for pezzo in byte.as_chunks::<4>().0 {
+        let valore = f32::from_le_bytes(*pezzo);
         if !valore.is_finite() {
             return None;
         }

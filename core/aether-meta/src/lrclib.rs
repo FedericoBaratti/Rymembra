@@ -32,6 +32,7 @@
 //! sbagliarlo produce scarti di tre ordini di grandezza — cioè nessuna
 //! corrispondenza, mai, senza nessun messaggio d'errore.
 
+use aether_domain::abbinamento::senza_decorazioni;
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::testo::{Candidato, Cercato};
 use aether_domain::{enrich::normalize_for_match, testo};
@@ -40,8 +41,8 @@ use aether_net::percento;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::Fornitori;
 use crate::deposito::VIVE_RICERCA_MS;
+use crate::{Fornitori, Memoria};
 
 /// Una voce del catalogo: cosa dice di essere, e cosa porta.
 ///
@@ -156,18 +157,113 @@ const fn secondi(ms: u64) -> u64 {
     ms.saturating_add(500) / 1000
 }
 
-/// La chiave con cui si ricorda una domanda.
+/// La chiave con cui si ricorda la domanda **generosa**.
 ///
 /// Ci va anche la durata, arrotondata al secondo: due edizioni dello stesso
 /// brano fanno due domande diverse e devono avere due risposte diverse in
 /// cache, altrimenti la prima risposta si applica anche alla seconda — che è
 /// proprio l'errore che il veto di durata esiste per fermare.
-fn chiave(cercato: &Cercato<'_>) -> String {
+///
+/// L'album invece **non** ci va, e non è una dimenticanza: `/api/search` non lo
+/// manda: vedi [`url_ricerca`]. Metterlo qui vorrebbe dire ricordare sotto due
+/// chiavi diverse due richieste identiche byte per byte.
+fn chiave_ricerca(cercato: &Cercato<'_>) -> String {
     let secondi = secondi(cercato.durata_ms.unwrap_or(0));
     format!(
         "{}|{}|{secondi}",
         normalize_for_match(cercato.artista),
         normalize_for_match(cercato.titolo),
+    )
+}
+
+/// La chiave con cui si ricorda la domanda **esatta**.
+///
+/// È quella della ricerca più l'album, perché l'album sta nell'URL di
+/// `/api/get` e quindi **fa parte della domanda**: la stessa canzone chiesta
+/// una volta come «Habemus Capa» e una come «Greatest Hits» sono due richieste
+/// diverse, e il catalogo risponde a una delle due `404`. Senza l'album qui, la
+/// prima delle due risposte si applicava anche alla seconda — un `404`
+/// ricordato per tre giorni su un'edizione che il catalogo ce l'aveva, o
+/// peggio il testo di un'edizione mostrato sull'altra.
+///
+/// La regola generale, che vale anche per chi aggiungerà una terza domanda:
+/// **quel che cambia l'URL deve cambiare la chiave.**
+fn chiave_esatta(cercato: &Cercato<'_>) -> String {
+    format!(
+        "{}|{}",
+        chiave_ricerca(cercato),
+        normalize_for_match(cercato.album.unwrap_or_default()),
+    )
+}
+
+/// L'URL della domanda esatta.
+///
+/// `album_name` **si omette** quando non c'è, invece di mandarlo vuoto: per
+/// LRCLIB un parametro assente è «non lo so», mentre `album_name=` è «l'album è
+/// la stringa vuota», e nessuna voce del catalogo ha l'album vuoto. Mandarlo
+/// vuoto voleva dire un `404` garantito su ogni file senza tag `album` — cioè
+/// spendere la richiesta esatta per non ottenere mai niente, proprio sui file
+/// taggati peggio, che sono quelli che il testo non ce l'hanno.
+fn url_esatta(cercato: &Cercato<'_>, durata_ms: u64) -> String {
+    let mut url = format!(
+        "https://lrclib.net/api/get?artist_name={}&track_name={}&duration={}",
+        percento(cercato.artista),
+        percento(cercato.titolo),
+        secondi(durata_ms),
+    );
+    if let Some(album) = cercato.album.map(str::trim).filter(|a| !a.is_empty()) {
+        url.push_str("&album_name=");
+        url.push_str(&percento(album));
+    }
+    url
+}
+
+/// Con quale titolo si sta facendo il giro: quello del file, o quello sfrondato.
+///
+/// Serve a **due** cose, e la seconda è quella che conta: dà un nome di
+/// servizio diverso ai due giri, quindi due voci di deposito diverse. Senza,
+/// le due domande finirebbero sotto la stessa chiave — `chiave_ricerca` passa
+/// da `normalize_for_match`, che le parentesi le toglie già, quindi
+/// «Wattershed (Live at Reading…)» e «Wattershed» danno la **stessa** stringa
+/// — e la risposta della prima si applicherebbe alla seconda. È la regola
+/// scritta su [`chiave_esatta`]: quel che cambia l'URL deve cambiare la
+/// chiave, e qui l'URL cambia eccome.
+///
+/// Il guadagno collaterale è la memoria del «non c'è»: due servizi vuol dire
+/// che il deposito ricorda di aver provato **tutt'e due** i titoli, e riaprire
+/// il pannello domani non costa nessuna richiesta invece di costarne due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Giro {
+    /// Il titolo come sta nei tag.
+    ComeSta,
+    /// Il titolo senza le decorazioni.
+    Sfrondato,
+}
+
+impl Giro {
+    /// Il nome del servizio per la domanda esatta di questo giro.
+    const fn esatta(self) -> &'static str {
+        match self {
+            Self::ComeSta => "lrclib-esatta",
+            Self::Sfrondato => "lrclib-esatta-sfrondata",
+        }
+    }
+
+    /// Il nome del servizio per la domanda generosa di questo giro.
+    const fn ricerca(self) -> &'static str {
+        match self {
+            Self::ComeSta => "lrclib-ricerca",
+            Self::Sfrondato => "lrclib-ricerca-sfrondata",
+        }
+    }
+}
+
+/// L'URL della domanda generosa: solo titolo e artista.
+fn url_ricerca(cercato: &Cercato<'_>) -> String {
+    format!(
+        "https://lrclib.net/api/search?track_name={}&artist_name={}",
+        percento(cercato.titolo),
+        percento(cercato.artista),
     )
 }
 
@@ -217,10 +313,126 @@ fn chiave(cercato: &Cercato<'_>) -> String {
 /// significherebbe marchiare come introvabili tutti i brani cercati mentre il
 /// portatile era staccato dal wifi.
 pub fn cerca(fornitori: &Fornitori, cercato: &Cercato<'_>) -> Result<Option<Voce>, AppError> {
+    cerca_con(fornitori, cercato, Memoria::Vale)
+}
+
+/// Come [`cerca`], ma **senza rileggere** quel che il deposito ricorda.
+///
+/// È il gesto di chi ha davanti un pannello vuoto e preme «Cerca di nuovo».
+/// Senza questa via il pulsante non avrebbe niente da fare: un «non ce l'ho»
+/// resta in deposito tre giorni e una risposta una settimana, quindi il
+/// ritentativo avrebbe riletto la stessa risposta di prima e chi ha premuto
+/// avrebbe visto lo stesso vuoto, concludendo che il pulsante è finto.
+///
+/// Il deposito si **riscrive** lo stesso: saltarlo in lettura non vuol dire
+/// smettere di ricordare, vuol dire non fidarsi di quel che si ricordava
+/// adesso. La cadenza e l'interruttore valgono identici — sono proprietà del
+/// servizio, non della domanda — quindi anche questa via aspetta il suo quarto
+/// di secondo e si ferma davanti a un interruttore aperto.
+///
+/// # Errori
+///
+/// Gli stessi di [`cerca`].
+pub fn cerca_di_nuovo(
+    fornitori: &Fornitori,
+    cercato: &Cercato<'_>,
+) -> Result<Option<Voce>, AppError> {
+    cerca_con(fornitori, cercato, Memoria::Salta)
+}
+
+/// Il corpo delle due, con la sola differenza che le distingue.
+///
+/// # I due giri, e perché il secondo esiste
+///
+/// «Wattershed (Live at Reading Festival, London, UK - August 1995)» è il
+/// titolo che sta nei tag di un file vero, ed è il caso da cui questo pezzo è
+/// nato. Quella parentesi descrive **un'esecuzione**: dice dove e quando è
+/// stata suonata. Il testo cantato però è quello della canzone, e nel catalogo
+/// nessuno ha caricato una voce con quel nome per esteso — quindi tutt'e due le
+/// domande del primo giro tornano vuote, e il pannello resta bianco per un
+/// brano di cui LRCLIB il testo ce l'ha.
+///
+/// Da qui il secondo giro, con il titolo sfrondato da
+/// [`senza_decorazioni`]: gruppi fra parentesi via, e la coda dopo un trattino
+/// isolato quando parla di un'edizione.
+///
+/// # Perché non si sfronda subito, e perché non si tocca `titolo_da_cercare`
+///
+/// Sono la stessa domanda, e hanno la stessa risposta: **l'ordine è
+/// l'informazione**. Se il catalogo ha una voce per quella esecuzione esatta,
+/// quella è la voce giusta — è il testo di *quel* concerto, con gli
+/// intercalari e i versi cambiati che un live ha — e prenderla vince su
+/// qualunque ripiego. Il secondo giro parte solo dopo un vuoto.
+///
+/// E `aether_domain::enrich::titolo_da_cercare` resta com'è, che è il fatto
+/// nuovo da mettere per iscritto: **le due dottrine sono opposte, e hanno
+/// tutt'e due ragione, perché cercano due cose diverse.** Quella funzione serve
+/// all'arricchimento, che cerca una **pubblicazione**: là togliere `(Live)` è
+/// un errore, perché farebbe trovare il disco di studio e attaccare a un file
+/// dal vivo i metadati di un'altra incisione. Qui si cerca un **testo cantato**,
+/// che di quella distinzione non sa niente: le parole di «Wattershed» sono le
+/// parole di «Wattershed», al Reading Festival come in studio.
+///
+/// La difesa contro l'abuso non è quindi il titolo: è il **veto di durata** di
+/// [`aether_domain::testo::scegli`], che resta identico nei due giri. Sfrondando
+/// si allarga il campo, quindi quel veto conta più di prima, non meno — ed è
+/// giusto che una registrazione dal vivo lunga il doppio dello studio faccia
+/// rinunciare invece di agganciare il testo sbagliato.
+fn cerca_con(
+    fornitori: &Fornitori,
+    cercato: &Cercato<'_>,
+    memoria: Memoria,
+) -> Result<Option<Voce>, AppError> {
     if cercato.titolo.trim().is_empty() || cercato.artista.trim().is_empty() {
         return Ok(None);
     }
-    let chiave = chiave(cercato);
+    // Un `Err` non passa al secondo giro: «non si sa» non è «non c'è», e
+    // chiedere una seconda volta a una rete che non ha risposto costa due
+    // scadenze invece di una per lo stesso silenzio.
+    if let Some(voce) = un_giro(fornitori, cercato, memoria, Giro::ComeSta)? {
+        return Ok(Some(voce));
+    }
+
+    // Si riusa `senza_decorazioni` invece di scriverne una seconda: è la
+    // funzione che `normalize_for_match` compone già dentro di sé, quindi lo
+    // sfrondamento della domanda e quello della chiave **non possono**
+    // divergere. Due normalizzazioni che si allontanano di un carattere sono
+    // il difetto che le chiavi di cache qui sopra esistono per non avere.
+    let sfrondato = senza_decorazioni(cercato.titolo);
+    let sfrondato = sfrondato.trim();
+    // Niente da sfrondare, o non è rimasto niente: il secondo giro sarebbe la
+    // stessa richiesta sotto un'altra chiave, cioè traffico per nulla.
+    if sfrondato.is_empty() || sfrondato == cercato.titolo.trim() {
+        return Ok(None);
+    }
+    un_giro(
+        fornitori,
+        &Cercato {
+            titolo: sfrondato,
+            ..*cercato
+        },
+        memoria,
+        Giro::Sfrondato,
+    )
+}
+
+/// Un giro di domande — l'esatta, poi la generosa — con un titolo solo.
+fn un_giro(
+    fornitori: &Fornitori,
+    cercato: &Cercato<'_>,
+    memoria: Memoria,
+    giro: Giro,
+) -> Result<Option<Voce>, AppError> {
+    let chiedi = |servizio: &str, chiave: &str, url: &str| {
+        fornitori.json_con_memoria(
+            &fornitori.lrclib,
+            servizio,
+            chiave,
+            url,
+            VIVE_RICERCA_MS,
+            memoria,
+        )
+    };
 
     // ── la domanda esatta ───────────────────────────────────────────────────
     // Quel che l'esatta ha risposto quando la risposta non porta i tempi: si
@@ -228,20 +440,8 @@ pub fn cerca(fornitori: &Fornitori, cercato: &Cercato<'_>) -> Result<Option<Voce
     // risposta di riserva e non ancora la risposta.
     let mut piatta: Option<Voce> = None;
     if let Some(durata_ms) = cercato.durata_ms.filter(|d| *d > 0) {
-        let url = format!(
-            "https://lrclib.net/api/get?artist_name={}&track_name={}&album_name={}&duration={}",
-            percento(cercato.artista),
-            percento(cercato.titolo),
-            percento(cercato.album.unwrap_or_default()),
-            secondi(durata_ms),
-        );
-        let corpo = fornitori.json(
-            &fornitori.lrclib,
-            "lrclib-esatta",
-            &chiave,
-            &url,
-            VIVE_RICERCA_MS,
-        )?;
+        let url = url_esatta(cercato, durata_ms);
+        let corpo = chiedi(giro.esatta(), &chiave_esatta(cercato), &url)?;
         if let Some(corpo) = corpo
             && let Some(voce) = interpreta(&corpo).into_iter().next()
             && !voce.e_vuota()
@@ -257,18 +457,8 @@ pub fn cerca(fornitori: &Fornitori, cercato: &Cercato<'_>) -> Result<Option<Voce
     }
 
     // ── la domanda generosa ─────────────────────────────────────────────────
-    let url = format!(
-        "https://lrclib.net/api/search?track_name={}&artist_name={}",
-        percento(cercato.titolo),
-        percento(cercato.artista),
-    );
-    let risposta = fornitori.json(
-        &fornitori.lrclib,
-        "lrclib-ricerca",
-        &chiave,
-        &url,
-        VIVE_RICERCA_MS,
-    );
+    let url = url_ricerca(cercato);
+    let risposta = chiedi(giro.ricerca(), &chiave_ricerca(cercato), &url);
     let corpo = match risposta {
         Ok(Some(corpo)) => corpo,
         Ok(None) => return Ok(piatta),
@@ -489,7 +679,7 @@ fn da_esadecimale(grezzo: &str) -> Option<[u8; 32]> {
         .into_iter()
         .map(|c| u8::try_from(c).unwrap_or(0))
         .collect();
-    for (posto, coppia) in fuori.iter_mut().zip(cifre.chunks_exact(2)) {
+    for (posto, coppia) in fuori.iter_mut().zip(cifre.as_chunks::<2>().0) {
         let alto = coppia.first().copied().unwrap_or(0);
         let basso = coppia.get(1).copied().unwrap_or(0);
         *posto = alto.saturating_mul(16).saturating_add(basso);
@@ -897,13 +1087,247 @@ mod prove {
             durata_ms: Some(300_000),
             ..corta
         };
-        assert_ne!(chiave(&corta), chiave(&lunga));
+        assert_ne!(chiave_ricerca(&corta), chiave_ricerca(&lunga));
         // …e non distingue due scritture della stessa cosa.
         let storta = Cercato {
             titolo: "  titolo  ",
             artista: "ARTISTA",
             ..corta
         };
-        assert_eq!(chiave(&corta), chiave(&storta));
+        assert_eq!(chiave_ricerca(&corta), chiave_ricerca(&storta));
+    }
+
+    #[test]
+    fn due_edizioni_non_condividono_la_risposta_ricordata() {
+        // Stesso titolo, stesso artista, stessa durata al secondo: due
+        // ristampe dello stesso brano differiscono **solo** per l'album, e
+        // l'album sta nell'URL della domanda esatta.
+        let originale = Cercato {
+            titolo: "The Auditels Family",
+            artista: "Caparezza",
+            album: Some("Habemus Capa"),
+            durata_ms: Some(247_000),
+        };
+        let raccolta = Cercato {
+            album: Some("Greatest Hits"),
+            ..originale
+        };
+        assert_ne!(
+            chiave_esatta(&originale),
+            chiave_esatta(&raccolta),
+            "due domande diverse non possono avere una risposta sola in cache"
+        );
+        // E la domanda generosa, che l'album non lo manda, resta una sola: due
+        // chiavi per la stessa richiesta sarebbero due richieste dove ne basta
+        // una.
+        assert_eq!(chiave_ricerca(&originale), chiave_ricerca(&raccolta));
+    }
+
+    #[test]
+    fn un_album_assente_non_finisce_nell_url() {
+        let senza = Cercato {
+            titolo: "Titolo",
+            artista: "Artista",
+            album: None,
+            durata_ms: Some(240_000),
+        };
+        let url = url_esatta(&senza, 240_000);
+        assert!(
+            !url.contains("album_name"),
+            "un album che non c'è non è un album vuoto: {url}"
+        );
+        // Uno fatto di soli spazi conta come assente: nei tag capita, e
+        // mandarlo sarebbe lo stesso `404` garantito.
+        let spazi = Cercato {
+            album: Some("   "),
+            ..senza
+        };
+        assert!(!url_esatta(&spazi, 240_000).contains("album_name"));
+
+        // Quando invece c'è, ci va — con il percento al posto giusto.
+        let con = Cercato {
+            album: Some("Habemus Capa"),
+            ..senza
+        };
+        assert!(url_esatta(&con, 240_000).contains("album_name=Habemus%20Capa"));
+        // La durata resta in secondi interi, come il catalogo la vuole.
+        assert!(url_esatta(&con, 240_400).contains("duration=240"));
+    }
+
+    // ── il secondo giro, col titolo sfrondato ───────────────────────────────
+
+    /// Il titolo come sta nei tag del file da cui è nato il punto #4.
+    ///
+    /// La parentesi descrive **un'esecuzione**: dove e quando è stata suonata.
+    /// Nessuno ha caricato in catalogo una voce con quel nome per esteso.
+    const DAL_VIVO: &str = "Wattershed (Live at Reading Festival, London, UK - August 1995)";
+
+    /// Il brano dal vivo: tre minuti e cinquantuno, come la registrazione.
+    const fn concerto() -> Cercato<'static> {
+        Cercato {
+            titolo: DAL_VIVO,
+            artista: "Foo Fighters",
+            album: Some("Live at Reading"),
+            durata_ms: Some(231_000),
+        }
+    }
+
+    #[test]
+    fn un_titolo_dal_vivo_ripiega_sul_titolo_sfrondato() {
+        // Il catalogo, sotto il titolo per esteso, non ha niente: né la
+        // domanda esatta né quella generosa. È il pannello bianco che il
+        // punto #4 doveva chiudere.
+        //
+        // Sotto «Wattershed» invece la voce c'è, con la durata di **questa**
+        // esecuzione: qualcuno l'ha caricata dal disco dal vivo, col titolo
+        // scritto in modo semplice.
+        let sfrondata = r#"[
+          {"id": 991, "trackName": "Wattershed", "artistName": "Foo Fighters",
+           "albumName": "Live at Reading", "duration": 231.0, "instrumental": false,
+           "plainLyrics": "le parole", "syncedLyrics": "[00:12.00]le parole"}
+        ]"#;
+        let (fornitori, finto) = finti(vec![
+            ("lrclib-esatta", Finta::Niente),
+            ("lrclib-ricerca", Finta::Niente),
+            ("lrclib-esatta-sfrondata", Finta::Niente),
+            ("lrclib-ricerca-sfrondata", Finta::Corpo(sfrondata)),
+        ]);
+
+        let voce = cerca(&fornitori, &concerto())
+            .expect("nessun guasto")
+            .expect("il catalogo il testo ce l'ha, sotto l'altro nome");
+        assert_eq!(voce.candidato.id, 991);
+        assert!(voce.candidato.sincronizzato);
+
+        // E i due giri hanno chiesto a **quattro** servizi diversi, non a due:
+        // è quel che tiene separate le due risposte in deposito. Con una
+        // chiave sola il «non c'è» del primo giro avrebbe risposto anche al
+        // secondo — `normalize_for_match` le parentesi le toglie già, quindi i
+        // due titoli danno la stessa chiave.
+        let chieste = finto.chieste();
+        for servizio in [
+            "lrclib-esatta",
+            "lrclib-ricerca",
+            "lrclib-esatta-sfrondata",
+            "lrclib-ricerca-sfrondata",
+        ] {
+            assert!(
+                chieste.iter().any(|s| s == servizio),
+                "manca la domanda a {servizio}: {chieste:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn il_ripiego_non_scavalca_un_esito_esatto() {
+        // Il catalogo ha la voce di **questa** esecuzione, col titolo per
+        // esteso: è il testo di quel concerto, con gli intercalari e i versi
+        // cambiati che un live ha, e vince su qualunque ripiego.
+        let esatta_dal_vivo = r#"{"id": 100, "trackName": "Wattershed (Live at Reading Festival, London, UK - August 1995)",
+             "artistName": "Foo Fighters", "albumName": "Live at Reading", "duration": 231.0,
+             "instrumental": false, "plainLyrics": "le parole del concerto",
+             "syncedLyrics": "[00:12.00]le parole del concerto"}"#;
+        // Lo studio esiste, ha la stessa durata al secondo, e non deve
+        // vincere: l'ordine è l'informazione.
+        let studio = r#"[
+          {"id": 200, "trackName": "Wattershed", "artistName": "Foo Fighters",
+           "albumName": "The Colour and the Shape", "duration": 231.0, "instrumental": false,
+           "plainLyrics": "le parole", "syncedLyrics": "[00:12.00]le parole"}
+        ]"#;
+        let (fornitori, finto) = finti(vec![
+            ("lrclib-esatta", Finta::Corpo(esatta_dal_vivo)),
+            ("lrclib-ricerca", Finta::Corpo(studio)),
+            ("lrclib-esatta-sfrondata", Finta::Corpo(studio)),
+            ("lrclib-ricerca-sfrondata", Finta::Corpo(studio)),
+        ]);
+
+        let voce = cerca(&fornitori, &concerto())
+            .expect("nessun guasto")
+            .expect("una voce");
+        assert_eq!(voce.candidato.id, 100, "vince l'esecuzione esatta");
+        let chieste = finto.chieste();
+        assert!(
+            !chieste.iter().any(|s| s.ends_with("-sfrondata")),
+            "il secondo giro non si fa nemmeno: {chieste:?}"
+        );
+    }
+
+    #[test]
+    fn il_ripiego_rispetta_il_veto_sulla_durata() {
+        // Sotto «Wattershed» il catalogo ha la sola versione di studio: due
+        // minuti e cinquantaquattro contro i tre e cinquantuno del concerto,
+        // cioè cinquantasette secondi di scarto. Sfrondare allarga il campo, e
+        // il veto di durata è l'unica difesa che resta contro l'agganciare il
+        // testo di un'altra incisione: qui deve tenere.
+        let solo_studio = r#"[
+          {"id": 200, "trackName": "Wattershed", "artistName": "Foo Fighters",
+           "albumName": "The Colour and the Shape", "duration": 174.0, "instrumental": false,
+           "plainLyrics": "le parole", "syncedLyrics": "[00:12.00]le parole"}
+        ]"#;
+        let (fornitori, finto) = finti(vec![
+            ("lrclib-esatta", Finta::Niente),
+            ("lrclib-ricerca", Finta::Niente),
+            ("lrclib-esatta-sfrondata", Finta::Niente),
+            ("lrclib-ricerca-sfrondata", Finta::Corpo(solo_studio)),
+        ]);
+
+        assert_eq!(
+            cerca(&fornitori, &concerto()).expect("nessun guasto"),
+            None,
+            "meglio nessun testo che il testo di un'altra incisione"
+        );
+        // Il secondo giro **si è fatto**: la rinuncia viene dal veto, non dal
+        // non aver provato. Senza questa riga la prova passerebbe anche se il
+        // ripiego non esistesse.
+        assert!(
+            finto
+                .chieste()
+                .iter()
+                .any(|s| s == "lrclib-ricerca-sfrondata")
+        );
+    }
+
+    #[test]
+    fn un_titolo_senza_decorazioni_non_fa_un_secondo_giro() {
+        // Niente da sfrondare: il secondo giro sarebbe la stessa identica
+        // richiesta sotto un'altra chiave, cioè traffico per nulla contro un
+        // servizio che ci ospita gratis.
+        let (fornitori, finto) = finti(vec![
+            ("lrclib-esatta", Finta::Niente),
+            ("lrclib-ricerca", Finta::Niente),
+        ]);
+        assert_eq!(cerca(&fornitori, &brano()).expect("nessun guasto"), None);
+        assert!(!finto.chieste().iter().any(|s| s.ends_with("-sfrondata")));
+    }
+
+    #[test]
+    fn saltare_la_memoria_non_rilegge_ma_riscrive() {
+        // Il deposito finto risponde `Corpo` a chiunque legga: se la lettura
+        // avvenisse, la domanda esatta troverebbe una voce con i tempi e la
+        // ricerca non si farebbe. Saltandola, la richiesta vera parte — e qui
+        // non c'è rete, quindi cade sull'interruttore aperto.
+        let (fornitori, finto) = finti(vec![
+            ("lrclib-esatta", Finta::Corpo(ESATTA_CON_TEMPI)),
+            ("lrclib-ricerca", Finta::Corpo(RICERCA_CON_TEMPI)),
+        ]);
+        for _ in 0..crate::cadenza::GUASTI_PER_APRIRE {
+            fornitori.lrclib.guasto();
+        }
+        assert!(
+            cerca_di_nuovo(&fornitori, &brano()).is_err(),
+            "il ritentativo non si accontenta di quel che si ricordava"
+        );
+        assert!(
+            finto.chieste().is_empty(),
+            "il deposito non è stato nemmeno interrogato"
+        );
+
+        // E la stessa domanda per la via normale la risposta ricordata la
+        // trova, interruttore aperto o no.
+        let voce = cerca(&fornitori, &brano())
+            .expect("la memoria basta")
+            .expect("una voce");
+        assert_eq!(voce.candidato.id, 1);
+        assert!(!finto.chieste().is_empty());
     }
 }

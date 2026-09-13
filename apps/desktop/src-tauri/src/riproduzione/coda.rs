@@ -110,6 +110,18 @@ pub fn riprendi_coda(app: &tauri::AppHandle) {
             .dissolvenza(dissolvenza_s.saturating_mul(1000));
         lettore.dissolvenza_s = dissolvenza_s;
 
+        // E la latenza d'uscita dichiarata a mano, per la stessa ragione: la
+        // compensazione la fa il motore, e un motore appena aperto non sa niente
+        // di quel che l'utente aveva dichiarato. Senza questa riga il cursore
+        // delle impostazioni mostrerebbe il numero scritto e la posizione non ne
+        // terrebbe conto, che è la peggiore delle due bugie possibili.
+        let latenza_ms = con_libreria(&stato, |libreria| {
+            playback::load_latenza(&libreria.connection)
+        })
+        .unwrap_or(0);
+        lettore.motore.latenza(latenza_ms);
+        lettore.latenza_ms = latenza_ms;
+
         // Quante barre vuole vedere chi guarda. Si applica all'avvio anche se
         // la schermata è chiusa: costa un messaggio e vuol dire che la prima
         // apertura mostra la scena giusta invece di quella di serie per un

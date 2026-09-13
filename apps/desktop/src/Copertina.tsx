@@ -21,7 +21,31 @@
  * novecento miniature in una griglia sono novecento. La regola è «piena dove la
  * copertina **è** il soggetto» — schermo intero, terza colonna, testata di un
  * album — e miniatura dove è un'etichetta.
+ *
+ * # Perché la dissolvenza è uno stato e non un attributo
+ *
+ * Perché l'attributo non si cancellava. `data-pronta` lo scriveva `onLoad` con
+ * un `setAttribute`, cioè a mano, fuori dal modello di React: il nodo restava lo
+ * stesso quando cambiava `src` — ed è quel che succede a **ogni cambio di brano**
+ * nella copertina del lettore e in quella della terza colonna — e un attributo
+ * scritto a mano su un nodo riusato nessuno lo togliva.
+ *
+ * Il danno non era la dissolvenza che funziona una volta sola. Era che un `<img>`
+ * riusato **continua a mostrare l'immagine di prima** finché la nuova non è
+ * decodificata, e con `data-pronta` ancora addosso la mostrava a piena opacità:
+ * per qualche decina di millisecondi il lettore diceva il brano nuovo con la
+ * copertina del precedente, che è un errore — non una transizione.
+ *
+ * Due cose lo chiudono, e servono entrambe. `key={url}` perché l'elemento sia
+ * nuovo quando l'indirizzo è nuovo: un `<img>` appena nato non ha niente da
+ * mostrare, quindi la copertina vecchia sparisce nell'istante in cui il brano
+ * cambia. E lo stato che ricorda **quale** indirizzo è arrivato, invece di un
+ * booleano: così «pronta» si spegne da sé al cambio di `url`, senza un effetto
+ * che lo azzeri e senza il fotogramma in cui l'immagine nuova si vede opaca
+ * prima che l'azzeramento arrivi.
  */
+import { useState } from "react";
+
 import { urlCopertina } from "./aspetto";
 
 export function Copertina({
@@ -36,7 +60,15 @@ export function Copertina({
   /** L'originale invece della miniatura. Vedi la nota del modulo. */
   piena?: boolean;
 }) {
+  /**
+   * L'indirizzo che è arrivato, non il fatto che qualcosa sia arrivato.
+   *
+   * `pronta` si calcola confrontandolo con quello che si sta chiedendo: al cambio
+   * di `url` torna falsa senza che nessuno la azzeri.
+   */
+  const [caricato, setCaricato] = useState<string | null>(null);
   const url = urlCopertina(hash, !piena);
+  const pronta = caricato !== null && caricato === url;
   if (!url) {
     return (
       <div className={`${classe} vuota`} aria-hidden="true">
@@ -46,10 +78,15 @@ export function Copertina({
   }
   return (
     <img
+      /* L'elemento è nuovo quando l'indirizzo è nuovo: vedi la nota del modulo.
+         La chiave sta qui e non sul chiamante perché è questo nodo che deve
+         nascere di nuovo, e i chiamanti hanno già le loro chiavi di lista. */
+      key={url}
       /* `foto` accanto alla classe di chi la usa, e non al posto: serve alla
          sola regola della dissolvenza, che altrimenti andrebbe ripetuta per
          ognuno dei sei nomi che passano di qui. */
       className={`${classe} foto`}
+      data-pronta={pronta ? "" : undefined}
       src={url}
       alt={titolo}
       /* `lazy`: una griglia di novecento album non deve chiedere novecento
@@ -60,8 +97,8 @@ export function Copertina({
       /* La dissolvenza sta nel CSS; qui c'è solo il fatto. `onError` la accende
          lo stesso: un'immagine che non arriva deve mostrare il suo fondo, non
          restare un buco invisibile per sempre. */
-      onLoad={(e) => e.currentTarget.setAttribute("data-pronta", "")}
-      onError={(e) => e.currentTarget.setAttribute("data-pronta", "")}
+      onLoad={() => setCaricato(url)}
+      onError={() => setCaricato(url)}
     />
   );
 }
