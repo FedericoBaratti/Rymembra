@@ -135,6 +135,12 @@ fn contesto() -> Contesto {
 ///   rete **o** il giornale è ripiegato, altrimenti [`ErrorCode::DbIoFailed`].
 ///   I due dicono all'utente due cose diverse — «sposta la cartella» contro
 ///   «guarda il disco» — e mandarlo nel posto sbagliato costa un pomeriggio.
+/// - `SQLITE_CANTOPEN` → la stessa coppia. Fino alla 2.3.1 cadeva nel ripiego,
+///   e il file che non si apre più perché la share si è staccata diceva «il
+///   database ha rifiutato una richiesta, il difetto è di Aether».
+/// - `SQLITE_PROTOCOL` → [`ErrorCode::DbNetworkPath`] con gli stessi indizi,
+///   altrimenti [`ErrorCode::DbLocked`]: è il protocollo dei lucchetti di WAL
+///   che fallisce, e sul disco locale è una corsa che si riprova.
 /// - tutto il resto → [`ErrorCode::DbQueryFailed`] con il suo `detail`, com'era.
 ///   Il ripiego resta un ripiego: un vincolo violato, un tipo che non torna e
 ///   una sintassi sbagliata sono difetti di Aether, non cose da raccontare.
@@ -169,14 +175,22 @@ fn codice_con_contesto(detail: &str, err: &rusqlite::Error, contesto: &Contesto)
             // sposta file. Chi deciderà di metterlo da parte riempirà il campo.
             quarantined_as: None,
         },
-        CodiceSqlite::SystemIoFailure if sospetto_di_rete(err, contesto) => {
+        CodiceSqlite::SystemIoFailure
+        | CodiceSqlite::CannotOpen
+        | CodiceSqlite::FileLockingProtocolFailed
+            if sospetto_di_rete(err, contesto) =>
+        {
             ErrorCode::DbNetworkPath {
                 path: contesto.percorso.clone(),
             }
         }
-        CodiceSqlite::SystemIoFailure => ErrorCode::DbIoFailed {
+        CodiceSqlite::SystemIoFailure | CodiceSqlite::CannotOpen => ErrorCode::DbIoFailed {
             detail: Some(detail.to_owned()),
         },
+        // `SQLITE_PROTOCOL` su un disco locale è la corsa fra due connessioni
+        // sulla memoria condivisa di WAL: SQLite stesso dice di riprovare, ed è
+        // il caso di `DbLocked`.
+        CodiceSqlite::FileLockingProtocolFailed => ErrorCode::DbLocked,
         _ => ErrorCode::DbQueryFailed {
             detail: Some(detail.to_owned()),
         },
@@ -199,12 +213,17 @@ fn codice_con_contesto(detail: &str, err: &rusqlite::Error, contesto: &Contesto)
 ///    rifiutato una volta all'apertura. È l'indizio che copre il caso della
 ///    lettera mappata: il percorso non dice niente, ma il giornale sì.
 fn sospetto_di_rete(err: &rusqlite::Error, contesto: &Contesto) -> bool {
+    // `SQLITE_IOERR_LOCK` accanto ai tre della memoria condivisa: è il
+    // filesystem che non sa dare un lucchetto a intervallo di byte, che è la
+    // stessa firma — SMB con i lucchetti opportunistici, un NAS con un
+    // filesystem che li finge.
     let memoria_condivisa = err.sqlite_error().is_some_and(|errore| {
         matches!(
             errore.extended_code,
             rusqlite::ffi::SQLITE_IOERR_SHMOPEN
                 | rusqlite::ffi::SQLITE_IOERR_SHMSIZE
                 | rusqlite::ffi::SQLITE_IOERR_SHMMAP
+                | rusqlite::ffi::SQLITE_IOERR_LOCK
         )
     });
     memoria_condivisa || contesto.di_rete || contesto.ripiegato
@@ -294,6 +313,29 @@ fn open_connection(connection: Connection) -> Result<Opened, AppError> {
         fts5,
         giornale,
     })
+}
+
+/// Prepara una connessione **in più** allo stesso database della libreria.
+///
+/// # Perché esiste
+///
+/// Perché le connessioni in più sono due — il deposito delle risposte dei
+/// cataloghi e l'indice delle cartelle — e ognuna si scriveva la sua attesa a
+/// mano: cinque secondi, contro i [`BUSY_TIMEOUT_MS`] della principale, e le
+/// chiavi esterne spente. Due numeri che dicono la stessa cosa in due posti sono
+/// due numeri che divergono al primo ritocco.
+///
+/// Non tocca il giornale e non migra: `journal_mode` è scritto nel file, quindi
+/// una connessione in più eredita da sé il ripiego della principale, e due
+/// connessioni che migrano lo stesso database insieme sono il guasto da non
+/// avere. Le due impostazioni che **non** stanno nel file sono queste.
+///
+/// Gli errori si ignorano: una connessione in più che non riesce ad aspettare
+/// risponde «occupato» alla prima contesa, che è un guasto che si riprova, e
+/// rifiutarne l'apertura per questo costerebbe la cache intera.
+pub fn prepara_connessione_secondaria(connection: &Connection) {
+    let _ = connection.busy_timeout(std::time::Duration::from_millis(u64::from(BUSY_TIMEOUT_MS)));
+    let _ = connection.pragma_update(None, "foreign_keys", "ON");
 }
 
 /// Le impostazioni di connessione. Vanno rifatte a ogni apertura: non si
@@ -719,6 +761,51 @@ mod tests {
             &locale,
         );
         assert_eq!(nostro.code().kind(), ErrorCodeKind::DbQueryFailed);
+    }
+
+    #[test]
+    fn il_file_che_non_si_apre_non_e_un_difetto_di_aether() {
+        let locale = contesto_locale();
+        let di_rete = Contesto {
+            percorso: Some(r"\\nas\casa\aether\aether.db".into()),
+            di_rete: true,
+            ripiegato: false,
+        };
+        let cantopen = guasto(rusqlite::ffi::SQLITE_CANTOPEN);
+        assert_eq!(
+            codice_con_contesto("apertura", &cantopen, &di_rete)
+                .code()
+                .kind(),
+            ErrorCodeKind::DbNetworkPath
+        );
+        assert_eq!(
+            codice_con_contesto("apertura", &cantopen, &locale)
+                .code()
+                .kind(),
+            ErrorCodeKind::DbIoFailed
+        );
+
+        let protocollo = guasto(rusqlite::ffi::SQLITE_PROTOCOL);
+        assert_eq!(
+            codice_con_contesto("scrittura", &protocollo, &di_rete)
+                .code()
+                .kind(),
+            ErrorCodeKind::DbNetworkPath
+        );
+        let corsa = codice_con_contesto("scrittura", &protocollo, &locale);
+        assert_eq!(corsa.code().kind(), ErrorCodeKind::DbLocked);
+        assert!(corsa.is_retryable());
+
+        // Il lucchetto a intervallo di byte che il filesystem non sa dare vale
+        // da solo, come la memoria condivisa: una lettera mappata non si
+        // riconosce dalla forma.
+        let lucchetto = guasto(rusqlite::ffi::SQLITE_IOERR_LOCK);
+        assert_eq!(
+            codice_con_contesto("scrittura", &lucchetto, &locale)
+                .code()
+                .kind(),
+            ErrorCodeKind::DbNetworkPath
+        );
     }
 
     #[test]

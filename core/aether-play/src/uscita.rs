@@ -586,7 +586,7 @@ fn riempi<T>(
     // Poi lo svuotamento: dopo un salto, quel che c'è nell'anello appartiene al
     // punto di prima. Va scartato anche — anzi, soprattutto — se siamo in
     // pausa, altrimenti riprendendo si sentirebbe il punto vecchio.
-    if condiviso.svuota.swap(false, Ordering::AcqRel) {
+    if condiviso.svuota.load(Ordering::Acquire) {
         while lettore.pop().is_ok() {}
         // La coda dei filtri è quel punto vecchio quanto i campioni
         // nell'anello: lasciarla suonare sopra il punto nuovo sarebbe la stessa
@@ -600,6 +600,29 @@ fn riempi<T>(
         for posto in dati.iter_mut() {
             *posto = converti(0.0);
         }
+        // La bandiera si abbassa **dopo** aver svuotato, e non prima.
+        //
+        // # Perché l'ordine conta
+        //
+        // Perché dall'altra parte c'è un'attesa: [`Contesto::scarta_in_volo`]
+        // alza questa bandiera e resta fermo finché non la vede abbassata,
+        // perché solo allora l'anello è certamente vuoto e i contatori si
+        // possono azzerare senza correre contro questa funzione. Abbassandola
+        // all'inizio, quell'attesa finiva **prima** dello svuotamento: il filo
+        // della decodifica ripartiva, ricominciava a spingere campioni nuovi, e
+        // il `while` qui sopra — che era ancora dentro il suo giro — se li
+        // mangiava senza contarli.
+        //
+        // Il risultato era un debito permanente fra i fotogrammi spinti e
+        // quelli contati come usciti: qualche migliaio, cioè qualche decina di
+        // millisecondi, a ogni salto. Per i brani in mezzo a una coda non si
+        // vedeva — a passare al successivo è il decodificatore che finisce, non
+        // un conteggio — ma la **fine della coda** la dichiara
+        // [`Contesto::forse_fine`] confrontando quei due numeri, e con un debito
+        // aperto quel confronto non era mai vero: l'ultimo brano restava fermo a
+        // un dito dalla fine, il tasto diceva che stava suonando, e non
+        // succedeva più niente.
+        condiviso.svuota.store(false, Ordering::Release);
         return;
     }
 
@@ -807,6 +830,121 @@ mod prove {
         assert_eq!(dati, [0.0; 4]);
         assert_eq!(lettore.slots(), 0, "l'anello doveva restare vuoto");
         assert!(!stato.svuota.load(Ordering::Acquire), "doveva disarmarsi");
+    }
+
+    #[test]
+    #[expect(clippy::integer_division, reason = "campioni stereo in fotogrammi")]
+    fn chi_aspetta_lo_svuotamento_non_perde_i_campioni_spinti_subito_dopo() {
+        // Il protocollo è quello di `Contesto::scarta_in_volo`: il filo della
+        // decodifica alza `svuota`, resta fermo finché non la vede abbassata —
+        // perché solo allora l'anello è certamente vuoto — e **solo allora**
+        // azzera i contatori e ricomincia a spingere.
+        //
+        // Finché la bandiera si abbassava all'inizio della callback, quella
+        // attesa finiva prima dello svuotamento: i campioni spinti subito dopo
+        // finivano dentro il `while` che stava ancora svuotando, e uscivano dal
+        // conto dei fotogrammi per sempre. Il debito non si richiudeva più, e a
+        // pagarlo era la fine della coda — vedi il commento nel ramo dello
+        // svuotamento, e `Contesto::forse_fine`.
+        //
+        const ANELLO: usize = 65_536;
+        const DA_CONTARE: usize = 4_096;
+        let (mut scrittore, mut lettore) = rtrb::RingBuffer::<f32>::new(ANELLO);
+        let stato = condiviso(2);
+        let fermati = Arc::new(AtomicBool::new(false));
+
+        let callback = {
+            let stato = Arc::clone(&stato);
+            let fermati = Arc::clone(&fermati);
+            std::thread::spawn(move || {
+                let mut andamento = Andamento {
+                    guadagno: 1.0,
+                    resto: 0,
+                };
+                let (_manda, mut filtro) = filtro();
+                let mut spia = spia();
+                let mut dati = [0.0f32; 512];
+                while !fermati.load(Ordering::Acquire) {
+                    riempi(
+                        &mut dati,
+                        &mut lettore,
+                        &stato,
+                        &mut andamento,
+                        &mut filtro,
+                        &mut spia,
+                        |v| v,
+                    );
+                    // Il passo di un dispositivo vero, e non un giro a vuoto il
+                    // più in fretta possibile: senza, questo filo svuoterebbe
+                    // l'anello in pochi microsecondi e la finestra da riprodurre
+                    // non si aprirebbe mai.
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+
+        // Prima si aspetta che la callback stia davvero girando — con lei non
+        // ancora partita la bandiera resterebbe alzata fino al suo primo giro, e
+        // lo svuotamento sarebbe finito prima ancora di cominciare.
+        let _ = scrittore.push(0.9);
+        for _ in 0..1_000 {
+            if stato.fotogrammi.load(Ordering::Relaxed) > 0 || scrittore.slots() == ANELLO {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Poi l'anello si riempie fino all'orlo, perché il `while` che lo svuota
+        // ci metta un tempo misurabile: è la finestra in cui il difetto viveva.
+        while scrittore.push(0.9).is_ok() {}
+
+        stato.svuota.store(true, Ordering::Release);
+        // L'attesa del filo, con un giro stretto invece dei millisecondi veri:
+        // qui non si vuole dormire *attraverso* l'istante in cui la bandiera si
+        // abbassa, perché è proprio quell'istante che la prova guarda.
+        let scadenza = std::time::Instant::now() + Duration::from_secs(5);
+        while stato.svuota.load(Ordering::Acquire) && std::time::Instant::now() < scadenza {
+            std::hint::spin_loop();
+        }
+        assert!(
+            !stato.svuota.load(Ordering::Acquire),
+            "la callback non ha mai abbassato la bandiera"
+        );
+        // L'invariante, guardata dal lato che la usa: quando il filo vede la
+        // bandiera abbassata, l'anello **è** vuoto. È la promessa su cui
+        // `scarta_in_volo` azzera i contatori, e con la bandiera abbassata
+        // all'inizio era falsa — qui sotto ci sarebbero ancora le decine di
+        // migliaia di campioni che il `while` stava scartando.
+        assert_eq!(
+            scrittore.slots(),
+            ANELLO,
+            "la bandiera si è abbassata con l'anello ancora pieno"
+        );
+        // Da qui in poi il filo azzera il conto e ricomincia a spingere: è
+        // esattamente quel che fa `scarta_in_volo`.
+        stato.fotogrammi.store(0, Ordering::Relaxed);
+        let mut spinti = 0usize;
+        while spinti < DA_CONTARE {
+            if scrittore.push(0.5).is_ok() {
+                spinti = spinti.saturating_add(1);
+            }
+        }
+
+        // Il tempo che la callback consumi quel che è stato spinto.
+        for _ in 0..1_000 {
+            if stato.fotogrammi.load(Ordering::Relaxed) >= (DA_CONTARE / 2) as u64 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        fermati.store(true, Ordering::Release);
+        let _ = callback.join();
+
+        assert_eq!(
+            stato.fotogrammi.load(Ordering::Relaxed),
+            (DA_CONTARE / 2) as u64,
+            "la callback ha contato meno fotogrammi di quanti ne sono stati \
+             spinti: lo svuotamento si è mangiato i campioni arrivati dopo"
+        );
     }
 
     #[test]

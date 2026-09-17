@@ -1167,6 +1167,7 @@ fn scansione_automatica(app: &AppHandle, stato: &Stato) {
                 );
             }
             app.emetti("scarico:in_libreria", report.inserted);
+            crate::cartelle::cambiate(app);
         }
         Err(guasto) => nota!("[procura] la scansione finale è fallita: {guasto}"),
     }

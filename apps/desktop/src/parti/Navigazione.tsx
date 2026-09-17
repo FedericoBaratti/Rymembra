@@ -224,7 +224,12 @@ export function Navigazione({
             >
               <Icona nome={icona} dim={19} />
               <span className="etichetta">{etichetta}</span>
-              <span className="conteggio">{conteggi[chiave] ?? "—"}</span>
+              {/* La Home un conteggio non ce l'ha — lo dice il preambolo di
+                  `destinazioni` — e la lineetta che ne prendeva il posto si
+                  leggeva come «zero», o come un numero non ancora arrivato. */}
+              {chiave !== "home" && (
+                <span className="conteggio">{conteggi[chiave] ?? "—"}</span>
+              )}
             </button>
           );
         })}
@@ -290,6 +295,15 @@ export function Navigazione({
                 {/* L'ingranaggio era un glifo che su alcuni caratteri di sistema
                     non esisteva e si vedeva come un rettangolo vuoto. */}
                 <Icona nome={p.isSmart ? "i-settings" : "i-list"} dim={16} />
+                {/* L'iniziale, al posto dell'icona quando la barra è stretta.
+                    Sette playlist erano sette icone identiche incolonnate, e
+                    per trovare quella giusta bisognava passarci sopra una per
+                    una e leggere il suggerimento. Il foglio decide quale delle
+                    due si vede; la lettera è `aria-hidden` perché il nome
+                    intero sta già nell'etichetta. */}
+                <span className="iniziale" aria-hidden="true">
+                  {[...p.name.trim()][0]?.toLocaleUpperCase() ?? "·"}
+                </span>
                 <span className="etichetta">{p.name}</span>
                 <span className="conteggio">{p.tracks}</span>
               </button>

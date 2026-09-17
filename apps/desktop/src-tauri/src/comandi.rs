@@ -103,12 +103,23 @@ pub fn avvio(stato: State<'_, Stato>) -> Esito<Avvio> {
 }
 
 /// Cambia le cartelle sorvegliate.
+///
+/// # I doppioni si tolgono qui
+///
+/// La finestra confrontava le cartelle con `includes`, cioè stringa per
+/// stringa: `D:\Musica`, `d:\musica` e `D:\Musica\` — il dialogo, un
+/// trascinamento e un percorso incollato — erano tre cartelle sorvegliate, e la
+/// stessa musica si scansionava tre volte. Il confronto giusto è
+/// [`aether_domain::paths::path_key`], che è quello della scansione, e sta qui
+/// perché le strade che arrivano a questo comando sono tre: resta la prima
+/// grafia, quella con cui la cartella era già in elenco.
 #[tauri::command]
 pub fn imposta_cartelle(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
     cartelle: Vec<String>,
 ) -> Esito<()> {
+    let cartelle = senza_doppioni(cartelle);
     crate::nuvola::se_riuscito(
         &app,
         con_libreria(&stato, |libreria| {
@@ -116,6 +127,41 @@ pub fn imposta_cartelle(
         })
         .map_err(errore),
     )
+}
+
+/// Le cartelle senza quelle che indicano lo stesso posto di una precedente, e
+/// senza le righe vuote.
+fn senza_doppioni(cartelle: Vec<String>) -> Vec<String> {
+    let regole = aether_domain::paths::PathRules::for_current_platform();
+    let mut viste = std::collections::HashSet::new();
+    cartelle
+        .into_iter()
+        .filter(|cartella| !cartella.trim().is_empty())
+        .filter(|cartella| viste.insert(aether_domain::paths::path_key(cartella, regole)))
+        .collect()
+}
+
+#[cfg(test)]
+mod prove_cartelle {
+    use super::senza_doppioni;
+
+    #[test]
+    fn la_stessa_cartella_scritta_in_tre_modi_e_una() {
+        let date = vec![
+            r"D:\Musica".to_owned(),
+            r"D:\Musica\".to_owned(),
+            r"D:\Live".to_owned(),
+            "   ".to_owned(),
+        ];
+        let attese = vec![r"D:\Musica".to_owned(), r"D:\Live".to_owned()];
+        assert_eq!(senza_doppioni(date.clone()), attese);
+        // Le maiuscole contano solo dove il filesystem le distingue.
+        if cfg!(any(target_os = "windows", target_os = "macos")) {
+            let mut con_minuscole = date;
+            con_minuscole.insert(1, r"d:\musica".to_owned());
+            assert_eq!(senza_doppioni(con_minuscole), attese);
+        }
+    }
 }
 
 /// Sceglie dove finiscono i brani scaricati. Una stringa vuota rimette il
@@ -368,11 +414,10 @@ pub async fn scansiona(app: tauri::AppHandle) -> Esito<EsitoScansione> {
         crate::analisi::sporca(&app);
         // Una scansione cambia quali cartelle esistono e cosa c'è dentro:
         // l'albero del pannello «Cartelle» è derivato da `tracks`, quindi non
-        // si aggiorna, si butta. Costa un contatore atomico, e non ricostruisce
-        // niente — se il pannello non è aperto non c'è nemmeno un albero.
-        if let Some(indice) = app.try_state::<std::sync::Arc<crate::cartelle::IndiceCartelle>>() {
-            indice.invalida();
-        }
+        // si aggiorna, si butta. Costa un contatore atomico e un evento, e non
+        // ricostruisce niente — se il pannello non è aperto non c'è nemmeno un
+        // albero.
+        crate::cartelle::cambiate(&app);
     }
     // Una scansione cambia quali brani esistono, quindi quali statistiche il
     // backup può ancorare: un brano ritrovato dopo una reinstallazione va
@@ -619,15 +664,47 @@ pub fn preferito(
                 rusqlite::params![id, i64::from(valore), now],
             )
             .map(|_| ())
-            .map_err(|err| {
-                AppError::new(aether_domain::errors::ErrorCode::DbQueryFailed {
-                    detail: Some("preferito".into()),
-                })
-                .with_cause(err.to_string())
-            })
+            // Dal classificatore e non costruito a mano: un database occupato o
+            // una share staccata devono dirlo, non «il database ha rifiutato
+            // una richiesta».
+            .map_err(|err| aether_app::db::codice_da_sqlite("preferito", &err))
     })
     .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Apre la cartella di un brano in Esplora risorse, con il file selezionato.
+///
+/// # Perché prende un identificativo e non un percorso
+///
+/// Perché un comando che apre il gestore file su un percorso qualunque è un
+/// comando che la finestra potrebbe usare per aprire qualunque cosa. Con un
+/// identificativo il percorso lo legge il nucleo da `tracks`, e quel che si può
+/// mostrare è soltanto un file che la libreria conosce già.
+///
+/// `(async)`: su una cartella di rete il gestore file può metterci secondi a
+/// rispondere, e non sul filo della finestra.
+///
+/// # Errori
+///
+/// `library.trackNotFound` se il brano non c'è più; `fs.notFound` se il file
+/// non c'è o il gestore file rifiuta di aprirsi.
+#[tauri::command(async)]
+pub fn brano_mostra_nella_cartella(stato: State<'_, Stato>, id: i64) -> Esito<()> {
+    let percorso = con_libreria(&stato, |libreria| {
+        aether_app::library::read_summary(&libreria.connection, id)?
+            .map(|brano| brano.path)
+            .ok_or_else(|| AppError::new(ErrorCode::LibraryTrackNotFound { track_id: Some(id) }))
+    })
+    .map_err(errore)?;
+    tauri_plugin_opener::reveal_item_in_dir(&percorso).map_err(|err| {
+        errore(
+            AppError::new(ErrorCode::FsNotFound {
+                path: percorso.clone(),
+            })
+            .with_cause(err.to_string()),
+        )
+    })
 }
 
 /// Cambia la valutazione di un brano.
@@ -664,12 +741,7 @@ pub fn valutazione(
                 rusqlite::params![id, stelle, now],
             )
             .map(|_| ())
-            .map_err(|err| {
-                AppError::new(aether_domain::errors::ErrorCode::DbQueryFailed {
-                    detail: Some("valutazione".into()),
-                })
-                .with_cause(err.to_string())
-            })
+            .map_err(|err| aether_app::db::codice_da_sqlite("valutazione", &err))
     })
     .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)
@@ -934,10 +1006,9 @@ pub fn casa(stato: State<'_, Stato>) -> Esito<Casa> {
         // La posizione si legge solo se c'è un brano a cui appartiene: da sola
         // sarebbe un numero senza significato, e mostrarla accanto al brano
         // sbagliato è peggio che non mostrarla.
-        let riprendi_ms = if riprendi.is_some() {
-            aether_app::playback::load_posizione(connection)?
-        } else {
-            0
+        let riprendi_ms = match &riprendi {
+            Some(brano) => aether_app::playback::load_posizione(connection, brano.id)?,
+            None => 0,
         };
 
         let recenti = list_tracks(connection, TrackOrder::RecentlyPlayed, 0, RIPIANO)?

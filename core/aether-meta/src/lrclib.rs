@@ -32,7 +32,7 @@
 //! sbagliarlo produce scarti di tre ordini di grandezza — cioè nessuna
 //! corrispondenza, mai, senza nessun messaggio d'errore.
 
-use aether_domain::abbinamento::senza_decorazioni;
+use aether_domain::abbinamento::{primo_artista, senza_decorazioni};
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::testo::{Candidato, Cercato};
 use aether_domain::{enrich::normalize_for_match, testo};
@@ -238,6 +238,8 @@ enum Giro {
     ComeSta,
     /// Il titolo senza le decorazioni.
     Sfrondato,
+    /// Il solo primo interprete, quando i tag ne elencano più d'uno.
+    ArtistaPrincipale,
 }
 
 impl Giro {
@@ -246,6 +248,7 @@ impl Giro {
         match self {
             Self::ComeSta => "lrclib-esatta",
             Self::Sfrondato => "lrclib-esatta-sfrondata",
+            Self::ArtistaPrincipale => "lrclib-esatta-principale",
         }
     }
 
@@ -254,6 +257,7 @@ impl Giro {
         match self {
             Self::ComeSta => "lrclib-ricerca",
             Self::Sfrondato => "lrclib-ricerca-sfrondata",
+            Self::ArtistaPrincipale => "lrclib-ricerca-principale",
         }
     }
 }
@@ -383,8 +387,14 @@ fn cerca_con(
     cercato: &Cercato<'_>,
     memoria: Memoria,
 ) -> Result<Option<Voce>, AppError> {
-    if cercato.titolo.trim().is_empty() || cercato.artista.trim().is_empty() {
+    if cercato.titolo.trim().is_empty() {
         return Ok(None);
+    }
+    // Senza artista la domanda esatta non si può fare — `/api/get` lo vuole — e
+    // quella generosa per titolo e artista vuoto risponde con niente. Resta la
+    // ricerca libera, che guarda il titolo da solo: vedi [`senza_artista`].
+    if cercato.artista.trim().is_empty() {
+        return senza_artista(fornitori, cercato, memoria);
     }
     // Un `Err` non passa al secondo giro: «non si sa» non è «non c'è», e
     // chiedere una seconda volta a una rete che non ha risposto costa due
@@ -402,18 +412,197 @@ fn cerca_con(
     let sfrondato = sfrondato.trim();
     // Niente da sfrondare, o non è rimasto niente: il secondo giro sarebbe la
     // stessa richiesta sotto un'altra chiave, cioè traffico per nulla.
-    if sfrondato.is_empty() || sfrondato == cercato.titolo.trim() {
+    let titolo = if sfrondato.is_empty() || sfrondato == cercato.titolo.trim() {
+        cercato.titolo.trim()
+    } else {
+        if let Some(voce) = un_giro(
+            fornitori,
+            &Cercato {
+                titolo: sfrondato,
+                ..*cercato
+            },
+            memoria,
+            Giro::Sfrondato,
+        )? {
+            return Ok(Some(voce));
+        }
+        sfrondato
+    };
+
+    // ── il terzo giro: l'artista principale ──
+    // «Caparezza, Diego Perrone» nei tag, «Caparezza» nel catalogo: la domanda
+    // esatta fallisce sull'artista e la generosa ha bisogno che l'artista
+    // somigli. Si riprova con il solo primo interprete, e con il titolo più
+    // corto dei due giri di prima — quel che ha più probabilità di esserci.
+    let principale = primo_artista(cercato.artista);
+    if principale.is_empty() || principale == cercato.artista.trim() {
         return Ok(None);
     }
     un_giro(
         fornitori,
         &Cercato {
-            titolo: sfrondato,
+            titolo,
+            artista: principale,
             ..*cercato
         },
         memoria,
-        Giro::Sfrondato,
+        Giro::ArtistaPrincipale,
     )
+}
+
+/// La ricerca per titolo soltanto, quando l'artista non si sa.
+///
+/// È il caso dei file senza tag, che sono quelli che il testo non ce l'hanno: il
+/// titolo arriva dal nome del file e l'artista non c'è. Prima la domanda partiva
+/// lo stesso con «Artista sconosciuto» come artista, cioè una richiesta spesa per
+/// una risposta vuota garantita, e il brano si segnava come cercato per due
+/// settimane.
+///
+/// `q=` guarda titolo, artista e album insieme, e risponde con parecchio: a
+/// restringere ci pensa [`testo::scegli`], che con l'artista vuoto non gli dà
+/// punti e quindi pretende titolo e durata quasi perfetti. Senza la durata non
+/// si prova nemmeno: un titolo solo, come «Home», è di mille canzoni.
+fn senza_artista(
+    fornitori: &Fornitori,
+    cercato: &Cercato<'_>,
+    memoria: Memoria,
+) -> Result<Option<Voce>, AppError> {
+    if cercato.durata_ms.is_none_or(|d| d == 0) {
+        return Ok(None);
+    }
+    let corpo = fornitori.json_con_memoria(
+        &fornitori.lrclib,
+        "lrclib-ricerca-titolo",
+        &chiave_ricerca(cercato),
+        &url_ricerca_libera(cercato.titolo),
+        VIVE_RICERCA_MS,
+        memoria,
+    )?;
+    let Some(corpo) = corpo else {
+        return Ok(None);
+    };
+    let voci = interpreta(&corpo);
+    let candidati: Vec<Candidato> = voci.iter().map(|v| v.candidato.clone()).collect();
+    Ok(testo::scegli(&candidati, cercato)
+        .and_then(|scelto| voci.into_iter().nth(scelto))
+        .filter(|voce| !voce.e_vuota()))
+}
+
+/// L'URL della ricerca libera.
+fn url_ricerca_libera(testo: &str) -> String {
+    format!("https://lrclib.net/api/search?q={}", percento(testo))
+}
+
+/// Quante voci al massimo si mostrano a chi sceglie a mano.
+///
+/// Venti: una ricerca per un titolo comune ne restituisce anche cento — cover,
+/// karaoke, remix — e oltre la ventesima, ordinate come le ordina [`candidati`],
+/// non c'è più niente che somigli al brano.
+const CANDIDATI_MASSIMI: usize = 20;
+
+/// Tutte le voci che il catalogo ha per questo brano, per sceglierne una a mano.
+///
+/// # Quando serve
+///
+/// Quando [`cerca`] ha scelto male, o non ha scelto: la scelta automatica passa
+/// dai veti di [`testo::scegli`], che sono prudenti apposta — meglio nessun testo
+/// che quello di un'altra canzone — e la prudenza qualche volta scarta la voce
+/// giusta. Chi ascolta la riconosce a colpo d'occhio; il programma no.
+///
+/// # Cosa torna
+///
+/// Le voci **non vuote** delle ricerche generose con il titolo com'è, sfrondato,
+/// e con il solo artista principale; senza artista, la ricerca libera. Senza
+/// doppioni, con quelle che hanno i tempi prima, e a parità la durata più
+/// vicina a quella del file. Nessun veto: è chi guarda che decide.
+///
+/// Salta sempre il deposito in lettura: chi apre questo elenco lo fa perché
+/// quel che si ricordava non gli è andato bene.
+///
+/// # Errori
+///
+/// Gli stessi di [`cerca`]. Un giro che fallisce dopo che un altro ha già
+/// risposto non fa perdere quel che si era trovato.
+pub fn candidati(fornitori: &Fornitori, cercato: &Cercato<'_>) -> Result<Vec<Voce>, AppError> {
+    let titolo = cercato.titolo.trim();
+    if titolo.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sfrondato = senza_decorazioni(titolo);
+    let principale = primo_artista(cercato.artista);
+
+    // Le domande, come coppie (servizio, cercato, url): le stesse chiavi dei giri
+    // di `cerca`, così una risposta presa qui vale anche là, e viceversa.
+    let mut domande: Vec<(&str, Cercato<'_>, String)> = Vec::new();
+    if cercato.artista.trim().is_empty() {
+        domande.push((
+            "lrclib-ricerca-titolo",
+            *cercato,
+            url_ricerca_libera(titolo),
+        ));
+    } else {
+        domande.push((Giro::ComeSta.ricerca(), *cercato, url_ricerca(cercato)));
+        if !sfrondato.trim().is_empty() && sfrondato.trim() != titolo {
+            let domanda = Cercato {
+                titolo: sfrondato.trim(),
+                ..*cercato
+            };
+            domande.push((Giro::Sfrondato.ricerca(), domanda, url_ricerca(&domanda)));
+        }
+        if !principale.is_empty() && principale != cercato.artista.trim() {
+            let domanda = Cercato {
+                artista: principale,
+                ..*cercato
+            };
+            domande.push((
+                Giro::ArtistaPrincipale.ricerca(),
+                domanda,
+                url_ricerca(&domanda),
+            ));
+        }
+    }
+
+    let mut voci: Vec<Voce> = Vec::new();
+    let mut guasto: Option<AppError> = None;
+    for (servizio, domanda, url) in &domande {
+        let risposta = fornitori.json_con_memoria(
+            &fornitori.lrclib,
+            servizio,
+            &chiave_ricerca(domanda),
+            url,
+            VIVE_RICERCA_MS,
+            Memoria::Salta,
+        );
+        match risposta {
+            Ok(Some(corpo)) => {
+                for voce in interpreta(&corpo) {
+                    let nuova = !voci.iter().any(|v| v.candidato.id == voce.candidato.id);
+                    if nuova && !voce.e_vuota() {
+                        voci.push(voce);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(err) => guasto = Some(err),
+        }
+    }
+    if voci.is_empty()
+        && let Some(err) = guasto
+    {
+        return Err(err);
+    }
+
+    voci.sort_by_key(|voce| {
+        (
+            !voce.candidato.sincronizzato,
+            match (cercato.durata_ms, voce.candidato.durata_ms) {
+                (Some(nostra), Some(sua)) => nostra.abs_diff(sua),
+                _ => u64::MAX,
+            },
+        )
+    });
+    voci.truncate(CANDIDATI_MASSIMI);
+    Ok(voci)
 }
 
 /// Un giro di domande — l'esatta, poi la generosa — con un titolo solo.

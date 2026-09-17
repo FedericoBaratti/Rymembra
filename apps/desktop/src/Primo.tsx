@@ -28,11 +28,27 @@
  * ragione non cambia perché è il primo avvio. Il pulsante «Ascolta» costa un
  * clic e lo rende una risposta a un gesto invece di una sorpresa — e resta
  * l'unico clic fra l'installazione e il suono.
+ *
+ * # Quel che deve dire, perché nessun altro lo dice
+ *
+ * Copre la finestra intera, e quindi anche le fasce degli avvisi: un errore
+ * della scansione finiva in un toast disegnato **sotto** di lei, e dal primo
+ * avvio si vedeva soltanto «Continua» tornare acceso. Gli avvisi della finestra
+ * li riceve da `App` e li mostra dentro la scheda (`avvisi`), e l'esito di una
+ * lettura che non ha trovato niente lo dice lei (`esito`) — altrimenti una
+ * cartella sbagliata e una scansione andata storta avrebbero la stessa faccia:
+ * nessuna.
  */
-import { useCallback, useEffect, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { useFinestrella } from "./finestrella";
-import { ipc, type CartellaCandidata } from "./ipc";
+import { ipc, type CartellaCandidata, type EsitoScansione } from "./ipc";
 import { t } from "./lingue";
 import { Icona } from "./parti/Icone";
 
@@ -46,6 +62,24 @@ export interface PrimoProps {
   scansione: { fatti: number; totale: number } | null;
   /** Quanti brani ci sono in libreria adesso. */
   brani: number;
+  /**
+   * Com'è andata l'ultima lettura, o `null` se non ne è finita nessuna.
+   *
+   * Serve al caso in cui è finita senza brani: i numeri da soli non lo
+   * distinguono da una lettura che non è mai partita.
+   */
+  esito: EsitoScansione | null;
+  /**
+   * Le cartelle lasciate cadere sulla finestra mentre questa schermata è
+   * aperta.
+   *
+   * Entrano nell'elenco, spuntate, invece di finire fra le sorvegliate da
+   * sole: lì «Continua» scriveva le sole cartelle spuntate, e quella trascinata
+   * — che la schermata non mostrava — spariva.
+   */
+  lasciate: readonly string[];
+  /** Gli avvisi della finestra, che sotto questa schermata non si vedrebbero. */
+  avvisi: ReactNode;
   /** Fa partire la musica e chiude. */
   onAscolta: () => void;
   /** Chiude e basta. */
@@ -59,18 +93,48 @@ function quantiBrani(cartella: CartellaCandidata): string {
     : t("primo.brani", { n: cartella.brani });
 }
 
+/**
+ * L'elenco con in fondo le cartelle indicate a mano che non c'erano già.
+ *
+ * Senza conteggio: contarle vorrebbe dire camminarci dentro prima di
+ * «Continua», cioè una scansione per sapere se fare la scansione.
+ */
+function conAMano(
+  elenco: CartellaCandidata[],
+  percorsi: readonly string[],
+): CartellaCandidata[] {
+  const mancano = percorsi.filter((p) => !elenco.some((c) => c.percorso === p));
+  if (mancano.length === 0) return elenco;
+  return [
+    ...elenco,
+    ...mancano.map((percorso) => ({
+      percorso,
+      brani: 0,
+      troncato: false,
+      parziale: false,
+    })),
+  ];
+}
+
 /** La schermata di benvenuto. */
 export function Primo({
   onCartelle,
   onScegliCartella,
   scansione,
   brani,
+  esito,
+  lasciate,
+  avvisi,
   onAscolta,
   onSalta,
 }: PrimoProps) {
   const [candidate, setCandidate] = useState<CartellaCandidata[] | null>(null);
   const [scelte, setScelte] = useState<Set<string>>(new Set());
   const [inCorso, setInCorso] = useState(false);
+  // Le cartelle indicate a mano — col dialogo o trascinate — ricordate a parte:
+  // possono arrivare prima dell'elenco del sistema, e l'elenco che arriva dopo
+  // le cancellava.
+  const aMano = useRef<string[]>([]);
   /*
    * Anche qui, e per il motivo più forte di tutti: questa non è una finestrella
    * sopra una pagina, è una schermata piena — e sotto, montata e raggiungibile
@@ -99,15 +163,15 @@ export function Primo({
       .cartelleCandidate()
       .then((trovate) => {
         if (!vivo) return;
-        setCandidate(trovate);
+        setCandidate(conAMano(trovate, aMano.current));
         // Già spuntate: è tutto il punto. Chi non le vuole le toglie, che è un
         // gesto in meno di chi doveva aggiungerle.
-        setScelte(new Set(trovate.map((c) => c.percorso)));
+        setScelte(new Set([...trovate.map((c) => c.percorso), ...aMano.current]));
       })
       .catch(() => {
         // Un guasto qui non è un motivo per bloccare il primo avvio: si
         // ricade sull'elenco vuoto, che ha già il suo testo e il suo pulsante.
-        if (vivo) setCandidate([]);
+        if (vivo) setCandidate(conAMano([], aMano.current));
       });
     return () => {
       vivo = false;
@@ -123,19 +187,24 @@ export function Primo({
     });
   }, []);
 
+  const aggiungiPercorsi = useCallback((percorsi: readonly string[]) => {
+    const nuovi = percorsi.filter((p) => !aMano.current.includes(p));
+    if (nuovi.length === 0) return;
+    aMano.current = [...aMano.current, ...nuovi];
+    // Finché l'elenco del sistema non è arrivato si resta in attesa: le
+    // cartelle a mano le aggiunge lui, quando arriva.
+    setCandidate((prima) => (prima === null ? null : conAMano(prima, nuovi)));
+    setScelte((prima) => new Set([...prima, ...nuovi]));
+  }, []);
+
   const aggiungi = useCallback(async () => {
     const scelta = await onScegliCartella();
-    if (scelta === null) return;
-    setCandidate((prima) => {
-      const elenco = prima ?? [];
-      if (elenco.some((c) => c.percorso === scelta)) return elenco;
-      return [
-        ...elenco,
-        { percorso: scelta, brani: 0, troncato: false, parziale: false },
-      ];
-    });
-    setScelte((prima) => new Set(prima).add(scelta));
-  }, [onScegliCartella]);
+    if (scelta !== null) aggiungiPercorsi([scelta]);
+  }, [onScegliCartella, aggiungiPercorsi]);
+
+  useEffect(() => {
+    aggiungiPercorsi(lasciate);
+  }, [lasciate, aggiungiPercorsi]);
 
   const continua = useCallback(() => {
     if (scelte.size === 0) return;
@@ -148,6 +217,9 @@ export function Primo({
   // Appena c'è qualcosa da sentire il pulsante cambia mestiere, anche se la
   // scansione non è finita: è la differenza fra aspettare e cominciare.
   const puoAscoltare = brani > 0;
+  // Letto tutto, e non c'era niente. Si dice, e si dice perché se lo si sa: le
+  // cartelle che non hanno risposto sono il caso del NAS spento.
+  const lettaVuota = !scansionando && !inCorso && esito !== null && brani === 0;
 
   return (
     <div
@@ -208,6 +280,27 @@ export function Primo({
             {t("primo.pronto", { n: brani })}
           </p>
         )}
+
+        {lettaVuota && (
+          <div role="status">
+            <h2 className="primo-sotto">{t("primo.vuota.title")}</h2>
+            <p>{t("primo.vuota.body")}</p>
+            {esito.radiciSaltate.length > 0 && (
+              <>
+                <p className="primo-avviso">{t("primo.saltate")}</p>
+                <ul className="primo-cartelle">
+                  {esito.radiciSaltate.map((radice) => (
+                    <li key={radice} className="primo-percorso">
+                      {radice}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+        )}
+
+        <div className="primo-avvisi">{avvisi}</div>
 
         <div className="primo-tasti">
           {puoAscoltare ? (

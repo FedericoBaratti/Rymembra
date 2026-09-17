@@ -10,6 +10,13 @@
  * in testa e in coda a ogni zona tolgono l'ambiguità senza una libreria: una
  * fessura è un posto, e un posto è un indice dentro una zona precisa.
  *
+ * # Col puntatore, non col trascinamento del browser
+ *
+ * Per la ragione di `riordino.ts`: dentro la finestra di Aether `dragover` e
+ * `drop` non arrivano mai, e le fessure si accendevano senza che rilasciare
+ * facesse niente. Il gesto è [`usePresaPerFessure`], che di questo file sa solo
+ * che ogni fessura porta una chiave in `data-fessura`.
+ *
  * # I rilasci illegali non si illuminano
  *
  * Un widget che non ci sta in una zona, o un singleton già montato, non accende
@@ -36,6 +43,7 @@ import {
   type Via,
 } from "./albero";
 import { t } from "../lingue";
+import { usePresaPerFessure } from "../riordino";
 import { descrizioneOpzione, descrizioneWidget } from "./vocabolario";
 
 /** Cosa si sta trascinando: un nodo che c'è già, o un widget dalla tavolozza. */
@@ -43,6 +51,30 @@ type Preso =
   | { tipo: "nodo"; via: Via }
   | { tipo: "widget"; def: WidgetRegistro }
   | { tipo: "zona"; kind: string };
+
+/**
+ * Il nome di una fessura: la via della zona, e il posto dentro di lei.
+ *
+ * Una stringa perché è quel che sta in un attributo del DOM, ed è da lì che il
+ * gesto la ripesca. I due pezzi non si confondono: la via è fatta di numeri
+ * separati da `/`, il posto viene dopo l'unico `:`.
+ */
+function chiaveFessura(dove: Via, indice: number): string {
+  return `${dove.join("/")}:${indice}`;
+}
+
+/** La fessura che quella chiave nomina, o `null` se non la si legge. */
+function fessuraDa(chiave: string): { dove: Via; indice: number } | null {
+  const taglio = chiave.lastIndexOf(":");
+  if (taglio < 0) return null;
+  const indice = Number(chiave.slice(taglio + 1));
+  const via = chiave.slice(0, taglio);
+  const numeri = via === "" ? [] : via.split("/").map(Number);
+  if (!Number.isInteger(indice) || numeri.some((n) => !Number.isInteger(n))) {
+    return null;
+  }
+  return { dove: numeri, indice };
+}
 
 export function Scafale({
   albero,
@@ -65,6 +97,8 @@ export function Scafale({
   onPrefab: (via: Via) => void;
 }) {
   const [preso, setPreso] = useState<Preso | null>(null);
+  /** La fessura sotto il puntatore, per accendere quella e non tutte. */
+  const [mirata, setMirata] = useState<string | null>(null);
   const widgets = registro?.widgets ?? [];
 
   if (albero === null) {
@@ -92,40 +126,48 @@ export function Scafale({
     return !(cosa.def.singleton && montati.includes(cosa.def.name));
   };
 
-  const rilascia = (dove: Via, indice: number) => {
-    if (preso === null) return;
+  const rilascia = (dove: Via, indice: number, cosa: Preso) => {
     const dentro = nodoA(albero, dove);
-    if (dentro === null || !accetta(dentro, preso)) return;
-    if (preso.tipo === "nodo") {
-      onAlbero(spostato(albero, preso.via, dove, indice));
+    if (dentro === null || !accetta(dentro, cosa)) return;
+    if (cosa.tipo === "nodo") {
+      onAlbero(spostato(albero, cosa.via, dove, indice));
     } else {
       const nuovo =
-        preso.tipo === "widget" ? widgetNuovo(preso.def) : zonaNuova(preso.kind);
+        cosa.tipo === "widget" ? widgetNuovo(cosa.def) : zonaNuova(cosa.kind);
       const children = [...dentro.children];
       children.splice(indice, 0, nuovo);
       onAlbero(conNodo(albero, dove, { ...dentro, children }));
       onScegli([...dove, indice]);
     }
-    setPreso(null);
   };
+
+  const presa = usePresaPerFessure<Preso>({
+    onPresa: (cosa) => {
+      setPreso(cosa);
+      if (cosa === null) setMirata(null);
+    },
+    onMira: setMirata,
+    onLascia: (chiave, cosa) => {
+      const fessura = fessuraDa(chiave);
+      if (fessura !== null) rilascia(fessura.dove, fessura.indice, cosa);
+      setPreso(null);
+      setMirata(null);
+    },
+  });
 
   /** Una fessura fra due fratelli, o in testa e in coda a una zona. */
   const Fessura = ({ dove, indice }: { dove: Via; indice: number }) => {
     const dentro = nodoA(albero, dove);
     const legale = preso !== null && dentro !== null && accetta(dentro, preso);
+    const chiave = chiaveFessura(dove, indice);
     return (
       <div
         className="fessura"
+        // Solo le fessure legali si fanno trovare: il gesto cerca
+        // `data-fessura`, e una che non c'è non si mira e non si illumina.
+        data-fessura={legale ? chiave : undefined}
         data-attiva={legale || undefined}
-        onDragOver={(e) => {
-          if (!legale) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = preso?.tipo === "nodo" ? "move" : "copy";
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          rilascia(dove, indice);
-        }}
+        data-mirata={(legale && mirata === chiave) || undefined}
       />
     );
   };
@@ -141,15 +183,16 @@ export function Scafale({
           className="nodo-riga voce-registro"
           data-active={qui || undefined}
           data-zona={nodo.kind === "zone" || undefined}
-          draggable={via.length > 0}
           title={
             def?.description ?? t("studio.shelf.zone", { nome: nodo.name })
           }
-          onDragStart={(e) => {
-            setPreso({ tipo: "nodo", via });
-            e.dataTransfer.effectAllowed = "move";
-          }}
-          onDragEnd={() => setPreso(null)}
+          // La radice no: non ha un posto dove andare, e non si può portare
+          // dentro sé stessa.
+          onPointerDown={
+            via.length > 0
+              ? (e) => presa(e, { tipo: "nodo", via })
+              : undefined
+          }
           onClick={() => onScegli(via)}
         >
           <Icona nome={nodo.kind === "zone" ? "i-list" : "i-grip"} dim={12} />
@@ -270,12 +313,7 @@ export function Scafale({
             <div
               key={kind}
               className="un-widget"
-              draggable
-              onDragStart={(e) => {
-                setPreso({ tipo: "zona", kind });
-                e.dataTransfer.effectAllowed = "copy";
-              }}
-              onDragEnd={() => setPreso(null)}
+              onPointerDown={(e) => presa(e, { tipo: "zona", kind })}
             >
               <Icona nome="i-list" dim={12} />
               <code>{kind}</code>
@@ -296,7 +334,6 @@ export function Scafale({
                   key={w.name}
                   className="un-widget"
                   data-spento={gia || undefined}
-                  draggable={!gia}
                   title={
                     gia
                       ? t("studio.shelf.singleton", { nome: w.name })
@@ -305,11 +342,9 @@ export function Scafale({
                           dove: w.fits.join(t("studio.shelf.or")),
                         })
                   }
-                  onDragStart={(e) => {
-                    setPreso({ tipo: "widget", def: w });
-                    e.dataTransfer.effectAllowed = "copy";
-                  }}
-                  onDragEnd={() => setPreso(null)}
+                  onPointerDown={
+                    gia ? undefined : (e) => presa(e, { tipo: "widget", def: w })
+                  }
                 >
                   <Icona nome="i-grip" dim={12} />
                   <code>{w.name}</code>

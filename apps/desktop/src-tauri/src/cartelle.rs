@@ -195,10 +195,10 @@ impl IndiceCartelle {
             })
             .with_cause(err.to_string())
         })?;
-        // Solo l'attesa. Niente `journal_mode`, niente migrazioni: la
-        // connessione principale ha già fatto entrambe, e questa non potrebbe
-        // nemmeno se volesse.
-        let _ = connessione.busy_timeout(Duration::from_secs(5));
+        // Solo quel che non sta nel file. Niente `journal_mode`, niente
+        // migrazioni: la connessione principale ha già fatto entrambe, e questa
+        // non potrebbe nemmeno se volesse.
+        aether_app::db::prepara_connessione_secondaria(&connessione);
         Ok(connessione)
     }
 
@@ -251,6 +251,26 @@ impl IndiceCartelle {
             crate::nota!("[cartelle] il filo di sfratto non è partito");
         }
     }
+}
+
+/// Una scansione ha cambiato i brani: l'albero si butta, e il pannello aperto lo
+/// sa.
+///
+/// # Perché le due cose insieme
+///
+/// Buttare l'albero nel nucleo non bastava. Il pannello tiene le figlie che ha
+/// già chiesto, e le richiede solo quando cambiano le cartelle sorvegliate: dopo
+/// una scansione mostrava i conteggi e le cartelle di prima finché non si
+/// cambiavano le radici o si riavviava. E l'albero lo buttava soltanto
+/// «Scansiona», non la scansione che parte da sola quando finiscono i download.
+/// Adesso le passano da qui tutte e due, e l'evento `cartelle:cambiate` fa
+/// richiedere al pannello quel che sta mostrando.
+pub fn cambiate(app: &tauri::AppHandle) {
+    use crate::spegnimento::Emette as _;
+    if let Ok(indice) = indice(app) {
+        indice.invalida();
+    }
+    app.emetti("cartelle:cambiate", ());
 }
 
 /// Lo stato gestito, preso dal registro di Tauri.

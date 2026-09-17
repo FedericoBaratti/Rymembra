@@ -539,13 +539,19 @@ function SchedaTesti() {
         <button
           type="button"
           className="bottone btn-ghost"
-          /* Senza rete non c'è niente da chiedere, e senza brani scoperti non
+          /* Senza rete non c'è niente da chiedere, e senza domande aperte non
              c'è niente da cercare: un pulsante acceso prometterebbe qualcosa
-             che non succede. */
+             che non succede.
+
+             Il conto è `inCoda` e non i mancanti qui accanto: sono due domande
+             diverse — «di quanti non ho niente» e «quanti ne chiederei adesso»
+             — e il pulsante appeso alla prima si spegneva su una libreria piena
+             di testi piatti da sincronizzare, e si accendeva su una dove tutto
+             quel che manca è già stato chiesto da poco. */
           disabled={
             stato === null ||
             !stato.rete ||
-            (!stato.inCorso && copertura.mancanti === 0)
+            (!stato.inCorso && stato.inCoda === 0)
           }
           onClick={() => {
             const chiamata = stato?.inCorso ? ipc.testiFerma() : ipc.testiRiempi();

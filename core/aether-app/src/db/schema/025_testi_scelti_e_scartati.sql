@@ -1,0 +1,46 @@
+-- Il testo scelto a mano dal catalogo resta, e quello scartato non torna.
+--
+-- # Il guasto
+--
+-- Due gesti del pannello del testo non lasciavano niente di sé.
+--
+-- «Nessuno di questi» svuotava la riga e la segnava come cercata. Ma «cercata»
+-- vale quattordici giorni per la passata di sottofondo, e zero per «Cerca di
+-- nuovo»: tutt'e due richiedono al catalogo, la scelta automatica trova la
+-- stessa voce di prima — i veti li aveva già passati una volta — e la riscrive.
+-- Il testo di un'altra canzone, scartato a mano, tornava da solo.
+--
+-- La voce scelta dall'elenco si scriveva come una qualunque risposta del
+-- catalogo. Se non aveva i tempi, dopo quattordici giorni il brano rientrava
+-- nella coda della passata, e la scelta automatica le passava sopra con la voce
+-- che chi ascolta aveva appena detto di non volere.
+--
+-- # Come
+--
+-- Due colonne, sulla riga del brano e non in una tabella a parte: così seguono
+-- il brano quando la sua chiave cambia, per il trigger di
+-- `022_testi_seguono_il_brano.sql`, senza un trigger in più.
+--
+-- `scelta` dice che la voce in riga l'ha presa chi ascolta. Le risposte del
+-- catalogo non le passano sopra, e il brano non torna in coda. La scrive solo
+-- `aether_app::testi::ricorda_scelta`; la rimettono a zero lo scarto e un testo
+-- che arriva dal disco.
+--
+-- `scartati` è l'elenco, in JSON, degli identificativi del catalogo scartati per
+-- questo brano. Una risposta del catalogo che è una di quelle vale come «non ce
+-- l'ho»: si segna che si è chiesto, e la riga resta com'è. Sceglierla poi a
+-- mano dall'elenco la toglie dagli scartati — è un ripensamento, e vale.
+--
+-- # Le righe che ci sono già
+--
+-- Tutte a `scelta = 0` e senza scartati: di quel che è successo prima di questa
+-- versione non resta traccia da cui ricostruirlo.
+--
+-- # Tornare indietro
+--
+-- Come per ogni migrazione: una versione precedente rifiuta un database a
+-- questa versione, e serve il backup di prima dell'aggiornamento.
+
+ALTER TABLE lyrics ADD COLUMN scelta INTEGER NOT NULL DEFAULT 0 CHECK (scelta IN (0, 1));
+
+ALTER TABLE lyrics ADD COLUMN scartati TEXT;

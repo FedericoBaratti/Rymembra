@@ -105,3 +105,16 @@ export function titoloAlbum(nome: string): string {
 export function nomeArtista(nome: string): string {
   return nome === SENZA_ARTISTA ? t("format.unknownArtist") : nome;
 }
+
+/**
+ * Se questo nome è un artista vero, e non il segnaposto di un tag mancante.
+ *
+ * Serve a chi il nome lo usa per **dire qualcosa** — il titolo di una raccolta
+ * del lunedì, per esempio — e non per mostrarlo in una riga. Un filtro sul
+ * nome già passato da [`nomeArtista`] non basta: la sentinella lì è già
+ * diventata «Artista sconosciuto», una stringa non vuota come le altre, e la
+ * raccolta finiva per chiamarsi «Artista sconosciuto, Led Zeppelin».
+ */
+export function artistaNoto(nome: string): boolean {
+  return nome !== "" && nome !== SENZA_ARTISTA;
+}

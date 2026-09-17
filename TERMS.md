@@ -164,6 +164,11 @@ files Aether downloaded itself, the `.lrc` it saves beside a track, the
 playlists and the profile archive you ask it to export, and its own data
 folder. Nothing on that list is a file you already had.
 
+One entry does reach a file you already had, and only when you press it: from
+2.3.2 a track's menu offers **«Delete from disk»**, which sends the file to the
+Recycle Bin and takes the library row with it. It asks first and never runs by
+itself, and **«Remove from library»** beside it leaves the disk alone entirely.
+
 A backup of what you care about remains a good idea all the same — that goes
 for any program that reads your disk, this one included.
 

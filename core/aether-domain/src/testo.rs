@@ -151,6 +151,14 @@ pub struct Riga {
     pub testo: String,
     /// I tempi delle singole parole, se il file li porta. Quasi sempre vuoto.
     pub parole: Vec<Parola>,
+    /// Le righe che il file mette **allo stesso tempo** di questa, di solito una
+    /// traduzione o la pronuncia. Separate da `\n`, e quasi sempre `None`.
+    ///
+    /// Esiste perché due righe allo stesso millesimo non si possono accendere
+    /// tutt'e due: [`riga_attiva`] prende l'ultima, e la prima — che nei file con
+    /// la traduzione è l'originale, cioè quel che si canta — restava spenta per
+    /// sempre. Vedi [`leggi`].
+    pub secondaria: Option<String>,
 }
 
 /// Il testo di un brano, in una delle tre forme in cui può esistere.
@@ -240,8 +248,15 @@ pub fn leggi(grezzo: &str) -> Testo {
     let mut offset_ms = 0_i32;
 
     // Il BOM sta in testa al file, non in testa a ogni riga: si toglie una volta
-    // sola, e `lines()` pensa da sé al CRLF.
-    for riga in grezzo.trim_start_matches('\u{FEFF}').lines() {
+    // sola. `lines()` pensa da sé al CRLF ma non al CR nudo, che è il fine riga
+    // dei file scritti sui Mac di prima di OS X e di qualche editor di testi
+    // giapponese: senza questa riga un file intero diventava una riga sola, con i
+    // tempi della prima e il resto come testo.
+    let normalizzato = grezzo
+        .trim_start_matches('\u{FEFF}')
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    for riga in normalizzato.lines() {
         let (tag, resto) = separa_tag(riga);
         let mut tempi: Vec<u32> = Vec::new();
         for uno in tag {
@@ -272,6 +287,7 @@ pub fn leggi(grezzo: &str) -> Testo {
                 ms,
                 testo: piatta.clone(),
                 parole: parole.clone(),
+                secondaria: None,
             });
         }
     }
@@ -291,11 +307,54 @@ pub fn leggi(grezzo: &str) -> Testo {
     // l'unica informazione che abbiamo su quale vada letta prima.
     righe.sort_by_key(|r| r.ms);
     Testo {
-        righe,
+        righe: fondi_allo_stesso_tempo(righe),
         piatto: None,
         strumentale: false,
         offset_ms,
     }
+}
+
+/// Le righe allo stesso millesimo diventano una riga sola, con le altre come
+/// [`Riga::secondaria`].
+///
+/// # Perché fonderle
+///
+/// Perché è la forma dei file con la traduzione: `[00:12.00]originale` e subito
+/// sotto `[00:12.00]traduzione`. Tenute separate, [`riga_attiva`] accendeva
+/// sempre la seconda — è l'ultima con quel tempo — e l'originale, cioè quel che
+/// si sta cantando, non si accendeva mai. Fuse, si accendono insieme, e la
+/// finestra mostra la seconda sotto la prima.
+///
+/// Vince come principale la prima **non vuota**, nell'ordine del file: una riga
+/// di soli tempi seguita dal testo allo stesso tempo non deve lasciare il testo
+/// in secondo piano. Le parole con i tempi sono quelle della principale; quelle
+/// di una traduzione non avrebbero niente su cui accendersi. Un doppione esatto
+/// — `[00:12.00][00:12.00]riga` — non diventa una traduzione di sé stesso.
+fn fondi_allo_stesso_tempo(righe: Vec<Riga>) -> Vec<Riga> {
+    let mut fuse: Vec<Riga> = Vec::with_capacity(righe.len());
+    for riga in righe {
+        let Some(ultima) = fuse.last_mut().filter(|u| u.ms == riga.ms) else {
+            fuse.push(riga);
+            continue;
+        };
+        if riga.testo.is_empty() || riga.testo == ultima.testo {
+            continue;
+        }
+        if ultima.testo.is_empty() {
+            let secondaria = ultima.secondaria.take();
+            *ultima = Riga { secondaria, ..riga };
+            continue;
+        }
+        match ultima.secondaria.as_mut() {
+            Some(gia) if gia.lines().any(|l| l == riga.testo) => {}
+            Some(gia) => {
+                gia.push('\n');
+                gia.push_str(&riga.testo);
+            }
+            None => ultima.secondaria = Some(riga.testo),
+        }
+    }
+    fuse
 }
 
 /// I contenuti dei `[…]` in testa alla riga, e quel che resta.
@@ -387,7 +446,17 @@ fn separa_parole(testo: &str) -> (String, Vec<Parola>) {
     (piatta, parole)
 }
 
-/// Legge `mm:ss`, `mm:ss.xx`, `mm:ss,xxx` o `hh:mm:ss.xx`.
+/// Legge `mm:ss`, `mm:ss.xx`, `mm:ss,xxx`, `mm:ss:xx` o `hh:mm:ss.xx`.
+///
+/// # Tre campi senza punto sono minuti, secondi e centesimi
+///
+/// `[01:02:03]` si scrive in due modi nel mondo: come `hh:mm:ss` e come
+/// `mm:ss:cc`, con i centesimi dopo i due punti invece che dopo il punto. Il
+/// secondo è quel che scrivono alcuni programmi di karaoke e parecchi file fatti
+/// a mano, e un brano di un'ora e due minuti è molto più raro di un file così:
+/// letto come ore, ogni riga cadeva un'ora più in là e il testo non si accendeva
+/// mai. Quindi tre campi **con** la frazione — `01:02:03.00` — sono ore, minuti e
+/// secondi; tre campi **senza** sono minuti, secondi e centesimi.
 ///
 /// # Le cifre della frazione contano
 ///
@@ -398,17 +467,30 @@ fn separa_parole(testo: &str) -> (String, Vec<Parola>) {
 fn tempo_ms(grezzo: &str) -> Option<u32> {
     let grezzo = grezzo.trim();
     let pezzi: Vec<&str> = grezzo.split(':').collect();
-    let (ore, minuti, secondi) = match pezzi.as_slice() {
-        [m, s] => ("0", *m, *s),
-        [h, m, s] => (*h, *m, *s),
+    let (ore, minuti, secondi, frazione) = match pezzi.as_slice() {
+        [m, s] => {
+            let s = s.trim();
+            let (interi, frazione) = s.split_once(['.', ',']).unwrap_or((s, ""));
+            ("0", *m, interi, frazione)
+        }
+        [h, m, s] if s.contains(['.', ',']) => {
+            let s = s.trim();
+            let (interi, frazione) = s.split_once(['.', ',']).unwrap_or((s, ""));
+            (*h, *m, interi, frazione)
+        }
+        [m, s, centesimi] => {
+            let centesimi = centesimi.trim();
+            if centesimi.is_empty() || centesimi.len() > 3 {
+                return None;
+            }
+            ("0", *m, s.trim(), centesimi)
+        }
         _ => return None,
     };
 
     let ore: u32 = ore.trim().parse().ok()?;
     let minuti: u32 = minuti.trim().parse().ok()?;
-    let secondi = secondi.trim();
-    let (interi, frazione) = secondi.split_once(['.', ',']).unwrap_or((secondi, ""));
-    let interi: u32 = interi.parse().ok()?;
+    let interi: u32 = secondi.parse().ok()?;
     if interi > 59 && pezzi.len() == 3 {
         return None;
     }
@@ -475,6 +557,16 @@ pub fn scrivi(testo: &Testo) -> String {
             }
         }
         fuori.push('\n');
+        // Le secondarie tornano come le si era lette: una riga ciascuna, allo
+        // stesso tempo, dopo la principale. È la forma che gli altri lettori
+        // conoscono, e rileggerla le rifonde.
+        for secondaria in riga.secondaria.iter().flat_map(|s| s.lines()) {
+            fuori.push('[');
+            fuori.push_str(&scrivi_tempo(riga.ms));
+            fuori.push(']');
+            fuori.push_str(secondaria);
+            fuori.push('\n');
+        }
     }
     fuori
 }
@@ -736,6 +828,7 @@ pub fn scegli(candidati: &[Candidato], cercato: &Cercato<'_>) -> Option<usize> {
 ///         Parola { ms: 0, testo: "una ".to_owned() },
 ///         Parola { ms: 500, testo: "due".to_owned() },
 ///     ],
+///     secondaria: None,
 /// };
 /// assert!(parole_combaciano(&riga));
 /// ```
@@ -971,6 +1064,70 @@ mod prove {
     }
 
     #[test]
+    fn tre_campi_senza_punto_sono_centesimi_non_ore() {
+        // `[01:02:03]` letto come ore cadeva a un'ora e due minuti, e il testo
+        // non si accendeva mai.
+        assert_eq!(tempo_ms("01:02:03"), Some(62_030));
+        assert_eq!(tempo_ms("00:12:5"), Some(12_500));
+        // Con la frazione restano ore, minuti e secondi.
+        assert_eq!(tempo_ms("01:02:03.00"), Some(3_723_000));
+        // I secondi oltre il 59 non sono un tempo in nessuna delle due forme.
+        assert_eq!(tempo_ms("00:75:10"), None);
+        assert_eq!(tempo_ms("00:12:"), None);
+        let testo = leggi("[00:12:34]prima riga\n[00:15:00]seconda riga");
+        assert_eq!(
+            testo.righe.iter().map(|r| r.ms).collect::<Vec<_>>(),
+            vec![12_340, 15_000]
+        );
+    }
+
+    #[test]
+    fn il_cr_nudo_chiude_una_riga() {
+        let testo = leggi("[00:01.00]prima riga\r[00:02.00]seconda riga\r");
+        assert_eq!(testo.righe.len(), 2);
+        assert_eq!(
+            testo.righe.get(1).map(|r| r.testo.as_str()),
+            Some("seconda riga")
+        );
+    }
+
+    #[test]
+    fn la_traduzione_allo_stesso_tempo_si_accende_con_l_originale() {
+        let testo = leggi(
+            "[00:10.00]prima riga\n[00:10.00]first line\n[00:14.00]seconda riga\n[00:14.00]second line",
+        );
+        assert_eq!(testo.righe.len(), 2, "una riga per tempo: {testo:?}");
+        let prima = testo.righe.first().expect("la prima");
+        assert_eq!(prima.testo, "prima riga");
+        assert_eq!(prima.secondaria.as_deref(), Some("first line"));
+        // L'originale è quella che si accende, e non la traduzione.
+        assert_eq!(riga_attiva(&testo.righe, 10_500), Some(0));
+
+        // E si riscrive nella forma in cui era arrivata.
+        assert_eq!(
+            scrivi(&testo),
+            "[00:10.00]prima riga\n[00:10.00]first line\n[00:14.00]seconda riga\n[00:14.00]second line\n"
+        );
+        assert_eq!(leggi(&scrivi(&testo)), testo);
+    }
+
+    #[test]
+    fn un_doppione_o_un_tempo_vuoto_non_sono_traduzioni() {
+        let testo = leggi("[00:10.00][00:10.00]la stessa riga");
+        assert_eq!(testo.righe.len(), 1);
+        assert_eq!(testo.righe.first().and_then(|r| r.secondaria.clone()), None);
+
+        // Una riga di soli tempi seguita dal testo allo stesso tempo: il testo
+        // resta la principale.
+        let testo = leggi("[00:10.00]\n[00:10.00]la riga vera");
+        assert_eq!(
+            testo.righe.first().map(|r| r.testo.as_str()),
+            Some("la riga vera")
+        );
+        assert_eq!(testo.righe.first().and_then(|r| r.secondaria.clone()), None);
+    }
+
+    #[test]
     fn un_testo_senza_tempi_e_piatto() {
         let testo = leggi("prima riga\nseconda riga\n");
         assert!(testo.righe.is_empty());
@@ -1005,6 +1162,7 @@ mod prove {
                 ms: 12_347,
                 testo: "prima riga".to_owned(),
                 parole: Vec::new(),
+                secondaria: None,
             }],
             ..Testo::default()
         };
@@ -1057,6 +1215,7 @@ mod prove {
                             testo: "qui".to_owned(),
                         },
                     ],
+                    secondaria: None,
                 },
                 Riga {
                     ms: 20_000,
@@ -1065,6 +1224,7 @@ mod prove {
                         ms: 20_000,
                         testo: "seconda".to_owned(),
                     }],
+                    secondaria: None,
                 },
             ],
             ..Testo::default()
@@ -1095,6 +1255,7 @@ mod prove {
             ms: 0,
             testo: "una due".to_owned(),
             parole: Vec::new(),
+            secondaria: None,
         }));
         // Il caso vero: si è battuto su un testo e poi il testo è cambiato.
         assert!(!parole_combaciano(&Riga {
@@ -1110,6 +1271,7 @@ mod prove {
                     testo: "due".to_owned(),
                 },
             ],
+            secondaria: None,
         }));
         // Contare non basterebbe: qui le parole sono due come i tempi.
         assert!(!parole_combaciano(&Riga {
@@ -1125,6 +1287,7 @@ mod prove {
                     testo: "tre".to_owned(),
                 },
             ],
+            secondaria: None,
         }));
     }
 

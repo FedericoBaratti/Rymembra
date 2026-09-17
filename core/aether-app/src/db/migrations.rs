@@ -128,6 +128,26 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "impronte-illeggibili",
         sql: include_str!("schema/021_impronte_illeggibili.sql"),
     },
+    Migration {
+        version: 22,
+        name: "testi-seguono-il-brano",
+        sql: include_str!("schema/022_testi_seguono_il_brano.sql"),
+    },
+    Migration {
+        version: 23,
+        name: "correzioni-orfane",
+        sql: include_str!("schema/023_correzioni_orfane.sql"),
+    },
+    Migration {
+        version: 24,
+        name: "indici-degli-ordinamenti",
+        sql: include_str!("schema/024_indici_degli_ordinamenti.sql"),
+    },
+    Migration {
+        version: 25,
+        name: "testi-scelti-e-scartati",
+        sql: include_str!("schema/025_testi_scelti_e_scartati.sql"),
+    },
 ];
 
 /// La versione a cui questa build porta il database.

@@ -145,7 +145,16 @@ export function usePagine<T>(
       if (nodo === null) return undefined;
       const osservatore = new IntersectionObserver(
         (voci) => {
-          if (!voci.some((v) => v.isIntersecting)) return;
+          // Il riflesso della barra scorre solo a sentinella vicina. Lontana,
+          // un'animazione di sfondo infinita costa un ridisegno a ogni
+          // fotogramma anche dove nessuno la vede: misurato, quindici-venti
+          // per cento di un core con la musica ferma e l'elenco degli album
+          // aperto. La regola che la ferma sta in `stile.css`, accanto a
+          // `.sentinella .skeleton`; qui si dice solo dov'è.
+          const vicina = voci.some((v) => v.isIntersecting);
+          if (vicina) nodo.dataset.vicina = "";
+          else delete nodo.dataset.vicina;
+          if (!vicina) return;
           if (finite.current || inVolo.current) return;
           chiediPagina(quante.current);
         },

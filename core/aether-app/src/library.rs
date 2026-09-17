@@ -431,9 +431,24 @@ pub fn read_track(
 ///
 /// Ordinate per identificativo: l'ordine di arrivo detta l'ordine del piano, e
 /// un piano da mostrare all'utente non deve cambiare fra due aperture.
+///
+/// # Le righe senza `content_key` si rileggono
+///
+/// La migrazione 019 ha lasciato `content_key` a NULL sulle righe che avevano
+/// già una correzione, in attesa della «prima riscansione che le rilegge». Ma una
+/// riscansione rilegge solo i file cambiati, e un file corretto a mano di solito
+/// non lo tocca più nessuno: la chiave restava NULL per sempre. E il trigger
+/// della 023, che mette da parte le correzioni di un file che sparisce, le salta
+/// proprio quando la chiave manca — cioè perdeva le correzioni più vecchie, che
+/// sono quelle che contano di più. Per quelle righe la data qui vale `-1`, che
+/// nessun file ha: il piano le vede cambiate e le rilegge una volta, e da lì in
+/// poi la data è quella vera.
 pub fn known_tracks(connection: &Connection) -> Result<Vec<KnownTrack>, AppError> {
     let mut statement = connection
-        .prepare("SELECT id, path, date_modified FROM tracks ORDER BY id")
+        .prepare(
+            "SELECT id, path, CASE WHEN content_key IS NULL THEN -1 ELSE date_modified END
+               FROM tracks ORDER BY id",
+        )
         .map_err(|err| db_error("elenco dei brani noti", &err))?;
     let rows = statement
         .query_map([], |row| {
@@ -615,7 +630,11 @@ fn update_track(
     let mut statement = tx
         .prepare_cached(
             "UPDATE tracks SET
-               path = ?1, track_key = ?2, title = ?3, artist = ?4, album = ?5,
+               path = ?1, title = ?3, artist = ?4, album = ?5,
+               -- Non su un brano corretto: vedi `incerti::riapplica_sopra_i_tag`.
+               track_key = CASE WHEN EXISTS
+                             (SELECT 1 FROM track_overrides WHERE track_id = ?30)
+                           THEN track_key ELSE ?2 END,
                album_artist = ?6, album_key = ?7, year = ?8, track_number = ?9,
                disc_number = ?10, genre = ?11, duration_ms = ?12, bpm = ?13,
                musical_key = ?14, comment = ?15, lyrics = ?16,
@@ -672,6 +691,117 @@ fn remove_tracks(tx: &Transaction<'_>, righe: &[(i64, &str)]) -> Result<usize, A
             .map_err(|err| db_error("rimozione di un brano", &err))?;
     }
     Ok(removed)
+}
+
+/// Quel che una cancellazione decisa dall'utente ha portato via.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cancellazione {
+    /// Quante righe sono sparite davvero.
+    pub tolti: usize,
+    /// Quanti di quei file stanno ancora sotto una cartella sorvegliata.
+    ///
+    /// Cioè: quanti torneranno alla prossima scansione. Non è una diagnostica,
+    /// è la cosa da dire a chi ha appena premuto «Togli dalla libreria» e si
+    /// aspetta che resti tolto.
+    pub torneranno: usize,
+}
+
+/// Toglie dalla libreria i brani indicati. **Non tocca i file.**
+///
+/// # Perché una funzione a parte, e non [`remove_tracks`] reso pubblico
+///
+/// Perché le due rimozioni non sono la stessa cosa detta due volte. Quella della
+/// scansione è una constatazione — «questo file non c'è più su questo disco» —
+/// e arriva già dentro la transazione di una passata, in mezzo ad altre sei
+/// fasi; questa è una decisione, arriva da sola, e deve portarsi dietro tutto
+/// quel che una rimozione isolata richiede: la transazione, gli aggregati, e il
+/// conto di quel che tornerà. `remove_tracks` resta la primitiva di tutte e due.
+///
+/// # Quel che fanno lo schema e i trigger, e non si scrive qui
+///
+/// Le chiavi esterne sono accese su ogni connessione (vedi `db::configure`), e
+/// con la riga se ne vanno in cascata `playlist_tracks`, `play_history`,
+/// `enrich_undo`, `track_overrides`, `track_impronta`, `brano_vicino` — nei due
+/// versi — `brano_vicino_stato`, `settimana_brano` e `track_meta_arricchita`. Il
+/// trigger `tracks_fts_delete` toglie il brano dall'indice di ricerca, e
+/// `correzioni_restano_orfane` mette da parte le correzioni a mano sotto la
+/// `content_key`, dove scadono da sole dopo novanta giorni: se il file viene
+/// cancellato davvero non le rivedrà nessuno, e se invece torna con una
+/// scansione è giusto che tornino con lui.
+///
+/// Le tabelle della sincronia non si toccano nemmeno: `sincronia::allinea` le
+/// rimette in pari con la libreria all'inizio di ogni passata, ed è pigra
+/// apposta perché chi scrive non debba ricordarsene.
+///
+/// # Niente lapidi di sincronizzazione
+///
+/// Per la stessa ragione per cui non ne scrive la scansione, detta dall'altro
+/// lato: `lapidi.brani` viaggia e si fonde, ma **nessuno la consulta** per
+/// impedire il ritorno di un brano — vedi `sincronia::togli_playlist` e
+/// `backup::dal_salvataggio`. Una riga di brano non la crea mai una sincronia,
+/// la crea la scansione leggendo un file che c'è; se l'altro dispositivo quel
+/// file ce l'ha, deve tenerselo. Scriverne una qui sarebbe stato morto.
+///
+/// # Perché si legge dentro la transazione
+///
+/// Perché così i percorsi con cui si cancella sono quelli che ci sono **adesso**:
+/// la guardia `AND path = ?2` di [`remove_tracks`] esiste per il caso opposto —
+/// un piano deciso prima, eseguito dopo, con in mezzo altre scritture — e qui
+/// non c'è nessun «prima». Il conto dei tolti coincide quindi con quello delle
+/// righe lette, ed è ciò che rende affidabile `torneranno`: si guarda solo quel
+/// che è stato tolto davvero.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la lettura o la scrittura falliscono.
+pub fn cancella_brani(
+    connection: &mut Connection,
+    ids: &[i64],
+    sorvegliate: &[String],
+    rules: PathRules,
+) -> Result<Cancellazione, AppError> {
+    if ids.is_empty() {
+        return Ok(Cancellazione::default());
+    }
+    let tx = connection
+        .transaction()
+        .map_err(|err| db_error("cancellazione di brani", &err))?;
+    // `Transaction` si deferenzia a `Connection`: la lettura vede quel che la
+    // transazione vede, cioè il database un istante prima della cancellazione.
+    let percorsi: Vec<(i64, String)> = summaries_by_id(&tx, ids)?
+        .into_iter()
+        .map(|brano| (brano.id, brano.path))
+        .collect();
+    if percorsi.is_empty() {
+        // Niente da togliere non è un guasto: è il clic su un elenco che è
+        // cambiato sotto. Si esce senza rifare gli aggregati, che su una
+        // libreria grande costano una lettura intera per niente.
+        drop(tx);
+        return Ok(Cancellazione::default());
+    }
+    let coppie: Vec<(i64, &str)> = percorsi
+        .iter()
+        .map(|(id, percorso)| (*id, percorso.as_str()))
+        .collect();
+    let tolti = remove_tracks(&tx, &coppie)?;
+    // Gli aggregati nella stessa transazione: un album senza più brani e un
+    // artista senza più album devono sparire insieme alle righe, non alla
+    // prossima scansione. È il passo 7 di `Scan::run_su`, fatto qui perché qui
+    // non c'è una scansione che lo faccia dopo.
+    rebuild_aggregates(&tx)?;
+    tx.commit()
+        .map_err(|err| db_error("cancellazione di brani", &err))?;
+
+    let torneranno = percorsi
+        .iter()
+        .filter(|(_, percorso)| {
+            sorvegliate
+                .iter()
+                .any(|radice| is_under(percorso, radice, rules))
+        })
+        .count();
+    Ok(Cancellazione { tolti, torneranno })
 }
 
 /// Quanti album e quanti artisti sono stati ricostruiti.
@@ -1738,13 +1868,16 @@ impl Scan<'_> {
                     match *destinazione {
                         Destinazione::Nuova => {
                             insert_track(&tx, row, now)?;
-                            // Nessun `riapplica` qui, e non è una dimenticanza:
-                            // `track_overrides` è agganciata all'`id` della riga,
-                            // e questa riga non esisteva un istante fa. Una
-                            // correzione per un brano che la libreria non
-                            // conosceva ancora non può esistere — se il file
-                            // è lo stesso di prima, il piano lo avrebbe
-                            // riconosciuto come `Sposta`.
+                            // `riapplica` anche qui, da quando una correzione
+                            // può precedere la riga: un file tolto dalla
+                            // libreria e tornato — la cartella rimessa, il
+                            // disco ricollegato — ritrova le sue correzioni per
+                            // `content_key`, e il trigger della migrazione 023
+                            // le ha appena rimesse in `track_overrides`. Senza
+                            // questa chiamata starebbero lì senza toccare la
+                            // riga. Per quasi tutti i brani nuovi costa una
+                            // lettura che non trova niente.
+                            crate::incerti::riapplica(&tx, tx.last_insert_rowid())?;
                             inserite += 1;
                         }
                         Destinazione::Aggiorna(id) => {
@@ -1754,7 +1887,7 @@ impl Scan<'_> {
                             // cambi la data di modifica di un file perché la
                             // correzione dell'utente sparisca da `tracks`
                             // restando orfana in `track_overrides`.
-                            crate::incerti::riapplica(&tx, id)?;
+                            crate::incerti::riapplica_sopra_i_tag(&tx, id, &row.track_key)?;
                             aggiornate += 1;
                         }
                         Destinazione::Sposta(id) => {
@@ -1762,7 +1895,7 @@ impl Scan<'_> {
                             // Lo stesso, e qui conta doppio: un file spostato ha
                             // anche un `album_key` nuovo, che si ricalcola dal
                             // percorso d'arrivo e dall'album **corretto**.
-                            crate::incerti::riapplica(&tx, id)?;
+                            crate::incerti::riapplica_sopra_i_tag(&tx, id, &row.track_key)?;
                             spostate += 1;
                         }
                     }
@@ -2468,6 +2601,56 @@ pub fn summaries_by_id(
         .collect())
 }
 
+/// Gli identificativi dei brani a questi percorsi, nello stesso ordine.
+///
+/// `None` per un percorso che non è in libreria: serve a chi ha dei file in
+/// mano — trascinati sulla finestra — e deve sapere quali può mettere in coda,
+/// perché la coda è fatta di identificativi e un file che la scansione non ha
+/// mai visto non ne ha uno.
+///
+/// # Due confronti, e perché non `path_key`
+///
+/// Prima quello esatto, che passa dall'indice `UNIQUE` di `path` ed è il caso
+/// di quasi tutti: Esplora risorse consegna il percorso con le stesse maiuscole
+/// che la camminata ha scritto. Poi, solo dove il filesystem ignora le
+/// maiuscole, lo stesso confronto con `COLLATE NOCASE`, che l'indice non aiuta
+/// ma che si paga soltanto per i file che il primo non ha trovato.
+///
+/// [`aether_domain::paths::path_key`] unificherebbe anche i separatori, e
+/// servirebbe calcolarla su ogni riga della tabella: una lettura intera della
+/// libreria per ogni file lasciato cadere, per riconciliare una barra che i
+/// percorsi di Windows non hanno mai girata dall'altra parte.
+pub fn ids_by_path(
+    connection: &Connection,
+    paths: &[String],
+    rules: PathRules,
+) -> Result<Vec<Option<i64>>, AppError> {
+    use rusqlite::OptionalExtension as _;
+
+    let mut esatto = connection
+        .prepare_cached("SELECT id FROM tracks WHERE path = ?1")
+        .map_err(|err| db_error("brani per percorso", &err))?;
+    let mut piegato = connection
+        .prepare_cached("SELECT id FROM tracks WHERE path = ?1 COLLATE NOCASE LIMIT 1")
+        .map_err(|err| db_error("brani per percorso", &err))?;
+    paths
+        .iter()
+        .map(|path| {
+            let trovato = esatto
+                .query_row([path], |row| row.get(0))
+                .optional()
+                .map_err(|err| db_error("brani per percorso", &err))?;
+            if trovato.is_some() || !rules.case_insensitive {
+                return Ok(trovato);
+            }
+            piegato
+                .query_row([path], |row| row.get(0))
+                .optional()
+                .map_err(|err| db_error("brani per percorso", &err))
+        })
+        .collect()
+}
+
 /// I brani di un album, nell'ordine del disco.
 pub fn album_tracks(
     connection: &Connection,
@@ -2913,6 +3096,19 @@ mod tests {
                 .query_row(&format!("SELECT COUNT(*) FROM {tabella}"), [], |r| r.get(0))
                 .expect("conteggio")
         }
+
+        /// L'identificativo della riga di un brano, che la scansione decide da sé.
+        ///
+        /// Si cerca per titolo e non per percorso: la camminata scrive il
+        /// percorso coi separatori del sistema, mentre quello che la prova ha
+        /// composto tiene le barre con cui è stato scritto qui sopra.
+        fn id_del_titolo(&self, titolo: &str) -> i64 {
+            self.connection
+                .query_row("SELECT id FROM tracks WHERE title = ?1", [titolo], |r| {
+                    r.get(0)
+                })
+                .expect("identificativo")
+        }
     }
 
     #[test]
@@ -2949,6 +3145,53 @@ mod tests {
             Some("Bachelorette"),
             "una ricerca si fa mentre si digita"
         );
+    }
+
+    #[test]
+    fn i_percorsi_trascinati_ritrovano_i_loro_brani() {
+        let mut lib = Libreria::nuova();
+        lib.brano("A/01.wav", "Uno", "Tale", "A");
+        lib.brano("A/02.wav", "Due", "Tale", "A");
+        lib.scansiona();
+
+        // Con i separatori del sistema, come li consegna Esplora risorse e come
+        // li scrive la camminata: `join("A/01.wav")` su Windows lascerebbe una
+        // barra dritta in mezzo, e quel percorso in tabella non c'è.
+        let nativo = |cartella: &str, file: &str| {
+            lib.musica()
+                .join(cartella)
+                .join(file)
+                .to_string_lossy()
+                .into_owned()
+        };
+        let primo = nativo("A", "01.wav");
+        let secondo = nativo("A", "02.wav");
+        let fuori = nativo("B", "03.wav");
+        let insensibile = PathRules {
+            case_insensitive: true,
+        };
+
+        let trovati = ids_by_path(
+            &lib.connection,
+            &[secondo.clone(), fuori.clone(), primo.clone()],
+            insensibile,
+        )
+        .expect("ricerca per percorso");
+        assert_eq!(trovati.len(), 3, "uno per percorso, nello stesso ordine");
+        assert!(trovati.first().is_some_and(Option::is_some));
+        assert_eq!(trovati.get(1), Some(&None), "quel che non è in libreria");
+        assert!(trovati.get(2).is_some_and(Option::is_some));
+        assert_ne!(trovati.first(), trovati.get(2));
+
+        // Le maiuscole contano solo dove il filesystem le distingue.
+        let gridato = vec![primo.to_uppercase()];
+        let piegato = ids_by_path(&lib.connection, &gridato, insensibile).expect("piegato");
+        assert_eq!(piegato.first(), trovati.get(2));
+        let sensibile = PathRules {
+            case_insensitive: false,
+        };
+        let esatto = ids_by_path(&lib.connection, &gridato, sensibile).expect("esatto");
+        assert_eq!(esatto, vec![None]);
     }
 
     #[test]
@@ -3006,6 +3249,204 @@ mod tests {
         // E con esso l'identità: una chiave ricalcolata dai tag del file
         // rilegherebbe in silenzio ascolti e posizioni di un altro brano.
         assert!(chiave.contains("pink floyd"), "chiave: {chiave}");
+    }
+
+    #[test]
+    fn il_testo_di_un_brano_corretto_resta_suo_dopo_una_riscansione() {
+        // Due copie dello stesso brano con gli stessi tag sbagliati — il FLAC e
+        // l'mp3 — e una sola corretta, con un testo sincronizzato a mano. La
+        // riscansione della copia corretta scriveva prima la chiave dei tag, e
+        // il trigger della 022 le portava dietro il testo; poi `riapplica`
+        // rimetteva la chiave corretta, ma il ritorno era bloccato dall'altra
+        // copia, che quella chiave la porta ancora. Il testo finiva sulla copia
+        // che nessuno aveva sincronizzato.
+        let mut lib = Libreria::nuova();
+        lib.brano("Uno/01.wav", "Traccia 01", "Unknown Artist", "Al");
+        lib.brano("Due/01.wav", "Traccia 01", "Unknown Artist", "Al");
+        assert_eq!(lib.scansiona().inserted, 2);
+        let (id, chiave_dei_tag): (i64, String) = lib
+            .connection
+            .query_row(
+                "SELECT id, track_key FROM tracks WHERE path LIKE '%Uno%'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("la prima copia");
+
+        crate::incerti::correggi(
+            &mut lib.connection,
+            id,
+            &crate::provenienza::Correzioni {
+                titolo: Some("Hey You".to_owned()),
+                artista: Some("Pink Floyd".to_owned()),
+                ..crate::provenienza::Correzioni::default()
+            },
+        )
+        .expect("correzione");
+        let chiave_corretta: String = lib
+            .connection
+            .query_row("SELECT track_key FROM tracks WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .expect("chiave corretta");
+        assert_ne!(chiave_corretta, chiave_dei_tag);
+        lib.connection
+            .execute(
+                "INSERT INTO lyrics (track_key, source, synced, checked_at, updated_at)
+                 VALUES (?1, 'mano', '[00:01.00]Is there anybody', 1, 1)",
+                [&chiave_corretta],
+            )
+            .expect("testo a mano");
+
+        lib.connection
+            .execute("UPDATE tracks SET date_modified = 0 WHERE id = ?1", [id])
+            .expect("data di modifica");
+        assert_eq!(
+            lib.scansiona().updated,
+            1,
+            "la riga deve essere stata riletta"
+        );
+
+        let dove: Vec<String> = lib
+            .connection
+            .prepare("SELECT track_key FROM lyrics")
+            .and_then(|mut s| {
+                s.query_map([], |r| r.get::<_, String>(0))
+                    .and_then(Iterator::collect)
+            })
+            .expect("testi");
+        assert_eq!(
+            dove,
+            vec![chiave_corretta],
+            "il testo resta alla copia corretta"
+        );
+    }
+
+    #[test]
+    fn gli_elenchi_non_ordinano_la_tabella_a_ogni_pagina() {
+        // Il piano di SQLite, e non un cronometro: «USE TEMP B-TREE FOR ORDER
+        // BY» vuol dire che ogni pagina da duecento righe ordinava la libreria
+        // intera. È la frase che la migrazione 024 esiste per togliere, e questa
+        // prova fallisce se un giorno l'ordinamento e l'indice smettono di
+        // avere la stessa forma.
+        let lib = Libreria::nuova();
+        let piano = |sql: &str| -> String {
+            let mut statement = lib
+                .connection
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .expect("piano");
+            let righe = statement
+                .query_map([], |r| r.get::<_, String>(3))
+                .expect("righe del piano");
+            righe
+                .collect::<Result<Vec<_>, _>>()
+                .expect("piano letto")
+                .join(" | ")
+        };
+        for ordine in [TrackOrder::Shelf, TrackOrder::Title, TrackOrder::MostPlayed] {
+            let letto = piano(&format!(
+                "SELECT t.id FROM tracks t ORDER BY {} LIMIT 200 OFFSET 0",
+                ordine.sql()
+            ));
+            assert!(
+                !letto.contains("TEMP B-TREE"),
+                "{ordine:?} ordina la tabella intera: {letto}"
+            );
+        }
+        let album = piano(
+            "SELECT a.title FROM albums a
+             ORDER BY a.artist COLLATE NOCASE, a.year, a.title COLLATE NOCASE
+             LIMIT 200 OFFSET 0",
+        );
+        assert!(!album.contains("TEMP B-TREE"), "gli album: {album}");
+    }
+
+    #[test]
+    fn la_correzione_torna_con_il_file() {
+        // Il file sparisce — la cartella tolta, il disco scollegato — e la
+        // scansione cancella la riga. Il file torna, e la riga nuova deve
+        // ritrovare quel che l'utente aveva corretto a mano.
+        let mut lib = Libreria::nuova();
+        let file = lib.brano("Senza/Nome/01.wav", "Traccia 01", "Unknown Artist", "Al");
+        assert_eq!(lib.scansiona().inserted, 1);
+        let id: i64 = lib
+            .connection
+            .query_row("SELECT id FROM tracks", [], |r| r.get(0))
+            .expect("identificativo");
+        crate::incerti::correggi(
+            &mut lib.connection,
+            id,
+            &crate::provenienza::Correzioni {
+                titolo: Some("Hey You".to_owned()),
+                artista: Some("Pink Floyd".to_owned()),
+                ..crate::provenienza::Correzioni::default()
+            },
+        )
+        .expect("correzione");
+
+        std::fs::remove_file(&file).expect("il file sparisce");
+        assert_eq!(lib.scansiona().removed, 1);
+        assert_eq!(lib.conta("track_overrides"), 0, "la riga se n'è andata");
+        assert_eq!(lib.conta("correzioni_orfane"), 1, "la correzione no");
+
+        lib.brano("Senza/Nome/01.wav", "Traccia 01", "Unknown Artist", "Al");
+        assert_eq!(lib.scansiona().inserted, 1);
+        let (titolo, artista): (String, String) = lib
+            .connection
+            .query_row("SELECT title, artist FROM tracks", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .expect("riga");
+        assert_eq!(titolo, "Hey You");
+        assert_eq!(artista, "Pink Floyd");
+        assert_eq!(lib.conta("correzioni_orfane"), 0, "e non resta orfana");
+    }
+
+    #[test]
+    fn una_correzione_di_prima_della_019_si_salva_anche_lei() {
+        // Una riga corretta prima della 019: la migrazione le ha lasciato
+        // `content_key` a NULL, e il file non è mai cambiato da allora.
+        let mut lib = Libreria::nuova();
+        let file = lib.brano("Senza/Nome/01.wav", "Traccia 01", "Unknown Artist", "Al");
+        assert_eq!(lib.scansiona().inserted, 1);
+        let id: i64 = lib
+            .connection
+            .query_row("SELECT id FROM tracks", [], |r| r.get(0))
+            .expect("identificativo");
+        crate::incerti::correggi(
+            &mut lib.connection,
+            id,
+            &crate::provenienza::Correzioni {
+                titolo: Some("Hey You".to_owned()),
+                ..crate::provenienza::Correzioni::default()
+            },
+        )
+        .expect("correzione");
+        lib.connection
+            .execute("UPDATE tracks SET content_key = NULL WHERE id = ?1", [id])
+            .expect("com'era dopo la 019");
+
+        // La riscansione di tutti i giorni la rilegge, una volta.
+        assert_eq!(
+            lib.scansiona().updated,
+            1,
+            "la riga senza chiave si rilegge"
+        );
+        assert_eq!(lib.scansiona().updated, 0, "e poi basta");
+        let titolo: String = lib
+            .connection
+            .query_row("SELECT title FROM tracks WHERE id = ?1", [id], |r| r.get(0))
+            .expect("titolo");
+        assert_eq!(titolo, "Hey You", "la correzione resta");
+
+        // E il file che sparisce lascia la correzione da parte.
+        std::fs::remove_file(&file).expect("il file sparisce");
+        assert_eq!(lib.scansiona().removed, 1);
+        assert_eq!(
+            lib.conta("correzioni_orfane"),
+            1,
+            "la correzione resta orfana"
+        );
     }
 
     #[test]
@@ -3628,6 +4069,124 @@ mod tests {
         lib.scansiona();
         assert_eq!(lib.conta("tracks"), 0);
         assert_eq!(lib.conta("sync_tombstones"), 0);
+    }
+
+    /// Le regole dei percorsi delle prove: Windows e macOS ignorano le maiuscole.
+    const REGOLE: PathRules = PathRules {
+        case_insensitive: true,
+    };
+
+    #[test]
+    fn cancellare_un_brano_se_ne_porta_dietro_l_album_e_l_artista() {
+        let mut lib = Libreria::nuova();
+        lib.brano("A/Al/01.wav", "Uno", "Art", "Al");
+        let secondo = lib.brano("B/Bl/01.wav", "Due", "Art2", "Bl");
+        lib.scansiona();
+        assert_eq!(lib.conta("albums"), 2);
+        let id = lib.id_del_titolo("Due");
+        let radici = vec![lib.root()];
+
+        let esito =
+            cancella_brani(&mut lib.connection, &[id], &radici, REGOLE).expect("cancellazione");
+
+        assert_eq!(esito.tolti, 1);
+        assert_eq!(lib.conta("tracks"), 1);
+        // Gli aggregati nella stessa transazione: senza, resterebbe un album
+        // senza brani e un artista senza album.
+        assert_eq!(lib.conta("albums"), 1);
+        assert_eq!(lib.conta("artists"), 1);
+        // Il file non si tocca: questa funzione non sa nemmeno che esiste un
+        // disco.
+        assert!(secondo.exists(), "il file deve essere ancora al suo posto");
+    }
+
+    #[test]
+    fn cancellare_a_mano_non_scrive_lapidi() {
+        // Per la stessa ragione della scansione, detta dall'altro lato:
+        // `lapidi.brani` non la consulta nessuno, e una riga che non protegge
+        // niente è stato morto.
+        let mut lib = Libreria::nuova();
+        lib.brano("A/Al/01.wav", "Uno", "Art", "Al");
+        lib.scansiona();
+        let id = lib.id_del_titolo("Uno");
+        let radici = vec![lib.root()];
+
+        cancella_brani(&mut lib.connection, &[id], &radici, REGOLE).expect("cancellazione");
+
+        assert_eq!(lib.conta("tracks"), 0);
+        assert_eq!(lib.conta("sync_tombstones"), 0);
+    }
+
+    #[test]
+    fn cancellare_dice_quanti_torneranno_alla_prossima_scansione() {
+        let mut lib = Libreria::nuova();
+        lib.brano("A/Al/01.wav", "Uno", "Art", "Al");
+        lib.scansiona();
+        let id = lib.id_del_titolo("Uno");
+
+        // Sorvegliata: il file è ancora lì, e la scansione dopo lo rimette.
+        let radici = vec![lib.root()];
+        let esito =
+            cancella_brani(&mut lib.connection, &[id], &radici, REGOLE).expect("cancellazione");
+        assert_eq!(esito.tolti, 1);
+        assert_eq!(esito.torneranno, 1);
+        lib.scansiona();
+        assert_eq!(
+            lib.conta("tracks"),
+            1,
+            "torna davvero, non per modo di dire"
+        );
+
+        // Fuori da ogni cartella sorvegliata — una radice tolta, un disco
+        // staccato — non torna nessuno, e non lo si promette.
+        let id = lib.id_del_titolo("Uno");
+        let esito = cancella_brani(&mut lib.connection, &[id], &[], REGOLE).expect("cancellazione");
+        assert_eq!(esito.tolti, 1);
+        assert_eq!(esito.torneranno, 0);
+    }
+
+    #[test]
+    fn cancellare_un_brano_lo_toglie_dalle_playlist() {
+        let mut lib = Libreria::nuova();
+        lib.brano("A/Al/01.wav", "Uno", "Art", "Al");
+        lib.scansiona();
+        let id = lib.id_del_titolo("Uno");
+        lib.connection
+            .execute_batch(
+                "INSERT INTO playlists (id, playlist_key, name, created_at, updated_at)
+                 VALUES (1, 'p', 'P', 1, 1);",
+            )
+            .expect("playlist");
+        lib.connection
+            .execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (1, ?1, 0)",
+                [id],
+            )
+            .expect("riga di playlist");
+
+        cancella_brani(&mut lib.connection, &[id], &[], REGOLE).expect("cancellazione");
+
+        // La cascata, che le chiavi esterne accese rendono possibile.
+        assert_eq!(lib.conta("playlist_tracks"), 0);
+        // La playlist resta: si è cancellato un brano, non un elenco.
+        assert_eq!(lib.conta("playlists"), 1);
+    }
+
+    #[test]
+    fn cancellare_quel_che_non_c_e_non_e_un_guasto() {
+        // Il clic su un elenco cambiato sotto: non si tocca niente, e non si
+        // rifanno gli aggregati per niente.
+        let mut lib = Libreria::nuova();
+        lib.brano("A/Al/01.wav", "Uno", "Art", "Al");
+        lib.scansiona();
+
+        let esito =
+            cancella_brani(&mut lib.connection, &[4_242], &[], REGOLE).expect("cancellazione");
+
+        assert_eq!(esito.tolti, 0);
+        assert_eq!(esito.torneranno, 0);
+        assert_eq!(lib.conta("tracks"), 1);
+        assert_eq!(lib.conta("albums"), 1);
     }
 
     #[test]
@@ -4342,14 +4901,22 @@ mod tests {
     }
 
     /// Una riga in `tracks` scritta a mano: qui interessa il percorso, non i tag.
+    /// Una riga come la scrive una scansione di oggi: con la `content_key`, senza
+    /// la quale il piano la rileggerebbe (vedi `known_tracks`).
     fn riga(connection: &Connection, id: i64, path: &str, modified_ms: i64) {
         connection
             .execute(
                 "INSERT INTO tracks
-                     (id, path, track_key, title, artist, album, duration_ms,
+                     (id, path, track_key, content_key, title, artist, album, duration_ms,
                       file_size, date_added, date_modified)
-                 VALUES (?1, ?2, ?3, 'T', 'A', 'Al', 1000, 99999, 0, ?4)",
-                rusqlite::params![id, path, format!("a|t{id}|al"), modified_ms],
+                 VALUES (?1, ?2, ?3, ?4, 'T', 'A', 'Al', 1000, 99999, 0, ?5)",
+                rusqlite::params![
+                    id,
+                    path,
+                    format!("a|t{id}|al"),
+                    format!("c{id}"),
+                    modified_ms
+                ],
             )
             .expect("riga di brano");
     }

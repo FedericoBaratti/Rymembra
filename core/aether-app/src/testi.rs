@@ -229,10 +229,83 @@ pub fn per_brano(connection: &Connection, id: i64) -> Result<TestoBrano, AppErro
 /// Non fallisce: ogni fonte che non risponde è una fonte in meno, e l'esito
 /// «niente» è un esito legittimo. Un guasto del database qui costerebbe una
 /// cache, non un testo.
+///
+/// Legge il disco **con la connessione in mano**: va bene per le prove e per chi
+/// non tiene nessun lucchetto. Chi la connessione la tiene sotto il lucchetto
+/// della libreria usa i tre tempi — [`leggi_riga`], [`leggi_dal_disco`] fuori
+/// dal lucchetto, [`componi`] — per la ragione scritta su [`DalDisco`].
 #[must_use]
 pub fn per_questo_brano(connection: &Connection, brano: &BranoDaTestare) -> TestoBrano {
-    let durata = u64::try_from(brano.duration_ms).unwrap_or(0);
     let riga = leggi_riga(connection, &brano.track_key);
+    let disco = leggi_dal_disco(brano, riga.as_ref());
+    componi(connection, brano, riga, disco)
+}
+
+/// Quel che del testo sta sul disco accanto al brano: il sidecar e il tag.
+///
+/// # Perché si legge a parte
+///
+/// Perché «accanto al brano» può voler dire su una cartella di rete, e prima si
+/// leggeva dentro [`per_questo_brano`] con il lucchetto della libreria in mano:
+/// una condivisione lenta a rispondere teneva fermo, per tutto quel tempo, ogni
+/// comando che chiedeva la libreria — la lista dei brani, la ricerca, il
+/// contatore dei preferiti — per aprire il pannello del testo. Adesso chi tiene
+/// il lucchetto lo lascia prima di leggere il disco e lo riprende per scrivere:
+/// è la stessa forma dei tre tempi della rete.
+#[derive(Debug, Clone, Default)]
+pub struct DalDisco {
+    /// Il contenuto del sidecar, se c'è.
+    pub sidecar: Option<String>,
+    /// Quando il sidecar è stato modificato l'ultima volta, in millisecondi.
+    pub sidecar_ms: Option<i64>,
+    /// L'LRC dentro il file musicale, se c'è e se serviva aprirlo.
+    pub tag: Option<String>,
+}
+
+/// Legge il sidecar e — solo se serve — il tag sincronizzato del file.
+///
+/// `riga` è quel che la tabella sa del brano, letto prima: decide se aprire il
+/// file musicale, che è la lettura cara. Si apre solo se il sidecar non basta e
+/// la riga non ha già i tempi, esattamente come quando le due letture stavano
+/// in fila dentro [`per_questo_brano`].
+#[must_use]
+pub fn leggi_dal_disco(brano: &BranoDaTestare, riga: Option<&Riga>) -> DalDisco {
+    if riga.is_some_and(|r| r.strumentale) {
+        return DalDisco::default();
+    }
+    let (sidecar, sidecar_ms) = match leggi_sidecar_con_data(Path::new(&brano.path)) {
+        Some((grezzo, quando)) => (Some(grezzo), quando),
+        None => (None, None),
+    };
+    let basta_il_sidecar = sidecar.as_deref().is_some_and(|grezzo| {
+        let testo = testo::leggi(grezzo);
+        let copre_i_tempi = !testo.sincronizzato() && riga.is_some_and(Riga::ha_i_tempi);
+        !testo.vuoto() && !copre_i_tempi
+    });
+    let tag = if basta_il_sidecar || riga.is_some_and(Riga::ha_i_tempi) {
+        None
+    } else {
+        tag_sincronizzato(Path::new(&brano.path))
+    };
+    DalDisco {
+        sidecar,
+        sidecar_ms,
+        tag,
+    }
+}
+
+/// Mette insieme il testo di un brano da quel che si è letto, e ricorda in
+/// tabella quel che il disco ha dato.
+///
+/// Non tocca il disco: il disco l'ha già letto [`leggi_dal_disco`].
+#[must_use]
+pub fn componi(
+    connection: &Connection,
+    brano: &BranoDaTestare,
+    riga: Option<Riga>,
+    disco: DalDisco,
+) -> TestoBrano {
+    let durata = u64::try_from(brano.duration_ms).unwrap_or(0);
 
     // Uno strumentale è una risposta, e vince su tutto: non c'è niente da
     // cercare altrove, ed è la riga in tabella l'unica che possa saperlo.
@@ -254,7 +327,33 @@ pub fn per_questo_brano(connection: &Connection, brano: &BranoDaTestare) -> Test
     let cercato = riga.as_ref().is_some_and(|r| r.cercato);
 
     // ── 1. il sidecar ───────────────────────────────────────────────────────
-    if let Some(grezzo) = leggi_sidecar(Path::new(&brano.path)) {
+    // Tranne quando è **più vecchio** di un testo sincronizzato a mano che dice
+    // altro: vuol dire che il salvataggio ha scritto la riga e non è riuscito a
+    // scrivere il file — una cartella di sola lettura, una share — e il file
+    // rimasto è quello di prima. Senza questa guardia chi ha appena
+    // sincronizzato vedrebbe tornare il testo vecchio. Un sidecar modificato
+    // **dopo** invece vince, com'è sempre stato: chi lo tocca a mano deve
+    // vedere il cambiamento.
+    //
+    // «Dice altro» vuol dire **altre righe**, e non altri byte. La riga salvata
+    // a mano è il `.lrc` semplice, e il sidecar che si legge per primo è il
+    // `.a2.lrc` con i tempi delle parole: byte diversi per la stessa
+    // sincronizzazione. Finché `updated_at` restava quello del salvataggio il
+    // confronto delle date li teneva d'accordo; ma lo scarto riscrive
+    // `updated_at`, e un colpo su «−100» dopo una sincronia a parole faceva
+    // passare la riga davanti al suo stesso `.a2.lrc` — le parole si spegnevano.
+    let superato_dalla_mano = |grezzo: &str| {
+        riga.as_ref().is_some_and(|r| {
+            r.fonte.e_di_chi_ascolta()
+                && r.ha_i_tempi()
+                && disco
+                    .sidecar_ms
+                    .is_some_and(|quando| quando < r.aggiornata_ms)
+                && !stesse_righe(r.synced.as_deref(), grezzo)
+        })
+    };
+    if let Some(grezzo) = disco.sidecar.as_deref().filter(|g| !superato_dalla_mano(g)) {
+        let grezzo = grezzo.to_owned();
         let testo = testo::leggi(&grezzo);
         // Un sidecar **senza tempi** non scavalca una riga che i tempi ce li
         // ha. Il primato del sidecar esiste perché è il file dell'utente,
@@ -291,7 +390,7 @@ pub fn per_questo_brano(connection: &Connection, brano: &BranoDaTestare) -> Test
     // comprato. Quel che si trova si ricorda in tabella, così l'apertura si
     // paga una volta sola.
     if !riga.as_ref().is_some_and(Riga::ha_i_tempi)
-        && let Some(grezzo) = tag_sincronizzato(Path::new(&brano.path))
+        && let Some(grezzo) = disco.tag
     {
         let testo = testo::leggi(&grezzo);
         // Solo se i tempi ci sono davvero: un `SYLT` mal scritto che si legge
@@ -342,6 +441,29 @@ pub fn per_questo_brano(connection: &Connection, brano: &BranoDaTestare) -> Test
     }
 }
 
+/// I due LRC hanno le stesse righe agli stessi tempi, parole a parte.
+///
+/// Serve a riconoscere il `.a2.lrc` di una sincronizzazione nella riga che ne
+/// conserva il gemello semplice: vedi `superato_dalla_mano` in [`componi`]. Le
+/// traduzioni contano, perché sono righe; i tempi delle parole no, perché il
+/// gemello semplice non li ha per costruzione.
+fn stesse_righe(salvato: Option<&str>, grezzo: &str) -> bool {
+    let Some(salvato) = salvato else {
+        return false;
+    };
+    if salvato == grezzo {
+        return true;
+    }
+    let righe = |lrc: &str| {
+        testo::leggi(lrc)
+            .righe
+            .into_iter()
+            .map(|riga| (riga.ms, riga.testo, riga.secondaria))
+            .collect::<Vec<_>>()
+    };
+    righe(salvato) == righe(grezzo)
+}
+
 /// Mette insieme l'esito, con l'aderenza calcolata sulla durata vera.
 fn finisci(
     testo: Testo,
@@ -384,28 +506,82 @@ pub fn percorso_sidecar(brano: &Path, coda: &str) -> PathBuf {
 ///
 /// # Le codifiche che non sono UTF-8
 ///
-/// Un `.lrc` scaricato dieci anni fa può essere in Latin-1 o in Shift-JIS, e
-/// non c'è niente nel file che lo dica. Si prova UTF-8 e, se fallisce, si legge
-/// in modo tollerante: i caratteri che non si capiscono diventano un segno di
-/// sostituzione, il resto del testo arriva. L'alternativa — riconoscere la
-/// codifica — è una dipendenza in più per un caso che si risolve da sé appena
-/// qualcuno risincronizza il brano, e con lui il file.
+/// Un `.lrc` scaricato dieci anni fa può essere in windows-1252 o in Shift-JIS,
+/// e non c'è niente nel file che lo dica. Si leggeva in modo tollerante, cioè
+/// con un segno di sostituzione al posto di ogni «è» — e un testo giapponese
+/// intero fatto di segni di sostituzione. La scusa scritta qui era che
+/// riconoscere la codifica fosse una dipendenza in più: non lo è, `encoding_rs`
+/// sta già nel dominio per riparare i tag. La scelta la fa
+/// [`aether_domain::codifica::leggi_byte`], che dice anche come.
 #[must_use]
 pub fn leggi_sidecar(brano: &Path) -> Option<String> {
+    leggi_sidecar_con_data(brano).map(|(grezzo, _)| grezzo)
+}
+
+/// Come [`leggi_sidecar`], con l'istante dell'ultima modifica del file in
+/// millisecondi, quando il filesystem lo dice.
+fn leggi_sidecar_con_data(brano: &Path) -> Option<(String, Option<i64>)> {
     for coda in CODE {
         let percorso = percorso_sidecar(brano, coda);
         let Ok(byte) = std::fs::read(&percorso) else {
             continue;
         };
-        let grezzo = match String::from_utf8(byte) {
-            Ok(testo) => testo,
-            Err(err) => String::from_utf8_lossy(err.as_bytes()).into_owned(),
-        };
+        let (grezzo, _codifica) = aether_domain::codifica::leggi_byte(&byte);
         if !grezzo.trim().is_empty() {
-            return Some(grezzo);
+            let modificato = std::fs::metadata(&percorso)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|quando| quando.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|durata| i64::try_from(durata.as_millis()).ok());
+            return Some((grezzo, modificato));
         }
     }
     None
+}
+
+/// Scrive — o toglie, con `None` — un sidecar accanto al brano, senza perdere
+/// quel che c'era.
+///
+/// # Il `.bak`
+///
+/// Un `.lrc` accanto al brano può non essere nostro: l'ha scaricato qualcuno,
+/// l'ha scritto un altro lettore, l'ha sincronizzato l'utente anni fa con un
+/// programma che non c'è più. Prima lo si sovrascriveva, e l'`.a2.lrc` si
+/// cancellava, senza chiedere e senza copia. Adesso, la prima volta che Aether
+/// sostituisce o toglie un sidecar che ha un contenuto diverso, lo sposta in
+/// `<nome>.<coda>.bak`. Solo la prima: un `.bak` che c'è già è l'originale, e
+/// le scritture dopo sono le nostre.
+///
+/// # Errori
+///
+/// `fs.writeFailed` col percorso, per la scrittura, lo spostamento o la
+/// rimozione. Un sidecar che non c'era, da togliere, non è un guasto.
+pub fn scrivi_sidecar(brano: &Path, coda: &str, contenuto: Option<&str>) -> Result<(), AppError> {
+    let percorso = percorso_sidecar(brano, coda);
+    let copia = percorso_sidecar(brano, &format!("{coda}.bak"));
+    let guaio = |dove: &Path, err: std::io::Error| {
+        AppError::new(ErrorCode::FsWriteFailed {
+            path: dove.display().to_string(),
+            detail: None,
+        })
+        .with_cause(err.to_string())
+    };
+    let di_prima = std::fs::read(&percorso).ok();
+    let da_mettere_da_parte = di_prima
+        .as_deref()
+        .is_some_and(|c| contenuto.is_none_or(|nuovo| c != nuovo.as_bytes()))
+        && !copia.exists();
+    if da_mettere_da_parte {
+        std::fs::rename(&percorso, &copia).map_err(|err| guaio(&copia, err))?;
+    }
+    match contenuto {
+        Some(nuovo) => std::fs::write(&percorso, nuovo).map_err(|err| guaio(&percorso, err)),
+        None => match std::fs::remove_file(&percorso) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(guaio(&percorso, err)),
+        },
+    }
 }
 
 // ── i tag sincronizzati ─────────────────────────────────────────────────────
@@ -604,6 +780,7 @@ fn lrc_da_sylt(frame: &lofty::id3::v2::SynchronizedTextFrame<'_>) -> Option<Stri
                 ms: *ms,
                 testo: pulito.to_owned(),
                 parole: Vec::new(),
+                secondaria: None,
             }),
         }
     }
@@ -653,6 +830,11 @@ pub struct Riga {
     /// `None` per le righe scritte prima che qualcuno la leggesse, e per
     /// quelle nate da [`imposta_scarto`], che di testo non ne ha ancora uno.
     pub durata_ms: Option<u64>,
+    /// Quando la riga è stata scritta l'ultima volta, in millisecondi.
+    ///
+    /// Serve a un confronto solo: un testo sincronizzato a mano più recente del
+    /// sidecar che sta accanto al brano. Vedi [`componi`].
+    pub aggiornata_ms: i64,
 }
 
 impl Riga {
@@ -713,7 +895,8 @@ impl Riga {
 pub fn leggi_riga(connection: &Connection, track_key: &str) -> Option<Riga> {
     connection
         .prepare_cached(
-            "SELECT synced, plain, source, offset_ms, instrumental, checked_at, duration_ms
+            "SELECT synced, plain, source, offset_ms, instrumental, checked_at, duration_ms,
+                    updated_at
              FROM lyrics WHERE track_key = ?1",
         )
         .ok()?
@@ -730,6 +913,7 @@ pub fn leggi_riga(connection: &Connection, track_key: &str) -> Option<Riga> {
                 durata_ms: row
                     .get::<_, Option<i64>>(6)?
                     .and_then(|d| u64::try_from(d).ok()),
+                aggiornata_ms: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
             })
         })
         .optional()
@@ -764,7 +948,9 @@ fn ricorda(
            synced = excluded.synced,
            source = excluded.source,
            duration_ms = excluded.duration_ms,
-           updated_at = excluded.updated_at
+           updated_at = excluded.updated_at,
+           -- Il testo in riga adesso è quello del disco, non la voce scelta.
+           scelta = 0
          WHERE lyrics.source <> 'mano'",
         rusqlite::params![
             brano.track_key,
@@ -870,18 +1056,26 @@ pub fn cerca_in_rete(
     fornitori: &Fornitori,
     brano: &BranoDaTestare,
 ) -> Result<Option<Voce>, AppError> {
-    con_ritentativi(|| {
-        let (titolo, album, durata_ms) = da_chiedere_al_catalogo(brano);
-        lrclib::cerca(
-            fornitori,
-            &Cercato {
-                titolo: &titolo,
-                artista: &brano.artist,
-                album,
-                durata_ms,
-            },
-        )
-    })
+    let domanda = da_chiedere_al_catalogo(brano);
+    con_ritentativi(|| lrclib::cerca(fornitori, &domanda.cercato()))
+}
+
+/// Tutte le voci che il catalogo ha per questo brano, per sceglierne una a mano.
+/// **Non tocca il database.**
+///
+/// Stessa domanda di [`cerca_in_rete`] — gli stessi segnaposto tolti, lo stesso
+/// titolo ripulito — e senza nessuna scelta: la fa chi guarda. Vedi
+/// [`aether_meta::lrclib::candidati`].
+///
+/// # Errori
+///
+/// Gli stessi di [`cerca_in_rete`].
+pub fn candidati_in_rete(
+    fornitori: &Fornitori,
+    brano: &BranoDaTestare,
+) -> Result<Vec<Voce>, AppError> {
+    let domanda = da_chiedere_al_catalogo(brano);
+    lrclib::candidati(fornitori, &domanda.cercato())
 }
 
 /// Come [`cerca_in_rete`], ma senza fidarsi di quel che il deposito ricorda.
@@ -898,18 +1092,32 @@ pub fn cerca_di_nuovo_in_rete(
     fornitori: &Fornitori,
     brano: &BranoDaTestare,
 ) -> Result<Option<Voce>, AppError> {
-    con_ritentativi(|| {
-        let (titolo, album, durata_ms) = da_chiedere_al_catalogo(brano);
-        lrclib::cerca_di_nuovo(
-            fornitori,
-            &Cercato {
-                titolo: &titolo,
-                artista: &brano.artist,
-                album,
-                durata_ms,
-            },
-        )
-    })
+    let domanda = da_chiedere_al_catalogo(brano);
+    con_ritentativi(|| lrclib::cerca_di_nuovo(fornitori, &domanda.cercato()))
+}
+
+/// La domanda al catalogo per un brano, con i campi già decisi.
+///
+/// Possiede le sue stringhe perché due di loro possono non venire dai tag: vedi
+/// [`da_chiedere_al_catalogo`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Domanda {
+    titolo: String,
+    /// Vuoto quando non si sa: il catalogo allora si interroga per titolo.
+    artista: String,
+    album: Option<String>,
+    durata_ms: Option<u64>,
+}
+
+impl Domanda {
+    fn cercato(&self) -> Cercato<'_> {
+        Cercato {
+            titolo: &self.titolo,
+            artista: &self.artista,
+            album: self.album.as_deref(),
+            durata_ms: self.durata_ms,
+        }
+    }
 }
 
 /// Con che cosa si interroga il catalogo per questo brano.
@@ -941,19 +1149,58 @@ pub fn cerca_di_nuovo_in_rete(
 ///
 /// Ripiego sul grezzo se la ripulitura non lascia niente: un brano che si
 /// chiama davvero «Video» esiste, e cercarne la stringa vuota non è cercare.
-fn da_chiedere_al_catalogo(brano: &BranoDaTestare) -> (String, Option<&str>, Option<u64>) {
-    let pulito = titolo_da_cercare(&brano.title);
-    let titolo = if pulito.trim().is_empty() {
-        brano.title.clone()
+///
+/// # I segnaposto non si mandano
+///
+/// Un file senza tag arriva qui con «Artista sconosciuto» e «Album sconosciuto»,
+/// che sono quel che la scansione scrive per dire «non lo so» — e si mandavano
+/// al catalogo così com'erano: una domanda con una risposta vuota garantita, e
+/// il brano segnato come cercato per due settimane. Adesso un segnaposto non
+/// entra nella domanda: l'album si omette, e l'artista si prende dal **nome del
+/// file** quando lo porta — «Artista - Titolo.mp3» — altrimenti si lascia
+/// vuoto e il catalogo si interroga per titolo. Dal nome del file e non dalle
+/// cartelle: senza sapere quali sono le cartelle sorvegliate, «Musica» o
+/// «Desktop» diventerebbero l'artista.
+fn da_chiedere_al_catalogo(brano: &BranoDaTestare) -> Domanda {
+    let dal_nome = || {
+        aether_domain::indizi::dal_percorso(
+            aether_domain::paths::base_name(&brano.path),
+            &[],
+            aether_domain::paths::PathRules::for_current_platform(),
+        )
+    };
+    let (grezzo, artista) = if e_segnaposto(Some(&brano.artist)) {
+        let indizi = dal_nome();
+        (
+            // Il titolo dei tag, se c'è; altrimenti quello del nome del file,
+            // senza il numero di traccia e l'artista davanti.
+            if e_segnaposto(Some(&brano.title)) || indizi.artista.is_some() {
+                indizi.titolo.unwrap_or_else(|| brano.title.clone())
+            } else {
+                brano.title.clone()
+            },
+            indizi.artista.unwrap_or_default(),
+        )
     } else {
-        pulito
+        (brano.title.clone(), brano.artist.clone())
+    };
+    let titolo = if e_segnaposto(Some(&grezzo)) {
+        String::new()
+    } else {
+        let pulito = titolo_da_cercare(&grezzo);
+        if pulito.trim().is_empty() {
+            grezzo
+        } else {
+            pulito
+        }
     };
     let album = brano.album.trim();
-    (
+    Domanda {
         titolo,
-        (!album.is_empty()).then_some(album),
-        u64::try_from(brano.duration_ms).ok().filter(|d| *d > 0),
-    )
+        artista,
+        album: (!e_segnaposto(Some(album))).then(|| album.to_owned()),
+        durata_ms: u64::try_from(brano.duration_ms).ok().filter(|d| *d > 0),
+    }
 }
 
 /// Quanto si aspetta prima del secondo e del terzo tentativo.
@@ -1014,6 +1261,24 @@ where
 /// nella `WHERE` dell'`UPSERT`, cioè nel database, e non in un `if` che il
 /// prossimo punto di chiamata potrebbe dimenticare.
 ///
+/// # Il «no» non cancella quel che si aveva
+///
+/// Un `None` scriveva i testi a `NULL` sopra la riga che c'era, e ci arrivava
+/// «Cerca di nuovo»: chi aveva un testo scaricato ieri e premeva il pulsante per
+/// vedere se ce n'era uno con i tempi, se il catalogo nel frattempo non
+/// rispondeva più per quel brano, perdeva anche quello di ieri. Adesso il «no»
+/// su una riga che esiste scrive soltanto che si è chiesto; su una riga che non
+/// esiste la crea vuota, come prima, perché è quella la memoria del brano che
+/// nessuno conosce. Buttare un testo sbagliato è un gesto a sé: [`rifiuta`].
+///
+/// # Quel che chi ascolta ha deciso
+///
+/// Non passa sopra a una voce scelta a mano — vedi [`ricorda_scelta`] — e non
+/// scrive una voce che chi ascolta ha scartato: vedi [`rifiuta`]. In tutti e due
+/// i casi la risposta vale come un «no», e resta solo da segnare che si è
+/// chiesto. Le due condizioni stanno nella `WHERE` dell'`UPSERT`, come quella di
+/// `mano`, e per la stessa ragione.
+///
 /// # Errori
 ///
 /// `db.queryFailed`. Qui l'errore si propaga: una passata che crede di aver
@@ -1023,15 +1288,24 @@ pub fn ricorda_esito(
     brano: &BranoDaTestare,
     voce: Option<&Voce>,
 ) -> Result<(), AppError> {
-    let (piatto, sincronizzato, strumentale, id_catalogo) = match voce {
-        Some(voce) => (
-            voce.piatto.as_deref(),
-            voce.sincronizzato.as_deref(),
-            voce.candidato.strumentale,
-            Some(voce.candidato.id),
-        ),
-        None => (None, None, false, None),
+    let Some(voce) = voce else {
+        return connection
+            .execute(
+                "INSERT INTO lyrics
+                   (track_key, source, offset_ms, instrumental, duration_ms, updated_at, checked_at)
+                 VALUES (?1, 'lrclib', 0, 0, ?2, ?3, ?3)
+                 ON CONFLICT(track_key) DO UPDATE SET checked_at = excluded.checked_at",
+                rusqlite::params![brano.track_key, brano.duration_ms, now_ms()],
+            )
+            .map(|_| ())
+            .map_err(|err| db_error("scrittura dell'esito di un testo", &err));
     };
+    let (piatto, sincronizzato, strumentale, id_catalogo) = (
+        voce.piatto.as_deref(),
+        voce.sincronizzato.as_deref(),
+        voce.candidato.strumentale,
+        Some(voce.candidato.id),
+    );
     connection
         .execute(
             "INSERT INTO lyrics
@@ -1047,7 +1321,12 @@ pub fn ricorda_esito(
                duration_ms = excluded.duration_ms,
                updated_at = excluded.updated_at,
                checked_at = excluded.checked_at
-             WHERE lyrics.source <> 'mano'",
+             WHERE lyrics.source <> 'mano'
+               AND lyrics.scelta = 0
+               AND NOT EXISTS (
+                 SELECT 1 FROM json_each(COALESCE(lyrics.scartati, '[]'))
+                 WHERE value = excluded.lrclib_id
+               )",
             rusqlite::params![
                 brano.track_key,
                 piatto,
@@ -1061,14 +1340,70 @@ pub fn ricorda_esito(
         .map(|_| ())
         .map_err(|err| db_error("scrittura dell'esito di un testo", &err))?;
 
-    // Se l'`UPSERT` non ha toccato niente perché il testo è di chi ascolta,
-    // resta comunque da segnare che si è guardato: senza, la passata
-    // rimetterebbe in coda per sempre un brano che ha già il suo testo.
+    // Se l'`UPSERT` non ha toccato niente — il testo è di chi ascolta, la voce
+    // l'ha scelta lui, o l'ha scartata — resta comunque da segnare che si è
+    // guardato: senza, la passata rimetterebbe in coda per sempre un brano a
+    // cui ha già chiesto.
     let _ = connection.execute(
-        "UPDATE lyrics SET checked_at = ?2 WHERE track_key = ?1 AND source = 'mano'",
+        "UPDATE lyrics SET checked_at = ?2 WHERE track_key = ?1",
         rusqlite::params![brano.track_key, now_ms()],
     );
     Ok(())
+}
+
+/// Scrive la voce del catalogo che chi ascolta ha scelto dall'elenco.
+///
+/// Come [`ricorda_esito`], con due differenze. La riga si segna `scelta`, e da
+/// quel momento le risposte del catalogo non le passano sopra e la passata non
+/// la rimette in coda: prima una voce senza tempi scelta a mano tornava in coda
+/// dopo quattordici giorni, e la scelta automatica la sostituiva con quella che
+/// chi ascolta aveva appena scartato. E la voce esce dagli scartati, se c'era:
+/// sceglierla adesso è un ripensamento.
+///
+/// Il testo sincronizzato a mano resta, come in ogni `UPSERT` di questo modulo.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn ricorda_scelta(
+    connection: &Connection,
+    brano: &BranoDaTestare,
+    voce: &Voce,
+) -> Result<(), AppError> {
+    connection
+        .execute(
+            "INSERT INTO lyrics
+               (track_key, plain, synced, source, lrclib_id, offset_ms, instrumental,
+                duration_ms, updated_at, checked_at, scelta)
+             VALUES (?1, ?2, ?3, 'lrclib', ?4, 0, ?5, ?6, ?7, ?7, 1)
+             ON CONFLICT(track_key) DO UPDATE SET
+               plain = excluded.plain,
+               synced = excluded.synced,
+               source = excluded.source,
+               lrclib_id = excluded.lrclib_id,
+               instrumental = excluded.instrumental,
+               duration_ms = excluded.duration_ms,
+               updated_at = excluded.updated_at,
+               checked_at = excluded.checked_at,
+               scelta = 1,
+               scartati = (
+                 SELECT json_group_array(value)
+                 FROM json_each(COALESCE(lyrics.scartati, '[]'))
+                 WHERE value <> excluded.lrclib_id
+               )
+             WHERE lyrics.source <> 'mano'",
+            rusqlite::params![
+                brano.track_key,
+                voce.piatto.as_deref(),
+                voce.sincronizzato.as_deref(),
+                voce.candidato.id,
+                i64::from(voce.candidato.strumentale),
+                brano.duration_ms,
+                now_ms(),
+            ],
+        )
+        .map(|_| ())
+        .map_err(|err| db_error("scrittura di un testo scelto a mano", &err))
 }
 
 /// Dimentica di aver già chiesto al catalogo per questo brano.
@@ -1103,6 +1438,96 @@ pub fn dimentica_esito(connection: &Connection, track_key: &str) -> Result<(), A
         .map_err(|err| db_error("azzeramento della memoria di una ricerca", &err))
 }
 
+/// Dopo quanto si riprova un brano su cui il catalogo ha risposto con un guasto.
+///
+/// Un giorno, contro i quattordici di [`RIPROVA_MS`]: un guasto non è una
+/// risposta sul brano, e fra un giorno quel titolo potrebbe andare benissimo.
+/// Ma nemmeno zero, che era il valore di prima.
+pub const RIPROVA_DOPO_UN_GUASTO_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// Il catalogo ha risposto a questo brano con un guasto che non passa riprovando.
+///
+/// # Il difetto che chiude
+///
+/// La passata non registrava niente per un brano che faceva inciampare il
+/// catalogo — «non si sa» non è «non c'è» — e la coda si rilegge da capo a ogni
+/// lotto, ordinata per ascolti. Cinque brani così in cima alla coda erano cinque
+/// guasti di fila, e cinque guasti di fila fermano la passata: a ogni avvio la
+/// stessa passata ripartiva, inciampava sugli stessi cinque, e si fermava. Il
+/// resto della libreria non veniva mai guardato.
+///
+/// Adesso il brano si segna come cercato **un giorno fa meno quattordici**:
+/// esce dalla coda per [`RIPROVA_DOPO_UN_GUASTO_MS`] invece che per due
+/// settimane, e non tocca nessun testo che la riga avesse già. Un
+/// `checked_at` più recente non si abbassa.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn rimanda(connection: &Connection, brano: &BranoDaTestare) -> Result<(), AppError> {
+    let adesso = now_ms();
+    let finto = adesso
+        .saturating_sub(RIPROVA_MS)
+        .saturating_add(RIPROVA_DOPO_UN_GUASTO_MS);
+    connection
+        .execute(
+            "INSERT INTO lyrics
+               (track_key, source, offset_ms, instrumental, duration_ms, updated_at, checked_at)
+             VALUES (?1, 'lrclib', 0, 0, ?2, ?3, ?4)
+             ON CONFLICT(track_key) DO UPDATE SET checked_at = excluded.checked_at
+             WHERE lyrics.checked_at IS NULL OR lyrics.checked_at < excluded.checked_at",
+            rusqlite::params![brano.track_key, brano.duration_ms, adesso, finto],
+        )
+        .map(|_| ())
+        .map_err(|err| db_error("rinvio di un testo che il catalogo non ha dato", &err))
+}
+
+/// Butta il testo arrivato dal catalogo per questo brano: «non è questo».
+///
+/// # Perché un gesto a sé
+///
+/// Perché fino a qui un testo scelto male dal catalogo non si toglieva più: la
+/// scelta automatica aveva passato i veti, «Cerca di nuovo» ritrovava la stessa
+/// voce, e l'unico modo di non vederlo era sincronizzarne uno a mano. Adesso chi
+/// ascolta lo riconosce e lo scarta, e il brano resta segnato come cercato —
+/// quindi né il pannello né la passata vanno a riprenderlo da soli. La voce
+/// giusta, se c'è, si sceglie dall'elenco: vedi [`candidati_in_rete`].
+///
+/// Tocca **solo** quel che è venuto dal catalogo. Il testo di chi ascolta non si
+/// butta da qui, e quello del sidecar o del tag sta in un file che non è nostro:
+/// scartarne la copia in tabella non servirebbe a niente, perché alla prossima
+/// apertura il file lo ridarebbe.
+///
+/// # E non torna
+///
+/// Segnarlo come cercato non bastava: la passata lo richiede dopo quattordici
+/// giorni, «Cerca di nuovo» subito, e tutt'e due ritrovavano la stessa voce e la
+/// riscrivevano. L'identificativo scartato si aggiunge a `scartati`, e
+/// [`ricorda_esito`] non scrive più quella voce per questo brano. Una voce
+/// **diversa** invece sì: un catalogo si corregge, e il testo giusto può
+/// arrivare domani.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn rifiuta(connection: &Connection, track_key: &str) -> Result<(), AppError> {
+    let adesso = now_ms();
+    connection
+        .execute(
+            "UPDATE lyrics
+               SET scartati = CASE
+                     WHEN lrclib_id IS NULL THEN scartati
+                     ELSE json_insert(COALESCE(scartati, '[]'), '$[#]', lrclib_id)
+                   END,
+                   plain = NULL, synced = NULL, lrclib_id = NULL, instrumental = 0,
+                   scelta = 0, updated_at = ?2, checked_at = ?2
+             WHERE track_key = ?1 AND source = 'lrclib'",
+            rusqlite::params![track_key, adesso],
+        )
+        .map(|_| ())
+        .map_err(|err| db_error("scarto di un testo del catalogo", &err))
+}
+
 /// Chi è in coda per il catalogo, come condizione `WHERE` su `tracks t`.
 ///
 /// Una stringa sola perché a questa domanda rispondono in due — [`da_cercare`],
@@ -1112,12 +1537,16 @@ pub fn dimentica_esito(connection: &Connection, track_key: &str) -> Result<(), A
 /// mentre la passata continua a lavorare.
 ///
 /// `?1` è la soglia del ritentativo: `adesso − `[`RIPROVA_MS`].
+///
+/// Una voce scelta a mano non è una domanda aperta, anche senza tempi: vedi
+/// [`ricorda_scelta`].
 const IN_CODA: &str = "t.id IN (SELECT MIN(id) FROM tracks GROUP BY track_key)
        AND NOT EXISTS (
          SELECT 1 FROM lyrics l
          WHERE l.track_key = t.track_key
            AND (l.synced IS NOT NULL
                 OR l.instrumental = 1
+                OR l.scelta = 1
                 OR l.checked_at >= ?1)
        )";
 
@@ -1260,47 +1689,64 @@ pub fn copertura(connection: &Connection) -> Result<Copertura, AppError> {
 
 // ── sincronizzato a mano ────────────────────────────────────────────────────
 
-/// Scrive un testo sincronizzato a mano: il `.lrc` accanto al brano, e la riga.
+/// Scrive un testo sincronizzato a mano: la riga, e poi il `.lrc` accanto al brano.
 ///
-/// # Perché il file viene prima
+/// Le due metà in una chiamata sola, per chi non tiene lucchetti: le prove, e
+/// chiunque abbia la connessione in mano senza nessuno che aspetti dietro. Chi
+/// la connessione la tiene sotto il lucchetto della libreria chiama le due metà
+/// separate — [`registra_a_mano`] dentro, [`scrivi_sidecar`] fuori — perché la
+/// scrittura del file può stare su una share.
 ///
-/// Perché il file **è** la verità e la riga è la copia veloce — sta scritto
-/// nella migrazione `011_testi.sql`. Se il disco è pieno o la cartella è di sola
-/// lettura, meglio fallire senza aver scritto niente da nessuna parte che
-/// ritrovarsi una riga di database che promette un file che non esiste: al
-/// prossimo avvio la catena leggerebbe la riga, non troverebbe il sidecar, e
-/// nessuno saprebbe perché il testo c'è in Aether e in nessun altro lettore.
+/// # Perché la riga viene prima, adesso
+///
+/// Prima veniva prima il file, con una ragione scritta qui: meglio fallire del
+/// tutto che avere una riga che promette un file che non c'è. Il prezzo di
+/// quella regola era un lavoro perso per intero — mezz'ora di battute su un
+/// brano che sta in una cartella di sola lettura, o su una share che si è
+/// staccata, e l'editor che risponde «non si è potuto scrivere» senza aver
+/// salvato niente da nessuna parte. Il testo è di chi l'ha battuto, e il posto
+/// dove non si perde è il database: il file accanto al brano è il modo di
+/// portarlo agli altri lettori, e se non si scrive si dice.
+///
+/// La promessa che la riga non mente resta, in un altro modo: un sidecar più
+/// vecchio della riga non la scavalca — vedi [`componi`].
 ///
 /// # I byte dell'audio non si toccano
 ///
 /// Non si scrive in `USLT`, non si riapre il file con lofty, non serve
 /// `enrich_undo`. Un `.lrc` accanto al brano lo leggono foobar2000, VLC,
 /// Poweramp e Navidrome, e cancellarlo è un gesto che chiunque sa fare senza
-/// strumenti — che è la definizione di reversibile.
+/// strumenti — che è la definizione di reversibile. Quello che c'era prima, se
+/// non era lo stesso, resta in un `.lrc.bak`: vedi [`scrivi_sidecar`].
 ///
 /// # Errori
 ///
-/// `fs.writeFailed` se il sidecar non si scrive, `db.queryFailed` se la riga non
-/// si salva.
+/// `db.queryFailed` se la riga non si salva, e allora il file non si tocca;
+/// `fs.writeFailed` se il sidecar non si scrive, **dopo** che la riga è salva.
 pub fn salva_a_mano(
     connection: &Connection,
     brano: &BranoDaTestare,
     lrc: &str,
 ) -> Result<(), AppError> {
-    let percorso = percorso_sidecar(Path::new(&brano.path), "lrc");
+    registra_a_mano(connection, brano, lrc)?;
     // `std::fs` e non `MusicFiles`: quel tratto sa aprire in lettura, perché è
     // quel che serve al motore. Scrivere accanto a un file altrui è un mestiere
     // in più, e quando arriverà Android — dove non c'è un percorso ma una
     // concessione — sarà quello il momento di allargare il tratto, non adesso
     // con un'astrazione che avrebbe un implementatore solo.
-    std::fs::write(&percorso, lrc).map_err(|err| {
-        AppError::new(ErrorCode::FsWriteFailed {
-            path: percorso.display().to_string(),
-            detail: None,
-        })
-        .with_cause(err.to_string())
-    })?;
+    scrivi_sidecar(Path::new(&brano.path), "lrc", Some(lrc))
+}
 
+/// La metà di [`salva_a_mano`] che scrive nel database, e nient'altro.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn registra_a_mano(
+    connection: &Connection,
+    brano: &BranoDaTestare,
+    lrc: &str,
+) -> Result<(), AppError> {
     connection
         .execute(
             "INSERT INTO lyrics
@@ -1532,6 +1978,51 @@ mod prove {
         let riga = leggi_riga(&connection, "chiave").expect("riga");
         assert_eq!(riga.fonte, Fonte::Sidecar);
         assert_eq!(riga.synced.as_deref(), Some(LRC));
+    }
+
+    #[test]
+    fn lo_scarto_non_spegne_le_parole_di_una_sincronia_a_mano() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let id = inserisci(&connection, &brano, None);
+        let quale = super::brano(&connection, id).expect("brano");
+
+        // Com'è dopo l'editor: in riga il gemello semplice, accanto al brano
+        // l'`.a2.lrc` con i tempi delle parole.
+        registra_a_mano(&connection, &quale, "[00:10.00]prima riga\n").expect("salvato");
+        let esteso = brano.with_extension("a2.lrc");
+        std::fs::write(&esteso, "[00:10.00]<00:10.00>prima <00:10.40>riga\n").expect("esteso");
+        // Un colpo sullo scarto dopo: `updated_at` passa davanti al file.
+        std::fs::File::options()
+            .write(true)
+            .open(&esteso)
+            .and_then(|file| {
+                file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000))
+            })
+            .expect("data del file");
+        imposta_scarto(&connection, "chiave", -100).expect("scarto");
+
+        let esito = per_brano(&connection, id).expect("testo");
+        assert_eq!(esito.fonte, Fonte::Sidecar, "l'esteso resta la fonte");
+        assert_eq!(
+            esito.testo.righe.first().map(|r| r.parole.len()),
+            Some(2),
+            "e le parole restano accese"
+        );
+
+        // Un sidecar vecchio che dice **altre** righe resta invece superato: è
+        // il file che il salvataggio non è riuscito a riscrivere.
+        std::fs::write(&esteso, "[00:05.00]<00:05.00>vecchia\n").expect("vecchio");
+        std::fs::File::options()
+            .write(true)
+            .open(&esteso)
+            .and_then(|file| {
+                file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000))
+            })
+            .expect("data del file");
+        let superato = per_brano(&connection, id).expect("testo");
+        assert_eq!(superato.fonte, Fonte::Mano);
     }
 
     #[test]
@@ -1831,6 +2322,82 @@ mod prove {
     }
 
     #[test]
+    fn il_lrc_di_qualcun_altro_resta_in_un_bak() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let sidecar = brano.with_extension("lrc");
+        let copia = brano.with_extension("lrc.bak");
+        std::fs::write(&sidecar, "[00:05.00]il testo di un altro programma").expect("altrui");
+        let id = inserisci(&connection, &brano, None);
+        let riga = super::brano(&connection, id).expect("riga");
+
+        salva_a_mano(&connection, &riga, LRC).expect("salvataggio");
+        assert_eq!(std::fs::read_to_string(&sidecar).expect("nuovo"), LRC);
+        assert_eq!(
+            std::fs::read_to_string(&copia).expect("la copia"),
+            "[00:05.00]il testo di un altro programma"
+        );
+
+        // La seconda volta il `.bak` resta quello di prima: è l'originale.
+        salva_a_mano(&connection, &riga, "[00:09.00]rifatto").expect("secondo");
+        assert_eq!(
+            std::fs::read_to_string(&copia).expect("la copia"),
+            "[00:05.00]il testo di un altro programma"
+        );
+
+        // E togliere un esteso non lo cancella: lo mette da parte.
+        let esteso = brano.with_extension("a2.lrc");
+        std::fs::write(&esteso, "[00:01.00]<00:01.00>parola").expect("esteso altrui");
+        scrivi_sidecar(&brano, "a2.lrc", None).expect("rimozione");
+        assert!(!esteso.exists());
+        assert!(brano.with_extension("a2.lrc.bak").exists());
+    }
+
+    #[test]
+    fn un_file_che_non_si_scrive_non_perde_il_lavoro() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let sidecar = brano.with_extension("lrc");
+        // Un `.bak` c'è già, e il sidecar di prima è di sola lettura: la
+        // scrittura del nuovo non può riuscire.
+        std::fs::write(brano.with_extension("lrc.bak"), "originale").expect("bak");
+        std::fs::write(&sidecar, "[00:05.00]il testo di prima").expect("vecchio");
+        let mut permessi = std::fs::metadata(&sidecar).expect("permessi").permissions();
+        permessi.set_readonly(true);
+        std::fs::set_permissions(&sidecar, permessi.clone()).expect("sola lettura");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let id = inserisci(&connection, &brano, None);
+        let riga = super::brano(&connection, id).expect("riga");
+        let esito = salva_a_mano(&connection, &riga, LRC);
+        assert_eq!(
+            esito
+                .expect_err("il file non si scrive")
+                .code()
+                .kind()
+                .code(),
+            "fs.writeFailed"
+        );
+
+        // La riga però è salva, e il sidecar vecchio non la scavalca.
+        let testo = per_brano(&connection, id).expect("testo");
+        assert_eq!(testo.fonte, Fonte::Mano);
+        assert_eq!(
+            testo.testo.righe.first().map(|r| r.testo.as_str()),
+            Some("prima riga")
+        );
+
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "si toglie la sola lettura messa dalla prova, perché la cartella temporanea si possa cancellare"
+        )]
+        permessi.set_readonly(false);
+        let _ = std::fs::set_permissions(&sidecar, permessi);
+    }
+
+    #[test]
     fn risincronizzare_sovrascrive_quel_che_c_era() {
         let (dir, connection) = libreria();
         let brano = dir.path().join("brano.mp3");
@@ -1844,6 +2411,313 @@ mod prove {
         let salvata = leggi_riga(&connection, "chiave").expect("riga");
         assert_eq!(salvata.synced.as_deref(), Some("[00:09.00]rifatto"));
         assert_eq!(salvata.plain, None);
+    }
+
+    /// Una voce del catalogo con i tempi, per le prove che scrivono un esito.
+    fn voce_con_i_tempi() -> Voce {
+        Voce {
+            candidato: testo::Candidato {
+                id: 7,
+                titolo: "Titolo".to_owned(),
+                artista: "Artista".to_owned(),
+                album: Some("Album".to_owned()),
+                durata_ms: Some(120_000),
+                sincronizzato: true,
+                strumentale: false,
+            },
+            piatto: Some("prima riga\nseconda riga".to_owned()),
+            sincronizzato: Some(LRC.to_owned()),
+        }
+    }
+
+    #[test]
+    fn un_no_del_catalogo_non_cancella_il_testo_che_si_aveva() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let id = inserisci(&connection, &brano, None);
+        let quale = super::brano(&connection, id).expect("brano");
+
+        ricorda_esito(&connection, &quale, Some(&voce_con_i_tempi())).expect("il sì");
+        dimentica_esito(&connection, "chiave").expect("cerca di nuovo");
+        // «Cerca di nuovo», e questa volta il catalogo non risponde niente.
+        ricorda_esito(&connection, &quale, None).expect("il no");
+
+        let riga = leggi_riga(&connection, "chiave").expect("riga");
+        assert_eq!(riga.synced.as_deref(), Some(LRC), "il testo di ieri resta");
+        assert!(riga.cercato, "e si sa di aver chiesto");
+
+        // Su un brano che una riga non l'aveva, il «no» la crea vuota: è la
+        // memoria di un brano che nessuno conosce.
+        connection
+            .execute("DELETE FROM lyrics", [])
+            .expect("tabella vuota");
+        ricorda_esito(&connection, &quale, None).expect("il primo no");
+        let vuota = leggi_riga(&connection, "chiave").expect("riga vuota");
+        assert!(vuota.grezzo().is_none());
+        assert!(vuota.cercato);
+    }
+
+    #[test]
+    fn rifiutare_butta_solo_quel_che_viene_dal_catalogo() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let id = inserisci(&connection, &brano, None);
+        let quale = super::brano(&connection, id).expect("brano");
+
+        ricorda_esito(&connection, &quale, Some(&voce_con_i_tempi())).expect("esito");
+        imposta_scarto(&connection, "chiave", 200).expect("scarto");
+        rifiuta(&connection, "chiave").expect("non è questo");
+        let riga = leggi_riga(&connection, "chiave").expect("riga");
+        assert!(riga.grezzo().is_none(), "il testo sbagliato se n'è andato");
+        assert!(riga.cercato, "e non si va a riprenderlo da soli");
+        assert_eq!(riga.scarto_ms, 200, "la correzione di chi ascolta resta");
+        assert!(per_brano(&connection, id).is_ok_and(|t| !t.da_chiedere));
+
+        // Quel che ha sincronizzato chi ascolta non si butta da qui.
+        salva_a_mano(&connection, &quale, LRC).expect("a mano");
+        rifiuta(&connection, "chiave").expect("niente da fare");
+        let mano = leggi_riga(&connection, "chiave").expect("riga di mano");
+        assert_eq!(mano.synced.as_deref(), Some(LRC));
+    }
+
+    /// Una voce senza tempi, diversa da [`voce_con_i_tempi`].
+    fn voce_piatta(id: i64, parole: &str) -> Voce {
+        Voce {
+            candidato: testo::Candidato {
+                id,
+                titolo: "Titolo".to_owned(),
+                artista: "Artista".to_owned(),
+                album: None,
+                durata_ms: Some(120_000),
+                sincronizzato: false,
+                strumentale: false,
+            },
+            piatto: Some(parole.to_owned()),
+            sincronizzato: None,
+        }
+    }
+
+    #[test]
+    fn una_voce_scartata_non_torna_con_il_catalogo() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let id = inserisci(&connection, &brano, None);
+        let quale = super::brano(&connection, id).expect("brano");
+
+        ricorda_esito(&connection, &quale, Some(&voce_con_i_tempi())).expect("esito");
+        rifiuta(&connection, "chiave").expect("nessuno di questi");
+        // «Cerca di nuovo», o la passata fra quattordici giorni: il catalogo
+        // risponde la stessa voce di prima.
+        dimentica_esito(&connection, "chiave").expect("cerca di nuovo");
+        ricorda_esito(&connection, &quale, Some(&voce_con_i_tempi())).expect("di nuovo lei");
+        let riga = leggi_riga(&connection, "chiave").expect("riga");
+        assert!(riga.grezzo().is_none(), "la voce scartata non torna");
+        assert!(riga.cercato, "ma si sa di aver chiesto");
+
+        // Una voce diversa invece sì.
+        ricorda_esito(&connection, &quale, Some(&voce_piatta(8, "un'altra"))).expect("altra");
+        let altra = leggi_riga(&connection, "chiave").expect("riga");
+        assert_eq!(altra.plain.as_deref(), Some("un'altra"));
+
+        // E la voce scartata, scelta a mano dall'elenco, è un ripensamento.
+        ricorda_scelta(&connection, &quale, &voce_con_i_tempi()).expect("ripensamento");
+        let scelta = leggi_riga(&connection, "chiave").expect("riga");
+        assert_eq!(scelta.synced.as_deref(), Some(LRC));
+        let scartati: Option<String> = connection
+            .query_row(
+                "SELECT scartati FROM lyrics WHERE track_key = 'chiave'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("scartati");
+        assert_eq!(scartati.as_deref(), Some("[]"));
+    }
+
+    #[test]
+    fn una_voce_scelta_a_mano_resta_sua() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let id = inserisci(&connection, &brano, None);
+        let quale = super::brano(&connection, id).expect("brano");
+        let adesso = now_ms();
+
+        ricorda_scelta(&connection, &quale, &voce_piatta(8, "quella giusta")).expect("scelta");
+        // Senza tempi, e fra quattordici giorni: prima tornava in coda.
+        let fra_un_mese = adesso.saturating_add(RIPROVA_MS).saturating_add(60_000);
+        assert!(
+            da_cercare(&connection, fra_un_mese, LOTTO)
+                .expect("coda")
+                .is_empty(),
+            "la passata non la richiede"
+        );
+        // E se il catalogo risponde lo stesso, non le passa sopra.
+        ricorda_esito(&connection, &quale, Some(&voce_con_i_tempi())).expect("il catalogo");
+        let riga = leggi_riga(&connection, "chiave").expect("riga");
+        assert_eq!(riga.plain.as_deref(), Some("quella giusta"));
+        assert_eq!(riga.synced, None);
+
+        // Scartarla la rimette nelle mani del catalogo.
+        rifiuta(&connection, "chiave").expect("nessuno di questi");
+        ricorda_esito(&connection, &quale, Some(&voce_con_i_tempi())).expect("il catalogo");
+        let dopo = leggi_riga(&connection, "chiave").expect("riga");
+        assert_eq!(dopo.synced.as_deref(), Some(LRC));
+    }
+
+    #[test]
+    fn un_guasto_toglie_il_brano_dalla_coda_per_un_giorno_solo() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let id = inserisci(&connection, &brano, None);
+        let quale = super::brano(&connection, id).expect("brano");
+        let adesso = now_ms();
+        assert_eq!(
+            da_cercare(&connection, adesso, LOTTO).expect("coda").len(),
+            1
+        );
+
+        rimanda(&connection, &quale).expect("rinvio");
+        assert!(
+            da_cercare(&connection, adesso, LOTTO)
+                .expect("coda")
+                .is_empty(),
+            "la passata dopo non ricomincia da lui"
+        );
+        let domani = adesso
+            .saturating_add(RIPROVA_DOPO_UN_GUASTO_MS)
+            .saturating_add(60_000);
+        assert_eq!(
+            da_cercare(&connection, domani, LOTTO).expect("coda").len(),
+            1,
+            "e fra un giorno ci si riprova"
+        );
+
+        // Una risposta vera, arrivata dopo, non si fa abbassare da un guasto.
+        ricorda_esito(&connection, &quale, None).expect("il no");
+        rimanda(&connection, &quale).expect("un altro guasto");
+        assert!(
+            da_cercare(&connection, domani, LOTTO)
+                .expect("coda")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn il_testo_segue_il_brano_quando_la_chiave_cambia() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let id = inserisci(&connection, &brano, None);
+        let quale = super::brano(&connection, id).expect("brano");
+        ricorda_esito(&connection, &quale, Some(&voce_con_i_tempi())).expect("esito");
+        imposta_scarto(&connection, "chiave", -150).expect("scarto");
+
+        // Un secondo file dello stesso brano: finché lui porta la chiave
+        // vecchia, correggere il primo non gli porta via il testo.
+        let gemello = dir.path().join("brano.flac");
+        connection
+            .execute(
+                "INSERT INTO tracks
+                   (path, track_key, title, artist, album, duration_ms, file_size,
+                    date_added, date_modified)
+                 VALUES (?1, 'chiave', 'Titolo', 'Artista', 'Album', 120000, 1, 0, 0)",
+                [gemello.display().to_string()],
+            )
+            .expect("gemello");
+        let gemello_id = connection.last_insert_rowid();
+        let corregge = |quale: i64| {
+            connection
+                .execute(
+                    "UPDATE tracks SET track_key = 'chiave-corretta' WHERE id = ?1",
+                    [quale],
+                )
+                .expect("correzione dei tag")
+        };
+        corregge(id);
+        assert!(
+            leggi_riga(&connection, "chiave").is_some(),
+            "il gemello lo tiene"
+        );
+        assert!(leggi_riga(&connection, "chiave-corretta").is_none());
+
+        // Corretti tutti e due, il testo è passato alla chiave nuova, con lo
+        // scarto di chi ascolta.
+        corregge(gemello_id);
+        assert!(leggi_riga(&connection, "chiave").is_none());
+        let seguita = leggi_riga(&connection, "chiave-corretta").expect("il testo ha seguito");
+        assert_eq!(seguita.synced.as_deref(), Some(LRC));
+        assert_eq!(seguita.scarto_ms, -150);
+
+        // La chiave nuova ha già una riga vuota — «il catalogo non conosceva
+        // quel nome» — e la riga piena prende il suo posto.
+        connection
+            .execute(
+                "INSERT INTO lyrics (track_key, source, checked_at, updated_at)
+                 VALUES ('chiave-vuota', 'lrclib', 1, 1)",
+                [],
+            )
+            .expect("riga vuota");
+        connection
+            .execute(
+                "UPDATE tracks SET track_key = 'chiave-vuota' WHERE id IN (?1, ?2)",
+                [id, gemello_id],
+            )
+            .expect("verso una chiave con una riga vuota");
+        let dopo =
+            leggi_riga(&connection, "chiave-vuota").expect("la riga piena ha preso il posto");
+        assert_eq!(dopo.synced.as_deref(), Some(LRC));
+    }
+
+    #[test]
+    fn i_segnaposto_non_arrivano_al_catalogo() {
+        let brano = |percorso: &str, titolo: &str, artista: &str, album: &str| BranoDaTestare {
+            id: 1,
+            path: percorso.to_owned(),
+            track_key: "chiave".to_owned(),
+            title: titolo.to_owned(),
+            artist: artista.to_owned(),
+            album: album.to_owned(),
+            duration_ms: 200_000,
+            lyrics: None,
+        };
+
+        // Il nome del file porta l'artista: si prende da lì, e il titolo senza
+        // numero e senza artista davanti.
+        let domanda = da_chiedere_al_catalogo(&brano(
+            r"D:\Scaricati\03 - Verdena - Luna.mp3",
+            "03 - Verdena - Luna",
+            "Artista sconosciuto",
+            "Album sconosciuto",
+        ));
+        assert_eq!(domanda.artista, "Verdena");
+        assert_eq!(domanda.titolo, "Luna");
+        assert_eq!(domanda.album, None, "l'album segnaposto si omette");
+
+        // Il nome del file non lo porta: l'artista resta vuoto, e il catalogo
+        // si interroga per titolo.
+        let domanda = da_chiedere_al_catalogo(&brano(
+            r"D:\Musica\Luna.mp3",
+            "Luna",
+            "Unknown Artist",
+            "Mondo",
+        ));
+        assert_eq!(domanda.artista, "");
+        assert_eq!(domanda.titolo, "Luna");
+        assert_eq!(domanda.album.as_deref(), Some("Mondo"));
+
+        // Con i tag giusti non cambia niente.
+        let domanda = da_chiedere_al_catalogo(&brano(
+            r"D:\Musica\x.mp3",
+            "Poetica (Official Video)",
+            "Cesare Cremonini",
+            "Possibili scenari",
+        ));
+        assert_eq!(domanda.artista, "Cesare Cremonini");
+        assert_eq!(domanda.titolo, "Poetica");
     }
 
     #[test]
@@ -2074,25 +2948,28 @@ mod prove {
         let mut quale = super::brano(&connection, id).expect("brano");
 
         quale.title = "Poetica (Official Video)".to_owned();
-        let (titolo, album, durata) = da_chiedere_al_catalogo(&quale);
-        assert_eq!(titolo, "Poetica", "il rumore del caricamento non si cerca");
-        assert_eq!(album, Some("Album"));
-        assert_eq!(durata, Some(120_000));
+        let domanda = da_chiedere_al_catalogo(&quale);
+        assert_eq!(
+            domanda.titolo, "Poetica",
+            "il rumore del caricamento non si cerca"
+        );
+        assert_eq!(domanda.album.as_deref(), Some("Album"));
+        assert_eq!(domanda.durata_ms, Some(120_000));
 
         // Quel che dice del brano invece resta: cercare la versione dal vivo
         // di un file dal vivo è la cosa giusta.
         quale.title = "Poetica (Live)".to_owned();
-        assert_eq!(da_chiedere_al_catalogo(&quale).0, "Poetica (Live)");
+        assert_eq!(da_chiedere_al_catalogo(&quale).titolo, "Poetica (Live)");
 
         // Un titolo fatto di solo rumore torna com'era: cercare la stringa
         // vuota non è cercare.
         quale.title = "(Official Video)".to_owned();
-        assert_eq!(da_chiedere_al_catalogo(&quale).0, "(Official Video)");
+        assert_eq!(da_chiedere_al_catalogo(&quale).titolo, "(Official Video)");
 
         // Un album vuoto non diventa una stringa vuota da mandare: diventa
         // «non c'è», ed è `lrclib::url_esatta` a saltarlo.
         quale.album = "   ".to_owned();
-        assert_eq!(da_chiedere_al_catalogo(&quale).1, None);
+        assert_eq!(da_chiedere_al_catalogo(&quale).album, None);
     }
 
     #[test]

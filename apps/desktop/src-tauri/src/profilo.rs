@@ -227,10 +227,13 @@ pub async fn profilo_piano(
     app: AppHandle,
     percorso: String,
     rimappature: Vec<Rimappatura>,
+    // Facoltativo per chi chiama senza: vale «no», com'era prima.
+    unisci_comunque: Option<bool>,
 ) -> Esito<Piano> {
     let mano = app.clone();
+    let unisci = unisci_comunque.unwrap_or(false);
     in_disparte("piano del profilo", move || {
-        applica_ora(&mano, &percorso, &rimappature, false)
+        applica_ora(&mano, &percorso, &rimappature, unisci, false)
     })
     .await
     .map_err(errore)?
@@ -248,17 +251,24 @@ pub async fn profilo_importa(
     app: AppHandle,
     percorso: String,
     rimappature: Vec<Rimappatura>,
+    unisci_comunque: Option<bool>,
 ) -> Esito<Piano> {
     let mano = app.clone();
+    let unisci = unisci_comunque.unwrap_or(false);
     let esito = in_disparte("importazione del profilo", move || {
         // **Prima** di scrivere, non dopo. Una copia scritta dopo sarebbe la
         // fotografia della libreria già cambiata, cioè esattamente il
         // contrario di quel che serve a chi vuole tornare indietro.
         copia_di_sicurezza(&mano)?;
-        applica_ora(&mano, &percorso, &rimappature, true)
+        applica_ora(&mano, &percorso, &rimappature, unisci, true)
     })
     .await
     .map_err(errore)?;
+    // Le radici importate cambiano l'albero delle cartelle: il pannello aperto
+    // deve richiederlo, come dopo una scansione.
+    if esito.is_ok() {
+        crate::cartelle::cambiate(&app);
+    }
     // Un profilo importato cambia preferenze, playlist e statistiche tutte
     // insieme: è il momento in cui il backup ha più da salvare.
     crate::nuvola::se_riuscito(&app, esito.map_err(errore))
@@ -305,6 +315,7 @@ fn annulla_ora(app: &AppHandle) -> Result<Piano, AppError> {
                 dispositivo: &dispositivo,
                 rimappature: &[],
                 copertine: None,
+                unisci_comunque: false,
             },
         )
     })
@@ -319,6 +330,7 @@ fn applica_ora(
     app: &AppHandle,
     percorso: &str,
     rimappature: &[Rimappatura],
+    unisci_comunque: bool,
     conferma: bool,
 ) -> Result<Piano, AppError> {
     let stato = libreria(app, "importazione del profilo")?;
@@ -363,6 +375,7 @@ fn applica_ora(
             dispositivo: &dispositivo,
             rimappature,
             copertine: Some(&store),
+            unisci_comunque,
         };
         if conferma {
             profilo::importa(&mut libreria.connection, &letto, &ambiente)

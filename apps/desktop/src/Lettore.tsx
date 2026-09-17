@@ -16,6 +16,8 @@ import { Ora } from "./parti/Ora";
 import { Scrubber } from "./parti/Scrubber";
 import { Trasporto } from "./parti/Trasporto";
 import { t } from "./lingue";
+import { Formato } from "./parti/Formato";
+import { useVolumeSottoIlDito } from "./volume";
 
 /**
  * Quanto si muove il volume a ogni scatto, di freccia o di rotella.
@@ -45,6 +47,10 @@ export function Lettore({
 }) {
   const [eqAperto, setEqAperto] = useState(false);
   const tastoMuto = useRef<HTMLButtonElement>(null);
+  // Il cursore segue il dito, e il nucleo lo sente venti volte al secondo:
+  // vedi `volume.ts`. Le frecce e la rotella sul tasto muto restano scatti
+  // interi e vanno dritti al nucleo: sono un colpo alla volta.
+  const { volume, sposta } = useVolumeSottoIlDito(stato.volume, onErrore);
 
   /** Sposta il volume di uno scatto, e togliendo il silenziamento. */
   const muovi = useCallback(
@@ -101,6 +107,11 @@ export function Lettore({
       <div className="comandi" data-giro="trasporto">
         <Trasporto stato={stato} taglia="barra" onErrore={onErrore} />
         <Scrubber stato={stato} onErrore={onErrore} />
+        {/* I dati tecnici del file anche qui, sotto il cursore. La colonna e
+            lo schermo intero li mostravano, la barra no: e la barra è quel che
+            resta sotto i 1100 pixel, quando la colonna si chiude — cioè chi
+            teneva la finestra stretta non li vedeva mai. */}
+        <Formato formato={stato.formato} classe="formato lettore-formato" />
       </div>
 
       <div className="suono">
@@ -186,20 +197,20 @@ export function Lettore({
           min={0}
           max={1}
           step={0.01}
-          value={stato.volume}
-          style={{ "--avanzamento": `${stato.volume * 100}%` } as CSSProperties}
+          value={volume}
+          style={{ "--avanzamento": `${volume * 100}%` } as CSSProperties}
           aria-label={t("player.volume")}
           /* Senza questo uno screen reader legge «0,72», che è il numero con cui
              il volume viaggia e non quello in cui si pensa. La percentuale passa
              da `numero()` come ogni altro numero dell'interfaccia, così la
              virgola o il punto li decide la lingua e non questo file. */
           aria-valuetext={t("player.volume.value", {
-            percento: numero(Math.round(stato.volume * 100)),
+            percento: numero(Math.round(volume * 100)),
           })}
           /* Muovere il volume toglie il silenziamento: chi trascina la manopola
              sta chiedendo di sentire, e lasciarla muta gli farebbe credere che
              il comando sia rotto. */
-          onChange={(e) => comanda(ipc.volume(Number(e.target.value), false))}
+          onChange={(e) => sposta(Number(e.target.value))}
         />
       </div>
     </footer>

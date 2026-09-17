@@ -90,8 +90,14 @@ export function Menu({
    * prima voce e ArrowUp dall'ultima.
    */
   useEffect(() => {
+    // In cattura, e ogni tasto preso si ferma: le scorciatoie globali stanno
+    // anche loro su `window` e si erano iscritte prima, quindi Escape chiudeva
+    // il menù **e** quel che c'era sotto, e le frecce arrivavano anche al
+    // trasporto.
     const suTasto = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
         onChiudi();
         return;
       }
@@ -107,10 +113,12 @@ export function Menu({
       else if (e.key === "End") prossima = voci.length - 1;
       else return;
       e.preventDefault();
+      e.stopPropagation();
       voci[prossima]?.focus();
     };
-    window.addEventListener("keydown", suTasto);
-    return () => window.removeEventListener("keydown", suTasto);
+    window.addEventListener("keydown", suTasto, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", suTasto, { capture: true });
   }, [onChiudi]);
 
   // Il fuoco entra nel menù appena si apre: chi naviga da tastiera deve poterlo

@@ -582,12 +582,17 @@ body {
  * pannello dell'equalizzatore è anche lui un dialogo, non prende il fuoco sulla
  * radice, e non deve perdere il suo anello per sbaglio.
  *
+ * `.in-riproduzione` non è un dialogo ma ha la stessa ragione: il fuoco ci entra
+ * dal programma all'apertura, sulla radice, e l'anello attorno allo schermo
+ * intero diceva soltanto che la schermata si era aperta.
+ *
  * Vale anche in contrasto elevato: il blocco `forced-colors` in fondo al foglio
  * ripete l'esclusione accanto al suo anello `Highlight`. Due righe in due posti,
  * perché l'anello è dichiarato in due posti.
  */
 .finestrella[role='dialog']:focus-visible,
-.primo[role='dialog']:focus-visible {
+.primo[role='dialog']:focus-visible,
+.in-riproduzione:focus-visible {
   outline: none;
 }
 
@@ -1017,6 +1022,33 @@ body {
 .navigazione[data-stretta] .voce .icona {
   width: 19px;
   height: 19px;
+}
+
+/* Le playlist, strette, si riconoscono dall'iniziale e non dall'icona: sette
+   icone identiche incolonnate non dicono quale sia quale. Larga, la barra ha
+   l'etichetta e l'iniziale non serve. Il riquadro è grande quanto l'icona che
+   sostituisce, così la colonna resta allineata alle destinazioni sopra. */
+.navigazione .playlist .iniziale {
+  display: none;
+}
+.navigazione[data-stretta] .playlist .icona {
+  display: none;
+}
+.navigazione[data-stretta] .playlist .iniziale {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--raggio-minuto);
+  background: var(--color-surface-3);
+  color: var(--color-text-2);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+.navigazione[data-stretta] .playlist[data-active] .iniziale {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 /* Il nome dell'applicazione è l'unica parola dell'interfaccia che non descrive
@@ -1982,14 +2014,22 @@ body {
  * `outline` e non `border`: un bordo cambierebbe l'altezza della riga, e
  * l'elenco salterebbe di due pixel a ogni riga sorvolata.
  */
-.riga[draggable="true"] {
+.riga[data-riordino] {
   cursor: grab;
 }
 .riga[data-sopra] {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-.riga:active[draggable="true"] {
+/* Durante il gesto, su tutta la pagina: il puntatore esce dalla riga e passa
+   su titoli e tasti, che hanno cursori loro e testo selezionabile. Il
+   trascinamento è quello di `riordino.ts`, che accende l'attributo alla presa
+   e lo spegne al rilascio. `body *` per battere i cursori dei tasti, che hanno
+   la stessa specificità e vengono dopo nel foglio. */
+:root[data-riordinando] {
+  user-select: none;
+}
+:root[data-riordinando] body * {
   cursor: grabbing;
 }
 
@@ -2143,6 +2183,11 @@ body {
 }
 .primo-scheda {
   display: grid;
+  /* `minmax(0, …)` e non la colonna di serie: un elemento di griglia non scende
+     sotto il suo contenuto, e un percorso trascinato da una cartella profonda —
+     su una riga sola, per scelta di `.primo-percorso` — allargava la colonna
+     oltre la scheda, con elenco e avvisi dietro di lui. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--spazio-3);
   width: min(560px, 100%);
   padding: var(--spazio-4);
@@ -2176,6 +2221,8 @@ body {
 }
 .primo-cartelle {
   display: grid;
+  /* Lo stesso `minmax` della scheda, e per la stessa ragione. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--spazio-1);
   margin: 0;
   padding: 0;
@@ -2223,6 +2270,18 @@ body {
 .primo-pronto {
   color: var(--accent);
   font-size: 13px;
+}
+/* Gli avvisi della finestra, dentro la scheda: vedi `Primo`. La scheda è una
+   griglia con il suo passo, e il margine sotto di una notizia lo raddoppierebbe. */
+.primo-avvisi {
+  display: grid;
+  gap: var(--spazio-2);
+}
+.primo-avvisi:empty {
+  display: none;
+}
+.primo-avvisi > * {
+  margin-bottom: 0;
 }
 .primo-tasti {
   display: flex;
@@ -2283,6 +2342,19 @@ body {
   flex: 1;
   min-width: 0;
   word-break: break-word;
+}
+
+/* L'«Annulla» della coda sostituita resta in vista a elenco scorso. Le altre
+   notizie stanno in cima alla pagina e scorrono via con lei, e per loro va
+   bene: si leggono. Questa invece nasce da un Invio su una cartella a metà
+   dell'albero, cioè quasi sempre con la cima della pagina fuori vista, e un
+   annulla che non si vede non annulla niente. Un gradino sopra gli aderenti:
+   l'intestazione dell'elenco dei brani è aderente anche lei, e viene dopo nel
+   DOM. */
+.avviso-coda {
+  position: sticky;
+  top: 0;
+  z-index: calc(var(--strato-aderente) + 1);
 }
 
 /* Una versione nuova è una notizia, non un allarme: stessa fascia, stesso
@@ -2709,6 +2781,11 @@ body {
   flex-direction: column;
   overflow: hidden;
   background: var(--color-surface-0);
+  /* Il contenitore della soglia dei due pannelli: vedi «un pannello solo»,
+     accanto alle colonne del testo. `inline-size` basta — la soglia è una
+     larghezza — e non disturba `.centro`, che resta il contenitore più vicino
+     per le misure della copertina e del titolo. */
+  container: riproduzione / inline-size;
 }
 
 /* Due strati e non uno. L'ambiente prende il colore dalla copertina; lo scrim
@@ -2748,6 +2825,30 @@ body {
 .in-riproduzione .testa,
 .in-riproduzione .corpo {
   position: relative;
+}
+
+/* Le notizie a schermo intero: la loro casa in cima alla pagina è coperta da
+   questa schermata. Galleggiano sotto la testata, dove non coprono «Chiudi»
+   né i tre interruttori, e non spostano il corpo quando arrivano. Il
+   contenitore non prende il puntatore — è largo quanto la schermata — e le
+   notizie sì. */
+.in-riproduzione .avvisi-np {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  z-index: var(--strato-toast);
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100% - 64px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.in-riproduzione .avvisi-np > * {
+  pointer-events: auto;
+  box-shadow: var(--shadow-player);
+}
+.in-riproduzione .avvisi-np > .avviso-coda {
+  position: static;
 }
 
 .in-riproduzione .testa {
@@ -2949,6 +3050,20 @@ body {
   gap: var(--spazio-3);
   width: 100%;
 }
+/* Con lo spettro acceso i comandi stanno **sopra le barre**, nella metà bassa
+   in cui la maschera della scena le lascia piene: i due tempi ai lati del
+   cursore, grigi da dodici pixel, sparivano sopra le barre scure, e le stelle
+   non accese sopra quelle chiare. La stessa ricetta — e la stessa ragione — del
+   pannello del testo: un fondo quasi opaco, non un `backdrop-filter` sopra una
+   tela che si ridisegna a ogni fotogramma. */
+.in-riproduzione .centro[data-spettro] .comandi-np {
+  padding: var(--spazio-3) var(--spazio-4);
+  background: rgb(var(--surface-0-rgb) / 0.82);
+  background-image: var(--luce);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--filo);
+}
 /*
  * Su una colonna stretta i comandi salgono di una linguetta.
  *
@@ -2962,6 +3077,11 @@ body {
 @container (max-width: 860px) {
   .in-riproduzione .comandi-np {
     padding-bottom: 34px;
+  }
+  /* Col fondo il padding è quello del pannello, e lo spazio per la linguetta
+     passa fuori, sotto il bordo. */
+  .in-riproduzione .centro[data-spettro] .comandi-np {
+    margin-bottom: 34px;
   }
 }
 
@@ -3038,6 +3158,10 @@ body {
 .in-riproduzione .np-title {
   margin: 0;
   max-width: 100%;
+  /* Una parola sola più larga della colonna — «Kryptonite» a trecento pixel —
+     va a capo dentro la parola invece di sparire oltre il bordo: il clamp taglia
+     le righe, non la larghezza. */
+  overflow-wrap: anywhere;
   font-family: var(--font-dot), var(--font-sans);
   font-size: clamp(20px, 5.2cqw, 34px);
   font-weight: 700;
@@ -3552,6 +3676,26 @@ body {
     color: transparent;
   }
 }
+
+/* La riga secondaria: la traduzione, o la pronuncia, che il file mette allo
+   stesso tempo della riga. Sotto, più piccola e un gradino di grigio più in là,
+   perché quel che si canta è sopra. Il colore è scritto e non ereditato, e non è
+   pignoleria: la riga accesa è `color: transparent` per far vedere il fronte, e
+   una secondaria che lo ereditasse sparirebbe proprio quando è accesa. Il
+   fronte non la attraversa — non ha tempi suoi. `pre-line` perché le secondarie
+   possono essere due, una per riga. */
+.lyric-secondaria {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.72em;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: pre-line;
+  color: var(--color-text-3);
+}
+.lyric-line[data-attiva] .lyric-secondaria {
+  color: var(--color-text-2);
+}
 /* ── la parola ────────────────────────────────────────────────────────────
    Quando l'LRC porta anche i tempi delle parole — l'esteso `.a2.lrc` — il
    fronte lascia l'involucro e passa alle parole. Il meccanismo è identico,
@@ -3839,6 +3983,21 @@ body {
   grid-template-columns: minmax(0, 1fr) clamp(340px, 26vw, 460px) 316px;
 }
 
+/* Un pannello solo.
+   Sotto questa larghezza della schermata testo e coda si alternano, e la
+   decisione la prende `InRiproduzione.tsx` leggendo `--un-pannello-solo`: il
+   numero sta qui perché dipende da misure di questo foglio. Il conto: il testo
+   al suo minimo (340), la coda (316), due spazi di `--spazio-5` (68), il padding
+   del corpo (64), e un centro che non scenda sotto i 380 — la larghezza del
+   trasporto grande più il respiro, e quella a cui un titolo di due parole sta
+   ancora su due righe. Fa 1168; alla misura di serie della finestra, con la
+   navigazione aperta, la schermata ne ha 1040. */
+@container riproduzione (max-width: 1168px) {
+  .in-riproduzione .corpo {
+    --un-pannello-solo: 1;
+  }
+}
+
 /* ── l'editor a battute ──────────────────────────────────────────────────── */
 /* Tre momenti in una modale sola, e in ognuno la tastiera vuol dire una cosa
    diversa: nel primo Spazio è uno spazio, nel secondo è una battuta. Lo stile
@@ -3852,6 +4011,21 @@ body {
   /* Un tetto invece di un'altezza: con quattro righe la finestra è piccola,
      con sessanta arriva al bordo e scorre dentro l'elenco. */
   max-height: min(80vh, 720px);
+}
+
+/* Un altro brano in corso: le battute sono ferme. Il bordo dell'accento e non
+   il rosso di un errore — non si è rotto niente, la canzone è solo finita. */
+.sincronizza .altrove {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: var(--spazio-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--raggio-minuto);
+  background: rgb(var(--surface-0-rgb) / 0.6);
+  color: var(--color-text-1);
+  font-size: 13px;
 }
 
 .sincronizza .righe-da-battere {
@@ -4600,7 +4774,11 @@ body {
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
-.fessura[data-attiva]:hover {
+/* Quella sotto il puntatore, e non `:hover`: il gesto è quello di
+   `riordino.ts`, che non passa dal trascinamento del browser e sceglie la
+   fessura da sé — anche mentre l'elenco scorre da solo sul bordo, dove il
+   puntatore sta fermo e il `:hover` resta indietro. */
+.fessura[data-attiva][data-mirata] {
   background: var(--accent);
 }
 .dentro-zona {
@@ -5326,6 +5504,12 @@ body {
 .livello[data-preso] {
   border-color: var(--accent);
   opacity: 0.6;
+}
+/* Dove il livello preso andrebbe a finire. Come per le righe della coda: si
+   lasciava andare e si scopriva dopo. */
+.livello[data-sopra] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .livello .maniglia {
   display: grid;
@@ -8466,6 +8650,20 @@ body {
   flex: none;
 }
 
+/* La riga dei dati tecnici sotto il cursore. `flex: none` e non il `0 0 100%`
+   di `.formato`: là il genitore è una riga, qui è una colonna, e una base del
+   cento per cento in colonna vorrebbe dire alta quanto la barra. Un gradino
+   sotto la colonna, perché la barra è alta 92 pixel e ci stanno già il
+   trasporto e il cursore. */
+.lettore .lettore-formato {
+  flex: none;
+  max-width: 100%;
+  font-size: 10.5px;
+  line-height: 1.2;
+  color: var(--color-text-3);
+  text-align: center;
+}
+
 .lettore .suono {
   display: flex;
   align-items: center;
@@ -9047,9 +9245,6 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-.riga-coda:active {
-  cursor: grabbing;
-}
 
 .riga-coda .salta {
   display: block;
@@ -9560,6 +9755,59 @@ body {
   display: flex;
   gap: var(--spazio-2);
 }
+
+/* ── quale testo è di questo brano ─────────────────────────────────────────
+   La stessa forma della scelta di una playlist qui sopra, con tre righe per
+   voce invece di una: chi sceglie un testo lo riconosce dalle prime parole, non
+   dal titolo — che per le voci di un elenco così è quasi sempre lo stesso. */
+.scelta-testo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-1);
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+}
+.scelta-testo button {
+  /* Una colonna che non si allarga oltre il riquadro: senza `minmax(0, …)` il
+     titolo su una riga sola spinge la voce di lato; senza `flex-shrink` le voci
+     si schiacciano l'una sull'altra invece di scorrere. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex-shrink: 0;
+  gap: 2px;
+  padding: 8px var(--spazio-3);
+  border: none;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-2);
+  color: var(--color-text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.scelta-testo button:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.scelta-testo button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.scelta-testo .chi {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scelta-testo .dati {
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+/* Non `.anteprima`: quel nome è il riquadro delle skin, e si porta dietro
+   variabili e misure che qui allargavano la voce a tutta altezza. */
+.scelta-testo .anteprima-testo {
+  font-size: 12px;
+  color: var(--color-text-2);
+  white-space: pre-line;
+}
 .crea-playlist .campo {
   flex: 1;
   min-width: 0;
@@ -9582,8 +9830,11 @@ body {
  * Il riflesso è una posizione di sfondo che si muove, **non** uno
  * pseudo-elemento: `skeleton` ha `layers: true` nel registro, cioè il suo
  * `::after` è promesso alle skin, e prendercelo qui vorrebbe dire togliere alle
- * altre proprio il livello che la loro identità userebbe. Il costo è lo stesso —
- * il compositore anima una posizione di sfondo senza ridisegnare.
+ * altre proprio il livello che la loro identità userebbe. Il costo **non** è lo
+ * stesso: una posizione di sfondo non la anima il compositore, si ridisegna a
+ * ogni fotogramma. Per un segnaposto che vive quanto un caricamento va bene; per
+ * uno che resta montato — la sentinella in fondo agli elenchi — no, ed è per
+ * quello che la sentinella si ferma quando è lontana (vedi `.sentinella`).
  *
  * Il colore si compone da `--color-text-1`, così il segnaposto è più chiaro del
  * fondo al buio e più scuro alla luce senza dover conoscere il tema.
@@ -9647,6 +9898,16 @@ body {
   width: min(33%, 220px);
   height: 4px;
   border-radius: 99px;
+}
+/* Ferma finché non è vicina. La sentinella resta montata per tutto il tempo in
+   cui l'elenco ha altre pagine — cioè, su una libreria vera, quasi sempre — e
+   una posizione di sfondo animata si ridisegna a ogni fotogramma anche fuori
+   dallo schermo. `data-vicina` lo scrive l'osservatore di `pagine.ts`, con lo
+   stesso margine con cui chiede la pagina dopo: quando la barra entra in vista
+   il riflesso è già ripartito. Ferma a metà, qui, non è la bugia di cui parla
+   il blocco del movimento ridotto: nessuno la sta guardando. */
+.sentinella:not([data-vicina]) .skeleton {
+  animation-play-state: paused;
 }
 
 /* Le due misure di testo finto: una riga piena e una più corta, che è quel che
@@ -11840,6 +12101,23 @@ body {
    che rimette solo la configurazione: tre cose vere da sapere prima di premere,
    nessuna delle quali è andata storta. In rosso direbbero «è successo qualcosa
    di male», e chi le legge smetterebbe di leggere gli errori veri. */
+/* La via d'uscita sotto l'avviso: una casella in riga col suo testo, come
+   `.finestrella label.scelta`, che qui non vale perché la scheda non è una
+   finestrella. */
+.unisci-comunque {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spazio-2);
+  margin-block: var(--spazio-2);
+  font-size: 13px;
+  color: var(--color-text-1);
+  cursor: pointer;
+}
+.unisci-comunque input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
 .avviso-profilo {
   border-left-color: var(--warning);
   background: var(--warning-soft);
@@ -12045,7 +12323,8 @@ body {
   }
   /* La stessa esclusione di sopra, per la stessa ragione. */
   .finestrella[role='dialog']:focus-visible,
-  .primo[role='dialog']:focus-visible {
+  .primo[role='dialog']:focus-visible,
+  .in-riproduzione:focus-visible {
     outline: none;
   }
 

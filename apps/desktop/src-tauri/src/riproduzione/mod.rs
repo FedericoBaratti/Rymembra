@@ -106,7 +106,7 @@ use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::stato::{Stato, adesso_ms, con_libreria};
 
-use self::coda::{gesto_di_coda, salva_coda};
+use self::coda::{gesto_di_coda, ricorda_coda_di_prima, salva_coda};
 use self::fili::{prepara_prossimo, quanto_manca};
 use self::flusso::{apri_flusso, riferimento_di, sorgente_da_flusso};
 use self::suono::nome_normalizzazione;
@@ -499,6 +499,103 @@ pub struct Lettore {
     /// riavvii vorrebbe dire spiegare una scelta che il programma non ricorda
     /// più di aver fatto.
     motivo_prossimo: Option<(i64, &'static str)>,
+    /// La coda che l'ultimo gesto ha sostituito, per l'«Annulla».
+    ///
+    /// Una sola, la più recente: l'avviso che la offre dura qualche secondo, e
+    /// una pila di code passate sarebbe una cronologia che nessuno sfoglia.
+    /// Dentro il lettore perché si scrive nello stesso istante in cui la coda
+    /// cambia, con lo stesso lucchetto in mano. Vedi [`coda::coda_ripristina`].
+    coda_di_prima: Option<coda::CodaDiPrima>,
+    /// La coda è stata toccata a mano dopo l'ultima volta che è stata sostituita.
+    ///
+    /// Accodare, mettere dopo, togliere, riordinare: una coda così vale anche
+    /// se è corta, e sostituirla offre sempre un «Annulla». Una coda nata da un
+    /// doppio clic su un album invece si sostituisce in silenzio. Non si
+    /// conserva fra un avvio e l'altro: all'avvio non c'è nessun avviso da
+    /// offrire, e il primo gesto ricomincia il conto.
+    coda_curata: bool,
+    /// I brani che il giro guidato ha messo in una coda vuota, finché nessuno
+    /// li ha fatti partire.
+    ///
+    /// Una coda così non l'ha scelta nessuno: il giro ce l'ha messa perché i
+    /// passi sul lettore avessero qualcosa da mostrare. Sostituirla non perde
+    /// niente, e il primo «Suona» vero diceva «Coda sostituita: 50 brani —
+    /// Annulla» a chi non sapeva di averne una. [`coda::ricorda_coda_di_prima`]
+    /// la riconosce confrontando i brani — qualunque gesto che la cambi la rende
+    /// una coda come le altre, senza doverlo scrivere in ogni gesto — e
+    /// [`Lettore::suona`] la dimentica, perché una coda che ha suonato è stata
+    /// ascoltata.
+    coda_del_giro: Option<Vec<i64>>,
+    /// Il brano che il motore ha in canna come successivo, se ne ha uno.
+    ///
+    /// Si scrive soltanto passando da [`Lettore::suona`], [`Lettore::prepara`] e
+    /// [`Lettore::ferma`], che sono le tre strade per cui il motore prende o
+    /// butta un successivo. Serve a due domande che la coda da sola non sa
+    /// rispondere.
+    ///
+    /// **L'inizio annunciato è quello del preparato?** Con lo stesso brano due
+    /// volte di fila — «ripeti uno», o una coda `[A, A, B]` — l'identificativo
+    /// non distingue il brano che riparte da quello che già suonava, e la coda
+    /// non avanzava: il secondo A tornava a preparare sé stesso e B non partiva
+    /// mai. Vedi il ramo `Iniziato` di [`su_evento`].
+    ///
+    /// **Il successivo in canna è ancora quello giusto?** Togliere o spostare il
+    /// brano dopo lasciava nel motore quello vecchio fino a che il preparatore
+    /// non ne consegnava un altro — e se l'altro non si apriva, non arrivava
+    /// mai: alla fine del corrente suonava il brano tolto. Vedi
+    /// [`fili::prepara_prossimo`].
+    in_canna: Option<i64>,
+    /// Il brano dopo che il preparatore non è riuscito ad aprire.
+    ///
+    /// Quando il corrente finisce il motore si ferma, perché in canna non c'è
+    /// niente; senza questo la coda restava sul brano finito e «riproduci»
+    /// ricominciava quello. Il ramo `Fermato` di [`su_evento`] avanza la coda
+    /// sul brano che non si è aperto: la finestra lo mostra, fermo, accanto
+    /// all'errore che già lo diceva.
+    non_aperto: Option<i64>,
+    /// Il motore ha appena ricevuto un brano da suonare e non l'ha ancora
+    /// annunciato.
+    ///
+    /// L'annuncio arriva quando il primo campione raggiunge l'orecchio, e nel
+    /// frattempo il preparatore ha già messo in canna il successivo: con una coda
+    /// `[A, A, B]` il successivo è di nuovo A, e l'inizio del primo A sembrava
+    /// quello del preparato — la coda avanzava mentre suonava ancora il primo.
+    /// Il primo annuncio dopo [`Lettore::suona`] è del brano avviato.
+    annuncio_atteso: bool,
+    /// Il punto chiesto con [`vai_a`] mentre il motore non aveva niente in mano,
+    /// e di quale brano.
+    ///
+    /// Il caso è la coda rimessa all'avvio: si trascina il cursore, si preme
+    /// «play», e il brano partiva dall'inizio — il salto era andato a un motore
+    /// vuoto, che non aveva dove farlo. Lo raccoglie [`riprendi`]; qualunque
+    /// partenza lo butta, perché parla di un brano che non era ancora aperto.
+    puntina_a_vuoto: Option<(i64, u64)>,
+}
+
+impl Lettore {
+    /// Fa partire un brano, e il successivo in canna se ne va con quello che c'era.
+    fn suona(&mut self, brano: aether_play::BranoAperto) {
+        self.motore.suona(brano);
+        self.puntina_a_vuoto = None;
+        self.coda_del_giro = None;
+        self.in_canna = None;
+        self.non_aperto = None;
+        self.annuncio_atteso = true;
+    }
+
+    /// Mette in canna il brano dopo, o toglie quello che c'era.
+    fn prepara(&mut self, brano: Option<aether_play::BranoAperto>) {
+        self.in_canna = brano.as_ref().map(aether_play::BranoAperto::track_id);
+        self.motore.prepara(brano);
+    }
+
+    /// Ferma tutto: col corrente se ne va anche il successivo.
+    fn ferma(&mut self) {
+        self.motore.ferma();
+        self.in_canna = None;
+        self.non_aperto = None;
+        self.annuncio_atteso = false;
+    }
 }
 
 /// Il lettore, o il motivo per cui non c'è.
@@ -559,6 +656,16 @@ pub struct StatoLettore {
     /// Ritrovare domani mattina un tasto «Riprova» che punta a un NAS di ieri
     /// sera vorrebbe dire offrire una cosa che non funziona.
     pub ripresa: Mutex<Option<Ripresa>>,
+    /// La scheda del brano corrente com'era all'ultima lettura riuscita, e di
+    /// quale brano.
+    ///
+    /// La legge [`costruisci_stato`] quando la libreria non risponde. Sul filo
+    /// della finestra `con_libreria` rinuncia dopo quattro secondi, e allo stato
+    /// arrivava `brano: null` con la musica che suonava: la barra del lettore
+    /// spariva e lo schermo intero si chiudeva, per un lucchetto tenuto da una
+    /// share lenta. Il titolo di un brano non cambia perché il database è
+    /// occupato, e il ricordo dice il vero finché parla dello stesso brano.
+    scheda_corrente: Mutex<Option<(i64, TrackSummary, Option<FormatoFile>)>>,
     /// Il canale con cui si sveglia il filo che apre il brano successivo.
     ///
     /// # Perché una spinta e non una chiamata
@@ -733,6 +840,13 @@ impl StatoLettore {
             dissolvenza_s: 0,
             latenza_ms: 0,
             motivo_prossimo: None,
+            coda_di_prima: None,
+            coda_curata: false,
+            coda_del_giro: None,
+            in_canna: None,
+            non_aperto: None,
+            annuncio_atteso: false,
+            puntina_a_vuoto: None,
         });
         let (prepara, orecchio) = std::sync::mpsc::channel();
         let (sveglia_dispositivi, orecchio_dispositivi) = std::sync::mpsc::channel();
@@ -743,6 +857,7 @@ impl StatoLettore {
                 spettro_bande: std::sync::atomic::AtomicU16::new(aether_play::RISOLUZIONE_DI_SERIE),
                 spegnimento: std::sync::atomic::AtomicI64::new(0),
                 ripresa: Mutex::new(None),
+                scheda_corrente: Mutex::new(None),
                 prepara,
                 volume_da_salvare: std::sync::atomic::AtomicBool::new(false),
                 eq_da_salvare: std::sync::atomic::AtomicBool::new(false),
@@ -1038,9 +1153,12 @@ fn costruisci_stato(app: &tauri::AppHandle, lettore: &Lettore) -> StatoRiproduzi
     // spenta la query non si fa affatto. Vale anche al contrario — la lettura
     // della preferenza è un'altra riga di `settings`, e sta dentro la stessa
     // presa per la stessa ragione.
+    //
+    // Quando la libreria non risponde, la scheda si prende dal ricordo: vedi
+    // `StatoLettore::scheda_corrente`.
     let (brano, formato) = lettore.coda.current().map_or((None, None), |id| {
         let stato = app.state::<Stato>();
-        con_libreria(&stato, |libreria| {
+        let letto = con_libreria(&stato, |libreria| {
             let brano = aether_app::library::read_summary(&libreria.connection, id)?;
             let formato = if playback::load_formato_visibile(&libreria.connection)? {
                 aether_app::library::read_formato(&libreria.connection, id)?
@@ -1048,8 +1166,26 @@ fn costruisci_stato(app: &tauri::AppHandle, lettore: &Lettore) -> StatoRiproduzi
                 None
             };
             Ok((brano, formato))
-        })
-        .unwrap_or((None, None))
+        });
+        let stato_lettore = app.state::<StatoLettore>();
+        let mut ricordo = stato_lettore
+            .scheda_corrente
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match letto {
+            Ok((brano, formato)) => {
+                *ricordo = brano
+                    .as_ref()
+                    .map(|scheda| (id, scheda.clone(), formato.clone()));
+                (brano, formato)
+            }
+            Err(_) => ricordo
+                .as_ref()
+                .filter(|(di, _, _)| *di == id)
+                .map_or((None, None), |(_, scheda, formato)| {
+                    (Some(scheda.clone()), formato.clone())
+                }),
+        }
     });
     // Un dispositivo perso è fermo, comunque la pensi il motore.
     //
@@ -1181,17 +1317,38 @@ fn su_evento(app: &tauri::AppHandle, evento: Evento) {
                 chiudi_ascolto(app, lettore);
 
                 // La coda può essere indietro di un passo: il motore ha
-                // attaccato il brano che gli era stato preparato.
-                if lettore.coda.current() != Some(track_id) {
+                // attaccato il brano che gli era stato preparato. Si chiede al
+                // successivo in canna e non all'identificativo, che con lo
+                // stesso brano due volte di fila non distingue il brano che
+                // riparte da quello che già suonava — vedi `Lettore::in_canna`.
+                // Il confronto con la coda resta per quel che il motore attacca
+                // senza passare dalla canna di questo lettore: un entrante
+                // rimesso in canna da un salto a metà dissolvenza.
+                //
+                // Prima di tutto, però, il brano appena avviato: vedi
+                // `Lettore::annuncio_atteso`. Se l'annuncio è di un altro brano,
+                // quello avviato non è mai uscito — un file che il motore ha
+                // saltato — e l'annuncio si legge come gli altri.
+                let atteso = std::mem::take(&mut lettore.annuncio_atteso);
+                if atteso && lettore.coda.current() == Some(track_id) {
+                    // Il brano che la coda indica, che comincia: niente da spostare.
+                } else if lettore.in_canna == Some(track_id) {
+                    lettore.in_canna = None;
+                    lettore.coda.advance(false);
+                } else if lettore.coda.current() != Some(track_id) {
                     lettore.coda.advance(false);
                 }
 
-                let durata = lettore
-                    .motore
-                    .posizione()
-                    .durata_ms
-                    .max(durata_di(app, track_id));
-                lettore.ascolto = Some(ListenTracker::begin(track_id, durata, adesso_ms()));
+                let adesso = lettore.motore.posizione();
+                let durata = adesso.durata_ms.max(durata_di(app, track_id));
+                let mut ascolto = ListenTracker::begin(track_id, durata, adesso_ms());
+                // Un brano rimesso al suo posto in pausa — l'«Annulla» di una
+                // coda ferma, la riapertura di un dispositivo — comincia fermo:
+                // senza, il tempo passato in pausa contava come ascoltato.
+                if adesso.in_pausa {
+                    ascolto.pause(adesso_ms());
+                }
+                lettore.ascolto = Some(ascolto);
 
                 // Il «sta ascoltando» verso i servizi di scrobbling. Parte su un
                 // filo suo: qui il lucchetto del lettore è in mano, e una
@@ -1214,6 +1371,38 @@ fn su_evento(app: &tauri::AppHandle, evento: Evento) {
         Evento::Fermato => {
             let _ = con_lettore(&stato_lettore, |lettore| {
                 chiudi_ascolto(app, lettore);
+                // Il corrente è finito e in canna non c'era niente perché il
+                // brano dopo non si è aperto: la coda va su di lui, così la
+                // finestra mostra quale — fermo, accanto all'errore — e
+                // «riproduci» riprova quello invece di ricominciare il brano
+                // appena finito.
+                if lettore.non_aperto.is_some()
+                    && lettore.non_aperto == lettore.coda.peek_next()
+                    && lettore.motore.posizione().track_id.is_none()
+                {
+                    lettore.non_aperto = None;
+                    lettore.coda.advance(false);
+                    salva_coda(app, lettore);
+                }
+                // Il segno di «riprendi dov'eri» torna all'inizio del brano su
+                // cui la coda si è fermata. Era quello di cinque secondi prima
+                // della fine, e «Riprendi» il giorno dopo saltava lì: un brano
+                // che finiva di nuovo appena ripartito. Non quando la fermata
+                // viene da una rete caduta — lì il punto a metà è proprio quel
+                // che si vuole ritrovare, e `annota_ripresa` l'ha appena segnato.
+                let rete_caduta = stato_lettore
+                    .ripresa
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_some();
+                if let Some(id) = lettore.coda.current()
+                    && !rete_caduta
+                {
+                    let stato_app = app.state::<Stato>();
+                    let _ = con_libreria(&stato_app, |libreria| {
+                        playback::save_posizione(&libreria.connection, id, 0)
+                    });
+                }
                 manda_stato(app, lettore);
                 Ok(())
             });
@@ -1602,8 +1791,10 @@ pub fn suona(
     indice: usize,
 ) -> Esito<()> {
     gesto_di_coda(&app, &stato, |lettore| {
+        ricorda_coda_di_prima(&app, lettore, Some(&brani));
         chiudi_ascolto(&app, lettore);
         lettore.coda.play_tracks(brani, indice, seme());
+        lettore.coda_curata = false;
         Ok(true)
     })
     .map_err(errore)
@@ -1639,8 +1830,10 @@ pub fn radio(app: tauri::AppHandle, stato: State<'_, StatoLettore>, brano: i64) 
     brani.extend(coda);
 
     gesto_di_coda(&app, &stato, |lettore| {
+        ricorda_coda_di_prima(&app, lettore, Some(&brani));
         chiudi_ascolto(&app, lettore);
         lettore.coda.play_tracks(brani, 0, seme());
+        lettore.coda_curata = false;
         Ok(true)
     })
     .map_err(errore)
@@ -1668,11 +1861,27 @@ pub fn radio(app: tauri::AppHandle, stato: State<'_, StatoLettore>, brano: i64) 
 /// non è più quello non si suona niente — chi ha cambiato la coda ha già
 /// avviato quel che voleva, e sovrascriverlo adesso vorrebbe dire un brano che
 /// riparte da solo dopo che se n'è chiesto un altro.
-fn avvia_corrente(app: &tauri::AppHandle, stato: &StatoLettore) -> Result<(), AppError> {
+///
+/// # Quando il brano non si apre
+///
+/// Il gesto ha già spostato la coda, e il motore suona ancora quel che c'era:
+/// lasciarli così voleva dire il titolo nuovo nel nucleo, il brano vecchio
+/// nelle casse e la coda vecchia nella finestra, che non riceveva niente. Vedi
+/// [`avvio_fallito`].
+///
+/// `in_pausa` fa partire il brano fermo: serve a chi toglie dalla coda il brano
+/// in pausa, che non ha chiesto di sentire il successivo. `da_ms` è il punto da
+/// cui parte, zero quasi sempre: vedi [`riprendi`].
+fn avvia_corrente(
+    app: &tauri::AppHandle,
+    stato: &StatoLettore,
+    in_pausa: bool,
+    da_ms: u64,
+) -> Result<(), AppError> {
     // ── 1. chi, e con che formato ──
     let scelta = con_lettore(stato, |lettore| {
         let Some(id) = lettore.coda.current() else {
-            lettore.motore.ferma();
+            lettore.ferma();
             salva_coda(app, lettore);
             manda_stato(app, lettore);
             return Ok(None);
@@ -1684,24 +1893,61 @@ fn avvia_corrente(app: &tauri::AppHandle, stato: &StatoLettore) -> Result<(), Ap
     };
 
     // ── 2. l'apertura, senza niente in mano ──
-    let brano = brano_di(app, id, formato)?;
+    let brano = match brano_di(app, id, formato) {
+        Ok(brano) => brano,
+        Err(err) => {
+            avvio_fallito(app, stato, id);
+            return Err(err);
+        }
+    };
 
     // ── 3. la partenza ──
     con_lettore(stato, |lettore| {
         if lettore.coda.current() != Some(id) {
             return Ok(());
         }
-        lettore.motore.suona(brano);
+        lettore.suona(brano);
+        if da_ms > 0 {
+            lettore.motore.vai_a(da_ms);
+        }
+        if in_pausa {
+            lettore.motore.pausa();
+        }
         prepara_prossimo(app, lettore);
         salva_coda(app, lettore);
         // Lo stato parte subito, senza aspettare che il primo campione esca: il
         // titolo nella barra deve comparire al clic, non un decimo di secondo
-        // dopo. Con la posizione a zero, che è dove il brano nuovo comincia:
-        // quella del motore è ancora quella del brano di prima, e mandarla
-        // vorrebbe dire un titolo nuovo con il cursore a metà.
-        manda_stato_con_posizione(app, lettore, 0);
+        // dopo. Con la posizione da cui il brano nuovo comincia: quella del
+        // motore è ancora quella del brano di prima, e mandarla vorrebbe dire un
+        // titolo nuovo con il cursore a metà.
+        manda_stato_con_posizione(app, lettore, da_ms);
         Ok(())
     })
+}
+
+/// Il brano che la coda indica non si è aperto: si ferma il motore su di lui.
+///
+/// Fermo e non «si torna a com'era»: il gesto è già avvenuto — la coda nuova, la
+/// coda di prima messa da parte per l'«Annulla», l'ascolto chiuso — e disfarlo a
+/// metà vorrebbe dire un avviso «coda sostituita» per una coda che non lo è
+/// stata. Così i tre dicono la stessa cosa: la coda è quella chiesta, la barra
+/// mostra il brano che non si apre, le casse tacciono, e l'errore che risale a
+/// chi ha chiamato dice perché. «Riproduci» riprova quel brano, «prossimo» va
+/// oltre.
+///
+/// Se nel frattempo la coda ha voltato pagina, chi l'ha voltata ha già avviato
+/// quel che voleva e non si tocca niente.
+pub(super) fn avvio_fallito(app: &tauri::AppHandle, stato: &StatoLettore, id: i64) {
+    let _ = con_lettore(stato, |lettore| {
+        if lettore.coda.current() != Some(id) {
+            return Ok(());
+        }
+        chiudi_ascolto(app, lettore);
+        lettore.ferma();
+        salva_coda(app, lettore);
+        manda_stato_con_posizione(app, lettore, 0);
+        Ok(())
+    });
 }
 
 /// Mette in pausa.
@@ -1719,22 +1965,57 @@ pub fn pausa(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()>
 }
 
 /// Riprende.
+///
+/// # Da dove, quando il motore non ha niente in mano
+///
+/// Dal segno di «riprendi dov'eri», se parla del brano che la coda indica. È il
+/// caso della coda rimessa all'avvio: il «play» della barra la faceva partire
+/// dall'inizio, e la riga «Riprendi» della Home saltava al segno **dalla
+/// finestra**, dopo — con un `vai_a` che arrivava anche quando il brano stava
+/// già suonando, e lo riportava indietro al numero di un altro brano. Il punto
+/// adesso lo sceglie chi sa quale brano sta aprendo, e tutti e due i tasti
+/// fanno la stessa cosa. Prima del segno viene un salto chiesto a motore vuoto:
+/// vedi [`Lettore::puntina_a_vuoto`].
 #[tauri::command(async)]
 pub fn riprendi(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
-    gesto_di_coda(&app, &stato, |lettore| {
-        // Coda ripresa dall'avvio: il motore non ha ancora niente in mano, e
-        // «riprendi» deve voler dire «comincia».
+    // Fuori `None` vuol dire «il motore suonava già, fatto»; dentro è il brano
+    // da aprire, che può mancare anche lui — una coda vuota, che
+    // `avvia_corrente` sa fermare.
+    let da_aprire = con_lettore(&stato, |lettore| {
         if lettore.motore.posizione().track_id.is_none() {
-            return Ok(true);
+            let corrente = lettore.coda.current();
+            // Un salto chiesto a motore vuoto vince sul segno: è più recente, e
+            // l'ha chiesto qualcuno. Vedi `Lettore::puntina_a_vuoto`.
+            let chiesto = lettore
+                .puntina_a_vuoto
+                .take()
+                .filter(|(id, _)| Some(*id) == corrente)
+                .map(|(_, ms)| ms);
+            return Ok(Some((corrente, chiesto)));
         }
         lettore.motore.riprendi();
         if let Some(a) = lettore.ascolto.as_mut() {
             a.resume(adesso_ms());
         }
         manda_stato(&app, lettore);
-        Ok(false)
+        Ok(None)
     })
-    .map_err(errore)
+    .map_err(errore)?;
+    let Some((corrente, chiesto)) = da_aprire else {
+        return Ok(());
+    };
+    let da_ms = match (chiesto, corrente) {
+        (Some(ms), _) => ms,
+        (None, Some(id)) => {
+            let stato_app = app.state::<Stato>();
+            con_libreria(&stato_app, |libreria| {
+                playback::load_posizione(&libreria.connection, id)
+            })
+            .unwrap_or(0)
+        }
+        (None, None) => 0,
+    };
+    avvia_corrente(&app, &stato, false, da_ms).map_err(errore)
 }
 
 /// Alterna fra pausa e ripresa.
@@ -1762,7 +2043,7 @@ pub fn prossimo(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<
                 Ok(false)
             }
             Step::Stop => {
-                lettore.motore.ferma();
+                lettore.ferma();
                 manda_stato(&app, lettore);
                 Ok(false)
             }
@@ -1798,6 +2079,11 @@ pub fn precedente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esit
 pub fn vai_a(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: u64) -> Esito<()> {
     con_lettore(&stato, |lettore| {
         lettore.motore.vai_a(ms);
+        // A motore vuoto il salto si tiene da parte per chi aprirà il brano:
+        // vedi `Lettore::puntina_a_vuoto`.
+        if lettore.motore.posizione().track_id.is_none() {
+            lettore.puntina_a_vuoto = lettore.coda.current().map(|id| (id, ms));
+        }
         // Con i millisecondi richiesti: il motore li raggiunge sul suo filo, e
         // fino ad allora `posizione()` dice ancora il punto da cui si è
         // partiti. Vedi [`manda_stato_con_posizione`].

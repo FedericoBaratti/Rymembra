@@ -233,9 +233,13 @@ pub fn uno(connection: &Connection, track_id: i64) -> Result<Option<TracciaIncer
 }
 
 /// Il brano non c'è.
+///
+/// `library.trackNotFound`, e non `db.queryFailed` come prima: il database ha
+/// risposto benissimo, è il brano che non c'è — e la frase di `db.queryFailed`
+/// dice all'utente che il difetto è quasi sempre di Aether.
 fn non_trovato(track_id: i64) -> AppError {
-    AppError::new(ErrorCode::DbQueryFailed {
-        detail: Some("correzione di un brano".to_owned()),
+    AppError::new(ErrorCode::LibraryTrackNotFound {
+        track_id: Some(track_id),
     })
     .with_message(format!("il brano {track_id} non è in libreria"))
 }
@@ -261,7 +265,8 @@ fn non_trovato(track_id: i64) -> AppError {
 ///
 /// # Errori
 ///
-/// `db.queryFailed` se il brano non c'è o il database non risponde.
+/// `library.trackNotFound` se il brano non c'è, `db.queryFailed` se il database
+/// non risponde.
 pub fn correggi(
     connection: &mut Connection,
     track_id: i64,
@@ -291,8 +296,12 @@ pub fn correggi(
 
     applica_correzioni(&tx, track_id, &tutte)?;
 
-    let campi = serde_json::to_string(&tutte)
-        .map_err(|err| non_trovato(track_id).with_cause(err.to_string()))?;
+    let campi = serde_json::to_string(&tutte).map_err(|err| {
+        AppError::new(ErrorCode::InternalAborted {
+            what: Some("correzione di un brano".to_owned()),
+        })
+        .with_cause(err.to_string())
+    })?;
     tx.execute(
         "INSERT INTO track_overrides (track_id, campi, set_at) VALUES (?1, ?2, ?3)
          ON CONFLICT(track_id) DO UPDATE SET campi = ?2, set_at = ?3",
@@ -325,7 +334,8 @@ pub fn correggi(
 ///
 /// # Errori
 ///
-/// `db.queryFailed` se il brano non c'è o il database non risponde.
+/// `library.trackNotFound` se il brano non c'è, `db.queryFailed` se il database
+/// non risponde.
 pub(crate) fn applica_correzioni(
     tx: &Transaction<'_>,
     track_id: i64,
@@ -440,7 +450,8 @@ pub(crate) fn applica_correzioni(
 /// Va chiamata **subito dopo** ogni scrittura che rifà i campi descrittivi di
 /// `tracks` da una fonte che non sa niente di `track_overrides`: la scansione
 /// ([`crate::library`], dopo `update_track`) e l'arricchimento
-/// ([`crate::enrich::registra`], dopo `aggiorna_brano`). Senza queste chiamate
+/// ([`crate::enrich::registra`], dopo `aggiorna_brano`) — da quelle due per
+/// tramite di [`riapplica_sopra_i_tag`], che spiega perché. Senza queste chiamate
 /// bastava che cambiasse la data di modifica di un file perché la correzione
 /// sparisse dalla riga restando orfana nella sua tabella — ed è stato così fino
 /// a questa release, commento della migrazione 016 compreso.
@@ -483,6 +494,46 @@ pub(crate) fn riapplica(tx: &Transaction<'_>, track_id: i64) -> Result<bool, App
     Ok(true)
 }
 
+/// [`riapplica`], per chi ha appena rifatto la riga dai tag del file.
+///
+/// # La chiave, e perché non la scrive chi scrive i tag
+///
+/// Chi rifà la riga dai tag — la scansione, l'arricchimento, i due ritorni
+/// indietro dell'arricchimento — ne calcola anche la `track_key`, e su un brano
+/// corretto quella è la chiave **sbagliata**: [`riapplica`] la rimette giusta un
+/// istante dopo, nella stessa transazione. Per le colonne di `tracks` il giro
+/// non si vede. Per `lyrics` sì: il trigger della migrazione 022 sposta il testo
+/// a ogni cambio di chiave, quindi all'andata se lo portava dietro, e al ritorno
+/// poteva non riportarlo. Se un'altra copia del brano, non corretta, porta
+/// ancora la chiave dei tag, la regola «non togliere il testo a un gemello»
+/// lasciava il testo a lei: quello sincronizzato a mano sul FLAC corretto
+/// finiva all'mp3 con i tag sbagliati.
+///
+/// Quei quattro `UPDATE` scrivono quindi la chiave dei tag **solo sui brani
+/// senza correzione** (`CASE WHEN EXISTS (… track_overrides …)`), e la chiave
+/// di un brano corretto cambia una volta sola, qui: da quella di prima a quella
+/// che la correzione dà sopra i tag nuovi. Resta la correzione che c'è ma non
+/// si legge, o è vuota: [`riapplica`] non rimette niente, e allora la chiave
+/// giusta è quella dei tag, che si scrive adesso — sui brani senza correzione
+/// è già lì, e l'`UPDATE` non trova righe.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub(crate) fn riapplica_sopra_i_tag(
+    tx: &Transaction<'_>,
+    track_id: i64,
+    chiave_dei_tag: &str,
+) -> Result<bool, AppError> {
+    if riapplica(tx, track_id)? {
+        return Ok(true);
+    }
+    tx.prepare_cached("UPDATE tracks SET track_key = ?2 WHERE id = ?1 AND track_key <> ?2")
+        .and_then(|mut statement| statement.execute(rusqlite::params![track_id, chiave_dei_tag]))
+        .map_err(|err| db_error("chiave di un brano senza correzione", &err))?;
+    Ok(false)
+}
+
 /// Fonde una correzione nuova sopra quelle già salvate.
 ///
 /// Un campo assente nella nuova non cancella il vecchio: assente vuol dire «non
@@ -519,7 +570,8 @@ fn fondi(tutte: &mut Correzioni, nuove: &Correzioni) {
 ///
 /// # Errori
 ///
-/// `db.queryFailed` se il brano non c'è o il database non risponde.
+/// `library.trackNotFound` se il brano non c'è, `db.queryFailed` se il database
+/// non risponde.
 pub fn conferma(connection: &mut Connection, track_id: i64) -> Result<(), AppError> {
     let Some(traccia) = uno(connection, track_id)? else {
         return Err(non_trovato(track_id));

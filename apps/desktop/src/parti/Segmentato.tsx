@@ -149,7 +149,12 @@ export function Segmentato<T extends string>({
     else if (e.key === "Home") prossimo = 0;
     else if (e.key === "End") prossimo = quante - 1;
     else return;
+    // Fermato, non solo impedito: ←→ sono anche «avanti/indietro di cinque
+    // secondi» per le scorciatoie appese a `window`, e scorrere le linguette
+    // del tema spostava il brano. È la regola di `fuoco.ts`: il tasto lo
+    // consuma chi ha il fuoco.
     e.preventDefault();
+    e.stopPropagation();
     vaiA(prossimo);
   };
 

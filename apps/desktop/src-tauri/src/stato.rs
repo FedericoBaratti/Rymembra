@@ -561,9 +561,11 @@ fn prendi_la_libreria(stato: &Stato) -> MutexGuard<'_, Result<Libreria, AppError
 /// aspetta più di [`ATTESA_DA_NOTARE`] lascia una riga nel diario, che è come si
 /// scopre chi tiene il lucchetto troppo a lungo.
 ///
-/// L'unico posto che non può aspettare è l'**uscita**, e infatti usa
+/// I posti che non possono aspettare sono due. L'**uscita**, che usa
 /// [`con_libreria_entro`]: lì un'attesa lunga non è un comando lento, è un
-/// processo che non si chiude.
+/// processo che non si chiude. E il **filo della finestra**, dove girano i
+/// comandi sincroni: lì questa funzione rinuncia da sé dopo qualche secondo,
+/// vedi [`con_libreria_dalla_finestra`].
 ///
 /// Il mutex avvelenato — un panico dentro un altro comando mentre teneva il
 /// lucchetto — si recupera invece di propagare: i dati dietro sono una
@@ -574,7 +576,77 @@ pub fn con_libreria<T>(
     stato: &Stato,
     azione: impl FnOnce(&mut Libreria) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
+    if sul_filo_della_finestra() {
+        return con_libreria_dalla_finestra(stato, azione);
+    }
     let mut guardia = prendi_la_libreria(stato);
+    match guardia.as_mut() {
+        Ok(libreria) => azione(libreria),
+        Err(errore) => Err(errore.clone()),
+    }
+}
+
+/// Il filo che disegna la finestra, segnato all'avvio.
+///
+/// Serve a [`con_libreria`] per una domanda sola: chi sta aspettando la
+/// libreria è il filo della finestra? Un comando Tauri scritto senza `(async)`
+/// gira **lì**, e lì un'attesa senza limite non è un comando lento: è la
+/// finestra intera che non ridisegna, non risponde ai clic e che Windows dopo
+/// cinque secondi dichiara «non risponde».
+static FILO_DELLA_FINESTRA: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
+
+/// Segna il filo corrente come quello della finestra. Va chiamata dal `setup`
+/// di Tauri, che gira su quel filo; le chiamate dopo la prima non fanno niente.
+pub fn segna_filo_della_finestra() {
+    let _ = FILO_DELLA_FINESTRA.set(std::thread::current().id());
+}
+
+/// Il filo corrente è quello della finestra.
+fn sul_filo_della_finestra() -> bool {
+    FILO_DELLA_FINESTRA
+        .get()
+        .is_some_and(|filo| *filo == std::thread::current().id())
+}
+
+/// Quanto il filo della finestra aspetta la libreria prima di rinunciare.
+///
+/// Quattro secondi. Il limite serve al caso in cui chi tiene il lucchetto sta
+/// aspettando un disco che non risponde — una share staccata a metà di una
+/// scrittura — e l'attesa, senza, sarebbe di quaranta secondi o per sempre.
+/// Sotto i cinque secondi dopo i quali Windows marchia la finestra come «non
+/// risponde»; sopra le attese legittime, che sono transazioni da millisecondi e
+/// al massimo il lotto di una scansione.
+const ATTESA_DELLA_FINESTRA: Duration = Duration::from_secs(4);
+
+/// [`con_libreria`] quando chi chiede è il filo della finestra.
+///
+/// Rinuncia dopo [`ATTESA_DELLA_FINESTRA`] con `db.locked`, che è ritentabile e
+/// ha già la sua frase: «il database è occupato da un'altra operazione». È
+/// meglio di una finestra ferma, ed è la verità.
+///
+/// Il prezzo va detto: un comando sincrono che scrive — un cuoricino, un voto —
+/// premuto mentre qualcuno tiene il lucchetto per più di quattro secondi adesso
+/// risponde «occupato» invece di riuscire in ritardo. Succede solo quando chi
+/// tiene il lucchetto aspetta un disco, perché la scansione lo prende e lo lascia
+/// lotto per lotto; e un gesto da ripetere costa meno di una finestra che
+/// Windows dichiara morta. Sugli altri fili — i comandi `(async)`, le passate —
+/// l'attesa resta quella di sempre.
+fn con_libreria_dalla_finestra<T>(
+    stato: &Stato,
+    azione: impl FnOnce(&mut Libreria) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let Some(mut guardia) = lucchetto_entro(&stato.libreria, ATTESA_DELLA_FINESTRA) else {
+        nota!(
+            "[stato] il filo della finestra rinuncia alla libreria dopo {} s",
+            ATTESA_DELLA_FINESTRA.as_secs()
+        );
+        return Err(
+            AppError::new(aether_domain::errors::ErrorCode::DbLocked).with_cause(format!(
+                "lucchetto della libreria non disponibile entro {} s sul filo della finestra",
+                ATTESA_DELLA_FINESTRA.as_secs()
+            )),
+        );
+    };
     match guardia.as_mut() {
         Ok(libreria) => azione(libreria),
         Err(errore) => Err(errore.clone()),

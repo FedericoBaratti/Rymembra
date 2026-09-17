@@ -214,8 +214,6 @@ const ATTESE_MOVIMENTO = {
 const ATTESE_CLASSI = {
   "d-uguale":
     "La riga immutata del confronto non prende colore: è il fondo su cui si leggono `.d-piu` e `.d-meno`, e dipingerla toglierebbe il contrasto che serve.",
-  playlist:
-    "Dice che cosa è la riga nella navigazione — `voce nav-pill playlist`, in `parti/Navigazione.tsx` — e non la dipinge: a dipingerla è `.voce`, e a distinguerla dalle destinazioni fisse è l'icona. Come `.dona` e `.trovata`, ma senza il ritocco che quelle due hanno.",
 };
 
 /*

@@ -12,6 +12,7 @@ mod account;
 mod aggiornamenti;
 mod analisi;
 mod arricchimento;
+mod cancellazione;
 mod cartelle;
 mod comandi;
 mod copertine;
@@ -35,6 +36,7 @@ mod spegnimento;
 mod stato;
 mod studio;
 mod testi;
+mod trascinati;
 mod vassoio;
 mod zoom;
 
@@ -213,6 +215,10 @@ fn main() {
         // quali condizioni.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // Per prima cosa: il `setup` gira sul filo della finestra, ed è il
+            // solo punto in cui lo si può riconoscere. Vedi
+            // `stato::con_libreria`.
+            stato::segna_filo_della_finestra();
             let data_dir = cartella_dati(app.handle())?;
             // Il diario **prima di tutto il resto**, libreria compresa: quel
             // che si vuole leggere quando Aether non si apre è precisamente
@@ -406,6 +412,8 @@ fn main() {
             vassoio::vassoio_lingua,
             comandi::avvio,
             comandi::imposta_cartelle,
+            trascinati::smista_trascinati,
+            comandi::brano_mostra_nella_cartella,
             comandi::cartelle_candidate,
             comandi::imposta_cartella_download,
             comandi::cronologia,
@@ -430,6 +438,10 @@ fn main() {
             comandi::preferiti,
             comandi::preferito,
             comandi::valutazione,
+            // Le due voci in fondo al menù del tasto destro: la riga se ne va, e
+            // con la seconda anche il file. Vedi `crate::cancellazione`.
+            cancellazione::brani_togli,
+            cancellazione::brani_elimina,
             comandi::piano_importazione,
             comandi::importa,
             comandi::imposta_tema,
@@ -554,6 +566,8 @@ fn main() {
             riproduzione::coda_togli,
             riproduzione::coda_riordina,
             riproduzione::coda_svuota,
+            riproduzione::coda_ripristina,
+            riproduzione::coda_prepara,
             riproduzione::ripeti,
             riproduzione::mescola,
             riproduzione::brani_per_id,
@@ -576,6 +590,10 @@ fn main() {
             testi::testo_scarto,
             testi::testo_cerca,
             testi::testo_cerca_di_nuovo,
+            testi::testo_candidati,
+            testi::testo_scegli,
+            testi::testo_rifiuta,
+            testi::testi_pannello,
             testi::testi_stato,
             testi::testi_rete,
             testi::testi_riempi,

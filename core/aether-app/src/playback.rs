@@ -501,20 +501,57 @@ pub const CHIAVE_POSIZIONE: &str = "player.position";
 /// `aether_domain::queue`, che oggi non sa nemmeno cosa sia il tempo, si
 /// ritrova un campo che solo `aether-play` sa produrre.
 ///
+/// # Perché con il brano accanto
+///
+/// Perché il segno si scrive ogni cinque secondi e la coda a ogni cambio di
+/// brano, e fra le due scritture i conti non tornano: per i primi cinque secondi
+/// di un brano nuovo il numero sul database era ancora quello del brano di
+/// prima. La Home diceva «Riprendi» su un brano di 0:22 «a 0:29», e il clic
+/// saltava lì. Il numero da solo non sa di chi è; con l'identificativo accanto
+/// chi lo legge può chiedere se parla del brano che ha in mano.
+///
 /// # Errori
 ///
 /// `db.queryFailed` se il database non risponde.
-pub fn save_posizione(connection: &Connection, ms: u64) -> Result<(), AppError> {
-    crate::settings::write_json(connection, CHIAVE_POSIZIONE, &ms)
+pub fn save_posizione(connection: &Connection, track_id: i64, ms: u64) -> Result<(), AppError> {
+    crate::settings::write_json(
+        connection,
+        CHIAVE_POSIZIONE,
+        &SegnoPosizione::DelBrano {
+            brano: track_id,
+            ms,
+        },
+    )
 }
 
-/// Legge la posizione dentro il brano. Assente vale l'inizio.
+/// Legge dove si era arrivati **dentro `track_id`**. Assente, o di un altro
+/// brano, vale l'inizio.
+///
+/// Il numero nudo di prima di questa versione vale per il brano che si chiede:
+/// è l'unica lettura che quel formato ha sempre avuto, ed è giusta nel caso di
+/// gran lunga più comune — chi aggiorna a metà di una canzone e riapre.
 ///
 /// # Errori
 ///
 /// `db.queryFailed` se il database non risponde.
-pub fn load_posizione(connection: &Connection) -> Result<u64, AppError> {
-    Ok(crate::settings::read_json::<u64>(connection, CHIAVE_POSIZIONE)?.unwrap_or(0))
+pub fn load_posizione(connection: &Connection, track_id: i64) -> Result<u64, AppError> {
+    Ok(
+        match crate::settings::read_json::<SegnoPosizione>(connection, CHIAVE_POSIZIONE)? {
+            Some(SegnoPosizione::DelBrano { brano, ms }) if brano == track_id => ms,
+            Some(SegnoPosizione::Vecchio(ms)) => ms,
+            _ => 0,
+        },
+    )
+}
+
+/// Come sta sul database il segno di [`save_posizione`].
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum SegnoPosizione {
+    /// Brano e millisecondo.
+    DelBrano { brano: i64, ms: u64 },
+    /// Il numero nudo che si scriveva prima.
+    Vecchio(u64),
 }
 
 // ── la coda che non finisce ─────────────────────────────────────────────────
@@ -1165,6 +1202,19 @@ mod prove {
         .expect("registrato");
         assert!(scritto);
         assert_eq!(conteggio(&c, 1), (1, Some(1_700_000_000_000), 1));
+    }
+
+    #[test]
+    fn la_posizione_vale_solo_per_il_brano_di_cui_parla() {
+        let c = db();
+        assert_eq!(load_posizione(&c, 1).expect("letta"), 0);
+        save_posizione(&c, 1, 95_000).expect("scritta");
+        assert_eq!(load_posizione(&c, 1).expect("letta"), 95_000);
+        // Il brano dopo, nei cinque secondi prima del segno nuovo.
+        assert_eq!(load_posizione(&c, 2).expect("letta"), 0);
+        // Il numero nudo delle versioni di prima vale per chi lo chiede.
+        crate::settings::write_json(&c, CHIAVE_POSIZIONE, &29_000u64).expect("vecchio");
+        assert_eq!(load_posizione(&c, 7).expect("letta"), 29_000);
     }
 
     #[test]

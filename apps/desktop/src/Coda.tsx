@@ -21,12 +21,14 @@
  * difetto del riordino. Quindi: un gancio che tiene le righe, un elenco che le
  * disegna, e un pannello che è solo la cornice.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { durata, nomeArtista, titoloAlbum } from "./formato";
 import { ipc, type Brano, type StatoRiproduzione } from "./ipc";
 import { Icona } from "./parti/Icone";
+import { usePresaPerRiordino } from "./riordino";
 import { t, tSe } from "./lingue";
+import { useVirtuale } from "./virtuale";
 
 /**
  * Le righe della coda, per identificativo.
@@ -35,6 +37,19 @@ import { t, tSe } from "./lingue";
  * identità, e ogni evento `riproduzione:stato` porta un array nuovo con dentro
  * gli stessi numeri. Il nucleo ne manda quattro al secondo — senza questo, ogni
  * secondo partirebbero quattro richieste di righe identiche.
+ *
+ * # Si chiedono solo le righe che mancano
+ *
+ * Prima ogni cambiamento della coda — un brano accodato, uno tolto, un riordino
+ * — richiedeva **tutte** le righe: su una coda di diciottomila brani, «Tutti i
+ * brani» fatto partire, erano diciottomila righe attraverso l'IPC per spostarne
+ * una. Adesso quelle già in mano restano, quelle che la coda non nomina più si
+ * lasciano andare, e si chiedono le sole nuove: un riordino non ne chiede
+ * nessuna.
+ *
+ * I voti e i preferiti delle righe già in mano non si rinfrescano da qui: la
+ * colonna li legge dallo stato del brano in ascolto, e una riga della coda mostra
+ * titolo, artista e album, che non cambiano mentre il brano sta in coda.
  */
 export function useRigheCoda(
   coda: readonly number[],
@@ -42,6 +57,11 @@ export function useRigheCoda(
 ): Map<number, Brano> {
   const [righe, setRighe] = useState<Map<number, Brano>>(new Map());
   const chiave = coda.join(",");
+  // Le righe già in mano, lette dall'effetto senza farne una dipendenza: una
+  // risposta che arriva cambia la mappa, e con la mappa fra le dipendenze
+  // l'effetto ripartirebbe per chiedere quel che ha appena ricevuto.
+  const inMano = useRef(righe);
+  inMano.current = righe;
 
   useEffect(() => {
     const ids = chiave.length > 0 ? chiave.split(",").map(Number) : [];
@@ -49,12 +69,25 @@ export function useRigheCoda(
       setRighe(new Map());
       return;
     }
+    const nominati = new Set(ids);
+    const prima = inMano.current;
+    const mancanti = [...nominati].filter((id) => !prima.has(id));
+    const restano = (mappa: Map<number, Brano>) =>
+      new Map([...mappa].filter(([id]) => nominati.has(id)));
+    if (mancanti.length === 0) {
+      if (prima.size !== nominati.size) setRighe(restano(prima));
+      return;
+    }
     let annullato = false;
     ipc
-      .braniPerId(ids)
+      .braniPerId(mancanti)
       .then((trovate) => {
         if (annullato) return;
-        setRighe(new Map(trovate.map((b) => [b.id, b])));
+        setRighe((adesso) => {
+          const fusa = restano(adesso);
+          for (const brano of trovate) fusa.set(brano.id, brano);
+          return fusa;
+        });
       })
       .catch(onErrore);
     return () => {
@@ -70,10 +103,11 @@ export function useRigheCoda(
  *
  * # Perché il riordino ha anche una scorciatoia
  *
- * Il trascinamento HTML5 non esiste per chi non usa il mouse: `dragstart` nasce
- * da un puntatore, e nessuna combinazione di tasti lo produce. Finché il
- * riordino era **solo** trascinabile, riordinare la coda era una funzione che
- * una parte degli utenti non aveva — non «scomoda», assente.
+ * Il trascinamento non esiste per chi non usa il mouse: nasce da un
+ * puntatore, e nessuna combinazione di tasti lo produce. Finché il riordino era
+ * **solo** trascinabile, riordinare la coda era una funzione che una parte degli
+ * utenti non aveva — non «scomoda», assente. Il trascinamento stesso è quello
+ * di `riordino.ts`, e il perché non è più quello HTML5 sta là.
  *
  * `Alt`+`↑↓` sposta la riga a fuoco. Alt e non le frecce nude perché quelle
  * devono continuare a muovere il fuoco: sono due gesti diversi sullo stesso
@@ -101,6 +135,22 @@ export function RigheCoda({
    */
   const [mirato, setMirato] = useState<number | null>(null);
 
+  /*
+   * Solo le righe che si vedono, come l'elenco dei brani. La coda è una lista
+   * come le altre, e «Tutti i brani» fatto partire la riempie di diciottomila
+   * righe: disegnarle tutte erano decine di migliaia di nodi nella terza
+   * colonna, che è sempre aperta. Lo scorrevole è l'elenco stesso, quindi
+   * contenitore e ancora coincidono; le due `.paglia` sono `li` perché stanno
+   * dentro un `ol`.
+   */
+  const scorrevole = useRef<HTMLOListElement>(null);
+  const finestra = useVirtuale({
+    totale: stato.coda.length,
+    contenitore: scorrevole,
+    ancora: scorrevole,
+    selettoreRiga: ".riga-coda",
+  });
+
   const comanda = (azione: Promise<void>) => {
     azione.catch(onErrore);
   };
@@ -119,6 +169,15 @@ export function RigheCoda({
     posa();
   };
 
+  const presa = usePresaPerRiordino({
+    onPresa: (indice) => {
+      if (indice === null) posa();
+      else setTrascinato(indice);
+    },
+    onMira: setMirato,
+    onLascia: lascia,
+  });
+
   const daTastiera = (e: React.KeyboardEvent, indice: number) => {
     if (!e.altKey) return;
     const passo = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
@@ -129,10 +188,18 @@ export function RigheCoda({
     comanda(ipc.codaRiordina(indice, a));
     // Il fuoco segue la riga spostata invece di restare sulla posizione: chi
     // tiene premuto Alt e freccia sta spostando **una** canzone, e lasciare il
-    // fuoco fermo farebbe scendere quella dopo al colpo successivo.
-    const lista = e.currentTarget.parentElement?.parentElement;
-    const arrivo = lista?.children[a]?.querySelector<HTMLElement>(".salta");
-    window.requestAnimationFrame(() => arrivo?.focus());
+    // fuoco fermo farebbe scendere quella dopo al colpo successivo. Per indice
+    // e non per posizione fra i figli: con la finestra virtuale il primo figlio
+    // è una paglia, e la riga d'arrivo può essere appena fuori dalla finestra —
+    // allora prima ci si scorre, e il fuoco arriva al disegno dopo.
+    if (a < finestra.primo || a >= finestra.ultimo) finestra.scorriA(a);
+    window.requestAnimationFrame(() =>
+      window.requestAnimationFrame(() =>
+        scorrevole.current
+          ?.querySelector<HTMLElement>(`[data-indice="${a}"] .salta`)
+          ?.focus(),
+      ),
+    );
   };
 
   if (stato.coda.length === 0) {
@@ -140,8 +207,18 @@ export function RigheCoda({
   }
 
   return (
-    <ol className="righe-coda queue-list" data-compatta={compatta || undefined}>
-      {stato.coda.map((id, indice) => {
+    <ol
+      ref={scorrevole}
+      className="righe-coda queue-list"
+      data-compatta={compatta || undefined}
+    >
+      <li
+        className="paglia"
+        style={{ height: finestra.sopra * finestra.altezza }}
+        role="presentation"
+      />
+      {stato.coda.slice(finestra.primo, finestra.ultimo).map((id, k) => {
+        const indice = finestra.primo + k;
         const brano = righe.get(id);
         const inAscolto = indice === stato.posizioneCoda;
         /* Il perché sta solo sul brano **subito dopo** quello in ascolto, ed è
@@ -166,17 +243,12 @@ export function RigheCoda({
                distinguerebbe. */
             key={`${indice}-${id}`}
             className="riga-coda list-row"
+            data-indice={indice}
             aria-current={inAscolto}
             data-active={inAscolto || undefined}
             data-sopra={(mirato === indice && trascinato !== indice) || undefined}
-            draggable
-            onDragStart={() => setTrascinato(indice)}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setMirato(indice);
-            }}
-            onDrop={() => lascia(indice)}
-            onDragEnd={posa}
+            data-riordino={indice}
+            onPointerDown={(e) => presa(e, indice)}
             onDoubleClick={() => comanda(ipc.codaVai(indice))}
           >
             <span className="presa" aria-hidden="true">
@@ -230,6 +302,11 @@ export function RigheCoda({
           </li>
         );
       })}
+      <li
+        className="paglia"
+        style={{ height: finestra.sotto * finestra.altezza }}
+        role="presentation"
+      />
     </ol>
   );
 }

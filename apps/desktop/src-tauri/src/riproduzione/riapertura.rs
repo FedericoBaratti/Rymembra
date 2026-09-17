@@ -222,6 +222,10 @@ fn riapri_davvero(
             // è [`riprendi_dov_era`] qui sotto.
             lettore.ascolto = None;
             lettore.motore = motore;
+            // Il motore nuovo non ha niente in canna.
+            lettore.in_canna = None;
+            lettore.non_aperto = None;
+            lettore.annuncio_atteso = false;
             lettore
                 .motore
                 .volume(lettore.volume.volume, lettore.volume.muto);
@@ -273,6 +277,13 @@ fn riapri_davvero(
                 dissolvenza_s: 0,
                 latenza_ms: 0,
                 motivo_prossimo: None,
+                coda_di_prima: None,
+                coda_curata: false,
+                coda_del_giro: None,
+                in_canna: None,
+                non_aperto: None,
+                annuncio_atteso: false,
+                puntina_a_vuoto: None,
             });
             drop(guardia);
             riprendi_coda(app);
@@ -385,7 +396,7 @@ fn riprendi_dov_era(
         if lettore.coda.current() != Some(ripresa.track_id) {
             return Ok(());
         }
-        lettore.motore.suona(brano);
+        lettore.suona(brano);
         lettore.motore.vai_a(ripresa.ms);
         // La pausa **dopo** `suona`, non prima: `suona` abbassa il bit da sé
         // (vedi `Motore::pausa` per l'ordine), quindi non rialzarlo qui vuol
@@ -466,7 +477,7 @@ pub fn riprova_corrente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -
         if lettore.coda.current() != Some(ripresa.track_id) {
             return Ok(());
         }
-        lettore.motore.suona(brano);
+        lettore.suona(brano);
         lettore.motore.vai_a(ripresa.ms);
         prepara_prossimo(&app, lettore);
         // Con la posizione richiesta e non con quella del motore: il salto lo

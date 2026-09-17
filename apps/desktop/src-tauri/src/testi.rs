@@ -61,6 +61,9 @@ pub struct RigaIpc {
     pub testo: String,
     /// I tempi delle parole, quando il file li porta. Quasi sempre vuoto.
     pub parole: Vec<ParolaIpc>,
+    /// Le righe allo stesso tempo di questa — una traduzione, la pronuncia —
+    /// una per riga. Si accendono con lei.
+    pub secondaria: Option<String>,
 }
 
 /// Il testo di un brano, nella forma che la finestra riceve.
@@ -124,6 +127,7 @@ impl From<testi::TestoBrano> for TestoIpc {
                             testo: p.testo,
                         })
                         .collect(),
+                    secondaria: riga.secondaria,
                 })
                 .collect(),
             piatto: trovato.testo.piatto,
@@ -189,8 +193,33 @@ pub async fn testo_brano(app: AppHandle, id: i64) -> Esito<TestoIpc> {
 /// stessa lettura sarebbero due copie che divergono il giorno in cui qualcuno
 /// cambia cosa vuol dire «il testo che si ha».
 fn testo_gia_saputo(stato: &Stato, id: i64) -> Result<TestoIpc, AppError> {
+    let brano = con_libreria(stato, |libreria| testi::brano(&libreria.connection, id))?;
+    testo_di(stato, &brano).map(TestoIpc::from)
+}
+
+/// Il testo di un brano, con il lucchetto della libreria preso **due volte** e
+/// lasciato nel mezzo.
+///
+/// # Perché due volte
+///
+/// Perché nel mezzo si legge il disco: il sidecar accanto al brano e, se serve,
+/// il tag dentro il file musicale — che su una cartella di rete lenta possono
+/// essere secondi. Prima quelle letture stavano dentro `con_libreria`, e per
+/// tutti quei secondi si fermavano la lista dei brani, la ricerca, e ogni altro
+/// comando che chiedeva la libreria. È la stessa forma dei tre tempi della
+/// rete, e la ragione sta per esteso su `aether_app::testi::DalDisco`.
+///
+/// Fra la prima presa e la seconda la riga in tabella può cambiare — una passata
+/// che scrive un esito — e non è un problema: `componi` la usa per decidere da
+/// dove viene il testo, e quel che scrive passa dagli `UPSERT` che proteggono il
+/// lavoro di chi ascolta.
+fn testo_di(stato: &Stato, brano: &testi::BranoDaTestare) -> Result<testi::TestoBrano, AppError> {
+    let riga = con_libreria(stato, |libreria| {
+        Ok(testi::leggi_riga(&libreria.connection, &brano.track_key))
+    })?;
+    let disco = testi::leggi_dal_disco(brano, riga.as_ref());
     con_libreria(stato, |libreria| {
-        testi::per_brano(&libreria.connection, id).map(TestoIpc::from)
+        Ok(testi::componi(&libreria.connection, brano, riga, disco))
     })
 }
 
@@ -262,6 +291,23 @@ pub struct StatoTesti {
     /// rifarebbe la stessa domanda a ogni canzone. Zero vuol dire «nessuno»:
     /// gli identificativi di `tracks` partono da uno.
     precaricato: AtomicI64,
+    /// Quanti pannelli del testo sono aperti adesso.
+    ///
+    /// Il precaricamento chiede al catalogo il testo del brano **dopo**, e
+    /// `PRIVACY.md` promette che le richieste partono solo quando il pannello è
+    /// aperto: senza questo numero partivano a ogni cambio di brano, anche con
+    /// il pannello chiuso da un mese. Un conteggio e non un sì o un no, perché i
+    /// pannelli possono essere due — la colonna e lo schermo intero — e chiudere
+    /// il primo non deve spegnere il secondo.
+    pannelli_aperti: AtomicU32,
+    /// Le voci dell'ultima richiesta di candidati, per sceglierne una senza
+    /// richiederle.
+    ///
+    /// Una sola lista, del brano per cui la si è chiesta: l'elenco sta a schermo
+    /// il tempo di un clic, e tenerne di più sarebbe memoria di testi che nessuno
+    /// guarda. Se il clic arriva per un brano diverso, o dopo che la lista è
+    /// stata sostituita, la voce si richiede.
+    candidati: Mutex<Option<(i64, Vec<aether_meta::lrclib::Voce>)>>,
 }
 
 impl std::fmt::Debug for StatoTesti {
@@ -290,6 +336,8 @@ impl StatoTesti {
             rimasti: AtomicU32::new(0),
             precarica: AtomicBool::new(false),
             precaricato: AtomicI64::new(0),
+            pannelli_aperti: AtomicU32::new(0),
+            candidati: Mutex::new(None),
         }
     }
 
@@ -316,12 +364,19 @@ fn servizi(app: &AppHandle, testi: &StatoTesti) -> Result<Arc<Fornitori>, AppErr
     if let Some(gia) = guardia.as_ref() {
         return Ok(Arc::clone(gia));
     }
-    let dati = app.path().app_data_dir().map_err(|err| {
-        AppError::new(aether_domain::errors::ErrorCode::FsNotFound {
-            path: "cartella dati".to_owned(),
+    // La cartella della libreria, e non `app_data_dir()`: quella è la cartella
+    // **di serie**, e con `AETHER_DATI` impostata la libreria sta altrove. Il
+    // deposito dei testi finiva così nel database dell'utente vero mentre il
+    // resto del programma lavorava sulla copia — cioè proprio la cosa che
+    // quella variabile esiste per impedire. `arricchimento` la prende già da
+    // qui. Il lucchetto si tiene per il tempo di una copia di percorso.
+    let Some(stato) = app.try_state::<Stato>() else {
+        return Err(AppError::new(ErrorCode::InternalAborted {
+            what: Some("apertura del deposito dei testi".to_owned()),
         })
-        .with_cause(err.to_string())
-    })?;
+        .with_cause("la libreria non è più fra gli stati gestiti"));
+    };
+    let dati = con_libreria(&stato, |libreria| Ok(libreria.data_dir.clone()))?;
     let deposito = DepositoSqlite::apri(&dati.join(NOME_DATABASE), adesso_ms())?;
     let nuovi = Arc::new(Fornitori::nuovo(Box::new(deposito)));
     *guardia = Some(Arc::clone(&nuovi));
@@ -358,16 +413,27 @@ pub struct StatoTestiIpc {
     pub rimasti: u32,
     /// I quattro numeri della copertura.
     pub copertura: Copertura,
+    /// Quanti brani una passata di adesso chiederebbe al catalogo.
+    ///
+    /// Non è `copertura.mancanti`, ed è questo che decide se «Riempi la
+    /// libreria» abbia qualcosa da fare: un brano col testo piatto manca di
+    /// tempi e la passata lo chiede, pur non essendo fra i mancanti; uno
+    /// scartato o chiesto da poco non si chiede, pur essendoci. Il pulsante
+    /// stava sui mancanti, e si accendeva quando non c'era niente da cercare —
+    /// o si spegneva con mezza libreria da cercare. Vedi
+    /// [`testi::quanti_da_cercare`].
+    pub in_coda: i64,
 }
 
 fn stato_adesso(stato: &Stato, testi: &StatoTesti) -> Result<StatoTestiIpc, AppError> {
     // Le due letture sotto lo **stesso** lucchetto: prenderlo due volte
     // lascerebbe passare in mezzo un brano che si conclude, e l'interruttore
     // direbbe una cosa mentre i numeri ne dicono un'altra.
-    let (rete, copertura) = con_libreria(stato, |libreria| {
+    let (rete, copertura, in_coda) = con_libreria(stato, |libreria| {
         Ok((
             rete_attiva(&libreria.connection),
             testi::copertura(&libreria.connection)?,
+            testi::quanti_da_cercare(&libreria.connection, adesso_ms())?,
         ))
     })?;
     Ok(StatoTestiIpc {
@@ -376,6 +442,7 @@ fn stato_adesso(stato: &Stato, testi: &StatoTesti) -> Result<StatoTestiIpc, AppE
         fatti: testi.fatti.load(Ordering::Relaxed),
         rimasti: testi.rimasti.load(Ordering::Relaxed),
         copertura,
+        in_coda,
     })
 }
 
@@ -425,15 +492,12 @@ pub fn testo_cerca(
     let fornitori = servizi(&app, &testi).map_err(errore)?;
     let voce = testi::cerca_in_rete(&fornitori, &brano).map_err(errore)?;
 
-    // ── di nuovo sotto lucchetto: scrivere, e rileggere quel che ne esce ────
+    // ── di nuovo sotto lucchetto: scrivere; poi rileggere quel che ne esce ──
     con_libreria(&stato, |libreria| {
-        testi::ricorda_esito(&libreria.connection, &brano, voce.as_ref())?;
-        Ok(TestoIpc::from(testi::per_questo_brano(
-            &libreria.connection,
-            &brano,
-        )))
+        testi::ricorda_esito(&libreria.connection, &brano, voce.as_ref())
     })
-    .map_err(errore)
+    .map_err(errore)?;
+    testo_di(&stato, &brano).map(TestoIpc::from).map_err(errore)
 }
 
 /// Richiede il testo al catalogo **ignorando quel che si ricordava**.
@@ -492,15 +556,222 @@ pub fn testo_cerca_di_nuovo(
     let fornitori = servizi(&app, &testi).map_err(errore)?;
     let voce = testi::cerca_di_nuovo_in_rete(&fornitori, &brano).map_err(errore)?;
 
-    // ── di nuovo sotto lucchetto: scrivere, e rileggere quel che ne esce ────
+    // ── di nuovo sotto lucchetto: scrivere; poi rileggere quel che ne esce ──
     con_libreria(&stato, |libreria| {
-        testi::ricorda_esito(&libreria.connection, &brano, voce.as_ref())?;
-        Ok(TestoIpc::from(testi::per_questo_brano(
-            &libreria.connection,
-            &brano,
-        )))
+        testi::ricorda_esito(&libreria.connection, &brano, voce.as_ref())
     })
-    .map_err(errore)
+    .map_err(errore)?;
+    testo_di(&stato, &brano).map(TestoIpc::from).map_err(errore)
+}
+
+/// Una voce del catalogo, come la vede chi sceglie a mano.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidatoIpc {
+    /// L'identificativo nel catalogo, da ripassare a [`testo_scegli`].
+    pub id: i64,
+    /// Il titolo secondo il catalogo.
+    pub titolo: String,
+    /// L'artista secondo il catalogo.
+    pub artista: String,
+    /// L'album secondo il catalogo, quando lo dice.
+    pub album: Option<String>,
+    /// La durata secondo il catalogo, in millisecondi.
+    pub durata_ms: Option<u64>,
+    /// La voce porta i tempi.
+    pub sincronizzato: bool,
+    /// La voce dice che il brano non ha parole.
+    pub strumentale: bool,
+    /// Le prime righe del testo, per riconoscerlo senza sceglierlo.
+    ///
+    /// Due righe non vuote e senza tempi: è quel che serve a distinguere «la
+    /// canzone» da «un'altra canzone con lo stesso titolo», e il testo intero
+    /// resta nel nucleo finché qualcuno non lo sceglie.
+    pub anteprima: Option<String>,
+}
+
+impl From<&aether_meta::lrclib::Voce> for CandidatoIpc {
+    fn from(voce: &aether_meta::lrclib::Voce) -> Self {
+        let grezzo = voce
+            .sincronizzato
+            .as_deref()
+            .or(voce.piatto.as_deref())
+            .unwrap_or_default();
+        let letto = aether_domain::testo::leggi(grezzo);
+        let anteprima: Vec<String> = letto
+            .come_piatto()
+            .lines()
+            .map(str::trim)
+            .filter(|riga| !riga.is_empty())
+            .take(2)
+            .map(ToOwned::to_owned)
+            .collect();
+        Self {
+            id: voce.candidato.id,
+            titolo: voce.candidato.titolo.clone(),
+            artista: voce.candidato.artista.clone(),
+            album: voce.candidato.album.clone(),
+            durata_ms: voce.candidato.durata_ms,
+            sincronizzato: voce.candidato.sincronizzato,
+            strumentale: voce.candidato.strumentale,
+            anteprima: (!anteprima.is_empty()).then(|| anteprima.join("\n")),
+        }
+    }
+}
+
+/// L'elenco del catalogo, e se al catalogo si è chiesto.
+///
+/// Le due cose viaggiano insieme perché un elenco vuoto da solo non dice quale
+/// delle due è successa, e la finestrella deve dirlo: «il catalogo non ha voci
+/// per questo brano» con l'interruttore spento è una risposta che nessuno ha
+/// dato, e manda a cercare il guasto dalla parte sbagliata.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidatiIpc {
+    /// La rete per i testi è accesa.
+    pub rete: bool,
+    /// Le voci, nell'ordine in cui il catalogo le ha date. Vuoto se `rete` è
+    /// falso: non si è chiesto niente.
+    pub voci: Vec<CandidatoIpc>,
+}
+
+/// Le voci che il catalogo ha per questo brano, per sceglierne una a mano.
+///
+/// Esiste per il testo scelto male — o scartato dai veti — che fino a qui non
+/// aveva rimedio se non sincronizzarne uno da capo. Vedi
+/// [`aether_meta::lrclib::candidati`] per cosa torna e in che ordine.
+///
+/// Con l'interruttore della rete spento non si chiede, e non è un errore — è la
+/// stessa scelta di [`testo_cerca`]; torna `rete: false` con l'elenco vuoto.
+///
+/// # Errori
+///
+/// `library.trackNotFound`, l'errore di rete, `db.queryFailed`.
+///
+/// `(async)`: sono fino a tre richieste al catalogo.
+#[tauri::command(async)]
+pub fn testo_candidati(
+    app: AppHandle,
+    stato: State<'_, Stato>,
+    testi: State<'_, StatoTesti>,
+    id: i64,
+) -> Esito<CandidatiIpc> {
+    let (brano, rete) = con_libreria(&stato, |libreria| {
+        Ok((
+            testi::brano(&libreria.connection, id)?,
+            rete_attiva(&libreria.connection),
+        ))
+    })
+    .map_err(errore)?;
+    if !rete {
+        return Ok(CandidatiIpc {
+            rete: false,
+            voci: Vec::new(),
+        });
+    }
+    let fornitori = servizi(&app, &testi).map_err(errore)?;
+    let voci = testi::candidati_in_rete(&fornitori, &brano).map_err(errore)?;
+    let fuori = voci.iter().map(CandidatoIpc::from).collect();
+    *testi
+        .candidati
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some((id, voci));
+    Ok(CandidatiIpc {
+        rete: true,
+        voci: fuori,
+    })
+}
+
+/// Sceglie una voce del catalogo come testo di questo brano.
+///
+/// La voce si prende dall'elenco che [`testo_candidati`] ha appena restituito,
+/// e si richiede solo se quell'elenco non c'è più. Si scrive segnata come
+/// scelta — vedi [`testi::ricorda_scelta`] — così le risposte del catalogo non
+/// le passano sopra; non passa sopra lei a quel che chi ascolta ha
+/// sincronizzato a mano.
+///
+/// # Errori
+///
+/// `library.trackNotFound`; `internal.aborted` se la voce non è fra i candidati;
+/// l'errore di rete se va richiesta e il catalogo non risponde; `db.queryFailed`.
+#[tauri::command(async)]
+pub fn testo_scegli(
+    app: AppHandle,
+    stato: State<'_, Stato>,
+    testi: State<'_, StatoTesti>,
+    id: i64,
+    candidato: i64,
+) -> Esito<TestoIpc> {
+    let brano =
+        con_libreria(&stato, |libreria| testi::brano(&libreria.connection, id)).map_err(errore)?;
+    let dall_elenco = |voci: &[aether_meta::lrclib::Voce]| {
+        voci.iter()
+            .find(|voce| voce.candidato.id == candidato)
+            .cloned()
+    };
+    let ricordata = testi
+        .candidati
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .filter(|(di, _)| *di == id)
+        .and_then(|(_, voci)| dall_elenco(voci));
+    let voce = match ricordata {
+        Some(voce) => voce,
+        None => {
+            let fornitori = servizi(&app, &testi).map_err(errore)?;
+            let voci = testi::candidati_in_rete(&fornitori, &brano).map_err(errore)?;
+            dall_elenco(&voci).ok_or_else(|| {
+                errore(
+                    AppError::new(ErrorCode::InternalAborted {
+                        what: Some("scelta di un testo".to_owned()),
+                    })
+                    .with_cause("la voce scelta non è più fra quelle del catalogo"),
+                )
+            })?
+        }
+    };
+    con_libreria(&stato, |libreria| {
+        testi::ricorda_scelta(&libreria.connection, &brano, &voce)
+    })
+    .map_err(errore)?;
+    testo_di(&stato, &brano).map(TestoIpc::from).map_err(errore)
+}
+
+/// Scarta il testo che il catalogo aveva dato a questo brano: «non è questo».
+///
+/// Vedi [`testi::rifiuta`]: tocca solo quel che è venuto dal catalogo, il brano
+/// resta segnato come cercato, e quella voce non torna più per questo brano.
+///
+/// # Errori
+///
+/// `library.trackNotFound`, `db.queryFailed`.
+#[tauri::command(async)]
+pub fn testo_rifiuta(stato: State<'_, Stato>, id: i64) -> Esito<TestoIpc> {
+    let brano = con_libreria(&stato, |libreria| {
+        let brano = testi::brano(&libreria.connection, id)?;
+        testi::rifiuta(&libreria.connection, &brano.track_key)?;
+        Ok(brano)
+    })
+    .map_err(errore)?;
+    testo_di(&stato, &brano).map(TestoIpc::from).map_err(errore)
+}
+
+/// Un pannello del testo si è aperto (`true`) o chiuso (`false`).
+///
+/// Serve al precaricamento: vedi [`StatoTesti::pannelli_aperti`]. Non fallisce
+/// e non tocca niente oltre a un contatore, quindi non è `(async)`.
+#[tauri::command]
+pub fn testi_pannello(testi: State<'_, StatoTesti>, aperto: bool) {
+    let _ = testi
+        .pannelli_aperti
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |quanti| {
+            Some(if aperto {
+                quanti.saturating_add(1)
+            } else {
+                quanti.saturating_sub(1)
+            })
+        });
 }
 
 /// Come stanno i testi sulla libreria intera.
@@ -651,6 +922,12 @@ fn passata(app: &AppHandle) {
     // fuori dal ciclo dei lotti: una sequenza non ricomincia perché è finito
     // un lotto di cinquanta.
     let mut sequenza = Sequenza::default();
+    // I brani caduti in questa passata con un guasto che riprovando passa — la
+    // rete che inciampa. Non si registra niente per loro, quindi la coda li
+    // ridarebbe in cima al lotto dopo: si saltano fino alla fine della passata.
+    // Quelli caduti con un guasto che non passa riprovando si registrano
+    // invece nel database con `testi::rimanda`, e la coda non li ridà da sola.
+    let mut saltati: std::collections::HashSet<i64> = std::collections::HashSet::new();
 
     loop {
         if testi.da_fermare.load(Ordering::Relaxed) {
@@ -663,7 +940,13 @@ fn passata(app: &AppHandle) {
                 return Ok(None);
             }
             let adesso = adesso_ms();
-            let lotto = testi::da_cercare(&libreria.connection, adesso, testi::LOTTO)?;
+            let mut lotto = testi::da_cercare(
+                &libreria.connection,
+                adesso,
+                testi::LOTTO.saturating_add(saltati.len()),
+            )?;
+            lotto.retain(|brano| !saltati.contains(&brano.id));
+            lotto.truncate(testi::LOTTO);
             // Quanti ne restano lo dice la **coda**, non la copertura: un brano
             // di cui si ha il solo testo piatto non è fra i «mancanti» e la
             // passata però ci passa, e contarlo con l'altro numero farebbe
@@ -704,12 +987,21 @@ fn passata(app: &AppHandle) {
                     voce
                 }
                 Err(err) => {
-                    // Il catalogo non ha risposto per **questo** brano. Non si
-                    // registra niente — «non si sa» non è «non c'è» — e non si
-                    // esce per forza: il prossimo può andare benissimo, e un
-                    // titolo che fa inciampare il catalogo non è una ragione
-                    // per lasciare ventimila brani senza testo. Quando fermarsi
-                    // lo dice `Sequenza`, che è provata.
+                    // Il catalogo non ha risposto per **questo** brano. Non è
+                    // «non c'è», quindi il testo non si scrive; e non si esce
+                    // per forza: il prossimo può andare benissimo, e un titolo
+                    // che fa inciampare il catalogo non è una ragione per
+                    // lasciare ventimila brani senza testo. Quando fermarsi lo
+                    // dice `Sequenza`, che è provata.
+                    //
+                    // Il brano però non torna in cima al lotto dopo: vedi
+                    // `saltati` e `testi::rimanda`.
+                    saltati.insert(brano.id);
+                    if !err.is_retryable() {
+                        let _ = con_libreria(&stato, |libreria| {
+                            testi::rimanda(&libreria.connection, &brano)
+                        });
+                    }
                     match sequenza.guasto() {
                         Reazione::ProseguiSegnalando => {
                             segnala(app, &err);
@@ -884,14 +1176,17 @@ mod prove {
 
     #[test]
     fn le_parole_sopravvivono_al_viaggio_e_finiscono_nell_esteso() {
-        let gemelli = componi(vec![
-            riga(
-                10_000,
-                "prima riga",
-                &[(10_000, "prima "), (10_400, "riga")],
-            ),
-            riga(20_000, "seconda", &[(20_000, "seconda")]),
-        ]);
+        let gemelli = componi(
+            vec![
+                riga(
+                    10_000,
+                    "prima riga",
+                    &[(10_000, "prima "), (10_400, "riga")],
+                ),
+                riga(20_000, "seconda", &[(20_000, "seconda")]),
+            ],
+            &[],
+        );
         assert_eq!(
             gemelli.esteso.as_deref(),
             Some(concat!(
@@ -915,14 +1210,17 @@ mod prove {
     fn il_gemello_semplice_e_lo_stesso_lrc_di_sempre() {
         // Quel che leggono gli altri lettori: nessun `<…>`, gli stessi tempi di
         // riga. È la metà del lavoro che non deve regredire mai.
-        let gemelli = componi(vec![
-            riga(
-                10_000,
-                "prima riga",
-                &[(10_000, "prima "), (10_400, "riga")],
-            ),
-            riga(20_000, "seconda", &[]),
-        ]);
+        let gemelli = componi(
+            vec![
+                riga(
+                    10_000,
+                    "prima riga",
+                    &[(10_000, "prima "), (10_400, "riga")],
+                ),
+                riga(20_000, "seconda", &[]),
+            ],
+            &[],
+        );
         assert_eq!(
             gemelli.semplice,
             "[00:10.00]prima riga\n[00:20.00]seconda\n"
@@ -931,8 +1229,40 @@ mod prove {
     }
 
     #[test]
+    fn risincronizzare_non_butta_le_traduzioni() {
+        // Il testo di prima, letto da un `.lrc` con la traduzione sotto ogni
+        // riga e un ritornello che torna due volte con due traduzioni diverse.
+        let prima = aether_domain::testo::leggi(concat!(
+            "[00:01.00]strofa\n[00:01.00]verse\n",
+            "[00:02.00]coro\n[00:02.00]chorus one\n",
+            "[00:03.00]coro\n[00:03.00]chorus two\n",
+            "[00:04.00]fine\n[00:04.00]end\n",
+        ))
+        .righe;
+        let gemelli = componi(
+            vec![
+                riga(1_500, "strofa", &[]),
+                riga(2_500, "coro", &[]),
+                riga(3_500, "coro", &[]),
+                // Parole cambiate: la traduzione di prima non è più sua.
+                riga(4_500, "la fine", &[]),
+            ],
+            &prima,
+        );
+        assert_eq!(
+            gemelli.semplice,
+            concat!(
+                "[00:01.50]strofa\n[00:01.50]verse\n",
+                "[00:02.50]coro\n[00:02.50]chorus one\n",
+                "[00:03.50]coro\n[00:03.50]chorus two\n",
+                "[00:04.50]la fine\n",
+            )
+        );
+    }
+
+    #[test]
     fn senza_parole_non_si_scrive_nessun_esteso() {
-        let gemelli = componi(vec![riga(10_000, "prima riga", &[])]);
+        let gemelli = componi(vec![riga(10_000, "prima riga", &[])], &[]);
         assert_eq!(gemelli.esteso, None);
         assert_eq!(gemelli.semplice, "[00:10.00]prima riga\n");
     }
@@ -941,11 +1271,14 @@ mod prove {
     fn le_parole_che_non_ricompongono_la_riga_si_buttano() {
         // Il testo è cambiato dopo che le parole erano state battute: i tempi
         // non si riassegnano a caso, la riga torna sincronizzata al verso.
-        let gemelli = componi(vec![riga(
-            10_000,
-            "prima strofa",
-            &[(10_000, "prima "), (10_400, "riga")],
-        )]);
+        let gemelli = componi(
+            vec![riga(
+                10_000,
+                "prima strofa",
+                &[(10_000, "prima "), (10_400, "riga")],
+            )],
+            &[],
+        );
         assert_eq!(gemelli.esteso, None);
         assert_eq!(gemelli.semplice, "[00:10.00]prima strofa\n");
     }
@@ -994,7 +1327,8 @@ mod prove {
 /// **Una richiesta per brano**, e solo quando quel brano un testo che scorre
 /// non ce l'ha — la condizione è `da_chiedere`, la stessa che usa il pannello,
 /// letta dal nucleo e non ricostruita qui. Nessuna richiesta se l'interruttore
-/// è spento, se il successivo è lo stesso di prima, o se un altro
+/// è spento, se nessun pannello del testo è aperto — la promessa di
+/// `PRIVACY.md` — se il successivo è lo stesso di prima, o se un altro
 /// precaricamento sta ancora girando. In fila dietro la stessa `Cadenza` di
 /// tutto il resto, quindi non scavalca né una passata né il pannello.
 ///
@@ -1012,6 +1346,12 @@ pub fn precarica_prossimo(app: &AppHandle, prossimo: Option<i64>) {
     let Some(testi) = app.try_state::<StatoTesti>() else {
         return;
     };
+    // Con il pannello chiuso non si chiede niente: vedi
+    // [`StatoTesti::pannelli_aperti`]. Il testo del brano dopo lo chiederà il
+    // pannello, se qualcuno lo aprirà.
+    if testi.pannelli_aperti.load(Ordering::Relaxed) == 0 {
+        return;
+    }
     // `Iniziato` arriva a ogni cambio di traccia; il successivo, quasi sempre,
     // è già quello che si era precaricato al brano prima.
     if testi.precaricato.swap(id, Ordering::Relaxed) == id {
@@ -1038,20 +1378,22 @@ fn precarica_adesso(app: &AppHandle, id: i64) {
         return;
     };
 
-    // ── sotto lucchetto: chi è, si può chiedere, e serve davvero ────────────
+    // ── sotto lucchetto: chi è, e si può chiedere ───────────────────────────
     let letto = con_libreria(&stato, |libreria| {
         if !rete_attiva(&libreria.connection) {
             return Ok(None);
         }
-        let brano = testi::brano(&libreria.connection, id)?;
-        // La condizione è quella del pannello, letta dal nucleo: un brano che
-        // il testo ce l'ha già — o a cui si è già chiesto — non si chiede.
-        let serve = testi::per_questo_brano(&libreria.connection, &brano).da_chiedere;
-        Ok(serve.then_some(brano))
+        testi::brano(&libreria.connection, id).map(Some)
     });
     let Ok(Some(brano)) = letto else {
         return;
     };
+    // La condizione è quella del pannello, letta dal nucleo: un brano che il
+    // testo ce l'ha già — o a cui si è già chiesto — non si chiede. Con il
+    // disco letto fuori dal lucchetto, come il pannello.
+    if !testo_di(&stato, &brano).is_ok_and(|trovato| trovato.da_chiedere) {
+        return;
+    }
 
     // ── senza nessun lucchetto: la parte lenta ──────────────────────────────
     let Ok(fornitori) = servizi(app, &testi) else {
@@ -1207,25 +1549,65 @@ pub fn testo_salva(
     stato: State<'_, Stato>,
     id: i64,
     righe: Vec<RigaSalvata>,
-) -> Esito<TestoIpc> {
-    let gemelli = componi(righe);
+) -> Esito<SalvatoIpc> {
+    // ── le traduzioni del testo di prima, che l'editor non porta ────────────
+    // Vedi «Le traduzioni restano» su `componi`. Con i due tempi di `testo_di`,
+    // perché il testo di prima può stare in un sidecar su una share; e senza
+    // farne un errore: un testo di prima che non si legge vuol dire nessuna
+    // traduzione da portare, non battute perse.
+    let esito = con_libreria(&stato, |libreria| testi::brano(&libreria.connection, id))
+        .and_then(|brano| {
+            let prima = testo_di(&stato, &brano)
+                .map(|trovato| trovato.testo.righe)
+                .unwrap_or_default();
+            let gemelli = componi(righe, &prima);
 
-    let esito = con_libreria(&stato, |libreria| {
-        let brano = testi::brano(&libreria.connection, id)?;
-        // L'esteso per primo, e non è indifferente: se la scrittura del `.lrc`
-        // qui sotto fallisce, quel che resta su disco è comunque il file più
-        // ricco, con dentro tutto — tempi delle righe compresi. Nell'ordine
-        // opposto un guasto lascerebbe accanto al brano un esteso vecchio che
-        // scavalca il `.lrc` appena scritto, cioè il caso peggiore.
-        gemello_esteso(Path::new(&brano.path), gemelli.esteso.as_deref())?;
-        testi::salva_a_mano(&libreria.connection, &brano, &gemelli.semplice)?;
-        Ok(TestoIpc::from(testi::per_questo_brano(
-            &libreria.connection,
-            &brano,
-        )))
-    })
-    .map_err(errore);
+            // ── sotto lucchetto: la riga, che è dove il lavoro non si perde ─
+            // Prima del file, e la ragione sta su
+            // `aether_app::testi::salva_a_mano`: una cartella di sola lettura
+            // non deve costare mezz'ora di battute.
+            con_libreria(&stato, |libreria| {
+                testi::registra_a_mano(&libreria.connection, &brano, &gemelli.semplice)
+            })?;
+            Ok((brano, gemelli))
+        })
+        .and_then(|(brano, gemelli)| {
+            // ── senza lucchetto: i file accanto al brano, che può stare su una
+            // share ────────────────────────────────────────────────────────────
+            // L'esteso per primo, e non è indifferente: se la scrittura del `.lrc`
+            // qui sotto fallisce, quel che resta su disco è comunque il file più
+            // ricco, con dentro tutto — tempi delle righe compresi. Nell'ordine
+            // opposto un guasto lascerebbe accanto al brano un esteso vecchio che
+            // scavalca il `.lrc` appena scritto, cioè il caso peggiore.
+            let percorso = Path::new(&brano.path);
+            let nei_file = gemello_esteso(percorso, gemelli.esteso.as_deref())
+                .and_then(|()| testi::scrivi_sidecar(percorso, "lrc", Some(&gemelli.semplice)));
+            if let Err(err) = &nei_file {
+                nota!(
+                    "[testi] testo salvato nella libreria ma non accanto al brano: {}",
+                    err.cause().unwrap_or("—")
+                );
+            }
+            // ── di nuovo sotto lucchetto: quel che il pannello deve mostrare ───
+            Ok(SalvatoIpc {
+                testo: testo_di(&stato, &brano).map(TestoIpc::from)?,
+                file_non_scritto: nei_file.err().map(crate::errore::ErroreIpc::from),
+            })
+        })
+        .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Com'è andato un salvataggio fatto a mano.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SalvatoIpc {
+    /// Il testo da mostrare adesso.
+    pub testo: TestoIpc,
+    /// Il guasto con cui il file accanto al brano non si è scritto, se c'è
+    /// stato. Il testo è salvo comunque, nella libreria: la finestra lo dice
+    /// invece di dire «non salvato».
+    pub file_non_scritto: Option<crate::errore::ErroreIpc>,
 }
 
 /// Restituisce al catalogo il testo che si è appena sincronizzato.
@@ -1362,13 +1744,40 @@ struct Gemelli {
 /// Il controllo qui è la seconda rete, non la prima: la finestra manda già
 /// vuote le righe battute a metà. È la rete che vale anche il giorno in cui
 /// l'editor cambia, perché il formato non deve dipendere da chi lo riempie.
-fn componi(righe: Vec<RigaSalvata>) -> Gemelli {
+///
+/// # Le traduzioni restano
+///
+/// L'editor lavora sulle righe e basta: le traduzioni — le righe allo stesso
+/// tempo, [`Riga::secondaria`] — non entrano nel testo da cui parte, e un
+/// `.lrc` con la traduzione risincronizzato usciva senza. `prima` sono le righe
+/// del testo che si aveva: ogni riga salvata prende la traduzione della prima
+/// riga di `prima` con le stesse parole, cercando **in avanti** da dove si era
+/// arrivati — un ritornello che torna tre volte prende le sue tre traduzioni in
+/// ordine — e ricominciando da capo solo se in avanti non c'è. Una riga di cui
+/// si sono cambiate le parole non ha più una traduzione che le appartenga, e
+/// resta senza.
+fn componi(righe: Vec<RigaSalvata>, prima: &[Riga]) -> Gemelli {
+    let mut da = 0_usize;
+    let mut traduzione_di = |testo: &str| {
+        let trovata = prima
+            .iter()
+            .enumerate()
+            .skip(da)
+            .chain(prima.iter().enumerate().take(da))
+            .find(|(_, vecchia)| vecchia.testo == testo && vecchia.secondaria.is_some());
+        trovata.and_then(|(dove, vecchia)| {
+            da = dove.saturating_add(1);
+            vecchia.secondaria.clone()
+        })
+    };
     let righe: Vec<Riga> = righe
         .into_iter()
         .map(|riga| {
+            let testo = riga.testo.trim().to_owned();
+            let secondaria = traduzione_di(&testo);
             let piena = Riga {
                 ms: riga.ms,
-                testo: riga.testo.trim().to_owned(),
+                testo,
                 parole: riga
                     .parole
                     .into_iter()
@@ -1377,6 +1786,7 @@ fn componi(righe: Vec<RigaSalvata>) -> Gemelli {
                         testo: parola.testo,
                     })
                     .collect(),
+                secondaria,
             };
             if parole_combaciano(&piena) {
                 piena
@@ -1432,21 +1842,9 @@ fn componi(righe: Vec<RigaSalvata>) -> Gemelli {
 /// `fs.writeFailed`, con dentro il percorso — vale per la scrittura e per la
 /// rimozione: in tutt'e due i casi quel che non è riuscito è mettere il disco
 /// nello stato voluto. Un file che non c'era non è un guasto.
+///
+/// Togliere non vuol dire cancellare: un esteso che non era nostro finisce in un
+/// `.a2.lrc.bak`, com'è scritto su `aether_app::testi::scrivi_sidecar`.
 fn gemello_esteso(brano: &Path, esteso: Option<&str>) -> Result<(), AppError> {
-    let percorso = testi::percorso_sidecar(brano, "a2.lrc");
-    let guaio = |err: std::io::Error| {
-        AppError::new(ErrorCode::FsWriteFailed {
-            path: percorso.display().to_string(),
-            detail: None,
-        })
-        .with_cause(err.to_string())
-    };
-    match esteso {
-        Some(lrc) => std::fs::write(&percorso, lrc).map_err(guaio),
-        None => match std::fs::remove_file(&percorso) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(guaio(err)),
-        },
-    }
+    testi::scrivi_sidecar(brano, "a2.lrc", esteso)
 }

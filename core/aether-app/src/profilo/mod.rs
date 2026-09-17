@@ -271,6 +271,19 @@ const CATALOGO: &[(&str, Genere)] = &[
     ("enrich.auto", Genere::Preferenza),
     ("scrobble.attivo", Genere::Preferenza),
     ("nuvola.attivo", Genere::Preferenza),
+    // Le due scelte su cosa esce verso la rete, e mancavano. Tutte e due sono
+    // decisioni di chi usa il programma — «non dire a LRCLIB cosa ascolto»,
+    // «non chiedere a GitHub se c'è una versione nuova» — e una scelta di
+    // riservatezza che non si porta dietro è la peggiore da perdere: sul
+    // computer nuovo si riaccende da sola, e nessuno se ne accorge finché le
+    // richieste non sono già partite.
+    ("testi.rete", Genere::Preferenza),
+    ("aggiornamenti.attivo", Genere::Preferenza),
+    // ── la prima volta ──
+    // Il giro guidato già visto: è la persona ad averlo visto, non il computer.
+    // Senza, reinstallare o cambiare macchina lo riproponeva da capo a chi
+    // l'aveva già chiuso.
+    (crate::preferenze::CHIAVE_GIRO_VISTO, Genere::Preferenza),
     // `scrobble.lastfm.api_key` **non** c'è, ed è la quinta omissione
     // deliberata — la sola che riguardi una credenziale. Non è un segreto nel
     // senso stretto: viaggia in chiaro nell'indirizzo del consenso, e chiunque
@@ -957,6 +970,19 @@ pub struct Ambiente<'a> {
     pub rimappature: &'a [Rimappatura],
     /// Lo store delle copertine, per contare quante ne mancano davvero.
     pub copertine: Option<&'a crate::covers::CoverStore>,
+    /// Chi importa ha detto che la libreria del profilo **è** la sua, anche se
+    /// le due identità non si riconoscono.
+    ///
+    /// # Perché serve una via d'uscita
+    ///
+    /// Perché l'identità nasce alla prima esportazione, e chi su un computer
+    /// nuovo esporta un profilo **prima** di importare quello vecchio ha due
+    /// identità diverse per la stessa musica: il rifiuto, che protegge dal
+    /// riversare ascolti su canzoni di un altro, lì non protegge niente e toglie
+    /// l'unico modo di riavere la propria storia. Il piano continua a dire che
+    /// le identità sono diverse; questo dice soltanto che si è letto, e che si
+    /// procede lo stesso. L'identità di questa libreria resta la sua.
+    pub unisci_comunque: bool,
 }
 
 /// Cosa cambierebbe importare questo profilo. Non applica niente.
@@ -1066,8 +1092,15 @@ fn esegui(
         });
     }
 
-    // ── la libreria, se le due identità si riconoscono ──
-    if !identita_diversa {
+    // ── la libreria, se le due identità si riconoscono — o se chi importa ha
+    // detto di procedere lo stesso: vedi `Ambiente::unisci_comunque` ──
+    if !identita_diversa || ambiente.unisci_comunque {
+        // Le correzioni prima di tutto: cuori, voti, playlist, cronologia e
+        // testi di un brano corretto stanno sotto la chiave corretta, e su un
+        // computer nuovo nessun brano la porta finché la correzione non è
+        // scritta. Vedi il `//!` di `biblioteca`.
+        piano.portati.correzioni = biblioteca::applica_correzioni_in(&tx, &letto.biblioteca)?;
+
         if let Some(originale) = &letto.sincronia {
             // Le cartelle sorvegliate del documento sono percorsi di quella
             // macchina, e vanno rimappate **prima** della fusione. Senza,
@@ -1115,7 +1148,6 @@ fn esegui(
 
         let portato = biblioteca::applica_in(&tx, &letto.biblioteca, ambiente.adesso_ms)?;
         piano.portati.cronologia = portato.cronologia;
-        piano.portati.correzioni = portato.correzioni;
         piano.portati.testi = portato.testi;
         piano.portati.desiderati = portato.desiderati;
         piano.portati.copertine = portato.copertine;

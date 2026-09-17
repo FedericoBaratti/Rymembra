@@ -391,6 +391,17 @@ export function useRiproduzione(): Riproduzione {
     })),
   );
 
+  // Il volume da solo, per la stessa ragione della curva: arriva a ogni passo
+  // del cursore, e comporre lo stato intero voleva dire una lettura del brano
+  // dal database per ogni passo.
+  useAscolto<{ volume: number; muto: boolean }>("riproduzione:volume", (carico) =>
+    setStato((prima) =>
+      prima.volume === carico.volume && prima.muto === carico.muto
+        ? prima
+        : { ...prima, volume: carico.volume, muto: carico.muto },
+    ),
+  );
+
   useAscolto<ErroreIpc>("riproduzione:errore", setErrore);
 
   // Il dispositivo sparito. Arriva **una volta** — l'orologio annuncia il

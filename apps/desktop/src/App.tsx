@@ -42,6 +42,7 @@ import {
   type MovimentoUtente,
 } from "./aspetto";
 import { brani_, durata, nomeArtista, numero, titoloAlbum } from "./formato";
+import { useFinestrella } from "./finestrella";
 import { useFuoco } from "./fuoco";
 import {
   eRitentabile,
@@ -55,6 +56,7 @@ import {
   type Avanzamento,
   type Avvio,
   type Brano,
+  type Cancellazione,
   type EsitoScansione,
   type Ordine,
   type Playlist,
@@ -66,11 +68,13 @@ import { useNuvola } from "./nuvola";
 import { useAscolto, usePagine, usePigro } from "./pagine";
 import { AvvisoAggiornamento } from "./parti/Aggiornamenti";
 import { AvvisoAudio } from "./parti/AvvisoAudio";
+import { AvvisoCoda } from "./parti/AvvisoCoda";
 import { Icona } from "./parti/Icone";
 import { useImportazioni } from "./parti/Importazioni";
 import { Intestazione } from "./parti/Intestazione";
 import type { Vista } from "./parti/Navigazione";
 import { ToastImportazioni } from "./parti/ToastImportazioni";
+import { usePresaPerRiordino } from "./riordino";
 import { useRiproduzione } from "./riproduzione";
 import { Artisti } from "./schermate/Artisti";
 import { Cartelle } from "./schermate/Cartelle";
@@ -185,9 +189,7 @@ const RigaBrano = memo(function RigaBrano({
   onSeleziona,
   numeroTraccia,
   onRiordina,
-  onPresa,
-  onMira,
-  onLascia,
+  onPresaPuntatore,
   sopra,
 }: {
   brano: Brano;
@@ -241,12 +243,15 @@ const RigaBrano = memo(function RigaBrano({
    * due, quindi l'ordine di una playlist si poteva solo subire.
    */
   onRiordina?: ((da: number, a: number) => void) | undefined;
-  /** Comincia (`indice`) o finisce (`null`) un trascinamento. */
-  onPresa?: ((indice: number | null) => void) | undefined;
-  /** Il rilascio cadrebbe qui (`indice`), o da nessuna parte (`null`). */
-  onMira?: ((indice: number | null) => void) | undefined;
-  /** Il rilascio è avvenuto su questa riga. */
-  onLascia?: ((indice: number) => void) | undefined;
+  /**
+   * La pressione che può diventare un trascinamento: vedi `riordino.ts`.
+   *
+   * Come `onTogli`, prende l'indice invece di essere legata alla riga, e per
+   * la stessa ragione: il `memo`.
+   */
+  onPresaPuntatore?:
+    | ((e: React.PointerEvent<HTMLElement>, indice: number) => void)
+    | undefined;
   /** Il rilascio cadrebbe **su questa riga**: disegna il segno. */
   sopra?: boolean | undefined;
 }) {
@@ -309,19 +314,13 @@ const RigaBrano = memo(function RigaBrano({
       data-active={attivo || undefined}
       data-scelta={selezionato || undefined}
       data-sopra={sopra || undefined}
-      draggable={onRiordina !== undefined}
-      onDragStart={onPresa && (() => onPresa(indice))}
-      /* `preventDefault` è quel che dichiara la riga un bersaglio valido:
-         senza, il puntatore mostra il divieto e `onDrop` non arriva mai. */
-      onDragOver={
-        onMira &&
-        ((e) => {
-          e.preventDefault();
-          onMira(indice);
-        })
+      /* Col puntatore e non col trascinamento HTML5, che su Windows non
+         rilascia mai: vedi `riordino.ts`. L'attributo è anche il modo in cui
+         il gesto riconosce la riga d'arrivo. */
+      data-riordino={onRiordina !== undefined ? indice : undefined}
+      onPointerDown={
+        onRiordina && onPresaPuntatore && ((e) => onPresaPuntatore(e, indice))
       }
-      onDragEnd={onPresa && (() => onPresa(null))}
-      onDrop={onLascia && (() => onLascia(indice))}
       /* Sul contenitore e non sul tasto dell'indice: così l'`Alt+↑↓` funziona
          da qualunque comando della riga abbia il fuoco — l'indice, le stelle,
          il cuore — invece che da uno solo, che per giunta è spento quando non
@@ -700,6 +699,8 @@ function ElencoBrani({
     contenitore: scorrevole,
     ancora: elenco,
   });
+  // Stabile per tutta la vita dell'elenco: le azioni si leggono al gesto.
+  const presaPuntatore = usePresaPerRiordino({ onPresa, onMira, onLascia });
 
   /*
    * Invio suona, ma solo se c'è da suonare: è la stessa condizione che spegne il
@@ -771,9 +772,7 @@ function ElencoBrani({
             numeroTraccia={numeroTraccia}
             onTogli={onTogli}
             onRiordina={onRiordina}
-            onPresa={onPresa}
-            onMira={onMira}
-            onLascia={onLascia}
+            onPresaPuntatore={presaPuntatore}
             sopra={mirata === i && trascinata !== i}
           />
         );
@@ -800,6 +799,18 @@ export function App() {
    * più economico di dire la cosa opposta.
    */
   const [notizia, setNotizia] = useState<string | null>(null);
+  /*
+   * E se ne va da sola. Restava a schermo finché qualcuno non premeva la X —
+   * cioè, per chi non la premeva, per sempre, in cima a ogni pagina, a dire
+   * «5 brani scritti» di un'esportazione di un'ora prima. Otto secondi: una
+   * notizia riuscita si legge e basta, e l'errore invece resta, perché quello
+   * chiede di fare qualcosa.
+   */
+  useEffect(() => {
+    if (notizia === null) return;
+    const conto = window.setTimeout(() => setNotizia(null), 8_000);
+    return () => window.clearTimeout(conto);
+  }, [notizia]);
   const [vista, setVista] = useState<Vista>("home");
   const [sezione, setSezione] = useState<Sezione>("cartelle");
   const [query, setQuery] = useState("");
@@ -836,6 +847,25 @@ export function App() {
    * proposta è ancora la risposta giusta.
    */
   const [primoChiuso, setPrimoChiuso] = useState(false);
+  /**
+   * Il primo avvio si è aperto, in questa finestra.
+   *
+   * Serve a tenerlo **aperto**. La condizione per mostrarlo era soltanto
+   * «nessuna cartella sorvegliata», e `primoConferma` scrive la cartella e
+   * ricarica prima di scansionare: `Primo` spariva nell'istante in cui la
+   * cartella c'era, cioè proprio prima di mostrare l'avanzamento e il tasto
+   * «Ascolta» che esiste per quel momento. La condizione decide se si apre;
+   * da lì in poi lo chiude soltanto chi ascolta, con «Ascolta» o «Lo faccio
+   * dopo».
+   */
+  const [primoAperto, setPrimoAperto] = useState(false);
+  const nessunaCartella = avvio !== null && avvio.cartelle.length === 0;
+  useEffect(() => {
+    if (nessunaCartella) setPrimoAperto(true);
+  }, [nessunaCartella]);
+  const primoVisibile = !primoChiuso && (primoAperto || nessunaCartella);
+  /** Le cartelle trascinate sulla finestra mentre il primo avvio le chiede. */
+  const [lasciateAlPrimo, setLasciateAlPrimo] = useState<string[]>([]);
   /**
    * Il giro guidato di questa versione del copione non è ancora stato fatto.
    *
@@ -880,8 +910,26 @@ export function App() {
   } | null>(null);
   const [playlistAperta, setPlaylistAperta] = useState<Playlist | null>(null);
   const [braniPlaylist, setBraniPlaylist] = useState<Brano[]>([]);
+  /**
+   * Di quale playlist sono i brani in `braniPlaylist`, quando sono arrivati.
+   *
+   * Serve a una cosa sola: distinguere «la playlist è vuota» da «i brani non
+   * sono ancora arrivati». Senza, lo stato vuoto lampeggerebbe a ogni apertura.
+   */
+  const [playlistCaricata, setPlaylistCaricata] = useState<number | null>(null);
   const [daAggiungere, setDaAggiungere] = useState<number[] | null>(null);
   const [daRinominare, setDaRinominare] = useState<Playlist | null>(null);
+  /**
+   * I brani che il menù ha proposto di togliere, e in che modo.
+   *
+   * `dalDisco` sceglie fra i due comandi e fra i due testi della conferma: sono
+   * due gesti diversi — «non lo voglio in elenco» e «non lo voglio più» — e la
+   * differenza va letta prima di premere, non scoperta dopo.
+   */
+  const [daEliminare, setDaEliminare] = useState<{
+    brani: number[];
+    dalDisco: boolean;
+  } | null>(null);
   const [creandoPlaylist, setCreandoPlaylist] = useState(false);
   /** La finestrella del ripristino è aperta. */
   const [ripristinando, setRipristinando] = useState(false);
@@ -1384,14 +1432,37 @@ export function App() {
     );
   }, [skinAttiva, avvio, zoom, segnalaErrore]);
 
-  // La colonna si chiude da sé quando la finestra si stringe, e non si riapre
-  // da sé quando torna larga: riaprirla annullerebbe una chiusura decisa a mano.
+  // La colonna si chiude da sé quando la finestra si stringe, e si riapre da
+  // sé quando torna larga **solo se a chiuderla è stata la finestra**. Prima
+  // non si riapriva mai, con la ragione che riaprirla avrebbe annullato una
+  // chiusura decisa a mano — ma così annullava anche l'apertura decisa a mano:
+  // chi rimpiccioliva la finestra un momento per affiancarla a un'altra
+  // ritrovava la colonna chiusa per sempre. La chiusura a mano ora si ricorda a
+  // parte, e quella resta.
+  const colonnaChiusaDallaFinestra = useRef(false);
+  // Letta dal gestore del `resize`, che si registra una volta sola: senza il
+  // riferimento vedrebbe per sempre il valore del primo disegno.
+  const colonnaApertaAdesso = useRef(colonnaAperta);
+  colonnaApertaAdesso.current = colonnaAperta;
   useEffect(() => {
     const guarda = () => {
-      if (window.innerWidth < LARGHEZZA_TRE_COLONNE) setColonnaAperta(false);
+      const larga = window.innerWidth >= LARGHEZZA_TRE_COLONNE;
+      const aperta = colonnaApertaAdesso.current;
+      if (!larga && aperta) {
+        colonnaChiusaDallaFinestra.current = true;
+        setColonnaAperta(false);
+      } else if (larga && !aperta && colonnaChiusaDallaFinestra.current) {
+        colonnaChiusaDallaFinestra.current = false;
+        setColonnaAperta(true);
+      }
     };
     window.addEventListener("resize", guarda);
     return () => window.removeEventListener("resize", guarda);
+  }, []);
+  /** Il gesto di chi apre o chiude la colonna a mano: vince sulla finestra. */
+  const colonnaAMano = useCallback((aperta: boolean) => {
+    colonnaChiusaDallaFinestra.current = false;
+    setColonnaAperta(aperta);
   }, []);
 
   const ricaricaSkin = useCallback(async () => {
@@ -1538,7 +1609,7 @@ export function App() {
       if (sorgente === null) {
         const quale = skin.find((s) => s.id === dati.base)?.nome ?? dati.base;
         setErrore({
-          testo: `«${quale}» non è un documento leggibile: correggilo nello Studio prima di derivarne un tema.`,
+          testo: t("theme.new.unreadableBase", { nome: quale }),
           dettaglio: null,
         });
         return;
@@ -1556,7 +1627,43 @@ export function App() {
     }
   };
 
-  useAscolto<Avanzamento>("scansione:avanzamento", setScansione);
+  /*
+   * L'avanzamento della scansione, a non più di quattro disegni al secondo.
+   *
+   * `scansione:avanzamento` arriva ogni venticinque file, cioè decine di volte
+   * al secondo su un disco veloce, e ogni arrivo ridisegnava l'applicazione
+   * intera — elenchi, colonna, lettore — per spostare una barra di un pixel. Un
+   * numero che si legge non cambia più spesso di così; l'ultimo valore arriva
+   * sempre, e la fine del lavoro passa subito. Il timer in sospeso si butta
+   * quando la scansione finisce, o un arrivo in ritardo rimetterebbe la barra
+   * dopo che `scansiona` l'ha tolta.
+   */
+  const strozzaScansione = useRef<{
+    ultimo: number;
+    timer: number | undefined;
+    valore: Avanzamento | null;
+  }>({ ultimo: 0, timer: undefined, valore: null });
+  const posaScansione = useCallback((valore: Avanzamento | null) => {
+    const r = strozzaScansione.current;
+    window.clearTimeout(r.timer);
+    r.timer = undefined;
+    r.ultimo = performance.now();
+    r.valore = valore;
+    setScansione(valore);
+  }, []);
+  useAscolto<Avanzamento>("scansione:avanzamento", (carico) => {
+    const r = strozzaScansione.current;
+    r.valore = carico;
+    const passato = performance.now() - r.ultimo;
+    const finito = carico.totale > 0 && carico.fatti >= carico.totale;
+    if (finito || passato >= 250) {
+      posaScansione(carico);
+      return;
+    }
+    if (r.timer === undefined)
+      r.timer = window.setTimeout(() => posaScansione(r.valore), 250 - passato);
+  });
+  useEffect(() => () => window.clearTimeout(strozzaScansione.current.timer), []);
 
   /**
    * Backup, sincronia e arricchimento, che adesso stanno in `nuvola.ts`.
@@ -1824,8 +1931,20 @@ export function App() {
    */
   const ricaricaBrani = elencoBrani.ricarica;
   const ricaricaAlbum = elencoAlbum.ricarica;
-  const caricaVista = useCallback(() => {
-    ricaricaBrani();
+
+  /**
+   * Tutto quel che sta **intorno** all'elenco dei brani: la griglia degli
+   * album, quella degli artisti, i ripiani della Home.
+   *
+   * A parte, per chi l'elenco se l'è già sistemato da sé. `elimina` toglie le
+   * righe a mano — è la parte che si vede, e richiederla al nucleo la
+   * rimanderebbe alla prima pagina, buttando via lo scorrimento di chi era in
+   * fondo alla libreria. Ma un brano che se ne va cambia anche il numero sotto
+   * una copertina, e un disco rimasto senza tracce sparisce dalla griglia: quei
+   * tre elenchi un «togli una riga» non ce l'hanno, perché quanti brani abbia
+   * davvero un album lo sa solo il nucleo — la finestra ne vede una pagina.
+   */
+  const ricaricaContorno = useCallback(() => {
     ricaricaAlbum();
     if (vista === "artisti") {
       ipc.artisti().then(setArtisti).catch(segnalaErrore);
@@ -1843,7 +1962,12 @@ export function App() {
         })
         .catch(segnalaErrore);
     }
-  }, [ricaricaBrani, ricaricaAlbum, vista, segnalaErrore]);
+  }, [ricaricaAlbum, vista, segnalaErrore]);
+
+  const caricaVista = useCallback(() => {
+    ricaricaBrani();
+    ricaricaContorno();
+  }, [ricaricaBrani, ricaricaContorno]);
 
   /**
    * I brani scaricati sono entrati in libreria.
@@ -1859,12 +1983,37 @@ export function App() {
     void caricaVista();
   });
 
+  /*
+   * I brani dell'album aperto.
+   *
+   * Due difetti, e una riga ciascuno. Aprendo un album dopo un altro si vedevano
+   * per un attimo i brani del **precedente** sotto la copertina del nuovo: si
+   * azzera quando cambia l'album, e non quando cambia soltanto l'oggetto — lo
+   * stesso album riletto dopo un voto non deve lampeggiare vuoto. E chi apriva
+   * due album in fila veloce poteva ritrovarsi sotto il secondo i brani del
+   * primo, se la prima risposta arrivava dopo: la risposta di una richiesta
+   * superata si butta.
+   */
+  const albumDiPrima = useRef<string | null>(null);
   useEffect(() => {
-    if (!aperto) return;
+    if (!aperto) {
+      albumDiPrima.current = null;
+      return;
+    }
+    if (albumDiPrima.current !== aperto.albumKey) setBraniAperto([]);
+    albumDiPrima.current = aperto.albumKey;
+    let superata = false;
     ipc
       .braniAlbum(aperto.albumKey)
-      .then(setBraniAperto)
-      .catch((e: unknown) => segnalaErrore(e));
+      .then((brani) => {
+        if (!superata) setBraniAperto(brani);
+      })
+      .catch((e: unknown) => {
+        if (!superata) segnalaErrore(e);
+      });
+    return () => {
+      superata = true;
+    };
   }, [aperto]);
 
   /** Porta in una vista, azzerando tutto quel che le sta sopra. */
@@ -1905,8 +2054,9 @@ export function App() {
    * **Dopo la chiusura del primo avvio, non dentro.** `Primo` chiede dove sta
    * la musica e fa una scansione: un fumetto sopra quella schermata spiegherebbe
    * una finestra che non si è ancora vista. Il giro aspetta che `Primo` se ne
-   * sia andato — cioè che una cartella ci sia, o che si sia premuto «Lo faccio
-   * dopo».
+   * sia andato — che si sia premuto «Ascolta» o «Lo faccio dopo» — e non
+   * soltanto che una cartella ci sia: la cartella c'è già mentre `Primo` mostra
+   * la scansione.
    *
    * **Libreria vuota: si rinvia, non si simula.** Illuminare una riga di brano
    * che non esiste vorrebbe dire disegnarne una finta, e insegnare una libreria
@@ -1921,10 +2071,36 @@ export function App() {
   useEffect(() => {
     if (!giroDaFare || giroAperto) return;
     if (avvio === null) return;
-    if (avvio.cartelle.length === 0 && !primoChiuso) return;
+    if (primoVisibile) return;
     if (avvio.numeri.tracks === 0) return;
     setGiroAperto(true);
-  }, [giroDaFare, giroAperto, avvio, primoChiuso]);
+  }, [giroDaFare, giroAperto, avvio, primoVisibile]);
+
+  /**
+   * Quando il giro si apre senza niente in coda, ci si mette qualcosa — fermo.
+   *
+   * Quattro passi su undici parlano del lettore, e il lettore si vede solo con
+   * un brano: al primo avvio si saltavano tutti e quattro. Il nucleo riempie
+   * la coda **solo se è vuota** e non fa partire niente (`coda_prepara`), e i
+   * primi passi — il benvenuto, la barra, la ricerca, la riga — lasciano il
+   * tempo alla risposta di arrivare prima che serva.
+   */
+  const branoDelLettore = riproduzione.stato.brano;
+  useEffect(() => {
+    if (!giroAperto || branoDelLettore !== null) return;
+    ipc
+      .brani("recenti", 0, 50)
+      .then((elenco) =>
+        elenco.length === 0
+          ? false
+          : ipc.codaPrepara(elenco.map((b) => b.id)),
+      )
+      // Senza, il giro salta quei quattro passi come prima: è un ripiego, non
+      // un guasto da mostrare in cima al giro.
+      .catch(() => undefined);
+    // Solo all'apertura: quando il brano arriva, l'effetto non deve rifarsi.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [giroAperto]);
 
   /**
    * Mette l'applicazione dove il passo vive.
@@ -2150,7 +2326,9 @@ export function App() {
       if (typeof scelta !== "string") return;
       const quanti = await ipc.playlistEsporta(p.id, scelta);
       setNotizia(
-        `${numero(quanti)} ${quanti === 1 ? "brano scritto" : "brani scritti"} in ${scelta}`,
+        quanti === 1
+          ? t("playlist.exported.one", { dove: scelta })
+          : t("playlist.exported", { n: numero(quanti), dove: scelta }),
       );
     } catch (e) {
       segnalaErrore(e);
@@ -2197,7 +2375,7 @@ export function App() {
 
   const scansiona = async () => {
     setEsito(null);
-    setScansione({ fatti: 0, totale: 0 });
+    posaScansione({ fatti: 0, totale: 0 });
     try {
       const risultato = await ipc.scansiona();
       setEsito(risultato);
@@ -2206,7 +2384,7 @@ export function App() {
     } catch (e) {
       segnalaErrore(e);
     } finally {
-      setScansione(null);
+      posaScansione(null);
     }
   };
 
@@ -2243,12 +2421,33 @@ export function App() {
   // I brani della playlist aperta. `updatedAt` fa parte della dipendenza: ogni
   // comando restituisce la playlist aggiornata, e senza quel campo un'aggiunta
   // alla playlist che si sta già guardando non ricaricherebbe l'elenco.
+  //
+  // Come per l'album: si azzera solo cambiando playlist — un'aggiunta a quella
+  // aperta non deve farla lampeggiare vuota — e la risposta di una richiesta
+  // superata si butta.
+  const playlistDiPrima = useRef<number | null>(null);
   useEffect(() => {
-    if (!playlistAperta) return;
+    if (!playlistAperta) {
+      playlistDiPrima.current = null;
+      return;
+    }
+    if (playlistDiPrima.current !== playlistAperta.id) setBraniPlaylist([]);
+    playlistDiPrima.current = playlistAperta.id;
+    let superata = false;
+    const quale = playlistAperta.id;
     ipc
-      .playlistBrani(playlistAperta.id)
-      .then(setBraniPlaylist)
-      .catch(segnalaErrore);
+      .playlistBrani(quale)
+      .then((brani) => {
+        if (superata) return;
+        setBraniPlaylist(brani);
+        setPlaylistCaricata(quale);
+      })
+      .catch((e: unknown) => {
+        if (!superata) segnalaErrore(e);
+      });
+    return () => {
+      superata = true;
+    };
   }, [playlistAperta, segnalaErrore]);
 
   /** Rimpiazza una playlist nell'elenco e, se è quella aperta, anche lì. */
@@ -2269,6 +2468,93 @@ export function App() {
       // la voce sparisce invece di far finta di scegliere. È lo stesso motivo
       // per cui «rinomina» non compare su una selezione multipla.
       const primo = elenco.length === 1 ? elenco[0] : undefined;
+      /*
+       * Le tre voci che su un brano solo mancavano: portarsi al suo disco, al
+       * suo artista, e al suo file. Il menù aveva «radio», «dopo», «in coda» e
+       * «a una playlist» — cioè tutto quel che si fa **con** il brano e niente
+       * di quel che si fa **da** il brano, che è la domanda più comune davanti a
+       * una riga di un elenco lungo: «di che disco è questo?». Il brano si legge
+       * al momento del gesto: l'elenco che ha aperto il menù ha solo i numeri.
+       */
+      const conBrano = (fai: (brano: Brano) => Promise<void> | void) => () => {
+        if (primo === undefined) return;
+        ipc
+          .braniPerId([primo])
+          .then(async ([brano]) => {
+            if (brano !== undefined) await fai(brano);
+          })
+          .catch(segnalaErrore);
+      };
+      /*
+       * Portarsi a un disco o a un artista vuol dire anche **uscire** da quel che
+       * gli sta sopra. `corpo()` guarda prima la ricerca, poi la playlist, poi
+       * l'album, poi l'artista: da una ricerca o da una playlist il disco si
+       * apriva sotto e non si vedeva — compariva svuotando la ricerca, cioè
+       * molto dopo il clic e senza nessun legame con lui — e l'artista, da un
+       * album aperto, restava sotto l'album. Si esce da tutti in un colpo solo,
+       * dentro la stessa transizione.
+       */
+      const daUnBrano =
+        primo === undefined
+          ? []
+          : [
+              {
+                etichetta: t("menu.goToAlbum"),
+                azione: conBrano(async (brano) => {
+                  const chiave = brano.albumKey;
+                  // Un brano senza disco — un flusso, un file sparso — ha la voce
+                  // come tutti: il menù si apre prima di leggere il brano. Il
+                  // clic almeno lo dice, invece di non fare niente.
+                  if (chiave === null) {
+                    setNotizia(t("menu.goToAlbum.none"));
+                    return;
+                  }
+                  const tracce = await ipc.braniAlbum(chiave);
+                  cambiandoVista(() => {
+                    setQuery("");
+                    setPlaylistAperta(null);
+                    setAperto({
+                      albumKey: chiave,
+                      title: brano.album,
+                      artist: brano.artist,
+                      year: brano.year,
+                      genre: null,
+                      totalTracks: tracce.length,
+                      coverArtHash: brano.coverArtHash,
+                    });
+                  });
+                }),
+              },
+              {
+                etichetta: t("menu.goToArtist"),
+                azione: conBrano(async (brano) => {
+                  const tutti = artisti.length > 0 ? artisti : await ipc.artisti();
+                  const piegato = brano.artist.toLocaleLowerCase();
+                  const suo =
+                    tutti.find((a) => a.name === brano.artist) ??
+                    tutti.find((a) => a.name.toLocaleLowerCase() === piegato);
+                  // Un artista che la griglia non ha — una collaborazione
+                  // scritta in un modo solo in quel brano — si cerca per nome
+                  // invece di non fare niente.
+                  if (suo === undefined) {
+                    setQuery(brano.artist);
+                    return;
+                  }
+                  cambiandoVista(() => {
+                    setQuery("");
+                    setPlaylistAperta(null);
+                    setAperto(null);
+                    setArtistaAperto(suo);
+                  });
+                }),
+              },
+              {
+                etichetta: t("menu.showInFolder"),
+                azione: () => {
+                  ipc.branoMostraNellaCartella(primo).catch(segnalaErrore);
+                },
+              },
+            ];
       setMenu({
         x: e.clientX,
         y: e.clientY,
@@ -2299,10 +2585,34 @@ export function App() {
             etichetta: t("action.addToPlaylist"),
             azione: () => setDaAggiungere(elenco),
           },
+          ...daUnBrano,
+          /*
+           * Le due distruttive, in fondo e in quest'ordine.
+           *
+           * In fondo perché sono le uniche voci del menù che tolgono qualcosa, e
+           * la distanza dal puntatore è l'unica protezione che un menù sa dare
+           * contro il clic sbagliato. In quest'ordine perché la seconda contiene
+           * la prima: chi elimina dal disco toglie anche dalla libreria, e
+           * l'ordine inverso metterebbe la più grave sotto il dito per prima.
+           *
+           * Tutte e due aprono una conferma — i puntini lo dicono — e non perché
+           * una domanda renda prudenti: un voto, un preferito e un conteggio
+           * d'ascolto costruiti in anni se ne vanno con la riga, e di quello non
+           * c'è annulla da offrire. Dove un annulla c'è, come per la coda
+           * sostituita, si offre quello e non si chiede niente.
+           */
+          {
+            etichetta: t("menu.removeFromLibrary"),
+            azione: () => setDaEliminare({ brani: elenco, dalDisco: false }),
+          },
+          {
+            etichetta: t("menu.deleteFromDisk"),
+            azione: () => setDaEliminare({ brani: elenco, dalDisco: true }),
+          },
         ],
       });
     },
-    [segnalaErrore],
+    [segnalaErrore, artisti],
   );
 
   /** Il menù di una playlist nella barra di navigazione. */
@@ -2481,6 +2791,106 @@ export function App() {
       }
     },
     [caricaVista, riproduzione.ritoccaBrano],
+  );
+
+  /**
+   * Toglie dei brani dalla libreria, e — se lo si è chiesto — anche dal disco.
+   *
+   * # Ottimistico, con rimedio
+   *
+   * Le righe spariscono prima che il nucleo risponda, come il cuore e le
+   * stelle: un elenco che resta fermo dopo un «Elimina» si legge come un clic
+   * non registrato, e chi riprova cancella due volte. Se qualcosa va storto la
+   * verità torna dal nucleo — e va **chiesta**, non dedotta: un'eliminazione che
+   * si ferma a metà (due file nel Cestino, il terzo aperto da un altro
+   * programma) lascia un risultato che da qui non si può ricostruire.
+   *
+   * # Tre elenchi e una selezione
+   *
+   * Gli stessi tre che `cambiaVoto` tiene allineati, più la selezione: lasciarci
+   * dentro l'identificativo di un brano cancellato vorrebbe dire una barra che
+   * dice «4 brani» sopra un elenco che ne mostra tre, e i comandi di quella
+   * barra andrebbero a chiedere al nucleo una riga che non c'è.
+   */
+  const elimina = useCallback(
+    async (brani: number[], dalDisco: boolean) => {
+      const via = new Set(brani);
+      const senza = (elenco: Brano[]) => elenco.filter((b) => !via.has(b.id));
+      // L'album aperto resta senza niente? Si guarda **prima** di togliere:
+      // dopo, l'elenco non sa più cosa conteneva.
+      const svuotaLAlbum =
+        braniAperto.length > 0 && braniAperto.every((b) => via.has(b.id));
+      elencoBrani.aggiorna(senza);
+      setBraniAperto(senza);
+      setBraniPlaylist(senza);
+      setSelezione((prima) => {
+        const dopo = new Set(prima);
+        for (const id of via) dopo.delete(id);
+        return dopo;
+      });
+      try {
+        if (dalDisco) {
+          const quanti = await ipc.braniElimina(brani);
+          setNotizia(t("delete.done.disk", { brani: brani_(quanti) }));
+        } else {
+          const esito: Cancellazione = await ipc.braniTogli(brani);
+          setNotizia(
+            esito.torneranno > 0
+              ? t("delete.done.back", {
+                  brani: brani_(esito.tolti),
+                  n: esito.torneranno,
+                })
+              : t("delete.done", { brani: brani_(esito.tolti) }),
+          );
+        }
+        // Un disco rimasto senza tracce non è una schermata: è una copertina
+        // sopra il vuoto, con un titolo che promette qualcosa da ascoltare. Si
+        // torna alla griglia, che è quel che c'è ancora da guardare. Dopo la
+        // risposta e non prima: se l'eliminazione fallisce, l'album è ancora
+        // pieno e uscirne sarebbe un movimento per niente.
+        if (aperto && svuotaLAlbum) {
+          cambiandoVista(() => setAperto(null));
+        }
+        // La griglia degli album, quella degli artisti, i ripiani della Home:
+        // l'elenco dei brani se l'è già sistemato qui sopra, loro no.
+        ricaricaContorno();
+        // E il numero accanto a ogni playlist nella barra laterale: è di
+        // `playlistElenco`, e un brano cancellato esce anche dalle playlist.
+        // Qui e non dentro `ricaricaContorno` per una ragione stupida ma vera:
+        // `ricaricaPlaylist` nasce trecento righe più in giù, e nominarla lassù
+        // la leggerebbe prima che esista.
+        void ricaricaPlaylist();
+        // I contatori della barra: sono di `avvio`, e né `ricaricaContorno` né
+        // `caricaVista` li sfiorano.
+        await ricarica();
+      } catch (e) {
+        segnalaErrore(e);
+        await caricaVista();
+        // `caricaVista` rifà gli elenchi impaginati, non questi due: hanno
+        // effetti loro, legati all'album e alla playlist aperti, che un errore
+        // non fa scattare.
+        if (aperto) {
+          ipc.braniAlbum(aperto.albumKey).then(setBraniAperto).catch(segnalaErrore);
+        }
+        if (playlistAperta) {
+          ipc
+            .playlistBrani(playlistAperta.id)
+            .then(setBraniPlaylist)
+            .catch(segnalaErrore);
+        }
+      }
+    },
+    [
+      elencoBrani.aggiorna,
+      aperto,
+      braniAperto,
+      playlistAperta,
+      ricarica,
+      ricaricaContorno,
+      ricaricaPlaylist,
+      caricaVista,
+      segnalaErrore,
+    ],
   );
 
   /**
@@ -2760,30 +3170,85 @@ export function App() {
    * e in tutti e due i casi si atterra nella sezione di Impostazioni che
    * mostra il risultato — perché un'azione che avviene fuori dallo schermo è
    * un'azione che sembra non essere avvenuta.
+   *
+   * Quale percorso è cosa lo dice il nucleo (`trascinati.rs`). Qui prima si
+   * provava come cartella tutto quel che non era una skin, e un `.m3u8` o un
+   * MP3 lasciati cadere finivano fra le cartelle sorvegliate. Adesso una
+   * playlist apre l'importazione, i brani che la libreria conosce vanno in
+   * coda, e dei file che non conosce si dice cosa fare invece di tacere.
    */
   useAscolto<{ paths: string[] }>("tauri://drag-drop", ({ paths: arrivati }) => {
-    const skinLasciata = arrivati.find((p) => p.toLowerCase().endsWith(".aeskin"));
-    if (skinLasciata !== undefined) {
-      // `vaiA` e non `setVista`: quello nudo lasciava in piedi l'album, la
-      // playlist e la ricerca di prima, cioè uno stato in cui l'intestazione
-      // e il corpo rispondono a due domande diverse.
-      vaiA("impostazioni");
-      setSezione("aspetto");
-      ipc
-        .skinInstalla(skinLasciata)
-        .then((installata) => scegliSkin(installata.id))
-        .catch(segnalaErrore);
-      return;
-    }
-    // Tutto il resto si prova come cartella: `imposta_cartelle` accetta dei
-    // percorsi, e la scansione salta da sé quel che non è musica. Distinguere
-    // qui una cartella da un file vorrebbe dire chiedere al filesystem
-    // dall'interfaccia, cioè mettere una regola dove non deve stare.
-    if (arrivati.length === 0 || !avvio) return;
-    vaiA("impostazioni");
-    setSezione("cartelle");
-    const unite = [...new Set([...avvio.cartelle, ...arrivati])];
-    ipc.impostaCartelle(unite).then(ricarica).catch(segnalaErrore);
+    if (arrivati.length === 0) return;
+    ipc
+      .smistaTrascinati(arrivati)
+      .then((smistati) => {
+        const skinLasciata = smistati.skin[0];
+        if (skinLasciata !== undefined) {
+          // `vaiA` e non `setVista`: quello nudo lasciava in piedi l'album, la
+          // playlist e la ricerca di prima, cioè uno stato in cui l'intestazione
+          // e il corpo rispondono a due domande diverse.
+          vaiA("impostazioni");
+          setSezione("aspetto");
+          ipc
+            .skinInstalla(skinLasciata)
+            .then((installata) => scegliSkin(installata.id))
+            .catch(segnalaErrore);
+          return;
+        }
+        // Una playlist apre la sua finestrella: è un gesto con delle scelte
+        // dentro, e non si fa a metà insieme ad altro.
+        const playlistLasciata = smistati.playlist[0];
+        if (playlistLasciata !== undefined) {
+          setFilePlaylist(playlistLasciata);
+          return;
+        }
+        if (smistati.brani.length > 0) {
+          const quanti = smistati.brani.length;
+          ipc
+            .codaAccoda(smistati.brani)
+            .then(() =>
+              setNotizia(
+                t("drop.queued", {
+                  brani:
+                    quanti === 1
+                      ? t("format.tracks.uno")
+                      : t("format.tracks", { n: quanti }),
+                }),
+              ),
+            )
+            .catch(segnalaErrore);
+        }
+        // Col primo avvio che chiede ancora dove sta la musica, le cartelle
+        // vanno nel suo elenco: scriverle da qui voleva dire perderle al suo
+        // «Continua», che scrive le spuntate e basta. A lettura partita o
+        // finita con dei brani «Continua» non c'è più, e la strada di sempre —
+        // che unisce — non perde niente.
+        if (
+          smistati.cartelle.length > 0 &&
+          primoVisibile &&
+          scansione === null &&
+          (avvio?.numeri.tracks ?? 0) === 0
+        ) {
+          setLasciateAlPrimo((prima) => [
+            ...new Set([...prima, ...smistati.cartelle]),
+          ]);
+          return;
+        }
+        if (smistati.cartelle.length > 0 && avvio) {
+          vaiA("impostazioni");
+          setSezione("cartelle");
+          const unite = [...new Set([...avvio.cartelle, ...smistati.cartelle])];
+          ipc.impostaCartelle(unite).then(ricarica).catch(segnalaErrore);
+          return;
+        }
+        // Dopo i brani accodati, che hanno già la loro notizia: questa
+        // la sostituirebbe, e i due casi insieme sono rari abbastanza da non
+        // meritare una frase che li tenga tutti e due.
+        if (smistati.brani.length > 0) return;
+        if (smistati.fuoriLibreria > 0) setNotizia(t("drop.notInLibrary"));
+        else if (smistati.ignorati > 0) setNotizia(t("drop.nothing"));
+      })
+      .catch(segnalaErrore);
   });
 
   const numeri = avvio?.numeri;
@@ -2882,7 +3347,7 @@ export function App() {
       onDona: () => {
         ipc.apriDocumento("donazioni").catch(segnalaErrore);
       },
-      onColonna: setColonnaAperta,
+      onColonna: colonnaAMano,
       onCoda: setCodaAperta,
       onGrande: () => setGrande(true),
       onPreferito: cambiaPreferito,
@@ -3411,6 +3876,30 @@ export function App() {
       );
     }
 
+    if (
+      playlistAperta &&
+      playlistCaricata === playlistAperta.id &&
+      braniPlaylist.length === 0
+    ) {
+      // Una playlist vuota mostrava l'intestazione di colonna dell'elenco e
+      // sotto niente, cioè una tabella senza righe che sembra non caricata.
+      // Qui si dice che è vuota, e come si riempie: le due strade sono diverse
+      // per le due specie.
+      return (
+        <div className="vuoto empty-state">
+          <span className="empty-icon" aria-hidden="true">
+            <Icona nome={playlistAperta.isSmart ? "i-settings" : "i-list"} dim={30} />
+          </span>
+          <h2>{t("empty.playlist.title")}</h2>
+          <p>
+            {playlistAperta.isSmart
+              ? t("empty.playlist.smart")
+              : t("empty.playlist.body")}
+          </p>
+        </div>
+      );
+    }
+
     if (playlistAperta) {
       return (
         <>
@@ -3538,19 +4027,19 @@ export function App() {
               );
             })();
           }}
-          onRiprendi={(ms) => {
-            void (async () => {
-              // `riprendi` e non `suona`: la coda conservata è già in piedi —
-              // il nucleo la rimette all'avvio senza far partire niente — e
-              // `suona([brano], 0)` la buttava via per sostituirla con un brano
-              // solo. Cioè «riprendi dov'eri» faceva calare il silenzio dove
-              // ieri sera la serata continuava. Il comando sa già di dover
-              // cominciare quando il motore ha le mani vuote.
-              await ipc.riprendi().catch(segnalaErrore);
-              // Il salto **dopo** l'avvio: `vai_a` su un motore che non ha
-              // ancora aperto il file non ha un posto dove andare.
-              if (ms > 0) await ipc.vaiA(ms).catch(segnalaErrore);
-            })();
+          onRiprendi={() => {
+            // `riprendi` e non `suona`: la coda conservata è già in piedi — il
+            // nucleo la rimette all'avvio senza far partire niente — e
+            // `suona([brano], 0)` la buttava via per sostituirla con un brano
+            // solo. Cioè «riprendi dov'eri» faceva calare il silenzio dove ieri
+            // sera la serata continuava.
+            //
+            // E niente `vaiA` dopo: il salto al segno partiva anche su un brano
+            // che stava già suonando, con il numero che la Home aveva letto —
+            // cioè, per i primi secondi di un brano nuovo, quello del brano di
+            // prima. Il punto da cui aprire lo sceglie il comando, che sa se il
+            // motore ha le mani vuote.
+            ipc.riprendi().catch(segnalaErrore);
           }}
           onMenu={(e, brano) => menuSuSelezione(e, [brano.id])}
           onApriAlbum={apriAlbum}
@@ -3693,17 +4182,93 @@ export function App() {
     );
   }
 
+  /*
+   * La notizia e l'errore della fascia in cima alla pagina.
+   *
+   * Una costante e non un pezzo scritto dentro `.dentro`, perché servono in due
+   * posti: là, e sopra lo schermo intero — che copre la pagina e la rende
+   * `inert`, cioè proprio dove un brano che non si apre falliva senza dirlo.
+   * Gli stessi due stati, quindi chiuderne uno lo chiude in tutti e due i posti.
+   */
+  const notizieDiFascia = (
+    <>
+      {notizia !== null && (
+        <div className="notizia toast-card" role="status">
+          <Icona nome="i-check" dim={16} />
+          <span>{notizia}</span>
+          <button
+            type="button"
+            className="tasto icon-btn"
+            aria-label={t("common.close")}
+            onClick={() => setNotizia(null)}
+          >
+            <Icona nome="i-x" dim={14} />
+          </button>
+        </div>
+      )}
+      {messaggio && (
+        <div className="errore toast-card" role="alert">
+          <Icona nome="i-alert" dim={16} />
+          <span>
+            {messaggio}
+            {/* Quel che il servizio ha scritto con parole sue: la
+                frase del catalogo dice cosa è successo, questa dice
+                cosa fare. Vedi `dettaglioErrore`. */}
+            {guasto?.dettaglio != null && (
+              <span className="dettaglio-errore">
+                {guasto.dettaglio}
+              </span>
+            )}
+          </span>
+          {/* «Riprova» compare solo quando il catalogo dice che
+              riprovare ha senso, e il caso per cui esiste è la
+              cartella di rete che non risponde: lì il gesto non è
+              «rifai quel che hai chiesto», è «rimetti la puntina
+              dov'era», e il nucleo si è annotato il punto. La stessa
+              forma della fascia dell'audio perso qui sopra: un
+              `bottone minuto` in linea, senza CSS nuovo. */}
+          {ritentabile && (
+            <button
+              type="button"
+              className="bottone minuto btn-ghost"
+              onClick={() => {
+                riproduzione.scartaErrore();
+                ipc.riprovaCorrente().catch(segnalaErrore);
+              }}
+            >
+              {t("common.retry")}
+            </button>
+          )}
+          <button
+            type="button"
+            className="tasto icon-btn"
+            aria-label={t("toast.dismiss")}
+            onClick={() => {
+              setErrore(null);
+              riproduzione.scartaErrore();
+            }}
+          >
+            <Icona nome="i-x" dim={14} />
+          </button>
+        </div>
+      )}
+    </>
+  );
+
   return (
     <>
       {/* Prima di tutto il resto e sopra tutto il resto: al primo avvio non c'è
           una libreria da guardare dietro, e la schermata che chiede dove sta la
           musica è l'unica cosa che ha senso leggere. */}
-      {avvio !== null && avvio.cartelle.length === 0 && !primoChiuso && (
+      {primoVisibile && (
         <Primo
           onCartelle={primoConferma}
           onScegliCartella={primoScegli}
           scansione={scansione}
           brani={numeri?.tracks ?? 0}
+          esito={esito}
+          lasciate={lasciateAlPrimo}
+          avvisi={notizieDiFascia}
           onAscolta={primoAscolta}
           onSalta={() => setPrimoChiuso(true)}
         />
@@ -3725,9 +4290,25 @@ export function App() {
                   onPreferito={cambiaPreferito}
                   onVoto={cambiaVoto}
                   onErrore={segnalaErrore}
+                  avvisi={
+                    <>
+                      {/* Una seconda copia, montata solo qui: quella nella
+                          pagina è sotto, `inert`. Vede gli avvisi che nascono a
+                          schermo intero; quelli di prima erano già a schermo. */}
+                      <AvvisoCoda onErrore={segnalaErrore} />
+                      {notizieDiFascia}
+                    </>
+                  }
                 />
               ) : null}
-              <div className="dentro" ref={contenuto}>
+              {/* `inert` a schermo intero: la pagina resta montata ma è
+                  coperta, e un Tab che ci entrasse porterebbe il fuoco su un
+                  elenco che non si vede. Vedi «il fuoco» in `InRiproduzione`. */}
+              <div
+                className="dentro"
+                ref={contenuto}
+                inert={grande && riproduzione.stato.brano !== null}
+              >
                 {/* Qui e non solo nella terza colonna: la colonna si può
                     chiudere, e il lettore flottante sparisce quando non c'è un
                     brano — cioè proprio nei due casi in cui il dispositivo
@@ -3749,66 +4330,13 @@ export function App() {
                     c'è niente da mostrare quasi sempre — e non torna dopo un
                     «non ora», perché il rifiuto è scritto nel database. */}
                 <AvvisoAggiornamento onErrore={segnalaErrore} />
-                {notizia !== null && (
-                  <div className="notizia toast-card" role="status">
-                    <Icona nome="i-check" dim={16} />
-                    <span>{notizia}</span>
-                    <button
-                      type="button"
-                      className="tasto icon-btn"
-                      aria-label={t("common.close")}
-                      onClick={() => setNotizia(null)}
-                    >
-                      <Icona nome="i-x" dim={14} />
-                    </button>
-                  </div>
-                )}
-                {messaggio && (
-                  <div className="errore toast-card" role="alert">
-                    <Icona nome="i-alert" dim={16} />
-                    <span>
-                      {messaggio}
-                      {/* Quel che il servizio ha scritto con parole sue: la
-                          frase del catalogo dice cosa è successo, questa dice
-                          cosa fare. Vedi `dettaglioErrore`. */}
-                      {guasto?.dettaglio != null && (
-                        <span className="dettaglio-errore">
-                          {guasto.dettaglio}
-                        </span>
-                      )}
-                    </span>
-                    {/* «Riprova» compare solo quando il catalogo dice che
-                        riprovare ha senso, e il caso per cui esiste è la
-                        cartella di rete che non risponde: lì il gesto non è
-                        «rifai quel che hai chiesto», è «rimetti la puntina
-                        dov'era», e il nucleo si è annotato il punto. La stessa
-                        forma della fascia dell'audio perso qui sopra: un
-                        `bottone minuto` in linea, senza CSS nuovo. */}
-                    {ritentabile && (
-                      <button
-                        type="button"
-                        className="bottone minuto btn-ghost"
-                        onClick={() => {
-                          riproduzione.scartaErrore();
-                          ipc.riprovaCorrente().catch(segnalaErrore);
-                        }}
-                      >
-                        {t("common.retry")}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="tasto icon-btn"
-                      aria-label={t("toast.dismiss")}
-                      onClick={() => {
-                        setErrore(null);
-                        riproduzione.scartaErrore();
-                      }}
-                    >
-                      <Icona nome="i-x" dim={14} />
-                    </button>
-                  </div>
-                )}
+                {/* «Coda sostituita — Annulla»: si disegna da sé quando il
+                    nucleo manda `coda:sostituita`, e passa da sé. */}
+                <AvvisoCoda onErrore={segnalaErrore} />
+                {/* Col primo avvio aperto le notizie le mostra lui: qui
+                    sarebbero sotto la sua schermata, e due copie della stessa
+                    fascia d'errore si annuncerebbero due volte. */}
+                {!primoVisibile && notizieDiFascia}
                 {corpo()}
               </div>
             </>
@@ -3888,6 +4416,19 @@ export function App() {
             void ricarica();
             void caricaVista();
             void ricaricaPlaylist();
+          }}
+        />
+      )}
+
+      {daEliminare && (
+        <ConfermaEliminazione
+          quanti={daEliminare.brani.length}
+          dalDisco={daEliminare.dalDisco}
+          onChiudi={() => setDaEliminare(null)}
+          onConferma={() => {
+            const cosa = daEliminare;
+            setDaEliminare(null);
+            void elimina(cosa.brani, cosa.dalDisco);
           }}
         />
       )}
@@ -4053,5 +4594,63 @@ export function App() {
           si dice soltanto che viene per ultimo. */}
       {giroAperto && <Giro onPrepara={preparaGiro} onChiudi={chiudiGiro} />}
     </>
+  );
+}
+
+/**
+ * «Sono tre brani, e uno lo stai ascoltando: sicuro?»
+ *
+ * Una finestrella qui dentro e non un componente condiviso, per la stessa
+ * ragione per cui `schermate/Cartelle.tsx` tiene la sua: la domanda è di questo
+ * gesto. Il comportamento — il fuoco che entra, la trappola del Tab, Escape, il
+ * fuoco che torna a chi l'aveva — viene tutto da `useFinestrella`.
+ *
+ * # Due testi e non due finestrelle
+ *
+ * Perché la struttura è la stessa e a cambiare è solo quel che si sta per
+ * perdere. Tenerle separate vorrebbe dire due volte la stessa impalcatura, e
+ * due occasioni di correggerne una sola.
+ *
+ * Il tasto che conferma **non** è primario. Il primario è «Annulla»: in una
+ * finestra che si apre sopra un gesto distruttivo, l'azione che il colore invita
+ * a premere deve essere quella che non toglie niente.
+ */
+function ConfermaEliminazione({
+  quanti,
+  dalDisco,
+  onConferma,
+  onChiudi,
+}: {
+  quanti: number;
+  dalDisco: boolean;
+  onConferma: () => void;
+  onChiudi: () => void;
+}) {
+  const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
+  const titolo = dalDisco
+    ? t("delete.disk.title", { brani: brani_(quanti) })
+    : t("delete.library.title", { brani: brani_(quanti) });
+  return (
+    <div className="velo scuro" onClick={onChiudi}>
+      <div
+        ref={finestrella}
+        className="finestrella stretta glass-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={titolo}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2>{titolo}</h2>
+        <p>{dalDisco ? t("delete.disk.body") : t("delete.library.body")}</p>
+        <div className="tasti-finestrella">
+          <button type="button" className="bottone primario" onClick={onChiudi}>
+            {t("common.cancel")}
+          </button>
+          <button type="button" className="bottone" onClick={onConferma}>
+            {dalDisco ? t("delete.disk.ok") : t("delete.library.ok")}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

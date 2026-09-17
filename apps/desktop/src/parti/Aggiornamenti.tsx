@@ -17,11 +17,17 @@
  * schermata mostra la situazione di prima. Farlo scendere da `App` vorrebbe
  * dire tre prop e un aggiornatore per una cosa che si tocca due volte l'anno.
  *
- * # La fascia non torna dopo un «non ora»
+ * # «Non ora» e «Salta questa versione» sono due gesti
  *
- * Il rifiuto si scrive nel database, non in un `useState`: un avviso che
- * riappare a ogni riavvio della finestra — o ogni mezz'ora, che è la stessa
- * cosa detta più spesso — è un avviso che si impara a chiudere senza leggerlo.
+ * Erano uno solo: la X della fascia si chiamava «Non ora» e scriveva nel
+ * database che **quella versione** non andava più proposta. Chi voleva soltanto
+ * finire di ascoltare un disco non la rivedeva mai più — per quella versione,
+ * cioè fino alla prossima release — e senza sapere di aver deciso qualcosa.
+ *
+ * Adesso «Non ora» chiude la fascia per questa sessione, in un `useState`: al
+ * prossimo avvio torna. «Salta questa versione» è il rifiuto vero, e si scrive
+ * nel database, perché un avviso che riappare a ogni riavvio dopo che si è detto
+ * di no è un avviso che si impara a chiudere senza leggerlo.
  */
 import { useCallback, useEffect, useState } from "react";
 
@@ -53,6 +59,16 @@ function useAggiornamenti(
 
   return [stato, setStato];
 }
+
+/**
+ * «Non ora», per il resto della sessione.
+ *
+ * Fuori dal componente e non solo nel suo `useState`: la fascia si smonta ogni
+ * volta che la finestra cambia faccia — lo Studio delle skin prende il posto di
+ * tutto — e rimontandosi ripartiva da capo, cioè l'avviso chiuso tornava. La
+ * sessione è quella del processo, non quella del componente.
+ */
+let nonOraInSessione: string | null = null;
 
 /** Da byte a una misura che si legge. Nessun decimale sotto il megabyte. */
 function peso(byte: number): string {
@@ -108,7 +124,19 @@ export function AvvisoAggiornamento({
       .catch(onErrore);
   }, [disponibile, onErrore, setStato]);
 
-  if (disponibile === null || disponibile.saltata) return null;
+  /** La versione chiusa con «Non ora» in questa sessione. Vedi il `/**` in testa. */
+  const [nonOra, setNonOraQui] = useState<string | null>(nonOraInSessione);
+  const setNonOra = (versione: string) => {
+    nonOraInSessione = versione;
+    setNonOraQui(versione);
+  };
+
+  if (
+    disponibile === null ||
+    disponibile.saltata ||
+    disponibile.versione === nonOra
+  )
+    return null;
 
   const scaricando = stato?.installazione === true;
   // `totale` manca quando il server non manda `Content-Length`. Una barra che
@@ -162,10 +190,18 @@ export function AvvisoAggiornamento({
           </button>
           <button
             type="button"
+            className="bottone minuto btn-ghost"
+            title={t("update.skip.hint")}
+            onClick={salta}
+          >
+            {t("update.skip")}
+          </button>
+          <button
+            type="button"
             className="tasto icon-btn"
             aria-label={t("update.later")}
-            title={t("update.later")}
-            onClick={salta}
+            title={t("update.later.hint")}
+            onClick={() => setNonOra(disponibile.versione)}
           >
             <Icona nome="i-x" dim={14} />
           </button>
@@ -190,9 +226,44 @@ export function Aggiornamenti({
     [onErrore, setStato],
   );
 
+  /**
+   * A che punto è il «Controlla adesso» premuto qui.
+   *
+   * Serve a dire «hai l'ultima versione», che prima non si diceva: il tasto
+   * tornava cliccabile e basta, e chi l'aveva premuto non sapeva se il
+   * controllo fosse andato o no. Tre passi e non un sì o un no, perché lo
+   * stato che il comando restituisce arriva **prima** che il filo cominci — un
+   * «non c'è niente» letto lì sarebbe la risposta di mezz'ora fa. Si dice solo
+   * dopo aver visto il controllo cominciare e finire.
+   */
+  const [controllo, setControllo] = useState<"niente" | "chiesto" | "in-corso" | "finito">(
+    "niente",
+  );
+  useEffect(() => {
+    if (stato === null) return;
+    setControllo((prima) => {
+      if (prima === "chiesto" && stato.inCorso) return "in-corso";
+      if (prima === "in-corso" && !stato.inCorso) return "finito";
+      return prima;
+    });
+  }, [stato]);
+
+  // La risposta del comando non si mette nello stato, e non per dimenticanza:
+  // è scritta prima che il filo cominci, e l'evento con `inCorso` acceso può
+  // arrivare **prima** di lei. Posata sopra, riportava `inCorso` a spento —
+  // e il passo qui sopra leggeva «cominciato e finito» un controllo appena
+  // partito, con un «hai l'ultima versione» detto sulla risposta di mezz'ora
+  // fa. Quel che serve lo portano gli eventi, che sono in ordine.
   const adesso = useCallback(() => {
-    ipc.aggiornamentiAdesso().then(setStato).catch(onErrore);
-  }, [onErrore, setStato]);
+    setControllo("chiesto");
+    ipc.aggiornamentiAdesso().catch(onErrore);
+  }, [onErrore]);
+
+  const aggiornato =
+    controllo === "finito" &&
+    stato !== null &&
+    stato.disponibile === null &&
+    stato.errore == null;
 
   // Saltare «la versione vuota» è il modo di non saltarne nessuna: nessun
   // numero di versione è la stringa vuota, quindi il confronto di là non torna
@@ -278,6 +349,12 @@ export function Aggiornamenti({
           {t("settings.diary.open")}
         </button>
       </div>
+
+      {aggiornato && (
+        <p className="nota" role="status">
+          {t("settings.update.upToDate", { v: stato.versioneCorrente })}
+        </p>
+      )}
 
       <p className="nota">{t("settings.diary.hint")}</p>
 

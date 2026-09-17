@@ -47,8 +47,8 @@
 //! mostra accanto all'originale.
 
 use encoding_rs::{
-    BIG5, EUC_KR, Encoding, GBK, SHIFT_JIS, UTF_8, WINDOWS_1250, WINDOWS_1251, WINDOWS_1253,
-    WINDOWS_1254,
+    BIG5, EUC_KR, Encoding, GBK, SHIFT_JIS, UTF_8, WINDOWS_1250, WINDOWS_1251, WINDOWS_1252,
+    WINDOWS_1253, WINDOWS_1254,
 };
 
 /// Oltre questa lunghezza non si prova nemmeno.
@@ -485,6 +485,249 @@ pub fn ripara(testo: &str) -> Option<Riparazione> {
     migliore
 }
 
+// ── un file intero, dai byte ────────────────────────────────────────────────
+
+/// Le codifiche in cui si prova a leggere un file che non è UTF-8.
+///
+/// Un elenco diverso da [`CODIFICHE`], perché la domanda è diversa: là si
+/// ripara un testo **già** letto come Latin-1, qui si leggono dei byte per la
+/// prima volta, e windows-1252 è proprio la risposta più probabile — è quel che
+/// scriveva il Blocco note di un Windows europeo quando questi `.lrc` sono nati.
+///
+/// L'ordine decide i pareggi, e i pareggi ci sono. windows-1252 per prima,
+/// perché a parità vince il testo latino, che è quel che una libreria europea
+/// contiene. Shift-JIS **prima** di GBK: i byte del giapponese sono quasi sempre
+/// GBK valido anche loro, e riletti così danno ideogrammi rari senza nessuna
+/// penalità — mentre il cinese riletto come Shift-JIS si riempie di katakana a
+/// mezza larghezza, che [`mezze_larghezze`] fa pagare. Il coreano e il cinese
+/// tradizionale restano fuori, e non per dimenticanza: i loro byte sono validi
+/// anche in GBK e gli uni negli altri, e senza una statistica della lingua i
+/// pareggi si risolverebbero a caso.
+const CODIFICHE_DEI_FILE: [&Encoding; 4] = [WINDOWS_1252, WINDOWS_1251, SHIFT_JIS, GBK];
+
+/// Quanti katakana a mezza larghezza ci sono.
+///
+/// Esistono per i terminali giapponesi degli anni Ottanta, e in un testo di
+/// canzone scritto a mano non compaiono: dove compaiono, quasi sempre sono byte
+/// cinesi letti come Shift-JIS.
+fn mezze_larghezze(testo: &str) -> u32 {
+    let quante = testo
+        .chars()
+        .filter(|c| matches!(c, '\u{FF61}'..='\u{FF9F}'))
+        .count();
+    u32::try_from(quante).unwrap_or(u32::MAX)
+}
+
+/// Quanti segni non ASCII ci sono che non sono né lettere né punteggiatura comune.
+///
+/// È la firma dei byte a due a due letti uno per uno: il cinese in GBK riletto
+/// come windows-1251 dà «ФВББґъ±нОТµДРД», parole cirilliche plausibili per
+/// [`penalita`] ma piene di `±`, `¶`, `®` — segni che in un testo cantato non
+/// stanno. Le virgolette, i trattini, i puntini, l'euro e il grado invece si
+/// scrivono davvero, e la punteggiatura giapponese e cinese pure: quelle non
+/// si contano.
+fn simboli_fuori_posto(testo: &str) -> u32 {
+    let quanti = testo
+        .chars()
+        .filter(|c| !c.is_ascii() && !c.is_alphabetic() && !c.is_whitespace())
+        .filter(|c| {
+            !matches!(
+                c,
+                '«' | '»'
+                    | '‘'
+                    | '’'
+                    | '“'
+                    | '”'
+                    | '„'
+                    | '–'
+                    | '—'
+                    | '…'
+                    | '€'
+                    | '°'
+                    | '·'
+                    | '¡'
+                    | '¿'
+                    | '\u{3000}'..='\u{303F}'
+                    | '\u{FF00}'..='\u{FF60}'
+            )
+        })
+        .count();
+    u32::try_from(quanti).unwrap_or(u32::MAX)
+}
+
+/// Quanto un testo letto dai byte di un file somiglia a spazzatura.
+///
+/// La stessa [`penalita`] della riparazione dei tag, più i katakana a mezza
+/// larghezza e i [segni fuori posto](simboli_fuori_posto): un file è lungo, e
+/// quel che in un titolo era un indizio debole qui si conta cento volte.
+fn punteggio(testo: &str) -> u32 {
+    penalita(testo)
+        .saturating_add(mezze_larghezze(testo).saturating_mul(4))
+        .saturating_add(simboli_fuori_posto(testo).saturating_mul(2))
+}
+
+/// Quanto costa, nel confronto, ogni byte che la lettura UTF-8 ha riparato.
+///
+/// Sotto il peso di una coppia guida-continuazione — che è 12 — perché un file
+/// con un byte rotto e un accento solo deve poter vincere sulla rilettura in
+/// windows-1252, che quell'accento lo spezza. Sopra lo zero perché un file che
+/// di UTF-8 non ha niente non deve arrivare qui per la porta di servizio.
+const COSTO_RIPARAZIONE: u32 = 8;
+
+/// Il carattere che windows-1252 mette su questo byte.
+///
+/// Sopra 0x9F windows-1252 **è** Latin-1, cioè il byte è il punto di codice; i
+/// trentadue di sotto stanno in [`CP1252_ALTO`].
+fn da_cp1252(byte: u8) -> char {
+    CP1252_ALTO
+        .iter()
+        .find(|(quale, _)| *quale == byte)
+        .map_or(char::from(byte), |(_, c)| *c)
+}
+
+/// Legge i byte come UTF-8 riparando in windows-1252 quelli che non lo sono.
+///
+/// # Perché esiste
+///
+/// Perché un file **quasi** UTF-8 esiste, ed è comunissimo: un `.lrc` scritto
+/// in UTF-8 e poi ritoccato da un editor che salva in windows-1252, o due
+/// spezzoni di provenienza diversa incollati uno dopo l'altro. Un solo byte
+/// così, e `from_utf8` fallisce sul file **intero**: si rileggeva tutto come
+/// windows-1252, e ogni «è» scritto bene diventava «Ã¨». Un byte rotto
+/// rovinava tutti gli accenti giusti.
+///
+/// # Quando vale
+///
+/// Solo se c'è più UTF-8 vero che byte da riparare — `multibyte > riparati`.
+/// Senza questa condizione un file in Shift-JIS, dove qualche coppia di byte è
+/// UTF-8 valido per combinazione, entrerebbe da qui con mezzo file «riparato»
+/// un byte alla volta. Con essa, quel che passa è un file che è UTF-8 tranne
+/// che in qualche punto.
+///
+/// `None` anche quando non c'è niente da riparare: chi chiama ha già provato
+/// [`std::str::from_utf8`] e non è arrivato fin qui per caso.
+fn utf8_riparato(byte: &[u8]) -> Option<(String, u32)> {
+    let mut testo = String::with_capacity(byte.len());
+    let mut riparati = 0_u32;
+    let mut multibyte = 0_u32;
+    let mut resto = byte;
+
+    loop {
+        let (buono, guasto) = match std::str::from_utf8(resto) {
+            Ok(buono) => (buono, None),
+            Err(errore) => (
+                // Il prefisso che `valid_up_to` dichiara valido lo è: questo
+                // `from_utf8` non può fallire, e se un giorno fallisse la
+                // risposta giusta è rinunciare, non disegnare a metà.
+                std::str::from_utf8(resto.get(..errore.valid_up_to())?).ok()?,
+                Some(errore),
+            ),
+        };
+        multibyte = multibyte.saturating_add(
+            u32::try_from(buono.chars().filter(|c| !c.is_ascii()).count()).unwrap_or(u32::MAX),
+        );
+        testo.push_str(buono);
+
+        let Some(errore) = guasto else { break };
+        // `error_len()` è `None` quando i byte finiscono a metà di una sequenza:
+        // lì non c'è un errore lungo quanto dice nessuno, e si ripara il primo
+        // byte e si va avanti — gli altri torneranno qui da soli.
+        let quanti = errore.error_len().unwrap_or(1);
+        let inizio = errore.valid_up_to();
+        testo.push(da_cp1252(*resto.get(inizio)?));
+        riparati = riparati.saturating_add(1);
+        resto = resto
+            .get(inizio.saturating_add(quanti)..)
+            .unwrap_or_default();
+    }
+
+    (riparati > 0 && multibyte > riparati).then_some((testo, riparati))
+}
+
+/// Legge un file di testo di cui non si sa la codifica.
+///
+/// Restituisce il testo e il nome della codifica che ha vinto.
+///
+/// # In che ordine
+///
+/// 1. **Il BOM**, quando c'è: UTF-8, UTF-16 in tutti e due i versi. È la sola
+///    dichiarazione che un file di testo possa fare di sé, e chi l'ha scritta
+///    lo sapeva.
+/// 2. **UTF-8**, se i byte lo sono per intero. Un file di sole lettere latine
+///    accentate che fosse UTF-8 valido per caso non esiste in pratica: le
+///    sequenze sono troppo rigide.
+/// 3. Altrimenti ogni codifica di [`CODIFICHE_DEI_FILE`] che accetti i byte
+///    **senza sostituzioni**, e vince quella il cui [punteggio](punteggio) è
+///    più basso, cioè il testo che somiglia meno a spazzatura.
+/// 4. In gara con loro c'è anche l'UTF-8 [riparato](utf8_riparato), per il file
+///    che è UTF-8 tranne che in qualche byte. Vince solo se fa **meglio** delle
+///    altre: a parità resta una codifica vera.
+///
+/// Prima c'era `String::from_utf8_lossy`, cioè un `.lrc` in windows-1252 che
+/// arrivava con un segno di sostituzione al posto di ogni «è», e uno in
+/// Shift-JIS che arrivava come una collana di segni di sostituzione.
+///
+/// ```
+/// use aether_domain::codifica::leggi_byte;
+/// // «perché» scritto dal Blocco note di un Windows italiano.
+/// let (testo, codifica) = leggi_byte(b"perch\xe9");
+/// assert_eq!(testo, "perché");
+/// assert_eq!(codifica, "windows-1252");
+///
+/// // Un file UTF-8 con dentro un byte che UTF-8 non è: gli accenti scritti
+/// // bene restano bene, e quello rotto si legge come windows-1252.
+/// let (testo, _) = leggi_byte(b"perch\xc3\xa9 \xe8 cos\xc3\xac");
+/// assert_eq!(testo, "perché è così");
+/// ```
+#[must_use]
+pub fn leggi_byte(byte: &[u8]) -> (String, &'static str) {
+    if let Some((codifica, lunghezza_bom)) = Encoding::for_bom(byte) {
+        let resto = byte.get(lunghezza_bom..).unwrap_or_default();
+        let (letto, _) = codifica.decode_without_bom_handling(resto);
+        return (letto.into_owned(), codifica.name());
+    }
+    if let Ok(testo) = std::str::from_utf8(byte) {
+        return (testo.to_owned(), UTF_8.name());
+    }
+
+    let mut migliore: Option<(String, &'static str, u32)> = None;
+    for codifica in CODIFICHE_DEI_FILE {
+        let Some(letto) = codifica.decode_without_bom_handling_and_without_replacement(byte) else {
+            continue;
+        };
+        let punti = punteggio(&letto);
+        // Strettamente minore: a parità resta la prima, e l'ordine è voluto.
+        if migliore
+            .as_ref()
+            .is_some_and(|(_, _, meglio)| *meglio <= punti)
+        {
+            continue;
+        }
+        migliore = Some((letto.into_owned(), codifica.name(), punti));
+    }
+
+    // L'UTF-8 riparato entra dopo, e deve fare **strettamente** meglio: a
+    // parità vince una codifica intera, che è una spiegazione più semplice di
+    // «UTF-8 con dei buchi». Il nome che torna resta UTF-8, perché è quel che
+    // il file è quasi per intero.
+    if let Some((riparato, riparati)) = utf8_riparato(byte) {
+        let punti = punteggio(&riparato).saturating_add(riparati.saturating_mul(COSTO_RIPARAZIONE));
+        if migliore
+            .as_ref()
+            .is_none_or(|(_, _, meglio)| punti < *meglio)
+        {
+            migliore = Some((riparato, UTF_8.name(), punti));
+        }
+    }
+
+    migliore.map_or_else(
+        // Non capita: windows-1252 accetta qualunque byte. Ma se un giorno
+        // l'elenco cambiasse, il ripiego è quello di prima, non un testo vuoto.
+        || (String::from_utf8_lossy(byte).into_owned(), UTF_8.name()),
+        |(testo, nome, _)| (testo, nome),
+    )
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;
@@ -624,6 +867,72 @@ mod prove {
         // inventarsi un percorso che nessun decodificatore ha fatto.
         assert_eq!(byte_da_cp1252("\u{0080}"), None);
         assert_eq!(byte_da_latin1("\u{0080}"), Some(vec![0x80]));
+    }
+
+    #[test]
+    fn un_file_si_legge_nella_sua_codifica() {
+        let (testo, codifica) = leggi_byte("[00:01.00]città è già là".as_bytes());
+        assert_eq!(
+            (testo.as_str(), codifica),
+            ("[00:01.00]città è già là", "UTF-8")
+        );
+
+        let (cp1252, _, _) = WINDOWS_1252.encode("[00:01.00]perché è così\n[00:02.00]Motörhead");
+        let (testo, codifica) = leggi_byte(&cp1252);
+        assert_eq!(testo, "[00:01.00]perché è così\n[00:02.00]Motörhead");
+        assert_eq!(codifica, "windows-1252");
+
+        let (cirillico, _, _) = WINDOWS_1251.encode("[00:01.00]Группа крови на рукаве");
+        assert_eq!(leggi_byte(&cirillico).1, "windows-1251");
+
+        let giapponese = "[00:01.00]こんにちは、世界\n[00:02.00]ありがとう";
+        let (sjis, _, _) = SHIFT_JIS.encode(giapponese);
+        assert_eq!(leggi_byte(&sjis), (giapponese.to_owned(), "Shift_JIS"));
+
+        let cinese = "[00:01.00]月亮代表我的心\n[00:02.00]你问我爱你有多深";
+        let (gbk, _, _) = GBK.encode(cinese);
+        assert_eq!(leggi_byte(&gbk), (cinese.to_owned(), "GBK"));
+    }
+
+    /// Un file UTF-8 con dentro qualche byte che UTF-8 non è.
+    ///
+    /// È il caso vero che rompeva tutto: un solo byte, e l'intero file si
+    /// rileggeva in windows-1252 — cioè ogni «è» scritto bene diventava «Ã¨».
+    #[test]
+    fn un_byte_rotto_non_rovina_gli_accenti_giusti() {
+        let mut righe = "[00:01.00]perché è così\n[00:02.00]città"
+            .as_bytes()
+            .to_vec();
+        // Un «è» di windows-1252 incollato dentro un file UTF-8.
+        righe.extend_from_slice(b"\n[00:03.00]cos\xe8 sia");
+        let (testo, codifica) = leggi_byte(&righe);
+        assert_eq!(
+            testo,
+            "[00:01.00]perché è così\n[00:02.00]città\n[00:03.00]cosè sia"
+        );
+        assert_eq!(codifica, "UTF-8");
+
+        // E un file che di UTF-8 non ha niente non entra da questa porta: i
+        // byte da riparare sarebbero più delle sequenze buone.
+        let (cp1252, _, _) = WINDOWS_1252.encode("[00:01.00]perché è così più là");
+        assert_eq!(leggi_byte(&cp1252).1, "windows-1252");
+        let giapponese = "[00:01.00]こんにちは、世界\n[00:02.00]ありがとう";
+        let (sjis, _, _) = SHIFT_JIS.encode(giapponese);
+        assert_eq!(leggi_byte(&sjis), (giapponese.to_owned(), "Shift_JIS"));
+    }
+
+    #[test]
+    fn il_bom_decide_da_solo() {
+        let mut utf16: Vec<u8> = vec![0xFF, 0xFE];
+        for unita in "[00:01.00]ciao".encode_utf16() {
+            utf16.extend_from_slice(&unita.to_le_bytes());
+        }
+        assert_eq!(
+            leggi_byte(&utf16),
+            ("[00:01.00]ciao".to_owned(), "UTF-16LE")
+        );
+        // Il BOM di UTF-8 si toglie: non è testo.
+        assert_eq!(leggi_byte(b"\xEF\xBB\xBFciao").0, "ciao");
     }
 
     #[test]

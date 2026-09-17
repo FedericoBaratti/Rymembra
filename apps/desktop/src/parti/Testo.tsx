@@ -76,6 +76,7 @@ import { anticipoAdesso, usePosizioneMs } from "../riproduzione";
 import { fermoRestando } from "../transizione";
 import { t, tSe } from "../lingue";
 import { Icona } from "./Icone";
+import { SceltaTesto } from "./SceltaTesto";
 
 /**
  * Di quanto sposta una spinta del cursore di correzione.
@@ -291,7 +292,25 @@ export function Testo({
   // guasto e si riprova. Confonderle era il difetto — il pannello diceva
   // «Nessun testo per questo brano» anche quando il wifi era staccato.
   const [guasto, setGuasto] = useState(false);
-  const [editor, setEditor] = useState(false);
+  /* L'editor e l'elenco delle voci del catalogo (`SceltaTesto`), aperti a
+     mano — e aperti **su un brano**, che si tengono.
+
+     Erano due interruttori, e la finestrella prendeva il brano del pannello a
+     ogni disegno: finito il brano mentre si battevano le righe, il testo del
+     pannello tornava `null`, l'editor si smontava con tutte le battute dentro,
+     e al primo testo del brano dopo si riapriva vuoto — sul brano dopo. E un
+     salvataggio che rispondeva in ritardo metteva il testo di un brano sul
+     pannello dell'altro. Adesso si ricorda il brano del gesto, con quel che la
+     finestrella deve sapere di lui in quel momento: il pannello dietro può
+     cambiare brano, lei no. */
+  const [editor, setEditor] = useState<{
+    brano: Brano;
+    iniziale: string;
+  } | null>(null);
+  const [scelta, setScelta] = useState<{
+    brano: Brano;
+    rifiutabile: boolean;
+  } | null>(null);
   // Che lo scorrimento sia fermo lo sa già `fermoFino`, che è un `ref` perché
   // lo legge un effetto che gira venti volte al secondo. Questo stato esiste
   // solo perché la pilloletta si veda comparire e sparire: sono due disegni per
@@ -409,6 +428,15 @@ export function Testo({
   // Il timer della pilloletta non deve sopravvivere al pannello.
   useEffect(() => () => window.clearTimeout(scadenzaPausa.current), []);
 
+  // Il nucleo precarica il testo del brano dopo solo mentre un pannello è
+  // aperto: è la promessa di `PRIVACY.md`, e questo è il pannello.
+  useEffect(() => {
+    ipc.testiPannello(true).catch(() => undefined);
+    return () => {
+      ipc.testiPannello(false).catch(() => undefined);
+    };
+  }, []);
+
   // La posizione con cui confrontare i tempi: quella del lettore più i due
   // scarti. È `aether_domain::testo::posizione_corretta`, e la regola è che i
   // tempi delle righe non si toccano mai — si sposta il metro, non i numeri.
@@ -444,7 +472,9 @@ export function Testo({
     const acceso = rigaAccesa.current;
     if (parole.length === 0 || !acceso) return;
     const quale = parolaAttiva(parole, corretta);
-    for (let i = 0; i < acceso.children.length; i += 1) {
+    // Fino alle parole e non a tutti i figli: dopo l'ultima può esserci la riga
+    // secondaria, che non è una parola e non ha un avanzamento.
+    for (let i = 0; i < Math.min(acceso.children.length, parole.length); i += 1) {
       const parola = acceso.children[i];
       if (!(parola instanceof HTMLElement)) continue;
       // Quel che è già stato detto è pieno, quel che deve ancora venire è
@@ -581,6 +611,15 @@ export function Testo({
   // giusto e i tempi sbagliati, e ribattere le parole sarebbe lavoro rifatto.
   const daCuiPartire =
     testo?.piatto ?? righe.map((riga) => riga.testo).join("\n");
+  const apriEditor = () => setEditor({ brano, iniziale: daCuiPartire });
+
+  // Il testo che si ha è del catalogo, e la scelta può scartarlo.
+  const rifiutabile =
+    testo !== null &&
+    testo.fonte === "lrclib" &&
+    !testo.strumentale &&
+    (righe.length > 0 || testo.piatto !== null);
+  const apriScelta = () => setScelta({ brano, rifiutabile });
 
   /* Il bottone c'è sempre, e cambia parola: «sincronizza» quando non ci sono
      tempi, «risincronizza» quando ci sono. Nasconderlo nel secondo caso
@@ -591,7 +630,7 @@ export function Testo({
       type="button"
       className="bottone minuto btn-ghost"
       title={t("np.lyrics.sync.hint")}
-      onClick={() => setEditor(true)}
+      onClick={apriEditor}
     >
       {righe.length > 0 ? t("np.lyrics.resync") : t("np.lyrics.sync")}
     </button>
@@ -625,13 +664,38 @@ export function Testo({
           chiude la copertura fino in fondo. */}
       <button
         type="button"
+        className="bottone minuto btn-ghost"
+        title={t("np.lyrics.choose.hint")}
+        onClick={apriScelta}
+      >
+        {t("np.lyrics.choose")}
+      </button>
+      <button
+        type="button"
         className="bottone primario btn-accent"
-        onClick={() => setEditor(true)}
+        onClick={apriEditor}
       >
         {t("np.lyrics.sync")}
       </button>
     </div>
   );
+
+  /* «Altri testi», in testata: quando il testo che scorre è arrivato dal
+     catalogo, e quindi l'ha scelto il programma. Quello di un sidecar o di chi
+     ascolta non si sostituisce da qui — vincerebbe comunque — e quando non c'è
+     niente il gesto sta già fra i ripieghi. */
+  const bottoneAltri = testo !== null &&
+    testo.fonte === "lrclib" &&
+    (righe.length > 0 || testo.strumentale) && (
+      <button
+        type="button"
+        className="bottone minuto btn-ghost"
+        title={t("np.lyrics.choose.hint")}
+        onClick={apriScelta}
+      >
+        {t("np.lyrics.choose.short")}
+      </button>
+    );
 
   /* L'introduzione, quando è lunga abbastanza da essere un'attesa.
      Sta prima dell'elenco e non dentro, perché nell'LRC non è una riga: è il
@@ -750,6 +814,12 @@ export function Testo({
                  finisce la prima riga e poi comincia la seconda. */
               <span className="lyric-fill">{riga.testo}</span>
             )}
+            {/* La traduzione, o la pronuncia: le righe che il file mette allo
+                stesso tempo di questa. Si accende con lei — è la stessa riga —
+                e sta sotto, più piccola, perché quel che si canta è sopra. */}
+            {riga.secondaria !== null && (
+              <span className="lyric-secondaria">{riga.secondaria}</span>
+            )}
           </button>
         );
       }),
@@ -775,6 +845,7 @@ export function Testo({
             {tSe(`np.lyrics.source.${testo.fonte}`, testo.fonte)}
           </span>
         )}
+        {bottoneAltri}
         {bottoneSincronizza}
       </header>
 
@@ -819,7 +890,21 @@ export function Testo({
           >
             −{PASSO_SCARTO}
           </button>
-          <span className="quanto">{t("np.lyrics.nudge.value", { ms: testo.scartoMs })}</span>
+          {/* Il numero col segno dei bottoni, non con quello dello scarto.
+              Lo scarto si **somma** alla posizione, quindi un testo anticipato
+              ha uno scarto positivo: mostrato com'è, due clic su «−100» davano
+              «200 ms». Chi guarda legge lo spostamento del testo, e un testo
+              che arriva prima è un testo spostato indietro. */}
+          <span className="quanto">
+            {t("np.lyrics.nudge.value", {
+              ms:
+                testo.scartoMs > 0
+                  ? `−${testo.scartoMs}`
+                  : testo.scartoMs < 0
+                    ? `+${-testo.scartoMs}`
+                    : "0",
+            })}
+          </span>
           <button
             type="button"
             className="bottone minuto btn-ghost"
@@ -918,17 +1003,31 @@ export function Testo({
           fissa, quindi il posto nell'albero non cambia dove finisce sullo
           schermo — e tenerla qui evita di far scendere quattro prop attraverso
           `InRiproduzione` per una schermata che apre solo questo pannello. */}
-      {editor && testo !== null && (
+      {editor !== null && (
         <Sincronizza
-          brano={brano}
-          iniziale={daCuiPartire}
+          brano={editor.brano}
+          inCorso={brano.id}
+          iniziale={editor.iniziale}
           /* Solo le parole scendono: nessuno dei due scarti attraversa
              l'editor. Le battute che ne escono sono misurate sulla posizione
              grezza, e `testo_salva` spiega per esteso perché portarsi dietro un
              offset le sfaserebbe tutte. */
-          onChiudi={() => setEditor(false)}
-          onSalvato={setTesto}
+          onChiudi={() => setEditor(null)}
+          onSalvato={(nuovo) => {
+            if (branoOra.current === editor.brano.id) setTesto(nuovo);
+          }}
           onErrore={onErrore}
+        />
+      )}
+      {scelta !== null && (
+        <SceltaTesto
+          brano={scelta.brano}
+          rifiutabile={scelta.rifiutabile}
+          onChiudi={() => setScelta(null)}
+          onScelto={(nuovo) => {
+            if (branoOra.current === scelta.brano.id) setTesto(nuovo);
+            setScelta(null);
+          }}
         />
       )}
     </aside>

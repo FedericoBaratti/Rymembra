@@ -358,8 +358,17 @@ pub fn arricchimento_riporta_nei_file(
         // Come sopra: una passata in corso non deve incrociare una riscrittura
         // di file a metà.
         let _turno = Turno::prendi(&arricchimento.in_corso).ok_or_else(occupato)?;
+        // Tre tempi, e il lucchetto della libreria solo nel primo e nel terzo:
+        // in mezzo si riaprono in scrittura migliaia di file, e su una share
+        // sono minuti in cui ogni altro comando restava fermo ad aspettare.
+        // Il turno resta preso per tutti e tre, quindi nessuna passata
+        // dell'arricchimento può scrivere nelle stesse righe nel frattempo.
+        let da_fare = con_libreria(&stato, |libreria| {
+            enrich::da_riportare(&libreria.connection)
+        })?;
+        let riscritti = enrich::riscrivi_nei_file(da_fare);
         con_libreria(&stato, |libreria| {
-            enrich::riporta_nei_file(&mut libreria.connection)
+            enrich::registra_riportati(&mut libreria.connection, riscritti)
         })
     })();
     scorda_errore(&arricchimento);

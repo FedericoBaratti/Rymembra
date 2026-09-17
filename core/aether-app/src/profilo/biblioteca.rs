@@ -15,6 +15,21 @@
 //! come il primo, perché l'abbinamento fra macchine è uno solo e il manifesto
 //! lo dichiara.
 //!
+//! # L'eccezione: le correzioni, e perché vanno per prime
+//!
+//! La `track_key` di un brano corretto è quella **corretta**, e su un computer
+//! nuovo lo stesso file ha ancora quella dei suoi tag: cercata così, la
+//! correzione non trovava nessun brano. E con lei tutto il resto — cronologia,
+//! testi, copertine, e nel documento della sincronia cuori, voti e playlist —
+//! che sta sotto la chiave corretta e arrivava prima che qualche brano la
+//! portasse.
+//!
+//! Quindi una correzione porta con sé anche le `content_key` dei file che la
+//! avevano (vedi [`Correzione::contenuti`]), che sono le chiavi dei tag grezzi
+//! e dall'altra parte coincidono; e si applica **prima di tutto il resto**,
+//! sincronia compresa ([`applica_correzioni_in`]). Quando il resto arriva, i
+//! brani portano già la chiave sotto cui è stato scritto.
+//!
 //! # Cosa resta fuori, e non è una dimenticanza
 //!
 //! **Affinità** (`brano_vicino`, `track_impronta`, `impronta_scala`) e
@@ -90,6 +105,19 @@ pub struct Correzione {
     pub campi: String,
     /// Quando è stata decisa.
     pub set_at: i64,
+    /// Le `content_key` dei file che la portano, per ritrovarli dove la chiave
+    /// corretta non c'è ancora.
+    ///
+    /// Solo quelle **senza ambiguità** sulla macchina che esporta: una chiave
+    /// di contenuto che lì porta anche un brano con un'altra `track_key` — la
+    /// copia mp3 non corretta del FLAC corretto, o due «Traccia 01» di dischi
+    /// senza tag — non dice quale dei due file sia questo, e applicarla a tutti
+    /// e due correggerebbe un brano che nessuno ha corretto. Quel file resta
+    /// abbinato per `track_key` soltanto, come prima.
+    ///
+    /// Vuoto nei profili scritti prima di questo campo, che si leggono ancora.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contenuti: Vec<String>,
 }
 
 /// Un testo, come sta in `lyrics`.
@@ -227,8 +255,6 @@ impl Biblioteca {
 pub struct Portato {
     /// Righe di cronologia entrate.
     pub cronologia: usize,
-    /// Correzioni scritte o aggiornate.
-    pub correzioni: usize,
     /// Testi scritti o aggiornati.
     pub testi: usize,
     /// Brani aggiunti all'elenco di quelli che mancano.
@@ -241,11 +267,7 @@ impl Portato {
     /// Non ha portato niente.
     #[must_use]
     pub const fn e_vuoto(&self) -> bool {
-        self.cronologia == 0
-            && self.correzioni == 0
-            && self.testi == 0
-            && self.desiderati == 0
-            && self.copertine == 0
+        self.cronologia == 0 && self.testi == 0 && self.desiderati == 0 && self.copertine == 0
     }
 }
 
@@ -296,11 +318,19 @@ fn cronologia(connection: &Connection) -> Result<Vec<Ascoltato>, AppError> {
         .map_err(|err| db_error("cronologia del profilo", &err))
 }
 
-/// Le correzioni, sulla chiave del brano.
+/// Le correzioni, sulla chiave del brano, con le chiavi di contenuto dei file.
 fn correzioni(connection: &Connection) -> Result<BTreeMap<String, Correzione>, AppError> {
+    // La chiave di contenuto esce solo se nessun brano che la porta ha un'altra
+    // `track_key`: vedi [`Correzione::contenuti`]. Uguale alla chiave del brano
+    // non serve — l'abbinamento per `track_key` la trova già.
     let mut istruzione = connection
         .prepare(
-            "SELECT t.track_key, o.campi, o.set_at
+            "SELECT t.track_key, o.campi, o.set_at,
+                    CASE WHEN t.content_key <> t.track_key
+                          AND NOT EXISTS (SELECT 1 FROM tracks a
+                                           WHERE a.content_key = t.content_key
+                                             AND a.track_key <> t.track_key)
+                         THEN t.content_key END
                FROM track_overrides o JOIN tracks t ON t.id = o.track_id
               ORDER BY o.set_at",
         )
@@ -309,16 +339,26 @@ fn correzioni(connection: &Connection) -> Result<BTreeMap<String, Correzione>, A
         .query_map([], |riga| {
             Ok((
                 riga.get::<_, String>(0)?,
+                riga.get::<_, Option<String>>(3)?,
                 Correzione {
                     campi: riga.get(1)?,
                     set_at: riga.get(2)?,
+                    contenuti: Vec::new(),
                 },
             ))
         })
         .map_err(|err| db_error("correzioni del profilo", &err))?;
     let mut mappa = BTreeMap::new();
+    let mut contenuti: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for riga in righe {
-        let (chiave, correzione) = riga.map_err(|err| db_error("correzioni del profilo", &err))?;
+        let (chiave, contenuto, correzione) =
+            riga.map_err(|err| db_error("correzioni del profilo", &err))?;
+        if let Some(contenuto) = contenuto {
+            contenuti
+                .entry(chiave.clone())
+                .or_default()
+                .insert(contenuto);
+        }
         // Due file dello stesso brano possono avere due correzioni diverse.
         // Vince la più recente, che è la stessa regola con cui la fusione
         // deciderà dall'altra parte: dire qui una cosa e là un'altra vorrebbe
@@ -331,6 +371,13 @@ fn correzioni(connection: &Connection) -> Result<BTreeMap<String, Correzione>, A
                 }
             })
             .or_insert(correzione);
+    }
+    // Dopo il ciclo e non dentro: la regola del più recente sostituisce la
+    // correzione intera, e si porterebbe via le chiavi dei file di prima.
+    for (chiave, quali) in contenuti {
+        if let Some(correzione) = mappa.get_mut(&chiave) {
+            correzione.contenuti = quali.into_iter().collect();
+        }
     }
     Ok(mappa)
 }
@@ -491,6 +538,9 @@ pub fn interpreta(byte: &[u8]) -> Result<Biblioteca, AppError> {
 /// per lo stesso motivo: il piano è l'esecuzione annullata, e per esserlo deve
 /// essere davvero l'esecuzione.
 ///
+/// Le correzioni no: vanno prima, e prima anche della sincronia — è
+/// [`applica_correzioni_in`], e il perché sta nel `//!`.
+///
 /// # Errori
 ///
 /// `db.queryFailed` se una scrittura fallisce.
@@ -502,7 +552,6 @@ pub fn applica_in(
     let _ = adesso_ms;
     Ok(Portato {
         cronologia: applica_cronologia(tx, &biblioteca.cronologia)?,
-        correzioni: applica_correzioni(tx, &biblioteca.correzioni)?,
         testi: applica_testi(tx, &biblioteca.testi)?,
         desiderati: applica_desiderati(tx, &biblioteca.desiderati)?,
         copertine: applica_copertine(tx, &biblioteca.copertine)?,
@@ -548,17 +597,32 @@ fn applica_cronologia(tx: &Transaction<'_>, righe: &[Ascoltato]) -> Result<usize
 }
 
 /// Le correzioni: vince la più recente, e la riga di `tracks` si rifà subito.
-fn applica_correzioni(
+///
+/// Da chiamare **prima** della sincronia e di [`applica_in`]: tutto quel che
+/// arriva dopo cerca i brani per la chiave corretta, e questa è la funzione che
+/// gliela dà. Restituisce quanti brani hanno ricevuto una correzione.
+///
+/// # Errori
+///
+/// `db.queryFailed` se una scrittura fallisce.
+pub fn applica_correzioni_in(
     tx: &Transaction<'_>,
-    correzioni: &BTreeMap<String, Correzione>,
+    biblioteca: &Biblioteca,
 ) -> Result<usize, AppError> {
+    let correzioni = &biblioteca.correzioni;
     if correzioni.is_empty() {
         return Ok(0);
     }
     let mut toccati: BTreeSet<i64> = BTreeSet::new();
     {
+        // Per la chiave corretta — il brano che qui è già stato corretto, o i
+        // cui tag dicono già il nome giusto — e per quella dei tag grezzi: il
+        // file appena scansionato su un computer nuovo.
         let mut quali = tx
             .prepare("SELECT id FROM tracks WHERE track_key = ?1")
+            .map_err(|err| db_error("correzioni dal profilo", &err))?;
+        let mut per_contenuto = tx
+            .prepare("SELECT id FROM tracks WHERE content_key = ?1")
             .map_err(|err| db_error("correzioni dal profilo", &err))?;
         let mut scrivi = tx
             .prepare(
@@ -570,11 +634,19 @@ fn applica_correzioni(
             .map_err(|err| db_error("correzioni dal profilo", &err))?;
 
         for (chiave, correzione) in correzioni {
-            let identificativi: Vec<i64> = quali
+            let mut identificativi: BTreeSet<i64> = quali
                 .query_map([chiave], |riga| riga.get(0))
                 .map_err(|err| db_error("correzioni dal profilo", &err))?
                 .collect::<Result<_, _>>()
                 .map_err(|err| db_error("correzioni dal profilo", &err))?;
+            for contenuto in &correzione.contenuti {
+                let altri: Vec<i64> = per_contenuto
+                    .query_map([contenuto], |riga| riga.get(0))
+                    .map_err(|err| db_error("correzioni dal profilo", &err))?
+                    .collect::<Result<_, _>>()
+                    .map_err(|err| db_error("correzioni dal profilo", &err))?;
+                identificativi.extend(altri);
+            }
             for track_id in identificativi {
                 let scritte = scrivi
                     .execute(rusqlite::params![

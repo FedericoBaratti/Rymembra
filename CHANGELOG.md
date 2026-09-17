@@ -85,9 +85,515 @@ Entries older than 2.3.1 argue their number under the rule that was in force
 when they were written. They are a record of what shipped and are left as they
 were, not restated.
 
-## [Unreleased]
+## [2.3.2] — 2026-09-17
 
-**Nothing is pending.**
+**The release that finishes the track.** Three faults lived in the last three
+seconds of every song — a scrubber that landed on the next track, a short one
+that stopped the music for good, a queue that died a breath from its end — and
+all three had the same cause, which nothing in the engine had ever written
+down: the ring buffer between the decoder and the sound card is sized for
+192 kHz across eight channels, so on an ordinary output it holds over three
+seconds of music. For the last three seconds of every track, **the track you
+hear and the track Aether is decoding are not the same track.** Around them,
+the queue was fixed to play what it says it plays: «repeat one» repeats,
+dragging to reorder works again, and a next track you removed no longer plays
+anyway.
+
+Two things that were missing rather than broken arrive with them. A track can
+leave the library from its own context menu — «Remove from library», which
+keeps the file, and «Delete from disk», which sends it to the Recycle Bin;
+until now the only way out was to close Aether and delete the file in Explorer.
+And lyrics can be chosen by hand from everything the catalogue has for a track,
+with what you pick staying picked and what you drop staying dropped.
+
+The rest of the entry is mostly one subject: **work you had already done, kept.**
+A correction made by hand survives a watched folder disappearing and coming
+back; lyrics follow a track whose name was corrected instead of being orphaned
+under the old one; a hand-synced `.lrc` is written to the library first, so a
+read-only folder costs you a warning rather than half an hour of tapping; and
+an existing sidecar is never overwritten without a `.bak` beside it.
+
+Four migrations — `022_testi_seguono_il_brano`, `023_correzioni_orfane`,
+`024_indici_degli_ordinamenti` and `025_testi_scelti_e_scartati` — and, as for
+every migration, going back to 2.3.1 costs a copy of the database taken before
+the update. Each is described in the section below.
+
+### Database
+
+`022_testi_seguono_il_brano.sql` adds one trigger, `lyrics_segue_track_key`,
+and changes no data. `lyrics` is keyed on `track_key`, and `track_key` is
+recomputed whenever artist, title or album change — by enrichment, by
+confirming an uncertain match, by a re-scan of retagged files. None of those
+writers touched `lyrics`, so every correction orphaned the lyrics under the old
+key: hand-synced timings, the offset nudged by ear, the catalogue's answer. The
+trigger moves the row when no other file still carries the old key, only if
+the row holds something (an empty «the catalogue didn't know that name» row
+stays behind, because the name was wrong), and never over a row that already
+has lyrics.
+
+For the trigger to be right, a key must change once. A re-scan, an enrichment
+pass and undoing enrichment used to rewrite a corrected track with its tags'
+key and put the corrected one back a moment later, in the same transaction; the
+lyrics followed the first move and, when another copy of the track (the
+uncorrected MP3 next to the corrected FLAC) still carried the tags' key, stayed
+on that copy. Those writers now leave a corrected track's key alone.
+
+`023_correzioni_orfane.sql` adds a `correzioni_orfane` table and two triggers,
+and changes no existing row. A track leaves the library when its file does —
+and also when the file hasn't gone anywhere: a watched folder removed and added
+back, an external disk unplugged during a scan, a share that didn't answer.
+`track_overrides` cascades with the row, so the file came back under a new id
+and every hand correction on it was gone. Now a correction is set aside under
+the track's `content_key` (computed from the raw tags, so the same file brings
+the same key back) before its row is deleted, and returns when a row with that
+key is inserted; the scan re-applies it. Set-aside corrections expire after 90
+days. Enrichment annotations are not kept this way: the enrichment pass
+re-derives them, and restoring them without their fields would misdescribe the
+row. Tracks scanned before migration 019 had no `content_key` until their file
+changed on disk, so their corrections were still deleted with the row; the next
+scan re-reads those files once and fills the key in.
+
+`024_indici_degli_ordinamenti.sql` adds four indexes and changes no data. The
+Tracks list sorted by shelf (`artist COLLATE NOCASE, album COLLATE NOCASE, …`),
+by title, by most played, and the Albums list, fetch 200 rows at a time with
+`LIMIT … OFFSET …`; no index had those shapes — `idx_tracks_artist` is not
+`NOCASE`, and SQLite won't use it for a case-folded sort — so every page sorted
+the whole table in a temporary B-tree. A test now reads SQLite's query plan and
+fails if that comes back. The cost is a few hundred kilobytes on disk and a
+little more work per write to `tracks`.
+
+`025_testi_scelti_e_scartati.sql` adds two columns to `lyrics`, `scelta` and
+`scartati`, and changes no data. Lyrics chosen by hand from «Other lyrics» were
+stored like any catalogue answer, so the background pass could replace them
+with the entry you had just passed over; lyrics dropped with «None of these»
+came back with the next «Search again», or by themselves two weeks later.
+`scelta` marks a row you chose, which catalogue answers no longer overwrite;
+`scartati` lists the catalogue entries you dropped for that track, which count
+as «not found» from then on. Choosing one from the list again takes it off.
+Being on the lyrics row, both follow a corrected track through the 022
+trigger.
+
+**Going back to 2.3.1 needs a backup**, as for every migration: 2.3.1 refuses a
+database at version 22 to 25 rather than guessing at it.
+
+### Added — taking a track out of the library
+
+A track's context menu ends with two new entries: **«Remove from library…»** and
+**«Delete from disk…»**. Both work on the whole selection, both ask first.
+
+Until now a track could only leave the library by its file leaving the disk: to
+get rid of one you closed Aether, deleted the file in Explorer, and came back to
+press «Scan». There was no entry for it anywhere, and the only code that removed
+a row lived inside the scan, where it means «this file is not on this disk» —
+which is a different statement.
+
+Two entries and not one, because they answer two different questions.
+
+«Remove from library» says «I don't want this in the list»: the row goes, the
+file stays. It is the right answer for what got in by mistake — one watched
+folder too many, an external disk scanned once — and it has a limit that is
+stated instead of hidden. The library is an index of the disk, not the disk, and
+no index can tell a file not to exist: a file still under a watched folder comes
+back at the next scan. So the notice counts them and says so, and the
+confirmation points at the other entry for those who want it gone.
+
+«Delete from disk» says «I don't want this any more»: the file goes to the
+Recycle Bin, and the row with it. To the Recycle Bin and not deleted, because a
+menu entry that destroys without a way back is the wrong menu entry; and for the
+same reason the row is removed **afterwards**, and only for the files that
+actually got there. A library that claims a file is gone while it is still on
+disk is worse than one that claims too much.
+
+Both are confirmed, and the primary button in that window is «Cancel». What goes
+away with the row is not just the row: the rating, the like, the play counts and
+the place in playlists were built by listening, over years, and there is no undo
+to offer for them. Where an undo does exist — the replaced queue — Aether offers
+the undo and asks nothing.
+
+Three things happen around the row, and none of them is visible:
+
+- **The queue is swept.** It is a JSON list of identifiers in `settings`, not a
+  table: no foreign key cleans it, and a stale identifier is a number that opens
+  nothing — the engine finds it at the end of the current track, and answers
+  with «source unavailable» instead of the next song.
+- **The engine lets go of the file first**, when deleting from disk. On Windows
+  an open file cannot go to the Recycle Bin, and the audio engine holds its file
+  open for the whole track — including the next one, which gapless opens ahead
+  of time. Deleting the track you are listening to now stops playback and works.
+- **Albums and artists are rebuilt** in the same transaction, so a disc with no
+  tracks left and an artist with no discs left go away with them, and an album
+  emptied from its own page closes and returns to the grid. The grid, the
+  artists, the Home shelves and the number beside each playlist are re-read
+  afterwards: the track list takes the rows out by itself, to keep the place of
+  whoever had scrolled, but how many tracks an album really has is not something
+  a window that holds one page of it can work out.
+
+When a file will not go, the row stays. Deleting stops at the first file that
+refuses, takes out the rows of the ones already in the Recycle Bin, and says
+why — as far as Windows will say. A file held open by another program makes the
+shell give up without giving a reason, so the message names both causes it could
+be, the other program or a drive that has no Recycle Bin, instead of picking one
+and sending half the people to close a program that has nothing to do with it.
+
+No sync tombstone is written, and that is not an omission: `tombstones.tracks`
+travels and merges, but nothing consults it to keep a track from coming back —
+both `sincronia` and `backup` say so in as many words. A track row is never
+created by a sync; it is created by a scan reading a file that is there. If the
+other device has that file, it should keep it.
+
+New dependency: `trash 5`, for the Recycle Bin. A dependency and not four calls
+of our own, for the reason already written next to `souvlaki`: talking COM to the
+operating system is `unsafe` by definition, and the workspace forbids it. In
+`Cargo.lock` it is seven packages (675 → 682) — `trash`, `urlencoding`, and a
+fourth `windows` with four satellites.
+
+### Changed — smaller things you would have noticed
+
+- **A track's context menu gains «Go to album», «Go to artist» and «Show in
+  folder».** It only had what you do *with* a track, and none of the ways to
+  get somewhere *from* it. From search results and playlists they close the
+  search or the playlist on the way, and a track with no album says so.
+- **Clicking a folder's name opens it**, not only its 14-pixel triangle.
+- **Full screen says «Now playing»** instead of «Now playing from the album»,
+  which it said whether the queue came from an album, a playlist, a search or
+  the Monday mixes. Nothing records where a queue was filled from — and after a
+  restart nothing could — so the line said «album» and was wrong more often
+  than not. The track's album is right below it, where it always was.
+- **The Folders panel updates after a scan** — including the one that runs by
+  itself when downloads finish, and after importing a profile. It showed the
+  counts and folders from before until the watched folders changed or Aether
+  restarted. Open folders and the selection stay as they are.
+- **«Resume» on Home resumes that track, from where it was.** The position it
+  offered belonged to whatever played last — «Resume at 0:29» on a 22-second
+  track — and pressing it on a track already started sent it back there.
+  Play in the bar after a restart also resumes from the saved position instead
+  of 0:00, and a track that played to its end starts over.
+- **The right column comes back when the window widens again**, if it was the
+  window that closed it; a column closed by hand stays closed.
+- **The floating player shows the file's format line** under the scrubber, as
+  the column and full screen already did — below 1100 px it was nowhere.
+- **Playlists in the collapsed sidebar show their initial** instead of seven
+  identical icons.
+- **An empty playlist says so**, and how to fill it, instead of showing an
+  empty table.
+- **Success notices dismiss themselves** after eight seconds; errors still
+  stay.
+- **Weekly mixes without a majority genre or artist are named after their
+  first two artists** instead of «More like this, 2». Tracks with no artist tag
+  are left out of that name: one such mix was called «Unknown artist, Led
+  Zeppelin».
+- Home no longer shows a «–» where a count would be; the Artists subtitle and
+  the database line in Settings no longer speak in jargon; two messages that
+  were hard-coded in Italian are translated.
+
+### Changed — lists and sliders
+
+- **Dragging the volume no longer re-renders the whole window at every
+  pixel.** The slider follows the finger locally and talks to the engine at
+  most 20 times a second; the engine answers with a two-field event instead of
+  the full player state, which meant a database read per step. A volume
+  changed by keyboard or from the tray icon after a drag now moves the slider;
+  it stayed where the drag had left it.
+- **The queue is virtualised**, like the track list: starting «All tracks» put
+  eighteen thousand rows in the always-open right column. It also stopped
+  re-fetching every row whenever one track was added, removed or moved; only
+  the rows it does not have yet are requested.
+- **Scan progress redraws the window at most four times a second** instead of
+  every 25 files.
+- **Opening an album or playlist no longer shows the previous one's tracks**
+  for a moment, and a slow answer for the one you left no longer lands under
+  the one you opened.
+
+### Fixed — your own work, kept
+
+- **Saving hand-synced lyrics no longer depends on being able to write next to
+  the track.** The row in the library is written first; the `.lrc` beside the
+  track follows, and if it can't be written — a read-only folder, a share —
+  the editor says «saved in Aether, but not next to the track» instead of
+  losing the half hour of tapping. A stale `.lrc` older than your sync no
+  longer overrides it.
+- **An existing `.lrc` or `.a2.lrc` is never overwritten or deleted without a
+  copy.** The first time Aether replaces or removes one with different content,
+  it is moved to `<name>.lrc.bak` (or `.a2.lrc.bak`).
+- **The profile carries three more choices**: whether lyrics may be fetched
+  online, whether to check for updates, and whether the guided tour was already
+  seen. The first two are privacy choices, and losing them on a new computer
+  meant requests going out before anyone noticed.
+- **A profile brings corrected tracks back whole.** Corrections were looked up
+  by the corrected key, which a freshly scanned file on another computer does
+  not have yet; and everything filed under that key — favourites, ratings,
+  playlists, history, lyrics, covers — was applied before them, so it found no
+  track either. A correction now also carries the raw-tag key of its files
+  (only when that key names one track on the exporting computer), and
+  corrections are applied first. Older profiles still import as before.
+- **The lyrics sync editor keeps your taps when the track ends.** It lived on
+  «the track now playing»: when that changed, the editor closed with every tap
+  in it and reopened, empty, on the next track. It now stays on the track it
+  was opened for; while another one plays, taps are held and a notice offers
+  to go back — to the same queue position, from just before the last tap. A
+  slow save no longer puts one track's lyrics on another's panel.
+- **«It's my library: merge anyway».** A profile whose library identity differs
+  from this one's brought only settings, with no way round it — which also hit
+  someone who exported a profile on the new computer before importing the old
+  one. The plan still says the identities differ; the box lets you proceed.
+- **Re-syncing lyrics keeps their translation lines.** Saving from the sync
+  editor rebuilt every line without the one shown below it.
+- **A word-by-word sync survives an `.lrc` that is merely touched.** A sidecar
+  copied or moved after the sync was newer on disk, and took over with its
+  line-level timings; it now does only when its lines differ.
+
+### Fixed — lyrics
+
+- **The library no longer freezes while a lyrics panel reads a network share.**
+  The `.lrc` beside the track and the synced tag inside it were read with the
+  library lock held; on a slow share every other command waited. The disk is
+  now read between two short lock windows.
+- **«Search again» no longer deletes lyrics you had.** A «not found» used to
+  write `NULL` over the existing row; now it only records that it asked.
+- **Choose the lyrics yourself.** «Other lyrics» lists every entry the
+  catalogue has for the track, timed ones first, with the first two lines of
+  each; «None of these» drops lyrics that came from the catalogue, and that
+  entry does not come back — not with «Search again», not with the background
+  pass. What you pick stays picked (see migration 025).
+- **Untagged files are searched properly.** «Unknown artist» and «Unknown
+  album» are no longer sent to the catalogue: the artist comes from the file
+  name when it carries one, otherwise the catalogue is searched by title. A
+  third round tries the main artist alone when the tags list several.
+- **`.lrc` files in other encodings.** Sidecars in windows-1252, windows-1251,
+  Shift-JIS, GBK or UTF-16 used to arrive with a replacement character in
+  place of every non-ASCII letter; the encoding is now detected. A file that is
+  UTF-8 except for a byte or two — written in UTF-8, then touched up by an
+  editor that saves in the Windows codepage — no longer has all its accents
+  ruined: the whole file was re-read in that codepage, turning every correct
+  «è» into «Ã¨». The good text is kept and the stray bytes are read as
+  windows-1252.
+- **The timing nudge shows the sign of its buttons.** Two clicks on «−100»
+  read «200 ms».
+- **With «Ask the catalogue for lyrics» off, «Other lyrics» says so.** It said
+  «The catalogue has no entries for this track» — a reply nobody had given, and
+  one that sent you looking for the fault in the wrong place.
+- **«Fill the library» is enabled by what a pass would actually ask for.** It
+  went by the tracks with no lyrics at all, which is a different question: it
+  was off on a library full of plain lyrics waiting for timings, and on when
+  everything missing had already been asked for in the last fortnight.
+- **`[mm:ss:cc]` timestamps** were read as hours, so the lyrics never lit up.
+  Bare CR line endings are split. Two lines at the same timestamp — a
+  translation under the original — now light up together, with the second
+  shown below, instead of the original never lighting at all.
+- **The preload of the next track's lyrics only runs while a lyrics panel is
+  open**, as `PRIVACY.md` already promised.
+- **The background pass no longer stalls on the same tracks.** A track that
+  made the catalogue fail was retried at the head of every batch, and five of
+  them in a row stopped the pass for good; they are now skipped for the rest of
+  the pass and, when the failure is not transient, retried a day later.
+- **With `AETHER_DATI` set**, the lyrics cache was written to the default data
+  folder instead of the one in use.
+
+### Changed — the guided tour and the update notice
+
+- **The tour opens with a welcome card** saying what Aether does, before
+  pointing at where things are.
+- **The player steps are no longer skipped on a first run.** Four of the steps
+  point at things that only exist while a track is loaded, and on a fresh
+  library nothing was, so they were silently skipped. When the tour opens with
+  an empty queue, the queue is filled with recent tracks — paused, and only if
+  it was empty. That queue no longer counts as yours: the first real «Play»
+  replaces it without offering to undo it.
+- **«Not now» means not now.** The close button on the update notice used to
+  skip that version for good; it now hides the notice for this session — also
+  across a visit to the theme Studio — and «Skip this version» is a separate
+  button.
+- **«Check now» works with automatic checks off**, as the switch's hint says.
+- **The notice and Settings agree.** Turning checks off or skipping the version
+  in Settings now hides the notice, where «Update» would have failed.
+- **«Update» pauses the music when the installer starts**, not before a
+  download that can take a minute.
+- **The update notice survives a restart.** The version found lived only in
+  memory, and the startup check is skipped within 30 minutes of the last one,
+  so reopening Aether hid it for half an hour. A found version is now
+  remembered and forces the startup check.
+- **«Check now» says «You have the latest version»** when it finds nothing,
+  instead of just re-enabling the button.
+
+### Fixed — network shares and a busy database
+
+- **«The database refused a request» no longer stands in for a network
+  fault.** `SQLITE_CANTOPEN`, `SQLITE_PROTOCOL` and `SQLITE_IOERR_LOCK` fell
+  into the catch-all, whose message says the fault is almost always Aether's;
+  they now say network share, disk, or busy. The favourite and rating commands,
+  which built that error by hand, go through the same classifier, and a
+  correction on a track that no longer exists says so instead of blaming the
+  database.
+- **More ways a share goes away are recognised**: a mapped drive that is not
+  reconnected yet (2250), no network at all (1222), and a share that rejects
+  the credentials (1219, 1244, 1326).
+- **The window no longer freezes behind a stuck lock.** Synchronous commands
+  run on the window's thread; when whoever holds the library is waiting on a
+  dead disk they now give up after four seconds with «the database is busy»
+  instead of waiting for ever. The player bar no longer disappears when that
+  happens — and full screen no longer closes — because a track could not be
+  re-read: the last known one is shown.
+- **Writing old tags back into files releases the library while it writes**,
+  instead of holding it for the whole run over thousands of files.
+- **The same folder is watched once**, however it was spelled: `D:\Musica`,
+  `d:\musica` and `D:\Musica\` used to be three watched folders.
+- The network-share message pointed to a setting that does not exist; it now
+  says what is going on and where the path can be read.
+
+### Fixed — the renderer no longer burns a core while you look at a list
+
+Albums and Tracks kept the renderer at 15–20% of a core with nothing moving on
+screen. The cause was the «More on the way» sentinel at the bottom of every
+paged list: its shimmer animates `background-position`, which the stylesheet
+claimed the compositor handles alone. It does not — it repaints every frame,
+off screen included. The shimmer now pauses until the sentinel is within
+reach of the viewport; measured after the change, the renderer idles near
+zero.
+
+### Fixed — keys go to the control that has focus
+
+The arrows on the volume slider moved the track by five seconds instead of
+changing the volume, Space on a checkbox or a button played or paused, every
+tap in the lyrics sync editor also paused the music, and Escape in a menu
+closed the menu *and* what was under it. Global shortcuts now step aside for
+sliders, radios, checkboxes, switches, focused buttons and anything inside a
+modal, and the components that consume a key stop it where they take it.
+
+### Fixed — replacing the queue can be undone
+
+Enter on a folder replaced a 200-track queue with one track, with no way back.
+Replacing a long queue, a queue you built by hand, or pressing «Clear» now
+shows a notice with **Undo**, which brings back the tracks, the order, the
+position in the track and whether it was playing. Replacing one album with
+another stays silent: that is almost always what you meant.
+
+The notice also shows over full screen. It used to be drawn in the page
+underneath, which full screen covers and makes `inert`, so the Undo could be
+neither seen nor pressed — nor could an error from a track started there.
+
+### Fixed — the queue plays what it says
+
+- **«Repeat one» repeats.** It played the track twice and stopped. The engine
+  announced a track only when its id changed, and that announcement is what
+  prepares the next one; the same track starting again went unannounced. A
+  queue with the same track twice in a row (`A, A, B`) had the same fault from
+  the other side: B never played. The engine now announces every *listen*, and a
+  seek within one is still not a new one.
+- **Dragging to reorder works again**, in the queue, in hand-made playlists
+  and in the theme Studio. On Windows the drop never arrived: the window
+  accepts files from the system, and with that on, WebView2 keeps HTML5 drops
+  for itself. The rows now follow the pointer instead; dropping files on the
+  window is unchanged. In the Studio that covers both gestures — reordering the
+  layers of a surface, and carrying a widget or a zone from the palette into a
+  slot of the shell — and the slot under the pointer is the one that lights up,
+  even while the list scrolls itself near the edge.
+- **A removed or reordered next track no longer plays.** The engine kept the
+  track it had been given as next until a new one was opened, and if that one
+  failed to open it kept it for good: remove the next track, and it played
+  anyway while the bar showed another. The stale one is now dropped at once,
+  and when the new next cannot be opened, the queue stops on it — shown, with
+  the error — instead of replaying the track that just ended on «Play».
+- **A track that won't open no longer splits the player in three.** Playing a
+  missing file moved the queue but kept the old track in the speakers and the
+  old queue on screen. Now the queue is the one you asked for, the bar shows
+  the track that failed, stopped, and the error says why.
+- **Removing the paused track from the queue no longer starts the music.** The
+  next one is loaded at its start, still paused.
+- **A seek near the end with crossfade on no longer runs the clock past the
+  track.** The incoming track was announced halfway through the full
+  crossfade even when the outgoing one had less left than that: with the
+  12-second crossfade, a seek to the last second played the next track for
+  five seconds while the bar showed the previous one at 0:27 of 0:22, and the
+  queue moved late. It is now announced halfway through the overlap that
+  actually happens.
+- Time spent paused after «Undo» on a paused queue no longer counts as
+  listening.
+- **→ no longer sends a track back to its start** when the database has no
+  duration for it. A duration of zero means «not known», and it was taken for
+  «ends now», so that track could not be crossed at all.
+
+### Fixed — the last seconds of a track
+
+Three faults, all of them living in the same handful of seconds, and all of
+them for the same reason: **the track you hear and the track Aether is decoding
+are not the same track.** The ring buffer between the decoder and the sound card
+is sized for the worst case a device could ask for — 192 kHz across eight
+channels — so on an ordinary 48 kHz stereo output the same samples are over
+three seconds of music. For the last three seconds of every track, the decoder
+has already finished it and moved on to the next.
+
+- **Dragging the scrubber in the last seconds of a track no longer breaks
+  playback.** The seek was applied to whatever the decoder had open, which by
+  then was the *next* track: you heard that one, from the point you had asked
+  for, while the window still showed the title of the one before and the cursor
+  ran off the end of the bar — 3.9 seconds into a track that lasts 2. Then that
+  track ended with nothing left to play, and nothing happened: no new track, no
+  stop, the queue frozen and the button still saying «playing». Only pressing
+  something by hand got the music back. The seek now lands on the track you can
+  hear — Aether keeps its decoder for as long as one of its samples is still
+  waiting to be heard — and the one that was queued up goes back to being the
+  next one, from its beginning. Where it cannot (two tracks shorter than the
+  buffer, one after the other), the seek is dropped rather than misapplied.
+- **A short track no longer stops the music.** A track shorter than those three
+  seconds is decoded in full before the next one is ready, so the engine reached
+  the end of it with nothing to attach, and what arrived a moment later arrived
+  into a state nothing could leave. An album with a short intro or an interlude
+  died on that track. The track that arrives late is now attached at once —
+  which costs no gap, because the buffer is still full of the track that just
+  finished.
+- **Every track after the first no longer plays twice.** Same cause from the
+  other end: the pre-loader is nudged twice at each start, and the second nudge
+  handed over a track the engine had already taken, which then sat in the chamber
+  behind itself. It now checks what is already loaded before loading it again.
+- **The queue ends after a seek.** Every seek left a debt of a few thousand
+  frames between what had been pushed towards the speakers and what was counted
+  as played: the callback lowered the «buffer emptied» flag before emptying it,
+  so the decoding thread started again while the flush was still running and had
+  its first samples eaten uncounted. Tracks in the middle of a queue never
+  noticed — moving on is the decoder finishing, not a count — but the *end* of a
+  queue is that count, so the last track stopped a breath from the end and
+  stayed there, playing nothing, for good.
+
+### Fixed — dropping files on the window
+
+Everything that was not a skin was added as a watched folder — including a
+`.m3u8` and every MP3. Folders are still added; playlists open the import,
+tracks that are already in the library go to the queue, and files the library
+does not know get a sentence saying what to do instead of silence.
+
+### Fixed — full screen at the default window size
+
+With lyrics and queue both open, the centre column dropped under 300 px: title
+cut mid-word, one word of artist per line, transport under the lyrics panel.
+Below a width set in the stylesheet the two side panels now take turns. With
+the spectrum on, the controls sit on a panel so the times stay readable over
+the bars. Focus moves into the screen when it opens and back when it closes,
+and the page underneath is `inert` so Tab no longer walks an invisible list.
+
+### Fixed — smaller things
+
+- The window buttons kept the startup language after switching it.
+- The profile note said «your choices, not your library», which 2.3.1 made
+  false.
+- **The first click on «Apply» after typing a folder into an imported profile
+  is no longer lost.** Leaving the field redrew the plan, which disabled the
+  button between the press and the release — so the click landed on a disabled
+  button and nothing happened. Redrawing the plan no longer disables «Apply»:
+  it only ever changed the numbers on screen, never what gets applied.
+- The confirmation before playing a large folder said the queue you are
+  listening to «cannot be put back the way it was». It can, with «Undo» in the
+  notice, and it now says so.
+- The Folders panel is a text file again: it carried a literal NUL byte, which
+  made git treat it as binary and hide every change to it.
+- The first-run screen closed the moment the folder was written, before the
+  scan progress and the «Listen» button it exists to show.
+- **The first-run screen says what happened.** It covers the window, and with
+  it the notices: a scan error was drawn underneath, and a scan that found
+  nothing just turned «Continue» back on. Notices now show inside it, and a
+  read with no tracks says so, naming the folders that did not answer. A
+  folder dropped on it joins its list, ticked — it used to be added behind it
+  and dropped again by «Continue». A long path no longer pushes the list out
+  of the card.
 
 ## [2.3.1] — 2026-09-10
 

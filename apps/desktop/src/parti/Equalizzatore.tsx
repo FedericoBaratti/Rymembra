@@ -354,11 +354,18 @@ export function PannelloEq({
   onErrore: (e: unknown) => void;
 }) {
   useEffect(() => {
+    // In cattura e fermato: l'Escape delle scorciatoie globali, iscritto prima
+    // su `window`, altrimenti chiudeva **anche** quel che stava sotto — la
+    // ricerca, l'album aperto — insieme al pannello.
     const suTasto = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onChiudi();
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      onChiudi();
     };
-    window.addEventListener("keydown", suTasto);
-    return () => window.removeEventListener("keydown", suTasto);
+    window.addEventListener("keydown", suTasto, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", suTasto, { capture: true });
   }, [onChiudi]);
 
   return (

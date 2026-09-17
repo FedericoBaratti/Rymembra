@@ -115,7 +115,21 @@ pub(super) fn nome_normalizzazione(normalizzazione: Normalizzazione) -> &'static
     nome
 }
 
+/// Il volume da solo, per l'evento `riproduzione:volume`.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatoVolume {
+    volume: f32,
+    muto: bool,
+}
+
 /// Cambia volume e silenziamento.
+///
+/// **Non manda [`StatoRiproduzione`](super::StatoRiproduzione)**, come
+/// [`equalizzatore`] e per la stessa ragione: arriva a ogni passo di un cursore,
+/// e comporre lo stato intero voleva dire leggere il brano corrente dal database
+/// per ogni passo, e ridisegnare l'applicazione intera con quel che ne usciva.
+/// Parte `riproduzione:volume`, che sono due campi.
 #[tauri::command]
 pub fn volume(
     app: tauri::AppHandle,
@@ -136,7 +150,13 @@ pub fn volume(
         stato
             .volume_da_salvare
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        manda_stato(&app, lettore);
+        app.emetti(
+            "riproduzione:volume",
+            StatoVolume {
+                volume: lettore.volume.volume,
+                muto: lettore.volume.muto,
+            },
+        );
         Ok(())
     })
     .map_err(errore)

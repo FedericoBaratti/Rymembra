@@ -1,5 +1,5 @@
 /**
- * Il giro guidato: dieci riflettori sui comandi veri.
+ * Il giro guidato: un benvenuto, e dieci riflettori sui comandi veri.
  *
  * # Perché non un carosello
  *
@@ -130,7 +130,7 @@ export type Ancora =
  * l'unione larga il compilatore avrebbe preteso due coppie di chiavi che
  * nessuno legge.
  */
-export type NomePasso = Exclude<Ancora, "coda" | "testo">;
+export type NomePasso = Exclude<Ancora, "coda" | "testo"> | "benvenuto";
 
 /**
  * Come si trova ogni ancora nel documento.
@@ -166,7 +166,17 @@ const SELETTORE: Record<Ancora, string> = {
  * `onPrepara`. Un nome in più sarebbe stato un terzo elenco da tenere allineato
  * con gli altri due.
  */
-const COPIONE: readonly (readonly [NomePasso, ...Ancora[]])[] = [
+const COPIONE: readonly (
+  | readonly ["benvenuto"]
+  | readonly [Exclude<NomePasso, "benvenuto">, ...Ancora[]]
+)[] = [
+  // Il solo passo senza ancora, ed è voluto: dieci riflettori dicono **dove**
+  // stanno le cose, e nessuno diceva **cosa** fa il programma. Chi apre Aether
+  // per la prima volta veniva portato sulla barra laterale senza sapere che
+  // cosa stesse guardando. Il fumetto sta al centro e il velo non si scurisce:
+  // non c'è niente da illuminare, e un velo scuro senza buco è la cosa che il
+  // resto di questo file evita.
+  ["benvenuto"],
   ["navigazione"],
   ["ricerca"],
   ["riga-brano"],
@@ -197,8 +207,11 @@ const DISTACCO = 12;
 
 /** La misura di un riflettore, in coordinate di finestra. */
 interface Posa {
-  /** Il rettangolo del bersaglio: `top`, `left`, `width`, `height` in pixel. */
-  buco: { top: number; left: number; width: number; height: number };
+  /**
+   * Il rettangolo del bersaglio: `top`, `left`, `width`, `height` in pixel.
+   * `null` per il benvenuto, che non illumina niente.
+   */
+  buco: { top: number; left: number; width: number; height: number } | null;
   /** Il `border-radius` calcolato del bersaglio, copiato com'è. */
   raggio: string;
   /** Dove si posa il fumetto. */
@@ -333,6 +346,30 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
 
     prepara.current(passo[0]);
 
+    // Il benvenuto: niente da cercare, il fumetto al centro della finestra.
+    if (passo[0] === "benvenuto") {
+      const alCentro = () => {
+        if (!vivo) return;
+        const suo = radice.current?.getBoundingClientRect();
+        setPosa({
+          buco: null,
+          raggio: "0",
+          fumetto: {
+            top: Math.max(DISTACCO, (window.innerHeight - (suo?.height ?? 0)) / 2),
+            left: Math.max(DISTACCO, (window.innerWidth - (suo?.width ?? 0)) / 2),
+          },
+        });
+      };
+      cercando = window.requestAnimationFrame(alCentro);
+      window.addEventListener("resize", alCentro);
+      return () => {
+        vivo = false;
+        window.cancelAnimationFrame(cercando);
+        window.removeEventListener("resize", alCentro);
+      };
+    }
+    const ancore = passo;
+
     const misura = () => {
       if (!vivo || bersaglio === null) return;
       const r = bersaglio.getBoundingClientRect();
@@ -354,7 +391,7 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
 
     const cerca = () => {
       if (!vivo) return;
-      bersaglio = trova(passo);
+      bersaglio = trova(ancore);
       if (bersaglio === null) {
         tentativi += 1;
         if (tentativi <= FOTOGRAMMI_DI_ATTESA) {
@@ -428,7 +465,7 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
           perché non ha niente da dire — quel che c'è da leggere sta nel
           fumetto, che è il dialogo. */}
       <div className="giro-velo" aria-hidden="true">
-        {posa !== null && (
+        {posa !== null && posa.buco !== null && (
           <div
             className="giro-buco"
             style={{

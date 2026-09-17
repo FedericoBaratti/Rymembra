@@ -274,6 +274,21 @@ catalogo! {
     FsDiskFull = "fs.diskFull", Fs, Error, Never, None, { path: Option<String> };
     /// Il file è in uso da un altro processo.
     FsInUse = "fs.inUse", Fs, Warning, Always, None, { path: String };
+    /// Il Cestino non ha voluto prendere questo file.
+    ///
+    /// Un codice suo e non [`Self::FsWriteFailed`] perché non è una scrittura
+    /// andata male, ed è l'unico guasto del programma che ha **due** cause
+    /// comuni e nessun modo di distinguerle: su Windows `IFileOperation`
+    /// riporta un'operazione «interrotta» senza dire da cosa. La prima causa è
+    /// un file aperto da qualcun altro; la seconda è che quel disco un Cestino
+    /// non ce l'ha — una chiavetta, una cartella di rete — dove Esplora risorse
+    /// propone di cancellare e basta, e Aether non lo fa al posto di nessuno.
+    /// Il messaggio le dice tutte e due, perché indovinare quale sia vorrebbe
+    /// dire mandare metà delle persone a chiudere un programma che non c'entra.
+    ///
+    /// `Always`: chiudere l'altro programma e riprovare funziona, e per l'altra
+    /// causa il tentativo non costa niente.
+    FsTrashFailed = "fs.trashFailed", Fs, Warning, Always, None, { path: String, detail: Option<String> };
     /// Percorso non valido per questo sistema.
     FsPathInvalid = "fs.pathInvalid", Fs, Error, Never, None, { path: String };
     /// Lettura fallita.

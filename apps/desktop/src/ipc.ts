@@ -185,6 +185,19 @@ export interface Numeri {
   durationMs: number;
 }
 
+/**
+ * Quel che «Togli dalla libreria» ha portato via.
+ *
+ * `torneranno` non è una diagnostica: la libreria è un indice del disco, e un
+ * file che sta ancora sotto una cartella sorvegliata rientra alla prima
+ * scansione. Dirlo subito è l'unico modo perche' chi ha appena premuto non lo
+ * scopra fra una settimana.
+ */
+export interface Cancellazione {
+  tolti: number;
+  torneranno: number;
+}
+
 /** Lo stato all'avvio. */
 /**
  * Una cartella che il sistema dichiara musicale e che contiene davvero qualcosa.
@@ -245,6 +258,19 @@ export interface StatoUiCartelle {
   aperte: string[];
   /** Il nodo su cui stava il fuoco, se ce n'era uno. */
   scelta: string | null;
+}
+
+/** I percorsi trascinati sulla finestra, divisi per destinazione. */
+export interface Trascinati {
+  cartelle: string[];
+  skin: string[];
+  playlist: string[];
+  /** I brani in libreria dei file audio, nell'ordine in cui sono arrivati. */
+  brani: number[];
+  /** File audio che la libreria non conosce. */
+  fuoriLibreria: number;
+  /** Né cartelle né file che Aether sappia usare. */
+  ignorati: number;
 }
 
 export interface Avvio {
@@ -2536,6 +2562,32 @@ export interface ParolaTesto {
 }
 
 /** Una riga di testo con il suo tempo. */
+/** Una voce del catalogo dei testi, come la vede chi sceglie a mano. */
+export interface CandidatoTesto {
+  id: number;
+  titolo: string;
+  artista: string;
+  album: string | null;
+  durataMs: number | null;
+  sincronizzato: boolean;
+  strumentale: boolean;
+  /** Le prime due righe del testo, per riconoscerlo senza sceglierlo. */
+  anteprima: string | null;
+}
+
+/** Quel che torna da `testoCandidati`. */
+export interface CandidatiTesto {
+  /**
+   * Si è potuto chiedere al catalogo.
+   *
+   * Spento, `voci` è vuoto perché nessuno ha chiesto — e la finestrella lo dice
+   * invece di far credere che il catalogo non conosca il brano.
+   */
+  rete: boolean;
+  /** Le voci, nell'ordine in cui il catalogo le ha date. */
+  voci: CandidatoTesto[];
+}
+
 export interface RigaTesto {
   /** Quando comincia, in millisecondi. */
   ms: number;
@@ -2543,6 +2595,11 @@ export interface RigaTesto {
   testo: string;
   /** I tempi delle parole, quando il file li porta. Quasi sempre vuoto. */
   parole: ParolaTesto[];
+  /**
+   * Le righe che il file mette allo stesso tempo di questa — una traduzione, la
+   * pronuncia — una per riga. Si accendono con lei, e si leggono sotto.
+   */
+  secondaria: string | null;
 }
 
 /**
@@ -2618,6 +2675,15 @@ export interface StatoTesti {
   rimasti: number;
   /** I quattro numeri, contati sui brani e non sui file. */
   copertura: CoperturaTesti;
+  /**
+   * Quanti brani una passata di adesso chiederebbe al catalogo.
+   *
+   * È questo, e non `copertura.mancanti`, a dire se «Riempi la libreria» abbia
+   * qualcosa da fare: un brano col testo piatto non è fra i mancanti ma i tempi
+   * gli mancano e la passata lo chiede; uno scartato o chiesto negli ultimi
+   * quattordici giorni è fra i mancanti e la passata lo salta.
+   */
+  inCoda: number;
 }
 
 /** L'avanzamento di una passata sui testi, in brani. */
@@ -2738,6 +2804,21 @@ export const ipc = {
   avvio: () => invoke<Avvio>("avvio"),
   impostaCartelle: (cartelle: string[]) =>
     invoke<void>("imposta_cartelle", { cartelle }),
+  // I percorsi lasciati cadere sulla finestra, divisi dal nucleo per quel che
+  // se ne fa: è lui a chiedere al filesystem se un percorso è una cartella.
+  smistaTrascinati: (percorsi: string[]) =>
+    invoke<Trascinati>("smista_trascinati", { percorsi }),
+  // Il file di un brano, selezionato in Esplora risorse. Un identificativo e non
+  // un percorso: il percorso lo legge il nucleo.
+  branoMostraNellaCartella: (id: number) =>
+    invoke<void>("brano_mostra_nella_cartella", { id }),
+  // Le due cancellazioni, e la differenza sta tutta nel nome: la prima toglie
+  // la riga e lascia il file, la seconda manda il file nel Cestino e toglie la
+  // riga solo per quelli che ci sono arrivati. Identificativi e mai percorsi,
+  // per la stessa ragione di «mostra nella cartella».
+  braniTogli: (brani: number[]) =>
+    invoke<Cancellazione>("brani_togli", { brani }),
+  braniElimina: (brani: number[]) => invoke<number>("brani_elimina", { brani }),
   // Le cartelle musicali del sistema che contengono davvero qualcosa. Elenco
   // vuoto anche quando la ricerca è scaduta: per la finestra i due casi si
   // disegnano uguali — non c'è niente da proporre — e distinguerli vorrebbe
@@ -2832,10 +2913,28 @@ export const ipc = {
   // `rimappature` è vuoto la prima volta: allora il piano ne **propone** una
   // per ogni radice che di qua non esiste, e lo si richiama con quelle
   // compilate per vedere quanti percorsi seguirebbero.
-  profiloPiano: (percorso: string, rimappature: RimappaturaRadice[] = []) =>
-    invoke<PianoProfilo>("profilo_piano", { percorso, rimappature }),
-  profiloImporta: (percorso: string, rimappature: RimappaturaRadice[] = []) =>
-    invoke<PianoProfilo>("profilo_importa", { percorso, rimappature }),
+  // `unisciComunque`: la libreria del profilo è di chi importa anche se le due
+  // identità non si riconoscono. Di serie no, e il piano dice sempre se lo sono.
+  profiloPiano: (
+    percorso: string,
+    rimappature: RimappaturaRadice[] = [],
+    unisciComunque = false,
+  ) =>
+    invoke<PianoProfilo>("profilo_piano", {
+      percorso,
+      rimappature,
+      unisciComunque,
+    }),
+  profiloImporta: (
+    percorso: string,
+    rimappature: RimappaturaRadice[] = [],
+    unisciComunque = false,
+  ) =>
+    invoke<PianoProfilo>("profilo_importa", {
+      percorso,
+      rimappature,
+      unisciComunque,
+    }),
   // Rimette **solo** le preferenze e la skin attiva dall'ultima copia di
   // sicurezza. Il resto dell'importazione è additivo e non si annulla, e
   // l'interfaccia lo dice invece di promettere un ritorno che non c'è.
@@ -3287,6 +3386,14 @@ export const ipc = {
   codaRiordina: (da: number, a: number) =>
     invoke<void>("coda_riordina", { da, a }),
   codaSvuota: () => invoke<void>("coda_svuota"),
+  // L'«Annulla» dell'avviso di coda sostituita. `numero` è quello arrivato con
+  // l'evento `coda:sostituita`: `false` se nel frattempo la coda è stata
+  // sostituita di nuovo, o se è già stata rimessa — l'avviso va chiuso comunque.
+  codaRipristina: (numero: number) =>
+    invoke<boolean>("coda_ripristina", { numero }),
+  // Riempie una coda vuota senza farla partire: per il giro guidato. `false` se
+  // la coda non era vuota, e allora non ha toccato niente.
+  codaPrepara: (brani: number[]) => invoke<boolean>("coda_prepara", { brani }),
   braniPerId: (brani: number[]) => invoke<Brano[]>("brani_per_id", { brani }),
 
   // ── il backup su Drive ───────────────────────────────────────────────────
@@ -3457,6 +3564,22 @@ export const ipc = {
   // Va chiamato solo su un gesto: costa una richiesta a un servizio pubblico.
   testoCercaDiNuovo: (id: number) =>
     invoke<TestoBrano>("testo_cerca_di_nuovo", { id }),
+  // Tutte le voci del catalogo per questo brano, senza nessuna scelta: la fa
+  // chi guarda. Con la rete dei testi spenta torna `rete: false` e nessuna
+  // voce. Anche questo costa delle richieste, e va chiamato solo su un gesto.
+  testoCandidati: (id: number) =>
+    invoke<CandidatiTesto>("testo_candidati", { id }),
+  // Il testo che torna è quello che il pannello deve mostrare adesso: la voce
+  // scelta, a meno che un sidecar o un testo sincronizzato a mano vincano.
+  testoScegli: (id: number, candidato: number) =>
+    invoke<TestoBrano>("testo_scegli", { id, candidato }),
+  // «Nessuno di questi»: toglie il testo arrivato dal catalogo, e il brano resta
+  // segnato come cercato.
+  testoRifiuta: (id: number) => invoke<TestoBrano>("testo_rifiuta", { id }),
+  // Un pannello del testo si apre o si chiude. Il nucleo precarica il testo del
+  // brano dopo solo mentre almeno un pannello è aperto: vedi `PRIVACY.md`.
+  testiPannello: (aperto: boolean) =>
+    invoke<void>("testi_pannello", { aperto }),
   testiStato: () => invoke<StatoTesti>("testi_stato"),
   testiRete: (attivo: boolean) => invoke<StatoTesti>("testi_rete", { attivo }),
   // Torna subito: il lavoro va su un filo suo e l'avanzamento arriva con
@@ -3494,7 +3617,11 @@ export const ipc = {
       testo: string;
       parole: { ms: number; testo: string }[];
     }[],
-  ) => invoke<TestoBrano>("testo_salva", { id, righe }),
+  ) =>
+    invoke<{ testo: TestoBrano; fileNonScritto: ErroreIpc | null }>(
+      "testo_salva",
+      { id, righe },
+    ),
   // Il verso opposto, e mai automatico: manda a LRCLIB il testo che si è
   // sincronizzato a mano, uno per volta e solo dopo averlo visto. Ci mette
   // secondi, e non per la rete — il catalogo chiede una prova di lavoro. Il

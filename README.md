@@ -127,7 +127,12 @@ a longer listening history than the public API offers.
   single audio engine (`cpal` + `symphonia`) spread over three threads, with no
   shared lock at all between the decoder and the audio callback.
 - **A library on SQLite**: incremental scanning with detection of moved files,
-  manual and automatic playlists, ratings, favorites and listening history.
+  manual and automatic playlists, ratings, favorites and listening history. A
+  track can leave it too: «Remove from library» takes the row out and leaves
+  the file where it is, «Delete from disk» sends the file to the Recycle Bin,
+  and both ask first. A correction you made by hand now survives its track
+  disappearing and coming back — an unplugged external disk, a watched folder
+  removed and added again.
 - **Metadata enrichment** from MusicBrainz, written **into the library and
   never into your files**. The search is carried out on the complete album
   rather than on the individual track; in the absence of matches that are
@@ -146,6 +151,9 @@ a longer listening history than the public API offers.
   every other player can still read. A constant drift is corrected with two
   buttons that are **always** reachable, not only when the fit is judged poor:
   a text that sits inside the right duration can still be half a second early.
+  When the catalogue holds more than one answer, «Other lyrics» lists them all
+  with their first lines, and what you choose stays chosen — «none of these»
+  included, which is remembered rather than asked again.
 - **Affinity**: what plays after a record ends is chosen from three independent
   layers — the sound of your files, analyzed locally; what you have listened to;
   and the cultural proximity read from ListenBrainz. Each missing layer removes
@@ -313,7 +321,7 @@ and it is a patch.
 ### Commands
 
 ```bash
-# The test suite: about 1840 tests, runnable with no network connection
+# The test suite: about 1900 tests, runnable with no network connection
 cargo test --workspace
 ```
 

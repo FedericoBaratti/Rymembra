@@ -577,7 +577,7 @@ function Schermo({ ctx }: { ctx: ContestoWidget }) {
 
       <header className="testa">
         <div className="chi-suona">
-          <div className="occhiello hero-eyebrow">{t("np.fromAlbum")}</div>
+          <div className="occhiello hero-eyebrow">{t("np.nowPlaying")}</div>
         </div>
         <div className="comandi">
           <button type="button" className="tasto icon-btn">

@@ -38,6 +38,7 @@ import {
   ritrattoEffetto,
 } from "./valori";
 import { t } from "../lingue";
+import { usePresaPerRiordino } from "../riordino";
 import { descrizioneParametro } from "./vocabolario";
 
 /** Gli angoli che un `chamfer` può tagliare, come li scrive il documento. */
@@ -293,6 +294,8 @@ export function Livelli({
 }) {
   const [apertoElenco, setApertoElenco] = useState(false);
   const [preso, setPreso] = useState<number | null>(null);
+  /** Dove cadrebbe il livello che si sta trascinando. */
+  const [sopra, setSopra] = useState<number | null>(null);
   const [aperto, setAperto] = useState<number | null>(null);
 
   /** Solo gli effetti che si possono impilare come sfondo. */
@@ -331,6 +334,22 @@ export function Livelli({
     onCambia(nuovi);
   };
 
+  // Col puntatore, non col trascinamento HTML5: dentro la finestra di Aether
+  // quello non arriva mai al rilascio, e la pila si prendeva ma non si
+  // riordinava. Vedi `riordino.ts`, che è lo stesso gesto della coda.
+  const presa = usePresaPerRiordino({
+    onPresa: (indice) => {
+      setPreso(indice);
+      if (indice === null) setSopra(null);
+    },
+    onMira: setSopra,
+    onLascia: (a) => {
+      if (preso !== null) sposta(preso, a);
+      setPreso(null);
+      setSopra(null);
+    },
+  });
+
   return (
     <div className="livelli">
       <div className="testa-sezione">
@@ -338,7 +357,10 @@ export function Livelli({
         <span className="da-dove">{t("studio.layers.fromBottom")}</span>
       </div>
 
-      <div className="pila">
+      {/* `data-elenco`: ogni livello ha il suo guscio — sotto di lui si aprono
+          le manopole — quindi i livelli non sono fratelli, e senza questo il
+          riordino non riconoscerebbe due righe della stessa pila. */}
+      <div className="pila" data-elenco>
         {livelli.map((livello, indice) => {
           const nome = nomeEffetto(livello, motivi) ?? "?";
           const costo = costoDi(livello, effetti, motivi);
@@ -351,23 +373,11 @@ export function Livelli({
                 // L'indice è la chiave perché è l'identità: due `solid` nella
                 // stessa pila sono due livelli diversi e nient'altro li distingue.
                 className="livello"
-                draggable
+                data-riordino={indice}
                 data-preso={preso === indice || undefined}
+                data-sopra={(sopra === indice && preso !== indice) || undefined}
                 data-aperto={apertoQui || undefined}
-                onDragStart={(e) => {
-                  setPreso(indice);
-                  e.dataTransfer.effectAllowed = "move";
-                }}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = "move";
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (preso !== null) sposta(preso, indice);
-                  setPreso(null);
-                }}
-                onDragEnd={() => setPreso(null)}
+                onPointerDown={(e) => presa(e, indice)}
               >
                 <span className="maniglia" aria-hidden="true">
                   <Icona nome="i-grip" dim={12} />

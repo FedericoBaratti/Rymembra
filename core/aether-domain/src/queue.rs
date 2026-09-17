@@ -77,6 +77,21 @@ pub enum Step {
 /// ritornello.
 pub const RIAVVIO_SOTTO_MS: u64 = 3_000;
 
+/// Quel che [`Queue::remove_tracks`] ha tolto.
+///
+/// Due campi e non un `bool` solo: chi chiama deve decidere due cose diverse —
+/// se vale la pena riscrivere e ripubblicare la coda (`quante`), e se il motore
+/// va fermato perché quel che suonava non è più in elenco (`cera_il_corrente`)
+/// — e dedurre la prima dalla seconda direbbe «niente da fare» proprio nel caso
+/// più comune, cioè quando si toglie un brano che in quel momento non suonava.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Tolti {
+    /// Quante occorrenze sono sparite. Zero vuol dire che la coda non è cambiata.
+    pub quante: usize,
+    /// Fra le occorrenze tolte c'era quella che stava suonando.
+    pub cera_il_corrente: bool,
+}
+
 /// La coda di riproduzione.
 ///
 /// Gli invarianti, mantenuti da ogni metodo: `order` è sempre una permutazione
@@ -294,6 +309,40 @@ impl Queue {
             (Some(pos), _) => Some(pos.min(self.order.len().saturating_sub(1))),
             (None, _) => None,
         };
+    }
+
+    /// Toglie **ogni** occorrenza di questi brani.
+    ///
+    /// Serve a chi cancella un brano dalla libreria. La coda è fatta di
+    /// identificativi e vive in `settings` come JSON, non in una tabella:
+    /// nessuna chiave esterna la ripulisce, quindi una riga tolta dal database
+    /// resterebbe qui come un numero che non apre più niente — e il motore ci
+    /// inciamperebbe alla fine del brano in corso, restituendo un
+    /// `playback.sourceUnavailable` al posto della canzone dopo.
+    ///
+    /// Ogni occorrenza, perché la stessa canzone può stare due volte nella
+    /// stessa coda — accodarla due volte è legittimo — e toglierne una sola
+    /// lascerebbe indietro proprio il caso che ha fatto scrivere questa
+    /// funzione.
+    ///
+    /// Si scorre **dall'ultimo al primo**: [`Self::remove`] ricompatta gli
+    /// indici di quel che sta dopo, e andando in avanti ogni rimozione farebbe
+    /// saltare l'elemento seguente.
+    ///
+    /// Il corrente si legge **prima** di cominciare: dopo la prima rimozione è
+    /// già un altro, e la domanda a cui rispondere è «quello che stava suonando
+    /// se n'è andato?».
+    pub fn remove_tracks(&mut self, ids: &[i64]) -> Tolti {
+        let corrente = self.current();
+        let mut esito = Tolti::default();
+        for indice in (0..self.tracks.len()).rev() {
+            if self.tracks.get(indice).is_some_and(|id| ids.contains(id)) {
+                self.remove(indice);
+                esito.quante = esito.quante.saturating_add(1);
+            }
+        }
+        esito.cera_il_corrente = corrente.is_some_and(|id| ids.contains(&id));
+        esito
     }
 
     /// Sposta un brano dentro l'ordine di riproduzione.
@@ -718,6 +767,53 @@ mod prove {
     fn togliere_l_ultimo_brano_svuota() {
         let mut q = coda(1);
         q.remove(0);
+        assert!(q.is_empty());
+        assert_eq!(q.current(), None);
+        assert_eq!(q.advance(true), Step::Stop);
+    }
+
+    #[test]
+    fn cancellare_un_brano_lo_toglie_da_tutte_le_sue_occorrenze() {
+        let mut q = Queue::new();
+        q.play_tracks(vec![1, 2, 1, 3, 1], 0, 0);
+        let esito = q.remove_tracks(&[1]);
+        assert_eq!(esito.quante, 3);
+        assert_eq!(q.in_play_order(), vec![2, 3]);
+    }
+
+    #[test]
+    fn cancellare_dice_se_ha_portato_via_il_corrente() {
+        let mut q = coda(4);
+        q.advance(true);
+        assert_eq!(q.current(), Some(2));
+        // Un brano che non suonava: la coda cambia, il motore no.
+        let altrove = q.remove_tracks(&[4]);
+        assert_eq!(altrove.quante, 1);
+        assert!(!altrove.cera_il_corrente);
+        assert_eq!(q.current(), Some(2));
+        // Quello che suonava: il seguente scivola sotto il cursore, come per
+        // `remove`, e chi chiama sa che deve intervenire.
+        let suo = q.remove_tracks(&[2]);
+        assert!(suo.cera_il_corrente);
+        assert_eq!(q.current(), Some(3));
+    }
+
+    #[test]
+    fn cancellare_brani_che_nella_coda_non_ci_sono_non_la_tocca() {
+        let mut q = coda(3);
+        let prima = q.clone();
+        let esito = q.remove_tracks(&[99, 100]);
+        assert_eq!(esito.quante, 0);
+        assert!(!esito.cera_il_corrente);
+        assert_eq!(q, prima);
+    }
+
+    #[test]
+    fn cancellare_tutta_la_coda_la_svuota() {
+        let mut q = coda(3);
+        let esito = q.remove_tracks(&[1, 2, 3]);
+        assert_eq!(esito.quante, 3);
+        assert!(esito.cera_il_corrente);
         assert!(q.is_empty());
         assert_eq!(q.current(), None);
         assert_eq!(q.advance(true), Step::Stop);

@@ -21,6 +21,7 @@
 import type { CSSProperties } from "react";
 
 import { Stelle } from "../Stelle";
+import { useVolumeSottoIlDito } from "../volume";
 import { ipc, type Brano, type StatoRiproduzione } from "../ipc";
 import { Formato } from "./Formato";
 import { Icona } from "./Icone";
@@ -55,6 +56,13 @@ export function Giudizio({
   const comanda = (azione: Promise<void>) => {
     azione.catch(onErrore);
   };
+
+  // Il cursore segue il dito, e il nucleo lo sente venti volte al secondo:
+  // vedi `volume.ts`.
+  const { volume, sposta: mandaVolume } = useVolumeSottoIlDito(
+    stato.volume,
+    onErrore,
+  );
 
   return (
     // L'ancora del giro guidato. Sta qui e non nelle due schermate che montano
@@ -98,13 +106,13 @@ export function Giudizio({
           min={0}
           max={1}
           step={0.01}
-          value={stato.volume}
-          style={{ "--avanzamento": `${stato.volume * 100}%` } as CSSProperties}
+          value={volume}
+          style={{ "--avanzamento": `${volume * 100}%` } as CSSProperties}
           aria-label={t("player.volume")}
           /* Muovere il volume toglie il silenziamento: chi trascina la manopola
              sta chiedendo di sentire, e lasciarla muta gli farebbe credere che
              il comando sia rotto. */
-          onChange={(e) => comanda(ipc.volume(Number(e.target.value), false))}
+          onChange={(e) => mandaVolume(Number(e.target.value))}
         />
       </div>
       {/* Ultimo figlio, e a capo da solo: nella colonna la fascia è larga

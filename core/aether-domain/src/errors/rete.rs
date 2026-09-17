@@ -37,7 +37,18 @@
 ///   cioè la share ha smesso di rispondere mentre si leggeva;
 /// - 1203 `ERROR_NO_NET_OR_BAD_PATH` — nessun provider di rete ha accettato il
 ///   percorso;
-/// - 1231 `ERROR_NETWORK_UNREACHABLE` e 1232 `ERROR_HOST_UNREACHABLE`.
+/// - 1231 `ERROR_NETWORK_UNREACHABLE` e 1232 `ERROR_HOST_UNREACHABLE`;
+/// - 1222 `ERROR_NO_NETWORK` — la rete non c'è proprio, il portatile appena
+///   svegliato prima che il Wi-Fi si riagganci;
+/// - 2250 `ERROR_NOT_CONNECTED` — la lettera mappata esiste ma non è connessa:
+///   è quel che risponde `Z:\` all'avvio di Windows, prima che la
+///   riconnessione automatica delle unità abbia finito;
+/// - 1219 `ERROR_SESSION_CREDENTIAL_CONFLICT`, 1244 `ERROR_NOT_AUTHENTICATED` e
+///   1326 `ERROR_LOGON_FAILURE` — la share c'è ma non riconosce chi bussa.
+///   Sono di rete anche loro, e il «Riprova» qui ha senso: basta aprire la
+///   share una volta in Esplora risorse, con la password, perché la seconda
+///   lettura passi. Chiamarli guasti del file vorrebbe dire «il file è
+///   danneggiato» su un NAS che chiedeva soltanto di accedere.
 ///
 /// Fuori da Windows è sempre `false`, e non per pigrizia: il bersaglio di questa
 /// applicazione desktop è Windows, gli errori di rete POSIX (`ENETDOWN`,
@@ -50,7 +61,22 @@
 pub fn e_di_rete(err: &std::io::Error) -> bool {
     matches!(
         err.raw_os_error(),
-        Some(51 | 53 | 55 | 59 | 64 | 67 | 121 | 1203 | 1231 | 1232)
+        Some(
+            51 | 53
+                | 55
+                | 59
+                | 64
+                | 67
+                | 121
+                | 1203
+                | 1219
+                | 1222
+                | 1231
+                | 1232
+                | 1244
+                | 1326
+                | 2250
+        )
     )
 }
 
@@ -69,7 +95,9 @@ mod prove {
     #[cfg(windows)]
     #[test]
     fn i_numeri_della_share_si_riconoscono_e_gli_altri_no() {
-        for numero in [51, 53, 55, 59, 64, 67, 121, 1203, 1231, 1232] {
+        for numero in [
+            51, 53, 55, 59, 64, 67, 121, 1203, 1219, 1222, 1231, 1232, 1244, 1326, 2250,
+        ] {
             assert!(
                 e_di_rete(&std::io::Error::from_raw_os_error(numero)),
                 "il codice {numero} viene da una share che non risponde"

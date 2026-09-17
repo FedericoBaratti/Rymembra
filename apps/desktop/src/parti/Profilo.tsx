@@ -36,7 +36,7 @@
  * l'esportazione dice quali chiavi ha lasciato indietro, e chi ne riconosce una
  * che invece voleva può dirlo.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
@@ -107,12 +107,42 @@ export function Profilo({
     piano: PianoProfilo;
   } | null>(null);
   const [inVolo, setInVolo] = useState(false);
+  /**
+   * Un piano si sta rifacendo: i campi non si toccano, ma «Applica» sì.
+   *
+   * Separato da `inVolo` per una ragione precisa. Rifare il piano parte
+   * dall'`onBlur` del campo di destinazione, cioè **mentre** si clicca su
+   * «Applica»: fra il premere e il rilasciare il pulsante diventava `disabled`,
+   * e un clic su un pulsante disabilitato non è un clic. Il primo si perdeva
+   * sempre, e chi lo faceva imparava a premere due volte.
+   *
+   * «Applica» non ha bisogno del piano nuovo: il piano serve a mostrare i
+   * numeri, mentre quel che si porta al nucleo sono le `rimappature`, che sono
+   * già quelle. Si aspetta solo che il conto in volo torni — vedi `ripiana`.
+   */
+  const [ripianificando, setRipianificando] = useState(false);
+  /** Il conto del piano in volo, se ce n'è uno: `applica` lo aspetta. */
+  const pianoInVolo = useRef<Promise<void> | null>(null);
+  /**
+   * Quante volte il pannello del piano è stato chiuso.
+   *
+   * Un piano che torna dopo che si è applicato o rinunciato parla di una
+   * conferma che non c'è più, e scriverlo rimetterebbe in piedi il pannello.
+   */
+  const giro = useRef(0);
   /** L'ultima esportazione, per dire cosa ha portato e quanto pesa. */
   const [uscito, setUscito] = useState<EsportazioneProfilo | null>(null);
   /** Le destinazioni scelte per le radici che di qua non esistono. */
   const [rimappature, setRimappature] = useState<RimappaturaRadice[]>([]);
   /** Si può ancora tornare indietro dall'ultima importazione. */
   const [annullabile, setAnnullabile] = useState(false);
+  /**
+   * Chi importa ha detto che la libreria del profilo è la sua, anche con
+   * un'identità diversa. Vedi `Ambiente::unisci_comunque` nel nucleo: è la via
+   * d'uscita di chi ha esportato dal computer nuovo prima di importare il
+   * vecchio. Torna a «no» a ogni file scelto.
+   */
+  const [unisci, setUnisci] = useState(false);
   const [avanzamento, setAvanzamento] = useState<AvanzamentoProfilo | null>(
     null,
   );
@@ -156,6 +186,7 @@ export function Profilo({
       });
       if (typeof scelta !== "string") return;
       setInVolo(true);
+      setUnisci(false);
       const piano = await ipc.profiloPiano(scelta);
       setRimappature(piano.rimappature);
       setDaApplicare({ percorso: scelta, piano });
@@ -168,26 +199,48 @@ export function Profilo({
   };
 
   /** Rifà il piano con le destinazioni scelte finora. */
-  const ripiana = async (prossime: RimappaturaRadice[]) => {
+  const ripiana = async (
+    prossime: RimappaturaRadice[],
+    unisciComunque: boolean = unisci,
+  ) => {
     if (!daApplicare) return;
-    try {
-      setInVolo(true);
-      const piano = await ipc.profiloPiano(daApplicare.percorso, prossime);
-      setDaApplicare({ percorso: daApplicare.percorso, piano });
-    } catch (e) {
-      onErrore(e);
-    } finally {
-      setInVolo(false);
-    }
+    const mio = giro.current;
+    const conto = (async () => {
+      try {
+        setRipianificando(true);
+        const piano = await ipc.profiloPiano(
+          daApplicare.percorso,
+          prossime,
+          unisciComunque,
+        );
+        if (mio === giro.current) {
+          setDaApplicare({ percorso: daApplicare.percorso, piano });
+        }
+      } catch (e) {
+        onErrore(e);
+      } finally {
+        setRipianificando(false);
+      }
+    })();
+    pianoInVolo.current = conto;
+    await conto;
+    if (pianoInVolo.current === conto) pianoInVolo.current = null;
   };
 
   const applica = async () => {
     if (!daApplicare) return;
     try {
       setInVolo(true);
+      // Il piano che sta tornando riguarda le stesse `rimappature` che si sta
+      // per portare al nucleo: non cambia niente di quel che si fa, e si
+      // aspetta solo perché due comandi sulla stessa libreria non si
+      // accavallino.
+      await pianoInVolo.current;
+      giro.current += 1;
       const fatto = await ipc.profiloImporta(
         daApplicare.percorso,
         rimappature,
+        unisci,
       );
       setDaApplicare(null);
       setAnnullabile(true);
@@ -250,7 +303,7 @@ export function Profilo({
         <button
           type="button"
           className="bottone btn-ghost"
-          disabled={inVolo}
+          disabled={inVolo || ripianificando}
           onClick={() => void esporta()}
         >
           <Icona nome="i-import" dim={15} />
@@ -259,7 +312,7 @@ export function Profilo({
         <button
           type="button"
           className="bottone btn-ghost"
-          disabled={inVolo}
+          disabled={inVolo || ripianificando}
           onClick={() => void leggi()}
         >
           <Icona nome="i-import" dim={15} />
@@ -269,7 +322,7 @@ export function Profilo({
           <button
             type="button"
             className="bottone btn-ghost"
-            disabled={inVolo}
+            disabled={inVolo || ripianificando}
             onClick={() => void annulla()}
           >
             {t("profile.undo")}
@@ -336,9 +389,28 @@ export function Profilo({
           </h3>
 
           {piano.identitaDiversa && (
-            <p className="nota avviso-profilo">
-              {t("profile.otherLibrary")}
-            </p>
+            <>
+              <p className="nota avviso-profilo">
+                {unisci
+                  ? t("profile.otherLibrary.merging")
+                  : t("profile.otherLibrary")}
+              </p>
+              {/* Il piano si rifà con la scelta, così i numeri qui sotto sono
+                  quelli di quel che succederà davvero. */}
+              <label className="unisci-comunque">
+                <input
+                  type="checkbox"
+                  checked={unisci}
+                  disabled={inVolo || ripianificando}
+                  onChange={(e) => {
+                    const scelta = e.target.checked;
+                    setUnisci(scelta);
+                    void ripiana(rimappature, scelta);
+                  }}
+                />
+                <span>{t("profile.mergeAnyway")}</span>
+              </label>
+            </>
           )}
 
           {piano.rimappature.length > 0 && (
@@ -463,8 +535,11 @@ export function Profilo({
             <button
               type="button"
               className="bottone btn-ghost"
-              disabled={inVolo}
-              onClick={() => setDaApplicare(null)}
+              disabled={inVolo || ripianificando}
+              onClick={() => {
+                giro.current += 1;
+                setDaApplicare(null);
+              }}
             >
               {t("profile.leaveIt")}
             </button>

@@ -456,7 +456,10 @@ What Aether writes, and where:
   is not "your file" in the sense this section is about.
 - **The lyrics files it saves next to a track** — `name.lrc` and, when you
   time the words, `name.a2.lrc`. These are *new* files, written beside the
-  track; the track itself is not opened.
+  track; the track itself is not opened. From 2.3.2, when one of them is
+  already there and Aether is about to replace it with something different,
+  the version that was there is kept once as `name.lrc.bak` (or
+  `name.a2.lrc.bak`) instead of being overwritten.
 - **The playlists you export**, `.m3u` and `.pls`, where you ask for them.
 - **The profile archive** (`.aeprofile`), where you ask for it.
 - **The application's data folder** —
@@ -466,6 +469,21 @@ What Aether writes, and where:
 
 Nothing on that list leaves your computer, and nothing on it is a file you
 already had.
+
+### The one thing that reaches a file you already had — from 2.3.2
+
+A track's context menu ends with **«Delete from disk»**, and it does what it
+says: the file goes to the **Recycle Bin**, and the library row goes with it.
+It is the only thing in Aether that reaches a music file you already had, so
+the conditions on it are the ones you would want. It never runs by itself and
+is never part of a scan, an enrichment pass or any other background work; it
+asks first, with «Cancel» as the primary button; it goes to the Recycle Bin
+rather than being deleted, so the operating system still holds your copy; and
+when a file will not go, the row stays, because a library that claims a file
+is gone while it is still on disk is worse than one that claims too much.
+
+Its neighbour in that menu, **«Remove from library»**, does not touch the disk
+at all: it takes the row out and leaves the file exactly where it is.
 
 ### Why there is no "write the tags into my files" button
 

@@ -58,8 +58,38 @@
  * legge ancora i testi, e una schermata vuota che si apre sarebbe peggio di un
  * bottone spento che spiega. Toglierlo del tutto nasconderebbe che il posto per
  * lui c'è ed è deciso.
+ *
+ * # Testo e coda, quando non ci stanno tutti e due
+ *
+ * Tre colonne — il centro, il testo, la coda — chiedono più di milleduecento
+ * pixel perché il centro resti leggibile. Alla misura di serie della finestra,
+ * con la navigazione aperta, ne restano poco più di mille, e il centro scendeva
+ * sotto i trecento: il titolo tagliato a metà parola, l'artista una parola per
+ * riga, il trasporto sotto il pannello del testo.
+ *
+ * Sotto quella soglia i due pannelli si **alternano**: aprirne uno chiude
+ * l'altro, e se la finestra si stringe con tutti e due aperti resta quello
+ * aperto per ultimo. La soglia non è scritta qui: la dice il foglio, con una
+ * query di contenitore che accende `--un-pannello-solo` sul corpo, e questo file
+ * la legge. È la stessa regola di `parti/BarraTitolo.tsx`, che l'altezza della
+ * fascia la legge invece di saperla — e in più qui la soglia dipende dalla
+ * densità, che il foglio conosce e questo file no.
+ *
+ * Chiuso resta chiuso: il pannello tolto per far posto all'altro non torna
+ * da solo quando la finestra si riallarga. Riaprirlo da solo vorrebbe dire
+ * un pannello che compare mentre si trascina un bordo, senza che nessuno
+ * l'abbia chiesto.
+ *
+ * # Il fuoco
+ *
+ * La schermata non è una finestrella: la navigazione resta viva accanto, ed è
+ * tutto il senso di «quasi». Niente trappola del tabulatore, quindi. Però il
+ * fuoco **entra** all'apertura — chi l'ha aperta con la tastiera non deve
+ * ritrovarla attraversando la pagina che le sta sotto — e alla chiusura torna
+ * dov'era. La pagina sotto, intanto, è `inert` (lo decide `App`): è coperta, e
+ * un Tab che ci finisse dentro porterebbe il fuoco su un elenco invisibile.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { Copertina, Sfocata } from "../Copertina";
 import { RigheCoda, useRigheCoda } from "../Coda";
@@ -85,12 +115,22 @@ export function InRiproduzione({
   onPreferito,
   onVoto,
   onErrore,
+  avvisi,
 }: {
   stato: StatoRiproduzione;
   onChiudi: () => void;
   onPreferito: (brano: Brano) => void;
   onVoto: (brano: Brano, stelle: number) => void;
   onErrore: (e: unknown) => void;
+  /**
+   * Le notizie da mostrare sopra la schermata: «coda sostituita — Annulla»,
+   * l'esito di un gesto, l'errore.
+   *
+   * Le passa `App` perché la loro casa è in cima alla pagina, e a schermo
+   * intero la pagina è coperta e `inert`: un «Annulla» emesso lì non si vedeva
+   * e non si poteva premere, e un brano che non si apriva falliva in silenzio.
+   */
+  avvisi: ReactNode;
 }) {
   const [codaVisibile, setCodaVisibile] = useState(true);
   // Spento all'apertura come lo spettro, e per la stessa ragione: chi apre
@@ -141,6 +181,66 @@ export function InRiproduzione({
   const righe = useRigheCoda(stato.coda, onErrore);
   const brano = stato.brano;
 
+  // ── un pannello solo, quando non ci stanno ──
+  const schermata = useRef<HTMLElement>(null);
+  const corpo = useRef<HTMLDivElement>(null);
+  const [unPannelloSolo, setUnPannelloSolo] = useState(false);
+  // Quale dei due si è aperto per ultimo: è quello che resta quando la finestra
+  // si stringe con tutti e due aperti. Si parte dalla coda perché è quella che
+  // la schermata apre da sé.
+  const ultimoAperto = useRef<"testo" | "coda">("coda");
+  useLayoutEffect(() => {
+    const nodo = corpo.current;
+    if (nodo === null) return;
+    const misura = () =>
+      setUnPannelloSolo(
+        getComputedStyle(nodo).getPropertyValue("--un-pannello-solo").trim() ===
+          "1",
+      );
+    misura();
+    const osservatore = new ResizeObserver(misura);
+    osservatore.observe(nodo);
+    return () => osservatore.disconnect();
+  }, []);
+  // La finestra si è stretta con tutti e due aperti. Prima della pittura, così
+  // il fotogramma con tre colonne schiacciate non si vede.
+  useLayoutEffect(() => {
+    if (!unPannelloSolo || !testoVisibile || !codaVisibile) return;
+    if (ultimoAperto.current === "testo") setCodaVisibile(false);
+    else setTestoVisibile(false);
+  }, [unPannelloSolo, testoVisibile, codaVisibile]);
+  const alternaTesto = () => {
+    const apre = !testoVisibile;
+    setTestoVisibile(apre);
+    if (!apre) return;
+    ultimoAperto.current = "testo";
+    if (unPannelloSolo) setCodaVisibile(false);
+  };
+  const alternaCoda = () => {
+    const apre = !codaVisibile;
+    setCodaVisibile(apre);
+    if (!apre) return;
+    ultimoAperto.current = "coda";
+    if (unPannelloSolo) setTestoVisibile(false);
+  };
+
+  // ── il fuoco entra, e alla chiusura torna ──
+  useEffect(() => {
+    const chiAveva =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    schermata.current?.focus({ preventScroll: true });
+    return () => {
+      if (
+        chiAveva !== null &&
+        chiAveva !== document.body &&
+        chiAveva.isConnected
+      )
+        chiAveva.focus({ preventScroll: true });
+    };
+  }, []);
+
   // Chi apre questa schermata mentre non suona niente resterebbe davanti a un
   // fondo vuoto senza modo di capire cosa è successo. Non capita dai tre modi
   // previsti per aprirla — sono tutti spenti senza un brano — ma capita se il
@@ -157,6 +257,10 @@ export function InRiproduzione({
 
   return (
     <section
+      ref={schermata}
+      /* Raggiungibile dal codice e non dal tabulatore: è il punto in cui il
+         fuoco entra, e da lì il primo Tab va al primo comando della testata. */
+      tabIndex={-1}
       className="np-screen in-riproduzione"
       // L'ancora del giro guidato: la schermata intera, che è quel che il
       // passo racconta — copertina, spettro e testo nello stesso posto.
@@ -197,7 +301,15 @@ export function InRiproduzione({
 
       <header className="testa">
         <div className="chi-suona">
-          <div className="occhiello hero-eyebrow">{t("np.fromAlbum")}</div>
+          {/* «In riproduzione», e basta. Diceva «dall'album», sempre, anche
+              quando la coda veniva da una playlist, da una ricerca o dal
+              lunedì: nessuno qui sa da dove la coda sia stata riempita — non
+              c'è un'origine né nello stato del nucleo né in quel che la coda
+              salva, e dopo un riavvio non ci sarebbe comunque. Dire «album» a
+              caso è una riga d'interfaccia che si sbaglia più spesso di quanto
+              ci prenda; l'album del brano, quando c'è, sta già qui sotto in
+              `np-meta`. */}
+          <div className="occhiello hero-eyebrow">{t("np.nowPlaying")}</div>
         </div>
 
         <div className="comandi">
@@ -210,7 +322,7 @@ export function InRiproduzione({
             className="tasto icon-btn"
             aria-pressed={testoVisibile}
             aria-label={t("np.lyrics.toggle")}
-            onClick={() => setTestoVisibile((prima) => !prima)}
+            onClick={alternaTesto}
           >
             <Icona nome="i-text" dim={16} titolo={t("np.lyrics")} />
           </button>
@@ -241,7 +353,7 @@ export function InRiproduzione({
             className="tasto icon-btn"
             aria-pressed={codaVisibile}
             aria-label={t("np.queue.toggle")}
-            onClick={() => setCodaVisibile((prima) => !prima)}
+            onClick={alternaCoda}
           >
             <Icona nome="i-queue" dim={16} />
           </button>
@@ -257,7 +369,13 @@ export function InRiproduzione({
         </div>
       </header>
 
+      {/* Sotto la testata e sopra il corpo, in un posto che non copre i comandi:
+          vedi `avvisi`. Il contenitore resta anche vuoto — niente da
+          rimontare quando una notizia arriva. */}
+      <div className="avvisi-np">{avvisi}</div>
+
       <div
+        ref={corpo}
         className="corpo"
         data-con-coda={codaVisibile || undefined}
         data-con-testo={testoVisibile || undefined}

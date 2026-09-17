@@ -801,6 +801,31 @@ mod prove {
     }
 
     #[test]
+    fn un_brano_cancellato_esce_dalla_playlist_e_non_sposta_il_bersaglio() {
+        // La cascata delle chiavi esterne toglie la riga di `playlist_tracks` ma
+        // **non** ricompatta le posizioni: dopo questa cancellazione restano
+        // occupate la 0, la 2 e la 3. È innocuo, e questa prova è il motivo per
+        // cui lo si può affermare: `remove_at` e `reorder` non leggono quel
+        // numero, lavorano sull'elenco ordinato che `ordine_attuale` dà — e al
+        // primo gesto lo riscrivono compatto.
+        let mut connection = libreria();
+        let p = create(&connection, "Mista").expect("creata").id;
+        add_tracks(&mut connection, p, &[1, 2, 3, 4]).expect("aggiunti");
+
+        connection
+            .execute("DELETE FROM tracks WHERE id = 2", [])
+            .expect("cancellazione");
+        assert_eq!(posizioni(&connection, p), ["Uno", "Tre", "Quattro"]);
+
+        // La posizione 1 di quel che si vede è «Tre», non il buco lasciato da
+        // «Due».
+        remove_at(&mut connection, p, 1).expect("tolto");
+        assert_eq!(posizioni(&connection, p), ["Uno", "Quattro"]);
+        reorder(&mut connection, p, 1, 0).expect("spostato");
+        assert_eq!(posizioni(&connection, p), ["Quattro", "Uno"]);
+    }
+
+    #[test]
     fn spostare_in_avanti() {
         let mut connection = libreria();
         let p = create(&connection, "Mista").expect("creata").id;

@@ -52,7 +52,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useFinestrella } from "./finestrella";
-import { ipc, type Brano, type TestoBrano } from "./ipc";
+import { ipc, testoErrore, type Brano, type TestoBrano } from "./ipc";
 import { durata, nomeArtista } from "./formato";
 import { t } from "./lingue";
 import { Icona } from "./parti/Icone";
@@ -87,12 +87,25 @@ function spezza(riga: string): string[] {
 
 export function Sincronizza({
   brano,
+  inCorso,
   iniziale,
   onChiudi,
   onSalvato,
   onErrore,
 }: {
   brano: Brano;
+  /**
+   * Il brano che suona adesso, che non è per forza `brano`.
+   *
+   * Tre minuti di battute sono abbastanza perché il brano finisca e parta il
+   * successivo: capita a chi batte l'ultima riga a ridosso della fine e poi
+   * cerca Invio. Da lì la posizione del lettore è quella di un'altra canzone.
+   * Una battuta presa lì sarebbe un tempo senza senso, e ogni salto — «rifai
+   * l'ultima», «senti da qui» — salterebbe dentro il brano sbagliato. Finché
+   * suona un altro brano, quindi, non si batte e non si salta: l'editor lo dice
+   * e offre di tornare.
+   */
+  inCorso: number;
   /**
    * Il testo da cui partire: quel che il pannello aveva, o niente.
    *
@@ -130,6 +143,10 @@ export function Sincronizza({
   // mandare qualcosa a un servizio che si è deciso di non interpellare è una
   // domanda a cui la risposta è già stata data.
   const [reteAccesa, setReteAccesa] = useState(false);
+  // Il file accanto al brano non si è scritto — una cartella di sola lettura,
+  // una share — ma il testo è salvo nella libreria. Si dice nel «fatto», con la
+  // ragione, invece di dire «non salvato» a chi il lavoro l'ha salvato.
+  const [nonNelFile, setNonNelFile] = useState<string | null>(null);
   // La riga su cui si sta battendo, per tenerla in vista senza ridisegnare
   // l'elenco a ogni fotogramma.
   const corrente = useRef<HTMLLIElement | null>(null);
@@ -212,11 +229,53 @@ export function Sincronizza({
      cui la rincorsa di `rifai` cambia, cambierebbe in un momento solo. */
 
   const siBattonoParole = momento === "parole";
+  const altrove = inCorso !== brano.id;
+  // Da dove si riparte tornando a battere le righe: con la rincorsa, poco prima
+  // dell'ultima battuta; dall'inizio, se non ce n'è ancora nessuna.
+  const ripresa = indice > 0 ? (tempi[indice - 1] ?? 0) - RINCORSA_MS : 0;
+
+  /* Rimette il lettore su questo brano, e da `ms`, poi suona.
+
+     Il brano si cerca nella coda come si vede — l'ordine in cui `coda_vai`
+     conta — all'indietro dal brano in corso: il caso di tutti i giorni è che
+     sia finito e sia partito il successivo, cioè che stia una riga sopra. Se
+     nella coda non c'è più lo si mette subito dopo il brano in corso e si va
+     lì: sostituire la coda per tornare a una canzone butterebbe via quel che
+     qualcuno aveva messo in fila.
+
+     Lo stato si chiede adesso e non si porta giù come prop: serve una volta,
+     in risposta a un tasto, e un pannello che si ridisegna a ogni riordino
+     della coda per un bottone che quasi nessuno preme sarebbe il prezzo
+     sbagliato. */
+  const suonaDa = useCallback(
+    async (ms: number) => {
+      if (altrove) {
+        const stato = await ipc.riproduzioneStato();
+        if (stato.brano?.id !== brano.id) {
+          const qui = Math.min(
+            stato.posizioneCoda ?? stato.coda.length,
+            stato.coda.length - 1,
+          );
+          let dove = stato.coda.lastIndexOf(brano.id, qui);
+          if (dove < 0) dove = stato.coda.indexOf(brano.id);
+          if (dove < 0) {
+            await ipc.codaDopo([brano.id]);
+            const dopo = await ipc.riproduzioneStato();
+            dove = dopo.coda.indexOf(brano.id, dopo.posizioneCoda ?? 0);
+          }
+          if (dove >= 0) await ipc.codaVai(dove);
+        }
+      }
+      await ipc.vaiA(Math.max(0, ms));
+      await ipc.riprendi();
+    },
+    [altrove, brano.id],
+  );
 
   const batti = useCallback(() => {
     const quante = siBattonoParole ? posti.length : righe.length;
     const dove = siBattonoParole ? indiceParola : indice;
-    if (dove >= quante) return;
+    if (dove >= quante || altrove) return;
     // `posizioneAdesso` e non la posizione iscritta: qui non si disegna a venti
     // fotogrammi al secondo, si legge una volta in risposta a un tasto. È
     // esattamente il caso per cui quella funzione esiste.
@@ -234,7 +293,7 @@ export function Sincronizza({
     }
     setTempi((prima) => [...prima.slice(0, dove), adesso]);
     setIndice((prima) => prima + 1);
-  }, [siBattonoParole, indice, indiceParola, posti.length, righe.length]);
+  }, [siBattonoParole, indice, indiceParola, posti.length, righe.length, altrove]);
 
   const rifai = useCallback(() => {
     const dove = siBattonoParole ? indiceParola : indice;
@@ -248,9 +307,12 @@ export function Sincronizza({
       setIndice(precedente);
       setTempi((prima) => prima.slice(0, precedente));
     }
+    // Con un altro brano in corso si disfa e basta: il salto cadrebbe dentro
+    // quello. La rincorsa la dà il ritorno, dall'avviso.
+    if (altrove) return;
     const da = Math.max(0, (scorsi[precedente] ?? 0) - RINCORSA_MS);
     ipc.vaiA(da).catch(onErrore);
-  }, [siBattonoParole, indice, indiceParola, tempi, tempiParola, onErrore]);
+  }, [siBattonoParole, indice, indiceParola, tempi, tempiParola, altrove, onErrore]);
 
   /* Il raddrizzamento agli attacchi non sa cosa sia una riga: prende un vettore
      di tempi e lo aggancia a dove il suono comincia davvero. Le parole sono
@@ -296,20 +358,29 @@ export function Sincronizza({
 
   useEffect(() => {
     if (momento !== "battute" && momento !== "parole") return;
+    // In cattura, e fermato: le scorciatoie globali ascoltano anche loro su
+    // `window`, e si erano iscritte prima. Senza, ogni battuta di Spazio segnava
+    // la riga **e** metteva in pausa il brano che si stava battendo — cioè la
+    // battuta dopo cadeva su una musica ferma.
     const alTasto = (evento: KeyboardEvent) => {
-      if (evento.key === " ") {
+      const prendi = () => {
         evento.preventDefault();
+        evento.stopPropagation();
+      };
+      if (evento.key === " ") {
+        prendi();
         batti();
       } else if (evento.key === "Backspace") {
-        evento.preventDefault();
+        prendi();
         rifai();
       } else if (evento.key === "Enter" && tutteBattute) {
-        evento.preventDefault();
+        prendi();
         finisci();
       }
     };
-    window.addEventListener("keydown", alTasto);
-    return () => window.removeEventListener("keydown", alTasto);
+    window.addEventListener("keydown", alTasto, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", alTasto, { capture: true });
   }, [momento, batti, rifai, finisci, tutteBattute]);
 
   // ── il momento della revisione ────────────────────────────────────────────
@@ -352,11 +423,8 @@ export function Sincronizza({
   const suonaDaQui = useCallback(() => {
     const dove = Math.min(indiceParola, posti.length - 1);
     const quale = posti[Math.max(0, dove)]?.riga ?? 0;
-    ipc
-      .vaiA(Math.max(0, (tempi[quale] ?? 0) - RINCORSA_MS))
-      .then(() => ipc.riprendi())
-      .catch(onErrore);
-  }, [indiceParola, posti, tempi, onErrore]);
+    suonaDa((tempi[quale] ?? 0) - RINCORSA_MS).catch(onErrore);
+  }, [indiceParola, posti, tempi, suonaDa, onErrore]);
 
   /* Quali righe portano le parole, quando si salva.
 
@@ -423,7 +491,12 @@ export function Sincronizza({
         // Il pannello dietro si aggiorna subito, prima ancora che questa
         // finestra si chiuda. Il lavoro è finito e salvato; quel che resta è
         // un'offerta, e un'offerta non deve tenere in ostaggio il risultato.
-        onSalvato(salvato);
+        onSalvato(salvato.testo);
+        setNonNelFile(
+          salvato.fileNonScritto === null
+            ? null
+            : testoErrore(salvato.fileNonScritto),
+        );
         return ipc
           .testiStato()
           .then((stato) => setReteAccesa(stato.rete))
@@ -462,6 +535,29 @@ export function Sincronizza({
         <div className="percorso">
           {brano.title} · {nomeArtista(brano.artist)}
         </div>
+
+        {/* Suona un altro brano: le battute sono ferme, e si dice qui e non
+            con un tasto che smette di rispondere. Il ritorno riparte da dove
+            serve in quel momento — la rincorsa dell'ultima battuta, l'inizio
+            del verso delle parole — e nella revisione, dove si ascolta riga per
+            riga, dall'inizio. */}
+        {altrove && momento !== "righe" && momento !== "dono" && (
+          <div className="altrove" role="status">
+            <span>{t("sync.elsewhere")}</span>
+            <button
+              type="button"
+              className="bottone minuto btn-ghost"
+              onClick={() =>
+                momento === "parole"
+                  ? suonaDaQui()
+                  : suonaDa(momento === "battute" ? ripresa : 0).catch(onErrore)
+              }
+            >
+              <Icona nome="i-play" dim={12} />
+              {t("sync.elsewhere.back")}
+            </button>
+          </div>
+        )}
 
         {momento === "righe" && (
           <>
@@ -519,7 +615,9 @@ export function Sincronizza({
               <button
                 type="button"
                 className="bottone btn-ghost"
-                onClick={() => ipc.alterna().catch(onErrore)}
+                onClick={() =>
+                  (altrove ? suonaDa(ripresa) : ipc.alterna()).catch(onErrore)
+                }
               >
                 <Icona nome="i-play" dim={15} />
                 {t("sync.tap.play")}
@@ -598,10 +696,7 @@ export function Sincronizza({
                         riga: String(i + 1),
                       })}
                       onClick={() =>
-                        ipc
-                          .vaiA(Math.max(0, (tempi[i] ?? 0) - 1000))
-                          .then(() => ipc.riprendi())
-                          .catch(onErrore)
+                        suonaDa((tempi[i] ?? 0) - 1000).catch(onErrore)
                       }
                     >
                       <Icona nome="i-play" dim={12} />
@@ -772,8 +867,11 @@ export function Sincronizza({
           <div className="dono">
             <p className="fatto">
               <Icona nome="i-check" dim={16} />
-              {t("sync.done.saved")}
+              {nonNelFile === null
+                ? t("sync.done.saved")
+                : t("sync.done.savedInLibrary")}
             </p>
+            {nonNelFile !== null && <p className="nota">{nonNelFile}</p>}
 
             {/* Senza rete verso il catalogo non c'è offerta: si dice che è
                 fatto e si chiude, senza far intravedere una porta chiusa. */}

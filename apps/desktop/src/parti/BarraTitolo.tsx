@@ -36,7 +36,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ipc } from "../ipc";
 import { Icona } from "./Icone";
-import { t } from "../lingue";
+import { t, useLingua } from "../lingue";
 
 /**
  * Quel che, nella fascia, non è barra del titolo.
@@ -59,6 +59,10 @@ const NON_SI_AFFERRA = [
 ].join(",");
 
 export function BarraTitolo() {
+  // Iscritta alla lingua anche se il valore non serve: montata fuori da `App`,
+  // nessun disegno di `App` la raggiunge, e i tre nomi dei bottoni restavano
+  // nella lingua dell'avvio — «Riduci a icona» con l'interfaccia in inglese.
+  useLingua();
   const riquadro = useRef<HTMLDivElement>(null);
   const [ingrandita, setIngrandita] = useState(false);
 

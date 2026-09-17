@@ -29,7 +29,10 @@
 //! l'ultimo controllo riuscito è di meno di [`INTERVALLO`] — vedi
 //! [`troppo_presto`]. Chi chiude e riapre Aether dieci volte in un'ora fa una
 //! richiesta, non dieci. «Controlla adesso» invece non guarda niente: chi preme
-//! un tasto ha il diritto di vedere che succede qualcosa.
+//! un tasto ha il diritto di vedere che succede qualcosa. E la guardia cede
+//! quando l'ultimo controllo aveva trovato una versione nuova — vedi
+//! `CHIAVE_TROVATA` — perché senza, chi riapriva Aether dopo aver visto l'avviso
+//! non lo rivedeva per mezz'ora.
 //!
 //! # Perché non si installa da solo
 //!
@@ -85,6 +88,20 @@ const CHIAVE_ULTIMO: &str = "aggiornamenti.ultimo_ms";
 /// Senza, «Non ora» durerebbe mezz'ora: l'avviso tornerebbe al controllo
 /// successivo, identico, e la terza volta l'utente imparerebbe a non leggerlo.
 const CHIAVE_SALTATA: &str = "aggiornamenti.saltata";
+
+/// La chiave della versione che l'ultimo controllo riuscito ha trovato.
+///
+/// # Perché si scrive, se l'oggetto per installare vive in memoria
+///
+/// Perché la guardia d'avvio salta il controllo se l'ultimo è di meno di
+/// mezz'ora fa, e l'aggiornamento trovato viveva **solo** in memoria. Chi
+/// vedeva l'avviso, chiudeva Aether e lo riapriva dieci minuti dopo non lo
+/// rivedeva più: il controllo d'avvio saltava, e il prossimo arrivava dopo
+/// mezz'ora. Qui si ricorda soltanto che una versione nuova c'era — basta a
+/// far fare comunque il controllo d'avvio, che è l'unico modo di riavere
+/// l'oggetto con l'URL e la firma. Si toglie quando un controllo riuscito non
+/// trova niente.
+const CHIAVE_TROVATA: &str = "aggiornamenti.trovata";
 
 /// Ogni quanto si guarda se è uscita una versione nuova.
 ///
@@ -322,6 +339,8 @@ pub fn aggiornamenti_attivo(
         deposita(&aggiornamenti, None);
         azzera_errore(&aggiornamenti);
     }
+    // Anche a chi non ha chiesto: vedi `riferisci`.
+    riferisci(&app);
     stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
 }
 
@@ -367,6 +386,8 @@ pub fn aggiornamenti_salta(
         settings::write(&libreria.connection, CHIAVE_SALTATA, &versione)
     })
     .map_err(errore)?;
+    // Anche a chi non ha chiesto: vedi `riferisci`.
+    riferisci(&app);
     stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
 }
 
@@ -472,22 +493,31 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
                 Ok(_) => false,
                 Err(RecvTimeoutError::Timeout) => true,
             };
+            // Una sveglia è sempre una persona; la scadenza, mai. Vedi
+            // `passata`.
+            let mut a_mano = !guardia;
             loop {
                 // Il cortocircuito del `&&` non è un dettaglio di stile: tiene
                 // la lettura dal database fuori da ogni giro tranne, al più, il
                 // primo.
-                if guardia && troppo_presto(ultimo_controllo(&app), adesso_ms()) {
+                // La guardia cede quando l'ultimo controllo aveva trovato una
+                // versione nuova: vedi `CHIAVE_TROVATA`.
+                if guardia
+                    && troppo_presto(ultimo_controllo(&app), adesso_ms())
+                    && !versione_trovata_prima(&app)
+                {
                     nota!(
                         "[aggiornamenti] la passata d'avvio salta: l'ultimo controllo è di meno di mezz'ora fa"
                     );
                 } else {
-                    passata(&app);
+                    passata(&app, a_mano);
                 }
                 guardia = false;
-                match orecchio.recv_timeout(INTERVALLO) {
+                a_mano = match orecchio.recv_timeout(INTERVALLO) {
                     Err(RecvTimeoutError::Disconnected) => return,
-                    Ok(_) | Err(RecvTimeoutError::Timeout) => {}
-                }
+                    Ok(_) => true,
+                    Err(RecvTimeoutError::Timeout) => false,
+                };
             }
         });
     if let Err(err) = avviato {
@@ -508,6 +538,22 @@ fn ultimo_controllo(app: &AppHandle) -> Option<i64> {
     })
     .ok()
     .flatten()
+}
+
+/// L'ultimo controllo riuscito aveva trovato una versione nuova?
+///
+/// Falso per tutto quel che non è un sì: libreria non aperta, chiave mai
+/// scritta. Vuol dire lasciare la guardia com'era.
+fn versione_trovata_prima(app: &AppHandle) -> bool {
+    let Some(stato) = app.try_state::<Stato>() else {
+        return false;
+    };
+    con_libreria(&stato, |libreria| {
+        settings::read(&libreria.connection, CHIAVE_TROVATA)
+    })
+    .ok()
+    .flatten()
+    .is_some_and(|versione| !versione.trim().is_empty())
 }
 
 /// L'ultimo controllo è troppo recente perché valga la pena rifarlo?
@@ -538,15 +584,22 @@ fn troppo_presto(ultimo_ms: Option<i64>, adesso_ms: i64) -> bool {
     (0..intervallo).contains(&passati)
 }
 
-/// Un controllo automatico. Non fallisce mai rumorosamente.
-fn passata(app: &AppHandle) {
+/// Un controllo. Non fallisce mai rumorosamente.
+///
+/// `a_mano` è il controllo chiesto da una persona — «Controlla adesso», o
+/// l'interruttore appena acceso — e quello non guarda l'interruttore. Lo
+/// guardava: con il controllo automatico spento il tasto non faceva niente, né
+/// una richiesta né un evento, e il suggerimento sotto l'interruttore diceva
+/// proprio di usare quel tasto per controllare quando si vuole.
+fn passata(app: &AppHandle, a_mano: bool) {
     if !configurato(app) {
         return;
     }
-    let acceso = app
-        .try_state::<Stato>()
-        .and_then(|stato| con_libreria(&stato, |libreria| attivo(&libreria.connection)).ok())
-        .unwrap_or(true);
+    let acceso = a_mano
+        || app
+            .try_state::<Stato>()
+            .and_then(|stato| con_libreria(&stato, |libreria| attivo(&libreria.connection)).ok())
+            .unwrap_or(true);
     if !acceso {
         return;
     }
@@ -574,6 +627,7 @@ fn passata(app: &AppHandle) {
     let esito = controlla(app);
     match esito {
         Ok(trovato) => {
+            let versione = trovato.as_ref().map(|nuovo| nuovo.version.clone());
             deposita(&aggiornamenti, trovato);
             azzera_errore(&aggiornamenti);
             if let Some(stato) = app.try_state::<Stato>() {
@@ -582,7 +636,13 @@ fn passata(app: &AppHandle) {
                         &libreria.connection,
                         CHIAVE_ULTIMO,
                         &adesso_ms().to_string(),
-                    )
+                    )?;
+                    match &versione {
+                        Some(versione) => {
+                            settings::write(&libreria.connection, CHIAVE_TROVATA, versione)
+                        }
+                        None => settings::forget(&libreria.connection, CHIAVE_TROVATA).map(|_| ()),
+                    }
                 });
             }
         }
@@ -690,13 +750,6 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
         .as_ref()
         .map(|stato| Turno::adotta(&stato.installazione));
 
-    // Fermare la musica prima che l'installer prenda in mano il processo. Il
-    // plugin, su Windows, esce con `process::exit(0)`: senza questa riga il
-    // dispositivo audio si chiuderebbe di colpo a metà di un brano, con il
-    // rumore che ne consegue, e la posizione dell'ascolto in corso non
-    // verrebbe scritta da nessuna parte.
-    fermare_la_musica(app);
-
     let mut scaricati: u64 = 0;
     let mut ultimo_detto = Instant::now()
         .checked_sub(RESPIRO_AVANZAMENTO)
@@ -717,8 +770,20 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
         }
     };
 
+    // Scaricare e installare in due tempi, e la musica si ferma **in mezzo**:
+    // prima che l'installer prenda in mano il processo, perché il plugin, su
+    // Windows, esce con `process::exit(0)` — senza la pausa il dispositivo audio
+    // si chiuderebbe di colpo a metà di un brano, con il rumore che ne consegue,
+    // e la posizione dell'ascolto in corso non verrebbe scritta da nessuna
+    // parte. Ma non prima dello scaricamento, dov'era: sono minuti in cui
+    // l'applicazione funziona ancora, e un disco zittito al clic su «Aggiorna»
+    // per tutto quel tempo — o per sempre, se lo scaricamento o la firma non
+    // vanno — era una pausa che nessuno aveva chiesto.
     let esito =
-        tauri::async_runtime::block_on(aggiornamento.download_and_install(per_pezzo, || {}));
+        tauri::async_runtime::block_on(aggiornamento.download(per_pezzo, || {})).and_then(|byte| {
+            fermare_la_musica(app);
+            aggiornamento.install(byte)
+        });
 
     // Se si arriva qui su Windows, è andata male: l'installazione riuscita non
     // torna mai, perché il plugin fa uscire il processo.
@@ -755,6 +820,14 @@ fn fermare_la_musica(app: &AppHandle) {
 }
 
 /// Manda alla finestra lo stato aggiornato.
+///
+/// # Anche dopo i comandi che lo restituiscono
+///
+/// Perché lo stato lo guardano in due, la fascia e la scheda delle
+/// Impostazioni, e un comando risponde solo a chi l'ha chiamato. Spegnendo il
+/// controllo dalla scheda la fascia restava su con un «Aggiorna» che poi falliva
+/// — l'aggiornamento trovato era stato buttato — e «Salta questa versione» dalla
+/// fascia lasciava alla scheda un «Riproponi» che non compariva.
 fn riferisci(app: &AppHandle) {
     let (Some(stato), Some(aggiornamenti)) = (
         app.try_state::<Stato>(),

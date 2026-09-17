@@ -850,7 +850,7 @@ pub fn registra(
                 conto.copertine = conto.copertine.saturating_add(1);
             }
         }
-        aggiorna_brano(tx, scrittura, esito, adesso)?;
+        let chiave_dei_tag = aggiorna_brano(tx, scrittura, esito, adesso)?;
         // E subito dopo si rimette sopra quel che l'utente aveva corretto a
         // mano. `plan_write` non scrive un campo [`Origine::Manuale`], quindi i
         // valori restano quelli giusti — ma `aggiorna_brano` ricalcola
@@ -858,7 +858,7 @@ pub fn registra(
         // della correzione: senza questa riga il brano appena arricchito
         // tornerebbe ad avere l'identità che aveva quando si chiamava «Artista
         // sconosciuto». Gli aggregati li rifà [`ricostruisci`], a fine passata.
-        crate::incerti::riapplica(tx, scrittura.track_id)?;
+        crate::incerti::riapplica_sopra_i_tag(tx, scrittura.track_id, &chiave_dei_tag)?;
         conto.applicati = conto.applicati.saturating_add(1);
     }
 
@@ -1031,7 +1031,7 @@ fn aggiorna_brano(
     scrittura: &Scrittura,
     esito: &EsitoFile,
     adesso: i64,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     // Le chiavi si ricalcolano dai valori **finali**, non da quelli trovati:
     // `plan_write` può aver deciso di non scrivere un campo, e una chiave
     // derivata da un titolo che sul file non c'è non ritroverebbe mai il brano.
@@ -1076,7 +1076,10 @@ fn aggiorna_brano(
            mb_release_id = COALESCE(?11, mb_release_id),
            mb_release_group_id = COALESCE(?12, mb_release_group_id),
            cover_art_hash = COALESCE(?13, cover_art_hash),
-           track_key = ?14,
+           -- Non su un brano corretto: vedi `incerti::riapplica_sopra_i_tag`.
+           track_key = CASE WHEN EXISTS
+                         (SELECT 1 FROM track_overrides WHERE track_id = ?1)
+                       THEN track_key ELSE ?14 END,
            album_key = ?15,
            enrich_status = 'ok',
            enrich_attempted_at = ?16,
@@ -1106,7 +1109,7 @@ fn aggiorna_brano(
             scrittura.confidenza,
         ])
     })
-    .map(|_| ())
+    .map(|_| track_key)
     .map_err(|err| db_error("aggiornamento di un brano arricchito", &err))
 }
 
@@ -1296,7 +1299,11 @@ fn rimetti_i_tag_del_file(
            title = ?2, artist = ?3, album = ?4, album_artist = ?5,
            year = ?6, genre = ?7, track_number = ?8, disc_number = ?9,
            mb_recording_id = ?10, mb_release_id = ?11, mb_release_group_id = ?12,
-           track_key = ?13, album_key = ?14,
+           -- Non su un brano corretto: vedi `incerti::riapplica_sopra_i_tag`.
+           track_key = CASE WHEN EXISTS
+                         (SELECT 1 FROM track_overrides WHERE track_id = ?1)
+                       THEN track_key ELSE ?13 END,
+           album_key = ?14,
            enrich_status = 'undone', enrich_source = NULL, enrich_confidence = NULL
          WHERE id = ?1",
     )
@@ -1322,7 +1329,7 @@ fn rimetti_i_tag_del_file(
 
     // E subito dopo la parola dell'utente, che resta l'ultima: vedi il `//!` di
     // [`crate::incerti`] per l'ordine di risoluzione per intero.
-    crate::incerti::riapplica(tx, track_id)?;
+    crate::incerti::riapplica_sopra_i_tag(tx, track_id, &track_key)?;
 
     tx.prepare_cached("DELETE FROM track_meta_arricchita WHERE track_id = ?1")
         .and_then(|mut statement| statement.execute([track_id]))
@@ -1363,6 +1370,35 @@ fn rimetti_i_tag_del_file(
 /// arrendersi al primo file bloccato lascerebbe l'utente con metà libreria
 /// riportata indietro e nessun modo di finire il lavoro.
 pub fn riporta_nei_file(connection: &mut Connection) -> Result<Annullati, AppError> {
+    let da_fare = da_riportare(connection)?;
+    let riscritti = riscrivi_nei_file(da_fare);
+    registra_riportati(connection, riscritti)
+}
+
+/// Le fotografie da riportare nei file, lette dal database.
+///
+/// La prima delle tre metà di [`riporta_nei_file`], separate perché chi tiene
+/// il lucchetto della libreria lo possa lasciare **mentre si scrivono i file**:
+/// sono migliaia di aperture in scrittura, su una share anche minuti, e per
+/// tutto quel tempo ogni altro comando che chiede la libreria restava fermo.
+#[derive(Debug)]
+pub struct DaRiportare {
+    righe: Vec<(i64, String, String)>,
+}
+
+/// Quel che si è riusciti a riscrivere nei file, da registrare nel database.
+#[derive(Debug)]
+pub struct Riscritti {
+    riusciti: Vec<(i64, TagOriginali, i64, i64)>,
+    falliti: usize,
+}
+
+/// Legge le fotografie da riportare. Vedi [`DaRiportare`].
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn da_riportare(connection: &Connection) -> Result<DaRiportare, AppError> {
     let righe: Vec<(i64, String, String)> = {
         let mut statement = connection
             .prepare(
@@ -1379,23 +1415,49 @@ pub fn riporta_nei_file(connection: &mut Connection) -> Result<Annullati, AppErr
             .collect::<Result<Vec<_>, _>>()
             .map_err(|err| db_error("elenco degli annullamenti", &err))?
     };
+    Ok(DaRiportare { righe })
+}
 
-    let mut conto = Annullati::default();
-    let mut riusciti: Vec<(i64, TagOriginali, i64, i64)> = Vec::new();
-
-    for (track_id, percorso, tags) in &righe {
-        let Ok(originali) = serde_json::from_str::<TagOriginali>(tags) else {
-            conto.falliti = conto.falliti.saturating_add(1);
+/// Riscrive i tag nei file. **Non tocca il database**, ed è il punto: vedi
+/// [`DaRiportare`]. Un file che non si riscrive si conta e si prosegue.
+#[must_use]
+pub fn riscrivi_nei_file(da_fare: DaRiportare) -> Riscritti {
+    let mut riscritti = Riscritti {
+        riusciti: Vec::new(),
+        falliti: 0,
+    };
+    for (track_id, percorso, tags) in da_fare.righe {
+        let Ok(originali) = serde_json::from_str::<TagOriginali>(&tags) else {
+            riscritti.falliti = riscritti.falliti.saturating_add(1);
             continue;
         };
-        let path = Path::new(percorso);
+        let path = Path::new(&percorso);
         if tag_scrittura::ripristina_campi(path, &originali.in_campi()).is_err() {
-            conto.falliti = conto.falliti.saturating_add(1);
+            riscritti.falliti = riscritti.falliti.saturating_add(1);
             continue;
         }
         let (modificato, dimensione) = misura(path);
-        riusciti.push((*track_id, originali, modificato, dimensione));
+        riscritti
+            .riusciti
+            .push((track_id, originali, modificato, dimensione));
     }
+    riscritti
+}
+
+/// Registra nel database quel che [`riscrivi_nei_file`] ha riscritto.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn registra_riportati(
+    connection: &mut Connection,
+    riscritti: Riscritti,
+) -> Result<Annullati, AppError> {
+    let Riscritti { riusciti, falliti } = riscritti;
+    let mut conto = Annullati {
+        falliti,
+        ..Annullati::default()
+    };
 
     let tx = connection
         .transaction()
@@ -1456,7 +1518,10 @@ fn ripristina_riga(
            title = ?2, artist = ?3, album = ?4, album_artist = ?5,
            year = ?6, genre = ?7, track_number = ?8, disc_number = ?9,
            mb_recording_id = NULL, mb_release_id = NULL, mb_release_group_id = NULL,
-           track_key = ?10,
+           -- Non su un brano corretto: vedi `incerti::riapplica_sopra_i_tag`.
+           track_key = CASE WHEN EXISTS
+                         (SELECT 1 FROM track_overrides WHERE track_id = ?1)
+                       THEN track_key ELSE ?10 END,
            album_key = CASE WHEN ?11 = '' THEN album_key ELSE ?11 END,
            date_modified = ?12, file_size = ?13,
            enrich_status = 'undone', enrich_source = NULL, enrich_confidence = NULL
@@ -1483,7 +1548,7 @@ fn ripristina_riga(
 
     // La parola dell'utente resta l'ultima, anche quando si riportano indietro
     // i tag del file: vedi la nota qui sopra.
-    crate::incerti::riapplica(tx, track_id)?;
+    crate::incerti::riapplica_sopra_i_tag(tx, track_id, &track_key)?;
 
     tx.prepare_cached("DELETE FROM enrich_undo WHERE track_id = ?1")
         .and_then(|mut statement| statement.execute([track_id]))
@@ -1530,11 +1595,11 @@ impl DepositoSqlite {
             })
             .with_cause(err.to_string())
         })?;
-        // Solo l'attesa: `journal_mode` è salvato nel file e le migrazioni le ha
-        // già applicate la connessione principale. Questa non deve toccare lo
-        // schema — se lo facesse, due connessioni migrerebbero lo stesso
-        // database insieme.
-        let _ = connessione.busy_timeout(std::time::Duration::from_secs(5));
+        // Solo quel che non sta nel file: `journal_mode` è salvato lì e le
+        // migrazioni le ha già applicate la connessione principale. Questa non
+        // deve toccare lo schema — se lo facesse, due connessioni migrerebbero
+        // lo stesso database insieme.
+        crate::db::prepara_connessione_secondaria(&connessione);
         let _ = connessione.execute("DELETE FROM enrich_cache WHERE expires_at < ?1", [adesso]);
         Ok(Self {
             connessione: Mutex::new(connessione),

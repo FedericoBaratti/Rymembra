@@ -52,7 +52,7 @@ use crate::stato::{Stato, con_libreria};
 /// passo in più, una schermata che prima non c'era — e allora chi l'ha già
 /// fatto se lo rivede una volta. Non si alza per una correzione di testo, per
 /// una traduzione, né perché è uscita una release: vedi il preambolo.
-pub const VERSIONE_COPIONE: &str = "2.3.1";
+pub const VERSIONE_COPIONE: &str = "2.3.2";
 
 /// Se il giro di [`VERSIONE_COPIONE`] è ancora da fare.
 ///

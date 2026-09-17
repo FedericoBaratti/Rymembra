@@ -51,11 +51,21 @@ use super::{
 ///
 /// Adesso è una **spinta**: si manda un colpetto sul canale e si torna subito.
 /// Il lavoro vero lo fa il filo di [`avvia_preparatore`].
-pub(super) fn prepara_prossimo(app: &tauri::AppHandle, _lettore: &mut Lettore) {
-    // `_lettore` resta nella firma apposta: dice che chi chiama ha il lucchetto
-    // in mano, ed è mentre ce l'ha che il colpetto va mandato — così il filo che
-    // si sveglia trova la coda già nello stato nuovo e non in quello di un
-    // istante prima.
+pub(super) fn prepara_prossimo(app: &tauri::AppHandle, lettore: &mut Lettore) {
+    // Il successivo in canna che non è più il brano dopo esce **adesso**, non
+    // quando il preparatore avrà aperto quello nuovo: fino ad allora il motore
+    // lo attaccherebbe alla fine del corrente — il brano appena tolto dalla
+    // coda, o quello di prima di un riordino — e se il nuovo non si apre, quel
+    // momento non arriva mai. Un gapless perso per qualche millisecondo costa
+    // meno di un brano sbagliato. È una scrittura su un canale: il lucchetto in
+    // mano non la rallenta.
+    if lettore.in_canna.is_some() && lettore.in_canna != lettore.coda.peek_next() {
+        lettore.prepara(None);
+    }
+    lettore.non_aperto = None;
+    // Il lucchetto in mano dice anche un'altra cosa: è mentre ce l'ha che il
+    // colpetto va mandato — così il filo che si sveglia trova la coda già nello
+    // stato nuovo e non in quello di un istante prima.
     sveglia_preparatore(&app.state::<StatoLettore>());
 }
 
@@ -144,7 +154,7 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
         // previsto.
         let fine = stato.spegnimento.load(std::sync::atomic::Ordering::Relaxed) == FINE_DEL_BRANO;
         if fine {
-            lettore.motore.prepara(None);
+            lettore.prepara(None);
             return Ok(None);
         }
 
@@ -167,9 +177,33 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
             // Nessun successivo: azzerare è l'unica cosa da fare, dura quanto
             // una scrittura su un canale, e si fa subito qui.
             None => {
-                lettore.motore.prepara(None);
+                lettore.prepara(None);
                 Ok(None)
             }
+            // Già in canna: non c'è niente da fare, e farlo sarebbe peggio
+            // che inutile.
+            //
+            // Il preparatore viene svegliato due volte per lo stesso
+            // successivo a ogni partenza — una da `avvia_corrente`, una
+            // dall'annuncio di `Iniziato` — e l'antirimbalzo di
+            // [`RAFFICA_PREPARA`] le fonde solo se cadono vicine, che è quel che
+            // succede quasi sempre e non quel che si può dare per buono. La
+            // seconda passata riapriva lo stesso file per consegnare lo stesso
+            // brano.
+            //
+            // «Peggio che inutile» perché il motore, nel frattempo, può averlo
+            // **già attaccato**: davanti alla callback c'è più di un secondo di
+            // musica — vedi `aether_play::uscita::RISERVA_MS` — e in quel
+            // margine `Iniziato` non è ancora arrivato, quindi la coda non è
+            // ancora avanzata e `peek_next` indica ancora lui. La seconda copia
+            // finiva in canna dietro sé stessa, e alla fine del brano il motore
+            // l'attaccava: lo stesso brano due volte di fila, che con un
+            // intermezzo più corto della riserva capitava a ogni traccia.
+            //
+            // `in_canna` è esattamente la domanda «il successivo è già questo?»,
+            // ed è quel che il suo doc-comment su [`crate::riproduzione::Lettore`]
+            // dichiara di servire a sapere.
+            Some(id) if lettore.in_canna == Some(id) => Ok(None),
             Some(id) => Ok(Some((id, formato))),
         }
     });
@@ -194,6 +228,18 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
                 err.code().kind().code(),
                 err.cause().unwrap_or("—")
             );
+            // Quel che era in canna prima non è il brano dopo: se la coda dice
+            // ancora questo, in canna non deve restare niente — altrimenti alla
+            // fine del corrente suonerebbe il successivo di prima, e la barra
+            // mostrerebbe questo. Vedi `Lettore::non_aperto` per cosa succede
+            // quando il corrente finisce.
+            let _ = con_lettore(&stato, |lettore| {
+                if lettore.coda.peek_next() == Some(id) {
+                    lettore.prepara(None);
+                    lettore.non_aperto = Some(id);
+                }
+                Ok(())
+            });
             app.emetti("riproduzione:errore", crate::errore::errore(err));
             return;
         }
@@ -208,7 +254,7 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
         if lettore.coda.peek_next() != Some(id) {
             return Ok(());
         }
-        lettore.motore.prepara(Some(brano));
+        lettore.prepara(Some(brano));
         Ok(())
     });
 }
@@ -508,15 +554,18 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                 // sarebbe già quella di un lettore in pausa.
                 scade_il_timer(&app, &stato_lettore);
 
-                let tempo = con_lettore(&stato_lettore, |lettore| {
+                let letto = con_lettore(&stato_lettore, |lettore| {
                     let p = lettore.motore.posizione();
-                    Ok(Tempo {
-                        posizione_ms: p.ms,
-                        durata_ms: p.durata_ms,
-                        in_pausa: p.in_pausa,
-                    })
+                    Ok((
+                        p.track_id,
+                        Tempo {
+                            posizione_ms: p.ms,
+                            durata_ms: p.durata_ms,
+                            in_pausa: p.in_pausa,
+                        },
+                    ))
                 });
-                let Ok(tempo) = tempo else { continue };
+                let Ok((di_chi, tempo)) = letto else { continue };
                 // Il filo dell'analisi sonora legge da qui se può leggere dal
                 // disco. Passa da un'atomica e non da `con_lettore` perché
                 // chiedere al lettore come sta, per sapere se disturbarlo,
@@ -549,11 +598,16 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                 // è la peggior imprecisione possibile su una cosa che si
                 // riprende a mano — e chi chiude a metà brano ritrova il segno
                 // a cinque secondi da dove l'aveva lasciato, non all'inizio.
+                //
+                // Con il brano accanto: vedi `playback::save_posizione`.
                 battiti = battiti.wrapping_add(1);
-                if !tempo.in_pausa && battiti.is_multiple_of(BATTITI_PER_SEGNO) {
+                if let Some(brano) = di_chi
+                    && !tempo.in_pausa
+                    && battiti.is_multiple_of(BATTITI_PER_SEGNO)
+                {
                     let stato_app = app.state::<Stato>();
                     let _ = con_libreria(&stato_app, |libreria| {
-                        playback::save_posizione(&libreria.connection, tempo.posizione_ms)
+                        playback::save_posizione(&libreria.connection, brano, tempo.posizione_ms)
                     });
                 }
             }

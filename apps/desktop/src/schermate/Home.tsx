@@ -47,7 +47,7 @@
  * momento in cui l'applicazione ha già tutto il resto da fare.
  */
 import { Copertina } from "../Copertina";
-import { brani_, durata, nomeArtista, titoloAlbum } from "../formato";
+import { artistaNoto, brani_, durata, nomeArtista, titoloAlbum } from "../formato";
 import type { Album, Brano, Casa, Raccolta } from "../ipc";
 import { t } from "../lingue";
 import { Icona } from "../parti/Icone";
@@ -238,8 +238,20 @@ function nomeRaccolta(raccolta: Raccolta): string {
   if (raccolta.etichetta !== null && raccolta.etichettaTipo === "artista") {
     return t("home.week.artist", { nome: raccolta.etichetta });
   }
-  // Nessuna maggioranza dentro il gruppo: non c'è niente di vero da dire, e il
-  // numero è l'unica cosa che distingue questa raccolta dalle altre due.
+  // Nessuna maggioranza dentro il gruppo: non c'è un genere o un artista che
+  // la descriva da solo. Il numero era la sola cosa che la distingueva dalle
+  // altre — «Ancora, 1», «Ancora, 2» — e non diceva niente di cosa ci fosse
+  // dentro. I primi due interpreti che si incontrano, in ordine, sono veri e
+  // bastano a riconoscerla; il numero resta per una raccolta senza brani, o
+  // fatta di soli brani senza il tag dell'artista — che non è un nome e non
+  // dice niente, per questo `artistaNoto` lo butta prima di contare.
+  const interpreti = [
+    ...new Set(raccolta.brani.map((b) => b.artist).filter(artistaNoto)),
+  ];
+  const [primo, secondo] = interpreti;
+  if (primo !== undefined && secondo !== undefined)
+    return t("home.week.mixFrom", { primo, secondo });
+  if (primo !== undefined) return t("home.week.artist", { nome: primo });
   return t("home.week.mix", { numero: String(raccolta.ordine + 1) });
 }
 
@@ -406,8 +418,11 @@ export function Home({
   onSuona: (brani: Brano[], indice: number) => void;
   /** Fa partire una raccolta del lunedì e la segna aperta. */
   onApriRaccolta: (raccolta: Raccolta) => void;
-  /** Riprende la coda conservata dalla sua posizione. */
-  onRiprendi: (ms: number) => void;
+  /**
+   * Riprende la coda conservata. Senza il punto: lo sceglie il nucleo, che sa
+   * se il brano è già aperto — vedi `riprendi` in `riproduzione/mod.rs`.
+   */
+  onRiprendi: () => void;
   onMenu: (e: React.MouseEvent, brano: Brano) => void;
   onApriAlbum: (album: Album) => void;
   onMenuAlbum: (e: React.MouseEvent, album: Album) => void;
@@ -447,7 +462,7 @@ export function Home({
           <button
             type="button"
             className="casa-riprendi list-row"
-            onClick={() => onRiprendi(casa.riprendiMs)}
+            onClick={onRiprendi}
             onContextMenu={(e) => {
               if (casa.riprendi) onMenu(e, casa.riprendi);
             }}

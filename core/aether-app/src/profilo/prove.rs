@@ -61,6 +61,7 @@ fn ambiente<'a>(esiste: &'a dyn Fn(&str) -> bool) -> Ambiente<'a> {
         dispositivo: "qui",
         rimappature: &[],
         copertine: None,
+        unisci_comunque: false,
     }
 }
 
@@ -563,6 +564,129 @@ fn un_testo_scritto_a_mano_non_si_sovrascrive() {
 }
 
 #[test]
+fn un_brano_corretto_ritrova_tutto_su_un_computer_nuovo() {
+    // Il caso per cui un profilo esiste: là il brano è stato corretto a mano, e
+    // tutto quel che lo riguarda — cronologia, testo, cuore — sta sotto la
+    // chiave **corretta**. Qui lo stesso file è appena stato scansionato, con
+    // la chiave dei suoi tag. La correzione si cercava per chiave corretta e
+    // non trovava niente; il resto, applicato prima, nemmeno.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let dei_tag = "unknown artist|traccia 01|al";
+    let corretta = "pink floyd|hey you|al";
+    let campi = serde_json::to_string(&crate::provenienza::Correzioni {
+        titolo: Some("Hey You".to_owned()),
+        artista: Some("Pink Floyd".to_owned()),
+        ..crate::provenienza::Correzioni::default()
+    })
+    .expect("correzione");
+
+    let mut la = libreria();
+    brano(&la, 1, r"D:\M\01.flac", corretta);
+    la.execute(
+        "UPDATE tracks SET title = 'Hey You', artist = 'Pink Floyd', album = 'Al',
+                content_key = ?1, liked = 1, liked_at = 700
+          WHERE id = 1",
+        [dei_tag],
+    )
+    .expect("il brano corretto");
+    la.execute(
+        "INSERT INTO track_overrides (track_id, campi, set_at) VALUES (1, ?1, 600)",
+        [&campi],
+    )
+    .expect("la correzione");
+    la.execute(
+        "INSERT INTO play_history (track_id, played_at, ms_played) VALUES (1, 500, 200000)",
+        [],
+    )
+    .expect("cronologia");
+    la.execute(
+        "INSERT INTO lyrics (track_key, synced, source, updated_at)
+         VALUES (?1, '[00:01.00]Out there in the cold', 'mano', 800)",
+        [corretta],
+    )
+    .expect("testo a mano");
+    let archivio = esporta(&mut la, dir.path(), "la", &identita_fissa);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut qui = libreria();
+    brano(&qui, 1, r"E:\M\01.flac", dei_tag);
+    qui.execute(
+        "UPDATE tracks SET title = 'Traccia 01', artist = 'Unknown Artist', album = 'Al',
+                content_key = ?1
+          WHERE id = 1",
+        [dei_tag],
+    )
+    .expect("il brano coi suoi tag");
+
+    let piano = importa(&mut qui, &letto, &ambiente(&c_e_tutto)).expect("importazione");
+    assert_eq!(piano.portati.correzioni, 1, "{piano:?}");
+
+    let (titolo, chiave, cuore): (String, String, i64) = qui
+        .query_row(
+            "SELECT title, track_key, liked FROM tracks WHERE id = 1",
+            [],
+            |riga| Ok((riga.get(0)?, riga.get(1)?, riga.get(2)?)),
+        )
+        .expect("rilettura");
+    assert_eq!(titolo, "Hey You", "la correzione è arrivata");
+    assert_eq!(chiave, corretta);
+    assert_eq!(cuore, 1, "e il cuore l'ha seguita");
+    let ascolti: i64 = qui
+        .query_row(
+            "SELECT COUNT(*) FROM play_history WHERE track_id = 1",
+            [],
+            |riga| riga.get(0),
+        )
+        .expect("conteggio");
+    assert_eq!(ascolti, 1, "la cronologia pure");
+    let testo: Option<String> = qui
+        .query_row(
+            "SELECT synced FROM lyrics WHERE track_key = ?1",
+            [corretta],
+            |riga| riga.get(0),
+        )
+        .expect("il testo");
+    assert!(testo.is_some());
+}
+
+#[test]
+fn una_chiave_di_contenuto_ambigua_non_esce_con_la_correzione() {
+    // Il FLAC corretto e l'mp3 con gli stessi tag, lasciato com'era: la chiave
+    // di contenuto è la stessa, e non dice quale dei due file sia quello
+    // corretto. Dall'altra parte correggerebbe anche l'mp3.
+    let dei_tag = "unknown artist|traccia 01|al";
+    let c = libreria();
+    brano(&c, 1, r"D:\M\01.flac", "pink floyd|hey you|al");
+    brano(&c, 2, r"D:\M\01.mp3", dei_tag);
+    c.execute("UPDATE tracks SET content_key = ?1", [dei_tag])
+        .expect("stessi tag");
+    c.execute(
+        "INSERT INTO track_overrides (track_id, campi, set_at) VALUES (1, '{}', 600)",
+        [],
+    )
+    .expect("la correzione");
+
+    let uscita = biblioteca::raccogli(&c).expect("raccolta");
+    let correzione = uscita
+        .correzioni
+        .get("pink floyd|hey you|al")
+        .expect("la correzione esce");
+    assert!(correzione.contenuti.is_empty(), "{correzione:?}");
+
+    // Tolto l'mp3, la chiave torna a dire un file solo.
+    c.execute("DELETE FROM tracks WHERE id = 2", [])
+        .expect("via l'mp3");
+    let uscita = biblioteca::raccogli(&c).expect("raccolta");
+    assert_eq!(
+        uscita
+            .correzioni
+            .get("pink floyd|hey you|al")
+            .map(|c| c.contenuti.clone()),
+        Some(vec![dei_tag.to_owned()])
+    );
+}
+
+#[test]
 fn un_profilo_con_un_altra_identita_porta_solo_le_preferenze() {
     let dir = tempfile::tempdir().expect("cartella temporanea");
     let mut altrui = libreria();
@@ -597,6 +721,51 @@ fn un_profilo_con_un_altra_identita_porta_solo_le_preferenze() {
         "la cronologia di un'altra libreria non si attacca ai brani di questa"
     );
     assert_eq!(piano.portati.cronologia, 0);
+}
+
+#[test]
+fn chi_dice_che_e_la_sua_libreria_la_riavra() {
+    // Il caso della via d'uscita: un computer nuovo che ha esportato un profilo
+    // prima di importare quello vecchio, e ha così un'identità sua per la
+    // stessa musica.
+    let dir = tempfile::tempdir().expect("cartella temporanea");
+    let mut vecchia = libreria();
+    brano(&vecchia, 1, r"D:\M\a.flac", "chiave");
+    vecchia
+        .execute(
+            "INSERT INTO play_history (track_id, played_at, ms_played) VALUES (1, 500, 200000)",
+            [],
+        )
+        .expect("cronologia");
+    let archivio = esporta(&mut vecchia, dir.path(), "vecchia", &identita_altrui);
+    let letto = leggi(&archivio).expect("lettura");
+
+    let mut nuova = libreria();
+    brano(&nuova, 1, r"E:\M\a.flac", "chiave");
+    identita(&nuova, &identita_fissa).expect("identità");
+
+    let piano = importa(
+        &mut nuova,
+        &letto,
+        &Ambiente {
+            unisci_comunque: true,
+            ..ambiente(&c_e_tutto)
+        },
+    )
+    .expect("importazione");
+    assert!(
+        piano.identita_diversa,
+        "il piano continua a dire che le identità sono due"
+    );
+    let ascolti: i64 = nuova
+        .query_row("SELECT COUNT(*) FROM play_history", [], |riga| riga.get(0))
+        .expect("conteggio");
+    assert_eq!(ascolti, 1, "e la storia torna, perché lo si è chiesto");
+    assert_eq!(
+        settings::read(&nuova, CHIAVE_IDENTITA),
+        Ok(Some(identita_fissa().expect("identità fissa"))),
+        "l'identità di questa libreria resta la sua"
+    );
 }
 
 // ── la portabilità ──────────────────────────────────────────────────────────

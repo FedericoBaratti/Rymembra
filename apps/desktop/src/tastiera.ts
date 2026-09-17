@@ -319,11 +319,76 @@ function siStaScrivendo(bersaglio: EventTarget | null): boolean {
   const nome = bersaglio.tagName;
   if (nome === "TEXTAREA" || nome === "SELECT") return true;
   if (nome !== "INPUT") return false;
-  // Un cursore a scorrimento è un `input` ma non ci si scrive dentro, e le
-  // frecce ce le vuole lui: senza questa distinzione, spostare il volume con la
-  // tastiera sposterebbe anche la posizione nel brano.
+  // Un cursore, una casella e un pallino sono `input` ma non ci si scrive
+  // dentro: i loro tasti li decide [`vuoleIlTasto`], uno per uno.
   const tipo = (bersaglio as HTMLInputElement).type;
   return tipo !== "range" && tipo !== "checkbox" && tipo !== "radio";
+}
+
+/** I tasti con cui un cursore si muove da sé. */
+const TASTI_CURSORE = new Set([
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+]);
+
+/**
+ * Il comando che ha il fuoco usa già questo tasto per il suo mestiere.
+ *
+ * # Perché non bastava `siStaScrivendo`
+ *
+ * La funzione qui sopra diceva «non si sta scrivendo» per cursori, caselle e
+ * pallini, e il commento accanto diceva il contrario di quel che faceva: un
+ * cursore del volume col fuoco lasciava passare ←→, e la freccia spostava il
+ * brano di cinque secondi **invece** del volume — provato sull'app installata,
+ * 30,5 s diventati 25,5 s col volume fermo. Lo Spazio su una casella metteva in
+ * pausa invece di spuntarla.
+ *
+ * # Chi si tiene cosa
+ *
+ * - un cursore (`range`, `role="slider"`): frecce, Home/End, pagina su e giù;
+ * - una casella, un interruttore, un pallino: lo Spazio, e il pallino anche le
+ *   frecce, che sono il suo modo di scorrere il gruppo;
+ * - un bottone o un collegamento raggiunto **da tastiera**: Spazio e Invio.
+ *   Solo da tastiera, cioè con `:focus-visible`: chi clicca «Avanti» col mouse
+ *   e poi preme Spazio vuole la pausa, non un secondo «Avanti» — il fuoco è
+ *   rimasto lì per caso, non per scelta;
+ * - dentro una finestrella modale, ogni tasto nudo: la finestrella è quel che
+ *   si sta usando, e il tour, la sincronizzazione a battute o l'equalizzatore
+ *   non devono mettere in pausa la musica a ogni pressione.
+ */
+function vuoleIlTasto(bersaglio: EventTarget | null, tasto: string): boolean {
+  if (!(bersaglio instanceof HTMLElement)) return false;
+  if (bersaglio.closest("[aria-modal='true']") !== null) return true;
+  const ruolo = bersaglio.getAttribute("role");
+  const tipo =
+    bersaglio instanceof HTMLInputElement ? bersaglio.type : null;
+  if (tipo === "range" || ruolo === "slider") return TASTI_CURSORE.has(tasto);
+  if (tipo === "radio" || ruolo === "radio")
+    return tasto === "Space" || TASTI_CURSORE.has(tasto);
+  if (
+    tipo === "checkbox" ||
+    ruolo === "checkbox" ||
+    ruolo === "switch"
+  )
+    return tasto === "Space";
+  const premibile =
+    bersaglio.tagName === "BUTTON" ||
+    bersaglio.tagName === "SUMMARY" ||
+    (bersaglio.tagName === "A" && bersaglio.hasAttribute("href")) ||
+    ruolo === "button" ||
+    ruolo === "menuitem" ||
+    ruolo === "tab";
+  return (
+    premibile &&
+    (tasto === "Space" || tasto === "Enter") &&
+    bersaglio.matches(":focus-visible")
+  );
 }
 
 /** Il campo di ricerca dell'intestazione, se la pagina ne ha uno. */
@@ -344,9 +409,19 @@ function esegui(comando: Comando, azioni: Azioni): void {
     // vuole in risposta a un gesto invece che per disegnarla, e farsela passare
     // come prop la rimetterebbe fra le cose che ridisegnano `App` venti volte
     // al secondo.
-    case "avanti":
-      azioni.vaiA(Math.min(posizioneAdesso() + PASSO_MS, azioni.durataMs));
+    case "avanti": {
+      // Una durata a zero vuol dire «non si sa» — un file che il database ha
+      // senza, perché il tag mentiva o non c'era — non «finisce adesso»: preso
+      // per un tetto, ogni → riportava il brano in cima, e quel brano non si
+      // poteva più attraversare. Senza un limite noto si salta avanti e basta,
+      // che è sicuro: sopra la fine del flusso `motore::vai_a` mette un tetto
+      // suo invece di fallire.
+      const dopo = posizioneAdesso() + PASSO_MS;
+      azioni.vaiA(
+        azioni.durataMs > 0 ? Math.min(dopo, azioni.durataMs) : dopo,
+      );
       break;
+    }
     case "indietro":
       azioni.vaiA(Math.max(posizioneAdesso() - PASSO_MS, 0));
       break;
@@ -419,9 +494,12 @@ export function useScorciatoie(azioni: Azioni, associazioni: Associazioni): void
 
       // Un accordo con `Ctrl` o `Alt` passa anche mentre si scrive, e con esso
       // i tasti funzione, che nessuna parola contiene; un tasto nudo no. Vedi il
-      // preambolo.
-      if (!e.ctrlKey && !e.altKey && !FUNZIONE.test(e.key) && siStaScrivendo(e.target))
-        return;
+      // preambolo. Lo stesso tasto nudo non passa neppure quando il comando col
+      // fuoco lo usa già per sé: vedi `vuoleIlTasto`.
+      if (!e.ctrlKey && !e.altKey && !FUNZIONE.test(e.key)) {
+        if (siStaScrivendo(e.target)) return;
+        if (vuoleIlTasto(e.target, e.key === " " ? "Space" : e.key)) return;
+      }
 
       // `preventDefault` sempre, e non solo per lo Spazio: un tasto che
       // abbiamo preso non deve fare anche il suo mestiere di serie — lo Spazio
