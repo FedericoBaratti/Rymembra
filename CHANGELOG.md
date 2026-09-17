@@ -566,8 +566,11 @@ does not know get a sentence saying what to do instead of silence.
 With lyrics and queue both open, the centre column dropped under 300 px: title
 cut mid-word, one word of artist per line, transport under the lyrics panel.
 Below a width set in the stylesheet the two side panels now take turns. With
-the spectrum on, the controls sit on a panel so the times stay readable over
-the bars. Focus moves into the screen when it opens and back when it closes,
+the spectrum on, the controls keep no background of their own — the scene runs
+behind them, edge to edge — and what that would have cost in legibility, the
+two times beside the scrubber and the unlit stars over bright bars, is paid by
+a shadow on the text and the marks instead of by a panel over the scene. Focus
+moves into the screen when it opens and back when it closes,
 and the page underneath is `inert` so Tab no longer walks an invisible list.
 
 ### Fixed — smaller things

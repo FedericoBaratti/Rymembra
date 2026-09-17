@@ -3050,19 +3050,18 @@ body {
   gap: var(--spazio-3);
   width: 100%;
 }
-/* Con lo spettro acceso i comandi stanno **sopra le barre**, nella metà bassa
-   in cui la maschera della scena le lascia piene: i due tempi ai lati del
-   cursore, grigi da dodici pixel, sparivano sopra le barre scure, e le stelle
-   non accese sopra quelle chiare. La stessa ricetta — e la stessa ragione — del
-   pannello del testo: un fondo quasi opaco, non un `backdrop-filter` sopra una
-   tela che si ridisegna a ogni fotogramma. */
+/* Con lo spettro acceso i comandi stanno **sopra le barre** e non su un fondo:
+   il pannello quasi opaco che ci stava sotto è stato tolto, perché chiudeva la
+   scena in una scatola proprio dove la scena è tutto quel che si guarda. Quel
+   che quel fondo teneva leggibile — i due tempi ai lati del cursore e le stelle
+   non accese — se lo tiene da sé, con un'ombra portata sul testo e sui segni:
+   costa un'ombra e non un rettangolo, e sopra una tela che si ridisegna a ogni
+   fotogramma resta comunque più economica di un `backdrop-filter`. */
 .in-riproduzione .centro[data-spettro] .comandi-np {
-  padding: var(--spazio-3) var(--spazio-4);
-  background: rgb(var(--surface-0-rgb) / 0.82);
-  background-image: var(--luce);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-panel);
-  box-shadow: var(--filo);
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.55);
+}
+.in-riproduzione .centro[data-spettro] .comandi-np svg {
+  filter: drop-shadow(0 1px 3px rgb(0 0 0 / 0.55));
 }
 /*
  * Su una colonna stretta i comandi salgono di una linguetta.
@@ -3077,11 +3076,6 @@ body {
 @container (max-width: 860px) {
   .in-riproduzione .comandi-np {
     padding-bottom: 34px;
-  }
-  /* Col fondo il padding è quello del pannello, e lo spazio per la linguetta
-     passa fuori, sotto il bordo. */
-  .in-riproduzione .centro[data-spettro] .comandi-np {
-    margin-bottom: 34px;
   }
 }
 
