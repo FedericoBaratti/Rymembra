@@ -14,6 +14,7 @@
 //! libreria che una scansione non può ricostruire.
 
 use aether_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
+use aether_domain::esterno::Fonte;
 use aether_domain::listen::Listen;
 use aether_domain::queue::{QueueSnapshot, RepeatMode};
 use aether_play::{BANDE, LIMITE_DB, Sorgente};
@@ -102,12 +103,75 @@ pub const CHIAVE_FORMATO_VISIBILE: &str = "player.fileFormat.visible";
 pub struct SchedaSorgente {
     /// Quale brano.
     pub track_id: i64,
-    /// Dove sta il file.
-    pub path: String,
+    /// Da dove escono i byte: un file sul disco, o un catalogo.
+    pub collocazione: Collocazione,
     /// La durata secondo il database, per quando il file non la dichiara.
     pub durata_ms: i64,
     /// Il guadagno ReplayGain scritto nei tag, se c'era.
     pub replaygain_db: Option<f64>,
+}
+
+/// Da dove escono i byte di un brano. Due possibilità, e mai una terza.
+///
+/// # Perché è un enum e non un percorso con qualche colonna accanto
+///
+/// Perché «questo brano è un file?» è la domanda che viene **prima** di
+/// qualunque cosa si faccia con un brano, e un percorso che a volte è vuoto
+/// lascia rispondere per distrazione. Le funzioni che calcolano l'impronta, che
+/// agganciano i testi, che leggono e riscrivono i tag aprono tutte un percorso:
+/// con un enum il compilatore le obbliga a dire cosa fanno dell'altro caso, e
+/// «lo salto» diventa una riga scritta apposta invece di un caso non
+/// considerato. Un caso non considerato, qui, sarebbe un indirizzo passato a
+/// `File::open`.
+///
+/// È la stessa cosa che dice il `CHECK` della migrazione 26, e sta in due posti
+/// di proposito: quel che il database rifiuta di contenere è anche quel che il
+/// Rust non sa rappresentare.
+///
+/// # Da non confondere con [`crate::provenienza`]
+///
+/// Quel modulo risponde a «da dove viene questo **titolo**» — dai tag, dal nome
+/// del file, da una correzione a mano. Questo tipo risponde a «da dove vengono
+/// questi **byte**». Due domande diverse sullo stesso brano, e il nome le tiene
+/// separate apposta.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Collocazione {
+    /// Un file sul disco, col percorso così com'è scritto in tabella — mai
+    /// normalizzato, perché serve ad aprirlo.
+    File(String),
+    /// Un brano che sta in un catalogo, e su questo disco non c'è.
+    Catalogo {
+        /// Quale catalogo. Decide con quale rete si va a prendere i byte, cioè
+        /// con quali scadenze, quale `User-Agent` e quale riserva di
+        /// connessioni.
+        fonte: Fonte,
+        /// L'indirizzo dei byte, così com'è in tabella. Per Audius è un
+        /// percorso senza nodo davanti, e il perché sta nella migrazione 26.
+        url: String,
+    },
+}
+
+impl Collocazione {
+    /// Il percorso sul disco, se di un file si tratta.
+    ///
+    /// L'unico modo di arrivare a quella stringa, e la forma è voluta: chi la
+    /// chiama ha in mano un `Option` e deve deciderne il `None`.
+    #[must_use]
+    pub fn percorso(&self) -> Option<&str> {
+        match self {
+            Self::File(percorso) => Some(percorso),
+            Self::Catalogo { .. } => None,
+        }
+    }
+
+    /// Da quale catalogo arriva, se non è un file.
+    #[must_use]
+    pub const fn fonte(&self) -> Option<Fonte> {
+        match self {
+            Self::File(_) => None,
+            Self::Catalogo { fonte, .. } => Some(*fonte),
+        }
+    }
 }
 
 /// La sola query: cosa dice il database di questo brano.
@@ -117,11 +181,26 @@ pub struct SchedaSorgente {
 /// `playback.sourceUnavailable` se la riga non c'è più, `db.queryFailed` se il
 /// database non risponde.
 pub fn scheda_sorgente(connection: &Connection, track_id: i64) -> Result<SchedaSorgente, AppError> {
-    let (path, durata_ms, replaygain_db): (String, i64, Option<f64>) = connection
+    let (path, servizio, fonte_url, durata_ms, replaygain_db): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        Option<f64>,
+    ) = connection
         .query_row(
-            "SELECT path, duration_ms, replaygain_track_db FROM tracks WHERE id = ?1",
+            "SELECT path, source_service, fonte_url, duration_ms, replaygain_track_db
+               FROM tracks WHERE id = ?1",
             [track_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .map_err(|err| match err {
             // Un brano che non c'è più non è un guasto del database: è una riga
@@ -135,9 +214,33 @@ pub fn scheda_sorgente(connection: &Connection, track_id: i64) -> Result<SchedaS
             }
             altro => db_error("lettura del brano da suonare", &altro),
         })?;
+
+    // Il `CHECK` della migrazione 26 garantisce che una delle due ci sia, e che
+    // non ci siano tutte e due. Qui si legge comunque come se non lo
+    // garantisse, perché questo è il punto in cui un database toccato a mano —
+    // o scritto da una versione futura che avesse allentato quel vincolo —
+    // entra nel programma. La risposta a «non so cosa sia questa riga» è
+    // saltare il brano, non suonare qualcosa a caso.
+    let collocazione = match (path, servizio.zip(fonte_url)) {
+        (Some(percorso), None) => Collocazione::File(percorso),
+        (None, Some((servizio, url))) => Collocazione::Catalogo {
+            fonte: Fonte::da_testo(&servizio),
+            url,
+        },
+        (percorso, _) => {
+            return Err(AppError::new(ErrorCode::PlaybackSourceUnavailable {
+                track_id: Some(track_id),
+                path: percorso,
+            })
+            .with_cause(
+                "la riga non dice né un file né un catalogo, o li dice tutti e due".to_owned(),
+            ));
+        }
+    };
+
     Ok(SchedaSorgente {
         track_id,
-        path,
+        collocazione,
         durata_ms,
         replaygain_db,
     })
@@ -158,12 +261,33 @@ pub fn scheda_sorgente(connection: &Connection, track_id: i64) -> Result<SchedaS
 ///
 /// `fs.networkUnavailable` se il guasto viene dalla rete — e passa **intero**,
 /// perché è ritentabile; `playback.sourceUnavailable` per ogni altro modo in cui
-/// il file non si apre.
+/// il file non si apre, **compreso** un brano di catalogo.
+///
+/// # Perché un brano di catalogo qui è un errore e non un ramo
+///
+/// Perché questo crate non vede la rete, e non è una mancanza ma il confine su
+/// cui è costruito l'albero: il posto in cui un flusso HTTP diventa qualcosa da
+/// suonare è `apps/desktop/src-tauri/src/riproduzione/flusso.rs`, l'unico che
+/// conosce tutti e due i lati. Chi chiama di qui — l'impronta sonora,
+/// l'aggancio dei testi — un flusso non lo vuole comunque: non si misura un
+/// brano che non si ha, e scaricarlo per misurarlo sarebbe esattamente quel che
+/// `Disponibilita::SoloAscolto` vieta.
 pub fn sorgente_da_scheda(
     files: &dyn MusicFiles,
     scheda: &SchedaSorgente,
 ) -> Result<Sorgente, AppError> {
-    let media = files.open(&scheda.path).map_err(|err| {
+    let Some(percorso) = scheda.collocazione.percorso() else {
+        return Err(AppError::new(ErrorCode::PlaybackSourceUnavailable {
+            track_id: Some(scheda.track_id),
+            // Nessun percorso, e non per reticenza: la finestra mostra quel
+            // campo per dire quale cartella andare a ricollegare, e un brano di
+            // catalogo una cartella non ce l'ha.
+            path: None,
+        })
+        .with_cause("un brano di catalogo non ha un file da aprire".to_owned()));
+    };
+
+    let media = files.open(percorso).map_err(|err| {
         // La rete giù si propaga **così com'è**: è ritentabile, e la finestra
         // ci mette accanto il tasto «Riprova». Impacchettarla in
         // `playback.sourceUnavailable` — che il catalogo dichiara mai
@@ -174,7 +298,7 @@ pub fn sorgente_da_scheda(
         }
         AppError::new(ErrorCode::PlaybackSourceUnavailable {
             track_id: Some(scheda.track_id),
-            path: Some(scheda.path.clone()),
+            path: Some(percorso.to_owned()),
         })
         .with_cause(err.cause().unwrap_or(err.code().kind().code()).to_owned())
     })?;
@@ -182,7 +306,7 @@ pub fn sorgente_da_scheda(
     Ok(Sorgente {
         track_id: scheda.track_id,
         media: Box::new(Adattatore::nuovo(media)),
-        estensione: estensione_di(&scheda.path),
+        estensione: estensione_di(percorso),
         durata_ms: u64::try_from(scheda.durata_ms).unwrap_or(0),
         // `f64` nel database perché SQLite non ha i float a 32 bit; il motore
         // lavora in `f32`, che per dei decibel è largamente sufficiente — la
@@ -1843,7 +1967,7 @@ mod prove {
         });
         let scheda = SchedaSorgente {
             track_id: 1,
-            path: "//srv/musica/1.mp3".to_owned(),
+            collocazione: Collocazione::File("//srv/musica/1.mp3".to_owned()),
             durata_ms: 1_000,
             replaygain_db: None,
         };

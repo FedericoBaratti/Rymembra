@@ -173,39 +173,9 @@ export function nomeNatura(natura: string): string | null {
   }
 }
 
-/**
- * Come si chiama una licenza davanti a chi ascolta.
- *
- * # Perché si mostra
- *
- * Perché è la differenza fra un'applicazione che prende musica dove le pare e
- * una che sa cosa sta prendendo. Chi ascolta ha il diritto di saperlo quanto
- * chi pubblica, e un file che entra in libreria senza che nessuno dica sotto
- * che condizioni ci è entrato è un file che fra un anno nessuno saprà se può
- * condividere.
- *
- * Le sigle Creative Commons restano sigle — `cc-by-nc-sa` non si traduce in
- * «attribuzione, non commerciale, condividi allo stesso modo» — perché la sigla
- * è il nome vero, ed è quella che si cerca quando si vuole sapere cosa
- * comporta.
- */
-export function nomeLicenza(licenza: string): string {
-  switch (licenza) {
-    case "pubblicoDominio":
-      return t("license.publicDomain");
-    case "openMusicLicense":
-      return t("license.openMusic");
-    case "liberaNonCommerciale":
-      return t("license.freeNonCommercial");
-    case "tutteRiservate":
-      return t("license.allRights");
-    case "sconosciuta":
-      return t("license.unknown");
-    default:
-      // Le Creative Commons arrivano come sigla e restano sigla.
-      return licenza.toUpperCase();
-  }
-}
+// `nomeLicenza` stava qui, ed è andata in `formato.ts`: la mostrano tre
+// schermate — Importazioni, Esplora e la libreria — e finché ne esistevano
+// due copie le due dicevano la stessa licenza con due nomi diversi.
 
 /** Sopra questo scarto la durata va in ambra: `scelta::BANDA_STRETTA_MS`. */
 const BANDA_STRETTA_MS = 30_000;

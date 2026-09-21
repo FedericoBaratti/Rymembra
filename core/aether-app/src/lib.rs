@@ -12,6 +12,7 @@
 pub mod autoplay;
 pub mod backup;
 pub mod cartelle;
+pub mod catalogo;
 pub mod covers;
 pub mod db;
 pub mod desiderati;

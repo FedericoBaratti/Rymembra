@@ -170,7 +170,7 @@ pub fn proposte(
 /// si guarda un piano.
 fn quanti_sotto(connection: &Connection, radice: &str) -> Result<usize, AppError> {
     let mut istruzione = connection
-        .prepare("SELECT path FROM tracks")
+        .prepare("SELECT path FROM tracks WHERE path IS NOT NULL")
         .map_err(|err| db_error("conteggio dei brani sotto una radice", &err))?;
     let righe = istruzione
         .query_map([], |riga| riga.get::<_, String>(0))
@@ -238,7 +238,7 @@ pub fn applica_in(
 
     let da_riscrivere: Vec<(i64, String)> = {
         let mut istruzione = tx
-            .prepare("SELECT id, path FROM tracks")
+            .prepare("SELECT id, path FROM tracks WHERE path IS NOT NULL")
             .map_err(|err| db_error("percorsi da rimappare", &err))?;
         let righe = istruzione
             .query_map([], |riga| {

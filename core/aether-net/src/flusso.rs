@@ -56,6 +56,25 @@ use crate::http::{Pezzo, Rete};
 /// scarichi mezza canzone per farne sentire l'inizio.
 pub const FINESTRA: u64 = 256 * 1024;
 
+/// Fin dove la finestra può crescere quando si legge di fila.
+///
+/// # Perché cresce, e perché si ferma qui
+///
+/// Perché il decodificatore, quando non trova una tavola di salto, **scorre**:
+/// cercare a metà di un mp3 senza indice vuol dire leggerne la prima metà tutta
+/// di seguito. A [`FINESTRA`] fissa sono una quarantina di richieste, e
+/// misurato ognuna costa fra un secondo e due di sola attesa prima che arrivi
+/// un byte — cioè un minuto buono speso a chiedere, oltre al tempo di
+/// scaricare.
+///
+/// Due megabyte e non di più, ed è il tetto che tiene insieme le due cose che
+/// questo modulo deve tenere insieme. Chiedere dieci volte tanto per volta
+/// taglia l'attesa; tenere in memoria un brano intero sarebbe **una copia del
+/// brano**, che è precisamente quel che i termini di Jamendo vietano e
+/// `TERMS.md` § 2 promette di non fare. La finestra resta una sola e si
+/// sovrascrive: quel che è passato non si conserva, a nessuna dimensione.
+pub const FINESTRA_MASSIMA: u64 = 2 * 1024 * 1024;
+
 /// Da dove arrivano i pezzi.
 ///
 /// Un tratto e non direttamente [`Rete`], per una ragione sola: le prove di
@@ -75,10 +94,26 @@ pub trait Sorgente: Send + Sync + std::fmt::Debug {
 }
 
 /// Un indirizzo, letto a intervalli.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DaRete {
     rete: Rete,
     url: String,
+    /// Il nodo a cui il primo rimando ha portato, se c'è stato.
+    ///
+    /// # Perché si ricorda
+    ///
+    /// Perché l'Internet Archive risponde a ogni `/download/…` con un rimando
+    /// al nodo che quel file ce l'ha, e misurato quel rimando costa novecento
+    /// millisecondi su due secondi di attesa. Un brano che si scorre avanti e
+    /// indietro fa decine di richieste: pagarlo ogni volta vuol dire pagarlo
+    /// decine di volte per sapere una cosa che non cambia.
+    ///
+    /// Un `Mutex` e non un campo riscrivibile perché [`Sorgente::pezzo`] prende
+    /// `&self`: il tratto è così apposta, perché la sorgente viene condivisa. È
+    /// l'unico stato mutabile di questo tipo, non è sulla via calda — si scrive
+    /// una volta per brano — e un lucchetto avvelenato non è un guasto da
+    /// propagare: si riparte dall'indirizzo di partenza, che funziona sempre.
+    nodo: std::sync::Mutex<Option<String>>,
 }
 
 impl DaRete {
@@ -89,13 +124,30 @@ impl DaRete {
     /// connessioni è già calda.
     #[must_use]
     pub const fn nuova(rete: Rete, url: String) -> Self {
-        Self { rete, url }
+        Self {
+            rete,
+            url,
+            nodo: std::sync::Mutex::new(None),
+        }
     }
 }
 
 impl Sorgente for DaRete {
     fn pezzo(&self, da: u64, quanti: u64) -> Result<Pezzo, AppError> {
-        self.rete.intervallo(&self.url, da, quanti)
+        let dove = self
+            .nodo
+            .lock()
+            .map(|n| n.clone())
+            .unwrap_or(None)
+            .unwrap_or_else(|| self.url.clone());
+        let pezzo = self.rete.intervallo(&dove, da, quanti)?;
+        if let Some(nuovo) = pezzo.url_finale.as_ref()
+            && let Ok(mut nodo) = self.nodo.lock()
+            && nodo.is_none()
+        {
+            *nodo = Some(nuovo.clone());
+        }
+        Ok(pezzo)
     }
 }
 
@@ -115,6 +167,12 @@ pub struct FlussoHttp {
     finestra: Vec<u8>,
     /// A quale byte del file corrisponde il primo byte della finestra.
     inizio: u64,
+    /// Quanto si chiederà alla prossima richiesta.
+    ///
+    /// Parte da [`FINESTRA`], raddoppia a ogni riempimento che riprende da dove
+    /// finiva il precedente — cioè mentre si legge di fila — e torna a
+    /// [`FINESTRA`] al primo salto vero. Vedi [`FINESTRA_MASSIMA`].
+    passo: u64,
 }
 
 impl FlussoHttp {
@@ -147,6 +205,7 @@ impl FlussoHttp {
             posizione: 0,
             finestra: primo.byte,
             inizio: 0,
+            passo: FINESTRA,
         })
     }
 
@@ -165,8 +224,27 @@ impl FlussoHttp {
     }
 
     /// Chiede la finestra che contiene il cursore.
+    ///
+    /// Il passo raddoppia quando questa finestra riprende **esattamente** da
+    /// dove finiva quella di prima: è la firma di una lettura di fila, e una
+    /// lettura di fila è o un brano che suona o un decodificatore che sta
+    /// scorrendo per trovare un punto. In tutti e due i casi la prossima
+    /// richiesta si sa già che arriverà, e conviene che sia una invece di
+    /// quattro. Un salto vero riporta il passo a [`FINESTRA`], perché dopo un
+    /// salto quel che il decodificatore vuole sono di solito pochi kilobyte —
+    /// una testa di tag, una coda di indice — e chiederne due megabyte sarebbe
+    /// aspettare per niente.
     fn riempi(&mut self) -> Result<(), AppError> {
-        let pezzo = self.sorgente.pezzo(self.posizione, FINESTRA)?;
+        let di_fila = self
+            .inizio
+            .saturating_add(u64::try_from(self.finestra.len()).unwrap_or(0))
+            == self.posizione;
+        self.passo = if di_fila {
+            self.passo.saturating_mul(2).min(FINESTRA_MASSIMA)
+        } else {
+            FINESTRA
+        };
+        let pezzo = self.sorgente.pezzo(self.posizione, self.passo)?;
         self.inizio = self.posizione;
         self.finestra = pezzo.byte;
         // La lunghezza si impara alla prima risposta che la dichiara e non si
@@ -363,6 +441,28 @@ mod prove {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .len()
         }
+        /// Quanto è stato chiesto a ogni richiesta, nell'ordine.
+        fn passi(&self) -> Vec<u64> {
+            self.richieste
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .map(|(_, quanti)| *quanti)
+                .collect()
+        }
+    }
+
+    /// Una sorgente che rimanda a una [`Finta`] condivisa.
+    ///
+    /// Serve a poter interrogare la finta **dopo** che il flusso se l'è presa:
+    /// `FlussoHttp::da` vuole un `Box`, e un `Box` non si guarda più da fuori.
+    #[derive(Debug)]
+    struct Condivisa(std::sync::Arc<Finta>);
+
+    impl Sorgente for Condivisa {
+        fn pezzo(&self, da: u64, quanti: u64) -> Result<Pezzo, AppError> {
+            self.0.pezzo(da, quanti)
+        }
     }
 
     impl Sorgente for Finta {
@@ -382,6 +482,7 @@ mod prove {
                 totale: self
                     .dichiara
                     .then(|| u64::try_from(self.byte.len()).unwrap_or(0)),
+                url_finale: None,
             })
         }
     }
@@ -565,6 +666,7 @@ mod prove {
                 // Una lunghezza che vale il doppio della finestra: così la fine
                 // non è ancora arrivata e la seconda richiesta parte davvero.
                 totale: Some(FINESTRA.saturating_mul(2)),
+                url_finale: None,
             })
         }
     }
@@ -637,6 +739,7 @@ mod prove {
                 Ok(Pezzo {
                     byte: Vec::new(),
                     totale: Some(0),
+                    url_finale: None,
                 })
             }
         }
@@ -646,6 +749,109 @@ mod prove {
             posizione: 0,
             finestra: Vec::new(),
             inizio: 0,
+            passo: FINESTRA,
         }
+    }
+
+    /// Leggere di fila fa crescere la finestra, fino al tetto e non oltre.
+    ///
+    /// È la cura al difetto che la prova sul campo ha trovato: cercare a metà
+    /// di un mp3 senza tavola di salto fa scorrere il decodificatore dall'inizio
+    /// fino al punto, e a finestra fissa sono quaranta richieste da un secondo
+    /// e mezzo l'una di sola attesa. Qui si conta il numero di richieste, che è
+    /// la cosa che quella attesa la moltiplica.
+    #[test]
+    fn una_lettura_di_fila_fa_crescere_la_finestra() {
+        let quanti = usize::try_from(FINESTRA_MASSIMA.saturating_mul(8)).unwrap_or(0);
+        let finta = std::sync::Arc::new(Finta::nuova(quanti, true));
+        let mut flusso = FlussoHttp::da(Box::new(Condivisa(std::sync::Arc::clone(&finta))))
+            .unwrap_or_else(|_| unreachable());
+
+        let mut letti = Vec::new();
+        let quanti_letti = std::io::Read::read_to_end(&mut flusso, &mut letti).unwrap_or(0);
+        assert_eq!(quanti_letti, quanti, "il file non è arrivato per intero");
+        assert_eq!(letti, finta.byte, "i byte non sono quelli, o sono spostati");
+
+        let passi = finta.passi();
+        assert_eq!(
+            passi.first().copied(),
+            Some(FINESTRA),
+            "la prima richiesta resta piccola: è l'apertura, e chi apre vuole sentire subito"
+        );
+        assert!(
+            passi.iter().all(|p| *p <= FINESTRA_MASSIMA),
+            "nessuna richiesta supera il tetto: {passi:?}"
+        );
+        assert_eq!(
+            passi.last().copied(),
+            Some(FINESTRA_MASSIMA),
+            "letto di fila abbastanza a lungo, si arriva al tetto: {passi:?}"
+        );
+        // Sedici megabyte a finestra fissa sarebbero sessantaquattro richieste.
+        assert!(
+            passi.len() <= 16,
+            "sedici megabyte in {} richieste: la finestra non sta crescendo",
+            passi.len()
+        );
+    }
+
+    /// Un salto vero rimette la finestra piccola.
+    ///
+    /// Dopo un salto quel che il decodificatore chiede sono di solito pochi
+    /// kilobyte — una testa di tag, una coda di indice — e continuare a
+    /// chiederne due megabyte vorrebbe dire aspettare per niente, che è il
+    /// difetto opposto a quello che la crescita cura.
+    #[test]
+    fn un_salto_rimette_la_finestra_piccola() {
+        let quanti = usize::try_from(FINESTRA_MASSIMA.saturating_mul(4)).unwrap_or(0);
+        let finta = std::sync::Arc::new(Finta::nuova(quanti, true));
+        let mut flusso = FlussoHttp::da(Box::new(Condivisa(std::sync::Arc::clone(&finta))))
+            .unwrap_or_else(|_| unreachable());
+
+        // Si legge di fila quanto basta a far crescere il passo.
+        let mut buco = vec![0_u8; usize::try_from(FINESTRA_MASSIMA).unwrap_or(0)];
+        for _ in 0..4 {
+            let _ = std::io::Read::read(&mut flusso, &mut buco);
+        }
+        assert!(
+            finta.passi().last().copied().unwrap_or(0) > FINESTRA,
+            "la premessa di questa prova non si è verificata: {:?}",
+            finta.passi()
+        );
+
+        // E poi si salta indietro, che è quel che fa chi trascina il cursore.
+        let _ = std::io::Seek::seek(&mut flusso, SeekFrom::Start(16));
+        let mut poco = [0_u8; 8];
+        let _ = std::io::Read::read(&mut flusso, &mut poco);
+        assert_eq!(
+            finta.passi().last().copied(),
+            Some(FINESTRA),
+            "dopo un salto la finestra torna piccola: {:?}",
+            finta.passi()
+        );
+        assert_eq!(poco[0], 16_u8, "e legge dal punto giusto");
+    }
+
+    /// Tornare a leggere di fila dopo un salto rifa crescere la finestra.
+    ///
+    /// È il caso vero: si trascina il cursore, e da lì in poi il brano suona.
+    /// Se la finestra restasse piccola per sempre dopo il primo salto, il
+    /// rimedio varrebbe solo per il primo minuto d'ascolto.
+    #[test]
+    fn dopo_un_salto_la_finestra_ricresce() {
+        let quanti = usize::try_from(FINESTRA_MASSIMA.saturating_mul(4)).unwrap_or(0);
+        let finta = std::sync::Arc::new(Finta::nuova(quanti, true));
+        let mut flusso = FlussoHttp::da(Box::new(Condivisa(std::sync::Arc::clone(&finta))))
+            .unwrap_or_else(|_| unreachable());
+        let _ = std::io::Seek::seek(&mut flusso, SeekFrom::Start(FINESTRA));
+        let mut buco = vec![0_u8; usize::try_from(FINESTRA).unwrap_or(0)];
+        for _ in 0..6 {
+            let _ = std::io::Read::read(&mut flusso, &mut buco);
+        }
+        assert!(
+            finta.passi().last().copied().unwrap_or(0) > FINESTRA,
+            "riprendendo a leggere di fila la finestra deve tornare a crescere: {:?}",
+            finta.passi()
+        );
     }
 }

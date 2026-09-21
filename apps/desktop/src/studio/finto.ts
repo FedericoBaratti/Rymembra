@@ -212,6 +212,11 @@ const BRANO: Brano = {
   playCount: 12,
   liked: true,
   rating: 4,
+  // Un file sul disco, che è il caso da mostrare in un'anteprima di tema: le
+  // tre colonne del catalogo restano vuote.
+  fonte: null,
+  fontePagina: null,
+  licenza: null,
 };
 
 const STATO: StatoRiproduzione = {

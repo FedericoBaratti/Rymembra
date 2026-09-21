@@ -94,7 +94,11 @@ import {
 } from "./albero";
 import { t } from "../lingue";
 import { Trans } from "../lingue/Trans";
-import { descrizioneParte, descrizioneToken } from "./vocabolario";
+import {
+  descrizioneParte,
+  descrizioneToken,
+  nomeGruppo,
+} from "./vocabolario";
 
 /** Le quattro viste dello Studio. */
 type Vista = "ispeziona" | "impagina" | "documento" | "tavolozza";
@@ -1319,7 +1323,7 @@ export function Studio({
                       }
                     >
                       <Icona nome={aperto ? "i-chev-d" : "i-chev-r"} dim={13} />
-                      <span>{gruppo}</span>
+                      <span>{nomeGruppo(gruppo)}</span>
                       <span className="quante">{dentro.length}</span>
                     </button>
                     {aperto &&
@@ -1405,7 +1409,7 @@ export function Studio({
                       })
                     }
                   >
-                    {gruppo}
+                    {nomeGruppo(gruppo)}
                     <span className="quante">{dentro.length}</span>
                   </button>
                 ))}

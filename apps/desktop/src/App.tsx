@@ -41,7 +41,14 @@ import {
   applicaSkin,
   type MovimentoUtente,
 } from "./aspetto";
-import { brani_, durata, nomeArtista, numero, titoloAlbum } from "./formato";
+import {
+  brani_,
+  durata,
+  nomeArtista,
+  nomeFonte,
+  numero,
+  titoloAlbum,
+} from "./formato";
 import { useFinestrella } from "./finestrella";
 import { useFuoco } from "./fuoco";
 import {
@@ -78,6 +85,11 @@ import { usePresaPerRiordino } from "./riordino";
 import { useRiproduzione } from "./riproduzione";
 import { Artisti } from "./schermate/Artisti";
 import { Cartelle } from "./schermate/Cartelle";
+import {
+  Esplora,
+  ESPLORA_INIZIALE,
+  type StatoEsplora,
+} from "./schermate/Esplora";
 import { Home, TestaHome } from "./schermate/Home";
 import {
   SchermataImportazioni,
@@ -377,6 +389,20 @@ const RigaBrano = memo(function RigaBrano({
       <div className="chi" role="gridcell">
         <div className="nome" title={brano.title}>
           {brano.title}
+          {/* La pastiglia accanto al titolo e non in una colonna sua: dice una
+              cosa su **questo** brano, e su una libreria di file sarebbe una
+              colonna vuota per diciottomila righe. Chi ascolta con uno screen
+              reader la sente nel titolo, che è dove serve — è la differenza fra
+              un brano che c'è sul disco e uno che c'è finché c'è la rete. */}
+          {brano.fonte !== null && (
+            <span
+              className="pastiglia flusso"
+              data-livello="nota"
+              title={t("track.stream.title", { fonte: nomeFonte(brano.fonte) })}
+            >
+              {t("track.stream.badge")}
+            </span>
+          )}
         </div>
         <div className="autore" title={nomeArtista(brano.artist)}>
           {nomeArtista(brano.artist)}
@@ -812,6 +838,17 @@ export function App() {
     return () => window.clearTimeout(conto);
   }, [notizia]);
   const [vista, setVista] = useState<Vista>("home");
+  /**
+   * Quel che Esplora ha trovato l'ultima volta che era aperta.
+   *
+   * Sta qui e non dentro il componente perché il componente si smonta a ogni
+   * cambio di schermata, e con lui sparivano risultati e frase cercata:
+   * tornare su Esplora dopo aver guardato un album voleva dire rifare una
+   * ricerca che costa da una a cinque richieste all'Internet Archive e una ad
+   * Audius. Il nucleo i candidati non li aveva mai buttati — è la finestra
+   * che dimenticava. Vedi `StatoEsplora` in `schermate/Esplora.tsx`.
+   */
+  const [esplora, setEsplora] = useState<StatoEsplora>(ESPLORA_INIZIALE);
   const [sezione, setSezione] = useState<Sezione>("cartelle");
   const [query, setQuery] = useState("");
   const [artisti, setArtisti] = useState<Artista[]>([]);
@@ -2406,6 +2443,24 @@ export function App() {
     }
   }, []);
 
+  /**
+   * Fa partire **un** brano, da solo.
+   *
+   * Non è `suonaDa` con un elenco di uno: quella prende righe di libreria e qui
+   * si ha solo un identificativo, che è tutto quel che serve — la coda viaggia
+   * per identificativi, e il motore rilegge la riga da sé.
+   */
+  const suonaSolo = useCallback(
+    async (id: number) => {
+      try {
+        await ipc.suona([id], 0);
+      } catch (e) {
+        segnalaErrore(e);
+      }
+    },
+    [segnalaErrore],
+  );
+
   const ricaricaPlaylist = useCallback(async () => {
     try {
       setPlaylist(await ipc.playlistElenco());
@@ -2459,6 +2514,22 @@ export function App() {
       prima && prima.id === cambiata.id ? cambiata : prima,
     );
   }, []);
+
+  /**
+   * L'elenco che si sta guardando, leggibile da una chiusura.
+   *
+   * `elencoCorrente` è dichiarato **dopo** [`apriMenu`] — deriva da stati che
+   * stanno più in basso — quindi il menù non può averlo fra le dipendenze:
+   * nominarlo là sarebbe una lettura prima dell'inizializzazione. Un `ref` è il
+   * modo di leggerlo al momento del clic invece che al momento del disegno, ed
+   * è lo stesso motivo per cui `pagine.ts` tiene `chiedi` in un `ref`.
+   *
+   * Senza, la chiusura catturava l'elenco che c'era alla creazione del menù —
+   * cioè quello vuoto del primo disegno — e ogni domanda fatta all'elenco
+   * rispondeva «non lo so». Si vedeva su una cosa sola, la voce «mostra nella
+   * cartella» offerta su un brano che una cartella non ce l'ha.
+   */
+  const elencoCorrenteRef = useRef<Brano[]>([]);
 
   /** Apre il menù contestuale su una selezione di brani. */
   const apriMenu = useCallback(
@@ -2548,12 +2619,43 @@ export function App() {
                   });
                 }),
               },
-              {
-                etichetta: t("menu.showInFolder"),
-                azione: () => {
-                  ipc.branoMostraNellaCartella(primo).catch(segnalaErrore);
-                },
-              },
+              // «Mostra nella cartella» solo su un file. Un brano di catalogo
+              // in nessuna cartella sta, e la voce che lo promettesse
+              // risponderebbe con un errore a un clic perfettamente
+              // ragionevole. Il comando si difende comunque da sé — un comando
+              // è una porta — ma una porta che non si apre non va messa in
+              // vista.
+              // Il brano non trovato nell'elenco — il menù aperto da un
+              // pannello che mostra un'altra lista — lascia la voce dov'è:
+              // è quel che si faceva prima di distinguere i due casi, e il
+              // comando si difende comunque da sé.
+              ...(elencoCorrenteRef.current.find((b) => b.id === primo)?.fonte ==
+              null
+                ? [
+                    {
+                      etichetta: t("menu.showInFolder"),
+                      azione: () => {
+                        ipc.branoMostraNellaCartella(primo).catch(segnalaErrore);
+                      },
+                    },
+                  ]
+                : []),
+              // E il contrario: la pagina pubblica esiste solo per un brano che
+              // viene da un catalogo. È il gesto che «Mostra nella cartella»
+              // è per un file — «fammi vedere da dove viene» — e per certe
+              // licenze non è una curiosità ma una condizione d'uso, per cui
+              // qui c'è e in «In riproduzione» c'è scritta per esteso.
+              ...(elencoCorrenteRef.current.find((b) => b.id === primo)
+                ?.fontePagina != null
+                ? [
+                    {
+                      etichetta: t("track.openPage"),
+                      azione: () => {
+                        ipc.branoApriPagina(primo).catch(segnalaErrore);
+                      },
+                    },
+                  ]
+                : []),
             ];
       setMenu({
         x: e.clientX,
@@ -2906,6 +3008,10 @@ export function App() {
     : aperto
       ? braniAperto
       : brani;
+  // Durante il disegno e non in un effetto: chi legge questo `ref` lo fa a un
+  // clic, cioè sempre dopo che il disegno è finito, e un effetto lo
+  // aggiornerebbe un fotogramma più tardi senza guadagnarci niente.
+  elencoCorrenteRef.current = elencoCorrente;
 
   /**
    * La selezione multipla.
@@ -3439,6 +3545,19 @@ export function App() {
         />
       );
     }
+    /* Senza `query`: la casella dell'intestazione cerca **in libreria**, e
+       questa pagina cerca fuori. Due caselle vicine che cercano in due posti
+       diversi sono la cosa che fa digitare nella sbagliata; quella di qui sta
+       dentro la pagina, accanto al tasto che la fa partire. */
+    if (vista === "esplora") {
+      return (
+        <Intestazione
+          occhiello={t("page.explore.eyebrow")}
+          titolo={t("page.explore.title")}
+          sottotitolo={t("page.explore.sub")}
+        />
+      );
+    }
     if (cercando) {
       return (
         <Intestazione
@@ -3619,6 +3738,29 @@ export function App() {
         <SchermataImportazioni
           importazioni={importazioni}
           onIncollaLink={() => setImportandoLink(true)}
+        />
+      );
+    }
+    if (vista === "esplora") {
+      return (
+        <Esplora
+          stato={esplora}
+          onStato={setEsplora}
+          onErrore={segnalaErrore}
+          onNotizia={setNotizia}
+          onSuona={(id) => void suonaSolo(id)}
+          onAccoda={(id) => {
+            ipc.codaAccoda([id]).catch(segnalaErrore);
+          }}
+          onLibreriaCambiata={() => {
+            /* La libreria è cambiata sotto gli elenchi aperti: un brano di
+               catalogo entra in `tracks` e negli aggregati, quindi si affaccia
+               in Brani e in Album. Senza questa riga comparirebbe solo al
+               riavvio, che è il modo di far credere che il tasto non abbia
+               funzionato. */
+            elencoBrani.ricarica();
+            elencoAlbum.ricarica();
+          }}
         />
       );
     }

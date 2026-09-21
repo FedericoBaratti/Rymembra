@@ -466,7 +466,8 @@ mod prove {
                 track_number INTEGER, disc_number INTEGER, duration_ms INTEGER NOT NULL,
                 year INTEGER, cover_art_hash TEXT, play_count INTEGER NOT NULL DEFAULT 0,
                 liked INTEGER NOT NULL DEFAULT 0, rating INTEGER NOT NULL DEFAULT 0,
-                genre TEXT, date_added INTEGER NOT NULL DEFAULT 0, last_played_at INTEGER)",
+                genre TEXT, date_added INTEGER NOT NULL DEFAULT 0, last_played_at INTEGER,
+                source_service TEXT, fonte_pagina TEXT, licenza TEXT)",
         )
         .expect("schema");
         c

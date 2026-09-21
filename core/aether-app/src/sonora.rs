@@ -65,7 +65,7 @@ use aether_play::impronta::{self, Esito};
 
 use crate::files::MusicFiles;
 use crate::library::db_error;
-use crate::playback::{SchedaSorgente, sorgente_da_scheda};
+use crate::playback::{Collocazione, SchedaSorgente, sorgente_da_scheda};
 
 /// Quanti brani per passata.
 ///
@@ -131,10 +131,18 @@ pub const OK: &str = "ok";
 /// `'muto'` non compare fra i ritentabili apposta: trenta secondi di silenzio
 /// oggi saranno trenta secondi di silenzio fra un mese, e un'impronta di
 /// silenzio sarebbe una calamita che attira ogni ricerca di somiglianza.
+///
+/// `t.path IS NOT NULL` toglie di mezzo i brani di catalogo, e non è
+/// un'ottimizzazione: un'impronta si calcola leggendo il file dall'inizio alla
+/// fine, e farlo su un flusso vorrebbe dire scaricarlo per intero — cioè
+/// esattamente quel che `Disponibilita::SoloAscolto` non permette. Un brano che
+/// non si possiede non entra nella somiglianza, e non ci entra per un motivo
+/// che non è tecnico.
 const fn candidato_where() -> &'static str {
-    "i.track_id IS NULL
-     OR i.versione <> ?1
-     OR (i.vettore IS NULL AND i.esito <> 'muto' AND i.tentato_at < ?2)"
+    "t.path IS NOT NULL
+     AND (i.track_id IS NULL
+          OR i.versione <> ?1
+          OR (i.vettore IS NULL AND i.esito <> 'muto' AND i.tentato_at < ?2))"
 }
 
 /// Quanti brani aspettano ancora un'impronta.
@@ -194,7 +202,9 @@ pub fn candidati(
             |row| {
                 Ok(SchedaSorgente {
                     track_id: row.get(0)?,
-                    path: row.get(1)?,
+                    // `candidato_where` ha già escluso i brani senza file:
+                    // qui `path` non è mai `NULL`, e un catalogo non arriva.
+                    collocazione: Collocazione::File(row.get(1)?),
                     durata_ms: row.get(2)?,
                     replaygain_db: row.get(3)?,
                 })
@@ -856,7 +866,7 @@ mod prove {
     fn scheda() -> SchedaSorgente {
         SchedaSorgente {
             track_id: 7,
-            path: "/musica/7.flac".to_owned(),
+            collocazione: Collocazione::File("/musica/7.flac".to_owned()),
             durata_ms: 180_000,
             replaygain_db: None,
         }

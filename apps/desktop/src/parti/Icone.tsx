@@ -81,7 +81,11 @@ export type NomeIcona =
   | "i-text"
   | "i-ia"
   | "i-chat"
-  | "i-mark";
+  | "i-mark"
+  // Il rimando alla pagina pubblica di un brano di catalogo. La freccia che
+  // esce dal riquadro è il glifo con cui si dice «questo apre il browser» da
+  // sempre, e qui quel che apre è un obbligo di certe licenze.
+  | "i-external";
 
 /** Le proprietà comuni ai simboli col tratto. */
 const TRATTO = {
@@ -278,6 +282,10 @@ export function Simboli() {
         <symbol id="i-expand" viewBox="0 0 20 20" {...TRATTO}>
           <path d="M11.8 4.4h3.8v3.8M8.2 15.6H4.4v-3.8" />
           <path d="M15.6 4.4 11 9M4.4 15.6 9 11" />
+        </symbol>
+        <symbol id="i-external" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M15.6 11v3.4a1.2 1.2 0 0 1-1.2 1.2H5.6a1.2 1.2 0 0 1-1.2-1.2V5.6a1.2 1.2 0 0 1 1.2-1.2H9" />
+          <path d="M12.2 4.4h3.4v3.4M15.6 4.4 9.4 10.6" />
         </symbol>
         <symbol id="i-sort" viewBox="0 0 20 20" {...TRATTO}>
           <path d="M4.4 5.8h11.2M4.4 10h7M4.4 14.2h4" />

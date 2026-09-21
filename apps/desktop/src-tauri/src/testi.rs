@@ -1579,9 +1579,16 @@ pub fn testo_salva(
             // ricco, con dentro tutto — tempi delle righe compresi. Nell'ordine
             // opposto un guasto lascerebbe accanto al brano un esteso vecchio che
             // scavalca il `.lrc` appena scritto, cioè il caso peggiore.
-            let percorso = Path::new(&brano.path);
-            let nei_file = gemello_esteso(percorso, gemelli.esteso.as_deref())
-                .and_then(|()| testi::scrivi_sidecar(percorso, "lrc", Some(&gemelli.semplice)));
+            //
+            // Per un brano di catalogo non c'è nessun file accanto a cui
+            // scrivere, e non è un guasto: il testo è già salvato in tabella,
+            // che è il posto da cui il pannello lo rilegge. `Ok(())` e si tira
+            // dritto.
+            let nei_file = brano.path.as_deref().map_or(Ok(()), |percorso| {
+                let percorso = Path::new(percorso);
+                gemello_esteso(percorso, gemelli.esteso.as_deref())
+                    .and_then(|()| testi::scrivi_sidecar(percorso, "lrc", Some(&gemelli.semplice)))
+            });
             if let Err(err) = &nei_file {
                 nota!(
                     "[testi] testo salvato nella libreria ma non accanto al brano: {}",

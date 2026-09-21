@@ -9,7 +9,7 @@
 //! che tocca proprio questo modulo: aprire una connessione è un'attesa, e le
 //! attese si aspettano a mani vuote.
 
-use aether_app::playback::SchedaSorgente;
+use aether_app::playback::{Collocazione, SchedaSorgente};
 use aether_catalogo::Cataloghi;
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::esterno::Fonte;
@@ -52,19 +52,21 @@ const PERCORSO_AUDIUS: &str = "/v1/tracks/";
 
 /// Questo brano è un flusso? Allora ecco da dove.
 ///
-/// # Quale campo si legge, e quale si leggerà
+/// # Quale campo si legge
 ///
-/// Oggi `path`, perché in [`SchedaSorgente`] non c'è altro: `tracks.path` è
-/// `NOT NULL UNIQUE` e la libreria non ha ancora un posto per una traccia che
-/// non è un file — è il buco dichiarato fra i limiti noti del README, e
-/// chiuderlo vuole una migrazione, quindi `aether-app` e una minor in più.
-///
-/// Quando quella migrazione arriverà, i campi da guardare sono già scritti
-/// nella migrazione 10 e vivono su `desiderati`: `fonte_url` per l'indirizzo,
-/// `source_service` per la fonte, `disponibilita` per il resto. **Cambia solo
-/// questa funzione**: tutto quel che sta a valle — [`apri_flusso`],
+/// `source_service` e `fonte_url`, che la migrazione 26 ha messo su `tracks`
+/// accanto a un `path` che adesso può essere nullo — gli stessi nomi e gli
+/// stessi valori che `desiderati` ha dalla migrazione 10. Fino alla 2.3.2 qui
+/// si leggeva `path`, perché in `SchedaSorgente` non c'era altro, e il commento
+/// che stava in questo punto prometteva che sarebbe cambiata **solo questa
+/// funzione**: è quel che è successo. Tutto ciò che sta a valle — [`apri_flusso`],
 /// [`sorgente_da_flusso`], il ramo dentro [`brano_di`](super::brano_di) —
 /// riceve un [`RiferimentoFlusso`] e non sa da quale colonna sia uscito.
+///
+/// La differenza non è cosmetica. Prima la domanda era «questo testo somiglia a
+/// un indirizzo?», e la risposta andava data guardandosi dai percorsi di
+/// Windows che le somigliano. Adesso è la riga a dichiararsi, e quel che resta
+/// da controllare è solo che si dichiari una cosa lecita.
 ///
 /// # Perché il riconoscimento passa dal catalogo e non da un elenco di qui
 ///
@@ -80,25 +82,42 @@ const PERCORSO_AUDIUS: &str = "/v1/tracks/";
 /// il catalogo ne ricava nomina il concerto e non il file. È un cancello, non un
 /// traduttore.
 pub(super) fn riferimento_di(scheda: &SchedaSorgente) -> Option<RiferimentoFlusso> {
-    riferimento_da_testo(&scheda.path)
+    let Collocazione::Catalogo { fonte, url } = &scheda.collocazione else {
+        return None;
+    };
+    riferimento_da_testo(*fonte, url)
 }
 
-/// Il riconoscimento vero e proprio, su una stringa sola.
+/// Il cancello vero e proprio, su una fonte e un indirizzo.
 ///
 /// Separata da [`riferimento_di`] per poterla provare senza un database e senza
 /// una finestra: è una decisione su del testo, e le decisioni su del testo si
 /// provano come chiamate di funzione.
-fn riferimento_da_testo(testo: &str) -> Option<RiferimentoFlusso> {
-    let pulito = testo.trim();
-    // Il percorso di Audius prima di tutto, perché non è un indirizzo e
-    // `riconosci` — che di indirizzi si occupa — non lo vedrebbe. Non si
-    // confonde con un percorso di disco: su Windows un percorso comincia con
-    // una lettera di unità o con due barre rovesce, mai con `/v1/`.
-    if pulito.starts_with(PERCORSO_AUDIUS) {
-        return Some(RiferimentoFlusso {
-            fonte: Fonte::Audius,
-            url: pulito.to_owned(),
-        });
+///
+/// # Perché si ricontrolla quel che la riga dichiara
+///
+/// Perché fra la riga e questa funzione c'è un database, e un database è un
+/// file che si può aprire con altri strumenti. La colonna dice da dove *si
+/// crede* che arrivino i byte; l'allowlist dice dove Aether è invitato ad
+/// andare. La seconda non si delega alla prima — è la differenza fra un
+/// programma che non bussa dove non deve e un programma che non bussa dove non
+/// deve *finché nessuno gli scrive un indirizzo in tabella*.
+fn riferimento_da_testo(fonte: Fonte, url: &str) -> Option<RiferimentoFlusso> {
+    let pulito = url.trim();
+    if pulito.is_empty() {
+        return None;
+    }
+    // Il percorso di Audius è un caso a parte perché non è un indirizzo, e
+    // `riconosci` — che di indirizzi si occupa — non lo vedrebbe. Il controllo
+    // che vale qui è che la forma sia quella che `Audius::prepara` sa
+    // completare: un percorso `/v1/tracks/…`, senza nodo davanti.
+    if fonte == Fonte::Audius {
+        return pulito
+            .starts_with(PERCORSO_AUDIUS)
+            .then(|| RiferimentoFlusso {
+                fonte,
+                url: pulito.to_owned(),
+            });
     }
     // `https://` e non anche `http://`: `Rete` nasce con `https_only`, quindi un
     // indirizzo in chiaro non partirebbe comunque, e riconoscerlo qui vorrebbe
@@ -107,8 +126,12 @@ fn riferimento_da_testo(testo: &str) -> Option<RiferimentoFlusso> {
     if !pulito.starts_with("https://") {
         return None;
     }
-    Some(RiferimentoFlusso {
-        fonte: aether_catalogo::riconosci(pulito)?.fonte,
+    // La fonte riconosciuta dall'indirizzo deve essere **quella** che la riga
+    // dichiara: un indirizzo dell'Internet Archive in una riga che dice Jamendo
+    // aprirebbe una connessione con la rete sbagliata, cioè con le scadenze e i
+    // limiti di frequenza di un servizio verso un altro.
+    (aether_catalogo::riconosci(pulito)?.fonte == fonte).then(|| RiferimentoFlusso {
+        fonte,
         url: pulito.to_owned(),
     })
 }
@@ -246,26 +269,39 @@ pub(super) fn sorgente_da_flusso(
 mod prove {
     use super::*;
 
-    /// Un percorso resta un percorso.
+    /// Un file della libreria non diventa mai un flusso.
     ///
     /// La prova che conta di più delle altre: qui dentro passa **ogni** brano
     /// della libreria, e un riconoscimento troppo largo vorrebbe dire un file
-    /// del disco mandato a cercare in rete. Le forme sono quelle vere di
-    /// Windows, più le due che somigliano di più a un indirizzo.
+    /// del disco mandato a cercare in rete. Dalla migrazione 26 la garanzia è
+    /// più forte di prima — un file porta `Collocazione::File`, e da lì non si
+    /// esce — ma resta provata su [`riferimento_di`], che è la funzione vera:
+    /// una prova sul solo cancello non direbbe niente del cablaggio.
     #[test]
-    fn un_percorso_di_disco_non_diventa_mai_un_flusso() {
+    fn un_file_della_libreria_non_diventa_mai_un_flusso() {
         for percorso in [
             r"C:\Musica\Pink Floyd\Animals\01 - Pigs on the Wing.flac",
             r"\\nas\musica\raccolta\02 - Dogs.mp3",
+            // I tre che somigliano di più a un indirizzo di catalogo. I primi
+            // due passavano già prima; il terzo e il quarto no, e sono la
+            // ragione per cui questa prova è cambiata: fino alla 2.3.2 un
+            // indirizzo scritto in `path` *diventava* un flusso, ed era l'unico
+            // modo di ascoltarne uno. Adesso `path` significa «file», e basta.
             r"D:\archive.org\download\gd77\t01.flac",
-            "C:/Musica/https/brano.mp3",
+            "https://archive.org/download/gd77/t01.flac",
+            "/v1/tracks/aB3dE/stream",
             "",
-            "   ",
         ] {
+            let scheda = SchedaSorgente {
+                track_id: 1,
+                collocazione: Collocazione::File(percorso.to_owned()),
+                durata_ms: 1000,
+                replaygain_db: None,
+            };
             assert_eq!(
-                riferimento_da_testo(percorso),
+                riferimento_di(&scheda),
                 None,
-                "«{percorso}» è un file, non un flusso"
+                "«{percorso}» sta in `path`: è un file, non un flusso"
             );
         }
     }
@@ -279,7 +315,7 @@ mod prove {
     fn un_indirizzo_di_catalogo_diventa_un_flusso_senza_essere_riscritto() {
         let file = "https://archive.org/download/gd1977-05-08/gd77-05-08d1t01.flac";
         assert_eq!(
-            riferimento_da_testo(file),
+            riferimento_da_testo(Fonte::InternetArchive, file),
             Some(RiferimentoFlusso {
                 fonte: Fonte::InternetArchive,
                 url: file.to_owned(),
@@ -290,10 +326,28 @@ mod prove {
         // oggi fra un mese non c'è più. Vedi [`PERCORSO_AUDIUS`].
         let percorso = "/v1/tracks/aB3dE/stream?ext=wav";
         assert_eq!(
-            riferimento_da_testo(percorso),
+            riferimento_da_testo(Fonte::Audius, percorso),
             Some(RiferimentoFlusso {
                 fonte: Fonte::Audius,
                 url: percorso.to_owned(),
+            })
+        );
+
+        // E ci arriva passando da una riga di libreria, che è la strada vera.
+        let scheda = SchedaSorgente {
+            track_id: 9,
+            collocazione: Collocazione::Catalogo {
+                fonte: Fonte::InternetArchive,
+                url: file.to_owned(),
+            },
+            durata_ms: 754_000,
+            replaygain_db: None,
+        };
+        assert_eq!(
+            riferimento_di(&scheda),
+            Some(RiferimentoFlusso {
+                fonte: Fonte::InternetArchive,
+                url: file.to_owned(),
             })
         );
     }
@@ -316,11 +370,32 @@ mod prove {
             "http://archive.org/download/gd77/t01.flac",
         ] {
             assert_eq!(
-                riferimento_da_testo(indirizzo),
+                riferimento_da_testo(Fonte::InternetArchive, indirizzo),
                 None,
                 "«{indirizzo}» non è un posto dove Aether sia invitato"
             );
         }
+    }
+
+    /// Una riga che dichiara una fonte e ne porta un'altra non si apre.
+    ///
+    /// È il caso che esiste **solo** dalla migrazione 26 in poi, perché prima
+    /// la fonte si deduceva dall'indirizzo e le due non potevano discordare. Un
+    /// indirizzo dell'Archive dentro una riga che dice Audius passerebbe il
+    /// controllo del dominio e aprirebbe la connessione con la rete sbagliata:
+    /// le scadenze, lo `User-Agent` e il limite di frequenza di un servizio
+    /// spesi verso un altro.
+    #[test]
+    fn una_riga_che_dichiara_la_fonte_sbagliata_non_si_apre() {
+        assert_eq!(
+            riferimento_da_testo(Fonte::Audius, "https://archive.org/download/gd77/t01.flac"),
+            None
+        );
+        assert_eq!(
+            riferimento_da_testo(Fonte::InternetArchive, "/v1/tracks/aB3dE/stream"),
+            None,
+            "un percorso di Audius non è un indirizzo dell'Archive"
+        );
     }
 
     /// Una fonte che non consegna byte lo dice, senza chiedere niente a nessuno.
@@ -365,6 +440,7 @@ mod prove {
             Ok(aether_net::Pezzo {
                 byte: self.0.get(inizio..fine).unwrap_or(&[]).to_vec(),
                 totale: Some(u64::try_from(self.0.len()).unwrap_or(0)),
+                url_finale: None,
             })
         }
     }
@@ -384,14 +460,18 @@ mod prove {
         let Ok(flusso) = FlussoHttp::da(Box::new(FintaRete(byte.clone()))) else {
             panic!("la finta non fallisce mai");
         };
+        let indirizzo = "https://archive.org/download/gd1977-05-08/gd77d1t01.flac";
         let scheda = SchedaSorgente {
             track_id: 4242,
-            path: "https://archive.org/download/gd1977-05-08/gd77d1t01.flac".to_owned(),
+            collocazione: Collocazione::Catalogo {
+                fonte: Fonte::InternetArchive,
+                url: indirizzo.to_owned(),
+            },
             durata_ms: 754_000,
             replaygain_db: Some(-7.5),
         };
 
-        let mut sorgente = sorgente_da_flusso(&scheda, &scheda.path, flusso);
+        let mut sorgente = sorgente_da_flusso(&scheda, indirizzo, flusso);
         assert_eq!(sorgente.track_id, 4242, "il brano ha perso il suo nome");
         assert_eq!(
             sorgente.durata_ms, 754_000,

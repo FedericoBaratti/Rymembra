@@ -46,12 +46,11 @@ import {
   Tacche,
   fiduciaDi,
   nomeAffidabilita,
-  nomeLicenza,
   nomeNatura,
 } from "../parti/Incertezza";
 import { Intestazione } from "../parti/Intestazione";
 import { Rapporto } from "../parti/Rapporto";
-import { numero } from "../formato";
+import { nomeLicenza, numero } from "../formato";
 import { t } from "../lingue";
 import { Trans } from "../lingue/Trans";
 

@@ -85,6 +85,219 @@ Entries older than 2.3.1 argue their number under the rule that was in force
 when they were written. They are a record of what shipped and are left as they
 were, not restated.
 
+## [2.4.0] — 2026-09-21
+
+**The release that finishes the other half.** Issue #1 asked for two things.
+The first — issue templates in English — was done the day after it was opened.
+The second was one sentence: «your exe doesn't do live searches and streaming».
+
+That one was half true in a way that was hard to see from outside. Since 2.2.0
+the player has known how to play bytes arriving from the network without
+writing them anywhere: `aether_play::Sorgente` takes a stream, not a path, and
+`FlussoHttp` reads a remote file through a sliding window using HTTP `Range`.
+Gapless, crossfade, the equalizer and the spectrum all worked on it. What was
+missing was not an engine. It was **a place in the library for a track that is
+not a file**, and **a screen to search from** — and without those two, the
+streaming branch was reachable in the code and unreachable from the interface.
+No code path ever wrote a catalog address into `tracks.path`. Both are here.
+
+**Explore.** A seventh entry in the sidebar: type a phrase, press Enter, and the
+Internet Archive and Audius answer. Every result carries its license and a link
+to its public page — not out of politeness, but because for some Creative
+Commons licenses and for Audius's terms a visible credit is a condition of use.
+«Listen» puts the track in the library and plays it; «Add» just keeps it. What
+can be kept says so; what can only be streamed says that; what no free catalog
+delivers still goes to the shopping list.
+
+The search runs on Enter and not on every keystroke, and that is a decision, not
+an omission: the library's search box queries an index that lives on your disk
+and costs microseconds, while this one costs between one and five requests to
+the Internet Archive and one to Audius. On the other side are public archives
+that host us for free.
+
+**Streaming tracks in the library.** Migration `026_brani_di_catalogo` makes
+`tracks.path` nullable and puts four columns beside it — `source_service`,
+`fonte_url`, `fonte_pagina`, `licenza`, `disponibilita` — with the same names
+and the same values `desiderati` has had since migration 10. A track is now
+**either** a file **or** a reference to a catalog, never neither and never both,
+and that is a `CHECK` constraint rather than a convention written in a comment.
+In the library such a track looks like any other — it is searchable, it appears
+under its album and its artist, it can be queued, rated, favourited, and its
+listening history syncs like everything else — with a «Streaming» pill beside
+its title and, where a gesture needs a file, that gesture absent.
+
+As for every migration, going back to 2.3.2 costs a copy of the database taken
+before the update. The section below describes what it does and why it is the
+only migration so far that rebuilds a table.
+
+**Seeking got faster, and honest.** Measured against archive.org: a range
+request costs about two seconds before the first byte arrives, of which nine
+hundred milliseconds are the redirect to the node that actually holds the file.
+That redirect is now followed once per track instead of once per request, and
+the reading window grows from 256 KB up to 2 MB while the decoder reads
+forward — which is what it does when it scans an MP3 that has no seek table.
+What no amount of engineering removes is the download of the skipped bytes, so
+a long seek inside a big MP3 is still a wait; the difference is that the cursor
+now says «Finding the spot…» instead of claiming to be playing.
+
+**The Live Music Archive was not there.** The search asked archive.org for
+`mediatype:audio`, which is the obvious way to say «the sound files» and at the
+Internet Archive means something narrower: concerts recorded with the
+performers' permission are not `audio`, they are `etree`, their own mediatype,
+for an archive that predates the generic one. Measured against the API,
+`mediatype:audio AND collection:etree` returns **four** items in the whole
+archive; `collection:etree` alone holds more than two hundred thousand. The
+source this project names first was not sparse or badly ordered — it was
+absent, and it did not look absent, because cover bands filed under
+`audio_music` mention the artist in their description and answered in its
+place. Searching «Grateful Dead» found four evenings by groups who play the
+Grateful Dead and none by the Grateful Dead.
+
+The query now names both mediatypes, and it sorts by downloads. The sort is not
+cosmetic: of the items found only the first few are opened — each one is a
+request to a free public service — so **the order is the filter**, and what
+does not make the first four does not exist. Downloads are the closest thing to
+a judgement the Archive publishes: not which track is the right one, but which
+recording people have actually listened to, which on an archive where the same
+concert exists on eight different tapes is exactly the question being asked.
+The same search now opens with Barton Hall 1977.
+
+**Explore keeps what it found.** Changing screen and coming back used to leave
+an empty box and a blank page: the results and the typed phrase lived inside
+the component, and the component is unmounted on every navigation. Coming back
+meant running the search again — one to five requests to the Internet Archive
+and one to Audius — which is the same cost the «search on Enter» rule exists to
+respect, paid by the most ordinary gesture there is. The core had never thrown
+the candidates away; the window forgot on its own.
+
+**Two gestures that were missing from a result.** «Listen» replaces the queue,
+which is right for «play this now» and wrong for «add it to what I am
+listening to» — pressing it threw away a queue built by hand, without asking
+and without saying. There is now a second button that appends. And the «Can be
+kept» pill, which stated a permission that no button exercised, has one: «Keep
+a copy» puts the track in the download queue with the exact address that was on
+screen, so `procura` skips the search and fetches that file rather than a
+similar one chosen by an algorithm. It does not start the pass — that pass
+takes every waiting row, and starting three hundred downloads left over from an
+import a month ago is not what one button should do.
+
+**A result's title no longer collapses to nothing.** In the results list every
+column except the title was non-shrinkable, so at the default window size with
+the third column open the fixed columns took 604 pixels out of 639 and the
+title — the only flexible element among six rigid ones — was squeezed to
+**zero**. Of a result one could read the name of the concert and not the name
+of the track. Below 900 pixels of content the row now splits in two: the title
+and its buttons on the first line, everything else on the second. No column is
+hidden, because here the album is the concert's title and it is the only thing
+that tells ten files of the same show apart.
+
+**Bitrate on M4A files was wrong by a factor of thirty.** `lofty` reads it from
+the `esds` descriptor, where taggers write whatever they like: in a real
+library all forty-four M4A files declared between 0 and 15 kbit/s where the sum
+of bytes over seconds gives a hundred and thirty, and the technical line under
+the controls said «M4A · 44.1 kHz · Stereo · 4 kbps» to somebody listening to a
+perfectly ordinary file. A figure below thirty-two kbit/s is not a quiet file,
+it is a wrong field, and the file's overall bitrate is used instead — which on
+a file that really is that lean differs by a few percent, so the threshold can
+afford to be generous. Migration
+`027_bitrate_da_rileggere` asks the scan to read those files again, because
+nothing about them changed and without it the wrong number would have stayed
+for good.
+
+**The two times over the spectrum.** In the full Now Playing view, with the
+scene on, position and duration were dark text with a dark shadow over the dark
+band of the scene: the shadow was written for light text on a dark background,
+which is the dark theme, and in the light theme the two numbers that say where
+one is disappeared. They now carry a small pill of their own — two rounded
+rectangles, not the panel that used to box the scene in.
+
+**The Skin Studio spoke half Italian.** Twenty-one group names crossed the IPC
+as fixed Italian strings and were printed as they arrived: the tree said
+CORNICE, LETTORE, SOVRAPPOSIZIONI above cards explaining the same parts in
+English. The core now sends a stable key and the window picks the word, which
+is what `Fonte::nome` and `Fonte::etichetta` have done everywhere else from the
+start. The built-in skin's own description goes through the catalogue too; an
+installed skin's does not, because that text belongs to whoever wrote it.
+
+**And a skin can no longer promise a light theme it cannot keep.** The contrast
+table measures tokens, and `themes.light` flips tokens. A part does not flip: a
+surface that writes `#030305` into its own gradient paints that black in both
+themes, because the format has no `themes.light` for parts. A skin written in
+this program's own Studio declared `capabilities.light`, painted `section-card`
+almost black, and with the light theme made **the whole Settings page black on
+black** — while validation reported «0 errors, 0 warnings». Validation now
+measures every surface a skin repaints against the text that goes on it, in
+each theme the skin declares, and says which theme fails. It is a warning and
+not an error: a dark surface with its own declared text colour is legitimate,
+and that case is checked first.
+
+### The number
+
+This is the first minor since 2.3.0, and under the rule as amended in 2.3.1 a
+minor has to be earned: something outside Aether has to keep up. Something
+does. The contrast table now measures every surface a skin repaints, in each
+theme the skin declares, and a skin that declared `capabilities.light` and
+painted a surface dark passed validation yesterday with «0 errors, 0 warnings»
+and does not today. Nothing about it stops working — the Studio still opens it,
+the program still compiles it, the skin is still valid — but to get a clean
+report back it has to declare the text colour that goes on that surface. That
+is the shape the clause describes: a skin that must say something it did not
+have to say before, with nothing breaking in the meantime.
+
+`SKIN_FORMAT_VERSION` stays at 1 and the transport protocol is untouched, which
+is what keeps this a minor and not a major: no document written for the old
+rules is refused, and no device stops understanding another.
+
+Everything else here — Explore, the streaming tracks, the two migrations — is
+the application doing things to itself, and under the same amendments would
+have been a patch on its own.
+
+### Database
+
+`026_brani_di_catalogo.sql` is the first migration in this tree that rebuilds a
+table rather than adding to one, and it is worth saying why, because the
+dangerous part is invisible.
+
+SQLite cannot drop a `NOT NULL`: `ALTER TABLE` adds columns and nothing else.
+The documented way round it is to build the new table, copy, drop the old one
+and rename — and that last-but-one step is the trap. Ten tables reference
+`tracks(id)` with `ON DELETE CASCADE`, and with foreign keys enabled `DROP
+TABLE` performs an implicit delete that fires every one of those cascades.
+Listening history, playlists, ratings and hand-made corrections would have
+disappeared in silence, inside a migration that reported success. This was
+reproduced before the migration was written, and with two different techniques.
+
+So `Migration` gained a field. An entry can declare `ricostruisce: true`, and
+for that entry — and only that entry — the migration runner turns `foreign_keys`
+off outside the transaction and, before committing, runs `PRAGMA
+foreign_key_check` and fails if anything is left pointing at nothing. Every
+other migration behaves exactly as it did.
+
+The migration also adds `idx_tracks_riferimento`, a unique index on
+`(source_service, fonte_url)`: what `UNIQUE` on `path` does for files, it does
+for references, so the same stream cannot be added twice.
+
+`027_bitrate_da_rileggere.sql` is one statement: it sets `date_modified` to
+zero on the rows whose stored bitrate is below thirty-two kbit/s and that have
+a file underneath. That is this tree's existing way of saying «this row is to be
+read again» — the three metadata corrections in `library.rs` use it — and the
+next scan reopens those files and writes what it finds. The right number lives
+in the file, and computing it here from `file_size` and `duration_ms` would
+have been a measurement invented in the database that tomorrow disagrees with
+the one the scan writes. It costs a tag read for the affected files only:
+forty-four in a library of fourteen hundred. Going back to 2.3.2 costs, as
+always, a copy of the database taken before the update; what this statement
+changes is a modification date, the one column the scan rewrites by itself on
+the first pass.
+
+`file_size` and `date_modified` become nullable, for the reason a zero would
+have been worse: a streamed track occupies nothing and has no modification date,
+and a zero meaning «unknown» is the kind of value somebody sums a year later.
+Every query that assumes a file now says `path IS NOT NULL` — the scan, the
+Folders tree, enrichment, the sound fingerprint, playlist export, the profile's
+roots — and in Rust `SchedaSorgente` carries a `Collocazione`, which is an enum
+with two cases, so the compiler names every place that has to decide.
+
 ## [2.3.2] — 2026-09-17
 
 **The release that finishes the track.** Three faults lived in the last three

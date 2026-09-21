@@ -447,7 +447,7 @@ pub fn known_tracks(connection: &Connection) -> Result<Vec<KnownTrack>, AppError
     let mut statement = connection
         .prepare(
             "SELECT id, path, CASE WHEN content_key IS NULL THEN -1 ELSE date_modified END
-               FROM tracks ORDER BY id",
+               FROM tracks WHERE path IS NOT NULL ORDER BY id",
         )
         .map_err(|err| db_error("elenco dei brani noti", &err))?;
     let rows = statement
@@ -681,8 +681,13 @@ fn update_track(
 ///
 /// Le coppie arrivano da `ScanPlan::to_remove`, che porta già entrambi.
 fn remove_tracks(tx: &Transaction<'_>, righe: &[(i64, &str)]) -> Result<usize, AppError> {
+    // `COALESCE(path, fonte_url)`: per un file l'identità è il percorso, per un
+    // brano di catalogo è l'indirizzo — in tutti e due i casi la stringa che
+    // quella riga non condivide con nessun'altra. Un confronto sul solo `path`
+    // qui non toglierebbe **mai** un brano di catalogo, perché in SQL `NULL = ?`
+    // non è vero nemmeno quando il parametro è nullo.
     let mut statement = tx
-        .prepare_cached("DELETE FROM tracks WHERE id = ?1 AND path = ?2")
+        .prepare_cached("DELETE FROM tracks WHERE id = ?1 AND COALESCE(path, fonte_url) = ?2")
         .map_err(|err| db_error("rimozione di un brano", &err))?;
     let mut removed = 0;
     for (id, path) in righe {
@@ -769,10 +774,28 @@ pub fn cancella_brani(
         .map_err(|err| db_error("cancellazione di brani", &err))?;
     // `Transaction` si deferenzia a `Connection`: la lettura vede quel che la
     // transazione vede, cioè il database un istante prima della cancellazione.
-    let percorsi: Vec<(i64, String)> = summaries_by_id(&tx, ids)?
-        .into_iter()
-        .map(|brano| (brano.id, brano.path))
-        .collect();
+    // Due colonne e non il riepilogo intero: qui serve l'identità della riga,
+    // che per un file è il percorso e per un brano di catalogo l'indirizzo.
+    let percorsi: Vec<(i64, String, bool)> = {
+        let segnaposto = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, COALESCE(path, fonte_url), path IS NOT NULL
+               FROM tracks WHERE id IN ({segnaposto})"
+        );
+        let mut statement = tx
+            .prepare(&sql)
+            .map_err(|err| db_error("cancellazione di brani", &err))?;
+        let righe = statement
+            .query_map(rusqlite::params_from_iter(ids), |riga| {
+                Ok((riga.get(0)?, riga.get(1)?, riga.get::<_, i64>(2)? != 0))
+            })
+            .map_err(|err| db_error("cancellazione di brani", &err))?;
+        righe
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| db_error("cancellazione di brani", &err))?
+    };
     if percorsi.is_empty() {
         // Niente da togliere non è un guasto: è il clic su un elenco che è
         // cambiato sotto. Si esce senza rifare gli aggregati, che su una
@@ -782,7 +805,7 @@ pub fn cancella_brani(
     }
     let coppie: Vec<(i64, &str)> = percorsi
         .iter()
-        .map(|(id, percorso)| (*id, percorso.as_str()))
+        .map(|(id, identita, _)| (*id, identita.as_str()))
         .collect();
     let tolti = remove_tracks(&tx, &coppie)?;
     // Gli aggregati nella stessa transazione: un album senza più brani e un
@@ -793,12 +816,16 @@ pub fn cancella_brani(
     tx.commit()
         .map_err(|err| db_error("cancellazione di brani", &err))?;
 
+    // Solo i file: un brano di catalogo non sta sotto nessuna cartella e
+    // nessuna scansione lo riporterà indietro. Contarlo qui vorrebbe dire
+    // avvisare «tornerà alla prossima scansione» di qualcosa che non torna.
     let torneranno = percorsi
         .iter()
-        .filter(|(_, percorso)| {
-            sorvegliate
-                .iter()
-                .any(|radice| is_under(percorso, radice, rules))
+        .filter(|(_, percorso, e_un_file)| {
+            *e_un_file
+                && sorvegliate
+                    .iter()
+                    .any(|radice| is_under(percorso, radice, rules))
         })
         .count();
     Ok(Cancellazione { tolti, torneranno })
@@ -2056,8 +2083,8 @@ impl Scan<'_> {
 pub struct TrackSummary {
     /// L'identificativo della riga.
     pub id: i64,
-    /// Il percorso.
-    pub path: String,
+    /// Il percorso. `None` per un brano di catalogo, che un file non ce l'ha.
+    pub path: Option<String>,
     /// Il titolo.
     pub title: String,
     /// L'interprete.
@@ -2082,12 +2109,40 @@ pub struct TrackSummary {
     pub liked: bool,
     /// Il voto, 0–5.
     pub rating: i64,
+    /// Da quale catalogo arriva, col nome stabile di
+    /// [`aether_domain::esterno::Fonte`]. `None` per un file sul disco.
+    ///
+    /// È il campo con cui la finestra decide se mostrare la pastiglia «in
+    /// streaming» e se nascondere i gesti che vogliono un file — mostrare nella
+    /// cartella, riscrivere i tag, spostare. Uno solo, e non un booleano
+    /// accanto a un nome: due campi che dicono la stessa cosa sono due campi
+    /// che un giorno la diranno diversa.
+    pub fonte: Option<String>,
+    /// La pagina pubblica del brano, da mettere accanto a chi lo ascolta.
+    ///
+    /// Non è un ornamento: per certe Creative Commons e per i termini di Audius
+    /// il rimando visibile è una condizione d'uso, e questo è il campo che la
+    /// soddisfa.
+    pub fonte_pagina: Option<String>,
+    /// Sotto che licenza sta, col nome stabile di
+    /// [`aether_domain::esterno::Licenza`].
+    pub licenza: Option<String>,
 }
 
 /// Le colonne di [`TrackSummary`], nell'ordine in cui le legge `track_from_row`.
 pub(crate) const COLONNE_BRANO: &str = "t.id, t.path, t.title, t.artist, t.album, t.album_key,
      t.track_number, t.disc_number, t.duration_ms, t.year, t.cover_art_hash,
-     t.play_count, t.liked, t.rating";
+     t.play_count, t.liked, t.rating, t.source_service, t.fonte_pagina, t.licenza";
+
+/// Quante sono le colonne di [`COLONNE_BRANO`].
+///
+/// Esiste perché una query le mette in testa e ne aggiunge altre dopo — la
+/// cronologia lo fa — e l'indice della prima colonna aggiunta dipende da
+/// questo numero. Scritto una volta sola, aggiungere una colonna al riepilogo
+/// resta un cambiamento in un posto solo; scritto a mano in ogni chiamante,
+/// sarebbe il genere di disallineamento che si manifesta come «l'ora
+/// dell'ascolto è diventata il voto».
+pub(crate) const COLONNE_BRANO_QUANTE: usize = 17;
 
 pub(crate) fn track_from_row(row: &Row<'_>) -> rusqlite::Result<TrackSummary> {
     Ok(TrackSummary {
@@ -2105,6 +2160,9 @@ pub(crate) fn track_from_row(row: &Row<'_>) -> rusqlite::Result<TrackSummary> {
         play_count: row.get(11)?,
         liked: row.get::<_, i64>(12)? != 0,
         rating: row.get(13)?,
+        fonte: row.get(14)?,
+        fonte_pagina: row.get(15)?,
+        licenza: row.get(16)?,
     })
 }
 
@@ -2345,18 +2403,20 @@ pub fn list_history(
     let mut statement = connection
         .prepare_cached(&sql)
         .map_err(|err| db_error("cronologia d'ascolto", &err))?;
-    // 14 colonne di brano: le successive cominciano da 14, e il conto lo tiene
-    // `COLONNE_BRANO` insieme a `track_from_row`. Se una colonna venisse
-    // aggiunta là, questi indici si spostano — ed è il motivo per cui la prova
-    // qui sotto controlla il campo `quando_ms` e non solo la lunghezza.
+    // Le colonne del brano vengono per prime: le quattro dell'ascolto cominciano
+    // dove finiscono quelle, e il conto lo tiene [`COLONNE_BRANO_QUANTE`]
+    // invece di un numero scritto qui. Quando `COLONNE_BRANO` è cresciuta di
+    // tre colonne, questi indici si sono spostati da soli — prima di allora
+    // erano scritti a mano, e la prova qui sotto controlla il campo
+    // `quando_ms` e non solo la lunghezza proprio per accorgersene.
     let rows = statement
         .query_map(rusqlite::params![limit, offset], |row| {
             Ok(VoceCronologia {
                 brano: track_from_row(row)?,
-                id: row.get(14)?,
-                quando_ms: row.get(15)?,
-                ms_ascoltati: row.get(16)?,
-                sorgente: row.get(17)?,
+                id: row.get(COLONNE_BRANO_QUANTE)?,
+                quando_ms: row.get(COLONNE_BRANO_QUANTE + 1)?,
+                ms_ascoltati: row.get(COLONNE_BRANO_QUANTE + 2)?,
+                sorgente: row.get(COLONNE_BRANO_QUANTE + 3)?,
             })
         })
         .map_err(|err| db_error("cronologia d'ascolto", &err))?;

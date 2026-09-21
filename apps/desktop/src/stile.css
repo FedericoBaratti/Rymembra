@@ -3064,6 +3064,36 @@ body {
   filter: drop-shadow(0 1px 3px rgb(0 0 0 / 0.55));
 }
 /*
+ * I due tempi si portano dietro il loro fondo, e sono gli unici.
+ *
+ * L'ombra che la regola qui sopra mette su tutti i comandi regge un testo
+ * **chiaro** su un fondo scuro: è il caso del tema scuro, ed è il caso per cui
+ * fu scritta. Col tema chiaro il testo è scuro, l'ombra è scura, e le barre
+ * dietro restano scure lo stesso — la scena ha il suo orizzonte scuro proprio
+ * all'altezza del cursore, comunque sia dipinta. Posizione e durata sparivano:
+ * i due numeri che dicono a che punto si è, illeggibili nella schermata che
+ * esiste per guardare quel punto.
+ *
+ * Un colore fisso chiaro non è la risposta, perché la scena la dipinge la
+ * copertina e domani lì dietro può esserci qualunque cosa. Una pastiglia sì:
+ * qualunque cosa ci sia dietro, il contrasto è quello del tema. Due rettangoli
+ * arrotondati non sono il pannello che chiudeva la scena in una scatola — quel
+ * pannello copriva tutta la fascia dei comandi, questi coprono otto caratteri.
+ *
+ * `content-box` tiene la larghezza fissa dove stava: i quarantadue pixel sono
+ * lì perché «0:59» che diventa «1:00» non sposti il cursore di qualche pixel
+ * una volta al minuto, e col `border-box` di serie il padding se li sarebbe
+ * mangiati da dentro, riportando il salto.
+ */
+.in-riproduzione .centro[data-spettro] .cursore .tempo {
+  box-sizing: content-box;
+  padding: 1px 7px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--color-surface-0) 70%, transparent);
+  color: var(--color-text-1);
+  text-shadow: none;
+}
+/*
  * Su una colonna stretta i comandi salgono di una linguetta.
  *
  * Il selettore delle barre sta appoggiato in basso a sinistra della schermata e
@@ -12409,4 +12439,279 @@ body {
   .scena-spettro {
     forced-color-adjust: none;
   }
+}
+
+/* ── Esplora: la ricerca nei cataloghi liberi ─────────────────────────────────
+   Una barra in cima e un elenco sotto. L'elenco ha la forma della lista della
+   spesa — `.elenco-da-comprare`, poco più su — e non è pigrizia: sono le due
+   schermate in cui una riga dice «questo brano esiste da qualche parte, ecco
+   che cosa puoi farne», e due forme diverse per la stessa domanda si leggono
+   come due cose diverse. */
+.esplora {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spazio-3);
+}
+
+.esplora-barra {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+}
+
+/* La casella di questa pagina e non quella dell'intestazione: cercano in due
+   posti diversi — questa fuori, quella in libreria — e sta accanto al tasto che
+   la fa partire perché qui la ricerca parte con Invio, non mentre si scrive. */
+.esplora-barra .cerca {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 170px;
+  height: 34px;
+  padding: 0 12px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: 99px;
+  box-shadow: inset 0 1px 2px var(--incavo);
+  color: var(--color-text-3);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.esplora-barra .cerca:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  color: var(--color-text-2);
+}
+.esplora-barra .campo {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  user-select: text;
+}
+.esplora-barra .campo::placeholder {
+  color: var(--color-text-3);
+}
+.esplora-barra .campo::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.elenco-esplora {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.elenco-esplora > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spazio-1) var(--spazio-2);
+  padding: var(--spazio-1) var(--spazio-2);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.elenco-esplora > li:hover {
+  background: var(--color-surface-2);
+}
+/*
+ * I dati del risultato: di norma questo involucro non c'è.
+ *
+ * `display: contents` lo toglie dall'impaginazione e lascia album, durata,
+ * fonte e pastiglie figli diretti della riga, incolonnati come prima. Esiste
+ * per il caso stretto, che è il caso **normale**: alla misura di serie, con la
+ * terza colonna aperta, al contenuto restano seicentotrenta pixel.
+ */
+.elenco-esplora .dati-esplora {
+  display: contents;
+}
+/* Il titolo prende lo spazio e si tronca; tutto il resto tiene il suo, come
+   nella lista della spesa. Un elenco di risultati si scorre con l'occhio sulla
+   colonna di sinistra.
+
+   La larghezza minima è il pavimento sotto cui non si scende. Serviva: il
+   titolo era l'unico elemento elastico fra sei rigidi, e in flexbox chi ha
+   base zero non partecipa alla contrazione — la subisce tutta. Su seicento
+   pixel le colonne fisse ne occupavano seicentoquattro e il titolo restava a
+   **zero**: di un risultato si leggeva il nome del concerto e non quello del
+   brano. Il pavimento da solo non basta — sopra c'è la riga che si sdoppia —
+   ma è quel che tiene in piedi le larghezze intermedie. */
+.elenco-esplora .titolo {
+  flex: 1 1 0;
+  min-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-1);
+}
+/* Album e fonte cedono per primi, e cedendo si troncano invece di spingere:
+   `flex: none` faceva di due testi lunghi un muro che il titolo pagava. */
+.elenco-esplora .genere,
+.elenco-esplora .provenienza {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+/* La pastiglia della licenza è larga quanto la frase che porta — «License not
+   declared» sono centoventitré pixel — e nella riga dei risultati non può
+   essere incomprimibile come lo è nella scheda della scelta. Il testo intero
+   resta nel `title`. */
+.elenco-esplora .pastiglia.licenza {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.elenco-esplora .durata {
+  flex: none;
+  color: var(--color-text-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+/* I comandi della riga: sono l'azione, non il contenuto. Restano visibili — a
+   differenza dei negozi della lista della spesa — perché qui l'azione è il
+   motivo per cui si è aperta la pagina. */
+.elenco-esplora .azioni {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--spazio-1);
+}
+
+/*
+ * La riga dei risultati che si sdoppia.
+ *
+ * `@container` e non `@media`, per la stessa ragione dell'elenco dei brani
+ * duecento righe più su: quel che si stringe non è la finestra, è il
+ * contenuto. Aprire la terza colonna toglie trecentocinquanta pixel senza che
+ * la finestra cambi misura di un pixel, ed è la posizione di serie.
+ *
+ * Sopra la soglia la riga è una sola e le colonne stanno in fila. Sotto, il
+ * titolo si tiene la prima riga con i suoi tasti e tutto il resto scende in una
+ * seconda riga sotto di lui. Nessuna colonna sparisce, e la differenza rispetto
+ * al nascondere l'album — che è la strada dell'elenco dei brani — è che qui
+ * l'album è il titolo del concerto: è l'unica cosa che distingue dieci file
+ * dello stesso spettacolo, e toglierlo renderebbe dieci risultati
+ * indistinguibili invece che stretti.
+ */
+@container (max-width: 900px) {
+  /* `nowrap` e non `wrap`: la seconda riga è **una**, sempre. A capo libero,
+     un album lungo ne faceva una terza e le righe dell'elenco finivano alte
+     tre misure diverse a seconda di quanto si chiamava il concerto — un
+     elenco che si scorre con l'occhio non può avere il passo irregolare. Qui
+     dentro cede l'album, che è l'unico testo elastico fra pastiglie che non
+     lo sono, e cede troncandosi: il nome intero resta comunque scritto per
+     esteso nella prima riga di chi lo cerca, che è il titolo. */
+  .elenco-esplora .dati-esplora {
+    display: flex;
+    order: 1;
+    flex: 1 0 100%;
+    align-items: center;
+    gap: var(--spazio-2);
+    min-width: 0;
+  }
+  /* Sulla riga sua l'album non ha più bisogno di stare in ventidue caratteri:
+     il tetto era la difesa contro una colonna che spingeva il titolo, e qui
+     non c'è più niente da spingere. */
+  .elenco-esplora .genere {
+    max-width: none;
+  }
+  /* Fonte e licenza tornano rigide: su una riga che non deve andare a capo
+     l'unico che si stringe dev'essere uno solo, o si stringono tutti un po' e
+     non si legge più nessuno. */
+  .elenco-esplora .provenienza,
+  .elenco-esplora .pastiglia.licenza {
+    flex: none;
+    max-width: none;
+  }
+}
+
+/* Le pastiglie dei risultati e quella del brano in libreria. Stessa forma della
+   licenza, che sta due regole più su: dicono tutte la stessa cosa — «ecco cosa
+   puoi farne di questo» — e una forma diversa per ognuna le farebbe leggere
+   come informazioni di genere diverso. */
+.pastiglia.flusso,
+.pastiglia.tenibile,
+.pastiglia.solo-negozio,
+.pastiglia.certo {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--livello-bordo);
+  border-radius: 99px;
+  background: var(--livello-fondo);
+  color: var(--livello-tinta);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* Quella accanto al titolo di un brano in libreria sta **dentro** il nome, e
+   quindi non deve ereditarne la troncatura né il peso. Un margine a sinistra e
+   nient'altro: è una nota, non una colonna. */
+.chi .nome .pastiglia.flusso {
+  margin-left: var(--spazio-1);
+  vertical-align: middle;
+  font-weight: 400;
+}
+
+/* L'attesa di un salto su un brano di catalogo. Discreta: è una nota, non un
+   allarme — il brano sta arrivando, non si è rotto niente. Non ha larghezza
+   fissa perché compare e sparisce, e una colonna riservata a una cosa che quasi
+   sempre non c'è sarebbe un buco permanente accanto al cursore. */
+.cursore .tempo.cercando {
+  flex: none;
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* E quando il salto non arriva. Ambra e non accento: l'accento dice «sta
+   succedendo», e qui non sta succedendo più niente. La scritta resta, perché
+   sparire lascerebbe un cursore fermo senza spiegazione, che è lo stato che
+   questa nota era stata scritta per evitare. */
+.cursore .tempo.cercando[data-scaduto] {
+  color: var(--warning);
+}
+
+/* L'attribuzione di un brano di catalogo: chi l'ha pubblicato, sotto che
+   licenza, e il rimando alla sua pagina.
+
+   Discreta come `.formato` e per la stessa ragione — è un dato sul brano, non
+   il brano — ma **mai nascosta**: per certe Creative Commons e per i termini
+   di Audius il rimando visibile è una condizione d'uso, e una condizione d'uso
+   dentro un `title` che compare dopo un secondo di puntatore fermo non è
+   visibile.
+
+   Il nome non è `.attribuzione` e basta perché quello ce l'ha già la riga
+   della scheda d'anteprima (`.scheda-anteprima .nota.attribuzione`): una
+   regola nuda la prenderebbe in pieno e le cambierebbe il flusso. */
+.attribuzione-brano {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spazio-1) var(--spazio-2);
+  margin-top: var(--spazio-1);
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+/* Selezionabile: il nome della licenza è la cosa che si copia in un messaggio
+   quando si condivide il brano, ed è l'unico posto dell'interfaccia in cui sta
+   scritto per esteso. */
+.attribuzione-brano .chi-pubblica {
+  user-select: text;
+}
+.attribuzione-brano .bottone {
+  gap: 5px;
 }

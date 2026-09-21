@@ -261,7 +261,12 @@ pub struct Decisione {
 /// ciò che l'utente ha appena disfatto.
 fn candidato_where() -> String {
     format!(
-        "t.mb_recording_id IS NULL
+        // `t.path IS NOT NULL` per primo: l'arricchimento legge e riscrive i
+        // tag di un file, e un brano di catalogo un file non ce l'ha. Senza
+        // questa riga ci finirebbero dentro tutti, perché `source = 'catalogo'`
+        // qui sotto è proprio una delle condizioni che li chiama in coda.
+        "t.path IS NOT NULL
+         AND t.mb_recording_id IS NULL
          AND (
            t.artist = '{UNKNOWN_ARTIST}' OR t.album = '{UNKNOWN_ALBUM}'
            OR t.cover_art_hash IS NULL
@@ -358,7 +363,7 @@ pub fn leggi_gruppo(connection: &Connection, album_key: &str) -> Result<Option<G
                     track_number, disc_number, year, genre, cover_art_hash,
                     mb_recording_id, enrich_status, mb_release_id, mb_release_group_id
              FROM tracks
-             WHERE album_key = ?1
+             WHERE album_key = ?1 AND path IS NOT NULL
              ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 0), id",
         )
         .map_err(|err| db_error("lettura di un gruppo da arricchire", &err))?;
@@ -1206,6 +1211,7 @@ pub fn dimentica(connection: &mut Connection) -> Result<Annullati, AppError> {
                 "SELECT m.track_id, t.path
                  FROM track_meta_arricchita m
                  JOIN tracks t ON t.id = m.track_id
+                 WHERE t.path IS NOT NULL
                  ORDER BY m.set_at DESC",
             )
             .map_err(|err| db_error("elenco dei brani arricchiti", &err))?;

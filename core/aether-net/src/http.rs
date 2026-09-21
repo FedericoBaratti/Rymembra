@@ -48,6 +48,38 @@ const ATTESA_MASSIMA: Duration = Duration::from_secs(30);
 /// un battito di ciglia anche su una connessione lenta.
 const BLOCCO_PRELIEVO: usize = 64 * 1024;
 
+/// Quanto si aspetta un nome che non si risolve, in un prelievo.
+///
+/// Le tre costanti qui sotto esistono perché [`Rete::per_prelievo`] non ha una
+/// scadenza complessiva, e senza di loro un indirizzo morto lascerebbe il filo
+/// del prelievo fermo per il timeout del sistema operativo — su Windows,
+/// decine di secondi per la connessione e nessun limite per il resto.
+const PRELIEVO_RISOLUZIONE: Duration = Duration::from_secs(10);
+
+/// Quanto si aspetta una connessione che non si apre, in un prelievo.
+const PRELIEVO_CONNESSIONE: Duration = Duration::from_secs(15);
+
+/// Quanto si aspetta un servizio che non risponde nemmeno le intestazioni.
+///
+/// Trenta secondi: è la stessa attesa che i cataloghi si danno per una
+/// risposta, perché la domanda è la stessa — «questo servizio c'è?» — e la
+/// risposta arriva prima del primo byte del corpo.
+const PRELIEVO_INTESTAZIONI: Duration = Duration::from_secs(30);
+
+/// Quanto può durare, al massimo, l'arrivo di un corpo.
+///
+/// Mezz'ora, e il numero è scelto contando: duecento megabyte — un concerto in
+/// FLAC dell'Internet Archive — in mezz'ora vogliono novecento kilobit al
+/// secondo. Sotto quella soglia non c'è connessione con cui valga la pena
+/// scaricare musica, e sopra il limite non si tocca mai.
+///
+/// Non è una scadenza «per respiro»: `ureq` non ne ha una, e questa è la sola
+/// forma di limite che resta per un corpo che smette di arrivare. Fra un blocco
+/// e l'altro [`Rete::preleva`] chiede comunque se l'utente ha annullato, quindi
+/// il tempo che questo numero limita è solo quello in cui nessuno sta
+/// guardando.
+const PRELIEVO_CORPO: Duration = Duration::from_secs(30 * 60);
+
 /// Il metodo della richiesta.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Metodo {
@@ -225,6 +257,17 @@ pub struct Pezzo {
     /// senza lunghezza si sente lo stesso, e `MediaSource::is_seekable` di
     /// symphonia risponde `false` proprio guardando questo.
     pub totale: Option<u64>,
+    /// L'indirizzo a cui si è arrivati davvero, quando è diverso da quello
+    /// chiesto.
+    ///
+    /// Serve a chi farà **altre** richieste sullo stesso file. L'Internet
+    /// Archive risponde a `/download/…` con un rimando al nodo che quel file ce
+    /// l'ha davvero, e misurato costa novecento millisecondi: pagarlo una volta
+    /// per brano invece che una per intervallo è, su un brano che si scorre
+    /// avanti e indietro, la differenza fra qualche secondo e qualche decina.
+    ///
+    /// `None` quando non c'è stato nessun rimando.
+    pub url_finale: Option<String>,
 }
 
 /// Quanto è lungo il file, da `Content-Range` o da `Content-Length`.
@@ -274,6 +317,64 @@ impl Rete {
             servizio,
             chiaro_locale: false,
         }
+    }
+
+    /// Un client per portare giù un file intero.
+    ///
+    /// # Perché non basta [`Self::nuova`]
+    ///
+    /// Perché la scadenza di `nuova` è **globale**: copre la risoluzione, la
+    /// connessione, le intestazioni e l'ultimo byte del corpo, tutti insieme.
+    /// È la forma giusta per una risposta JSON da qualche kilobyte, ed è la
+    /// forma sbagliata per un file.
+    ///
+    /// Il conto che lo dimostra: i cataloghi si danno trenta secondi, e la
+    /// docstring di [`Self::preleva`] nomina il caso vero, «un concerto in FLAC
+    /// dell'Internet Archive sono duecento megabyte». Duecento megabyte in
+    /// trenta secondi vogliono cinquantatré megabit al secondo **sostenuti**.
+    /// Sotto quella soglia il trasferimento moriva a metà con `net.timeout`, e
+    /// siccome `net.timeout` si ritenta la coda ripartiva da zero — all'infinito,
+    /// su qualunque connessione normale.
+    ///
+    /// # Cosa resta limitato
+    ///
+    /// Tutto quello in cui il silenzio vuol dire guasto: il nome che non si
+    /// risolve, la connessione che non si apre, il servizio che non risponde
+    /// nemmeno le intestazioni. Del corpo resta un tetto largo
+    /// ([`PRELIEVO_CORPO`]), perché `ureq` non offre una scadenza per singola
+    /// lettura e senza nessun limite un socket che si blocca terrebbe il filo
+    /// per sempre.
+    #[must_use]
+    pub fn per_prelievo(servizio: &'static str) -> Self {
+        let configurazione = ureq::Agent::config_builder()
+            // Nessuna scadenza complessiva: è il punto di questo costruttore.
+            .timeout_global(None)
+            .timeout_resolve(Some(PRELIEVO_RISOLUZIONE))
+            .timeout_connect(Some(PRELIEVO_CONNESSIONE))
+            .timeout_recv_response(Some(PRELIEVO_INTESTAZIONI))
+            .timeout_recv_body(Some(PRELIEVO_CORPO))
+            // Le stesse tre regole di `nuova`, e per le stesse ragioni.
+            .http_status_as_error(false)
+            .https_only(true)
+            .user_agent(AGENTE)
+            .build();
+        Self {
+            agente: configurazione.into(),
+            servizio,
+            chiaro_locale: false,
+        }
+    }
+
+    /// La scadenza complessiva di questo client, se ne ha una.
+    ///
+    /// Esiste perché la differenza fra il client delle domande e quello dei
+    /// prelievi è invisibile da fuori — sono lo stesso tipo — e una differenza
+    /// invisibile è una differenza che prima o poi qualcuno annulla
+    /// riassegnando un campo. Con questo, chi tiene le due reti può **provare**
+    /// di averle tenute distinte.
+    #[must_use]
+    pub fn scadenza_complessiva(&self) -> Option<Duration> {
+        self.agente.config().timeouts().global
     }
 
     /// Un client verso un indirizzo preciso, che sa se quell'indirizzo può
@@ -672,11 +773,23 @@ impl Rete {
         }
 
         let totale = totale_da(risposta.headers());
+        // Prima di consumare il corpo: `get_uri` dice dove si è finiti dopo i
+        // rimandi, e il corpo se lo porta via.
+        let arrivato = risposta.get_uri().to_string();
         let byte = risposta.body_mut().read_to_vec().map_err(|err| {
             AppError::new(ErrorCode::DownloadNetwork)
                 .with_cause(format!("lettura dell'intervallo interrotta: {err}"))
         })?;
-        Ok(Pezzo { byte, totale })
+        // L'indirizzo nuovo passa **dallo stesso cancello** di quello chiesto.
+        // Un rimando è pur sempre qualcuno che dice «vai là», e seguirlo senza
+        // ricontrollare vorrebbe dire che l'allowlist vale per il primo
+        // indirizzo e non per il secondo — cioè non vale.
+        let url_finale = (arrivato != url && self.consenti(&arrivato).is_ok()).then_some(arrivato);
+        Ok(Pezzo {
+            byte,
+            totale,
+            url_finale,
+        })
     }
 
     /// Traduce un guasto di trasporto di `ureq` in un codice Aether.
@@ -1290,6 +1403,41 @@ mod prove {
         let corto = accorcia(&lungo, 10);
         assert_eq!(corto.chars().count(), 11, "dieci più i puntini");
         assert_eq!(accorcia("corto", 10), "corto");
+    }
+
+    #[test]
+    fn la_rete_delle_domande_ha_una_scadenza_complessiva() {
+        let rete = Rete::nuova("prova", Duration::from_secs(30));
+        assert_eq!(rete.scadenza_complessiva(), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn la_rete_dei_prelievi_non_ha_una_scadenza_complessiva() {
+        // Il difetto che questa prova impedisce di rifare: con una scadenza
+        // complessiva di trenta secondi, duecento megabyte di FLAC volevano
+        // cinquantatré megabit al secondo sostenuti, e sotto quella soglia il
+        // prelievo moriva a metà — per sempre, perché `net.timeout` si ritenta.
+        let rete = Rete::per_prelievo("prova");
+        assert_eq!(rete.scadenza_complessiva(), None);
+
+        // Ma il silenzio resta limitato dove silenzio vuol dire guasto.
+        let scadenze = rete.agente.config().timeouts();
+        assert_eq!(scadenze.resolve, Some(PRELIEVO_RISOLUZIONE));
+        assert_eq!(scadenze.connect, Some(PRELIEVO_CONNESSIONE));
+        assert_eq!(scadenze.recv_response, Some(PRELIEVO_INTESTAZIONI));
+        assert_eq!(scadenze.recv_body, Some(PRELIEVO_CORPO));
+    }
+
+    #[test]
+    fn il_tetto_del_corpo_regge_un_concerto_su_una_linea_lenta() {
+        // Duecento megabyte è la misura che la docstring di `preleva` nomina.
+        let megabyte = 200_u64;
+        let secondi = PRELIEVO_CORPO.as_secs();
+        let megabit_al_secondo = (megabyte * 8) as f64 / secondi as f64;
+        assert!(
+            megabit_al_secondo < 1.0,
+            "un concerto in FLAC deve passare anche sotto un megabit: servono {megabit_al_secondo:.2} Mbit/s"
+        );
     }
 
     #[test]

@@ -44,7 +44,11 @@ import {
 } from "./albero";
 import { t } from "../lingue";
 import { usePresaPerFessure } from "../riordino";
-import { descrizioneOpzione, descrizioneWidget } from "./vocabolario";
+import {
+  descrizioneOpzione,
+  descrizioneWidget,
+  nomeGruppo,
+} from "./vocabolario";
 
 /** Cosa si sta trascinando: un nodo che c'è già, o un widget dalla tavolozza. */
 type Preso =
@@ -409,7 +413,7 @@ export function IspettoreNodo({
         <span className="gruppo-parte">
           {nodo.kind === "zone"
             ? t("studio.shelf.zoneWord")
-            : (def?.group ?? "widget")}
+            : nomeGruppo(def?.group ?? "widget")}
         </span>
         {/* Dentro la testata e non dopo: `.testa-ispettore .descrizione` è
             un discendente, e un paragrafo fuori restava senza regola. */}

@@ -46,7 +46,7 @@ import {
   testoErrore,
 } from "../ipc";
 import { dataOra, durata, numero, ore } from "../formato";
-import { DISPONIBILI, t, type Chiave } from "../lingue";
+import { DISPONIBILI, t, tSe, type Chiave } from "../lingue";
 import { useAscolto } from "../pagine";
 import { Aggiornamenti } from "../parti/Aggiornamenti";
 import { Equalizzatore } from "../parti/Equalizzatore";
@@ -1744,7 +1744,18 @@ export function Impostazioni({
                         </span>
                       </button>
                       {s.descrizione !== null && (
-                        <p className="descrizione">{s.descrizione}</p>
+                        /* Solo le skin di serie passano dal catalogo delle
+                           lingue: la loro descrizione la scriviamo noi, ed è
+                           interfaccia come il resto della scheda — «Plain»
+                           spiegava sé stessa in italiano dentro
+                           un'applicazione in inglese. Quella di una skin
+                           installata resta com'è: è un testo di chi l'ha
+                           fatta, e tradurlo vorrebbe dire riscriverlo. */
+                        <p className="descrizione">
+                          {s.diSerie
+                            ? tSe(`skin.builtin.${s.id}.desc`, s.descrizione)
+                            : s.descrizione}
+                        </p>
                       )}
                       {/* «Deriva…» apre la creazione di un tema con questa skin
                           come base, non lo Studio. Prima faceva la stessa cosa

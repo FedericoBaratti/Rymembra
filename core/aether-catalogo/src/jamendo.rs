@@ -145,18 +145,35 @@ impl Jamendo {
         if annullato() {
             return Ok(Vec::new());
         }
-        let mut trovati = self.cerca_con(&query_stretta(brano), brano)?;
+        let mut trovati = self.cerca_con(&query_stretta(brano), Some(brano))?;
         if trovati.is_empty()
             && !annullato()
             && let Some(larga) = query_larga(brano)
         {
-            trovati = self.cerca_con(&larga, brano)?;
+            trovati = self.cerca_con(&larga, Some(brano))?;
         }
         Ok(trovati)
     }
 
+    /// I brani di questo catalogo che rispondono a una frase.
+    ///
+    /// Senza titolo atteso, come le sorelle negli altri due cataloghi. Una
+    /// passata sola: `search` di Jamendo guarda già titolo, artista e album
+    /// insieme, e non ha una forma «stretta» da distinguere.
+    ///
+    /// # Errori
+    ///
+    /// Quelli di [`Self::cerca`].
+    pub fn cerca_libera(&self, testo: &str) -> Result<Vec<Candidato>, AppError> {
+        self.cerca_con(testo, None)
+    }
+
     /// Una passata di ricerca con una stringa sola.
-    fn cerca_con(&self, testo: &str, brano: &BranoEsterno) -> Result<Vec<Candidato>, AppError> {
+    fn cerca_con(
+        &self,
+        testo: &str,
+        atteso: Option<&BranoEsterno>,
+    ) -> Result<Vec<Candidato>, AppError> {
         if testo.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -187,7 +204,7 @@ impl Jamendo {
 
         Ok(risultati(&corpo)
             .iter()
-            .filter_map(|t| candidato_da(t, Some(&brano.title)))
+            .filter_map(|t| candidato_da(t, atteso.map(|b| b.title.as_str())))
             .collect())
     }
 
@@ -397,6 +414,8 @@ fn candidato_da(traccia: &Value, atteso: Option<&str>) -> Option<Candidato> {
         fonte: Fonte::Jamendo,
         licenza,
         disponibilita,
+        // Jamendo dichiara l'album di ogni brano, e lo dichiara sempre.
+        album: testo(traccia, "album_name"),
         // Il flusso di Jamendo è sempre mp3: `format=mp31` sta nell'indirizzo
         // che loro stessi costruiscono. Serve al decodificatore come
         // suggerimento — dal percorso non si ricava, perché l'estensione non

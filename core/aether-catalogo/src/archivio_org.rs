@@ -52,6 +52,40 @@ const BASE: &str = "https://archive.org";
 /// diritto d'autore.
 const COLLEZIONI: &str = "collection:(etree OR netlabels OR audio_music OR 78rpm)";
 
+/// I `mediatype` che contengono musica.
+///
+/// **Due e non uno, e il secondo è quello che conta.** Qui c'era scritto
+/// `mediatype:audio`, che è il modo ovvio di dire «i file sonori» e che
+/// all'Internet Archive vuol dire una cosa più stretta: il Live Music Archive
+/// — i concerti registrati col permesso di chi li ha suonati, la fonte che
+/// questo programma nomina per prima — non è `audio`, è `etree`. Il proprio
+/// `mediatype`, per un archivio nato prima che l'audio generico esistesse.
+///
+/// Il conto, misurato sull'API: `mediatype:audio AND collection:etree`
+/// restituisce **quattro** item in tutto l'archivio, e `collection:etree` da
+/// solo ne ha oltre duecentomila. Con la riga di prima i concerti non erano
+/// pochi o mal ordinati: erano **zero**, e non si vedeva, perché al loro posto
+/// arrivavano le cover band di `audio_music` che nominano l'artista nella
+/// descrizione. Cercando «Grateful Dead» si trovavano quattro serate di gruppi
+/// che suonano i Grateful Dead e nessuna dei Grateful Dead.
+const GENERI: &str = "(mediatype:audio OR mediatype:etree)";
+
+/// Come si ordinano gli item trovati.
+///
+/// Senza questo, l'Archive risponde nell'ordine che gli fa comodo, e non è la
+/// rilevanza: è un ordine che a `("Grateful Dead")` metteva in testa una
+/// serata del 2021 di un gruppo di Pennsylvania. Conta perché di item se ne
+/// apre un numero piccolo — vedi [`ITEM_DA_APRIRE`] — quindi **l'ordine è il
+/// filtro**: quel che non entra nei primi quattro non esiste.
+///
+/// Gli scaricamenti sono la cosa più vicina a un giudizio che l'Archive
+/// pubblichi. Non dicono qual è il brano giusto, dicono quale registrazione la
+/// gente ha davvero ascoltato, e su un archivio dove lo stesso concerto esiste
+/// in otto nastri diversi è esattamente la domanda che chi cerca si sta
+/// facendo. Misurato: la stessa ricerca di prima adesso apre con Barton Hall
+/// 1977, che è il nastro dei Grateful Dead più ascoltato che ci sia.
+const ORDINE: &str = "downloads desc";
+
 /// Quanti item la ricerca restituisce.
 const ITEM_TROVATI: u32 = 8;
 
@@ -62,7 +96,13 @@ const ITEM_TROVATI: u32 = 8;
 /// [`primo_sicuro`] la maggior parte delle volte se ne aprono una o due.
 const ITEM_DA_APRIRE: usize = 4;
 
-/// Quanto si aspetta una risposta.
+/// Quanto si aspetta **una risposta**.
+///
+/// Vale per le domande — ricerche, schede, elenchi — e non per il prelievo di
+/// un file, che ha una rete sua senza scadenza complessiva: vedi
+/// [`Rete::per_prelievo`]. Il nome di questa costante dice «una risposta» da
+/// sempre, ed è quel che fa: per un pezzo di tempo ha coperto anche
+/// duecento megabyte di FLAC, ed è stato un guasto.
 const SCADENZA: Duration = Duration::from_secs(30);
 
 /// I formati che il motore audio sa aprire, dal migliore al peggiore.
@@ -84,6 +124,9 @@ const FORMATI: [(&str, &str); 4] = [
 #[derive(Debug, Clone)]
 pub struct ArchivioOrg {
     rete: Rete,
+    /// La rete dei prelievi, che ha una scadenza sua: vedi
+    /// [`Rete::per_prelievo`].
+    prelievo: Rete,
 }
 
 impl Default for ArchivioOrg {
@@ -98,14 +141,30 @@ impl ArchivioOrg {
     pub fn nuovo() -> Self {
         Self {
             rete: Rete::nuova("archive.org", SCADENZA),
+            prelievo: Rete::per_prelievo("archive.org"),
         }
     }
 
-    /// La rete che usa, per chi deve prelevare con la stessa riserva di
-    /// connessioni invece di aprirne una seconda.
+    /// La rete che usa per **chiedere**: ricerche, schede, elenchi.
+    ///
+    /// Le richieste piccole e la lettura a finestre di un flusso, che piccole
+    /// sono anche loro. Per portare giù un file intero c'è
+    /// [`Self::rete_prelievo`], e la differenza fra le due è la scadenza.
     #[must_use]
     pub const fn rete(&self) -> &Rete {
         &self.rete
+    }
+
+    /// La rete che usa per **portare giù un file**.
+    ///
+    /// Una seconda riserva di connessioni, e non è uno spreco: è l'unico modo
+    /// di avere due politiche di scadenza nello stesso catalogo, perché in
+    /// `ureq` la scadenza sta nell'agente e non nella richiesta. Vedi
+    /// [`Rete::per_prelievo`] per il conto che ha reso necessaria la
+    /// separazione.
+    #[must_use]
+    pub const fn rete_prelievo(&self) -> &Rete {
+        &self.prelievo
     }
 
     /// Il catalogo risponde.
@@ -114,7 +173,7 @@ impl ArchivioOrg {
     /// diagnostica, che deve poter distinguere «non l'ho trovato» da «non ci
     /// arrivo».
     pub fn risponde(&self) -> bool {
-        self.cerca_item("mediatype:audio", 1).is_ok()
+        self.cerca_item(GENERI, 1).is_ok()
     }
 
     /// I brani di questo catalogo che potrebbero essere quello chiesto.
@@ -132,27 +191,51 @@ impl ArchivioOrg {
         brano: &BranoEsterno,
         annullato: &dyn Fn() -> bool,
     ) -> Result<Vec<Candidato>, AppError> {
-        let mut trovati = self.cerca_con(&query_stretta(brano), brano, annullato)?;
+        let mut trovati = self.cerca_con(&query_stretta(brano), Some(brano), true, annullato)?;
         if trovati.is_empty()
             && let Some(larga) = query_larga(brano)
         {
-            trovati = self.cerca_con(&larga, brano, annullato)?;
+            trovati = self.cerca_con(&larga, Some(brano), true, annullato)?;
         }
         Ok(trovati)
+    }
+
+    /// Gli item di questo catalogo che rispondono a una frase.
+    ///
+    /// Non c'è un brano da ritrovare: c'è quel che qualcuno ha scritto in una
+    /// casella, e nessun titolo atteso con cui filtrare i file dentro l'item.
+    /// Vale quindi il tetto di sempre — [`ITEM_DA_APRIRE`] schede, non una di
+    /// più — e la frenata di [`primo_sicuro`] qui non può scattare: senza una
+    /// durata attesa non si è sicuri di niente.
+    ///
+    /// `esatta` decide se i termini restano legati in una frase. Per un titolo
+    /// sì, ed è quel che fa [`Self::cerca`]; per «lo-fi piano», che non è il
+    /// nome di niente, una frase esatta trova quasi sempre zero.
+    ///
+    /// # Errori
+    ///
+    /// Quelli di [`Self::cerca`].
+    pub fn cerca_libera(
+        &self,
+        testo: &str,
+        esatta: bool,
+        annullato: &dyn Fn() -> bool,
+    ) -> Result<Vec<Candidato>, AppError> {
+        self.cerca_con(testo, None, esatta, annullato)
     }
 
     /// Una passata di ricerca con una stringa sola.
     fn cerca_con(
         &self,
         testo: &str,
-        brano: &BranoEsterno,
+        atteso: Option<&BranoEsterno>,
+        esatta: bool,
         annullato: &dyn Fn() -> bool,
     ) -> Result<Vec<Candidato>, AppError> {
         if testo.trim().is_empty() {
             return Ok(Vec::new());
         }
-        let query = format!("mediatype:audio AND {COLLEZIONI} AND ({})", frase(testo));
-        let item = self.cerca_item(&query, ITEM_TROVATI)?;
+        let item = self.cerca_item(&query_item(testo, esatta), ITEM_TROVATI)?;
 
         let mut candidati = Vec::new();
         // Un item che non risponde è un risultato in meno, non un fallimento:
@@ -174,8 +257,8 @@ impl ArchivioOrg {
                     continue;
                 }
             };
-            candidati.extend(brani_dalla_scheda(&identificativo, &scheda, Some(brano)));
-            if primo_sicuro(&candidati, brano) {
+            candidati.extend(brani_dalla_scheda(&identificativo, &scheda, atteso));
+            if atteso.is_some_and(|b| primo_sicuro(&candidati, b)) {
                 break;
             }
         }
@@ -252,8 +335,10 @@ impl ArchivioOrg {
     /// La ricerca avanzata: da una query a un elenco di item.
     fn cerca_item(&self, query: &str, righe: u32) -> Result<Vec<Value>, AppError> {
         let url = format!(
-            "{BASE}/advancedsearch.php?q={}&fl%5B%5D=identifier&rows={righe}&page=1&output=json",
-            percento(query)
+            "{BASE}/advancedsearch.php?q={}&sort%5B%5D={}\
+             &fl%5B%5D=identifier&rows={righe}&page=1&output=json",
+            percento(query),
+            percento(ORDINE)
         );
         let risposta = self.rete.esegui(Richiesta {
             metodo: Metodo::Get,
@@ -445,6 +530,7 @@ fn brani_dalla_scheda(
     let licenza = licenza_da(metadati);
     let disponibilita = disponibilita_da(metadati, &licenza);
     let autore = testo_di(metadati, "creator");
+    let titolo_item = testo_di(metadati, "title");
     let dal_vivo = collezioni_di(metadati).iter().any(|c| c == "etree");
 
     let Some(file) = scheda.get("files").and_then(Value::as_array) else {
@@ -506,6 +592,15 @@ fn brani_dalla_scheda(
             disponibilita,
             estensione: Some(estensione.to_owned()),
             pagina: Some(format!("{BASE}/details/{}", percento(identificativo))),
+            // Il titolo dell'item, che per l'Archive è il concerto o il disco:
+            // è l'unica cosa che distingue dieci file dello stesso spettacolo
+            // da dieci brani che si chiamano allo stesso modo. Se manca resta
+            // l'identificativo, che è brutto da leggere ma è comunque vero.
+            album: Some(
+                titolo_item
+                    .clone()
+                    .unwrap_or_else(|| identificativo.to_owned()),
+            ),
         };
 
         match migliori.iter_mut().find(|(c, _, _)| *c == chiave) {
@@ -593,6 +688,23 @@ fn brano_da_candidato(
     }
 }
 
+/// La domanda che si fa all'indice degli item.
+///
+/// Tre pezzi, e ognuno risponde a una domanda diversa: [`GENERI`] dice **che
+/// cosa** è musica per l'Archive, [`COLLEZIONI`] dice quale musica abbiamo il
+/// permesso di toccare, e il terzo è quel che si sta cercando.
+///
+/// È una funzione e non un `format!` in mezzo a `cerca_con` per una ragione
+/// sola: così una prova può leggerla senza rete. Il guasto che ha reso
+/// necessario `GENERI` stava esattamente qui, era una parola, ed è rimasto
+/// invisibile finché nessuno ha potuto guardare la stringa.
+fn query_item(testo: &str, esatta: bool) -> String {
+    format!(
+        "{GENERI} AND {COLLEZIONI} AND ({})",
+        if esatta { frase(testo) } else { termini(testo) }
+    )
+}
+
 /// La frase da mettere nella query, con le virgolette al posto giusto.
 ///
 /// Senza virgolette, «Karma Police» cerca i due termini separatamente e trova
@@ -605,8 +717,40 @@ fn frase(testo: &str) -> String {
     format!("\"{}\"", ripulito.trim())
 }
 
+/// Gli stessi termini, sciolti: senza le virgolette che li legano in una frase.
+///
+/// La sorella di [`frase`], e la differenza è tutta in chi ha scritto il testo.
+/// Un titolo che arriva da una playlist è il nome di una cosa, e va cercato
+/// come tale; una frase digitata in una casella descrive quel che si vorrebbe
+/// sentire, e legarla intera vorrebbe dire chiedere all'archivio un item che
+/// si chiami così.
+///
+/// La ripulitura è la stessa, e per la stessa ragione: una virgoletta o una
+/// barra rovesciata nel mezzo romperebbero la query invece di restringerla.
+fn termini(testo: &str) -> String {
+    testo
+        .chars()
+        .map(|c| if c == '"' || c == '\\' { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
 #[cfg(test)]
 mod prove {
+    #[test]
+    fn il_prelievo_non_usa_la_rete_delle_domande() {
+        // Due reti e non una: la domanda ha una scadenza complessiva perché
+        // un servizio muto è un servizio rotto, il prelievo no perché un file
+        // grosso su una linea normale non è rotto — è grosso.
+        let archivio = super::ArchivioOrg::nuovo();
+        assert_eq!(
+            archivio.rete().scadenza_complessiva(),
+            Some(super::SCADENZA)
+        );
+        assert_eq!(archivio.rete_prelievo().scadenza_complessiva(), None);
+    }
+
     use super::*;
 
     fn scheda(json: &str) -> Value {
@@ -836,5 +980,47 @@ mod prove {
         }];
         assert!(!primo_sicuro(&candidati, &senza));
         assert!(primo_sicuro(&candidati, &con));
+    }
+    /// La ricerca chiede tutti e due i `mediatype` della musica.
+    ///
+    /// # Cos'è questa prova
+    ///
+    /// Il guardiano di una parola. Fino alla 2.4.0 la query diceva
+    /// `mediatype:audio`, e quella parola da sola teneva fuori il Live Music
+    /// Archive intero — duecentomila concerti che all'Archive sono
+    /// `mediatype:etree` — mentre la ricerca continuava a rispondere con
+    /// qualcosa, cioè senza mai sembrare rotta. Chi cercava i Grateful Dead
+    /// riceveva quattro serate di gruppi che li suonano.
+    ///
+    /// Una prova che guarda la stringa è l'unica possibile senza rete, ed è
+    /// quella che mancava: il guasto stava in un `format!` in mezzo a una
+    /// funzione che parla con Internet, dove nessuna prova poteva arrivare.
+    #[test]
+    fn la_ricerca_non_dimentica_i_concerti() {
+        let q = query_item("Grateful Dead", true);
+        assert!(
+            q.contains("mediatype:etree"),
+            "senza `etree` il Live Music Archive non esiste: {q}"
+        );
+        assert!(
+            q.contains("mediatype:audio"),
+            "e senza `audio` sparisce il resto: {q}"
+        );
+        assert!(
+            q.contains("collection:(etree OR netlabels OR audio_music OR 78rpm)"),
+            "il cancello delle collezioni non si allarga con i generi: {q}"
+        );
+        assert!(
+            q.contains("\"Grateful Dead\""),
+            "la frase resta legata: {q}"
+        );
+    }
+
+    /// La passata larga scioglie i termini e tiene tutto il resto.
+    #[test]
+    fn la_passata_larga_cambia_solo_la_frase() {
+        let larga = query_item("lo-fi piano", false);
+        assert!(!larga.contains('"'), "senza virgolette: {larga}");
+        assert!(larga.contains("mediatype:etree"), "{larga}");
     }
 }

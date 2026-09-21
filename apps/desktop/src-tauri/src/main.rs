@@ -19,6 +19,7 @@ mod copertine;
 mod diario;
 mod disparte;
 mod errore;
+mod esplora;
 mod giro;
 mod ia;
 mod importa;
@@ -229,6 +230,7 @@ fn main() {
             // richiesta parte quando qualcuno incolla un link, così chi non
             // importa mai da un catalogo non paga nemmeno una stretta di mano.
             app.manage(importa::StatoImport::nuovo());
+            app.manage(esplora::StatoEsplora::nuovo());
             // Come sopra, e per la stessa ragione: una cella vuota e un bit.
             // Lo zip arriva solo se qualcuno apre la schermata dell'account.
             app.manage(account::StatoAccount::nuovo());
@@ -414,6 +416,7 @@ fn main() {
             comandi::imposta_cartelle,
             trascinati::smista_trascinati,
             comandi::brano_mostra_nella_cartella,
+            comandi::brano_apri_pagina,
             comandi::cartelle_candidate,
             comandi::imposta_cartella_download,
             comandi::cronologia,
@@ -463,6 +466,15 @@ fn main() {
             profilo::profilo_piano,
             profilo::profilo_importa,
             profilo::profilo_annulla,
+            esplora::esplora_cerca,
+            esplora::esplora_annulla,
+            esplora::esplora_aggiungi,
+            esplora::esplora_aggiungi_tutti,
+            esplora::esplora_togli,
+            esplora::esplora_identificativo,
+            esplora::esplora_apri_pagina,
+            esplora::esplora_nella_lista,
+            esplora::esplora_tieni,
             importa::import_anteprima,
             importa::import_piano,
             importa::import_esegui,

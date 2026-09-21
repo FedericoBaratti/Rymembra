@@ -207,7 +207,7 @@ fn esegui(
 /// «nessun brano ritrovato» su una playlist i cui file sono tutti lì.
 fn indice_percorsi(connection: &Connection) -> Result<HashMap<String, i64>, AppError> {
     let mut statement = connection
-        .prepare("SELECT id, path FROM tracks")
+        .prepare("SELECT id, path FROM tracks WHERE path IS NOT NULL")
         .map_err(|err| db_error("indice dei percorsi", &err))?;
     let righe = statement
         .query_map([], |row| {
@@ -396,13 +396,21 @@ pub fn esporta(
             })
         })?;
     let brani = crate::playlists::tracks(connection, playlist_id)?;
+    // `filter_map` e non `map`: un file di playlist è un elenco di **file**, e
+    // un brano di catalogo un file non ce l'ha. Scriverci dentro l'indirizzo
+    // del flusso sembrerebbe generoso e sarebbe un errore doppio: altri lettori
+    // aprirebbero un indirizzo di Audius senza il nodo davanti — cioè niente —
+    // e l'elenco uscirebbe di casa portandosi dietro un indirizzo che i termini
+    // di certi cataloghi non vogliono veder ridistribuito.
     let voci: Vec<VocePlaylist> = brani
         .into_iter()
-        .map(|b| VocePlaylist {
-            percorso: b.path,
-            titolo: Some(b.title),
-            artista: Some(b.artist),
-            durata_ms: u64::try_from(b.duration_ms).ok(),
+        .filter_map(|b| {
+            Some(VocePlaylist {
+                percorso: b.path?,
+                titolo: Some(b.title),
+                artista: Some(b.artist),
+                durata_ms: u64::try_from(b.duration_ms).ok(),
+            })
         })
         .collect();
     Ok(aether_domain::playlist_file::scrivi(

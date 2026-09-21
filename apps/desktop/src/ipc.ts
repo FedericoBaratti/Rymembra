@@ -138,7 +138,12 @@ export function guastoDa(value: unknown): Guasto | null {
 /** Un brano, come lo mostra una lista. */
 export interface Brano {
   id: number;
-  path: string;
+  /**
+   * Il percorso sul disco. `null` per un brano di catalogo, che un file non ce
+   * l'ha: è il campo da guardare prima di offrire «mostra nella cartella»,
+   * «riscrivi i tag» o qualunque altro gesto che voglia un file.
+   */
+  path: string | null;
   title: string;
   artist: string;
   album: string;
@@ -151,6 +156,68 @@ export interface Brano {
   playCount: number;
   liked: boolean;
   rating: number;
+  /**
+   * Da quale catalogo arriva: `internet-archive`, `audius`, `jamendo`.
+   * `null` per un file sul disco.
+   */
+  fonte: string | null;
+  /**
+   * La pagina pubblica del brano.
+   *
+   * Si mostra accanto a chi ascolta, e non per gentilezza: per certe Creative
+   * Commons e per i termini di Audius il rimando visibile è una condizione
+   * d'uso.
+   */
+  fontePagina: string | null;
+  /** Sotto che licenza sta, col nome stabile del dominio. */
+  licenza: string | null;
+}
+
+/** Un risultato della ricerca nei cataloghi liberi. */
+export interface RisultatoEsplora {
+  url: string;
+  titolo: string;
+  autore: string | null;
+  album: string | null;
+  durataSec: number | null;
+  fonte: string;
+  fonteEtichetta: string;
+  licenza: string;
+  disponibilita: string;
+  pagina: string | null;
+  inLibreria: boolean;
+}
+
+/** Quel che una ricerca nei cataloghi ha trovato. */
+export interface EsitoAggiuntaTutti {
+  /** Quanti nuovi, quanti c'erano già, quanti rifiutati. */
+  conteggi: AggiuntiDalCatalogo;
+  /**
+   * Gli indirizzi che **adesso** stanno in libreria.
+   *
+   * È quel che permette di aggiornare le righe dicendo il vero invece di
+   * indovinare: il nucleo scarta anche righe che da qui sembrano buone.
+   */
+  inLibreria: string[];
+}
+
+export interface EsitoRicerca {
+  risultati: RisultatoEsplora[];
+  annullata: boolean;
+  /**
+   * I cataloghi che non hanno risposto, coi nomi da mostrare.
+   *
+   * Vuoto è il caso normale. Pieno con dei risultati accanto vuol dire che
+   * l'elenco sembra completo e non lo è.
+   */
+  muti: string[];
+}
+
+/** Quel che l'aggiunta di brani di catalogo ha prodotto. */
+export interface AggiuntiDalCatalogo {
+  aggiunti: number;
+  giaPresenti: number;
+  senzaByte: number;
 }
 
 /** Un album, come lo mostra una griglia. */
@@ -2812,6 +2879,10 @@ export const ipc = {
   // un percorso: il percorso lo legge il nucleo.
   branoMostraNellaCartella: (id: number) =>
     invoke<void>("brano_mostra_nella_cartella", { id }),
+  // La pagina pubblica di un brano di catalogo. Come sopra: un identificativo e
+  // mai un indirizzo, perché aprire il browser su un indirizzo scelto dalla
+  // finestra sarebbe l'unica capacità pericolosa che ha, data intera.
+  branoApriPagina: (id: number) => invoke<void>("brano_apri_pagina", { id }),
   // Le due cancellazioni, e la differenza sta tutta nel nome: la prima toglie
   // la riga e lascia il file, la seconda manda il file nel Cestino e toglie la
   // riga solo per quelli che ci sono arrivati. Identificativi e mai percorsi,
@@ -3146,6 +3217,40 @@ export const ipc = {
   // era una chiamata bloccante muta dietro il tasto «Guarda». Non c'è un evento
   // di annullamento: l'abort del lettore è cablato a «no», e un tasto che non
   // annulla è peggio della sua assenza.
+  // La ricerca nei cataloghi liberi. Va chiamata a **Invio** e non a ogni
+  // carattere: costa da una a cinque richieste all'Internet Archive e una ad
+  // Audius, contro archivi pubblici che ci ospitano gratis. La casella della
+  // libreria cerca a ogni tasto perché interroga un indice che sta in casa;
+  // questa no, ed è una differenza di buona educazione prima che di
+  // prestazioni.
+  esploraCerca: (testo: string) =>
+    invoke<EsitoRicerca>("esplora_cerca", { testo }),
+  esploraAnnulla: () => invoke<void>("esplora_annulla"),
+  // Si manda l'**indirizzo**, non la riga: licenza e disponibilità le dichiara
+  // il catalogo e restano di là. Vedi il `//!` di `esplora.rs`.
+  esploraAggiungi: (url: string) =>
+    invoke<AggiuntiDalCatalogo>("esplora_aggiungi", { url }),
+  esploraAggiungiTutti: () =>
+    invoke<EsitoAggiuntaTutti>("esplora_aggiungi_tutti"),
+  esploraTogli: (url: string) => invoke<boolean>("esplora_togli", { url }),
+  esploraIdentificativo: (url: string) =>
+    invoke<number | null>("esplora_identificativo", { url }),
+  // Si nomina il risultato, non la pagina: l'indirizzo lo tira fuori il nucleo
+  // da quel che il catalogo aveva dichiarato, e lo fa passare dall'allowlist.
+  // Stessa regola di `cercaDoveComprare`, e per la stessa ragione.
+  esploraApriPagina: (url: string) =>
+    invoke<void>("esplora_apri_pagina", { url }),
+  // Quel che nessun catalogo libero consegna: si annota nella lista della
+  // spesa, con la frase cercata come provenienza.
+  esploraNellaLista: (url: string, frase: string) =>
+    invoke<boolean>("esplora_nella_lista", { url, frase }),
+  // Quel che la licenza permette di tenere: una riga in coda di prelievo, con
+  // l'indirizzo esatto che si aveva davanti. `false` se c'era già. Non avvia
+  // niente: la passata si accende da Importazioni, perché prende **tutte** le
+  // righe in attesa e accenderla da qui farebbe partire scaricamenti che
+  // nessuno ha chiesto adesso.
+  esploraTieni: (url: string, frase: string) =>
+    invoke<boolean>("esplora_tieni", { url, frase }),
   importAnteprima: (url: string, forza = false) =>
     invoke<AnteprimaImport>("import_anteprima", { url, forza }),
   importPiano: (url: string, creaPlaylist: boolean) =>

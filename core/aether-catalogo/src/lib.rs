@@ -209,6 +209,111 @@ impl Cataloghi {
         Ok(trovati)
     }
 
+    /// I brani che rispondono a una frase scritta da una persona.
+    ///
+    /// L'altra metà di [`Self::cerca`]: là c'è un brano che qualcun altro ha
+    /// nominato e si cerca *quello*, qui c'è quel che è stato scritto in una
+    /// casella e non c'è niente con cui filtrare.
+    ///
+    /// # La scala, e perché non basta una passata sola
+    ///
+    /// Misurato sui due cataloghi veri, su tre frasi di natura diversa: né la
+    /// frase esatta né i termini sciolti bastano da soli. «Broke For Free» dà
+    /// zero risultati con le virgolette e sessantotto senza; «grateful dead
+    /// 1977» ne dà dieci pertinenti con le virgolette e rumore senza. Si fa
+    /// quindi quel che [`Self::cerca`] fa già per l'abbinamento — prima
+    /// stretta, e la larga **solo** se la prima non ha dato niente — che è
+    /// anche la scala che costa meno: la seconda richiesta si paga soltanto
+    /// quando la prima è andata a vuoto.
+    ///
+    /// Su Audius la distinzione non esiste: il suo punto di ricerca prende una
+    /// stringa e la tratta a modo suo, quindi una passata sola.
+    ///
+    /// # Quanto costa
+    ///
+    /// Da una a cinque richieste all'Archive — una ricerca più fino a quattro
+    /// schede di item, il tetto che quel modulo si dà — e una ad Audius, raddoppiate
+    /// nel caso peggiore in cui la passata stretta torni vuota. È il motivo per
+    /// cui questa funzione va chiamata a **Invio** e non a ogni carattere
+    /// digitato: gli archivi che ci ospitano sono gratuiti, e una ricerca per
+    /// tasto premuto è il modo di farsi chiudere la porta.
+    ///
+    /// # Errori
+    ///
+    /// Come [`Self::cerca`]: solo se **nessun** catalogo ha risposto. Finché
+    /// uno risponde, il guasto di un altro è un risultato in meno. La
+    /// distinzione serve alla schermata, che deve poter dire «il catalogo non
+    /// risponde» invece di «nessun risultato»: sono due frasi diverse, e chi
+    /// legge la seconda al posto della prima smette di cercare.
+    ///
+    /// # E il catalogo che è giù mentre l'altro risponde
+    ///
+    /// Non è un errore, ma **non è nemmeno niente**: chi cerca un brano che sta
+    /// solo su Audius, con Audius giù e l'Internet Archive che risponde, vede
+    /// un elenco che sembra completo e non lo è. Per questo il guasto degli
+    /// altri non si butta via: esce in [`RicercaLibera::muti`], e la schermata
+    /// lo dice sopra l'elenco.
+    pub fn cerca_libera(
+        &self,
+        testo: &str,
+        annullato: &dyn Fn() -> bool,
+    ) -> Result<RicercaLibera, AppError> {
+        let testo = testo.trim();
+        if testo.is_empty() {
+            return Ok(RicercaLibera::default());
+        }
+
+        let mut trovati = Vec::new();
+        let mut guasti: Vec<AppError> = Vec::new();
+        let mut muti: Vec<Fonte> = Vec::new();
+
+        match self.archivio.cerca_libera(testo, true, annullato) {
+            Ok(suoi) if suoi.is_empty() && !annullato() => {
+                match self.archivio.cerca_libera(testo, false, annullato) {
+                    Ok(larghi) => trovati.extend(larghi),
+                    Err(err) => {
+                        guasti.push(err);
+                        muti.push(Fonte::InternetArchive);
+                    }
+                }
+            }
+            Ok(suoi) => trovati.extend(suoi),
+            Err(err) => {
+                guasti.push(err);
+                muti.push(Fonte::InternetArchive);
+            }
+        }
+
+        if !annullato() {
+            match self.audius.cerca_libera(testo) {
+                Ok(suoi) => trovati.extend(suoi),
+                Err(err) => {
+                    guasti.push(err);
+                    muti.push(Fonte::Audius);
+                }
+            }
+        }
+
+        #[cfg(feature = "jamendo")]
+        if !annullato() && self.jamendo.configurato() {
+            match self.jamendo.cerca_libera(testo) {
+                Ok(suoi) => trovati.extend(suoi),
+                Err(err) => {
+                    guasti.push(err);
+                    muti.push(Fonte::Jamendo);
+                }
+            }
+        }
+
+        if trovati.is_empty()
+            && let Some(primo) = guasti.into_iter().next()
+        {
+            return Err(primo);
+        }
+        senza_doppioni(&mut trovati);
+        Ok(RicercaLibera { trovati, muti })
+    }
+
     /// Da un riferimento a un contenuto con i suoi brani.
     ///
     /// # Errori
@@ -253,7 +358,7 @@ impl Cataloghi {
     ) -> Result<Prelevato, AppError> {
         match candidato.fonte {
             Fonte::InternetArchive => prelievo::preleva(
-                self.archivio.rete(),
+                self.archivio.rete_prelievo(),
                 candidato,
                 richiesta,
                 annullato,
@@ -274,7 +379,7 @@ impl Cataloghi {
                     candidato.clone()
                 };
                 prelievo::preleva(
-                    self.audius.rete(),
+                    self.audius.rete_prelievo(),
                     &pronto,
                     richiesta,
                     annullato,
@@ -290,6 +395,51 @@ impl Cataloghi {
             ))),
         }
     }
+}
+
+/// Quel che una ricerca libera ha trovato, e chi non ha risposto.
+///
+/// Due campi e non un `Vec` perché la seconda informazione esisteva già e si
+/// buttava via: [`Cataloghi::cerca_libera`] interroga più cataloghi, tiene
+/// buono quel che arriva e fallisce solo se non arriva niente da nessuno. Nel
+/// mezzo — uno risponde, l'altro è giù — la schermata mostrava un elenco che
+/// sembrava completo senza modo di sapere che non lo era.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RicercaLibera {
+    /// I risultati, deduplicati, nell'ordine in cui vanno mostrati.
+    pub trovati: Vec<Candidato>,
+    /// I cataloghi che non hanno risposto. Vuoto è il caso normale.
+    pub muti: Vec<Fonte>,
+}
+
+/// Toglie dall'elenco lo stesso brano comparso più volte.
+///
+/// Serve **solo** alla ricerca libera, e la ragione è precisa: senza un titolo
+/// atteso con cui filtrare, un item dell'Internet Archive restituisce lo stesso
+/// pezzo in FLAC, in MP3 e nella sua versione a bitrate variabile. La deduplica
+/// che il modulo dell'Archive fa già lavora sulla radice del nome del file, e
+/// `gd77d1t01.flac` e `gd77d1t01_vbr.mp3` radici diverse ce le hanno — quindi
+/// passano tutti e tre, e in una schermata di ricerca diventano tre righe
+/// identiche.
+///
+/// La chiave comprende la **durata** e non solo il titolo, e non è un di più:
+/// dentro un concerto due improvvisazioni si chiamano tutte e due «Jam», e
+/// collassarle per solo titolo farebbe sparire della musica. Due file che sono
+/// lo stesso brano durano invece lo stesso.
+///
+/// Si tiene il primo, che è il migliore: l'Archive ordina i suoi per qualità di
+/// formato, e il primo di un gruppo è quello con la resa più alta.
+fn senza_doppioni(candidati: &mut Vec<Candidato>) {
+    let mut visti: std::collections::HashSet<(Fonte, String, String, Option<u32>)> =
+        std::collections::HashSet::new();
+    candidati.retain(|c| {
+        visti.insert((
+            c.fonte,
+            aether_domain::text::fold_text(c.album.as_deref().unwrap_or_default()),
+            aether_domain::text::fold_text(&c.titolo),
+            c.durata_sec,
+        ))
+    });
 }
 
 #[cfg(test)]

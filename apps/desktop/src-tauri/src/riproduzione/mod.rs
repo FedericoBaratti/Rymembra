@@ -1078,7 +1078,7 @@ fn brano_di(
     // Il percorso si copia prima per la stessa ragione: senza di lui l'errore
     // direbbe «la rete non risponde» senza dire quale cartella andare a
     // ricollegare.
-    let percorso = scheda.path.clone();
+    let percorso = scheda.collocazione.percorso().map(str::to_owned);
     // I cataloghi si clonano fuori dallo stato: un `State` non attraversa il
     // confine di un filo, e il clone è quasi gratis — l'agente sta in un `Arc` e
     // la riserva di connessioni resta la stessa (vedi [`StatoLettore::cataloghi`]).
@@ -1100,7 +1100,7 @@ fn brano_di(
             // lo mostra per dire *quale cartella* andare a ricollegare, e una
             // cartella non c'è. Un indirizzo al posto di un percorso sarebbe un
             // consiglio che non si può seguire.
-            path: remoto.is_none().then_some(percorso),
+            path: percorso,
         })
         .with_cause(format!(
             "l'apertura non è finita entro {} secondi",

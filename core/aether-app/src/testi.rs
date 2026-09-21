@@ -154,8 +154,11 @@ impl Default for TestoBrano {
 pub struct BranoDaTestare {
     /// L'identificativo della riga.
     pub id: i64,
-    /// Il percorso del file, per il sidecar.
-    pub path: String,
+    /// Il percorso del file, per il sidecar. `None` per un brano di catalogo:
+    /// le parole si cercano lo stesso — il catalogo dei testi si interroga per
+    /// artista, titolo e durata, e quelli un flusso ce li ha — ma non c'è
+    /// nessun file accanto a cui posare un `.lrc`.
+    pub path: Option<String>,
     /// L'identità fra dispositivi, che è la chiave della tabella `lyrics`.
     pub track_key: String,
     /// Il titolo, per interrogare il catalogo.
@@ -273,7 +276,13 @@ pub fn leggi_dal_disco(brano: &BranoDaTestare, riga: Option<&Riga>) -> DalDisco 
     if riga.is_some_and(|r| r.strumentale) {
         return DalDisco::default();
     }
-    let (sidecar, sidecar_ms) = match leggi_sidecar_con_data(Path::new(&brano.path)) {
+    // Senza un file non c'è né un `.lrc` accanto né un tag da aprire: restano
+    // la riga in tabella e il catalogo, che è esattamente quel che serve a un
+    // brano di catalogo.
+    let Some(percorso) = brano.path.as_deref() else {
+        return DalDisco::default();
+    };
+    let (sidecar, sidecar_ms) = match leggi_sidecar_con_data(Path::new(percorso)) {
         Some((grezzo, quando)) => (Some(grezzo), quando),
         None => (None, None),
     };
@@ -285,7 +294,7 @@ pub fn leggi_dal_disco(brano: &BranoDaTestare, riga: Option<&Riga>) -> DalDisco 
     let tag = if basta_il_sidecar || riga.is_some_and(Riga::ha_i_tempi) {
         None
     } else {
-        tag_sincronizzato(Path::new(&brano.path))
+        tag_sincronizzato(Path::new(percorso))
     };
     DalDisco {
         sidecar,
@@ -1163,8 +1172,14 @@ impl Domanda {
 /// «Desktop» diventerebbero l'artista.
 fn da_chiedere_al_catalogo(brano: &BranoDaTestare) -> Domanda {
     let dal_nome = || {
+        // Un brano di catalogo non ha un nome di file da cui indovinare
+        // l'artista, e non gli serve: il titolo e l'autore glieli ha dati il
+        // catalogo, che li sa.
         aether_domain::indizi::dal_percorso(
-            aether_domain::paths::base_name(&brano.path),
+            brano
+                .path
+                .as_deref()
+                .map_or("", aether_domain::paths::base_name),
             &[],
             aether_domain::paths::PathRules::for_current_platform(),
         )
@@ -1729,12 +1744,19 @@ pub fn salva_a_mano(
     lrc: &str,
 ) -> Result<(), AppError> {
     registra_a_mano(connection, brano, lrc)?;
+    // Per un brano di catalogo la riga in tabella è tutto quel che c'è da
+    // salvare, ed è abbastanza: la tabella `lyrics` è indicizzata su
+    // `track_key`, non sul percorso. Il sidecar serve a far sopravvivere il
+    // testo a una reinstallazione **accanto al file**, e un file non c'è.
+    let Some(percorso) = brano.path.as_deref() else {
+        return Ok(());
+    };
     // `std::fs` e non `MusicFiles`: quel tratto sa aprire in lettura, perché è
     // quel che serve al motore. Scrivere accanto a un file altrui è un mestiere
     // in più, e quando arriverà Android — dove non c'è un percorso ma una
     // concessione — sarà quello il momento di allargare il tratto, non adesso
     // con un'astrazione che avrebbe un implementatore solo.
-    scrivi_sidecar(Path::new(&brano.path), "lrc", Some(lrc))
+    scrivi_sidecar(Path::new(percorso), "lrc", Some(lrc))
 }
 
 /// La metà di [`salva_a_mano`] che scrive nel database, e nient'altro.
@@ -2676,7 +2698,7 @@ mod prove {
     fn i_segnaposto_non_arrivano_al_catalogo() {
         let brano = |percorso: &str, titolo: &str, artista: &str, album: &str| BranoDaTestare {
             id: 1,
-            path: percorso.to_owned(),
+            path: Some(percorso.to_owned()),
             track_key: "chiave".to_owned(),
             title: titolo.to_owned(),
             artist: artista.to_owned(),

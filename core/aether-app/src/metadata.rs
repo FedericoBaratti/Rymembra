@@ -127,6 +127,46 @@ fn pick_cover(file: &TaggedFile) -> Option<EmbeddedCover> {
     fallback.map(to_cover)
 }
 
+/// Sotto questo numero non c'è musica, c'è un campo sbagliato.
+///
+/// Trentadue kbit/s: sotto, un file musicale non ci sta. La codifica più magra
+/// che si incontri in una libreria vera — un Opus di parlato, un MP3 mono di
+/// venticinque anni fa — parte da lì, e la musica stereo normale sta fra i
+/// centoventotto e i trecentoventi.
+///
+/// **La soglia può essere generosa senza far danni**, ed è il motivo per cui
+/// non è otto. Il ripiego è `overall_bitrate`, che è lo stesso numero più
+/// l'involucro: su un file davvero magro i due valori distano qualche punto
+/// percentuale, quindi ripiegare per sbaglio costa un'inezia. Sbagliare nel
+/// verso opposto costa invece la riga dei dati tecnici che dichiara «4 kbps»
+/// su un brano da centotrenta, ed è quel che succedeva con gli M4A, che
+/// dichiaravano da zero a quindici.
+const BITRATE_MINIMO_KBPS: u32 = 32;
+
+/// Quanto pesa il suono, in kbit/s.
+///
+/// `audio_bitrate` è il numero che si vuole — quanto pesa il **suono**, non
+/// quanto pesa il file con dentro la copertina e i tag — e per MP3, FLAC e Ogg
+/// è quello giusto. Su MP4 no: `lofty` lo legge dal descrittore `esds`, e in
+/// quel campo i taggatori scrivono quel che capita. In una libreria vera i
+/// quarantaquattro M4A dichiaravano tutti da 0 a 15 kbit/s dove il conto su
+/// byte e durata ne dà centotrenta, e la riga dei dati tecnici sotto i comandi
+/// scriveva «M4A · 44.1 kHz · Stereo · 4 kbps» a chi stava ascoltando un file
+/// normalissimo.
+///
+/// Sotto [`BITRATE_MINIMO_KBPS`] quindi non si crede al campo e si ripiega su
+/// `overall_bitrate`, che `lofty` ricava dalla dimensione del file: comprende
+/// l'involucro, quindi su un brano corto con una copertina grossa è un po'
+/// generoso, ed è comunque il numero di cui chi guarda riconosce l'ordine di
+/// grandezza. Meglio centotrenta con dentro i tag che quattro.
+fn bitrate_del_suono(properties: &lofty::properties::FileProperties) -> Option<u32> {
+    let plausibile = |kbps: &u32| *kbps >= BITRATE_MINIMO_KBPS;
+    properties
+        .audio_bitrate()
+        .filter(plausibile)
+        .or_else(|| properties.overall_bitrate().filter(plausibile))
+}
+
 /// Legge i tag di un file attraverso il fornitore di file dato.
 pub fn read_tags(files: &dyn MusicFiles, path: &str) -> Result<TrackTags, AppError> {
     let mut reader = files.open(path)?;
@@ -152,7 +192,7 @@ pub fn read_tags(files: &dyn MusicFiles, path: &str) -> Result<TrackTags, AppErr
 
     let mut tags = TrackTags {
         duration_ms: u64::try_from(properties.duration().as_millis()).unwrap_or(0),
-        bitrate: properties.audio_bitrate(),
+        bitrate: bitrate_del_suono(properties),
         sample_rate: properties.sample_rate(),
         channels: properties.channels(),
         codec: Some(file_type),
@@ -232,5 +272,59 @@ mod tests {
         // trattare come «salta questo file e prosegui».
         assert_eq!(errore.code().kind(), ErrorCodeKind::MetadataTagReadFailed);
         assert!(!errore.is_retryable() || errore.is_retryable());
+    }
+    /// Un bitrate impossibile non si crede: si ripiega sul conto del file.
+    ///
+    /// È il caso MP4 di tutti i giorni. `esds` dichiara cinque kbit/s per un
+    /// brano che ne pesa centotrenta, e cinque finiva sotto i comandi come se
+    /// qualcuno l'avesse misurato.
+    #[test]
+    fn un_bitrate_impossibile_lascia_il_posto_a_quello_del_file() {
+        let mp4 = lofty::properties::FileProperties::new(
+            std::time::Duration::from_secs(249),
+            Some(130),
+            Some(5),
+            Some(44_100),
+            None,
+            Some(2),
+            None,
+        );
+        assert_eq!(bitrate_del_suono(&mp4), Some(130));
+    }
+
+    /// Un bitrate plausibile resta quello del suono, non quello del file.
+    ///
+    /// La differenza si vede su un MP3 con una copertina grossa: il suono pesa
+    /// centonovantadue, il file di più, e il numero da mostrare è il primo.
+    #[test]
+    fn un_bitrate_plausibile_non_viene_sostituito() {
+        let mp3 = lofty::properties::FileProperties::new(
+            std::time::Duration::from_secs(255),
+            Some(240),
+            Some(192),
+            Some(44_100),
+            None,
+            Some(2),
+            None,
+        );
+        assert_eq!(bitrate_del_suono(&mp3), Some(192));
+    }
+
+    /// Senza nessuno dei due non si inventa niente.
+    ///
+    /// `None` vuol dire «non lo so», e la riga dei dati tecnici sa non
+    /// scrivere quel pezzo. Uno zero, invece, sarebbe una misura.
+    #[test]
+    fn senza_numeri_credibili_non_si_dichiara_un_bitrate() {
+        let ignoto = lofty::properties::FileProperties::new(
+            std::time::Duration::from_secs(10),
+            Some(12),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(bitrate_del_suono(&ignoto), None);
     }
 }

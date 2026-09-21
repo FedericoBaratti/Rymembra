@@ -84,6 +84,11 @@ export type Vista =
   // posizione che ha in foobar2000, e la si trova lì per abitudine.
   | "cartelle"
   | "preferiti"
+  // Ultima delle destinazioni con una voce, e dopo una riga che la separa dalle
+  // altre: le sei di sopra guardano quel che si ha, questa guarda quel che c'è
+  // fuori. Metterla in mezzo a loro direbbe che la libreria e i cataloghi sono
+  // la stessa cosa, e la differenza fra le due è tutto il programma.
+  | "esplora"
   | "impostazioni"
   // Una destinazione senza voce nella barra: per quasi tutto il tempo non c'è
   // niente da vedere, e una voce che non risponde è una voce che si impara a
@@ -113,6 +118,10 @@ function destinazioni(): readonly (readonly [Vista, string, NomeIcona])[] {
     // cartelle sorvegliate ci sono da guardare.
     ["cartelle", t("nav.folders"), "i-folder"],
     ["preferiti", t("nav.favorites"), "i-heart"],
+    // Senza conteggio: quel che sta nei cataloghi non si conta, e un numero
+    // accanto a questa voce sarebbe il numero dell'ultima ricerca — cioè un
+    // numero che parla di una cosa diversa da tutti gli altri della barra.
+    ["esplora", t("nav.explore"), "i-external"],
   ];
 }
 
@@ -226,8 +235,11 @@ export function Navigazione({
               <span className="etichetta">{etichetta}</span>
               {/* La Home un conteggio non ce l'ha — lo dice il preambolo di
                   `destinazioni` — e la lineetta che ne prendeva il posto si
-                  leggeva come «zero», o come un numero non ancora arrivato. */}
-              {chiave !== "home" && (
+                  leggeva come «zero», o come un numero non ancora arrivato.
+                  Vale identico per «Esplora»: quel che sta nei cataloghi non si
+                  conta, e un trattino lì direbbe «nessun risultato» a chi non ha
+                  ancora cercato niente. */}
+              {chiave !== "home" && chiave !== "esplora" && (
                 <span className="conteggio">{conteggi[chiave] ?? "—"}</span>
               )}
             </button>

@@ -38,7 +38,7 @@ import {
 } from "./valori";
 import { t } from "../lingue";
 import { Trans } from "../lingue/Trans";
-import { descrizioneParte } from "./vocabolario";
+import { descrizioneParte, nomeGruppo } from "./vocabolario";
 
 /** Gli stati di una parte, come li chiama il registro. */
 export function stati(): readonly (readonly [string | null, string])[] {
@@ -161,7 +161,7 @@ export function Ispettore({
     <aside className="ispettore">
       <header className="testa-ispettore">
         <code className="nome-parte">.{definizione.name}</code>
-        <span className="gruppo-parte">{definizione.group}</span>
+        <span className="gruppo-parte">{nomeGruppo(definizione.group)}</span>
         {definizione.layers && <span className="chip-livello">::after</span>}
         <p className="descrizione">
           {descrizioneParte(definizione.name, definizione.description)}

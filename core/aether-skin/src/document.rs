@@ -2880,6 +2880,130 @@ pub fn contrast_pairs(skin: &SkinDocument) -> Vec<ContrastPair> {
     coppie
 }
 
+/// Il colore di fondo che una pila di livelli dipinge, se se ne può dire uno.
+///
+/// Si guarda **lo strato più basso**, che è quello che copre tutto: sopra ci
+/// possono stare scanline, griglie e velature, e quelle non sostituiscono il
+/// fondo — lo sporcano. Una tinta piatta vale sé stessa; un gradiente vale la
+/// media delle sue fermate, che non è il colore di nessun pixel preciso ed è
+/// una buona approssimazione di quel che l'occhio legge dietro il testo.
+///
+/// `None` per tutto il resto — un motivo a righe, una griglia, una tinta che
+/// segue la copertina — e non è una rinuncia: sotto quegli effetti c'è quel che
+/// c'era prima, che questa funzione non conosce, e misurare il contrasto contro
+/// un fondo inventato sarebbe peggio che non misurarlo.
+fn fondo_dipinto(
+    livelli: &[crate::effects::Paint],
+    tokens: &TokenSet,
+    base: Option<&TokenSet>,
+    palette: &[(String, Rgba)],
+) -> Option<Rgba> {
+    use crate::effects::Effect;
+    let media = |stops: &[crate::effects::Stop]| -> Option<Rgba> {
+        let risolti: Vec<Rgba> = stops
+            .iter()
+            .filter_map(|s| risolvi(&s.color, tokens, base, palette, 8))
+            .collect();
+        if risolti.len() != stops.len() || risolti.is_empty() {
+            return None;
+        }
+        let quanti = risolti.len();
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "la media di valori fra 0 e 255 sta in un u8"
+        )]
+        let canale = |prendi: fn(&Rgba) -> u8| -> u8 {
+            (risolti.iter().map(|c| f64::from(prendi(c))).sum::<f64>() / quanti as f64).round()
+                as u8
+        };
+        Some(Rgba {
+            r: canale(|c| c.r),
+            g: canale(|c| c.g),
+            b: canale(|c| c.b),
+            a: risolti.iter().map(|c| c.a).sum::<f64>() / quanti as f64,
+        })
+    };
+    match livelli.first()?.effect() {
+        Effect::Solid { color } => risolvi(color, tokens, base, palette, 8),
+        Effect::LinearGradient { stops, .. }
+        | Effect::RadialGradient { stops, .. }
+        | Effect::ConicGradient { stops, .. } => media(stops),
+        _ => None,
+    }
+}
+
+/// Le superfici che una skin si ridipinge, misurate contro il testo che ci va
+/// sopra, in ogni tema che dichiara.
+///
+/// # Il guasto che questo controllo esiste per impedire
+///
+/// La tabella dei contrasti guarda i **token**, e i token la variante chiara li
+/// ribalta: `themes.light` riscrive `color.surface.*` e `color.text.*`, e le
+/// coppie tornano a posto da sole. Una **parte** no. Una parte che scrive
+/// `{"effect": "linearGradient", "stops": [{"color": "#030305"}, …]}` dipinge
+/// quel nero in tutti e due i temi, perché il formato non ha un `themes.light`
+/// per le parti: ci sono i token, e chi non passa di lì non si ribalta.
+///
+/// Il risultato visto per davvero, su una skin scritta nello Studio di questo
+/// programma: `capabilities.light` dichiarato, `section-card` col suo gradiente
+/// quasi nero, e con il tema chiaro **tutte le Impostazioni nere su nere** —
+/// titoli, descrizioni e nomi delle skin illeggibili, mentre il resto della
+/// finestra era chiaro e a posto. Lo Studio diceva «0 errori, 0 avvisi».
+///
+/// Chi scrive una skin può averlo voluto — un fondo scuro con un testo suo
+/// dichiarato è legittimo, e per quello si guarda prima `text_color` della
+/// parte — quindi è un avviso e non un errore. Ma deve saperlo prima di
+/// pubblicarla, invece che dopo, da chi la installa.
+fn avvisi_superfici(skin: &SkinDocument) -> Vec<SkinWarning> {
+    let mut avvisi = Vec::new();
+    let mut temi: Vec<(&str, &TokenSet, Option<&TokenSet>)> = vec![("scuro", &skin.tokens, None)];
+    if let Some(chiaro) = skin.light.as_ref() {
+        temi.push(("chiaro", chiaro, Some(&skin.tokens)));
+    }
+
+    for parte in &skin.parts {
+        if parte.appearance.background.is_empty() {
+            continue;
+        }
+        for (nome_tema, tokens, base) in &temi {
+            let Some(fondo) =
+                fondo_dipinto(&parte.appearance.background, tokens, *base, &skin.palette)
+            else {
+                continue;
+            };
+            // Il testo della parte se la parte lo dichiara, altrimenti quello
+            // che ci finirà sopra davvero: `color.text.1` è il colore del testo
+            // normale, e una superficie si giudica contro il testo che porta.
+            let testo = parte
+                .appearance
+                .text_color
+                .as_ref()
+                .and_then(|c| risolvi(c, tokens, *base, &skin.palette, 8))
+                .or_else(|| colore_di("color.text.1", tokens, *base, &skin.palette));
+            let Some(testo) = testo else { continue };
+            let rapporto = crate::values::contrast_ratio(testo, fondo);
+            if rapporto >= CONTRASTO_MINIMO {
+                continue;
+            }
+            avvisi.push(SkinWarning {
+                kind: WarningKind::Contrast,
+                path: format!("parts.{}.background", parte.def.name),
+                message: format!(
+                    "«{}» si dipinge un fondo su cui il testo fa {rapporto:.2}:1 nel tema \
+                     {nome_tema}, sotto {CONTRASTO_MINIMO}:1. Le parti non \
+                     seguono `themes.light`: un colore scritto per esteso resta \
+                     quello in tutti e due i temi, e in uno dei due il testo ci \
+                     sparisce sopra. Usa un token (`color.surface.1` e simili), \
+                     o dichiara `text` su questa parte.",
+                    parte.def.name
+                ),
+            });
+        }
+    }
+    avvisi
+}
+
 /// Quante volte ogni colore della tavolozza è riferito.
 ///
 /// # Perché un conteggio e non un avviso
@@ -3031,6 +3155,10 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
             ),
         });
     }
+
+    // Le superfici che la skin si ridipinge, che la tabella dei token non
+    // copre: vedi `avvisi_superfici`.
+    avvisi.extend(avvisi_superfici(skin));
 
     // Uno scafale che monta mezza applicazione non è illegale — ogni singolo
     // widget ci sta — ma è una finestra in cui non si trova più niente. Riusa
@@ -4292,6 +4420,84 @@ mod tests {
                 "{avviso:?}"
             );
         }
+    }
+
+    /// Una superficie dipinta a mano non segue il tema, e lo Studio lo dice.
+    ///
+    /// # Cos'è questa prova
+    ///
+    /// La riproduzione del guasto vero. Una skin scritta nello Studio di
+    /// questo programma dichiarava `capabilities.light` e dipingeva
+    /// `section-card` con un gradiente quasi nero scritto per esteso. I token
+    /// la variante chiara li ribalta; una parte no, perché il formato non ha
+    /// un `themes.light` per le parti. Col tema chiaro tutte le Impostazioni
+    /// erano nere su nere — e la validazione diceva «0 errori, 0 avvisi».
+    #[test]
+    fn una_superficie_dipinta_a_mano_che_sparisce_col_tema_chiaro_e_un_avviso() {
+        let skin = parse_skin_json(&minima(
+            r##", "capabilities": { "light": true },
+                 "themes": { "light": { "color.text.1": "rgba(10, 10, 15, 0.95)" } },
+                 "parts": {
+                   "section-card": {
+                     "background": [
+                       { "effect": "linearGradient",
+                         "stops": [{ "color": "#030305" }, { "color": "#0a0a12" }] }
+                     ]
+                   }
+                 }"##,
+        ))
+        .expect("valida");
+
+        let avvisi = check_skin(&skin);
+        let suoi: Vec<&SkinWarning> = avvisi
+            .iter()
+            .filter(|a| a.path == "parts.section-card.background")
+            .collect();
+        assert_eq!(
+            suoi.len(),
+            1,
+            "uno solo, e nel tema in cui il guasto c'è davvero: {avvisi:?}"
+        );
+        let avviso = suoi.first().expect("l'avviso");
+        assert_eq!(avviso.kind, WarningKind::Contrast);
+        assert!(
+            avviso.message.contains("chiaro"),
+            "deve dire in quale tema: {}",
+            avviso.message
+        );
+    }
+
+    /// La stessa superficie, scritta con un token, non produce niente.
+    ///
+    /// È il rovescio della prova sopra, e senza di essa l'avviso sarebbe
+    /// inutile: un controllo che scatta anche sulla forma giusta insegna a
+    /// ignorarlo. `color.surface.1` si ribalta col tema, quindi il testo ci sta
+    /// sopra leggibile in tutti e due.
+    #[test]
+    fn una_superficie_scritta_con_un_token_non_avvisa() {
+        let skin = parse_skin_json(&minima(
+            r##", "capabilities": { "light": true },
+                 "themes": { "light": {
+                    "color.surface.1": "#e6e6ec",
+                    "color.text.1": "rgba(10, 10, 15, 0.95)" } },
+                 "parts": {
+                   "section-card": {
+                     "background": [
+                       { "effect": "solid", "color": { "$token": "color.surface.1" } }
+                     ]
+                   }
+                 }"##,
+        ))
+        .expect("valida");
+        // Il tema scuro eredita `color.surface.1` dalla skin di base, che è
+        // scura, e il testo di base è chiaro: leggibile di qua e di là.
+        assert!(
+            !check_skin(&skin)
+                .iter()
+                .any(|a| a.path.starts_with("parts.")),
+            "{:?}",
+            check_skin(&skin)
+        );
     }
 
     #[test]

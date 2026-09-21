@@ -349,7 +349,14 @@ pub(crate) fn applica_correzioni(
         Option<String>,
     ) = tx
         .query_row(
-            "SELECT path, title, artist, album, meta_origine FROM tracks WHERE id = ?1",
+            // `COALESCE(path, fonte_url)` e non `path`: da qui esce solo la
+            // cartella con cui `album_group_key` raggruppa le edizioni, e per un
+            // brano di catalogo quella cartella è il pezzo di indirizzo che sta
+            // prima del file — cioè l'item dell'Internet Archive, che è il
+            // concerto. Per Audius è l'identificativo del brano, e un singolo
+            // che sta per conto suo è la verità.
+            "SELECT COALESCE(path, fonte_url), title, artist, album, meta_origine
+               FROM tracks WHERE id = ?1",
             [track_id],
             |row| {
                 Ok((

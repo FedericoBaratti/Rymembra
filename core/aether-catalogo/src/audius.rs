@@ -108,6 +108,9 @@ const TETTO_BRANI: usize = 200;
 #[derive(Debug, Clone)]
 pub struct Audius {
     rete: Rete,
+    /// La rete dei prelievi, che ha una scadenza sua: vedi
+    /// [`Rete::per_prelievo`].
+    prelievo: Rete,
     nodo: Arc<Mutex<Option<String>>>,
 }
 
@@ -123,15 +126,31 @@ impl Audius {
     pub fn nuovo() -> Self {
         Self {
             rete: Rete::nuova("audius.co", SCADENZA),
+            prelievo: Rete::per_prelievo("audius.co"),
             nodo: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// La rete che usa, per chi deve prelevare con la stessa riserva di
-    /// connessioni invece di aprirne una seconda.
+    /// La rete che usa per **chiedere**: ricerche, schede, elenchi.
+    ///
+    /// Le richieste piccole e la lettura a finestre di un flusso, che piccole
+    /// sono anche loro. Per portare giù un file intero c'è
+    /// [`Self::rete_prelievo`], e la differenza fra le due è la scadenza.
     #[must_use]
     pub const fn rete(&self) -> &Rete {
         &self.rete
+    }
+
+    /// La rete che usa per **portare giù un file**.
+    ///
+    /// Una seconda riserva di connessioni, e non è uno spreco: è l'unico modo
+    /// di avere due politiche di scadenza nello stesso catalogo, perché in
+    /// `ureq` la scadenza sta nell'agente e non nella richiesta. Vedi
+    /// [`Rete::per_prelievo`] per il conto che ha reso necessaria la
+    /// separazione.
+    #[must_use]
+    pub const fn rete_prelievo(&self) -> &Rete {
+        &self.prelievo
     }
 
     /// Il catalogo risponde.
@@ -163,18 +182,33 @@ impl Audius {
         if annullato() {
             return Ok(Vec::new());
         }
-        let mut trovati = self.cerca_con(&query_stretta(brano), brano)?;
+        let mut trovati = self.cerca_con(&query_stretta(brano), Some(&brano.title))?;
         if trovati.is_empty()
             && !annullato()
             && let Some(larga) = query_larga(brano)
         {
-            trovati = self.cerca_con(&larga, brano)?;
+            trovati = self.cerca_con(&larga, Some(&brano.title))?;
         }
         Ok(trovati)
     }
 
+    /// I brani di questo catalogo che rispondono a una frase.
+    ///
+    /// Non c'è un brano da ritrovare: c'è quel che qualcuno ha scritto in una
+    /// casella. È la stessa passata di [`Self::cerca`] senza il titolo atteso,
+    /// perché qui non c'è niente a cui somigliare. I cancelli restano dove
+    /// stanno: un brano con il cancello sullo streaming non esce da qui nemmeno
+    /// adesso, e la disponibilità la decide sempre `Disponibilita::decidi`.
+    ///
+    /// # Errori
+    ///
+    /// Quelli di [`Self::cerca`].
+    pub fn cerca_libera(&self, testo: &str) -> Result<Vec<Candidato>, AppError> {
+        self.cerca_con(testo, None)
+    }
+
     /// Una passata di ricerca con una stringa sola.
-    fn cerca_con(&self, testo: &str, brano: &BranoEsterno) -> Result<Vec<Candidato>, AppError> {
+    fn cerca_con(&self, testo: &str, atteso: Option<&str>) -> Result<Vec<Candidato>, AppError> {
         if testo.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -194,7 +228,7 @@ impl Audius {
 
         Ok(elenco(&corpo)
             .iter()
-            .filter_map(|t| candidato_da(t, Some(&brano.title)))
+            .filter_map(|t| candidato_da(t, atteso))
             .collect())
     }
 
@@ -658,6 +692,11 @@ fn candidato_da(traccia: &Value, atteso: Option<&str>) -> Option<Candidato> {
         // rimette [`Audius::prepara`]. Vedi il commento di [`indirizzo`].
         estensione: None,
         pagina,
+        // Su Audius quasi tutto è un singolo, e quando fa parte di una
+        // raccolta il brano porta il nome di quella. Niente ripiego: un album
+        // inventato sarebbe peggio di un album assente.
+        album: testo(traccia, "album_backlink")
+            .or_else(|| traccia.get("album").and_then(|a| testo(a, "playlist_name"))),
     })
 }
 
@@ -737,6 +776,13 @@ fn tracce_da(brani: &[Value]) -> Vec<BranoEsterno> {
 
 #[cfg(test)]
 mod prove {
+    #[test]
+    fn il_prelievo_non_usa_la_rete_delle_domande() {
+        let audius = super::Audius::nuovo();
+        assert_eq!(audius.rete().scadenza_complessiva(), Some(super::SCADENZA));
+        assert_eq!(audius.rete_prelievo().scadenza_complessiva(), None);
+    }
+
     use super::*;
 
     fn traccia(json: &str) -> Value {

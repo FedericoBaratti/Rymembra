@@ -56,6 +56,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ParteRegistro } from "../ipc";
 import { Icona } from "../parti/Icone";
 import { t } from "../lingue";
+import { nomeGruppo } from "./vocabolario";
 
 /**
  * La finestra vera, di cui la miniatura è una riduzione.
@@ -424,7 +425,7 @@ export function Anteprima({
             >
               <span className="targhetta" data-sotto={dove.y < 18 || undefined}>
                 <code>.{definizione.name}</code>
-                <span className="gruppo">{definizione.group}</span>
+                <span className="gruppo">{nomeGruppo(definizione.group)}</span>
                 {definizione.layers && <span className="strato">::after</span>}
               </span>
             </div>

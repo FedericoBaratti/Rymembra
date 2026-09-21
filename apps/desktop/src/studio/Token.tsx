@@ -51,7 +51,11 @@ import { Icona } from "../parti/Icone";
 import { ControlloPerTipo } from "./controlli";
 import { t } from "../lingue";
 import { Trans } from "../lingue/Trans";
-import { descrizionePreset, descrizioneToken } from "./vocabolario";
+import {
+  descrizionePreset,
+  descrizioneToken,
+  nomeGruppo,
+} from "./vocabolario";
 
 /** Come si legge un tipo, per chi non conosce i nomi del crate. */
 function comeSiChiama(): Readonly<Record<string, string>> {
@@ -124,7 +128,7 @@ export function Token({
     <aside className="ispettore editor-token">
       <header className="testa-ispettore">
         <code className="nome-parte">{definizione.id}</code>
-        <span className="gruppo-parte">{definizione.group}</span>
+        <span className="gruppo-parte">{nomeGruppo(definizione.group)}</span>
         {definizione.required && (
           <span
             className="chip-livello"
@@ -246,7 +250,7 @@ export function Token({
             {/* Quel che il bottone fa oltre a quel che si vede: riscrive anche i
                 token che non sono aperti. Detto prima, non scoperto dopo. */}
             <p className="nota">
-              {t("studio.preset.hint", { gruppo: definizione.group })}
+              {t("studio.preset.hint", { gruppo: nomeGruppo(definizione.group) })}
             </p>
           </div>
         )}

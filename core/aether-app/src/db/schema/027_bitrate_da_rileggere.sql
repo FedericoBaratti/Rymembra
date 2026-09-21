@@ -1,0 +1,57 @@
+-- I file il cui bitrate era un numero impossibile tornano da leggere.
+--
+-- # Il guasto che questa migrazione ripara, e che non è un guasto del database
+--
+-- `metadata::read_tags` prendeva il bitrate da `lofty::audio_bitrate`, che è il
+-- numero giusto — quanto pesa il suono, non quanto pesa il file — per MP3,
+-- FLAC e Ogg. Su MP4 quel valore `lofty` lo legge dal descrittore `esds`, e in
+-- quel campo i taggatori scrivono quel che capita: in una libreria vera i
+-- quarantaquattro M4A dichiaravano tutti da 0 a 15 kbit/s dove il conto su byte
+-- e durata ne dà centotrenta. La riga dei dati tecnici sotto i comandi scriveva
+-- quindi «M4A · 44.1 kHz · Stereo · 4 kbps» a chi stava ascoltando un file
+-- normalissimo, e quello è l'unico posto in cui il numero si vede: un dato
+-- tecnico sbagliato è peggio di un dato tecnico assente, perché ha l'aria di
+-- essere stato misurato.
+--
+-- Da oggi `bitrate_del_suono` non crede a un valore sotto gli otto kbit/s e
+-- ripiega su `overall_bitrate`. Ma la scansione rilegge un file solo quando la
+-- sua data di modifica è cambiata, e quei file non sono cambiati: senza questa
+-- riga il numero sbagliato resterebbe in libreria per sempre, e la correzione
+-- varrebbe solo per la musica che arriverà domani.
+--
+-- # Perché una data azzerata e non un bitrate corretto qui
+--
+-- Perché il numero giusto sta nel file, e il database non sa leggerlo. Si
+-- potrebbe calcolarlo da `file_size` e `duration_ms`, che sono due colonne che
+-- ci sono — ed è esattamente il conto che ha rivelato il guasto — ma sarebbe
+-- una misura inventata qui dentro invece che letta di là, e domani
+-- divergerebbe da quella che la scansione scrive sui file nuovi. Azzerare la
+-- data è il modo che questa base di codice ha già per dire «questa riga è da
+-- rileggere»: lo usano le tre correzioni dei metadati in `library.rs`, e il
+-- piano della scansione la vede cambiata, riapre il file e scrive quel che
+-- trova.
+--
+-- # Cosa costa
+--
+-- Una rilettura dei tag per i soli file toccati, alla prima scansione dopo
+-- l'aggiornamento: le righe con un bitrate impossibile e un file sotto, che in
+-- una libreria di millequattrocento brani sono quarantaquattro. Niente si
+-- perde: la data vera torna al suo posto appena il file è stato riletto.
+--
+-- # Tornare indietro
+--
+-- Non si torna indietro da nessuna migrazione, e da questa non si vorrebbe: una
+-- versione precedente aprirebbe comunque un database con `user_version` 27
+-- rifiutandolo con `db.versionAhead`. Quel che questa riga cambia è una data di
+-- modifica, cioè l'unica colonna che la scansione riscrive da sé al primo giro.
+-- Il 32 è `metadata::BITRATE_MINIMO_KBPS`, e i due numeri devono restare
+-- d'accordo: qui si segnano da rileggere esattamente le righe che il lettore
+-- nuovo non crederebbe. Scritto e non letto da una costante perché una
+-- migrazione è un file di SQL applicato una volta sola: il giorno in cui quella
+-- costante cambiasse, questa riga resterebbe il conto che è stato fatto quel
+-- giorno, che è quel che una migrazione deve essere.
+UPDATE tracks
+   SET date_modified = 0
+ WHERE path IS NOT NULL
+   AND bitrate IS NOT NULL
+   AND bitrate < 32;

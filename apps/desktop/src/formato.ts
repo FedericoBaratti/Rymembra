@@ -118,3 +118,87 @@ export function nomeArtista(nome: string): string {
 export function artistaNoto(nome: string): boolean {
   return nome !== "" && nome !== SENZA_ARTISTA;
 }
+
+/**
+ * Come si chiama una licenza davanti a chi ascolta.
+ *
+ * # Perché si mostra
+ *
+ * Perché è la differenza fra un'applicazione che prende musica dove le pare e
+ * una che sa cosa sta prendendo. Chi ascolta ha il diritto di saperlo quanto
+ * chi pubblica, e un file che entra in libreria senza che nessuno dica sotto
+ * che condizioni ci è entrato è un file che fra un anno nessuno saprà se può
+ * condividere. Per certe Creative Commons e per i termini di Audius il rimando
+ * visibile non è nemmeno una cortesia: è una condizione d'uso.
+ *
+ * # Perché sta qui e non nelle schermate che la mostrano
+ *
+ * Perché ci è stata, in due copie, e le due copie **non dicevano la stessa
+ * cosa**: `cc-by-nc-sa` diventava CC-BY-NC-SA sotto Importazioni e BY-NC-SA
+ * sotto Esplora, una diceva «pubblico dominio» e l'altra «Pubblico dominio», e
+ * una delle due aspettava `openMusicLicense` da un dominio che scrive `oml` da
+ * sempre — cioè non veniva raggiunta mai, e una Open Music License si leggeva
+ * «OML».
+ *
+ * Il vocabolario vero è uno solo, ed è `Licenza::nome()` in
+ * `core/aether-domain/src/esterno.rs`: `pubblicoDominio`, `cc-…`, `oml`,
+ * `liberaNonCommerciale`, `tutteRiservate`, `sconosciuta`. Questa funzione è
+ * l'unico posto che lo traduce.
+ *
+ * # Perché le sigle restano sigle
+ *
+ * Perché `cc-by-nc-sa` non si traduce in «attribuzione, non commerciale,
+ * condividi allo stesso modo»: la sigla è il nome vero, ed è quella che si
+ * cerca quando si vuole sapere cosa comporta. Si scrive però nella forma in cui
+ * Creative Commons la scrive — «CC BY-NC-SA», con lo spazio — e non nella forma
+ * in cui arriva dall'IPC.
+ */
+export function nomeLicenza(licenza: string): string {
+  // Le Creative Commons arrivano come `cc-by-nc-sa`.
+  if (licenza.startsWith("cc-")) {
+    return `CC ${licenza.slice(3).toUpperCase()}`;
+  }
+  switch (licenza) {
+    case "pubblicoDominio":
+      return t("license.publicDomain");
+    case "oml":
+      return t("license.openMusic");
+    case "liberaNonCommerciale":
+      return t("license.freeNonCommercial");
+    case "tutteRiservate":
+      return t("license.allRights");
+    case "sconosciuta":
+      return t("license.unknown");
+    // Una licenza che il dominio imparasse domani e questa mappa non sapesse
+    // ancora: si mostra il nome com'è, che è vero e non è vuoto.
+    default:
+      return licenza;
+  }
+}
+
+/**
+ * Come si chiama un catalogo davanti a chi ascolta.
+ *
+ * `Fonte::nome()` attraversa l'IPC come nome stabile — `internet-archive` — e
+ * `Fonte::etichetta()`, che è la forma leggibile, resta di là. Farla scendere
+ * dentro ogni riga di `Brano` vorrebbe dire quindici byte in più per
+ * diciottomila righe per dire una cosa che sono due nomi propri; farla mancare
+ * vuol dire «Arriva da internet-archive», che è quel che la pastiglia diceva.
+ *
+ * I nomi dei cataloghi non si traducono, e l'elenco è corto perché corto è
+ * l'insieme dei valori che `tracks.source_service` può contenere: li scrive
+ * `catalogo::aggiungi`, e sono le fonti da cui si tiene qualcosa.
+ */
+export function nomeFonte(fonte: string): string {
+  switch (fonte) {
+    case "internet-archive":
+      return "Internet Archive";
+    case "audius":
+      return "Audius";
+    case "jamendo":
+      return "Jamendo";
+    // Come sopra: un nome che non si conosce si scrive com'è.
+    default:
+      return fonte;
+  }
+}

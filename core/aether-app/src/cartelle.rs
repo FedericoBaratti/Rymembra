@@ -573,7 +573,11 @@ fn leggi_righe(connection: &Connection) -> Result<Vec<Riga>, AppError> {
     let guasto =
         |err: &rusqlite::Error| crate::db::codice_da_sqlite("l'albero delle cartelle", err);
     let mut statement = connection
-        .prepare("SELECT id, path, disc_number, track_number FROM tracks")
+        // `WHERE path IS NOT NULL`: un brano di catalogo non sta in nessuna
+        // cartella, e metterlo in questo albero vorrebbe dire inventargli una
+        // cartella di nome «https:» — che è quel che si vedrebbe, perché è
+        // questa query a decidere cosa appare nella schermata Cartelle.
+        .prepare("SELECT id, path, disc_number, track_number FROM tracks WHERE path IS NOT NULL")
         .map_err(|err| guasto(&err))?;
     let mappate = statement
         .query_map([], |riga| {

@@ -32,10 +32,12 @@ disk and joins your local library up with the freely accessible music catalogs.
 Aether plays the audio files already on your disk. Starting from a playlist —
 exported from your Spotify archive, read from an M3U file, or given as a link —
 it matches the tracks against your local library and fetches the missing ones
-from the freely accessible catalogs: Internet Archive and Audius. Every track it
-acquires keeps the license of the source it came from. Tracks that no free
-catalog has end up in a shopping list, with links to the shops that pay the
-artists.
+from the freely accessible catalogs: Internet Archive and Audius. Since 2.4.0
+those catalogs can also be searched directly, a phrase at a time, from
+**Explore** — and a track found there can be listened to without ever being
+written to disk. Every track it acquires keeps the license of the source it
+came from. Tracks that no free catalog has end up in a shopping list, with
+links to the shops that pay the artists.
 
 The program does not download content from YouTube, does not scrape Spotify and
 does not ship third-party binaries. The reasons are documented in [Sources that
@@ -145,6 +147,13 @@ a longer listening history than the public API offers.
   files, and it is kept for one release and then removed.
 - **A folder panel** that reads the tree out of the library instead of the
   disk, so it opens instantly and never touches a network share.
+- **Explore**: a free-text search across the Internet Archive and Audius, from
+  which a track can be listened to without ever being written to disk. A track
+  kept this way lives in the library like any other — it is searchable, it sits
+  under its album and its artist, it can be queued, rated and favourited — and
+  carries the license it was published under and a link to its public page.
+  The search runs when you press Enter, not on every keystroke: on the other
+  side are public archives that host the project for free.
 - **Synced lyrics** from LRCLIB, with no key and no account, and a way to time
   them yourself when nobody has: you tap once per line, and then — optionally —
   once per word, which writes an `.a2.lrc` beside the ordinary `.lrc` that
@@ -443,14 +452,17 @@ constraint is stated explicitly in the terms of use.
   (`cargo test -p aether-catalogo --features jamendo`), but the feature is
   disabled pending formal clarification from `licensing@jamendo.com` on whether
   donations count as commercial use.
-- **Streaming-only tracks.** Since 2.2.0 a track whose path is a catalog address
-  does play: `FlussoHttp` reads it from the network with positional access, and
-  what reaches the audio engine is indistinguishable from a file. What is still
-  missing is a place of its own in the library — `tracks.path` is `NOT NULL
-  UNIQUE`, so a track that is not a file has to borrow the column meant for one
-  — and the «Explore» section from which to search for such tracks. Closing the
-  gap takes a migration, which since 2.3.1 no longer implies a minor version but
-  does imply a line in that release's entry saying what going back would cost.
+- **Seeking inside a streamed track.** Dragging the cursor through a streamed
+  track is not instant, and on a large MP3 it can take tens of seconds. The
+  cause is not Aether: an MP3 without a seek table cannot be positioned by
+  arithmetic, so the decoder *scans* to the point — and scanning means asking
+  the network for every byte in between. 2.4.0 removed what could be removed
+  (the window grows while reading forward, and the Archive's storage node is
+  resolved once per track rather than once per request), and what remains is the
+  download of the bytes being skipped. While it lasts the cursor says so, which
+  is the part that was actually broken: before, the window said «playing» with
+  the position frozen. FLAC and WAV are unaffected — they carry a seek table, or
+  the offset is a multiplication.
 - **macOS and Linux.** The installer's only target is NSIS: the supported
   platform is therefore Windows.
 - **Mobile application.** Present in the previous version of the project, not

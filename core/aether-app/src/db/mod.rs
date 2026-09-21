@@ -632,33 +632,88 @@ fn migrate(connection: &Connection) -> Result<usize, AppError> {
 
     let mut applied = 0;
     for migration in MIGRATIONS.iter().filter(|m| m.version > current) {
-        connection.execute_batch("BEGIN").map_err(|err| {
+        let fallita = |err: &rusqlite::Error| {
             db_error(
                 ErrorCode::DbMigrationFailed {
                     from: current,
                     to: migration.version,
                     step: Some(migration.name.to_owned()),
                 },
-                &err,
+                err,
             )
-        })?;
+        };
 
-        let outcome = connection.execute_batch(migration.sql).and_then(|()| {
-            connection.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
-        });
+        // Le chiavi esterne si spengono **prima** della transazione, perché è
+        // l'unico momento in cui SQLite ascolta: dentro una transazione quel
+        // pragma non fa niente e non lo dice. Vedi [`Migration::ricostruisce`]
+        // per cosa succederebbe senza.
+        if migration.ricostruisce {
+            connection
+                .pragma_update(None, "foreign_keys", "OFF")
+                .map_err(|err| fallita(&err))?;
+        }
+
+        // Da qui in poi ogni uscita deve riaccenderle, compresa quella per
+        // errore: una connessione che prosegue con le chiavi esterne spente
+        // lascerebbe scrivere righe orfane per tutta la sessione.
+        //
+        // Sulle uscite per errore il ritorno si scarta, ed è giusto: si sta
+        // già tornando un errore, e la libreria non si aprirà. Sull'uscita
+        // buona no — vedi sotto.
+        let riaccendi = |connection: &Connection| {
+            if migration.ricostruisce {
+                let _ = connection.pragma_update(None, "foreign_keys", "ON");
+            }
+        };
+
+        if let Err(err) = connection.execute_batch("BEGIN") {
+            riaccendi(connection);
+            return Err(fallita(&err));
+        }
+
+        let outcome = connection
+            .execute_batch(migration.sql)
+            .and_then(|()| verifica_le_chiavi(connection, migration.ricostruisce))
+            .and_then(|()| {
+                connection.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
+            });
 
         match outcome {
             Ok(()) => {
-                connection.execute_batch("COMMIT").map_err(|err| {
-                    db_error(
-                        ErrorCode::DbMigrationFailed {
-                            from: current,
-                            to: migration.version,
-                            step: Some(migration.name.to_owned()),
-                        },
-                        &err,
-                    )
-                })?;
+                if let Err(err) = connection.execute_batch("COMMIT") {
+                    riaccendi(connection);
+                    return Err(fallita(&err));
+                }
+                riaccendi(connection);
+                // E si **verifica** che siano tornate accese, invece di
+                // sperarlo. Il commento tre righe sopra dice cosa costerebbe
+                // sbagliarsi — righe orfane per tutta la sessione — e una
+                // promessa di quel peso scritta come `let _ = …` è una
+                // promessa che nessuno mantiene se un giorno smette di valere.
+                // Qui la migrazione è andata bene: se l'unica cosa che resta
+                // da fare fallisce, è meglio non aprire la libreria che
+                // aprirla senza rete.
+                if migration.ricostruisce {
+                    let accese: i64 = connection
+                        .query_row("PRAGMA foreign_keys", [], |riga| riga.get(0))
+                        .map_err(|err| fallita(&err))?;
+                    if accese != 1 {
+                        return Err(db_error(
+                            ErrorCode::DbMigrationFailed {
+                                from: current,
+                                to: migration.version,
+                                step: Some(migration.name.to_owned()),
+                            },
+                            &rusqlite::Error::SqliteFailure(
+                                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISUSE),
+                                Some(
+                                    "le chiavi esterne non si sono riaccese dopo la ricostruzione"
+                                        .to_owned(),
+                                ),
+                            ),
+                        ));
+                    }
+                }
                 applied += 1;
             }
             Err(err) => {
@@ -666,19 +721,44 @@ fn migrate(connection: &Connection) -> Result<usize, AppError> {
                 // quel caso l'errore da riportare resta il primo, che è quello
                 // che dice cosa è andato storto davvero.
                 let _ = connection.execute_batch("ROLLBACK");
-                return Err(db_error(
-                    ErrorCode::DbMigrationFailed {
-                        from: current,
-                        to: migration.version,
-                        step: Some(migration.name.to_owned()),
-                    },
-                    &err,
-                ));
+                riaccendi(connection);
+                return Err(fallita(&err));
             }
         }
     }
 
     Ok(applied)
+}
+
+/// Dopo una ricostruzione: è rimasto qualcosa a puntare nel vuoto?
+///
+/// `PRAGMA foreign_key_check` costa una scansione delle tabelle con chiavi
+/// esterne, quindi si paga solo quando c'è qualcosa da controllare. È la rete
+/// sotto il trapezio della migrazione 26: con `foreign_keys` spento SQLite
+/// accetta in silenzio un travaso che lasci righe figlie senza genitore, e
+/// senza questa verifica il danno si scoprirebbe mesi dopo, come una playlist
+/// che contiene brani che non esistono.
+///
+/// Restituisce un errore di SQLite e non un [`AppError`] perché si incatena
+/// dentro l'`and_then` di [`migrate`], dove il rollback è già previsto: un tipo
+/// diverso qui vorrebbe dire duplicare quel rollback.
+fn verifica_le_chiavi(connection: &Connection, serve: bool) -> Result<(), rusqlite::Error> {
+    if !serve {
+        return Ok(());
+    }
+    let rotte = connection
+        .prepare("PRAGMA foreign_key_check")
+        .and_then(|mut statement| statement.exists([]))?;
+    if rotte {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY),
+            Some(
+                "la ricostruzione ha lasciato righe che puntano a un brano che non c'è più"
+                    .to_owned(),
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1241,6 +1321,157 @@ mod tests {
                 .expect("scollegamento"),
             1,
             "una riga sola, e se ne va tutta"
+        );
+    }
+
+    /// Porta un database vuoto fino alla versione voluta, compresa.
+    ///
+    /// Serve a una cosa sola: mettere dei dati **prima** di una migrazione, che
+    /// è l'unico modo di provare che quella migrazione non se li porta via.
+    /// `migrate` applica tutto quel che manca, quindi da sola non lascia
+    /// nessuna finestra in cui scrivere.
+    fn fino_alla(connection: &Connection, versione: u32) {
+        for migrazione in MIGRATIONS.iter().filter(|m| m.version <= versione) {
+            connection
+                .execute_batch(migrazione.sql)
+                .unwrap_or_else(|err| panic!("migrazione {}: {err}", migrazione.version));
+        }
+        connection
+            .execute_batch(&format!("PRAGMA user_version = {versione}"))
+            .expect("versione");
+    }
+
+    /// Una libreria con dentro le quattro cose che si perderebbero.
+    fn libreria_da_perdere(connection: &Connection) {
+        connection
+            .execute_batch(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album,
+                                     file_size, date_added, date_modified, rating, play_count)
+                 VALUES (1, 'C:/M/a.flac', 'a|b|c', 'A', 'B', 'C', 5000000, 1, 1, 4, 7);
+                 INSERT INTO playlists (id, playlist_key, name, created_at, updated_at)
+                 VALUES (1, 'p', 'P', 1, 1);
+                 INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (1, 1, 0);
+                 INSERT INTO play_history (track_id, played_at, ms_played) VALUES (1, 1700, 240000);
+                 INSERT INTO track_overrides (track_id, campi, set_at)
+                 VALUES (1, '{\"artista\":\"Pink Floyd\"}', 1);",
+            )
+            .expect("dati di prova");
+    }
+
+    /// Quante righe ha una tabella.
+    fn quante(connection: &Connection, tabella: &str) -> i64 {
+        connection
+            .query_row(&format!("SELECT COUNT(*) FROM {tabella}"), [], |r| r.get(0))
+            .unwrap_or_else(|err| panic!("conteggio di {tabella}: {err}"))
+    }
+
+    /// La migrazione che ricostruisce `tracks` non porta via il resto.
+    ///
+    /// # Cos'è questa prova
+    ///
+    /// La riproduzione del disastro che la 26 ha evitato, e che fino a qui era
+    /// raccontata nel CHANGELOG e in nessun file eseguibile.
+    ///
+    /// SQLite non sa togliere un `NOT NULL`: per rendere `tracks.path`
+    /// nullabile la 26 costruisce una tabella nuova, travasa, **cancella la
+    /// vecchia** e rinomina. Il passo pericoloso è il terzo: dieci tabelle
+    /// referenziano `tracks(id)` con `ON DELETE CASCADE`, e con le chiavi
+    /// esterne accese `DROP TABLE` esegue una cancellazione implicita che le
+    /// fa scattare tutte. Cronologia, playlist, voti e correzioni a mano
+    /// sparirebbero in silenzio, dentro una migrazione che riporta successo.
+    ///
+    /// Per questo `Migration::ricostruisce` esiste e per questo `migrate`
+    /// spegne `foreign_keys` **fuori** dalla transazione. Togliendo quel campo
+    /// alla voce 26, questa prova diventa rossa: è il suo unico scopo.
+    #[test]
+    fn la_ricostruzione_della_ventisei_non_porta_via_niente() {
+        let connection = Connection::open_in_memory().expect("apertura in memoria");
+        // Accese, come le accende `open`. Spente, questa prova non proverebbe
+        // niente: la cascata che deve non scattare non scatterebbe comunque.
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .expect("chiavi esterne");
+
+        fino_alla(&connection, 25);
+        libreria_da_perdere(&connection);
+
+        let applicate = migrate(&connection).expect("la 26 deve passare");
+        // Quante ne mancano dalla 25, non «una»: il numero scritto a mano
+        // diventava rosso alla migrazione dopo, e faceva sembrare guasta la
+        // ricostruzione per il solo fatto che qualcuno aveva aggiunto una riga
+        // in fondo a `MIGRATIONS`.
+        assert_eq!(
+            u32::try_from(applicate).expect("il conto delle migrazioni sta in un u32"),
+            LATEST_VERSION - 25,
+            "dalla 25 mancano tutte quelle dopo"
+        );
+        assert_eq!(user_version(&connection).expect("versione"), LATEST_VERSION);
+
+        // Le quattro cose, una per una.
+        assert_eq!(quante(&connection, "tracks"), 1, "il brano");
+        assert_eq!(quante(&connection, "playlist_tracks"), 1, "la playlist");
+        assert_eq!(quante(&connection, "play_history"), 1, "la cronologia");
+        assert_eq!(quante(&connection, "track_overrides"), 1, "le correzioni");
+
+        // E il brano è ancora quello, non un guscio con lo stesso numero.
+        let (titolo, voto, ascolti): (String, i64, i64) = connection
+            .query_row(
+                "SELECT title, rating, play_count FROM tracks WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("il brano");
+        assert_eq!((titolo.as_str(), voto, ascolti), ("A", 4, 7));
+
+        // Le chiavi esterne sono tornate accese: una sessione che proseguisse
+        // con quelle spente lascerebbe scrivere righe orfane fino alla chiusura.
+        let accese: i64 = connection
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .expect("lettura pragma");
+        assert_eq!(accese, 1, "riaccese dopo la ricostruzione");
+
+        // E la cascata funziona ancora: la tabella nuova ha davvero le sue
+        // chiavi, non solo le sue colonne.
+        connection
+            .execute("DELETE FROM tracks WHERE id = 1", [])
+            .expect("cancella");
+        assert_eq!(quante(&connection, "playlist_tracks"), 0);
+        assert_eq!(quante(&connection, "play_history"), 0);
+        assert_eq!(quante(&connection, "track_overrides"), 0);
+    }
+
+    /// La rete sotto il trapezio esiste e regge.
+    ///
+    /// `verifica_le_chiavi` gira solo per le migrazioni che ricostruiscono, e
+    /// una rete che non si prova non si sa se è appesa. Qui si semina una riga
+    /// orfana **prima** della 26 — cosa che solo le chiavi esterne spente
+    /// permettono — e si pretende che la migrazione si rifiuti di confermare.
+    #[test]
+    fn una_riga_orfana_ferma_la_ricostruzione() {
+        let connection = Connection::open_in_memory().expect("apertura in memoria");
+        connection
+            .pragma_update(None, "foreign_keys", "OFF")
+            .expect("chiavi esterne");
+        fino_alla(&connection, 25);
+        connection
+            .execute_batch(
+                "INSERT INTO play_history (track_id, played_at, ms_played)
+                 VALUES (999, 1700, 1000);",
+            )
+            .expect("la riga orfana");
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .expect("chiavi esterne");
+
+        let esito = migrate(&connection);
+        assert!(
+            esito.is_err(),
+            "una ricostruzione che lascia righe nel vuoto non si conferma"
+        );
+        assert_eq!(
+            user_version(&connection).expect("versione"),
+            25,
+            "e il database resta dov'era"
         );
     }
 

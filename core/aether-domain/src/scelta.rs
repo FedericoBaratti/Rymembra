@@ -169,6 +169,17 @@ pub struct Candidato {
     /// Da mostrare, non da leggere: i termini di certi cataloghi obbligano a un
     /// rimando visibile accanto al brano.
     pub pagina: Option<String>,
+    /// L'album, il concerto o la raccolta da cui viene, quando il catalogo lo
+    /// dice.
+    ///
+    /// Non serve all'abbinamento — [`scegli`] non lo guarda, perché il brano
+    /// cercato porta già il proprio album e confrontarli darebbe un criterio in
+    /// più che sbaglia sulle compilation. Serve a **mostrarlo**: su un item
+    /// dell'Internet Archive dieci risultati sono dieci pezzi dello stesso
+    /// concerto, e senza il nome di quel concerto accanto sono dieci righe che
+    /// si somigliano e basta. Ed è quel che finisce in `tracks.album` quando un
+    /// brano di catalogo entra in libreria.
+    pub album: Option<String>,
 }
 
 impl Candidato {

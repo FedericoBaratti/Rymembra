@@ -476,22 +476,36 @@ pub struct RegistroIpc {
     pub trigger: Vec<&'static str>,
 }
 
+/// Il nome stabile di un gruppo di token.
+///
+/// **Un nome stabile, non una parola da leggere.** Qui c'erano «Tipografia»,
+/// «Superfici», «Profondità»: tredici stringhe italiane che attraversavano
+/// l'IPC e finivano tali e quali sullo schermo. Con l'interfaccia in inglese
+/// lo Studio si leggeva per metà in una lingua e per metà nell'altra —
+/// un'intestazione che dice CORNICE sopra una scheda che dice «The icon-only
+/// button», che è quella frase lì tradotta.
+///
+/// La forma giusta è quella che il resto del programma usa già da sempre:
+/// `Fonte::nome` dà la chiave, `Fonte::etichetta` la parola. Di là passa la
+/// chiave — che serve anche a **confrontare**, perché la striscia dei preset
+/// si costruisce paragonando `preset.group` col gruppo del token aperto — e la
+/// parola la sceglie la finestra, con `studio.group.<chiave>`.
 const fn nome_gruppo_token(group: aether_skin::tokens::TokenGroup) -> &'static str {
     use aether_skin::tokens::TokenGroup as G;
     match group {
-        G::Typography => "Tipografia",
-        G::Surface => "Superfici",
-        G::Text => "Testo",
-        G::Accent => "Accento",
-        G::Status => "Stati",
-        G::Chrome => "Cornice",
-        G::Layout => "Impaginazione",
-        G::Rhythm => "Ritmo",
-        G::Geometry => "Geometria",
-        G::Depth => "Profondità",
-        G::Elevation => "Sopraelevazione",
-        G::Motion => "Movimento",
-        G::Canvas => "Tela",
+        G::Typography => "typography",
+        G::Surface => "surface",
+        G::Text => "text",
+        G::Accent => "accent",
+        G::Status => "status",
+        G::Chrome => "chrome",
+        G::Layout => "layout",
+        G::Rhythm => "rhythm",
+        G::Geometry => "geometry",
+        G::Depth => "depth",
+        G::Elevation => "elevation",
+        G::Motion => "motion",
+        G::Canvas => "canvas",
     }
 }
 
@@ -508,17 +522,24 @@ const fn nome_tipo(kind: aether_skin::tokens::TokenKind) -> &'static str {
     }
 }
 
+/// Il nome stabile di un gruppo di parti.
+///
+/// Come [`nome_gruppo_token`], e per la stessa ragione: di qui passa la
+/// chiave, la parola la sceglie la finestra. Le chiavi sono le stesse che
+/// `WidgetGroup::as_str` usa dove i due vocabolari si sovrappongono — `shell`
+/// è la cornice tanto per un widget quanto per una parte — così una traduzione
+/// sola serve tutti e due.
 const fn nome_gruppo_parte(group: aether_skin::parts::PartGroup) -> &'static str {
     use aether_skin::parts::PartGroup as G;
     match group {
-        G::Shell => "Cornice",
-        G::Nav => "Navigazione",
-        G::Page => "Pagina",
-        G::Controls => "Controlli",
-        G::Lists => "Elenchi",
-        G::Player => "Lettore",
-        G::NowPlaying => "In riproduzione",
-        G::Overlays => "Sovrapposizioni",
+        G::Shell => "shell",
+        G::Nav => "nav",
+        G::Page => "page",
+        G::Controls => "controls",
+        G::Lists => "lists",
+        G::Player => "player",
+        G::NowPlaying => "nowPlaying",
+        G::Overlays => "overlays",
     }
 }
 

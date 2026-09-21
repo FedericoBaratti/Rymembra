@@ -163,10 +163,19 @@ pub async fn brani_elimina(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<usiz
         let mut andati: Vec<i64> = Vec::with_capacity(condannati.len());
         let mut guasto = None;
         for brano in &condannati {
-            match trash::delete(&brano.path) {
+            // Un brano di catalogo non ha un file da mandare nel Cestino, e la
+            // sua riga se ne va lo stesso: «elimina dal disco» su qualcosa che
+            // sul disco non c'è vuol dire «toglilo dalla libreria», che è quel
+            // che succede qui sotto insieme a tutti gli altri. Fallire sarebbe
+            // rispondere a una domanda che nessuno ha fatto.
+            let Some(percorso) = brano.path.as_deref() else {
+                andati.push(brano.id);
+                continue;
+            };
+            match trash::delete(percorso) {
                 Ok(()) => andati.push(brano.id),
                 Err(err) => {
-                    guasto = Some(nel_cestino(&brano.path, &err));
+                    guasto = Some(nel_cestino(percorso, &err));
                     break;
                 }
             }

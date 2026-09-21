@@ -90,3 +90,21 @@ export function descrizioneParametro(
 ): string {
   return tSe(`skin.par.${effetto}.${nome}`, ripiego);
 }
+
+/**
+ * Come si chiama un gruppo del registro: `studio.group.nowPlaying`.
+ *
+ * Il gemello dei precedenti, per la cosa che quelli non coprivano. Le
+ * **descrizioni** passavano di qui e si traducevano; i **nomi dei gruppi** no,
+ * perché fino alla 2.4.0 il nucleo non mandava una chiave — mandava già la
+ * parola, in italiano, e la finestra la scriveva così com'era. Con l'interfaccia
+ * in inglese l'albero dello Studio diceva CORNICE, LETTORE, SOVRAPPOSIZIONI
+ * sopra delle schede che spiegavano le stesse parti in inglese.
+ *
+ * Adesso di là passa la chiave — `shell`, `player`, `overlays` — e la parola la
+ * sceglie il catalogo. Il ripiego è la chiave stessa: una chiave nuova nel
+ * registro si legge male ma si legge, invece di lasciare un'intestazione vuota.
+ */
+export function nomeGruppo(chiave: string): string {
+  return tSe(`studio.group.${chiave}`, chiave);
+}

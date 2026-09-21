@@ -25,7 +25,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.3.2"
+version = "2.4.0"
 edition = "2024"
 # Era 1.85, che è il minimo dell'edizione 2024. L'ha alzata `opus-pure`, il
 # decodificatore Opus di `aether-play`, che ne dichiara 1.88: il numero qui

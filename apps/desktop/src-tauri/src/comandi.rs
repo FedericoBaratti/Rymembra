@@ -692,15 +692,80 @@ pub fn preferito(
 #[tauri::command(async)]
 pub fn brano_mostra_nella_cartella(stato: State<'_, Stato>, id: i64) -> Esito<()> {
     let percorso = con_libreria(&stato, |libreria| {
-        aether_app::library::read_summary(&libreria.connection, id)?
-            .map(|brano| brano.path)
-            .ok_or_else(|| AppError::new(ErrorCode::LibraryTrackNotFound { track_id: Some(id) }))
+        let brano = aether_app::library::read_summary(&libreria.connection, id)?
+            .ok_or_else(|| AppError::new(ErrorCode::LibraryTrackNotFound { track_id: Some(id) }))?;
+        // Un brano di catalogo non sta in nessuna cartella. La finestra nasconde
+        // già questo gesto quando il brano è un flusso; il controllo resta
+        // perché un comando è una porta, e una porta non si fida di chi bussa.
+        brano.path.ok_or_else(|| {
+            AppError::new(ErrorCode::PlaybackSourceUnavailable {
+                track_id: Some(id),
+                path: None,
+            })
+            .with_cause("un brano di catalogo non sta in nessuna cartella".to_owned())
+        })
     })
     .map_err(errore)?;
     tauri_plugin_opener::reveal_item_in_dir(&percorso).map_err(|err| {
         errore(
             AppError::new(ErrorCode::FsNotFound {
                 path: percorso.clone(),
+            })
+            .with_cause(err.to_string()),
+        )
+    })
+}
+
+/// Apre nel browser la pagina pubblica di un brano di catalogo.
+///
+/// # Perché esiste accanto a `esplora::esplora_apri_pagina`
+///
+/// Perché quella chiede l'indirizzo all'**ultima ricerca**, e un brano tenuto
+/// in libreria l'ultima ricerca non se la ricorda: è entrato settimane fa, e
+/// la finestra che vuole aprirne la pagina è l'elenco dei brani, non Esplora.
+/// Qui la pagina la legge il nucleo da `tracks.fonte_pagina`.
+///
+/// # Perché prende un identificativo e non un indirizzo
+///
+/// Stessa regola di [`brano_mostra_nella_cartella`] e di
+/// `procura::cerca_dove_comprare`: aprire un indirizzo nel browser di sistema è
+/// l'unica capacità pericolosa che la finestra ha, e lasciarle scegliere quale
+/// indirizzo vorrebbe dire dargliela intera. La finestra nomina un brano;
+/// l'indirizzo è quello che il catalogo aveva dichiarato quando quel brano è
+/// entrato, e prima di aprirlo passa comunque dall'allowlist di
+/// `aether_catalogo::riconosci` — lo stesso cancello da cui passano i byte da
+/// suonare.
+///
+/// `(async)`: aprire il browser di sistema può metterci un istante, e non sul
+/// filo della finestra.
+///
+/// # Errori
+///
+/// `library.trackNotFound` se il brano non c'è più;
+/// `download.unrecognizedUrl` se non dichiara una pagina pubblica, o se quella
+/// pagina non è in un posto dove Aether sia invitato; `internal.aborted` se il
+/// browser non si apre.
+#[tauri::command(async)]
+pub fn brano_apri_pagina(stato: State<'_, Stato>, id: i64) -> Esito<()> {
+    let pagina = con_libreria(&stato, |libreria| {
+        let brano = aether_app::library::read_summary(&libreria.connection, id)?
+            .ok_or_else(|| AppError::new(ErrorCode::LibraryTrackNotFound { track_id: Some(id) }))?;
+        brano.fonte_pagina.ok_or_else(|| {
+            AppError::new(ErrorCode::DownloadUnrecognizedUrl)
+                .with_cause("questo brano non dichiara una pagina pubblica".to_owned())
+        })
+    })
+    .map_err(errore)?;
+    if aether_catalogo::riconosci(&pagina).is_none() {
+        return Err(errore(
+            AppError::new(ErrorCode::DownloadUnrecognizedUrl)
+                .with_cause("questa pagina non è in un posto dove Aether sia invitato".to_owned()),
+        ));
+    }
+    tauri_plugin_opener::open_url(&pagina, None::<&str>).map_err(|err| {
+        errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("apertura del browser".to_owned()),
             })
             .with_cause(err.to_string()),
         )
