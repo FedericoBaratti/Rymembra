@@ -468,6 +468,10 @@ constraint is stated explicitly in the terms of use.
 - **Mobile application.** Present in the previous version of the project, not
   yet rewritten.
 
+- **Major 3.0** currently i'm working on 3.0 a major that is a full rework of aether, it need
+  a lot of time. New skin studio a new site, full rework of the site and a lot of rifinitures.
+  If you want to know more, just wait. It's worth!
+  
 Two questions require a written clarification before publication: whether
 **donations** constitute commercial use for the purposes of Jamendo's terms
 (`licensing@jamendo.com`) and of the Deezer API used for metadata. Failing a
