@@ -6,36 +6,38 @@
  * aggiunge sono le due funzioni in fondo — `conNuvola` e `conSincronia` — che
  * sono il modo in cui un comando si riflette sul pulsante che lo ha chiesto.
  *
- * # Perché questi tre stanno fuori da `App` e altri no
+ * # Perché fuori da `App`, e in un fornitore
  *
  * Perché questo grappolo ha **un solo ingresso e una sola uscita**. In ingresso
  * c'è `segnalaErrore` e basta: tre letture all'avvio e due comandi che, se
- * cadono, hanno solo quello da dire. In uscita c'è `<Impostazioni>` e basta: i
- * cinque stati e le due funzioni scendono lì e in nessun altro punto
+ * cadono, hanno solo quello da dire. In uscita ci sono le Impostazioni e
+ * basta: i cinque stati e le due funzioni scendono lì e in nessun altro punto
  * dell'albero — niente pallino nella navigazione, niente riga nel lettore.
- * Un grappolo con un ingresso e un'uscita è una scatola già chiusa: portarlo
- * qui non taglia nessun filo, toglie solo cento righe dal corpo di `App`.
+ * Un grappolo con un ingresso e un'uscita è una scatola già chiusa.
  *
- * Il tema e la selezione, che pure sono grappoli, sono rimasti di là proprio
- * perché non hanno questa forma.
+ * Stava in `App`, chiamato come hook, e ogni passo di un arricchimento — un
+ * evento per gruppo d'album — ridisegnava la finestra intera per una barra che
+ * si guarda solo dalle Impostazioni. Adesso lo tiene `FornitoreNuvola`, montato
+ * una volta fra i fornitori di `App`, e lo legge chi lo mostra
+ * (`useNuvolaDellaFinestra`). Non dentro le Impostazioni: quelle si smontano
+ * uscendo dalla pagina, e con loro se ne andrebbe l'esito dell'ultima passata
+ * di questa sessione, che è proprio quel che si torna a guardare.
  *
- * Il tema tira dentro `avvio`, la skin attiva, il brano che suona e la variante
- * chiara — e l'effetto che ricalcola l'accento della copertina ha sei
- * dipendenze, fra cui `skinAttiva` e `accentoDaRimettere`, che sono stati di
- * `App` per altre ragioni. Quel vettore di dipendenze è il cuore della cosa:
- * è lì che sta scritto quando il colore si rifà. Un hook con cinque parametri
- * che se lo passa intero non è un confine, è la stessa riga scritta due volte,
- * con in più il rischio di scriverla la seconda volta un po' diversa.
- *
- * La selezione esce da quasi ogni schermata: la usano le scorciatoie, il
- * contesto dei widget, le azioni di massa e ogni elenco che sa disegnare una
- * riga scelta. Un'uscita così larga è la definizione di stato del componente.
+ * Anche il tema e la selezione, che una volta erano rimasti in `App` perché
+ * non avevano questa forma, adesso stanno fuori — in `aspettoFinestra.ts` e
+ * in `selezioneVista.ts` — ma come hook di `App` e non come fornitori: i loro
+ * ingressi sono stati di `App`, e lì è scritto perché.
  */
 import {
+  createContext,
+  createElement,
   useCallback,
+  useContext,
   useEffect,
+  useMemo,
   useState,
   type Dispatch,
+  type ReactNode,
   type SetStateAction,
 } from "react";
 
@@ -85,9 +87,11 @@ export interface Nuvola {
 /**
  * Segue backup, sincronia e arricchimento per tutta la vita della finestra.
  *
- * Va chiamato nel punto del corpo di `App` in cui stavano i suoi effetti: gli
- * ascolti che apre e le tre letture d'avvio si registrano nell'ordine in cui
- * questa riga compare fra gli altri hook, e quell'ordine è quello di prima.
+ * Va chiamato una volta sola, in `FornitoreNuvola`. Le tre letture d'avvio e i
+ * cinque ascolti partono quando il fornitore si monta, cioè prima degli
+ * effetti di `App` che lo contiene: stavano dopo l'avanzamento della scansione,
+ * ma nessuno degli effetti di `App` fa scattare un evento di questi tre fili,
+ * e le tre domande al nucleo sono indipendenti da quelle di `App`.
  */
 export function useNuvola(segnalaErrore: (e: unknown) => void): Nuvola {
   const [nuvola, setNuvola] = useState<StatoNuvola | null>(null);
@@ -202,15 +206,51 @@ export function useNuvola(segnalaErrore: (e: unknown) => void): Nuvola {
     [segnalaErrore],
   );
 
-  return {
-    nuvola,
-    sincronia,
-    setSincronia,
-    arricchimento,
-    setArricchimento,
-    avanzaArricchimento,
-    esitoArricchimento,
-    conNuvola,
-    conSincronia,
-  };
+  // La stessa identità finché niente cambia: è il valore di un contesto.
+  return useMemo(
+    () => ({
+      nuvola,
+      sincronia,
+      setSincronia,
+      arricchimento,
+      setArricchimento,
+      avanzaArricchimento,
+      esitoArricchimento,
+      conNuvola,
+      conSincronia,
+    }),
+    [
+      nuvola,
+      sincronia,
+      arricchimento,
+      avanzaArricchimento,
+      esitoArricchimento,
+      conNuvola,
+      conSincronia,
+    ],
+  );
+}
+
+/** Backup, sincronia e arricchimento della finestra: vedi `FornitoreNuvola`. */
+const NuvolaDellaFinestra = createContext<Nuvola | null>(null);
+
+/**
+ * Tiene backup, sincronia e arricchimento per tutta la finestra, e li dà a chi
+ * sta sotto: vedi «Perché fuori da `App`, e in un fornitore».
+ */
+export function FornitoreNuvola({
+  segnalaErrore,
+  children,
+}: {
+  segnalaErrore: (e: unknown) => void;
+  children: ReactNode;
+}) {
+  return createElement(NuvolaDellaFinestra, { value: useNuvola(segnalaErrore) }, children);
+}
+
+/** Backup, sincronia e arricchimento, da sotto `FornitoreNuvola`. */
+export function useNuvolaDellaFinestra(): Nuvola {
+  const nuvola = useContext(NuvolaDellaFinestra);
+  if (nuvola === null) throw new Error("useNuvolaDellaFinestra fuori da FornitoreNuvola");
+  return nuvola;
 }

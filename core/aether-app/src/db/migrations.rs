@@ -201,6 +201,24 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/027_bitrate_da_rileggere.sql"),
         ricostruisce: false,
     },
+    Migration {
+        version: 28,
+        name: "statistiche-orfane",
+        sql: include_str!("schema/028_statistiche_orfane.sql"),
+        ricostruisce: false,
+    },
+    Migration {
+        version: 29,
+        name: "intensita",
+        sql: include_str!("schema/029_intensita.sql"),
+        ricostruisce: false,
+    },
+    Migration {
+        version: 30,
+        name: "libreria-leggera",
+        sql: include_str!("schema/030_libreria_leggera.sql"),
+        ricostruisce: false,
+    },
 ];
 
 /// La versione a cui questa build porta il database.

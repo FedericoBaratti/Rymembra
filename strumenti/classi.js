@@ -18,10 +18,12 @@
  * nessuno.
  *
  * **Una parte del registro che l'app non emette.** `aether-skin::parts` dichiara
- * il vocabolario che una skin può ridipingere, e `studio/scene.tsx` lo usa nel
- * mock dell'anteprima. Se la parte sta nel mock e non nell'app, chi disegna una
- * skin la vede funzionare mentre la scrive e non funzionare quando la installa:
- * il modo peggiore di scoprire una cosa. È il caso di `viz-scene`, scritto
+ * il vocabolario che una skin può ridipingere, e la tela dello Studio lo mostra
+ * sulle pagine vere dell'app — tranne i pochi pezzi che la tela disegna da sé
+ * (`studio/Tela.tsx`: il giro guidato fermo su un passo). Se una parte stesse
+ * solo lì e non nell'app, chi disegna una skin la vedrebbe funzionare mentre la
+ * scrive e non funzionare quando la installa: il modo peggiore di scoprire una
+ * cosa. È il caso di `viz-scene`, scritto
  * nell'app dove il registro dice `viz-screen` — cioè esattamente l'errore per
  * assonanza che `aether-skin::vicini` esiste per correggere a chi fa le skin, e
  * che qui l'aveva fatto l'app.
@@ -126,9 +128,12 @@ const REGISTRO = "core/aether-skin/src/parts.rs";
 // per mano di `Impaginazione.tsx`, che non sa quali siano: è markup emesso, e
 // il solo motivo per cui va letto qui è che è scritto in Rust.
 const IMPAGINAZIONE = "core/aether-skin/src/layout.rs";
-// Il mock dell'anteprima dello Studio. Non è l'app: quel che vive solo qui è
-// una promessa che l'anteprima mantiene e la finestra no.
-const MOCK = path.join(SORGENTI, "studio", "scene.tsx");
+// La tela dello Studio. Disegna l'app vera, ma qualche pezzo lo ridisegna da
+// sé — il giro guidato fermo su un passo — e una parte che vivesse solo qui
+// sarebbe una promessa che la tela mantiene e la finestra no.
+const MOCK = path.join(SORGENTI, "studio", "Tela.tsx");
+// Dove lo Studio porta la tela per mostrare una parte: `DOVE` di `scena.ts`.
+const SCENA = path.join(SORGENTI, "studio", "scena.ts");
 
 /*
  * Le parti che il registro dichiara e l'app non disegna, con il perché.
@@ -147,11 +152,8 @@ const ATTESE = {
   // `tour-tooltip` stava qui, e la sua riga diceva «non c'è ancora un giro
   // guidato». Adesso c'è: `Giro.tsx` monta il fumetto come
   // `<div className="giro-fumetto tour-tooltip">`, e una parte che l'app emette
-  // non è un'attesa. Esce di qui e da `NON_ANCORA` di `studio/scene.tsx` nello
-  // stesso passo, perché il controllo 3 vuole i due elenchi uguali — e allo
-  // Studio non basta toglierla: `finto.ts` ha guadagnato l'interruttore «giro»
-  // e `scene.tsx` disegna il velo, il buco e il fumetto, altrimenti la risposta
-  // «sta in un'altra scena» rimanderebbe a una scena che non la mostra.
+  // non è un'attesa — e allo Studio non è bastato toglierla da qui: la tela ha
+  // la sovrapposizione «giro», che disegna il velo, il buco e il fumetto.
   //
   // `app-shell` stava qui, e la sua riga diceva il falso: la radice dello
   // scafale di serie porta `.parte("app-shell")` su tutti e due i rami di
@@ -162,15 +164,11 @@ const ATTESE = {
   //
   // `home-shortcuts` stava qui, e adesso sta in `parts::RITIRATE`: era l'unica
   // delle quattro attese senza un proprietario, e un'attesa che nessuno ha
-  // preso in carico è una promessa che lo Studio non può mantenere. Come
-  // `app-shell`, esce anche da `NON_ANCORA` di `studio/scene.tsx` nello stesso
-  // passo, perché il controllo 3 vuole i due elenchi uguali.
+  // preso in carico è una promessa che lo Studio non può mantenere.
   // `tooltip-pill` stava qui, e non ci sta più: il markup è arrivato. Le
   // linguette spente di `parti/Segmentato.tsx` sono `aria-disabled` e non
   // `disabled`, quindi restano focalizzabili e possono dire perché sono spente:
-  // ognuna sta dentro il guscio `.con-ragione`, con la pastiglia appesa. La
-  // voce esce di qui e da `NON_ANCORA` di `studio/scene.tsx` nello stesso
-  // passo, perché il controllo 3 vuole i due elenchi uguali.
+  // ognuna sta dentro il guscio `.con-ragione`, con la pastiglia appesa.
 };
 
 /*
@@ -238,12 +236,6 @@ const ATTESE_FOGLIO = {
   "posto-queue": "Come `posto-content`: il posto `queue` dello scafale.",
   "posto-selection-bar":
     "Come `posto-content`: il posto `selection-bar` dello scafale.",
-  "t-chiave":
-    "`studio/Documento.tsx` scrive `` `t-${pezzo.genere}` ``, e il genere è un campo — non un ternario di letterali, che è l'unica forma di buco che si sa leggere. I cinque generi li elenca `studio/evidenzia.ts`.",
-  "t-stringa": "Come `t-chiave`: un genere di `studio/evidenzia.ts`.",
-  "t-numero": "Come `t-chiave`: un genere di `studio/evidenzia.ts`.",
-  "t-letterale": "Come `t-chiave`: un genere di `studio/evidenzia.ts`.",
-  "t-segno": "Come `t-chiave`: un genere di `studio/evidenzia.ts`.",
 };
 
 /*
@@ -263,10 +255,6 @@ const ATTESE_PUNTATORE = {
     "La schermata del primo avvio è la superficie, non quel che ci sta sopra: i clic sono i suoi.",
   ".in-riproduzione":
     "Come `.primo`: è la schermata. Quel che ci galleggia sopra — l'ambiente e lo scrim — il divieto ce l'ha scritto nel blocco suo.",
-  ".editor-doppio .editor, .editor-doppio .sotto-editor":
-    "La regola condivisa dai due strati incollati, che è l'unica cosa che hanno in comune: `.sotto-editor` si vieta il puntatore nel blocco suo, e `.editor` è la `<textarea>` su cui si scrive.",
-  ".anteprima-documento .velo":
-    "Copre l'anteprima ferma di proposito: è il velo che dice «in pausa» mentre il documento è rotto, e coprire è il suo mestiere.",
   ".velo":
     "Un velo è un bersaglio: prende il clic che chiude il menù o la finestrella. È la definizione, ed è il motivo per cui ha uno strato.",
   ".giro-velo":
@@ -405,7 +393,9 @@ function classiDelFoglio(css) {
 /** Le parti dichiarate dal registro delle skin. */
 function partiDelRegistro(rust) {
   const trovate = new Set();
-  for (const pezzo of rust.matchAll(/parte!\(\s*"([a-z0-9-]+)"/g)) {
+  // `PartDef::nuova("…")` dal formato 2, `parte!("…")` prima: si leggono
+  // tutti e due, così il controllo non dipende da come il registro è scritto.
+  for (const pezzo of rust.matchAll(/(?:parte!|PartDef::nuova)\(\s*"([a-z0-9-]+)"/g)) {
     trovate.add(pezzo[1]);
   }
   return trovate;
@@ -509,36 +499,34 @@ if (nonEmesse.length > 0) {
   );
 }
 
-// 3. Lo Studio dichiara le stesse attese, o no.
+// 3. Lo Studio sa dove si vede ogni parte, e non promette l'impossibile.
 //
-// `scene.tsx` ha un `NON_ANCORA` che serve a rispondere «questa parte non la
-// disegna ancora nessuno» invece di «sta nella cornice, aspetta». Sono gli
-// stessi nomi di `ATTESE`, e se i due elenchi divergono lo Studio torna a dare
-// una delle due risposte sbagliate: quella che promette un'attesa senza fine.
-const nonAncora = new Set(
-  [
-    ...fs
-      .readFileSync(MOCK, "utf8")
-      .matchAll(/"([a-z0-9-]+)":\s*"studio\.notYet\./g),
-  ].map((t) => t[1]),
-);
-const soloAttese = Object.keys(ATTESE).filter((nome) => !nonAncora.has(nome));
-const soloStudio = [...nonAncora].filter((nome) => !(nome in ATTESE));
+// `DOVE` di `studio/scena.ts` dice, per ogni parte che non sta sempre sulla
+// finestra, in che scena la tela la mostra: è quel che fa funzionare «Mostra»
+// nell'ispettore. Un nome lì che non è più una parte del registro porta la tela
+// in una scena per niente; una parte in `ATTESE` — che l'app non disegna — lì
+// sarebbe una scena che promette di mostrarla e non la mostra.
+const scene = [
+  ...fs
+    .readFileSync(SCENA, "utf8")
+    .slice(fs.readFileSync(SCENA, "utf8").indexOf("export const DOVE"))
+    .matchAll(/^\s*"?([a-z0-9-]+)"?:\s*\{\s*(?:pagina|sovrapposizioni|larghezza)/gm),
+].map((t) => t[1]);
+const doveSconosciute = scene.filter((nome) => !parti.has(nome));
+const doveInAttesa = scene.filter((nome) => nome in ATTESE);
 
-if (soloAttese.length > 0 || soloStudio.length > 0) {
-  guai += soloAttese.length + soloStudio.length;
-  console.log(
-    `\nLe attese e NON_ANCORA dello Studio non dicono la stessa cosa:\n`,
-  );
-  for (const nome of soloAttese) {
-    console.log(`  ${nome} — sta in ATTESE e non in studio/scene.tsx`);
+if (doveSconosciute.length > 0 || doveInAttesa.length > 0) {
+  guai += doveSconosciute.length + doveInAttesa.length;
+  console.log(`\nLo Studio porta la tela dove non c'è niente da vedere:\n`);
+  for (const nome of doveSconosciute) {
+    console.log(`  ${nome} — sta in DOVE di studio/scena.ts e non è una parte del registro`);
   }
-  for (const nome of soloStudio) {
-    console.log(`  ${nome} — sta in studio/scene.tsx e non in ATTESE`);
+  for (const nome of doveInAttesa) {
+    console.log(`  ${nome} — sta in DOVE di studio/scena.ts, e l'app non la disegna (ATTESE)`);
   }
   console.log(
-    `\n  Chi ridipinge chiede allo Studio perché una parte non si vede, e la` +
-      `\n  risposta viene da là: i due elenchi vanno tenuti uguali.`,
+    `\n  Chi ridipinge preme «Mostra» e si aspetta di vederla: il nome va` +
+      `\n  corretto, o tolto da DOVE finché l'app non la disegna.`,
   );
 }
 

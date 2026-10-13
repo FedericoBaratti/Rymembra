@@ -22,17 +22,44 @@
 //! è per questo che sta scritta in `PRIVACY.md` con un numero suo e si spegne
 //! con un interruttore in Impostazioni.
 //!
-//! # Una volta sola per mezz'ora, anche riaprendo dieci volte
+//! # Un controllo a ogni avvio
 //!
-//! Il primo controllo è [`ATTESA_AVVIO`] dopo l'apertura, e non è una richiesta
-//! per avvio: la passata d'avvio guarda `aggiornamenti.ultimo_ms` e **salta** se
-//! l'ultimo controllo riuscito è di meno di [`INTERVALLO`] — vedi
-//! [`troppo_presto`]. Chi chiude e riapre Aether dieci volte in un'ora fa una
-//! richiesta, non dieci. «Controlla adesso» invece non guarda niente: chi preme
-//! un tasto ha il diritto di vedere che succede qualcosa. E la guardia cede
-//! quando l'ultimo controllo aveva trovato una versione nuova — vedi
-//! `CHIAVE_TROVATA` — perché senza, chi riapriva Aether dopo aver visto l'avviso
-//! non lo rivedeva per mezz'ora.
+//! È la voce #10 di `TODO.md`: ogni volta che Aether si apre, controlla da sé
+//! una volta. Il controllo d'avvio parte [`DOPO_PRONTO`] dopo che la finestra
+//! si è mostrata (il comando `pronto`), o dopo [`ATTESA_PRONTO_MASSIMA`] se la
+//! finestra non lo dice mai. Fino alla 2.4.0 la guardia fra un controllo e
+//! l'altro era di mezz'ora, e chi apriva Aether due volte nella stessa mezz'ora
+//! non controllava la seconda: adesso è di [`GUARDIA`], che basta a non
+//! martellare GitHub se il programma si apre e si chiude in un giro, e non
+//! toglie il controllo a nessuno che lo riapra dopo pranzo. «Controlla adesso»
+//! non guarda niente: chi preme un tasto ha il diritto di vedere che succede
+//! qualcosa. E la guardia cede quando l'ultimo controllo aveva trovato una
+//! versione nuova — vedi `CHIAVE_TROVATA`.
+//!
+//! # Senza rete, si riprova presto
+//!
+//! Un controllo d'avvio senza rete — il portatile aperto in treno, il Wi-Fi
+//! che si aggancia dopo Aether — non aspetta la mezz'ora: si riprova dopo
+//! uno, cinque e quindici minuti ([`RIPROVE_SENZA_RETE`]), e poi si torna al
+//! passo normale. Solo il controllo automatico: se `aggiornamenti.attivo` è
+//! spento, non riprova niente.
+//!
+//! # Lo scaricamento ha un limite, e un tasto per fermarlo
+//!
+//! Il plugin costruisce lo scaricamento senza scadenza. Un installer che
+//! smette di arrivare a metà — una rete che cade senza chiudere la connessione
+//! — teneva il filo e il tasto «Aggiorna» fermi fino al riavvio. Adesso uno
+//! scaricamento che non riceve un byte per [`SILENZIO_MASSIMO`] si ferma e lo
+//! dice, e [`aggiornamenti_annulla`] lo ferma quando lo chiede chi guarda.
+//!
+//! # Prima di uscire, si spegne come si deve
+//!
+//! Su Windows l'installazione **termina il processo** con `exit(0)`, dal filo
+//! dello scaricamento: senza un aggancio, la posizione dell'ascolto, l'ultimo
+//! `PRAGMA optimize`, la scheda del sistema e l'icona del vassoio restavano
+//! come li trovava la morte del processo. Il plugin offre `on_before_exit`, e
+//! lì si fa la stessa sequenza della chiusura normale:
+//! [`crate::spegnimento::spegni`], una sola, chiamata da tutti e due i posti.
 //!
 //! # Perché non si installa da solo
 //!
@@ -57,9 +84,9 @@
 //! nessun updater, e annunciare un aggiornamento che poi non si può installare
 //! sarebbe solo un modo più lungo di fallire.
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::spegnimento::Emette as _;
@@ -93,9 +120,9 @@ const CHIAVE_SALTATA: &str = "aggiornamenti.saltata";
 ///
 /// # Perché si scrive, se l'oggetto per installare vive in memoria
 ///
-/// Perché la guardia d'avvio salta il controllo se l'ultimo è di meno di
-/// mezz'ora fa, e l'aggiornamento trovato viveva **solo** in memoria. Chi
-/// vedeva l'avviso, chiudeva Aether e lo riapriva dieci minuti dopo non lo
+/// Perché la guardia d'avvio salta il controllo se l'ultimo è recente — era
+/// mezz'ora, adesso [`GUARDIA`] — e l'aggiornamento trovato vive **solo** in
+/// memoria. Chi vedeva l'avviso, chiudeva Aether e lo riapriva subito non lo
 /// rivedeva più: il controllo d'avvio saltava, e il prossimo arrivava dopo
 /// mezz'ora. Qui si ricorda soltanto che una versione nuova c'era — basta a
 /// far fare comunque il controllo d'avvio, che è l'unico modo di riavere
@@ -113,29 +140,58 @@ const CHIAVE_TROVATA: &str = "aggiornamenti.trovata";
 /// dei brani una volta.
 const INTERVALLO: Duration = Duration::from_secs(30 * 60);
 
-/// Quanto si aspetta prima del primo controllo.
+/// Quanto dopo `pronto` parte il controllo d'avvio.
 ///
-/// Quarantacinque secondi, ed erano due minuti. I due minuti erano tarati su
-/// «non contendere il disco con quel che parte all'apertura» — ma questa
-/// richiesta il disco non lo tocca affatto: sono trecento byte che arrivano
-/// dalla rete e un confronto fra due numeri di versione. Contendere il disco è
-/// il problema dell'arricchimento, che infatti aspetta novanta secondi, e
-/// dell'analisi sonora, che ne aspetta centoventi. Aspettare due minuti per una
-/// cosa che non costa niente vuol dire soltanto che chi apre Aether, guarda se
-/// c'è una versione nuova e lo richiude non lo scopre mai.
+/// Dieci secondi, ed erano quarantacinque dall'apertura. Il conto si fa dalla
+/// finestra mostrata e non dal processo nato, perché è da lì che qualcuno sta
+/// guardando: chi apre Aether, vede che c'è una versione nuova e lo richiude
+/// deve scoprirlo prima di richiuderlo. I dieci secondi sono quelli in cui la
+/// finestra disegna la prima schermata e la coda di ieri torna su; la richiesta
+/// non tocca il disco e il lucchetto della libreria lo prende per due letture
+/// da microsecondi, quindi non contende niente con la sincronia (venti
+/// secondi) e la nuvola (trenta).
+const DOPO_PRONTO: Duration = Duration::from_secs(10);
+
+/// Quanto si aspetta `pronto` prima di controllare comunque.
 ///
-/// # Perché quarantacinque e non trenta
+/// La finestra che non arriva mai a dire `pronto` — uno script che cade, una
+/// skin illeggibile — è mostrata lo stesso dalla rete di sicurezza di `main`
+/// dopo due secondi; un minuto è largo abbastanza da non anticiparla mai, e
+/// stretto abbastanza perché chi ha una finestra rotta riceva lo stesso
+/// l'aggiornamento che magari la ripara.
+const ATTESA_PRONTO_MASSIMA: Duration = Duration::from_secs(60);
+
+/// Quanto deve essere vecchio l'ultimo controllo riuscito perché quello
+/// d'avvio si faccia.
 ///
-/// Perché i primi risvegli dei fili di sottofondo sono una scala, e ogni
-/// gradino è di qualcun altro: sincronia venti, nuvola trenta, arricchimento
-/// novanta, analisi centoventi. Trenta secondi non sarebbe «dopo la nuvola»,
-/// sarebbe **insieme** alla nuvola — due fili che si svegliano nello stesso
-/// istante e chiedono il lucchetto della libreria uno dietro l'altro. Centoventi
-/// era peggio ancora, perché era esattamente il risveglio dell'analisi.
-/// Quarantacinque è l'unico numero di quell'ordine di grandezza che lascia la
-/// scala senza due gradini sovrapposti, e resta comodamente prima
-/// dell'arricchimento.
-const ATTESA_AVVIO: Duration = Duration::from_secs(45);
+/// Cinque minuti, ed era mezz'ora: la guardia esiste per chi apre e chiude il
+/// programma a raffica — un collegamento cliccato due volte, un crash all'avvio
+/// che si ripete — non per far saltare il controllo a chi riapre Aether
+/// mezz'ora dopo, che è precisamente chi la voce #10 di `TODO.md` voleva
+/// servire.
+const GUARDIA: Duration = Duration::from_secs(5 * 60);
+
+/// Dopo quanto si riprova un controllo automatico fallito per la rete.
+///
+/// Uno, cinque, quindici minuti: la scala di chi apre il portatile prima che
+/// il Wi-Fi si agganci, di un router che riparte, di un treno che esce da una
+/// galleria. Finiti questi, si torna a [`INTERVALLO`] fino al primo controllo
+/// riuscito.
+const RIPROVE_SENZA_RETE: [Duration; 3] = [
+    Duration::from_secs(60),
+    Duration::from_secs(5 * 60),
+    Duration::from_secs(15 * 60),
+];
+
+/// Quanto può stare fermo uno scaricamento prima che lo si dichiari perso.
+///
+/// Un minuto senza un byte. Non è una scadenza complessiva — l'installer pesa
+/// settanta megabyte, e su una linea lenta ci vogliono minuti — ma il segno di
+/// una connessione che non è caduta e non porta più niente.
+const SILENZIO_MASSIMO: Duration = Duration::from_secs(60);
+
+/// Ogni quanto il filo dell'installazione guarda lo scaricamento.
+const PASSO_SORVEGLIANZA: Duration = Duration::from_millis(100);
 
 /// Quanto si aspetta una risposta prima di dire che non arriva.
 ///
@@ -180,12 +236,14 @@ const VARIABILE_ENDPOINT: &str = "AETHER_AGGIORNAMENTI_ENDPOINT";
 
 /// Perché il filo si è svegliato.
 ///
-/// Un solo motivo, a differenza della sincronia: niente «sporca» un controllo
-/// aggiornamenti, perché non dipende da cosa succede nella libreria.
+/// Niente «sporca» un controllo aggiornamenti, perché non dipende da cosa
+/// succede nella libreria: o lo chiede qualcuno, o la finestra si è mostrata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sveglia {
     /// Qualcuno ha chiesto di controllare adesso.
     Subito,
+    /// La finestra si è mostrata: da qui parte il conto di [`DOPO_PRONTO`].
+    Pronto,
 }
 
 /// Quel che il controllo aggiornamenti tiene aperto mentre l'applicazione gira.
@@ -217,6 +275,18 @@ pub struct StatoAggiornamenti {
 
     /// L'esito dell'ultimo controllo automatico. `None` vuol dire riuscito.
     ultimo_errore: Mutex<Option<ErroreIpc>>,
+
+    /// Qualcuno ha chiesto di fermare lo scaricamento in corso.
+    ///
+    /// Si abbassa all'inizio di ogni scaricamento: un «Annulla» premuto ieri
+    /// non deve fermare quello di oggi.
+    annulla: AtomicBool,
+
+    /// La finestra ha già detto `pronto` una volta.
+    ///
+    /// `pronto` si chiama a ogni ridisegno completo — una skin cambiata, un
+    /// ricaricamento in sviluppo — e il controllo d'avvio è uno.
+    pronto_detto: AtomicBool,
 }
 
 impl StatoAggiornamenti {
@@ -231,9 +301,23 @@ impl StatoAggiornamenti {
                 installazione: AtomicBool::new(false),
                 trovato: Mutex::new(None),
                 ultimo_errore: Mutex::new(None),
+                annulla: AtomicBool::new(false),
+                pronto_detto: AtomicBool::new(false),
             },
             orecchio,
         )
+    }
+}
+
+/// La finestra si è mostrata: comincia il conto del controllo d'avvio.
+///
+/// La chiama il comando `pronto` di `main`. Solo la prima volta conta: vedi
+/// `StatoAggiornamenti::pronto_detto`.
+pub fn finestra_pronta(app: &AppHandle) {
+    if let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>()
+        && !aggiornamenti.pronto_detto.swap(true, Ordering::AcqRel)
+    {
+        let _ = aggiornamenti.sveglia.send(Sveglia::Pronto);
     }
 }
 
@@ -463,65 +547,154 @@ pub fn aggiornamenti_installa(
     Ok(())
 }
 
+/// Ferma lo scaricamento in corso.
+///
+/// Torna subito: alza un bit che il filo dell'installazione guarda dieci volte
+/// al secondo. Fermato lì, lo scaricamento non lascia niente — i byte stanno in
+/// memoria, non su disco — e il tasto «Aggiorna» torna premibile.
+///
+/// Dopo che lo scaricamento è finito non ferma più niente: l'installer è già
+/// partito, e da lì non si torna indietro.
+#[tauri::command]
+pub fn aggiornamenti_annulla(aggiornamenti: State<'_, StatoAggiornamenti>) -> Esito<()> {
+    aggiornamenti.annulla.store(true, Ordering::Release);
+    Ok(())
+}
+
 // ── il filo di sottofondo ───────────────────────────────────────────────────
 
 /// Avvia il filo che controlla da solo.
 ///
 /// # La guardia d'avvio
 ///
-/// La prima passata è l'unica che può essere di troppo, e per una ragione che si
-/// vede solo fuori da una sessione sola: chi apre Aether, ascolta mezz'ora,
-/// chiude e riapre, con un'attesa d'avvio per ogni apertura farebbe una
-/// richiesta per apertura. Quindi la sola passata d'avvio guarda quando è
-/// andato a buon fine l'ultimo controllo, e se è di meno di [`INTERVALLO`] non
-/// la fa — vedi [`troppo_presto`]. Il battito periodico, dopo, non guarda
-/// niente: `INTERVALLO` è passato per definizione, e rimetterci una guardia
-/// vorrebbe dire poter perdere un battito per qualche millisecondo di sfasamento
-/// fra l'inizio di una passata e il momento in cui ne scrive l'esito.
+/// La prima passata è l'unica che può essere di troppo: chi apre e chiude
+/// Aether a raffica farebbe una richiesta per apertura. Quindi la sola passata
+/// d'avvio guarda quando è andato a buon fine l'ultimo controllo, e se è di
+/// meno di [`GUARDIA`] non la fa — vedi [`troppo_presto`]. Il battito
+/// periodico, dopo, non guarda niente: `INTERVALLO` è passato per definizione.
 ///
-/// Una sveglia arrivata **durante** l'attesa d'avvio è «Controlla adesso» — o
-/// l'interruttore appena acceso — e quella la guardia non la vede: è un tasto
-/// premuto da una persona che sta guardando la finestra.
+/// Una sveglia «Controlla adesso» arrivata **durante** l'attesa d'avvio — o
+/// l'interruttore appena acceso — vale come controllo d'avvio, e la guardia non
+/// la vede: è un tasto premuto da una persona che sta guardando la finestra.
+///
+/// # I giri dopo
+///
+/// Quanto aspettare lo decide l'esito: [`prossima_attesa`].
+///
+/// Il corpo di ogni giro gira **sorvegliato** ([`crate::stato::sorvegliato`]):
+/// un panico dentro il plugin non porta via il filo, che riprova al giro dopo.
 pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
     let avviato = std::thread::Builder::new()
         .name("aether-aggiornamenti".to_owned())
         .spawn(move || {
-            // `true` solo se l'attesa è scaduta da sé: allora, e solo allora, la
-            // passata che segue è quella d'avvio e la guardia vale.
-            let mut guardia = match orecchio.recv_timeout(ATTESA_AVVIO) {
-                Err(RecvTimeoutError::Disconnected) => return,
-                Ok(_) => false,
-                Err(RecvTimeoutError::Timeout) => true,
-            };
             // Una sveglia è sempre una persona; la scadenza, mai. Vedi
             // `passata`.
-            let mut a_mano = !guardia;
+            let Some(mut a_mano) = aspetta_l_avvio(&orecchio) else {
+                return;
+            };
+            let mut guardia = !a_mano;
+            let mut riprove = 0_usize;
             loop {
+                if crate::spegnimento::in_uscita() {
+                    return;
+                }
                 // Il cortocircuito del `&&` non è un dettaglio di stile: tiene
                 // la lettura dal database fuori da ogni giro tranne, al più, il
-                // primo.
-                // La guardia cede quando l'ultimo controllo aveva trovato una
-                // versione nuova: vedi `CHIAVE_TROVATA`.
-                if guardia
+                // primo. La guardia cede quando l'ultimo controllo aveva
+                // trovato una versione nuova: vedi `CHIAVE_TROVATA`.
+                let giro = if guardia
                     && troppo_presto(ultimo_controllo(&app), adesso_ms())
                     && !versione_trovata_prima(&app)
                 {
                     nota!(
-                        "[aggiornamenti] la passata d'avvio salta: l'ultimo controllo è di meno di mezz'ora fa"
+                        "[aggiornamenti] la passata d'avvio salta: l'ultimo controllo è di meno di {} minuti fa",
+                        GUARDIA.as_secs().div_euclid(60)
                     );
+                    Giro::Saltato
                 } else {
-                    passata(&app, a_mano);
-                }
-                guardia = false;
-                a_mano = match orecchio.recv_timeout(INTERVALLO) {
-                    Err(RecvTimeoutError::Disconnected) => return,
-                    Ok(_) => true,
-                    Err(RecvTimeoutError::Timeout) => false,
+                    crate::stato::sorvegliato("aether-aggiornamenti", || passata(&app, a_mano))
+                        .unwrap_or(Giro::Fallito)
                 };
+                guardia = false;
+                let (attesa, dopo) = prossima_attesa(giro, riprove);
+                riprove = dopo;
+                match aspetta(&orecchio, attesa) {
+                    None => return,
+                    Some(chiesto) => a_mano = chiesto,
+                }
             }
         });
     if let Err(err) = avviato {
         nota!("[avvio] il filo degli aggiornamenti non è partito: {err}");
+    }
+}
+
+/// Aspetta il momento del controllo d'avvio.
+///
+/// `pronto` più [`DOPO_PRONTO`]; o [`ATTESA_PRONTO_MASSIMA`] se `pronto` non
+/// arriva; o subito, se nel frattempo qualcuno preme «Controlla adesso».
+/// Restituisce se il controllo è stato chiesto a mano, e `None` se il canale si
+/// è chiuso — cioè se si sta uscendo.
+fn aspetta_l_avvio(orecchio: &Receiver<Sveglia>) -> Option<bool> {
+    match orecchio.recv_timeout(ATTESA_PRONTO_MASSIMA) {
+        Err(RecvTimeoutError::Disconnected) => None,
+        Err(RecvTimeoutError::Timeout) => Some(false),
+        Ok(Sveglia::Subito) => Some(true),
+        Ok(Sveglia::Pronto) => aspetta(orecchio, DOPO_PRONTO),
+    }
+}
+
+/// Aspetta `quanto`, o fino a una richiesta a mano.
+///
+/// `Some(true)` per «Controlla adesso», `Some(false)` quando il tempo è
+/// scaduto da sé, `None` quando il canale si è chiuso. Un `Pronto` arrivato
+/// qui — la finestra che si ridisegna — non interrompe niente.
+fn aspetta(orecchio: &Receiver<Sveglia>, quanto: Duration) -> Option<bool> {
+    let fine = Instant::now() + quanto;
+    loop {
+        match orecchio.recv_timeout(fine.saturating_duration_since(Instant::now())) {
+            Err(RecvTimeoutError::Disconnected) => return None,
+            Err(RecvTimeoutError::Timeout) => return Some(false),
+            Ok(Sveglia::Subito) => return Some(true),
+            Ok(Sveglia::Pronto) => {}
+        }
+    }
+}
+
+/// Com'è andato un giro del filo: è quel che decide quanto aspettare il
+/// prossimo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Giro {
+    /// Il controllo è andato a buon fine.
+    Riuscito,
+    /// Non c'era rete, o non rispondeva: si riprova presto.
+    SenzaRete,
+    /// Un guasto che non passa da sé — il manifesto storto, una firma: si
+    /// riprova al passo normale.
+    Fallito,
+    /// Non si è controllato: spento, non configurato, già in corso, o la
+    /// guardia d'avvio.
+    Saltato,
+}
+
+/// Quanto aspettare il prossimo giro, e quante riprove senza rete restano.
+///
+/// Pura, e la ragione è la stessa di [`troppo_presto`]: è la riga che decide
+/// se un portatile senza rete all'avvio scopre l'aggiornamento dopo un minuto o
+/// dopo mezz'ora, e una riga così si prova.
+///
+/// Dopo un giro senza rete, la prossima delle [`RIPROVE_SENZA_RETE`]; finite
+/// quelle, [`INTERVALLO`] senza azzerare il conto — un computer che resta
+/// offline per giorni non deve riprovare ogni minuto a ogni mezz'ora. Ogni
+/// altro esito azzera il conto e torna a [`INTERVALLO`].
+fn prossima_attesa(giro: Giro, riprove: usize) -> (Duration, usize) {
+    match giro {
+        Giro::SenzaRete => RIPROVE_SENZA_RETE
+            .get(riprove)
+            .map_or((INTERVALLO, riprove), |attesa| {
+                (*attesa, riprove.saturating_add(1))
+            }),
+        Giro::Riuscito | Giro::Fallito | Giro::Saltato => (INTERVALLO, 0),
     }
 }
 
@@ -559,7 +732,8 @@ fn versione_trovata_prima(app: &AppHandle) -> bool {
 /// L'ultimo controllo è troppo recente perché valga la pena rifarlo?
 ///
 /// Pura, e con l'orologio passato da fuori, perché è la riga che decide se dieci
-/// riaperture in un'ora sono dieci richieste o una: una riga così si prova.
+/// riaperture in un minuto sono dieci richieste o una: una riga così si prova.
+/// Il confine è [`GUARDIA`].
 ///
 /// # I due modi in cui si risponde «no»
 ///
@@ -577,11 +751,11 @@ fn troppo_presto(ultimo_ms: Option<i64>, adesso_ms: i64) -> bool {
         return false;
     };
     let passati = adesso_ms.saturating_sub(ultimo_ms);
-    // `try_from` e non `as`: la conversione è infallibile per mezz'ora di
+    // `try_from` e non `as`: la conversione è infallibile per cinque minuti di
     // millisecondi, ma scriverlo con un cast vorrebbe dire una deroga al lint
     // che vieta i troncamenti silenziosi in tutto il resto del programma.
-    let intervallo = i64::try_from(INTERVALLO.as_millis()).unwrap_or(i64::MAX);
-    (0..intervallo).contains(&passati)
+    let guardia = i64::try_from(GUARDIA.as_millis()).unwrap_or(i64::MAX);
+    (0..guardia).contains(&passati)
 }
 
 /// Un controllo. Non fallisce mai rumorosamente.
@@ -591,9 +765,9 @@ fn troppo_presto(ultimo_ms: Option<i64>, adesso_ms: i64) -> bool {
 /// guardava: con il controllo automatico spento il tasto non faceva niente, né
 /// una richiesta né un evento, e il suggerimento sotto l'interruttore diceva
 /// proprio di usare quel tasto per controllare quando si vuole.
-fn passata(app: &AppHandle, a_mano: bool) {
+fn passata(app: &AppHandle, a_mano: bool) -> Giro {
     if !configurato(app) {
-        return;
+        return Giro::Saltato;
     }
     let acceso = a_mano
         || app
@@ -601,10 +775,10 @@ fn passata(app: &AppHandle, a_mano: bool) {
             .and_then(|stato| con_libreria(&stato, |libreria| attivo(&libreria.connection)).ok())
             .unwrap_or(true);
     if !acceso {
-        return;
+        return Giro::Saltato;
     }
     let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>() else {
-        return;
+        return Giro::Saltato;
     };
     // Se un controllo è già in corso — l'utente ha premuto «controlla adesso»
     // proprio mentre scadeva la mezz'ora — questo giro salta e basta.
@@ -620,11 +794,16 @@ fn passata(app: &AppHandle, a_mano: bool) {
     // scadenza quel tempo non ha un limite. Le due cose si tengono insieme —
     // vedi [`SCADENZA_RICHIESTA`].
     let Some(_turno) = Turno::prendi(&aggiornamenti.in_corso) else {
-        return;
+        return Giro::Saltato;
     };
     riferisci(app);
 
     let esito = controlla(app);
+    let giro = match &esito {
+        Ok(_) => Giro::Riuscito,
+        Err(err) if err.is_retryable() => Giro::SenzaRete,
+        Err(_) => Giro::Fallito,
+    };
     match esito {
         Ok(trovato) => {
             let versione = trovato.as_ref().map(|nuovo| nuovo.version.clone());
@@ -661,6 +840,7 @@ fn passata(app: &AppHandle, a_mano: bool) {
     }
     drop(_turno);
     riferisci(app);
+    giro
 }
 
 /// La richiesta vera e propria.
@@ -710,7 +890,20 @@ fn controlla(app: &AppHandle) -> Result<Option<Update>, AppError> {
 /// servirà, è una decisione da prendere con `PRIVACY.md` aperto accanto — non una
 /// riga da aggiungere di corsa.
 fn costruisci(app: &AppHandle) -> Result<Updater, AppError> {
-    let costruttore = app.updater_builder().timeout(SCADENZA_RICHIESTA);
+    // `on_before_exit` **sostituisce** quel che il plugin ci mette di suo —
+    // `cleanup_before_exit`, che chiude le finestre e gli stati di Tauri — e
+    // quindi lo si rifà qui, dopo la sequenza nostra. L'ordine conta: prima si
+    // scrive la posizione dell'ascolto e si stacca la scheda del sistema, che
+    // hanno bisogno degli stati, poi Tauri smonta gli stati.
+    let mano = app.clone();
+    let costruttore = app
+        .updater_builder()
+        .timeout(SCADENZA_RICHIESTA)
+        .on_before_exit(move || {
+            nota!("[aggiornamenti] l'installer prende il posto di Aether: si spegne tutto");
+            crate::spegnimento::spegni(&mano);
+            mano.cleanup_before_exit();
+        });
     #[cfg(debug_assertions)]
     let costruttore = match std::env::var(VARIABILE_ENDPOINT) {
         Ok(scelto) if !scelto.trim().is_empty() => {
@@ -750,25 +943,9 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
         .as_ref()
         .map(|stato| Turno::adotta(&stato.installazione));
 
-    let mut scaricati: u64 = 0;
-    let mut ultimo_detto = Instant::now()
-        .checked_sub(RESPIRO_AVANZAMENTO)
-        .unwrap_or_else(Instant::now);
-    let per_pezzo = |quanto: usize, totale: Option<u64>| {
-        scaricati = scaricati.saturating_add(u64::try_from(quanto).unwrap_or(0));
-        // Il primo pezzo e l'ultimo si dicono sempre; quelli in mezzo con un
-        // respiro, o la finestra riceverebbe migliaia di eventi per disegnare
-        // una barra che si muove di un pixel.
-        let adesso = Instant::now();
-        let finito = totale.is_some_and(|totale| scaricati >= totale);
-        if finito || adesso.duration_since(ultimo_detto) >= RESPIRO_AVANZAMENTO {
-            ultimo_detto = adesso;
-            app.emetti(
-                "aggiornamenti:avanzamento",
-                AvanzamentoIpc { scaricati, totale },
-            );
-        }
-    };
+    if let Some(stato) = aggiornamenti.as_ref() {
+        stato.annulla.store(false, Ordering::Release);
+    }
 
     // Scaricare e installare in due tempi, e la musica si ferma **in mezzo**:
     // prima che l'installer prenda in mano il processo, perché il plugin, su
@@ -779,16 +956,17 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
     // l'applicazione funziona ancora, e un disco zittito al clic su «Aggiorna»
     // per tutto quel tempo — o per sempre, se lo scaricamento o la firma non
     // vanno — era una pausa che nessuno aveva chiesto.
-    let esito =
-        tauri::async_runtime::block_on(aggiornamento.download(per_pezzo, || {})).and_then(|byte| {
-            fermare_la_musica(app);
-            aggiornamento.install(byte)
-        });
+    let esito = scarica(app, aggiornamento).and_then(|byte| {
+        fermare_la_musica(app);
+        aggiornamento.install(byte).map_err(guasto)
+    });
 
     // Se si arriva qui su Windows, è andata male: l'installazione riuscita non
-    // torna mai, perché il plugin fa uscire il processo.
-    if let (Some(aggiornamenti), Err(err)) = (aggiornamenti.as_ref(), esito) {
-        let err = guasto(err);
+    // torna mai, perché il plugin fa uscire il processo. Un annullamento non è
+    // un guasto: non si annota e non si mostra.
+    if let (Some(aggiornamenti), Err(err)) = (aggiornamenti.as_ref(), esito)
+        && !matches!(err.code(), ErrorCode::InternalAborted { .. })
+    {
         nota!(
             "[aggiornamenti] installazione non riuscita codice={} causa={}",
             err.code().kind().code(),
@@ -805,6 +983,104 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
     // ancora di sì.
     drop(turno);
     riferisci(app);
+}
+
+/// Scarica l'installer e ne verifica la firma, sorvegliando lo scaricamento.
+///
+/// # Perché non basta `block_on(download)`, com'era
+///
+/// Perché il plugin costruisce lo scaricamento **senza scadenza** (il
+/// `timeout` dell'oggetto [`Update`] nasce `None`), e una scadenza
+/// complessiva qui sarebbe sbagliata comunque: settanta megabyte su una linea
+/// lenta ci mettono minuti, e sono minuti buoni. Quel che va fermato è il
+/// **silenzio**: una connessione che non cade e non porta più niente, che
+/// teneva il filo — e il tasto «Aggiorna» spento — fino al riavvio.
+///
+/// Lo scaricamento gira quindi sul runtime come compito suo, e questo filo lo
+/// guarda ogni [`PASSO_SORVEGLIANZA`]: se da [`SILENZIO_MASSIMO`] non arriva un
+/// byte, o se qualcuno ha premuto «Annulla» ([`aggiornamenti_annulla`]), o se
+/// l'applicazione sta uscendo, lo interrompe. I byte arrivati restano in
+/// memoria e se ne vanno con lui: niente da pulire sul disco.
+///
+/// # Errori
+///
+/// `internal.aborted` se è stato annullato, `net.timeout` se si è fermato, e
+/// quelli di [`guasto`] per tutto quel che dice il plugin — firma compresa.
+fn scarica(app: &AppHandle, aggiornamento: &Update) -> Result<Vec<u8>, AppError> {
+    let inizio = Instant::now();
+    // Quando è arrivato l'ultimo byte, in millisecondi da `inizio`. Lo scrive il
+    // compito dello scaricamento, lo legge questo filo.
+    let ultimo_byte = Arc::new(AtomicU64::new(0));
+    let suo_ultimo = Arc::clone(&ultimo_byte);
+    let mano = app.clone();
+    let mut scaricati: u64 = 0;
+    let mut ultimo_detto = Instant::now()
+        .checked_sub(RESPIRO_AVANZAMENTO)
+        .unwrap_or_else(Instant::now);
+    let per_pezzo = move |quanto: usize, totale: Option<u64>| {
+        scaricati = scaricati.saturating_add(u64::try_from(quanto).unwrap_or(0));
+        suo_ultimo.store(
+            u64::try_from(inizio.elapsed().as_millis()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+        // Il primo pezzo e l'ultimo si dicono sempre; quelli in mezzo con un
+        // respiro, o la finestra riceverebbe migliaia di eventi per disegnare
+        // una barra che si muove di un pixel.
+        let adesso = Instant::now();
+        let finito = totale.is_some_and(|totale| scaricati >= totale);
+        if finito || adesso.duration_since(ultimo_detto) >= RESPIRO_AVANZAMENTO {
+            ultimo_detto = adesso;
+            mano.emetti(
+                "aggiornamenti:avanzamento",
+                AvanzamentoIpc { scaricati, totale },
+            );
+        }
+    };
+    let suo = aggiornamento.clone();
+    let lavoro = tauri::async_runtime::spawn(async move { suo.download(per_pezzo, || {}).await });
+
+    let mut fermato: Option<AppError> = None;
+    while !lavoro.inner().is_finished() {
+        let annullato = crate::spegnimento::in_uscita()
+            || app
+                .try_state::<StatoAggiornamenti>()
+                .is_some_and(|stato| stato.annulla.load(Ordering::Acquire));
+        let silenzio = inizio
+            .elapsed()
+            .saturating_sub(Duration::from_millis(ultimo_byte.load(Ordering::Relaxed)));
+        if annullato {
+            fermato = Some(AppError::new(ErrorCode::InternalAborted {
+                what: Some("scaricamento dell'aggiornamento".to_owned()),
+            }));
+        } else if silenzio >= SILENZIO_MASSIMO {
+            fermato = Some(
+                AppError::new(ErrorCode::NetTimeout {
+                    url: None,
+                    timeout_ms: u64::try_from(SILENZIO_MASSIMO.as_millis()).ok(),
+                })
+                .with_cause(format!(
+                    "lo scaricamento dell'aggiornamento non riceve niente da {} secondi",
+                    SILENZIO_MASSIMO.as_secs()
+                )),
+            );
+        }
+        if fermato.is_some() {
+            lavoro.abort();
+            break;
+        }
+        std::thread::sleep(PASSO_SORVEGLIANZA);
+    }
+    let esito = tauri::async_runtime::block_on(lavoro);
+    if let Some(fermato) = fermato {
+        return Err(fermato);
+    }
+    match esito {
+        Ok(scaricato) => scaricato.map_err(guasto),
+        Err(err) => Err(AppError::new(ErrorCode::InternalAborted {
+            what: Some("scaricamento dell'aggiornamento".to_owned()),
+        })
+        .with_cause(err.to_string())),
+    }
 }
 
 /// Mette in pausa, se c'è un lettore e se sta suonando.
@@ -1012,40 +1288,92 @@ mod prove {
     }
 
     #[test]
-    fn l_attesa_di_avvio_e_piu_corta_dell_intervallo() {
-        // Non è un truismo: se l'attesa d'avvio superasse la periodicità, la
-        // guardia di [`troppo_presto`] non potrebbe mai dire di sì e l'intera
-        // ragione per cui esiste sparirebbe senza che niente si rompa. E
-        // l'attesa deve restare dentro la scala degli altri fili — dopo la
-        // nuvola, prima dell'arricchimento — che è quel che la seconda riga
-        // fissa.
-        assert!(ATTESA_AVVIO < INTERVALLO);
-        assert!(ATTESA_AVVIO > Duration::from_secs(30));
-        assert!(ATTESA_AVVIO < Duration::from_secs(90));
-        // E la scadenza della richiesta deve starci dentro più volte: una
-        // scadenza più lunga dell'attesa d'avvio vorrebbe dire una prima
+    fn i_tempi_si_tengono_fra_loro() {
+        // La guardia deve essere più corta della periodicità, o il battito
+        // periodico cadrebbe dentro la guardia di un avvio vicino; e il
+        // controllo d'avvio deve partire prima che la sincronia (venti
+        // secondi) e la nuvola (trenta) si sveglino.
+        assert!(GUARDIA < INTERVALLO);
+        assert!(DOPO_PRONTO < Duration::from_secs(20));
+        assert!(DOPO_PRONTO < ATTESA_PRONTO_MASSIMA);
+        // La rete di sicurezza di `main` mostra la finestra dopo due secondi:
+        // l'attesa di `pronto` deve essere molto più larga, o la si
+        // anticiperebbe.
+        assert!(ATTESA_PRONTO_MASSIMA > Duration::from_secs(10));
+        // Una scadenza più lunga del primo ritentativo vorrebbe dire una
         // richiesta ancora appesa quando parte la seconda.
-        assert!(SCADENZA_RICHIESTA < ATTESA_AVVIO);
+        assert!(
+            RIPROVE_SENZA_RETE
+                .first()
+                .is_some_and(|prima| SCADENZA_RICHIESTA < *prima)
+        );
+        assert!(RIPROVE_SENZA_RETE.iter().all(|attesa| *attesa < INTERVALLO));
     }
 
     #[test]
-    fn la_passata_di_avvio_salta_se_il_controllo_e_recente() {
+    fn la_passata_di_avvio_salta_solo_se_il_controllo_e_di_pochi_minuti_fa() {
         let adesso = 1_700_000_000_000;
-        let mezzora = 30 * 60 * 1_000;
-        // Cinque minuti fa: si salta. È il caso di chi ha chiuso e riaperto.
-        assert!(troppo_presto(Some(adesso - 5 * 60 * 1_000), adesso));
-        // Un millisecondo prima della mezz'ora: ancora presto.
-        assert!(troppo_presto(Some(adesso - mezzora + 1), adesso));
-        // La mezz'ora esatta: si controlla. Il confine sta da questa parte,
-        // perché il battito periodico cade lì e non deve essere zittito da un
-        // arrotondamento.
-        assert!(!troppo_presto(Some(adesso - mezzora), adesso));
-        assert!(!troppo_presto(Some(adesso - 31 * 60 * 1_000), adesso));
+        let guardia = 5 * 60 * 1_000;
+        // Un minuto fa: si salta. È il caso di chi apre e chiude a raffica.
+        assert!(troppo_presto(Some(adesso - 60 * 1_000), adesso));
+        assert!(troppo_presto(Some(adesso - guardia + 1), adesso));
+        // Il confine esatto, e oltre: si controlla. Chi riapre Aether dieci
+        // minuti dopo — la voce #10 di `TODO.md` — controlla.
+        assert!(!troppo_presto(Some(adesso - guardia), adesso));
+        assert!(!troppo_presto(Some(adesso - 10 * 60 * 1_000), adesso));
         // Mai controllato: si controlla.
         assert!(!troppo_presto(None, adesso));
         // Un istante nel futuro — orologio spostato avanti e poi rimesso a
         // posto — non deve zittire gli aggiornamenti fino a quella data.
-        assert!(!troppo_presto(Some(adesso + mezzora), adesso));
+        assert!(!troppo_presto(Some(adesso + guardia), adesso));
+    }
+
+    #[test]
+    fn senza_rete_si_riprova_a_uno_cinque_e_quindici_minuti() {
+        let minuti = |m: u64| Duration::from_secs(m * 60);
+        let (prima, conto) = prossima_attesa(Giro::SenzaRete, 0);
+        assert_eq!((prima, conto), (minuti(1), 1));
+        let (seconda, conto) = prossima_attesa(Giro::SenzaRete, conto);
+        assert_eq!((seconda, conto), (minuti(5), 2));
+        let (terza, conto) = prossima_attesa(Giro::SenzaRete, conto);
+        assert_eq!((terza, conto), (minuti(15), 3));
+        // Finite le tre, il passo normale — e il conto resta, così un computer
+        // offline per giorni non riprova ogni minuto a ogni mezz'ora.
+        let (dopo, conto) = prossima_attesa(Giro::SenzaRete, conto);
+        assert_eq!((dopo, conto), (INTERVALLO, 3));
+        // Un controllo riuscito azzera tutto.
+        assert_eq!(prossima_attesa(Giro::Riuscito, conto), (INTERVALLO, 0));
+        // E un guasto che non è la rete non accorcia niente.
+        assert_eq!(prossima_attesa(Giro::Fallito, 0), (INTERVALLO, 0));
+        assert_eq!(prossima_attesa(Giro::Saltato, 2), (INTERVALLO, 0));
+    }
+
+    #[test]
+    fn un_pronto_tardivo_non_interrompe_l_attesa_e_un_tasto_si() {
+        let (manda, orecchio) = channel();
+        // Un `Pronto` che arriva mentre si aspetta il giro dopo — la finestra
+        // che si ridisegna — si ignora, e il tempo scade da sé.
+        manda.send(Sveglia::Pronto).expect("canale aperto");
+        assert_eq!(aspetta(&orecchio, Duration::from_millis(30)), Some(false));
+        // «Controlla adesso» interrompe subito.
+        manda.send(Sveglia::Subito).expect("canale aperto");
+        assert_eq!(aspetta(&orecchio, Duration::from_secs(60)), Some(true));
+        // Un canale chiuso è l'uscita.
+        drop(manda);
+        assert_eq!(aspetta(&orecchio, Duration::from_secs(60)), None);
+    }
+
+    #[test]
+    fn il_controllo_d_avvio_aspetta_pronto_poi_dieci_secondi_o_un_tasto() {
+        let (manda, orecchio) = channel();
+        // Un tasto durante l'attesa di `pronto` vale come controllo d'avvio,
+        // e a mano.
+        manda.send(Sveglia::Subito).expect("canale aperto");
+        assert_eq!(aspetta_l_avvio(&orecchio), Some(true));
+        // `Pronto` e poi un tasto nei dieci secondi: a mano anche lui.
+        manda.send(Sveglia::Pronto).expect("canale aperto");
+        manda.send(Sveglia::Subito).expect("canale aperto");
+        assert_eq!(aspetta_l_avvio(&orecchio), Some(true));
     }
 
     #[test]

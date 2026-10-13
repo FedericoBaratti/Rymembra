@@ -43,12 +43,26 @@
 /// - 2250 `ERROR_NOT_CONNECTED` — la lettera mappata esiste ma non è connessa:
 ///   è quel che risponde `Z:\` all'avvio di Windows, prima che la
 ///   riconnessione automatica delle unità abbia finito;
-/// - 1219 `ERROR_SESSION_CREDENTIAL_CONFLICT`, 1244 `ERROR_NOT_AUTHENTICATED` e
-///   1326 `ERROR_LOGON_FAILURE` — la share c'è ma non riconosce chi bussa.
-///   Sono di rete anche loro, e il «Riprova» qui ha senso: basta aprire la
-///   share una volta in Esplora risorse, con la password, perché la seconda
-///   lettura passi. Chiamarli guasti del file vorrebbe dire «il file è
-///   danneggiato» su un NAS che chiedeva soltanto di accedere.
+/// - 1201 `ERROR_CONNECTION_UNAVAIL` — «il dispositivo non è connesso, ma è una
+///   connessione ricordata»: la stessa lettera mappata di 2250 detta con
+///   l'altro numero, quello che Windows dà mentre la riconnessione è ancora in
+///   corso;
+/// - 58 `ERROR_BAD_NET_RESP`, 70 `ERROR_SHARING_PAUSED`, 240
+///   `ERROR_VC_DISCONNECTED` (la sessione SMB è stata chiusa), 1225
+///   `ERROR_CONNECTION_REFUSED`, 1236 `ERROR_CONNECTION_ABORTED`, 1256
+///   `ERROR_HOST_DOWN` e 1262 `ERROR_CSCSHARE_OFFLINE` — un server che c'è ma
+///   non serve, una sessione caduta, un NAS che si riavvia;
+/// - 65 `ERROR_NETWORK_ACCESS_DENIED`, 1219 `ERROR_SESSION_CREDENTIAL_CONFLICT`,
+///   1244 `ERROR_NOT_AUTHENTICATED` e 1326 `ERROR_LOGON_FAILURE` — la share c'è
+///   ma non riconosce chi bussa. Sono di rete anche loro, e il «Riprova» qui ha
+///   senso: basta aprire la share una volta in Esplora risorse, con la
+///   password, perché la seconda lettura passi. Chiamarli guasti del file
+///   vorrebbe dire «il file è danneggiato» su un NAS che chiedeva soltanto di
+///   accedere.
+///
+/// Il 3 `ERROR_PATH_NOT_FOUND` **non** c'è, anche se una lettera mappata che
+/// non esiste in questa sessione lo restituisce: lo restituisce anche una
+/// cartella locale cancellata, e lì «Riprova» sarebbe una promessa falsa.
 ///
 /// Fuori da Windows è sempre `false`, e non per pigrizia: il bersaglio di questa
 /// applicazione desktop è Windows, gli errori di rete POSIX (`ENETDOWN`,
@@ -64,16 +78,25 @@ pub fn e_di_rete(err: &std::io::Error) -> bool {
         Some(
             51 | 53
                 | 55
+                | 58
                 | 59
                 | 64
+                | 65
                 | 67
+                | 70
                 | 121
+                | 240
+                | 1201
                 | 1203
                 | 1219
                 | 1222
+                | 1225
                 | 1231
                 | 1232
+                | 1236
                 | 1244
+                | 1256
+                | 1262
                 | 1326
                 | 2250
         )
@@ -96,7 +119,8 @@ mod prove {
     #[test]
     fn i_numeri_della_share_si_riconoscono_e_gli_altri_no() {
         for numero in [
-            51, 53, 55, 59, 64, 67, 121, 1203, 1219, 1222, 1231, 1232, 1244, 1326, 2250,
+            51, 53, 55, 58, 59, 64, 65, 67, 70, 121, 240, 1201, 1203, 1219, 1222, 1225, 1231, 1232,
+            1236, 1244, 1256, 1262, 1326, 2250,
         ] {
             assert!(
                 e_di_rete(&std::io::Error::from_raw_os_error(numero)),
@@ -105,8 +129,9 @@ mod prove {
         }
         // 2 è «file non trovato» e 5 è «accesso negato»: sono guasti del file,
         // e chiamarli rete vorrebbe dire offrire «Riprova» per un file che non
-        // tornerà mai.
-        for numero in [2, 5, 32, 112] {
+        // tornerà mai. Il 3 per la stessa ragione: è anche la cartella locale
+        // cancellata.
+        for numero in [2, 3, 5, 32, 112] {
             assert!(
                 !e_di_rete(&std::io::Error::from_raw_os_error(numero)),
                 "il codice {numero} non c'entra con la rete"

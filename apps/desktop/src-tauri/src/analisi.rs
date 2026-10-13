@@ -10,6 +10,14 @@
 //! Qui si tiene il tempo e si prende il lucchetto, come fa `arricchimento` per i
 //! metadati. Il resto sta altrove.
 //!
+//! # Due passate in una
+//!
+//! Dalla 3.0 la passata ha una seconda metà: finite le impronte, si misura
+//! quanto forte suona ogni brano (`aether_app::intensita`), che è quel che
+//! serve al volume uniforme per i brani senza tag ReplayGain. Stesse regole —
+//! lucchetti, musica, radici che non rispondono — con un costo diverso: una
+//! decodifica **intera** invece di trenta secondi. Vedi [`intensita`].
+//!
 //! # L'ordine dei lucchetti
 //!
 //! Come `nuvola`, `riproduzione` e `arricchimento` dichiarano il proprio, questo
@@ -55,13 +63,16 @@
 //! è I/O quasi puro, e la FFT su trenta secondi in mono a 22 kHz è dell'ordine
 //! dei millisecondi. Con un filo per core si otterrebbero soltanto più richieste
 //! in coda sulla stessa testina e più fastidio al preparatore. Tre è il numero
-//! che copre la latenza di rete senza saturare niente.
+//! che copre la latenza di rete senza saturare niente. Per l'intensità i fili
+//! sono due, e il perché sta in [`FILI_INTENSITA`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
+use aether_app::intensita as volume;
 use aether_app::playback::SchedaSorgente;
+use aether_app::scadenza::{Mancato, Operaio};
 use aether_app::sonora::{self, Misurato};
 use aether_domain::errors::AppError;
 use tauri::{AppHandle, Manager as _};
@@ -110,6 +121,34 @@ const SCADENZA_BRANO: Duration = Duration::from_secs(25);
 
 /// Il nome del filo della scadenza, per il debugger.
 const SCADENZA_NOME: &str = "impronta";
+
+/// Quanti brani si misurano insieme per il volume.
+///
+/// Due e non i tre dell'impronta: qui il collo di bottiglia torna a essere il
+/// calcolo — si decodifica il brano intero, non trenta secondi — e la passata
+/// gira proprio quando la musica tace, cioè quando il computer può star
+/// facendo dell'altro. Due fili finiscono una libreria in una sera e lasciano
+/// libero il resto del processore.
+const FILI_INTENSITA: usize = 2;
+
+/// Il minimo che si concede a un brano da misurare, prima di contare la sua
+/// durata.
+///
+/// La stessa base di [`SCADENZA_BRANO`]: aprire il file costa lo stesso, ed è
+/// l'apertura che su una share morta resta appesa.
+const SCADENZA_INTENSITA: Duration = Duration::from_secs(25);
+
+/// Quante volte più in fretta del tempo reale deve andare, almeno, la
+/// decodifica di un brano da misurare.
+///
+/// Venti. Un FLAC su un disco locale si decodifica a qualche centinaio di
+/// volte il tempo reale, uno su una share in Wi-Fi a qualche decina; sotto le
+/// venti volte la share non sta rispondendo. Alla base si aggiunge quindi la
+/// durata divisa per venti: tre minuti di brano, nove secondi in più.
+const VELOCITA_MINIMA: u32 = 20;
+
+/// Il nome dei fili della misura, per il debugger.
+const INTENSITA_NOME: &str = "intensita";
 
 /// Vero mentre il lettore sta suonando.
 ///
@@ -239,8 +278,22 @@ enum Fine {
 /// A differenza dell'arricchimento non manda niente alla finestra: l'analisi non
 /// scrive nei file dell'utente, non consuma quote di nessun servizio e non ha
 /// niente da farsi perdonare. Quel che produce si vede da solo, nella coda che
-/// dopo qualche giorno comincia a proporre brani che c'entrano.
+/// dopo qualche giorno comincia a proporre brani che c'entrano, e nel volume
+/// che smette di saltare da un disco all'altro.
+///
+/// Prima le impronte, poi l'intensità: le impronte costano trenta secondi di
+/// lettura a brano e finiscono presto, l'intensità un brano intero. Solo una
+/// metà finita lascia il posto all'altra — la musica, la chiusura o una radice
+/// che non risponde fermano tutte e due.
 fn passata(app: &AppHandle) -> Fine {
+    match impronte(app) {
+        Fine::Finito => intensita(app),
+        altro => altro,
+    }
+}
+
+/// La prima metà della passata: le impronte.
+fn impronte(app: &AppHandle) -> Fine {
     let mut fatti = 0_usize;
     let mut scritti = false;
     let fine = loop {
@@ -349,6 +402,11 @@ fn leggi_lotto(app: &AppHandle) -> Result<Vec<SchedaSorgente>, AppError> {
 ///
 /// Senza stato non si scrive niente e non si è scritto niente: i brani restano
 /// candidati, e la passata dopo li ripesca.
+///
+/// La transazione è `Immediate`, qui e in [`ritara`]: legge e poi scrive, e una
+/// transazione normale che prova a diventare di scrittura mentre l'arricchimento
+/// scrive dalla sua connessione riceve `SQLITE_BUSY` subito, senza l'attesa che
+/// il `busy_timeout` concede a chi chiede il lucchetto all'inizio.
 fn scrivi(app: &AppHandle, misurati: &[Misurato]) -> Result<usize, AppError> {
     let Some(stato) = app.try_state::<Stato>() else {
         return Ok(0);
@@ -356,7 +414,7 @@ fn scrivi(app: &AppHandle, misurati: &[Misurato]) -> Result<usize, AppError> {
     con_libreria(&stato, |libreria| {
         let tx = libreria
             .connection
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|err| db_errore("apertura della transazione delle impronte", &err))?;
         let quanti = sonora::registra(&tx, misurati, adesso_ms())?;
         tx.commit()
@@ -376,7 +434,7 @@ fn ritara(app: &AppHandle) -> Result<Option<usize>, AppError> {
     con_libreria(&stato, |libreria| {
         let tx = libreria
             .connection
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|err| db_errore("apertura della transazione della scala", &err))?;
         let quanti = sonora::ritara(&tx, adesso_ms())?;
         tx.commit()
@@ -420,6 +478,157 @@ fn misura_uno(scheda: &SchedaSorgente) -> Misurato {
     .unwrap_or(Misurato::NonRaggiungibile)
 }
 
+/// La seconda metà della passata: quanto forte suona ogni brano.
+///
+/// La forma è quella di [`impronte`] — leggere un lotto, misurare senza
+/// lucchetti, scrivere — con due differenze. La musica si guarda anche fra un
+/// brano e l'altro dentro il lotto, non solo fra un lotto e l'altro: un lotto
+/// d'impronte dura secondi, uno di brani interi può durare un minuto, e il
+/// preparatore non può aspettarlo. E un brano che fa cadere il decodificatore
+/// si segna illeggibile invece di fermare la passata: è il contenuto a essere
+/// storto, e senza segnarlo lo stesso brano — il più recente, quindi il primo
+/// candidato — si ripresenterebbe in testa a ogni passata.
+fn intensita(app: &AppHandle) -> Fine {
+    let mut fatti = 0_usize;
+    let fine = loop {
+        if SUONA.load(Ordering::Relaxed) {
+            break Fine::Musica;
+        }
+        if crate::spegnimento::in_uscita() {
+            break Fine::Uscita;
+        }
+
+        // ── finestra 1: quali brani. ────────────────────────────────────────
+        let Some(stato) = app.try_state::<Stato>() else {
+            break Fine::Uscita;
+        };
+        let schede = match con_libreria(&stato, |libreria| {
+            volume::candidati(&libreria.connection, adesso_ms(), volume::LOTTO)
+        }) {
+            Ok(schede) => schede,
+            Err(err) => {
+                nota!(
+                    "[analisi] lotto del volume non letto codice={} causa={}",
+                    err.code().kind().code(),
+                    err.cause().unwrap_or("—")
+                );
+                break Fine::Guasto;
+            }
+        };
+        if schede.is_empty() {
+            break Fine::Finito;
+        }
+
+        // ── in mezzo: nessun lucchetto. ─────────────────────────────────────
+        let misurati = misura_intensita(&schede);
+        let fermarsi = misurati
+            .iter()
+            .any(|m| matches!(m, volume::Misurato::NonRaggiungibile));
+        let buoni: Vec<volume::Misurato> = misurati
+            .into_iter()
+            .filter(|m| !matches!(m, volume::Misurato::NonRaggiungibile))
+            .collect();
+
+        // ── finestra 2: scrivere. ───────────────────────────────────────────
+        if !buoni.is_empty() {
+            let scritto = con_libreria(&stato, |libreria| {
+                let tx = libreria
+                    .connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .map_err(|err| db_errore("apertura della transazione del volume", &err))?;
+                let quanti = volume::registra(&tx, &buoni, adesso_ms())?;
+                tx.commit()
+                    .map_err(|err| db_errore("chiusura della transazione del volume", &err))?;
+                Ok(quanti)
+            });
+            match scritto {
+                Ok(quanti) => fatti = fatti.saturating_add(quanti),
+                Err(err) => {
+                    nota!(
+                        "[analisi] misure del volume non scritte codice={} causa={}",
+                        err.code().kind().code(),
+                        err.cause().unwrap_or("—")
+                    );
+                    break Fine::Guasto;
+                }
+            }
+        }
+        if fermarsi {
+            break Fine::Irraggiungibile;
+        }
+    };
+    if fatti > 0 {
+        nota!("[analisi] {fatti} brani misurati per il volume ({fine:?})");
+    }
+    fine
+}
+
+/// Misura un lotto su [`FILI_INTENSITA`] fili, senza tenere niente.
+///
+/// Ogni filo ha un [`Operaio`] suo: un filo creato per brano sarebbe uno ogni
+/// pochi decimi di secondo, e l'operaio distingue un brano che fa cadere il
+/// decodificatore da uno che non torna — le due cose che qui vanno trattate
+/// all'opposto. Prima di ogni brano si guarda se la musica è ripartita: i
+/// brani rimasti non si misurano, non si scrivono, e restano candidati.
+fn misura_intensita(schede: &[SchedaSorgente]) -> Vec<volume::Misurato> {
+    if schede.is_empty() {
+        return Vec::new();
+    }
+    let per_filo = schede.len().div_ceil(FILI_INTENSITA).max(1);
+    std::thread::scope(|ambito| {
+        let mani: Vec<_> = schede
+            .chunks(per_filo)
+            .map(|pezzo| {
+                ambito.spawn(move || {
+                    let mut operaio = Operaio::nuovo(INTENSITA_NOME);
+                    pezzo
+                        .iter()
+                        .take_while(|_| {
+                            !SUONA.load(Ordering::Relaxed) && !crate::spegnimento::in_uscita()
+                        })
+                        .map(|scheda| misura_volume(&mut operaio, scheda))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        mani.into_iter()
+            .filter_map(|mano| mano.join().ok())
+            .flatten()
+            .collect()
+    })
+}
+
+/// Un brano, con una scadenza che cresce con la sua durata.
+fn misura_volume(operaio: &mut Operaio, scheda: &SchedaSorgente) -> volume::Misurato {
+    let copia = scheda.clone();
+    match operaio.esegui(scadenza_volume(scheda), move || {
+        volume::misura(&aether_app::files::LocalFiles, &copia)
+    }) {
+        Ok(misurato) => misurato,
+        // Il file è arrivato ed è il contenuto a essere storto: si segna, e
+        // si ritenta fra un mese come ogni illeggibile.
+        Err(Mancato::Caduto { messaggio }) => {
+            nota!(
+                "[analisi] il decodificatore è caduto misurando il volume brano={} causa={}",
+                scheda.track_id,
+                messaggio.as_deref().unwrap_or("—")
+            );
+            volume::Misurato::Negata {
+                track_id: scheda.track_id,
+                esito: volume::ILLEGGIBILE,
+            }
+        }
+        Err(Mancato::Scaduto) => volume::Misurato::NonRaggiungibile,
+    }
+}
+
+/// Quanto si concede a un brano: la base più la sua durata a
+/// [`VELOCITA_MINIMA`].
+fn scadenza_volume(scheda: &SchedaSorgente) -> Duration {
+    let durata = Duration::from_millis(u64::try_from(scheda.durata_ms).unwrap_or(0));
+    SCADENZA_INTENSITA.saturating_add(durata / VELOCITA_MINIMA)
+}
+
 /// Un guasto del database, nella forma del catalogo.
 ///
 /// Delega a [`aether_app::db::codice_da_sqlite`], che guarda il codice di SQLite
@@ -457,6 +666,27 @@ mod prove {
     #[test]
     fn un_lotto_vuoto_non_misura_niente() {
         assert!(misura_lotto(&[]).is_empty());
+        assert!(misura_intensita(&[]).is_empty());
+    }
+
+    /// La scadenza della misura cresce con la durata, e non scende mai sotto
+    /// la base: un brano di durata ignota ha comunque il tempo di aprirsi.
+    #[test]
+    fn la_scadenza_del_volume_cresce_con_la_durata() {
+        let scheda = |durata_ms| SchedaSorgente {
+            track_id: 1,
+            collocazione: aether_app::playback::Collocazione::File("x.flac".to_owned()),
+            durata_ms,
+            replaygain_db: None,
+            picco: None,
+        };
+        assert_eq!(scadenza_volume(&scheda(0)), SCADENZA_INTENSITA);
+        assert_eq!(scadenza_volume(&scheda(-5)), SCADENZA_INTENSITA);
+        // Un'ora: tre minuti in più.
+        assert_eq!(
+            scadenza_volume(&scheda(3_600_000)),
+            SCADENZA_INTENSITA + Duration::from_secs(180)
+        );
     }
 
     /// La divisione in pezzi copre tutte le schede, comunque siano tante.

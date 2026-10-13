@@ -118,8 +118,7 @@ pub fn aggiungi(
     let adesso = now_ms();
     let mut esito = Aggiunti::default();
 
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("aggiunta di brani di catalogo", &err))?;
     {
         let mut statement = tx
@@ -205,8 +204,7 @@ pub fn aggiungi(
 ///
 /// `db.queryFailed` se la scrittura fallisce.
 pub fn togli(connection: &mut Connection, fonte: &str, fonte_url: &str) -> Result<bool, AppError> {
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("rimozione di un brano di catalogo", &err))?;
     let tolte = tx
         .execute(
@@ -447,8 +445,7 @@ fn fra_i_desiderati(
     let provenienza = format!("cercato: {}", frase.trim());
     let mut scritte = 0_usize;
 
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("lista della spesa", &err))?;
     {
         let mut statement = tx

@@ -33,12 +33,26 @@
  *
  * `esito` è il quarto e non è un livello d'errore: compare una volta sola in
  * tutto il flusso, per il viaggio di ritorno.
+ *
+ * # E uno che non è di questo flusso
+ *
+ * In fondo c'è `AvvisoDatabase`, l'avviso globale di database danneggiato. Non
+ * usa i tre livelli — non è il guasto di un gesto, è una condizione della
+ * sessione — ma è un avviso, e questo è il file degli avvisi.
  */
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
-import { dettaglioErrore, eErroreIpc, eRitentabile, testoErrore } from "../ipc";
+import {
+  dettaglioErrore,
+  eErroreIpc,
+  eRitentabile,
+  ipc,
+  testoErrore,
+  type SaluteDatabase,
+} from "../ipc";
 import { Icona, type NomeIcona } from "./Icone";
 import { t } from "../lingue";
+import { useAscolto } from "../pagine";
 
 export type Livello = "nota" | "avviso" | "blocco" | "esito";
 
@@ -170,5 +184,80 @@ export function AvvisoErrore({
       {testoErrore(errore)}
       {dettaglio !== null && <span className="dettaglio-errore">{dettaglio}</span>}
     </Avviso>
+  );
+}
+
+/**
+ * Il database della libreria è danneggiato: lo si dice in cima a ogni pagina,
+ * e finché la sessione dura.
+ *
+ * # Perché un avviso suo, e non l'errore della fascia
+ *
+ * Il controllo lo fa il nucleo da solo, un minuto dopo l'avvio
+ * (`manutenzione.rs`), e fino a qui l'esito si leggeva soltanto aprendo
+ * Impostazioni › Libreria e dati: chi non ci andava continuava a votare, a
+ * mettere cuori e a costruire playlist dentro un file rotto, cioè proprio le
+ * cose che un file rotto può perdere. La fascia d'errore non andava bene: si
+ * chiude con una X, e la prossima riga rossa la sostituisce. Questo invece non
+ * si chiude e non si sostituisce — il danno non passa chiudendo un avviso, e
+ * un avviso che sparisce mentre il danno resta direbbe il contrario del vero.
+ *
+ * # Perché chiede anche all'apertura
+ *
+ * L'evento `manutenzione:salute` passa una volta per sessione. Una finestra
+ * ricaricata dopo quel minuto non lo riceve più, e senza una domanda sua
+ * mostrerebbe una libreria sana sopra un database che il nucleo sa rotto. La
+ * domanda (`manutenzione_salute`) costa la lettura di un `Mutex`, e una
+ * risposta che arriva in ritardo può soltanto accendere l'avviso, mai spegnerlo
+ * sopra un evento più recente.
+ *
+ * # Cosa dice di fare
+ *
+ * Le due strade di `db/manutenzione.rs`: il profilo, che mette al sicuro voti,
+ * preferiti e playlist in un file a parte, e la copia `aether.db.schema-NNN.bak`
+ * che il nucleo scrive prima di ogni migrazione. Prima il profilo: è l'unica
+ * delle due che non perde quel che è cambiato dopo l'ultima migrazione. Il
+ * tasto porta dove stanno tutte e due le cose — il percorso della cartella dati
+ * e l'esportazione del profilo — invece di provare a fare da qui un gesto che
+ * ha bisogno di un dialogo di sistema e di una decisione.
+ */
+export function AvvisoDatabase({ onVaiAiDati }: { onVaiAiDati: () => void }) {
+  const [danneggiato, setDanneggiato] = useState(false);
+
+  useEffect(() => {
+    let vivo = true;
+    ipc
+      .manutenzioneSalute()
+      .then((salute) => {
+        if (vivo && salute.esito === "danneggiato") setDanneggiato(true);
+      })
+      // Un guasto qui non si mostra: sarebbe un avviso rosso per dire che non
+      // si è riusciti a sapere se mostrarne uno.
+      .catch(() => undefined);
+    return () => {
+      vivo = false;
+    };
+  }, []);
+
+  useAscolto<SaluteDatabase>("manutenzione:salute", (salute) =>
+    setDanneggiato(salute.esito === "danneggiato"),
+  );
+
+  if (!danneggiato) return null;
+  const dove = `${t("nav.settings")} › ${t("settings.section.dati")}`;
+  return (
+    <div className="errore toast-card" role="alert" data-avviso="database">
+      <Icona nome="i-alert" dim={16} />
+      <span>
+        <strong>{t("db.damaged.what")}</strong> {t("db.damaged.how", { dove })}
+      </span>
+      <button
+        type="button"
+        className="bottone minuto btn-ghost"
+        onClick={onVaiAiDati}
+      >
+        {t("db.damaged.go", { dove: t("settings.section.dati") })}
+      </button>
+    </div>
   );
 }

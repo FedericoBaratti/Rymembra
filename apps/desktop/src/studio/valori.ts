@@ -170,18 +170,6 @@ export function costoDi(
   return effetti.find((e) => e.name === quale)?.cost ?? 0;
 }
 
-/** Il costo sommato di una pila di livelli. */
-export function costoPila(
-  livelli: readonly unknown[],
-  effetti: readonly EffettoRegistro[],
-  motivi: Motivi = {},
-): number {
-  return livelli.reduce<number>(
-    (somma, livello) => somma + costoDi(livello, effetti, motivi),
-    0,
-  );
-}
-
 /**
  * Il colore di un costo, per classe.
  *
@@ -193,4 +181,60 @@ export function coloreCosto(costo: number, budget: number): string {
   if (costo >= budget) return "var(--danger)";
   if (costo > 1) return "var(--warning)";
   return "var(--success)";
+}
+
+/**
+ * Il colore che un valore dipinge **nella bozza**, per un campione.
+ *
+ * `tinta` risolve un `$token` con la variabile CSS, e nello Studio quella
+ * variabile la definisce la skin **indossata**, non la bozza: il campione di
+ * `color.accent` mostrava l'accento di Plain accanto al valore appena scelto.
+ * Qui i riferimenti si seguono nel documento — prima la variante, se è quella
+ * che si guarda, poi la base — fino a un letterale. Un token che la bozza non
+ * dichiara ripiega sulla variabile, che è il meglio che si sappia dire.
+ */
+export function tintaNel(
+  valore: unknown,
+  documento: Readonly<Record<string, unknown>> | null,
+  variante: boolean,
+  tokens: readonly TokenRegistro[],
+  profondita = 0,
+): string | null {
+  if (typeof valore === "string") return valore;
+  if (valore === null || typeof valore !== "object" || profondita > 8) return null;
+  const dentro = valore as Record<string, unknown>;
+  const radice = (documento ?? {}) as Record<string, unknown>;
+  const altra = ((radice["variant"] ?? {}) as Record<string, unknown>);
+  const cerca = (sezione: string, nome: string): unknown => {
+    const inVariante = variante
+      ? ((altra[sezione] ?? {}) as Record<string, unknown>)[nome]
+      : undefined;
+    return inVariante ?? ((radice[sezione] ?? {}) as Record<string, unknown>)[nome];
+  };
+  const conAlfa = (colore: string | null) => {
+    const alfa = dentro["alpha"];
+    if (colore === null || typeof alfa !== "number") return colore;
+    return `color-mix(in srgb, ${colore} ${Math.round(alfa * 100)}%, transparent)`;
+  };
+
+  const token = dentro["$token"];
+  if (typeof token === "string") {
+    const dichiarato = cerca("tokens", token);
+    if (dichiarato !== undefined) {
+      return tintaNel(dichiarato, documento, variante, tokens, profondita + 1);
+    }
+    const def = tokens.find((t) => t.id === token);
+    return def ? `var(${def.css})` : null;
+  }
+  const dalla = dentro["$palette"];
+  if (typeof dalla === "string") {
+    const scritto = cerca("palette", dalla);
+    return conAlfa(typeof scritto === "string" ? scritto : null);
+  }
+  // Una sorgente dinamica non ha un colore finché non c'è una copertina: il
+  // campione lo dice con l'arcobaleno, invece di inventarne uno.
+  if (typeof dentro["$source"] === "string") {
+    return "conic-gradient(from 90deg, #e8664f, #e9c46a, #58b37f, #4e8fd8, #a36bd6, #e8664f)";
+  }
+  return null;
 }

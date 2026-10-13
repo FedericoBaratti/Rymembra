@@ -50,6 +50,8 @@ import { useEffect, useRef } from "react";
 
 import { posizioneAdesso } from "./riproduzione";
 import { t, type Chiave } from "./lingue";
+import { modaleAperto, passaLaScorciatoia } from "./modale";
+import { nomiDi } from "./tasti";
 
 /** Di quanto si sposta il cursore con una freccia. */
 const PASSO_MS = 5_000;
@@ -154,39 +156,16 @@ export const DI_SERIE: Readonly<Record<Comando, readonly string[]>> = {
 /** Le associazioni in uso: per ogni comando, i tasti che lo eseguono. */
 export type Associazioni = Record<Comando, string[]>;
 
-/** I tasti che da soli non sono un tasto. */
-const SOLO_MODIFICATORI = new Set(["Control", "Shift", "Alt", "Meta", "OS"]);
-
 /** I tasti che non sono un carattere: `F1`…`F12`. */
 const FUNZIONE = /^F\d{1,2}$/;
 
-/**
- * Il nome stabile di un tasto premuto, modificatori compresi.
- *
- * `Meta` non entra mai: il tasto Windows appartiene al sistema operativo, e una
- * scorciatoia che ci sopra non la vedremmo comunque arrivare per intera.
- * Restituisce `null` quando è stato premuto soltanto un modificatore — cioè
- * mentre si sta ancora componendo la combinazione, che è esattamente l'istante
- * in cui la cattura non deve concludere niente.
+/*
+ * Il nome di un tasto premuto sta in `tasti.ts`, che è puro e si prova: qui si
+ * riesporta perché la scheda delle scorciatoie lo cattura con la stessa
+ * funzione con cui l'ascoltatore lo riconosce. Là c'è anche il ripiego sulla
+ * posizione del tasto, per le tastiere che non scrivono lettere latine.
  */
-export function tastoDi(e: {
-  key: string;
-  ctrlKey: boolean;
-  shiftKey: boolean;
-  altKey: boolean;
-  metaKey: boolean;
-}): string | null {
-  if (e.metaKey || SOLO_MODIFICATORI.has(e.key)) return null;
-  const parti: string[] = [];
-  if (e.ctrlKey) parti.push("Ctrl");
-  if (e.shiftKey) parti.push("Shift");
-  if (e.altKey) parti.push("Alt");
-  // Una lettera si normalizza in minuscolo: con `Shift` premuto `e.key` è
-  // maiuscola, e `Shift+F` e `Shift+f` sarebbero due associazioni diverse per
-  // la stessa pressione.
-  parti.push(e.key === " " ? "Space" : e.key.length === 1 ? e.key.toLowerCase() : e.key);
-  return parti.join("+");
-}
+export { tastoDi } from "./tasti";
 
 /** Come si legge un tasto a schermo. */
 export function tastoScritto(tasto: string): string {
@@ -200,6 +179,13 @@ export function tastoScritto(tasto: string): string {
     ArrowDown: "↓",
     Enter: t("keys.enter"),
     Escape: t("keys.esc"),
+    // Scritti nella lingua: sulle tastiere italiane i tasti dicono «PagSu» e
+    // «Fine», e un elenco di scorciatoie in un'altra lingua manda a cercare un
+    // tasto che sulla tastiera non c'è scritto così.
+    PageUp: t("keys.pageUp"),
+    PageDown: t("keys.pageDown"),
+    Home: t("keys.home"),
+    End: t("keys.end"),
   };
   return tasto
     .split("+")
@@ -449,7 +435,14 @@ function esegui(comando: Comando, azioni: Azioni): void {
   }
 }
 
-export function useScorciatoie(azioni: Azioni, associazioni: Associazioni): void {
+export function useScorciatoie(
+  azioni: Azioni,
+  associazioni: Associazioni,
+  /** Spente mentre qualcosa si prende la tastiera intera: lo Studio. */
+  attive = true,
+): void {
+  const accese = useRef(attive);
+  accese.current = attive;
   // In un ref, e l'effetto senza dipendenze: `azioni` arriva come oggetto
   // scritto sul posto, quindi la sua identità cambia a ogni disegno di `App`.
   // Tenerlo fra le dipendenze voleva dire togliere e rimettere l'ascoltatore
@@ -473,6 +466,7 @@ export function useScorciatoie(azioni: Azioni, associazioni: Associazioni): void
 
   useEffect(() => {
     const ascolta = (e: KeyboardEvent) => {
+      if (!accese.current) return;
       const azioni = ultime.current;
 
       if (e.key === "Escape") {
@@ -483,14 +477,36 @@ export function useScorciatoie(azioni: Azioni, associazioni: Associazioni): void
           e.preventDefault();
           return;
         }
+        // Con una finestrella aperta Escape è suo, e lo prende sul suo nodo
+        // (`finestrella.ts`). Se arriva fin qui il fuoco era fuori da lei, e la
+        // scala dietro il velo non deve perdere un livello per un tasto che
+        // nessuno le ha rivolto.
+        if (modaleAperto()) return;
         if (azioni.chiudi()) e.preventDefault();
         return;
       }
 
-      const tasto = tastoDi(e);
-      if (tasto === null) return;
-      const comando = mappa.current.get(tasto);
+      // Il carattere prima, la posizione poi: `Ctrl+F` su una tastiera russa
+      // arriva come `Ctrl+а`, e si riconosce dal tasto su cui sta. Vedi
+      // `tasti.ts` per quando la posizione conta e quando no.
+      let comando: Comando | undefined;
+      for (const tasto of nomiDi(e)) {
+        comando = mappa.current.get(tasto);
+        if (comando !== undefined) break;
+      }
       if (comando === undefined) return;
+
+      // Con un modale aperto passano solo lo zoom e lo schermo intero, accordi
+      // compresi: `Ctrl+L` sopra una conferma apriva «Importa da un link» dietro
+      // il velo. La regola, e il perché di quei due, sta in `modale.ts`. Un
+      // modale è una finestrella aperta (il conto di `useFinestrella`) o un
+      // pannello `aria-modal` che ha il fuoco, come l'equalizzatore. Niente
+      // `preventDefault`: il tasto resta a chi ce l'ha, e `Ctrl+C` copia.
+      const sottoUnModale =
+        modaleAperto() ||
+        (e.target instanceof Element &&
+          e.target.closest("[aria-modal='true']") !== null);
+      if (!passaLaScorciatoia(comando, sottoUnModale)) return;
 
       // Un accordo con `Ctrl` o `Alt` passa anche mentre si scrive, e con esso
       // i tasti funzione, che nessuna parola contiene; un tasto nudo no. Vedi il

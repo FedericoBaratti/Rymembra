@@ -8,8 +8,14 @@
 //! come chiederebbe qualunque immagine: in parallelo, con la sua cache, e
 //! scartando quelle che escono dallo schermo.
 //!
-//! L'indirizzo è `aether-cover://localhost/<impronta>` per la copertina piena e
+//! L'indirizzo è `aether-cover://localhost/<impronta>` per la copertina piena,
+//! `aether-cover://localhost/<impronta>.m` per la media (le schede delle
+//! griglie, vedi `MAX_LATO_MEDIA` nel nucleo) e
 //! `aether-cover://localhost/<impronta>.t` per la miniatura.
+//!
+//! La media è l'unica che può non esserci ancora: nasce dalla piena alla prima
+//! richiesta, ed è per questo che qui si passa da [`CoverStore::media`] invece
+//! che da una lettura di file come per le altre due.
 //!
 //! # Perché l'impronta e non il percorso
 //!
@@ -19,10 +25,37 @@
 //! richiesta con dentro un separatore non è un percorso da normalizzare — è una
 //! richiesta che non può essere legittima, e si rifiuta.
 
+use aether_app::covers::CoverStore;
 use tauri::http;
 use tauri::{Manager as _, UriSchemeContext, UriSchemeResponder};
 
 use crate::stato::Stato;
+
+/// Quale delle tre misure chiede un indirizzo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Misura {
+    /// `<impronta>.t`: le righe degli elenchi.
+    Miniatura,
+    /// `<impronta>.m`: le schede delle griglie.
+    Media,
+    /// `<impronta>`: dove la copertina è il soggetto.
+    Piena,
+}
+
+/// L'impronta e la misura, dal percorso dell'indirizzo.
+///
+/// Solo la separazione: se quel che resta sia un'impronta lo dice
+/// [`e_un_impronta`], dopo. Un suffisso sconosciuto — `.x` — resta attaccato
+/// all'impronta, e il controllo dell'alfabeto lo rifiuta per via del punto.
+fn misura_da(percorso: &str) -> (&str, Misura) {
+    if let Some(impronta) = percorso.strip_suffix(".t") {
+        (impronta, Misura::Miniatura)
+    } else if let Some(impronta) = percorso.strip_suffix(".m") {
+        (impronta, Misura::Media)
+    } else {
+        (percorso, Misura::Piena)
+    }
+}
 
 /// Un'impronta è esadecimale e basta.
 ///
@@ -60,10 +93,8 @@ pub fn servi(
     responder: UriSchemeResponder,
 ) {
     let percorso = request.uri().path().trim_start_matches('/').to_owned();
-    let (impronta, miniatura) = match percorso.strip_suffix(".t") {
-        Some(resto) => (resto.to_owned(), true),
-        None => (percorso, false),
-    };
+    let (impronta, misura) = misura_da(&percorso);
+    let impronta = impronta.to_owned();
 
     if !e_un_impronta(&impronta) {
         responder.respond(risposta(400, "text/plain", b"impronta non valida".to_vec()));
@@ -80,11 +111,6 @@ pub fn servi(
         responder.respond(risposta(503, "text/plain", b"libreria non aperta".to_vec()));
         return;
     };
-    let file = if miniatura {
-        copertine.thumbnail_path_for(&impronta)
-    } else {
-        copertine.path_for(&impronta)
-    };
 
     // Nessun lucchetto è stato preso, e la lettura va comunque su un altro
     // thread. Le due cose sono separate e servono a due guasti diversi.
@@ -100,14 +126,37 @@ pub fn servi(
     //
     // Il thread: la lettura è un `read` su disco, e questo resta il filo della
     // finestra. Non deve tenere fermo né lo stato né chi ha mandato la richiesta.
+    // Per la media vale il doppio: la prima volta è una decodifica e una
+    // ricodifica, qualche millisecondo per copertina e trenta copertine per
+    // schermata.
     tauri::async_runtime::spawn_blocking(move || {
-        match std::fs::read(&file) {
-            Ok(bytes) => responder.respond(risposta(200, "image/jpeg", bytes)),
+        match leggi(&copertine, &impronta, misura) {
+            Some(bytes) => responder.respond(risposta(200, "image/jpeg", bytes)),
             // Una copertina che manca non è un guasto: è un album senza
             // immagine, e l'interfaccia ha già un ripiego da mostrare.
-            Err(_) => responder.respond(risposta(404, "text/plain", Vec::new())),
+            None => responder.respond(risposta(404, "text/plain", Vec::new())),
         }
     });
+}
+
+/// I byte di una misura, o `None` se non ci sono.
+///
+/// Una media che non si riesce a fare — la piena illeggibile, la cartella in
+/// sola lettura — vale come una copertina che manca: la finestra mostra il
+/// segnaposto, e il motivo va nel diario invece che in un avviso rosso per
+/// un quadratino.
+fn leggi(copertine: &CoverStore, impronta: &str, misura: Misura) -> Option<Vec<u8>> {
+    match misura {
+        Misura::Miniatura => std::fs::read(copertine.thumbnail_path_for(impronta)).ok(),
+        Misura::Piena => std::fs::read(copertine.path_for(impronta)).ok(),
+        Misura::Media => match copertine.media(impronta) {
+            Ok(byte) => byte,
+            Err(guasto) => {
+                crate::nota!("[copertine] la media di {impronta} non si fa: {guasto}");
+                None
+            }
+        },
+    }
 }
 
 #[cfg(test)]
@@ -125,5 +174,50 @@ mod tests {
         assert!(!e_un_impronta("a3f9.jpg"));
         assert!(!e_un_impronta("C:\\Windows"));
         assert!(!e_un_impronta(&"a".repeat(129)));
+    }
+
+    #[test]
+    fn il_suffisso_dice_la_misura() {
+        assert_eq!(misura_da("a3f9"), ("a3f9", Misura::Piena));
+        assert_eq!(misura_da("a3f9.t"), ("a3f9", Misura::Miniatura));
+        assert_eq!(misura_da("a3f9.m"), ("a3f9", Misura::Media));
+        // Un suffisso che non è nostro resta attaccato, e il punto lo fa
+        // rifiutare dal controllo dell'impronta.
+        let (impronta, misura) = misura_da("a3f9.x");
+        assert_eq!(misura, Misura::Piena);
+        assert!(!e_un_impronta(impronta));
+        // Due suffissi non sono una misura.
+        let (impronta, _) = misura_da("a3f9.m.t");
+        assert!(!e_un_impronta(impronta));
+    }
+
+    #[test]
+    fn le_tre_misure_si_leggono_dallo_store() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        // Un PNG vero da due per due, scritto a byte: questo crate non dipende
+        // da `image`, e per provare che le tre misure si leggono non serve
+        // un'immagine grande — serve che lo store la sappia decodificare.
+        const PNG: [u8; 75] = [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0xFD, 0xD4, 0x9A, 0x73, 0x00, 0x00, 0x00, 0x12, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x38, 0x91, 0x62, 0x74, 0x22, 0xC5, 0x88, 0x01, 0x42, 0x01, 0x00, 0x28,
+            0xAE, 0x05, 0x79, 0xA2, 0x98, 0x47, 0x51, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+            0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        let salvata = store
+            .store(&PNG, aether_app::covers::CoverSource::Tag)
+            .expect("salvataggio");
+        for misura in [Misura::Miniatura, Misura::Media, Misura::Piena] {
+            assert!(leggi(&store, &salvata.hash, misura).is_some(), "{misura:?}");
+        }
+        // La media è nata alla richiesta, accanto alle altre due.
+        assert!(store.percorso_media(&salvata.hash).exists());
+        // Un'impronta senza file: niente, per tutte e tre.
+        let assente = "cd".repeat(32);
+        for misura in [Misura::Miniatura, Misura::Media, Misura::Piena] {
+            assert!(leggi(&store, &assente, misura).is_none(), "{misura:?}");
+        }
     }
 }

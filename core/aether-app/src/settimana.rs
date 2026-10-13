@@ -193,8 +193,7 @@ pub fn aggiorna(
     // WAL vuol dire prendere il lucchetto dello scrittore e tenerlo per tutto
     // il tempo della domanda, mentre chi chiama tiene già quello della libreria.
     if !gia_generate(connection, lunedi)? {
-        let tx = connection
-            .transaction()
+        let tx = crate::library::transazione_di_scrittura(connection)
             .map_err(|err| db_error("apertura della settimana", &err))?;
         genera(&tx, lunedi, adesso)?;
         tx.commit()

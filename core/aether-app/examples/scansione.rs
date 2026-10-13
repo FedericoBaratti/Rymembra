@@ -68,8 +68,8 @@ fn main() {
         covers: store.clone(),
         roots: &roots,
         rules: PathRules::for_current_platform(),
-        // Un esempio lo si lancia a mano e se ne legge l'esito: la guardia
-        // contro le stragi non presidiate qui non serve.
+        // Un esempio lo si lancia a mano e se ne legge l'esito: le rimozioni
+        // che la guardia trattiene tornano una per una, e qui si stampano.
         prudente: false,
         scadenze: Scadenze::default(),
         // Da riga di comando si annulla con Ctrl+C, che non passa di qui.
@@ -130,6 +130,19 @@ fn main() {
     println!("aggiornati    {}", esito.updated);
     println!("spostati      {}", esito.moved);
     println!("tolti         {}", esito.removed);
+    if esito.rimozioni_rinviate > 0 {
+        println!(
+            "trattenuti    {} (troppi in una volta: niente è stato tolto)",
+            esito.rimozioni_rinviate
+        );
+    }
+    if esito.non_verificati > 0 {
+        println!(
+            "non verificati {} (sotto {} cartelle illeggibili)",
+            esito.non_verificati,
+            esito.rami_persi.len()
+        );
+    }
     println!("illeggibili   {}", esito.unreadable.len());
     println!(
         "copertine     {} ricodificate, {} già nello store",

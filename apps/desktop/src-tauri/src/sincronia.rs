@@ -38,7 +38,6 @@
 //! deposito butta via la memoria della passata, perché i documenti di una
 //! cartella non dicono niente su cosa c'è su un Drive.
 
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -56,6 +55,7 @@ use aether_sync::{Cartella, Magazzino, Memoria, Motore};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
+use crate::disparte::in_disparte;
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
@@ -315,20 +315,57 @@ pub fn sincronia_attiva(
 /// su un Drive, e tenerli fonderebbe due depositi che l'utente ha voluto
 /// separati.
 ///
+/// # Dove gira
+///
+/// In disparte, sul pool bloccante: controllare e creare la cartella tocca il
+/// disco, e la cartella scelta è spesso una condivisione di rete o quella di un
+/// client di sincronia che la tiene occupata. Fino alla 2.4.0 era `(async)`,
+/// cioè un *worker* del runtime fermo per tutto il tempo del disco.
+///
 /// # Errori
 ///
-/// `fs.pathInvalid` se il percorso non è una cartella utilizzabile.
+/// `fs.pathInvalid` se il percorso non è una cartella utilizzabile: vuoto, non
+/// assoluto, un file, o dentro una cartella che non esiste.
 /// `db.queryFailed` se la scrittura fallisce.
-#[tauri::command(async)]
-pub fn sincronia_magazzino(
-    stato: State<'_, Stato>,
-    sincronia: State<'_, StatoSincronia>,
+#[tauri::command]
+pub async fn sincronia_magazzino(
+    app: AppHandle,
     dove: String,
     cartella: Option<String>,
 ) -> Esito<StatoSincroniaIpc> {
+    in_disparte("deposito della sincronia", move || {
+        let (stato, sincronia) = stati(&app)?;
+        scegli_il_magazzino(&stato, &sincronia, &dove, cartella.as_deref())
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+/// I due stati che servono ai comandi che lavorano in disparte.
+///
+/// `try_state` e non `state`: alla chiusura gli stati se ne vanno, e `state`
+/// panica.
+fn stati(app: &AppHandle) -> Result<(State<'_, Stato>, State<'_, StatoSincronia>), AppError> {
+    match (app.try_state::<Stato>(), app.try_state::<StatoSincronia>()) {
+        (Some(stato), Some(sincronia)) => Ok((stato, sincronia)),
+        _ => {
+            Err(AppError::new(ErrorCode::SyncBusy)
+                .with_cause("lo stato della sincronia non c'è più"))
+        }
+    }
+}
+
+/// Il corpo di [`sincronia_magazzino`], in disparte.
+fn scegli_il_magazzino(
+    stato: &Stato,
+    sincronia: &StatoSincronia,
+    dove: &str,
+    cartella: Option<&str>,
+) -> Result<StatoSincroniaIpc, AppError> {
     (|| -> Result<(), AppError> {
-        let dove = match dove.as_str() {
-            "cartella" | "drive" => dove.as_str(),
+        let dove = match dove {
+            "cartella" | "drive" => dove,
             altro => {
                 return Err(AppError::new(ErrorCode::InternalUnexpected {
                     detail: Some(format!("deposito sconosciuto: {altro}")),
@@ -336,54 +373,62 @@ pub fn sincronia_magazzino(
             }
         };
         if dove == "cartella" {
-            let percorso = cartella.as_deref().unwrap_or("").trim().to_owned();
-            if percorso.is_empty() {
-                return Err(AppError::new(ErrorCode::FsPathInvalid { path: percorso }));
-            }
             // Si crea adesso e non alla prima passata: un percorso sbagliato deve
             // dirlo mentre l'utente è ancora davanti alla finestra che glielo ha
             // chiesto, non fra cinque minuti dentro un filo di sottofondo.
-            std::fs::create_dir_all(&percorso).map_err(|err| {
-                AppError::new(ErrorCode::FsPathInvalid {
-                    path: percorso.clone(),
-                })
-                .with_cause(err.to_string())
-            })?;
-            con_libreria(&stato, |libreria| {
-                settings::write(&libreria.connection, CHIAVE_CARTELLA, &percorso)
+            //
+            // E si crea **al più l'ultimo gradino**. Il percorso si scrive a
+            // mano in un campo di testo, e fino alla 2.4 era un
+            // `create_dir_all`: un errore di battitura diventava un albero di
+            // cartelle su un disco a caso. Le regole stanno in
+            // `crate::destinazioni`, accanto a quelle dei file che la finestra
+            // chiede di scrivere.
+            let percorso = crate::destinazioni::cartella_da_usare(cartella.unwrap_or(""))?;
+            con_libreria(stato, |libreria| {
+                settings::write(
+                    &libreria.connection,
+                    CHIAVE_CARTELLA,
+                    &percorso.to_string_lossy(),
+                )
             })?;
         }
-        con_libreria(&stato, |libreria| {
+        con_libreria(stato, |libreria| {
             settings::write(&libreria.connection, CHIAVE_DOVE, dove)
         })
-    })()
-    .map_err(errore)?;
+    })()?;
 
     sincronia.dimentica_la_memoria();
-    stato_ipc(&stato, &sincronia).map_err(errore)
+    // Una cartella scelta adesso passa i controlli per costruzione: se
+    // l'errore mostrato era quello della cartella vecchia, non vale più.
+    scorda_l_errore(sincronia);
+    stato_ipc(stato, sincronia)
 }
 
 /// Sincronizza adesso.
 ///
-/// `(async)`: la passata parla con Drive, e la scadenza di quelle richieste è
-/// di due minuti — un comando normale li passerebbe sul filo principale della
-/// finestra.
+/// In disparte: la passata parla con Drive, con due minuti di scadenza per
+/// richiesta, o legge una cartella che può stare su una condivisione di rete.
+/// Fino alla 2.4.0 era `(async)`, e quei minuti li passava su un *worker* del
+/// runtime — un posto in meno per ogni altro comando asincrono.
 ///
 /// # Errori
 ///
 /// `sync.busy` se una passata è già in corso; i codici del deposito altrimenti.
-#[tauri::command(async)]
-pub fn sincronia_adesso(app: AppHandle, sincronia: State<'_, StatoSincronia>) -> Esito<Resoconto> {
-    if sincronia
-        .in_corso
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        return Err(errore(AppError::new(ErrorCode::SyncBusy)));
-    }
-    let esito = passata_vera(&app);
-    ricorda(&app, &esito);
-    riferisci(&app);
-    esito.map_err(errore)
+#[tauri::command]
+pub async fn sincronia_adesso(app: AppHandle) -> Esito<Resoconto> {
+    in_disparte("sincronia", move || {
+        let (_, sincronia) = stati(&app)?;
+        if sincronia.in_corso.load(Ordering::Acquire) {
+            return Err(AppError::new(ErrorCode::SyncBusy));
+        }
+        let esito = passata_vera(&app);
+        ricorda(&app, &esito);
+        riferisci(&app);
+        esito
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 /// I dispositivi conosciuti.
@@ -460,7 +505,11 @@ pub fn sporca(app: &AppHandle) {
 ///
 /// Il ciclo sta in [`crate::stato::avvia_filo_periodico`]: è lo stesso della
 /// nuvola e dell'arricchimento, con altre tre durate.
+///
+/// Il primo giro, prima della prima passata, **rivaluta la cartella salvata**:
+/// vedi [`rivaluta_la_cartella`].
 pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
+    let mut rivalutata = false;
     let avviato = crate::stato::avvia_filo_periodico(
         "aether-sincronia",
         orecchio,
@@ -470,11 +519,72 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
         // Solo `Sporca` aspetta la raffica; `Subito` è una richiesta a mano, e
         // chi l'ha fatta sta guardando la finestra.
         |sveglia| *sveglia == Sveglia::Sporca,
-        move || passata(&app),
+        move || {
+            if !rivalutata {
+                rivalutata = true;
+                rivaluta_la_cartella(&app);
+            }
+            passata(&app);
+        },
     );
     if let Err(err) = avviato {
         nota!("[avvio] il filo della sincronia non è partito: {err}");
     }
+}
+
+/// Ricontrolla, una volta per avvio, la cartella di sincronia salvata.
+///
+/// # Perché
+///
+/// Fino alla 2.4 la cartella si scriveva com'era, e diventava un
+/// `create_dir_all`: un percorso relativo, uno con un `..`, uno con un `:` nel
+/// nome — cioè un flusso NTFS — passavano e restavano salvati. Dalla 3.0 la
+/// scelta passa da [`crate::destinazioni`], ma quel che era già scritto nel
+/// database no. Qui si rifà la stessa domanda sul valore salvato, **senza
+/// creare niente**: una cartella che non passa più le regole non si usa, e la
+/// sezione delle Impostazioni lo dice con l'errore che si mostra accanto alla
+/// cartella, finché qualcuno non ne sceglie un'altra.
+///
+/// Gira sul filo della sincronia e non nel `setup`: la forma si controlla
+/// senza disco, ma il resto della passata il disco lo tocca, e il `setup` è il
+/// filo della finestra.
+fn rivaluta_la_cartella(app: &AppHandle) {
+    let Some(stato) = app.try_state::<Stato>() else {
+        return;
+    };
+    let salvata = con_libreria(&stato, |libreria| {
+        Ok((
+            settings::read(&libreria.connection, CHIAVE_DOVE)?,
+            settings::read(&libreria.connection, CHIAVE_CARTELLA)?,
+        ))
+    });
+    let Ok((dove, Some(cartella))) = salvata else {
+        return;
+    };
+    if dove.as_deref().unwrap_or("cartella") != "cartella" || cartella.trim().is_empty() {
+        return;
+    }
+    if let Err(err) = crate::destinazioni::forma_ammessa(cartella.trim()) {
+        let err = err.with_cause(
+            "la cartella di sincronia salvata non passa più i controlli: va scelta di nuovo"
+                .to_owned(),
+        );
+        nota!(
+            "[sincronia] cartella salvata rifiutata codice={} causa={}",
+            err.code().kind().code(),
+            err.cause().unwrap_or("—")
+        );
+        ricorda(app, &Err(err));
+        riferisci(app);
+    }
+}
+
+/// Dimentica l'errore dell'ultima passata.
+fn scorda_l_errore(sincronia: &StatoSincronia) {
+    *sincronia
+        .ultimo_errore
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
 /// Una passata automatica. Non fallisce mai rumorosamente.
@@ -590,16 +700,32 @@ fn passata_vera(app: &AppHandle) -> Result<Resoconto, AppError> {
     let esito = esito?;
 
     // ── finestra 3: applicare quel che è stato deciso. ──────────────────────
-    let cambiamenti = con_libreria(&stato, |libreria| {
-        let cambiamenti = sincronia::applica(&mut libreria.connection, &esito.fuso, adesso)?;
+    // Solo se playlist e cartelle sono ancora quelle di `mio`: vedi
+    // `applica_se_ferma`. Un brano aggiunto a una playlist mentre la passata era
+    // in rete spariva, riscritto dalla sequenza fusa che non lo conosceva.
+    let applicato = con_libreria(&stato, |libreria| {
+        let cambiamenti =
+            sincronia::applica_se_ferma(&mut libreria.connection, &mio, &esito.fuso, adesso)?;
         // I dispositivi visti e non ancora accettati si registrano lo stesso,
         // come ignoti: è l'unico modo perché compaiano nell'elenco da cui li si
         // accetta. Un elenco che si popolasse solo dopo l'accettazione sarebbe
         // una porta la cui maniglia sta dall'altra parte.
         sincronia::intravisti(&libreria.connection, &esito.passata.ignoti, adesso)?;
-        settings::write(&libreria.connection, CHIAVE_ULTIMA, &adesso.to_string())?;
+        if cambiamenti.is_some() {
+            settings::write(&libreria.connection, CHIAVE_ULTIMA, &adesso.to_string())?;
+        }
         Ok(cambiamenti)
     })?;
+    let cambiamenti = applicato.unwrap_or_else(|| {
+        // Il comando che ha cambiato la libreria ha già chiesto una passata;
+        // la si chiede anche da qui, così non dipende dal fatto che se ne sia
+        // ricordato. Parte dopo la raffica, non subito: niente giri a vuoto.
+        nota!(
+            "[sincronia] playlist o cartelle cambiate durante la passata: niente applicato, si rifà"
+        );
+        sporca(app);
+        sincronia::Cambiamenti::default()
+    });
 
     Ok(Resoconto {
         quando_ms: adesso,
@@ -635,13 +761,18 @@ fn magazzino(
                     path: String::new(),
                 }));
             };
+            // Le stesse regole di quando la si sceglie, anche per quella
+            // salvata dalla 2.4 che non ci era mai passata: vedi
+            // [`rivaluta_la_cartella`]. Una cartella che non le passa non si
+            // usa, e non si crea niente fuori dall'ultimo gradino.
+            let radice = crate::destinazioni::cartella_da_usare(percorso)?;
             // I documenti vanno in una sottocartella e non nella radice: la
             // cartella che l'utente sceglie è quasi sempre una cartella di
             // Syncthing o di Dropbox che contiene già altro, e riempirgliela di
             // file `aether-*.json.gz` alla pari con i suoi è un modo di rendersi
             // antipatici che non serve a niente.
             Ok(Box::new(Cartella::nuova(
-                PathBuf::from(percorso).join(aether_sync::documento::CARTELLA),
+                radice.join(aether_sync::documento::CARTELLA),
             )))
         }
     }

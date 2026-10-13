@@ -27,7 +27,7 @@ import { AvvisoErrore } from "./Avvisi";
 import { Icona } from "./Icone";
 import { nomeSorgente } from "./Importazioni";
 import { PastigliaGradino, Tacche, fiduciaDi } from "./Incertezza";
-import { numero } from "../formato";
+import { nomeGenere, numero } from "../formato";
 import { t } from "../lingue";
 
 /** Una riga etichetta/numero. */
@@ -123,8 +123,9 @@ export function Rapporto({
             />
             <span>
               {t("report.summary", {
-                genere: esito.kind,
-                n: numero(esito.resolved),
+                // Il genere tradotto, e il numero vero: vedi `nomeGenere`.
+                genere: nomeGenere(esito.kind),
+                n: esito.resolved,
                 sorgente: nomeSorgente(esito.source),
               })}
             </span>

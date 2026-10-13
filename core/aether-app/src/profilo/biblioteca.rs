@@ -32,8 +32,9 @@
 //!
 //! # Cosa resta fuori, e non è una dimenticanza
 //!
-//! **Affinità** (`brano_vicino`, `track_impronta`, `impronta_scala`) e
-//! **settimana** (`settimana_raccolta`, `settimana_brano`). Sono derivati: si
+//! **Affinità** (`brano_vicino`, `track_impronta`, `impronta_scala`), le
+//! misure dell'**intensità** (`track_intensita`) e la **settimana**
+//! (`settimana_raccolta`, `settimana_brano`). Sono derivati: si
 //! ricalcolano dai brani che ci sono, e portarli vorrebbe dire garantirne la
 //! coerenza con una libreria che *non è quella da cui vengono*. Un'affinità
 //! calcolata su diciottomila brani e riversata su una libreria che ne ha

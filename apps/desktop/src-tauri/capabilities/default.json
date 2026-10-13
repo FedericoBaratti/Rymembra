@@ -1,14 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Quel che la finestra principale può fare. Elenco chiuso: ogni voce in più è una cosa che una pagina compromessa potrebbe chiamare.",
+  "description": "Quel che la finestra principale può fare, e niente di più. Elenco chiuso: ogni voce in più è una cosa che una pagina compromessa potrebbe chiamare, e ogni voce qui corrisponde a una chiamata che la pagina fa davvero. Ascoltare e smettere di ascoltare gli eventi (gli eventi del nucleo, il trascinamento di file, onResized e onScaleChanged dello spettro 3D); chiedere se la finestra è ridotta a icona (lo spettro 3D, che smette di disegnare); i due dialoghi di sistema, apri e salva. Niente core:default, che porterebbe con sé vassoio, menù, immagini da percorso ed emit; niente opener: il browser di sistema lo apre il nucleo, e i controlli della finestra passano dai comandi dell'applicazione.",
   "windows": ["main"],
   "permissions": [
-    "core:default",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:window:allow-is-minimized",
     "dialog:allow-open",
-    "dialog:allow-save",
-    "opener:allow-open-url"
+    "dialog:allow-save"
   ]
 }

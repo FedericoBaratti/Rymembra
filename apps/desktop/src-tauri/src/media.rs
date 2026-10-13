@@ -11,6 +11,11 @@
 //! e per tutto quel tempo era irraggiungibile se non tornandoci sopra col
 //! mouse.
 //!
+//! Questo modulo chiude la scheda nel riquadro del volume e i tasti della
+//! tastiera e delle cuffie. I tre pulsanti sotto l'anteprima nella barra delle
+//! applicazioni sono un'altra cosa — le SMTC non li danno — e li mette
+//! `crate::barra`, con gli stessi gesti di qui: vedi [`premi`].
+//!
 //! # Una registrazione sola per due cose
 //!
 //! Le `SystemMediaTransportControls` non sono soltanto la scheda che si vede:
@@ -37,11 +42,35 @@
 //! aggiornasse da un posto suo, prima o poi mostrerebbe un brano diverso da
 //! quello che suona — ed è il tipo di difetto che nessuno segnala, perché chi
 //! lo vede pensa di aver letto male.
+//!
+//! # Tre difetti che la 3.0 ha chiuso
+//!
+//! **La scheda restava vuota per ogni brano con la copertina.** Il percorso
+//! della copertina partiva come `file:///C:/…`; `souvlaki` toglie soltanto
+//! `file://` e passa a Windows `/C:/…`, che `StorageFile::GetFileFromPathAsync`
+//! rifiuta. L'errore usciva col `?` **prima** di `DisplayUpdater::Update`, cioè
+//! prima che titolo, artista, album e durata venissero consegnati, e qui lo si
+//! scartava in silenzio. Adesso l'indirizzo è quello che `souvlaki` sa
+//! trasformare in un percorso vero: vedi [`url_di_file`].
+//!
+//! **A coda finita restava l'ultimo brano.** `souvlaki` scrive solo i campi che
+//! riceve: `MediaMetadata::default()` non azzerava niente. Adesso si mandano
+//! stringhe vuote.
+//!
+//! **La copertina si ricaricava a ogni pausa.** Ogni stato passava la
+//! copertina, e ogni copertina è un file aperto e un'attesa del sistema: a ogni
+//! pausa, salto o ritocco della coda. Adesso la scheda si riscrive solo quando
+//! cambia, e la copertina solo quando cambia lei.
+//!
+//! E i tasti non fanno più aspettare il sistema: arrivano su un filo di
+//! Windows, e un «prossimo» su un brano che arriva dalla rete può durare
+//! quindici secondi. Vedi [`premi`].
 
 use std::ffi::c_void;
-use std::sync::Mutex;
-use std::sync::PoisonError;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use aether_app::covers::CoverStore;
@@ -113,14 +142,23 @@ pub struct StatoMedia {
     /// zero»: con un tetto a zero ogni salto in avanti tornerebbe all'inizio,
     /// che è un difetto peggiore di quello che il tetto viene a togliere.
     durata_ms: AtomicU64,
+    /// Il canale verso il filo che esegue i tasti. Vedi [`premi`].
+    tasti: OnceLock<Sender<Gesto>>,
 }
 
-/// I due pezzi che stanno insieme o non stanno affatto.
+/// I due pezzi che stanno insieme o non stanno affatto, e quel che si è già
+/// mostrato.
 struct Controlli {
     /// La maniglia verso il sistema operativo.
     controlli: MediaControls,
     /// Dove stanno le copertine su disco.
     copertine: CoverStore,
+    /// La scheda consegnata a Windows l'ultima volta che la consegna è
+    /// riuscita. Vedi [`Scheda`].
+    mostrata: Option<Scheda>,
+    /// L'ultima scheda che Windows ha rifiutato: serve a scriverlo nel diario
+    /// una volta sola invece che a ogni stato.
+    rifiutata: Option<Scheda>,
 }
 
 impl StatoMedia {
@@ -131,8 +169,31 @@ impl StatoMedia {
             controlli: Mutex::new(None),
             posizione_ms: AtomicU64::new(0),
             durata_ms: AtomicU64::new(0),
+            tasti: OnceLock::new(),
         }
     }
+}
+
+/// Quel che la scheda di Windows mostra, per sapere se è cambiato.
+///
+/// # Perché si confronta
+///
+/// Perché consegnare la scheda costa: `souvlaki` riscrive i quattro testi, la
+/// durata, e — se riceve una copertina — **apre il file** e aspetta il sistema
+/// finché non l'ha letto. Lo stato del lettore invece parte a ogni pausa, a
+/// ogni salto, a ogni ritocco della coda, e prima di questo confronto ognuno
+/// di loro riapriva la stessa copertina. Adesso la scheda si consegna solo se
+/// qualcosa di quel che mostra è cambiato, e la copertina solo se è cambiata
+/// lei: a `souvlaki` arriva `None`, e il sistema tiene quella che ha.
+#[derive(Clone, PartialEq, Eq)]
+struct Scheda {
+    track_id: Option<i64>,
+    titolo: String,
+    artista: String,
+    album: String,
+    /// L'indirizzo della copertina, già nella forma di [`url_di_file`].
+    copertina: Option<String>,
+    durata_ms: u64,
 }
 
 /// Registra i controlli e collega i tasti.
@@ -200,6 +261,8 @@ pub fn avvia(app: &tauri::AppHandle) {
     *dentro = Some(Controlli {
         controlli,
         copertine,
+        mostrata: None,
+        rifiutata: None,
     });
 }
 
@@ -238,6 +301,10 @@ pub fn stacca(app: &tauri::AppHandle) {
 /// composto**: comporlo una seconda volta vorrebbe dire una seconda lettura
 /// del brano dal database a ogni cambio, e soprattutto due risposte possibili
 /// alla stessa domanda.
+///
+/// Gira sul filo del seguito del lettore, non dentro il suo lucchetto: la
+/// consegna della copertina aspetta il sistema, e prima si aspettava con il
+/// lettore chiuso. Vedi `crate::riproduzione::in_ordine`.
 pub fn aggiorna(app: &tauri::AppHandle, stato: &StatoRiproduzione) {
     // `try_state` e non `state`: quest'ultima **va in panico** se lo stato non
     // è registrato, e chi chiama è anche il filo dell'orologio, che parte
@@ -264,31 +331,9 @@ pub fn aggiorna(app: &tauri::AppHandle, stato: &StatoRiproduzione) {
         return;
     };
 
-    // Il percorso della copertina va tenuto vivo per tutta la chiamata:
-    // `MediaMetadata` presta delle `&str` e non possiede niente.
-    let copertina = stato
-        .brano
-        .as_ref()
-        .and_then(|brano| brano.cover_art_hash.as_ref())
-        .map(|hash| controlli.copertine.path_for(hash))
-        .filter(|percorso| percorso.exists())
-        .and_then(|percorso| url_di_file(&percorso));
-
-    match stato.brano.as_ref() {
-        Some(brano) => {
-            let _ = controlli.controlli.set_metadata(MediaMetadata {
-                title: Some(&brano.title),
-                album: Some(&brano.album),
-                artist: Some(&brano.artist),
-                cover_url: copertina.as_deref(),
-                duration: Some(Duration::from_millis(stato.durata_ms)),
-            });
-        }
-        // Coda finita: si svuota la scheda invece di lasciarci l'ultimo brano,
-        // che altrimenti resterebbe lì a dire che sta suonando qualcosa.
-        None => {
-            let _ = controlli.controlli.set_metadata(MediaMetadata::default());
-        }
+    let scheda = scheda_di(stato, &controlli.copertine);
+    if controlli.mostrata.as_ref() != Some(&scheda) {
+        consegna(controlli, scheda);
     }
 
     let dove = Some(MediaPosition(Duration::from_millis(stato.posizione_ms)));
@@ -300,6 +345,134 @@ pub fn aggiorna(app: &tauri::AppHandle, stato: &StatoRiproduzione) {
         MediaPlayback::Playing { progress: dove }
     };
     let _ = controlli.controlli.set_playback(riproduzione);
+}
+
+/// Quel che la scheda deve mostrare per questo stato.
+///
+/// A coda finita la scheda è **vuota**, non assente: quattro stringhe vuote e
+/// la copertina di ripiego. `souvlaki` scrive soltanto i campi che riceve, e
+/// `MediaMetadata::default()` — che era quel che si mandava — non ne conteneva
+/// nessuno: la scheda restava lì a dire il titolo dell'ultimo brano.
+fn scheda_di(stato: &StatoRiproduzione, copertine: &CoverStore) -> Scheda {
+    let Some(brano) = stato.brano.as_ref() else {
+        return Scheda {
+            track_id: None,
+            titolo: String::new(),
+            artista: String::new(),
+            album: String::new(),
+            copertina: copertina_di_ripiego(),
+            durata_ms: 0,
+        };
+    };
+    let copertina = brano
+        .cover_art_hash
+        .as_ref()
+        .map(|hash| copertine.path_for(hash))
+        .filter(|percorso| percorso.exists())
+        .and_then(|percorso| url_di_file(&percorso))
+        // Un brano senza copertina mostra quella di ripiego, e non è un
+        // ornamento: senza, la scheda terrebbe la copertina del brano di prima
+        // — `souvlaki` non ha un modo di toglierla.
+        .or_else(copertina_di_ripiego);
+    Scheda {
+        track_id: Some(brano.id),
+        titolo: brano.title.clone(),
+        artista: brano.artist.clone(),
+        album: brano.album.clone(),
+        copertina,
+        durata_ms: stato.durata_ms,
+    }
+}
+
+/// Consegna la scheda a Windows, e ricorda com'è andata.
+///
+/// La copertina si passa solo se è cambiata: con `None` `souvlaki` lascia
+/// quella che c'è, ed è l'unico modo di non riaprire lo stesso file a ogni
+/// pausa.
+///
+/// # Quando Windows rifiuta
+///
+/// `souvlaki` consegna la copertina **prima** del resto e, se il sistema la
+/// rifiuta, esce senza consegnare niente: un file che non si apre costava
+/// titolo, artista e durata. Qui si riprova subito senza copertina, così la
+/// scheda almeno dice cosa suona; e la si dà per consegnata, perché riaprire lo
+/// stesso file a ogni stato non lo farebbe aprire meglio.
+///
+/// Ogni rifiuto si scrive nel diario una volta per scheda: prima veniva
+/// scartato in silenzio, ed è così che la scheda vuota è rimasta nascosta per
+/// tre versioni.
+fn consegna(controlli: &mut Controlli, scheda: Scheda) {
+    let copertina_nuova = controlli
+        .mostrata
+        .as_ref()
+        .is_none_or(|prima| prima.copertina != scheda.copertina);
+    let copertina = if copertina_nuova {
+        scheda.copertina.as_deref()
+    } else {
+        None
+    };
+    let metti = |controlli: &mut MediaControls, copertina: Option<&str>| {
+        controlli.set_metadata(MediaMetadata {
+            title: Some(&scheda.titolo),
+            album: Some(&scheda.album),
+            artist: Some(&scheda.artista),
+            cover_url: copertina,
+            duration: Some(Duration::from_millis(scheda.durata_ms)),
+        })
+    };
+    let mut esito = metti(&mut controlli.controlli, copertina);
+    if let Err(err) = &esito
+        && copertina.is_some()
+    {
+        if controlli.rifiutata.as_ref() != Some(&scheda) {
+            nota!(
+                "[media] la scheda di Windows non accetta la copertina del brano {:?}: {err:?}",
+                scheda.track_id
+            );
+        }
+        esito = metti(&mut controlli.controlli, None);
+    }
+    match esito {
+        Ok(()) => {
+            controlli.mostrata = Some(scheda);
+            controlli.rifiutata = None;
+        }
+        Err(err) => {
+            if controlli.rifiutata.as_ref() != Some(&scheda) {
+                nota!(
+                    "[media] la scheda di Windows non accetta il brano {:?}: {err:?}",
+                    scheda.track_id
+                );
+            }
+            // Quel che è stato consegnato a metà non si sa: la prossima volta
+            // si riparte da zero, copertina compresa.
+            controlli.mostrata = None;
+            controlli.rifiutata = Some(scheda);
+        }
+    }
+}
+
+/// La copertina per quando non ce n'è una: l'icona di Aether.
+///
+/// # Perché un file nella cartella temporanea
+///
+/// Perché la scheda di Windows vuole un file vero — vedi [`StatoMedia`] — e
+/// l'icona sta dentro l'eseguibile, non accanto. Si scrive una volta per
+/// processo, e si riscrive se nel frattempo qualcuno ha pulito la cartella.
+/// Nella cartella temporanea e non accanto al database, perché non è un dato:
+/// è un'immagine che l'applicazione sa rifare quando vuole.
+///
+/// `None` se non si riesce a scriverla: la scheda resta con la copertina che
+/// aveva, che è quel che succedeva prima.
+fn copertina_di_ripiego() -> Option<String> {
+    const ICONA: &[u8] = include_bytes!("../icons/128x128.png");
+    static PERCORSO: OnceLock<PathBuf> = OnceLock::new();
+    let percorso =
+        PERCORSO.get_or_init(|| std::env::temp_dir().join("aether-scheda-senza-copertina.png"));
+    if !percorso.exists() && aether_app::scrittura::scrivi_atomico(percorso, ICONA).is_err() {
+        return None;
+    }
+    url_di_file(percorso)
 }
 
 /// Aggiorna dove sta il brano, senza toccare la scheda.
@@ -317,61 +490,116 @@ pub fn segna_posizione(app: &tauri::AppHandle, ms: u64) {
     }
 }
 
-/// Un `file://` che Windows sappia aprire.
+/// L'indirizzo di una copertina, nella forma che `souvlaki` sa aprire.
 ///
-/// `Url::from_file_path` sarebbe la strada, ma vorrebbe dire dipendere da
-/// `url` qui per una riga. I percorsi di Windows hanno una sola stranezza che
-/// conta — le barre rovesce — e il resto lo si lascia stare: se un percorso
-/// contiene caratteri che vorrebbero la codifica percentuale, la scheda
-/// resterà senza immagine, che è esattamente quel che succedeva prima di
-/// questo modulo.
+/// # Non è un URL, ed è voluto
+///
+/// `souvlaki` 0.8.3, su Windows, fa una cosa sola con un indirizzo che
+/// comincia per `file://`: **toglie il prefisso** (`trim_start_matches`) e
+/// passa quel che resta a `StorageFile::GetFileFromPathAsync`, che vuole un
+/// percorso di Windows vero — lettera di unità e barre rovesce. Qui si
+/// costruiva un URL da manuale, `file:///C:/…`: tolto il prefisso restava
+/// `/C:/…`, che il sistema rifiuta, e con quel rifiuto saltava la scheda
+/// intera — vedi il preambolo del modulo.
+///
+/// La forma giusta è quindi il prefisso seguito dal percorso **così com'è**:
+/// `file://C:\Users\…`, che tolto il prefisso torna a essere
+/// `C:\Users\…`. Niente codifica percentuale, per la stessa ragione: spazi e
+/// lettere accentate devono arrivare al sistema tali e quali.
+///
+/// Il prefisso `\\?\` dei percorsi lunghi si toglie: `GetFileFromPathAsync`
+/// non lo accetta, e per una copertina — che sta in una cartella dell'utente —
+/// non serve.
 fn url_di_file(percorso: &std::path::Path) -> Option<String> {
     let testo = percorso.to_str()?;
-    Some(format!("file:///{}", testo.replace('\\', "/")))
+    let testo = if let Some(resto) = testo.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{resto}")
+    } else {
+        testo.strip_prefix(r"\\?\").unwrap_or(testo).to_owned()
+    };
+    Some(format!("file://{testo}"))
 }
 
-/// Un tasto premuto, o un comando arrivato dalla scheda del sistema.
+/// Un gesto sulla musica, da eseguire lontano da chi l'ha ricevuto.
 ///
-/// Ogni ramo passa dai comandi che esistono già invece di toccare il lettore:
-/// così un tasto della tastiera e il pulsante nella finestra fanno
-/// **letteralmente** la stessa cosa, salvataggio della coda e invio dello
-/// stato compresi.
-fn su_evento(app: &tauri::AppHandle, evento: MediaControlEvent) {
-    let lettore = app.state::<StatoLettore>();
-    let esito = match evento {
-        MediaControlEvent::Play => crate::riproduzione::riprendi(app.clone(), lettore),
-        MediaControlEvent::Pause => crate::riproduzione::pausa(app.clone(), lettore),
-        MediaControlEvent::Toggle => crate::riproduzione::alterna(app.clone(), lettore),
-        MediaControlEvent::Next => crate::riproduzione::prossimo(app.clone(), lettore),
-        MediaControlEvent::Previous => crate::riproduzione::precedente(app.clone(), lettore),
-        // `Stop` come pausa, di proposito: fermare davvero butterebbe la
-        // posizione, e il tasto stop di una tastiera lo si preme per
-        // interrompere, non per perdere il segno.
-        MediaControlEvent::Stop => crate::riproduzione::pausa(app.clone(), lettore),
-        // Anche questo passa dal tetto, che pure arriva già come posizione
-        // assoluta: il numero lo sceglie il sistema operativo — una barra
-        // trascinata nel riquadro del volume, un'auto collegata in Bluetooth —
-        // e la durata che quel sistema crede di avere è quella dell'ultimo
-        // [`aggiorna`], che può essere del brano di prima.
-        MediaControlEvent::SetPosition(MediaPosition(dove)) => {
-            crate::riproduzione::vai_a(app.clone(), lettore, dentro_il_brano(app, ms_di(dove)))
+/// Li mandano i tasti della scheda di Windows, il menù dell'icona nel vassoio
+/// e i pulsanti nell'anteprima della barra: vedi [`premi`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Gesto {
+    /// Riprendi.
+    Riprendi,
+    /// Pausa.
+    Pausa,
+    /// Pausa se suona, riprendi se è fermo.
+    Alterna,
+    /// Il brano dopo.
+    Prossimo,
+    /// Il brano prima, o da capo.
+    Precedente,
+    /// A questo millisecondo del brano.
+    VaiA(u64),
+}
+
+/// Esegue un gesto sul filo «aether-tasti», dietro a quelli arrivati prima.
+///
+/// # Perché un filo
+///
+/// Perché chi riceve il gesto non può aspettare. I tasti della scheda di
+/// Windows arrivano su un filo del sistema operativo, dentro il gestore che
+/// `souvlaki` gli ha registrato; il menù del vassoio arriva sul filo della
+/// finestra. E i comandi che eseguono il gesto possono aspettare parecchio:
+/// «prossimo» apre un file, e un brano che arriva dalla rete ha quindici
+/// secondi di scadenza. Per tutto quel tempo il sistema restava con un tasto
+/// in mano, o la finestra ferma.
+///
+/// Un filo solo, e non uno per gesto: due tasti premuti di fila — pausa e
+/// subito play — devono valere nell'ordine in cui sono stati premuti.
+///
+/// Parte al primo gesto, non all'avvio: chi non tocca mai un tasto non paga un
+/// filo.
+pub(crate) fn premi(app: &tauri::AppHandle, gesto: Gesto) {
+    let Some(media) = app.try_state::<StatoMedia>() else {
+        return;
+    };
+    let tasti = media.tasti.get_or_init(|| {
+        let (manda, ricevi) = std::sync::mpsc::channel::<Gesto>();
+        let mano = app.clone();
+        let avviato = std::thread::Builder::new()
+            .name("aether-tasti".to_owned())
+            .spawn(move || {
+                for gesto in ricevi {
+                    esegui(&mano, gesto);
+                }
+            });
+        if avviato.is_err() {
+            nota!("[media] il filo dei tasti non è partito: i gesti si eseguono sul posto");
         }
-        MediaControlEvent::Seek(verso) => {
-            let dove = salto(app, verso, PASSO_SALTO_MS);
-            crate::riproduzione::vai_a(app.clone(), lettore, dove)
-        }
-        MediaControlEvent::SeekBy(verso, quanto) => {
-            let dove = salto(app, verso, ms_di(quanto));
-            crate::riproduzione::vai_a(app.clone(), lettore, dove)
-        }
-        // Il volume del sistema non è il volume del lettore, e `OpenUri`
-        // chiederebbe di suonare qualcosa che non è in libreria. `Raise` e
-        // `Quit` sono gesti della finestra che la scheda non deve avere: da
-        // lì si comanda la musica, non il programma.
-        MediaControlEvent::SetVolume(_)
-        | MediaControlEvent::OpenUri(_)
-        | MediaControlEvent::Raise
-        | MediaControlEvent::Quit => Ok(()),
+        manda
+    });
+    // Canale chiuso: il filo non è partito. Si esegue qui, lenti come prima ma
+    // non muti.
+    if let Err(respinto) = tasti.send(gesto) {
+        esegui(app, respinto.0);
+    }
+}
+
+/// Il gesto, fatto con i comandi che esistono già.
+///
+/// Ogni ramo passa dai comandi della finestra invece di toccare il lettore:
+/// così un tasto della tastiera, una voce del vassoio e il pulsante nella
+/// finestra fanno **letteralmente** la stessa cosa, salvataggio della coda e
+/// invio dello stato compresi.
+fn esegui(app: &tauri::AppHandle, gesto: Gesto) {
+    let Some(lettore) = app.try_state::<StatoLettore>() else {
+        return;
+    };
+    let esito = match gesto {
+        Gesto::Riprendi => crate::riproduzione::riprendi(app.clone(), lettore),
+        Gesto::Pausa => crate::riproduzione::pausa(app.clone(), lettore),
+        Gesto::Alterna => crate::riproduzione::alterna(app.clone(), lettore),
+        Gesto::Prossimo => crate::riproduzione::prossimo(app.clone(), lettore),
+        Gesto::Precedente => crate::riproduzione::precedente(app.clone(), lettore),
+        Gesto::VaiA(ms) => crate::riproduzione::vai_a(app.clone(), lettore, ms),
     };
     if let Err(err) = esito {
         nota!(
@@ -380,6 +608,44 @@ fn su_evento(app: &tauri::AppHandle, evento: MediaControlEvent) {
             err.cause.unwrap_or_default()
         );
     }
+}
+
+/// Un tasto premuto, o un comando arrivato dalla scheda del sistema.
+///
+/// Gira sul filo del sistema operativo che ha ricevuto il tasto, e ci resta il
+/// meno possibile: traduce il tasto in un [`Gesto`] e lo consegna a [`premi`].
+/// I conti dei salti relativi si fanno qui, perché leggono due atomici e basta.
+fn su_evento(app: &tauri::AppHandle, evento: MediaControlEvent) {
+    let gesto = match evento {
+        MediaControlEvent::Play => Gesto::Riprendi,
+        MediaControlEvent::Pause => Gesto::Pausa,
+        MediaControlEvent::Toggle => Gesto::Alterna,
+        MediaControlEvent::Next => Gesto::Prossimo,
+        MediaControlEvent::Previous => Gesto::Precedente,
+        // `Stop` come pausa, di proposito: fermare davvero butterebbe la
+        // posizione, e il tasto stop di una tastiera lo si preme per
+        // interrompere, non per perdere il segno.
+        MediaControlEvent::Stop => Gesto::Pausa,
+        // Anche questo passa dal tetto, che pure arriva già come posizione
+        // assoluta: il numero lo sceglie il sistema operativo — una barra
+        // trascinata nel riquadro del volume, un'auto collegata in Bluetooth —
+        // e la durata che quel sistema crede di avere è quella dell'ultimo
+        // [`aggiorna`], che può essere del brano di prima.
+        MediaControlEvent::SetPosition(MediaPosition(dove)) => {
+            Gesto::VaiA(dentro_il_brano(app, ms_di(dove)))
+        }
+        MediaControlEvent::Seek(verso) => Gesto::VaiA(salto(app, verso, PASSO_SALTO_MS)),
+        MediaControlEvent::SeekBy(verso, quanto) => Gesto::VaiA(salto(app, verso, ms_di(quanto))),
+        // Il volume del sistema non è il volume del lettore, e `OpenUri`
+        // chiederebbe di suonare qualcosa che non è in libreria. `Raise` e
+        // `Quit` sono gesti della finestra che la scheda non deve avere: da
+        // lì si comanda la musica, non il programma.
+        MediaControlEvent::SetVolume(_)
+        | MediaControlEvent::OpenUri(_)
+        | MediaControlEvent::Raise
+        | MediaControlEvent::Quit => return,
+    };
+    premi(app, gesto);
 }
 
 /// Dove finisce un salto relativo, senza uscire dal brano.
@@ -436,26 +702,70 @@ fn ms_di(durata: Duration) -> u64 {
 mod prove {
     use super::*;
 
+    /// Quel che `souvlaki` 0.8.3 fa di un indirizzo `file://` su Windows,
+    /// riga per riga (`platform/windows/mod.rs`, `set_metadata`): se comincia
+    /// per `file://` toglie il prefisso e passa il resto a
+    /// `StorageFile::GetFileFromPathAsync`. `None` se non comincia così — lì
+    /// `souvlaki` prende un'altra strada, `Uri::CreateUri`, che per un file
+    /// locale non serve a niente.
+    fn percorso_che_souvlaki_consegna(url: &str) -> Option<&str> {
+        url.starts_with("file://")
+            .then(|| url.trim_start_matches("file://"))
+    }
+
     #[test]
-    fn un_percorso_di_windows_diventa_un_indirizzo_che_il_sistema_apre() {
-        // La lettera di unità e le barre rovesce sono la sola stranezza che
-        // conta: `C:\…` deve uscire come `file:///C:/…`, con tre barre.
-        assert_eq!(
-            url_di_file(std::path::Path::new(r"C:\Users\ada\copertine\ab.jpg")).as_deref(),
-            Some("file:///C:/Users/ada/copertine/ab.jpg")
+    fn souvlaki_consegna_a_windows_il_percorso_della_copertina_tale_e_quale() {
+        // Il difetto che la prova tiene chiuso: `file:///C:/…` diventava
+        // `/C:/…`, che Windows rifiuta, e con lui saltava la scheda intera.
+        // Quel che arriva al sistema dev'essere il percorso di partenza,
+        // lettera di unità e barre rovesce comprese.
+        let percorso = r"C:\Users\ada\AppData\Roaming\aether\copertine\ab\abcdef.jpg";
+        let url = url_di_file(std::path::Path::new(percorso)).expect("un percorso UTF-8");
+        assert_eq!(url, format!("file://{percorso}"));
+        assert_eq!(percorso_che_souvlaki_consegna(&url), Some(percorso));
+    }
+
+    #[test]
+    fn il_percorso_consegnato_e_assoluto_per_windows() {
+        // `GetFileFromPathAsync` vuole un percorso assoluto: è la proprietà che
+        // `/C:/…` perdeva. Su Windows lo sa dire `Path::is_absolute`.
+        let url = url_di_file(std::path::Path::new(r"D:\Musica\copertina.jpg"))
+            .expect("un percorso UTF-8");
+        let consegnato = percorso_che_souvlaki_consegna(&url).expect("comincia per file://");
+        assert!(
+            !consegnato.starts_with('/'),
+            "resta la barra davanti: {consegnato}"
+        );
+        #[cfg(windows)]
+        assert!(
+            std::path::Path::new(consegnato).is_absolute(),
+            "Windows non lo prende per assoluto: {consegnato}"
         );
     }
 
     #[test]
     fn gli_spazi_e_i_caratteri_non_ascii_si_lasciano_stare() {
-        // Documentato in [`url_di_file`]: niente codifica percentuale. Uno
-        // spazio o una lettera accentata passano tali e quali, e al massimo la
-        // scheda del sistema resta senza immagine — che è quel che succedeva
-        // prima che questo modulo esistesse. La prova sta qui perché il giorno
-        // in cui qualcuno aggiungesse una codifica a metà, se ne accorgerebbe.
+        // Niente codifica percentuale: `souvlaki` non la toglie, e un `%20`
+        // arriverebbe a Windows come tre caratteri veri di un nome che non
+        // esiste. Spazi e lettere accentate passano tali e quali.
+        let percorso = r"D:\Musica mia\Björk\è così.png";
+        let url = url_di_file(std::path::Path::new(percorso)).expect("un percorso UTF-8");
+        assert_eq!(percorso_che_souvlaki_consegna(&url), Some(percorso));
+    }
+
+    #[test]
+    fn un_percorso_lungo_perde_il_prefisso_che_windows_non_accetta() {
+        let url = url_di_file(std::path::Path::new(r"\\?\C:\copertine\ab.jpg"))
+            .expect("un percorso UTF-8");
         assert_eq!(
-            url_di_file(std::path::Path::new(r"D:\Musica mia\Björk\è così.png")).as_deref(),
-            Some("file:///D:/Musica mia/Björk/è così.png")
+            percorso_che_souvlaki_consegna(&url),
+            Some(r"C:\copertine\ab.jpg")
+        );
+        let rete = url_di_file(std::path::Path::new(r"\\?\UNC\nas\dati\ab.jpg"))
+            .expect("un percorso UTF-8");
+        assert_eq!(
+            percorso_che_souvlaki_consegna(&rete),
+            Some(r"\\nas\dati\ab.jpg")
         );
     }
 

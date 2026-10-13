@@ -143,6 +143,36 @@ fn classifica(name: &str) -> Option<Voce> {
     tipo(estensione).map(Voce::Risorsa)
 }
 
+/// Il tipo di una risorsa dal suo nome dentro `assets/`, se il nome è ammesso.
+///
+/// È la stessa regola che decide quali voci un pacchetto può contenere, messa
+/// a disposizione di chi **nomina** una risorsa — il documento, quando un font
+/// o un'immagine la richiamano. Due regole per lo stesso nome sarebbero due
+/// alfabeti, e un nome che uno accetta e l'altro no sarebbe un riferimento che
+/// si scrive e non si risolve mai.
+#[must_use]
+pub fn tipo_risorsa(nome: &str) -> Option<&'static str> {
+    match classifica(&format!("{PREFISSO_RISORSE}{nome}"))? {
+        Voce::Risorsa(tipo) => Some(tipo.mime),
+        Voce::Manifest | Voce::Miniatura => None,
+    }
+}
+
+/// Il tipo di una risorsa dal suo nome **e** dai suoi byte.
+///
+/// `None` se il nome non è ammesso, o se i byte dicono un'altra cosa rispetto
+/// all'estensione. È il controllo che [`read_skin_package`] fa voce per voce,
+/// per chi legge una risorsa che non sta in un archivio: la bozza dello Studio
+/// tiene le sue in una cartella, e un file rinominato lì dentro non è più
+/// fidato di uno arrivato zippato.
+#[must_use]
+pub fn riconosci_risorsa(nome: &str, bytes: &[u8]) -> Option<&'static str> {
+    match classifica(&format!("{PREFISSO_RISORSE}{nome}"))? {
+        Voce::Risorsa(tipo) if comincia_con(bytes, tipo.firma) => Some(tipo.mime),
+        Voce::Risorsa(_) | Voce::Manifest | Voce::Miniatura => None,
+    }
+}
+
 fn comincia_con(bytes: &[u8], firma: &[u8]) -> bool {
     bytes.len() >= firma.len() && bytes.iter().zip(firma).all(|(a, b)| a == b)
 }
@@ -325,19 +355,34 @@ fn leggi_voce(
     Ok(bytes)
 }
 
-/// Legge un pacchetto.
+/// Un pacchetto passato dalle guardie dell'archivio, col manifest **non**
+/// ancora validato.
 ///
-/// L'ordine dei controlli è deliberato: prima la dimensione dell'archivio, poi i
-/// nomi e le dimensioni **dichiarate** delle voci, e solo dopo la
-/// decompressione. Un controllo fatto dopo aver decompresso non protegge da
-/// niente.
+/// # Perché esiste una lettura a metà
 ///
-/// # Errori
-///
-/// `skin.tooLarge` se l'archivio sfora, `skin.assetRejected` se una voce non è
-/// ammessa, `skin.packageCorrupt` se l'archivio non si legge, e i codici della
-/// validazione se il manifest non è valido.
-pub fn read_skin_package(archive: &[u8]) -> Result<SkinPackage, AppError> {
+/// Per lo Studio. Una skin installata può smettere di passare la validazione
+/// senza che nessuno la tocchi — una regola nuova del formato, un budget che
+/// adesso è un errore — e fino alla 3.0 lo Studio la leggeva con
+/// [`read_skin_package`], che fallisce proprio lì: la skin che più aveva
+/// bisogno dell'editor era l'unica che l'editor non apriva. Qui le guardie
+/// contro un archivio ostile ci sono tutte — i nomi, le dimensioni, il
+/// rapporto di compressione, le firme dei tipi — e manca soltanto la domanda
+/// «il documento è valido?», che nello Studio fa la validazione riga per riga.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PacchettoGrezzo {
+    /// Il manifest come è scritto, valido o no.
+    pub source: String,
+    /// La miniatura, se c'è.
+    pub preview: Option<Vec<u8>>,
+    /// Le risorse, in ordine di nome.
+    pub assets: Vec<SkinAsset>,
+}
+
+/// Un archivio aperto, e le voci che i controlli sull'indice hanno ammesso.
+type Aperto<'a> = (ZipArchive<Cursor<&'a [u8]>>, Vec<Ammessa>);
+
+/// Un archivio aperto, dopo i controlli che non decomprimono niente.
+fn apri_archivio(archive: &[u8]) -> Result<Aperto<'_>, AppError> {
     let dimensione = archive.len() as u64;
     if dimensione > limits::MAX_ARCHIVE_BYTES {
         return Err(AppError::new(ErrorCode::SkinTooLarge {
@@ -353,6 +398,50 @@ pub fn read_skin_package(archive: &[u8]) -> Result<SkinPackage, AppError> {
         .map_err(|err| corrotto(&format!("archivio non leggibile: {err}")))?;
 
     let ammesse = preflight(&mut archivio)?;
+    Ok((archivio, ammesse))
+}
+
+fn manifest_da(bytes: Vec<u8>) -> Result<String, AppError> {
+    String::from_utf8(bytes).map_err(|_| {
+        AppError::new(ErrorCode::SkinManifestInvalid {
+            detail: Some("il manifest non è testo UTF-8".to_owned()),
+        })
+    })
+}
+
+/// Legge un pacchetto.
+///
+/// L'ordine dei controlli è deliberato: prima la dimensione dell'archivio, poi i
+/// nomi e le dimensioni **dichiarate** delle voci, e solo dopo la
+/// decompressione. Un controllo fatto dopo aver decompresso non protegge da
+/// niente.
+///
+/// # Errori
+///
+/// `skin.tooLarge` se l'archivio sfora, `skin.assetRejected` se una voce non è
+/// ammessa, `skin.packageCorrupt` se l'archivio non si legge, e i codici della
+/// validazione se il manifest non è valido.
+pub fn read_skin_package(archive: &[u8]) -> Result<SkinPackage, AppError> {
+    let grezzo = leggi_pacchetto_grezzo(archive)?;
+    let document = parse_skin_json(&grezzo.source)?;
+    nominate_presenti(&document, grezzo.assets.iter().map(|a| a.name.as_str()))?;
+    Ok(SkinPackage {
+        document,
+        source: grezzo.source,
+        preview: grezzo.preview,
+        assets: grezzo.assets,
+    })
+}
+
+/// Legge un pacchetto con tutte le guardie dell'archivio, senza validare il
+/// manifest. Vedi [`PacchettoGrezzo`].
+///
+/// # Errori
+///
+/// Quelli di [`read_skin_package`] meno quelli della validazione: un manifest
+/// che non è testo UTF-8 resta un errore, perché non c'è niente da aprire.
+pub fn leggi_pacchetto_grezzo(archive: &[u8]) -> Result<PacchettoGrezzo, AppError> {
+    let (mut archivio, ammesse) = apri_archivio(archive)?;
 
     let mut source: Option<String> = None;
     let mut preview: Option<Vec<u8>> = None;
@@ -363,11 +452,7 @@ pub fn read_skin_package(archive: &[u8]) -> Result<SkinPackage, AppError> {
         let bytes = leggi_voce(&mut archivio, ammessa, &mut letti)?;
         match ammessa.voce {
             Voce::Manifest => {
-                source = Some(String::from_utf8(bytes).map_err(|_| {
-                    AppError::new(ErrorCode::SkinManifestInvalid {
-                        detail: Some("il manifest non è testo UTF-8".to_owned()),
-                    })
-                })?);
+                source = Some(manifest_da(bytes)?);
             }
             Voce::Miniatura => {
                 let png = tipo("png").map_or(&[][..], |t| t.firma);
@@ -406,13 +491,169 @@ pub fn read_skin_package(archive: &[u8]) -> Result<SkinPackage, AppError> {
     };
 
     assets.sort_by(|a, b| a.name.cmp(&b.name));
-
-    Ok(SkinPackage {
-        document: parse_skin_json(&source)?,
+    Ok(PacchettoGrezzo {
         source,
         preview,
         assets,
     })
+}
+
+/// Il manifest di un pacchetto, e i nomi delle risorse che l'archivio
+/// dichiara.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Manifesto {
+    /// Il manifest come è scritto, non validato.
+    pub source: String,
+    /// I nomi delle risorse, dentro `assets/` e senza prefisso, in ordine.
+    pub risorse: Vec<String>,
+}
+
+/// Legge il solo manifest di un pacchetto, senza decomprimere le risorse.
+///
+/// È la lettura dell'elenco delle skin: per scrivere un nome e tre colori su
+/// una scheda non serve espandere due caratteri e un'immagine di sfondo, e
+/// fino alla 3.0 l'elenco lo faceva per ogni skin installata a ogni apertura
+/// delle Impostazioni. Le guardie sono le stesse — l'indice passa da
+/// [`preflight`] voce per voce, e il manifest si legge col suo tetto — e i nomi
+/// delle risorse arrivano dall'indice, così [`risorse_presenti`] può dire se
+/// il documento nomina qualcosa che manca senza aprire niente.
+///
+/// # Errori
+///
+/// Quelli di [`leggi_pacchetto_grezzo`] che riguardano l'indice e il manifest.
+pub fn leggi_manifesto(archive: &[u8]) -> Result<Manifesto, AppError> {
+    let (mut archivio, ammesse) = apri_archivio(archive)?;
+    let mut source: Option<String> = None;
+    let mut risorse = Vec::new();
+    let mut letti: u64 = 0;
+    for ammessa in &ammesse {
+        match ammessa.voce {
+            Voce::Manifest => {
+                source = Some(manifest_da(leggi_voce(
+                    &mut archivio,
+                    ammessa,
+                    &mut letti,
+                )?)?);
+            }
+            Voce::Risorsa(_) => risorse.push(
+                ammessa
+                    .nome
+                    .strip_prefix(PREFISSO_RISORSE)
+                    .unwrap_or(&ammessa.nome)
+                    .to_owned(),
+            ),
+            Voce::Miniatura => {}
+        }
+    }
+    let Some(source) = source else {
+        return Err(corrotto(&format!("manca {MANIFEST_NAME}")));
+    };
+    risorse.sort();
+    Ok(Manifesto { source, risorse })
+}
+
+/// Ogni risorsa che il documento nomina sta fra quelle date.
+///
+/// È il controllo che la lettura e la scrittura di un pacchetto fanno da sé,
+/// per chi ha i nomi e non le risorse: l'elenco delle skin, che legge solo il
+/// manifest ([`leggi_manifesto`]).
+///
+/// # Errori
+///
+/// `skin.assetRejected` col nome della prima risorsa nominata e assente.
+pub fn risorse_presenti(document: &SkinDocument, nomi: &[String]) -> Result<(), AppError> {
+    nominate_presenti(document, nomi.iter().map(String::as_str))
+}
+
+/// Quanto occupa nell'archivio una voce oltre al suo contenuto.
+///
+/// L'intestazione locale (30 byte), quella dell'indice (46), e il nome scritto
+/// in tutte e due: il nome più lungo che il formato ammette sta sotto gli
+/// ottanta caratteri. È una stima per eccesso, ed è quel che serve a una
+/// domanda che si fa **prima** di scrivere.
+const CORNICE_VOCE: u64 = 30 + 46 + 2 * 80;
+
+/// La coda dell'archivio: il record di fine dell'indice.
+const CODA_ARCHIVIO: u64 = 22;
+
+/// Un pacchetto con queste voci starebbe nei limiti della lettura?
+///
+/// La domanda che lo scrittore si fa prima di scrivere, e che lo Studio si fa
+/// prima di aggiungere una risorsa alla bozza: fino alla 3.0 una bozza poteva
+/// raccogliere risorse finché l'esportazione — o peggio l'installazione su
+/// un altro computer — non la rifiutava tutta insieme. Le risorse si scrivono
+/// senza comprimerle, quindi il tetto che morde davvero è quello
+/// dell'archivio, non quello del decompresso; il manifest si conta intero, che
+/// è il caso peggiore.
+///
+/// # Errori
+///
+/// `skin.tooLarge` per una voce, il totale o l'archivio oltre il loro tetto,
+/// `skin.assetRejected` per troppe voci.
+pub fn entra_in_un_pacchetto(
+    manifest: u64,
+    preview: Option<u64>,
+    risorse: impl IntoIterator<Item = u64>,
+) -> Result<(), AppError> {
+    let troppo = |bytes: u64, limit_bytes: u64| {
+        Err(AppError::new(ErrorCode::SkinTooLarge {
+            bytes,
+            limit_bytes,
+        }))
+    };
+    if manifest > limits::MAX_MANIFEST_BYTES {
+        return troppo(manifest, limits::MAX_MANIFEST_BYTES);
+    }
+    let mut voci: usize = 1;
+    let mut totale = manifest;
+    let mut archivio = CODA_ARCHIVIO
+        .saturating_add(manifest)
+        .saturating_add(CORNICE_VOCE);
+    for voce in preview.into_iter().chain(risorse) {
+        if voce > limits::MAX_ENTRY_BYTES {
+            return troppo(voce, limits::MAX_ENTRY_BYTES);
+        }
+        voci = voci.saturating_add(1);
+        totale = totale.saturating_add(voce);
+        archivio = archivio.saturating_add(voce).saturating_add(CORNICE_VOCE);
+    }
+    if voci > limits::MAX_ENTRIES {
+        return Err(rifiutata(
+            "(archivio)",
+            format!(
+                "un pacchetto tiene al più {} voci, e questo ne avrebbe {voci}",
+                limits::MAX_ENTRIES
+            ),
+        ));
+    }
+    if totale > limits::MAX_TOTAL_BYTES {
+        return troppo(totale, limits::MAX_TOTAL_BYTES);
+    }
+    if archivio > limits::MAX_ARCHIVE_BYTES {
+        return troppo(archivio, limits::MAX_ARCHIVE_BYTES);
+    }
+    Ok(())
+}
+
+/// Ogni risorsa che il documento nomina sta nel pacchetto.
+///
+/// Un carattere nominato e assente non è un errore del motore: il foglio
+/// chiede un indirizzo che risponde 404, e la skin si disegna col carattere di
+/// ripiego senza che niente lo dica. Si ferma qui, alla porta, con il nome di
+/// quel che manca.
+fn nominate_presenti<'a>(
+    document: &SkinDocument,
+    presenti: impl Iterator<Item = &'a str> + Clone,
+) -> Result<(), AppError> {
+    for nome in document.assets() {
+        if !presenti.clone().any(|c| c == nome) {
+            return Err(rifiutata(
+                &nome,
+                "il documento la nomina, e il pacchetto non la contiene",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Cosa mettere in un pacchetto.
@@ -435,15 +676,41 @@ pub struct WritePackageInput<'a> {
 /// scoprirlo qui è meglio che scoprirlo sul telefono di qualcuno dopo il
 /// trasferimento.
 ///
+/// Fino alla 3.0 questa riga era una promessa scritta e non mantenuta: si
+/// controllavano i nomi e le firme, e basta. Una bozza con settanta risorse, o
+/// con venticinque megabyte di immagini, usciva come un `.aeskin` che nessuna
+/// installazione avrebbe accettato. Adesso i tetti si misurano prima
+/// ([`entra_in_un_pacchetto`]), e l'archivio scritto si **rilegge** con
+/// [`leggi_pacchetto_grezzo`] prima di restituirlo: le guardie sono quelle, non
+/// una loro copia.
+///
 /// # Errori
 ///
 /// I codici della validazione se il manifest non è valido, `skin.assetRejected`
-/// se una risorsa non è ammessa, `skin.tooLarge` se ne supera il limite.
+/// se una risorsa non è ammessa o se ce ne sono troppe, `skin.tooLarge` se una
+/// voce, il totale o l'archivio superano il loro limite.
 pub fn write_skin_package(input: &WritePackageInput<'_>) -> Result<Vec<u8>, AppError> {
     // Si valida prima di scrivere: un pacchetto non valido non deve poter
     // esistere, e scoprirlo all'esportazione è incomparabilmente meglio che
     // scoprirlo all'importazione sull'altro dispositivo.
-    parse_skin_json(input.source)?;
+    let document = parse_skin_json(input.source)?;
+    nominate_presenti(&document, input.assets.iter().map(|a| a.name.as_str()))?;
+    entra_in_un_pacchetto(
+        input.source.len() as u64,
+        input.preview.map(|p| p.len() as u64),
+        input.assets.iter().map(|a| a.bytes.len() as u64),
+    )?;
+    // Due risorse con lo stesso nome sono due voci con lo stesso nome: la
+    // lettura ne terrebbe una a caso, e lo scrittore dello zip si ferma a metà
+    // con un messaggio che non nomina la risorsa.
+    let mut nomi: Vec<&str> = input.assets.iter().map(|a| a.name.as_str()).collect();
+    nomi.sort_unstable();
+    if let Some(doppia) = nomi.windows(2).find_map(|due| match due {
+        [a, b] if a == b => Some(*a),
+        _ => None,
+    }) {
+        return Err(rifiutata(doppia, "due risorse con lo stesso nome"));
+    }
 
     let mut buffer = Vec::new();
     {
@@ -497,6 +764,10 @@ pub fn write_skin_package(input: &WritePackageInput<'_>) -> Result<Vec<u8>, AppE
             .map_err(|err| corrotto(&format!("l'archivio non si è chiuso: {err}")))?;
     }
 
+    // La rilettura: le guardie della lettura sul pacchetto appena scritto.
+    // Il documento è già stato validato sopra, quindi basta la metà che
+    // riguarda l'archivio.
+    leggi_pacchetto_grezzo(&buffer)?;
     Ok(buffer)
 }
 
@@ -716,5 +987,182 @@ mod tests {
             err.code().kind(),
             aether_domain::errors::ErrorCodeKind::SkinAssetRejected
         );
+    }
+
+    #[test]
+    fn una_risorsa_fuori_dal_pacchetto_si_riconosce_dai_byte() {
+        assert_eq!(
+            riconosci_risorsa("titoli.woff2", b"wOF2..."),
+            Some("font/woff2")
+        );
+        assert_eq!(
+            riconosci_risorsa("trama.png", b"\x89PNG..."),
+            Some("image/png")
+        );
+        // Il nome dice una cosa, i byte un'altra.
+        assert_eq!(riconosci_risorsa("trama.png", b"GIF89a"), None);
+        // Il nome non è ammesso, qualunque cosa ci sia dentro.
+        assert_eq!(riconosci_risorsa("../trama.png", b"\x89PNG"), None);
+        assert_eq!(riconosci_risorsa("trama.svg", b"<svg"), None);
+    }
+
+    #[test]
+    fn una_risorsa_nominata_deve_stare_nel_pacchetto() {
+        let sorgente = crate::PLAIN_SOURCE.replacen(
+            "\"id\": \"plain\",",
+            "\"id\": \"plain\", \"fonts\": { \"Prova\": { \"src\": \"prova.woff2\" } },",
+            1,
+        );
+        let senza = write_skin_package(&WritePackageInput {
+            source: &sorgente,
+            preview: None,
+            assets: &[],
+        })
+        .expect_err("manca il carattere");
+        assert_eq!(
+            senza.code().kind(),
+            aether_domain::errors::ErrorCodeKind::SkinAssetRejected
+        );
+
+        let con = write_skin_package(&WritePackageInput {
+            source: &sorgente,
+            preview: None,
+            assets: &[SkinAsset {
+                name: "prova.woff2".to_owned(),
+                mime: "font/woff2",
+                bytes: b"wOF2 finto".to_vec(),
+            }],
+        })
+        .expect("col carattere si scrive");
+        let letto = read_skin_package(&con).expect("e si rilegge");
+        assert_eq!(letto.document.assets(), vec!["prova.woff2".to_owned()]);
+    }
+
+    #[test]
+    fn un_manifest_rotto_si_legge_grezzo_e_non_si_installa() {
+        // La skin che non passa più la validazione: lo Studio la deve poter
+        // aprire per aggiustarla, l'installazione no.
+        let rotto = MANIFEST.replace("#8b7cf6", "blu");
+        let dati = archivio(&[
+            (MANIFEST_NAME, rotto.as_bytes()),
+            (PREVIEW_NAME, PNG),
+            ("assets/trama.png", PNG),
+        ]);
+        let grezzo = leggi_pacchetto_grezzo(&dati).expect("le guardie passano");
+        assert_eq!(grezzo.source, rotto);
+        assert_eq!(grezzo.preview.as_deref(), Some(PNG));
+        assert_eq!(grezzo.assets.len(), 1);
+        assert!(read_skin_package(&dati).is_err());
+
+        // E le guardie restano: un nome storto ferma anche la lettura grezza.
+        let ostile = archivio(&[(MANIFEST_NAME, rotto.as_bytes()), ("../x.png", PNG)]);
+        assert!(leggi_pacchetto_grezzo(&ostile).is_err());
+    }
+
+    #[test]
+    fn il_solo_manifest_si_legge_senza_le_risorse() {
+        let dati = archivio(&[
+            ("assets/zeta.png", PNG),
+            (MANIFEST_NAME, MANIFEST.as_bytes()),
+            ("assets/alfa.woff2", b"wOF2 finto"),
+        ]);
+        let letto = leggi_manifesto(&dati).expect("letto");
+        assert_eq!(letto.source, MANIFEST);
+        assert_eq!(letto.risorse, ["alfa.woff2", "zeta.png"]);
+
+        let sorgente = crate::PLAIN_SOURCE.replacen(
+            "\"id\": \"plain\",",
+            "\"id\": \"plain\", \"fonts\": { \"Prova\": { \"src\": \"prova.woff2\" } },",
+            1,
+        );
+        let documento = parse_skin_json(&sorgente).expect("valido");
+        assert!(risorse_presenti(&documento, &letto.risorse).is_err());
+        assert!(risorse_presenti(&documento, &["prova.woff2".to_owned()]).is_ok());
+    }
+
+    #[test]
+    fn lo_scrittore_rispetta_i_tetti_della_lettura() {
+        // Troppe voci: sessantacinque risorse minuscole.
+        let tante: Vec<SkinAsset> = (0..limits::MAX_ENTRIES)
+            .map(|i| SkinAsset {
+                name: format!("r{i}.png"),
+                mime: "image/png",
+                bytes: PNG.to_vec(),
+            })
+            .collect();
+        let err = write_skin_package(&WritePackageInput {
+            source: MANIFEST,
+            preview: None,
+            assets: &tante,
+        })
+        .expect_err("troppe voci");
+        assert_eq!(
+            err.code().kind(),
+            aether_domain::errors::ErrorCodeKind::SkinAssetRejected
+        );
+
+        // Tre risorse da sette megabyte: ognuna sta sotto il suo tetto, e
+        // insieme non stanno in un archivio.
+        let quanto = 7 * 1024 * 1024;
+        let grosse: Vec<SkinAsset> = (0..3)
+            .map(|i| {
+                let mut bytes = vec![0_u8; quanto];
+                if let Some(testa) = bytes.get_mut(..PNG.len()) {
+                    testa.copy_from_slice(PNG);
+                }
+                SkinAsset {
+                    name: format!("g{i}.png"),
+                    mime: "image/png",
+                    bytes,
+                }
+            })
+            .collect();
+        let err = write_skin_package(&WritePackageInput {
+            source: MANIFEST,
+            preview: None,
+            assets: &grosse,
+        })
+        .expect_err("troppo grande");
+        assert_eq!(
+            err.code().kind(),
+            aether_domain::errors::ErrorCodeKind::SkinTooLarge
+        );
+
+        // Due risorse con lo stesso nome.
+        let doppie = [
+            SkinAsset {
+                name: "x.png".to_owned(),
+                mime: "image/png",
+                bytes: PNG.to_vec(),
+            },
+            SkinAsset {
+                name: "x.png".to_owned(),
+                mime: "image/png",
+                bytes: PNG.to_vec(),
+            },
+        ];
+        let err = write_skin_package(&WritePackageInput {
+            source: MANIFEST,
+            preview: None,
+            assets: &doppie,
+        })
+        .expect_err("doppie");
+        assert_eq!(
+            err.code().kind(),
+            aether_domain::errors::ErrorCodeKind::SkinAssetRejected
+        );
+    }
+
+    #[test]
+    fn la_misura_di_un_pacchetto_si_chiede_prima_di_scriverlo() {
+        assert!(entra_in_un_pacchetto(10_000, Some(4_000), [1_000, 2_000]).is_ok());
+        assert!(entra_in_un_pacchetto(limits::MAX_MANIFEST_BYTES + 1, None, []).is_err());
+        assert!(entra_in_un_pacchetto(10, None, [limits::MAX_ENTRY_BYTES + 1]).is_err());
+        let venti = [
+            limits::MAX_ENTRY_BYTES,
+            limits::MAX_ENTRY_BYTES,
+            4 * 1024 * 1024,
+        ];
+        assert!(entra_in_un_pacchetto(10, None, venti).is_err());
     }
 }

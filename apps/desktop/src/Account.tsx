@@ -43,12 +43,14 @@ import {
   type ScelteAccount,
   type StatoAccount,
 } from "./ipc";
-import { useFinestrella } from "./finestrella";
+import { useFinestrella, useVeloInerte } from "./finestrella";
+import { nuovoVelo } from "./modale";
 import { ComeAvereLArchivio } from "./parti/ArchivioSpotify";
 import { Avviso } from "./parti/Avvisi";
 import { numero } from "./formato";
 import { t } from "./lingue";
 import { Trans } from "./lingue/Trans";
+import { Presenza } from "./presenza";
 
 /** Tutto acceso: chi preme «importa il mio account» vuole il suo account. */
 const TUTTO: ScelteAccount = {
@@ -132,6 +134,12 @@ export function Account({
   const [inCorso, setInCorso] = useState(false);
   const [dimenticati, setDimenticati] = useState<number | null>(null);
   const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
+  // Il resto della finestra inerte, e il velo che chiude solo un clic nato **e**
+  // finito su di lui: una selezione trascinata fuori dal pannello chiudeva
+  // tutto. È quel che `Dialogo.tsx` fa per le altre.
+  const velo = useRef<HTMLDivElement>(null);
+  useVeloInerte(velo);
+  const [gesto] = useState(nuovoVelo);
 
   // Lo stato è la prima cosa: decide che cosa mostrare — le istruzioni per
   // ottenere l'archivio, o direttamente quel che è già in cella da un giro
@@ -236,299 +244,310 @@ export function Account({
   const niente = anteprima !== null && vuotoAccount(anteprima);
 
   return (
-    <div className="velo scuro" onClick={onChiudi}>
+    <Presenza parte="modal-veil">
       <div
-        ref={finestrella}
-        /* Larghezza normale e non `larga`: qui dentro c'è testo da leggere, e
-           una riga di prosa lunga novecento pixel si legge peggio — l'occhio
-           perde il capo della riga successiva. `larga` serve al ripristino, che
-           mostra percorsi che non si possono accorciare. */
-        className="finestrella glass-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("account.aria")}
-        onClick={(e) => e.stopPropagation()}
+        ref={velo}
+        className="velo scuro modal-veil"
+        onPointerDown={(e) => gesto.premuto(e.target, e.currentTarget)}
+        onClick={(e) => {
+          if (gesto.clic(e.target, e.currentTarget)) onChiudi();
+        }}
       >
-        <h2>{anteprima ? t("account.title.preview") : t("account.title")}</h2>
+        <Presenza parte="glass-modal">
+          <div
+            ref={finestrella}
+            /* Larghezza normale e non `larga`: qui dentro c'è testo da leggere, e
+               una riga di prosa lunga novecento pixel si legge peggio — l'occhio
+               perde il capo della riga successiva. `larga` serve al ripristino, che
+               mostra percorsi che non si possono accorciare. */
+            className="finestrella glass-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("account.aria")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2>{anteprima ? t("account.title.preview") : t("account.title")}</h2>
 
-        {!anteprima && (
-          <>
-            <ComeAvereLArchivio onApriArchivio={() => void apriArchivio()} />
-
-            {/* Sotto le istruzioni e non sopra: è l'unico modo di disfare, e
-                chi lo cerca lo cerca quando ha già importato — cioè quando ha
-                già letto tutto il resto una volta e non lo rilegge. */}
-            {stato !== null && stato.ascoltiImportati > 0 && (
-              <section className="scheda">
-                <header>
-                  <h3>{t("account.already")}</h3>
-                  <span className="nota-testa">
-                    {t("account.already.rows", { n: stato.ascoltiImportati })}
-                  </span>
-                </header>
-                <p className="nota">
-                  <Trans
-                    k="account.already.note"
-                    v={{
-                      non: <strong>{t("account.already.note.not")}</strong>,
-                    }}
-                  />
-                </p>
-                {dimenticati !== null && (
-                  <p className="nota">
-                    {t("account.forgotten", { n: dimenticati })}
-                  </p>
-                )}
-                <div className="azioni">
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    onClick={() => void dimentica()}
-                  >
-                    {t("account.forget")}
-                  </button>
-                </div>
-              </section>
-            )}
-          </>
-        )}
-
-        {inCorso && !anteprima && <p>{t("account.opening")}</p>}
-
-        {errore && <div className="errore">{errore}</div>}
-
-        {anteprima && (
-          <>
-            <div className="scheda-anteprima">
-              <div className="che-cosa">
-                <div className="titolo">
-                  {anteprima.profilo ?? t("account.unnamed")}
-                </div>
-                <div className="nota">
-                  {anteprima.provenienza === "archivio"
-                    ? t("account.from.archive")
-                    : t("account.from.earlier")}
-                </div>
-              </div>
-            </div>
-
-            {/* Prima delle scelte: sono le cose che spiegano un numero più
-                basso di quel che uno si aspetta, e leggerle dopo vorrebbe dire
-                credere per qualche secondo che l'importazione abbia sbagliato. */}
-            {/* Nota, e con un tasto: dei due zip che Spotify manda, questo è
-                quello senza la cronologia estesa. Non è un guasto — è l'altro
-                file, che arriva settimane dopo — e il gesto che ripara è
-                aprirlo quando arriva, sopra questo. */}
-            {anteprima.cronologia === 0 && anteprima.playlist > 0 && (
-              <Avviso
-                livello="nota"
-                azione={
-                  <button
-                    type="button"
-                    className="bottone minuto btn-ghost"
-                    disabled={inCorso}
-                    onClick={() => void apriArchivio()}
-                  >
-                    {t("account.otherArchive.cta")}
-                  </button>
-                }
-              >
-                {t("account.otherArchive")}
-              </Avviso>
-            )}
-            {/* Nota: il resto è stato letto, e non c'è niente da premere. I nomi
-                oltre i tre stanno in un `<details>`: un archivio con quaranta
-                file illeggibili darebbe quaranta nomi in mezzo alla frase. */}
-            {anteprima.illeggibili.length > 0 && (
-              <Avviso livello="nota">
-                {t("account.unreadable", { n: anteprima.illeggibili.length })}
-                {anteprima.illeggibili.length <= 3 ? (
-                  <span className="quali">
-                    {anteprima.illeggibili.map((f) => f.nome).join(" · ")}
-                  </span>
-                ) : (
-                  <details>
-                    <summary>{t("account.unreadable.which")}</summary>
-                    <ul className="quali-elenco">
-                      {anteprima.illeggibili.map((f) => (
-                        <li key={f.nome}>{f.nome}</li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
-              </Avviso>
-            )}
-            {/* Blocco: non c'è niente da importare, e continuare non porta da
-                nessuna parte. La frase dice l'unica cosa che si può fare. */}
-            {niente && (
-              <Avviso livello="blocco">
-                <Trans
-                  k="account.nothing"
-                  v={{
-                    a: <code>Playlist1.json</code>,
-                    b: <code>Streaming_History_Audio</code>,
-                  }}
-                />
-              </Avviso>
-            )}
-
-            <div className="scelte-account">
-              <Casella
-                etichetta={t("account.pick.playlists")}
-                spiegazione={t("account.pick.playlists.hint", {
-                  n: anteprima.braniInPlaylist,
-                })}
-                acceso={scelte.playlist}
-                quanti={anteprima.playlist}
-                onCambia={(v) => setScelte({ ...scelte, playlist: v })}
-              />
-              <Casella
-                etichetta={t("account.pick.liked")}
-                spiegazione={t("account.pick.liked.hint")}
-                acceso={scelte.preferiti}
-                quanti={anteprima.preferiti}
-                onCambia={(v) => setScelte({ ...scelte, preferiti: v })}
-              />
-              <Casella
-                etichetta={t("account.pick.albums")}
-                spiegazione={t("account.pick.albums.hint")}
-                acceso={scelte.album}
-                quanti={anteprima.album}
-                onCambia={(v) => setScelte({ ...scelte, album: v })}
-              />
-              <Casella
-                etichetta={t("account.pick.artists")}
-                spiegazione={t("account.pick.artists.hint")}
-                acceso={scelte.artisti}
-                quanti={anteprima.artisti}
-                onCambia={(v) => setScelte({ ...scelte, artisti: v })}
-              />
-              <Casella
-                etichetta={t("account.pick.history")}
-                spiegazione={t("account.pick.history.hint")}
-                acceso={scelte.cronologia}
-                quanti={anteprima.cronologia}
-                onCambia={(v) => setScelte({ ...scelte, cronologia: v })}
-              />
-            </div>
-
-            {inCorso && !piano && <p>{t("account.planning")}</p>}
-
-            {piano && totali && (
+            {!anteprima && (
               <>
-                <div className="rapporto">
-                  <Voce
-                    etichetta={t("account.found")}
-                    valore={totali.ritrovati}
-                  />
-                  {/* Il conteggio **distinto**, non la somma per elenco: lo
-                      stesso brano che manca da tre playlist è un brano che non
-                      hai, non tre. La somma resta nella nota, perché è quella
-                      che descrive la coda — lì una riga per sorgente c'è
-                      davvero, ed è quel che permette di dire da dove manca. */}
-                  <Voce
-                    etichetta={t("account.missing")}
-                    valore={mancanti.length}
-                    nota={
-                      totali.inCoda > 0
-                        ? t("account.missing.queue", { n: totali.inCoda })
-                        : undefined
-                    }
-                  />
-                  <Voce
-                    etichetta={t("account.toLike")}
-                    valore={piano.likedMarked}
-                    nota={t("account.toLike.note")}
-                  />
-                  <Voce
-                    etichetta={t("account.toWrite")}
-                    valore={piano.historyRows}
-                    nota={
-                      piano.historySkipped.duplicates +
-                        piano.historySkipped.tooShort +
-                        piano.historySkipped.notInLibrary >
-                      0
-                        ? t("account.skipped", {
-                            doppioni: piano.historySkipped.duplicates,
-                            brevi: piano.historySkipped.tooShort,
-                            fuori: piano.historySkipped.notInLibrary,
-                          })
-                        : undefined
-                    }
-                  />
-                  <Voce
-                    etichetta={t("account.artistsLink")}
-                    valore={piano.artistsLinked}
-                  />
-                  <Voce
-                    etichetta={t("account.albumsLink")}
-                    valore={piano.albumIdsWritten}
-                  />
-                </div>
+                <ComeAvereLArchivio onApriArchivio={() => void apriArchivio()} />
 
-                {/* Nota: è il nucleo che le rifiuta per una ragione sua — vedi
-                    `import_account` — e non c'è un tasto che le faccia entrare.
-                    Un ambra qui prometterebbe che ci sia. */}
-                {piano.rejectedPlaylists.length > 0 && (
-                  <Avviso livello="nota">
-                    {t("account.rejected", {
-                      n: piano.rejectedPlaylists.length,
-                    })}{" "}
-                    <span className="quali">
-                      {piano.rejectedPlaylists
-                        .map((p) => `«${p.name}»`)
-                        .join(" · ")}
-                    </span>
-                  </Avviso>
-                )}
-
-                {/* L'elenco per nome, e non un numero: sono l'unica cosa che
-                    non si può ricostruire dopo. */}
-                {mancanti.length > 0 && (
-                  <details className="mancanti-account">
-                    <summary>
-                      {t("account.missingList", { n: mancanti.length })}
-                    </summary>
-                    <ul>
-                      {mancanti.slice(0, 200).map((b) => (
-                        <li key={`${b.artist ?? ""}|${b.title}`}>
-                          {b.artist ? `${b.artist} — ` : ""}
-                          {b.title}
-                        </li>
-                      ))}
-                    </ul>
-                    {mancanti.length > 200 && (
+                {/* Sotto le istruzioni e non sopra: è l'unico modo di disfare, e
+                    chi lo cerca lo cerca quando ha già importato — cioè quando ha
+                    già letto tutto il resto una volta e non lo rilegge. */}
+                {stato !== null && stato.ascoltiImportati > 0 && (
+                  <section className="scheda">
+                    <header>
+                      <h3>{t("account.already")}</h3>
+                      <span className="nota-testa">
+                        {t("account.already.rows", { n: stato.ascoltiImportati })}
+                      </span>
+                    </header>
+                    <p className="nota">
+                      <Trans
+                        k="account.already.note"
+                        v={{
+                          non: <strong>{t("account.already.note.not")}</strong>,
+                        }}
+                      />
+                    </p>
+                    {dimenticati !== null && (
                       <p className="nota">
-                        {t("account.andMore", { n: mancanti.length - 200 })}
+                        {t("account.forgotten", { n: dimenticati })}
                       </p>
                     )}
-                  </details>
+                    <div className="azioni">
+                      <button
+                        type="button"
+                        className="bottone btn-ghost"
+                        onClick={() => void dimentica()}
+                      >
+                        {t("account.forget")}
+                      </button>
+                    </div>
+                  </section>
                 )}
               </>
             )}
-          </>
-        )}
 
-        <div className="azioni">
-          <button
-            type="button"
-            className="bottone btn-ghost"
-            onClick={onChiudi}
-          >
-            {anteprima ? t("common.cancel") : t("account.close")}
-          </button>
-          {anteprima && (
-            <button
-              type="button"
-              className="bottone"
-              disabled={inCorso || piano === null || niente}
-              onClick={() => void importa()}
-            >
-              {inCorso ? t("account.importing") : t("account.import")}
-            </button>
-          )}
-        </div>
+            {inCorso && !anteprima && <p>{t("account.opening")}</p>}
+
+            {errore && <div className="errore">{errore}</div>}
+
+            {anteprima && (
+              <>
+                <div className="scheda-anteprima">
+                  <div className="che-cosa">
+                    <div className="titolo">
+                      {anteprima.profilo ?? t("account.unnamed")}
+                    </div>
+                    <div className="nota">
+                      {anteprima.provenienza === "archivio"
+                        ? t("account.from.archive")
+                        : t("account.from.earlier")}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Prima delle scelte: sono le cose che spiegano un numero più
+                    basso di quel che uno si aspetta, e leggerle dopo vorrebbe dire
+                    credere per qualche secondo che l'importazione abbia sbagliato. */}
+                {/* Nota, e con un tasto: dei due zip che Spotify manda, questo è
+                    quello senza la cronologia estesa. Non è un guasto — è l'altro
+                    file, che arriva settimane dopo — e il gesto che ripara è
+                    aprirlo quando arriva, sopra questo. */}
+                {anteprima.cronologia === 0 && anteprima.playlist > 0 && (
+                  <Avviso
+                    livello="nota"
+                    azione={
+                      <button
+                        type="button"
+                        className="bottone minuto btn-ghost"
+                        disabled={inCorso}
+                        onClick={() => void apriArchivio()}
+                      >
+                        {t("account.otherArchive.cta")}
+                      </button>
+                    }
+                  >
+                    {t("account.otherArchive")}
+                  </Avviso>
+                )}
+                {/* Nota: il resto è stato letto, e non c'è niente da premere. I nomi
+                    oltre i tre stanno in un `<details>`: un archivio con quaranta
+                    file illeggibili darebbe quaranta nomi in mezzo alla frase. */}
+                {anteprima.illeggibili.length > 0 && (
+                  <Avviso livello="nota">
+                    {t("account.unreadable", { n: anteprima.illeggibili.length })}
+                    {anteprima.illeggibili.length <= 3 ? (
+                      <span className="quali">
+                        {anteprima.illeggibili.map((f) => f.nome).join(" · ")}
+                      </span>
+                    ) : (
+                      <details>
+                        <summary>{t("account.unreadable.which")}</summary>
+                        <ul className="quali-elenco">
+                          {anteprima.illeggibili.map((f) => (
+                            <li key={f.nome}>{f.nome}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </Avviso>
+                )}
+                {/* Blocco: non c'è niente da importare, e continuare non porta da
+                    nessuna parte. La frase dice l'unica cosa che si può fare. */}
+                {niente && (
+                  <Avviso livello="blocco">
+                    <Trans
+                      k="account.nothing"
+                      v={{
+                        a: <code>Playlist1.json</code>,
+                        b: <code>Streaming_History_Audio</code>,
+                      }}
+                    />
+                  </Avviso>
+                )}
+
+                <div className="scelte-account">
+                  <Casella
+                    etichetta={t("account.pick.playlists")}
+                    spiegazione={t("account.pick.playlists.hint", {
+                      n: anteprima.braniInPlaylist,
+                    })}
+                    acceso={scelte.playlist}
+                    quanti={anteprima.playlist}
+                    onCambia={(v) => setScelte({ ...scelte, playlist: v })}
+                  />
+                  <Casella
+                    etichetta={t("account.pick.liked")}
+                    spiegazione={t("account.pick.liked.hint")}
+                    acceso={scelte.preferiti}
+                    quanti={anteprima.preferiti}
+                    onCambia={(v) => setScelte({ ...scelte, preferiti: v })}
+                  />
+                  <Casella
+                    etichetta={t("account.pick.albums")}
+                    spiegazione={t("account.pick.albums.hint")}
+                    acceso={scelte.album}
+                    quanti={anteprima.album}
+                    onCambia={(v) => setScelte({ ...scelte, album: v })}
+                  />
+                  <Casella
+                    etichetta={t("account.pick.artists")}
+                    spiegazione={t("account.pick.artists.hint")}
+                    acceso={scelte.artisti}
+                    quanti={anteprima.artisti}
+                    onCambia={(v) => setScelte({ ...scelte, artisti: v })}
+                  />
+                  <Casella
+                    etichetta={t("account.pick.history")}
+                    spiegazione={t("account.pick.history.hint")}
+                    acceso={scelte.cronologia}
+                    quanti={anteprima.cronologia}
+                    onCambia={(v) => setScelte({ ...scelte, cronologia: v })}
+                  />
+                </div>
+
+                {inCorso && !piano && <p>{t("account.planning")}</p>}
+
+                {piano && totali && (
+                  <>
+                    <div className="rapporto">
+                      <Voce
+                        etichetta={t("account.found")}
+                        valore={totali.ritrovati}
+                      />
+                      {/* Il conteggio **distinto**, non la somma per elenco: lo
+                          stesso brano che manca da tre playlist è un brano che non
+                          hai, non tre. La somma resta nella nota, perché è quella
+                          che descrive la coda — lì una riga per sorgente c'è
+                          davvero, ed è quel che permette di dire da dove manca. */}
+                      <Voce
+                        etichetta={t("account.missing")}
+                        valore={mancanti.length}
+                        nota={
+                          totali.inCoda > 0
+                            ? t("account.missing.queue", { n: totali.inCoda })
+                            : undefined
+                        }
+                      />
+                      <Voce
+                        etichetta={t("account.toLike")}
+                        valore={piano.likedMarked}
+                        nota={t("account.toLike.note")}
+                      />
+                      <Voce
+                        etichetta={t("account.toWrite")}
+                        valore={piano.historyRows}
+                        nota={
+                          piano.historySkipped.duplicates +
+                            piano.historySkipped.tooShort +
+                            piano.historySkipped.notInLibrary >
+                          0
+                            ? t("account.skipped", {
+                                doppioni: piano.historySkipped.duplicates,
+                                brevi: piano.historySkipped.tooShort,
+                                fuori: piano.historySkipped.notInLibrary,
+                              })
+                            : undefined
+                        }
+                      />
+                      <Voce
+                        etichetta={t("account.artistsLink")}
+                        valore={piano.artistsLinked}
+                      />
+                      <Voce
+                        etichetta={t("account.albumsLink")}
+                        valore={piano.albumIdsWritten}
+                      />
+                    </div>
+
+                    {/* Nota: è il nucleo che le rifiuta per una ragione sua — vedi
+                        `import_account` — e non c'è un tasto che le faccia entrare.
+                        Un ambra qui prometterebbe che ci sia. */}
+                    {piano.rejectedPlaylists.length > 0 && (
+                      <Avviso livello="nota">
+                        {t("account.rejected", {
+                          n: piano.rejectedPlaylists.length,
+                        })}{" "}
+                        <span className="quali">
+                          {piano.rejectedPlaylists
+                            .map((p) => `«${p.name}»`)
+                            .join(" · ")}
+                        </span>
+                      </Avviso>
+                    )}
+
+                    {/* L'elenco per nome, e non un numero: sono l'unica cosa che
+                        non si può ricostruire dopo. */}
+                    {mancanti.length > 0 && (
+                      <details className="mancanti-account">
+                        <summary>
+                          {t("account.missingList", { n: mancanti.length })}
+                        </summary>
+                        <ul>
+                          {mancanti.slice(0, 200).map((b) => (
+                            <li key={`${b.artist ?? ""}|${b.title}`}>
+                              {b.artist ? `${b.artist} — ` : ""}
+                              {b.title}
+                            </li>
+                          ))}
+                        </ul>
+                        {mancanti.length > 200 && (
+                          <p className="nota">
+                            {t("account.andMore", { n: mancanti.length - 200 })}
+                          </p>
+                        )}
+                      </details>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+
+            <div className="azioni">
+              <button
+                type="button"
+                className="bottone btn-ghost"
+                onClick={onChiudi}
+              >
+                {anteprima ? t("common.cancel") : t("account.close")}
+              </button>
+              {anteprima && (
+                <button
+                  type="button"
+                  className="bottone"
+                  disabled={inCorso || piano === null || niente}
+                  onClick={() => void importa()}
+                >
+                  {inCorso ? t("account.importing") : t("account.import")}
+                </button>
+              )}
+            </div>
+          </div>
+        </Presenza>
       </div>
-    </div>
+    </Presenza>
   );
 }

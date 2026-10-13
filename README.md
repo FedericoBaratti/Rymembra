@@ -125,16 +125,30 @@ a longer listening history than the public API offers.
 
 ## Features
 
-- **Gapless playback** with ReplayGain, an equalizer and a persistent queue. A
-  single audio engine (`cpal` + `symphonia`) spread over three threads, with no
-  shared lock at all between the decoder and the audio callback.
+- **Every track at the same loudness.** Aether measures each file with EBU
+  R128 — integrated loudness and true peak — in a background pass that runs
+  only while nothing is playing, and uses ReplayGain or R128 tags where the
+  file has them. Track, album or automatic mode; a track is never raised past
+  its own peak, and a soft limiter catches the rest. The volume slider follows
+  a perceptual curve.
+- **Gapless playback**, gapless across sample rates too (a 44.1 kHz album on a
+  48 kHz output joins without a click), with an equalizer, crossfade and a
+  persistent queue. A single audio engine (`cpal` + `symphonia`) spread over
+  three threads, with no shared lock at all between the decoder and the audio
+  callback; the stream sleeps after thirty seconds of silence, so the PC can
+  go to sleep with Aether open.
 - **A library on SQLite**: incremental scanning with detection of moved files,
   manual and automatic playlists, ratings, favorites and listening history. A
   track can leave it too: «Remove from library» takes the row out and leaves
-  the file where it is, «Delete from disk» sends the file to the Recycle Bin,
-  and both ask first. A correction you made by hand now survives its track
-  disappearing and coming back — an unplugged external disk, a watched folder
-  removed and added again.
+  the file where it is, «Delete from disk» sends the file to the Recycle Bin —
+  or, on a network share, where there is no Recycle Bin, asks you to confirm a
+  permanent deletion — and both ask first. A correction you made by hand
+  survives its track disappearing and coming back, and so do its plays,
+  rating, heart and playlist places, for ninety days.
+- **Music on a NAS or a mapped drive.** A folder the share would not list for
+  a moment makes its tracks *unverified*, never *gone*; a scan that would
+  remove many tracks shows them and asks first; a drive letter and its
+  `\\server\share` path are recognised as the same place.
 - **Metadata enrichment** from MusicBrainz, written **into the library and
   never into your files**. The search is carried out on the complete album
   rather than on the individual track; in the absence of matches that are
@@ -145,8 +159,18 @@ a longer listening history than the public API offers.
   files are left alone rather than reverted on your behalf; the way back is a
   separate button of its own, labelled with the fact that it writes into the
   files, and it is kept for one release and then removed.
-- **A folder panel** that reads the tree out of the library instead of the
-  disk, so it opens instantly and never touches a network share.
+- **Folders the way foobar2000 shows them**: a tree read out of the library
+  instead of the disk — so it opens instantly and never touches a network
+  share — with files as leaves in natural order, a panel with the tracks of
+  the folder under the cursor (with or without its subfolders), a filter over
+  the whole tree, and multiple selection to play, queue, drag onto the queue
+  or add to a playlist.
+- **Folders that watch themselves.** An album copied into a music folder,
+  renamed or deleted there enters or leaves the library a few seconds later,
+  without a scan: only the folders that changed are looked at again, and a
+  change that would remove too many tracks at once removes nothing. Network
+  shares, where Windows does not always tell, can be checked every five
+  minutes instead (off by default: it keeps a NAS awake).
 - **Explore**: a free-text search across the Internet Archive and Audius, from
   which a track can be listened to without ever being written to disk. A track
   kept this way lives in the library like any other — it is searchable, it sits
@@ -171,12 +195,13 @@ a longer listening history than the public API offers.
 - **Monday**: up to four collections of twenty tracks, computed locally while
   the machine is idle, which stay put for seven days and then become other ones.
   What came out last week does not come out again.
-- **Skins** with a built-in visual editor (the Studio) and a packaged
-  distribution format. Inside the Studio, a side chat can ask a language model
-  to make the change for you — a model running on your own machine (Ollama, or
-  LM Studio's local server, the one the Bionic app sits on) or a remote one
-  through OpenRouter. It is off until you configure a provider, and what it
-  sends is documented in [`PRIVACY.md`](PRIVACY.md) § 2-quater.
+- **Skins** that can repaint and animate any part of the window, with a
+  built-in visual editor (the Studio) and a packaged distribution format.
+  Inside the Studio, a side chat can ask a language model to make the change
+  for you — a model running on your own machine (Ollama, or LM Studio's local
+  server, the one the Bionic app sits on) or a remote one through OpenRouter.
+  It is off until you configure a provider, and what it sends is documented in
+  [`PRIVACY.md`](PRIVACY.md) § 2-quater.
 - **Backup and synchronization** to Google Drive or to a shared folder, plus a
   **profile** you can carry by hand: a `.aeprofile` archive with the settings,
   the library, the listening history, the lyrics, your corrections, the covers
@@ -185,10 +210,26 @@ a longer listening history than the public API offers.
   memory; importing shows you the plan first and proposes a remapping for every
   root that does not exist on this machine. The old seventeen-line JSON is
   still read, and no longer written.
+
+  **Google Drive needs a Google project of your own, and the installer
+  published here ships without one — on purpose.** A desktop program cannot
+  keep an OAuth client secret: anything compiled into the executable can be
+  read out of it, and a shared client would put every user's backups on one
+  quota that anybody could exhaust. So *Settings → Backup* says «not
+  configured» and explains how to turn it on: create an OAuth client of the
+  «Desktop app» type in the Google Cloud Console and paste its ID and secret.
+  The folder Aether writes to is its private application folder, visible only
+  to that client. If you would rather not, synchronizing through a shared
+  folder (Syncthing, OneDrive, Dropbox) needs no account, and an exported
+  profile keeps a copy of everything. Builds made with
+  `AETHER_GOOGLE_CLIENT_ID` and `AETHER_GOOGLE_CLIENT_SECRET` in the
+  environment carry their own client and skip this step.
 - **Scrobbling** to Last.fm and ListenBrainz.
-- **Automatic updates**: a check for releases on GitHub every thirty minutes,
-  with a notification. Installing always requires an explicit confirmation, and
-  the installer's signature is verified before it runs. The feature can be
+- **Automatic updates**: a check for releases on GitHub at every start, ten
+  seconds after the window is ready, then every thirty minutes; without a
+  network it tries again after one, five and fifteen minutes. Installing always
+  requires an explicit confirmation, and the installer's signature — bound to
+  the version it announces — is verified before it runs. The feature can be
   switched off in the settings; the traffic it generates is documented in
   [`PRIVACY.md`](PRIVACY.md) § 6.
 
@@ -196,18 +237,23 @@ a longer listening history than the public API offers.
 
 ## Interface
 
-On first run a guided tour runs once, in ten steps. It is not a carousel of
-pictures: each step finds the real element in the window, cuts a hole in the
-veil over it and puts the bubble beside it, so what you are shown is the
-program at the size and in the skin you are running it in. A step whose anchor
-is not on screen — the queue is closed, nothing is playing — is skipped rather
+On first run a guided tour runs once, in fourteen steps — the context menu of a
+track, the Folders view and the keyboard shortcuts among them. It is not a
+carousel of pictures: each step finds the real element in the window, cuts a
+hole in the veil over it and puts the bubble beside it, so what you are shown
+is the program at the size and in the skin you are running it in. To show the
+player it puts something in the queue, and when it ends the view and the queue
+are put back as they were. A step whose element is not there is skipped rather
 than faked. *Settings → Redo the tour* brings it back.
 
 ![The track list](immagini/brani.webp)
 
-The track list, with cover art, album, rating and duration. Loading is
-progressive: further pages are requested automatically as the end of the list
-approaches, with no numbered pagination.
+The track list, with cover art, album, rating and duration. There are no
+pages, numbered or endless: the scrollbar is as long as the whole list from the
+first moment, only the rows on screen are fetched — dragging to the bottom of
+fifty thousand tracks asks for the last rows and nothing in between — and a
+view you leave keeps its scroll position, focus and selection for when you come
+back. «Select all» selects the whole view, not what happens to be loaded.
 
 ![The playback screen with the spectrum analyzer](immagini/riproduzione.webp)
 
@@ -216,10 +262,12 @@ the equalizer and before the volume control: changes to the equalization curve
 are visible in the bars, changes to the volume are not. The bands reach the
 interface through a ring buffer that discards excess samples when it is full, so
 as not to introduce any wait in the audio callback. Under the rating there is a
-line saying what the file is — «FLAC · 44.1 kHz · Stereo · 1058 kbps» — read
-from four columns that had been in the database since the first version and
-that nothing had ever read back. It describes the **file** and not the output:
-if the sound card is resampling, this line still says what the edition is.
+line saying what the file is — «FLAC · 44.1 kHz · 24-bit · Stereo · 1058 kbps»
+— as the **decoder** reports it while the track plays: the real codec inside an
+`.m4a`, the MP3 that a FLAC page of the Internet Archive actually streams. It
+describes the edition and not the output; if the sound card is resampling, the
+line still says 44.1 kHz, and hovering it says «Resampled from 44.1 kHz to 48
+kHz».
 
 The whole window zooms, `Ctrl++`, `Ctrl+-` and `Ctrl+0`, over the same seven
 steps between 90% and 200% that every browser offers. It is the WebView's zoom
@@ -237,53 +285,77 @@ it is the correction left over after Windows' own scaling on this monitor.
 | ![The album grid with the Plain skin](immagini/album.webp) | ![The same grid with the Cyberpunk Edge skin](immagini/skin.webp) |
 
 The same screen with two different skins. A skin redefines colors, borders,
-shadows, type weights and corner radii across 51 interface components — and,
-since 2.3.0, the visualizer's scene as well: not only its colors, but its
-geometry and its behavior, from the depth of the room and the aperture of the
-lens down to how fast a bar falls. This is not a matter of switching between a
-light theme and a dark one.
+shadows, type and corner radii across 101 interface components — and, since
+2.3.0, the visualizer's scene as well: not only its colors, but its geometry and
+its behavior, from the depth of the room and the aperture of the lens down to
+how fast a bar falls. This is not a matter of switching between a light theme
+and a dark one — although a skin has both: it declares its base scheme, dark
+or light, and a variant for the other one that may override its tokens,
+palette, patterns and components. A skin can also ship its own fonts and
+images.
 
-Since 2.3.1 a skin also declares **named animations** — up to eight of them,
-two to six frames each, bound to a part's `enter`, `hover`, `active`, `focus`
-or `disabled` state — and the Studio has a Motion panel for them, with the
-curves, the page transition and a cost budget. The line that decides what
-belongs there is that a skin animates **states of the DOM, not events of the
-application**. `iterations: infinite` is refused without exception, because the
-rules that stop an endless animation under «reduced motion» are written by
-hand, one at a time, and a skin cannot write them: a skin's endless animation
-would be the only thing in Aether nobody could stop. Every duration the
-compiler emits passes through `calc(… * var(--motion-scale))`, and a test
-asserts that none escapes.
+Since 3.0 a skin can **animate any component**. A component binds named
+animations to fifteen triggers: its ten states — hover, pressed, selected,
+current, open, checked, playing, paused, focus, disabled — and five moments
+that are not states: entering, leaving, flying from one screen to the next,
+being scrolled into view, changing content. Keyframes move, scale, rotate,
+skew, blur, recolor and clip. The line that decides what belongs there is that
+a skin animates **states of the DOM, not events of the application**. An
+endless loop is allowed only on a state — a record turning while music plays —
+because the compiler writes the rules that stop it under «reduced motion» for
+every animation it emits, and a skin cannot opt out. Every duration passes
+through `calc(… * var(--motion-scale))`, and a test asserts that none escapes.
+Instead of fixed caps, each component and the whole window have a cost budget:
+going over it is a warning, shown while you spend it.
+
+Skins written for Aether 2 are migrated as they are read and look as they
+did — a test compares what they compile to against frozen copies, rule by
+rule. Skins written in the new format do not open in Aether 2.
 
 ![The Studio, the skin editor](immagini/studio.webp)
 
-The Studio is the built-in editor. On the left, the tree of components and of
-the 73 tokens; in the middle, the preview updated in real time, which works on a
-sample library and not on yours; on the right, the inspector of the selected
-component, with its states and its layers. The probe lights up whatever sits
-under the pointer, so that a surface can be found without knowing its name.
+The Studio is the built-in editor, laid out as one workspace. On the left,
+the components grouped by area with the tree of the window's layout, or the
+variables — the 73 tokens, the palette, patterns, easings, fonts and images. In
+the middle, the **real pages of the application**, running on a sample library
+and never on yours, at three window widths, with any state forced on the
+selected component and a probe that names whatever sits under the pointer. On
+the right, the inspector: the style, states, motion and code of the selection,
+with its cost. At the bottom, a timeline to draw an animation keyframe by
+keyframe, the list of problems with «go» and «fix», and the whole document in a
+code editor that completes from the format's own vocabulary. A palette
+generator builds a legible set of colors from one color or from the cover that
+is playing, and «Try on the app» dresses the real window in the draft until
+you press Esc.
 
-The bottom bar reports errors, warnings, redrawn components and the number of
-color pairs with a contrast ratio below 4.5:1, the recommended legibility
-threshold. The figure is computed before export, so that a skin distributed with
+The status bar reports errors, warnings and the number of color pairs with a
+contrast ratio below 4.5:1, the recommended legibility threshold. The figure is computed before export, so that a skin distributed with
 contrast warnings is the result of a deliberate choice.
 
 ### Asking instead of writing
 
 The Studio also has a chat, and it works because of three properties the skin
-format already had: the vocabulary is **closed and declared** — 73 tokens, 51
-components, 11 effects, each with a valid example produced by the real parser —
+format already had: the vocabulary is **closed and declared** — 73 tokens, 101
+components, 12 effects, each with a valid example produced by the real parser —
 the source of truth is **text**, edited by path; and validation **never fails**,
 answering instead with positioned errors and a «did you mean» for every
 misspelled name. Those three are exactly what a language model needs to work on
 a document and to correct itself when it gets a name wrong.
 
 There are two modes, switched in the panel's header. In *Proposal*, the model
-proposes, you read the diff, and you press Apply. In *Agent*, the model applies,
+proposes, you read the values that would change, and you press Apply. In *Agent*, the model applies,
 re-reads the validation of the result, and fixes what it broke — at most four
 rounds, with a Stop button. Either way the change goes through the same path a
 dragged slider does, so Ctrl+Z takes it back; in Agent mode a snapshot is taken
 before the first round.
+
+What is selected in the Studio travels with the question, so «make this
+rounder» means the component you are looking at, in the state and theme you
+are looking at. Models that read images can also be shown the preview —
+switched on with «Preview», and showing the sample library only. The
+conversation stays next to the draft, on this computer, with the tokens each
+turn cost; each answer lists the values it changed, and each value is a link to
+the thing it names.
 
 You configure the model in Settings › AI Models. Several named profiles can
 coexist; each key lives in the operating system's keychain, never in the library
@@ -315,7 +387,9 @@ in its own entry and says what going back would cost** — which is always the
 same thing: a copy of the database taken before the update, because an older
 version refuses to open a newer database rather than guessing at it. 2.3.1
 migrates twice, `019_identita_e_metadati.sql` and `020_cronologia_unica.sql`,
-and it is a patch.
+and it is a patch. From 3.0 Aether takes that copy itself before every
+migration — `aether.db.schema-NNN.bak`, beside the database, the last two
+kept — so going back means putting it in place of `aether.db`.
 
 ---
 
@@ -323,15 +397,26 @@ and it is a patch.
 
 ### Requirements
 
-- **Rust** — the version given in `rust-toolchain.toml`
-- **Node.js** 20 or later
+- **Rust** — stable, 1.90 or later (`rust-version` in `Cargo.toml`); CI pins
+  the exact release in `.github/workflows/verify.yml`
+- **Node.js** 24 or later — the interface's TypeScript tests run on Node's
+  own type stripping
 - **Windows** — the only platform the installer supports
 
 ### Commands
 
 ```bash
-# The test suite: about 1900 tests, runnable with no network connection
-cargo test --workspace
+# Everything CI checks, in one go: versions, translations, CSS classes, the
+# interface's build and tests, the release tools' tests, formatting, clippy
+# and about 2,300 Rust tests — all runnable with no network connection
+cd apps/desktop && npm run verify
+```
+
+```bash
+# Licenses and security advisories of the Rust dependencies (cargo-deny),
+# and of the npm packages that ship inside the window
+cargo deny check
+cd apps/desktop && npm audit --omit=dev
 ```
 
 ```bash
@@ -371,6 +456,14 @@ systems: losing it permanently prevents every existing installation from
 updating. The `strumenti/manifesto.js` script compares the identifiers of the
 two halves on every release, so that any mismatch surfaces in CI.
 
+Since 3.0 the signature also carries the version it was made for, and the
+updater refuses an update whose signature does not match the version the
+manifest announces (`requireSignedVersion`). The release workflow signs on a
+machine of its own, after the build, with
+`npx tauri signer sign --app-version <version> <installer>`; signing by hand
+without `--app-version` produces an update no 3.x copy will install, and
+`manifesto.js` stops before publishing it.
+
 ---
 
 ## Architecture
@@ -399,6 +492,11 @@ apps/desktop        the interface: Tauri 2 + React 19
 The direction of the dependencies is binding. `aether-catalogo` has no access to
 `rusqlite`: it is therefore structurally impossible, and not merely inadvisable,
 to hold the library lock for the whole duration of a download.
+
+How every part works — threads and locks, the schema, the scan, the audio
+engine, the skin compiler, the IPC surface — is described in the [technical
+documentation](https://federicobaratti.github.io/Aether/docs/), whose source is
+in `site/docs/`.
 
 ---
 
@@ -468,10 +566,6 @@ constraint is stated explicitly in the terms of use.
 - **Mobile application.** Present in the previous version of the project, not
   yet rewritten.
 
-- **Major 3.0** currently i'm working on 3.0 a major that is a full rework of aether, it need
-  a lot of time. New skin studio a new site, full rework of the site and a lot of rifinitures.
-  If you want to know more, just wait. It's worth!
-  
 Two questions require a written clarification before publication: whether
 **donations** constitute commercial use for the purposes of Jamendo's terms
 (`licensing@jamendo.com`) and of the Deezer API used for metadata. Failing a
@@ -483,6 +577,7 @@ reply, the Jamendo module stays behind a Cargo feature that can be switched off.
 
 | Document | Content |
 | --- | --- |
+| [Technical documentation](https://federicobaratti.github.io/Aether/docs/) | How the code works, subsystem by subsystem (`site/docs/`) |
 | [`CHANGELOG.md`](CHANGELOG.md) | The changes in each version and the numbering rule |
 | [`PRIVACY.md`](PRIVACY.md) | How data is handled and every network request |
 | [`TERMS.md`](TERMS.md) | Terms of use and the licenses of acquired content |

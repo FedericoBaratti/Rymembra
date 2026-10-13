@@ -34,7 +34,29 @@ import {
   tastoDi,
   tastoScritto,
 } from "../tastiera";
-import { Trans } from "../lingue/Trans";
+
+/**
+ * I tasti fissi degli elenchi, e cosa fanno.
+ *
+ * Non stanno nella tabella di `tastiera.ts` perché non sono comandi della
+ * finestra: valgono dentro un elenco col fuoco (`fuoco.ts`, `Elenco.tsx`,
+ * `Coda.tsx`), e altrove lo stesso tasto fa altro — Spazio è la pausa, Ctrl+A
+ * dentro un campo sceglie il testo. Ma esistono, e un tasto che esiste e non è
+ * scritto da nessuna parte lo trova solo chi lo prova per caso: per anni
+ * «Seleziona tutto» non ha avuto il suo Ctrl+A, e nessuno se n'era accorto.
+ * Quindi si elencano qui, sotto quelli che si riassegnano, senza il tasto per
+ * cambiarli. Una funzione e non una costante, per la lingua.
+ */
+function tastiDegliElenchi(): readonly { tasti: string[]; cosa: string }[] {
+  return [
+    { tasti: ["Ctrl+A"], cosa: t("shortcuts.lists.selectAll") },
+    { tasti: ["Space"], cosa: t("shortcuts.lists.toggle") },
+    { tasti: ["Enter"], cosa: t("shortcuts.lists.play") },
+    { tasti: ["PageUp", "PageDown"], cosa: t("shortcuts.lists.page") },
+    { tasti: ["Home", "End"], cosa: t("shortcuts.lists.ends") },
+    { tasti: ["Alt+ArrowUp", "Alt+ArrowDown"], cosa: t("shortcuts.lists.move") },
+  ];
+}
 
 /** I tasti che non si lasciano assegnare, e perché. */
 function vietati(): Record<string, string> {
@@ -95,16 +117,6 @@ export function Scorciatoie({
 
   return (
     <>
-      <p className="nota">
-        <Trans
-          k="shortcuts.intro"
-          v={{
-            assegna: <strong>{t("shortcuts.intro.assign")}</strong>,
-            esc: <code>{t("keys.esc")}</code>,
-          }}
-        />
-      </p>
-
       <ul className="cartelle">
         {comandi().map(({ chiave, titolo, spiegazione }) => (
           <li className="cartella scorciatoia" key={chiave}>
@@ -194,6 +206,24 @@ export function Scorciatoie({
           {t("shortcuts.reset")}
         </button>
       </div>
+
+      <h3 className="titoletto">{t("shortcuts.lists.title")}</h3>
+      <ul className="cartelle">
+        {tastiDegliElenchi().map(({ tasti, cosa }) => (
+          <li className="cartella scorciatoia" key={tasti.join(" ")}>
+            <div className="che-cosa">
+              <div className="etichetta">{cosa}</div>
+            </div>
+            <div className="tasti">
+              {tasti.map((tasto) => (
+                <kbd key={tasto} className="scorciatoia">
+                  {tastoScritto(tasto)}
+                </kbd>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ul>
     </>
   );
 }

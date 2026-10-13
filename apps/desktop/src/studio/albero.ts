@@ -224,3 +224,46 @@ export function nomePrefabLibero(nodo: NodoScafale, presi: readonly string[]): s
   }
   return `${base}-x`;
 }
+
+/** Le istanze di prefab di un albero: nome → i loro corpi, scritti. */
+function corpiDeiPrefab(nodo: NodoScafale, fuori = new Map<string, string[]>()) {
+  if (nodo.kind !== "zone") return fuori;
+  if (nodo.fromPrefab !== null) {
+    const corpi = fuori.get(nodo.fromPrefab) ?? [];
+    corpi.push(JSON.stringify(corpoPrefab(nodo)));
+    fuori.set(nodo.fromPrefab, corpi);
+  }
+  for (const figlio of nodo.children) corpiDeiPrefab(figlio, fuori);
+  return fuori;
+}
+
+/**
+ * I prefab il cui corpo è cambiato fra due alberi: nome → corpo nuovo.
+ *
+ * `versoDocumento` riscrive un'istanza di prefab come riferimento, ed è giusto
+ * — ma voleva dire che una modifica **dentro** un'istanza (una manopola di un
+ * widget, un figlio spostato) si perdeva: il documento riceveva lo stesso
+ * riferimento di prima, e la modifica spariva al primo disegno. Modificare
+ * un'istanza è modificare il prefab, e con lui tutte le sue altre istanze:
+ * qui si trova quale corpo è nuovo — quello che nel vecchio albero non c'era —
+ * e chi scrive lo mette in `layout.prefabs`.
+ */
+export function prefabCambiati(
+  vecchio: NodoScafale,
+  nuovo: NodoScafale,
+): Map<string, Record<string, unknown>> {
+  const prima = corpiDeiPrefab(vecchio);
+  const fuori = new Map<string, Record<string, unknown>>();
+  const visita = (nodo: NodoScafale) => {
+    if (nodo.kind !== "zone") return;
+    if (nodo.fromPrefab !== null && !fuori.has(nodo.fromPrefab)) {
+      const corpo = corpoPrefab(nodo);
+      if (!(prima.get(nodo.fromPrefab) ?? []).includes(JSON.stringify(corpo))) {
+        fuori.set(nodo.fromPrefab, corpo);
+      }
+    }
+    nodo.children.forEach(visita);
+  };
+  visita(nuovo);
+  return fuori;
+}

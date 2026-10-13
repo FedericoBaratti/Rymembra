@@ -1,57 +1,53 @@
 /**
- * Le istruzioni che il modello riceve: il vocabolario chiuso, e come si scrive
- * una modifica.
+ * Le istruzioni che il modello riceve: il formato, il vocabolario chiuso, la
+ * selezione, il documento, e come si scrive una modifica.
  *
  * # Perché si costruiscono qui e non nel nucleo
  *
- * Perché qui il registro e il documento sono già in memoria — lo Studio li ha
- * per disegnare — e perché il pannello deve poter dire **quanto** sta mandando.
- * Costruirle in Rust vorrebbe dire una seconda lettura del registro, una
- * seconda idea di cosa mettere dentro, e nessun modo di mostrare la misura
- * accanto al campo in cui si scrive.
+ * Perché qui il registro, il documento e la selezione sono già in memoria — lo
+ * Studio li ha per disegnare — e perché il pannello deve poter dire **quanto**
+ * sta mandando. `aether-ia` resta ignorante di cosa sia una skin: queste righe
+ * arrivano al client come un messaggio come gli altri.
  *
- * `aether-ia` resta ignorante di cosa sia una skin: queste righe arrivano al
- * client come un messaggio come gli altri.
+ * # Cosa viene dal registro, e cosa è scritto qui
  *
- * # Cosa ci va, e cosa no
+ * Dal registro viene ogni **nome**: token con il loro tipo, parti con quel che
+ * ammettono (livelli, entrata e uscita, volo), stati nell'ordine della cascata,
+ * inneschi, campi dei fotogrammi con i loro estremi, animazioni pronte,
+ * effetti con un esemplare valido, parole chiuse, chiavi per contesto, budget.
+ * Sono le stesse liste con cui il validatore rifiuta: un nome che il modello
+ * legge qui è un nome che il salvataggio accetta.
  *
- * Ci vanno i **nomi**: i token con il loro tipo, le parti, gli effetti con il
- * loro esemplare valido, le parole ammesse per zone, spazi e allineamenti. Un
- * modello che lavora su un vocabolario chiuso ha bisogno di sapere quali nomi
- * esistono, non di leggerne la descrizione.
+ * Qui è scritta la **grammatica**: che `background` è una pila, che uno stato
+ * contiene solo i campi che cambiano, che un ciclo infinito sta solo su uno
+ * stato. Sono proprietà del formato, e se il formato cambia cambia
+ * `SKIN_FORMAT_VERSION` — un cambio maggiore, che si vede.
  *
- * **Non** ci vanno le descrizioni del registro. Sono la metà pesante — una
- * frase per ognuna delle centoventi voci — e sono scritte per una persona che
- * legge l'albero. Senza, l'elenco compatto sta in cinque o sei kilobyte; con il
- * documento e le regole si resta sotto i venticinque, cioè sotto il contesto
- * degli otto-kilo-gettoni che è il tetto dei modelli locali piccoli. È la
- * differenza fra una chat che funziona su Ollama e una che risponde monca senza
- * dire perché.
+ * **Non** ci vanno le descrizioni del registro: sono la metà pesante — una
+ * frase per ognuna delle duecento voci — e sono scritte per una persona.
  *
- * # Perché l'elenco degli elenchi sta scritto a mano in `REGOLE`
+ * # Il contesto leggero
  *
- * Perché il registro non lo sa. `studio_registro` dice quali token esistono e
- * di che tipo sono, quali parti si possono ridipingere, quali effetti si
- * possono impilare — non dice che `background` è una pila e `radius` no. Quella
- * è una proprietà del **formato**, e vive in `document.rs`.
+ * Il documento viaggia compatto (senza rientri: a un modello non servono) e,
+ * oltre una soglia, **ridotto**: restano intere le sezioni piccole e quelle
+ * che servono a questa domanda — la parte selezionata, le parti e le
+ * animazioni nominate nella richiesta o negli errori, le animazioni che quelle
+ * parti usano — e delle altre si elencano solo i nomi. La cronologia, oltre
+ * una soglia sua, tiene intere le ultime battute e riassume le vecchie
+ * (`storiaLeggera`). Tutte e due le soglie stanno sotto il contesto degli
+ * otto-kilo-gettoni, che è il tetto dei modelli locali piccoli.
  *
- * Dedurla dal documento aperto sembrerebbe più onesto e sarebbe peggio: una
- * skin che non dichiara nessuno sfondo non insegnerebbe al modello che gli
- * sfondi sono pile, e il primo che ne aggiunge uno lo scriverebbe come oggetto.
- * Un elenco fisso di otto righe si sbaglia solo se cambia il formato — e se
- * cambia il formato cambia `SKIN_FORMAT_VERSION`, che è un cambio maggiore e si
- * vede.
+ * # In inglese
  *
- * # Il conto dei caratteri, e perché si mostra
- *
- * Perché è l'unico modo in cui chi sceglie un modello con quattromila gettoni
- * di contesto capisce da dove viene una risposta tagliata a metà, invece di
- * dare la colpa alla chat. La stima è quattro caratteri per gettone: è
- * grossolana e sta dalla parte giusta della grossolanità — sovrastima per
- * l'italiano, che è quel che serve a un avviso.
+ * È l'unico testo dell'applicazione scritto per essere letto da un modello, e
+ * i modelli piccoli seguono le istruzioni in inglese molto meglio — mentre la
+ * **conversazione** resta nella lingua di chi scrive, perché quella la legge
+ * una persona. Non passa dal catalogo delle lingue per la stessa ragione: e
+ * per questo il modulo non importa `../lingue`, e si prova con `node --test`.
  */
 import type { MessaggioIa, Problema, Registro, Validazione } from "../ipc";
-import { t } from "../lingue";
+import type { MessaggioChat } from "./conversazione";
+import type { Selezione, Tema } from "./negozio";
 
 /** Quanti caratteri vale un gettone, per la stima che si mostra. */
 const CARATTERI_PER_GETTONE = 4;
@@ -60,65 +56,187 @@ const CARATTERI_PER_GETTONE = 4;
 const ERRORI_DA_MOSTRARE = 12;
 
 /**
- * Le regole del formato: la parte delle istruzioni che non dipende dal
- * registro.
+ * Oltre questa lunghezza, compatto, il documento si riduce.
  *
- * In inglese, e non è una svista né un cedimento. È l'unico testo
- * dell'applicazione scritto per essere letto da un modello, e i modelli piccoli
- * seguono le istruzioni in inglese molto meglio di quanto le seguano in
- * italiano — mentre la **conversazione** resta nella lingua di chi scrive,
- * perché quella la legge una persona. Non passa dal catalogo delle lingue per
- * la stessa ragione: tradurlo lo peggiorerebbe.
+ * Plain intera ne pesa cinquemila, Vinile e Neon diecimila: sotto la soglia
+ * passano intere, ed è il caso comune. Una skin cresciuta a trenta parti
+ * ridipinte e venti animazioni ne pesa il doppio, e lì la riduzione comincia
+ * a valere più di quel che toglie.
  */
-const REGOLE = `You edit an Aether skin manifest: a JSON document.
+export const SOGLIA_DOCUMENTO = 12_000;
+
+/** Oltre questa lunghezza la cronologia si riassume. */
+export const SOGLIA_STORIA = 12_000;
+
+/** Quante battute in coda restano intere quando la cronologia si riassume. */
+const BATTUTE_INTERE = 4;
+
+/**
+ * Il contratto d'uscita: come si scrive una modifica.
+ *
+ * Un blocco `aether-patch` di operazioni per percorso, e non il documento
+ * riscritto: un modello che riscrive venti kilobyte per cambiare un raggio
+ * sbaglia, prima o poi, uno dei diciannove che non doveva toccare.
+ */
+const CONTRATTO = `You edit an Aether skin manifest: a JSON document that paints a music player.
 
 To change it, emit ONE fenced block with the language tag \`aether-patch\`,
 containing a JSON array of operations. Nothing else in the block.
 
 \`\`\`aether-patch
 [{"op": "scrivi", "percorso": ["tokens", "color.surface.0"], "valore": "#050508"},
- {"op": "scrivi", "percorso": ["parts", "section-card", "background", "0", "stops", "1", "color"], "valore": "#1a1512"},
+ {"op": "scrivi", "percorso": ["parts", "card", "states", "hover", "shadow"], "valore": {"$token": "shadow.2"}},
  {"op": "togli", "percorso": ["parts", "section-card", "radius"]}]
 \`\`\`
 
 - \`op\` is "scrivi" (set a value, creating what is missing) or "togli" (remove).
-- \`percorso\` is an ARRAY of steps, one per level from the document root — never
-  a dotted string. A step is an object key, or a position counted from 0.
-    right: ["parts", "section-card", "background", "0", "stops", "0", "color"]
-    wrong: "parts.section-card.background[0].stops[0].color"
+- \`percorso\` is an ARRAY of steps from the document root — never a dotted
+  string. A step is an object key, or a list position counted from 0.
+    right: ["parts", "card", "background", "0", "stops", "0", "color"]
+    wrong: "parts.card.background[0].stops[0].color"
 - \`valore\` is required for "scrivi" and must be absent for "togli".
 
 Lists, and how to address them:
-- \`parts.<name>.background\` is a STACK of effect layers, bottom first. So
-  \`["parts","section-card","background","0","stops","1","color"]\` is the second
-  colour stop of the bottom layer.
-- Also lists: \`meta.preview\`, \`tokens.font.*\`, \`tokens.shadow.*.layers\`,
-  \`tokens.motion.ease.*.points\`, \`patterns.*.at\`, \`patterns.*.stops\`, the
-  \`at\` and \`stops\` of any gradient, \`layout.shell.children\`.
-- There is no "add" operation. To ADD a layer, "scrivi" at the position equal to
-  the list's current length — count it in the document below. If that stack has
-  two layers, the third one is written like this:
-    {"op": "scrivi", "percorso": ["parts", "section-card", "background", "2"],
-     "valore": {"effect": "vignette", "color": "#000"}}
-  A position further out is refused, because it would leave a hole.
+- These are lists: every \`background\` (a STACK of effect layers, bottom
+  first — also inside \`before\`, \`after\` and states), \`filter\`, \`backdrop\`,
+  \`shadow.layers\`, \`frames\`, gradient \`stops\` and \`at\`, \`points\`,
+  \`meta.preview\`, \`layout.shell.children\`.
+- There is no "add" operation. To ADD an item, "scrivi" at the position equal
+  to the list's current length — count it in the document. A position further
+  out is refused, because it would leave a hole.
 - To REMOVE one, "togli" that position: the ones after it shift down.
-- To REORDER, or to insert somewhere other than the end, write the whole list in
-  a single "scrivi" on the list itself.
-- Otherwise change one layer at a time by its position. Rewriting a whole stack
-  to change one colour is how you lose the other layers.
+- To REORDER, or to insert elsewhere, write the whole list in one "scrivi".
+- Otherwise change one item at a time by its position. Rewriting a whole stack
+  to change one colour is how you lose the other layers.`;
 
-Value syntax inside the document:
-- colors: \`"#rrggbb"\` or \`"#rrggbbaa"\`
-- a reference to a token: \`{"$token": "color.accent"}\`
-- a palette entry with opacity: \`{"$palette": "viola", "alpha": 0.4}\`
-- lengths and durations are strings with a unit: \`"12px"\`, \`"180ms"\`
+/**
+ * La grammatica del formato 2, in una pagina.
+ *
+ * Tutto quel che qui è un elenco di nomi viene dal registro; le frasi sono
+ * quel che il registro non può dire.
+ */
+function grammatica(registro: Registro): string {
+  const chiavi = (contesto: string) => (registro.chiavi[contesto] ?? []).join(", ");
+  const stati = registro.stati.map((s) => s.name).join(" ");
+  const inneschi = registro.inneschi
+    .filter((i) => !i.stato)
+    .map((i) => i.name)
+    .join(", ");
+  return `FORMAT ${registro.format} — the shape of a skin
 
-Rules:
-- Use ONLY names from the vocabulary below. Nothing else exists; a name that is
-  not listed is an error, not an extension.
-- Change only what was asked. Do not restate unchanged values.
-- Write a short sentence explaining what you changed, then the block.
-- If the request cannot be done with this vocabulary, say so and emit no block.`;
+Top level: ${chiavi("documento")}.
+- scheme: the base theme, "dark" or "light". \`variant\` is the OPPOSITE theme:
+  it may override ${chiavi("variante")}; whatever it does not override is
+  inherited. When the user says "the light theme" or "the dark theme", write to
+  the base or to \`variant\` according to \`scheme\`.
+- tokens: the design variables, by id (listed below). palette: the skin's own
+  named colours. patterns: named background layers, used as
+  {"$pattern": "name"} inside a background stack.
+- Colour values: "#rrggbb", "#rrggbbaa", "rgba(…)", {"$token": "color.accent"},
+  {"$palette": "name", "alpha": 0.4}, or a colour that follows the playing cover:
+  {"$source": "<source>", "alpha"?: 0.5}. Lengths and durations are strings
+  with a unit: "12px", "180ms".
+
+parts.<name> paints one surface of the app. Appearance fields:
+  ${chiavi("aspetto")}
+  - radius: "8px", or per corner {${chiavi("angoli")}}.
+  - shadow: {"$token": "shadow.2"} or {"layers": [{${chiavi("livelloOmbra")}}]}.
+  - focusRing: {${chiavi("anello")}}. font: sans | mono | display.
+  - filter (on the element) and backdrop (behind it) are stacks of filter
+    effects; clip is a clip effect.
+  - before / after: one extra layer {${chiavi("livello")}} behind the content
+    (before) or above the background (after) — only on parts marked b / a.
+  - states.<state>: only the appearance fields that CHANGE in that state.
+    States, in cascade order (a later one wins): ${stati}.
+  - motion: which animation plays when. See below.
+
+motion (top level): ${chiavi("movimento")}.
+- motion.animations.<name>: {${chiavi("animazione")}}.
+  frames: at least ${registro.minFotogrammi}, at most ${registro.maxFotogrammi}, each {"at": 0..100, <frame fields>}.
+  iterations: 1..${registro.maxIterazioni}, or "infinite".
+- motion.easings.<name>: {"kind": "cubicBezier", "points": [x1, y1, x2, y2]}
+  or {"kind": "steps", "count": 4, "position": "end"}. An animation's easing is
+  a keyword (listed below) or the name of one of these.
+- motion.route: the page change, {${chiavi("rotta")}}; out / in hold ${chiavi("fotogrammaRotta")}.
+- parts.<name>.motion maps a trigger to an animation NAME, plus ${chiavi("movimentoParte")}:
+    {"enter": "rise", "hover": "pulse", "stagger": "30ms",
+     "transition": {"duration": "160ms", "easing": "ease-out"}}
+  Triggers: ${inneschi}, and every state name.
+  enter / exit only on parts marked p (they come and go); share only on parts
+  marked s (they fly between screens); inView when scrolled into view; change
+  when the content changes. "infinite" iterations ONLY on a state trigger
+  (e.g. "playing": "spin"). transition smooths appearance changes between
+  states. Reduced motion is handled by the compiler: never add it yourself.
+- Cost: each part has a surface budget (${registro.budget}) and a motion budget
+  (${registro.motionBudget}); the whole window ${registro.windowMotionBudget}. Going over is a warning.
+
+fonts: families from files already in the package. You cannot add files: if a
+font or an image is missing, say so.`;
+}
+
+/**
+ * Il vocabolario chiuso, compatto.
+ *
+ * I token per tipo e non per gruppo: quel che il modello deve sapere di
+ * `color.surface.0` è che accetta un colore, non che appartiene a «Superfici».
+ * Le parti con una sigla per quel che ammettono: una parte senza `a` rifiuta
+ * un `after`, e senza la sigla il modello lo scriverebbe su tutte.
+ */
+function vocabolario(registro: Registro): string {
+  const perTipo = new Map<string, string[]>();
+  for (const token of registro.tokens) {
+    const elenco = perTipo.get(token.kind) ?? [];
+    elenco.push(token.id);
+    perTipo.set(token.kind, elenco);
+  }
+  const sigla = (p: Registro["parts"][number]) => {
+    const segni = `${p.before ? "b" : ""}${p.after ? "a" : ""}${p.presenza ? "p" : ""}${p.condivisa ? "s" : ""}`;
+    return segni === "" ? p.name : `${p.name}:${segni}`;
+  };
+  const estremi = (c: Registro["fotogramma"][number]) =>
+    c.min !== null && c.max !== null ? `${c.name} ${c.min}..${c.max}` : `${c.name} (${c.kind})`;
+  const parole = Object.entries(registro.parole)
+    .filter(([campo]) => campo !== "iterations")
+    .map(([campo, nomi]) => `  ${campo}: ${nomi.join(" | ")}`);
+
+  return [
+    `VOCABULARY — use ONLY these names`,
+    "",
+    "tokens, by value type:",
+    ...[...perTipo.entries()].map(([tipo, nomi]) => `  ${tipo}: ${nomi.join(" ")}`),
+    "",
+    "parts (b = before layer, a = after layer, p = enter/exit, s = share):",
+    `  ${registro.parts.map(sigla).join(" ")}`,
+    "",
+    "frame fields (numbers are plain numbers; translate in px, rotate/skew/hueRotate in degrees):",
+    `  ${registro.fotogramma.map(estremi).join(", ")}`,
+    "",
+    "ready-made animations (copy the definition into motion.animations first, then name it):",
+    ...registro.animazioniPronte.map((a) => `  ${a.id} (for ${a.innesco}): ${compatto(a.valore)}`),
+    "",
+    // L'esemplare viene dal nucleo, che lo costruisce facendolo passare dal
+    // parser vero: un esempio che non compila non esce.
+    "effects (name, cost, and a minimal valid example):",
+    ...registro.effects.map((e) => `  ${e.name} (cost ${e.cost}, ${e.target}): ${e.esempio}`),
+    "",
+    "closed words:",
+    ...parole,
+    `  $source: ${registro.sorgenti.join(" ")}`,
+    "",
+    "shell widgets:",
+    `  ${registro.widgets.map((w) => w.name).join(" ")}`,
+    `  zone: ${registro.vocabolario.zones.join(" ")}; gap: ${registro.vocabolario.gaps.join(" ")}; align: ${registro.vocabolario.aligns.join(" ")}; spread: ${registro.vocabolario.spreads.join(" ")}`,
+  ].join("\n");
+}
+
+/** Un frammento JSON senza rientri; il testo com'è se non si legge. */
+function compatto(testo: string): string {
+  try {
+    return JSON.stringify(JSON.parse(testo));
+  } catch {
+    return testo;
+  }
+}
 
 /**
  * Il contratto d'uscita, ripetuto **dopo** il documento.
@@ -128,108 +246,329 @@ Rules:
  * Perché le stesse frasi in cima non bastavano, e non è un'ipotesi: con un
  * modello locale da ventisette miliardi di parametri, le istruzioni scritte
  * solo in testa producevano un blocco ```json con dentro il pezzo di documento
- * riscritto — cioè zero operazioni, un pannello che non ha niente da mostrare
- * e nessuna spiegazione del perché. Con queste otto righe in fondo, lo stesso
- * modello e la stessa domanda producono un blocco `aether-patch` con dentro
- * un'operazione.
+ * riscritto. Con queste righe in fondo, lo stesso modello e la stessa domanda
+ * producono un blocco `aether-patch`. L'ultima forma vista è quella che un
+ * modello imita: qui è il contratto e non il documento.
  *
- * La ragione è la distanza. Fra le regole e la risposta ci sono il vocabolario
- * e il documento intero — venti kilobyte in cui l'ultima cosa che il modello
- * legge è un manifest JSON, e imitare l'ultima forma vista è quel che un
- * modello fa quando le istruzioni sono lontane. Qui l'ultima forma vista è il
- * contratto.
- *
- * Va **dopo gli errori** e non prima: in modalità agent quello è l'elenco che
- * cresce, e finirebbe lui a fare da ultima cosa letta.
+ * Va **dopo gli errori**: in modalità agent quello è l'elenco che cresce, e
+ * finirebbe lui a fare da ultima cosa letta.
  */
 const CHIUSURA = `REMEMBER — the answer has exactly two parts, in this order:
-1. one short sentence saying what you changed;
+1. one short sentence saying what you changed, in the user's language;
 2. ONE fenced block tagged \`aether-patch\` holding the JSON array of operations.
 
 Never a \`json\` block, and never the rewritten document: only the operations.
-\`percorso\` is an array of steps — ["parts", "section-card", "background", "0"] —
-never a dotted string. If nothing needs changing, say so and emit no block.`;
+\`percorso\` is an array of steps — ["parts", "card", "background", "0"] — never
+a dotted string. Use only names from the vocabulary; change only what was
+asked. If the request cannot be done with this vocabulary, or nothing needs
+changing, say so and emit no block.`;
 
-/** Le istruzioni complete, per questo registro e questo documento. */
-export function istruzioni(
-  registro: Registro,
-  documento: string,
-  esito: Validazione | null,
-): string {
-  const pezzi = [REGOLE, vocabolario(registro), `Current document:\n${documento}`];
-  const aperti = errori(esito?.errori ?? []);
+// ── la selezione ────────────────────────────────────────────────────────────
+
+/** Quel che lo Studio sta guardando, per le istruzioni. */
+export interface Sguardo {
+  selezione: Selezione | null;
+  /** Lo stato della parte che l'ispettore modifica. */
+  stato: string | null;
+  tema: Tema;
+}
+
+/**
+ * La riga che accompagna una richiesta: cosa era selezionato quando è stata
+ * scritta.
+ *
+ * Sta **nel messaggio** e non solo nelle istruzioni: la cronologia deve
+ * ricordare che «rendila più tonda», tre battute fa, parlava della scheda e
+ * non del bottone selezionato adesso. `null` quando non c'è niente da dire.
+ */
+export function rigaSelezione({ selezione, stato, tema }: Sguardo): string | null {
+  if (selezione === null || selezione.tipo === "documento") return null;
+  const inTema = tema === "variante" ? ", in the variant theme" : "";
+  switch (selezione.tipo) {
+    case "parte":
+      return `[Selected in the Studio: part "${selezione.nome}"${stato === null ? "" : `, state "${stato}"`}${inTema}]`;
+    case "token":
+      return `[Selected in the Studio: token "${selezione.id}"${inTema}]`;
+    case "colore":
+      return `[Selected in the Studio: palette colour "${selezione.nome}"${inTema}]`;
+    case "motivo":
+      return `[Selected in the Studio: pattern "${selezione.nome}"${inTema}]`;
+    case "curva":
+      return `[Selected in the Studio: easing "${selezione.nome}"]`;
+    case "animazione":
+      return `[Selected in the Studio: animation "${selezione.nome}"]`;
+    case "carattere":
+      return `[Selected in the Studio: font family "${selezione.nome}"]`;
+    case "risorsa":
+      return `[Selected in the Studio: asset file "${selezione.nome}"]`;
+    case "nodo":
+      return `[Selected in the Studio: shell node at ${JSON.stringify(percorsoNodo(selezione.via))}]`;
+  }
+}
+
+/** Il percorso di un nodo dello scafale, dalla radice del documento. */
+function percorsoNodo(via: readonly number[]): string[] {
+  return ["layout", "shell", ...via.flatMap((i) => ["children", String(i)])];
+}
+
+type Oggetto = Record<string, unknown>;
+const eOggetto = (v: unknown): v is Oggetto =>
+  v !== null && typeof v === "object" && !Array.isArray(v);
+
+/** Il valore a un percorso, o `undefined`. */
+function a(documento: unknown, percorso: readonly string[]): unknown {
+  let qui: unknown = documento;
+  for (const passo of percorso) {
+    if (Array.isArray(qui)) qui = qui[Number(passo)];
+    else if (eOggetto(qui)) qui = qui[passo];
+    else return undefined;
+  }
+  return qui;
+}
+
+/**
+ * La selezione com'è scritta adesso, con il suo percorso.
+ *
+ * È la metà che la riga del messaggio non porta: il modello riceve la
+ * definizione **di adesso** a ogni giro — anche quando il documento è ridotto
+ * e la parte non ci sarebbe — e può scrivere il percorso giusto senza
+ * cercarlo. Nel tema variante si mostrano tutte e due le metà: quel che la
+ * variante sovrascrive, e quel che eredita.
+ */
+function dettaglioSelezione(documento: unknown, sguardo: Sguardo): string | null {
+  const { selezione, tema } = sguardo;
+  if (selezione === null || selezione.tipo === "documento" || selezione.tipo === "risorsa") {
+    return null;
+  }
+  const percorsi: string[][] = [];
+  const conVariante = (base: string[], variante: string[]) => {
+    percorsi.push(base);
+    if (tema === "variante") percorsi.push(variante);
+  };
+  switch (selezione.tipo) {
+    case "parte":
+      conVariante(["parts", selezione.nome], ["variant", "parts", selezione.nome]);
+      break;
+    case "token":
+      conVariante(["tokens", selezione.id], ["variant", "tokens", selezione.id]);
+      break;
+    case "colore":
+      conVariante(["palette", selezione.nome], ["variant", "palette", selezione.nome]);
+      break;
+    case "motivo":
+      conVariante(["patterns", selezione.nome], ["variant", "patterns", selezione.nome]);
+      break;
+    case "curva":
+      percorsi.push(["motion", "easings", selezione.nome]);
+      break;
+    case "animazione":
+      percorsi.push(["motion", "animations", selezione.nome]);
+      break;
+    case "carattere":
+      percorsi.push(["fonts", selezione.nome]);
+      break;
+    case "nodo":
+      percorsi.push(percorsoNodo(selezione.via));
+      break;
+  }
+  const righe = percorsi.map((p) => {
+    const valore = a(documento, p);
+    return `  ${JSON.stringify(p)}: ${valore === undefined ? "(not written yet)" : JSON.stringify(valore)}`;
+  });
+  return ["THE SELECTION, as it is written now:", ...righe].join("\n");
+}
+
+// ── il documento, leggero ───────────────────────────────────────────────────
+
+/** I nomi di cui questa domanda ha bisogno per intero. */
+export interface Pertinenti {
+  parti: Set<string>;
+  animazioni: Set<string>;
+  scafale: boolean;
+}
+
+/** `nome` compare in `testo` come parola intera — i nomi hanno trattini. */
+function nomina(testo: string, nome: string): boolean {
+  const i = testo.indexOf(nome);
+  if (i < 0) return false;
+  const confine = /[a-z0-9.-]/i;
+  for (let da = i; da >= 0; da = testo.indexOf(nome, da + 1)) {
+    const prima = testo[da - 1] ?? "";
+    const dopo = testo[da + nome.length] ?? "";
+    if (!confine.test(prima) && !confine.test(dopo)) return true;
+  }
+  return false;
+}
+
+/** Le parole che fanno pensare allo scafale, in italiano e in inglese. */
+const PAROLE_SCAFALE =
+  /\b(layout|shell|scaffal|widget|zon[ae]|colonn|column|sidebar|barra laterale|impagina)/i;
+
+/**
+ * Quel che serve per intero a questa domanda.
+ *
+ * La selezione; le parti e le animazioni che la richiesta o gli errori
+ * nominano; le animazioni che quelle parti usano. Lo scafale solo se la
+ * domanda ne parla o un suo nodo è selezionato: è la sezione più lunga, e la
+ * più lontana da «cambia questo colore».
+ */
+export function pertinenti(
+  documento: unknown,
+  sguardo: Sguardo,
+  richiesta: string,
+  problemi: readonly Problema[],
+): Pertinenti {
+  const parti = new Set<string>();
+  const animazioni = new Set<string>();
+  const { selezione } = sguardo;
+  if (selezione?.tipo === "parte") parti.add(selezione.nome);
+  if (selezione?.tipo === "animazione") animazioni.add(selezione.nome);
+
+  const nomiParti = new Set([
+    ...Object.keys(eOggetto(a(documento, ["parts"])) ? (a(documento, ["parts"]) as Oggetto) : {}),
+    ...Object.keys(
+      eOggetto(a(documento, ["variant", "parts"])) ? (a(documento, ["variant", "parts"]) as Oggetto) : {},
+    ),
+  ]);
+  const tutteAnimazioni = a(documento, ["motion", "animations"]);
+  const nomiAnimazioni = eOggetto(tutteAnimazioni) ? Object.keys(tutteAnimazioni) : [];
+
+  const sorgenti = [richiesta, ...problemi.map((p) => p.path.split(".").join(" "))].join("\n");
+  for (const nome of nomiParti) if (nomina(sorgenti, nome)) parti.add(nome);
+  for (const nome of nomiAnimazioni) if (nomina(sorgenti, nome)) animazioni.add(nome);
+
+  // Le animazioni che le parti scelte usano: chi cambia l'entrata di una
+  // scheda deve vedere l'animazione che la scheda chiama.
+  for (const parte of parti) {
+    for (const radice of [["parts"], ["variant", "parts"]]) {
+      const movimento = a(documento, [...radice, parte, "motion"]);
+      if (!eOggetto(movimento)) continue;
+      for (const valore of Object.values(movimento)) {
+        if (typeof valore === "string" && nomiAnimazioni.includes(valore)) animazioni.add(valore);
+      }
+    }
+  }
+  const scafale =
+    selezione?.tipo === "nodo" ||
+    PAROLE_SCAFALE.test(richiesta) ||
+    problemi.some((p) => p.path.startsWith("layout"));
+  return { parti, animazioni, scafale };
+}
+
+/**
+ * Il documento come lo legge il modello.
+ *
+ * Compatto sempre; ridotto oltre [`SOGLIA_DOCUMENTO`]. Un testo che non è
+ * JSON passa com'è: è rotto, e per aggiustarlo va visto tutto.
+ *
+ * Restituisce anche i nomi tolti, che le istruzioni elencano: un modello che
+ * non sa che `card` esiste la dichiarerebbe da capo sopra quella che c'è.
+ */
+export function documentoLeggero(
+  testo: string,
+  quali: Pertinenti,
+  soglia = SOGLIA_DOCUMENTO,
+): { testo: string; tolti: string[] } {
+  let documento: unknown;
+  try {
+    documento = JSON.parse(testo);
+  } catch {
+    return { testo, tolti: [] };
+  }
+  const intero = JSON.stringify(documento);
+  if (intero.length <= soglia || !eOggetto(documento)) return { testo: intero, tolti: [] };
+
+  const tolti: string[] = [];
+  const filtra = (dove: string, mappa: unknown, tieni: Set<string>): unknown => {
+    if (!eOggetto(mappa)) return mappa;
+    const fuori = Object.keys(mappa).filter((k) => !tieni.has(k));
+    if (fuori.length > 0) tolti.push(`${dove}: ${fuori.join(" ")}`);
+    return Object.fromEntries(Object.entries(mappa).filter(([k]) => tieni.has(k)));
+  };
+
+  const ridotto: Oggetto = { ...documento };
+  ridotto.parts = filtra("parts", documento.parts, quali.parti);
+  if (eOggetto(documento.variant)) {
+    ridotto.variant = {
+      ...documento.variant,
+      parts: filtra("variant.parts", documento.variant.parts, quali.parti),
+    };
+  }
+  if (eOggetto(documento.motion)) {
+    ridotto.motion = {
+      ...documento.motion,
+      animations: filtra("motion.animations", documento.motion.animations, quali.animazioni),
+    };
+  }
+  if (!quali.scafale && eOggetto(documento.layout)) {
+    const { shell, prefabs, ...resto } = documento.layout;
+    if (shell !== undefined || prefabs !== undefined) {
+      tolti.push("layout: shell and prefabs (the window's arrangement)");
+    }
+    ridotto.layout = resto;
+  }
+  return { testo: JSON.stringify(ridotto), tolti };
+}
+
+// ── le istruzioni ───────────────────────────────────────────────────────────
+
+/** Tutto quel che le istruzioni devono sapere di questo giro. */
+export interface Contesto {
+  registro: Registro;
+  /** Il testo del documento di adesso. */
+  documento: string;
+  esito: Validazione | null;
+  sguardo: Sguardo;
+  /** L'ultima richiesta di chi scrive: decide cosa del documento serve. */
+  richiesta: string;
+}
+
+/** Le istruzioni complete, per questo registro, questo documento, questa domanda. */
+export function istruzioni(c: Contesto): string {
+  let letto: unknown = null;
+  try {
+    letto = JSON.parse(c.documento);
+  } catch {
+    // Il documento è rotto: niente dettaglio della selezione, e il testo
+    // intero sotto.
+  }
+  const problemi = c.esito?.errori ?? [];
+  const quali = pertinenti(letto, c.sguardo, c.richiesta, problemi);
+  const leggero = documentoLeggero(c.documento, quali);
+
+  const pezzi = [CONTRATTO, grammatica(c.registro), vocabolario(c.registro)];
+  const dettaglio = letto === null ? null : dettaglioSelezione(letto, c.sguardo);
+  if (dettaglio !== null) pezzi.push(dettaglio);
+  pezzi.push(`CURRENT DOCUMENT (compact JSON):\n${leggero.testo}`);
+  if (leggero.tolti.length > 0) {
+    pezzi.push(
+      [
+        "Left out above to save space — these EXIST in the document; do not declare them again:",
+        ...leggero.tolti.map((riga) => `  ${riga}`),
+      ].join("\n"),
+    );
+  }
+  const aperti = errori(problemi);
   if (aperti !== null) pezzi.push(aperti);
   pezzi.push(CHIUSURA);
   return pezzi.join("\n\n");
 }
 
-/**
- * Il vocabolario chiuso, compatto.
- *
- * I token vanno raggruppati per tipo e non per gruppo: quel che il modello deve
- * sapere di `color.surface.0` è che accetta un colore, non che appartiene a
- * «Superfici» — il gruppo è per l'albero, che lo legge una persona.
- */
-function vocabolario(registro: Registro): string {
-  const perTipo = new Map<string, string[]>();
-  for (const token of registro.tokens) {
-    const elenco = perTipo.get(token.kind) ?? [];
-    elenco.push(token.id);
-    perTipo.set(token.kind, elenco);
-  }
-  const righe = [...perTipo.entries()].map(
-    ([tipo, nomi]) => `  ${tipo}: ${nomi.join(" ")}`,
-  );
-
-  return [
-    `VOCABULARY (format ${registro.format})`,
-    "",
-    "tokens, by value type:",
-    ...righe,
-    "",
-    // Gli strati liberi si segnano: una parte che non li ha rifiuta un
-    // `layers`, e senza questa distinzione il modello lo scriverebbe su tutte.
-    `parts (a "+" means it accepts an extra free layer):`,
-    `  ${registro.parts.map((p) => (p.layers ? `${p.name}+` : p.name)).join(" ")}`,
-    "",
-    // L'esemplare viene dal nucleo, che lo costruisce facendolo passare dal
-    // parser vero: un esempio che non compila non esce, e un effetto che la
-    // tabella non conosce sparisce dall'elenco invece di mentire.
-    "effects (name, cost, and a minimal valid example):",
-    ...registro.effects.map(
-      (e) => `  ${e.name} (cost ${e.cost}, ${e.target}): ${e.esempio}`,
-    ),
-    "",
-    `surface cost budget: ${registro.budget}; shell budget: ${registro.shellBudget}`,
-    "",
-    "shell widgets:",
-    `  ${registro.widgets.map((w) => w.name).join(" ")}`,
-    "",
-    "words allowed in a shell node:",
-    `  zone: ${registro.vocabolario.zones.join(" ")}`,
-    `  gap: ${registro.vocabolario.gaps.join(" ")}`,
-    `  align: ${registro.vocabolario.aligns.join(" ")}`,
-    `  spread: ${registro.vocabolario.spreads.join(" ")}`,
-  ].join("\n");
+/** Il messaggio di sistema, pronto da mettere in testa alla conversazione. */
+export function sistema(c: Contesto): MessaggioIa {
+  return { ruolo: "system", testo: istruzioni(c) };
 }
 
 /**
  * Gli errori aperti, nelle stesse parole che il bottone «forse volevi dire»
- * già usa.
- *
- * `null` quando non ce ne sono: una riga «no errors» sarebbe contesto speso per
- * dire che non c'è niente da dire.
+ * già usa. `null` quando non ce ne sono: una riga «no errors» sarebbe
+ * contesto speso per dire che non c'è niente da dire.
  */
 export function errori(problemi: readonly Problema[]): string | null {
   if (problemi.length === 0) return null;
   const righe = problemi.slice(0, ERRORI_DA_MOSTRARE).map((p) => {
     const forse = p.forse.length > 0 ? ` (did you mean: ${p.forse.join(", ")})` : "";
-    // La riga serve al modello quanto serve a chi legge: gli errori che riceve
-    // sono quelli del **suo** documento, e senza un numero deve ritrovare il
-    // punto dal percorso. Fino a poco fa qui arrivava comunque un problema
-    // solo, con dentro venti frasi unite da punti e virgola.
-    const dove = p.riga === null ? p.path : `${p.path} (line ${p.riga})`;
-    return `  ${p.code} at ${dove}: ${p.message}${forse}`;
+    return `  ${p.code} at ${p.path}: ${p.message}${forse}`;
   });
   const coda =
     problemi.length > ERRORI_DA_MOSTRARE
@@ -241,14 +580,11 @@ export function errori(problemi: readonly Problema[]): string | null {
 /**
  * Il messaggio che apre un giro di correzione, in modalità agent.
  *
- * Porta gli errori del **candidato** e le ragioni di quel che si è scartato:
- * sono le due cose che il modello può usare per correggersi, e sono già scritte
- * nelle sue parole.
- *
- * `applicato` distingue i due giri, e non è un dettaglio: quando il documento
- * non è cambiato affatto — tutte le operazioni rifiutate — «l'ho applicata e non
- * è venuta pulita» è una frase falsa, e manda il modello a cercare cosa ha
- * rotto invece che a riscrivere quel che non è nemmeno partito.
+ * Porta gli errori del **candidato** e le ragioni di quel che si è scartato.
+ * `applicato` distingue i due giri: quando il documento non è cambiato
+ * affatto, «l'ho applicata e non è venuta pulita» è una frase falsa, e manda
+ * il modello a cercare cosa ha rotto invece che a riscrivere quel che non è
+ * nemmeno partito.
  */
 export function correzione(
   problemi: readonly Problema[],
@@ -269,12 +605,9 @@ export function correzione(
       ),
     );
   }
-  // La chiusa cambia con `applicato`, e cambiarla non è cortesia. «Do not
-  // repeat what already works» dopo un giro in cui **non** ha funzionato niente
-  // dice al modello che c'è qualcosa da conservare, e la conclusione che ne
-  // trae è che non resta niente da scrivere: visto davvero, un secondo giro che
-  // rispondeva a parole e senza blocco. Quando il documento è intatto, quel che
-  // serve è il contrario — rifallo tutto, nella forma giusta.
+  // «Do not repeat what already works» dopo un giro in cui **non** ha
+  // funzionato niente dice al modello che c'è qualcosa da conservare: visto
+  // davvero, un secondo giro che rispondeva a parole e senza blocco.
   pezzi.push(
     applicato
       ? "Emit a new block that fixes only these. Do not repeat what already works."
@@ -283,25 +616,89 @@ export function correzione(
   return pezzi.join("\n\n");
 }
 
-/** Il messaggio di sistema, pronto da mettere in testa alla conversazione. */
-export function sistema(
-  registro: Registro,
-  documento: string,
-  esito: Validazione | null,
-): MessaggioIa {
-  return { ruolo: "system", testo: istruzioni(registro, documento, esito) };
+// ── la cronologia, leggera ──────────────────────────────────────────────────
+
+/** Un blocco di modifiche dentro una risposta. */
+const BLOCCO = /```aether-patch[\s\S]*?(```|$)/g;
+
+/** Il testo accorciato a `quanti` caratteri, con un segno che lo dice. */
+function accorcia(testo: string, quanti: number): string {
+  return testo.length <= quanti ? testo : `${testo.slice(0, quanti)}…`;
+}
+
+/** La riga che segue una proposta che non è stata applicata. */
+export const NON_APPLICATA = "[this aether-patch block was NOT applied: the user discarded it]";
+
+/** Il segno di un blocco vecchio, nella cronologia riassunta. */
+function segnoDelBlocco(applicata: boolean | undefined): string {
+  return applicata === false
+    ? "[an aether-patch block, NOT applied: the user discarded it]"
+    : "[an aether-patch block, already applied]";
 }
 
 /**
- * Quanto pesa quel che si sta per mandare, detto a chi guarda.
+ * La cronologia da mandare: intera finché è corta, riassunta dopo.
  *
- * La stima dei gettoni è deliberatamente grossolana — vedi il preambolo — e la
- * frase la nomina come stima.
+ * Riassunta vuol dire: le ultime [`BATTUTE_INTERE`] restano come sono, e nelle
+ * vecchie i blocchi di modifiche diventano una riga — sono già applicati, e il
+ * documento che il modello riceve li contiene — mentre le frasi si accorciano.
+ * Le immagini restano solo sull'ultima richiesta in ogni caso: una fotografia
+ * della tela di tre giri fa mostra una skin che non c'è più, e si pagherebbe
+ * a ogni giro.
+ *
+ * # Le proposte scartate
+ *
+ * «Già applicati» era vero in modalità agent e falso in modalità proposta,
+ * dove chi guarda può scartare: fino alla 3.0 la cronologia diceva al modello
+ * che una proposta rifiutata era nel documento, e il modello costruiva il giro
+ * dopo su una modifica che non c'era. Adesso la chat segna ogni risposta col
+ * suo esito (`MessaggioChat.applicata`), e una scartata lo dice — riassunta o
+ * no. Un messaggio senza segno, da una conversazione salvata prima, si
+ * racconta come prima. Il segno non parte: si mandano solo `ruolo`, `testo` e,
+ * sull'ultimo, le immagini.
  */
-export function misura(messaggi: readonly MessaggioIa[]): string {
-  const caratteri = messaggi.reduce((somma, m) => somma + m.testo.length, 0);
-  return t("studio.chat.size", {
-    k: Math.round(caratteri / 100) / 10,
-    gettoni: Math.round(caratteri / CARATTERI_PER_GETTONE / 100) * 100,
+export function storiaLeggera(
+  conversazione: readonly MessaggioChat[],
+  soglia = SOGLIA_STORIA,
+): MessaggioIa[] {
+  const ultima = conversazione.length - 1;
+  const senzaVecchieImmagini: MessaggioIa[] = conversazione.map((m, i) => {
+    const scartata =
+      m.ruolo === "assistant" && m.applicata === false && m.testo.includes("```aether-patch");
+    const testo = scartata ? `${m.testo}\n${NON_APPLICATA}` : m.testo;
+    return i === ultima && m.immagini !== undefined
+      ? { ruolo: m.ruolo, testo, immagini: m.immagini }
+      : { ruolo: m.ruolo, testo };
   });
+  const peso = senzaVecchieImmagini.reduce((somma, m) => somma + m.testo.length, 0);
+  if (peso <= soglia) return senzaVecchieImmagini;
+  const confine = conversazione.length - BATTUTE_INTERE;
+  return senzaVecchieImmagini.map((m, i) => {
+    if (i >= confine) return m;
+    if (m.ruolo === "assistant") {
+      const originale = conversazione[i]?.testo ?? m.testo;
+      const blocchi = originale.match(BLOCCO)?.length ?? 0;
+      const frasi = accorcia(originale.replace(BLOCCO, "").trim(), 300);
+      return {
+        ruolo: m.ruolo,
+        testo:
+          blocchi > 0 ? `${frasi}\n${segnoDelBlocco(conversazione[i]?.applicata)}` : frasi,
+      };
+    }
+    return { ruolo: m.ruolo, testo: accorcia(m.testo, 500) };
+  });
+}
+
+/**
+ * Quanti gettoni peserebbe quel che si sta per mandare, a spanne.
+ *
+ * Quattro caratteri per gettone: grossolana, e dalla parte giusta della
+ * grossolanità — sovrastima per l'italiano, che è quel che serve a un avviso.
+ * Un'immagine si conta come il migliaio di gettoni che i modelli con la
+ * visione di solito le attribuiscono.
+ */
+export function stimaGettoni(messaggi: readonly MessaggioIa[]): number {
+  const caratteri = messaggi.reduce((somma, m) => somma + m.testo.length, 0);
+  const immagini = messaggi.reduce((somma, m) => somma + (m.immagini?.length ?? 0), 0);
+  return Math.round(caratteri / CARATTERI_PER_GETTONE) + immagini * 1000;
 }

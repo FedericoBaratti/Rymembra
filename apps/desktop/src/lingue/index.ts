@@ -22,9 +22,10 @@
  *
  * Il progetto ha quattro dipendenze runtime in tutto, e la CI ne vieta
  * esplicitamente altre. Quel che serve qui è ricerca per chiave, interpolazione
- * testuale e un plurale a due forme: duecento righe leggibili, contro
- * quaranta kilobyte di libreria generica e un formato di catalogo che nessuno
- * di noi ha scelto.
+ * testuale e il plurale: duecento righe leggibili, contro quaranta kilobyte di
+ * libreria generica e un formato di catalogo che nessuno di noi ha scelto. Le
+ * regole del plurale non le scriviamo noi: le ha già il motore
+ * (`Intl.PluralRules`), e `plurali.ts` sceglie la forma.
  *
  * # Perché un modulo e non un contesto
  *
@@ -40,6 +41,7 @@
 import { useSyncExternalStore } from "react";
 
 import it from "./it.json";
+import { formaPlurale } from "./plurali";
 
 /** Un dizionario, come sta sul disco: chiave piatta → testo. */
 export type Dizionario = Record<string, string>;
@@ -233,6 +235,36 @@ function cerca(chiave: string): string | null {
 }
 
 /**
+ * Come [`cerca`], ma la forma giusta per il numero `n`.
+ *
+ * Dizionario per dizionario, e non forma per forma: vedi «L'ordine in cui si
+ * cerca» in `plurali.ts`. Cercare `.one` prima nella lingua attiva e poi
+ * nell'inglese, e solo dopo la chiave nuda tedesca, metterebbe una parola
+ * inglese in mezzo a una frase tedesca che c'era tutta.
+ */
+function cercaPer(chiave: string, n: number): string | null {
+  for (const codice of attiva === RIPIEGO ? [attiva] : [attiva, RIPIEGO]) {
+    const dizionario = DIZIONARI[codice];
+    if (dizionario === undefined) continue;
+    const trovato = formaPlurale((k) => dizionario[k] ?? null, codice, chiave, n);
+    if (trovato !== null) return trovato;
+  }
+  return null;
+}
+
+/**
+ * Il testo da riempire: la forma plurale quando fra i valori c'è un numero `n`.
+ *
+ * Un `n` scritto come stringa non sceglie la forma, e non può: «1.234» è
+ * milleduecentotrentaquattro in italiano e uno virgola due in inglese. Chi
+ * vuole il plurale passa il numero, e la formattazione la fa [`riempi`].
+ */
+function testoDi(chiave: string, valori: Valori | undefined): string | null {
+  const n = valori?.["n"];
+  return typeof n === "number" ? cercaPer(chiave, n) : cerca(chiave);
+}
+
+/**
  * Sostituisce `{nome}` con i valori.
  *
  * I numeri passano da `toLocaleString` con la lingua attiva, e non è una
@@ -255,10 +287,11 @@ function riempi(testo: string, valori: Valori | undefined): string {
  *
  * # Il plurale
  *
- * Quando fra i valori c'è `n`, si prova prima `chiave.uno` con `n === 1`. Due
- * forme bastano per italiano e inglese, e una lingua che ne ha di più può
- * aggiungere le sue senza che le due di adesso cambino: il posto da toccare è
- * questa funzione, e le altre lingue non se ne accorgono.
+ * Quando fra i valori c'è un numero `n`, la forma la sceglie `plurali.ts`:
+ * `chiave.uno` per esattamente uno, poi la categoria della lingua (`.one`,
+ * `.few`, `.many`…), poi `.other`, poi la chiave nuda. L'italiano e l'inglese
+ * hanno bisogno solo di `.uno`; una lingua con più forme aggiunge le sue, e le
+ * chiavi di adesso non se ne accorgono.
  *
  * # Quando manca
  *
@@ -267,11 +300,7 @@ function riempi(testo: string, valori: Valori | undefined): string {
  * sembra un difetto di grafica, non una traduzione mancante.
  */
 export function t(chiave: Chiave, valori?: Valori): string {
-  if (valori !== undefined && valori["n"] === 1) {
-    const singolare = cerca(`${chiave}.uno`);
-    if (singolare !== null) return riempi(singolare, valori);
-  }
-  const testo = cerca(chiave);
+  const testo = testoDi(chiave, valori);
   if (testo === null) {
     if (import.meta.env.DEV)
       console.warn(`[lingue] manca «${chiave}» in «${attiva}»`);
@@ -290,7 +319,7 @@ export function t(chiave: Chiave, valori?: Valori): string {
  * obbligatorio, ed è quel che rende accettabile la chiave non verificata.
  */
 export function tSe(chiave: string, ripiego: string, valori?: Valori): string {
-  const testo = cerca(chiave);
+  const testo = testoDi(chiave, valori);
   if (testo === null) {
     if (import.meta.env.DEV)
       console.warn(`[lingue] manca «${chiave}» in «${attiva}»`);

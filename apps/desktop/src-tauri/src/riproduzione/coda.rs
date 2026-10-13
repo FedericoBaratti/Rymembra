@@ -19,6 +19,7 @@ use serde::Serialize;
 use tauri::{Manager as _, State};
 
 use crate::errore::{Esito, errore};
+use crate::nota;
 use crate::spegnimento::Emette as _;
 use crate::stato::{Stato, adesso_ms, con_libreria};
 
@@ -133,33 +134,62 @@ pub(super) fn ricorda_coda_di_prima(
 
 /// Il brano che continua la sessione, secondo la libreria.
 ///
-/// Fuori da [`prepara_prossimo`] perché prende il lucchetto della libreria, e
-/// la regola di [`crate::riproduzione`] è che lo si prenda **dopo** quello del
-/// lettore — che a questo punto è già in mano a chi ci ha chiamati. Tenerla
-/// separata rende la sequenza leggibile invece che implicita.
+/// Riceve il brano corrente e quel che è già in coda, e **non** il lettore:
+/// scegliere vuol dire leggere impronte e cronologie, e si fa a lucchetto del
+/// lettore lasciato. Prima si faceva con il lucchetto in mano, e per tutta la
+/// scelta la pausa premuta dalla finestra restava in attesa. Chi chiama
+/// fotografa la coda sotto il lucchetto, sceglie fuori, e rientra per
+/// accodare solo se nel frattempo la coda non è cambiata — vedi
+/// `fili::prepara_prossimo_adesso`.
+///
+/// `esclusi` è tutto quel che è già in coda, così l'autoplay non ripropone
+/// quel che si è appena sentito.
 pub(super) fn scegli_da_solo(
     app: &tauri::AppHandle,
-    lettore: &Lettore,
+    corrente: i64,
+    esclusi: &[i64],
 ) -> Option<aether_app::autoplay::Scelta> {
-    let corrente = lettore.coda.current()?;
-    // Tutto quel che è già in coda, così l'autoplay non ripropone quel che si
-    // è appena sentito.
-    let esclusi = lettore.coda.in_play_order();
     let stato = app.state::<Stato>();
     con_libreria(&stato, |libreria| {
-        aether_app::autoplay::prossimo(&libreria.connection, corrente, &esclusi, adesso_ms())
+        aether_app::autoplay::prossimo(&libreria.connection, corrente, esclusi, adesso_ms())
     })
     .ok()
     .flatten()
 }
 
-/// Conserva la coda.
-pub(super) fn salva_coda(app: &tauri::AppHandle, lettore: &Lettore) {
-    let istantanea = lettore.coda.snapshot();
-    let stato = app.state::<Stato>();
-    let _ = con_libreria(&stato, |libreria| {
+/// Conserva la coda — fra un attimo.
+///
+/// Alza la bandiera [`StatoLettore::coda_da_salvare`], e la scrittura la fa il
+/// filo dell'orologio entro un quarto di secondo, con una scadenza: vedi
+/// `fili::salva_quel_che_manca`. Qui si passava dal database con il lucchetto
+/// del lettore in mano, a ogni gesto e a ogni cambio di brano — e un database
+/// occupato teneva fermo il lettore per tutto il tempo della scrittura.
+///
+/// Il lettore resta nella firma perché la regola resta quella di prima: si
+/// chiama dopo aver cambiato la coda, con il lucchetto in mano. Chi scrive
+/// rilegge la coda da lì, e scrive l'ultima — che è la sola che interessi.
+pub(super) fn salva_coda(app: &tauri::AppHandle, _lettore: &Lettore) {
+    if let Some(stato) = app.try_state::<StatoLettore>() {
+        stato.coda_da_salvare.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Scrive la coda sul disco adesso, con una scadenza. Chiamata dall'orologio e
+/// dall'uscita, **senza** il lucchetto del lettore in mano: se lo prende da sé
+/// per la fotografia, e lo lascia prima di toccare il database.
+///
+/// `None` vuol dire «non scritta, la libreria era occupata»; chi chiama rialza
+/// la bandiera.
+pub(super) fn scrivi_coda(
+    app: &tauri::AppHandle,
+    stato: &StatoLettore,
+    entro: std::time::Duration,
+) -> Option<Result<(), AppError>> {
+    let istantanea = con_lettore(stato, |lettore| Ok(lettore.coda.snapshot())).ok()?;
+    let stato_app = app.try_state::<Stato>()?;
+    crate::stato::con_libreria_entro(&stato_app, entro, |libreria| {
         playback::save_queue(&libreria.connection, &istantanea)
-    });
+    })
 }
 
 /// Riprende la coda conservata, senza far partire niente.
@@ -171,10 +201,21 @@ pub fn riprendi_coda(app: &tauri::AppHandle) {
     let stato_lettore = app.state::<StatoLettore>();
     let _ = con_lettore(&stato_lettore, |lettore| {
         let stato = app.state::<Stato>();
-        let istantanea = con_libreria(&stato, |libreria| {
+        // Una coda salvata che non si legge non è una ragione per saltare tutto
+        // il resto: col `?` di prima, un guasto qui lasciava il motore col
+        // volume di serie, l'equalizzatore spento e la normalizzazione di
+        // fabbrica — cioè il primo brano a tutto volume per chi teneva il
+        // cursore basso. Si riparte con la coda vuota, e il resto si rimette.
+        match con_libreria(&stato, |libreria| {
             playback::load_queue(&libreria.connection)
-        })?;
-        lettore.coda = Queue::restore(istantanea);
+        }) {
+            Ok(istantanea) => lettore.coda = Queue::restore(istantanea),
+            Err(err) => nota!(
+                "[riproduzione] coda salvata non riletta codice={} causa={}",
+                err.code().kind().code(),
+                err.cause().unwrap_or("—")
+            ),
+        }
         let volume = con_libreria(&stato, |libreria| {
             playback::load_volume(&libreria.connection)
         })
@@ -605,16 +646,25 @@ pub fn coda_ripristina(
     // [`avvio_fallito`].
     let brano = match brano_di(&app, id, formato) {
         Ok(brano) => brano,
+        // La coda è tornata comunque: per la finestra l'«Annulla» ha fatto il
+        // suo, e un guasto ritentabile lo dice la fascia. Vedi
+        // [`avvio_fallito`].
         Err(err) => {
-            avvio_fallito(&app, &stato, id);
-            return Err(errore(err));
+            return avvio_fallito(&app, &stato, id, ms, err)
+                .map(|()| true)
+                .map_err(errore);
         }
     };
 
     // ── 3. la puntina dov'era ──
-    con_lettore(&stato, |lettore| {
+    let consegnato = con_lettore(&stato, |lettore| {
         if lettore.coda.current() != Some(id) {
-            return Ok(());
+            return Ok(true);
+        }
+        // Il motore è stato sostituito mentre il file si apriva: il brano è
+        // per il formato di prima. Vedi la stessa guardia in `avvia_corrente`.
+        if lettore.motore.formato() != formato {
+            return Ok(false);
         }
         lettore.suona(brano);
         lettore.motore.vai_a(ms);
@@ -624,9 +674,14 @@ pub fn coda_ripristina(
         prepara_prossimo(&app, lettore);
         salva_coda(&app, lettore);
         manda_stato_con_posizione(&app, lettore, ms);
-        Ok(())
+        Ok(true)
     })
     .map_err(errore)?;
+    if !consegnato {
+        // La strada di tutti gli altri avvii, che col formato nuovo sa
+        // riaprire da sé: stesso brano, stesso punto, stessa pausa.
+        avvia_corrente(&app, &stato, !suonava, ms).map_err(errore)?;
+    }
     Ok(true)
 }
 

@@ -52,6 +52,7 @@
 //! dell'applicazione. Il nome del filo serve al gancio dei panici, che senza di
 //! quello direbbe soltanto «un filo è caduto».
 
+use std::panic::AssertUnwindSafe;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -187,39 +188,116 @@ impl Operaio {
 
     /// Esegue `lavoro` sul filo dell'operaio e aspetta al più `scadenza`.
     ///
-    /// `None` se è scaduto, se il filo è caduto durante il lavoro, o se non se
-    /// n'è potuto assumere uno: le tre si confondono per la stessa ragione per
-    /// cui le confonde [`con_scadenza`], cioè che chi chiama può farci una cosa
-    /// sola.
+    /// `Err(Mancato::Scaduto)` se non è tornato in tempo o se non si è potuto
+    /// assumere un filo; `Err(Mancato::Caduto)` se il lavoro è caduto — ha
+    /// panicato — prima di rispondere. Vedi [`Mancato`] per il perché le due
+    /// non si confondono più.
     ///
-    /// Dopo un `None` l'operaio è di nuovo senza filo, e la chiamata successiva
-    /// ne assume uno nuovo: un file appeso non contagia quelli dopo.
+    /// Dopo una scadenza l'operaio è di nuovo senza filo, e la chiamata
+    /// successiva ne assume uno nuovo: un file appeso non contagia quelli dopo.
+    /// Dopo una caduta invece il filo è ancora buono — il panico l'ha raccolto
+    /// lui, dentro il compito — e il file dopo lo trova al suo posto.
+    ///
+    /// # Cosa dichiara `AssertUnwindSafe`
+    ///
+    /// Che quel che il lavoro si è portato dentro non viene più guardato da
+    /// nessuno dopo un panico: la chiusura è `FnOnce` e posseduta, quindi cade
+    /// con l'unwind, e l'unica cosa che esce di qui è il messaggio. Il filo
+    /// dell'operaio non tiene stato suo fra un compito e l'altro — riceve
+    /// scatole, le apre, le butta — e non ha niente che un lavoro a metà possa
+    /// aver lasciato storto.
+    ///
+    /// La traccia del panico non la scrive questa funzione: la scrive il gancio
+    /// globale dei panici, che gira **prima** dell'unwind. Qui arriva solo il
+    /// messaggio, che è quel che serve a chi deve dire perché un file non si è
+    /// letto.
+    ///
+    /// # Errori
+    ///
+    /// Vedi [`Mancato`].
     pub fn esegui<T: Send + 'static>(
         &mut self,
         scadenza: Duration,
         lavoro: impl FnOnce() -> T + Send + 'static,
-    ) -> Option<T> {
-        let (rispondi, risposta) = mpsc::channel();
+    ) -> Result<T, Mancato> {
+        let (rispondi, risposta) = mpsc::channel::<Result<T, Mancato>>();
         let compito: Compito = Box::new(move || {
+            let esito = std::panic::catch_unwind(AssertUnwindSafe(lavoro)).map_err(|carico| {
+                Mancato::Caduto {
+                    messaggio: messaggio_del_panico(carico.as_ref()),
+                }
+            });
             // Come in `con_scadenza`: se chi aspettava se n'è andato, il canale
             // è chiuso e non c'è niente da fare né da dire.
-            let _ = rispondi.send(lavoro());
+            let _ = rispondi.send(esito);
         });
         if !self.manda(compito) {
-            return None;
+            return Err(Mancato::Scaduto);
         }
         match risposta.recv_timeout(scadenza) {
-            Ok(esito) => Some(esito),
-            Err(_) => {
-                // Scaduto, oppure il filo è caduto portandosi via il mittente.
-                // In entrambi i casi quel filo non serve più a niente: lo si
-                // dimentica, e lasciando cadere il mittente gli si dice di
-                // uscire appena avrà finito quel che sta facendo.
+            Ok(esito) => esito,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Scaduto: quel filo è ancora dentro il lavoro e non serve più
+                // a niente. Lo si dimentica, e lasciando cadere il mittente gli
+                // si dice di uscire appena avrà finito quel che sta facendo.
                 self.in_servizio = None;
-                None
+                Err(Mancato::Scaduto)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // Il compito è stato buttato senza rispondere, e **subito**: non
+                // è un'attesa, è un filo che se n'è andato portandosi via il
+                // mittente. Col panico raccolto qui sopra non dovrebbe più
+                // succedere, ma se succede somiglia a una caduta e non a una
+                // scadenza — e trattarlo da scadenza vorrebbe dire contarlo fra
+                // i segni di una rete che non risponde.
+                self.in_servizio = None;
+                Err(Mancato::Caduto { messaggio: None })
             }
         }
     }
+}
+
+/// Perché un lavoro affidato a un [`Operaio`] non ha restituito il suo esito.
+///
+/// # Perché due casi e non un `None`
+///
+/// Fino alla 2.4 erano un `None` solo, e sembrava la stessa cosa: «il risultato
+/// non c'è». Non lo è, e la differenza costava cara proprio dove l'operaio
+/// lavora di più. La scansione conta le scadenze **di fila** per capire quando
+/// una condivisione non ce la fa più, e alla terza abbandona la radice (vedi
+/// `library::SCADENZE_DI_FILA`). Un lettore di tag che panica su un file
+/// malformato — `lofty` davanti a un'intestazione che non si aspettava — faceva
+/// tornare lo stesso `None` di una share morta, **all'istante**: tre file rotti
+/// di fila in una cartella del disco di casa, e l'intera radice veniva
+/// abbandonata come «rete non disponibile».
+///
+/// Una caduta dice il contrario di una scadenza: il file è arrivato, lo si è
+/// letto, ed è il contenuto a essere storto. Va riportata come un file
+/// illeggibile, detto per nome, e non deve pesare sulla salute del disco.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mancato {
+    /// Non è tornato entro la scadenza — oppure non è nemmeno partito, perché
+    /// il sistema non dava più fili. Per chi chiama le due sono la stessa
+    /// cosa: un risultato che non arriverà, e un disco di cui dubitare.
+    Scaduto,
+    /// Il lavoro è caduto: ha panicato, e il filo l'ha raccolto.
+    Caduto {
+        /// Il messaggio del panico, quando era un testo.
+        messaggio: Option<String>,
+    },
+}
+
+/// Il messaggio di un panico, che è tutto quel che se ne può raccontare.
+///
+/// `panic!("…")` con una stringa letterale consegna un `&'static str`, uno con
+/// argomenti da formattare una `String`, e un panico che arriva da una libreria
+/// di terzi può portare qualunque cosa. I primi due si leggono, il terzo no, e
+/// allora `None`: nessun messaggio è meglio dell'indirizzo di una scatola.
+fn messaggio_del_panico(carico: &(dyn std::any::Any + Send)) -> Option<String> {
+    if let Some(testo) = carico.downcast_ref::<&'static str>() {
+        return Some((*testo).to_owned());
+    }
+    carico.downcast_ref::<String>().cloned()
 }
 
 /// Un lavoro lungo che consegna i suoi risultati man mano.
@@ -319,10 +397,10 @@ mod prove {
         let mut operaio = Operaio::nuovo("prova");
         let primo = operaio.esegui(Duration::from_secs(5), || std::thread::current().id());
         let secondo = operaio.esegui(Duration::from_secs(5), || std::thread::current().id());
-        assert!(primo.is_some() && secondo.is_some(), "entrambi in tempo");
+        assert!(primo.is_ok() && secondo.is_ok(), "entrambi in tempo");
         assert_eq!(primo, secondo, "due compiti, un filo solo");
         // E non è il filo di chi chiama: il lavoro deve poter restare indietro.
-        assert_ne!(primo, Some(std::thread::current().id()));
+        assert_ne!(primo, Ok(std::thread::current().id()));
     }
 
     #[test]
@@ -331,7 +409,7 @@ mod prove {
         // Il compito appeso dice chi è **prima** di appendersi, su un canale
         // suo. Dopo non lo dirà a nessuno: il suo valore di ritorno è già stato
         // buttato via, ed è il punto della scadenza. Senza questo canale l'unico
-        // identificativo in mano sarebbe il `None` della scadenza, e
+        // identificativo in mano sarebbe l'`Err` della scadenza, e
         // confrontarlo con quello del compito dopo sarebbe vero per
         // costruzione — cioè non proverebbe niente.
         let (dice_chi_e, chi_era) = mpsc::channel();
@@ -341,7 +419,7 @@ mod prove {
             std::thread::sleep(Duration::from_millis(300));
         });
         let passato = prima.elapsed();
-        assert_eq!(appeso, None, "doveva scadere");
+        assert_eq!(appeso, Err(Mancato::Scaduto), "doveva scadere");
         assert!(
             passato < Duration::from_millis(150),
             "ha aspettato la fine del lavoro appeso: {passato:?}"
@@ -355,16 +433,56 @@ mod prove {
             .recv_timeout(Duration::from_secs(5))
             .expect("il compito appeso deve aver detto su quale filo girava");
         let dopo = operaio.esegui(Duration::from_secs(5), || std::thread::current().id());
-        assert!(dopo.is_some(), "il compito dopo deve passare");
+        assert!(dopo.is_ok(), "il compito dopo deve passare");
         assert_ne!(
             dopo,
-            Some(filo_appeso),
+            Ok(filo_appeso),
             "il compito dopo ha trovato il filo appeso, non uno nuovo"
         );
 
         // Il filo abbandonato finisce da sé e prova a mandare su un canale
         // chiuso: si aspetta che lo faccia, per esercitare quel percorso.
         std::thread::sleep(Duration::from_millis(400));
+    }
+
+    #[test]
+    fn un_compito_che_cade_non_e_un_compito_scaduto() {
+        // Il guasto per cui `Mancato` esiste: il lettore dei tag che panica su
+        // un file malformato. Prima tornava lo stesso `None` di una share morta,
+        // e la scansione lo contava fra le scadenze di fila.
+        let mut operaio = Operaio::nuovo("caduto");
+        let prima = operaio.esegui(Duration::from_secs(5), || std::thread::current().id());
+        let scadenza = Duration::from_secs(5);
+        let inizio = std::time::Instant::now();
+        let caduto = operaio.esegui(scadenza, || -> u32 {
+            panic!("intestazione malformata");
+        });
+        let passato = inizio.elapsed();
+        assert_eq!(
+            caduto,
+            Err(Mancato::Caduto {
+                messaggio: Some("intestazione malformata".to_owned())
+            }),
+            "una caduta si dice caduta, col suo messaggio"
+        );
+        // E si dice **subito**: una caduta che aspettasse la scadenza per
+        // farsi riconoscere costerebbe venticinque secondi a file rotto.
+        assert!(
+            passato < scadenza,
+            "la caduta ha aspettato la scadenza: {passato:?}"
+        );
+
+        // Il filo ha raccolto il panico ed è ancora buono: il compito dopo lo
+        // ritrova, invece di pagarne uno nuovo per ogni file rotto.
+        let dopo = operaio.esegui(Duration::from_secs(5), || std::thread::current().id());
+        assert!(dopo.is_ok(), "il compito dopo deve passare");
+        assert_eq!(dopo, prima, "stesso filo prima e dopo la caduta");
+
+        // Un panico che non porta testo resta una caduta, senza messaggio.
+        let muto = operaio.esegui(Duration::from_secs(5), || -> u32 {
+            std::panic::panic_any(42_u8);
+        });
+        assert_eq!(muto, Err(Mancato::Caduto { messaggio: None }));
     }
 
     #[test]

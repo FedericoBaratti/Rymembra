@@ -37,6 +37,8 @@ use lofty::probe::Probe;
 use lofty::tag::items::Timestamp;
 use lofty::tag::{ItemValue, Tag, TagItem, TagType};
 
+use crate::metadata::racconta_errore;
+
 /// Quanto può essere grande una copertina da incorporare.
 ///
 /// Otto megabyte: sopra questa soglia non è una copertina, è un'immagine finita
@@ -71,9 +73,9 @@ pub fn scrivi_tag(
     };
 
     let mut file = Probe::open(percorso)
-        .map_err(|err| fallito(err.to_string()))?
+        .map_err(|err| fallito(racconta_errore(&err)))?
         .read()
-        .map_err(|err| fallito(err.to_string()))?;
+        .map_err(|err| fallito(racconta_errore(&err)))?;
 
     // Il tag primario se c'è; altrimenti se ne crea uno del tipo che quel
     // formato usa di suo. Senza il secondo ramo, un m4a appena scaricato — che
@@ -122,7 +124,7 @@ pub fn scrivi_tag(
     }
 
     tag.save_to_path(percorso, WriteOptions::default())
-        .map_err(|err| fallito(err.to_string()))
+        .map_err(|err| fallito(racconta_errore(&err)))
 }
 
 /// Scrive **solo** i campi presenti, conservando tutto il resto del tag.
@@ -181,9 +183,9 @@ pub fn scrivi_campi(percorso: &std::path::Path, campi: &Fields) -> Result<(), Ap
     };
 
     let mut file = Probe::open(percorso)
-        .map_err(|err| fallito(err.to_string()))?
+        .map_err(|err| fallito(racconta_errore(&err)))?
         .read()
-        .map_err(|err| fallito(err.to_string()))?;
+        .map_err(|err| fallito(racconta_errore(&err)))?;
 
     let tipo = file
         .primary_tag()
@@ -239,7 +241,7 @@ pub fn scrivi_campi(percorso: &std::path::Path, campi: &Fields) -> Result<(), Ap
         }
     }
 
-    salva(percorso, tipo, tag, campi).map_err(|err| fallito(err.to_string()))
+    salva(percorso, tipo, tag, campi).map_err(|err| fallito(racconta_errore(&err)))
 }
 
 /// Scrive il tag sul file, aggiungendo a mano ciò che la strada generica perde.
@@ -277,7 +279,7 @@ fn salva(
     tipo: TagType,
     tag: Tag,
     campi: &Fields,
-) -> Result<(), lofty::error::LoftyError> {
+) -> Result<(), lofty::error::FileEncodingError> {
     if tipo != TagType::Id3v2 {
         return tag.save_to_path(percorso, WriteOptions::default());
     }
@@ -333,9 +335,9 @@ pub fn ripristina_campi(percorso: &std::path::Path, originali: &Fields) -> Resul
     };
 
     let mut file = Probe::open(percorso)
-        .map_err(|err| fallito(err.to_string()))?
+        .map_err(|err| fallito(racconta_errore(&err)))?
         .read()
-        .map_err(|err| fallito(err.to_string()))?;
+        .map_err(|err| fallito(racconta_errore(&err)))?;
 
     let tipo = file
         .primary_tag()
@@ -395,7 +397,7 @@ pub fn ripristina_campi(percorso: &std::path::Path, originali: &Fields) -> Resul
     }
 
     tag.save_to_path(percorso, WriteOptions::default())
-        .map_err(|err| fallito(err.to_string()))
+        .map_err(|err| fallito(racconta_errore(&err)))
 }
 
 /// Un valore di tag ripulito: vuoto vale come assente.

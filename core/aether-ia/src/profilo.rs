@@ -14,6 +14,21 @@
 //! ([`Profilo::voce_portachiavi`]). Il valore lo va a prendere chi sta per fare
 //! la richiesta, un istante prima di farla.
 //!
+//! # Perché la chiave è legata a un indirizzo
+//!
+//! Perché una chiave è scritta **per qualcuno**. Chi incolla la chiave di
+//! OpenRouter la dà a `openrouter.ai`, e se più tardi cambia l'indirizzo di
+//! base di quel profilo — un errore di battitura, un proxy da provare, un
+//! indirizzo copiato da una pagina sbagliata — la chiave non deve partire
+//! verso il posto nuovo come `Authorization: Bearer`. Fino alla 2.4.0 partiva:
+//! salvare un profilo senza riscrivere la chiave teneva quella che c'era,
+//! qualunque fosse il nuovo indirizzo.
+//!
+//! Adesso il profilo ricorda l'**origine** per cui la chiave è stata scritta
+//! ([`Profilo::origine_chiave`]), e una chiave vale solo per quella
+//! ([`Profilo::chiave_vale_per`]). Chi salva un indirizzo con un'origine
+//! diversa senza riscrivere la chiave la perde, e la schermata lo dice.
+//!
 //! # Perché l'id non è il nome
 //!
 //! Perché il nome si cambia. «Claude» diventa «Claude (buono)» il giorno in cui
@@ -55,6 +70,16 @@ pub struct Profilo {
     /// [`Fornitore::vuole_chiave`] sa già come finirà la richiesta, e può dirlo
     /// prima di farla.
     pub con_chiave: bool,
+    /// L'origine per cui la chiave è stata scritta, nella forma di
+    /// [`aether_net::http::origine`]: `https://openrouter.ai:443`.
+    ///
+    /// Non è un segreto — è un pezzo dell'indirizzo che il profilo mostra già —
+    /// e per questo può viaggiare con lui. `None` quando non c'è una chiave, e
+    /// nei profili salvati prima della 3.0.0, che non lo scrivevano: per quelli
+    /// vale l'origine dell'indirizzo che hanno adesso, che è l'unica ipotesi
+    /// onesta — vedi [`Self::chiave_vale_per`].
+    #[serde(default)]
+    pub origine_chiave: Option<String>,
 }
 
 impl Profilo {
@@ -78,6 +103,33 @@ impl Profilo {
     #[must_use]
     pub fn punto(&self, percorso: &str) -> String {
         format!("{}{percorso}", self.url_base.trim_end_matches('/'))
+    }
+
+    /// La chiave di questo profilo può essere mandata a `url_base`.
+    ///
+    /// Sì quando l'origine per cui è stata scritta e quella di `url_base` sono
+    /// la stessa: stesso schema, stesso ospite, stessa porta. Il percorso non
+    /// conta — `/api/v1` e `/api/v2` sono lo stesso servizio con la stessa
+    /// chiave. Vedi [`aether_net::http::origine`] per la forma che si confronta.
+    ///
+    /// Per un profilo salvato prima della 3.0.0, che l'origine non la scriveva,
+    /// si prende quella dell'indirizzo che il profilo ha adesso: è l'indirizzo
+    /// con cui la chiave è stata usata fino a oggi, e trattarlo come
+    /// sconosciuto costringerebbe tutti a riscrivere la chiave all'aggiornamento
+    /// per un rischio che non corrono.
+    ///
+    /// `false` quando una delle due origini non si sa leggere: la domanda è
+    /// «posso mandare qui un segreto?», e nel dubbio la risposta è no.
+    #[must_use]
+    pub fn chiave_vale_per(&self, url_base: &str) -> bool {
+        let scritta_per = self
+            .origine_chiave
+            .clone()
+            .or_else(|| aether_net::http::origine(&self.url_base));
+        match (scritta_per, aether_net::http::origine(url_base)) {
+            (Some(prima), Some(adesso)) => prima == adesso,
+            _ => false,
+        }
     }
 }
 
@@ -199,7 +251,68 @@ mod prove {
             url_base: url.to_owned(),
             modello: "qwen3".to_owned(),
             con_chiave: false,
+            origine_chiave: None,
         }
+    }
+
+    fn con_chiave_per(url: &str, origine: Option<&str>) -> Profilo {
+        Profilo {
+            con_chiave: true,
+            origine_chiave: origine.map(ToOwned::to_owned),
+            fornitore: Fornitore::OpenRouter,
+            ..profilo(url)
+        }
+    }
+
+    /// Il difetto che questa prova chiude: cambiare l'indirizzo di un profilo
+    /// senza riscrivere la chiave teneva la chiave, e la mandava al posto nuovo.
+    #[test]
+    fn la_chiave_vale_solo_per_lorigine_per_cui_e_stata_scritta() {
+        let p = con_chiave_per(
+            "https://openrouter.ai/api/v1",
+            Some("https://openrouter.ai:443"),
+        );
+        assert!(p.chiave_vale_per("https://openrouter.ai/api/v1"));
+        assert!(
+            p.chiave_vale_per("https://openrouter.ai/api/v2/"),
+            "il percorso non cambia il servizio"
+        );
+        assert!(
+            p.chiave_vale_per("https://OpenRouter.ai:443/api/v1"),
+            "maiuscole nell'ospite e porta di serie esplicita sono lo stesso posto"
+        );
+
+        for altrove in [
+            "https://esempio.com/api/v1",
+            "https://openrouter.ai.esempio.com/api/v1",
+            "https://openrouter.ai@esempio.com/api/v1",
+            "https://openrouter.ai:8443/api/v1",
+            "http://localhost:11434/v1",
+            "non è un indirizzo",
+        ] {
+            assert!(
+                !p.chiave_vale_per(altrove),
+                "«{altrove}» non è openrouter.ai"
+            );
+        }
+    }
+
+    /// Un profilo della 2.x non ha l'origine: vale quella dell'indirizzo che ha.
+    #[test]
+    fn un_profilo_di_prima_prende_lorigine_dal_suo_indirizzo() {
+        let vecchio = con_chiave_per("https://openrouter.ai/api/v1", None);
+        assert!(
+            vecchio.chiave_vale_per("https://openrouter.ai/api/v1"),
+            "aggiornare Aether non deve costringere a riscrivere la chiave"
+        );
+        assert!(!vecchio.chiave_vale_per("https://esempio.com/api/v1"));
+
+        let letto: Profilo = serde_json::from_str(
+            r#"{"id":"or","nome":"OR","fornitore":"openrouter","urlBase":"https://openrouter.ai/api/v1","modello":"x","conChiave":true}"#,
+        )
+        .expect("un profilo salvato dalla 2.4.0 si legge ancora");
+        assert_eq!(letto.origine_chiave, None);
+        assert!(letto.chiave_vale_per("https://openrouter.ai/api/v1"));
     }
 
     #[test]

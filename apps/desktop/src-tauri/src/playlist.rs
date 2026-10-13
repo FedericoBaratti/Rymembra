@@ -19,22 +19,37 @@ use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::playlist_file::{FormatoPlaylist, PlaylistLetta};
 use aether_domain::regole::{Campo, Combinazione, Insieme, Operatore, Ordinamento, Regola, Valore};
 
+use crate::destinazioni;
+use crate::disparte::leggi_la_libreria;
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, adesso_ms, con_libreria};
 use tauri::State;
 
 /// Tutte le playlist, con i loro numeri.
+///
+/// In disparte, come le altre letture lunghe — vedi [`crate::disparte`]: i
+/// numeri delle intelligenti sono un'interrogazione ciascuna su tutta la
+/// libreria, la prima volta dopo ogni scrittura dei brani. Le volte dopo li
+/// ricorda `smart::conteggi_ricordati`.
 #[tauri::command]
-pub fn playlist_elenco(stato: State<'_, Stato>) -> Esito<Vec<PlaylistSummary>> {
-    con_libreria(&stato, |libreria| playlists::list(&libreria.connection)).map_err(errore)
+pub async fn playlist_elenco(app: tauri::AppHandle) -> Esito<Vec<PlaylistSummary>> {
+    leggi_la_libreria(app, "elenco delle playlist", |libreria| {
+        playlists::list(&libreria.connection)
+    })
+    .await
+    .map_err(errore)
 }
 
 /// I brani di una playlist, nell'ordine in cui stanno.
+///
+/// In disparte: per un'intelligente è il motore delle regole su tutta la
+/// libreria, fino a cinquemila righe.
 #[tauri::command]
-pub fn playlist_brani(stato: State<'_, Stato>, id: i64) -> Esito<Vec<TrackSummary>> {
-    con_libreria(&stato, |libreria| {
+pub async fn playlist_brani(app: tauri::AppHandle, id: i64) -> Esito<Vec<TrackSummary>> {
+    leggi_la_libreria(app, "brani di una playlist", move |libreria| {
         playlists::tracks(&libreria.connection, id)
     })
+    .await
     .map_err(errore)
 }
 
@@ -67,30 +82,154 @@ pub fn playlist_rinomina(
     crate::nuvola::se_riuscito(&app, esito)
 }
 
-/// Cancella una playlist.
+/// Le playlist appena cancellate, finché un «Annulla» le può ancora rimettere.
+///
+/// # Perché qui, e perché poche
+///
+/// La cancellazione è già scritta quando l'avviso compare — vedi
+/// `aether_app::playlists::Cancellata` per il perché — e quel che serve a
+/// tornare indietro sta in memoria, con un gettone che la finestra ripassa. È
+/// la forma delle rimozioni in attesa di `comandi.rs`: una statica e non uno
+/// stato gestito, perché è un posto solo per un processo solo, che nessuno deve
+/// registrare all'avvio per poterlo usare.
+///
+/// Se ne tengono poche e per poco: l'avviso dura dieci secondi, e una
+/// fotografia più vecchia di [`DURATA_ANNULLO`] non la chiede più nessuno. Si
+/// puliscono a ogni cancellazione, non con un orologio: un filo che si sveglia
+/// per buttare via qualche chilobyte costerebbe più di quel che libera.
+static CANCELLATE: std::sync::Mutex<Vec<Tenuta>> = std::sync::Mutex::new(Vec::new());
+
+/// Una cancellazione annullabile: il gettone, quando, e la fotografia.
+type Tenuta = (u64, std::time::Instant, playlists::Cancellata);
+
+/// Il prossimo gettone. Parte da uno: lo zero non lo riceve nessuna cancellazione.
+static GETTONI: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Quanto resta possibile annullare una cancellazione.
+///
+/// Un minuto: sei volte l'avviso della finestra. Il margine non è per chi
+/// guarda — l'«Annulla» sparisce prima — ma per chi l'ha premuto mentre il
+/// nucleo era occupato in una scrittura lunga.
+const DURATA_ANNULLO: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Quante fotografie si tengono al massimo.
+const CANCELLATE_MASSIME: usize = 8;
+
+/// Il posto delle cancellazioni annullabili, anche se un filo è caduto tenendolo.
+///
+/// Un mutex avvelenato vuol dire soltanto che un filo è caduto mentre ci
+/// scriveva: le fotografie dentro sono intere, e rinunciarci vorrebbe dire
+/// rinunciare a un «Annulla» per un guasto che non le ha toccate.
+fn cancellate() -> std::sync::MutexGuard<'static, Vec<Tenuta>> {
+    CANCELLATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Cancella una playlist, e restituisce il gettone per annullare.
+///
+/// In disparte: la cancellazione legge tutte le righe della playlist per
+/// fotografarle, e su una playlist di migliaia di brani non è una query di
+/// microsecondi.
 #[tauri::command]
-pub fn playlist_cancella(app: tauri::AppHandle, stato: State<'_, Stato>, id: i64) -> Esito<()> {
-    let esito = con_libreria(&stato, |libreria| {
-        playlists::delete(&mut libreria.connection, id)
+pub async fn playlist_cancella(app: tauri::AppHandle, id: i64) -> Esito<u64> {
+    let esito = leggi_la_libreria(
+        app.clone(),
+        "cancellazione di una playlist",
+        move |libreria| playlists::cancella(&mut libreria.connection, id),
+    )
+    .await
+    .map(|fotografia| {
+        let gettone = GETTONI.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut tenute = cancellate();
+        tenute.retain(|(_, quando, _)| quando.elapsed() < DURATA_ANNULLO);
+        if tenute.len() >= CANCELLATE_MASSIME {
+            tenute.remove(0);
+        }
+        tenute.push((gettone, std::time::Instant::now(), fotografia));
+        gettone
     })
     .map_err(errore);
-    // La lapide che `delete` lascia deve arrivare su Drive: senza, l'altro
+    // La lapide che `cancella` lascia deve arrivare su Drive: senza, l'altro
     // dispositivo vedrebbe solo «a me manca una playlist» e la rimanderebbe
     // indietro alla prima passata.
     crate::nuvola::se_riuscito(&app, esito)
 }
 
-/// Aggiunge brani in fondo a una playlist.
+/// Rimette la playlist cancellata col gettone dato.
+///
+/// `None` se il gettone non vale più — scaduto, già usato, o di un'altra
+/// esecuzione dell'applicazione: non è un errore, è un «Annulla» arrivato
+/// tardi, e la finestra lo dice con parole sue.
+///
+/// La fotografia si prende prima di scrivere e torna al suo posto se la
+/// scrittura fallisce: un secondo «Annulla» deve poterci riprovare.
 #[tauri::command]
-pub fn playlist_aggiungi(
+pub async fn playlist_ripristina(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
+    gettone: u64,
+) -> Esito<Option<PlaylistSummary>> {
+    let presa = {
+        let mut tenute = cancellate();
+        tenute
+            .iter()
+            .position(|(segno, quando, _)| *segno == gettone && quando.elapsed() < DURATA_ANNULLO)
+            .map(|dove| tenute.remove(dove))
+    };
+    let Some((segno, quando, fotografia)) = presa else {
+        return Ok(None);
+    };
+    let esito = leggi_la_libreria(app.clone(), "ripristino di una playlist", move |libreria| {
+        let tornata = playlists::ripristina(&mut libreria.connection, &fotografia);
+        if tornata.is_err() {
+            cancellate().push((segno, quando, fotografia));
+        }
+        tornata
+    })
+    .await
+    .map(Some)
+    .map_err(errore);
+    // La playlist che torna è una modifica come le altre: Drive e l'altro
+    // dispositivo devono vederla, con la sua data nuova.
+    crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Aggiunge brani in fondo a una playlist, e dice quanti non c'erano più.
+///
+/// L'`Aggiunta` intera e non la sola playlist: «2 non c'erano più» è la frase
+/// che distingue un'aggiunta riuscita a metà per una scansione nel frattempo da
+/// un guasto, e senza il numero la finestra non la può dire.
+#[tauri::command]
+pub async fn playlist_aggiungi(
+    app: tauri::AppHandle,
     id: i64,
     brani: Vec<i64>,
-) -> Esito<PlaylistSummary> {
-    let esito = con_libreria(&stato, |libreria| {
-        playlists::add_tracks(&mut libreria.connection, id, &brani)
+) -> Esito<playlists::Aggiunta> {
+    let esito = leggi_la_libreria(app.clone(), "aggiunta a una playlist", move |libreria| {
+        playlists::aggiungi_brani(&mut libreria.connection, id, &brani)
     })
+    .await
+    .map_err(errore);
+    crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Crea una playlist e ci mette dentro dei brani, in una transazione sola.
+///
+/// Erano due comandi chiamati di seguito dalla finestra, e un'aggiunta fallita
+/// lasciava una playlist vuota col nome appena scelto: vedi
+/// `aether_app::playlists::crea_e_aggiungi`.
+#[tauri::command]
+pub async fn playlist_crea_e_aggiungi(
+    app: tauri::AppHandle,
+    nome: String,
+    brani: Vec<i64>,
+) -> Esito<playlists::Aggiunta> {
+    let esito = leggi_la_libreria(
+        app.clone(),
+        "playlist nuova con i suoi brani",
+        move |libreria| playlists::crea_e_aggiungi(&mut libreria.connection, &nome, &brani),
+    )
+    .await
     .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)
 }
@@ -224,33 +363,40 @@ impl InsiemeIpc {
 }
 
 /// Crea una playlist intelligente.
+///
+/// In disparte: la risposta porta i suoi numeri, cioè le regole nuove contate
+/// su tutta la libreria.
 #[tauri::command]
-pub fn playlist_crea_smart(
+pub async fn playlist_crea_smart(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     nome: String,
     regole: InsiemeIpc,
 ) -> Esito<PlaylistSummary> {
     let insieme = regole.nel_dominio();
-    let esito = con_libreria(&stato, |libreria| {
-        playlists::create_smart(&libreria.connection, &nome, &insieme)
-    })
+    let esito = leggi_la_libreria(
+        app.clone(),
+        "playlist intelligente nuova",
+        move |libreria| playlists::create_smart(&libreria.connection, &nome, &insieme),
+    )
+    .await
     .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)
 }
 
 /// Riscrive le regole di una playlist intelligente.
+///
+/// In disparte per la stessa ragione di [`playlist_crea_smart`].
 #[tauri::command]
-pub fn playlist_regole_scrivi(
+pub async fn playlist_regole_scrivi(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     id: i64,
     regole: InsiemeIpc,
 ) -> Esito<PlaylistSummary> {
     let insieme = regole.nel_dominio();
-    let esito = con_libreria(&stato, |libreria| {
+    let esito = leggi_la_libreria(app.clone(), "regole di una playlist", move |libreria| {
         playlists::set_rules(&libreria.connection, id, &insieme)
     })
+    .await
     .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)
 }
@@ -292,13 +438,16 @@ pub struct AnteprimaRegole {
 /// È l'anteprima dell'editor: dice «142 brani» mentre si scrive la condizione,
 /// che è l'unico modo di accorgersi di aver scritto «anno maggiore di 2050»
 /// prima di salvare una playlist vuota sotto un nome che promette il contrario.
+///
+/// In disparte: si chiede a ogni tasto premuto nell'editor, e ogni volta conta
+/// tutta la libreria senza limite.
 #[tauri::command]
-pub fn playlist_regole_prova(
-    stato: State<'_, Stato>,
+pub async fn playlist_regole_prova(
+    app: tauri::AppHandle,
     regole: InsiemeIpc,
 ) -> Esito<AnteprimaRegole> {
     let insieme = regole.nel_dominio();
-    con_libreria(&stato, |libreria| {
+    leggi_la_libreria(app, "anteprima delle regole", move |libreria| {
         let adesso = adesso_ms();
         Ok(AnteprimaRegole {
             quanti: aether_app::smart::quanti(&libreria.connection, &insieme, adesso)?,
@@ -315,6 +464,7 @@ pub fn playlist_regole_prova(
             )?,
         })
     })
+    .await
     .map_err(errore)
 }
 
@@ -400,16 +550,34 @@ fn leggi_file(percorso: &str) -> Result<(PlaylistLetta, String, Option<PathBuf>)
 /// Il formato lo decide **l'estensione del file scelto**: chi salva come
 /// `serata.pls` vuole un PLS, e chiederglielo una seconda volta in una tendina
 /// accanto sarebbe la stessa domanda due volte con due risposte possibili.
-/// Un'estensione che non riconosciamo vale M3U, che è quello che ogni lettore
-/// al mondo apre.
+///
+/// Un'estensione che non è di una playlist si **rifiuta**. Fino alla 2.4 valeva
+/// M3U, che sembrava generoso e voleva dire che questo comando scriveva testo
+/// sotto qualunque nome la pagina gli passasse — `serata.txt` come
+/// `qualcosa.dll`. Le regole, e perché non si aggiusta il nome, stanno in
+/// [`crate::destinazioni`].
+///
+/// # Errori
+///
+/// `fs.extensionRefused` o `fs.pathInvalid` per un percorso che la finestra non
+/// può chiedere; quelli della libreria e della scrittura per il resto.
 #[tauri::command(async)]
 pub fn playlist_esporta(stato: State<'_, Stato>, id: i64, percorso: String) -> Esito<usize> {
-    let path = PathBuf::from(&percorso);
-    let estensione = path
-        .extension()
-        .map(|e| e.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let formato = FormatoPlaylist::da_estensione(&estensione).unwrap_or(FormatoPlaylist::M3u);
+    let file = destinazioni::file_da_scrivere(&percorso, destinazioni::ESTENSIONI_PLAYLIST)
+        .map_err(errore)?;
+    // Non succede: `ESTENSIONI_PLAYLIST` e `da_estensione` sono tenute allineate
+    // da un test in `destinazioni`. Ma se un giorno divergessero, il rifiuto è
+    // la risposta giusta — non un ritorno silenzioso a M3U.
+    let formato = FormatoPlaylist::da_estensione(file.estensione).ok_or_else(|| {
+        errore(AppError::new(ErrorCode::FsExtensionRefused {
+            path: percorso.clone(),
+            allowed: destinazioni::ESTENSIONI_PLAYLIST
+                .iter()
+                .map(|&e| e.to_owned())
+                .collect(),
+        }))
+    })?;
+    let path = file.percorso;
     let (testo, quanti) = con_libreria(&stato, |libreria| {
         let testo = import_playlist::esporta(&libreria.connection, id, formato)?;
         let quanti = playlists::tracks(&libreria.connection, id)?.len();

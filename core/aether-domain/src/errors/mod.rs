@@ -34,6 +34,48 @@ pub mod rete;
 
 pub use catalog::{Domain, ErrorCode, ErrorCodeKind, RetryRule, Severity};
 
+/// Quanto può essere lunga una causa.
+///
+/// Cinquecento caratteri sono più del doppio della causa più lunga che si
+/// incontri in un guasto vero — un errore di sistema, la frase di un servizio,
+/// la riga di un parser — e molto meno di una pagina.
+const CAUSA_MASSIMA: usize = 500;
+
+/// La causa, ridotta a una riga leggibile.
+///
+/// # Il difetto che chiude
+///
+/// Una causa è quel che il mondo di fuori ha detto, e il mondo di fuori a
+/// volte risponde con un documento. Una ricerca respinta dal guardiano di un
+/// catalogo torna con la **pagina HTML intera** del blocco; un motore di
+/// ricerca che rifiuta una frase troppo lunga torna con il suo errore
+/// completo, annidato e indentato. Il testo arrivava qui così com'era, e da
+/// qui finiva nel diario e sulla console: righe su righe di `<title>`, `<div>`
+/// e `<script>` per dire una cosa sola, cioè che quella ricerca non è passata.
+///
+/// Il diario è quel che si allega quando si racconta un guasto, e si legge in
+/// diagonale: un guasto per riga. Una causa che porta dentro i suoi a capo
+/// rompe quella forma, e una che porta dentro venti chilobyte la rende
+/// inservibile.
+///
+/// # Perché tagliare e non buttare
+///
+/// Perché l'inizio di quelle risposte è la parte che dice qualcosa: il titolo
+/// della pagina di blocco, il tipo dell'errore del motore di ricerca. Il resto
+/// è contorno. E quanto se n'è tagliato si dice, così chi legge sa che c'era
+/// dell'altro invece di credere che il servizio si sia fermato a metà frase.
+fn una_riga_sola(causa: &str) -> String {
+    let piatta = causa.split_whitespace().collect::<Vec<_>>().join(" ");
+    let quanti = piatta.chars().count();
+    if quanti <= CAUSA_MASSIMA {
+        return piatta;
+    }
+    // Per carattere e non per byte: tagliare a metà di una lettera accentata
+    // darebbe una stringa che non è più UTF-8 valido.
+    let taglio: String = piatta.chars().take(CAUSA_MASSIMA).collect();
+    format!("{taglio}… [{quanti} caratteri in tutto]")
+}
+
 /// Un errore di Aether: cosa è andato storto, e tutto ciò che serve per
 /// deciderne il seguito.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,9 +109,12 @@ impl AppError {
     }
 
     /// Allega la descrizione dell'errore sottostante.
+    ///
+    /// Il testo viene messo **su una riga sola e accorciato**: vedi
+    /// [`una_riga_sola`] per il perché.
     #[must_use]
     pub fn with_cause(mut self, cause: impl Into<String>) -> Self {
-        self.cause = Some(cause.into());
+        self.cause = Some(una_riga_sola(&cause.into()));
         self
     }
 
@@ -241,5 +286,46 @@ mod tests {
             e.to_string(),
             "[fs.notFound] scansione interrotta (causa: ENOENT)"
         );
+    }
+
+    #[test]
+    fn una_causa_lunga_una_pagina_diventa_una_riga() {
+        // La pagina di blocco di un guardiano, in miniatura: a capo, rientri, e
+        // la sola cosa che conta nel titolo.
+        let pagina = format!(
+            "<html>
+  <head>
+    <title>Attention Required! | Cloudflare</title>
+  </head>
+  <body>{}</body>
+</html>",
+            "x".repeat(20_000)
+        );
+        let e = AppError::new(ErrorCode::InternalAborted { what: None }).with_cause(pagina);
+        let causa = e.cause().expect("la causa c'è");
+
+        // Una riga sola: il diario si legge in diagonale.
+        assert!(!causa.contains('\n'));
+        // Accorciata, e con scritto di quanto.
+        assert!(causa.chars().count() < CAUSA_MASSIMA + 40);
+        assert!(causa.ends_with("caratteri in tutto]"));
+        // E l'inizio, che è la parte che dice qualcosa, è ancora lì.
+        assert!(causa.contains("Attention Required"));
+    }
+
+    #[test]
+    fn una_causa_corta_resta_quella_che_era() {
+        let e = AppError::new(ErrorCode::InternalAborted { what: None }).with_cause("ENOENT");
+        assert_eq!(e.cause(), Some("ENOENT"));
+    }
+
+    #[test]
+    fn accorciare_non_taglia_a_meta_di_una_lettera() {
+        // Cinquecento caratteri accentati sono mille byte: un taglio contato in
+        // byte cadrebbe in mezzo all'ultima lettera.
+        let e = AppError::new(ErrorCode::InternalAborted { what: None })
+            .with_cause("è".repeat(CAUSA_MASSIMA + 10));
+        let causa = e.cause().expect("la causa c'è");
+        assert!(causa.starts_with(&"è".repeat(CAUSA_MASSIMA)));
     }
 }

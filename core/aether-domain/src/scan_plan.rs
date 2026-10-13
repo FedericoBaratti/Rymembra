@@ -48,6 +48,25 @@ pub struct KnownTrack {
     pub path: String,
     /// La data di modifica registrata all'ultima lettura.
     pub modified_ms: i64,
+    /// La dimensione registrata all'ultima lettura, se la si conosce.
+    ///
+    /// # Perché anche la dimensione, e non la sola data
+    ///
+    /// Perché la data si può fermare. Mp3tag ha un'opzione — «conserva la data
+    /// di modifica» — che riscrive i tag e rimette sul file la data di prima, e
+    /// non è l'unico: chi la usa ritagga cento file e Aether non se ne accorge
+    /// mai, perché per il piano quei cento file sono «invariati» per sempre. La
+    /// dimensione invece cambia quasi sempre quando cambiano i tag, perché un
+    /// titolo nuovo raramente ha la lunghezza esatta di quello vecchio.
+    ///
+    /// Quasi sempre, e non sempre: un taggatore che riscrive dentro lo spazio
+    /// di riempimento di un ID3v2 lascia il file lungo uguale. Quel caso resta
+    /// fuori, ed è il motivo per cui esiste «Rileggi tutti i tag».
+    ///
+    /// `None` vuol dire «non si sa», e allora si confronta la sola data, come
+    /// prima: è il caso dei vettori di parità generati dal vecchio albero, che
+    /// la dimensione delle righe note non la portavano.
+    pub size_bytes: Option<u64>,
 }
 
 /// Perché un file trovato non entra in libreria.
@@ -98,7 +117,7 @@ impl RemoveReason {
     }
 }
 
-/// Un file già in libreria la cui data di modifica è cambiata.
+/// Un file già in libreria la cui data di modifica, o la cui dimensione, è cambiata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingUpdate {
     /// Il file sul disco.
@@ -130,7 +149,7 @@ pub struct SkippedFile {
 pub struct ScanPlan {
     /// Da leggere e inserire: non c'era.
     pub to_insert: Vec<DiscoveredFile>,
-    /// Da rileggere e aggiornare: la data di modifica è cambiata.
+    /// Da rileggere e aggiornare: la data di modifica o la dimensione è cambiata.
     pub to_update: Vec<PendingUpdate>,
     /// Righe da togliere. È la parte del piano che va mostrata prima di eseguirla.
     pub to_remove: Vec<PendingRemoval>,
@@ -247,9 +266,24 @@ pub fn plan_scan(input: ScanInput<'_>, rules: PathRules) -> ScanPlan {
             continue;
         }
 
+        // Invariato vuol dire **stessa data, stessa dimensione e stessa
+        // grafia**: vedi `KnownTrack::size_bytes` per il taggatore che ferma la
+        // data. La grafia è per il file rinominato solo nelle maiuscole
+        // (`Song.flac` → `song.flac`): Windows non cambia la data, la chiave è
+        // la stessa, e la riga terrebbe il nome vecchio — che su una share Samba
+        // sensibile alle maiuscole non si apre più. Le barre non contano: sono
+        // la stessa grafia scritta in due modi.
         match index.get(&key).and_then(|&pos| order.get(pos)) {
             None => plan.to_insert.push(file.clone()),
-            Some((_, existing)) if existing.modified_ms == file.modified_ms => plan.unchanged += 1,
+            Some((_, existing))
+                if existing.modified_ms == file.modified_ms
+                    && existing
+                        .size_bytes
+                        .is_none_or(|size| size == file.size_bytes)
+                    && stessa_grafia(&existing.path, &file.path, input.roots, rules) =>
+            {
+                plan.unchanged += 1;
+            }
             Some((_, existing)) => plan.to_update.push(PendingUpdate {
                 file: file.clone(),
                 track_id: existing.id,
@@ -280,6 +314,34 @@ pub fn plan_scan(input: ScanInput<'_>, rules: PathRules) -> ScanPlan {
     }
 
     plan
+}
+
+/// Sotto la sua radice, il file è scritto con le stesse lettere, maiuscole
+/// comprese?
+///
+/// È [`path_key`] senza la piegatura del caso — barre e separatori in coda
+/// restano indifferenti, le maiuscole no — e solo **sotto la radice**: la radice
+/// stessa la scrive chi l'ha aggiunta, e due grafie della stessa cartella (la
+/// libreria in `C:\Music`, i download in `c:\music\download`) non devono far
+/// riscrivere le stesse righe avanti e indietro a ogni passata. Quel che sta
+/// sotto lo scrive il disco, ed è lì che un nome rinominato si vede.
+fn stessa_grafia(nota: &str, trovato: &str, radici: &[String], rules: PathRules) -> bool {
+    if nota == trovato {
+        return true;
+    }
+    let esatte = PathRules {
+        case_insensitive: false,
+    };
+    let sotto = radici
+        .iter()
+        .find(|radice| is_under(trovato, radice, rules))
+        .map_or(0, |radice| path_key(radice, esatte).split('/').count());
+    // Stessa chiave, quindi stesso numero di pezzi: piegare il caso non
+    // inventa separatori.
+    path_key(nota, esatte)
+        .split('/')
+        .skip(sotto)
+        .eq(path_key(trovato, esatte).split('/').skip(sotto))
 }
 
 /// L'identità di una riga che il piano toglierebbe.
@@ -409,7 +471,49 @@ mod tests {
             id,
             path: path.to_owned(),
             modified_ms,
+            size_bytes: None,
         }
+    }
+
+    #[test]
+    fn un_file_ritaggato_con_la_data_ferma_si_rilegge() {
+        // Mp3tag con «conserva la data di modifica»: stessa data, un titolo
+        // più lungo, quindi un file più grande. Senza la dimensione il piano
+        // lo dichiarava invariato per sempre.
+        let noto = KnownTrack {
+            size_bytes: Some(5_000_000),
+            ..track(1, r"C:\M\a.mp3", 1000)
+        };
+        let ritaggato = plan(
+            &[r"C:\M"],
+            vec![file(r"C:\M\a.mp3", 5_000_128, 1000)],
+            vec![noto.clone()],
+        );
+        assert_eq!(ritaggato.unchanged, 0);
+        assert_eq!(ritaggato.to_update.len(), 1);
+        assert_eq!(ritaggato.to_update.first().map(|u| u.track_id), Some(1));
+
+        // Stessa data e stessa dimensione: invariato, com'è sempre stato.
+        let fermo = plan(
+            &[r"C:\M"],
+            vec![file(r"C:\M\a.mp3", 5_000_000, 1000)],
+            vec![noto],
+        );
+        assert_eq!(fermo.unchanged, 1);
+        assert!(fermo.to_update.is_empty());
+    }
+
+    #[test]
+    fn senza_dimensione_nota_decide_la_sola_data() {
+        // Le righe di cui non si conosce la dimensione si confrontano come
+        // prima: una dimensione qualunque sul disco non le fa rileggere.
+        let p = plan(
+            &[r"C:\M"],
+            vec![file(r"C:\M\a.mp3", 7_777_777, 1000)],
+            vec![track(1, r"C:\M\a.mp3", 1000)],
+        );
+        assert_eq!(p.unchanged, 1);
+        assert!(p.to_update.is_empty());
     }
 
     fn plan(roots: &[&str], found: Vec<DiscoveredFile>, known: Vec<KnownTrack>) -> ScanPlan {
@@ -450,6 +554,45 @@ mod tests {
         );
         assert!(p.to_remove.is_empty());
         assert_eq!(p.unchanged, 1);
+    }
+
+    #[test]
+    fn un_file_rinominato_solo_nelle_maiuscole_si_riscrive() {
+        // La data resta ferma e la chiave è la stessa: senza guardare la grafia
+        // la riga terrebbe `Song.flac`, che su una share sensibile alle
+        // maiuscole non esiste più. Si riscrive la riga, non se ne fa una nuova.
+        let p = plan(
+            &[r"\\nas\musica"],
+            vec![file(r"\\nas\musica\song.flac", 5_000_000, 1000)],
+            vec![track(1, r"\\nas\musica\Song.flac", 1000)],
+        );
+        assert!(p.to_remove.is_empty());
+        assert!(p.to_insert.is_empty());
+        assert_eq!(p.unchanged, 0);
+        assert_eq!(p.to_update.len(), 1);
+        assert_eq!(p.to_update[0].track_id, 1);
+        assert_eq!(p.to_update[0].file.path, r"\\nas\musica\song.flac");
+    }
+
+    #[test]
+    fn la_grafia_della_radice_non_fa_riscrivere_niente() {
+        // La radice l'ha scritta chi l'ha aggiunta: `c:\music` e `C:\Music`
+        // sono la stessa cartella, e le righe scritte sotto l'una non si
+        // riscrivono quando passa una scansione dell'altra.
+        let p = plan(
+            &[r"c:\music"],
+            vec![file(r"c:\music\Disco\a.mp3", 5_000_000, 1000)],
+            vec![track(1, r"C:\Music\Disco\a.mp3", 1000)],
+        );
+        assert!(p.to_update.is_empty());
+        assert_eq!(p.unchanged, 1);
+        // Ma una cartella rinominata sotto la radice sì.
+        let p = plan(
+            &[r"c:\music"],
+            vec![file(r"c:\music\disco\a.mp3", 5_000_000, 1000)],
+            vec![track(1, r"C:\Music\Disco\a.mp3", 1000)],
+        );
+        assert_eq!(p.to_update.len(), 1);
     }
 
     #[test]

@@ -59,7 +59,11 @@ export function Intestazione({
         {occhiello !== undefined && (
           <div className="occhiello hero-eyebrow">{occhiello}</div>
         )}
-        <h1 className="titolo page-title">{titolo}</h1>
+        {/* `dir="auto"`: il titolo è spesso un album, un artista o una
+            playlist, e il suo verso lo decide lui. */}
+        <h1 className="titolo page-title" dir="auto">
+          {titolo}
+        </h1>
         {sottotitolo !== undefined && (
           <div className="sotto page-subtitle">{sottotitolo}</div>
         )}
@@ -80,7 +84,7 @@ export function Intestazione({
           </button>
         )}
         {onQuery && (
-          <div className="cerca">
+          <div className="cerca search-field">
             <Icona nome="i-search" dim={15} />
             <input
               className="campo field-input"

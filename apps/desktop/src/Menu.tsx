@@ -7,6 +7,8 @@
  * a playlist», che è la stessa forma di comando.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useDati } from "./dati";
+import { Presenza } from "./presenza";
 
 /**
  * Quanto il menù sta lontano dal bordo della finestra.
@@ -36,8 +38,11 @@ export function Menu({
   apertura: Apertura;
   onChiudi: () => void;
 }) {
+  const { misura, anteprima } = useDati();
   const menu = useRef<HTMLDivElement>(null);
   const chiAveva = useRef<HTMLElement | null>(null);
+  /** Il menù si è chiuso col Tab: il fuoco è già andato avanti da sé. */
+  const uscitoColTab = useRef(false);
   const [posto, setPosto] = useState<{ left: number; top: number } | null>(null);
 
   /**
@@ -72,11 +77,12 @@ export function Menu({
     const { width, height } = nodo.getBoundingClientRect();
     const dentro = (voluto: number, misura: number, quanto: number) =>
       Math.max(MARGINE, Math.min(voluto, quanto - misura - MARGINE));
+    const schermo = misura();
     setPosto({
-      left: dentro(apertura.x, width, window.innerWidth),
-      top: dentro(apertura.y, height, window.innerHeight),
+      left: dentro(apertura.x, width, schermo.larghezza),
+      top: dentro(apertura.y, height, schermo.altezza),
     });
-  }, [apertura]);
+  }, [apertura, misura]);
 
   /**
    * Escape chiude, le frecce percorrono.
@@ -90,6 +96,9 @@ export function Menu({
    * prima voce e ArrowUp dall'ultima.
    */
   useEffect(() => {
+    // Nell'anteprima dello Studio il menù è un disegno: i tasti sono dello
+    // Studio, ed Escape deve chiudere quel che lo Studio ha aperto.
+    if (anteprima) return;
     // In cattura, e ogni tasto preso si ferma: le scorciatoie globali stanno
     // anche loro su `window` e si erano iscritte prima, quindi Escape chiudeva
     // il menù **e** quel che c'era sotto, e le frecce arrivavano anche al
@@ -98,6 +107,25 @@ export function Menu({
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
+        onChiudi();
+        return;
+      }
+      // Il Tab chiude, e il fuoco prosegue: è quel che fa un menù del sistema,
+      // e un `role="menu"` non è una fermata del tabulatore. Prima il Tab
+      // portava il fuoco sulla voce dopo — nel menù, ma anche oltre la sua fine,
+      // su quel che segue nel documento — e il menù restava aperto.
+      //
+      // Il fuoco torna a chi aveva aperto **prima** che il browser faccia il
+      // suo Tab, e il Tab non si ferma: la mossa di serie parte dal fuoco di
+      // quel momento, quindi va al comando dopo quello da cui si era partiti
+      // (o prima, con Maiuscolo). Da un clic destro su una riga che non prende
+      // il fuoco non c'è niente a cui tornare, e il Tab parte dalla voce.
+      if (e.key === "Tab") {
+        const chi = chiAveva.current;
+        if (chi && chi !== document.body && chi.isConnected) {
+          chi.focus({ preventScroll: true });
+          uscitoColTab.current = true;
+        }
         onChiudi();
         return;
       }
@@ -119,7 +147,7 @@ export function Menu({
     window.addEventListener("keydown", suTasto, { capture: true });
     return () =>
       window.removeEventListener("keydown", suTasto, { capture: true });
-  }, [onChiudi]);
+  }, [onChiudi, anteprima]);
 
   // Il fuoco entra nel menù appena si apre: chi naviga da tastiera deve poterlo
   // percorrere senza prima ritrovare con Tab il punto in cui si è aperto. Alla
@@ -138,17 +166,40 @@ export function Menu({
   // successivo.
   //
   // Chi aveva il fuoco va letto prima di portarlo dentro il menù.
-  useEffect(() => {
+  //
+  // # Dopo il posizionamento, non prima
+  //
+  // Il fuoco entrava in un effetto passivo, e un effetto passivo può girare
+  // **prima** del secondo disegno, quello in cui il menù ha il suo posto: lo
+  // `setPosto` dell'effetto di disposizione chiede un disegno sincrono, ma
+  // React svuota prima gli effetti passivi in sospeso. In quell'istante il menù
+  // stava a `0,0` e invisibile, e `focus()` su una voce lassù faceva scorrere
+  // il contenitore per mostrarla — la pagina saltava in cima a ogni clic
+  // destro. Adesso chi aveva il fuoco si legge subito, e la prima voce lo
+  // prende in un effetto di disposizione che aspetta `posto`, senza scorrere
+  // niente.
+  useLayoutEffect(() => {
+    // Sulla tela dello Studio il menù non prende il fuoco: lo ruberebbe al
+    // campo in cui si sta scrivendo.
+    if (anteprima) return;
     chiAveva.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
-    menu.current?.querySelector("button")?.focus();
     return () => {
+      // Chiuso col Tab, il fuoco è già andato avanti: rimetterlo su chi aveva
+      // aperto annullerebbe proprio la mossa che si è chiesta.
+      if (uscitoColTab.current) return;
       const chi = chiAveva.current;
       if (chi && chi !== document.body && chi.isConnected) chi.focus();
     };
-  }, []);
+  }, [anteprima]);
+  const entrato = useRef(false);
+  useLayoutEffect(() => {
+    if (anteprima || posto === null || entrato.current) return;
+    entrato.current = true;
+    menu.current?.querySelector("button")?.focus({ preventScroll: true });
+  }, [anteprima, posto]);
 
   return (
     <>
@@ -162,33 +213,36 @@ export function Menu({
           onChiudi();
         }}
       />
-      <div
-        ref={menu}
-        className="menu menu-pop"
-        role="menu"
-        /* Il menù si ancora in alto a sinistra del puntatore e si tira dentro dal
-           bordo quando sborderebbe. Il primo passaggio è la misura: vedi la nota
-           dell'effetto qui sopra. */
-        style={
-          posto === null
-            ? { left: 0, top: 0, visibility: "hidden" }
-            : { left: posto.left, top: posto.top }
-        }
-      >
-        {apertura.voci.map((voce) => (
-          <button
-            key={voce.etichetta}
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              voce.azione();
-              onChiudi();
-            }}
-          >
-            {voce.etichetta}
-          </button>
-        ))}
-      </div>
+      <Presenza parte="menu-pop">
+        <div
+          ref={menu}
+          className="menu menu-pop"
+          role="menu"
+          /* Il menù si ancora in alto a sinistra del puntatore e si tira dentro dal
+             bordo quando sborderebbe. Il primo passaggio è la misura: vedi la nota
+             dell'effetto qui sopra. */
+          style={
+            posto === null
+              ? { left: 0, top: 0, visibility: "hidden" }
+              : { left: posto.left, top: posto.top }
+          }
+        >
+          {apertura.voci.map((voce) => (
+            <button
+              key={voce.etichetta}
+              type="button"
+              className="menu-item"
+              role="menuitem"
+              onClick={() => {
+                voce.azione();
+                onChiudi();
+              }}
+            >
+              {voce.etichetta}
+            </button>
+          ))}
+        </div>
+      </Presenza>
     </>
   );
 }

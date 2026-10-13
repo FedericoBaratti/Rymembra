@@ -208,6 +208,41 @@ impl Queue {
         }
     }
 
+    /// Il brano prima e il brano dopo `track_id`, nell'ordine d'ascolto.
+    ///
+    /// Serve a capire se si sta ascoltando un disco: chi apre un brano vuole
+    /// sapere chi gli sta accanto. Il brano si cerca prima dove è più probabile
+    /// che stia — il corrente, poi il seguente, che il motore apre in anticipo —
+    /// e solo dopo nel resto della coda, perché lo stesso brano può comparirci
+    /// due volte e i vicini giusti sono quelli del punto in cui sta per
+    /// suonare. Non si avvolge in cima con `Repeat::All`: il primo e l'ultimo
+    /// di un disco non sono vicini. Un brano che nella coda non c'è non ha
+    /// vicini.
+    #[must_use]
+    pub fn neighbors(&self, track_id: i64) -> (Option<i64>, Option<i64>) {
+        let brano_a = |pos: usize| {
+            self.order
+                .get(pos)
+                .and_then(|&i| self.tracks.get(i))
+                .copied()
+        };
+        let probabili = self
+            .order_pos
+            .into_iter()
+            .flat_map(|pos| [Some(pos), pos.checked_add(1)])
+            .flatten();
+        let Some(pos) = probabili
+            .chain(0..self.order.len())
+            .find(|&pos| brano_a(pos) == Some(track_id))
+        else {
+            return (None, None);
+        };
+        (
+            pos.checked_sub(1).and_then(brano_a),
+            pos.checked_add(1).and_then(brano_a),
+        )
+    }
+
     // ── quel che si cambia ──────────────────────────────────────────────────
 
     /// Sostituisce la coda e comincia dal brano indicato.
@@ -595,6 +630,26 @@ mod prove {
         let mut q = Queue::new();
         q.play_tracks((1..=n).collect(), 0, 7);
         q
+    }
+
+    #[test]
+    fn i_vicini_sono_quelli_del_punto_in_cui_il_brano_sta_per_suonare() {
+        let mut q = Queue::new();
+        // Il 20 compare due volte: in testa e dopo il 30.
+        q.play_tracks(vec![20, 10, 30, 20, 40], 2, 0);
+        // Il corrente.
+        assert_eq!(q.neighbors(30), (Some(10), Some(20)));
+        // Il seguente, che il motore apre in anticipo: i vicini sono 30 e 40,
+        // non quelli del 20 in testa.
+        assert_eq!(q.neighbors(20), (Some(30), Some(40)));
+        // Uno qualunque, altrove nella coda.
+        assert_eq!(q.neighbors(10), (Some(20), Some(30)));
+        // L'ultimo non si avvolge sul primo, nemmeno con ripeti tutto.
+        q.set_repeat(RepeatMode::All);
+        assert_eq!(q.neighbors(40), (Some(20), None));
+        // Fuori dalla coda, nessuno.
+        assert_eq!(q.neighbors(99), (None, None));
+        assert_eq!(Queue::new().neighbors(1), (None, None));
     }
 
     #[test]

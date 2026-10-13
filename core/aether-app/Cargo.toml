@@ -32,13 +32,33 @@ aether-sync = { path = "../aether-sync" }
 blake3.workspace = true
 image = { version = "0.25.9", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "rayon"] }
 imagesize = "0.15.0"
-lofty = "0.24.0"
+lofty = "0.25.4"
 # `bundled`: SQLite compilato da sorgente e incluso nel binario. Non è comodità
 # — è l'unico modo di avere la STESSA versione di SQLite e le stesse opzioni di
 # compilazione sul desktop e dentro l'APK. Su Android il SQLite di sistema
 # cambia da versione a versione, e FTS5 non è garantito: è il motivo per cui il
 # vecchio porting doveva ripiegare su `LIKE` per la ricerca.
-rusqlite = { version = "0.37", features = ["bundled", "functions"] }
+#
+# La versione conta quanto l'opzione: la 0.40 porta dentro SQLite 3.53.2, che
+# chiude CVE-2026-11824, un traboccamento di memoria dentro FTS5. Non è una
+# teoria per Aether: `import_legacy` apre un database che non ha scritto lui —
+# quello della versione rilasciata, scelto dall'utente — e un file preparato
+# apposta arriverebbe lì.
+#
+# `cache` scritta per esteso anche se è fra quelle di serie: dalla 0.38 la
+# cache delle istruzioni è facoltativa, e `prepare_cached` — una cinquantina di
+# chiamate, da `library.rs` in giù — senza di lei non esiste. Le altre di serie
+# si spengono: portano solo `sqlite-wasm-rs`, che serve a WebAssembly nel
+# browser.
+#
+# Nemmeno `fallible_uint`, e non serve: dalla 0.38 `u64` e `usize` non passano
+# più da soli verso SQLite (che ha solo interi con segno), e nessuna riga di
+# questo crate ce li faceva passare.
+rusqlite = { version = "0.40", default-features = false, features = [
+    "bundled",
+    "cache",
+    "functions",
+] }
 # Il dominio non serializza niente da sé, ed è una regola che vale per il
 # dominio: là una `derive` costringerebbe le decisioni pure ad avere
 # un'opinione su come vengono trasmesse. Qui è diverso — questo crate esiste
@@ -47,6 +67,10 @@ rusqlite = { version = "0.37", features = ["bundled", "functions"] }
 # consumatore sarebbe la duplicazione che questo ramo esiste per togliere.
 serde.workspace = true
 serde_json.workspace = true
+# La normalizzazione NFC dei tag appena letti (`metadata::clean`). La stessa
+# versione che il dominio usa già per piegare il testo: un crate in più nel
+# grafo non c'è, c'è solo una riga in più qui.
+unicode-normalization.workspace = true
 walkdir = "2.5.0"
 # L'archivio del profilo (`.aeprofile`). Le opzioni sono quelle già scelte in
 # `[workspace.dependencies]` per `aether-skin`: `default-features = false` più

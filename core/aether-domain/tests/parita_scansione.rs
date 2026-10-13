@@ -284,6 +284,9 @@ fn plan_scan_combacia_con_l_originale() -> Esito {
                         id: k.id,
                         path: k.path.clone(),
                         modified_ms: k.modified_ms,
+                        // I vettori vengono dal vecchio albero, che la
+                        // dimensione delle righe note non la confrontava.
+                        size_bytes: None,
                     })
                     .collect();
                 let piano = plan_scan(
@@ -325,9 +328,33 @@ fn plan_scan_combacia_con_l_originale() -> Esito {
                     untouched: piano.untouched,
                     is_no_op: piano.is_no_op(),
                 };
-                (c.nota.clone(), c.nota, c.atteso, ottenuto)
+                let atteso = divergenza_voluta(&c.nota, c.atteso);
+                (c.nota.clone(), c.nota, atteso, ottenuto)
             })
             .collect(),
     );
     Ok(())
+}
+
+/// Dove il port si scosta dall'originale **di proposito**, e perché.
+///
+/// Il file dei vettori resta l'uscita dell'originale, com'era: è quel che lo
+/// rende una prova e non una fotografia di chi l'ha riscritto. Le divergenze
+/// volute si dichiarano qui, una per una, e ognuna tiene fermo quel che il
+/// vettore proteggeva.
+fn divergenza_voluta(nota: &str, mut atteso: PianoAtteso) -> PianoAtteso {
+    // 3.0: un file che sotto la radice cambia solo le maiuscole si riscrive con
+    // la grafia nuova (su una share Samba sensibile alle maiuscole il nome
+    // vecchio non si apre più). Il vettore proteggeva «non fa sparire il file»,
+    // e resta vero: nessuna rimozione, nessun inserimento, la stessa riga.
+    if nota == "una maiuscola diversa non fa sparire il file (windows)" {
+        assert!(atteso.to_remove.is_empty() && atteso.to_insert.is_empty());
+        atteso.to_update = vec![VoceAggiornamento {
+            path: r"C:\MUSIC\A.MP3".to_owned(),
+            track_id: 1,
+        }];
+        atteso.unchanged = 0;
+        atteso.is_no_op = false;
+    }
+    atteso
 }

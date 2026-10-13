@@ -29,9 +29,11 @@ import {
   type EsitoImportazione,
   type EsitoImport,
 } from "./ipc";
+import { Dialogo } from "./Dialogo";
 import { Avviso, AvvisoErrore } from "./parti/Avvisi";
 import { nomeSorgente } from "./parti/Importazioni";
 import { fiduciaDi, nomeFonte, PastigliaGradino, Tacche } from "./parti/Incertezza";
+import { nomeGenere, numero } from "./formato";
 import { LetturaLink, useLetturaLink } from "./parti/LetturaLink";
 import { t } from "./lingue";
 import { Trans } from "./lingue/Trans";
@@ -49,7 +51,7 @@ function Voce({
   return (
     <div className="voce-rapporto">
       <span>{etichetta}</span>
-      <span className="conteggio">{valore}</span>
+      <span className="conteggio">{numero(valore)}</span>
       {nota && <small>{nota}</small>}
     </div>
   );
@@ -107,89 +109,94 @@ export function Importa({
   const rapporto = fatto ?? piano;
 
   return (
-    <div className="velo scuro" onClick={onChiudi}>
-      <div
-        className="finestrella glass-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("legacy.aria")}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2>{fatto ? t("legacy.done") : t("legacy.preview")}</h2>
-        <div className="percorso">{percorso}</div>
+    // Il titolo dice il passo — anteprima, poi fatto — e il nome resta quello
+    // di sempre. Prima di `Dialogo` questa finestrella non aveva né la trappola
+    // del fuoco né Escape: il Tab usciva dietro il velo.
+    <Dialogo
+      titolo={fatto ? t("legacy.done") : t("legacy.preview")}
+      etichetta={t("legacy.aria")}
+      classe="finestrella glass-modal"
+      onChiudi={onChiudi}
+    >
+      <div className="percorso">{percorso}</div>
 
-        {errore && <div className="errore">{errore}</div>}
-        {inCorso && !rapporto && <p>{t("legacy.reading")}</p>}
+      {errore && <div className="errore">{errore}</div>}
+      {inCorso && !rapporto && <p>{t("legacy.reading")}</p>}
 
-        {rapporto && (
-          <>
-            <div className="rapporto">
-              <Voce etichetta={t("legacy.found")} valore={rapporto.matched} />
-              <Voce
-                etichetta={t("legacy.plays")}
-                valore={rapporto.playCountCarried}
-                nota={t("legacy.plays.note")}
-              />
-              <Voce
-                etichetta={t("legacy.ratings")}
-                valore={rapporto.ratingsCarried}
-              />
-              <Voce
-                etichetta={t("legacy.liked")}
-                valore={rapporto.likedCarried}
-              />
-              <Voce
-                etichetta={t("legacy.historyRows")}
-                valore={rapporto.historyRows}
-              />
-              <Voce
-                etichetta={t("legacy.playlists")}
-                valore={rapporto.playlists}
-              />
-              <Voce
-                etichetta={t("legacy.entries")}
-                valore={rapporto.playlistEntries}
-                nota={
-                  rapporto.playlistOrphans > 0
-                    ? t("legacy.orphans", { n: rapporto.playlistOrphans })
-                    : undefined
-                }
-              />
-            </div>
+      {rapporto && (
+        <>
+          <div className="rapporto">
+            <Voce etichetta={t("legacy.found")} valore={rapporto.matched} />
+            <Voce
+              etichetta={t("legacy.plays")}
+              valore={rapporto.playCountCarried}
+              nota={t("legacy.plays.note")}
+            />
+            <Voce
+              etichetta={t("legacy.ratings")}
+              valore={rapporto.ratingsCarried}
+            />
+            <Voce
+              etichetta={t("legacy.liked")}
+              valore={rapporto.likedCarried}
+            />
+            <Voce
+              etichetta={t("legacy.historyRows")}
+              valore={rapporto.historyRows}
+            />
+            <Voce
+              etichetta={t("legacy.playlists")}
+              valore={rapporto.playlists}
+            />
+            <Voce
+              etichetta={t("legacy.entries")}
+              valore={rapporto.playlistEntries}
+              nota={
+                rapporto.playlistOrphans > 0
+                  ? t("legacy.orphans", { n: rapporto.playlistOrphans })
+                  : undefined
+              }
+            />
+          </div>
 
-            {rapporto.unmatched.length > 0 && (
-              <details className="non-ritrovati">
-                <summary>
-                  {t("legacy.unmatched", { n: rapporto.unmatched.length })}
-                </summary>
-                <p>{t("legacy.unmatched.note")}</p>
-                <ul>
-                  {rapporto.unmatched.map((etichetta) => (
-                    <li key={etichetta}>{etichetta}</li>
-                  ))}
-                </ul>
-              </details>
-            )}
-          </>
-        )}
-
-        <div className="tasti-finestrella">
-          <button type="button" className="bottone" onClick={onChiudi}>
-            {fatto ? t("common.close") : t("common.cancel")}
-          </button>
-          {!fatto && (
-            <button
-              type="button"
-              className="bottone primario"
-              disabled={inCorso || piano === null}
-              onClick={() => void esegui()}
-            >
-              {inCorso ? t("legacy.importing") : t("legacy.import")}
-            </button>
+          {rapporto.unmatched.length > 0 && (
+            <details className="non-ritrovati">
+              <summary>
+                {t("legacy.unmatched", { n: rapporto.unmatched.length })}
+              </summary>
+              <p>{t("legacy.unmatched.note")}</p>
+              <ul>
+                {/* La posizione nella chiave: due brani del vecchio database
+                    possono avere la stessa etichetta — lo stesso titolo dello
+                    stesso artista su due dischi — e con la sola etichetta
+                    React ne disegnava uno e perdeva l'altro. L'elenco non
+                    cambia ordine mentre si guarda, quindi la posizione è
+                    stabile. */}
+                {rapporto.unmatched.map((etichetta, posizione) => (
+                  <li key={`${posizione}-${etichetta}`}>{etichetta}</li>
+                ))}
+              </ul>
+            </details>
           )}
-        </div>
+        </>
+      )}
+
+      <div className="tasti-finestrella">
+        <button type="button" className="bottone" onClick={onChiudi}>
+          {fatto ? t("common.close") : t("common.cancel")}
+        </button>
+        {!fatto && (
+          <button
+            type="button"
+            className="bottone primario"
+            disabled={inCorso || piano === null}
+            onClick={() => void esegui()}
+          >
+            {inCorso ? t("legacy.importing") : t("legacy.import")}
+          </button>
+        )}
       </div>
-    </div>
+    </Dialogo>
   );
 }
 
@@ -281,7 +288,8 @@ function Diagnosi() {
  * Stava in questo file, dentro la finestrella, e moriva con lei: la coda gira
  * su un filo del nucleo e **non** si ferma quando la finestrella si chiude,
  * quindi chi chiudeva si ritrovava un'applicazione che scaricava in silenzio.
- * Adesso sta in `parti/Importazioni.tsx`, montato in `App` e mostrato in
+ * Adesso sta in `parti/Importazioni.tsx`, montato fra i fornitori della
+ * finestra (`FornitoreImportazioni`) e mostrato in
  * Impostazioni › Da Spotify, dove sopravvive alla chiusura e mette una riga per
  * importazione invece di una barra sola per tutte.
  */
@@ -362,24 +370,18 @@ export function ImportaLink({
   /**
    * Il fuoco, nei tre momenti in cui si sposta da sé.
    *
-   * All'apertura sta nel campo del link — ci pensa `autoFocus`. Quando arriva
-   * l'anteprima **il campo non c'è più**: senza questo il fuoco cadrebbe sul
-   * `<body>`, e chi naviga con la tastiera dovrebbe ritabulare dall'inizio del
-   * documento per raggiungere «Importa», che è a due centimetri dai suoi occhi.
+   * All'apertura sta nel campo del link: è il primo comando della
+   * finestrella, e `Dialogo` ce lo mette da sé. Quando arriva l'anteprima **il
+   * campo non c'è più**: senza questo il fuoco cadrebbe sul `<body>`, e chi
+   * naviga con la tastiera dovrebbe ritabulare per raggiungere «Importa», che
+   * è a due centimetri dai suoi occhi.
    *
-   * Alla chiusura torna dov'era. Conta di più adesso che prima: con `Ctrl+l`
-   * questa finestrella si apre da qualunque pagina, e chi l'ha aperta da un
-   * elenco vuole ritrovarsi nell'elenco.
+   * Alla chiusura torna dov'era — anche questo da `Dialogo`, che prima di
+   * questa finestrella lo faceva per tutte le altre e non per lei. Conta di
+   * più adesso che prima: con `Ctrl+l` questa finestrella si apre da qualunque
+   * pagina, e chi l'ha aperta da un elenco vuole ritrovarsi nell'elenco.
    */
   const primario = useRef<HTMLButtonElement>(null);
-  const chiAveva = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    chiAveva.current =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    return () => chiAveva.current?.focus();
-  }, []);
   useEffect(() => {
     if (anteprima !== null) primario.current?.focus();
   }, [anteprima]);
@@ -496,382 +498,378 @@ export function ImportaLink({
   );
 
   return (
-    <div className="velo scuro" onClick={onChiudi}>
-      <div
-        className="finestrella glass-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("link.aria")}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2>{anteprima ? t("legacy.preview") : t("link.title")}</h2>
+    // Come quella del vecchio database: il titolo dice il passo, il nome resta
+    // quello di sempre, e prima di `Dialogo` il Tab usciva dietro il velo.
+    <Dialogo
+      titolo={anteprima ? t("legacy.preview") : t("link.title")}
+      etichetta={t("link.aria")}
+      classe="finestrella glass-modal"
+      onChiudi={onChiudi}
+    >
+      {!anteprima && (
+        <>
+          <p>
+            <Trans
+              k="link.intro"
+              v={{ solo: <strong>{t("link.intro.only")}</strong> }}
+            />
+          </p>
+          <label>
+            {t("link.label")}
+            <input
+              type="url"
+              className="campo field-input"
+              placeholder={ESEMPI[0]}
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void guarda();
+              }}
+            />
+          </label>
+          {/* Sotto il campo e non dentro il segnaposto: nel segnaposto ce ne
+              starebbe uno solo, e il fatto che siano tre posti diversi — con
+              regole diverse su cosa si può tenere — è precisamente la cosa
+              che va vista prima di incollare. */}
+          <ul className="esempi-link">
+            {ESEMPI.map((esempio) => (
+              <li key={esempio} className="mono">
+                {esempio}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
 
-        {!anteprima && (
-          <>
-            <p>
-              <Trans
-                k="link.intro"
-                v={{ solo: <strong>{t("link.intro.only")}</strong> }}
-              />
-            </p>
-            <label>
-              {t("link.label")}
-              <input
-                type="url"
-                className="campo field-input"
-                autoFocus
-                placeholder={ESEMPI[0]}
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void guarda();
-                }}
-              />
-            </label>
-            {/* Sotto il campo e non dentro il segnaposto: nel segnaposto ce ne
-                starebbe uno solo, e il fatto che siano tre posti diversi — con
-                regole diverse su cosa si può tenere — è precisamente la cosa
-                che va vista prima di incollare. */}
-            <ul className="esempi-link">
-              {ESEMPI.map((esempio) => (
-                <li key={esempio} className="mono">
-                  {esempio}
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-
-        {anteprima && (
-          <div className="scheda-anteprima">
-            {anteprima.copertina && (
-              /* Un `data:` già scaricato dal nucleo, non un indirizzo del
-                 catalogo: la finestra non parla mai con nessuno di loro, e la
-                 politica dei contenuti resta quella di prima. */
-              <img src={anteprima.copertina} alt="" />
+      {anteprima && (
+        <div className="scheda-anteprima">
+          {anteprima.copertina && (
+            /* Un `data:` già scaricato dal nucleo, non un indirizzo del
+               catalogo: la finestra non parla mai con nessuno di loro, e la
+               politica dei contenuti resta quella di prima. */
+            <img src={anteprima.copertina} alt="" />
+          )}
+          <div className="che-cosa">
+            <div className="titolo">{anteprima.titolo}</div>
+            {anteprima.autore && (
+              <div className="autore">{anteprima.autore}</div>
             )}
-            <div className="che-cosa">
-              <div className="titolo">{anteprima.titolo}</div>
-              {anteprima.autore && (
-                <div className="autore">{anteprima.autore}</div>
-              )}
-              {/* Le tacche prima della frase, e `aria-hidden`: chi legge con lo
-                  schermo sente già «dai soli titolo e copertina», che è la
-                  stessa cosa detta meglio. Servono a chi guarda, per vedere in
-                  un colpo che questa lettura vale meno della precedente. */}
-              <div className="nota provenienza">
-                <Tacche fiducia={fiduciaDi(anteprima.sorgente)} />
-                <span>
-                  {t("link.summary", {
+            {/* Le tacche prima della frase, e `aria-hidden`: chi legge con lo
+                schermo sente già «dai soli titolo e copertina», che è la
+                stessa cosa detta meglio. Servono a chi guarda, per vedere in
+                un colpo che questa lettura vale meno della precedente. */}
+            <div className="nota provenienza">
+              <Tacche fiducia={fiduciaDi(anteprima.sorgente)} />
+              <span>
+                {t("link.summary", {
+                  fonte: nomeFonte(anteprima.fonte),
+                  genere: nomeGenere(anteprima.genere),
+                  brani: t("link.tracks", { n: anteprima.brani }),
+                  sorgente: nomeSorgente(anteprima.sorgente),
+                })}
+              </span>
+            </div>
+            {/* Il numero che rende onesta questa schermata: quanti di quei
+                brani si possono davvero tenere. Un elenco di venti di cui tre
+                si prendono e diciassette si ascoltano e basta è una cosa da
+                sapere **prima** di confermare, non da scoprire dalla coda che
+                si riempie di righe introvabili. */}
+            {anteprima.brani > 0 && (
+              <div className="nota licenza-riga">
+                {anteprima.scaricabili === anteprima.brani ? (
+                  t("link.allDownloadable")
+                ) : anteprima.scaricabili === 0 ? (
+                  <Trans
+                    k="link.noneDownloadable"
+                    v={{
+                      nessuno: (
+                        <strong>{t("link.noneDownloadable.head")}</strong>
+                      ),
+                    }}
+                  />
+                ) : (
+                  <Trans
+                    k="link.someDownloadable"
+                    n={{ totale: anteprima.brani }}
+                    v={{ quanti: <strong>{numero(anteprima.scaricabili)}</strong> }}
+                  />
+                )}
+              </div>
+            )}
+            {/* L'attribuzione **si mostra**, sempre: nominare il catalogo da
+                cui viene quel che si sta per portare dentro non è un
+                dettaglio legale da tenere in un file di licenze, è una
+                condizione d'uso, e nasconderla vorrebbe dire usare il
+                catalogo senza rispettarne i termini. Composta qui e non dal
+                nucleo perché è testo dell'interfaccia — la riga gemella che
+                finisce **nei tag** di un file scaricato la scrive
+                `prelievo.rs`, e quella non segue la lingua attiva. */}
+            <div className="nota attribuzione">
+              {anteprima.autore === null
+                ? t("link.attribution", { fonte: nomeFonte(anteprima.fonte) })
+                : t("link.attribution.by", {
+                    autore: anteprima.autore,
                     fonte: nomeFonte(anteprima.fonte),
-                    genere: anteprima.genere,
-                    brani: t("link.tracks", { n: anteprima.brani }),
-                    sorgente: nomeSorgente(anteprima.sorgente),
                   })}
-                </span>
-              </div>
-              {/* Il numero che rende onesta questa schermata: quanti di quei
-                  brani si possono davvero tenere. Un elenco di venti di cui tre
-                  si prendono e diciassette si ascoltano e basta è una cosa da
-                  sapere **prima** di confermare, non da scoprire dalla coda che
-                  si riempie di righe introvabili. */}
-              {anteprima.brani > 0 && (
-                <div className="nota licenza-riga">
-                  {anteprima.scaricabili === anteprima.brani ? (
-                    t("link.allDownloadable")
-                  ) : anteprima.scaricabili === 0 ? (
-                    <Trans
-                      k="link.noneDownloadable"
-                      v={{
-                        nessuno: (
-                          <strong>{t("link.noneDownloadable.head")}</strong>
-                        ),
-                      }}
-                    />
-                  ) : (
-                    <Trans
-                      k="link.someDownloadable"
-                      n={{ totale: anteprima.brani }}
-                      v={{ quanti: <strong>{anteprima.scaricabili}</strong> }}
-                    />
-                  )}
-                </div>
-              )}
-              {/* L'attribuzione **si mostra**, sempre: nominare il catalogo da
-                  cui viene quel che si sta per portare dentro non è un
-                  dettaglio legale da tenere in un file di licenze, è una
-                  condizione d'uso, e nasconderla vorrebbe dire usare il
-                  catalogo senza rispettarne i termini. Composta qui e non dal
-                  nucleo perché è testo dell'interfaccia — la riga gemella che
-                  finisce **nei tag** di un file scaricato la scrive
-                  `prelievo.rs`, e quella non segue la lingua attiva. */}
-              <div className="nota attribuzione">
-                {anteprima.autore === null
-                  ? t("link.attribution", { fonte: nomeFonte(anteprima.fonte) })
-                  : t("link.attribution.by", {
-                      autore: anteprima.autore,
-                      fonte: nomeFonte(anteprima.fonte),
-                    })}
-              </div>
             </div>
           </div>
-        )}
-
-        {/* Il rifiuto della playlist automatica **non** compare qui: è attaccato
-            alla casella che lo causa, più in basso. Un blocco in cima che parla
-            di una casella a mezzo schermo di distanza è un blocco che si legge
-            senza capire a cosa si riferisca. */}
-        {errore !== null && !playlistAutomatica && (
-          <AvvisoErrore
-            errore={errore}
-            {...(url.trim() !== ""
-              ? { onRiprova: () => void guarda(true) }
-              : {})}
-          />
-        )}
-        {/* Anche con un'anteprima in mano, quando è quella magra: è proprio il
-            caso in cui sapere *dove* si è fermata la lettura serve a qualcosa. */}
-        {(errore !== null || degradato) && <Diagnosi />}
-        {/* Era `<p>Lettura in corso…</p>`, e per una playlist da trecento brani
-            erano duecento richieste dietro una frase che non cambiava mai: chi
-            aspettava non poteva distinguere una lettura lunga da una impiantata,
-            e l'unica risposta possibile era chiudere e rifare da capo la cosa
-            che stava quasi finendo. */}
-        {leggendo && <LetturaLink avanzamento={avanzamento} />}
-
-        {/* Blocco e non avviso, ed era ambra come tutto il resto: importare
-            adesso creerebbe una playlist **vuota**, cioè qualcosa che dal di
-            fuori assomiglia a un successo. Il primario è spento, e l'unica cosa
-            da fare — rileggere il link saltando la cella — sta dentro il
-            riquadro invece che in fondo alla finestrella accanto ad «Annulla». */}
-        {degradato && (
-          <Avviso livello="blocco" azione={riprova}>
-            <Trans
-              k="link.degraded"
-              v={{
-                titolo: <strong>{t("link.degraded.title")}</strong>,
-                copertina: <strong>{t("link.degraded.cover")}</strong>,
-              }}
-            />
-          </Avviso>
-        )}
-
-        {/* Avviso e non blocco: importare adesso porta dentro qualcosa di
-            buono, solo non tutto. I due numeri in `stat-number` perché la
-            differenza fra 297 e 300 e quella fra 30 e 300 sono due notizie
-            diverse, e in mezzo a una frase si leggono uguali. */}
-        {monco && anteprima && (
-          <Avviso livello="avviso" azione={riprova}>
-            <Trans
-              k="link.truncated"
-              n={{
-                fonte: nomeFonte(anteprima.fonte),
-                mancanti: monco.attesi - monco.letti,
-              }}
-              v={{
-                attesi: <span className="stat-number">{monco.attesi}</span>,
-                letti: <span className="stat-number">{monco.letti}</span>,
-              }}
-            />
-          </Avviso>
-        )}
-
-        {anteprima && !degradato && (
-          <>
-            <label className="scelta">
-              <input
-                type="checkbox"
-                checked={creaPlaylist}
-                onChange={(e) => setCreaPlaylist(e.target.checked)}
-              />
-              <span>
-                {t("link.createPlaylist", { nome: anteprima.titolo })}
-                {piano?.playlistReplaced && <em>{t("link.replaces")}</em>}
-              </span>
-            </label>
-            {/* Attaccato alla casella, e con l'unica uscita che esiste davvero:
-                importare i brani senza toccare la playlist. Spegnere la casella
-                rifà il piano da sé — l'effetto la guarda — quindi il tasto fa
-                una cosa sola e quella cosa si vede subito. */}
-            {playlistAutomatica && (
-              <Avviso
-                livello="blocco"
-                azione={
-                  <button
-                    type="button"
-                    className="bottone minuto btn-ghost"
-                    onClick={() => setCreaPlaylist(false)}
-                  >
-                    {t("link.smartEscape")}
-                  </button>
-                }
-              >
-                {testoErrore(errore)}
-              </Avviso>
-            )}
-          </>
-        )}
-
-        {rapporto && (
-          <>
-            <div className="rapporto">
-              <Voce etichetta={t("link.inLibrary")} valore={rapporto.matched} />
-              {/* La scomposizione esce dalla `nota` e diventa quattro pastiglie.
-                  Era una frase — «12 esatti, 3 con un altro album, 1 a titolo
-                  ripulito» — che elencava sempre tutti e tre i gradini, zeri
-                  compresi, e non diceva quale fosse il più solido. Le pastiglie
-                  portano il grado nel colore, spiegano al passaggio del
-                  puntatore, e i gradini a zero **non compaiono**: una voce
-                  fissa a zero è una voce che si impara a non leggere.
-
-                  L'ISRC compare qui e non nella frase di prima perché nella
-                  frase non c'era: `matchedIsrc` esisteva nel rapporto e non
-                  usciva da nessuna parte, cioè l'unico gradino senza margine di
-                  dubbio era l'unico che non si vedeva. */}
-              {rapporto.matched > 0 && (
-                <div className="scomposizione">
-                  {rapporto.matchedIsrc > 0 && (
-                    <span>
-                      <PastigliaGradino gradino="isrc" /> {rapporto.matchedIsrc}
-                    </span>
-                  )}
-                  {rapporto.matchedExact > 0 && (
-                    <span>
-                      <PastigliaGradino gradino="esatta" />{" "}
-                      {rapporto.matchedExact}
-                    </span>
-                  )}
-                  {rapporto.matchedByTitle > 0 && (
-                    <span>
-                      <PastigliaGradino gradino="artistaTitolo" />{" "}
-                      {rapporto.matchedByTitle}
-                    </span>
-                  )}
-                  {rapporto.matchedStripped > 0 && (
-                    <span>
-                      <PastigliaGradino gradino="ripulito" />{" "}
-                      {rapporto.matchedStripped}
-                    </span>
-                  )}
-                </div>
-              )}
-              <Voce
-                etichetta={t("link.notFound")}
-                valore={rapporto.missing}
-                nota={t("link.notFound.note")}
-              />
-              {rapporto.playlistId !== null && (
-                <Voce
-                  etichetta={t("link.entries")}
-                  valore={rapporto.playlistEntries}
-                  nota={t(
-                    rapporto.playlistCreated
-                      ? "link.entries.new"
-                      : "link.entries.replaced",
-                    { nome: rapporto.playlistName ?? "" },
-                  )}
-                />
-              )}
-              {/* Solo quando ce n'è: da un catalogo quella colonna resta
-                  vuota, e una riga fissa a zero è una riga che si impara a non
-                  leggere — la stessa ragione per cui l'ISRC qui sotto compare a
-                  condizione. */}
-              {rapporto.spotifyAlbumIdsWritten > 0 && (
-                <Voce
-                  etichetta={t("link.spotifyIds")}
-                  valore={rapporto.spotifyAlbumIdsWritten}
-                  nota={t("link.spotifyIds.note")}
-                />
-              )}
-              {/* Solo quando ce n'è: oggi Spotify non manda più l'ISRC, e una
-                  riga fissa a zero è una riga che si impara a non leggere. */}
-              {rapporto.isrcWritten > 0 && (
-                <Voce
-                  etichetta={t("link.isrc")}
-                  valore={rapporto.isrcWritten}
-                />
-              )}
-            </div>
-
-            {/* L'elenco dei mancanti sta qui perché è l'ultimo momento per
-                accorgersi che i file ci sono già in una cartella non
-                sorvegliata, e risparmiarsi di riscaricarli.
-
-                Non è più l'**unico** momento, ed è la differenza che il quarto
-                tempo ha portato: il rapporto adesso si salva, e la pagina
-                Importazioni lo riapre tre giorni dopo. Finché moriva con questa
-                finestrella, chi chiudeva senza copiare questi nomi li perdeva —
-                e la finestrella si chiude da sé alla conferma, perché il gesto
-                da rendere facile era il link successivo. */}
-            {rapporto.missingTracks.length > 0 && (
-              <details className="non-ritrovati">
-                <summary>{t("link.missing", { n: rapporto.missing })}</summary>
-                <p>
-                  <Trans
-                    k="link.missing.p1"
-                    v={{
-                      daComprare: (
-                        <strong>{t("settings.import.how.p2.toBuy")}</strong>
-                      ),
-                    }}
-                  />
-                </p>
-                <p>{t("link.missing.p2")}</p>
-                {/* La frase che rende innocua la chiusura automatica. Il difetto
-                    non era la finestrella che si chiude: era che chiudere
-                    costava questo elenco, e nessuno lo diceva. */}
-                <p>
-                  <Trans
-                    k="link.missing.p3"
-                    v={{
-                      importazioni: (
-                        <strong>{t("settings.queue.empty.link")}</strong>
-                      ),
-                    }}
-                  />
-                </p>
-                <ul>
-                  {rapporto.missingTracks.map((b) => (
-                    <li key={`${b.position}-${b.title}`}>
-                      {b.artist ? `${b.artist} — ` : ""}
-                      {b.title}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            )}
-          </>
-        )}
-
-        <div className="tasti-finestrella">
-          <button type="button" className="bottone" onClick={onChiudi}>
-            {t("common.cancel")}
-          </button>
-          {anteprima ? (
-            <button
-              type="button"
-              className="bottone primario"
-              ref={primario}
-              // `degradato`: importare zero brani riesce, ed è il guasto
-              // peggiore possibile qui perché assomiglia in tutto a un
-              // successo. Meglio un tasto spento e una frase che lo spiega.
-              disabled={inCorso || piano === null || degradato}
-              onClick={() => void esegui()}
-            >
-              {inCorso ? t("legacy.importing") : t("legacy.import")}
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="bottone primario"
-              disabled={inCorso || url.trim() === ""}
-              onClick={() => void guarda()}
-            >
-              {inCorso ? t("link.retrying") : t("link.look")}
-            </button>
-          )}
         </div>
+      )}
+
+      {/* Il rifiuto della playlist automatica **non** compare qui: è attaccato
+          alla casella che lo causa, più in basso. Un blocco in cima che parla
+          di una casella a mezzo schermo di distanza è un blocco che si legge
+          senza capire a cosa si riferisca. */}
+      {errore !== null && !playlistAutomatica && (
+        <AvvisoErrore
+          errore={errore}
+          {...(url.trim() !== ""
+            ? { onRiprova: () => void guarda(true) }
+            : {})}
+        />
+      )}
+      {/* Anche con un'anteprima in mano, quando è quella magra: è proprio il
+          caso in cui sapere *dove* si è fermata la lettura serve a qualcosa. */}
+      {(errore !== null || degradato) && <Diagnosi />}
+      {/* Era `<p>Lettura in corso…</p>`, e per una playlist da trecento brani
+          erano duecento richieste dietro una frase che non cambiava mai: chi
+          aspettava non poteva distinguere una lettura lunga da una impiantata,
+          e l'unica risposta possibile era chiudere e rifare da capo la cosa
+          che stava quasi finendo. */}
+      {leggendo && <LetturaLink avanzamento={avanzamento} />}
+
+      {/* Blocco e non avviso, ed era ambra come tutto il resto: importare
+          adesso creerebbe una playlist **vuota**, cioè qualcosa che dal di
+          fuori assomiglia a un successo. Il primario è spento, e l'unica cosa
+          da fare — rileggere il link saltando la cella — sta dentro il
+          riquadro invece che in fondo alla finestrella accanto ad «Annulla». */}
+      {degradato && (
+        <Avviso livello="blocco" azione={riprova}>
+          <Trans
+            k="link.degraded"
+            v={{
+              titolo: <strong>{t("link.degraded.title")}</strong>,
+              copertina: <strong>{t("link.degraded.cover")}</strong>,
+            }}
+          />
+        </Avviso>
+      )}
+
+      {/* Avviso e non blocco: importare adesso porta dentro qualcosa di
+          buono, solo non tutto. I due numeri in `stat-number` perché la
+          differenza fra 297 e 300 e quella fra 30 e 300 sono due notizie
+          diverse, e in mezzo a una frase si leggono uguali. */}
+      {monco && anteprima && (
+        <Avviso livello="avviso" azione={riprova}>
+          <Trans
+            k="link.truncated"
+            n={{
+              fonte: nomeFonte(anteprima.fonte),
+              mancanti: monco.attesi - monco.letti,
+            }}
+            v={{
+              attesi: <span className="stat-number">{monco.attesi}</span>,
+              letti: <span className="stat-number">{monco.letti}</span>,
+            }}
+          />
+        </Avviso>
+      )}
+
+      {anteprima && !degradato && (
+        <>
+          <label className="scelta">
+            <input
+              type="checkbox"
+              checked={creaPlaylist}
+              onChange={(e) => setCreaPlaylist(e.target.checked)}
+            />
+            <span>
+              {t("link.createPlaylist", { nome: anteprima.titolo })}
+              {piano?.playlistReplaced && <em>{t("link.replaces")}</em>}
+            </span>
+          </label>
+          {/* Attaccato alla casella, e con l'unica uscita che esiste davvero:
+              importare i brani senza toccare la playlist. Spegnere la casella
+              rifà il piano da sé — l'effetto la guarda — quindi il tasto fa
+              una cosa sola e quella cosa si vede subito. */}
+          {playlistAutomatica && (
+            <Avviso
+              livello="blocco"
+              azione={
+                <button
+                  type="button"
+                  className="bottone minuto btn-ghost"
+                  onClick={() => setCreaPlaylist(false)}
+                >
+                  {t("link.smartEscape")}
+                </button>
+              }
+            >
+              {testoErrore(errore)}
+            </Avviso>
+          )}
+        </>
+      )}
+
+      {rapporto && (
+        <>
+          <div className="rapporto">
+            <Voce etichetta={t("link.inLibrary")} valore={rapporto.matched} />
+            {/* La scomposizione esce dalla `nota` e diventa quattro pastiglie.
+                Era una frase — «12 esatti, 3 con un altro album, 1 a titolo
+                ripulito» — che elencava sempre tutti e tre i gradini, zeri
+                compresi, e non diceva quale fosse il più solido. Le pastiglie
+                portano il grado nel colore, spiegano al passaggio del
+                puntatore, e i gradini a zero **non compaiono**: una voce
+                fissa a zero è una voce che si impara a non leggere.
+
+                L'ISRC compare qui e non nella frase di prima perché nella
+                frase non c'era: `matchedIsrc` esisteva nel rapporto e non
+                usciva da nessuna parte, cioè l'unico gradino senza margine di
+                dubbio era l'unico che non si vedeva. */}
+            {rapporto.matched > 0 && (
+              <div className="scomposizione">
+                {rapporto.matchedIsrc > 0 && (
+                  <span>
+                    <PastigliaGradino gradino="isrc" /> {rapporto.matchedIsrc}
+                  </span>
+                )}
+                {rapporto.matchedExact > 0 && (
+                  <span>
+                    <PastigliaGradino gradino="esatta" />{" "}
+                    {rapporto.matchedExact}
+                  </span>
+                )}
+                {rapporto.matchedByTitle > 0 && (
+                  <span>
+                    <PastigliaGradino gradino="artistaTitolo" />{" "}
+                    {rapporto.matchedByTitle}
+                  </span>
+                )}
+                {rapporto.matchedStripped > 0 && (
+                  <span>
+                    <PastigliaGradino gradino="ripulito" />{" "}
+                    {rapporto.matchedStripped}
+                  </span>
+                )}
+              </div>
+            )}
+            <Voce
+              etichetta={t("link.notFound")}
+              valore={rapporto.missing}
+              nota={t("link.notFound.note")}
+            />
+            {rapporto.playlistId !== null && (
+              <Voce
+                etichetta={t("link.entries")}
+                valore={rapporto.playlistEntries}
+                nota={t(
+                  rapporto.playlistCreated
+                    ? "link.entries.new"
+                    : "link.entries.replaced",
+                  { nome: rapporto.playlistName ?? "" },
+                )}
+              />
+            )}
+            {/* Solo quando ce n'è: da un catalogo quella colonna resta
+                vuota, e una riga fissa a zero è una riga che si impara a non
+                leggere — la stessa ragione per cui l'ISRC qui sotto compare a
+                condizione. */}
+            {rapporto.spotifyAlbumIdsWritten > 0 && (
+              <Voce
+                etichetta={t("link.spotifyIds")}
+                valore={rapporto.spotifyAlbumIdsWritten}
+                nota={t("link.spotifyIds.note")}
+              />
+            )}
+            {/* Solo quando ce n'è: oggi Spotify non manda più l'ISRC, e una
+                riga fissa a zero è una riga che si impara a non leggere. */}
+            {rapporto.isrcWritten > 0 && (
+              <Voce
+                etichetta={t("link.isrc")}
+                valore={rapporto.isrcWritten}
+              />
+            )}
+          </div>
+
+          {/* L'elenco dei mancanti sta qui perché è l'ultimo momento per
+              accorgersi che i file ci sono già in una cartella non
+              sorvegliata, e risparmiarsi di riscaricarli.
+
+              Non è più l'**unico** momento, ed è la differenza che il quarto
+              tempo ha portato: il rapporto adesso si salva, e la pagina
+              Importazioni lo riapre tre giorni dopo. Finché moriva con questa
+              finestrella, chi chiudeva senza copiare questi nomi li perdeva —
+              e la finestrella si chiude da sé alla conferma, perché il gesto
+              da rendere facile era il link successivo. */}
+          {rapporto.missingTracks.length > 0 && (
+            <details className="non-ritrovati">
+              <summary>{t("link.missing", { n: rapporto.missing })}</summary>
+              <p>
+                <Trans
+                  k="link.missing.p1"
+                  v={{
+                    daComprare: (
+                      <strong>{t("settings.import.how.p2.toBuy")}</strong>
+                    ),
+                  }}
+                />
+              </p>
+              <p>{t("link.missing.p2")}</p>
+              {/* La frase che rende innocua la chiusura automatica. Il difetto
+                  non era la finestrella che si chiude: era che chiudere
+                  costava questo elenco, e nessuno lo diceva. */}
+              <p>
+                <Trans
+                  k="link.missing.p3"
+                  v={{
+                    importazioni: (
+                      <strong>{t("settings.queue.empty.link")}</strong>
+                    ),
+                  }}
+                />
+              </p>
+              <ul>
+                {rapporto.missingTracks.map((b) => (
+                  <li key={`${b.position}-${b.title}`}>
+                    {b.artist ? `${b.artist} — ` : ""}
+                    {b.title}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </>
+      )}
+
+      <div className="tasti-finestrella">
+        <button type="button" className="bottone" onClick={onChiudi}>
+          {t("common.cancel")}
+        </button>
+        {anteprima ? (
+          <button
+            type="button"
+            className="bottone primario"
+            ref={primario}
+            // `degradato`: importare zero brani riesce, ed è il guasto
+            // peggiore possibile qui perché assomiglia in tutto a un
+            // successo. Meglio un tasto spento e una frase che lo spiega.
+            disabled={inCorso || piano === null || degradato}
+            onClick={() => void esegui()}
+          >
+            {inCorso ? t("legacy.importing") : t("legacy.import")}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="bottone primario"
+            disabled={inCorso || url.trim() === ""}
+            onClick={() => void guarda()}
+          >
+            {inCorso ? t("link.retrying") : t("link.look")}
+          </button>
+        )}
       </div>
-    </div>
+    </Dialogo>
   );
 }

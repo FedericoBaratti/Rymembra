@@ -51,6 +51,7 @@ use aether_scrobble::{LastFm, ListenBrainz, per_richiesta};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
+use crate::disparte::in_disparte;
 use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::stato::{Stato, Turno, con_libreria};
@@ -213,21 +214,37 @@ pub fn scrobble_attivo(
     stato_ipc(&stato, &scrobble).map_err(errore)
 }
 
+/// I due stati che servono ai comandi che lavorano in disparte.
+///
+/// Un comando che gira sul pool bloccante riceve un `AppHandle` e non dei
+/// `State`: il lavoro va mosso dentro una chiusura `'static`. `try_state` e non
+/// `state`, perché alla chiusura gli stati se ne vanno e `state` panica.
+fn stati(app: &AppHandle) -> Result<(State<'_, Stato>, State<'_, StatoScrobble>), AppError> {
+    match (app.try_state::<Stato>(), app.try_state::<StatoScrobble>()) {
+        (Some(stato), Some(scrobble)) => Ok((stato, scrobble)),
+        _ => Err(AppError::new(ErrorCode::InternalAborted {
+            what: Some("scrobbling".to_owned()),
+        })
+        .with_cause("lo stato dello scrobbling non c'è più")),
+    }
+}
+
 /// Collega ListenBrainz con un token utente.
 ///
 /// Il token si **verifica prima di salvarlo**: uno sbagliato incollato qui non
 /// darebbe nessun sintomo finché il primo ascolto non fallisce, cioè ore dopo e
 /// in un posto diverso da dove è stato commesso l'errore.
 ///
-/// `(async)` perché va in rete: vedi la nota in `account.rs` sul perché un
-/// comando bloccante non deve girare sul filo della finestra.
-#[tauri::command(async)]
-pub fn scrobble_listenbrainz_collega(
-    stato: State<'_, Stato>,
-    scrobble: State<'_, StatoScrobble>,
+/// In disparte, sul pool bloccante, perché va in rete con tre tentativi da un
+/// minuto: fino alla 2.4.0 era `(async)`, cioè quel tempo passato su un
+/// *worker* del runtime che serve a tutti gli altri comandi asincroni.
+#[tauri::command]
+pub async fn scrobble_listenbrainz_collega(
+    app: AppHandle,
     token: String,
 ) -> Esito<StatoScrobbleIpc> {
-    let esito = (|| {
+    in_disparte("collegamento a ListenBrainz", move || {
+        let (stato, scrobble) = stati(&app)?;
         let token = token.trim().to_owned();
         if token.is_empty() {
             return Err(AppError::new(ErrorCode::SettingsListenbrainzNotConfigured));
@@ -240,10 +257,12 @@ pub fn scrobble_listenbrainz_collega(
                 coda::CHIAVE_LB_UTENTE,
                 &proprietario.utente,
             )
-        })
-    })();
-    esito.map_err(errore)?;
-    stato_ipc(&stato, &scrobble).map_err(errore)
+        })?;
+        stato_ipc(&stato, &scrobble)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 /// Scollega ListenBrainz.
@@ -275,6 +294,11 @@ pub fn scrobble_listenbrainz_scollega(
 /// continuerebbe a funzionare, e nascondere che le credenziali nuove non vanno è
 /// il modo di far cercare il guasto nel posto sbagliato. È la stessa regola di
 /// `account_credenziali`.
+///
+/// La coda degli ascolti in attesa però resta, se le credenziali non sono
+/// vuote: correggere un refuso nella chiave non è scollegarsi, e prima buttava
+/// via gli ascolti accumulati senza rete. Vuote tutte e due vuol dire togliere
+/// Last.fm, e allora vale [`scollega_lastfm`] intero.
 #[tauri::command]
 pub fn scrobble_lastfm_credenziali(
     stato: State<'_, Stato>,
@@ -302,7 +326,11 @@ pub fn scrobble_lastfm_credenziali(
         } else {
             portachiavi().scrivi(CHIAVE_LFM_SEGRETO, segreto)?;
         }
-        scollega_lastfm(&stato, &scrobble)
+        if api_key.is_empty() && segreto.is_empty() {
+            scollega_lastfm(&stato, &scrobble)
+        } else {
+            togli_la_sessione_lastfm(&stato, &scrobble)
+        }
     })();
     esito.map_err(errore)?;
     stato_ipc(&stato, &scrobble).map_err(errore)
@@ -312,62 +340,76 @@ pub fn scrobble_lastfm_credenziali(
 ///
 /// Il token resta in memoria finché l'utente non torna a dire che ha approvato.
 /// Non c'è nessun modo di accorgersene da qui: Last.fm non richiama nessuno.
-#[tauri::command(async)]
-pub fn scrobble_lastfm_collega(
-    stato: State<'_, Stato>,
-    scrobble: State<'_, StatoScrobble>,
-) -> Esito<StatoScrobbleIpc> {
-    let esito = (|| {
-        let client = client_lastfm(&stato)?;
-        let token = client.chiedi_token()?;
-        let url = client.url_consenso(&token);
-        tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|err| {
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("apertura del browser".to_owned()),
-            })
-            .with_cause(err.to_string())
-        })?;
-        if let Ok(mut attesa) = scrobble.attesa_lastfm.lock() {
-            *attesa = Some(token);
-        }
-        Ok(())
-    })();
-    esito.map_err(errore)?;
-    stato_ipc(&stato, &scrobble).map_err(errore)
+///
+/// In disparte, come [`scrobble_listenbrainz_collega`]: va in rete.
+#[tauri::command]
+pub async fn scrobble_lastfm_collega(app: AppHandle) -> Esito<StatoScrobbleIpc> {
+    in_disparte("consenso Last.fm", move || {
+        let (stato, scrobble) = stati(&app)?;
+        consenso_lastfm(&stato, &scrobble)?;
+        stato_ipc(&stato, &scrobble)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+/// Il primo tempo del consenso Last.fm, in disparte.
+fn consenso_lastfm(stato: &Stato, scrobble: &StatoScrobble) -> Result<(), AppError> {
+    let client = client_lastfm(stato)?;
+    let token = client.chiedi_token()?;
+    let url = client.url_consenso(&token);
+    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|err| {
+        AppError::new(ErrorCode::InternalAborted {
+            what: Some("apertura del browser".to_owned()),
+        })
+        .with_cause(err.to_string())
+    })?;
+    if let Ok(mut attesa) = scrobble.attesa_lastfm.lock() {
+        *attesa = Some(token);
+    }
+    Ok(())
 }
 
 /// Secondo tempo: scambia il token approvato per una sessione.
-#[tauri::command(async)]
-pub fn scrobble_lastfm_completa(
-    stato: State<'_, Stato>,
-    scrobble: State<'_, StatoScrobble>,
-) -> Esito<StatoScrobbleIpc> {
-    let esito = (|| {
-        let token = scrobble
-            .attesa_lastfm
-            .lock()
-            .ok()
-            .and_then(|attesa| attesa.clone())
-            .ok_or_else(|| AppError::new(ErrorCode::SettingsLastfmNoPendingToken))?;
+///
+/// In disparte, come [`scrobble_listenbrainz_collega`]: va in rete.
+#[tauri::command]
+pub async fn scrobble_lastfm_completa(app: AppHandle) -> Esito<StatoScrobbleIpc> {
+    in_disparte("sessione Last.fm", move || {
+        let (stato, scrobble) = stati(&app)?;
+        sessione_lastfm(&stato, &scrobble)?;
+        stato_ipc(&stato, &scrobble)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
 
-        let sessione = client_lastfm(&stato)?.sessione(&token)?;
-        portachiavi().scrivi(CHIAVE_LFM_SESSIONE, &sessione.chiave)?;
-        con_libreria(&stato, |libreria| {
-            settings::write(
-                &libreria.connection,
-                coda::CHIAVE_LFM_UTENTE,
-                &sessione.utente,
-            )
-        })?;
-        // Il token è servito: usarlo due volte dà un errore che non spiega
-        // niente, e tenerlo in giro non serve a nessuno.
-        if let Ok(mut attesa) = scrobble.attesa_lastfm.lock() {
-            *attesa = None;
-        }
-        Ok(())
-    })();
-    esito.map_err(errore)?;
-    stato_ipc(&stato, &scrobble).map_err(errore)
+/// Il secondo tempo del consenso Last.fm, in disparte.
+fn sessione_lastfm(stato: &Stato, scrobble: &StatoScrobble) -> Result<(), AppError> {
+    let token = scrobble
+        .attesa_lastfm
+        .lock()
+        .ok()
+        .and_then(|attesa| attesa.clone())
+        .ok_or_else(|| AppError::new(ErrorCode::SettingsLastfmNoPendingToken))?;
+
+    let sessione = client_lastfm(stato)?.sessione(&token)?;
+    portachiavi().scrivi(CHIAVE_LFM_SESSIONE, &sessione.chiave)?;
+    con_libreria(stato, |libreria| {
+        settings::write(
+            &libreria.connection,
+            coda::CHIAVE_LFM_UTENTE,
+            &sessione.utente,
+        )
+    })?;
+    // Il token è servito: usarlo due volte dà un errore che non spiega
+    // niente, e tenerlo in giro non serve a nessuno.
+    if let Ok(mut attesa) = scrobble.attesa_lastfm.lock() {
+        *attesa = None;
+    }
+    Ok(())
 }
 
 /// Scollega Last.fm.
@@ -381,16 +423,21 @@ pub fn scrobble_lastfm_scollega(
 }
 
 /// Svuota la coda adesso, senza aspettare il filo.
-#[tauri::command(async)]
-pub fn scrobble_invia(app: AppHandle) -> Esito<EsitoInvio> {
-    let scrobble = app.state::<StatoScrobble>();
-    let _turno = Turno::prendi(&scrobble.in_corso).ok_or_else(|| {
-        errore(
+///
+/// In disparte: una passata sono minuti di HTTP su una coda lunga.
+#[tauri::command]
+pub async fn scrobble_invia(app: AppHandle) -> Esito<EsitoInvio> {
+    in_disparte("invio degli ascolti", move || {
+        let (_, scrobble) = stati(&app)?;
+        let _turno = Turno::prendi(&scrobble.in_corso).ok_or_else(|| {
             AppError::new(ErrorCode::SyncBusy)
-                .with_cause("c'è già una passata di scrobbling in corso"),
-        )
-    })?;
-    Ok(passata(&app))
+                .with_cause("c'è già una passata di scrobbling in corso")
+        })?;
+        Ok(passata(&app))
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 /// Rimette in fila gli ascolti abbandonati.
@@ -560,8 +607,13 @@ pub fn avvia(app: &AppHandle) {
                         aspetta(&manico);
                         continue;
                     };
-                    let esito = passata(&manico);
-                    if esito.mandati > 0 || esito.guasto.is_some() {
+                    // Sorvegliata: un panico in mezzo a una passata non porta
+                    // via il filo, e la coda si riprova al giro dopo. Vedi
+                    // `crate::stato::sorvegliato`.
+                    let esito = crate::stato::sorvegliato("aether-scrobble", || passata(&manico));
+                    if let Some(esito) = esito
+                        && (esito.mandati > 0 || esito.guasto.is_some())
+                    {
                         manico.emetti("scrobble:passata", &esito);
                     }
                 }
@@ -639,7 +691,14 @@ fn passata(app: &AppHandle) -> EsitoInvio {
             };
 
             let (riuscite, fallite, fermato) = manda_bisecando(&mandatore, &voci, &mut esito);
-            chiudi(&stato, &riuscite, &fallite);
+            // Una coda che non si chiude non si rilegge: `da_mandare` darebbe lo
+            // stesso lotto, e il giro lo rimanderebbe — doppioni sul servizio a
+            // ogni giro, finché non risponde 429. Ci si ferma, e le righe restano
+            // da mandare alla passata dopo: al più un doppione, non uno a giro.
+            if let Err(err) = chiudi(&stato, &riuscite, &fallite) {
+                esito.guasto = Some(err.code().kind().code().to_owned());
+                break;
+            }
             if fermato.is_some() {
                 esito.guasto = fermato;
                 break;
@@ -738,7 +797,7 @@ fn bisezione(
             }
             riuscite.extend(voci.iter().map(|v| v.id));
         }
-        Err(err) if err.is_retryable() => {
+        Err(err) if non_e_degli_ascolti(&err) => {
             // Non è colpa di questi ascolti. Si ferma tutto: consumare un
             // tentativo a mille righe perché il servizio è in manutenzione
             // vorrebbe dire abbandonarle dopo dieci manutenzioni.
@@ -771,6 +830,40 @@ fn bisezione(
     }
 }
 
+/// Il guasto non dice niente degli ascolti che si stavano mandando.
+///
+/// Allora si ferma la passata e non si divide il blocco: dividerlo vorrebbe
+/// dire mandare due richieste che falliranno uguali, poi quattro, e mettere un
+/// tentativo fallito sul conto di ogni ascolto — che dopo dieci viene
+/// abbandonato per una cosa che non ha fatto.
+///
+/// Sono tre famiglie:
+///
+/// - quel che si **ritenta** (rete giù, servizio in manutenzione, limiti di
+///   frequenza): passerà da sé;
+/// - un **3xx** che nessuno ha seguito — il client dello scrobbling non segue
+///   rimandi, perché porta il token nel corpo. Un rimando è il servizio che
+///   ha cambiato indirizzo, un proxy aziendale o un portale di una rete
+///   pubblica che vuole il login: niente di tutto questo è un ascolto
+///   sbagliato. Fino alla 2.4.0 cadeva fra i rifiuti, il blocco si divideva, e
+///   ogni ascolto si prendeva un tentativo per ogni rete del bar;
+/// - le **credenziali** rifiutate: una sessione revocata rifiuta ogni ascolto
+///   allo stesso modo, e i tentativi non c'entrano.
+fn non_e_degli_ascolti(err: &AppError) -> bool {
+    err.is_retryable()
+        || matches!(
+            err.code(),
+            ErrorCode::NetHttp { status, .. } if (300..400).contains(status)
+        )
+        || matches!(
+            err.code(),
+            ErrorCode::SettingsScrobbleAuthRejected { .. }
+                | ErrorCode::SettingsLastfmNotConfigured
+                | ErrorCode::SettingsListenbrainzNotConfigured
+                | ErrorCode::NetBadSchema { .. }
+        )
+}
+
 /// Metà di un numero di voci, per la bisezione.
 #[expect(
     clippy::integer_division,
@@ -788,7 +881,12 @@ const fn meta(quante: usize) -> usize {
 /// e una chiamata sola: [`coda::fallite`] apre una transazione per invocazione, e
 /// una per riga vorrebbe dire tornare ai commit contati che questa correzione
 /// toglie di mezzo.
-fn chiudi(stato: &State<'_, Stato>, riuscite: &[i64], fallite: &[(i64, String)]) {
+///
+/// # Errori
+///
+/// Quello del database, già scritto nel diario: chi chiama deve smettere di
+/// mandare, perché la coda non è andata avanti.
+fn chiudi(stato: &Stato, riuscite: &[i64], fallite: &[(i64, String)]) -> Result<(), AppError> {
     let mut per_causa: std::collections::HashMap<&str, Vec<i64>> = std::collections::HashMap::new();
     for (id, causa) in fallite {
         per_causa.entry(causa.as_str()).or_default().push(*id);
@@ -800,13 +898,14 @@ fn chiudi(stato: &State<'_, Stato>, riuscite: &[i64], fallite: &[(i64, String)])
         }
         Ok(())
     });
-    if let Err(err) = esito {
-        lamenta("chiusura della coda", &err);
+    if let Err(err) = &esito {
+        lamenta("chiusura della coda", err);
     }
+    esito
 }
 
 /// Rilegge i conteggi dentro l'esito.
-fn aggiorna_conteggi(stato: &State<'_, Stato>, esito: &mut EsitoInvio) {
+fn aggiorna_conteggi(stato: &Stato, esito: &mut EsitoInvio) {
     if let Ok(conteggi) = con_libreria(stato, |libreria| coda::conteggi(&libreria.connection, None))
     {
         esito.in_attesa = conteggi.in_attesa;
@@ -869,7 +968,7 @@ pub fn travasa_chiave_lastfm(
 /// ma la lettura della coda del travaso: su una macchina il cui portachiavi non
 /// ha risposto all'avvio la chiave è ancora nel database, e rifiutarsi di
 /// leggerla vorrebbe dire scollegare Last.fm a chi non ha fatto niente.
-fn chiave_lastfm(stato: &State<'_, Stato>) -> Result<Option<String>, AppError> {
+fn chiave_lastfm(stato: &Stato) -> Result<Option<String>, AppError> {
     if let Some(chiave) = leggi_segreto(CHIAVE_LFM_CHIAVE)
         .unwrap_or_default()
         .filter(|chiave| !chiave.trim().is_empty())
@@ -884,7 +983,7 @@ fn chiave_lastfm(stato: &State<'_, Stato>) -> Result<Option<String>, AppError> {
 
 /// Lo scrobbling è acceso? Acceso di serie: chi collega un servizio vuole che
 /// mandi, e un interruttore che nasce spento sembra un guasto.
-fn acceso(stato: &State<'_, Stato>) -> bool {
+fn acceso(stato: &Stato) -> bool {
     con_libreria(stato, |libreria| {
         settings::read(&libreria.connection, coda::CHIAVE_ATTIVO)
     })
@@ -894,7 +993,7 @@ fn acceso(stato: &State<'_, Stato>) -> bool {
 }
 
 /// Quali servizi hanno di che mandare, adesso.
-fn collegati(stato: &State<'_, Stato>) -> Result<Vec<Servizio>, AppError> {
+fn collegati(stato: &Stato) -> Result<Vec<Servizio>, AppError> {
     if !acceso(stato) {
         return Ok(Vec::new());
     }
@@ -925,7 +1024,7 @@ fn leggi_segreto(chiave: &str) -> Result<Option<String>, AppError> {
 }
 
 /// Il client di ListenBrainz, se c'è un token.
-fn listenbrainz(stato: &State<'_, Stato>) -> Result<ListenBrainz, AppError> {
+fn listenbrainz(stato: &Stato) -> Result<ListenBrainz, AppError> {
     let _ = stato;
     let token = leggi_segreto(CHIAVE_LB_TOKEN)?
         .filter(|t| !t.is_empty())
@@ -935,7 +1034,7 @@ fn listenbrainz(stato: &State<'_, Stato>) -> Result<ListenBrainz, AppError> {
 
 /// Il client di Last.fm, senza la sessione: serve al consenso, che la sessione
 /// non ce l'ha ancora.
-fn client_lastfm(stato: &State<'_, Stato>) -> Result<LastFm, AppError> {
+fn client_lastfm(stato: &Stato) -> Result<LastFm, AppError> {
     let api_key = chiave_lastfm(stato)?
         .ok_or_else(|| AppError::new(ErrorCode::SettingsLastfmNotConfigured))?;
     let segreto = leggi_segreto(CHIAVE_LFM_SEGRETO)?
@@ -945,7 +1044,7 @@ fn client_lastfm(stato: &State<'_, Stato>) -> Result<LastFm, AppError> {
 }
 
 /// Il client di Last.fm con la sua sessione.
-fn lastfm(stato: &State<'_, Stato>) -> Result<(LastFm, String), AppError> {
+fn lastfm(stato: &Stato) -> Result<(LastFm, String), AppError> {
     let client = client_lastfm(stato)?;
     let sessione = leggi_segreto(CHIAVE_LFM_SESSIONE)?
         .filter(|s| !s.is_empty())
@@ -959,7 +1058,7 @@ fn lastfm(stato: &State<'_, Stato>) -> Result<(LastFm, String), AppError> {
 }
 
 /// Chi manda per questo servizio, o `None` se non è collegato.
-fn mandatore(stato: &State<'_, Stato>, servizio: Servizio) -> Result<Option<Mandatore>, AppError> {
+fn mandatore(stato: &Stato, servizio: Servizio) -> Result<Option<Mandatore>, AppError> {
     let collegati = collegati(stato)?;
     if !collegati.contains(&servizio) {
         return Ok(None);
@@ -977,26 +1076,29 @@ fn mandatore(stato: &State<'_, Stato>, servizio: Servizio) -> Result<Option<Mand
 }
 
 /// Scollega Last.fm: sessione, nome, coda e token in attesa.
-fn scollega_lastfm(
-    stato: &State<'_, Stato>,
-    scrobble: &State<'_, StatoScrobble>,
-) -> Result<(), AppError> {
-    portachiavi().cancella(CHIAVE_LFM_SESSIONE)?;
-    if let Ok(mut attesa) = scrobble.attesa_lastfm.lock() {
-        *attesa = None;
-    }
+fn scollega_lastfm(stato: &Stato, scrobble: &StatoScrobble) -> Result<(), AppError> {
+    togli_la_sessione_lastfm(stato, scrobble)?;
     con_libreria(stato, |libreria| {
-        settings::forget(&libreria.connection, coda::CHIAVE_LFM_UTENTE)?;
         coda::dimentica(&libreria.connection, Some(Servizio::LastFm), false)
     })
     .map(|_| ())
 }
 
+/// Toglie sessione, nome e token in attesa, e lascia la coda: le credenziali
+/// sono cambiate, e la sessione di prima era di un'altra chiave.
+fn togli_la_sessione_lastfm(stato: &Stato, scrobble: &StatoScrobble) -> Result<(), AppError> {
+    portachiavi().cancella(CHIAVE_LFM_SESSIONE)?;
+    if let Ok(mut attesa) = scrobble.attesa_lastfm.lock() {
+        *attesa = None;
+    }
+    con_libreria(stato, |libreria| {
+        settings::forget(&libreria.connection, coda::CHIAVE_LFM_UTENTE)
+    })
+    .map(|_| ())
+}
+
 /// Lo stato completo, senza toccare la rete.
-fn stato_ipc(
-    stato: &State<'_, Stato>,
-    scrobble: &State<'_, StatoScrobble>,
-) -> Result<StatoScrobbleIpc, AppError> {
+fn stato_ipc(stato: &Stato, scrobble: &StatoScrobble) -> Result<StatoScrobbleIpc, AppError> {
     let (utente_lb, utente_lfm, attivo, conta_lb, conta_lfm) = con_libreria(stato, |libreria| {
         let c = &libreria.connection;
         Ok((
@@ -1109,6 +1211,42 @@ mod prove {
             Ok(Some("0123456789abcdef".to_owned())),
             "la chiave resta dov'è, e il profilo la lascia comunque fuori"
         );
+    }
+
+    #[test]
+    fn un_rimando_inatteso_non_e_colpa_degli_ascolti() {
+        // Il portale di una rete pubblica risponde `302` verso la sua pagina
+        // di accesso: fino alla 2.4.0 il blocco si divideva e ogni ascolto si
+        // prendeva un tentativo fallito.
+        let rimando = AppError::new(ErrorCode::NetHttp {
+            status: 302,
+            url: None,
+        });
+        assert!(
+            !rimando.is_retryable(),
+            "la premessa: un 3xx non si ritenta"
+        );
+        assert!(non_e_degli_ascolti(&rimando));
+        assert!(non_e_degli_ascolti(&AppError::new(
+            ErrorCode::SettingsScrobbleAuthRejected {
+                service: "lastfm".to_owned()
+            }
+        )));
+        assert!(non_e_degli_ascolti(&AppError::new(ErrorCode::NetOffline {
+            url: None
+        })));
+        // Un rifiuto del documento resta degli ascolti: è lì che la bisezione
+        // trova il colpevole.
+        assert!(!non_e_degli_ascolti(&AppError::new(
+            ErrorCode::SettingsScrobbleRejected {
+                service: "listenbrainz".to_owned(),
+                detail: None
+            }
+        )));
+        assert!(!non_e_degli_ascolti(&AppError::new(ErrorCode::NetHttp {
+            status: 400,
+            url: None
+        })));
     }
 
     #[test]

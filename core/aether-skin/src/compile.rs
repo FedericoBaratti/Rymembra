@@ -5,33 +5,113 @@
 //! entrano come canali, le lunghezze come numero più unità, e i nomi delle
 //! proprietà vengono dal registro dei token e dal registro delle parti, non dal
 //! documento. Quella proprietà è ciò che rende l'intera classe di attacchi via
-//! CSS — `url()` che chiama a casa, `@import`, selettori che esfiltrano
-//! attributi — non applicabile, e i test la verificano sull'output, non
-//! sull'intenzione.
+//! CSS — `@import`, selettori che esfiltrano attributi, indirizzi che chiamano a
+//! casa — non applicabile, e i test la verificano sull'output.
+//!
+//! L'unico `url()` che esce di qui punta allo schema locale che serve le voci
+//! dei pacchetti, ed è costruito dal compilatore con due pezzi già validati:
+//! l'id della skin e il nome della voce. Vedi [`Effect::Image`].
+//!
+//! # I nomi che arrivano nel foglio, e perché non possono chiuderlo
+//!
+//! «Nessuna stringa dell'autore» va letto con precisione: i **valori** non ci
+//! arrivano mai, i **nomi** sì, perché un nome è il modo in cui due punti del
+//! foglio si ritrovano. Sono questi, e nessun altro:
+//!
+//! - l'id della skin, nei selettori (`[data-skin='<id>']`), nei nomi dei
+//!   `@keyframes`, delle famiglie e negli indirizzi delle risorse;
+//! - la versione, nell'intestazione;
+//! - i nomi della tavolozza, dei motivi e delle curve, dentro i nomi delle
+//!   variabili (`--skin-color-<nome>`, `--skin-<nome>`, `--skin-ease-<nome>`);
+//! - i nomi delle animazioni, dentro quelli dei `@keyframes`;
+//! - le famiglie dei caratteri, fra apici nelle pile di `font.*` e ridotte a
+//!   `[a-z0-9-]` nel nome proprio che il `@font-face` dichiara;
+//! - i nomi delle voci del pacchetto, dentro `url("…")`.
+//!
+//! Ognuno ha un alfabeto chiuso che la validazione impone — lettere, cifre,
+//! trattini, al più lo spazio in una famiglia e il punto in una versione o in
+//! un nome di file — e in nessuno ci stanno apici, graffe, punti e virgola,
+//! barre inverse o `*/`. Il compilatore però **non si fida** della validazione:
+//! ogni nome passa da `nel_suo_alfabeto` nel punto esatto in cui entra nel
+//! testo. Su un documento validato non cambia un carattere — la prova sulle
+//! skin di serie lo dice — e un [`SkinDocument`] costruito a mano, che ha i
+//! campi pubblici e nessuno obbliga a passare da `parse_skin`, non ha comunque
+//! un canale per uscire da una stringa.
+//!
+//! Il testo libero — nome, autore, descrizione, licenza — **non entra**, in
+//! nessuna forma. Il nome stava nell'intestazione fino alla 3.0, dentro un
+//! commento: una skin condivisa che si chiamasse `x */ :root{display:none} /*`
+//! chiudeva il commento, e la finestra di chi la indossava restava vuota a ogni
+//! avvio. Ora l'intestazione porta id e versione, e la prova che mette `*/`,
+//! graffe, apici e a capo in **ogni** campo di stringa di un documento vero
+//! verifica che il foglio non cambi di un byte.
 //!
 //! # Perché non restituisce un `Result`
 //!
-//! Nel vecchio albero il compilatore era avvolto in un `try/catch` che
-//! trasformava un'eccezione in un errore «la skin ha superato la validazione ma
-//! non compila», con il commento che spiegava che sarebbe stato un buco fra
-//! schema e compilatore. Qui quel buco non esiste: i tipi che entrano sono già
-//! i tipi che escono — un colore è un `ColorValue`, un effetto è un `Effect`
-//! chiuso — e ogni `match` è esaustivo. Non c'è un ramo in cui fallire, quindi
-//! non c'è un `Result` da controllare e nessuno può ignorarlo.
+//! I tipi che entrano sono già i tipi che escono — un colore è un
+//! `ColorValue`, un effetto è un `Effect` chiuso — e ogni `match` è esaustivo.
+//! Non c'è un ramo in cui fallire.
+//!
+//! # Due ambiti
+//!
+//! Lo stesso documento si compila per la finestra e per l'anteprima dello
+//! Studio, e le due cose non sono la stessa. Nella finestra le regole partono da
+//! `:root[data-skin='<id>']`; nell'anteprima da `.anteprima[data-skin='<id>']`,
+//! i nomi di `@keyframes` e dei caratteri hanno un suffisso che li tiene
+//! separati da quelli della skin che la finestra indossa, e i token che la
+//! bozza non dichiara si colmano con quelli di serie — nella finestra li colma
+//! `stile.css`, nel riquadro li erediterebbe dalla skin attiva. È [`Ambito`] a
+//! tenere queste differenze in un posto solo, invece di una sostituzione di
+//! testo a valle.
+//!
+//! # Le animazioni di una parte sono **una** lista
+//!
+//! Lo shorthand `animation` non aggiunge: sostituisce l'intera lista. Una
+//! regola di stato che scrivesse soltanto la sua animazione spegnerebbe
+//! l'entrata e il ciclo che la regola base aveva acceso — il vinile che si
+//! ferma e riparte da capo a ogni passaggio del mouse. Il compilatore quindi
+//! scrive, in **ogni** regola che tocca `animation`, la lista completa di quel
+//! che deve girare in quella condizione. Un'animazione che resta nella lista
+//! allo stesso posto il motore la riconosce e la lascia andare avanti.
 
 use std::fmt::Write as _;
+use std::sync::OnceLock;
 
-use crate::document::{RouteFrame, SkinDocument, SkinMotion};
-use crate::effects::{Effect, EffectTarget, Paint, stack_cost};
-use crate::movimento::{AnimFrame, AnimTrigger, Animation, AnimationRef};
-use crate::parts::{PartAppearance, PartState, PartStyle};
+use crate::document::{RouteFrame, Scheme, SkinDocument, SkinMotion};
+use crate::effects::{Effect, EffectTarget, FiltroElemento, ImageSize, Paint, stack_cost};
+use crate::movimento::{
+    AnimFrame, AnimTrigger, Animation, AnimationRef, CASCATA_VOCI, Curva, Ritaglio,
+};
+use crate::parts::{AnelloFuoco, Ombra, PartAppearance, PartLayer, PartStyle, Raggio};
+use crate::stati::{Fuoco, PartState};
 use crate::tokens::{
-    ColorValue, DynamicSource, ShadowValue, TokenDef, TokenKind, TokenSet, TokenValue,
+    ColorValue, DIFETTI_DEL_MOTORE, DynamicSource, ShadowValue, TokenDef, TokenKind, TokenSet,
+    TokenValue,
 };
 use crate::values::{
-    FontKind, Length, Rgba, format_color, format_duration, format_easing, format_font_stack,
-    format_length, format_length_value, format_rgb_triple, num,
+    Duration, FontKind, Length, Rgba, format_color, format_duration, format_easing,
+    format_font_stack, format_length, format_length_value, format_rgb_triple, num,
 };
+
+/// Una parte che il renderer avvolge in `<ViewTransition>`, e cosa la skin ci
+/// dichiara sopra.
+///
+/// Il renderer lo deve sapere per una ragione precisa: una transizione di vista
+/// **senza** regole della skin non è ferma — il motore mette di serie una
+/// dissolvenza incrociata — e sopra l'entrata di `@starting-style` che il
+/// foglio del motore già scrive ne farebbe due. Dove la skin non dichiara
+/// niente, il renderer passa `"none"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Presenza {
+    /// La parte.
+    pub parte: &'static str,
+    /// La skin anima l'entrata.
+    pub enter: bool,
+    /// La skin anima l'uscita.
+    pub exit: bool,
+    /// La skin anima il volo fra due schermate.
+    pub share: bool,
+}
 
 /// Il risultato della compilazione.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,46 +123,213 @@ pub struct CompiledSkin {
     /// Somma dei costi di motivi e parti, per il budget prestazionale.
     pub cost: u32,
     /// Quanti pezzi dell'app lo scafale monta, sul budget dello scafale.
-    ///
-    /// Non entra in [`Self::cost`]: sono due budget di due cose diverse, e la
-    /// somma non risponderebbe a nessuna delle due domande.
     pub shell_cost: u32,
     /// Quanto costa il movimento, sommato su tutte le parti animate.
-    ///
-    /// Terzo numero e terzo budget, separato dagli altri due per la stessa
-    /// ragione: disegnare una superficie, montare mezza applicazione e muovere
-    /// una parte sono tre lavori diversi. Il budget vero
-    /// ([`MOTION_COST_BUDGET`](crate::movimento::MOTION_COST_BUDGET)) è **per
-    /// parte** e lo controlla [`check_skin`](crate::check_skin); questo è la
-    /// somma, cioè il numero da mostrare accanto agli altri due.
-    ///
-    /// Conta solo le animazioni **assegnate**: una dichiarata e mai richiamata
-    /// si compila in `@keyframes` inerti, che non costano niente per
-    /// fotogramma.
     pub motion_cost: u32,
     /// I token che seguono la copertina: il runtime deve aggiornarli.
     pub dynamic_tokens: Vec<&'static str>,
+    /// Le parti che entrano, escono o volano con una transizione di vista.
+    pub presenze: Vec<Presenza>,
 }
 
 /// Il prefisso dei motivi. Evita collisioni fra skin e col registro dei token.
 const PREFISSO_MOTIVO: &str = "--skin-";
 /// Il prefisso dei colori della tavolozza locale.
 const PREFISSO_TAVOLOZZA: &str = "--skin-color-";
+/// L'indirizzo da cui il protocollo locale serve le voci dei pacchetti.
+///
+/// È la forma con cui WebView2 raggiunge uno schema personalizzato — la
+/// stessa di `http://aether-cover.localhost` per le copertine.
+pub const ORIGINE_RISORSE: &str = "http://aether-skin.localhost";
 
-/// La variante di selettore.
-#[derive(Debug, Clone, Copy)]
-enum Variante {
-    Base,
-    Chiaro,
-    Telefono,
+/// Per chi si compila: la finestra, o il riquadro dell'anteprima.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ambito {
+    id: String,
+    anteprima: bool,
+    /// Le risorse vengono dalla bozza dello Studio e non dalla skin installata.
+    bozza: bool,
+    /// Ogni stato si può anche forzare con `data-forza`.
+    forza: bool,
 }
 
-fn selettore(id: &str, variante: Variante) -> String {
-    let radice = format!(":root[data-skin='{id}']");
-    match variante {
-        Variante::Base => radice,
-        Variante::Chiaro => format!("{radice}[data-theme='light']"),
-        Variante::Telefono => format!("{radice}[data-mobile]"),
+/// Un nome del documento ridotto al suo alfabeto, nel punto in cui entra nel
+/// foglio.
+///
+/// Restano le lettere e le cifre ASCII più i caratteri di `anche`, e cade tutto
+/// il resto. Non è la validazione — quella rifiuta e dice perché, questa scarta
+/// in silenzio — ed è proprio la differenza: qui non c'è più nessuno a cui
+/// dirlo, e un carattere che arrivasse fin qui sarebbe già un guasto a monte.
+/// Su un nome validato è l'identità. Vedi il `//!`, «I nomi che arrivano nel
+/// foglio».
+fn nel_suo_alfabeto(testo: &str, anche: &[char]) -> String {
+    testo
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || anche.contains(c))
+        .collect()
+}
+
+/// L'alfabeto di un id e dei nomi locali: tavolozza, motivi, curve, animazioni.
+const TRATTINO: &[char] = &['-'];
+
+impl Ambito {
+    fn nuovo(id: &str, anteprima: bool, bozza: bool, forza: bool) -> Self {
+        Self {
+            // L'id finisce fra apici in ogni selettore: vedi `nel_suo_alfabeto`.
+            id: nel_suo_alfabeto(id, TRATTINO),
+            anteprima,
+            bozza,
+            forza,
+        }
+    }
+
+    /// La finestra vera.
+    #[must_use]
+    pub fn app(id: &str) -> Self {
+        Self::nuovo(id, false, false, false)
+    }
+
+    /// La finestra vera, con la bozza dello Studio indosso: «Prova sull'app».
+    ///
+    /// I selettori sono quelli della finestra, le risorse quelle della bozza —
+    /// che è dove lo Studio mette un carattere appena aggiunto, prima che la
+    /// skin si installi.
+    #[must_use]
+    pub fn prova(id: &str) -> Self {
+        Self::nuovo(id, false, true, false)
+    }
+
+    /// La tela dello Studio: una finestra finta dentro un `<iframe>`.
+    ///
+    /// I selettori sono quelli della finestra — nel documento della tela
+    /// `:root` è la sua radice, e la skin attiva dell'app lì non c'è — con le
+    /// risorse della bozza e gli stati forzabili. È la forma più fedele: la
+    /// tela misura `100vw`, `position: fixed` e le query sulla sua finestra,
+    /// esattamente come le misurerà l'app.
+    #[must_use]
+    pub fn tela(id: &str) -> Self {
+        Self::nuovo(id, false, true, true)
+    }
+
+    /// Il riquadro dell'anteprima dello Studio.
+    #[must_use]
+    pub fn anteprima(id: &str) -> Self {
+        Self::nuovo(id, true, true, true)
+    }
+
+    /// È l'anteprima.
+    #[must_use]
+    pub const fn in_anteprima(&self) -> bool {
+        self.anteprima
+    }
+
+    /// L'id sotto cui si compila, già ridotto al suo alfabeto.
+    ///
+    /// È quel che la finestra deve scrivere in `data-skin` perché i selettori
+    /// la trovino. Di solito è l'id del documento; nello Studio è quello della
+    /// **bozza** — la cartella da cui vengono le risorse — che resta indietro
+    /// rispetto al documento finché una rinomina non la raggiunge, e la tela e
+    /// la prova sull'app devono seguire la cartella, non il testo.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn radice(&self) -> String {
+        if self.anteprima {
+            format!(".anteprima[data-skin='{}']", self.id)
+        } else {
+            format!(":root[data-skin='{}']", self.id)
+        }
+    }
+
+    fn tema(&self, scheme: Scheme) -> String {
+        format!("{}[data-theme='{}']", self.radice(), scheme.as_str())
+    }
+
+    fn telefono(&self) -> String {
+        format!("{}[data-mobile]", self.radice())
+    }
+
+    /// La radice sotto cui la preferenza di Aether ferma il movimento.
+    fn radice_ferma_utente(&self) -> String {
+        if self.anteprima {
+            format!(":root[data-motion-utente='ridotto'] {}", self.radice())
+        } else {
+            format!(
+                ":root[data-skin='{}'][data-motion-utente='ridotto']",
+                self.id
+            )
+        }
+    }
+
+    /// La radice sotto cui l'intensità della skin ferma il movimento.
+    fn radice_ferma_intensita(&self) -> String {
+        format!("{}[data-motion='none']", self.radice())
+    }
+
+    fn suffisso(&self) -> &'static str {
+        if self.anteprima { "-anteprima" } else { "" }
+    }
+
+    fn keyframes(&self, nome: &str) -> String {
+        format!(
+            "skin-{}-anim-{}{}",
+            self.id,
+            nel_suo_alfabeto(nome, TRATTINO),
+            self.suffisso()
+        )
+    }
+
+    fn keyframes_rotta(&self, verso: &str) -> String {
+        format!("skin-{}-{verso}{}", self.id, self.suffisso())
+    }
+
+    /// Il nome di famiglia di un carattere del pacchetto.
+    ///
+    /// Le famiglie sono globali come i `@keyframes`: senza un nome proprio,
+    /// una skin che chiama «Fraunces» il suo carattere e una che chiama così un
+    /// altro si prenderebbero a vicenda il file.
+    ///
+    /// La riduzione è quella della validazione
+    /// ([`crate::document::famiglia_ridotta`]), che rifiuta due famiglie che
+    /// finirebbero sotto lo stesso nome.
+    fn famiglia(&self, nome: &str) -> String {
+        let piccolo = crate::document::famiglia_ridotta(nome);
+        format!("skin-{}{}-{piccolo}", self.id, self.suffisso())
+    }
+
+    /// L'indirizzo di una voce del pacchetto.
+    ///
+    /// Nella finestra serve la skin installata; nell'anteprima — e nella prova
+    /// sull'app — la bozza, che è dove lo Studio mette le voci nuove prima che
+    /// la skin si installi.
+    fn url_risorsa(&self, nome: &str) -> String {
+        // Il nome di una voce sta fra virgolette dentro `url("…")`: una
+        // virgoletta o una barra inversa lo chiuderebbero, una barra lo
+        // manderebbe in un'altra cartella. L'alfabeto del pacchetto non ha
+        // nessuno dei tre.
+        let nome = nel_suo_alfabeto(nome, &['-', '_', '.']);
+        if self.bozza {
+            format!("{ORIGINE_RISORSE}/bozza/{}/{nome}", self.id)
+        } else {
+            format!("{ORIGINE_RISORSE}/{}/{nome}", self.id)
+        }
+    }
+
+    /// Il selettore di uno stato.
+    ///
+    /// Nell'anteprima ogni stato si può anche **forzare**: la tela scrive
+    /// `data-forza="hover"` sulla parte scelta, e lo stato si vede senza
+    /// portarci sopra il puntatore — che è l'unico modo di guardare com'è una
+    /// superficie premuta mentre la si modifica.
+    fn stato(&self, stato: PartState, fuoco: Fuoco) -> String {
+        let nativo = stato.selector(fuoco);
+        if self.forza {
+            format!("{nativo}, [data-forza~='{}']", stato.as_str())
+        } else {
+            nativo.to_owned()
+        }
     }
 }
 
@@ -116,13 +363,9 @@ fn blocco(selector: &str, dichiarazioni: &[Dichiarazione]) -> String {
 
 /// I due nomi con cui la copertina arriva nel foglio.
 ///
-/// Nel vecchio albero questa scelta era un'espressione ternaria con i due rami
-/// identici — `source === 'albumArt.vibrant' ? '--accent' : '--accent'` — che è
-/// il modo in cui si scrive «qui andrà una distinzione» e poi non ci si torna.
-/// Il `match` la rende una decisione dichiarata: oggi il runtime estrae **una**
-/// tinta dalla copertina e la scrive in `--accent`, quindi tutte e quattro le
-/// sorgenti puntano lì. Il giorno in cui ne estrarrà quattro, questo è l'unico
-/// punto da cambiare, e il compilatore non lascia dimenticarne una.
+/// Oggi il runtime estrae **una** tinta dalla copertina e la scrive in
+/// `--accent`, quindi tutte e quattro le sorgenti puntano lì. Il `match` rende
+/// la cosa una decisione dichiarata invece di un ramo ripetuto.
 const fn nomi_della_copertina(source: DynamicSource) -> (&'static str, &'static str) {
     match source {
         DynamicSource::Vibrant
@@ -135,22 +378,18 @@ const fn nomi_della_copertina(source: DynamicSource) -> (&'static str, &'static 
 fn risolvi_colore(value: &ColorValue) -> String {
     match *value {
         ColorValue::Literal(colore) => format_color(colore),
-        // Il nome della variabile viene dal registro, non dal documento: è la
-        // ragione per cui un riferimento non può diventare un canale di
-        // iniezione.
+        // Il nome della variabile viene dal registro, non dal documento.
         ColorValue::Token(def) => format!("var({})", def.css),
-        ColorValue::Palette { ref name, alpha } => match alpha {
-            None => format!("var({PREFISSO_TAVOLOZZA}{name})"),
-            // Con un'opacità serve la tripla: `rgb(var(--x) / a)` funziona solo
-            // se `--x` è una tripla di canali. Il compilatore emette entrambe le
-            // forme per ogni colore della tavolozza proprio perché questo caso è
-            // frequente — è come `cyberpunk` costruisce le varianti soft e glow
-            // del suo teal.
-            Some(a) => format!(
-                "rgb(var({PREFISSO_TAVOLOZZA}{name}-rgb) / {})",
-                crate::values::number(a, 3)
-            ),
-        },
+        ColorValue::Palette { ref name, alpha } => {
+            let name = nel_suo_alfabeto(name, TRATTINO);
+            match alpha {
+                None => format!("var({PREFISSO_TAVOLOZZA}{name})"),
+                Some(a) => format!(
+                    "rgb(var({PREFISSO_TAVOLOZZA}{name}-rgb) / {})",
+                    crate::values::number(a, 3)
+                ),
+            }
+        }
         ColorValue::Source { source, alpha } => {
             let (pieno, tripla) = nomi_della_copertina(source);
             match alpha {
@@ -169,13 +408,10 @@ const fn colore_letterale(value: &ColorValue) -> Option<Rgba> {
 }
 
 /// La tavolozza locale, con la tripla di ogni colore.
-///
-/// Entrambe le forme, sempre. Nel vecchio albero erano due dichiarazioni scritte
-/// a mano per ogni colore locale — `--cyber-teal` e `--cyber-teal-rgb` — con la
-/// stessa possibilità di divergere che avevano `--accent` e `--accent-rgb`.
 fn compila_tavolozza(palette: &[(String, Rgba)]) -> Vec<Dichiarazione> {
     let mut dichiarazioni = Vec::with_capacity(palette.len() * 2);
     for (nome, colore) in palette {
+        let nome = nel_suo_alfabeto(nome, TRATTINO);
         dichiarazioni.push(dichiara(
             format!("{PREFISSO_TAVOLOZZA}{nome}"),
             format_color(*colore),
@@ -210,6 +446,13 @@ fn risolvi_ombra(value: &ShadowValue) -> String {
     pezzi.join(", ")
 }
 
+fn risolvi_ombra_parte(ombra: &Ombra) -> String {
+    match ombra {
+        Ombra::Valore(valore) => risolvi_ombra(valore),
+        Ombra::Token(def) => format!("var({})", def.css),
+    }
+}
+
 // ── Gli effetti ─────────────────────────────────────────────────────────────
 
 fn fermate(stops: &[crate::effects::Stop]) -> String {
@@ -232,7 +475,7 @@ fn posizione(at: Option<(Length, Length)>) -> String {
 
 /// Un effetto, come valore CSS. `target()` dice in quale proprietà va.
 #[must_use]
-pub(crate) fn compile_effect(effect: &Effect) -> String {
+fn compile_effect(effect: &Effect, ambito: &Ambito) -> String {
     match *effect {
         Effect::Solid { ref color } => risolvi_colore(color),
 
@@ -246,12 +489,9 @@ pub(crate) fn compile_effect(effect: &Effect) -> String {
             size,
             ref stops,
         } => {
-            let misura = size.map(format_length).unwrap_or_default();
-            let misura = if misura.is_empty() {
-                String::new()
-            } else {
-                format!(" {misura}")
-            };
+            let misura = size
+                .map(|s| format!(" {}", format_length(s)))
+                .unwrap_or_default();
             format!(
                 "radial-gradient({}{misura}{}, {})",
                 shape.as_str(),
@@ -277,9 +517,6 @@ pub(crate) fn compile_effect(effect: &Effect) -> String {
             cell_y,
             thickness,
         } => {
-            // Le due righe che nel vecchio albero erano copiate a mano, col
-            // passo ripetuto — ed è nella copia che la variante chiara di
-            // cyberpunk scrive `36px 36px` dove le altre scrivono `100% 36px`.
             let colore = risolvi_colore(color);
             let spessore = format_length(thickness.unwrap_or(Length::px(1.0)));
             format!(
@@ -343,9 +580,6 @@ pub(crate) fn compile_effect(effect: &Effect) -> String {
         ),
 
         Effect::Chamfer { size, ref corners } => {
-            // Il poligono che nel vecchio albero erano due token da tenere
-            // coerenti a mano: la misura in `--cyber-cut`, la forma in
-            // `--cyber-chamfer`.
             use crate::effects::Corner;
             let misura = format_length(size);
             let taglia = |angolo: Corner| corners.contains(&angolo);
@@ -393,12 +627,110 @@ pub(crate) fn compile_effect(effect: &Effect) -> String {
                 num(percentuale)
             ),
         },
+
+        Effect::Image {
+            ref src,
+            size,
+            repeat,
+            position,
+        } => {
+            let misura = match size {
+                ImageSize::Cover => "cover".to_owned(),
+                ImageSize::Contain => "contain".to_owned(),
+                ImageSize::Auto => "auto".to_owned(),
+                ImageSize::Misura(lunghezza) => format_length(lunghezza),
+            };
+            let dove = position.map_or_else(
+                || "center".to_owned(),
+                |(x, y)| format!("{} {}", format_length(x), format_length(y)),
+            );
+            format!(
+                "url(\"{}\") {dove} / {misura} {}",
+                ambito.url_risorsa(src),
+                if repeat { "repeat" } else { "no-repeat" }
+            )
+        }
     }
+}
+
+/// Il suffisso dice in quale proprietà va usato un motivo.
+const fn suffisso_motivo(target: EffectTarget) -> &'static str {
+    match target {
+        EffectTarget::Background => "",
+        EffectTarget::ClipPath => "-clip",
+        EffectTarget::Filter => "-filter",
+    }
+}
+
+/// Uno strato di pittura, per esteso o come riferimento a un motivo.
+///
+/// Il nome del motivo finisce nel nome di una variabile: ci arriva già passato
+/// da `is_local_name`, e ripassa comunque da [`nel_suo_alfabeto`].
+fn compila_pittura(paint: &Paint, ambito: &Ambito) -> String {
+    match paint {
+        Paint::Inline(effect) => compile_effect(effect, ambito),
+        Paint::Pattern { name, def } => {
+            format!(
+                "var({PREFISSO_MOTIVO}{}{})",
+                nel_suo_alfabeto(name, TRATTINO),
+                suffisso_motivo(def.target())
+            )
+        }
+    }
+}
+
+/// Una pila di strati per `background`, il primo sopra gli altri come in CSS.
+///
+/// Un colore pieno è ammesso da CSS **solo** nell'ultimo strato: `rgb(…),
+/// linear-gradient(…)` è una dichiarazione non valida, e il browser la butta
+/// intera — con `var()` di mezzo senza nemmeno dirlo, perché l'errore arriva
+/// al valore calcolato. Una tinta che non sta in fondo si scrive allora come un
+/// gradiente di un colore solo, che si dipinge uguale e sta dove vuole.
+fn compila_sfondo(strati: &[Paint], ambito: &Ambito) -> String {
+    let ultimo = strati.len().saturating_sub(1);
+    strati
+        .iter()
+        .enumerate()
+        .map(|(posto, strato)| {
+            let scritto = compila_pittura(strato, ambito);
+            let tinta = matches!(strato.effect(), Effect::Solid { .. });
+            if tinta && posto < ultimo {
+                format!("linear-gradient({scritto}, {scritto})")
+            } else {
+                scritto
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn compila_motivi(patterns: &[(String, Effect)], ambito: &Ambito) -> Vec<Dichiarazione> {
+    patterns
+        .iter()
+        .map(|(nome, effetto)| {
+            dichiara(
+                format!(
+                    "{PREFISSO_MOTIVO}{}{}",
+                    nel_suo_alfabeto(nome, TRATTINO),
+                    suffisso_motivo(effetto.target())
+                ),
+                compile_effect(effetto, ambito),
+            )
+        })
+        .collect()
 }
 
 // ── I token ─────────────────────────────────────────────────────────────────
 
-fn compila_token(tokens: &TokenSet) -> (Vec<Dichiarazione>, Vec<&'static str>) {
+/// I token di un insieme, più quelli che seguono la copertina.
+///
+/// `famiglia` traduce il nome di un carattere del pacchetto nel nome proprio
+/// della skin: nei token si scrive «Fraunces», nel foglio va il nome che il
+/// `@font-face` ha dichiarato.
+fn compila_token(
+    tokens: &TokenSet,
+    famiglia: &dyn Fn(&str) -> Option<String>,
+) -> (Vec<Dichiarazione>, Vec<&'static str>) {
     let mut dichiarazioni = Vec::with_capacity(tokens.len() * 2);
     let mut dinamici = Vec::new();
 
@@ -428,7 +760,11 @@ fn compila_token(tokens: &TokenSet) -> (Vec<Dichiarazione>, Vec<&'static str>) {
                     "font.display" => FontKind::Display,
                     _ => FontKind::Sans,
                 };
-                dichiarazioni.push(dichiara(def.css, format_font_stack(families, genere)));
+                let nomi: Vec<String> = families
+                    .iter()
+                    .map(|f| famiglia(f).unwrap_or_else(|| f.clone()))
+                    .collect();
+                dichiarazioni.push(dichiara(def.css, format_font_stack(&nomi, genere)));
             }
             TokenValue::Shadow(ref shadow) => {
                 dichiarazioni.push(dichiara(def.css, risolvi_ombra(shadow)));
@@ -447,8 +783,7 @@ fn compila_colore(def: &TokenDef, color: &ColorValue, dichiarazioni: &mut Vec<Di
         colore_letterale(color).map_or_else(|| "var(--accent-rgb)".to_owned(), format_rgb_triple)
     };
 
-    // `color.hero` esiste **solo** come tripla: emettere `--hero-rgb: rgb(…)`
-    // romperebbe tutte le `rgba()` che la usano.
+    // `color.hero` esiste **solo** come tripla.
     if def.rgb_triple == Some(def.css) {
         dichiarazioni.push(dichiara(def.css, tripla(color)));
         return;
@@ -456,63 +791,38 @@ fn compila_colore(def: &TokenDef, color: &ColorValue, dichiarazioni: &mut Vec<Di
 
     dichiarazioni.push(dichiara(def.css, risolvi_colore(color)));
     if let Some(nome) = def.rgb_triple {
-        // Non può divergere dal colore, perché è lo stesso dato. È la correzione
-        // del commento «DEVE combaciare con surface-0».
         dichiarazioni.push(dichiara(nome, tripla(color)));
     }
 }
 
-/// I token **calcolati**.
+/// I token **calcolati**: conseguenze, non scelte.
 ///
-/// Non sono scelte di stile, sono conseguenze, e una skin non deve poterle
-/// contraddire: `--shell-left` è la larghezza del rail, `--player-clearance`
-/// l'altezza del player più due volte il suo margine, le due `--transition-*`
-/// una durata più una curva. Nel vecchio albero stavano in `:root` insieme a
-/// tutto il resto, quindi una skin poteva sovrascriverle con valori incoerenti
-/// e la shell si sfasava.
-fn calcolati(tokens: &TokenSet) -> Vec<Dichiarazione> {
+/// `tutti` li emette anche quando i token da cui derivano non sono nell'insieme:
+/// serve al blocco di serie dell'anteprima, che deve reggere da solo.
+fn calcolati(tokens: &TokenSet, tutti: bool) -> Vec<Dichiarazione> {
     let mut dichiarazioni = Vec::new();
 
-    if tokens.contains("layout.rail") {
+    if tutti || tokens.contains("layout.rail") {
         dichiarazioni.push(dichiara("--shell-left", "var(--rail-w)"));
     }
-    if tokens.contains("layout.playerHeight") || tokens.contains("layout.playerGap") {
+    if tutti || tokens.contains("layout.playerHeight") || tokens.contains("layout.playerGap") {
         dichiarazioni.push(dichiara(
             "--player-clearance",
             "calc(var(--player-h) + var(--player-gap) * 2)",
         ));
     }
-
-    // La tripla di surface-0. Nel vecchio albero `cyberpunk` dichiarava
-    // `--cyber-fog-rgb: 6 6 8` con accanto un commento in maiuscolo: «DEVE
-    // combaciare con surface-0». Un'invariante affidata a un commento è
-    // un'invariante che prima o poi si rompe — basta ritoccare la superficie e
-    // dimenticare la nebbia, e il pavimento prospettico sfuma verso un colore
-    // che non è il fondo.
     if let Some(TokenValue::Color(color)) = tokens.get("color.surface.0")
         && let Some(colore) = colore_letterale(color)
     {
         dichiarazioni.push(dichiara("--surface-0-rgb", format_rgb_triple(colore)));
     }
-
-    // Il `calc()` è il lettore che a `--motion-scale` mancava. Il compilatore lo
-    // scriveva da sempre (`compila_movimento`) e nessuna regola lo interrogava,
-    // quindi l'intensità del movimento era una manopola scollegata. Passando di
-    // qui invece che da ogni singola transizione si raggiunge tutto in due
-    // righe: `--transition-fast` e `--transition-med` *sono* le due variabili
-    // che ogni transizione del foglio usa.
-    //
-    // Il fallback `, 1` non è difensivo per abitudine: `--motion-scale` esiste
-    // solo se la skin dichiara `motion.intensity`, e senza fallback una skin che
-    // dichiara le durate ma non l'intensità otterrebbe un `calc()` invalido —
-    // cioè nessuna transizione affatto.
-    if tokens.contains("motion.dur.1") {
+    if tutti || tokens.contains("motion.dur.1") {
         dichiarazioni.push(dichiara(
             "--transition-fast",
             "calc(var(--dur-1) * var(--motion-scale, 1)) var(--ease-out-expo)",
         ));
     }
-    if tokens.contains("motion.dur.2") {
+    if tutti || tokens.contains("motion.dur.2") {
         dichiarazioni.push(dichiara(
             "--transition-med",
             "calc(var(--dur-2) * var(--motion-scale, 1)) var(--ease-out-expo)",
@@ -522,98 +832,183 @@ fn calcolati(tokens: &TokenSet) -> Vec<Dichiarazione> {
     dichiarazioni
 }
 
-// ── I motivi ────────────────────────────────────────────────────────────────
-
-fn compila_motivi(patterns: &[(String, Effect)]) -> (Vec<Dichiarazione>, u32) {
-    let mut dichiarazioni = Vec::with_capacity(patterns.len());
-    let mut effetti = Vec::with_capacity(patterns.len());
-
-    for (nome, effetto) in patterns {
-        effetti.push(effetto.clone());
-        dichiarazioni.push(dichiara(
-            format!(
-                "{PREFISSO_MOTIVO}{nome}{}",
-                suffisso_motivo(effetto.target())
-            ),
-            compile_effect(effetto),
-        ));
-    }
-
-    (dichiarazioni, stack_cost(&effetti))
+/// La skin di riferimento, letta una volta sola.
+///
+/// Il compilatore non fallisce, e la skin di riferimento è compilata dentro il
+/// binario e provata dai test: se non si leggesse, l'anteprima semplicemente
+/// non avrebbe il blocco di serie — che è il comportamento di prima.
+fn di_serie() -> Option<&'static SkinDocument> {
+    static PLAIN: OnceLock<Option<SkinDocument>> = OnceLock::new();
+    PLAIN.get_or_init(|| crate::plain().ok()).as_ref()
 }
 
-/// Il suffisso dice in quale proprietà va usato un motivo: un clip-path e uno
-/// sfondo non si scambiano, e il nome lo rende evidente a chi scrive le parti.
+/// Il blocco di serie dell'anteprima: tutti i token, come li avrebbe la
+/// finestra se la bozza non ne dichiarasse nessuno.
 ///
-/// È anche ciò che rende controllabile un `$pattern` messo nel posto sbagliato:
-/// `pittura()` in `document.rs` rifiuta prima che il nome sbagliato arrivi qui.
-const fn suffisso_motivo(target: EffectTarget) -> &'static str {
-    match target {
-        EffectTarget::Background => "",
-        EffectTarget::ClipPath => "-clip",
-        EffectTarget::Filter => "-filter",
-    }
-}
-
-/// Uno strato di pittura, per esteso o come riferimento a un motivo.
-///
-/// Il nome del motivo è l'unico pezzo di documento che finisce nel testo del
-/// foglio, e ci arriva già passato da `is_local_name` — minuscole, cifre e
-/// trattini — cioè da un alfabeto che non contiene né parentesi né due punti né
-/// il carattere che chiude una dichiarazione. L'invariante che il test di
-/// iniezione difende regge quindi per costruzione, non per controllo a valle.
-fn compila_pittura(paint: &Paint) -> String {
-    match paint {
-        Paint::Inline(effect) => compile_effect(effect),
-        Paint::Pattern { name, def } => {
-            format!(
-                "var({PREFISSO_MOTIVO}{name}{})",
-                suffisso_motivo(def.target())
-            )
+/// Sta sotto un `:where()`, cioè a specificità zero: qualunque cosa la bozza
+/// dichiari lo batte, e quel che non dichiara lo trova qui invece di
+/// ereditarlo dalla skin che la finestra indossa.
+fn blocchi_di_serie(ambito: &Ambito) -> String {
+    let Some(plain) = di_serie() else {
+        return String::new();
+    };
+    let nessuna = |_: &str| -> Option<String> { None };
+    let (mut base, _) = compila_token(&plain.tokens, &nessuna);
+    for (id, valore) in DIFETTI_DEL_MOTORE {
+        if let Some(def) = crate::tokens::token(id)
+            && !plain.tokens.contains(id)
+        {
+            base.push(dichiara(def.css, *valore));
         }
     }
+    base.extend(calcolati(&plain.tokens, true));
+    base.push(dichiara("--motion-intensity", "full"));
+    base.push(dichiara("--motion-scale", "1"));
+    base.push(dichiara("color-scheme", "dark"));
+    let mut css = blocco(&format!(":where({})", ambito.radice()), &base);
+
+    if let Some(chiari) = plain.variante_tokens() {
+        let (mut luce, _) = compila_token(chiari, &nessuna);
+        luce.extend(calcolati(chiari, false));
+        luce.push(dichiara("color-scheme", "light"));
+        css.push_str(&blocco(
+            &format!(":where({})", ambito.tema(Scheme::Light)),
+            &luce,
+        ));
+    }
+    css
 }
 
 // ── Le parti ────────────────────────────────────────────────────────────────
 
-fn compila_aspetto(source: &PartAppearance) -> Vec<Dichiarazione> {
+fn compila_raggio(raggio: Raggio, dichiarazioni: &mut Vec<Dichiarazione>) {
+    match raggio {
+        Raggio::Uguale(lunghezza) => {
+            dichiarazioni.push(dichiara("border-radius", format_length(lunghezza)));
+        }
+        Raggio::Angoli {
+            top_left,
+            top_right,
+            bottom_right,
+            bottom_left,
+        } => {
+            for (proprieta, valore) in [
+                ("border-top-left-radius", top_left),
+                ("border-top-right-radius", top_right),
+                ("border-bottom-right-radius", bottom_right),
+                ("border-bottom-left-radius", bottom_left),
+            ] {
+                if let Some(lunghezza) = valore {
+                    dichiarazioni.push(dichiara(proprieta, format_length(lunghezza)));
+                }
+            }
+        }
+    }
+}
+
+fn compila_filtri(filtri: &[FiltroElemento]) -> String {
+    filtri
+        .iter()
+        .map(|filtro| match *filtro {
+            FiltroElemento::Blur(l) => format!("blur({})", format_length(l)),
+            FiltroElemento::Brightness(n) => format!("brightness({})", num(n)),
+            FiltroElemento::Contrast(n) => format!("contrast({})", num(n)),
+            FiltroElemento::Saturate(n) => format!("saturate({})", num(n)),
+            FiltroElemento::Grayscale(n) => format!("grayscale({})", num(n)),
+            FiltroElemento::HueRotate(n) => format!("hue-rotate({}deg)", num(n)),
+            FiltroElemento::DropShadow {
+                x,
+                y,
+                blur,
+                ref color,
+            } => format!(
+                "drop-shadow({} {} {} {})",
+                format_length(x),
+                format_length(y),
+                format_length(blur),
+                risolvi_colore(color)
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn compila_anello(anello: &AnelloFuoco) -> Vec<Dichiarazione> {
+    let mut dichiarazioni = vec![dichiara(
+        "outline",
+        format!(
+            "{} solid {}",
+            format_length(anello.width),
+            risolvi_colore(&anello.color)
+        ),
+    )];
+    if let Some(distanza) = anello.offset {
+        dichiarazioni.push(dichiara("outline-offset", format_length(distanza)));
+    }
+    dichiarazioni
+}
+
+const fn variabile_carattere(genere: FontKind) -> &'static str {
+    match genere {
+        FontKind::Sans => "var(--font-sans)",
+        FontKind::Mono => "var(--font-mono)",
+        FontKind::Display => "var(--font-dot)",
+    }
+}
+
+/// L'aspetto, senza l'anello del fuoco: quello va nella regola del fuoco.
+fn compila_aspetto(source: &PartAppearance, ambito: &Ambito) -> Vec<Dichiarazione> {
     let mut dichiarazioni = Vec::new();
 
     if !source.background.is_empty() {
         dichiarazioni.push(dichiara(
             "background",
-            source
-                .background
-                .iter()
-                .map(compila_pittura)
-                .collect::<Vec<_>>()
-                .join(", "),
+            compila_sfondo(&source.background, ambito),
         ));
     }
     if let Some(color) = source.text_color.as_ref() {
         dichiarazioni.push(dichiara("color", risolvi_colore(color)));
     }
-    if source.border_color.is_some() || source.border_width.is_some() {
+    if source.border_color.is_some()
+        || source.border_width.is_some()
+        || source.border_style.is_some()
+    {
         let spessore = source
             .border_width
             .map_or_else(|| "1px".to_owned(), format_length);
+        let stile = source.border_style.map_or("solid", |s| s.as_str());
         let colore = source
             .border_color
             .as_ref()
             .map_or_else(|| "var(--hairline)".to_owned(), risolvi_colore);
-        dichiarazioni.push(dichiara("border", format!("{spessore} solid {colore}")));
+        dichiarazioni.push(dichiara("border", format!("{spessore} {stile} {colore}")));
     }
-    if let Some(radius) = source.radius {
-        dichiarazioni.push(dichiara("border-radius", format_length(radius)));
+    if let Some(raggio) = source.radius {
+        compila_raggio(raggio, &mut dichiarazioni);
+    }
+    if let Some(ombra) = source.shadow.as_ref() {
+        dichiarazioni.push(dichiara("box-shadow", risolvi_ombra_parte(ombra)));
     }
     if let Some(clip) = source.clip.as_ref() {
-        dichiarazioni.push(dichiara("clip-path", compila_pittura(clip)));
+        dichiarazioni.push(dichiara("clip-path", compila_pittura(clip, ambito)));
     }
-    if let Some(filter) = source.filter.as_ref() {
-        dichiarazioni.push(dichiara("backdrop-filter", compila_pittura(filter)));
+    if !source.filter.is_empty() {
+        dichiarazioni.push(dichiara("filter", compila_filtri(&source.filter)));
+    }
+    if let Some(dietro) = source.backdrop.as_ref() {
+        dichiarazioni.push(dichiara("backdrop-filter", compila_pittura(dietro, ambito)));
     }
     if let Some(opacity) = source.opacity {
         dichiarazioni.push(dichiara("opacity", num(opacity)));
+    }
+    if let Some(genere) = source.font {
+        dichiarazioni.push(dichiara("font-family", variabile_carattere(genere)));
+    }
+    if let Some(misura) = source.font_size {
+        dichiarazioni.push(dichiara("font-size", format_length(misura)));
+    }
+    if let Some(interlinea) = source.line_height {
+        dichiarazioni.push(dichiara("line-height", num(interlinea)));
     }
     if let Some(spacing) = source.letter_spacing {
         dichiarazioni.push(dichiara("letter-spacing", format_length(spacing)));
@@ -628,177 +1023,306 @@ fn compila_aspetto(source: &PartAppearance) -> Vec<Dichiarazione> {
     dichiarazioni
 }
 
-/// Le regole CSS di una parte.
+/// Un livello su `::before` o `::after`.
 ///
-/// Il selettore include sempre `[data-skin='<id>']`, quindi una parte
-/// ridisegnata da una skin non può influenzare un'altra skin: è la stessa
-/// proprietà che il compilatore dei token garantisce, estesa alle parti.
-fn compila_parte(id: &str, stile: &PartStyle) -> String {
-    let base = format!(":root[data-skin='{id}'] .{}", stile.def.name);
-    // L'animazione dell'ingresso sta nella **stessa** regola dell'aspetto di
-    // base, e non in una sua: il trigger `enter` non è un gancio nuovo, è la
-    // regola base della parte. Una seconda regola con lo stesso selettore
-    // direbbe la stessa cosa in due posti, e a parità di specificità sarebbe
-    // anche una fonte di sorprese sull'ordine.
-    let mut dichiarazioni = compila_aspetto(&stile.appearance);
-    if let Some(riferimento) = stile.animations.get(AnimTrigger::Enter) {
-        dichiarazioni.push(dichiara("animation", scorciatoia(id, riferimento)));
+/// Posizione, riempimento e inerzia al puntatore li mette il compilatore,
+/// sempre uguali: una skin non può spostare un livello, né fargli prendere i
+/// clic della superficie sotto. Il raggio lo eredita dall'ospite, così un
+/// livello non esce dagli angoli tondi della superficie che veste.
+fn compila_livello(livello: &PartLayer, prima: bool, ambito: &Ambito) -> Vec<Dichiarazione> {
+    let mut dichiarazioni = vec![
+        dichiara("content", "\"\""),
+        dichiara("position", "absolute"),
+        dichiara("inset", "0"),
+        dichiara("pointer-events", "none"),
+        dichiara("border-radius", "inherit"),
+    ];
+    if prima {
+        // Dietro al contenuto dell'ospite e davanti al suo fondo: l'ospite
+        // isola il contesto, e il livello non può scivolare sotto la pagina.
+        dichiarazioni.push(dichiara("z-index", "-1"));
     }
-    let mut css = blocco(&base, &dichiarazioni);
-
-    if let Some(layer) = stile.layer.as_ref() {
-        // Lo pseudo-elemento ha bisogno di `content` e di essere posizionato, ma
-        // **non** di poter essere spostato dalla skin: quelle proprietà le mette
-        // il compilatore, sempre uguali.
-        let mut dichiarazioni = vec![
-            dichiara("content", "\"\""),
-            dichiara("position", "absolute"),
-            dichiara("inset", "0"),
-            dichiara("pointer-events", "none"),
-            dichiara(
-                "background",
-                layer
-                    .background
-                    .iter()
-                    .map(compila_pittura)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ),
-        ];
-        if let Some(opacity) = layer.opacity {
-            dichiarazioni.push(dichiara("opacity", num(opacity)));
-        }
-        css.push_str(&blocco(&format!("{base}::after"), &dichiarazioni));
+    dichiarazioni.push(dichiara(
+        "background",
+        compila_sfondo(&livello.background, ambito),
+    ));
+    if let Some(opacity) = livello.opacity {
+        dichiarazioni.push(dichiara("opacity", num(opacity)));
     }
-
-    for stato in PartState::ALL {
-        let aspetto = stile.states.get(*stato);
-        let animazione = stile.animations.get(AnimTrigger::State(*stato));
-        if aspetto.is_none() && animazione.is_none() {
-            continue;
-        }
-        let mut dichiarazioni = aspetto.map(compila_aspetto).unwrap_or_default();
-        if let Some(riferimento) = animazione {
-            dichiarazioni.push(dichiara("animation", scorciatoia(id, riferimento)));
-        }
-        // `:where()` mantiene la specificità del selettore di stato uguale a
-        // quella della parte: senza, uno stato dichiarato da una skin
-        // vincerebbe su una regola che il componente considera più importante.
-        css.push_str(&blocco(
-            &format!("{base}:where({})", stato.selector()),
-            &dichiarazioni,
-        ));
-    }
-
-    css
+    dichiarazioni
 }
 
 // ── Il movimento ────────────────────────────────────────────────────────────
 
 /// Una durata come esce di qui, e come esce **sempre**.
 ///
-/// Questa funzione è la regola scritta una volta sola: nessun ramo del
-/// compilatore emette una durata nuda dentro un `animation:` o un
-/// `transition:`. `prefers-reduced-motion` nell'app non spegne le animazioni a
-/// una a una — azzera `--motion-scale` su `:root` e su `[data-motion]`, e ogni
-/// durata del foglio passa da lì. Una durata letterale **aggira** quella
-/// preferenza, e una skin non può scrivere la media query che la rimedierebbe:
-/// il suo foglio arriva dopo, e non ha nessuna regola con cui spegnersi.
-///
-/// Il fallback `, 1` non è difensivo per abitudine: `--motion-scale` esiste
-/// solo se la skin dichiara `motion.intensity`, e senza fallback una skin che
-/// dichiara un'animazione ma non l'intensità otterrebbe un `calc()` invalido —
-/// cioè, ironicamente, nessuna animazione affatto.
+/// Nessun ramo del compilatore emette una durata nuda dentro un `animation:` o
+/// un `transition:`. Il fallback `, 1` serve a una skin che dichiara
+/// un'animazione e non l'intensità.
 fn durata_scalata(tempo: &str) -> String {
     format!("calc({tempo} * var(--motion-scale, 1))")
 }
 
-/// Il nome dei `@keyframes` di un'animazione nominata.
-///
-/// Il segmento `-anim-` non è decorazione: le transizioni di rotta si chiamano
-/// già `skin-<id>-out` e `skin-<id>-in`, e senza quel segmento un'animazione
-/// battezzata `out` produrrebbe **gli stessi** `@keyframes` — cioè, siccome i
-/// `@keyframes` sono globali e l'ultimo vince, farebbe sparire in silenzio la
-/// transizione di rotta della sua stessa skin. Il rimedio alternativo sarebbe
-/// vietare due nomi, cioè una lista da tenere allineata a mano con le due
-/// `write!` qui sotto; questo invece regge per costruzione, ed è la stessa
-/// preferenza che il compilatore applica dappertutto.
-fn nome_keyframes(id: &str, nome: &str) -> String {
-    format!("skin-{id}-anim-{nome}")
+fn curva(curva: &Curva) -> String {
+    match curva {
+        Curva::Valore(easing) => format_easing(*easing),
+        Curva::Nome(nome) => format!(
+            "var({PREFISSO_MOTIVO}ease-{})",
+            nel_suo_alfabeto(nome, TRATTINO)
+        ),
+    }
 }
 
-/// La scorciatoia `animation:` di un trigger.
+/// Il ritardo di un'animazione, con la cascata se c'è.
 ///
-/// `fill-mode` è sempre `both`, e non è dichiarabile: un'animazione che non
-/// tiene lo stato finale fa **saltare** la parte al valore di partenza
-/// nell'istante in cui finisce. Il verso e le iterazioni si scrivono sempre,
-/// anche quando sono quelli di serie, perché un output deterministico è più
-/// facile da leggere in un diff di uno che omette i valori di serie.
-fn scorciatoia(id: &str, riferimento: &AnimationRef) -> String {
-    let def = &riferimento.def;
-    let mut pezzi = vec![
-        nome_keyframes(id, &riferimento.name),
-        durata_scalata(&format_duration(def.duration)),
-        format_easing(def.easing),
-    ];
-    // Il ritardo esce solo se dichiarato: nella scorciatoia il **secondo**
-    // tempo è il ritardo, quindi scrivere `calc(0ms * …)` non aggiungerebbe
-    // niente se non una riga più lunga da leggere.
-    if let Some(ritardo) = def.delay {
-        pezzi.push(durata_scalata(&format_duration(ritardo)));
+/// La cascata legge `--indice`, che il componente scrive sulla voce: la
+/// posizione dentro la pagina o la finestra visibile, mai quella assoluta —
+/// la duecentesima scheda di una pagina non aspetta duecento passi. E anche
+/// così il passo si ferma a [`CASCATA_VOCI`].
+fn ritardo(def: &Animation, cascata: Option<Duration>) -> Option<String> {
+    match (def.delay, cascata) {
+        (None, None) => None,
+        (Some(tempo), None) => Some(durata_scalata(&format_duration(tempo))),
+        (fisso, Some(passo)) => {
+            let base = fisso.map_or_else(|| "0ms".to_owned(), format_duration);
+            Some(format!(
+                "calc(({base} + min(var(--indice, 0), {CASCATA_VOCI}) * {}) * var(--motion-scale, 1))",
+                format_duration(passo)
+            ))
+        }
     }
-    pezzi.push(def.iterations.to_string());
-    pezzi.push(def.direction.as_str().to_owned());
-    pezzi.push("both".to_owned());
-    pezzi.join(" ")
 }
 
-/// Una fermata di un'animazione nominata.
-///
-/// L'ordine delle trasformazioni è fisso — traslazione, rotazione, scala — e
-/// non quello in cui i campi sono scritti nel documento: `transform` non è
-/// commutativa, e lasciare che l'ordine dipendesse dalla scrittura vorrebbe
-/// dire che due documenti equivalenti danno due animazioni diverse.
-fn fermata(frame: AnimFrame) -> Vec<String> {
-    let mut dichiarazioni: Vec<String> = Vec::new();
-    if let Some(opacity) = frame.opacity {
-        dichiarazioni.push(format!("    opacity: {};", num(opacity)));
+/// Una voce della lista `animation` di una parte.
+#[derive(Debug, Clone)]
+struct Voce<'a> {
+    keyframes: String,
+    def: &'a Animation,
+    /// È l'entrata della parte: tace dove la parte si rimonta scorrendo.
+    entrata: bool,
+    /// Gira solo finché la parte suona.
+    suona: bool,
+    /// Scorre con la vista invece che col tempo.
+    vista: bool,
+    cascata: Option<Duration>,
+}
+
+impl<'a> Voce<'a> {
+    fn di(ambito: &Ambito, riferimento: &'a AnimationRef) -> Self {
+        Self {
+            keyframes: ambito.keyframes(&riferimento.name),
+            def: &riferimento.def,
+            entrata: false,
+            suona: false,
+            vista: false,
+            cascata: None,
+        }
     }
-    let mut trasformazioni: Vec<String> = Vec::new();
-    if let Some(x) = frame.translate_x {
-        trasformazioni.push(format!("translateX({}px)", num(x)));
+}
+
+impl Voce<'_> {
+    fn scorciatoia(&self) -> String {
+        let mut pezzi = vec![self.keyframes.clone()];
+        pezzi.push(if self.vista {
+            // Una durata a tempo su una linea di vista non vuol dire niente:
+            // la misura la dà lo scorrimento. Si scrive `auto` qui, e la prova
+            // sulle durate nude la accetta perché `auto` non è un tempo.
+            "auto".to_owned()
+        } else {
+            durata_scalata(&format_duration(self.def.duration))
+        });
+        pezzi.push(curva(&self.def.easing));
+        if let Some(tempo) = ritardo(self.def, self.cascata) {
+            pezzi.push(tempo);
+        }
+        pezzi.push(self.def.iterations.css());
+        pezzi.push(self.def.direction.as_str().to_owned());
+        pezzi.push(self.def.fill.as_str().to_owned());
+        pezzi.join(" ")
     }
-    if let Some(y) = frame.translate_y {
-        trasformazioni.push(format!("translateY({}px)", num(y)));
+}
+
+/// Le dichiarazioni di una lista di animazioni.
+fn dichiara_lista(voci: &[Voce<'_>]) -> Vec<Dichiarazione> {
+    if voci.is_empty() {
+        return vec![dichiara("animation", "none")];
     }
-    if let Some(gradi) = frame.rotate {
-        trasformazioni.push(format!("rotate({}deg)", num(gradi)));
+    let mut dichiarazioni = vec![dichiara(
+        "animation",
+        voci.iter()
+            .map(Voce::scorciatoia)
+            .collect::<Vec<_>>()
+            .join(", "),
+    )];
+    if voci.iter().any(|v| v.suona) {
+        dichiarazioni.push(dichiara(
+            "animation-play-state",
+            voci.iter()
+                .map(|v| {
+                    if v.suona {
+                        "var(--skin-suona, paused)"
+                    } else {
+                        "running"
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
     }
-    if let Some(scale) = frame.scale {
-        trasformazioni.push(format!("scale({})", num(scale)));
-    }
-    if !trasformazioni.is_empty() {
-        dichiarazioni.push(format!("    transform: {};", trasformazioni.join(" ")));
+    if voci.iter().any(|v| v.vista) {
+        // Dopo lo shorthand, che rimette la linea del tempo a `auto`.
+        dichiarazioni.push(dichiara(
+            "animation-timeline",
+            voci.iter()
+                .map(|v| if v.vista { "view()" } else { "auto" })
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+        dichiarazioni.push(dichiara(
+            "animation-range",
+            voci.iter()
+                .map(|v| {
+                    if v.vista {
+                        "entry 0% cover 30%"
+                    } else {
+                        "normal"
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
     }
     dichiarazioni
 }
 
+/// Una fermata di un'animazione.
+///
+/// L'ordine delle trasformazioni è fisso — traslazione, rotazione,
+/// inclinazione, scala — e non quello in cui i campi sono scritti:
+/// `transform` non è commutativa.
+fn fermata(frame: &AnimFrame, origine: Option<(Length, Length)>) -> Vec<String> {
+    let mut righe: Vec<String> = Vec::new();
+    let mut scrivi = |proprieta: &str, valore: String| {
+        righe.push(format!("    {proprieta}: {valore};"));
+    };
+    if let Some(opacity) = frame.opacity {
+        scrivi("opacity", num(opacity));
+    }
+    let mut trasformazioni: Vec<String> = Vec::new();
+    if let Some(x) = frame.translate_x {
+        trasformazioni.push(format!("translateX({})", format_length(x)));
+    }
+    if let Some(y) = frame.translate_y {
+        trasformazioni.push(format!("translateY({})", format_length(y)));
+    }
+    if let Some(gradi) = frame.rotate {
+        trasformazioni.push(format!("rotate({}deg)", num(gradi)));
+    }
+    if let Some(gradi) = frame.skew_x {
+        trasformazioni.push(format!("skewX({}deg)", num(gradi)));
+    }
+    if let Some(gradi) = frame.skew_y {
+        trasformazioni.push(format!("skewY({}deg)", num(gradi)));
+    }
+    if let Some(scala) = frame.scale {
+        trasformazioni.push(format!("scale({})", num(scala)));
+    }
+    if let Some(scala) = frame.scale_x {
+        trasformazioni.push(format!("scaleX({})", num(scala)));
+    }
+    if let Some(scala) = frame.scale_y {
+        trasformazioni.push(format!("scaleY({})", num(scala)));
+    }
+    if !trasformazioni.is_empty() {
+        scrivi("transform", trasformazioni.join(" "));
+        if let Some((x, y)) = origine {
+            scrivi(
+                "transform-origin",
+                format!("{} {}", format_length(x), format_length(y)),
+            );
+        }
+    }
+    let mut filtri: Vec<String> = Vec::new();
+    if let Some(l) = frame.blur {
+        filtri.push(format!("blur({})", format_length(l)));
+    }
+    if let Some(n) = frame.brightness {
+        filtri.push(format!("brightness({})", num(n)));
+    }
+    if let Some(n) = frame.saturate {
+        filtri.push(format!("saturate({})", num(n)));
+    }
+    if let Some(n) = frame.hue_rotate {
+        filtri.push(format!("hue-rotate({}deg)", num(n)));
+    }
+    if !filtri.is_empty() {
+        scrivi("filter", filtri.join(" "));
+    }
+    if let Some(c) = frame.background_color.as_ref() {
+        scrivi("background-color", risolvi_colore(c));
+    }
+    if let Some(c) = frame.color.as_ref() {
+        scrivi("color", risolvi_colore(c));
+    }
+    if let Some(c) = frame.border_color.as_ref() {
+        scrivi("border-color", risolvi_colore(c));
+    }
+    if let Some(ombra) = frame.shadow.as_ref() {
+        scrivi("box-shadow", risolvi_ombra_parte(ombra));
+    }
+    if let Some(ritaglio) = frame.clip.as_ref() {
+        scrivi("clip-path", compila_ritaglio(ritaglio));
+    }
+    righe
+}
+
+fn compila_ritaglio(ritaglio: &Ritaglio) -> String {
+    match ritaglio {
+        Ritaglio::Inset {
+            top,
+            right,
+            bottom,
+            left,
+        } => format!(
+            "inset({} {} {} {})",
+            format_length(*top),
+            format_length(*right),
+            format_length(*bottom),
+            format_length(*left)
+        ),
+        Ritaglio::Circle { radius, at } => format!(
+            "circle({} at {} {})",
+            format_length(*radius),
+            format_length(at.0),
+            format_length(at.1)
+        ),
+        Ritaglio::Polygon(punti) => format!(
+            "polygon({})",
+            punti
+                .iter()
+                .map(|(x, y)| format!("{} {}", format_length(*x), format_length(*y)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 /// I `@keyframes` di un'animazione nominata.
-fn keyframes(id: &str, nome: &str, def: &Animation) -> String {
-    let mut css = format!("@keyframes {} {{\n", nome_keyframes(id, nome));
+fn keyframes(nome: &str, def: &Animation) -> String {
+    let mut css = format!("@keyframes {nome} {{\n");
     for frame in &def.frames {
         let _ = write!(
             css,
             "  {}% {{\n{}\n  }}\n",
             num(frame.at),
-            fermata(*frame).join("\n")
+            fermata(frame, def.origin).join("\n")
         );
     }
     css.push_str("}\n");
     css
 }
 
-fn fotogramma(nome: &str, quando: &str, frame: RouteFrame) -> String {
+fn fotogramma_rotta(nome: &str, quando: &str, frame: RouteFrame) -> String {
     let mut dichiarazioni: Vec<String> = Vec::new();
     if let Some(opacity) = frame.opacity {
         dichiarazioni.push(format!("    opacity: {};", num(opacity)));
@@ -822,62 +1346,480 @@ fn fotogramma(nome: &str, quando: &str, frame: RouteFrame) -> String {
     )
 }
 
-fn compila_movimento(id: &str, motion: &SkinMotion) -> String {
+/// Le variabili del movimento, le curve, i `@keyframes` di tutte le animazioni.
+///
+/// Escono tutte, anche quelle che nessuna parte richiama: un `@keyframes`
+/// inerte non costa niente, e lo Studio deve poter mostrare un'animazione
+/// appena dichiarata e non ancora assegnata.
+fn compila_movimento(ambito: &Ambito, motion: &SkinMotion) -> String {
     let mut dichiarazioni = vec![
         dichiara("--motion-intensity", motion.intensity.as_str()),
         dichiara("--motion-scale", num(motion.intensity.scale())),
     ];
-    for (nome, curva) in &motion.easings {
+    for (nome, easing) in &motion.easings {
         dichiarazioni.push(dichiara(
-            format!("{PREFISSO_MOTIVO}ease-{nome}"),
-            format_easing(*curva),
+            format!("{PREFISSO_MOTIVO}ease-{}", nel_suo_alfabeto(nome, TRATTINO)),
+            format_easing(*easing),
+        ));
+    }
+    let mut css = blocco(&ambito.radice(), &dichiarazioni);
+
+    for (nome, def) in &motion.animations {
+        let chiave = ambito.keyframes(nome);
+        css.push_str(&keyframes(&chiave, def));
+    }
+    css
+}
+
+/// Le animazioni di una parte, divise per condizione.
+struct Liste<'a> {
+    /// Quel che gira sempre: l'entrata, lo scorrimento, il ciclo «finché suona».
+    base: Vec<Voce<'a>>,
+    /// Il cambio di contenuto, nei suoi due gemelli.
+    cambio: Option<(Voce<'a>, Voce<'a>)>,
+    /// Gli stati.
+    stati: Vec<(PartState, Voce<'a>)>,
+    /// C'è un ciclo «finché suona».
+    suona: bool,
+}
+
+fn liste<'a>(stile: &'a PartStyle, ambito: &Ambito) -> Liste<'a> {
+    let voce = |riferimento: &'a AnimationRef| Voce::di(ambito, riferimento);
+    let mut base = Vec::new();
+    // Sulle presenze l'entrata è una transizione di vista, non un'animazione
+    // della regola base: nell'anteprima, dove le transizioni di vista non ci
+    // sono, la si guarda con la timeline.
+    if !stile.def.presenza
+        && let Some(entrata) = stile.motion.get(AnimTrigger::Enter)
+    {
+        base.push(Voce {
+            entrata: true,
+            cascata: stile.motion.stagger,
+            ..voce(entrata)
+        });
+    }
+    if let Some(scorre) = stile.motion.get(AnimTrigger::InView) {
+        base.push(Voce {
+            vista: true,
+            ..voce(scorre)
+        });
+    }
+    let suona = stile
+        .motion
+        .get(AnimTrigger::State(PartState::Playing))
+        .map(|giro| Voce {
+            suona: true,
+            ..voce(giro)
+        });
+    let ha_suona = suona.is_some();
+    base.extend(suona);
+
+    let cambio = stile.motion.get(AnimTrigger::Change).map(|cambia| {
+        (
+            Voce {
+                keyframes: format!("{}-a", ambito.keyframes(&cambia.name)),
+                ..voce(cambia)
+            },
+            Voce {
+                keyframes: format!("{}-b", ambito.keyframes(&cambia.name)),
+                ..voce(cambia)
+            },
+        )
+    });
+
+    let stati = PartState::ALL
+        .iter()
+        .filter(|s| **s != PartState::Playing)
+        .filter_map(|s| {
+            stile
+                .motion
+                .get(AnimTrigger::State(*s))
+                .map(|r| (*s, voce(r)))
+        })
+        .collect();
+
+    Liste {
+        base,
+        cambio,
+        stati,
+        suona: ha_suona,
+    }
+}
+
+/// Le regole di una parte.
+///
+/// Il selettore include sempre `[data-skin='<id>']`, quindi una parte
+/// ridisegnata da una skin non può influenzare un'altra skin. `radice` è la
+/// radice del tema: la base, o la variante.
+fn compila_parte(ambito: &Ambito, radice: &str, stile: &PartStyle, con_movimento: bool) -> String {
+    let nome = stile.def.name;
+    let base = format!("{radice} .{nome}");
+    let mut dichiarazioni = compila_aspetto(&stile.appearance, ambito);
+    if stile.before.is_some() {
+        dichiarazioni.push(dichiara("isolation", "isolate"));
+    }
+
+    let liste = liste(stile, ambito);
+    if con_movimento {
+        if !liste.base.is_empty() {
+            dichiarazioni.extend(dichiara_lista(&liste.base));
+        }
+        // Il ciclo «finché suona» parte fermo, e lo dice la parte **a sé
+        // stessa**. Le proprietà personalizzate si ereditano: fino alla 3.0
+        // una parte col suo ciclo dentro una che suonava — la copertina di
+        // una riga dentro la colonna in ascolto — riceveva il `running` del
+        // genitore e girava anche lei, senza suonare. Dichiarata qui, la
+        // pausa vince sull'eredità; lo stato `playing` della parte stessa,
+        // che viene dopo con la stessa specificità, vince sulla pausa.
+        if liste.suona {
+            dichiarazioni.push(dichiara("--skin-suona", "paused"));
+        }
+        if let Some(transizione) = stile.motion.transition.as_ref() {
+            dichiarazioni.push(dichiara(
+                "transition-duration",
+                durata_scalata(&format_duration(transizione.duration)),
+            ));
+            dichiarazioni.push(dichiara(
+                "transition-timing-function",
+                curva(&transizione.easing),
+            ));
+        } else if stile.def.presenza && stile.motion.get(AnimTrigger::Enter).is_some() {
+            // La skin dichiara la sua entrata: quella di serie, scritta con
+            // `@starting-style` nel foglio del motore, non deve sommarsi.
+            dichiarazioni.push(dichiara("transition", "none"));
+        }
+    }
+    let mut css = blocco(&base, &dichiarazioni);
+
+    for (livello, prima) in [(stile.before.as_ref(), true), (stile.after.as_ref(), false)] {
+        if let Some(livello) = livello {
+            let pseudo = if prima { "::before" } else { "::after" };
+            css.push_str(&blocco(
+                &format!("{base}{pseudo}"),
+                &compila_livello(livello, prima, ambito),
+            ));
+        }
+    }
+
+    // Il ciclo «finché suona»: lo stato accende la variabile, e la lista
+    // della regola base se ne accorge.
+    if con_movimento && liste.suona {
+        css.push_str(&blocco(
+            &format!(
+                "{base}:where({})",
+                ambito.stato(PartState::Playing, stile.def.fuoco)
+            ),
+            &[dichiara("--skin-suona", "running")],
         ));
     }
 
-    let mut css = blocco(&selettore(id, Variante::Base), &dichiarazioni);
-
-    // Solo `transform` e `opacity`: è il vincolo che il compilatore impone, e
-    // non una raccomandazione scritta in un documento che nessuno rilegge.
-    //
-    // La durata passa da `durata_scalata` come ogni altra. Queste due righe
-    // scrivevano `var(--dur-2)` nudo, ed erano le sole due animazioni del
-    // sistema che «Riduci il movimento» non toccava: `stile.css` se n'era
-    // accorto e aveva rimediato **altrove**, facendo saltare la transizione a
-    // `transizione.ts` prima ancora di chiamare il motore. Ora il rimedio è qui
-    // dov'è la causa, e quello lassù è una cintura in più invece dell'unica.
-    if let Some(transizione) = motion.route_transition {
-        let scala = durata_scalata("var(--dur-2)");
-        if let Some(uscita) = transizione.out.filter(|f| !f.is_empty()) {
-            let _ = write!(
-                css,
-                ":root[data-skin='{id}']::view-transition-old(root) {{\n  animation: skin-{id}-out {scala} var(--ease-out-expo) both;\n}}\n"
-            );
-            css.push_str(&fotogramma(&format!("skin-{id}-out"), "to", uscita));
-        }
-        if let Some(entrata) = transizione.enter.filter(|f| !f.is_empty()) {
-            let _ = write!(
-                css,
-                ":root[data-skin='{id}']::view-transition-new(root) {{\n  animation: skin-{id}-in {scala} var(--ease-out-expo) both;\n}}\n"
-            );
-            css.push_str(&fotogramma(&format!("skin-{id}-in"), "from", entrata));
+    // Il cambio di contenuto: due gemelli che si alternano, così il motore vede
+    // un nome nuovo a ogni cambio e riparte.
+    if con_movimento && let Some((a, b)) = liste.cambio.as_ref() {
+        for (gemello, voce) in [("a", a), ("b", b)] {
+            let mut lista = liste.base.clone();
+            lista.push(voce.clone());
+            css.push_str(&blocco(
+                &format!("{base}:where([data-cambio='{gemello}'])"),
+                &dichiara_lista(&lista),
+            ));
         }
     }
 
-    // I `@keyframes` delle animazioni nominate escono **dopo** quelli della
-    // rotta e in ordine di nome, che è l'ordine in cui `SkinMotion` li tiene:
-    // due compilazioni dello stesso documento devono dare lo stesso foglio,
-    // byte per byte, o il test di fedeltà misura il caso e non il codice.
+    // L'anello del fuoco: sta sotto lo stato del fuoco, qualunque sia la
+    // regola in cui è stato scritto.
+    if let Some(anello) = stile.appearance.focus_ring.as_ref() {
+        css.push_str(&blocco(
+            &format!(
+                "{base}:where({})",
+                ambito.stato(PartState::Focus, stile.def.fuoco)
+            ),
+            &compila_anello(anello),
+        ));
+    }
+
+    for stato in PartState::ALL {
+        let aspetto = stile.states.get(*stato);
+        let animazione = con_movimento
+            .then(|| liste.stati.iter().find(|(s, _)| s == stato))
+            .flatten();
+        if aspetto.is_none() && animazione.is_none() {
+            continue;
+        }
+        let mut dichiarazioni = aspetto
+            .map(|a| compila_aspetto(a, ambito))
+            .unwrap_or_default();
+        if let Some(anello) = aspetto.and_then(|a| a.focus_ring.as_ref()) {
+            dichiarazioni.extend(compila_anello(anello));
+        }
+        if let Some((_, voce)) = animazione {
+            let mut lista = liste.base.clone();
+            lista.push(voce.clone());
+            dichiarazioni.extend(dichiara_lista(&lista));
+        }
+        // `:where()` mantiene la specificità dello stato uguale a quella della
+        // parte: senza, uno stato dichiarato da una skin vincerebbe su una
+        // regola che il componente considera più importante.
+        css.push_str(&blocco(
+            &format!("{base}:where({})", ambito.stato(*stato, stile.def.fuoco)),
+            &dichiarazioni,
+        ));
+    }
+
+    // Il cambio di contenuto **dentro** uno stato animato.
     //
-    // Escono tutte, anche quelle che nessuna parte richiama: un `@keyframes`
-    // inerte non costa niente per fotogramma, e toglierlo qui vorrebbe dire che
-    // l'anteprima dello Studio non può mostrare un'animazione appena
-    // dichiarata e non ancora assegnata. Che sia dichiarata a vuoto lo dice un
-    // avviso, che è il posto giusto.
-    for (nome, def) in &motion.animations {
-        css.push_str(&keyframes(id, nome, def));
+    // La regola di uno stato scrive la sua lista — la base più l'animazione
+    // dello stato — e vince su quella del cambio, che le sta prima. Fino alla
+    // 3.0 quindi, sopra una parte appena cambiata, il passaggio del mouse
+    // toglieva dalla lista il gemello del cambio, e alla fine del passaggio la
+    // regola del cambio lo rimetteva: il motore vedeva un'animazione nuova e
+    // la faceva ripartire. Un titolo che entra con un guizzo guizzava di nuovo
+    // a ogni passaggio del puntatore. Qui, dove ci sono tutti e due, la lista
+    // porta il gemello **allo stesso posto** — subito dopo la base, come nella
+    // regola del cambio — e l'animazione dello stato in coda: entrando e
+    // uscendo dallo stato il gemello resta dov'era, e il motore lo lascia
+    // andare. Sta prima delle righe scorse qui sotto, che restano l'ultima
+    // parola nei contenitori già scorsi.
+    if con_movimento && let Some((a, b)) = liste.cambio.as_ref() {
+        for (stato, voce_stato) in &liste.stati {
+            for (gemello, voce) in [("a", a), ("b", b)] {
+                let mut lista = liste.base.clone();
+                lista.push(voce.clone());
+                lista.push(voce_stato.clone());
+                css.push_str(&blocco(
+                    &format!(
+                        "{base}:where([data-cambio='{gemello}']):where({})",
+                        ambito.stato(*stato, stile.def.fuoco)
+                    ),
+                    &dichiara_lista(&lista),
+                ));
+            }
+        }
+    }
+
+    // Le righe che si rimontano mentre si scorre: tutto quel che gira, meno
+    // l'entrata e la cascata. Vengono dopo le loro gemelle e hanno la stessa
+    // specificità, quindi vincono solo dove il contenitore è stato scorso.
+    if con_movimento && stile.def.riciclata && liste.base.iter().any(|v| v.entrata) {
+        let senza: Vec<Voce<'_>> = liste.base.iter().filter(|v| !v.entrata).cloned().collect();
+        let scorso = format!("{radice} :where([data-scorso]) .{nome}");
+        css.push_str(&blocco(&scorso, &dichiara_lista(&senza)));
+        for (stato, voce) in &liste.stati {
+            let mut lista = senza.clone();
+            lista.push(voce.clone());
+            css.push_str(&blocco(
+                &format!("{scorso}:where({})", ambito.stato(*stato, stile.def.fuoco)),
+                &dichiara_lista(&lista),
+            ));
+        }
     }
 
     css
+}
+
+/// Le regole che fermano le animazioni di una parte, scritte dal compilatore.
+///
+/// Tre porte, e tutte e tre chiudono: la preferenza del sistema, quella chiesta
+/// da Aether, e una skin a intensità `none`. È ciò che rende ammissibile un
+/// ciclo infinito: si ferma esattamente come le quattro animazioni infinite del
+/// motore, e una skin non può ometterlo.
+fn regole_di_arresto(ambito: &Ambito, nome: &str) -> String {
+    let ferma = [dichiara("animation", "none !important")];
+    let mut css = String::new();
+    let _ = write!(
+        css,
+        "@media (prefers-reduced-motion: reduce) {{\n{}}}\n",
+        blocco(&format!("{} .{nome}", ambito.radice()), &ferma)
+    );
+    css.push_str(&blocco(
+        &format!("{} .{nome}", ambito.radice_ferma_utente()),
+        &ferma,
+    ));
+    css.push_str(&blocco(
+        &format!("{} .{nome}", ambito.radice_ferma_intensita()),
+        &ferma,
+    ));
+    css
+}
+
+/// Le transizioni di vista: la rotta, le presenze, le condivise.
+///
+/// Solo nella finestra: gli pseudo-elementi delle transizioni di vista esistono
+/// alla radice del documento, e nell'anteprima non ce n'è nessuna — lì le
+/// entrate e le uscite si guardano sulla timeline.
+///
+/// Una classe per innesco — `vt-<parte>-enter`, `-exit`, `-share` — e non una
+/// per parte: `<ViewTransition>` mette la classe dell'innesco che sta
+/// accadendo, e una regola per classe evita di dover distinguere un'entrata da
+/// un'uscita guardando quali pseudo-elementi esistono.
+fn compila_viste(ambito: &Ambito, skin: &SkinDocument) -> (String, Vec<Presenza>) {
+    let radice = ambito.radice();
+    let mut regole: Vec<(String, Vec<Dichiarazione>)> = Vec::new();
+    let mut fotogrammi = String::new();
+    let mut presenze = Vec::new();
+
+    // La rotta: `page-content` è la presenza della pagina, e se la skin non
+    // gli assegna un'entrata e un'uscita sue le prende da `motion.route`.
+    let rotta = skin.motion.as_ref().and_then(|m| m.route.as_ref());
+    let contenuto = skin.parts.iter().find(|p| p.def.name == "page-content");
+    let mut pagina = Presenza {
+        parte: "page-content",
+        enter: false,
+        exit: false,
+        share: false,
+    };
+    for (verso, trigger, pseudo, quando) in [
+        ("out", AnimTrigger::Exit, "view-transition-old", "to"),
+        ("in", AnimTrigger::Enter, "view-transition-new", "from"),
+    ] {
+        let selettore = format!("{radice}::{pseudo}(.vt-page-content-{})", trigger.as_str());
+        if let Some(propria) = contenuto.and_then(|p| p.motion.get(trigger)) {
+            regole.push((
+                selettore,
+                vec![dichiara(
+                    "animation",
+                    Voce::di(ambito, propria).scorciatoia(),
+                )],
+            ));
+        } else if let Some(r) = rotta {
+            let fotogramma = if verso == "out" { r.out } else { r.enter };
+            let Some(fotogramma) = fotogramma.filter(|f| !f.is_empty()) else {
+                continue;
+            };
+            let nome = ambito.keyframes_rotta(verso);
+            let tempo = durata_scalata(
+                &r.duration
+                    .map_or_else(|| "var(--dur-2)".to_owned(), format_duration),
+            );
+            let easing = r
+                .easing
+                .as_ref()
+                .map_or_else(|| "var(--ease-out-expo)".to_owned(), curva);
+            regole.push((
+                selettore,
+                vec![dichiara(
+                    "animation",
+                    format!("{nome} {tempo} {easing} both"),
+                )],
+            ));
+            fotogrammi.push_str(&fotogramma_rotta(&nome, quando, fotogramma));
+        } else {
+            continue;
+        }
+        if trigger == AnimTrigger::Exit {
+            pagina.exit = true;
+        } else {
+            pagina.enter = true;
+        }
+    }
+    if pagina.enter || pagina.exit {
+        presenze.push(pagina);
+    }
+
+    for stile in &skin.parts {
+        if stile.def.name == "page-content" || !(stile.def.presenza || stile.def.condivisa) {
+            continue;
+        }
+        let mut presenza = Presenza {
+            parte: stile.def.name,
+            enter: false,
+            exit: false,
+            share: false,
+        };
+        for (trigger, pseudo) in [
+            (AnimTrigger::Enter, "view-transition-new"),
+            (AnimTrigger::Exit, "view-transition-old"),
+            (AnimTrigger::Share, "view-transition-group"),
+        ] {
+            if trigger == AnimTrigger::Enter && !stile.def.presenza {
+                continue;
+            }
+            let Some(riferimento) = stile.motion.get(trigger) else {
+                continue;
+            };
+            let selettore = format!(
+                "{radice}::{pseudo}(.vt-{}-{})",
+                stile.def.name,
+                trigger.as_str()
+            );
+            let dichiarazioni = if trigger == AnimTrigger::Share {
+                // Un volo condiviso non ha fotogrammi suoi: il motore sposta e
+                // ridimensiona il gruppo da solo. La skin ne sceglie il tempo.
+                let mut tempo = vec![
+                    dichiara(
+                        "animation-duration",
+                        durata_scalata(&format_duration(riferimento.def.duration)),
+                    ),
+                    dichiara("animation-timing-function", curva(&riferimento.def.easing)),
+                ];
+                if let Some(attesa) = riferimento.def.delay {
+                    tempo.push(dichiara(
+                        "animation-delay",
+                        durata_scalata(&format_duration(attesa)),
+                    ));
+                }
+                tempo
+            } else {
+                vec![dichiara(
+                    "animation",
+                    Voce::di(ambito, riferimento).scorciatoia(),
+                )]
+            };
+            regole.push((selettore, dichiarazioni));
+            match trigger {
+                AnimTrigger::Enter => presenza.enter = true,
+                AnimTrigger::Exit => presenza.exit = true,
+                _ => presenza.share = true,
+            }
+        }
+        if presenza.enter || presenza.exit || presenza.share {
+            presenze.push(presenza);
+        }
+    }
+
+    let mut css = String::new();
+    for (selettore, dichiarazioni) in &regole {
+        css.push_str(&blocco(selettore, dichiarazioni));
+    }
+    css.push_str(&fotogrammi);
+
+    // E le loro regole d'arresto, come per le parti.
+    if !regole.is_empty() {
+        let ferma = [dichiara("animation", "none !important")];
+        let selettori: Vec<&str> = regole.iter().map(|(s, _)| s.as_str()).collect();
+        let _ = write!(
+            css,
+            "@media (prefers-reduced-motion: reduce) {{
+{}}}
+",
+            blocco(
+                &selettori.join(
+                    ",
+"
+                ),
+                &ferma
+            )
+        );
+        let utente: Vec<String> = selettori
+            .iter()
+            .map(|s| {
+                s.replacen(
+                    &radice,
+                    &format!("{radice}[data-motion-utente='ridotto']"),
+                    1,
+                )
+            })
+            .collect();
+        css.push_str(&blocco(
+            &utente.join(
+                ",
+",
+            ),
+            &ferma,
+        ));
+    }
+
+    (css, presenze)
 }
 
 // ── Lo scafale ──────────────────────────────────────────────────────────────
@@ -885,16 +1827,8 @@ fn compila_movimento(id: &str, motion: &SkinMotion) -> String {
 /// L'indirizzo di un nodo: il percorso degli indici dei figli.
 ///
 /// `0-1-2` è «il terzo figlio del secondo figlio del primo figlio della
-/// radice». Lo calcola **il compilatore** camminando l'albero — non è un id
-/// scritto nel documento — e questo compra quattro cose in una:
-///
-/// 1. niente del documento entra nel selettore, quindi l'invariante che il test
-///    di iniezione difende regge senza una regola nuova;
-/// 2. il renderer React deriva lo stesso indirizzo dallo stesso albero, quindi
-///    i due lati non hanno bisogno di accordarsi su niente;
-/// 3. la sonda dello Studio ottiene un appiglio nel DOM (`closest("[data-nodo]")`);
-/// 4. **è** il percorso JSON, quindi portare il cursore sull'errore è
-///    formattazione e non ricerca.
+/// radice». Lo calcola **il compilatore** camminando l'albero, e il renderer
+/// React deriva lo stesso indirizzo dallo stesso albero.
 fn indirizzo(via: &[usize]) -> String {
     if via.is_empty() {
         return "radice".to_owned();
@@ -907,12 +1841,8 @@ fn indirizzo(via: &[usize]) -> String {
 
 /// Come una misura diventa `flex`.
 ///
-/// `min-width: 0` e `min-height: 0` li mette **sempre** il compilatore, mai la
-/// skin: senza, un figlio flex si rifiuta di scendere sotto la larghezza del
-/// suo contenuto, ed è il modo in cui un elenco di brani con un titolo lungo
-/// spinge fuori dallo schermo tutto quel che gli sta accanto. È la stessa idea
-/// per cui `compila_parte` forza `position`/`inset` sui livelli: le proprietà
-/// che tengono in piedi la finestra non sono negoziabili.
+/// `min-width: 0` e `min-height: 0` li mette **sempre** il compilatore: senza,
+/// un figlio flex si rifiuta di scendere sotto la larghezza del suo contenuto.
 fn misura_flex(size: crate::layout::TrackSize, riga: bool) -> Vec<Dichiarazione> {
     use crate::layout::TrackSize;
 
@@ -924,9 +1854,6 @@ fn misura_flex(size: crate::layout::TrackSize, riga: bool) -> Vec<Dichiarazione>
             match size {
                 TrackSize::Hug => "0 0 auto".to_owned(),
                 TrackSize::Fill => "1 1 0".to_owned(),
-                // `clamp` invece del numero nudo: la validazione ha già
-                // controllato l'intervallo, e questo lo rende vero anche se un
-                // giorno qualcuno compilasse un albero che non è passato di lì.
                 TrackSize::Fixed(length) => format!(
                     "0 0 clamp({}px, {}, {}px)",
                     num(crate::layout::FIXED_MIN),
@@ -936,9 +1863,6 @@ fn misura_flex(size: crate::layout::TrackSize, riga: bool) -> Vec<Dichiarazione>
             },
         ),
     ];
-    // La misura fissa va detta anche sull'asse giusto: `flex-basis` da solo non
-    // vincola l'altezza di un figlio di colonna né la larghezza di un figlio di
-    // riga quando il contenitore ha spazio in abbondanza.
     if let TrackSize::Fixed(length) = size {
         let proprieta = if riga { "width" } else { "height" };
         dichiarazioni.push(dichiara(
@@ -954,12 +1878,8 @@ fn misura_flex(size: crate::layout::TrackSize, riga: bool) -> Vec<Dichiarazione>
     dichiarazioni
 }
 
-/// Le regole di una zona e di tutto quel che contiene.
-///
-/// `dentro` dice se la zona che *contiene* questa dispone in riga: serve a
-/// sapere su quale asse una misura fissa vada scritta.
 fn compila_zona(
-    id: &str,
+    ambito: &Ambito,
     zona: &crate::layout::LayoutZone,
     via: &mut Vec<usize>,
     dentro_una_riga: bool,
@@ -983,10 +1903,6 @@ fn compila_zona(
         dichiarazioni.push(dichiara("overflow-y", "auto"));
         dichiarazioni.push(dichiara("overflow-x", "hidden"));
     }
-    // Il contenitore di query per `--content-x`, deciso dal compilatore in base
-    // a **chi c'è dentro** e non da una chiave del formato: la pagina si adatta
-    // alla zona che la ospita, quale che sia, e una skin non ha bisogno di
-    // sapere che questa parola esiste.
     if zona
         .children
         .iter()
@@ -997,17 +1913,17 @@ fn compila_zona(
     dichiarazioni.extend(misura_flex(zona.size, dentro_una_riga));
 
     css.push_str(&blocco(
-        &format!(":root[data-skin='{id}'] [data-nodo='{}']", indirizzo(via)),
+        &format!("{} [data-nodo='{}']", ambito.radice(), indirizzo(via)),
         &dichiarazioni,
     ));
 
     for (indice, figlio) in zona.children.iter().enumerate() {
         via.push(indice);
         match figlio {
-            LayoutNode::Zone(sotto) => compila_zona(id, sotto, via, zona.kind.is_row(), css),
+            LayoutNode::Zone(sotto) => compila_zona(ambito, sotto, via, zona.kind.is_row(), css),
             LayoutNode::Widget(istanza) => {
                 css.push_str(&blocco(
-                    &format!(":root[data-skin='{id}'] [data-nodo='{}']", indirizzo(via)),
+                    &format!("{} [data-nodo='{}']", ambito.radice(), indirizzo(via)),
                     &misura_flex(istanza.size, zona.kind.is_row()),
                 ));
             }
@@ -1016,98 +1932,182 @@ fn compila_zona(
     }
 }
 
-/// Le regole di impaginazione di una skin.
-///
-/// Sono **blocchi propri**, mai dichiarazioni dentro `:root[data-skin='<id>']`:
-/// quel blocco è confrontato riga per riga con `stile.css` da un test di
-/// allineamento, e aggiungerci roba lo romperebbe senza guadagnare niente.
-fn compila_impaginazione(id: &str, shell: &crate::layout::LayoutZone) -> String {
+fn compila_impaginazione(ambito: &Ambito, shell: &crate::layout::LayoutZone) -> String {
     let mut css = String::new();
     let mut via = Vec::with_capacity(crate::layout::MAX_SHELL_DEPTH);
-    compila_zona(id, shell, &mut via, false, &mut css);
+    compila_zona(ambito, shell, &mut via, false, &mut css);
     css
 }
 
 // ── L'insieme ───────────────────────────────────────────────────────────────
 
-/// Compila una skin validata.
+/// Compila una skin per la finestra.
 #[must_use]
 pub fn compile_skin(skin: &SkinDocument) -> CompiledSkin {
-    let (base, dinamici) = compila_token(&skin.tokens);
-    let (motivi, costo_motivi) = compila_motivi(&skin.patterns);
+    compila(skin, &Ambito::app(&skin.id))
+}
 
+/// Compila una skin per l'anteprima dello Studio.
+///
+/// Stesso documento, stesso compilatore, un altro ambito: vedi il `//!`.
+#[must_use]
+pub fn compile_skin_anteprima(skin: &SkinDocument) -> CompiledSkin {
+    compila(skin, &Ambito::anteprima(&skin.id))
+}
+
+/// Compila una skin per la tela dello Studio: vedi [`Ambito::tela`].
+#[must_use]
+pub fn compile_skin_tela(skin: &SkinDocument) -> CompiledSkin {
+    compila(skin, &Ambito::tela(&skin.id))
+}
+
+/// Compila una skin nell'ambito dato.
+#[must_use]
+pub fn compila(skin: &SkinDocument, ambito: &Ambito) -> CompiledSkin {
+    let famiglie: Vec<(&str, String)> = skin
+        .fonts
+        .iter()
+        .map(|f| (f.family.as_str(), ambito.famiglia(&f.family)))
+        .collect();
+    let famiglia = |nome: &str| {
+        famiglie
+            .iter()
+            .find(|(scritto, _)| *scritto == nome)
+            .map(|(_, proprio)| proprio.clone())
+    };
+
+    // L'intestazione porta l'id e la versione, e **nient'altro**. Fino alla 3.0
+    // portava il nome, che è testo libero: un `*/` dentro il nome chiudeva il
+    // commento e il resto del nome diventava foglio. Id e versione hanno un
+    // alfabeto chiuso — minuscole, cifre e trattini; cifre e punti — e passano
+    // comunque dal loro alfabeto qui, dove il commento si apre. È anche
+    // l'unico commento del foglio: la prova sul CSS emesso lo pretende.
+    let versione: String = skin
+        .meta
+        .version
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let mut css = format!(
+        "/* skin {} {versione} — generato, non modificare a mano */\n",
+        ambito.id
+    );
+
+    for font in &skin.fonts {
+        let mut dichiarazioni = vec![
+            dichiara(
+                "font-family",
+                format!("'{}'", ambito.famiglia(&font.family)),
+            ),
+            dichiara(
+                "src",
+                format!("url(\"{}\") format('woff2')", ambito.url_risorsa(&font.src)),
+            ),
+            dichiara(
+                "font-weight",
+                if font.weight.0 == font.weight.1 {
+                    font.weight.0.to_string()
+                } else {
+                    format!("{} {}", font.weight.0, font.weight.1)
+                },
+            ),
+            dichiara("font-style", if font.italic { "italic" } else { "normal" }),
+        ];
+        dichiarazioni.push(dichiara("font-display", "swap"));
+        css.push_str(&blocco("@font-face", &dichiarazioni));
+    }
+
+    if ambito.in_anteprima() {
+        css.push_str(&blocchi_di_serie(ambito));
+    }
+
+    let (base, dinamici) = compila_token(&skin.tokens, &famiglia);
     let mut dichiarazioni = compila_tavolozza(&skin.palette);
     dichiarazioni.extend(base);
-    dichiarazioni.extend(calcolati(&skin.tokens));
-    dichiarazioni.extend(motivi);
-    // `color-scheme` non è un token: è ciò che dice al motore di rendering come
-    // disegnare le barre di scorrimento e i controlli nativi. Nel vecchio albero
-    // stava scritto a mano in ogni skin, e dimenticarlo dava scrollbar chiare su
-    // fondo nero.
-    dichiarazioni.push(dichiara("color-scheme", "dark"));
+    dichiarazioni.extend(calcolati(&skin.tokens, false));
+    dichiarazioni.extend(compila_motivi(&skin.patterns, ambito));
+    // `color-scheme` non è un token: dice al motore come disegnare le barre di
+    // scorrimento e i controlli nativi, e segue il tema di base.
+    dichiarazioni.push(dichiara("color-scheme", skin.scheme.as_str()));
+    css.push_str(&blocco(&ambito.radice(), &dichiarazioni));
 
-    let mut css = format!(
-        "/* {} {} — generato, non modificare a mano */\n",
-        skin.meta.name, skin.meta.version
-    );
-    css.push_str(&blocco(
-        &selettore(&skin.id, Variante::Base),
-        &dichiarazioni,
-    ));
-
-    if let Some(chiaro) = skin.light.as_ref() {
-        let (mut dichiarazioni, _) = compila_token(chiaro);
-        dichiarazioni.extend(calcolati(chiaro));
-        dichiarazioni.push(dichiara("color-scheme", "light"));
-        css.push_str(&blocco(
-            &selettore(&skin.id, Variante::Chiaro),
-            &dichiarazioni,
-        ));
+    let tema_variante = ambito.tema(skin.scheme.opposto());
+    if let Some(variante) = skin.variant.as_ref() {
+        let (mut dichiarazioni, _) = compila_token(&variante.tokens, &famiglia);
+        dichiarazioni.extend(calcolati(&variante.tokens, false));
+        dichiarazioni.extend(compila_tavolozza(&variante.palette));
+        dichiarazioni.extend(compila_motivi(&variante.patterns, ambito));
+        dichiarazioni.push(dichiara("color-scheme", skin.scheme.opposto().as_str()));
+        css.push_str(&blocco(&tema_variante, &dichiarazioni));
     }
 
     if let Some(telefono) = skin.mobile.as_ref() {
-        let (mut dichiarazioni, _) = compila_token(telefono);
-        dichiarazioni.extend(calcolati(telefono));
-        css.push_str(&blocco(
-            &selettore(&skin.id, Variante::Telefono),
-            &dichiarazioni,
-        ));
+        let (mut dichiarazioni, _) = compila_token(telefono, &famiglia);
+        dichiarazioni.extend(calcolati(telefono, false));
+        css.push_str(&blocco(&ambito.telefono(), &dichiarazioni));
     }
 
     if let Some(motion) = skin.motion.as_ref() {
-        css.push_str(&compila_movimento(&skin.id, motion));
+        css.push_str(&compila_movimento(ambito, motion));
+        // I gemelli del cambio: stessi fotogrammi, nome diverso.
+        for stile in &skin.parts {
+            if let Some(cambia) = stile.motion.get(AnimTrigger::Change) {
+                for gemello in ["a", "b"] {
+                    css.push_str(&keyframes(
+                        &format!("{}-{gemello}", ambito.keyframes(&cambia.name)),
+                        &cambia.def,
+                    ));
+                }
+            }
+        }
     }
 
+    let presenze = if ambito.in_anteprima() {
+        Vec::new()
+    } else {
+        let (viste, presenze) = compila_viste(ambito, skin);
+        css.push_str(&viste);
+        presenze
+    };
+
+    let radice = ambito.radice();
     let mut costo_parti = 0;
     let mut costo_movimento = 0;
     for stile in &skin.parts {
-        costo_parti += stack_cost(&stile.effects());
+        costo_parti += stile.costo_superficie();
         costo_movimento += stile.motion_cost();
-        css.push_str(&compila_parte(&skin.id, stile));
+        css.push_str(&compila_parte(ambito, &radice, stile, true));
+        if !stile.motion.senza_animazioni() {
+            css.push_str(&regole_di_arresto(ambito, stile.def.name));
+        }
+    }
+    if let Some(variante) = skin.variant.as_ref() {
+        for stile in &variante.parts {
+            css.push_str(&compila_parte(ambito, &tema_variante, stile, false));
+        }
     }
 
     // Lo scafale esce **dopo** le parti: a parità di specificità vince chi viene
     // dopo, e le regole di impaginazione devono poter dire l'ultima parola su
-    // `display` e `flex` — che sono precisamente le proprietà che il vocabolario
-    // delle parti non contiene, quindi non c'è niente da scavalcare, solo un
-    // ordine da non lasciare al caso.
+    // `display` e `flex`.
     let difetto = crate::document::SkinLayout::default();
     let layout = skin.layout.as_ref().unwrap_or(&difetto);
-    css.push_str(&compila_impaginazione(&skin.id, &layout.shell));
+    css.push_str(&compila_impaginazione(ambito, &layout.shell));
 
     CompiledSkin {
         id: skin.id.clone(),
         css,
-        // Il costo somma motivi e parti: è la cifra che il budget confronta, e
-        // sommarne solo una metà la renderebbe inutile.
-        cost: costo_motivi + costo_parti,
-        // **Separato**, e mai sommato in `cost`: sono due budget che misurano
-        // due cose diverse — quanto costa disegnare una superficie, e quanti
-        // pezzi dell'app sono montati insieme. Sommarli darebbe un numero che
-        // non risponde a nessuna delle due domande.
+        cost: stack_cost(
+            &skin
+                .patterns
+                .iter()
+                .map(|(_, e)| e.clone())
+                .collect::<Vec<_>>(),
+        ) + costo_parti,
         shell_cost: layout.shell.costo(),
         motion_cost: costo_movimento,
         dynamic_tokens: dinamici,
+        presenze,
     }
 }
 
@@ -1124,857 +2124,4 @@ pub const fn token_kind(def: &TokenDef) -> TokenKind {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::document::parse_skin_json;
-
-    const MINIMA: &str = r##"{
-      "format": 1,
-      "id": "prova",
-      "meta": { "name": "Prova", "author": "Aether", "version": "1.0.0" },
-      "tokens": {}
-    }"##;
-
-    fn compila(tokens: &str) -> String {
-        let json = MINIMA.replace("\"tokens\": {}", &format!("\"tokens\": {tokens}"));
-        let skin = parse_skin_json(&json).expect("valida");
-        compile_skin(&skin).css
-    }
-
-    fn compila_documento(json: &str) -> CompiledSkin {
-        let skin = parse_skin_json(json).expect("valida");
-        compile_skin(&skin)
-    }
-
-    /// Il valore di una proprietà dentro un blocco, o niente.
-    fn valore(css: &str, selettore: &str, proprieta: &str) -> Option<String> {
-        let inizio = css.find(&format!("{selettore} {{"))?;
-        let corpo = css.get(inizio..)?;
-        let fine = corpo.find("\n}")?;
-        corpo
-            .get(..fine)?
-            .lines()
-            .find_map(|riga| riga.trim_start().strip_prefix(&format!("{proprieta}: ")))
-            .map(|resto| resto.trim_end_matches(';').to_owned())
-    }
-
-    #[test]
-    fn la_tripla_si_deriva_dal_colore() {
-        let css = compila(r##"{ "color.accent": "#8b7cf6" }"##);
-        assert!(css.contains("--accent: rgb(139 124 246);"), "{css}");
-        assert!(css.contains("--accent-rgb: 139 124 246;"), "{css}");
-    }
-
-    #[test]
-    fn la_nebbia_non_puo_piu_scollarsi_dal_fondo() {
-        // Il commento in maiuscolo «DEVE combaciare con surface-0», sostituito
-        // da una derivazione.
-        let css = compila(r##"{ "color.surface.0": "#060608" }"##);
-        assert!(css.contains("--color-surface-0: rgb(6 6 8);"), "{css}");
-        assert!(css.contains("--surface-0-rgb: 6 6 8;"), "{css}");
-    }
-
-    #[test]
-    fn hero_esce_solo_come_tripla() {
-        // `--hero-rgb` finisce dentro `rgba()` calcolate a runtime: emetterlo
-        // come `rgb(...)` le romperebbe tutte.
-        let css = compila(r##"{ "color.hero": "#8b7cf6" }"##);
-        assert!(css.contains("--hero-rgb: 139 124 246;"), "{css}");
-        assert!(!css.contains("--hero-rgb: rgb("), "{css}");
-    }
-
-    #[test]
-    fn il_ritmo_e_la_profondita_escono_coi_nomi_che_il_foglio_legge() {
-        // Questi undici token non hanno bisogno di una riga nel compilatore: il
-        // percorso generico li emette come qualunque altra lunghezza o numero.
-        // Quel che **non** ha nessun altro guardiano è il patto sui nomi — la
-        // composizione vera sta in `stile.css`, che chiede `var(--ritmo-3)` e
-        // `var(--profondita-spigolo)`. Rinominare un token qui e dimenticare il
-        // foglio spegnerebbe la manopola senza rompere niente che compili, e
-        // questo test è l'unico posto in cui i due file si guardano.
-        let css = compila(
-            r##"{
-                "space.3": "14px",
-                "depth.edge": 0.5,
-                "depth.sheen": "40px",
-                "radius.inner": 0.25
-            }"##,
-        );
-        assert!(css.contains("--ritmo-3: 14px;"), "{css}");
-        assert!(css.contains("--profondita-spigolo: 0.5;"), "{css}");
-        assert!(css.contains("--profondita-luce: 40px;"), "{css}");
-        assert!(css.contains("--raggio-fattore-interno: 0.25;"), "{css}");
-        // `--spazio-*` resta del motore: il foglio lo compone da ritmo e
-        // densità, e una skin che lo scrivesse scavalcherebbe la densità.
-        assert!(!css.contains("--spazio-"), "{css}");
-    }
-
-    #[test]
-    fn i_calcolati_non_si_dichiarano() {
-        let css = compila(
-            r##"{ "layout.rail": "68px", "layout.playerHeight": "92px", "layout.playerGap": "14px", "motion.dur.1": "150ms" }"##,
-        );
-        assert!(css.contains("--shell-left: var(--rail-w);"), "{css}");
-        assert!(
-            css.contains("--player-clearance: calc(var(--player-h) + var(--player-gap) * 2);"),
-            "{css}"
-        );
-        // Il fallback `, 1` fa parte dell'asserzione, non è rumore: questa skin
-        // dichiara `motion.dur.1` e **non** `motion.intensity`, quindi
-        // `--motion-scale` non esiste. Senza fallback il `calc()` sarebbe
-        // invalido e la transizione sparirebbe invece di durare 150ms.
-        assert!(
-            css.contains(
-                "--transition-fast: calc(var(--dur-1) * var(--motion-scale, 1)) var(--ease-out-expo);"
-            ),
-            "{css}"
-        );
-        assert!(!css.contains("--motion-scale:"), "{css}");
-        // E non compaiono se la skin non dichiara ciò da cui derivano.
-        let vuota = compila("{}");
-        assert!(!vuota.contains("--shell-left"), "{vuota}");
-    }
-
-    #[test]
-    fn il_color_scheme_non_si_dimentica() {
-        // Dimenticarlo dava barre di scorrimento chiare su fondo nero, e nel
-        // vecchio albero era scritto a mano in ogni skin.
-        let css = compila("{}");
-        assert!(css.contains("color-scheme: dark;"), "{css}");
-    }
-
-    #[test]
-    fn niente_del_documento_finisce_nel_foglio_come_testo() {
-        // La proprietà che tiene in piedi tutto il formato, verificata
-        // sull'output: nessun canale in cui infilare CSS arbitrario.
-        let compilata = compila_documento(
-            r##"{
-              "format": 1,
-              "id": "prova",
-              "meta": { "name": "Prova", "author": "Aether", "version": "1.0.0" },
-              "palette": { "teal": "#00f0ff" },
-              "tokens": {
-                "color.accent": { "$palette": "teal", "alpha": 0.18 },
-                "color.accent.like": { "$token": "color.accent" },
-                "color.hero": { "$source": "albumArt.vibrant" },
-                "font.sans": ["Space Grotesk Variable"]
-              },
-              "patterns": {
-                "griglia": { "effect": "hairlineGrid", "color": { "$palette": "teal" }, "cell": "36px" },
-                "taglio": { "effect": "chamfer", "size": "10px" }
-              },
-              "parts": {
-                "app-shell": {
-                  "background": [{ "$pattern": "griglia" }],
-                  "clip": { "$pattern": "taglio" }
-                }
-              }
-            }"##,
-        );
-        for vietato in ["url(", "@import", "expression(", "javascript:", "</style"] {
-            assert!(
-                !compilata.css.contains(vietato),
-                "«{vietato}» nel foglio:\n{}",
-                compilata.css
-            );
-        }
-        // Il riferimento diventa una `var()` col nome preso dal registro.
-        assert!(
-            compilata.css.contains("--accent-like: var(--accent);"),
-            "{}",
-            compilata.css
-        );
-        // La tavolozza esce in due forme, sempre.
-        assert!(
-            compilata.css.contains("--skin-color-teal: rgb(0 240 255);"),
-            "{}",
-            compilata.css
-        );
-        assert!(
-            compilata.css.contains("--skin-color-teal-rgb: 0 240 255;"),
-            "{}",
-            compilata.css
-        );
-        // Il motivo che produce un ritaglio ha il suffisso che lo dice.
-        assert!(
-            compilata.css.contains("--skin-taglio-clip: polygon("),
-            "{}",
-            compilata.css
-        );
-        // `$pattern` è l'unico canale nuovo per cui un pezzo di documento — il
-        // nome — finisce nel testo del foglio. Ci arriva passato da
-        // `is_local_name`, e ne esce come una `var()` e nient'altro: il suffisso
-        // lo sceglie il compilatore dalla destinazione dell'effetto, non il
-        // documento.
-        assert!(
-            compilata.css.contains("background: var(--skin-griglia);"),
-            "{}",
-            compilata.css
-        );
-        assert!(
-            compilata
-                .css
-                .contains("clip-path: var(--skin-taglio-clip);"),
-            "{}",
-            compilata.css
-        );
-        // E il token legato alla copertina è dichiarato come tale.
-        assert_eq!(compilata.dynamic_tokens, ["color.hero"]);
-    }
-
-    #[test]
-    fn una_parte_puo_finalmente_sfocare_quel_che_ha_dietro() {
-        // Il buco che questo chiude: `blurBehind` si poteva dichiarare come
-        // motivo, `EffectTarget::Filter` sapeva già che finisce in
-        // `backdrop-filter`, e `PartAppearance` non aveva un campo che lo
-        // riferisse. Una skin che ci provava riceveva un errore giusto su una
-        // strada che non esisteva.
-        let compilata = compila_documento(
-            r##"{
-              "format": 1,
-              "id": "prova",
-              "meta": { "name": "Prova", "author": "Aether", "version": "1.0.0" },
-              "tokens": {},
-              "patterns": {
-                "velo": { "effect": "blurBehind", "radius": "18px", "saturate": 140 }
-              },
-              "parts": {
-                "glass-modal": { "filter": { "$pattern": "velo" } }
-              }
-            }"##,
-        );
-        // Il motivo esce col suffisso della sua destinazione, e la parte lo
-        // richiama con quello: è il suffisso a rendere impossibile scambiare
-        // uno sfondo con un filtro.
-        assert!(
-            compilata.css.contains("--skin-velo-filter: blur("),
-            "{}",
-            compilata.css
-        );
-        assert!(
-            compilata
-                .css
-                .contains("backdrop-filter: var(--skin-velo-filter);"),
-            "{}",
-            compilata.css
-        );
-    }
-
-    #[test]
-    fn una_sfocatura_dietro_costa_il_budget_intero() {
-        // Dieci è un `backdrop-filter` da solo. Il punto della prova non è il
-        // numero: è che il filtro **entri** nel conto. Finché `effects()`
-        // sommava i soli sfondi, una skin poteva metterne uno su ogni
-        // superficie e nessuno se ne accorgeva.
-        let compilata = compila_documento(
-            r##"{
-              "format": 1,
-              "id": "prova",
-              "meta": { "name": "Prova", "author": "Aether", "version": "1.0.0" },
-              "tokens": {},
-              "patterns": {
-                "velo": { "effect": "blurBehind", "radius": "18px" }
-              },
-              "parts": {
-                "glass-modal": { "filter": { "$pattern": "velo" } }
-              }
-            }"##,
-        );
-        // Il motivo conta una volta come motivo e una come uso nella parte:
-        // quel che serve è che la seconda non sia zero.
-        assert!(
-            compilata.cost >= crate::effects::SURFACE_COST_BUDGET,
-            "una sfocatura dietro deve pesare almeno il budget, non {}",
-            compilata.cost
-        );
-
-        // E senza il filtro la stessa skin non costa niente: è il confronto che
-        // dimostra che il costo viene da lì e non da altro.
-        let senza = compila_documento(
-            r##"{
-              "format": 1,
-              "id": "prova",
-              "meta": { "name": "Prova", "author": "Aether", "version": "1.0.0" },
-              "tokens": {},
-              "parts": { "glass-modal": { "opacity": 0.9 } }
-            }"##,
-        );
-        assert_eq!(senza.cost, 0, "senza effetti non si spende niente");
-    }
-
-    #[test]
-    fn un_nome_di_motivo_ostile_non_arriva_al_foglio() {
-        // La `var()` di `$pattern` è l'unico posto in cui un nome scritto nel
-        // documento diventa testo del foglio. Chiuderla richiede che l'alfabeto
-        // dei nomi non contenga né la parentesi che la chiude né il punto e
-        // virgola che finisce la dichiarazione — ed è ciò che si verifica qui,
-        // sul rifiuto e non sull'uscita.
-        for ostile in ["a); color: red; --b:(", "a}", "Griglia", "a b", "a/*"] {
-            let json = format!(
-                r##"{{
-                  "format": 1,
-                  "id": "prova",
-                  "meta": {{ "name": "Prova", "author": "Aether", "version": "1.0.0" }},
-                  "tokens": {{}},
-                  "patterns": {{ {} : {{ "effect": "solid", "color": "#fff" }} }}
-                }}"##,
-                serde_json::Value::String(ostile.to_owned())
-            );
-            assert!(
-                crate::document::parse_skin_json(&json).is_err(),
-                "accettato un nome di motivo ostile: {ostile}"
-            );
-        }
-    }
-
-    #[test]
-    fn la_griglia_e_un_colore_e_un_passo() {
-        // Nel vecchio albero erano due gradienti scritti due volte, e la
-        // variante chiara ne sbagliava uno.
-        let css = compila_documento(
-            &MINIMA.replace(
-                "\"tokens\": {}",
-                r##""tokens": {}, "patterns": { "g": { "effect": "hairlineGrid", "color": "rgba(0,240,255,0.07)", "cell": "36px" } }"##,
-            ),
-        )
-        .css;
-        assert!(css.contains("0 0 / 100% 36px"), "{css}");
-        assert!(css.contains("0 0 / 36px 100%"), "{css}");
-        // Lo stesso colore in entrambe le righe, per costruzione.
-        assert_eq!(css.matches("rgb(0 240 255 / 0.07)").count(), 2, "{css}");
-    }
-
-    #[test]
-    fn gli_stati_non_scavalcano_i_componenti() {
-        let compilata = compila_documento(
-            &MINIMA.replace(
-                "\"tokens\": {}",
-                r##""tokens": {}, "parts": { "nav-pill": { "states": { "hover": { "opacity": 0.8 }, "focus": { "opacity": 1 } } } }"##,
-            ),
-        );
-        assert!(
-            compilata
-                .css
-                .contains(":root[data-skin='prova'] .nav-pill:where(:hover)"),
-            "{}",
-            compilata.css
-        );
-        // Il fuoco è quello da tastiera.
-        assert!(
-            compilata
-                .css
-                .contains(":root[data-skin='prova'] .nav-pill:where(:focus-visible)"),
-            "{}",
-            compilata.css
-        );
-    }
-
-    #[test]
-    fn il_livello_non_lo_puo_spostare_la_skin() {
-        let css = compila_documento(
-            &MINIMA.replace(
-                "\"tokens\": {}",
-                r##""tokens": {}, "parts": { "ambient-backdrop": { "layer": { "background": [{ "effect": "solid", "color": "#fff" }], "opacity": 0.2 } } }"##,
-            ),
-        )
-        .css;
-        assert!(css.contains(".ambient-backdrop::after"), "{css}");
-        // Posizionamento e contenuto li mette il compilatore, sempre uguali.
-        assert!(css.contains("position: absolute;"), "{css}");
-        assert!(css.contains("inset: 0;"), "{css}");
-        assert!(css.contains("pointer-events: none;"), "{css}");
-    }
-
-    #[test]
-    fn il_costo_somma_motivi_e_parti() {
-        let compilata = compila_documento(
-            &MINIMA.replace(
-                "\"tokens\": {}",
-                r##""tokens": {},
-                   "patterns": { "sfoca": { "effect": "blurBehind", "radius": "24px" } },
-                   "parts": { "section-card": { "background": [{ "effect": "solid", "color": "#fff" }] } }"##,
-            ),
-        );
-        // Sfocatura 10 più tinta 1: sommarne una metà renderebbe il budget
-        // inutile.
-        assert_eq!(compilata.cost, 11);
-    }
-
-    #[test]
-    fn due_compilazioni_danno_lo_stesso_foglio() {
-        // Determinismo: è ciò che rende utili gli snapshot e la cache
-        // dell'anteprima dal vivo, e non lo si ottiene iterando un oggetto JSON.
-        let json = MINIMA.replace(
-            "\"tokens\": {}",
-            r##""tokens": { "color.accent": "#8b7cf6", "color.surface.0": "#09090d", "radius.card": "14px" }"##,
-        );
-        let skin = parse_skin_json(&json).expect("valida");
-        assert_eq!(compile_skin(&skin).css, compile_skin(&skin).css);
-        // E l'ordine è quello del registro, non quello di scrittura.
-        let css = compile_skin(&skin).css;
-        let posizione = |ago: &str| css.find(ago).unwrap_or(usize::MAX);
-        assert!(posizione("--color-surface-0") < posizione("--accent"));
-        assert!(posizione("--accent") < posizione("--radius-card"));
-    }
-
-    // ── Lo scafale ──────────────────────────────────────────────────────────
-
-    /// Il corpo di un blocco CSS: quel che sta fra la graffa aperta e la chiusa.
-    fn corpo(css: &str, apertura: &str) -> String {
-        let inizio = css.find(apertura).map_or(0, |i| i + apertura.len());
-        let resto = css.get(inizio..).unwrap_or_default();
-        let fine = resto.find("\n}").unwrap_or(0);
-        resto.get(..fine).unwrap_or_default().to_owned()
-    }
-
-    #[test]
-    fn lo_scafale_esce_in_blocchi_propri() {
-        // Non dentro `:root[data-skin='<id>']`: quel blocco è confrontato riga
-        // per riga con `stile.css`, e aggiungerci una regola di layout
-        // romperebbe il test di allineamento senza guadagnare niente.
-        let css = compila_documento(MINIMA).css;
-        let radice = corpo(&css, ":root[data-skin='prova'] {");
-        assert!(!radice.contains("display"), "{radice}");
-        assert!(!radice.contains("flex"), "{radice}");
-        assert!(
-            css.contains(":root[data-skin='prova'] [data-nodo="),
-            "{css}"
-        );
-    }
-
-    #[test]
-    fn l_indirizzo_di_un_nodo_e_il_suo_percorso() {
-        // `1-1` è il secondo figlio del secondo figlio: nell'albero di serie è
-        // `content`, dentro la colonna che sta accanto alla navigazione.
-        let css = compila_documento(MINIMA).css;
-        for atteso in [
-            "[data-nodo='radice']",
-            "[data-nodo='1']",
-            "[data-nodo='1-1']",
-        ] {
-            assert!(css.contains(atteso), "manca {atteso} in:\n{css}");
-        }
-    }
-
-    #[test]
-    fn il_contenitore_di_query_va_dove_sta_il_contenuto() {
-        // `--content-x` è `clamp(16px, 3cqw, 48px)`: senza un `container-type`
-        // da qualche parte, `cqw` non ha un contenitore e la lunghezza adattiva
-        // non si adatta a niente.
-        let css = compila_documento(MINIMA).css;
-        let zona = corpo(&css, ":root[data-skin='prova'] [data-nodo='1'] {");
-        assert!(zona.contains("container-type: inline-size;"), "{zona}");
-        let radice = corpo(&css, ":root[data-skin='prova'] [data-nodo='radice'] {");
-        assert!(!radice.contains("container-type"), "{radice}");
-    }
-
-    #[test]
-    fn ogni_nodo_riceve_il_minimo_a_zero() {
-        // È la proprietà che impedisce a un titolo lungo di spingere fuori
-        // schermo quel che gli sta accanto, ed è del compilatore: nessuna skin
-        // può toglierla, perché non ha una parola per dirlo.
-        let css = compila_documento(MINIMA).css;
-        let nodi = css.matches("[data-nodo=").count();
-        assert!(nodi >= 6, "solo {nodi} nodi:\n{css}");
-        assert_eq!(css.matches("min-width: 0;").count(), nodi);
-        assert_eq!(css.matches("min-height: 0;").count(), nodi);
-    }
-
-    #[test]
-    fn una_misura_fissa_esce_stretta_fra_due_estremi() {
-        let css = compila_documento(MINIMA).css;
-        // La terza colonna dell'albero di serie: 348px, fra 24 e 480.
-        assert!(
-            css.contains("flex: 0 0 clamp(24px, 348px, 480px);"),
-            "{css}"
-        );
-    }
-
-    #[test]
-    fn il_costo_dello_scafale_non_entra_in_quello_delle_superfici() {
-        let compilata = compila_documento(MINIMA);
-        // Nessun motivo e nessuna parte: le superfici non costano niente.
-        assert_eq!(compilata.cost, 0);
-        // Ma l'albero di serie monta navigazione, colonna e lettore (5), più la
-        // coda e la barra della selezione (1 ciascuna) che galleggiano accanto
-        // al lettore.
-        assert_eq!(compilata.shell_cost, 7);
-    }
-
-    #[test]
-    fn uno_scafale_scritto_a_mano_esce_come_l_ha_scritto_chi_lo_ha_scritto() {
-        let css = compila_documento(
-            r##"{
-              "format": 1,
-              "id": "prova",
-              "meta": { "name": "Prova", "author": "Aether", "version": "1.0.0" },
-              "tokens": {},
-              "layout": { "shell": {
-                "zone": "column",
-                "gap": "l",
-                "align": "center",
-                "spread": "between",
-                "children": [
-                  { "widget": "content" },
-                  { "zone": "scroll", "size": "120px", "children": [
-                    { "widget": "queue", "size": "fill" }
-                  ] },
-                  { "widget": "player" },
-                  { "widget": "bottom-nav" }
-                ]
-              } }
-            }"##,
-        )
-        .css;
-        let radice = corpo(&css, ":root[data-skin='prova'] [data-nodo='radice'] {");
-        assert!(radice.contains("flex-direction: column;"), "{radice}");
-        assert!(radice.contains("gap: var(--spazio-4);"), "{radice}");
-        assert!(radice.contains("align-items: center;"), "{radice}");
-        assert!(
-            radice.contains("justify-content: space-between;"),
-            "{radice}"
-        );
-        let scorrevole = corpo(&css, ":root[data-skin='prova'] [data-nodo='1'] {");
-        assert!(scorrevole.contains("overflow-y: auto;"), "{scorrevole}");
-        // Figlio di una colonna: la misura fissa va sull'altezza, non sulla
-        // larghezza. È l'unica cosa che `flex-basis` da solo non direbbe.
-        assert!(
-            scorrevole.contains("height: clamp(24px, 120px, 480px);"),
-            "{scorrevole}"
-        );
-    }
-
-    #[test]
-    fn niente_dello_scafale_finisce_nel_foglio_come_testo() {
-        // Lo scafale aggiunge tre canali dal documento al foglio — il nome del
-        // widget, il nome della manopola, il valore della manopola — e nessuno
-        // dei tre ci arriva: il selettore porta l'indirizzo calcolato qui, e le
-        // manopole non producono CSS affatto. Si verifica sull'uscita.
-        let compilata = compila_documento(
-            r##"{
-              "format": 1,
-              "id": "prova",
-              "meta": { "name": "Prova", "author": "Aether", "version": "1.0.0" },
-              "tokens": {},
-              "layout": { "shell": {
-                "zone": "row",
-                "part": "app-shell",
-                "children": [
-                  { "widget": "navigation", "options": { "wide": true } },
-                  { "widget": "content" },
-                  {
-                    "widget": "transport",
-                    "options": { "size": "large", "shuffle": false }
-                  }
-                ]
-              } }
-            }"##,
-        );
-        for vietato in ["url(", "@import", "expression(", "javascript:", "</style"] {
-            assert!(!compilata.css.contains(vietato), "{}", compilata.css);
-        }
-        // Il nome del widget e quello della manopola non compaiono: il
-        // selettore è un indirizzo, non un nome.
-        for nome in ["navigation", "transport", "shuffle", "large"] {
-            assert!(
-                !compilata.css.contains(nome),
-                "«{nome}» nel foglio:\n{}",
-                compilata.css
-            );
-        }
-    }
-
-    #[test]
-    fn due_compilazioni_danno_lo_stesso_scafale() {
-        let skin = parse_skin_json(MINIMA).expect("valida");
-        assert_eq!(compile_skin(&skin).css, compile_skin(&skin).css);
-    }
-
-    // ── Le animazioni nominate ──────────────────────────────────────────
-
-    /// Un documento col movimento scritto per intero.
-    fn con_movimento(motion: &str, parti: &str) -> CompiledSkin {
-        compila_documento(&MINIMA.replace(
-            "\"tokens\": {}",
-            &format!(
-                r##""tokens": {{ "motion.dur.1": "150ms", "motion.dur.2": "280ms" }},
-                   "motion": {motion},
-                   "parts": {parti}"##
-            ),
-        ))
-    }
-
-    const DUE_ANIMAZIONI: &str = r##"{
-      "intensity": "full",
-      "animations": {
-        "sbuca": {
-          "duration": "240ms", "delay": "60ms", "iterations": 2,
-          "direction": "alternate",
-          "frames": [
-            { "at": 0, "opacity": 0, "translateY": 8 },
-            { "at": 60, "opacity": 1, "translateX": -4, "rotate": 3 },
-            { "at": 100, "opacity": 1, "scale": 1.02 }
-          ]
-        },
-        "appare": {
-          "duration": "120ms",
-          "frames": [{ "at": 0, "opacity": 0 }, { "at": 100, "opacity": 1 }]
-        }
-      }
-    }"##;
-
-    #[test]
-    fn i_keyframes_portano_il_nome_della_skin_e_dell_animazione() {
-        let compilata = con_movimento(
-            DUE_ANIMAZIONI,
-            r##"{ "section-card": { "animations": { "enter": "appare", "hover": "sbuca" } } }"##,
-        );
-        // `appare` una volta (4) più `sbuca` due (5): nove, e in un campo suo.
-        // Il costo delle superfici resta zero: sono due conti diversi, e
-        // sommarli darebbe un numero che non risponde a nessuna delle due
-        // domande.
-        assert_eq!(compilata.motion_cost, 9);
-        assert_eq!(compilata.cost, 0);
-        let css = compilata.css;
-
-        // Il segmento `-anim-` tiene i nomi dichiarati fuori dallo spazio dei
-        // nomi delle transizioni di rotta, che sono `skin-<id>-out` e
-        // `skin-<id>-in`: senza, un'animazione chiamata `out` cancellerebbe in
-        // silenzio la transizione della sua stessa skin.
-        assert!(css.contains("@keyframes skin-prova-anim-appare {"), "{css}");
-        assert!(css.contains("@keyframes skin-prova-anim-sbuca {"), "{css}");
-
-        // Le fermate escono con la percentuale scritta, e le trasformazioni in
-        // ordine fisso: traslazione, rotazione, scala.
-        assert!(
-            css.contains(
-                "  60% {\n    opacity: 1;\n    transform: translateX(-4px) rotate(3deg);\n  }"
-            ),
-            "{css}"
-        );
-        assert!(
-            css.contains("  100% {\n    opacity: 1;\n    transform: scale(1.02);\n  }"),
-            "{css}"
-        );
-
-        // L'ingresso sta nella regola base della parte, lo stato nella sua.
-        assert_eq!(
-            valore(&css, ":root[data-skin='prova'] .section-card", "animation").as_deref(),
-            Some("skin-prova-anim-appare calc(120ms * var(--motion-scale, 1)) ease 1 normal both")
-        );
-        assert_eq!(
-            valore(
-                &css,
-                ":root[data-skin='prova'] .section-card:where(:hover)",
-                "animation"
-            )
-            .as_deref(),
-            Some(
-                "skin-prova-anim-sbuca calc(240ms * var(--motion-scale, 1)) ease \
-                 calc(60ms * var(--motion-scale, 1)) 2 alternate both"
-            )
-        );
-    }
-
-    #[test]
-    fn l_ordine_dell_emissione_non_dipende_da_come_e_scritto_il_documento() {
-        let primo = con_movimento(
-            DUE_ANIMAZIONI,
-            r##"{ "section-card": { "animations": { "hover": "sbuca", "enter": "appare" } } }"##,
-        )
-        .css;
-        // Le stesse cose scritte nell'ordine opposto danno lo stesso foglio.
-        let secondo = con_movimento(
-            &DUE_ANIMAZIONI.replace("\"sbuca\"", "\"zeta\""),
-            r##"{ "section-card": { "animations": { "enter": "appare", "hover": "zeta" } } }"##,
-        )
-        .css;
-        assert_eq!(primo.replace("sbuca", "zeta"), secondo);
-
-        // E i `@keyframes` escono in ordine di nome, non di scrittura:
-        // `appare` è dichiarato secondo nel documento e viene per primo.
-        let appare = primo.find("@keyframes skin-prova-anim-appare");
-        let sbuca = primo.find("@keyframes skin-prova-anim-sbuca");
-        assert!(appare < sbuca, "{primo}");
-        assert!(appare.is_some());
-
-        // La regola base viene prima di quella dello stato: a parità di
-        // specificità vince chi viene dopo, e lo stato deve poter dire
-        // l'ultima parola.
-        let base = primo.find(":root[data-skin='prova'] .section-card {");
-        let hover = primo.find(":root[data-skin='prova'] .section-card:where(:hover) {");
-        assert!(base < hover, "{primo}");
-        assert!(base.is_some());
-    }
-
-    /// I pezzi di un valore che stanno **fuori** da ogni `calc(…)`.
-    ///
-    /// Serve alla prova qui sotto: dentro un `calc()` una durata è scalata, e
-    /// fuori no. Conta le parentesi invece di cercare la chiusa più vicina,
-    /// perché `calc(var(--dur-2) * var(--motion-scale, 1))` ne ha tre annidate.
-    fn fuori_dai_calc(valore: &str) -> String {
-        let mut fuori = String::new();
-        let mut resto = valore;
-        while let Some(inizio) = resto.find("calc(") {
-            fuori.push_str(resto.get(..inizio).unwrap_or_default());
-            let mut profondita = 0_i32;
-            let mut fine = resto.len();
-            for (indice, carattere) in resto.char_indices().skip(inizio) {
-                match carattere {
-                    '(' => profondita += 1,
-                    ')' => {
-                        profondita -= 1;
-                        if profondita == 0 {
-                            fine = indice + 1;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            resto = resto.get(fine..).unwrap_or_default();
-        }
-        fuori.push_str(resto);
-        fuori
-    }
-
-    /// Tutti i `calc(…)` di un valore, per esteso.
-    fn i_calc(valore: &str) -> Vec<String> {
-        let mut trovati = Vec::new();
-        let mut resto = valore;
-        while let Some(inizio) = resto.find("calc(") {
-            let mut profondita = 0_i32;
-            let mut fine = resto.len();
-            for (indice, carattere) in resto.char_indices().skip(inizio) {
-                match carattere {
-                    '(' => profondita += 1,
-                    ')' => {
-                        profondita -= 1;
-                        if profondita == 0 {
-                            fine = indice + 1;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            trovati.push(resto.get(inizio..fine).unwrap_or_default().to_owned());
-            resto = resto.get(fine..).unwrap_or_default();
-        }
-        trovati
-    }
-
-    #[test]
-    fn nessuna_durata_esce_da_qui_fuori_da_var_motion_scale() {
-        // **La prova che difende la regola.** `prefers-reduced-motion` nell'app
-        // non spegne le animazioni una per una: azzera `--motion-scale`, e ogni
-        // durata del foglio passa da lì. Una durata letterale in un
-        // `animation:` o in un `transition:` aggira quell'interruttore, e una
-        // skin non può scrivere la media query che la rimedierebbe — quindi
-        // sarebbe l'unica cosa dell'applicazione che non si riesce a fermare.
-        //
-        // Guarda l'**output**, non l'intenzione: qualunque ramo nuovo del
-        // compilatore che emetta un tempo fuori da un `calc()` cade qui.
-        let fogli = [
-            compile_skin(&crate::plain().expect("la skin di serie")).css,
-            con_movimento(
-                DUE_ANIMAZIONI,
-                r##"{ "section-card": { "animations": { "enter": "appare", "hover": "sbuca" } },
-                      "nav-pill": { "animations": { "active": "sbuca", "focus": "appare" } } }"##,
-            )
-            .css,
-            compila_documento(&MINIMA.replace(
-                "\"tokens\": {}",
-                r##""tokens": { "motion.dur.1": "150ms", "motion.dur.2": "280ms" },
-                       "motion": { "routeTransition": {
-                           "out": { "opacity": 0, "scale": 0.99 },
-                           "in": { "opacity": 0, "translateY": 6 }
-                       } }"##,
-            ))
-            .css,
-        ];
-
-        let mut viste = 0_usize;
-        for css in &fogli {
-            for riga in css.lines() {
-                let riga = riga.trim();
-                let Some((proprieta, valore)) = riga.split_once(": ") else {
-                    continue;
-                };
-                if !matches!(proprieta, "animation" | "transition")
-                    && !proprieta.starts_with("--transition")
-                {
-                    continue;
-                }
-                viste += 1;
-                let valore = valore.trim_end_matches(';');
-                for calcolo in i_calc(valore) {
-                    assert!(
-                        calcolo.contains("var(--motion-scale"),
-                        "«{proprieta}: {valore}»: il calc «{calcolo}» non passa da --motion-scale"
-                    );
-                }
-                let nudo = fuori_dai_calc(valore);
-                assert!(
-                    !nudo.contains("ms") && !nudo.contains("var(--dur"),
-                    "«{proprieta}: {valore}»: c'è una durata fuori dal calc"
-                );
-                assert!(
-                    !nudo
-                        .as_bytes()
-                        .windows(2)
-                        .any(|coppia| coppia.first().is_some_and(u8::is_ascii_digit)
-                            && coppia.get(1) == Some(&b's')),
-                    "«{proprieta}: {valore}»: c'è una durata in secondi fuori dal calc"
-                );
-            }
-        }
-        // Se un giorno il compilatore smettesse di emettere queste proprietà,
-        // la prova passerebbe senza guardare niente: il conto lo impedisce.
-        assert!(viste >= 8, "solo {viste} dichiarazioni esaminate");
-    }
-
-    #[test]
-    fn anche_la_transizione_di_rotta_passa_dalla_scala() {
-        // Erano le due sole animazioni del sistema che «Riduci il movimento»
-        // non toccava, e `stile.css` aveva rimediato altrove — facendo saltare
-        // la transizione a `transizione.ts` prima ancora di chiamare il motore.
-        let css = compila_documento(&MINIMA.replace(
-            "\"tokens\": {}",
-            r##""tokens": { "motion.dur.2": "280ms" },
-               "motion": { "routeTransition": {
-                   "out": { "opacity": 0 }, "in": { "opacity": 0 }
-               } }"##,
-        ))
-        .css;
-        assert!(
-            css.contains(
-                "animation: skin-prova-out calc(var(--dur-2) * var(--motion-scale, 1)) \
-                 var(--ease-out-expo) both;"
-            ),
-            "{css}"
-        );
-        assert!(
-            css.contains(
-                "animation: skin-prova-in calc(var(--dur-2) * var(--motion-scale, 1)) \
-                 var(--ease-out-expo) both;"
-            ),
-            "{css}"
-        );
-    }
-
-    #[test]
-    fn il_tema_chiaro_sovrascrive_solo_quel_che_serve() {
-        let css = compila_documento(&MINIMA.replace(
-            "\"tokens\": {}",
-            r##""tokens": { "color.hairline": "rgba(255,255,255,0.07)" },
-                   "themes": { "light": { "color.hairline": "rgba(0,0,0,0.08)" } }"##,
-        ))
-        .css;
-        assert!(
-            css.contains(":root[data-skin='prova'][data-theme='light'] {"),
-            "{css}"
-        );
-        assert!(css.contains("color-scheme: light;"), "{css}");
-    }
-}
+mod tests;

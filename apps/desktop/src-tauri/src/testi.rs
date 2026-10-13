@@ -405,6 +405,9 @@ fn rete_attiva(connection: &rusqlite::Connection) -> bool {
 pub struct StatoTestiIpc {
     /// Si può chiedere al catalogo.
     pub rete: bool,
+    /// Un testo sincronizzato a mano si scrive anche in un `.lrc` accanto al
+    /// brano. Vedi `aether_app::testi::accanto_ai_file`.
+    pub accanto: bool,
     /// Una passata sta girando adesso.
     pub in_corso: bool,
     /// Quanti brani ha guardato la passata in corso.
@@ -429,15 +432,17 @@ fn stato_adesso(stato: &Stato, testi: &StatoTesti) -> Result<StatoTestiIpc, AppE
     // Le due letture sotto lo **stesso** lucchetto: prenderlo due volte
     // lascerebbe passare in mezzo un brano che si conclude, e l'interruttore
     // direbbe una cosa mentre i numeri ne dicono un'altra.
-    let (rete, copertura, in_coda) = con_libreria(stato, |libreria| {
+    let (rete, accanto, copertura, in_coda) = con_libreria(stato, |libreria| {
         Ok((
             rete_attiva(&libreria.connection),
+            testi::accanto_ai_file(&libreria.connection),
             testi::copertura(&libreria.connection)?,
             testi::quanti_da_cercare(&libreria.connection, adesso_ms())?,
         ))
     })?;
     Ok(StatoTestiIpc {
         rete,
+        accanto,
         in_corso: testi.in_corso.load(Ordering::Acquire),
         fatti: testi.fatti.load(Ordering::Relaxed),
         rimasti: testi.rimasti.load(Ordering::Relaxed),
@@ -813,6 +818,33 @@ pub fn testi_rete(
     if !attivo {
         testi.ferma();
     }
+    stato_adesso(&stato, &testi).map_err(errore)
+}
+
+/// Accende o spegne i `.lrc` accanto alla musica.
+///
+/// Vale per i salvataggi da qui in poi: i file già scritti restano dove sono —
+/// toglierli sarebbe toccare di nuovo le cartelle della musica, proprio quel che
+/// l'interruttore spento promette di non fare — e continuano a leggersi. Il
+/// perché del valore di serie sta su `aether_app::testi::accanto_ai_file`.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+#[tauri::command(async)]
+pub fn testi_accanto(
+    stato: State<'_, Stato>,
+    testi: State<'_, StatoTesti>,
+    attivo: bool,
+) -> Esito<StatoTestiIpc> {
+    con_libreria(&stato, |libreria| {
+        settings::write(
+            &libreria.connection,
+            testi::CHIAVE_ACCANTO,
+            if attivo { "1" } else { "0" },
+        )
+    })
+    .map_err(errore)?;
     stato_adesso(&stato, &testi).map_err(errore)
 }
 
@@ -1476,8 +1508,8 @@ pub fn testo_aggancia(stato: State<'_, Stato>, id: i64, battute: Vec<u32>) -> Es
 ///
 /// Riceve le righe già agganciate: l'aggancio agli attacchi lo fa
 /// `aether_domain::testo::aggancia`, che è puro, e la finestra manda quel che ne
-/// esce. Qui si compone l'LRC e si scrive — il `.lrc` accanto al brano prima, la
-/// riga in tabella dopo.
+/// esce. Qui si compone l'LRC e si scrive — la riga in tabella prima, e poi, se
+/// l'utente l'ha chiesto, i `.lrc` accanto al brano.
 ///
 /// # Perché l'LRC si scrive qui e non nella finestra
 ///
@@ -1491,23 +1523,24 @@ pub fn testo_aggancia(stato: State<'_, Stato>, id: i64, battute: Vec<u32>) -> Es
 /// `library.trackNotFound`, `fs.writeFailed` se la cartella è di sola lettura,
 /// `db.queryFailed`.
 ///
-/// # Due file accanto al brano, non uno
+/// # La riga è la fonte, i file un'esportazione
 ///
-/// Quando almeno una riga porta i tempi delle sue parole si scrive anche
-/// `nome.a2.lrc`, e il `nome.lrc` di sempre resta lì **senza** le parole. Il
-/// perché sta su [`Gemelli`]; quel che conta qui è che la riga in tabella porta
-/// il **semplice**, non l'esteso, e nemmeno questo è una dimenticanza:
+/// La riga in tabella porta il testo **per intero**: l'esteso, con i tempi delle
+/// parole, quando ce ne sono, e il semplice altrimenti. Fino alla 2.4 portava
+/// sempre il semplice, e le parole vivevano solo nell'`.a2.lrc` accanto al
+/// brano: con i file accanto spenti — che dalla 3.0 è il valore di serie, vedi
+/// `aether_app::testi::accanto_ai_file` — sarebbero andate perse al primo
+/// salvataggio. A LRCLIB le parole non arrivano lo stesso: le toglie
+/// [`testi::da_restituire`], che al catalogo manda il gemello semplice.
 ///
-/// * la riga è una copia veloce, e il file è la verità — la fonte che si
-///   rilegge è il sidecar, dove l'esteso vince già da sé
-///   (`aether_app::testi::CODE`);
-/// * da quella riga esce quel che si offre a LRCLIB
-///   ([`testi::da_restituire`]), e il catalogo si aspetta un LRC che tutti
-///   sappiano leggere. Mandargli i `<mm:ss.xx>` vorrebbe dire far arrivare i
-///   tempi delle parole a chi li mostrerà come testo.
+/// # Due file accanto al brano, non uno — quando li si vuole
 ///
-/// Quando parole non ce ne sono l'esteso non si scrive, e se ce n'era uno **si
-/// toglie**: vedi [`gemello_esteso`].
+/// Con l'interruttore acceso, quando almeno una riga porta i tempi delle sue
+/// parole si scrive anche `nome.a2.lrc`, e il `nome.lrc` di sempre resta lì
+/// **senza** le parole. Il perché sta su [`Gemelli`]. Quando parole non ce ne
+/// sono l'esteso non si scrive, e se ce n'era uno **si toglie**: vedi
+/// [`gemello_esteso`]. Con l'interruttore spento accanto al brano non si tocca
+/// niente, nemmeno per togliere.
 ///
 /// # I due scarti si azzerano entrambi, e non è una dimenticanza
 ///
@@ -1540,9 +1573,9 @@ pub fn testo_aggancia(stato: State<'_, Stato>, id: i64, battute: Vec<u32>) -> Es
 /// tempi non esistono più. Dall'editor arrivano solo le parole — `iniziale`, in
 /// `Testo.tsx` — e i tempi si ribattono tutti.
 ///
-/// `(async)`: scrive un `.lrc` accanto al file musicale, che può stare su una
-/// cartella di rete. Stessa ragione di [`testo_brano`], e qui è una scrittura:
-/// costa di più di una lettura anche quando la rete c'è.
+/// `(async)`: può scrivere un `.lrc` accanto al file musicale, che può stare su
+/// una cartella di rete. Stessa ragione di [`testo_brano`], e qui è una
+/// scrittura: costa di più di una lettura anche quando la rete c'è.
 #[tauri::command(async)]
 pub fn testo_salva(
     app: AppHandle,
@@ -1566,12 +1599,17 @@ pub fn testo_salva(
             // Prima del file, e la ragione sta su
             // `aether_app::testi::salva_a_mano`: una cartella di sola lettura
             // non deve costare mezz'ora di battute.
-            con_libreria(&stato, |libreria| {
-                testi::registra_a_mano(&libreria.connection, &brano, &gemelli.semplice)
+            let accanto = con_libreria(&stato, |libreria| {
+                testi::registra_a_mano(
+                    &libreria.connection,
+                    &brano,
+                    gemelli.esteso.as_deref().unwrap_or(&gemelli.semplice),
+                )?;
+                Ok(testi::accanto_ai_file(&libreria.connection))
             })?;
-            Ok((brano, gemelli))
+            Ok((brano, gemelli, accanto))
         })
-        .and_then(|(brano, gemelli)| {
+        .and_then(|(brano, gemelli, accanto)| {
             // ── senza lucchetto: i file accanto al brano, che può stare su una
             // share ────────────────────────────────────────────────────────────
             // L'esteso per primo, e non è indifferente: se la scrittura del `.lrc`
@@ -1583,12 +1621,18 @@ pub fn testo_salva(
             // Per un brano di catalogo non c'è nessun file accanto a cui
             // scrivere, e non è un guasto: il testo è già salvato in tabella,
             // che è il posto da cui il pannello lo rilegge. `Ok(())` e si tira
-            // dritto.
-            let nei_file = brano.path.as_deref().map_or(Ok(()), |percorso| {
-                let percorso = Path::new(percorso);
-                gemello_esteso(percorso, gemelli.esteso.as_deref())
-                    .and_then(|()| testi::scrivi_sidecar(percorso, "lrc", Some(&gemelli.semplice)))
-            });
+            // dritto. Lo stesso con l'interruttore spento, che è il caso di
+            // serie: la riga è tutto il salvataggio.
+            let nei_file = brano
+                .path
+                .as_deref()
+                .filter(|_| accanto)
+                .map_or(Ok(()), |percorso| {
+                    let percorso = Path::new(percorso);
+                    gemello_esteso(percorso, gemelli.esteso.as_deref()).and_then(|()| {
+                        testi::scrivi_sidecar(percorso, "lrc", Some(&gemelli.semplice))
+                    })
+                });
             if let Err(err) = &nei_file {
                 nota!(
                     "[testi] testo salvato nella libreria ma non accanto al brano: {}",

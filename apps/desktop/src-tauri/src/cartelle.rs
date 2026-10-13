@@ -44,18 +44,25 @@
 //!
 //! # Il lucchetto globale non si prende mai
 //!
-//! Nessuna funzione di questo modulo nomina `con_libreria`. Tutti e tre i
-//! comandi passano da [`crate::disparte::in_disparte`], perché la sonda delle
-//! radici tocca il disco e perché una costruzione da trentacinque millisecondi
-//! sul filo principale sono due fotogrammi persi.
+//! Nessuna funzione di questo modulo nomina `con_libreria`. Tutti i comandi
+//! passano da [`crate::disparte::in_disparte`], perché la sonda delle radici
+//! tocca il disco e perché una costruzione da trentacinque millisecondi sul
+//! filo principale sono due fotogrammi persi. Lo stesso vale per le foglie e
+//! per il filtro, che leggono `tracks` dalla connessione di sola lettura, e per
+//! «Mostra nella cartella», che legge le radici da lì.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use aether_app::cartelle::{Albero, NodoCartella, brani_sotto_dal_database};
+use aether_app::cartelle::{
+    Albero, CartelleFiltrate, FileCartella, LIMITE_FILTRO, NodoCartella,
+    brani_diretti_dal_database, brani_sotto_dal_database, file_della_cartella, filtra,
+    sotto_una_radice,
+};
 use aether_app::files::MusicFiles as _;
+use aether_app::settings::{self, CHIAVE_CARTELLE};
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::paths::PathRules;
 use rusqlite::{Connection, OpenFlags};
@@ -185,8 +192,12 @@ impl IndiceCartelle {
     /// `db.openFailed` col percorso, che è l'unica cosa utile da dire quando un
     /// file non si apre.
     fn apri(&self) -> Result<Connection, AppError> {
+        // Dal percorso lungo, come la connessione principale: con una cartella
+        // dati oltre i 260 caratteri la principale si apre e questa no, e
+        // l'albero delle cartelle diventerebbe l'unica cosa che dice «il
+        // database non si apre» di un database aperto.
         let connessione = Connection::open_with_flags(
-            &self.percorso,
+            aether_app::files::percorso_lungo(&self.percorso),
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|err| {
@@ -323,6 +334,11 @@ pub async fn cartelle_figlie(
 /// dell'album — che è la cosa giusta perché una cartella, nel caso normale, *è*
 /// un album.
 ///
+/// `ricorsivo` a `false` tiene i soli brani che stanno direttamente lì: è
+/// l'interruttore «includi sottocartelle» del pannello dei brani. Facoltativo,
+/// e di serie acceso, perché è quel che il comando ha sempre fatto e quel che
+/// chiedono la riproduzione e la coda.
+///
 /// # Dove gira
 ///
 /// In disparte, e mai sotto il lucchetto della libreria.
@@ -335,11 +351,18 @@ pub async fn cartelle_brani(
     app: tauri::AppHandle,
     radici: Vec<String>,
     percorso: String,
+    ricorsivo: Option<bool>,
 ) -> Esito<Vec<i64>> {
+    let ricorsivo = ricorsivo.unwrap_or(true);
     in_disparte("cartelle brani", move || {
         let indice = indice(&app)?;
         let albero = indice.albero(&radici)?;
-        if let Some(brani) = albero.brani_sotto(&percorso) {
+        let in_memoria = if ricorsivo {
+            albero.brani_sotto(&percorso)
+        } else {
+            albero.brani_diretti(&percorso)
+        };
+        if let Some(brani) = in_memoria {
             return Ok(brani);
         }
         // `None` vuol dire «non lo so», non «non ce n'è»: oltre la soglia il
@@ -347,11 +370,167 @@ pub async fn cartelle_brani(
         // sotto controllo su una libreria enorme. Qui si rilegge, e si può — è
         // un gesto solo, non un'espansione.
         let connessione = indice.apri()?;
-        brani_sotto_dal_database(&connessione, &percorso, PathRules::for_current_platform())
+        let regole = PathRules::for_current_platform();
+        if ricorsivo {
+            brani_sotto_dal_database(&connessione, &percorso, regole)
+        } else {
+            brani_diretti_dal_database(&connessione, &percorso, regole)
+        }
     })
     .await
     .map_err(errore)?
     .map_err(errore)
+}
+
+/// I file che stanno direttamente in `percorso`: le foglie della cartella.
+///
+/// Si chiede insieme alle figlie quando una cartella si apre, e solo se il
+/// nodo dice di avere dei file. Dal database e mai dal disco, come il resto
+/// dell'albero: le righe vengono da `tracks`, dalla connessione di sola
+/// lettura, e una cartella su una share spenta mostra le sue foglie come le
+/// altre.
+///
+/// # Dove gira
+///
+/// In disparte, e mai sotto il lucchetto della libreria.
+///
+/// # Errori
+///
+/// Gli stessi di [`cartelle_figlie`].
+#[tauri::command]
+pub async fn cartelle_file(
+    app: tauri::AppHandle,
+    radici: Vec<String>,
+    percorso: String,
+) -> Esito<Vec<FileCartella>> {
+    in_disparte("cartelle file", move || {
+        let indice = indice(&app)?;
+        let albero = indice.albero(&radici)?;
+        // Una cartella di passaggio non ha foglie: si risponde senza aprire
+        // la connessione, che è l'unica cosa che qui costa.
+        if albero.quanti_diretti(&percorso) == 0 {
+            return Ok(Vec::new());
+        }
+        let connessione = indice.apri()?;
+        file_della_cartella(&connessione, &albero, &percorso)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+/// Le cartelle e i file il cui nome contiene `testo`, con la strada per
+/// arrivarci: vedi [`aether_app::cartelle::filtra`].
+///
+/// # Dove gira
+///
+/// In disparte, e mai sotto il lucchetto della libreria. Costa una lettura di
+/// `tracks` — i nomi dei file non stanno nel trie — cioè quanto costruire
+/// l'albero; la finestra la chiede dopo una pausa nella digitazione, non a ogni
+/// lettera.
+///
+/// # Errori
+///
+/// Gli stessi di [`cartelle_figlie`].
+#[tauri::command]
+pub async fn cartelle_filtra(
+    app: tauri::AppHandle,
+    radici: Vec<String>,
+    testo: String,
+) -> Esito<CartelleFiltrate> {
+    in_disparte("cartelle filtro", move || {
+        if testo.trim().is_empty() {
+            return Ok(CartelleFiltrate::default());
+        }
+        let indice = indice(&app)?;
+        let albero = indice.albero(&radici)?;
+        let connessione = indice.apri()?;
+        filtra(&connessione, &albero, &testo, LIMITE_FILTRO)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+/// Apre una cartella della libreria in Esplora risorse.
+///
+/// È il «Mostra nella cartella» dei nodi, gemello di
+/// `comandi::brano_mostra_nella_cartella` per le foglie. Il brano si nomina per
+/// identificativo e il percorso lo legge il nucleo; una cartella un
+/// identificativo non ce l'ha, quindi qui il percorso arriva dalla finestra — e
+/// proprio per questo non le si crede: vedi [`cartella_da_mostrare`].
+///
+/// # Dove gira
+///
+/// In disparte: le radici si leggono dalla connessione di sola lettura, senza
+/// il lucchetto, e su una cartella di rete sia il controllo sia il gestore file
+/// possono metterci secondi.
+///
+/// # Errori
+///
+/// `fs.pathInvalid` se il percorso non sta sotto una cartella sorvegliata o
+/// non è una cartella; `fs.notFound` se non c'è più o il gestore file rifiuta
+/// di aprirsi.
+#[tauri::command]
+pub async fn cartella_mostra(app: tauri::AppHandle, percorso: String) -> Esito<()> {
+    in_disparte("mostra cartella", move || {
+        let connessione = indice(&app)?.apri()?;
+        let cartella = cartella_da_mostrare(&connessione, &percorso)?;
+        // `open_path` e non `reveal_item_in_dir`: si chiede la cartella stessa,
+        // aperta, e non la cartella che la contiene con lei evidenziata. Che sia
+        // davvero una cartella l'ha appena verificato la guardia: aprire «con il
+        // programma predefinito» un file sotto una radice vorrebbe dire
+        // eseguirlo, se fosse un eseguibile.
+        tauri_plugin_opener::open_path(&cartella, None::<&str>).map_err(|err| {
+            AppError::new(ErrorCode::FsNotFound {
+                path: percorso.clone(),
+            })
+            .with_cause(err.to_string())
+        })
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+/// La cartella da aprire, se la si può aprire.
+///
+/// Due condizioni, nell'ordine in cui costano. La prima non tocca il disco: il
+/// percorso deve stare sotto una delle cartelle sorvegliate — lette dal
+/// database, non dalla finestra, che altrimenti si sceglierebbe il recinto da
+/// sola — e senza segmenti `..` che lo portino fuori (vedi
+/// [`sotto_una_radice`]). La seconda guarda il disco: dev'essere una
+/// **cartella**, perché il comando che segue apre quel che riceve con il
+/// programma predefinito, e su un file vorrebbe dire eseguirlo.
+///
+/// Separata dal comando perché è tutto quel che c'è da provare: aprire Esplora
+/// risorse in una prova non si può, e non serve.
+///
+/// # Errori
+///
+/// `fs.pathInvalid` fuori dalle cartelle sorvegliate o su un file;
+/// `fs.notFound` se il percorso non c'è; `db.*` se le radici non si leggono.
+fn cartella_da_mostrare(connessione: &Connection, percorso: &str) -> Result<PathBuf, AppError> {
+    let radici: Vec<String> =
+        settings::read_json(connessione, CHIAVE_CARTELLE)?.unwrap_or_default();
+    let rifiuto = |perche: &str| {
+        AppError::new(ErrorCode::FsPathInvalid {
+            path: percorso.to_owned(),
+        })
+        .with_cause(perche.to_owned())
+    };
+    if !sotto_una_radice(percorso, &radici, PathRules::for_current_platform()) {
+        return Err(rifiuto("non sta sotto nessuna cartella sorvegliata"));
+    }
+    let cartella = PathBuf::from(percorso);
+    match std::fs::metadata(aether_app::files::percorso_lungo(&cartella)) {
+        Ok(dati) if dati.is_dir() => Ok(cartella),
+        Ok(_) => Err(rifiuto("non è una cartella")),
+        Err(err) => Err(AppError::new(ErrorCode::FsNotFound {
+            path: percorso.to_owned(),
+        })
+        .with_cause(err.to_string())),
+    }
 }
 
 /// Quali radici rispondono, adesso.
@@ -486,6 +665,60 @@ mod tests {
         indice.invalida();
         let dopo = indice.albero(&radici).expect("albero");
         assert_eq!(dopo.quanti_sotto(r"C:\M"), 2, "la scansione si vede");
+    }
+
+    #[test]
+    fn si_mostra_solo_una_cartella_sotto_una_radice() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let dati = dir.path().join("dati");
+        let musica = dir.path().join("Musica");
+        let album = musica.join("Album");
+        let fuori = dir.path().join("Altro");
+        for cartella in [&dati, &album, &fuori] {
+            std::fs::create_dir_all(cartella).expect("cartella");
+        }
+        let file = album.join("01.mp3");
+        std::fs::write(&file, b"non suona").expect("file");
+
+        let stato = crate::stato::Stato::apri(dati.clone());
+        {
+            let mut guardia = stato.libreria.lock().expect("lucchetto");
+            let libreria = guardia.as_mut().expect("libreria aperta");
+            settings::write_json(
+                &libreria.connection,
+                CHIAVE_CARTELLE,
+                &vec![musica.display().to_string()],
+            )
+            .expect("cartelle sorvegliate");
+        }
+        // La connessione del modulo, di sola lettura: è da lì che il comando
+        // legge le radici, e non dalla finestra.
+        let connessione = IndiceCartelle::nuovo(&dati).apri().expect("connessione");
+        let mostra =
+            |percorso: &Path| cartella_da_mostrare(&connessione, &percorso.display().to_string());
+        let rifiutato =
+            |esito: Result<PathBuf, AppError>| esito.err().map(|err| err.code().clone());
+
+        assert!(mostra(&album).is_ok(), "una cartella sotto la radice");
+        assert!(mostra(&musica).is_ok(), "la radice stessa");
+        assert!(matches!(
+            rifiutato(mostra(&fuori)),
+            Some(ErrorCode::FsPathInvalid { .. })
+        ));
+        // Lessicalmente dentro, in realtà fuori.
+        assert!(matches!(
+            rifiutato(mostra(&musica.join("..").join("Altro"))),
+            Some(ErrorCode::FsPathInvalid { .. })
+        ));
+        // Un file sotto la radice no: aprirlo vorrebbe dire eseguirlo.
+        assert!(matches!(
+            rifiutato(mostra(&file)),
+            Some(ErrorCode::FsPathInvalid { .. })
+        ));
+        assert!(matches!(
+            rifiutato(mostra(&musica.join("Sparita"))),
+            Some(ErrorCode::FsNotFound { .. })
+        ));
     }
 
     #[test]

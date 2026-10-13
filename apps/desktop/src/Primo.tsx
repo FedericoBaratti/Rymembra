@@ -48,9 +48,12 @@ import {
 } from "react";
 
 import { useFinestrella } from "./finestrella";
-import { ipc, type CartellaCandidata, type EsitoScansione } from "./ipc";
+import { numero } from "./formato";
+import type { CartellaCandidata, EsitoScansione } from "./ipc";
 import { t } from "./lingue";
 import { Icona } from "./parti/Icone";
+import { Presenza } from "./presenza";
+import { useDati } from "./dati";
 
 /** Quel che il primo avvio chiede alla finestra di fare per lui. */
 export interface PrimoProps {
@@ -128,6 +131,7 @@ export function Primo({
   onAscolta,
   onSalta,
 }: PrimoProps) {
+  const letture = useDati().ipc;
   const [candidate, setCandidate] = useState<CartellaCandidata[] | null>(null);
   const [scelte, setScelte] = useState<Set<string>>(new Set());
   const [inCorso, setInCorso] = useState(false);
@@ -159,7 +163,7 @@ export function Primo({
   // elenco vuoto invece di lasciare questa schermata a girare per sempre.
   useEffect(() => {
     let vivo = true;
-    void ipc
+    void letture
       .cartelleCandidate()
       .then((trovate) => {
         if (!vivo) return;
@@ -176,7 +180,7 @@ export function Primo({
     return () => {
       vivo = false;
     };
-  }, []);
+  }, [letture]);
 
   const spunta = useCallback((percorso: string) => {
     setScelte((prima) => {
@@ -222,119 +226,125 @@ export function Primo({
   const lettaVuota = !scansionando && !inCorso && esito !== null && brani === 0;
 
   return (
-    <div
-      ref={finestrella}
-      className="primo"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="primo-titolo"
-      data-fuoco-iniziale
-    >
-      <div className="primo-scheda">
-        <p className="occhiello">{t("primo.eyebrow")}</p>
-        <h1 id="primo-titolo">{t("primo.title")}</h1>
+    <Presenza parte="first-run">
+      <div
+        ref={finestrella}
+        className="primo first-run"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="primo-titolo"
+        data-fuoco-iniziale
+      >
+        <div className="primo-scheda first-run-card">
+          <p className="occhiello">{t("primo.eyebrow")}</p>
+          <h1 id="primo-titolo">{t("primo.title")}</h1>
 
-        {cercando ? (
-          <p className="primo-attesa" role="status">
-            {t("primo.cercando")}
-          </p>
-        ) : candidate.length === 0 ? (
-          <>
-            <h2 className="primo-sotto">{t("primo.nessuna.title")}</h2>
-            <p>{t("primo.nessuna.body")}</p>
-          </>
-        ) : (
-          <>
-            <p>{t("primo.body")}</p>
-            <ul className="primo-cartelle">
-              {candidate.map((cartella) => (
-                <li key={cartella.percorso}>
-                  <label className="primo-cartella">
-                    <input
-                      type="checkbox"
-                      checked={scelte.has(cartella.percorso)}
-                      onChange={() => spunta(cartella.percorso)}
-                      disabled={scansionando || inCorso}
-                    />
-                    <span className="primo-percorso">{cartella.percorso}</span>
-                    <span className="primo-conto">{quantiBrani(cartella)}</span>
-                  </label>
-                  {cartella.parziale && (
-                    <p className="primo-avviso">{t("primo.parziale")}</p>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-
-        {scansionando && (
-          <p className="primo-attesa" role="status">
-            {t("primo.scansione")}
-            {scansione.totale > 0 && ` ${scansione.fatti}/${scansione.totale}`}
-          </p>
-        )}
-
-        {brani > 0 && (
-          <p className="primo-pronto" role="status">
-            {t("primo.pronto", { n: brani })}
-          </p>
-        )}
-
-        {lettaVuota && (
-          <div role="status">
-            <h2 className="primo-sotto">{t("primo.vuota.title")}</h2>
-            <p>{t("primo.vuota.body")}</p>
-            {esito.radiciSaltate.length > 0 && (
-              <>
-                <p className="primo-avviso">{t("primo.saltate")}</p>
-                <ul className="primo-cartelle">
-                  {esito.radiciSaltate.map((radice) => (
-                    <li key={radice} className="primo-percorso">
-                      {radice}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </div>
-        )}
-
-        <div className="primo-avvisi">{avvisi}</div>
-
-        <div className="primo-tasti">
-          {puoAscoltare ? (
-            <button
-              type="button"
-              className="bottone primario btn-accent"
-              onClick={onAscolta}
-            >
-              <Icona nome="i-play" dim={16} />
-              {t("primo.ascolta")}
-            </button>
+          {cercando ? (
+            <p className="primo-attesa" role="status">
+              {t("primo.cercando")}
+            </p>
+          ) : candidate.length === 0 ? (
+            <>
+              <h2 className="primo-sotto">{t("primo.nessuna.title")}</h2>
+              <p>{t("primo.nessuna.body")}</p>
+            </>
           ) : (
+            <>
+              <p>{t("primo.body")}</p>
+              <ul className="primo-cartelle">
+                {candidate.map((cartella) => (
+                  <li key={cartella.percorso}>
+                    <label className="primo-cartella">
+                      <input
+                        type="checkbox"
+                        checked={scelte.has(cartella.percorso)}
+                        onChange={() => spunta(cartella.percorso)}
+                        disabled={scansionando || inCorso}
+                      />
+                      <span className="primo-percorso">{cartella.percorso}</span>
+                      <span className="primo-conto">{quantiBrani(cartella)}</span>
+                    </label>
+                    {cartella.parziale && (
+                      <p className="primo-avviso">{t("primo.parziale")}</p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          {/* La frase nella regione viva, il conteggio fuori: il conteggio
+              cambia quattro volte al secondo, e dentro la regione un lettore
+              di schermo lo rileggeva a ogni passo. Vedi `AnnuncioScansione`. */}
+          {scansionando && (
+            <p className="primo-attesa">
+              <span role="status">{t("primo.scansione")}</span>
+              {scansione.totale > 0 &&
+                ` ${numero(scansione.fatti)}/${numero(scansione.totale)}`}
+            </p>
+          )}
+
+          {brani > 0 && (
+            <p className="primo-pronto" role="status">
+              {t("primo.pronto", { n: brani })}
+            </p>
+          )}
+
+          {lettaVuota && (
+            <div role="status">
+              <h2 className="primo-sotto">{t("primo.vuota.title")}</h2>
+              <p>{t("primo.vuota.body")}</p>
+              {esito.radiciSaltate.length > 0 && (
+                <>
+                  <p className="primo-avviso">{t("primo.saltate")}</p>
+                  <ul className="primo-cartelle">
+                    {esito.radiciSaltate.map((radice) => (
+                      <li key={radice} className="primo-percorso">
+                        {radice}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
+
+          <div className="primo-avvisi">{avvisi}</div>
+
+          <div className="primo-tasti">
+            {puoAscoltare ? (
+              <button
+                type="button"
+                className="bottone primario btn-accent"
+                onClick={onAscolta}
+              >
+                <Icona nome="i-play" dim={16} />
+                {t("primo.ascolta")}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="bottone primario btn-accent"
+                onClick={continua}
+                disabled={cercando || scelte.size === 0 || scansionando || inCorso}
+              >
+                {t("primo.continua")}
+              </button>
+            )}
             <button
               type="button"
-              className="bottone primario btn-accent"
-              onClick={continua}
-              disabled={cercando || scelte.size === 0 || scansionando || inCorso}
+              className="bottone"
+              onClick={() => void aggiungi()}
+              disabled={scansionando || inCorso}
             >
-              {t("primo.continua")}
+              {t("primo.altra")}
             </button>
-          )}
-          <button
-            type="button"
-            className="bottone"
-            onClick={() => void aggiungi()}
-            disabled={scansionando || inCorso}
-          >
-            {t("primo.altra")}
-          </button>
-          <button type="button" className="bottone minuto" onClick={onSalta}>
-            {t("primo.salta")}
-          </button>
+            <button type="button" className="bottone minuto" onClick={onSalta}>
+              {t("primo.salta")}
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </Presenza>
   );
 }

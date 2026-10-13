@@ -18,7 +18,7 @@ use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::stato::{Stato, con_libreria};
 
-use super::riapertura::riapri_su;
+use super::riapertura::{Modo, ferma_l_ascolto_se_perso, riapri_su};
 use super::{
     ATTESA_MASSIMA_DISPOSITIVI, PASSO_DISPOSITIVI, StatoLettore, annota_ripresa, uscita_scelta,
 };
@@ -66,11 +66,26 @@ pub struct DispositivoAudio {
 ///
 /// # Perché guardare, invece di farsi avvisare
 ///
-/// Perché non c'è nessuno che avvisi. `cpal` 0.15 espone l'enumerazione e
-/// basta: `HostTrait` non ha nessun gancio per i cambi di dispositivo, e
-/// l'unico modo di saperlo dal sistema sarebbe `IMMNotificationClient`, cioè
-/// implementare un'interfaccia COM, cioè `unsafe` — che il workspace vieta.
-/// Rileggere l'elenco e confrontarlo con quello di prima **è** il rilevamento.
+/// Perché non c'è nessuno che avvisi. `cpal` espone l'enumerazione e basta:
+/// `HostTrait` non ha nessun gancio per i cambi dell'elenco, e l'unico modo di
+/// saperlo dal sistema sarebbe `IMMNotificationClient`, cioè implementare
+/// un'interfaccia COM, cioè `unsafe` — che il workspace vieta. Rileggere
+/// l'elenco e confrontarlo con quello di prima **è** il rilevamento.
+///
+/// # Perché cpal 0.18 non l'ha reso superfluo
+///
+/// La 0.18 dice di seguire il predefinito di sistema, e il passaggio era da
+/// guardare: se il flusso si spostasse da solo sulle cuffie appena attaccate,
+/// buona parte di questo filo — e la ricostruzione del motore, e la riapertura
+/// del brano, che su un brano di rete vuol dire riscaricarlo fino al punto — non
+/// servirebbe più. Non è così. Il seguito vale solo per i flussi aperti sul
+/// predefinito **virtuale**, e su WASAPI la 0.18.2 — correggendo la 0.18.0 —
+/// quando il predefinito cambia manda alla callback d'errore
+/// `StreamInvalidated`, cioè «ricostruisci il flusso», e dichiara che il flusso
+/// non si è spostato. La ricostruzione resta quindi la cura in tutti i casi; e
+/// per chi ha fissato una scheda, il seguito del predefinito sarebbe proprio il
+/// comportamento da evitare. Questo filo resta com'era, e il motore si apre su
+/// un dispositivo preciso: vedi `aether_play::dispositivi`.
 ///
 /// # Perché un filo suo e non quello dell'orologio
 ///
@@ -145,6 +160,12 @@ fn passata_dispositivi(app: &tauri::AppHandle, visti: &mut Vec<aether_play::Disp
         return Passo::Riposo;
     };
 
+    // Prima di tutto il resto, e anche quando non ci sarà niente su cui
+    // riaprire: un motore che non suona non deve continuare a far crescere
+    // l'ascolto in corso, che adesso sopravvive alla riapertura invece di
+    // essere buttato. Vedi `riapertura::ferma_l_ascolto_se_perso`.
+    ferma_l_ascolto_se_perso(&stato);
+
     let adesso = aether_play::dispositivi::elenco();
     if adesso != *visti {
         visti.clone_from(&adesso);
@@ -173,7 +194,7 @@ fn passata_dispositivi(app: &tauri::AppHandle, visti: &mut Vec<aether_play::Disp
     // fatto nessuno: lì `cpal` non segnala niente, e senza questa riga la
     // musica ripartirebbe da capo.
     annota_ripresa(&stato);
-    if let Err(err) = riapri_su(app, &stato, None) {
+    if let Err(err) = riapri_su(app, &stato, None, Modo::Automatica) {
         nota!(
             "[riproduzione] riapertura automatica fallita codice={} causa={}",
             err.code().kind().code(),
@@ -205,25 +226,42 @@ fn passata_dispositivi(app: &tauri::AppHandle, visti: &mut Vec<aether_play::Disp
 /// # La regola, in una riga
 ///
 /// Si riapre quando **quel che si aprirebbe adesso non è quel che è aperto**.
-/// Il «quel che si aprirebbe adesso» è `dispositivi::scegli`, la stessa
-/// funzione che decide all'apertura: usarne una seconda, scritta apposta per il
-/// confronto, vorrebbe dire due idee di quale sia l'uscita giusta e un lettore
-/// che riapre in cerchio perché le due non si mettono d'accordo.
+/// Il «quel che si aprirebbe adesso» è `dispositivi::scegli_per_riaprire`, che
+/// quando risponde risponde come `scegli` — la funzione che decide
+/// all'apertura — e si distingue solo perché a volte non risponde: due idee
+/// diverse di quale sia l'uscita giusta vorrebbero dire un lettore che riapre
+/// in cerchio perché le due non si mettono d'accordo, e qui non ce ne sono due.
 ///
 /// Da quella riga sola escono tutti e quattro i casi:
 ///
 /// - il DAC scelto è tornato → `scegli` lo sceglie, il motore è sul ripiego;
-/// - il DAC scelto è stato staccato → `scegli` ripiega, il motore è ancora lì;
+/// - il DAC scelto è stato staccato → non si ripiega: si aspetta che torni
+///   (vedi sotto, «L'uscita fissata che non c'è»);
 /// - nessuna preferenza e il predefinito di sistema è cambiato → `scegli` dà
-///   quello nuovo. **È il caso che prima passava inosservato**: `cpal` non
-///   invalida il flusso quando cambia il predefinito, quindi nessun
-///   `StreamError`, quindi nessun guasto da vedere;
+///   quello nuovo. **È il caso che prima passava inosservato**: un flusso
+///   aperto su un dispositivo preciso non si accorge che il predefinito è
+///   cambiato, quindi nessun errore dalla callback, quindi nessun guasto da
+///   vedere;
 /// - nessuna preferenza e non è cambiato niente → i due nomi coincidono, e non
 ///   si fa niente.
 ///
 /// Il guasto vero — `perso` alzato dalla callback — resta un ramo suo, perché
 /// lì il nome del dispositivo non è cambiato affatto: è il dispositivo a non
 /// funzionare più.
+///
+/// # L'uscita fissata che non c'è
+///
+/// Il «quel che si aprirebbe adesso» è `dispositivi::scegli_per_riaprire`, e
+/// non `scegli`: una scheda fissata che non c'è più **non ripiega**, e qui la
+/// risposta è «niente da fare» anche a motore perso. È la promessa per cui la
+/// si fissa — le cuffie Bluetooth che si staccano non mandano la musica agli
+/// altoparlanti — e fino alla 3.0 questa funzione la rompeva: il ramo del
+/// guasto veniva prima del confronto, e la riapertura ripiegava da sé. Quando
+/// la scheda torna, `scegli_per_riaprire` la trova, e si riapre su di lei.
+///
+/// Fa eccezione il motore mai aperto: lì non c'è niente da aspettare, e
+/// un'uscita qualunque è meglio di un'applicazione muta. Vedi
+/// `dispositivi::scegli`.
 fn da_riaprire(stato: &StatoLettore, adesso: &[aether_play::Dispositivo]) -> Option<String> {
     let voluta = stato
         .uscita_voluta
@@ -239,6 +277,9 @@ fn da_riaprire(stato: &StatoLettore, adesso: &[aether_play::Dispositivo]) -> Opt
         // una scheda c'è. È il caso che prima costringeva a riavviare.
         return Some("il motore non si era mai aperto".to_owned());
     };
+    // Prima del guasto, e non dopo: un'uscita fissata che non c'è si aspetta
+    // anche — soprattutto — a motore perso.
+    let giusta = aether_play::dispositivi::scegli_per_riaprire(adesso, voluta.as_deref())?;
     if lettore.motore.dispositivo_perso() {
         // «Il motore» e non «l'uscita»: la bandiera che si legge qui la alzano
         // in due — la callback quando il dispositivo sparisce, e il filo della
@@ -251,7 +292,6 @@ fn da_riaprire(stato: &StatoLettore, adesso: &[aether_play::Dispositivo]) -> Opt
             lettore.motore.dispositivo()
         ));
     }
-    let giusta = aether_play::dispositivi::scegli(adesso, voluta.as_deref())?;
     (giusta.id != lettore.motore.dispositivo()).then(|| {
         format!(
             "si suonava su «{}», adesso tocca a «{}»",
@@ -383,7 +423,7 @@ pub fn scegli_dispositivo_audio(
     // ma passarla per esteso toglie di mezzo la domanda «e se nel frattempo
     // qualcun altro l'avesse cambiata», che su una preferenza che l'utente
     // sta cliccando adesso avrebbe una risposta sola sbagliata.
-    riapri_su(&app, &stato, Some(scelta)).map_err(errore)?;
+    riapri_su(&app, &stato, Some(scelta), Modo::AMano).map_err(errore)?;
 
     // E l'elenco alla finestra, con il segno di «attivo» spostato: senza
     // questa riga il pallino resterebbe sulla riga di prima fino alla prossima

@@ -207,6 +207,7 @@ pub fn candidati(
                     collocazione: Collocazione::File(row.get(1)?),
                     durata_ms: row.get(2)?,
                     replaygain_db: row.get(3)?,
+                    picco: None,
                 })
             },
         )
@@ -869,6 +870,7 @@ mod prove {
             collocazione: Collocazione::File("/musica/7.flac".to_owned()),
             durata_ms: 180_000,
             replaygain_db: None,
+            picco: None,
         }
     }
 

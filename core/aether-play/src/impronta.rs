@@ -44,18 +44,17 @@
 //! [`MEL_ALTA_HZ`] a 10 000. In basso, per il motivo speculare, si parte da 40:
 //! sotto ci sono il rombo e la continua, non un disco.
 //!
-//! # Il decodificatore a un canale prende il sinistro, non la media
+//! # Si apre a due canali, e la media la fa questo modulo
 //!
-//! Va detto perché è la trappola di questo modulo. `decodifica::adatta_canali`,
-//! chiesto un canale su una sorgente stereo, restituisce il piano 0 — e altret-
-//! tanto fa il ramo del ricampionatore. Per [`crate::attacchi`] è innocuo:
-//! cerca sillabe, e le sillabe stanno al centro. Per un'impronta no: un disco
-//! con gli strumenti aperti a destra e a sinistra darebbe l'impronta di metà di
-//! sé.
-//!
-//! Si apre quindi a **due** canali e la media la fa questo modulo. Una sorgente
-//! mono viene duplicata da entrambi i rami, quindi la media la restituisce
-//! identica: corretto in tutti e tre i casi.
+//! Fino alla 2.4 il decodificatore a un canale prendeva il sinistro, e un disco
+//! con gli strumenti aperti a destra e a sinistra avrebbe dato l'impronta di
+//! metà di sé. Dalla 3.0 la matrice dei canali (`decodifica::canali`) chiesta
+//! di un canale su una sorgente stereo restituisce già (L+R)/2, ma questo
+//! modulo continua ad aprire a **due** canali e a fare la media da sé: le
+//! impronte già nel database sono state calcolate così, e restano confrontabili
+//! qualunque cosa la matrice decida in futuro per il mono. Una sorgente mono
+//! arriva duplicata nei due frontali a guadagno pieno, quindi la media la
+//! restituisce identica.
 //!
 //! # Cosa è invariante al guadagno, e cosa no di proposito
 //!
@@ -1443,6 +1442,7 @@ mod prove {
             estensione: Some("wav".to_owned()),
             durata_ms: dichiarati_ms,
             replaygain_db: None,
+            picco: None,
         }
     }
 

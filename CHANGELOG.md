@@ -85,6 +85,743 @@ Entries older than 2.3.1 argue their number under the rule that was in force
 when they were written. They are a record of what shipped and are left as they
 were, not restated.
 
+## [3.0.0] — 2026-10-13
+
+**A leap, not a step.** 3.0 began as the release in which a skin can move — the
+third line of `TODO.md` — and that work is one of the sections below. Then the
+rest of the program was read again from one end to the other by six audits run
+side by side — audio, library and database, skins and Studio, interface,
+backend and network, dependencies and CI — looking for what 2.4 did wrong
+without anybody noticing. They came back with about a hundred and fifty
+findings; the worst were checked by hand before anything was touched, and every
+area was then tried on a real build — a library on a real SMB share, a real
+loopback recording of what reaches the speakers — not only by the tests.
+
+What came out is grouped by area below, each section opening with the failure
+it fixes in the words you would have used. Four things are new rather than
+mended: **every track at the same loudness**, measured where the tags say
+nothing; **lists without pages**, so fifty thousand tracks scroll like fifty;
+**Folders the way foobar2000 shows them**, files and all; and **folders that
+watch themselves**, so a copied album enters the library without a scan. Four
+old lines of `TODO.md` close here too: the Folders view (#2), metadata that
+survive an edit made elsewhere (#5), a library on a NAS or a mapped drive (#9)
+and an update check at every start (#10).
+
+### Added — every track at the same loudness
+
+«Normalize volume» in 2.x read `replaygain_track_db` and, when a file had no
+such tag, did nothing. In a real library the tags are the exception: whoever
+never ran the collection through a dedicated tool had the column empty
+everywhere, and the switch sounded the same on and off. A disc remastered in
+2010 arrived ten decibels above one from 1975, in the same queue.
+
+Aether now **measures** every track the way broadcasters do, with EBU R128: the
+integrated loudness in LUFS and the true peak. The measurement runs in a second
+pass of the sound analysis that was already decoding every file, on two
+threads, only while nothing is playing — two minutes after the window opens,
+and after a scan once two quiet minutes have passed — so it never competes
+with what you are listening to. Tags still win when they are there: ReplayGain
+and R128 tags are read, and the measurement fills the gaps.
+
+- *Track, album or automatic.* Album mode plays a record at the level its
+  mastering chose, quiet tracks quiet; the album's loudness is the
+  duration-weighted energy mean of its tracks, its peak the highest of them.
+  *Automatic* uses the album value while you are listening to an album in
+  order, and the track value everywhere else.
+- *No clipping.* A track raised to the target is never raised past its own
+  peak, and a soft limiter above −1 dBFS catches what is left — a loud track
+  made louder no longer turns into square waves.
+- *A target you choose*, in Settings → Playback, next to how far the analysis
+  has got.
+- *The volume slider follows your ears.* Its curve is now perceptual (cubic)
+  instead of linear amplitude, so the first half of the slider is no longer
+  where everything happens. A volume saved by 2.4 is converted, not reset.
+
+### Added — fifty thousand tracks, no pages
+
+Tracks, Favorites and Search loaded two hundred rows at a time as you
+scrolled. The scrollbar grew under your thumb; «Select all» selected what had
+arrived, and the commands acted on those two hundred under a bar that said so;
+dragging the thumb to the bottom meant waiting for every page in between; and
+leaving a view and coming back started it again from the top.
+
+- **The scrollbar is the whole list from the first moment.** A view knows its
+  length before its rows arrive, and only the rows on screen are asked for:
+  dragging to the bottom of fifty thousand tracks asks for the last page, not
+  the ones in between. A row that has not arrived yet is a placeholder of the
+  same height, so nothing jumps when it does.
+- **Views stay where you left them.** Tracks, Favorites, Albums and Artists
+  keep their scroll position, focus and selection when you go elsewhere and
+  come back, and while hidden they do no work at all.
+- **«Select all» is the whole view**, in the order you see it — and playing a
+  track from Tracks, Favorites or Search queues the whole view, not the rows
+  that happened to be loaded.
+- **Albums and Artists** are windowed grids too, where the arrow keys move in
+  two dimensions and Home and End go to the ends. The alphabet index jumps to
+  the right place. Covers in the grids are sharp on high-DPI screens — a
+  320-pixel version is made on first use, the full image is used at 200% —
+  and a cover file that has gone missing shows the placeholder instead of a
+  broken-image icon.
+- **Faster underneath.** After a scan only the albums and artists it touched
+  are rebuilt: on fifty thousand tracks, 415 ms after every scan became
+  nothing when nothing changed and 18 ms for one changed track. Smart playlist
+  counts are kept until the library changes, instead of recounted at every
+  opening of the sidebar; dropped files are looked up by an index; and the
+  heavy reads no longer run on the thread that answers the window. Building
+  this turned up an old defect in the full rebuild — album keys remapped pair
+  by pair could chain and file tracks under the wrong album — now fixed and
+  tested.
+
+### Added — Folders, the way foobar2000 shows them
+
+`TODO.md` #2. The Folders view showed folders, and a folder could only be
+played whole.
+
+- **Files are leaves of the tree**, after the subfolders, in natural order:
+  «2» before «10», «CD 2» before «CD 10». The order a folder plays in follows
+  the same rule.
+- **A panel beside the tree** lists the tracks of the folder under the cursor,
+  with or without its subfolders, with everything the track list has: hearts,
+  ratings, the context menu. Below a certain width it moves under the tree.
+- **A filter** above the tree searches all of it, not only what is open,
+  ignoring case and accents, by file name and by title. It opens the folders
+  around what it finds and hides the rest; Esc puts the tree back as it was.
+- **Select several folders and files** — Ctrl, Shift and Space, as in the track
+  list — and play them, queue them, play them next or add them to a playlist,
+  or drag them onto the queue. Double-clicking a file plays its folder,
+  starting from that file. «Show in folder» works on folders as well.
+- **Keyboard and screen readers.** One Tab stop for the whole tree; the arrows
+  open and close; Space now selects (it used to open). Screen readers hear a
+  multi-select tree whose files are leaves.
+
+### Added — folders that watch themselves
+
+An album copied into a music folder, renamed there or deleted from it now
+enters or leaves the library on its own, a few seconds later, without
+pressing «Scan». On local disks Aether listens to Windows' change
+notifications, waits for two seconds of quiet and rescans only the folders
+that changed — with the safety of every automatic scan: if it would remove
+too many tracks at once it removes nothing, and the next «Scan» asks. On
+network shares and mapped drives, where Windows does not always tell, «Also
+network folders» looks at the folders' dates every five minutes; it is off by
+default, because it keeps a NAS awake. Both switches are in Settings →
+Folders and scanning and take effect without a restart.
+
+The scan after downloads now looks only at the download folder, and when
+another scan is running it waits its turn instead of being skipped — 2.4 left
+the new tracks out until the next scan. A «Scan» pressed during an automatic
+one waits for it instead of answering «busy».
+
+### Added — skins that move: format 2 and Skin Studio 3
+
+The third line of `TODO.md` said
+«animate any component», and the format could not do it. A skin could declare
+eight animations of up to six keyframes, bind them to five triggers, move them
+within a few pixels and never loop; the Studio edited them through a panel that showed the player at
+the bottom of a window that had not had a bottom player for two releases. The
+honest answer was not a bigger panel. It was a new version of the format, a
+window that tells a skin what is happening in it, and a Studio rebuilt around
+both. This is that answer, and it is a major because the format changed: see
+«The number» below.
+
+**Skin format 2.** What a part can say about itself grew in four directions.
+
+- *When*: ten states instead of five — hover, pressed, selected, current, open,
+  checked, playing, paused, focus, disabled, emitted in that order so a later
+  one wins — and five triggers that are not states: `enter` and `exit` (a
+  panel, a menu, a toast appearing and leaving), `share` (a cover flying from
+  the grid to the album page), `inView` (scrolled into view) and `change` (the
+  title of the track in the column, the moment it becomes another). The window
+  now emits what these need: `data-playing` and `data-paused` on the player,
+  the column and the covers of whatever is playing, `data-open` on the open
+  navigation and folders, `--indice` on the items of a list so a skin can
+  cascade them, `data-cambio` where content changes.
+- *How*: a keyframe can translate by up to 400 px, scale up to three times,
+  rotate by two full turns, skew, blur, change brightness, saturation and hue,
+  change the background, text and border colours and the shadow, and clip to an
+  inset, a circle or a polygon.
+- *How long*: `iterations: "infinite"` is allowed — on state triggers only, so
+  a record can turn while music plays and never while a panel opens. The
+  reason 2.3.1 gave for refusing it was that the rules which stop an endless
+  animation under «reduced motion» had to be written by hand; the compiler now
+  writes them itself for every animation it emits, under the system setting,
+  under the application's own and under «none», and a skin cannot opt out.
+- *How much*: the fixed caps (eight animations, three triggers per part, ten
+  animated parts) are gone. In their place is a cost budget — 10 for a part's
+  surfaces, 16 for its motion, 96 for the whole window — where exceeding it is
+  a warning in the Studio, and exceeding it **twice over** refuses the
+  installation (`skin.overBudget`). Hard ceilings remain only against abuse:
+  64 animations, 12 keyframes, 16 iterations.
+- *How safely*: an animation that flashes — opacity, brightness, colour,
+  background or filter changing with a half-cycle under 333 ms, looping or
+  repeated more than three times — is refused, whatever else the skin says.
+  It is the WCAG 2.3.1 threshold for seizures, and it is not a style choice.
+
+A part also gained a shadow, a focus ring, a border style, a radius per corner,
+a font family, size and line height, a filter stack on the element itself (what
+format 1 called `filter` was the backdrop, and is now called that), and a
+`before` layer behind its content next to the `after` layer it already had.
+A skin can ship **its own fonts and images**, served to the window from the
+package through a new `aether-skin` protocol; the address is written only by
+the compiler, from a name it has already validated, so a manifest cannot point
+anywhere else.
+
+**Themes are symmetric.** Format 1 had a dark base and an optional light theme
+that could flip tokens and nothing else — which is how a skin written in this
+program's own Studio painted the Settings page black on black in the light
+theme, as the 2.4.0 entry recounts. A format 2 skin declares its base
+`scheme`, dark or light, and a `variant` for the opposite one that may
+override tokens, palette, patterns **and parts**.
+
+**Fifty new parts, and no more borrowed ones.** The registry goes from 51 parts
+to 101: the window controls, the sidebar and its brand, the column with its
+header and cover, the now-playing strip, the queue panel and its rows, the
+toast stack, the veils, the EQ panel, menu items, the page content, the search
+field, the back button, the cards of the grids and of the Home shelves, the
+artists page, the Folders tree, the Explore rows, the badge, the heart, the
+stars, the volume, the first-run screen and more. Several surfaces used to
+wear somebody else's class: every card in the grids and on Home was a
+`list-row`, the queue was a `glass-modal`, the equalizer a `menu-pop`, the
+column's cover a `hero-art` — so a skin could not round the cards without
+rounding the rows. Each now has its own name.
+
+**Widgets stop painting themselves twice.** A widget's wrapper in the layout
+carried its part's class, and so did the component inside it: the player, the
+queue, the selection bar, the transport, the scrubber, the navigation and the
+header each received the skin's opacity, border and layers twice. The wrapper
+no longer carries it. A skin that had compensated for the doubling — halving an
+opacity until it looked right — will now look lighter than before, and is
+worth a second look.
+
+**Format 1 skins keep working.** A format 1 document is migrated as it is read,
+by the core, every time: `capabilities.light` and `themes.light` become
+`scheme: "dark"` and `variant.tokens`, a part's `filter` becomes `backdrop`,
+`layer` becomes `after`, `states.active` becomes `current`, `animations`
+becomes `motion`, `routeTransition` becomes `motion.route`, `layout.player`
+and `layout.sidebar` become the shell they describe, `capabilities.mobile` is
+dropped. And so that nothing changes on screen, the migration **copies** what
+the split classes used to inherit: the style of `list-row` onto the five kinds
+of card, `glass-modal` onto `queue-panel`, `menu-pop` onto `eq-panel`,
+`hero-art` onto `column-art`. Before the core was touched, the CSS that Plain
+and Sala compiled to under format 1, and a set of real drafts, were frozen as
+golden files; a test compares what the migrated documents compile to against
+them, rule by rule, admitting only the renames and additions listed here.
+
+Installed packages are not rewritten on disk. A draft is: opening a format 1
+skin in the Studio writes the draft in format 2, and the text it had before is
+kept in a snapshot marked `migrata`.
+
+**Built-in skins.** Plain, migrated. **Vinile**, new: ivory paper, ink and a
+red label on a light base with a dark variant for the evening; the record in
+the column turns while music plays and stops where it is when you pause, and
+the cards come in one after another. **Neon**, new and dark only: cyan and
+magenta over a violet night, scanlines, cards that light up in sequence. Sala
+is gone — its format 1 source stays among the golden files the migration is
+tested against.
+
+**The window moves with the skin.** React is at 19.3, and panels, menus,
+dialogs, toasts, the queue, the column, the selection bar, the tour and the
+first-run screen enter and leave through `<ViewTransition>` when — and only
+when — the skin declares an animation for them. Page changes go through a transition typed as a route,
+and the cover you click in a grid can fly to the album page. The hand-written
+`view-transition-name` rules in the application's stylesheet are gone. The
+Folders page stopped using `aria-selected` for its keyboard cursor — it marked
+a position, not a selection, and it would have lit up the new `selected`
+state on the wrong row.
+
+**Skin Studio 3.** The editor is rebuilt from the ground up as one workspace,
+the way a drawing program is laid out, instead of four separate views:
+
+- *on the left*, the parts grouped by area, marked when repainted or animated,
+  with the window's layout tree beneath them — drag to rearrange, prefabs
+  editable in place — and, in a second tab, the variables: tokens, palette,
+  patterns, easings, fonts, images and ready-made presets;
+- *in the middle*, the canvas: the **real pages of the application**, running on
+  sample data — never your library — at three window widths, with a bar that
+  forces a state (hover, pressed, playing…) on the selected part, a probe that
+  names whatever is under the pointer, zoom, and a sample transport so that
+  whatever should turn while music plays turns. Clicks, keys and drags on the
+  canvas are stopped before they reach anything: a click there never plays a
+  track;
+- *on the right*, the inspector of the selection in four tabs — style, states,
+  motion, code — with typed controls: colours with alpha and an OKLCH picker,
+  shadows as sliders, filter stacks, radius per corner, the before and after
+  layers, and the cost of the part against its budget;
+- *at the bottom*, a dock with a **timeline** — tracks per property turned into
+  the format's keyframes, scrubbed and played with the Web Animations API — the
+  problems, each with «go» and, when the core has a suggestion, «fix», and the
+  code: the whole document in **CodeMirror 6**, with completion driven by the
+  format's own registry, errors underlined at the line and column the core
+  reports, the compiled CSS and a diff.
+
+Also new: a **palette generator** that builds the eighteen colour tokens from a
+colour or from the cover that is playing and corrects every checked pair until
+it reaches 4.5:1; **«Try on the app»**, which dresses the real window in the
+draft and gives it back with Esc; labelled undo steps («Radius of card: 14px»)
+two hundred deep; Ctrl+S saves and takes a snapshot, Ctrl+K finds a part.
+Ctrl+Z and Ctrl+Y belong to the document only outside text fields: in a field
+they undo what you are typing.
+
+**The chat learned the new format, and got a memory.** The instructions sent to
+the model are now built from the registry — every token, part, state, trigger,
+keyframe field with its range, ready-made animation and budget — instead of a
+list copied by hand that knew nothing about motion. What is selected in the
+Studio travels with the question, so «make this rounder» means the part you are
+looking at, in the state and theme you are looking at. The document goes out
+**light**: the sections the question, the selection and the open errors name,
+plus a list of what was left out so the model does not declare it again; older
+turns are summarised past a threshold. With «Preview» switched on, each
+question also carries a snapshot of the canvas for models that read images —
+sample data only, made in the window with no library and no native code. The
+conversation is saved next to the draft, shows the tokens each turn cost and
+the running total, and the changes a reply made are listed value by value —
+`parts.card.radius → "18px"` — each one a link to the thing it names.
+
+**Fixed in the Studio.** «Save and use» dropped the package's `preview.png`
+and `assets/`. «Discard draft» deleted the snapshots too, the safety one taken
+before a migration included; snapshots now live in `skin/istantanee/<id>/`,
+where discarding a draft does not reach. Errors from saving and exporting were
+shown behind the Studio, where nobody could see them. The application's
+keyboard shortcuts and file drops stayed active while the Studio was open. An
+edit made less than a second before closing was lost, and undoing back to the
+original left the previous version of the draft on disk. The preview borrowed
+any token a skin did not declare from the skin you were wearing, and a skin's
+`@keyframes` could collide with the application's. `layers: true` on the
+large covers could never have worked: the class sits on an `<img>`, and images
+draw no pseudo-elements. In the core, one message said `text` where the field
+is `textColor`, the default of `corners` disagreed with itself, and the
+parameters of radial and conic gradients left out `at` and `size`.
+
+**And it no longer loses work.** An installed skin that stopped passing
+validation — a hand edit, a stricter rule — used to vanish from the list
+without a word; it is now listed as «To open in the Studio», and opening it
+shows its text and its errors instead of refusing. «Create theme» started from
+nothing and failed on any skin with fonts or images; it now starts from the
+base draft and copies its assets. Changing a skin's id and saving is one step
+that renames it, refused when an installed skin already has that id — before,
+the rename and the save were two commands and a failure between them left two
+half-skins. Leaving the Studio waits for the save to succeed. Drafts, the
+chat, snapshots and packages are written atomically, so a crash mid-save
+leaves the previous file and not half of the new one, and the package writer
+enforces the same limits as the reader: a skin the Studio exports is a skin
+Aether accepts. Validating and compiling run off the window's thread with a
+cache keyed by the text, and a skin's images and fonts are served from a cache
+with an `ETag` instead of being read from the package at every request — the
+Studio stays smooth on a large skin. The format 1 migration no longer turns a
+`themes.light` block into a light variant when the skin never declared
+`capabilities.light`, which is what format 1 itself did with it.
+
+**Under the hood.** The window's TypeScript has tests now — the Studio's store
+and history, the patch engine, diffs, the layout tree, colours, keyframes, the
+chat's prompt and its saved format — run by `node --test` with no dependency,
+inside `npm run verify`; CI moves to Node 24 to run them. `THIRD-PARTY-NOTICES.md`
+now lists the npm packages that ship inside the window (React, CodeMirror,
+Lezer, Tauri's API) next to the crates, with their license texts.
+
+### Fixed — a library on a NAS or a mapped drive
+
+The ninth line of `TODO.md`: with the music on a network share, Aether said
+«the database refused the request». It was several failures wearing one
+message, and each is now its own.
+
+- **A scan no longer deletes what it could not read.** A subfolder the share
+  would not list for a moment — while the root answered — made every track
+  under it look gone, and the next scan deleted them, with their ratings,
+  hearts, play history and places in playlists. Tracks under a folder that
+  failed to list, or files that failed to open, are now *not verified*, never
+  *gone*; Settings names the folders that could not be read. A file whose tag
+  reader crashes is told apart from one that timed out, so three malformed
+  files no longer make a whole folder look unreachable.
+- **Removals ask first.** A manual scan now computes its plan before applying
+  it, and when it would remove more than a handful of tracks, or a suspicious
+  share of the library, it shows them and asks: «Leave them» changes nothing,
+  «Remove» does. Automatic scans never remove that many on their own.
+- **And what is removed can come back.** Before a track's row is deleted, its
+  play count, rating, heart, play history and its place in every playlist are
+  set aside under the key of its raw tags for ninety days; when the same file
+  returns — the share comes back, the disk is plugged in again — all of it
+  returns to the new row, in the same spot of the same playlists.
+- **Deleting from disk on a share** has no Recycle Bin behind it: Windows
+  deletes for good. 2.4 called it «Move to Recycle Bin» all the same. Aether
+  now recognises network paths, mapped letters included, and asks for an
+  explicit «delete permanently».
+- **A letter and its UNC path are the same folder.** Replacing `Z:\Music` with
+  `\\nas\music` (or back) offers to move the library over instead of
+  re-importing it; nested roots are collapsed; a rename that only changes
+  capitals is a rename, not a removal and an addition.
+- **Database errors say what they are**: a full disk, a denied permission, a
+  track that no longer exists and a duplicate each have their own message,
+  and the diary records the extended SQLite code with the detail. «The
+  database refused» is left for real defects.
+- **The first play after starting, with the NAS still asleep.** Windows
+  reconnects a mapped letter lazily, and the first plays on `Z:` failed with
+  «network unavailable» while it did. Aether now wakes the shares as soon as
+  it starts, gives a file on the network fifteen seconds to open instead of
+  five, opens one track at a time however many times play is pressed, and
+  when the share is still asleep the error bar keeps its «Retry» — which now
+  works. Windows' «remembered but not connected» (error 1201) and eight other
+  network codes are recognised as the network, not as a missing file.
+- **A whole drive is a network folder too.** `Z:\` added as a folder was
+  taken for a local disk — `Z:\Music` was not — so it was watched with change
+  notifications a share does not send, and the watching thread hung for a
+  minute every minute while the NAS slept. Settings now also counts the
+  network folders it is not watching, instead of leaving them out.
+- **A watch that dies says so.** When Windows drops a watch — the share goes,
+  a USB disk is unplugged — Aether used to go on calling the folder
+  «watched». It now notices within a minute, tries again, falls back to the
+  five-minute check when network folders are on, and when the watch is back
+  it looks again at what changed in between.
+- **Nothing waits on the share with the library locked.** Undoing the
+  automatic enrichment re-read the tags of every enriched file, and a restore
+  from Drive checked every folder, while holding the library: with the NAS
+  asleep, scans, play and every click queued behind them and the window gave
+  up after four seconds with «database busy». The files are now read first,
+  outside.
+
+All of this was tried on a library served from a real SMB share, both as
+`\\server\share` and through a `net use` letter, with a subfolder denied,
+two thirds of the files made to disappear and return, case-only renames and
+deletion from the share.
+
+### Changed — playback, from the decoder to the speaker
+
+- **Gapless across sample rates.** A 44.1 kHz album on a 48 kHz output had a
+  click at every join: each track was resampled on its own, and the
+  resampler's delay was neither trimmed at the start nor flushed at the end.
+  One resampler now runs across the join, and the residue at the seam on a
+  recording of the output went from 0.069 to 0.0016 — under what is already
+  in the files.
+- **Stereo on a 5.1 or 7.1 system** put the right channel on the centre, the
+  LFE and the surrounds. Left and right now go to front left and right and
+  the rest is silent; mono goes to both fronts; 5.1 folded to stereo uses the
+  ITU coefficients.
+- **Seeking is exact** to the sample, not to the packet; chained Ogg streams
+  play through; the decoder (symphonia 0.6.1) is faster and handles the
+  encoder-delay tags that gapless MP3 needs.
+- **Pause, resume and seek fade** over a few milliseconds instead of cutting,
+  so they no longer click, and the sleep timer fades out over six seconds
+  instead of stopping mid-phrase.
+- **Changing the output device keeps the track and the position.** The output
+  follows the Windows default device, survives headphones being unplugged,
+  and opens 24-bit formats.
+- **An output you chose that disappears pauses and waits.** With an output
+  chosen in Settings, unplugging it — or Bluetooth headphones dropping —
+  moved the music to the default device, that is the speakers, although the
+  setting promised the opposite. The music now pauses and the bar says it is
+  waiting for that output; when the output comes back the music resumes, if it
+  was playing and less than thirty minutes have passed. «Reopen», or pressing play, plays
+  wherever it can and says where. With «System default» the music follows
+  Windows, as before.
+- **Play/Pause with the output lost** did the opposite of what it showed: the
+  window said «play» and the media key paused. Play now reopens the output
+  and plays, from the window, the media keys and the taskbar alike.
+- **«End of this track» switched itself off only by playing.** Stopping left
+  it set, and the next day the music stopped again after one track.
+- **The sleep timer's fade ended with a blip**: in the milliseconds the stream
+  takes to close, the volume rose back towards full. It now stays silent.
+- **At startup** the media overlay, the tray and the taskbar buttons knew
+  nothing of the restored queue until the first play, and a saved queue that
+  could not be read took volume, equalizer, normalization and crossfade with
+  it. Both are fixed.
+- **After a change of output** the next track, already prepared for the old
+  output's sample rate or channels, could play at the wrong speed; it is now
+  prepared again.
+- **Crossfade and repeat-one**: seeking in the second half of a crossfade no
+  longer overwrites the next track, repeat-one counts plays instead of
+  comparing ids, and the equalizer forgets its filter memory when it is
+  switched back on instead of releasing a thump.
+- **The audio thread only does audio.** Saving the queue, writing plays to the
+  database, scrobbling and updating Windows' media controls used to happen on
+  the thread that feeds the speakers, and a slow disk was a dropout. They now
+  run on threads of their own.
+
+### Added — what the file actually is, from the decoder
+
+The line under «Now playing» (`TODO.md` #1) now reports what the **decoder**
+is playing — the real codec inside an `.m4a`, the bit depth, the channels, the
+average bitrate — and not what the database remembered of the file. A FLAC
+from the Internet Archive that streams as MP3 says MP3. Hovering it says when
+the output is resampling: «Resampled from 44.1 kHz to 48 kHz».
+
+### Changed — Windows: the PC sleeps, the media overlay knows the track, the taskbar has buttons
+
+- **Aether no longer keeps the PC awake.** The audio stream was started once
+  and never paused, and Windows treats an open stream as «playing»: with
+  Aether open, the PC never went to sleep. The stream now sleeps after thirty
+  seconds of pause or stop (one second on Bluetooth, see the next point) and
+  wakes on the next play.
+- **Pausing lets go of Bluetooth headphones.** Multipoint headphones paired
+  with the PC and a phone at once (Huawei FreeBuds and the like) stayed with
+  the PC for as long as the stream kept running in silence after a pause, so a
+  video started on the phone in that time came out of the phone's speaker. On
+  a Bluetooth output the stream now sleeps one to two seconds after the pause,
+  and the headphones are free to follow the phone. Wired, USB and HDMI outputs
+  keep the thirty seconds: an HDMI or optical receiver loses the start of the
+  music every time the stream restarts. The log's audio line now says
+  `bluetooth=sì|no`, at startup and whenever the output is reopened.
+- **Previous, Play/Pause and Next under the taskbar preview**, as in
+  foobar2000: hover Aether's taskbar icon and the three buttons sit under the
+  window's thumbnail. They do what the tray menu does, the middle one turns
+  into Pause while music plays, the tooltips are the tray's labels in the
+  interface language, and the icons are drawn at the system's scale in the
+  colour of the taskbar's light or dark theme. They come back when the window
+  returns from the tray or Explorer restarts. This needs talking COM to the
+  taskbar, which no maintained dependency does for us, so it is the one place
+  in Aether with `unsafe` code: a module of its own crate, `aether-barra`,
+  declared as the single exception next to `unsafe_code = "forbid"` in the
+  workspace manifest. No new package enters `Cargo.lock`.
+- **Windows' media overlay** (the one the volume keys open) lost the title and
+  artist of every track with a cover: the cover's address was handed over in
+  a form Windows could not open, and the whole update was dropped with it. It
+  now shows title, artist and cover, its buttons work, and it is cleared when
+  the queue ends.
+- **The tray menu** has Play/Pause and Next, and shows what is playing.
+
+### Changed — streams that wait instead of failing
+
+A stream that stalls now says so: the time stops and reads «Waiting for
+data…» instead of running ahead of the sound. Pausing, stopping or seeking
+interrupts a read that is waiting on the network instead of waiting for it to
+time out. Requests are retried with growing pauses; a server answering
+`Content-Range: …/*` no longer has its chunk size taken for the file size;
+and read-ahead that failed once is tried again later instead of being off for
+the rest of the track.
+
+### Changed — the database looks after itself
+
+Before every migration Aether now takes a copy of the database next to it —
+`aether.db.schema-027.bak` for the one 3.0 migrates from — and keeps the last
+two. It checks the file for damage a minute after starting (`quick_check`, a
+fifth of a second) and keeps the planner's statistics fresh (`PRAGMA
+optimize`). The cover cache can be cleaned from Settings, which now shows its
+size, and covers are decoded with limits, so a malformed image cannot take
+all the memory.
+
+### Changed — your metadata survive an edit made elsewhere
+
+`TODO.md` #5. When a file is changed by another program, the fields Aether
+enriched are put back if the raw tag they came from did not change, and the
+track goes back into the enrichment queue if it did — 2.4 replaced
+everything with what the file said. «Reread all tags» does it for the whole
+library. Tags are normalised (NFC), so an «é» written as one character and one
+written as two are the same album, and smart playlists compare text the same
+way. Lyrics are no longer written as `.lrc` files beside your music unless you
+ask for it in Settings: the library is where they live.
+
+### Changed — Google Drive, updates, and the work in the background
+
+- **Updates (`TODO.md` #10).** Aether checks once at every start, ten seconds
+  after the window is ready, and if there is no network it tries again after
+  one, five and fifteen minutes. A download that goes a minute without a byte
+  stops and says so, and can be cancelled. The update now runs the same
+  shutdown sequence as closing the window, so the queue and the position are
+  saved before the installer starts.
+- **Drive.** Restoring a backup with a skin between 10 and 20 MB failed as a
+  whole — the HTTP client stopped every body at 10 MB; Drive now has its own
+  25 MB ceiling, and a package that will not come down is listed as missing
+  instead of stopping the restore. Interrupted uploads resume, a full Drive
+  says so in its own words, disconnecting forgets the credentials, and two
+  devices syncing at once no longer leave duplicates. Builds without a Drive
+  client — the ones published here, deliberately — now explain why the button
+  says «not configured»: see the README.
+- **Sync between devices** could lose a track added to a playlist, or a folder
+  added, while a pass was on the network — up to two minutes: the pass
+  rewrote them from what it had read before. A pass that finds the library
+  changed in the meantime now applies nothing and runs again shortly after.
+- **Scrobbling.** If the queue could not be updated after a batch was sent,
+  the same batch went out again and again until the service answered «too
+  many requests»; the pass now stops. Correcting a typo in the Last.fm key no
+  longer throws away the plays queued while offline — only «Disconnect» does.
+  The Scrobbling panel's counts follow what the background sends.
+- **Big libraries.** «Play all» on more than 32,766 tracks left the queue panel
+  empty with a database error, and so did removing that many from the
+  library. Enrichment and «Correct» rebuilt every album and artist with the
+  library locked, which on a large library outlasted the window's patience:
+  hearts, ratings and playlists failed with «database busy». They now rebuild
+  only what they touched.
+- **A profile from another computer** with a path differing only in capitals
+  made a second row for the same file, and the next scan removed it — with
+  the imported plays and ratings. It now merges into the row already there.
+- **Background threads are watched**: one that crashes is restarted and the
+  diary says so, and long jobs — connecting Drive, syncing, listing AI models,
+  sorting dropped files — no longer run on the threads that answer the
+  window. Connecting Drive can be cancelled.
+- **Privacy.** The diary writes `%APPDATA%` instead of your user name in
+  paths, structures that hold tokens and keys print without them, and the
+  sign-in page that answers the browser no longer takes a reply with the wrong
+  `state` for an answer — it turns it away and keeps waiting for the right
+  one.
+
+### Changed — dialogs, the keyboard and screen readers
+
+Every dialog in 2.4 handled focus in its own way. «Import from a link» let Tab
+walk out into the page behind it; selecting the text of a field by dragging
+and letting go over the dark veil closed the dialog and threw away what you
+had typed; Ctrl+L opened a second dialog over the first; and a screen reader
+could still wander through the whole window under a dialog that looked modal.
+
+- **One way for every dialog.** Focus goes in, Tab and Shift+Tab stay in, Esc
+  closes, and focus returns to the button that opened it. The page behind is
+  inert for the mouse, the keyboard and screen readers, and the veil closes
+  only on a click that starts and ends on it. Under a dialog the only
+  shortcuts left are zoom and full screen. Context menus take focus on their
+  first item, and Tab closes them.
+- **The last dialogs on their own.** The smart playlist editor, Account,
+  Restore and the lyrics choice still closed — losing the work — when a
+  selection was dragged out onto the veil; they now behave like the rest.
+  The equalizer panel keeps focus inside it as a dialog should.
+- **After importing a profile** its language and «reduce motion» apply at
+  once instead of at the next start, and the skin list marks the right skin
+  «in use»; a restore from Drive refreshes the playlists and wears the
+  restored skin. Choosing a skin and moving the mouse out of the list at once
+  could leave the old skin on screen with the new one marked «in use».
+- **Deleting a playlist can be undone.** It goes at once, and a notice with
+  «Undo» stays for ten seconds: undo puts it back with its tracks in their
+  order. The undo is kept in memory for a minute, so closing Aether makes the
+  deletion final.
+- **«Create» in «Add to playlist» is one step.** It was two: if the second
+  failed, an empty playlist was left with the name you had just chosen, and
+  that name — now taken — made the next attempt fail with «already exists».
+  Now the playlist is born with its tracks or not at all. An error is read out
+  inside the dialog; a success is said in the notice bar, including how many
+  of the selected tracks were no longer in the library.
+- **Long lists by keyboard.** Page Up and Page Down, Home and End, Ctrl+Home
+  and Ctrl+End in the track lists, in the Albums and Artists grids — where
+  Page Down stays in its column — and in the queue. **Ctrl+A** selects the
+  whole view (2.4 had no such shortcut). A list has one Tab stop, and it
+  follows the scrolling: scrolled far from the row you were on, Tab lands on a
+  row you can see instead of one that is no longer drawn.
+- **Any keyboard layout.** Shortcuts are still matched by the letter a key
+  types, so Ctrl+Z is the Z wherever your layout puts it; but when the key
+  types a letter outside the Latin alphabet, its position is used instead.
+  On a Russian or Greek layout Ctrl+F opens the search again, and on a French
+  one Ctrl+0 resets the zoom.
+- **Numbers and plurals in your language.** Counts are written the way your
+  language writes them — 53.002 in Italian, 53,002 in English — everywhere,
+  and singular and plural follow the language's own rules instead of a
+  hand-written «one or more».
+- **Screen readers.** A scan is announced when it starts and when it ends,
+  not at every step; titles, artists and albums in right-to-left scripts are
+  read and shown in their own direction; covers next to their title no longer
+  read the title twice. A skin whose focus ring would be invisible against its
+  own surfaces — under 3:1 — is reported by the Studio and asks for
+  confirmation before it is worn, like a skin with unreadable text.
+- **A damaged database says so, everywhere.** When the check a minute after
+  start finds damage, a notice stays at the top of every view, says what to
+  do — export the profile, then put back the copy taken before the last
+  migration — and leads to the right page of Settings. It comes back after a
+  restart until the database is healthy again.
+- **A scan survives a reload of the window.** The progress bar of a scan
+  started before the window was reloaded used to stay at «in progress»
+  forever; the window now asks where the scan has got to and follows it to
+  the end.
+- **The guided tour** has fourteen steps, three of them new: the context menu
+  of a track (with a real menu open), the Folders view, and the keyboard
+  shortcuts. It waits for an open dialog to close before starting, skips a
+  step whose element has not appeared within a second and a half, and when it
+  ends it puts back the view you were in and the queue it borrowed. Everyone
+  sees it once more after the update.
+
+### Security
+
+- **A shared skin could blank the window at every start.** A skin's name went
+  into a comment of the compiled CSS, and a skin called
+  `x */ :root{display:none} /*` closed the comment and hid everything. The
+  compiled CSS now carries no free text at all, and a fuzz test puts
+  `*/ { } < ; @ \` in every string field of a skin and checks that what comes
+  out is still only the rules the compiler means to write.
+- **An imported skin asks before you wear it**, showing its cost, its motion
+  and anything that deserves a second look; a flashing skin is refused (see
+  above).
+- **The window can do less.** Five permissions instead of the default set, a
+  stricter content security policy (`object-src`, `base-uri`, `form-action`
+  and `frame-ancestors` closed), and exports that check where they write and
+  with which extension.
+- **Network clients.** The AI key is bound to the address it was written for:
+  changing the address asks for the key again instead of sending it to the new
+  one. The AI, sign-in and scrobbling clients follow no redirects, Drive
+  follows two at most and only to Google, and a stream's redirects must lead
+  to a catalog Aether knows. HTTPS certificates are checked against Windows'
+  own store.
+- **SQLite 3.53.2**, which closes CVE-2026-11824 in FTS5 — reachable here
+  through the database of an older Aether opened by the importer. Tauri 2.12,
+  lofty 0.25 and zip 8 come with it.
+- **Updates are bound to their version.** The signature of an update now
+  carries the version it was made for, and 3.0 refuses one whose signature
+  does not match what the update server announces — so a tampered manifest
+  cannot pair a new version number with the installer of an older release.
+
+### Changed — the release pipeline
+
+The key that signs updates no longer sits beside the build: the installer is
+built without it, and signed on a clean machine that compiles nothing. Every
+action is pinned to a commit and runs on Node 24; the release job uses no
+cache, builds with `--locked`, and runs the full verification on the tag
+before building. Every push now also checks licenses and security advisories
+of the Rust dependencies (`cargo deny`) and of the npm packages that ship in
+the window, and the notes the update notice shows are tested so they can no
+longer come out empty.
+
+### Changed — the documentation
+
+The Docs page on the site used to explain the Settings, card by card, in four
+languages. It is now a technical reference of the program itself, in English:
+fourteen chapters — the design rules, the database and its migrations, the
+scan, metadata and lyrics, the audio engine, playback, the catalogs, the
+network, the online services, skins and the Studio, the window, the desktop
+shell, and the build — each entry naming the source files it describes. The
+**?** on every Settings card still opens the page at its own entry, which now
+says how that part works in the code; the link no longer carries a language.
+
+`strumenti/docs.js` checks the page on every verification, CI included: every
+chapter file is loaded, every link and every anchor the Settings can open
+lands on an entry, and every source path an entry names still exists in the
+repository.
+
+### The number
+
+A major, and the clearest one this project has shipped: `SKIN_FORMAT_VERSION`
+goes from 1 to 2, which is the first of the two points the versioning rules at
+the top of this file name. Aether 3.0 reads every format 1 skin; Aether 2.x
+refuses every format 2 skin as a format it does not read. A skin exported from
+this Studio, and every draft it has opened, will not open in 2.4.
+
+Everything else in this entry — the loudness, the network shares, the audio
+chain, the database care — would have been a patch under those rules, however
+large. It is here because the format changed, not because of its size.
+
+### Database
+
+Three migrations, all additive: nothing is rewritten and no table is rebuilt.
+
+- `028_statistiche_orfane` — three tables where a removed track's play count,
+  rating, heart, play history and playlist places wait ninety days for the
+  same file to return, and the triggers that fill and empty them.
+- `029_intensita` — `track_intensita`, the measured loudness, true peak and
+  measured duration of each track. The gain is not stored: it is derived when
+  read, so changing the target never asks to measure again.
+- `030_libreria_leggera` — two indexes on `tracks` (the path ignoring case,
+  and the effective artist) and `libreria_stato`, a single row: a random
+  number that three triggers on `tracks` change at every write, which tells
+  the smart-playlist counts when to recount, and the version of the rule
+  albums and artists were last rebuilt with. The first scan after the update
+  rebuilds albums and artists in full, once.
+
+**Going back to 2.4.0 costs a copy of the database**, as for every migration:
+2.4 opens schema 27 and refuses 30 with `db.versionAhead`. 3.0 takes that copy
+itself before migrating — `aether.db.schema-027.bak`, beside the database in
+`%APPDATA%\io.github.federicobaratti.aether` — and putting it back in place of
+`aether.db` returns to 2.4 with the library as it was on the day of the
+update: what was played, rated or added afterwards is not in it. The
+loudness measurements cost only time to redo.
+
+What does not go back either is the skins: drafts opened in this Studio are
+written in format 2 (their format 1 text is in the `migrata` snapshot, which
+2.4 cannot see, because it looks for snapshots inside the draft's folder), and
+the conversations with the chat stay in `chat.json` files that 2.4 ignores.
+Skins installed before the update are still format 1 on disk and still open in
+both.
+
 ## [2.4.0] — 2026-09-21
 
 **The release that finishes the other half.** Issue #1 asked for two things.

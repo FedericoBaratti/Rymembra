@@ -33,7 +33,7 @@
 use std::time::Duration;
 
 use aether_domain::errors::{AppError, ErrorCode};
-use aether_net::{Corpo, Metodo, Rete, Richiesta, Risposta};
+use aether_net::{Corpo, Metodo, Rete, Richiesta, Rimandi, Risposta};
 
 use crate::{Ascolto, CLIENT, Servizio, VERSIONE};
 
@@ -94,10 +94,15 @@ impl ListenBrainz {
     /// Esiste per due ragioni vere, non per simmetria: ListenBrainz è software
     /// libero e c'è chi ne ospita un'istanza propria, e le prove di questo
     /// modulo hanno bisogno di un indirizzo che non sia il servizio vero.
+    ///
+    /// Nessun rimando: ogni richiesta porta il token, e gli invii portano nel
+    /// corpo la cronologia d'ascolto. Un'istanza propria che rimandasse altrove
+    /// (una barra finale, un dominio cambiato) dà un errore che nomina il
+    /// posto giusto, invece di mandarci il token da sola.
     #[must_use]
     pub fn verso(punto: impl Into<String>, token: impl Into<String>) -> Self {
         Self {
-            rete: Rete::nuova("listenbrainz", SCADENZA),
+            rete: Rete::nuova("listenbrainz", SCADENZA).con_rimandi(Rimandi::Nessuno),
             token: token.into(),
             punto: punto.into(),
         }
@@ -444,6 +449,7 @@ mod prove {
             riprova_fra_ms: None,
             posizione: None,
             url_finale: "https://x".to_owned(),
+            intervallo: None,
         };
         assert_eq!(
             motivo(&con(
@@ -467,5 +473,15 @@ mod prove {
             !scritto.contains("segretissimo"),
             "un token in un log è un token utilizzabile da chi legge quel log"
         );
+    }
+
+    #[test]
+    fn listenbrainz_non_segue_rimandi() {
+        for cliente in [
+            ListenBrainz::nuovo("t"),
+            ListenBrainz::verso("https://istanza.esempio", "t"),
+        ] {
+            assert!(matches!(cliente.rete.rimandi(), Rimandi::Nessuno));
+        }
     }
 }

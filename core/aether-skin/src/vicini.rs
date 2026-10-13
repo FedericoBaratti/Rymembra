@@ -20,9 +20,17 @@ pub(crate) fn vicini<'a>(ago: &str, candidati: impl Iterator<Item = &'a str>) ->
     let mut punteggi: Vec<(u8, &'a str)> = candidati
         .filter_map(|nome| {
             let minuscolo = nome.to_lowercase();
+            let refusi = distanza(&ago, &minuscolo);
             let punteggio = if minuscolo.starts_with(&ago) || ago.starts_with(&minuscolo) {
                 3
-            } else if minuscolo.contains(&ago) || ago.contains(&minuscolo) {
+            } else if refusi <= 1 {
+                // Una lettera saltata o raddoppiata — `mola`, `pulssa` — è il
+                // refuso più comune, e non somiglia al nome per nessun pezzo.
+                3
+            } else if minuscolo.contains(&ago)
+                || ago.contains(&minuscolo)
+                || (refusi == 2 && ago.chars().count() >= 5)
+            {
                 2
             } else if testa.len() > 2 && minuscolo.contains(&testa) {
                 1
@@ -40,11 +48,53 @@ pub(crate) fn vicini<'a>(ago: &str, candidati: impl Iterator<Item = &'a str>) ->
     punteggi.into_iter().take(3).map(|(_, nome)| nome).collect()
 }
 
+/// Quante lettere tolte, aggiunte o cambiate separano due nomi (Levenshtein).
+fn distanza(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    // Una riga della tabella alla volta: `prima[j]` è la distanza fra il
+    // pezzo di `a` letto finora e i primi `j` caratteri di `b`.
+    let mut prima: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut riga = Vec::with_capacity(prima.len());
+        riga.push(i + 1);
+        for ((cb, diagonale), sopra) in b.iter().zip(&prima).zip(prima.iter().skip(1)) {
+            let sinistra = riga.last().copied().unwrap_or(0);
+            riga.push(if ca == *cb {
+                *diagonale
+            } else {
+                diagonale.min(sopra).min(&sinistra).saturating_add(1)
+            });
+        }
+        prima = riga;
+    }
+    prima.last().copied().unwrap_or(0)
+}
+
 /// I candidati, scritti come li leggerà chi ha sbagliato.
 pub(crate) fn forse(candidati: &[&str]) -> String {
     let elenco: Vec<String> = candidati.iter().map(|nome| format!("«{nome}»")).collect();
     match elenco.len() {
         0 => String::new(),
         _ => format!(" Forse intendevi {}?", elenco.join(", ")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn la_distanza_conta_le_lettere_da_cambiare() {
+        assert_eq!(distanza("molla", "molla"), 0);
+        assert_eq!(distanza("mola", "molla"), 1);
+        assert_eq!(distanza("pulssa", "pulsa"), 1);
+        assert_eq!(distanza("sale", "sela"), 2);
+        assert_eq!(distanza("", "abc"), 3);
+        assert_eq!(distanza("abc", ""), 3);
+    }
+
+    #[test]
+    fn un_refuso_di_una_lettera_trova_il_nome() {
+        assert_eq!(vicini("mola", ["molla", "scatto"].into_iter()), ["molla"]);
     }
 }

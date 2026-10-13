@@ -29,9 +29,10 @@
 //! (`%APPDATA%\Aether`). Deve esserlo: finché questa non è finita, la vecchia
 //! deve restare apribile, e l'importatore la legge in sola lettura.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
+use std::sync::mpsc::Sender;
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use crate::nota;
@@ -68,6 +69,12 @@ pub struct Libreria {
     /// scritture vanno in fila. Il vocabolario completo e il perché stanno su
     /// [`aether_app::db::Opened::giornale`].
     pub giornale: String,
+    /// La copia fatta prima delle migrazioni, o perché non c'è. `None` quando
+    /// non c'era niente da migrare.
+    ///
+    /// Anche questa sta qui solo per la riga di avvio: se un aggiornamento va
+    /// storto, la prima domanda è se c'è una copia da cui ripartire, e dove.
+    pub istantanea: Option<aether_app::db::Istantanea>,
 }
 
 /// Lo stato condiviso fra i comandi.
@@ -93,6 +100,13 @@ pub struct Stato {
     /// `None` quando l'apertura è fallita: allora l'errore è nel mutex, e
     /// [`Stato::copertine`] va a prenderlo lì.
     store_copertine: Option<CoverStore>,
+
+    /// La cartella dati, senza chiedere il lucchetto.
+    ///
+    /// La stessa ragione di `store_copertine`: la chiede il protocollo delle
+    /// risorse delle skin, che sta sul filo della finestra, e un percorso che
+    /// non cambia mai non vale una coda dietro una scansione.
+    cartella_dati: Option<PathBuf>,
 
     /// Qualcuno ha chiesto di fermare la scansione in corso.
     ///
@@ -125,6 +139,22 @@ pub struct Stato {
     /// l'altra ha appena messo. Il nucleo non esclude più niente da sé — lo dice
     /// la documentazione di `Deposito` — e l'esclusione tocca a chi chiama.
     scansione_in_corso: AtomicBool,
+
+    /// Chi svegliare quando una scansione finisce: il filo della manutenzione.
+    ///
+    /// # Perché qui e non nei due posti che scansionano
+    ///
+    /// Perché una scansione che toglie dei brani lascia le loro copertine senza
+    /// nessuno, e la pulizia deve seguirla **qualunque** strada l'abbia fatta
+    /// partire — il comando a mano, la passata automatica a fine coda dei
+    /// download, e quelle che verranno. L'unico punto per cui passano tutte è il
+    /// turno, e il turno sta qui: la sveglia parte quando la sua guardia cade
+    /// (vedi [`TurnoDiScansione`]). Una riga in ognuno dei chiamanti sarebbe una
+    /// riga che il prossimo chiamante dimentica.
+    ///
+    /// Un `OnceLock` perché la manutenzione nasce dopo la libreria, e la
+    /// registra una volta sola.
+    fine_scansione: OnceLock<Sender<()>>,
 }
 
 impl Stato {
@@ -133,10 +163,18 @@ impl Stato {
         let libreria = apri_libreria(data_dir);
         Self {
             store_copertine: libreria.as_ref().ok().map(|l| l.covers.clone()),
+            cartella_dati: libreria.as_ref().ok().map(|l| l.data_dir.clone()),
             libreria: Mutex::new(libreria),
             scansione_da_fermare: AtomicBool::new(false),
             scansione_in_corso: AtomicBool::new(false),
+            fine_scansione: OnceLock::new(),
         }
+    }
+
+    /// Chi svegliare alla fine di ogni scansione. Le chiamate dopo la prima non
+    /// fanno niente: il filo della manutenzione è uno.
+    pub fn a_fine_scansione(&self, sveglia: Sender<()>) {
+        let _ = self.fine_scansione.set(sveglia);
     }
 
     /// Lo store delle copertine, senza chiedere il lucchetto.
@@ -157,14 +195,47 @@ impl Stato {
         }
     }
 
+    /// La cartella dati, senza chiedere il lucchetto. `None` se la libreria
+    /// non si è aperta.
+    pub fn cartella_dati(&self) -> Option<&Path> {
+        self.cartella_dati.as_deref()
+    }
+
     /// Il diritto di essere l'unica scansione in corso.
     ///
     /// `None` quando ce n'è già una: chi chiama risponde `library.scanBusy` se
     /// gliel'ha chiesto qualcuno, o annota e lascia perdere se è una passata
     /// automatica. Il turno si libera da sé quando la guardia cade — anche
     /// uscendo per un `?`, che è la ragione per cui [`Turno`] esiste.
-    pub fn turno_di_scansione(&self) -> Option<Turno<'_>> {
+    ///
+    /// Quando cade, la guardia sveglia anche la manutenzione: vedi
+    /// [`TurnoDiScansione`].
+    pub fn turno_di_scansione(&self) -> Option<TurnoDiScansione<'_>> {
+        Turno::prendi(&self.scansione_in_corso).map(|turno| TurnoDiScansione {
+            _turno: turno,
+            sveglia: self.fine_scansione.get(),
+        })
+    }
+
+    /// Lo stesso turno, preso dalla manutenzione: esclude le scansioni come
+    /// [`Stato::turno_di_scansione`], e **non** sveglia nessuno quando cade.
+    ///
+    /// Senza questa seconda porta, la pulizia delle copertine — che prende il
+    /// turno per non incrociare una scansione — sveglierebbe sé stessa alla
+    /// fine, e da lì una volta ogni dieci secondi per sempre.
+    pub fn turno_di_manutenzione(&self) -> Option<Turno<'_>> {
         Turno::prendi(&self.scansione_in_corso)
+    }
+
+    /// Qualcuno tiene il turno delle scansioni, adesso.
+    ///
+    /// Solo una lettura, per chi deve **non** cominciare qualcosa durante una
+    /// scansione senza però prenderne il turno: il sondaggio delle cartelle di
+    /// rete di `crate::sorveglia`, che non scrive niente e che, prendendo il
+    /// turno anche per un istante, farebbe rispondere «occupato» a una
+    /// «Scansiona» premuta in quell'istante.
+    pub fn scansione_in_corso(&self) -> bool {
+        self.scansione_in_corso.load(Ordering::Acquire)
     }
 
     /// Chiede alla scansione in corso di fermarsi.
@@ -296,6 +367,31 @@ impl Drop for Turno<'_> {
     }
 }
 
+/// Il turno di una scansione: un [`Turno`], più la sveglia della manutenzione.
+///
+/// Quando cade — a scansione finita, annullata o fallita, anche uscendo per un
+/// `?` — sveglia il filo della manutenzione, che dopo la sua raffica guarda se
+/// sono rimaste copertine senza nessuno e passa `PRAGMA optimize` su una
+/// libreria appena cambiata. Prima si sveglia, poi il turno si libera: il
+/// `Drop` di questa struttura gira prima di quello dei suoi campi, e la
+/// manutenzione aspetta comunque dieci secondi prima di chiederlo.
+pub struct TurnoDiScansione<'a> {
+    /// Il turno vero, che si libera cadendo.
+    _turno: Turno<'a>,
+    /// Chi svegliare. `None` finché la manutenzione non si è registrata.
+    sveglia: Option<&'a Sender<()>>,
+}
+
+impl Drop for TurnoDiScansione<'_> {
+    fn drop(&mut self) {
+        if let Some(sveglia) = self.sveglia {
+            // Un canale chiuso vuol dire che il filo non c'è più, cioè che si
+            // sta uscendo: non è un guasto della scansione.
+            let _ = sveglia.send(());
+        }
+    }
+}
+
 /// Aspetta che una raffica di sveglie finisca.
 ///
 /// `Continue` quando per `raffica` non è arrivato più niente: la raffica è
@@ -330,6 +426,132 @@ pub fn aspetta_la_raffica<T>(
     }
 }
 
+/// La salute di un filo di sottofondo, come la si legge da fuori.
+///
+/// Quel che serve a rispondere a «il backup gira?» senza aprire il diario:
+/// quanti giri ha fatto, quante volte è caduto, quando e perché l'ultima.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaluteFilo {
+    /// Il nome del filo, lo stesso che compare nel diario.
+    pub nome: String,
+    /// I giri finiti, caduti compresi.
+    pub giri: u64,
+    /// Quante volte un giro è caduto in panico.
+    pub cadute: u64,
+    /// Quante di fila, fino all'ultimo giro: zero vuol dire che l'ultimo è
+    /// andato.
+    pub cadute_di_fila: u32,
+    /// Quando è caduto l'ultima volta, in millisecondi dall'epoca.
+    pub ultima_caduta_ms: Option<i64>,
+    /// Il messaggio dell'ultimo panico, accorciato. Il dove lo scrive il
+    /// gancio dei panici nel diario.
+    pub ultimo_panico: Option<String>,
+}
+
+/// Il registro della salute dei fili, uno per processo.
+static SALUTE: OnceLock<Mutex<std::collections::BTreeMap<&'static str, SaluteFilo>>> =
+    OnceLock::new();
+
+/// Il registro, anche se un panico lo ha avvelenato: è proprio quando qualcuno
+/// è caduto che serve leggerlo.
+fn salute() -> MutexGuard<'static, std::collections::BTreeMap<&'static str, SaluteFilo>> {
+    SALUTE
+        .get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// La salute di tutti i fili sorvegliati che hanno fatto almeno un giro.
+#[must_use]
+pub fn salute_dei_fili() -> Vec<SaluteFilo> {
+    salute().values().cloned().collect()
+}
+
+/// La salute dei fili di sottofondo, per la finestra.
+///
+/// Istantaneo: legge un registro in memoria, non tocca né disco né rete.
+#[tauri::command]
+pub fn fili_salute() -> crate::errore::Esito<Vec<SaluteFilo>> {
+    Ok(salute_dei_fili())
+}
+
+/// Un giro di un filo di sottofondo, che se cade in panico non porta via il
+/// filo.
+///
+/// # Il difetto che toglie
+///
+/// I fili di sottofondo — backup, sincronia, arricchimento, manutenzione,
+/// aggiornamenti, scrobbling — sono cicli infiniti, e un panico in un giro
+/// srotolava **fuori dal ciclo**: il filo finiva, e con lui il servizio, per il
+/// resto della sessione e senza che nessuno lo dicesse. Il gancio scriveva il
+/// panico nel diario; il backup intanto non salvava più niente, e la finestra
+/// continuava a mostrare l'ora dell'ultimo salvataggio riuscito.
+///
+/// Qui il giro gira dentro `catch_unwind`: un panico diventa `None`, una riga
+/// nel diario e una voce in [`salute_dei_fili`], e il ciclo decide quando
+/// riprovare — vedi [`attesa_dopo_la_caduta`]. I panici restano vietati dai
+/// lint in questo albero; quelli che arrivano vengono da sotto, da un parser o
+/// da un plugin davanti a byte che non si aspettava.
+///
+/// # Perché `AssertUnwindSafe`
+///
+/// Perché quel che il giro tocca è di due specie, e nessuna delle due resta a
+/// metà in un modo che conti: i lucchetti si riprendono con
+/// `unwrap_or_else(PoisonError::into_inner)` dappertutto, e il database ha le
+/// sue transazioni, che un panico lascia cadere senza commit.
+pub fn sorvegliato<T>(nome: &'static str, giro: impl FnOnce() -> T) -> Option<T> {
+    let esito = std::panic::catch_unwind(std::panic::AssertUnwindSafe(giro));
+    let mut registro = salute();
+    let voce = registro.entry(nome).or_insert_with(|| SaluteFilo {
+        nome: nome.to_owned(),
+        giri: 0,
+        cadute: 0,
+        cadute_di_fila: 0,
+        ultima_caduta_ms: None,
+        ultimo_panico: None,
+    });
+    voce.giri = voce.giri.saturating_add(1);
+    match esito {
+        Ok(valore) => {
+            voce.cadute_di_fila = 0;
+            Some(valore)
+        }
+        Err(carico) => {
+            let messaggio = carico
+                .downcast_ref::<&str>()
+                .map(|testo| (*testo).to_owned())
+                .or_else(|| carico.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "panico senza messaggio".to_owned());
+            let messaggio: String = messaggio.chars().take(300).collect();
+            voce.cadute = voce.cadute.saturating_add(1);
+            voce.cadute_di_fila = voce.cadute_di_fila.saturating_add(1);
+            voce.ultima_caduta_ms = Some(adesso_ms());
+            voce.ultimo_panico = Some(messaggio.clone());
+            let di_fila = voce.cadute_di_fila;
+            drop(registro);
+            nota!("[fili] {nome} è caduto in panico ({di_fila} di fila) e riparte: {messaggio}");
+            None
+        }
+    }
+}
+
+/// Quanto aspettare prima di rifare un giro dopo `cadute_di_fila` panici di
+/// fila.
+///
+/// Cinque secondi la prima volta, poi il doppio, fino a dieci minuti. Un
+/// panico che dipende da un file storto si ripresenterebbe identico a ogni
+/// giro: ripartire subito vorrebbe dire un diario pieno della stessa riga e un
+/// processore occupato a cadere. Un panico di passaggio, invece, merita il
+/// secondo giro presto.
+#[must_use]
+pub fn attesa_dopo_la_caduta(cadute_di_fila: u32) -> Duration {
+    let raddoppi = cadute_di_fila.saturating_sub(1).min(16);
+    Duration::from_secs(5)
+        .saturating_mul(1_u32 << raddoppi)
+        .min(Duration::from_secs(10 * 60))
+}
+
 /// Avvia un filo che fa una passata ogni tanto, e prima se qualcuno lo sveglia.
 ///
 /// La forma è quella dei tre fili che salvano, sincronizzano e arricchiscono: un
@@ -359,6 +581,12 @@ pub fn aspetta_la_raffica<T>(
 /// arrivi sul canale vuol dire «controlla adesso», e passare di qui gli farebbe
 /// dichiarare una durata di raffica che non aspetterebbe mai.
 ///
+/// # Sorvegliato
+///
+/// Ogni passata gira dentro [`sorvegliato`]: una che cade in panico non porta
+/// via il filo, e la successiva arriva dopo [`attesa_dopo_la_caduta`] invece
+/// che dopo l'intervallo — o prima, se qualcuno sveglia il filo.
+///
 /// # Errori
 ///
 /// L'errore di `Builder::spawn` torna a chi chiama invece di essere annotato qui:
@@ -385,6 +613,7 @@ pub fn avvia_filo_periodico<S: Send + 'static>(
                 Ok(sveglia) => Some(sveglia),
                 Err(RecvTimeoutError::Timeout) => None,
             };
+            let mut cadute_di_fila = 0_u32;
             loop {
                 // I due esiti dell'attesa si distinguono, ed è quel che impedisce
                 // a una chiusura dell'applicazione di far cominciare **adesso**
@@ -394,8 +623,14 @@ pub fn avvia_filo_periodico<S: Send + 'static>(
                 {
                     return;
                 }
-                passata();
-                motivo = match orecchio.recv_timeout(intervallo) {
+                let attesa = if sorvegliato(nome, &mut passata).is_some() {
+                    cadute_di_fila = 0;
+                    intervallo
+                } else {
+                    cadute_di_fila = cadute_di_fila.saturating_add(1);
+                    attesa_dopo_la_caduta(cadute_di_fila).min(intervallo)
+                };
+                motivo = match orecchio.recv_timeout(attesa) {
                     Err(RecvTimeoutError::Disconnected) => return,
                     Ok(sveglia) => Some(sveglia),
                     // Il timeout **è** il battito periodico: nessun timer.
@@ -420,6 +655,7 @@ fn apri_libreria(data_dir: PathBuf) -> Result<Libreria, AppError> {
         migrazioni: aperto.applied,
         fts5: aperto.fts5,
         giornale: aperto.giornale,
+        istantanea: aperto.istantanea,
     })
 }
 
@@ -440,17 +676,93 @@ pub fn riga_di_avvio(stato: &Stato) {
         // una condivisione di rete — e che da lì viene l'interfaccia che si
         // impunta durante una scansione. Senza questo campo quella domanda non
         // aveva risposta da nessuna parte nel diario.
-        Ok(libreria) => nota!(
-            "[avvio] libreria aperta dati={} migrazioni={} fts5={} giornale={}",
-            libreria.data_dir.display(),
-            libreria.migrazioni,
-            libreria.fts5,
-            libreria.giornale
-        ),
+        Ok(libreria) => {
+            nota!(
+                "[avvio] libreria aperta dati={} migrazioni={} fts5={} giornale={}",
+                libreria.data_dir.display(),
+                libreria.migrazioni,
+                libreria.fts5,
+                libreria.giornale
+            );
+            riga_dell_istantanea(libreria.istantanea.as_ref());
+        }
         Err(errore) => nota!(
             "[avvio] libreria NON aperta codice={} causa={}",
             errore.code().kind().code(),
             errore.cause().unwrap_or("—")
+        ),
+    }
+}
+
+/// La riga di diario dell'istantanea di prima delle migrazioni, se c'è stata
+/// una migrazione.
+///
+/// Una riga a parte e non un campo della riga di avvio: c'è solo quando un
+/// aggiornamento ha toccato lo schema, e quando c'è porta un percorso intero —
+/// quello da rimettere a mano se la migrazione è andata storta. La riga dice
+/// anche quando la copia **non** c'è, e perché: è l'informazione che serve di
+/// più proprio nel giorno in cui servirebbe la copia.
+fn riga_dell_istantanea(istantanea: Option<&aether_app::db::Istantanea>) {
+    use aether_app::db::Istantanea;
+    match istantanea {
+        None => {}
+        Some(Istantanea::Fatta {
+            percorso,
+            byte,
+            millisecondi,
+        }) => nota!(
+            "[avvio] istantanea prima delle migrazioni: {} ({} MiB, {} ms)",
+            percorso.display(),
+            byte >> 20,
+            millisecondi
+        ),
+        Some(Istantanea::Presente { percorso }) => nota!(
+            "[avvio] istantanea prima delle migrazioni già presente: {}",
+            percorso.display()
+        ),
+        Some(Istantanea::Saltata { motivo }) => {
+            nota!("[avvio] istantanea prima delle migrazioni SALTATA: {motivo}");
+        }
+    }
+}
+
+/// Quanto l'uscita aspetta la libreria per l'ultimo `PRAGMA optimize`.
+///
+/// Un quarto di secondo. L'ottimizzazione in sé costa meno di un millisecondo
+/// quasi sempre; l'attesa è per il lucchetto, che all'uscita può tenerlo una
+/// scansione a cui si è appena chiesto di fermarsi. Oltre, si rinuncia: le
+/// statistiche restano quelle di sei ore fa, e l'`optimize=0x10002` della
+/// prossima apertura rimedia. Un'uscita che si impunta per aspettarla no.
+const ATTESA_OTTIMIZZAZIONE_USCITA: Duration = Duration::from_millis(250);
+
+/// L'ultimo `PRAGMA optimize` della sessione, quello che la documentazione di
+/// SQLite chiede prima di chiudere una connessione.
+///
+/// # Una volta sola
+///
+/// La sequenza di spegnimento in `main` gira per ognuno dei tre eventi che
+/// dicono «si chiude», e di solito ne arrivano due o tre. La prima volta si
+/// ottimizza, le altre no: una bandiera di processo, alzata **prima** di
+/// provare, perché anche un tentativo che rinuncia al lucchetto non va
+/// ripetuto — la seconda attesa costerebbe un altro quarto di secondo a
+/// un'uscita che sta già aspettando.
+pub fn ottimizza_uscendo(stato: &Stato) {
+    static FATTA: AtomicBool = AtomicBool::new(false);
+    if FATTA.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    match con_libreria_entro(stato, ATTESA_OTTIMIZZAZIONE_USCITA, |libreria| {
+        aether_app::db::ottimizza(&libreria.connection)
+    }) {
+        Some(Ok(())) => {}
+        Some(Err(err)) => nota!(
+            "[uscita] ottimizzazione del database non riuscita codice={} causa={}",
+            err.code().kind().code(),
+            err.cause().unwrap_or("—")
+        ),
+        None => nota!(
+            "[uscita] ottimizzazione del database saltata: lucchetto non preso in {} ms",
+            ATTESA_OTTIMIZZAZIONE_USCITA.as_millis()
         ),
     }
 }
@@ -879,6 +1191,44 @@ mod prove {
     }
 
     #[test]
+    fn la_fine_di_una_scansione_sveglia_la_manutenzione_e_la_pulizia_no() {
+        // La scansione sveglia la manutenzione quando il suo turno cade — per
+        // qualunque strada sia partita — e la pulizia, che prende lo stesso
+        // turno dall'altra porta, no: altrimenti si sveglierebbe da sola a ogni
+        // giro, per sempre.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let (sveglia, orecchio) = std::sync::mpsc::channel();
+        stato.a_fine_scansione(sveglia);
+
+        {
+            let _turno = stato.turno_di_manutenzione().expect("turno libero");
+            assert!(
+                stato.turno_di_scansione().is_none(),
+                "la pulizia esclude le scansioni"
+            );
+        }
+        assert!(
+            orecchio.try_recv().is_err(),
+            "la pulizia non sveglia nessuno"
+        );
+
+        {
+            let _turno = stato.turno_di_scansione().expect("turno libero");
+            assert!(
+                stato.turno_di_manutenzione().is_none(),
+                "e una scansione esclude la pulizia"
+            );
+            assert!(orecchio.try_recv().is_err(), "non prima della fine");
+        }
+        assert!(orecchio.try_recv().is_ok(), "la scansione finita sveglia");
+        assert!(
+            stato.turno_di_scansione().is_some(),
+            "e il turno è di nuovo libero"
+        );
+    }
+
+    #[test]
     fn un_lucchetto_avvelenato_si_prende_lo_stesso() {
         // `try_lock` su un mutex avvelenato risponde `Poisoned` **subito**:
         // trattarlo come «occupato» vorrebbe dire consumare la scadenza intera
@@ -900,5 +1250,49 @@ mod prove {
             inizio.elapsed() < Duration::from_millis(400),
             "e si recupera subito, non alla scadenza"
         );
+    }
+}
+
+#[cfg(test)]
+mod prove_dei_fili {
+    use super::*;
+
+    #[test]
+    fn un_giro_che_cade_non_porta_via_il_filo_e_si_vede() {
+        let nome = "prova-sorvegliato";
+        assert_eq!(sorvegliato(nome, || 3), Some(3));
+        let caduto: Option<()> = sorvegliato(nome, || {
+            std::panic::resume_unwind(Box::new("un parser davanti a byte storti"))
+        });
+        assert_eq!(
+            caduto, None,
+            "il panico diventa un giro mancato, non un filo morto"
+        );
+        let voce = salute_dei_fili()
+            .into_iter()
+            .find(|voce| voce.nome == nome)
+            .expect("il filo è nel registro");
+        assert_eq!(voce.giri, 2);
+        assert_eq!(voce.cadute, 1);
+        assert_eq!(voce.cadute_di_fila, 1);
+        assert_eq!(
+            voce.ultimo_panico.as_deref(),
+            Some("un parser davanti a byte storti")
+        );
+        // Un giro buono azzera le cadute di fila, non la storia.
+        assert_eq!(sorvegliato(nome, || ()), Some(()));
+        let voce = salute_dei_fili()
+            .into_iter()
+            .find(|voce| voce.nome == nome)
+            .expect("il filo è nel registro");
+        assert_eq!((voce.cadute, voce.cadute_di_fila), (1, 0));
+    }
+
+    #[test]
+    fn dopo_una_caduta_si_aspetta_sempre_di_piu_ma_non_troppo() {
+        assert_eq!(attesa_dopo_la_caduta(1), Duration::from_secs(5));
+        assert_eq!(attesa_dopo_la_caduta(2), Duration::from_secs(10));
+        assert_eq!(attesa_dopo_la_caduta(3), Duration::from_secs(20));
+        assert_eq!(attesa_dopo_la_caduta(40), Duration::from_secs(600));
     }
 }

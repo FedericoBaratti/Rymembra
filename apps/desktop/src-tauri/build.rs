@@ -21,6 +21,25 @@
 //! configurato. È voluto. Con `env!` al posto di `option_env!`, clonare il repo
 //! e lanciare `cargo test` sarebbe impossibile per chiunque non abbia un
 //! progetto Google, e la prima cosa che farebbe è commentare la riga.
+//!
+//! # Il runtime di Visual C++, e perché dipende dal profilo
+//!
+//! L'installer porta dentro l'eseguibile il runtime di Visual C++ collegato
+//! staticamente: chi installa Aether non deve avere già il pacchetto
+//! ridistribuibile di Microsoft, che su un Windows appena messo spesso manca.
+//! Fino a `tauri 2.11` lo decideva la CLI, e solo in `tauri build`; dalla
+//! `2.12` lo decide `tauri-build`, e di serie lo fa **sempre** — anche in un
+//! `cargo test`.
+//!
+//! Lì fa danni. Per collegarlo così `tauri-build` mette nella propria cartella
+//! di uscita un `msvcrt.lib` finto e la aggiunge ai percorsi del linker; e
+//! `cargo`, quando prova gli esempi della documentazione, passa quei percorsi a
+//! **tutti** i crate del workspace. Gli esempi di `aether-domain` trovavano il
+//! `msvcrt.lib` finto al posto di quello vero, e non si collegavano più.
+//!
+//! Quindi si torna a com'era: statico nel profilo `release`, che è quello di
+//! `tauri build` e dell'installer; il runtime di sistema in sviluppo e nelle
+//! prove, dove Visual C++ c'è di sicuro perché serve a compilare.
 
 use std::path::Path;
 
@@ -54,7 +73,17 @@ fn main() {
         }
     }
 
-    tauri_build::build();
+    // `PROFILE` vale `release` anche per un profilo che eredita da lì: è la
+    // domanda giusta, «questa è la build che va nell'installer?».
+    let di_rilascio = std::env::var("PROFILE").is_ok_and(|profilo| profilo == "release");
+    let attributi = tauri_build::Attributes::new()
+        .windows_attributes(tauri_build::WindowsAttributes::new().static_vc_runtime(di_rilascio));
+    // Quel che fa `tauri_build::build`, con un attributo in più: il messaggio
+    // intero sull'uscita, e la compilazione che si ferma.
+    if let Err(errore) = tauri_build::try_build(attributi) {
+        println!("{errore:#}");
+        std::process::exit(1);
+    }
 }
 
 /// Le coppie `chiave = "valore"` di un file `.toml` minimale.

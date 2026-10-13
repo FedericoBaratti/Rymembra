@@ -15,7 +15,7 @@ use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::esterno::Fonte;
 use aether_domain::indirizzo::estensione_da_url;
 use aether_domain::scelta::Candidato;
-use aether_net::FlussoHttp;
+use aether_net::{Cancello, FlussoHttp};
 
 /// Il riferimento a un brano che non è un file.
 ///
@@ -148,25 +148,52 @@ fn riferimento_da_testo(fonte: Fonte, url: &str) -> Option<RiferimentoFlusso> {
 ///
 /// Perché in quella `Rete` ci sono lo `User-Agent` con cui Aether si presenta,
 /// la scadenza che quel servizio merita, il modo di leggere un `Retry-After` e
-/// la riserva di connessioni già calda. Una `Rete` nuova per brano sarebbe un
+/// la riserva di connessioni già calda. È la rete **dei flussi** del catalogo
+/// (`rete_flusso`), non quella delle domande: fino alla 2.4.0 era la seconda, e
+/// i suoi trenta secondi complessivi facevano morire a metà canzone le finestre
+/// da due megabyte su una linea lenta. Una `Rete` nuova per brano sarebbe un
 /// saluto TLS per canzone e un limite di frequenza contato da capo ogni volta,
 /// contro archivi pubblici che ci ospitano gratis — cioè il modo di farsi
 /// bloccare per maleducazione.
 ///
+/// # Che cosa restituisce, oltre al flusso
+///
+/// L'indirizzo da cui si ricava il formato. Di solito è quello della riga; per
+/// un FLAC dell'Internet Archive entrato in libreria con la 2.4.0 è l'MP3 che si
+/// suona al suo posto (vedi `ArchivioOrg::da_ascoltare`), e dire al
+/// decodificatore «è un FLAC» mentre arrivano fotogrammi MP3 vorrebbe dire
+/// fargli cercare il contenitore sbagliato per primo.
+///
+/// # Dove può portare un rimando
+///
+/// Solo dove il catalogo è di casa: ogni flusso si apre con il suo
+/// [`cancello_di`], e un rimando che il cancello rifiuta non riceve nemmeno la
+/// richiesta.
+///
 /// # Errori
 ///
 /// Quelli di `Rete::intervallo` (`net.*`, `download.*`) e, per Audius,
-/// `catalogo.notAvailable` se non risponde nessun nodo.
+/// `catalogo.notAvailable` se non risponde nessun nodo. `net.badSchema` per un
+/// rimando che porta fuori dal catalogo.
 /// `playback.sourceUnavailable` per una fonte che di byte non ne dà: è il caso
 /// dell'archivio di Spotify e di un file di playlist, che nominano un brano e
 /// non lo consegnano.
 pub(super) fn apri_flusso(
     cataloghi: &Cataloghi,
     rif: &RiferimentoFlusso,
-) -> Result<FlussoHttp, AppError> {
+) -> Result<(FlussoHttp, String), AppError> {
     match rif.fonte {
+        // Per un FLAC entrato in libreria con la 2.4.0 si suona l'MP3 dello
+        // stesso brano. Costa una scheda la prima volta, dentro la stessa
+        // scadenza dell'apertura.
         Fonte::InternetArchive => {
-            FlussoHttp::nuovo(cataloghi.archivio().rete().clone(), rif.url.clone())
+            let da_suonare = cataloghi.archivio().da_ascoltare(&rif.url);
+            let flusso = FlussoHttp::nuovo(
+                cataloghi.archivio().rete_flusso(),
+                da_suonare.clone(),
+                cancello_di(rif.fonte, &da_suonare),
+            )?;
+            Ok((flusso, da_suonare))
         }
         // Il nodo si sceglie **adesso**: è lo stesso passo che fa il prelievo, e
         // per la stessa ragione. Un `Candidato` con il solo indirizzo dentro
@@ -178,14 +205,23 @@ pub(super) fn apri_flusso(
                 url: rif.url.clone(),
                 ..Candidato::default()
             })?;
-            FlussoHttp::nuovo(cataloghi.audius().rete().clone(), pronto.url)
+            let cancello = cancello_di(rif.fonte, &pronto.url);
+            let flusso = FlussoHttp::nuovo(cataloghi.audius().rete_flusso(), pronto.url, cancello)?;
+            Ok((flusso, rif.url.clone()))
         }
         // Il catalogo per cui `FlussoHttp` è nato: da Jamendo non si tiene
         // niente, e ascoltare mentre arriva è l'unico modo lecito che c'è. Senza
         // la feature il ramo non esiste e la fonte cade nel caso generale, che è
         // la verità: questa copia di Aether Jamendo non ce l'ha.
         #[cfg(feature = "jamendo")]
-        Fonte::Jamendo => FlussoHttp::nuovo(cataloghi.jamendo().rete().clone(), rif.url.clone()),
+        Fonte::Jamendo => {
+            let flusso = FlussoHttp::nuovo(
+                cataloghi.jamendo().rete_flusso(),
+                rif.url.clone(),
+                cancello_di(rif.fonte, &rif.url),
+            )?;
+            Ok((flusso, rif.url.clone()))
+        }
         altra => Err(AppError::new(ErrorCode::PlaybackSourceUnavailable {
             track_id: None,
             path: Some(rif.url.clone()),
@@ -195,6 +231,96 @@ pub(super) fn apri_flusso(
             altra.etichetta()
         ))),
     }
+}
+
+/// Il cancello dei rimandi di un flusso: dove un «vai là» può portare i byte.
+///
+/// `partenza` è l'indirizzo che si apre davvero — quello passato da
+/// [`riferimento_da_testo`], o per Audius quello col nodo davanti — e resta lo
+/// stesso per tutti i salti: il cancello giudica ogni bersaglio contro il
+/// catalogo da cui si è partiti, non contro il salto prima.
+fn cancello_di(fonte: Fonte, partenza: &str) -> Cancello {
+    let partenza = partenza.to_owned();
+    Cancello::nuovo(move |bersaglio| bersaglio_ammesso(fonte, &partenza, bersaglio))
+}
+
+/// Se un rimando di un flusso di `fonte`, partito da `partenza`, può andare a
+/// `bersaglio`.
+///
+/// # La stessa allowlist dell'indirizzo di partenza
+///
+/// L'indirizzo di partenza è passato da `aether_catalogo::riconosci`, e il
+/// bersaglio deve passare **dallo stesso posto**: un secondo elenco di domini
+/// scritto qui sarebbe il secondo, cioè quello che un giorno dice una cosa
+/// diversa (vedi [`riferimento_di`]). Ma `riconosci` legge link pubblici, e il
+/// bersaglio di un rimando non lo è: `archive.org/download/…` rimanda a
+/// `ia800305.us.archive.org/27/items/…`, un percorso che `riconosci` non ha
+/// motivo di conoscere. Quel che del bersaglio conta è l'**ospite**, e allora
+/// si chiede a `riconosci` esattamente quello: lo stesso indirizzo di partenza,
+/// con l'ospite del bersaglio al posto del suo. Se è ancora un link di quel
+/// catalogo, l'ospite è di casa; `evilarchive.org` e `archive.org.esempio.com`
+/// no, per le stesse ragioni per cui non lo sono come link.
+///
+/// # Audius, che un'allowlist di domini non ce l'ha
+///
+/// Audius non ha un server ma una rete di nodi gestiti da chi vuole, ognuno col
+/// suo dominio: il nodo di partenza viene dall'elenco che `api.audius.co`
+/// consegna, non da `riconosci`, e rimanda a un nodo di contenuti che può stare
+/// sotto qualunque nome. Un elenco di domini per Audius sarebbe un elenco che
+/// smette di suonare metà del catalogo il giorno in cui entra un nodo nuovo.
+/// Quel che si può esigere da un salto di Audius, e si esige, è che resti
+/// cifrato e che vada verso un **nome pubblico**: mai un indirizzo IP scritto a
+/// cifre, mai `localhost`, mai un nome da rete di casa. Un nodo ostile non può
+/// così usare il lettore per bussare al router o a un servizio di questa
+/// macchina.
+fn bersaglio_ammesso(fonte: Fonte, partenza: &str, bersaglio: &str) -> bool {
+    if !bersaglio.starts_with("https://") {
+        return false;
+    }
+    let Some(ospite) = aether_net::http::ospite(bersaglio) else {
+        return false;
+    };
+    if fonte == Fonte::Audius {
+        return nome_pubblico(ospite);
+    }
+    // Il percorso della partenza, query compresa: `riconosci` guarda il
+    // percorso per capire *che cosa* il link nomina, e deve trovarci quel che
+    // ci ha trovato la prima volta.
+    let percorso = partenza
+        .strip_prefix("https://")
+        .and_then(|resto| resto.find('/').and_then(|inizio| resto.get(inizio..)))
+        .unwrap_or("/");
+    aether_catalogo::riconosci(&format!("https://{ospite}{percorso}"))
+        .is_some_and(|riferimento| riferimento.fonte == fonte)
+}
+
+/// Un nome che si risolve nel DNS pubblico, e non un indirizzo di casa.
+///
+/// Si guarda l'ultima etichetta: un nome pubblico finisce con un dominio di
+/// primo livello fatto di lettere (o di punycode, `xn--…`). È la regola che
+/// esclude in un colpo solo `127.0.0.1`, `10.0.0.1`, `[::1]`, le forme
+/// esadecimali o decimali di un IPv4 che alcuni risolutori accettano
+/// (`0x7f.1`, `2130706433`) e i nomi senza punto; i suffissi da rete di casa si
+/// escludono per nome.
+fn nome_pubblico(ospite: &str) -> bool {
+    let ospite = ospite.trim_end_matches('.').to_ascii_lowercase();
+    let Some((_, ultima)) = ospite.rsplit_once('.') else {
+        return false;
+    };
+    let lettere = ultima.len() >= 2 && ultima.chars().all(|c| c.is_ascii_alphabetic());
+    let punycode = ultima.starts_with("xn--");
+    let di_casa = [
+        "localhost",
+        "local",
+        "internal",
+        "lan",
+        "home",
+        "arpa",
+        "test",
+        "invalid",
+    ]
+    .contains(&ultima);
+    (lettere || punycode) && !di_casa
 }
 
 /// Un flusso di rete, vestito da [`aether_play::Flusso`].
@@ -233,6 +359,19 @@ impl aether_play::Flusso for FlussoDiRete {
     fn lunghezza(&self) -> Option<u64> {
         self.0.lunghezza()
     }
+
+    /// I byte arrivano dalla rete: il decodificatore salta con la modalità
+    /// grossolana e la riga dei dati tecnici prende il bitrate da qui. Vedi
+    /// `aether_play::Flusso::remoto`.
+    fn remoto(&self) -> bool {
+        true
+    }
+
+    /// Un salto dopo un salto, un altro brano o uno stop: la richiesta in
+    /// corso smette di aspettare la rete. Vedi `FlussoHttp::ascolta_annullo`.
+    fn ascolta_annullo(&mut self, annullo: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        self.0.ascolta_annullo(annullo);
+    }
 }
 
 /// Da un flusso aperto alla sorgente che il motore sa suonare.
@@ -262,6 +401,11 @@ pub(super) fn sorgente_da_flusso(
             reason = "sono decibel: la precisione di un f32 è un milionesimo di dB"
         )]
         replaygain_db: scheda.replaygain_db.map(|db| db as f32),
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "un picco lineare fra 0 e qualche unità: un f32 basta e avanza"
+        )]
+        picco: scheda.picco.map(|picco| picco as f32),
     }
 }
 
@@ -297,6 +441,7 @@ mod prove {
                 collocazione: Collocazione::File(percorso.to_owned()),
                 durata_ms: 1000,
                 replaygain_db: None,
+                picco: None,
             };
             assert_eq!(
                 riferimento_di(&scheda),
@@ -342,6 +487,7 @@ mod prove {
             },
             durata_ms: 754_000,
             replaygain_db: None,
+            picco: None,
         };
         assert_eq!(
             riferimento_di(&scheda),
@@ -423,6 +569,68 @@ mod prove {
         );
     }
 
+    /// Un rimando dell'Internet Archive va dove l'Archive tiene i file, e da
+    /// nessun'altra parte.
+    ///
+    /// È la promessa che il commento di `Rete::intervallo_finche` faceva già
+    /// nella 2.4.0 e che il codice non manteneva: lì si guardava solo lo schema,
+    /// e dopo che `ureq` aveva già seguito il rimando.
+    #[test]
+    fn un_rimando_dellarchivio_resta_nellarchivio() {
+        let partenza = "https://archive.org/download/gd1977-05-08/gd77-05-08d1t01.mp3";
+        let cancello = cancello_di(Fonte::InternetArchive, partenza);
+        for buono in [
+            "https://ia800305.us.archive.org/27/items/gd1977-05-08/gd77-05-08d1t01.mp3",
+            "https://dn720003.ca.archive.org/0/items/gd1977-05-08/gd77-05-08d1t01.mp3",
+            "https://IA800305.US.ARCHIVE.ORG:443/27/items/x/y.mp3",
+            "https://archive.org/download/gd1977-05-08/altro.mp3",
+        ] {
+            assert!(cancello.ammette(buono), "«{buono}» è dell'Archive");
+        }
+        for cattivo in [
+            "https://evilarchive.org/27/items/x/y.mp3",
+            "https://archive.org.esempio.com/27/items/x/y.mp3",
+            "https://archive.org@esempio.com/27/items/x/y.mp3",
+            "https://esempio.com/archive.org/download/x/y.mp3",
+            "http://ia800305.us.archive.org/27/items/x/y.mp3",
+            "https://127.0.0.1/download/x/y.mp3",
+        ] {
+            assert!(!cancello.ammette(cattivo), "«{cattivo}» non è dell'Archive");
+        }
+    }
+
+    /// Un rimando di Audius può andare da un nodo qualunque, ma non a casa.
+    #[test]
+    fn un_rimando_di_audius_va_verso_un_nome_pubblico() {
+        let cancello = cancello_di(
+            Fonte::Audius,
+            "https://discoveryprovider.audius.co/v1/tracks/aB3dE/stream?app_name=Aether",
+        );
+        for buono in [
+            "https://creatornode2.audius.co/tracks/cidstream/Qm?signature=x",
+            "https://audius-content-1.esempio-nodi.com/tracks/cidstream/Qm",
+            "https://nodo.xn--p1ai/tracks/cidstream/Qm",
+        ] {
+            assert!(cancello.ammette(buono), "«{buono}» è un nodo possibile");
+        }
+        for cattivo in [
+            "https://127.0.0.1/tracks/cidstream/Qm",
+            "https://192.168.1.1/",
+            "https://[::1]:8443/",
+            "https://0x7f.1/",
+            "https://2130706433/",
+            "https://localhost/",
+            "https://router.lan/",
+            "https://stampante.local/",
+            "http://creatornode2.audius.co/tracks/cidstream/Qm",
+        ] {
+            assert!(
+                !cancello.ammette(cattivo),
+                "«{cattivo}» è casa, o in chiaro"
+            );
+        }
+    }
+
     /// Un file finto in memoria, al posto di un catalogo.
     ///
     /// Passa dal tratto `Sorgente` di `aether-net`, che esiste esattamente per
@@ -469,6 +677,7 @@ mod prove {
             },
             durata_ms: 754_000,
             replaygain_db: Some(-7.5),
+            picco: Some(1.2),
         };
 
         let mut sorgente = sorgente_da_flusso(&scheda, indirizzo, flusso);
@@ -484,6 +693,13 @@ mod prove {
                 .is_some_and(|db| (db + 7.5).abs() < 0.001),
             "il guadagno non è arrivato: {:?}",
             sorgente.replaygain_db
+        );
+        assert!(
+            sorgente
+                .picco
+                .is_some_and(|picco| (picco - 1.2).abs() < 0.001),
+            "il picco misurato non è arrivato: {:?}",
+            sorgente.picco
         );
         assert_eq!(
             sorgente.media.lunghezza(),

@@ -17,7 +17,7 @@ import "./stile.css";
  * chiamata. Questa riga serve a far nascere l'interfaccia nella lingua del
  * sistema invece che nell'inglese di ripiego: chi ha scelto altro la vede
  * corretta un istante dopo, mentre la finestra è ancora nascosta (vedi il
- * commento su `pronto` in `App.tsx`).
+ * commento su `pronto` in `aspettoFinestra.ts`).
  *
  * Farlo dentro un effetto vorrebbe dire un fotogramma nella lingua sbagliata per
  * chiunque non parli inglese, e per chi ha una lingua di sistema senza file
@@ -79,9 +79,9 @@ if (radice) {
       </RecintoErrori>
       {/*
        * I tre comandi della finestra **fuori** dall'applicazione, e non per
-       * simmetria coi simboli: `App` si sostituisce con lo Studio quando si apre
-       * l'editor delle skin, e una finestra che perde il tasto di chiusura
-       * entrando in una schermata sarebbe un guasto. Qui valgono per tutte.
+       * simmetria coi simboli: una finestra che perde il tasto di chiusura
+       * entrando in una schermata — quella d'errore del recinto qui sopra, lo
+       * Studio che copre tutto — sarebbe un guasto. Qui valgono per tutte.
        */}
       <BarraTitolo />
     </StrictMode>,

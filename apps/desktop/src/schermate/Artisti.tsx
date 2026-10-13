@@ -23,55 +23,85 @@
  * Le lettere senza artisti restano visibili e spente: un indice a buchi dice
  * quanto è grande la libreria, uno che mostra solo le lettere piene sembra un
  * indice completo e fa cercare la Q che non c'è.
+ *
+ * Sotto quale lettera cade un artista lo decide `alfabeto.ts`, con
+ * `Intl.Collator` nella lingua di chi legge: «Ørjan» sta sotto la O per un
+ * italiano, e non sotto «#» insieme ai numeri.
+ *
+ * # Una finestra sulla griglia, e l'indice che la conosce
+ *
+ * Duemila artisti erano duemila schede nel DOM, ognuna con fino a quattro
+ * copertine: la griglia si disegna per righe come quella degli album
+ * (`useGrigliaVirtuale` in `Libreria.tsx`). L'indice alfabetico non può quindi
+ * più cercare la scheda della R nel documento — quasi sempre non c'è — e non
+ * ne ha bisogno: sa in che posizione sta il primo artista di ogni lettera, e
+ * chiede alla finestra di scorrere lì. La lettera accesa è quella del primo
+ * artista in vista, che la finestra sa senza osservare niente.
  */
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
+import type { ReactNode, RefObject } from "react";
 
+import { ALTRO, LETTERE, indiceAlfabetico } from "../alfabeto";
 import { Copertina } from "../Copertina";
 import type { Artista } from "../ipc";
 import { Icona } from "../parti/Icone";
-import { t } from "../lingue";
+import { t, useLingua } from "../lingue";
 import { brani_, nomeArtista } from "../formato";
-
-/** L'alfabeto dell'indice, più il cestino di chi non comincia per lettera. */
-const LETTERE = "abcdefghijklmnopqrstuvwxyz".split("");
-
-/** La lettera sotto cui sta un artista: la prima della chiave d'ordinamento. */
-function lettera(artista: Artista): string {
-  const prima = artista.sortName.slice(0, 1);
-  return LETTERE.includes(prima) ? prima : "#";
-}
+import { conIndice } from "../segnali";
+import { pagliaDiGriglia, useGrigliaVirtuale } from "./Libreria";
 
 export function Artisti({
   artisti,
   onApri,
   onMenu,
+  scorrevole,
+  memoria,
 }: {
   artisti: Artista[];
   onApri: (artista: Artista) => void;
   onMenu: (e: React.MouseEvent, artista: Artista) => void;
+  /** Lo scorrevole: senza, la griglia si disegna per intero (lo Studio). */
+  scorrevole?: RefObject<HTMLDivElement | null> | undefined;
+  /** Lo scorrimento si ricorda: solo sotto un `<Activity>`. */
+  memoria?: boolean | undefined;
 }) {
-  /** Quali lettere hanno qualcuno sotto. */
-  const piene = useMemo(
-    () => new Set(artisti.map(lettera)),
-    [artisti],
+  /*
+   * La lettera di ogni artista, quali lettere hanno qualcuno sotto, e dove
+   * comincia ognuna: è lì che salta l'indice. Nella lingua di chi legge, perché
+   * «ö» è una «o» per un italiano e un'altra lettera per uno svedese — vedi
+   * `alfabeto.ts`. Cambiando lingua l'indice si rifà.
+   */
+  const lingua = useLingua();
+  const { lettere, piene, ancore } = useMemo(
+    () => indiceAlfabetico(artisti.map((a) => a.sortName), lingua),
+    [artisti, lingua],
   );
 
-  /** Il primo artista di ogni lettera: è lì che salta l'indice. */
-  const ancore = useMemo(() => {
-    const trovate = new Map<string, string>();
-    for (const a of artisti) {
-      const l = lettera(a);
-      if (!trovate.has(l)) trovate.set(l, a.name);
-    }
-    return trovate;
-  }, [artisti]);
+  const griglia = useRef<HTMLDivElement>(null);
+  const { finestra, intera, primo, ultimo, fuoco, fermata } = useGrigliaVirtuale({
+    totale: artisti.length,
+    griglia,
+    scorrevole,
+    selettore: ".scheda-artista",
+    selettoreMisura: ".scheda-artista",
+    memoria,
+  });
+
+  /**
+   * La lettera sotto cui si sta guardando: `aria-current` sulla sua voce
+   * dell'indice, che per una skin è lo stato «corrente».
+   *
+   * È la lettera del primo artista in vista: la finestra lo sa già, e prima
+   * serviva un `IntersectionObserver` sulle schede-ancora che con la finestra
+   * non sarebbero più nel documento.
+   */
+  const corrente = intera ? null : (lettere[finestra.visibileDa] ?? null);
 
   const salta = (l: string) => {
-    const nome = ancore.get(l);
-    if (nome === undefined) return;
-    document
-      .getElementById(`artista-${encodeURIComponent(nome)}`)
-      ?.scrollIntoView({ block: "start", behavior: "smooth" });
+    const indice = ancore.get(l);
+    if (indice === undefined) return;
+    // Scivola; col movimento ridotto — del sistema o dell'app — `scorriA` salta.
+    finestra.scorriA(indice, "smooth");
   };
 
   if (artisti.length === 0) {
@@ -86,57 +116,88 @@ export function Artisti({
     );
   }
 
+  /*
+   * Quanto è largo un tassello del mosaico, per `sizes`: la colonna intera con
+   * una o due copertine — con due, ognuna è alta quanto il mosaico — e metà con
+   * tre o quattro.
+   */
+  const colonna = finestra.larghezzaColonna;
+  const schede: ReactNode[] = [];
+  for (let i = primo; i < ultimo; i += 1) {
+    const a = artisti[i];
+    if (a === undefined) continue;
+    const quante = Math.min(a.covers.length, 4);
+    const tassello = colonna === null ? null : quante > 2 ? colonna / 2 : colonna;
+    schede.push(
+      <button
+        key={a.name}
+        type="button"
+        className="scheda-artista artist-card"
+        style={conIndice(i)}
+        data-indice={i}
+        tabIndex={i === fermata ? 0 : -1}
+        onFocus={() => fuoco.segna(i)}
+        onClick={() => onApri(a)}
+        onContextMenu={(e) => onMenu(e, a)}
+      >
+        <span
+          className="mosaico artist-mosaic"
+          data-quante={quante}
+          aria-hidden="true"
+        >
+          {a.covers.length === 0 ? (
+            <span className="senza">
+              <Icona nome="i-artist" dim={22} />
+            </span>
+          ) : (
+            a.covers.map((hash) => (
+              <Copertina
+                key={hash}
+                hash={hash}
+                titolo={nomeArtista(a.name)}
+                classe="tassello"
+                misura="scheda"
+                larghezza={tassello}
+                accanto
+              />
+            ))
+          )}
+        </span>
+        {/* `dir="auto"`: un nome in arabo o in ebraico si legge da destra, e
+            la direzione la decide il nome, non la pagina. */}
+        <span className="nome" title={nomeArtista(a.name)} dir="auto">
+          {nomeArtista(a.name)}
+        </span>
+        <span className="quanti">
+          {t("artists.counts", {
+            album: t("artists.albums", { n: a.albums }),
+            brani: brani_(a.tracks),
+          })}
+        </span>
+      </button>,
+    );
+  }
+
   return (
     <div className="artisti">
-      <div className="griglia-artisti track-grid">
-        {artisti.map((a) => (
-          <button
-            key={a.name}
-            id={`artista-${encodeURIComponent(a.name)}`}
-            type="button"
-            className="scheda-artista list-row"
-            onClick={() => onApri(a)}
-            onContextMenu={(e) => onMenu(e, a)}
-          >
-            <span
-              className="mosaico"
-              data-quante={Math.min(a.covers.length, 4)}
-              aria-hidden="true"
-            >
-              {a.covers.length === 0 ? (
-                <span className="senza">
-                  <Icona nome="i-artist" dim={22} />
-                </span>
-              ) : (
-                a.covers.map((hash) => (
-                  <Copertina
-                    key={hash}
-                    hash={hash}
-                    titolo={nomeArtista(a.name)}
-                    classe="tassello"
-                  />
-                ))
-              )}
-            </span>
-            <span className="nome" title={nomeArtista(a.name)}>
-              {nomeArtista(a.name)}
-            </span>
-            <span className="quanti">
-              {t("artists.counts", {
-                album: t("artists.albums", { n: a.albums }),
-                brani: brani_(a.tracks),
-              })}
-            </span>
-          </button>
-        ))}
+      <div
+        className="griglia-artisti track-grid"
+        ref={griglia}
+        onKeyDown={fuoco.daTastiera}
+        data-scorso={finestra.scorso || undefined}
+      >
+        {!intera && pagliaDiGriglia("sopra", finestra.sopra, finestra)}
+        {schede}
+        {!intera && pagliaDiGriglia("sotto", finestra.sotto, finestra)}
       </div>
 
-      <nav className="indice-alfabetico" aria-label={t("artists.index.aria")}>
+      <nav className="indice-alfabetico alpha-index" aria-label={t("artists.index.aria")}>
         {LETTERE.map((l) => (
           <button
             key={l}
             type="button"
-            className="lettera"
+            className="lettera alpha-letter"
+            aria-current={corrente === l ? "location" : undefined}
             disabled={!piene.has(l)}
             aria-label={t("artists.index.letter", { lettera: l.toUpperCase() })}
             onClick={() => salta(l)}
@@ -144,14 +205,15 @@ export function Artisti({
             {l.toUpperCase()}
           </button>
         ))}
-        {piene.has("#") && (
+        {piene.has(ALTRO) && (
           <button
             type="button"
-            className="lettera"
+            className="lettera alpha-letter"
+            aria-current={corrente === ALTRO ? "location" : undefined}
             aria-label={t("artists.index.other")}
-            onClick={() => salta("#")}
+            onClick={() => salta(ALTRO)}
           >
-            #
+            {ALTRO}
           </button>
         )}
       </nav>

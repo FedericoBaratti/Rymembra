@@ -35,7 +35,29 @@ aether-domain = { path = "../aether-domain" }
 # `ogg` vale per tre codec e non per uno: Vorbis, FLAC e Opus viaggiano tutti
 # dentro quel contenitore, e il demultiplatore di symphonia li distingue da sé.
 # È la ragione per cui `.oga` non è costato una riga di decodifica.
-symphonia = { version = "0.5", default-features = false, features = [
+#
+# Dalla 0.6 le voci in fondo non si danno più per scontate, e ciascuna ha
+# la sua ragione:
+#
+# - `id3v2`: in 0.5 il lettore dei tag ID3v2 stava sempre nel riconoscitore, in
+#   0.6 è una feature. Senza, un MP3 che comincia con un tag viene attraversato
+#   byte per byte in cerca di una sincronia — dentro i byte di una copertina, che
+#   possono somigliarle — e con un tag più grande di un mega (una copertina
+#   grande basta) il riconoscitore si arrende prima di arrivare all'audio. Gli
+#   altri due lettori di tag, `id3v1` e `ape`, restano fuori apposta: stanno in
+#   coda al file, e per cercarli il riconoscitore salta alla fine e torna — su
+#   un flusso di rete sono richieste in più prima del primo suono, per dei tag
+#   che il motore non legge (li legge `aether-app`, con lofty);
+# - `opt-simd`: la FFT di symphonia (le trasformate di AAC e Vorbis) passa per
+#   `rustfft`, che nel grafo c'è già per il ricampionatore di rubato. Non è una
+#   dipendenza nuova: è la stessa, usata due volte;
+# - `mkv` e `caf`: Matroska/WebM e il Core Audio Format di Apple. C'erano già in
+#   0.5, spenti; la 0.6 li ha riscritti (il ritardo del codec di Matroska ora
+#   si toglie dai timestamp) e dentro portano codec che già decodifichiamo:
+#   Opus e Vorbis il primo, PCM, ALAC e AAC il secondo. Il motore li riconosce
+#   dal contenuto; `.mka`, `.webm` e `.caf` **non** sono ancora fra le
+#   estensioni del dominio, e la ragione sta in `Codec::da_estensione`.
+symphonia = { version = "0.6.1", default-features = false, features = [
     "mp3",
     "flac",
     "isomp4",
@@ -46,12 +68,16 @@ symphonia = { version = "0.5", default-features = false, features = [
     "wav",
     "pcm",
     "aiff",
+    "id3v2",
+    "opt-simd",
+    "mkv",
+    "caf",
 ] }
 
-# Il decodificatore Opus, che symphonia 0.5 non ha. Il contenitore lo apre già
-# lei: riconosce `OpusHead`, misura la durata di ogni pacchetto, e col gapless
-# acceso dice quanto togliere in testa e in coda. Qui manca solo chi faccia
-# diventare campioni quei pacchetti.
+# Il decodificatore Opus, che symphonia continua a non avere nemmeno nella 0.6.
+# Il contenitore lo apre già lei: riconosce `OpusHead`, misura la durata di ogni
+# pacchetto, e a fine brano dice quanto togliere in coda. Qui manca solo chi
+# faccia diventare campioni quei pacchetti.
 #
 # Rust e non C: niente cmake da installare, niente trenta megabyte di libopus da
 # compilare, e niente quattro cross-build in più il giorno che questo crate
@@ -64,16 +90,28 @@ symphonia = { version = "0.5", default-features = false, features = [
 # che ne ricava libopus. La prova sta in `decodifica::opus`, che spiega anche
 # cosa si paga — a cominciare dal fatto che «Rust puro» qui non vuol dire
 # «senza unsafe».
-opus-pure = "0.2"
+#
+# Esatta perché il crate è nato il 2026-08-27: una 0.2.x nuova ripassa dal mazzo.
+opus-pure = "=0.2.1"
 
 # L'uscita. WASAPI qui, AAudio quando ci sarà Android: è la ragione per cui il
 # dispositivo sta dietro questa libreria e non dietro una chiamata di sistema.
-cpal = "0.15"
+#
+# Almeno la 0.18.2, e non la 0.18.0: è la prima in cui `play` e `pause` su
+# WASAPI non vanno in panico a dispositivo sparito — e da quando il flusso si
+# mette a riposo quelle due chiamate le facciamo davvero, vedi `uscita.rs`.
+cpal = "0.18.2"
 
 # Il ricampionamento, che non è un lusso: il dispositivo apre a una frequenza
 # sola e i file ne hanno una loro. Senza, due brani a frequenze diverse non
 # possono attaccarsi senza buco.
 rubato = "0.16"
+
+# La misura dell'intensità percepita: EBU R128 / ITU-R BS.1770, con il picco
+# vero. È il port in Rust di libebur128, la stessa misura che fanno foobar2000,
+# ffmpeg e i programmi di ReplayGain 2.0 — quindi un numero confrontabile con
+# quello scritto nei tag da chiunque altro. Vedi `intensita`.
+ebur128 = "0.1.10"
 
 # L'anello fra il filo che decodifica e la callback che suona. Senza lucchetti:
 # prendere un mutex dentro una callback audio significa che, se il proprietario

@@ -33,7 +33,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { AvanzamentoAggiornamento, StatoAggiornamenti } from "../ipc";
 import { ipc, testoErrore } from "../ipc";
-import { dataOra } from "../formato";
+import { dataOra, numero } from "../formato";
 import { t } from "../lingue";
 import { useAscolto } from "../pagine";
 import { Icona } from "./Icone";
@@ -74,7 +74,8 @@ let nonOraInSessione: string | null = null;
 function peso(byte: number): string {
   const mb = byte / (1024 * 1024);
   if (mb < 1) return t("update.size.kb", { n: Math.round(byte / 1024) });
-  return t("update.size.mb", { n: mb.toFixed(1) });
+  // `numero` e non `toFixed`: «12,5 MB» in italiano, non «12.5».
+  return t("update.size.mb", { n: numero(mb, 1) });
 }
 
 /**
@@ -114,6 +115,15 @@ export function AvvisoAggiornamento({
   const installa = useCallback(() => {
     setTentato(true);
     ipc.aggiornamentiInstalla().catch(onErrore);
+  }, [onErrore]);
+
+  /**
+   * Ferma lo scaricamento. Non è un errore: la fascia torna com'era, con
+   * «Aggiorna» di nuovo premibile, e lo stato arriva da `aggiornamenti:stato`.
+   */
+  const annulla = useCallback(() => {
+    setTentato(false);
+    ipc.aggiornamentiAnnulla().catch(onErrore);
   }, [onErrore]);
 
   const salta = useCallback(() => {
@@ -179,6 +189,16 @@ export function AvvisoAggiornamento({
           <span className="guasto">{testoErrore(stato.errore)}</span>
         )}
       </span>
+      {scaricando && (
+        <button
+          type="button"
+          className="bottone minuto btn-ghost"
+          title={t("update.cancel.hint")}
+          onClick={annulla}
+        >
+          {t("update.cancel")}
+        </button>
+      )}
       {!scaricando && (
         <>
           <button
@@ -291,16 +311,12 @@ export function Aggiornamenti({
 
   return (
     <>
-      <p className="nota">{t("settings.update.p1")}</p>
-      <p className="nota">{t("settings.update.p2")}</p>
-
       {stato?.errore != null && (
         <div className="errore">{testoErrore(stato.errore)}</div>
       )}
 
       <Interruttore
         etichetta={t("settings.update.toggle")}
-        spiegazione={t("settings.update.toggle.hint")}
         acceso={stato?.attivo ?? true}
         onCambia={accendi}
         impedito={
@@ -356,8 +372,6 @@ export function Aggiornamenti({
         </p>
       )}
 
-      <p className="nota">{t("settings.diary.hint")}</p>
-
       {/* I documenti, qui e non in una scheda loro: è la sezione in cui si
           legge quale versione è installata, cioè dove arriva chi sta per
           raccontare che qualcosa non va — e le due cose che gli servono, il
@@ -384,7 +398,6 @@ export function Aggiornamenti({
           </button>
         ))}
       </div>
-      <p className="nota">{t("settings.docs.hint")}</p>
     </>
   );
 }

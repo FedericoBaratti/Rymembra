@@ -29,4 +29,4 @@ pub mod http;
 pub mod immagine;
 
 pub use flusso::{FlussoHttp, Sorgente};
-pub use http::{Corpo, Metodo, Pezzo, Rete, Richiesta, Risposta, percento};
+pub use http::{Cancello, Corpo, Metodo, Pezzo, Rete, Richiesta, Rimandi, Risposta, percento};

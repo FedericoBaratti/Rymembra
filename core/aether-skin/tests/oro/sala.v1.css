@@ -1,0 +1,228 @@
+/* Sala 1.0.0 — generato, non modificare a mano */
+:root[data-skin='sala'] {
+  --skin-color-brace: rgb(224 90 112);
+  --skin-color-brace-rgb: 224 90 112;
+  --skin-color-ottone: rgb(227 164 79);
+  --skin-color-ottone-rgb: 227 164 79;
+  --font-sans: 'Geist', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+  --font-dot: 'Geist Mono', system-ui, sans-serif;
+  --color-surface-0: rgb(11 10 9);
+  --color-surface-1: rgb(19 17 16);
+  --color-surface-2: rgb(27 25 23);
+  --color-surface-3: rgb(36 31 28);
+  --color-text-1: rgb(255 249 240 / 0.93);
+  --color-text-2: rgb(255 249 240 / 0.64);
+  --color-text-3: rgb(255 249 240 / 0.5);
+  --accent: var(--skin-color-ottone);
+  --accent-rgb: var(--accent-rgb);
+  --accent-soft: rgb(var(--skin-color-ottone-rgb) / 0.16);
+  --accent-glow: rgb(var(--skin-color-ottone-rgb) / 0.32);
+  --accent-like: var(--skin-color-brace);
+  --hero-rgb: var(--accent-rgb);
+  --danger: rgb(244 105 79);
+  --danger-soft: rgb(244 105 79 / 0.15);
+  --success: rgb(94 207 146);
+  --success-soft: rgb(94 207 146 / 0.15);
+  --warning: rgb(247 224 122);
+  --warning-soft: rgb(247 224 122 / 0.14);
+  --sidebar-bg: rgb(255 249 240 / 0.035);
+  --hairline: rgb(255 249 240 / 0.08);
+  --ambient-1: rgb(227 164 79 / 0.1);
+  --ambient-2: rgb(140 84 30 / 0.07);
+  --rail-w: 68px;
+  --rail-w-expanded: 240px;
+  --player-h: 92px;
+  --player-gap: 14px;
+  --content-x: clamp(16px, 3cqw, 48px);
+  --radius-panel: 16px;
+  --radius-card: 10px;
+  --shadow-1: 0px 1px 2px rgb(0 0 0 / 0.4), 0px 4px 12px -2px rgb(0 0 0 / 0.3);
+  --shadow-2: 0px 2px 4px -1px rgb(0 0 0 / 0.42), 0px 10px 26px -6px rgb(0 0 0 / 0.5);
+  --shadow-3: 0px 4px 10px -2px rgb(0 0 0 / 0.45), 0px 28px 64px -12px rgb(0 0 0 / 0.62);
+  --shadow-player: inset 0px 1px 0px rgb(255 249 240 / 0.09), 0px 2px 6px -1px rgb(0 0 0 / 0.42), 0px 16px 48px -10px rgb(0 0 0 / 0.6);
+  --glow-accent: 0px 2px 12px -2px rgb(var(--skin-color-ottone-rgb) / 0.45), 0px 0px 32px var(--accent-glow);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-1: 160ms;
+  --dur-2: 300ms;
+  --dur-3: 480ms;
+  --viz-primary: var(--accent);
+  --viz-secondary: var(--skin-color-brace);
+  --viz-tip: var(--skin-color-ottone);
+  --viz-glow: 34;
+  --viz-lens: 46;
+  --viz-reflection: 0.35;
+  --viz-ambient: 0.55;
+  --viz-sway: 0.6;
+  --scrubber-glow: 10;
+  --scrubber-rest: rgb(255 249 240 / 0.16);
+  --shell-left: var(--rail-w);
+  --player-clearance: calc(var(--player-h) + var(--player-gap) * 2);
+  --surface-0-rgb: 11 10 9;
+  --transition-fast: calc(var(--dur-1) * var(--motion-scale, 1)) var(--ease-out-expo);
+  --transition-med: calc(var(--dur-2) * var(--motion-scale, 1)) var(--ease-out-expo);
+  --skin-lampada: radial-gradient(ellipse 115% at 16% 0%, rgb(var(--skin-color-ottone-rgb) / 0.14) 0%, rgb(227 164 79 / 0) 68%);
+  color-scheme: dark;
+}
+:root[data-skin='sala'][data-theme='light'] {
+  --color-surface-0: rgb(250 246 240);
+  --color-surface-1: rgb(242 236 226);
+  --color-surface-2: rgb(233 225 213);
+  --color-surface-3: rgb(222 212 197);
+  --color-text-1: rgb(28 22 16 / 0.92);
+  --color-text-2: rgb(28 22 16 / 0.72);
+  --color-text-3: rgb(28 22 16 / 0.66);
+  --accent: rgb(138 84 16);
+  --accent-rgb: 138 84 16;
+  --accent-soft: rgb(138 84 16 / 0.14);
+  --accent-glow: rgb(138 84 16 / 0.26);
+  --accent-like: rgb(176 36 64);
+  --danger: rgb(179 49 31);
+  --danger-soft: rgb(179 49 31 / 0.12);
+  --success: rgb(15 107 63);
+  --success-soft: rgb(15 107 63 / 0.12);
+  --warning: rgb(122 92 0);
+  --warning-soft: rgb(122 92 0 / 0.14);
+  --sidebar-bg: rgb(28 22 16 / 0.04);
+  --hairline: rgb(28 22 16 / 0.1);
+  --ambient-1: rgb(138 84 16 / 0.09);
+  --ambient-2: rgb(140 84 30 / 0.05);
+  --shadow-1: 0px 1px 1px rgb(60 44 24 / 0.07), 0px 2px 6px -1px rgb(60 44 24 / 0.09);
+  --shadow-2: 0px 1px 2px rgb(60 44 24 / 0.08), 0px 8px 20px -4px rgb(60 44 24 / 0.12);
+  --shadow-3: 0px 2px 6px -1px rgb(60 44 24 / 0.09), 0px 22px 52px -10px rgb(60 44 24 / 0.16);
+  --shadow-player: inset 0px 1px 0px rgb(255 255 255 / 0.9), 0px 1px 3px rgb(60 44 24 / 0.09), 0px 12px 34px -8px rgb(60 44 24 / 0.13);
+  --scrubber-rest: rgb(28 22 16 / 0.16);
+  --surface-0-rgb: 250 246 240;
+  color-scheme: light;
+}
+:root[data-skin='sala'] {
+  --motion-intensity: full;
+  --motion-scale: 1;
+}
+:root[data-skin='sala']::view-transition-old(root) {
+  animation: skin-sala-out calc(var(--dur-2) * var(--motion-scale, 1)) var(--ease-out-expo) both;
+}
+@keyframes skin-sala-out {
+  to {
+    opacity: 0;
+    transform: scale(0.988);
+  }
+}
+:root[data-skin='sala']::view-transition-new(root) {
+  animation: skin-sala-in calc(var(--dur-2) * var(--motion-scale, 1)) var(--ease-out-expo) both;
+}
+@keyframes skin-sala-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+:root[data-skin='sala'] .app-shell {
+  background: linear-gradient(170deg, rgb(16 14 12) 0%, var(--color-surface-0) 58%);
+}
+:root[data-skin='sala'] .ambient-backdrop {
+  background: var(--skin-lampada);
+}
+:root[data-skin='sala'] .player-shell {
+  background: linear-gradient(180deg, var(--color-surface-3) 0%, var(--color-surface-1) 100%);
+  border: 1px solid rgb(var(--skin-color-ottone-rgb) / 0.18);
+  border-radius: 16px;
+}
+:root[data-skin='sala'] .nav-pill:where([data-active], .is-active) {
+  color: var(--accent);
+  font-weight: 600;
+}
+:root[data-skin='sala'] .hero-eyebrow {
+  color: rgb(var(--skin-color-ottone-rgb) / 0.75);
+  letter-spacing: 0.18em;
+}
+:root[data-skin='sala'] .hero-art {
+  border-radius: 12px;
+}
+:root[data-skin='sala'] .section-card {
+  background: linear-gradient(180deg, var(--color-surface-2) 0%, var(--color-surface-1) 72px);
+}
+:root[data-skin='sala'] .stat-number {
+  color: var(--accent);
+}
+:root[data-skin='sala'] .play-btn-primary {
+  background: radial-gradient(circle 96% at 50% 16%, rgb(242 189 114) 0%, var(--accent) 100%);
+}
+:root[data-skin='sala'] .empty-icon {
+  color: rgb(var(--skin-color-ottone-rgb) / 0.7);
+}
+:root[data-skin='sala'] .np-screen {
+  background: var(--color-surface-0), var(--skin-lampada), radial-gradient(ellipse at center, transparent 42%, rgb(0 0 0 / 0.55) 100%);
+}
+:root[data-skin='sala'] .np-art {
+  border-radius: 14px;
+}
+:root[data-skin='sala'] .np-title {
+  letter-spacing: -0.02em;
+  font-weight: 600;
+}
+:root[data-skin='sala'] .glass-modal {
+  border: 1px solid rgb(var(--skin-color-ottone-rgb) / 0.18);
+}
+:root[data-skin='sala'] .menu-pop {
+  border: 1px solid rgb(var(--skin-color-ottone-rgb) / 0.16);
+}
+:root[data-skin='sala'] .toast-card {
+  border: 1px solid rgb(var(--skin-color-ottone-rgb) / 0.16);
+}
+:root[data-skin='sala'] [data-nodo='radice'] {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: flex-start;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 0;
+}
+:root[data-skin='sala'] [data-nodo='0'] {
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+}
+:root[data-skin='sala'] [data-nodo='1'] {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  container-type: inline-size;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 0;
+}
+:root[data-skin='sala'] [data-nodo='1-0'] {
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+}
+:root[data-skin='sala'] [data-nodo='1-1'] {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 0;
+}
+:root[data-skin='sala'] [data-nodo='2'] {
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 clamp(24px, 348px, 480px);
+  width: clamp(24px, 348px, 480px);
+}
+:root[data-skin='sala'] [data-nodo='3'] {
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+}
+:root[data-skin='sala'] [data-nodo='4'] {
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+}
+:root[data-skin='sala'] [data-nodo='5'] {
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+}

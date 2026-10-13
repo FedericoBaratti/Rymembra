@@ -54,6 +54,13 @@ const RESPIRO: Duration = Duration::from_millis(100);
 /// mangi la memoria.
 const RIGA_MASSIMA: u64 = 8 * 1024;
 
+/// Quante righe di intestazione si leggono, al più, dopo la riga di richiesta.
+///
+/// Se ne cerca una sola — `Accept-Language`, per rispondere nella lingua del
+/// browser — e un browser vero ne manda una ventina. Il tetto c'è per la
+/// stessa ragione di [`RIGA_MASSIMA`]: chi bussa non è per forza un browser.
+const INTESTAZIONI_MASSIME: usize = 64;
+
 /// Il servitore in ascolto, prima che il browser risponda.
 ///
 /// Si apre **prima** di costruire l'indirizzo di autorizzazione, perché la porta
@@ -67,7 +74,9 @@ pub struct Attesa {
 }
 
 /// Quel che il browser ha riportato indietro.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// [`Debug`] scritto a mano: il codice è un segreto a tempo — vedi il campo.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Risposta {
     /// Il codice di autorizzazione da scambiare con un token.
     ///
@@ -75,6 +84,12 @@ pub struct Risposta {
     /// deve poter finire in una stringa di formato senza che qualcuno lo scriva
     /// apposta.
     pub code: String,
+}
+
+impl std::fmt::Debug for Risposta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Risposta").field("code", &"…").finish()
+    }
 }
 
 impl Attesa {
@@ -143,9 +158,17 @@ impl Attesa {
     ///   di chi apre la pagina e va a fare altro.
     /// - `internal.aborted` se l'utente nega il consenso. Non è un guasto, ed è
     ///   `Info`: è una risposta legittima a una domanda.
-    /// - `net.badSchema` se lo `state` non corrisponde. Vuol dire che a questa
-    ///   porta ha bussato qualcosa che non è la nostra richiesta, e l'unica
-    ///   risposta sicura è buttare via tutto e ricominciare.
+    ///
+    /// # Uno `state` sbagliato non chiude niente
+    ///
+    /// Fino alla 2.4.0 chiudeva tutto, con `net.badSchema`: bastava che a
+    /// questa porta bussasse qualcosa con uno `state` qualunque — un'altra
+    /// scheda rimasta aperta da un tentativo di prima, un programma della
+    /// stessa macchina — perché il collegamento fallisse mentre l'utente stava
+    /// ancora leggendo la schermata di consenso. La risposta sbagliata non è
+    /// la nostra, e trattarla come la nostra era proprio quel che lo `state`
+    /// esiste per impedire. Adesso le si risponde `400`, la si dimentica, e si
+    /// continua ad aspettare quella giusta fino alla scadenza.
     ///
     /// # `fermare`
     ///
@@ -206,6 +229,35 @@ enum Esito {
     NonEraLei,
 }
 
+/// In che lingua rispondere al browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lingua {
+    /// Italiano.
+    Italiano,
+    /// Inglese: per chiunque non chieda l'italiano.
+    Inglese,
+}
+
+impl Lingua {
+    /// La lingua preferita dal browser, da `Accept-Language`.
+    ///
+    /// Conta la **prima** voce, che è quella che il browser preferisce: si
+    /// risponde in italiano se comincia per `it`, in inglese altrimenti. Le
+    /// pagine sono due frasi, e una negoziazione con i pesi `q=` sarebbe più
+    /// lunga di loro.
+    fn da_accept_language(valore: Option<&str>) -> Self {
+        let prima = valore
+            .and_then(|valore| valore.split(',').next())
+            .map(|voce| voce.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        if prima == "it" || prima.starts_with("it-") || prima.starts_with("it;") {
+            Self::Italiano
+        } else {
+            Self::Inglese
+        }
+    }
+}
+
 /// Legge una richiesta, risponde, e dice se era quella giusta.
 fn serve(flusso: TcpStream, state: &str, servizio: Servizio) -> Esito {
     // Una scadenza sul socket accettato: un client che apre la connessione e
@@ -222,6 +274,25 @@ fn serve(flusso: TcpStream, state: &str, servizio: Servizio) -> Esito {
     {
         return Esito::NonEraLei;
     }
+    // Le intestazioni, per una sola: la lingua in cui rispondere. Una che non
+    // si legge non è un guasto — si risponde in inglese.
+    let mut accept_language = None;
+    for _ in 0..INTESTAZIONI_MASSIME {
+        let mut intestazione = String::new();
+        let letti = (&mut lettore)
+            .take(RIGA_MASSIMA)
+            .read_line(&mut intestazione)
+            .unwrap_or(0);
+        if letti == 0 || intestazione.trim().is_empty() {
+            break;
+        }
+        if let Some((nome, valore)) = intestazione.split_once(':')
+            && nome.trim().eq_ignore_ascii_case("accept-language")
+        {
+            accept_language = Some(valore.trim().to_owned());
+        }
+    }
+    let lingua = Lingua::da_accept_language(accept_language.as_deref());
 
     let query = interroga(&riga).unwrap_or_default();
     let valore = |cercato: &str| {
@@ -246,19 +317,18 @@ fn serve(flusso: TcpStream, state: &str, servizio: Servizio) -> Esito {
     // guardare il contenuto, compreso un `error`: altrimenti chiunque possa
     // bussare a questa porta potrebbe far fallire il collegamento mandando un
     // `error=access_denied` che non viene dal fornitore.
+    //
+    // Una che non lo è si rimanda via e **non chiude l'attesa**: vedi
+    // [`Attesa::aspetta`]. Il valore ricevuto non si scrive da nessuna parte:
+    // se davvero è arrivato da qualcun altro, ricopiarlo in un registro è
+    // l'unica cosa peggiore che si possa fare con lui.
     if valore("state").as_deref() != Some(state) {
-        rispondi(&flusso, "400 Bad Request", PAGINA_IGNOTA);
-        // Il valore ricevuto **non** si mette nella causa: se davvero è arrivato
-        // da qualcun altro, ricopiarlo in un registro è l'unica cosa peggiore
-        // che si possa fare con lui.
-        return Esito::Finita(Err(AppError::new(ErrorCode::NetBadSchema {
-            service: Some(servizio.chiave.to_owned()),
-            detail: Some("la risposta non corrisponde alla richiesta".to_owned()),
-        })));
+        rispondi(&flusso, "400 Bad Request", pagina_altrui(lingua));
+        return Esito::NonEraLei;
     }
 
     if let Some(motivo) = errore {
-        rispondi(&flusso, "200 OK", PAGINA_NEGATA);
+        rispondi(&flusso, "200 OK", pagina_negata(lingua));
         // Il motivo del fornitore finisce nella causa: `access_denied` è
         // un'informazione utile a chi legge un registro, e non è un segreto.
         return Esito::Finita(Err(AppError::new(ErrorCode::InternalAborted {
@@ -271,7 +341,7 @@ fn serve(flusso: TcpStream, state: &str, servizio: Servizio) -> Esito {
         rispondi(&flusso, "404 Not Found", PAGINA_IGNOTA);
         return Esito::NonEraLei;
     };
-    rispondi(&flusso, "200 OK", PAGINA_FATTA);
+    rispondi(&flusso, "200 OK", pagina_fatta(lingua));
     Esito::Finita(Ok(Risposta { code }))
 }
 
@@ -351,26 +421,79 @@ fn rispondi(mut flusso: &TcpStream, stato: &str, corpo: &str) {
     let _ = flusso.flush();
 }
 
+/// L'inizio comune delle pagine, fino al titolo escluso.
+///
+/// Le pagine sono costanti e non si compongono con dati arrivati da fuori:
+/// niente di quel che il browser ha mandato finisce dentro l'HTML, e così una
+/// richiesta costruita apposta non può scriverci niente.
+macro_rules! pagina {
+    ($lingua:literal, $titolo:literal, $frase:literal) => {
+        concat!(
+            "<!doctype html><html lang=\"",
+            $lingua,
+            "\"><meta charset=\"utf-8\">",
+            "<title>Aether</title>",
+            "<body style=\"font:16px system-ui;display:grid;place-items:center;height:100vh;margin:0;",
+            "background:#0b0b0d;color:#f4f4f5\">",
+            "<div style=\"text-align:center\"><h1 style=\"font-size:20px\">",
+            $titolo,
+            "</h1><p style=\"opacity:.7\">",
+            $frase,
+            "</p></div>"
+        )
+    };
+}
+
 /// La pagina che l'utente vede quando è andata bene.
-const PAGINA_FATTA: &str = concat!(
-    "<!doctype html><html lang=\"it\"><meta charset=\"utf-8\">",
-    "<title>Aether</title>",
-    "<body style=\"font:16px system-ui;display:grid;place-items:center;height:100vh;margin:0;",
-    "background:#0b0b0d;color:#f4f4f5\">",
-    "<div style=\"text-align:center\"><h1 style=\"font-size:20px\">Account collegato</h1>",
-    "<p style=\"opacity:.7\">Puoi chiudere questa scheda e tornare ad Aether.</p></div>"
-);
+const fn pagina_fatta(lingua: Lingua) -> &'static str {
+    match lingua {
+        Lingua::Italiano => pagina!(
+            "it",
+            "Account collegato",
+            "Puoi chiudere questa scheda e tornare ad Aether."
+        ),
+        Lingua::Inglese => pagina!(
+            "en",
+            "Account connected",
+            "You can close this tab and go back to Aether."
+        ),
+    }
+}
 
 /// La pagina che l'utente vede quando ha detto di no.
-const PAGINA_NEGATA: &str = concat!(
-    "<!doctype html><html lang=\"it\"><meta charset=\"utf-8\">",
-    "<title>Aether</title>",
-    "<body style=\"font:16px system-ui;display:grid;place-items:center;height:100vh;margin:0;",
-    "background:#0b0b0d;color:#f4f4f5\">",
-    "<div style=\"text-align:center\"><h1 style=\"font-size:20px\">Nessun accesso concesso</h1>",
-    "<p style=\"opacity:.7\">Aether non ha ricevuto il permesso. Puoi chiudere questa scheda.</p>",
-    "</div>"
-);
+const fn pagina_negata(lingua: Lingua) -> &'static str {
+    match lingua {
+        Lingua::Italiano => pagina!(
+            "it",
+            "Nessun accesso concesso",
+            "Aether non ha ricevuto il permesso. Puoi chiudere questa scheda."
+        ),
+        Lingua::Inglese => pagina!(
+            "en",
+            "No access granted",
+            "Aether did not receive permission. You can close this tab."
+        ),
+    }
+}
+
+/// La pagina di una risposta che non è quella che Aether sta aspettando.
+///
+/// Di solito è una scheda rimasta aperta da un tentativo di prima: la frase
+/// dice di tornare ad Aether, dove l'attesa vera continua.
+const fn pagina_altrui(lingua: Lingua) -> &'static str {
+    match lingua {
+        Lingua::Italiano => pagina!(
+            "it",
+            "Questa risposta non è per Aether",
+            "Non corrisponde al collegamento in corso: forse viene da un tentativo di prima. Torna ad Aether, che sta ancora aspettando."
+        ),
+        Lingua::Inglese => pagina!(
+            "en",
+            "This answer is not for Aether",
+            "It does not match the connection in progress: it may come from an earlier attempt. Go back to Aether, which is still waiting."
+        ),
+    }
+}
 
 /// Quel che si risponde a chi bussa senza essere il browser.
 const PAGINA_IGNOTA: &str = "<!doctype html><meta charset=\"utf-8\"><title>Aether</title>";
@@ -391,9 +514,21 @@ mod prove {
     /// servitore, e mettere di mezzo una libreria vorrebbe dire provare anche
     /// lei. Sono tre righe.
     fn bussa(porta: u16, percorso: &str) -> String {
+        bussa_in(porta, percorso, None)
+    }
+
+    /// Come [`bussa`], con un `Accept-Language`.
+    fn bussa_in(porta: u16, percorso: &str, lingua: Option<&str>) -> String {
         let mut flusso =
             std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, porta)).expect("connessione");
-        write!(flusso, "GET {percorso} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").expect("richiesta");
+        let lingua = lingua
+            .map(|valore| format!("Accept-Language: {valore}\r\n"))
+            .unwrap_or_default();
+        write!(
+            flusso,
+            "GET {percorso} HTTP/1.1\r\nHost: 127.0.0.1\r\n{lingua}\r\n"
+        )
+        .expect("richiesta");
         let mut risposta = String::new();
         let _ = flusso.read_to_string(&mut risposta);
         risposta
@@ -416,22 +551,76 @@ mod prove {
     }
 
     #[test]
-    fn uno_state_sbagliato_si_rifiuta() {
+    fn uno_state_sbagliato_si_rimanda_via_e_si_aspetta_quello_giusto() {
         // A questa porta può bussare qualunque cosa giri sulla stessa macchina.
         // Lo `state` è ciò che distingue la risposta alla nostra richiesta da
-        // una risposta a quella di qualcun altro.
+        // una risposta a quella di qualcun altro — e fino alla 2.4.0 una
+        // risposta altrui chiudeva l'attesa, facendo fallire il collegamento
+        // mentre l'utente leggeva ancora la schermata di consenso.
+        let attesa = Attesa::apri(PROVA).expect("apertura");
+        let porta = attesa.porta();
+        let filo = std::thread::spawn(move || {
+            let altrui = bussa(porta, "/?code=rubato&state=altro");
+            let nostra = bussa(porta, "/?code=quello_vero&state=nostro");
+            (altrui, nostra)
+        });
+
+        let risposta = attesa
+            .aspetta("nostro", Duration::from_secs(10), &|| false)
+            .expect("la risposta giusta arriva dopo quella sbagliata");
+        assert_eq!(risposta.code, "quello_vero");
+        let (altrui, nostra) = filo.join().expect("filo");
+        assert!(altrui.contains("400"), "{altrui}");
+        assert!(nostra.contains("200 OK"), "{nostra}");
+    }
+
+    #[test]
+    fn uno_state_sbagliato_da_solo_porta_alla_scadenza() {
         let attesa = Attesa::apri(PROVA).expect("apertura");
         let porta = attesa.porta();
         let filo = std::thread::spawn(move || bussa(porta, "/?code=rubato&state=altro"));
-
         let err = attesa
-            .aspetta("nostro", Duration::from_secs(10), &|| false)
-            .expect_err("non è la nostra");
-        assert_eq!(err.code().kind().code(), "net.badSchema");
+            .aspetta("nostro", Duration::from_millis(500), &|| false)
+            .expect_err("la nostra non arriva mai");
+        assert_eq!(err.code().kind().code(), "internal.timeout");
         // Il codice ricevuto non finisce mai nel messaggio: ricopiarlo in un
         // registro sarebbe la cosa peggiore da farne.
         assert!(!format!("{err}").contains("rubato"));
         assert!(filo.join().expect("filo").contains("400"));
+    }
+
+    #[test]
+    fn la_pagina_parla_la_lingua_del_browser() {
+        let attesa = Attesa::apri(PROVA).expect("apertura");
+        let porta = attesa.porta();
+        let filo = std::thread::spawn(move || {
+            let inglese = bussa_in(porta, "/?code=x&state=altro", Some("en-GB,en;q=0.9"));
+            let italiano = bussa_in(porta, "/?code=x&state=s", Some("it-IT,it;q=0.9,en;q=0.8"));
+            (inglese, italiano)
+        });
+        attesa
+            .aspetta("s", Duration::from_secs(10), &|| false)
+            .expect("codice");
+        let (inglese, italiano) = filo.join().expect("filo");
+        assert!(
+            inglese.contains("This answer is not for Aether"),
+            "{inglese}"
+        );
+        assert!(italiano.contains("Account collegato"), "{italiano}");
+        assert!(italiano.contains("lang=\"it\""));
+
+        assert_eq!(Lingua::da_accept_language(None), Lingua::Inglese);
+        assert_eq!(Lingua::da_accept_language(Some("it")), Lingua::Italiano);
+        assert_eq!(
+            Lingua::da_accept_language(Some("fr-FR,it;q=0.9")),
+            Lingua::Inglese,
+            "conta la prima preferenza"
+        );
+        assert_eq!(
+            Lingua::da_accept_language(Some("italic")),
+            Lingua::Inglese,
+            "«it» come lingua, non come prefisso di una parola"
+        );
     }
 
     #[test]
@@ -458,12 +647,15 @@ mod prove {
         // un `error=access_denied` che non viene dal fornitore.
         let attesa = Attesa::apri(PROVA).expect("apertura");
         let porta = attesa.porta();
-        let filo = std::thread::spawn(move || bussa(porta, "/?error=access_denied&state=finto"));
+        let filo = std::thread::spawn(move || {
+            bussa(porta, "/?error=access_denied&state=finto");
+            bussa(porta, "/?code=vero_codice&state=vero")
+        });
 
-        let err = attesa
+        let risposta = attesa
             .aspetta("vero", Duration::from_secs(10), &|| false)
-            .expect_err("respinta");
-        assert_eq!(err.code().kind().code(), "net.badSchema");
+            .expect("l'errore finto non ha chiuso niente");
+        assert_eq!(risposta.code, "vero_codice");
         filo.join().expect("filo");
     }
 

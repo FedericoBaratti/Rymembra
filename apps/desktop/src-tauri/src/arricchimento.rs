@@ -70,6 +70,7 @@ use std::time::Duration;
 use crate::spegnimento::Emette as _;
 use aether_app::covers::CoverStore;
 use aether_app::enrich::{self, DepositoSqlite, Gruppo};
+use aether_app::library::{Toccati, ricostruisci_aggregati};
 use aether_app::settings;
 use aether_app::vicinanza;
 use aether_domain::enrich::Verdetto;
@@ -175,6 +176,17 @@ impl StatoArricchimento {
             },
             orecchio,
         )
+    }
+
+    /// Il turno delle passate, per chi deve lavorare quando nessuna è in corso.
+    ///
+    /// Lo prende la pulizia delle copertine della manutenzione: una passata
+    /// salva le copertine fuori dal lucchetto e le registra dopo, e una pulizia
+    /// nel mezzo toglierebbe il file di una copertina che sta per essere
+    /// registrata. Chi lo tiene fa saltare la passata che si sveglia in quel
+    /// momento, come fanno «Dimentica» e «Riporta nei file».
+    pub fn turno(&self) -> Option<Turno<'_>> {
+        Turno::prendi(&self.in_corso)
     }
 }
 
@@ -305,11 +317,17 @@ pub fn arricchimento_annulla(
         // dipenderebbe dall'ordine in cui i due fili arrivano alla transazione.
         let _turno = Turno::prendi(&arricchimento.in_corso).ok_or_else(occupato)?;
 
-        con_libreria(&stato, |libreria| {
-            settings::write(&libreria.connection, CHIAVE_ATTIVO, "0")
+        // Poi tre tempi, come [`arricchimento_riporta_nei_file`]: il lucchetto
+        // della libreria nel primo e nel terzo, e in mezzo la rilettura di un
+        // file per ogni brano arricchito — che su un NAS addormentato sono
+        // secondi l'uno, con scansione, backup e play fermi ad aspettare.
+        let da_fare = con_libreria(&stato, |libreria| {
+            settings::write(&libreria.connection, CHIAVE_ATTIVO, "0")?;
+            enrich::da_dimenticare(&libreria.connection)
         })?;
+        let riletti = enrich::rileggi_i_file(da_fare);
         con_libreria(&stato, |libreria| {
-            enrich::dimentica(&mut libreria.connection)
+            enrich::registra_dimenticati(&mut libreria.connection, riletti)
         })
     })();
     // Fuori dalla chiusura, cioè con il turno ormai lasciato cadere: qui dentro
@@ -578,6 +596,9 @@ fn passata_vera(
 
     let totale = da_fare.gruppi.len();
     let mut bilancio = Bilancio::default();
+    // Le chiavi d'album e gli artisti che le scritture hanno toccato, per la
+    // finestra 3: vedi [`Toccati`].
+    let mut toccati = Toccati::nessuno();
     for (fatti, gruppo) in da_fare.gruppi.iter().enumerate() {
         avanza(app, fatti, totale);
 
@@ -606,9 +627,14 @@ fn passata_vera(
 
         // ── finestra 2: registrare questo gruppo. ───────────────────────────
         let conto = con_libreria(&stato, |libreria| {
+            // `Immediate`, come le altre due di questo file: la transazione
+            // legge e poi scrive, e il `DepositoSqlite` scrive la sua cache
+            // sullo stesso file da un'altra connessione. Una transazione
+            // normale che a metà diventa di scrittura riceve `SQLITE_BUSY`
+            // senza attesa; chiedere il lucchetto all'inizio la fa aspettare.
             let tx = libreria
                 .connection
-                .transaction()
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                 .map_err(|err| db_errore("apertura della transazione di arricchimento", &err))?;
             // Ogni scrittura ha il suo esito, sempre: la fase tre non può più
             // fallire su un brano, perché non apre più nessun file. Fin qui
@@ -616,8 +642,11 @@ fn passata_vera(
             // scritture rimaste senza esito — non ne resta nessuna, e tenere
             // quel giro vorrebbe dire tenere un rimedio a un guasto che non
             // esiste più.
+            let ids: Vec<i64> = decisione.scritture.iter().map(|s| s.track_id).collect();
+            toccati.segna_brani(&tx, &ids)?;
             let conto =
                 enrich::registra(&tx, &decisione, &decisione.scritture, &esiti, adesso_ms())?;
+            toccati.segna_brani(&tx, &ids)?;
             tx.commit()
                 .map_err(|err| db_errore("chiusura della transazione di arricchimento", &err))?;
             Ok(conto)
@@ -663,11 +692,17 @@ fn passata_vera(
 
     // ── finestra 3: gli aggregati, una volta sola. ──────────────────────────
     //
-    // Qui e non dentro il ciclo: `rebuild_aggregates` riscrive `albums` e
-    // `artists` per intero, e farlo dodici volte di fila costerebbe dodici volte
-    // per un risultato che conta solo alla fine.
+    // Qui e non dentro il ciclo: riscrivere gli stessi album dodici volte di
+    // fila costerebbe dodici volte per un risultato che conta solo alla fine.
+    //
+    // Per chiavi, come la scansione, e non per intero: su una libreria di
+    // cinquantamila brani la ricostruzione intera passa i quattro secondi che
+    // la finestra aspetta il lucchetto, e cuore, voto e playlist rinunciavano
+    // con `db.locked` mentre girava. Il risultato è lo stesso: vedi
+    // [`ricostruisci_aggregati`], che rifà anche gli album **fusi** con quelli
+    // toccati attraverso un identificativo condiviso.
     con_libreria(&stato, |libreria| {
-        if bilancio.applicati > 0 {
+        if bilancio.applicati > 0 && !toccati.e_vuoto() {
             // L'arricchimento scrive `mb_release_group_id` su brani che prima non
             // l'avevano, ed è esattamente l'identificativo con cui i gruppi
             // d'album si **fondono**. Senza la ricostruzione, il disco resterebbe
@@ -675,9 +710,9 @@ fn passata_vera(
             // essere una sola.
             let tx = libreria
                 .connection
-                .transaction()
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                 .map_err(|err| db_errore("apertura della ricostruzione", &err))?;
-            enrich::ricostruisci(&tx)?;
+            ricostruisci_aggregati(&tx, &toccati)?;
             tx.commit()
                 .map_err(|err| db_errore("chiusura della ricostruzione", &err))?;
         }
@@ -791,7 +826,7 @@ fn vicini(stato: &State<'_, Stato>, servizi: &Fornitori) -> Result<usize, AppErr
     let scritte = con_libreria(stato, |libreria| {
         let tx = libreria
             .connection
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|err| db_errore("apertura della transazione dei vicini", &err))?;
         let scritte = vicinanza::registra(&tx, &trovati, adesso_ms())?;
         tx.commit()

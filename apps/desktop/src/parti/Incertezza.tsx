@@ -113,7 +113,7 @@ export function PastigliaGradino({ gradino }: { gradino: Gradino }) {
   const debole = gradino === "artistaTitolo" || gradino === "ripulito";
   return (
     <span
-      className="pastiglia gradino"
+      className="pastiglia badge gradino"
       data-livello={
         gradino === "nessuno" ? "nota" : debole ? "avviso" : "certo"
       }

@@ -198,7 +198,7 @@ fn le_ombre_hanno_un_contatto_e_un_ambiente() {
     // E vale anche per la variante chiara: alla luce le ombre sono più tenui,
     // non più povere. Il tema chiaro le ridichiara tutte e quattro, quindi
     // tutte e quattro devono passare di qui.
-    let chiaro = skin.light.as_ref().expect("plain ha la variante chiara");
+    let chiaro = skin.variante_tokens().expect("plain ha la variante chiara");
     for insieme in [&skin.tokens, chiaro] {
         for id in ombre {
             let Some(aether_skin::tokens::TokenValue::Shadow(ombra)) = insieme.get(id) else {
@@ -614,8 +614,12 @@ fn le_transizioni_di_rotta_sono_quelle_scritte_a_mano() {
     // accorto e aveva rimediato altrove, facendo saltare la transizione a
     // `transizione.ts` prima ancora di chiamare il motore — cioè spegnendo la
     // funzione invece della durata. Ora la scala passa di qui, dov'è la causa.
-    for verso in ["old", "new"] {
-        let regola = format!(":root[data-skin='plain']::view-transition-{verso}(root)");
+    // Nel formato 2 la rotta si anima sulla presenza della pagina e non
+    // sull'istantanea della radice: `<ViewTransition>` mette la classe.
+    for (verso, innesco) in [("old", "exit"), ("new", "enter")] {
+        let regola = format!(
+            ":root[data-skin='plain']::view-transition-{verso}(.vt-page-content-{innesco})"
+        );
         let scritto = valore(&css, &regola, "animation").unwrap_or_else(|| panic!("{regola}"));
         assert!(
             scritto.contains("calc(var(--dur-2) * var(--motion-scale, 1))"),
@@ -638,7 +642,11 @@ fn plain_non_dichiara_animazioni_e_non_ne_compila() {
     );
     let css = compile_skin(&skin).css;
     assert!(!css.contains("-anim-"), "{css}");
-    assert!(!skin.parts.iter().any(|parte| !parte.animations.is_empty()));
+    assert!(
+        skin.parts
+            .iter()
+            .all(|parte| parte.motion.senza_animazioni())
+    );
 }
 
 #[test]
@@ -672,4 +680,19 @@ fn plain_sopravvive_a_un_giro_nel_pacchetto() {
         compile_skin(&letto.document).css,
         compile_skin(&plain().expect("valida")).css
     );
+}
+
+#[test]
+fn le_skin_di_serie_sono_valide_e_senza_avvisi() {
+    // Le due skin dimostrative esistono per collaudare il formato 2 — un ciclo
+    // su una copertina, le uscite, la cascata, i temi — e un collaudo che
+    // passa con degli avvisi è un collaudo che ha smesso di guardare.
+    for (id, testo) in aether_skin::DI_SERIE {
+        let skin = aether_skin::parse_skin_json(testo)
+            .unwrap_or_else(|err| panic!("«{id}» non è valida: {err}"));
+        assert_eq!(skin.id, *id);
+        let avvisi = check_skin(&skin);
+        assert!(avvisi.is_empty(), "«{id}»: {avvisi:#?}");
+        assert!(aether_skin::di_serie(id).is_some());
+    }
 }

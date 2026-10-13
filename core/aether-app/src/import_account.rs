@@ -246,8 +246,7 @@ fn run(
     };
 
     let adesso = now_ms();
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura della transazione", &err))?;
 
     let mut scritti_album = 0_usize;
@@ -895,8 +894,7 @@ pub fn scollega(connection: &Connection) -> Result<(), AppError> {
 ///
 /// `db.queryFailed` quando il database non risponde.
 pub fn dimentica_importati(connection: &mut Connection) -> Result<usize, AppError> {
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura della transazione", &err))?;
     let quante = tx
         .execute("DELETE FROM play_history WHERE source = 'spotify'", [])

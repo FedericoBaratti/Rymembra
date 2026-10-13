@@ -6,13 +6,16 @@
  * e l'altro, per il motivo scritto sotto.
  */
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
 
+import { creaArchivio, useArchivio, type Leggibile } from "./archivio";
 import {
   ipc,
   type Brano,
@@ -24,6 +27,8 @@ import {
 } from "./ipc";
 import { ETA, FINESTRA, SALTO, creaOrologio } from "./orologio";
 import { useAscolto } from "./pagine";
+import { useDati } from "./dati";
+import { ARCHIVIO_FINESTRA } from "./posizione";
 
 /**
  * Ogni quanto la posizione interpolata arriva a React.
@@ -119,28 +124,15 @@ export function anticipoAdesso(): number {
 // sola: `Scrubber`. Tutto il resto della catena — `Lettore`, `Colonna`,
 // `InRiproduzione`, `Impaginazione`, `App` — non la vede più passare.
 //
-// Vive nel modulo e non in un contesto perché di riproduzioni ce n'è una per
-// finestra: `useRiproduzione` si chiama una volta sola, in `App`, ed è quella
-// chiamata che alimenta questo archivio.
-
-let posizioneCorrente = 0;
-const ascoltatori = new Set<() => void>();
-
-function iscrivi(avvisa: () => void): () => void {
-  ascoltatori.add(avvisa);
-  return () => {
-    ascoltatori.delete(avvisa);
-  };
-}
-
-function leggi(): number {
-  return posizioneCorrente;
-}
+// Di riproduzioni ce n'è una per finestra: `useRiproduzione` si chiama una
+// volta sola, in `App`, ed è quella chiamata che alimenta l'archivio della
+// finestra (`posizione.ts`). Chi disegna la posizione però lo legge dal
+// contesto `Dati`, perché nell'anteprima dello Studio la posizione è quella
+// di un trasporto finto, e la barra di avanzamento di un tema che si sta
+// disegnando non deve correre col brano che si sta ascoltando.
 
 function pubblica(ms: number): void {
-  if (ms === posizioneCorrente) return;
-  posizioneCorrente = ms;
-  for (const avvisa of ascoltatori) avvisa();
+  ARCHIVIO_FINESTRA.pubblica(ms);
 }
 
 /**
@@ -165,7 +157,7 @@ function alPasso(ms: number, durataMs: number): number {
  * cinquanta millisecondi.
  */
 export function posizioneAdesso(): number {
-  return posizioneCorrente;
+  return ARCHIVIO_FINESTRA.leggi();
 }
 
 /**
@@ -176,13 +168,68 @@ export function posizioneAdesso(): number {
  * per togliere.
  */
 export function usePosizioneMs(): number {
-  return useSyncExternalStore(iscrivi, leggi, leggi);
+  const { posizione } = useDati();
+  return useSyncExternalStore(posizione.iscrivi, posizione.leggi, posizione.leggi);
+}
+
+// ── Lo stato, fuori da React ────────────────────────────────────────────────
+//
+// La stessa mossa della posizione, un gradino più su. Lo stato del motore
+// stava in uno `useState` di questo hook, cioè di `App`: un passo del cursore
+// del volume, una pausa, una banda dell'equalizzatore, l'attesa dei dati che
+// va e viene — ognuno rifaceva la finestra intera, libreria e Impostazioni
+// comprese, per cambiare un'icona nella barra. Adesso sta in un archivio
+// (`archivio.ts`), e lo legge chi lo disegna: i widget dello scafale
+// (`Impaginazione.tsx`), lo schermo intero, l'avviso dell'audio, la scheda
+// della riproduzione nelle Impostazioni. `App` ne sceglie soltanto se c'è un
+// brano, che cambia quando si comincia o si smette di ascoltare; chi deve
+// reagire a un brano nuovo senza disegnarlo — la Home che si rilegge,
+// l'accento della copertina — si iscrive all'archivio in un effetto, e la
+// durata per le frecce della tastiera si legge al tasto.
+
+/** Lo stato della riproduzione, da leggere e da seguire: vedi sopra. */
+export type ArchivioLettore = Leggibile<StatoRiproduzione>;
+
+/**
+ * L'archivio dello stato della finestra, per chi disegna più in basso.
+ *
+ * Di serie un archivio fermo, che non cambia mai: fuori da `App` — nei
+ * frammenti dello Studio che non lo forniscono — si disegna il lettore senza
+ * brano, che è quel che `FERMO` dice.
+ */
+export const LettoreDellaFinestra = createContext<ArchivioLettore>(creaArchivio(FERMO));
+
+/**
+ * Segue lo stato della riproduzione, o la parte che se ne sceglie.
+ *
+ * Con una scelta che risponde con un numero o un booleano il componente si
+ * ridisegna solo quando quel numero cambia: è il modo di chiedere «c'è un
+ * brano?» senza essere svegliati da ogni passo del volume. Vedi `useArchivio`.
+ */
+export function useLettore(): StatoRiproduzione;
+export function useLettore<S>(
+  scegli: (stato: StatoRiproduzione) => S,
+  uguali?: (a: S, b: S) => boolean,
+): S;
+export function useLettore<S>(
+  scegli?: (stato: StatoRiproduzione) => S,
+  uguali?: (a: S, b: S) => boolean,
+): StatoRiproduzione | S {
+  const archivio = useContext(LettoreDellaFinestra);
+  // Lo stesso hook nei due rami, chiamato una volta sola: l'ordine degli hook
+  // del componente non cambia, qualunque ramo si prenda.
+  return scegli === undefined
+    ? useArchivio(archivio)
+    : useArchivio(archivio, scegli, uguali);
 }
 
 /** Quel che la finestra sa della riproduzione. */
 export interface Riproduzione {
-  /** L'ultimo stato mandato dal nucleo. */
-  stato: StatoRiproduzione;
+  /**
+   * L'ultimo stato mandato dal nucleo, in un archivio: vedi «Lo stato, fuori
+   * da React» qui sopra. Un'identità sola per tutta la vita della finestra.
+   */
+  archivio: ArchivioLettore;
   /**
    * Il dispositivo audio si è aperto.
    *
@@ -227,7 +274,29 @@ export interface Riproduzione {
 
 /** Segue la riproduzione per tutta la vita della finestra. */
 export function useRiproduzione(): Riproduzione {
-  const [stato, setStato] = useState<StatoRiproduzione>(FERMO);
+  // Lo stato com'è arrivato dal nucleo, l'attesa dei dati, e quel che se ne
+  // mostra: tre archivi e non tre `useState`, per la ragione scritta in «Lo
+  // stato, fuori da React». Il terzo si ricompone da sé quando cambia uno dei
+  // primi due, e solo allora — è il `useMemo` che stava qui, con la stessa
+  // identità quando niente di quel che mostra è cambiato. In pausa non si
+  // aspetta niente: la scritta non deve sopravvivere a chi ha fermato la
+  // musica mentre aspettava.
+  const [archivi] = useState(() => {
+    const grezzo = creaArchivio<StatoRiproduzione>(FERMO);
+    const inAttesa = creaArchivio(false);
+    const visto = creaArchivio<StatoRiproduzione>(FERMO);
+    const ricomponi = () => {
+      const stato = grezzo.leggi();
+      visto.scrivi(
+        inAttesa.leggi() && !stato.inPausa ? { ...stato, inAttesa: true } : stato,
+      );
+    };
+    grezzo.iscrivi(ricomponi);
+    inAttesa.iscrivi(ricomponi);
+    return { grezzo, inAttesa, visto };
+  });
+  const setStato = archivi.grezzo.scrivi;
+  const setInAttesa = archivi.inAttesa.scrivi;
   const [disponibile, setDisponibile] = useState(true);
   const [errore, setErrore] = useState<unknown>(null);
 
@@ -250,6 +319,12 @@ export function useRiproduzione(): Riproduzione {
 
   // Il fotogramma in volo, o `0` quando il ciclo è spento.
   const fotogramma = useRef(0);
+
+  // Si aspettano dati che non arrivano: l'ultimo colpo d'orologio l'ha detto.
+  // Il ref per l'ancoraggio di uno stato intero, che non lo porta e non deve
+  // far ripartire il cursore per un quarto di secondo; l'archivio per chi lo
+  // disegna. Vedi `Tempo.inAttesa`.
+  const attesa = useRef(false);
 
   /**
    * Accende il ciclo dei fotogrammi, se non è già acceso.
@@ -306,10 +381,16 @@ export function useRiproduzione(): Riproduzione {
   const ancoraggio = useCallback(
     (tempo: Tempo, nuovoBrano: boolean) => {
       const adesso = performance.now();
-      const transizione = tempo.inPausa !== ancora.current.inPausa;
+      // In attesa dei dati la musica è ferma quanto in pausa, e per il cursore
+      // vale lo stesso: correre da solo vorrebbe dire andare avanti su un
+      // brano fermo e tornare indietro di colpo al colpo dopo. E la ripresa è
+      // una transizione come dopo una pausa: l'origine di prima è vecchia
+      // quanto l'attesa.
+      const fermo = tempo.inPausa || tempo.inAttesa === true;
+      const transizione = fermo !== ancora.current.inPausa;
       orologio.current.ancora(tempo.posizioneMs, adesso, nuovoBrano || transizione);
       ancora.current = {
-        inPausa: tempo.inPausa,
+        inPausa: fermo,
         durataMs: tempo.durataMs,
       };
       // Mentre suona si pubblica la **stima**, non il numero arrivato: quel
@@ -322,13 +403,13 @@ export function useRiproduzione(): Riproduzione {
       // è «origine più tempo di parete», e in pausa il tempo di parete scorre
       // mentre la musica no.
       pubblica(
-        tempo.inPausa
+        fermo
           ? alPasso(tempo.posizioneMs, tempo.durataMs)
           : alPasso(orologio.current.stima(adesso), tempo.durataMs),
       );
       // Riparte da qui, e solo da qui: è l'unico posto che sa che si è tornati
       // a suonare.
-      if (!tempo.inPausa) accendi();
+      if (!fermo) accendi();
     },
     [accendi],
   );
@@ -346,7 +427,13 @@ export function useRiproduzione(): Riproduzione {
       const idOra = carico.brano?.id ?? null;
       const nuovoBrano = idOra !== branoPrima.current;
       branoPrima.current = idOra;
-      ancoraggio(carico, nuovoBrano);
+      // Un brano nuovo non eredita l'attesa di quello di prima; lo stesso
+      // brano sì, finché il colpo d'orologio dopo non dice altro.
+      if (nuovoBrano) {
+        attesa.current = false;
+        setInAttesa(false);
+      }
+      ancoraggio({ ...carico, inAttesa: attesa.current }, nuovoBrano);
     },
     [ancoraggio],
   );
@@ -378,7 +465,16 @@ export function useRiproduzione(): Riproduzione {
   // quando cambia, e lì il confronto si fa. Qui `false` non è una semplificazione
   // — è quel che rende questi colpi i campioni **onesti** su cui l'orologio
   // costruisce la sua finestra.
-  useAscolto<Tempo>("riproduzione:tempo", (carico) => ancoraggio(carico, false));
+  //
+  // L'attesa dei dati arriva solo da qui, e sveglia qualcuno solo quando
+  // cambia: `setInAttesa` con lo stesso valore non avvisa nessuno, e quattro
+  // colpi al secondo che ridisegnassero lo scafale per ripetere «no»
+  // sarebbero il difetto che l'archivio della posizione esiste per togliere.
+  useAscolto<Tempo>("riproduzione:tempo", (carico) => {
+    attesa.current = carico.inAttesa === true;
+    ancoraggio(carico, false);
+    setInAttesa(attesa.current);
+  });
 
   // La curva da sola. Non tocca l'ancora del tempo: il nucleo la manda
   // proprio per non dover comporre lo stato intero a ogni cursore mosso, e
@@ -436,5 +532,11 @@ export function useRiproduzione(): Riproduzione {
     );
   }, []);
 
-  return { stato, disponibile, errore, scartaErrore, ritoccaBrano };
+  return {
+    archivio: archivi.visto,
+    disponibile,
+    errore,
+    scartaErrore,
+    ritoccaBrano,
+  };
 }

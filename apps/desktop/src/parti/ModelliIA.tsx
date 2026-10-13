@@ -26,6 +26,16 @@
  * Perché da quel momento sta nel portachiavi del sistema, e tenerne una seconda
  * copia in memoria in un campo che nessuno guarda è una copia di troppo di un
  * segreto. È la stessa cosa che fa `Scrobbling` con il token di ListenBrainz.
+ *
+ * # Perché cambiare indirizzo può costare la chiave
+ *
+ * Perché una chiave è scritta per un servizio, e il servizio è l'origine
+ * dell'indirizzo — schema, ospite, porta. Chi cambia l'indirizzo di un profilo
+ * verso un'altra origine senza riscrivere la chiave la perde: il nucleo la
+ * cancella invece di mandarla al posto nuovo. La schermata lo dice **prima**
+ * di salvare, mentre si scrive l'indirizzo, e **dopo**, tenendo aperto il
+ * profilo dove la chiave va riscritta. Il confronto qui è solo un avviso: chi
+ * decide è `Profilo::chiave_vale_per` nel nucleo.
  */
 import { useCallback, useEffect, useState } from "react";
 
@@ -34,7 +44,6 @@ import { ipc } from "../ipc";
 import { Icona } from "./Icone";
 import { Segmentato } from "./Segmentato";
 import { t, type Chiave } from "../lingue";
-import { Trans } from "../lingue/Trans";
 
 /** L'indirizzo che si propone scegliendo un fornitore. */
 const DI_SERIE: Record<FornitoreIa, string> = {
@@ -43,9 +52,6 @@ const DI_SERIE: Record<FornitoreIa, string> = {
   bionic: "http://localhost:1234/v1",
   custom: "",
 };
-
-/** Chi gira su questa macchina. */
-const LOCALI: readonly FornitoreIa[] = ["ollama", "bionic"];
 
 /** Chi non risponde senza una chiave. */
 const CON_CHIAVE: readonly FornitoreIa[] = ["openrouter"];
@@ -95,6 +101,22 @@ function vuota(fornitore: FornitoreIa): Bozza {
     urlBase: DI_SERIE[fornitore],
     modello: "",
   };
+}
+
+/**
+ * L'origine di un indirizzo, per l'avviso sulla chiave: `null` se non si legge.
+ *
+ * `URL.origin` è la stessa idea del nucleo — schema, ospite in minuscolo,
+ * porta di serie sottintesa — e basta per decidere se mostrare un avviso. La
+ * decisione vera, quella che cancella la chiave, la prende il nucleo.
+ */
+function origine(indirizzo: string): string | null {
+  try {
+    const url = new URL(indirizzo.trim());
+    return url.protocol === "https:" || url.protocol === "http:" ? url.origin : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Un profilo esistente, aperto nel modulo. */
@@ -204,6 +226,20 @@ export function ModelliIA({
       .then((s: StatoIa) => {
         setStato(s);
         setChiave("");
+        // L'indirizzo è passato a un'altra origine e la chiave non è stata
+        // riscritta: il nucleo l'ha dimenticata. Il profilo resta aperto nel
+        // modulo, perché il gesto dopo è scriverla di nuovo, e non si prova —
+        // la prova fallirebbe per la ragione che l'avviso ha appena detto.
+        const dimenticato =
+          s.chiaveDimenticata === null
+            ? undefined
+            : s.profili.find((p) => p.id === s.chiaveDimenticata);
+        if (dimenticato !== undefined) {
+          setBozza(da(dimenticato));
+          setModelli([]);
+          onNotizia(t("ia.key.forgotten", { nome: dimenticato.nome }));
+          return;
+        }
         const salvato = s.profili.find((p) => p.nome === bozza.nome);
         setBozza(vuota(bozza.fornitore));
         setModelli([]);
@@ -221,8 +257,22 @@ export function ModelliIA({
   }, [bozza, chiave, onErrore, onNotizia, prova]);
 
   const profili = stato?.profili ?? [];
-  const locale = LOCALI.includes(bozza.fornitore);
   const vuoleChiave = CON_CHIAVE.includes(bozza.fornitore);
+  /**
+   * Salvando così, la chiave del profilo aperto verrebbe dimenticata.
+   *
+   * Vero quando il profilo ha una chiave, il campo della chiave è vuoto (cioè
+   * «lascia quella che c'è») e l'indirizzo scritto ha un'altra origine di
+   * quello salvato. Un indirizzo che non si legge conta come un'altra origine:
+   * nel nucleo vale lo stesso.
+   */
+  const aperto = bozza.id === null ? undefined : profili.find((p) => p.id === bozza.id);
+  const perdeChiave =
+    aperto !== undefined &&
+    aperto.conChiave &&
+    chiave === "" &&
+    (origine(bozza.urlBase) === null ||
+      origine(bozza.urlBase) !== origine(aperto.urlBase));
   /**
    * Se in questo elenco c'è qualcosa da filtrare.
    *
@@ -241,12 +291,6 @@ export function ModelliIA({
 
   return (
     <>
-      <p className="nota">{t("ia.p1")}</p>
-      <p className="nota">
-        <Trans k="ia.p2" v={{ locali: <strong>{t("ia.p2.local")}</strong> }} />
-      </p>
-      <p className="nota">{t("ia.keyring")}</p>
-
       {/* ── i profili salvati ── */}
       {profili.length > 0 && (
         <ul className="elenco-profili">
@@ -265,6 +309,9 @@ export function ModelliIA({
                     {t(`ia.provider.${profilo.fornitore}` as Chiave)} ·{" "}
                     {profilo.modello} · {profilo.urlBase}
                     {profilo.conChiave ? ` · ${t("ia.hasKey")}` : ""}
+                    {!profilo.conChiave && CON_CHIAVE.includes(profilo.fornitore)
+                      ? ` · ${t("ia.noKey")}`
+                      : ""}
                   </div>
                 </div>
                 <div className="azioni">
@@ -323,10 +370,6 @@ export function ModelliIA({
         ]}
       />
 
-      <p className="nota">
-        {locale ? t("ia.provider.localNote") : t("ia.provider.remoteNote")}
-      </p>
-
       <div className="azioni">
         <input
           type="text"
@@ -371,6 +414,11 @@ export function ModelliIA({
           onChange={(e) => setChiave(e.target.value)}
         />
       </div>
+
+      {/* Prima di salvare, non dopo: la chiave si perde al salvataggio, e
+          saperlo mentre si scrive l'indirizzo è il momento in cui si può
+          ancora scegliere di riscriverla nel campo qui sopra. */}
+      {perdeChiave && <p className="nota">{t("ia.key.originChanged")}</p>}
 
       {/* Solo dove c'è un prezzo da guardare: su Ollama la casella filtrerebbe
           un elenco in cui tutto costa lo stesso, cioè niente. */}

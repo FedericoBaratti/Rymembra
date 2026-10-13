@@ -70,6 +70,18 @@ const BERSAGLIO = "windows-x86_64";
  */
 const QUANTI_TITOLI = 8;
 
+/**
+ * I titoli che ogni sezione ha e che non dicono niente a chi aggiorna.
+ *
+ * «The number» spiega perché la versione è major, minor o patch, «Database»
+ * quali migrazioni ci sono e cosa costa tornare indietro: stanno in fondo a
+ * ogni sezione per chi legge il changelog, e in un avviso di quattro righe
+ * prenderebbero due posti su otto per dire «qui c'è una regola di
+ * numerazione». La 3.0.0 li aveva **solo** loro, e le note sarebbero state
+ * quelle due righe.
+ */
+const DI_SERVIZIO = /^(The number|Database)\b/;
+
 /** Muore dicendo cosa, invece di scrivere un manifesto sbagliato. */
 function basta(messaggio) {
   console.error(messaggio);
@@ -99,6 +111,31 @@ function identificativo(base64DelFile, cosa) {
   const grezzo = Buffer.from(righe[0], "base64");
   if (grezzo.length < 10) basta(`${cosa}: la riga di dati è troppo corta.`);
   return grezzo.subarray(2, 10).toString("hex");
+}
+
+/**
+ * La versione che la firma dice di coprire, o `null` se non ne dice nessuna.
+ *
+ * Sta nel *commento fidato* del file minisign — la riga `trusted comment:`,
+ * coperta dalla firma — come coppie `chiave:valore` separate da tabulazioni:
+ * `timestamp:…\tfile:…\tversion:3.0.0`. La scrive `tauri signer sign
+ * --app-version`, e dalla 3.0 Aether (`requireSignedVersion` in
+ * `tauri.conf.json`) rifiuta un aggiornamento la cui firma non la porti o ne
+ * porti un'altra: va controllata qui, prima che lo scopra ogni copia
+ * installata.
+ */
+function versioneFirmata(base64DelFile) {
+  const testo = Buffer.from(base64DelFile, "base64").toString("utf8");
+  const commento = testo
+    .split("\n")
+    .map((r) => r.trim())
+    .find((r) => r.startsWith("trusted comment:"));
+  if (commento === undefined) return null;
+  for (const coppia of commento.slice("trusted comment:".length).trim().split("\t")) {
+    const [chiave, ...resto] = coppia.split(":");
+    if (chiave === "version") return resto.join(":");
+  }
+  return null;
 }
 
 /** La versione, dal file che `versione.js` tiene allineato agli altri due. */
@@ -175,7 +212,16 @@ function installer() {
  */
 function note(v) {
   if (!fs.existsSync(CHANGELOG)) return "";
-  const testo = fs.readFileSync(CHANGELOG, "utf8");
+  return noteDa(fs.readFileSync(CHANGELOG, "utf8"), v);
+}
+
+/**
+ * Le note ricavate da un testo di changelog già letto.
+ *
+ * Separata da `note` perché la si possa provare su un changelog finto
+ * (`manifesto.test.js`) senza scrivere file accanto a quello vero.
+ */
+function noteDa(testo, v) {
   const righe = testo.split("\n");
   // La sezione di questa versione, e **solo se non c'è** quella non ancora
   // rilasciata: al momento in cui si taglia un tag il changelog di solito ha
@@ -192,14 +238,19 @@ function note(v) {
   // una release le cui note sono la stringa vuota.
   let inizio = righe.findIndex((r) => r.startsWith(`## [${v}]`));
   if (inizio < 0) {
-    inizio = righe.findIndex((r) => r.startsWith("## [Non rilasciato]"));
+    // Le due grafie: il changelog è passato all'inglese con la 2.3, e
+    // l'intestazione della sezione aperta con lui.
+    inizio = righe.findIndex(
+      (r) => r.startsWith("## [Non rilasciato]") || r.startsWith("## [Unreleased]"),
+    );
   }
   if (inizio < 0) return "";
   const titoli = [];
   for (let i = inizio + 1; i < righe.length; i++) {
     if (righe[i].startsWith("## ")) break;
     if (righe[i].startsWith("### ")) {
-      titoli.push(`• ${righe[i].slice(4).trim()}`);
+      const titolo = righe[i].slice(4).trim();
+      if (!DI_SERVIZIO.test(titolo)) titoli.push(`• ${titolo}`);
     }
   }
   const mostrati = titoli.slice(0, QUANTI_TITOLI);
@@ -229,9 +280,29 @@ function main() {
     );
   }
 
+  const firmata = versioneFirmata(firma);
+  if (firmata !== v && firmata !== `v${v}`) {
+    basta(
+      `${nome}.sig: la firma copre la versione ${firmata ?? "(nessuna)"}, il manifesto annuncia la ${v}.\n` +
+        "Le copie 3.x rifiutano un aggiornamento così (`requireSignedVersion`).\n" +
+        `Firmare con: npx tauri signer sign --app-version ${v} <installer>`,
+    );
+  }
+
+  // Vuote non partono: l'avviso nella finestra si aprirebbe su una tendina
+  // senza niente dentro, su ogni copia installata. La prova in
+  // `manifesto.test.js` lo dice a ogni push; questo è l'ultimo cancello.
+  const testo = note(v);
+  if (testo === "") {
+    basta(
+      `${CHANGELOG}: la sezione della ${v} non ha titoli \`### \` da mostrare.\n` +
+        "Le note dell'aggiornamento sarebbero vuote.",
+    );
+  }
+
   const manifesto = {
     version: v,
-    notes: note(v),
+    notes: testo,
     pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
     platforms: {
       [BERSAGLIO]: {
@@ -268,5 +339,7 @@ module.exports = {
   identificativo,
   installer,
   note,
+  noteDa,
   versione,
+  versioneFirmata,
 };

@@ -93,7 +93,6 @@ export function SchedaSpettro({
     <>
       <Interruttore
         etichetta={t("settings.spectrum.toggle")}
-        spiegazione={t("settings.spectrum.toggle.hint")}
         acceso={visibile}
         onCambia={(valore) => {
           ipc.spettroVisibileScegli(valore).then(setVisibile).catch(onErrore);
@@ -107,8 +106,6 @@ export function SchedaSpettro({
         }}
         etichetta={t("settings.spectrum.quality.label")}
       />
-      <p className="nota">{t("settings.spectrum.quality.hint")}</p>
-      <p className="nota">{t("settings.spectrum.bars.where")}</p>
     </>
   );
 }

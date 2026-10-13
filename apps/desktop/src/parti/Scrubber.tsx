@@ -35,12 +35,12 @@
  * non deve restare è il silenzio: finché il motore non è arrivato, il cursore
  * lo dice.
  */
-import { useEffect, useState, type CSSProperties } from "react";
+import { memo, useEffect, useState, type CSSProperties } from "react";
 
 import { durata } from "../formato";
 import { ipc, type StatoRiproduzione } from "../ipc";
 import { usePosizioneMs } from "../riproduzione";
-import { t } from "../lingue";
+import { t, useLingua } from "../lingue";
 
 /**
  * Quanto vicino al bersaglio vuol dire «ci siamo».
@@ -90,7 +90,7 @@ const PRIMA_DI_CREDERCI_MS = 1500;
  */
 const SCADENZA_CERCA_MS = 60_000;
 
-export function Scrubber({
+export const Scrubber = memo(function Scrubber({
   stato,
   conTempi = true,
   onErrore,
@@ -100,6 +100,10 @@ export function Scrubber({
   conTempi?: boolean;
   onErrore: (e: unknown) => void;
 }) {
+  // Sotto `memo` (vedi «I widget sotto `memo`» in `Impaginazione.tsx`): si
+  // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
+  // l'iscrizione i testi resterebbero quelli del primo disegno.
+  useLingua();
   const posizioneMs = usePosizioneMs();
   const [trascinato, setTrascinato] = useState<number | null>(null);
   /**
@@ -109,16 +113,29 @@ export function Scrubber({
    * che è l'unico caso in cui l'arrivo non è immediato. Su un file resta
    * `null`, e questa parte di componente non esiste.
    *
-   * Porta anche **quando** è stato chiesto, e non è un dettaglio contabile:
-   * vedi [`PRIMA_DI_CREDERCI_MS`].
+   * Porta anche **da quando** il motore ci sta lavorando, e non è un dettaglio
+   * contabile: vedi [`PRIMA_DI_CREDERCI_MS`].
+   *
+   * # In pausa l'orologio è fermo
+   *
+   * `da` è `null` finché si è in pausa, e non per prudenza: misurato, in pausa
+   * il motore il salto **non lo fa**. Resta dov'era, non manda un colpo
+   * d'orologio, e ci va solo alla ripresa — su un MP3 dell'Internet Archive,
+   * otto secondi di byte da scorrere dopo aver premuto play. Contare il minuto
+   * di [`SCADENZA_CERCA_MS`] da quando si è saltato faceva comparire «il salto
+   * non è arrivato» su un brano semplicemente fermo; darlo per arrivato dopo un
+   * secondo e mezzo faceva tornare il cursore all'inizio, alla ripresa, per
+   * tutto il tempo dello scorrimento. L'attesa quindi comincia quando si suona:
+   * fino ad allora il cursore sta sul punto chiesto, senza scritte.
    */
   const [cercando, setCercando] = useState<{
     bersaglio: number;
-    da: number;
+    da: number | null;
     /** Il salto ha superato [`SCADENZA_CERCA_MS`] e non è arrivato. */
     scaduto: boolean;
   } | null>(null);
   const eUnFlusso = stato.brano?.fonte != null;
+  const inPausa = stato.inPausa;
   // Sopra `rilascia` perché la legge anche lei, e non solo il disegno: il tetto
   // del salto e il tetto di quel che si vede sono lo stesso numero, e tenerli a
   // due righe di distanza è il modo di non correggerne uno solo.
@@ -146,7 +163,11 @@ export function Scrubber({
       // accendere un'attesa per quello vorrebbe dire un lampeggio a ogni
       // ritocco del cursore.
       if (eUnFlusso && Math.abs(bersaglio - posizioneMs) > TOLLERANZA_MS) {
-        setCercando({ bersaglio, da: performance.now(), scaduto: false });
+        setCercando({
+          bersaglio,
+          da: inPausa ? null : performance.now(),
+          scaduto: false,
+        });
       }
     } catch (e) {
       onErrore(e);
@@ -168,7 +189,7 @@ export function Scrubber({
    */
   const idBrano = stato.brano?.id ?? null;
   useEffect(() => {
-    if (cercando === null) return;
+    if (cercando === null || cercando.da === null) return;
     // Non prima che la posizione annunciata abbia lasciato il posto a quella
     // vera: vedi [`PRIMA_DI_CREDERCI_MS`].
     if (performance.now() - cercando.da < PRIMA_DI_CREDERCI_MS) return;
@@ -177,6 +198,21 @@ export function Scrubber({
     }
   }, [posizioneMs, cercando]);
   useEffect(() => setCercando(null), [idBrano]);
+
+  /*
+   * La pausa ferma l'attesa, la ripresa la fa ricominciare.
+   *
+   * Da capo e non da dove era arrivata: il motore riparte a cercare quando si
+   * suona, ed è da lì che valgono sia il secondo e mezzo prima di credere alla
+   * posizione sia il minuto oltre il quale dire che il salto non è arrivato.
+   */
+  useEffect(() => {
+    setCercando((c) => {
+      if (c === null) return c;
+      if (inPausa) return c.da === null ? c : { ...c, da: null, scaduto: false };
+      return c.da === null ? { ...c, da: performance.now() } : c;
+    });
+  }, [inPausa]);
 
   /*
    * E se non arriva, a un certo punto lo si dice.
@@ -191,7 +227,7 @@ export function Scrubber({
    * che la scritta era stata scritta per evitare.
    */
   useEffect(() => {
-    if (cercando === null || cercando.scaduto) return;
+    if (cercando === null || cercando.da === null || cercando.scaduto) return;
     const orologio = window.setTimeout(() => {
       setCercando((c) => (c === null ? null : { ...c, scaduto: true }));
     }, SCADENZA_CERCA_MS);
@@ -249,7 +285,9 @@ export function Scrubber({
           l'attesa appartiene al gesto che l'ha aperta, e una nota lontana dal
           cursore che si è appena mosso è una nota che nessuno collega. Il
           `title` dice anche perché, per chi si chiede se sia rotto. */}
-      {cercando !== null && (
+      {/* In pausa no: il motore non sta cercando niente, ci andrà alla
+          ripresa, e il cursore fermo sul punto chiesto lo dice già. */}
+      {cercando !== null && cercando.da !== null && (
         <span
           className="tempo cercando"
           data-scaduto={cercando.scaduto ? "" : undefined}
@@ -263,6 +301,19 @@ export function Scrubber({
           {t(cercando.scaduto ? "player.seeking.failed" : "player.seeking")}
         </span>
       )}
+      {/* L'attesa dei dati, con la stessa scritta e nello stesso posto del
+          salto che cerca: tutte e due dicono «il cursore è fermo, e non per
+          sbaglio». Il salto ha la precedenza perché è il gesto appena fatto, e
+          l'attesa che lo accompagna è la sua. */}
+      {cercando === null && stato.inAttesa === true && (
+        <span
+          className="tempo cercando"
+          role="status"
+          title={t("player.waiting.title")}
+        >
+          {t("player.waiting")}
+        </span>
+      )}
     </div>
   );
-}
+});

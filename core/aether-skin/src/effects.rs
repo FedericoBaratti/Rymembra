@@ -250,6 +250,120 @@ pub enum Effect {
         /// Saturazione in percentuale. 100 = invariata.
         saturate: Option<f64>,
     },
+    /// Un'immagine del pacchetto: una grana, una carta, una texture.
+    ///
+    /// # Perché non apre il canale che il formato chiude
+    ///
+    /// `url()` era l'esempio con cui il `//!` di [`crate::compile`] spiegava
+    /// perché nessuna stringa dell'autore arriva nel foglio: un indirizzo scelto
+    /// da chi scrive la skin è una richiesta di rete che parte quando la skin si
+    /// applica. Qui l'autore non sceglie un indirizzo: sceglie il **nome di una
+    /// voce del suo pacchetto**, vincolato dallo stesso alfabeto che
+    /// `package.rs` impone alle voci — minuscole, cifre, `_` e `-`, un punto,
+    /// un'estensione dell'elenco chiuso — e l'indirizzo lo scrive il
+    /// compilatore, sempre verso lo schema locale che serve i pacchetti
+    /// installati. Non esiste un valore di `src` che porti fuori da quella
+    /// cartella.
+    Image {
+        /// Il nome della voce dentro `assets/`, senza il prefisso.
+        src: String,
+        /// Quanto è grande.
+        size: ImageSize,
+        /// Si ripete a mattonelle.
+        repeat: bool,
+        /// Dove sta, se non al centro.
+        position: Option<(Length, Length)>,
+    },
+}
+
+/// Quanto è grande un'immagine di sfondo.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ImageSize {
+    /// Copre tutta la superficie, tagliando quel che avanza.
+    Cover,
+    /// Sta tutta dentro, lasciando i bordi.
+    Contain,
+    /// La sua misura naturale.
+    Auto,
+    /// Una misura data, per le mattonelle.
+    Misura(Length),
+}
+
+/// Un filtro sull'elemento stesso, non su quel che sta dietro.
+///
+/// Sono i filtri di `filter`, e si impilano: `blur(2px) saturate(1.4)`. Il loro
+/// costo non è quello di [`Effect`] perché non dipingono uno sfondo: chiedono
+/// al compositore di ridisegnare l'elemento attraverso un filtro, e quanto costa
+/// dipende da quale.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FiltroElemento {
+    /// Sfocatura dell'elemento.
+    Blur(Length),
+    /// Luminosità: 1 invariata.
+    Brightness(f64),
+    /// Contrasto: 1 invariato.
+    Contrast(f64),
+    /// Saturazione: 1 invariata, 0 grigio.
+    Saturate(f64),
+    /// Scala di grigi: 0 niente, 1 tutto.
+    Grayscale(f64),
+    /// Rotazione della tinta, in gradi.
+    HueRotate(f64),
+    /// Un'ombra che segue la forma di quel che si vede, non il riquadro.
+    DropShadow {
+        /// Spostamento orizzontale.
+        x: Length,
+        /// Spostamento verticale.
+        y: Length,
+        /// Sfocatura.
+        blur: Length,
+        /// Colore.
+        color: ColorValue,
+    },
+}
+
+impl FiltroElemento {
+    /// Il nome nel documento, che è la chiave dell'oggetto.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match *self {
+            Self::Blur(_) => "blur",
+            Self::Brightness(_) => "brightness",
+            Self::Contrast(_) => "contrast",
+            Self::Saturate(_) => "saturate",
+            Self::Grayscale(_) => "grayscale",
+            Self::HueRotate(_) => "hueRotate",
+            Self::DropShadow { .. } => "dropShadow",
+        }
+    }
+
+    /// Quanto costa.
+    ///
+    /// Sfocatura e ombra sagomata campionano i pixel attorno a ogni pixel:
+    /// sono il lavoro di un livello composto. I filtri di colore sono una
+    /// matrice applicata pixel per pixel, e costano quanto una tinta.
+    #[must_use]
+    pub const fn costo(&self) -> CostClass {
+        match *self {
+            Self::Blur(_) | Self::DropShadow { .. } => CostClass::Composited,
+            Self::Brightness(_)
+            | Self::Contrast(_)
+            | Self::Saturate(_)
+            | Self::Grayscale(_)
+            | Self::HueRotate(_) => CostClass::Cheap,
+        }
+    }
+
+    /// I nomi ammessi, per il messaggio di un filtro sconosciuto.
+    pub const NAMES: &'static [&'static str] = &[
+        "blur",
+        "brightness",
+        "contrast",
+        "saturate",
+        "grayscale",
+        "hueRotate",
+        "dropShadow",
+    ];
 }
 
 impl Effect {
@@ -268,6 +382,7 @@ impl Effect {
             Self::Vignette { .. } => "vignette",
             Self::Chamfer { .. } => "chamfer",
             Self::BlurBehind { .. } => "blurBehind",
+            Self::Image { .. } => "image",
         }
     }
 
@@ -279,11 +394,14 @@ impl Effect {
             | Self::LinearGradient { .. }
             | Self::RadialGradient { .. }
             | Self::Vignette { .. } => CostClass::Cheap,
+            // Un'immagine si decodifica una volta e poi si ridisegna a ogni
+            // cambio dell'area, come un motivo ripetuto.
             Self::ConicGradient { .. }
             | Self::HairlineGrid { .. }
             | Self::Scanlines { .. }
             | Self::Stripes { .. }
-            | Self::DotGrid { .. } => CostClass::Paint,
+            | Self::DotGrid { .. }
+            | Self::Image { .. } => CostClass::Paint,
             Self::Chamfer { .. } => CostClass::Composited,
             Self::BlurBehind { .. } => CostClass::Gpu,
         }
@@ -305,9 +423,19 @@ impl Effect {
             | Self::Scanlines { .. }
             | Self::Stripes { .. }
             | Self::DotGrid { .. }
-            | Self::Vignette { .. } => EffectTarget::Background,
+            | Self::Vignette { .. }
+            | Self::Image { .. } => EffectTarget::Background,
             Self::Chamfer { .. } => EffectTarget::ClipPath,
             Self::BlurBehind { .. } => EffectTarget::Filter,
+        }
+    }
+
+    /// La voce del pacchetto che questo effetto nomina, se ne nomina una.
+    #[must_use]
+    pub fn asset(&self) -> Option<&str> {
+        match self {
+            Self::Image { src, .. } => Some(src),
+            _ => None,
         }
     }
 
@@ -331,7 +459,7 @@ impl Effect {
             Self::LinearGradient { stops, .. }
             | Self::RadialGradient { stops, .. }
             | Self::ConicGradient { stops, .. } => stops.iter().map(|stop| &stop.color).collect(),
-            Self::Chamfer { .. } | Self::BlurBehind { .. } => Vec::new(),
+            Self::Chamfer { .. } | Self::BlurBehind { .. } | Self::Image { .. } => Vec::new(),
         }
     }
 
@@ -348,6 +476,7 @@ impl Effect {
         "vignette",
         "chamfer",
         "blurBehind",
+        "image",
     ];
 }
 
@@ -525,10 +654,26 @@ mod tests {
                 corners: vec![Corner::TopRight],
             },
             sfocatura(),
+            Effect::Image {
+                src: "grana.webp".to_owned(),
+                size: ImageSize::Cover,
+                repeat: false,
+                position: None,
+            },
         ] {
             visti.push(effetto.name());
         }
         assert_eq!(visti, Effect::NAMES);
+    }
+
+    #[test]
+    fn i_filtri_di_colore_costano_una_tinta_e_la_sfocatura_un_livello() {
+        assert_eq!(
+            FiltroElemento::Blur(Length::px(4.0)).costo(),
+            CostClass::Composited
+        );
+        assert_eq!(FiltroElemento::Saturate(1.4).costo(), CostClass::Cheap);
+        assert_eq!(FiltroElemento::NAMES.len(), 7);
     }
 
     #[test]

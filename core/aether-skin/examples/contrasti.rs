@@ -36,15 +36,19 @@ fn main() {
         skin.meta.version,
         aether_skin::CONTRASTO_MINIMO
     );
+    // Le due colonne sono il tema di base e la variante, qualunque dei due
+    // sia lo scuro: una skin chiara di base ha la variante scura.
+    let base = skin.scheme.nome();
+    let variante = skin.scheme.opposto().nome();
     println!(
         "{:<16} {:<16} {:>7} {:>7}",
-        "davanti", "dietro", "scuro", "chiaro"
+        "davanti", "dietro", base, variante
     );
 
     let mut sotto = 0;
     for coppia in aether_skin::contrast_pairs(&skin) {
-        let chiaro = coppia
-            .light
+        let nella_variante = coppia
+            .variante
             .map_or_else(|| "—".to_owned(), |l| format!("{l:.2}"));
         // Il segno sta in fondo, dove l'occhio arriva dopo aver letto i numeri.
         let segno = if coppia.passa() {
@@ -57,8 +61,8 @@ fn main() {
             "{:<16} {:<16} {:>7.2} {:>7}{segno}",
             coppia.foreground.trim_start_matches("color."),
             coppia.background.trim_start_matches("color."),
-            coppia.dark,
-            chiaro
+            coppia.base,
+            nella_variante
         );
     }
 

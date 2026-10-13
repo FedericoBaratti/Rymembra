@@ -11,12 +11,13 @@
 //! nuovo **prima** di chiedere il lucchetto del lettore.
 
 use aether_app::playback::{Equalizzazione, Normalizzazione, Volume};
-use aether_domain::errors::AppError;
+use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::queue::Queue;
 use tauri::{Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
+use crate::spegnimento::Emette as _;
 
 use super::coda::riprendi_coda;
 use super::fili::prepara_prossimo;
@@ -75,6 +76,77 @@ fn si_puo_rimettere_la_puntina(track_id: i64) -> bool {
     true
 }
 
+/// Il brano il cui ascolto deve **continuare** al prossimo annuncio d'inizio.
+///
+/// # Il difetto che chiude
+///
+/// Riaprire il dispositivo buttava l'ascolto in corso: passare alle cuffie
+/// Bluetooth a metà di una canzone costava il suo conteggio e il suo scrobble,
+/// perché la metà prima del cambio se ne andava senza essere scritta e quella
+/// dopo, da sola, di solito non arrivava alla soglia. Eppure è sempre la stessa
+/// canzone ascoltata da capo a fondo: il cavo non l'ha sentita nessuno, la
+/// musica sì.
+///
+/// L'ascolto adesso resta nel lettore attraverso la riapertura — fermo mentre
+/// il motore non suona — e quel che serve è che il motore nuovo, annunciando
+/// l'inizio del brano rimesso nel solco, non lo chiuda per aprirne uno nuovo.
+/// Questa casella dice a [`su_evento`](super::su_evento) che quell'annuncio è
+/// una ripresa e non un inizio: vedi [`e_la_ripresa_dell_ascolto`].
+///
+/// # Perché una casella di modulo
+///
+/// Per la stessa ragione di [`ULTIMA_RIPRESA`]: fra chi la scrive e chi la
+/// legge c'è un motore buttato e uno costruito, e uno è il lettore. Si scrive
+/// con il lucchetto del lettore in mano, subito dopo aver rimesso la puntina,
+/// e l'annuncio che la legge ha bisogno dello stesso lucchetto: non può
+/// arrivare prima.
+static ASCOLTO_DA_CONTINUARE: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
+
+/// L'annuncio d'inizio di questo brano è la ripresa dell'ascolto in corso?
+///
+/// `true` una volta sola, per il primo annuncio dopo che [`riprendi_dov_era`]
+/// ha rimesso la puntina su `track_id`, e solo se l'ascolto che il lettore
+/// tiene è proprio di quel brano. Chi riceve `true` **non** chiude l'ascolto e
+/// non ne comincia uno nuovo: lo fa ripartire, o lo lascia fermo se il motore è
+/// in pausa. Chi riceve `false` fa quel che faceva sempre.
+///
+/// Il segno si consuma comunque, anche quando la risposta è no: se nel
+/// frattempo è partito un altro brano, l'annuncio è suo e la ripresa non c'è
+/// più.
+pub(super) fn e_la_ripresa_dell_ascolto(lettore: &Lettore, track_id: i64) -> bool {
+    let segnato = ASCOLTO_DA_CONTINUARE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    segnato == Some(track_id)
+        && lettore
+            .ascolto
+            .as_ref()
+            .is_some_and(|ascolto| ascolto.track_id() == track_id)
+}
+
+/// Ferma l'ascolto in corso, se il motore non suona più.
+///
+/// Un ascolto misura il tempo che passa mentre la musica va, e con il
+/// dispositivo sparito la musica non va: senza questa pausa, un DAC staccato
+/// per dieci minuti e poi riattaccato avrebbe regalato dieci minuti di silenzio
+/// al conteggio della canzone che suonava — adesso che l'ascolto sopravvive
+/// alla riapertura invece di essere buttato. La chiama il sorvegliante dei
+/// dispositivi a ogni passata, anche quando non c'è nessuna uscita su cui
+/// riaprire; `ListenTracker::pause` chiamata due volte non accumula due volte.
+pub(super) fn ferma_l_ascolto_se_perso(stato: &StatoLettore) {
+    let mut guardia = stato
+        .lettore
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Ok(lettore) = guardia.as_mut()
+        && lettore.motore.dispositivo_perso()
+        && let Some(ascolto) = lettore.ascolto.as_mut()
+    {
+        ascolto.pause(crate::stato::adesso_ms());
+    }
+}
+
 /// Riapre il dispositivo audio, a mano.
 ///
 /// # Perché esiste ancora, se adesso si riapre da sola
@@ -97,9 +169,15 @@ fn si_puo_rimettere_la_puntina(track_id: i64) -> bool {
 /// [`scegli_dispositivo_audio`](super::uscite::scegli_dispositivo_audio) — e la
 /// riapertura è automatica: chi non vuole che il suono si sposti fissa la sua
 /// scheda, e la preferenza vale più del predefinito di sistema. Chi resta su
-/// «predefinito» ha chiesto proprio di seguire il sistema. In tutti e due i
-/// casi la finestra dice **su quale uscita** è finito il suono, che è la parte
-/// che prima mancava del tutto.
+/// «predefinito» ha chiesto proprio di seguire il sistema, e la musica va dove
+/// va Windows; la finestra dice **su quale uscita** è finito il suono.
+///
+/// Fino alla 3.0 la promessa era scritta qui ma non mantenuta: la scheda fissata
+/// che spariva faceva ripiegare la riapertura automatica sul predefinito, cioè
+/// proprio sugli altoparlanti. Adesso il sorvegliante **aspetta** che torni —
+/// vedi `uscite::da_riaprire` e [`Modo::Automatica`] — e la finestra dice quale
+/// si sta aspettando. Questo tasto invece ripiega: chi lo preme ha chiesto di
+/// sentire adesso, da dove si può.
 ///
 /// Resta vera la ragione tecnica scritta in `uscita.rs`: riaprire può
 /// bloccarsi, e non si può fare dal filo che segnala il guasto — quello è un
@@ -111,8 +189,49 @@ fn si_puo_rimettere_la_puntina(track_id: i64) -> bool {
 pub fn riapri_audio(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
     // A mano si riparte come si stava: se la musica andava, riprende; se era
     // in pausa, resta ferma. La stessa regola dell'automatico — l'ha decisa
-    // `annota_ripresa`, non chi chiama.
-    riapri_su(&app, &stato, None).map_err(errore)
+    // `annota_ripresa`, non chi chiama. A differenza dell'automatico, a mano si
+    // ripiega: chi preme «Riapri» mentre aspetta le cuffie fissate ha chiesto
+    // di sentire adesso, da dove si può. Vedi [`Modo`].
+    riapri_su(&app, &stato, None, Modo::AMano)
+        .map(|_| ())
+        .map_err(errore)
+}
+
+/// Chi chiede di riaprire, che vuol dire: quanto si può ripiegare, e cosa fare
+/// dopo.
+///
+/// # Perché il ripiego dipende da chi chiede
+///
+/// Perché l'uscita fissata che sparisce — le cuffie Bluetooth che si staccano —
+/// adesso **si aspetta**: il suono non passa agli altoparlanti dell'ufficio da
+/// solo, ed è la ragione per cui la si fissa. Ma l'attesa è del sorvegliante,
+/// non di chi preme un tasto: chi preme «Riapri» o play mentre le cuffie sono
+/// via ha chiesto di sentire adesso, e lo si accontenta da dove si può.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Modo {
+    /// Il sorvegliante dei dispositivi: sull'uscita fissata o su niente, e la
+    /// musica riparte come stava.
+    Automatica,
+    /// «Riapri» e la scelta di un'uscita nelle impostazioni: si ripiega se la
+    /// fissata non c'è, e la musica riparte come stava.
+    AMano,
+    /// Play premuto a dispositivo perso: si ripiega, e la musica riparte
+    /// **suonando** — il gesto vince sul bit segnato al momento del guasto.
+    Suona,
+    /// Un brano sta per partire da sé: serve soltanto un dispositivo vivo, e
+    /// non c'è nessun punto da rimettere.
+    SoloDispositivo,
+}
+
+/// Com'è andata una riapertura riuscita.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Riaperta {
+    /// Ce n'era già una in corso: questa non ha fatto niente.
+    Saltata,
+    /// Il motore è nuovo e la puntina è tornata nel solco del brano di prima.
+    Rimessa,
+    /// Il motore è nuovo, e non c'era niente da rimettere al suo posto.
+    Vuota,
 }
 
 /// Il lavoro vero di [`riapri_audio`], senza il comando intorno.
@@ -142,9 +261,14 @@ pub fn riapri_audio(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Es
 /// quel millisecondo: una canzone di venti minuti staccata al quattordicesimo
 /// non ricomincia da capo, e riparte se stava andando.
 ///
-/// Non sopravvive l'ascolto in corso, ed è giusto: il conteggio misura quel che
-/// si è **sentito**, e i minuti passati con le cuffie staccate non li ha
-/// sentiti nessuno.
+/// **E l'ascolto in corso.** Fino alla 2.x qui si buttava, con la ragione che
+/// il conteggio misura quel che si è **sentito** e i minuti con le cuffie
+/// staccate non li ha sentiti nessuno. La ragione è giusta, la cura no: buttare
+/// l'ascolto toglieva anche quel che si era sentito **prima** del cambio, e
+/// passare alle cuffie a metà canzone costava il conteggio della canzone.
+/// Adesso l'ascolto si ferma — il tempo col dispositivo via non conta — e
+/// riparte quando il motore nuovo annuncia il brano rimesso nel solco: vedi
+/// [`ASCOLTO_DA_CONTINUARE`].
 ///
 /// Funziona anche quando il motore non si è **mai** aperto, che è il caso più
 /// utile: l'applicazione avviata senza scheda audio è un catalogo consultabile
@@ -154,7 +278,8 @@ pub(super) fn riapri_su(
     app: &tauri::AppHandle,
     stato: &StatoLettore,
     uscita: Option<Option<String>>,
-) -> Result<(), AppError> {
+    modo: Modo,
+) -> Result<Riaperta, AppError> {
     // La bandiera si alza **prima** di tutto e si abbassa comunque vada.
     // Aprire un dispositivo può prendersi dei secondi, e il sorvegliante bussa
     // ogni due: senza questa riga due aperture si sovrapporrebbero, e due
@@ -164,9 +289,9 @@ pub(super) fn riapri_su(
         .riapertura_in_corso
         .swap(true, std::sync::atomic::Ordering::AcqRel)
     {
-        return Ok(());
+        return Ok(Riaperta::Saltata);
     }
-    let esito = riapri_davvero(app, stato, uscita);
+    let esito = riapri_davvero(app, stato, uscita, modo);
     stato
         .riapertura_in_corso
         .store(false, std::sync::atomic::Ordering::Release);
@@ -182,7 +307,8 @@ fn riapri_davvero(
     app: &tauri::AppHandle,
     stato: &StatoLettore,
     uscita: Option<Option<String>>,
-) -> Result<(), AppError> {
+    modo: Modo,
+) -> Result<Riaperta, AppError> {
     // Su cosa aprire. Il lucchetto della preferenza si prende e si lascia in
     // una riga: è il clone di una stringa corta, e nessuno lo tiene mentre
     // parla col sistema.
@@ -203,11 +329,21 @@ fn riapri_davvero(
     // secondi: con quel lucchetto già in mano, pausa, volume e «prossimo»
     // resterebbero tutti in coda dietro la riapertura. `(async)` toglie di
     // mezzo il filo principale, non il lucchetto.
-    let motore = apri_motore(app, voluta)?;
+    let motore = apri_motore(app, voluta.clone())?;
     // Il formato si legge **prima** che il motore entri nel lettore: subito
     // dopo è dietro il lucchetto, e serve a [`riprendi_dov_era`] che gira
     // quando il lucchetto è già stato lasciato. Sono due interi `Copy`.
     let formato = motore.formato();
+    // La riga gemella di `riga_di_avvio_lettore`: le cuffie Bluetooth si
+    // collegano quasi sempre a programma già aperto, e senza questa il diario
+    // direbbe soltanto com'era l'uscita all'avvio.
+    nota!(
+        "[riproduzione] audio riaperto uscita={} frequenza={} canali={} bluetooth={}",
+        motore.dispositivo(),
+        formato.frequenza,
+        formato.canali,
+        if motore.su_bluetooth() { "sì" } else { "no" }
+    );
 
     let mut guardia = stato
         .lettore
@@ -216,11 +352,64 @@ fn riapri_davvero(
 
     match guardia.as_mut() {
         Ok(lettore) => {
-            // L'ascolto in corso si lascia cadere senza scriverlo: misura
-            // quanto si è **sentito**, e i minuti con le cuffie staccate non
-            // li ha sentiti nessuno. La posizione invece torna, e a rimetterla
-            // è [`riprendi_dov_era`] qui sotto.
-            lettore.ascolto = None;
+            // Il sorvegliante voleva l'uscita fissata, e `cpal` ha aperto
+            // un'altra cosa: la scheda è sparita fra il controllo di
+            // `da_riaprire` e l'apertura, e `costruisci` ha ripiegato sul
+            // predefinito. Per un gesto a mano va bene; per il sorvegliante no —
+            // è proprio il salto agli altoparlanti che l'attesa esiste per
+            // evitare. Il motore nuovo nasce in pausa e non ha suonato niente:
+            // lasciarlo cadere qui non si sente. Il sorvegliante insiste una
+            // volta, e alla passata dopo `da_riaprire` vede che la fissata non
+            // c'è e aspetta.
+            if modo == Modo::Automatica
+                && let Some(fissata) = voluta.as_deref()
+                && fissata != motore.dispositivo()
+            {
+                let causa = format!(
+                    "l'uscita fissata «{fissata}» non c'è più, e si aspetta che torni invece di \
+                     suonare su «{}»",
+                    motore.dispositivo()
+                );
+                drop(guardia);
+                drop(motore);
+                return Err(AppError::new(ErrorCode::PlaybackDeviceLost).with_cause(causa));
+            }
+            // Un cambio voluto — un'uscita scelta nelle impostazioni, «Riapri»
+            // a dispositivo sano — non passa da nessun guasto, e nessuno ha
+            // segnato dove fosse la puntina: [`riprendi_dov_era`] non trovava
+            // niente a cui tornare, e il brano si perdeva a metà. Lo si segna
+            // adesso dal motore vecchio, che fino alla riga dopo sta suonando.
+            //
+            // Un segno già scritto vince solo se parla dello stesso brano a
+            // musica ferma: è quello dell'istante del guasto, o il punto di
+            // «Riprova» di un flusso caduto, e un motore fermato da un guasto
+            // racconta una posizione che non vale più. A musica in corso la
+            // posizione viva è quella giusta per definizione.
+            //
+            // Non quando sta per partire un brano: chi ha chiamato lo apre lui
+            // subito dopo, e un segno scritto qui riporterebbe indietro quello
+            // di prima.
+            let viva = lettore.motore.posizione();
+            let segnato = stato
+                .ripresa
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .map(|ripresa| ripresa.track_id);
+            if modo != Modo::SoloDispositivo
+                && viva.track_id.is_some()
+                && (!viva.in_pausa || segnato != viva.track_id)
+            {
+                let _ = super::annota_ripresa_da(stato, viva);
+            }
+            // L'ascolto in corso **resta**, fermo: il tempo che passa da qui
+            // all'annuncio del motore nuovo non l'ha sentito nessuno, e quel
+            // che si è sentito prima del cambio non deve andare perso. Lo fa
+            // ripartire l'annuncio del brano rimesso nel solco — vedi
+            // [`ASCOLTO_DA_CONTINUARE`] — e se la puntina non torna al suo
+            // posto lo chiude chi volta pagina, come ogni altro ascolto.
+            if let Some(ascolto) = lettore.ascolto.as_mut() {
+                ascolto.pause(crate::stato::adesso_ms());
+            }
             lettore.motore = motore;
             // Il motore nuovo non ha niente in canna.
             lettore.in_canna = None;
@@ -290,7 +479,7 @@ fn riapri_davvero(
             let stato_lettore = app.state::<StatoLettore>();
             return con_lettore(&stato_lettore, |lettore| {
                 manda_stato(app, lettore);
-                Ok(())
+                Ok(Riaperta::Vuota)
             });
         }
     }
@@ -303,8 +492,14 @@ fn riapri_davvero(
     // testa al modulo dice che nessun lucchetto si tiene mentre si aspetta.
     drop(guardia);
 
-    riprendi_dov_era(app, stato, formato);
-    Ok(())
+    if modo == Modo::SoloDispositivo {
+        return Ok(Riaperta::Vuota);
+    }
+    if riprendi_dov_era(app, stato, formato, modo == Modo::Suona) {
+        Ok(Riaperta::Rimessa)
+    } else {
+        Ok(Riaperta::Vuota)
+    }
 }
 
 /// Rimette la puntina dove il dispositivo l'aveva lasciata.
@@ -326,7 +521,13 @@ fn riapri_davvero(
 /// non ha chiesto niente, e ritrovare la musica in corso sarebbe un comando che
 /// nessuno ha dato.
 ///
-/// # Perché non restituisce niente
+/// Con due eccezioni. `suona` vero — play premuto a dispositivo perso — vince
+/// sul bit: il gesto è più recente del guasto. E un segno più vecchio di
+/// [`RIPRESA_FRESCA`](super::RIPRESA_FRESCA) non riparte da solo anche se la
+/// musica stava andando: l'uscita fissata si aspetta, e aspettarla può voler
+/// dire fino al mattino dopo.
+///
+/// # Perché non restituisce un errore
 ///
 /// Perché il suo fallimento non è quello di chi l'ha chiamata. Il dispositivo a
 /// questo punto è **già** riaperto: se il brano non si riapre — la chiavetta
@@ -338,11 +539,15 @@ fn riapri_davvero(
 ///
 /// L'annotazione, in quel caso, **resta**: come per «Riprova» della rete, si
 /// può premere di nuovo.
+///
+/// Dice soltanto se la puntina è tornata nel solco: a play premuto a
+/// dispositivo perso serve sapere se c'è ancora un brano da far partire.
 fn riprendi_dov_era(
     app: &tauri::AppHandle,
     stato: &StatoLettore,
     formato: aether_play::FormatoUscita,
-) {
+    suona: bool,
+) -> bool {
     let annotato = *stato
         .ripresa
         .lock()
@@ -351,8 +556,11 @@ fn riprendi_dov_era(
         // Nessun segno: o il dispositivo se n'è andato a lettore fermo, o non
         // si era mai aperto. Non c'è un punto a cui tornare, e inventarne uno
         // vorrebbe dire far partire un brano che nessuno stava ascoltando.
-        return;
+        return false;
     };
+    let fresca =
+        crate::stato::adesso_ms().saturating_sub(ripresa.quando_ms) < super::RIPRESA_FRESCA;
+    let riparte = suona || (ripresa.suonava && fresca);
 
     // Prima di riaprire il file, e non dopo: aprire un brano vuol dire far
     // riconoscere il contenitore a symphonia, cioè far rileggere proprio i byte
@@ -374,7 +582,7 @@ fn riprendi_dov_era(
             .ripresa
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        return;
+        return false;
     }
 
     let brano = match brano_di(app, ripresa.track_id, formato) {
@@ -385,7 +593,7 @@ fn riprendi_dov_era(
                 err.code().kind().code(),
                 err.cause().unwrap_or("—")
             );
-            return;
+            return false;
         }
     };
 
@@ -394,16 +602,24 @@ fn riprendi_dov_era(
         // di forza il brano di prima sarebbe una musica che riparte da sola,
         // ed è la stessa rinuncia di [`riprova_corrente`].
         if lettore.coda.current() != Some(ripresa.track_id) {
-            return Ok(());
+            return Ok(false);
         }
         lettore.suona(brano);
         lettore.motore.vai_a(ripresa.ms);
+        // L'annuncio d'inizio che il motore nuovo manderà per questo brano è
+        // la ripresa dell'ascolto di prima, non un ascolto nuovo. Scritto qui,
+        // col lucchetto del lettore in mano: l'annuncio ha bisogno dello
+        // stesso lucchetto, e non può leggerlo prima.
+        *ASCOLTO_DA_CONTINUARE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ripresa.track_id);
         // La pausa **dopo** `suona`, non prima: `suona` abbassa il bit da sé
         // (vedi `Motore::pausa` per l'ordine), quindi non rialzarlo qui vuol
         // dire ripartire — ed è il ramo normale, da quando la riapertura è
-        // automatica. Il ramo fermo serve a chi era in pausa: per lui `suona`
-        // avrebbe appena acceso una musica che non aveva chiesto.
-        if !ripresa.suonava {
+        // automatica. Il ramo fermo serve a chi era in pausa — o a chi ha
+        // aspettato le cuffie troppo a lungo: per lui `suona` avrebbe appena
+        // acceso una musica che non aveva chiesto.
+        if !riparte {
             lettore.motore.pausa();
         }
         prepara_prossimo(app, lettore);
@@ -411,16 +627,18 @@ fn riprendi_dov_era(
         // fa il filo della decodifica, e fino ad allora `posizione()` direbbe
         // zero. Stessa ragione di [`riprova_corrente`].
         manda_stato_con_posizione(app, lettore, ripresa.ms);
-        Ok(())
+        Ok(true)
     });
-    if esito.is_err() {
-        return;
+    let Ok(rimessa) = esito else {
+        return false;
+    };
+    if rimessa {
+        nota!(
+            "[riproduzione] posizione ripresa dopo la riapertura ms={} suonando={}",
+            ripresa.ms,
+            riparte
+        );
     }
-    nota!(
-        "[riproduzione] posizione ripresa dopo la riapertura ms={} suonando={}",
-        ripresa.ms,
-        ripresa.suonava
-    );
 
     // Consumata. Si cancella qui e non prima, come in [`riprova_corrente`]:
     // arrivare fin qui vuol dire o che la puntina è tornata nel solco, o che la
@@ -430,6 +648,7 @@ fn riprendi_dov_era(
         .ripresa
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    rimessa
 }
 
 /// Riprende il brano che una cartella di rete aveva interrotto.
@@ -451,6 +670,21 @@ fn riprendi_dov_era(
 /// pagina e riportarcelo di forza sarebbe una musica che riparte da sola.
 /// L'annotazione si butta e basta.
 ///
+/// # Cosa succede se non c'è niente di annotato
+///
+/// Il «Riprova» compare anche per il brano **dopo** che il preparatore non è
+/// riuscito ad aprire: lì non si è interrotto niente, e un punto a cui tornare
+/// non c'è. Premuto, non faceva niente. Adesso, se il motore ha ancora in mano
+/// il brano corrente, si rimanda il preparatore su quello dopo; se si è già
+/// fermato — il corrente è finito e la coda si è spostata sul brano che non si
+/// apriva — è un play, e lo fa [`super::riprendi`].
+///
+/// # A dispositivo perso
+///
+/// Prima il dispositivo, poi il brano: è un play anche questo, e
+/// [`super::riprendi`] sa già fare tutte e due le cose — riaprire l'uscita e
+/// rimettere la puntina sul segno annotato, suonando.
+///
 /// `(async)`: riapre un file che può stare su una cartella di rete, e quella è
 /// esattamente l'attesa da cui la finestra va tenuta fuori.
 #[tauri::command(async)]
@@ -459,23 +693,58 @@ pub fn riprova_corrente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -
         .ripresa
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(ripresa) = annotato else {
-        return Ok(());
-    };
 
     // Il formato dell'uscita si legge sotto lucchetto e il lucchetto si lascia
     // subito: sono due interi da una struttura `Copy`, non un'apertura di file.
-    let formato = con_lettore(&stato, |lettore| Ok(lettore.motore.formato())).map_err(errore)?;
+    let (formato, perso, con_brano) = con_lettore(&stato, |lettore| {
+        Ok((
+            lettore.motore.formato(),
+            lettore.motore.dispositivo_perso(),
+            lettore.motore.posizione().track_id.is_some(),
+        ))
+    })
+    .map_err(errore)?;
+    let ripresa = match annotato {
+        Some(ripresa) if !perso => ripresa,
+        _ if perso || !con_brano => return super::riprendi(app, stato),
+        _ => {
+            return con_lettore(&stato, |lettore| {
+                prepara_prossimo(&app, lettore);
+                Ok(())
+            })
+            .map_err(errore);
+        }
+    };
 
     // Il brano si apre **prima di chiedere il lucchetto**, per la stessa
     // ragione scritta in [`riapri_audio`]: fin qui l'apertura ha già mostrato
     // di poterci mettere dei secondi, ed è la ragione per cui esiste questo
-    // comando.
-    let brano = brano_di(&app, ripresa.track_id, formato).map_err(errore)?;
-
-    con_lettore(&stato, |lettore| {
-        if lettore.coda.current() != Some(ripresa.track_id) {
+    // comando. Una sola apertura per brano, come in `avvia_corrente`: tre
+    // colpi su «Riprova» mentre il NAS si sveglia sono un'attesa, non tre.
+    let Ok(aprendo) = super::Aprendo::prendi(&stato.aprendo, ripresa.track_id) else {
+        return Ok(());
+    };
+    let brano = match brano_di(&app, ripresa.track_id, formato) {
+        Ok(brano) => brano,
+        // Ancora giù: l'annotazione resta, e la fascia deve ridire il guasto
+        // con il suo codice — risalito al comando come errore, arrivava alla
+        // finestra già tradotto, e il «Riprova» spariva proprio al tentativo in
+        // cui serviva di nuovo.
+        Err(err) if err.is_retryable() => {
+            app.emetti("riproduzione:errore", errore(err));
             return Ok(());
+        }
+        Err(err) => return Err(errore(err)),
+    };
+
+    let consegnato = con_lettore(&stato, |lettore| {
+        if lettore.coda.current() != Some(ripresa.track_id) {
+            return Ok(true);
+        }
+        // Il motore è cambiato mentre il file si apriva: il brano è stato
+        // aperto per un'altra uscita. Lo rifà `avvia_corrente`, qui sotto.
+        if lettore.motore.formato() != formato {
+            return Ok(false);
         }
         lettore.suona(brano);
         lettore.motore.vai_a(ripresa.ms);
@@ -484,14 +753,20 @@ pub fn riprova_corrente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -
         // fa il filo della decodifica, e fino ad allora `posizione()`
         // direbbe zero. Stessa ragione di [`vai_a`].
         manda_stato_con_posizione(&app, lettore, ripresa.ms);
-        Ok(())
+        Ok(true)
     })
     .map_err(errore)?;
+    if !consegnato {
+        // La casella va lasciata prima: `avvia_corrente` la vuole per lo
+        // stesso brano, e la troverebbe presa da noi.
+        drop(aprendo);
+        return super::avvia_corrente(&app, &stato, false, ripresa.ms).map_err(errore);
+    }
 
     // Si cancella qui e non prima: se l'apertura fosse fallita saremmo usciti
-    // sopra con il `?`, e l'annotazione sarebbe rimasta per il tentativo dopo.
-    // Arrivare fin qui vuol dire o che la musica è ripartita, o che la coda ha
-    // voltato pagina: in tutti e due i casi non c'è più niente da riprendere.
+    // sopra, e l'annotazione sarebbe rimasta per il tentativo dopo. Arrivare
+    // fin qui vuol dire o che la musica è ripartita, o che la coda ha voltato
+    // pagina: in tutti e due i casi non c'è più niente da riprendere.
     *stato
         .ripresa
         .lock()

@@ -1,521 +1,329 @@
 /**
- * Lo sfondo di una superficie, a livelli.
+ * I livelli: tutto quel che una skin può ridipingere, e lo scafale.
  *
- * # Perché è la parte che mancava
+ * Le parti del registro, per gruppo, ognuna coi suoi segni: ridipinta (la skin
+ * la dichiara), animata (ha un movimento), oltre il budget. Sceglierne una la
+ * apre nell'ispettore **e** porta la tela dove si vede — `explore-row` sta in
+ * Esplora, `menu-item` sotto un menù aperto — così non ci si chiede mai se la
+ * skin la stia ridipingendo o se semplicemente non è sulla pagina.
  *
- * `parts.<nome>.background` è un array di effetti, e finora lo Studio lo leggeva
- * soltanto per sommarne il costo: per aggiungere una griglia di punti a una
- * scheda bisognava scendere nella vista Documento e scrivere l'oggetto a mano.
- * Il che vuol dire che la vista a controlli non era una seconda tastiera sullo
- * stesso documento — era una tastiera con meno tasti.
+ * Sotto, lo scafale: l'albero di dove stanno le cose (`AlberoScafale.tsx`).
  *
- * # Il costo accanto al nome, sempre
- *
- * Ogni livello porta il suo peso, e l'elenco da cui si sceglie ce l'ha già
- * accanto a ciascuna voce: si vede quanto costa **prima** di spenderlo. È la
- * terza regola dello Studio, e senza questo elenco non aveva un posto dove
- * succedere.
- *
- * # Perché si riscrive l'array intero
- *
- * `patch.ts` non indicizza gli array, e non serve che lo faccia: aggiungere,
- * togliere e riordinare producono tutti e tre un array nuovo, e scriverlo in un
- * colpo solo è anche l'unico modo di non lasciare il documento in uno stato
- * intermedio a metà di un riordino.
+ * L'elenco è un albero ARIA con un solo punto di tabulazione: le frecce
+ * scorrono, destra e sinistra aprono e chiudono un gruppo, Invio sceglie.
+ * Ctrl+K porta nel campo di ricerca da qualunque punto dello Studio.
  */
-import { useState } from "react";
+import { useMemo, useState, type KeyboardEvent } from "react";
 
-import type { EffettoRegistro, ParametroRegistro, TokenRegistro } from "../ipc";
+import type { ParteRegistro } from "../ipc";
+import { t } from "../lingue";
 import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
-import { Cursore, ValoreColore, ValoreLunghezza } from "./controlli";
-import {
-  coloreCosto,
-  costoDi,
-  type Livello,
-  type Motivi,
-  nomeEffetto,
-  ritrattoEffetto,
-} from "./valori";
-import { t } from "../lingue";
-import { usePresaPerRiordino } from "../riordino";
-import { descrizioneParametro } from "./vocabolario";
+import { AlberoScafale } from "./AlberoScafale";
+import { useStudio } from "./contesto";
+import { parteScelta } from "./negozio";
+import { descrizioneParte, nomeGruppo } from "./vocabolario";
 
-/** Gli angoli che un `chamfer` può tagliare, come li scrive il documento. */
-const ANGOLI = ["topLeft", "topRight", "bottomLeft", "bottomRight"] as const;
+type Filtro = "tutte" | "ridipinte" | "animate";
 
-/**
- * Le manopole di un livello, generate dal registro.
- *
- * Non c'è una tabella di undici effetti scritta qui: c'è una `switch` su sette
- * tipi. È lo stesso principio dell'ispettore dei nodi — «una forma di controllo
- * per tipo» — e la conseguenza è che un effetto nuovo nel nucleo arriva già
- * modificabile, senza che nessuno tocchi questo file.
- */
-export function Manopole({
-  livello,
-  params,
-  tokens,
-  tavolozza,
-  onCambia,
-}: {
-  livello: Livello;
-  params: readonly ParametroRegistro[];
-  tokens: readonly TokenRegistro[];
-  tavolozza: Readonly<Record<string, string>>;
-  onCambia: (livello: Livello) => void;
-}) {
-  // Le descrizioni dei parametri si chiavano sull'effetto: `color` esiste su
-  // sei effetti e ogni volta dice un'altra cosa.
-  const effetto = nomeEffetto(livello) ?? "";
+/** Che cosa la skin fa di una parte. */
+interface Segni {
+  ridipinta: boolean;
+  animata: boolean;
+  /** Nella variante: il tema opposto la ridipinge a modo suo. */
+  variata: boolean;
+  oltre: boolean;
+}
 
-  const scrivi = (nome: string, valore: unknown) => {
-    const nuovo = { ...livello };
-    // Togliere vuol dire togliere la chiave, non scrivere `null`: il parser
-    // legge una chiave assente come «usa il valore di serie» e un `null` come
-    // un errore di tipo.
-    if (valore === null || valore === undefined) delete nuovo[nome];
-    else nuovo[nome] = valore;
-    onCambia(nuovo);
+export function Livelli() {
+  const { s, manda, registro, documento } = useStudio();
+  const [cerca, setCerca] = useState("");
+  const [filtro, setFiltro] = useState<Filtro>("tutte");
+  const [chiusi, setChiusi] = useState<ReadonlySet<string>>(new Set());
+  const [fuoco, setFuoco] = useState<string | null>(null);
+  const [scafaleAperto, setScafaleAperto] = useState(true);
+  const scelta = parteScelta(s);
+
+  const segni = useMemo(() => {
+    const parti = (documento?.["parts"] ?? {}) as Record<string, Record<string, unknown>>;
+    const varianti = (((documento?.["variant"] ?? {}) as Record<string, unknown>)["parts"] ??
+      {}) as Record<string, unknown>;
+    const costi = new Map((s.valido?.costi ?? []).map((c) => [c.parte, c]));
+    const fuori = new Map<string, Segni>();
+    for (const p of registro.parts) {
+      const dichiarata = parti[p.name];
+      const costo = costi.get(p.name);
+      fuori.set(p.name, {
+        ridipinta: dichiarata !== undefined,
+        animata: dichiarata?.["motion"] !== undefined,
+        variata: varianti[p.name] !== undefined,
+        oltre:
+          costo !== undefined &&
+          (costo.superficie > registro.budget || costo.movimento > registro.motionBudget),
+      });
+    }
+    return fuori;
+  }, [documento, registro, s.valido]);
+
+  const quante = {
+    tutte: registro.parts.length,
+    ridipinte: [...segni.values()].filter((g) => g.ridipinta || g.variata).length,
+    animate: [...segni.values()].filter((g) => g.animata).length,
+  };
+
+  const gruppi = useMemo(() => {
+    const ago = cerca.trim().toLowerCase();
+    const fuori = new Map<string, ParteRegistro[]>();
+    for (const p of registro.parts) {
+      const g = segni.get(p.name);
+      if (filtro === "ridipinte" && !(g?.ridipinta || g?.variata)) continue;
+      if (filtro === "animate" && !g?.animata) continue;
+      if (
+        ago !== "" &&
+        !p.name.includes(ago) &&
+        !descrizioneParte(p.name, p.description).toLowerCase().includes(ago) &&
+        !nomeGruppo(p.group).toLowerCase().includes(ago)
+      )
+        continue;
+      fuori.set(p.group, [...(fuori.get(p.group) ?? []), p]);
+    }
+    return [...fuori.entries()];
+  }, [registro, segni, filtro, cerca]);
+
+  // Le righe visibili, in ordine: i gruppi e le parti dei gruppi aperti. Una
+  // ricerca apre tutto — chi cerca vuole vedere quel che ha trovato.
+  const cercando = cerca.trim() !== "";
+  const righe: { chiave: string; gruppo: string; parte: string | null }[] = [];
+  for (const [gruppo, parti] of gruppi) {
+    righe.push({ chiave: `g:${gruppo}`, gruppo, parte: null });
+    if (cercando || !chiusi.has(gruppo)) {
+      for (const p of parti) righe.push({ chiave: `p:${p.name}`, gruppo, parte: p.name });
+    }
+  }
+  const attiva =
+    fuoco !== null && righe.some((r) => r.chiave === fuoco)
+      ? fuoco
+      : scelta !== null && righe.some((r) => r.parte === scelta)
+        ? `p:${scelta}`
+        : (righe[0]?.chiave ?? "");
+
+  const scegli = (parte: string) => {
+    manda({ tipo: "scegli", selezione: { tipo: "parte", nome: parte } });
+    manda({ tipo: "mostra", parte });
+  };
+
+  const alterna = (gruppo: string) =>
+    setChiusi((prima) => {
+      const dopo = new Set(prima);
+      if (dopo.has(gruppo)) dopo.delete(gruppo);
+      else dopo.add(gruppo);
+      return dopo;
+    });
+
+  const vaiA = (chiave: string) => {
+    setFuoco(chiave);
+    document
+      .querySelector<HTMLElement>(`.albero-parti [data-riga="${CSS.escape(chiave)}"]`)
+      ?.focus();
+  };
+
+  const daTastiera = (e: KeyboardEvent<HTMLDivElement>) => {
+    const qui = righe.findIndex((r) => r.chiave === attiva);
+    const riga = righe[qui];
+    if (riga === undefined) return;
+    const altra = (i: number) => {
+      const presa = righe[Math.max(0, Math.min(righe.length - 1, i))];
+      if (presa !== undefined) vaiA(presa.chiave);
+    };
+    let fatto = true;
+    if (e.key === "ArrowDown") altra(qui + 1);
+    else if (e.key === "ArrowUp") altra(qui - 1);
+    else if (e.key === "Home") altra(0);
+    else if (e.key === "End") altra(righe.length - 1);
+    else if (e.key === "ArrowRight" && riga.parte === null) {
+      if (chiusi.has(riga.gruppo)) alterna(riga.gruppo);
+      else altra(qui + 1);
+    } else if (e.key === "ArrowLeft") {
+      if (riga.parte === null) {
+        if (!chiusi.has(riga.gruppo)) alterna(riga.gruppo);
+      } else vaiA(`g:${riga.gruppo}`);
+    } else if (e.key === "Enter" || e.key === " ") {
+      if (riga.parte === null) alterna(riga.gruppo);
+      else scegli(riga.parte);
+    } else fatto = false;
+    if (fatto) e.preventDefault();
   };
 
   return (
-    <div className="manopole-livello">
-      {params.map((p) => {
-        const valore = livello[p.name];
-        return (
-          <div
-            key={p.name}
-            className="una-manopola"
-            title={descrizioneParametro(effetto, p.name, p.description)}
-          >
-            <span className="nome-manopola">{p.name}</span>
+    <div className="livelli-studio">
+      <label className="cerca-livelli">
+        <Icona nome="i-search" dim={14} />
+        <input
+          type="search"
+          className="field-input"
+          placeholder={t("studio3.layers.search")}
+          aria-label={t("studio3.layers.search")}
+          value={cerca}
+          onChange={(e) => setCerca(e.target.value)}
+          onKeyDown={(e) => {
+            // Dalla ricerca si scende nell'elenco con la freccia, come in un
+            // campo di suggerimenti: senza, trovata la parte bisognava
+            // attraversare il filtro col tabulatore per arrivarci.
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              const prima = righe.find((r) => r.parte !== null);
+              if (prima !== undefined) vaiA(prima.chiave);
+            }
+            if (e.key === "Escape" && cerca !== "") {
+              e.stopPropagation();
+              setCerca("");
+            }
+          }}
+        />
+        <kbd className="tasto-cerca">Ctrl K</kbd>
+      </label>
+      <Segmentato<Filtro>
+        etichetta={t("studio3.layers.filter")}
+        classe="minuto denso"
+        scelta={filtro}
+        onScegli={setFiltro}
+        voci={[
+          { chiave: "tutte", etichetta: t("studio3.layers.all"), conteggio: quante.tutte },
+          { chiave: "ridipinte", etichetta: t("studio3.layers.painted"), conteggio: quante.ridipinte },
+          { chiave: "animate", etichetta: t("studio3.layers.animated"), conteggio: quante.animate },
+        ]}
+      />
 
-            {p.kind === "color" && (
-              <ValoreColore
-                valore={valore ?? null}
-                tokens={tokens}
-                tavolozza={tavolozza}
-                onCambia={(v) => scrivi(p.name, v)}
-              />
-            )}
-
-            {p.kind === "length" && (
-              <ValoreLunghezza
-                valore={valore ?? null}
-                min={p.min ?? 0}
-                max={p.max ?? 64}
-                passo={1}
-                etichetta={p.name}
-                onCambia={(v) => scrivi(p.name, v)}
-              />
-            )}
-
-            {(p.kind === "angle" || p.kind === "number") && (
-              <Cursore
-                valore={valore ?? null}
-                min={p.min ?? 0}
-                max={p.max ?? 100}
-                passo={p.kind === "angle" ? 5 : 1}
-                etichetta={p.name}
-                suffisso={p.kind === "angle" ? "°" : ""}
-                onCambia={(v) => scrivi(p.name, v)}
-              />
-            )}
-
-            {p.kind === "word" && (
-              <Segmentato
-                etichetta={descrizioneParametro(effetto, p.name, p.description)}
-                classe="minuto denso"
-                scelta={String(valore ?? "")}
-                onScegli={(v) => scrivi(p.name, v === "" ? null : v)}
-                voci={[
-                  ...(p.optional ? [{ chiave: "", etichetta: "—" }] : []),
-                  ...p.allowed.map((a) => ({ chiave: a, etichetta: a })),
-                ]}
-              />
-            )}
-
-            {p.kind === "corners" && (
+      <div
+        className="albero-parti"
+        role="tree"
+        aria-label={t("studio3.layers.aria")}
+        onKeyDown={daTastiera}
+      >
+        {gruppi.length === 0 && <p className="niente-livelli">{t("studio3.layers.nothing")}</p>}
+        {gruppi.map(([gruppo, parti]) => {
+          const aperto = cercando || !chiusi.has(gruppo);
+          return (
+            <div key={gruppo} role="none">
               <div
-                className="angoli"
-                role="group"
-                aria-label={t("studio.part.corners")}
+                role="treeitem"
+                className="gruppo-livelli"
+                data-riga={`g:${gruppo}`}
+                aria-level={1}
+                aria-expanded={aperto}
+                aria-selected={false}
+                tabIndex={attiva === `g:${gruppo}` ? 0 : -1}
+                onClick={() => {
+                  setFuoco(`g:${gruppo}`);
+                  alterna(gruppo);
+                }}
               >
-                {ANGOLI.map((angolo) => {
-                  const quali = Array.isArray(valore) ? valore.map(String) : [];
-                  const acceso = quali.includes(angolo);
-                  return (
-                    <button
-                      key={angolo}
-                      type="button"
-                      className="angolo"
-                      aria-label={angolo}
-                      aria-pressed={acceso}
-                      data-active={acceso || undefined}
-                      onClick={() => {
-                        const nuovi = acceso
-                          ? quali.filter((a) => a !== angolo)
-                          : [...quali, angolo];
-                        // Nessun angolo dichiarato vuol dire **tutti**: una
-                        // lista vuota il formato la legge al contrario.
-                        scrivi(p.name, nuovi.length === 0 ? null : nuovi);
+                <Icona nome={aperto ? "i-chev-d" : "i-chev-r"} dim={11} />
+                <span className="nome-gruppo">{nomeGruppo(gruppo)}</span>
+                <span className="quante">{parti.length}</span>
+              </div>
+              {aperto && (
+                <div role="group">
+                  {parti.map((p, i) => (
+                    <RigaParte
+                      key={p.name}
+                      parte={p}
+                      posto={i + 1}
+                      fratelli={parti.length}
+                      segni={segni.get(p.name)}
+                      scelta={scelta === p.name}
+                      raggiungibile={attiva === `p:${p.name}`}
+                      onScegli={() => {
+                        setFuoco(`p:${p.name}`);
+                        scegli(p.name);
                       }}
                     />
-                  );
-                })}
-              </div>
-            )}
-
-            {p.kind === "stops" && (
-              <Fermate
-                fermate={Array.isArray(valore) ? valore : []}
-                tokens={tokens}
-                tavolozza={tavolozza}
-                onCambia={(f) => scrivi(p.name, f)}
-              />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** Una fermata di un gradiente: un colore, e volendo dove si ferma. */
-type Fermata = { color?: unknown; at?: string };
-
-/**
- * Le fermate di un gradiente.
- *
- * Un gradiente ne vuole almeno due — il parser lo pretende — quindi il bottone
- * che le toglie si spegne a due invece di lasciar scrivere un documento che poi
- * non si valida.
- */
-function Fermate({
-  fermate,
-  tokens,
-  tavolozza,
-  onCambia,
-}: {
-  fermate: readonly Fermata[];
-  tokens: readonly TokenRegistro[];
-  tavolozza: Readonly<Record<string, string>>;
-  onCambia: (fermate: Fermata[]) => void;
-}) {
-  return (
-    <div className="fermate">
-      {fermate.map((fermata, indice) => (
-        // L'indice è la chiave perché è l'identità: una fermata è il suo posto
-        // nel gradiente, e due dello stesso colore non sono la stessa.
-        <div key={indice} className="una-fermata">
-          <ValoreColore
-            valore={fermata.color ?? null}
-            tokens={tokens}
-            tavolozza={tavolozza}
-            onCambia={(v) =>
-              onCambia(
-                fermate.map((f, i) => (i === indice ? { ...f, color: v } : f)),
-              )
-            }
-          />
-          <input
-            className="dove field-input"
-            type="text"
-            inputMode="numeric"
-            aria-label={t("studio.layers.stopAt", { n: indice + 1 })}
-            placeholder="auto"
-            value={fermata.at ?? ""}
-            onChange={(e) =>
-              onCambia(
-                fermate.map((f, i) => {
-                  if (i !== indice) return f;
-                  const { at: _tolto, ...resto } = f;
-                  return e.target.value === ""
-                    ? resto
-                    : { ...resto, at: e.target.value };
-                }),
-              )
-            }
-          />
-          <button
-            type="button"
-            className="via icon-btn"
-            aria-label={t("studio.layers.removeStop", { n: indice + 1 })}
-            disabled={fermate.length <= 2}
-            title={
-              fermate.length <= 2 ? t("studio.layers.twoStops") : undefined
-            }
-            onClick={() => onCambia(fermate.filter((_, i) => i !== indice))}
-          >
-            <Icona nome="i-x" dim={11} />
-          </button>
-        </div>
-      ))}
-      <button
-        type="button"
-        className="aggiungi-livello"
-        onClick={() => onCambia([...fermate, { color: "#000000" }])}
-      >
-        <Icona nome="i-plus" dim={12} />
-        <span>{t("studio.layers.addStop")}</span>
-      </button>
-    </div>
-  );
-}
-
-export function Livelli({
-  livelli,
-  effetti,
-  tokens,
-  tavolozza,
-  budget,
-  titolo,
-  motivi = {},
-  onCambia,
-}: {
-  livelli: readonly Livello[];
-  effetti: readonly EffettoRegistro[];
-  tokens: readonly TokenRegistro[];
-  tavolozza: Readonly<Record<string, string>>;
-  budget: number;
-  /** Come si chiama questa pila: lo sfondo, o il livello su `::after`. */
-  titolo?: string;
-  /**
-   * I motivi dichiarati dal documento: nome → effetto per esteso.
-   *
-   * La mappa e non i soli nomi, perché serve a due cose che devono restare
-   * d'accordo — offrirli nell'elenco, e sapere quanto costa e che faccia ha un
-   * livello che ne riferisce uno.
-   */
-  motivi?: Motivi;
-  /** L'array nuovo. Vuoto vuol dire «togli la dichiarazione». */
-  onCambia: (livelli: Livello[]) => void;
-}) {
-  const [apertoElenco, setApertoElenco] = useState(false);
-  const [preso, setPreso] = useState<number | null>(null);
-  /** Dove cadrebbe il livello che si sta trascinando. */
-  const [sopra, setSopra] = useState<number | null>(null);
-  const [aperto, setAperto] = useState<number | null>(null);
-
-  /** Solo gli effetti che si possono impilare come sfondo. */
-  const impilabili = effetti.filter((e) => e.target === "background");
-
-  const aggiungi = (effetto: EffettoRegistro) => {
-    try {
-      onCambia([...livelli, JSON.parse(effetto.esempio) as Livello]);
-      // Aperto subito. L'esemplare del nucleo è un minimo valido — `solid` è un
-      // rettangolo nero — e lasciarlo chiuso vuol dire consegnare un livello che
-      // non è quel che si voleva e non dire dove si cambia.
-      setAperto(livelli.length);
-    } catch {
-      // L'esemplare viene dal nucleo e non da qui: se non è JSON, il posto dove
-      // aggiustarlo è `esempio()` in `studio.rs`, non un ripiego inventato ora.
-    }
-    setApertoElenco(false);
-  };
-
-  /** Un motivo già dichiarato, riusato come livello. */
-  const aggiungiMotivo = (nome: string) => {
-    onCambia([...livelli, { $pattern: nome } as Livello]);
-    setApertoElenco(false);
-  };
-
-  const togli = (indice: number) =>
-    onCambia(livelli.filter((_, i) => i !== indice));
-
-  /** Sposta un livello, e restituisce l'array nuovo. */
-  const sposta = (da: number, a: number) => {
-    if (da === a) return;
-    const nuovi = [...livelli];
-    const [tolto] = nuovi.splice(da, 1);
-    if (tolto === undefined) return;
-    nuovi.splice(a, 0, tolto);
-    onCambia(nuovi);
-  };
-
-  // Col puntatore, non col trascinamento HTML5: dentro la finestra di Aether
-  // quello non arriva mai al rilascio, e la pila si prendeva ma non si
-  // riordinava. Vedi `riordino.ts`, che è lo stesso gesto della coda.
-  const presa = usePresaPerRiordino({
-    onPresa: (indice) => {
-      setPreso(indice);
-      if (indice === null) setSopra(null);
-    },
-    onMira: setSopra,
-    onLascia: (a) => {
-      if (preso !== null) sposta(preso, a);
-      setPreso(null);
-      setSopra(null);
-    },
-  });
-
-  return (
-    <div className="livelli">
-      <div className="testa-sezione">
-        <span className="titolino">{titolo ?? t("studio.layers.title")}</span>
-        <span className="da-dove">{t("studio.layers.fromBottom")}</span>
-      </div>
-
-      {/* `data-elenco`: ogni livello ha il suo guscio — sotto di lui si aprono
-          le manopole — quindi i livelli non sono fratelli, e senza questo il
-          riordino non riconoscerebbe due righe della stessa pila. */}
-      <div className="pila" data-elenco>
-        {livelli.map((livello, indice) => {
-          const nome = nomeEffetto(livello, motivi) ?? "?";
-          const costo = costoDi(livello, effetti, motivi);
-          const definizione = effetti.find((e) => e.name === nome);
-          const daMotivo = typeof livello["$pattern"] === "string";
-          const apertoQui = aperto === indice;
-          return (
-            <div key={indice} className="livello-con-manopole">
-              <div
-                // L'indice è la chiave perché è l'identità: due `solid` nella
-                // stessa pila sono due livelli diversi e nient'altro li distingue.
-                className="livello"
-                data-riordino={indice}
-                data-preso={preso === indice || undefined}
-                data-sopra={(sopra === indice && preso !== indice) || undefined}
-                data-aperto={apertoQui || undefined}
-                onPointerDown={(e) => presa(e, indice)}
-              >
-                <span className="maniglia" aria-hidden="true">
-                  <Icona nome="i-grip" dim={12} />
-                </span>
-                <span
-                  className="ritratto"
-                  style={{
-                    background: ritrattoEffetto(
-                      livello,
-                      tokens,
-                      tavolozza,
-                      motivi,
-                    ),
-                  }}
-                  aria-hidden="true"
-                />
-                {/* Un riferimento a un motivo non ha manopole proprie: si
-                    modifica dove il motivo è dichiarato, e cambiarlo qui lo
-                    cambierebbe in ogni superficie che lo usa. Dirlo è meglio
-                    che offrire dei controlli che poi non compaiono. */}
-                {daMotivo ? (
-                  <code
-                    className="quale da-motivo"
-                    title={t("studio.layers.fromPatterns")}
-                  >
-                    ${String(livello["$pattern"])}
-                  </code>
-                ) : (
-                  <button
-                    type="button"
-                    className="quale apri"
-                    aria-expanded={apertoQui}
-                    disabled={definizione === undefined}
-                    onClick={() => setAperto(apertoQui ? null : indice)}
-                  >
-                    <Icona
-                      nome={apertoQui ? "i-chev-u" : "i-chev-d"}
-                      dim={11}
-                    />
-                    <code>{nome}</code>
-                  </button>
-                )}
-                <span
-                  className="peso"
-                  style={{ color: coloreCosto(costo, budget) }}
-                >
-                  {costo}
-                </span>
-                <button
-                  type="button"
-                  className="via icon-btn"
-                  aria-label={t("studio.layers.remove", { nome })}
-                  onClick={() => {
-                    togli(indice);
-                    setAperto(null);
-                  }}
-                >
-                  <Icona nome="i-x" dim={12} />
-                </button>
-              </div>
-
-              {apertoQui && definizione !== undefined && (
-                <Manopole
-                  livello={livello}
-                  params={definizione.params}
-                  tokens={tokens}
-                  tavolozza={tavolozza}
-                  onCambia={(nuovo) =>
-                    onCambia(livelli.map((l, i) => (i === indice ? nuovo : l)))
-                  }
-                />
+                  ))}
+                </div>
               )}
             </div>
           );
         })}
+      </div>
 
+      <section className="sezione-scafale" data-aperta={scafaleAperto || undefined}>
         <button
           type="button"
-          className="aggiungi-livello"
-          aria-expanded={apertoElenco}
-          onClick={() => setApertoElenco((prima) => !prima)}
+          className="testa-scafale"
+          aria-expanded={scafaleAperto}
+          onClick={() => setScafaleAperto((a) => !a)}
         >
-          <Icona nome={apertoElenco ? "i-chev-u" : "i-plus"} dim={13} />
-          <span>{t("studio.layers.add")}</span>
-          <span className="quanti">
-            {t("studio.layers.effects", { n: impilabili.length })}
-          </span>
+          <Icona nome={scafaleAperto ? "i-chev-d" : "i-chev-r"} dim={11} />
+          <span>{t("studio3.shell.section")}</span>
         </button>
+        {scafaleAperto && <AlberoScafale />}
+      </section>
+    </div>
+  );
+}
 
-        {apertoElenco && (
-          <div className="elenco-effetti" role="menu">
-            {/* I motivi in testa: sono già dichiarati e già pagati una volta,
-                quindi riusarne uno è quasi sempre la risposta migliore a
-                «voglio quella texture anche qui». */}
-            {Object.keys(motivi).length > 0 && (
-              <>
-                <span className="titolo-gruppo">
-                  {t("studio.layers.patterns")}
-                </span>
-                {Object.keys(motivi).map((nome) => (
-                  <button
-                    key={nome}
-                    type="button"
-                    role="menuitem"
-                    className="un-effetto"
-                    onClick={() => aggiungiMotivo(nome)}
-                  >
-                    <code>${nome}</code>
-                    <span className="da-dove">
-                      {t("studio.layers.fromPattern")}
-                    </span>
-                  </button>
-                ))}
-                <span className="titolo-gruppo">
-                  {t("studio.layers.effectList")}
-                </span>
-              </>
-            )}
-            {impilabili.map((effetto) => (
-              <button
-                key={effetto.name}
-                type="button"
-                role="menuitem"
-                className="un-effetto"
-                onClick={() => aggiungi(effetto)}
-              >
-                <code>{effetto.name}</code>
-                {/* Il peso **prima** di spenderlo: è tutto il punto della terza
-                    regola, e un elenco senza questo numero costringerebbe a
-                    scoprirlo aggiungendo. */}
-                <span className="peso" style={{ color: coloreCosto(effetto.cost, budget) }}>
-                  {effetto.cost}
-                </span>
-              </button>
-            ))}
-          </div>
+function RigaParte({
+  parte,
+  posto,
+  fratelli,
+  segni,
+  scelta,
+  raggiungibile,
+  onScegli,
+}: {
+  parte: ParteRegistro;
+  posto: number;
+  fratelli: number;
+  segni: Segni | undefined;
+  scelta: boolean;
+  raggiungibile: boolean;
+  onScegli: () => void;
+}) {
+  return (
+    <div
+      role="treeitem"
+      className="voce-livello"
+      data-riga={`p:${parte.name}`}
+      aria-level={2}
+      aria-posinset={posto}
+      aria-setsize={fratelli}
+      aria-selected={scelta}
+      tabIndex={raggiungibile ? 0 : -1}
+      title={descrizioneParte(parte.name, parte.description)}
+      data-ridipinta={segni?.ridipinta || undefined}
+      onClick={onScegli}
+    >
+      <span className="punto-livello" aria-hidden="true" />
+      <code className="nome-voce">{parte.name}</code>
+      <span className="segni-livello">
+        {segni?.variata && (
+          <span className="segno" title={t("studio3.layers.mark.variant")}>
+            <Icona nome="i-moon" dim={11} />
+          </span>
         )}
-      </div>
+        {segni?.animata && (
+          <span className="segno" title={t("studio3.layers.mark.animated")}>
+            <Icona nome="i-timeline" dim={11} />
+          </span>
+        )}
+        {segni?.oltre && (
+          <span className="segno oltre" title={t("studio3.layers.mark.over")}>
+            <Icona nome="i-alert" dim={11} />
+          </span>
+        )}
+      </span>
+      {/* Segnati anche per chi non vede i segni: una parte ridipinta si legge
+          «ridipinta», non solo più chiara. */}
+      <span className="solo-lettori">
+        {[
+          segni?.ridipinta ? t("studio3.layers.mark.painted") : null,
+          segni?.variata ? t("studio3.layers.mark.variant") : null,
+          segni?.animata ? t("studio3.layers.mark.animated") : null,
+          segni?.oltre ? t("studio3.layers.mark.over") : null,
+        ]
+          .filter(Boolean)
+          .join(", ")}
+      </span>
     </div>
   );
 }

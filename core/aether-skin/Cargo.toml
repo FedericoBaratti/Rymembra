@@ -28,7 +28,7 @@ serde_json.workspace = true
 # leggere formati che il nostro scrittore non produce mai. Restano implementazioni
 # in puro Rust, che è anche ciò che serve a compilare per Android senza portarsi
 # dietro una libreria C.
-zip = { version = "6", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

@@ -28,15 +28,17 @@
 //! sincronizzati: sono due tastiere sullo stesso documento. E il documento che
 //! esce è il file che si mette in git.
 
+use std::hash::{Hash as _, Hasher as _};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
+use aether_app::scrittura::scrivi_atomico;
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_skin::movimento;
 use serde::Serialize;
 use tauri::State;
 
-use crate::errore::{Esito, errore};
-use crate::skin::DI_SERIE;
+use crate::errore::{ErroreIpc, Esito, errore};
 use crate::stato::{Stato, con_libreria};
 
 // ── Il registro ─────────────────────────────────────────────────────────────
@@ -106,8 +108,14 @@ pub struct ParteIpc {
     pub group: &'static str,
     /// A cosa serve.
     pub description: &'static str,
-    /// Ha uno pseudo-elemento libero per un livello aggiuntivo.
-    pub layers: bool,
+    /// Ha `::before` libero per un livello, dietro al contenuto.
+    pub before: bool,
+    /// Ha `::after` libero per un livello, sopra al fondo.
+    pub after: bool,
+    /// Entra ed esce dal documento come un'unità: ammette `enter` ed `exit`.
+    pub presenza: bool,
+    /// Può volare fra due schermate: ammette `share`.
+    pub condivisa: bool,
 }
 
 /// Un effetto, col suo costo.
@@ -148,7 +156,8 @@ pub struct EffettoIpc {
 pub struct ParametroIpc {
     /// Come si chiama nel documento.
     pub name: &'static str,
-    /// `color`, `length`, `angle`, `number`, `stops`, `corners`, `word`.
+    /// `color`, `length`, `angle`, `number`, `stops`, `corners`, `word`,
+    /// `point`, `asset`, `flag`.
     pub kind: &'static str,
     /// A cosa serve.
     pub description: &'static str,
@@ -228,6 +237,20 @@ fn parametri(nome: &str) -> Vec<ParametroIpc> {
                 ["circle", "ellipse"],
                 "Cerchio o ellisse."
             ),
+            par!(
+                "at",
+                "point",
+                true,
+                "Dov'è il centro, orizzontale e verticale. Senza, nel mezzo."
+            ),
+            par!(
+                "size",
+                "length",
+                true,
+                0.0,
+                400.0,
+                "Quanto è grande. Senza, fino all'angolo più lontano."
+            ),
             par!("stops", "stops", false, "Le fermate, dal centro."),
         ],
         "conicGradient" => vec![
@@ -238,6 +261,12 @@ fn parametri(nome: &str) -> Vec<ParametroIpc> {
                 -360.0,
                 360.0,
                 "Da che angolo parte il giro."
+            ),
+            par!(
+                "at",
+                "point",
+                true,
+                "Dov'è il centro del giro. Senza, nel mezzo."
             ),
             par!("stops", "stops", false, "Le fermate, in senso orario."),
         ],
@@ -320,7 +349,7 @@ fn parametri(nome: &str) -> Vec<ParametroIpc> {
                 "corners",
                 "corners",
                 true,
-                "Quali angoli. Nessuno dichiarato vuol dire tutti."
+                "Quali angoli. Senza, in alto a destra e in basso a sinistra."
             ),
         ],
         "blurBehind" => vec![
@@ -339,6 +368,28 @@ fn parametri(nome: &str) -> Vec<ParametroIpc> {
                 0.0,
                 400.0,
                 "Quanto satura quel che sta dietro."
+            ),
+        ],
+        "image" => vec![
+            par!(
+                "src",
+                "asset",
+                false,
+                "Un'immagine del pacchetto: png, jpg o webp."
+            ),
+            par!(
+                "size",
+                "word",
+                true,
+                ["cover", "contain", "auto"],
+                "Come riempie: tutta coperta, tutta dentro, o com'è. Anche una lunghezza, per le mattonelle."
+            ),
+            par!("repeat", "flag", true, "Si ripete a mattonelle."),
+            par!(
+                "position",
+                "point",
+                true,
+                "Dove si appoggia. Senza, nel mezzo."
             ),
         ],
         _ => Vec::new(),
@@ -409,6 +460,100 @@ pub struct VocabolarioIpc {
     pub spreads: Vec<&'static str>,
 }
 
+/// Uno stato del DOM, come lo mostra l'editor.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatoIpc {
+    /// Il nome nel documento: `hover`, `current`, `playing`.
+    pub name: &'static str,
+    /// Il selettore che lo riconosce, per una parte che prende il fuoco da sé.
+    pub selector: &'static str,
+    /// Il selettore per una parte il cui fuoco lo prende un figlio.
+    pub dentro: &'static str,
+}
+
+/// Un innesco del movimento, con quel che ammette.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InnescoIpc {
+    /// `enter`, `exit`, `share`, `inView`, `change`, o uno stato.
+    pub name: &'static str,
+    /// Ammette un ciclo infinito: solo gli stati.
+    pub ciclo: bool,
+    /// Si realizza come transizione di vista: vale sulle presenze e sulle
+    /// condivise.
+    pub vista: bool,
+    /// È uno stato del DOM.
+    pub stato: bool,
+}
+
+/// Un campo di un fotogramma, coi suoi estremi.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CampoFotogrammaIpc {
+    /// Come si chiama nel documento.
+    pub name: &'static str,
+    /// `number`, `offset` (px o %), `angle`, `length`, `color`, `shadow`, `clip`.
+    pub kind: &'static str,
+    /// Il valore di riposo: quello di un elemento che non si anima.
+    pub riposo: Option<f64>,
+    /// Gli estremi che il validatore ammette.
+    pub min: Option<f64>,
+    /// L'altro capo.
+    pub max: Option<f64>,
+}
+
+/// Un'animazione pronta, come la offre l'editor.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnimazioneProntaIpc {
+    /// Il nome proposto nel documento.
+    pub id: &'static str,
+    /// Il nome che si legge.
+    pub nome: &'static str,
+    /// L'innesco per cui è pensata.
+    pub innesco: &'static str,
+    /// La dichiarazione, come frammento JSON.
+    pub valore: &'static str,
+}
+
+/// I campi di un fotogramma, nell'ordine del documento.
+///
+/// Una tabella qui, come quella dei parametri degli effetti, e per la stessa
+/// ragione: `AnimFrame` è una struttura tipizzata e non un elenco da leggere a
+/// macchina. Gli estremi sono quelli di `document.rs`, e un test li fa passare
+/// dal parser uno per uno: un estremo scritto qui e rifiutato là sarebbe un
+/// cursore che offre un valore che il documento respinge.
+fn campi_fotogramma() -> Vec<CampoFotogrammaIpc> {
+    let campo = |name, kind, riposo, estremi: Option<(f64, f64)>| CampoFotogrammaIpc {
+        name,
+        kind,
+        riposo,
+        min: estremi.map(|(min, _)| min),
+        max: estremi.map(|(_, max)| max),
+    };
+    vec![
+        campo("opacity", "number", Some(1.0), Some((0.0, 1.0))),
+        campo("translateX", "offset", Some(0.0), Some((-400.0, 400.0))),
+        campo("translateY", "offset", Some(0.0), Some((-400.0, 400.0))),
+        campo("scale", "number", Some(1.0), Some((0.0, 3.0))),
+        campo("scaleX", "number", Some(1.0), Some((0.0, 3.0))),
+        campo("scaleY", "number", Some(1.0), Some((0.0, 3.0))),
+        campo("rotate", "angle", Some(0.0), Some((-720.0, 720.0))),
+        campo("skewX", "angle", Some(0.0), Some((-45.0, 45.0))),
+        campo("skewY", "angle", Some(0.0), Some((-45.0, 45.0))),
+        campo("blur", "length", Some(0.0), Some((0.0, 40.0))),
+        campo("brightness", "number", Some(1.0), Some((0.0, 3.0))),
+        campo("saturate", "number", Some(1.0), Some((0.0, 3.0))),
+        campo("hueRotate", "angle", Some(0.0), Some((-360.0, 360.0))),
+        campo("backgroundColor", "color", None, None),
+        campo("color", "color", None, None),
+        campo("borderColor", "color", None, None),
+        campo("shadow", "shadow", None, None),
+        campo("clip", "clip", None, None),
+    ]
+}
+
 /// Il vocabolario completo: token, parti, effetti, widget.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -453,14 +598,12 @@ pub struct RegistroIpc {
     pub max_durata_ms: f64,
     /// Quanto può attendere prima di partire, in millisecondi.
     pub max_ritardo_ms: f64,
-    /// Quante volte può ripetersi. Mai «infinite».
+    /// Quante volte può ripetersi, o «infinite» sugli stati.
     pub max_iterazioni: u32,
-    /// Quanti trigger può assegnare una singola parte.
-    pub max_trigger_per_parte: usize,
-    /// Quante parti possono portare almeno un'animazione.
-    pub max_parti_animate: usize,
     /// Il budget del movimento di una parte, che è un terzo budget ancora.
     pub motion_budget: u32,
+    /// Il budget del movimento della finestra intera.
+    pub window_motion_budget: u32,
     /// Quanto costa un'animazione prima delle ripetizioni.
     ///
     /// È il peso di [`CostClass::Composited`](aether_skin::effects::CostClass),
@@ -474,6 +617,23 @@ pub struct RegistroIpc {
     pub versi: Vec<&'static str>,
     /// I trigger ammessi, come li scrive `AnimTrigger::as_str`.
     pub trigger: Vec<&'static str>,
+    /// Gli stati del DOM, nell'ordine in cui il compilatore li emette.
+    pub stati: Vec<StatoIpc>,
+    /// Gli inneschi, con quel che ammettono.
+    pub inneschi: Vec<InnescoIpc>,
+    /// I campi di un fotogramma, coi loro estremi.
+    pub fotogramma: Vec<CampoFotogrammaIpc>,
+    /// Le animazioni pronte, da `preset.rs`.
+    pub animazioni_pronte: Vec<AnimazioneProntaIpc>,
+    /// Quel che un'animazione tiene prima e dopo: `both`, `forwards`, …
+    pub riempimenti: Vec<&'static str>,
+    /// Le sorgenti dinamiche di un colore: i colori che la copertina offre.
+    pub sorgenti: Vec<&'static str>,
+    /// Le chiavi che il formato accetta, per contesto: il completamento del
+    /// codice le propone, dalle stesse liste con cui il validatore rifiuta.
+    pub chiavi: std::collections::BTreeMap<&'static str, Vec<&'static str>>,
+    /// Le parole chiuse di un campo, per nome del campo.
+    pub parole: std::collections::BTreeMap<&'static str, Vec<&'static str>>,
 }
 
 /// Il nome stabile di un gruppo di token.
@@ -537,7 +697,9 @@ const fn nome_gruppo_parte(group: aether_skin::parts::PartGroup) -> &'static str
         G::Page => "page",
         G::Controls => "controls",
         G::Lists => "lists",
+        G::Cards => "cards",
         G::Player => "player",
+        G::Column => "column",
         G::NowPlaying => "nowPlaying",
         G::Overlays => "overlays",
     }
@@ -579,7 +741,10 @@ pub fn studio_registro() -> RegistroIpc {
                 name: def.name,
                 group: nome_gruppo_parte(def.group),
                 description: def.description,
-                layers: def.layers,
+                before: def.before,
+                after: def.after,
+                presenza: def.presenza,
+                condivisa: def.condivisa,
             })
             .collect(),
         effects: aether_skin::Effect::NAMES
@@ -598,9 +763,8 @@ pub fn studio_registro() -> RegistroIpc {
         max_durata_ms: movimento::MAX_DURATA_MS,
         max_ritardo_ms: movimento::MAX_RITARDO_MS,
         max_iterazioni: movimento::MAX_ITERAZIONI,
-        max_trigger_per_parte: movimento::MAX_TRIGGER_PER_PARTE,
-        max_parti_animate: movimento::MAX_PARTI_ANIMATE,
         motion_budget: movimento::MOTION_COST_BUDGET,
+        window_motion_budget: movimento::WINDOW_MOTION_BUDGET,
         peso_composito: aether_skin::effects::CostClass::Composited.weight(),
         // Dagli `ALL` degli enum, come il vocabolario dello scafale poco più
         // sotto: una parola nuova nel crate compare nell'editor senza che
@@ -610,6 +774,46 @@ pub fn studio_registro() -> RegistroIpc {
             .map(|verso| verso.as_str())
             .collect(),
         trigger: movimento::AnimTrigger::nomi(),
+        stati: aether_skin::PartState::ALL
+            .iter()
+            .map(|stato| StatoIpc {
+                name: stato.as_str(),
+                selector: stato.selector(aether_skin::stati::Fuoco::Proprio),
+                dentro: stato.selector(aether_skin::stati::Fuoco::Dentro),
+            })
+            .collect(),
+        inneschi: movimento::AnimTrigger::ALL
+            .iter()
+            .map(|innesco| InnescoIpc {
+                name: innesco.as_str(),
+                ciclo: innesco.ammette_ciclo(),
+                vista: innesco.di_vista(),
+                stato: matches!(innesco, movimento::AnimTrigger::State(_)),
+            })
+            .collect(),
+        fotogramma: campi_fotogramma(),
+        animazioni_pronte: aether_skin::ANIMAZIONI_PRONTE
+            .iter()
+            .map(|pronta| AnimazioneProntaIpc {
+                id: pronta.id,
+                nome: pronta.nome,
+                innesco: pronta.innesco,
+                valore: pronta.valore,
+            })
+            .collect(),
+        riempimenti: movimento::Riempimento::ALL
+            .iter()
+            .map(|r| r.as_str())
+            .collect(),
+        sorgenti: aether_skin::tokens::DynamicSource::ALL
+            .iter()
+            .map(|s| s.as_str())
+            .collect(),
+        chiavi: aether_skin::chiavi_schema()
+            .into_iter()
+            .map(|(contesto, chiavi)| (contesto, chiavi.to_vec()))
+            .collect(),
+        parole: aether_skin::parole_schema().into_iter().collect(),
     }
 }
 
@@ -697,12 +901,13 @@ fn esempio(nome: &str) -> Option<EffettoIpc> {
         "vignette" => r##"{"effect":"vignette","color":"#000"}"##,
         "chamfer" => r##"{"effect":"chamfer","size":"10px"}"##,
         "blurBehind" => r##"{"effect":"blurBehind","radius":"24px"}"##,
+        "image" => r##"{"effect":"image","src":"trama.png"}"##,
         _ => return None,
     };
     // Un documento minimo che dichiara quell'effetto come motivo: è la via più
     // corta per ottenere un `Effect` senza esporre i suoi costruttori.
     let documento = format!(
-        r##"{{"format":1,"id":"esempio","meta":{{"name":"E","author":"A","version":"1.0.0"}},
+        r##"{{"format":2,"id":"esempio","meta":{{"name":"E","author":"A","version":"1.0.0"}},
              "tokens":{{}},"patterns":{{"x":{minimo}}}}}"##
     );
     let skin = aether_skin::parse_skin_json(&documento).ok()?;
@@ -778,12 +983,24 @@ pub struct ContrastoIpc {
     pub davanti: &'static str,
     /// Il token dietro.
     pub dietro: &'static str,
-    /// Il rapporto nel tema scuro.
-    pub scuro: f64,
-    /// Il rapporto nel tema chiaro, se c'è.
-    pub chiaro: Option<f64>,
+    /// Il rapporto nel tema di base.
+    pub base: f64,
+    /// Il rapporto nella variante, se c'è.
+    pub variante: Option<f64>,
     /// Passa la soglia in tutti i temi misurati.
     pub passa: bool,
+}
+
+/// Quanto costa una parte, sui suoi due budget.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostoParteIpc {
+    /// La parte.
+    pub parte: &'static str,
+    /// Motivi, livelli e filtri: il budget della superficie.
+    pub superficie: u32,
+    /// Le animazioni assegnate: il budget del movimento.
+    pub movimento: u32,
 }
 
 /// L'esito di una validazione.
@@ -821,10 +1038,27 @@ pub struct ValidazioneIpc {
     pub costo_movimento: u32,
     /// Quante parti la skin ridisegna.
     pub parti: usize,
+    /// Il costo di ogni parte ridisegnata: la superficie e il movimento.
+    pub costi: Vec<CostoParteIpc>,
+    /// Quanto movimento può essere in corso nello stesso momento, sulla
+    /// finestra intera: il numero che il budget della finestra misura.
+    pub costo_finestra: u32,
+    /// Le risorse che il documento nomina.
+    pub risorse: Vec<String>,
     /// I token che seguono la copertina.
     pub dinamici: Vec<String>,
     /// Quanti millisecondi ci ha messo a compilare.
     pub compilato_ms: u128,
+    /// L'id sotto cui il foglio è compilato: quel che la tela scrive in
+    /// `data-skin`. Vuoto quando ci sono errori, perché non c'è un foglio.
+    ///
+    /// È quello della bozza e non quello del documento — vedi
+    /// [`radice_della_bozza`] — e viaggia **col** foglio perché i due devono
+    /// dire la stessa cosa: fino alla 3.0 la tela scriveva l'id della bozza e
+    /// il foglio usava quello del documento, e un documento che cambiava `id`
+    /// lasciava la tela senza una regola che la trovasse finché la rinomina
+    /// non arrivava.
+    pub radice: String,
 }
 
 const fn nome_avviso(kind: aether_skin::WarningKind) -> &'static str {
@@ -837,7 +1071,109 @@ const fn nome_avviso(kind: aether_skin::WarningKind) -> &'static str {
         W::UnusedAnimation => "unusedAnimation",
         W::CostBudget => "costBudget",
         W::Contrast => "contrast",
+        W::RestingLoop => "restingLoop",
     }
+}
+
+// ── I ricordi: le ultime risposte, per testo ────────────────────────────────
+
+/// Quante risposte si ricordano per comando.
+///
+/// Poche, e non è avarizia: il caso che le fa servire è l'annullo — Ctrl+Z,
+/// Ctrl+Y, Ctrl+Z su tre testi — e il ritorno da «Prova sull'app», che
+/// rimanda lo stesso testo di prima. Una risposta porta dentro un foglio da
+/// qualche decina di kilobyte, e sei sono già più di quanti passi si rifanno
+/// in fila.
+const QUANTI_RICORDI: usize = 6;
+
+/// Una risposta ricordata, col testo e la bozza a cui risponde.
+struct Ricordo<V> {
+    impronta: u64,
+    bozza: Option<String>,
+    testo: String,
+    valore: V,
+}
+
+/// Le ultime risposte di un comando dello Studio che non dipende da nient'altro
+/// che dal testo e dalla bozza.
+///
+/// # Perché si ricorda
+///
+/// `studio_valida` è `parse` + `check` + `compile` su tutto il documento, e
+/// girava sul filo della finestra: a ogni passo dell'annullo, a ogni ritorno
+/// dalla prova, la finestra aspettava il nucleo per un documento che aveva
+/// già visto un secondo prima. Il nucleo è deterministico — stesso testo,
+/// stessa bozza, stessa risposta — quindi la risposta si può tenere.
+///
+/// L'impronta serve a cercare in fretta; il confronto vero è sul testo intero,
+/// così due testi con la stessa impronta non si scambiano mai la risposta.
+struct Ricordi<V> {
+    voci: Mutex<Vec<Ricordo<V>>>,
+}
+
+impl<V: Clone> Ricordi<V> {
+    const fn nuovi() -> Self {
+        Self {
+            voci: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// La risposta ricordata, o quella calcolata adesso — e ricordata.
+    ///
+    /// Il calcolo sta **fuori** dal lucchetto: due validazioni diverse non si
+    /// aspettano a vicenda, e due uguali al peggio calcolano due volte.
+    fn o_calcola(&self, bozza: Option<&str>, testo: &str, calcola: impl FnOnce() -> V) -> V {
+        let impronta = {
+            let mut h = std::hash::DefaultHasher::new();
+            bozza.hash(&mut h);
+            testo.hash(&mut h);
+            h.finish()
+        };
+        let stesso = |r: &Ricordo<V>| {
+            r.impronta == impronta && r.bozza.as_deref() == bozza && r.testo == testo
+        };
+        {
+            let voci = self.voci.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(trovato) = voci.iter().find(|r| stesso(r)) {
+                return trovato.valore.clone();
+            }
+        }
+        let valore = calcola();
+        let mut voci = self.voci.lock().unwrap_or_else(PoisonError::into_inner);
+        voci.retain(|r| !stesso(r));
+        voci.insert(
+            0,
+            Ricordo {
+                impronta,
+                bozza: bozza.map(ToOwned::to_owned),
+                testo: testo.to_owned(),
+                valore: valore.clone(),
+            },
+        );
+        voci.truncate(QUANTI_RICORDI);
+        valore
+    }
+}
+
+static VALIDAZIONI: Ricordi<ValidazioneIpc> = Ricordi::nuovi();
+static PROVE: Ricordi<Result<crate::skin::SkinIpc, AppError>> = Ricordi::nuovi();
+static MIGRAZIONI: Ricordi<MigratoIpc> = Ricordi::nuovi();
+
+/// L'id sotto cui compilare la tela e la prova: quello della bozza, quando si
+/// può usare, altrimenti quello del documento.
+///
+/// Quello della bozza perché è la cartella da cui vengono le risorse, e il
+/// documento può dichiarare un `id` che la bozza non ha ancora — l'ha appena
+/// cambiato chi scrive, o è di un'altra skin e la rinomina è stata rifiutata.
+/// Compilare col documento voleva dire caratteri e immagini chiesti a una
+/// cartella che non esiste. Si usa solo se è già nell'alfabeto del foglio
+/// (lettere, cifre, trattini): il compilatore riduce l'id a quello, e un id
+/// ridotto non nominerebbe più la cartella.
+fn radice_della_bozza(bozza: Option<&str>, documento: &str) -> String {
+    bozza
+        .filter(|b| id_sicuro(b) && b.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .unwrap_or(documento)
+        .to_owned()
 }
 
 /// Valida e compila un documento skin scritto a mano.
@@ -846,9 +1182,22 @@ const fn nome_avviso(kind: aether_skin::WarningKind) -> &'static str {
 /// scrive — a metà di una parentesi il JSON non è JSON — e restituire un errore
 /// IPC costringerebbe l'editor a distinguere «il comando è andato storto» da «il
 /// documento non è ancora finito». Qui gli errori sono un campo del risultato.
-#[tauri::command]
+///
+/// `bozza` è la bozza aperta: il foglio si compila sotto il suo id, e le
+/// risorse vengono dalla sua cartella. Vedi [`radice_della_bozza`].
+///
+/// Gira fuori dal filo della finestra, e ricorda le ultime risposte: vedi
+/// [`Ricordi`].
+#[tauri::command(async)]
 #[must_use]
-pub fn studio_valida(sorgente: String) -> ValidazioneIpc {
+pub fn studio_valida(sorgente: String, bozza: Option<String>) -> ValidazioneIpc {
+    VALIDAZIONI.o_calcola(bozza.as_deref(), &sorgente, || {
+        valida(&sorgente, bozza.as_deref())
+    })
+}
+
+/// Quel che fa [`studio_valida`], senza i ricordi.
+fn valida(sorgente: &str, bozza: Option<&str>) -> ValidazioneIpc {
     let inizio = std::time::Instant::now();
     let vuoto = ValidazioneIpc {
         errori: Vec::new(),
@@ -861,16 +1210,20 @@ pub fn studio_valida(sorgente: String) -> ValidazioneIpc {
         costo_scafale: 0,
         costo_movimento: 0,
         parti: 0,
+        costi: Vec::new(),
+        costo_finestra: 0,
+        risorse: Vec::new(),
         dinamici: Vec::new(),
         compilato_ms: 0,
+        radice: String::new(),
     };
 
     // Le posizioni si calcolano una volta per validazione e non una per
     // problema: è una passata sola sul testo, e sono venti token sbagliati che
     // chiedono la stessa mappa.
-    let dove = aether_skin::posizioni(&sorgente);
+    let dove = aether_skin::posizioni(sorgente);
 
-    let documento = match aether_skin::leggi_skin(&sorgente) {
+    let documento = match aether_skin::leggi_skin(sorgente) {
         Ok(documento) => documento,
         Err(problemi) => {
             let mut errori: Vec<ProblemaIpc> =
@@ -888,7 +1241,13 @@ pub fn studio_valida(sorgente: String) -> ValidazioneIpc {
         }
     };
 
-    let compilata = aether_skin::compile_skin(&documento);
+    // Nell'ambito della tela: i selettori della finestra — la tela è un
+    // `<iframe>`, un documento suo dove `:root` è la sua radice e la skin
+    // attiva dell'app non c'è — con le risorse della bozza e gli stati che la
+    // tela può forzare (`data-forza`). Sotto l'id della bozza: vedi
+    // [`radice_della_bozza`].
+    let ambito = aether_skin::Ambito::tela(&radice_della_bozza(bozza, &documento.id));
+    let compilata = aether_skin::compile::compila(&documento, &ambito);
     ValidazioneIpc {
         errori: Vec::new(),
         avvisi: aether_skin::check_skin(&documento)
@@ -910,8 +1269,8 @@ pub fn studio_valida(sorgente: String) -> ValidazioneIpc {
                 passa: c.passa(),
                 davanti: c.foreground,
                 dietro: c.background,
-                scuro: c.dark,
-                chiaro: c.light,
+                base: c.base,
+                variante: c.variante,
             })
             .collect(),
         tavolozza: aether_skin::palette_usage(&documento),
@@ -921,12 +1280,28 @@ pub fn studio_valida(sorgente: String) -> ValidazioneIpc {
         costo_scafale: compilata.shell_cost,
         costo_movimento: compilata.motion_cost,
         parti: documento.parts.len(),
+        costi: documento
+            .parts
+            .iter()
+            .map(|stile| CostoParteIpc {
+                parte: stile.def.name,
+                superficie: stile.costo_superficie(),
+                movimento: stile.motion.costo(),
+            })
+            .collect(),
+        costo_finestra: documento
+            .parts
+            .iter()
+            .map(|stile| stile.motion.costo_insieme())
+            .sum(),
+        risorse: documento.assets(),
         dinamici: compilata
             .dynamic_tokens
             .into_iter()
             .map(ToOwned::to_owned)
             .collect(),
         compilato_ms: inizio.elapsed().as_millis(),
+        radice: ambito.id().to_owned(),
     }
 }
 
@@ -988,9 +1363,38 @@ fn cartella_bozze(data_dir: &Path) -> PathBuf {
     data_dir.join("skin").join("bozze")
 }
 
-/// Dove stanno le istantanee di una bozza.
-fn cartella_istantanee(data_dir: &Path, id: &str) -> PathBuf {
-    cartella_bozze(data_dir).join(id).join("istantanee")
+/// Le bozze hanno un lucchetto loro.
+///
+/// Fino alla 3.0 ogni comando dello Studio prendeva quello della libreria —
+/// l'unico, quello della connessione al database — per scrivere un file in
+/// una cartella che col database non ha niente a che fare. Dietro un
+/// salvataggio della bozza si accodava la scansione, e dietro la scansione il
+/// salvataggio: su un disco lento, lo Studio che non salva mentre la libreria
+/// si aggiorna. Le bozze però un ordine fra loro lo vogliono — una rinomina e
+/// un salvataggio sulla stessa cartella non si devono incrociare — e questo è
+/// quell'ordine, senza il resto.
+static BOZZE: Mutex<()> = Mutex::new(());
+
+/// La cartella dati, senza il lucchetto della libreria.
+///
+/// Se la libreria non si è aperta non c'è una cartella: allora si chiede a
+/// [`con_libreria`], che sa dire il guasto col suo codice. La usa anche
+/// `skin.rs`, per i comandi che leggono pacchetti e non il database.
+pub(crate) fn cartella_dati(stato: &Stato) -> Result<PathBuf, AppError> {
+    match stato.cartella_dati() {
+        Some(dati) => Ok(dati.to_path_buf()),
+        None => con_libreria(stato, |libreria| Ok(libreria.data_dir.clone())),
+    }
+}
+
+/// Fa `azione` sulle bozze, col loro lucchetto e senza quello della libreria.
+fn con_le_bozze<T>(
+    stato: &Stato,
+    azione: impl FnOnce(&Path) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let dati = cartella_dati(stato)?;
+    let _turno = BOZZE.lock().unwrap_or_else(PoisonError::into_inner);
+    azione(&dati)
 }
 
 /// L'identificatore è anche un nome di cartella: non deve poter uscire.
@@ -1025,10 +1429,27 @@ struct DaLavorare {
     assets: Vec<aether_skin::package::SkinAsset>,
 }
 
-/// Cerca prima fra le bozze, poi in quella di serie, poi fra le installate.
+/// Cerca prima fra le bozze, poi fra quelle di serie, poi fra le installate.
 ///
 /// L'ordine è quello: chi ha lasciato una bozza a metà la ritrova, e non riparte
 /// dall'originale che stava modificando.
+///
+/// «Quelle di serie» sono tutte, non solo Plain: fino alla 3.0 qui si
+/// guardava soltanto `plain`, e derivare da Vinile o da Neon — che non stanno
+/// fra le installate, perché non si installano — diceva «skin non installata».
+///
+/// # Il pacchetto si legge senza validarlo
+///
+/// Con le guardie dell'archivio sì, con la validazione del documento no
+/// ([`aether_skin::package::leggi_pacchetto_grezzo`]). Fino alla 3.0 qui c'era
+/// `read_skin_package` con un `?`: una skin installata che non passava più la
+/// validazione — una regola nuova del formato, un budget diventato errore —
+/// non si apriva nello Studio, cioè nell'unico posto dove la si poteva
+/// aggiustare. E il `?` stava **prima** della bozza: bastava un pacchetto
+/// rotto accanto a una bozza buona per perdere l'accesso a tutte e due.
+/// Adesso il testo si apre com'è, e la validazione dice riga per riga cosa non
+/// va. Un archivio che non si legge nemmeno così resta un guasto da dire —
+/// ma solo se non c'è una bozza da aprire al suo posto.
 fn da_lavorare(data_dir: &Path, id: &str) -> Result<DaLavorare, AppError> {
     if !id_sicuro(id) {
         return Err(non_trovata(id));
@@ -1037,38 +1458,331 @@ fn da_lavorare(data_dir: &Path, id: &str) -> Result<DaLavorare, AppError> {
     // Un file che non si apre vuol dire «non installata»; un file che si apre e
     // non si legge è un guasto, e va detto invece che scambiato per assenza.
     let installata = data_dir.join("skin").join(format!("{id}.aeskin"));
-    let pacchetto = match std::fs::read(&installata) {
-        Ok(bytes) => Some(aether_skin::read_skin_package(&bytes)?),
-        Err(_) => None,
-    };
+    let pacchetto = std::fs::read(&installata)
+        .ok()
+        .map(|bytes| aether_skin::package::leggi_pacchetto_grezzo(&bytes));
+    let letto = pacchetto.as_ref().and_then(|esito| esito.as_ref().ok());
 
     let bozza = cartella_bozze(data_dir)
         .join(id)
         .join(aether_skin::package::MANIFEST_NAME);
     let sorgente = if let Ok(testo) = std::fs::read_to_string(&bozza) {
         testo
-    } else if id == DI_SERIE {
-        aether_skin::PLAIN_SOURCE.to_owned()
-    } else if let Some(letto) = &pacchetto {
-        letto.source.clone()
+    } else if let Some(di_serie) = aether_skin::di_serie(id) {
+        di_serie.to_owned()
     } else {
-        return Err(non_trovata(id));
+        match pacchetto.as_ref() {
+            Some(Ok(letto)) => letto.source.clone(),
+            Some(Err(guasto)) => return Err(guasto.clone()),
+            None => return Err(non_trovata(id)),
+        }
     };
 
+    // Le risorse della bozza comandano quando la bozza ha la sua cartella:
+    // è lì che lo Studio aggiunge e toglie.
+    let risorse = cartella_risorse(data_dir, id);
+    let assets = if risorse.exists() {
+        risorse_della_bozza(&risorse)
+    } else {
+        letto.map_or_else(Vec::new, |letto| letto.assets.clone())
+    };
     Ok(DaLavorare {
         sorgente,
-        preview: pacchetto.as_ref().and_then(|letto| letto.preview.clone()),
-        assets: pacchetto.map_or_else(Vec::new, |letto| letto.assets),
+        preview: letto.and_then(|letto| letto.preview.clone()),
+        assets,
     })
 }
 
-/// Il testo di una skin da aprire nello Studio.
+/// Dove stanno le istantanee di una skin.
+///
+/// **Fuori** dalla bozza: fino alla 2.x stavano in `bozze/<id>/istantanee`, e
+/// «Scarta bozza» — che butta la cartella della bozza — le portava via con
+/// sé, compresa quella presa un attimo prima proprio per poter tornare
+/// indietro. La rete sotto il bottone irreversibile se ne andava col bottone.
+fn cartella_istantanee(data_dir: &Path, id: &str) -> PathBuf {
+    data_dir.join("skin").join("istantanee").join(id)
+}
+
+/// Le istantanee di una skin, dopo averle portate fuori dalla bozza se
+/// stavano ancora dentro.
+///
+/// Il trasloco è per voce e non per cartella: se da una versione all'altra ne
+/// sono nate anche nella cartella nuova, le due serie si uniscono invece di
+/// scavalcarsi. Un file che non si sposta resta dov'era — la prossima volta ci
+/// si riprova — e non ferma niente.
+fn istantanee_di(data_dir: &Path, id: &str) -> PathBuf {
+    let nuova = cartella_istantanee(data_dir, id);
+    let vecchia = cartella_bozze(data_dir).join(id).join("istantanee");
+    if let Ok(voci) = std::fs::read_dir(&vecchia)
+        && std::fs::create_dir_all(&nuova).is_ok()
+    {
+        for voce in voci.flatten() {
+            drop(std::fs::rename(voce.path(), nuova.join(voce.file_name())));
+        }
+        drop(std::fs::remove_dir(&vecchia));
+    }
+    nuova
+}
+
+/// Dove stanno le risorse della bozza: caratteri e immagini.
+///
+/// È la cartella che il protocollo `aether-skin` serve all'anteprima e alla
+/// prova sull'app (`skin::servi_risorsa`), e quella da cui l'esportazione e
+/// «Salva e usa» riempiono il pacchetto.
+fn cartella_risorse(data_dir: &Path, id: &str) -> PathBuf {
+    cartella_bozze(data_dir).join(id).join("assets")
+}
+
+/// Le risorse della bozza, in ordine di nome.
+///
+/// Si rileggono i byte a ogni volta, e quel che non passa il controllo del
+/// formato — un nome storto, un `.png` che non è un PNG — si salta: nella
+/// cartella qualcuno ci può aver messo le mani, e una risorsa che il pacchetto
+/// rifiuterebbe non deve arrivare fino all'esportazione per farla fallire.
+fn risorse_della_bozza(cartella: &Path) -> Vec<aether_skin::package::SkinAsset> {
+    let Ok(voci) = std::fs::read_dir(cartella) else {
+        return Vec::new();
+    };
+    let mut risorse: Vec<aether_skin::package::SkinAsset> = voci
+        .flatten()
+        .filter_map(|voce| {
+            let name = voce.file_name().to_str()?.to_owned();
+            let bytes = std::fs::read(voce.path()).ok()?;
+            let mime = aether_skin::riconosci_risorsa(&name, &bytes)?;
+            Some(aether_skin::package::SkinAsset { name, mime, bytes })
+        })
+        .collect();
+    risorse.sort_by(|a, b| a.name.cmp(&b.name));
+    risorse
+}
+
+/// Porta nella bozza le risorse del pacchetto.
+///
+/// Una volta sola: se la cartella c'è già, la bozza ha le sue e quelle
+/// comandano. Senza `forza` la cartella nasce solo se c'è qualcosa da
+/// metterci — aprire nello Studio una skin senza risorse non deve lasciare
+/// cartelle vuote in giro.
+fn materializza_risorse(
+    data_dir: &Path,
+    id: &str,
+    del_pacchetto: &[aether_skin::package::SkinAsset],
+    forza: bool,
+) -> Result<(), AppError> {
+    let cartella = cartella_risorse(data_dir, id);
+    if cartella.exists() || (del_pacchetto.is_empty() && !forza) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&cartella)
+        .map_err(|err| aether_app::files::io_error(&cartella.display().to_string(), &err))?;
+    for risorsa in del_pacchetto {
+        scrivi_atomico(&cartella.join(&risorsa.name), &risorsa.bytes)?;
+    }
+    Ok(())
+}
+
+/// Il nome che una risorsa prende nel pacchetto, dal nome del file.
+///
+/// Il formato ammette minuscole, cifre, trattini e trattini bassi, con
+/// un'estensione sola: un «Titoli Grassetto.WOFF2» diventa
+/// «titoli-grassetto.woff2» invece di essere rifiutato per una maiuscola.
+fn nome_risorsa(percorso: &Path) -> String {
+    let radice: String = percorso
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let radice = radice.trim_matches(|c: char| c == '-' || c == '_');
+    let radice = if radice.is_empty() { "risorsa" } else { radice };
+    let estensione = percorso
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let estensione = if estensione == "jpeg" {
+        "jpg".to_owned()
+    } else {
+        estensione
+    };
+    format!("{radice}.{estensione}")
+}
+
+/// Un nome che nella cartella non c'è ancora: `trama.png`, `trama-2.png`, …
+fn nome_libero(cartella: &Path, nome: &str) -> String {
+    if !cartella.join(nome).exists() {
+        return nome.to_owned();
+    }
+    let (radice, estensione) = nome.rsplit_once('.').unwrap_or((nome, ""));
+    (2..)
+        .map(|n| format!("{radice}-{n}.{estensione}"))
+        .find(|candidato| !cartella.join(candidato).exists())
+        .unwrap_or_else(|| nome.to_owned())
+}
+
+fn rifiutata(nome: &str, perche: &str) -> AppError {
+    AppError::new(ErrorCode::SkinAssetRejected {
+        asset: nome.to_owned(),
+        reason: perche.to_owned(),
+    })
+}
+
+/// Aggiunge una risorsa alla bozza, da un file scelto sul disco.
+///
+/// Il tipo si decide dai byte, come dentro un pacchetto: un file chiamato
+/// `.png` che non lo è si ferma qui, col suo nome, invece che all'esportazione.
+///
+/// E così la misura: la risorsa entra solo se il pacchetto che ne verrebbe sta
+/// nei limiti della lettura (`entra_in_un_pacchetto`). Fino alla 3.0 si
+/// contavano soltanto le voci, e una bozza poteva raccogliere trenta megabyte
+/// di immagini che nessun `.aeskin` avrebbe mai contenuto — lo si scopriva
+/// esportando, cioè dopo averci lavorato sopra.
+fn aggiungi_risorsa(data_dir: &Path, id: &str, percorso: &Path) -> Result<VoceFileIpc, AppError> {
+    use aether_skin::package::limits::MAX_ENTRY_BYTES;
+
+    let da = da_lavorare(data_dir, id)?;
+    materializza_risorse(data_dir, id, &da.assets, true)?;
+    let cartella = cartella_risorse(data_dir, id);
+
+    let nome = nome_risorsa(percorso);
+    let byte = std::fs::metadata(percorso)
+        .map_err(|err| aether_app::files::io_error(&percorso.display().to_string(), &err))?
+        .len();
+    if byte > MAX_ENTRY_BYTES {
+        return Err(AppError::new(ErrorCode::SkinTooLarge {
+            bytes: byte,
+            limit_bytes: MAX_ENTRY_BYTES,
+        }));
+    }
+    let bytes = std::fs::read(percorso)
+        .map_err(|err| aether_app::files::io_error(&percorso.display().to_string(), &err))?;
+    if aether_skin::riconosci_risorsa(&nome, &bytes).is_none() {
+        return Err(rifiutata(
+            &nome,
+            "una risorsa è un'immagine png, jpg o webp, o un carattere woff2, e i byte devono dire lo stesso dell'estensione",
+        ));
+    }
+    let quanto = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+    aether_skin::package::entra_in_un_pacchetto(
+        quanto(da.sorgente.len()),
+        da.preview.as_ref().map(|p| quanto(p.len())),
+        risorse_della_bozza(&cartella)
+            .iter()
+            .map(|r| quanto(r.bytes.len()))
+            .chain([byte]),
+    )?;
+    let libero = nome_libero(&cartella, &nome);
+    scrivi_atomico(&cartella.join(&libero), &bytes)?;
+    Ok(VoceFileIpc {
+        nome: format!("assets/{libero}"),
+        byte,
+        genere: "risorsa",
+    })
+}
+
+/// Aggiunge una risorsa alla bozza. Restituisce la voce, col nome che ha preso.
 #[tauri::command(async)]
-pub fn studio_documento(stato: State<'_, Stato>, id: String) -> Esito<String> {
-    con_libreria(&stato, |libreria| {
-        da_lavorare(&libreria.data_dir, &id).map(|da| da.sorgente)
+pub fn studio_risorsa_aggiungi(
+    stato: State<'_, Stato>,
+    id: String,
+    percorso: String,
+) -> Esito<VoceFileIpc> {
+    con_le_bozze(&stato, |dati| {
+        aggiungi_risorsa(dati, &id, Path::new(&percorso))
     })
     .map_err(errore)
+}
+
+/// Toglie una risorsa dalla bozza.
+#[tauri::command(async)]
+pub fn studio_risorsa_togli(stato: State<'_, Stato>, id: String, nome: String) -> Esito<()> {
+    con_le_bozze(&stato, |dati| {
+        if !id_sicuro(&id) || aether_skin::tipo_risorsa(&nome).is_none() {
+            return Err(non_trovata(&id));
+        }
+        let da = da_lavorare(dati, &id)?;
+        materializza_risorse(dati, &id, &da.assets, true)?;
+        let file = cartella_risorse(dati, &id).join(&nome);
+        match std::fs::remove_file(&file) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(aether_app::files::io_error(
+                &file.display().to_string(),
+                &err,
+            )),
+        }
+    })
+    .map_err(errore)
+}
+
+/// Quel che serve per mettere la bozza in un pacchetto: la miniatura del
+/// pacchetto installato, e le risorse della bozza.
+///
+/// Lo usa anche «Salva e usa» in `skin.rs`: prima impacchettava il solo
+/// manifest, e una skin col suo carattere installata da qui perdeva il
+/// carattere e la miniatura. Prende da sé il lucchetto delle bozze.
+pub fn corredo_della_bozza(
+    data_dir: &Path,
+    id: &str,
+) -> Result<(Option<Vec<u8>>, Vec<aether_skin::package::SkinAsset>), AppError> {
+    let _turno = BOZZE.lock().unwrap_or_else(PoisonError::into_inner);
+    corredo(data_dir, id)
+}
+
+/// [`corredo_della_bozza`], per chi il lucchetto delle bozze l'ha già.
+fn corredo(
+    data_dir: &Path,
+    id: &str,
+) -> Result<(Option<Vec<u8>>, Vec<aether_skin::package::SkinAsset>), AppError> {
+    let da = da_lavorare(data_dir, id)?;
+    Ok((da.preview, da.assets))
+}
+
+/// Il testo di una skin da aprire nello Studio.
+///
+/// Una skin del formato 1 si apre **migrata**: il testo che lo Studio mostra
+/// è quello del formato di oggi, e la migrazione si scrive subito come bozza —
+/// così alla prossima apertura non si rifà, e non si fotografa due volte. Il
+/// testo di prima resta in un'istantanea di causa `migrata`, che è da dove si
+/// riparte se la migrazione ha tradito qualcosa.
+#[tauri::command(async)]
+pub fn studio_documento(stato: State<'_, Stato>, id: String) -> Esito<String> {
+    con_le_bozze(&stato, |dati| apri_documento(dati, &id, true)).map_err(errore)
+}
+
+/// Quel che fa [`studio_documento`], senza lo stato di Tauri attorno.
+///
+/// `fotografa` dice se la migrazione di un testo del formato 1 si prende la
+/// sua istantanea. Sì all'apertura; no dopo «Scarta bozza», che riapre lo
+/// stesso pacchetto: la fotografia di quel testo c'è già dalla prima
+/// apertura, e ogni «Scarta» ne aggiungeva un'altra uguale — la serie delle
+/// istantanee si riempiva di copie dello stesso file, e le venti che si
+/// tengono spingevano fuori quelle che contavano.
+fn apri_documento(data_dir: &Path, id: &str, fotografa: bool) -> Result<String, AppError> {
+    let da = da_lavorare(data_dir, id)?;
+    materializza_risorse(data_dir, id, &da.assets, false)?;
+    match aether_skin::migra_testo(&da.sorgente) {
+        Ok(migrato) if migrato.da < u64::from(aether_skin::SKIN_FORMAT_VERSION) => {
+            if fotografa {
+                prendi_istantanea(&istantanee_di(data_dir, id), &da.sorgente, Causa::Migrata)?;
+            }
+            let file = cartella_bozze(data_dir)
+                .join(id)
+                .join(aether_skin::package::MANIFEST_NAME);
+            scrivi_atomico(&file, migrato.sorgente.as_bytes())?;
+            Ok(migrato.sorgente)
+        }
+        // Già del formato di oggi, o non ancora JSON: si apre com'è, e la
+        // validazione dirà dove.
+        _ => Ok(da.sorgente),
+    }
 }
 
 /// Una voce del pacchetto, come la mostra la colonna sinistra dello Studio.
@@ -1091,8 +1805,8 @@ pub struct VoceFileIpc {
 /// mostrare niente.
 #[tauri::command(async)]
 pub fn studio_pacchetto(stato: State<'_, Stato>, id: String) -> Esito<Vec<VoceFileIpc>> {
-    con_libreria(&stato, |libreria| {
-        let da = da_lavorare(&libreria.data_dir, &id)?;
+    con_le_bozze(&stato, |dati| {
+        let da = da_lavorare(dati, &id)?;
         let quanto = |byte: usize| u64::try_from(byte).unwrap_or(u64::MAX);
         let mut voci = vec![VoceFileIpc {
             nome: aether_skin::package::MANIFEST_NAME.to_owned(),
@@ -1116,28 +1830,84 @@ pub fn studio_pacchetto(stato: State<'_, Stato>, id: String) -> Esito<Vec<VoceFi
     .map_err(errore)
 }
 
+/// Com'è andato un salvataggio della bozza.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SalvataggioIpc {
+    /// L'id sotto cui la bozza sta adesso: quello nuovo, se il documento ha
+    /// cambiato `id` e la rinomina è passata.
+    pub id: String,
+    /// Perché la rinomina non è passata, quando il documento dichiara un id
+    /// che la bozza non ha potuto prendere. Il testo è salvato lo stesso,
+    /// sotto l'id di prima.
+    pub rinomina: Option<ErroreIpc>,
+}
+
+/// L'`id` che il testo dichiara, se è un nome di cartella possibile.
+///
+/// Letto dal JSON e non dal documento validato: una bozza si salva anche a
+/// metà, e un token sbagliato altrove non toglie niente al suo `id`.
+fn id_dichiarato(sorgente: &str) -> Option<String> {
+    let valore: serde_json::Value = serde_json::from_str(sorgente).ok()?;
+    let id = valore.get("id")?.as_str()?;
+    id_sicuro(id).then(|| id.to_owned())
+}
+
+/// Salva la bozza, dopo averla spostata sotto l'id che il documento dichiara.
+///
+/// # Perché la rinomina sta qui
+///
+/// Fino alla 3.0 erano due comandi, e la finestra li chiamava a un secondo e
+/// mezzo l'uno dall'altro: il salvataggio scriveva nella cartella vecchia, la
+/// rinomina — più tardi, se il testo era valido, se nessuno aveva annullato —
+/// la spostava. In mezzo c'erano la prova sull'app e l'esportazione, che
+/// cercavano le risorse sotto l'id del documento in una cartella che ancora
+/// non c'era, e un rifiuto della rinomina che nessuno vedeva: lo si buttava
+/// con un `catch` vuoto. Adesso è un passo solo, sotto il lucchetto delle
+/// bozze, e quel che è successo torna indietro: dove sta la bozza, e perché
+/// non si è spostata se non si è spostata.
+fn salva_bozza(
+    data_dir: &Path,
+    id: &str,
+    sorgente: &str,
+    origine: Option<&str>,
+) -> Result<SalvataggioIpc, AppError> {
+    if !id_sicuro(id) {
+        return Err(non_trovata(id));
+    }
+    let mut dove = id.to_owned();
+    let mut rinomina = None;
+    if let Some(dichiarato) = id_dichiarato(sorgente).filter(|d| d != id) {
+        match rinomina_bozza(data_dir, id, &dichiarato, origine) {
+            Ok(()) => dove = dichiarato,
+            Err(rifiuto) => rinomina = Some(ErroreIpc::from(rifiuto)),
+        }
+    }
+    let file = cartella_bozze(data_dir)
+        .join(&dove)
+        .join(aether_skin::package::MANIFEST_NAME);
+    scrivi_atomico(&file, sorgente.as_bytes())?;
+    Ok(SalvataggioIpc { id: dove, rinomina })
+}
+
 /// Salva la bozza.
 ///
 /// Si salva **anche se non è valida**: una bozza è un lavoro in corso, e
 /// rifiutare di scrivere un documento a metà vorrebbe dire perderlo chiudendo la
 /// finestra. È la validazione a dire cosa non va, non il salvataggio.
+///
+/// Se il documento ha cambiato `id` la bozza lo segue: vedi [`salva_bozza`].
+/// `origine` è l'id con cui lo Studio è stato aperto.
 #[tauri::command(async)]
 pub fn studio_salva(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
     id: String,
     sorgente: String,
-) -> Esito<()> {
-    let esito = con_libreria(&stato, |libreria| {
-        if !id_sicuro(&id) {
-            return Err(non_trovata(&id));
-        }
-        let cartella = cartella_bozze(&libreria.data_dir).join(&id);
-        std::fs::create_dir_all(&cartella)
-            .map_err(|err| aether_app::files::io_error(&cartella.display().to_string(), &err))?;
-        let file = cartella.join("skin.json");
-        std::fs::write(&file, sorgente.as_bytes())
-            .map_err(|err| aether_app::files::io_error(&file.display().to_string(), &err))
+    origine: Option<String>,
+) -> Esito<SalvataggioIpc> {
+    let esito = con_le_bozze(&stato, |dati| {
+        salva_bozza(dati, &id, &sorgente, origine.as_deref())
     })
     .map_err(errore);
     // Una bozza è lavoro non ancora salvato da nessuna parte: è precisamente la
@@ -1151,32 +1921,34 @@ pub fn studio_salva(
 ///
 /// Sono due cose diverse e non si cancellano insieme. La bozza è «dove sono
 /// arrivato»; le istantanee sono «dove sono passato», e sono l'unica rete sotto
-/// questo bottone — che è irreversibile per natura. Chi scarta una bozza e si
-/// pente ha ancora l'ultima istantanea da cui ripartire; se questo comando
-/// portasse via anche quelle, non avrebbe più niente.
+/// questo bottone — che è irreversibile per natura. Per questo non stanno più
+/// dentro la cartella della bozza ma in `skin/istantanee/<id>/`: la 2.x le
+/// teneva lì, e questo comando se le portava via.
 ///
 /// Restituisce la sorgente del pacchetto, cioè quel che l'editor deve mostrare
 /// da qui in poi: farsela ridire con una seconda chiamata lascerebbe un istante
 /// in cui la finestra mostra un documento che non esiste più da nessuna parte.
 #[tauri::command(async)]
 pub fn studio_scarta(stato: State<'_, Stato>, id: String) -> Esito<String> {
-    con_libreria(&stato, |libreria| {
-        if !id_sicuro(&id) {
-            return Err(non_trovata(&id));
-        }
-        let cartella = cartella_bozze(&libreria.data_dir).join(&id);
-        if cartella.exists() {
-            std::fs::remove_dir_all(&cartella).map_err(|err| {
-                aether_app::files::io_error(&cartella.display().to_string(), &err)
-            })?;
-        }
-        // Dopo la cancellazione `da_lavorare` non trova più la bozza e ricade
-        // sul pacchetto: è la stessa funzione che decide all'apertura, quindi
-        // non c'è un secondo posto in cui la regola «la bozza vince» possa
-        // divergere.
-        Ok(da_lavorare(&libreria.data_dir, &id)?.sorgente)
-    })
-    .map_err(errore)
+    con_le_bozze(&stato, |dati| scarta_bozza(dati, &id)).map_err(errore)
+}
+
+/// Quel che fa [`studio_scarta`], senza lo stato di Tauri attorno.
+fn scarta_bozza(data_dir: &Path, id: &str) -> Result<String, AppError> {
+    if !id_sicuro(id) {
+        return Err(non_trovata(id));
+    }
+    let cartella = cartella_bozze(data_dir).join(id);
+    if cartella.exists() {
+        std::fs::remove_dir_all(&cartella)
+            .map_err(|err| aether_app::files::io_error(&cartella.display().to_string(), &err))?;
+    }
+    // Dopo la cancellazione `da_lavorare` non trova più la bozza e ricade
+    // sul pacchetto: è la stessa funzione che decide all'apertura, quindi
+    // non c'è un secondo posto in cui la regola «la bozza vince» possa
+    // divergere. Le istantanee non stanno più qui dentro, e restano — e non
+    // se ne aggiunge un'altra per la migrazione: vedi `apri_documento`.
+    apri_documento(data_dir, id, false)
 }
 
 /// Scrive un `.aeskin` da una sorgente, con dentro le risorse che aveva.
@@ -1188,6 +1960,16 @@ pub fn studio_scarta(stato: State<'_, Stato>, id: String) -> Esito<String> {
 /// Il manifest è quello dell'editor, le risorse quelle del pacchetto: chi aveva
 /// una skin con un carattere dentro lo perdeva esportandola da qui, e l'albero
 /// della vista Documento avrebbe mostrato file che l'esportazione buttava via.
+///
+/// Il percorso arriva dalla pagina, e si scrive solo se finisce in `.aeskin`:
+/// fino alla 2.4 questo comando scriveva un pacchetto sotto qualunque nome.
+/// Vedi [`crate::destinazioni`].
+///
+/// # Errori
+///
+/// `fs.extensionRefused` o `fs.pathInvalid` per un percorso che la finestra non
+/// può chiedere, **prima** di prendere il lucchetto; quelli della validazione e
+/// della scrittura per il resto.
 #[tauri::command(async)]
 pub fn studio_esporta(
     stato: State<'_, Stato>,
@@ -1195,8 +1977,11 @@ pub fn studio_esporta(
     sorgente: String,
     percorso: String,
 ) -> Esito<()> {
-    con_libreria(&stato, |libreria| {
-        let da = da_lavorare(&libreria.data_dir, &id)?;
+    let file =
+        crate::destinazioni::file_da_scrivere(&percorso, crate::destinazioni::ESTENSIONI_SKIN)
+            .map_err(errore)?;
+    con_le_bozze(&stato, |dati| {
+        let da = da_lavorare(dati, &id)?;
         // `write_skin_package` valida da sé prima di scrivere — passa dalle
         // stesse guardie della lettura — quindi qui non serve un `parse` in più:
         // sarebbe una seconda validazione che può divergere dalla prima.
@@ -1205,10 +1990,364 @@ pub fn studio_esporta(
             preview: da.preview.as_deref(),
             assets: &da.assets,
         })?;
-        std::fs::write(&percorso, &bytes)
-            .map_err(|err| aether_app::files::io_error(&percorso, &err))
+        // Intero o niente anche qui: un `.aeskin` a metà sul disco di chi lo
+        // voleva mandare a qualcuno è un pacchetto che si scopre rotto
+        // dall'altra parte.
+        scrivi_atomico(&file.percorso, &bytes)
     })
     .map_err(errore)
+}
+
+/// Un testo portato al formato di oggi.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigratoIpc {
+    /// Il testo da aprire.
+    pub sorgente: String,
+    /// Di quale formato era.
+    pub da: u64,
+}
+
+/// Porta un testo al formato di oggi: per chi incolla nello Studio una skin
+/// della 2.x.
+///
+/// Un testo che non è JSON torna com'era, col formato di oggi: la migrazione
+/// non è il posto in cui dire cosa non va in una parentesi — lo dice la
+/// validazione, riga per riga.
+///
+/// Fuori dal filo della finestra, e coi suoi ricordi: vedi [`Ricordi`].
+#[tauri::command(async)]
+#[must_use]
+pub fn studio_migra(sorgente: String) -> MigratoIpc {
+    MIGRAZIONI.o_calcola(None, &sorgente, || {
+        match aether_skin::migra_testo(&sorgente) {
+            Ok(migrato) => MigratoIpc {
+                sorgente: migrato.sorgente,
+                da: migrato.da,
+            },
+            Err(_) => MigratoIpc {
+                sorgente: sorgente.clone(),
+                da: u64::from(aether_skin::SKIN_FORMAT_VERSION),
+            },
+        }
+    })
+}
+
+/// Compila una bozza per la finestra vera: «Prova sull'app».
+///
+/// Selettori della finestra, risorse della bozza — e l'id della **bozza**,
+/// come la tela ([`radice_della_bozza`]): le risorse stanno nella sua
+/// cartella, e la skin che torna porta lo stesso id dei selettori, che è
+/// quel che la finestra scrive in `data-skin`. Gli errori fermano: una bozza
+/// che non si legge non si prova addosso.
+///
+/// Fuori dal filo della finestra, e coi suoi ricordi: tornare dalla prova e
+/// riprovare lo stesso testo non ricompila niente.
+#[tauri::command(async)]
+pub fn studio_compila_app(sorgente: String, bozza: String) -> Esito<crate::skin::SkinIpc> {
+    PROVE
+        .o_calcola(Some(&bozza), &sorgente, || {
+            compila_per_la_prova(&sorgente, &bozza)
+        })
+        .map_err(errore)
+}
+
+/// Quel che fa [`studio_compila_app`], senza i ricordi.
+fn compila_per_la_prova(sorgente: &str, bozza: &str) -> Result<crate::skin::SkinIpc, AppError> {
+    let documento = aether_skin::parse_skin_json(sorgente)?;
+    let ambito = aether_skin::Ambito::prova(&radice_della_bozza(Some(bozza), &documento.id));
+    let mut skin = crate::skin::skin_ipc(&documento, &ambito);
+    skin.id = ambito.id().to_owned();
+    Ok(skin)
+}
+
+/// Sposta la bozza e le sue istantanee sotto un altro identificatore.
+///
+/// Serve quando nel documento cambia `id`: la bozza vive in una cartella col
+/// nome dell'id, e un documento che dice «sono nocturne» dentro la cartella di
+/// «plain» si ritroverebbe riaprendo plain. Non si scavalca niente: se sotto
+/// il nome nuovo c'è già una bozza, una skin di serie o una skin **installata**
+/// si dice di no. L'ultima mancava fino alla 3.0: una bozza rinominata come
+/// una skin installata di un altro, alla prima «Salva e usa», ne prendeva il
+/// posto.
+///
+/// `origine` è la skin da cui lo Studio è partito: tornare al suo id non è
+/// prendere il posto di un'altra, è rimettere a posto il proprio. Senza,
+/// chi cambiava l'`id` e ci ripensava restava chiuso fuori dalla sua skin.
+fn rinomina_bozza(
+    data_dir: &Path,
+    da: &str,
+    a: &str,
+    origine: Option<&str>,
+) -> Result<(), AppError> {
+    if !id_sicuro(da) || !id_sicuro(a) {
+        return Err(non_trovata(a));
+    }
+    if da == a {
+        return Ok(());
+    }
+    let arrivo = cartella_bozze(data_dir).join(a);
+    let installata =
+        origine != Some(a) && data_dir.join("skin").join(format!("{a}.aeskin")).exists();
+    if aether_skin::di_serie(a).is_some() || arrivo.exists() || installata {
+        return Err(
+            AppError::new(ErrorCode::SkinIdConflict { id: a.to_owned() }).with_cause(
+                "sotto questo identificatore c'è già una skin di serie, una skin installata o \
+                 un'altra bozza"
+                    .to_owned(),
+            ),
+        );
+    }
+    let partenza = cartella_bozze(data_dir).join(da);
+    if partenza.exists() {
+        std::fs::create_dir_all(cartella_bozze(data_dir))
+            .map_err(|err| aether_app::files::io_error(&arrivo.display().to_string(), &err))?;
+        std::fs::rename(&partenza, &arrivo)
+            .map_err(|err| aether_app::files::io_error(&arrivo.display().to_string(), &err))?;
+    }
+    let istantanee = istantanee_di(data_dir, da);
+    if istantanee.exists() {
+        let nuove = cartella_istantanee(data_dir, a);
+        if let Some(sopra) = nuove.parent() {
+            std::fs::create_dir_all(sopra)
+                .map_err(|err| aether_app::files::io_error(&sopra.display().to_string(), &err))?;
+        }
+        if !nuove.exists() {
+            std::fs::rename(&istantanee, &nuove)
+                .map_err(|err| aether_app::files::io_error(&nuove.display().to_string(), &err))?;
+        }
+    }
+    Ok(())
+}
+
+// ── Un tema nuovo ───────────────────────────────────────────────────────────
+
+/// Gli id che hanno già una cartella nello Studio: bozze e istantanee.
+///
+/// Un tema nuovo non li deve prendere anche se nessuna skin li porta più. Una
+/// bozza rimasta da una skin disinstallata ha dentro le sue risorse e la sua
+/// conversazione, e fino alla 3.0 il tema nuovo che ne ereditava il nome le
+/// ereditava tutte e due — la conversazione su un'altra skin, e caratteri che
+/// il manifest nuovo non nominava. Le istantanee idem: comparivano nell'elenco
+/// del tema nuovo come se fossero sue.
+fn occupati(data_dir: &Path) -> Vec<String> {
+    let mut ids: Vec<String> = [
+        cartella_bozze(data_dir),
+        data_dir.join("skin").join("istantanee"),
+    ]
+    .iter()
+    .filter_map(|cartella| std::fs::read_dir(cartella).ok())
+    .flatten()
+    .flatten()
+    .filter(|voce| voce.path().is_dir())
+    .filter_map(|voce| voce.file_name().to_str().map(ToOwned::to_owned))
+    .filter(|id| id_sicuro(id))
+    .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// Gli id che un tema nuovo non può prendere, oltre a quelli delle skin
+/// elencate: vedi [`occupati`].
+#[tauri::command(async)]
+pub fn studio_occupati(stato: State<'_, Stato>) -> Esito<Vec<String>> {
+    con_le_bozze(&stato, |dati| Ok(occupati(dati))).map_err(errore)
+}
+
+/// Un tema nuovo: il pacchetto con le risorse della base, installato, e la
+/// bozza che parte da lì.
+///
+/// # Perché un comando solo
+///
+/// Fino alla 3.0 la finestra lo componeva da tre: installa il manifest,
+/// salva la bozza, scegli. L'installazione impacchettava il **solo**
+/// manifest, quindi un tema nato da una skin con un carattere o un'immagine
+/// si fermava lì — il manifest nominava una risorsa che il pacchetto non
+/// aveva — e quello nato da una skin con la miniatura la perdeva. E la bozza
+/// finiva nella cartella che c'era già, se c'era: vedi [`occupati`].
+///
+/// Qui le risorse e la miniatura sono quelle della base — della sua bozza, se
+/// la base è aperta nello Studio con qualcosa di aggiunto — e un id già preso
+/// da una skin, da una bozza o da una serie di istantanee si rifiuta prima di
+/// scrivere qualunque cosa.
+fn crea_tema(
+    data_dir: &Path,
+    base: &str,
+    sorgente: &str,
+) -> Result<crate::skin::VoceSkin, AppError> {
+    let documento = aether_skin::parse_skin_json(sorgente)?;
+    let id = documento.id;
+    if !id_sicuro(&id) {
+        return Err(non_trovata(&id));
+    }
+    let preso = aether_skin::di_serie(&id).is_some()
+        || data_dir.join("skin").join(format!("{id}.aeskin")).exists()
+        || occupati(data_dir).contains(&id);
+    if preso {
+        return Err(AppError::new(ErrorCode::SkinIdConflict { id }));
+    }
+    let (preview, assets) = corredo(data_dir, base)?;
+    let bytes = aether_skin::write_skin_package(&aether_skin::package::WritePackageInput {
+        source: sorgente,
+        preview: preview.as_deref(),
+        assets: &assets,
+    })?;
+    let voce = crate::skin::installa(data_dir, &bytes)?;
+    // La bozza parte allineata all'installato: riaprendo lo Studio, la
+    // pillola in testa non dice «da salvare» su un lavoro che nessuno ha
+    // ancora toccato. Le risorse la bozza le prende dal pacchetto alla prima
+    // apertura, come per ogni skin installata.
+    let file = cartella_bozze(data_dir)
+        .join(&id)
+        .join(aether_skin::package::MANIFEST_NAME);
+    scrivi_atomico(&file, sorgente.as_bytes())?;
+    Ok(voce)
+}
+
+/// Crea un tema nuovo da `base`: vedi [`crea_tema`].
+///
+/// # Errori
+///
+/// `skin.idConflict` se l'id è già preso; quelli della validazione, del
+/// pacchetto e della scrittura per il resto.
+#[tauri::command(async)]
+pub fn studio_crea(
+    app: tauri::AppHandle,
+    stato: State<'_, Stato>,
+    base: String,
+    sorgente: String,
+) -> Esito<crate::skin::VoceSkin> {
+    let esito = con_le_bozze(&stato, |dati| crea_tema(dati, &base, &sorgente)).map_err(errore);
+    crate::nuvola::se_riuscito(&app, esito)
+}
+
+// ── La conversazione con la chat ────────────────────────────────────────────
+
+/// Il nome del file della conversazione, dentro la cartella della bozza.
+const FILE_CHAT: &str = "chat.json";
+
+/// Quanto può pesare una conversazione salvata.
+///
+/// Due megabyte sono qualche centinaio di battute con i loro blocchi di
+/// modifiche: le immagini non ci finiscono — si mandano e basta — e il testo
+/// di una chat vera sta molto sotto. Il tetto è per la finestra che si rompe e
+/// scrive in un ciclo, non per chi chiacchiera a lungo.
+const CHAT_MASSIMA_MB: usize = 2;
+const CHAT_MASSIMA: usize = CHAT_MASSIMA_MB * 1024 * 1024;
+
+/// La conversazione salvata di una bozza, o `None` se non ce n'è.
+///
+/// Sta dentro la cartella della bozza, accanto a `skin.json`: è una
+/// conversazione **su quella bozza**, e «Scarta» se la porta via insieme — le
+/// modifiche di cui parla non esistono più. Una rinomina la sposta con la
+/// cartella. Il backup su Drive (`aether_cloud::pacchetti`) prende soltanto il
+/// manifest: quel che si è scritto al modello resta su questo computer.
+fn leggi_chat(data_dir: &Path, id: &str) -> Result<Option<String>, AppError> {
+    if !id_sicuro(id) {
+        return Err(non_trovata(id));
+    }
+    let file = cartella_bozze(data_dir).join(id).join(FILE_CHAT);
+    match std::fs::read_to_string(&file) {
+        Ok(testo) => Ok(Some(testo)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(aether_app::files::io_error(
+            &file.display().to_string(),
+            &err,
+        )),
+    }
+}
+
+/// Scrive la conversazione di una bozza. Vuota, la toglie.
+///
+/// Il contenuto lo decide la finestra, e qui si controlla solo che sia un
+/// oggetto JSON di un peso ragionevole: il file lo rilegge lei, e un formato
+/// scritto in due posti sarebbe un formato che diverge.
+fn scrivi_chat(data_dir: &Path, id: &str, testo: &str) -> Result<(), AppError> {
+    if !id_sicuro(id) {
+        return Err(non_trovata(id));
+    }
+    let cartella = cartella_bozze(data_dir).join(id);
+    let file = cartella.join(FILE_CHAT);
+    if testo.is_empty() {
+        return match std::fs::remove_file(&file) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(
+                aether_app::files::io_error(&file.display().to_string(), &err),
+            ),
+            _ => Ok(()),
+        };
+    }
+    let oggetto =
+        serde_json::from_str::<serde_json::Value>(testo).is_ok_and(|valore| valore.is_object());
+    if testo.len() > CHAT_MASSIMA || !oggetto {
+        return Err(AppError::new(ErrorCode::IpcPayloadInvalid {
+            channel: "studio_chat_scrivi".to_owned(),
+            detail: Some(format!(
+                "la conversazione non è un oggetto JSON entro {} MB ({} byte)",
+                CHAT_MASSIMA_MB,
+                testo.len()
+            )),
+        }));
+    }
+    scrivi_atomico(&file, testo.as_bytes())
+}
+
+/// La conversazione salvata della bozza `id`, o `null`.
+#[tauri::command(async)]
+pub fn studio_chat_leggi(stato: State<'_, Stato>, id: String) -> Esito<Option<String>> {
+    con_le_bozze(&stato, |dati| leggi_chat(dati, &id)).map_err(errore)
+}
+
+/// Salva la conversazione della bozza `id`; un testo vuoto la cancella.
+#[tauri::command(async)]
+pub fn studio_chat_scrivi(stato: State<'_, Stato>, id: String, testo: String) -> Esito<()> {
+    con_le_bozze(&stato, |dati| scrivi_chat(dati, &id, &testo)).map_err(errore)
+}
+
+// ── Il generatore di tavolozze ──────────────────────────────────────────────
+
+/// Un colore generato, per un token.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoceTavolozzaIpc {
+    /// `color.surface.0`.
+    pub token: &'static str,
+    /// `#rrggbb` o `#rrggbbaa`.
+    pub valore: String,
+}
+
+/// Una tavolozza intera da una tinta: un colore scritto, o la copertina.
+///
+/// La copertina è quella di un brano della libreria, per impronta: la tinta
+/// la sa già il magazzino delle copertine, che la calcola per l'accento che
+/// segue la musica. Niente si decodifica qui.
+#[tauri::command(async)]
+pub fn studio_tavolozza_da(
+    stato: State<'_, Stato>,
+    colore: Option<String>,
+    copertina: Option<String>,
+    scura: bool,
+) -> Esito<Vec<VoceTavolozzaIpc>> {
+    let tinta = match (colore, copertina) {
+        (Some(scritto), _) => aether_skin::values::parse_color(&scritto)
+            .ok_or_else(|| errore(rifiutata("colore", "non è un colore")))?,
+        (None, Some(impronta)) => {
+            if !crate::copertine::e_un_impronta(&impronta) {
+                return Err(errore(rifiutata("copertina", "non è un'impronta")));
+            }
+            let copertine =
+                con_libreria(&stato, |libreria| Ok(libreria.covers.clone())).map_err(errore)?;
+            let [r, g, b] = copertine
+                .tinta(&impronta)
+                .ok_or_else(|| errore(rifiutata("copertina", "la copertina non ha una tinta")))?;
+            aether_skin::values::Rgba { r, g, b, a: 1.0 }
+        }
+        (None, None) => return Err(errore(rifiutata("tinta", "manca da dove partire"))),
+    };
+    Ok(aether_skin::dinamico::tavolozza_da(tinta, scura)
+        .into_iter()
+        .map(|(token, valore)| VoceTavolozzaIpc { token, valore })
+        .collect())
 }
 
 // ── Le istantanee ───────────────────────────────────────────────────────────
@@ -1232,6 +2371,8 @@ pub enum Causa {
     Esportata,
     /// Chiesta a mano.
     Manuale,
+    /// Il testo del formato 1, prima della migrazione.
+    Migrata,
 }
 
 impl Causa {
@@ -1241,6 +2382,7 @@ impl Causa {
             Self::Salvata => "salvata",
             Self::Esportata => "esportata",
             Self::Manuale => "manuale",
+            Self::Migrata => "migrata",
         }
     }
 
@@ -1250,6 +2392,7 @@ impl Causa {
             Self::Salvata,
             Self::Esportata,
             Self::Manuale,
+            Self::Migrata,
         ]
         .into_iter()
         .find(|causa| causa.nome() == nome)
@@ -1332,14 +2475,11 @@ fn elenco_istantanee(cartella: &Path) -> Vec<IstantaneaIpc> {
 /// Le istantanee di una bozza.
 #[tauri::command(async)]
 pub fn studio_istantanee(stato: State<'_, Stato>, id: String) -> Esito<Vec<IstantaneaIpc>> {
-    con_libreria(&stato, |libreria| {
+    con_le_bozze(&stato, |dati| {
         if !id_sicuro(&id) {
             return Err(non_trovata(&id));
         }
-        Ok(elenco_istantanee(&cartella_istantanee(
-            &libreria.data_dir,
-            &id,
-        )))
+        Ok(elenco_istantanee(&istantanee_di(dati, &id)))
     })
     .map_err(errore)
 }
@@ -1381,9 +2521,7 @@ fn prendi_istantanea(cartella: &Path, sorgente: &str, causa: Causa) -> Result<()
             presa.quando = presa.quando.saturating_add(1);
         }
 
-        let file = cartella.join(nome_istantanea(&presa));
-        std::fs::write(&file, sorgente.as_bytes())
-            .map_err(|err| aether_app::files::io_error(&file.display().to_string(), &err))?;
+        scrivi_atomico(&cartella.join(nome_istantanea(&presa)), sorgente.as_bytes())?;
 
         for vecchia in elenco_istantanee(cartella)
             .into_iter()
@@ -1407,15 +2545,11 @@ pub fn studio_istantanea(
     sorgente: String,
     causa: Causa,
 ) -> Esito<()> {
-    con_libreria(&stato, |libreria| {
+    con_le_bozze(&stato, |dati| {
         if !id_sicuro(&id) {
             return Err(non_trovata(&id));
         }
-        prendi_istantanea(
-            &cartella_istantanee(&libreria.data_dir, &id),
-            &sorgente,
-            causa,
-        )
+        prendi_istantanea(&istantanee_di(dati, &id), &sorgente, causa)
     })
     .map_err(errore)
 }
@@ -1438,11 +2572,11 @@ fn ripristina_istantanea(cartella: &Path, quando: u64) -> Result<String, AppErro
 /// Riporta il documento a com'era in un'istantanea.
 #[tauri::command(async)]
 pub fn studio_ripristina(stato: State<'_, Stato>, id: String, quando: u64) -> Esito<String> {
-    con_libreria(&stato, |libreria| {
+    con_le_bozze(&stato, |dati| {
         if !id_sicuro(&id) {
             return Err(non_trovata(&id));
         }
-        ripristina_istantanea(&cartella_istantanee(&libreria.data_dir, &id), quando)
+        ripristina_istantanea(&istantanee_di(dati, &id), quando)
     })
     .map_err(errore)
 }
@@ -1450,6 +2584,7 @@ pub fn studio_ripristina(stato: State<'_, Stato>, id: String, quando: u64) -> Es
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skin::DI_SERIE;
 
     #[test]
     fn il_registro_dice_tutto_quel_che_serve_a_un_editor() {
@@ -1492,7 +2627,7 @@ mod tests {
         // mentre si scrive: se questo comando tornasse un errore IPC, l'editor
         // dovrebbe distinguere «il comando è andato storto» da «non ho ancora
         // finito di scrivere».
-        let esito = studio_valida("{ \"format\": 1, ".to_owned());
+        let esito = studio_valida("{ \"format\": 1, ".to_owned(), None);
         assert_eq!(esito.errori.len(), 1);
         assert!(esito.css.is_empty(), "niente foglio da un documento rotto");
     }
@@ -1510,7 +2645,7 @@ mod tests {
   \"format\": 1
   \"id\": \"prova\"
 }";
-        let esito = studio_valida(json.to_owned());
+        let esito = studio_valida(json.to_owned(), None);
         let solo = match esito.errori.as_slice() {
             [solo] => solo,
             altri => panic!("un errore di sintassi è uno solo: {altri:#?}"),
@@ -1530,14 +2665,17 @@ mod tests {
     /// tre scritti per una lista: adesso ne ricevono una.
     #[test]
     fn ogni_problema_e_un_problema_e_porta_la_sua_riga() {
-        let json = aether_skin::PLAIN_SOURCE.replace(
+        // Solo nel primo `tokens`: dal formato 2 ce n'è un secondo, nella
+        // variante, e lì gli stessi tre sbagli sarebbero altri tre errori.
+        let json = aether_skin::PLAIN_SOURCE.replacen(
             "\"tokens\": {",
             "\"tokens\": {
     \"color.accents\": \"#ff0000\",
     \"radius.cards\": \"4px\",
     \"font.mainly\": [\"X\"],",
+            1,
         );
-        let esito = studio_valida(json);
+        let esito = studio_valida(json, None);
         assert_eq!(
             esito.errori.len(),
             3,
@@ -1581,7 +2719,7 @@ mod tests {
             "\"capabilities\": {",
             "\"patterns\": { \"mai-usato\": { \"effect\": \"vignette\", \"color\": \"#000\" } }, \"capabilities\": {",
         );
-        let esito = studio_valida(json);
+        let esito = studio_valida(json, None);
         let avviso = esito
             .avvisi
             .iter()
@@ -1597,7 +2735,7 @@ mod tests {
             "\"layout\": {",
             "\"parts\": { \"section-cards\": { \"radius\": \"10px\" } }, \"layout\": {",
         );
-        let esito = studio_valida(json);
+        let esito = studio_valida(json, None);
         let primo = esito.errori.first().expect("un errore");
         assert!(
             primo.forse.contains(&"section-card".to_owned()),
@@ -1608,7 +2746,7 @@ mod tests {
 
     #[test]
     fn la_skin_di_serie_passa_dallo_studio_senza_errori() {
-        let esito = studio_valida(aether_skin::PLAIN_SOURCE.to_owned());
+        let esito = studio_valida(aether_skin::PLAIN_SOURCE.to_owned(), None);
         assert!(esito.errori.is_empty(), "{:#?}", esito.errori);
         assert!(esito.avvisi.is_empty(), "{:#?}", esito.avvisi);
         assert!(!esito.css.is_empty());
@@ -1749,6 +2887,16 @@ mod tests {
     }
 
     #[test]
+    fn ogni_skin_di_serie_si_apre_e_si_deriva() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        for (id, testo) in aether_skin::DI_SERIE {
+            let da = da_lavorare(dir.path(), id).expect("una skin di serie");
+            assert_eq!(da.sorgente, *testo, "{id}");
+        }
+        assert!(da_lavorare(dir.path(), "non-esiste").is_err());
+    }
+
+    #[test]
     fn una_bozza_vince_sul_pacchetto_ma_le_risorse_restano_quelle() {
         // È l'invariante che tiene insieme l'albero e l'esportazione: il
         // manifest può venire da una bozza, le risorse no — una bozza è un
@@ -1834,6 +2982,45 @@ mod tests {
     }
 
     #[test]
+    fn la_conversazione_sta_con_la_bozza_e_ne_segue_la_sorte() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        assert_eq!(leggi_chat(dir.path(), "mia").expect("letta"), None);
+
+        scrivi_chat(dir.path(), "mia", r#"{"versione":1,"battute":[]}"#).expect("scritta");
+        assert_eq!(
+            leggi_chat(dir.path(), "mia").expect("letta").as_deref(),
+            Some(r#"{"versione":1,"battute":[]}"#)
+        );
+
+        // Una rinomina la porta con sé.
+        rinomina_bozza(dir.path(), "mia", "nuova", None).expect("rinominata");
+        assert_eq!(leggi_chat(dir.path(), "mia").expect("letta"), None);
+        assert!(leggi_chat(dir.path(), "nuova").expect("letta").is_some());
+
+        // Vuota, si toglie; due volte non è un guasto.
+        scrivi_chat(dir.path(), "nuova", "").expect("tolta");
+        scrivi_chat(dir.path(), "nuova", "").expect("già tolta");
+        assert_eq!(leggi_chat(dir.path(), "nuova").expect("letta"), None);
+    }
+
+    #[test]
+    fn una_conversazione_storta_non_si_scrive() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        for cattiva in ["non json", "[1,2]", "\"testo\""] {
+            assert!(
+                scrivi_chat(dir.path(), "mia", cattiva).is_err(),
+                "«{cattiva}»"
+            );
+        }
+        let enorme = format!(r#"{{"x":"{}"}}"#, "a".repeat(CHAT_MASSIMA));
+        assert!(scrivi_chat(dir.path(), "mia", &enorme).is_err());
+        for cattivo in ["../fuori", ""] {
+            assert!(scrivi_chat(dir.path(), cattivo, "{}").is_err());
+            assert!(leggi_chat(dir.path(), cattivo).is_err());
+        }
+    }
+
+    #[test]
     fn un_id_storto_non_raggiunge_ne_il_pacchetto_ne_le_istantanee() {
         let dir = tempfile::tempdir().expect("cartella temporanea");
         for cattivo in ["../../altrove", "..\\fuori", "c:/assoluto", ""] {
@@ -1842,5 +3029,453 @@ mod tests {
                 "«{cattivo}» ha raggiunto un pacchetto"
             );
         }
+    }
+
+    // ── il registro del movimento ───────────────────────────────────────────
+
+    /// Un documento di prova con un'animazione dal fotogramma dato.
+    fn con_fotogramma(campo: &str, valore: &str) -> String {
+        aether_skin::PLAIN_SOURCE.replacen(
+            "\"motion\": {",
+            &format!(
+                "\"motion\": {{ \"animations\": {{ \"prova\": {{ \"duration\": \"200ms\", \
+                 \"frames\": [{{ \"at\": 0, \"{campo}\": {valore} }}, {{ \"at\": 100, \"opacity\": 1 }}] }} }},"
+            ),
+            1,
+        )
+    }
+
+    #[test]
+    fn gli_estremi_dei_fotogrammi_sono_quelli_del_parser() {
+        let registro = studio_registro();
+        assert_eq!(registro.stati.len(), aether_skin::PartState::ALL.len());
+        assert!(
+            registro
+                .inneschi
+                .iter()
+                .any(|i| i.name == "hover" && i.ciclo && i.stato)
+        );
+        assert!(
+            registro
+                .inneschi
+                .iter()
+                .any(|i| i.name == "exit" && i.vista && !i.ciclo)
+        );
+        assert!(!registro.animazioni_pronte.is_empty());
+        // Lo schema arriva intero: il completamento del codice ci conta.
+        assert!(registro.chiavi["aspetto"].contains(&"focusRing"));
+        assert!(registro.chiavi["documento"].contains(&"variant"));
+        assert!(registro.parole["easing"].contains(&"ease-out"));
+        assert!(registro.parole["borderStyle"].contains(&"dashed"));
+        assert!(!registro.sorgenti.is_empty());
+        for campo in &registro.fotogramma {
+            let (Some(min), Some(max)) = (campo.min, campo.max) else {
+                continue;
+            };
+            let scrivi = |n: f64| match campo.kind {
+                "length" => format!("\"{n}px\""),
+                _ => n.to_string(),
+            };
+            for dentro in [min, max] {
+                let testo = con_fotogramma(campo.name, &scrivi(dentro));
+                assert!(
+                    aether_skin::parse_skin_json(&testo).is_ok(),
+                    "«{}» = {dentro} dovrebbe passare: {:?}",
+                    campo.name,
+                    aether_skin::parse_skin_json(&testo).err()
+                );
+            }
+            let fuori = con_fotogramma(campo.name, &scrivi(max + 1.0));
+            assert!(
+                aether_skin::parse_skin_json(&fuori).is_err(),
+                "«{}» = {} dovrebbe essere rifiutato",
+                campo.name,
+                max + 1.0
+            );
+        }
+    }
+
+    #[test]
+    fn la_validazione_scrive_per_la_tela_e_dice_i_costi() {
+        let esito = studio_valida(
+            aether_skin::di_serie("vinile").expect("vinile").to_owned(),
+            None,
+        );
+        assert!(esito.errori.is_empty(), "{:?}", esito.errori);
+        assert!(esito.css.contains(":root[data-skin='vinile'] ."));
+        assert!(esito.css.contains("[data-forza~='hover']"));
+        let colonna = esito
+            .costi
+            .iter()
+            .find(|c| c.parte == "column-art")
+            .expect("column-art");
+        assert!(colonna.movimento > 0);
+        assert!(esito.costo_finestra > 0);
+    }
+
+    // ── le risorse della bozza ──────────────────────────────────────────────
+
+    #[test]
+    fn il_nome_di_una_risorsa_si_mette_in_regola() {
+        assert_eq!(
+            nome_risorsa(Path::new("C:/x/Titoli Grassetto.WOFF2")),
+            "titoli-grassetto.woff2"
+        );
+        assert_eq!(nome_risorsa(Path::new("/x/foto.JPEG")), "foto.jpg");
+        assert_eq!(nome_risorsa(Path::new("/x/__.png")), "risorsa.png");
+    }
+
+    #[test]
+    fn una_risorsa_si_aggiunge_si_rinomina_se_occupato_e_si_rifiuta_se_mente() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let fuori = tempfile::tempdir().expect("cartella dei file");
+        let buono = fuori.path().join("Trama.png");
+        std::fs::write(&buono, b"\x89PNG\r\n\x1a\n resto").expect("scritto");
+        let voce = aggiungi_risorsa(dir.path(), DI_SERIE, &buono).expect("aggiunta");
+        assert_eq!(voce.nome, "assets/trama.png");
+        let seconda = aggiungi_risorsa(dir.path(), DI_SERIE, &buono).expect("aggiunta");
+        assert_eq!(seconda.nome, "assets/trama-2.png");
+
+        let bugiardo = fuori.path().join("finta.png");
+        std::fs::write(&bugiardo, b"GIF89a").expect("scritto");
+        assert!(aggiungi_risorsa(dir.path(), DI_SERIE, &bugiardo).is_err());
+
+        let da = da_lavorare(dir.path(), DI_SERIE).expect("la bozza");
+        let nomi: Vec<&str> = da.assets.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(nomi, ["trama-2.png", "trama.png"]);
+    }
+
+    #[test]
+    fn le_risorse_del_pacchetto_passano_nella_bozza_all_apertura() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let sorgente = aether_skin::PLAIN_SOURCE
+            .replace("\"id\": \"plain\"", "\"id\": \"nocturne\"")
+            .replacen(
+                "\"id\": \"nocturne\",",
+                "\"id\": \"nocturne\", \"fonts\": { \"Prova\": { \"src\": \"prova.woff2\" } },",
+                1,
+            );
+        let bytes = aether_skin::write_skin_package(&aether_skin::package::WritePackageInput {
+            source: &sorgente,
+            preview: None,
+            assets: &[aether_skin::package::SkinAsset {
+                name: "prova.woff2".to_owned(),
+                mime: "font/woff2",
+                bytes: b"wOF2 finto".to_vec(),
+            }],
+        })
+        .expect("impacchettata");
+        let skin = dir.path().join("skin");
+        std::fs::create_dir_all(&skin).expect("cartella");
+        std::fs::write(skin.join("nocturne.aeskin"), bytes).expect("installata");
+
+        apri_documento(dir.path(), "nocturne", true).expect("aperta");
+        assert!(
+            cartella_risorse(dir.path(), "nocturne")
+                .join("prova.woff2")
+                .is_file()
+        );
+        // E «Salva e usa» ha di nuovo il carattere da impacchettare.
+        let (_, assets) = corredo_della_bozza(dir.path(), "nocturne").expect("corredo");
+        assert_eq!(assets.len(), 1);
+    }
+
+    // ── le istantanee fuori dalla bozza ─────────────────────────────────────
+
+    #[test]
+    fn scartare_la_bozza_non_porta_via_le_istantanee() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        prendi_istantanea(
+            &istantanee_di(dir.path(), DI_SERIE),
+            aether_skin::PLAIN_SOURCE,
+            Causa::Manuale,
+        )
+        .expect("presa");
+        let bozza = cartella_bozze(dir.path()).join(DI_SERIE);
+        std::fs::create_dir_all(&bozza).expect("bozza");
+        std::fs::write(bozza.join("skin.json"), aether_skin::PLAIN_SOURCE).expect("scritta");
+        std::fs::remove_dir_all(&bozza).expect("scartata");
+        assert_eq!(
+            elenco_istantanee(&istantanee_di(dir.path(), DI_SERIE)).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn le_istantanee_della_2x_traslocano_fuori_dalla_bozza() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let vecchia = cartella_bozze(dir.path()).join(DI_SERIE).join("istantanee");
+        prendi_istantanea(&vecchia, aether_skin::PLAIN_SOURCE, Causa::Salvata).expect("presa");
+        let elenco = elenco_istantanee(&istantanee_di(dir.path(), DI_SERIE));
+        assert_eq!(elenco.len(), 1);
+        assert!(!vecchia.exists());
+    }
+
+    #[test]
+    fn una_skin_del_formato_1_si_apre_migrata_e_ricorda_com_era() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let v1 = include_str!("../../../../core/aether-skin/tests/oro/scafalatura.v1.json");
+        let id = aether_skin::parse_skin_json(v1).expect("si legge").id;
+        let bozza = cartella_bozze(dir.path()).join(&id);
+        std::fs::create_dir_all(&bozza).expect("bozza");
+        std::fs::write(bozza.join("skin.json"), v1).expect("scritta");
+
+        let aperta = apri_documento(dir.path(), &id, true).expect("aperta");
+        assert!(aperta.contains("\"format\": 2"));
+        let istantanee = elenco_istantanee(&istantanee_di(dir.path(), &id));
+        assert_eq!(istantanee.first().map(|i| i.causa), Some("migrata"));
+        // La seconda apertura trova la bozza già migrata: niente istantanea nuova.
+        apri_documento(dir.path(), &id, true).expect("riaperta");
+        assert_eq!(elenco_istantanee(&istantanee_di(dir.path(), &id)).len(), 1);
+    }
+
+    #[test]
+    fn rinominare_la_bozza_porta_con_se_le_istantanee() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let bozza = cartella_bozze(dir.path()).join("vecchio");
+        std::fs::create_dir_all(&bozza).expect("bozza");
+        std::fs::write(bozza.join("skin.json"), "{}").expect("scritta");
+        prendi_istantanea(&istantanee_di(dir.path(), "vecchio"), "{}", Causa::Manuale)
+            .expect("presa");
+
+        rinomina_bozza(dir.path(), "vecchio", "nuovo", None).expect("rinominata");
+        assert!(
+            cartella_bozze(dir.path())
+                .join("nuovo")
+                .join("skin.json")
+                .is_file()
+        );
+        assert_eq!(
+            elenco_istantanee(&istantanee_di(dir.path(), "nuovo")).len(),
+            1
+        );
+        // Sopra una skin di serie non si scrive.
+        assert!(rinomina_bozza(dir.path(), "nuovo", "plain", None).is_err());
+    }
+
+    // ── WP31: lo Studio che non perde lavoro ────────────────────────────────
+
+    /// Il manifest di serie con un altro id.
+    fn con_id(id: &str) -> String {
+        aether_skin::PLAIN_SOURCE.replace("\"id\": \"plain\"", &format!("\"id\": \"{id}\""))
+    }
+
+    /// Il manifest di serie con un altro id e un carattere del pacchetto.
+    fn con_carattere(id: &str) -> String {
+        con_id(id).replacen(
+            &format!("\"id\": \"{id}\","),
+            &format!(
+                "\"id\": \"{id}\", \"fonts\": {{ \"Prova\": {{ \"src\": \"prova.woff2\" }} }},"
+            ),
+            1,
+        )
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n resto";
+    const WOFF2: &[u8] = b"wOF2 finto con la firma giusta";
+
+    fn installa_qui(dir: &Path, sorgente: &str, assets: &[aether_skin::package::SkinAsset]) {
+        let bytes = aether_skin::write_skin_package(&aether_skin::package::WritePackageInput {
+            source: sorgente,
+            preview: Some(PNG),
+            assets,
+        })
+        .expect("impacchettata");
+        crate::skin::installa(dir, &bytes).expect("installata");
+    }
+
+    fn carattere() -> aether_skin::package::SkinAsset {
+        aether_skin::package::SkinAsset {
+            name: "prova.woff2".to_owned(),
+            mime: "font/woff2",
+            bytes: WOFF2.to_vec(),
+        }
+    }
+
+    #[test]
+    fn la_tela_si_compila_sotto_l_id_della_bozza() {
+        // Il documento dice «nuovo-nome», la bozza sta ancora in «vecchio»:
+        // i selettori e gli indirizzi delle risorse seguono la cartella.
+        let sorgente = con_carattere("nuovo-nome");
+        let esito = studio_valida(sorgente.clone(), Some("vecchio".to_owned()));
+        assert!(esito.errori.is_empty(), "{:?}", esito.errori);
+        assert_eq!(esito.radice, "vecchio");
+        assert!(esito.css.contains(":root[data-skin='vecchio']"));
+        assert!(
+            esito.css.contains("/bozza/vecchio/prova.woff2"),
+            "{}",
+            esito.css
+        );
+        assert!(!esito.css.contains("data-skin='nuovo-nome'"));
+
+        // Un id che il foglio non sa scrivere così com'è ricade sul documento.
+        let ricaduta = studio_valida(sorgente.clone(), Some("con_trattino".to_owned()));
+        assert_eq!(ricaduta.radice, "nuovo-nome");
+
+        // La stessa domanda ha la stessa risposta, dai ricordi: anche i
+        // millisecondi sono quelli della prima volta.
+        let ancora = studio_valida(sorgente, Some("vecchio".to_owned()));
+        assert_eq!(ancora.css, esito.css);
+        assert_eq!(ancora.compilato_ms, esito.compilato_ms);
+    }
+
+    #[test]
+    fn la_prova_sull_app_porta_l_id_della_bozza() {
+        let skin = compila_per_la_prova(&con_id("altro"), "mia").expect("compilata");
+        assert_eq!(skin.id, "mia");
+        assert!(skin.css.contains(":root[data-skin='mia']"));
+        assert!(compila_per_la_prova("{ rotto", "mia").is_err());
+    }
+
+    #[test]
+    fn salvare_segue_l_id_del_documento_e_non_prende_quello_di_un_altro() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let manifest = |id: &str| cartella_bozze(dir.path()).join(id).join("skin.json");
+
+        let primo = salva_bozza(dir.path(), "prima", &con_id("prima"), None).expect("salvata");
+        assert_eq!(primo.id, "prima");
+        assert!(primo.rinomina.is_none());
+
+        // Il documento cambia id: la bozza lo segue, in un passo solo.
+        let seconda = con_id("seconda");
+        let esito = salva_bozza(dir.path(), "prima", &seconda, None).expect("salvata");
+        assert_eq!(esito.id, "seconda");
+        assert_eq!(
+            std::fs::read_to_string(manifest("seconda")).expect("letta"),
+            seconda
+        );
+        assert!(!cartella_bozze(dir.path()).join("prima").exists());
+
+        // L'id di una skin installata di un altro: il testo si salva dov'era,
+        // e il rifiuto torna indietro col suo codice invece di sparire.
+        installa_qui(dir.path(), &con_id("altrui"), &[]);
+        let rubata = con_id("altrui");
+        let esito = salva_bozza(dir.path(), "seconda", &rubata, None).expect("salvata");
+        assert_eq!(esito.id, "seconda");
+        assert_eq!(
+            esito.rinomina.as_ref().map(|e| e.code.as_str()),
+            Some("skin.idConflict")
+        );
+        assert_eq!(
+            std::fs::read_to_string(manifest("seconda")).expect("letta"),
+            rubata
+        );
+        assert!(!cartella_bozze(dir.path()).join("altrui").exists());
+
+        // Ma tornare all'id da cui lo Studio è partito si può.
+        let esito = salva_bozza(dir.path(), "seconda", &rubata, Some("altrui")).expect("salvata");
+        assert_eq!(esito.id, "altrui");
+        assert!(esito.rinomina.is_none());
+
+        // Un testo a metà si salva lo stesso, senza rinomine.
+        let esito = salva_bozza(dir.path(), "altrui", "{ \"id\": ", None).expect("salvata");
+        assert_eq!(esito.id, "altrui");
+    }
+
+    #[test]
+    fn una_skin_installata_che_non_passa_piu_si_apre_nello_studio() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let rotta = con_id("vecchia").replacen(
+            "\"tokens\": {",
+            "\"tokens\": { \"color.accents\": \"#ff0000\",",
+            1,
+        );
+        let cartella = dir.path().join("skin");
+        std::fs::create_dir_all(&cartella).expect("cartella");
+        std::fs::write(
+            cartella.join("vecchia.aeskin"),
+            crate::skin::zip_a_mano(&[("skin.json", rotta.as_bytes()), ("assets/trama.png", PNG)]),
+        )
+        .expect("scritta");
+        assert_eq!(
+            apri_documento(dir.path(), "vecchia", true).expect("aperta"),
+            rotta
+        );
+        assert!(
+            cartella_risorse(dir.path(), "vecchia")
+                .join("trama.png")
+                .is_file()
+        );
+        // E la validazione dice dove.
+        assert!(
+            !studio_valida(rotta, Some("vecchia".to_owned()))
+                .errori
+                .is_empty()
+        );
+
+        // Un archivio che non si apre, con una bozza accanto: si apre la bozza.
+        std::fs::write(cartella.join("guasta.aeskin"), b"non sono uno zip").expect("scritto");
+        let bozza = cartella_bozze(dir.path()).join("guasta");
+        std::fs::create_dir_all(&bozza).expect("bozza");
+        std::fs::write(bozza.join("skin.json"), con_id("guasta")).expect("scritta");
+        assert_eq!(
+            da_lavorare(dir.path(), "guasta")
+                .expect("la bozza")
+                .sorgente,
+            con_id("guasta")
+        );
+        // Senza la bozza il guasto si dice, invece di passare per un'assenza.
+        std::fs::write(cartella.join("sola.aeskin"), b"non sono uno zip").expect("scritto");
+        let guasto = da_lavorare(dir.path(), "sola").err().expect("un guasto");
+        assert_eq!(guasto.code().kind().code(), "skin.packageCorrupt");
+    }
+
+    #[test]
+    fn un_tema_nuovo_porta_le_risorse_della_base_e_non_eredita_bozze_orfane() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        installa_qui(dir.path(), &con_carattere("base"), &[carattere()]);
+
+        let figlia = con_carattere("figlia");
+        let voce = crea_tema(dir.path(), "base", &figlia).expect("creato");
+        assert_eq!(voce.id, "figlia");
+        let letto = aether_skin::read_skin_package(
+            &std::fs::read(dir.path().join("skin").join("figlia.aeskin")).expect("installato"),
+        )
+        .expect("si rilegge");
+        assert_eq!(letto.assets.len(), 1, "il carattere della base");
+        assert_eq!(
+            letto.preview.as_deref(),
+            Some(PNG),
+            "la miniatura della base"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cartella_bozze(dir.path()).join("figlia").join("skin.json"))
+                .expect("la bozza"),
+            figlia
+        );
+
+        // Una bozza rimasta da una skin che non c'è più: il suo id è preso.
+        std::fs::create_dir_all(cartella_bozze(dir.path()).join("orfana")).expect("orfana");
+        let err = crea_tema(dir.path(), "base", &con_carattere("orfana")).expect_err("rifiutato");
+        assert_eq!(err.code().kind().code(), "skin.idConflict");
+        assert!(!dir.path().join("skin").join("orfana.aeskin").exists());
+        let presi = occupati(dir.path());
+        assert!(presi.contains(&"orfana".to_owned()) && presi.contains(&"figlia".to_owned()));
+        // E quello di una skin installata, o di serie, pure.
+        assert!(crea_tema(dir.path(), "base", &con_carattere("base")).is_err());
+        assert!(crea_tema(dir.path(), "base", aether_skin::PLAIN_SOURCE).is_err());
+    }
+
+    #[test]
+    fn scartare_la_bozza_di_una_skin_del_formato_1_non_aggiunge_istantanee() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let v1 = include_str!("../../../../core/aether-skin/tests/oro/scafalatura.v1.json");
+        let bytes = aether_skin::write_skin_package(&aether_skin::package::WritePackageInput {
+            source: v1,
+            preview: None,
+            assets: &[],
+        })
+        .expect("impacchettata");
+        crate::skin::installa(dir.path(), &bytes).expect("installata");
+        let aperta = apri_documento(dir.path(), "scafalatura", true).expect("aperta");
+        let serie = || elenco_istantanee(&istantanee_di(dir.path(), "scafalatura")).len();
+        assert_eq!(serie(), 1, "la fotografia del testo del formato 1");
+        let riaperta = scarta_bozza(dir.path(), "scafalatura").expect("scartata");
+        assert_eq!(riaperta, aperta);
+        assert_eq!(
+            serie(),
+            1,
+            "lo scarto non fotografa di nuovo lo stesso testo"
+        );
     }
 }

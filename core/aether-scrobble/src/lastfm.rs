@@ -50,7 +50,7 @@
 use std::time::Duration;
 
 use aether_domain::errors::{AppError, ErrorCode};
-use aether_net::{Corpo, Metodo, Rete, Richiesta, percento};
+use aether_net::{Corpo, Metodo, Rete, Richiesta, Rimandi, percento};
 use md5::{Digest as _, Md5};
 
 use crate::{Ascolto, Servizio, esadecimale};
@@ -92,12 +92,25 @@ impl std::fmt::Debug for LastFm {
 }
 
 /// La sessione, che non scade.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// [`Debug`] scritto a mano, come per il client: la chiave di sessione non
+/// scade mai, e chi la legge in un diario manda scrobble a nome di qualcun
+/// altro finché quello non la revoca a mano.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Sessione {
     /// Il nome utente.
     pub utente: String,
     /// La chiave di sessione. Va nel portachiavi, mai in `settings`.
     pub chiave: String,
+}
+
+impl std::fmt::Debug for Sessione {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sessione")
+            .field("utente", &self.utente)
+            .field("chiave", &"…")
+            .finish()
+    }
 }
 
 /// Com'è andato un invio.
@@ -122,6 +135,11 @@ impl LastFm {
     }
 
     /// Un client verso un altro punto. Serve alle prove.
+    ///
+    /// Nessun rimando, qui come nel client di serie: ogni richiesta porta la
+    /// chiave di sessione e la firma nel **corpo**, e un `307` le rimanderebbe
+    /// identiche a chiunque venisse nominato. `ws.audioscrobbler.com` risponde
+    /// sul posto da quindici anni; un 3xx da lì è un guasto da raccontare.
     #[must_use]
     pub fn verso(
         punto: impl Into<String>,
@@ -129,7 +147,7 @@ impl LastFm {
         segreto: impl Into<String>,
     ) -> Self {
         Self {
-            rete: Rete::nuova("lastfm", SCADENZA),
+            rete: Rete::nuova("lastfm", SCADENZA).con_rimandi(Rimandi::Nessuno),
             api_key: api_key.into(),
             segreto: segreto.into(),
             punto: punto.into(),
@@ -329,16 +347,34 @@ impl LastFm {
                 AppError::new(ErrorCode::SettingsScrobbleAuthRejected { service: servizio })
                     .with_cause(format!("{codice}: {messaggio}"))
             }
-            // 11 e 16 il servizio è temporaneamente giù, 29 troppe richieste.
-            // Questi sì, e con l'attesa che raddoppia.
-            11 | 16 | 29 => AppError::new(ErrorCode::NetRateLimited {
+            // «Riprova più tardi», con le parole della loro tabella
+            // (`last.fm/api/errorcodes`): 8 «Operation failed — most likely the
+            // backend service failed. Please try again», 11 «Service offline —
+            // try again later», 16 «temporarily unavailable, please try
+            // again», 29 troppe richieste. Questi si ritentano, con l'attesa
+            // che raddoppia, e se non passano fermano la passata **senza**
+            // consumare i tentativi degli ascolti — vedi `scrobble.rs`, che
+            // su un guasto ritentabile si ferma invece di dividere il blocco.
+            //
+            // L'8 fino alla 2.4.0 stava con i rifiuti: un guasto del loro
+            // server diventava un difetto di cinquanta ascolti, il blocco si
+            // divideva in due richieste, poi in quattro, e ogni ascolto si
+            // prendeva un tentativo fallito per una cosa che non aveva fatto.
+            //
+            // `net.rateLimited` anche per i tre che non sono un limite: è il
+            // codice ritentabile che dice «il servizio ha chiesto di aspettare»
+            // senza inventare uno stato HTTP che Last.fm non ha mandato. Quale
+            // dei quattro fosse, lo dice la causa.
+            8 | 11 | 16 | 29 => AppError::new(ErrorCode::NetRateLimited {
                 service: Some(Servizio::LastFm.nome().to_owned()),
                 retry_after_ms: None,
             })
             .with_cause(format!("{codice}: {messaggio}")),
             // Tutto il resto — parametri mancanti (6), firma sbagliata (13),
             // chiave sospesa (26) — è colpa di come è stata composta la
-            // richiesta, e riproporla identica dà lo stesso esito.
+            // richiesta, e riproporla identica dà lo stesso esito. È la regola
+            // della loro pagina sullo scrobbling: «all other error codes
+            // indicate the scrobble request was incorrectly formed».
             _ => self.rifiuto(Some(format!("{codice}: {messaggio}"))),
         })
     }
@@ -693,6 +729,23 @@ mod prove {
             "«temporaneamente non disponibile» vuol dire riprova, ed è l'unico modo di non perdere l'ascolto"
         );
 
+        // I quattro «riprova più tardi» della loro tabella. L'8 era un rifiuto
+        // fino alla 2.4.0: un guasto del loro server faceva dividere il blocco
+        // e prendere un tentativo fallito a ogni ascolto.
+        for codice in [8, 11, 16, 29] {
+            let guasto = dichiarato(codice);
+            assert!(
+                guasto.is_retryable(),
+                "il codice {codice} vuol dire «riprova», non «questo ascolto è sbagliato»"
+            );
+            assert!(
+                guasto
+                    .cause()
+                    .is_some_and(|c| c.starts_with(&format!("{codice}:"))),
+                "la causa dice quale dei quattro era"
+            );
+        }
+
         let firma_storta = dichiarato(13);
         assert_eq!(
             firma_storta.code().kind().code(),
@@ -725,6 +778,25 @@ mod prove {
             .collect();
         let err = client.invia("sk", &troppi).expect_err("deve rifiutare");
         assert_eq!(err.code().kind().code(), "settings.scrobbleRejected");
+    }
+
+    #[test]
+    fn last_fm_non_segue_rimandi() {
+        assert!(matches!(
+            LastFm::nuovo("k", "s").rete.rimandi(),
+            Rimandi::Nessuno
+        ));
+    }
+
+    #[test]
+    fn la_chiave_di_sessione_non_compare_nel_debug() {
+        let sessione = Sessione {
+            utente: "verdena".to_owned(),
+            chiave: "chiave-che-non-scade".to_owned(),
+        };
+        let scritto = format!("{sessione:?}");
+        assert!(scritto.contains("verdena"));
+        assert!(!scritto.contains("chiave-che-non-scade"));
     }
 
     #[test]

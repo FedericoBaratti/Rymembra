@@ -18,6 +18,23 @@
 //! una libreria che dichiara vuoto quel che sul disco c'è ancora è peggio di una
 //! che dichiara troppo.
 //!
+//! # Dove un Cestino non c'è
+//!
+//! Su un'unità di rete — `\\nas\musica`, o la lettera `Z:` mappata sopra — il
+//! Cestino di Windows non esiste. `IFileOperation` con «annullabile» non se ne
+//! lamenta: **cancella per sempre** e riporta successo, e se proprio decide di
+//! avvisare apre un dialogo della shell da un filo senza finestra. Per chi
+//! teneva la musica su un NAS, «Elimina dal disco» voleva dire quindi una
+//! cancellazione senza ritorno raccontata come un viaggio nel Cestino.
+//!
+//! Adesso si chiede prima dove sta ogni file ([`aether_app::volumi`], che
+//! riconosce anche le lettere mappate), la finestra lo dice nella conferma —
+//! «questi N file saranno cancellati definitivamente» — e solo con quella
+//! conferma in mano i file di rete si tolgono con `remove_file`, senza passare
+//! dalla shell. Senza conferma il nucleo rifiuta con `fs.noRecycleBin`, prima
+//! di aver toccato la coda o un file. Un file di cui non si è saputo dove sta
+//! vale come uno di rete: la promessa del Cestino non si fa a vuoto.
+//!
 //! # L'ordine, in [`brani_elimina`]
 //!
 //! Prima si sgombera la coda **fermando il motore**, poi si cestina, poi si
@@ -33,8 +50,11 @@
 //! Per la stessa ragione di [`crate::playlist`]: `comandi.rs` è già il più
 //! lungo, e questi due comandi hanno un solo argomento in comune.
 
+use std::path::Path;
+
 use aether_app::library::{self, Cancellazione};
 use aether_app::settings::{self, CHIAVE_CARTELLE};
+use aether_app::volumi::{self, Collocazione};
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::paths::PathRules;
 use tauri::Manager as _;
@@ -77,7 +97,7 @@ fn sorvegliate(stato: &Stato) -> Result<Vec<String>, AppError> {
 /// riuscire lo stesso. Quel che non si è potuto fare finisce nel diario, che è
 /// il posto dove si va a cercarlo, invece di diventare un errore rosso sopra un
 /// gesto che è andato a buon fine.
-fn sgombera(app: &tauri::AppHandle, brani: &[i64], ferma: bool) {
+pub(crate) fn sgombera(app: &tauri::AppHandle, brani: &[i64], ferma: bool) {
     let Some(lettore) = app.try_state::<StatoLettore>() else {
         return;
     };
@@ -128,25 +148,103 @@ pub async fn brani_togli(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<Cancel
     crate::nuvola::se_riuscito(&app, esito)
 }
 
-/// Manda i file nel Cestino e toglie dalla libreria quelli che ci sono arrivati.
+/// I percorsi su disco dei brani, nell'ordine in cui la libreria li restituisce.
+///
+/// I brani di catalogo non ne hanno, e non compaiono: per loro la domanda
+/// «dove sta il file» non ha senso.
+fn percorsi_dei(stato: &Stato, brani: &[i64]) -> Result<Vec<String>, AppError> {
+    let righe = con_libreria(stato, |libreria| {
+        library::summaries_by_id(&libreria.connection, brani)
+    })?;
+    Ok(righe.into_iter().filter_map(|brano| brano.path).collect())
+}
+
+/// Quanti dei file di questi brani stanno dove un Cestino non c'è.
+///
+/// È la domanda che la conferma di «Elimina dal disco» fa **prima** di
+/// mostrarsi: zero vuol dire la frase di sempre, più di zero vuol dire
+/// «questi N file saranno cancellati definitivamente». I file di cui non si è
+/// saputo dove stanno si contano insieme a quelli di rete, per la stessa
+/// ragione per cui [`brani_elimina`] li tratta così: vedi il `//!`.
+///
+/// # Dove gira
+///
+/// In disparte e fuori dal lucchetto: chiedere dove sta un file vuol dire
+/// risolvere la sua cartella, e su una share che non risponde è un'attesa.
+///
+/// # Errori
+///
+/// `internal.aborted` se lo stato non c'è più, `db.*` se la lettura fallisce.
+#[tauri::command]
+pub async fn brani_su_rete(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<usize> {
+    in_disparte("collocazione dei brani da eliminare", move || {
+        let stato = stato_di(&app, "collocazione dei brani")?;
+        let percorsi = percorsi_dei(&stato, &brani)?;
+        Ok(
+            volumi::collocazioni(&percorsi, volumi::SCADENZA_RISOLUZIONE)
+                .into_iter()
+                .filter(|dove| !dove.ha_un_cestino())
+                .count(),
+        )
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+/// Cancella un file **per sempre**, dove un Cestino non c'è.
+///
+/// Un file che non c'è già più non è un guasto: il gesto voleva che non ci
+/// fosse, e la sua riga se ne va con le altre. Ma «non c'è» si crede solo se
+/// non è la rete a dirlo: Windows racconta la share sparita con lo stesso
+/// genere di errore del file sparito, e lì la riga deve restare.
+fn per_sempre(percorso: &str) -> Result<(), AppError> {
+    match std::fs::remove_file(aether_app::files::percorso_lungo(Path::new(percorso))) {
+        Ok(()) => Ok(()),
+        Err(err)
+            if err.kind() == std::io::ErrorKind::NotFound
+                && !aether_domain::errors::rete::e_di_rete(&err) =>
+        {
+            Ok(())
+        }
+        Err(err) => Err(aether_app::files::io_error(percorso, &err)),
+    }
+}
+
+/// Manda i file nel Cestino — o, dove un Cestino non c'è e lo si è confermato,
+/// li cancella per sempre — e toglie dalla libreria quelli che se ne sono
+/// andati.
+///
+/// `definitivi` è la conferma della finestra: «sì, anche quelli che non possono
+/// andare nel Cestino». Assente vale no, ed è la forma che hanno le chiamate
+/// scritte prima che esistesse.
 ///
 /// # Dove gira
 ///
 /// In disparte, e il Cestino si chiama **fuori** dal lucchetto della libreria:
 /// `IFileOperation` parla con la shell di Windows, che su una cartella di rete
-/// può metterci quanto le pare.
+/// può metterci quanto le pare. Fuori dal lucchetto anche la domanda su dove
+/// stanno i file, per la stessa ragione.
 ///
 /// # Errori
 ///
-/// `fs.trashFailed` — o uno dei `fs.*` più precisi, quando Windows dice un
-/// numero che si sa leggere — se il Cestino rifiuta un file. Lì ci si ferma,
-/// dopo aver tolto dalla libreria quelli già andati: una riga che resta per un
-/// file che non c'è più è un brano che non suona, una riga tolta per un file che
-/// c'è ancora è un brano che nessuno ritrova. `internal.aborted` se lo stato non
-/// c'è più, `db.*` se la scrittura fallisce.
+/// `fs.noRecycleBin` se qualche file sta dove un Cestino non c'è e `definitivi`
+/// non è stato detto: in quel caso non si è toccato niente, né la coda né un
+/// file. `fs.trashFailed` — o uno dei `fs.*` più precisi, quando Windows dice
+/// un numero che si sa leggere — se il Cestino rifiuta un file; `fs.*` se la
+/// cancellazione definitiva fallisce. Lì ci si ferma, dopo aver tolto dalla
+/// libreria quelli già andati: una riga che resta per un file che non c'è più è
+/// un brano che non suona, una riga tolta per un file che c'è ancora è un brano
+/// che nessuno ritrova. `internal.aborted` se lo stato non c'è più, `db.*` se
+/// la scrittura fallisce.
 #[tauri::command]
-pub async fn brani_elimina(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<usize> {
+pub async fn brani_elimina(
+    app: tauri::AppHandle,
+    brani: Vec<i64>,
+    definitivi: Option<bool>,
+) -> Esito<usize> {
     let mano = app.clone();
+    let definitivi = definitivi.unwrap_or(false);
     let esito = in_disparte("eliminazione di brani dal disco", move || {
         let stato = stato_di(&mano, "eliminazione di brani")?;
         let condannati = con_libreria(&stato, |libreria| {
@@ -155,6 +253,31 @@ pub async fn brani_elimina(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<usiz
         if condannati.is_empty() {
             return Ok(0);
         }
+
+        // Dove sta ogni file, chiesto **prima** di fermare il motore: se la
+        // risposta è un rifiuto, chi ascoltava deve continuare ad ascoltare.
+        let percorsi: Vec<String> = condannati
+            .iter()
+            .filter_map(|brano| brano.path.clone())
+            .collect();
+        let collocazioni = volumi::collocazioni(&percorsi, volumi::SCADENZA_RISOLUZIONE);
+        let dove = |percorso: &str| {
+            percorsi
+                .iter()
+                .position(|p| p == percorso)
+                .and_then(|i| collocazioni.get(i).copied())
+                .unwrap_or(Collocazione::Ignota)
+        };
+        if !definitivi && let Some(primo) = percorsi.iter().find(|p| !dove(p).ha_un_cestino()) {
+            return Err(AppError::new(ErrorCode::FsNoRecycleBin {
+                path: primo.clone(),
+            })
+            .with_cause(
+                "il file sta su un'unità di rete, o non si è saputo dove sta, e la \
+                 cancellazione definitiva non è stata confermata",
+            ));
+        }
+
         // Il motore lascia andare i file che ha in mano — il corrente e quello
         // in canna — prima che il Cestino provi a prenderli.
         let ids: Vec<i64> = condannati.iter().map(|brano| brano.id).collect();
@@ -172,10 +295,18 @@ pub async fn brani_elimina(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<usiz
                 andati.push(brano.id);
                 continue;
             };
-            match trash::delete(percorso) {
+            // Dove il Cestino c'è, il Cestino; dove non c'è — ed è stato
+            // confermato, o non si sarebbe arrivati qui — `remove_file`, senza
+            // passare dalla shell e dal suo dialogo senza finestra.
+            let fatto = if dove(percorso).ha_un_cestino() {
+                trash::delete(percorso).map_err(|err| nel_cestino(percorso, &err))
+            } else {
+                per_sempre(percorso)
+            };
+            match fatto {
                 Ok(()) => andati.push(brano.id),
                 Err(err) => {
-                    guasto = Some(nel_cestino(percorso, &err));
+                    guasto = Some(err);
                     break;
                 }
             }
@@ -293,6 +424,24 @@ fn nel_cestino(percorso: &str, err: &trash::Error) -> AppError {
         _ => generico(),
     };
     AppError::new(codice).with_cause(err.to_string())
+}
+
+#[cfg(test)]
+mod prove_per_sempre {
+    use super::per_sempre;
+
+    #[test]
+    fn per_sempre_toglie_il_file_e_non_si_lamenta_di_quel_che_manca_gia() {
+        let cartella = tempfile::tempdir().expect("cartella temporanea");
+        let file = cartella.path().join("a.flac");
+        std::fs::write(&file, b"x").expect("file");
+        let percorso = file.to_string_lossy().into_owned();
+
+        assert!(per_sempre(&percorso).is_ok());
+        assert!(!file.exists(), "il file se n'è andato");
+        // Già sparito: il gesto voleva che non ci fosse, e non c'è.
+        assert!(per_sempre(&percorso).is_ok());
+    }
 }
 
 #[cfg(test)]

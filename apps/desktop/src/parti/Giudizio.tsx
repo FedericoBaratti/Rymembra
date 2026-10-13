@@ -18,21 +18,21 @@
  * `Formato` non disegna niente quando il dato manca, quindi la fascia resta
  * quella di prima per chi ha spento l'interruttore o ha una libreria vecchia.
  */
-import type { CSSProperties } from "react";
+import { memo, type CSSProperties } from "react";
 
 import { Stelle } from "../Stelle";
 import { useVolumeSottoIlDito } from "../volume";
 import { ipc, type Brano, type StatoRiproduzione } from "../ipc";
 import { Formato } from "./Formato";
 import { Icona } from "./Icone";
-import { t } from "../lingue";
+import { t, useLingua } from "../lingue";
 
 /** Dove sta il giudizio, e quindi quanto è grande il cuore. */
 export type TagliaGiudizio = "colonna" | "grande";
 
 const CUORE = { colonna: 16, grande: 18 } as const;
 
-export function Giudizio({
+export const Giudizio = memo(function Giudizio({
   stato,
   brano,
   taglia,
@@ -53,6 +53,10 @@ export function Giudizio({
   onVoto: (brano: Brano, stelle: number) => void;
   onErrore: (e: unknown) => void;
 }) {
+  // Sotto `memo` (vedi «I widget sotto `memo`» in `Impaginazione.tsx`): si
+  // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
+  // l'iscrizione i testi resterebbero quelli del primo disegno.
+  useLingua();
   const comanda = (azione: Promise<void>) => {
     azione.catch(onErrore);
   };
@@ -68,10 +72,10 @@ export function Giudizio({
     // L'ancora del giro guidato. Sta qui e non nelle due schermate che montano
     // questa fascia, per la stessa ragione per cui ci sta il formato del file:
     // scritta una volta, illuminata in tutti e due i posti.
-    <div className="giudizio" data-giro="giudizio">
+    <div className="giudizio rating" data-giro="giudizio">
       <button
         type="button"
-        className="cuore icon-btn"
+        className="cuore icon-btn heart"
         aria-pressed={brano.liked}
         aria-label={brano.liked ? t("track.unlike") : t("track.like")}
         onClick={() => onPreferito(brano)}
@@ -122,4 +126,4 @@ export function Giudizio({
       <Formato formato={stato.formato} classe="formato np-formato" />
     </div>
   );
-}
+});

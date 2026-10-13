@@ -384,7 +384,8 @@ fn collega() -> Result<(), AppError> {
     let rete = Rete::nuova("google", oauth::SCADENZA);
     println!("Apro il consenso di Google. Hai tre minuti.");
 
-    let token = oauth::collega(&rete, &credenziali, apri_browser)?;
+    // Da riga di comando non c'è un tasto «Annulla»: si interrompe con Ctrl+C.
+    let token = oauth::collega(&rete, &credenziali, apri_browser, &|| false)?;
 
     let Some(refresh) = token.refresh_token.as_deref() else {
         // Senza `prompt=consent` Google non lo rimanda al secondo consenso, e

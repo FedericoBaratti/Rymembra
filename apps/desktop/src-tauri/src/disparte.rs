@@ -50,6 +50,18 @@
 //! scritto su una share che smette di rispondere è la scansione lenta,
 //! moltiplicata per la quantità di byte.
 //!
+//! # E le letture lunghe della libreria
+//!
+//! Dalla 3.0 passano di qui anche i comandi che **leggono molto**, attraverso
+//! [`leggi_la_libreria`]: gli elenchi di brani, album e artisti, la ricerca e i
+//! suoi conteggi, la cronologia, la Home, l'avvio, e le playlist — l'elenco con
+//! i conteggi delle intelligenti, i loro brani, l'anteprima delle regole. Non
+//! aspettano il disco, ma su cinquantamila brani l'elenco degli artisti o una
+//! ricerca per prefisso durano decine di millisecondi, e un comando sincrono
+//! quei millisecondi li toglie al filo che ridisegna la finestra: una lista che
+//! scorre a scatti mentre la pagina successiva arriva. La regola che ne esce è
+//! semplice: un comando che legge più di una riga per chiave non è sincrono.
+//!
 //! Gli altri settantanove `#[tauri::command(async)]` restano dove sono:
 //! spostarli tutti insieme sarebbe un gesto che nessuna prova copre, e la
 //! maggior parte fa una query di microsecondi. Il prossimo candidato è
@@ -88,4 +100,36 @@ pub async fn in_disparte<T: Send + 'static>(
             })
             .with_cause(err.to_string())
         })
+}
+
+/// Una lettura della libreria, in disparte: [`in_disparte`] più il lucchetto.
+///
+/// È la forma di quasi tutti i comandi che leggono molto, scritta una volta:
+/// prendere lo stato dal registro di Tauri, prendere il lucchetto, leggere.
+/// Prende un `AppHandle` e non uno `State` per la ragione scritta su
+/// `comandi::cartelle_candidate`: quel che va sul pool dev'essere `'static`,
+/// e un prestito dello stato lì dentro non entra.
+///
+/// # Errori
+///
+/// `internal.aborted` se lo stato non c'è più — la finestra si sta chiudendo —
+/// o se la lettura cade; altrimenti quello della lettura.
+pub async fn leggi_la_libreria<T: Send + 'static>(
+    app: tauri::AppHandle,
+    nome: &'static str,
+    lettura: impl FnOnce(&mut crate::stato::Libreria) -> Result<T, AppError> + Send + 'static,
+) -> Result<T, AppError> {
+    in_disparte(nome, move || {
+        use tauri::Manager as _;
+        // `try_state` e non `state`: questo corpo gira sul pool bloccante, che
+        // può ritrovarsi vivo mentre gli stati gestiti vengono lasciati cadere.
+        let stato = app.try_state::<crate::stato::Stato>().ok_or_else(|| {
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some(nome.to_owned()),
+            })
+            .with_cause("la libreria non è più fra gli stati gestiti")
+        })?;
+        crate::stato::con_libreria(&stato, lettura)
+    })
+    .await?
 }

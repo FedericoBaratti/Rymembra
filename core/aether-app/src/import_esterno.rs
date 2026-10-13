@@ -29,7 +29,7 @@ use aether_domain::esterno::{BranoEsterno, ContenutoEsterno, Fonte, GenereConten
 use aether_domain::keys::{PlaylistKey, TrackKey, TrackKeyInput};
 use rusqlite::{Connection, OptionalExtension as _, Transaction};
 
-use crate::library::{db_error, now_ms, rebuild_aggregates};
+use crate::library::{db_error, now_ms, rebuild_aggregates, transazione_di_scrittura};
 
 /// Un brano che su Spotify c'era e in libreria no.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -219,8 +219,9 @@ fn run(
         }
     }
 
-    let tx = connection
-        .transaction()
+    // `Immediate`: si legge (la playlist che c'è già, i desiderati) e poi si
+    // scrive. Vedi [`crate::library::transazione_di_scrittura`].
+    let tx = transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura della transazione", &err))?;
 
     if crea_playlist {
@@ -246,7 +247,10 @@ fn run(
             contenuto.truncation(),
         )?;
         rapporto.playlist_id = Some(id);
-        rapporto.playlist_name = Some(contenuto.title.trim().to_owned());
+        // Il nome che la playlist ha davvero, troncato come l'ha troncato
+        // `prepara_playlist`: il rapporto deve nominare quel che si trova in
+        // libreria, non il titolo che non ci è entrato.
+        rapporto.playlist_name = Some(crate::playlists::nome_da_importare(&contenuto.title));
         rapporto.playlist_created = creata;
         rapporto.playlist_replaced = sostituita;
         rapporto.playlist_entries = riempi_playlist(
@@ -503,12 +507,25 @@ pub(crate) fn prepara_playlist(
     sorgente: Option<(Fonte, &str)>,
     troncatura: Option<(u32, u32)>,
 ) -> Result<(i64, bool, bool), AppError> {
-    let chiave = PlaylistKey::compute(Some(titolo.trim()));
+    // Il titolo che arriva da fuori si **tronca** al tetto dei nomi invece di
+    // farsi rifiutare: vedi `playlists::nome_da_importare`. Da qui in giù è
+    // l'unico titolo che esiste — la chiave, il rinomino, la riga nuova — così
+    // nessuna delle tre strade scrive un nome che la creazione a mano
+    // rifiuterebbe.
+    let integro = titolo.trim();
+    let nome = crate::playlists::nome_da_importare(integro);
+    let titolo = nome.as_str();
+    let chiave = PlaylistKey::compute(Some(titolo));
     if chiave.as_str().is_empty() {
         return Err(AppError::new(ErrorCode::LibraryPlaylistNameInvalid {
             name: titolo.to_owned(),
         }));
     }
+    // La chiave del titolo **intero**, per ritrovare una playlist importata
+    // prima della 3.0, quando il tetto non c'era e il nome lungo è entrato
+    // così com'era. Senza, reimportarla senza identificativo — un M3U — ne
+    // creerebbe una seconda accanto, col nome troncato e la storia vuota.
+    let chiave_intera = (titolo != integro).then(|| PlaylistKey::compute(Some(integro)));
 
     let per_identificativo = match sorgente {
         Some((servizio, id)) => tx
@@ -521,14 +538,17 @@ pub(crate) fn prepara_playlist(
             .ok(),
         None => None,
     };
-    let esistente: Option<(i64, bool)> = per_identificativo.or_else(|| {
+    let per_chiave = |chiave: &PlaylistKey| {
         tx.query_row(
             "SELECT id, is_smart FROM playlists WHERE playlist_key = ?1",
             [chiave.as_str()],
-            |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? != 0)),
         )
         .ok()
-    });
+    };
+    let esistente: Option<(i64, bool)> = per_identificativo
+        .or_else(|| per_chiave(&chiave))
+        .or_else(|| chiave_intera.as_ref().and_then(per_chiave));
 
     match esistente {
         Some((_, true)) => Err(AppError::new(ErrorCode::LibraryPlaylistIsSmart {
@@ -540,12 +560,12 @@ pub(crate) fn prepara_playlist(
             }
             tx.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [id])
                 .map_err(|err| db_error("svuotamento della playlist", &err))?;
-            rinomina_se_libero(tx, id, titolo.trim(), &chiave)?;
+            rinomina_se_libero(tx, id, titolo, &chiave)?;
             segna_identificativo(tx, id, sorgente)?;
             Ok((id, false, true))
         }
         None => {
-            let id = crate::playlists::crea_riga(tx, titolo.trim())?;
+            let id = crate::playlists::crea_riga(tx, titolo)?;
             segna_identificativo(tx, id, sorgente)?;
             Ok((id, true, false))
         }
@@ -1707,5 +1727,70 @@ mod prove {
         // interrompesse l'elenco quella buona non comparirebbe.
         assert_eq!(rapporti(&db, 50), Ok(vec![buono]));
         assert_eq!(rapporto(&db, "rotto"), Ok(None));
+    }
+
+    #[test]
+    fn un_titolo_oltre_il_tetto_non_fa_fallire_l_importazione() {
+        // La regressione della 3.0: un item dell'Internet Archive con la
+        // scaletta intera nel titolo superava i duecento caratteri, e il tetto
+        // dei nomi rifiutava **l'importazione intera** — brani ritrovati
+        // compresi. Adesso il titolo si tronca e i brani arrivano.
+        let mut db = database();
+        aggiungi(&db, "Grateful Dead", "Scarlet Begonias", "Cornell", 600_000);
+        let mut c = contenuto_catalogo(vec![brano(
+            "Grateful Dead",
+            "Scarlet Begonias",
+            "Cornell",
+            600_000,
+        )]);
+        c.title = "Grateful Dead Live at Barton Hall, Cornell University — ".repeat(10);
+
+        let Ok(fatto) = import(&mut db, &c, true) else {
+            panic!("un titolo lungo non deve far fallire l'importazione");
+        };
+        assert_eq!(fatto.playlist_entries, 1, "il brano è arrivato");
+        let nome = testo(&db, "SELECT name FROM playlists").unwrap_or_default();
+        assert!(nome.chars().count() <= crate::playlists::NOME_MASSIMO);
+        assert!(nome.ends_with('…'), "il nome dice che continuava: «{nome}»");
+        // Il rapporto nomina la playlist che c'è, non il titolo che non c'è entrato.
+        assert_eq!(fatto.playlist_name.as_deref(), Some(nome.as_str()));
+
+        // E reimportare lo stesso titolo ritrova la stessa playlist.
+        let Ok(di_nuovo) = import(&mut db, &c, true) else {
+            panic!("la reimportazione deve riuscire");
+        };
+        assert!(di_nuovo.playlist_replaced);
+        assert_eq!(conta(&db, "SELECT COUNT(*) FROM playlists"), 1);
+    }
+
+    #[test]
+    fn una_playlist_dal_nome_lungo_di_prima_della_tre_si_ritrova() {
+        // Prima della 3.0 il tetto non c'era, e un nome lungo è entrato intero
+        // con la chiave del nome intero. Reimportarla senza identificativo — il
+        // caso di un M3U — deve sostituirla, non crearne una seconda col nome
+        // troncato e la storia vuota accanto.
+        let mut db = database();
+        aggiungi(&db, "Radiohead", "Karma Police", "OK Computer", 264_000);
+        let lungo = "Una serata lunghissima con gli amici di sempre, ".repeat(6);
+        let chiave = PlaylistKey::compute(Some(lungo.trim()));
+        let esito = db.execute(
+            "INSERT INTO playlists (playlist_key, name, created_at, updated_at, is_smart)
+             VALUES (?1, ?2, 0, 0, 0)",
+            rusqlite::params![chiave.as_str(), lungo.trim()],
+        );
+        assert!(esito.is_ok(), "la playlist di prima deve entrare");
+
+        let tx = db.transaction();
+        let Ok(tx) = tx else {
+            panic!("la transazione di prova si deve aprire");
+        };
+        let Ok((_, creata, sostituita)) = prepara_playlist(&tx, &lungo, None, None) else {
+            panic!("la playlist di prima si deve ritrovare");
+        };
+        assert!(
+            !creata && sostituita,
+            "ritrovata e sostituita, non duplicata"
+        );
+        drop(tx);
     }
 }

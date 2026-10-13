@@ -75,7 +75,41 @@ pub struct Camminata {
     /// È lo stesso `bool` che [`MusicFiles::walk_a_rate`] restituisce alla fine
     /// della sua consegna, e i due non devono mai divergere: chi implementa
     /// l'uno implementa l'altro.
+    ///
+    /// **Dove** si è perso il ramo qui non c'è: lo dice soltanto la camminata a
+    /// rate, con [`Voce::RamoPerso`], che è quella da cui passa la scansione.
+    /// Chi cammina intero — il primo avvio, gli esempi — vuole sapere quali file
+    /// ci sono, non decidere cosa cancellare.
     pub completa: bool,
+}
+
+/// Quel che una camminata a rate consegna, un pezzo per volta.
+///
+/// # Perché i rami persi viaggiano insieme ai file
+///
+/// Perché [`Camminata::completa`] da solo dice **che** si è perso qualcosa, e
+/// non **dove**, e fra le due domande c'è di mezzo la libreria. Con la radice
+/// che alla sonda risponde — il caso normale di una sottocartella a permessi
+/// negati sul disco di casa, o di una share che singhiozza su un ramo solo — la
+/// scansione prima proseguiva come se avesse visto tutto: ogni brano sotto la
+/// cartella illeggibile risultava «sparito», e una scansione a mano lo toglieva,
+/// portandosi via in cascata cronologia, playlist, voti e preferiti.
+///
+/// Con il ramo detto per nome la scansione può fare la cosa giusta e stretta:
+/// quel che sta **sotto quel ramo** non è stato verificato — né tolto né
+/// riscritto — e tutto il resto della radice si giudica come sempre.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Voce {
+    /// Un file trovato.
+    File(DiscoveredFile),
+    /// Una cartella dentro cui non si è potuto guardare, per intero.
+    ///
+    /// Il percorso è quello della cartella, nella stessa forma dei percorsi dei
+    /// file — la radice più i nomi, come la camminata li costruisce — così che
+    /// «sta sotto questo ramo» si chieda con la stessa `is_under` con cui il
+    /// piano chiede «sta sotto questa radice». Può essere la radice stessa,
+    /// quando non si sa dire di meglio.
+    RamoPerso(String),
 }
 
 /// Da dove arrivano i file musicali.
@@ -121,34 +155,50 @@ pub trait MusicFiles: Send + Sync {
     /// dire scegliere fra dichiarare morta una libreria grande e non accorgersi
     /// mai di una share caduta.
     ///
-    /// `su_file` viene chiamato una volta per file, nell'ordine in cui la
-    /// camminata li incontra; restituendo [`ControlFlow::Break`] dice «basta
-    /// così» e la camminata si ferma lì.
+    /// `su_voce` viene chiamato una volta per file, nell'ordine in cui la
+    /// camminata li incontra, e una volta per ogni ramo che si perde;
+    /// restituendo [`ControlFlow::Break`] dice «basta così» e la camminata si
+    /// ferma lì.
     ///
     /// # Il `bool`
     ///
     /// È [`Camminata::completa`], con lo stesso significato e lo stesso peso a
     /// valle: `true` vuol dire «nessun ramo è andato perso», e solo su un `true`
     /// chi chiama si può permettere di concludere che quel che non è arrivato
-    /// non c'è. Una camminata **interrotta** da `su_file` restituisce quindi
+    /// non c'è. Una camminata **interrotta** da `su_voce` restituisce quindi
     /// `false`: chi ha detto basta non ha visto tutto, per definizione.
+    ///
+    /// # Il patto dei rami persi
+    ///
+    /// Chi abbassa `completa` perché un ramo non si è letto **deve** averlo
+    /// consegnato come [`Voce::RamoPerso`]. Chi non sa dire dove l'ha perso
+    /// consegna la radice intera: è la risposta larga, e l'unica onesta — a
+    /// valle vuol dire «di questa radice non si toglie niente», che è quel che
+    /// un elenco monco senza indirizzo merita. Una camminata che si dice monca
+    /// senza aver consegnato rami viene trattata allo stesso modo da chi la
+    /// consuma, così che il patto rotto costi prudenza e non brani.
     ///
     /// Il corpo di serie chiama [`Self::walk`] e consegna quel che ha
     /// restituito: è corretto per ogni implementazione — i doppi di prova, un
-    /// provider Android — e sbagliato per una cosa sola, il tempo. Chi cammina
-    /// su un filesystem che può non rispondere lo sovrascrive consegnando
-    /// davvero man mano, altrimenti il silenzio che chi consuma sta misurando è
-    /// un silenzio che comincia soltanto alla fine.
+    /// provider Android — e sbagliato per due cose. La prima è il tempo: chi
+    /// cammina su un filesystem che può non rispondere lo sovrascrive
+    /// consegnando davvero man mano, altrimenti il silenzio che chi consuma sta
+    /// misurando è un silenzio che comincia soltanto alla fine. La seconda è la
+    /// grana dei rami persi: [`Camminata`] non sa dove si è perso qualcosa, e il
+    /// corpo di serie consegna la radice intera.
     fn walk_a_rate(
         &self,
         root: &str,
-        su_file: &mut dyn FnMut(DiscoveredFile) -> ControlFlow<()>,
+        su_voce: &mut dyn FnMut(Voce) -> ControlFlow<()>,
     ) -> Result<bool, AppError> {
         let camminata = self.walk(root)?;
         for file in camminata.file {
-            if su_file(file).is_break() {
+            if su_voce(Voce::File(file)).is_break() {
                 return Ok(false);
             }
+        }
+        if !camminata.completa && su_voce(Voce::RamoPerso(root.to_owned())).is_break() {
+            return Ok(false);
         }
         Ok(camminata.completa)
     }
@@ -411,8 +461,12 @@ impl MusicFiles for LocalFiles {
     /// una a rate direbbero due cose diverse sulla stessa cartella.
     fn walk(&self, root: &str) -> Result<Camminata, AppError> {
         let mut file = Vec::new();
-        let completa = self.walk_a_rate(root, &mut |trovato| {
-            file.push(trovato);
+        let completa = self.walk_a_rate(root, &mut |voce| {
+            // I rami persi qui non servono: `completa` dice già che l'elenco è
+            // monco, e chi cammina intero non decide cancellazioni.
+            if let Voce::File(trovato) = voce {
+                file.push(trovato);
+            }
             ControlFlow::Continue(())
         })?;
         Ok(Camminata { file, completa })
@@ -421,12 +475,16 @@ impl MusicFiles for LocalFiles {
     fn walk_a_rate(
         &self,
         root: &str,
-        su_file: &mut dyn FnMut(DiscoveredFile) -> ControlFlow<()>,
+        su_voce: &mut dyn FnMut(Voce) -> ControlFlow<()>,
     ) -> Result<bool, AppError> {
         // Ogni ramo perso abbassa questo, e non è pignoleria: è l'unica
         // differenza fra «qui non c'è più niente» e «di qui non si è visto
         // tutto», e a valle decide se dei brani si cancellano.
         let mut completa = true;
+        // Le cartelle aperte lungo il cammino, con la loro profondità: servono
+        // a dare un indirizzo agli errori che `walkdir` consegna senza. Vedi
+        // [`ramo_di_un_errore`].
+        let mut aperte: Vec<(usize, PathBuf)> = Vec::new();
         // `walkdir` con i link simbolici non seguiti: seguirli permetterebbe a
         // un anello di far girare la scansione all'infinito, e a un link verso
         // la cartella superiore di contare ogni brano due volte.
@@ -434,20 +492,46 @@ impl MusicFiles for LocalFiles {
             let entry = match entry {
                 Ok(entry) => entry,
                 // Una sottocartella illeggibile non ferma la camminata: si perde
-                // quel ramo, non l'intera libreria. Ma **si dice**.
-                Err(_) => {
+                // quel ramo, non l'intera libreria. Ma **si dice**, e si dice
+                // quale: è il nome del ramo che permette a valle di non
+                // giudicare quel che ci sta sotto, invece di giudicarlo sparito.
+                Err(err) => {
                     completa = false;
+                    let ramo = ramo_di_un_errore(err.path(), err.depth(), &aperte, root);
+                    if su_voce(Voce::RamoPerso(ramo)).is_break() {
+                        return Ok(false);
+                    }
                     continue;
                 }
             };
+            if entry.file_type().is_dir() {
+                // `walkdir` cammina in profondità: una cartella a profondità
+                // `d` chiude tutte quelle aperte a profondità `d` o più.
+                let profondita = entry.depth();
+                while aperte.last().is_some_and(|(d, _)| *d >= profondita) {
+                    aperte.pop();
+                }
+                aperte.push((profondita, entry.path().to_path_buf()));
+                continue;
+            }
             if !entry.file_type().is_file() {
                 continue;
             }
             let Ok(metadata) = entry.metadata() else {
                 // Un file elencato di cui non si legge la data è un file su cui
                 // non si può decidere niente: sparisce dall'elenco, quindi
-                // l'elenco non è più intero.
+                // l'elenco non è più intero. Il ramo perso è la sua cartella, e
+                // non il file solo: l'errore sui metadati di un file è quasi
+                // sempre l'errore di chi serve quella cartella, e i suoi vicini
+                // arrivati prima o dopo non sono una garanzia.
                 completa = false;
+                let cartella = entry
+                    .path()
+                    .parent()
+                    .map_or_else(|| root.to_owned(), |p| p.to_string_lossy().into_owned());
+                if su_voce(Voce::RamoPerso(cartella)).is_break() {
+                    return Ok(false);
+                }
                 continue;
             };
             let path = entry.path().to_string_lossy().into_owned();
@@ -457,7 +541,7 @@ impl MusicFiles for LocalFiles {
                 modified_ms: modified_ms(&metadata),
             };
             // Chi ha detto basta non ha visto tutto: `false`, non `completa`.
-            if su_file(trovato).is_break() {
+            if su_voce(Voce::File(trovato)).is_break() {
                 return Ok(false);
             }
         }
@@ -493,6 +577,43 @@ impl MusicFiles for LocalFiles {
         })
         .unwrap_or(false)
     }
+}
+
+/// La cartella di cui un errore di `walkdir` racconta il guasto.
+///
+/// # Tre casi
+///
+/// - **L'errore ha un percorso.** È il caso di una cartella che non si apre —
+///   `read_dir` rifiutato, permessi negati — e il percorso è quello della
+///   cartella: il ramo perso è lei.
+/// - **L'errore non ce l'ha.** Succede quando la cartella si è aperta e poi
+///   l'elenco si interrompe a metà — la share che cade mentre consegna i nomi.
+///   `walkdir` dice soltanto a che profondità stavano le voci che non sono
+///   arrivate; la cartella che le stava elencando è quella aperta un livello
+///   sopra, e `aperte` la ricorda.
+/// - **Nemmeno quella si trova.** Allora la radice: non sapere dove si è perso
+///   qualcosa vuol dire averlo perso ovunque, e a valle la risposta larga costa
+///   una passata senza rimozioni, mai una rimozione di troppo.
+///
+/// Separata dal ciclo perché è l'unica parte della camminata che decide
+/// qualcosa, ed è l'unica che si può provare senza un disco che si rompa a
+/// comando.
+fn ramo_di_un_errore(
+    percorso: Option<&Path>,
+    profondita: usize,
+    aperte: &[(usize, PathBuf)],
+    root: &str,
+) -> String {
+    if let Some(percorso) = percorso {
+        return percorso.to_string_lossy().into_owned();
+    }
+    profondita
+        .checked_sub(1)
+        .and_then(|sopra| aperte.iter().rev().find(|(d, _)| *d == sopra))
+        .map_or_else(
+            || root.to_owned(),
+            |(_, cartella)| cartella.to_string_lossy().into_owned(),
+        )
 }
 
 /// Quanto si aspetta una radice prima di dichiararla irraggiungibile.
@@ -587,8 +708,8 @@ mod tests {
 
         let mut a_rate = Vec::new();
         let completa = LocalFiles
-            .walk_a_rate(&root, &mut |trovato| {
-                a_rate.push(trovato);
+            .walk_a_rate(&root, &mut |voce| {
+                a_rate.push(voce);
                 ControlFlow::Continue(())
             })
             .expect("camminata a rate");
@@ -596,7 +717,13 @@ mod tests {
 
         assert_eq!(completa, intera.completa);
         assert!(completa, "una cartella sana si cammina per intero");
-        let percorsi: Vec<&str> = a_rate.iter().map(|f| f.path.as_str()).collect();
+        let percorsi: Vec<&str> = a_rate
+            .iter()
+            .map(|voce| match voce {
+                Voce::File(f) => f.path.as_str(),
+                Voce::RamoPerso(ramo) => panic!("una cartella sana non perde rami: {ramo}"),
+            })
+            .collect();
         let attesi: Vec<&str> = intera.file.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(percorsi, attesi, "stessi file, stesso ordine");
     }
@@ -645,6 +772,89 @@ mod tests {
             !found.completa,
             "una radice che non si apre non produce un elenco su cui fidarsi"
         );
+    }
+
+    #[test]
+    fn una_radice_che_non_si_apre_consegna_se_stessa_come_ramo_perso() {
+        // Il patto dei rami persi, sulla camminata vera: chi abbassa
+        // `completa` dice anche dove. Qui il ramo è la radice intera, perché è
+        // lei a non aprirsi — e a valle vuol dire «di qui non si toglie niente».
+        let mut rami = Vec::new();
+        let completa = LocalFiles
+            .walk_a_rate("Z:/non/esiste", &mut |voce| {
+                if let Voce::RamoPerso(ramo) = voce {
+                    rami.push(ramo);
+                }
+                ControlFlow::Continue(())
+            })
+            .expect("nessun errore");
+        assert!(!completa);
+        assert_eq!(rami, vec!["Z:/non/esiste".to_owned()]);
+    }
+
+    #[test]
+    fn l_errore_di_walkdir_trova_la_sua_cartella() {
+        let root = r"C:\Musica";
+        let aperte = vec![
+            (0, PathBuf::from(root)),
+            (1, PathBuf::from(r"C:\Musica\Album")),
+            (2, PathBuf::from(r"C:\Musica\Album\CD1")),
+        ];
+        // Con un percorso: è la cartella che non si è aperta.
+        assert_eq!(
+            ramo_di_un_errore(Some(Path::new(r"C:\Musica\Negata")), 1, &aperte, root),
+            r"C:\Musica\Negata"
+        );
+        // Senza: le voci che mancano stavano a profondità 2, quindi le stava
+        // elencando la cartella aperta a profondità 1.
+        assert_eq!(
+            ramo_di_un_errore(None, 2, &aperte, root),
+            r"C:\Musica\Album"
+        );
+        assert_eq!(
+            ramo_di_un_errore(None, 3, &aperte, root),
+            r"C:\Musica\Album\CD1"
+        );
+        // Senza, e senza una cartella che corrisponda: la radice. Non sapere
+        // dove vuol dire dappertutto.
+        assert_eq!(ramo_di_un_errore(None, 0, &aperte, root), root);
+        assert_eq!(ramo_di_un_errore(None, 7, &aperte, root), root);
+        assert_eq!(ramo_di_un_errore(None, 2, &[], root), root);
+    }
+
+    #[test]
+    fn la_camminata_di_serie_consegna_la_radice_quando_e_monca() {
+        // Chi implementa soltanto `walk` non sa dire dove ha perso un ramo: il
+        // corpo di serie di `walk_a_rate` consegna allora la radice intera,
+        // che è la risposta larga — e a valle costa prudenza, non brani.
+        struct Monco;
+        impl MusicFiles for Monco {
+            fn walk(&self, _root: &str) -> Result<Camminata, AppError> {
+                Ok(Camminata {
+                    file: vec![DiscoveredFile {
+                        path: r"C:\m\a.mp3".to_owned(),
+                        size_bytes: 1,
+                        modified_ms: 1,
+                    }],
+                    completa: false,
+                })
+            }
+            fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send + Sync>, AppError> {
+                Err(AppError::new(ErrorCode::FsNotFound {
+                    path: path.to_owned(),
+                }))
+            }
+        }
+        let mut voci = Vec::new();
+        let completa = Monco
+            .walk_a_rate(r"C:\m", &mut |voce| {
+                voci.push(voce);
+                ControlFlow::Continue(())
+            })
+            .expect("camminata");
+        assert!(!completa);
+        assert_eq!(voci.len(), 2);
+        assert_eq!(voci.last(), Some(&Voce::RamoPerso(r"C:\m".to_owned())));
     }
 
     #[test]

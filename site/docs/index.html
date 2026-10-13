@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Aether — Technical documentation</title>
+<meta name="description" content="How Aether works, from the code: architecture, the library database, scanning, the audio engine, network, services, skins, the interface and the build.">
+<meta name="theme-color" content="#09090d">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2309090d'/%3E%3Cpath d='M32 8a24 24 0 0 1 0 48' fill='none' stroke='%238b7cf6' stroke-width='7' stroke-linecap='round'/%3E%3Cpath d='M32 56a24 24 0 0 1 0-48' fill='none' stroke='%234fd6e0' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./docs.css">
+</head>
+<body>
+
+<header class="top">
+  <a class="brand" href="../" aria-label="Back to the site">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke-width="2.6" aria-hidden="true"><path d="M10 2.4a7.6 7.6 0 0 1 0 15.2" stroke="currentColor"/><path d="M10 17.6a7.6 7.6 0 0 1 0-15.2" stroke="var(--acc2)"/></svg>
+    <span>Aether</span>
+  </a>
+  <span class="badge">Docs</span>
+  <span class="spacer"></span>
+  <button type="button" class="menu-btn" data-menu aria-expanded="false" aria-controls="indice">Index</button>
+</header>
+
+<div class="layout">
+  <nav class="side" id="indice" aria-label="Documentation index">
+    <label class="search">
+      <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="9" r="5"/><path d="m12.8 12.8 3.6 3.6"/></svg>
+      <input type="search" data-search autocomplete="off" spellcheck="false" placeholder="Search the docs" aria-label="Search the docs">
+    </label>
+    <div data-index></div>
+  </nav>
+
+  <main class="doc" id="contenuto">
+    <div class="intro">
+      <h1>Technical documentation</h1>
+      <p>How Aether works, read from its code: what each part does, how it does it, and why it is built that way. It describes version 3.0.0 — the workspace in the repository — and every entry names the source files it comes from.</p>
+      <p>The code is written with Italian identifiers and comments; the <a href="#glossary">glossary</a> translates the words that recur. The <strong>?</strong> on each card of the Settings opens the entry for that feature. What travels over the network, request by request, is listed in <a href="https://github.com/FedericoBaratti/Aether/blob/main/PRIVACY.md" target="_blank" rel="noopener">PRIVACY.md</a>.</p>
+    </div>
+    <div data-body></div>
+    <p class="nessuno" data-empty hidden>Nothing matches these words.</p>
+    <noscript>
+      <p>This documentation needs JavaScript. The same information is in the
+      <a href="https://github.com/FedericoBaratti/Aether">repository</a>.</p>
+    </noscript>
+  </main>
+</div>
+
+<!-- I capitoli, nell'ordine in cui si leggono. `strumenti/docs.js` legge
+     questo elenco: un file in `contenuto/` che non compare qui è un errore. -->
+<script src="./contenuto/overview.js"></script>
+<script src="./contenuto/data.js"></script>
+<script src="./contenuto/library.js"></script>
+<script src="./contenuto/metadata.js"></script>
+<script src="./contenuto/audio.js"></script>
+<script src="./contenuto/player.js"></script>
+<script src="./contenuto/sources.js"></script>
+<script src="./contenuto/network.js"></script>
+<script src="./contenuto/services.js"></script>
+<script src="./contenuto/skins.js"></script>
+<script src="./contenuto/studio.js"></script>
+<script src="./contenuto/interface.js"></script>
+<script src="./contenuto/shell.js"></script>
+<script src="./contenuto/build.js"></script>
+<script src="./docs.js"></script>
+</body>
+</html>

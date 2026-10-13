@@ -6,49 +6,63 @@
  * del registro e non un pezzo della barra. Il giorno in cui una skin lo mette
  * in cima alla colonna, il componente c'è già.
  */
+import { memo } from "react";
+
 import { Copertina } from "../Copertina";
 import type { Brano } from "../ipc";
+import { statoSuono } from "../segnali";
 import { Icona } from "./Icone";
-import { t } from "../lingue";
+import { t, useLingua } from "../lingue";
 import { nomeArtista, titoloAlbum } from "../formato";
 
-export function Ora({
+export const Ora = memo(function Ora({
   brano,
+  inPausa,
   conCopertina = true,
   conCuore = true,
   onPreferito,
 }: {
   brano: Brano;
+  inPausa: boolean;
   /** La copertina in miniatura. */
   conCopertina?: boolean;
   /** Il cuore dei preferiti. */
   conCuore?: boolean;
   onPreferito: (brano: Brano) => void;
 }) {
+  // Sotto `memo` (vedi «I widget sotto `memo`» in `Impaginazione.tsx`): si
+  // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
+  // l'iscrizione i testi resterebbero quelli del primo disegno.
+  useLingua();
+  const suono = statoSuono(true, inPausa);
   return (
-    <div className="ora">
+    <div className="ora now-playing" {...suono}>
       {conCopertina && (
         <Copertina
           hash={brano.coverArtHash}
           titolo={titoloAlbum(brano.album)}
-          classe="miniatura"
+          classe="miniatura np-thumb"
+          suono={suono}
+          cambio
+          /* Titolo e album sono scritti accanto: vedi `Copertina`. */
+          accanto
         />
       )}
       <div className="chi">
-        <div className="nome" title={brano.title}>
+        <div className="nome" title={brano.title} dir="auto">
           {brano.title}
         </div>
         <div
           className="autore"
           title={`${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`}
         >
-          {nomeArtista(brano.artist)} · {titoloAlbum(brano.album)}
+          <bdi>{nomeArtista(brano.artist)}</bdi> · <bdi>{titoloAlbum(brano.album)}</bdi>
         </div>
       </div>
       {conCuore && (
         <button
           type="button"
-          className="cuore icon-btn"
+          className="cuore icon-btn heart"
           aria-pressed={brano.liked}
           aria-label={brano.liked ? t("track.unlike") : t("track.like")}
           onClick={() => onPreferito(brano)}
@@ -58,4 +72,4 @@ export function Ora({
       )}
     </div>
   );
-}
+});

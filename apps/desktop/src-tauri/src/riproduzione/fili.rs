@@ -23,13 +23,13 @@ use tauri::{Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
-use crate::stato::{Stato, adesso_ms, con_libreria, con_libreria_entro};
+use crate::stato::{Stato, adesso_ms, con_libreria_entro};
 
-use super::coda::scegli_da_solo;
+use super::coda::{scegli_da_solo, scrivi_coda};
 use super::{
-    BATTITI_PER_SEGNO, BandeIpc, FINE_DEL_BRANO, Lettore, PASSO_SPETTRO, PASSO_SPETTRO_FERMO,
-    PASSO_TEMPO, StatoLettore, Tempo, annota_ripresa, brano_di, con_lettore, guasto_di,
-    manda_stato,
+    AVANZAMENTO_MINIMO_MS, BATTITI_PER_SEGNO, BandeIpc, FINE_DEL_BRANO, Lettore, PASSO_SPETTRO,
+    PASSO_SPETTRO_FERMO, PASSO_TEMPO, StatoLettore, Tempo, annota_ripresa, aspetta_il_seguito,
+    brano_di, con_lettore, guasto_di, manda_stato,
 };
 
 /// Dice al motore quale sarà il brano dopo.
@@ -145,6 +145,39 @@ pub fn avvia_preparatore(app: tauri::AppHandle, orecchio: std::sync::mpsc::Recei
 fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
     let stato = app.state::<StatoLettore>();
 
+    // ── 0. l'autoplay, se la coda non ha un dopo ──
+    //
+    // Scegliere legge la libreria, e si fa **fuori** dal lucchetto del
+    // lettore: prima si faceva dentro, e per tutta la scelta la pausa premuta
+    // dalla finestra aspettava. Tre passi: sotto lucchetto si guarda se serve
+    // e si fotografa la coda; fuori si sceglie; sotto lucchetto si accoda —
+    // solo se nel frattempo la coda è rimasta quella fotografata, altrimenti
+    // chi l'ha cambiata ha già deciso lui cosa viene dopo.
+    let da_scegliere = con_lettore(&stato, |lettore| {
+        let fine = stato.spegnimento.load(std::sync::atomic::Ordering::Relaxed) == FINE_DEL_BRANO;
+        if fine || !lettore.autoplay || lettore.coda.peek_next().is_some() {
+            return Ok(None);
+        }
+        Ok(lettore
+            .coda
+            .current()
+            .map(|corrente| (corrente, lettore.coda.in_play_order())))
+    });
+    if let Ok(Some((corrente, esclusi))) = da_scegliere
+        && let Some(scelta) = scegli_da_solo(app, corrente, &esclusi)
+    {
+        let _ = con_lettore(&stato, |lettore| {
+            if lettore.coda.current() == Some(corrente)
+                && lettore.coda.peek_next().is_none()
+                && lettore.coda.in_play_order() == esclusi
+            {
+                lettore.coda.enqueue(&[scelta.id]);
+                lettore.motivo_prossimo = Some((scelta.id, scelta.motivo.codice()));
+            }
+            Ok(())
+        });
+    }
+
     // ── 1. la decisione, sotto lucchetto ──
     let scelta = con_lettore(&stato, |lettore| {
         // Il timer «fine del brano» si fa qui, e non con una sveglia: non è un
@@ -158,20 +191,13 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
             return Ok(None);
         }
 
-        // La coda non ha un dopo: è qui che l'autoplay entra, e **qui** e non
-        // sull'evento `Fermato`. Accodando adesso — mentre il brano corrente
-        // suona ancora — quel che si sceglie passa dalla stessa strada di tutti
-        // gli altri: viene aperto in anticipo, attacca senza stacco, e non c'è
-        // nessun istante in cui l'applicazione si sia fermata. Reagire a
-        // `Fermato` vorrebbe dire ripartire *dopo* il silenzio.
-        if lettore.coda.peek_next().is_none()
-            && lettore.autoplay
-            && let Some(scelta) = scegli_da_solo(app, lettore)
-        {
-            lettore.coda.enqueue(&[scelta.id]);
-            lettore.motivo_prossimo = Some((scelta.id, scelta.motivo.codice()));
-        }
-
+        // La coda non ha un dopo: è lì che l'autoplay entra — al passo zero,
+        // qui sopra — e **lì** e non sull'evento `Fermato`. Accodando adesso,
+        // mentre il brano corrente suona ancora, quel che si sceglie passa
+        // dalla stessa strada di tutti gli altri: viene aperto in anticipo,
+        // attacca senza stacco, e non c'è nessun istante in cui l'applicazione
+        // si sia fermata. Reagire a `Fermato` vorrebbe dire ripartire *dopo* il
+        // silenzio.
         let formato = lettore.motore.formato();
         match lettore.coda.peek_next() {
             // Nessun successivo: azzerare è l'unica cosa da fare, dura quanto
@@ -254,6 +280,16 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
         if lettore.coda.peek_next() != Some(id) {
             return Ok(());
         }
+        // E può essere cambiato il motore: un'uscita riaperta mentre il file si
+        // apriva — le cuffie a 48 kHz al posto degli altoparlanti a 44,1, un
+        // DAC a sei canali al posto di due. Il brano è stato preparato per il
+        // formato di prima, e consegnato a questo suonerebbe alla velocità o con
+        // i canali sbagliati. Si lascia cadere e si chiede di nuovo, col
+        // formato di adesso.
+        if lettore.motore.formato() != formato {
+            sveglia_preparatore(&stato);
+            return Ok(());
+        }
         lettore.prepara(Some(brano));
         Ok(())
     });
@@ -313,6 +349,12 @@ pub fn spegnimento(
     // successivo era stato preparato quando questo è cominciato, e senza
     // questa riga suonerebbe lo stesso.
     con_lettore(&stato, |lettore| {
+        // Un timer toccato mentre la musica si sta già spegnendo è un timer che
+        // qualcuno ha deciso di cambiare: la discesa si lascia perdere, e il
+        // volume torna dov'era. Vedi [`scade_il_timer`].
+        if stato.sfumando_fino.swap(0, Ordering::Relaxed) != 0 {
+            lettore.motore.annulla_sfumatura();
+        }
         prepara_prossimo(&app, lettore);
         manda_stato(&app, lettore);
         Ok(())
@@ -320,18 +362,58 @@ pub fn spegnimento(
     .map_err(errore)
 }
 
-/// Mette in pausa se il timer di spegnimento è scaduto.
+/// Quanto dura la discesa del volume quando scade il timer di spegnimento.
+///
+/// Sei secondi: abbastanza perché la musica sembri allontanarsi invece di
+/// interrompersi, pochi abbastanza da non sembrare un timer che non scatta.
+const SFUMATURA_SPEGNIMENTO: Duration = Duration::from_secs(6);
+
+/// Fa scendere il volume e poi mette in pausa, se il timer di spegnimento è
+/// scaduto.
 ///
 /// Pausa e non `ferma`: chi si addormenta con la musica accesa, al risveglio,
 /// vuole ritrovare il segno dov'era. `ferma` butterebbe la posizione, e il
 /// mattino dopo il brano ripartirebbe da capo senza che nessuno capisca
 /// perché.
 ///
+/// # Perché una discesa e non la pausa secca
+///
+/// Perché la pausa secca era il modo peggiore di finire la serata di chi si
+/// stava addormentando: la musica si fermava a metà di una frase, e un
+/// silenzio improvviso sveglia quanto un rumore. Adesso il motore scende in
+/// [`SFUMATURA_SPEGNIMENTO`] e si mette in pausa da solo — vedi
+/// `aether_play::Motore::sfuma` — e questa funzione, a discesa finita, ferma
+/// l'ascolto e lo dice alla finestra. Qualunque gesto nel frattempo — play,
+/// un altro brano, il timer toccato — la annulla.
+///
 /// Il modo «fine del brano» non passa di qui: quello non è una scadenza ma un
 /// brano successivo che non viene preparato, e lo decide
 /// [`prepara_prossimo`].
 fn scade_il_timer(app: &tauri::AppHandle, stato_lettore: &StatoLettore) {
     use std::sync::atomic::Ordering;
+
+    // La discesa finita: il motore è già in pausa, se nessuno l'ha fermata.
+    let fino = stato_lettore.sfumando_fino.load(Ordering::Relaxed);
+    if fino > 0
+        && adesso_ms() >= fino
+        && stato_lettore
+            .sfumando_fino
+            .compare_exchange(fino, 0, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        let _ = con_lettore(stato_lettore, |lettore| {
+            // In pausa vuol dire che la discesa è arrivata in fondo. Se no,
+            // qualcuno l'ha interrotta scegliendo un altro brano o premendo
+            // play, e non c'è niente da fermare.
+            if lettore.motore.posizione().in_pausa
+                && let Some(ascolto) = lettore.ascolto.as_mut()
+            {
+                ascolto.pause(adesso_ms());
+            }
+            manda_stato(app, lettore);
+            Ok(())
+        });
+    }
 
     let quando = stato_lettore.spegnimento.load(Ordering::Relaxed);
     if quando <= 0 || adesso_ms() < quando {
@@ -349,9 +431,20 @@ fn scade_il_timer(app: &tauri::AppHandle, stato_lettore: &StatoLettore) {
         return;
     }
     let _ = con_lettore(stato_lettore, |lettore| {
-        lettore.motore.pausa();
-        if let Some(ascolto) = lettore.ascolto.as_mut() {
-            ascolto.pause(adesso_ms());
+        // Già fermo: non c'è niente da far scendere, resta da dire alla
+        // finestra che il timer non c'è più.
+        if !lettore.motore.posizione().in_pausa {
+            let durata = u64::try_from(SFUMATURA_SPEGNIMENTO.as_millis()).unwrap_or(6_000);
+            lettore.motore.sfuma(durata);
+            // La sveglia con mezzo secondo di margine: la discesa la misura il
+            // filo della decodifica col suo orologio, e controllare prima che
+            // abbia finito scambierebbe una discesa in corso per una
+            // interrotta — cioè un ascolto che continua a contare a musica
+            // ferma.
+            let fino = adesso_ms()
+                .saturating_add(i64::try_from(durata).unwrap_or(6_000))
+                .saturating_add(500);
+            stato_lettore.sfumando_fino.store(fino, Ordering::Relaxed);
         }
         manda_stato(app, lettore);
         Ok(())
@@ -404,8 +497,33 @@ fn scade_il_timer(app: &tauri::AppHandle, stato_lettore: &StatoLettore) {
 /// da fare. `fetch_or` e non `store` perché nel frattempo un comando può averle
 /// rialzate lui, e uno `store` non le abbasserebbe ma nemmeno racconterebbe la
 /// stessa cosa.
+///
+/// # E la coda
+///
+/// Dalla 3.0 anche la coda passa di qui: il gesto alza
+/// [`StatoLettore::coda_da_salvare`] e la scrittura arriva al giro dopo. Stessa
+/// bandiera, stessa scadenza, stessa regola del rialzo — e stessa ragione:
+/// scriverla dentro il gesto voleva dire tenere il lucchetto del lettore per
+/// tutto il tempo di una transazione.
 fn salva_quel_che_manca(app: &tauri::AppHandle, stato: &StatoLettore, entro: Duration) {
     use std::sync::atomic::Ordering::Relaxed;
+    if stato.coda_da_salvare.swap(false, Relaxed) {
+        match scrivi_coda(app, stato, entro) {
+            Some(Ok(())) => {}
+            Some(Err(err)) => nota!(
+                "[riproduzione] coda non salvata codice={} causa={}",
+                err.code().kind().code(),
+                err.cause().unwrap_or("—")
+            ),
+            None => {
+                stato.coda_da_salvare.fetch_or(true, Relaxed);
+                nota!(
+                    "[riproduzione] coda rinviata: la libreria era occupata da più di {} ms",
+                    entro.as_millis()
+                );
+            }
+        }
+    }
     let volume = stato.volume_da_salvare.swap(false, Relaxed);
     let eq = stato.eq_da_salvare.swap(false, Relaxed);
     if !volume && !eq {
@@ -473,8 +591,13 @@ const ATTESA_USCENDO: Duration = Duration::from_millis(400);
 ///
 /// Con [`ATTESA_USCENDO`] e non con l'attesa dell'orologio: vedi «Perché il
 /// lucchetto ha una scadenza» su [`salva_quel_che_manca`].
+///
+/// Prima, però, si lascia finire il filo del seguito — con la stessa scadenza:
+/// là dentro possono esserci gli ascolti chiusi un istante prima di uscire, e
+/// un ascolto finito che non arriva sul disco è una canzone che non conta.
 pub fn salva_uscendo(app: &tauri::AppHandle) {
     if let Some(stato) = app.try_state::<StatoLettore>() {
+        aspetta_il_seguito(app, ATTESA_USCENDO);
         salva_quel_che_manca(app, &stato, ATTESA_USCENDO);
     }
 }
@@ -497,6 +620,11 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
             // l'annuncio parta **una volta**, non quattro al secondo per tutto
             // il tempo in cui le cuffie restano staccate.
             let mut gia_perso = false;
+            // Per «in attesa di dati»: com'era al giro prima, e da quanti giri
+            // di fila la musica non avanza mentre la callback serve silenzio.
+            // Vedi `Tempo::in_attesa`.
+            let mut prima: (Option<i64>, u64, u64) = (None, 0, 0);
+            let mut giri_a_secco: u8 = 0;
             loop {
                 std::thread::sleep(PASSO_TEMPO);
                 // Prima di qualunque cosa che tocchi l'`AppHandle`: se la
@@ -558,14 +686,36 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                     let p = lettore.motore.posizione();
                     Ok((
                         p.track_id,
+                        lettore.motore.vuoti(),
                         Tempo {
                             posizione_ms: p.ms,
                             durata_ms: p.durata_ms,
                             in_pausa: p.in_pausa,
+                            in_attesa: false,
                         },
                     ))
                 });
-                let Ok((di_chi, tempo)) = letto else { continue };
+                let Ok((di_chi, vuoti, mut tempo)) = letto else {
+                    continue;
+                };
+                // A secco: nessuna pausa voluta, la callback ha servito silenzio
+                // dall'ultimo giro, e la posizione dello stesso brano non si è
+                // mossa. Due giri di fila, e non uno, perché un salto su un
+                // file svuota l'anello e lo riempie in qualche millisecondo: un
+                // vuoto solo è quello, e annunciarlo farebbe lampeggiare la
+                // scritta a ogni salto.
+                let (brano_prima, ms_prima, vuoti_prima) = prima;
+                let a_secco = !tempo.in_pausa
+                    && vuoti > vuoti_prima
+                    && di_chi == brano_prima
+                    && tempo.posizione_ms.saturating_sub(ms_prima) < AVANZAMENTO_MINIMO_MS;
+                giri_a_secco = if a_secco {
+                    giri_a_secco.saturating_add(1)
+                } else {
+                    0
+                };
+                tempo.in_attesa = giri_a_secco >= 2;
+                prima = (di_chi, tempo.posizione_ms, vuoti);
                 // Il filo dell'analisi sonora legge da qui se può leggere dal
                 // disco. Passa da un'atomica e non da `con_lettore` perché
                 // chiedere al lettore come sta, per sapere se disturbarlo,
@@ -601,12 +751,17 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                 //
                 // Con il brano accanto: vedi `playback::save_posizione`.
                 battiti = battiti.wrapping_add(1);
+                //
+                // Con una scadenza, come ogni altra scrittura di questo filo:
+                // senza, una libreria occupata lo teneva fermo qui, e con lui
+                // la posizione, il timer e la sorveglianza del dispositivo. Un
+                // segno saltato si riscrive fra cinque secondi.
                 if let Some(brano) = di_chi
                     && !tempo.in_pausa
                     && battiti.is_multiple_of(BATTITI_PER_SEGNO)
+                    && let Some(stato_app) = app.try_state::<Stato>()
                 {
-                    let stato_app = app.state::<Stato>();
-                    let _ = con_libreria(&stato_app, |libreria| {
+                    let _ = con_libreria_entro(&stato_app, ATTESA_ORDINARIA, |libreria| {
                         playback::save_posizione(&libreria.connection, brano, tempo.posizione_ms)
                     });
                 }

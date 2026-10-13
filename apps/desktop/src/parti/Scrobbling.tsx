@@ -29,6 +29,7 @@ import { Icona } from "./Icone";
 import { numero } from "../formato";
 import { t } from "../lingue";
 import { Trans } from "../lingue/Trans";
+import { useAscolto } from "../pagine";
 
 /** La riga di stato di una coda: quanti aspettano, quanti sono fermi. */
 function Coda({
@@ -104,6 +105,13 @@ export function Scrobbling({
     ipc.scrobbleStato().then(setStato).catch(onErrore);
   }, [onErrore]);
 
+  // Il filo di sottofondo ha mandato qualcosa, o si è fermato su un guasto: i
+  // conteggi «in attesa» e «non accettati» qui sotto sono cambiati. Senza,
+  // restavano quelli dell'apertura del pannello finché non lo si riapriva.
+  useAscolto("scrobble:passata", () => {
+    ipc.scrobbleStato().then(setStato).catch(() => undefined);
+  });
+
   const invia = useCallback(() => {
     setInVolo(true);
     ipc
@@ -136,7 +144,7 @@ export function Scrobbling({
         .then((accodati: number) => {
           onNotizia(
             accodati > 0
-              ? t("scrobble.enqueued", { n: numero(accodati) })
+              ? t("scrobble.enqueued", { n: accodati })
               : t("scrobble.nothingToQueue"),
           );
           return ipc.scrobbleStato();
@@ -154,25 +162,12 @@ export function Scrobbling({
 
   return (
     <>
-      <p className="nota">
-        <Trans
-          k="scrobble.p1"
-          v={{ regola: <strong>{t("scrobble.p1.rule")}</strong> }}
-        />
-      </p>
-      <p className="nota">
-        <Trans
-          k="scrobble.p2"
-          v={{ nonPerde: <strong>{t("scrobble.p2.notLost")}</strong> }}
-        />
-      </p>
-
       <div className="riga-opzione">
         <div className="che-cosa">
           <div className="etichetta">{t("scrobble.toggle")}</div>
-          <div className="spiegazione">
-            {collegato ? t("scrobble.toggle.on") : t("scrobble.toggle.off")}
-          </div>
+          {!collegato && (
+            <div className="spiegazione">{t("scrobble.toggle.off")}</div>
+          )}
         </div>
         <button
           type="button"
@@ -193,7 +188,6 @@ export function Scrobbling({
 
       {/* ── ListenBrainz ── */}
       <h3 className="titoletto">ListenBrainz</h3>
-      <p className="nota">{t("scrobble.lb.note")}</p>
 
       {lb?.collegato ? (
         <>
@@ -265,7 +259,6 @@ export function Scrobbling({
         <details className="non-ritrovati">
           <summary>{t("scrobble.backlog")}</summary>
           <p>{t("scrobble.backlog.p1")}</p>
-          <p className="nota">{t("scrobble.backlog.p2")}</p>
           <div className="azioni">
             <button
               type="button"
@@ -289,12 +282,6 @@ export function Scrobbling({
 
       {/* ── Last.fm ── */}
       <h3 className="titoletto">Last.fm</h3>
-      <p className="nota">
-        <Trans
-          k="scrobble.lfm.note"
-          v={{ sito: <code>last.fm/api/account/create</code> }}
-        />
-      </p>
 
       {lfm?.collegato ? (
         <>

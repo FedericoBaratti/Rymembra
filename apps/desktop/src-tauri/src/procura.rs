@@ -390,9 +390,9 @@ pub fn da_comprare(stato: State<'_, Stato>, limite: u32) -> Esito<Vec<desiderati
 ///
 /// # Perché l'indirizzo si costruisce **qui** e non nella finestra
 ///
-/// Perché aprire un indirizzo nel browser di sistema è l'unica capacità
-/// pericolosa che questa applicazione concede alla sua pagina
-/// (`opener:allow-open-url` in `capabilities/default.json`). Se l'indirizzo
+/// Perché aprire un indirizzo nel browser di sistema è una capacità che la
+/// pagina **non** ha: `capabilities/default.json` non elenca niente di
+/// `opener:*`, e gli indirizzi li apre il nucleo. Se l'indirizzo
 /// arrivasse dalla finestra, una pagina compromessa potrebbe farne aprire uno
 /// qualunque; arrivando da qui, quel che si può aprire sono i tre domini di
 /// questo elenco e nient'altro — la finestra manda **cosa cercare**, non dove.
@@ -1038,7 +1038,22 @@ fn cartella_download(app: &AppHandle) -> Option<PathBuf> {
         let scelta: Option<String> =
             settings::read(&libreria.connection, settings::CHIAVE_CARTELLA_DOWNLOAD)?;
         if let Some(scelta) = scelta.filter(|s| !s.trim().is_empty()) {
-            return Ok(Some(PathBuf::from(scelta)));
+            // Una scelta salvata prima che il comando la controllasse — dalla
+            // 2.4, o scritta a mano nel database — passa le stesse regole di
+            // una scelta di adesso. Se non le passa non si scrive lì, e non si
+            // ripiega in silenzio sulla prima cartella sorvegliata: i brani
+            // finirebbero dove nessuno li ha mandati.
+            return match cartella_download_ammessa(&scelta) {
+                Ok(cartella) => Ok(Some(cartella)),
+                Err(err) => {
+                    nota!(
+                        "[procura] cartella dei download rifiutata codice={} causa={}",
+                        err.code().kind().code(),
+                        err.cause().unwrap_or("—")
+                    );
+                    Ok(None)
+                }
+            };
         }
         let cartelle: Vec<String> =
             settings::read_json(&libreria.connection, settings::CHIAVE_CARTELLE)?
@@ -1047,6 +1062,29 @@ fn cartella_download(app: &AppHandle) -> Option<PathBuf> {
     })
     .ok()
     .flatten()
+}
+
+/// Se una cartella può fare da cartella dei download, per come è scritta.
+///
+/// Le regole di forma di [`crate::destinazioni`] — assoluta, di un disco o di
+/// una condivisione, senza `..` e senza `:` nei nomi — e **nessun accesso al
+/// disco**: la chiama un comando sul filo della finestra, e la cartella scelta
+/// può stare su una condivisione che non risponde. Se poi non esiste o non si
+/// scrive, lo dirà il prelievo, con il suo codice.
+///
+/// # Perché il controllo c'è
+///
+/// Fino alla 2.4 `imposta_cartella_download` scriveva qualunque testo, e la
+/// coda ci creava sotto le cartelle di artisti e album: un percorso relativo
+/// finiva nella cartella di lavoro del processo, uno con `..` fuori da dove si
+/// era scelto, uno con `:` dentro il flusso nascosto di un file. Il dialogo di
+/// sistema non li produce mai, quindi chi li manda il dialogo l'ha scavalcato.
+///
+/// # Errori
+///
+/// `fs.pathInvalid`, con la regola che non passa nella causa.
+pub(crate) fn cartella_download_ammessa(percorso: &str) -> Result<PathBuf, AppError> {
+    crate::destinazioni::forma_ammessa(percorso.trim())
 }
 
 /// Dove stanno i file mentre arrivano.
@@ -1068,16 +1106,30 @@ fn cartella_temporanea(app: &AppHandle) -> PathBuf {
 
 /// La scansione che parte da sé quando la coda ha finito di scaricare.
 ///
-/// # Perché può non partire affatto
+/// # Solo la cartella dei download
 ///
-/// Perché il turno può essere di qualcun altro: [`crate::comandi::scansiona`],
-/// cioè qualcuno che ha premuto «Scansiona» mentre i download finivano. Le due
-/// passate farebbero lo stesso lavoro sulle stesse cartelle, e insieme si
-/// contenderebbero l'inserimento della stessa riga in `tracks`, dove `path` è
-/// UNIQUE. Chi arriva secondo lascia perdere: quella già in corso guarda le
-/// stesse radici, quindi troverà anche i file appena scaricati.
+/// Fino alla 2.4 questa passata riguardava **tutte** le cartelle sorvegliate:
+/// su una libreria da cinquantamila brani, una camminata intera — su un NAS,
+/// minuti — per far entrare i dieci file appena scaricati. Adesso guarda solo
+/// la cartella dove i file sono arrivati, e solo la parte di lei che sta sotto
+/// una cartella sorvegliata (`aether_app::library::dentro_le_radici`): un file
+/// che nessuna «Scansiona» troverebbe non deve entrare in libreria per la porta
+/// di servizio. Il resto della libreria è fuori competenza, e non può sparire.
 ///
-/// Il fatto finisce nel diario e non in un errore: non c'è nessuno davanti alla
+/// # Accodata, non saltata
+///
+/// Il turno può essere di qualcun altro: [`crate::comandi::scansiona`], cioè
+/// qualcuno che ha premuto «Scansiona» mentre i download finivano, o la
+/// sorveglianza delle cartelle. Le due passate non possono intrecciarsi —
+/// `tracks.path` è UNIQUE — e fino alla 2.4 chi arrivava secondo lasciava
+/// perdere, contando che quella in corso guardasse le stesse radici. Con la
+/// sorveglianza non è più vero: la passata in corso può guardare un album solo,
+/// altrove. Quindi si **aspetta** che finisca
+/// ([`crate::sorveglia::aspetta_il_turno`]), e poi si scansiona. L'attesa la
+/// paga il filo della coda, che non ha nient'altro da fare; la interrompe solo
+/// l'uscita.
+///
+/// I fatti finiscono nel diario e non in un errore: non c'è nessuno davanti alla
 /// finestra a cui dirlo, e l'unico posto dove la domanda «perché quella volta non
 /// sono comparsi subito» trova risposta è il diario.
 ///
@@ -1088,8 +1140,12 @@ fn cartella_temporanea(app: &AppHandle) -> PathBuf {
 /// passata su una condivisione di rete lenta cominciata senza che nessuno
 /// l'abbia chiesta.
 fn scansione_automatica(app: &AppHandle, stato: &Stato) {
-    let Some(_turno) = stato.turno_di_scansione() else {
-        nota!("[procura] scansione automatica saltata: ce n'è già una in corso");
+    if stato.scansione_in_corso() {
+        nota!("[procura] scansione automatica in coda: ce n'è già una in corso");
+    }
+    let Some(_turno) = crate::sorveglia::aspetta_il_turno(stato, &crate::spegnimento::in_uscita)
+    else {
+        nota!("[procura] scansione automatica lasciata: il programma si sta chiudendo");
         return;
     };
     // Dopo il controllo d'uscita di chi chiama, e non prima: azzerare la
@@ -1111,13 +1167,27 @@ fn scansione_automatica(app: &AppHandle, stato: &Stato) {
                 .unwrap_or_default(),
         )
     });
-    let roots = match roots {
-        Ok(roots) => roots,
+    let radici = match roots {
+        Ok(radici) => radici,
         Err(guasto) => {
             nota!("[procura] la scansione automatica non parte: {guasto}");
             return;
         }
     };
+    let Some(cartella) = cartella_download(app) else {
+        return;
+    };
+    let roots = aether_app::library::dentro_le_radici(
+        &cartella.to_string_lossy(),
+        &radici,
+        PathRules::for_current_platform(),
+    );
+    if roots.is_empty() {
+        nota!(
+            "[procura] la cartella dei download non sta sotto nessuna cartella sorvegliata: niente da scansionare"
+        );
+        return;
+    }
 
     // Due ragioni per fermarsi, la stessa domanda: «questa passata deve ancora
     // andare avanti?». L'annullamento a mano non arriva mai qui — nessuno sta

@@ -454,6 +454,39 @@ pub fn required_tokens() -> Vec<&'static TokenDef> {
     TOKENS.iter().filter(|def| def.required).collect()
 }
 
+/// Il valore di serie dei token che nemmeno la skin di riferimento dichiara.
+///
+/// # Perché esiste, e perché solo per l'anteprima
+///
+/// Nella finestra vera un token che la skin non dichiara ricade su `:root`, e
+/// su `:root` c'è quel che il motore scrive in `stile.css`: il blocco copiato
+/// dal compilatore per la skin di riferimento, più una manciata di valori che
+/// il motore tiene per sé — il ritmo della spaziatura, la profondità della
+/// luce, i fattori dei raggi interni. Nell'anteprima dello Studio no: il
+/// riquadro sta **dentro** la finestra, e un token che la bozza non dichiara
+/// eredita quello della skin che la finestra indossa. Chi disegnava una skin
+/// vedeva i valori di un'altra.
+///
+/// Il compilatore in modo anteprima colma quindi ogni token non dichiarato:
+/// quelli della skin di riferimento li prende da lei, questi undici da qui. Il
+/// testo è CSS perché è quel che `stile.css` scrive, e una prova in
+/// `apps/desktop` lo confronta riga per riga con il foglio: due copie dello
+/// stesso numero che nessuno confronta sono due numeri.
+#[rustfmt::skip]
+pub static DIFETTI_DEL_MOTORE: &[(&str, &str)] = &[
+    ("space.1", "4px"),
+    ("space.2", "8px"),
+    ("space.3", "14px"),
+    ("space.4", "22px"),
+    ("space.5", "34px"),
+    ("radius.inner", "0.6"),
+    ("radius.tiny", "0.36"),
+    ("depth.edge", "1"),
+    ("depth.inset", "1"),
+    ("depth.lift", "1"),
+    ("depth.sheen", "72px"),
+];
+
 // ── Riferimenti e sorgenti dinamiche ────────────────────────────────────────
 
 /// Da dove un token può prendere il colore a runtime.

@@ -4,8 +4,8 @@
  * # Perché sta fuori dall'applicazione
  *
  * Si monta in `main.tsx` accanto ad `App`, non dentro. Non è una scelta di
- * eleganza: `App` **si sostituisce** con lo Studio quando si apre l'editor delle
- * skin — è un `return` anticipato, non un pannello — e una finestra che perde i
+ * eleganza: `App` può cadere nel recinto degli errori, e lo Studio la copre
+ * per intero quando si apre l'editor delle skin — e una finestra che perde i
  * suoi tre bottoni entrando in una schermata sarebbe un guasto. Fuori, valgono
  * per ogni schermata che l'applicazione possa mostrare, compresa quella d'errore.
  *
@@ -32,7 +32,7 @@
  * alto quanto lei: è la stessa regola per cui nessun componente di questa
  * cartella calcola geometria.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Ref } from "react";
 
 import { ipc } from "../ipc";
 import { Icona } from "./Icone";
@@ -130,30 +130,63 @@ export function BarraTitolo() {
   }, [chiediStato]);
 
   return (
-    <div className="controlli-finestra" ref={riquadro}>
+    <ControlliFinestra
+      riquadro={riquadro}
+      ingrandita={ingrandita}
+      onRiduci={() => void ipc.finestraRiduci().catch(() => {})}
+      onIngrandisci={() => {
+        ipc.finestraIngrandisci().then(setIngrandita).catch(chiediStato);
+      }}
+      onChiudi={() => void ipc.finestraChiudi().catch(() => {})}
+    />
+  );
+}
+
+/**
+ * I tre tasti, e basta: il disegno della barra del titolo.
+ *
+ * Non ha gesti propri, li riceve. La barra vera gli passa i comandi della
+ * finestra; l'anteprima dello Studio lo disegna senza, perché una skin che
+ * ridipinge `window-button` deve vedere i tre tasti, e un clic sulla tela non
+ * deve ridurre a icona la finestra di chi sta disegnando.
+ */
+export function ControlliFinestra({
+  ingrandita,
+  riquadro,
+  onRiduci,
+  onIngrandisci,
+  onChiudi,
+}: {
+  ingrandita: boolean;
+  /** Il riquadro dei tasti: la barra ne legge l'altezza della fascia. */
+  riquadro?: Ref<HTMLDivElement> | undefined;
+  onRiduci?: (() => void) | undefined;
+  onIngrandisci?: (() => void) | undefined;
+  onChiudi?: (() => void) | undefined;
+}) {
+  return (
+    <div className="controlli-finestra window-controls" ref={riquadro}>
       <button
         type="button"
-        className="controllo"
+        className="controllo window-button"
         aria-label={t("window.minimize")}
-        onClick={() => void ipc.finestraRiduci().catch(() => {})}
+        onClick={onRiduci}
       >
         <Icona nome="i-win-min" dim={16} />
       </button>
       <button
         type="button"
-        className="controllo"
+        className="controllo window-button"
         aria-label={ingrandita ? t("window.restore") : t("window.maximize")}
-        onClick={() => {
-          ipc.finestraIngrandisci().then(setIngrandita).catch(chiediStato);
-        }}
+        onClick={onIngrandisci}
       >
         <Icona nome={ingrandita ? "i-win-restore" : "i-win-max"} dim={16} />
       </button>
       <button
         type="button"
-        className="controllo chiudi"
+        className="controllo chiudi window-button"
         aria-label={t("window.close")}
-        onClick={() => void ipc.finestraChiudi().catch(() => {})}
+        onClick={onChiudi}
       >
         <Icona nome="i-x" dim={16} />
       </button>

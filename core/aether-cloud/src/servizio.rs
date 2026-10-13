@@ -36,6 +36,22 @@
 //! bisogna premere «Ripristina», ed è deliberato: una sincronia che riscrive la
 //! libreria da sola è una sincronia di cui non ci si accorge finché non ha
 //! cancellato qualcosa.
+//!
+//! # Due dispositivi nello stesso istante
+//!
+//! Il controllo «chi l'ha scritto» qui sopra ha una fessura: fra la lettura e
+//! la scrittura passa un secondo, e in quel secondo l'altro computer può
+//! scrivere anche lui. Drive, poi, **permette** due file con lo stesso nome, e
+//! due dispositivi che salvano per la prima volta insieme ne creano due. Fino
+//! alla 2.4.0 la risposta era «vince l'ultimo dell'elenco», e i dati dell'altro
+//! restavano in un file che nessuno avrebbe più letto.
+//!
+//! Adesso le copie del file dei metadati si **fondono tutte**, e dopo aver
+//! scritto si **rilegge** l'elenco: se c'è una copia che non è la nostra, o la
+//! nostra ha un'impronta diversa da quella appena scritta, qualcuno è passato
+//! in mezzo e si rifà il giro con quel che c'è adesso. Le copie in più, una
+//! volta fuse, si cancellano. La fusione è idempotente e commutativa, quindi
+//! rifarla non costa altro che una lettura. Vedi [`salva`].
 
 use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
@@ -44,8 +60,9 @@ use std::path::Path;
 use aether_app::backup::{self, Contenuto, Salvataggio, StatoLocale};
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::restore::RestorePlan;
+use aether_sync::Magazzino;
 
-use crate::drive::{Drive, FileRemoto};
+use crate::drive::{self, FileRemoto};
 use crate::pacchetti;
 
 /// Il nome del file dei metadati.
@@ -69,6 +86,14 @@ const PREFISSO_BOZZA: &str = "aether-bozza-";
 /// viene dalla rete, e «l'abbiamo scritto noi» non è una garanzia su cosa ci sia
 /// dentro adesso.
 const LIMITE_DECOMPRESSO: u64 = 64 * 1024 * 1024;
+
+/// Quante volte, al più, si rilegge l'elenco e si rifonde dopo aver scritto.
+///
+/// Tre: il primo giro scrive, il secondo assorbe chi ha scritto in mezzo, il
+/// terzo copre il caso raro di un terzo dispositivo. Oltre, ci si ferma con
+/// quel che si ha: la passata dopo — fra un quarto d'ora — rifà la stessa cosa
+/// su un elenco che nel frattempo si sarà calmato.
+const GIRI_DI_FUSIONE: usize = 3;
 
 /// Il nome su Drive del pacchetto di una skin.
 #[must_use]
@@ -172,7 +197,17 @@ pub struct Scritti {
     /// caricamento dei metadati e quello dei pacchetti. Non è un guasto del
     /// ripristino: è un pezzo che manca, e va detto invece che far fallire tutto
     /// il resto.
+    ///
+    /// Ci finisce anche un pacchetto che c'era ma **non è sceso**, o non si è
+    /// validato: fino alla 2.4.0 il primo scarico fallito fermava l'intero
+    /// ripristino, e una skin da quindici megabyte oltre il tetto del client
+    /// voleva dire nessuna playlist ripristinata.
     pub mancanti: Vec<String>,
+    /// Perché ognuno dei mancanti che c'era non è arrivato: `nome — codice:
+    /// causa`, una riga per file, per il diario.
+    ///
+    /// Solo codici e cause, che non contengono né token né contenuti.
+    pub guasti: Vec<String>,
 }
 
 /// Salva la libreria e i pacchetti su Drive.
@@ -186,8 +221,8 @@ pub struct Scritti {
 ///
 /// `net.*` per la rete; `net.badSchema` se lassù c'è un backup scritto da una
 /// versione di Aether più nuova — nel qual caso **non si sovrascrive niente**.
-pub fn salva(
-    drive: &Drive,
+pub fn salva<M: Magazzino + ?Sized>(
+    drive: &M,
     data_dir: &Path,
     stato: &StatoLocale,
     dispositivo: &str,
@@ -196,9 +231,10 @@ pub fn salva(
 ) -> Result<Passata, AppError> {
     let skin_locali = pacchetti::elenca_skin(data_dir);
     let bozze_locali = pacchetti::elenca_bozze(data_dir);
-    let mut contenuto = backup::snapshot(stato, skin_locali.clone(), bozze_locali.clone());
+    let contenuto = backup::snapshot(stato, skin_locali.clone(), bozze_locali.clone());
 
-    let remoti = per_nome(drive.elenca()?);
+    let elenco = drive.elenca()?;
+    let remoti = per_nome(elenco.clone());
     let mut caricati = 0usize;
     let mut saltati = 0usize;
 
@@ -208,54 +244,13 @@ pub fn salva(
         totale: 1,
         cosa: Cosa::Metadati,
     });
-    let esistente = remoti.get(NOME_LIBRERIA);
-    let mut nostra = backup::impronta(&backup::canonico(&contenuto)?);
-
-    let file_id = match esistente {
-        Some(remoto) if remoto.impronta.as_deref() == Some(nostra.as_str()) => {
-            // La scorciatoia che rende gratuita una passata su una libreria
-            // ferma: né scaricare né caricare, una sola richiesta in tutto.
-            saltati = saltati.saturating_add(1);
-            remoto.id.clone()
-        }
-        Some(remoto) => {
-            let loro = leggi_remoto(drive, remoto)?;
-            // `None` vuol dire che il remoto era corrotto ed è stato messo da
-            // parte: aggiornarne l'id lo rinominerebbe indietro e ne
-            // riscriverebbe il contenuto, distruggendo l'unica copia di ciò
-            // che è andato storto. Si crea un file nuovo.
-            let esistente_id = loro.is_some().then(|| remoto.id.clone());
-            if let Some(loro) = loro {
-                // Si fonde SEMPRE, anche col proprio contenuto: la fusione è
-                // idempotente, e la guardia «l'ha scritto un altro computer»
-                // sarebbe falsa proprio dopo una fusione — il file A∪B è
-                // firmato da questo dispositivo, e non rifonderlo caricherebbe
-                // solo A, facendo sparire i dati di B dal backup.
-                contenuto = backup::fondi(&contenuto, &loro.content);
-                nostra = backup::impronta(&backup::canonico(&contenuto)?);
-            }
-            let salvataggio = Salvataggio::nuovo(contenuto, adesso_ms, dispositivo.to_owned());
-            let byte = comprimi(&backup::serializza(&salvataggio)?)?;
-            caricati = caricati.saturating_add(1);
-            drive
-                .carica(
-                    NOME_LIBRERIA,
-                    esistente_id.as_deref(),
-                    "application/gzip",
-                    &byte,
-                    &nostra,
-                )?
-                .id
-        }
-        None => {
-            let salvataggio = Salvataggio::nuovo(contenuto, adesso_ms, dispositivo.to_owned());
-            let byte = comprimi(&backup::serializza(&salvataggio)?)?;
-            caricati = caricati.saturating_add(1);
-            drive
-                .carica(NOME_LIBRERIA, None, "application/gzip", &byte, &nostra)?
-                .id
-        }
-    };
+    let libreria = salva_la_libreria(drive, elenco, &contenuto, dispositivo, adesso_ms)?;
+    if libreria.caricati == 0 {
+        saltati = saltati.saturating_add(1);
+    }
+    caricati = caricati.saturating_add(libreria.caricati);
+    let file_id = libreria.file_id;
+    let nostra = libreria.impronta;
     avanzamento(Avanzamento {
         fatti: 1,
         totale: 1,
@@ -271,7 +266,7 @@ pub fn salva(
             saltati = saltati.saturating_add(1);
         } else {
             let byte = pacchetti::leggi_skin(data_dir, id)?;
-            drive.carica(
+            drive.scrivi(
                 &nome,
                 remoto.map(|voce| voce.id.as_str()),
                 "application/zip",
@@ -297,7 +292,7 @@ pub fn salva(
             saltati = saltati.saturating_add(1);
         } else {
             let byte = comprimi(&pacchetti::leggi_bozza(data_dir, id)?)?;
-            drive.carica(
+            drive.scrivi(
                 &nome,
                 remoto.map(|voce| voce.id.as_str()),
                 "application/gzip",
@@ -322,6 +317,145 @@ pub fn salva(
     })
 }
 
+/// Com'è finito il file dei metadati.
+struct Libreria {
+    /// L'identificativo del file che resta.
+    file_id: String,
+    /// L'impronta di quel che c'è dentro.
+    impronta: String,
+    /// Quante volte lo si è caricato: zero se era già lassù identico.
+    caricati: usize,
+}
+
+/// Il file dei metadati: fonde tutte le copie, scrive, rilegge.
+///
+/// # Il giro
+///
+/// 1. Le copie del file che l'elenco nomina. Se ce n'è **una** e ha già
+///    l'impronta di quel che si ha, non c'è niente da fare: è la scorciatoia
+///    che rende gratuita una passata su una libreria ferma.
+/// 2. Si leggono tutte e si fondono col contenuto di qui. **Sempre**, anche
+///    quando una è stata scritta da questo dispositivo: la fusione è
+///    idempotente, e la guardia «l'ha scritto un altro computer» sarebbe falsa
+///    proprio dopo una fusione — il file A∪B è firmato da questo dispositivo, e
+///    non rifonderlo caricherebbe solo A.
+/// 3. Si scrive sulla prima copia leggibile, e le altre — ormai dentro — si
+///    cancellano. Una copia illeggibile è stata messa da parte da
+///    [`leggi_remoto`] e non si riusa: aggiornarne l'id la rinominerebbe
+///    indietro e ne riscriverebbe il contenuto, distruggendo l'unica copia di
+///    ciò che è andato storto.
+/// 4. Si **rilegge** l'elenco. Se c'è una copia che non è quella appena
+///    scritta, o quella scritta ha un'impronta diversa, qualcuno ha scritto in
+///    mezzo: si rifà il giro, al più [`GIRI_DI_FUSIONE`] volte.
+///
+/// Una copia che non compare nella rilettura non fa ricominciare niente: un
+/// elenco che arriva un istante indietro non deve far creare un secondo file.
+fn salva_la_libreria<M: Magazzino + ?Sized>(
+    drive: &M,
+    mut elenco: Vec<FileRemoto>,
+    locale: &Contenuto,
+    dispositivo: &str,
+    adesso_ms: i64,
+) -> Result<Libreria, AppError> {
+    let mut contenuto = locale.clone();
+    let mut caricati = 0usize;
+    let mut ultimo: Option<(String, String)> = None;
+    for _ in 0..GIRI_DI_FUSIONE {
+        let copie: Vec<FileRemoto> = elenco
+            .iter()
+            .filter(|file| file.nome == NOME_LIBRERIA)
+            .cloned()
+            .collect();
+        let nostra = backup::impronta(&backup::canonico(&contenuto)?);
+        if let [unica] = copie.as_slice()
+            && unica.impronta.as_deref() == Some(nostra.as_str())
+        {
+            return Ok(Libreria {
+                file_id: unica.id.clone(),
+                impronta: nostra,
+                caricati,
+            });
+        }
+
+        let mut tenuta: Option<&FileRemoto> = None;
+        let mut doppioni: Vec<String> = Vec::new();
+        for copia in &copie {
+            if let Some(loro) = leggi_remoto(drive, copia)? {
+                contenuto = backup::fondi(&contenuto, &loro.content);
+                if tenuta.is_none() {
+                    tenuta = Some(copia);
+                } else {
+                    doppioni.push(copia.id.clone());
+                }
+            }
+        }
+        let nostra = backup::impronta(&backup::canonico(&contenuto)?);
+        // Dopo la fusione può non esserci niente da caricare: una copia sola,
+        // e lassù c'è già esattamente questo. Succede a chi ha appena
+        // ricevuto, dall'altro dispositivo, tutto quel che aveva di nuovo.
+        if copie.len() == 1
+            && let Some(unica) = tenuta
+            && unica.impronta.as_deref() == Some(nostra.as_str())
+        {
+            return Ok(Libreria {
+                file_id: unica.id.clone(),
+                impronta: nostra,
+                caricati,
+            });
+        }
+
+        let salvataggio = Salvataggio::nuovo(contenuto.clone(), adesso_ms, dispositivo.to_owned());
+        let byte = comprimi(&backup::serializza(&salvataggio)?)?;
+        let scritto = drive.scrivi(
+            NOME_LIBRERIA,
+            tenuta.map(|file| file.id.as_str()),
+            "application/gzip",
+            &byte,
+            &nostra,
+        )?;
+        caricati = caricati.saturating_add(1);
+        // Le copie in più sono dentro quella scritta adesso: via. Un guasto
+        // qui non si racconta, la passata dopo le rifonde e riprova.
+        for doppione in &doppioni {
+            drop(drive.cancella(doppione));
+        }
+        ultimo = Some((scritto.id.clone(), nostra.clone()));
+
+        // ── la rilettura ────────────────────────────────────────────────────
+        elenco = drive.elenca()?;
+        let altre = elenco
+            .iter()
+            .any(|file| file.nome == NOME_LIBRERIA && file.id != scritto.id);
+        let cambiata = elenco.iter().any(|file| {
+            file.nome == NOME_LIBRERIA
+                && file.id == scritto.id
+                && file
+                    .impronta
+                    .as_deref()
+                    .is_some_and(|impronta| impronta != nostra)
+        });
+        if !altre && !cambiata {
+            return Ok(Libreria {
+                file_id: scritto.id,
+                impronta: nostra,
+                caricati,
+            });
+        }
+    }
+    // Finiti i giri con qualcuno che continua a scrivere: si tiene l'ultima
+    // scrittura. Ogni giro ne fa una, quindi c'è.
+    let (file_id, impronta) = ultimo.ok_or_else(|| {
+        AppError::new(ErrorCode::InternalInvariantViolated {
+            what: "un giro di fusione senza scrittura".to_owned(),
+        })
+    })?;
+    Ok(Libreria {
+        file_id,
+        impronta,
+        caricati,
+    })
+}
+
 /// Scarica il backup, senza applicare niente.
 ///
 /// `None` se lassù non c'è ancora nessun file di metadati: è la condizione di
@@ -335,7 +469,9 @@ pub fn salva(
 ///
 /// `net.*`; `sync.remoteCorrupt` se il file lassù non si legge, dopo averlo
 /// messo da parte con un nome che dice cos'era.
-pub fn scarica_salvataggio(drive: &Drive) -> Result<Option<DaRipristinare>, AppError> {
+pub fn scarica_salvataggio<M: Magazzino + ?Sized>(
+    drive: &M,
+) -> Result<Option<DaRipristinare>, AppError> {
     let remoti = per_nome(drive.elenca()?);
     let Some(file) = remoti.get(NOME_LIBRERIA) else {
         return Ok(None);
@@ -373,14 +509,18 @@ pub fn scarica_salvataggio(drive: &Drive) -> Result<Option<DaRipristinare>, AppE
 /// senza sapersi disegnare.
 ///
 /// Un pacchetto che non si scarica o non si valida non ferma gli altri: finisce
-/// in [`Scritti::mancanti`]. Un ripristino parziale è meglio di nessun
-/// ripristino, purché si dica quale parte manca.
+/// in [`Scritti::mancanti`], con il perché in [`Scritti::guasti`]. Un
+/// ripristino parziale è meglio di nessun ripristino, purché si dica quale
+/// parte manca.
 ///
 /// # Errori
 ///
-/// `net.*` solo per i guasti che riguardano l'intera connessione.
-pub fn scarica_pacchetti(
-    drive: &Drive,
+/// Uno solo: il token scaduto a metà (`net.http` 401, vedi
+/// [`drive::e_scaduto`]). Quello non riguarda un pacchetto ma la connessione, e
+/// chi chiama rinfresca il token e rifà tutto — i pacchetti già scritti, al
+/// secondo giro, sono «c'era già».
+pub fn scarica_pacchetti<M: Magazzino + ?Sized>(
+    drive: &M,
     data_dir: &Path,
     da: &DaRipristinare,
     piano: &RestorePlan,
@@ -393,15 +533,16 @@ pub fn scarica_pacchetti(
         match da.skin.get(id) {
             None => scritti.mancanti.push(nome_skin(id)),
             Some(remoto) => {
-                let byte = drive.scarica(&remoto.id)?;
-                match pacchetti::scrivi_skin(data_dir, id, &byte) {
+                let esito = pacchetto(drive, &remoto.id, false)?
+                    .and_then(|byte| pacchetti::scrivi_skin(data_dir, id, &byte));
+                match esito {
                     Ok(true) => scritti.skin = scritti.skin.saturating_add(1),
                     // `false` è «c'era già»: non è un lavoro svolto né un
-                    // guasto. `Err` è un pacchetto che non si valida, e vale
-                    // come mancante: la skin non c'è, e dirlo è più utile che
-                    // far fallire tutto il ripristino per un tema.
+                    // guasto. `Err` è un pacchetto che non è sceso o non si
+                    // valida, e vale come mancante: la skin non c'è, e dirlo è
+                    // più utile che far fallire tutto il ripristino per un tema.
                     Ok(false) => {}
-                    Err(_) => scritti.mancanti.push(nome_skin(id)),
+                    Err(err) => scritti.manca(nome_skin(id), &err),
                 }
             }
         }
@@ -418,11 +559,12 @@ pub fn scarica_pacchetti(
         match da.bozze.get(id) {
             None => scritti.mancanti.push(nome_bozza(id)),
             Some(remoto) => {
-                let byte = decomprimi(&drive.scarica(&remoto.id)?)?;
-                match pacchetti::scrivi_bozza(data_dir, id, &byte) {
+                let esito = pacchetto(drive, &remoto.id, true)?
+                    .and_then(|byte| pacchetti::scrivi_bozza(data_dir, id, &byte));
+                match esito {
                     Ok(true) => scritti.bozze = scritti.bozze.saturating_add(1),
                     Ok(false) => {}
-                    Err(_) => scritti.mancanti.push(nome_bozza(id)),
+                    Err(err) => scritti.manca(nome_bozza(id), &err),
                 }
             }
         }
@@ -437,13 +579,44 @@ pub fn scarica_pacchetti(
     Ok(scritti)
 }
 
+impl Scritti {
+    /// Un file che c'era e non è arrivato, con il suo perché.
+    fn manca(&mut self, nome: String, err: &AppError) {
+        self.guasti.push(format!(
+            "{nome} — {}: {}",
+            err.code().kind().code(),
+            err.cause().unwrap_or("—")
+        ));
+        self.mancanti.push(nome);
+    }
+}
+
+/// I byte di un pacchetto, o il guasto che riguarda **quel** pacchetto.
+///
+/// Il `Result` esterno è la connessione — solo il token scaduto, che fa
+/// rinfrescare e rifare tutto; quello interno è il file, e finisce fra i
+/// mancanti. `compresso` per i manifest delle bozze, che viaggiano in gzip.
+fn pacchetto<M: Magazzino + ?Sized>(
+    drive: &M,
+    id: &str,
+    compresso: bool,
+) -> Result<Result<Vec<u8>, AppError>, AppError> {
+    match drive.leggi(id) {
+        Err(err) if drive::e_scaduto(&err) => Err(err),
+        Err(err) => Ok(Err(err)),
+        Ok(byte) if compresso => Ok(decomprimi(&byte)),
+        Ok(byte) => Ok(Ok(byte)),
+    }
+}
+
 /// I file remoti, per nome.
 ///
-/// Drive **permette** due file con lo stesso nome nella stessa cartella. Se
-/// succede — un caricamento interrotto a metà, due versioni che si sono
-/// incrociate — vince l'ultimo che compare nell'elenco, e la passata successiva
-/// sovrascriverà quello. Non è una scelta profonda: è che una libreria non può
-/// avere due backup e bisogna pur sceglierne uno.
+/// Drive **permette** due file con lo stesso nome nella stessa cartella. Per il
+/// file dei metadati il caso è trattato davvero — le copie si fondono, vedi
+/// [`salva_la_libreria`]; per i pacchetti vince l'ultimo che compare
+/// nell'elenco, e la passata successiva sovrascriverà quello: un pacchetto è
+/// identificato dalla sua impronta, e due copie dello stesso tema non hanno
+/// niente da fondere.
 fn per_nome(file: Vec<FileRemoto>) -> BTreeMap<String, FileRemoto> {
     file.into_iter()
         .map(|voce| (voce.nome.clone(), voce))
@@ -466,8 +639,11 @@ fn per_nome(file: Vec<FileRemoto>) -> BTreeMap<String, FileRemoto> {
 /// rinominare e cancellare davvero. E perché un backup illeggibile è l'unica
 /// copia rimasta di qualcosa: se un giorno si scoprisse *perché* si era rotto,
 /// averlo buttato via sarebbe irrimediabile. Costa settanta chilobyte tenerlo.
-fn leggi_remoto(drive: &Drive, file: &FileRemoto) -> Result<Option<Salvataggio>, AppError> {
-    let byte = drive.scarica(&file.id)?;
+fn leggi_remoto<M: Magazzino + ?Sized>(
+    drive: &M,
+    file: &FileRemoto,
+) -> Result<Option<Salvataggio>, AppError> {
+    let byte = drive.leggi(&file.id)?;
     let esito = decomprimi(&byte).and_then(|aperto| backup::interpreta(&aperto));
     match esito {
         Ok(salvataggio) => Ok(Some(salvataggio)),
@@ -653,5 +829,314 @@ mod prove {
         assert_eq!(Cosa::Metadati.nome(), "metadati");
         assert_eq!(Cosa::Skin.nome(), "skin");
         assert_eq!(Cosa::Bozze.nome(), "bozze");
+    }
+
+    /// Un Drive in memoria, che come quello vero ammette due file con lo
+    /// stesso nome.
+    ///
+    /// `intrusione` è l'altro dispositivo: alla prima scrittura del file dei
+    /// metadati ne crea un'altra copia, come farebbe un computer che salva per
+    /// la prima volta nello stesso secondo.
+    #[derive(Default)]
+    struct Finto {
+        file: std::sync::Mutex<Vec<(FileRemoto, Vec<u8>)>>,
+        prossimo: std::sync::atomic::AtomicUsize,
+        intrusione: std::sync::Mutex<Option<Vec<u8>>>,
+    }
+
+    impl Finto {
+        fn con(file: Vec<(FileRemoto, Vec<u8>)>) -> Self {
+            Self {
+                file: std::sync::Mutex::new(file),
+                ..Self::default()
+            }
+        }
+
+        fn copie_della_libreria(&self) -> Vec<(FileRemoto, Vec<u8>)> {
+            self.file
+                .lock()
+                .expect("file")
+                .iter()
+                .filter(|(file, _)| file.nome == NOME_LIBRERIA)
+                .cloned()
+                .collect()
+        }
+    }
+
+    impl Magazzino for Finto {
+        fn elenca(&self) -> Result<Vec<FileRemoto>, AppError> {
+            Ok(self
+                .file
+                .lock()
+                .expect("file")
+                .iter()
+                .map(|(file, _)| file.clone())
+                .collect())
+        }
+
+        fn leggi(&self, id: &str) -> Result<Vec<u8>, AppError> {
+            match id {
+                "rotto" => return Err(AppError::new(ErrorCode::NetOffline { url: None })),
+                "scaduto" => {
+                    return Err(AppError::new(ErrorCode::NetHttp {
+                        status: 401,
+                        url: None,
+                    }));
+                }
+                _ => {}
+            }
+            self.file
+                .lock()
+                .expect("file")
+                .iter()
+                .find(|(file, _)| file.id == id)
+                .map(|(_, byte)| byte.clone())
+                .ok_or_else(|| {
+                    AppError::new(ErrorCode::FsNotFound {
+                        path: id.to_owned(),
+                    })
+                })
+        }
+
+        fn scrivi(
+            &self,
+            nome: &str,
+            esistente: Option<&str>,
+            _tipo: &str,
+            dati: &[u8],
+            impronta: &str,
+        ) -> Result<FileRemoto, AppError> {
+            let mut file = self.file.lock().expect("file");
+            let scritto = if let Some(voce) =
+                esistente.and_then(|id| file.iter_mut().find(|(f, _)| f.id == id))
+            {
+                voce.0.impronta = Some(impronta.to_owned());
+                voce.1 = dati.to_vec();
+                voce.0.clone()
+            } else {
+                let n = self
+                    .prossimo
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let nuovo = FileRemoto {
+                    id: format!("f{n}"),
+                    nome: nome.to_owned(),
+                    byte: u64::try_from(dati.len()).unwrap_or(0),
+                    impronta: Some(impronta.to_owned()),
+                };
+                file.push((nuovo.clone(), dati.to_vec()));
+                nuovo
+            };
+            if nome == NOME_LIBRERIA
+                && let Some(loro) = self.intrusione.lock().expect("intrusione").take()
+            {
+                file.push((
+                    FileRemoto {
+                        id: "intruso".to_owned(),
+                        nome: NOME_LIBRERIA.to_owned(),
+                        byte: u64::try_from(loro.len()).unwrap_or(0),
+                        impronta: Some("loro".to_owned()),
+                    },
+                    loro,
+                ));
+            }
+            Ok(scritto)
+        }
+
+        fn rinomina(&self, id: &str, nome: &str) -> Result<(), AppError> {
+            if let Some(voce) = self
+                .file
+                .lock()
+                .expect("file")
+                .iter_mut()
+                .find(|(f, _)| f.id == id)
+            {
+                voce.0.nome = nome.to_owned();
+            }
+            Ok(())
+        }
+
+        fn cancella(&self, id: &str) -> Result<(), AppError> {
+            self.file.lock().expect("file").retain(|(f, _)| f.id != id);
+            Ok(())
+        }
+    }
+
+    /// Il file dei metadati di un altro dispositivo, che sorveglia `cartella`.
+    fn di_un_altro(cartella: &str) -> Vec<u8> {
+        let contenuto = Contenuto {
+            roots: vec![cartella.to_owned()],
+            ..Contenuto::default()
+        };
+        let salvataggio = Salvataggio::nuovo(contenuto, 1, "altro".to_owned());
+        comprimi(&backup::serializza(&salvataggio).expect("serializzato")).expect("compresso")
+    }
+
+    fn copia(id: &str, impronta: &str) -> FileRemoto {
+        FileRemoto {
+            id: id.to_owned(),
+            nome: NOME_LIBRERIA.to_owned(),
+            byte: 0,
+            impronta: Some(impronta.to_owned()),
+        }
+    }
+
+    /// Le cartelle dentro il file dei metadati che è rimasto.
+    fn cartelle_dentro(byte: &[u8]) -> Vec<String> {
+        backup::interpreta(&decomprimi(byte).expect("gzip"))
+            .expect("un salvataggio")
+            .content
+            .roots
+    }
+
+    fn qui() -> StatoLocale {
+        StatoLocale {
+            roots: vec![r"C:\Qui".to_owned()],
+            ..StatoLocale::default()
+        }
+    }
+
+    /// Due dispositivi che hanno salvato per la prima volta insieme lasciano
+    /// due copie: si fondono tutte, e ne resta una.
+    #[test]
+    fn le_copie_doppie_si_fondono_e_ne_resta_una() {
+        let dati = tempfile::tempdir().expect("cartella");
+        let finto = Finto::con(vec![
+            (copia("a", "x"), di_un_altro(r"D:\A")),
+            (copia("b", "y"), di_un_altro(r"E:\B")),
+        ]);
+        let passata =
+            salva(&finto, dati.path(), &qui(), "questo", 2, |_| {}).expect("la passata riesce");
+        let copie = finto.copie_della_libreria();
+        assert_eq!(
+            copie.len(),
+            1,
+            "le copie in più si cancellano dopo la fusione"
+        );
+        let (rimasta, byte) = copie.first().expect("una copia");
+        assert_eq!(rimasta.id, "a", "si scrive sulla prima copia leggibile");
+        assert_eq!(passata.file_id, "a");
+        let mut cartelle = cartelle_dentro(byte);
+        cartelle.sort();
+        assert_eq!(
+            cartelle,
+            [r"C:\Qui", r"D:\A", r"E:\B"],
+            "niente dei due dispositivi si è perso"
+        );
+    }
+
+    /// Chi scrive mentre questo dispositivo scrive non si perde: la rilettura
+    /// dopo la scrittura lo trova, e si rifà il giro.
+    #[test]
+    fn chi_scrive_in_mezzo_si_ritrova_nella_rilettura() {
+        let dati = tempfile::tempdir().expect("cartella");
+        let finto = Finto::default();
+        *finto.intrusione.lock().expect("intrusione") = Some(di_un_altro(r"D:\Altrove"));
+        let passata =
+            salva(&finto, dati.path(), &qui(), "questo", 2, |_| {}).expect("la passata riesce");
+        let copie = finto.copie_della_libreria();
+        assert_eq!(copie.len(), 1, "la copia dell'altro è stata fusa e tolta");
+        let (rimasta, byte) = copie.first().expect("una copia");
+        assert_eq!(rimasta.id, passata.file_id);
+        assert_eq!(rimasta.impronta.as_deref(), Some(passata.impronta.as_str()));
+        let mut cartelle = cartelle_dentro(byte);
+        cartelle.sort();
+        assert_eq!(cartelle, [r"C:\Qui", r"D:\Altrove"]);
+        assert_eq!(
+            passata.caricati, 2,
+            "una scrittura, una rilettura, una rifusione"
+        );
+    }
+
+    /// Una libreria ferma resta gratuita: una copia sola e già uguale, nessuna
+    /// scrittura.
+    #[test]
+    fn una_libreria_ferma_non_si_ricarica() {
+        let dati = tempfile::tempdir().expect("cartella");
+        let finto = Finto::default();
+        salva(&finto, dati.path(), &qui(), "questo", 2, |_| {}).expect("prima");
+        let seconda = salva(&finto, dati.path(), &qui(), "questo", 3, |_| {}).expect("seconda");
+        assert_eq!(seconda.caricati, 0);
+        assert_eq!(seconda.saltati, 1);
+        assert_eq!(finto.copie_della_libreria().len(), 1);
+    }
+
+    /// Un pacchetto con l'identificatore dato.
+    fn pacchetto_di(id: &str) -> Vec<u8> {
+        let sorgente =
+            aether_skin::PLAIN_SOURCE.replace("\"id\": \"plain\"", &format!("\"id\": \"{id}\""));
+        aether_skin::write_skin_package(&aether_skin::package::WritePackageInput {
+            source: &sorgente,
+            preview: None,
+            assets: &[],
+        })
+        .expect("pacchetto")
+    }
+
+    fn da_ripristinare(skin: &[(&str, &str)]) -> DaRipristinare {
+        DaRipristinare {
+            contenuto: Contenuto::default(),
+            generato_ms: 0,
+            generato_da: String::new(),
+            skin: skin
+                .iter()
+                .map(|(id, file)| {
+                    (
+                        (*id).to_owned(),
+                        FileRemoto {
+                            id: (*file).to_owned(),
+                            nome: nome_skin(id),
+                            byte: 0,
+                            impronta: None,
+                        },
+                    )
+                })
+                .collect(),
+            bozze: BTreeMap::new(),
+        }
+    }
+
+    /// Il difetto che il collaudo della 2.4.0 non aveva visto: il primo scarico
+    /// fallito fermava l'intero ripristino. Adesso quel pacchetto è un mancante
+    /// con il suo perché, e gli altri arrivano.
+    #[test]
+    fn un_pacchetto_che_non_scende_va_fra_i_mancanti() {
+        let dati = tempfile::tempdir().expect("cartella");
+        let mut buona = copia("buona", "z");
+        buona.nome = nome_skin("giorno");
+        let finto = Finto::con(vec![(buona, pacchetto_di("giorno"))]);
+        let da = da_ripristinare(&[("giorno", "buona"), ("notte", "rotto")]);
+        let piano = RestorePlan {
+            skins_to_install: vec!["giorno".to_owned(), "notte".to_owned()],
+            ..RestorePlan::default()
+        };
+        let scritti = scarica_pacchetti(&finto, dati.path(), &da, &piano, |_| {})
+            .expect("il ripristino non si ferma");
+        assert_eq!(scritti.skin, 1, "il pacchetto che c'era è arrivato");
+        assert_eq!(scritti.mancanti, vec![nome_skin("notte")]);
+        assert!(
+            scritti
+                .guasti
+                .first()
+                .is_some_and(|riga| riga.contains("net.offline")),
+            "il perché finisce nel diario: {:?}",
+            scritti.guasti
+        );
+        assert!(dati.path().join("skin").join("giorno.aeskin").exists());
+    }
+
+    /// Il token scaduto a metà non è un pacchetto mancante: torna su, perché
+    /// chi chiama rinfreschi e rifaccia tutto.
+    #[test]
+    fn un_token_scaduto_a_meta_ripristino_non_diventa_un_mancante() {
+        let dati = tempfile::tempdir().expect("cartella");
+        let finto = Finto::default();
+        let da = da_ripristinare(&[("notte", "scaduto")]);
+        let piano = RestorePlan {
+            skins_to_install: vec!["notte".to_owned()],
+            ..RestorePlan::default()
+        };
+        let err = scarica_pacchetti(&finto, dati.path(), &da, &piano, |_| {})
+            .expect_err("il 401 torna a chi chiama");
+        assert!(drive::e_scaduto(&err));
     }
 }

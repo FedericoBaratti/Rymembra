@@ -46,7 +46,8 @@ export function Interruttore({
   impedito,
 }: {
   etichetta: string;
-  spiegazione: string;
+  /** Facoltativa: nelle Impostazioni le spiegazioni stanno nella documentazione. */
+  spiegazione?: string | undefined;
   acceso: boolean;
   onCambia?: ((valore: boolean) => void) | undefined;
   /** Perché non si può toccare. Presente ⇒ spento. */
@@ -56,6 +57,7 @@ export function Interruttore({
   const idEtichetta = `${idBase}-etichetta`;
   const idSpiegazione = `${idBase}-spiegazione`;
   const spento = impedito !== undefined;
+  const testo = impedito ?? spiegazione;
 
   const alterna = () => {
     if (!spento) onCambia?.(!acceso);
@@ -79,9 +81,11 @@ export function Interruttore({
         <div className="etichetta" id={idEtichetta}>
           {etichetta}
         </div>
-        <div className="spiegazione" id={idSpiegazione}>
-          {impedito ?? spiegazione}
-        </div>
+        {testo !== undefined && (
+          <div className="spiegazione" id={idSpiegazione}>
+            {testo}
+          </div>
+        )}
       </div>
       <button
         type="button"
@@ -89,7 +93,7 @@ export function Interruttore({
         role="switch"
         aria-checked={acceso}
         aria-labelledby={idEtichetta}
-        aria-describedby={idSpiegazione}
+        aria-describedby={testo !== undefined ? idSpiegazione : undefined}
         disabled={spento}
         title={impedito}
         onClick={alterna}

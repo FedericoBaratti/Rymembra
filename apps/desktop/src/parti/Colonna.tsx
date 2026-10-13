@@ -25,7 +25,7 @@
  * copertina è di un rosa acceso, quel rosa sta dietro sé stesso, non sotto il
  * titolo del brano.
  */
-import { useState } from "react";
+import { memo, useState } from "react";
 
 import { Copertina, Sfocata } from "../Copertina";
 import { RigheCoda, useRigheCoda } from "../Coda";
@@ -37,10 +37,12 @@ import { Icona } from "./Icone";
 import { Scrubber } from "./Scrubber";
 import { Segmentato } from "./Segmentato";
 import { Trasporto } from "./Trasporto";
-import { t } from "../lingue";
+import { t, useLingua } from "../lingue";
 import { nomeArtista, titoloAlbum } from "../formato";
+import { statoSuono, useCambio } from "../segnali";
+import { Presenza } from "../presenza";
 
-export function Colonna({
+export const Colonna = memo(function Colonna({
   stato,
   onChiudi,
   onEspandi,
@@ -55,9 +57,15 @@ export function Colonna({
   onVoto: (brano: Brano, stelle: number) => void;
   onErrore: (e: unknown) => void;
 }) {
+  // Sotto `memo` (vedi «I widget sotto `memo`» in `Impaginazione.tsx`): si
+  // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
+  // l'iscrizione i testi resterebbero quelli del primo disegno.
+  useLingua();
   const [scheda, setScheda] = useState<"coda" | "cronologia">("coda");
   const righe = useRigheCoda(stato.coda, onErrore);
   const brano = stato.brano;
+  const suono = statoSuono(brano !== null, stato.inPausa);
+  const cambio = useCambio(brano?.id);
 
   const comanda = (azione: Promise<void>) => {
     azione.catch(onErrore);
@@ -66,138 +74,151 @@ export function Colonna({
   // Niente `app-shell`: quella classe dice «il contenitore di tutta la
   // finestra», e la porta la zona radice dello scafale.
   return (
-    <aside
-      className="colonna"
-      // L'ancora del giro guidato: la colonna intera, perché il passo parla di
-      // «cosa sta suonando, tutto in una striscia» e non di uno dei suoi pezzi.
-      data-giro="colonna"
-      aria-label={t("column.aria")}
-    >
-      {/* Lo strato ambientale è un fratello e non uno sfondo: come sfondo
-          dovrebbe stare su un elemento che ha anche del testo, e allora la
-          tinta della copertina finirebbe sotto delle lettere. */}
-      <div className="ambiente ambient-backdrop" aria-hidden="true">
-        <Sfocata hash={brano?.coverArtHash ?? null} classe="tinta" />
-      </div>
-
-      <header className="testa">
-        <span className="occhiello hero-eyebrow">{t("column.aria")}</span>
-        <button
-          type="button"
-          className="tasto icon-btn"
-          aria-label={t("column.fullscreen")}
-          title={t("column.fullscreen.title")}
-          disabled={!brano}
-          onClick={onEspandi}
-        >
-          <Icona nome="i-expand" dim={15} />
-        </button>
-        <button
-          type="button"
-          className="tasto icon-btn"
-          aria-label={t("column.close")}
-          title={t("common.close")}
-          onClick={onChiudi}
-        >
-          <Icona nome="i-x" dim={15} />
-        </button>
-      </header>
-
-      {/* Sopra tutto il resto, copertina compresa: è la risposta alla domanda
-          «perché non si sente niente», e quella domanda viene prima di
-          qualunque cosa ci sia da guardare. Prima di questa fascia il nucleo
-          alzava un bit che nessuno leggeva, e staccare le cuffie voleva dire
-          premere play senza sentire niente, per sempre. */}
-      <AvvisoAudio stato={stato} dove="colonna" onErrore={onErrore} />
-
-      {brano === null ? (
-        <div className="niente-in-ascolto empty-state">
-          <span className="empty-icon" aria-hidden="true">
-            <Icona nome="i-album" dim={28} />
-          </span>
-          <p>{t("nothing.playing")}</p>
-          <p className="sotto">{t("nothing.playing.hint")}</p>
+    <Presenza parte="column">
+      <aside
+        className="colonna column"
+        {...suono}
+        // L'ancora del giro guidato: la colonna intera, perché il passo parla di
+        // «cosa sta suonando, tutto in una striscia» e non di uno dei suoi pezzi.
+        data-giro="colonna"
+        aria-label={t("column.aria")}
+      >
+        {/* Lo strato ambientale è un fratello e non uno sfondo: come sfondo
+            dovrebbe stare su un elemento che ha anche del testo, e allora la
+            tinta della copertina finirebbe sotto delle lettere. */}
+        <div className="ambiente ambient-backdrop" aria-hidden="true">
+          <Sfocata hash={brano?.coverArtHash ?? null} classe="tinta" />
         </div>
-      ) : (
-        <>
+
+        <header className="testa column-header">
+          <span className="occhiello hero-eyebrow">{t("column.aria")}</span>
           <button
             type="button"
-            className="apri-grande"
+            className="tasto icon-btn"
             aria-label={t("column.fullscreen")}
+            title={t("column.fullscreen.title")}
+            disabled={!brano}
             onClick={onEspandi}
           >
-            <Copertina
-              hash={brano.coverArtHash}
-              titolo={titoloAlbum(brano.album)}
-              classe="hero-art"
-              piena
-            />
+            <Icona nome="i-expand" dim={15} />
           </button>
+          <button
+            type="button"
+            className="tasto icon-btn"
+            aria-label={t("column.close")}
+            title={t("common.close")}
+            onClick={onChiudi}
+          >
+            <Icona nome="i-x" dim={15} />
+          </button>
+        </header>
 
-          <div className="chi">
-            <div className="titolo np-title" title={brano.title}>
-              {brano.title}
-            </div>
-            <div
-              className="meta np-meta"
-              title={`${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`}
-            >
-              {nomeArtista(brano.artist)} · {titoloAlbum(brano.album)}
-            </div>
+        {/* Sopra tutto il resto, copertina compresa: è la risposta alla domanda
+            «perché non si sente niente», e quella domanda viene prima di
+            qualunque cosa ci sia da guardare. Prima di questa fascia il nucleo
+            alzava un bit che nessuno leggeva, e staccare le cuffie voleva dire
+            premere play senza sentire niente, per sempre. */}
+        <AvvisoAudio stato={stato} dove="colonna" onErrore={onErrore} />
+
+        {brano === null ? (
+          <div className="niente-in-ascolto empty-state">
+            <span className="empty-icon" aria-hidden="true">
+              <Icona nome="i-album" dim={28} />
+            </span>
+            <p>{t("nothing.playing")}</p>
+            <p className="sotto">{t("nothing.playing.hint")}</p>
           </div>
-
-          <Scrubber stato={stato} onErrore={onErrore} />
-
-          <Trasporto stato={stato} taglia="colonna" onErrore={onErrore} />
-
-          <Giudizio
-            stato={stato}
-            brano={brano}
-            taglia="colonna"
-            onPreferito={onPreferito}
-            onVoto={onVoto}
-            onErrore={onErrore}
-          />
-        </>
-      )}
-
-      <div className="coda-in-colonna">
-        <div className="testa-coda">
-          <Segmentato
-            etichetta={t("column.tabs")}
-            scelta={scheda}
-            onScegli={setScheda}
-            classe="minuto"
-            voci={[
-              {
-                chiave: "coda",
-                etichetta: t("column.tab.queue"),
-                conteggio: stato.coda.length,
-              },
-              { chiave: "cronologia", etichetta: t("column.tab.history") },
-            ]}
-          />
-          {/* «Svuota» è della coda, e con la cronologia aperta non avrebbe
-              niente da svuotare che sia sotto gli occhi. Sparisce invece di
-              spegnersi: un tasto spento accanto a un elenco che non è il suo è
-              un tasto che invita a chiedersi cosa cancellerebbe. */}
-          {scheda === "coda" && (
+        ) : (
+          <>
             <button
               type="button"
-              className="bottone minuto btn-ghost"
-              disabled={stato.coda.length === 0}
-              onClick={() => comanda(ipc.codaSvuota())}
+              className="apri-grande"
+              aria-label={t("column.fullscreen")}
+              onClick={onEspandi}
             >
-              {t("queue.clear")}
+              <Copertina
+                hash={brano.coverArtHash}
+                titolo={titoloAlbum(brano.album)}
+                classe="column-art"
+                piena
+                suono={suono}
+                cambio
+                /* Il titolo è scritto sotto, e il tasto ha già il suo nome. */
+                accanto
+              />
             </button>
+
+            <div className="chi">
+              {/* `dir="auto"`: un titolo arabo o ebraico si legge da destra. */}
+              <div
+                className="titolo np-title"
+                title={brano.title}
+                data-cambio={cambio}
+                dir="auto"
+              >
+                {brano.title}
+              </div>
+              <div
+                className="meta np-meta"
+                title={`${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`}
+              >
+                <bdi>{nomeArtista(brano.artist)}</bdi> · <bdi>{titoloAlbum(brano.album)}</bdi>
+              </div>
+            </div>
+
+            <Scrubber stato={stato} onErrore={onErrore} />
+
+            <Trasporto stato={stato} taglia="colonna" onErrore={onErrore} />
+
+            <Giudizio
+              stato={stato}
+              brano={brano}
+              taglia="colonna"
+              onPreferito={onPreferito}
+              onVoto={onVoto}
+              onErrore={onErrore}
+            />
+          </>
+        )}
+
+        <div className="coda-in-colonna">
+          <div className="testa-coda">
+            <Segmentato
+              etichetta={t("column.tabs")}
+              scelta={scheda}
+              onScegli={setScheda}
+              classe="minuto"
+              voci={[
+                {
+                  chiave: "coda",
+                  etichetta: t("column.tab.queue"),
+                  conteggio: stato.coda.length,
+                },
+                { chiave: "cronologia", etichetta: t("column.tab.history") },
+              ]}
+            />
+            {/* «Svuota» è della coda, e con la cronologia aperta non avrebbe
+                niente da svuotare che sia sotto gli occhi. Sparisce invece di
+                spegnersi: un tasto spento accanto a un elenco che non è il suo è
+                un tasto che invita a chiedersi cosa cancellerebbe. */}
+            {scheda === "coda" && (
+              <button
+                type="button"
+                className="bottone minuto btn-ghost"
+                disabled={stato.coda.length === 0}
+                onClick={() => comanda(ipc.codaSvuota())}
+              >
+                {t("queue.clear")}
+              </button>
+            )}
+          </div>
+          {scheda === "coda" ? (
+            <RigheCoda stato={stato} righe={righe} onErrore={onErrore} compatta />
+          ) : (
+            <Cronologia stato={stato} onErrore={onErrore} />
           )}
         </div>
-        {scheda === "coda" ? (
-          <RigheCoda stato={stato} righe={righe} onErrore={onErrore} compatta />
-        ) : (
-          <Cronologia stato={stato} onErrore={onErrore} />
-        )}
-      </div>
-    </aside>
+      </aside>
+    </Presenza>
   );
-}
+});

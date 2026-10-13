@@ -44,8 +44,31 @@
  * perimetro di un raffinamento a comportamento invariato. È il candidato
  * successivo.
  *
- * Chi aveva il fuoco va letto **prima** di prenderglielo: è la prima riga
- * dell'effetto, e l'ordine non è scambiabile con niente.
+ * Chi aveva il fuoco va letto **prima** di prenderglielo: è il primo effetto
+ * dell'hook, uno di disposizione, e l'ordine non è scambiabile con niente —
+ * nemmeno con l'inerzia di `Dialogo`, che spegne proprio il nodo da leggere.
+ *
+ * # E poi è arrivato `Dialogo`
+ *
+ * Quel che sta scritto qui sopra contro un componente avvolgente era vero
+ * finché il comportamento comune si fermava al fuoco. Con la 3.0 ne sono
+ * arrivati altri due che il JSX di ogni finestrella non diceva meglio da sé, e
+ * che dieci copie avrebbero sbagliato in dieci modi: il resto della finestra
+ * `inert` mentre la finestrella è aperta, e il velo che chiude solo un clic
+ * nato **e** finito su di lui. Quelle due cose le fa `Dialogo.tsx`, costruito
+ * sopra questo hook; le finestrelle con una forma tutta loro — `Primo`, `Giro`,
+ * `Regole`, `Sincronizza` — continuano a chiamare l'hook e basta.
+ *
+ * Le decisioni senza DOM — dove va il fuoco, chi diventa inerte, quando il velo
+ * chiude, quali scorciatoie passano — stanno in `modale.ts`, dove si provano.
+ *
+ * # Il conto dei modali
+ *
+ * Ogni finestrella aperta fuori dall'anteprima si conta (`apriModale`), e
+ * `tastiera.ts` legge il conto: con un modale aperto le scorciatoie globali non
+ * passano, tranne lo zoom e lo schermo intero. Si conta qui e non in `Dialogo`
+ * perché la regola vale per tutte le finestrelle, anche quelle che l'hook lo
+ * chiamano da sole.
  *
  * # Il Tab resta dentro
  *
@@ -110,7 +133,15 @@
  * chiusura in un `ref`, il fuoco si prende e si restituisce una volta sola, e
  * nessun chiamante deve ricordarsi di un `useCallback`.
  */
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+
+import { useDati } from "./dati";
+import {
+  apriModale,
+  daRendereInerti,
+  fuocoDopoTab,
+  fuocoIniziale,
+} from "./modale";
 
 /**
  * Chi può prendere il fuoco dentro una finestrella.
@@ -179,29 +210,41 @@ export function useFinestrella<E extends HTMLElement>(
   const radice = useRef<E | null>(null);
   const chiudi = useRef(onChiudi);
   chiudi.current = onChiudi;
+  // Nell'anteprima dello Studio una finestrella è un disegno: prenderle il
+  // fuoco lo toglierebbe al campo in cui si sta scrivendo un colore.
+  const { anteprima } = useDati();
 
-  useEffect(() => {
-    const dentro = radice.current;
-    if (dentro === null) return;
-
-    // Chi aveva il fuoco, letto prima di prenderglielo.
-    const chiAveva =
+  // Chi aveva il fuoco, letto prima di prenderglielo — e prima di tutto il
+  // resto: in un effetto di disposizione, che gira prima di quello qui sotto
+  // e prima di quello di `useVeloInerte` dichiarato dopo l'hook. Un nodo reso
+  // inerte perde il fuoco, e leggerlo dopo voleva dire leggere il `<body>`.
+  const chiAveva = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (anteprima) return;
+    chiAveva.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+  }, [anteprima]);
+
+  useEffect(() => {
+    const dentro = radice.current;
+    if (dentro === null || anteprima) return;
+    const daRidare = chiAveva.current;
+
+    // Da qui la finestrella conta fra i modali aperti: vedi «Il conto dei
+    // modali» qui sopra.
+    const chiudiModale = apriModale();
 
     if (!dentro.hasAttribute("tabindex")) dentro.tabIndex = -1;
 
     // Il marchio si cerca fra i fuochi veri e non nel DOM nudo: `focus()` su un
     // comando spento o non disegnato non fa niente, e lascerebbe il fuoco dietro
     // al velo senza dirlo. La radice può portarlo addosso lei, e allora il fuoco
-    // si ferma lì: lo chiede `Primo`.
-    const fuochi = fuochiDi(dentro);
-    const dove = dentro.hasAttribute("data-fuoco-iniziale")
-      ? dentro
-      : (fuochi.find((nodo) => nodo.hasAttribute("data-fuoco-iniziale")) ??
-        fuochi[0] ??
-        dentro);
+    // si ferma lì: lo chiede `Primo`. La regola sta in `modale.ts`.
+    const dove = fuocoIniziale(fuochiDi(dentro), dentro, (nodo) =>
+      nodo.hasAttribute("data-fuoco-iniziale"),
+    );
     dove.focus();
     if (eUnCampoDaSostituire(dove)) dove.select();
 
@@ -212,35 +255,126 @@ export function useFinestrella<E extends HTMLElement>(
         return;
       }
       if (e.key !== "Tab") return;
-      const fuochi = fuochiDi(dentro);
-      const primo = fuochi[0];
-      const ultimo = fuochi[fuochi.length - 1];
-      if (primo === undefined || ultimo === undefined) return;
-      const adesso = document.activeElement;
-      // Sulla radice o fuori: il giro ricomincia da un capo. Dalla radice il
-      // Tab nudo andrebbe al primo da sé, ma lo Shift+Tab uscirebbe dal velo, e
-      // un anello che tiene in un verso solo non è un anello.
-      const altrove =
-        !(adesso instanceof HTMLElement) ||
-        adesso === dentro ||
-        !dentro.contains(adesso);
-      if (altrove || adesso === (e.shiftKey ? primo : ultimo)) {
+      const adesso =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      // Sulla radice o fuori: il giro ricomincia da un capo. Vedi
+      // `fuocoDopoTab`, che dice anche perché vale per la radice.
+      const dentroDavvero =
+        adesso !== null && adesso !== dentro && dentro.contains(adesso);
+      const verso = fuocoDopoTab(fuochiDi(dentro), adesso, dentroDavvero, e.shiftKey);
+      if (verso !== null) {
         e.preventDefault();
-        (e.shiftKey ? ultimo : primo).focus();
+        verso.focus();
       }
     };
     dentro.addEventListener("keydown", suTasto);
 
     return () => {
+      chiudiModale();
       dentro.removeEventListener("keydown", suTasto);
       if (
-        chiAveva !== null &&
-        chiAveva !== document.body &&
-        chiAveva.isConnected
+        daRidare !== null &&
+        daRidare !== document.body &&
+        daRidare.isConnected
       )
-        chiAveva.focus();
+        daRidare.focus();
     };
-  }, []);
+  }, [anteprima]);
 
   return radice;
+}
+
+// ── il resto della finestra, inerte ────────────────────────────────────────
+
+/** I veli aperti, nell'ordine in cui si sono aperti: l'ultimo è quello sopra. */
+const veliAperti: HTMLElement[] = [];
+
+/**
+ * I nodi resi inerti da qui, e soltanto quelli.
+ *
+ * Un `inert` che non è in questo insieme è di qualcun altro — React lo mette
+ * sulla pagina a schermo intero e sulla finestra mentre lo Studio è aperto —
+ * e non si tocca: né per metterlo, né per toglierlo.
+ */
+const spentiDaQui = new Set<HTMLElement>();
+
+/** Chi guarda i gradini della salita, per i nodi che arrivano dopo. */
+let sentinella: MutationObserver | null = null;
+
+/**
+ * Rifà da capo l'inerzia per il velo in cima.
+ *
+ * Da capo e non a differenze, perché i casi sono tre e si somigliano poco: un
+ * velo che si apre sopra un altro (la conferma di una scansione che arriva
+ * mentre si importa un link), uno che si chiude lasciando sotto il precedente,
+ * e un nodo nuovo che compare dietro mentre il velo è aperto — un avviso, la
+ * pila dei toast. Togliere tutto quel che si era messo e rimetterlo per il velo
+ * in cima li copre tutti e tre, e succede nello stesso giro di codice, quindi
+ * non c'è un fotogramma in cui la pagina dietro torni cliccabile.
+ *
+ * La sentinella guarda solo i figli diretti di ogni gradino (`childList`, non
+ * `subtree`): un nodo nuovo **dentro** un fratello già inerte è inerte da sé, e
+ * le modifiche agli attributi — compresi gli `inert` scritti qui — non la
+ * svegliano.
+ */
+function riapplicaInerzia(): void {
+  for (const nodo of spentiDaQui) nodo.inert = false;
+  spentiDaQui.clear();
+  sentinella?.disconnect();
+  const cima = veliAperti[veliAperti.length - 1];
+  if (cima === undefined) return;
+  for (const nodo of daRendereInerti<Element>(cima)) {
+    if (!(nodo instanceof HTMLElement) || nodo.inert) continue;
+    nodo.inert = true;
+    spentiDaQui.add(nodo);
+  }
+  sentinella ??= new MutationObserver(riapplicaInerzia);
+  for (let gradino = cima.parentElement; gradino !== null; gradino = gradino.parentElement) {
+    sentinella.observe(gradino, { childList: true });
+  }
+}
+
+/**
+ * Il resto della finestra `inert` finché questo velo è aperto.
+ *
+ * # Perché non bastava la trappola del Tab
+ *
+ * La trappola tiene dentro il **tabulatore**, e basta. Un lettore di schermo
+ * percorre la pagina con i suoi tasti, non col Tab, e dietro il velo trovava
+ * tutta l'applicazione come se niente fosse — `aria-modal` è un suggerimento
+ * che non tutti seguono. Un clic del tasto centrale, un trascinamento, un
+ * `accesskey`: tutte strade che la trappola non vede. `inert` le chiude tutte
+ * insieme, ed è quel che `<dialog>.showModal()` farebbe da sé — se le
+ * finestrelle potessero essere `<dialog>` senza cambiare il modo in cui le skin
+ * le disegnano, che è il vincolo di questo albero.
+ *
+ * # Perché un effetto di disposizione
+ *
+ * Perché deve arrivare **prima** dell'effetto di `useFinestrella`, che sposta
+ * il fuoco: un nodo diventato inerte perde il fuoco, e il fuoco deve già essere
+ * dove andrà. E alla chiusura deve togliersi prima che l'hook restituisca il
+ * fuoco a chi l'aveva — che è dietro il velo, cioè inerte fino a un istante
+ * prima. React smonta gli effetti di disposizione prima di quelli passivi, e
+ * l'ordine viene da sé.
+ *
+ * Nell'anteprima dello Studio non fa niente: la finestrella è un disegno sulla
+ * tela, e spegnere lo Studio intorno a lei lo renderebbe inservibile.
+ */
+export function useVeloInerte(velo: RefObject<HTMLElement | null>): void {
+  const { anteprima } = useDati();
+  useLayoutEffect(() => {
+    const nodo = velo.current;
+    if (nodo === null || anteprima) return;
+    veliAperti.push(nodo);
+    riapplicaInerzia();
+    return () => {
+      const dove = veliAperti.indexOf(nodo);
+      if (dove !== -1) veliAperti.splice(dove, 1);
+      riapplicaInerzia();
+    };
+    // `velo` è un riferimento: la sua identità non cambia, e il nodo si legge
+    // dentro l'effetto, dove è già appeso.
+  }, [velo, anteprima]);
 }

@@ -109,6 +109,7 @@ import { Testo } from "../parti/Testo";
 import { Trasporto } from "../parti/Trasporto";
 import { t } from "../lingue";
 import { nomeArtista, titoloAlbum } from "../formato";
+import { useDati } from "../dati";
 
 export function InRiproduzione({
   stato,
@@ -117,6 +118,7 @@ export function InRiproduzione({
   onVoto,
   onErrore,
   avvisi,
+  testoAperto = false,
 }: {
   stato: StatoRiproduzione;
   onChiudi: () => void;
@@ -132,12 +134,15 @@ export function InRiproduzione({
    * e non si poteva premere, e un brano che non si apriva falliva in silenzio.
    */
   avvisi: ReactNode;
+  /** Il pannello del testo acceso all'apertura: lo chiede la tela dello Studio. */
+  testoAperto?: boolean | undefined;
 }) {
+  const letture = useDati().ipc;
   const [codaVisibile, setCodaVisibile] = useState(true);
   // Spento all'apertura come lo spettro, e per la stessa ragione: chi apre
   // questa schermata è venuto a guardare la copertina. Il testo è una seconda
   // cosa da guardare, e chi la vuole la accende.
-  const [testoVisibile, setTestoVisibile] = useState(false);
+  const [testoVisibile, setTestoVisibile] = useState(testoAperto);
   // Spento all'apertura, e la ragione non è più «di proposito, ogni volta»: la
   // scelta adesso si ricorda. Sta in `settings` sotto `player.spectrum.visible`,
   // vale `false` per chi non l'ha mai fatta — chi apre questa schermata la prima
@@ -150,15 +155,15 @@ export function InRiproduzione({
   // della scena — cioè un contesto WebGL creato e distrutto per niente.
   const [spettroVisibile, setSpettroVisibile] = useState(false);
   useEffect(() => {
-    ipc.spettroVisibile().then(setSpettroVisibile).catch(onErrore);
-  }, [onErrore]);
+    letture.spettroVisibile().then(setSpettroVisibile).catch(onErrore);
+  }, [onErrore, letture]);
   // Quante barre disegna la scena. Parte da quel che dice il nucleo — la
   // preferenza sta in `settings`, non qui — e si chiede una volta sola,
   // all'apertura: è una lettura da una tabella di chiavi, non da mezza libreria.
   const [barre, setBarre] = useState(64);
   useEffect(() => {
-    ipc.spettroBande().then(setBarre).catch(onErrore);
-  }, [onErrore]);
+    letture.spettroBande().then(setBarre).catch(onErrore);
+  }, [onErrore, letture]);
   // Quanto la scena può costare a questa macchina. Stessa forma degli altri due:
   // si parte dal valore di serie e si semina con un effetto, perché è una
   // lettura da una tabella di chiavi e non da mezza libreria.
@@ -171,8 +176,8 @@ export function InRiproduzione({
   // la scena rinasce comunque.
   const [qualitaSpettro, setQualitaSpettro] = useState<QualitaSpettro>("auto");
   useEffect(() => {
-    ipc.spettroQualita().then(setQualitaSpettro).catch(onErrore);
-  }, [onErrore]);
+    letture.spettroQualita().then(setQualitaSpettro).catch(onErrore);
+  }, [onErrore, letture]);
   const scegliBarre = (quante: number) => {
     // Si prende quel che è rimasto e non quel che si è chiesto: fra le potenze
     // di due non c'è niente, e il nucleo porta alla più vicina un numero che
@@ -403,14 +408,15 @@ export function InRiproduzione({
               titolo={titoloAlbum(brano.album)}
               classe="np-art"
               piena
+              accanto
             />
 
             <div className="chi">
-              <h1 className="np-title" title={brano.title}>
+              <h1 className="np-title" title={brano.title} dir="auto">
                 {brano.title}
               </h1>
               <div className="np-meta">
-                {nomeArtista(brano.artist)} · {titoloAlbum(brano.album)}
+                <bdi>{nomeArtista(brano.artist)}</bdi> · <bdi>{titoloAlbum(brano.album)}</bdi>
                 {brano.year ? ` · ${brano.year}` : ""}
               </div>
               {/* Sotto il sommario e non in un angolo: è la schermata che si

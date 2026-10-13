@@ -1,4 +1,4 @@
-# Quel che deve passare prima di unire qualcosa.
+# Quel che deve passare prima di unire qualcosa — e prima di ogni release.
 #
 # Gira su Windows e basta, ed è deliberato: è l'unico bersaglio che l'installer
 # produce oggi, e una matrice che compila su Linux darebbe la sensazione di
@@ -9,6 +9,9 @@
 # di `release.yml`: un'etichetta come `@v4` si può spostare, un hash no. Qui non
 # passa nessun segreto, ma è la stessa CI che dice «si può unire» — e un'azione
 # sostituita sotto i piedi lo direbbe di qualunque cosa.
+#
+# Tutte su Node 24: GitHub spegne il runtime Node 20 delle azioni, e un'azione
+# ferma a Node 20 smette di partire il giorno in cui lo fa, non prima.
 
 name: verify
 
@@ -18,6 +21,29 @@ on:
   pull_request:
   # Perché si possa lanciare a mano quando si sospetta che la cache menta.
   workflow_dispatch:
+  # Perché `release.yml` la chiami prima di costruire: una release che parte
+  # senza che le prove siano passate **su quel tag** è una release che si fida
+  # dell'ultima volta che qualcuno ha guardato un ramo.
+  workflow_call:
+    inputs:
+      ref:
+        description: "Il ref da verificare (vuoto = quello dell'evento)"
+        type: string
+        required: false
+        default: ""
+
+# Leggere l'albero e basta. Nessun lavoro qui scrive niente su GitHub.
+permissions:
+  contents: read
+
+# Un push nuovo sullo stesso ramo rende vecchio quello di prima: verificarlo
+# fino in fondo sono quaranta minuti per una risposta che nessuno leggerà.
+# `github.workflow` nel gruppo perché, chiamata da `release.yml`, questa corsa
+# porta il nome di chi la chiama e non deve annullare né essere annullata da
+# una verifica di un ramo.
+concurrency:
+  group: verify-${{ github.workflow }}-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,22 +55,37 @@ jobs:
   verifica:
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      # La versione di Rust inchiodata, e non «stable»: una CI che un martedì
+      # mattina comincia a fallire perché è uscito un clippy nuovo è una CI
+      # rossa per una ragione che non sta nel cambio che si sta guardando. La
+      # variabile vince su `rust-toolchain.toml`, che sulla macchina di chi
+      # sviluppa resta `stable`; la si alza a mano, insieme a `rust-version` se
+      # serve, e insieme a quella di `release.yml`. Sta qui e non in cima
+      # perché il contenitore di `cargo deny`, più sotto, porta il suo Rust.
+      RUSTUP_TOOLCHAIN: "1.97.1"
 
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      # La versione di Rust la decide `rust-toolchain.toml`, che sta nel repo:
-      # `dtolnay/rust-toolchain` lo rispetta se non gli si dice altro.
-      - name: Rust
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      # Senza credenziali nel `.git/config`: nessun passo di questo lavoro ha
+      # bisogno di parlare con GitHub, e un token lasciato su disco è un token
+      # che ogni script di compilazione di quattrocento crate può leggere.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt, clippy
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # `rustup` c'è già sull'immagine: installare la versione inchiodata con
+      # lui è un'azione di terzi in meno fra il codice e la CI.
+      - name: Rust
+        run: rustup toolchain install ${{ env.RUSTUP_TOOLCHAIN }} --profile minimal --component rustfmt,clippy
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          # 24 e non 20: le prove dell'interfaccia sono TypeScript eseguito da
+          # `node --test` senza compilarlo, e Node lo fa da sé dalla 23.6 in poi.
+          node-version: "24"
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 
@@ -65,22 +106,87 @@ jobs:
       - name: Le classi CSS esistono
         run: node strumenti/classi.js
 
+      # Anche questo lo eseguiva solo `npm run verify`. La documentazione cita i
+      # file del repository per percorso, e il «?» delle Impostazioni apre le sue
+      # ancore: un file rinominato o un'ancora sparita si vedono qui.
+      - name: La documentazione dice il vero
+        run: node strumenti/docs.js
+
+      # Le note che l'updater mostrerà, ricavate dal changelog: se la sezione di
+      # questa versione non ha titoli, l'avviso «c'è un aggiornamento» si apre
+      # su una tendina vuota. Meglio saperlo a ogni push che la sera del tag.
+      - name: Gli strumenti di rilascio
+        run: node --test "strumenti/*.test.js"
+
       - name: Formattazione
         run: cargo fmt --all --check
 
       # ── e poi quelle che costano ─────────────────────────────────────────
+      # `--locked` dappertutto: un `Cargo.lock` che la CI riscrive in silenzio
+      # vuol dire che le prove sono passate su dipendenze diverse da quelle che
+      # l'installer conterrà.
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets --locked
 
       - name: Prove
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Frontend
         working-directory: apps/desktop
         run: |
           npm ci
           npm run build:web
+          npm run test:web
+
+      # Dopo `npm ci`, perché `licenze.js` legge i testi dei pacchetti npm che
+      # finiscono nel programma da `node_modules`. Era un controllo della sola
+      # release: scoprire al momento del tag che tre aggiornamenti di
+      # dipendenze fa qualcuno non ha rigenerato gli avvisi vuol dire una
+      # release ferma per un file di testo.
+      - name: Gli avvisi sulle licenze sono aggiornati
+        shell: bash
+        run: |
+          node strumenti/licenze.js
+          if ! git diff --quiet -- THIRD-PARTY-NOTICES.md; then
+            echo "THIRD-PARTY-NOTICES.md non è aggiornato."
+            echo "Rigenerarlo con: node strumenti/licenze.js"
+            git --no-pager diff --stat -- THIRD-PARTY-NOTICES.md
+            exit 1
+          fi
+
+  # Le dipendenze, guardate da fuori: licenze, avvisi di sicurezza, crate ritirati,
+  # sorgenti. Un lavoro suo perché fallisce per ragioni che non stanno nel
+  # codice di questo repository — un avviso pubblicato stanotte su un crate che
+  # non è cambiato — e va letto come tale.
+  dipendenze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # Su Linux perché l'azione è un contenitore, e i contenitori su Windows
+      # non girano; il bersaglio che guarda è Windows lo stesso, perché lo dice
+      # `deny.toml` (`[graph] targets`).
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      # Solo le dipendenze che finiscono nella finestra: un avviso su uno
+      # strumento di compilazione (`vite`, `typescript`) non tocca chi installa
+      # Aether, e una CI rossa per quello si impara a ignorarla.
+      - name: npm audit
+        working-directory: apps/desktop
+        run: npm audit --omit=dev
 
   # Un lavoro suo, e non un passo del precedente: fallisce per una ragione
   # diversa — qualcuno ha reintrodotto una dipendenza che non si può usare — e
@@ -91,7 +197,10 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       # Le tre cose che hanno reso Aether indistribuibile, e che non devono
       # tornare. Il grep esclude i commenti che *spiegano* perché non ci sono:

@@ -1,6 +1,6 @@
 # Privacy
 
-Last updated: 10 September 2026.
+Last updated: 26 September 2026.
 
 **Aether has no telemetry, no analytics, no crash reporting, and sends nothing
 to me.** There is no Aether server. There is no account to create. There is
@@ -22,6 +22,8 @@ Everything Aether knows about you:
   ratings, favorites, listening history, play counts.
 - **The settings**, in the same folder.
 - **The cover art**, in a file cache next to the database.
+- **Your skins and Skin Studio drafts**, in the `skin` folder beside it —
+  including, from 3.0, the conversations with the Studio's chat (§ 2-quater).
 - **The secrets** — the Google Drive tokens, the scrobbling credentials and the
   API keys of any language model you configure — in the **operating system's
   keychain**, not in a file. On Windows that's Credential Manager.
@@ -213,9 +215,9 @@ point of this section.
 
 | Host | When | What reaches it |
 | --- | --- | --- |
-| `localhost:11434` (Ollama) | If you configure a local model | The skin document and what you type in the chat |
+| `localhost:11434` (Ollama) | If you configure a local model | The skin document, what is selected in the Studio and what you type in the chat; a picture of the Studio's preview if you switch on «Preview» |
 | `localhost:1234` (Bionic / LM Studio) | As above | As above |
-| `openrouter.ai` | If you configure an OpenRouter profile | The skin document and what you type in the chat, plus your API key |
+| `openrouter.ai` | If you configure an OpenRouter profile | As above, plus your API key |
 | an address you write yourself | If you configure a custom profile | As above |
 
 **With a local model, nothing leaves this computer.** Ollama and LM Studio are
@@ -226,9 +228,21 @@ case — see the rewritten point in § 7.
 **With OpenRouter, or any address of your own, something does leave.** Namely:
 
 - **the skin document you have open** — the JSON manifest: colors, spacing,
-  effects, layout. It is a design file, not your data;
+  effects, animations, layout. It is a design file, not your data. From 3.0 a
+  large document goes out in part: the sections your question, your selection
+  and the open errors name, and a list of the names left out;
+- **what is selected in the Studio** — the name of a part, a token, a colour or
+  an animation, with the state and theme you are looking at — as one line in
+  front of your message, so that «this» means something;
 - **what you type in the chat**, and what the model has already answered in the
-  same conversation;
+  same conversation (past a certain length, the older turns go out shortened);
+- **a picture of the Studio's preview, only if you switch on «Preview»** under
+  the chat. It is off until you do, and when it is on one picture goes with each
+  question you send. The preview is the application running on **sample
+  data** — invented albums, artists, tracks and covers that ship with the
+  program — so the picture shows those and never your library. It is made
+  inside the window from that preview, a JPEG at most 1,280 pixels wide, and it
+  is sent once: later turns do not send it again;
 - **your API key**, in the `Authorization` header, because that is how the
   service knows who is asking;
 - two courtesy headers naming the application (`Aether`, and this repository's
@@ -237,8 +251,18 @@ case — see the rewritten point in § 7.
 **What does not go, ever.** No track, no album, no artist, no playlist, no
 listening history, no play count, no file name, no path, no identifier of you or
 of this installation. The chat has no access to your library, and the request is
-built by the core from the skin document and the conversation — nothing else is
-in scope to add.
+built by the core from the skin document, the selection, the conversation and,
+if you asked for it, the picture of the sample preview — nothing else is in
+scope to add. The core also checks that a picture is a PNG, JPEG or WebP image
+before anything is sent.
+
+**The conversation is kept on this computer.** From 3.0 it is saved next to the
+draft it is about, in `skin\bozze\<id>\chat.json` inside the data folder: what
+you wrote, what the model answered, the token counts the service reported and
+the list of changes each answer made. The pictures are not saved. Discarding
+the draft deletes it, and «New conversation» empties it. It is **not** part of
+the Google Drive backup (§ 4) nor of the profile archive (§ 4-bis): both carry
+only the draft's `skin.json`.
 
 **The key lives in the operating system's keychain**, one entry per profile
 (`ia.<profile>.chiave` under the usual Aether service), never in the library
@@ -367,14 +391,17 @@ that's why it gets its own section instead of a line at the bottom of a list.
 
 | Host | When | What reaches it |
 | --- | --- | --- |
-| `github.com` | Forty-five seconds after startup, then every thirty minutes | Nothing: a GET to a public file |
+| `github.com` | Ten seconds after the window is ready, then every thirty minutes; after a failure for lack of network, again after one, five and fifteen minutes | Nothing: a GET to a public file |
 | `objects.githubusercontent.com` | Only if you press «Update» | The request for the installer file |
 
-**At most one check every half hour, no matter how often you open Aether.** The
-startup check looks at when the last successful one happened, and if that was
-less than thirty minutes ago it doesn't run: opening and closing Aether ten times
-in an hour makes one request, not ten. Pressing «Check now» is the exception, and
-deliberately so — a button you pressed has to do something.
+**One check at every start, but not one per click.** Until 2.4 the startup check
+was skipped when the last successful one was less than half an hour old, which
+meant that whoever reopened Aether after twenty minutes never got the check
+`TODO.md` asked for. From 3.0 the threshold is five minutes: it is there for a
+shortcut double-clicked or a start that crashes and repeats, so that opening and
+closing Aether ten times in a minute still makes one request, not ten. Pressing
+«Check now» is the exception, and deliberately so — a button you pressed has to
+do something.
 
 The file it downloads is called `latest.json`, sits among the latest release's
 assets, and is public: it's the same one you'd see opening the releases page in

@@ -11,10 +11,42 @@
  * precisamente ciò che la decisione sui prefab rifiuta.
  *
  * Tutto il resto rende da `contesto`, un oggetto solo costruito in `App.tsx`. È
- * anche l'unico imbuto per gli `useState` di `App` — il conteggio sta nel
- * commento gemello in `App.tsx`, e tenerlo in un posto solo è il modo di non
- * avere due numeri che divergono — che stavano passando di mano in mano:
- * `Lettore` prende sei prop, `Colonna` sei, `Coda` tre.
+ * anche l'unico imbuto per lo stato di `App` che i widget leggono — quale sia,
+ * e dove viva, sta nel commento gemello in `App.tsx`, e tenerlo in un posto
+ * solo è il modo di non avere due elenchi che divergono — che stava passando
+ * di mano in mano: `Lettore` prende sei prop, `Colonna` sei, `Coda` tre.
+ *
+ * # Lo stato del motore non passa dal contesto
+ *
+ * Ci passava, ed era la ragione per cui il contesto non stava mai fermo: ogni
+ * passo del volume, ogni pausa, ogni banda dell'equalizzatore ne faceva uno
+ * nuovo, e con lui si ridisegnava lo scafale intero — la navigazione, la barra
+ * della selezione, la testata. Adesso lo stato sta in un archivio
+ * (`riproduzione.ts`), e lo legge **la foglia** che lo disegna: i widget che
+ * ne hanno bisogno sono segnati `conStato` nel registro, e solo loro si
+ * iscrivono. Per decidere se mostrarsi, gli altri chiedono una cosa sola — «c'è
+ * un brano?» — che cambia quando si comincia o si smette di ascoltare, non a
+ * ogni passo del cursore.
+ *
+ * L'anteprima dello Studio lo stato lo porta ancora nel contesto, finto: quando
+ * c'è, vince lui (`useStatoDelloScafale`), e la tela non segue il brano che si
+ * sta ascoltando.
+ *
+ * # I widget sotto `memo`
+ *
+ * `Navigazione`, `Lettore`, `Colonna`, `Coda`, `Trasporto`, `Scrubber`,
+ * `BarraSelezione`, `Ora` e `Giudizio` sono sotto `memo`. Lo scafale si
+ * ridisegna quando cambia il contesto — una riga scelta, la colonna che si
+ * apre — e senza `memo` ogni suo disegno rifaceva tutti i widget, anche quelli
+ * a cui quel cambio non diceva niente: la colonna per una riga scelta, la
+ * navigazione per un passo del volume. Le loro prop adesso sono stabili — lo
+ * stato del motore cambia solo quando cambia davvero, le chiamate del contesto
+ * hanno un'identità sola (`App.tsx`, e `useMani` qui sotto) — e `memo` serve.
+ * Non sugli altri: `Copertina` e i segnaposto costano meno del confronto.
+ *
+ * La lingua non è una prop, e un componente sotto `memo` non si ridisegna
+ * quando cambia: ciascuno di quei nove si iscrive con `useLingua`, come già
+ * fanno le righe dell'elenco.
  *
  * # Le sovrapposizioni non sono qui
  *
@@ -29,8 +61,14 @@
  * compilatore. `parts.rs` registra cos'era successo l'ultima volta che il
  * sistema aveva due autori di CSS.
  */
-import type { ReactNode } from "react";
+import {
+  useCallback,
+  useContext,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 
+import { NESSUNA_ISCRIZIONE } from "./archivio";
 import { Coda } from "./Coda";
 import { Copertina } from "./Copertina";
 import type {
@@ -45,10 +83,12 @@ import { Colonna } from "./parti/Colonna";
 import { Giudizio } from "./parti/Giudizio";
 import { Navigazione, type Vista } from "./parti/Navigazione";
 import { Ora } from "./parti/Ora";
+import { statoSuono } from "./segnali";
 import { Scrubber } from "./parti/Scrubber";
 import { Trasporto, type TagliaTrasporto } from "./parti/Trasporto";
 import { Lettore } from "./Lettore";
 import { titoloAlbum } from "./formato";
+import { LettoreDellaFinestra } from "./riproduzione";
 
 /**
  * Tutto quel che i widget sanno del mondo.
@@ -57,9 +97,14 @@ import { titoloAlbum } from "./formato";
  * un widget può richiedere una voce in più qui; quel che si compra è che
  * aggiungere un widget all'albero non richiede di far scendere una prop
  * attraverso tre componenti che non la usano.
+ *
+ * È il contesto della finestra: lo stato del motore non c'è, lo leggono le
+ * foglie dall'archivio (vedi «Lo stato del motore non passa dal contesto» in
+ * testa). Quello dello Studio è `ContestoWidget`, che lo porta.
  */
-export interface ContestoWidget {
-  stato: StatoRiproduzione;
+export interface ContestoScafale {
+  /** Lo stato della riproduzione, solo se finto: vedi `ContestoWidget`. */
+  stato?: StatoRiproduzione | undefined;
   // La posizione **non** sta qui, ed è deliberato: cambia venti volte al
   // secondo, e questo oggetto è nelle dipendenze di tutto l'albero. La legge
   // `Scrubber` dal suo archivio — vedi `riproduzione.ts`.
@@ -112,7 +157,20 @@ export interface ContestoWidget {
   onSelezioneChiudi: () => void;
 }
 
+/**
+ * Il contesto dell'anteprima dello Studio: quello della finestra, con lo stato.
+ *
+ * Lo Studio disegna un brano finto e non deve seguire quello che suona, quindi
+ * lo stato lo porta qui dentro, e quando c'è vince sull'archivio
+ * (`useStatoDelloScafale`). Il nome è quello di prima della separazione,
+ * perché è quello che `studio/mondo.ts` e `studio/Tela.tsx` conoscono.
+ */
+export interface ContestoWidget extends ContestoScafale {
+  stato: StatoRiproduzione;
+}
+
 /** I due buchi che l'app riempie: quale pagina, e la sua intestazione. */
+
 export interface SlotScafale {
   intestazione: ReactNode;
   contenuto: ReactNode;
@@ -121,8 +179,23 @@ export interface SlotScafale {
 /** Quel che un widget riceve. */
 interface Argomenti {
   nodo: NodoScafale;
-  ctx: ContestoWidget;
+  ctx: ContestoScafale;
   slot: SlotScafale;
+}
+
+/**
+ * Le chiamate che i widget fanno col contesto, con un'identità che resta.
+ *
+ * Scritte sul posto — `() => ctx.onColonna(false)` — erano una funzione nuova a
+ * ogni disegno dello scafale, e il `memo` di `Lettore`, `Colonna` e `Coda`
+ * non sarebbe servito a niente: ogni cambio della selezione li avrebbe
+ * ridisegnati per una prop che dice la stessa cosa. Vedi `useMani`.
+ */
+interface Mani {
+  alternaCoda: () => void;
+  chiudiCoda: () => void;
+  apriColonna: () => void;
+  chiudiColonna: () => void;
 }
 
 /**
@@ -132,10 +205,24 @@ interface Argomenti {
  * dato della skin: la terza colonna è aperta o chiusa, la barra della selezione
  * c'è solo con dei brani selezionati. Un widget nascosto semplicemente non è nel
  * flusso flex — ed è la ragione per cui le zone sono flex e non grid.
+ *
+ * Del motore `visibile` sa una cosa sola, se c'è un brano (`conBrano`): è
+ * tutto quel che serve per decidere, e chiederlo costa un booleano invece
+ * dello stato intero. `conStato` segna chi lo stato lo disegna, e lo riceve.
  */
-interface ComponenteWidget {
-  rende: (args: Argomenti) => ReactNode;
-  visibile?: (ctx: ContestoWidget) => boolean;
+type ComponenteWidget =
+  | {
+      conStato?: false;
+      rende: (args: Argomenti) => ReactNode;
+      visibile?: (ctx: ContestoScafale, conBrano: boolean) => boolean;
+    }
+  | WidgetConStato;
+
+/** Un widget che disegna lo stato del motore. */
+interface WidgetConStato {
+  conStato: true;
+  rende: (args: Argomenti, stato: StatoRiproduzione, mani: Mani) => ReactNode;
+  visibile?: (ctx: ContestoScafale, conBrano: boolean) => boolean;
 }
 
 /** Il valore di una manopola, col suo tipo e un ripiego se il tipo non torna. */
@@ -234,19 +321,20 @@ const WIDGET: Record<string, ComponenteWidget> = {
     // La barra della selezione prende il posto del lettore: è la stessa domanda
     // — «cosa sto per fare adesso» — in due momenti diversi, e chi ha appena
     // scelto quaranta brani non sta cercando il tasto pausa.
-    visibile: (ctx) =>
+    visibile: (ctx, conBrano) =>
       !ctx.colonnaAperta &&
       !ctx.grande &&
       ctx.selezionati.length === 0 &&
-      ctx.stato.brano !== null,
-    rende: ({ ctx }) => (
+      conBrano,
+    conStato: true,
+    rende: ({ ctx }, stato, mani) => (
       <Lettore
-        stato={ctx.stato}
+        stato={stato}
         codaAperta={ctx.codaAperta}
-        onCoda={() => ctx.onCoda(!ctx.codaAperta)}
+        onCoda={mani.alternaCoda}
         onPreferito={ctx.onPreferito}
         onErrore={ctx.onErrore}
-        onColonna={() => ctx.onColonna(true)}
+        onColonna={mani.apriColonna}
       />
     ),
   },
@@ -257,10 +345,11 @@ const WIDGET: Record<string, ComponenteWidget> = {
     // davvero avrebbe fatto pagare a chi apre la copertina grande la riapertura
     // della colonna ogni volta.
     visibile: (ctx) => ctx.colonnaAperta && !ctx.grande,
-    rende: ({ ctx }) => (
+    conStato: true,
+    rende: ({ ctx }, stato, mani) => (
       <Colonna
-        stato={ctx.stato}
-        onChiudi={() => ctx.onColonna(false)}
+        stato={stato}
+        onChiudi={mani.chiudiColonna}
         onEspandi={ctx.onGrande}
         onPreferito={ctx.onPreferito}
         onVoto={ctx.onVoto}
@@ -270,10 +359,11 @@ const WIDGET: Record<string, ComponenteWidget> = {
   },
 
   transport: {
-    visibile: (ctx) => ctx.stato.brano !== null,
-    rende: ({ nodo, ctx }) => (
+    visibile: (_ctx, conBrano) => conBrano,
+    conStato: true,
+    rende: ({ nodo, ctx }, stato) => (
       <Trasporto
-        stato={ctx.stato}
+        stato={stato}
         taglia={DA_TAGLIA[parola(nodo, "size", TAGLIE_TRASPORTO, "bar")]}
         conMescola={bandiera(nodo, "shuffle", true)}
         conRipeti={bandiera(nodo, "repeat", true)}
@@ -283,10 +373,11 @@ const WIDGET: Record<string, ComponenteWidget> = {
   },
 
   scrubber: {
-    visibile: (ctx) => ctx.stato.brano !== null,
-    rende: ({ nodo, ctx }) => (
+    visibile: (_ctx, conBrano) => conBrano,
+    conStato: true,
+    rende: ({ nodo, ctx }, stato) => (
       <Scrubber
-        stato={ctx.stato}
+        stato={stato}
         conTempi={bandiera(nodo, "times", true)}
         onErrore={ctx.onErrore}
       />
@@ -296,8 +387,9 @@ const WIDGET: Record<string, ComponenteWidget> = {
   queue: {
     // A schermo intero la coda ce l'ha già quella schermata, nel suo pannello.
     visibile: (ctx) => ctx.codaAperta && !ctx.colonnaAperta && !ctx.grande,
-    rende: ({ ctx }) => (
-      <Coda stato={ctx.stato} onChiudi={() => ctx.onCoda(false)} onErrore={ctx.onErrore} />
+    conStato: true,
+    rende: ({ ctx }, stato, mani) => (
+      <Coda stato={stato} onChiudi={mani.chiudiCoda} onErrore={ctx.onErrore} />
     ),
   },
 
@@ -321,11 +413,13 @@ const WIDGET: Record<string, ComponenteWidget> = {
   },
 
   "now-playing": {
-    visibile: (ctx) => ctx.stato.brano !== null,
-    rende: ({ nodo, ctx }) =>
-      ctx.stato.brano && (
+    visibile: (_ctx, conBrano) => conBrano,
+    conStato: true,
+    rende: ({ nodo, ctx }, stato) =>
+      stato.brano && (
         <Ora
-          brano={ctx.stato.brano}
+          brano={stato.brano}
+          inPausa={stato.inPausa}
           conCopertina={bandiera(nodo, "cover", true)}
           conCuore={bandiera(nodo, "heart", true)}
           onPreferito={ctx.onPreferito}
@@ -334,25 +428,29 @@ const WIDGET: Record<string, ComponenteWidget> = {
   },
 
   "cover-large": {
-    visibile: (ctx) => ctx.stato.brano !== null,
-    rende: ({ ctx }) =>
-      ctx.stato.brano && (
+    visibile: (_ctx, conBrano) => conBrano,
+    conStato: true,
+    rende: (_args, stato) =>
+      stato.brano && (
         <Copertina
-          hash={ctx.stato.brano.coverArtHash}
-          titolo={titoloAlbum(ctx.stato.brano.album)}
+          hash={stato.brano.coverArtHash}
+          titolo={titoloAlbum(stato.brano.album)}
           classe="np-art"
           piena
+          suono={statoSuono(true, stato.inPausa)}
+          cambio
         />
       ),
   },
 
   rating: {
-    visibile: (ctx) => ctx.stato.brano !== null,
-    rende: ({ nodo, ctx }) =>
-      ctx.stato.brano && (
+    visibile: (_ctx, conBrano) => conBrano,
+    conStato: true,
+    rende: ({ nodo, ctx }, stato) =>
+      stato.brano && (
         <Giudizio
-          stato={ctx.stato}
-          brano={ctx.stato.brano}
+          stato={stato}
+          brano={stato.brano}
           taglia="colonna"
           conStelle={bandiera(nodo, "stars", true)}
           conVolume={bandiera(nodo, "volume", true)}
@@ -380,26 +478,97 @@ function SegnapostoWidget({ nome }: { nome: string }) {
   );
 }
 
+/**
+ * Lo stato del motore per un widget dello scafale.
+ *
+ * Dall'archivio della finestra, iscrivendosi; dal contesto quando il contesto
+ * lo porta, cioè nell'anteprima dello Studio, e allora senza iscriversi a
+ * niente: la tela disegna un brano finto e non deve svegliarsi per quello vero.
+ */
+function useStatoDelloScafale(ctx: ContestoScafale): StatoRiproduzione {
+  const archivio = useContext(LettoreDellaFinestra);
+  const finto = ctx.stato;
+  return useSyncExternalStore(
+    finto === undefined ? archivio.iscrivi : NESSUNA_ISCRIZIONE,
+    () => finto ?? archivio.leggi(),
+  );
+}
+
+/**
+ * C'è un brano, per chi deve soltanto decidere se mostrarsi.
+ *
+ * Un booleano e non lo stato: chi lo chiede si ridisegna quando si comincia o
+ * si smette di ascoltare, non a ogni passo del volume.
+ */
+function useConBrano(ctx: ContestoScafale): boolean {
+  const archivio = useContext(LettoreDellaFinestra);
+  const finto = ctx.stato;
+  return useSyncExternalStore(
+    finto === undefined ? archivio.iscrivi : NESSUNA_ISCRIZIONE,
+    () => (finto ?? archivio.leggi()).brano !== null,
+  );
+}
+
+/** Le chiamate col contesto, stabili finché il contesto non le cambia: vedi `Mani`. */
+function useMani(ctx: ContestoScafale): Mani {
+  const { onCoda, onColonna, codaAperta } = ctx;
+  return {
+    alternaCoda: useCallback(() => onCoda(!codaAperta), [onCoda, codaAperta]),
+    chiudiCoda: useCallback(() => onCoda(false), [onCoda]),
+    apriColonna: useCallback(() => onColonna(true), [onColonna]),
+    chiudiColonna: useCallback(() => onColonna(false), [onColonna]),
+  };
+}
+
 function Foglia({ nodo, ctx, slot }: Argomenti) {
   const voce = WIDGET[nodo.name];
   if (!voce) return <SegnapostoWidget nome={nodo.name} />;
-  if (voce.visibile && !voce.visibile(ctx)) return null;
+  if (voce.conStato) {
+    return <FogliaConStato voce={voce} nodo={nodo} ctx={ctx} slot={slot} />;
+  }
   return <>{voce.rende({ nodo, ctx, slot })}</>;
 }
 
+/**
+ * Una foglia che disegna lo stato del motore: la sola che se lo legge.
+ *
+ * Un componente a parte e non un ramo di `Foglia`, perché gli hook non stanno
+ * dietro un `if`: chi non è `conStato` non si iscrive a niente.
+ */
+function FogliaConStato({
+  voce,
+  nodo,
+  ctx,
+  slot,
+}: Argomenti & { voce: WidgetConStato }) {
+  const stato = useStatoDelloScafale(ctx);
+  const mani = useMani(ctx);
+  return <>{voce.rende({ nodo, ctx, slot }, stato, mani)}</>;
+}
+
+/**
+ * Un widget al suo posto, se in questo momento va mostrato.
+ *
+ * La visibilità si chiedeva due volte, qui e in `Foglia`; adesso solo qui, che
+ * è il punto in cui un widget nascosto esce dal flusso col suo involucro.
+ */
+function NodoWidget({ nodo, ctx, slot }: Argomenti) {
+  const voce = WIDGET[nodo.name];
+  const conBrano = useConBrano(ctx);
+  if (voce?.visibile && !voce.visibile(ctx, conBrano)) return null;
+  // L'involucro porta solo l'indirizzo, che aggancia le regole di misura del
+  // foglio. La parte la porta il componente dentro: quando la portavano tutti
+  // e due, ogni widget si dipingeva due volte — l'opacità si moltiplicava, i
+  // bordi si raddoppiavano, un livello si disegnava sopra l'altro.
+  return (
+    <div className={classi(nodo)} data-nodo={nodo.at}>
+      <Foglia nodo={nodo} ctx={ctx} slot={slot} />
+    </div>
+  );
+}
+
 function Nodo({ nodo, ctx, slot }: Argomenti) {
-  if (nodo.kind === "widget") {
-    const voce = WIDGET[nodo.name];
-    if (voce?.visibile && !voce.visibile(ctx)) return null;
-    // L'involucro porta l'indirizzo e la classe di parte: il primo aggancia le
-    // regole di misura del foglio, la seconda quel che la skin ridipinge. Il
-    // componente dentro resta ignaro di entrambe le cose.
-    return (
-      <div className={classi(nodo)} data-nodo={nodo.at}>
-        <Foglia nodo={nodo} ctx={ctx} slot={slot} />
-      </div>
-    );
-  }
+  if (nodo.kind === "widget") return <NodoWidget nodo={nodo} ctx={ctx} slot={slot} />;
 
   return (
     <div className={classi(nodo)} data-nodo={nodo.at}>
@@ -414,10 +583,13 @@ function Nodo({ nodo, ctx, slot }: Argomenti) {
  * Le classi di un nodo.
  *
  * Semantica prima, parte del registro dopo, sempre additive: è la convenzione
- * del markup di tutta l'app.
+ * del markup di tutta l'app. Solo le **zone** portano la loro parte: quella di
+ * un widget è un metadato — dice allo Studio quale parte selezionare — e la
+ * porta già il componente.
  */
 function classi(nodo: NodoScafale): string {
-  const semantica = nodo.kind === "zone" ? `zona zona-${nodo.name}` : `posto posto-${nodo.name}`;
+  if (nodo.kind === "widget") return `posto posto-${nodo.name}`;
+  const semantica = `zona zona-${nodo.name}`;
   return nodo.part ? `${semantica} ${nodo.part}` : semantica;
 }
 
@@ -435,8 +607,9 @@ export function Impaginazione({
 }: {
   albero: NodoScafale | null;
   slot: SlotScafale;
-  contesto: ContestoWidget;
+  contesto: ContestoScafale;
 }) {
+  const conBrano = useConBrano(contesto);
   if (!albero) return null;
   return (
     <div
@@ -449,7 +622,7 @@ export function Impaginazione({
          il contenuto — la barra del lettore, la notifica — e deve sapere se
          sotto c'è spazio suo o della terza colonna. */
       data-colonna={contesto.colonnaAperta || undefined}
-      data-lettore={WIDGET.player?.visibile?.(contesto) ? "" : undefined}
+      data-lettore={WIDGET.player?.visibile?.(contesto, conBrano) ? "" : undefined}
     >
       {albero.children.map((figlio) => (
         <Nodo key={figlio.at} nodo={figlio} ctx={contesto} slot={slot} />

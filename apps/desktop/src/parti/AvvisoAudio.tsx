@@ -97,18 +97,34 @@ export function AvvisoAudio({
        `tSe` perché il codice non lo può verificare TypeScript: arriva da
        `aether-play`, che di lingue non ne conosce. Prima si stampava la frase
        e basta, ed era italiana accanto a un'etichetta inglese. */
+    /* L'uscita fissata che se n'è andata non è un guasto da riparare ma
+       un'attesa: il nucleo riprende da sé quando torna. Dirlo così — «In
+       attesa di …» al posto di «Non c'è audio» — toglie l'allarme a chi ha
+       soltanto spento le cuffie. */
+    const cosa =
+      guasto.attesa !== null
+        ? t("audio.waiting.what", { nome: guasto.attesa })
+        : t("audio.lost.what");
     const perche =
-      guasto.causaCodice === null
-        ? guasto.causa
-        : tSe(`audio.lost.cause.${guasto.causaCodice}`, guasto.causa);
+      guasto.attesa !== null
+        ? t("audio.waiting.how")
+        : guasto.causaCodice === null
+          ? guasto.causa
+          : tSe(`audio.lost.cause.${guasto.causaCodice}`, guasto.causa);
     const tasto = guasto.riapribile && (
       <button
         type="button"
         className="bottone minuto btn-ghost"
         /* Il brano si ritrova dov'era e riparte se stava andando: il tasto non
            è più l'unica strada — il nucleo riapre da sé quando l'elenco delle
-           uscite cambia — ma resta per i guasti che dall'elenco non si vedono. */
-        title={t("audio.lost.reopen.title")}
+           uscite cambia — ma resta per i guasti che dall'elenco non si vedono.
+           Mentre si aspetta l'uscita fissata è la scorciatoia per sentire
+           subito da un'altra parte, e il titolo lo dice. */
+        title={
+          guasto.attesa !== null
+            ? t("audio.lost.reopen.elsewhere")
+            : t("audio.lost.reopen.title")
+        }
         onClick={() => {
           ipc.riapriAudio().catch(onErrore);
         }}
@@ -122,7 +138,7 @@ export function AvvisoAudio({
       return (
         <div className="audio-perso" role="alert">
           <div className="cosa">
-            <strong>{t("audio.lost.what")}</strong> {perche}.
+            <strong>{cosa}</strong> {perche}.
           </div>
           {tasto}
         </div>
@@ -132,7 +148,7 @@ export function AvvisoAudio({
       <div className="errore audio-perso toast-card" role="alert">
         <Icona nome="i-alert" dim={16} />
         <span>
-          <strong>{t("audio.lost.what")}</strong> {perche}.
+          <strong>{cosa}</strong> {perche}.
         </span>
         {tasto}
       </div>

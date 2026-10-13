@@ -156,7 +156,6 @@ export function SchedaUscita({
           ))}
         </ul>
       )}
-      <p className="nota">{t("settings.output.hint")}</p>
       <Latenza onErrore={onErrore} />
     </>
   );
@@ -266,7 +265,6 @@ function Latenza({ onErrore }: { onErrore: (e: unknown) => void }) {
         />
         <span className="valore">{etichetta}</span>
       </div>
-      <p className="nota">{t("settings.output.latency.hint")}</p>
     </>
   );
 }

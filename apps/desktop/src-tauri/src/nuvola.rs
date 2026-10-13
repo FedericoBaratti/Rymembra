@@ -58,6 +58,7 @@ use aether_domain::restore::{RestoreInput, RestorePlan, plan_restore};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
+use crate::disparte::in_disparte;
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
@@ -174,6 +175,14 @@ pub struct StatoNuvola {
     /// questa cache si chiederebbero a Google quattro rinfreschi all'ora per
     /// niente.
     token: Mutex<Option<Token>>,
+
+    /// Qualcuno ha premuto «Annulla» mentre si aspetta il consenso.
+    ///
+    /// Un bit accanto al turno e non dentro: chi lo alza è un comando che deve
+    /// rispondere subito, e il turno lo tiene per tre minuti proprio
+    /// l'operazione che si vuole fermare. Si abbassa all'inizio di ogni
+    /// collegamento.
+    annulla_collegamento: AtomicBool,
 }
 
 impl StatoNuvola {
@@ -187,9 +196,26 @@ impl StatoNuvola {
                 in_corso: AtomicBool::new(false),
                 ultimo_errore: Mutex::new(None),
                 token: Mutex::new(None),
+                annulla_collegamento: AtomicBool::new(false),
             },
             orecchio,
         )
+    }
+}
+
+/// I due stati che servono ai comandi che lavorano in disparte.
+///
+/// Un comando che gira sul pool bloccante riceve un `AppHandle` e non dei
+/// `State`: il lavoro va mosso dentro una chiusura `'static`, e un prestito
+/// dello stato lì dentro non entra. `try_state` e non `state`, per la ragione
+/// di sempre: alla chiusura gli stati se ne vanno, e `state` panica.
+fn stati(app: &AppHandle) -> Result<(State<'_, Stato>, State<'_, StatoNuvola>), AppError> {
+    match (app.try_state::<Stato>(), app.try_state::<StatoNuvola>()) {
+        (Some(stato), Some(nuvola)) => Ok((stato, nuvola)),
+        _ => Err(AppError::new(ErrorCode::InternalAborted {
+            what: Some("backup su Drive".to_owned()),
+        })
+        .with_cause("lo stato del backup non c'è più")),
     }
 }
 
@@ -348,36 +374,82 @@ pub fn nuvola_stato(
 /// di aggiornamento finisce nel portachiavi; l'email in `settings`, che non è un
 /// segreto ed è quel che si mostra nelle Impostazioni.
 ///
-/// # Perché `(async)` su una funzione che non è `async`
+/// # Dove gira, e perché non più `(async)`
 ///
-/// Perché un `#[tauri::command]` normale gira **sul filo principale**, quello
-/// dell'anello degli eventi della finestra. Questa funzione aspetta che una
-/// persona legga una schermata di consenso in un browser: fino a tre minuti in
-/// cui l'applicazione sarebbe congelata, senza ridisegnarsi e senza rispondere a
-/// niente — compreso il tasto che l'utente premerebbe per annullare.
+/// Un `#[tauri::command]` normale gira **sul filo principale**, quello
+/// dell'anello degli eventi della finestra, e questa funzione aspetta che una
+/// persona legga una schermata di consenso: fino a tre minuti di applicazione
+/// congelata. Fino alla 2.4.0 la risposta era `(async)` su una funzione
+/// sincrona, che manda il corpo su un *worker* del runtime — e un worker fermo
+/// tre minuti è un posto in meno per ogni altro comando asincrono. Adesso il
+/// corpo va sul pool bloccante, con [`in_disparte`], come tutti i comandi di
+/// questo modulo che vanno in rete.
 ///
-/// `(async)` su una funzione sincrona la manda sulla riserva di fili di Tauri.
-/// Il corpo resta bloccante e ordinario; cambia solo **dove** gira. Vale per
-/// questo comando e per i tre qui sotto che vanno in rete.
-#[tauri::command(async)]
-pub fn nuvola_collega(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    nuvola: State<'_, StatoNuvola>,
-) -> Esito<StatoNuvolaIpc> {
+/// # Annullabile
+///
+/// [`nuvola_annulla`] alza un bit che l'attesa del consenso guarda a ogni
+/// giro: chi ha aperto il consenso per sbaglio non resta tre minuti davanti a
+/// un tasto spento. Un collegamento annullato non è un errore — è la risposta
+/// che l'utente ha dato — e torna lo stato com'è, senza account.
+#[tauri::command]
+pub async fn nuvola_collega(app: AppHandle) -> Esito<StatoNuvolaIpc> {
+    in_disparte("collegamento a Google", move || collega(&app))
+        .await
+        .map_err(errore)?
+}
+
+/// Ferma l'attesa del consenso, se ce n'è una.
+///
+/// Torna subito: alza il bit e basta. Chi aspetta se ne accorge entro un
+/// decimo di secondo, chiude il servitore locale e lascia il turno, e la
+/// finestra lo vede dall'evento `nuvola:stato`.
+#[tauri::command]
+pub fn nuvola_annulla(nuvola: State<'_, StatoNuvola>) -> Esito<()> {
+    nuvola.annulla_collegamento.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// Il corpo di [`nuvola_collega`], in disparte.
+fn collega(app: &AppHandle) -> Esito<StatoNuvolaIpc> {
+    let (stato, nuvola) = stati(app).map_err(errore)?;
     let esito = (|| {
         let _turno = Turno::prendi(&nuvola.in_corso).ok_or_else(occupato)?;
+        // Un «Annulla» rimasto da un collegamento di prima non deve fermare
+        // questo prima ancora di cominciare.
+        nuvola.annulla_collegamento.store(false, Ordering::Release);
+        // Chi guarda deve vedere subito «Aspetto il consenso…» e il tasto per
+        // annullare, non dopo che il browser si è aperto.
+        riferisci(app);
         let credenziali = con_libreria(&stato, |libreria| credenziali(&libreria.connection))?;
         let rete = Rete::nuova("google", oauth::SCADENZA);
+        let fermare = || {
+            nuvola.annulla_collegamento.load(Ordering::Acquire) || crate::spegnimento::in_uscita()
+        };
 
-        let token = oauth::collega(&rete, &credenziali, |url| {
-            tauri_plugin_opener::open_url(url, None::<&str>).map_err(|err| {
-                AppError::new(ErrorCode::InternalAborted {
-                    what: Some("apertura del browser".to_owned()),
+        let token = oauth::collega(
+            &rete,
+            &credenziali,
+            |url| {
+                tauri_plugin_opener::open_url(url, None::<&str>).map_err(|err| {
+                    AppError::new(ErrorCode::InternalAborted {
+                        what: Some("apertura del browser".to_owned()),
+                    })
+                    .with_cause(err.to_string())
                 })
-                .with_cause(err.to_string())
-            })
-        })?;
+            },
+            &fermare,
+        );
+        let token = match token {
+            // Annullato da chi guarda: non è un guasto, e la finestra non deve
+            // mostrarlo come tale.
+            Err(err)
+                if matches!(err.code(), ErrorCode::InternalAborted { .. })
+                    && nuvola.annulla_collegamento.load(Ordering::Acquire) =>
+            {
+                return Ok(());
+            }
+            altro => altro?,
+        };
 
         let Some(refresh) = token.refresh_token.as_deref() else {
             // Succede solo se `prompt=consent` sparisse dall'indirizzo di
@@ -404,7 +476,7 @@ pub fn nuvola_collega(
         Ok(())
     })();
 
-    concludi(&app, &stato, &nuvola, esito)
+    concludi(app, &stato, &nuvola, esito)
 }
 
 /// Chiude un comando: rilascia, riferisce, e restituisce lo stato di **adesso**.
@@ -428,50 +500,71 @@ fn concludi(
     adesso
 }
 
-/// Scollega l'account.
+/// Scollega l'account, e dimentica la coppia di credenziali scritta a mano.
 ///
 /// Revoca presso Google — **best-effort**: chi si scollega deve vedersi
 /// scollegato anche senza rete — e pulisce comunque il portachiavi. Non tocca
 /// niente su Drive: i file restano, e il giorno in cui l'utente si ricollega
 /// sono ancora lì. Toglierli sarebbe una cancellazione che nessuno ha chiesto.
 ///
-/// `(async)`: la revoca va in rete. Vedi [`nuvola_collega`].
-#[tauri::command(async)]
-pub fn nuvola_scollega(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    nuvola: State<'_, StatoNuvola>,
-) -> Esito<StatoNuvolaIpc> {
-    let esito = (|| {
-        let _turno = Turno::prendi(&nuvola.in_corso).ok_or_else(occupato)?;
-        if let Some(refresh) = DiSistema.leggi(portachiavi::GOOGLE_REFRESH_TOKEN)? {
-            let rete = Rete::nuova("google", oauth::SCADENZA);
-            drop(oauth::revoca(&rete, &refresh));
-        }
-        DiSistema.cancella(portachiavi::GOOGLE_REFRESH_TOKEN)?;
-        DiSistema.cancella(portachiavi::GOOGLE_CLIENT_SECRET)?;
-        dimentica_token(&nuvola);
+/// # La coppia, tutta e due
+///
+/// Fino alla 2.4.0 si cancellava il segreto e restava l'identificativo in
+/// `settings`: mezza coppia, che da sola non vale niente e che al collegamento
+/// successivo si accoppiava col segreto compilato dentro — cioè con il client
+/// di un altro progetto, e un `invalid_client` che nessuno capiva. Adesso
+/// scollegarsi toglie identificativo e segreto insieme, e restano quelli
+/// compilati dentro, se ci sono.
+///
+/// In disparte: la revoca va in rete. Vedi [`nuvola_collega`].
+#[tauri::command]
+pub async fn nuvola_scollega(app: AppHandle) -> Esito<StatoNuvolaIpc> {
+    in_disparte("scollegamento da Google", move || {
+        let (stato, nuvola) = stati(&app).map_err(errore)?;
+        let esito = (|| {
+            let _turno = Turno::prendi(&nuvola.in_corso).ok_or_else(occupato)?;
+            dimentica_l_account(&stato, &nuvola)?;
+            con_libreria(&stato, |libreria| {
+                settings::forget(&libreria.connection, CHIAVE_CLIENT_ID).map(|_| ())
+            })?;
+            DiSistema.cancella(portachiavi::GOOGLE_CLIENT_SECRET)
+        })();
+        concludi(&app, &stato, &nuvola, esito)
+    })
+    .await
+    .map_err(errore)?
+}
 
-        // `forget` e non `write(.., "")`: una stringa vuota è un terzo stato
-        // oltre «c'è» e «non c'è», e lo deve riconoscere ogni lettore — il
-        // primo che si dimenta il `.filter(|e| !e.is_empty())` mostra una
-        // schermata collegata a un account senza nome. E c'è la ragione che
-        // basterebbe da sola: un'identità che l'utente ha chiesto di
-        // dimenticare non resta scritta in un file che il backup copia via.
-        // `CHIAVE_ATTIVO` no: lì lo zero è un valore, non un'assenza — spento
-        // per scelta e mai acceso si comportano uguale, ma solo il primo è
-        // quello che l'utente ha appena detto.
-        con_libreria(&stato, |libreria| {
-            settings::write(&libreria.connection, CHIAVE_ATTIVO, "0")?;
-            settings::forget(&libreria.connection, CHIAVE_EMAIL)?;
-            settings::forget(&libreria.connection, CHIAVE_FILE_ID)?;
-            settings::forget(&libreria.connection, CHIAVE_IMPRONTA).map(|_| ())
-        })?;
-        scorda_errore(&nuvola);
-        Ok(())
-    })();
+/// Dimentica l'account collegato: revoca, portachiavi, `settings`, cache.
+///
+/// Non tocca la coppia di credenziali del client: è il pezzo comune fra
+/// [`nuvola_scollega`], che poi dimentica anche quella, e [`nuvola_credenziali`],
+/// che ne scrive una nuova.
+fn dimentica_l_account(stato: &Stato, nuvola: &StatoNuvola) -> Result<(), AppError> {
+    if let Some(refresh) = DiSistema.leggi(portachiavi::GOOGLE_REFRESH_TOKEN)? {
+        let rete = Rete::nuova("google", oauth::SCADENZA);
+        drop(oauth::revoca(&rete, &refresh));
+    }
+    DiSistema.cancella(portachiavi::GOOGLE_REFRESH_TOKEN)?;
+    dimentica_token(nuvola);
 
-    concludi(&app, &stato, &nuvola, esito)
+    // `forget` e non `write(.., "")`: una stringa vuota è un terzo stato
+    // oltre «c'è» e «non c'è», e lo deve riconoscere ogni lettore — il
+    // primo che si dimenta il `.filter(|e| !e.is_empty())` mostra una
+    // schermata collegata a un account senza nome. E c'è la ragione che
+    // basterebbe da sola: un'identità che l'utente ha chiesto di
+    // dimenticare non resta scritta in un file che il backup copia via.
+    // `CHIAVE_ATTIVO` no: lì lo zero è un valore, non un'assenza — spento
+    // per scelta e mai acceso si comportano uguale, ma solo il primo è
+    // quello che l'utente ha appena detto.
+    con_libreria(stato, |libreria| {
+        settings::write(&libreria.connection, CHIAVE_ATTIVO, "0")?;
+        settings::forget(&libreria.connection, CHIAVE_EMAIL)?;
+        settings::forget(&libreria.connection, CHIAVE_FILE_ID)?;
+        settings::forget(&libreria.connection, CHIAVE_IMPRONTA).map(|_| ())
+    })?;
+    scorda_errore(nuvola);
+    Ok(())
 }
 
 /// Sostituisce le credenziali del client con quelle scritte dall'utente.
@@ -479,35 +572,62 @@ pub fn nuvola_scollega(
 /// Serve a chi vuole usare il **proprio** progetto Google invece di quello di
 /// Aether: la quota è di chi la paga. Un identificativo vuoto rimette quelle
 /// compilate dentro.
+///
+/// # Cambiare client vuol dire scollegarsi
+///
+/// Un token di aggiornamento appartiene al client che l'ha ottenuto: con un
+/// altro client Google risponde `unauthorized_client`, a ogni passata, per
+/// sempre. Fino alla 2.4.0 cambiare le credenziali lasciava l'account
+/// «collegato» con un token che non poteva più funzionare. Adesso, se la coppia
+/// che vale cambia davvero, l'account si scollega — come farebbe
+/// [`nuvola_scollega`] — e la finestra mostra di nuovo «Collega». Riscrivere la
+/// stessa coppia non scollega niente.
+///
+/// In disparte: scollegarsi va in rete, e il portachiavi di Windows non è
+/// sempre istantaneo.
 #[tauri::command]
-pub fn nuvola_credenziali(
+pub async fn nuvola_credenziali(
     app: AppHandle,
-    stato: State<'_, Stato>,
-    nuvola: State<'_, StatoNuvola>,
     client_id: String,
     client_secret: String,
 ) -> Esito<StatoNuvolaIpc> {
-    let esito = (|| {
-        let id = client_id.trim();
-        // Il segreto nel portachiavi e l'identificativo in `settings`: il primo
-        // è trattato come un segreto anche se non lo è del tutto, il secondo
-        // non lo è mai stato.
-        if id.is_empty() {
-            con_libreria(&stato, |libreria| {
-                settings::forget(&libreria.connection, CHIAVE_CLIENT_ID).map(|_| ())
-            })?;
-            DiSistema.cancella(portachiavi::GOOGLE_CLIENT_SECRET)?;
-        } else {
-            con_libreria(&stato, |libreria| {
-                settings::write(&libreria.connection, CHIAVE_CLIENT_ID, id)
-            })?;
-            DiSistema.scrivi(portachiavi::GOOGLE_CLIENT_SECRET, client_secret.trim())?;
-        }
-        dimentica_token(&nuvola);
-        Ok(())
-    })();
-
-    concludi(&app, &stato, &nuvola, esito)
+    in_disparte("credenziali di Google", move || {
+        let (stato, nuvola) = stati(&app).map_err(errore)?;
+        let esito = (|| {
+            let _turno = Turno::prendi(&nuvola.in_corso).ok_or_else(occupato)?;
+            let prima = con_libreria(
+                &stato,
+                |libreria| Ok(credenziali(&libreria.connection).ok()),
+            )?;
+            let id = client_id.trim();
+            // Il segreto nel portachiavi e l'identificativo in `settings`: il
+            // primo è trattato come un segreto anche se non lo è del tutto, il
+            // secondo non lo è mai stato.
+            if id.is_empty() {
+                con_libreria(&stato, |libreria| {
+                    settings::forget(&libreria.connection, CHIAVE_CLIENT_ID).map(|_| ())
+                })?;
+                DiSistema.cancella(portachiavi::GOOGLE_CLIENT_SECRET)?;
+            } else {
+                con_libreria(&stato, |libreria| {
+                    settings::write(&libreria.connection, CHIAVE_CLIENT_ID, id)
+                })?;
+                DiSistema.scrivi(portachiavi::GOOGLE_CLIENT_SECRET, client_secret.trim())?;
+            }
+            let dopo = con_libreria(
+                &stato,
+                |libreria| Ok(credenziali(&libreria.connection).ok()),
+            )?;
+            if prima != dopo {
+                dimentica_l_account(&stato, &nuvola)?;
+            }
+            dimentica_token(&nuvola);
+            Ok(())
+        })();
+        concludi(&app, &stato, &nuvola, esito)
+    })
+    .await
+    .map_err(errore)?
 }
 
 /// Accende o spegne il backup automatico.
@@ -549,23 +669,25 @@ pub fn nuvola_salva(nuvola: State<'_, StatoNuvola>) -> Esito<()> {
 
 /// Scarica il backup e dice cosa farebbe un ripristino, senza applicarlo.
 ///
-/// `(async)`: scarica settanta chilobyte e li interpreta. Vedi
-/// [`nuvola_collega`].
-#[tauri::command(async)]
-pub fn nuvola_piano_ripristino(
-    stato: State<'_, Stato>,
-    nuvola: State<'_, StatoNuvola>,
-) -> Esito<PianoRipristinoIpc> {
-    (|| {
+/// In disparte: scarica settanta chilobyte e li interpreta, e su una rete
+/// lenta sono secondi. Vedi [`nuvola_collega`].
+#[tauri::command]
+pub async fn nuvola_piano_ripristino(app: AppHandle) -> Esito<PianoRipristinoIpc> {
+    in_disparte("piano del ripristino", move || {
+        let (stato, nuvola) = stati(&app)?;
         let _turno = Turno::prendi(&nuvola.in_corso).ok_or_else(occupato)?;
         let (dati, qui, credenziali) = leggi_per_passata(&stato)?;
-        let scaricato = con_drive(&nuvola, &credenziali, servizio::scarica_salvataggio)?;
+        let scaricato = con_drive(&nuvola, &credenziali, |drive| {
+            servizio::scarica_salvataggio(drive)
+        })?;
         let Some(da) = scaricato else {
             return Ok(niente_backup());
         };
-        let piano = pianifica(&dati, &qui, &da);
+        let piano = pianifica(&dati, &qui, &da, &cartelle_presenti(&da));
         Ok(in_ipc(&piano, &da))
-    })()
+    })
+    .await
+    .map_err(errore)?
     .map_err(errore)
 }
 
@@ -576,14 +698,22 @@ pub fn nuvola_piano_ripristino(
 /// cambiano cosa resta da fare. È l'invariante di ogni `piano → esegui` di
 /// Aether: il piano si mostra, l'esecuzione lo rifà.
 ///
-/// `(async)`: scarica anche i pacchetti di skin, che arrivano a venti megabyte
-/// l'uno. Vedi [`nuvola_collega`].
-#[tauri::command(async)]
-pub fn nuvola_ripristina(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    nuvola: State<'_, StatoNuvola>,
-) -> Esito<EsitoRipristinoIpc> {
+/// In disparte: scarica anche i pacchetti di skin, che arrivano a venti
+/// megabyte l'uno. Vedi [`nuvola_collega`].
+///
+/// Un pacchetto che non scende non ferma il ripristino: finisce fra i
+/// mancanti, e il perché nel diario.
+#[tauri::command]
+pub async fn nuvola_ripristina(app: AppHandle) -> Esito<EsitoRipristinoIpc> {
+    in_disparte("ripristino da Drive", move || ripristina(&app))
+        .await
+        .map_err(errore)?
+        .map_err(errore)
+}
+
+/// Il corpo di [`nuvola_ripristina`], in disparte.
+fn ripristina(app: &AppHandle) -> Result<EsitoRipristinoIpc, AppError> {
+    let (stato, nuvola) = stati(app)?;
     (|| {
         let _turno = Turno::prendi(&nuvola.in_corso).ok_or_else(occupato)?;
         let (dati, qui, credenziali) = leggi_per_passata(&stato)?;
@@ -592,24 +722,32 @@ pub fn nuvola_ripristina(
         // un download fallisse, resterebbe scritto uno `skin.active` che punta a
         // una skin che non esiste, e Aether si riaprirebbe senza sapersi
         // disegnare.
-        let (da, scritti) = con_drive(&nuvola, &credenziali, |drive| {
+        let (da, esistono, scritti) = con_drive(&nuvola, &credenziali, |drive| {
             let Some(da) = servizio::scarica_salvataggio(drive)? else {
                 return Err(AppError::new(ErrorCode::SyncRemoteCorrupt)
                     .with_cause("su Drive non c'è nessun backup"));
             };
-            let proposto = pianifica(&dati, &qui, &da);
+            let esistono = cartelle_presenti(&da);
+            let proposto = pianifica(&dati, &qui, &da, &esistono);
             let scritti = servizio::scarica_pacchetti(drive, &dati, &da, &proposto, |passo| {
-                avanza(&app, passo);
+                avanza(app, passo);
             })?;
-            Ok((da, scritti))
+            Ok((da, esistono, scritti))
         })?;
+        for guasto in &scritti.guasti {
+            nota!("[nuvola] pacchetto non ripristinato: {guasto}");
+        }
 
-        // Si rilegge e si ripianifica con le skin ormai su disco.
+        // Si rilegge e si ripianifica con le skin ormai su disco. Le cartelle
+        // no: sono quelle di prima, guardate fuori dal lucchetto.
         let applicato = con_libreria(&stato, |libreria| {
             let adesso = backup::stato_locale(&libreria.connection)?;
-            let definitivo = pianifica(&libreria.data_dir, &adesso, &da);
+            let definitivo = pianifica(&libreria.data_dir, &adesso, &da, &esistono);
             backup::applica(&mut libreria.connection, &definitivo)
         })?;
+        // Brani, playlist e cartelle sono cambiati sotto la finestra: l'albero
+        // delle cartelle si butta, e la vista si rilegge con l'evento.
+        crate::cartelle::cambiate(app);
 
         Ok(EsitoRipristinoIpc {
             brani: applicato.tracks,
@@ -621,7 +759,6 @@ pub fn nuvola_ripristina(
             mancanti: scritti.mancanti,
         })
     })()
-    .map_err(errore)
 }
 
 // ── il filo di sottofondo ───────────────────────────────────────────────────
@@ -1032,16 +1169,36 @@ fn stato_ipc(stato: &Stato, nuvola: &StatoNuvola) -> Result<StatoNuvolaIpc, AppE
     })
 }
 
-/// Costruisce il piano dai due lati.
-fn pianifica(dati: &std::path::Path, qui: &StatoLocale, da: &DaRipristinare) -> RestorePlan {
+/// Per ogni cartella del backup, se c'è su questo disco.
+///
+/// Il dominio non guarda il disco: chi ha il filesystem decora ogni cartella
+/// con la sua esistenza, e chi decide la usa. Si guarda **una** volta e fuori
+/// dal lucchetto della libreria: una cartella sul NAS addormentato ci mette
+/// secondi a rispondere, e prima lo si faceva dentro, con scansione, play e
+/// finestra fermi ad aspettare. Una cartella che non risponde in tempo vale
+/// «non c'è», come prima valeva un `is_dir` fallito: è la direzione che non
+/// promette.
+///
+/// Nello stesso ordine di `contenuto.roots`, che è lo stesso di
+/// `dal_salvataggio(..).roots`: le cartelle si copiano senza filtri.
+fn cartelle_presenti(da: &DaRipristinare) -> Vec<bool> {
+    aether_app::volumi::esistenze(
+        da.contenuto.roots.clone(),
+        aether_app::volumi::SCADENZA_RISOLUZIONE,
+    )
+    .into_iter()
+    .map(|esistenza| esistenza == aether_app::volumi::Esistenza::Presente)
+    .collect()
+}
+
+/// Costruisce il piano dai due lati. `esistono` è [`cartelle_presenti`].
+fn pianifica(
+    dati: &std::path::Path,
+    qui: &StatoLocale,
+    da: &DaRipristinare,
+    esistono: &[bool],
+) -> RestorePlan {
     let dal_backup = backup::dal_salvataggio(&da.contenuto, &qui.tombstones);
-    // Il dominio non guarda il disco: chi ha il filesystem decora ogni cartella
-    // con la sua esistenza, e chi decide la usa.
-    let esistono: Vec<bool> = dal_backup
-        .roots
-        .iter()
-        .map(|radice| std::path::Path::new(radice).is_dir())
-        .collect();
     // Le skin **disponibili**, non solo quelle installate: `plain` viene dal
     // binario, e senza di lei una skin attiva `plain` nel backup sembrerebbe
     // impossibile da ripristinare.
@@ -1058,7 +1215,7 @@ fn pianifica(dati: &std::path::Path, qui: &StatoLocale, da: &DaRipristinare) -> 
         backup_playlists: &dal_backup.playlists,
         local_roots: &qui.roots,
         backup_roots: &dal_backup.roots,
-        backup_roots_exist: &esistono,
+        backup_roots_exist: esistono,
         local_skins: &skin_locali,
         backup_skins: &dal_backup.skins,
         local_drafts: &bozze_locali,

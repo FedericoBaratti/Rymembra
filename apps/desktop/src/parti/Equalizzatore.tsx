@@ -29,6 +29,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CENTRI_EQ, LIMITE_EQ_DB, ipc, type VocePreset } from "../ipc";
 import { Icona } from "./Icone";
 import { t } from "../lingue";
+import { useDati } from "../dati";
+import { useFinestrella } from "../finestrella";
+import { Presenza } from "../presenza";
 
 /** Dove sta l'equalizzatore, e quindi quanto è grande. */
 export type TagliaEq = "pannello" | "pagina";
@@ -172,12 +175,13 @@ export function Equalizzatore({
     setAcceso(attivo);
   }, [guadagni, attivo]);
 
+  const letture = useDati().ipc;
   const caricaPreset = useCallback(() => {
-    ipc
+    letture
       .eqPresetElenco()
       .then(setPreset)
       .catch((e: unknown) => onErrore(e));
-  }, [onErrore]);
+  }, [onErrore, letture]);
 
   useEffect(caricaPreset, [caricaPreset]);
 
@@ -353,7 +357,16 @@ export function PannelloEq({
   onChiudi: () => void;
   onErrore: (e: unknown) => void;
 }) {
+  const { anteprima } = useDati();
+  // `aria-modal` promette che fuori non si va: il fuoco entra all'apertura,
+  // il Tab gira dentro e alla chiusura torna al tasto che l'ha aperto. Prima
+  // restava sul tasto della barra, e il Tab usciva nella pagina dietro.
+  // L'Escape resta quello qui sotto, che arriva prima di quello dell'hook.
+  const radice = useFinestrella<HTMLDivElement>(onChiudi);
   useEffect(() => {
+    // Nell'anteprima dello Studio il pannello è un disegno, e i tasti sono
+    // dello Studio: vedi lo stesso ramo in `Menu.tsx`.
+    if (anteprima) return;
     // In cattura e fermato: l'Escape delle scorciatoie globali, iscritto prima
     // su `window`, altrimenti chiudeva **anche** quel che stava sotto — la
     // ricerca, l'album aperto — insieme al pannello.
@@ -366,26 +379,29 @@ export function PannelloEq({
     window.addEventListener("keydown", suTasto, { capture: true });
     return () =>
       window.removeEventListener("keydown", suTasto, { capture: true });
-  }, [onChiudi]);
+  }, [onChiudi, anteprima]);
 
   return (
     <>
       {/* Lo stesso velo del menù contestuale: prende il clic di chiusura, così
           il pannello si chiude cliccando ovunque e non solo su un tasto. */}
       <div className="velo" onClick={onChiudi} />
-      <div
-        className="pannello-eq menu-pop"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("player.eq")}
-      >
-        <Equalizzatore
-          attivo={attivo}
-          guadagni={guadagni}
-          taglia="pannello"
-          onErrore={onErrore}
-        />
-      </div>
+      <Presenza parte="eq-panel">
+        <div
+          ref={radice}
+          className="pannello-eq eq-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("player.eq")}
+        >
+          <Equalizzatore
+            attivo={attivo}
+            guadagni={guadagni}
+            taglia="pannello"
+            onErrore={onErrore}
+          />
+        </div>
+      </Presenza>
     </>
   );
 }

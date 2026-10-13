@@ -46,12 +46,16 @@
  * della libreria per disegnare una schermata sola, all'avvio — cioè nel
  * momento in cui l'applicazione ha già tutto il resto da fare.
  */
+import { useContext } from "react";
+
 import { Copertina } from "../Copertina";
 import { artistaNoto, brani_, durata, nomeArtista, titoloAlbum } from "../formato";
 import type { Album, Brano, Casa, Raccolta } from "../ipc";
 import { t } from "../lingue";
 import { Icona } from "../parti/Icone";
 import { Intestazione } from "../parti/Intestazione";
+import { conIndice, suonoAlbum, suonoBrano, useQuelCheSuona } from "../segnali";
+import { COPERTINA_IN_VOLO, Presenza, Volo } from "../presenza";
 
 /**
  * L'intestazione della Home. In un export suo, come per «Importazioni».
@@ -87,24 +91,38 @@ export function TestaHome({
 /** Un brano, come scheda dentro un ripiano. */
 function Scheda({
   brano,
+  indice,
   onSuona,
   onMenu,
 }: {
   brano: Brano;
+  /** La posizione nel ripiano, per la cascata. */
+  indice: number;
   onSuona: () => void;
   onMenu: (e: React.MouseEvent, brano: Brano) => void;
 }) {
   return (
     <button
       type="button"
-      className="scheda-brano list-row"
+      className="scheda-brano track-card"
+      {...suonoBrano(useQuelCheSuona(), brano.id)}
+      style={conIndice(indice)}
       onClick={onSuona}
       onContextMenu={(e) => onMenu(e, brano)}
       title={`${brano.title} — ${nomeArtista(brano.artist)}`}
     >
-      <Copertina hash={brano.coverArtHash} titolo={titoloAlbum(brano.album)} />
-      <span className="titolo">{brano.title}</span>
-      <span className="artista">{nomeArtista(brano.artist)}</span>
+      <Copertina
+        hash={brano.coverArtHash}
+        titolo={titoloAlbum(brano.album)}
+        classe="copertina card-cover"
+        accanto
+      />
+      <span className="titolo card-title" dir="auto">
+        {brano.title}
+      </span>
+      <span className="artista card-subtitle" dir="auto">
+        {nomeArtista(brano.artist)}
+      </span>
     </button>
   );
 }
@@ -134,13 +152,14 @@ function Ripiano({
 }) {
   if (brani.length === 0) return null;
   return (
-    <section className="casa-ripiano">
-      <h2 className="casa-titolo">{titolo}</h2>
+    <section className="casa-ripiano home-shelf">
+      <h2 className="casa-titolo home-shelf-title">{titolo}</h2>
       <div className="casa-schede track-grid">
         {brani.map((b, i) => (
           <Scheda
             key={b.id}
             brano={b}
+            indice={i}
             onSuona={() => onSuona(brani, i)}
             onMenu={onMenu}
           />
@@ -164,25 +183,44 @@ function Ripiano({
  */
 function SchedaAlbum({
   album,
+  indice,
   onApri,
   onMenu,
 }: {
   album: Album;
+  /** La posizione nel ripiano, per la cascata. */
+  indice: number;
   onApri: (album: Album) => void;
   onMenu: (e: React.MouseEvent, album: Album) => void;
 }) {
   const titolo = titoloAlbum(album.title);
+  const inVolo = useContext(Volo);
   return (
     <button
       type="button"
-      className="scheda list-row"
+      className="scheda card"
+      {...suonoAlbum(useQuelCheSuona(), album.albumKey)}
+      style={conIndice(indice)}
       onClick={() => onApri(album)}
       onContextMenu={(e) => onMenu(e, album)}
       title={`${titolo} — ${nomeArtista(album.artist)}`}
     >
-      <Copertina hash={album.coverArtHash} titolo={titolo} />
-      <div className="titolo">{titolo}</div>
-      <div className="sotto">
+      <Presenza
+        parte="card-cover"
+        nome={album.albumKey === inVolo ? COPERTINA_IN_VOLO : undefined}
+        compagna="hero-art"
+      >
+        <Copertina
+          hash={album.coverArtHash}
+          titolo={titolo}
+          classe="copertina card-cover"
+          accanto
+        />
+      </Presenza>
+      <div className="titolo card-title" dir="auto">
+        {titolo}
+      </div>
+      <div className="sotto card-subtitle">
         {album.year ?? ""}
         {album.year && album.totalTracks > 1 ? " · " : ""}
         {album.totalTracks > 1 ? brani_(album.totalTracks) : ""}
@@ -205,13 +243,14 @@ function RipianoAlbum({
 }) {
   if (album.length === 0) return null;
   return (
-    <section className="casa-ripiano">
-      <h2 className="casa-titolo">{titolo}</h2>
+    <section className="casa-ripiano home-shelf">
+      <h2 className="casa-titolo home-shelf-title">{titolo}</h2>
       <div className="casa-schede track-grid">
-        {album.map((a) => (
+        {album.map((a, i) => (
           <SchedaAlbum
             key={a.albumKey}
             album={a}
+            indice={i}
             onApri={onApri}
             onMenu={onMenu}
           />
@@ -293,8 +332,8 @@ function RipianoSettimana({
   const ripescati = raccolte.find((r) => r.genere === "ripescati");
 
   return (
-    <section className="casa-ripiano settimana">
-      <h2 className="casa-titolo">
+    <section className="casa-ripiano settimana home-shelf">
+      <h2 className="casa-titolo home-shelf-title">
         {t("home.week.title")}
         {nuove.length > 0 && (
           <span className="annuncio">
@@ -307,23 +346,28 @@ function RipianoSettimana({
         )}
       </h2>
       <div className="casa-raccolte track-grid">
-        {raccolte.map((raccolta) => (
+        {raccolte.map((raccolta, i) => (
           <button
             type="button"
             key={raccolta.id}
-            className="scheda-raccolta list-row"
+            className="scheda-raccolta collection-card"
+            style={conIndice(i)}
             onClick={() => onApri(raccolta)}
             title={nomeRaccolta(raccolta)}
           >
             <Copertina
               hash={raccolta.brani[0]?.coverArtHash ?? null}
               titolo={nomeRaccolta(raccolta)}
+              classe="copertina card-cover"
+              accanto
             />
-            <span className="titolo">{nomeRaccolta(raccolta)}</span>
-            <span className="sotto">
-              {t("home.week.count", {
-                quanti: String(raccolta.brani.length),
-              })}
+            <span className="titolo card-title" dir="auto">
+              {nomeRaccolta(raccolta)}
+            </span>
+            <span className="sotto card-subtitle">
+              {/* «1 brano», «12 brani», con i separatori della lingua: era
+                  `String()` di un numero, cioè «1 brani». */}
+              {brani_(raccolta.brani.length)}
             </span>
             {!raccolta.aperta && (
               <span
@@ -373,7 +417,7 @@ const RIQUADRI_FINTI = 12;
 function CasaFinta() {
   return (
     <div className="casa" role="status" aria-label={t("list.loading")}>
-      <section className="casa-ripiano">
+      <section className="casa-ripiano home-shelf">
         <div className="casa-titolo finta skeleton" aria-hidden="true" />
         <div className="casa-riprendi finta" aria-hidden="true">
           <div className="copertina skeleton" />
@@ -427,6 +471,7 @@ export function Home({
   onApriAlbum: (album: Album) => void;
   onMenuAlbum: (e: React.MouseEvent, album: Album) => void;
 }) {
+  const ora = useQuelCheSuona();
   if (casa === null) return <CasaFinta />;
 
   const vuota =
@@ -457,11 +502,12 @@ export function Home({
       <RipianoSettimana raccolte={settimana} onApri={onApriRaccolta} />
 
       {casa.riprendi !== null && (
-        <section className="casa-ripiano">
-          <h2 className="casa-titolo">{t("home.resume")}</h2>
+        <section className="casa-ripiano home-shelf">
+          <h2 className="casa-titolo home-shelf-title">{t("home.resume")}</h2>
           <button
             type="button"
-            className="casa-riprendi list-row"
+            className="casa-riprendi home-resume"
+            {...suonoBrano(ora, casa.riprendi.id)}
             onClick={onRiprendi}
             onContextMenu={(e) => {
               if (casa.riprendi) onMenu(e, casa.riprendi);
@@ -470,10 +516,13 @@ export function Home({
             <Copertina
               hash={casa.riprendi.coverArtHash}
               titolo={titoloAlbum(casa.riprendi.album)}
+              accanto
             />
             <span className="che-cosa">
-              <span className="titolo">{casa.riprendi.title}</span>
-              <span className="artista">
+              <span className="titolo" dir="auto">
+                {casa.riprendi.title}
+              </span>
+              <span className="artista" dir="auto">
                 {nomeArtista(casa.riprendi.artist)}
               </span>
             </span>

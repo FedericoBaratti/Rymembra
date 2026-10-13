@@ -64,6 +64,64 @@ pub fn in_uscita() -> bool {
     USCITA.load(Ordering::Relaxed)
 }
 
+/// La sequenza di spegnimento, una sola, per tutte le strade che portano fuori.
+///
+/// # Perché sta qui e non in `main`
+///
+/// Perché le strade sono due. La prima è la chiusura normale: il `RunEvent`
+/// in fondo a `main`, per ognuno dei due o tre eventi che dicono «si chiude».
+/// La seconda è l'aggiornamento: su Windows il plugin lancia l'installer e
+/// chiama `exit(0)` dal filo dello scaricamento, e da lì il `RunEvent` non
+/// passa mai. Fino alla 2.4.0 quella strada usciva senza scrivere la posizione
+/// dell'ascolto, senza l'ultimo `PRAGMA optimize`, e lasciando nel vassoio
+/// un'icona fantasma fino al passaggio del mouse. Due copie della sequenza
+/// sarebbero due sequenze che divergono alla prima riga aggiunta a una sola:
+/// questa la chiamano tutte e due (`aggiornamenti::costruisci`, con
+/// `on_before_exit`).
+///
+/// # Ripetibile
+///
+/// Ogni passo regge la seconda chiamata — la bandiera resta alzata, la
+/// scansione resta fermata, l'ottimizzazione si fa una volta sola, la scheda e
+/// l'icona già staccate non ci sono più — perché il `RunEvent` la chiama più
+/// volte di fila.
+pub fn spegni(mano: &tauri::AppHandle) {
+    use tauri::Manager as _;
+    chiedi();
+    // E poi si dice alla scansione di smettere, se ce n'è una. Non è un di più
+    // rispetto alla riga qui sopra: questa bandiera ferma i fili che la
+    // guardano, e la scansione guarda la propria — quella che alza anche
+    // «Annulla». Senza questa riga una scansione che sta leggendo una
+    // condivisione di rete continuerebbe a leggerla mentre il resto del
+    // programma se ne va, e le righe che seguono aspetterebbero il suo
+    // lucchetto.
+    //
+    // `try_state` e non `state`: `state` panica se lo stato non c'è, e qui si
+    // sta smontando tutto. Nessuno stato vuol dire nessuna scansione da
+    // fermare.
+    if let Some(stato) = mano.try_state::<crate::stato::Stato>() {
+        stato.ferma_scansione();
+    }
+    // La sorveglianza delle cartelle: il suo filo esce, e gli osservatori del
+    // sistema con lui, prima che una copia in corso gli faccia cominciare
+    // un'altra scansione.
+    crate::sorveglia::ferma(mano);
+    // L'ultima posizione di un cursore mosso un attimo prima di chiudere: il
+    // filo dell'orologio, che di solito la scrive, è appena uscito per via
+    // della bandiera.
+    crate::riproduzione::salva_uscendo(mano);
+    // L'ultimo `PRAGMA optimize`, che SQLite chiede prima di chiudere: una
+    // volta sola, e al più un quarto di secondo d'attesa.
+    crate::manutenzione::uscendo(mano);
+    // Poi la scheda del sistema. Il distacco parla all'`HWND` della finestra,
+    // e questo è l'ultimo momento in cui quell'`HWND` esiste ancora.
+    crate::media::stacca(mano);
+    // E l'icona dell'area di notifica, per la stessa ragione: anche lei se ne
+    // va parlando col sistema operativo, e lasciarla cadere da sola vorrebbe
+    // dire farlo a ciclo degli eventi già smontato.
+    crate::vassoio::stacca(mano);
+}
+
 /// Mandare eventi alla finestra solo finché la finestra c'è.
 ///
 /// # Perché passa tutto di qui

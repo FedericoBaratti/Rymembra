@@ -1,5 +1,5 @@
 /**
- * Il giro guidato: un benvenuto, e dieci riflettori sui comandi veri.
+ * Il giro guidato: un benvenuto, e tredici riflettori sui comandi veri.
  *
  * # Perché non un carosello
  *
@@ -34,6 +34,19 @@
  * qualunque schermata» — e aggiungergliene accanto un secondo che dice la
  * stessa cosa sarebbe due nomi per un aggancio solo.
  *
+ * Le altre eccezioni sono tre, e stanno scritte qui perché si vedano:
+ *
+ * - **il menù di un brano** si trova con `[role="menu"]`. Non è una classe: è
+ *   la promessa che `Menu.tsx` fa a chi legge lo schermo, e un menù che la
+ *   perdesse avrebbe un guasto più grave di un passo saltato;
+ * - **l'albero delle Cartelle** (`.albero-cartelle`) e **la scheda delle
+ *   scorciatoie** (`section.scheda:has(.scorciatoia)`) si trovano per classe.
+ *   Nessuna delle due sta nell'impaginazione di una skin — una skin le
+ *   ridipinge, non le sposta — quindi il guasto descritto sopra qui non
+ *   succede. Ma sono un debito: un nome cambiato in quei due componenti fa
+ *   saltare il passo senza dirlo, e il rimedio è un `data-giro` loro, come
+ *   tutti gli altri.
+ *
  * # Il buco: un'ombra, non quattro rettangoli e non un ritaglio
  *
  * Il riflettore è **un** elemento vuoto messo sul rettangolo del bersaglio, con
@@ -65,16 +78,38 @@
  * Perché non tutto c'è sempre: la colonna si chiude, il testo esiste se il
  * brano ce l'ha, la coda è vuota finché non si mette qualcosa dentro. Il
  * riflettore chiede all'applicazione di mettersi dove il passo vive
- * (`onPrepara`), aspetta qualche fotogramma che il disegno arrivi, e se dopo
- * quelli l'ancora non c'è **passa oltre** nella direzione in cui si stava
- * andando. In sviluppo scrive una riga in console; in rilascio no, perché
- * saltare un passo è un esito previsto e non un guasto.
+ * (`onPrepara`), aspetta che il disegno arrivi — al più un secondo e mezzo,
+ * `ATTESA_ANCORA_MS` in `guida.ts`, che dice anche perché a tempo e non a
+ * fotogrammi — e se l'ancora non c'è **passa oltre** nella direzione in cui si
+ * stava andando. In sviluppo scrive una riga in console; in rilascio no,
+ * perché saltare un passo è un esito previsto e non un guasto.
  *
  * Mai un velo senza buco: finché una misura non c'è, il velo non si scurisce.
  *
+ * # Ogni passo si mette e si toglie
+ *
+ * `onPrepara` può restituire chi lo disfa, e il giro lo chiama lasciando il
+ * passo — avanti, indietro, o chiudendo. Serve al menù di un brano, che è un
+ * menù vero aperto col tasto destro vero (`apriIlMenuDiUnaRiga`): lasciato
+ * aperto, starebbe a schermo sotto il passo dopo a parlare d'altro. Il resto —
+ * la vista, la colonna, la coda che il giro ha riempito — lo rimette `App` alla
+ * chiusura, com'era prima di partire: un giro che lascia la finestra nelle
+ * Impostazioni con un disco in coda che nessuno ha scelto non è finito, è
+ * scappato.
+ *
+ * # Il fuoco resta nel fumetto
+ *
+ * Il fumetto è un dialogo modale e il velo prende i clic: l'unico posto in cui
+ * il fuoco ha senso è lì dentro. Ma due passi mettono a schermo cose che il
+ * fuoco se lo prendono da sole quando si aprono — lo schermo intero, che lo
+ * porta su di sé, e il menù, che lo porta sulla prima voce — e da lì Invio non
+ * mandava più avanti il giro: nello schermo intero non faceva niente, nel menù
+ * faceva partire la prima voce. Il fuoco che esce dal fumetto mentre il giro è
+ * aperto ci torna, sul pulsante che lo teneva.
+ *
  * # La prosa, e le due copie lunghe
  *
- * I dieci testi sono **corti apposta** e stanno in `lingue/{it,en}.json` sotto
+ * I testi sono **corti apposta** e stanno in `lingue/{it,en}.json` sotto
  * `tour.step.*`. Le versioni lunghe delle stesse cose sono due e vivono
  * altrove: **`README.md` § Interface/Customization (righe 160-226)** e
  * **`site/index.html` (righe 332-420)**. Sono tre copie in due lingue, e
@@ -95,8 +130,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useDati } from "./dati";
 import { useFinestrella } from "./finestrella";
+import { ATTESA_ANCORA_MS, DISTACCO, posaFumetto } from "./guida";
 import { t } from "./lingue";
+import { Presenza } from "./presenza";
 
 /**
  * I nomi delle ancore, cioè i valori ammessi di `data-giro`.
@@ -110,6 +148,8 @@ export type Ancora =
   | "navigazione"
   | "ricerca"
   | "riga-brano"
+  | "menu"
+  | "cartelle"
   | "trasporto"
   | "giudizio"
   | "colonna"
@@ -118,10 +158,11 @@ export type Ancora =
   | "testo"
   | "playlist"
   | "studio"
-  | "impostazioni";
+  | "impostazioni"
+  | "scorciatoie";
 
 /**
- * I nomi dei passi, che sono dieci delle dodici ancore.
+ * I nomi dei passi, che sono tredici delle quindici ancore.
  *
  * `coda` e `testo` non ci sono perché non intitolano nessun passo: sono i
  * ripieghi di «colonna» e di «In riproduzione», e un passo che si illumina
@@ -135,12 +176,15 @@ export type NomePasso = Exclude<Ancora, "coda" | "testo"> | "benvenuto";
 /**
  * Come si trova ogni ancora nel documento.
  *
- * Tutte uguali tranne la ricerca: vedi il preambolo.
+ * Tutte uguali tranne la ricerca, il menù, le Cartelle e le scorciatoie: vedi
+ * il preambolo.
  */
 const SELETTORE: Record<Ancora, string> = {
   navigazione: '[data-giro="navigazione"]',
   ricerca: "[data-cerca]",
   "riga-brano": '[data-giro="riga-brano"]',
+  menu: '[role="menu"]',
+  cartelle: ".albero-cartelle",
   trasporto: '[data-giro="trasporto"]',
   giudizio: '[data-giro="giudizio"]',
   colonna: '[data-giro="colonna"]',
@@ -150,12 +194,13 @@ const SELETTORE: Record<Ancora, string> = {
   playlist: '[data-giro="playlist"]',
   studio: '[data-giro="studio"]',
   impostazioni: '[data-giro="impostazioni"]',
+  scorciatoie: "section.scheda:has(.scorciatoia)",
 };
 
 /**
- * I dieci passi, ognuno con le ancore che gli vanno bene in ordine di scelta.
+ * I tredici passi, ognuno con le ancore che gli vanno bene in ordine di scelta.
  *
- * Dodici ancore e dieci passi, perché due passi parlano di due cose che sono la
+ * Quindici ancore e tredici passi, perché due passi parlano di due cose che sono la
  * stessa cosa vista da due posti: la colonna di destra e il pannello della
  * coda, la schermata a tutto schermo e il testo che ci sta dentro. Si illumina
  * la prima che c'è, e il testo nomina tutte e due — la seconda è dove si
@@ -170,7 +215,7 @@ const COPIONE: readonly (
   | readonly ["benvenuto"]
   | readonly [Exclude<NomePasso, "benvenuto">, ...Ancora[]]
 )[] = [
-  // Il solo passo senza ancora, ed è voluto: dieci riflettori dicono **dove**
+  // Il solo passo senza ancora, ed è voluto: i riflettori dicono **dove**
   // stanno le cose, e nessuno diceva **cosa** fa il programma. Chi apre Aether
   // per la prima volta veniva portato sulla barra laterale senza sapere che
   // cosa stesse guardando. Il fumetto sta al centro e il velo non si scurisce:
@@ -180,6 +225,13 @@ const COPIONE: readonly (
   ["navigazione"],
   ["ricerca"],
   ["riga-brano"],
+  // Subito dopo la riga, perché è la stessa riga col tasto destro: il passo di
+  // prima lo nomina, questo lo apre. Su un menù vero, non disegnato: vedi
+  // `apriIlMenuDiUnaRiga`.
+  ["menu"],
+  // Accanto ai Brani perché è l'altro modo di guardare la stessa libreria: per
+  // come sta sul disco invece che per titolo.
+  ["cartelle"],
   ["trasporto"],
   ["giudizio"],
   ["colonna", "coda"],
@@ -187,23 +239,10 @@ const COPIONE: readonly (
   ["playlist"],
   ["studio"],
   ["impostazioni"],
+  // Ultimo, dopo le Impostazioni che lo nominano: il passo prima dice dove
+  // sono, questo le mostra. E da lì il giro finisce dove si cambiano.
+  ["scorciatoie"],
 ];
-
-/**
- * Quanti fotogrammi si aspetta un'ancora prima di rinunciare al passo.
- *
- * Trenta, cioè mezzo secondo scarso a sessanta hertz. `onPrepara` cambia dello
- * stato di React — una vista, una colonna che si apre — e fra quella chiamata e
- * il nodo disegnato ci sono un ridisegno, a volte una transizione di pagina, e
- * per la colonna di destra anche una richiesta al nucleo. Aspettare un
- * fotogramma solo avrebbe saltato quasi tutti i passi che il giro esiste per
- * mostrare; aspettarne trecento avrebbe lasciato il giro fermo su un velo
- * scuro, che è il modo di farlo sembrare rotto.
- */
-const FOTOGRAMMI_DI_ATTESA = 30;
-
-/** Quanto sta il fumetto lontano dal bordo del buco, e dal bordo della finestra. */
-const DISTACCO = 12;
 
 /** La misura di un riflettore, in coordinate di finestra. */
 interface Posa {
@@ -242,38 +281,77 @@ function trova(ancore: readonly Ancora[]): HTMLElement | null {
 }
 
 /**
- * Dove si posa il fumetto rispetto al buco.
+ * Apre il menù di un brano come lo apre il tasto destro: sulla prima riga di
+ * brano disegnata, con un `contextmenu` vero.
  *
- * Sotto se ci sta, sopra altrimenti, e in tutti e due i casi centrato sul buco
- * e poi rientrato dentro la finestra. Non si prova a stare *accanto*: con un
- * bersaglio largo quanto una barra laterale non ci sarebbe spazio, e la regola
- * «sotto, se no sopra» dà una posizione prevedibile — chi ha letto il passo
- * prima sa già dove guardare per il prossimo.
+ * Non `setMenu` con delle voci scritte per il giro: il menù che si vede deve
+ * essere quello che si troverà premendo il tasto destro — le stesse voci, nello
+ * stesso ordine, con le stesse regole («Mostra nella cartella» solo su un file,
+ * la radio solo su un brano). Un evento sulla riga passa dal gestore della riga,
+ * e quel gestore è l'unico posto in cui quelle regole sono scritte.
+ *
+ * La riga può non esserci ancora: la vista dei Brani è appena stata chiesta, e
+ * le righe arrivano con la prima pagina. Si riprova a ogni fotogramma per il
+ * tempo che il giro aspetta un'ancora, e poi si lascia stare — il passo si
+ * salterà da sé. Restituisce chi smette di provare: il passo lasciato prima che
+ * la riga arrivi non deve aprire un menù sotto quello dopo.
  */
-function posaFumetto(
-  buco: { top: number; left: number; width: number; height: number },
-  misura: { width: number; height: number },
-): { top: number; left: number } {
-  const stretta = (valore: number, minimo: number, massimo: number) =>
-    Math.max(minimo, Math.min(valore, Math.max(minimo, massimo)));
-
-  const sotto = buco.top + buco.height + DISTACCO;
-  const sopra = buco.top - DISTACCO - misura.height;
-  const top =
-    sotto + misura.height + DISTACCO <= window.innerHeight
-      ? sotto
-      : sopra >= DISTACCO
-        ? sopra
-        : // Non ci sta né sotto né sopra: il bersaglio è alto quasi quanto la
-          // finestra. Si appoggia in alto e si accetta la sovrapposizione, che
-          // è meno peggio di un fumetto mezzo fuori dallo schermo.
-          DISTACCO;
-
-  const left = buco.left + buco.width / 2 - misura.width / 2;
-  return {
-    top: stretta(top, DISTACCO, window.innerHeight - misura.height - DISTACCO),
-    left: stretta(left, DISTACCO, window.innerWidth - misura.width - DISTACCO),
+export function apriIlMenuDiUnaRiga(): () => void {
+  const inizio = performance.now();
+  let cercando = 0;
+  let premuta = false;
+  const prova = () => {
+    const riga = trova(["riga-brano"]);
+    if (riga === null) {
+      if (performance.now() - inizio < ATTESA_ANCORA_MS)
+        cercando = window.requestAnimationFrame(prova);
+      return;
+    }
+    if (!premuta) {
+      // Prima in vista, poi il clic: il menù nasce dove si è premuto, e una
+      // riga mezza fuori dallo schermo lo farebbe nascere contro il bordo.
+      premuta = true;
+      riga.scrollIntoView({ block: "center", inline: "nearest" });
+      cercando = window.requestAnimationFrame(prova);
+      return;
+    }
+    const r = riga.getBoundingClientRect();
+    riga.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        button: 2,
+        // Sul titolo, non sul bordo: è dove la mano lo aprirebbe, e il menù si
+        // tira dentro la finestra da sé se sborda.
+        clientX: r.left + Math.min(r.width / 3, 160),
+        clientY: r.top + r.height / 2,
+      }),
+    );
   };
+  cercando = window.requestAnimationFrame(prova);
+  return () => window.cancelAnimationFrame(cercando);
+}
+
+/**
+ * Un dialogo modale o un menù è aperto adesso, e si vede.
+ *
+ * Dal documento e non dallo stato di `App`, perché i modali non stanno tutti
+ * lì: l'equalizzatore, la sincronia, le conferme delle Cartelle, la scelta del
+ * testo tengono ciascuno il proprio. Quel che hanno in comune è quel che
+ * promettono a chi legge lo schermo — `aria-modal="true"`, o `role="menu"` —
+ * ed è proprio la cosa che conta qui: c'è qualcosa che aspetta una risposta.
+ * «Si vede» perché lo Studio in prova resta montato e nascosto, con dentro il
+ * suo menù degli effetti: un nodo che non si disegna non aspetta niente.
+ *
+ * Serve a `comeParteIlGiro` (`guida.ts`), che sopra un modale aspetta.
+ */
+export function unModaleAperto(): boolean {
+  for (const nodo of document.querySelectorAll<HTMLElement>(
+    '[aria-modal="true"], [role="menu"]',
+  )) {
+    if (nodo.getClientRects().length > 0) return true;
+  }
+  return false;
 }
 
 /** Quel che il giro chiede alla finestra di fare per lui. */
@@ -285,8 +363,11 @@ export interface GiroProps {
    * del passo, cioè la sua prima ancora. Chi la implementa non deve garantire
    * niente: se dopo il cambio l'ancora non c'è — non c'è un brano in
    * riproduzione, la libreria è vuota — il passo si salta, ed è previsto.
+   *
+   * Può restituire chi disfa quel che ha fatto, e il giro lo chiama lasciando il
+   * passo: vedi «Ogni passo si mette e si toglie» nel preambolo.
    */
-  onPrepara: (passo: NomePasso) => void;
+  onPrepara: (passo: NomePasso) => (() => void) | void;
   /**
    * Il giro è finito, saltato o chiuso con Escape.
    *
@@ -298,6 +379,7 @@ export interface GiroProps {
 
 /** Il giro guidato. */
 export function Giro({ onPrepara, onChiudi }: GiroProps) {
+  const schermo = useDati().misura;
   const [indice, setIndice] = useState(0);
   const [posa, setPosa] = useState<Posa | null>(null);
   /**
@@ -320,6 +402,34 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
 
   const radice = useFinestrella<HTMLDivElement>(onChiudi);
 
+  /*
+   * Il fuoco che esce dal fumetto ci torna: vedi «Il fuoco resta nel fumetto»
+   * nel preambolo.
+   *
+   * Sul documento e in `focusin`, che risale — `focus` no — e arriva **dopo**
+   * che il fuoco si è spostato: lo si riprende invece di impedirlo, perché chi
+   * lo prende (lo schermo intero, il menù) lo fa in un suo effetto, e non c'è un
+   * modo pulito di dirgli di non farlo. Il pulsante è quello marcato
+   * `data-fuoco-iniziale`, «Avanti»: è dove il fuoco stava, ed è quello che
+   * Invio deve premere.
+   *
+   * Un fumetto staccato dal documento è un giro che si sta smontando: lì il
+   * fuoco va dove `useFinestrella` lo rimette, e tirarlo indietro vorrebbe dire
+   * metterlo su un nodo che sta sparendo.
+   */
+  useEffect(() => {
+    const torna = (e: FocusEvent) => {
+      const dentro = radice.current;
+      if (dentro === null || !dentro.isConnected) return;
+      if (e.target instanceof Node && dentro.contains(e.target)) return;
+      const tasto =
+        dentro.querySelector<HTMLElement>("[data-fuoco-iniziale]") ?? dentro;
+      tasto.focus({ preventScroll: true });
+    };
+    document.addEventListener("focusin", torna);
+    return () => document.removeEventListener("focusin", torna);
+  }, [radice]);
+
   const vai = useCallback((passo: number) => {
     verso.current = passo;
     // La misura di prima non vale più, e lasciarla vorrebbe dire un fotogramma
@@ -339,24 +449,30 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
     }
 
     let vivo = true;
-    let tentativi = 0;
     let bersaglio: HTMLElement | null = null;
     let cercando = 0;
     let inCoda = 0;
 
-    prepara.current(passo[0]);
+    // Chi disfa il passo, se il passo ha qualcosa da disfare: vedi «Ogni passo
+    // si mette e si toglie» nel preambolo. Si chiama in tutte e due le uscite
+    // di questo effetto, quella del benvenuto compresa.
+    const sgombra = prepara.current(passo[0]);
+    const disfa = () => {
+      if (typeof sgombra === "function") sgombra();
+    };
 
     // Il benvenuto: niente da cercare, il fumetto al centro della finestra.
     if (passo[0] === "benvenuto") {
       const alCentro = () => {
         if (!vivo) return;
         const suo = radice.current?.getBoundingClientRect();
+        const { larghezza, altezza } = schermo();
         setPosa({
           buco: null,
           raggio: "0",
           fumetto: {
-            top: Math.max(DISTACCO, (window.innerHeight - (suo?.height ?? 0)) / 2),
-            left: Math.max(DISTACCO, (window.innerWidth - (suo?.width ?? 0)) / 2),
+            top: Math.max(DISTACCO, (altezza - (suo?.height ?? 0)) / 2),
+            left: Math.max(DISTACCO, (larghezza - (suo?.width ?? 0)) / 2),
           },
         });
       };
@@ -366,9 +482,11 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
         vivo = false;
         window.cancelAnimationFrame(cercando);
         window.removeEventListener("resize", alCentro);
+        disfa();
       };
     }
     const ancore = passo;
+    const inizio = performance.now();
 
     const misura = () => {
       if (!vivo || bersaglio === null) return;
@@ -382,10 +500,11 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
       setPosa({
         buco,
         raggio: window.getComputedStyle(bersaglio).borderRadius,
-        fumetto: posaFumetto(buco, {
-          width: suo?.width ?? 0,
-          height: suo?.height ?? 0,
-        }),
+        fumetto: posaFumetto(
+          buco,
+          { width: suo?.width ?? 0, height: suo?.height ?? 0 },
+          schermo(),
+        ),
       });
     };
 
@@ -393,8 +512,8 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
       if (!vivo) return;
       bersaglio = trova(ancore);
       if (bersaglio === null) {
-        tentativi += 1;
-        if (tentativi <= FOTOGRAMMI_DI_ATTESA) {
+        // A tempo e non a fotogrammi: vedi `ATTESA_ANCORA_MS`.
+        if (performance.now() - inizio < ATTESA_ANCORA_MS) {
           cercando = window.requestAnimationFrame(cerca);
           return;
         }
@@ -408,6 +527,14 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
       // Prima di misurare: un bersaglio fuori schermo darebbe un buco fuori
       // schermo, cioè un velo senza buco con la misura giusta.
       bersaglio.scrollIntoView({ block: "center", inline: "nearest" });
+      // Un bersaglio che entra con una transizione — il menù cresce dal
+      // puntatore, la colonna si allarga — misurato a metà darebbe un buco più
+      // piccolo della cosa, e nessuno dei tre ascolti qui sotto lo vedrebbe
+      // crescere: non scorre niente, e la finestra non cambia misura. La fine
+      // della transizione è il momento giusto per rimisurare, e risale dai
+      // figli: basta ascoltarla sul bersaglio.
+      bersaglio.addEventListener("transitionend", strozza);
+      bersaglio.addEventListener("animationend", strozza);
       // Nel fotogramma dopo, perché `scrollIntoView` sposta e
       // `getBoundingClientRect` legge: nello stesso fotogramma si leggerebbe il
       // rettangolo di prima dello scorrimento.
@@ -448,11 +575,16 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
       window.removeEventListener("resize", strozza);
       window.removeEventListener("scroll", strozza, { capture: true });
       osserva.disconnect();
+      if (bersaglio !== null) {
+        bersaglio.removeEventListener("transitionend", strozza);
+        bersaglio.removeEventListener("animationend", strozza);
+      }
+      disfa();
     };
     // `radice` è il riferimento di `useFinestrella`, cioè un oggetto stabile:
     // sta fra le dipendenze perché il controllo delle dipendenze non sa che lo
     // è, e non perché possa cambiare.
-  }, [passo, vai, radice]);
+  }, [passo, vai, radice, schermo]);
 
   if (passo === undefined) return null;
 
@@ -464,75 +596,79 @@ export function Giro({ onPrepara, onChiudi }: GiroProps) {
       {/* Il velo prende i clic e non chiude: vedi il preambolo. `aria-hidden`
           perché non ha niente da dire — quel che c'è da leggere sta nel
           fumetto, che è il dialogo. */}
-      <div className="giro-velo" aria-hidden="true">
-        {posa !== null && posa.buco !== null && (
-          <div
-            className="giro-buco"
-            style={{
-              top: `${posa.buco.top}px`,
-              left: `${posa.buco.left}px`,
-              width: `${posa.buco.width}px`,
-              height: `${posa.buco.height}px`,
-              borderRadius: posa.raggio,
-            }}
-          />
-        )}
-      </div>
-      <div
-        ref={radice}
-        className="giro-fumetto tour-tooltip"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="giro-titolo"
-        /* Il fumetto resta lo stesso nodo per tutti e dieci i passi — è quel
-           che tiene il fuoco sul pulsante «Avanti», così il giro si fa a
-           Invio — e quindi il cambio di passo è un cambio di testo dentro un
-           dialogo già aperto, che nessun lettore di schermo annuncerebbe. Il
-           `polite` sulla radice lo fa annunciare: i tre pulsanti non cambiano
-           mai, quindi non si ripetono. */
-        aria-live="polite"
-        style={
-          posa === null
-            ? undefined
-            : { top: `${posa.fumetto.top}px`, left: `${posa.fumetto.left}px` }
-        }
-      >
-        <div className="giro-testa">
-          <h2 id="giro-titolo">{t(`tour.step.${passo[0]}.title`)}</h2>
-          <span className="giro-passi">
-            {t("tour.progress", { n: indice + 1, totale: COPIONE.length })}
-          </span>
+      <Presenza parte="tour-veil">
+        <div className="giro-velo tour-veil" aria-hidden="true">
+          {posa !== null && posa.buco !== null && (
+            <div
+              className="giro-buco"
+              style={{
+                top: `${posa.buco.top}px`,
+                left: `${posa.buco.left}px`,
+                width: `${posa.buco.width}px`,
+                height: `${posa.buco.height}px`,
+                borderRadius: posa.raggio,
+              }}
+            />
+          )}
         </div>
-        <p>{t(`tour.step.${passo[0]}.body`)}</p>
-        <div className="giro-tasti">
-          {/* Primo nell'ordine del tabulatore e ultimo per importanza: chi
-              vuole uscire lo trova subito, chi vuole andare avanti ha già il
-              fuoco sul pulsante giusto e non lo sfiora mai. */}
-          <button
-            type="button"
-            className="bottone minuto btn-ghost"
-            onClick={onChiudi}
-          >
-            {t("tour.skip")}
-          </button>
-          <button
-            type="button"
-            className="bottone"
-            disabled={primo}
-            onClick={() => vai(-1)}
-          >
-            {t("tour.back")}
-          </button>
-          <button
-            type="button"
-            className="bottone primario btn-accent"
-            data-fuoco-iniziale
-            onClick={() => vai(1)}
-          >
-            {ultimo ? t("tour.done") : t("tour.next")}
-          </button>
+      </Presenza>
+      <Presenza parte="tour-tooltip">
+        <div
+          ref={radice}
+          className="giro-fumetto tour-tooltip"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="giro-titolo"
+          /* Il fumetto resta lo stesso nodo per tutti i passi — è quel
+             che tiene il fuoco sul pulsante «Avanti», così il giro si fa a
+             Invio — e quindi il cambio di passo è un cambio di testo dentro un
+             dialogo già aperto, che nessun lettore di schermo annuncerebbe. Il
+             `polite` sulla radice lo fa annunciare: i tre pulsanti non cambiano
+             mai, quindi non si ripetono. */
+          aria-live="polite"
+          style={
+            posa === null
+              ? undefined
+              : { top: `${posa.fumetto.top}px`, left: `${posa.fumetto.left}px` }
+          }
+        >
+          <div className="giro-testa">
+            <h2 id="giro-titolo">{t(`tour.step.${passo[0]}.title`)}</h2>
+            <span className="giro-passi">
+              {t("tour.progress", { n: indice + 1, totale: COPIONE.length })}
+            </span>
+          </div>
+          <p>{t(`tour.step.${passo[0]}.body`)}</p>
+          <div className="giro-tasti">
+            {/* Primo nell'ordine del tabulatore e ultimo per importanza: chi
+                vuole uscire lo trova subito, chi vuole andare avanti ha già il
+                fuoco sul pulsante giusto e non lo sfiora mai. */}
+            <button
+              type="button"
+              className="bottone minuto btn-ghost"
+              onClick={onChiudi}
+            >
+              {t("tour.skip")}
+            </button>
+            <button
+              type="button"
+              className="bottone"
+              disabled={primo}
+              onClick={() => vai(-1)}
+            >
+              {t("tour.back")}
+            </button>
+            <button
+              type="button"
+              className="bottone primario btn-accent"
+              data-fuoco-iniziale
+              onClick={() => vai(1)}
+            >
+              {ultimo ? t("tour.done") : t("tour.next")}
+            </button>
+          </div>
         </div>
-      </div>
+      </Presenza>
     </>
   );
 }

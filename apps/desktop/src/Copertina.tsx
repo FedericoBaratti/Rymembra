@@ -22,6 +22,23 @@
  * copertina **è** il soggetto» — schermo intero, terza colonna, testata di un
  * album — e miniatura dove è un'etichetta.
  *
+ * # La scheda: una terza misura, scelta dal motore
+ *
+ * Le schede delle griglie stanno in mezzo: troppo grandi per la miniatura (una
+ * scheda è larga dai 164 pixel, e a 200% sono più del doppio dei 160 della
+ * miniatura), troppe per la piena. `misura="scheda"` dà al motore le tre misure
+ * in `srcset` e la larghezza della scheda in `sizes`, e la scelta la fa lui con
+ * la densità vera dello schermo: la media da 320 a 100%, la piena a 200%. I
+ * conti stanno in `copertine.ts`. Nell'anteprima dello Studio no: là le
+ * copertine sono disegni finti, e di misure ne hanno una sola.
+ *
+ * # Una copertina che non arriva
+ *
+ * Mostra il quadrato con la nota, come una copertina che non c'è. Un `<img>`
+ * il cui file manca mostrava l'icona dell'immagine rotta con il titolo
+ * dell'album accanto — si vedeva nella terza colonna — cioè un guasto dove c'era
+ * soltanto un disco senza immagine.
+ *
  * # Perché la dissolvenza è uno stato e non un attributo
  *
  * Perché l'attributo non si cancellava. `data-pronta` lo scriveva `onLoad` con
@@ -43,35 +60,91 @@
  * booleano: così «pronta» si spegne da sé al cambio di `url`, senza un effetto
  * che lo azzeri e senza il fotogramma in cui l'immagine nuova si vede opaca
  * prima che l'azzeramento arrivi.
+ *
+ * # Quando l'`alt` tace
+ *
+ * Quasi sempre, una copertina sta **accanto** al suo titolo: la riga
+ * dell'elenco, la scheda della griglia, il lettore, lo schermo intero. Lì un
+ * `alt` col nome dell'album fa leggere il nome due volte — una per l'immagine,
+ * una per il testo — e dentro un bottone lo raddoppia nel suo nome: «Kind of
+ * Blue Kind of Blue Miles Davis». Chi la disegna accanto al titolo passa
+ * `accanto`, e l'immagine diventa decorazione (`alt=""`), che è quel che è.
+ * Dove la copertina sta da sola, l'`alt` resta il titolo.
  */
 import { useState } from "react";
 
-import { urlCopertina } from "./aspetto";
+import { indirizzoCopertina, sizesPer, srcsetCopertina } from "./copertine";
+import { useDati } from "./dati";
+import { useCambio, type AttributiSuono } from "./segnali";
 
 export function Copertina({
   hash,
   titolo,
   classe = "copertina",
   piena = false,
+  misura,
+  larghezza,
+  suono,
+  cambio = false,
+  accanto = false,
 }: {
   hash: string | null;
   titolo: string;
   classe?: string;
   /** L'originale invece della miniatura. Vedi la nota del modulo. */
   piena?: boolean;
+  /**
+   * `"scheda"` per le griglie: le tre misure in `srcset`, e la scelta al
+   * motore. Senza, vale `piena`. Vedi «La scheda» nella nota del modulo.
+   */
+  misura?: "scheda" | undefined;
+  /**
+   * Quanto è larga la copertina sullo schermo, in pixel CSS: diventa `sizes`.
+   * Solo con `misura="scheda"`; chi disegna una griglia la sa, perché ha
+   * misurato le colonne.
+   */
+  larghezza?: number | null | undefined;
+  /**
+   * In riproduzione o in pausa, per chi ritrae quel che suona: la skin ci
+   * aggancia il vinile che gira. Vedi `segnali.ts`.
+   */
+  suono?: AttributiSuono;
+  /**
+   * `data-cambio` a ogni copertina nuova. Solo per chi mostra quel che suona:
+   * in una griglia la copertina cambia perché la riga è stata riciclata, e
+   * quello non è un cambio da festeggiare.
+   */
+  cambio?: boolean;
+  /**
+   * Il titolo è già scritto accanto: l'immagine è decorazione, e `alt` resta
+   * vuoto. Vedi «Quando l'`alt` tace» nella nota del modulo.
+   */
+  accanto?: boolean;
 }) {
   /**
-   * L'indirizzo che è arrivato, non il fatto che qualcosa sia arrivato.
+   * L'indirizzo che è arrivato — o che è fallito — non il fatto che qualcosa
+   * sia arrivato.
    *
-   * `pronta` si calcola confrontandolo con quello che si sta chiedendo: al cambio
-   * di `url` torna falsa senza che nessuno la azzeri.
+   * `pronta` e `fallita` si calcolano confrontandolo con quello che si sta
+   * chiedendo: al cambio di `url` tornano false senza che nessuno le azzeri. Uno
+   * stato solo per le due cose, perché ogni riga dell'elenco porta una
+   * copertina, e uno stato in più per riga è quel che le liste lunghe non si
+   * possono permettere.
    */
-  const [caricato, setCaricato] = useState<string | null>(null);
-  const url = urlCopertina(hash, !piena);
-  const pronta = caricato !== null && caricato === url;
-  if (!url) {
+  const [esito, setEsito] = useState<{ url: string; riuscita: boolean } | null>(null);
+  const dati = useDati();
+  const conSrcset = misura === "scheda" && !dati.anteprima && hash !== null;
+  const url = conSrcset
+    ? indirizzoCopertina(hash, "media")
+    : dati.copertina(hash, !piena);
+  const pronta = esito !== null && esito.url === url;
+  const fallita = pronta && !esito.riuscita;
+  // Si chiede sempre, anche quando non serve: un hook non si salta.
+  const lato = useCambio(hash);
+  const segnali = { ...suono, "data-cambio": cambio ? lato : undefined };
+  if (!url || fallita) {
     return (
-      <div className={`${classe} vuota`} aria-hidden="true">
+      <div className={`${classe} vuota`} aria-hidden="true" {...segnali}>
         ♪
       </div>
     );
@@ -87,18 +160,22 @@ export function Copertina({
          ognuno dei sei nomi che passano di qui. */
       className={`${classe} foto`}
       data-pronta={pronta ? "" : undefined}
+      {...segnali}
       src={url}
-      alt={titolo}
+      /* Le tre misure e la larghezza della scheda: sceglie il motore, che
+         conosce la densità vera. Vedi «La scheda» nella nota del modulo. */
+      srcSet={conSrcset ? srcsetCopertina(hash) : undefined}
+      sizes={conSrcset ? sizesPer(larghezza) : undefined}
+      alt={accanto ? "" : titolo}
       /* `lazy`: una griglia di novecento album non deve chiedere novecento
          immagini all'apertura, ma quelle che entrano nello schermo. */
       loading="lazy"
       decoding="async"
       draggable={false}
-      /* La dissolvenza sta nel CSS; qui c'è solo il fatto. `onError` la accende
-         lo stesso: un'immagine che non arriva deve mostrare il suo fondo, non
-         restare un buco invisibile per sempre. */
-      onLoad={() => setCaricato(url)}
-      onError={() => setCaricato(url)}
+      /* La dissolvenza sta nel CSS; qui c'è solo il fatto. Un errore non è una
+         copertina pronta: è il segnaposto, vedi «Una copertina che non arriva». */
+      onLoad={() => setEsito({ url, riuscita: true })}
+      onError={() => setEsito({ url, riuscita: false })}
     />
   );
 }
@@ -127,7 +204,7 @@ export function Sfocata({
   hash: string | null;
   classe: string;
 }) {
-  const url = urlCopertina(hash);
+  const url = useDati().copertina(hash);
   if (!url) return null;
   return (
     <img

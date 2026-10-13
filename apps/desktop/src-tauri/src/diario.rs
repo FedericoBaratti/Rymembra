@@ -36,6 +36,14 @@
 //! Quel che si scrive sono guasti — codici, cause, e i percorsi delle
 //! **cartelle dell'applicazione**, che sono le stesse per tutti.
 //!
+//! Le stesse per tutti **tranne il nome dell'utente**, che fino alla 2.4.0 ci
+//! stava dentro per esteso: la riga d'avvio scriveva
+//! `dati=C:\Users\Mario Rossi\AppData\Roaming\…`, e chi mandava il diario mandava
+//! anche nome e cognome. Adesso ogni riga passa da [`senza_utente`] prima di
+//! toccare il file, e le cartelle dell'utente diventano `%APPDATA%`,
+//! `%LOCALAPPDATA%` e `%USERPROFILE%` — le stesse parole che si scriverebbero
+//! in una segnalazione, e che dicono ancora **dove** senza dire **chi**.
+//!
 //! # La rotazione, e perché tre file
 //!
 //! Un diario che cresce all'infinito è un difetto suo: due anni di avvii sono
@@ -52,6 +60,7 @@
 //! fermare la musica. Un diario che fa cadere l'applicazione che stava
 //! sorvegliando è peggio di nessun diario.
 
+use std::borrow::Cow;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -201,6 +210,7 @@ pub fn nota(argomenti: std::fmt::Arguments<'_>) {
             return;
         };
         let riga = format!("{} {argomenti}\n", istante_iso(adesso_ms()));
+        let riga = senza_utente(&riga, cartelle_dell_utente());
         // Un errore di scrittura non si racconta a nessuno: raccontarlo
         // vorrebbe dire scriverlo sul diario che non si riesce a scrivere.
         if aperto.file.write_all(riga.as_bytes()).is_ok() {
@@ -219,6 +229,67 @@ pub fn nota(argomenti: std::fmt::Arguments<'_>) {
     if pieno {
         ruota();
     }
+}
+
+/// Le cartelle dell'utente che non si scrivono per esteso, con il loro
+/// segnaposto, dalla più lunga alla più corta.
+///
+/// Lette una volta sola dall'ambiente del processo: `%LOCALAPPDATA%` e
+/// `%APPDATA%` prima di `%USERPROFILE%`, perché stanno dentro di lui e la
+/// sostituzione più lunga deve vincere — altrimenti la riga d'avvio direbbe
+/// `%USERPROFILE%\AppData\Roaming\…`, che è vero ma meno utile. Una variabile
+/// assente o troppo corta per essere una cartella (`C:\`) non si usa: togliere
+/// `C:` da ogni riga non nasconderebbe nessuno e renderebbe il diario
+/// illeggibile.
+fn cartelle_dell_utente() -> &'static [(String, &'static str)] {
+    static CARTELLE: OnceLock<Vec<(String, &'static str)>> = OnceLock::new();
+    CARTELLE.get_or_init(|| {
+        let mut cartelle: Vec<(String, &'static str)> = [
+            ("LOCALAPPDATA", "%LOCALAPPDATA%"),
+            ("APPDATA", "%APPDATA%"),
+            ("USERPROFILE", "%USERPROFILE%"),
+        ]
+        .into_iter()
+        .filter_map(|(variabile, segnaposto)| {
+            let valore = std::env::var(variabile).ok()?;
+            let pulito = valore.trim().trim_end_matches(['\\', '/']).to_owned();
+            (pulito.len() > 3).then_some((pulito, segnaposto))
+        })
+        .collect();
+        cartelle.sort_by_key(|c| std::cmp::Reverse(c.0.len()));
+        cartelle
+    })
+}
+
+/// Una riga del diario senza il nome dell'utente dentro.
+///
+/// Ogni cartella di `cartelle` diventa il suo segnaposto, **senza badare alle
+/// maiuscole**: Windows non ci bada, e lo stesso percorso arriva scritto
+/// `C:\Users\mario` da un posto e `c:\users\Mario` da un altro. Il confronto
+/// abbassa solo le lettere ASCII, che non cambiano la lunghezza in byte, e così
+/// le posizioni trovate nella copia valgono anche nell'originale.
+///
+/// Pura, con le cartelle passate da fuori, perché è la riga che decide se un
+/// diario spedito porta un nome e un cognome: una riga così si prova.
+fn senza_utente<'a>(riga: &'a str, cartelle: &[(String, &str)]) -> Cow<'a, str> {
+    let mut fuori = Cow::Borrowed(riga);
+    for (cartella, segnaposto) in cartelle {
+        let basso = fuori.to_ascii_lowercase();
+        let cercato = cartella.to_ascii_lowercase();
+        if cercato.is_empty() || !basso.contains(&cercato) {
+            continue;
+        }
+        let mut nuova = String::with_capacity(fuori.len());
+        let mut da = 0_usize;
+        for (inizio, _) in basso.match_indices(&cercato) {
+            nuova.push_str(fuori.get(da..inizio).unwrap_or_default());
+            nuova.push_str(segnaposto);
+            da = inizio.saturating_add(cercato.len());
+        }
+        nuova.push_str(fuori.get(da..).unwrap_or_default());
+        fuori = Cow::Owned(nuova);
+    }
+    fuori
 }
 
 /// Sposta i file di uno e riapre un diario vuoto.
@@ -591,6 +662,41 @@ mod prove {
         assert!(
             corto.chars().take(QUANTO_DAL_DAVANTI).all(|c| c == 'à'),
             "il taglio ha rotto un carattere a metà"
+        );
+    }
+
+    #[test]
+    fn il_nome_dell_utente_non_finisce_nel_diario() {
+        let cartelle = [
+            (
+                r"C:\Users\Mario Rossi\AppData\Roaming".to_owned(),
+                "%APPDATA%",
+            ),
+            (r"C:\Users\Mario Rossi".to_owned(), "%USERPROFILE%"),
+        ];
+        let riga = r"[avvio] libreria aperta dati=C:\Users\Mario Rossi\AppData\Roaming\io.github.federicobaratti.aether migrazioni=0";
+        let pulita = senza_utente(riga, &cartelle);
+        assert_eq!(
+            pulita,
+            r"[avvio] libreria aperta dati=%APPDATA%\io.github.federicobaratti.aether migrazioni=0"
+        );
+        // Le maiuscole non contano, come per Windows; e più volte nella riga.
+        let due = senza_utente(
+            r"da c:\users\mario rossi\Musica a C:\USERS\MARIO ROSSI\Desktop",
+            &cartelle,
+        );
+        assert_eq!(due, r"da %USERPROFILE%\Musica a %USERPROFILE%\Desktop");
+        assert!(!due.to_lowercase().contains("mario"));
+        // Una riga senza cartelle dell'utente resta quella, senza copie.
+        assert!(matches!(
+            senza_utente("[rete] net.offline", &cartelle),
+            Cow::Borrowed(_)
+        ));
+        // Gli accenti di un nome non spostano niente.
+        let accentata = [(r"C:\Users\Niccolò".to_owned(), "%USERPROFILE%")];
+        assert_eq!(
+            senza_utente(r"«C:\Users\Niccolò\x» è qui", &accentata),
+            r"«%USERPROFILE%\x» è qui"
         );
     }
 

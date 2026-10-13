@@ -19,8 +19,18 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
-    // La finestra incorpora una versione nota di WebView2: non serve
-    // trasformare per browser che non incontreremo mai.
-    target: "chrome120",
+    // Il pavimento vero, non uno scelto a occhio. La finestra è WebView2 nella
+    // versione «evergreen», che Windows aggiorna da sé insieme a Edge: un
+    // browser vecchio qui non arriva mai, e trasformare il codice per lui è
+    // lavoro buttato. Il numero però deve dire quel che il codice chiede già,
+    // e il codice chiede Chromium 125: `<ViewTransition>` e `addTransitionType`
+    // di React, insieme al compilatore delle skin, scrivono
+    // `::view-transition-old(.classe)` e i tipi di transizione (125);
+    // `light-dark()` nei token (123); `scrollbar-width` nel foglio (121);
+    // `@starting-style` e `text-wrap: pretty` (117); le animazioni legate allo
+    // scorrimento (115). Era `chrome120`, che prometteva una compatibilità che
+    // l'app non ha: su un 120 si aprirebbe, con i passaggi fra le viste spenti
+    // e i colori a metà.
+    target: "chrome125",
   },
 });

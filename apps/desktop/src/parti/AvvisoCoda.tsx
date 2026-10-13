@@ -25,6 +25,7 @@ import { useEffect, useState } from "react";
 import { ipc } from "../ipc";
 import { useAscolto } from "../pagine";
 import { Icona } from "./Icone";
+import { brani_ } from "../formato";
 import { t } from "../lingue";
 
 /**
@@ -58,10 +59,8 @@ export function AvvisoCoda({ onErrore }: { onErrore: (e: unknown) => void }) {
 
   if (avviso === null) return null;
 
-  const brani =
-    avviso.brani === 1
-      ? t("format.tracks.uno")
-      : t("format.tracks", { n: avviso.brani });
+  // «1 brano» o «12 brani»: la forma la sceglie il motore delle lingue.
+  const brani = brani_(avviso.brani);
   return (
     <div className="notizia avviso-coda toast-card" role="status">
       <Icona nome="i-check" dim={16} />

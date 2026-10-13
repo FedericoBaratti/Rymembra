@@ -21,14 +21,19 @@
  * difetto del riordino. Quindi: un gancio che tiene le righe, un elenco che le
  * disegna, e un pannello che è solo la cornice.
  */
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 
-import { durata, nomeArtista, titoloAlbum } from "./formato";
+import { durata, nomeArtista, numero, titoloAlbum } from "./formato";
+import { useFuoco } from "./fuoco";
 import { ipc, type Brano, type StatoRiproduzione } from "./ipc";
 import { Icona } from "./parti/Icone";
 import { usePresaPerRiordino } from "./riordino";
-import { t, tSe } from "./lingue";
+import { t, tSe, useLingua } from "./lingue";
 import { useVirtuale } from "./virtuale";
+import { conIndice, statoSuono } from "./segnali";
+import { useDati } from "./dati";
+import { Presenza } from "./presenza";
 
 /**
  * Le righe della coda, per identificativo.
@@ -56,6 +61,7 @@ export function useRigheCoda(
   onErrore: (e: unknown) => void,
 ): Map<number, Brano> {
   const [righe, setRighe] = useState<Map<number, Brano>>(new Map());
+  const letture = useDati().ipc;
   const chiave = coda.join(",");
   // Le righe già in mano, lette dall'effetto senza farne una dipendenza: una
   // risposta che arriva cambia la mappa, e con la mappa fra le dipendenze
@@ -79,7 +85,7 @@ export function useRigheCoda(
       return;
     }
     let annullato = false;
-    ipc
+    letture
       .braniPerId(mancanti)
       .then((trovate) => {
         if (annullato) return;
@@ -93,7 +99,7 @@ export function useRigheCoda(
     return () => {
       annullato = true;
     };
-  }, [chiave, onErrore]);
+  }, [chiave, onErrore, letture]);
 
   return righe;
 }
@@ -112,6 +118,17 @@ export function useRigheCoda(
  * `Alt`+`↑↓` sposta la riga a fuoco. Alt e non le frecce nude perché quelle
  * devono continuare a muovere il fuoco: sono due gesti diversi sullo stesso
  * tasto, e il modificatore è quel che li distingue.
+ *
+ * # Una fermata di tabulazione, come l'elenco dei brani
+ *
+ * Ogni riga aveva due fermate — il titolo e la × — e la coda di «Tutti i
+ * brani» ne ha diciottomila: chi arrivava con Tab nella terza colonna ne usciva
+ * dopo una sessantina di pressioni, solo perché la finestra disegna trenta
+ * righe. E una rotellata che portava via la riga col fuoco lo faceva cadere sul
+ * `<body>`. Adesso la coda è un fuoco a rotazione (`fuoco.ts`): una fermata per
+ * tutta la lista — la prima riga in vista se quella attiva è uscita —, ↑↓ fra
+ * le righe, PagSu/PagGiù, Inizio/Fine, ←→ fra i due comandi della riga, Invio e
+ * Spazio fanno partire il brano come faceva il titolo premuto.
  */
 export function RigheCoda({
   stato,
@@ -178,28 +195,72 @@ export function RigheCoda({
     onLascia: lascia,
   });
 
-  const daTastiera = (e: React.KeyboardEvent, indice: number) => {
-    if (!e.altKey) return;
-    const passo = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
-    if (passo === 0) return;
-    const a = indice + passo;
-    if (a < 0 || a >= stato.coda.length) return;
-    e.preventDefault();
-    comanda(ipc.codaRiordina(indice, a));
-    // Il fuoco segue la riga spostata invece di restare sulla posizione: chi
-    // tiene premuto Alt e freccia sta spostando **una** canzone, e lasciare il
-    // fuoco fermo farebbe scendere quella dopo al colpo successivo. Per indice
-    // e non per posizione fra i figli: con la finestra virtuale il primo figlio
-    // è una paglia, e la riga d'arrivo può essere appena fuori dalla finestra —
-    // allora prima ci si scorre, e il fuoco arriva al disegno dopo.
-    if (a < finestra.primo || a >= finestra.ultimo) finestra.scorriA(a);
-    window.requestAnimationFrame(() =>
-      window.requestAnimationFrame(() =>
-        scorrevole.current
-          ?.querySelector<HTMLElement>(`[data-indice="${a}"] .salta`)
-          ?.focus(),
-      ),
-    );
+  /** Invio e Spazio su una riga: parte quel brano, se c'è ancora. */
+  const coda = stato.coda;
+  const vai = useCallback(
+    (indice: number) => {
+      const id = coda[indice];
+      if (id === undefined || !righe.has(id)) return;
+      ipc.codaVai(indice).catch(onErrore);
+    },
+    [coda, righe, onErrore],
+  );
+
+  const fuoco = useFuoco({
+    totale: coda.length,
+    ancora: scorrevole,
+    finestra,
+    scorriA: finestra.scorriA,
+    selettoreRiga: ".riga-coda",
+    onInvio: vai,
+    onSpazio: vai,
+  });
+
+  /**
+   * La riga che il fuoco deve seguire quando la coda nuova arriva.
+   *
+   * Il riordino passa dal nucleo, e le righe si rifanno quando torna lo stato:
+   * la chiave di una riga porta l'identificativo, quindi il nodo della riga
+   * spostata **non** è quello di prima, e il fuoco che ci stava sopra cadrebbe
+   * sul `<body>`. Si ricorda dove deve andare e **quale brano** ci deve
+   * arrivare, e ci si va quando lo stato lo dice: lo stato arriva quattro volte
+   * al secondo con una coda nuova anche quando è la stessa, e solo il brano al
+   * suo posto dice che il riordino è arrivato.
+   */
+  const seguire = useRef<{ dove: number; id: number } | null>(null);
+  const vaiA = fuoco.vaiA;
+  useEffect(() => {
+    const atteso = seguire.current;
+    if (atteso === null || coda[atteso.dove] !== atteso.id) return;
+    seguire.current = null;
+    vaiA(atteso.dove);
+  }, [coda, vaiA]);
+
+  const daTastiera = (e: KeyboardEvent<HTMLElement>) => {
+    if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      const riga =
+        e.target instanceof HTMLElement ? e.target.closest<HTMLElement>(".riga-coda") : null;
+      const indice = Number(riga?.dataset.indice);
+      if (riga === null || !Number.isInteger(indice)) return;
+      const a = indice + (e.key === "ArrowDown" ? 1 : -1);
+      const id = coda[indice];
+      if (a < 0 || a >= coda.length || id === undefined) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Il fuoco segue la riga spostata invece di restare sulla posizione: chi
+      // tiene premuto Alt e freccia sta spostando **una** canzone, e lasciare il
+      // fuoco fermo farebbe scendere quella dopo al colpo successivo. Subito
+      // sulla posizione d'arrivo — `vaiA` sa scorrere se è fuori dalla
+      // finestra — e di nuovo quando la coda nuova arriva: vedi `seguire`.
+      seguire.current = { dove: a, id };
+      fuoco.vaiA(a);
+      ipc.codaRiordina(indice, a).catch((errore: unknown) => {
+        seguire.current = null;
+        onErrore(errore);
+      });
+      return;
+    }
+    fuoco.daTastiera(e);
   };
 
   if (stato.coda.length === 0) {
@@ -211,6 +272,9 @@ export function RigheCoda({
       ref={scorrevole}
       className="righe-coda queue-list"
       data-compatta={compatta || undefined}
+      data-scorso={finestra.scorso || undefined}
+      /* Un gestore solo per tutte le righe, come nell'elenco dei brani. */
+      onKeyDown={daTastiera}
     >
       <li
         className="paglia"
@@ -242,12 +306,17 @@ export function RigheCoda({
                volte nella stessa coda, e l'identificativo da solo non la
                distinguerebbe. */
             key={`${indice}-${id}`}
-            className="riga-coda list-row"
+            className="riga-coda list-row queue-row"
+            {...statoSuono(inAscolto, stato.inPausa)}
+            style={conIndice(indice)}
             data-indice={indice}
             aria-current={inAscolto}
             data-active={inAscolto || undefined}
             data-sopra={(mirato === indice && trascinato !== indice) || undefined}
             data-riordino={indice}
+            /* La sola fermata di tabulazione della coda: vedi la nota. */
+            tabIndex={indice === fuoco.fermata ? 0 : -1}
+            onFocus={() => fuoco.segna(indice)}
             onPointerDown={(e) => presa(e, indice)}
             onDoubleClick={() => comanda(ipc.codaVai(indice))}
           >
@@ -258,15 +327,17 @@ export function RigheCoda({
               type="button"
               className="salta"
               onClick={() => comanda(ipc.codaVai(indice))}
-              onKeyDown={(e) => daTastiera(e, indice)}
+              /* Si raggiunge con ←→ dalla riga, non con Tab: `fuoco.ts`. */
+              tabIndex={-1}
               /* Un brano sparito dalla libreria non si può far partire, ma si
                  deve poter togliere: il tasto si spegne, la riga no. */
               disabled={!brano}
             >
-              <span className="nome">
+              {/* `dir="auto"`: un titolo arabo o ebraico si legge da destra. */}
+              <span className="nome" dir="auto">
                 {brano ? brano.title : t("queue.goneTrack")}
               </span>
-              <span className="autore">
+              <span className="autore" dir="auto">
                 {brano
                   ? `${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`
                   : `id ${id}`}
@@ -295,6 +366,7 @@ export function RigheCoda({
               /* Il `title` resta la frase corta: al passaggio del mouse il titolo
                  del brano è già scritto accanto, a due centimetri dal puntatore. */
               title={t("queue.remove")}
+              tabIndex={-1}
               onClick={() => comanda(ipc.codaTogli(indice))}
             >
               <Icona nome="i-x" dim={14} />
@@ -318,7 +390,7 @@ export function RigheCoda({
  * la coda è già visibile, e aprirne una seconda copia sopra sarebbe la stessa
  * lista due volte nella stessa finestra.
  */
-export function Coda({
+export const Coda = memo(function Coda({
   stato,
   onChiudi,
   onErrore,
@@ -327,39 +399,45 @@ export function Coda({
   onChiudi: () => void;
   onErrore: (e: unknown) => void;
 }) {
+  // Sotto `memo` (vedi «I widget sotto `memo`» in `Impaginazione.tsx`): si
+  // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
+  // l'iscrizione i testi resterebbero quelli del primo disegno.
+  useLingua();
   const righe = useRigheCoda(stato.coda, onErrore);
 
   return (
-    <aside
-      className="pannello-coda glass-modal"
-      // L'ancora del giro guidato: il ripiego del passo della colonna, per chi
-      // la colonna la tiene chiusa.
-      data-giro="coda"
-      aria-label={t("queue.panel.aria")}
-    >
-      <header>
-        <h2>{t("queue.panel.title")}</h2>
-        <span className="conteggio">{stato.coda.length}</span>
-        <button
-          type="button"
-          className="bottone minuto btn-ghost"
-          disabled={stato.coda.length === 0}
-          onClick={() => {
-            ipc.codaSvuota().catch(onErrore);
-          }}
-        >
-          {t("queue.clear")}
-        </button>
-        <button
-          type="button"
-          className="tasto icon-btn"
-          aria-label={t("queue.close")}
-          onClick={onChiudi}
-        >
-          <Icona nome="i-x" dim={15} />
-        </button>
-      </header>
-      <RigheCoda stato={stato} righe={righe} onErrore={onErrore} />
-    </aside>
+    <Presenza parte="queue-panel">
+      <aside
+        className="pannello-coda queue-panel"
+        // L'ancora del giro guidato: il ripiego del passo della colonna, per chi
+        // la colonna la tiene chiusa.
+        data-giro="coda"
+        aria-label={t("queue.panel.aria")}
+      >
+        <header>
+          <h2>{t("queue.panel.title")}</h2>
+          <span className="conteggio">{numero(stato.coda.length)}</span>
+          <button
+            type="button"
+            className="bottone minuto btn-ghost"
+            disabled={stato.coda.length === 0}
+            onClick={() => {
+              ipc.codaSvuota().catch(onErrore);
+            }}
+          >
+            {t("queue.clear")}
+          </button>
+          <button
+            type="button"
+            className="tasto icon-btn"
+            aria-label={t("queue.close")}
+            onClick={onChiudi}
+          >
+            <Icona nome="i-x" dim={15} />
+          </button>
+        </header>
+        <RigheCoda stato={stato} righe={righe} onErrore={onErrore} />
+      </aside>
+    </Presenza>
   );
-}
+});

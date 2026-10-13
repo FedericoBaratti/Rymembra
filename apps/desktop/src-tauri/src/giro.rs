@@ -1,7 +1,7 @@
 //! Il giro guidato: se va fatto, e che è stato fatto.
 //!
 //! Due comandi e una costante. Tutto il resto del giro — il velo, il buco, il
-//! fumetto, i dieci passi — sta nella finestra (`apps/desktop/src/Giro.tsx`),
+//! fumetto, i passi — sta nella finestra (`apps/desktop/src/Giro.tsx`),
 //! perché è materia di rettangoli sullo schermo e non di libreria. Qui c'è
 //! soltanto la memoria: quel che va ricordato fra due avvii, e che quindi deve
 //! stare nel database.
@@ -52,7 +52,12 @@ use crate::stato::{Stato, con_libreria};
 /// passo in più, una schermata che prima non c'era — e allora chi l'ha già
 /// fatto se lo rivede una volta. Non si alza per una correzione di testo, per
 /// una traduzione, né perché è uscita una release: vedi il preambolo.
-pub const VERSIONE_COPIONE: &str = "2.3.2";
+///
+/// `3.0.0` per tre passi nuovi: il menù di un brano, le Cartelle com'è il
+/// disco, e dove stanno le scorciatoie. Che coincida col numero della release
+/// è una comodità di chi legge, non una regola: il copione di prima era
+/// `2.3.2` anche nella 2.4.
+pub const VERSIONE_COPIONE: &str = "3.0.0";
 
 /// Se il giro di [`VERSIONE_COPIONE`] è ancora da fare.
 ///
@@ -120,5 +125,8 @@ mod prove {
         // scritta nel preambolo.
         assert!(da_fare(Some("2.2.0")));
         assert!(da_fare(Some("9.9.9")));
+        // Il copione di prima dei tre passi nuovi: chi l'ha visto rivede il
+        // giro una volta. Vedi `VERSIONE_COPIONE`.
+        assert!(da_fare(Some("2.3.2")));
     }
 }

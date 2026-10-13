@@ -122,8 +122,7 @@ fn esegui(
     let libreria = crate::import_esterno::leggi_libreria(connection)?;
     let indice = Indice::nuovo(&libreria);
 
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura dell'importazione di una playlist", &err))?;
 
     let mut rapporto = PlaylistFileReport {

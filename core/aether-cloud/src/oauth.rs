@@ -33,7 +33,7 @@ use std::time::Duration;
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_oauth::{Attesa, Pkce, Servizio, adesso_ms};
 
-use crate::http::{Corpo, Metodo, Rete, Richiesta, percento};
+use crate::http::{Corpo, Metodo, Rete, Richiesta, Rimandi, percento};
 
 /// Le parti di OAuth che non sanno con chi stanno parlando.
 ///
@@ -83,7 +83,11 @@ pub const ATTESA_CONSENSO: Duration = Duration::from_secs(3 * 60);
 pub const SCADENZA: Duration = Duration::from_secs(15);
 
 /// Il client OAuth di questa applicazione.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// [`Debug`] scritto a mano: il segreto non è davvero un segreto (vedi il
+/// `//!`), ma finisce in un diario solo se qualcuno lo scrive apposta, e un
+/// `{:?}` distratto non è «apposta».
+#[derive(Clone, PartialEq, Eq)]
 pub struct Credenziali {
     /// L'identificativo del client.
     pub client_id: String,
@@ -91,8 +95,21 @@ pub struct Credenziali {
     pub client_secret: String,
 }
 
+impl std::fmt::Debug for Credenziali {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credenziali")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"…")
+            .finish()
+    }
+}
+
 /// I token appena ricevuti da Google.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// [`Debug`] scritto a mano: un `derive` stamperebbe l'access token e il token
+/// di aggiornamento, cioè le due cose con cui chiunque legga un diario
+/// potrebbe entrare nella cartella dell'app sul Drive di qualcun altro.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Token {
     /// Il token con cui si chiamano le API, valido un'ora circa.
     pub access_token: String,
@@ -106,6 +123,20 @@ pub struct Token {
     pub scade_ms: i64,
     /// L'indirizzo email dell'account, se Google l'ha detto.
     pub email: Option<String>,
+}
+
+impl std::fmt::Debug for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Token")
+            .field("access_token", &"…")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "‹presente›"),
+            )
+            .field("scade_ms", &self.scade_ms)
+            .field("email", &self.email)
+            .finish()
+    }
 }
 
 /// L'indirizzo a cui mandare l'utente, e lo `state` che dovrà tornare indietro.
@@ -223,6 +254,9 @@ pub fn rinfresca(
 /// `net.*` se la richiesta non arriva o Google rifiuta.
 pub fn revoca(rete: &Rete, token: &str) -> Result<(), AppError> {
     let campi = [("token", token.to_owned())];
+    // Senza rimandi, come lo scambio: il corpo è il token da revocare. Vedi
+    // [`chiedi`].
+    let rete = rete.con_rimandi(Rimandi::Nessuno);
     let risposta = rete.esegui(Richiesta {
         metodo: Metodo::Post,
         url: REVOCA,
@@ -243,15 +277,21 @@ pub fn revoca(rete: &Rete, token: &str) -> Result<(), AppError> {
 /// vedrebbe soltanto una dipendenza da Tauri in un crate che deve poter girare
 /// dentro un esempio da riga di comando.
 ///
+/// `fermare` si chiede a ogni giro dell'attesa: è il tasto «Annulla» accanto a
+/// «Aspetto il consenso…». Fino alla 2.4.0 non c'era, e chi apriva il consenso
+/// per sbaglio restava tre minuti davanti a un tasto spento.
+///
 /// # Errori
 ///
 /// `internal.timeout` se l'utente non risponde, `internal.aborted` se nega il
-/// consenso, `sync.authExpired` se lo scambio viene rifiutato, `net.*` per la
-/// rete.
+/// consenso o se `fermare` dice di sì, `sync.authExpired` se lo scambio viene
+/// rifiutato, `sync.clientInvalid` o `sync.clientUnauthorized` se Google non
+/// accetta le credenziali del client, `net.*` per la rete.
 pub fn collega(
     rete: &Rete,
     credenziali: &Credenziali,
     apri_browser: impl FnOnce(&str) -> Result<(), AppError>,
+    fermare: &dyn Fn() -> bool,
 ) -> Result<Token, AppError> {
     // Il servitore si apre per primo: la porta fa parte dell'indirizzo di
     // ritorno, e quell'indirizzo fa parte di ciò che si firma con PKCE.
@@ -261,11 +301,14 @@ pub fn collega(
     let invito = invito(credenziali, &pkce, &redirect_uri)?;
 
     apri_browser(&invito.url)?;
-    // Nessun annullamento da qui: il collegamento a Drive non ha una superficie
-    // che lo offra, e passare un `fermare` che non lo chiede nessuno vorrebbe
-    // dire cablare un tasto inesistente. Il giorno in cui quella superficie
-    // arriva, la firma è già pronta di là.
-    let risposta = attesa.aspetta(&invito.state, ATTESA_CONSENSO, &|| false)?;
+    let risposta = attesa.aspetta(&invito.state, ATTESA_CONSENSO, fermare)?;
+    if fermare() {
+        // Annullato fra la risposta del browser e lo scambio: chi ha premuto
+        // «Annulla» non vuole trovarsi collegato un istante dopo.
+        return Err(AppError::new(ErrorCode::InternalAborted {
+            what: Some(format!("consenso {}", GOOGLE.nome)),
+        }));
+    }
     scambia(rete, credenziali, &pkce, &redirect_uri, &risposta.code)
 }
 
@@ -276,7 +319,16 @@ pub fn collega(
 /// che l'utente sta guardando è meglio riportarlo subito che farlo aspettare
 /// mentre riproviamo in silenzio. Il ritentare sta sulle chiamate a Drive, dove
 /// l'utente non sta guardando.
+///
+/// **Non si seguono rimandi.** Il corpo di questa richiesta è il codice di
+/// autorizzazione, o il refresh token, più il segreto del client: un `307`
+/// lo rimanderebbe identico a chiunque Google — o chi si spacciasse per lui
+/// dietro un proxy — nominasse. Il punto di scambio risponde sul posto, e un
+/// 3xx da lì è un guasto da dire, non una strada da prendere. La politica si
+/// impone qui, e non a chi costruisce la rete: i posti che la costruiscono
+/// sono tre, e il punto di scambio uno.
 fn chiedi(rete: &Rete, campi: &[(&str, String)]) -> Result<serde_json::Value, AppError> {
+    let rete = rete.con_rimandi(Rimandi::Nessuno);
     let risposta = rete.esegui(Richiesta {
         metodo: Metodo::Post,
         url: SCAMBIO,
@@ -289,17 +341,47 @@ fn chiedi(rete: &Rete, campi: &[(&str, String)]) -> Result<serde_json::Value, Ap
         return Ok(corpo);
     }
 
-    // `invalid_grant` è il caso vero e ha una risposta precisa: rimandare
-    // l'utente al consenso. Distinguerlo dagli altri guasti è la differenza fra
-    // «riprova più tardi» e «devi ricollegare l'account».
     let motivo = corpo
         .get("error")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    if motivo == "invalid_grant" {
-        return Err(AppError::new(ErrorCode::SyncAuthExpired).with_cause(motivo.to_owned()));
+    let descrizione = corpo
+        .get("error_description")
+        .and_then(serde_json::Value::as_str);
+    if let Some(rifiuto) = rifiuto_del_punto(motivo, descrizione) {
+        return Err(rifiuto);
     }
     Err(rete.stato_a_errore(&risposta, SCAMBIO))
+}
+
+/// Il codice di un rifiuto del punto di scambio, per i tre motivi che hanno
+/// un rimedio loro.
+///
+/// - `invalid_grant`: la concessione non vale più — l'utente ha revocato
+///   l'accesso, o il progetto è in «Testing» e Google l'ha scaduta. Si
+///   ricollega l'account: `sync.authExpired`.
+/// - `invalid_client`: Google non riconosce il client — l'identificativo o il
+///   segreto sono sbagliati, o il client è stato cancellato. Ricollegare non
+///   serve: si correggono le credenziali. `sync.clientInvalid`.
+/// - `unauthorized_client`: il client c'è ma non può fare questo — non è di
+///   tipo «App desktop», o il token di aggiornamento l'ha emesso un **altro**
+///   client. `sync.clientUnauthorized`.
+///
+/// Fino alla 2.4.0 gli ultimi due arrivavano come «il server ha risposto con un
+/// errore», e il consiglio implicito era riprovare: cioè l'unica cosa che non
+/// poteva funzionare. La descrizione di Google va nella causa: non è un
+/// segreto, ed è quel che serve a chi legge un diario.
+///
+/// `None` per tutto il resto, che passa dalla traduzione normale dello stato.
+fn rifiuto_del_punto(motivo: &str, descrizione: Option<&str>) -> Option<AppError> {
+    let codice = match motivo {
+        "invalid_grant" => ErrorCode::SyncAuthExpired,
+        "invalid_client" => ErrorCode::SyncClientInvalid,
+        "unauthorized_client" => ErrorCode::SyncClientUnauthorized,
+        _ => return None,
+    };
+    let causa = descrizione.map_or_else(|| motivo.to_owned(), |d| format!("{motivo}: {d}"));
+    Some(AppError::new(codice).with_cause(causa))
 }
 
 /// Legge la risposta di un punto OAuth.
@@ -453,6 +535,56 @@ mod prove {
         });
         let token = interpreta_token(&corpo).expect("token");
         assert_eq!(token.email, None);
+    }
+
+    #[test]
+    fn i_rifiuti_del_client_hanno_i_loro_codici() {
+        let codice = |motivo: &str| {
+            rifiuto_del_punto(motivo, Some("descrizione di Google"))
+                .map(|err| err.code().kind().code())
+        };
+        assert_eq!(codice("invalid_grant"), Some("sync.authExpired"));
+        assert_eq!(codice("invalid_client"), Some("sync.clientInvalid"));
+        assert_eq!(
+            codice("unauthorized_client"),
+            Some("sync.clientUnauthorized")
+        );
+        assert_eq!(
+            codice("invalid_request"),
+            None,
+            "il resto passa dalla traduzione normale"
+        );
+        let err = rifiuto_del_punto("invalid_client", Some("The OAuth client was not found."))
+            .expect("un rifiuto");
+        assert!(
+            !err.is_retryable(),
+            "credenziali sbagliate non si aggiustano ritentando"
+        );
+        assert!(
+            err.cause().is_some_and(|c| c.contains("not found")),
+            "la descrizione di Google serve a chi legge il diario"
+        );
+    }
+
+    #[test]
+    fn i_segreti_non_compaiono_nel_debug() {
+        let token = Token {
+            access_token: "ya29.segretissimo".to_owned(),
+            refresh_token: Some("1//anche-questo".to_owned()),
+            scade_ms: 1,
+            email: Some("tizio@example.com".to_owned()),
+        };
+        let scritto = format!("{token:?}");
+        assert!(!scritto.contains("segretissimo"));
+        assert!(!scritto.contains("anche-questo"));
+        assert!(
+            scritto.contains("tizio@example.com"),
+            "l'email non è un segreto"
+        );
+
+        let scritto = format!("{:?}", credenziali());
+        assert!(!scritto.contains("GOCSPX-finto"));
+        assert!(scritto.contains("123.apps.googleusercontent.com"));
     }
 
     #[test]

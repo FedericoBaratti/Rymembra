@@ -229,6 +229,74 @@ pub fn presets_del_gruppo(group: TokenGroup) -> impl Iterator<Item = &'static Pr
     PRESETS.iter().filter(move |def| def.group == group)
 }
 
+/// Un'animazione pronta: un nome, l'innesco per cui è pensata, e il testo.
+///
+/// È la stessa idea dei preset dei token applicata al movimento, e con la
+/// stessa regola: **si applica e poi non esiste più**. Lo Studio la copia in
+/// `motion.animations` col suo nome, e da lì è un'animazione come le altre —
+/// si ritocca, si rinomina, si assegna altrove. Nessun documento contiene un
+/// riferimento a questa tabella.
+#[derive(Debug, Clone, Copy)]
+pub struct AnimazionePronta {
+    /// L'identificatore stabile, che è anche il nome proposto nel documento.
+    pub id: &'static str,
+    /// Il nome che si legge nello Studio.
+    pub nome: &'static str,
+    /// L'innesco per cui è pensata: lo Studio la propone lì per prima.
+    pub innesco: &'static str,
+    /// La dichiarazione come frammento JSON, pronta per `motion.animations`.
+    pub valore: &'static str,
+}
+
+/// Le animazioni pronte, nell'ordine in cui lo Studio le mostra.
+///
+/// Le prime per le entrate, poi per gli stati, poi i cicli. Ognuna passa dalle
+/// guardie vere: `ogni_animazione_pronta_si_applica_a_plain_senza_avvisi`.
+#[rustfmt::skip]
+pub static ANIMAZIONI_PRONTE: &[AnimazionePronta] = &[
+    AnimazionePronta { id: "dissolvenza", nome: "Dissolvenza", innesco: "enter", valore: r#"{
+        "duration": "240ms", "easing": "ease-out",
+        "frames": [{ "at": 0, "opacity": 0 }, { "at": 100, "opacity": 1 }] }"# },
+    AnimazionePronta { id: "sale", nome: "Sale", innesco: "enter", valore: r#"{
+        "duration": "320ms", "easing": { "kind": "cubicBezier", "points": [0.16, 1, 0.3, 1] },
+        "frames": [{ "at": 0, "opacity": 0, "translateY": 12 }, { "at": 100, "opacity": 1, "translateY": 0 }] }"# },
+    AnimazionePronta { id: "pop", nome: "Pop", innesco: "enter", valore: r#"{
+        "duration": "280ms", "easing": { "kind": "cubicBezier", "points": [0.34, 1.56, 0.64, 1] },
+        "frames": [{ "at": 0, "opacity": 0, "scale": 0.9 }, { "at": 100, "opacity": 1, "scale": 1 }] }"# },
+    AnimazionePronta { id: "scivola", nome: "Scivola", innesco: "enter", valore: r#"{
+        "duration": "300ms", "easing": "ease-out",
+        "frames": [{ "at": 0, "opacity": 0, "translateX": -16 }, { "at": 100, "opacity": 1, "translateX": 0 }] }"# },
+    AnimazionePronta { id: "rivela", nome: "Rivela", innesco: "inView", valore: r#"{
+        "duration": "420ms", "easing": "ease-out",
+        "frames": [
+          { "at": 0, "clip": { "inset": ["0%", "100%", "0%", "0%"] } },
+          { "at": 100, "clip": { "inset": ["0%", "0%", "0%", "0%"] } }] }"# },
+    AnimazionePronta { id: "sobbalzo", nome: "Sobbalzo", innesco: "hover", valore: r#"{
+        "duration": "360ms", "easing": "ease-out",
+        "frames": [{ "at": 0, "translateY": 0 }, { "at": 40, "translateY": -6 }, { "at": 100, "translateY": 0 }] }"# },
+    AnimazionePronta { id: "battito", nome: "Battito", innesco: "checked", valore: r#"{
+        "duration": "280ms", "easing": { "kind": "cubicBezier", "points": [0.34, 1.56, 0.64, 1] },
+        "frames": [{ "at": 0, "scale": 1 }, { "at": 40, "scale": 1.28 }, { "at": 100, "scale": 1 }] }"# },
+    AnimazionePronta { id: "pulsa", nome: "Pulsa", innesco: "current", valore: r#"{
+        "duration": "600ms", "easing": "ease-in-out", "iterations": 2, "direction": "alternate",
+        "frames": [{ "at": 0, "scale": 1 }, { "at": 100, "scale": 1.06 }] }"# },
+    AnimazionePronta { id: "vinile", nome: "Vinile", innesco: "playing", valore: r#"{
+        "duration": "2400ms", "easing": "linear", "iterations": "infinite", "fill": "none",
+        "frames": [{ "at": 0, "rotate": 0 }, { "at": 100, "rotate": 360 }] }"# },
+    AnimazionePronta { id: "luccichio", nome: "Luccichio", innesco: "hover", valore: r#"{
+        "duration": "1200ms", "easing": "ease-in-out", "iterations": "infinite", "fill": "none",
+        "frames": [{ "at": 0, "brightness": 1 }, { "at": 50, "brightness": 1.3 }, { "at": 100, "brightness": 1 }] }"# },
+    AnimazionePronta { id: "respiro", nome: "Respiro", innesco: "playing", valore: r#"{
+        "duration": "3200ms", "easing": "ease-in-out", "iterations": "infinite", "fill": "none",
+        "frames": [{ "at": 0, "opacity": 1 }, { "at": 50, "opacity": 0.72 }, { "at": 100, "opacity": 1 }] }"# },
+];
+
+/// L'animazione pronta con questo id, se esiste.
+#[must_use]
+pub fn animazione_pronta(id: &str) -> Option<&'static AnimazionePronta> {
+    ANIMAZIONI_PRONTE.iter().find(|def| def.id == id)
+}
+
 /// Il preset con questo id, se esiste.
 #[must_use]
 pub fn preset(id: &str) -> Option<&'static PresetDef> {
@@ -373,6 +441,69 @@ mod tests {
                 "«Curato» non rimette «{chiave}»"
             );
         }
+    }
+
+    /// La parte su cui un'animazione pronta si prova, per l'innesco che dice.
+    fn parte_per(innesco: &str) -> &'static str {
+        match innesco {
+            "enter" => "section-card",
+            "inView" => "card",
+            "hover" => "icon-btn",
+            "checked" => "heart",
+            "current" => "nav-pill",
+            "playing" => "column-art",
+            altro => panic!("nessuna parte di prova per «{altro}»"),
+        }
+    }
+
+    #[test]
+    fn ogni_animazione_pronta_si_applica_a_plain_senza_avvisi() {
+        // La stessa prova dei preset dei token, sul movimento: ogni animazione
+        // pronta, dichiarata in Plain e assegnata all'innesco per cui è
+        // pensata, dà una skin valida e senza avvisi. Un campo rinominato nel
+        // formato, un estremo stretto, un ciclo messo su un innesco che non lo
+        // ammette: cade qui, e non davanti a chi preme il bottone.
+        let mut visti = HashSet::new();
+        for pronta in ANIMAZIONI_PRONTE {
+            assert!(visti.insert(pronta.id), "id ripetuto: {}", pronta.id);
+            let mut documento: Value =
+                serde_json::from_str(PLAIN_SOURCE).expect("plain.json è JSON valido");
+            let valore: Value = serde_json::from_str(pronta.valore)
+                .unwrap_or_else(|e| panic!("«{}» non è JSON: {e}", pronta.id));
+            let radice = documento.as_object_mut().expect("un oggetto");
+            let movimento = radice
+                .entry("motion")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .expect("motion è un oggetto");
+            movimento
+                .entry("animations")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .expect("animations è un oggetto")
+                .insert(pronta.id.to_owned(), valore);
+            let parti = radice
+                .entry("parts")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .expect("parts è un oggetto");
+            parti.insert(
+                parte_per(pronta.innesco).to_owned(),
+                serde_json::json!({ "motion": { pronta.innesco: pronta.id } }),
+            );
+            let testo = serde_json::to_string(&documento).expect("si riscrive");
+            let skin = parse_skin_json(&testo)
+                .unwrap_or_else(|err| panic!("«{}» dà una skin non valida: {err}", pronta.id));
+            let avvisi = check_skin(&skin);
+            assert!(
+                avvisi.is_empty(),
+                "«{}» dà avvisi: {:?}",
+                pronta.id,
+                avvisi.iter().map(|a| &a.message).collect::<Vec<_>>()
+            );
+        }
+        assert!(animazione_pronta("vinile").is_some());
+        assert!(animazione_pronta("inventata").is_none());
     }
 
     #[test]

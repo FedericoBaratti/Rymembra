@@ -33,6 +33,7 @@ import { data, dataOra, durata, nomeArtista, numero } from "../formato";
 import { ipc, type StatoRiproduzione, type VoceCronologia } from "../ipc";
 import { locale, t } from "../lingue";
 import { Icona } from "./Icone";
+import { useDati } from "../dati";
 
 /** Quante righe per volta. Una schermata piena più un po' di margine. */
 const PAGINA = 50;
@@ -71,6 +72,7 @@ export function Cronologia({
   stato: StatoRiproduzione;
   onErrore: (e: unknown) => void;
 }) {
+  const letture = useDati().ipc;
   const [voci, setVoci] = useState<VoceCronologia[]>([]);
   const [totale, setTotale] = useState<number | null>(null);
   const [quante, setQuante] = useState(PAGINA);
@@ -85,7 +87,7 @@ export function Cronologia({
     (limite: number) => {
       let annullato = false;
       setCaricando(true);
-      Promise.all([ipc.cronologia(0, limite), ipc.cronologiaConteggio()])
+      Promise.all([letture.cronologia(0, limite), letture.cronologiaConteggio()])
         .then(([pagina, quanti]) => {
           if (annullato) return;
           setVoci(pagina);
@@ -99,7 +101,7 @@ export function Cronologia({
         annullato = true;
       };
     },
-    [onErrore],
+    [onErrore, letture],
   );
 
   // `corrente` fra le dipendenze: è il segnale che un ascolto si è chiuso.

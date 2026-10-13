@@ -81,11 +81,45 @@
 //! prima apertura della vista, e lo lascia cadere quando la vista è chiusa da
 //! un pezzo. Quella parte sta nel guscio desktop, che è l'unico a sapere se una
 //! finestra è aperta.
+//!
+//! # I file sono foglie, ma non stanno nel trie
+//!
+//! Il pannello mostra anche i brani di una cartella aperta, come le foglie del
+//! pannello «Folders» di foobar2000: titolo e durata sotto le sottocartelle. Il
+//! trie però sa dei brani soltanto l'identificativo, e per una ragione che è
+//! la condizione del paragrafo qui sopra: titoli e nomi di file di diciottomila
+//! brani sono un altro paio di megabyte, cioè il trie raddoppiato per mostrare
+//! le foglie di una cartella alla volta. Quindi [`file_della_cartella`] prende
+//! dal trie gli identificativi **diretti** — già pronti, senza scendere — e
+//! legge dal database le sole righe di quella cartella: una decina di righe per
+//! un album, mai la tabella. Resta una lettura del database e non del disco: le
+//! foglie di una share spenta si aprono come le altre.
+//!
+//! # Il filtro guarda tutto l'albero, non solo quel che è aperto
+//!
+//! Il pannello conosce le sole cartelle che ha aperto, e un filtro scritto lì
+//! troverebbe soltanto quelle — cioè quasi niente, perché si filtra proprio per
+//! non dover aprire a mano. [`filtra`] cerca nel trie intero e, per i file, in
+//! una lettura di `tracks`, e restituisce l'albero **potato**: ogni corrispondenza
+//! con i suoi antenati, ognuno con dentro soltanto i figli che portano a
+//! qualcosa. La piegatura è quella della ricerca ([`fold_text`]): maiuscole e
+//! accenti non contano.
+//!
+//! # L'ordine delle sorelle è quello di chi legge
+//!
+//! «CD 2» prima di «CD 10». Le cartelle sorelle si ordinano con
+//! [`confronta_naturale`], che legge le cifre come numeri, e lo stesso vale per
+//! i nomi dei file quando un album non ha i numeri di traccia: l'ordine in cui
+//! una cartella suona è quello in cui la si vede. I file del pannello li ordina
+//! la finestra, che li disegna: dentro una cartella l'ordine di riproduzione
+//! resta quello dell'album.
 
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 
 use aether_domain::errors::AppError;
 use aether_domain::paths::{PathRules, base_name, is_under, path_key};
+use aether_domain::text::fold_text;
 use rusqlite::Connection;
 
 /// Oltre questi brani il trie rinuncia agli identificativi.
@@ -97,6 +131,22 @@ use rusqlite::Connection;
 /// rinuncia a quel che serve solo nel momento in cui si preme «riproduci», dove
 /// una rilettura del database si può pagare perché è un gesto singolo.
 pub const SOGLIA_IDENTIFICATIVI: usize = 200_000;
+
+/// Quante corrispondenze al massimo restituisce un filtro.
+///
+/// Duemila. Il filtro si scrive una lettera alla volta, e con una lettera sola
+/// corrisponde quasi tutto: diciottomila foglie mandate alla finestra per la
+/// «a» che precede «abba» sarebbero un megabyte e mezzo di risposta buttato via
+/// trecento millisecondi dopo. Duemila righe riempiono già parecchi schermi, e
+/// chi ne vuole di più sta cercando con una parola troppo corta — il pannello
+/// glielo dice.
+pub const LIMITE_FILTRO: usize = 2_000;
+
+/// Quanti identificativi per ogni `IN (…)` della lettura dei file.
+///
+/// Sotto il limite dei parametri di SQLite con un margine largo, e abbastanza
+/// per leggere in un colpo solo qualunque cartella che sia un album.
+const PEZZO_LETTURA: usize = 500;
 
 /// Una cartella dell'albero, nella forma che il pannello disegna.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -116,6 +166,13 @@ pub struct NodoCartella {
     pub brani: u32,
     /// Quante sottocartelle dirette.
     pub sottocartelle: u32,
+    /// Quanti brani stanno **direttamente** qui, senza scendere.
+    ///
+    /// Sono le foglie che il pannello disegna aprendo la cartella. Il numero
+    /// arriva con il nodo perché la freccia va disegnata subito — una cartella
+    /// d'album non ha sottocartelle ma si apre lo stesso — e perché la finestra
+    /// non chieda le foglie di una cartella che non ne ha.
+    pub file: u32,
     /// È una delle cartelle sorvegliate.
     ///
     /// `false` sui nodi sintetici, cioè quelli nati per dare un posto a un
@@ -123,6 +180,58 @@ pub struct NodoCartella {
     /// La differenza conta: solo su una radice vera ha senso chiedersi se
     /// risponde ancora.
     pub radice: bool,
+}
+
+/// Un file dentro una cartella: una foglia dell'albero.
+///
+/// Quel che la riga disegna e quel che serve a riprodurla, e nient'altro: le
+/// colonne del brano intero le chiede il pannello dei brani, che le mostra.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileCartella {
+    /// L'identificativo del brano: è quel che va in coda.
+    pub brano: i64,
+    /// Il percorso del file, nella grafia del database. È anche l'identità
+    /// della riga nel pannello, accanto a quella delle cartelle.
+    pub percorso: String,
+    /// Il nome del file, senza la cartella: è la chiave con cui la finestra
+    /// ordina le foglie.
+    pub nome: String,
+    /// Il titolo del brano, come lo dicono i tag.
+    pub titolo: String,
+    /// La durata in millisecondi.
+    pub durata_ms: i64,
+}
+
+/// Un ramo dell'albero potato da [`filtra`]: una cartella aperta e quel che le
+/// resta dentro.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RamoFiltrato {
+    /// La cartella aperta; `None` per il primo livello.
+    pub percorso: Option<String>,
+    /// Le sottocartelle che portano a una corrispondenza, o che lo sono,
+    /// nell'ordine dell'albero.
+    pub cartelle: Vec<NodoCartella>,
+    /// I file di questa cartella che corrispondono.
+    pub file: Vec<FileCartella>,
+}
+
+/// L'esito di un filtro: l'albero potato e quanto è grande quel che si è trovato.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CartelleFiltrate {
+    /// Il primo livello e ogni cartella da mostrare aperta. Una cartella che
+    /// corrisponde e non contiene altre corrispondenze **non** è fra queste: si
+    /// mostra chiusa, e aprendola la si vede intera.
+    pub rami: Vec<RamoFiltrato>,
+    /// I percorsi delle cartelle il cui nome corrisponde: la finestra le
+    /// distingue dagli antenati, che stanno lì solo per portarci.
+    pub trovate: Vec<String>,
+    /// Quante corrispondenze c'erano in tutto, cartelle e file, prima del tetto.
+    pub corrispondenze: u32,
+    /// Le corrispondenze erano più di quelle restituite: vedi [`LIMITE_FILTRO`].
+    pub troncato: bool,
 }
 
 /// L'albero delle cartelle della libreria.
@@ -134,6 +243,15 @@ pub struct NodoCartella {
 pub struct Albero {
     /// Tutti i nodi in un solo vettore: i legami sono indici, non puntatori.
     nodi: Vec<Nodo>,
+    /// Il padre di ogni nodo, `None` per quelli di primo livello.
+    ///
+    /// Sedici byte per nodo — su diciottomila brani un migliaio e mezzo di
+    /// cartelle, cioè ventiquattro kilobyte — tenuti per il filtro, che da ogni
+    /// corrispondenza deve risalire fino alla cima per aprire la strada.
+    /// Ricavarlo dal percorso togliendo un segmento alla volta funzionerebbe
+    /// lo stesso, ma vorrebbe dire rifare a mano la regola del prefisso più
+    /// lungo che la costruzione ha già applicato.
+    padri: Vec<Option<usize>>,
     /// Da [`chiave`] all'indice del nodo. È l'unica copia delle chiavi che
     /// sopravvive alla costruzione.
     per_chiave: HashMap<String, usize>,
@@ -159,7 +277,31 @@ struct Nodo {
     brani: Vec<i64>,
     /// Quanti brani ci sono qui sotto, sottocartelle comprese.
     sotto: u32,
+    /// Quanti brani stanno direttamente qui. Non è `brani.len()`: sopra la
+    /// soglia gli identificativi non ci sono, e il conteggio serve lo stesso.
+    diretti: u32,
     radice: bool,
+}
+
+/// Una riga di `tracks` per le foglie: quel che [`FileCartella`] porta.
+#[derive(Debug)]
+struct RigaFile {
+    id: i64,
+    percorso: String,
+    titolo: String,
+    durata_ms: i64,
+}
+
+impl RigaFile {
+    fn in_foglia(self) -> FileCartella {
+        FileCartella {
+            brano: self.id,
+            nome: base_name(&self.percorso).to_owned(),
+            percorso: self.percorso,
+            titolo: self.titolo,
+            durata_ms: self.durata_ms,
+        }
+    }
 }
 
 /// Una riga di `tracks`, per quel poco che all'albero serve.
@@ -198,9 +340,10 @@ struct Sorvegliata {
 #[derive(Debug)]
 struct InCostruzione {
     nodi: Vec<Nodo>,
-    /// Il padre di ogni nodo, `None` per quelli di primo livello. Vive solo
-    /// qui: serve a far salire i conteggi una volta sola, e tenerlo dentro
-    /// [`Nodo`] vorrebbe dire sedici byte per nodo mai più letti.
+    /// Il padre di ogni nodo, `None` per quelli di primo livello. Serve qui a
+    /// far salire i conteggi una volta sola, e passa poi ad [`Albero::padri`]
+    /// per il filtro. Un vettore a parte e non un campo di [`Nodo`] perché la
+    /// costruzione lo vuole prima che i nodi siano finiti.
     padri: Vec<Option<usize>>,
     /// I brani di ogni nodo, ancora da ordinare.
     brani: Vec<Vec<DaOrdinare>>,
@@ -252,15 +395,86 @@ impl Albero {
         };
         indici
             .iter()
-            .filter_map(|indice| self.nodi.get(*indice))
-            .map(|nodo| NodoCartella {
-                percorso: nodo.percorso.clone(),
-                nome: nodo.nome.clone(),
-                brani: nodo.sotto,
-                sottocartelle: u32::try_from(nodo.figli.len()).unwrap_or(u32::MAX),
-                radice: nodo.radice,
-            })
+            .filter_map(|indice| self.nodo_cartella(*indice))
             .collect()
+    }
+
+    /// Il nodo all'indice dato, nella forma che esce.
+    fn nodo_cartella(&self, indice: usize) -> Option<NodoCartella> {
+        self.nodi.get(indice).map(|nodo| NodoCartella {
+            percorso: nodo.percorso.clone(),
+            nome: nodo.nome.clone(),
+            brani: nodo.sotto,
+            sottocartelle: u32::try_from(nodo.figli.len()).unwrap_or(u32::MAX),
+            file: nodo.diretti,
+            radice: nodo.radice,
+        })
+    }
+
+    /// L'indice della cartella che contiene il file a questo percorso.
+    ///
+    /// Si cerca il percorso senza l'ultimo segmento, ed è la stessa cartella in
+    /// cui la costruzione ha messo il brano: i nodi nascono ritagliando i
+    /// percorsi dei brani segmento per segmento, quindi la cartella di un file
+    /// che sta in libreria ha sempre la sua chiave. `None` per un percorso che
+    /// non ha una cartella nell'albero.
+    fn cartella_di(&self, percorso: &str) -> Option<usize> {
+        let taglio = percorso.rfind(['/', '\\'])?;
+        let cartella = percorso.get(..taglio)?;
+        self.per_chiave.get(&chiave(cartella, self.regole)).copied()
+    }
+
+    /// Gli identificativi dei brani che stanno **direttamente** in `percorso`,
+    /// senza le sottocartelle, nell'ordine dell'album.
+    ///
+    /// È la metà di [`Albero::brani_sotto`] che non scende: serve al pannello
+    /// dei brani quando l'interruttore «includi sottocartelle» è spento, e alle
+    /// foglie. `None` sopra [`SOGLIA_IDENTIFICATIVI`], con lo stesso
+    /// significato di là — «non lo so» — e la stessa via d'uscita:
+    /// [`brani_diretti_dal_database`].
+    #[must_use]
+    pub fn brani_diretti(&self, percorso: &str) -> Option<Vec<i64>> {
+        if !self.con_identificativi {
+            return None;
+        }
+        Some(
+            self.per_chiave
+                .get(&chiave(percorso, self.regole))
+                .and_then(|indice| self.nodi.get(*indice))
+                .map_or_else(Vec::new, |nodo| nodo.brani.clone()),
+        )
+    }
+
+    /// Quanti brani stanno direttamente in `percorso`. Zero per un percorso
+    /// che l'albero non conosce, come [`Albero::quanti_sotto`].
+    #[must_use]
+    pub fn quanti_diretti(&self, percorso: &str) -> u32 {
+        self.per_chiave
+            .get(&chiave(percorso, self.regole))
+            .and_then(|indice| self.nodi.get(*indice))
+            .map_or(0, |nodo| nodo.diretti)
+    }
+
+    /// Segna da mostrare e da aprire ogni antenato di `indice`, fino alla cima:
+    /// è la strada che [`filtra`] apre verso ogni corrispondenza.
+    ///
+    /// Si ferma al primo antenato già aperto: quello ha già percorso la sua
+    /// strada, e rifarla per ogni corrispondenza sotto lo stesso disco vorrebbe
+    /// dire risalire mille volte gli stessi tre gradini.
+    fn apri_la_strada(
+        &self,
+        indice: usize,
+        mostrate: &mut HashSet<usize>,
+        aperte: &mut HashSet<usize>,
+    ) {
+        let mut qui = self.padri.get(indice).copied().flatten();
+        while let Some(padre) = qui {
+            mostrate.insert(padre);
+            if !aperte.insert(padre) {
+                break;
+            }
+            qui = self.padri.get(padre).copied().flatten();
+        }
     }
 
     /// Gli identificativi dei brani sotto `percorso`, nell'ordine in cui si
@@ -269,7 +483,10 @@ impl Albero {
     /// L'ordine è quello che ci si aspetta da una cartella d'album, perché una
     /// cartella *è* un album nel caso normale: prima i brani che stanno
     /// direttamente qui, ordinati per `(disc_number, track_number, path_key)`,
-    /// poi le sottocartelle in ordine di chiave, ciascuna con la stessa regola.
+    /// poi le sottocartelle nell'ordine in cui il pannello le mostra, ciascuna
+    /// con la stessa regola. I nomi, dei file e delle cartelle, si confrontano
+    /// con [`confronta_naturale`]: «2» prima di «10».
+    ///
     /// Un brano senza numero di traccia va in coda ai numerati, non in testa:
     /// dentro un album vero i non numerati sono i bonus e le tracce nascoste.
     ///
@@ -367,6 +584,7 @@ impl Albero {
                 figli: Vec::new(),
                 brani: Vec::new(),
                 sotto: 0,
+                diretti: 0,
                 radice: true,
             });
             lavoro.padri.push(None);
@@ -435,6 +653,9 @@ impl Albero {
             }
             if let Some(nodo) = lavoro.nodi.get_mut(corrente) {
                 nodo.sotto = nodo.sotto.saturating_add(1);
+                // Qui e solo qui: più sotto i conteggi salgono verso i padri, e
+                // quel che sale non sta «direttamente» da nessuna parte.
+                nodo.diretti = nodo.diretti.saturating_add(1);
             }
             if con_identificativi && let Some(cartella) = lavoro.brani.get_mut(corrente) {
                 cartella.push(DaOrdinare {
@@ -469,22 +690,28 @@ impl Albero {
             }
         }
 
-        // I fratelli in ordine di chiave. Fra figli dello stesso padre l'ordine
-        // per chiave intera e quello per solo nome coincidono — il prefisso è
-        // lo stesso — e il secondo si calcola su venti caratteri invece che su
-        // centoventi.
+        // I fratelli in ordine di chiave, letta come la legge chi guarda: «CD 2»
+        // prima di «CD 10». Fra figli dello stesso padre l'ordine per chiave
+        // intera e quello per solo nome coincidono — il prefisso è lo stesso —
+        // e il secondo si calcola su venti caratteri invece che su centoventi.
         let ordine: Vec<String> = nodi.iter().map(|n| path_key(&n.nome, regole)).collect();
+        let per_nome = |a: &usize, b: &usize| match (ordine.get(*a), ordine.get(*b)) {
+            (Some(x), Some(y)) => confronta_naturale(x, y),
+            (x, y) => x.cmp(&y),
+        };
         for nodo in &mut nodi {
-            nodo.figli
-                .sort_by(|a, b| ordine.get(*a).cmp(&ordine.get(*b)));
+            nodo.figli.sort_by(per_nome);
         }
-        cime.sort_by(|a, b| ordine.get(*a).cmp(&ordine.get(*b)));
+        cime.sort_by(per_nome);
 
         // I brani dentro ogni cartella, e poi via la chiave di ordinamento:
         // quel che resta sono otto byte per brano.
         for (indice, mut cartella) in brani.into_iter().enumerate() {
-            cartella
-                .sort_by(|a, b| (a.disco, a.traccia, &a.nome).cmp(&(b.disco, b.traccia, &b.nome)));
+            cartella.sort_by(|a, b| {
+                (a.disco, a.traccia)
+                    .cmp(&(b.disco, b.traccia))
+                    .then_with(|| confronta_naturale(&a.nome, &b.nome))
+            });
             if let Some(nodo) = nodi.get_mut(indice) {
                 // `iter` e non `into_iter`, e la differenza vale un megabyte su
                 // diciottomila brani: da un `Vec` consumato per valore la
@@ -498,6 +725,7 @@ impl Albero {
 
         Self {
             nodi,
+            padri,
             per_chiave,
             cime,
             con_identificativi,
@@ -514,6 +742,7 @@ impl Albero {
     fn peso_in_byte(&self) -> usize {
         let mut peso = std::mem::size_of::<Self>();
         peso += self.nodi.capacity() * std::mem::size_of::<Nodo>();
+        peso += self.padri.capacity() * std::mem::size_of::<Option<usize>>();
         for nodo in &self.nodi {
             peso += nodo.percorso.capacity() + nodo.nome.capacity();
             peso += nodo.figli.capacity() * std::mem::size_of::<usize>();
@@ -551,17 +780,347 @@ pub fn brani_sotto_dal_database(
     percorso: &str,
     rules: PathRules,
 ) -> Result<Vec<i64>, AppError> {
+    // `unwrap_or_default` e non un `expect`: l'albero è appena stato costruito
+    // con gli identificativi, quindi `None` qui non può succedere — e se un
+    // giorno potesse, un elenco vuoto è la risposta prudente, non un panico
+    // dentro un pannello di navigazione.
+    Ok(albero_di(connection, percorso, rules)?
+        .brani_sotto(percorso)
+        .unwrap_or_default())
+}
+
+/// Gli identificativi dei brani che stanno direttamente in `percorso`,
+/// rileggendo il database.
+///
+/// La metà di [`brani_sotto_dal_database`] che non scende, con lo stesso
+/// costo e la stessa ragione d'essere: le librerie oltre
+/// [`SOGLIA_IDENTIFICATIVI`]. L'ordine è quello di [`Albero::brani_diretti`],
+/// per la stessa costruzione.
+///
+/// # Errori
+///
+/// Quel che risponde SQLite se la lettura fallisce.
+pub fn brani_diretti_dal_database(
+    connection: &Connection,
+    percorso: &str,
+    rules: PathRules,
+) -> Result<Vec<i64>, AppError> {
+    Ok(albero_di(connection, percorso, rules)?
+        .brani_diretti(percorso)
+        .unwrap_or_default())
+}
+
+/// L'albero delle sole righe sotto `percorso`, con gli identificativi.
+fn albero_di(
+    connection: &Connection,
+    percorso: &str,
+    rules: PathRules,
+) -> Result<Albero, AppError> {
     let righe: Vec<Riga> = leggi_righe(connection)?
         .into_iter()
         .filter(|riga| is_under(&riga.percorso, percorso, rules))
         .collect();
     let radici = [percorso.to_owned()];
-    let albero = Albero::da_righe(righe, &radici, rules, true);
-    // `unwrap_or_default` e non un `expect`: l'albero è appena stato costruito
-    // con gli identificativi, quindi `None` qui non può succedere — e se un
-    // giorno potesse, un elenco vuoto è la risposta prudente, non un panico
-    // dentro un pannello di navigazione.
-    Ok(albero.brani_sotto(percorso).unwrap_or_default())
+    Ok(Albero::da_righe(righe, &radici, rules, true))
+}
+
+/// I file che stanno direttamente in `percorso`: le foglie della cartella.
+///
+/// Gli identificativi vengono dal trie, già pronti, e dal database si leggono
+/// le sole righe di quei brani — un album sono dieci righe, e nessuna
+/// espansione legge la tabella intera. Sopra [`SOGLIA_IDENTIFICATIVI`], dove il
+/// trie gli identificativi non li ha, si legge `tracks` e si tengono le righe la
+/// cui cartella è questa: costa quel che costa costruire l'albero, e su una
+/// libreria così è il prezzo dichiarato di ogni gesto che vuole i brani.
+///
+/// L'ordine non è una promessa: le foglie le ordina la finestra, per nome di
+/// file, perché è lei a disegnarle. Quando gli identificativi ci sono escono
+/// nell'ordine dell'album, che è gratis.
+///
+/// # Errori
+///
+/// Quel che risponde SQLite se la lettura fallisce.
+pub fn file_della_cartella(
+    connection: &Connection,
+    albero: &Albero,
+    percorso: &str,
+) -> Result<Vec<FileCartella>, AppError> {
+    if albero.quanti_diretti(percorso) == 0 {
+        return Ok(Vec::new());
+    }
+    if let Some(ids) = albero.brani_diretti(percorso) {
+        return righe_per_id(connection, &ids);
+    }
+    let cartella = albero
+        .per_chiave
+        .get(&chiave(percorso, albero.regole))
+        .copied();
+    Ok(leggi_file(connection)?
+        .into_iter()
+        .filter(|riga| cartella.is_some() && albero.cartella_di(&riga.percorso) == cartella)
+        .map(RigaFile::in_foglia)
+        .collect())
+}
+
+/// L'albero potato dal filtro `testo`: ogni cartella e ogni file il cui nome
+/// lo contiene, con gli antenati che portano fin lì.
+///
+/// # Cosa corrisponde
+///
+/// Una cartella, se il **nome** che il pannello le scrive contiene il testo —
+/// per le cime è il percorso intero, come nella riga. Un file, se lo contiene
+/// il nome del file **o** il titolo: la foglia mostra il titolo e ha il nome
+/// nel suggerimento, e un filtro che non trovasse quel che c'è scritto nella
+/// riga sembrerebbe rotto. Il confronto passa da [`fold_text`] da entrambe le
+/// parti, cioè la piegatura della ricerca: «Ö» e «o» sono la stessa lettera, e
+/// le maiuscole non contano.
+///
+/// # Quel che esce
+///
+/// Un [`RamoFiltrato`] per il primo livello e uno per ogni cartella da tenere
+/// aperta, cioè ogni cartella che ha sotto di sé qualcosa da mostrare. Dentro
+/// ciascuno restano soltanto i figli che sono una corrispondenza o portano a
+/// una: le sorelle che non c'entrano non si vedono, che è il punto di un
+/// filtro.
+///
+/// Oltre `limite` corrispondenze ci si ferma — prima le cartelle, che danno la
+/// forma, poi i file — e [`CartelleFiltrate::troncato`] lo dice.
+///
+/// # Errori
+///
+/// Quel che risponde SQLite se la lettura dei file fallisce.
+pub fn filtra(
+    connection: &Connection,
+    albero: &Albero,
+    testo: &str,
+    limite: usize,
+) -> Result<CartelleFiltrate, AppError> {
+    let ago = fold_text(testo.trim());
+    if ago.is_empty() {
+        return Ok(CartelleFiltrate::default());
+    }
+
+    let mut cartelle: Vec<usize> = albero
+        .nodi
+        .iter()
+        .enumerate()
+        .filter(|(_, nodo)| fold_text(&nodo.nome).contains(&ago))
+        .map(|(indice, _)| indice)
+        .collect();
+    let mut file: Vec<(usize, FileCartella)> = Vec::new();
+    for riga in leggi_file(connection)? {
+        let combacia = fold_text(base_name(&riga.percorso)).contains(&ago)
+            || fold_text(&riga.titolo).contains(&ago);
+        if !combacia {
+            continue;
+        }
+        // Un file senza cartella nell'albero non ha dove essere mostrato: è un
+        // percorso che la costruzione ha saltato, e qui si salta allo stesso
+        // modo invece di inventargli un posto.
+        if let Some(cartella) = albero.cartella_di(&riga.percorso) {
+            file.push((cartella, riga.in_foglia()));
+        }
+    }
+
+    let corrispondenze = cartelle.len().saturating_add(file.len());
+    cartelle.truncate(limite);
+    file.truncate(limite.saturating_sub(cartelle.len()));
+
+    // Da mostrare: le corrispondenze e i loro antenati. Da aprire: tutto quel
+    // che ha sotto qualcosa da mostrare. Una cartella trovata che non contiene
+    // altre corrispondenze resta chiusa — aprendola si vede intera.
+    let mut mostrate: HashSet<usize> = HashSet::new();
+    let mut aperte: HashSet<usize> = HashSet::new();
+    for indice in &cartelle {
+        mostrate.insert(*indice);
+        albero.apri_la_strada(*indice, &mut mostrate, &mut aperte);
+    }
+    let mut per_cartella: HashMap<usize, Vec<FileCartella>> = HashMap::new();
+    for (cartella, foglia) in file {
+        mostrate.insert(cartella);
+        if aperte.insert(cartella) {
+            albero.apri_la_strada(cartella, &mut mostrate, &mut aperte);
+        }
+        per_cartella.entry(cartella).or_default().push(foglia);
+    }
+
+    let mut rami = vec![RamoFiltrato {
+        percorso: None,
+        cartelle: albero
+            .cime
+            .iter()
+            .filter(|indice| mostrate.contains(indice))
+            .filter_map(|indice| albero.nodo_cartella(*indice))
+            .collect(),
+        file: Vec::new(),
+    }];
+    // In ordine di indice: la risposta non dipende dall'ordine di un insieme,
+    // e due filtri uguali danno due risposte uguali byte per byte.
+    let mut da_aprire: Vec<usize> = aperte.into_iter().collect();
+    da_aprire.sort_unstable();
+    for indice in da_aprire {
+        let Some(nodo) = albero.nodi.get(indice) else {
+            continue;
+        };
+        rami.push(RamoFiltrato {
+            percorso: Some(nodo.percorso.clone()),
+            cartelle: nodo
+                .figli
+                .iter()
+                .filter(|figlio| mostrate.contains(figlio))
+                .filter_map(|figlio| albero.nodo_cartella(*figlio))
+                .collect(),
+            file: per_cartella.remove(&indice).unwrap_or_default(),
+        });
+    }
+
+    Ok(CartelleFiltrate {
+        rami,
+        trovate: cartelle
+            .iter()
+            .filter_map(|indice| albero.nodi.get(*indice))
+            .map(|nodo| nodo.percorso.clone())
+            .collect(),
+        corrispondenze: u32::try_from(corrispondenze).unwrap_or(u32::MAX),
+        troncato: corrispondenze > limite,
+    })
+}
+
+/// `percorso` sta dentro una delle cartelle sorvegliate, o è una di loro.
+///
+/// È la guardia del comando che apre una cartella in Esplora risorse: la
+/// finestra nomina un percorso, e un comando che aprisse il gestore file su un
+/// percorso qualunque sarebbe una porta su tutto il disco. Le radici le legge
+/// chi chiama, dal database — **mai** dalla finestra, che altrimenti si
+/// sceglierebbe da sola il recinto.
+///
+/// Il confronto è [`is_under`], che conosce il confine di separatore (`C:\Music`
+/// non contiene `C:\Musica`). In più si rifiuta ogni percorso con un segmento
+/// `.` o `..`: `is_under` confronta le grafie e non risolve niente, quindi
+/// `C:\Musica\..\Windows` gli sembrerebbe dentro `C:\Musica` — ed è
+/// precisamente il percorso che un comando così non deve accettare.
+#[must_use]
+pub fn sotto_una_radice(percorso: &str, radici: &[String], regole: PathRules) -> bool {
+    if percorso.trim().is_empty() || percorso.contains('\0') {
+        return false;
+    }
+    if segmenti(percorso).any(|parte| parte == "." || parte == "..") {
+        return false;
+    }
+    radici
+        .iter()
+        .any(|radice| is_under(percorso, radice, regole))
+}
+
+/// Confronta due nomi come li ordina chi li legge: le cifre come numeri.
+///
+/// «2» prima di «10», «CD 9» prima di «CD 10». Una sequenza di cifre si
+/// confronta per valore — prima per quante cifre restano senza gli zeri in
+/// testa, poi cifra per cifra, così nessun nome troppo lungo per un `u64`
+/// trabocca — e tutto il resto carattere per carattere. A parità di lettura
+/// («01» e «1») decide il confronto dei byte: due nomi diversi non risultano
+/// mai uguali, e l'ordine resta lo stesso a ogni costruzione.
+///
+/// Le chiavi che arrivano qui sono già passate da [`path_key`]: le maiuscole le
+/// ha piegate lei, dove il filesystem non le distingue.
+#[must_use]
+pub fn confronta_naturale(a: &str, b: &str) -> Ordering {
+    let mut x = a.chars().peekable();
+    let mut y = b.chars().peekable();
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return a.cmp(b),
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let numero_x = cifre(&mut x);
+                let numero_y = cifre(&mut y);
+                let senza_x = numero_x.trim_start_matches('0');
+                let senza_y = numero_y.trim_start_matches('0');
+                let ordine = senza_x
+                    .len()
+                    .cmp(&senza_y.len())
+                    .then_with(|| senza_x.cmp(senza_y));
+                if ordine != Ordering::Equal {
+                    return ordine;
+                }
+            }
+            (Some(c), Some(d)) => {
+                if c != d {
+                    return c.cmp(&d);
+                }
+                x.next();
+                y.next();
+            }
+        }
+    }
+}
+
+/// Consuma le cifre ASCII consecutive e le restituisce.
+fn cifre(caratteri: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut numero = String::new();
+    while let Some(cifra) = caratteri.next_if(char::is_ascii_digit) {
+        numero.push(cifra);
+    }
+    numero
+}
+
+/// Le righe dei file per identificativo, a pezzi, nell'ordine chiesto.
+///
+/// L'ordine chiesto è quello dell'album; una `IN (…)` restituisce le righe come
+/// fa comodo a SQLite, quindi si riordina con una mappa. Un identificativo che
+/// non c'è più — il brano tolto fra la costruzione del trie e questa lettura —
+/// semplicemente non compare.
+fn righe_per_id(connection: &Connection, ids: &[i64]) -> Result<Vec<FileCartella>, AppError> {
+    let guasto = |err: &rusqlite::Error| crate::db::codice_da_sqlite("i file di una cartella", err);
+    let mut trovate: HashMap<i64, FileCartella> = HashMap::with_capacity(ids.len());
+    for pezzo in ids.chunks(PEZZO_LETTURA) {
+        let segnaposto = std::iter::repeat_n("?", pezzo.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT id, path, title, duration_ms FROM tracks
+                 WHERE path IS NOT NULL AND id IN ({segnaposto})"
+            ))
+            .map_err(|err| guasto(&err))?;
+        let mappate = statement
+            .query_map(rusqlite::params_from_iter(pezzo), riga_file)
+            .map_err(|err| guasto(&err))?;
+        for riga in mappate {
+            let riga = riga.map_err(|err| guasto(&err))?;
+            trovate.insert(riga.id, riga.in_foglia());
+        }
+    }
+    Ok(ids.iter().filter_map(|id| trovate.remove(id)).collect())
+}
+
+/// Tutti i file della libreria, per il filtro e per le cartelle oltre la soglia.
+///
+/// Quattro colonne, come [`leggi_righe`], e per la stessa ragione.
+fn leggi_file(connection: &Connection) -> Result<Vec<RigaFile>, AppError> {
+    let guasto = |err: &rusqlite::Error| crate::db::codice_da_sqlite("i file delle cartelle", err);
+    let mut statement = connection
+        .prepare("SELECT id, path, title, duration_ms FROM tracks WHERE path IS NOT NULL")
+        .map_err(|err| guasto(&err))?;
+    let mappate = statement
+        .query_map([], riga_file)
+        .map_err(|err| guasto(&err))?;
+    let mut righe = Vec::new();
+    for riga in mappate {
+        righe.push(riga.map_err(|err| guasto(&err))?);
+    }
+    Ok(righe)
+}
+
+/// Una riga di `SELECT id, path, title, duration_ms`.
+fn riga_file(riga: &rusqlite::Row<'_>) -> rusqlite::Result<RigaFile> {
+    Ok(RigaFile {
+        id: riga.get(0)?,
+        percorso: riga.get(1)?,
+        titolo: riga.get(2)?,
+        durata_ms: riga.get(3)?,
+    })
 }
 
 /// Legge da `tracks` le sole quattro colonne che l'albero guarda.
@@ -630,6 +1189,7 @@ fn trova_o_crea(
         figli: Vec::new(),
         brani: Vec::new(),
         sotto: 0,
+        diretti: 0,
         radice: false,
     });
     lavoro.padri.push(padre);
@@ -750,6 +1310,33 @@ mod tests {
 
     fn nomi(nodi: &[NodoCartella]) -> Vec<String> {
         nodi.iter().map(|n| n.nome.clone()).collect()
+    }
+
+    /// Una riga con un titolo suo, per le prove delle foglie e del filtro.
+    fn brano_titolato(connection: &Connection, id: i64, percorso: &str, titolo: &str) {
+        connection
+            .execute(
+                "INSERT INTO tracks
+                     (id, path, track_key, title, artist, album, duration_ms,
+                      file_size, date_added, date_modified)
+                 VALUES (?1, ?2, ?3, ?4, 'A', 'Al', 241000, 99999, 0, 0)",
+                rusqlite::params![id, percorso, format!("a|t{id}|al"), titolo],
+            )
+            .expect("riga di brano");
+    }
+
+    fn brani_delle_foglie(foglie: &[FileCartella]) -> Vec<i64> {
+        let mut brani: Vec<i64> = foglie.iter().map(|f| f.brano).collect();
+        brani.sort_unstable();
+        brani
+    }
+
+    /// Il ramo filtrato di una cartella, o `None` se il filtro la lascia chiusa.
+    fn ramo<'a>(filtro: &'a CartelleFiltrate, percorso: Option<&str>) -> Option<&'a RamoFiltrato> {
+        filtro
+            .rami
+            .iter()
+            .find(|r| r.percorso.as_deref() == percorso)
     }
 
     #[test]
@@ -980,6 +1567,234 @@ mod tests {
         // non c'è niente. Non è il vuoto della soglia superata.
         assert_eq!(albero.brani_sotto(r"Q:\niente"), Some(Vec::new()));
         assert_eq!(albero.quanti_sotto(r"Q:\niente"), 0);
+    }
+
+    #[test]
+    fn le_foglie_sono_i_soli_file_diretti() {
+        let c = banco();
+        brano_titolato(&c, 1, r"C:\M\Al\01 - Uno.mp3", "Uno");
+        brano_titolato(&c, 2, r"C:\M\Al\02 - Due.mp3", "Due");
+        brano_titolato(&c, 3, r"C:\M\Al\CD2\01 - Tre.mp3", "Tre");
+        let albero = Albero::costruisci(&c, &[r"C:\M".to_owned()], WIN).expect("albero");
+
+        // Il nodo dice quante foglie ha prima che qualcuno le chieda: è quel
+        // che fa disegnare la freccia su una cartella senza sottocartelle.
+        let al = albero
+            .figlie(Some(r"C:\M"))
+            .into_iter()
+            .next()
+            .expect("la cartella Al");
+        assert_eq!((al.brani, al.sottocartelle, al.file), (3, 1, 2));
+
+        let foglie = file_della_cartella(&c, &albero, r"C:\M\Al").expect("foglie");
+        assert_eq!(brani_delle_foglie(&foglie), vec![1, 2], "CD2 non entra");
+        let prima = foglie
+            .iter()
+            .find(|f| f.brano == 1)
+            .expect("la prima foglia");
+        assert_eq!(prima.nome, "01 - Uno.mp3");
+        assert_eq!(prima.titolo, "Uno");
+        assert_eq!(prima.durata_ms, 241_000);
+        assert_eq!(prima.percorso, r"C:\M\Al\01 - Uno.mp3");
+
+        // Una cartella di passaggio non ha foglie, e non si legge niente.
+        assert!(
+            file_della_cartella(&c, &albero, r"C:\M")
+                .expect("foglie")
+                .is_empty()
+        );
+        assert_eq!(albero.quanti_diretti(r"C:\M"), 0);
+    }
+
+    #[test]
+    fn i_brani_diretti_non_scendono() {
+        let c = banco();
+        riga(&c, 1, r"C:\M\Al\a.mp3", Some(1), Some(2));
+        riga(&c, 2, r"C:\M\Al\b.mp3", Some(1), Some(1));
+        riga(&c, 3, r"C:\M\Al\Bonus\c.mp3", Some(1), Some(1));
+        let albero = Albero::costruisci(&c, &[r"C:\M".to_owned()], WIN).expect("albero");
+        // Con le sottocartelle e senza: l'interruttore del pannello dei brani.
+        assert_eq!(albero.brani_sotto(r"C:\M\Al"), Some(vec![2, 1, 3]));
+        assert_eq!(albero.brani_diretti(r"C:\M\Al"), Some(vec![2, 1]));
+        // E la rilettura dal database dice lo stesso, nello stesso ordine.
+        assert_eq!(
+            brani_diretti_dal_database(&c, r"C:\M\Al", WIN).expect("rilettura"),
+            vec![2, 1]
+        );
+        assert_eq!(albero.brani_diretti(r"Q:\niente"), Some(Vec::new()));
+    }
+
+    #[test]
+    fn sopra_la_soglia_le_foglie_si_rileggono() {
+        let c = banco();
+        brano_titolato(&c, 1, r"C:\M\Al\a.mp3", "A");
+        brano_titolato(&c, 2, r"C:\M\Al\b.mp3", "B");
+        brano_titolato(&c, 3, r"C:\M\Al\Sotto\c.mp3", "C");
+        brano_titolato(&c, 4, r"C:\M\Altro\d.mp3", "D");
+        let senza = Albero::da_righe(
+            leggi_righe(&c).expect("righe"),
+            &[r"C:\M".to_owned()],
+            WIN,
+            false,
+        );
+        assert_eq!(senza.brani_diretti(r"C:\M\Al"), None, "gli id non ci sono");
+        // Le foglie ci sono lo stesso: si rilegge la tabella, e restano le
+        // sole righe di quella cartella — non la sottocartella, non la sorella
+        // che comincia allo stesso modo.
+        let foglie = file_della_cartella(&c, &senza, r"C:\M\Al").expect("foglie");
+        assert_eq!(brani_delle_foglie(&foglie), vec![1, 2]);
+    }
+
+    #[test]
+    fn le_cartelle_sorelle_in_ordine_naturale() {
+        let c = banco();
+        riga(&c, 1, r"C:\M\CD 10\a.mp3", None, None);
+        riga(&c, 2, r"C:\M\CD 2\a.mp3", None, None);
+        riga(&c, 3, r"C:\M\CD 1\a.mp3", None, None);
+        let albero = Albero::costruisci(&c, &[r"C:\M".to_owned()], WIN).expect("albero");
+        assert_eq!(
+            nomi(&albero.figlie(Some(r"C:\M"))),
+            vec!["CD 1", "CD 2", "CD 10"]
+        );
+        // E la cartella suona nell'ordine in cui la si vede.
+        assert_eq!(albero.brani_sotto(r"C:\M"), Some(vec![3, 2, 1]));
+    }
+
+    #[test]
+    fn senza_numeri_di_traccia_i_nomi_si_leggono_come_numeri() {
+        let c = banco();
+        riga(&c, 1, r"C:\M\Al\10.mp3", None, None);
+        riga(&c, 2, r"C:\M\Al\2.mp3", None, None);
+        riga(&c, 3, r"C:\M\Al\1.mp3", None, None);
+        let albero = Albero::costruisci(&c, &[r"C:\M".to_owned()], WIN).expect("albero");
+        assert_eq!(albero.brani_sotto(r"C:\M\Al"), Some(vec![3, 2, 1]));
+    }
+
+    #[test]
+    fn il_confronto_naturale_legge_le_cifre_come_numeri() {
+        use std::cmp::Ordering::{Greater, Less};
+        assert_eq!(confronta_naturale("2", "10"), Less);
+        assert_eq!(confronta_naturale("cd 9", "cd 10"), Less);
+        assert_eq!(confronta_naturale("track10b", "track10a"), Greater);
+        assert_eq!(confronta_naturale("a", "a1"), Less);
+        // Gli zeri in testa non contano per il valore, ma due nomi diversi non
+        // sono mai uguali: decide il confronto dei byte.
+        assert_eq!(confronta_naturale("007", "7"), Less);
+        assert_ne!(confronta_naturale("01", "1"), std::cmp::Ordering::Equal);
+        // Un numero più lungo di un `u64` non trabocca: si confronta per
+        // lunghezza prima che per cifre.
+        assert_eq!(
+            confronta_naturale("x99999999999999999999999", "x100000000000000000000000"),
+            Less
+        );
+    }
+
+    #[test]
+    fn il_filtro_apre_gli_antenati_e_pota_le_sorelle() {
+        let c = banco();
+        brano_titolato(&c, 1, r"C:\M\Rock\Queen\Bohemian.mp3", "Bohemian Rhapsody");
+        brano_titolato(&c, 2, r"C:\M\Rock\Altri\x.mp3", "X");
+        brano_titolato(&c, 3, r"C:\M\Jazz\y.mp3", "Y");
+        let albero = Albero::costruisci(&c, &[r"C:\M".to_owned()], WIN).expect("albero");
+
+        let filtro = filtra(&c, &albero, "QUEEN", LIMITE_FILTRO).expect("filtro");
+        assert_eq!(filtro.trovate, vec![r"C:\M\Rock\Queen"]);
+        assert_eq!(filtro.corrispondenze, 1);
+        assert!(!filtro.troncato);
+        assert_eq!(
+            nomi(&ramo(&filtro, None).expect("le cime").cartelle),
+            vec![r"C:\M"]
+        );
+        // La strada è aperta, e lungo la strada ci sono solo i passi che portano
+        // alla corrispondenza: niente Jazz, niente Altri.
+        assert_eq!(
+            nomi(&ramo(&filtro, Some(r"C:\M")).expect("la radice").cartelle),
+            vec!["Rock"]
+        );
+        assert_eq!(
+            nomi(&ramo(&filtro, Some(r"C:\M\Rock")).expect("Rock").cartelle),
+            vec!["Queen"]
+        );
+        // La cartella trovata resta chiusa: aprendola la si vede intera.
+        assert!(ramo(&filtro, Some(r"C:\M\Rock\Queen")).is_none());
+    }
+
+    #[test]
+    fn il_filtro_trova_i_file_per_nome_e_per_titolo_senza_accenti() {
+        let c = banco();
+        brano_titolato(&c, 1, r"C:\M\A\cafe.mp3", "Brano");
+        brano_titolato(&c, 2, r"C:\M\B\x.mp3", "Café del Mar");
+        brano_titolato(&c, 3, r"C:\M\B\y.mp3", "Altro");
+        let albero = Albero::costruisci(&c, &[r"C:\M".to_owned()], WIN).expect("albero");
+
+        let filtro = filtra(&c, &albero, "  CAFÉ ", LIMITE_FILTRO).expect("filtro");
+        assert!(filtro.trovate.is_empty(), "nessuna cartella si chiama così");
+        assert_eq!(filtro.corrispondenze, 2);
+        assert_eq!(
+            nomi(&ramo(&filtro, Some(r"C:\M")).expect("la radice").cartelle),
+            vec!["A", "B"]
+        );
+        let a = ramo(&filtro, Some(r"C:\M\A")).expect("A è aperta");
+        assert_eq!(brani_delle_foglie(&a.file), vec![1], "per nome del file");
+        let b = ramo(&filtro, Some(r"C:\M\B")).expect("B è aperta");
+        assert_eq!(brani_delle_foglie(&b.file), vec![2], "per titolo, e y no");
+    }
+
+    #[test]
+    fn il_filtro_si_ferma_al_limite_e_lo_dice() {
+        let c = banco();
+        for id in 1..=5 {
+            brano_titolato(&c, id, &format!(r"C:\M\Al\pezzo {id}.mp3"), "T");
+        }
+        let albero = Albero::costruisci(&c, &[r"C:\M".to_owned()], WIN).expect("albero");
+        let filtro = filtra(&c, &albero, "pezzo", 3).expect("filtro");
+        assert!(filtro.troncato);
+        assert_eq!(filtro.corrispondenze, 5);
+        let foglie: usize = filtro.rami.iter().map(|r| r.file.len()).sum();
+        assert_eq!(foglie, 3);
+    }
+
+    #[test]
+    fn un_filtro_vuoto_non_trova_niente() {
+        let c = banco();
+        riga(&c, 1, r"C:\M\a.mp3", None, None);
+        let albero = Albero::costruisci(&c, &[r"C:\M".to_owned()], WIN).expect("albero");
+        assert_eq!(
+            filtra(&c, &albero, "   ", LIMITE_FILTRO).expect("filtro"),
+            CartelleFiltrate::default()
+        );
+    }
+
+    #[test]
+    fn sotto_una_radice_vale_solo_dentro_le_cartelle_sorvegliate() {
+        let radici = vec![r"C:\M".to_owned(), r"\\srv\musica".to_owned()];
+        assert!(sotto_una_radice(r"C:\M\Rock\Queen", &radici, WIN));
+        assert!(sotto_una_radice(r"C:\M", &radici, WIN), "la radice stessa");
+        assert!(
+            sotto_una_radice(r"c:/m/rock", &radici, WIN),
+            "un'altra grafia"
+        );
+        assert!(sotto_una_radice(r"\\srv\musica\Jazz", &radici, WIN));
+        // Il confine di separatore: `C:\Musica` comincia come `C:\M`, e non ci
+        // sta dentro.
+        assert!(!sotto_una_radice(r"C:\Musica\Rock", &radici, WIN));
+        assert!(!sotto_una_radice(r"D:\altro", &radici, WIN));
+        assert!(!sotto_una_radice(r"\\srv\altro", &radici, WIN));
+    }
+
+    #[test]
+    fn sotto_una_radice_non_si_fa_aggirare_dai_punti() {
+        let radici = vec![r"C:\M".to_owned()];
+        // Lessicalmente «dentro», in realtà fuori: è il percorso per cui la
+        // guardia esiste.
+        assert!(!sotto_una_radice(r"C:\M\..\Windows", &radici, WIN));
+        assert!(!sotto_una_radice(r"C:/M/Rock/../../Windows", &radici, WIN));
+        assert!(!sotto_una_radice(r"C:\M\.\Rock", &radici, WIN));
+        assert!(!sotto_una_radice("", &radici, WIN));
+        assert!(!sotto_una_radice("C:\\M\\a\0b", &radici, WIN));
+        // E senza radici non c'è niente da mostrare.
+        assert!(!sotto_una_radice(r"C:\M\Rock", &[], WIN));
+        assert!(!sotto_una_radice(r"C:\M\Rock", &[String::new()], WIN));
     }
 
     /// Quanto costa l'albero sulla libreria dell'autore: 18.534 brani.

@@ -51,11 +51,16 @@
 //! `State` è un prestito che vive quanto la chiamata. È la stessa forma di
 //! `comandi::scansiona`, e per la stessa ragione.
 
-use std::collections::BTreeMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use aether_app::profilo::radici;
 use aether_app::profilo::{self, Ambiente, Esportazione, Passo, Piano, Rimappatura, Sorgenti};
+use aether_app::volumi::{self, Esistenza};
 use aether_domain::errors::{AppError, ErrorCode};
+use serde::Serialize;
 use tauri::{AppHandle, Manager as _};
 
 use crate::disparte::in_disparte;
@@ -168,13 +173,19 @@ fn pacchetti(data_dir: &Path) -> Pacchetti {
 ///
 /// # Errori
 ///
+/// `fs.extensionRefused` o `fs.pathInvalid` se il percorso non è quello di un
+/// `.aeprofile` — si controlla prima di tutto il resto, perché non costa niente
+/// e non tocca il disco: vedi [`crate::destinazioni`];
 /// `internal.aborted` se la libreria non c'è più; `db.queryFailed` se la
 /// raccolta fallisce; `fs.writeFailed` se l'archivio non si scrive.
 #[tauri::command(async)]
 pub async fn profilo_esporta(app: AppHandle, percorso: String) -> Esito<Esportazione> {
+    let file =
+        crate::destinazioni::file_da_scrivere(&percorso, crate::destinazioni::ESTENSIONI_PROFILO)
+            .map_err(errore)?;
     let mano = app.clone();
     in_disparte("esportazione del profilo", move || {
-        esporta_ora(&mano, &percorso)
+        esporta_ora(&mano, &file.percorso)
     })
     .await
     .map_err(errore)?
@@ -182,7 +193,7 @@ pub async fn profilo_esporta(app: AppHandle, percorso: String) -> Esito<Esportaz
 }
 
 /// Il corpo di [`profilo_esporta`], sul filo che l'ha presa in disparte.
-fn esporta_ora(app: &AppHandle, percorso: &str) -> Result<Esportazione, AppError> {
+fn esporta_ora(app: &AppHandle, percorso: &Path) -> Result<Esportazione, AppError> {
     let stato = libreria(app, "esportazione del profilo")?;
     let (data_dir, dispositivo) = preludio(&stato)?;
     let (skin, bozze, percorsi_skin, percorsi_bozze) = pacchetti(&data_dir);
@@ -208,10 +219,51 @@ fn esporta_ora(app: &AppHandle, percorso: &str) -> Result<Esportazione, AppError
             skin: percorsi_skin,
             bozze: percorsi_bozze,
         },
-        Path::new(percorso),
+        percorso,
         &|passo| avanza(app, "archivio", passo),
     )
 }
+
+/// Il piano del profilo, con quel che il nucleo non sa contare da sé.
+///
+/// # Perché un involucro
+///
+/// Perché le due cose in più nascono **qui**, dove il disco si guarda: il
+/// nucleo del profilo riceve una domanda a due risposte («il file c'è?») e
+/// quel che non si è potuto sapere lo conterebbe fra gli irrintracciabili.
+/// Qui lo si toglie da lì e lo si dice a parte. Sul filo la forma è quella di
+/// [`Piano`] con due campi in più, e chi non li conosce li ignora.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PianoProfilo {
+    /// Il piano del nucleo, così com'è — con gli irrintracciabili già al netto
+    /// dei non verificati.
+    #[serde(flatten)]
+    pub piano: Piano,
+    /// Brani il cui file, sotto il prefisso nuovo, non si è potuto verificare:
+    /// la share non rispondeva, o il tempo è scaduto. La loro riga resta
+    /// com'era.
+    pub brani_non_verificati: usize,
+    /// I numeri della rimappatura vengono da un campione: è il piano, e sul
+    /// piano non si guarda ogni file. L'importazione li guarda tutti.
+    pub stima: bool,
+}
+
+/// Quanti file per rimappatura guarda il **piano**.
+///
+/// Sessantaquattro: abbastanza da distinguere i tre casi che contano — la
+/// destinazione giusta, quella sbagliata, la share spenta — e abbastanza pochi
+/// da restare sotto il secondo anche su un NAS in Wi-Fi. L'importazione vera
+/// non campiona.
+const CAMPIONE_DEL_PIANO: usize = 64;
+
+/// Quanto si aspetta una risposta su un percorso che non è un brano — una
+/// radice del profilo, la cartella dei download.
+///
+/// Più corta della scadenza dei brani perché queste domande partono con il
+/// lucchetto della libreria in mano: sono poche, ma ognuna, su una share morta,
+/// sarebbe il tempo in cui il lettore non passa al brano dopo.
+const SCADENZA_PERCORSO: Duration = Duration::from_secs(3);
 
 /// Cosa cambierebbe importare questo profilo. Non applica niente.
 ///
@@ -229,7 +281,7 @@ pub async fn profilo_piano(
     rimappature: Vec<Rimappatura>,
     // Facoltativo per chi chiama senza: vale «no», com'era prima.
     unisci_comunque: Option<bool>,
-) -> Esito<Piano> {
+) -> Esito<PianoProfilo> {
     let mano = app.clone();
     let unisci = unisci_comunque.unwrap_or(false);
     in_disparte("piano del profilo", move || {
@@ -252,7 +304,7 @@ pub async fn profilo_importa(
     percorso: String,
     rimappature: Vec<Rimappatura>,
     unisci_comunque: Option<bool>,
-) -> Esito<Piano> {
+) -> Esito<PianoProfilo> {
     let mano = app.clone();
     let unisci = unisci_comunque.unwrap_or(false);
     let esito = in_disparte("importazione del profilo", move || {
@@ -305,6 +357,8 @@ fn annulla_ora(app: &AppHandle) -> Result<Piano, AppError> {
         })
         .with_cause("non c'è nessuna copia di sicurezza da cui tornare indietro")
     })?;
+    let gia_chiesti = RefCell::new(HashMap::new());
+    let esiste = |percorso: &str| esiste_entro(percorso, &gia_chiesti);
     con_libreria(&stato, |libreria| {
         profilo::annulla(
             &mut libreria.connection,
@@ -332,7 +386,7 @@ fn applica_ora(
     rimappature: &[Rimappatura],
     unisci_comunque: bool,
     conferma: bool,
-) -> Result<Piano, AppError> {
+) -> Result<PianoProfilo, AppError> {
     let stato = libreria(app, "importazione del profilo")?;
     let (data_dir, dispositivo) = preludio(&stato)?;
     let store = stato.copertine()?;
@@ -367,8 +421,46 @@ fn applica_ora(
         })?;
     }
 
+    // ── fase 2 ter: i file della rimappatura, fuori da ogni lucchetto. ─────
+    //
+    // Fino alla 3.0 si chiedeva al disco se ogni file c'era **dentro** la
+    // transazione della fase 3, cioè con il lucchetto della libreria in mano:
+    // su una libreria di cinquantamila brani su un NAS erano cinquantamila
+    // domande in fila, la finestra ferma, il lettore che non passava al brano
+    // dopo e ogni altro comando che dopo quattro secondi diceva «database
+    // occupato». Adesso i percorsi si leggono con il lucchetto preso per un
+    // attimo, si verificano qui fuori in parallelo e con la scadenza, e la fase
+    // 3 consulta soltanto le risposte. Nel piano si guarda un campione: vedi
+    // `radici::Verifiche`.
+    let candidati = con_libreria(&stato, |libreria| {
+        radici::candidati(&libreria.connection, rimappature)
+    })?;
+    let verifiche = radici::verifica(
+        candidati,
+        (!conferma).then_some(CAMPIONE_DEL_PIANO),
+        &|percorsi| volumi::esistenze(percorsi, volumi::SCADENZA_RISOLUZIONE),
+    );
+
+    // Le risposte, e il conto di quelle che non si sono sapute. Il nucleo del
+    // profilo le riceve come «no» — la sua domanda ha due risposte — e le
+    // conterebbe fra gli irrintracciabili: qui si contano a parte, e dopo le si
+    // tolgono da lì.
+    let non_verificati = Cell::new(0_usize);
+    let gia_chiesti = RefCell::new(HashMap::new());
+    let esiste = |percorso: &str| match verifiche.esito(percorso) {
+        Some(Esistenza::Presente) => true,
+        Some(Esistenza::Assente) => false,
+        Some(Esistenza::Ignota) => {
+            non_verificati.set(non_verificati.get().saturating_add(1));
+            false
+        }
+        // Non è un brano: una radice del profilo, la cartella dei download.
+        // Sono poche, e si chiedono qui con la loro scadenza.
+        None => esiste_entro(percorso, &gia_chiesti),
+    };
+
     // ── fase 3: sotto lucchetto, una transazione sola. ─────────────────────
-    con_libreria(&stato, |libreria| {
+    let mut piano = con_libreria(&stato, |libreria| {
         let ambiente = Ambiente {
             esiste: &esiste,
             adesso_ms: adesso_ms(),
@@ -382,6 +474,15 @@ fn applica_ora(
         } else {
             profilo::piano(&mut libreria.connection, &letto, &ambiente)
         }
+    })?;
+    let brani_non_verificati = non_verificati.get();
+    piano.brani_irrintracciabili = piano
+        .brani_irrintracciabili
+        .saturating_sub(brani_non_verificati);
+    Ok(PianoProfilo {
+        piano,
+        brani_non_verificati,
+        stima: verifiche.stima(),
     })
 }
 
@@ -422,11 +523,29 @@ fn copia_di_sicurezza(app: &AppHandle) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Questo percorso esiste su questo computer?
+/// Questo percorso esiste su questo computer? Con la scadenza, e una volta sola.
 ///
 /// Il modulo del profilo non guarda il disco da sé — la si passa come funzione,
 /// così le sue prove girano senza avere le cartelle di nessuno. Qui il disco
 /// c'è, ed è questa riga.
-fn esiste(percorso: &str) -> bool {
-    Path::new(percorso).exists()
+///
+/// Per i pochi percorsi che non sono brani: le radici del profilo e la
+/// cartella dei download, che il nucleo chiede con il lucchetto in mano. Prima
+/// era un `Path::exists` nudo, che su una share spenta aspettava i quaranta
+/// secondi di SMB per rispondere «no»; adesso aspetta [`SCADENZA_PERCORSO`], e
+/// la stessa radice chiesta due volte — dalle proposte e dai percorsi mancanti
+/// — si chiede al disco una volta sola.
+///
+/// «Non si sa» vale «no», e per queste domande è la risposta giusta: una
+/// radice che non risponde si propone da rimappare, e chi importa può lasciare
+/// vuoto il campo.
+fn esiste_entro(percorso: &str, gia_chiesti: &RefCell<HashMap<String, bool>>) -> bool {
+    if let Some(risposta) = gia_chiesti.borrow().get(percorso) {
+        return *risposta;
+    }
+    let risposta = volumi::esistenza_entro(percorso, SCADENZA_PERCORSO) == Esistenza::Presente;
+    gia_chiesti
+        .borrow_mut()
+        .insert(percorso.to_owned(), risposta);
+    risposta
 }

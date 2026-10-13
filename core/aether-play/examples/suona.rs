@@ -124,6 +124,7 @@ fn apri(percorso: &std::path::Path, formato: FormatoUscita) -> Option<BranoApert
             .map(str::to_owned),
         durata_ms: 0,
         replaygain_db: None,
+        picco: None,
     };
     match BranoAperto::apri(sorgente, formato) {
         Ok(brano) => Some(brano),

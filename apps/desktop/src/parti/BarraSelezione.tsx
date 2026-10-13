@@ -21,11 +21,14 @@
  * chiamato sempre con uno solo: la selezione multipla è quel parametro che
  * finalmente serve a qualcosa.
  */
+import { memo } from "react";
+
 import { brani_ } from "../formato";
 import { Icona } from "./Icone";
-import { t } from "../lingue";
+import { t, useLingua } from "../lingue";
+import { Presenza } from "../presenza";
 
-export function BarraSelezione({
+export const BarraSelezione = memo(function BarraSelezione({
   quanti,
   onRiproduci,
   onDopo,
@@ -44,69 +47,75 @@ export function BarraSelezione({
   tuttiSelezionati: boolean;
   onChiudi: () => void;
 }) {
+  // Sotto `memo` (vedi «I widget sotto `memo`» in `Impaginazione.tsx`): si
+  // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
+  // l'iscrizione i testi resterebbero quelli del primo disegno.
+  useLingua();
   return (
-    <div
-      className="barra-selezione selection-bar"
-      role="toolbar"
-      aria-label={t("selection.aria")}
-    >
-      <span className="quanti">{brani_(quanti)}</span>
+    <Presenza parte="selection-bar">
+      <div
+        className="barra-selezione selection-bar"
+        role="toolbar"
+        aria-label={t("selection.aria")}
+      >
+        <span className="quanti">{brani_(quanti)}</span>
 
-      <button
-        type="button"
-        className="bottone minuto btn-ghost"
-        onClick={onTuttiOAnnulla}
-      >
-        {tuttiSelezionati
-          ? t("selection.deselectAll")
-          : t("selection.selectAll")}
-      </button>
+        <button
+          type="button"
+          className="bottone minuto btn-ghost"
+          onClick={onTuttiOAnnulla}
+        >
+          {tuttiSelezionati
+            ? t("selection.deselectAll")
+            : t("selection.selectAll")}
+        </button>
 
-      <div className="separatore" aria-hidden="true" />
+        <div className="separatore" aria-hidden="true" />
 
-      <button
-        type="button"
-        className="bottone minuto btn-accent"
-        onClick={onRiproduci}
-      >
-        <Icona nome="i-play" dim={14} />
-        {t("action.play")}
-      </button>
-      <button
-        type="button"
-        className="bottone minuto btn-ghost"
-        onClick={onDopo}
-      >
-        {t("action.playNext")}
-      </button>
-      <button
-        type="button"
-        className="bottone minuto btn-ghost"
-        onClick={onAccoda}
-      >
-        <Icona nome="i-queue" dim={14} />
-        {t("action.enqueue")}
-      </button>
-      <button
-        type="button"
-        className="bottone minuto btn-ghost"
-        onClick={onPlaylist}
-      >
-        <Icona nome="i-plus" dim={14} />
-        {t("action.addToPlaylist")}
-      </button>
+        <button
+          type="button"
+          className="bottone minuto btn-accent"
+          onClick={onRiproduci}
+        >
+          <Icona nome="i-play" dim={14} />
+          {t("action.play")}
+        </button>
+        <button
+          type="button"
+          className="bottone minuto btn-ghost"
+          onClick={onDopo}
+        >
+          {t("action.playNext")}
+        </button>
+        <button
+          type="button"
+          className="bottone minuto btn-ghost"
+          onClick={onAccoda}
+        >
+          <Icona nome="i-queue" dim={14} />
+          {t("action.enqueue")}
+        </button>
+        <button
+          type="button"
+          className="bottone minuto btn-ghost"
+          onClick={onPlaylist}
+        >
+          <Icona nome="i-plus" dim={14} />
+          {t("action.addToPlaylist")}
+        </button>
 
-      <div className="spinta" />
+        <div className="spinta" />
 
-      <button
-        type="button"
-        className="tasto icon-btn"
-        aria-label={t("selection.clear")}
-        title={t("selection.clear.title")}
-        onClick={onChiudi}
-      >
-        <Icona nome="i-x" dim={15} />
-      </button>
-    </div>
+        <button
+          type="button"
+          className="tasto icon-btn"
+          aria-label={t("selection.clear")}
+          title={t("selection.clear.title")}
+          onClick={onChiudi}
+        >
+          <Icona nome="i-x" dim={15} />
+        </button>
+      </div>
+    </Presenza>
   );
-}
+});

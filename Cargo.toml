@@ -22,16 +22,21 @@ members = [
     "core/aether-scrobble",
     "core/aether-ia",
     "apps/desktop/src-tauri",
+    "apps/desktop/aether-barra",
 ]
 
 [workspace.package]
-version = "2.4.0"
+version = "3.0.0"
 edition = "2024"
-# Era 1.85, che è il minimo dell'edizione 2024. L'ha alzata `opus-pure`, il
-# decodificatore Opus di `aether-play`, che ne dichiara 1.88: il numero qui
-# deve essere il vero pavimento del workspace — dipendenze comprese — o non
-# dice niente a nessuno.
-rust-version = "1.88"
+# Era 1.85, che è il minimo dell'edizione 2024. L'ha alzata prima `opus-pure`,
+# il decodificatore Opus di `aether-play`, che ne dichiara 1.88; poi `tauri
+# 2.12`, che insieme ai suoi plugin ne dichiara 1.90 (e `lofty 0.25` 1.89). Il
+# numero qui deve essere il vero pavimento del workspace — dipendenze comprese —
+# o non dice niente a nessuno. Conta anche per `cargo update`: il risolutore
+# `3` scritto qui sopra preferisce le versioni che stanno sotto questo numero, e
+# uno più basso del vero terrebbe indietro in silenzio proprio i crate che lo
+# hanno alzato.
+rust-version = "1.90"
 license = "MIT"
 authors = ["Federico Baratti"]
 # La grafia è quella vera del repository, maiuscole comprese. GitHub
@@ -63,7 +68,17 @@ serde_json = "1"
 # asincrono per fare quattro richieste HTTP ogni quarto d'ora vorrebbe dire
 # portarsi dietro tokio — e con lui una seconda idea di cos'è un errore, di
 # cos'è un timeout e di chi possiede un thread.
-ureq = "3"
+#
+# `platform-verifier`: i certificati li giudica il sistema operativo — su
+# Windows lo stesso archivio di radici che usa Edge — e non un elenco cucito
+# nel binario il giorno della compilazione. È ciò che fa funzionare Aether
+# dietro un proxy aziendale o un antivirus che ispeziona il TLS con una radice
+# installata a mano, e che fa sparire una radice ritirata con gli
+# aggiornamenti di Windows invece che con la release successiva di Aether. La
+# feature porta solo l'interruttore: accenderlo è di `aether_net::http`, dove
+# si costruisce l'agente. Nel `Cargo.lock` non entra niente di nuovo:
+# `rustls-platform-verifier` c'era già, lo usa il `reqwest` dell'updater.
+ureq = { version = "3.4", features = ["platform-verifier"] }
 flate2 = "1"
 # L'impronta del contenuto. Sta qui e non più nel solo `aether-app` da quando la
 # calcolano in due: il backup, per sapere se quei byte sono già lassù, e la
@@ -80,11 +95,20 @@ keyring = { version = "3", features = ["windows-native"] }
 # pacchetti `.aeskin`, `aether-archivio` per i dati che Spotify manda — e sta
 # qui perché due versioni diverse dello stesso decompressore nello stesso
 # binario sono megabyte duplicati.
-zip = { version = "6", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 # Il dominio non ha bisogno di unsafe. Vietato, non scoraggiato: se un giorno
 # servisse davvero, deve essere una decisione visibile in questo file.
+#
+# Ed è servito, una volta: `apps/desktop/aether-barra`, i tre pulsanti
+# nell'anteprima della barra delle applicazioni. Per metterli bisogna parlare
+# COM con la barra e mettersi in mezzo ai messaggi della finestra, e nessuna
+# dipendenza seria lo fa al posto nostro — come invece fanno `souvlaki` e
+# `trash`. Quel crate non eredita questa tabella: ne ha una sua, uguale tranne
+# `unsafe_code = "deny"`, e l'`unsafe` sta in un solo modulo, `finestra.rs`,
+# con ogni blocco che dice perché è corretto. Qui sotto non cambia niente, e
+# per tutti gli altri crate resta `forbid`.
 unsafe_code = "forbid"
 missing_docs = "warn"
 

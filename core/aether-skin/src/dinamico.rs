@@ -319,14 +319,23 @@ pub fn accento_dinamico(
         return None;
     }
 
-    // La stessa cascata del CSS: nel tema chiaro si guarda prima l'insieme
-    // chiaro e poi quello base. È la ragione per cui `colore_di` prende due
-    // insiemi invece di uno.
-    let (attivo, base) = match (chiaro, skin.light.as_ref()) {
-        (true, Some(light)) => (light, Some(&skin.tokens)),
+    // La stessa cascata del CSS: nel tema della variante si guarda prima
+    // l'insieme della variante e poi quello base. È la ragione per cui
+    // `colore_di` prende due insiemi invece di uno.
+    //
+    // `chiaro` è il tema che la finestra mostra, non «la variante»: una skin
+    // chiara di base ha la variante accesa quando la finestra è scura.
+    let variante_accesa = chiaro != (skin.scheme == crate::document::Scheme::Light);
+    let tavolozza = if variante_accesa {
+        skin.tavolozza_variante()
+    } else {
+        skin.palette.clone()
+    };
+    let (attivo, base) = match (variante_accesa, skin.variante_tokens()) {
+        (true, Some(variante)) => (variante, Some(&skin.tokens)),
         _ => (&skin.tokens, None),
     };
-    let leggi = |id: &str| colore_di(id, attivo, base, &skin.palette);
+    let leggi = |id: &str| colore_di(id, attivo, base, &tavolozza);
 
     let superfici: Vec<Rgba> = DIETRO.iter().filter_map(|id| leggi(id)).collect();
     // Il testo che sta **sopra** l'accento quando l'accento fa da fondo. Senza
@@ -368,6 +377,185 @@ pub fn accento_dinamico(
         return None;
     }
     Some(variabili)
+}
+
+// ── Il generatore di tavolozze dello Studio ────────────────────────────────
+
+/// Un colore generato, pronto da scrivere nel documento: `#rrggbb` o
+/// `#rrggbbaa`, le forme che il formato legge.
+fn esadecimale(colore: Rgba) -> String {
+    let base = format!("#{:02x}{:02x}{:02x}", colore.r, colore.g, colore.b);
+    if colore.a >= 1.0 {
+        return base;
+    }
+    let alfa = (colore.a.clamp(0.0, 1.0) * 255.0).round();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "l'alfa è bloccata in 0..=1 e scalata a 0..=255"
+    )]
+    let alfa = alfa as u8;
+    format!("{base}{alfa:02x}")
+}
+
+/// Sposta la chiarezza di un colore, lontano dal fondo, finché regge il
+/// contrasto contro tutte le superfici. Se non ci arriva, resta al capo.
+fn leggibile(tinta: Oklch, superfici: &[Rgba], minimo: f64, verso_il_chiaro: bool) -> Rgba {
+    let mut chiarezza = tinta.l;
+    for _ in 0..=PASSI {
+        let colore = in_rgba(dentro_srgb(Oklch {
+            l: chiarezza,
+            ..tinta
+        }));
+        if superfici
+            .iter()
+            .all(|fondo| contrast_ratio(colore, *fondo) >= minimo)
+        {
+            return colore;
+        }
+        chiarezza = if verso_il_chiaro {
+            (chiarezza + GRANA).min(1.0)
+        } else {
+            (chiarezza - GRANA).max(0.0)
+        };
+    }
+    in_rgba(dentro_srgb(Oklch {
+        l: chiarezza,
+        ..tinta
+    }))
+}
+
+/// Una tavolozza intera da una tinta sola: superfici, testo, accento, stati.
+///
+/// # Perché in OKLCH
+///
+/// Le superfici prendono la tonalità della tinta con pochissimo croma — si
+/// sente che sono «di quel colore» senza che lo siano — e salgono (o scendono,
+/// nel tema chiaro) a passi di chiarezza percettiva uguali. Il testo è quasi
+/// neutro. L'accento è la tinta, spostata di chiarezza finché regge: è
+/// [`accento_sicuro`], la stessa regola dell'accento che segue la copertina.
+/// Gli stati — pericolo, riuscita, attenzione — hanno le loro tonalità fisse,
+/// e anche loro si spostano finché si leggono.
+///
+/// # Il contrasto non si spera, si impone
+///
+/// Ogni coppia che [`check_skin`](crate::check_skin) misura — i tre testi e
+/// l'accento e gli stati sulle tre superfici, e la superficie di fondo
+/// sull'accento — esce di qui sopra [`CONTRASTO_MINIMO`](crate::CONTRASTO_MINIMO).
+/// Una tavolozza generata che il validatore poi segnalasse sarebbe un
+/// generatore che non sa quel che fa.
+///
+/// Restituisce coppie `(token, colore)`, i colori già nella forma che il
+/// documento accetta.
+#[must_use]
+pub fn tavolozza_da(tinta: Rgba, scura: bool) -> Vec<(&'static str, String)> {
+    use crate::document::CONTRASTO_MINIMO;
+
+    let base = in_oklch(tinta);
+    let tono = base.h;
+    // Le superfici: quattro gradini, un velo della tinta.
+    let chiarezze: [f64; 4] = if scura {
+        [0.17, 0.205, 0.24, 0.285]
+    } else {
+        [0.985, 0.955, 0.925, 0.885]
+    };
+    let croma_superficie = if base.c < 0.02 {
+        0.0
+    } else if scura {
+        0.018
+    } else {
+        0.012
+    };
+    let [s0, s1, s2, s3] = chiarezze.map(|l| {
+        in_rgba(dentro_srgb(Oklch {
+            l,
+            c: croma_superficie,
+            h: tono,
+        }))
+    });
+    // Le tre su cui il testo capita davvero: la quarta è un rilievo.
+    let lette = &[s0, s1, s2];
+    let croma_testo = if base.c < 0.02 { 0.0 } else { 0.012 };
+    let testo = |l: f64, minimo: f64| {
+        leggibile(
+            Oklch {
+                l,
+                c: croma_testo,
+                h: tono,
+            },
+            lette,
+            minimo,
+            scura,
+        )
+    };
+    // Il primo testo sta ben sopra la soglia: è quello che si legge di più.
+    let (t1, t2, t3) = if scura {
+        (
+            testo(0.96, 7.0),
+            testo(0.82, CONTRASTO_MINIMO),
+            testo(0.72, CONTRASTO_MINIMO),
+        )
+    } else {
+        (
+            testo(0.22, 7.0),
+            testo(0.38, CONTRASTO_MINIMO),
+            testo(0.47, CONTRASTO_MINIMO),
+        )
+    };
+    // Una tinta che non regge a nessuna chiarezza — una tinta molto satura
+    // può restare fuori — ripiega sul testo principale: leggibile per
+    // costruzione.
+    let accento = accento_sicuro(tinta, lette, s0, CONTRASTO_MINIMO).unwrap_or(t1);
+    let stato = |gradi: f64| {
+        let colore = leggibile(
+            Oklch {
+                l: if scura { 0.72 } else { 0.5 },
+                c: 0.15,
+                h: gradi,
+            },
+            lette,
+            CONTRASTO_MINIMO,
+            scura,
+        );
+        (colore, Rgba { a: 0.14, ..colore })
+    };
+    let (pericolo, pericolo_morbido) = stato(27.0);
+    let (riuscita, riuscita_morbida) = stato(150.0);
+    let (attenzione, attenzione_morbida) = stato(85.0);
+    let velo = |colore: Rgba, a: f64| Rgba { a, ..colore };
+
+    vec![
+        ("color.surface.0", esadecimale(s0)),
+        ("color.surface.1", esadecimale(s1)),
+        ("color.surface.2", esadecimale(s2)),
+        ("color.surface.3", esadecimale(s3)),
+        ("color.text.1", esadecimale(t1)),
+        ("color.text.2", esadecimale(t2)),
+        ("color.text.3", esadecimale(t3)),
+        ("color.accent", esadecimale(accento)),
+        (
+            "color.accent.soft",
+            esadecimale(velo(accento, if scura { 0.16 } else { 0.12 })),
+        ),
+        (
+            "color.accent.glow",
+            esadecimale(velo(accento, if scura { 0.32 } else { 0.24 })),
+        ),
+        (
+            "color.hairline",
+            esadecimale(velo(t1, if scura { 0.1 } else { 0.12 })),
+        ),
+        (
+            "color.sidebar",
+            esadecimale(velo(t1, if scura { 0.03 } else { 0.035 })),
+        ),
+        ("color.danger", esadecimale(pericolo)),
+        ("color.danger.soft", esadecimale(pericolo_morbido)),
+        ("color.success", esadecimale(riuscita)),
+        ("color.success.soft", esadecimale(riuscita_morbida)),
+        ("color.warning", esadecimale(attenzione)),
+        ("color.warning.soft", esadecimale(attenzione_morbida)),
+    ]
 }
 
 #[cfg(test)]
@@ -644,7 +832,7 @@ mod tests {
         // Il controllo che rende il meccanismo accettabile: qualunque disco, in
         // entrambi i temi, la finestra resta leggibile quanto prima.
         let skin = plain();
-        let chiare = skin.light.as_ref().expect("plain ha un tema chiaro");
+        let chiare = skin.variante_tokens().expect("plain ha un tema chiaro");
         for grado in (0..360).step_by(5) {
             let tinta = in_rgba(dentro_srgb(Oklch {
                 l: 0.6,
@@ -701,5 +889,82 @@ mod tests {
         // ancora da fondo a `--color-surface-0`.
         let sicuro = accento_sicuro(colore(250, 204, 21), &[], SCURE[0], CONTRASTO_MINIMO).unwrap();
         assert!(contrast_ratio(SCURE[0], sicuro) >= CONTRASTO_MINIMO);
+    }
+
+    #[test]
+    fn la_tavolozza_generata_passa_ogni_contrasto() {
+        use crate::values::parse_color;
+        for (tinta, scura) in [
+            (
+                Rgba {
+                    r: 163,
+                    g: 48,
+                    b: 28,
+                    a: 1.0,
+                },
+                false,
+            ),
+            (
+                Rgba {
+                    r: 163,
+                    g: 48,
+                    b: 28,
+                    a: 1.0,
+                },
+                true,
+            ),
+            (
+                Rgba {
+                    r: 0,
+                    g: 243,
+                    b: 255,
+                    a: 1.0,
+                },
+                true,
+            ),
+            (
+                Rgba {
+                    r: 128,
+                    g: 128,
+                    b: 128,
+                    a: 1.0,
+                },
+                false,
+            ),
+            (
+                Rgba {
+                    r: 250,
+                    g: 230,
+                    b: 20,
+                    a: 1.0,
+                },
+                false,
+            ),
+        ] {
+            let voci = tavolozza_da(tinta, scura);
+            let colore = |id: &str| {
+                let (_, valore) = voci.iter().find(|(t, _)| *t == id).expect(id);
+                parse_color(valore).expect(valore)
+            };
+            for davanti in [
+                "color.text.1",
+                "color.text.2",
+                "color.text.3",
+                "color.accent",
+                "color.danger",
+                "color.success",
+                "color.warning",
+            ] {
+                for dietro in ["color.surface.0", "color.surface.1", "color.surface.2"] {
+                    let rapporto = contrast_ratio(colore(davanti), colore(dietro));
+                    assert!(
+                        rapporto >= CONTRASTO_MINIMO,
+                        "{davanti} su {dietro}: {rapporto:.2} ({tinta:?}, scura {scura})"
+                    );
+                }
+            }
+            let sopra = contrast_ratio(colore("color.surface.0"), colore("color.accent"));
+            assert!(sopra >= CONTRASTO_MINIMO, "fondo sull'accento: {sopra:.2}");
+        }
     }
 }

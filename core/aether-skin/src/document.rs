@@ -20,38 +20,62 @@
 //! Un `format` sbagliato è una cosa sola e la si corregge subito. I token e le
 //! parti no: sono decine di voci scritte in una sessione, e chi le sta scrivendo
 //! vuole vedere **tutti** gli errori insieme invece di scoprirli uno per
-//! esecuzione. Quindi i due blocchi grandi raccolgono, il resto si ferma al
-//! primo problema.
+//! esecuzione. Quindi i blocchi grandi raccolgono, il resto si ferma al primo
+//! problema.
+//!
+//! # Il formato 2
+//!
+//! Il formato 1 si legge ancora: [`MIGRAZIONI`] lo porta al 2 riscrivendo il
+//! JSON prima della validazione (vedi [`crate::migrazione`]). Quel che il 2
+//! aggiunge sta nei moduli che lo possiedono — gli stati in [`crate::stati`], il
+//! movimento in [`crate::movimento`], le parti in [`crate::parts`] — e qui c'è
+//! la lettura. Le differenze che contano per chi legge questo file:
+//!
+//! - **i temi sono simmetrici**: `scheme` dice se la skin è scura o chiara di
+//!   base, e `variant` porta il tema opposto con i suoi token, la sua
+//!   tavolozza, i suoi motivi e le sue parti. Il formato 1 aveva solo
+//!   `themes.light`, e solo per i token;
+//! - **una skin porta i suoi caratteri e le sue immagini**: `fonts` e
+//!   l'effetto `image` nominano voci del pacchetto, mai indirizzi;
+//! - **il movimento è per parte e per innesco**: `parts.<p>.motion`.
 
 use aether_domain::errors::{AppError, ErrorCode};
 use serde_json::{Map, Value};
 
-use crate::effects::{Corner, Effect, EffectTarget, Paint, RadialShape, Stop};
+use crate::effects::{
+    Corner, Effect, EffectTarget, FiltroElemento, ImageSize, Paint, RadialShape, Stop,
+};
 use crate::layout::{
     Align, GapStep, LayoutNode, LayoutZone, MAX_SHELL_NODES, OptionKind, OptionValue, Spread,
-    TrackSize, WidgetDef, WidgetInstance, WidgetOption, ZoneKind, default_shell,
+    TrackSize, WidgetDef, WidgetInstance, WidgetOption, ZoneKind, shell_di_serie,
 };
 use crate::movimento::{
-    AnimDirection, AnimFrame, AnimTrigger, Animation, AnimationRef, MAX_ANIMAZIONI, MAX_DURATA_MS,
-    MAX_FOTOGRAMMI, MAX_ITERAZIONI, MAX_PARTI_ANIMATE, MAX_RITARDO_MS, MAX_TRIGGER_PER_PARTE,
-    MIN_FOTOGRAMMI, PartAnimations,
+    AnimDirection, AnimFrame, AnimTrigger, Animation, AnimationRef, CASCATA_VOCI, Curva,
+    Iterazioni, MAX_ANIMAZIONI, MAX_CASCATA_MS, MAX_DURATA_MS, MAX_FOTOGRAMMI, MAX_ITERAZIONI,
+    MAX_RITARDO_MS, MIN_FOTOGRAMMI, PartMotion, Riempimento, Ritaglio, Transizione,
 };
 use crate::parts::{
-    PartAppearance, PartLayer, PartState, PartStates, PartStyle, TextTransform, nearest_parts,
-    part, ritirata,
+    AnelloFuoco, BorderStyle, FONT_SIZE_MAX, FONT_SIZE_MIN, Ombra, PartAppearance, PartDef,
+    PartLayer, PartStates, PartStyle, Raggio, TextTransform, nearest_parts, part, ritirata,
 };
+use crate::stati::PartState;
 use crate::tokens::{
     ColorValue, DynamicSource, ShadowLayer, ShadowValue, TOKENS, TokenDef, TokenKind, TokenSet,
     TokenValue, is_local_name, token,
 };
 use crate::values::{
-    Duration, Easing, EasingKeyword, Length, LengthUnit, LengthValue, Rgba, StepPosition,
+    Duration, Easing, EasingKeyword, FontKind, Length, LengthUnit, LengthValue, Rgba, StepPosition,
     is_font_family, parse_color, parse_duration, parse_length,
 };
 use crate::vicini::{forse, vicini};
 
 /// La versione del formato. Un numero, non semver: cambia solo se rompiamo.
-pub const SKIN_FORMAT_VERSION: u32 = 1;
+///
+/// È 2 dalla 3.0.0. Un documento del formato 1 si legge ancora — lo migra
+/// [`crate::migrazione`] — e uno del formato 2 non si legge in una versione
+/// che conosce solo l'1: i suoi blocchi sono chiusi, e una chiave nuova è un
+/// errore. È esattamente quel che il cambio di numero dice.
+pub const SKIN_FORMAT_VERSION: u32 = 2;
 
 /// Un problema in un punto preciso del documento.
 #[derive(Debug, Clone, PartialEq)]
@@ -73,9 +97,9 @@ pub struct SkinIssue {
 }
 
 /// Il tipo di risultato dei parser interni.
-type Esito<T> = Result<T, SkinIssue>;
+pub(crate) type Esito<T> = Result<T, SkinIssue>;
 
-fn problema(path: &str, message: impl Into<String>) -> SkinIssue {
+pub(crate) fn problema(path: &str, message: impl Into<String>) -> SkinIssue {
     let message = message.into();
     SkinIssue {
         code: ErrorCode::SkinManifestInvalid {
@@ -119,7 +143,7 @@ fn compatto(value: &Value) -> String {
     }
 }
 
-fn giu(path: &str, name: &str) -> String {
+pub(crate) fn giu(path: &str, name: &str) -> String {
     if path.is_empty() {
         return name.to_owned();
     }
@@ -128,7 +152,7 @@ fn giu(path: &str, name: &str) -> String {
 
 // ── Le forme elementari ─────────────────────────────────────────────────────
 
-fn oggetto<'a>(value: &'a Value, path: &str) -> Esito<&'a Map<String, Value>> {
+pub(crate) fn oggetto<'a>(value: &'a Value, path: &str) -> Esito<&'a Map<String, Value>> {
     value
         .as_object()
         .ok_or_else(|| problema(path, "qui ci va un oggetto"))
@@ -178,7 +202,7 @@ fn lista_fra<'a>(value: &'a Value, path: &str, min: usize, max: usize) -> Esito<
     Ok(voci)
 }
 
-/// Le sole chiavi ammesse. È il `strict` del vecchio schema.
+/// Le sole chiavi ammesse. È lo `strict` del vecchio schema.
 fn solo_chiavi(map: &Map<String, Value>, path: &str, ammesse: &[&str]) -> Esito<()> {
     for chiave in map.keys() {
         if ammesse.contains(&chiave.as_str()) {
@@ -213,6 +237,280 @@ fn parola<T: Copy>(value: &Value, path: &str, ammesse: &[(&str, T)]) -> Esito<T>
         })
 }
 
+// ── Le chiavi, in ordine ────────────────────────────────────────────────────
+//
+// Gli elenchi delle chiavi ammesse, con un nome. Servono due volte: alla
+// validazione, che rifiuta quel che non c'è, e alla forma canonica di
+// `crate::migrazione`, che le riscrive **in quest'ordine**. Un elenco solo per
+// due lettori è la ragione per cui non sono più scritti in linea.
+
+/// Le chiavi della radice, nell'ordine della forma canonica.
+pub(crate) const CHIAVI_DOCUMENTO: &[&str] = &[
+    "format",
+    "id",
+    "meta",
+    "scheme",
+    "capabilities",
+    "fonts",
+    "palette",
+    "patterns",
+    "tokens",
+    "variant",
+    "platforms",
+    "motion",
+    "layout",
+    "parts",
+];
+
+/// Le chiavi di `meta`.
+pub(crate) const CHIAVI_META: &[&str] = &[
+    "name",
+    "author",
+    "version",
+    "description",
+    "license",
+    "basedOn",
+    "preview",
+];
+
+/// Le chiavi di `capabilities`.
+pub(crate) const CHIAVI_CAPACITA: &[&str] = &["dynamicAccent"];
+
+/// Le chiavi di un carattere in `fonts`.
+pub(crate) const CHIAVI_FONT: &[&str] = &["src", "weight", "style"];
+
+/// Le chiavi di `variant`.
+pub(crate) const CHIAVI_VARIANTE: &[&str] = &["tokens", "palette", "patterns", "parts"];
+
+/// Le chiavi di `motion`.
+pub(crate) const CHIAVI_MOVIMENTO: &[&str] = &["intensity", "easings", "route", "animations"];
+
+/// Le chiavi di `motion.route`.
+pub(crate) const CHIAVI_ROTTA: &[&str] = &["duration", "easing", "out", "in"];
+
+/// Le chiavi di un fotogramma di rotta.
+pub(crate) const CHIAVI_FOTOGRAMMA_ROTTA: &[&str] = &["opacity", "scale", "translateY"];
+
+/// Le chiavi di un'animazione.
+pub(crate) const CHIAVI_ANIMAZIONE: &[&str] = &[
+    "duration",
+    "delay",
+    "easing",
+    "iterations",
+    "direction",
+    "fill",
+    "origin",
+    "frames",
+];
+
+/// Le chiavi di un fotogramma di animazione.
+pub(crate) const CHIAVI_FOTOGRAMMA: &[&str] = &[
+    "at",
+    "opacity",
+    "translateX",
+    "translateY",
+    "scale",
+    "scaleX",
+    "scaleY",
+    "rotate",
+    "skewX",
+    "skewY",
+    "blur",
+    "brightness",
+    "saturate",
+    "hueRotate",
+    "backgroundColor",
+    "color",
+    "borderColor",
+    "shadow",
+    "clip",
+];
+
+/// Le chiavi di `layout`.
+pub(crate) const CHIAVI_IMPAGINAZIONE: &[&str] = &["density", "prefabs", "shell"];
+
+/// Le chiavi di una zona dello scafale.
+pub(crate) const CHIAVI_ZONA: &[&str] =
+    &["zone", "size", "gap", "align", "spread", "part", "children"];
+
+/// Le chiavi di un widget dello scafale.
+pub(crate) const CHIAVI_WIDGET: &[&str] = &["widget", "size", "options"];
+
+/// Le chiavi di un prefab richiamato.
+pub(crate) const CHIAVI_RICHIAMO: &[&str] = &["prefab", "size"];
+
+/// Le chiavi dell'aspetto di una parte, base o stato.
+pub(crate) const CHIAVI_ASPETTO: &[&str] = &[
+    "background",
+    "textColor",
+    "borderColor",
+    "borderWidth",
+    "borderStyle",
+    "radius",
+    "shadow",
+    "focusRing",
+    "clip",
+    "filter",
+    "backdrop",
+    "opacity",
+    "font",
+    "fontSize",
+    "lineHeight",
+    "letterSpacing",
+    "textTransform",
+    "fontWeight",
+];
+
+/// Le chiavi strutturali di una parte, dopo quelle d'aspetto.
+pub(crate) const CHIAVI_STRUTTURA_PARTE: &[&str] = &["before", "after", "states", "motion"];
+
+/// Le chiavi di un livello.
+pub(crate) const CHIAVI_LIVELLO: &[&str] = &["background", "opacity"];
+
+/// Le chiavi del movimento di una parte oltre agli inneschi.
+pub(crate) const CHIAVI_MOVIMENTO_PARTE: &[&str] = &["stagger", "transition"];
+
+/// Le chiavi di una transizione di parte.
+pub(crate) const CHIAVI_TRANSIZIONE: &[&str] = &["duration", "easing"];
+
+/// Le chiavi di un anello del fuoco.
+pub(crate) const CHIAVI_ANELLO: &[&str] = &["color", "width", "offset"];
+
+/// Le chiavi di un raggio per angolo.
+pub(crate) const CHIAVI_ANGOLI: &[&str] = &["topLeft", "topRight", "bottomRight", "bottomLeft"];
+
+/// Le chiavi di un livello d'ombra.
+pub(crate) const CHIAVI_LIVELLO_OMBRA: &[&str] = &["inset", "x", "y", "blur", "spread", "color"];
+
+/// Le chiavi di una fermata di gradiente.
+pub(crate) const CHIAVI_FERMATA: &[&str] = &["color", "at"];
+
+/// Le chiavi che il formato accetta, per contesto.
+///
+/// È quel che l'editor di codice dello Studio propone mentre si scrive: le
+/// stesse liste con cui [`solo_chiavi`] rifiuta una chiave, così il
+/// completamento non può suggerire una chiave che il validatore poi respinge,
+/// né dimenticarne una che accetta.
+#[must_use]
+pub fn chiavi_schema() -> Vec<(&'static str, &'static [&'static str])> {
+    vec![
+        ("documento", CHIAVI_DOCUMENTO),
+        ("meta", CHIAVI_META),
+        ("capacita", CHIAVI_CAPACITA),
+        ("font", CHIAVI_FONT),
+        ("variante", CHIAVI_VARIANTE),
+        ("movimento", CHIAVI_MOVIMENTO),
+        ("rotta", CHIAVI_ROTTA),
+        ("fotogrammaRotta", CHIAVI_FOTOGRAMMA_ROTTA),
+        ("animazione", CHIAVI_ANIMAZIONE),
+        ("fotogramma", CHIAVI_FOTOGRAMMA),
+        ("impaginazione", CHIAVI_IMPAGINAZIONE),
+        ("zona", CHIAVI_ZONA),
+        ("widget", CHIAVI_WIDGET),
+        ("richiamo", CHIAVI_RICHIAMO),
+        ("aspetto", CHIAVI_ASPETTO),
+        ("strutturaParte", CHIAVI_STRUTTURA_PARTE),
+        ("livello", CHIAVI_LIVELLO),
+        ("movimentoParte", CHIAVI_MOVIMENTO_PARTE),
+        ("transizione", CHIAVI_TRANSIZIONE),
+        ("anello", CHIAVI_ANELLO),
+        ("angoli", CHIAVI_ANGOLI),
+        ("livelloOmbra", CHIAVI_LIVELLO_OMBRA),
+        ("fermata", CHIAVI_FERMATA),
+    ]
+}
+
+/// Le parole chiuse che un campo accetta, per nome del campo.
+///
+/// Il gemello di [`chiavi_schema`] per i valori: `"scheme": "…"`,
+/// `"borderStyle": "…"`, `"easing": "…"`. Vengono dagli stessi `ALL` con cui
+/// la lettura riconosce la parola.
+#[must_use]
+pub fn parole_schema() -> Vec<(&'static str, Vec<&'static str>)> {
+    vec![
+        (
+            "scheme",
+            vec![Scheme::Dark.as_str(), Scheme::Light.as_str()],
+        ),
+        (
+            "density",
+            [Density::Compact, Density::Comfortable, Density::Spacious]
+                .iter()
+                .map(|d| d.as_str())
+                .collect(),
+        ),
+        (
+            "intensity",
+            MotionIntensity::ALL.iter().map(|m| m.as_str()).collect(),
+        ),
+        ("font", vec!["sans", "mono", "display"]),
+        (
+            "borderStyle",
+            BorderStyle::ALL.iter().map(|b| b.as_str()).collect(),
+        ),
+        (
+            "textTransform",
+            TextTransform::ALL.iter().map(|t| t.as_str()).collect(),
+        ),
+        (
+            "easing",
+            EasingKeyword::ALL.iter().map(|k| k.as_str()).collect(),
+        ),
+        (
+            "direction",
+            AnimDirection::ALL.iter().map(|d| d.as_str()).collect(),
+        ),
+        (
+            "fill",
+            Riempimento::ALL.iter().map(|r| r.as_str()).collect(),
+        ),
+        ("iterations", vec!["infinite"]),
+        (
+            "origin",
+            vec![
+                "center",
+                "top",
+                "bottom",
+                "left",
+                "right",
+                "top left",
+                "top right",
+                "bottom left",
+                "bottom right",
+            ],
+        ),
+        ("zone", ZoneKind::ALL.iter().map(|z| z.as_str()).collect()),
+        ("gap", GapStep::ALL.iter().map(|g| g.as_str()).collect()),
+        ("align", Align::ALL.iter().map(|a| a.as_str()).collect()),
+        ("spread", Spread::ALL.iter().map(|s| s.as_str()).collect()),
+        ("size", vec!["hug", "fill"]),
+        ("position", vec!["start", "end"]),
+        ("style", vec!["normal", "italic"]),
+    ]
+}
+
+/// Le chiavi di ogni effetto, in ordine, dopo `effect`.
+///
+/// Stanno qui e non accanto a [`Effect`] perché sono la forma **scritta**
+/// dell'effetto, che è cosa di questo modulo.
+pub(crate) fn chiavi_effetto(nome: &str) -> &'static [&'static str] {
+    match nome {
+        "solid" => &["effect", "color"],
+        "linearGradient" => &["effect", "angle", "stops"],
+        "radialGradient" => &["effect", "shape", "at", "size", "stops"],
+        "conicGradient" => &["effect", "from", "at", "stops"],
+        "hairlineGrid" => &["effect", "color", "cell", "cellY", "thickness"],
+        "scanlines" => &["effect", "color", "line", "gap"],
+        "stripes" => &["effect", "angle", "color", "background", "width"],
+        "dotGrid" => &["effect", "color", "spacing", "dot"],
+        "vignette" => &["effect", "color", "start"],
+        "chamfer" => &["effect", "size", "corners"],
+        "blurBehind" => &["effect", "radius", "saturate"],
+        "image" => &["effect", "src", "size", "repeat", "position"],
+        _ => &["effect"],
+    }
+}
+
 // ── I valori ────────────────────────────────────────────────────────────────
 
 fn colore_letterale(value: &Value, path: &str) -> Esito<Rgba> {
@@ -236,9 +534,8 @@ fn opacita(map: &Map<String, Value>, path: &str) -> Esito<Option<f64>> {
 /// Un colore: letterale, riferito a un token, alla tavolozza, o alla copertina.
 ///
 /// Riconosce prima la forma e valida poi, invece di provare le quattro
-/// alternative e riportare l'ultimo errore. È la stessa scelta che il vecchio
-/// albero aveva dovuto fare a mano contro l'unione di zod: chi scrive `blu`
-/// deve leggere «`blu` non è un colore», non «input non valido».
+/// alternative e riportare l'ultimo errore: chi scrive `blu` deve leggere «`blu`
+/// non è un colore», non «input non valido».
 fn colore(value: &Value, path: &str) -> Esito<ColorValue> {
     let Some(map) = value.as_object() else {
         return colore_letterale(value, path).map(ColorValue::Literal);
@@ -306,6 +603,73 @@ fn lunghezza(value: &Value, path: &str) -> Esito<Length> {
             ),
         )
     })
+}
+
+/// Una lunghezza in una delle unità date.
+fn lunghezza_in(value: &Value, path: &str, unita: &[LengthUnit]) -> Esito<Length> {
+    let letta = lunghezza(value, path)?;
+    if !unita.contains(&letta.unit) {
+        let nomi: Vec<&str> = unita.iter().map(|u| u.as_str()).collect();
+        return Err(problema(
+            path,
+            format!(
+                "qui l'unità va scelta fra {}, non {}",
+                nomi.join(", "),
+                letta.unit.as_str()
+            ),
+        ));
+    }
+    Ok(letta)
+}
+
+/// Una misura assoluta fra due estremi in pixel; `rem` vale sedici.
+fn misura_fra(value: &Value, path: &str, min: f64, max: f64) -> Esito<Length> {
+    let letta = lunghezza_in(value, path, &[LengthUnit::Px, LengthUnit::Rem])?;
+    let px = match letta.unit {
+        LengthUnit::Rem => letta.value * 16.0,
+        _ => letta.value,
+    };
+    if px < min || px > max {
+        return Err(problema(
+            path,
+            format!("va fra {min}px e {max}px, non {px}px"),
+        ));
+    }
+    Ok(letta)
+}
+
+/// Uno spostamento: un numero è in pixel, una stringa porta la sua unità.
+///
+/// I numeri nudi sono la forma del formato 1 — `"translateY": 8` — e restano
+/// validi. Le percentuali servono a far uscire una parte dal suo bordo senza
+/// sapere quanto è grande: `-100%` è «tutta fuori», qualunque sia la misura.
+fn spostamento(value: &Value, path: &str) -> Esito<Length> {
+    let letta = if value.is_number() {
+        Length::px(numero(value, path)?)
+    } else {
+        lunghezza_in(
+            value,
+            path,
+            &[
+                LengthUnit::Px,
+                LengthUnit::Percent,
+                LengthUnit::Rem,
+                LengthUnit::Em,
+            ],
+        )?
+    };
+    let (estremo, unita) = match letta.unit {
+        LengthUnit::Percent => (200.0, "%"),
+        LengthUnit::Rem | LengthUnit::Em => (25.0, letta.unit.as_str()),
+        _ => (400.0, "px"),
+    };
+    if letta.value.abs() > estremo {
+        return Err(problema(
+            path,
+            format!("va fra -{estremo}{unita} e {estremo}{unita}"),
+        ));
+    }
+    Ok(letta)
 }
 
 fn lunghezza_valore(value: &Value, path: &str) -> Esito<LengthValue> {
@@ -400,6 +764,39 @@ fn easing(value: &Value, path: &str) -> Esito<Easing> {
     }
 }
 
+/// Una curva di un'animazione: per esteso, una parola chiave, o il nome di una
+/// curva della skin.
+///
+/// La stringa è il caso nuovo: `"easing": "molla"` richiama `motion.easings.molla`,
+/// e `"easing": "linear"` è la parola chiave del CSS. Le due non si confondono
+/// perché una curva della skin non può chiamarsi come una parola chiave —
+/// [`movimento`] lo rifiuta alla dichiarazione.
+fn curva(value: &Value, path: &str, dichiarate: &[(String, Easing)]) -> Esito<Curva> {
+    let Some(scritto) = value.as_str() else {
+        return easing(value, path).map(Curva::Valore);
+    };
+    if let Some(parola) = EasingKeyword::parse(scritto) {
+        return Ok(Curva::Valore(Easing::Keyword(parola)));
+    }
+    if dichiarate.iter().any(|(nome, _)| nome == scritto) {
+        return Ok(Curva::Nome(scritto.to_owned()));
+    }
+    let candidati = vicini(scritto, dichiarate.iter().map(|(n, _)| n.as_str()));
+    Err(problema(
+        path,
+        format!(
+            "«{scritto}» non è una curva: né una parola chiave ({}), né una curva dichiarata in \
+             `motion.easings`.{}",
+            EasingKeyword::ALL
+                .iter()
+                .map(|k| k.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            forse(&candidati)
+        ),
+    ))
+}
+
 fn ombra(value: &Value, path: &str) -> Esito<ShadowValue> {
     let map = oggetto(value, path)?;
     solo_chiavi(map, path, &["layers"])?;
@@ -411,11 +808,7 @@ fn ombra(value: &Value, path: &str) -> Esito<ShadowValue> {
     for (indice, grezzo) in livelli.iter().enumerate() {
         let dentro = giu(&percorso, &indice.to_string());
         let livello = oggetto(grezzo, &dentro)?;
-        solo_chiavi(
-            livello,
-            &dentro,
-            &["inset", "x", "y", "blur", "spread", "color"],
-        )?;
+        solo_chiavi(livello, &dentro, CHIAVI_LIVELLO_OMBRA)?;
         layers.push(ShadowLayer {
             inset: campo(livello, "inset")
                 .map(|v| booleano(v, &giu(&dentro, "inset")))
@@ -436,6 +829,37 @@ fn ombra(value: &Value, path: &str) -> Esito<ShadowValue> {
     Ok(ShadowValue { layers })
 }
 
+/// Un'ombra di parte: per esteso, o un token d'ombra richiamato.
+fn ombra_parte(value: &Value, path: &str) -> Esito<Ombra> {
+    let map = oggetto(value, path)?;
+    let Some(grezzo) = campo(map, "$token") else {
+        return ombra(value, path).map(Ombra::Valore);
+    };
+    solo_chiavi(map, path, &["$token"])?;
+    let percorso = giu(path, "$token");
+    let nome = testo(grezzo, &percorso)?;
+    match token(nome) {
+        Some(def) if def.kind == TokenKind::Shadow => Ok(Ombra::Token(def)),
+        Some(_) => Err(problema(
+            &percorso,
+            format!("«{nome}» non è un token d'ombra: qui ci va uno fra shadow.* e glow.*"),
+        )),
+        None => {
+            let candidati = vicini(
+                nome,
+                TOKENS
+                    .iter()
+                    .filter(|d| d.kind == TokenKind::Shadow)
+                    .map(|d| d.id),
+            );
+            Err(problema(
+                &percorso,
+                format!("«{nome}» non è un token del registro.{}", forse(&candidati)),
+            ))
+        }
+    }
+}
+
 fn pila_caratteri(value: &Value, path: &str) -> Esito<Vec<String>> {
     let voci = lista_fra(value, path, 1, 8)?;
     let mut famiglie = Vec::with_capacity(voci.len());
@@ -453,6 +877,30 @@ fn pila_caratteri(value: &Value, path: &str) -> Esito<Vec<String>> {
     Ok(famiglie)
 }
 
+/// Il nome di una voce del pacchetto, controllato con la regola del pacchetto.
+fn risorsa(value: &Value, path: &str, mime_ammessi: &[&str]) -> Esito<String> {
+    let nome = testo(value, path)?;
+    let Some(mime) = crate::package::tipo_risorsa(nome) else {
+        return Err(problema(
+            path,
+            format!(
+                "«{nome}» non è il nome di una risorsa del pacchetto: minuscole, cifre, `_` e \
+                 `-`, poi un'estensione fra png, jpg, webp e woff2 — senza cartelle"
+            ),
+        ));
+    };
+    if !mime_ammessi.contains(&mime) {
+        return Err(problema(
+            path,
+            format!(
+                "«{nome}» non è del tipo che serve qui ({})",
+                mime_ammessi.join(", ")
+            ),
+        ));
+    }
+    Ok(nome.to_owned())
+}
+
 // ── Gli effetti ─────────────────────────────────────────────────────────────
 
 fn fermate(value: &Value, path: &str) -> Esito<Vec<Stop>> {
@@ -461,7 +909,7 @@ fn fermate(value: &Value, path: &str) -> Esito<Vec<Stop>> {
     for (indice, grezzo) in voci.iter().enumerate() {
         let dentro = giu(path, &indice.to_string());
         let map = oggetto(grezzo, &dentro)?;
-        solo_chiavi(map, &dentro, &["color", "at"])?;
+        solo_chiavi(map, &dentro, CHIAVI_FERMATA)?;
         stops.push(Stop {
             color: colore(richiesto(map, &dentro, "color")?, &giu(&dentro, "color"))?,
             at: campo(map, "at")
@@ -472,19 +920,21 @@ fn fermate(value: &Value, path: &str) -> Esito<Vec<Stop>> {
     Ok(stops)
 }
 
+fn coppia(value: &Value, path: &str) -> Esito<(Length, Length)> {
+    let voci = lista_fra(value, path, 2, 2)?;
+    let (Some(x), Some(y)) = (voci.first(), voci.get(1)) else {
+        return Err(problema(path, "ci vogliono due lunghezze"));
+    };
+    Ok((
+        lunghezza(x, &giu(path, "0"))?,
+        lunghezza(y, &giu(path, "1"))?,
+    ))
+}
+
 fn centro(map: &Map<String, Value>, path: &str) -> Esito<Option<(Length, Length)>> {
-    let Some(grezzo) = campo(map, "at") else {
-        return Ok(None);
-    };
-    let percorso = giu(path, "at");
-    let coppia = lista_fra(grezzo, &percorso, 2, 2)?;
-    let (Some(x), Some(y)) = (coppia.first(), coppia.get(1)) else {
-        return Err(problema(&percorso, "ci vogliono due lunghezze"));
-    };
-    Ok(Some((
-        lunghezza(x, &giu(&percorso, "0"))?,
-        lunghezza(y, &giu(&percorso, "1"))?,
-    )))
+    campo(map, "at")
+        .map(|grezzo| coppia(grezzo, &giu(path, "at")))
+        .transpose()
 }
 
 fn angolo(map: &Map<String, Value>, path: &str, name: &str, difetto: f64) -> Esito<f64> {
@@ -505,7 +955,7 @@ fn lunghezza_facoltativa(
 }
 
 /// Un effetto. Il campo `effect` è il discriminante, e l'unione è chiusa.
-fn effetto(value: &Value, path: &str) -> Esito<Effect> {
+pub(crate) fn effetto(value: &Value, path: &str) -> Esito<Effect> {
     let map = oggetto(value, path)?;
     let percorso = giu(path, "effect");
     let nome = testo(richiesto(map, path, "effect")?, &percorso)?;
@@ -517,103 +967,71 @@ fn effetto(value: &Value, path: &str) -> Esito<Effect> {
     let fermate_di =
         || -> Esito<Vec<Stop>> { fermate(richiesto(map, path, "stops")?, &giu(path, "stops")) };
 
+    if Effect::NAMES.contains(&nome) {
+        solo_chiavi(map, path, chiavi_effetto(nome))?;
+    }
+
     match nome {
-        "solid" => {
-            solo_chiavi(map, path, &["effect", "color"])?;
-            Ok(Effect::Solid {
-                color: colore_di("color")?,
-            })
-        }
-        "linearGradient" => {
-            solo_chiavi(map, path, &["effect", "angle", "stops"])?;
-            Ok(Effect::LinearGradient {
-                angle: angolo(map, path, "angle", 180.0)?,
-                stops: fermate_di()?,
-            })
-        }
-        "radialGradient" => {
-            solo_chiavi(map, path, &["effect", "shape", "at", "size", "stops"])?;
-            Ok(Effect::RadialGradient {
-                shape: campo(map, "shape")
-                    .map(|v| {
-                        parola(
-                            v,
-                            &giu(path, "shape"),
-                            &[
-                                ("circle", RadialShape::Circle),
-                                ("ellipse", RadialShape::Ellipse),
-                            ],
-                        )
-                    })
-                    .transpose()?
-                    .unwrap_or(RadialShape::Ellipse),
-                at: centro(map, path)?,
-                size: lunghezza_facoltativa(map, path, "size")?,
-                stops: fermate_di()?,
-            })
-        }
-        "conicGradient" => {
-            solo_chiavi(map, path, &["effect", "from", "at", "stops"])?;
-            Ok(Effect::ConicGradient {
-                from: angolo(map, path, "from", 0.0)?,
-                at: centro(map, path)?,
-                stops: fermate_di()?,
-            })
-        }
-        "hairlineGrid" => {
-            solo_chiavi(
-                map,
-                path,
-                &["effect", "color", "cell", "cellY", "thickness"],
-            )?;
-            Ok(Effect::HairlineGrid {
-                color: colore_di("color")?,
-                cell: lunghezza_di("cell")?,
-                cell_y: lunghezza_facoltativa(map, path, "cellY")?,
-                thickness: lunghezza_facoltativa(map, path, "thickness")?,
-            })
-        }
-        "scanlines" => {
-            solo_chiavi(map, path, &["effect", "color", "line", "gap"])?;
-            Ok(Effect::Scanlines {
-                color: colore_di("color")?,
-                line: lunghezza_di("line")?,
-                gap: lunghezza_di("gap")?,
-            })
-        }
-        "stripes" => {
-            solo_chiavi(
-                map,
-                path,
-                &["effect", "angle", "color", "background", "width"],
-            )?;
-            Ok(Effect::Stripes {
-                angle: angolo(map, path, "angle", -45.0)?,
-                color: colore_di("color")?,
-                background: colore_di("background")?,
-                width: lunghezza_di("width")?,
-            })
-        }
-        "dotGrid" => {
-            solo_chiavi(map, path, &["effect", "color", "spacing", "dot"])?;
-            Ok(Effect::DotGrid {
-                color: colore_di("color")?,
-                spacing: lunghezza_di("spacing")?,
-                dot: lunghezza_di("dot")?,
-            })
-        }
-        "vignette" => {
-            solo_chiavi(map, path, &["effect", "color", "start"])?;
-            Ok(Effect::Vignette {
-                color: colore_di("color")?,
-                start: campo(map, "start")
-                    .map(|v| numero_fra(v, &giu(path, "start"), 0.0, 100.0))
-                    .transpose()?
-                    .unwrap_or(60.0),
-            })
-        }
+        "solid" => Ok(Effect::Solid {
+            color: colore_di("color")?,
+        }),
+        "linearGradient" => Ok(Effect::LinearGradient {
+            angle: angolo(map, path, "angle", 180.0)?,
+            stops: fermate_di()?,
+        }),
+        "radialGradient" => Ok(Effect::RadialGradient {
+            shape: campo(map, "shape")
+                .map(|v| {
+                    parola(
+                        v,
+                        &giu(path, "shape"),
+                        &[
+                            ("circle", RadialShape::Circle),
+                            ("ellipse", RadialShape::Ellipse),
+                        ],
+                    )
+                })
+                .transpose()?
+                .unwrap_or(RadialShape::Ellipse),
+            at: centro(map, path)?,
+            size: lunghezza_facoltativa(map, path, "size")?,
+            stops: fermate_di()?,
+        }),
+        "conicGradient" => Ok(Effect::ConicGradient {
+            from: angolo(map, path, "from", 0.0)?,
+            at: centro(map, path)?,
+            stops: fermate_di()?,
+        }),
+        "hairlineGrid" => Ok(Effect::HairlineGrid {
+            color: colore_di("color")?,
+            cell: lunghezza_di("cell")?,
+            cell_y: lunghezza_facoltativa(map, path, "cellY")?,
+            thickness: lunghezza_facoltativa(map, path, "thickness")?,
+        }),
+        "scanlines" => Ok(Effect::Scanlines {
+            color: colore_di("color")?,
+            line: lunghezza_di("line")?,
+            gap: lunghezza_di("gap")?,
+        }),
+        "stripes" => Ok(Effect::Stripes {
+            angle: angolo(map, path, "angle", -45.0)?,
+            color: colore_di("color")?,
+            background: colore_di("background")?,
+            width: lunghezza_di("width")?,
+        }),
+        "dotGrid" => Ok(Effect::DotGrid {
+            color: colore_di("color")?,
+            spacing: lunghezza_di("spacing")?,
+            dot: lunghezza_di("dot")?,
+        }),
+        "vignette" => Ok(Effect::Vignette {
+            color: colore_di("color")?,
+            start: campo(map, "start")
+                .map(|v| numero_fra(v, &giu(path, "start"), 0.0, 100.0))
+                .transpose()?
+                .unwrap_or(60.0),
+        }),
         "chamfer" => {
-            solo_chiavi(map, path, &["effect", "size", "corners"])?;
             let corners = match campo(map, "corners") {
                 None => vec![Corner::TopRight, Corner::BottomLeft],
                 Some(grezzo) => {
@@ -633,15 +1051,42 @@ fn effetto(value: &Value, path: &str) -> Esito<Effect> {
                 corners,
             })
         }
-        "blurBehind" => {
-            solo_chiavi(map, path, &["effect", "radius", "saturate"])?;
-            Ok(Effect::BlurBehind {
-                radius: lunghezza_di("radius")?,
-                saturate: campo(map, "saturate")
-                    .map(|v| numero_fra(v, &giu(path, "saturate"), 0.0, 400.0))
-                    .transpose()?,
-            })
-        }
+        "blurBehind" => Ok(Effect::BlurBehind {
+            radius: lunghezza_di("radius")?,
+            saturate: campo(map, "saturate")
+                .map(|v| numero_fra(v, &giu(path, "saturate"), 0.0, 400.0))
+                .transpose()?,
+        }),
+        "image" => Ok(Effect::Image {
+            src: risorsa(
+                richiesto(map, path, "src")?,
+                &giu(path, "src"),
+                &["image/png", "image/jpeg", "image/webp"],
+            )?,
+            size: match campo(map, "size") {
+                None => ImageSize::Cover,
+                Some(grezzo) => match grezzo.as_str() {
+                    Some("cover") => ImageSize::Cover,
+                    Some("contain") => ImageSize::Contain,
+                    Some("auto") => ImageSize::Auto,
+                    _ => {
+                        ImageSize::Misura(lunghezza(grezzo, &giu(path, "size")).map_err(|_| {
+                            problema(
+                                &giu(path, "size"),
+                                "ammessi cover, contain, auto, o una lunghezza per le mattonelle",
+                            )
+                        })?)
+                    }
+                },
+            },
+            repeat: campo(map, "repeat")
+                .map(|v| booleano(v, &giu(path, "repeat")))
+                .transpose()?
+                .unwrap_or(false),
+            position: campo(map, "position")
+                .map(|v| coppia(v, &giu(path, "position")))
+                .transpose()?,
+        }),
         altro => {
             let candidati = vicini(altro, Effect::NAMES.iter().copied());
             Err(SkinIssue {
@@ -677,15 +1122,9 @@ fn valore_token(def: &TokenDef, value: &Value, path: &str) -> Esito<TokenValue> 
 
 /// Gli estremi di [`TokenDef::limiti`], quando ci sono.
 ///
-/// # Perché una lunghezza limitata accetta solo `px` e `rem`
-///
-/// Un estremo su una lunghezza è un numero, e un numero senza unità non
-/// confronta niente: `64%` non è «più piccolo» di `64px`, è un'altra cosa. Le
-/// unità relative alla finestra sono anche esattamente il modo in cui la
-/// garanzia salterebbe — `space.5: 30vh` starebbe dentro qualunque estremo
-/// numerico e produrrebbe comunque un'aria che spinge il contenuto fuori dallo
-/// schermo. Quindi dove c'è un estremo l'unità è assoluta, e `rem` si converte
-/// alla sua radice di 16px per essere confrontabile.
+/// Dove c'è un estremo l'unità è assoluta: `64%` non è «più piccolo» di `64px`,
+/// e le unità relative alla finestra sono esattamente il modo in cui la
+/// garanzia salterebbe. `rem` si converte alla sua radice di 16px.
 fn entro_gli_estremi(def: &TokenDef, valore: &TokenValue, path: &str) -> Esito<()> {
     let Some((min, max)) = def.limiti else {
         return Ok(());
@@ -727,8 +1166,6 @@ fn entro_gli_estremi(def: &TokenDef, valore: &TokenValue, path: &str) -> Esito<(
                 }
             }
         }
-        // Gli altri tipi non hanno estremi, e la tabella lo garantisce: c'è un
-        // test che rifiuta un `limiti` su un colore o su una curva.
         _ => {}
     }
 
@@ -758,17 +1195,22 @@ fn insieme_token(value: &Value, path: &str, problemi: &mut Vec<SkinIssue>) -> Es
 
 // ── Le parti ────────────────────────────────────────────────────────────────
 
+/// Quel che una parte può richiamare per nome, letto prima delle parti.
+///
+/// Un richiamo si risolve solo se quel che richiama esiste già: motivi,
+/// animazioni e curve si leggono prima, e le parti li trovano qui.
+struct Richiamabili<'a> {
+    motivi: &'a [(String, Effect)],
+    animazioni: &'a [(String, Animation)],
+    curve: &'a [(String, Easing)],
+}
+
 /// Uno strato di pittura: `{"$pattern": "nome"}`, oppure un effetto per esteso.
 ///
-/// # Perché la destinazione si controlla solo per i motivi
-///
-/// Un effetto scritto per esteso nel posto sbagliato — un `blurBehind` dentro
-/// `background` — produce una dichiarazione CSS che il browser scarta: si vede
-/// subito che non fa niente. Un **motivo** nel posto sbagliato produce invece un
-/// nome di variabile che non esiste: `compila_motivi` scrive `--skin-x-filter` e
-/// la parte chiederebbe `var(--skin-x)`, cioè un riferimento a un motivo
-/// dichiarato che risolve nel nulla senza che nessuno lo dica. È l'unico dei due
-/// casi in cui l'errore è invisibile, ed è per questo che è l'unico controllato.
+/// Un **motivo** nel posto sbagliato produce un nome di variabile che non
+/// esiste — `--skin-x-filter` richiesto come `var(--skin-x)` — cioè un
+/// riferimento che risolve nel nulla senza che nessuno lo dica. È l'unico caso
+/// in cui l'errore è invisibile, ed è per questo che è l'unico controllato.
 fn pittura(
     value: &Value,
     path: &str,
@@ -813,68 +1255,8 @@ const fn nome_destinazione(target: EffectTarget) -> &'static str {
     match target {
         EffectTarget::Background => "sfondo",
         EffectTarget::ClipPath => "ritaglio",
-        EffectTarget::Filter => "filtro",
+        EffectTarget::Filter => "filtro di quel che sta dietro",
     }
-}
-
-fn aspetto(value: &Value, path: &str, motivi: &[(String, Effect)]) -> Esito<PartAppearance> {
-    let map = oggetto(value, path)?;
-    solo_chiavi(
-        map,
-        path,
-        &[
-            "background",
-            "textColor",
-            "borderColor",
-            "borderWidth",
-            "radius",
-            "clip",
-            "filter",
-            "opacity",
-            "letterSpacing",
-            "textTransform",
-            "fontWeight",
-        ],
-    )?;
-    Ok(PartAppearance {
-        background: match campo(map, "background") {
-            None => Vec::new(),
-            Some(grezzo) => livelli(grezzo, &giu(path, "background"), 0, 4, motivi)?,
-        },
-        text_color: campo(map, "textColor")
-            .map(|v| colore(v, &giu(path, "textColor")))
-            .transpose()?,
-        border_color: campo(map, "borderColor")
-            .map(|v| colore(v, &giu(path, "borderColor")))
-            .transpose()?,
-        border_width: lunghezza_facoltativa(map, path, "borderWidth")?,
-        radius: lunghezza_facoltativa(map, path, "radius")?,
-        clip: campo(map, "clip")
-            .map(|v| pittura(v, &giu(path, "clip"), motivi, EffectTarget::ClipPath))
-            .transpose()?,
-        // Come `clip`, con l'altra destinazione: `pittura` controlla che un
-        // `$pattern` messo qui sia dichiarato per il filtro e non per lo
-        // sfondo, che è la stessa guardia e la stessa ragione.
-        filter: campo(map, "filter")
-            .map(|v| pittura(v, &giu(path, "filter"), motivi, EffectTarget::Filter))
-            .transpose()?,
-        opacity: campo(map, "opacity")
-            .map(|v| numero_fra(v, &giu(path, "opacity"), 0.0, 1.0))
-            .transpose()?,
-        letter_spacing: lunghezza_facoltativa(map, path, "letterSpacing")?,
-        text_transform: campo(map, "textTransform")
-            .map(|v| {
-                let nomi: Vec<(&str, TextTransform)> = TextTransform::ALL
-                    .iter()
-                    .map(|t| (t.as_str(), *t))
-                    .collect();
-                parola(v, &giu(path, "textTransform"), &nomi)
-            })
-            .transpose()?,
-        font_weight: campo(map, "fontWeight")
-            .map(|v| numero_fra(v, &giu(path, "fontWeight"), 1.0, 1000.0))
-            .transpose()?,
-    })
 }
 
 fn livelli(
@@ -897,25 +1279,378 @@ fn livelli(
     Ok(strati)
 }
 
+/// Il raggio: una lunghezza, o un oggetto con gli angoli.
+fn raggio(value: &Value, path: &str) -> Esito<Raggio> {
+    let Some(map) = value.as_object() else {
+        return lunghezza(value, path).map(Raggio::Uguale);
+    };
+    solo_chiavi(map, path, CHIAVI_ANGOLI)?;
+    if map.is_empty() {
+        return Err(problema(
+            path,
+            "un raggio per angolo deve nominare almeno un angolo",
+        ));
+    }
+    Ok(Raggio::Angoli {
+        top_left: lunghezza_facoltativa(map, path, "topLeft")?,
+        top_right: lunghezza_facoltativa(map, path, "topRight")?,
+        bottom_right: lunghezza_facoltativa(map, path, "bottomRight")?,
+        bottom_left: lunghezza_facoltativa(map, path, "bottomLeft")?,
+    })
+}
+
+/// I filtri sull'elemento: una lista di oggetti a una chiave sola.
+///
+/// La forma è `[{ "blur": "2px" }, { "saturate": 1.4 }]`, e non un oggetto con
+/// tante chiavi, perché l'ordine dei filtri cambia il risultato — una
+/// sfocatura prima della saturazione non è una saturazione prima della
+/// sfocatura — e l'ordine delle chiavi di un oggetto non è qualcosa su cui
+/// fare affidamento.
+fn filtri_elemento(value: &Value, path: &str) -> Esito<Vec<FiltroElemento>> {
+    if value.is_object() {
+        return Err(problema(
+            path,
+            "qui ci va una lista di filtri sull'elemento, come [{ \"blur\": \"2px\" }]. Il filtro \
+             di quel che sta dietro — la sfocatura del vetro — si chiama `backdrop`",
+        ));
+    }
+    let voci = lista_fra(value, path, 1, 6)?;
+    let mut filtri = Vec::with_capacity(voci.len());
+    for (indice, grezzo) in voci.iter().enumerate() {
+        let dentro = giu(path, &indice.to_string());
+        let map = oggetto(grezzo, &dentro)?;
+        let mut chiavi = map.keys();
+        let (Some(nome), None) = (chiavi.next(), chiavi.next()) else {
+            return Err(problema(
+                &dentro,
+                "ogni filtro è un oggetto con una chiave sola: il nome del filtro",
+            ));
+        };
+        let valore = map.get(nome).unwrap_or(&Value::Null);
+        let qui = giu(&dentro, nome);
+        filtri.push(match nome.as_str() {
+            "blur" => FiltroElemento::Blur(misura_fra(valore, &qui, 0.0, 40.0)?),
+            "brightness" => FiltroElemento::Brightness(numero_fra(valore, &qui, 0.0, 3.0)?),
+            "contrast" => FiltroElemento::Contrast(numero_fra(valore, &qui, 0.0, 3.0)?),
+            "saturate" => FiltroElemento::Saturate(numero_fra(valore, &qui, 0.0, 3.0)?),
+            "grayscale" => FiltroElemento::Grayscale(numero_fra(valore, &qui, 0.0, 1.0)?),
+            "hueRotate" => FiltroElemento::HueRotate(numero_fra(valore, &qui, -360.0, 360.0)?),
+            "dropShadow" => {
+                let ombra = oggetto(valore, &qui)?;
+                solo_chiavi(ombra, &qui, &["x", "y", "blur", "color"])?;
+                FiltroElemento::DropShadow {
+                    x: lunghezza(richiesto(ombra, &qui, "x")?, &giu(&qui, "x"))?,
+                    y: lunghezza(richiesto(ombra, &qui, "y")?, &giu(&qui, "y"))?,
+                    blur: lunghezza(richiesto(ombra, &qui, "blur")?, &giu(&qui, "blur"))?,
+                    color: colore(richiesto(ombra, &qui, "color")?, &giu(&qui, "color"))?,
+                }
+            }
+            altro => {
+                let candidati = vicini(altro, FiltroElemento::NAMES.iter().copied());
+                return Err(problema(
+                    &qui,
+                    format!("filtro sconosciuto: «{altro}».{}", forse(&candidati)),
+                ));
+            }
+        });
+    }
+    Ok(filtri)
+}
+
+fn aspetto(value: &Value, path: &str, motivi: &[(String, Effect)]) -> Esito<PartAppearance> {
+    let map = oggetto(value, path)?;
+    solo_chiavi(map, path, CHIAVI_ASPETTO)?;
+    Ok(PartAppearance {
+        background: match campo(map, "background") {
+            None => Vec::new(),
+            Some(grezzo) => livelli(grezzo, &giu(path, "background"), 0, 4, motivi)?,
+        },
+        text_color: campo(map, "textColor")
+            .map(|v| colore(v, &giu(path, "textColor")))
+            .transpose()?,
+        border_color: campo(map, "borderColor")
+            .map(|v| colore(v, &giu(path, "borderColor")))
+            .transpose()?,
+        border_width: lunghezza_facoltativa(map, path, "borderWidth")?,
+        border_style: campo(map, "borderStyle")
+            .map(|v| {
+                let nomi: Vec<(&str, BorderStyle)> =
+                    BorderStyle::ALL.iter().map(|s| (s.as_str(), *s)).collect();
+                parola(v, &giu(path, "borderStyle"), &nomi)
+            })
+            .transpose()?,
+        radius: campo(map, "radius")
+            .map(|v| raggio(v, &giu(path, "radius")))
+            .transpose()?,
+        shadow: campo(map, "shadow")
+            .map(|v| ombra_parte(v, &giu(path, "shadow")))
+            .transpose()?,
+        focus_ring: campo(map, "focusRing")
+            .map(|v| {
+                let dentro = giu(path, "focusRing");
+                let anello = oggetto(v, &dentro)?;
+                solo_chiavi(anello, &dentro, CHIAVI_ANELLO)?;
+                Ok(AnelloFuoco {
+                    color: colore(richiesto(anello, &dentro, "color")?, &giu(&dentro, "color"))?,
+                    width: misura_fra(
+                        richiesto(anello, &dentro, "width")?,
+                        &giu(&dentro, "width"),
+                        0.0,
+                        8.0,
+                    )?,
+                    offset: campo(anello, "offset")
+                        .map(|o| {
+                            let letta = lunghezza_in(
+                                o,
+                                &giu(&dentro, "offset"),
+                                &[LengthUnit::Px, LengthUnit::Rem],
+                            )?;
+                            if letta.value.abs() > 12.0 {
+                                return Err(problema(
+                                    &giu(&dentro, "offset"),
+                                    "va fra -12px e 12px",
+                                ));
+                            }
+                            Ok(letta)
+                        })
+                        .transpose()?,
+                })
+            })
+            .transpose()?,
+        clip: campo(map, "clip")
+            .map(|v| pittura(v, &giu(path, "clip"), motivi, EffectTarget::ClipPath))
+            .transpose()?,
+        filter: match campo(map, "filter") {
+            None => Vec::new(),
+            Some(grezzo) => filtri_elemento(grezzo, &giu(path, "filter"))?,
+        },
+        backdrop: campo(map, "backdrop")
+            .map(|v| pittura(v, &giu(path, "backdrop"), motivi, EffectTarget::Filter))
+            .transpose()?,
+        opacity: campo(map, "opacity")
+            .map(|v| numero_fra(v, &giu(path, "opacity"), 0.0, 1.0))
+            .transpose()?,
+        font: campo(map, "font")
+            .map(|v| {
+                parola(
+                    v,
+                    &giu(path, "font"),
+                    &[
+                        ("sans", FontKind::Sans),
+                        ("mono", FontKind::Mono),
+                        ("display", FontKind::Display),
+                    ],
+                )
+            })
+            .transpose()?,
+        font_size: campo(map, "fontSize")
+            .map(|v| misura_fra(v, &giu(path, "fontSize"), FONT_SIZE_MIN, FONT_SIZE_MAX))
+            .transpose()?,
+        line_height: campo(map, "lineHeight")
+            .map(|v| numero_fra(v, &giu(path, "lineHeight"), 0.8, 3.0))
+            .transpose()?,
+        letter_spacing: lunghezza_facoltativa(map, path, "letterSpacing")?,
+        text_transform: campo(map, "textTransform")
+            .map(|v| {
+                let nomi: Vec<(&str, TextTransform)> = TextTransform::ALL
+                    .iter()
+                    .map(|t| (t.as_str(), *t))
+                    .collect();
+                parola(v, &giu(path, "textTransform"), &nomi)
+            })
+            .transpose()?,
+        font_weight: campo(map, "fontWeight")
+            .map(|v| numero_fra(v, &giu(path, "fontWeight"), 1.0, 1000.0))
+            .transpose()?,
+    })
+}
+
+/// Un livello su `::before` o `::after`, se la parte ne ha uno libero.
+fn livello(
+    def: &PartDef,
+    quale: &str,
+    libero: bool,
+    value: &Value,
+    path: &str,
+    motivi: &[(String, Effect)],
+) -> Esito<PartLayer> {
+    if !libero {
+        // Non è un capriccio: lo pseudo-elemento di questa parte è già usato
+        // dal componente, o la parte è un'immagine e non ne ha. Una skin che ci
+        // scrivesse sopra non otterrebbe il suo livello — e toglierebbe quel che
+        // c'era, o non disegnerebbe niente.
+        return Err(problema(
+            path,
+            format!(
+                "la parte «{}» non ha `::{quale}` libero per un livello",
+                def.name
+            ),
+        ));
+    }
+    let map = oggetto(value, path)?;
+    solo_chiavi(map, path, CHIAVI_LIVELLO)?;
+    Ok(PartLayer {
+        background: livelli(
+            richiesto(map, path, "background")?,
+            &giu(path, "background"),
+            1,
+            3,
+            motivi,
+        )?,
+        opacity: campo(map, "opacity")
+            .map(|v| numero_fra(v, &giu(path, "opacity"), 0.0, 1.0))
+            .transpose()?,
+    })
+}
+
+/// Il movimento di una parte: `parts.<p>.motion`.
+fn movimento_parte(
+    def: &'static PartDef,
+    value: &Value,
+    path: &str,
+    richiamabili: &Richiamabili<'_>,
+) -> Esito<PartMotion> {
+    let map = oggetto(value, path)?;
+    let mut motion = PartMotion::default();
+
+    for (chiave, grezzo) in map {
+        let percorso = giu(path, chiave);
+        match chiave.as_str() {
+            "stagger" => {
+                let passo = durata(grezzo, &percorso)?;
+                if passo.ms > MAX_CASCATA_MS {
+                    return Err(problema(
+                        &percorso,
+                        format!("il passo della cascata va fino a {MAX_CASCATA_MS}ms"),
+                    ));
+                }
+                motion.stagger = Some(passo);
+            }
+            "transition" => {
+                let blocco = oggetto(grezzo, &percorso)?;
+                solo_chiavi(blocco, &percorso, CHIAVI_TRANSIZIONE)?;
+                let tempo = durata(
+                    richiesto(blocco, &percorso, "duration")?,
+                    &giu(&percorso, "duration"),
+                )?;
+                if tempo.ms > MAX_DURATA_MS {
+                    return Err(problema(
+                        &giu(&percorso, "duration"),
+                        format!("al massimo {MAX_DURATA_MS}ms"),
+                    ));
+                }
+                motion.transition = Some(Transizione {
+                    duration: tempo,
+                    easing: campo(blocco, "easing")
+                        .map(|v| curva(v, &giu(&percorso, "easing"), richiamabili.curve))
+                        .transpose()?
+                        .unwrap_or_default(),
+                });
+            }
+            altro => {
+                let Some(trigger) = AnimTrigger::parse(altro) else {
+                    let nomi: Vec<&str> = AnimTrigger::nomi()
+                        .into_iter()
+                        .chain(CHIAVI_MOVIMENTO_PARTE.iter().copied())
+                        .collect();
+                    let candidati = vicini(altro, nomi.iter().copied());
+                    let dopo = if altro == "active" {
+                        " Nel formato 2 lo stato che si chiamava «active» si chiama «current»."
+                    } else {
+                        ""
+                    };
+                    return Err(problema(
+                        &percorso,
+                        format!(
+                            "innesco sconosciuto: «{altro}».{}{dopo} Ammessi: {}.",
+                            forse(&candidati),
+                            nomi.join(", ")
+                        ),
+                    ));
+                };
+                if trigger == AnimTrigger::Exit && !def.presenza {
+                    return Err(problema(
+                        &percorso,
+                        format!(
+                            "«{}» non entra ed esce dal documento come un'unità, quindi non ha \
+                             un'uscita da animare: l'uscita esiste solo sulle presenze — menù, \
+                             modali, notifiche, la colonna, la coda, il contenuto della pagina",
+                            def.name
+                        ),
+                    ));
+                }
+                if trigger == AnimTrigger::Share && !def.condivisa {
+                    return Err(problema(
+                        &percorso,
+                        format!(
+                            "«{}» non vola fra due schermate: il volo condiviso esiste solo sulle \
+                             copertine",
+                            def.name
+                        ),
+                    ));
+                }
+                let richiamata = testo(grezzo, &percorso)?;
+                let Some((_, animazione)) = richiamabili
+                    .animazioni
+                    .iter()
+                    .find(|(nome, _)| nome == richiamata)
+                else {
+                    let candidati = vicini(
+                        richiamata,
+                        richiamabili
+                            .animazioni
+                            .iter()
+                            .map(|(nome, _)| nome.as_str()),
+                    );
+                    return Err(problema(
+                        &percorso,
+                        format!(
+                            "animazione inesistente: «{richiamata}». \
+                             Le animazioni si dichiarano in `motion.animations`.{}",
+                            forse(&candidati)
+                        ),
+                    ));
+                };
+                if animazione.iterations == Iterazioni::Infinite && !trigger.ammette_ciclo() {
+                    return Err(problema(
+                        &percorso,
+                        format!(
+                            "«{richiamata}» si ripete all'infinito, e «{altro}» non è uno stato: \
+                             un ciclo dura quanto lo stato che lo accende, e un'entrata, \
+                             un'uscita o un cambio non finirebbero mai. Mettilo su uno stato — \
+                             «playing», «hover», «current» — o dagli un numero di ripetizioni"
+                        ),
+                    ));
+                }
+                motion.set(
+                    trigger,
+                    AnimationRef {
+                        name: richiamata.to_owned(),
+                        def: animazione.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    Ok(motion)
+}
+
+/// Una parte, nella base o nella variante.
+///
+/// Nella variante il movimento non c'è: un tema cambia i colori e le superfici,
+/// non come le cose si muovono, e una parte che si animasse in modo diverso a
+/// seconda del tema sarebbe una seconda skin nascosta dentro la prima.
 fn stile_parte(
     nome: &str,
     value: &Value,
     path: &str,
-    motivi: &[(String, Effect)],
-    animazioni: &[(String, Animation)],
+    richiamabili: &Richiamabili<'_>,
+    nella_variante: bool,
 ) -> Esito<Option<PartStyle>> {
     let Some(def) = part(nome) else {
-        // Una parte ritirata si accetta e non fa niente. Il nome è pubblico: sta
-        // nelle skin già spedite, e qui sotto un nome sconosciuto è un errore
-        // che **ferma il caricamento** dell'intera skin, non un avviso. Senza
-        // questo ramo, ritirare `viz-title` — che non disegnava niente neanche
-        // prima — spegnerebbe la skin di qualcun altro per intero.
-        //
-        // Torna `None` e non un `PartStyle` vuoto perché un `PartStyle` porta il
-        // suo `PartDef`, e una parte ritirata non ne ha uno: è precisamente ciò
-        // che vuol dire ritirarla. Non finendo nell'elenco, non produce
-        // selettori, non conta nel costo e non compare nell'editor — cioè
-        // esattamente «si accetta e non fa niente».
+        // Una parte ritirata si accetta e non fa niente: il nome è pubblico, e
+        // un nome sconosciuto qui **ferma il caricamento** dell'intera skin.
         if ritirata(nome).is_some() {
             return Ok(None);
         }
@@ -927,139 +1662,117 @@ fn stile_parte(
     };
     let map = oggetto(value, path)?;
 
-    // L'aspetto e i due blocchi strutturali stanno nello stesso oggetto: si
-    // toglie quel che non è aspetto e si valida il resto con la stessa
-    // funzione degli stati, così base e stati non possono divergere.
+    let ammesse: Vec<&str> = CHIAVI_ASPETTO
+        .iter()
+        .chain(CHIAVI_STRUTTURA_PARTE.iter())
+        .copied()
+        .collect();
+    solo_chiavi(map, path, &ammesse)?;
+    if nella_variante && campo(map, "motion").is_some() {
+        return Err(problema(
+            &giu(path, "motion"),
+            "il movimento non cambia col tema: dichiaralo sulla parte della skin, fuori da `variant`",
+        ));
+    }
+
+    // L'aspetto e i blocchi strutturali stanno nello stesso oggetto: si toglie
+    // quel che non è aspetto e si valida il resto con la stessa funzione degli
+    // stati, così base e stati non possono divergere.
     let mut solo_aspetto = map.clone();
-    solo_aspetto.remove("layer");
-    solo_aspetto.remove("states");
-    solo_aspetto.remove("animations");
-    let appearance = aspetto(&Value::Object(solo_aspetto), path, motivi)?;
+    for chiave in CHIAVI_STRUTTURA_PARTE {
+        solo_aspetto.remove(*chiave);
+    }
+    let appearance = aspetto(&Value::Object(solo_aspetto), path, richiamabili.motivi)?;
 
-    let layer = match campo(map, "layer") {
-        None => None,
-        Some(grezzo) => {
-            let dentro = giu(path, "layer");
-            if !def.layers {
-                // Non è un capriccio: lo pseudo-elemento di questa parte è già
-                // usato dal componente, e un secondo `::after` non esiste. Una
-                // skin che ci scrive sopra non otterrebbe il suo livello — e
-                // toglierebbe quello che c'era.
-                return Err(problema(
-                    &dentro,
-                    format!("la parte «{nome}» non ha uno pseudo-elemento libero per un livello"),
-                ));
-            }
-            let livello = oggetto(grezzo, &dentro)?;
-            solo_chiavi(livello, &dentro, &["background", "opacity"])?;
-            Some(PartLayer {
-                background: livelli(
-                    richiesto(livello, &dentro, "background")?,
-                    &giu(&dentro, "background"),
-                    1,
-                    3,
-                    motivi,
-                )?,
-                opacity: campo(livello, "opacity")
-                    .map(|v| numero_fra(v, &giu(&dentro, "opacity"), 0.0, 1.0))
-                    .transpose()?,
-            })
-        }
-    };
+    let before = campo(map, "before")
+        .map(|v| {
+            livello(
+                def,
+                "before",
+                def.before,
+                v,
+                &giu(path, "before"),
+                richiamabili.motivi,
+            )
+        })
+        .transpose()?;
+    let after = campo(map, "after")
+        .map(|v| {
+            livello(
+                def,
+                "after",
+                def.after,
+                v,
+                &giu(path, "after"),
+                richiamabili.motivi,
+            )
+        })
+        .transpose()?;
 
-    let mut states = PartStates::default();
+    let mut stati = Vec::new();
     if let Some(grezzo) = campo(map, "states") {
         let dentro = giu(path, "states");
         let blocco = oggetto(grezzo, &dentro)?;
-        let nomi: Vec<&str> = PartState::ALL.iter().map(|s| s.as_str()).collect();
-        solo_chiavi(blocco, &dentro, &nomi)?;
-        for stato in PartState::ALL {
-            let Some(valore) = campo(blocco, stato.as_str()) else {
-                continue;
-            };
-            let aspetto_stato = aspetto(valore, &giu(&dentro, stato.as_str()), motivi)?;
-            match *stato {
-                PartState::Hover => states.hover = Some(aspetto_stato),
-                PartState::Active => states.active = Some(aspetto_stato),
-                PartState::Focus => states.focus = Some(aspetto_stato),
-                PartState::Disabled => states.disabled = Some(aspetto_stato),
-            }
-        }
-    }
-
-    let mut animations = PartAnimations::default();
-    if let Some(grezzo) = campo(map, "animations") {
-        let dentro = giu(path, "animations");
-        let blocco = oggetto(grezzo, &dentro)?;
-        for chiave in blocco.keys() {
-            if AnimTrigger::parse(chiave).is_some() {
-                continue;
-            }
-            // `exit` ha una risposta sua perché è la prima cosa che si prova
-            // dopo aver scritto `enter`, e «chiave sconosciuta» manderebbe a
-            // cercare un refuso invece di leggere il motivo.
-            let perche = if chiave == "exit" {
-                " In CSS puro l'uscita non esiste: perché una parte che se ne va                  possa animarsi qualcuno deve tenerla montata finché l'animazione                  finisce, e quel qualcuno è il renderer, non il foglio."
-            } else {
-                ""
-            };
-            return Err(problema(
-                &giu(&dentro, chiave),
-                format!(
-                    "trigger sconosciuto: «{chiave}». Ammessi soltanto: {}.{perche}",
-                    AnimTrigger::nomi().join(", ")
-                ),
-            ));
-        }
-        if blocco.len() > MAX_TRIGGER_PER_PARTE {
-            return Err(problema(
-                &dentro,
-                format!(
-                    "al massimo {MAX_TRIGGER_PER_PARTE} trigger per parte, non {}: \
-                     una superficie che si muove a ogni stato non si legge più come una \
-                     superficie, si legge come un guasto",
-                    blocco.len()
-                ),
-            ));
-        }
-        for trigger in AnimTrigger::ALL {
-            let Some(valore) = campo(blocco, trigger.as_str()) else {
-                continue;
-            };
-            let percorso = giu(&dentro, trigger.as_str());
-            let richiamata = testo(valore, &percorso)?;
-            let Some((_, def)) = animazioni.iter().find(|(nome, _)| nome == richiamata) else {
-                // Stesso trattamento del nome di una parte sbagliato: chi
-                // sbaglia sbaglia per assonanza, e l'elenco completo delle
-                // animazioni dichiarate è il modo educato di non dire niente.
-                let candidati =
-                    vicini(richiamata, animazioni.iter().map(|(nome, _)| nome.as_str()));
+        for (chiave, valore) in blocco {
+            let Some(stato) = PartState::parse(chiave) else {
+                let candidati = vicini(chiave, PartState::ALL.iter().map(|s| s.as_str()));
+                let dopo = if chiave == "active" {
+                    " Nel formato 2 lo stato che si chiamava «active» si chiama «current»."
+                } else {
+                    ""
+                };
                 return Err(problema(
-                    &percorso,
+                    &giu(&dentro, chiave),
                     format!(
-                        "animazione inesistente: «{richiamata}». \
-                         Le animazioni si dichiarano in `motion.animations`.{}",
-                        forse(&candidati)
+                        "stato sconosciuto: «{chiave}».{}{dopo} Ammessi: {}.",
+                        forse(&candidati),
+                        PartState::nomi().join(", ")
                     ),
                 ));
             };
-            animations.set(
-                *trigger,
-                AnimationRef {
-                    name: richiamata.to_owned(),
-                    def: def.clone(),
-                },
-            );
+            stati.push((
+                stato,
+                aspetto(valore, &giu(&dentro, chiave), richiamabili.motivi)?,
+            ));
         }
     }
+
+    let motion = match campo(map, "motion") {
+        None => PartMotion::default(),
+        Some(grezzo) => movimento_parte(def, grezzo, &giu(path, "motion"), richiamabili)?,
+    };
 
     Ok(Some(PartStyle {
         def,
         appearance,
-        layer,
-        states,
-        animations,
+        before,
+        after,
+        states: PartStates::new(stati),
+        motion,
     }))
+}
+
+fn superfici(
+    value: &Value,
+    path: &str,
+    richiamabili: &Richiamabili<'_>,
+    nella_variante: bool,
+    problemi: &mut Vec<SkinIssue>,
+) -> Esito<Vec<PartStyle>> {
+    let map = oggetto(value, path)?;
+    let mut stili = Vec::with_capacity(map.len());
+    for (nome, grezzo) in map {
+        match stile_parte(nome, grezzo, &giu(path, nome), richiamabili, nella_variante) {
+            Ok(Some(stile)) => stili.push(stile),
+            // Una parte ritirata: letta, accettata, e lasciata cadere qui.
+            Ok(None) => {}
+            Err(guasto) => problemi.push(guasto),
+        }
+    }
+    // Ordine di registro e non alfabetico: nel CSS l'ordine decide la cascata a
+    // parità di specificità, e il registro va dal generale al particolare.
+    stili.sort_by_key(|stile| crate::parts::posto(stile.def.name));
+    Ok(stili)
 }
 
 // ── I blocchi del documento ─────────────────────────────────────────────────
@@ -1073,7 +1786,7 @@ pub struct SkinMeta {
     pub name: String,
     /// L'autore.
     pub author: String,
-    /// La versione della skin, `1.0.0`. Serve all'allineamento fra PC e telefono.
+    /// La versione della skin, `1.0.0`.
     pub version: String,
     /// A cosa somiglia.
     pub description: Option<String>,
@@ -1083,34 +1796,105 @@ pub struct SkinMeta {
     pub based_on: Option<String>,
     /// I tre colori della scheda nel selettore, scelti dall'autore.
     ///
-    /// Senza, chi disegna il selettore deve indovinarli, e il modo ovvio di
-    /// indovinare — fondo, superficie e accento — dà tre grigi quasi uguali per
-    /// una skin sobria e sbaglia del tutto per una che tiene la sua identità in
-    /// un colore della tavolozza. Sono **letterali** e non riferimenti a token:
-    /// servono a mostrare la skin a chi non l'ha ancora scelta, cioè quando i
-    /// suoi token non sono applicati a niente.
+    /// Sono **letterali** e non riferimenti a token: servono a mostrare la
+    /// skin a chi non l'ha ancora scelta, cioè quando i suoi token non sono
+    /// applicati a niente.
     pub preview: Option<[Rgba; 3]>,
 }
 
+/// Il tema di base di una skin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scheme {
+    /// Scura di base: la variante, se c'è, è chiara.
+    #[default]
+    Dark,
+    /// Chiara di base: la variante, se c'è, è scura.
+    Light,
+}
+
+impl Scheme {
+    /// Come si scrive nel documento e in `color-scheme`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+
+    /// Il tema opposto: quello della variante.
+    #[must_use]
+    pub const fn opposto(self) -> Self {
+        match self {
+            Self::Dark => Self::Light,
+            Self::Light => Self::Dark,
+        }
+    }
+
+    /// Come si chiama in un messaggio: «scuro», «chiaro».
+    #[must_use]
+    pub const fn nome(self) -> &'static str {
+        match self {
+            Self::Dark => "scuro",
+            Self::Light => "chiaro",
+        }
+    }
+}
+
 /// Cosa la skin dichiara di saper fare.
+///
+/// Nel formato 1 c'erano anche `light` e `mobile`: il primo è diventato la
+/// presenza di [`SkinDocument::variant`], che non può più mentire — una
+/// variante c'è o non c'è — e il secondo non lo leggeva nessuno.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SkinCapabilities {
-    /// Ha una variante chiara. Se falsa, l'interruttore del tema non si mostra.
-    pub light: bool,
-    /// Ha sovrascritture pensate per lo schermo di un telefono.
-    pub mobile: bool,
     /// Va bene che i colori seguano la copertina. Una skin con una tavolozza
-    /// fissa e voluta — Nothing è bianco e nero per scelta — dice falso.
+    /// fissa e voluta dice falso.
     pub dynamic_accent: bool,
 }
 
 impl Default for SkinCapabilities {
     fn default() -> Self {
         Self {
-            light: false,
-            mobile: false,
             dynamic_accent: true,
         }
+    }
+}
+
+/// Un carattere portato dal pacchetto.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontFace {
+    /// Il nome della famiglia, come lo scrivono i token `font.*`.
+    pub family: String,
+    /// La voce `woff2` del pacchetto.
+    pub src: String,
+    /// Il peso, o l'intervallo dei pesi di un carattere variabile.
+    pub weight: (u16, u16),
+    /// Corsivo.
+    pub italic: bool,
+}
+
+/// Il tema opposto a quello di base.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Variante {
+    /// I token che cambiano.
+    pub tokens: TokenSet,
+    /// I colori della tavolozza che cambiano. Solo nomi già dichiarati.
+    pub palette: Vec<(String, Rgba)>,
+    /// I motivi che cambiano. Solo nomi già dichiarati, con la stessa destinazione.
+    pub patterns: Vec<(String, Effect)>,
+    /// Le parti ridipinte in questo tema.
+    pub parts: Vec<PartStyle>,
+}
+
+impl Variante {
+    /// Non cambia niente: una promessa vuota.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tokens.is_empty()
+            && self.palette.is_empty()
+            && self.patterns.is_empty()
+            && self.parts.is_empty()
     }
 }
 
@@ -1156,9 +1940,9 @@ impl MotionIntensity {
 
 /// Un fotogramma di una transizione di rotta.
 ///
-/// Solo opacità e trasformazione: sono le due proprietà che il compositore
-/// anima senza ridisegnare, e il vincolo è del compilatore, non una
-/// raccomandazione scritta da qualche parte.
+/// Solo opacità e trasformazione: queste regole agiscono su un'istantanea
+/// dell'intera pagina, e una rotazione o un colore lì non hanno un significato
+/// che si possa prevedere.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct RouteFrame {
     /// Opacità.
@@ -1177,9 +1961,13 @@ impl RouteFrame {
     }
 }
 
-/// Come si sostituiscono due schermate.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct RouteTransition {
+/// Come si sostituiscono due pagine.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Rotta {
+    /// Quanto dura. Assente: `--dur-2`, come nel formato 1.
+    pub duration: Option<Duration>,
+    /// Con che curva. Assente: `--ease-out-expo`.
+    pub easing: Option<Curva>,
     /// Come esce quella vecchia.
     pub out: Option<RouteFrame>,
     /// Come entra quella nuova.
@@ -1189,57 +1977,20 @@ pub struct RouteTransition {
 /// Il movimento della skin.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkinMotion {
-    /// Quanto si muove.
-    ///
-    /// Si **compone** con `prefers-reduced-motion`, non lo sovrascrive verso
-    /// l'alto: la media query del sistema viene dopo, quindi vince.
+    /// Quanto si muove. Si **compone** con `prefers-reduced-motion`.
     pub intensity: MotionIntensity,
-    /// Curve aggiuntive della skin, oltre a quelle del registro. In ordine di
-    /// nome, perché il foglio prodotto dev'essere deterministico.
+    /// Le curve della skin, in ordine di nome.
     pub easings: Vec<(String, Easing)>,
-    /// Le transizioni di rotta.
-    pub route_transition: Option<RouteTransition>,
+    /// Il cambio di pagina.
+    pub route: Option<Rotta>,
     /// Le animazioni nominate, in ordine di nome.
-    ///
-    /// In ordine per la stessa ragione di [`Self::easings`]: il foglio prodotto
-    /// dev'essere lo stesso a ogni compilazione, e l'ordine delle chiavi di un
-    /// oggetto JSON non e' qualcosa su cui fare affidamento.
-    ///
-    /// Sono **dichiarazioni**, non assegnazioni: chi le usa sono le parti, e
-    /// una dichiarata e mai richiamata si compila in `@keyframes` che nessuno
-    /// legge - un avviso, come per un motivo o un prefab, non un errore.
     pub animations: Vec<(String, Animation)>,
-}
-
-/// Dove sta il player.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlayerLayout {
-    /// Attaccato in basso.
-    BottomBar,
-    /// Flottante.
-    Floating,
-    /// Ridotto.
-    Compact,
-}
-
-/// Come si presenta la barra laterale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SidebarLayout {
-    /// Solo icone.
-    Rail,
-    /// Aperta.
-    Expanded,
-    /// Nascosta.
-    Hidden,
 }
 
 /// Quanto respira il contenuto.
 ///
-/// I tre gradini sono **parole**, non misure, e i numeri che ci stanno dietro —
-/// la scala `--spazio-1..5` — sono del motore e stanno in `stile.css`, non qui e
-/// non nel compilatore. È la stessa ragione per cui la spaziatura non è un
-/// token: una skin che potesse scriverne il valore potrebbe ridurre l'aria a
-/// zero o gonfiarla finché qualcosa esce dallo schermo.
+/// I tre gradini sono **parole**, non misure, e i numeri che ci stanno dietro
+/// sono del motore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Density {
     /// Stretto.
@@ -1250,58 +2001,34 @@ pub enum Density {
     Spacious,
 }
 
+impl Density {
+    /// Come si scrive nel documento e in `data-density`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Comfortable => "comfortable",
+            Self::Spacious => "spacious",
+        }
+    }
+}
+
 /// Le scelte di impaginazione.
-///
-/// Non è più `Copy`: [`Self::shell`] è un albero, e un albero ha figli. Il
-/// prezzo è una riga di `.clone()` dove prima non serviva; quel che si compra è
-/// che una skin possa dire **dove** stanno le cose invece che solo di che
-/// colore sono.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkinLayout {
-    /// Il player.
-    ///
-    /// Non è geometria: sceglie una variante dell'albero di serie, e conta
-    /// **solo** quando `shell` non è dichiarato.
-    ///
-    /// Da considerarsi **in uscita**. Ora che l'albero si dichiara, questa è una
-    /// seconda maniera di dire la stessa cosa in modo meno preciso, e due
-    /// maniere di dire la stessa cosa prima o poi si contraddicono. Toglierla è
-    /// una rottura di formato, quindi è la prima voce vera di
-    /// [`MIGRAZIONI`](crate::document): al formato 2 diventa uno `shell`
-    /// scritto per esteso, e la tabella di migrazione esiste già vuota apposta.
-    pub player: PlayerLayout,
-    /// La barra laterale. Come `player`, in uscita per la stessa ragione.
-    pub sidebar: SidebarLayout,
-    /// La densità.
-    ///
-    /// Sopravvive alle altre due: non è geometria da mettere nell'albero, è la
-    /// scala della spaziatura, e resta esprimibile in una parola sola.
+    /// La densità: la scala della spaziatura, in una parola.
     pub density: Density,
-    /// L'albero: dove stanno le cose.
-    ///
-    /// Sempre popolato. Un documento che non lo dichiara riceve
-    /// [`crate::layout::default_shell`] applicato alle due manopole qui sopra —
-    /// così a valle non esiste il caso «manca lo scafale», né in Rust né in
-    /// TypeScript.
+    /// L'albero: dove stanno le cose. Sempre popolato.
     pub shell: LayoutZone,
     /// I nomi dei prefab dichiarati, in ordine.
-    ///
-    /// Solo i **nomi**: i corpi sono già espansi dentro `shell`, e tenerli
-    /// anche qui vorrebbe dire avere due copie dello stesso sottoalbero che
-    /// possono divergere. Servono a una cosa sola — dire quali sono dichiarati
-    /// e mai usati — e per quella il nome basta.
     pub prefabs: Vec<String>,
 }
 
 impl Default for SkinLayout {
     fn default() -> Self {
-        let player = PlayerLayout::Floating;
-        let sidebar = SidebarLayout::Rail;
         Self {
-            player,
-            sidebar,
             density: Density::Comfortable,
-            shell: default_shell(player, sidebar),
+            shell: shell_di_serie(),
             prefabs: Vec::new(),
         }
     }
@@ -1320,18 +2047,18 @@ pub struct SkinDocument {
     pub id: String,
     /// Chi l'ha fatta.
     pub meta: SkinMeta,
+    /// Il tema di base.
+    pub scheme: Scheme,
     /// Cosa dichiara di saper fare.
     pub capabilities: SkinCapabilities,
+    /// I caratteri che porta nel pacchetto.
+    pub fonts: Vec<FontFace>,
     /// I colori locali, in ordine di nome.
-    ///
-    /// Sono i token skin-locali del vecchio albero: `--cyber-teal`,
-    /// `--nothing-red`. Nessun componente li legge — servono alla skin per non
-    /// ripetere lo stesso valore in venti dichiarazioni.
     pub palette: Vec<(String, Rgba)>,
-    /// I token del blocco base.
+    /// I token del tema di base.
     pub tokens: TokenSet,
-    /// Le sovrascritture per `[data-theme='light']`.
-    pub light: Option<TokenSet>,
+    /// Il tema opposto, se lo dichiara.
+    pub variant: Option<Variante>,
     /// Le sovrascritture per `[data-mobile]`.
     pub mobile: Option<TokenSet>,
     /// Il movimento.
@@ -1344,20 +2071,57 @@ pub struct SkinDocument {
     pub parts: Vec<PartStyle>,
 }
 
-const CHIAVI_DOCUMENTO: &[&str] = &[
-    "format",
-    "id",
-    "meta",
-    "capabilities",
-    "palette",
-    "tokens",
-    "themes",
-    "platforms",
-    "motion",
-    "layout",
-    "patterns",
-    "parts",
-];
+impl SkinDocument {
+    /// I token della variante, se c'è.
+    #[must_use]
+    pub fn variante_tokens(&self) -> Option<&TokenSet> {
+        self.variant.as_ref().map(|v| &v.tokens)
+    }
+
+    /// La tavolozza nel tema della variante: quella di base con i colori che
+    /// la variante ridefinisce.
+    #[must_use]
+    pub fn tavolozza_variante(&self) -> Vec<(String, Rgba)> {
+        let mut tutta = self.palette.clone();
+        if let Some(variante) = self.variant.as_ref() {
+            for (nome, colore) in &variante.palette {
+                if let Some(voce) = tutta.iter_mut().find(|(n, _)| n == nome) {
+                    voce.1 = *colore;
+                }
+            }
+        }
+        tutta
+    }
+
+    /// Le voci del pacchetto che il documento nomina — caratteri e immagini —
+    /// in ordine di nome e senza doppioni.
+    ///
+    /// Serve al pacchetto, che le deve contenere, e allo Studio, che dice quali
+    /// mancano nella bozza.
+    #[must_use]
+    pub fn assets(&self) -> Vec<String> {
+        let mut nomi: Vec<String> = self.fonts.iter().map(|f| f.src.clone()).collect();
+        let motivi = self
+            .patterns
+            .iter()
+            .chain(self.variant.iter().flat_map(|v| v.patterns.iter()));
+        for (_, effetto) in motivi {
+            nomi.extend(effetto.asset().map(str::to_owned));
+        }
+        let parti = self
+            .parts
+            .iter()
+            .chain(self.variant.iter().flat_map(|v| v.parts.iter()));
+        for stile in parti {
+            for effetto in stile.effects() {
+                nomi.extend(effetto.asset().map(str::to_owned));
+            }
+        }
+        nomi.sort();
+        nomi.dedup();
+        nomi
+    }
+}
 
 fn identificatore(value: &Value, path: &str) -> Esito<String> {
     let scritto = testo(value, path)?;
@@ -1367,8 +2131,7 @@ fn identificatore(value: &Value, path: &str) -> Esito<String> {
     if !ammesso || scritto.len() < 2 || scritto.len() > 48 {
         // Vincolato perché finisce in un selettore CSS, in un nome di file e in
         // un URL della rete locale: un id con una virgoletta o una barra
-        // romperebbe uno dei tre, ed è proprio la fuga che il formato deve
-        // rendere impossibile.
+        // romperebbe uno dei tre.
         return Err(problema(
             path,
             "l'id ammette da 2 a 48 fra minuscole, cifre e trattini, e comincia con una lettera",
@@ -1418,19 +2181,7 @@ fn anteprima(value: &Value, path: &str) -> Esito<[Rgba; 3]> {
 
 fn meta(value: &Value, path: &str) -> Esito<SkinMeta> {
     let map = oggetto(value, path)?;
-    solo_chiavi(
-        map,
-        path,
-        &[
-            "name",
-            "author",
-            "version",
-            "description",
-            "license",
-            "basedOn",
-            "preview",
-        ],
-    )?;
+    solo_chiavi(map, path, CHIAVI_META)?;
     Ok(SkinMeta {
         name: stringa_lunga(richiesto(map, path, "name")?, &giu(path, "name"), 1, 64)?,
         author: stringa_lunga(richiesto(map, path, "author")?, &giu(path, "author"), 1, 64)?,
@@ -1452,19 +2203,148 @@ fn meta(value: &Value, path: &str) -> Esito<SkinMeta> {
 
 fn capacita(value: &Value, path: &str) -> Esito<SkinCapabilities> {
     let map = oggetto(value, path)?;
-    solo_chiavi(map, path, &["light", "mobile", "dynamicAccent"])?;
-    let difetto = SkinCapabilities::default();
-    let leggi = |name: &str, difetto: bool| -> Esito<bool> {
-        campo(map, name)
-            .map(|v| booleano(v, &giu(path, name)))
-            .transpose()
-            .map(|v| v.unwrap_or(difetto))
-    };
+    for chiave in ["light", "mobile"] {
+        if map.contains_key(chiave) {
+            return Err(problema(
+                &giu(path, chiave),
+                if chiave == "light" {
+                    "nel formato 2 il tema opposto si dichiara scrivendolo, in `variant`: una \
+                     capacità vuota non può più promettere quel che non c'è"
+                } else {
+                    "nel formato 2 non c'è più: le sovrascritture per telefono stanno in \
+                     `platforms.mobile`, e la loro presenza è la dichiarazione"
+                },
+            ));
+        }
+    }
+    solo_chiavi(map, path, CHIAVI_CAPACITA)?;
     Ok(SkinCapabilities {
-        light: leggi("light", difetto.light)?,
-        mobile: leggi("mobile", difetto.mobile)?,
-        dynamic_accent: leggi("dynamicAccent", difetto.dynamic_accent)?,
+        dynamic_accent: campo(map, "dynamicAccent")
+            .map(|v| booleano(v, &giu(path, "dynamicAccent")))
+            .transpose()?
+            .unwrap_or(SkinCapabilities::default().dynamic_accent),
     })
+}
+
+/// I caratteri del pacchetto: al più otto famiglie.
+fn caratteri(value: &Value, path: &str) -> Esito<Vec<FontFace>> {
+    let map = oggetto(value, path)?;
+    if map.len() > 8 {
+        return Err(problema(path, "al massimo otto caratteri per skin"));
+    }
+    let mut elenco = Vec::with_capacity(map.len());
+    for (famiglia, grezzo) in map {
+        let dentro = giu(path, famiglia);
+        if !is_font_family(famiglia) {
+            return Err(problema(
+                &dentro,
+                "il nome di una famiglia ammette lettere, cifre, spazi, - e _",
+            ));
+        }
+        let voce = oggetto(grezzo, &dentro)?;
+        solo_chiavi(voce, &dentro, CHIAVI_FONT)?;
+        let weight = match campo(voce, "weight") {
+            None => (400, 400),
+            Some(peso) if peso.is_array() => {
+                let coppia = lista_fra(peso, &giu(&dentro, "weight"), 2, 2)?;
+                let a = numero_fra(
+                    coppia.first().unwrap_or(&Value::Null),
+                    &giu(&dentro, "weight.0"),
+                    1.0,
+                    1000.0,
+                )?;
+                let b = numero_fra(
+                    coppia.get(1).unwrap_or(&Value::Null),
+                    &giu(&dentro, "weight.1"),
+                    1.0,
+                    1000.0,
+                )?;
+                if a > b {
+                    return Err(problema(
+                        &giu(&dentro, "weight"),
+                        "l'intervallo dei pesi va dal più leggero al più pesante",
+                    ));
+                }
+                (peso_intero(a), peso_intero(b))
+            }
+            Some(peso) => {
+                let unico = numero_fra(peso, &giu(&dentro, "weight"), 1.0, 1000.0)?;
+                (peso_intero(unico), peso_intero(unico))
+            }
+        };
+        elenco.push(FontFace {
+            family: famiglia.clone(),
+            src: risorsa(
+                richiesto(voce, &dentro, "src")?,
+                &giu(&dentro, "src"),
+                &["font/woff2"],
+            )?,
+            weight,
+            italic: campo(voce, "style")
+                .map(|v| {
+                    parola(
+                        v,
+                        &giu(&dentro, "style"),
+                        &[("normal", false), ("italic", true)],
+                    )
+                })
+                .transpose()?
+                .unwrap_or(false),
+        });
+    }
+    // Due famiglie che nel foglio diventano lo stesso nome.
+    //
+    // Il compilatore dà a ogni famiglia un nome suo, ridotto a minuscole,
+    // cifre e trattini ([`famiglia_ridotta`]): «Titoli A» e «titoli-a» sono
+    // due chiavi diverse qui e un nome solo là. Fino alla 3.0 passavano
+    // tutte e due, e il foglio dichiarava due `@font-face` con la stessa
+    // famiglia e due file diversi: quale dei due disegnasse un titolo lo
+    // decideva il motore, a caso fra due pesi uguali.
+    let mut viste: Vec<(String, &str)> = Vec::with_capacity(elenco.len());
+    for faccia in &elenco {
+        let ridotta = famiglia_ridotta(&faccia.family);
+        if let Some((_, prima)) = viste.iter().find(|(r, _)| *r == ridotta) {
+            return Err(problema(
+                &giu(path, &faccia.family),
+                format!(
+                    "«{}» e «{prima}» nel foglio diventano lo stesso nome, «{ridotta}»: due \
+                     caratteri diversi si prenderebbero a vicenda il file. Cambia uno dei due nomi.",
+                    faccia.family
+                ),
+            ));
+        }
+        viste.push((ridotta, faccia.family.as_str()));
+    }
+    elenco.sort_by(|a, b| a.family.cmp(&b.family));
+    Ok(elenco)
+}
+
+/// Il nome di una famiglia com'è nel foglio, prima del prefisso della skin:
+/// minuscole e cifre, e un trattino al posto di tutto il resto.
+///
+/// Una funzione sola per il compilatore, che la usa per scrivere il nome, e
+/// per la validazione, che la usa per rifiutare due famiglie che finirebbero
+/// sotto lo stesso: se fossero due, un giorno direbbero due cose diverse.
+pub(crate) fn famiglia_ridotta(nome: &str) -> String {
+    nome.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "chi chiama ha già controllato che il peso stia fra 1 e 1000, e `round` toglie i \
+              decimali: un u16 lo contiene tutto"
+)]
+fn peso_intero(peso: f64) -> u16 {
+    peso.round() as u16
 }
 
 fn tavolozza(value: &Value, path: &str) -> Esito<Vec<(String, Rgba)>> {
@@ -1479,8 +2359,7 @@ fn tavolozza(value: &Value, path: &str) -> Esito<Vec<(String, Rgba)>> {
             ));
         }
         // Solo colori letterali: una tavolozza che può riferire sé stessa può
-        // anche fare un ciclo, e un ciclo in un foglio di stile non è un errore
-        // — è un valore che semplicemente non si applica.
+        // anche fare un ciclo.
         colori.push((nome.clone(), colore_letterale(grezzo, &percorso)?));
     }
     colori.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1495,9 +2374,9 @@ fn is_easing_name(nome: &str) -> bool {
         && caratteri.all(|b| b.is_ascii_alphanumeric())
 }
 
-fn fotogramma(value: &Value, path: &str) -> Esito<RouteFrame> {
+fn fotogramma_rotta(value: &Value, path: &str) -> Esito<RouteFrame> {
     let map = oggetto(value, path)?;
-    solo_chiavi(map, path, &["opacity", "scale", "translateY"])?;
+    solo_chiavi(map, path, CHIAVI_FOTOGRAMMA_ROTTA)?;
     Ok(RouteFrame {
         opacity: campo(map, "opacity")
             .map(|v| numero_fra(v, &giu(path, "opacity"), 0.0, 1.0))
@@ -1511,25 +2390,14 @@ fn fotogramma(value: &Value, path: &str) -> Esito<RouteFrame> {
     })
 }
 
-/// Le iterazioni: da 1 a [`MAX_ITERAZIONI`], e mai «infinite».
+/// Le iterazioni: da 1 a [`MAX_ITERAZIONI`], o `"infinite"`.
 ///
-/// La stringa `"infinite"` ha un ramo suo perché è **l'errore che si fa
-/// davvero**: chi arriva dal CSS scrive quella parola prima di chiedersi se sia
-/// ammessa, e riceverla come «qui ci va un numero» manderebbe a cercare un
-/// refuso invece di leggere il divieto. Il divieto ha una ragione, e vale la
-/// pena spenderla qui piuttosto che in un documento che nessuno riapre.
-fn iterazioni(value: &Value, path: &str) -> Esito<u32> {
+/// Dove l'infinito si possa usare lo decide l'innesco, non l'animazione: la
+/// stessa animazione può girare per sempre su `playing` e non su `enter`, e il
+/// controllo sta in [`movimento_parte`].
+fn iterazioni(value: &Value, path: &str) -> Esito<Iterazioni> {
     if value.as_str() == Some("infinite") {
-        return Err(problema(
-            path,
-            format!(
-                "«infinite» non è ammesso: un'animazione che non finisce non la ferma nemmeno \
-                 «Riduci il movimento» — una scala a zero la rende infinitamente lenta invece \
-                 di spegnerla, e la regola che la spegnerebbe una skin non la può scrivere. \
-                 Per un pulsare: \"direction\": \"alternate\" con \"iterations\": 2. \
-                 Al massimo {MAX_ITERAZIONI}."
-            ),
-        ));
+        return Ok(Iterazioni::Infinite);
     }
     let quante = value
         .as_u64()
@@ -1537,13 +2405,15 @@ fn iterazioni(value: &Value, path: &str) -> Esito<u32> {
         .ok_or_else(|| {
             problema(
                 path,
-                format!("va da 1 a {MAX_ITERAZIONI}, e «infinite» non è ammesso"),
+                format!("va da 1 a {MAX_ITERAZIONI}, o \"infinite\" per un ciclo"),
             )
         })?;
-    u32::try_from(quante).map_err(|_| problema(path, "iterazioni fuori scala"))
+    u32::try_from(quante)
+        .map(Iterazioni::Volte)
+        .map_err(|_| problema(path, "iterazioni fuori scala"))
 }
 
-/// Una durata con un tetto suo, più basso di quello dei token.
+/// Una durata con un tetto suo.
 fn durata_fino_a(value: &Value, path: &str, massimo: f64) -> Esito<Duration> {
     let letta = durata(value, path)?;
     if letta.ms > massimo {
@@ -1555,31 +2425,113 @@ fn durata_fino_a(value: &Value, path: &str, massimo: f64) -> Esito<Duration> {
     Ok(letta)
 }
 
-/// I fotogrammi di un'animazione: da due a sei, in ordine, il primo a 0.
+/// Il punto attorno a cui ruota e scala: una parola, o due lunghezze.
+fn origine(value: &Value, path: &str) -> Esito<(Length, Length)> {
+    let Some(parola) = value.as_str() else {
+        return coppia(value, path);
+    };
+    let pc = |v: f64| Length {
+        value: v,
+        unit: LengthUnit::Percent,
+    };
+    let (x, y) = match parola {
+        "center" => (50.0, 50.0),
+        "top" => (50.0, 0.0),
+        "bottom" => (50.0, 100.0),
+        "left" => (0.0, 50.0),
+        "right" => (100.0, 50.0),
+        "top left" => (0.0, 0.0),
+        "top right" => (100.0, 0.0),
+        "bottom left" => (0.0, 100.0),
+        "bottom right" => (100.0, 100.0),
+        _ => {
+            return Err(problema(
+                path,
+                "ammessi center, top, bottom, left, right, i quattro angoli come «top left», o due lunghezze",
+            ));
+        }
+    };
+    Ok((pc(x), pc(y)))
+}
+
+fn ritaglio(value: &Value, path: &str) -> Esito<Ritaglio> {
+    let map = oggetto(value, path)?;
+    let mut chiavi = map.keys();
+    let (Some(forma), None) = (chiavi.next(), chiavi.next()) else {
+        return Err(problema(
+            path,
+            "un ritaglio è un oggetto con una chiave sola: inset, circle o polygon",
+        ));
+    };
+    let valore = map.get(forma).unwrap_or(&Value::Null);
+    let qui = giu(path, forma);
+    match forma.as_str() {
+        "inset" => {
+            let lati = lista_fra(valore, &qui, 4, 4)?;
+            let lato = |i: usize| -> Esito<Length> {
+                lunghezza(
+                    lati.get(i).unwrap_or(&Value::Null),
+                    &giu(&qui, &i.to_string()),
+                )
+            };
+            Ok(Ritaglio::Inset {
+                top: lato(0)?,
+                right: lato(1)?,
+                bottom: lato(2)?,
+                left: lato(3)?,
+            })
+        }
+        "circle" => {
+            let cerchio = oggetto(valore, &qui)?;
+            solo_chiavi(cerchio, &qui, &["radius", "at"])?;
+            Ok(Ritaglio::Circle {
+                radius: lunghezza(richiesto(cerchio, &qui, "radius")?, &giu(&qui, "radius"))?,
+                at: match campo(cerchio, "at") {
+                    None => (
+                        Length {
+                            value: 50.0,
+                            unit: LengthUnit::Percent,
+                        },
+                        Length {
+                            value: 50.0,
+                            unit: LengthUnit::Percent,
+                        },
+                    ),
+                    Some(centro) => coppia(centro, &giu(&qui, "at"))?,
+                },
+            })
+        }
+        "polygon" => {
+            let punti = lista_fra(valore, &qui, 3, 8)?;
+            let mut letti = Vec::with_capacity(punti.len());
+            for (indice, punto) in punti.iter().enumerate() {
+                letti.push(coppia(punto, &giu(&qui, &indice.to_string()))?);
+            }
+            Ok(Ritaglio::Polygon(letti))
+        }
+        altro => Err(problema(
+            &qui,
+            format!("«{altro}» non è una forma di ritaglio: ammessi inset, circle, polygon"),
+        )),
+    }
+}
+
+/// I fotogrammi di un'animazione: da due a dodici, in ordine, il primo a 0.
 ///
 /// L'ordine lo deve scrivere **chi dichiara**, e la lettura non lo raddrizza:
-/// un elenco che si lascia riordinare in silenzio è un elenco in cui un `at`
-/// battuto storto produce un'animazione diversa da quella scritta, e chi la
-/// guarda nell'editor vede il risultato del riordino invece dell'errore.
-/// Rifiutare costa un messaggio; riordinare costa la fiducia nell'anteprima.
+/// rifiutare costa un messaggio; riordinare costa la fiducia nell'anteprima.
 fn fotogrammi_animazione(value: &Value, path: &str) -> Esito<Vec<AnimFrame>> {
     let voci = lista_fra(value, path, MIN_FOTOGRAMMI, MAX_FOTOGRAMMI)?;
     let mut fermate: Vec<AnimFrame> = Vec::with_capacity(voci.len());
     for (indice, grezzo) in voci.iter().enumerate() {
         let dentro = giu(path, &indice.to_string());
         let map = oggetto(grezzo, &dentro)?;
-        solo_chiavi(
-            map,
-            &dentro,
-            &[
-                "at",
-                "opacity",
-                "scale",
-                "translateX",
-                "translateY",
-                "rotate",
-            ],
-        )?;
+        solo_chiavi(map, &dentro, CHIAVI_FOTOGRAMMA)?;
+        let fra = |nome: &str, min: f64, max: f64| -> Esito<Option<f64>> {
+            campo(map, nome)
+                .map(|v| numero_fra(v, &giu(&dentro, nome), min, max))
+                .transpose()
+        };
         let fermata = AnimFrame {
             at: numero_fra(
                 richiesto(map, &dentro, "at")?,
@@ -1587,20 +2539,39 @@ fn fotogrammi_animazione(value: &Value, path: &str) -> Esito<Vec<AnimFrame>> {
                 0.0,
                 100.0,
             )?,
-            opacity: campo(map, "opacity")
-                .map(|v| numero_fra(v, &giu(&dentro, "opacity"), 0.0, 1.0))
-                .transpose()?,
-            scale: campo(map, "scale")
-                .map(|v| numero_fra(v, &giu(&dentro, "scale"), 0.5, 1.5))
-                .transpose()?,
+            opacity: fra("opacity", 0.0, 1.0)?,
             translate_x: campo(map, "translateX")
-                .map(|v| numero_fra(v, &giu(&dentro, "translateX"), -100.0, 100.0))
+                .map(|v| spostamento(v, &giu(&dentro, "translateX")))
                 .transpose()?,
             translate_y: campo(map, "translateY")
-                .map(|v| numero_fra(v, &giu(&dentro, "translateY"), -100.0, 100.0))
+                .map(|v| spostamento(v, &giu(&dentro, "translateY")))
                 .transpose()?,
-            rotate: campo(map, "rotate")
-                .map(|v| numero_fra(v, &giu(&dentro, "rotate"), -30.0, 30.0))
+            scale: fra("scale", 0.0, 3.0)?,
+            scale_x: fra("scaleX", 0.0, 3.0)?,
+            scale_y: fra("scaleY", 0.0, 3.0)?,
+            rotate: fra("rotate", -720.0, 720.0)?,
+            skew_x: fra("skewX", -45.0, 45.0)?,
+            skew_y: fra("skewY", -45.0, 45.0)?,
+            blur: campo(map, "blur")
+                .map(|v| misura_fra(v, &giu(&dentro, "blur"), 0.0, 40.0))
+                .transpose()?,
+            brightness: fra("brightness", 0.0, 3.0)?,
+            saturate: fra("saturate", 0.0, 3.0)?,
+            hue_rotate: fra("hueRotate", -360.0, 360.0)?,
+            background_color: campo(map, "backgroundColor")
+                .map(|v| colore(v, &giu(&dentro, "backgroundColor")))
+                .transpose()?,
+            color: campo(map, "color")
+                .map(|v| colore(v, &giu(&dentro, "color")))
+                .transpose()?,
+            border_color: campo(map, "borderColor")
+                .map(|v| colore(v, &giu(&dentro, "borderColor")))
+                .transpose()?,
+            shadow: campo(map, "shadow")
+                .map(|v| ombra_parte(v, &giu(&dentro, "shadow")))
+                .transpose()?,
+            clip: campo(map, "clip")
+                .map(|v| ritaglio(v, &giu(&dentro, "clip")))
                 .transpose()?,
         };
         if fermata.is_empty() {
@@ -1631,40 +2602,26 @@ fn fotogrammi_animazione(value: &Value, path: &str) -> Esito<Vec<AnimFrame>> {
     Ok(fermate)
 }
 
-fn animazione(value: &Value, path: &str) -> Esito<Animation> {
+fn animazione(value: &Value, path: &str, curve: &[(String, Easing)]) -> Esito<Animation> {
     let map = oggetto(value, path)?;
-    solo_chiavi(
-        map,
-        path,
-        &[
-            "duration",
-            "easing",
-            "delay",
-            "iterations",
-            "direction",
-            "frames",
-        ],
-    )?;
+    solo_chiavi(map, path, CHIAVI_ANIMAZIONE)?;
     Ok(Animation {
         duration: durata_fino_a(
             richiesto(map, path, "duration")?,
             &giu(path, "duration"),
             MAX_DURATA_MS,
         )?,
-        // Assente: `ease`, il default del CSS. La curva il compilatore la
-        // scrive sempre per esteso, quindi non esiste un caso in cui il valore
-        // di serie del motore e quello del formato possano divergere.
         easing: campo(map, "easing")
-            .map(|v| easing(v, &giu(path, "easing")))
+            .map(|v| curva(v, &giu(path, "easing"), curve))
             .transpose()?
-            .unwrap_or(Easing::Keyword(EasingKeyword::Ease)),
+            .unwrap_or_default(),
         delay: campo(map, "delay")
             .map(|v| durata_fino_a(v, &giu(path, "delay"), MAX_RITARDO_MS))
             .transpose()?,
         iterations: campo(map, "iterations")
             .map(|v| iterazioni(v, &giu(path, "iterations")))
             .transpose()?
-            .unwrap_or(1),
+            .unwrap_or(Iterazioni::Volte(1)),
         direction: campo(map, "direction")
             .map(|v| {
                 let nomi: Vec<(&str, AnimDirection)> = AnimDirection::ALL
@@ -1675,11 +2632,26 @@ fn animazione(value: &Value, path: &str) -> Esito<Animation> {
             })
             .transpose()?
             .unwrap_or_default(),
+        fill: campo(map, "fill")
+            .map(|v| {
+                let nomi: Vec<(&str, Riempimento)> =
+                    Riempimento::ALL.iter().map(|f| (f.as_str(), *f)).collect();
+                parola(v, &giu(path, "fill"), &nomi)
+            })
+            .transpose()?
+            .unwrap_or_default(),
+        origin: campo(map, "origin")
+            .map(|v| origine(v, &giu(path, "origin")))
+            .transpose()?,
         frames: fotogrammi_animazione(richiesto(map, path, "frames")?, &giu(path, "frames"))?,
     })
 }
 
-fn animazioni(value: &Value, path: &str) -> Esito<Vec<(String, Animation)>> {
+fn animazioni(
+    value: &Value,
+    path: &str,
+    curve: &[(String, Easing)],
+) -> Esito<Vec<(String, Animation)>> {
     let map = oggetto(value, path)?;
     if map.len() > MAX_ANIMAZIONI {
         return Err(problema(
@@ -1699,19 +2671,290 @@ fn animazioni(value: &Value, path: &str) -> Esito<Vec<(String, Animation)>> {
                 "il nome di un'animazione ammette minuscole, cifre e trattini",
             ));
         }
-        elenco.push((nome.clone(), animazione(grezzo, &percorso)?));
+        elenco.push((nome.clone(), animazione(grezzo, &percorso, curve)?));
     }
     elenco.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(elenco)
 }
 
+// ── Il lampeggio ────────────────────────────────────────────────────────────
+//
+// Una skin si scambia, e chi la indossa non l'ha scritta. Un'animazione che
+// accende e spegne una luce dieci volte al secondo, per sempre, non è uno stile
+// brutto: in chi soffre di epilessia fotosensibile può scatenare una crisi, ed
+// è il motivo per cui WCAG 2.3.1 ne fa un criterio di livello A. Le regole
+// d'arresto del compilatore non bastano, perché scattano solo per chi ha già
+// chiesto meno movimento — e chi non sa di essere sensibile non l'ha chiesto.
+//
+// Quindi è un **errore** e non un avviso: una skin che lampeggia non si
+// installa, non si prova sull'app, e lo Studio lo dice sulla durata
+// dell'animazione.
+//
+// # Cosa si misura
+//
+// Il tempo di un lampo: due cambi di luce opposti uno dopo l'altro — sale e
+// scende, si accende e si spegne — dall'inizio del primo alla fine del secondo.
+// La metà di quel tempo è il **mezzo ciclo**, e sotto [`MEZZO_CICLO_MINIMO_MS`]
+// è un lampeggio. Per ogni proprietà che si vede come luce, separatamente,
+// perché il motore anima ogni proprietà sulla sua traccia:
+//
+// - un fotogramma che non dichiara la proprietà non conta; se non la dichiara
+//   il primo o l'ultimo, lì vale quel che la parte ha di suo, che non si
+//   conosce e quindi è diverso da tutto;
+// - due passi di fila nello stesso verso — 0 → 0,5 → 1 — sono un cambio solo:
+//   una salita scritta in più fotogrammi non è un tremolio;
+// - con `normal` e `reverse`, alla fine di ogni giro la luce **salta** al
+//   primo fotogramma: è un cambio istantaneo, e conta;
+// - con `alternate` il giro dura due volte, e al ritorno ogni cambio si rifà
+//   al contrario;
+// - la durata è quella che il foglio userà: con l'intensità `essential` il
+//   compilatore la dimezza, e il conto si fa sulla metà.
+//
+// La soglia è più severa di quella di WCAG — tre lampi al secondo vorrebbero
+// dire un mezzo ciclo di 166 ms — e di proposito: il criterio misura anche
+// l'area e la luminanza, e qui non si sa quanto grande sarà la parte né su
+// cosa starà. Un colore che pulsa in due secondi resta lontanissimo dalla
+// soglia, un respiro di luminosità anche; un fondo che scatta cento volte al
+// minuto no.
+
+/// Il mezzo ciclo più corto che una luce ripetuta può avere, in millisecondi.
+///
+/// Un terzo di secondo: un lampo intero dura almeno due terzi, cioè non più di
+/// un lampo e mezzo al secondo. Vedi «Il lampeggio» in questo file.
+pub const MEZZO_CICLO_MINIMO_MS: f64 = 333.0;
+
+/// Quante ripetizioni una luce può fare prima di contare come lampeggio.
+///
+/// Tre come i tre lampi che WCAG 2.3.1 ammette: un'animazione che si ripete
+/// al più tre volte e si ferma non può farne di più, a qualunque velocità.
+pub const RIPETIZIONI_SENZA_LAMPEGGIO: u32 = 3;
+
+/// Un valore che si vede come luce, su un fotogramma.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Luce<'a> {
+    /// Quel che la parte ha di suo, dove la traccia non dichiara la proprietà.
+    DellaParte,
+    /// Un numero: opacità, sfocatura, luminosità, saturazione, tinta.
+    Numero(f64),
+    /// Un colore.
+    Colore(&'a ColorValue),
+    /// Un'ombra.
+    Ombra(&'a Ombra),
+}
+
+impl Luce<'_> {
+    /// In che verso va il cambio da qui a lì, quando lo si può dire.
+    ///
+    /// Solo fra due numeri: un colore che diventa un altro colore non sale e
+    /// non scende, e due cambi di colore di fila si contano per due.
+    fn verso(self, poi: Self) -> Option<std::cmp::Ordering> {
+        match (self, poi) {
+            (Self::Numero(da), Self::Numero(a)) => da.partial_cmp(&a),
+            _ => None,
+        }
+    }
+}
+
+/// Una proprietà che si vede come luce: come si chiama in un messaggio, e come
+/// si legge da un fotogramma.
+type Tracciato = (&'static str, for<'a> fn(&'a AnimFrame) -> Option<Luce<'a>>);
+
+/// Le proprietà che, cambiando in fretta, lampeggiano. Le trasformazioni e il
+/// ritaglio restano fuori: spostano la parte, non ne cambiano la luce.
+const LUCI: &[Tracciato] = &[
+    ("l'opacità", |f| f.opacity.map(Luce::Numero)),
+    ("la sfocatura", |f| f.blur.map(|l| Luce::Numero(l.value))),
+    ("la luminosità", |f| f.brightness.map(Luce::Numero)),
+    ("la saturazione", |f| f.saturate.map(Luce::Numero)),
+    ("la tinta", |f| f.hue_rotate.map(Luce::Numero)),
+    ("il colore di fondo", |f| {
+        f.background_color.as_ref().map(Luce::Colore)
+    }),
+    ("il colore del testo", |f| {
+        f.color.as_ref().map(Luce::Colore)
+    }),
+    ("il colore del bordo", |f| {
+        f.border_color.as_ref().map(Luce::Colore)
+    }),
+    ("l'ombra", |f| f.shadow.as_ref().map(Luce::Ombra)),
+];
+
+/// Un cambio di luce dentro un giro, in millisecondi dall'inizio del giro.
+#[derive(Debug, Clone, Copy)]
+struct Cambio {
+    inizio: f64,
+    fine: f64,
+    verso: Option<std::cmp::Ordering>,
+}
+
+/// Il mezzo ciclo più corto di una proprietà, o `None` se non cambia mai.
+///
+/// `durata` è quella di un giro, già scalata; `alterna` vale per `alternate` e
+/// `alternate-reverse`. `reverse` è `normal` guardato allo specchio: gli
+/// intervalli fra un cambio e l'altro sono gli stessi.
+fn mezzo_ciclo(
+    fotogrammi: &[AnimFrame],
+    durata: f64,
+    alterna: bool,
+    leggi: for<'a> fn(&'a AnimFrame) -> Option<Luce<'a>>,
+) -> Option<f64> {
+    let mut punti: Vec<(f64, Luce<'_>)> = fotogrammi
+        .iter()
+        .filter_map(|f| leggi(f).map(|luce| (f.at, luce)))
+        .collect();
+    let (&(primo, _), &(ultimo, _)) = (punti.first()?, punti.last()?);
+    if primo > 0.0 {
+        punti.insert(0, (0.0, Luce::DellaParte));
+    }
+    if ultimo < 100.0 {
+        punti.push((100.0, Luce::DellaParte));
+    }
+    let tempo = |at: f64| durata * at / 100.0;
+
+    let mut giro: Vec<Cambio> = punti
+        .windows(2)
+        .filter_map(|coppia| match coppia {
+            [(da, prima), (a, dopo)] if prima != dopo => Some(Cambio {
+                inizio: tempo(*da),
+                fine: tempo(*a),
+                verso: prima.verso(*dopo),
+            }),
+            _ => None,
+        })
+        .collect();
+    let periodo = if alterna {
+        // Il ritorno: gli stessi cambi, al contrario e nel verso opposto.
+        let periodo = durata * 2.0;
+        let ritorno: Vec<Cambio> = giro
+            .iter()
+            .rev()
+            .map(|c| Cambio {
+                inizio: periodo - c.fine,
+                fine: periodo - c.inizio,
+                verso: c.verso.map(std::cmp::Ordering::reverse),
+            })
+            .collect();
+        giro.extend(ritorno);
+        periodo
+    } else {
+        // Il salto dall'ultimo fotogramma al primo, fra un giro e l'altro.
+        if let (Some(&(_, fine)), Some(&(_, inizio))) = (punti.last(), punti.first())
+            && fine != inizio
+        {
+            giro.push(Cambio {
+                inizio: durata,
+                fine: durata,
+                verso: fine.verso(inizio),
+            });
+        }
+        durata
+    };
+
+    // Due cambi di fila nello stesso verso sono uno solo, anche a cavallo fra
+    // la fine di un giro e l'inizio del successivo.
+    let mut cambi: Vec<Cambio> = Vec::with_capacity(giro.len());
+    for cambio in giro {
+        match cambi.last_mut() {
+            Some(prima) if prima.verso.is_some() && prima.verso == cambio.verso => {
+                prima.fine = cambio.fine;
+            }
+            _ => cambi.push(cambio),
+        }
+    }
+    if cambi.len() > 1
+        && let (Some(&primo), Some(&ultimo)) = (cambi.first(), cambi.last())
+        && primo.verso.is_some()
+        && primo.verso == ultimo.verso
+    {
+        cambi.pop();
+        if let Some(testa) = cambi.first_mut() {
+            testa.inizio = ultimo.inizio - periodo;
+        }
+    }
+
+    // Ogni cambio col successivo — l'ultimo col primo del giro dopo — è un
+    // lampo. Il più breve decide.
+    let quanti = cambi.len();
+    (0..quanti)
+        .filter_map(|indice| {
+            let questo = cambi.get(indice)?;
+            let (poi, oltre) = match cambi.get(indice + 1) {
+                Some(poi) => (poi, 0.0),
+                None => (cambi.first()?, periodo),
+            };
+            Some((poi.fine + oltre - questo.inizio) / 2.0)
+        })
+        .reduce(f64::min)
+}
+
+/// Le animazioni che lampeggiano, come errori sulla loro durata.
+fn lampeggi(motion: &SkinMotion) -> Vec<SkinIssue> {
+    // La durata che il foglio userà: `essential` la dimezza. `maximum` la
+    // allunga, e non si conta — lo Studio fa scorrere le animazioni alla loro
+    // durata scritta, e il conto deve valere anche lì. `none` le ferma tutte,
+    // e nemmeno questo si conta: una scala a zero non ferma un ciclo, lo rende
+    // infinitamente veloce, e a fermarlo è una regola del foglio che non deve
+    // essere l'unica cosa fra una skin e un lampeggio.
+    let scala = match motion.intensity.scale() {
+        s if s > 0.0 => s.min(1.0),
+        _ => 1.0,
+    };
+    let mut errori = Vec::new();
+    for (nome, animazione) in &motion.animations {
+        let ripete = match animazione.iterations {
+            Iterazioni::Infinite => "si ripete all'infinito".to_owned(),
+            Iterazioni::Volte(n) if n > RIPETIZIONI_SENZA_LAMPEGGIO => {
+                format!("si ripete {n} volte")
+            }
+            Iterazioni::Volte(_) => continue,
+        };
+        let alterna = matches!(
+            animazione.direction,
+            AnimDirection::Alternate | AnimDirection::AlternateReverse
+        );
+        let durata = animazione.duration.ms * scala;
+        let peggiore = LUCI
+            .iter()
+            .filter_map(|(cosa, leggi)| {
+                mezzo_ciclo(&animazione.frames, durata, alterna, *leggi).map(|m| (*cosa, m))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        let Some((cosa, mezzo)) = peggiore.filter(|(_, m)| *m < MEZZO_CICLO_MINIMO_MS) else {
+            continue;
+        };
+        let dimezzata = if scala < 1.0 {
+            format!(
+                " Con l'intensità «{}» il foglio moltiplica ogni durata per {scala}, e il conto \
+                 si fa sulla durata che il foglio userà.",
+                motion.intensity.as_str()
+            )
+        } else {
+            String::new()
+        };
+        errori.push(problema(
+            &giu(&giu(&giu("motion", "animations"), nome), "duration"),
+            format!(
+                "«{nome}» lampeggia: {cosa} cambia ogni {mezzo:.0} ms e {ripete}, sotto i \
+                 {MEZZO_CICLO_MINIMO_MS:.0} ms per mezzo ciclo. Una luce che cambia così in fretta \
+                 e si ripete può scatenare una crisi in chi soffre di epilessia fotosensibile \
+                 (WCAG 2.3.1). Allunga la durata, togli i fotogrammi che vanno e vengono, anima \
+                 una trasformazione invece della luce, o fermala a {RIPETIZIONI_SENZA_LAMPEGGIO} \
+                 ripetizioni.{dimezzata}"
+            ),
+        ));
+    }
+    errori
+}
+
 fn movimento(value: &Value, path: &str) -> Esito<SkinMotion> {
     let map = oggetto(value, path)?;
-    solo_chiavi(
-        map,
-        path,
-        &["intensity", "easings", "routeTransition", "animations"],
-    )?;
+    if map.contains_key("routeTransition") {
+        return Err(problema(
+            &giu(path, "routeTransition"),
+            "nel formato 2 si chiama `route`, e oltre a `out` e `in` accetta `duration` ed `easing`",
+        ));
+    }
+    solo_chiavi(map, path, CHIAVI_MOVIMENTO)?;
 
     let intensity = match campo(map, "intensity") {
         None => MotionIntensity::Full,
@@ -1727,7 +2970,7 @@ fn movimento(value: &Value, path: &str) -> Esito<SkinMotion> {
     let mut easings = Vec::new();
     if let Some(grezzo) = campo(map, "easings") {
         let dentro = giu(path, "easings");
-        for (nome, curva) in oggetto(grezzo, &dentro)? {
+        for (nome, valore) in oggetto(grezzo, &dentro)? {
             let percorso = giu(&dentro, nome);
             if !is_easing_name(nome) {
                 return Err(problema(
@@ -1735,23 +2978,37 @@ fn movimento(value: &Value, path: &str) -> Esito<SkinMotion> {
                     "il nome di una curva ammette minuscole, cifre e lettere, e comincia con una minuscola",
                 ));
             }
-            easings.push((nome.clone(), easing(curva, &percorso)?));
+            if EasingKeyword::parse(nome).is_some() {
+                return Err(problema(
+                    &percorso,
+                    format!(
+                        "«{nome}» è una parola chiave del CSS: una curva della skin non può chiamarsi così"
+                    ),
+                ));
+            }
+            easings.push((nome.clone(), easing(valore, &percorso)?));
         }
         easings.sort_by(|a, b| a.0.cmp(&b.0));
     }
 
-    let route_transition = match campo(map, "routeTransition") {
+    let route = match campo(map, "route") {
         None => None,
         Some(grezzo) => {
-            let dentro = giu(path, "routeTransition");
+            let dentro = giu(path, "route");
             let blocco = oggetto(grezzo, &dentro)?;
-            solo_chiavi(blocco, &dentro, &["out", "in"])?;
-            Some(RouteTransition {
+            solo_chiavi(blocco, &dentro, CHIAVI_ROTTA)?;
+            Some(Rotta {
+                duration: campo(blocco, "duration")
+                    .map(|v| durata_fino_a(v, &giu(&dentro, "duration"), 2_000.0))
+                    .transpose()?,
+                easing: campo(blocco, "easing")
+                    .map(|v| curva(v, &giu(&dentro, "easing"), &easings))
+                    .transpose()?,
                 out: campo(blocco, "out")
-                    .map(|v| fotogramma(v, &giu(&dentro, "out")))
+                    .map(|v| fotogramma_rotta(v, &giu(&dentro, "out")))
                     .transpose()?,
                 enter: campo(blocco, "in")
-                    .map(|v| fotogramma(v, &giu(&dentro, "in")))
+                    .map(|v| fotogramma_rotta(v, &giu(&dentro, "in")))
                     .transpose()?,
             })
         }
@@ -1759,74 +3016,43 @@ fn movimento(value: &Value, path: &str) -> Esito<SkinMotion> {
 
     let animations = match campo(map, "animations") {
         None => Vec::new(),
-        Some(grezzo) => animazioni(grezzo, &giu(path, "animations"))?,
+        Some(grezzo) => animazioni(grezzo, &giu(path, "animations"), &easings)?,
     };
 
     Ok(SkinMotion {
         intensity,
         easings,
-        route_transition,
+        route,
         animations,
     })
 }
 
 fn impaginazione(value: &Value, path: &str, problemi: &mut Vec<SkinIssue>) -> Esito<SkinLayout> {
     let map = oggetto(value, path)?;
-    solo_chiavi(
-        map,
-        path,
-        &["player", "sidebar", "density", "prefabs", "shell"],
-    )?;
-    let difetto = SkinLayout::default();
-    let base = SkinLayout {
-        player: campo(map, "player")
-            .map(|v| {
-                parola(
-                    v,
-                    &giu(path, "player"),
-                    &[
-                        ("bottom-bar", PlayerLayout::BottomBar),
-                        ("floating", PlayerLayout::Floating),
-                        ("compact", PlayerLayout::Compact),
-                    ],
-                )
-            })
-            .transpose()?
-            .unwrap_or(difetto.player),
-        sidebar: campo(map, "sidebar")
-            .map(|v| {
-                parola(
-                    v,
-                    &giu(path, "sidebar"),
-                    &[
-                        ("rail", SidebarLayout::Rail),
-                        ("expanded", SidebarLayout::Expanded),
-                        ("hidden", SidebarLayout::Hidden),
-                    ],
-                )
-            })
-            .transpose()?
-            .unwrap_or(difetto.sidebar),
-        density: campo(map, "density")
-            .map(|v| {
-                parola(
-                    v,
-                    &giu(path, "density"),
-                    &[
-                        ("compact", Density::Compact),
-                        ("comfortable", Density::Comfortable),
-                        ("spacious", Density::Spacious),
-                    ],
-                )
-            })
-            .transpose()?
-            .unwrap_or(difetto.density),
-        // Provvisori: lo scafale vero e i prefab si leggono subito sotto,
-        // quando si sa quali sono le due manopole da cui dipende la variante di
-        // serie.
-        shell: difetto.shell,
-        prefabs: Vec::new(),
-    };
+    for chiave in ["player", "sidebar"] {
+        if map.contains_key(chiave) {
+            return Err(problema(
+                &giu(path, chiave),
+                "nel formato 2 non c'è più: dove stanno il lettore e la barra lo dice lo \
+                 scafale, `layout.shell`, scritto per esteso",
+            ));
+        }
+    }
+    solo_chiavi(map, path, CHIAVI_IMPAGINAZIONE)?;
+    let density = campo(map, "density")
+        .map(|v| {
+            parola(
+                v,
+                &giu(path, "density"),
+                &[
+                    ("compact", Density::Compact),
+                    ("comfortable", Density::Comfortable),
+                    ("spacious", Density::Spacious),
+                ],
+            )
+        })
+        .transpose()?
+        .unwrap_or(Density::Comfortable);
 
     // I prefab si leggono **prima** dello scafale, come i motivi prima delle
     // parti: un riferimento si risolve solo se quel che riferisce esiste già.
@@ -1837,9 +3063,9 @@ fn impaginazione(value: &Value, path: &str, problemi: &mut Vec<SkinIssue>) -> Es
 
     let Some(grezzo) = campo(map, "shell") else {
         return Ok(SkinLayout {
-            shell: default_shell(base.player, base.sidebar),
+            density,
+            shell: shell_di_serie(),
             prefabs: prefabs.iter().map(|(n, _)| n.clone()).collect(),
-            ..base
         });
     };
 
@@ -1849,10 +3075,9 @@ fn impaginazione(value: &Value, path: &str, problemi: &mut Vec<SkinIssue>) -> Es
     let mut restanti = MAX_SHELL_NODES.saturating_sub(1);
     let albero = zona_scafale(grezzo, &dentro, &prefabs, &mut restanti, problemi)?;
 
-    // Le regole si applicano soltanto se l'albero è arrivato intero. Un ramo
-    // che non si è letto lascia un buco, e un buco produce «manca il fill», che
-    // è vero dell'albero mutilato e non di quello scritto: manderebbe a
-    // correggere una cosa che non c'è.
+    // Le regole si applicano soltanto se l'albero è arrivato intero: un ramo
+    // che non si è letto lascia un buco, e un buco produce errori veri
+    // dell'albero mutilato e falsi di quello scritto.
     if problemi.len() == prima {
         for guasto in crate::layout::verifica(&albero) {
             problemi.push(problema_scafale(&dentro, &guasto));
@@ -1860,20 +3085,16 @@ fn impaginazione(value: &Value, path: &str, problemi: &mut Vec<SkinIssue>) -> Es
     }
 
     Ok(SkinLayout {
+        density,
         shell: albero,
         prefabs: prefabs.into_iter().map(|(n, _)| n).collect(),
-        ..base
     })
 }
 
 /// I sottoalberi nominati che lo scafale può richiamare.
 ///
 /// Un prefab è **un sottoalbero di widget già registrati**, e nient'altro:
-/// niente parametri, niente condizioni, niente prefab dentro prefab. Ognuna
-/// delle tre lo trasformerebbe in un linguaggio di programmazione, e la terza
-/// renderebbe possibili i cicli — che senza una visita del grafo non si
-/// riconoscono. Il corpo si legge con la tabella **vuota**, quindi
-/// l'annidamento non è una regola da controllare: è inesprimibile.
+/// niente parametri, niente condizioni, niente prefab dentro prefab.
 fn modelli(
     value: &Value,
     path: &str,
@@ -1889,10 +3110,6 @@ fn modelli(
                 "il nome di un prefab ammette minuscole, cifre e trattini",
             ));
         }
-        // Ogni corpo ha il suo budget, e non uno condiviso: un prefab è un pezzo
-        // di scafale, quindi da solo non può già sfondare il tetto dello
-        // scafale. Quanti prefab si dichiarano resta invece libero — quello
-        // cresce come il manifest, e il manifest ha già il suo tetto.
         let mut restanti = MAX_SHELL_NODES.saturating_sub(1);
         let mut corpo = zona_scafale(grezzo, &percorso, &[], &mut restanti, problemi)?;
         corpo.from_prefab = Some(nome.clone());
@@ -1907,11 +3124,9 @@ fn modelli(
 /// Un problema dello scafale, col prefisso e il codice del catalogo.
 ///
 /// Il percorso è **quello del JSON** e mai un indirizzo `data-nodo`: è ciò che
-/// lo Studio consuma per portare il cursore sull'errore, e un indirizzo di
-/// nodo non si sa dove sia in un file di testo.
+/// lo Studio consuma per portare il cursore sull'errore.
 fn problema_scafale(prefisso: &str, guasto: &crate::layout::ShellIssue) -> SkinIssue {
-    // Un problema dentro un prefab si riporta al sito di **dichiarazione**: chi
-    // lo corregge lo corregge una volta, invece che a ogni uso.
+    // Un problema dentro un prefab si riporta al sito di **dichiarazione**.
     let base = match guasto.prefab.as_ref() {
         None => prefisso.to_owned(),
         Some(nome) => format!(
@@ -1927,9 +3142,6 @@ fn problema_scafale(prefisso: &str, guasto: &crate::layout::ShellIssue) -> SkinI
     let Some(widget) = guasto.missing.as_ref() else {
         return problema(&percorso, guasto.message.clone());
     };
-    // Un essenziale mancante ha un codice suo, perché è l'unico caso in cui chi
-    // legge un log deve poter contare quante skin sono state rifiutate per
-    // questo — e non è «il manifest è sbagliato», è «questa skin toglie l'app».
     SkinIssue {
         code: ErrorCode::SkinLayoutIncomplete {
             widget: widget.clone(),
@@ -1940,13 +3152,12 @@ fn problema_scafale(prefisso: &str, guasto: &crate::layout::ShellIssue) -> SkinI
     }
 }
 
-fn misura_traccia(value: &Value, path: &str, difetto: TrackSize) -> Esito<TrackSize> {
+fn misura_traccia(value: &Value, path: &str) -> Esito<TrackSize> {
     let scritto = testo(value, path)?;
     match scritto {
         "hug" => Ok(TrackSize::Hug),
         "fill" => Ok(TrackSize::Fill),
         _ => parse_length(scritto).map(TrackSize::Fixed).ok_or_else(|| {
-            let _ = difetto;
             problema(
                 path,
                 format!("«{scritto}» non è una misura: «hug», «fill», o una lunghezza in px o rem"),
@@ -1985,9 +3196,6 @@ fn opzioni_widget(
                     allowed.iter().map(|parola| (*parola, *parola)).collect();
                 OptionValue::Word(parola(grezzo, &percorso, &ammesse)?)
             }
-            // Un conteggio si legge come intero e non come numero arrotondato:
-            // «2.5 tasti» non è un valore che qualcuno abbia scritto per sbaglio
-            // di battitura, è un valore che il formato non ha.
             OptionKind::Count { min, max, .. } => {
                 let quanti = grezzo
                     .as_u64()
@@ -2008,7 +3216,7 @@ fn opzioni_widget(
 }
 
 fn foglia_scafale(map: &Map<String, Value>, path: &str) -> Esito<WidgetInstance> {
-    solo_chiavi(map, path, &["widget", "size", "options"])?;
+    solo_chiavi(map, path, CHIAVI_WIDGET)?;
     let percorso = giu(path, "widget");
     let nome = testo(richiesto(map, path, "widget")?, &percorso)?;
     let Some(def) = crate::layout::widget(nome) else {
@@ -2022,7 +3230,7 @@ fn foglia_scafale(map: &Map<String, Value>, path: &str) -> Esito<WidgetInstance>
     Ok(WidgetInstance {
         def,
         size: campo(map, "size")
-            .map(|v| misura_traccia(v, &giu(path, "size"), def.natural))
+            .map(|v| misura_traccia(v, &giu(path, "size")))
             .transpose()?
             .unwrap_or(def.natural),
         options: match campo(map, "options") {
@@ -2032,12 +3240,6 @@ fn foglia_scafale(map: &Map<String, Value>, path: &str) -> Esito<WidgetInstance>
     })
 }
 
-/// L'albero non ci sta nel tetto.
-///
-/// Lo stesso messaggio di [`crate::layout::verifica`], perché è la stessa
-/// regola. Qui però si scopre **mentre** si costruisce, e la differenza non è di
-/// stile: `verifica` guarda un albero già in memoria, e per arrivarci bisogna
-/// averlo costruito.
 fn troppi_nodi(path: &str) -> SkinIssue {
     problema(
         path,
@@ -2047,15 +3249,10 @@ fn troppi_nodi(path: &str) -> SkinIssue {
 
 /// Prende dei nodi dal budget, o dice che l'albero non ci sta.
 ///
-/// # Perché il tetto si spende invece di contarlo alla fine
-///
-/// Perché un prefab si espande dove è richiamato, quindi l'albero cresce come il
-/// **prodotto** fra la larghezza di un corpo e il numero dei richiami, mentre il
-/// manifest che li descrive cresce come la loro somma. Contare alla fine
-/// significa contare qualcosa che è già stato allocato: 129 KB di manifest
-/// bastavano a costruire nove milioni di nodi prima che qualcuno dicesse che il
-/// massimo è sessantaquattro, e mezzo megabyte — il tetto del manifest in
-/// `package.rs` — a esaurire la memoria della macchina.
+/// Il tetto si spende invece di contarlo alla fine perché un prefab si espande
+/// dove è richiamato: l'albero cresce come il **prodotto** fra la larghezza di
+/// un corpo e il numero dei richiami, e contare alla fine vuol dire contare
+/// qualcosa che è già stato allocato.
 fn prendi(restanti: &mut usize, quanti: usize, path: &str) -> Esito<()> {
     match restanti.checked_sub(quanti) {
         Some(rimasti) => {
@@ -2077,11 +3274,7 @@ fn zona_scafale(
     problemi: &mut Vec<SkinIssue>,
 ) -> Esito<LayoutZone> {
     let map = oggetto(value, path)?;
-    solo_chiavi(
-        map,
-        path,
-        &["zone", "size", "gap", "align", "spread", "part", "children"],
-    )?;
+    solo_chiavi(map, path, CHIAVI_ZONA)?;
 
     let kind = {
         let ammesse: Vec<(&str, ZoneKind)> =
@@ -2096,17 +3289,8 @@ fn zona_scafale(
             let nome = testo(grezzo, &percorso)?;
             match crate::parts::part(nome) {
                 Some(def) => Some(def),
-                // È la stessa decisione di `stile_parte`, presa sulla seconda
-                // porta. Una parte si può nominare in due punti — sotto `parts`
-                // per stilarla, e qui per appenderla a un nodo dello scafale — e
-                // accettarla ritirata solo nel primo lascerebbe la serratura
-                // sull'altro: una skin di terzi che mette `viz-title` su una
-                // zona continuerebbe a non caricarsi affatto, che è
-                // esattamente il difetto che `RITIRATE` esiste per evitare.
-                //
-                // `None`, e non un `PartDef` finto: il nodo resta, con la sua
-                // zona e i suoi figli, e semplicemente non porta nessuna classe
-                // di parte. Cioè «si accetta e non fa niente», come promesso.
+                // La stessa decisione di `stile_parte`, sulla seconda porta: una
+                // parte ritirata su un nodo si accetta, e il nodo resta senza.
                 None if crate::parts::ritirata(nome).is_some() => None,
                 None => {
                     let candidati = crate::parts::nearest_parts(nome);
@@ -2124,15 +3308,11 @@ fn zona_scafale(
     let mut figli = Vec::with_capacity(voci.len());
     for (indice, grezzo) in voci.iter().enumerate() {
         let percorso = giu(&dentro, &indice.to_string());
-        // Esaurito il tetto si smette del tutto, e non si segna un fratello alla
-        // volta: oltre il tetto ogni fratello direbbe la stessa cosa, ed è
-        // l'albero intero a non starci — non questo ramo.
         if *restanti == 0 {
             return Err(troppi_nodi(&dentro));
         }
         // Un figlio malformato smette di scendere in **quel** ramo; i fratelli
-        // proseguono. È la forma di `superfici()`, per la stessa ragione: chi
-        // costruisce un layout corregge in una passata sola.
+        // proseguono.
         match nodo_scafale(grezzo, &percorso, prefabs, restanti, problemi) {
             Ok(figlio) => figli.push(figlio),
             Err(guasto) => problemi.push(guasto),
@@ -2142,7 +3322,7 @@ fn zona_scafale(
     Ok(LayoutZone {
         kind,
         size: campo(map, "size")
-            .map(|v| misura_traccia(v, &giu(path, "size"), TrackSize::Fill))
+            .map(|v| misura_traccia(v, &giu(path, "size")))
             .transpose()?
             .unwrap_or(TrackSize::Fill),
         gap: campo(map, "gap")
@@ -2170,8 +3350,6 @@ fn zona_scafale(
             .transpose()?
             .unwrap_or(Spread::Start),
         part: parte,
-        // I prefab si espandono qui sotto, non qui: una zona scritta per esteso
-        // non viene da nessun prefab, e `modelli()` marca la sua.
         from_prefab: None,
         children: figli,
     })
@@ -2184,10 +3362,7 @@ fn nodo_scafale(
     restanti: &mut usize,
     problemi: &mut Vec<SkinIssue>,
 ) -> Esito<LayoutNode> {
-    // Un nodo costa uno prima ancora che si sappia cos'è. Il tetto vale
-    // sull'albero **scritto**, non su quello che si è riusciti a leggere: se un
-    // fratello malformato non costasse niente, un elenco di mille nodi rotti
-    // resterebbe mille giri di ciclo dopo che l'albero ha già sfondato.
+    // Un nodo costa uno prima ancora che si sappia cos'è.
     prendi(restanti, 1, path)?;
 
     let map = oggetto(value, path)?;
@@ -2214,14 +3389,11 @@ fn modello_richiamato(
     prefabs: &[(String, LayoutZone)],
     restanti: &mut usize,
 ) -> Esito<LayoutZone> {
-    solo_chiavi(map, path, &["prefab", "size"])?;
+    solo_chiavi(map, path, CHIAVI_RICHIAMO)?;
     let percorso = giu(path, "prefab");
     let nome = testo(richiesto(map, path, "prefab")?, &percorso)?;
 
     let Some((_, corpo)) = prefabs.iter().find(|(n, _)| n == nome) else {
-        // La tabella vuota è il caso «dentro un prefab»: lì i prefab non
-        // esistono affatto, e il messaggio deve dirlo invece di suggerire nomi
-        // che in quel punto non sarebbero comunque richiamabili.
         if prefabs.is_empty() {
             return Err(problema(
                 &percorso,
@@ -2236,17 +3408,13 @@ fn modello_richiamato(
         ));
     };
 
-    // Il corpo intero, meno il nodo che `nodo_scafale` ha già pagato. È l'unico
-    // punto in cui l'albero cresce più del testo che lo descrive, ed è quindi
-    // l'unico in cui il tetto deve essere speso in blocco invece che a uno a uno.
+    // Il corpo intero, meno il nodo che `nodo_scafale` ha già pagato.
     prendi(restanti, corpo.conta_nodi().saturating_sub(1), path)?;
 
     Ok(LayoutZone {
-        // La misura è l'unica cosa che il sito d'uso può dire: è **dove** sta il
-        // sottoalbero, non cosa contiene. Tutto il resto verrebbe da un
-        // parametro, e un prefab con parametri è una funzione.
+        // La misura è l'unica cosa che il sito d'uso può dire.
         size: campo(map, "size")
-            .map(|v| misura_traccia(v, &giu(path, "size"), corpo.size))
+            .map(|v| misura_traccia(v, &giu(path, "size")))
             .transpose()?
             .unwrap_or(corpo.size),
         ..corpo.clone()
@@ -2270,56 +3438,90 @@ fn motivi(value: &Value, path: &str) -> Esito<Vec<(String, Effect)>> {
     Ok(elenco)
 }
 
-fn superfici(
+/// Il tema opposto.
+///
+/// La tavolozza e i motivi della variante **ridefiniscono** nomi della base e
+/// non ne aggiungono: un riferimento scritto in una parte deve risolversi in
+/// tutti e due i temi, e un nome che esistesse solo nella variante sarebbe un
+/// riferimento a niente nell'altro.
+/// La tavolozza e i motivi della base, a cui la variante deve rispondere.
+type Richiami<'a> = (&'a [(String, Rgba)], &'a [(String, Effect)]);
+
+fn variante(
     value: &Value,
     path: &str,
-    motivi: &[(String, Effect)],
-    animazioni: &[(String, Animation)],
+    base: Richiami<'_>,
+    richiamabili: &Richiamabili<'_>,
     problemi: &mut Vec<SkinIssue>,
-) -> Esito<Vec<PartStyle>> {
+) -> Esito<Variante> {
+    let (tavolozza_base, motivi_base) = base;
     let map = oggetto(value, path)?;
-    let mut stili = Vec::with_capacity(map.len());
-    for (nome, grezzo) in map {
-        match stile_parte(nome, grezzo, &giu(path, nome), motivi, animazioni) {
-            Ok(Some(stile)) => stili.push(stile),
-            // Una parte ritirata: letta, accettata, e lasciata cadere qui. Non
-            // è un problema da segnalare — la skin è valida — e non è uno stile
-            // da compilare, perché non c'è più niente da vestire.
-            Ok(None) => {}
-            Err(guasto) => problemi.push(guasto),
+    solo_chiavi(map, path, CHIAVI_VARIANTE)?;
+
+    let tokens = match campo(map, "tokens") {
+        None => TokenSet::default(),
+        Some(grezzo) => insieme_token(grezzo, &giu(path, "tokens"), problemi)?,
+    };
+
+    let palette = match campo(map, "palette") {
+        None => Vec::new(),
+        Some(grezzo) => {
+            let letta = tavolozza(grezzo, &giu(path, "palette"))?;
+            for (nome, _) in &letta {
+                if !tavolozza_base.iter().any(|(n, _)| n == nome) {
+                    return Err(problema(
+                        &giu(&giu(path, "palette"), nome),
+                        format!(
+                            "«{nome}» non è nella tavolozza della skin: la variante ridefinisce \
+                             i colori che ci sono, non ne aggiunge"
+                        ),
+                    ));
+                }
+            }
+            letta
         }
-    }
-    // Ordine di registro e non alfabetico: nel CSS l'ordine decide la cascata a
-    // parità di specificità, e il registro va dalla cornice alle
-    // sovrapposizioni, cioè dal generale al particolare. Nel vecchio albero il
-    // commento diceva «l'ordine è quello del registro» e il codice ordinava per
-    // nome, il che metteva `toast-card` prima di `app-shell` senza che nessuno
-    // l'avesse deciso.
-    stili.sort_by_key(|stile| {
-        crate::parts::PARTS
-            .iter()
-            .position(|def| def.name == stile.def.name)
-            .unwrap_or(usize::MAX)
-    });
+    };
 
-    // Il tetto sulle parti animate è un limite d'insieme, non di costo: dieci
-    // superfici che si muovono possono stare ognuna nel suo budget e comporre
-    // lo stesso una finestra irrequieta. È la stessa distinzione fra
-    // `SURFACE_COST_BUDGET` e `SHELL_COST_BUDGET` — quanto costa una cosa, e
-    // quante ce ne sono — e per questo è un errore e non un avviso: un budget
-    // sforato si vede su un telefono, una finestra che vibra si vede su tutti.
-    let animate = stili
-        .iter()
-        .filter(|stile| !stile.animations.is_empty())
-        .count();
-    if animate > MAX_PARTI_ANIMATE {
-        return Err(problema(
-            path,
-            format!("al massimo {MAX_PARTI_ANIMATE} parti animate, non {animate}"),
-        ));
-    }
+    let patterns = match campo(map, "patterns") {
+        None => Vec::new(),
+        Some(grezzo) => {
+            let letti = motivi(grezzo, &giu(path, "patterns"))?;
+            for (nome, effetto) in &letti {
+                let dove = giu(&giu(path, "patterns"), nome);
+                let Some((_, originale)) = motivi_base.iter().find(|(n, _)| n == nome) else {
+                    return Err(problema(
+                        &dove,
+                        format!(
+                            "«{nome}» non è fra i motivi della skin: la variante ridefinisce i \
+                             motivi che ci sono, non ne aggiunge"
+                        ),
+                    ));
+                };
+                if originale.target() != effetto.target() {
+                    return Err(problema(
+                        &dove,
+                        format!(
+                            "«{nome}» nella skin è un {}, e nella variante deve restarlo",
+                            nome_destinazione(originale.target())
+                        ),
+                    ));
+                }
+            }
+            letti
+        }
+    };
 
-    Ok(stili)
+    let parts = match campo(map, "parts") {
+        None => Vec::new(),
+        Some(grezzo) => superfici(grezzo, &giu(path, "parts"), richiamabili, true, problemi)?,
+    };
+
+    Ok(Variante {
+        tokens,
+        palette,
+        patterns,
+        parts,
+    })
 }
 
 /// Un problema che ferma la lettura, invece di aggiungersi all'elenco.
@@ -2331,13 +3533,35 @@ fn documento(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
     let mut problemi: Vec<SkinIssue> = Vec::new();
 
     let map = oggetto(raw, "").map_err(solo)?;
+    for vecchia in ["themes"] {
+        if map.contains_key(vecchia) {
+            return Err(solo(problema(
+                vecchia,
+                "nel formato 2 il tema opposto si chiama `variant`, e oltre ai token porta \
+                 tavolozza, motivi e parti",
+            )));
+        }
+    }
     solo_chiavi(map, "", CHIAVI_DOCUMENTO).map_err(solo)?;
 
     let id = identificatore(richiesto(map, "", "id").map_err(solo)?, "id").map_err(solo)?;
     let meta = meta(richiesto(map, "", "meta").map_err(solo)?, "meta").map_err(solo)?;
+    let scheme = match campo(map, "scheme") {
+        None => Scheme::Dark,
+        Some(grezzo) => parola(
+            grezzo,
+            "scheme",
+            &[("dark", Scheme::Dark), ("light", Scheme::Light)],
+        )
+        .map_err(solo)?,
+    };
     let capabilities = match campo(map, "capabilities") {
         None => SkinCapabilities::default(),
         Some(grezzo) => capacita(grezzo, "capabilities").map_err(solo)?,
+    };
+    let fonts = match campo(map, "fonts") {
+        None => Vec::new(),
+        Some(grezzo) => caratteri(grezzo, "fonts").map_err(solo)?,
     };
     let palette = match campo(map, "palette") {
         None => Vec::new(),
@@ -2350,20 +3574,6 @@ fn documento(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
         &mut problemi,
     )
     .map_err(solo)?;
-
-    let light = match campo(map, "themes") {
-        None => None,
-        Some(grezzo) => {
-            let blocco = oggetto(grezzo, "themes").map_err(solo)?;
-            solo_chiavi(blocco, "themes", &["light"]).map_err(solo)?;
-            match campo(blocco, "light") {
-                None => None,
-                Some(chiaro) => {
-                    Some(insieme_token(chiaro, "themes.light", &mut problemi).map_err(solo)?)
-                }
-            }
-        }
-    };
 
     let mobile = match campo(map, "platforms") {
         None => None,
@@ -2383,6 +3593,12 @@ fn documento(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
         .map(|grezzo| movimento(grezzo, "motion"))
         .transpose()
         .map_err(solo)?;
+    // Un lampeggio è un errore di tutta la skin, non della parte che lo
+    // richiama: si dice sull'animazione, anche se nessuno la usa ancora — nello
+    // Studio la timeline la fa scorrere lo stesso. Vedi «Il lampeggio».
+    if let Some(blocco) = motion.as_ref() {
+        problemi.extend(lampeggi(blocco));
+    }
     let layout = campo(map, "layout")
         .map(|grezzo| impaginazione(grezzo, "layout", &mut problemi))
         .transpose()
@@ -2391,17 +3607,36 @@ fn documento(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
         None => Vec::new(),
         Some(grezzo) => motivi(grezzo, "patterns").map_err(solo)?,
     };
-    // Le animazioni si leggono **prima** delle parti perché le parti le
-    // richiamano per nome: è lo stesso ordine, e la stessa ragione, per cui i
-    // motivi si leggono prima delle superfici che li usano.
-    let dichiarate: &[(String, Animation)] =
+
+    // Motivi, animazioni e curve si leggono **prima** delle parti perché le
+    // parti li richiamano per nome.
+    let animazioni_dichiarate: &[(String, Animation)] =
         motion.as_ref().map_or(&[], |blocco| &blocco.animations);
+    let curve_dichiarate: &[(String, Easing)] =
+        motion.as_ref().map_or(&[], |blocco| &blocco.easings);
+    let richiamabili = Richiamabili {
+        motivi: &patterns,
+        animazioni: animazioni_dichiarate,
+        curve: curve_dichiarate,
+    };
     let parts = match campo(map, "parts") {
         None => Vec::new(),
         Some(grezzo) => {
-            superfici(grezzo, "parts", &patterns, dichiarate, &mut problemi).map_err(solo)?
+            superfici(grezzo, "parts", &richiamabili, false, &mut problemi).map_err(solo)?
         }
     };
+    let variant = campo(map, "variant")
+        .map(|grezzo| {
+            variante(
+                grezzo,
+                "variant",
+                (&palette, &patterns),
+                &richiamabili,
+                &mut problemi,
+            )
+        })
+        .transpose()
+        .map_err(solo)?;
 
     if !problemi.is_empty() {
         return Err(problemi);
@@ -2410,10 +3645,12 @@ fn documento(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
     Ok(SkinDocument {
         id,
         meta,
+        scheme,
         capabilities,
+        fonts,
         palette,
         tokens,
-        light,
+        variant,
         mobile,
         motion,
         layout,
@@ -2429,8 +3666,7 @@ fn in_errore(problemi: &[SkinIssue]) -> AppError {
         .map(|guasto| format!("{}: {}", guasto.path, guasto.message))
         .collect();
     // Il codice è quello del primo problema, perché è quello che nomina il punto
-    // esatto; il messaggio li elenca tutti, perché chi sta scrivendo la skin
-    // vuole correggerli in una passata sola.
+    // esatto; il messaggio li elenca tutti.
     let codice = problemi
         .first()
         .map_or(ErrorCode::SkinManifestInvalid { detail: None }, |guasto| {
@@ -2439,7 +3675,7 @@ fn in_errore(problemi: &[SkinIssue]) -> AppError {
     AppError::new(codice).with_message(elenco.join("; "))
 }
 
-fn versione_formato(raw: &Value) -> Option<u64> {
+pub(crate) fn versione_formato(raw: &Value) -> Option<u64> {
     raw.as_object()?.get("format")?.as_u64()
 }
 
@@ -2447,35 +3683,25 @@ fn versione_formato(raw: &Value) -> Option<u64> {
 ///
 /// La versione del formato si controlla **prima** dello schema e a parte: un
 /// pacchetto scritto da una versione futura dell'app non è malformato, è solo
-/// più nuovo, e i due casi vogliono messaggi diversi. È la stessa distinzione
-/// che nel database separa una migrazione fallita da un database più avanti
-/// del codice.
+/// più nuovo, e i due casi vogliono messaggi diversi.
 ///
 /// # Errori
 ///
-/// `skin.formatUnsupported` se la versione non è la nostra; altrimenti il codice
-/// del primo problema trovato, col messaggio che li elenca tutti.
+/// `skin.formatUnsupported` se la versione è più nuova della nostra; altrimenti
+/// il codice del primo problema trovato, col messaggio che li elenca tutti.
 pub fn parse_skin(raw: &Value) -> Result<SkinDocument, AppError> {
     valida(raw).map_err(|problemi| in_errore(&problemi))
 }
 
 /// La sequenza vera: versione, migrazione, schema — e l'elenco dei problemi.
-///
-/// Sta sotto tutti e tre gli ingressi pubblici ([`parse_skin`],
-/// [`parse_skin_json`], [`leggi_skin`]) perché scriverla due volte, una che
-/// schiaccia e una che elenca, vorrebbe dire due ordini di controlli che possono
-/// divergere: il giorno in cui il formato 2 arriva, la migrazione girerebbe in
-/// uno dei due rami e non nell'altro.
 fn valida(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
     let Some(trovata) = versione_formato(raw) else {
         return Err(solo(problema("format", "campo obbligatorio, manca")));
     };
     let nostra = u64::from(SKIN_FORMAT_VERSION);
 
-    // Tre vie e non due. Più nuova: si rifiuta, ed è l'unica risposta onesta —
-    // un documento che usa chiavi che non conosciamo non si legge a metà. Uguale:
-    // passa. **Più vecchia: si migra e passa**, che è il ramo che oggi non ha
-    // niente da fare e che esiste perché il giorno in cui ne avrà, ci sia già.
+    // Tre vie. Più nuova: si rifiuta, ed è l'unica risposta onesta. Uguale:
+    // passa. **Più vecchia: si migra e passa.**
     if trovata > nostra {
         let found = u32::try_from(trovata).unwrap_or(u32::MAX);
         return Err(solo(SkinIssue {
@@ -2485,7 +3711,7 @@ fn valida(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
             },
             path: "format".to_owned(),
             message: format!(
-                "è del formato {found}, e questa versione di Aether legge il {SKIN_FORMAT_VERSION}"
+                "è del formato {found}, e questa versione di Aether legge fino al {SKIN_FORMAT_VERSION}"
             ),
             punto: None,
         }));
@@ -2503,34 +3729,28 @@ fn valida(raw: &Value) -> Result<SkinDocument, Vec<SkinIssue>> {
 /// Un passo di migrazione: da una versione alla successiva.
 ///
 /// Riscrive **il JSON**, non la forma interna, ed è l'unico posto possibile:
-/// [`SkinDocument`] non è riserializzabile, quindi non esiste un modo di
-/// tornare indietro da lì al testo. Una migrazione è quindi una funzione da
-/// documento a documento, e la validazione gira una volta sola, alla fine, sul
-/// risultato — così un difetto introdotto da una migrazione viene rifiutato
-/// dalle stesse regole di tutto il resto invece che da nessuno.
-struct Migrazione {
+/// [`SkinDocument`] non è riserializzabile. La validazione gira una volta sola,
+/// alla fine, sul risultato — così un difetto introdotto da una migrazione
+/// viene rifiutato dalle stesse regole di tutto il resto.
+pub(crate) struct Migrazione {
     /// La versione da cui parte. Produce sempre `da + 1`.
-    da: u32,
+    pub(crate) da: u32,
     /// Cosa cambia.
-    applica: fn(&mut Map<String, Value>) -> Esito<()>,
+    pub(crate) applica: fn(&mut Map<String, Value>) -> Esito<()>,
 }
 
 /// I passi di migrazione, in ordine di versione.
 ///
-/// **Vuota, e non per pigrizia**: il formato 1 è il primo, e non esiste un
-/// documento più vecchio da migrare. Questa tabella esiste perché il giorno in
-/// cui arriva il secondo formato ci sia già un posto dove metterlo, un ordine in
-/// cui applicarlo e un test che lo esercita — invece che una decisione da
-/// prendere di fretta mentre si rompe qualcosa.
-///
-/// La prima voce vera è già prevedibile: la deprecazione di `layout.player` e
-/// `layout.sidebar`, che al formato 2 diventeranno un `layout.shell` scritto per
-/// esteso da [`crate::layout::default_shell`].
+/// La prima voce è arrivata con la 3.0.0: il formato 1 diventa il 2. Cosa
+/// cambia, e perché la skin migrata si disegna come prima, sta in
+/// [`crate::migrazione`].
 #[rustfmt::skip]
-static MIGRAZIONI: &[Migrazione] = &[];
+pub(crate) static MIGRAZIONI: &[Migrazione] = &[
+    Migrazione { da: 1, applica: crate::migrazione::da_1_a_2 },
+];
 
 /// Porta un documento dalla sua versione alla nostra.
-fn migra(raw: &Value, da: u64) -> Result<Value, Vec<SkinIssue>> {
+pub(crate) fn migra(raw: &Value, da: u64) -> Result<Value, Vec<SkinIssue>> {
     let mut map = oggetto(raw, "").map_err(solo)?.clone();
     let mut versione = u32::try_from(da).unwrap_or(u32::MAX);
 
@@ -2556,19 +3776,10 @@ fn migra(raw: &Value, da: u64) -> Result<Value, Vec<SkinIssue>> {
 
 /// Cosa dire di un testo che non è JSON, in italiano e senza la coda.
 ///
-/// # Perché non basta il messaggio di serde
-///
-/// Perché è inglese, tecnico, e finisce con «at line 42 column 7» — cioè
-/// **ripete** dentro la frase i due numeri che qui viaggiano come numeri, e che
-/// l'editor mostra accanto alla riga. Lasciarlo intero vorrebbe dire scrivere la
-/// posizione due volte in due grafie diverse nello stesso pannello.
-///
-/// I casi tradotti sono quelli che si producono scrivendo: le altre categorie
-/// tengono il testo di serde, ripulito dalla coda. Meglio una frase inglese
-/// precisa di una italiana inventata.
-fn perche_non_e_json(err: &serde_json::Error) -> String {
+/// Il messaggio di serde è inglese e finisce con «at line 42 column 7», cioè
+/// ripete dentro la frase i due numeri che qui viaggiano come numeri.
+pub(crate) fn perche_non_e_json(err: &serde_json::Error) -> String {
     let inglese = err.to_string();
-    // «at line N column M» lo dicono già `riga` e `colonna`.
     let nudo = match inglese.find(" at line ") {
         Some(taglio) => inglese.get(..taglio).unwrap_or(&inglese),
         None => &inglese,
@@ -2578,8 +3789,6 @@ fn perche_non_e_json(err: &serde_json::Error) -> String {
         return "il documento finisce prima di chiudersi: manca una parentesi, o una virgoletta"
             .to_owned();
     }
-    // In ordine di quanto capitano scrivendo, e le due coppie prima delle
-    // singole: «expected `,` or `}`» contiene «expected `,`».
     for (segno, detto) in [
         (
             "expected `,` or `}`",
@@ -2622,43 +3831,35 @@ fn perche_non_e_json(err: &serde_json::Error) -> String {
     format!("il documento non è JSON: {nudo}")
 }
 
+/// Il problema di sintassi di un testo che non è JSON.
+pub(crate) fn non_e_json(err: &serde_json::Error) -> SkinIssue {
+    let message = perche_non_e_json(err);
+    SkinIssue {
+        code: ErrorCode::SkinManifestInvalid {
+            detail: Some(message.clone()),
+        },
+        path: String::new(),
+        message,
+        punto: Some(crate::posizioni::Punto {
+            riga: u32::try_from(err.line()).unwrap_or(1).max(1),
+            colonna: u32::try_from(err.column()).unwrap_or(1).max(1),
+        }),
+    }
+}
+
 /// Valida un documento skin scritto come testo JSON, elencando tutto.
 ///
-/// # Perché esiste accanto a [`parse_skin_json`]
-///
-/// Perché [`in_errore`] schiaccia: prende fino a venti problemi e li unisce con
-/// dei punti e virgola dentro **un** `AppError`, che è la forma giusta per un
-/// pacchetto rifiutato — lì di errore ce n'è uno, «questa skin non si installa»
-/// — e quella sbagliata per un editor. Lo Studio vuole l'elenco: una riga per
-/// problema, ognuna col suo percorso e il suo codice, perché ognuna diventa una
-/// riga cliccabile e un punto nel documento.
-///
-/// Ed è l'unica delle due che sa dire **dove** quando il testo non è nemmeno
-/// JSON: [`SkinIssue::punto`] porta riga e colonna prese da `serde_json`, che
-/// `AppError` non ha un campo per contenere.
+/// Esiste accanto a [`parse_skin_json`] perché quello schiaccia fino a venti
+/// problemi dentro **un** `AppError`, che è la forma giusta per un pacchetto
+/// rifiutato e quella sbagliata per un editor: lo Studio vuole l'elenco, una
+/// riga per problema, col suo percorso e il suo codice.
 ///
 /// # Errori
 ///
 /// Un problema solo — quello di sintassi, con la posizione — se il testo non è
 /// JSON; l'elenco intero altrimenti.
 pub fn leggi_skin(sorgente: &str) -> Result<SkinDocument, Vec<SkinIssue>> {
-    let raw: Value = match serde_json::from_str(sorgente) {
-        Ok(raw) => raw,
-        Err(err) => {
-            let message = perche_non_e_json(&err);
-            return Err(solo(SkinIssue {
-                code: ErrorCode::SkinManifestInvalid {
-                    detail: Some(message.clone()),
-                },
-                path: String::new(),
-                message,
-                punto: Some(crate::posizioni::Punto {
-                    riga: u32::try_from(err.line()).unwrap_or(1).max(1),
-                    colonna: u32::try_from(err.column()).unwrap_or(1).max(1),
-                }),
-            }));
-        }
-    };
+    let raw: Value = serde_json::from_str(sorgente).map_err(|err| solo(non_e_json(&err)))?;
     valida(&raw)
 }
 
@@ -2679,51 +3880,39 @@ pub fn parse_skin_json(text: &str) -> Result<SkinDocument, AppError> {
 pub enum WarningKind {
     /// Un token obbligatorio non è dichiarato.
     MissingRequiredToken,
-    /// Una promessa delle capacità non è mantenuta.
+    /// Una promessa non è mantenuta: una variante dichiarata e vuota.
     UnkeptCapability,
     /// Un motivo dichiarato e mai riferito da nessuna parte.
-    ///
-    /// # Perché per un po' non era producibile
-    ///
-    /// Un motivo si compila in una proprietà custom (`--skin-<nome>`), e per
-    /// diverse versioni il formato non aveva una forma per riferirla: una parte
-    /// scriveva i suoi effetti per esteso e non poteva dire «usa il motivo
-    /// `griglia`». Ogni motivo era quindi tecnicamente inutilizzato, e un avviso
-    /// che scatta su tutti è rumore che insegna a ignorare gli avvisi — così la
-    /// variante restava dichiarata e nessun ramo la produceva.
-    ///
-    /// Ora `{"$pattern": "griglia"}` è quella forma, e l'avviso dice la cosa che
-    /// voleva dire dall'inizio: questo motivo si compila in una variabile CSS che
-    /// nessuno legge.
     UnusedPattern,
     /// Un prefab dichiarato e mai richiamato.
-    ///
-    /// Stessa idea di [`Self::UnusedPattern`], sull'altro registro: un
-    /// sottoalbero nominato che nessuno monta non fa niente e non si vede, e
-    /// quasi sempre è il pezzo che si è dimenticato di collegare.
     UnusedPrefab,
     /// Un'animazione dichiarata e mai richiamata da nessuna parte.
-    ///
-    /// Terza voce della stessa idea di [`Self::UnusedPattern`] e
-    /// [`Self::UnusedPrefab`], sul terzo registro nominato del formato. Una
-    /// variante sua e non una delle altre due perché il rimedio è diverso e il
-    /// messaggio deve dirlo: un motivo si collega con `{"$pattern": …}`, un
-    /// prefab con `{"prefab": …}`, un'animazione assegnandola a un trigger.
-    ///
-    /// Non è un costo: un'animazione mai assegnata si compila in un
-    /// `@keyframes` che nessuno usa, e i `@keyframes` inerti non costano niente
-    /// per fotogramma. Per questo il budget del movimento conta **solo** le
-    /// assegnate.
     UnusedAnimation,
-    /// Una superficie che sfora il budget di costo, o una parte che sfora
-    /// quello del movimento.
+    /// Una superficie che sfora il budget di costo, una parte che sfora quello
+    /// del movimento, o la finestra intera che sfora il suo.
     CostBudget,
     /// Una coppia testo/superficie sotto la soglia di leggibilità.
     Contrast,
+    /// Un ciclo il cui primo fotogramma non è la posa di riposo.
+    ///
+    /// Un ciclo su `playing` si ferma in pausa **sul fotogramma in cui è**, e
+    /// prima di suonare la prima volta sta sul primo. Se il primo non è la
+    /// parte com'è — un vinile che parte ruotato di trenta gradi — la parte si
+    /// vede storta finché nessuno preme play.
+    RestingLoop,
 }
 
 /// La soglia di WCAG 2.1 per il testo normale.
 pub const CONTRASTO_MINIMO: f64 = 4.5;
+
+/// La soglia di WCAG 2.1 (criterio 1.4.11) per quel che non è testo: qui,
+/// l'anello del fuoco contro la superficie su cui si disegna.
+///
+/// Tre e non quattro e mezzo perché l'anello non si legge, si **vede**: è un
+/// tratto di due pixel attorno a un comando, e la regola per le forme è più
+/// larga di quella per le lettere. Sotto, chi naviga con la tastiera non trova
+/// più dove sta il fuoco — ed è la sola cosa che l'anello esiste per dire.
+pub const CONTRASTO_ANELLO: f64 = 3.0;
 
 /// Una coppia misurata: quanto si legge questo colore su quello.
 #[derive(Debug, Clone, PartialEq)]
@@ -2732,17 +3921,17 @@ pub struct ContrastPair {
     pub foreground: &'static str,
     /// Il token dietro.
     pub background: &'static str,
-    /// Il rapporto nel tema base.
-    pub dark: f64,
-    /// Il rapporto nel tema chiaro, quando la skin ne ha uno.
-    pub light: Option<f64>,
+    /// Il rapporto nel tema di base.
+    pub base: f64,
+    /// Il rapporto nella variante, quando la skin ne ha una.
+    pub variante: Option<f64>,
 }
 
 impl ContrastPair {
     /// Passa in tutti i temi in cui è stata misurata.
     #[must_use]
     pub fn passa(&self) -> bool {
-        self.dark >= CONTRASTO_MINIMO && self.light.is_none_or(|l| l >= CONTRASTO_MINIMO)
+        self.base >= CONTRASTO_MINIMO && self.variante.is_none_or(|l| l >= CONTRASTO_MINIMO)
     }
 }
 
@@ -2759,20 +3948,14 @@ const DAVANTI: &[&str] = &[
 
 /// Le superfici su cui il testo sta davvero.
 ///
-/// `surface.3` è deliberatamente fuori: è un riempimento di sopraelevazione —
-/// il fondo di un elemento di menù al passaggio del mouse — non un letto di
-/// testo semantico. Includerlo produrrebbe avvisi su coppie che nell'interfaccia
-/// non si incontrano.
+/// `surface.3` è deliberatamente fuori: è un riempimento di sopraelevazione,
+/// non un letto di testo semantico.
 pub(crate) const DIETRO: &[&str] = &["color.surface.0", "color.surface.1", "color.surface.2"];
 
-/// Il colore vero di un token, quando si può saperlo.
+/// Il colore vero di un colore, quando si può saperlo.
 ///
-/// `None` quando dipende dalla copertina: `{ "$source": "albumArt.vibrant" }` è
-/// un colore che al momento della validazione non esiste ancora, e misurarne il
-/// contrasto vorrebbe dire inventarsi un disco.
-///
-/// I riferimenti fra token si seguono, con un tetto: `a → b → a` è un ciclo che
-/// il formato non vieta, e senza il tetto questa funzione non tornerebbe.
+/// `None` quando dipende dalla copertina. I riferimenti fra token si seguono,
+/// con un tetto: `a → b → a` è un ciclo che il formato non vieta.
 fn risolvi(
     colore: &ColorValue,
     tokens: &TokenSet,
@@ -2791,9 +3974,6 @@ fn risolvi(
             .map(|(_, rgba)| alpha.map_or(*rgba, |a| rgba.with_alpha(a))),
         ColorValue::Source { .. } => None,
         ColorValue::Token(def) => {
-            // Prima nell'insieme di questo tema, poi in quello base: è la stessa
-            // cascata del CSS, e cercarne uno solo darebbe un contrasto giusto
-            // per il tema sbagliato.
             let valore = tokens
                 .get(def.id)
                 .or_else(|| base.and_then(|b| b.get(def.id)))?;
@@ -2819,87 +3999,85 @@ pub(crate) fn colore_di(
     }
 }
 
+/// Un tema da misurare: il nome, i suoi token, quelli su cui ricade, la sua
+/// tavolozza.
+struct Tema<'a> {
+    nome: &'static str,
+    tokens: &'a TokenSet,
+    base: Option<&'a TokenSet>,
+    palette: Vec<(String, Rgba)>,
+}
+
+fn temi(skin: &SkinDocument) -> Vec<Tema<'_>> {
+    let mut temi = vec![Tema {
+        nome: skin.scheme.nome(),
+        tokens: &skin.tokens,
+        base: None,
+        palette: skin.palette.clone(),
+    }];
+    if let Some(variante) = skin.variant.as_ref() {
+        temi.push(Tema {
+            nome: skin.scheme.opposto().nome(),
+            tokens: &variante.tokens,
+            base: Some(&skin.tokens),
+            palette: skin.tavolozza_variante(),
+        });
+    }
+    temi
+}
+
 /// Misura ogni coppia testo/superficie, nei temi che la skin dichiara.
 ///
-/// # Perché è pubblica e separata dagli avvisi
-///
-/// Perché lo Studio mostra **la tabella**, non solo le righe rosse: sapere che
-/// `text.2` sta a 7.3 e `text.3` a 4.6 dice quanto margine c'è prima che un
-/// ritocco al fondo rompa qualcosa. `check_skin` ne prende le righe che non
-/// passano e le trasforma in avvisi; qui ci sono tutte.
-///
-/// Le coppie che non si possono misurare — un colore che segue la copertina, un
-/// token non dichiarato — semplicemente non compaiono: un rapporto inventato
-/// sarebbe peggio di un rapporto assente.
+/// Le coppie che non si possono misurare — un colore che segue la copertina,
+/// un token non dichiarato — semplicemente non compaiono.
 #[must_use]
 pub fn contrast_pairs(skin: &SkinDocument) -> Vec<ContrastPair> {
+    let temi = temi(skin);
+    let misura = |davanti: &str, dietro: &str, tema: &Tema<'_>| -> Option<f64> {
+        let f = colore_di(davanti, tema.tokens, tema.base, &tema.palette)?;
+        let b = colore_di(dietro, tema.tokens, tema.base, &tema.palette)?;
+        Some(crate::values::contrast_ratio(f, b))
+    };
     let mut coppie = Vec::new();
+    let mut aggiungi = |davanti: &'static str, dietro: &'static str| {
+        let Some(tema_base) = temi.first() else {
+            return;
+        };
+        let Some(base) = misura(davanti, dietro, tema_base) else {
+            return;
+        };
+        coppie.push(ContrastPair {
+            foreground: davanti,
+            background: dietro,
+            base,
+            variante: temi.get(1).and_then(|t| misura(davanti, dietro, t)),
+        });
+    };
     for davanti in DAVANTI {
         for dietro in DIETRO {
-            let Some(f) = colore_di(davanti, &skin.tokens, None, &skin.palette) else {
-                continue;
-            };
-            let Some(b) = colore_di(dietro, &skin.tokens, None, &skin.palette) else {
-                continue;
-            };
-            let chiaro = skin.light.as_ref().and_then(|light| {
-                let f = colore_di(davanti, light, Some(&skin.tokens), &skin.palette)?;
-                let b = colore_di(dietro, light, Some(&skin.tokens), &skin.palette)?;
-                Some(crate::values::contrast_ratio(f, b))
-            });
-            coppie.push(ContrastPair {
-                foreground: davanti,
-                background: dietro,
-                dark: crate::values::contrast_ratio(f, b),
-                light: chiaro,
-            });
+            aggiungi(davanti, dietro);
         }
     }
-
-    // E la regola inversa, che nessun'altra coppia copre: il testo che sta
-    // **sopra** l'accento è `--color-surface-0`. Se l'accento si schiarisce,
-    // l'etichetta di un bottone primario sparisce, e la tabella di sopra non se
-    // ne accorgerebbe: lì `surface.0` è sempre un fondo, mai un davanti.
-    if let (Some(f), Some(b)) = (
-        colore_di("color.surface.0", &skin.tokens, None, &skin.palette),
-        colore_di("color.accent", &skin.tokens, None, &skin.palette),
-    ) {
-        let chiaro = skin.light.as_ref().and_then(|light| {
-            let f = colore_di("color.surface.0", light, Some(&skin.tokens), &skin.palette)?;
-            let b = colore_di("color.accent", light, Some(&skin.tokens), &skin.palette)?;
-            Some(crate::values::contrast_ratio(f, b))
-        });
-        coppie.push(ContrastPair {
-            foreground: "color.surface.0",
-            background: "color.accent",
-            dark: crate::values::contrast_ratio(f, b),
-            light: chiaro,
-        });
-    }
-
+    // E la regola inversa: il testo che sta **sopra** l'accento è
+    // `--color-surface-0`, l'etichetta di un bottone primario.
+    aggiungi("color.surface.0", "color.accent");
     coppie
 }
 
 /// Il colore di fondo che una pila di livelli dipinge, se se ne può dire uno.
 ///
-/// Si guarda **lo strato più basso**, che è quello che copre tutto: sopra ci
-/// possono stare scanline, griglie e velature, e quelle non sostituiscono il
-/// fondo — lo sporcano. Una tinta piatta vale sé stessa; un gradiente vale la
-/// media delle sue fermate, che non è il colore di nessun pixel preciso ed è
-/// una buona approssimazione di quel che l'occhio legge dietro il testo.
-///
-/// `None` per tutto il resto — un motivo a righe, una griglia, una tinta che
-/// segue la copertina — e non è una rinuncia: sotto quegli effetti c'è quel che
-/// c'era prima, che questa funzione non conosce, e misurare il contrasto contro
-/// un fondo inventato sarebbe peggio che non misurarlo.
+/// Si guarda lo strato più basso, che in CSS è l'**ultimo** della lista: una
+/// tinta vale sé stessa, un gradiente la media delle sue fermate. Tutto il
+/// resto — un motivo, un'immagine, una tinta che segue la copertina — non si
+/// misura. Uno strato trasparente si guarda sopra il fondo dell'app, perché è
+/// quello che ci si vede attraverso.
 fn fondo_dipinto(
-    livelli: &[crate::effects::Paint],
+    livelli: &[Paint],
     tokens: &TokenSet,
     base: Option<&TokenSet>,
     palette: &[(String, Rgba)],
 ) -> Option<Rgba> {
-    use crate::effects::Effect;
-    let media = |stops: &[crate::effects::Stop]| -> Option<Rgba> {
+    let media = |stops: &[Stop]| -> Option<Rgba> {
         let risolti: Vec<Rgba> = stops
             .iter()
             .filter_map(|s| risolvi(&s.color, tokens, base, palette, 8))
@@ -2924,63 +4102,70 @@ fn fondo_dipinto(
             a: risolti.iter().map(|c| c.a).sum::<f64>() / quanti as f64,
         })
     };
-    match livelli.first()?.effect() {
+    let dipinto = match livelli.last()?.effect() {
         Effect::Solid { color } => risolvi(color, tokens, base, palette, 8),
         Effect::LinearGradient { stops, .. }
         | Effect::RadialGradient { stops, .. }
         | Effect::ConicGradient { stops, .. } => media(stops),
         _ => None,
+    }?;
+    if dipinto.a >= 1.0 {
+        return Some(dipinto);
     }
+    let sotto = colore_di("color.surface.0", tokens, base, palette)?;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "una media pesata di due canali fra 0 e 255 sta in un u8"
+    )]
+    let piatto = |sopra: u8, dietro: u8| -> u8 {
+        f64::from(sopra)
+            .mul_add(dipinto.a, f64::from(dietro) * (1.0 - dipinto.a))
+            .round() as u8
+    };
+    Some(Rgba {
+        r: piatto(dipinto.r, sotto.r),
+        g: piatto(dipinto.g, sotto.g),
+        b: piatto(dipinto.b, sotto.b),
+        a: 1.0,
+    })
 }
 
 /// Le superfici che una skin si ridipinge, misurate contro il testo che ci va
 /// sopra, in ogni tema che dichiara.
 ///
-/// # Il guasto che questo controllo esiste per impedire
-///
-/// La tabella dei contrasti guarda i **token**, e i token la variante chiara li
-/// ribalta: `themes.light` riscrive `color.surface.*` e `color.text.*`, e le
-/// coppie tornano a posto da sole. Una **parte** no. Una parte che scrive
-/// `{"effect": "linearGradient", "stops": [{"color": "#030305"}, …]}` dipinge
-/// quel nero in tutti e due i temi, perché il formato non ha un `themes.light`
-/// per le parti: ci sono i token, e chi non passa di lì non si ribalta.
-///
-/// Il risultato visto per davvero, su una skin scritta nello Studio di questo
-/// programma: `capabilities.light` dichiarato, `section-card` col suo gradiente
-/// quasi nero, e con il tema chiaro **tutte le Impostazioni nere su nere** —
-/// titoli, descrizioni e nomi delle skin illeggibili, mentre il resto della
-/// finestra era chiaro e a posto. Lo Studio diceva «0 errori, 0 avvisi».
-///
-/// Chi scrive una skin può averlo voluto — un fondo scuro con un testo suo
-/// dichiarato è legittimo, e per quello si guarda prima `text_color` della
-/// parte — quindi è un avviso e non un errore. Ma deve saperlo prima di
-/// pubblicarla, invece che dopo, da chi la installa.
+/// Nel tema della variante una parte si guarda com'è **in quel tema**: se la
+/// variante la ridipinge, conta la sua pittura; se no, quella della base — che
+/// è esattamente il caso in cui un colore scritto per esteso resta uguale in
+/// due temi che hanno testi opposti.
 fn avvisi_superfici(skin: &SkinDocument) -> Vec<SkinWarning> {
     let mut avvisi = Vec::new();
-    let mut temi: Vec<(&str, &TokenSet, Option<&TokenSet>)> = vec![("scuro", &skin.tokens, None)];
-    if let Some(chiaro) = skin.light.as_ref() {
-        temi.push(("chiaro", chiaro, Some(&skin.tokens)));
-    }
-
-    for parte in &skin.parts {
-        if parte.appearance.background.is_empty() {
-            continue;
-        }
-        for (nome_tema, tokens, base) in &temi {
-            let Some(fondo) =
-                fondo_dipinto(&parte.appearance.background, tokens, *base, &skin.palette)
+    for (indice, tema) in temi(skin).iter().enumerate() {
+        for base in &skin.parts {
+            let sovrascritta = (indice > 0)
+                .then(|| {
+                    skin.variant
+                        .as_ref()
+                        .and_then(|v| v.parts.iter().find(|p| p.def.name == base.def.name))
+                })
+                .flatten();
+            let fondo_scritto = sovrascritta
+                .map(|p| &p.appearance.background)
+                .filter(|b| !b.is_empty())
+                .unwrap_or(&base.appearance.background);
+            if fondo_scritto.is_empty() {
+                continue;
+            }
+            let Some(fondo) = fondo_dipinto(fondo_scritto, tema.tokens, tema.base, &tema.palette)
             else {
                 continue;
             };
-            // Il testo della parte se la parte lo dichiara, altrimenti quello
-            // che ci finirà sopra davvero: `color.text.1` è il colore del testo
-            // normale, e una superficie si giudica contro il testo che porta.
-            let testo = parte
-                .appearance
-                .text_color
-                .as_ref()
-                .and_then(|c| risolvi(c, tokens, *base, &skin.palette, 8))
-                .or_else(|| colore_di("color.text.1", tokens, *base, &skin.palette));
+            let testo_scritto = sovrascritta
+                .and_then(|p| p.appearance.text_color.as_ref())
+                .or(base.appearance.text_color.as_ref());
+            let testo = testo_scritto
+                .and_then(|c| risolvi(c, tema.tokens, tema.base, &tema.palette, 8))
+                .or_else(|| colore_di("color.text.1", tema.tokens, tema.base, &tema.palette));
             let Some(testo) = testo else { continue };
             let rapporto = crate::values::contrast_ratio(testo, fondo);
             if rapporto >= CONTRASTO_MINIMO {
@@ -2988,15 +4173,13 @@ fn avvisi_superfici(skin: &SkinDocument) -> Vec<SkinWarning> {
             }
             avvisi.push(SkinWarning {
                 kind: WarningKind::Contrast,
-                path: format!("parts.{}.background", parte.def.name),
+                path: format!("parts.{}.background", base.def.name),
                 message: format!(
-                    "«{}» si dipinge un fondo su cui il testo fa {rapporto:.2}:1 nel tema \
-                     {nome_tema}, sotto {CONTRASTO_MINIMO}:1. Le parti non \
-                     seguono `themes.light`: un colore scritto per esteso resta \
-                     quello in tutti e due i temi, e in uno dei due il testo ci \
-                     sparisce sopra. Usa un token (`color.surface.1` e simili), \
-                     o dichiara `text` su questa parte.",
-                    parte.def.name
+                    "«{}» si dipinge un fondo su cui il testo fa {rapporto:.2}:1 nel tema {}, \
+                     sotto {CONTRASTO_MINIMO}:1. Un colore scritto per esteso resta quello in \
+                     tutti e due i temi: usa un token (`color.surface.1` e simili), ridipingi \
+                     la parte nella variante, o dichiara `textColor` su questa parte.",
+                    base.def.name, tema.nome
                 ),
             });
         }
@@ -3004,14 +4187,137 @@ fn avvisi_superfici(skin: &SkinDocument) -> Vec<SkinWarning> {
     avvisi
 }
 
+/// Un anello del fuoco, misurato contro le superfici in un tema.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnelloMisurato {
+    /// Dove sta scritto il suo colore: `tokens.color.accent` per l'anello di
+    /// serie, `parts.<parte>.focusRing` o `parts.<parte>.states.<stato>.focusRing`
+    /// per quello che una parte si disegna da sé.
+    pub path: String,
+    /// Il tema in cui si è misurato: `scuro` o `chiaro`.
+    pub tema: &'static str,
+    /// La superficie contro cui si vede peggio.
+    pub background: &'static str,
+    /// Il rapporto contro quella superficie: il più basso.
+    pub rapporto: f64,
+}
+
+impl AnelloMisurato {
+    /// Si vede abbastanza: almeno [`CONTRASTO_ANELLO`].
+    #[must_use]
+    pub fn passa(&self) -> bool {
+        self.rapporto >= CONTRASTO_ANELLO
+    }
+}
+
+/// Ogni anello del fuoco di una skin, misurato contro le superfici, in ogni
+/// tema che dichiara.
+///
+/// # Quali anelli
+///
+/// L'anello di serie è `outline: 2px solid var(--accent)` su `:focus-visible`
+/// (`stile.css`): il suo colore è il token `color.accent`, e si misura per
+/// primo. Poi quelli che una parte si disegna da sé con `focusRing`, alla base o
+/// in uno stato: nel tema della variante conta la parte com'è **in quel tema**,
+/// come per le superfici ridipinte (`avvisi_superfici`).
+///
+/// # Contro cosa
+///
+/// Contro le tre superfici su cui stanno i comandi (`color.surface.0`…`2`), e
+/// vale la peggiore: l'anello sta **fuori** dal comando, sopra quel che c'è
+/// attorno, e un anello che si vede su una superficie e sparisce su un'altra
+/// sparisce proprio dove il fuoco ci passa. Un colore che segue la copertina
+/// non si misura — lo tiene a bada `dinamico.rs` — e nemmeno una superficie che
+/// non si può risolvere.
+#[must_use]
+pub fn focus_ring_pairs(skin: &SkinDocument) -> Vec<AnelloMisurato> {
+    let mut anelli = Vec::new();
+    for (indice, tema) in temi(skin).iter().enumerate() {
+        let superfici: Vec<(&'static str, Rgba)> = DIETRO
+            .iter()
+            .filter_map(|id| colore_di(id, tema.tokens, tema.base, &tema.palette).map(|c| (*id, c)))
+            .collect();
+        if superfici.is_empty() {
+            continue;
+        }
+        let mut misura = |path: String, colore: Rgba| {
+            let peggiore = superfici
+                .iter()
+                .map(|(id, dietro)| (*id, crate::values::contrast_ratio(colore, *dietro)))
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((background, rapporto)) = peggiore {
+                anelli.push(AnelloMisurato {
+                    path,
+                    tema: tema.nome,
+                    background,
+                    rapporto,
+                });
+            }
+        };
+
+        if let Some(accento) = colore_di("color.accent", tema.tokens, tema.base, &tema.palette) {
+            misura("tokens.color.accent".to_owned(), accento);
+        }
+
+        for base in &skin.parts {
+            let parte = (indice > 0)
+                .then(|| {
+                    skin.variant
+                        .as_ref()
+                        .and_then(|v| v.parts.iter().find(|p| p.def.name == base.def.name))
+                })
+                .flatten()
+                .unwrap_or(base);
+            let nome = base.def.name;
+            let mut scritti: Vec<(String, &ColorValue)> = Vec::new();
+            if let Some(anello) = parte.appearance.focus_ring.as_ref() {
+                scritti.push((format!("parts.{nome}.focusRing"), &anello.color));
+            }
+            for (stato, aspetto) in parte.states.iter() {
+                if let Some(anello) = aspetto.focus_ring.as_ref() {
+                    scritti.push((
+                        format!("parts.{nome}.states.{}.focusRing", stato.as_str()),
+                        &anello.color,
+                    ));
+                }
+            }
+            for (path, colore) in scritti {
+                if let Some(colore) = risolvi(colore, tema.tokens, tema.base, &tema.palette, 8) {
+                    misura(path, colore);
+                }
+            }
+        }
+    }
+    anelli
+}
+
+/// Gli anelli del fuoco che non si vedono abbastanza, come avvisi.
+///
+/// Un avviso e non un errore, come per il testo: la skin si installa e si
+/// indossa, ma chi la scrive lo sa nello Studio e chi la importa lo legge
+/// nell'esame prima di indossarla.
+fn avvisi_anelli(skin: &SkinDocument) -> Vec<SkinWarning> {
+    focus_ring_pairs(skin)
+        .into_iter()
+        .filter(|a| !a.passa())
+        .map(|a| SkinWarning {
+            kind: WarningKind::Contrast,
+            message: format!(
+                "L'anello del fuoco scritto in «{}» fa {:.2}:1 contro «{}» nel tema {}, sotto \
+                 {CONTRASTO_ANELLO}:1: chi naviga con la tastiera non vede dove si trova. \
+                 L'anello di serie è `color.accent`; una parte può dichiarare un suo \
+                 `focusRing` più acceso.",
+                a.path, a.rapporto, a.background, a.tema
+            ),
+            path: a.path,
+        })
+        .collect()
+}
+
 /// Quante volte ogni colore della tavolozza è riferito.
 ///
-/// # Perché un conteggio e non un avviso
-///
-/// È il numero che trasforma una tavolozza in un sistema: un colore usato una
-/// volta sola non è un colore della skin, è un letterale con un nome. Ma non è
-/// un errore, e trattarlo come tale insegnerebbe a ignorare gli avvisi. Lo
-/// Studio lo mostra accanto al colore e lascia decidere.
+/// Un conteggio e non un avviso: un colore usato una volta sola non è un
+/// errore, è un letterale con un nome. Lo Studio lo mostra e lascia decidere.
 #[must_use]
 pub fn palette_usage(skin: &SkinDocument) -> Vec<(String, usize)> {
     let mut conteggi: Vec<(String, usize)> =
@@ -3025,7 +4331,10 @@ pub fn palette_usage(skin: &SkinDocument) -> Vec<(String, usize)> {
         }
     };
 
-    let mut in_token = |insieme: &TokenSet| {
+    let mut insiemi: Vec<&TokenSet> = vec![&skin.tokens];
+    insiemi.extend(skin.variante_tokens());
+    insiemi.extend(skin.mobile.as_ref());
+    for insieme in insiemi {
         for (_, valore) in insieme.iter() {
             match valore {
                 TokenValue::Color(colore) => conta(colore),
@@ -3037,31 +4346,41 @@ pub fn palette_usage(skin: &SkinDocument) -> Vec<(String, usize)> {
                 _ => {}
             }
         }
-    };
-    in_token(&skin.tokens);
-    if let Some(chiaro) = skin.light.as_ref() {
-        in_token(chiaro);
-    }
-    if let Some(telefono) = skin.mobile.as_ref() {
-        in_token(telefono);
     }
 
-    for (_, effetto) in &skin.patterns {
+    let motivi = skin
+        .patterns
+        .iter()
+        .chain(skin.variant.iter().flat_map(|v| v.patterns.iter()));
+    for (_, effetto) in motivi {
         for colore in effetto.colors() {
             conta(colore);
         }
     }
-    for stile in &skin.parts {
+    let parti = skin
+        .parts
+        .iter()
+        .chain(skin.variant.iter().flat_map(|v| v.parts.iter()));
+    for stile in parti {
         for effetto in &stile.effects() {
             for colore in effetto.colors() {
                 conta(colore);
             }
         }
         for aspetto in stile.appearances() {
-            for colore in [aspetto.text_color.as_ref(), aspetto.border_color.as_ref()]
-                .into_iter()
-                .flatten()
-            {
+            for colore in aspetto.colori_propri() {
+                conta(colore);
+            }
+        }
+    }
+    for (_, animazione) in skin
+        .motion
+        .as_ref()
+        .map(|m| m.animations.as_slice())
+        .unwrap_or_default()
+    {
+        for fotogramma in &animazione.frames {
+            for colore in fotogramma.colori() {
                 conta(colore);
             }
         }
@@ -3081,12 +4400,27 @@ pub struct SkinWarning {
     pub message: String,
 }
 
+/// Il primo fotogramma di un ciclo è la parte com'è?
+fn a_riposo(fotogramma: &AnimFrame) -> bool {
+    let zero = |v: Option<f64>| v.is_none_or(|n| n == 0.0);
+    let uno = |v: Option<f64>| v.is_none_or(|n| (n - 1.0).abs() < f64::EPSILON);
+    let fermo = |l: Option<Length>| l.is_none_or(|l| l.value == 0.0);
+    uno(fotogramma.opacity)
+        && fermo(fotogramma.translate_x)
+        && fermo(fotogramma.translate_y)
+        && uno(fotogramma.scale)
+        && uno(fotogramma.scale_x)
+        && uno(fotogramma.scale_y)
+        && zero(fotogramma.rotate.map(|r| r % 360.0))
+        && zero(fotogramma.skew_x)
+        && zero(fotogramma.skew_y)
+        && fermo(fotogramma.blur)
+        && uno(fotogramma.brightness)
+        && uno(fotogramma.saturate)
+        && zero(fotogramma.hue_rotate.map(|h| h % 360.0))
+}
+
 /// Gli avvisi di una skin valida.
-///
-/// Il primo è quello che nel vecchio albero costava un mese di silenzio. Un
-/// token obbligatorio non dichiarato non è un errore — la skin eredita quello di
-/// base — ma quasi sempre è una dimenticanza, e il risultato è una superficie
-/// che resta del colore sbagliato in una schermata che si visita raramente.
 #[must_use]
 pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
     let mut avvisi = Vec::new();
@@ -3105,44 +4439,32 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
         });
     }
 
-    // Un tema chiaro dichiarato e vuoto è una promessa non mantenuta:
+    // Una variante dichiarata e vuota è una promessa non mantenuta:
     // l'interruttore del tema apparirebbe e non farebbe niente.
-    if skin.capabilities.light && skin.light.as_ref().is_none_or(TokenSet::is_empty) {
+    if skin.variant.as_ref().is_some_and(Variante::is_empty) {
         avvisi.push(SkinWarning {
             kind: WarningKind::UnkeptCapability,
-            path: "themes.light".to_owned(),
-            message: "La skin dichiara di avere una variante chiara ma non la definisce."
-                .to_owned(),
-        });
-    }
-    if skin.capabilities.mobile && skin.mobile.as_ref().is_none_or(TokenSet::is_empty) {
-        avvisi.push(SkinWarning {
-            kind: WarningKind::UnkeptCapability,
-            path: "platforms.mobile".to_owned(),
-            message: "La skin dichiara sovrascritture per telefono ma non le definisce.".to_owned(),
+            path: "variant".to_owned(),
+            message: format!(
+                "La skin dichiara un tema {} e non ci scrive niente.",
+                skin.scheme.opposto().nome()
+            ),
         });
     }
 
-    // Il contrasto. `contrast_ratio()` esisteva da prima di questo ramo, con un
-    // test che provava che `color.text.3` della skin di riferimento stava sotto
-    // la soglia — e nessuno la chiamava, quindi quel test provava un difetto
-    // invece di impedirlo. Misurare qui è ciò che trasforma un numero scritto a
-    // occhio in un numero che qualcuno controlla.
-    //
-    // È un avviso e non un errore: una skin poco leggibile funziona, e chi la
-    // scrive potrebbe averlo voluto per un'etichetta secondaria. Ma deve
-    // saperlo, e deve saperlo **prima** di pubblicarla invece che dopo, da chi
-    // la usa.
+    // Il contrasto: un avviso e non un errore, ma da sapere **prima** di
+    // pubblicare.
     for coppia in contrast_pairs(skin) {
         if coppia.passa() {
             continue;
         }
-        let dove = if coppia.dark < CONTRASTO_MINIMO {
-            format!("{:.2}:1 nel tema scuro", coppia.dark)
+        let dove = if coppia.base < CONTRASTO_MINIMO {
+            format!("{:.2}:1 nel tema {}", coppia.base, skin.scheme.nome())
         } else {
             format!(
-                "{:.2}:1 nel tema chiaro",
-                coppia.light.unwrap_or(CONTRASTO_MINIMO)
+                "{:.2}:1 nel tema {}",
+                coppia.variante.unwrap_or(CONTRASTO_MINIMO),
+                skin.scheme.opposto().nome()
             )
         };
         avvisi.push(SkinWarning {
@@ -3156,14 +4478,9 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
         });
     }
 
-    // Le superfici che la skin si ridipinge, che la tabella dei token non
-    // copre: vedi `avvisi_superfici`.
     avvisi.extend(avvisi_superfici(skin));
+    avvisi.extend(avvisi_anelli(skin));
 
-    // Uno scafale che monta mezza applicazione non è illegale — ogni singolo
-    // widget ci sta — ma è una finestra in cui non si trova più niente. Riusa
-    // `CostBudget` invece di inventarsi una variante: è la stessa idea di
-    // «troppa roba insieme», misurata su un altro budget.
     if let Some(layout) = skin.layout.as_ref() {
         let usati = layout.shell.prefabs_used();
         for nome in &layout.prefabs {
@@ -3180,28 +4497,11 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
             });
         }
 
-        let costo = layout.shell.costo();
-        if costo > crate::layout::SHELL_COST_BUDGET {
-            avvisi.push(SkinWarning {
-                kind: WarningKind::CostBudget,
-                path: "layout.shell".to_owned(),
-                message: format!(
-                    "lo scafale monta {costo} sul budget di {}: \
-                     tanti pezzi insieme sono una finestra in cui non si trova niente.",
-                    crate::layout::SHELL_COST_BUDGET
-                ),
-            });
-        }
+        avvisi.extend(sfori_scafale(skin).into_iter().map(Sforo::avviso));
     }
 
-    // Un motivo che nessuna parte richiama si compila comunque: resta una
-    // proprietà custom in `:root` che nessuno legge. Non rompe niente — ed è
-    // esattamente il tipo di cosa che chi scrive la skin ha dimenticato di
-    // collegare, non deciso di lasciare.
-    let usati: Vec<&str> = skin
-        .parts
-        .iter()
-        .flat_map(crate::parts::PartStyle::patterns_used)
+    let usati: Vec<&str> = tutte_le_parti(skin)
+        .flat_map(PartStyle::patterns_used)
         .collect();
     for (nome, _) in &skin.patterns {
         if usati.contains(&nome.as_str()) {
@@ -3217,21 +4517,17 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
         });
     }
 
-    // Un'animazione dichiarata e mai assegnata: stessa storia del motivo qui
-    // sopra, sull'altro registro. Il `@keyframes` esce lo stesso — è inerte,
-    // non costa niente — e quasi sempre è il trigger che si è dimenticato di
-    // scrivere, non una scelta.
     let animate: Vec<&str> = skin
         .parts
         .iter()
-        .flat_map(crate::parts::PartStyle::animations_used)
+        .flat_map(PartStyle::animations_used)
         .collect();
-    for (nome, _) in skin
+    let dichiarate = skin
         .motion
         .as_ref()
         .map(|blocco| blocco.animations.as_slice())
-        .unwrap_or_default()
-    {
+        .unwrap_or_default();
+    for (nome, _) in dichiarate {
         if animate.contains(&nome.as_str()) {
             continue;
         }
@@ -3240,1525 +4536,419 @@ pub fn check_skin(skin: &SkinDocument) -> Vec<SkinWarning> {
             path: format!("motion.animations.{nome}"),
             message: format!(
                 "l'animazione «{nome}» non è assegnata a nessuna parte: \
-                 scrivi \"animations\": {{\"enter\": \"{nome}\"}} sulla parte che deve \
+                 scrivi \"motion\": {{\"enter\": \"{nome}\"}} sulla parte che deve \
                  muoversi, o toglila."
             ),
         });
     }
-
-    // Il movimento di una parte ha un budget suo, contato **solo** sulle
-    // animazioni assegnate e mai sommato a quello delle superfici: disegnare e
-    // muovere sono due lavori diversi, e un numero solo non risponderebbe a
-    // nessuna delle due domande.
-    for stile in &skin.parts {
-        let costo = stile.motion_cost();
-        if costo > crate::movimento::MOTION_COST_BUDGET {
+    for (nome, animazione) in dichiarate {
+        if animazione.iterations != Iterazioni::Infinite {
+            continue;
+        }
+        if animazione.frames.first().is_some_and(|f| !a_riposo(f)) {
             avvisi.push(SkinWarning {
-                kind: WarningKind::CostBudget,
-                path: format!("parts.{}.animations", stile.def.name),
+                kind: WarningKind::RestingLoop,
+                path: format!("motion.animations.{nome}.frames.0"),
                 message: format!(
-                    "il movimento costa {costo} sul budget di {}: \
-                     togli una ripetizione, o un trigger.",
-                    crate::movimento::MOTION_COST_BUDGET
+                    "«{nome}» è un ciclo, e il suo primo fotogramma non è la parte com'è: \
+                     prima di partire e in pausa la parte resta lì, storta. Metti al primo \
+                     fotogramma la posa di riposo."
+                ),
+            });
+        }
+    }
+
+    // Il movimento: per parte, e per la finestra intera.
+    avvisi.extend(sfori_movimento(skin).into_iter().map(Sforo::avviso));
+
+    // La cascata ha senso solo se qualcosa entra — e entra a tempo.
+    //
+    // Il compilatore la scrive sul ritardo dell'entrata (`enter`), e solo
+    // dove l'entrata è un'animazione della parte: su una presenza l'entrata è
+    // una transizione di vista, e la vista non ha un indice. Su `inView` non
+    // c'è niente da ritardare: ogni voce ha la sua linea di scorrimento, e
+    // parte quando entra lei — un ritardo a tempo su una linea che non è il
+    // tempo il motore lo ignora. Fino alla 3.0 questo avviso suggeriva proprio
+    // `inView` come rimedio, e la cascata restava scritta senza fare niente.
+    for stile in &skin.parts {
+        let entra_a_tempo = !stile.def.presenza && stile.motion.get(AnimTrigger::Enter).is_some();
+        if stile.motion.stagger.is_some() && !entra_a_tempo {
+            let perche = if stile.def.presenza {
+                "entra come una presenza, tutta insieme, e non ha voci da far partire una dopo l'altra"
+            } else if stile.motion.get(AnimTrigger::InView).is_some() {
+                "entra con lo scorrimento, e ogni voce parte già quando arriva in vista"
+            } else {
+                "non ha un'entrata"
+            };
+            avvisi.push(SkinWarning {
+                kind: WarningKind::UnusedAnimation,
+                path: format!("parts.{}.motion.stagger", stile.def.name),
+                message: format!(
+                    "la cascata ritarda l'entrata di ogni voce, e «{}» {perche}: assegna \
+                     «enter», o togli la cascata. Parte al più per le prime {CASCATA_VOCI} voci.",
+                    stile.def.name
                 ),
             });
         }
     }
 
     // Una superficie che sfora il budget non è illegale: è una superficie che
-    // salterà i fotogrammi su un telefono, e chi la sta costruendo su un PC non
-    // ha modo di accorgersene.
-    for stile in &skin.parts {
-        let effetti = stile.effects();
-        if crate::effects::exceeds_budget(&effetti) {
-            avvisi.push(SkinWarning {
-                kind: WarningKind::CostBudget,
-                path: format!("parts.{}", stile.def.name),
-                message: format!(
-                    "costo {} sul budget di {}: su WebView questa superficie salterà fotogrammi.",
-                    crate::effects::stack_cost(&effetti),
-                    crate::effects::SURFACE_COST_BUDGET
-                ),
-            });
-        }
-    }
+    // salterà i fotogrammi su un telefono.
+    avvisi.extend(sfori_superfici(skin).into_iter().map(Sforo::avviso));
 
     avvisi
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn minima(extra: &str) -> String {
-        format!(
-            r##"{{
-              "format": 1,
-              "id": "prova",
-              "meta": {{ "name": "Prova", "author": "Aether", "version": "1.0.0" }},
-              "tokens": {{ "color.accent": "#8b7cf6" }}
-              {extra}
-            }}"##
-        )
-    }
-
-    fn rifiuta(json: &str) -> AppError {
-        match parse_skin_json(json) {
-            Ok(_) => panic!("accettato quel che andava rifiutato: {json}"),
-            Err(err) => err,
-        }
-    }
-
-    #[test]
-    fn una_skin_minima_passa() {
-        let skin = parse_skin_json(&minima("")).expect("valida");
-        assert_eq!(skin.id, "prova");
-        assert_eq!(skin.tokens.len(), 1);
-        // I difetti sono quelli documentati, non l'assenza di scelta.
-        assert!(skin.capabilities.dynamic_accent);
-        assert!(!skin.capabilities.light);
-    }
-
-    #[test]
-    fn una_chiave_sconosciuta_e_un_errore() {
-        // È la differenza col vecchio albero: là una chiave in più era CSS che
-        // il browser ignorava, e la skin restava rotta in un punto solo.
-        let err = rifiuta(&minima(r##", "colours": {}"##));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("colours"), "{messaggio}");
-        assert!(messaggio.contains("sconosciuta"), "{messaggio}");
-    }
-
-    #[test]
-    fn un_token_sbagliato_riceve_un_suggerimento() {
-        let err = rifiuta(&minima("").replace("color.accent", "color.accents"));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("color.accents"), "{messaggio}");
-        assert!(messaggio.contains("«color.accent»"), "{messaggio}");
-    }
-
-    #[test]
-    fn un_valore_di_token_sbagliato_nomina_il_token() {
-        let err = rifiuta(&minima("").replace("#8b7cf6", "blu"));
-        // Il codice del catalogo, non solo un messaggio: è ciò che permette di
-        // contare quante skin vengono rifiutate e perché.
-        assert_eq!(
-            *err.code(),
-            ErrorCode::SkinTokenInvalid {
-                token: "color.accent".to_owned(),
-                value: "\"blu\"".to_owned(),
-            }
-        );
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("non è un colore"), "{messaggio}");
-    }
-
-    #[test]
-    fn gli_errori_dei_token_arrivano_tutti_insieme() {
-        // Chi sta scrivendo una skin corregge in una passata sola invece di
-        // scoprire un errore per esecuzione.
-        let err = rifiuta(&minima("").replace(
-            r##""color.accent": "#8b7cf6""##,
-            r##""color.accent": "blu", "color.danger": "rosso", "color.text.9": "#fff""##,
-        ));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("color.accent"), "{messaggio}");
-        assert!(messaggio.contains("color.danger"), "{messaggio}");
-        assert!(messaggio.contains("color.text.9"), "{messaggio}");
-    }
-
-    #[test]
-    fn una_versione_futura_non_e_un_manifest_rotto() {
-        let err = rifiuta(&minima("").replace("\"format\": 1", "\"format\": 2"));
-        assert_eq!(
-            *err.code(),
-            ErrorCode::SkinFormatUnsupported {
-                found: 2,
-                supported: 1
-            }
-        );
-    }
-
-    #[test]
-    fn un_effetto_sconosciuto_ha_il_suo_codice() {
-        let err = rifiuta(&minima(
-            r##", "patterns": { "griglia": { "effect": "hairlineGrids", "color": "#fff", "cell": "36px" } }"##,
-        ));
-        assert_eq!(
-            *err.code(),
-            ErrorCode::SkinUnknownEffect {
-                effect_type: "hairlineGrids".to_owned()
-            }
-        );
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("«hairlineGrid»"), "{messaggio}");
-    }
-
-    #[test]
-    fn un_id_che_romperebbe_il_selettore_non_passa() {
-        for cattivo in ["Prova", "pro va", "pro'va", "p", "pro/va", "1prova"] {
-            let json = minima("").replace("\"id\": \"prova\"", &format!("\"id\": \"{cattivo}\""));
-            rifiuta(&json);
-        }
-    }
-
-    #[test]
-    fn un_livello_su_una_parte_senza_pseudo_elemento_e_un_errore() {
-        // `nav-pill` ha `layers: false`: il suo ::after è già usato dal
-        // componente, e una skin che ci scrive sopra toglierebbe quel che c'è.
-        let err = rifiuta(&minima(
-            r##", "parts": { "nav-pill": { "layer": { "background": [{ "effect": "solid", "color": "#fff" }] } } }"##,
-        ));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("pseudo-elemento"), "{messaggio}");
-    }
-
-    #[test]
-    fn una_parte_sbagliata_per_assonanza_riceve_un_suggerimento() {
-        let err = rifiuta(&minima(
-            r##", "parts": { "section-cards": { "opacity": 1 } }"##,
-        ));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("«section-card»"), "{messaggio}");
-    }
-
-    #[test]
-    fn una_parte_ritirata_si_legge_e_non_disegna() {
-        // La skin del 2.2.0 che stilava `viz-title` deve continuare ad aprirsi:
-        // un nome sconosciuto qui è un errore duro, e ritirare una parte non
-        // deve valere più di quel che valeva disegnarla — cioè niente.
-        let skin = parse_skin_json(&minima(
-            r##", "parts": {
-                "viz-title": { "opacity": 1, "textColor": "#fff" },
-                "viz-screen": { "opacity": 1 }
-            }"##,
-        ))
-        .expect("una parte ritirata non ferma la lettura");
-        let ordine: Vec<&str> = skin.parts.iter().map(|s| s.def.name).collect();
-        assert_eq!(ordine, ["viz-screen"]);
-        // E non lascia dietro nemmeno un problema: la skin è valida com'è
-        // scritta, e chi l'ha scritta non ha niente da correggere.
-        assert!(crate::compile_skin(&skin).css.contains("viz-screen"));
-    }
-
-    #[test]
-    fn una_parte_ritirata_su_un_nodo_dello_scafale_si_accetta_e_non_veste_niente() {
-        // La stessa serratura, sulla seconda porta. Una parte si nomina in due
-        // punti — sotto `parts` per stilarla, e su un nodo dello scafale per
-        // appendergliela — e accettarla ritirata solo nel primo avrebbe salvato
-        // metà dei casi: la skin che mette `viz-title` su una zona avrebbe
-        // continuato a non aprirsi affatto.
-        let skin = parse_skin_json(&minima(
-            r##", "layout": { "shell": { "zone": "row", "children": [
-                { "widget": "navigation" },
-                { "zone": "column", "part": "viz-title", "children": [
-                    { "widget": "content" },
-                    { "widget": "transport" }
-                ] }
-            ] } }"##,
-        ))
-        .expect("una parte ritirata non ferma la lettura dello scafale");
-        let shell = skin.layout.expect("dichiara layout").shell;
-        let LayoutNode::Zone(dentro) = &shell.children[1] else {
-            panic!("il secondo figlio non è una zona");
-        };
-        // Il nodo resta con i suoi figli: perde soltanto la parte, che è quel
-        // che vuol dire «si accetta e non fa niente».
-        assert!(dentro.part.is_none());
-        assert!(shell.monta("content"));
-
-        // E la porta resta chiusa per chi sbaglia a scrivere: ritirata non vuol
-        // dire che qui dentro va bene qualunque nome.
-        let err = rifiuta(&minima(
-            r##", "layout": { "shell": { "zone": "row", "children": [
-                { "widget": "navigation" },
-                { "zone": "column", "part": "viz-titel", "children": [
-                    { "widget": "content" },
-                    { "widget": "transport" }
-                ] }
-            ] } }"##,
-        ));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("«viz-titel»"), "{messaggio}");
-    }
-
-    #[test]
-    fn le_parti_escono_in_ordine_di_registro() {
-        let skin = parse_skin_json(&minima(
-            r##", "parts": {
-                "toast-card": { "opacity": 1 },
-                "app-shell": { "opacity": 1 },
-                "nav-pill": { "opacity": 1 }
-            }"##,
-        ))
-        .expect("valida");
-        let ordine: Vec<&str> = skin.parts.iter().map(|s| s.def.name).collect();
-        // Alfabeticamente sarebbe app-shell, nav-pill, toast-card. Qui è
-        // l'ordine del registro: cornice, navigazione, sovrapposizioni.
-        assert_eq!(ordine, ["app-shell", "nav-pill", "toast-card"]);
-    }
-
-    /// Un motivo dichiarato, più quel che il chiamante ci mette attorno.
-    fn con_motivo(parti: &str) -> String {
-        minima(&format!(
-            r##", "patterns": {{
-                "griglia": {{ "effect": "hairlineGrid", "color": "#fff", "cell": "36px" }},
-                "taglio": {{ "effect": "chamfer", "size": "12px", "corners": ["topLeft"] }}
-            }}, "parts": {{ {parti} }}"##
-        ))
-    }
-
-    #[test]
-    fn un_motivo_si_richiama_per_nome() {
-        let skin = parse_skin_json(&con_motivo(
-            r##""app-shell": { "background": [{ "$pattern": "griglia" }], "clip": { "$pattern": "taglio" } }"##,
-        ))
-        .expect("valida");
-        let stile = &skin.parts[0];
-        assert_eq!(
-            stile.appearance.background[0].pattern_name(),
-            Some("griglia")
-        );
-        assert_eq!(
-            stile.appearance.clip.as_ref().and_then(Paint::pattern_name),
-            Some("taglio")
-        );
-        // La definizione viaggia col nome: chi conta il costo non deve tenersi
-        // la tabella dei motivi per sapere cosa sta contando.
-        assert_eq!(stile.effects().len(), 2);
-    }
-
-    #[test]
-    fn un_motivo_inesistente_riceve_un_suggerimento() {
-        // La `s` di troppo, che è la stessa forma di sbaglio di `color.accents`:
-        // `vicini()` riconosce la coda sbagliata, non la lettera cambiata in
-        // mezzo. Vale per i motivi come per tutti gli altri registri.
-        let err = rifiuta(&con_motivo(
-            r##""app-shell": { "background": [{ "$pattern": "griglias" }] }"##,
-        ));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("motivo inesistente"), "{messaggio}");
-        assert!(messaggio.contains("«griglia»"), "{messaggio}");
-    }
-
-    #[test]
-    fn un_motivo_nel_posto_sbagliato_e_un_errore() {
-        // È il caso che vale la pena controllare: un ritaglio dentro `background`
-        // scriverebbe `var(--skin-taglio)` mentre il motivo si compila in
-        // `--skin-taglio-clip`, cioè un riferimento a niente che non dà segno.
-        for (dove, motivo) in [
-            (r##""background": [{ "$pattern": "taglio" }]"##, "taglio"),
-            (r##""clip": { "$pattern": "griglia" }"##, "griglia"),
-        ] {
-            let err = rifiuta(&con_motivo(&format!(r##""app-shell": {{ {dove} }}"##)));
-            let messaggio = err.message().unwrap_or_default();
-            assert!(messaggio.contains(motivo), "{messaggio}");
-            assert!(messaggio.contains("qui ci va"), "{messaggio}");
-        }
-    }
-
-    #[test]
-    fn un_riferimento_a_motivo_non_porta_altre_chiavi() {
-        // Metà riferimento e metà effetto non è una cosa: o si nomina un motivo,
-        // o si scrive l'effetto per esteso.
-        let err = rifiuta(&con_motivo(
-            r##""app-shell": { "background": [{ "$pattern": "griglia", "color": "#fff" }] }"##,
-        ));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("color"), "{messaggio}");
-    }
-
-    #[test]
-    fn un_motivo_mai_richiamato_e_un_avviso() {
-        let skin = parse_skin_json(&con_motivo(
-            r##""app-shell": { "background": [{ "$pattern": "griglia" }] }"##,
-        ))
-        .expect("valida");
-        let avvisi = check_skin(&skin);
-        let motivi: Vec<&str> = avvisi
-            .iter()
-            .filter(|a| a.kind == WarningKind::UnusedPattern)
-            .map(|a| a.path.as_str())
-            .collect();
-        // `griglia` è richiamata, `taglio` no.
-        assert_eq!(motivi, ["patterns.taglio"]);
-    }
-
-    #[test]
-    fn un_motivo_richiamato_solo_in_uno_stato_e_richiamato() {
-        // Stessa regola dei colori in `appearances()`: quel che si vede al
-        // passaggio del mouse si vede eccome.
-        let skin = parse_skin_json(&con_motivo(
-            r##""app-shell": { "clip": { "$pattern": "taglio" },
-                "states": { "hover": { "background": [{ "$pattern": "griglia" }] } } }"##,
-        ))
-        .expect("valida");
-        assert!(
-            !check_skin(&skin)
-                .iter()
-                .any(|a| a.kind == WarningKind::UnusedPattern)
-        );
-    }
-
-    // ── Gli effetti ─────────────────────────────────────────────────────────
-
-    /// Un effetto scritto per esteso, letto come lo legge il documento.
-    ///
-    /// Il percorso è `prova` per tutti: gli errori qui sotto lo citano, e averlo
-    /// sempre uguale rende leggibile il confronto.
-    fn effetto_letto(scritto: &str) -> Effect {
-        let grezzo: Value = serde_json::from_str(scritto).expect("json ben formato");
-        effetto(&grezzo, "prova").expect("effetto valido")
-    }
-
-    /// Lo stesso, quando ci si aspetta che venga rifiutato.
-    fn effetto_storto(scritto: &str) -> SkinIssue {
-        let grezzo: Value = serde_json::from_str(scritto).expect("json ben formato");
-        match effetto(&grezzo, "prova") {
-            Ok(_) => panic!("accettato quel che andava rifiutato: {scritto}"),
-            Err(guaio) => guaio,
-        }
-    }
-
-    /// Un colore letterale opaco, come esce dal parser.
-    fn tinta(r: u8, g: u8, b: u8) -> ColorValue {
-        ColorValue::Literal(Rgba { r, g, b, a: 1.0 })
-    }
-
-    #[test]
-    fn una_tinta_piatta_torna_col_colore_che_e_stato_scritto() {
-        assert_eq!(
-            effetto_letto(r##"{ "effect": "solid", "color": "#8b7cf6" }"##),
-            Effect::Solid {
-                color: tinta(0x8b, 0x7c, 0xf6),
-            }
-        );
-    }
-
-    #[test]
-    fn un_gradiente_lineare_senza_angolo_scende_dall_alto() {
-        // 180 gradi è il difetto scritto accanto al campo, ed è quello del CSS.
-        // Le fermate tornano nell'ordine in cui sono state scritte, e un `at`
-        // assente resta assente invece di diventare un numero.
-        assert_eq!(
-            effetto_letto(
-                r##"{ "effect": "linearGradient",
-                      "stops": [{ "color": "#000" }, { "color": "#fff", "at": "80%" }] }"##
-            ),
-            Effect::LinearGradient {
-                angle: 180.0,
-                stops: vec![
-                    Stop {
-                        color: tinta(0, 0, 0),
-                        at: None,
-                    },
-                    Stop {
-                        color: tinta(255, 255, 255),
-                        at: Some(Length {
-                            value: 80.0,
-                            unit: LengthUnit::Percent,
-                        }),
-                    },
-                ],
-            }
-        );
-    }
-
-    #[test]
-    fn i_due_gradienti_col_centro_hanno_i_difetti_documentati() {
-        let fermate = || {
-            vec![
-                Stop {
-                    color: tinta(0, 0, 0),
-                    at: None,
-                },
-                Stop {
-                    color: tinta(255, 255, 255),
-                    at: None,
-                },
-            ]
-        };
-
-        // Il radiale senza forma è un'ellisse, e quel che non è scritto resta
-        // `None`: il ripiego lo mette il compilatore, non il documento.
-        assert_eq!(
-            effetto_letto(
-                r##"{ "effect": "radialGradient",
-                      "stops": [{ "color": "#000" }, { "color": "#fff" }] }"##
-            ),
-            Effect::RadialGradient {
-                shape: RadialShape::Ellipse,
-                at: None,
-                size: None,
-                stops: fermate(),
-            }
-        );
-
-        // Il conico parte da zero, e il centro sono due lunghezze in ordine.
-        assert_eq!(
-            effetto_letto(
-                r##"{ "effect": "conicGradient", "at": ["50%", "0px"],
-                      "stops": [{ "color": "#000" }, { "color": "#fff" }] }"##
-            ),
-            Effect::ConicGradient {
-                from: 0.0,
-                at: Some((
-                    Length {
-                        value: 50.0,
-                        unit: LengthUnit::Percent,
-                    },
-                    Length::px(0.0),
-                )),
-                stops: fermate(),
-            }
-        );
-    }
-
-    #[test]
-    fn una_griglia_a_linee_sottili_ricorda_soltanto_quel_che_e_scritto() {
-        assert_eq!(
-            effetto_letto(r##"{ "effect": "hairlineGrid", "color": "#fff", "cell": "36px" }"##),
-            Effect::HairlineGrid {
-                color: tinta(255, 255, 255),
-                cell: Length::px(36.0),
-                cell_y: None,
-                thickness: None,
-            }
-        );
-        // È il caso di `--cyber-grid`: il passo verticale diverso da quello
-        // orizzontale è un parametro, non una seconda dichiarazione copiata.
-        assert_eq!(
-            effetto_letto(
-                r##"{ "effect": "hairlineGrid", "color": "#fff", "cell": "36px",
-                      "cellY": "12px", "thickness": "2px" }"##
-            ),
-            Effect::HairlineGrid {
-                color: tinta(255, 255, 255),
-                cell: Length::px(36.0),
-                cell_y: Some(Length::px(12.0)),
-                thickness: Some(Length::px(2.0)),
-            }
-        );
-    }
-
-    #[test]
-    fn un_angolo_smussato_senza_elenco_taglia_i_due_di_serie() {
-        assert_eq!(
-            effetto_letto(r##"{ "effect": "chamfer", "size": "12px" }"##),
-            Effect::Chamfer {
-                size: Length::px(12.0),
-                corners: vec![Corner::TopRight, Corner::BottomLeft],
-            }
-        );
-        // E quando l'elenco c'è, torna nell'ordine scritto: il registro dice
-        // quali nomi esistono, non in che ordine si scrivono.
-        assert_eq!(
-            effetto_letto(
-                r##"{ "effect": "chamfer", "size": "12px", "corners": ["bottomRight", "topLeft"] }"##
-            ),
-            Effect::Chamfer {
-                size: Length::px(12.0),
-                corners: vec![Corner::BottomRight, Corner::TopLeft],
-            }
-        );
-    }
-
-    #[test]
-    fn la_vignetta_e_la_sfocatura_hanno_i_difetti_documentati() {
-        assert_eq!(
-            effetto_letto(r##"{ "effect": "vignette", "color": "#000" }"##),
-            Effect::Vignette {
-                color: tinta(0, 0, 0),
-                start: 60.0,
-            }
-        );
-        // La saturazione della sfocatura non ha un difetto numerico: assente
-        // vuol dire «non toccarla», che non è «lasciala a 100».
-        assert_eq!(
-            effetto_letto(r##"{ "effect": "blurBehind", "radius": "18px" }"##),
-            Effect::BlurBehind {
-                radius: Length::px(18.0),
-                saturate: None,
-            }
-        );
-    }
-
-    #[test]
-    fn un_motivo_letto_dalla_porta_e_lo_stesso_letto_a_mano() {
-        // Non si prova qui `effetto` — lo provano i casi qui sopra — ma il
-        // cablaggio attorno: `parse_skin_json` mette in `skin.patterns` la
-        // chiave scritta e l'effetto com'è uscito da `effetto`, senza
-        // normalizzarlo per strada. Perciò il lato atteso è scritto a mano.
-        const SCRITTO: &str = r##"{ "effect": "stripes", "angle": 30, "color": "#fff",
-                                    "background": "#000", "width": "6px" }"##;
-        let skin = parse_skin_json(&minima(&format!(
-            r##", "patterns": {{ "righe": {SCRITTO} }}"##
-        )))
-        .expect("valida");
-        assert_eq!(
-            skin.patterns,
-            vec![(
-                "righe".to_owned(),
-                Effect::Stripes {
-                    angle: 30.0,
-                    color: tinta(255, 255, 255),
-                    background: tinta(0, 0, 0),
-                    width: Length::px(6.0),
-                }
-            )]
-        );
-    }
-
-    #[test]
-    fn le_liste_di_un_effetto_hanno_una_misura_e_lo_dicono() {
-        // Una fermata sola non è un gradiente, ed è il tipo di svista che in CSS
-        // dava una superficie storta invece di un errore.
-        let poche =
-            effetto_storto(r##"{ "effect": "linearGradient", "stops": [{ "color": "#000" }] }"##);
-        assert_eq!(poche.path, "prova.stops");
-        assert!(
-            poche.message.contains("da 2 a 8 voci, non 1"),
-            "{}",
-            poche.message
-        );
-
-        // Il centro sono esattamente due lunghezze: una sola non è un punto.
-        let centro = effetto_storto(
-            r##"{ "effect": "radialGradient", "at": ["50%"],
-                  "stops": [{ "color": "#000" }, { "color": "#fff" }] }"##,
-        );
-        assert_eq!(centro.path, "prova.at");
-        assert!(
-            centro.message.contains("da 2 a 2 voci, non 1"),
-            "{}",
-            centro.message
-        );
-    }
-
-    #[test]
-    fn una_chiave_di_troppo_dentro_un_effetto_riceve_un_suggerimento() {
-        // L'unione è chiusa anche dentro un effetto: una chiave in più è la
-        // svista che nel vecchio albero passava in silenzio.
-        let coda = effetto_storto(r##"{ "effect": "solid", "color": "#fff", "colors": "#000" }"##);
-        assert_eq!(coda.path, "prova.colors");
-        assert!(
-            coda.message.contains("chiave sconosciuta"),
-            "{}",
-            coda.message
-        );
-        assert!(coda.message.contains("«color»"), "{}", coda.message);
-
-        // E il limite del suggerimento, fissato com'è oggi: `vicini` riconosce
-        // la testa e la coda, non una lettera cambiata in mezzo. `colour` non
-        // comincia per `color`, quindi resta senza candidati — l'errore c'è
-        // lo stesso, ma non porta niente da leggere.
-        let dentro =
-            effetto_storto(r##"{ "effect": "solid", "color": "#fff", "colour": "#000" }"##);
-        assert_eq!(dentro.path, "prova.colour");
-        assert_eq!(dentro.message, "chiave sconosciuta.");
-    }
-
-    #[test]
-    fn quel_che_manca_a_un_effetto_si_dice_col_percorso() {
-        // Non è un oggetto: ci si ferma prima ancora di cercare il nome.
-        let stringa = effetto_storto(r##""solid""##);
-        assert_eq!(stringa.path, "prova");
-        assert_eq!(stringa.message, "qui ci va un oggetto");
-
-        // Un oggetto senza discriminante non è «effetto sconosciuto»: è un campo
-        // obbligatorio che manca, e il percorso lo nomina.
-        let vuoto = effetto_storto("{}");
-        assert_eq!(vuoto.path, "prova.effect");
-        assert_eq!(vuoto.message, "campo obbligatorio, manca");
-
-        // E il campo che manca è quello che manca, non il primo dell'elenco.
-        let senza_passo =
-            effetto_storto(r##"{ "effect": "scanlines", "color": "#fff", "line": "1px" }"##);
-        assert_eq!(senza_passo.path, "prova.gap");
-        assert_eq!(senza_passo.message, "campo obbligatorio, manca");
-    }
-
-    #[test]
-    fn una_parola_fuori_vocabolario_dentro_un_effetto_elenca_le_ammesse() {
-        let forma = effetto_storto(
-            r##"{ "effect": "radialGradient", "shape": "square",
-                  "stops": [{ "color": "#000" }, { "color": "#fff" }] }"##,
-        );
-        assert_eq!(forma.path, "prova.shape");
-        assert!(
-            forma.message.contains("ammessi soltanto: circle, ellipse"),
-            "{}",
-            forma.message
-        );
-
-        // Gli angoli sono un elenco, e l'indice della voce sbagliata sta nel
-        // percorso: con quattro angoli scritti, «uno non va» non basta.
-        let angolo = effetto_storto(
-            r##"{ "effect": "chamfer", "size": "12px",
-                  "corners": ["topLeft", "bottomRight", "topRigth", "bottomLeft"] }"##,
-        );
-        assert_eq!(angolo.path, "prova.corners.2");
-        assert!(
-            angolo
-                .message
-                .contains("topLeft, topRight, bottomRight, bottomLeft"),
-            "{}",
-            angolo.message
-        );
-    }
-
-    #[test]
-    fn un_numero_fuori_scala_dice_fra_quali_estremi_sta() {
-        for (scritto, percorso, estremi) in [
-            (
-                r##"{ "effect": "vignette", "color": "#000", "start": 120 }"##,
-                "prova.start",
-                "va fra 0 e 100, non 120",
-            ),
-            (
-                r##"{ "effect": "blurBehind", "radius": "18px", "saturate": 500 }"##,
-                "prova.saturate",
-                "va fra 0 e 400, non 500",
-            ),
-        ] {
-            let guaio = effetto_storto(scritto);
-            assert_eq!(guaio.path, percorso);
-            assert_eq!(guaio.message, estremi);
-        }
-    }
-
-    // ── Lo scafale ──────────────────────────────────────────────────────────
-
-    /// Uno scafale non di serie, scritto per esteso. Non è spedita: sta in
-    /// `tests/` e non in `skins/`, quindi resta fuori dall'elenco chiuso di
-    /// `package.rs` e non può finire in un pacchetto per sbaglio.
-    const SCAFALATURA: &str = include_str!("../tests/scafalatura.json");
-
-    /// Una skin minima con questo scafale.
-    fn con_scafale(shell: &str) -> String {
-        minima(&format!(r##", "layout": {{ "shell": {shell} }}"##))
-    }
-
-    /// Uno scafale che passa, da guastare in un punto solo.
-    const SANO: &str = r##"{
-        "zone": "row",
-        "children": [
-            { "widget": "navigation" },
-            { "widget": "content" },
-            { "widget": "player" }
-        ]
-    }"##;
-
-    #[test]
-    fn chi_non_dichiara_uno_scafale_riceve_quello_di_serie() {
-        // La skin di riferimento continua a esercitare il difetto: se l'albero
-        // di serie cambia senza che nessuno lo decida, questo test lo dice.
-        let skin = parse_skin_json(crate::PLAIN_SOURCE).expect("plain è valida");
-        let layout = skin.layout.expect("plain dichiara layout");
-        // `expanded` e non `rail`: la barra è sempre partita larga, e la skin di
-        // riferimento diceva «rail» solo perché nessuno leggeva quel campo.
-        // Adesso che lo legge qualcuno, il valore scritto deve essere quello
-        // vero — è precisamente il tipo di bugia che questo lavoro chiude.
-        assert_eq!(
-            layout.shell,
-            default_shell(PlayerLayout::Floating, SidebarLayout::Expanded)
-        );
-    }
-
-    #[test]
-    fn uno_scafale_scritto_per_esteso_si_legge() {
-        let skin = parse_skin_json(SCAFALATURA).expect("valida");
-        let layout = skin.layout.expect("dichiara layout");
-        assert_eq!(layout.shell.kind, ZoneKind::Column);
-        assert_eq!(layout.shell.part.map(|p| p.name), Some("app-shell"));
-        assert_eq!(layout.density, Density::Compact);
-        assert!(layout.shell.monta("queue"));
-        // Le manopole dichiarate valgono, e le altre restano ai difetti.
-        let trasporto = layout
-            .shell
-            .widgets()
-            .into_iter()
-            .find(|w| w.def.name == "transport")
-            .expect("il trasporto");
-        assert_eq!(trasporto.option("size"), Some(OptionValue::Word("column")));
-        assert_eq!(trasporto.option("shuffle"), Some(OptionValue::Flag(false)));
-        assert_eq!(trasporto.option("repeat"), Some(OptionValue::Flag(true)));
-    }
-
-    #[test]
-    fn togliere_un_widget_essenziale_e_un_errore_col_suo_codice() {
-        let err = rifiuta(&con_scafale(
-            r##"{ "zone": "row", "children": [
-                { "widget": "navigation" },
-                { "widget": "player", "size": "fill" }
-            ] }"##,
-        ));
-        assert_eq!(
-            *err.code(),
-            ErrorCode::SkinLayoutIncomplete {
-                widget: "content".to_owned()
-            }
-        );
-    }
-
-    #[test]
-    fn togliere_i_comandi_e_un_errore_che_elenca_le_alternative() {
-        let err = rifiuta(&con_scafale(
-            r##"{ "zone": "row", "children": [
-                { "widget": "navigation" },
-                { "widget": "content" }
-            ] }"##,
-        ));
-        assert_eq!(
-            *err.code(),
-            ErrorCode::SkinLayoutIncomplete {
-                widget: "playback".to_owned()
-            }
-        );
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("«player»"), "{messaggio}");
-        assert!(messaggio.contains("«column»"), "{messaggio}");
-    }
-
-    #[test]
-    fn un_widget_sconosciuto_riceve_un_suggerimento() {
-        let err = rifiuta(&con_scafale(&SANO.replace("\"content\"", "\"contents\"")));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("widget inesistente"), "{messaggio}");
-        assert!(messaggio.contains("«content»"), "{messaggio}");
-    }
-
-    #[test]
-    fn una_manopola_sconosciuta_riceve_un_suggerimento() {
-        let err = rifiuta(&con_scafale(&SANO.replace(
-            r##"{ "widget": "player" }"##,
-            r##"{ "widget": "transport", "options": { "shuffles": true } }"##,
-        )));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("«shuffle»"), "{messaggio}");
-    }
-
-    #[test]
-    fn una_parola_fuori_vocabolario_elenca_le_ammesse() {
-        let err = rifiuta(&con_scafale(&SANO.replace(
-            r##"{ "widget": "player" }"##,
-            r##"{ "widget": "transport", "options": { "size": "gigante" } }"##,
-        )));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("large"), "{messaggio}");
-    }
-
-    #[test]
-    fn una_misura_relativa_e_un_errore_col_percorso_giusto() {
-        let err = rifiuta(&con_scafale(&SANO.replace(
-            r##"{ "widget": "navigation" }"##,
-            r##"{ "widget": "navigation", "size": "20%" }"##,
-        )));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("non esiste ancora"), "{messaggio}");
-        // Il percorso è quello del JSON, non un indirizzo di nodo: è ciò che
-        // porta il cursore dell'editor sulla riga giusta.
-        assert!(messaggio.contains("layout.shell.children.0"), "{messaggio}");
-    }
-
-    #[test]
-    fn un_nodo_che_non_e_ne_zona_ne_widget_e_un_errore() {
-        let err = rifiuta(&con_scafale(
-            r##"{ "zone": "row", "children": [{ "size": "fill" }] }"##,
-        ));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("nessuno dei tre"), "{messaggio}");
-    }
-
-    #[test]
-    fn gli_errori_dello_scafale_arrivano_tutti_insieme() {
-        // Due rami rotti, non uno: chi costruisce un layout corregge in una
-        // passata sola, come per i token e per le parti.
-        let err = rifiuta(&con_scafale(
-            r##"{ "zone": "row", "children": [
-                { "widget": "navigazione" },
-                { "widget": "contenuto" },
-                { "widget": "player" }
-            ] }"##,
-        ));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("navigazione"), "{messaggio}");
-        assert!(messaggio.contains("contenuto"), "{messaggio}");
-    }
-
-    /// Uno scafale che richiama un prefab, col prefab dichiarato.
-    fn con_prefab(corpo: &str, uso: &str) -> String {
-        minima(&format!(
-            r##", "layout": {{
-                "prefabs": {{ "barretta": {corpo} }},
-                "shell": {{ "zone": "row", "children": [
-                    {{ "widget": "navigation" }},
-                    {{ "widget": "content" }},
-                    {uso}
-                ] }}
-            }}"##
-        ))
-    }
-
-    const BARRETTA: &str = r##"{
-        "zone": "row",
-        "size": "hug",
-        "gap": "s",
-        "part": "player-shell",
-        "children": [
-            { "widget": "now-playing" },
-            { "widget": "scrubber", "size": "fill" },
-            { "widget": "transport" }
-        ]
-    }"##;
-
-    #[test]
-    fn un_prefab_si_espande_dove_e_richiamato() {
-        let skin = parse_skin_json(&con_prefab(BARRETTA, r##"{ "prefab": "barretta" }"##))
-            .expect("valida");
-        let shell = skin.layout.expect("dichiara layout").shell;
-        // Da qui in giù l'albero è fatto solo di zone e widget: chi lo legge non
-        // deve conoscere i prefab.
-        assert!(shell.monta("transport"));
-        assert!(shell.monta("scrubber"));
-        assert_eq!(shell.prefabs_used(), ["barretta"]);
-        let LayoutNode::Zone(espansa) = &shell.children[2] else {
-            panic!("il prefab non si è espanso in una zona");
-        };
-        assert_eq!(espansa.part.map(|p| p.name), Some("player-shell"));
-        assert_eq!(espansa.gap, GapStep::S);
-    }
-
-    #[test]
-    fn il_sito_d_uso_puo_dire_solo_la_misura() {
-        let skin = parse_skin_json(&con_prefab(
-            BARRETTA,
-            r##"{ "prefab": "barretta", "size": "200px" }"##,
-        ))
-        .expect("valida");
-        let shell = skin.layout.expect("dichiara layout").shell;
-        assert_eq!(
-            shell.children[2].size(),
-            TrackSize::Fixed(Length::px(200.0))
-        );
-
-        // Qualunque altra chiave sarebbe un parametro, e un prefab con parametri
-        // è una funzione.
-        let err = rifiuta(&con_prefab(
-            BARRETTA,
-            r##"{ "prefab": "barretta", "gap": "l" }"##,
-        ));
-        assert!(err.message().unwrap_or_default().contains("gap"));
-    }
-
-    #[test]
-    fn un_prefab_non_puo_contenerne_un_altro() {
-        let err = rifiuta(&con_prefab(
-            r##"{ "zone": "row", "children": [{ "prefab": "barretta" }] }"##,
-            r##"{ "widget": "player" }"##,
-        ));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(
-            messaggio.contains("non può contenerne un altro"),
-            "{messaggio}"
-        );
-    }
-
-    #[test]
-    fn un_prefab_inesistente_riceve_un_suggerimento() {
-        let err = rifiuta(&con_prefab(BARRETTA, r##"{ "prefab": "barrettas" }"##));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("prefab inesistente"), "{messaggio}");
-        assert!(messaggio.contains("«barretta»"), "{messaggio}");
-    }
-
-    #[test]
-    fn l_espansione_di_un_prefab_si_ferma_al_tetto_invece_che_alla_memoria() {
-        // La bomba: un prefab largo, richiamato tante volte. L'albero cresce
-        // come il **prodotto** dei due, il manifest che lo descrive come la
-        // loro somma — quindi il tetto del manifest (mezzo megabyte, in
-        // `package.rs`) non è un tetto sull'albero.
-        //
-        // Prima che il budget si spendesse mentre si costruisce, questo
-        // manifest da 64 KB montava 2 250 000 nodi e **poi** contava fino a
-        // sessantaquattro; a mezzo megabyte ne sarebbero stati 153 milioni,
-        // cioè più memoria di quanta ne abbia la macchina, per un pacchetto che
-        // basta posare nella cartella delle skin perché l'elenco lo apra.
-        let foglia = r##"{"zone":"row","children":[]}"##;
-        let corpo: Vec<&str> = std::iter::repeat_n(foglia, 1500).collect();
-        let usi: Vec<&str> = std::iter::repeat_n(r##"{"prefab":"barretta"}"##, 1500).collect();
-        let err = rifiuta(&minima(&format!(
-            r##", "layout": {{
-                "prefabs": {{ "barretta": {{"zone":"row","children":[{}]}} }},
-                "shell": {{ "zone": "row", "children": [{}] }}
-            }}"##,
-            corpo.join(","),
-            usi.join(",")
-        )));
-        let messaggio = err.message().unwrap_or_default();
-        // Il messaggio del tetto **speso**, non quello del tetto contato: il
-        // secondo nomina il numero di nodi, e per nominarlo bisogna averli
-        // costruiti tutti.
-        assert!(
-            messaggio.contains(&format!("supera i {MAX_SHELL_NODES} nodi")),
-            "{messaggio}"
-        );
-    }
-
-    #[test]
-    fn un_prefab_che_da_solo_ci_sta_non_ci_sta_due_volte() {
-        // Il tetto vale sull'albero **espanso**: due copie di un corpo che da
-        // solo entra nel tetto non ci entrano. È la stessa aritmetica della
-        // bomba, alla scala in cui la si scrive per sbaglio.
-        let larga = |quanti: usize| {
-            let foglie: Vec<&str> =
-                std::iter::repeat_n(r##"{"widget":"rating"}"##, quanti).collect();
-            format!(
-                r##"{{"zone":"row","size":"hug","children":[{},{{"widget":"transport","size":"fill"}}]}}"##,
-                foglie.join(",")
-            )
-        };
-        let scafale = |corpo: &str, usi: usize| {
-            let richiami: Vec<&str> =
-                std::iter::repeat_n(r##"{"prefab":"barretta"}"##, usi).collect();
-            minima(&format!(
-                r##", "layout": {{
-                    "prefabs": {{ "barretta": {corpo} }},
-                    "shell": {{ "zone": "row", "children": [
-                        {{ "widget": "navigation" }},
-                        {{ "widget": "content", "size": "fill" }},
-                        {}
-                    ] }}
-                }}"##,
-                richiami.join(",")
-            ))
-        };
-        // Trentadue nodi: una copia sta sotto il tetto, due lo sfondano.
-        let corpo = larga(30);
-        parse_skin_json(&scafale(&corpo, 1)).expect("una copia ci sta");
-        let err = rifiuta(&scafale(&corpo, 2));
-        assert!(
-            err.message()
-                .unwrap_or_default()
-                .contains(&format!("supera i {MAX_SHELL_NODES} nodi")),
-            "{:?}",
-            err.message()
-        );
-    }
-
-    #[test]
-    fn l_espansione_conserva_gli_essenziali() {
-        // Il trasporto sta **dentro** il prefab: se l'espansione lo perdesse,
-        // il gruppo «playback» resterebbe vuoto e la skin verrebbe rifiutata.
-        parse_skin_json(&minima(&format!(
-            r##", "layout": {{
-                "prefabs": {{ "barretta": {BARRETTA} }},
-                "shell": {{ "zone": "row", "children": [
-                    {{ "widget": "navigation" }},
-                    {{ "widget": "content" }},
-                    {{ "prefab": "barretta" }}
-                ] }}
-            }}"##
-        )))
-        .expect("il trasporto dentro il prefab conta come montato");
-    }
-
-    #[test]
-    fn un_errore_dentro_un_prefab_si_riporta_alla_dichiarazione() {
-        // Due usi, un errore solo: chi lo corregge lo corregge una volta.
-        let rotto = r##"{ "zone": "row", "size": "hug", "children": [
-            { "widget": "now-playing" },
-            { "widget": "transport" }
-        ] }"##;
-        let err = rifiuta(&minima(&format!(
-            r##", "layout": {{
-                "prefabs": {{ "barretta": {rotto} }},
-                "shell": {{ "zone": "row", "children": [
-                    {{ "widget": "navigation" }},
-                    {{ "widget": "content" }},
-                    {{ "prefab": "barretta" }},
-                    {{ "prefab": "barretta" }}
-                ] }}
-            }}"##
-        )));
-        let messaggio = err.message().unwrap_or_default();
-        assert!(messaggio.contains("layout.prefabs.barretta"), "{messaggio}");
-        assert!(!messaggio.contains("layout.shell.children"), "{messaggio}");
-        assert_eq!(messaggio.matches("nessun figlio").count(), 1, "{messaggio}");
-    }
-
-    #[test]
-    fn un_prefab_mai_richiamato_e_un_avviso() {
-        let skin = parse_skin_json(&con_prefab(BARRETTA, r##"{ "widget": "player" }"##))
-            .expect("valida: è un avviso");
-        let avvisi = check_skin(&skin);
-        assert!(
-            avvisi.iter().any(|a| a.kind == WarningKind::UnusedPrefab
-                && a.path == "layout.prefabs.barretta"),
-            "{avvisi:?}"
-        );
-    }
-
-    #[test]
-    fn uno_scafale_troppo_carico_e_un_avviso_non_un_errore() {
-        let mut figli = vec![
-            r##"{ "widget": "content" }"##.to_owned(),
-            r##"{ "widget": "navigation" }"##.to_owned(),
-        ];
-        for _ in 0..24 {
-            figli.push(r##"{ "widget": "transport" }"##.to_owned());
-        }
-        let skin = parse_skin_json(&con_scafale(&format!(
-            r##"{{ "zone": "row", "children": [{}] }}"##,
-            figli.join(",")
-        )))
-        .expect("valida: è un avviso");
-        let avvisi = check_skin(&skin);
-        assert!(
-            avvisi
-                .iter()
-                .any(|a| a.kind == WarningKind::CostBudget && a.path == "layout.shell"),
-            "{avvisi:?}"
-        );
-    }
-
-    #[test]
-    fn i_token_obbligatori_mancanti_sono_un_avviso_non_un_errore() {
-        let skin = parse_skin_json(&minima("")).expect("valida");
-        let avvisi = check_skin(&skin);
-        assert!(avvisi.len() > 10, "{avvisi:?}");
-        assert!(
-            avvisi
-                .iter()
-                .all(|a| a.kind == WarningKind::MissingRequiredToken)
-        );
-        assert!(avvisi.iter().any(|a| a.path == "tokens.color.surface.0"));
-    }
-
-    /// Un documento con un solo token dichiarato, per esercitare gli estremi.
-    fn con_token(id: &str, valore: &str) -> String {
-        format!(
-            r##"{{
-              "format": 1,
-              "id": "prova",
-              "meta": {{ "name": "Prova", "author": "Aether", "version": "1.0.0" }},
-              "tokens": {{ "{id}": {valore} }}
-            }}"##
-        )
-    }
-
-    #[test]
-    fn il_ritmo_dentro_gli_estremi_passa() {
-        for (id, valore) in [
-            ("space.1", r#""4px""#),
-            ("space.5", r#""64px""#),
-            ("space.3", r#""0px""#),
-            // 2rem = 32px, dentro i 64.
-            ("space.4", r#""2rem""#),
-            ("depth.edge", "0"),
-            ("depth.lift", "3"),
-            ("depth.sheen", r#""72px""#),
-            ("radius.inner", "0.6"),
-        ] {
-            parse_skin_json(&con_token(id, valore))
-                .unwrap_or_else(|e| panic!("{id}: {valore} rifiutato: {e:?}"));
-        }
-    }
-
-    #[test]
-    fn il_ritmo_oltre_gli_estremi_e_un_errore() {
-        // Il caso che gli estremi esistono per fermare: un'aria che spinge il
-        // contenuto fuori dallo schermo.
-        let messaggio = rifiuta(&con_token("space.5", r#""400px""#)).to_string();
-        assert!(messaggio.contains("va fra 0 e 64"), "{messaggio}");
-
-        let messaggio = rifiuta(&con_token("depth.edge", "9")).to_string();
-        assert!(messaggio.contains("va fra 0 e 3"), "{messaggio}");
-
-        let messaggio = rifiuta(&con_token("radius.tiny", "-0.5")).to_string();
-        assert!(messaggio.contains("va fra 0 e 1"), "{messaggio}");
-
-        // `rem` si converte: 8rem = 128px, fuori.
-        let messaggio = rifiuta(&con_token("space.2", r#""8rem""#)).to_string();
-        assert!(messaggio.contains("va fra 0 e 64"), "{messaggio}");
-    }
-
-    #[test]
-    fn una_misura_limitata_rifiuta_le_unita_relative() {
-        // `30vh` starebbe dentro qualunque estremo numerico e sarebbe comunque
-        // un terzo dello schermo di aria fra due righe.
-        let messaggio = rifiuta(&con_token("space.3", r#""30vh""#)).to_string();
-        assert!(messaggio.contains("px o rem"), "{messaggio}");
-        assert!(messaggio.contains("vh"), "{messaggio}");
-    }
-
-    #[test]
-    fn una_misura_adattiva_si_controlla_in_tutti_e_tre_i_capi() {
-        // Il capo alto è quello che sfonda: se si guardasse solo il preferito,
-        // un `clamp()` passerebbe portandosi dietro il massimo che si voleva
-        // vietare.
-        let messaggio = rifiuta(&con_token(
-            "space.4",
-            r#"{ "min": "4px", "preferred": "8px", "max": "300px" }"#,
-        ))
-        .to_string();
-        assert!(messaggio.contains("va fra 0 e 64"), "{messaggio}");
-    }
-
-    #[test]
-    fn i_token_nuovi_non_aggiungono_avvisi_alle_skin_gia_scritte() {
-        // La prova che il formato non ha bisogno di salire a 2: nessuno degli
-        // undici token nuovi è obbligatorio, quindi nessuna skin esistente
-        // guadagna un avviso per non averli scritti.
-        let skin = parse_skin_json(&minima("")).expect("valida");
-        for avviso in check_skin(&skin) {
-            assert!(
-                !avviso.path.starts_with("tokens.space.")
-                    && !avviso.path.starts_with("tokens.depth.")
-                    && !avviso.path.starts_with("tokens.radius.inner")
-                    && !avviso.path.starts_with("tokens.radius.tiny"),
-                "{avviso:?}"
-            );
-        }
-    }
-
-    /// Una superficie dipinta a mano non segue il tema, e lo Studio lo dice.
-    ///
-    /// # Cos'è questa prova
-    ///
-    /// La riproduzione del guasto vero. Una skin scritta nello Studio di
-    /// questo programma dichiarava `capabilities.light` e dipingeva
-    /// `section-card` con un gradiente quasi nero scritto per esteso. I token
-    /// la variante chiara li ribalta; una parte no, perché il formato non ha
-    /// un `themes.light` per le parti. Col tema chiaro tutte le Impostazioni
-    /// erano nere su nere — e la validazione diceva «0 errori, 0 avvisi».
-    #[test]
-    fn una_superficie_dipinta_a_mano_che_sparisce_col_tema_chiaro_e_un_avviso() {
-        let skin = parse_skin_json(&minima(
-            r##", "capabilities": { "light": true },
-                 "themes": { "light": { "color.text.1": "rgba(10, 10, 15, 0.95)" } },
-                 "parts": {
-                   "section-card": {
-                     "background": [
-                       { "effect": "linearGradient",
-                         "stops": [{ "color": "#030305" }, { "color": "#0a0a12" }] }
-                     ]
-                   }
-                 }"##,
-        ))
-        .expect("valida");
-
-        let avvisi = check_skin(&skin);
-        let suoi: Vec<&SkinWarning> = avvisi
-            .iter()
-            .filter(|a| a.path == "parts.section-card.background")
-            .collect();
-        assert_eq!(
-            suoi.len(),
-            1,
-            "uno solo, e nel tema in cui il guasto c'è davvero: {avvisi:?}"
-        );
-        let avviso = suoi.first().expect("l'avviso");
-        assert_eq!(avviso.kind, WarningKind::Contrast);
-        assert!(
-            avviso.message.contains("chiaro"),
-            "deve dire in quale tema: {}",
-            avviso.message
-        );
-    }
-
-    /// La stessa superficie, scritta con un token, non produce niente.
-    ///
-    /// È il rovescio della prova sopra, e senza di essa l'avviso sarebbe
-    /// inutile: un controllo che scatta anche sulla forma giusta insegna a
-    /// ignorarlo. `color.surface.1` si ribalta col tema, quindi il testo ci sta
-    /// sopra leggibile in tutti e due.
-    #[test]
-    fn una_superficie_scritta_con_un_token_non_avvisa() {
-        let skin = parse_skin_json(&minima(
-            r##", "capabilities": { "light": true },
-                 "themes": { "light": {
-                    "color.surface.1": "#e6e6ec",
-                    "color.text.1": "rgba(10, 10, 15, 0.95)" } },
-                 "parts": {
-                   "section-card": {
-                     "background": [
-                       { "effect": "solid", "color": { "$token": "color.surface.1" } }
-                     ]
-                   }
-                 }"##,
-        ))
-        .expect("valida");
-        // Il tema scuro eredita `color.surface.1` dalla skin di base, che è
-        // scura, e il testo di base è chiaro: leggibile di qua e di là.
-        assert!(
-            !check_skin(&skin)
-                .iter()
-                .any(|a| a.path.starts_with("parts.")),
-            "{:?}",
-            check_skin(&skin)
-        );
-    }
-
-    #[test]
-    fn un_tema_chiaro_promesso_e_non_scritto_e_un_avviso() {
-        let skin =
-            parse_skin_json(&minima(r##", "capabilities": { "light": true }"##)).expect("valida");
-        let avvisi = check_skin(&skin);
-        assert!(
-            avvisi
-                .iter()
-                .any(|a| a.kind == WarningKind::UnkeptCapability && a.path == "themes.light")
-        );
-    }
-
-    // ── Le animazioni nominate ──────────────────────────────────────────
-
-    /// Un documento con una tabella di animazioni e le parti che le usano.
-    fn con_animazioni(animazioni: &str, parti: &str) -> String {
-        minima(&format!(
-            r##", "motion": {{ "intensity": "full", "animations": {animazioni} }},
-                 "parts": {parti}"##
-        ))
-    }
-
-    /// L'animazione d'esempio: entra salendo, in due fermate.
-    const SALE: &str = r##"{
-      "duration": "240ms",
-      "easing": { "kind": "keyword", "keyword": "ease-out" },
-      "delay": "60ms",
-      "iterations": 1,
-      "direction": "normal",
-      "frames": [
-        { "at": 0, "opacity": 0, "translateY": 8 },
-        { "at": 100, "opacity": 1, "translateY": 0, "scale": 1, "rotate": 0 }
-      ]
-    }"##;
-
-    #[test]
-    fn un_animazione_nominata_si_dichiara_una_volta_e_si_richiama() {
-        let skin = parse_skin_json(&con_animazioni(
-            &format!(r##"{{ "sale": {SALE} }}"##),
-            r##"{ "section-card": { "animations": { "enter": "sale", "hover": "sale" } } }"##,
-        ))
-        .expect("valida");
-
-        let motion = skin.motion.as_ref().expect("il blocco del movimento");
-        assert_eq!(motion.animations.len(), 1);
-        let (nome, def) = motion.animations.first().expect("l'animazione");
-        assert_eq!(nome, "sale");
-        assert_eq!(def.duration.ms, 240.0);
-        assert_eq!(def.delay.map(|d| d.ms), Some(60.0));
-        assert_eq!(def.iterations, 1);
-        assert_eq!(def.direction, AnimDirection::Normal);
-        assert_eq!(def.frames.len(), 2);
-        assert_eq!(def.frames.first().map(|f| f.translate_y), Some(Some(8.0)));
-
-        // Il legame sta in `PartStyle`, e la definizione viaggia col nome: chi
-        // deve sapere quanto costa non deve tenersi accanto la tabella.
-        let parte = skin.parts.first().expect("la parte");
-        assert_eq!(parte.animations_used(), ["sale", "sale"]);
-        assert_eq!(
-            parte
-                .animations
-                .get(AnimTrigger::Enter)
-                .map(|r| r.def.duration.ms),
-            Some(240.0)
-        );
-        // Due animazioni suonate una volta: otto sul budget di dodici.
-        assert_eq!(parte.motion_cost(), 8);
-        // E l'aspetto non ne sa niente: `animations` non è un valore d'aspetto.
-        assert!(parte.appearance.is_empty());
-    }
-
-    #[test]
-    fn i_fotogrammi_fuori_ordine_si_rifiutano_invece_di_essere_riordinati() {
-        let guasto = rifiuta(&con_animazioni(
-            r##"{ "sale": { "duration": "240ms", "frames": [
-                { "at": 0, "opacity": 0 },
-                { "at": 80, "opacity": 1 },
-                { "at": 40, "opacity": 0.5 }
-            ] } }"##,
-            "{}",
-        ));
-        assert!(guasto.to_string().contains("ordine crescente"), "{guasto}");
-
-        // E il primo deve stare a 0: senza, il motore ricava la partenza dallo
-        // stato in cui la parte si trova, che cambia da un'esecuzione all'altra.
-        let guasto = rifiuta(&con_animazioni(
-            r##"{ "sale": { "duration": "240ms", "frames": [
-                { "at": 10, "opacity": 0 },
-                { "at": 100, "opacity": 1 }
-            ] } }"##,
-            "{}",
-        ));
-        assert!(guasto.to_string().contains("sta a 0"), "{guasto}");
-    }
-
-    #[test]
-    fn infinite_non_e_un_numero_di_ripetizioni() {
-        // Il divieto è la ragione per cui esiste il tetto: una scala a zero non
-        // ferma un ciclo infinito, lo rende infinitamente lento — e la regola
-        // che lo spegnerebbe una skin non la può scrivere.
-        let guasto = rifiuta(&con_animazioni(
-            r##"{ "pulsa": { "duration": "240ms", "iterations": "infinite", "frames": [
-                { "at": 0, "scale": 1 },
-                { "at": 100, "scale": 1.1 }
-            ] } }"##,
-            "{}",
-        ));
-        let detto = guasto.to_string();
-        assert!(detto.contains("«infinite» non è ammesso"), "{detto}");
-        // Il messaggio dice anche come si fa un pulsare, che è la domanda vera.
-        assert!(detto.contains("alternate"), "{detto}");
-
-        // E nemmeno la quinta ripetizione, che «infinite» non la scrive.
-        assert!(
-            rifiuta(&con_animazioni(
-                r##"{ "pulsa": { "duration": "240ms", "iterations": 5, "frames": [
-                    { "at": 0, "scale": 1 },
-                    { "at": 100, "scale": 1.1 }
-                ] } }"##,
-                "{}",
-            ))
-            .to_string()
-            .contains("va da 1 a 4")
-        );
-    }
-
-    #[test]
-    fn un_nome_di_animazione_inesistente_riceve_un_suggerimento() {
-        let guasto = rifiuta(&con_animazioni(
-            &format!(r##"{{ "sale": {SALE} }}"##),
-            r##"{ "section-card": { "animations": { "enter": "sales" } } }"##,
-        ));
-        let detto = guasto.to_string();
-        assert!(detto.contains("animazione inesistente: «sales»"), "{detto}");
-        assert!(detto.contains("Forse intendevi «sale»?"), "{detto}");
-
-        // Un trigger fuori elenco è un errore duro, e `exit` è quello che si
-        // prova per primo: in CSS puro non esiste senza che il renderer tenga
-        // montato l'elemento uscente.
-        assert!(
-            rifiuta(&con_animazioni(
-                &format!(r##"{{ "sale": {SALE} }}"##),
-                r##"{ "section-card": { "animations": { "exit": "sale" } } }"##,
-            ))
-            .to_string()
-            .contains("l'uscita non esiste")
-        );
-    }
-
-    #[test]
-    fn il_movimento_di_una_parte_ha_un_budget_suo() {
-        // Tre trigger, e uno che pulsa: 4 + 4 + 5 = 13 sul budget di 12. È
-        // esattamente la riga che la taratura di `MOTION_COST_BUDGET` descrive.
-        let pulsa = r##"{
-          "duration": "160ms", "iterations": 2, "direction": "alternate",
-          "frames": [{ "at": 0, "scale": 1 }, { "at": 100, "scale": 1.08 }]
-        }"##;
-        let skin = parse_skin_json(&con_animazioni(
-            &format!(r##"{{ "sale": {SALE}, "pulsa": {pulsa} }}"##),
-            r##"{ "section-card": { "animations": {
-                "enter": "sale", "hover": "sale", "active": "pulsa"
-            } } }"##,
-        ))
-        .expect("valida");
-        assert_eq!(
-            skin.parts.first().map(crate::parts::PartStyle::motion_cost),
-            Some(13)
-        );
-        let avvisi = check_skin(&skin);
-        assert!(
-            avvisi
-                .iter()
-                .any(|a| a.kind == WarningKind::CostBudget
-                    && a.path == "parts.section-card.animations"),
-            "{avvisi:?}"
-        );
-
-        // Il quarto trigger non arriva nemmeno al budget: è un errore duro,
-        // perché una superficie che si muove a ogni stato non si legge più.
-        assert!(
-            rifiuta(&con_animazioni(
-                &format!(r##"{{ "sale": {SALE} }}"##),
-                r##"{ "section-card": { "animations": {
-                    "enter": "sale", "hover": "sale", "active": "sale", "focus": "sale"
-                } } }"##,
-            ))
-            .to_string()
-            .contains("al massimo 3 trigger")
-        );
-    }
-
-    #[test]
-    fn un_animazione_dichiarata_e_mai_assegnata_e_un_avviso_non_un_costo() {
-        let skin = parse_skin_json(&con_animazioni(
-            &format!(r##"{{ "sale": {SALE} }}"##),
-            r##"{ "section-card": { "opacity": 0.9 } }"##,
-        ))
-        .expect("valida");
-        assert_eq!(
-            skin.parts.first().map(crate::parts::PartStyle::motion_cost),
-            Some(0)
-        );
-        let avvisi = check_skin(&skin);
-        assert!(
-            avvisi
-                .iter()
-                .any(|a| a.kind == WarningKind::UnusedAnimation
-                    && a.path == "motion.animations.sale"),
-            "{avvisi:?}"
-        );
-    }
-
-    #[test]
-    fn un_animazione_su_una_parte_ritirata_si_accetta_e_cade() {
-        // Stessa regola dell'aspetto: il nome è pubblico, sta nelle skin già
-        // spedite, e ritirare una parte non deve spegnere la skin di qualcuno.
-        // Il legame sparisce con la parte, quindi non costa e non si compila.
-        let skin = parse_skin_json(&con_animazioni(
-            &format!(r##"{{ "sale": {SALE} }}"##),
-            r##"{ "viz-title": { "animations": { "enter": "sale" } } }"##,
-        ))
-        .expect("valida: una parte ritirata si accetta");
-        assert!(skin.parts.is_empty());
-        assert!(
-            !crate::compile::compile_skin(&skin)
-                .css
-                .contains("viz-title")
-        );
-    }
-
-    #[test]
-    fn il_formato_resta_1_e_nessuna_migrazione_serve() {
-        // `MIGRAZIONI` risponde alla domanda «documento vecchio, app nuova», e
-        // un documento senza `animations` è già valido così com'è: non c'è
-        // niente da migrare. La domanda opposta — documento nuovo, app vecchia
-        // — nessuna migrazione la risolve, ed è giusto che `solo_chiavi` la
-        // fermi. Alzare a 2 costerebbe una migrazione identità e la riscrittura
-        // di `format` nelle due skin, senza che cambi nulla.
-        assert_eq!(SKIN_FORMAT_VERSION, 1);
-        assert!(MIGRAZIONI.is_empty());
-        assert!(parse_skin_json(&minima("")).is_ok());
-    }
-
-    #[test]
-    fn una_superficie_troppo_costosa_e_un_avviso() {
-        let skin = parse_skin_json(&minima(
-            r##", "parts": { "glass-modal": {
-                "background": [
-                    { "effect": "blurBehind", "radius": "24px" },
-                    { "effect": "blurBehind", "radius": "12px" }
-                ]
-            } }"##,
-        ))
-        .expect("valida");
-        let avvisi = check_skin(&skin);
-        assert!(
-            avvisi
-                .iter()
-                .any(|a| a.kind == WarningKind::CostBudget && a.path == "parts.glass-modal")
-        );
+// ── I budget, e quando smettono di essere un avviso ─────────────────────────
+//
+// Un budget sforato è un avviso: lo Studio lo mostra mentre si lavora, e chi
+// lavora decide. Ma una skin **arriva** anche da altri, e chi la installa non
+// ha lo Studio aperto né sa cosa vuol dire «costo 34 sul budget di 10». Oltre
+// [`OLTRE_IL_BUDGET`] volte il budget non si tratta più di una scelta estetica
+// cara: è una finestra che scatta a ogni fotogramma, e il posto per dirlo è il
+// momento in cui la si installa, non quello in cui la si indossa.
+//
+// Per questo la soglia non sta nella validazione. Un documento valido resta
+// valido — si apre, si modifica, si prova, si esporta per ripararlo — e
+// [`controlla_installazione`] è una domanda in più che fa solo chi installa.
+
+/// Oltre quante volte il suo budget un costo impedisce di installare la skin.
+pub const OLTRE_IL_BUDGET: u32 = 2;
+
+/// Un costo, e il budget su cui si misura.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Misura {
+    /// Quanto costa.
+    pub costo: u32,
+    /// Quanto dovrebbe costare al più.
+    pub budget: u32,
+}
+
+impl Misura {
+    /// Sfora il budget: un avviso.
+    #[must_use]
+    pub const fn sfora(self) -> bool {
+        self.costo > self.budget
+    }
+
+    /// Sfora più di [`OLTRE_IL_BUDGET`] volte: all'installazione è un errore.
+    #[must_use]
+    pub const fn fuori_misura(self) -> bool {
+        self.costo > self.budget.saturating_mul(OLTRE_IL_BUDGET)
     }
 }
+
+/// Un budget sforato: dove, di quanto, e con quali parole.
+struct Sforo {
+    path: String,
+    misura: Misura,
+    message: String,
+}
+
+impl Sforo {
+    fn nuovo(path: String, misura: Misura, message: String) -> Self {
+        // Chi lavora nello Studio deve sapere **prima** che la skin non si
+        // installerà: l'avviso lo dice nella stessa frase.
+        let message = if misura.fuori_misura() {
+            format!("{message} Oltre {OLTRE_IL_BUDGET} volte il budget la skin non si installa.")
+        } else {
+            message
+        };
+        Self {
+            path,
+            misura,
+            message,
+        }
+    }
+
+    fn avviso(self) -> SkinWarning {
+        SkinWarning {
+            kind: WarningKind::CostBudget,
+            path: self.path,
+            message: self.message,
+        }
+    }
+}
+
+/// Le parti della skin in tutti e due i temi.
+fn tutte_le_parti(skin: &SkinDocument) -> impl Iterator<Item = &PartStyle> {
+    skin.parts
+        .iter()
+        .chain(skin.variant.iter().flat_map(|v| v.parts.iter()))
+}
+
+/// Lo scafale, se sfora. Si misura solo quando la skin lo dichiara: quello di
+/// serie costa 3.
+fn sfori_scafale(skin: &SkinDocument) -> Option<Sforo> {
+    let layout = skin.layout.as_ref()?;
+    let misura = Misura {
+        costo: layout.shell.costo(),
+        budget: crate::layout::SHELL_COST_BUDGET,
+    };
+    misura.sfora().then(|| {
+        Sforo::nuovo(
+            "layout.shell".to_owned(),
+            misura,
+            format!(
+                "lo scafale monta {} sul budget di {}: \
+                 tanti pezzi insieme sono una finestra in cui non si trova niente.",
+                misura.costo, misura.budget
+            ),
+        )
+    })
+}
+
+/// Il movimento di ogni parte, e quello della finestra intera, quando sforano.
+fn sfori_movimento(skin: &SkinDocument) -> Vec<Sforo> {
+    let mut sfori = Vec::new();
+    for stile in &skin.parts {
+        let misura = Misura {
+            costo: stile.motion_cost(),
+            budget: crate::movimento::MOTION_COST_BUDGET,
+        };
+        if misura.sfora() {
+            sfori.push(Sforo::nuovo(
+                format!("parts.{}.motion", stile.def.name),
+                misura,
+                format!(
+                    "il movimento costa {} sul budget di {}: \
+                     togli una ripetizione, un innesco, o un colore animato.",
+                    misura.costo, misura.budget
+                ),
+            ));
+        }
+    }
+    let finestra = movimento_della_finestra(skin);
+    if finestra.sfora() {
+        sfori.push(Sforo::nuovo(
+            "parts".to_owned(),
+            finestra,
+            format!(
+                "tutte le parti insieme muovono {} sul budget di {} della finestra: \
+                 ognuna sta nel suo, e insieme fanno una finestra che non sta ferma.",
+                finestra.costo, finestra.budget
+            ),
+        ));
+    }
+    sfori
+}
+
+/// Il movimento che può essere in corso tutto insieme, sul budget della
+/// finestra.
+fn movimento_della_finestra(skin: &SkinDocument) -> Misura {
+    Misura {
+        costo: skin.parts.iter().map(|s| s.motion.costo_insieme()).sum(),
+        budget: crate::movimento::WINDOW_MOTION_BUDGET,
+    }
+}
+
+/// Le superfici che sforano, in tutti e due i temi.
+fn sfori_superfici(skin: &SkinDocument) -> Vec<Sforo> {
+    tutte_le_parti(skin)
+        .filter_map(|stile| {
+            let misura = Misura {
+                costo: stile.costo_superficie(),
+                budget: crate::effects::SURFACE_COST_BUDGET,
+            };
+            misura.sfora().then(|| {
+                Sforo::nuovo(
+                    format!("parts.{}", stile.def.name),
+                    misura,
+                    format!(
+                        "costo {} sul budget di {}: su WebView questa superficie salterà fotogrammi.",
+                        misura.costo, misura.budget
+                    ),
+                )
+            })
+        })
+        .collect()
+}
+
+/// I costi che sforano più di [`OLTRE_IL_BUDGET`] volte il loro budget, come
+/// problemi al loro posto nel documento.
+///
+/// Sono gli stessi avvisi che [`check_skin`] dà per lo Studio, con le stesse
+/// parole: qui diventano il motivo per cui una skin non si installa.
+#[must_use]
+pub fn fuori_misura(skin: &SkinDocument) -> Vec<SkinIssue> {
+    sfori_scafale(skin)
+        .into_iter()
+        .chain(sfori_movimento(skin))
+        .chain(sfori_superfici(skin))
+        .filter(|sforo| sforo.misura.fuori_misura())
+        .map(|sforo| SkinIssue {
+            // Un codice suo e non quello del manifest non valido: il manifest
+            // è valido, e la frase di quel codice — «non si legge» — mandava a
+            // cercare un errore che non c'era.
+            code: ErrorCode::SkinOverBudget {
+                costo: sforo.misura.costo,
+                budget: sforo.misura.budget,
+            },
+            path: sforo.path,
+            message: sforo.message,
+            punto: None,
+        })
+        .collect()
+}
+
+/// La domanda che fa chi installa, e solo lui: la skin sta nei suoi budget
+/// abbastanza da poterla indossare?
+///
+/// # Errori
+///
+/// `skin.overBudget`, con l'elenco dei costi fuori misura, se almeno uno
+/// sfora più di [`OLTRE_IL_BUDGET`] volte il suo budget.
+pub fn controlla_installazione(skin: &SkinDocument) -> Result<(), AppError> {
+    let problemi = fuori_misura(skin);
+    if problemi.is_empty() {
+        Ok(())
+    } else {
+        Err(in_errore(&problemi))
+    }
+}
+
+// ── L'esame prima di indossarla ─────────────────────────────────────────────
+//
+// Chi installa una skin arrivata da un altro non sa che cosa sta per mettersi
+// addosso finché non l'ha addosso. L'esame è quel che gli serve per decidere
+// prima: quanto pesa, se si muove e cosa gira per sempre, se il testo si
+// legge. Sono tutte cose che il nucleo sa già — i budget, i cicli, le coppie di
+// contrasto — raccolte in una forma che un'interfaccia può mostrare senza
+// ricalcolarle, e senza decidere da sé che cosa vada chiesto: lo dice
+// [`Esame::da_confermare`].
+
+/// Un ciclo che non finisce da solo: dura quanto lo stato che lo accende.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ciclo {
+    /// La parte che gira.
+    pub parte: &'static str,
+    /// Lo stato che lo accende: `playing`, `hover`, …
+    pub stato: &'static str,
+    /// L'animazione, col nome che ha in `motion.animations`.
+    pub animazione: String,
+}
+
+/// Quel che chi sta per indossare una skin deve sapere, prima di indossarla.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Esame {
+    /// La superficie più cara, sul budget di una superficie.
+    pub superficie: Misura,
+    /// La parte che si muove di più, sul budget del movimento di una parte.
+    pub movimento_parte: Misura,
+    /// Il movimento della finestra intera, sul suo budget.
+    pub movimento: Misura,
+    /// Lo scafale, sul suo budget.
+    pub scafale: Misura,
+    /// Si muove: almeno una parte ha un'animazione, o la rotta ne ha una, e
+    /// l'intensità non è `none`.
+    pub anima: bool,
+    /// Quel che gira per sempre, finché dura lo stato che lo accende.
+    pub cicli: Vec<Ciclo>,
+    /// Quante coppie di testo e superficie stanno sotto [`CONTRASTO_MINIMO`],
+    /// contando le superfici che la skin si ridipinge.
+    pub contrasti: usize,
+    /// Quanti anelli del fuoco stanno sotto [`CONTRASTO_ANELLO`], tema per
+    /// tema: vedi [`focus_ring_pairs`].
+    pub anelli: usize,
+}
+
+impl Esame {
+    /// C'è qualcosa da chiedere prima di indossarla: un budget sforato, un
+    /// testo che non si legge, o un anello del fuoco che non si vede.
+    ///
+    /// L'anello sta con il testo e non con i cicli: chi naviga con la tastiera e
+    /// indossa una skin il cui fuoco non si vede resta senza sapere dove si
+    /// trova, ed è una cosa da dire **prima** — non un rifiuto, una domanda.
+    ///
+    /// I cicli **non** bastano: sono ammessi, si fermano con «Riduci il
+    /// movimento», e una skin che fa girare il disco mentre suona non merita una
+    /// domanda. Se la domanda c'è per altro, l'esame li elenca.
+    #[must_use]
+    pub fn da_confermare(&self) -> bool {
+        self.contrasti > 0
+            || self.anelli > 0
+            || [
+                self.superficie,
+                self.movimento_parte,
+                self.movimento,
+                self.scafale,
+            ]
+            .iter()
+            .any(|m| m.sfora())
+    }
+}
+
+/// Esamina una skin valida. Vedi [`Esame`].
+#[must_use]
+pub fn esamina(skin: &SkinDocument) -> Esame {
+    let ferma = skin
+        .motion
+        .as_ref()
+        .is_none_or(|m| m.intensity == MotionIntensity::None);
+    let rotta = skin
+        .motion
+        .as_ref()
+        .and_then(|m| m.route.as_ref())
+        .is_some_and(|r| {
+            r.out.is_some_and(|f| !f.is_empty()) || r.enter.is_some_and(|f| !f.is_empty())
+        });
+    let cicli: Vec<Ciclo> = if ferma {
+        Vec::new()
+    } else {
+        skin.parts
+            .iter()
+            .flat_map(|stile| {
+                stile
+                    .motion
+                    .assegnate()
+                    .into_iter()
+                    .filter(|(_, r)| r.def.iterations == Iterazioni::Infinite)
+                    .map(|(innesco, r)| Ciclo {
+                        parte: stile.def.name,
+                        stato: innesco.as_str(),
+                        animazione: r.name.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    Esame {
+        superficie: Misura {
+            costo: tutte_le_parti(skin)
+                .map(PartStyle::costo_superficie)
+                .max()
+                .unwrap_or(0),
+            budget: crate::effects::SURFACE_COST_BUDGET,
+        },
+        movimento_parte: Misura {
+            costo: skin
+                .parts
+                .iter()
+                .map(PartStyle::motion_cost)
+                .max()
+                .unwrap_or(0),
+            budget: crate::movimento::MOTION_COST_BUDGET,
+        },
+        movimento: movimento_della_finestra(skin),
+        scafale: Misura {
+            costo: skin
+                .layout
+                .as_ref()
+                .map_or_else(|| shell_di_serie().costo(), |l| l.shell.costo()),
+            budget: crate::layout::SHELL_COST_BUDGET,
+        },
+        anima: !ferma
+            && (rotta
+                || skin
+                    .parts
+                    .iter()
+                    .any(|stile| !stile.motion.senza_animazioni())),
+        cicli,
+        contrasti: contrast_pairs(skin).iter().filter(|c| !c.passa()).count()
+            + avvisi_superfici(skin).len(),
+        anelli: focus_ring_pairs(skin).iter().filter(|a| !a.passa()).count(),
+    }
+}
+
+#[cfg(test)]
+mod tests;

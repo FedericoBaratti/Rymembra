@@ -33,13 +33,15 @@
 //!
 //! - [`values`]: cosa può valere un campo. È la sicurezza del formato.
 //! - [`tokens`]: il contratto fra le skin e i componenti.
-//! - [`preset`]: blocchi di valori pronti, per chi non vuole muovere quindici
-//!   cursori.
-//! - [`effects`]: gli undici effetti, e quanto costano.
+//! - [`preset`]: blocchi di valori pronti — per i token e per le animazioni —
+//!   per chi non vuole muovere quindici cursori.
+//! - [`effects`]: gli effetti, e quanto costano.
+//! - [`stati`]: gli stati del DOM che una skin veste e anima.
 //! - [`movimento`]: le animazioni nominate, e quanto costano.
 //! - [`parts`]: le superfici ridisegnabili.
 //! - [`layout`]: dove stanno le cose — il vocabolario dello scafale.
 //! - [`document`]: la forma di `skin.json`, e la validazione.
+//! - [`migrazione`]: dal formato 1 al 2, e la forma canonica del testo.
 //! - [`posizioni`]: dal percorso di un problema alla riga in cui è scritto.
 //! - [`compile`]: l'unico autore di CSS.
 //! - [`package`]: il formato `.aeskin`, e le difese contro un archivio ostile.
@@ -77,46 +79,54 @@
 //! # Come si anima una parte
 //!
 //! L'animazione si dichiara **una volta** in `motion.animations`, con un nome,
-//! e la parte la richiama in `parts.<parte>.animations.<trigger>`. È la stessa
+//! e la parte la richiama in `parts.<parte>.motion.<innesco>`. È la stessa
 //! forma dei motivi e delle curve, e per la stessa ragione: un valore scritto
-//! dove si usa è un valore che si ripete. Le due regole che
-//! [`movimento`] non lascia aggirare — ogni durata dentro
-//! `calc(… * var(--motion-scale, 1))`, e nessuna ripetizione infinita — non
-//! sono di stile: sono ciò che rende l'animazione di una skin fermabile da chi
-//! ha chiesto meno movimento.
+//! dove si usa è un valore che si ripete. La regola che [`movimento`] non
+//! lascia aggirare — ogni durata dentro `calc(… * var(--motion-scale, 1))`, e
+//! una regola d'arresto scritta dal compilatore per ogni parte animata — è ciò
+//! che rende l'animazione di una skin fermabile da chi ha chiesto meno
+//! movimento, cicli infiniti compresi.
 
 pub mod compile;
 pub mod dinamico;
 pub mod document;
 pub mod effects;
 pub mod layout;
+pub mod migrazione;
 pub mod movimento;
 pub mod package;
 pub mod parts;
 pub mod posizioni;
 pub mod preset;
+pub mod stati;
 pub mod tokens;
 pub mod values;
 mod vicini;
 
-pub use compile::{CompiledSkin, compile_skin};
+pub use compile::{
+    Ambito, CompiledSkin, Presenza, compile_skin, compile_skin_anteprima, compile_skin_tela,
+};
 pub use dinamico::{Oklch, accento_sicuro};
 pub use document::{
-    CONTRASTO_MINIMO, ContrastPair, SKIN_FORMAT_VERSION, SkinDocument, SkinIssue, SkinWarning,
-    WarningKind, check_skin, contrast_pairs, leggi_skin, palette_usage, parse_skin,
-    parse_skin_json,
+    AnelloMisurato, CONTRASTO_ANELLO, CONTRASTO_MINIMO, ContrastPair, SKIN_FORMAT_VERSION, Scheme,
+    SkinDocument, SkinIssue, SkinWarning, WarningKind, check_skin, chiavi_schema, contrast_pairs,
+    focus_ring_pairs, leggi_skin, palette_usage, parole_schema, parse_skin, parse_skin_json,
 };
-pub use effects::{Effect, SURFACE_COST_BUDGET, exceeds_budget, stack_cost};
+pub use effects::{Effect, SURFACE_COST_BUDGET, stack_cost};
 pub use layout::{
     LayoutNode, LayoutZone, SHELL_COST_BUDGET, WIDGETS, WidgetDef, WidgetInstance, default_shell,
 };
+pub use migrazione::{Migrato, forma_canonica, migra_testo};
 pub use movimento::{
-    AnimDirection, AnimFrame, AnimTrigger, Animation, AnimationRef, MOTION_COST_BUDGET,
-    PartAnimations, animation_cost, exceeds_motion_budget, motion_cost,
+    AnimDirection, AnimFrame, AnimTrigger, Animation, AnimationRef, MOTION_COST_BUDGET, PartMotion,
+    WINDOW_MOTION_BUDGET, animation_cost,
 };
-pub use package::{SkinPackage, read_skin_package, write_skin_package};
+pub use package::{
+    SkinPackage, read_skin_package, riconosci_risorsa, tipo_risorsa, write_skin_package,
+};
 pub use posizioni::{Posizioni, Punto, posizioni};
-pub use preset::{PRESETS, PresetDef};
+pub use preset::{ANIMAZIONI_PRONTE, AnimazionePronta, PRESETS, PresetDef};
+pub use stati::PartState;
 pub use tokens::{TOKENS, TokenDef};
 
 /// La skin di riferimento, come è scritta.
@@ -141,4 +151,26 @@ pub const PLAIN_SOURCE: &str = include_str!("../skins/plain.json");
 /// il test di fedeltà prima di chiunque altro.
 pub fn plain() -> Result<SkinDocument, aether_domain::AppError> {
     parse_skin_json(PLAIN_SOURCE)
+}
+
+/// Le skin che il binario porta con sé: l'id e il testo.
+///
+/// Plain è il riferimento sobrio; le altre due esistono per mostrare cosa il
+/// formato 2 sa fare — una copertina che gira come un disco, una finestra che
+/// si accende a neon — e per collaudarlo: una prova di fedeltà le fa passare
+/// dalle guardie vere, senza errori né avvisi. Non si installano: si derivano,
+/// come Plain.
+pub static DI_SERIE: &[(&str, &str)] = &[
+    ("plain", PLAIN_SOURCE),
+    ("vinile", include_str!("../skins/vinile.json")),
+    ("neon", include_str!("../skins/neon.json")),
+];
+
+/// Il testo di una skin di serie, se l'id è di una di loro.
+#[must_use]
+pub fn di_serie(id: &str) -> Option<&'static str> {
+    DI_SERIE
+        .iter()
+        .find(|(nome, _)| *nome == id)
+        .map(|(_, testo)| *testo)
 }

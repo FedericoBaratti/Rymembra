@@ -35,6 +35,20 @@
 //! La finestra li manda con [`vassoio_lingua`] appena ha applicato la lingua, e
 //! di nuovo a ogni cambio.
 //!
+//! # La musica dal vassoio
+//!
+//! Dalla 3.0 il menù ha anche le tre voci della musica — riproduci o pausa,
+//! successivo, precedente — e l'icona dice cosa sta suonando, nel suggerimento
+//! che compare passandoci sopra. Chi tiene Aether in secondo piano la musica la
+//! comanda da lì, senza riaprire la finestra.
+//!
+//! Le voci passano dagli stessi comandi dei tasti della finestra, attraverso
+//! [`crate::media::premi`]: fanno esattamente quel che fa il pulsante, e lo
+//! fanno su un filo loro, perché il menù arriva sul filo della finestra e
+//! «successivo» può dover aprire un file dalla rete. Etichetta e suggerimento
+//! li tiene in pari [`riflette`], chiamata da chi manda lo stato alla finestra:
+//! una sorgente sola, come per la scheda di Windows.
+//!
 //! # Perché uno specchio atomico della preferenza
 //!
 //! Perché a leggerla è il gestore della chiusura, che gira dentro il ciclo degli
@@ -52,11 +66,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::Manager as _;
 use tauri::State;
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use crate::errore::{Esito, errore};
+use crate::media::Gesto;
 use crate::nota;
+use crate::riproduzione::StatoRiproduzione;
 use crate::stato::{Stato, con_libreria};
 
 /// L'identificativo della voce che riapre la finestra.
@@ -65,13 +81,80 @@ const VOCE_MOSTRA: &str = "vassoio.mostra";
 /// L'identificativo della voce che esce davvero.
 const VOCE_ESCI: &str = "vassoio.esci";
 
-/// Le due etichette del menù, come le manda la finestra.
+/// L'identificativo della voce che mette in pausa o fa ripartire.
+const VOCE_ALTERNA: &str = "vassoio.alterna";
+
+/// L'identificativo della voce del brano dopo.
+const VOCE_SUCCESSIVO: &str = "vassoio.successivo";
+
+/// L'identificativo della voce del brano prima.
+const VOCE_PRECEDENTE: &str = "vassoio.precedente";
+
+/// Il suggerimento dell'icona quando non suona niente.
+///
+/// Il nome del programma, non tradotto: la stessa scelta di `display_name` in
+/// `media.rs`.
+const SUGGERIMENTO_A_RIPOSO: &str = "Aether";
+
+/// Quanti caratteri del suggerimento si tengono.
+///
+/// Windows ne tiene centoventisette in UTF-16, e taglia da sé quel che avanza
+/// — a metà di una lettera, se la lettera ne occupa due. Cento caratteri
+/// stanno comunque sotto, con il margine per i caratteri che in UTF-16 ne
+/// valgono due; titolo e interprete che li superano insieme sono rari, e il
+/// resto lo dice la finestra.
+const SUGGERIMENTO_MASSIMO: usize = 100;
+
+/// Le etichette del menù, come le manda la finestra.
 #[derive(Clone)]
 struct Etichette {
     /// «Mostra Aether».
     mostra: String,
     /// «Esci».
     esci: String,
+    /// Le tre voci della musica. `None` se la finestra non le ha mandate — una
+    /// finestra di prima della 3.0 — e allora il menù resta quello di prima.
+    trasporto: Option<Trasporto>,
+}
+
+/// Le etichette delle voci della musica.
+#[derive(Clone)]
+struct Trasporto {
+    /// «Riproduci», quando la musica è ferma.
+    riproduci: String,
+    /// «Pausa», quando suona.
+    pausa: String,
+    /// «Successivo».
+    successivo: String,
+    /// «Precedente».
+    precedente: String,
+}
+
+/// Quel che l'icona racconta della musica.
+#[derive(Clone, PartialEq, Eq)]
+struct InCorso {
+    /// «Titolo — Interprete», o il nome del programma a musica ferma.
+    suggerimento: String,
+    /// La musica sta andando: la prima voce dice «Pausa».
+    suona: bool,
+}
+
+impl InCorso {
+    const fn a_riposo() -> Self {
+        Self {
+            suggerimento: String::new(),
+            suona: false,
+        }
+    }
+
+    /// Il suggerimento da mostrare: quello a riposo se non c'è niente.
+    fn testo(&self) -> &str {
+        if self.suggerimento.is_empty() {
+            SUGGERIMENTO_A_RIPOSO
+        } else {
+            &self.suggerimento
+        }
+    }
 }
 
 /// Quel che serve a sapere se c'è un'icona, e a rifarla.
@@ -103,6 +186,14 @@ pub struct StatoVassoio {
     /// valore da qui è quindi tutto quel che serve per farla sparire — **quando**
     /// toglierlo è l'altra metà, e sta su [`stacca`].
     icona: Mutex<Option<TrayIcon>>,
+    /// La voce «Riproduci»/«Pausa» del menù in uso, per cambiarle etichetta.
+    ///
+    /// Si rifà insieme al menù: un menù nuovo — la lingua cambiata — ha voci
+    /// nuove, e questa si riscrive nello stesso punto.
+    alterna: Mutex<Option<MenuItem<tauri::Wry>>>,
+    /// Quel che l'icona deve raccontare adesso. Lo scrive [`riflette`], lo
+    /// legge chi costruisce l'icona o il menù.
+    in_corso: Mutex<InCorso>,
 }
 
 impl StatoVassoio {
@@ -114,6 +205,8 @@ impl StatoVassoio {
             presente: AtomicBool::new(false),
             etichette: Mutex::new(None),
             icona: Mutex::new(None),
+            alterna: Mutex::new(None),
+            in_corso: Mutex::new(InCorso::a_riposo()),
         }
     }
 }
@@ -169,21 +262,73 @@ fn esci(app: &tauri::AppHandle) {
 }
 
 /// Il menù, costruito con le etichette che sono arrivate.
+///
+/// Restituisce anche la voce «Riproduci»/«Pausa», se c'è, perché
+/// [`riflette`] le possa cambiare etichetta senza rifare il menù.
 fn costruisci_menu(
     app: &tauri::AppHandle,
     etichette: &Etichette,
-) -> tauri::Result<Menu<tauri::Wry>> {
+    in_corso: &InCorso,
+) -> tauri::Result<(Menu<tauri::Wry>, Option<MenuItem<tauri::Wry>>)> {
     let mostra = MenuItem::with_id(app, VOCE_MOSTRA, &etichette.mostra, true, None::<&str>)?;
     let esci = MenuItem::with_id(app, VOCE_ESCI, &etichette.esci, true, None::<&str>)?;
-    Menu::with_items(app, &[&mostra, &esci])
+    let Some(trasporto) = etichette.trasporto.as_ref() else {
+        return Ok((Menu::with_items(app, &[&mostra, &esci])?, None));
+    };
+    let alterna = MenuItem::with_id(
+        app,
+        VOCE_ALTERNA,
+        etichetta_alterna(trasporto, in_corso.suona),
+        true,
+        None::<&str>,
+    )?;
+    let successivo = MenuItem::with_id(
+        app,
+        VOCE_SUCCESSIVO,
+        &trasporto.successivo,
+        true,
+        None::<&str>,
+    )?;
+    let precedente = MenuItem::with_id(
+        app,
+        VOCE_PRECEDENTE,
+        &trasporto.precedente,
+        true,
+        None::<&str>,
+    )?;
+    let separatore = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &alterna,
+            &successivo,
+            &precedente,
+            &separatore,
+            &mostra,
+            &esci,
+        ],
+    )?;
+    Ok((menu, Some(alterna)))
+}
+
+/// L'etichetta della prima voce: quel che succede premendola.
+fn etichetta_alterna(trasporto: &Trasporto, suona: bool) -> &str {
+    if suona {
+        &trasporto.pausa
+    } else {
+        &trasporto.riproduci
+    }
 }
 
 /// Mette l'icona nell'area di notifica.
-fn costruisci(app: &tauri::AppHandle, menu: &Menu<tauri::Wry>) -> tauri::Result<TrayIcon> {
+fn costruisci(
+    app: &tauri::AppHandle,
+    menu: &Menu<tauri::Wry>,
+    suggerimento: &str,
+) -> tauri::Result<TrayIcon> {
     let mut costruttore = TrayIconBuilder::new()
-        // Il nome del programma, non tradotto: i nomi dei programmi non si
-        // traducono. La stessa scelta di `display_name` in `media.rs`.
-        .tooltip("Aether")
+        // Quel che sta suonando, o il nome del programma: vedi [`InCorso`].
+        .tooltip(suggerimento)
         .menu(menu)
         // Il menù sul tasto destro soltanto. Il sinistro riapre la finestra,
         // che è quel che si vuole quasi sempre: chi cerca l'icona la cerca per
@@ -192,6 +337,11 @@ fn costruisci(app: &tauri::AppHandle, menu: &Menu<tauri::Wry>) -> tauri::Result<
         .on_menu_event(|app, evento| match evento.id.as_ref() {
             VOCE_MOSTRA => mostra(app),
             VOCE_ESCI => esci(app),
+            // Il menù arriva sul filo della finestra: i gesti si eseguono
+            // altrove. Vedi il preambolo.
+            VOCE_ALTERNA => crate::media::premi(app, Gesto::Alterna),
+            VOCE_SUCCESSIVO => crate::media::premi(app, Gesto::Prossimo),
+            VOCE_PRECEDENTE => crate::media::premi(app, Gesto::Precedente),
             _ => {}
         })
         .on_tray_icon_event(|icona, evento| {
@@ -240,6 +390,12 @@ fn riallinea(app: &tauri::AppHandle) {
         .clone();
 
     let acceso = stato.attivo.load(Ordering::Relaxed);
+    // Come le etichette: una copia, presa prima dell'altro lucchetto.
+    let in_corso = stato
+        .in_corso
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
     let mut posto = stato.icona.lock().unwrap_or_else(PoisonError::into_inner);
 
     let ci_vuole = deve_esserci(acceso, etichette.as_ref());
@@ -248,16 +404,18 @@ fn riallinea(app: &tauri::AppHandle) {
         // l'ultima copia, e l'area di notifica torna com'era.
         stato.presente.store(false, Ordering::Relaxed);
         drop(posto.take());
+        *stato.alterna.lock().unwrap_or_else(PoisonError::into_inner) = None;
         return;
     };
 
-    let menu = match costruisci_menu(app, &etichette) {
-        Ok(menu) => menu,
+    let (menu, alterna) = match costruisci_menu(app, &etichette, &in_corso) {
+        Ok(fatto) => fatto,
         Err(err) => {
             nota!("[vassoio] il menù non si costruisce: {err}");
             return;
         }
     };
+    *stato.alterna.lock().unwrap_or_else(PoisonError::into_inner) = alterna;
 
     if let Some(icona) = posto.as_ref() {
         // C'è già: cambiano solo le etichette, e rifarla farebbe lampeggiare
@@ -268,7 +426,7 @@ fn riallinea(app: &tauri::AppHandle) {
         return;
     }
 
-    match costruisci(app, &menu) {
+    match costruisci(app, &menu, in_corso.testo()) {
         Ok(icona) => {
             *posto = Some(icona);
             // **Dopo** la costruzione, e non prima: fra le due cose c'è un giro
@@ -384,20 +542,151 @@ pub fn secondo_piano_attiva(
     Ok(rimasto)
 }
 
-/// Le due etichette del menù, nella lingua della finestra.
+/// Le etichette del menù, nella lingua della finestra.
 ///
 /// La chiama la finestra appena ha applicato la lingua, e di nuovo a ogni
 /// cambio. È anche il momento in cui l'icona compare la prima volta.
+///
+/// Le quattro della musica sono facoltative: senza — una finestra che non le
+/// manda — il menù resta quello di due voci, invece di mostrarne quattro
+/// senza nome.
 #[tauri::command(async)]
-pub fn vassoio_lingua(app: tauri::AppHandle, mostra: String, esci: String) {
+pub fn vassoio_lingua(
+    app: tauri::AppHandle,
+    mostra: String,
+    esci: String,
+    riproduci: Option<String>,
+    pausa: Option<String>,
+    successivo: Option<String>,
+    precedente: Option<String>,
+) {
+    let trasporto = match (riproduci, pausa, successivo, precedente) {
+        (Some(riproduci), Some(pausa), Some(successivo), Some(precedente)) => Some(Trasporto {
+            riproduci,
+            pausa,
+            successivo,
+            precedente,
+        }),
+        _ => None,
+    };
+    // Le stesse etichette fanno da suggerimento ai pulsanti nell'anteprima:
+    // vedi `crate::barra`.
+    if let Some(trasporto) = &trasporto {
+        crate::barra::etichette(
+            &app,
+            aether_barra::Etichette {
+                precedente: trasporto.precedente.clone(),
+                riproduci: trasporto.riproduci.clone(),
+                pausa: trasporto.pausa.clone(),
+                successivo: trasporto.successivo.clone(),
+            },
+        );
+    }
     if let Some(stato) = app.try_state::<StatoVassoio>() {
         let mut dentro = stato
             .etichette
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        *dentro = Some(Etichette { mostra, esci });
+        *dentro = Some(Etichette {
+            mostra,
+            esci,
+            trasporto,
+        });
     }
     riallinea(&app);
+}
+
+/// Rispecchia lo stato del lettore nell'icona: il suggerimento e la prima voce.
+///
+/// La chiama chi manda lo stato alla finestra, sul filo del seguito del
+/// lettore — vedi `crate::riproduzione::manda_stato` — con lo stato già
+/// composto. Se niente di quel che l'icona racconta è cambiato non tocca
+/// niente: lo stato parte a ogni salto e a ogni ritocco della coda, e
+/// riscrivere il suggerimento ogni volta vorrebbe dire un giro sul filo della
+/// finestra per dire la stessa cosa.
+///
+/// # Perché i lucchetti si lasciano prima di parlare all'icona
+///
+/// Perché cambiare suggerimento o etichetta vuol dire chiedere al filo della
+/// finestra di farlo e **aspettare** la risposta. Con un lucchetto di questo
+/// modulo in mano, basterebbe che quel filo lo stesse aspettando per non
+/// rispondere più a nessuno: si prendono le copie di quel che serve, si
+/// lasciano i lucchetti, e poi si parla.
+pub(crate) fn riflette(app: &tauri::AppHandle, stato: &StatoRiproduzione) {
+    let Some(vassoio) = app.try_state::<StatoVassoio>() else {
+        return;
+    };
+    let nuovo = in_corso_di(stato);
+    {
+        let mut in_corso = vassoio
+            .in_corso
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *in_corso == nuovo {
+            return;
+        }
+        in_corso.clone_from(&nuovo);
+    }
+    let icona = vassoio
+        .icona
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let alterna = vassoio
+        .alterna
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let trasporto = vassoio
+        .etichette
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(|etichette| etichette.trasporto.clone());
+
+    if let Some(icona) = icona
+        && let Err(err) = icona.set_tooltip(Some(nuovo.testo()))
+    {
+        nota!("[vassoio] il suggerimento non si aggiorna: {err}");
+    }
+    if let (Some(voce), Some(trasporto)) = (alterna, trasporto)
+        && let Err(err) = voce.set_text(etichetta_alterna(&trasporto, nuovo.suona))
+    {
+        nota!("[vassoio] la voce della pausa non si aggiorna: {err}");
+    }
+}
+
+/// Quel che l'icona deve raccontare di questo stato.
+fn in_corso_di(stato: &StatoRiproduzione) -> InCorso {
+    let Some(brano) = stato.brano.as_ref() else {
+        return InCorso::a_riposo();
+    };
+    InCorso {
+        suggerimento: suggerimento(&brano.title, &brano.artist),
+        suona: !stato.in_pausa,
+    }
+}
+
+/// «Titolo — Interprete», tagliato perché Windows lo mostri intero.
+///
+/// Senza interprete resta il titolo, senza il trattino davanti al vuoto. Il
+/// taglio è sui caratteri e non sui byte, così non spezza mai una lettera, e
+/// dice di esserci con i puntini: vedi [`SUGGERIMENTO_MASSIMO`].
+fn suggerimento(titolo: &str, interprete: &str) -> String {
+    let intero = if interprete.trim().is_empty() {
+        titolo.trim().to_owned()
+    } else {
+        format!("{} — {}", titolo.trim(), interprete.trim())
+    };
+    if intero.chars().count() <= SUGGERIMENTO_MASSIMO {
+        return intero;
+    }
+    let mut tagliato: String = intero
+        .chars()
+        .take(SUGGERIMENTO_MASSIMO.saturating_sub(1))
+        .collect();
+    tagliato.push('…');
+    tagliato
 }
 
 #[cfg(test)]
@@ -409,7 +698,45 @@ mod prove {
         Etichette {
             mostra: "Mostra Aether".to_owned(),
             esci: "Esci".to_owned(),
+            trasporto: None,
         }
+    }
+
+    fn trasporto() -> Trasporto {
+        Trasporto {
+            riproduci: "Riproduci".to_owned(),
+            pausa: "Pausa".to_owned(),
+            successivo: "Successivo".to_owned(),
+            precedente: "Precedente".to_owned(),
+        }
+    }
+
+    #[test]
+    fn la_prima_voce_dice_quel_che_succede_premendola() {
+        // Mentre suona la voce mette in pausa, e si chiama così; a musica ferma
+        // la fa ripartire. È la convenzione del pulsante nella finestra.
+        assert_eq!(etichetta_alterna(&trasporto(), true), "Pausa");
+        assert_eq!(etichetta_alterna(&trasporto(), false), "Riproduci");
+    }
+
+    #[test]
+    fn il_suggerimento_dice_titolo_e_interprete() {
+        assert_eq!(suggerimento("Hunter", "Björk"), "Hunter — Björk");
+        // Senza interprete non resta un trattino davanti al vuoto.
+        assert_eq!(suggerimento("Hunter", "  "), "Hunter");
+    }
+
+    #[test]
+    fn un_suggerimento_lungo_si_taglia_senza_spezzare_una_lettera() {
+        let titolo = "è".repeat(150);
+        let tagliato = suggerimento(&titolo, "Interprete");
+        assert_eq!(tagliato.chars().count(), SUGGERIMENTO_MASSIMO);
+        assert!(tagliato.ends_with('…'), "il taglio deve dirsi: {tagliato}");
+    }
+
+    #[test]
+    fn a_musica_ferma_il_suggerimento_e_il_nome_del_programma() {
+        assert_eq!(InCorso::a_riposo().testo(), SUGGERIMENTO_A_RIPOSO);
     }
 
     #[test]

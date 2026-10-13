@@ -111,6 +111,8 @@ pub struct Audius {
     /// La rete dei prelievi, che ha una scadenza sua: vedi
     /// [`Rete::per_prelievo`].
     prelievo: Rete,
+    /// La rete dei flussi: vedi [`Rete::per_flusso`].
+    flusso: Rete,
     nodo: Arc<Mutex<Option<String>>>,
 }
 
@@ -127,18 +129,26 @@ impl Audius {
         Self {
             rete: Rete::nuova("audius.co", SCADENZA),
             prelievo: Rete::per_prelievo("audius.co"),
+            flusso: Rete::per_flusso("audius.co"),
             nodo: Arc::new(Mutex::new(None)),
         }
     }
 
     /// La rete che usa per **chiedere**: ricerche, schede, elenchi.
     ///
-    /// Le richieste piccole e la lettura a finestre di un flusso, che piccole
-    /// sono anche loro. Per portare giù un file intero c'è
-    /// [`Self::rete_prelievo`], e la differenza fra le due è la scadenza.
+    /// Le richieste piccole, con una scadenza complessiva. Per portare giù un
+    /// file intero c'è [`Self::rete_prelievo`], per suonarlo mentre arriva
+    /// [`Self::rete_flusso`], e la differenza fra le tre è la scadenza.
     #[must_use]
     pub const fn rete(&self) -> &Rete {
         &self.rete
+    }
+
+    /// La rete che usa per **suonare un file mentre arriva**: vedi
+    /// [`Rete::per_flusso`].
+    #[must_use]
+    pub const fn rete_flusso(&self) -> &Rete {
+        &self.flusso
     }
 
     /// La rete che usa per **portare giù un file**.
@@ -218,12 +228,10 @@ impl Audius {
             .map_err(|err| {
                 // La ricerca che non risponde ha un codice suo, e non è lo
                 // stesso di un brano che non c'è: la coda tratta i due casi in
-                // modo diverso — uno si ritenta, l'altro no.
-                AppError::new(ErrorCode::DownloadExternalSearchFailed).with_cause(
-                    err.cause()
-                        .unwrap_or("la ricerca non ha risposto")
-                        .to_owned(),
-                )
+                // modo diverso — uno si ritenta, l'altro no. E fra le ricerche
+                // che non riescono, quella respinta si distingue da quella
+                // caduta: vedi `guasto_di_ricerca`.
+                crate::guasto_di_ricerca("Audius", &err, "la ricerca non ha risposto")
             })?;
 
         Ok(elenco(&corpo)

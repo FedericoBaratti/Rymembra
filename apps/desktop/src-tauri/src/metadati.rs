@@ -43,6 +43,7 @@ pub fn metadati_incerti(
     offset: i64,
     limite: i64,
 ) -> Esito<Vec<TracciaIncerta>> {
+    let (offset, limite) = crate::comandi::pagina(offset, limite);
     con_libreria(&stato, |libreria| {
         incerti::elenco(&libreria.connection, offset, limite)
     })
@@ -74,6 +75,31 @@ pub fn metadati_correggi(
 pub fn metadati_conferma(stato: State<'_, Stato>, id: i64) -> Esito<()> {
     con_libreria(&stato, |libreria| {
         incerti::conferma(&mut libreria.connection, id)
+    })
+    .map_err(errore)
+}
+
+/// «Rileggi tutti i tag»: la prossima scansione rilegge ogni file.
+///
+/// Non scansiona: segna. La scansione resta una sola, quella di sempre, con la
+/// sua esclusione, il suo avanzamento e il suo Annulla — la finestra la avvia
+/// subito dopo, e una seconda strada per leggere i file sarebbe una seconda
+/// strada da tenere d'accordo con la prima. Il come sta su
+/// `aether_app::library::rileggi_tutti_i_tag`; le correzioni a mano e
+/// l'arricchimento sopravvivono alla rilettura come a ogni altra.
+///
+/// Restituisce quanti brani aspettano la rilettura.
+///
+/// `(async)`: un `UPDATE` su ogni riga della libreria, che su centomila brani non
+/// è una cosa da fare sul filo della finestra.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+#[tauri::command(async)]
+pub fn metadati_rileggi_tutti(stato: State<'_, Stato>) -> Esito<usize> {
+    con_libreria(&stato, |libreria| {
+        aether_app::library::rileggi_tutti_i_tag(&libreria.connection)
     })
     .map_err(errore)
 }

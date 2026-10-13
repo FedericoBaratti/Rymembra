@@ -1035,8 +1035,7 @@ fn esegui(
     let identita_diversa =
         letto.ha_libreria() && !sua.is_empty() && mia.is_some_and(|id| id != sua);
 
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura della transazione del profilo", &err))?;
 
     let mut piano = Piano {

@@ -20,9 +20,10 @@
  * catalogo: è l'unico che si può scartare, perché quello di un file o di chi
  * ascolta tornerebbe alla prossima apertura.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { useFinestrella } from "../finestrella";
+import { useFinestrella, useVeloInerte } from "../finestrella";
+import { nuovoVelo } from "../modale";
 import { durata } from "../formato";
 import {
   ipc,
@@ -32,6 +33,7 @@ import {
   type TestoBrano,
 } from "../ipc";
 import { t } from "../lingue";
+import { Presenza } from "../presenza";
 
 export function SceltaTesto({
   brano,
@@ -47,6 +49,12 @@ export function SceltaTesto({
   onScelto: (testo: TestoBrano) => void;
 }) {
   const finestrella = useFinestrella<HTMLDivElement>(onChiudi);
+  // Il resto della finestra inerte, e il velo che chiude solo un clic nato **e**
+  // finito su di lui: una selezione trascinata fuori dal pannello chiudeva
+  // tutto. È quel che `../Dialogo.tsx` fa per le altre.
+  const velo = useRef<HTMLDivElement>(null);
+  useVeloInerte(velo);
+  const [gesto] = useState(nuovoVelo);
   const [elenco, setElenco] = useState<CandidatiTesto | null>(null);
   const [errore, setErrore] = useState<string | null>(null);
   const [inCorso, setInCorso] = useState(false);
@@ -78,83 +86,94 @@ export function SceltaTesto({
   };
 
   return (
-    <div className="velo scuro" onClick={onChiudi}>
+    <Presenza parte="modal-veil">
       <div
-        ref={finestrella}
-        className="finestrella glass-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("np.lyrics.choose.aria")}
-        onClick={(e) => e.stopPropagation()}
+        ref={velo}
+        className="velo scuro modal-veil"
+        onPointerDown={(e) => gesto.premuto(e.target, e.currentTarget)}
+        onClick={(e) => {
+          if (gesto.clic(e.target, e.currentTarget)) onChiudi();
+        }}
       >
-        <h2>{t("np.lyrics.choose.title")}</h2>
+        <Presenza parte="glass-modal">
+          <div
+            ref={finestrella}
+            className="finestrella glass-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("np.lyrics.choose.aria")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2>{t("np.lyrics.choose.title")}</h2>
 
-        {errore && <div className="errore">{errore}</div>}
+            {errore && <div className="errore">{errore}</div>}
 
-        {elenco === null ? (
-          <p aria-live="polite">{t("np.lyrics.choose.loading")}</p>
-        ) : elenco.voci.length === 0 ? (
-          /* Due vuoti diversi: nessuna voce, oppure nessuna domanda. Il secondo
-             non è una risposta del catalogo, e dirlo com'era — «il catalogo non
-             ha voci per questo brano» — mandava a cercare il guasto nel
-             catalogo invece che nell'interruttore che lo spegne. */
-          errore === null && (
-            <p>
-              {elenco.rete
-                ? t("np.lyrics.choose.none")
-                : t("np.lyrics.choose.offline")}
-            </p>
-          )
-        ) : (
-          <div className="scelta-testo">
-            {elenco.voci.map((voce) => (
-              <button
-                key={voce.id}
-                type="button"
-                disabled={inCorso}
-                onClick={() => fai(ipc.testoScegli(brano.id, voce.id))}
-              >
-                <span className="chi">
-                  {voce.titolo} · {voce.artista}
-                </span>
-                <span className="dati">
-                  {[
-                    voce.album,
-                    voce.durataMs !== null ? durata(voce.durataMs) : null,
-                    voce.strumentale
-                      ? t("np.lyrics.choose.instrumental")
-                      : voce.sincronizzato
-                        ? t("np.lyrics.choose.synced")
-                        : t("np.lyrics.choose.plain"),
-                  ]
-                    .filter((pezzo) => pezzo !== null && pezzo !== "")
-                    .join(" · ")}
-                </span>
-                {voce.anteprima !== null && (
-                  <span className="anteprima-testo">{voce.anteprima}</span>
-                )}
+            {elenco === null ? (
+              <p aria-live="polite">{t("np.lyrics.choose.loading")}</p>
+            ) : elenco.voci.length === 0 ? (
+              /* Due vuoti diversi: nessuna voce, oppure nessuna domanda. Il secondo
+                 non è una risposta del catalogo, e dirlo com'era — «il catalogo non
+                 ha voci per questo brano» — mandava a cercare il guasto nel
+                 catalogo invece che nell'interruttore che lo spegne. */
+              errore === null && (
+                <p>
+                  {elenco.rete
+                    ? t("np.lyrics.choose.none")
+                    : t("np.lyrics.choose.offline")}
+                </p>
+              )
+            ) : (
+              <div className="scelta-testo">
+                {elenco.voci.map((voce) => (
+                  <button
+                    key={voce.id}
+                    type="button"
+                    disabled={inCorso}
+                    onClick={() => fai(ipc.testoScegli(brano.id, voce.id))}
+                  >
+                    <span className="chi">
+                      {voce.titolo} · {voce.artista}
+                    </span>
+                    <span className="dati">
+                      {[
+                        voce.album,
+                        voce.durataMs !== null ? durata(voce.durataMs) : null,
+                        voce.strumentale
+                          ? t("np.lyrics.choose.instrumental")
+                          : voce.sincronizzato
+                            ? t("np.lyrics.choose.synced")
+                            : t("np.lyrics.choose.plain"),
+                      ]
+                        .filter((pezzo) => pezzo !== null && pezzo !== "")
+                        .join(" · ")}
+                    </span>
+                    {voce.anteprima !== null && (
+                      <span className="anteprima-testo">{voce.anteprima}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="tasti-finestrella">
+              {rifiutabile && (
+                <button
+                  type="button"
+                  className="bottone"
+                  title={t("np.lyrics.reject.hint")}
+                  disabled={inCorso}
+                  onClick={() => fai(ipc.testoRifiuta(brano.id))}
+                >
+                  {t("np.lyrics.reject")}
+                </button>
+              )}
+              <button type="button" className="bottone" onClick={onChiudi}>
+                {t("common.cancel")}
               </button>
-            ))}
+            </div>
           </div>
-        )}
-
-        <div className="tasti-finestrella">
-          {rifiutabile && (
-            <button
-              type="button"
-              className="bottone"
-              title={t("np.lyrics.reject.hint")}
-              disabled={inCorso}
-              onClick={() => fai(ipc.testoRifiuta(brano.id))}
-            >
-              {t("np.lyrics.reject")}
-            </button>
-          )}
-          <button type="button" className="bottone" onClick={onChiudi}>
-            {t("common.cancel")}
-          </button>
-        </div>
+        </Presenza>
       </div>
-    </div>
+    </Presenza>
   );
 }

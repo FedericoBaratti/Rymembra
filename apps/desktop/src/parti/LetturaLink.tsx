@@ -26,7 +26,6 @@
 import { useEffect, useState } from "react";
 
 import type { AvanzamentoImport } from "../ipc";
-import { numero } from "../formato";
 import { t } from "../lingue";
 import { useAscolto } from "../pagine";
 
@@ -147,12 +146,14 @@ export function LetturaLink({
             <span className="numeri">
               {avanzamento.pagine !== null
                 ? t("reading.counts", {
-                    n: numero(avanzamento.brani),
+                    // Il numero vero: la forma «1 brano» si sceglie da lui, e
+                    // la virgola delle migliaia la mette comunque `t`.
+                    n: avanzamento.brani,
                     pagina: avanzamento.pagina,
                     pagine: avanzamento.pagine,
                   })
                 : t("reading.counts.open", {
-                    n: numero(avanzamento.brani),
+                    n: avanzamento.brani,
                     pagina: avanzamento.pagina,
                   })}
             </span>

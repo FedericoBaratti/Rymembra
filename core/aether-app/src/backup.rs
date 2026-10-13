@@ -919,8 +919,7 @@ pub fn fondi(locale: &Contenuto, remoto: &Contenuto) -> Contenuto {
 /// `db.queryFailed` se una scrittura fallisce. In quel caso non viene applicato
 /// **niente**: è il motivo per cui è una transazione sola.
 pub fn applica(connection: &mut Connection, piano: &RestorePlan) -> Result<Applicato, AppError> {
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("ripristino", &err))?;
 
     let applicato = Applicato {

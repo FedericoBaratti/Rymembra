@@ -79,12 +79,9 @@ export function applicaSkin(skin: Skin): void {
   if (!foglio.isConnected) document.head.append(foglio);
   const radice = document.documentElement;
   radice.dataset.skin = skin.id;
-  // Le quattro scelte di impaginazione erano dichiarabili e non lette: il
-  // formato le accettava, il compilatore ne scriveva una in un foglio che
-  // nessuna regola interrogava, e le altre tre non uscivano nemmeno dal crate.
-  // Da qui in giù sono attributi, quindi sono selettori, quindi contano.
-  radice.dataset.player = skin.layout.player;
-  radice.dataset.sidebar = skin.layout.sidebar;
+  // Densità e movimento sono attributi, quindi selettori, quindi contano. Il
+  // lettore e la barra laterale non lo sono più: dal formato 2 stanno nello
+  // scafale, che li mette dove vuole invece di sceglierli da un elenco.
   radice.dataset.density = skin.layout.density;
   radice.dataset.motion = skin.layout.motion;
 }

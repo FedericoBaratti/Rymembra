@@ -12,10 +12,12 @@
 //! La finestra riceve i percorsi già divisi per quel che se ne fa, e decide solo
 //! dove portare chi guarda.
 
+use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::paths::{PathRules, extension_of, is_supported_audio_path};
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Manager as _};
 
+use crate::disparte::in_disparte;
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, con_libreria};
 
@@ -76,25 +78,43 @@ fn smista(percorsi: Vec<String>, e_cartella: impl Fn(&str) -> bool) -> (Trascina
 
 /// Divide i percorsi lasciati cadere sulla finestra.
 ///
-/// `async` perché chiede al filesystem se ogni percorso è una cartella, e su una
-/// condivisione di rete la risposta può farsi aspettare: non sul filo che
-/// disegna la finestra. Il lucchetto della libreria si prende **dopo**, e solo
-/// se fra i file ce n'è qualcuno audio.
-#[tauri::command(async)]
-pub fn smista_trascinati(stato: State<'_, Stato>, percorsi: Vec<String>) -> Esito<Trascinati> {
+/// In disparte, sul pool bloccante, perché chiede al filesystem se ogni
+/// percorso è una cartella, e su una condivisione di rete che non risponde la
+/// risposta vale i quaranta secondi di Windows. Fino alla 2.4.0 era `(async)`,
+/// cioè quei secondi passati su un *worker* del runtime: dieci cartelle di un
+/// NAS spento trascinate insieme bastavano a fermare ogni altro comando
+/// asincrono. Il lucchetto della libreria si prende **dopo**, e solo se fra i
+/// file ce n'è qualcuno audio.
+#[tauri::command]
+pub async fn smista_trascinati(app: AppHandle, percorsi: Vec<String>) -> Esito<Trascinati> {
+    in_disparte("smistamento dei file trascinati", move || {
+        let Some(stato) = app.try_state::<Stato>() else {
+            return Err(AppError::new(ErrorCode::InternalAborted {
+                what: Some("smistamento dei file trascinati".to_owned()),
+            })
+            .with_cause("la libreria non è più fra gli stati gestiti"));
+        };
+        smista_e_cerca(&stato, percorsi)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
+}
+
+/// Il corpo di [`smista_trascinati`], in disparte.
+fn smista_e_cerca(stato: &Stato, percorsi: Vec<String>) -> Result<Trascinati, AppError> {
     let (mut smistati, audio) =
         smista(percorsi, |percorso| std::path::Path::new(percorso).is_dir());
     if audio.is_empty() {
         return Ok(smistati);
     }
-    let trovati = con_libreria(&stato, |libreria| {
+    let trovati = con_libreria(stato, |libreria| {
         aether_app::library::ids_by_path(
             &libreria.connection,
             &audio,
             PathRules::for_current_platform(),
         )
-    })
-    .map_err(errore)?;
+    })?;
     for trovato in trovati {
         match trovato {
             Some(id) => smistati.brani.push(id),

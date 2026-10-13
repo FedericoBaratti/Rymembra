@@ -68,6 +68,58 @@ pub use jamendo::Jamendo;
 pub use prelievo::{Prelevato, Richiesta, attribuzione, preleva};
 pub use riferimento::{Riferimento, riconosci};
 
+/// Quanto può essere lunga una frase da cercare.
+///
+/// I motori di ricerca dei cataloghi hanno un tetto loro, e lo dicono male:
+/// Audius risponde `too_many_clauses: maxClauseCount is set to 1024`, cioè con
+/// il guasto interno del suo Elasticsearch, dentro un 500 che sembra un
+/// servizio caduto. Una frase più lunga di questo tetto non è una ricerca che
+/// non si può fare: è una ricerca che **non si deve spedire**, perché la
+/// risposta è già nota e arriverebbe travestita da disservizio.
+///
+/// Duecentocinquanta caratteri sono otto volte il titolo più lungo fra quelli
+/// che una ricerca vera porta — «beethoven symphony no. 5 [live]» ne ha trenta
+/// — e restano largamente sotto il tetto di chi riceve.
+pub const FRASE_MASSIMA: usize = 250;
+
+/// L'errore giusto per una ricerca che non è andata.
+///
+/// # Il difetto che chiude
+///
+/// C'era un solo esito per ogni ricerca mancata: `download.externalSearchFailed`,
+/// che è **sempre ritentabile** e in finestra si legge «la ricerca sui cataloghi
+/// non è riuscita, riprova». Ci finivano dentro due cose diverse.
+///
+/// Una è il catalogo che non risponde — rete giù, nodo caduto, 503 — e lì
+/// riprovare è esattamente la cosa da fare.
+///
+/// L'altra è il catalogo che ha **respinto quella frase**: il guardiano che
+/// risponde con una pagina di blocco invece che con la sua API, il motore di
+/// ricerca che rifiuta una richiesta che non sa comporre. Lì riprovare le stesse
+/// parole dà lo stesso rifiuto, all'infinito, e nel frattempo si accusa di
+/// essere giù un servizio che sta benissimo.
+///
+/// # Come si distinguono
+///
+/// Non si indovina: lo ha già deciso chi ha letto la risposta. `aether-net`
+/// classifica gli stati HTTP con `http_retryable` — un 4xx che non sia 408 o
+/// 429 vuol dire «la richiesta era sbagliata», e da lì in giù l'errore porta
+/// `is_retryable() == false`. Questa funzione non fa altro che **non buttare
+/// via** quella distinzione mentre traduce il guasto della rete nel guasto
+/// della ricerca, che è precisamente quel che si perdeva.
+pub(crate) fn guasto_di_ricerca(catalogo: &str, err: &AppError, se_muto: &str) -> AppError {
+    let detto = err.cause().unwrap_or(se_muto);
+    // Il nome del catalogo sta nella causa e non in un campo del codice: i
+    // campi non attraversano l'IPC, la causa sì — ed è la riga che la finestra
+    // mostra sotto il messaggio, cioè l'unico posto in cui «chi» ha respinto
+    // arriva a chi sta cercando.
+    let causa = format!("{catalogo}: {detto}");
+    if err.is_retryable() {
+        return AppError::new(ErrorCode::DownloadExternalSearchFailed).with_cause(causa);
+    }
+    AppError::new(ErrorCode::DownloadSearchRejected).with_cause(causa)
+}
+
 /// Che cosa risponde, e che cosa no.
 ///
 /// Serve alla finestra che spiega perché qualcosa non funziona. Un catalogo che
@@ -151,6 +203,24 @@ impl Cataloghi {
             jamendo: self.jamendo.risponde(),
             #[cfg(not(feature = "jamendo"))]
             jamendo: false,
+        }
+    }
+
+    /// Il candidato da portare sul disco, a partire da quello ascoltato.
+    ///
+    /// Per l'Internet Archive è un'altra riga della stessa scheda: la ricerca
+    /// libera sceglie il formato per l'ascolto, e la copia vuole l'originale —
+    /// vedi [`ArchivioOrg::per_tenere`]. Per gli altri cataloghi è lo stesso
+    /// candidato: Audius consegna un file solo per brano, e da Jamendo non si
+    /// tiene niente.
+    ///
+    /// # Errori
+    ///
+    /// Quelli di [`ArchivioOrg::per_tenere`], che va in rete.
+    pub fn per_tenere(&self, candidato: &Candidato) -> Result<Candidato, AppError> {
+        match candidato.fonte {
+            Fonte::InternetArchive => self.archivio.per_tenere(candidato),
+            _ => Ok(candidato.clone()),
         }
     }
 
@@ -261,6 +331,18 @@ impl Cataloghi {
         let testo = testo.trim();
         if testo.is_empty() {
             return Ok(RicercaLibera::default());
+        }
+        // Prima di spedire, non dopo aver ricevuto: una frase oltre il tetto
+        // torna respinta da tutti e tre, ognuno con parole sue, e il risultato
+        // è tre guasti di rete per una cosa che si sapeva di qua. Vedi
+        // [`FRASE_MASSIMA`].
+        let quanti = testo.chars().count();
+        if quanti > FRASE_MASSIMA {
+            return Err(
+                AppError::new(ErrorCode::DownloadSearchRejected).with_cause(format!(
+                    "la frase da cercare è di {quanti} caratteri, e il tetto è {FRASE_MASSIMA}"
+                )),
+            );
         }
 
         let mut trovati = Vec::new();
@@ -507,6 +589,47 @@ mod prove {
             esito.as_ref().map_err(AppError::code),
             Err(ErrorCode::DownloadNotPermitted { .. })
         ));
+    }
+
+    #[test]
+    fn una_ricerca_caduta_si_ritenta_e_una_respinta_no() {
+        // Il servizio che non risponde: un 503, che `aether-net` dichiara
+        // ritentabile. Chi cerca deve vedere «riprova».
+        let caduto = AppError::new(ErrorCode::NetHttp {
+            status: 503,
+            url: None,
+        });
+        let guasto = guasto_di_ricerca("Audius", &caduto, "muto");
+        assert_eq!(guasto.code().kind().code(), "download.externalSearchFailed");
+        assert!(guasto.is_retryable());
+
+        // Il guardiano che respinge: un 403. Le stesse parole daranno lo stesso
+        // rifiuto, quindi «riprova» è un tasto che non può funzionare.
+        let respinto = AppError::new(ErrorCode::NetHttp {
+            status: 403,
+            url: None,
+        })
+        .with_cause("<html><title>Attention Required! | Cloudflare</title>");
+        let guasto = guasto_di_ricerca("Audius", &respinto, "muto");
+        assert_eq!(guasto.code().kind().code(), "download.searchRejected");
+        assert!(!guasto.is_retryable());
+        // E chi ha respinto si sa, perché la causa attraversa l'IPC e i campi
+        // del codice no.
+        assert!(guasto.cause().is_some_and(|c| c.starts_with("Audius: ")));
+    }
+
+    #[test]
+    fn una_frase_piu_lunga_del_tetto_non_parte_nemmeno() {
+        // Senza rete: il tetto si applica prima di qualunque richiesta, ed è
+        // per questo che questa prova può girare senza toccare niente.
+        let cataloghi = Cataloghi::nuovi();
+        let esito = cataloghi.cerca_libera(&"a".repeat(FRASE_MASSIMA + 1), &|| false);
+        let guasto = esito.expect_err("respinta");
+        assert_eq!(guasto.code().kind().code(), "download.searchRejected");
+        assert!(!guasto.is_retryable());
+        // E il tetto è un tetto, non una soglia di sospetto: una ricerca vera
+        // ci sta dentro con otto volte di margine.
+        assert!("grateful dead 1977 cornell".chars().count() * 8 <= FRASE_MASSIMA);
     }
 
     #[test]

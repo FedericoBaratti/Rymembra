@@ -75,6 +75,8 @@ const TETTO_BRANI: u32 = 200;
 #[derive(Debug, Clone)]
 pub struct Jamendo {
     rete: Rete,
+    /// La rete dei flussi: vedi [`Rete::per_flusso`].
+    flusso: Rete,
     /// Il `client_id`, che arriva dalle impostazioni e può cambiare a programma
     /// acceso.
     chiave: Arc<Mutex<Option<String>>>,
@@ -92,15 +94,22 @@ impl Jamendo {
     pub fn nuovo() -> Self {
         Self {
             rete: Rete::nuova("jamendo.com", SCADENZA),
+            flusso: Rete::per_flusso("jamendo.com"),
             chiave: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// La rete che usa, per chi deve leggere il flusso con la stessa riserva di
-    /// connessioni.
+    /// La rete che usa per chiedere.
     #[must_use]
     pub const fn rete(&self) -> &Rete {
         &self.rete
+    }
+
+    /// La rete che usa per suonare un file mentre arriva: vedi
+    /// [`Rete::per_flusso`].
+    #[must_use]
+    pub const fn rete_flusso(&self) -> &Rete {
+        &self.flusso
     }
 
     /// Cambia la chiave, o la toglie.
@@ -195,11 +204,7 @@ impl Jamendo {
                 if err.code().kind().code() == "catalogo.notAvailable" {
                     return err;
                 }
-                AppError::new(ErrorCode::DownloadExternalSearchFailed).with_cause(
-                    err.cause()
-                        .unwrap_or("la ricerca di Jamendo non ha risposto")
-                        .to_owned(),
-                )
+                crate::guasto_di_ricerca("Jamendo", &err, "la ricerca non ha risposto")
             })?;
 
         Ok(risultati(&corpo)

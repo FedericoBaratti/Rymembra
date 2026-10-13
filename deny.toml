@@ -1,0 +1,72 @@
+# Cosa `cargo deny check` lascia entrare nel programma.
+#
+# Gira nella CI (`verify.yml`, lavoro `dipendenze`) e a mano con:
+#
+#   cargo deny check
+#
+# # Perché solo Windows
+#
+# Perché è l'unico bersaglio che l'installer produce, come dice il preambolo di
+# `verify.yml`. Senza questa riga `cargo deny` guarderebbe anche le dipendenze
+# di Linux e macOS che `tauri` e `cpal` si portano dietro — licenze e avvisi di
+# codice che in Aether non entra — e una CI che fallisce per un crate di ALSA
+# è una CI che si impara a ignorare.
+[graph]
+targets = ["x86_64-pc-windows-msvc"]
+all-features = false
+
+# Gli avvisi di sicurezza di RustSec. Un avviso aperto ferma la CI: lo si
+# legge, e se non tocca Aether lo si scrive qui sotto con il perché, invece di
+# spegnere il controllo.
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  # `paste` non ha più un manutentore, e lo dice l'avviso: non c'è un difetto.
+  # È una macro che gira solo in compilazione, portata da `lofty`, e non finisce
+  # nell'eseguibile. Si toglie da qui quando `lofty` la sostituisce.
+  { id = "RUSTSEC-2024-0436", reason = "macro di sola compilazione, portata da lofty; nessun codice nell'eseguibile" },
+]
+
+# L'elenco chiuso delle licenze che `THIRD-PARTY-NOTICES.md` sa già
+# attribuire (`strumenti/licenze.js` ne copia i testi). Una licenza nuova non è
+# vietata: va letta, aggiunta qui **e** a quel file nello stesso cambio.
+#
+# Niente GPL né LGPL: l'eseguibile è uno solo, statico, distribuito con licenza
+# MIT, e una dipendenza copyleft cambierebbe quel che si può fare del tutto.
+# MPL-2.0 sta nell'elenco perché vale file per file (symphonia, cssparser): chi
+# riceve Aether riceve anche il diritto di avere quei file, e il README dice dove.
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+
+# Due versioni dello stesso crate costano solo tempo di compilazione e peso
+# dell'eseguibile: si segnalano, non fermano niente. Quasi sempre vengono da
+# `tauri` o da `windows-*`, e non si risolvono da qui.
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# I crate dell'albero si chiamano fra loro per percorso, ed è giusto così.
+allow-wildcard-paths = true
+
+# Tutto da crates.io. Un crate preso da un repository git sarebbe codice che
+# nessun registro ha visto passare, e che può cambiare sotto lo stesso nome.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -29,8 +29,10 @@ use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::regole::{
     Campo, Combinazione, GenereCampo, Insieme, Operatore, Ordinamento, Regola, Valore,
 };
+use aether_domain::text::fold_text;
 use rusqlite::Connection;
-use rusqlite::types::Value as SqlValue;
+use rusqlite::functions::FunctionFlags;
+use rusqlite::types::{Value as SqlValue, ValueRef};
 
 use crate::library::{COLONNE_BRANO, TrackSummary, db_error, track_from_row};
 
@@ -225,8 +227,17 @@ fn traduci(regola: &Regola, adesso_ms: i64) -> Option<Pezzo> {
         // «Hit 'Em Up (100%)» — diventerebbe un carattere jolly, e la regola
         // selezionerebbe mezza libreria senza che niente lo dica. I due
         // caratteri si proteggono nel **parametro**, che è dove stanno.
+        //
+        // E i due lati passano dalla stessa piegatura, [`PIEGA`]: il `LIKE` di
+        // SQLite ignora le maiuscole solo dell'ASCII, quindi «contiene ö» non
+        // prendeva «Öyster», e «contiene bjork» non prendeva «Björk» — che la
+        // ricerca in alto, con i diacritici tolti dal suo indice, trova. Due
+        // idee diverse di «uguale» nella stessa finestra sono una di troppo.
+        // Il valore si piega qui, prima di proteggerne i jolly: la piegatura
+        // non ne produce, e proteggerli prima vorrebbe dire piegare anche le
+        // barre rovesciate che li proteggono.
         (Valore::Testo(t), op) => {
-            let ago = protetto(t.trim());
+            let ago = protetto(&fold_text(t.trim()));
             let (forma, parametro) = match op {
                 Operatore::Contiene => ("LIKE", format!("%{ago}%")),
                 Operatore::NonContiene => ("NOT LIKE", format!("%{ago}%")),
@@ -240,9 +251,9 @@ fn traduci(regola: &Regola, adesso_ms: i64) -> Option<Pezzo> {
             // il `COALESCE` «artista non contiene X» escluderebbe anche i brani
             // senza artista, che è l'opposto di quel che chiede chi la scrive.
             let sinistra = if matches!(op, Operatore::NonContiene | Operatore::Diverso) {
-                format!("COALESCE({col}, '')")
+                format!("{PIEGA}(COALESCE({col}, ''))")
             } else {
-                col.to_owned()
+                format!("{PIEGA}({col})")
             };
             Some(Pezzo {
                 sql: format!("{sinistra} {forma} ? ESCAPE '\\'"),
@@ -288,6 +299,60 @@ fn traduci(regola: &Regola, adesso_ms: i64) -> Option<Pezzo> {
 
         (Valore::Nessuno, _) => None,
     }
+}
+
+/// Il nome della funzione SQL che piega il testo come la ricerca.
+///
+/// Una costante di questo file, come i nomi di colonna: finisce dentro la query,
+/// e la regola del modulo vuole che dentro la query finiscano solo quelle.
+const PIEGA: &str = "aether_piega";
+
+/// Registra [`PIEGA`] sulla connessione, se non c'è già.
+///
+/// La funzione è [`fold_text`] del dominio — NFD, via i diacritici latini,
+/// minuscolo — cioè la stessa piegatura delle chiavi di identità, e quella che
+/// più somiglia a quel che fa l'indice della ricerca (`unicode61` con
+/// `remove_diacritics 2`): «ö» e «o» e «Ö» diventano la stessa lettera.
+///
+/// # Perché qui e non all'apertura del database
+///
+/// Perché la usano solo le regole di questo file, e l'apertura della
+/// connessione sta in `db`, che è di tutti. Registrarla qui la rende
+/// indipendente da chi ha aperto la connessione — il desktop, le prove, un
+/// giorno Android — al prezzo di una domanda per chiamata: la si prova con una
+/// `SELECT` preparata una volta sola, e la si registra solo se manca.
+/// Registrarla ogni volta costerebbe di più: SQLite, quando una funzione viene
+/// ridefinita, scade tutte le istruzioni preparate della connessione, e la
+/// cache di `prepare_cached` si svuoterebbe a ogni playlist aperta.
+///
+/// Un valore che non è testo passa com'è, `NULL` resta `NULL`: sono colonne di
+/// testo, e un `NULL` deve restare tale perché `COALESCE` e `IS NULL` delle
+/// regole lo riconoscano.
+fn assicura_piegatura(connection: &Connection) -> Result<(), AppError> {
+    let registrata = connection
+        .prepare_cached(&format!("SELECT {PIEGA}('')"))
+        .is_ok();
+    if registrata {
+        return Ok(());
+    }
+    connection
+        .create_scalar_function(
+            PIEGA,
+            1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |contesto| {
+                Ok(match contesto.get_raw(0) {
+                    ValueRef::Text(byte) => {
+                        SqlValue::Text(fold_text(&String::from_utf8_lossy(byte)))
+                    }
+                    ValueRef::Null => SqlValue::Null,
+                    ValueRef::Integer(n) => SqlValue::Integer(n),
+                    ValueRef::Real(x) => SqlValue::Real(x),
+                    ValueRef::Blob(byte) => SqlValue::Blob(byte.to_vec()),
+                })
+            },
+        )
+        .map_err(|err| db_error("piegatura del testo per le regole", &err))
 }
 
 /// Protegge i jolly di `LIKE` dentro il valore cercato.
@@ -369,6 +434,7 @@ pub fn brani(
     insieme: &Insieme,
     adesso_ms: i64,
 ) -> Result<Vec<TrackSummary>, AppError> {
+    assicura_piegatura(connection)?;
     let (sql, parametri) = query(insieme, adesso_ms);
     let mut statement = connection
         .prepare(&sql)
@@ -395,6 +461,7 @@ pub fn conteggi(
     insieme: &Insieme,
     adesso_ms: i64,
 ) -> Result<(i64, i64), AppError> {
+    assicura_piegatura(connection)?;
     let (sql, parametri) = query(insieme, adesso_ms);
     let riassunto = format!("SELECT COUNT(*), COALESCE(SUM(duration_ms), 0) FROM ({sql})");
     connection
@@ -407,6 +474,104 @@ pub fn conteggi(
         .map_err(|err| db_error("riassunto di una playlist intelligente", &err))
 }
 
+/// [`conteggi`], ricordati finché la libreria non cambia.
+///
+/// # Perché
+///
+/// Perché l'elenco delle playlist si chiede a ogni apertura della barra
+/// laterale e dopo ogni modifica a una playlist, e per ognuna delle
+/// intelligenti rifaceva l'interrogazione intera: una regola sul testo passa
+/// ogni riga di `tracks` dalla piegatura dei diacritici, che su cinquantamila
+/// brani è il tempo che si vede. Il risultato però non cambia finché nessuno
+/// scrive un brano — e quando qualcuno lo fa, lo dice
+/// [`crate::library::generazione`].
+///
+/// # Perché non può restare indietro
+///
+/// La chiave è la regola **e** la generazione della libreria, e la generazione
+/// la cambiano i trigger della migrazione 030 a ogni scrittura su `tracks`, da
+/// qualunque modulo e da qualunque connessione: un ascolto, un cuore, un brano
+/// arricchito, una scansione. Le regole leggono soltanto colonne di `tracks`
+/// (vedi [`colonna`]), quindi una scrittura che la generazione non vede è una
+/// scrittura che il conteggio non può sentire.
+///
+/// # Quel che non si ricorda
+///
+/// Le regole che guardano l'orologio — «negli ultimi 30 giorni», «non negli
+/// ultimi 6 mesi» — cambiano risultato mentre nessuno tocca niente, basta che
+/// passi la mezzanotte: vedi il preambolo del modulo. Per loro si conta ogni
+/// volta, com'era prima.
+///
+/// La cache sta nel processo e non nel database: è una scorciatoia, e una
+/// scorciatoia che sopravvive al riavvio è un dato in più da tenere d'accordo.
+/// Due librerie aperte in fila — un profilo importato — non si confondono: il
+/// segno di una generazione è un numero a caso, e quello dell'altra non lo
+/// ripete.
+///
+/// # Errori
+///
+/// Quelli di [`conteggi`], più `db.*` se la generazione non si legge.
+pub fn conteggi_ricordati(
+    connection: &Connection,
+    insieme: &Insieme,
+    adesso_ms: i64,
+) -> Result<(i64, i64), AppError> {
+    if guarda_l_orologio(insieme) {
+        return conteggi(connection, insieme, adesso_ms);
+    }
+    let chiave = a_json(insieme)?;
+    // Prima di contare, non dopo: vedi `library::generazione`.
+    let generazione = crate::library::generazione(connection)?;
+    if let Some(&(segno, valori)) = ricordati().get(&chiave)
+        && segno == generazione
+    {
+        return Ok(valori);
+    }
+    let valori = conteggi(connection, insieme, adesso_ms)?;
+    let mut cache = ricordati();
+    // Un tetto, perché la chiave contiene la regola e le regole provate
+    // nell'editor sono tante: oltre, si ricomincia da vuota invece di tenere
+    // un registro di ogni cosa scritta in una sessione.
+    if cache.len() >= VOCI_RICORDATE && !cache.contains_key(&chiave) {
+        cache.clear();
+    }
+    cache.insert(chiave, (generazione, valori));
+    Ok(valori)
+}
+
+/// Quante regole diverse si ricordano al massimo. Le playlist intelligenti di
+/// una persona sono decine; duecentocinquantasei lascia margine all'editor.
+const VOCI_RICORDATE: usize = 256;
+
+/// I conteggi ricordati: dalla regola scritta come in `playlists.rules` alla
+/// generazione in cui si sono contati, e ai due numeri.
+type Ricordati = std::collections::HashMap<String, (i64, (i64, i64))>;
+
+/// La cache dei conteggi, anche se un filo è caduto tenendola: il valore dentro
+/// è comunque una mappa intera, e nel dubbio ogni voce ha la sua generazione.
+fn ricordati() -> std::sync::MutexGuard<'static, Ricordati> {
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<Ricordati>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Ricordati::new()));
+    CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// L'insieme ha una regola il cui risultato dipende dall'ora?
+///
+/// Sono le sole che [`traduci`] scrive con `adesso_ms`: le due sulle date
+/// espresse in giorni indietro. Si guarda l'operatore e non la validità — una
+/// regola storta in più fra quelle che non si ricordano costa un conteggio,
+/// una in meno costerebbe un numero sbagliato.
+fn guarda_l_orologio(insieme: &Insieme) -> bool {
+    insieme.regole.iter().any(|regola| {
+        matches!(
+            regola.operatore,
+            Operatore::NegliUltimi | Operatore::NonNegliUltimi
+        )
+    })
+}
+
 /// Quanti brani soddisfano le regole, senza il limite.
 ///
 /// Serve a dire «120 brani, ne mostro 50» invece di lasciar credere che siano
@@ -416,6 +581,7 @@ pub fn conteggi(
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn quanti(connection: &Connection, insieme: &Insieme, adesso_ms: i64) -> Result<i64, AppError> {
+    assicura_piegatura(connection)?;
     let senza_limite = Insieme {
         limite: None,
         ..insieme.clone()
@@ -504,15 +670,18 @@ mod prove {
             )]),
             0,
         );
+        // In minuscolo, e da quando c'è la piegatura non è pignoleria: il
+        // valore arriva al parametro già piegato, e se finisse nella query ci
+        // finirebbe così.
         assert!(
-            !sql.contains("DROP"),
+            !sql.to_lowercase().contains("drop"),
             "il valore è finito nella query: {sql}"
         );
         assert!(!sql.contains('\''.to_string().as_str()) || !sql.contains("DROP"));
         assert_eq!(parametri.len(), 1);
         assert!(matches!(
             parametri.first(),
-            Some(SqlValue::Text(t)) if t.contains("DROP")
+            Some(SqlValue::Text(t)) if t.contains("drop table")
         ));
     }
 
@@ -535,6 +704,41 @@ mod prove {
         .expect("query");
         assert_eq!(trovati.len(), 1);
         assert_eq!(trovati.first().map(|b| b.id), Some(1));
+    }
+
+    #[test]
+    fn il_testo_si_confronta_come_nella_ricerca() {
+        // Il `LIKE` di SQLite piega solo l'ASCII: «contiene ö» non prendeva
+        // «Öyster», e «bjork» non prendeva «Björk», che la ricerca in alto
+        // trova. Scomposto o no, maiuscolo o no, con o senza dieresi: è la
+        // stessa lettera.
+        let c = db();
+        brano(&c, 1, "Godzilla", "Blue Öyster Cult", "genre");
+        brano(&c, 2, "Jóga", "Bjo\u{0308}rk", "genre");
+        brano(&c, 3, "Altro", "Tale", "genre");
+        let cerca = |ago: &str, operatore: Operatore| -> Vec<i64> {
+            brani(
+                &c,
+                &insieme(vec![regola(
+                    Campo::Artista,
+                    operatore,
+                    Valore::Testo(ago.to_owned()),
+                )]),
+                0,
+            )
+            .expect("query")
+            .iter()
+            .map(|b| b.id)
+            .collect()
+        };
+        assert_eq!(cerca("ö", Operatore::Contiene), vec![2, 1]);
+        assert_eq!(cerca("ÖYSTER", Operatore::Contiene), vec![1]);
+        assert_eq!(cerca("bjork", Operatore::Uguale), vec![2]);
+        assert_eq!(cerca("björk", Operatore::Inizia), vec![2]);
+        assert_eq!(cerca("Ö", Operatore::NonContiene), vec![3]);
+        // E una seconda chiamata sulla stessa connessione non la registra di
+        // nuovo: la trova, e prosegue.
+        assert_eq!(cerca("tale", Operatore::Uguale), vec![3]);
     }
 
     #[test]
@@ -728,5 +932,101 @@ mod prove {
         };
         assert_eq!(brani(&c, &insieme, 0).expect("query").len(), 2);
         assert_eq!(quanti(&c, &insieme, 0), Ok(5));
+    }
+
+    /// Una libreria vera, con la migrazione 030 e i suoi trigger: le prove
+    /// della cache ne hanno bisogno, quelle qui sopra no.
+    fn libreria_vera() -> Connection {
+        crate::db::open_in_memory().expect("database").connection
+    }
+
+    fn brano_vero(c: &Connection, titolo: &str, artista: &str) -> i64 {
+        c.execute(
+            "INSERT INTO tracks (path, track_key, title, artist, album, duration_ms,
+                                 date_added, date_modified, file_size)
+             VALUES (?1, ?2, ?3, ?4, 'Al', 200000, 1, 1, 1000000)",
+            rusqlite::params![
+                format!(r"C:\m\{titolo}.mp3"),
+                format!("{artista}|{titolo}"),
+                titolo,
+                artista
+            ],
+        )
+        .expect("brano");
+        c.last_insert_rowid()
+    }
+
+    fn artista_contiene(testo: &str) -> Insieme {
+        insieme(vec![regola(
+            Campo::Artista,
+            Operatore::Contiene,
+            Valore::Testo(testo.to_owned()),
+        )])
+    }
+
+    #[test]
+    fn i_conteggi_ricordati_non_restano_mai_indietro() {
+        // Il patto della cache: qualunque scrittura su `tracks` — un brano
+        // nuovo, uno cambiato, uno tolto, un ascolto — e il conteggio dopo è
+        // quello vero, senza che chi scrive debba avvisare nessuno.
+        let c = libreria_vera();
+        let regole = artista_contiene("björk");
+        brano_vero(&c, "Jóga", "Björk");
+        assert_eq!(conteggi_ricordati(&c, &regole, 0).expect("conto").0, 1);
+        let secondo = brano_vero(&c, "Hunter", "Bjork");
+        assert_eq!(conteggi_ricordati(&c, &regole, 0).expect("conto").0, 2);
+        c.execute(
+            "UPDATE tracks SET artist = 'Sigur Rós' WHERE id = ?1",
+            [secondo],
+        )
+        .expect("ritaggato");
+        assert_eq!(conteggi_ricordati(&c, &regole, 0).expect("conto").0, 1);
+        c.execute("DELETE FROM tracks", []).expect("tutti via");
+        assert_eq!(conteggi_ricordati(&c, &regole, 0).expect("conto").0, 0);
+    }
+
+    #[test]
+    fn i_conteggi_si_ricordano_davvero() {
+        // Il rovescio: senza scritture il conteggio non si rifà. Per vederlo si
+        // toglie il trigger dell'aggiornamento e si cambia una riga: la cache,
+        // che ora non può saperlo, deve rispondere il numero di prima. È la
+        // prova che la scorciatoia c'è — e che senza i trigger della 030
+        // sarebbe sbagliata.
+        let c = libreria_vera();
+        let regole = artista_contiene("radiohead");
+        let id = brano_vero(&c, "Airbag", "Radiohead");
+        assert_eq!(conteggi_ricordati(&c, &regole, 0).expect("conto").0, 1);
+        c.execute_batch("DROP TRIGGER generazione_dopo_aggiornamento")
+            .expect("via il trigger");
+        c.execute("UPDATE tracks SET artist = 'Muse' WHERE id = ?1", [id])
+            .expect("ritaggato");
+        assert_eq!(conteggi_ricordati(&c, &regole, 0).expect("conto").0, 1);
+        assert_eq!(conteggi(&c, &regole, 0).expect("conto").0, 0);
+    }
+
+    #[test]
+    fn le_regole_sull_orologio_non_si_ricordano() {
+        // «Aggiunti negli ultimi 7 giorni» cambia mentre nessuno scrive: basta
+        // che passi il tempo. Due conteggi a una settimana di distanza devono
+        // dare due numeri diversi anche senza nessuna scrittura in mezzo.
+        let c = libreria_vera();
+        brano_vero(&c, "Uno", "X");
+        let recenti = insieme(vec![regola(
+            Campo::Aggiunto,
+            Operatore::NegliUltimi,
+            Valore::Numero(7),
+        )]);
+        let giorno = 86_400_000_i64;
+        // `date_added` vale 1: il primo giorno dell'epoca.
+        assert_eq!(
+            conteggi_ricordati(&c, &recenti, giorno).expect("conto").0,
+            1
+        );
+        assert_eq!(
+            conteggi_ricordati(&c, &recenti, giorno * 30)
+                .expect("conto")
+                .0,
+            0
+        );
     }
 }

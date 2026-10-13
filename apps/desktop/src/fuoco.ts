@@ -39,11 +39,51 @@
  * Come `virtuale.ts`: le righe qui sono `.riga`, là `.nodo-cartella`, e i due
  * selettori sono parametri proprio perché non ci siano due copie di questa
  * logica da tenere d'accordo.
+ *
+ * # Le griglie: due assi veri
+ *
+ * In una griglia di schede (gli album, gli artisti) ogni cella è un comando
+ * solo, e i due assi diventano quelli della griglia: ↑↓ di una riga, ←→ di una
+ * cella, Inizio e Fine al primo e all'ultimo. Il conto sta in `passoGriglia`
+ * (`finestra.ts`), puro e provato; qui c'è solo chi lo chiama. Le colonne le
+ * dice chi disegna, che le ha misurate: sono quelle di `useVirtuale`.
+ *
+ * Una fermata di tabulazione per griglia anche qui: novecento schede erano
+ * novecento pressioni di Tab per arrivare a quel che viene dopo.
+ *
+ * # Le pagine, e i due capi
+ *
+ * PagSu e PagGiù spostano il fuoco di una schermata — le righe che entrano
+ * nello scorrevole meno una, perché la riga da cui si parte resti in vista e
+ * si sappia dove si è arrivati — e in una griglia restano sulla stessa
+ * colonna. Inizio e Fine portano al primo e all'ultimo della vista **intera**,
+ * anche a cinquantamila righe: la riga d'arrivo non c'è nel DOM, e ci arriva
+ * con lo scorrimento (vedi sopra). `Ctrl+Inizio` e `Ctrl+Fine` fanno lo
+ * stesso: sono i tasti che il modello delle griglie ARIA dà per i due capi, e
+ * chi li prova non deve trovare un tasto morto.
+ *
+ * # La fermata, quando la riga attiva non c'è
+ *
+ * La riga attiva può uscire dalla finestra — una rotellata la porta via — e
+ * allora nel DOM non c'è nessuna riga con `tabIndex={0}`: Tab salterebbe
+ * l'elenco intero. `fermata` è la riga che porta lo zero: quella attiva se è
+ * disegnata, altrimenti la prima che si vede. Entrandoci con Tab diventa lei
+ * l'attiva (`segna`); tornando con lo scorrimento sulla vecchia, lo zero torna
+ * là. L'elenco dei brani non ne ha bisogno — tiene montata la riga attiva —
+ * ma la coda, l'albero di «Cartelle» e le griglie sì.
+ *
+ * # Quale riga è questa
+ *
+ * Chi scrive `data-indice` sulle righe può disegnarle fuori ordine — l'elenco
+ * dei brani tiene montata la riga col fuoco quando esce dalla finestra — e
+ * allora la posizione nel DOM non dice quale riga sia: si legge l'attributo.
+ * Chi non lo scrive disegna solo la finestra, e la posizione basta.
  */
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, RefObject } from "react";
 
-import type { Finestra } from "./virtuale";
+import { passoGriglia } from "./finestra";
+import { indiceDi, type Finestra } from "./virtuale";
 
 /**
  * Per quanto aspettare che una riga entri nella finestra, prima di lasciar
@@ -72,6 +112,11 @@ export interface Fuoco {
    * può essere fuori dallo schermo, e resta quella a cui Tab riporta.
    */
   attivo: number;
+  /**
+   * La riga con `tabIndex={0}` adesso: `attivo` se è disegnata, la prima in
+   * vista se no. Vedi «La fermata» nella nota del modulo.
+   */
+  fermata: number;
   /**
    * Porta il fuoco su una riga, scorrendo prima se è fuori dalla finestra.
    *
@@ -125,6 +170,11 @@ export function useFuoco(opzioni: {
   onInvio?: ((indice: number) => void) | undefined;
   /** Spazio sulla riga: di solito «aggiungi alla selezione». */
   onSpazio?: ((indice: number) => void) | undefined;
+  /**
+   * Una griglia di `colonne` colonne invece di un elenco: le frecce si muovono
+   * sui due assi della griglia. Vedi «Le griglie» nella nota del modulo.
+   */
+  colonne?: number | undefined;
 }): Fuoco {
   const {
     totale,
@@ -135,6 +185,7 @@ export function useFuoco(opzioni: {
     selettoreComando = "button",
     onInvio,
     onSpazio,
+    colonne,
   } = opzioni;
 
   const [attivoStato, setAttivo] = useState(0);
@@ -163,6 +214,23 @@ export function useFuoco(opzioni: {
   const finestraRef = useRef(finestra);
   finestraRef.current = finestra;
 
+  /**
+   * Il nodo della riga `indice`, se è disegnato.
+   *
+   * Per `data-indice` quando le righe lo scrivono, per posizione nella finestra
+   * quando no: vedi «Quale riga è questa» nella nota del modulo.
+   */
+  const nodoDi = useCallback(
+    (indice: number): HTMLElement | null => {
+      const disegnate = righe();
+      if (disegnate[0]?.dataset.indice !== undefined) {
+        return disegnate.find((n) => n.dataset.indice === String(indice)) ?? null;
+      }
+      return disegnate[indice - finestraRef.current.primo] ?? null;
+    },
+    [righe],
+  );
+
   const vaiA = useCallback(
     (indice: number) => {
       const dove = stretto(indice, totale);
@@ -176,12 +244,12 @@ export function useFuoco(opzioni: {
         // sospeso, e al primo disegno altrui (un clic su un'altra riga, mezzo
         // minuto dopo) il fuoco salterebbe indietro da solo.
         inSospeso.current = null;
-        righe()[dove - f.primo]?.focus();
+        nodoDi(dove)?.focus();
         return;
       }
       inSospeso.current = { indice: dove, da: performance.now() };
     },
-    [totale, righe],
+    [totale, nodoDi],
   );
 
   const segna = useCallback((indice: number) => setAttivo(indice), []);
@@ -200,7 +268,7 @@ export function useFuoco(opzioni: {
     const { indice } = sospeso;
     if (indice >= finestra.primo && indice < finestra.ultimo) {
       inSospeso.current = null;
-      righe()[indice - finestra.primo]?.focus();
+      nodoDi(indice)?.focus();
       return;
     }
     if (performance.now() - sospeso.da > ATTESA_MS) {
@@ -214,12 +282,52 @@ export function useFuoco(opzioni: {
     scorriA(indice);
   });
 
+  /** Il nodo che aveva il fuoco all'ultimo disegno, se stava in questo elenco. */
+  const colFuoco = useRef<HTMLElement | null>(null);
+
+  /**
+   * Il fuoco che un disegno ha fatto cadere, rimesso sulla sua riga.
+   *
+   * Lo scheletro di una riga e la riga vera che lo sostituisce sono due
+   * componenti diversi, e React tiene un nodo solo quando sono uguali chiave
+   * **e** tipo: alla stessa chiave smonta lo scheletro e monta la riga, e il
+   * nodo col fuoco sparisce dal DOM — il fuoco cade sul `<body>`. Capita
+   * proprio a chi naviga da tastiera: Fine su cinquantamila brani porta il
+   * fuoco su uno scheletro, e la pagina che arriva un istante dopo glielo
+   * toglieva, con Ctrl+Inizio, le frecce e Ctrl+A che da lì in poi andavano
+   * alla pagina invece che all'elenco. Vale per le righe, per le schede delle
+   * griglie e per chiunque usi questo modulo.
+   *
+   * Si rimette **solo** se il nodo di prima non è più nel DOM e il fuoco sta sul
+   * `<body>`: è la firma di un nodo rifatto da un disegno. Un clic altrove o un
+   * Tab fuori dall'elenco lasciano il nodo dov'era, e qui non si tocca niente.
+   * `preventScroll` perché la riga nuova sta dove stava la vecchia: scorrere
+   * adesso sarebbe un salto che nessuno ha chiesto.
+   *
+   * Senza elenco di dipendenze, come l'effetto sopra e dopo di lui: se il fuoco
+   * in sospeso è appena arrivato, il `<body>` non ce l'ha più e qui non succede
+   * niente.
+   */
+  useLayoutEffect(() => {
+    const prima = colFuoco.current;
+    const ora = document.activeElement;
+    if (prima !== null && !prima.isConnected && (ora === null || ora === document.body)) {
+      nodoDi(attivo)?.focus({ preventScroll: true });
+    }
+    const adesso = document.activeElement;
+    colFuoco.current =
+      adesso instanceof HTMLElement && ancora.current?.contains(adesso) === true ? adesso : null;
+  });
+
   const daTastiera = useCallback(
     (e: KeyboardEvent<HTMLElement>) => {
       // `Alt+↑↓` non è di qui: sposta la riga dentro una playlist, e il gestore
       // sta sulla riga. Intercettarlo significherebbe spostare il fuoco invece
-      // di spostare la canzone.
-      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      // di spostare la canzone. Con `Ctrl` passano soltanto Inizio e Fine: vedi
+      // «Le pagine, e i due capi».
+      const capo = e.key === "Home" || e.key === "End";
+      if (e.altKey || e.metaKey) return;
+      if (e.ctrlKey && (!capo || e.shiftKey)) return;
 
       const bersaglio = e.target instanceof HTMLElement ? e.target : null;
       const riga = bersaglio?.closest<HTMLElement>(selettoreRiga) ?? null;
@@ -227,7 +335,7 @@ export function useFuoco(opzioni: {
       const disegnate = righe();
       const dentro = disegnate.indexOf(riga);
       if (dentro < 0) return;
-      const indice = finestra.primo + dentro;
+      const indice = indiceDi(riga, finestra.primo + dentro);
 
       /*
        * Preso **e fermato**.
@@ -248,6 +356,38 @@ export function useFuoco(opzioni: {
         e.preventDefault();
         e.stopPropagation();
       };
+
+      // Una schermata più in là: vedi «Le pagine, e i due capi». Le righe che
+      // entrano le sa la finestra; una griglia disegnata intera non ne ha una,
+      // e la pagina è tutta la griglia.
+      if (e.key === "PageDown" || e.key === "PageUp") {
+        preso();
+        const f = finestraRef.current;
+        const schermo = f.visibili ?? Math.max(f.ultimo - f.primo, 1);
+        vaiA(
+          passoPagina(
+            indice,
+            e.key === "PageDown" ? 1 : -1,
+            Math.max(schermo - 1, 1),
+            colonne ?? 1,
+            totale,
+          ),
+        );
+        return;
+      }
+
+      // In una griglia le frecce sono dei due assi: vedi «Le griglie». Prese
+      // anche contro un bordo, dove `passoGriglia` dice di restare: una freccia
+      // che a fine riga facesse scorrere il brano partirebbe per sbaglio.
+      if (colonne !== undefined) {
+        const tasti = ["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"];
+        if (tasti.includes(e.key)) {
+          preso();
+          const dove = passoGriglia(indice, e.key, colonne, totale);
+          if (dove !== null) vaiA(dove);
+          return;
+        }
+      }
 
       switch (e.key) {
         case "ArrowDown":
@@ -303,23 +443,70 @@ export function useFuoco(opzioni: {
           // `preventDefault` no, però: su un bottone toglierebbe l'attivazione
           // nativa, cioè il clic che lo Spazio **è**.
           if (e.target !== riga) return;
-          e.preventDefault();
-          if (e.key === "Enter") onInvio?.(indice);
-          else onSpazio?.(indice);
+          {
+            // Senza un gesto suo il tasto resta al nodo: una scheda della
+            // griglia è un bottone, e Invio e Spazio la premono già da soli.
+            const gesto = e.key === "Enter" ? onInvio : onSpazio;
+            if (gesto === undefined) return;
+            e.preventDefault();
+            gesto(indice);
+          }
           return;
         default:
           return;
       }
     },
-    [finestra.primo, righe, selettoreRiga, selettoreComando, totale, vaiA, onInvio, onSpazio],
+    [
+      finestra.primo,
+      righe,
+      selettoreRiga,
+      selettoreComando,
+      totale,
+      vaiA,
+      onInvio,
+      onSpazio,
+      colonne,
+    ],
   );
+
+  // La fermata: vedi «La fermata, quando la riga attiva non c'è».
+  const { primo, ultimo } = finestra;
+  const fermata =
+    totale === 0 || (attivo >= primo && attivo < ultimo)
+      ? attivo
+      : stretto(Math.max(finestra.visibileDa ?? primo, primo), Math.max(ultimo, primo + 1));
 
   // Memoizzato per la stessa ragione di `useVirtuale`: l'oggetto entra nelle
   // dipendenze di chi disegna.
   return useMemo(
-    () => ({ attivo, vaiA, segna, daTastiera }),
-    [attivo, vaiA, segna, daTastiera],
+    () => ({ attivo, fermata, vaiA, segna, daTastiera }),
+    [attivo, fermata, vaiA, segna, daTastiera],
   );
+}
+
+/**
+ * Dove va il fuoco con PagSu (`verso` −1) o PagGiù (+1).
+ *
+ * `righe` righe più in là, sulla stessa colonna in una griglia. Contro un capo
+ * si ferma sulla prima o sull'ultima riga, ancora nella stessa colonna se c'è:
+ * PagGiù sull'ultima pagina porta in fondo, non fuori. Puro, e provato.
+ */
+export function passoPagina(
+  indice: number,
+  verso: 1 | -1,
+  righe: number,
+  colonne: number,
+  totale: number,
+): number {
+  if (totale <= 0) return 0;
+  const c = Math.max(Math.floor(colonne), 1);
+  const dove = indice + verso * Math.max(Math.floor(righe), 1) * c;
+  if (dove < 0) return Math.min(indice % c, totale - 1);
+  if (dove > totale - 1) {
+    const ultimaRiga = Math.floor((totale - 1) / c);
+    return Math.min(ultimaRiga * c + (indice % c), totale - 1);
+  }
+  return dove;
 }
 
 /** Dentro l'elenco: da 0 all'ultimo indice, e 0 se l'elenco è vuoto. */

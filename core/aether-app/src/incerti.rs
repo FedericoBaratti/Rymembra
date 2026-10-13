@@ -58,23 +58,39 @@
 //!   `read_track` ha letto dal file, a ogni scansione che vede quel file
 //!   cambiato;
 //! * i **metadati arricchiti** li mette `enrich::registra`, che nella stessa
-//!   transazione annota in `track_meta_arricchita` quali campi vengono da lui;
+//!   transazione annota in `track_meta_arricchita` quali campi vengono da lui
+//!   e cosa diceva il file sotto ciascuno; dopo una rilettura del file li
+//!   rimette [`arricchimento_sopra_i_tag`], da dentro `library::update_track`;
 //! * la **correzione a mano** la rimette [`riapplica`], subito dopo l'uno e
 //!   l'altro. È l'ultima parola, ed è la sola dei tre che non abbia una
 //!   confidenza: le altre due sono letture, questa è una decisione.
 //!
-//! Lo strato di mezzo **non si rimette d'ufficio** dopo una riscansione, e non
-//! deve. Nel caso normale non serve: l'arricchimento non apre il file, quindi
-//! `tracks.date_modified` continua a coincidere con quella del disco, la
-//! scansione non rilegge niente e la riga arricchita resta com'è. E nel caso in
-//! cui una riscansione avvenga davvero — cioè quando quel file è stato
-//! **riscritto da un altro programma** — sono i tag grezzi ad avere ragione: la
-//! parola più recente su un file è quella del file, e rimetterci sopra una
-//! corrispondenza di sei mesi fa vorrebbe dire disfare la taggatura che
-//! l'utente è appena andato a fare altrove. L'annotazione resta in tabella —
-//! toglierla è un gesto suo, non l'effetto collaterale di una scansione — e
-//! [`crate::enrich::dimentica`], che il file lo rilegge, in quel caso non trova
-//! semplicemente più niente da riportare indietro.
+//! # Lo strato di mezzo dopo una rilettura, campo per campo
+//!
+//! Nel caso normale non c'è niente da rimettere: l'arricchimento non apre il
+//! file, quindi `tracks.date_modified` continua a coincidere con quella del
+//! disco, la scansione non rilegge niente e la riga arricchita resta com'è.
+//!
+//! Il caso che conta è quello in cui il file lo tocca **un altro programma**.
+//! Fino alla 2.4 la regola era una sola, e diceva «vince il file»: la parola più
+//! recente su un file è quella del file. Giusta per chi era appena andato a
+//! ritaggarlo altrove, e sbagliata per tutti gli altri — un calcolatore di
+//! ReplayGain, un lettore che ci scrive il conteggio degli ascolti, un riordino
+//! che lo sposta di cartella. A nessuno di quelli interessano l'album o la
+//! copertina, ma bastava che passassero perché tornassero «Album sconosciuto» e
+//! la copertina grigia, e l'arricchimento non ci ripassava più, perché per lui
+//! il brano era già fatto.
+//!
+//! Adesso la domanda si fa **campo per campo**: il file dice ancora, sotto quel
+//! campo, quel che diceva quando l'arricchimento l'ha coperto? Se sì, la
+//! corrispondenza vale ancora e si rimette. Se no, quel campo l'ha ritaggato
+//! qualcuno, e vince il file: esce dall'annotazione, e il brano torna in coda
+//! all'arricchimento, che lo riguarderà con i tag nuovi. Per saper rispondere
+//! l'annotazione ricorda cosa c'era sotto — vedi `enrich::Sotto` — e le regole
+//! per esteso stanno su [`arricchimento_sopra_i_tag`].
+//!
+//! [`crate::enrich::dimentica`] resta com'era: rilegge il file, e quel che
+//! trova è per costruzione quel che c'era sotto.
 //!
 //! # Quel che una correzione non tocca: `tracks.content_key`
 //!
@@ -98,10 +114,15 @@ use aether_domain::album::album_group_key;
 use aether_domain::errors::{AppError, ErrorCode};
 use aether_domain::keys::{TrackKey, TrackKeyInput};
 use aether_domain::ricostruzione::{Origine, Salute};
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension as _, Transaction};
 use serde::Serialize;
+use unicode_normalization::UnicodeNormalization as _;
 
-use crate::library::{db_error, now_ms, rebuild_aggregates};
+use crate::covers::CoverSource;
+use crate::enrich::{TagDelFile, annotazione};
+use crate::library::{
+    Toccati, TrackRow, db_error, now_ms, ricostruisci_aggregati, transazione_di_scrittura,
+};
 use crate::provenienza::{Correzioni, Origini};
 
 /// Un brano da guardare, con quel che serve a deciderlo.
@@ -275,9 +296,17 @@ pub fn correggi(
     if correzioni.e_vuoto() {
         return Ok(());
     }
-    let tx = connection
-        .transaction()
+    // `Immediate`, come ogni transazione che legge e poi scrive: una differita
+    // che arriva alla prima scrittura dopo che un'altra connessione ha scritto
+    // — la cache dell'arricchimento, l'indice delle cartelle — fallisce subito
+    // con `SQLITE_BUSY_SNAPSHOT`, senza nemmeno aspettare. Vedi
+    // [`transazione_di_scrittura`].
+    let tx = transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura della transazione", &err))?;
+    // Album e artista **prima** della correzione: se cambia l'album, quello da
+    // cui il brano esce va rifatto anche lui. Vedi [`Toccati`].
+    let mut toccati = Toccati::nessuno();
+    toccati.segna_brani(&tx, &[track_id])?;
 
     // Le correzioni si accumulano: chi corregge il titolo oggi e l'artista
     // domani non deve perdere la prima. È la stessa ragione per cui
@@ -309,7 +338,13 @@ pub fn correggi(
     )
     .map_err(|err| db_error("salvataggio della correzione", &err))?;
 
-    rebuild_aggregates(&tx)?;
+    // Solo gli album e gli artisti di questo brano, prima e dopo: la
+    // ricostruzione intera rileggeva tutta la libreria per un titolo
+    // corretto, e su centomila brani teneva la libreria più dei quattro
+    // secondi che la finestra aspetta — il cuore premuto subito dopo tornava
+    // `db.locked`.
+    toccati.segna_brani(&tx, &[track_id])?;
+    ricostruisci_aggregati(&tx, &toccati)?;
     tx.commit()
         .map_err(|err| db_error("chiusura della transazione", &err))
 }
@@ -539,6 +574,296 @@ pub(crate) fn riapplica_sopra_i_tag(
         .and_then(|mut statement| statement.execute(rusqlite::params![track_id, chiave_dei_tag]))
         .map_err(|err| db_error("chiave di un brano senza correzione", &err))?;
     Ok(false)
+}
+
+/// Quel che l'arricchimento rimette sopra una riga appena riletta dal file.
+#[derive(Debug)]
+pub(crate) struct SopraITag {
+    /// La riga da scrivere: i tag del file, con sopra i campi arricchiti che il
+    /// file non ha smentito, e `track_key` e `album_key` ricalcolate da quelli.
+    pub(crate) riga: TrackRow,
+    /// La copertina dell'arricchimento da rimettere, quando il file non ne porta
+    /// una sua.
+    pub(crate) copertina: Option<String>,
+}
+
+/// Che fine fa un campo arricchito quando il file sotto è stato riletto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Destino {
+    /// Il file sotto dice ancora quel che diceva: il campo arricchito si rimette.
+    Rimetti,
+    /// Il file adesso dice proprio il valore arricchito: il campo viene dal file,
+    /// e l'annotazione lo lascia andare.
+    DalFile,
+    /// Il file è stato ritaggato: vince lui, e il brano torna in coda.
+    Cambiato,
+}
+
+/// Decide il [`Destino`] di un campo.
+///
+/// `sotto` è quel che l'annotazione ricorda del file — `None` quando non lo
+/// ricorda, cioè su un'annotazione della 2.4 — e `file` quel che il file dice
+/// adesso, ripieghi già tolti.
+///
+/// # Quando non si sa cosa c'era sotto
+///
+/// Si rimette solo se il file, sotto quel campo, **non dice niente**. È il caso
+/// di gran lunga più frequente — l'arricchimento riempie buchi: «Album
+/// sconosciuto», un anno che non c'era — ed è anche l'unico in cui rimettere
+/// non può disfare il lavoro di nessuno: dove il file non dice niente, nessuno
+/// l'ha ritaggato. Dove invece dice qualcosa di diverso dal catalogo non si sa
+/// se l'abbia sempre detto — l'arricchimento l'aveva sostituito — o se qualcuno
+/// l'abbia appena scritto. Nel dubbio vince il file, e il brano torna in coda:
+/// se aveva ragione il catalogo, la passata dopo lo ritroverà.
+fn destino<T>(
+    arricchito: &T,
+    sotto: Option<&Option<T>>,
+    file: Option<&T>,
+    uguali: fn(Option<&T>, Option<&T>) -> bool,
+) -> Destino {
+    if uguali(file, Some(arricchito)) {
+        return Destino::DalFile;
+    }
+    let intatto = match sotto {
+        Some(prima) => uguali(file, prima.as_ref()),
+        None => file.is_none(),
+    };
+    if intatto {
+        Destino::Rimetti
+    } else {
+        Destino::Cambiato
+    }
+}
+
+/// Due testi di tag sono lo stesso testo.
+///
+/// Anche quando uno è scritto scomposto e l'altro no: dalla 3.0 la lettura dei
+/// tag li normalizza in NFC (vedi `metadata::clean`), mentre quel che
+/// l'annotazione ricorda può venire da una riga letta prima. «é» scritto in due
+/// modi non è un ritaggo, e trattarlo come tale rimetterebbe in coda un brano
+/// che nessuno ha toccato.
+fn stesso_testo(a: Option<&String>, b: Option<&String>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a == b || a.nfc().eq(b.nfc()),
+        (a, b) => a.is_none() && b.is_none(),
+    }
+}
+
+/// Due numeri di tag sono lo stesso numero.
+fn stesso_numero<T: PartialEq>(a: Option<&T>, b: Option<&T>) -> bool {
+    a == b
+}
+
+/// Rimette lo strato dell'arricchimento sopra una riga appena riletta dal file.
+///
+/// La chiama `library::update_track` **prima** di scrivere, e restituisce la
+/// riga da scrivere al posto di quella letta: così la riga passa dai tag del
+/// file al risultato finale con un `UPDATE` solo, e `track_key` cambia al più
+/// una volta. Non è un'eleganza — il trigger della migrazione 022 sposta il
+/// testo delle canzoni a ogni cambio di chiave, e un giro «chiave dei tag, poi
+/// chiave arricchita» lo porterebbe via e poi forse non lo riporterebbe. È la
+/// stessa ragione scritta su [`riapplica_sopra_i_tag`].
+///
+/// `Ok(None)` quando il brano non ha un'annotazione — cioè quasi sempre, e costa
+/// una lettura sulla chiave primaria di `track_meta_arricchita`.
+///
+/// # Le regole, campo per campo
+///
+/// Per ogni campo che l'annotazione dice arricchito, il suo [`Destino`]:
+///
+/// * il file **adesso dice proprio il valore arricchito** → resta quello, ma
+///   viene dal file: l'annotazione lo lascia andare;
+/// * il file **dice ancora quel che diceva sotto** → il campo arricchito si
+///   rimette, e l'annotazione non cambia;
+/// * altrimenti il file **è stato ritaggato** → vince il file, il campo esce
+///   dall'annotazione, e il brano torna in coda all'arricchimento
+///   (`enrich_status` a `NULL`), che lo riguarderà con i tag nuovi.
+///
+/// # La copertina
+///
+/// Se il file adesso ne porta una sua, vince quella, e l'annotazione dimentica
+/// la sua. Se non ne porta, si rimette quella dell'arricchimento — purché sia
+/// ancora in `cover_art`, e non ci sarebbe se qualcuno avesse ripulito la cache.
+/// Un'annotazione della 2.4 la copertina non la ricordava: lì si guarda la
+/// copertina che la riga aveva fino a un istante fa, e si rimette se non veniva
+/// da un tag, annotandola perché la volta dopo si sappia. Se invece veniva da un
+/// tag, quel file la sua copertina l'ha persa: resta senza, e torna in coda.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde. Un'annotazione illeggibile non
+/// è un errore: vale come assente, e la scansione prosegue.
+pub(crate) fn arricchimento_sopra_i_tag(
+    tx: &Transaction<'_>,
+    track_id: i64,
+    letta: &TrackRow,
+) -> Result<Option<SopraITag>, AppError> {
+    let Some(annotata) = annotazione(tx, track_id)? else {
+        return Ok(None);
+    };
+    let file = TagDelFile::della_riga_letta(letta);
+    let mut riga = letta.clone();
+    let mut resta = annotata.clone();
+    let mut in_coda = false;
+
+    macro_rules! decidi {
+        ($campo:ident, $uguali:expr, $metti:expr) => {
+            if let Some(valore) = annotata.$campo.clone() {
+                match destino(
+                    &valore,
+                    annotata.sotto.$campo.as_ref(),
+                    file.$campo.as_ref(),
+                    $uguali,
+                ) {
+                    Destino::Rimetti => ($metti)(&mut riga, valore),
+                    Destino::DalFile => {
+                        resta.$campo = None;
+                        resta.sotto.$campo = None;
+                    }
+                    Destino::Cambiato => {
+                        resta.$campo = None;
+                        resta.sotto.$campo = None;
+                        in_coda = true;
+                    }
+                }
+            }
+        };
+    }
+    decidi!(title, stesso_testo, |r: &mut TrackRow, v| r.title = v);
+    decidi!(artist, stesso_testo, |r: &mut TrackRow, v| r.artist = v);
+    decidi!(album, stesso_testo, |r: &mut TrackRow, v| r.album = v);
+    decidi!(album_artist, stesso_testo, |r: &mut TrackRow, v| r
+        .album_artist =
+        Some(v));
+    decidi!(year, stesso_numero::<i32>, |r: &mut TrackRow, v| r.year =
+        Some(i64::from(v)));
+    decidi!(genre, stesso_testo, |r: &mut TrackRow, v| r.genre = Some(v));
+    decidi!(track_number, stesso_numero::<u32>, |r: &mut TrackRow, v| {
+        r.track_number = Some(i64::from(v))
+    });
+    decidi!(disc_number, stesso_numero::<u32>, |r: &mut TrackRow, v| r
+        .disc_number =
+        Some(i64::from(v)));
+    decidi!(mb_recording_id, stesso_testo, |r: &mut TrackRow, v| r
+        .mb_recording_id =
+        Some(v));
+    decidi!(mb_release_id, stesso_testo, |r: &mut TrackRow, v| r
+        .mb_release_id =
+        Some(v));
+    decidi!(mb_release_group_id, stesso_testo, |r: &mut TrackRow, v| r
+        .mb_release_group_id =
+        Some(v));
+
+    let copertina = if letta.cover.is_some() {
+        // Il file adesso ne porta una sua: vince lui, come per ogni campo.
+        resta.copertina = None;
+        None
+    } else if let Some(impronta) = annotata.copertina.clone() {
+        if copertina_registrata(tx, &impronta)? {
+            Some(impronta)
+        } else {
+            resta.copertina = None;
+            in_coda = true;
+            None
+        }
+    } else {
+        match copertina_di_prima(tx, track_id)? {
+            Some((impronta, fonte)) if fonte != CoverSource::Tag.as_str() => {
+                resta.copertina = Some(impronta.clone());
+                Some(impronta)
+            }
+            Some(_) => {
+                in_coda = true;
+                None
+            }
+            None => None,
+        }
+    };
+
+    // Le chiavi dai valori finali, come fa `enrich::aggiorna_brano`: un brano a
+    // cui si è appena rimesso l'album del catalogo si raggruppa con quello.
+    riga.track_key = TrackKey::compute(TrackKeyInput {
+        artist: Some(&riga.artist),
+        title: Some(&riga.title),
+        album: Some(&riga.album),
+    })
+    .into_string();
+    riga.album_key = album_group_key(&riga.album, &riga.path);
+
+    if resta != annotata {
+        riscrivi_annotazione(tx, track_id, &resta)?;
+    }
+    if in_coda {
+        // Di nuovo candidato: `enrich::candidato_where` prende i brani con
+        // `enrich_status` a `NULL`, cioè «mai provato». Lo è, con questi tag.
+        tx.prepare_cached(
+            "UPDATE tracks SET enrich_status = NULL, enrich_attempted_at = NULL WHERE id = ?1",
+        )
+        .and_then(|mut statement| statement.execute([track_id]))
+        .map_err(|err| db_error("rimessa in coda di un brano ritaggato", &err))?;
+    }
+
+    Ok(Some(SopraITag { riga, copertina }))
+}
+
+/// La copertina è ancora registrata in `cover_art`.
+///
+/// Rimettere un'impronta che non c'è più farebbe cadere la chiave esterna di
+/// `tracks.cover_art_hash`, e con lei l'intero lotto della scansione.
+fn copertina_registrata(tx: &Transaction<'_>, impronta: &str) -> Result<bool, AppError> {
+    tx.prepare_cached("SELECT 1 FROM cover_art WHERE hash = ?1")
+        .and_then(|mut statement| statement.exists([impronta]))
+        .map_err(|err| db_error("lettura di una copertina", &err))
+}
+
+/// La copertina che la riga aveva prima di questa rilettura, con la sua
+/// provenienza in `cover_art.source`.
+///
+/// Solo se è ancora registrata: una provenienza che non si legge non dice
+/// niente, e un'impronta senza la sua riga non si potrebbe rimettere.
+fn copertina_di_prima(
+    tx: &Transaction<'_>,
+    track_id: i64,
+) -> Result<Option<(String, String)>, AppError> {
+    tx.prepare_cached(
+        "SELECT c.hash, c.source FROM tracks t JOIN cover_art c ON c.hash = t.cover_art_hash
+          WHERE t.id = ?1",
+    )
+    .and_then(|mut statement| {
+        statement
+            .query_row([track_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .optional()
+    })
+    .map_err(|err| db_error("lettura di una copertina", &err))
+}
+
+/// Riscrive l'annotazione di un brano con quel che ne resta, o la toglie se non
+/// resta niente.
+///
+/// Fonte, confidenza e data restano quelle della passata che l'ha scritta: la
+/// rilettura del file non ha deciso niente di nuovo, ha solo tolto.
+fn riscrivi_annotazione(
+    tx: &Transaction<'_>,
+    track_id: i64,
+    resta: &crate::enrich::CampiArricchiti,
+) -> Result<(), AppError> {
+    if resta.e_vuota() {
+        return tx
+            .prepare_cached("DELETE FROM track_meta_arricchita WHERE track_id = ?1")
+            .and_then(|mut statement| statement.execute([track_id]))
+            .map(|_| ())
+            .map_err(|err| db_error("annotazione di un brano ritaggato", &err));
+    }
+    let campi = serde_json::to_string(resta).map_err(|err| {
+        AppError::new(ErrorCode::InternalUnexpected {
+            detail: Some("serializzazione dei campi arricchiti".to_owned()),
+        })
+        .with_cause(err.to_string())
+    })?;
+    tx.prepare_cached("UPDATE track_meta_arricchita SET campi = ?2 WHERE track_id = ?1")
+        .and_then(|mut statement| statement.execute(rusqlite::params![track_id, campi]))
+        .map(|_| ())
+        .map_err(|err| db_error("annotazione di un brano ritaggato", &err))
 }
 
 /// Fonde una correzione nuova sopra quelle già salvate.
@@ -810,6 +1135,63 @@ mod prove {
             "nessuna chiave ricalcolata su una riga che nessuno ha corretto"
         );
         assert_eq!(salute, "dedotto", "e la domanda resta aperta");
+    }
+
+    #[test]
+    fn il_destino_di_un_campo_arricchito_dopo_la_rilettura() {
+        let trovato = "Homogenic".to_owned();
+        let altro = "Vespertine".to_owned();
+        let minuscolo = "homogenic".to_owned();
+        // Sotto non c'era niente, e il file tace ancora: si rimette.
+        assert_eq!(
+            destino(&trovato, Some(&None), None, stesso_testo),
+            Destino::Rimetti
+        );
+        // Il file adesso dice proprio quello: il campo viene dal file.
+        assert_eq!(
+            destino(&trovato, Some(&None), Some(&trovato), stesso_testo),
+            Destino::DalFile
+        );
+        // Il file dice altro: l'ha ritaggato qualcuno.
+        assert_eq!(
+            destino(&trovato, Some(&None), Some(&altro), stesso_testo),
+            Destino::Cambiato
+        );
+        // Sotto c'era un valore, e c'è ancora: il catalogo l'aveva corretto, e
+        // la correzione vale ancora.
+        assert_eq!(
+            destino(
+                &trovato,
+                Some(&Some(minuscolo.clone())),
+                Some(&minuscolo),
+                stesso_testo
+            ),
+            Destino::Rimetti
+        );
+        // Un'annotazione della 2.4: si rimette solo dove il file tace.
+        assert_eq!(
+            destino(&trovato, None, None, stesso_testo),
+            Destino::Rimetti
+        );
+        assert_eq!(
+            destino(&trovato, None, Some(&minuscolo), stesso_testo),
+            Destino::Cambiato
+        );
+        // Scritto composto sotto e scomposto adesso: non è un ritaggo.
+        assert_eq!(
+            destino(
+                &trovato,
+                Some(&Some("Bj\u{00F6}rk".to_owned())),
+                Some(&"Bjo\u{0308}rk".to_owned()),
+                stesso_testo
+            ),
+            Destino::Rimetti
+        );
+        // E i numeri come i testi.
+        assert_eq!(
+            destino(&1997, Some(&None), Some(&1996), stesso_numero::<i32>),
+            Destino::Cambiato
+        );
     }
 
     #[test]

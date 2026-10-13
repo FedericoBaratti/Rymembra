@@ -118,12 +118,11 @@
  * diciotto token era il costo dominante del fotogramma, e il commento che stava
  * qui — «costa niente» — era falso.
  *
- * Quindi si legge **per invalidazione**: un flag che si alza da tre osservatori
- * di mutazioni (la radice, dove `tema.ts` scrive tema, densità e movimento; il
- * più vicino antenato `[data-skin]`, che nello Studio è il riquadro
- * dell'anteprima; e il genitore della tela, l'unico modo di vedere il foglio in
- * prova che React monta **accanto**), da una rete di sicurezza mezzo secondo, e
- * da ogni risveglio. Il confronto è **per token e non su una firma unica**: con
+ * Quindi si legge **per invalidazione**: un flag che si alza da due osservatori
+ * di mutazioni sul documento della tela (la radice, dove `tema.ts` scrive tema,
+ * densità e movimento; e la testa, dove stanno il foglio della skin indossata
+ * o, sulla tela dello Studio, quello della bozza), da una rete di sicurezza
+ * mezzo secondo, e da ogni risveglio. Il confronto è **per token e non su una firma unica**: con
  * una firma, cambiare un cursore vorrebbe dire riconvertire diciotto valori
  * invece di uno.
  *
@@ -2578,69 +2577,44 @@ export function Spettro3D({
       "class",
       "style",
     ];
-    // La radice, dove `tema.ts:85-91` scrive tema, densità e movimento.
+    // La radice del **documento della tela**, dove `tema.ts` scrive tema,
+    // densità e movimento. Non `document`: sulla tela dello Studio lo spettro
+    // vive dentro un `<iframe>`, col suo documento e la sua radice, e gli
+    // attributi che contano sono quelli — la skin in prova, il tema scelto
+    // sulla tela — non quelli dello Studio che la contiene.
+    const casa = canvas.ownerDocument;
     const radice = new MutationObserver(sporca);
-    radice.observe(document.documentElement, {
+    radice.observe(casa.documentElement, {
       attributes: true,
       attributeFilter: ATTRIBUTI,
     });
-    // Il più vicino antenato che porta una skin: nell'app è la radice, nello
-    // Studio è il riquadro dell'anteprima (`Anteprima.tsx:355-358`), che scrive
-    // lì gli stessi quattro attributi.
-    const guscio = canvas.closest("[data-skin]");
-    const antenato =
-      guscio && guscio !== document.documentElement
-        ? new MutationObserver(sporca)
-        : null;
-    if (antenato && guscio) {
-      antenato.observe(guscio, {
-        attributes: true,
-        attributeFilter: ATTRIBUTI,
-      });
-    }
-    // Il genitore della tela, filtrato sui soli `<style>`: è il segnale che
-    // dice «la skin in prova è stata ricompilata». Il foglio vero non sta qui —
-    // `Anteprima.tsx:324` lo inietta in `.anteprima-guscio`, cioè quattro
-    // livelli sopra il genitore della tela, dove questo osservatore non
-    // arriverebbe mai. È lo Studio a **far sì** che accanto alla tela ci sia
-    // qualcosa di datato: `scene.tsx` monta dentro `.pannello-finto`, fratello
-    // della tela, un `<style>` minuscolo che non dipinge niente e porta un
-    // contatore di revisione, e quel contatore cresce esattamente quando il
-    // foglio vero cambia. Qui si guarda solo quello. Le due alternative erano
-    // peggiori: un osservatore su `document` con `subtree: true` vedrebbe la
-    // stessa cosa e in più ogni riga di ogni lista che si ridisegna — cioè
-    // sarebbe il costo che questo lavoro sta togliendo; e senza nessun segnale
-    // vicino, trascinare un cursore si vedrebbe solo alla passata successiva
-    // della rete di sicurezza, mezzo secondo dopo.
+    // I fogli nella testa dello stesso documento: il foglio della skin
+    // indossata nell'app (`#skin-attiva`, `aspetto.ts`) e quello della bozza
+    // sulla tela (`#bozza`, `studio/Tela.tsx`). Un foglio che compare o il suo
+    // testo che cambia è il segnale che i token sono da rileggere. Nella testa
+    // non succede quasi nient'altro, quindi guardarla tutta costa niente — al
+    // contrario di un osservatore sull'intero documento, che vedrebbe ogni
+    // riga di ogni lista che si ridisegna.
     const eUnFoglio = (nodo: Node | null) =>
       nodo !== null &&
       (nodo.nodeName === "STYLE" || nodo.parentNode?.nodeName === "STYLE");
-    const genitore = canvas.parentElement;
-    const foglio = genitore
-      ? new MutationObserver((mutazioni) => {
-          for (const m of mutazioni) {
-            // Un `<style>` che compare o sparisce, o il testo dentro uno che
-            // cambia: sono i due modi in cui l'anteprima dello Studio rifà il
-            // foglio della skin in prova. Tutto il resto che succede lì sotto —
-            // e succede — non ci riguarda.
-            if (
-              eUnFoglio(m.target) ||
-              Array.from(m.addedNodes).some(eUnFoglio) ||
-              Array.from(m.removedNodes).some(eUnFoglio)
-            ) {
-              sporca();
-              return;
-            }
-          }
-        })
-      : null;
-    if (foglio && genitore) {
-      foglio.observe(genitore, {
-        childList: true,
-        subtree: true,
-        characterData: true,
-      });
-    }
+    const foglio = new MutationObserver((mutazioni) => {
+      for (const m of mutazioni) {
+        if (
+          eUnFoglio(m.target) ||
+          Array.from(m.addedNodes).some(eUnFoglio) ||
+          Array.from(m.removedNodes).some(eUnFoglio)
+        ) {
+          sporca();
+          return;
+        }
+      }
+    });
+    foglio.observe(casa.head, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
     // La rete di sicurezza. Gli osservatori coprono i modi che si conoscono; il
     // mezzo secondo copre quelli che non si conoscono, e costa venti letture
     // due volte al secondo quando la scena disegna — cioè zero quando dorme.
@@ -2670,8 +2644,10 @@ export function Spettro3D({
     // quindi è un segnale **in più**, mai l'unico. L'occlusione Tauri v2 non la
     // espone; la minimizzazione su Windows si riconosce da un ridimensionamento
     // ad area nulla, che `isMinimized` conferma prima che se ne tragga una
-    // conclusione. Nessun permesso nuovo: `core:window:default` e
-    // `core:event:allow-listen` sono già concessi.
+    // conclusione. I permessi sono questi due e nient'altro, in
+    // `capabilities/default.json`: `core:event:allow-listen` (con `unlisten`)
+    // per i due ascoltatori, `core:window:allow-is-minimized` per la domanda.
+    // Una chiamata nuova a `finestra.*` vuole la sua voce là, o viene rifiutata.
     registra(
       finestra.onResized(({ payload }) => {
         if (payload.width === 0 || payload.height === 0) {
@@ -2758,8 +2734,7 @@ export function Spettro3D({
       media.removeEventListener("change", cambiaMoto);
       osserva.disconnect();
       radice.disconnect();
-      antenato?.disconnect();
-      foglio?.disconnect();
+      foglio.disconnect();
       document.removeEventListener("visibilitychange", visibilita);
       canvas.removeEventListener("webglcontextlost", perduto);
       canvas.removeEventListener("webglcontextrestored", ritrovato);

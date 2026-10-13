@@ -96,7 +96,7 @@ export function ToastImportazioni({
                 fatti: numero(fatti),
                 totale: numero(totale),
               })
-            : t("toast.imports.paused", { n: numero(inAttesa) })}
+            : t("toast.imports.paused", { n: inAttesa })}
         </div>
         <div className="toast-progress">
           {/* In pausa la barra resta dov'è e cambia colore invece di sparire:

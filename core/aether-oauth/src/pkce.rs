@@ -21,10 +21,24 @@ use crate::base64::base64url;
 ///
 /// Il `verifier` non esce mai da qui finché non è ora di scambiarlo; quel che
 /// viaggia nell'indirizzo di autorizzazione è solo il suo digest.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// [`Debug`] scritto a mano, e non era così: il `derive` stampava il
+/// `verifier` per intero, cioè proprio la metà della coppia che non deve mai
+/// lasciare questo processo — e `{:?}` è la cosa che si scrive senza pensarci
+/// dentro un messaggio di diario.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Pkce {
     verifier: String,
     challenge: String,
+}
+
+impl std::fmt::Debug for Pkce {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pkce")
+            .field("verifier", &"…")
+            .field("challenge", &self.challenge)
+            .finish()
+    }
 }
 
 impl Pkce {
@@ -137,6 +151,10 @@ mod prove {
         // starebbe proteggendo niente.
         let altro = Pkce::nuovo().expect("casualità");
         assert_ne!(pkce.verifier(), altro.verifier());
+        assert!(
+            !format!("{pkce:?}").contains(pkce.verifier()),
+            "il verifier non esce da questo processo, nemmeno in un `{{:?}}`"
+        );
         assert_ne!(pkce.challenge(), altro.challenge());
     }
 

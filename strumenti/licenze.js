@@ -1,5 +1,6 @@
 /*
- * Genera `THIRD-PARTY-NOTICES.md` dalle licenze vere dei crate che Aether usa.
+ * Genera `THIRD-PARTY-NOTICES.md` dalle licenze vere dei crate e dei pacchetti
+ * npm che Aether usa.
  *
  * # Perché uno script e non un file scritto a mano
  *
@@ -22,6 +23,16 @@
  * quanto finisca nel binario, ed è deliberato: distinguere il sottoinsieme
  * esatto richiede il grafo risolto per profilo, e attribuire in più non fa male
  * a nessuno mentre attribuire in meno è la sola cosa che si paga.
+ *
+ * # I pacchetti npm
+ *
+ * L'interfaccia è un pacchetto Vite: React, CodeMirror, Lezer e l'API di Tauri
+ * finiscono dentro il binario come JavaScript. Si leggono da
+ * `apps/desktop/package-lock.json`, solo le voci che non sono `dev` — gli
+ * strumenti con cui si costruisce (Vite, TypeScript) non viaggiano col
+ * programma — e i testi dalle cartelle di `node_modules` dove `npm` li ha già
+ * messi. Senza `npm ci` fatto prima, i pacchetti si elencano lo stesso e
+ * finiscono fra quelli «senza testo»: è il segnale di andarlo a fare.
  *
  * Uso:
  *   node strumenti/licenze.js [piattaforma]
@@ -51,6 +62,9 @@ const NOMI = /^(LICEN[SC]E|COPYING|NOTICE|UNLICENSE)([-._].*)?$/i;
  * volte quel che serve senza lasciar passare un file di dati.
  */
 const MASSIMO = 32 * 1024;
+
+/** Dove sta l'interfaccia, e il suo lockfile. */
+const INTERFACCIA = path.join("apps", "desktop");
 
 function metadata() {
   const grezzo = execFileSync(
@@ -93,6 +107,40 @@ function testiDi(manifestPath) {
   return fuori;
 }
 
+/** Un indirizzo di repository come lo scrive un `package.json`, ripulito. */
+function repositoryNpm(dir) {
+  try {
+    const manifesto = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+    const grezzo =
+      typeof manifesto.repository === "string" ? manifesto.repository : manifesto.repository?.url;
+    if (typeof grezzo !== "string") return null;
+    return grezzo.replace(/^git\+/, "").replace(/\.git$/, "").replace(/^git:\/\//, "https://");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * I pacchetti npm che finiscono nel programma: le voci del lockfile che non
+ * servono solo a costruire.
+ */
+function pacchettiNpm() {
+  const lock = JSON.parse(fs.readFileSync(path.join(INTERFACCIA, "package-lock.json"), "utf8"));
+  return Object.entries(lock.packages ?? {})
+    .filter(([dove, voce]) => dove.startsWith("node_modules/") && !voce.dev && !voce.devOptional)
+    .map(([dove, voce]) => {
+      const dir = path.join(INTERFACCIA, dove);
+      return {
+        name: voce.name ?? dove.slice(dove.lastIndexOf("node_modules/") + "node_modules/".length),
+        version: voce.version ?? "?",
+        license: voce.license ?? null,
+        repository: repositoryNpm(dir),
+        manifest_path: path.join(dir, "package.json"),
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
+}
+
 function impronta(testo) {
   return crypto.createHash("sha256").update(testo).digest("hex").slice(0, 12);
 }
@@ -109,8 +157,9 @@ function main() {
   // copie identiche di Apache-2.0 sono centinaia di copie identiche.
   const testi = new Map(); // impronta → { testo, crate: [] }
   const senzaTesto = [];
+  const npm = pacchettiNpm();
 
-  for (const p of esterni) {
+  for (const p of [...esterni, ...npm]) {
     const trovati = testiDi(p.manifest_path);
     if (trovati.length === 0) {
       senzaTesto.push(p);
@@ -141,8 +190,9 @@ function main() {
   righe.push("");
   righe.push(
     "**It is not written by hand.** `strumenti/licenze.js` generates it from",
-    "`cargo metadata`, reading the texts where `cargo` has already downloaded",
-    "them. It is remade with:",
+    "`cargo metadata` and from the production entries of",
+    "`apps/desktop/package-lock.json`, reading the texts where `cargo` and `npm`",
+    "have already downloaded them. It is remade with:",
   );
   righe.push("");
   righe.push("```");
@@ -150,7 +200,7 @@ function main() {
   righe.push("```");
   righe.push("");
   righe.push(
-    `The list covers the whole dependency graph for \`${PIATTAFORMA}\`,`,
+    `The Rust list covers the whole dependency graph for \`${PIATTAFORMA}\`,`,
     "including what is needed only to build or to test. It is more than what",
     "ends up in the binary, and that is deliberate: over-attributing costs",
     "nobody anything, under-attributing is the only thing you pay for.",
@@ -180,6 +230,15 @@ function main() {
   righe.push(
     "**Unicode-3.0** — the `icu4x` and `unicode-ident` crates. A permissive",
     "license with an attribution requirement, discharged by this file.",
+  );
+  righe.push("");
+  righe.push("## The interface");
+  righe.push("");
+  righe.push(
+    "The window is a web page bundled into the program: **React**, **CodeMirror**",
+    "(the Skin Studio's code editor), **Lezer** and Tauri's JavaScript API travel",
+    "inside it as JavaScript. They are listed after the crates; only the",
+    "packages that ship count, not the tools used to build (Vite, TypeScript).",
   );
   righe.push("");
   righe.push("## The fonts");
@@ -225,8 +284,18 @@ function main() {
   }
   righe.push("");
 
+  righe.push(`## The interface: ${npm.length} npm packages`);
+  righe.push("");
+  righe.push("| Package | Version | License | Where it lives |");
+  righe.push("| --- | --- | --- | --- |");
+  for (const p of npm) {
+    const repo = p.repository ? `<${p.repository}>` : "—";
+    righe.push(`| \`${p.name}\` | ${p.version} | ${p.license || "(not declared)"} | ${repo} |`);
+  }
+  righe.push("");
+
   if (senzaTesto.length > 0) {
-    righe.push("### Crates with no license file in the package");
+    righe.push("### Packages with no license file");
     righe.push("");
     righe.push(
       "They declare the license in the manifest but do not attach its text. The",
@@ -246,9 +315,9 @@ function main() {
   righe.push("");
 
   for (const [chiave, gruppo] of ordinati) {
-    righe.push(`### Text \`${chiave}\` — ${gruppo.crate.length} crates`);
+    righe.push(`### Text \`${chiave}\` — ${gruppo.crate.length} packages`);
     righe.push("");
-    righe.push("<details><summary>Which crates</summary>");
+    righe.push("<details><summary>Which packages</summary>");
     righe.push("");
     for (const c of gruppo.crate) righe.push(`- \`${c}\``);
     righe.push("");
@@ -262,7 +331,7 @@ function main() {
 
   fs.writeFileSync(USCITA, righe.join("\n") + "\n");
   console.log(
-    `${USCITA}: ${esterni.length} crates, ${testi.size} distinct texts, ` +
+    `${USCITA}: ${esterni.length} crates, ${npm.length} npm packages, ${testi.size} distinct texts, ` +
       `${senzaTesto.length} with no text attached.`,
   );
 }

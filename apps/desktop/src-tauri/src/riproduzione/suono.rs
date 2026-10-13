@@ -12,7 +12,7 @@
 //! Fa parte di [`crate::riproduzione`]: la regola dei due lucchetti — prima il
 //! lettore, poi la libreria — è scritta là e vale anche qui.
 
-use aether_app::playback::{self, Equalizzazione, Normalizzazione, Volume};
+use aether_app::playback::{self, Equalizzazione, ModoLivello, Normalizzazione, Volume};
 use aether_play::PRESET_DI_SERIE;
 use serde::Serialize;
 
@@ -20,9 +20,9 @@ use crate::spegnimento::Emette as _;
 use tauri::{Manager as _, State};
 
 use crate::errore::{Esito, errore};
-use crate::stato::{Stato, con_libreria};
+use crate::stato::{Stato, adesso_ms, con_libreria};
 
-use super::{StatoLettore, con_lettore, manda_stato};
+use super::{StatoLettore, con_lettore, in_ordine, manda_stato};
 
 /// La curva dell'equalizzatore da sola.
 ///
@@ -67,26 +67,22 @@ pub struct VocePreset {
 /// senza guardarlo.
 ///
 /// Un nome sconosciuto vale «normale», che è il riferimento dei tag.
-fn normalizzazione_da_nome(nome: &str) -> Normalizzazione {
-    match nome {
+///
+/// `modo` passa com'è: il nome dice quanto forte, non se il livello è del
+/// brano o del disco, e cambiare l'uno non deve rimettere di serie l'altro.
+fn normalizzazione_da_nome(nome: &str, modo: ModoLivello) -> Normalizzazione {
+    let (attivo, bersaglio_db) = match nome {
         // Spento conserva il bersaglio invece di azzerarlo: chi rispegne e
         // riaccende ritrova il livello che aveva scelto, non quello di serie.
-        "spento" => Normalizzazione {
-            attivo: false,
-            bersaglio_db: playback::BERSAGLIO_PREDEFINITO_DB,
-        },
-        "basso" => Normalizzazione {
-            attivo: true,
-            bersaglio_db: playback::BERSAGLIO_BASSO_DB,
-        },
-        "alto" => Normalizzazione {
-            attivo: true,
-            bersaglio_db: playback::BERSAGLIO_ALTO_DB,
-        },
-        _ => Normalizzazione {
-            attivo: true,
-            bersaglio_db: playback::BERSAGLIO_PREDEFINITO_DB,
-        },
+        "spento" => (false, playback::BERSAGLIO_PREDEFINITO_DB),
+        "basso" => (true, playback::BERSAGLIO_BASSO_DB),
+        "alto" => (true, playback::BERSAGLIO_ALTO_DB),
+        _ => (true, playback::BERSAGLIO_PREDEFINITO_DB),
+    };
+    Normalizzazione {
+        attivo,
+        bersaglio_db,
+        modo,
     }
 }
 
@@ -150,13 +146,15 @@ pub fn volume(
         stato
             .volume_da_salvare
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        app.emetti(
-            "riproduzione:volume",
-            StatoVolume {
-                volume: lettore.volume.volume,
-                muto: lettore.volume.muto,
-            },
-        );
+        // In fila dietro agli stati, e non subito: lo stato intero parte dal
+        // filo del seguito, e un evento del volume che lo sorpassasse verrebbe
+        // poi cancellato da uno stato fotografato **prima** di lui — il
+        // cursore che torna indietro da solo. Vedi `super::in_ordine`.
+        let carico = StatoVolume {
+            volume: lettore.volume.volume,
+            muto: lettore.volume.muto,
+        };
+        in_ordine(&app, move |app| app.emetti("riproduzione:volume", carico));
         Ok(())
     })
     .map_err(errore)
@@ -191,50 +189,60 @@ pub fn equalizzatore(
         stato
             .eq_da_salvare
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        app.emetti(
-            "riproduzione:eq",
-            StatoEq {
-                attivo: lettore.eq.attivo,
-                guadagni: lettore.eq.guadagni.clone(),
-            },
-        );
+        // In fila dietro agli stati, per la stessa ragione del volume.
+        let carico = StatoEq {
+            attivo: lettore.eq.attivo,
+            guadagni: lettore.eq.guadagni.clone(),
+        };
+        in_ordine(&app, move |app| app.emetti("riproduzione:eq", carico));
         Ok(())
     })
     .map_err(errore)
 }
 
-/// Accende o spegne la normalizzazione ReplayGain.
+/// Accende o spegne la normalizzazione, e ne sceglie il livello.
 ///
-/// # Cosa cambia davvero, e cosa no
+/// # Cosa cambia davvero
 ///
-/// Il guadagno lo applica `aether_play::guadagno` allo stadio del volume, e la
-/// correzione esiste **solo per i brani che portano il tag**: su un file senza
-/// `replaygain_track_gain` questo interruttore non sposta niente, in nessuna
-/// delle due posizioni. È il motivo per cui il valore di serie è «acceso» —
-/// sulla libreria misurata di questo progetto nessun file ha il tag, quindi
-/// acceso e spento suonano identici finché non arriva un disco che ce l'ha, e
-/// allora la cosa giusta da fare è rispettarlo.
+/// Il guadagno lo applica `aether_play::guadagno` allo stadio del volume. Fino
+/// alla 2.4 la correzione esisteva **solo per i brani che portano il tag**, e
+/// sulle librerie vere — dove il tag non ce l'ha quasi nessuno — acceso e
+/// spento suonavano identici. Dalla 3.0 i brani senza tag li misura la passata
+/// di [`crate::analisi`], e l'interruttore fa quel che dice anche su di loro,
+/// man mano che vengono misurati.
+///
+/// Il modo — brano, disco, automatico — resta quello scritto: lo si rilegge
+/// dentro lo stesso lucchetto in cui si scrive, così due comandi ravvicinati
+/// non si cancellano a vicenda la metà che non hanno toccato.
 ///
 /// Manda [`StatoRiproduzione`](super::StatoRiproduzione) e non un evento suo,
 /// al contrario dell'equalizzatore: questo comando arriva quando un dito preme
 /// un interruttore, cioè una volta ogni tanto, non dodici volte al secondo.
-#[tauri::command]
+///
+/// `(async)`: scrive sul database dentro il lucchetto del lettore — è quel che
+/// mette in fila due comandi ravvicinati — e sul filo della finestra, con una
+/// scansione che tiene la libreria, voleva dire la finestra ferma fino a otto
+/// secondi: quattro per il lettore, quattro per la libreria.
+#[tauri::command(async)]
 pub fn normalizzazione(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     livello: String,
 ) -> Esito<()> {
     con_lettore(&stato, |lettore| {
-        let voluta = normalizzazione_da_nome(&livello);
         let stato_app = app.state::<Stato>();
         // Si rilegge quel che è stato scritto invece di fidarsi di quel che è
         // arrivato: è la disciplina dell'equalizzatore, e serve perché il
         // bersaglio passa per un taglio.
         let salvata = con_libreria(&stato_app, |libreria| {
-            playback::save_replaygain(&libreria.connection, voluta)?;
+            let modo = playback::load_replaygain(&libreria.connection)?.modo;
+            playback::save_replaygain(
+                &libreria.connection,
+                normalizzazione_da_nome(&livello, modo),
+            )?;
             playback::load_replaygain(&libreria.connection)
         })
-        .unwrap_or(voluta);
+        .unwrap_or_else(|_| normalizzazione_da_nome(&livello, lettore.normalizzazione.modo));
         lettore
             .motore
             .replaygain(salvata.attivo, salvata.bersaglio_db);
@@ -242,6 +250,78 @@ pub fn normalizzazione(
         manda_stato(&app, lettore);
         Ok(())
     })
+    .map_err(errore)
+}
+
+/// Come si sceglie il livello: del brano, del disco, o da sé.
+///
+/// Serve al selettore delle Impostazioni, che è l'unico a chiederlo: per questo
+/// non viaggia nello stato della riproduzione, come la preferenza di
+/// [`super::formato_visibile`].
+#[tauri::command]
+pub fn normalizzazione_modo(stato: State<'_, Stato>) -> Esito<ModoLivello> {
+    con_libreria(&stato, |libreria| {
+        playback::load_replaygain(&libreria.connection).map(|letta| letta.modo)
+    })
+    .map_err(errore)
+}
+
+/// Sceglie come si prende il livello. Riporta com'è rimasto.
+///
+/// Scrive, rilegge e restituisce quel che è rimasto scritto, come
+/// [`super::formato_visibile_scegli`]. Il resto della normalizzazione — acceso
+/// e bersaglio — si rilegge nello stesso lucchetto e si riscrive com'era.
+///
+/// # Da quando vale
+///
+/// Dal prossimo brano che si apre. Il guadagno si sceglie all'apertura, e
+/// quello che suona — e quello già pronto dietro di lui — se lo tengono: un
+/// cambio a metà canzone sarebbe un salto di volume che nessuno ha chiesto
+/// adesso, e il prossimo brano è fra pochi minuti.
+#[tauri::command]
+pub fn normalizzazione_modo_scegli(
+    app: tauri::AppHandle,
+    stato: State<'_, StatoLettore>,
+    modo: ModoLivello,
+) -> Esito<ModoLivello> {
+    let stato_app = app.state::<Stato>();
+    let salvata = con_libreria(&stato_app, |libreria| {
+        let attuale = playback::load_replaygain(&libreria.connection)?;
+        playback::save_replaygain(&libreria.connection, Normalizzazione { modo, ..attuale })?;
+        playback::load_replaygain(&libreria.connection)
+    })
+    .map_err(errore)?;
+    // Il lettore può non esserci, e la scelta resta comunque scritta: la stessa
+    // clemenza di `formato_visibile_scegli`.
+    let _ = con_lettore(&stato, |lettore| {
+        lettore.normalizzazione = salvata;
+        Ok(())
+    });
+    Ok(salvata.modo)
+}
+
+/// A che punto è la misura del volume.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvanzamentoVolume {
+    /// I brani di cui la passata si è già occupata: misurati, muti o
+    /// illeggibili. Vedi `aether_app::intensita::avanzamento`.
+    pub misurati: i64,
+    /// I brani con un file, cioè quelli che la passata misura.
+    pub totale: i64,
+}
+
+/// Quanti brani della libreria sono già stati misurati, su quanti.
+///
+/// `(async)`: due conteggi su `tracks`, che su una libreria grande sono
+/// qualche decina di millisecondi, e il selettore li chiede ogni tanto mentre
+/// è aperto.
+#[tauri::command(async)]
+pub fn normalizzazione_avanzamento(stato: State<'_, Stato>) -> Esito<AvanzamentoVolume> {
+    con_libreria(&stato, |libreria| {
+        aether_app::intensita::avanzamento(&libreria.connection, adesso_ms())
+    })
+    .map(|(misurati, totale)| AvanzamentoVolume { misurati, totale })
     .map_err(errore)
 }
 
@@ -315,7 +395,7 @@ mod prove {
     #[test]
     fn i_livelli_di_normalizzazione_vanno_e_tornano() {
         for nome in ["spento", "basso", "normale", "alto"] {
-            let livello = normalizzazione_da_nome(nome);
+            let livello = normalizzazione_da_nome(nome, ModoLivello::default());
             assert_eq!(
                 nome_normalizzazione(livello),
                 nome,
@@ -327,7 +407,7 @@ mod prove {
     /// Un nome che non conosciamo vale «normale», non un guasto.
     #[test]
     fn un_livello_sconosciuto_vale_il_riferimento() {
-        let livello = normalizzazione_da_nome("fortissimo");
+        let livello = normalizzazione_da_nome("fortissimo", ModoLivello::default());
         assert!(livello.attivo);
         assert_eq!(nome_normalizzazione(livello), "normale");
     }
@@ -339,12 +419,27 @@ mod prove {
     /// nessuno ha chiesto.
     #[test]
     fn spento_non_perde_il_bersaglio() {
-        let spento = normalizzazione_da_nome("spento");
+        let spento = normalizzazione_da_nome("spento", ModoLivello::default());
         assert!(!spento.attivo);
         assert!(
             spento.bersaglio_db.is_finite() && spento.bersaglio_db < 0.0,
             "spento ha lasciato un bersaglio insensato: {}",
             spento.bersaglio_db
         );
+    }
+
+    /// Il nome cambia quanto forte, e il modo resta quel che era.
+    ///
+    /// Prima del modo i due erano una cosa sola; adesso scegliere «alto» non
+    /// deve rimettere «automatico» a chi aveva scelto «disco».
+    #[test]
+    fn il_livello_non_tocca_il_modo() {
+        for nome in ["spento", "basso", "normale", "alto"] {
+            assert_eq!(
+                normalizzazione_da_nome(nome, ModoLivello::Album).modo,
+                ModoLivello::Album,
+                "«{nome}» ha cambiato il modo"
+            );
+        }
     }
 }

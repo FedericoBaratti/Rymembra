@@ -1,5 +1,5 @@
 {
-  "format": 1,
+  "format": 2,
   "id": "plain",
   "meta": {
     "name": "Plain",
@@ -9,9 +9,8 @@
     "license": "MIT",
     "preview": ["#09090d", "#1e1e2a", "#8b7cf6"]
   },
+  "scheme": "dark",
   "capabilities": {
-    "light": true,
-    "mobile": false,
     "dynamicAccent": true
   },
   "palette": {
@@ -117,8 +116,8 @@
     "canvas.scrubber.glow": 6,
     "canvas.scrubber.rest": "rgba(255, 255, 255, 0.18)"
   },
-  "themes": {
-    "light": {
+  "variant": {
+    "tokens": {
       "color.surface.0": "#fbfbfd",
       "color.surface.1": "#f3f3f7",
       "color.surface.2": "#ebebf1",
@@ -177,14 +176,24 @@
   },
   "motion": {
     "intensity": "full",
-    "routeTransition": {
+    "route": {
       "out": { "opacity": 0, "scale": 0.992 },
       "in": { "opacity": 0, "translateY": 8 }
     }
   },
   "layout": {
-    "player": "floating",
-    "sidebar": "expanded",
-    "density": "comfortable"
+    "density": "comfortable",
+    "shell": {
+      "zone": "row",
+      "part": "app-shell",
+      "children": [
+        { "widget": "navigation", "options": { "wide": true } },
+        { "zone": "column", "children": [{ "widget": "page-header" }, { "widget": "content" }] },
+        { "widget": "column" },
+        { "widget": "player" },
+        { "widget": "queue", "size": "hug" },
+        { "widget": "selection-bar" }
+      ]
+    }
   }
 }

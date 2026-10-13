@@ -74,6 +74,8 @@ import { ipc, type Brano, type RigaTesto, type TestoBrano } from "../ipc";
 import { Sincronizza } from "../Sincronizza";
 import { anticipoAdesso, usePosizioneMs } from "../riproduzione";
 import { fermoRestando } from "../transizione";
+import { statoSuono, useQuelCheSuona } from "../segnali";
+import { useDati } from "../dati";
 import { t, tSe } from "../lingue";
 import { Icona } from "./Icone";
 import { SceltaTesto } from "./SceltaTesto";
@@ -284,6 +286,7 @@ export function Testo({
   brano: Brano;
   onErrore: (e: unknown) => void;
 }) {
+  const letture = useDati().ipc;
   const [testo, setTesto] = useState<TestoBrano | null>(null);
   const [cercando, setCercando] = useState(false);
   // La richiesta al catalogo è caduta. Uno stato a parte da «non c'è», perché
@@ -317,6 +320,9 @@ export function Testo({
   // gesto, non venti al secondo.
   const [inPausa, setInPausa] = useState(false);
   const posizioneMs = usePosizioneMs();
+  // Il lettore fermo, e non lo scorrimento fermo di `inPausa` qui sopra: la
+  // riga accesa lo porta, e una skin ci ferma quel che fa ballare.
+  const fermo = useQuelCheSuona().inPausa;
   const contenitore = useRef<HTMLDivElement | null>(null);
   const rigaAccesa = useRef<HTMLElement | null>(null);
   const fermoFino = useRef(0);
@@ -365,7 +371,7 @@ export function Testo({
   const chiedi = useCallback((id: number, diNuovo: boolean) => {
     setCercando(true);
     setGuasto(false);
-    const domanda = diNuovo ? ipc.testoCercaDiNuovo(id) : ipc.testoCerca(id);
+    const domanda = diNuovo ? letture.testoCercaDiNuovo(id) : letture.testoCerca(id);
     return domanda
       .then((dalla_rete) => {
         if (branoOra.current === id) setTesto(dalla_rete);
@@ -431,11 +437,11 @@ export function Testo({
   // Il nucleo precarica il testo del brano dopo solo mentre un pannello è
   // aperto: è la promessa di `PRIVACY.md`, e questo è il pannello.
   useEffect(() => {
-    ipc.testiPannello(true).catch(() => undefined);
+    letture.testiPannello(true).catch(() => undefined);
     return () => {
-      ipc.testiPannello(false).catch(() => undefined);
+      letture.testiPannello(false).catch(() => undefined);
     };
-  }, []);
+  }, [letture]);
 
   // La posizione con cui confrontare i tempi: quella del lettore più i due
   // scarti. È `aether_domain::testo::posizione_corretta`, e la regola è che i
@@ -709,6 +715,7 @@ export function Testo({
         data-attiva
         data-active
         data-stacco
+        {...statoSuono(true, fermo)}
       >
         <Stacco />
       </p>
@@ -748,6 +755,7 @@ export function Testo({
           "data-passata": indice < attiva || undefined,
           "data-parole": riga.parole.length > 0 || undefined,
           "data-stacco": stacco || undefined,
+          ...(indice === attiva ? statoSuono(true, fermo) : undefined),
         };
 
         /* Una pausa non è un bottone. Ci si potrebbe saltare — ha un tempo
@@ -823,7 +831,7 @@ export function Testo({
           </button>
         );
       }),
-    [righe, attiva, durata, saltaA, segna],
+    [righe, attiva, durata, saltaA, segna, fermo],
   );
 
   return (

@@ -51,7 +51,7 @@ import { Icona } from "./Icone";
 import type { Chiave } from "../lingue";
 import { t } from "../lingue";
 import { Trans } from "../lingue/Trans";
-import { dataOra } from "../formato";
+import { dataOra, numero } from "../formato";
 
 /** Come si legge una data del profilo. */
 function quandoScritto(ms: number): string {
@@ -292,13 +292,6 @@ export function Profilo({
 
   return (
     <>
-      <p className="nota">
-        <Trans
-          k="profile.note"
-          v={{ non: <strong>{t("profile.note.not")}</strong> }}
-        />
-      </p>
-
       <div className="azioni">
         <button
           type="button"
@@ -330,15 +323,13 @@ export function Profilo({
         )}
       </div>
 
-      {annullabile && <p className="nota">{t("profile.undo.note")}</p>}
-
       {avanzamento && (
         <>
           <div className="avanzamento">
             <div style={{ width: `${percentuale}%` }} />
           </div>
           <div className="conteggio">
-            {avanzamento.fatti} / {avanzamento.totale}
+            {numero(avanzamento.fatti)} / {numero(avanzamento.totale)}
           </div>
         </>
       )}
@@ -415,7 +406,6 @@ export function Profilo({
 
           {piano.rimappature.length > 0 && (
             <>
-              <p className="nota">{t("profile.remap.note")}</p>
               <ul className="rimappature">
                 {piano.rimappature.map((riga) => {
                   const scelta =
@@ -493,6 +483,20 @@ export function Profilo({
               {t("profile.remap.already", { n: piano.braniGiaPresenti })}
             </p>
           )}
+          {/*
+           * Quelli che la cartella di rete non ha lasciato verificare: non sono
+           * «non trovati», e la frase lo dice. E la stima: nel piano si guarda
+           * un campione per cartella, perché guardare ogni file su un NAS
+           * costerebbe quanto importare.
+           */}
+          {(piano.braniNonVerificati ?? 0) > 0 && (
+            <p className="nota">
+              {t("profile.remap.unknown", { n: piano.braniNonVerificati ?? 0 })}
+            </p>
+          )}
+          {piano.stima === true && piano.percorsiRiscritti + piano.braniIrrintracciabili > 0 && (
+            <p className="nota">{t("profile.remap.estimate")}</p>
+          )}
 
           {piano.invariate > 0 && (
             <p className="nota">{t("profile.same", { n: piano.invariate })}</p>
@@ -519,9 +523,6 @@ export function Profilo({
               })}
             </p>
           )}
-
-          <p className="nota">{t("profile.whenApplied")}</p>
-          <p className="nota">{t("profile.additive")}</p>
 
           <div className="azioni">
             <button

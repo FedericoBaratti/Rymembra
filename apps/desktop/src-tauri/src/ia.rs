@@ -47,6 +47,7 @@ use aether_oauth::portachiavi::{DiSistema, Portachiavi as _};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager as _, State};
 
+use crate::disparte::in_disparte;
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
 use crate::spegnimento::{self, Emette as _};
@@ -187,6 +188,16 @@ pub struct StatoIaIpc {
     pub attivo: Option<String>,
     /// C'è una conversazione in corso.
     pub occupato: bool,
+    /// L'id del profilo la cui chiave **questo** salvataggio ha dimenticato,
+    /// perché l'indirizzo è passato a un'altra origine.
+    ///
+    /// Solo nella risposta a [`ia_salva_profilo`], e solo quella volta: è un
+    /// avviso, non uno stato. Lo stato che resta è `conChiave: false`, e quello
+    /// da solo direbbe «non c'è una chiave» a chi un attimo prima ne aveva una
+    /// e non ha toccato il campo — cioè gli farebbe credere che il salvataggio
+    /// l'abbia persa per sbaglio. Con questo la schermata dice perché, e tiene
+    /// aperto il profilo dove la chiave va riscritta.
+    pub chiave_dimenticata: Option<String>,
 }
 
 /// Un profilo come la finestra lo manda.
@@ -292,6 +303,18 @@ pub fn ia_profili(stato: State<'_, Stato>, ia: State<'_, StatoIa>) -> Esito<Stat
 /// a un profilo costringerebbe a riscrivere la chiave, e la finestra dovrebbe
 /// tenerla in memoria per poterla rimandare.
 ///
+/// # Quando `None` non basta a tenerla
+///
+/// Quando l'indirizzo è passato a un'altra **origine** — schema, ospite o
+/// porta diversi da quelli per cui la chiave è stata scritta. Fino alla 2.4.0
+/// la chiave restava, e alla prima domanda partiva verso il posto nuovo come
+/// `Authorization: Bearer`: bastava un indirizzo sbagliato incollato nel campo
+/// per consegnare la chiave di OpenRouter a chi stava dietro. Adesso si
+/// cancella dal portachiavi, il profilo si salva con `con_chiave: false`, e la
+/// risposta porta [`StatoIaIpc::chiave_dimenticata`] perché la schermata lo
+/// dica. Cambiare solo il percorso (`/api/v1` → `/api/v2`) non la tocca: è
+/// lo stesso servizio. Vedi [`Profilo::chiave_vale_per`].
+///
 /// # Perché l'indirizzo si controlla qui e non alla prima domanda
 ///
 /// Perché un profilo che non potrà mai funzionare non deve poter essere
@@ -304,7 +327,7 @@ pub fn ia_salva_profilo(
     profilo: ProfiloIn,
     chiave: Option<String>,
 ) -> Esito<StatoIaIpc> {
-    let esito = (|| {
+    let esito = (|| -> Result<Option<String>, AppError> {
         let nome = profilo.nome.trim();
         let url_base = profilo.url_base.trim().to_owned();
         let modello = profilo.modello.trim().to_owned();
@@ -335,17 +358,40 @@ pub fn ia_salva_profilo(
         // profilo salvato senza la sua chiave direbbe di essere pronto e non lo
         // sarebbe. Al contrario, una chiave scritta e un elenco non salvato
         // lascia solo una voce orfana, che il salvataggio successivo riusa.
-        let con_chiave = match chiave.as_deref() {
-            None => quale
-                .and_then(|i| profili.get(i))
-                .is_some_and(|p| p.con_chiave),
+        //
+        // L'origine si scrive insieme alla chiave e si tiene finché la chiave
+        // vale: è quel che il prossimo salvataggio confronta. Vedi la sezione
+        // «Quando `None` non basta a tenerla» qui sopra.
+        let origine_nuova = aether_net::http::origine(&url_base);
+        let mut dimenticata = None;
+        let (con_chiave, origine_chiave) = match chiave.as_deref() {
+            None => match quale.and_then(|i| profili.get(i)) {
+                Some(prima) if prima.con_chiave && prima.chiave_vale_per(&url_base) => {
+                    (true, origine_nuova)
+                }
+                Some(prima) if prima.con_chiave => {
+                    // Cancellata e non solo marcata: una chiave che nessun
+                    // profilo può più usare è una chiave che sta nel
+                    // Credential Manager senza motivo, e il giorno in cui
+                    // l'indirizzo tornasse quello di prima ripartirebbe verso
+                    // un posto che nel frattempo nessuno ha ricontrollato.
+                    portachiavi().cancella(&aether_ia::voce_portachiavi(&id))?;
+                    nota!(
+                        "[ia] profilo {id}: l'indirizzo è passato a un'altra origine, la chiave \
+                         è stata dimenticata"
+                    );
+                    dimenticata = Some(id.clone());
+                    (false, None)
+                }
+                _ => (false, None),
+            },
             Some("") => {
                 portachiavi().cancella(&aether_ia::voce_portachiavi(&id))?;
-                false
+                (false, None)
             }
             Some(valore) => {
                 portachiavi().scrivi(&aether_ia::voce_portachiavi(&id), valore.trim())?;
-                true
+                (true, origine_nuova)
             }
         };
 
@@ -360,6 +406,7 @@ pub fn ia_salva_profilo(
             url_base,
             modello,
             con_chiave,
+            origine_chiave,
         };
         match quale.and_then(|i| profili.get_mut(i)) {
             Some(posto) => *posto = salvato,
@@ -371,10 +418,12 @@ pub fn ia_salva_profilo(
             settings::write(&libreria.connection, CHIAVE_ATTIVO, &id)
         })?;
         nota!("[ia] profilo salvato: {id}");
-        Ok(())
+        Ok(dimenticata)
     })();
-    esito.map_err(errore)?;
-    stato_ipc(&stato, &ia).map_err(errore)
+    let dimenticata = esito.map_err(errore)?;
+    let mut risposta = stato_ipc(&stato, &ia).map_err(errore)?;
+    risposta.chiave_dimenticata = dimenticata;
+    Ok(risposta)
 }
 
 /// Elimina un profilo e la sua chiave.
@@ -439,14 +488,25 @@ pub fn ia_scegli_profilo(
 /// È anche la prova di connessione: un servizio che risponde a questa risponde
 /// a tutto. Vedi [`Cliente::modelli`].
 ///
-/// `(async)` perché va in rete: un comando bloccante sul filo della finestra la
-/// fermerebbe per tutta la durata della richiesta.
-#[tauri::command(async)]
-pub fn ia_modelli(stato: State<'_, Stato>, id: String) -> Esito<Vec<aether_ia::Modello>> {
-    (|| {
+/// In disparte, sul pool bloccante, perché va in rete — e verso un servizio
+/// che può essere un modello locale spento, o un indirizzo personalizzato che
+/// non risponde fino alla scadenza. Fino alla 2.4.0 era `(async)`, cioè quella
+/// scadenza passata su un *worker* del runtime: tre clic su «Prova» contro un
+/// indirizzo morto bastavano a fermare ogni altro comando asincrono.
+#[tauri::command]
+pub async fn ia_modelli(app: AppHandle, id: String) -> Esito<Vec<aether_ia::Modello>> {
+    in_disparte("modelli di un profilo", move || {
+        let Some(stato) = app.try_state::<Stato>() else {
+            return Err(AppError::new(ErrorCode::InternalAborted {
+                what: Some("elenco dei modelli".to_owned()),
+            })
+            .with_cause("la libreria non è più fra gli stati gestiti"));
+        };
         let profilo = trova(&stato, Some(&id))?;
         cliente(&profilo)?.modelli()
-    })()
+    })
+    .await
+    .map_err(errore)?
     .map_err(errore)
 }
 
@@ -478,6 +538,23 @@ pub fn ia_conversa(
     if messaggi.is_empty() {
         return Err(errore(AppError::new(ErrorCode::IaBadResponse {
             detail: Some("nessun messaggio da mandare".to_owned()),
+        })));
+    }
+    // Le immagini sono l'unica cosa della conversazione che non si legge a
+    // occhio, e qui passano verso la rete: che siano immagini, e di un peso
+    // da immagine, si controlla al confine e non si dà per scontato.
+    if let Some(guasta) = messaggi
+        .iter()
+        .flat_map(|m| &m.immagini)
+        .find(|url| !Messaggio::immagine_ammessa(url))
+    {
+        return Err(errore(AppError::new(ErrorCode::IpcPayloadInvalid {
+            channel: "ia_conversa".to_owned(),
+            detail: Some(format!(
+                "un'immagine che non è PNG, JPEG o WebP in base64, o pesa più di {} MB ({} byte)",
+                aether_ia::messaggi::IMMAGINE_MASSIMA_MB,
+                guasta.len()
+            )),
         })));
     }
 
@@ -662,7 +739,7 @@ const fn portachiavi() -> DiSistema {
 /// scelta di `read_json`, e la ragione è che un `ia.profili` corrotto non deve
 /// impedire di aprire le impostazioni — che è l'unico posto da cui lo si può
 /// riscrivere.
-fn leggi_profili(stato: &State<'_, Stato>) -> Result<Vec<Profilo>, AppError> {
+fn leggi_profili(stato: &Stato) -> Result<Vec<Profilo>, AppError> {
     con_libreria(stato, |libreria| {
         settings::read_json::<Vec<Profilo>>(&libreria.connection, CHIAVE_PROFILI)
     })
@@ -670,7 +747,7 @@ fn leggi_profili(stato: &State<'_, Stato>) -> Result<Vec<Profilo>, AppError> {
 }
 
 /// Scrive l'elenco.
-fn scrivi_profili(stato: &State<'_, Stato>, profili: &[Profilo]) -> Result<(), AppError> {
+fn scrivi_profili(stato: &Stato, profili: &[Profilo]) -> Result<(), AppError> {
     con_libreria(stato, |libreria| {
         settings::write_json(&libreria.connection, CHIAVE_PROFILI, &profili)
     })
@@ -683,7 +760,7 @@ fn scrivi_profili(stato: &State<'_, Stato>, profili: &[Profilo]) -> Result<(), A
 /// `ia.notConfigured` quando non ce n'è nessuno, o quando l'id non esiste più —
 /// che è la condizione di chi ha eliminato il profilo scelto da un'altra
 /// finestra.
-fn trova(stato: &State<'_, Stato>, id: Option<&str>) -> Result<Profilo, AppError> {
+fn trova(stato: &Stato, id: Option<&str>) -> Result<Profilo, AppError> {
     let profili = leggi_profili(stato)?;
     let scelto = match id {
         Some(id) => Some(id.to_owned()),
@@ -729,6 +806,7 @@ fn stato_ipc(stato: &State<'_, Stato>, ia: &State<'_, StatoIa>) -> Result<StatoI
         profili,
         attivo,
         occupato: ia.occupato(),
+        chiave_dimenticata: None,
     })
 }
 

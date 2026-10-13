@@ -256,6 +256,23 @@ catalogo! {
     /// guarisce ritentando, e un ritentativo automatico nasconderebbe l'unico
     /// momento in cui conviene fare un backup.
     DbIoFailed = "db.ioFailed", Db, Error, Never, None, { detail: Option<String> };
+    /// Quel che si stava scrivendo nel database c'è già.
+    ///
+    /// È un vincolo `UNIQUE` (o una chiave primaria) che rifiuta una riga. Fino
+    /// alla 3.0 finiva in [`Self::DbQueryFailed`], cioè «il difetto è quasi
+    /// sempre di Aether», e per una parte dei casi era falso: la causa più
+    /// comune non è una riga sbagliata, è **un'altra operazione che l'ha
+    /// scritta un attimo prima** — una scansione che finisce mentre si importa,
+    /// due aggiunte alla stessa playlist che si contendono l'ultima posizione.
+    /// Chi la rifà rilegge lo stato e passa.
+    ///
+    /// `Always` per quella ragione, e non per ottimismo: ogni operazione di
+    /// questa cassa che può scontrarsi con un vincolo di unicità rilegge prima
+    /// di scrivere, quindi il secondo tentativo parte da una fotografia in cui
+    /// la riga c'è già. Se torna sempre uguale nello stesso punto, allora sì è
+    /// un difetto — e il `detail`, con il codice esteso di SQLite nella causa,
+    /// è quel che serve per trovarlo.
+    DbDuplicate = "db.duplicate", Db, Warning, Always, None, { detail: Option<String> };
     /// Una query è fallita, e non si è saputo dire di più.
     ///
     /// Il ripiego di [`crate::errors::ErrorCode`] per il database: ci arriva
@@ -289,8 +306,38 @@ catalogo! {
     /// `Always`: chiudere l'altro programma e riprovare funziona, e per l'altra
     /// causa il tentativo non costa niente.
     FsTrashFailed = "fs.trashFailed", Fs, Warning, Always, None, { path: String, detail: Option<String> };
+    /// Il file sta dove un Cestino non c'è, e nessuno ha detto di cancellarlo
+    /// per sempre.
+    ///
+    /// Il gemello onesto di [`Self::FsTrashFailed`]. Su un'unità di rete — un
+    /// percorso `\\server\…` o una lettera mappata — il Cestino di Windows non
+    /// esiste, e `IFileOperation` con «annullabile» **cancella lo stesso**,
+    /// definitivamente, riportando successo. «Elimina dal disco» su un NAS
+    /// voleva dire quindi una cancellazione senza ritorno raccontata come un
+    /// viaggio nel Cestino.
+    ///
+    /// Adesso lì il file non si manda al Cestino: si cancella con
+    /// `remove_file`, e solo dopo una conferma che dice «per sempre». Questo
+    /// codice è la guardia del nucleo per chi arrivasse senza quella conferma —
+    /// una finestra vecchia, una chiamata scritta a mano — e non è un guasto:
+    /// `Warning` e `Never`, perché la stessa richiesta senza conferma riceve la
+    /// stessa risposta.
+    FsNoRecycleBin = "fs.noRecycleBin", Fs, Warning, Never, None, { path: String };
     /// Percorso non valido per questo sistema.
     FsPathInvalid = "fs.pathInvalid", Fs, Error, Never, None, { path: String };
+    /// Un file che la finestra chiede di scrivere ha un'estensione che non è
+    /// quella del suo formato.
+    ///
+    /// Un codice suo e non [`Self::FsPathInvalid`] perché la frase di quello
+    /// manda a cercare una cartella, e qui la cartella va benissimo: è il nome
+    /// del file che non torna. Prima non si rifiutava niente — una playlist
+    /// salvata come `serata.txt` usciva M3U in silenzio, un `.aeskin` poteva
+    /// finire sopra un `.dll` — e la regola adesso è che si scrive solo con le
+    /// estensioni del formato, cioè quelle che il dialogo propone.
+    ///
+    /// `Warning` e `Never`: non è un guasto, e riprovare con lo stesso nome dà
+    /// la stessa risposta. `allowed` è l'elenco, senza punto, per il diario.
+    FsExtensionRefused = "fs.extensionRefused", Fs, Warning, Never, None, { path: String, allowed: Vec<String> };
     /// Lettura fallita.
     FsReadFailed = "fs.readFailed", Fs, Warning, Always, None, { path: String, detail: Option<String> };
     /// Scrittura fallita.
@@ -317,6 +364,17 @@ catalogo! {
     PlaybackAutoplayBlocked = "playback.autoplayBlocked", Playback, Info, Always, None;
     /// La riproduzione si è impantanata.
     PlaybackStalled = "playback.stalled", Playback, Warning, Always, None, { track_id: Option<i64>, position_ms: Option<u64> };
+    /// Un brano che arriva dalla rete si è interrotto a metà: la connessione
+    /// con il catalogo è caduta, o è troppo lenta per quel brano.
+    ///
+    /// Esiste accanto a [`Self::FsNetworkUnavailable`] e non al suo posto,
+    /// anche se la strada da cui arriva è la stessa — un numero di sistema che
+    /// `errors::rete::e_di_rete` riconosce. Quella frase parla di **una
+    /// cartella di rete**: server spento, VPN caduta, cavo staccato. Per un
+    /// brano dell'Internet Archive non c'è nessuna cartella, e chi la legge va
+    /// a controllare un NAS che non ha. Ritentabile per la stessa ragione: la
+    /// rete torna, e «Riprova» riparte dal punto in cui si era fermato.
+    PlaybackStreamInterrupted = "playback.streamInterrupted", Playback, Warning, Always, None;
     /// Nessun motore audio disponibile.
     PlaybackEngineUnavailable = "playback.engineUnavailable", Playback, Fatal, Never, None;
 
@@ -461,6 +519,24 @@ catalogo! {
     DownloadBadResponse = "download.badResponse", Download, Warning, Always, None;
     /// La ricerca in un catalogo è fallita.
     DownloadExternalSearchFailed = "download.externalSearchFailed", Download, Warning, Always, Some("EXT_SEARCH_FAILED");
+    /// Il catalogo ha respinto la ricerca: è la frase che non va, non il servizio.
+    ///
+    /// Distinto da [`Self::DownloadExternalSearchFailed`] per una cosa sola, che
+    /// è però quella che conta: **non si ritenta**. Una frase respinta dal
+    /// guardiano di un catalogo, o troppo lunga per il suo motore di ricerca,
+    /// torna respinta identica tutte le volte; offrire «riprova» vuol dire
+    /// mandare chi cerca a premere un tasto che non può funzionare, e
+    /// raccontargli intanto che il catalogo è giù — quando il catalogo sta
+    /// benissimo e il problema è nelle parole.
+    ///
+    /// Senza parametri: quel che attraversa l'IPC di un errore è il codice, non
+    /// i suoi campi (vedi `ErroreIpc`), quindi il nome del catalogo che ha
+    /// respinto starebbe in un posto che nessuno legge. Sta nella causa, che
+    /// invece passa ed è la riga che la finestra mostra sotto il messaggio.
+    ///
+    /// Senza codice storico: prima questo caso non si distingueva, quindi non
+    /// c'è nessuna riga già salvata che lo nomini.
+    DownloadSearchRejected = "download.searchRejected", Download, Warning, Never, None;
 
     // ── spotify ─────────────────────────────────────────────────────────────
     // Un dominio a sé e non `Download`: da qui non si scarica niente. Si legge
@@ -552,6 +628,12 @@ catalogo! {
     SkinNotFound = "skin.notFound", Skin, Warning, Never, None, { id: String };
     /// Le skin di serie non si modificano.
     SkinBuiltinReadOnly = "skin.builtinReadOnly", Skin, Info, Never, None, { id: String };
+    /// La skin è valida ma costa più del doppio di un suo budget: non si installa.
+    ///
+    /// Aveva il codice del manifest non valido, e la frase che quel codice
+    /// porta — «il manifesto non si legge» — era falsa: il manifesto si legge,
+    /// si apre nello Studio e si prova; è troppo caro per indossarlo.
+    SkinOverBudget = "skin.overBudget", Skin, Warning, Never, None, { costo: u32, budget: u32 };
 
     // ── transfer ────────────────────────────────────────────────────────────
     /// L'accoppiamento è scaduto.
@@ -586,6 +668,28 @@ catalogo! {
     /// due operazioni che parlano con Drive non devono intrecciarsi. Chi la
     /// riceve riprova fra poco e trova il turno libero.
     SyncBusy = "sync.busy", Sync, Info, Always, None;
+    /// Lo spazio del Google Drive dell'utente è pieno.
+    ///
+    /// Drive lo dice con un `403` e `reason: storageQuotaExceeded`, e fino alla
+    /// 2.4.0 arrivava come un `net.http` qualunque — «il server ha risposto con
+    /// un errore» — ogni quarto d'ora. Non passa da sé e non è colpa di Aether:
+    /// `Never`, e una frase che dice dove liberare spazio.
+    SyncQuotaExceeded = "sync.quotaExceeded", Sync, Warning, Never, None;
+    /// Google non riconosce il client OAuth: `invalid_client`.
+    ///
+    /// L'identificativo o il segreto scritti nelle Impostazioni non vanno —
+    /// uno sbaglio di copia, un client cancellato dalla Console. Separato da
+    /// `sync.authExpired` perché il rimedio è un altro: lì si ricollega
+    /// l'account, qui si correggono le credenziali, e ricollegare non serve.
+    SyncClientInvalid = "sync.clientInvalid", Sync, Warning, Never, None;
+    /// Google riconosce il client ma non gli permette questo accesso:
+    /// `unauthorized_client`.
+    ///
+    /// Succede con un client che non è di tipo «App desktop», o con un token di
+    /// aggiornamento emesso per un **altro** client — il caso di chi ha cambiato
+    /// le credenziali senza ricollegare l'account. Per questo cambiare le
+    /// credenziali adesso scollega.
+    SyncClientUnauthorized = "sync.clientUnauthorized", Sync, Warning, Never, None;
 
     // ── settings ────────────────────────────────────────────────────────────
     /// Le impostazioni salvate sono illeggibili.
@@ -786,6 +890,23 @@ mod prove {
         // La rete invece torna, ed è la stessa scelta di `fs.networkUnavailable`.
         assert!(ErrorCode::DbNetworkPath { path: None }.is_retryable());
         assert!(ErrorCode::FsNetworkUnavailable { path: None }.is_retryable());
+        // E il doppione: chi rifà l'operazione rilegge, e la riga che si
+        // contendeva c'è già. È la differenza con il ripiego, che resta `Never`.
+        assert!(ErrorCode::DbDuplicate { detail: None }.is_retryable());
+    }
+
+    #[test]
+    fn senza_cestino_non_si_ritenta_da_soli() {
+        // La guardia di «Elimina dal disco» su un'unità di rete: la stessa
+        // richiesta senza conferma riceve la stessa risposta, e un ritentativo
+        // automatico sarebbe il modo di ripeterla all'infinito. Chi la riceve
+        // deve **chiedere**, non riprovare.
+        let senza = ErrorCode::FsNoRecycleBin {
+            path: r"\\nas\musica\a.flac".to_owned(),
+        };
+        assert!(!senza.is_retryable());
+        assert_eq!(senza.kind().domain(), Domain::Fs);
+        assert_eq!(senza.i18n_key(), "errors.fs.noRecycleBin");
     }
 
     #[test]

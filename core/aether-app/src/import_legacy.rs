@@ -338,8 +338,7 @@ fn run(
         }
     }
 
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura della transazione", &err))?;
 
     // ── statistiche ──

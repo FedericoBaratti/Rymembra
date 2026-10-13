@@ -24,8 +24,6 @@
 //! nell'originale è lunga centosessanta caratteri e accetta separatori misti che
 //! nessuno ha deciso di accettare: sono emersi dalla scrittura.
 
-use std::fmt::Write as _;
-
 /// Un colore, sempre nei suoi canali.
 ///
 /// Scomposto e non una stringa perché il contratto con i componenti richiede
@@ -597,8 +595,18 @@ pub fn format_font_stack(families: &[String], kind: FontKind) -> String {
     let mut testo = String::new();
     for family in families {
         // Gli apici li mette il compilatore, non l'autore: è la ragione per cui
-        // il nome è vincolato a un alfabeto che non li contiene.
-        let _ = write!(testo, "'{family}', ");
+        // il nome è vincolato a un alfabeto che non li contiene. E qui, dove
+        // gli apici si scrivono, l'alfabeto si applica ancora una volta invece
+        // di darlo per fatto: un nome arrivato senza passare da
+        // `is_font_family` perde i caratteri che non ci stanno, e non chiude
+        // niente.
+        testo.push('\'');
+        testo.extend(
+            family
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_')),
+        );
+        testo.push_str("', ");
     }
     testo.push_str(kind.fallbacks());
     testo

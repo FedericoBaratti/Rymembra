@@ -17,8 +17,20 @@
  *
  * Lo stato vive quanto l'applicazione — si chiede una volta e poi si
  * **ascolta**, con la stessa disciplina di `nuvola` e `arricchimento` in
- * `App.tsx`. È anche ciò che permette la cosa che serviva davvero: avviare una
+ * `nuvola.ts`. È anche ciò che permette la cosa che serviva davvero: avviare una
  * seconda importazione mentre la prima scende, e vederle tutte e due.
+ *
+ * # Perché in un fornitore e non in `App`
+ *
+ * Stava in `App`, che lo passava per prop all'intestazione e alla pagina delle
+ * importazioni, al toast della coda, alle Impostazioni e alle due finestrelle
+ * che ne registrano una. Ma lo stato cambia a ogni brano che scende — un evento
+ * per brano, per un'ora — e da `App` ogni cambio ridisegnava la finestra
+ * intera. Adesso lo tiene `FornitoreImportazioni`, montato una volta fra i
+ * fornitori di `App`, e lo dà per contesto: si ridisegna lui, e chi lo legge
+ * (`useImportazioniDellaFinestra`). Uno solo, e non uno per chi lo legge: due
+ * copie vorrebbero dire due sottoscrizioni agli stessi eventi e due verità
+ * sullo stesso numero.
  *
  * # Un'importazione è un gruppo di righe
  *
@@ -36,7 +48,15 @@
  * gli eventi e uscirne vorrebbe dire smettere — cioè tornare alla coda che
  * scende in silenzio.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
 import {
   ipc,
@@ -167,8 +187,8 @@ function quanti(sorgente: SorgenteScarico): number {
 /**
  * Lo stato delle importazioni, per tutta la vita dell'applicazione.
  *
- * Va montato una volta sola, in `App`: due copie vorrebbero dire due
- * sottoscrizioni agli stessi eventi e due verità sullo stesso numero.
+ * Va montato una volta sola, in `FornitoreImportazioni`: due copie vorrebbero
+ * dire due sottoscrizioni agli stessi eventi e due verità sullo stesso numero.
  */
 export function useImportazioni(): UsoImportazioni {
   const [stato, setStato] = useState<StatoScarico | null>(null);
@@ -337,7 +357,7 @@ export function useImportazioni(): UsoImportazioni {
   const annulla = useCallback(() => {
     // Non si tocca `attiva`: la coda si ferma alla fine del brano in corso, e
     // dire «ferma» prima che lo sia sarebbe la stessa bugia che
-    // `onAnnullaScansione` evita in `App.tsx`.
+    // `onAnnullaScansione` evita in `ImpostazioniFinestra.tsx`.
     ipc.annullaScarico().catch((e: unknown) => setErrore(testoErrore(e)));
   }, []);
 
@@ -457,21 +477,84 @@ export function useImportazioni(): UsoImportazioni {
     return storia.filter((r) => !inElenco.has(r.sourceId));
   }, [storia, elenco]);
 
-  return {
-    elenco,
-    stato,
-    brano,
-    errore,
-    rientro,
-    storia: storiaFuoriDallElenco,
-    registra,
-    scarta,
-    dimenticaRientro,
-    annulla,
-    riprendi,
-    riprovaFalliti,
-    ammettiAlternative,
-  };
+  // Un oggetto con la stessa identità finché niente di quel che porta cambia:
+  // è il valore di un contesto, e uno nuovo a ogni disegno del fornitore
+  // ridisegnerebbe chi lo legge anche quando non è successo niente.
+  return useMemo(
+    () => ({
+      elenco,
+      stato,
+      brano,
+      errore,
+      rientro,
+      storia: storiaFuoriDallElenco,
+      registra,
+      scarta,
+      dimenticaRientro,
+      annulla,
+      riprendi,
+      riprovaFalliti,
+      ammettiAlternative,
+    }),
+    [
+      elenco,
+      stato,
+      brano,
+      errore,
+      rientro,
+      storiaFuoriDallElenco,
+      registra,
+      scarta,
+      dimenticaRientro,
+      annulla,
+      riprendi,
+      riprovaFalliti,
+      ammettiAlternative,
+    ],
+  );
+}
+
+/** Le importazioni della finestra: vedi «Perché in un fornitore e non in `App`». */
+const ImportazioniDellaFinestra = createContext<UsoImportazioni | null>(null);
+
+/**
+ * Tiene le importazioni per tutta la finestra, e le dà a chi sta sotto.
+ *
+ * Le sue letture d'avvio e i suoi sei ascolti partono quando si monta, cioè
+ * prima degli effetti di `App` che lo contiene: nessuno di quelli fa scattare
+ * un evento della coda, quindi l'ordine non cambia niente di quel che arriva.
+ */
+export function FornitoreImportazioni({ children }: { children: ReactNode }) {
+  return (
+    <ImportazioniDellaFinestra value={useImportazioni()}>
+      {children}
+    </ImportazioniDellaFinestra>
+  );
+}
+
+/** Le importazioni della finestra, da sotto `FornitoreImportazioni`. */
+export function useImportazioniDellaFinestra(): UsoImportazioni {
+  const uso = useContext(ImportazioniDellaFinestra);
+  if (uso === null) {
+    throw new Error("useImportazioniDellaFinestra fuori da FornitoreImportazioni");
+  }
+  return uso;
+}
+
+/**
+ * Le importazioni della finestra per chi le riceve per prop.
+ *
+ * L'intestazione e la pagina delle importazioni, il toast della coda e le due
+ * finestrelle che ne registrano una le prendono per prop — lo Studio disegna
+ * le prime con dati finti — e `App`, che le monta, sta sopra il fornitore e
+ * non può leggerle. Un figlio-funzione le porta dove servono.
+ */
+export function ConImportazioni({
+  children,
+}: {
+  children: (importazioni: UsoImportazioni) => ReactNode;
+}) {
+  return <>{children(useImportazioniDellaFinestra())}</>;
 }
 
 /**

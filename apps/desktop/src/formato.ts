@@ -16,7 +16,7 @@
  * riceverla per argomento — chi formatta un numero è quasi sempre dentro un
  * `map`, e farla scendere fin lì costerebbe una prop in venti componenti.
  */
-import { locale, t } from "./lingue";
+import { locale, t, tSe } from "./lingue";
 
 /**
  * Millisecondi in `m:ss`, o `h:mm:ss` quando serve.
@@ -174,6 +174,22 @@ export function nomeLicenza(licenza: string): string {
     default:
       return licenza;
   }
+}
+
+/**
+ * Che cosa nomina un link, o che cosa si è importato, davanti a chi ascolta.
+ *
+ * Il nucleo lo manda come nome stabile — `GenereContenuto::nome()` in
+ * `aether-domain/src/esterno.rs`: `brano`, `album`, `playlist`, `artista`,
+ * `collezione`, e dagli account anche `preferiti` — e fino alla 3.0 finiva a
+ * schermo così com'era: un'interfaccia in inglese diceva «Jamendo · brano · 12
+ * tracks». Le parole sono in italiano perché sono un valore dell'IPC, non un
+ * testo; si traducono qui, l'unico posto che le mostra.
+ */
+export function nomeGenere(genere: string): string {
+  // Una parola che il nucleo imparasse domani si mostra com'è: è vera, e non
+  // è vuota. `tSe` perché la chiave arriva da fuori, come quelle degli errori.
+  return tSe(`link.kind.${genere}`, genere);
 }
 
 /**

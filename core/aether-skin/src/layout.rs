@@ -41,9 +41,71 @@
 //! Ogni carattere di CSS esce da [`crate::compile`], e la lettura del JSON sta
 //! in [`crate::document`] con tutti gli altri parser.
 
-use crate::document::{PlayerLayout, SidebarLayout};
 use crate::parts::{PartDef, part};
 use crate::values::{Length, LengthUnit, num};
+
+/// Dove stava il player, nel formato 1.
+///
+/// Non è più un campo del documento: il formato 2 dice dove stanno le cose
+/// scrivendo lo scafale, e una seconda maniera di dirlo meno precisa prima o
+/// poi si contraddice. Resta come **selettore di una variante** dell'albero di
+/// serie, che è quel che la migrazione scrive per esteso.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerLayout {
+    /// Attaccato in basso.
+    BottomBar,
+    /// Flottante.
+    Floating,
+    /// Ridotto.
+    Compact,
+}
+
+impl PlayerLayout {
+    /// Dal nome scritto nel formato 1.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "bottom-bar" => Some(Self::BottomBar),
+            "floating" => Some(Self::Floating),
+            "compact" => Some(Self::Compact),
+            _ => None,
+        }
+    }
+}
+
+/// Come si presentava la barra laterale, nel formato 1. Vedi [`PlayerLayout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarLayout {
+    /// Solo icone.
+    Rail,
+    /// Aperta.
+    Expanded,
+    /// Nascosta.
+    Hidden,
+}
+
+impl SidebarLayout {
+    /// Dal nome scritto nel formato 1.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "rail" => Some(Self::Rail),
+            "expanded" => Some(Self::Expanded),
+            "hidden" => Some(Self::Hidden),
+            _ => None,
+        }
+    }
+}
+
+/// L'albero di serie di un documento che non ne dichiara uno.
+///
+/// È la variante che il formato 1 dava a chi non scriveva `layout`: il player
+/// flottante e la barra stretta. Una skin del formato 1 senza impaginazione si
+/// migra senza impaginazione, e deve ricevere lo stesso albero di prima.
+#[must_use]
+pub fn shell_di_serie() -> LayoutZone {
+    default_shell(PlayerLayout::Floating, SidebarLayout::Rail)
+}
 
 // ── I tetti ─────────────────────────────────────────────────────────────────
 
@@ -423,7 +485,9 @@ pub struct WidgetDef {
     ///
     /// È il ponte fra i due registri: chi ridipinge `player-shell` in `parts`
     /// ridipinge il widget `player`, e l'editor può dirlo invece di lasciarlo
-    /// scoprire.
+    /// scoprire. **Un metadato**: la classe la mette il componente del widget,
+    /// non l'involucro dello scafale — messa da tutti e due, la parte si
+    /// dipingeva due volte.
     pub part: Option<&'static str>,
     /// Il buco in cui la finestra infila il suo contenuto.
     ///
@@ -559,7 +623,7 @@ pub static WIDGETS: &[WidgetDef] = &[
         "Il fondo dietro al contenuto, che prende il colore dalla copertina."),
 
     // ── Navigazione ─────────────────────────────────────────────────────────
-    widget!("navigation", Nav, None, None,
+    widget!("navigation", Nav, Some("sidebar"), None,
         G_NAV, true, IN_RIGA, TrackSize::Hug, 1, OPZIONI_NAVIGAZIONE,
         "La barra laterale, con le viste e le playlist."),
     widget!("bottom-nav", Nav, Some("bottom-nav"), None,
@@ -570,7 +634,7 @@ pub static WIDGETS: &[WidgetDef] = &[
     widget!("page-header", Page, Some("page-header"), Some("intestazione"),
         Essential::No, true, IN_COLONNA, TrackSize::Hug, 0, NESSUNA,
         "L'intestazione della pagina aperta: titolo, ricerca, azioni."),
-    widget!("content", Page, None, Some("contenuto"),
+    widget!("content", Page, Some("page-content"), Some("contenuto"),
         Essential::Yes, true, OVUNQUE, TrackSize::Fill, 0, NESSUNA,
         "La pagina aperta. Toglierlo toglie l'applicazione."),
 
@@ -578,7 +642,7 @@ pub static WIDGETS: &[WidgetDef] = &[
     widget!("player", Player, Some("player-shell"), None,
         G_COMANDI, true, OVUNQUE, TrackSize::Hug, 2, NESSUNA,
         "La barra del lettore: cosa suona, i comandi, l'avanzamento."),
-    widget!("column", Player, None, None,
+    widget!("column", Player, Some("column"), None,
         G_COMANDI, true, IN_RIGA, TrackSize::Fixed(Length::px(348.0)), 2, NESSUNA,
         "La terza colonna: copertina grande, comandi e coda, tutto insieme."),
     widget!("transport", Player, Some("np-transport"), None,
@@ -589,7 +653,7 @@ pub static WIDGETS: &[WidgetDef] = &[
         "La barra di avanzamento, con i due tempi."),
 
     // ── Coda e selezione ────────────────────────────────────────────────────
-    widget!("queue", Queue, Some("queue-list"), None,
+    widget!("queue", Queue, Some("queue-panel"), None,
         Essential::No, true, OVUNQUE, TrackSize::Fixed(Length::px(320.0)), 1, NESSUNA,
         "La coda di riproduzione, riordinabile."),
     widget!("selection-bar", Queue, Some("selection-bar"), None,
@@ -597,13 +661,13 @@ pub static WIDGETS: &[WidgetDef] = &[
         "La barra che appare quando ci sono più brani selezionati."),
 
     // ── Cosa suona ──────────────────────────────────────────────────────────
-    widget!("now-playing", Meta, None, None,
+    widget!("now-playing", Meta, Some("now-playing"), None,
         Essential::No, false, OVUNQUE, TrackSize::Hug, 1, OPZIONI_ORA,
         "Copertina piccola, titolo e artista di quel che suona."),
     widget!("cover-large", Meta, Some("np-art"), None,
         Essential::No, false, OVUNQUE, TrackSize::Fill, 1, NESSUNA,
         "La copertina in grande."),
-    widget!("rating", Meta, None, None,
+    widget!("rating", Meta, Some("rating"), None,
         Essential::No, false, OVUNQUE, TrackSize::Hug, 0, OPZIONI_GIUDIZIO,
         "Le stelle e il volume."),
 ];

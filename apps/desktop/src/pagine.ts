@@ -23,8 +23,18 @@
  * vecchio e viene buttata invece di accodarsi a un elenco che non è più il suo.
  * È lo stesso motivo per cui la ricerca aveva già un `annullato`.
  */
-import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+
+import { useDati } from "./dati";
+import { ArchivioRado, type SorgenteRada } from "./rada";
 
 /**
  * Quante righe per pagina.
@@ -180,6 +190,80 @@ export function usePagine<T>(
 }
 
 /**
+ * Una lista rada che vive quanto il componente: vedi `rada.ts`.
+ *
+ * # Perché un archivio esterno e non uno stato
+ *
+ * Perché le pagine arrivano mentre si scorre — cinque, dieci al secondo tirando
+ * la barra — e uno stato di chi possiede la lista ridisegnerebbe chi la
+ * possiede a ogni arrivo. Chi la possiede è `App`, cioè tutta la finestra. Qui
+ * le pagine stanno in un archivio a cui si iscrive **solo** l'elenco che le
+ * disegna (`useSyncExternalStore`): una pagina che arriva ridisegna trenta
+ * righe, non l'applicazione.
+ *
+ * # Chiave e totale
+ *
+ * `chiave` è l'identità della vista (ordinamento, ricerca): cambiandola si
+ * butta tutto. `totale` è quanto è lunga: cambiandolo — un preferito tolto, una
+ * scansione finita — le righe restano a schermo e si richiedono. Arrivano
+ * all'archivio in un effetto di disposizione, prima che il disegno si veda:
+ * l'elenco iscritto si ridisegna lì, nello stesso fotogramma.
+ *
+ * `chiedi` può essere una lambda scritta sul posto, come per `usePagine`.
+ */
+export function useRada<T>(opzioni: {
+  chiave: string;
+  totale: number;
+  chiedi: (offset: number, limite: number) => Promise<T[]>;
+  onErrore: (e: unknown) => void;
+}): ArchivioRado<T> {
+  const chiediRef = useRef(opzioni.chiedi);
+  chiediRef.current = opzioni.chiedi;
+  const onErroreRef = useRef(opzioni.onErrore);
+  onErroreRef.current = opzioni.onErrore;
+
+  const [archivio] = useState(() => {
+    const nuovo = new ArchivioRado<T>({
+      chiedi: (offset, limite) => chiediRef.current(offset, limite),
+      onErrore: (e) => onErroreRef.current(e),
+    });
+    // Subito, e non solo nell'effetto: così il primo disegno sa già quanto è
+    // lunga la vista, e la barra di scorrimento nasce della lunghezza giusta.
+    nuovo.imposta(opzioni.chiave, opzioni.totale);
+    return nuovo;
+  });
+
+  const { chiave, totale } = opzioni;
+  useLayoutEffect(() => {
+    archivio.imposta(chiave, totale);
+  }, [archivio, chiave, totale]);
+
+  return archivio;
+}
+
+/**
+ * Ridisegna chi la chiama a ogni cambiamento di una lista rada, e dice quale.
+ *
+ * Senza lista — un elenco pieno, che le righe le ha già in mano — non si
+ * iscrive a niente e risponde sempre zero: gli hook si chiamano sempre, e
+ * questo è il modo di chiamarlo senza che faccia niente.
+ */
+export function useVersione<T>(sorgente: SorgenteRada<T> | undefined): number {
+  return useSyncExternalStore(
+    sorgente?.iscrivi ?? senzaIscrizione,
+    sorgente?.istantanea ?? zero,
+  );
+}
+
+function senzaIscrizione(): () => void {
+  return () => undefined;
+}
+
+function zero(): number {
+  return 0;
+}
+
+/**
  * Un valore che segue l'originale con un ritardo.
  *
  * Digitando «subsonica» sarebbero nove ricerche, di cui otto già superate
@@ -241,6 +325,8 @@ export function useAscolto<T>(
   acceso = true,
 ): void {
   const ultimo = useRef(gestore);
+  // Il nucleo nella finestra, niente nell'anteprima dello Studio: vedi `dati.tsx`.
+  const { ascolta } = useDati();
   // Senza array di dipendenze: gira dopo ogni disegno, che è precisamente
   // quando `gestore` può essere cambiato.
   useEffect(() => {
@@ -250,7 +336,7 @@ export function useAscolto<T>(
     if (!acceso) return;
     let vivo = true;
     let sciogli: (() => void) | null = null;
-    void listen<T>(evento, (arrivato) => ultimo.current(arrivato.payload)).then((stop) => {
+    void ascolta<T>(evento, (carico) => ultimo.current(carico)).then((stop) => {
       if (vivo) {
         sciogli = stop;
       } else {
@@ -264,5 +350,5 @@ export function useAscolto<T>(
       vivo = false;
       sciogli?.();
     };
-  }, [evento, acceso]);
+  }, [evento, acceso, ascolta]);
 }

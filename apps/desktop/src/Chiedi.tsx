@@ -8,7 +8,7 @@
  */
 import { useState } from "react";
 
-import { useFinestrella } from "./finestrella";
+import { Dialogo } from "./Dialogo";
 import { t } from "./lingue";
 
 export function Chiedi({
@@ -28,47 +28,38 @@ export function Chiedi({
 }) {
   const [testo, setTesto] = useState(iniziale);
   // Il fuoco all'apertura col testo già selezionato, la trappola del Tab,
-  // l'Escape e il ritorno del fuoco a chi l'aveva: sta tutto in
-  // `finestrella.ts`, che di questi quattro comportamenti porta anche le
-  // ragioni.
-  const finestrella = useFinestrella<HTMLFormElement>(onChiudi);
-
+  // l'Escape, il ritorno del fuoco a chi l'aveva, la pagina dietro inerte e il
+  // velo che non chiude a una selezione trascinata fuori: sta tutto in
+  // `Dialogo`, che di questi comportamenti porta anche le ragioni.
   const vuoto = testo.trim().length === 0;
 
   return (
-    <div className="velo scuro" onClick={onChiudi}>
-      <form
-        ref={finestrella}
-        className="finestrella stretta glass-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={titolo}
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (vuoto) return;
-          onRispondi(testo.trim());
-        }}
-      >
-        <h2>{titolo}</h2>
-        <label>
-          {etichetta}
-          <input
-            className="campo field-input"
-            value={testo}
-            spellCheck={false}
-            onChange={(e) => setTesto(e.target.value)}
-          />
-        </label>
-        <div className="tasti-finestrella">
-          <button type="button" className="bottone" onClick={onChiudi}>
-            {t("common.cancel")}
-          </button>
-          <button type="submit" className="bottone primario" disabled={vuoto}>
-            {conferma}
-          </button>
-        </div>
-      </form>
-    </div>
+    <Dialogo
+      titolo={titolo}
+      classe="finestrella stretta glass-modal"
+      onChiudi={onChiudi}
+      onInvia={() => {
+        if (vuoto) return;
+        onRispondi(testo.trim());
+      }}
+    >
+      <label>
+        {etichetta}
+        <input
+          className="campo field-input"
+          value={testo}
+          spellCheck={false}
+          onChange={(e) => setTesto(e.target.value)}
+        />
+      </label>
+      <div className="tasti-finestrella">
+        <button type="button" className="bottone" onClick={onChiudi}>
+          {t("common.cancel")}
+        </button>
+        <button type="submit" className="bottone primario" disabled={vuoto}>
+          {conferma}
+        </button>
+      </div>
+    </Dialogo>
   );
 }

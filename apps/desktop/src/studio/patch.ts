@@ -479,23 +479,6 @@ export function applicaOperazioni(
 }
 
 /**
- * Il percorso di una proprietà d'aspetto, base o di uno stato.
- *
- * Un posto solo per la regola: base sta in `parts.<nome>.<campo>`, uno stato in
- * `parts.<nome>.states.<stato>.<campo>`. Comporla nei punti in cui serve
- * vorrebbe dire scriverla cinque volte e sbagliarla una.
- */
-export function percorsoParte(
-  parte: string,
-  stato: string | null,
-  campo: string,
-): string[] {
-  return stato === null
-    ? ["parts", parte, campo]
-    : ["parts", parte, "states", stato, campo];
-}
-
-/**
  * Il percorso di un errore, sciolto in passi veri.
  *
  * Il validatore scrive i percorsi col punto — `parts.section-card.radius` — e i
@@ -511,7 +494,7 @@ export function percorsoParte(
  * Gli elenchi non si attraversano, e qui è giusto così: l'unico chiamante è la
  * rinomina di una chiave sbagliata, e una posizione non ha un nome da correggere.
  */
-function passiDi(
+export function passiDi(
   documento: Record<string, unknown>,
   percorso: string,
 ): string[] | null {

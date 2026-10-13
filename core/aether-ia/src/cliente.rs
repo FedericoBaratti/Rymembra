@@ -114,6 +114,12 @@ pub struct Modello {
     pub contesto: Option<u32>,
     /// Quanto costa.
     pub prezzo: Prezzo,
+    /// Legge le immagini, quando il servizio lo dichiara.
+    ///
+    /// `None` non è `false`: Ollama e LM Studio non dicono niente delle
+    /// modalità, e un modello locale con la visione esiste. Chi mostra la
+    /// scelta lascia decidere a chi usa il modello, invece di negargliela.
+    pub vede: Option<bool>,
 }
 
 /// Un modello raggiungibile.
@@ -146,11 +152,26 @@ impl Cliente {
     /// la prende dal portachiavi un istante prima, e questo oggetto vive quanto
     /// una conversazione.
     ///
+    /// # La chiave parte solo verso l'origine per cui è stata scritta
+    ///
+    /// Chi salva un profilo la toglie già quando l'indirizzo cambia origine
+    /// (vedi [`Profilo::chiave_vale_per`]), ma il profilo sta in `settings`, e
+    /// `settings` è un file che si può aprire con altri strumenti. Il controllo
+    /// si rifà qui, sull'ultimo metro prima della rete: una chiave che arriva
+    /// insieme a un indirizzo che non è il suo non costruisce un client.
+    ///
+    /// # Nessun rimando
+    ///
+    /// Le due reti vengono da [`Rete::verso`], che non ne segue nessuno: la
+    /// chiave e la conversazione vanno all'indirizzo del profilo e basta. Un
+    /// 3xx diventa un errore che dice dove il servizio voleva mandarle.
+    ///
     /// # Errori
     ///
     /// `ia.notConfigured` se manca l'indirizzo, il modello, o la chiave di un
-    /// fornitore che la vuole. `ia.notLoopback` per un indirizzo in chiaro che
-    /// non è questa macchina.
+    /// fornitore che la vuole, e se la chiave è stata scritta per un'altra
+    /// origine. `ia.notLoopback` per un indirizzo in chiaro che non è questa
+    /// macchina.
     pub fn nuovo(profilo: &Profilo, chiave: Option<String>) -> Result<Self, AppError> {
         let manca = |cosa: &str| {
             Err(AppError::new(ErrorCode::IaNotConfigured)
@@ -165,6 +186,16 @@ impl Cliente {
         let chiave = chiave.filter(|k| !k.trim().is_empty());
         if profilo.fornitore.vuole_chiave() && chiave.is_none() {
             return manca("una chiave");
+        }
+        if chiave.is_some() && !profilo.chiave_vale_per(&profilo.url_base) {
+            // Si nomina l'origine per cui era scritta, non la chiave: è quel che
+            // serve a capire perché, e non è un segreto.
+            return Err(AppError::new(ErrorCode::IaNotConfigured).with_message(format!(
+                "la chiave del profilo «{}» è stata scritta per {}, non per l'indirizzo di adesso: \
+                 va scritta di nuovo",
+                profilo.id,
+                profilo.origine_chiave.as_deref().unwrap_or("un altro indirizzo")
+            )));
         }
         crate::profilo::controlla_indirizzo(&profilo.url_base)?;
 
@@ -268,17 +299,23 @@ impl Cliente {
             "model": self.profilo.modello,
             "messages": messaggi
                 .iter()
-                .map(|m| json!({ "role": m.ruolo.nome(), "content": m.testo }))
+                .map(|m| json!({ "role": m.ruolo.nome(), "content": m.contenuto() }))
                 .collect::<Vec<_>>(),
             "stream": true,
         });
-        // OpenRouter i gettoni li conta anche in streaming, ma li manda solo a
-        // chi li chiede. Senza questa riga il conto resta `None` proprio dove
-        // costa qualcosa — cioè sull'unico fornitore dei quattro che fa pagare.
-        if self.profilo.fornitore == Fornitore::OpenRouter
-            && let Some(oggetto) = richiesta.as_object_mut()
-        {
-            oggetto.insert("usage".to_owned(), json!({ "include": true }));
+        // I gettoni, in streaming, li manda solo chi li chiede. OpenRouter ha
+        // la sua forma; gli altri quella del protocollo, `stream_options`, che
+        // Ollama e LM Studio documentano. Senza, il conto resta `None` — e la
+        // chat dello Studio non può dire quanto è costata una conversazione.
+        if let Some(oggetto) = richiesta.as_object_mut() {
+            if self.profilo.fornitore == Fornitore::OpenRouter {
+                oggetto.insert("usage".to_owned(), json!({ "include": true }));
+            } else {
+                oggetto.insert(
+                    "stream_options".to_owned(),
+                    json!({ "include_usage": true }),
+                );
+            }
         }
         let corpo = serde_json::to_vec(&richiesta)
             .map_err(|err| self.forma_sbagliata(&format!("la richiesta: {err}")))?;
@@ -440,6 +477,17 @@ impl Cliente {
         let parla_di_modello = detto.as_deref().is_some_and(parla_di_modello)
             || causa.to_lowercase().contains("model");
 
+        // Un rimando che questo client non segue (vedi `Rete::verso`). Il
+        // corpo di un 3xx non dice niente di utile; la causa che
+        // `stato_a_errore` ha scritto sì — dove il servizio voleva mandare la
+        // richiesta — ed è la frase da mostrare, perché quel che va corretto è
+        // l'indirizzo di base che l'utente ha scritto nel profilo.
+        if let ErrorCode::NetHttp { status, .. } = err.code()
+            && (300..400).contains(status)
+        {
+            return err.with_message(causa);
+        }
+
         let nuovo = match err.code() {
             ErrorCode::NetHttp {
                 status: 401 | 403, ..
@@ -565,11 +613,20 @@ fn voce_di_modello(voce: &Value) -> Option<Modello> {
         _ => Prezzo::Sconosciuto,
     };
 
+    // OpenRouter dichiara quel che un modello legge in
+    // `architecture.input_modalities`; chi non lo dichiara non ha detto di no.
+    let vede = voce
+        .get("architecture")
+        .and_then(|a| a.get("input_modalities"))
+        .and_then(Value::as_array)
+        .map(|modi| modi.iter().any(|m| m.as_str() == Some("image")));
+
     Some(Modello {
         id,
         nome,
         contesto,
         prezzo,
+        vede,
     })
 }
 
@@ -746,7 +803,46 @@ mod prove {
             url_base: url.to_owned(),
             modello: "qwen3".to_owned(),
             con_chiave: false,
+            origine_chiave: None,
         }
+    }
+
+    /// La chiave e la conversazione vanno all'indirizzo del profilo e basta:
+    /// nessuna delle due reti segue un rimando.
+    #[test]
+    fn il_client_dei_modelli_non_segue_rimandi() {
+        let cliente = Cliente::nuovo(
+            &profilo(Fornitore::OpenRouter, "https://openrouter.ai/api/v1"),
+            Some("sk-prova".to_owned()),
+        )
+        .expect("un profilo completo costruisce");
+        assert!(matches!(
+            cliente.rete.rimandi(),
+            aether_net::Rimandi::Nessuno
+        ));
+        assert!(matches!(
+            cliente.rete_corta.rimandi(),
+            aether_net::Rimandi::Nessuno
+        ));
+    }
+
+    /// Un profilo modificato a mano in `settings`, con la chiave rimasta e
+    /// l'indirizzo cambiato: la chiave non parte.
+    #[test]
+    fn una_chiave_scritta_per_un_altra_origine_non_parte() {
+        let mut spostato = profilo(Fornitore::OpenRouter, "https://esempio.com/api/v1");
+        spostato.con_chiave = true;
+        spostato.origine_chiave = Some("https://openrouter.ai:443".to_owned());
+        let err = Cliente::nuovo(&spostato, Some("sk-prova".to_owned())).unwrap_err();
+        assert!(matches!(err.code(), ErrorCode::IaNotConfigured));
+        assert!(
+            !format!("{err:?}").contains("sk-prova"),
+            "la chiave non finisce nell'errore"
+        );
+
+        let mut al_suo_posto = spostato.clone();
+        al_suo_posto.url_base = "https://openrouter.ai/api/v1".to_owned();
+        assert!(Cliente::nuovo(&al_suo_posto, Some("sk-prova".to_owned())).is_ok());
     }
 
     #[test]
@@ -1097,6 +1193,20 @@ mod prove {
         assert_eq!(gratis.prezzo, Prezzo::Gratis);
         assert_eq!(gratis.contesto, Some(163_840));
         assert_eq!(gratis.nome.as_deref(), Some("DeepSeek R1 (free)"));
+        assert_eq!(gratis.vede, None, "senza `architecture` non ha detto di no");
+
+        let vista = voce_di_modello(&json!({
+            "id": "x/vede",
+            "architecture": {"input_modalities": ["text", "image"]}
+        }))
+        .expect("una riga buona");
+        assert_eq!(vista.vede, Some(true));
+        let cieco = voce_di_modello(&json!({
+            "id": "x/cieco",
+            "architecture": {"input_modalities": ["text"]}
+        }))
+        .expect("una riga buona");
+        assert_eq!(cieco.vede, Some(false));
 
         // Legge gratis e scrive a pagamento: è a pagamento. La mezza verità qui
         // costa soldi a chi ci crede.
@@ -1187,6 +1297,33 @@ mod prove {
         .unwrap();
         let intatto = remoto.traduci(AppError::new(ErrorCode::NetOffline { url: None }));
         assert!(matches!(intatto.code(), ErrorCode::NetOffline { .. }));
+    }
+
+    /// Un rimando non seguito si dice con la frase che nomina dove portava:
+    /// è l'indirizzo di base del profilo quel che va corretto.
+    #[test]
+    fn un_rimando_non_seguito_dice_dove_portava() {
+        let cliente = Cliente::nuovo(
+            &profilo(Fornitore::Personalizzato, "https://proxy.esempio/v1"),
+            None,
+        )
+        .unwrap();
+        let rete = Rete::nuova("ia", Duration::from_secs(1));
+        let rimando = aether_net::Risposta {
+            stato: 307,
+            corpo: Vec::new(),
+            riprova_fra_ms: None,
+            posizione: Some("https://nuovo.esempio/v1/models?firma=x".to_owned()),
+            url_finale: "https://proxy.esempio/v1/models".to_owned(),
+            intervallo: None,
+        };
+        let tradotto =
+            cliente.traduci(rete.stato_a_errore(&rimando, "https://proxy.esempio/v1/models"));
+        assert_eq!(tradotto.code().kind().code(), "net.http");
+        assert!(!tradotto.is_retryable());
+        let frase = tradotto.message().unwrap_or_default();
+        assert!(frase.contains("nuovo.esempio/v1/models"), "{frase}");
+        assert!(!frase.contains("firma"), "la query non si mostra: {frase}");
     }
 
     /// Il limite di frequenza non ha un codice suo, e non deve prenderselo.

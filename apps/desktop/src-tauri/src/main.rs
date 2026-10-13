@@ -12,10 +12,12 @@ mod account;
 mod aggiornamenti;
 mod analisi;
 mod arricchimento;
+mod barra;
 mod cancellazione;
 mod cartelle;
 mod comandi;
 mod copertine;
+mod destinazioni;
 mod diario;
 mod disparte;
 mod errore;
@@ -23,6 +25,7 @@ mod esplora;
 mod giro;
 mod ia;
 mod importa;
+mod manutenzione;
 mod media;
 mod metadati;
 mod nuvola;
@@ -33,12 +36,14 @@ mod riproduzione;
 mod scrobble;
 mod sincronia;
 mod skin;
+mod sorveglia;
 mod spegnimento;
 mod stato;
 mod studio;
 mod testi;
 mod trascinati;
 mod vassoio;
+mod viste;
 mod zoom;
 
 use tauri::Manager as _;
@@ -63,9 +68,13 @@ const ATTESA_PRIMO_COLORE: std::time::Duration = std::time::Duration::from_secs(
 /// Idempotente per costruzione — `show()` su una finestra già visibile non fa
 /// niente — e per questo la rete di sicurezza qui sopra può chiamarlo senza
 /// coordinarsi con nessuno.
+///
+/// È anche il via del controllo aggiornamenti d'avvio: vedi
+/// `aggiornamenti::finestra_pronta`.
 #[tauri::command]
 fn pronto(finestra: tauri::Window) {
     let _ = finestra.show();
+    aggiornamenti::finestra_pronta(finestra.app_handle());
 }
 
 /// # La barra del titolo la disegna la pagina
@@ -207,7 +216,17 @@ fn main() {
         // Mai nella webview: una finestra dell'applicazione che sa disegnare
         // `accounts.google.com` è una superficie di phishing, e il CSP di
         // `tauri.conf.json` resta identico.
-        .plugin(tauri_plugin_opener::init())
+        //
+        // Senza l'aggancio dei clic: di serie il plugin inietta nella pagina uno
+        // script che apre nel browser ogni `<a target="_blank">` cliccato — un
+        // modo di uscire dalla finestra che non passa da nessun comando nostro,
+        // e che una skin o un testo di un catalogo potrebbero usare. I link che
+        // Aether apre li apre `comandi::apri_documento`, che sa quali sono.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         // Il controllo degli aggiornamenti. Il plugin qui non fa niente da sé:
         // non parte nessuna richiesta al `init`, e la finestra non ha il
         // permesso di chiamarlo — `capabilities/default.json` non elenca
@@ -275,6 +294,11 @@ fn main() {
             // questa riga, cercherebbe uno stato non registrato. Registrarlo
             // vuoto costa un mutex e un intero.
             app.manage(media::StatoMedia::nuovo());
+            // Lo stesso per i pulsanti nell'anteprima, e per una ragione in
+            // più: il loro stato ricorda l'aspetto anche prima che i pulsanti
+            // ci siano, e il primo stato del lettore arriva da `riprendi_coda`
+            // qui sotto. Vedi `barra`.
+            app.manage(barra::StatoBarra::nuovo());
 
             let (lettore, orecchio, orecchio_dispositivi) =
                 riproduzione::StatoLettore::avvia(app.handle());
@@ -302,6 +326,10 @@ fn main() {
             // stato le riempirà da sé, perché passa dallo stesso `manda_stato`
             // di tutti gli altri.
             media::avvia(app.handle());
+            // I pulsanti nell'anteprima, accanto ai controlli multimediali e per
+            // la stessa ragione: si appendono alla finestra, che qui esiste già.
+            // Compaiono quando la finestra si mostra.
+            barra::avvia(app.handle());
 
             // Il backup **per ultimo**: il suo filo aspetta mezzo minuto prima
             // della prima passata proprio per lasciar finire quel che parte
@@ -328,6 +356,10 @@ fn main() {
             app.manage(arricchimento);
             arricchimento::avvia_filo(app.handle().clone(), orecchio);
 
+            // La manutenzione del database: controllo, `optimize`, copertine
+            // orfane. Il suo filo aspetta un minuto — vedi `manutenzione`.
+            manutenzione::avvia(app.handle());
+
             // L'analisi sonora **dopo** l'arricchimento, e il suo filo aspetta
             // due minuti. È l'unica cosa qui dentro che legge dal disco a tutta
             // velocità senza che nessuno l'abbia chiesta, e cede alla
@@ -350,12 +382,10 @@ fn main() {
             // chat dello Studio questo stato non tocca ne' rete ne' disco.
             app.manage(ia::StatoIa::nuovo());
 
-            // Gli aggiornamenti **dopo tutti gli altri**, e il suo filo aspetta
-            // due minuti: è la cosa meno urgente che l'applicazione possa fare
-            // all'apertura, ed è anche l'unica che parla con la rete senza che
-            // nessuno gliel'abbia chiesto. Due minuti sono il tempo perché la
-            // scansione e la coda di ieri abbiano finito di contendersi il
-            // disco.
+            // Gli aggiornamenti **dopo tutti gli altri**: il suo filo aspetta
+            // che la finestra dica `pronto`, e poi dieci secondi. È l'unica
+            // cosa che parla con la rete senza che nessuno gliel'abbia
+            // chiesto, e lo fa una volta per avvio: vedi `aggiornamenti`.
             let (aggiornamenti, orecchio) = aggiornamenti::StatoAggiornamenti::nuovo();
             app.manage(aggiornamenti);
             aggiornamenti::avvia_filo(app.handle().clone(), orecchio);
@@ -367,6 +397,15 @@ fn main() {
             // c'è un menù da costruire. Vedi `vassoio`.
             app.manage(vassoio::StatoVassoio::nuovo());
             vassoio::avvia(app.handle());
+            // Adesso che ci sono tutti e tre — il riquadro multimediale, i
+            // pulsanti della miniatura, il vassoio — il brano della coda di
+            // ieri anche a loro. Vedi `riproduzione::primo_stato_fuori`.
+            riproduzione::primo_stato_fuori(app.handle());
+
+            // Le cartelle sorvegliate **dopo** la libreria: legge la scelta e
+            // l'elenco da lì, e il suo filo aspetta dieci secondi prima di
+            // guardare il disco. Vedi `sorveglia`.
+            sorveglia::avvia(app.handle());
 
             // Per ultima, e dopo tutto il resto: quel che conta è che parta a
             // finestra già costruita, non prima di aprire il database.
@@ -401,6 +440,9 @@ fn main() {
         // fuori dal thread che riceve la richiesta — una griglia che scorre ne
         // fa decine al secondo, e farle in fila le farebbe apparire a scatti.
         .register_asynchronous_uri_scheme_protocol("aether-cover", copertine::servi)
+        // I caratteri e le immagini delle skin. Stessa forma, stesse ragioni:
+        // un `@font-face` li chiede al motore come qualunque risorsa.
+        .register_asynchronous_uri_scheme_protocol("aether-skin", skin::servi_risorsa)
         .invoke_handler(tauri::generate_handler![
             pronto,
             finestra_trascina,
@@ -414,23 +456,33 @@ fn main() {
             vassoio::vassoio_lingua,
             comandi::avvio,
             comandi::imposta_cartelle,
+            comandi::cartelle_trasloca,
             trascinati::smista_trascinati,
             comandi::brano_mostra_nella_cartella,
             comandi::brano_apri_pagina,
             comandi::cartelle_candidate,
+            sorveglia::sorveglianza_stato,
+            sorveglia::imposta_sorveglianza,
             comandi::imposta_cartella_download,
             comandi::cronologia,
             comandi::cronologia_conteggio,
             comandi::scansiona,
             comandi::annulla_scansione,
+            comandi::scansione_avanzamento,
+            comandi::rimozioni_conferma,
+            comandi::rimozioni_scarta,
             cartelle::cartelle_figlie,
             cartelle::cartelle_brani,
+            cartelle::cartelle_file,
+            cartelle::cartelle_filtra,
+            cartelle::cartella_mostra,
             cartelle::cartelle_radici_vive,
             comandi::cartelle_ui,
             comandi::imposta_cartelle_ui,
             comandi::cerca,
             comandi::cerca_conteggio,
             comandi::brani,
+            viste::vista_brani_id,
             comandi::casa,
             comandi::settimana,
             comandi::settimana_apri,
@@ -445,6 +497,7 @@ fn main() {
             // con la seconda anche il file. Vedi `crate::cancellazione`.
             cancellazione::brani_togli,
             cancellazione::brani_elimina,
+            cancellazione::brani_su_rete,
             comandi::piano_importazione,
             comandi::importa,
             comandi::imposta_tema,
@@ -498,12 +551,15 @@ fn main() {
             metadati::metadati_incerti,
             metadati::metadati_correggi,
             metadati::metadati_conferma,
+            metadati::metadati_rileggi_tutti,
             playlist::playlist_elenco,
             playlist::playlist_brani,
             playlist::playlist_crea,
             playlist::playlist_rinomina,
             playlist::playlist_cancella,
+            playlist::playlist_ripristina,
             playlist::playlist_aggiungi,
+            playlist::playlist_crea_e_aggiungi,
             playlist::playlist_togli,
             playlist::playlist_riordina,
             playlist::playlist_crea_smart,
@@ -532,6 +588,15 @@ fn main() {
             studio::studio_istantanee,
             studio::studio_istantanea,
             studio::studio_ripristina,
+            studio::studio_risorsa_aggiungi,
+            studio::studio_risorsa_togli,
+            studio::studio_migra,
+            studio::studio_compila_app,
+            studio::studio_crea,
+            studio::studio_occupati,
+            studio::studio_chat_leggi,
+            studio::studio_chat_scrivi,
+            studio::studio_tavolozza_da,
             ia::ia_profili,
             ia::ia_salva_profilo,
             ia::ia_elimina_profilo,
@@ -551,6 +616,9 @@ fn main() {
             riproduzione::volume,
             riproduzione::equalizzatore,
             riproduzione::normalizzazione,
+            riproduzione::normalizzazione_modo,
+            riproduzione::normalizzazione_modo_scegli,
+            riproduzione::normalizzazione_avanzamento,
             riproduzione::spegnimento,
             riproduzione::autoplay,
             riproduzione::dissolvenza,
@@ -585,6 +653,7 @@ fn main() {
             riproduzione::brani_per_id,
             nuvola::nuvola_stato,
             nuvola::nuvola_collega,
+            nuvola::nuvola_annulla,
             nuvola::nuvola_scollega,
             nuvola::nuvola_credenziali,
             nuvola::nuvola_attiva,
@@ -608,6 +677,7 @@ fn main() {
             testi::testi_pannello,
             testi::testi_stato,
             testi::testi_rete,
+            testi::testi_accanto,
             testi::testi_riempi,
             testi::testi_ferma,
             testi::testo_aggancia,
@@ -634,9 +704,15 @@ fn main() {
             aggiornamenti::aggiornamenti_adesso,
             aggiornamenti::aggiornamenti_salta,
             aggiornamenti::aggiornamenti_installa,
+            aggiornamenti::aggiornamenti_annulla,
+            stato::fili_salute,
             diario::diario_apri,
             diario::diario_annota,
+            manutenzione::manutenzione_stato,
+            manutenzione::manutenzione_salute,
+            manutenzione::manutenzione_pulisci_copertine,
             comandi::apri_documento,
+            comandi::apri_guida,
         ])
         .build(tauri::generate_context!());
 
@@ -689,33 +765,9 @@ fn main() {
                 return;
             }
 
-            spegnimento::chiedi();
-            // E poi si dice alla scansione di smettere, se ce n'è una. Non è un
-            // di più rispetto alla riga qui sopra: `spegnimento` ferma i fili
-            // che guardano la sua bandiera, e la scansione guarda la propria —
-            // quella che alza anche «Annulla». Senza questa riga una scansione
-            // che sta leggendo una condivisione di rete continuerebbe a leggerla
-            // mentre il resto del programma se ne va, e le due righe che
-            // seguono aspetterebbero il suo lucchetto.
-            //
-            // `try_state` e non `state`: `state` panica se lo stato non c'è, e
-            // qui si sta smontando tutto. Nessuno stato vuol dire nessuna
-            // scansione da fermare.
-            if let Some(stato) = mano.try_state::<stato::Stato>() {
-                stato.ferma_scansione();
-            }
-            // L'ultima posizione di un cursore mosso un attimo prima di
-            // chiudere: il filo dell'orologio, che di solito la scrive, è
-            // appena uscito per via della riga qui sopra.
-            riproduzione::salva_uscendo(mano);
-            // Poi la scheda del sistema. Il distacco parla all'`HWND` della
-            // finestra, e questo è l'ultimo momento in cui quell'`HWND` esiste
-            // ancora.
-            media::stacca(mano);
-            // E l'icona dell'area di notifica, per la stessa ragione: anche lei
-            // se ne va parlando col sistema operativo, e lasciarla cadere da
-            // sola vorrebbe dire farlo a ciclo degli eventi già smontato.
-            vassoio::stacca(mano);
+            // La sequenza vera sta in `spegnimento::spegni`, perché la usa
+            // anche l'aggiornamento, che esce da un'altra strada: vedi lì.
+            spegnimento::spegni(mano);
         }),
         Err(err) => {
             // Nel diario e non solo su `stderr`: questo è il ramo in cui la

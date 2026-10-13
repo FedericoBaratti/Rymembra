@@ -42,6 +42,8 @@ import {
 } from "../ipc";
 import { t } from "../lingue";
 import { durata, nomeLicenza } from "../formato";
+import { conIndice } from "../segnali";
+import { useDati } from "../dati";
 
 /**
  * Che cosa dire dopo un «aggiungi tutti».
@@ -53,9 +55,8 @@ import { durata, nomeLicenza } from "../formato";
  */
 function riassunto(conteggi: AggiuntiDalCatalogo): string {
   const pezzi: string[] = [];
-  if (conteggi.aggiunti === 1) pezzi.push(t("explore.done.uno"));
-  else if (conteggi.aggiunti > 1)
-    pezzi.push(t("explore.done", { n: conteggi.aggiunti }));
+  // Una chiave sola: `.uno` la sceglie il motore delle lingue (`plurali.ts`).
+  if (conteggi.aggiunti > 0) pezzi.push(t("explore.done", { n: conteggi.aggiunti }));
   if (conteggi.giaPresenti > 0)
     pezzi.push(t("explore.done.gia", { n: conteggi.giaPresenti }));
 
@@ -67,9 +68,30 @@ function riassunto(conteggi: AggiuntiDalCatalogo): string {
 /** Lo stato in cui si trova la pagina. */
 type Fase =
   | { tipo: "ferma" }
-  | { tipo: "cerca" }
+  | { tipo: "cerca"; frase: string }
   | { tipo: "esito"; esito: EsitoRicerca; frase: string }
   | { tipo: "guasto" };
+
+/**
+ * Il numero dell'ultima ricerca partita.
+ *
+ * # Perché serve
+ *
+ * Perché le risposte non arrivano nell'ordine in cui si sono chieste. Cercando
+ * «john coltrane live», fermando e cercando «debussy clair de lune», i
+ * risultati di Debussy comparivano e dopo due secondi venivano sostituiti da
+ * cinquantasei righe dei Grateful Dead: la prima ricerca, fermata a metà, finiva
+ * dopo la seconda e la sua risposta vinceva. Adesso ogni risposta porta il suo
+ * numero, e quella che non è più l'ultima si butta.
+ *
+ * # Perché fuori dal componente
+ *
+ * Perché il componente si smonta a ogni cambio di schermata e la ricerca no:
+ * un `useRef` rinascerebbe a zero al ritorno, e una risposta partita prima
+ * troverebbe il suo numero ancora valido nella copia vecchia. Di Esplora ce
+ * n'è una sola, e il numero è suo.
+ */
+let ultimaRicerca = 0;
 
 /**
  * Quel che una visita a Esplora lascia dietro di sé.
@@ -125,6 +147,7 @@ export function Esplora({
   /** La libreria è cambiata: gli elenchi aperti vanno riletti. */
   onLibreriaCambiata: () => void;
 }) {
+  const letture = useDati().ipc;
   const { frase, fase } = stato;
   const setFrase = useCallback(
     (testo: string) => onStato((prima) => ({ ...prima, frase: testo })),
@@ -157,9 +180,11 @@ export function Esplora({
    * dell'applicazione in cui la prima cosa da fare è scrivere, ed è l'unica in
    * cui l'autofocus non ruba il fuoco a nient'altro.
    */
+  const { anteprima } = useDati();
   useEffect(() => {
-    campo.current?.focus();
-  }, []);
+    // Non sulla tela dello Studio, dove il fuoco è dello Studio.
+    if (!anteprima) campo.current?.focus();
+  }, [anteprima]);
 
   const segna = useCallback((url: string, attivo: boolean) => {
     setInCorso((prima) => {
@@ -194,18 +219,26 @@ export function Esplora({
   const cerca = useCallback(async () => {
     const testo = frase.trim();
     if (testo === "") return;
-    setFase({ tipo: "cerca" });
+    // La stessa frase mentre la si sta già cercando: Invio premuto due volte,
+    // non una domanda nuova. Richiederla vorrebbe dire ripartire da capo con
+    // gli archivi. Una frase **diversa** invece prende il posto di quella in
+    // corso, che il nucleo ferma da sé.
+    if (fase.tipo === "cerca" && fase.frase === testo) return;
+    const numero = ++ultimaRicerca;
+    setFase({ tipo: "cerca", frase: testo });
     try {
-      const esito = await ipc.esploraCerca(testo);
+      const esito = await letture.esploraCerca(testo);
+      if (numero !== ultimaRicerca) return;
       setFase({ tipo: "esito", esito, frase: testo });
     } catch (e) {
+      if (numero !== ultimaRicerca) return;
       // Il guasto si mostra come stato della pagina e non come toast: un toast
       // sparisce, e quel che resta sarebbe una pagina vuota che dice «nessun
       // risultato» — cioè la frase sbagliata.
       setFase({ tipo: "guasto" });
       onErrore(e);
     }
-  }, [frase, onErrore]);
+  }, [frase, fase, onErrore]);
 
   const aggiungi = useCallback(
     async (riga: RisultatoEsplora) => {
@@ -389,12 +422,12 @@ export function Esplora({
 
   return (
     <div className="esplora">
-      <div className="esplora-barra">
-        <div className="cerca">
+      <div className="esplora-barra explore-bar">
+        <div className="cerca search-field">
           <Icona nome="i-search" dim={16} />
           <input
             ref={campo}
-            className="campo"
+            className="campo field-input"
             type="search"
             value={frase}
             placeholder={t("explore.placeholder")}
@@ -405,7 +438,9 @@ export function Esplora({
             }}
           />
         </div>
-        {fase.tipo === "cerca" ? (
+        {/* «Ferma» solo per la frase che si sta cercando: se nel frattempo
+            la casella dice altro, il tasto torna «Cerca», come fa Invio. */}
+        {fase.tipo === "cerca" && fase.frase === frase.trim() ? (
           <button
             type="button"
             className="bottone btn-ghost"
@@ -509,16 +544,18 @@ export function Esplora({
       {risultati.length > 0 && (
         <>
           <p className="nota">
-            {risultati.length === 1
-              ? t("explore.results.uno")
-              : t("explore.results", { n: risultati.length })}
+            {t("explore.results", { n: risultati.length })}
           </p>
           <ul className="elenco-esplora">
-            {risultati.map((riga) => {
+            {risultati.map((riga, indice) => {
               const occupata = inCorso.has(riga.url);
               const siPuoAscoltare = riga.disponibilita !== "soloAcquisto";
               return (
-                <li key={riga.url} className="list-row">
+                <li
+                  key={riga.url}
+                  className="list-row explore-row"
+                  style={conIndice(indice)}
+                >
                   <span className="titolo">
                     {riga.autore !== null && riga.autore !== ""
                       ? `${riga.autore} — `
@@ -551,7 +588,7 @@ export function Esplora({
                     )}
                     <span className="provenienza">{riga.fonteEtichetta}</span>
                     <span
-                      className="pastiglia licenza"
+                      className="pastiglia badge licenza"
                       data-livello="nota"
                       title={nomeLicenza(riga.licenza)}
                     >
@@ -559,7 +596,7 @@ export function Esplora({
                     </span>
                     {riga.disponibilita === "scaricabile" ? (
                       <span
-                        className="pastiglia tenibile"
+                        className="pastiglia badge tenibile"
                         data-livello="esito"
                         title={t("explore.keep.title")}
                       >
@@ -567,7 +604,7 @@ export function Esplora({
                       </span>
                     ) : siPuoAscoltare ? (
                       <span
-                        className="pastiglia flusso"
+                        className="pastiglia badge flusso"
                         data-livello="nota"
                         title={t("explore.stream.title")}
                       >
@@ -575,7 +612,7 @@ export function Esplora({
                       </span>
                     ) : (
                       <span
-                        className="pastiglia solo-negozio"
+                        className="pastiglia badge solo-negozio"
                         data-livello="avviso"
                       >
                         {t("explore.notPermitted")}
@@ -684,7 +721,7 @@ export function Esplora({
                         </button>
                       ))}
                     {riga.inLibreria && (
-                      <span className="pastiglia certo" data-livello="certo">
+                      <span className="pastiglia badge certo" data-livello="certo">
                         {t("explore.added")}
                       </span>
                     )}

@@ -12,9 +12,12 @@
  * È anche la forma che questa scelta avrà quando arriverà nel registro dei
  * widget: là è un `OptionKind::Word`, cioè un segmentato nello Studio.
  */
+import { memo } from "react";
+
 import { ipc, type StatoRiproduzione } from "../ipc";
 import { Icona } from "./Icone";
-import { t } from "../lingue";
+import { t, useLingua } from "../lingue";
+import { statoSuono } from "../segnali";
 
 /**
  * Come si legge un modo di ripetizione, per chi usa uno screen reader.
@@ -69,7 +72,7 @@ const MISURE = {
   },
 } as const;
 
-export function Trasporto({
+export const Trasporto = memo(function Trasporto({
   stato,
   taglia,
   conMescola = true,
@@ -84,6 +87,10 @@ export function Trasporto({
   conRipeti?: boolean;
   onErrore: (e: unknown) => void;
 }) {
+  // Sotto `memo` (vedi «I widget sotto `memo`» in `Impaginazione.tsx`): si
+  // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
+  // l'iscrizione i testi resterebbero quelli del primo disegno.
+  useLingua();
   const { icona, play, classe, titoli, scorciatoia } = MISURE[taglia];
 
   const comanda = (azione: Promise<void>) => {
@@ -122,6 +129,7 @@ export function Trasporto({
       <button
         type="button"
         className="tasto grande play-btn-primary"
+        {...statoSuono(stato.brano !== null, stato.inPausa)}
         aria-label={stato.inPausa ? t("player.resume") : t("player.pause")}
         title={forse(
           `${stato.inPausa ? t("player.resume") : t("player.pause.short")}${
@@ -160,4 +168,4 @@ export function Trasporto({
       )}
     </div>
   );
-}
+});

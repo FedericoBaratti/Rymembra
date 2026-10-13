@@ -1,13 +1,18 @@
 /**
- * I dati tecnici del file: «FLAC · 44,1 kHz · Stereo · 1058 kbps».
+ * I dati tecnici di quel che suona: «FLAC · 44,1 kHz · 24 bit · Stereo · 1058 kbps».
  *
  * # Cosa dice, e cosa non dice
  *
- * Il **file**, non l'uscita. Se la scheda audio sta ricampionando a 48 kHz,
+ * L'**edizione**, non l'uscita. Se la scheda audio sta ricampionando a 48 kHz,
  * questa riga continua a dire 44,1: la domanda a cui risponde è «com'è fatta
  * questa edizione», e l'uscita reale non ci risponde — cambierebbe cambiando
  * cuffia, mentre il file resta quello. È una decisione dell'autore, non una
- * semplificazione.
+ * semplificazione. Il ricampionamento lo dice il suggerimento, a chi ci si
+ * ferma sopra per saperlo.
+ *
+ * I numeri sono quelli del decodificatore quando il brano suona (il codec vero
+ * dentro un M4A, l'MP3 che si ascolta di un FLAC dell'Internet Archive), e
+ * quelli del database nell'istante prima: vedi `FormatoFile` in `ipc.ts`.
  *
  * # Perché è un componente puro
  *
@@ -72,17 +77,12 @@ export function Formato({
   // lo scarto del valore assurdo è qui — nello stesso posto in cui si scarta un
   // `null`, invece di un secondo cammino per il guasto.
   if (formato.sampleRate && formato.sampleRate > 0) {
-    const khz = formato.sampleRate / 1000;
-    // Il decimale **solo quando c'è**: «44,1 kHz» ma «48 kHz», non «48,0 kHz».
-    // Un decimale fisso scriverebbe uno zero che non dice niente sui tre quarti
-    // delle librerie — 48, 96 e 192 sono interi — e la riga è già stretta.
-    //
-    // La virgola la sceglie la lingua: `numero` è l'unico posto in cui questa
-    // applicazione chiama `toLocaleString`, e passarci da qui è ciò che dà
-    // «44,1» in italiano e «44.1» in inglese senza scriverlo qui.
-    pezzi.push(
-      t("format.khz", { n: numero(khz, Number.isInteger(khz) ? 0 : 1) }),
-    );
+    pezzi.push(kilohertz(formato.sampleRate));
+  }
+  // Solo per i formati senza perdita, e lo decide il nucleo: su un MP3 il
+  // numero non esiste, e il decodificatore ne riporterebbe uno inventato.
+  if (formato.bitsPerSample && formato.bitsPerSample > 0) {
+    pezzi.push(t("format.bits", { n: formato.bitsPerSample }));
   }
   if (formato.channels && formato.channels > 0) {
     pezzi.push(canali(formato.channels));
@@ -98,13 +98,44 @@ export function Formato({
   if (pezzi.length === 0) return null;
 
   const riga = pezzi.join(" · ");
+  // Il ricampionamento sta nel suggerimento e non nella riga: vedi in testa.
+  const ricampionato =
+    formato.sampleRate &&
+    formato.sampleRate > 0 &&
+    formato.outputRate &&
+    formato.outputRate > 0 &&
+    formato.outputRate !== formato.sampleRate
+      ? t("format.resampled", {
+          da: kilohertz(formato.sampleRate),
+          a: kilohertz(formato.outputRate),
+        })
+      : null;
   // Il `title` è la riga intera, come per `.np-meta` accanto: nella colonna
   // larga 348 px fissi il foglio tronca con i puntini, e un formato dal nome
   // lungo — «Ogg Vorbis», «Musepack» — perde il bitrate in coda. Col
   // suggerimento resta leggibile fermandoci sopra.
   return (
-    <div className={classe} title={riga}>
+    <div
+      className={classe}
+      title={ricampionato === null ? riga : `${riga}\n${ricampionato}`}
+    >
       {riga}
     </div>
   );
+}
+
+/**
+ * Hertz in «44,1 kHz».
+ *
+ * Il decimale **solo quando c'è**: «44,1 kHz» ma «48 kHz», non «48,0 kHz».
+ * Un decimale fisso scriverebbe uno zero che non dice niente sui tre quarti
+ * delle librerie — 48, 96 e 192 sono interi — e la riga è già stretta.
+ *
+ * La virgola la sceglie la lingua: `numero` è l'unico posto in cui questa
+ * applicazione chiama `toLocaleString`, e passarci da qui è ciò che dà «44,1»
+ * in italiano e «44.1» in inglese senza scriverlo qui.
+ */
+function kilohertz(hz: number): string {
+  const khz = hz / 1000;
+  return t("format.khz", { n: numero(khz, Number.isInteger(khz) ? 0 : 1) });
 }

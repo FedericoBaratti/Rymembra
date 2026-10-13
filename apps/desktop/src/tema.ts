@@ -1,12 +1,19 @@
 /**
  * Chiaro, scuro, o quel che dice il sistema.
  *
- * # Perché adesso un comando serve
+ * # Temi simmetrici
  *
- * Il compilatore delle skin emette già la variante chiara sotto
- * `:root[data-skin='<id>'][data-theme='light']` — è in `compile.rs`, alla riga
- * che costruisce il selettore. Tutto quel che serve è che qualcuno scriva
- * quell'attributo, e questo file non fa altro.
+ * Una skin nasce scura o chiara (`scheme`), e può avere la **variante** del
+ * tema opposto. Il compilatore scrive la base sotto `:root[data-skin='<id>']`
+ * e la variante sotto `:root[data-skin='<id>'][data-theme='<opposto>']`, quindi
+ * tutto quel che serve è che qualcuno scriva quell'attributo — e questo file
+ * non fa altro.
+ *
+ * `data-theme` dice sempre **il tema che si vede**, anche quando coincide con
+ * la base: una skin chiara senza variante resta chiara con la preferenza sullo
+ * scuro, e l'attributo scrive `light`. Così chi legge l'attributo — il blocco
+ * chiaro di ripiego in `stile.css`, lo spettro che ricalcola i suoi colori —
+ * legge la verità e non la preferenza.
  *
  * Dove la scelta si **ricorda** è invece cambiato: stava in `localStorage`,
  * adesso sta in `ui.theme`, nel database. La ragione sta scritta per esteso in
@@ -35,8 +42,16 @@
  * JavaScript. La nota sta in `apps/desktop/src-tauri/src/skin.rs`.
  */
 
+import type { Schema } from "./ipc";
+
 /** Le tre scelte. */
 export type Tema = "scuro" | "chiaro" | "sistema";
+
+/** Quel che di una skin serve a decidere il tema: la base, e se ha l'opposto. */
+export interface TemiSkin {
+  scheme: Schema;
+  variante: boolean;
+}
 
 /** La chiave in cui la scelta viveva prima che tornasse nel nucleo. */
 const CHIAVE = "aether.tema";
@@ -63,32 +78,40 @@ export function dimenticaRipiego(): void {
 }
 
 /**
- * Applica un tema. Non lo ricorda: quello lo fa `ipc.impostaTema`.
+ * Il tema che si vede, data la scelta e la skin.
  *
- * `chiara` dice se la skin attiva ha davvero una variante chiara. Quando non ce
- * l'ha si resta sullo scuro anche se la preferenza dice altro: mettere
- * `data-theme='light'` senza un blocco che lo raccolga non cambierebbe niente,
- * e l'interfaccia mostrerebbe una scelta fatta e non avvenuta.
- *
- * Restituisce il tema che si sta **davvero** mostrando, che non è sempre quello
- * scelto — vedi il capoverso qui sopra. Serve a chi deve calcolare qualcosa
- * contro le superfici del tema in uso, come l'accento che segue la copertina:
- * chiederlo alla preferenza invece che al risultato darebbe la risposta
- * sbagliata proprio nel caso in cui i due divergono.
+ * Quello scelto se la skin lo sa mostrare — perché è la sua base o perché ha
+ * la variante — e altrimenti la sua base. Prima che la skin arrivi vale la
+ * base di serie, scura: la finestra non si mostra finché skin e tema non sono
+ * sul documento, quindi quel valore non si vede mai.
  */
-export function applicaTema(tema: Tema, chiara: boolean): boolean {
+export function temaMostrato(tema: Tema, skin: TemiSkin | null): Schema {
   const vuoleChiaro =
     tema === "chiaro" ||
     (tema === "sistema" &&
       window.matchMedia("(prefers-color-scheme: light)").matches);
+  const voluto: Schema = vuoleChiaro ? "light" : "dark";
+  const base = skin?.scheme ?? "dark";
+  return voluto === base || skin?.variante === true ? voluto : base;
+}
 
-  const radice = document.documentElement;
-  if (vuoleChiaro && chiara) {
-    radice.dataset.theme = "light";
-    return true;
-  }
-  delete radice.dataset.theme;
-  return false;
+/**
+ * Applica un tema. Non lo ricorda: quello lo fa `ipc.impostaTema`.
+ *
+ * Una skin che non sa mostrare il tema scelto resta nella sua base: scrivere
+ * l'altro senza un blocco che lo raccolga non cambierebbe i colori, e
+ * l'interfaccia mostrerebbe una scelta fatta e non avvenuta.
+ *
+ * Restituisce se si sta **davvero** mostrando il chiaro, che non è sempre
+ * quel che si è scelto. Serve a chi deve calcolare qualcosa contro le
+ * superfici del tema in uso, come l'accento che segue la copertina: chiederlo
+ * alla preferenza invece che al risultato darebbe la risposta sbagliata
+ * proprio nel caso in cui i due divergono.
+ */
+export function applicaTema(tema: Tema, skin: TemiSkin | null): boolean {
+  const mostrato = temaMostrato(tema, skin);
+  document.documentElement.dataset.theme = mostrato;
+  return mostrato === "light";
 }
 
 /**
@@ -105,13 +128,13 @@ export function applicaTema(tema: Tema, chiara: boolean): boolean {
  * saprebbe.
  */
 export function seguiIlSistema(
-  quando: () => { tema: Tema; chiara: boolean },
+  quando: () => { tema: Tema; skin: TemiSkin | null },
   avvisa?: (chiaro: boolean) => void,
 ): () => void {
   const media = window.matchMedia("(prefers-color-scheme: light)");
   const reagisci = () => {
-    const { tema, chiara } = quando();
-    if (tema === "sistema") avvisa?.(applicaTema(tema, chiara));
+    const { tema, skin } = quando();
+    if (tema === "sistema") avvisa?.(applicaTema(tema, skin));
   };
   media.addEventListener("change", reagisci);
   return () => media.removeEventListener("change", reagisci);

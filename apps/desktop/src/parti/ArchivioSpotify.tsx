@@ -85,13 +85,6 @@ export function ComeAvereLArchivio({
 }) {
   return (
     <div className="archivio-spotify">
-      <p className="nota">
-        <Trans
-          k="archive.intro"
-          v={{ intero: <strong>{t("archive.intro.whole")}</strong> }}
-        />
-      </p>
-
       <ol className="passi">
         {passi().map((passo, i) => (
           // L'indice come chiave: sono tre voci costanti, scritte qui sopra e
@@ -116,12 +109,6 @@ export function ComeAvereLArchivio({
         </button>
       </div>
 
-      <p className="nota">
-        <Trans
-          k="archive.askNow"
-          v={{ adesso: <strong>{t("archive.askNow.now")}</strong> }}
-        />
-      </p>
     </div>
   );
 }

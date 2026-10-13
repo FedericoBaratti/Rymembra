@@ -9,8 +9,9 @@
 use crate::spegnimento::Emette as _;
 use aether_app::import_legacy;
 use aether_app::library::{
-    AlbumSummary, ArtistSummary, Counts, Scadenze, Scan, ScanReport, TrackOrder, TrackSummary,
-    album_tracks, counts, list_albums, list_artists, list_tracks, recently_added_albums, search,
+    AlbumSummary, ArtistSummary, Counts, RimozioneInAttesa, RimozioniSottoUnaRadice, Scadenze,
+    Scan, ScanReport, TrackOrder, TrackSummary, album_tracks, applica_rimozioni, counts,
+    list_albums, list_artists, list_tracks, recently_added_albums, riassumi_rimozioni, search,
     summaries_by_id,
 };
 use aether_app::settings::CHIAVE_CARTELLE;
@@ -19,7 +20,7 @@ use aether_domain::paths::PathRules;
 use serde::Serialize;
 use tauri::{Manager as _, State};
 
-use crate::disparte::in_disparte;
+use crate::disparte::{in_disparte, leggi_la_libreria};
 use crate::errore::{Esito, errore};
 use crate::stato::{DepositoStato, Stato, adesso_ms, con_libreria};
 
@@ -78,9 +79,12 @@ fn leggi_cartelle(connection: &rusqlite::Connection) -> Result<Vec<String>, AppE
 }
 
 /// Lo stato all'avvio.
+///
+/// In disparte, come ogni lettura che conta tutta la libreria: vedi
+/// [`crate::disparte`].
 #[tauri::command]
-pub fn avvio(stato: State<'_, Stato>) -> Esito<Avvio> {
-    con_libreria(&stato, |libreria| {
+pub async fn avvio(app: tauri::AppHandle) -> Esito<Avvio> {
+    leggi_la_libreria(app, "avvio", |libreria| {
         Ok(Avvio {
             data_dir: libreria.data_dir.display().to_string(),
             migrazioni: libreria.migrazioni,
@@ -99,10 +103,11 @@ pub fn avvio(stato: State<'_, Stato>) -> Esito<Avvio> {
             scorciatoie: aether_app::preferenze::scorciatoie(&libreria.connection)?,
         })
     })
+    .await
     .map_err(errore)
 }
 
-/// Cambia le cartelle sorvegliate.
+/// Cambia le cartelle sorvegliate, e dice cosa ne ha fatto.
 ///
 /// # I doppioni si tolgono qui
 ///
@@ -113,55 +118,223 @@ pub fn avvio(stato: State<'_, Stato>) -> Esito<Avvio> {
 /// [`aether_domain::paths::path_key`], che è quello della scansione, e sta qui
 /// perché le strade che arrivano a questo comando sono tre: resta la prima
 /// grafia, quella con cui la cartella era già in elenco.
+///
+/// # E le annidate, e le gemelle
+///
+/// `D:\M` e `D:\M\Rock` insieme sono la stessa musica letta due volte: resta la
+/// madre, e la risposta lo dice fra le `assorbite`. `Z:\` e `\\nas\musica`
+/// possono essere la stessa cartella con due nomi, e aggiungere la seconda
+/// voleva dire ogni brano rientrato col nome nuovo e la storia vuota: la
+/// seconda non entra, e la risposta la mette fra le `gemelle`, per cui la
+/// finestra propone [`cartelle_trasloca`]. La decisione è
+/// [`aether_app::profilo::radici::ordina_cartelle`], che si prova senza una
+/// share; qui si chiede soltanto al disco il nome vero di ogni cartella.
+///
+/// # Dove gira
+///
+/// In disparte, e il nome vero si chiede **fuori** dal lucchetto: risolvere una
+/// lettera mappata tocca la rete, e su una share che non risponde è un'attesa.
+/// Solo quando c'è una cartella nuova — togliere una cartella non ha bisogno di
+/// sapere dove stanno le altre.
+///
+/// # Errori
+///
+/// `internal.aborted` se la libreria non c'è più, `db.*` se la lettura o la
+/// scrittura falliscono.
 #[tauri::command]
-pub fn imposta_cartelle(
+pub async fn imposta_cartelle(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     cartelle: Vec<String>,
-) -> Esito<()> {
-    let cartelle = senza_doppioni(cartelle);
-    crate::nuvola::se_riuscito(
-        &app,
+) -> Esito<aether_app::profilo::radici::CartelleOrdinate> {
+    let mano = app.clone();
+    let esito = in_disparte("cartelle sorvegliate", move || {
+        let stato = libreria_di(&mano, "cartelle sorvegliate")?;
+        let prima = con_libreria(&stato, |libreria| leggi_cartelle(&libreria.connection))?;
+        let nomi = nomi_veri(&prima, &cartelle);
+        let ordinate = aether_app::profilo::radici::ordina_cartelle(&prima, &cartelle, &|c| {
+            nomi.get(c).cloned().flatten()
+        });
         con_libreria(&stato, |libreria| {
-            aether_app::settings::write_json(&libreria.connection, CHIAVE_CARTELLE, &cartelle)
-        })
-        .map_err(errore),
-    )
-}
-
-/// Le cartelle senza quelle che indicano lo stesso posto di una precedente, e
-/// senza le righe vuote.
-fn senza_doppioni(cartelle: Vec<String>) -> Vec<String> {
-    let regole = aether_domain::paths::PathRules::for_current_platform();
-    let mut viste = std::collections::HashSet::new();
-    cartelle
-        .into_iter()
-        .filter(|cartella| !cartella.trim().is_empty())
-        .filter(|cartella| viste.insert(aether_domain::paths::path_key(cartella, regole)))
-        .collect()
-}
-
-#[cfg(test)]
-mod prove_cartelle {
-    use super::senza_doppioni;
-
-    #[test]
-    fn la_stessa_cartella_scritta_in_tre_modi_e_una() {
-        let date = vec![
-            r"D:\Musica".to_owned(),
-            r"D:\Musica\".to_owned(),
-            r"D:\Live".to_owned(),
-            "   ".to_owned(),
-        ];
-        let attese = vec![r"D:\Musica".to_owned(), r"D:\Live".to_owned()];
-        assert_eq!(senza_doppioni(date.clone()), attese);
-        // Le maiuscole contano solo dove il filesystem le distingue.
-        if cfg!(any(target_os = "windows", target_os = "macos")) {
-            let mut con_minuscole = date;
-            con_minuscole.insert(1, r"d:\musica".to_owned());
-            assert_eq!(senza_doppioni(con_minuscole), attese);
-        }
+            aether_app::settings::write_json(
+                &libreria.connection,
+                CHIAVE_CARTELLE,
+                &ordinate.cartelle,
+            )
+        })?;
+        Ok(ordinate)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore);
+    // La sorveglianza segue l'elenco: una cartella nuova si comincia a
+    // guardare adesso, una tolta smette.
+    if esito.is_ok() {
+        crate::sorveglia::riconfigura(&app);
     }
+    crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// La libreria, o l'errore di chi arriva mentre la finestra si chiude.
+///
+/// `try_state` e non `state`, come in `cancellazione`: questi corpi girano sul
+/// pool bloccante, e possono ritrovarsi vivi quando gli stati gestiti sono già
+/// stati lasciati cadere.
+fn libreria_di<'a>(
+    app: &'a tauri::AppHandle,
+    cosa: &'static str,
+) -> Result<State<'a, Stato>, AppError> {
+    app.try_state::<Stato>().ok_or_else(|| {
+        AppError::new(ErrorCode::InternalAborted {
+            what: Some(cosa.to_owned()),
+        })
+        .with_cause("la libreria non è più fra gli stati gestiti")
+    })
+}
+
+/// Il nome vero di ogni cartella chiesta, se fra loro ce n'è una nuova.
+///
+/// Vuoto quando non ce n'è: le regole che lo usano confrontano una cartella
+/// **nuova** con le altre, e senza nuove non c'è niente da confrontare.
+fn nomi_veri(
+    prima: &[String],
+    chieste: &[String],
+) -> std::collections::HashMap<String, Option<String>> {
+    let regole = PathRules::for_current_platform();
+    let chiave = |p: &str| aether_domain::paths::path_key(p, regole);
+    let c_e_una_nuova = chieste
+        .iter()
+        .any(|c| !prima.iter().any(|p| chiave(p) == chiave(c)));
+    if !c_e_una_nuova {
+        return std::collections::HashMap::new();
+    }
+    let elenco: Vec<String> = chieste
+        .iter()
+        .map(|c| c.trim().to_owned())
+        .filter(|c| !c.is_empty())
+        .collect();
+    let risolti =
+        aether_app::volumi::risolvi_tutti(&elenco, aether_app::volumi::SCADENZA_RISOLUZIONE);
+    elenco.into_iter().zip(risolti).collect()
+}
+
+/// Sposta la libreria da una cartella sorvegliata alla stessa cartella scritta
+/// in un altro modo, senza perdere niente.
+///
+/// È la risposta a una [`aether_app::profilo::radici::Gemella`]: `Z:\` e
+/// `\\nas\musica` sono lo stesso posto, e chi aggiunge la seconda vuole che la
+/// libreria la usi **al posto** della prima. Si riscrivono i percorsi dei brani
+/// — ascolti, voti e playlist restano attaccati alle loro righe — poi la
+/// cartella sorvegliata e, se ci stava sotto, quella dei download.
+///
+/// # Le tre fasi
+///
+/// Le stesse del profilo: i percorsi nuovi si leggono con il lucchetto preso
+/// per un attimo, si verificano **fuori** (in parallelo, con la scadenza: sono
+/// file su una share) e si scrivono dentro una transazione sola, con le
+/// risposte già in mano. Nessuna domanda al disco parte con il lucchetto preso.
+///
+/// # Tutto o niente
+///
+/// Se anche un solo file non si è potuto verificare — la share ha smesso di
+/// rispondere a metà — non si scrive niente. Un trasloco a metà lascerebbe una
+/// parte dei brani sotto la cartella vecchia, che non è più sorvegliata: la
+/// scansione dopo li rimetterebbe dentro col nome nuovo e la storia vuota, che
+/// è il guasto che il trasloco esiste per evitare.
+///
+/// # Errori
+///
+/// `fs.networkUnavailable` se qualche file non si è potuto verificare;
+/// `internal.aborted` se la libreria non c'è più; `db.*` per il resto.
+#[tauri::command]
+pub async fn cartelle_trasloca(
+    app: tauri::AppHandle,
+    da: String,
+    a: String,
+) -> Esito<aether_app::profilo::radici::Riscritti> {
+    let mano = app.clone();
+    let esito = in_disparte("trasloco di una cartella sorvegliata", move || {
+        trasloca_ora(&mano, &da, &a)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore);
+    // L'albero delle cartelle e ogni vista che nomina un percorso vanno
+    // richiesti: le radici sono cambiate come dopo una scansione.
+    if esito.is_ok() {
+        crate::cartelle::cambiate(&app);
+        crate::sorveglia::riconfigura(&app);
+    }
+    crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Il corpo di [`cartelle_trasloca`], sul filo che l'ha presa in disparte.
+fn trasloca_ora(
+    app: &tauri::AppHandle,
+    da: &str,
+    a: &str,
+) -> Result<aether_app::profilo::radici::Riscritti, AppError> {
+    use aether_app::profilo::radici;
+    use aether_app::volumi::{self, Esistenza};
+
+    let stato = libreria_di(app, "trasloco di una cartella sorvegliata")?;
+    let rimappature = [aether_app::profilo::Rimappatura {
+        da: da.to_owned(),
+        a: a.to_owned(),
+        brani: 0,
+    }];
+
+    // ── con il lucchetto, per un attimo: quali percorsi cambierebbero ──
+    let candidati = con_libreria(&stato, |libreria| {
+        radici::candidati(&libreria.connection, &rimappature)
+    })?;
+    // ── fuori da ogni lucchetto: ci sono davvero? ──
+    let verifiche = radici::verifica(candidati, None, &|percorsi| {
+        volumi::esistenze(percorsi, volumi::SCADENZA_RISOLUZIONE)
+    });
+
+    // ── con il lucchetto, una transazione sola ──
+    con_libreria(&stato, |libreria| {
+        let fallita = |err: rusqlite::Error| aether_app::db::codice_da_sqlite("trasloco", &err);
+        let tx = libreria
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(fallita)?;
+        let fatto = radici::applica_verificati(&tx, &rimappature, &|percorso| {
+            verifiche.esito(percorso).unwrap_or(Esistenza::Ignota)
+        })?;
+        if fatto.non_verificati > 0 {
+            // La transazione cade qui, e con lei le righe già riscritte.
+            return Err(AppError::new(ErrorCode::FsNetworkUnavailable {
+                path: Some(a.to_owned()),
+            })
+            .with_cause(format!(
+                "{} brani non si sono potuti verificare sotto la cartella nuova: \
+                 il trasloco non si fa a metà",
+                fatto.non_verificati
+            )));
+        }
+
+        let cartelle = leggi_cartelle(&tx)?;
+        let rimappate: Vec<String> = cartelle
+            .iter()
+            .map(|c| radici::rimappa_percorso(c, &rimappature))
+            .collect();
+        // Rimesse in ordine con le regole di sempre: la cartella traslocata
+        // può essere finita dentro un'altra, o sopra un doppione.
+        let ordinate = radici::ordina_cartelle(&rimappate, &rimappate, &|_| None);
+        aether_app::settings::write_json(&tx, CHIAVE_CARTELLE, &ordinate.cartelle)?;
+
+        let chiave_download = aether_app::settings::CHIAVE_CARTELLA_DOWNLOAD;
+        if let Some(scarichi) = aether_app::settings::read(&tx, chiave_download)? {
+            let spostata = radici::rimappa_percorso(&scarichi, &rimappature);
+            if spostata != scarichi {
+                aether_app::settings::write(&tx, chiave_download, &spostata)?;
+            }
+        }
+
+        tx.commit().map_err(fallita)?;
+        Ok(fatto)
+    })
 }
 
 /// Sceglie dove finiscono i brani scaricati. Una stringa vuota rimette il
@@ -181,12 +354,18 @@ mod prove_cartelle {
 /// in tabella è un terzo stato oltre «scelta» e «mai scelta», e
 /// `scarica::cartella_download` dovrebbe ricordarsi di filtrarlo — cosa che fa,
 /// ma che nessuno dovrebbe dover fare.
+///
+/// Una scelta non vuota passa le regole di forma di
+/// `procura::cartella_download_ammessa`, senza toccare il disco: vedi lì.
 #[tauri::command]
 pub fn imposta_cartella_download(
     app: tauri::AppHandle,
     stato: State<'_, Stato>,
     percorso: String,
 ) -> Esito<()> {
+    if !percorso.trim().is_empty() {
+        crate::procura::cartella_download_ammessa(&percorso).map_err(errore)?;
+    }
     crate::nuvola::se_riuscito(
         &app,
         con_libreria(&stato, |libreria| {
@@ -209,16 +388,46 @@ pub fn imposta_cartella_download(
     )
 }
 
+/// I due numeri di una pagina, resi innocui.
+///
+/// # Il difetto che chiude
+///
+/// `LIMIT` e `OFFSET` arrivano dalla finestra e finiscono in SQLite, che i
+/// numeri negativi non li rifiuta: **li reinterpreta**. Un `OFFSET` negativo
+/// vale zero — sgradevole ma innocuo — e un `LIMIT` negativo vuol dire *«senza
+/// limite»*. Cioè il numero che serve a chiedere duecento righe, se per una
+/// sottrazione sbagliata diventa `-1`, chiede invece la libreria intera, e lo
+/// fa in silenzio: nessun errore, solo una finestra che si ferma un secondo e
+/// mezzo su una libreria grande.
+///
+/// Si tosano e non si rifiutano: una pagina è una domanda di sola lettura, e
+/// rispondere «zero righe» a chi ne ha chieste meno di zero è più utile di un
+/// errore rosso in una lista che stava scorrendo.
+///
+/// Nessun tetto massimo, invece. Un tetto taglierebbe in silenzio le risposte
+/// di chi ha davvero bisogno di tutto — l'esportazione, la nuvola — e
+/// sostituirebbe un difetto con uno più difficile da vedere.
+pub(crate) const fn pagina(offset: i64, limite: i64) -> (i64, i64) {
+    // `i64::max` non è ancora utilizzabile in un contesto costante, e questa
+    // resta `const` perché è una funzione di due numeri e niente altro.
+    (
+        if offset < 0 { 0 } else { offset },
+        if limite < 0 { 0 } else { limite },
+    )
+}
+
 /// Una pagina di cronologia d'ascolto, dal più recente.
 #[tauri::command]
-pub fn cronologia(
-    stato: State<'_, Stato>,
+pub async fn cronologia(
+    app: tauri::AppHandle,
     offset: i64,
     limite: i64,
 ) -> Esito<Vec<aether_app::library::VoceCronologia>> {
-    con_libreria(&stato, |libreria| {
+    let (offset, limite) = pagina(offset, limite);
+    leggi_la_libreria(app, "cronologia", move |libreria| {
         aether_app::library::list_history(&libreria.connection, offset, limite)
     })
+    .await
     .map_err(errore)
 }
 
@@ -227,10 +436,11 @@ pub fn cronologia(
 /// Separato dalla pagina per la stessa ragione di [`cerca_conteggio`]: la pagina
 /// si richiede a ogni scorrimento, il totale una volta sola.
 #[tauri::command]
-pub fn cronologia_conteggio(stato: State<'_, Stato>) -> Esito<i64> {
-    con_libreria(&stato, |libreria| {
+pub async fn cronologia_conteggio(app: tauri::AppHandle) -> Esito<i64> {
+    leggi_la_libreria(app, "conteggio della cronologia", |libreria| {
         aether_app::library::count_history(&libreria.connection)
     })
+    .await
     .map_err(errore)
 }
 
@@ -298,11 +508,81 @@ pub struct EsitoScansione {
     pub radici_saltate: Vec<String>,
     /// Righe che il piano toglierebbe e che la guardia ha lasciato stare.
     ///
-    /// Zero nelle scansioni chieste a mano, che non sono prudenti apposta: chi
-    /// le ha chieste è davanti alla finestra e legge l'esito.
+    /// Anche in una scansione chiesta a mano, dalla 3.0: sopra la soglia la
+    /// passata non toglie niente e chiede. Quel che chiede sta in
+    /// [`EsitoScansione::da_confermare`].
     pub rimozioni_rinviate: usize,
+    /// Le rimozioni trattenute che aspettano un sì, in breve.
+    ///
+    /// `None` quando non c'è niente da chiedere. Quando c'è, la finestra mostra
+    /// quante e da dove, e un sì passa il `gettone` a
+    /// [`rimozioni_conferma`], che toglie **esattamente** quelle righe — tenute
+    /// qui, dal lato del nucleo, e non rimandate dalla finestra.
+    pub da_confermare: Option<RimozioniDaConfermare>,
+    /// Le cartelle che non si sono potute leggere dentro cartelle sorvegliate
+    /// che invece rispondevano: una sottocartella a permessi negati, un ramo di
+    /// share che singhiozza. I brani lì sotto non sono stati né tolti né
+    /// riscritti.
+    pub cartelle_illeggibili: Vec<String>,
+    /// Quante righe stanno sotto quelle cartelle, e sono state lasciate stare.
+    pub non_verificati: usize,
     /// I numeri della libreria dopo.
     pub numeri: Counts,
+}
+
+/// Le rimozioni che una scansione a mano ha trattenuto, come le vede chi deve
+/// decidere.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RimozioniDaConfermare {
+    /// Il segno di **questo** elenco: la conferma lo rimanda indietro, e un
+    /// elenco nel frattempo superato da un'altra scansione non si applica.
+    pub gettone: u64,
+    /// Quante righe se ne andrebbero in tutto.
+    pub quante: usize,
+    /// Per cartella sorvegliata: quante, e qualche percorso per riconoscerle.
+    pub radici: Vec<RimozioniSottoUnaRadice>,
+}
+
+/// Quanti percorsi d'esempio si mostrano per cartella, nella domanda.
+///
+/// Cinque: abbastanza per riconoscere «ah, è l'album che ho spostato» o «ma
+/// quella è tutta la cartella del NAS», pochi abbastanza da stare in una
+/// finestrella senza scorrere.
+const ESEMPI_PER_RADICE: usize = 5;
+
+/// Le rimozioni trattenute dall'ultima scansione a mano, in attesa di un sì.
+///
+/// # Perché qui, e non rimandate dalla finestra
+///
+/// Perché la conferma deve togliere **esattamente** quel che la scansione ha
+/// trattenuto, riga per riga, e la finestra di quell'elenco vede solo un
+/// riassunto — su una share caduta sono decine di migliaia di percorsi, che
+/// non ha senso spedire avanti e indietro per il gusto di rileggerli. Qui si
+/// tiene l'elenco vero, e la finestra tiene un gettone.
+///
+/// Una statica e non uno stato gestito da Tauri per la stessa ragione di
+/// `riapertura::ULTIMA_RIPRESA`: è un posto solo, per un processo solo, che
+/// nessuno deve registrare all'avvio per poterlo usare.
+///
+/// Una scansione nuova la svuota appena prende il turno: l'elenco della
+/// passata prima descriveva un disco che nel frattempo è stato riguardato.
+static IN_ATTESA: std::sync::Mutex<Option<(u64, Vec<RimozioneInAttesa>)>> =
+    std::sync::Mutex::new(None);
+
+/// Il prossimo gettone. Parte da uno: lo zero non lo riceve nessun elenco.
+static GETTONI: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Il posto delle rimozioni in attesa, anche se un filo è caduto tenendolo.
+///
+/// Un mutex avvelenato qui vuol dire soltanto che un filo è caduto mentre ci
+/// scriveva un `Option`: il valore dentro è comunque intero, e rinunciare a
+/// leggerlo vorrebbe dire rinunciare a una conferma per un guasto che non
+/// l'ha toccata.
+fn in_attesa() -> std::sync::MutexGuard<'static, Option<(u64, Vec<RimozioneInAttesa>)>> {
+    IN_ATTESA
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Un file che non è entrato come ci si aspettava, e il perché.
@@ -324,7 +604,11 @@ pub struct FileSaltato {
 pub const QUANTI_DETTAGLI: usize = 50;
 
 impl EsitoScansione {
-    fn da(report: &ScanReport, numeri: Counts) -> Self {
+    fn da(
+        report: &ScanReport,
+        numeri: Counts,
+        da_confermare: Option<RimozioniDaConfermare>,
+    ) -> Self {
         let quali = |elenco: &[aether_app::library::Unreadable]| -> Vec<FileSaltato> {
             elenco
                 .iter()
@@ -361,6 +645,11 @@ impl EsitoScansione {
             // non dire quale ricollegare.
             radici_saltate: report.radici_saltate.clone(),
             rimozioni_rinviate: report.rimozioni_rinviate,
+            da_confermare,
+            // Per intero come le radici, e per la stessa ragione: sono
+            // cartelle, non file, e di solito una o due.
+            cartelle_illeggibili: report.rami_persi.clone(),
+            non_verificati: report.non_verificati,
             numeri,
         }
     }
@@ -395,8 +684,9 @@ impl EsitoScansione {
 ///
 /// # Errori
 ///
-/// `library.scanBusy` se una scansione è già in corso — a mano, o quella
-/// automatica che parte quando la coda dei download ha finito. `internal.aborted`
+/// `library.scanBusy` se una scansione è già in corso e non finisce entro
+/// [`ATTESA_DEL_TURNO`] — a mano, quella automatica che parte quando la coda
+/// dei download ha finito, o una della sorveglianza delle cartelle. `internal.aborted`
 /// se lo stato non c'è più. Poi quel che riporta il nucleo: `db.*` per il
 /// database, `fs.*` per il disco. Una radice che non risponde **non** è un
 /// errore: finisce in `radiciSaltate`, e i suoi brani restano dove sono.
@@ -425,6 +715,14 @@ pub async fn scansiona(app: tauri::AppHandle) -> Esito<EsitoScansione> {
     crate::nuvola::se_riuscito(&app, esito)
 }
 
+/// Quanto «Scansiona» aspetta che finisca una scansione partita da sola.
+///
+/// Trenta secondi: la scansione di un album o della cartella dei download è
+/// questione di secondi, anche su una share. Oltre, quella in corso è una
+/// passata lunga — un'altra «Scansiona», una radice intera da riguardare — e
+/// la risposta giusta torna a essere `library.scanBusy`.
+const ATTESA_DEL_TURNO: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Il corpo di [`scansiona`], sul filo che l'ha presa in disparte.
 ///
 /// Una funzione a parte e non una chiusura dentro il comando perché quel che si
@@ -446,7 +744,16 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
     // Il turno prima di tutto: due scansioni intrecciate si contendono
     // l'inserimento della stessa riga in `tracks`, dove `path` è UNIQUE. Si
     // libera da sé quando la guardia cade, anche uscendo per un `?`.
-    let Some(_turno) = stato.turno_di_scansione() else {
+    //
+    // Aspettandolo un poco, dalla 3.0: con la sorveglianza delle cartelle il
+    // turno lo prendono anche le scansioni partite da sole, che durano quanto
+    // un album. Rispondere «occupato» a chi ha premuto «Scansiona» mentre ne
+    // girava una sarebbe un errore per qualcosa che fra tre secondi non c'è
+    // più. Oltre l'attesa, la risposta resta quella di sempre.
+    let fine_attesa = std::time::Instant::now() + ATTESA_DEL_TURNO;
+    let Some(_turno) = crate::sorveglia::aspetta_il_turno(&stato, &|| {
+        crate::spegnimento::in_uscita() || std::time::Instant::now() >= fine_attesa
+    }) else {
         return Err(errore(AppError::new(ErrorCode::LibraryScanBusy)));
     };
     // Ma se il programma si sta chiudendo, non si comincia affatto: una
@@ -465,6 +772,13 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
     // arrivato dopo la fine della scansione precedente fermerebbe questa al
     // primo file.
     stato.riprendi_scansioni();
+    // E le rimozioni trattenute dalla passata prima non valgono più: questa
+    // riguarda il disco da capo, e se c'è ancora qualcosa da chiedere lo
+    // chiederà lei, con un gettone suo.
+    *in_attesa() = None;
+    // Da qui la scansione c'è anche per una finestra che arriva a metà, e la
+    // sua fine si dice a tutte quando la guardia cade: vedi `IN_CORSO`.
+    let segno = ScansioneInCorso::comincia(app);
 
     // Lo store delle copertine si copia **fuori** dal lucchetto: è un percorso, e
     // il nucleo se lo porta dietro su fili che possono sopravvivere alla scadenza
@@ -486,11 +800,10 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
         covers: copertine,
         roots: &roots,
         rules: PathRules::for_current_platform(),
-        // Questa scansione l'ha chiesta qualcuno che è davanti alla finestra
-        // e ne legge l'esito riga per riga: se togliesse troppo, se ne
-        // accorgerebbe subito. La guardia serve all'altra — quella che parte
-        // da sola quando la coda dei download ha finito — e accenderla anche
-        // qui vorrebbe dire rifiutarsi di fare quel che è stato chiesto.
+        // Questa scansione l'ha chiesta qualcuno che è davanti alla finestra:
+        // se toglierebbe troppo in una volta non toglie, e chiede. Spento qui
+        // vuol dire «c'è chi può dire sì», e il nucleo restituisce le righe
+        // trattenute una per una invece di un numero solo.
         prudente: false,
         scadenze: Scadenze::default(),
         fermati: Some(&fermati),
@@ -504,7 +817,9 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
             // meno di un pixel per volta.
             if fatti == totale || fatti.saturating_sub(ultimo) >= 25 {
                 ultimo = fatti;
-                app.emetti("scansione:avanzamento", Avanzamento { fatti, totale });
+                let avanzamento = Avanzamento { fatti, totale };
+                segno.avanza(avanzamento);
+                app.emetti("scansione:avanzamento", avanzamento);
             }
             if fermare.scansione_fermata() {
                 std::ops::ControlFlow::Break(())
@@ -517,7 +832,110 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
     // restituito, e chiederli da dentro la scansione vorrebbe dire tenerlo per
     // una `COUNT(*)` che con la scrittura non c'entra niente.
     let numeri = con_libreria(&stato, |libreria| counts(&libreria.connection)).map_err(errore)?;
-    Ok(EsitoScansione::da(&report, numeri))
+    let da_confermare = if report.rimozioni_in_attesa.is_empty() {
+        None
+    } else {
+        let gettone = GETTONI.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let riassunto = RimozioniDaConfermare {
+            gettone,
+            quante: report.rimozioni_in_attesa.len(),
+            radici: riassumi_rimozioni(
+                &report.rimozioni_in_attesa,
+                &roots,
+                PathRules::for_current_platform(),
+                ESEMPI_PER_RADICE,
+            ),
+        };
+        *in_attesa() = Some((gettone, report.rimozioni_in_attesa.clone()));
+        Some(riassunto)
+    };
+    Ok(EsitoScansione::da(&report, numeri, da_confermare))
+}
+
+/// Com'è andata una conferma di rimozioni.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EsitoRimozioni {
+    /// Quante righe sono state tolte davvero.
+    ///
+    /// Può essere meno di quante se ne erano chieste: una riga cambiata fra la
+    /// domanda e la risposta non si riconosce e non si tocca. Zero se il
+    /// gettone non era più quello buono — un'altra scansione nel frattempo.
+    pub tolti: usize,
+    /// I numeri della libreria dopo.
+    pub numeri: Counts,
+}
+
+/// Toglie le rimozioni che l'ultima scansione a mano aveva trattenuto.
+///
+/// Non cammina il disco: toglie **esattamente** le righe trattenute, per
+/// identificativo e percorso — vedi `aether_app::library::applica_rimozioni`.
+/// Quel che quelle righe portavano con sé — ascolti, voto, preferito, posto
+/// nelle playlist — resta messo da parte per novanta giorni (migrazione 028) e
+/// torna se il file ricompare.
+///
+/// Prende il turno delle scansioni: togliere mentre un'altra passata sta
+/// scrivendo vorrebbe dire intrecciare due decisioni sullo stesso disco.
+///
+/// # Errori
+///
+/// `library.scanBusy` se una scansione è in corso; `internal.aborted` se lo
+/// stato non c'è più; `db.*` se la scrittura fallisce — e allora l'elenco
+/// resta in attesa, e un secondo sì ci riprova. Un gettone superato non è un
+/// errore: non toglie niente, e lo dice con `tolti: 0`.
+#[tauri::command]
+pub async fn rimozioni_conferma(app: tauri::AppHandle, gettone: u64) -> Esito<EsitoRimozioni> {
+    let mano = app.clone();
+    let esito = in_disparte("conferma delle rimozioni", move || {
+        let Some(stato) = mano.try_state::<Stato>() else {
+            return Err(AppError::new(ErrorCode::InternalAborted {
+                what: Some("conferma delle rimozioni".to_owned()),
+            })
+            .with_cause("la libreria non è più fra gli stati gestiti"));
+        };
+        let Some(_turno) = stato.turno_di_scansione() else {
+            return Err(AppError::new(ErrorCode::LibraryScanBusy));
+        };
+        // Si prende l'elenco solo se è quello confermato; resta in mano fino a
+        // scrittura riuscita, e se la scrittura fallisce torna al suo posto.
+        let elenco = in_attesa().take_if(|(atteso, _)| *atteso == gettone);
+        let tolti = match elenco {
+            None => 0,
+            Some((segno, righe)) => {
+                let fatto = con_libreria(&stato, |libreria| {
+                    applica_rimozioni(&mut libreria.connection, &righe)
+                });
+                match fatto {
+                    Ok(tolti) => tolti,
+                    Err(guasto) => {
+                        *in_attesa() = Some((segno, righe));
+                        return Err(guasto);
+                    }
+                }
+            }
+        };
+        let numeri = con_libreria(&stato, |libreria| counts(&libreria.connection))?;
+        Ok(EsitoRimozioni { tolti, numeri })
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore);
+    if esito.as_ref().is_ok_and(|fatto| fatto.tolti > 0) {
+        // Come dopo una scansione: l'albero delle cartelle è derivato da
+        // `tracks`, e il backup deve sapere che la libreria è cambiata.
+        crate::cartelle::cambiate(&app);
+    }
+    crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Lascia cadere le rimozioni in attesa: la risposta è stata no.
+///
+/// Sincrono e senza lucchetto della libreria: svuota un posto in memoria e
+/// basta. Le righe restano dove sono, e la prossima scansione — se i file
+/// mancano ancora — chiederà di nuovo.
+#[tauri::command]
+pub fn rimozioni_scarta() {
+    *in_attesa() = None;
 }
 
 /// Chiede alla scansione in corso di fermarsi.
@@ -541,17 +959,108 @@ pub fn annulla_scansione(stato: State<'_, Stato>) -> Esito<()> {
     Ok(())
 }
 
-/// Una pagina di risultati.
+// ── la scansione vista da una finestra che arriva a metà ────────────────────
+
+/// L'ultimo avanzamento della scansione a mano in corso, o `None` se non ce
+/// n'è una.
+///
+/// # Perché serve
+///
+/// L'avanzamento la finestra lo riceve come evento, e la fine come **risposta**
+/// a [`scansiona`]. Una finestra ricaricata a metà scansione riceve ancora gli
+/// eventi ma non la risposta, che spettava alla finestra di prima e non arriva
+/// più a nessuno: la barra restava «in corso» per sempre, e con lei «Annulla»
+/// su una scansione finita da un pezzo. Con questo posto la finestra nuova
+/// chiede all'apertura com'è davvero ([`scansione_avanzamento`]), e la fine la
+/// sente da `scansione:finita`, che va a tutti e non dipende da chi l'ha
+/// chiesta.
+///
+/// # Solo quella a mano
+///
+/// È l'unica che manda l'avanzamento: quelle della sorveglianza e della coda
+/// dei download una barra non l'hanno mai avuta. Il turno che condividono
+/// ([`Stato::scansione_in_corso`]) non andava bene per questa domanda: lo prende
+/// anche la pulizia delle copertine, e leggerlo avrebbe acceso una barra per
+/// lavori che non ne hanno una.
+///
+/// Una statica come [`IN_ATTESA`], e per la stessa ragione: un posto solo, per
+/// un processo solo.
+static IN_CORSO: std::sync::Mutex<Option<Avanzamento>> = std::sync::Mutex::new(None);
+
+/// Il posto della scansione in corso, anche se un filo è caduto tenendolo:
+/// dentro c'è un `Option` di due numeri, intero comunque.
+fn in_corso() -> std::sync::MutexGuard<'static, Option<Avanzamento>> {
+    IN_CORSO
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// La scansione a mano finché dura: la segna in [`IN_CORSO`] e, cadendo, la
+/// toglie e manda `scansione:finita`.
+///
+/// Una guardia e non due righe in cima e in fondo a [`scansiona_ora`]: quel
+/// corpo esce in cinque punti con un `?`, e la fine va detta in tutti — una
+/// fine detta solo quando va bene è la barra eterna di prima, spostata sul
+/// caso dell'errore.
+struct ScansioneInCorso<'a> {
+    /// A chi dire che è finita.
+    app: &'a tauri::AppHandle,
+}
+
+impl<'a> ScansioneInCorso<'a> {
+    /// La scansione comincia: non c'è ancora niente da contare, che è anche
+    /// quel che la finestra disegna nei primi istanti di una sua.
+    fn comincia(app: &'a tauri::AppHandle) -> Self {
+        *in_corso() = Some(Avanzamento {
+            fatti: 0,
+            totale: 0,
+        });
+        Self { app }
+    }
+
+    /// L'ultimo avanzamento mandato, per chi arriverà dopo.
+    fn avanza(&self, avanzamento: Avanzamento) {
+        *in_corso() = Some(avanzamento);
+    }
+}
+
+impl Drop for ScansioneInCorso<'_> {
+    fn drop(&mut self) {
+        *in_corso() = None;
+        // Anche alla finestra che la scansione l'ha chiesta, che però si regola
+        // sulla risposta e questo lo lascia cadere: vedi `scansioneMia` in
+        // `App.tsx`.
+        self.app.emetti("scansione:finita", ());
+    }
+}
+
+/// Com'è la scansione a mano adesso: l'ultimo avanzamento, o `None` se non ce
+/// n'è una in corso.
+///
+/// La chiede la finestra all'apertura: vedi [`IN_CORSO`]. Sincrono e senza il
+/// lucchetto della libreria, come [`annulla_scansione`]: legge due numeri in
+/// memoria.
 #[tauri::command]
-pub fn cerca(
-    stato: State<'_, Stato>,
+pub fn scansione_avanzamento() -> Option<Avanzamento> {
+    *in_corso()
+}
+
+/// Una pagina di risultati.
+///
+/// In disparte: una ricerca per prefisso su una libreria grande vale decine di
+/// millisecondi, che sul filo della finestra si vedono mentre si scrive.
+#[tauri::command]
+pub async fn cerca(
+    app: tauri::AppHandle,
     query: String,
     offset: i64,
     limite: i64,
 ) -> Esito<Vec<TrackSummary>> {
-    con_libreria(&stato, |libreria| {
+    let (offset, limite) = pagina(offset, limite);
+    leggi_la_libreria(app, "ricerca", move |libreria| {
         search(&libreria.connection, &query, offset, limite)
     })
+    .await
     .map_err(errore)
 }
 
@@ -561,64 +1070,89 @@ pub fn cerca(
 /// ogni scorrimento, il conteggio una volta per query. Metterli insieme
 /// vorrebbe dire rifare la `COUNT(*)` a ogni fetta.
 #[tauri::command]
-pub fn cerca_conteggio(stato: State<'_, Stato>, query: String) -> Esito<i64> {
-    con_libreria(&stato, |libreria| {
+pub async fn cerca_conteggio(app: tauri::AppHandle, query: String) -> Esito<i64> {
+    leggi_la_libreria(app, "conteggio della ricerca", move |libreria| {
         aether_app::library::search_count(&libreria.connection, &query)
     })
+    .await
     .map_err(errore)
 }
 
 /// Una pagina di preferiti.
 #[tauri::command]
-pub fn preferiti(stato: State<'_, Stato>, offset: i64, limite: i64) -> Esito<Vec<TrackSummary>> {
-    con_libreria(&stato, |libreria| {
+pub async fn preferiti(
+    app: tauri::AppHandle,
+    offset: i64,
+    limite: i64,
+) -> Esito<Vec<TrackSummary>> {
+    let (offset, limite) = pagina(offset, limite);
+    leggi_la_libreria(app, "preferiti", move |libreria| {
         aether_app::library::list_liked(&libreria.connection, offset, limite)
     })
+    .await
     .map_err(errore)
 }
 
 /// Una pagina degli album di un artista.
 #[tauri::command]
-pub fn album_artista(
-    stato: State<'_, Stato>,
+pub async fn album_artista(
+    app: tauri::AppHandle,
     nome: String,
     offset: i64,
     limite: i64,
 ) -> Esito<Vec<AlbumSummary>> {
-    con_libreria(&stato, |libreria| {
+    let (offset, limite) = pagina(offset, limite);
+    leggi_la_libreria(app, "album di un artista", move |libreria| {
         aether_app::library::albums_by_artist(&libreria.connection, &nome, offset, limite)
     })
+    .await
     .map_err(errore)
 }
 
 /// Una pagina di brani.
 #[tauri::command]
-pub fn brani(
-    stato: State<'_, Stato>,
+pub async fn brani(
+    app: tauri::AppHandle,
     ordine: String,
     offset: i64,
     limite: i64,
 ) -> Esito<Vec<TrackSummary>> {
     // Il nome dell'ordinamento si traduce qui in un valore chiuso: quel che
     // arriva dalla finestra non deve poter raggiungere una clausola SQL.
+    //
+    // Un nome sconosciuto vale «scaffale» e non è un errore: l'insieme è chiuso
+    // e l'unico che lo scrive è questa applicazione, quindi un valore fuori
+    // elenco è un refuso nostro o una preferenza salvata da una versione che
+    // chiamava le cose in un altro modo — e in tutti e due i casi un elenco che
+    // si disegna nell'ordine di sempre è meglio di un elenco che non si
+    // disegna. Ma se ne lascia traccia: prima spariva, e un refuso che non
+    // lascia traccia è un refuso che resta.
     let ordine = match ordine.as_str() {
         "recenti" => TrackOrder::RecentlyAdded,
         "ascoltati" => TrackOrder::MostPlayed,
         "titolo" => TrackOrder::Title,
-        _ => TrackOrder::Shelf,
+        "scaffale" | "shelf" => TrackOrder::Shelf,
+        altro => {
+            crate::nota!("[brani] ordinamento sconosciuto «{altro}»: vale «scaffale»");
+            TrackOrder::Shelf
+        }
     };
-    con_libreria(&stato, |libreria| {
+    let (offset, limite) = pagina(offset, limite);
+    leggi_la_libreria(app, "elenco dei brani", move |libreria| {
         list_tracks(&libreria.connection, ordine, offset, limite)
     })
+    .await
     .map_err(errore)
 }
 
 /// Una pagina di album.
 #[tauri::command]
-pub fn album(stato: State<'_, Stato>, offset: i64, limite: i64) -> Esito<Vec<AlbumSummary>> {
-    con_libreria(&stato, |libreria| {
+pub async fn album(app: tauri::AppHandle, offset: i64, limite: i64) -> Esito<Vec<AlbumSummary>> {
+    let (offset, limite) = pagina(offset, limite);
+    leggi_la_libreria(app, "elenco degli album", move |libreria| {
         list_albums(&libreria.connection, offset, limite)
     })
+    .await
     .map_err(errore)
 }
 
@@ -628,17 +1162,25 @@ pub fn album(stato: State<'_, Stato>, offset: i64, limite: i64) -> Esito<Vec<Alb
 /// pochi e la vista li mostra tutti con un indice alfabetico laterale. Il
 /// giorno in cui non fosse più vero, il posto in cui aggiungere la pagina è
 /// `list_artists`, non qui.
+///
+/// In disparte: è il comando più lungo fra le letture, un raggruppamento su
+/// tutta la tabella — sopra i cinquanta millisecondi su cinquantamila brani.
 #[tauri::command]
-pub fn artisti(stato: State<'_, Stato>) -> Esito<Vec<ArtistSummary>> {
-    con_libreria(&stato, |libreria| list_artists(&libreria.connection)).map_err(errore)
+pub async fn artisti(app: tauri::AppHandle) -> Esito<Vec<ArtistSummary>> {
+    leggi_la_libreria(app, "elenco degli artisti", |libreria| {
+        list_artists(&libreria.connection)
+    })
+    .await
+    .map_err(errore)
 }
 
 /// I brani di un album.
 #[tauri::command]
-pub fn brani_album(stato: State<'_, Stato>, chiave: String) -> Esito<Vec<TrackSummary>> {
-    con_libreria(&stato, |libreria| {
+pub async fn brani_album(app: tauri::AppHandle, chiave: String) -> Esito<Vec<TrackSummary>> {
+    leggi_la_libreria(app, "brani di un album", move |libreria| {
         album_tracks(&libreria.connection, &chiave)
     })
+    .await
     .map_err(errore)
 }
 
@@ -1051,13 +1593,16 @@ pub struct Casa {
 }
 
 /// Compone la Home.
+///
+/// In disparte: cinque letture insieme, e quella dei trascurati passa dal
+/// motore delle regole su tutta la libreria.
 #[tauri::command]
-pub fn casa(stato: State<'_, Stato>) -> Esito<Casa> {
+pub async fn casa(app: tauri::AppHandle) -> Esito<Casa> {
     use aether_domain::regole::{
         Campo, Combinazione, Insieme, Operatore, Ordinamento, Regola, Valore,
     };
 
-    con_libreria(&stato, |libreria| {
+    leggi_la_libreria(app, "Home", |libreria| {
         let connection = &libreria.connection;
 
         // Dove ci si era fermati: la coda di ieri sa quale brano, e la
@@ -1114,6 +1659,7 @@ pub fn casa(stato: State<'_, Stato>) -> Esito<Casa> {
             trascurati,
         })
     })
+    .await
     .map_err(errore)
 }
 /// Una raccolta del lunedì, coi suoi brani già risolti.
@@ -1328,6 +1874,105 @@ pub fn apri_documento(quale: String) -> Esito<()> {
     })
 }
 
+/// Le voci della documentazione tecnica a cui le Impostazioni rimandano.
+///
+/// Una per scheda, più i principi che le schede hanno in comune: ognuna è la
+/// voce che spiega come quella parte funziona nel codice. L'elenco è
+/// chiuso per la ragione di [`Documento`]: l'ancora arriva dalla finestra, e un
+/// comando che la incollasse in un indirizzo senza guardarla lascerebbe a una
+/// pagina compromessa la scelta di cosa aggiungere dopo il `#`. Le ancore
+/// stanno anche in `site/docs/` — `strumenti/docs.js` controlla che ci siano
+/// tutte — e una nuova scheda delle Impostazioni ne chiede una nuova in tutti e
+/// due i posti.
+const ANCORE_GUIDA: &[&str] = &[
+    "roots",
+    "downloads",
+    "lyrics",
+    "enrich",
+    "language",
+    "theme",
+    "skin",
+    "tour",
+    "eq",
+    "playback",
+    "output",
+    "crossfade",
+    "sleep",
+    "spectrum",
+    "shortcuts",
+    "zoom",
+    "motion",
+    "cloud",
+    "sync",
+    "legacy",
+    "import",
+    "scrobbling",
+    "models",
+    "background",
+    "data",
+    "maintenance",
+    "profile",
+    "update",
+    "concepts",
+];
+
+/// Dove sta la documentazione, per un'ancora.
+///
+/// `None` per un'ancora fuori elenco. La lingua non c'entra: la documentazione
+/// descrive il codice, ed è scritta in una lingua sola, l'inglese.
+///
+/// L'indirizzo si ricava dal repository, come quello delle donazioni:
+/// `github.com/OWNER/REPO` diventa `OWNER.github.io/REPO/docs/`. Il ripiego è il
+/// repository stesso, e non una pagina inventata.
+fn indirizzo_guida(ancora: &str) -> Option<String> {
+    if !ANCORE_GUIDA.contains(&ancora) {
+        return None;
+    }
+    let radice = env!("CARGO_PKG_REPOSITORY");
+    let base = radice
+        .strip_prefix("https://github.com/")
+        .and_then(|resto| resto.split_once('/'))
+        .map_or_else(
+            || radice.to_owned(),
+            |(proprietario, repo)| {
+                format!(
+                    "https://{}.github.io/{repo}/docs/",
+                    proprietario.to_lowercase()
+                )
+            },
+        );
+    Some(format!("{base}#{ancora}"))
+}
+
+/// Apre nel browser di sistema la voce della documentazione di una scheda.
+///
+/// Mai nella webview, per la ragione di [`apri_documento`]. L'ancora dev'essere
+/// una di [`ANCORE_GUIDA`].
+///
+/// # Errori
+///
+/// `internal.aborted` per un'ancora fuori elenco, o se il browser rifiuta di
+/// aprirsi.
+#[tauri::command]
+pub fn apri_guida(ancora: String) -> Esito<()> {
+    let Some(indirizzo) = indirizzo_guida(&ancora) else {
+        return Err(errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("apertura della guida".to_owned()),
+            })
+            .with_cause(format!("«{ancora}» non è una pagina della guida")),
+        ));
+    };
+    tauri_plugin_opener::open_url(&indirizzo, None::<&str>).map_err(|err| {
+        errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("apertura del browser".to_owned()),
+            })
+            .with_cause(err.to_string()),
+        )
+    })
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;
@@ -1367,6 +2012,34 @@ mod prove {
     fn un_nome_inventato_non_apre_niente() {
         assert!(Documento::da_nome("qualunque-cosa").is_none());
         assert!(Documento::da_nome("").is_none());
+    }
+
+    /// Ogni ancora ha un indirizzo vero, sul sito e con l'ancora in fondo.
+    #[test]
+    fn ogni_ancora_della_guida_ha_un_indirizzo() {
+        for ancora in ANCORE_GUIDA {
+            let indirizzo = indirizzo_guida(ancora).expect("un'ancora dell'elenco");
+            assert!(indirizzo.starts_with("https://"), "«{ancora}»: {indirizzo}");
+            assert!(indirizzo.contains(".github.io/"), "«{ancora}»: {indirizzo}");
+            assert!(indirizzo.ends_with(&format!("#{ancora}")), "{indirizzo}");
+        }
+    }
+
+    /// Un'ancora inventata non apre niente: non finisce incollata dopo il `#`.
+    #[test]
+    fn un_ancora_inventata_non_apre_niente() {
+        assert!(indirizzo_guida("../../x").is_none());
+        assert!(indirizzo_guida("roots#x").is_none());
+        assert!(indirizzo_guida("roots?lang=it").is_none());
+        assert!(indirizzo_guida("").is_none());
+    }
+
+    /// L'indirizzo non porta parametri: la pagina è una, in una lingua sola.
+    #[test]
+    fn la_guida_non_ha_parametri() {
+        let indirizzo = indirizzo_guida("roots").expect("un'ancora dell'elenco");
+        assert!(indirizzo.ends_with("/docs/#roots"), "{indirizzo}");
+        assert!(!indirizzo.contains('?'), "{indirizzo}");
     }
 
     /// Le donazioni stanno sul profilo, non dentro il repository.

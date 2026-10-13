@@ -42,7 +42,7 @@ export function Stelle({
 }) {
   return (
     <div
-      className="stelle"
+      className="stelle stars"
       role="group"
       aria-label={
         valore > 0 ? t("rating.label", { n: valore }) : t("rating.none")
@@ -52,7 +52,7 @@ export function Stelle({
         <button
           key={n}
           type="button"
-          className="stella"
+          className="stella star"
           tabIndex={raggiungibile ? undefined : -1}
           aria-pressed={n <= valore}
           aria-label={

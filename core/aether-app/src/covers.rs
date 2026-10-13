@@ -25,14 +25,43 @@
 //! L'impronta è quella dell'originale e non del ricodificato: così cambiare
 //! qualità o dimensione domani non fa perdere l'aggancio a ciò che è già
 //! salvato, e permette di ricodificare senza rileggere i file musicali.
+//!
+//! # Perché lo store va anche svuotato
+//!
+//! Indirizzato dal contenuto vuol dire che una copertina non appartiene a
+//! nessuno, e quindi che nessuno la butta quando smette di servire. Fino alla
+//! 2.4 non la buttava nessuno davvero: i brani tolti dalla libreria, i file
+//! ritaggati con un'immagine nuova e le copertine dell'arricchimento sostituite
+//! da una migliore lasciavano la loro riga in `cover_art` e i loro due file sul
+//! disco **per sempre**. [`dimentica_orfane`] e [`CoverStore::togli_tutte`]
+//! sono la pulizia a conteggio di riferimenti: una copertina se ne va quando
+//! nessuna riga del database la nomina più — e chi la nomina lo dice lo schema,
+//! non un elenco scritto qui (vedi [`riferimenti`]).
+//!
+//! # Perché la decodifica ha dei limiti
+//!
+//! Un PNG da qualche kilobyte può dichiarare diecimila pixel per lato, e un
+//! `deflate` ben costruito li riempie davvero: è la «bomba di decompressione».
+//! Dentro un tag, arriva alla scansione come una copertina qualunque. Con i
+//! limiti di serie di `image` — nessun tetto sui lati, 512 MiB di pixel — la
+//! decodifica ne chiedeva mezzo gigabyte, più il ridimensionamento in virgola
+//! mobile, per produrre un quadratino da 640 pixel.
+//! [`LATO_MASSIMO_DECODIFICA`] e [`MEMORIA_MASSIMA_DECODIFICA`] chiudono la
+//! porta prima che l'allocazione avvenga: `image` legge l'intestazione, fa i
+//! conti e rifiuta. Il brano entra in libreria senza copertina, e l'esito della
+//! scansione dice perché.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use aether_domain::errors::{AppError, ErrorCode};
-use image::ImageReader;
 use image::imageops::FilterType;
+use image::{ImageError, ImageReader, Limits};
+use rusqlite::Connection;
 
 use crate::files::io_error;
+use crate::scrittura::{e_temporaneo, scrivi_atomico};
 
 /// Il lato massimo della copertina salvata.
 ///
@@ -40,13 +69,97 @@ use crate::files::io_error;
 /// una colonna; oltre, si pagherebbero byte per pixel che nessuno guarda.
 pub const MAX_LATO: u32 = 640;
 
-/// Il lato massimo della miniatura, quella delle liste e delle griglie.
+/// Il lato massimo della miniatura, quella delle righe degli elenchi.
 pub const MAX_LATO_MINIATURA: u32 = 160;
+
+/// Il lato massimo della copertina media, quella delle schede delle griglie.
+///
+/// Una scheda è larga dai 164 pixel in su: la miniatura da 160 le stava
+/// appena sotto a 100%, e a 200% era ingrandita più del doppio. La media la
+/// copre a 100%; per il doppio dei pixel la finestra sceglie la piena (`srcset`
+/// in `Copertina.tsx`).
+///
+/// # Perché si fa alla prima richiesta
+///
+/// Gli originali non si tengono (vedi la nota del modulo), quindi la media non
+/// può nascere da loro per le copertine già nello store: nasce dalla piena, la
+/// prima volta che qualcuno la chiede ([`CoverStore::media`]). Così le
+/// copertine di prima restano valide così come sono, la scansione non paga una
+/// terza ricodifica, e una copertina che nessuno guarda in una griglia non
+/// occupa un terzo file.
+pub const MAX_LATO_MEDIA: u32 = 320;
 
 /// Qualità JPEG della copertina piena.
 const QUALITA: u8 = 85;
+/// Qualità della media: quella della piena, perché a 320 pixel in una scheda si
+/// guarda ancora come un'immagine e non come un'etichetta.
+const QUALITA_MEDIA: u8 = 85;
 /// Qualità della miniatura: più bassa, perché a 160 pixel non si distingue.
 const QUALITA_MINIATURA: u8 = 78;
+
+/// Il lato più lungo che si accetta di decodificare, in pixel.
+///
+/// Vale 8192, e il perché: le copertine più grandi che circolano davvero — le
+/// scansioni dei negozi «ad alta risoluzione» — stanno fra i tremila e i
+/// seimila pixel; sopra c'è soltanto chi ha incollato una locandina, o chi sta
+/// provando a far cadere il programma. Oltre questo lato l'immagine non si decodifica e il
+/// brano resta senza copertina.
+///
+/// Il lato vale **anche da solo**, non solo dentro il conto della memoria: una
+/// striscia da 1×100 000 pixel pesa poco, ma il ridimensionamento la tratta
+/// come un'immagine di centomila righe.
+pub const LATO_MASSIMO_DECODIFICA: u32 = 8192;
+
+/// Quanta memoria può chiedere una decodifica, in byte: 192 MiB.
+///
+/// È il conto dei pixel decodificati, prima del ridimensionamento: un'immagine
+/// RGB da 8000×8000 ci sta (183 MiB), una RGBA da 8192×8192 no (256 MiB). Il
+/// valore di serie di `image` è 512 MiB, e non è tutto il conto: il filtro di
+/// Lanczos lavora su una copia intermedia in virgola mobile, quattro byte per
+/// canale, che ai limiti di serie aggiungeva centinaia di megabyte a quel mezzo
+/// gigabyte — per ogni copertina, sul filo della scansione, mentre la musica
+/// suona.
+pub const MEMORIA_MASSIMA_DECODIFICA: u64 = 192 * 1024 * 1024;
+
+/// I limiti con cui ogni immagine di questo modulo si decodifica.
+///
+/// `Limits` è `#[non_exhaustive]`: si parte da quello senza limiti e si
+/// riempiono i tre campi, così un campo aggiunto domani da `image` resta
+/// spento invece di prendere un valore che nessuno qui ha scelto.
+fn limiti() -> Limits {
+    let mut limiti = Limits::no_limits();
+    limiti.max_image_width = Some(LATO_MASSIMO_DECODIFICA);
+    limiti.max_image_height = Some(LATO_MASSIMO_DECODIFICA);
+    limiti.max_alloc = Some(MEMORIA_MASSIMA_DECODIFICA);
+    limiti
+}
+
+/// Decodifica un'immagine dentro i [`limiti`].
+///
+/// Una funzione sola per i due posti che decodificano — la ricodifica di
+/// [`CoverStore::store`] e la lettura della tinta — perché due letture con due
+/// politiche sono una porta chiusa e una aperta.
+fn decodifica(byte: &[u8], hash: &str) -> Result<image::DynamicImage, AppError> {
+    let mut lettore = ImageReader::new(std::io::Cursor::new(byte))
+        .with_guessed_format()
+        .map_err(|err| decode_error(hash, &err.to_string()))?;
+    lettore.limits(limiti());
+    lettore.decode().map_err(|err| match err {
+        // Un'immagine troppo grande non è un'immagine rotta, e il diario deve
+        // poterle distinguere: la prima vuol dire «questo file ha una copertina
+        // da cinquanta megapixel», la seconda «questo file ha dentro
+        // spazzatura». Per il brano la conseguenza è la stessa — nessuna
+        // copertina — ed è voluta.
+        ImageError::Limits(limite) => {
+            AppError::new(ErrorCode::MetadataTagReadFailed { path: None })
+                .with_message(format!(
+                    "copertina {hash} non decodificabile: oltre i limiti di decodifica"
+                ))
+                .with_cause(limite.to_string())
+        }
+        altro => decode_error(hash, &altro.to_string()),
+    })
+}
 
 /// Da dove viene una copertina. Serve a decidere se una trovata online debba
 /// sostituirne una già presente, o lasciarla stare.
@@ -129,6 +242,44 @@ impl CoverStore {
         self.root.join(prefix).join(format!("{hash}.t.jpg"))
     }
 
+    /// Il percorso della copertina media: `<impronta>.m.jpg`, accanto alle altre
+    /// due e con lo stesso schema, così la pulizia la riconosce come loro.
+    #[must_use]
+    pub fn percorso_media(&self, hash: &str) -> PathBuf {
+        let prefix = hash.get(..2).unwrap_or("__");
+        self.root.join(prefix).join(format!("{hash}.m.jpg"))
+    }
+
+    /// I byte della copertina media, facendola dalla piena se non c'è ancora.
+    ///
+    /// `None` se non c'è nemmeno la piena: una copertina che manca, che per chi
+    /// la chiede è un disco senza immagine e non un guasto. La media scritta
+    /// passa da [`scrivi_atomico`] come le altre: due richieste della stessa
+    /// copertina nello stesso momento la fanno tutte e due, e l'ultima
+    /// rinomina vince su un file che è comunque lo stesso.
+    ///
+    /// Vedi [`MAX_LATO_MEDIA`] per perché nasce qui e non nella scansione.
+    ///
+    /// # Errori
+    ///
+    /// `metadata.tagReadFailed` se la piena sul disco non si decodifica; `fs.*`
+    /// se la media non si scrive.
+    pub fn media(&self, hash: &str) -> Result<Option<Vec<u8>>, AppError> {
+        let percorso = self.percorso_media(hash);
+        if let Ok(byte) = std::fs::read(&percorso) {
+            return Ok(Some(byte));
+        }
+        let Ok(piena) = std::fs::read(self.path_for(hash)) else {
+            return Ok(None);
+        };
+        // Con i limiti anche qui, come per la tinta: la piena l'ha scritta
+        // Aether, ma la cartella dati è una cartella come un'altra.
+        let immagine = decodifica(&piena, hash)?;
+        let byte = encode_jpeg(&fit(&immagine, MAX_LATO_MEDIA), QUALITA_MEDIA, hash)?;
+        scrivi_atomico(&percorso, &byte)?;
+        Ok(Some(byte))
+    }
+
     /// La tinta dominante di una copertina, dalla sua miniatura.
     ///
     /// Dalla miniatura e non dalla piena: sono gli stessi colori nelle stesse
@@ -143,11 +294,10 @@ impl CoverStore {
     #[must_use]
     pub fn tinta(&self, hash: &str) -> Option<[u8; 3]> {
         let bytes = std::fs::read(self.thumbnail_path_for(hash)).ok()?;
-        let immagine = ImageReader::new(std::io::Cursor::new(bytes))
-            .with_guessed_format()
-            .ok()?
-            .decode()
-            .ok()?;
+        // Con i limiti anche qui, benché la miniatura l'abbia scritta Aether:
+        // la cartella dati è una cartella come un'altra, e un file messo al
+        // posto di una miniatura non deve valere più di una copertina in un tag.
+        let immagine = decodifica(&bytes, hash).ok()?;
         crate::tinta::dominante(&immagine.to_rgb8())
     }
 
@@ -184,11 +334,7 @@ impl CoverStore {
             });
         }
 
-        let decoded = ImageReader::new(std::io::Cursor::new(original))
-            .with_guessed_format()
-            .map_err(|err| decode_error(&hash, &err.to_string()))?
-            .decode()
-            .map_err(|err| decode_error(&hash, &err.to_string()))?;
+        let decoded = decodifica(original, &hash)?;
 
         let piena = fit(&decoded, MAX_LATO);
         let miniatura = fit(&decoded, MAX_LATO_MINIATURA);
@@ -199,8 +345,18 @@ impl CoverStore {
         let bytes_miniatura = encode_jpeg(&miniatura, QUALITA_MINIATURA, &hash)?;
 
         let byte_size = bytes_piena.len() as u64;
-        write_atomic(&full, &bytes_piena)?;
-        write_atomic(&self.thumbnail_path_for(&hash), &bytes_miniatura)?;
+        // Una scrittura interrotta a metà lascerebbe nello store un file
+        // parziale col nome giusto — e siccome lo store si fida del nome, quel
+        // file verrebbe servito per sempre come se fosse valido. Vedi
+        // [`crate::scrittura`].
+        //
+        // La miniatura **prima** della piena, ed è l'ordine che conta: il ramo
+        // «già presente» guarda soltanto la piena, quindi una piena scritta e
+        // una miniatura persa a metà sarebbero una copertina che nelle griglie
+        // non compare mai più. Al contrario, una miniatura senza la piena si
+        // riscrive da sé alla prossima scansione di quel file.
+        scrivi_atomico(&self.thumbnail_path_for(&hash), &bytes_miniatura)?;
+        scrivi_atomico(&full, &bytes_piena)?;
 
         Ok(StoredCover {
             hash,
@@ -211,6 +367,402 @@ impl CoverStore {
             already_present: false,
         })
     }
+
+    /// Quanto occupa lo store sul disco: file e byte, miniature comprese.
+    ///
+    /// Si cammina la cartella invece di sommare `cover_art.byte_size`, per due
+    /// ragioni: quella colonna conta solo la copertina piena e non la
+    /// miniatura, e non vede quel che sta sul disco senza una riga — gli avanzi
+    /// che la pulizia esiste per togliere. Il numero che si mostra all'utente
+    /// dev'essere quello che il disco libererebbe, non quello che il database
+    /// crede.
+    ///
+    /// Costa una lettura di cartella per ognuna delle (al più) 256
+    /// sottocartelle: qualche decina di millisecondi su una libreria grande, e
+    /// per questo chi la chiama lo fa lontano dal filo della finestra. Una
+    /// cartella che non si legge conta zero invece di far fallire tutto: è una
+    /// misura, non un inventario.
+    #[must_use]
+    pub fn occupazione(&self) -> Occupazione {
+        let mut occupazione = Occupazione::default();
+        for (_, dati) in self.file_dello_store() {
+            occupazione.file = occupazione.file.saturating_add(1);
+            occupazione.byte = occupazione.byte.saturating_add(dati.len());
+        }
+        occupazione
+    }
+
+    /// Toglie dal disco la copertina piena, la media e la miniatura di ogni
+    /// impronta.
+    ///
+    /// Un file che non c'è già non è un guasto: è il risultato che si voleva.
+    /// Uno che non si lascia cancellare — aperto da un altro processo senza
+    /// condivisione, una cartella diventata di sola lettura — resta dov'è e
+    /// semplicemente non si conta: la sua riga è già andata, e
+    /// [`CoverStore::spazza_avanzi`] lo ritroverà alla pulizia dopo.
+    #[must_use]
+    pub fn togli_tutte(&self, hashes: &[String]) -> Liberato {
+        let mut liberato = Liberato::default();
+        for hash in hashes {
+            for percorso in [
+                self.path_for(hash),
+                self.percorso_media(hash),
+                self.thumbnail_path_for(hash),
+            ] {
+                liberato.aggiungi(togli_file(&percorso));
+            }
+        }
+        liberato
+    }
+
+    /// Toglie quel che sta nello store senza stare nel database.
+    ///
+    /// Due generi di avanzi, e nient'altro:
+    ///
+    /// - i temporanei di una scrittura interrotta (vedi
+    ///   [`crate::scrittura::e_temporaneo`]);
+    /// - le copertine e le miniature la cui impronta **non ha una riga** in
+    ///   `cover_art` (`registrate` è l'elenco delle impronte che ce l'hanno).
+    ///   Nascono quando una scansione annullata ha salvato le immagini dei file
+    ///   letti ma non ha fatto in tempo a registrarli, o quando una pulizia
+    ///   precedente ha tolto la riga e non è riuscita a togliere il file.
+    ///
+    /// # Perché l'età
+    ///
+    /// Tutti e due si toccano solo se più vecchi di `eta_minima`. Un
+    /// temporaneo giovane può essere la scrittura in corso di un altro filo, e
+    /// una copertina giovane senza riga è quasi sempre una copertina appena
+    /// salvata da una scansione che la registrerà fra un istante: la riga
+    /// arriva **dopo** il file, per costruzione, perché il file si scrive
+    /// fuori dal lucchetto della libreria.
+    ///
+    /// Un file con un nome che questo modulo non ha scritto non si tocca, a
+    /// nessuna età: la cartella è di Aether, ma non abbastanza da cancellare
+    /// quel che non si riconosce.
+    #[must_use]
+    pub fn spazza_avanzi(&self, registrate: &HashSet<String>, eta_minima: Duration) -> Liberato {
+        let mut liberato = Liberato::default();
+        let adesso = std::time::SystemTime::now();
+        for (percorso, dati) in self.file_dello_store() {
+            // Un orologio che non si legge, o un file «dal futuro» su una
+            // macchina con la data sbagliata, vale giovane: nel dubbio si lascia.
+            let vecchio = dati
+                .modified()
+                .ok()
+                .and_then(|quando| adesso.duration_since(quando).ok())
+                .is_some_and(|eta| eta >= eta_minima);
+            if !vecchio {
+                continue;
+            }
+            let avanzo = e_temporaneo(&percorso)
+                || impronta_del_file(&percorso).is_some_and(|hash| !registrate.contains(hash));
+            if avanzo {
+                liberato.aggiungi(togli_file(&percorso));
+            }
+        }
+        liberato
+    }
+
+    /// Tutti i file dello store, con i loro metadati.
+    ///
+    /// Solo le sottocartelle a due caratteri e i file lì dentro: è la forma
+    /// che [`CoverStore::path_for`] produce, e quel che sta fuori da quella
+    /// forma non è dello store. Le cartelle e i file che non si leggono si
+    /// saltano.
+    fn file_dello_store(&self) -> Vec<(PathBuf, std::fs::Metadata)> {
+        let mut file = Vec::new();
+        let Ok(cartelle) = std::fs::read_dir(&self.root) else {
+            return file;
+        };
+        for cartella in cartelle.flatten() {
+            let nome = cartella.file_name();
+            let di_due = nome.to_str().is_some_and(|n| n.chars().count() == 2);
+            if !di_due || !cartella.file_type().is_ok_and(|tipo| tipo.is_dir()) {
+                continue;
+            }
+            let Ok(voci) = std::fs::read_dir(cartella.path()) else {
+                continue;
+            };
+            for voce in voci.flatten() {
+                if let Ok(dati) = voce.metadata()
+                    && dati.is_file()
+                {
+                    file.push((voce.path(), dati));
+                }
+            }
+        }
+        file
+    }
+}
+
+/// Quanto occupa lo store: vedi [`CoverStore::occupazione`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Occupazione {
+    /// Quanti file, copertine piene e miniature insieme.
+    pub file: u64,
+    /// Quanti byte.
+    pub byte: u64,
+}
+
+/// Quanto ha liberato un giro di cancellazioni.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Liberato {
+    /// Quanti file se ne sono andati.
+    pub file: u64,
+    /// Quanti byte occupavano.
+    pub byte: u64,
+}
+
+impl Liberato {
+    /// Somma l'esito di una cancellazione: `None` vuol dire «non c'era», o
+    /// «non si è lasciato togliere», e non conta.
+    fn aggiungi(&mut self, tolto: Option<u64>) {
+        if let Some(byte) = tolto {
+            self.file = self.file.saturating_add(1);
+            self.byte = self.byte.saturating_add(byte);
+        }
+    }
+
+    /// La somma di due giri.
+    #[must_use]
+    pub fn piu(self, altro: Self) -> Self {
+        Self {
+            file: self.file.saturating_add(altro.file),
+            byte: self.byte.saturating_add(altro.byte),
+        }
+    }
+}
+
+/// Toglie un file e dice quanto pesava, o `None` se non c'era o non si è
+/// lasciato togliere.
+fn togli_file(percorso: &Path) -> Option<u64> {
+    let peso = std::fs::metadata(percorso).ok()?.len();
+    std::fs::remove_file(percorso).ok()?;
+    Some(peso)
+}
+
+/// L'impronta di un file dello store, se il nome ha la forma che lo store
+/// scrive: `<impronta>.jpg`, `<impronta>.m.jpg` o `<impronta>.t.jpg`, con
+/// l'impronta di blake3 in esadecimale minuscolo. `None` per tutto il resto,
+/// che non si tocca.
+fn impronta_del_file(percorso: &Path) -> Option<&str> {
+    let nome = percorso.file_name()?.to_str()?;
+    let hash = nome
+        .strip_suffix(".t.jpg")
+        .or_else(|| nome.strip_suffix(".m.jpg"))
+        .or_else(|| nome.strip_suffix(".jpg"))?;
+    let esadecimale = hash.len() == 64
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    esadecimale.then_some(hash)
+}
+
+/// Le colonne che nominano un'impronta di `cover_art`, come `(tabella,
+/// colonna)`.
+///
+/// # Chi lo dice
+///
+/// Lo **schema**, non un elenco scritto qui. Ogni colonna che punta a una
+/// copertina è dichiarata `REFERENCES cover_art(hash)`, e SQLite sa elencarle:
+/// `pragma_foreign_key_list` su ogni tabella. Così una tabella aggiunta da una
+/// migrazione futura che dichiari la sua chiave esterna entra nel conto da
+/// sola, senza che nessuno si ricordi di passare di qui — e dimenticarsene
+/// vorrebbe dire cancellare copertine ancora in uso.
+///
+/// # E la rete sotto
+///
+/// Le quattro che ci sono dalla prima migrazione — `tracks.cover_art_hash`,
+/// `albums.cover_art_hash`, `artists.image_hash`, `playlists.cover_art_hash` —
+/// **devono** esserci. Se il catalogo ne restituisce di meno qualcosa non va
+/// nello schema, o nella lettura del catalogo, e la pulizia si rifiuta invece
+/// di cancellare sulla base di un elenco monco.
+///
+/// # Errori
+///
+/// `db.*` se il catalogo non si legge; `db.queryFailed` se manca una delle
+/// quattro.
+pub fn riferimenti(connection: &Connection) -> Result<Vec<(String, String)>, AppError> {
+    let fallita = |err: &rusqlite::Error| {
+        crate::db::codice_da_sqlite("elenco delle colonne che nominano una copertina", err)
+    };
+    let mut statement = connection
+        .prepare(
+            "SELECT m.name, f.\"from\"
+               FROM sqlite_master AS m, pragma_foreign_key_list(m.name) AS f
+              WHERE m.type = 'table'
+                AND lower(f.\"table\") = 'cover_art'
+                AND (f.\"to\" IS NULL OR lower(f.\"to\") = 'hash')
+              ORDER BY m.name, f.\"from\"",
+        )
+        .map_err(|err| fallita(&err))?;
+    let colonne = statement
+        .query_map([], |riga| {
+            Ok((riga.get::<_, String>(0)?, riga.get::<_, String>(1)?))
+        })
+        .map_err(|err| fallita(&err))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| fallita(&err))?;
+
+    const ATTESE: [(&str, &str); 4] = [
+        ("albums", "cover_art_hash"),
+        ("artists", "image_hash"),
+        ("playlists", "cover_art_hash"),
+        ("tracks", "cover_art_hash"),
+    ];
+    for (tabella, colonna) in ATTESE {
+        let trovata = colonne
+            .iter()
+            .any(|(t, c)| t.eq_ignore_ascii_case(tabella) && c.eq_ignore_ascii_case(colonna));
+        if !trovata {
+            return Err(AppError::new(ErrorCode::DbQueryFailed {
+                detail: Some("elenco delle colonne che nominano una copertina".to_owned()),
+            })
+            .with_cause(format!(
+                "manca {tabella}.{colonna} fra i riferimenti a cover_art: la pulizia \
+                 delle copertine non procede su un elenco monco"
+            )));
+        }
+    }
+    Ok(colonne)
+}
+
+/// La condizione «nessuno la nomina», per le colonne date.
+///
+/// `NOT IN` su un'unione e non un `NOT EXISTS` per colonna: le colonne delle
+/// copertine non hanno indici, e un `NOT EXISTS` correlato scorrerebbe tutti i
+/// brani **per ogni** copertina — su cinquantamila brani e cinquemila
+/// copertine, duecentocinquanta milioni di confronti. La sottoquery non
+/// correlata SQLite la materializza una volta sola in un indice temporaneo.
+///
+/// Il `IS NOT NULL` in ogni ramo non è pignoleria: un solo `NULL` dentro un
+/// `NOT IN` rende la condizione `NULL` per **ogni** riga, e la pulizia non
+/// toglierebbe mai niente — in silenzio.
+fn nessuno_la_nomina(colonne: &[(String, String)]) -> String {
+    let virgolette = |nome: &str| format!("\"{}\"", nome.replace('"', "\"\""));
+    let rami: Vec<String> = colonne
+        .iter()
+        .map(|(tabella, colonna)| {
+            let colonna = virgolette(colonna);
+            format!(
+                "SELECT {colonna} FROM {} WHERE {colonna} IS NOT NULL",
+                virgolette(tabella)
+            )
+        })
+        .collect();
+    format!("hash NOT IN ({})", rami.join(" UNION "))
+}
+
+/// Quante righe di `cover_art` non nomina più nessuno.
+///
+/// È la domanda che il filo di manutenzione si fa prima di decidere se una
+/// pulizia vale la pena: costa la stessa unione di [`dimentica_orfane`], ma
+/// non scrive niente.
+///
+/// # Errori
+///
+/// Quelli di [`riferimenti`], e `db.*` dalla lettura.
+pub fn quante_orfane(connection: &Connection) -> Result<u64, AppError> {
+    let colonne = riferimenti(connection)?;
+    let quante: i64 = connection
+        .query_row(
+            &format!(
+                "SELECT COUNT(*) FROM cover_art WHERE {}",
+                nessuno_la_nomina(&colonne)
+            ),
+            [],
+            |riga| riga.get(0),
+        )
+        .map_err(|err| crate::db::codice_da_sqlite("conto delle copertine orfane", &err))?;
+    Ok(u64::try_from(quante).unwrap_or(0))
+}
+
+/// Cancella le righe di `cover_art` che nessuno nomina più, e ne restituisce
+/// le impronte.
+///
+/// **Non tocca i file**, e non per dimenticanza: si chiama col lucchetto della
+/// libreria in mano, e cancellare migliaia di file dentro quel lucchetto
+/// fermerebbe la finestra per tutto il tempo. Chi chiama passa le impronte a
+/// [`CoverStore::togli_tutte`] dopo averlo lasciato. Se il processo muore fra
+/// le due cose, i file restano senza riga, e li trova
+/// [`CoverStore::spazza_avanzi`] alla pulizia successiva.
+///
+/// Un'istruzione sola, `DELETE … RETURNING`: la scelta di cosa togliere e la
+/// cancellazione sono lo stesso passo, quindi nessuna scrittura può infilarsi
+/// fra le due e far togliere una copertina appena tornata in uso.
+///
+/// # Errori
+///
+/// Quelli di [`riferimenti`], e `db.*` dalla cancellazione.
+pub fn dimentica_orfane(connection: &Connection) -> Result<Vec<String>, AppError> {
+    let colonne = riferimenti(connection)?;
+    let fallita =
+        |err: &rusqlite::Error| crate::db::codice_da_sqlite("pulizia delle copertine orfane", err);
+    let mut statement = connection
+        .prepare(&format!(
+            "DELETE FROM cover_art WHERE {} RETURNING hash",
+            nessuno_la_nomina(&colonne)
+        ))
+        .map_err(|err| fallita(&err))?;
+    statement
+        .query_map([], |riga| riga.get::<_, String>(0))
+        .map_err(|err| fallita(&err))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| fallita(&err))
+}
+
+/// Le impronte che hanno una riga in `cover_art`, per
+/// [`CoverStore::spazza_avanzi`].
+///
+/// # Errori
+///
+/// `db.*` dalla lettura.
+pub fn registrate(connection: &Connection) -> Result<HashSet<String>, AppError> {
+    let fallita =
+        |err: &rusqlite::Error| crate::db::codice_da_sqlite("elenco delle copertine", err);
+    let mut statement = connection
+        .prepare("SELECT hash FROM cover_art")
+        .map_err(|err| fallita(&err))?;
+    statement
+        .query_map([], |riga| riga.get::<_, String>(0))
+        .map_err(|err| fallita(&err))?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|err| fallita(&err))
+}
+
+/// Com'è andata una pulizia intera.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Pulizia {
+    /// Quante righe di `cover_art` se ne sono andate.
+    pub righe: usize,
+    /// Quanto si è liberato sul disco: copertine, miniature e avanzi.
+    pub liberato: Liberato,
+}
+
+/// La pulizia intera in un colpo: righe orfane, i loro file, e gli avanzi.
+///
+/// È la composizione dei tre passi per chi non ha un lucchetto da lasciare fra
+/// l'uno e l'altro — le prove, gli esempi. L'applicazione li chiama separati,
+/// per cancellare i file **fuori** dal lucchetto della libreria.
+///
+/// # Errori
+///
+/// Quelli di [`dimentica_orfane`] e di [`registrate`]: se il database non
+/// risponde non si cancella nessun file.
+pub fn pulisci(
+    connection: &Connection,
+    store: &CoverStore,
+    eta_avanzi: Duration,
+) -> Result<Pulizia, AppError> {
+    let tolte = dimentica_orfane(connection)?;
+    let rimaste = registrate(connection)?;
+    let liberato = store
+        .togli_tutte(&tolte)
+        .piu(store.spazza_avanzi(&rimaste, eta_avanzi));
+    Ok(Pulizia {
+        righe: tolte.len(),
+        liberato,
+    })
 }
 
 /// Un'immagine illeggibile non è un guasto della scansione: è un file con
@@ -268,25 +820,6 @@ fn encode_jpeg(image: &image::DynamicImage, quality: u8, hash: &str) -> Result<V
         )
         .map_err(|err| decode_error(hash, &err.to_string()))?;
     Ok(out)
-}
-
-/// Scrive prima accanto e poi rinomina.
-///
-/// Una scrittura interrotta a metà lascerebbe nello store un file parziale col
-/// nome giusto — e siccome lo store si fida del nome, quel file verrebbe servito
-/// per sempre come se fosse valido. Il rinomina è atomico: o c'è tutto o non
-/// c'è niente.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| io_error(&parent.display().to_string(), &err))?;
-    }
-    let temp = path.with_extension(format!("tmp{}", std::process::id()));
-    std::fs::write(&temp, bytes).map_err(|err| io_error(&temp.display().to_string(), &err))?;
-    std::fs::rename(&temp, path).map_err(|err| {
-        let _ = std::fs::remove_file(&temp);
-        io_error(&path.display().to_string(), &err)
-    })
 }
 
 #[cfg(test)]
@@ -465,6 +998,375 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Il CRC di un blocco PNG: quello di zlib, sul tipo e sui dati.
+    fn crc_png(byte: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFF_u32;
+        for &b in byte {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// Un PNG che **dichiara** `larghezza`×`altezza` e non porta i pixel.
+    ///
+    /// È la forma di una bomba di decompressione vista dalla parte che conta:
+    /// l'intestazione. I pixel veri non servono — i limiti devono scattare
+    /// prima di chiederli, ed è esattamente quel che si prova — e un blocco
+    /// `IDAT` vuoto ma valido fa arrivare il lettore fino a dove i conti si
+    /// fanno, invece di farlo inciampare su un file senza dati.
+    fn png_finto(larghezza: u32, altezza: u32, profondita: u8, colore: u8) -> Vec<u8> {
+        fn blocco(out: &mut Vec<u8>, tipo: &[u8; 4], dati: &[u8]) {
+            out.extend_from_slice(&u32::try_from(dati.len()).expect("corto").to_be_bytes());
+            let mut firmato = tipo.to_vec();
+            firmato.extend_from_slice(dati);
+            out.extend_from_slice(&firmato);
+            out.extend_from_slice(&crc_png(&firmato).to_be_bytes());
+        }
+        let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&larghezza.to_be_bytes());
+        ihdr.extend_from_slice(&altezza.to_be_bytes());
+        ihdr.extend_from_slice(&[profondita, colore, 0, 0, 0]);
+        blocco(&mut out, b"IHDR", &ihdr);
+        // Un flusso zlib vuoto: intestazione, un blocco «stored» finale di
+        // lunghezza zero, e l'adler32 del niente.
+        blocco(
+            &mut out,
+            b"IDAT",
+            &[
+                0x78, 0x01, 0x01, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x01,
+            ],
+        );
+        blocco(&mut out, b"IEND", &[]);
+        out
+    }
+
+    #[test]
+    fn una_bomba_di_decompressione_non_arriva_a_chiedere_la_memoria() {
+        // Tre intestazioni che i limiti di serie di `image` lascerebbero
+        // passare fino all'allocazione, e che qui si fermano prima:
+        //
+        // - 8000×8000 RGBA a 16 bit: 512 milioni di byte, appena sotto i 512
+        //   MiB di serie, molto sopra i nostri 192;
+        // - 8200×8200 in scala di grigi: 67 megabyte soltanto, ma un lato oltre
+        //   8192;
+        // - 1×100 000: cento kilobyte e una striscia che il ridimensionamento
+        //   tratterebbe come centomila righe.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        for (larghezza, altezza, profondita, colore) in
+            [(8000, 8000, 16, 6), (8200, 8200, 8, 0), (1, 100_000, 8, 0)]
+        {
+            let bomba = png_finto(larghezza, altezza, profondita, colore);
+            let errore = store
+                .store(&bomba, CoverSource::Tag)
+                .expect_err("oltre i limiti non si decodifica");
+            assert!(
+                errore.to_string().contains("oltre i limiti"),
+                "{larghezza}×{altezza}: {errore}"
+            );
+            // E non resta niente nello store: nessuna copertina a metà.
+            assert!(!store.path_for(&blake3::hash(&bomba).to_hex()).exists());
+        }
+
+        // La controprova, sull'unica delle tre che non chiede mezzo gigabyte
+        // nemmeno per sbaglio: con i limiti di serie la stessa intestazione
+        // passa il controllo e il guasto arriva **dopo**, dai dati che mancano
+        // — cioè a memoria già chiesta. Se un giorno `image` stringesse i suoi
+        // limiti di serie, questa riga lo direbbe, e i nostri si potrebbero
+        // rileggere.
+        let di_serie = ImageReader::new(std::io::Cursor::new(png_finto(8200, 8200, 8, 0)))
+            .with_guessed_format()
+            .expect("formato")
+            .decode()
+            .expect_err("i dati non ci sono");
+        assert!(
+            !matches!(di_serie, ImageError::Limits(_)),
+            "coi limiti di serie non è un limite a fermarla: {di_serie}"
+        );
+    }
+
+    #[test]
+    fn una_copertina_grande_ma_vera_si_decodifica_ancora() {
+        // I limiti non devono diventare un rifiuto delle copertine vere: una
+        // 3000×3000, che è la «alta risoluzione» dei negozi, passa.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let salvata = store
+            .store(&png(3000, 3000), CoverSource::Tag)
+            .expect("una copertina vera");
+        assert_eq!((salvata.width, salvata.height), (MAX_LATO, MAX_LATO));
+    }
+
+    /// Un database con dentro le impronte date in `cover_art`.
+    fn con_le_copertine(hashes: &[&str]) -> Connection {
+        let connection = crate::db::open_in_memory().expect("database").connection;
+        for hash in hashes {
+            connection
+                .execute(
+                    "INSERT INTO cover_art (hash, mime_type, source, created_at)
+                     VALUES (?1, 'image/jpeg', 'tag', 0)",
+                    [hash],
+                )
+                .expect("riga della copertina");
+        }
+        connection
+    }
+
+    /// Salva `n` copertine diverse e ne restituisce le impronte.
+    fn salva(store: &CoverStore, n: u32) -> Vec<String> {
+        (0..n)
+            .map(|i| {
+                store
+                    .store(&png(20 + i, 20), CoverSource::Tag)
+                    .expect("salvataggio")
+                    .hash
+            })
+            .collect()
+    }
+
+    #[test]
+    fn la_pulizia_toglie_solo_quel_che_nessuno_nomina() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let h = salva(&store, 5);
+        let riferite: Vec<&str> = h.iter().map(String::as_str).collect();
+        let connection = con_le_copertine(&riferite);
+        // Una per ognuna delle quattro colonne che nominano una copertina, e
+        // l'ultima orfana. Più un brano **senza** copertina: il suo `NULL`
+        // dentro un `NOT IN` scritto male renderebbe la pulizia muta.
+        connection
+            .execute_batch(&format!(
+                "INSERT INTO tracks (path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified, cover_art_hash)
+                 VALUES ('C:/m/a.mp3', 'a', 'A', 'B', 'C', 1, 0, 0, '{}'),
+                        ('C:/m/b.mp3', 'b', 'A', 'B', 'C', 1, 0, 0, NULL);
+                 INSERT INTO albums (album_key, title, artist, cover_art_hash)
+                 VALUES ('k', 'C', 'B', '{}');
+                 INSERT INTO artists (name, image_hash) VALUES ('B', '{}');
+                 INSERT INTO playlists (playlist_key, name, created_at, updated_at,
+                                        cover_art_hash)
+                 VALUES ('p', 'P', 0, 0, '{}');",
+                h[0], h[1], h[2], h[3]
+            ))
+            .expect("chi le nomina");
+
+        assert_eq!(quante_orfane(&connection).expect("conto"), 1);
+        let prima = store.occupazione();
+        let esito = pulisci(&connection, &store, Duration::from_secs(3600)).expect("pulizia");
+
+        assert_eq!(esito.righe, 1, "una sola riga orfana");
+        assert_eq!(esito.liberato.file, 2, "la piena e la miniatura");
+        assert_eq!(
+            store.occupazione().byte,
+            prima.byte - esito.liberato.byte,
+            "i byte dichiarati sono quelli che il disco ha perso"
+        );
+        assert!(!store.path_for(&h[4]).exists());
+        assert!(!store.thumbnail_path_for(&h[4]).exists());
+        for viva in &h[..4] {
+            assert!(store.path_for(viva).exists(), "{viva} è ancora in uso");
+            assert!(store.thumbnail_path_for(viva).exists());
+        }
+        assert_eq!(quante_orfane(&connection).expect("conto"), 0);
+
+        // E una seconda pulizia non ha niente da fare.
+        let di_nuovo = pulisci(&connection, &store, Duration::from_secs(3600)).expect("ancora");
+        assert_eq!(di_nuovo, Pulizia::default());
+    }
+
+    #[test]
+    fn una_tabella_nuova_che_nomina_una_copertina_entra_nel_conto_da_sola() {
+        // Il motivo per cui i riferimenti li dice lo schema: una migrazione di
+        // domani che aggiunga una colonna `REFERENCES cover_art(hash)` non deve
+        // ricordarsi di passare dalla pulizia, o la pulizia le toglierebbe le
+        // copertine da sotto.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let h = salva(&store, 1);
+        let connection = con_le_copertine(&[h[0].as_str()]);
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE copertine_future (
+                   id INTEGER PRIMARY KEY,
+                   quale TEXT REFERENCES cover_art(hash) ON DELETE SET NULL
+                 );
+                 INSERT INTO copertine_future (quale) VALUES ('{}');",
+                h[0]
+            ))
+            .expect("tabella nuova");
+
+        let colonne = riferimenti(&connection).expect("riferimenti");
+        assert!(
+            colonne
+                .iter()
+                .any(|(t, c)| t == "copertine_future" && c == "quale"),
+            "{colonne:?}"
+        );
+        let esito = pulisci(&connection, &store, Duration::from_secs(3600)).expect("pulizia");
+        assert_eq!(
+            esito.righe, 0,
+            "la nomina qualcuno che l'elenco scritto a mano non conosceva"
+        );
+        assert!(store.path_for(&h[0]).exists());
+    }
+
+    #[test]
+    fn senza_i_quattro_riferimenti_di_sempre_la_pulizia_si_rifiuta() {
+        // Uno schema che non dice più chi nomina le copertine non è una buona
+        // ragione per cancellarle tutte.
+        let connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE cover_art (hash TEXT PRIMARY KEY);
+                 CREATE TABLE tracks (id INTEGER PRIMARY KEY,
+                   cover_art_hash TEXT REFERENCES cover_art(hash));
+                 INSERT INTO cover_art VALUES ('x');",
+            )
+            .expect("schema monco");
+        dimentica_orfane(&connection).expect_err("elenco monco");
+        let rimaste: i64 = connection
+            .query_row("SELECT COUNT(*) FROM cover_art", [], |r| r.get(0))
+            .expect("conto");
+        assert_eq!(rimaste, 1, "non si è cancellato niente");
+    }
+
+    #[test]
+    fn gli_avanzi_se_ne_vanno_solo_da_vecchi_e_solo_se_sono_avanzi() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let h = salva(&store, 2);
+        // La prima ha la sua riga, la seconda no: è quel che lascia una
+        // scansione annullata dopo aver salvato l'immagine e prima di
+        // registrarla.
+        let registrate: HashSet<String> = std::iter::once(h[0].clone()).collect();
+        let cartella = store
+            .path_for(&h[0])
+            .parent()
+            .expect("sottocartella")
+            .to_path_buf();
+        // Un temporaneo di una scrittura interrotta, nella forma nuova e in
+        // quella di prima, e un file che lo store non ha scritto.
+        let temporaneo = cartella.join(format!("{}.jpg.1234-5.tmp", h[0]));
+        let vecchio_stile = cartella.join(format!("{}.tmp1234", h[0]));
+        let estraneo = cartella.join("leggimi.txt");
+        for file in [&temporaneo, &vecchio_stile, &estraneo] {
+            std::fs::write(file, b"x").expect("file");
+        }
+
+        // Giovani: non si tocca niente. Potrebbero essere la scrittura in
+        // corso di un altro filo, o una copertina che sta per essere registrata.
+        let niente = store.spazza_avanzi(&registrate, Duration::from_secs(3600));
+        assert_eq!(niente, Liberato::default());
+
+        // Vecchi: se ne vanno i due temporanei e i due file della seconda.
+        let spazzati = store.spazza_avanzi(&registrate, Duration::ZERO);
+        assert_eq!(spazzati.file, 4);
+        assert!(!temporaneo.exists() && !vecchio_stile.exists());
+        assert!(!store.path_for(&h[1]).exists());
+        assert!(!store.thumbnail_path_for(&h[1]).exists());
+        assert!(store.path_for(&h[0]).exists(), "quella registrata resta");
+        assert!(estraneo.exists(), "quel che non si riconosce non si tocca");
+    }
+
+    #[test]
+    fn l_occupazione_conta_piene_miniature_e_avanzi() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        assert_eq!(store.occupazione(), Occupazione::default());
+        let h = salva(&store, 3);
+        let attesi: u64 = h
+            .iter()
+            .flat_map(|hash| [store.path_for(hash), store.thumbnail_path_for(hash)])
+            .map(|p| std::fs::metadata(p).expect("file").len())
+            .sum();
+        let occupazione = store.occupazione();
+        assert_eq!(occupazione.file, 6);
+        assert_eq!(occupazione.byte, attesi);
+    }
+
+    #[test]
+    fn la_media_nasce_dalla_piena_alla_prima_richiesta() {
+        // Una copertina salvata come le salva la scansione: piena e miniatura,
+        // e la media no — come tutte quelle già nello store prima della 3.0.
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let salvata = store
+            .store(&png(2000, 1000), CoverSource::Tag)
+            .expect("salvataggio");
+        let media = store.percorso_media(&salvata.hash);
+        assert!(
+            !media.exists(),
+            "la scansione non paga una terza ricodifica"
+        );
+
+        let byte = store.media(&salvata.hash).expect("media").expect("c'è");
+        let immagine = image::load_from_memory(&byte).expect("un JPEG vero");
+        assert_eq!(
+            (immagine.width(), immagine.height()),
+            (MAX_LATO_MEDIA, MAX_LATO_MEDIA / 2),
+            "ridotta in proporzione dalla piena"
+        );
+        assert!(media.exists(), "e resta sul disco per la prossima volta");
+        assert_eq!(
+            media.file_name().and_then(|n| n.to_str()),
+            Some(format!("{}.m.jpg", salvata.hash).as_str())
+        );
+        // La seconda volta si legge e basta: gli stessi byte.
+        assert_eq!(store.media(&salvata.hash).expect("ancora"), Some(byte));
+        // Le copertine di prima restano valide così come sono.
+        assert!(store.path_for(&salvata.hash).exists());
+        assert!(store.thumbnail_path_for(&salvata.hash).exists());
+    }
+
+    #[test]
+    fn una_copertina_piccola_resta_piccola_anche_da_media() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let salvata = store
+            .store(&png(200, 150), CoverSource::Tag)
+            .expect("salvataggio");
+        let byte = store.media(&salvata.hash).expect("media").expect("c'è");
+        let immagine = image::load_from_memory(&byte).expect("un JPEG vero");
+        assert_eq!((immagine.width(), immagine.height()), (200, 150));
+    }
+
+    #[test]
+    fn senza_la_piena_la_media_non_c_e_e_non_e_un_guasto() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let assente = "ab".repeat(32);
+        assert_eq!(store.media(&assente).expect("nessun guasto"), None);
+        assert!(!store.percorso_media(&assente).exists());
+    }
+
+    #[test]
+    fn la_pulizia_conosce_anche_la_media() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let store = CoverStore::open(dir.path()).expect("store");
+        let h = salva(&store, 3);
+        for hash in &h {
+            store.media(hash).expect("media").expect("c'è");
+        }
+        // Senza riga in `cover_art`, e vecchia: la media se ne va con le altre due.
+        let registrate: HashSet<String> = [h[0].clone(), h[1].clone()].into_iter().collect();
+        let spazzati = store.spazza_avanzi(&registrate, Duration::ZERO);
+        assert_eq!(spazzati.file, 3, "piena, media e miniatura");
+        assert!(!store.percorso_media(&h[2]).exists());
+        // E chi la toglie per impronta toglie anche lei.
+        let tolti = store.togli_tutte(&[h[0].clone()]);
+        assert_eq!(tolti.file, 3);
+        assert!(!store.percorso_media(&h[0]).exists());
+        assert!(store.percorso_media(&h[1]).exists(), "quella in uso resta");
     }
 
     #[test]

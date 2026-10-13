@@ -1,11 +1,11 @@
 /**
- * Le icone: quarantaquattro simboli disegnati apposta, montati una volta sola.
+ * Le icone: cinquantotto simboli disegnati apposta, montati una volta sola.
  *
  * # Perché uno sprite e non una libreria
  *
  * L'applicazione non ha dipendenze di componenti, di icone o di animazione, e
- * questo file è il motivo per cui può continuare a non averne: quarantaquattro
- * `<symbol>` in un `<defs>` nascosto costano meno di sei chilobyte e non portano
+ * questo file è il motivo per cui può continuare a non averne: cinquantotto
+ * `<symbol>` in un `<defs>` nascosto costano pochi chilobyte e non portano
  * dietro un albero di pacchetti da aggiornare. La CSP è chiusa
  * (`default-src 'self'`), quindi un font di icone remoto non sarebbe nemmeno
  * caricabile.
@@ -82,6 +82,20 @@ export type NomeIcona =
   | "i-ia"
   | "i-chat"
   | "i-mark"
+  // Gli strumenti dello Studio. Annulla e ripeti sono frecce che tornano, non
+  // le frecce della navigazione: sulla stessa barra c'è «indietro», e due
+  // frecce uguali per due gesti diversi si confondono al primo colpo d'occhio.
+  | "i-undo"
+  | "i-redo"
+  | "i-probe"
+  | "i-sun"
+  | "i-moon"
+  | "i-code"
+  | "i-layers"
+  | "i-wand"
+  | "i-eye"
+  | "i-drop"
+  | "i-timeline"
   // Il rimando alla pagina pubblica di un brano di catalogo. La freccia che
   // esce dal riquadro è il glifo con cui si dice «questo apre il browser» da
   // sempre, e qui quel che apre è un obbligo di certe licenze.
@@ -331,6 +345,47 @@ export function Simboli() {
         <symbol id="i-mark" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2.6}>
           <path d="M10 2.4a7.6 7.6 0 0 1 0 15.2" stroke="currentColor" />
           <path d="M10 17.6a7.6 7.6 0 0 1 0-15.2" stroke="var(--skin-color-ciano)" />
+        </symbol>
+        <symbol id="i-undo" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M7.6 4.6 4 8.2l3.6 3.6" />
+          <path d="M4 8.2h7.4a4.4 4.4 0 0 1 0 8.8H9" />
+        </symbol>
+        <symbol id="i-redo" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M12.4 4.6 16 8.2l-3.6 3.6" />
+          <path d="M16 8.2H8.6a4.4 4.4 0 0 0 0 8.8H11" />
+        </symbol>
+        <symbol id="i-probe" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M4.4 3.4 15.2 9l-4.6 1.4-2.2 4.4Z" />
+          <path d="m10.6 10.4 4 4" />
+        </symbol>
+        <symbol id="i-sun" viewBox="0 0 20 20" {...TRATTO}>
+          <circle cx="10" cy="10" r="3.2" />
+          <path d="M10 2.6v1.6M10 15.8v1.6M2.6 10h1.6M15.8 10h1.6M4.8 4.8l1.1 1.1M14.1 14.1l1.1 1.1M4.8 15.2l1.1-1.1M14.1 5.9l1.1-1.1" />
+        </symbol>
+        <symbol id="i-moon" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M15.8 12.2A6.4 6.4 0 0 1 7.8 4.2a6.4 6.4 0 1 0 8 8Z" />
+        </symbol>
+        <symbol id="i-code" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M7.4 6 3.4 10l4 4M12.6 6l4 4-4 4" />
+        </symbol>
+        <symbol id="i-layers" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M10 3 17 6.6l-7 3.6-7-3.6Z" />
+          <path d="m3 10.2 7 3.6 7-3.6M3 13.6l7 3.6 7-3.6" />
+        </symbol>
+        <symbol id="i-wand" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M3.6 16.4 12.4 7.6M11.2 6.4l2.4 2.4" />
+          <path d="M15.4 2.8v2.4M14.2 4h2.4M16.6 8.6v1.6M15.8 9.4h1.6M8.6 2.6v1.6M7.8 3.4h1.6" />
+        </symbol>
+        <symbol id="i-eye" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M2.6 10S5.4 4.8 10 4.8s7.4 5.2 7.4 5.2-2.8 5.2-7.4 5.2S2.6 10 2.6 10Z" />
+          <circle cx="10" cy="10" r="2.4" />
+        </symbol>
+        <symbol id="i-drop" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M10 3.2s-4.8 5.4-4.8 8.6a4.8 4.8 0 0 0 9.6 0C14.8 8.6 10 3.2 10 3.2Z" />
+        </symbol>
+        <symbol id="i-timeline" viewBox="0 0 20 20" {...TRATTO}>
+          <path d="M2.8 10h14.4" />
+          <path d="M7 7.4 9.6 10 7 12.6 4.4 10ZM14 8.2l1.8 1.8-1.8 1.8-1.8-1.8Z" />
         </symbol>
       </defs>
     </svg>

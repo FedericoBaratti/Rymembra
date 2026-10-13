@@ -361,7 +361,26 @@ impl Stato {
     /// cambio di coefficienti si smorza da solo in pochi millisecondi; a non far
     /// sentire i cambi *grossi* — il caricamento di un preset — ci pensa chi
     /// manda le curve, interpolandole.
+    ///
+    /// # L'eccezione: la riaccensione
+    ///
+    /// Con la curva piatta [`Stato::applica`] non tocca niente — è tutto il
+    /// punto di saltarla — e quindi **nemmeno la memoria**: resta com'era
+    /// all'ultimo campione filtrato, che può essere di dieci minuti e tre brani
+    /// fa. Riaccendendo, la cascata ripartiva da quel ricordo come se il
+    /// segnale di adesso fosse il seguito di quello di allora: un transitorio
+    /// fatto di niente che si sente come uno schiocco, proprio sul gesto che
+    /// la rampa delle curve esiste per rendere morbido.
+    ///
+    /// Qui la memoria si svuota quando si passa da piatto a non piatto. Non è
+    /// il gradino di cui sopra: a filtri spenti il segnale è passato intatto, e
+    /// una cascata che riparte da zero su una curva di pochi decimi di decibel
+    /// — il primo passo della rampa — è quanto di più vicino all'identità ci
+    /// sia.
     pub fn aggiorna(&mut self, coefficienti: Coefficienti) {
+        if self.coefficienti.piatto && !coefficienti.piatto {
+            self.azzera();
+        }
         self.coefficienti = coefficienti;
     }
 
@@ -535,6 +554,76 @@ mod prove {
         let copia = dati;
         stato.applica_blocco(&mut dati, 2);
         assert_eq!(dati, copia);
+    }
+
+    #[test]
+    fn riaccendere_non_si_porta_dietro_la_memoria_di_prima() {
+        // Il difetto: con la curva piatta i filtri si saltano, memoria
+        // compresa, e riaccendendoli la cascata ripartiva dall'ultimo campione
+        // filtrato minuti prima. Un filtro che si riaccende deve suonare
+        // esattamente come uno appena nato: stessa curva, stessi campioni,
+        // stesso risultato.
+        let curva = Coefficienti::calcola(&sola(0, 12.0), true, 48_000);
+
+        let mut usato = Stato::nuovo();
+        usato.aggiorna(curva);
+        // Un bel po' di bassi forti, perché la banda dei 31 Hz ha la coda più
+        // lunga di tutte: è lì che il ricordo resterebbe più a lungo.
+        for n in 0..4_800 {
+            let _ = usato.applica(seno(31.25, n, 48_000.0), 0);
+        }
+        // Spento: la curva diventa piatta, e i campioni passano senza toccarlo.
+        usato.aggiorna(Coefficienti::piatti());
+        for n in 0..480 {
+            let _ = usato.applica(seno(440.0, n, 48_000.0), 0);
+        }
+        // E riacceso.
+        usato.aggiorna(curva);
+
+        let mut nuovo = Stato::nuovo();
+        nuovo.aggiorna(curva);
+
+        for n in 0..2_400 {
+            let campione = seno(1_000.0, n, 48_000.0) * 0.1;
+            let da_usato = usato.applica(campione, 0);
+            let da_nuovo = nuovo.applica(campione, 0);
+            assert!(
+                (da_usato - da_nuovo).abs() < 1e-7,
+                "al campione {n} il filtro riacceso vale {da_usato}, uno nuovo {da_nuovo}: \
+                 la memoria di prima è ancora lì"
+            );
+        }
+    }
+
+    #[test]
+    fn cambiare_curva_a_filtri_accesi_non_svuota_la_memoria() {
+        // Il contrappeso: fra due curve non piatte la memoria resta, perché il
+        // suono sta continuando e svuotarla a metà di un'onda sarebbe il gradino
+        // che la rampa delle curve esiste per evitare.
+        let mut stato = con(&sola(0, 12.0), 48_000);
+        for n in 0..480 {
+            let _ = stato.applica(seno(31.25, n, 48_000.0), 0);
+        }
+        // I bit e non i numeri: la domanda è «è rimasta identica?», e per un
+        // numero in virgola mobile la risposta esatta la danno i bit.
+        let memoria_di = |stato: &Stato| {
+            stato
+                .memoria
+                .first()
+                .and_then(|canale| canale.first())
+                .map(|m| m.s1.to_bits())
+        };
+        let prima = memoria_di(&stato);
+        stato.aggiorna(Coefficienti::calcola(&sola(0, 11.0), true, 48_000));
+        assert_eq!(
+            prima,
+            memoria_di(&stato),
+            "un cambio di curva ha svuotato la memoria"
+        );
+        assert!(
+            prima.is_some_and(|bit| bit != 0),
+            "la memoria non si era mai riempita"
+        );
     }
 
     #[test]

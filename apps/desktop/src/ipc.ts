@@ -265,6 +265,41 @@ export interface Cancellazione {
   torneranno: number;
 }
 
+/** Una cartella tolta dall'elenco perché ci sta già dentro un'altra. */
+export interface CartellaAssorbita {
+  cartella: string;
+  dentro: string;
+}
+
+/**
+ * Una cartella nuova che è una già sorvegliata scritta in un altro modo:
+ * `\\nas\musica` accanto a `Z:\`, quando `Z:` è mappata lì.
+ *
+ * Non entra nell'elenco. La finestra propone il trasloco da `esistente` ad
+ * `a` (`cartelleTrasloca`), che porta con sé ascolti, voti e playlist.
+ */
+export interface CartellaGemella {
+  nuova: string;
+  esistente: string;
+  /** Come si chiamerebbe `esistente` nella grafia di `nuova`. */
+  a: string;
+}
+
+/** L'elenco delle cartelle sorvegliate com'è stato scritto, e cosa si è deciso. */
+export interface CartelleOrdinate {
+  cartelle: string[];
+  assorbite: CartellaAssorbita[];
+  gemelle: CartellaGemella[];
+}
+
+/** Cosa ha cambiato il trasloco di una cartella sorvegliata. */
+export interface Traslocati {
+  percorsi: number;
+  irrintracciabili: number;
+  giaPresenti: number;
+  nonVerificati: number;
+}
+
 /** Lo stato all'avvio. */
 /**
  * Una cartella che il sistema dichiara musicale e che contiene davvero qualcosa.
@@ -310,6 +345,14 @@ export interface NodoCartella {
   /** Quante sottocartelle dirette: è quel che dice se disegnare la freccia. */
   sottocartelle: number;
   /**
+   * Quanti brani stanno **direttamente** qui: le foglie che compaiono aprendo
+   * la cartella.
+   *
+   * Facoltativo per i dati finti dello Studio, che lo precedono: senza, la
+   * cartella si apre solo se ha sottocartelle, com'era prima delle foglie.
+   */
+  file?: number;
+  /**
    * È una delle cartelle sorvegliate.
    *
    * `false` sui nodi sintetici, cioè quelli nati per dare un posto a un brano
@@ -317,6 +360,40 @@ export interface NodoCartella {
    * senso chiedersi se risponde ancora.
    */
   radice: boolean;
+}
+
+/** Un file dentro una cartella: una foglia dell'albero del pannello «Cartelle». */
+export interface FileCartella {
+  /** Il brano: è quel che va in coda. */
+  brano: number;
+  /** Il percorso del file, nella grafia del database: è l'identità della riga. */
+  percorso: string;
+  /** Il nome del file, senza la cartella: è quel che decide l'ordine. */
+  nome: string;
+  /** Il titolo, come lo dicono i tag: è quel che la riga scrive. */
+  titolo: string;
+  durataMs: number;
+}
+
+/** Una cartella aperta dal filtro, con quel che le resta dentro. */
+export interface RamoFiltrato {
+  /** La cartella; `null` per il primo livello. */
+  percorso: string | null;
+  /** Le sottocartelle che sono una corrispondenza o portano a una. */
+  cartelle: NodoCartella[];
+  /** I file di questa cartella che corrispondono. */
+  file: FileCartella[];
+}
+
+/** L'albero potato da un filtro: vedi `cartelle.rs::filtra`. */
+export interface CartelleFiltrate {
+  rami: RamoFiltrato[];
+  /** Le cartelle il cui nome corrisponde, per distinguerle dagli antenati. */
+  trovate: string[];
+  /** Quante corrispondenze c'erano in tutto, prima del tetto. */
+  corrispondenze: number;
+  /** Erano più di quelle arrivate. */
+  troncato: boolean;
 }
 
 /** Com'era rimasto il pannello «Cartelle» all'ultima chiusura. */
@@ -489,6 +566,14 @@ export interface PianoProfilo {
   braniIrrintracciabili: number;
   /** Brani il cui percorso nuovo è già di un'altra riga. */
   braniGiaPresenti: number;
+  /**
+   * Brani il cui file, sotto il prefisso nuovo, non si è potuto verificare: la
+   * cartella di rete non rispondeva. Non sono «non trovati». Assente nella
+   * risposta dell'annullamento, che non rimappa niente.
+   */
+  braniNonVerificati?: number;
+  /** I numeri della rimappatura vengono da un campione: è il piano. */
+  stima?: boolean;
   portati: PortatiProfilo;
 }
 
@@ -551,10 +636,48 @@ export interface EsitoScansione {
   /**
    * Righe che il piano toglierebbe e che la guardia ha lasciato stare.
    *
-   * Diverso da zero solo nelle scansioni che nessuno sta guardando: davanti a
-   * una strage, non si distrugge e si aspetta la passata dopo.
+   * Davanti a una strage non si distrugge: la scansione automatica aspetta la
+   * passata dopo, quella a mano chiede — vedi `daConfermare`.
    */
   rimozioniRinviate: number;
+  /**
+   * Le rimozioni trattenute che aspettano un sì, o `null`.
+   *
+   * Solo un riassunto: l'elenco vero resta al nucleo, e la conferma rimanda
+   * indietro il `gettone` perché tolga esattamente quelle righe.
+   */
+  daConfermare: RimozioniDaConfermare | null;
+  /**
+   * Cartelle illeggibili dentro cartelle sorvegliate che rispondevano: i brani
+   * lì sotto non sono stati né tolti né riscritti.
+   */
+  cartelleIlleggibili: string[];
+  /** Quante righe stanno sotto quelle cartelle, lasciate stare. */
+  nonVerificati: number;
+  numeri: Numeri;
+}
+
+/** Le rimozioni trattenute sotto una cartella sorvegliata, in breve. */
+export interface RimozioniSottoUnaRadice {
+  /** La cartella sorvegliata; vuota se la riga non sta sotto nessuna. */
+  radice: string;
+  quante: number;
+  /** I primi percorsi, per riconoscerle. */
+  esempi: string[];
+}
+
+/** Quel che una scansione a mano chiede prima di togliere troppo. */
+export interface RimozioniDaConfermare {
+  /** Il segno di questo elenco: la conferma lo rimanda indietro. */
+  gettone: number;
+  quante: number;
+  radici: RimozioniSottoUnaRadice[];
+}
+
+/** Com'è andata una conferma di rimozioni. */
+export interface EsitoRimozioni {
+  /** Quante righe sono state tolte davvero: zero se il gettone era superato. */
+  tolti: number;
   numeri: Numeri;
 }
 
@@ -647,6 +770,18 @@ export interface Playlist {
   updatedAt: number;
 }
 
+/**
+ * Com'è andata un'aggiunta a una playlist (`playlists::Aggiunta`).
+ *
+ * `saltati` sono i brani che la finestra aveva ancora in mano e che una
+ * scansione, nel frattempo, ha tolto dalla libreria: non entrano, e si dice.
+ */
+export interface AggiuntaPlaylist {
+  playlist: Playlist;
+  aggiunti: number;
+  saltati: number;
+}
+
 /** Come ordinare un elenco di brani. */
 /**
  * Un ascolto, con il brano che lo ha prodotto.
@@ -669,6 +804,19 @@ export interface VoceCronologia {
 
 export type Ordine = "scaffale" | "recenti" | "ascoltati" | "titolo";
 
+/**
+ * Quale elenco di brani si sta guardando, detto al nucleo.
+ *
+ * Le stesse domande delle pagine — `brani`, `preferiti`, `cerca` — senza la
+ * pagina: serve a chiedere gli identificativi della vista **intera**, per
+ * «Seleziona tutto» e per suonare da una lista di cui la finestra ha in mano
+ * solo le pagine guardate. Vedi `src-tauri/src/viste.rs`.
+ */
+export type VistaBrani =
+  | { tipo: "brani"; ordine: Ordine }
+  | { tipo: "preferiti" }
+  | { tipo: "ricerca"; query: string };
+
 /** Come si ripete: niente, questo brano, tutta la coda. */
 export type Ripetizione = "off" | "one" | "all";
 
@@ -682,6 +830,19 @@ export type Ripetizione = "off" | "one" | "all";
  * quello delle piattaforme di streaming, `basso` sta cinque decibel sotto.
  */
 export type Normalizzazione = "spento" | "basso" | "normale" | "alto";
+
+/**
+ * Di chi è il livello a cui si normalizza: del brano, del disco, o si sceglie
+ * da sé — il disco quando lo si ascolta in ordine, il brano altrimenti.
+ */
+export type ModoLivello = "brano" | "album" | "automatico";
+
+/** Quanti brani con un file la passata di sottofondo ha già misurato. */
+export type AvanzamentoVolume = {
+  /** Misurati, muti o illeggibili: quelli di cui la passata si è occupata. */
+  misurati: number;
+  totale: number;
+};
 
 /**
  * Quel che la Home mostra all'apertura.
@@ -764,12 +925,15 @@ export const DISSOLVENZA_MASSIMA_S = 12;
 export const LATENZA_MASSIMA_MS = 500;
 
 /**
- * Com'è fatto il file che sta suonando.
+ * Com'è fatto quel che sta suonando.
  *
- * Il **file**, non l'uscita: se la scheda audio sta ricampionando, questa riga
- * non lo dice. È una decisione — la domanda a cui risponde è «com'è fatta
- * questa edizione», e l'uscita reale non ci risponde: cambierebbe cambiando
- * cuffia, mentre il file resta quello.
+ * Le colonne del database corrette dal decodificatore appena il brano si sente:
+ * il codec vero (ALAC dentro un M4A, l'MP3 che si ascolta di un FLAC
+ * dell'Internet Archive), e per un flusso, che colonne non ne ha, tutto.
+ *
+ * La riga descrive l'**edizione**, non l'uscita: se la scheda audio ricampiona
+ * non lo scrive — cambierebbe cambiando cuffia — e lo dice solo a chi ci si
+ * ferma sopra, con `outputRate`.
  *
  * Ogni campo può mancare, e non è un caso limite: le quattro colonne sono
  * nullable, `lofty` non ricava le proprietà di tutti i contenitori allo stesso
@@ -790,6 +954,10 @@ export interface FormatoFile {
    * un FLAC — dove pure si mostra — dice quanto è densa l'edizione.
    */
   bitrate: number | null;
+  /** Bit per campione, solo dei formati senza perdita: lo dice il motore. */
+  bitsPerSample: number | null;
+  /** A quanti hertz esce dalla scheda audio. Diverso da `sampleRate`: ricampionato. */
+  outputRate: number | null;
 }
 
 /**
@@ -884,6 +1052,13 @@ export interface StatoRiproduzione {
    * lo stato, e le due viste cambiano insieme.
    */
   formato: FormatoFile | null;
+  /**
+   * Suona, ma i dati non arrivano: il cursore è fermo e lo si dice.
+   *
+   * Non lo manda `riproduzione:stato`: lo porta il colpo d'orologio (vedi
+   * `Tempo.inAttesa`), e `useRiproduzione` lo aggiunge qui. Assente vale no.
+   */
+  inAttesa?: boolean;
 }
 
 /**
@@ -951,6 +1126,15 @@ export interface GuastoAudio {
   causaCodice: string | null;
   /** Riaprire ha senso provarlo. */
   riapribile: boolean;
+  /**
+   * L'uscita fissata che si sta aspettando, se è lei che se n'è andata.
+   *
+   * Le cuffie fissate che si staccano non mandano più la musica agli
+   * altoparlanti: il nucleo aspetta che tornino, e riprende da dov'era. Con
+   * questo nome l'avviso dice un'attesa invece di un guasto, e il tasto
+   * «Riapri» — che qui suona su un'altra uscita — può dire perché.
+   */
+  attesa: string | null;
 }
 
 /**
@@ -990,6 +1174,15 @@ export interface Tempo {
   posizioneMs: number;
   durataMs: number;
   inPausa: boolean;
+  /**
+   * Non è in pausa, ma da mezzo secondo la musica non avanza perché i dati
+   * non arrivano: la rete di un flusso, una condivisione lenta. La finestra
+   * smette di far correre il cursore e lo dice.
+   *
+   * Facoltativo perché lo stesso ancoraggio riceve anche lo stato intero, che
+   * non lo porta: assente vale no.
+   */
+  inAttesa?: boolean;
 }
 
 /**
@@ -1820,8 +2013,6 @@ export interface NodoScafale {
 }
 
 export interface ImpaginazioneSkin {
-  player: "bottom-bar" | "floating" | "compact";
-  sidebar: "rail" | "expanded" | "hidden";
   density: "compact" | "comfortable" | "spacious";
   /** Si compone con `prefers-reduced-motion`, che vince sempre. */
   motion: "none" | "essential" | "full" | "maximum";
@@ -1848,16 +2039,53 @@ export interface Skin {
    * l'accento. Serve a dire **quanti** sono in Impostazioni.
    */
   dynamicTokens: string[];
-  /** Ha una variante chiara: senza, l'interruttore del tema non si mostra. */
-  light: boolean;
+  /** Il tema di base della skin. */
+  scheme: Schema;
+  /**
+   * Ha la variante del tema opposto.
+   *
+   * Senza, la skin ha un tema solo e la scelta dell'utente non la cambia:
+   * `data-theme` scrive comunque quello che si vede.
+   */
+  variante: boolean;
   /**
    * La skin permette all'accento di seguire la copertina.
    *
-   * È una dichiarazione dell'autore e vince sulla preferenza: `sala` dice di
+   * È una dichiarazione dell'autore e vince sulla preferenza: `vinile` dice di
    * no perché è costruita attorno al suo accento.
    */
   dynamicAccent: boolean;
   layout: ImpaginazioneSkin;
+  /**
+   * Le parti che entrano, escono o volano con una transizione di vista.
+   *
+   * Un innesco assente vuol dire nessuna transizione per quella parte: senza
+   * una regola che la raccolga il motore farebbe la dissolvenza di serie.
+   */
+  presenze: Presenza[];
+  /**
+   * La skin che si sarebbe dovuta indossare e non si è potuta leggere.
+   *
+   * `null` quasi sempre. Quando c'è, quel che è arrivato è la skin di serie:
+   * il pacchetto scelto non si compila — cancellato, spostato, o su un disco
+   * che adesso non c'è — e il nucleo ha ripiegato invece di lasciare la
+   * finestra senza impaginazione, che vuol dire senza niente. La scelta nel
+   * database resta quella di prima, quindi il ripiego dura solo finché dura
+   * l'assenza.
+   */
+  ripiego: string | null;
+}
+
+/** Il tema di base di una skin, nella parola del formato. */
+export type Schema = "dark" | "light";
+
+/** Una parte con una transizione di vista, e quali inneschi dichiara. */
+export interface Presenza {
+  /** Il nome della parte: la classe è `vt-<parte>-<innesco>`. */
+  parte: string;
+  enter: boolean;
+  exit: boolean;
+  share: boolean;
 }
 
 /** Una proprietà personalizzata da scrivere sulla radice della finestra. */
@@ -1879,7 +2107,65 @@ export interface VoceSkin {
   attiva: boolean;
   /** I tre colori della scheda, scritti dall'autore. Vuoto se non li dichiara. */
   anteprima: string[];
-  chiara: boolean;
+  /** Il tema di base. */
+  scheme: Schema;
+  /** Ha la variante del tema opposto. */
+  variante: boolean;
+  /**
+   * Quel che chi l'ha appena installata deve sapere prima di indossarla.
+   * Solo nella risposta di `skinInstalla`/`skinInstallaSorgente`, mai
+   * nell'elenco. Vedi `EsameSkin`.
+   */
+  esame?: EsameSkin;
+  /**
+   * Il codice del guasto di una skin installata che non passa più la
+   * validazione: da aprire nello Studio, non da indossare. Assente per tutte
+   * le altre.
+   */
+  guasto?: string;
+}
+
+/** Un costo, e il budget su cui il nucleo lo misura. */
+export interface MisuraSkin {
+  costo: number;
+  budget: number;
+}
+
+/** Un ciclo che dura quanto lo stato che lo accende. */
+export interface CicloSkin {
+  /** La parte che gira. */
+  parte: string;
+  /** Lo stato che lo accende: `playing`, `hover`, … */
+  stato: string;
+  /** Il nome dell'animazione. */
+  animazione: string;
+}
+
+/**
+ * L'esame di una skin appena installata: `skin.rs::EsameIpc`.
+ *
+ * Che cosa meriti una domanda prima di indossarla lo decide il nucleo, in
+ * `daConfermare`: la finestra non rifà il conto sui budget, lo mostra.
+ */
+export interface EsameSkin {
+  /** La superficie più cara, sul budget di una superficie. */
+  superficie: MisuraSkin;
+  /** La parte che si muove di più, sul budget di una parte. */
+  movimentoParte: MisuraSkin;
+  /** Il movimento della finestra intera, sul suo budget. */
+  movimento: MisuraSkin;
+  /** Lo scafale, sul suo budget. */
+  scafale: MisuraSkin;
+  /** Si muove. */
+  anima: boolean;
+  /** Quel che gira per sempre, finché dura lo stato che lo accende. */
+  cicli: CicloSkin[];
+  /** Quante coppie di testo e superficie non si leggono. */
+  contrasti: number;
+  /** Quanti anelli del fuoco non si vedono: sotto 3:1 contro le superfici. */
+  anelli: number;
+  /** C'è qualcosa da chiedere prima di indossarla. */
+  daConfermare: boolean;
 }
 
 // ── lo Skin Studio ──────────────────────────────────────────────────────────
@@ -1953,13 +2239,28 @@ export interface ParteRegistro {
   name: string;
   group: string;
   description: string;
-  /** Ha uno pseudo-elemento libero per un livello aggiuntivo. */
-  layers: boolean;
+  /** Ha `::before` libero per un livello, dietro al contenuto. */
+  before: boolean;
+  /** Ha `::after` libero per un livello, sopra al fondo. */
+  after: boolean;
+  /** Entra ed esce dal documento come un'unità: ammette `enter` ed `exit`. */
+  presenza: boolean;
+  /** Può volare fra due schermate: ammette `share`. */
+  condivisa: boolean;
 }
 
 /** Il tipo di una manopola d'effetto. Decide quale controllo la modifica. */
 export type TipoParametro =
-  "color" | "length" | "angle" | "number" | "stops" | "corners" | "word";
+  | "color"
+  | "length"
+  | "angle"
+  | "number"
+  | "stops"
+  | "corners"
+  | "word"
+  | "point"
+  | "asset"
+  | "flag";
 
 /** Una manopola di un effetto, col controllo che le corrisponde. */
 export interface ParametroRegistro {
@@ -2058,20 +2359,76 @@ export interface Registro {
   maxDurataMs: number;
   /** `MAX_RITARDO_MS`. */
   maxRitardoMs: number;
-  /** `MAX_ITERAZIONI`: e mai «infinite». */
+  /** `MAX_ITERAZIONI`, oltre a «infinite» sugli stati. */
   maxIterazioni: number;
-  /** `MAX_TRIGGER_PER_PARTE`. */
-  maxTriggerPerParte: number;
-  /** `MAX_PARTI_ANIMATE`. */
-  maxPartiAnimate: number;
   /** `MOTION_COST_BUDGET`: per parte, e non si somma con gli altri due. */
   motionBudget: number;
+  /** `WINDOW_MOTION_BUDGET`: la somma su tutte le parti. */
+  windowMotionBudget: number;
   /** Il peso di `CostClass::Composited`: da qui parte `animation_cost`. */
   pesoComposito: number;
   /** I versi, da `AnimDirection::ALL`. */
   versi: string[];
   /** I trigger, da `AnimTrigger::nomi()`. `enter` è la regola base. */
   trigger: string[];
+  /** Gli stati del DOM, nell'ordine in cui il compilatore li emette. */
+  stati: StatoRegistro[];
+  /** Gli inneschi, con quel che ammettono. */
+  inneschi: InnescoRegistro[];
+  /** I campi di un fotogramma, coi loro estremi. */
+  fotogramma: CampoFotogramma[];
+  /** Le animazioni pronte, da `preset.rs`. */
+  animazioniPronte: AnimazionePronta[];
+  /** `both`, `forwards`, `backwards`, `none`. */
+  riempimenti: string[];
+  /** Le sorgenti dinamiche di un colore: `albumArt.vibrant` e le altre. */
+  sorgenti: string[];
+  /**
+   * Le chiavi che il formato accetta, per contesto — `documento`, `aspetto`,
+   * `animazione`, `fotogramma`… — dalle liste con cui il validatore rifiuta.
+   */
+  chiavi: Record<string, string[]>;
+  /** Le parole chiuse di un campo, per nome: `scheme`, `borderStyle`, `easing`… */
+  parole: Record<string, string[]>;
+}
+
+/** Uno stato del DOM e il selettore che lo riconosce. */
+export interface StatoRegistro {
+  name: string;
+  /** Per una parte che prende il fuoco da sé. */
+  selector: string;
+  /** Per una parte il cui fuoco lo prende un figlio. */
+  dentro: string;
+}
+
+/** Un innesco del movimento. */
+export interface InnescoRegistro {
+  name: string;
+  /** Ammette `"infinite"`: solo gli stati. */
+  ciclo: boolean;
+  /** Si realizza come transizione di vista: `exit` e `share`. */
+  vista: boolean;
+  /** È uno stato del DOM. */
+  stato: boolean;
+}
+
+/** Un campo di un fotogramma. */
+export interface CampoFotogramma {
+  name: string;
+  kind: "number" | "offset" | "angle" | "length" | "color" | "shadow" | "clip";
+  /** Il valore di un elemento che non si anima. */
+  riposo: number | null;
+  min: number | null;
+  max: number | null;
+}
+
+/** Un'animazione pronta da mettere nel documento. */
+export interface AnimazionePronta {
+  id: string;
+  nome: string;
+  innesco: string;
+  /** La dichiarazione, come frammento JSON. */
+  valore: string;
 }
 
 /** Un problema che blocca. */
@@ -2104,6 +2461,7 @@ export interface Avviso {
     | "unusedPrefab"
     | "unusedAnimation"
     | "costBudget"
+    | "restingLoop"
     | "contrast";
   path: string;
   message: string;
@@ -2117,8 +2475,10 @@ export interface Avviso {
 export interface Contrasto {
   davanti: string;
   dietro: string;
-  scuro: number;
-  chiaro: number | null;
+  /** Il rapporto nel tema di base. */
+  base: number;
+  /** Il rapporto nella variante, se la skin ne ha una. */
+  variante: number | null;
   passa: boolean;
 }
 
@@ -2136,7 +2496,7 @@ export interface VoceFile {
  * Un'istantanea non si battezza, si prende: il nome dice **perché**, ed è un
  * insieme chiuso — il nucleo lo respinge al confine se arriva altro.
  */
-export type Causa = "derivata" | "salvata" | "esportata" | "manuale";
+export type Causa = "derivata" | "salvata" | "esportata" | "manuale" | "migrata";
 
 /** Un'istantanea di una bozza. */
 export interface Istantanea {
@@ -2176,8 +2536,54 @@ export interface Validazione {
    */
   costoMovimento: number;
   parti: number;
+  /** Quanto costa ogni parte ridisegnata, sui suoi due budget. */
+  costi: CostoParte[];
+  /**
+   * Quanto movimento può essere in corso nello stesso momento: il numero che
+   * `windowMotionBudget` misura.
+   */
+  costoFinestra: number;
+  /** Le risorse che il documento nomina. */
+  risorse: string[];
   dinamici: string[];
   compilatoMs: number;
+  /**
+   * L'id sotto cui il foglio è compilato — quello della bozza, non quello
+   * del documento — e quindi quel che la tela scrive in `data-skin`. Vuoto
+   * quando ci sono errori.
+   */
+  radice: string;
+}
+
+/** Com'è andato un salvataggio della bozza: `studio.rs::SalvataggioIpc`. */
+export interface Salvataggio {
+  /** Dove sta la bozza adesso: l'id nuovo, se il documento l'ha cambiato. */
+  id: string;
+  /** Perché la bozza non ha potuto prendere l'id che il documento dichiara. */
+  rinomina: ErroreIpc | null;
+}
+
+/** Il costo di una parte. */
+export interface CostoParte {
+  parte: string;
+  /** Motivi, livelli e filtri. */
+  superficie: number;
+  /** Le animazioni assegnate. */
+  movimento: number;
+}
+
+/** Un colore della tavolozza generata, per un token. */
+export interface VoceTavolozza {
+  token: string;
+  /** `#rrggbb` o `#rrggbbaa`. */
+  valore: string;
+}
+
+/** Un testo portato al formato di oggi. */
+export interface Migrato {
+  sorgente: string;
+  /** Di quale formato era. */
+  da: number;
 }
 
 /**
@@ -2430,6 +2836,15 @@ export interface ProfiloIa {
   modello: string;
   /** Una chiave per questo profilo sta nel portachiavi. */
   conChiave: boolean;
+  /**
+   * L'origine per cui la chiave è stata scritta (`https://ospite:porta`), o
+   * `null` senza chiave e nei profili salvati prima della 3.0.0.
+   *
+   * Non è un segreto: è un pezzo dell'indirizzo. La chiave parte solo verso
+   * questa origine, e salvare il profilo con un indirizzo di un'altra origine
+   * senza riscriverla la fa dimenticare — vedi `chiaveDimenticata`.
+   */
+  origineChiave: string | null;
 }
 
 /** Quanto costa un modello, per quel che il servizio ne dichiara. */
@@ -2452,6 +2867,13 @@ export interface ModelloIa {
   contesto: number | null;
   /** `"sconosciuto"` per i locali, che non mandano nessun prezzo. */
   prezzo: PrezzoIa;
+  /**
+   * Legge le immagini, quando il servizio lo dichiara.
+   *
+   * `null` non è «no»: Ollama e LM Studio non dicono niente delle modalità, e
+   * un modello locale con la visione esiste.
+   */
+  vede: boolean | null;
 }
 
 /** Un profilo come lo manda la finestra: senza id se è nuovo. */
@@ -2471,6 +2893,12 @@ export interface StatoIa {
   attivo: string | null;
   /** C'è una conversazione in corso: una alla volta. */
   occupato: boolean;
+  /**
+   * L'id del profilo la cui chiave **questo** salvataggio ha dimenticato,
+   * perché l'indirizzo è passato a un'altra origine. Solo nella risposta di
+   * `iaSalvaProfilo`, e solo quella volta: è un avviso, non uno stato.
+   */
+  chiaveDimenticata: string | null;
 }
 
 /** Chi parla, in un messaggio. */
@@ -2480,6 +2908,13 @@ export type RuoloIa = "system" | "user" | "assistant";
 export interface MessaggioIa {
   ruolo: RuoloIa;
   testo: string;
+  /**
+   * Le immagini che l'accompagnano, come indirizzi `data:` PNG, JPEG o WebP.
+   *
+   * Il nucleo le controlla al confine prima che vadano in rete; vedi
+   * `aether_ia::Messaggio::immagine_ammessa`.
+   */
+  immagini?: string[];
 }
 
 /** Perché il modello ha smesso di parlare. */
@@ -2734,6 +3169,12 @@ export interface CoperturaTesti {
 export interface StatoTesti {
   /** Si può chiedere al catalogo. */
   rete: boolean;
+  /**
+   * Un testo sincronizzato a mano si scrive anche in un `.lrc` accanto al
+   * brano. Spento di serie: la riga nel database è la fonte, il file
+   * un'esportazione per gli altri lettori.
+   */
+  accanto: boolean;
   /** Una passata sta girando adesso. */
   inCorso: boolean;
   /** Quanti brani ha guardato la passata in corso. */
@@ -2757,6 +3198,35 @@ export interface StatoTesti {
 export interface AvanzamentoTesti {
   fatti: number;
   rimasti: number;
+}
+
+/**
+ * Cosa si sorveglia: niente, i dischi di questo computer (di serie), o anche
+ * le cartelle di rete con un controllo ogni cinque minuti.
+ */
+export type ModoSorveglianza = "spenta" | "locali" | "tutte";
+
+/** Come si tiene d'occhio una cartella sorvegliata. */
+export type ComeSorvegliata = "avvisi" | "sondaggio" | "ferma" | "nonRaggiungibile";
+
+/** La sorveglianza delle cartelle, come la vede la finestra. */
+export interface QuadroSorveglianza {
+  modo: ModoSorveglianza;
+  /**
+   * Le cartelle e come le si guarda. Vuoto nei primi secondi dopo l'avvio,
+   * prima che il filo abbia guardato.
+   */
+  cartelle: { percorso: string; come: ComeSorvegliata }[];
+  /** L'ultima scansione partita da sola, se c'è stata. */
+  ultima: {
+    quandoMs: number;
+    cartelle: number;
+    inseriti: number;
+    aggiornati: number;
+    tolti: number;
+    /** Rimozioni trattenute dalla guardia: niente è stato tolto. */
+    rinviate: number;
+  } | null;
 }
 
 /**
@@ -2828,6 +3298,53 @@ export interface EsitoArricchimento {
   copertine: number;
 }
 
+/**
+ * Com'è andato il controllo del database in questa sessione.
+ *
+ * Il controllo (`PRAGMA quick_check`) gira una volta, un minuto dopo l'avvio,
+ * in disparte: fino ad allora vale `daFare`. `danneggiato` porta `db.corrupt`,
+ * la stessa frase di una query che inciampa su una pagina rotta; `saltato` è
+ * la cartella dati con il giornale ripiegato, dove un lettore lungo
+ * fermerebbe le scritture.
+ */
+export interface SaluteDatabase {
+  esito:
+    | "daFare"
+    | "sano"
+    | "interrotto"
+    | "saltato"
+    | "danneggiato"
+    | "nonRiuscito";
+  /** Quando è finito, in millisecondi dall'epoca. */
+  quandoMs: number | null;
+  /** Quanto è durato. */
+  millisecondi: number | null;
+  /** Il guasto, per `danneggiato` e `nonRiuscito`. */
+  errore: ErroreIpc | null;
+}
+
+/** La cache delle copertine e la salute del database, per le Impostazioni. */
+export interface StatoManutenzione {
+  /** Quanti file conta la cache delle copertine, miniature comprese. */
+  file: number;
+  /** Quanti byte occupa. */
+  byte: number;
+  /** Quante copertine nessun brano, album, artista o playlist nomina più. */
+  orfane: number;
+  salute: SaluteDatabase;
+}
+
+/** Quanto ha liberato una pulizia a mano, e lo stato dopo. */
+export interface EsitoPulizia {
+  /** Righe di copertina tolte dal database. */
+  righe: number;
+  /** File tolti dal disco: copertine, miniature, avanzi. */
+  file: number;
+  /** Byte liberati. */
+  byte: number;
+  stato: StatoManutenzione;
+}
+
 export const ipc = {
   // La finestra nasce nascosta: il fondo che il sistema operativo dipinge
   // prima che esista una pagina è quello di `tauri.conf.json`, e con una skin
@@ -2862,15 +3379,40 @@ export const ipc = {
   // e non dal click, come `accentoDinamicoAttiva`.
   secondoPianoAttiva: (attivo: boolean) =>
     invoke<boolean>("secondo_piano_attiva", { attivo }),
-  // Le due voci del menù dell'icona, nella lingua della finestra. Vanno mandate
+  // Le voci del menù dell'icona, nella lingua della finestra. Vanno mandate
   // perché i testi che si leggono stanno in `lingue/`, dove `lingue.js` li
-  // controlla, e non in Rust dove nessuno li terrebbe allineati.
-  vassoioLingua: (mostra: string, esci: string) =>
-    invoke<void>("vassoio_lingua", { mostra, esci }),
+  // controlla, e non in Rust dove nessuno li terrebbe allineati. Le quattro
+  // della musica — riproduci, pausa, successivo, precedente — si mandano tutte
+  // e due le etichette della prima voce, perché è il nucleo a sapere quale
+  // mostrare mentre la finestra è nascosta.
+  vassoioLingua: (
+    mostra: string,
+    esci: string,
+    riproduci: string,
+    pausa: string,
+    successivo: string,
+    precedente: string,
+  ) =>
+    invoke<void>("vassoio_lingua", {
+      mostra,
+      esci,
+      riproduci,
+      pausa,
+      successivo,
+      precedente,
+    }),
 
   avvio: () => invoke<Avvio>("avvio"),
+  // Scrive le cartelle sorvegliate e dice cosa ne ha fatto: le annidate si
+  // raccolgono nella madre, e una cartella che è una già sorvegliata con un
+  // altro nome (lettera mappata ↔ `\\server`) non entra — torna fra le
+  // `gemelle`, per proporre il trasloco.
   impostaCartelle: (cartelle: string[]) =>
-    invoke<void>("imposta_cartelle", { cartelle }),
+    invoke<CartelleOrdinate>("imposta_cartelle", { cartelle }),
+  // Sposta la libreria da una cartella sorvegliata alla stessa cartella scritta
+  // in un altro modo, riscrivendo i percorsi dei brani invece di rileggerli.
+  cartelleTrasloca: (da: string, a: string) =>
+    invoke<Traslocati>("cartelle_trasloca", { da, a }),
   // I percorsi lasciati cadere sulla finestra, divisi dal nucleo per quel che
   // se ne fa: è lui a chiedere al filesystem se un percorso è una cartella.
   smistaTrascinati: (percorsi: string[]) =>
@@ -2889,7 +3431,15 @@ export const ipc = {
   // per la stessa ragione di «mostra nella cartella».
   braniTogli: (brani: number[]) =>
     invoke<Cancellazione>("brani_togli", { brani }),
-  braniElimina: (brani: number[]) => invoke<number>("brani_elimina", { brani }),
+  // `definitivi` è la conferma che la finestra ha chiesto quando qualche file
+  // sta su un'unità di rete, dove un Cestino non c'è: senza, il nucleo rifiuta
+  // quei file con `fs.noRecycleBin` prima di toccare qualunque cosa.
+  braniElimina: (brani: number[], definitivi = false) =>
+    invoke<number>("brani_elimina", { brani, definitivi }),
+  // Quanti dei file di questi brani non possono andare nel Cestino: la conferma
+  // lo chiede prima di mostrarsi.
+  braniSuRete: (brani: number[]) =>
+    invoke<number>("brani_su_rete", { brani }),
   // Le cartelle musicali del sistema che contengono davvero qualcosa. Elenco
   // vuoto anche quando la ricerca è scaduta: per la finestra i due casi si
   // disegnano uguali — non c'è niente da proporre — e distinguerli vorrebbe
@@ -2914,9 +3464,25 @@ export const ipc = {
     invoke<NodoCartella[]>("cartelle_figlie", { radici, percorso }),
   // Gli identificativi, già nell'ordine in cui si riproducono: dentro una
   // cartella è l'ordine dell'album, perché una cartella nel caso normale *è* un
-  // album. Ricorsivo, come il conteggio.
-  cartelleBrani: (radici: string[], percorso: string) =>
-    invoke<number[]>("cartelle_brani", { radici, percorso }),
+  // album. Ricorsivo, come il conteggio; `ricorsivo: false` tiene i soli brani
+  // che stanno direttamente lì — l'interruttore «includi sottocartelle».
+  cartelleBrani: (radici: string[], percorso: string, ricorsivo = true) =>
+    invoke<number[]>("cartelle_brani", { radici, percorso, ricorsivo }),
+  // Le foglie di una cartella: i file che stanno direttamente lì, dal database
+  // e mai dal disco. In un ordine qualunque — le ordina chi le disegna
+  // (`albero.ts`, per nome di file).
+  cartelleFile: (radici: string[], percorso: string) =>
+    invoke<FileCartella[]>("cartelle_file", { radici, percorso }),
+  // Il filtro sopra l'albero: cerca nell'albero intero, non solo nei nodi
+  // aperti, e restituisce le corrispondenze con la strada per arrivarci.
+  cartelleFiltra: (radici: string[], testo: string) =>
+    invoke<CartelleFiltrate>("cartelle_filtra", { radici, testo }),
+  // Apre una cartella in Esplora risorse. Il percorso arriva da qui — una
+  // cartella non ha un identificativo — e per questo il nucleo lo controlla
+  // contro le cartelle sorvegliate **sue**, non contro quelle che manda la
+  // finestra.
+  cartellaMostra: (percorso: string) =>
+    invoke<void>("cartella_mostra", { percorso }),
   // Quali radici rispondono adesso, una risposta per posto e nello stesso
   // ordine. Una radice morta è `false`, non un errore: il pannello si disegna
   // **prima** di chiamare questa, e questa arriva dopo a spegnere quel che non
@@ -3028,9 +3594,28 @@ export const ipc = {
   metadatiCorreggi: (id: number, campi: CorrezioniMetadati) =>
     invoke<TracciaIncerta | null>("metadati_correggi", { id, campi }),
   metadatiConferma: (id: number) => invoke<void>("metadati_conferma", { id }),
+  // «Rileggi tutti i tag»: segna ogni brano da rileggere e restituisce quanti.
+  // Non scansiona — la scansione la avvia chi chiama, ed è quella di sempre.
+  metadatiRileggiTutti: () => invoke<number>("metadati_rileggi_tutti"),
+  // Le cartelle sorvegliate: leggere è istantaneo (un quadro in memoria),
+  // cambiare ferma o avvia gli osservatori senza riavviare.
+  sorveglianzaStato: () => invoke<QuadroSorveglianza>("sorveglianza_stato"),
+  impostaSorveglianza: (modo: ModoSorveglianza) =>
+    invoke<QuadroSorveglianza>("imposta_sorveglianza", { modo }),
   // Torna subito: fermarsi vuol dire «alla fine del lotto in corso», non
   // «adesso». Che sia successo lo dice `EsitoScansione.annullata`.
   annullaScansione: () => invoke<void>("annulla_scansione"),
+  // La scansione a mano in corso — il suo ultimo avanzamento — o `null`. La
+  // chiede la finestra all'apertura: una ricaricata a metà scansione riceve
+  // gli eventi ma non la risposta di `scansiona`, che era della finestra di
+  // prima. La fine, per tutte, la dice `scansione:finita`.
+  scansioneAvanzamento: () =>
+    invoke<Avanzamento | null>("scansione_avanzamento"),
+  // Il sì alla domanda di una scansione a mano: toglie esattamente le righe
+  // trattenute, senza ricamminare il disco. Il no le lascia cadere.
+  rimozioniConferma: (gettone: number) =>
+    invoke<EsitoRimozioni>("rimozioni_conferma", { gettone }),
+  rimozioniScarta: () => invoke<void>("rimozioni_scarta"),
   cerca: (query: string, offset: number, limite: number) =>
     invoke<Brano[]>("cerca", { query, offset, limite }),
   // Separato dalla pagina: la pagina si chiede a ogni scorrimento, il conteggio
@@ -3051,6 +3636,9 @@ export const ipc = {
     invoke<void>("settimana_apri", { raccolta }),
   brani: (ordine: Ordine, offset: number, limite: number) =>
     invoke<Brano[]>("brani", { ordine, offset, limite }),
+  // Gli identificativi di tutta la vista, nello stesso ordine delle pagine.
+  vistaBraniId: (vista: VistaBrani) =>
+    invoke<number[]>("vista_brani_id", { vista }),
   album: (offset: number, limite: number) =>
     invoke<Album[]>("album", { offset, limite }),
   // Una query vera e non un filtro sull'elenco dei brani: prima se ne
@@ -3080,8 +3668,10 @@ export const ipc = {
   // Installa un manifest senza passare da un file sul disco: è quel che serve
   // a un tema fatto qui dentro, che altrimenti dovrebbe uscire come `.aeskin`
   // e rientrare dalla stessa finestra di dialogo per essere usato.
-  skinInstallaSorgente: (sorgente: string) =>
-    invoke<VoceSkin>("skin_installa_sorgente", { sorgente }),
+  // `bozza` è l'id della bozza da cui prendere miniatura e risorse: senza,
+  // si impacchetta il solo manifest.
+  skinInstallaSorgente: (sorgente: string, bozza: string | null = null) =>
+    invoke<VoceSkin>("skin_installa_sorgente", { sorgente, bozza }),
   // Restituisce la skin che **resta attiva**: togliere quella indossata torna a
   // quella di serie, e il CSS da applicare arriva di qui invece che da una
   // seconda chiamata.
@@ -3105,15 +3695,20 @@ export const ipc = {
   studioRegistro: () => invoke<Registro>("studio_registro"),
   // Non fallisce mai: a metà di una parentesi il JSON non è JSON, ed è il caso
   // normale mentre si scrive. Gli errori sono un campo del risultato.
-  studioValida: (sorgente: string) =>
-    invoke<Validazione>("studio_valida", { sorgente }),
+  // `bozza` è la bozza aperta: il foglio si compila sotto il suo id, e le
+  // risorse vengono dalla sua cartella.
+  studioValida: (sorgente: string, bozza: string | null = null) =>
+    invoke<Validazione>("studio_valida", { sorgente, bozza }),
   studioDocumento: (id: string) => invoke<string>("studio_documento", { id }),
   // Non l'elenco di una cartella: le voci che il **formato** ammette, cioè
   // esattamente quel che `studioEsporta` rimetterà nell'archivio.
   studioPacchetto: (id: string) =>
     invoke<VoceFile[]>("studio_pacchetto", { id }),
-  studioSalva: (id: string, sorgente: string) =>
-    invoke<void>("studio_salva", { id, sorgente }),
+  // Se il documento ha cambiato `id` la bozza lo segue nello stesso passo;
+  // `origine` è l'id con cui lo Studio è stato aperto, l'unico installato su
+  // cui la bozza può tornare.
+  studioSalva: (id: string, sorgente: string, origine: string | null) =>
+    invoke<Salvataggio>("studio_salva", { id, sorgente, origine }),
   // Butta la bozza e restituisce quel che dice il pacchetto: la sorgente torna
   // di qui e non da una seconda chiamata, così non esiste un istante in cui la
   // finestra mostra un documento che non sta più da nessuna parte.
@@ -3129,6 +3724,35 @@ export const ipc = {
     invoke<void>("studio_istantanea", { id, sorgente, causa }),
   studioRipristina: (id: string, quando: number) =>
     invoke<string>("studio_ripristina", { id, quando }),
+  // Un file scelto sul disco entra nella bozza col nome che il formato
+  // ammette: la voce che torna dice quale ha preso.
+  studioRisorsaAggiungi: (id: string, percorso: string) =>
+    invoke<VoceFile>("studio_risorsa_aggiungi", { id, percorso }),
+  studioRisorsaTogli: (id: string, nome: string) =>
+    invoke<void>("studio_risorsa_togli", { id, nome }),
+  studioMigra: (sorgente: string) => invoke<Migrato>("studio_migra", { sorgente }),
+  // La bozza compilata per la finestra vera: «Prova sull'app». Sotto l'id
+  // della bozza, come la tela.
+  studioCompilaApp: (sorgente: string, bozza: string) =>
+    invoke<Skin>("studio_compila_app", { sorgente, bozza }),
+  // Un tema nuovo: il pacchetto con le risorse e la miniatura della base,
+  // installato, e la bozza che parte da lì.
+  studioCrea: (base: string, sorgente: string) =>
+    invoke<VoceSkin>("studio_crea", { base, sorgente }),
+  // Gli id che hanno già una cartella nello Studio: un tema nuovo non li prende.
+  studioOccupati: () => invoke<string[]>("studio_occupati"),
+  // La conversazione con la chat, salvata accanto alla bozza. Il contenuto lo
+  // decide la chat (`studio/conversazione.ts`); un testo vuoto la cancella.
+  studioChatLeggi: (id: string) => invoke<string | null>("studio_chat_leggi", { id }),
+  studioChatScrivi: (id: string, testo: string) =>
+    invoke<void>("studio_chat_scrivi", { id, testo }),
+  // Una tavolozza intera da una tinta: un colore, o la copertina di un brano.
+  studioTavolozzaDa: (da: { colore: string } | { copertina: string }, scura: boolean) =>
+    invoke<VoceTavolozza[]>("studio_tavolozza_da", {
+      colore: "colore" in da ? da.colore : null,
+      copertina: "copertina" in da ? da.copertina : null,
+      scura,
+    }),
 
   // ── playlist ─────────────────────────────────────────────────────────────
   // Ogni comando che modifica restituisce la playlist aggiornata: i conteggi e
@@ -3140,9 +3764,19 @@ export const ipc = {
   playlistCrea: (nome: string) => invoke<Playlist>("playlist_crea", { nome }),
   playlistRinomina: (id: number, nome: string) =>
     invoke<Playlist>("playlist_rinomina", { id, nome }),
-  playlistCancella: (id: number) => invoke<void>("playlist_cancella", { id }),
+  // La cancellazione è già scritta quando torna: il numero è il gettone per
+  // `playlistRipristina`, che rimette tutto com'era finché l'avviso con
+  // «Annulla» è a schermo. `null` da lì vuol dire «troppo tardi», non un guasto.
+  playlistCancella: (id: number) => invoke<number>("playlist_cancella", { id }),
+  playlistRipristina: (gettone: number) =>
+    invoke<Playlist | null>("playlist_ripristina", { gettone }),
+  // Con quanti sono entrati e quanti non c'erano più: «2 non c'erano più» è
+  // la frase che distingue una scansione passata nel frattempo da un guasto.
   playlistAggiungi: (id: number, brani: number[]) =>
-    invoke<Playlist>("playlist_aggiungi", { id, brani }),
+    invoke<AggiuntaPlaylist>("playlist_aggiungi", { id, brani }),
+  // Crea e aggiunge in una transazione sola: o tutte e due, o niente.
+  playlistCreaEAggiungi: (nome: string, brani: number[]) =>
+    invoke<AggiuntaPlaylist>("playlist_crea_e_aggiungi", { nome, brani }),
   playlistTogli: (id: number, posizione: number) =>
     invoke<Playlist>("playlist_togli", { id, posizione }),
   // ── le playlist intelligenti ──────────────────────────────────────────
@@ -3376,6 +4010,14 @@ export const ipc = {
   // correzione esiste solo dove c'è un guadagno dichiarato da rispettare.
   normalizzazione: (livello: Normalizzazione) =>
     invoke<void>("normalizzazione", { livello }),
+  // Il modo non viaggia nello stato della riproduzione: lo guarda solo il
+  // selettore delle Impostazioni, che se lo chiede da sé. La scelta riporta
+  // com'è rimasta, e vale dal prossimo brano che si apre.
+  normalizzazioneModo: () => invoke<ModoLivello>("normalizzazione_modo"),
+  normalizzazioneModoScegli: (modo: ModoLivello) =>
+    invoke<ModoLivello>("normalizzazione_modo_scegli", { modo }),
+  normalizzazioneAvanzamento: () =>
+    invoke<AvanzamentoVolume>("normalizzazione_avanzamento"),
   // Il timer di spegnimento. `minuti` a zero lo spegne, `FINE_DEL_BRANO` chiede
   // di fermarsi dove finisce quel che suona. I minuti e non un istante: «fra
   // mezz'ora» è quel che si intende, e un istante calcolato qui sarebbe
@@ -3511,6 +4153,10 @@ export const ipc = {
   // minuti. Può quindi metterci a lungo: chi la chiama deve mostrare che sta
   // succedendo qualcosa.
   nuvolaCollega: () => invoke<StatoNuvola>("nuvola_collega"),
+  // Ferma l'attesa del consenso aperta da `nuvolaCollega`. Torna subito: la
+  // risposta vera è quella di `nuvolaCollega`, che finisce senza account e
+  // senza errore, e l'evento `nuvola:stato`.
+  nuvolaAnnulla: () => invoke<void>("nuvola_annulla"),
   nuvolaScollega: () => invoke<StatoNuvola>("nuvola_scollega"),
   // Un `clientId` vuoto rimette le credenziali compilate dentro l'applicazione.
   nuvolaCredenziali: (clientId: string, clientSecret: string) =>
@@ -3553,8 +4199,9 @@ export const ipc = {
     invoke<DispositivoSincronia[]>("sincronia_dimentica", { id }),
 
   // ── gli aggiornamenti ────────────────────────────────────────────────────
-  // Il controllo vero non passa mai di qui: lo fa un filo di sottofondo ogni
-  // mezz'ora, e quel che la finestra vede arriva dall'evento
+  // Il controllo vero non passa mai di qui: lo fa un filo di sottofondo — una
+  // volta a ogni avvio, poi ogni mezz'ora — e quel che la finestra vede arriva
+  // dall'evento
   // `aggiornamenti:stato`. Anche `aggiornamentiAdesso` si limita a svegliare
   // quel filo e a restituire lo stato di **prima**, apposta: una via sola per
   // raccontare com'è andata, invece di due che possono dire cose diverse.
@@ -3574,6 +4221,10 @@ export const ipc = {
   // fa è chiudersi — su Windows è l'installer NSIS a terminare Aether e a
   // riaprirlo.
   aggiornamentiInstalla: () => invoke<void>("aggiornamenti_installa"),
+  // Ferma lo scaricamento in corso. Torna subito; lo stato con
+  // `installazione: false` arriva da `aggiornamenti:stato`. Dopo che
+  // l'installer è partito non ferma più niente.
+  aggiornamentiAnnulla: () => invoke<void>("aggiornamenti_annulla"),
 
   // ── il diario ────────────────────────────────────────────────────────────
   // L'unica cosa che la finestra può fare col diario: farlo vedere. Non lo
@@ -3594,6 +4245,17 @@ export const ipc = {
   diarioAnnota: (dove: string, cosa: string) =>
     invoke<void>("diario_annota", { dove, cosa }).catch(() => {}),
 
+  // La manutenzione: quanto pesa la cache delle copertine, com'è andato il
+  // controllo del database, e la pulizia a mano. Tutte e due in disparte nel
+  // nucleo: misurare la cache vuol dire leggere centinaia di cartelle.
+  manutenzioneStato: () => invoke<StatoManutenzione>("manutenzione_stato"),
+  // Il solo esito del controllo, senza misurare niente: lo chiede l'avviso di
+  // database danneggiato all'apertura della finestra, che può nascere dopo
+  // l'unico `manutenzione:salute` della sessione.
+  manutenzioneSalute: () => invoke<SaluteDatabase>("manutenzione_salute"),
+  manutenzionePulisciCopertine: () =>
+    invoke<EsitoPulizia>("manutenzione_pulisci_copertine"),
+
   // I documenti pubblici, nel browser di sistema. Il nome e non l'indirizzo: di
   // là c'è un elenco chiuso, e un comando che aprisse l'indirizzo che gli si
   // passa sarebbe un comando che apre qualunque indirizzo — dall'interno di un
@@ -3611,6 +4273,12 @@ export const ipc = {
       // di far aprire.
       | "donazioni",
   ) => invoke<void>("apri_documento", { quale }),
+
+  // La documentazione tecnica sul sito, alla voce di una scheda delle
+  // Impostazioni. L'ancora e non l'indirizzo, per la stessa ragione di sopra:
+  // di là c'è un elenco chiuso di ancore, e quel che non ne fa parte si
+  // rifiuta. Niente lingua: la documentazione è in inglese e basta.
+  apriGuida: (ancora: string) => invoke<void>("apri_guida", { ancora }),
 
   // ── l'account Spotify intero ───────────────────────────────
   // Il flusso è a tre tempi come per un link — anteprima, piano, conferma — ma
@@ -3687,6 +4355,8 @@ export const ipc = {
     invoke<void>("testi_pannello", { aperto }),
   testiStato: () => invoke<StatoTesti>("testi_stato"),
   testiRete: (attivo: boolean) => invoke<StatoTesti>("testi_rete", { attivo }),
+  testiAccanto: (attivo: boolean) =>
+    invoke<StatoTesti>("testi_accanto", { attivo }),
   // Torna subito: il lavoro va su un filo suo e l'avanzamento arriva con
   // l'evento `testi:avanzamento`.
   testiRiempi: () => invoke<StatoTesti>("testi_riempi"),

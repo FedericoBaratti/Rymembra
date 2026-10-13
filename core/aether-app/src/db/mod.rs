@@ -36,8 +36,13 @@
 //! [`ErrorCode::DbNetworkPath`], che consiglia di spostare la cartella dati su
 //! un disco locale.
 
+mod manutenzione;
 mod migrations;
 
+pub use manutenzione::{
+    Controllo, ISTANTANEE_TENUTE, Istantanea, controlla_il_file, controllo_rapido, nome_istantanea,
+    ottimizza,
+};
 pub use migrations::{LATEST_VERSION, MIGRATIONS, Migration};
 
 use std::path::Path;
@@ -141,13 +146,38 @@ fn contesto() -> Contesto {
 /// - `SQLITE_PROTOCOL` → [`ErrorCode::DbNetworkPath`] con gli stessi indizi,
 ///   altrimenti [`ErrorCode::DbLocked`]: è il protocollo dei lucchetti di WAL
 ///   che fallisce, e sul disco locale è una corsa che si riprova.
+/// - `SQLITE_CONSTRAINT_FOREIGNKEY` → [`ErrorCode::LibraryTrackNotFound`]. Una
+///   chiave esterna che rifiuta una riga vuol dire, in questa libreria, quasi
+///   sempre una cosa sola: si stava scrivendo qualcosa **a nome di un brano che
+///   non c'è più** — un'aggiunta a una playlist, un ascolto, una correzione —
+///   perché una scansione l'ha tolto nel frattempo. Con la musica su un NAS è
+///   il caso normale: la share che singhiozza fa sparire righe mentre la
+///   finestra ne mostra ancora gli identificativi. Fino alla 3.0 arrivava come
+///   «il database ha rifiutato una richiesta, il difetto è di Aether».
+/// - `SQLITE_CONSTRAINT_UNIQUE` / `_PRIMARYKEY` → [`ErrorCode::DbDuplicate`]:
+///   la riga c'è già, e la causa più comune è un'altra operazione che l'ha
+///   scritta un attimo prima. Gli altri vincoli (`CHECK`, `NOT NULL`) restano
+///   nel ripiego: quelli sì sono una riga sbagliata, cioè un difetto nostro.
+/// - `SQLITE_FULL` → [`ErrorCode::FsDiskFull`]: il disco della cartella dati è
+///   pieno, e la frase giusta è quella del disco, non quella del database.
+/// - `SQLITE_PERM` / `SQLITE_AUTH` → [`ErrorCode::FsPermissionDenied`]: il
+///   sistema ha negato l'accesso al file, che è una questione di permessi della
+///   cartella e non di richieste sbagliate.
 /// - tutto il resto → [`ErrorCode::DbQueryFailed`] con il suo `detail`, com'era.
-///   Il ripiego resta un ripiego: un vincolo violato, un tipo che non torna e
-///   una sintassi sbagliata sono difetti di Aether, non cose da raccontare.
+///   Il ripiego resta un ripiego: un vincolo di forma violato, un tipo che non
+///   torna e una sintassi sbagliata sono difetti di Aether, non cose da
+///   raccontare.
 ///
-/// Il `detail` viaggia comunque, e il testo di `rusqlite` finisce nella causa:
-/// sono le due metà che dicono *quale* operazione è fallita e *come*, ed è
-/// quello che si legge nel diario quando un utente segnala qualcosa.
+/// # La causa, e il codice esteso dentro
+///
+/// Il `detail` viaggia comunque, e nella causa finiscono **tre** cose: quale
+/// operazione (`detail`), cosa ha detto SQLite (il testo di `rusqlite`) e il
+/// **codice esteso**. Il terzo mancava, ed era il pezzo che serviva: `rusqlite`
+/// scrive «FOREIGN KEY constraint failed» e butta il 787, e un «constraint
+/// failed» da solo non dice quale dei sei vincoli, cioè quale dei sei difetti.
+/// La causa è la metà che `errore::errore`, nella finestra, scrive nel diario
+/// per ogni guasto che arriva a schermo: con questa riga la prossima
+/// segnalazione di «il database ha rifiutato» arriva con in mano il numero.
 pub fn codice_da_sqlite(detail: &str, err: &rusqlite::Error) -> AppError {
     codice_con_contesto(detail, err, &contesto())
 }
@@ -164,9 +194,42 @@ fn codice_con_contesto(detail: &str, err: &rusqlite::Error, contesto: &Contesto)
         return AppError::new(ErrorCode::DbQueryFailed {
             detail: Some(detail.to_owned()),
         })
-        .with_cause(err.to_string());
+        .with_cause(causa(detail, err));
     };
+    let esteso = err.sqlite_error().map(|errore| errore.extended_code);
     let code = match codice {
+        CodiceSqlite::ConstraintViolation
+            if esteso == Some(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY) =>
+        {
+            // Senza identificativo: il vincolo non dice quale riga ha
+            // rifiutato, e indovinarlo da qui vorrebbe dire rileggere il
+            // database dentro la traduzione di un errore. Chi chiama e lo sa
+            // — una funzione che ha un solo brano in mano — lo scrive da sé.
+            ErrorCode::LibraryTrackNotFound { track_id: None }
+        }
+        CodiceSqlite::ConstraintViolation
+            if matches!(
+                esteso,
+                Some(
+                    rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                        | rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                )
+            ) =>
+        {
+            ErrorCode::DbDuplicate {
+                detail: Some(detail.to_owned()),
+            }
+        }
+        CodiceSqlite::DiskFull => ErrorCode::FsDiskFull {
+            path: contesto.percorso.clone(),
+        },
+        CodiceSqlite::PermissionDenied | CodiceSqlite::AuthorizationForStatementDenied => {
+            ErrorCode::FsPermissionDenied {
+                // Vuoto per un database in memoria, che un percorso non ce
+                // l'ha: la frase del codice regge anche senza.
+                path: contesto.percorso.clone().unwrap_or_default(),
+            }
+        }
         CodiceSqlite::DatabaseBusy | CodiceSqlite::DatabaseLocked => ErrorCode::DbLocked,
         CodiceSqlite::ReadOnly => ErrorCode::DbReadOnly,
         CodiceSqlite::DatabaseCorrupt | CodiceSqlite::NotADatabase => ErrorCode::DbCorrupt {
@@ -195,7 +258,52 @@ fn codice_con_contesto(detail: &str, err: &rusqlite::Error, contesto: &Contesto)
             detail: Some(detail.to_owned()),
         },
     };
-    AppError::new(code).with_cause(err.to_string())
+    AppError::new(code).with_cause(causa(detail, err))
+}
+
+/// La causa da scrivere accanto al codice: quale operazione, cosa ha detto
+/// SQLite, e con quale codice esteso.
+///
+/// Il codice esteso si aggiunge solo quando c'è — gli errori di `rusqlite` che
+/// non vengono da SQLite non ne hanno — e porta accanto il suo nome quando è uno
+/// di quelli che si incontrano davvero: `787` letto in un diario non dice
+/// niente a nessuno, `SQLITE_CONSTRAINT_FOREIGNKEY` dice già dove guardare.
+fn causa(detail: &str, err: &rusqlite::Error) -> String {
+    let Some(errore) = err.sqlite_error() else {
+        return format!("{detail}: {err}");
+    };
+    let esteso = errore.extended_code;
+    match nome_esteso(esteso) {
+        Some(nome) => format!("{detail}: {err} [sqlite {esteso} {nome}]"),
+        None => format!("{detail}: {err} [sqlite {esteso}]"),
+    }
+}
+
+/// Il nome dei codici estesi che valgono una riga di diario.
+///
+/// Non tutti: sono una sessantina, e la maggior parte non si vede mai fuori da
+/// un banco di prova. Questi sono quelli che dividono in due un codice primario
+/// — sei vincoli diversi dietro lo stesso `SQLITE_CONSTRAINT`, la memoria
+/// condivisa di WAL dietro lo stesso `SQLITE_IOERR`, l'istantanea scaduta
+/// dietro lo stesso `SQLITE_BUSY` — cioè quelli per cui il numero è la diagnosi.
+fn nome_esteso(esteso: std::ffi::c_int) -> Option<&'static str> {
+    use rusqlite::ffi;
+    Some(match esteso {
+        ffi::SQLITE_CONSTRAINT_FOREIGNKEY => "SQLITE_CONSTRAINT_FOREIGNKEY",
+        ffi::SQLITE_CONSTRAINT_UNIQUE => "SQLITE_CONSTRAINT_UNIQUE",
+        ffi::SQLITE_CONSTRAINT_PRIMARYKEY => "SQLITE_CONSTRAINT_PRIMARYKEY",
+        ffi::SQLITE_CONSTRAINT_CHECK => "SQLITE_CONSTRAINT_CHECK",
+        ffi::SQLITE_CONSTRAINT_NOTNULL => "SQLITE_CONSTRAINT_NOTNULL",
+        ffi::SQLITE_CONSTRAINT_TRIGGER => "SQLITE_CONSTRAINT_TRIGGER",
+        ffi::SQLITE_BUSY_SNAPSHOT => "SQLITE_BUSY_SNAPSHOT",
+        ffi::SQLITE_BUSY_RECOVERY => "SQLITE_BUSY_RECOVERY",
+        ffi::SQLITE_IOERR_SHMOPEN => "SQLITE_IOERR_SHMOPEN",
+        ffi::SQLITE_IOERR_SHMSIZE => "SQLITE_IOERR_SHMSIZE",
+        ffi::SQLITE_IOERR_SHMMAP => "SQLITE_IOERR_SHMMAP",
+        ffi::SQLITE_IOERR_LOCK => "SQLITE_IOERR_LOCK",
+        ffi::SQLITE_READONLY_DBMOVED => "SQLITE_READONLY_DBMOVED",
+        _ => return None,
+    })
 }
 
 /// Un `SQLITE_IOERR` che viene dal posto dove sta il file, non dal supporto?
@@ -257,7 +365,7 @@ pub fn open(path: &Path) -> Result<Opened, AppError> {
             &err,
         )
     })?;
-    open_connection(connection)
+    open_connection(connection, Some(path))
 }
 
 /// Un database in memoria, per i test e per una diagnosi a vuoto.
@@ -270,7 +378,7 @@ pub fn open(path: &Path) -> Result<Opened, AppError> {
 pub fn open_in_memory() -> Result<Opened, AppError> {
     let connection = Connection::open_in_memory()
         .map_err(|err| db_error(ErrorCode::DbOpenFailed { path: None }, &err))?;
-    open_connection(connection)
+    open_connection(connection, None)
 }
 
 /// Un database aperto e portato alla versione corrente.
@@ -299,19 +407,44 @@ pub struct Opened {
     /// impunta a ogni scansione. Con `giornale=truncate` nel diario, «Aether è
     /// lento durante la scansione» smette di essere un'impressione.
     pub giornale: String,
+    /// La copia fatta prima delle migrazioni, o perché non c'è.
+    ///
+    /// `None` quando non c'era niente da migrare — il caso di quasi ogni
+    /// apertura — o quando non c'era niente da proteggere: un database nuovo, o
+    /// in memoria. Vedi [`Istantanea`].
+    pub istantanea: Option<Istantanea>,
 }
 
-fn open_connection(connection: Connection) -> Result<Opened, AppError> {
+/// Configura, migra e ottimizza una connessione appena aperta.
+///
+/// `percorso` è `None` per i database in memoria, e decide le due cose che
+/// solo un file ha: l'istantanea prima delle migrazioni e l'ottimizzazione di
+/// apertura. Ai database in memoria delle prove — centinaia — non servono né
+/// l'una né l'altra.
+fn open_connection(connection: Connection, percorso: Option<&Path>) -> Result<Opened, AppError> {
     let giornale = configure(&connection)?;
     let fts5 = has_fts5(&connection);
     let version_before = user_version(&connection)?;
+    // Solo se c'è qualcosa da migrare **e** qualcosa da proteggere: la versione
+    // zero è un database appena creato, e una versione dal futuro non si migra
+    // (`migrate` la rifiuta subito dopo).
+    let istantanea = percorso
+        .filter(|_| version_before > 0 && version_before < LATEST_VERSION)
+        .map(|percorso| manutenzione::prima_di_migrare(&connection, percorso, version_before));
     let applied = migrate(&connection)?;
+    if percorso.is_some() {
+        // Dopo le migrazioni e non prima: SQLite chiede un `optimize` dopo ogni
+        // cambio di schema, e un indice appena creato è precisamente la cosa
+        // su cui il pianificatore non ha ancora statistiche.
+        manutenzione::ottimizza_all_apertura(&connection);
+    }
     Ok(Opened {
         connection,
         version_before,
         applied,
         fts5,
         giornale,
+        istantanea,
     })
 }
 
@@ -970,6 +1103,138 @@ mod tests {
         }
     }
 
+    /// Lo stesso errore, con il messaggio che SQLite ci mette davvero.
+    ///
+    /// È la forma che arriva dal vivo, e quella in cui il codice esteso si
+    /// perdeva: con il messaggio dentro, il testo di `rusqlite` è soltanto
+    /// «FOREIGN KEY constraint failed», senza il 787.
+    fn guasto_con_testo(codice: std::ffi::c_int, testo: &str) -> rusqlite::Error {
+        rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(codice), Some(testo.to_owned()))
+    }
+
+    #[test]
+    fn i_vincoli_si_distinguono_invece_di_finire_nel_ripiego() {
+        let locale = contesto_locale();
+
+        // La chiave esterna: un brano che una scansione ha tolto mentre la
+        // finestra ne teneva ancora l'identificativo. Non è un difetto di
+        // Aether, ed era la riga che diceva che lo fosse.
+        let esterna = codice_con_contesto(
+            "aggiunta a una playlist",
+            &guasto_con_testo(
+                rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY,
+                "FOREIGN KEY constraint failed",
+            ),
+            &locale,
+        );
+        assert_eq!(esterna.code().kind(), ErrorCodeKind::LibraryTrackNotFound);
+
+        // L'unicità, e la chiave primaria che è la stessa cosa: la riga c'è già.
+        for doppione in [
+            rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE,
+            rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY,
+        ] {
+            let errore = codice_con_contesto("scansione", &guasto(doppione), &locale);
+            assert_eq!(errore.code().kind(), ErrorCodeKind::DbDuplicate);
+            assert!(errore.is_retryable(), "chi rifà rilegge, e passa");
+        }
+
+        // Gli altri vincoli restano nel ripiego: un `NOT NULL` o un `CHECK`
+        // violati sono una riga scritta male, cioè davvero un difetto nostro.
+        for di_forma in [
+            rusqlite::ffi::SQLITE_CONSTRAINT_NOTNULL,
+            rusqlite::ffi::SQLITE_CONSTRAINT_CHECK,
+        ] {
+            let errore = codice_con_contesto("scrittura", &guasto(di_forma), &locale);
+            assert_eq!(errore.code().kind(), ErrorCodeKind::DbQueryFailed);
+        }
+    }
+
+    #[test]
+    fn disco_pieno_e_permessi_parlano_come_il_disco() {
+        let locale = contesto_locale();
+
+        let pieno = codice_con_contesto(
+            "scrittura di un ascolto",
+            &guasto(rusqlite::ffi::SQLITE_FULL),
+            &locale,
+        );
+        assert_eq!(pieno.code().kind(), ErrorCodeKind::FsDiskFull);
+        // Il percorso del database viaggia con l'errore: è il disco da liberare.
+        assert!(matches!(
+            pieno.code(),
+            ErrorCode::FsDiskFull { path: Some(p) } if p.ends_with("aether.db")
+        ));
+
+        for negato in [rusqlite::ffi::SQLITE_PERM, rusqlite::ffi::SQLITE_AUTH] {
+            let errore = codice_con_contesto("scrittura", &guasto(negato), &locale);
+            assert_eq!(errore.code().kind(), ErrorCodeKind::FsPermissionDenied);
+        }
+
+        // In memoria il percorso non c'è, e la traduzione non deve cadere per
+        // questo: il codice resta quello, con un percorso vuoto.
+        let senza_file = codice_con_contesto(
+            "scrittura",
+            &guasto(rusqlite::ffi::SQLITE_PERM),
+            &Contesto {
+                percorso: None,
+                di_rete: false,
+                ripiegato: false,
+            },
+        );
+        assert_eq!(senza_file.code().kind(), ErrorCodeKind::FsPermissionDenied);
+    }
+
+    #[test]
+    fn la_causa_porta_l_operazione_e_il_codice_esteso() {
+        // Il motivo per cui la prossima segnalazione si potrà leggere: nel
+        // diario finisce la causa, e la causa deve dire quale operazione, cosa
+        // ha detto SQLite e **quale** vincolo. Prima arrivava soltanto
+        // «constraint failed».
+        let errore = codice_con_contesto(
+            "riscrittura di una playlist",
+            &guasto_con_testo(
+                rusqlite::ffi::SQLITE_CONSTRAINT_NOTNULL,
+                "NOT NULL constraint failed: playlist_tracks.track_id",
+            ),
+            &contesto_locale(),
+        );
+        assert_eq!(errore.code().kind(), ErrorCodeKind::DbQueryFailed);
+        let causa = errore.cause().expect("una causa c'è sempre");
+        assert!(causa.contains("riscrittura di una playlist"), "{causa}");
+        assert!(causa.contains("playlist_tracks.track_id"), "{causa}");
+        assert!(causa.contains("1299"), "{causa}");
+        assert!(causa.contains("SQLITE_CONSTRAINT_NOTNULL"), "{causa}");
+
+        // Un codice esteso senza nome resta un numero, che è meglio di niente.
+        let ignoto = codice_con_contesto(
+            "lettura",
+            &guasto(rusqlite::ffi::SQLITE_ERROR),
+            &contesto_locale(),
+        );
+        assert!(
+            ignoto
+                .cause()
+                .is_some_and(|c| c.starts_with("lettura: ") && c.contains("[sqlite 1]")),
+            "{:?}",
+            ignoto.cause()
+        );
+
+        // E l'errore che non viene da SQLite non inventa un codice che non ha.
+        let nostro = codice_con_contesto(
+            "lettura di una colonna",
+            &rusqlite::Error::InvalidColumnIndex(7),
+            &contesto_locale(),
+        );
+        assert!(
+            nostro.cause().is_some_and(
+                |c| c.starts_with("lettura di una colonna: ") && !c.contains("[sqlite")
+            ),
+            "{:?}",
+            nostro.cause()
+        );
+    }
+
     #[test]
     fn il_giornale_ripiega_quando_wal_non_si_accende() {
         // La decisione, che è la parte che può sbagliare. `memory` non è un
@@ -1153,6 +1418,24 @@ mod tests {
         // ciò che si sta eliminando.
         let db = open_in_memory().expect("apertura");
         assert!(db.fts5, "FTS5 deve essere disponibile");
+    }
+
+    #[test]
+    fn sqlite_non_scende_sotto_la_3_53_2() {
+        // CVE-2026-11824: un traboccamento di memoria dentro FTS5, chiuso nella
+        // 3.53.2. Aether apre database che non ha scritto lui — quello della
+        // versione rilasciata, in `import_legacy` — e FTS5 lo usa per la
+        // ricerca: una `rusqlite` tornata indietro per sbaglio riaprirebbe il
+        // buco senza che nessun'altra prova se ne accorga. Si chiede a SQLite e
+        // non al manifesto, perché conta quello che è finito nel binario.
+        let connessione = Connection::open_in_memory().expect("apertura");
+        let dichiarata: String = connessione
+            .query_row("SELECT sqlite_version()", [], |riga| riga.get(0))
+            .expect("versione");
+        assert!(
+            rusqlite::version_number() >= 3_053_002,
+            "SQLite {dichiarata} è sotto la 3.53.2"
+        );
     }
 
     #[test]

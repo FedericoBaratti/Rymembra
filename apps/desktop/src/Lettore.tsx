@@ -6,16 +6,18 @@
  * evento. L'unica eccezione era il trascinamento del cursore, che ora sta in
  * `Scrubber` — dove appartiene, perché è stato del controllo e non della barra.
  */
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { memo, useCallback, useEffect, useRef, type CSSProperties } from "react";
 
 import { numero } from "./formato";
 import { ipc, type Brano, type StatoRiproduzione } from "./ipc";
 import { PannelloEq } from "./parti/Equalizzatore";
 import { Icona } from "./parti/Icone";
 import { Ora } from "./parti/Ora";
+import { statoSuono } from "./segnali";
+import { useStatoPresente } from "./presenza";
 import { Scrubber } from "./parti/Scrubber";
 import { Trasporto } from "./parti/Trasporto";
-import { t } from "./lingue";
+import { t, useLingua } from "./lingue";
 import { Formato } from "./parti/Formato";
 import { useVolumeSottoIlDito } from "./volume";
 
@@ -29,7 +31,7 @@ import { useVolumeSottoIlDito } from "./volume";
  */
 const PASSO_VOLUME = 0.05;
 
-export function Lettore({
+export const Lettore = memo(function Lettore({
   stato,
   codaAperta,
   onCoda,
@@ -45,7 +47,11 @@ export function Lettore({
   /** Riapre la terza colonna: chiuderla dev'essere reversibile da qui. */
   onColonna: () => void;
 }) {
-  const [eqAperto, setEqAperto] = useState(false);
+  // Sotto `memo` (vedi «I widget sotto `memo`» in `Impaginazione.tsx`): si
+  // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
+  // l'iscrizione i testi resterebbero quelli del primo disegno.
+  useLingua();
+  const [eqAperto, setEqAperto] = useStatoPresente(false);
   const tastoMuto = useRef<HTMLButtonElement>(null);
   // Il cursore segue il dito, e il nucleo lo sente venti volte al secondo:
   // vedi `volume.ts`. Le frecce e la rotella sul tasto muto restano scatti
@@ -98,8 +104,8 @@ export function Lettore({
   };
 
   return (
-    <footer className="lettore player-shell">
-      <Ora brano={brano} onPreferito={onPreferito} />
+    <footer className="lettore player-shell" {...statoSuono(true, stato.inPausa)}>
+      <Ora brano={brano} inPausa={stato.inPausa} onPreferito={onPreferito} />
 
       {/* L'ancora del giro guidato: il guscio e non i due pezzi, perché il
           passo racconta trasporto e cursore come una cosa sola — «si comanda
@@ -215,4 +221,4 @@ export function Lettore({
       </div>
     </footer>
   );
-}
+});

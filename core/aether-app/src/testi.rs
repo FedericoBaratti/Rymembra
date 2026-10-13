@@ -29,6 +29,15 @@
 //! da cache. Quel che sta nella 3 non torna mai indietro da solo: scrivere nei
 //! file di qualcun altro è un gesto separato, e in questo modulo non c'è.
 //!
+//! # Quel che si sincronizza a mano sta nel database
+//!
+//! Un testo battuto nell'editor vive nella riga di `lyrics`, per intero — tempi
+//! delle parole compresi — e quella è la sua fonte. Il `.lrc` accanto al brano è
+//! un'**esportazione** per gli altri lettori, e dalla 3.0 si scrive solo se
+//! l'utente l'ha chiesto ([`accanto_ai_file`], spento di serie): Aether non
+//! mette file nelle cartelle della musica di sua iniziativa, così come non
+//! tocca i byte dell'audio. I sidecar che ci sono già si leggono come sempre.
+//!
 //! # Quattro esiti, e nessuna schermata bianca
 //!
 //! Ogni brano finisce in uno di quattro stati — sincronizzato, piatto,
@@ -450,12 +459,23 @@ pub fn componi(
     }
 }
 
-/// I due LRC hanno le stesse righe agli stessi tempi, parole a parte.
+/// I due LRC hanno le stesse righe agli stessi tempi — e le stesse parole, se
+/// la riga salvata le porta.
 ///
 /// Serve a riconoscere il `.a2.lrc` di una sincronizzazione nella riga che ne
 /// conserva il gemello semplice: vedi `superato_dalla_mano` in [`componi`]. Le
-/// traduzioni contano, perché sono righe; i tempi delle parole no, perché il
-/// gemello semplice non li ha per costruzione.
+/// traduzioni contano, perché sono righe.
+///
+/// # Le parole, e perché contano solo a volte
+///
+/// Fino alla 2.4 la riga salvata portava sempre il gemello **semplice**, e le
+/// parole stavano solo nell'`.a2.lrc`: confrontarle avrebbe dichiarato diversi
+/// due file che erano la stessa sincronizzazione. Dalla 3.0 la riga è la fonte e
+/// porta tutto, parole comprese — e allora contano, perché sono proprio quel che
+/// si è appena rifatto. Chi ha ribattuto le sole parole, con i `.lrc` accanto al
+/// brano spenti, ha ancora lì l'`.a2.lrc` di prima, con le stesse righe e le
+/// parole vecchie: senza questo confronto quel file, più vecchio della riga, la
+/// scavalcherebbe lo stesso.
 fn stesse_righe(salvato: Option<&str>, grezzo: &str) -> bool {
     let Some(salvato) = salvato else {
         return false;
@@ -463,14 +483,23 @@ fn stesse_righe(salvato: Option<&str>, grezzo: &str) -> bool {
     if salvato == grezzo {
         return true;
     }
-    let righe = |lrc: &str| {
-        testo::leggi(lrc)
+    let letto = testo::leggi(salvato);
+    let con_le_parole = letto.righe.iter().any(|riga| !riga.parole.is_empty());
+    let righe = |testo: Testo| {
+        testo
             .righe
             .into_iter()
-            .map(|riga| (riga.ms, riga.testo, riga.secondaria))
+            .map(|riga| {
+                let parole = if con_le_parole {
+                    riga.parole
+                } else {
+                    Vec::new()
+                };
+                (riga.ms, riga.testo, riga.secondaria, parole)
+            })
             .collect::<Vec<_>>()
     };
-    righe(salvato) == righe(grezzo)
+    righe(letto) == righe(testo::leggi(grezzo))
 }
 
 /// Mette insieme l'esito, con l'aderenza calcolata sulla durata vera.
@@ -496,6 +525,35 @@ fn finisci(
 }
 
 // ── il sidecar ──────────────────────────────────────────────────────────────
+
+/// La chiave in `settings` dell'interruttore dei `.lrc` accanto alla musica.
+pub const CHIAVE_ACCANTO: &str = "testi.accanto";
+
+/// Un testo sincronizzato a mano si scrive **anche** in un `.lrc` accanto al brano.
+///
+/// # Spento di serie, e perché
+///
+/// Fino alla 2.4 il salvataggio scriveva sempre, accanto al file musicale, il
+/// `.lrc`, a volte l'`.a2.lrc`, e al primo giro un `.lrc.bak` con quel che
+/// c'era prima: tre file nella cartella della musica dell'utente che nessuno
+/// aveva chiesto. Chi ha la libreria su un NAS condiviso con altri lettori li
+/// vuole, e chi l'ha sincronizzata con un telefono se li ritrova ovunque. La
+/// regola della 3.0 è che i dati di Aether stanno nel database di Aether: la
+/// riga di `lyrics` è la fonte, e un file accanto al brano si scrive solo se lo
+/// si chiede qui.
+///
+/// Leggerli non cambia: un `.lrc` che c'è — scritto da un altro programma, o da
+/// una versione passata — resta la prima fonte della catena.
+///
+/// Un valore illeggibile vale spento: è il valore di serie, e un interruttore
+/// che non si legge non deve mettersi a scrivere file.
+#[must_use]
+pub fn accanto_ai_file(connection: &Connection) -> bool {
+    crate::settings::read(connection, CHIAVE_ACCANTO)
+        .ok()
+        .flatten()
+        .is_some_and(|valore| valore == "1")
+}
 
 /// I nomi che un sidecar può avere, dal più ricco al più comune.
 ///
@@ -615,10 +673,10 @@ const CHIAVE_SINCRONIZZATA: &str = "SYNCEDLYRICS";
 ///
 /// # Le due forme, e perché servono due strade
 ///
-/// * **`SYLT`** è un frame ID3v2 binario, e in `lofty` 0.24 **non entra nel
-///   `Tag` unificato**: arriva come `Frame::Binary` e va interpretato a mano
-///   con `SynchronizedTextFrame::parse`. Vive solo dove vive ID3v2, cioè
-///   mp3, aiff e wav (più, fuori standard, flac e mpc).
+/// * **`SYLT`** è un frame ID3v2 binario, e in `lofty` — la 0.25 come la
+///   0.24 — **non entra nel `Tag` unificato**: arriva come `Frame::Binary` e va
+///   interpretato a mano con `SynchronizedTextFrame::parse`. Vive solo dove
+///   vive ID3v2, cioè mp3, aiff e wav (più, fuori standard, flac e mpc).
 /// * **`SYNCEDLYRICS`** è una chiave di testo qualunque dentro Vorbis o APE, e
 ///   nemmeno lei attraversa il `Tag` unificato: `ItemKey` è un'enumerazione
 ///   chiusa e una chiave che non le corrisponde non ci finisce. Si legge dal
@@ -725,7 +783,7 @@ fn da_id3v2(tag: Option<&lofty::id3::v2::Id3v2Tag>) -> Option<String> {
 }
 
 /// Il testo di `SYNCEDLYRICS` in un tag Vorbis.
-fn da_vorbis(tag: Option<&lofty::ogg::VorbisComments>) -> Option<String> {
+fn da_vorbis(tag: Option<&lofty::ogg::tag::VorbisComments>) -> Option<String> {
     tag?.get(CHIAVE_SINCRONIZZATA)
         .filter(|t| !t.trim().is_empty())
         .map(ToOwned::to_owned)
@@ -1704,7 +1762,11 @@ pub fn copertura(connection: &Connection) -> Result<Copertura, AppError> {
 
 // ── sincronizzato a mano ────────────────────────────────────────────────────
 
-/// Scrive un testo sincronizzato a mano: la riga, e poi il `.lrc` accanto al brano.
+/// Scrive un testo sincronizzato a mano: la riga, e poi — se l'utente l'ha
+/// chiesto — il `.lrc` accanto al brano.
+///
+/// Il file si scrive solo con [`accanto_ai_file`] acceso, che di serie è spento:
+/// la riga è la fonte, e il file un'esportazione. Vedi il `//!` del modulo.
 ///
 /// Le due metà in una chiamata sola, per chi non tiene lucchetti: le prove, e
 /// chiunque abbia la connessione in mano senza nessuno che aspetti dietro. Chi
@@ -1751,6 +1813,9 @@ pub fn salva_a_mano(
     let Some(percorso) = brano.path.as_deref() else {
         return Ok(());
     };
+    if !accanto_ai_file(connection) {
+        return Ok(());
+    }
     // `std::fs` e non `MusicFiles`: quel tratto sa aprire in lettura, perché è
     // quel che serve al motore. Scrivere accanto a un file altrui è un mestiere
     // in più, e quando arriverà Android — dove non c'è un percorso ma una
@@ -1879,10 +1944,14 @@ pub fn da_restituire(connection: &Connection, id: i64) -> Result<DaRestituire, A
             "si restituisce solo quel che si è sincronizzato a mano",
         ));
     }
-    let sincronizzato = riga
+    let salvato = riga
         .synced
         .filter(|lrc| !lrc.trim().is_empty())
         .ok_or_else(|| rifiuto("un testo senza tempi al catalogo non serve"))?;
+    // Al catalogo va il gemello **semplice**: dalla 3.0 la riga porta anche i
+    // tempi delle parole, e mandarli vorrebbe dire far arrivare i `<mm:ss.xx>`
+    // a chi li mostrerà come testo.
+    let sincronizzato = senza_parole(&salvato);
 
     // Il piatto si **ricava** dai tempi invece di prendere quello che sta nella
     // riga: così è per costruzione lo stesso testo, parola per parola, e non
@@ -1928,6 +1997,29 @@ pub fn da_restituire(connection: &Connection, id: i64) -> Result<DaRestituire, A
         durata_ms,
         piatto,
         sincronizzato,
+    })
+}
+
+/// Lo stesso LRC senza i tempi delle singole parole.
+///
+/// Un LRC che parole non ne porta esce **identico**, byte per byte: riscriverlo
+/// passando da [`testo::scrivi`] ne cambierebbe la forma — i centesimi, le
+/// etichette in testa — per niente.
+fn senza_parole(lrc: &str) -> String {
+    let letto = testo::leggi(lrc);
+    if letto.righe.iter().all(|riga| riga.parole.is_empty()) {
+        return lrc.to_owned();
+    }
+    testo::scrivi(&Testo {
+        righe: letto
+            .righe
+            .into_iter()
+            .map(|riga| testo::Riga {
+                parole: Vec::new(),
+                ..riga
+            })
+            .collect(),
+        ..letto
     })
 }
 
@@ -2322,6 +2414,8 @@ mod prove {
     #[test]
     fn quel_che_si_sincronizza_finisce_accanto_al_brano() {
         let (dir, connection) = libreria();
+        // Chi lo ha chiesto: di serie il `.lrc` non si scrive.
+        crate::settings::write(&connection, CHIAVE_ACCANTO, "1").expect("interruttore");
         let brano = dir.path().join("brano.mp3");
         std::fs::write(&brano, b"finto").expect("file");
         let id = inserisci(&connection, &brano, None);
@@ -2346,6 +2440,8 @@ mod prove {
     #[test]
     fn il_lrc_di_qualcun_altro_resta_in_un_bak() {
         let (dir, connection) = libreria();
+        // Chi lo ha chiesto: di serie il `.lrc` non si scrive.
+        crate::settings::write(&connection, CHIAVE_ACCANTO, "1").expect("interruttore");
         let brano = dir.path().join("brano.mp3");
         std::fs::write(&brano, b"finto").expect("file");
         let sidecar = brano.with_extension("lrc");
@@ -2379,6 +2475,8 @@ mod prove {
     #[test]
     fn un_file_che_non_si_scrive_non_perde_il_lavoro() {
         let (dir, connection) = libreria();
+        // Chi lo ha chiesto: di serie il `.lrc` non si scrive.
+        crate::settings::write(&connection, CHIAVE_ACCANTO, "1").expect("interruttore");
         let brano = dir.path().join("brano.mp3");
         std::fs::write(&brano, b"finto").expect("file");
         let sidecar = brano.with_extension("lrc");
@@ -2417,6 +2515,109 @@ mod prove {
         )]
         permessi.set_readonly(false);
         let _ = std::fs::set_permissions(&sidecar, permessi);
+    }
+
+    #[test]
+    fn di_serie_accanto_al_brano_non_si_scrive_niente() {
+        // Il salvataggio è tutto nella riga: nessun `.lrc`, nessun `.bak`,
+        // nemmeno quando accanto c'è il file di un altro programma — che resta
+        // com'era, e non scavalca il testo appena salvato perché è più vecchio.
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let altrui = brano.with_extension("lrc");
+        std::fs::write(&altrui, "[00:05.00]il testo di un altro programma").expect("altrui");
+        std::fs::File::options()
+            .write(true)
+            .open(&altrui)
+            .and_then(|file| {
+                file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000))
+            })
+            .expect("data del file");
+        let id = inserisci(&connection, &brano, None);
+        let quale = super::brano(&connection, id).expect("brano");
+        assert!(!accanto_ai_file(&connection), "spento di serie");
+
+        salva_a_mano(&connection, &quale, LRC).expect("salvataggio");
+
+        assert_eq!(
+            std::fs::read_to_string(&altrui).expect("il file altrui"),
+            "[00:05.00]il testo di un altro programma",
+            "il file di un altro non si tocca"
+        );
+        assert!(!brano.with_extension("lrc.bak").exists());
+        let esito = per_brano(&connection, id).expect("testo");
+        assert_eq!(esito.fonte, Fonte::Mano, "la riga è la fonte");
+        assert_eq!(
+            esito.testo.righe.first().map(|r| r.testo.as_str()),
+            Some("prima riga")
+        );
+    }
+
+    #[test]
+    fn le_parole_ribattute_non_le_scavalca_il_vecchio_a2() {
+        // Con i file accanto spenti, l'`.a2.lrc` di una sincronia di ieri resta
+        // lì. Stesse righe, parole diverse: la riga, più recente, porta le
+        // parole nuove e vince lei.
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let esteso = brano.with_extension("a2.lrc");
+        std::fs::write(&esteso, "[00:10.00]<00:10.00>prima <00:10.40>riga\n").expect("vecchio");
+        std::fs::File::options()
+            .write(true)
+            .open(&esteso)
+            .and_then(|file| {
+                file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000))
+            })
+            .expect("data del file");
+        let id = inserisci(&connection, &brano, None);
+        let quale = super::brano(&connection, id).expect("brano");
+
+        registra_a_mano(
+            &connection,
+            &quale,
+            "[00:10.00]<00:10.00>prima <00:10.90>riga\n",
+        )
+        .expect("salvato");
+
+        let esito = per_brano(&connection, id).expect("testo");
+        assert_eq!(esito.fonte, Fonte::Mano);
+        assert_eq!(
+            esito
+                .testo
+                .righe
+                .first()
+                .and_then(|r| r.parole.get(1))
+                .map(|p| p.ms),
+            Some(10_900),
+            "le parole di oggi, non quelle di ieri"
+        );
+    }
+
+    #[test]
+    fn al_catalogo_non_vanno_i_tempi_delle_parole() {
+        let (dir, connection) = libreria();
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let id = inserisci(&connection, &brano, None);
+        let quale = super::brano(&connection, id).expect("brano");
+        registra_a_mano(
+            &connection,
+            &quale,
+            "[00:01.00]<00:01.00>prima <00:01.50>riga\n[00:02.00]seconda riga\n",
+        )
+        .expect("salvato");
+
+        let cosa = da_restituire(&connection, id).expect("pronto");
+        assert!(
+            !cosa.sincronizzato.contains('<'),
+            "i tempi delle parole restano a casa: {}",
+            cosa.sincronizzato
+        );
+        let letto = testo::leggi(&cosa.sincronizzato);
+        assert_eq!(letto.righe.len(), 2);
+        assert_eq!(cosa.piatto, "prima riga\nseconda riga");
     }
 
     #[test]
@@ -3070,16 +3271,16 @@ mod prove {
 
     #[test]
     fn un_syncedlyrics_di_vorbis_si_legge() {
-        let mut tag = lofty::ogg::VorbisComments::default();
+        let mut tag = lofty::ogg::tag::VorbisComments::default();
         tag.push(CHIAVE_SINCRONIZZATA.to_owned(), LRC.to_owned());
         assert_eq!(da_vorbis(Some(&tag)).as_deref(), Some(LRC));
 
         // Un tag che quella chiave non ce l'ha è una fonte in meno, non un
         // errore — e nemmeno una stringa vuota lo è.
-        let vuoto = lofty::ogg::VorbisComments::default();
+        let vuoto = lofty::ogg::tag::VorbisComments::default();
         assert_eq!(da_vorbis(Some(&vuoto)), None);
         assert_eq!(da_vorbis(None), None);
-        let mut spazi = lofty::ogg::VorbisComments::default();
+        let mut spazi = lofty::ogg::tag::VorbisComments::default();
         spazi.push(CHIAVE_SINCRONIZZATA.to_owned(), "  \n ".to_owned());
         assert_eq!(da_vorbis(Some(&spazi)), None);
     }

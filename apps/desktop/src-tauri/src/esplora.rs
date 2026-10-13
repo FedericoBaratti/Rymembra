@@ -33,7 +33,7 @@
 //! ```
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use aether_catalogo::Cataloghi;
 use aether_domain::errors::{AppError, ErrorCode};
@@ -61,7 +61,29 @@ pub struct StatoEsplora {
     /// I cataloghi lo interrogano fra una richiesta e l'altra: è la forma che
     /// l'annullamento ha in tutto l'albero, perché qui non c'è un runtime
     /// asincrono da cui cancellare un compito.
+    ///
+    /// Vale per la ricerca **corrente**, e ogni ricerca nuova lo riabbassa. Le
+    /// ricerche che la nuova ha preso il posto le ferma [`Self::generazione`],
+    /// non questo: vedi lì.
     annullata: AtomicBool,
+    /// Il numero dell'ultima ricerca partita.
+    ///
+    /// # Perché non basta la bandiera
+    ///
+    /// Perché la bandiera è una sola e le ricerche possono essere due. Una
+    /// ricerca nuova la riabbassava — doveva, altrimenti sarebbe partita già
+    /// annullata — e così facendo **rimetteva in moto** quella fermata un
+    /// istante prima. Peggio: fermata a metà, la sua passata esatta era tornata
+    /// vuota, e con la bandiera di nuovo giù partiva la passata larga. Cercando
+    /// «john coltrane live», fermando e cercando «debussy clair de lune», i
+    /// risultati di Debussy venivano sostituiti due secondi dopo da cinquantasei
+    /// righe dei Grateful Dead — e [`Self::ultima`] con loro, così che
+    /// «aggiungi» sulle righe di Debussy rispondeva che non esistevano.
+    ///
+    /// Ogni ricerca prende il suo numero, ed è annullata anche quando il numero
+    /// è cambiato: una ricerca superata si ferma alla richiesta dopo, e la sua
+    /// risposta non scrive più niente.
+    generazione: AtomicU64,
 }
 
 impl StatoEsplora {
@@ -72,7 +94,32 @@ impl StatoEsplora {
             cataloghi: Cataloghi::nuovi(),
             ultima: Mutex::new(Vec::new()),
             annullata: AtomicBool::new(false),
+            generazione: AtomicU64::new(0),
         }
+    }
+
+    /// Comincia una ricerca, e restituisce il suo numero.
+    ///
+    /// Da qui ogni ricerca precedente è superata. La bandiera si riabbassa
+    /// **dopo** aver preso il numero: quelle di prima restano ferme lo stesso,
+    /// perché il loro numero non è più l'ultimo.
+    fn comincia(&self) -> u64 {
+        let numero = self
+            .generazione
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
+        self.annullata.store(false, Ordering::SeqCst);
+        numero
+    }
+
+    /// La ricerca con questo numero non deve più andare avanti.
+    fn fermata(&self, numero: u64) -> bool {
+        self.annullata.load(Ordering::SeqCst) || self.superata(numero)
+    }
+
+    /// Dopo la ricerca con questo numero ne è partita un'altra.
+    fn superata(&self, numero: u64) -> bool {
+        self.generazione.load(Ordering::SeqCst) != numero
     }
 }
 
@@ -169,13 +216,24 @@ pub fn esplora_cerca(
     esplora: State<'_, StatoEsplora>,
     testo: String,
 ) -> Esito<EsitoRicerca> {
-    esplora.annullata.store(false, Ordering::Relaxed);
-    let annullato = || esplora.annullata.load(Ordering::Relaxed);
+    let numero = esplora.comincia();
+    let annullato = || esplora.fermata(numero);
 
     let ricerca = esplora
         .cataloghi
         .cerca_libera(&testo, &annullato)
         .map_err(errore)?;
+
+    // Superata mentre cercava: la sua risposta non la aspetta più nessuno, e
+    // soprattutto non deve prendere il posto di quella nuova in `ultima`. La
+    // finestra la butta da sé; qui si evita anche di chiedere alla libreria.
+    if esplora.superata(numero) {
+        return Ok(EsitoRicerca {
+            risultati: Vec::new(),
+            annullata: true,
+            muti: Vec::new(),
+        });
+    }
 
     // Quali ci sono già: una query sola con tutti i riferimenti, non una per
     // riga. Con otto risultati la differenza non si vede; è la forma a contare,
@@ -201,8 +259,20 @@ pub fn esplora_cerca(
     // passare in silenzio la cella avvelenata: da lì in poi «aggiungi» e
     // «ascolta» avrebbero risposto `catalogo.resolveFailed` su risultati
     // vecchi, senza che niente collegasse le due cose.
+    //
+    // La seconda domanda sul numero sta **sotto** il lucchetto: fra la prima e
+    // la scrittura può essere partita un'altra ricerca, e la sua risposta
+    // scriverà qui dentro a sua volta. Chi arriva per secondo col numero
+    // sbagliato non deve cancellarla.
     {
         let mut ultima = esplora.ultima.lock().map_err(|_| errore(avvelenato()))?;
+        if esplora.superata(numero) {
+            return Ok(EsitoRicerca {
+                risultati: Vec::new(),
+                annullata: true,
+                muti: Vec::new(),
+            });
+        }
         *ultima = ricerca.trovati;
     }
 
@@ -223,7 +293,7 @@ pub fn esplora_cerca(
 /// guarda fra una richiesta e l'altra, e si ferma lì.
 #[tauri::command]
 pub fn esplora_annulla(esplora: State<'_, StatoEsplora>) -> Esito<()> {
-    esplora.annullata.store(true, Ordering::Relaxed);
+    esplora.annullata.store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -250,8 +320,17 @@ fn candidato_di(esplora: &StatoEsplora, url: &str) -> Result<Candidato, AppError
 /// `catalogo.resolveFailed` se quell'indirizzo non è fra i risultati
 /// dell'ultima ricerca; `download.notPermitted` se nessuna fonte lecita lo
 /// consegna; `db.*` se la scrittura fallisce.
+///
+/// # Il backup
+///
+/// Questo comando e tutti quelli qui sotto che scrivono passano da
+/// [`crate::nuvola::se_riuscito`], come ogni altro gesto che cambia la
+/// libreria. Fino alla 2.4.0 non lo facevano: un brano aggiunto da Esplora
+/// entrava nel backup solo se dopo si cambiava qualcos'altro, e sull'altro
+/// dispositivo non arrivava affatto.
 #[tauri::command(async)]
 pub fn esplora_aggiungi(
+    app: tauri::AppHandle,
     stato: State<'_, Stato>,
     esplora: State<'_, StatoEsplora>,
     url: String,
@@ -267,7 +346,7 @@ pub fn esplora_aggiungi(
     if esito.scartati > 0 {
         return Err(errore(aether_app::catalogo::riga_illeggibile()));
     }
-    Ok(esito)
+    crate::nuvola::se_riuscito(&app, Ok(esito))
 }
 
 /// Mette nella lista della spesa un risultato che nessun catalogo libero dà.
@@ -287,6 +366,7 @@ pub fn esplora_aggiungi(
 /// dell'ultima ricerca; `db.*` se la scrittura fallisce.
 #[tauri::command(async)]
 pub fn esplora_nella_lista(
+    app: tauri::AppHandle,
     stato: State<'_, Stato>,
     esplora: State<'_, StatoEsplora>,
     url: String,
@@ -301,7 +381,7 @@ pub fn esplora_nella_lista(
         )
     })
     .map_err(errore)?;
-    Ok(scritte > 0)
+    crate::nuvola::se_riuscito(&app, Ok(scritte > 0))
 }
 
 /// Mette in coda di prelievo un risultato che la licenza permette di tenere.
@@ -318,19 +398,36 @@ pub fn esplora_nella_lista(
 /// da qui vorrebbe dire far partire scaricamenti che nessuno ha chiesto adesso.
 /// Si accende da Importazioni, come per ogni altra riga desiderata.
 ///
+/// # Quale file
+///
+/// Non per forza quello che si è ascoltato. La ricerca sceglie per l'ascolto —
+/// sull'Internet Archive l'MP3, che su una linea lenta suona dove il FLAC si
+/// ferma — e una copia da tenere vuole l'originale: il candidato passa da
+/// [`Cataloghi::per_tenere`], che rilegge la scheda dell'item e prende lo
+/// stesso brano nel formato migliore. Solo per quel che si può tenere: per il
+/// resto il nucleo dirà di no comunque, e chiedere prima sarebbe una richiesta
+/// all'Archive per niente.
+///
 /// # Errori
 ///
 /// `catalogo.resolveFailed` se quell'indirizzo non è fra i risultati
 /// dell'ultima ricerca; `download.notPermitted` se la licenza di quel brano non
-/// permette di tenerne una copia; `db.*` se la scrittura fallisce.
+/// permette di tenerne una copia; `net.*` se la scheda dell'item non si
+/// rilegge; `db.*` se la scrittura fallisce.
 #[tauri::command(async)]
 pub fn esplora_tieni(
+    app: tauri::AppHandle,
     stato: State<'_, Stato>,
     esplora: State<'_, StatoEsplora>,
     url: String,
     frase: String,
 ) -> Esito<bool> {
-    let candidato = candidato_di(&esplora, &url).map_err(errore)?;
+    let ascoltato = candidato_di(&esplora, &url).map_err(errore)?;
+    let candidato = if ascoltato.si_puo_tenere() {
+        esplora.cataloghi.per_tenere(&ascoltato).map_err(errore)?
+    } else {
+        ascoltato
+    };
     let scritte = con_libreria(&stato, |libreria| {
         aether_app::catalogo::da_tenere(
             &mut libreria.connection,
@@ -346,7 +443,7 @@ pub fn esplora_tieni(
     if scritte == 0 && candidato.disponibilita != Disponibilita::Scaricabile {
         return Err(errore(aether_app::catalogo::non_si_tiene()));
     }
-    Ok(scritte > 0)
+    crate::nuvola::se_riuscito(&app, Ok(scritte > 0))
 }
 
 /// Quel che «aggiungi tutti» ha prodotto.
@@ -375,6 +472,7 @@ pub struct EsitoAggiuntaTutti {
 /// errore: si conta, e gli altri entrano lo stesso.
 #[tauri::command(async)]
 pub fn esplora_aggiungi_tutti(
+    app: tauri::AppHandle,
     stato: State<'_, Stato>,
     esplora: State<'_, StatoEsplora>,
 ) -> Esito<EsitoAggiuntaTutti> {
@@ -392,7 +490,7 @@ pub fn esplora_aggiungi_tutti(
     // Scrittura e rilettura sotto lo stesso lucchetto: due prese separate
     // lascerebbero in mezzo una finestra in cui un'altra scrittura cambia
     // la risposta, e la risposta serve a disegnare i tasti.
-    con_libreria(&stato, |libreria| {
+    let esito = con_libreria(&stato, |libreria| {
         let conteggi = aether_app::catalogo::aggiungi(&mut libreria.connection, &candidati)?;
         let presenti = aether_app::catalogo::gia_in_libreria(&libreria.connection, &riferimenti)?;
         Ok(EsitoAggiuntaTutti {
@@ -400,10 +498,20 @@ pub fn esplora_aggiungi_tutti(
             in_libreria: presenti.into_iter().collect(),
         })
     })
-    .map_err(errore)
+    .map_err(errore);
+    crate::nuvola::se_riuscito(&app, esito)
 }
 
 /// Toglie dalla libreria un brano di catalogo, per indirizzo.
+///
+/// # E dalla coda
+///
+/// Come `cancellazione::brani_togli`, di cui è il gemello per chi ha in mano
+/// un indirizzo invece di un identificativo. Fino alla 2.4.0 toglieva la riga e
+/// basta: il brano restava in coda, e al suo turno la coda mostrava «brano non
+/// più in libreria» su una riga che nessuno aveva chiesto di tenere. Si
+/// sgombera senza fermare, per la stessa ragione di là: i byte restano
+/// raggiungibili, e togliere vuol dire «non risuonarlo», non «zitto adesso».
 ///
 /// # Errori
 ///
@@ -411,15 +519,28 @@ pub fn esplora_aggiungi_tutti(
 /// dell'ultima ricerca; `db.*` se la scrittura fallisce.
 #[tauri::command(async)]
 pub fn esplora_togli(
+    app: tauri::AppHandle,
     stato: State<'_, Stato>,
     esplora: State<'_, StatoEsplora>,
     url: String,
 ) -> Esito<bool> {
     let candidato = candidato_di(&esplora, &url).map_err(errore)?;
-    con_libreria(&stato, |libreria| {
-        aether_app::catalogo::togli(&mut libreria.connection, candidato.fonte.nome(), &url)
+    let fonte = candidato.fonte.nome();
+    // L'identificativo si legge prima e sotto lo stesso lucchetto: dopo la
+    // cancellazione non c'è più niente da cui leggerlo, ed è quello che la
+    // coda conosce.
+    let (id, tolto) = con_libreria(&stato, |libreria| {
+        let id = aether_app::catalogo::id_di(&libreria.connection, fonte, &url)?;
+        let tolto = aether_app::catalogo::togli(&mut libreria.connection, fonte, &url)?;
+        Ok((id, tolto))
     })
-    .map_err(errore)
+    .map_err(errore)?;
+    // Dopo il database e fuori dal suo lucchetto: prima il lettore, poi la
+    // libreria, e qui la libreria è già stata lasciata.
+    if tolto && let Some(id) = id {
+        crate::cancellazione::sgombera(&app, &[id], false);
+    }
+    crate::nuvola::se_riuscito(&app, Ok(tolto))
 }
 
 /// Il brano di libreria che corrisponde a un risultato, per poterlo suonare.
@@ -545,19 +666,47 @@ mod prove {
         assert!(candidato_di(&esplora, &candidato().url).is_ok());
     }
 
-    /// L'annullamento è una bandiera, e si rialza a ogni ricerca nuova.
+    /// L'annullamento non avvelena la ricerca dopo.
     ///
-    /// Se restasse alzata, la ricerca dopo un annullamento partirebbe già
-    /// annullata e risponderebbe «nessun risultato» senza chiedere niente a
-    /// nessuno — il guasto che si vede una volta su dieci e non si riproduce.
+    /// Se la bandiera restasse alzata, la ricerca dopo un annullamento
+    /// partirebbe già annullata e risponderebbe «nessun risultato» senza
+    /// chiedere niente a nessuno — il guasto che si vede una volta su dieci e
+    /// non si riproduce.
     #[test]
     fn annullare_non_avvelena_la_ricerca_dopo() {
         let esplora = StatoEsplora::nuovo();
-        assert!(!esplora.annullata.load(Ordering::Relaxed));
-        esplora.annullata.store(true, Ordering::Relaxed);
-        assert!(esplora.annullata.load(Ordering::Relaxed));
-        // È la prima riga di `esplora_cerca`.
-        esplora.annullata.store(false, Ordering::Relaxed);
-        assert!(!esplora.annullata.load(Ordering::Relaxed));
+        let prima = esplora.comincia();
+        assert!(!esplora.fermata(prima));
+        esplora.annullata.store(true, Ordering::SeqCst);
+        assert!(esplora.fermata(prima));
+        let dopo = esplora.comincia();
+        assert!(!esplora.fermata(dopo), "la ricerca nuova parte già fermata");
+    }
+
+    /// Una ricerca nuova non rimette in moto quella fermata.
+    ///
+    /// Il guasto trovato usando la finestra: «Ferma», poi una ricerca nuova.
+    /// La nuova riabbassava la bandiera, e la vecchia — che la guardava fra una
+    /// richiesta e l'altra — ripartiva, finiva dopo e prendeva il posto dei
+    /// risultati giusti, in finestra e in `ultima`.
+    #[test]
+    fn una_ricerca_nuova_non_rimette_in_moto_quella_fermata() {
+        let esplora = StatoEsplora::nuovo();
+        let vecchia = esplora.comincia();
+        esplora.annullata.store(true, Ordering::SeqCst);
+        let nuova = esplora.comincia();
+        assert!(esplora.fermata(vecchia), "la vecchia è ripartita");
+        assert!(esplora.superata(vecchia));
+        assert!(!esplora.fermata(nuova));
+        assert!(!esplora.superata(nuova));
+
+        // E senza nessun «Ferma» di mezzo: Invio con una frase diversa mentre
+        // la prima sta ancora cercando.
+        let terza = esplora.comincia();
+        assert!(
+            esplora.fermata(nuova),
+            "la seconda doveva lasciare il posto"
+        );
+        assert!(!esplora.fermata(terza));
     }
 }

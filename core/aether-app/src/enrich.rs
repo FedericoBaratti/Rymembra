@@ -70,11 +70,11 @@ use aether_domain::paths::file_stem;
 use aether_meta::Fornitori;
 use aether_meta::copertine::{Copertina, Sorgenti};
 use aether_meta::deposito::{Deposito, Voce};
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension as _, Transaction};
 use serde::{Deserialize, Serialize};
 
 use crate::covers::{CoverSource, CoverStore, StoredCover};
-use crate::library::{db_error, now_ms, rebuild_aggregates};
+use crate::library::{Toccati, db_error, now_ms, rebuild_aggregates, ricostruisci_aggregati};
 use crate::tag_scrittura;
 
 /// Quanti gruppi d'album si prendono per passata.
@@ -847,7 +847,15 @@ pub fn registra(
         // prometterebbe un ritorno che non ha niente da riportare indietro, e
         // gonfierebbe il numero che il pannello mostra sul pulsante.
         if esito.applicato {
-            registra_arricchimento(tx, scrittura, adesso)?;
+            // Prima di `aggiorna_brano`, e non è indifferente: l'annotazione
+            // fotografa quel che la riga dice **adesso** sotto i campi che
+            // stanno per essere coperti, cioè quel che dice il file.
+            registra_arricchimento(
+                tx,
+                scrittura,
+                esito.copertina.as_ref().map(|c| c.hash.as_str()),
+                adesso,
+            )?;
         }
         if let Some(copertina) = esito.copertina.as_ref() {
             registra_copertina(tx, copertina, esito.copertina_da, adesso)?;
@@ -888,6 +896,28 @@ pub fn registra(
 /// **cosa** viene dall'arricchimento, e un campo assente vuol dire «questo no».
 /// Serializzarli come `null` renderebbe indistinguibile «non l'ho scritto io»
 /// da «l'ho scritto vuoto», che è la distinzione per cui l'annotazione esiste.
+///
+/// # Quel che c'era sotto, e la copertina
+///
+/// Fino alla 2.4 l'annotazione diceva soltanto **cosa** veniva dal catalogo, e
+/// non bastava. Il modo in cui non bastava si vedeva: un programma qualunque che
+/// toccasse il file — un calcolatore di ReplayGain, un lettore che ci scrive il
+/// conteggio degli ascolti — ne cambiava la data, la scansione lo rileggeva, e
+/// `library::update_track` rimetteva sulla riga i tag del file. «Album
+/// sconosciuto» tornava, la copertina spariva, e l'arricchimento non ci ripassava
+/// più, perché il brano per lui era già fatto.
+///
+/// Per rimettere sopra lo strato di mezzo serve una risposta sola per ogni
+/// campo: **il file dice ancora quel che diceva quando l'arricchimento l'ha
+/// coperto?** Se sì, la corrispondenza vale ancora e si rimette; se no, il file è
+/// stato ritaggato, e la parola più recente è la sua. Per poter rispondere, dalla
+/// 3.0 l'annotazione porta anche [`Sotto`] — il valore del file sotto ogni campo
+/// coperto — e [`Self::copertina`], che prima non si scriveva da nessuna parte.
+/// Chi le legge è `incerti::arricchimento_sopra_i_tag`.
+///
+/// Tutto nello stesso JSON, e senza una migrazione: le annotazioni scritte prima
+/// si leggono uguali, con le due parti nuove assenti — e assente vuol dire «non
+/// si sa», che ha una regola sua.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CampiArricchiti {
     /// Il titolo.
@@ -923,6 +953,19 @@ pub struct CampiArricchiti {
     /// L'identificativo MusicBrainz del gruppo di pubblicazione.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mb_release_group_id: Option<String>,
+    /// L'impronta della copertina che l'arricchimento ha messo sulla riga.
+    ///
+    /// Sotto non serve dire niente: l'arricchimento una copertina la cerca solo
+    /// per i brani che non ne hanno — vedi `per_album` e `per_brano` — quindi
+    /// sotto questa c'è sempre «il file non ne porta una».
+    ///
+    /// `None` anche sulle annotazioni scritte fino alla 2.4, che la copertina non
+    /// la ricordavano: lì vuol dire «non si sa».
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copertina: Option<String>,
+    /// Quel che il file diceva sotto ciascuno dei campi qui sopra.
+    #[serde(default, skip_serializing_if = "Sotto::e_vuoto")]
+    pub sotto: Sotto,
 }
 
 impl From<&Fields> for CampiArricchiti {
@@ -939,8 +982,381 @@ impl From<&Fields> for CampiArricchiti {
             mb_recording_id: campi.mb_recording_id.clone(),
             mb_release_id: campi.mb_release_id.clone(),
             mb_release_group_id: campi.mb_release_group_id.clone(),
+            copertina: None,
+            sotto: Sotto::default(),
         }
     }
+}
+
+impl CampiArricchiti {
+    /// Non resta niente da annotare: né un campo, né una copertina.
+    ///
+    /// È il momento in cui la riga di `track_meta_arricchita` va tolta invece che
+    /// riscritta: un'annotazione vuota prometterebbe al pannello un brano «da
+    /// dimenticare» su cui l'arricchimento non ha più niente.
+    #[must_use]
+    pub fn e_vuota(&self) -> bool {
+        self.title.is_none()
+            && self.artist.is_none()
+            && self.album.is_none()
+            && self.album_artist.is_none()
+            && self.year.is_none()
+            && self.genre.is_none()
+            && self.track_number.is_none()
+            && self.disc_number.is_none()
+            && self.mb_recording_id.is_none()
+            && self.mb_release_id.is_none()
+            && self.mb_release_group_id.is_none()
+            && self.copertina.is_none()
+    }
+
+    /// Questa passata, posata sopra l'annotazione di quella prima.
+    ///
+    /// # Perché fondere, e non sostituire
+    ///
+    /// Fino alla 2.4 l'annotazione nuova sostituiva la vecchia per intero, e non
+    /// si vedeva: serviva a dire «da dove viene», e i campi della passata prima
+    /// restavano comunque sulla riga. Adesso l'annotazione serve anche a
+    /// **rimetterli**, dopo che una scansione ha riletto il file — e un album
+    /// scritto dalla prima passata e dimenticato dalla seconda, che su quel brano
+    /// ha deciso soltanto il titolo, tornerebbe «Album sconosciuto» al primo
+    /// programma che tocca il file.
+    ///
+    /// Quindi: i campi di questa passata vincono, quelli della passata prima che
+    /// questa non ha toccato restano, e lo stesso vale per la copertina.
+    ///
+    /// # Quel che c'era sotto
+    ///
+    /// Per un campo che la passata prima **non** aveva coperto, sotto c'è quel che
+    /// la riga dice adesso — cioè il file, `file`. Per uno che aveva già coperto
+    /// no: adesso la riga dice il valore del catalogo, e il file sta sotto quello.
+    /// Si tiene allora quel che la passata prima aveva scritto, compreso il suo
+    /// «non si sa» se era un'annotazione della 2.4.
+    fn sopra(mut self, prima: Option<&Self>, file: &TagDelFile, copertina: Option<&str>) -> Self {
+        macro_rules! fondi {
+            ($campo:ident) => {
+                match prima {
+                    Some(prima) if prima.$campo.is_some() => {
+                        if self.$campo.is_none() {
+                            self.$campo = prima.$campo.clone();
+                        }
+                        self.sotto.$campo = prima.sotto.$campo.clone();
+                    }
+                    _ => {
+                        if self.$campo.is_some() {
+                            self.sotto.$campo = Some(file.$campo.clone());
+                        }
+                    }
+                }
+            };
+        }
+        fondi!(title);
+        fondi!(artist);
+        fondi!(album);
+        fondi!(album_artist);
+        fondi!(year);
+        fondi!(genre);
+        fondi!(track_number);
+        fondi!(disc_number);
+        fondi!(mb_recording_id);
+        fondi!(mb_release_id);
+        fondi!(mb_release_group_id);
+        self.copertina = copertina
+            .map(str::to_owned)
+            .or_else(|| prima.and_then(|p| p.copertina.clone()));
+        self
+    }
+}
+
+/// Quel che il file diceva sotto i campi che l'arricchimento ha coperto.
+///
+/// Un campo per ogni campo di [`CampiArricchiti`], e tre stati per ciascuno — è
+/// la ragione dell'`Option` dentro l'`Option`:
+///
+/// * **assente** (`None`, e nel JSON la chiave non c'è): non si sa. È il caso di
+///   ogni annotazione scritta fino alla 2.4, e di un campo coperto da una di
+///   quelle e ricoperto dopo;
+/// * **`null`** (`Some(None)`): il file quel campo non l'aveva, o aveva soltanto
+///   il ripiego — il titolo preso dal nome del file, «Artista sconosciuto»,
+///   «Album sconosciuto». È di gran lunga il caso più frequente, perché
+///   l'arricchimento riempie soprattutto dei buchi;
+/// * **un valore** (`Some(Some(v))`): il file diceva `v`, e il catalogo l'ha
+///   sostituito — un titolo tutto minuscolo, un anno sbagliato.
+///
+/// «Non si sa» e «non c'era» non si possono fondere in uno: il primo va trattato
+/// con prudenza, il secondo è una risposta esatta.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sotto {
+    /// Sotto il titolo.
+    #[serde(
+        default,
+        deserialize_with = "presente",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub title: Option<Option<String>>,
+    /// Sotto l'interprete.
+    #[serde(
+        default,
+        deserialize_with = "presente",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub artist: Option<Option<String>>,
+    /// Sotto l'album.
+    #[serde(
+        default,
+        deserialize_with = "presente",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub album: Option<Option<String>>,
+    /// Sotto l'interprete dell'album.
+    #[serde(
+        default,
+        deserialize_with = "presente",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub album_artist: Option<Option<String>>,
+    /// Sotto l'anno.
+    #[serde(
+        default,
+        deserialize_with = "presente",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub year: Option<Option<i32>>,
+    /// Sotto il genere.
+    #[serde(
+        default,
+        deserialize_with = "presente",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub genre: Option<Option<String>>,
+    /// Sotto il numero di traccia.
+    #[serde(
+        default,
+        deserialize_with = "presente",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub track_number: Option<Option<u32>>,
+    /// Sotto il numero di disco.
+    #[serde(
+        default,
+        deserialize_with = "presente",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub disc_number: Option<Option<u32>>,
+    /// Sotto l'identificativo MusicBrainz della registrazione.
+    #[serde(
+        default,
+        deserialize_with = "presente",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mb_recording_id: Option<Option<String>>,
+    /// Sotto l'identificativo MusicBrainz della pubblicazione.
+    #[serde(
+        default,
+        deserialize_with = "presente",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mb_release_id: Option<Option<String>>,
+    /// Sotto l'identificativo MusicBrainz del gruppo di pubblicazione.
+    #[serde(
+        default,
+        deserialize_with = "presente",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mb_release_group_id: Option<Option<String>>,
+}
+
+impl Sotto {
+    /// Non si sa niente di nessun campo: è quel che si legge da un'annotazione
+    /// della 2.4, e quel che non vale la pena scrivere.
+    #[must_use]
+    pub fn e_vuoto(&self) -> bool {
+        self.title.is_none()
+            && self.artist.is_none()
+            && self.album.is_none()
+            && self.album_artist.is_none()
+            && self.year.is_none()
+            && self.genre.is_none()
+            && self.track_number.is_none()
+            && self.disc_number.is_none()
+            && self.mb_recording_id.is_none()
+            && self.mb_release_id.is_none()
+            && self.mb_release_group_id.is_none()
+    }
+}
+
+/// Legge un campo di [`Sotto`] tenendo `null` distinto da «assente».
+///
+/// Serde da solo li tratterebbe allo stesso modo: su un `Option` una chiave
+/// `null` e una chiave che non c'è diventano entrambe `None`. La chiave che non
+/// c'è la copre già `#[serde(default)]`; questa funzione, che serde chiama solo
+/// quando la chiave c'è, avvolge in un `Some` anche il `null`.
+fn presente<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// Quel che un file dice di un brano, nella forma in cui lo si confronta con [`Sotto`].
+///
+/// # I ripieghi tornano assenze
+///
+/// La riga porta il titolo preso dal nome del file quando il tag non c'è, e
+/// «Artista sconosciuto», «Album sconosciuto»: sono i ripieghi di
+/// `library::read_track`. Per il confronto valgono tutti come **assenza**, e per
+/// il titolo non è un dettaglio. Il ripiego dipende dal nome del file, e un file
+/// senza titolo che viene rinominato o spostato dentro di sé non è cambiato: se il
+/// confronto guardasse il ripiego, spostare un brano arricchito gli toglierebbe il
+/// titolo che il catalogo gli aveva trovato.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TagDelFile {
+    /// Il titolo, senza il ripiego dal nome del file.
+    pub(crate) title: Option<String>,
+    /// L'interprete, senza «Artista sconosciuto».
+    pub(crate) artist: Option<String>,
+    /// L'album, senza «Album sconosciuto».
+    pub(crate) album: Option<String>,
+    /// L'interprete dell'album.
+    pub(crate) album_artist: Option<String>,
+    /// L'anno.
+    pub(crate) year: Option<i32>,
+    /// Il genere.
+    pub(crate) genre: Option<String>,
+    /// Il numero di traccia.
+    pub(crate) track_number: Option<u32>,
+    /// Il numero di disco.
+    pub(crate) disc_number: Option<u32>,
+    /// L'identificativo MusicBrainz della registrazione.
+    pub(crate) mb_recording_id: Option<String>,
+    /// L'identificativo MusicBrainz della pubblicazione.
+    pub(crate) mb_release_id: Option<String>,
+    /// L'identificativo MusicBrainz del gruppo di pubblicazione.
+    pub(crate) mb_release_group_id: Option<String>,
+}
+
+impl TagDelFile {
+    /// Dalla riga che la scansione ha appena letto dal file, ripieghi compresi.
+    pub(crate) fn della_riga_letta(riga: &crate::library::TrackRow) -> Self {
+        Self {
+            title: senza_ripiego_del_titolo(&riga.title, &riga.path),
+            artist: senza_ripiego(&riga.artist, UNKNOWN_ARTIST),
+            album: senza_ripiego(&riga.album, UNKNOWN_ALBUM),
+            album_artist: riga.album_artist.clone(),
+            year: riga.year.and_then(|anno| i32::try_from(anno).ok()),
+            genre: riga.genre.clone(),
+            track_number: riga.track_number.and_then(|n| u32::try_from(n).ok()),
+            disc_number: riga.disc_number.and_then(|n| u32::try_from(n).ok()),
+            mb_recording_id: riga.mb_recording_id.clone(),
+            mb_release_id: riga.mb_release_id.clone(),
+            mb_release_group_id: riga.mb_release_group_id.clone(),
+        }
+    }
+}
+
+/// Il titolo come lo dice il tag: `None` quando la riga porta il ripiego dal nome
+/// del file.
+///
+/// Un tag che dice esattamente la radice del nome si confonde col ripiego, ed è
+/// giusto così: per chi guarda la libreria sono la stessa cosa.
+fn senza_ripiego_del_titolo(titolo: &str, percorso: &str) -> Option<String> {
+    (titolo != file_stem(percorso)).then(|| titolo.to_owned())
+}
+
+/// Un valore come lo dice il tag: `None` quando è il ripiego della scansione.
+fn senza_ripiego(valore: &str, ripiego: &str) -> Option<String> {
+    (valore != ripiego).then(|| valore.to_owned())
+}
+
+/// L'annotazione di un brano, se ce n'è una che si legga.
+///
+/// Un JSON illeggibile — scritto da una versione futura, o rovinato — vale
+/// «nessuna annotazione» e non un errore: è la stessa regola di
+/// `incerti::riapplica`, e per la stessa ragione. Chi scrive dopo la riscrive
+/// intera.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub(crate) fn annotazione(
+    connection: &Connection,
+    track_id: i64,
+) -> Result<Option<CampiArricchiti>, AppError> {
+    let mut statement = connection
+        .prepare_cached("SELECT campi FROM track_meta_arricchita WHERE track_id = ?1")
+        .map_err(|err| db_error("lettura di un'annotazione di arricchimento", &err))?;
+    match statement.query_row([track_id], |row| row.get::<_, String>(0)) {
+        Ok(json) => Ok(serde_json::from_str(&json).ok()),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(db_error("lettura di un'annotazione di arricchimento", &err)),
+    }
+}
+
+/// Quel che la riga dice adesso, nella forma di [`TagDelFile`].
+///
+/// Si legge dentro la transazione che sta per coprirla, e non da
+/// [`Scrittura::originali`]: quelli sono stati letti minuti prima, prima della
+/// rete, e in mezzo una scansione può aver riletto il file.
+fn tag_della_riga(tx: &Transaction<'_>, track_id: i64) -> Result<TagDelFile, AppError> {
+    type Riga = (
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        (Option<String>, Option<String>, Option<String>),
+    );
+    let letta: Option<Riga> = tx
+        .prepare_cached(
+            "SELECT COALESCE(path, fonte_url, ''), title, artist, album, album_artist, year,
+                    genre, track_number, disc_number, mb_recording_id, mb_release_id,
+                    mb_release_group_id
+               FROM tracks WHERE id = ?1",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_row([track_id], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        (row.get(9)?, row.get(10)?, row.get(11)?),
+                    ))
+                })
+                .optional()
+        })
+        .map_err(|err| db_error("lettura di un brano da arricchire", &err))?;
+    let Some((percorso, titolo, artista, album, album_artist, anno, genere, traccia, disco, mb)) =
+        letta
+    else {
+        // La riga non c'è più: l'`UPDATE` che segue non troverà niente, e
+        // quel che si annota qui non lo leggerà nessuno.
+        return Ok(TagDelFile::default());
+    };
+    Ok(TagDelFile {
+        title: senza_ripiego_del_titolo(&titolo, &percorso),
+        artist: senza_ripiego(&artista, UNKNOWN_ARTIST),
+        album: senza_ripiego(&album, UNKNOWN_ALBUM),
+        album_artist,
+        year: anno.and_then(|a| i32::try_from(a).ok()),
+        genre: genere,
+        track_number: traccia.and_then(|n| u32::try_from(n).ok()),
+        disc_number: disco.and_then(|n| u32::try_from(n).ok()),
+        mb_recording_id: mb.0,
+        mb_release_id: mb.1,
+        mb_release_group_id: mb.2,
+    })
 }
 
 /// Annota che questi campi della riga vengono dall'arricchimento.
@@ -954,17 +1370,25 @@ impl From<&Fields> for CampiArricchiti {
 /// versione che l'utente non aveva mai visto, cioè a quella scritta da noi il
 /// giro prima. Questa dice «cosa c'è **adesso** sulla riga che venga da un
 /// catalogo», e la verità è sempre l'ultima passata: una decisione più recente,
-/// da una fonte più sicura, sostituisce quella di prima.
+/// da una fonte più sicura, sostituisce quella di prima — campo per campo, però,
+/// e non per intero: vedi [`CampiArricchiti::sopra`].
 ///
 /// Nessun percorso in tabella, per la stessa ragione: l'annotazione descrive la
 /// riga, non un file, e la riga la si ritrova per `track_id` anche dopo che il
 /// suo file è stato spostato.
+///
+/// Va chiamata **prima** di `aggiorna_brano`: quel che c'era sotto lo si legge
+/// dalla riga, e dopo la riga dice già il catalogo.
 fn registra_arricchimento(
     tx: &Transaction<'_>,
     scrittura: &Scrittura,
+    copertina: Option<&str>,
     adesso: i64,
 ) -> Result<(), AppError> {
-    let campi = serde_json::to_string(&CampiArricchiti::from(&scrittura.campi)).map_err(|err| {
+    let prima = annotazione(tx, scrittura.track_id)?;
+    let file = tag_della_riga(tx, scrittura.track_id)?;
+    let fusa = CampiArricchiti::from(&scrittura.campi).sopra(prima.as_ref(), &file, copertina);
+    let campi = serde_json::to_string(&fusa).map_err(|err| {
         AppError::new(ErrorCode::InternalUnexpected {
             detail: Some("serializzazione dei campi arricchiti".to_owned()),
         })
@@ -1195,7 +1619,10 @@ pub struct Annullati {
 ///
 /// La rilettura dei file avviene **fuori** dalla transazione, come in ogni
 /// altra passata di questo modulo: aprire migliaia di file tenendo il lucchetto
-/// della libreria vorrebbe dire un'applicazione ferma per tutto quel tempo.
+/// della libreria vorrebbe dire un'applicazione ferma per tutto quel tempo. Chi
+/// tiene quel lucchetto usa le tre metà — [`da_dimenticare`],
+/// [`rileggi_i_file`], [`registra_dimenticati`] — e lo lascia per quella di
+/// mezzo: vedi [`DaDimenticare`].
 ///
 /// # Errori
 ///
@@ -1205,6 +1632,37 @@ pub struct Annullati {
 /// riprovare quando quel disco c'è porta a termine il lavoro. Cancellarla
 /// lascerebbe la riga arricchita senza più niente che dica da dove viene.
 pub fn dimentica(connection: &mut Connection) -> Result<Annullati, AppError> {
+    let da_fare = da_dimenticare(connection)?;
+    let riletti = rileggi_i_file(da_fare);
+    registra_dimenticati(connection, riletti)
+}
+
+/// I brani arricchiti da riportare ai tag del loro file, letti dal database.
+///
+/// La prima delle tre metà di [`dimentica`], separate per la stessa ragione di
+/// [`DaRiportare`]: fra la prima e l'ultima si apre un file per ogni brano
+/// arricchito, e su una radice di rete che dorme ogni apertura può costare
+/// secondi. Con il lucchetto della libreria in mano voleva dire scansione,
+/// backup e play fermi per tutto quel tempo, e la finestra che dopo quattro
+/// secondi rinunciava a ogni comando con `db.locked`.
+#[derive(Debug)]
+pub struct DaDimenticare {
+    righe: Vec<(i64, String)>,
+}
+
+/// I tag riletti dai file, da registrare nel database.
+#[derive(Debug)]
+pub struct Riletti {
+    righe: Vec<(i64, String, Fields)>,
+    falliti: usize,
+}
+
+/// Legge i brani da riportare. Vedi [`DaDimenticare`].
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn da_dimenticare(connection: &Connection) -> Result<DaDimenticare, AppError> {
     let righe: Vec<(i64, String)> = {
         let mut statement = connection
             .prepare(
@@ -1222,17 +1680,25 @@ pub fn dimentica(connection: &mut Connection) -> Result<Annullati, AppError> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|err| db_error("elenco dei brani arricchiti", &err))?
     };
+    Ok(DaDimenticare { righe })
+}
 
-    let mut conto = Annullati::default();
-    let mut riletti: Vec<(i64, String, Fields)> = Vec::new();
-    for (track_id, percorso) in &righe {
-        let Ok(tags) = crate::metadata::read_tags(&crate::files::LocalFiles, percorso) else {
-            conto.falliti = conto.falliti.saturating_add(1);
+/// Rilegge i tag dei file. **Non tocca il database**: vedi [`DaDimenticare`].
+/// Un file che non si rilegge si conta e si prosegue.
+#[must_use]
+pub fn rileggi_i_file(da_fare: DaDimenticare) -> Riletti {
+    let mut riletti = Riletti {
+        righe: Vec::new(),
+        falliti: 0,
+    };
+    for (track_id, percorso) in da_fare.righe {
+        let Ok(tags) = crate::metadata::read_tags(&crate::files::LocalFiles, &percorso) else {
+            riletti.falliti = riletti.falliti.saturating_add(1);
             continue;
         };
-        riletti.push((
-            *track_id,
-            percorso.clone(),
+        riletti.righe.push((
+            track_id,
+            percorso,
             Fields {
                 title: tags.title,
                 artist: tags.artist,
@@ -1248,15 +1714,57 @@ pub fn dimentica(connection: &mut Connection) -> Result<Annullati, AppError> {
             },
         ));
     }
+    riletti
+}
 
-    let tx = connection
-        .transaction()
+/// Registra nel database quel che [`rileggi_i_file`] ha riletto.
+///
+/// # Il brano che nel frattempo ha cambiato file
+///
+/// Fra la lettura e questa scrittura il lucchetto era libero, e una scansione
+/// può aver spostato la riga su un altro percorso — un file rinominato, una
+/// cartella riordinata. I tag riletti sono quelli del file di **prima**, e
+/// scriverli sopra quello di adesso sarebbe un brano che prende il titolo di un
+/// altro. Si salta, contato fra i `falliti`: l'annotazione resta, e il gesto
+/// ripetuto lo riporta dal file giusto. Una riga che non c'è più non ha niente
+/// da riportare, e non si conta.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn registra_dimenticati(
+    connection: &mut Connection,
+    riletti: Riletti,
+) -> Result<Annullati, AppError> {
+    let Riletti { righe, falliti } = riletti;
+    let mut conto = Annullati {
+        falliti,
+        ..Annullati::default()
+    };
+
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura della transazione di ritorno", &err))?;
-    for (track_id, percorso, grezzi) in &riletti {
+    let mut toccati = Toccati::nessuno();
+    let ids: Vec<i64> = righe.iter().map(|(id, _, _)| *id).collect();
+    toccati.segna_brani(&tx, &ids)?;
+    for (track_id, percorso, grezzi) in &righe {
+        let adesso: Option<String> = tx
+            .prepare_cached("SELECT path FROM tracks WHERE id = ?1")
+            .and_then(|mut statement| statement.query_row([track_id], |row| row.get(0)).optional())
+            .map_err(|err| db_error("percorso di un brano da riportare", &err))?;
+        match adesso {
+            None => continue,
+            Some(adesso) if adesso != *percorso => {
+                conto.falliti = conto.falliti.saturating_add(1);
+                continue;
+            }
+            Some(_) => {}
+        }
         rimetti_i_tag_del_file(&tx, *track_id, percorso, grezzi)?;
         conto.riportati = conto.riportati.saturating_add(1);
     }
-    ricostruisci(&tx)?;
+    toccati.segna_brani(&tx, &ids)?;
+    ricostruisci_aggregati(&tx, &toccati)?;
     tx.commit()
         .map_err(|err| db_error("chiusura della transazione di ritorno", &err))?;
 
@@ -1465,14 +1973,18 @@ pub fn registra_riportati(
         ..Annullati::default()
     };
 
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura della transazione di riscrittura", &err))?;
+    // Gli aggregati per chiavi, come la scansione: vedi [`Toccati`].
+    let mut toccati = Toccati::nessuno();
+    let ids: Vec<i64> = riusciti.iter().map(|(id, _, _, _)| *id).collect();
+    toccati.segna_brani(&tx, &ids)?;
     for (track_id, originali, modificato, dimensione) in &riusciti {
         ripristina_riga(&tx, *track_id, originali, *modificato, *dimensione)?;
         conto.riportati = conto.riportati.saturating_add(1);
     }
-    ricostruisci(&tx)?;
+    toccati.segna_brani(&tx, &ids)?;
+    ricostruisci_aggregati(&tx, &toccati)?;
     tx.commit()
         .map_err(|err| db_error("chiusura della transazione di riscrittura", &err))?;
 
@@ -1595,12 +2107,17 @@ impl DepositoSqlite {
     ///
     /// `db.openFailed` se il file non si apre.
     pub fn apri(percorso: &Path, adesso: i64) -> Result<Self, AppError> {
-        let connessione = Connection::open(percorso).map_err(|err| {
-            AppError::new(ErrorCode::DbOpenFailed {
-                path: Some(percorso.display().to_string()),
-            })
-            .with_cause(err.to_string())
-        })?;
+        // Dal percorso lungo, come la connessione principale in `db::open`: una
+        // cartella dati profonda sfonda i 260 caratteri di `MAX_PATH`, e allora
+        // la principale si apre e questa no — con un «il database non si
+        // apre» che nomina lo stesso file che l'altra ha appena aperto.
+        let connessione =
+            Connection::open(crate::files::percorso_lungo(percorso)).map_err(|err| {
+                AppError::new(ErrorCode::DbOpenFailed {
+                    path: Some(percorso.display().to_string()),
+                })
+                .with_cause(err.to_string())
+            })?;
         // Solo quel che non sta nel file: `journal_mode` è salvato lì e le
         // migrazioni le ha già applicate la connessione principale. Questa non
         // deve toccare lo schema — se lo facesse, due connessioni migrerebbero
@@ -1963,6 +2480,81 @@ mod prove {
         let arricchiti: CampiArricchiti = serde_json::from_str(&campi).expect("json");
         assert_eq!(arricchiti.title.as_deref(), Some("Secondo"));
         assert_eq!(fonte.as_deref(), Some("itunes"));
+    }
+
+    #[test]
+    fn l_annotazione_ricorda_cosa_c_era_sotto_e_la_passata_prima() {
+        // Due passate su campi diversi: la seconda non fa dimenticare l'album
+        // della prima — che una scansione dovrà poter rimettere — e per ogni
+        // campo resta scritto cosa diceva il file quando è stato coperto.
+        let (cartella, mut connection, percorso) = libreria();
+        passa(
+            &mut connection,
+            cartella.path(),
+            &[scrittura(
+                &percorso,
+                Fields {
+                    artist: Some("Pink Floyd".to_owned()),
+                    album: Some("The Wall".to_owned()),
+                    ..Fields::default()
+                },
+            )],
+        );
+        passa(
+            &mut connection,
+            cartella.path(),
+            &[scrittura(
+                &percorso,
+                Fields {
+                    title: Some("Hey You".to_owned()),
+                    ..Fields::default()
+                },
+            )],
+        );
+
+        let arricchiti = annotazione(&connection, 1)
+            .expect("lettura")
+            .expect("l'annotazione c'è");
+        assert_eq!(arricchiti.title.as_deref(), Some("Hey You"));
+        assert_eq!(
+            arricchiti.album.as_deref(),
+            Some("The Wall"),
+            "l'album della passata prima resta annotato"
+        );
+        assert_eq!(arricchiti.artist.as_deref(), Some("Pink Floyd"));
+        // Sotto interprete e album c'erano soltanto i ripieghi: per il
+        // confronto, niente.
+        assert_eq!(arricchiti.sotto.artist, Some(None));
+        assert_eq!(arricchiti.sotto.album, Some(None));
+        // Sotto il titolo, quello del file: la riga lo diceva ancora quando la
+        // seconda passata l'ha coperto.
+        assert_eq!(
+            arricchiti.sotto.title,
+            Some(Some("Titolo vecchio".to_owned()))
+        );
+        assert_eq!(arricchiti.sotto.year, None, "l'anno nessuno l'ha coperto");
+    }
+
+    #[test]
+    fn un_annotazione_della_2_4_si_legge_ancora() {
+        // Senza `sotto` e senza `copertina`: vuol dire «non si sa», non «non
+        // c'era». E `null` resta distinto da «assente».
+        let vecchia: CampiArricchiti =
+            serde_json::from_str(r#"{"album":"The Wall"}"#).expect("json della 2.4");
+        assert_eq!(vecchia.album.as_deref(), Some("The Wall"));
+        assert!(vecchia.sotto.e_vuoto());
+        assert_eq!(vecchia.copertina, None);
+
+        let nuova: CampiArricchiti =
+            serde_json::from_str(r#"{"album":"The Wall","sotto":{"album":null,"title":"x"}}"#)
+                .expect("json della 3.0");
+        assert_eq!(nuova.sotto.album, Some(None));
+        assert_eq!(nuova.sotto.title, Some(Some("x".to_owned())));
+        assert_eq!(nuova.sotto.artist, None);
+        // E all'andata e ritorno il `null` sopravvive.
+        let di_nuovo: CampiArricchiti =
+            serde_json::from_str(&serde_json::to_string(&nuova).expect("json")).expect("json");
+        assert_eq!(di_nuovo, nuova);
     }
 
     #[test]

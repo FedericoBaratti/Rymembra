@@ -26,11 +26,32 @@
 //! troncato, cioè un `sync.remoteCorrupt` sul computer di qualcun altro, per una
 //! scrittura che qui era andata benissimo. Si scrive accanto e si rinomina: la
 //! rinomina è atomica, e chi guarda vede il file o non lo vede.
+//!
+//! E prima della rinomina il file di passaggio va **sul disco**, con
+//! `sync_all`: senza, dopo uno spegnimento brusco la rinomina può arrivare al
+//! disco prima dei byte, e il nome giusto punta a un file vuoto o a metà — che
+//! è esattamente il documento troncato che il file di passaggio esisteva per
+//! evitare.
+//!
+//! # Quanto si legge
+//!
+//! Al più [`TETTO_LETTURA`]. La cartella è condivisa con altri programmi e con
+//! altri dispositivi: un file sbagliato con il nome giusto — un video finito lì
+//! per errore, un disco di rete che mente sulla lunghezza — non deve poter
+//! riempire la memoria prima ancora che qualcuno provi a decomprimerlo.
 
 use std::fs;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use aether_domain::errors::{AppError, ErrorCode};
+
+/// Quanto può pesare un file letto da una cartella.
+///
+/// Sessantaquattro mebibyte: lo stesso tetto che il backup dà a un file
+/// compresso **una volta aperto**, quindi un documento compresso valido ci sta
+/// sempre con un margine enorme. Oltre, non è un documento di Aether.
+pub const TETTO_LETTURA: u64 = 64 * 1024 * 1024;
 
 /// Un file nel magazzino.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,7 +243,24 @@ impl Magazzino for Cartella {
 
     fn leggi(&self, id: &str) -> Result<Vec<u8>, AppError> {
         let percorso = self.percorso(id)?;
-        fs::read(&percorso).map_err(|err| Self::guasto(&percorso, &err, false))
+        let file = fs::File::open(&percorso).map_err(|err| Self::guasto(&percorso, &err, false))?;
+        // Si legge un byte oltre il tetto: è il solo modo di sapere che c'era
+        // di più senza fidarsi della lunghezza dichiarata dal filesystem, che
+        // su una condivisione di rete può mentire.
+        let mut byte = Vec::new();
+        file.take(TETTO_LETTURA.saturating_add(1))
+            .read_to_end(&mut byte)
+            .map_err(|err| Self::guasto(&percorso, &err, false))?;
+        if u64::try_from(byte.len()).unwrap_or(u64::MAX) > TETTO_LETTURA {
+            return Err(
+                AppError::new(ErrorCode::SyncRemoteCorrupt).with_cause(format!(
+                    "{} supera i {} MiB che un documento di sincronia può pesare",
+                    Self::testo(&percorso),
+                    TETTO_LETTURA >> 20
+                )),
+            );
+        }
+        Ok(byte)
     }
 
     fn scrivi(
@@ -241,7 +279,12 @@ impl Magazzino for Cartella {
         // volume, e fra `%TEMP%` e la cartella scelta dall'utente non c'è nessuna
         // garanzia che il volume sia quello.
         let passaggio = self.radice.join(format!("{nome}{PASSAGGIO}"));
-        fs::write(&passaggio, dati).map_err(|err| Self::guasto(&passaggio, &err, true))?;
+        scrivi_sul_disco(&passaggio, dati).map_err(|err| {
+            // Un file di passaggio scritto a metà non serve a nessuno, e
+            // `elenca` lo salterebbe comunque: via, se si riesce.
+            let _ = fs::remove_file(&passaggio);
+            Self::guasto(&passaggio, &err, true)
+        })?;
         fs::rename(&passaggio, &percorso).map_err(|err| {
             // Se la rinomina fallisce il file di passaggio resta lì, e la prossima
             // passata lo salta perché `elenca` non lo guarda. Toglierlo comunque è
@@ -280,6 +323,17 @@ impl Magazzino for Cartella {
 
 /// Il suffisso di un file mentre lo si sta scrivendo.
 const PASSAGGIO: &str = ".in-corso";
+
+/// Scrive un file e aspetta che sia sul disco, prima di restituire.
+///
+/// `sync_all` e non solo `write_all`: la rinomina che segue deve trovare i
+/// byte già sul disco — vedi la nota in testa al modulo. Costa qualche
+/// millisecondo per documento, una volta ogni cinque minuti.
+fn scrivi_sul_disco(percorso: &Path, dati: &[u8]) -> std::io::Result<()> {
+    let mut file = fs::File::create(percorso)?;
+    file.write_all(dati)?;
+    file.sync_all()
+}
 
 #[cfg(test)]
 mod prove {
@@ -407,6 +461,33 @@ mod prove {
             magazzino.leggi("uno.gz.guasto").expect("legge"),
             b"illeggibile"
         );
+    }
+
+    #[test]
+    fn un_file_oltre_il_tetto_non_si_legge() {
+        // Un file sbagliato con il nome giusto non deve riempire la memoria.
+        let (_dove, magazzino) = cartella();
+        fs::create_dir_all(magazzino.radice()).expect("cartella");
+        let grosso = fs::File::create(magazzino.radice().join("grosso.gz")).expect("file");
+        // Rado: la lunghezza c'è, i byte su disco quasi no.
+        grosso.set_len(TETTO_LETTURA + 10).expect("lunghezza");
+        drop(grosso);
+        let errore = magazzino.leggi("grosso.gz").expect_err("oltre il tetto");
+        assert_eq!(errore.code().kind().code(), "sync.remoteCorrupt");
+    }
+
+    #[test]
+    fn dopo_una_scrittura_non_resta_nessun_file_di_passaggio() {
+        let (_dove, magazzino) = cartella();
+        magazzino
+            .scrivi("uno.gz", None, "application/gzip", b"intero", "a")
+            .expect("scrive");
+        let rimasti: Vec<String> = fs::read_dir(magazzino.radice())
+            .expect("cartella")
+            .flatten()
+            .map(|voce| voce.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(rimasti, vec!["uno.gz".to_owned()]);
     }
 
     #[test]

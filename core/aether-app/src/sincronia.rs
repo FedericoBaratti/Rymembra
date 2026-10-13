@@ -178,20 +178,26 @@ pub fn allinea(
     dispositivo: &str,
     adesso_ms: i64,
 ) -> Result<Allineato, AppError> {
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura dell'allineamento", &err))?;
 
-    let mut fatto = Allineato {
-        ascolti: allinea_ascolti(&tx)?,
-        sequenze: allinea_sequenze(&tx, adesso_ms)?,
-        cartelle: 0,
-    };
-    fatto.cartelle = allinea_cartelle(&tx, adesso_ms)?;
+    let fatto = allinea_in(&tx, adesso_ms)?;
 
     tx.commit()
         .map_err(|err| db_error("chiusura dell'allineamento", &err))?;
     let _ = dispositivo;
+    Ok(fatto)
+}
+
+/// Le scritture di [`allinea`], dentro una transazione già aperta: la usa anche
+/// [`applica_se_ferma`].
+fn allinea_in(tx: &Transaction<'_>, adesso_ms: i64) -> Result<Allineato, AppError> {
+    let mut fatto = Allineato {
+        ascolti: allinea_ascolti(tx)?,
+        sequenze: allinea_sequenze(tx, adesso_ms)?,
+        cartelle: 0,
+    };
+    fatto.cartelle = allinea_cartelle(tx, adesso_ms)?;
     Ok(fatto)
 }
 
@@ -803,8 +809,7 @@ pub fn applica(
     fuso: &Fuso,
     adesso_ms: i64,
 ) -> Result<Cambiamenti, AppError> {
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura della sincronia", &err))?;
 
     let cambiamenti = applica_in(&tx, fuso, adesso_ms)?;
@@ -812,6 +817,55 @@ pub fn applica(
     tx.commit()
         .map_err(|err| db_error("chiusura della sincronia", &err))?;
     Ok(cambiamenti)
+}
+
+/// [`applica`], ma solo se playlist e cartelle sono ancora quelle di `partenza`.
+///
+/// Torna `None`, senza aver scritto niente, se sono cambiate.
+///
+/// # Perché
+///
+/// Fra la lettura del documento ([`contenuto`]) e l'applicazione la passata sta
+/// in rete anche due minuti, senza lucchetto. Quasi tutto quel che [`applica`]
+/// scrive si fonde con quel che trova — gli ascolti col massimo, voti, cuori e
+/// posizioni con la loro data — e un cuore messo in quei due minuti sopravvive
+/// da sé. Due cose no: l'appartenenza a una playlist si svuota e si riscrive
+/// dalla sequenza fusa, e l'elenco delle cartelle si rifà dalla mappa. Un brano
+/// aggiunto a una playlist, o una cartella aggiunta, in quei due minuti non
+/// erano nel documento, quindi non erano nel fuso, e sparivano: in silenzio e
+/// per sempre, perché la sequenza riscritta non li ricordava più.
+///
+/// Qui, nella stessa transazione che scriverà, si rifà l'allineamento e si
+/// rilegge quella parte del documento. Se è cambiata non si scrive niente —
+/// nemmeno l'allineamento, che rifarà la passata dopo con la sua ora. Non si
+/// perde niente nemmeno così: i documenti degli altri restano nella memoria
+/// della passata, e la passata dopo fonde di nuovo partendo dalla libreria
+/// vera.
+///
+/// # Errori
+///
+/// `db.queryFailed` se una lettura o una scrittura fallisce.
+pub fn applica_se_ferma(
+    connection: &mut Connection,
+    partenza: &Contenuto,
+    fuso: &Fuso,
+    adesso_ms: i64,
+) -> Result<Option<Cambiamenti>, AppError> {
+    let tx = crate::library::transazione_di_scrittura(connection)
+        .map_err(|err| db_error("apertura della sincronia", &err))?;
+
+    allinea_in(&tx, adesso_ms)?;
+    let cartelle: BTreeMap<String, Interruttore> =
+        settings::read_json(&tx, CHIAVE_CARTELLE_SINCRONIA)?.unwrap_or_default();
+    if cartelle != partenza.cartelle || playlist(&tx)? != partenza.playlist {
+        // `tx` cade senza `commit`: si torna indietro, allineamento compreso.
+        return Ok(None);
+    }
+
+    let cambiamenti = applica_in(&tx, fuso, adesso_ms)?;
+    tx.commit()
+        .map_err(|err| db_error("chiusura della sincronia", &err))?;
+    Ok(Some(cambiamenti))
 }
 
 /// Le stesse scritture di [`applica`], dentro una transazione già aperta.
@@ -1727,6 +1781,103 @@ mod prove {
             .expect("cartelle")
             .unwrap_or_default();
         assert_eq!(cartelle, vec!["C:\\Musica".to_owned()]);
+    }
+
+    /// Il documento di qui, allineato con «sera» = `a`, e il fuso con un altro
+    /// dispositivo che ha messo `c` in coda.
+    fn passata_su_sera(connection: &mut Connection) -> (Contenuto, Fuso) {
+        playlist_con(connection, "sera", &[1]);
+        allinea(connection, "portatile", 1_000).expect("allineamento");
+        let mio = contenuto(connection, "portatile", BTreeMap::new(), BTreeMap::new())
+            .expect("contenuto");
+        let mut suo = mio.clone();
+        if let Some(playlist) = suo.playlist.get_mut("sera") {
+            playlist.sequenza.accoda("telefono", "c");
+            playlist.at = 1_500;
+        }
+        let fuso = fondi(&[
+            Documento::nuovo("portatile", mio.clone(), 2_000),
+            Documento::nuovo("telefono", suo, 2_000),
+        ]);
+        (mio, fuso)
+    }
+
+    #[test]
+    fn senza_cambiamenti_in_mezzo_si_applica_come_prima() {
+        let mut connection = libreria();
+        let (mio, fuso) = passata_su_sera(&mut connection);
+        let esito = applica_se_ferma(&mut connection, &mio, &fuso, 2_000).expect("applicazione");
+        assert!(esito.is_some_and(|cambiamenti| cambiamenti.playlist == 1));
+        assert_eq!(ordine(&connection, "sera"), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn un_brano_aggiunto_durante_la_passata_non_si_perde() {
+        let mut connection = libreria();
+        let (mio, fuso) = passata_su_sera(&mut connection);
+
+        // Mentre la passata è in rete, di qua si aggiunge `b` per la via normale.
+        let id: i64 = connection
+            .query_row(
+                "SELECT id FROM playlists WHERE playlist_key = 'sera'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("playlist");
+        connection
+            .execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, 2, 1)",
+                [id],
+            )
+            .expect("aggiunta locale");
+
+        let esito = applica_se_ferma(&mut connection, &mio, &fuso, 2_000).expect("applicazione");
+        assert_eq!(esito, None, "la libreria è cambiata: non si scrive");
+        assert_eq!(
+            ordine(&connection, "sera"),
+            vec!["a", "b"],
+            "l'aggiunta locale resta dov'è"
+        );
+    }
+
+    #[test]
+    fn una_cartella_aggiunta_durante_la_passata_non_si_perde() {
+        let mut connection = libreria();
+        settings::write_json(&connection, CHIAVE_CARTELLE, &vec!["C:\\Musica"]).expect("cartelle");
+        allinea(&mut connection, "portatile", 1_000).expect("allineamento");
+        let mio = contenuto(&connection, "portatile", BTreeMap::new(), BTreeMap::new())
+            .expect("contenuto");
+        let mut suo = Contenuto::default();
+        suo.cartelle.insert(
+            "E:\\Concerti".to_owned(),
+            Interruttore {
+                on: true,
+                at: 1_500,
+            },
+        );
+        let fuso = fondi(&[
+            Documento::nuovo("portatile", mio.clone(), 2_000),
+            Documento::nuovo("telefono", suo, 2_000),
+        ]);
+
+        // Intanto, di qua, si aggiunge una cartella.
+        settings::write_json(
+            &connection,
+            CHIAVE_CARTELLE,
+            &vec!["C:\\Musica", "D:\\Nuova"],
+        )
+        .expect("cartelle");
+
+        let esito = applica_se_ferma(&mut connection, &mio, &fuso, 2_000).expect("applicazione");
+        assert_eq!(esito, None);
+        let cartelle: Vec<String> = settings::read_json(&connection, CHIAVE_CARTELLE)
+            .expect("cartelle")
+            .unwrap_or_default();
+        assert_eq!(
+            cartelle,
+            vec!["C:\\Musica".to_owned(), "D:\\Nuova".to_owned()],
+            "la cartella nuova resta: quella dell'altro arriva alla passata dopo"
+        );
     }
 
     #[test]

@@ -54,7 +54,7 @@
  * cioè stringere la barra laterale è la via per riavere il cursore, che è il
  * gesto che il commento del foglio descrive già.
  */
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 
 /**
  * Sotto questa larghezza di finestra la barra laterale si stringe da sé.
@@ -68,9 +68,11 @@ import { useEffect, useState } from "react";
  */
 const LARGHEZZA_NAV_LARGA = 1000;
 
+import { useDati } from "../dati";
+import { numero } from "../formato";
 import type { Playlist } from "../ipc";
 import { Icona, type NomeIcona } from "./Icone";
-import { t } from "../lingue";
+import { t, useLingua } from "../lingue";
 
 /** Dove si può andare. */
 export type Vista =
@@ -125,7 +127,7 @@ function destinazioni(): readonly (readonly [Vista, string, NomeIcona])[] {
   ];
 }
 
-export function Navigazione({
+export const Navigazione = memo(function Navigazione({
   vista,
   playlistAperta,
   inLibreria,
@@ -167,28 +169,36 @@ export function Navigazione({
   /** Apre la pagina delle donazioni nel browser di sistema. */
   onDona: () => void;
 }) {
+  // Sotto `memo` (vedi «I widget sotto `memo`» in `Impaginazione.tsx`): si
+  // ridisegna per le sue prop, e per la lingua, che non è una prop — senza
+  // l'iscrizione i testi resterebbero quelli del primo disegno.
+  useLingua();
   // La finestra conta già all'avvio: aprirsi larga su una finestra da 880 e
   // stringersi al primo `resize` sarebbe un traboccamento che si vede e poi si
   // corregge da solo, cioè la stessa cosa di prima con un fotogramma in più.
+  const { misura, anteprima } = useDati();
   const [stretta, setStretta] = useState(
-    () => !larga || window.innerWidth < LARGHEZZA_NAV_LARGA,
+    () => !larga || misura().larghezza < LARGHEZZA_NAV_LARGA,
   );
 
-  // Vedi la nota del modulo: si stringe da sé, non si riallarga da sé.
+  // Vedi la nota del modulo: si stringe da sé, non si riallarga da sé. Non
+  // nell'anteprima dello Studio, dove la finestra che si ridimensiona non è
+  // quella che la barra finge di abitare.
   useEffect(() => {
+    if (anteprima) return;
     const guarda = () => {
-      if (window.innerWidth < LARGHEZZA_NAV_LARGA) setStretta(true);
+      if (misura().larghezza < LARGHEZZA_NAV_LARGA) setStretta(true);
     };
     window.addEventListener("resize", guarda);
     return () => window.removeEventListener("resize", guarda);
-  }, []);
+  }, [anteprima, misura]);
 
   return (
     // Niente `app-shell`: quella classe dice «il contenitore di tutta la
     // finestra», e la porta la zona radice dello scafale. Averla qui e là
     // voleva dire che una skin che la ridipingeva colorava due cose.
     <nav
-      className={inFondo ? "navigazione bottom-nav" : "navigazione"}
+      className={inFondo ? "navigazione bottom-nav" : "navigazione sidebar"}
       /* L'ancora del giro guidato. Sta sul `nav` e non sulle voci: quel che il
          primo passo racconta è «da qui si va da qualche parte», e illuminare
          una pastiglia sola direbbe un'altra cosa. La porta anche la barra in
@@ -196,12 +206,15 @@ export function Navigazione({
          esiste una alla volta, e `Giro` prende comunque quella disegnata. */
       data-giro="navigazione"
       data-stretta={(!inFondo && stretta) || undefined}
+      // «Aperta» per una skin: la barra laterale distesa, con le etichette.
+      // Stretta resta chiusa, e in fondo non si apre né si chiude.
+      data-open={(!inFondo && !stretta) || undefined}
       data-fondo={inFondo || undefined}
       aria-label={t("nav.aria")}
     >
       {/* In fondo il marchio non ci sta e non serve: la finestra è già aperta,
           e chi la guarda sa in quale programma si trova. */}
-      <div className="marchio" hidden={inFondo}>
+      <div className="marchio brand" hidden={inFondo}>
         <span className="anello" aria-hidden="true">
           <Icona nome="i-mark" dim={20} />
         </span>
@@ -240,7 +253,10 @@ export function Navigazione({
                   conta, e un trattino lì direbbe «nessun risultato» a chi non ha
                   ancora cercato niente. */}
               {chiave !== "home" && chiave !== "esplora" && (
-                <span className="conteggio">{conteggi[chiave] ?? "—"}</span>
+                <span className="conteggio nav-count">
+                  {/* Con i separatori della lingua: «18.534», non «18534». */}
+                  {conteggi[chiave] === undefined ? "—" : numero(conteggi[chiave])}
+                </span>
               )}
             </button>
           );
@@ -250,7 +266,7 @@ export function Navigazione({
       {/* `hidden` in fondo, quindi senza rettangolo: il passo delle playlist
           si salta da sé sulla barra bassa, dove le playlist non ci sono. */}
       <div className="gruppo" hidden={inFondo} data-giro="playlist">
-        <div className="titolo-gruppo">
+        <div className="titolo-gruppo nav-section-title">
           <span>{t("playlist.group")}</span>
           {/* Tre tasti e non un menù: sono tre cose che si fanno di rado ma
               che, quando si fanno, si sanno già — e un menù a tendina per tre
@@ -316,8 +332,11 @@ export function Navigazione({
                 <span className="iniziale" aria-hidden="true">
                   {[...p.name.trim()][0]?.toLocaleUpperCase() ?? "·"}
                 </span>
-                <span className="etichetta">{p.name}</span>
-                <span className="conteggio">{p.tracks}</span>
+                {/* `dir="auto"`: il nome di una playlist può essere scritto da destra. */}
+                <span className="etichetta" dir="auto">
+                  {p.name}
+                </span>
+                <span className="conteggio nav-count">{numero(p.tracks)}</span>
               </button>
             );
           })
@@ -359,4 +378,4 @@ export function Navigazione({
       </div>
     </nav>
   );
-}
+});

@@ -36,7 +36,9 @@ use aether_domain::keys::PlaylistKey;
 use aether_domain::regole::Insieme;
 use rusqlite::{Connection, Transaction};
 
-use crate::library::{COLONNE_BRANO, TrackSummary, db_error, now_ms, track_from_row};
+use crate::library::{
+    COLONNE_BRANO, TrackSummary, db_error, now_ms, track_from_row, transazione_di_scrittura,
+};
 
 /// Una playlist, come la mostra un elenco.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -60,20 +62,79 @@ pub struct PlaylistSummary {
     pub updated_at: i64,
 }
 
-/// Le colonne di una playlist, con i suoi aggregati.
+/// Quanto può essere lungo il nome di una playlist.
+///
+/// Duecento caratteri sono tre volte il nome più lungo che si scriva davvero —
+/// una data, un posto e un'occasione ci stanno con il doppio di margine — e
+/// molto meno di quel che ci si incolla dentro per sbaglio. Il tetto è in
+/// caratteri e non in byte: contare i byte darebbe a un nome in giapponese un
+/// terzo dello spazio di uno in inglese.
+pub const NOME_MASSIMO: usize = 200;
+
+/// Il nome di una playlist che arriva **da fuori**, ridotto a [`NOME_MASSIMO`].
+///
+/// # Perché due regole per la stessa colonna
+///
+/// Perché sono due situazioni diverse. Chi **scrive** un nome e ne scrive
+/// cinquemila caratteri sta incollando per sbaglio, e il rifiuto di
+/// [`nome_utilizzabile`] glielo dice mentre può ancora rimediare. Chi
+/// **importa** non ha scritto niente: il titolo di un item dell'Internet
+/// Archive, la riga `#PLAYLIST` di un M3U, il nome di una playlist di Spotify
+/// arrivano come sono, e un concerto con la scaletta intera nel titolo non è un
+/// errore di nessuno. Il tetto della 3.0 li rifiutava tutti, e con loro
+/// l'importazione intera — centinaia di brani ritrovati persi per un titolo.
+///
+/// Quindi qui si **tronca**, su un confine di carattere (si conta in `char`,
+/// come il tetto), e si mette un'ellissi in fondo perché chi guarda veda che il
+/// nome continuava. Il risultato sta nel tetto **compresa** l'ellissi, e passa
+/// da [`nome_utilizzabile`] senza eccezioni.
+///
+/// Gli spazi prima dell'ellissi si tolgono: «Live at the…» e non «Live at
+/// the …», che è il taglio che una persona farebbe a mano.
+#[must_use]
+pub(crate) fn nome_da_importare(titolo: &str) -> String {
+    let titolo = titolo.trim();
+    if titolo.chars().count() <= NOME_MASSIMO {
+        return titolo.to_owned();
+    }
+    let testa: String = titolo
+        .chars()
+        .take(NOME_MASSIMO.saturating_sub(1))
+        .collect();
+    format!("{}…", testa.trim_end())
+}
+
+/// Le colonne di una playlist, con i suoi aggregati, e dopo la giunzione quel
+/// che si vuole: un `WHERE` per una playlist sola, niente per tutte.
 ///
 /// `LEFT JOIN` e non `JOIN`: una playlist appena creata non ha righe, e con una
 /// giunzione interna sparirebbe dall'elenco esattamente nel momento in cui
 /// l'utente la sta cercando per riempirla.
-const ELENCO: &str = "SELECT p.id, p.playlist_key, p.name, p.description, p.is_smart,
-            p.updated_at,
-            COUNT(pt.track_id)               AS brani,
-            COALESCE(SUM(t.duration_ms), 0)  AS durata
-     FROM playlists p
-     LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
-     LEFT JOIN tracks t           ON t.id = pt.track_id
-     GROUP BY p.id
-     ORDER BY p.name COLLATE NOCASE";
+///
+/// Una macro e non una costante perché le query sono due — tutte, una — e due
+/// copie dello stesso `SELECT` sono due definizioni di «quanto dura una
+/// playlist» che prima o poi divergono.
+macro_rules! riepilogo {
+    ($dove:literal) => {
+        concat!(
+            "SELECT p.id, p.playlist_key, p.name, p.description, p.is_smart,
+                    p.updated_at,
+                    COUNT(pt.track_id)               AS brani,
+                    COALESCE(SUM(t.duration_ms), 0)  AS durata
+             FROM playlists p
+             LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
+             LEFT JOIN tracks t           ON t.id = pt.track_id ",
+            $dove,
+            " GROUP BY p.id"
+        )
+    };
+}
+
+/// Tutte le playlist, in ordine di nome.
+const ELENCO: &str = concat!(riepilogo!(""), " ORDER BY p.name COLLATE NOCASE");
+
+/// Una playlist sola, per identificativo.
+const UNA: &str = riepilogo!("WHERE p.id = ?1");
 
 fn summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaylistSummary> {
     Ok(PlaylistSummary {
@@ -113,16 +174,33 @@ pub fn list(connection: &Connection) -> Result<Vec<PlaylistSummary>, AppError> {
     // migliaia, e questo elenco si chiede quando si apre la barra laterale.
     // L'alternativa — tenere i conteggi in una colonna — sarebbe una copia da
     // aggiornare a ogni ascolto e a ogni scansione, cioè il motivo per cui i
-    // brani di una playlist intelligente non si materializzano.
+    // brani di una playlist intelligente non si materializzano. Quel che si fa
+    // invece è ricordarli finché la libreria non cambia: vedi
+    // `smart::conteggi_ricordati`.
     let adesso = now_ms();
     for riga in elenco.iter_mut().filter(|p| p.is_smart) {
-        let insieme = crate::smart::da_json(&regole_grezze(connection, riga.id)?);
-        if let Ok((brani, durata)) = crate::smart::conteggi(connection, &insieme, adesso) {
-            riga.tracks = brani;
-            riga.duration_ms = durata;
-        }
+        conta_l_intelligente(connection, riga, adesso)?;
     }
     Ok(elenco)
+}
+
+/// I numeri di una playlist intelligente, che la giunzione conta zero.
+///
+/// Un conteggio che fallisce lascia lo zero invece di far fallire l'elenco: una
+/// regola che il database rifiuta riguarda quella playlist, e le altre devono
+/// potersi aprire lo stesso. Le regole che non si leggono, invece, sono un
+/// guasto del database e salgono.
+fn conta_l_intelligente(
+    connection: &Connection,
+    riga: &mut PlaylistSummary,
+    adesso: i64,
+) -> Result<(), AppError> {
+    let insieme = crate::smart::da_json(&regole_grezze(connection, riga.id)?);
+    if let Ok((brani, durata)) = crate::smart::conteggi_ricordati(connection, &insieme, adesso) {
+        riga.tracks = brani;
+        riga.duration_ms = durata;
+    }
+    Ok(())
 }
 
 /// La colonna `rules` così com'è, senza interpretarla.
@@ -136,18 +214,30 @@ fn regole_grezze(connection: &Connection, id: i64) -> Result<String, AppError> {
 }
 
 /// Una playlist sola, dopo averla toccata.
+///
+/// # Solo lei
+///
+/// Fino alla 2.4 si rileggeva l'elenco intero e se ne teneva una: ogni brano
+/// trascinato in una playlist rifaceva i conteggi di **tutte** le
+/// intelligenti, cioè una lettura di `tracks` per ognuna, per restituire i
+/// numeri di una playlist a mano. Adesso la query è la stessa dell'elenco con
+/// un `WHERE` — la stessa macro, quindi la stessa definizione di «quanto dura
+/// una playlist» — e un'intelligente conta soltanto sé stessa.
 fn read_one(connection: &Connection, id: i64) -> Result<PlaylistSummary, AppError> {
-    // Si rilegge dall'elenco invece di comporre il riepilogo a mano: gli
-    // aggregati vengono da una query sola, e ricalcolarli qui vorrebbe dire
-    // avere due definizioni di «quanto dura una playlist».
-    list(connection)?
-        .into_iter()
-        .find(|p| p.id == id)
-        .ok_or_else(|| {
-            AppError::new(ErrorCode::LibraryPlaylistNotFound {
-                playlist_id: Some(id),
-            })
-        })
+    use rusqlite::OptionalExtension as _;
+    let riga = connection
+        .prepare_cached(UNA)
+        .and_then(|mut statement| statement.query_row([id], summary_from_row).optional())
+        .map_err(|err| db_error("lettura di una playlist", &err))?;
+    let Some(mut riga) = riga else {
+        return Err(AppError::new(ErrorCode::LibraryPlaylistNotFound {
+            playlist_id: Some(id),
+        }));
+    };
+    if riga.is_smart {
+        conta_l_intelligente(connection, &mut riga, now_ms())?;
+    }
+    Ok(riga)
 }
 
 /// I brani di una playlist, che sia a mano o automatica.
@@ -325,14 +415,44 @@ pub fn create(connection: &Connection, name: &str) -> Result<PlaylistSummary, Ap
 /// Accetta un `&Connection`, che una `Transaction` è già per deref: così il
 /// controllo del nome e il riconoscimento del conflitto restano scritti una
 /// volta sola.
-pub(crate) fn crea_riga(connection: &Connection, name: &str) -> Result<i64, AppError> {
-    let name = name.trim();
-    let key = PlaylistKey::compute(Some(name));
-    if key.as_str().is_empty() {
+/// Il nome di una playlist si può usare?
+///
+/// Due condizioni, in un posto solo perché sono le stesse per chi crea e per
+/// chi rinomina: prima erano scritte due volte, e la seconda era scritta zero.
+///
+/// **Identifica qualcosa.** La chiave normalizzata non può essere vuota, o due
+/// playlist di sola punteggiatura sarebbero la stessa riga.
+///
+/// **Sta in una riga.** Il nome finisce in una voce della colonna, in un menù e
+/// in un titolo, e tutti e tre sono righe. Chi ci incolla un testo non sta
+/// dando un nome: il database lo accettava, e da lì in poi la colonna aveva una
+/// voce alta una pagina che nessuna larghezza rimetteva a posto. Vedi
+/// [`NOME_MASSIMO`].
+fn nome_utilizzabile(name: &str) -> Result<(), AppError> {
+    if PlaylistKey::compute(Some(name)).as_str().is_empty() {
         return Err(AppError::new(ErrorCode::LibraryPlaylistNameInvalid {
             name: name.to_owned(),
         }));
     }
+    let quanti = name.chars().count();
+    if quanti > NOME_MASSIMO {
+        return Err(AppError::new(ErrorCode::LibraryPlaylistNameInvalid {
+            // Troncato: il nome viaggia dentro il codice d'errore, e rimetterci
+            // dentro i cinquemila caratteri appena rifiutati vorrebbe dire
+            // farli passare lo stesso, per un'altra porta.
+            name: name.chars().take(NOME_MASSIMO).collect(),
+        })
+        .with_cause(format!(
+            "il nome è di {quanti} caratteri, e il tetto è {NOME_MASSIMO}"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn crea_riga(connection: &Connection, name: &str) -> Result<i64, AppError> {
+    let name = name.trim();
+    nome_utilizzabile(name)?;
+    let key = PlaylistKey::compute(Some(name));
     let adesso = now_ms();
     let esito = connection.execute(
         "INSERT INTO playlists (playlist_key, name, created_at, updated_at, is_smart)
@@ -457,12 +577,8 @@ pub fn set_rules(
 /// `library.playlistExists`, `db.queryFailed`.
 pub fn rename(connection: &Connection, id: i64, name: &str) -> Result<PlaylistSummary, AppError> {
     let name = name.trim();
+    nome_utilizzabile(name)?;
     let key = PlaylistKey::compute(Some(name));
-    if key.as_str().is_empty() {
-        return Err(AppError::new(ErrorCode::LibraryPlaylistNameInvalid {
-            name: name.to_owned(),
-        }));
-    }
     let esito = connection.execute(
         "UPDATE playlists SET playlist_key = ?2, name = ?3, updated_at = ?4 WHERE id = ?1",
         rusqlite::params![id, key.as_str(), name, now_ms()],
@@ -488,85 +604,484 @@ pub fn rename(connection: &Connection, id: i64, name: &str) -> Result<PlaylistSu
 /// Le righe di `playlist_tracks` se ne vanno da sole: la chiave esterna è
 /// dichiarata `ON DELETE CASCADE`.
 ///
+/// È [`cancella`] senza la fotografia, per chi non ha un «Annulla» da offrire.
+///
 /// # Errori
 ///
 /// `library.playlistNotFound`, `db.queryFailed`.
 pub fn delete(connection: &mut Connection, id: i64) -> Result<(), AppError> {
-    let tx = connection
-        .transaction()
+    cancella(connection, id).map(|_| ())
+}
+
+/// Quel che serve per rimettere al suo posto una playlist appena cancellata.
+///
+/// # Perché una fotografia e non una cancellazione rimandata
+///
+/// La strada ovvia per un «Annulla» sarebbe non cancellare finché l'avviso è a
+/// schermo, e cancellare davvero alla scadenza. Ha un buco proprio dove fa più
+/// male: se in quei secondi l'applicazione si chiude, o cade, la scadenza non
+/// arriva mai, e la playlist che l'utente ha visto sparire **torna** al
+/// prossimo avvio — e con lei, alla prima sincronizzazione, sugli altri
+/// dispositivi. Per evitarlo servirebbe un registro delle cancellazioni in
+/// attesa che sopravviva alla chiusura, cioè una seconda verità sullo stato
+/// delle playlist da tenere allineata con la prima.
+///
+/// Qui invece si cancella **subito**, nella stessa transazione di sempre, e si
+/// tiene in mano quel che serve per tornare indietro: è la forma
+/// dell'«Annulla» della coda sostituita (`riproduzione::coda`), che sostituisce
+/// e intanto ricorda la coda di prima. Una chiusura nel mezzo perde soltanto
+/// la possibilità di annullare, che è quel che chi chiude si aspetta; niente
+/// resuscita, e niente si perde finché l'avviso c'è.
+///
+/// # Cosa c'è dentro
+///
+/// Tutto quel che la cancellazione porta via, e soltanto quello: la riga di
+/// `playlists` colonna per colonna — letta per nome e non per elenco scritto
+/// qui, così una colonna aggiunta da una migrazione futura torna anche lei —,
+/// i brani nell'ordine in cui stavano, i posti tenuti in `playlist_orfane` per
+/// i brani usciti dalla libreria (vanno via in cascata), i desiderati che
+/// aspettavano di entrare in questa playlist (perdono l'aggancio con
+/// `ON DELETE SET NULL`), e la lapide che c'era già prima per lo stesso nome.
+#[derive(Debug, Clone)]
+pub struct Cancellata {
+    /// L'identificativo che aveva.
+    id: i64,
+    /// La chiave, per la lapide.
+    chiave: String,
+    /// Il nome, per dire quale playlist è stata cancellata.
+    nome: String,
+    /// La riga di `playlists`, colonna per colonna.
+    riga: Vec<(String, rusqlite::types::Value)>,
+    /// I brani, nell'ordine in cui stavano; ripetuti se ripetuti.
+    brani: Vec<i64>,
+    /// I posti tenuti per chi è uscito dalla libreria: chiave e posizione.
+    posti_orfani: Vec<(String, i64)>,
+    /// I desiderati che sarebbero entrati qui.
+    desiderati: Vec<i64>,
+    /// La data della lapide che c'era già per questa chiave, se c'era.
+    lapide_di_prima: Option<i64>,
+}
+
+impl Cancellata {
+    /// Il nome della playlist, com'era scritto.
+    #[must_use]
+    pub fn nome(&self) -> &str {
+        &self.nome
+    }
+
+    /// L'identificativo che aveva.
+    #[must_use]
+    pub fn id(&self) -> i64 {
+        self.id
+    }
+}
+
+/// Cancella una playlist e restituisce quel che serve a rimetterla.
+///
+/// Fa esattamente quel che faceva [`delete`] — la riga se ne va, le sue righe
+/// in cascata, la lapide resta — e prima di farlo, nella stessa transazione,
+/// fotografa quel che sta per andarsene. Vedi [`Cancellata`].
+///
+/// # Errori
+///
+/// `library.playlistNotFound`, `db.queryFailed`.
+pub fn cancella(connection: &mut Connection, id: i64) -> Result<Cancellata, AppError> {
+    // `Immediate` in questa e nelle tre qui sotto: leggono e poi scrivono, e
+    // una transazione che parte in lettura e passa alla scrittura non aspetta
+    // chi scrive nel frattempo — con WAL fallisce subito con
+    // `SQLITE_BUSY_SNAPSHOT`, senza passare dall'attesa di cinque secondi.
+    // Vedi [`crate::library::transazione_di_scrittura`].
+    let tx = transazione_di_scrittura(connection)
         .map_err(|err| db_error("cancellazione di una playlist", &err))?;
 
-    let key: Option<String> = tx
-        .query_row(
-            "SELECT playlist_key FROM playlists WHERE id = ?1",
-            [id],
-            |row| row.get(0),
-        )
-        .or_else(|err| match err {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(other),
-        })
-        .map_err(|err| db_error("cancellazione di una playlist", &err))?;
-    let Some(key) = key else {
-        return Err(AppError::new(ErrorCode::LibraryPlaylistNotFound {
-            playlist_id: Some(id),
-        }));
-    };
+    let fotografia = fotografa(&tx, id)?;
 
     tx.execute("DELETE FROM playlists WHERE id = ?1", [id])
         .map_err(|err| db_error("cancellazione di una playlist", &err))?;
     tx.execute(
         "INSERT INTO sync_tombstones (kind, key, deleted_at) VALUES ('playlist', ?1, ?2)
          ON CONFLICT(kind, key) DO UPDATE SET deleted_at = MAX(sync_tombstones.deleted_at, excluded.deleted_at)",
-        rusqlite::params![key, now_ms()],
+        rusqlite::params![fotografia.chiave, now_ms()],
     )
     .map_err(|err| db_error("lapide di una playlist", &err))?;
 
     tx.commit()
-        .map_err(|err| db_error("cancellazione di una playlist", &err))
+        .map_err(|err| db_error("cancellazione di una playlist", &err))?;
+    Ok(fotografia)
+}
+
+/// Legge tutto quel che la cancellazione di `id` porterebbe via.
+fn fotografa(tx: &Transaction<'_>, id: i64) -> Result<Cancellata, AppError> {
+    use rusqlite::OptionalExtension as _;
+    let guasto = |err: rusqlite::Error| db_error("fotografia di una playlist", &err);
+
+    let riga: Option<Vec<(String, rusqlite::types::Value)>> = {
+        let mut statement = tx
+            .prepare("SELECT * FROM playlists WHERE id = ?1")
+            .map_err(guasto)?;
+        let colonne: Vec<String> = statement
+            .column_names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        statement
+            .query_row([id], |row| {
+                colonne
+                    .iter()
+                    .enumerate()
+                    .map(|(indice, colonna)| Ok((colonna.clone(), row.get(indice)?)))
+                    .collect()
+            })
+            .optional()
+            .map_err(guasto)?
+    };
+    let Some(riga) = riga else {
+        return Err(AppError::new(ErrorCode::LibraryPlaylistNotFound {
+            playlist_id: Some(id),
+        }));
+    };
+    let testo = |nome: &str| {
+        riga.iter()
+            .find(|(colonna, _)| colonna == nome)
+            .and_then(|(_, valore)| match valore {
+                rusqlite::types::Value::Text(testo) => Some(testo.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    let chiave = testo("playlist_key");
+    let nome = testo("name");
+
+    let brani = ordine_attuale(tx, id)?;
+    let posti_orfani = {
+        let mut statement = tx
+            .prepare("SELECT content_key, position FROM playlist_orfane WHERE playlist_id = ?1")
+            .map_err(guasto)?;
+        statement
+            .query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(guasto)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(guasto)?
+    };
+    let desiderati = {
+        let mut statement = tx
+            .prepare("SELECT id FROM desiderati WHERE playlist_id = ?1")
+            .map_err(guasto)?;
+        statement
+            .query_map([id], |row| row.get(0))
+            .map_err(guasto)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(guasto)?
+    };
+    let lapide_di_prima = tx
+        .query_row(
+            "SELECT deleted_at FROM sync_tombstones WHERE kind = 'playlist' AND key = ?1",
+            [&chiave],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(guasto)?;
+
+    Ok(Cancellata {
+        id,
+        chiave,
+        nome,
+        riga,
+        brani,
+        posti_orfani,
+        desiderati,
+        lapide_di_prima,
+    })
+}
+
+/// Rimette una playlist cancellata com'era, e la restituisce.
+///
+/// Tutto in una transazione: o torna intera, o non torna niente.
+///
+/// # Com'era, tranne due cose
+///
+/// **La data di modifica è adesso.** Non è un dettaglio: nel frattempo la
+/// lapide può essere già partita verso Drive o verso l'altro dispositivo, e la
+/// fusione (`aether_sync::fusione`) tiene una playlist cancellata solo se è
+/// stata toccata **dopo** la lapide. Con la data di prima la playlist tornerebbe
+/// qui e sparirebbe di nuovo alla prima sincronizzazione; con quella di adesso è
+/// «rifatta dopo la cancellazione», che è esattamente quel che è successo. La
+/// lapide di qui torna invece com'era: tolta, o con la data che aveva già.
+///
+/// **I brani usciti dalla libreria nel frattempo restano fuori**, e le
+/// posizioni si ricompattano: la chiave esterna rifiuterebbe la loro riga, e un
+/// buco nelle posizioni farebbe puntare la finestra al brano sbagliato (vedi la
+/// nota in testa al modulo).
+///
+/// L'identificativo è quello di prima se è ancora libero. Se nel frattempo
+/// l'ha preso una playlist nuova — SQLite riusa il più alto quando lo si libera
+/// — se ne prende uno nuovo, e le righe vanno sotto quello.
+///
+/// # Errori
+///
+/// `library.playlistExists` se nel frattempo è nata un'altra playlist con lo
+/// stesso nome: la chiave è il nome, e due righe non possono averla. Non si
+/// tocca niente. `db.*` se la scrittura fallisce.
+pub fn ripristina(
+    connection: &mut Connection,
+    cancellata: &Cancellata,
+) -> Result<PlaylistSummary, AppError> {
+    let guasto = |err: rusqlite::Error| db_error("ripristino di una playlist", &err);
+    let tx = transazione_di_scrittura(connection).map_err(guasto)?;
+
+    let nome_preso: bool = tx
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM playlists WHERE playlist_key = ?1)",
+            [&cancellata.chiave],
+            |row| row.get(0),
+        )
+        .map_err(guasto)?;
+    if nome_preso {
+        return Err(AppError::new(ErrorCode::LibraryPlaylistExists {
+            name: cancellata.nome.clone(),
+        }));
+    }
+    let id_libero: bool = tx
+        .query_row(
+            "SELECT NOT EXISTS (SELECT 1 FROM playlists WHERE id = ?1)",
+            [cancellata.id],
+            |row| row.get(0),
+        )
+        .map_err(guasto)?;
+
+    // I nomi delle colonne vengono dal database stesso, non da chi chiama:
+    // tra virgolette lo stesso, perché `name` e `rules` sono parole che SQLite
+    // conosce.
+    let adesso = now_ms();
+    let colonne: Vec<&(String, rusqlite::types::Value)> = cancellata
+        .riga
+        .iter()
+        .filter(|(colonna, _)| id_libero || colonna != "id")
+        .collect();
+    let nomi = colonne
+        .iter()
+        .map(|(colonna, _)| format!("\"{}\"", colonna.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let segnaposti = (1..=colonne.len())
+        .map(|indice| format!("?{indice}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let valori = colonne.iter().map(|(colonna, valore)| {
+        if colonna == "updated_at" {
+            rusqlite::types::Value::Integer(adesso)
+        } else {
+            valore.clone()
+        }
+    });
+    tx.execute(
+        &format!("INSERT INTO playlists ({nomi}) VALUES ({segnaposti})"),
+        rusqlite::params_from_iter(valori),
+    )
+    .map_err(guasto)?;
+    let id = if id_libero {
+        cancellata.id
+    } else {
+        tx.last_insert_rowid()
+    };
+
+    let ancora: Vec<i64> = {
+        let mut esiste = tx
+            .prepare("SELECT 1 FROM tracks WHERE id = ?1")
+            .map_err(guasto)?;
+        let mut ancora = Vec::with_capacity(cancellata.brani.len());
+        for track_id in &cancellata.brani {
+            if esiste.exists([track_id]).map_err(guasto)? {
+                ancora.push(*track_id);
+            }
+        }
+        ancora
+    };
+    riscrivi_ordine(&tx, id, &ancora)?;
+
+    for (content_key, posizione) in &cancellata.posti_orfani {
+        tx.execute(
+            "INSERT OR IGNORE INTO playlist_orfane (content_key, playlist_id, position)
+             SELECT ?1, ?2, ?3
+             WHERE EXISTS (SELECT 1 FROM brani_orfani WHERE content_key = ?1)",
+            rusqlite::params![content_key, id, posizione],
+        )
+        .map_err(guasto)?;
+    }
+    for desiderato in &cancellata.desiderati {
+        // Solo se nessuno l'ha riagganciato nel frattempo a un'altra playlist.
+        tx.execute(
+            "UPDATE desiderati SET playlist_id = ?1 WHERE id = ?2 AND playlist_id IS NULL",
+            rusqlite::params![id, desiderato],
+        )
+        .map_err(guasto)?;
+    }
+    match cancellata.lapide_di_prima {
+        None => tx.execute(
+            "DELETE FROM sync_tombstones WHERE kind = 'playlist' AND key = ?1",
+            [&cancellata.chiave],
+        ),
+        Some(quando) => tx.execute(
+            "UPDATE sync_tombstones SET deleted_at = ?2 WHERE kind = 'playlist' AND key = ?1",
+            rusqlite::params![cancellata.chiave, quando],
+        ),
+    }
+    .map_err(guasto)?;
+
+    tx.commit().map_err(guasto)?;
+    read_one(connection, id)
+}
+
+/// Com'è andata un'aggiunta a una playlist.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Aggiunta {
+    /// La playlist dopo l'aggiunta.
+    pub playlist: PlaylistSummary,
+    /// Quanti brani sono entrati.
+    pub aggiunti: usize,
+    /// Quanti si sono lasciati fuori perché in libreria non c'erano più.
+    ///
+    /// Il numero da dire a chi ha trascinato: senza, dieci brani trascinati e
+    /// otto arrivati sembrano un'aggiunta riuscita a metà per un guasto.
+    pub saltati: usize,
+}
+
+/// Aggiunge brani in fondo a una playlist, e dice quanti non c'erano più.
+///
+/// I duplicati sono ammessi — lo stesso brano può comparire più volte, ed è
+/// voluto — quindi l'unico controllo, oltre alla posizione, è che il brano
+/// **esista ancora**.
+///
+/// # Perché quel controllo, e perché qui
+///
+/// Perché gli identificativi arrivano dalla finestra, e la finestra li ha letti
+/// prima: fra il momento in cui si è aperta la selezione e quello in cui si è
+/// lasciata sulla playlist una scansione può aver tolto dei brani. Con la
+/// musica su un NAS è il caso normale — la share che singhiozza durante una
+/// scansione fa sparire righe mentre l'elenco a schermo le mostra ancora — e la
+/// chiave esterna di `playlist_tracks` rifiutava l'inserimento del primo
+/// brano sparito, facendo fallire **tutta** l'aggiunta con «il database ha
+/// rifiutato una richiesta». Due brani spariti su cento costavano i cento.
+///
+/// Dentro la stessa transazione dell'inserimento, e `Immediate`: fra il
+/// controllo e la scrittura nessun altro scrittore può togliere il brano.
+///
+/// # Errori
+///
+/// `library.playlistNotFound`, `library.playlistIsSmart`, `db.*`.
+pub fn aggiungi_brani(
+    connection: &mut Connection,
+    id: i64,
+    track_ids: &[i64],
+) -> Result<Aggiunta, AppError> {
+    let tx = transazione_di_scrittura(connection)
+        .map_err(|err| db_error("aggiunta a una playlist", &err))?;
+    modificabile(&tx, id)?;
+    let (aggiunti, saltati) = accoda(&tx, id, track_ids)?;
+    // Toccata solo se è cambiata: una data nuova su una playlist identica
+    // sveglierebbe la sincronizzazione per niente.
+    if aggiunti > 0 {
+        tocca(&tx, id)?;
+    }
+    tx.commit()
+        .map_err(|err| db_error("aggiunta a una playlist", &err))?;
+    Ok(Aggiunta {
+        playlist: read_one(connection, id)?,
+        aggiunti,
+        saltati,
+    })
+}
+
+/// Crea una playlist e ci mette dentro dei brani, in una transazione sola.
+///
+/// # Perché non [`create`] e poi [`aggiungi_brani`]
+///
+/// Perché erano due chiamate dalla finestra, e fra le due poteva succedere di
+/// tutto: un'aggiunta che falliva lasciava una playlist **vuota** col nome
+/// appena scelto, e il nome — ormai occupato — faceva fallire anche il secondo
+/// tentativo con «esiste già». Qui la riga e i brani entrano insieme o non
+/// entra niente.
+///
+/// I brani che nel frattempo sono usciti dalla libreria si saltano e si
+/// contano, come in [`aggiungi_brani`]: la playlist nasce lo stesso, perché il
+/// nome l'ha scelto chi ha chiesto di crearla.
+///
+/// # Errori
+///
+/// `library.playlistNameInvalid`, `library.playlistExists`, `db.*`. In tutti e
+/// tre i casi la playlist non c'è.
+pub fn crea_e_aggiungi(
+    connection: &mut Connection,
+    name: &str,
+    track_ids: &[i64],
+) -> Result<Aggiunta, AppError> {
+    let tx = transazione_di_scrittura(connection)
+        .map_err(|err| db_error("creazione di una playlist", &err))?;
+    let id = crea_riga(&tx, name)?;
+    let (aggiunti, saltati) = accoda(&tx, id, track_ids)?;
+    tx.commit()
+        .map_err(|err| db_error("creazione di una playlist", &err))?;
+    Ok(Aggiunta {
+        playlist: read_one(connection, id)?,
+        aggiunti,
+        saltati,
+    })
+}
+
+/// Scrive dei brani in fondo a una playlist, saltando quelli che non ci sono
+/// più, e dice quanti sono entrati e quanti saltati.
+///
+/// Dentro la transazione di chi chiama, e `Immediate`: fra il controllo e la
+/// scrittura nessun altro scrittore può togliere il brano. Vedi
+/// [`aggiungi_brani`] per il perché del controllo.
+fn accoda(tx: &Transaction<'_>, id: i64, track_ids: &[i64]) -> Result<(usize, usize), AppError> {
+    let guasto = |err: rusqlite::Error| db_error("aggiunta a una playlist", &err);
+    let mut aggiunti = 0_usize;
+    let mut saltati = 0_usize;
+    let prima_libera: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM playlist_tracks WHERE playlist_id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(guasto)?;
+    let mut esiste = tx
+        .prepare("SELECT 1 FROM tracks WHERE id = ?1")
+        .map_err(guasto)?;
+    let mut inserisci = tx
+        .prepare(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
+        )
+        .map_err(guasto)?;
+    let mut posizione = prima_libera;
+    for track_id in track_ids {
+        if !esiste.exists([track_id]).map_err(guasto)? {
+            saltati += 1;
+            continue;
+        }
+        inserisci
+            .execute(rusqlite::params![id, track_id, posizione])
+            .map_err(guasto)?;
+        posizione = posizione.saturating_add(1);
+        aggiunti += 1;
+    }
+    Ok((aggiunti, saltati))
 }
 
 /// Aggiunge brani in fondo a una playlist.
 ///
-/// I duplicati sono ammessi — lo stesso brano può comparire più volte, ed è
-/// voluto — quindi non c'è nessun controllo da fare oltre alla posizione.
+/// [`aggiungi_brani`] senza il conto dei saltati, per chi non ha dove dirlo.
 ///
 /// # Errori
 ///
-/// `library.playlistNotFound`, `library.playlistIsSmart`, `db.queryFailed`.
+/// Gli stessi di [`aggiungi_brani`].
 pub fn add_tracks(
     connection: &mut Connection,
     id: i64,
     track_ids: &[i64],
 ) -> Result<PlaylistSummary, AppError> {
-    modificabile(connection, id)?;
-    let tx = connection
-        .transaction()
-        .map_err(|err| db_error("aggiunta a una playlist", &err))?;
-    {
-        let prima_libera: i64 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(position) + 1, 0) FROM playlist_tracks WHERE playlist_id = ?1",
-                [id],
-                |row| row.get(0),
-            )
-            .map_err(|err| db_error("aggiunta a una playlist", &err))?;
-        let mut inserisci = tx
-            .prepare(
-                "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
-            )
-            .map_err(|err| db_error("aggiunta a una playlist", &err))?;
-        for (scarto, track_id) in track_ids.iter().enumerate() {
-            let posizione = prima_libera.saturating_add(i64::try_from(scarto).unwrap_or(0));
-            inserisci
-                .execute(rusqlite::params![id, track_id, posizione])
-                .map_err(|err| db_error("aggiunta a una playlist", &err))?;
-        }
-    }
-    tx.commit()
-        .map_err(|err| db_error("aggiunta a una playlist", &err))?;
-    tocca(connection, id)?;
-    read_one(connection, id)
+    aggiungi_brani(connection, id, track_ids).map(|fatta| fatta.playlist)
 }
 
 /// Toglie il brano che sta in una posizione, chiudendo il buco.
@@ -587,8 +1102,7 @@ pub fn remove_at(
     position: i64,
 ) -> Result<PlaylistSummary, AppError> {
     modificabile(connection, id)?;
-    let tx = connection
-        .transaction()
+    let tx = transazione_di_scrittura(connection)
         .map_err(|err| db_error("rimozione da una playlist", &err))?;
     let mut ordine = ordine_attuale(&tx, id)?;
     let Ok(indice) = usize::try_from(position) else {
@@ -624,8 +1138,7 @@ pub fn reorder(
     to: i64,
 ) -> Result<PlaylistSummary, AppError> {
     modificabile(connection, id)?;
-    let tx = connection
-        .transaction()
+    let tx = transazione_di_scrittura(connection)
         .map_err(|err| db_error("riordino di una playlist", &err))?;
     let mut ordine = ordine_attuale(&tx, id)?;
 
@@ -787,6 +1300,59 @@ mod prove {
     }
 
     #[test]
+    fn un_brano_sparito_nel_frattempo_si_salta_e_non_ferma_gli_altri() {
+        // Il caso del NAS: la finestra ha ancora l'identificativo 99 di un
+        // brano che una scansione ha tolto. Prima la chiave esterna rifiutava
+        // quella riga e con lei **tutta** l'aggiunta; adesso entrano gli altri
+        // e il conto dice quanti mancavano.
+        let mut connection = libreria();
+        let p = create(&connection, "Da un NAS").expect("creata").id;
+        let fatta = aggiungi_brani(&mut connection, p, &[3, 99, 1, 98]).expect("aggiunti");
+        assert_eq!(fatta.aggiunti, 2);
+        assert_eq!(fatta.saltati, 2);
+        assert_eq!(fatta.playlist.tracks, 2);
+        // Le posizioni restano contigue: il buco del brano saltato non c'è.
+        assert_eq!(posizioni(&connection, p), ["Tre", "Uno"]);
+
+        // E un'aggiunta fatta solo di brani spariti non è un guasto: è
+        // un'aggiunta di niente, detta come tale.
+        let vuota = aggiungi_brani(&mut connection, p, &[97]).expect("niente da aggiungere");
+        assert_eq!((vuota.aggiunti, vuota.saltati), (0, 1));
+        assert_eq!(posizioni(&connection, p), ["Tre", "Uno"]);
+    }
+
+    #[test]
+    fn un_titolo_importato_troppo_lungo_si_tronca_e_passa() {
+        // La regressione della 3.0: il tetto dei nomi rifiutava l'importazione
+        // intera di un concerto con la scaletta nel titolo.
+        let lunghissimo = "Live at the Fillmore — ".repeat(40);
+        let corto = nome_da_importare(&lunghissimo);
+        assert!(corto.chars().count() <= NOME_MASSIMO);
+        assert!(
+            corto.chars().count() > NOME_MASSIMO - 5,
+            "si taglia al tetto, non prima"
+        );
+        assert!(corto.ends_with('…'));
+        assert!(
+            !corto.trim_end_matches('…').ends_with(' '),
+            "niente spazio prima dell'ellissi: «{corto}»"
+        );
+        assert!(nome_utilizzabile(&corto).is_ok(), "il nome troncato passa");
+
+        // Il taglio cade su un confine di carattere anche quando i caratteri
+        // sono di più byte: si conta in `char`, come il tetto.
+        let giapponese = "東京".repeat(300);
+        let tagliato = nome_da_importare(&giapponese);
+        assert_eq!(tagliato.chars().count(), NOME_MASSIMO);
+        assert!(nome_utilizzabile(&tagliato).is_ok());
+
+        // Sotto il tetto non si tocca niente, a parte gli spazi ai bordi.
+        assert_eq!(nome_da_importare("  Serata  "), "Serata");
+        // E chi scrive un nome a mano continua a sentirsi dire di no.
+        assert!(nome_utilizzabile(&lunghissimo).is_err());
+    }
+
+    #[test]
     fn togliere_chiude_il_buco() {
         let mut connection = libreria();
         let p = create(&connection, "Mista").expect("creata").id;
@@ -929,6 +1495,241 @@ mod prove {
             .query_row("SELECT COUNT(*) FROM playlist_tracks", [], |row| row.get(0))
             .expect("righe");
         assert_eq!(righe, 0);
+    }
+
+    #[test]
+    fn crea_e_aggiungi_mette_la_playlist_e_i_brani_insieme() {
+        // «Nuova playlist e aggiungi» in un colpo solo, e con il conto di chi
+        // nel frattempo era uscito dalla libreria.
+        let mut connection = libreria();
+        let fatta = crea_e_aggiungi(&mut connection, "Al volo", &[2, 99, 1]).expect("creata");
+        assert_eq!((fatta.aggiunti, fatta.saltati), (2, 1));
+        assert_eq!(fatta.playlist.name, "Al volo");
+        assert_eq!(fatta.playlist.tracks, 2);
+        assert_eq!(fatta.playlist.duration_ms, 3000);
+        assert_eq!(posizioni(&connection, fatta.playlist.id), ["Due", "Uno"]);
+    }
+
+    #[test]
+    fn se_l_aggiunta_fallisce_non_resta_una_playlist_vuota() {
+        // Il difetto di prima: due chiamate, e se la seconda falliva restava la
+        // playlist vuota col nome occupato. Un vincolo che rifiuta ogni riga di
+        // `playlist_tracks` fa fallire l'aggiunta a metà strada.
+        let mut connection = libreria();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER rifiuta BEFORE INSERT ON playlist_tracks
+                 BEGIN SELECT RAISE(ABORT, 'rifiutata'); END;",
+            )
+            .expect("vincolo");
+        assert!(crea_e_aggiungi(&mut connection, "Mai nata", &[1, 2]).is_err());
+        assert!(
+            list(&connection).expect("elenco").is_empty(),
+            "la playlist non deve sopravvivere all'aggiunta fallita"
+        );
+        connection
+            .execute_batch("DROP TRIGGER rifiuta;")
+            .expect("vincolo tolto");
+        // E il nome è ancora libero: il secondo tentativo riesce.
+        let fatta = crea_e_aggiungi(&mut connection, "Mai nata", &[1]).expect("creata");
+        assert_eq!(fatta.aggiunti, 1);
+    }
+
+    #[test]
+    fn crea_e_aggiungi_con_un_nome_preso_non_tocca_niente() {
+        let mut connection = libreria();
+        create(&connection, "Rock").expect("creata");
+        let err = crea_e_aggiungi(&mut connection, "rock", &[1, 2]).expect_err("doppione");
+        assert_eq!(err.code().kind().code(), "library.playlistExists");
+        let elenco = list(&connection).expect("elenco");
+        assert_eq!(elenco.len(), 1);
+        assert_eq!(elenco[0].tracks, 0, "la playlist che c'era non si riempie");
+    }
+
+    /// Quante righe dice una query di conteggio.
+    fn conta(connection: &Connection, sql: &str) -> i64 {
+        connection
+            .query_row(sql, [], |row| row.get(0))
+            .expect("conteggio")
+    }
+
+    #[test]
+    fn cancellare_e_ripristinare_rimette_tutto_com_era() {
+        let mut connection = libreria();
+        let p = create(&connection, "Serata").expect("creata");
+        add_tracks(&mut connection, p.id, &[3, 1, 3]).expect("aggiunti");
+        connection
+            .execute_batch(&format!(
+                "UPDATE playlists SET description = 'Per sabato', created_at = 7,
+                                      updated_at = 8 WHERE id = {id};
+                 INSERT INTO brani_orfani (content_key, orfano_at) VALUES ('via', 1);
+                 INSERT INTO playlist_orfane (content_key, playlist_id, position)
+                      VALUES ('via', {id}, 1);
+                 INSERT INTO desiderati (track_key, title, source_kind, source_id,
+                                         source_title, added_at, playlist_id, position)
+                      VALUES ('kx', 'Manca', 'playlist', 'sx', 'Fuori', 1, {id}, 3);",
+                id = p.id
+            ))
+            .expect("contorno");
+
+        let cancellata = cancella(&mut connection, p.id).expect("cancellata");
+        assert_eq!(cancellata.nome(), "Serata");
+        assert!(list(&connection).expect("elenco").is_empty());
+        assert_eq!(
+            conta(
+                &connection,
+                "SELECT COUNT(*) FROM sync_tombstones WHERE kind = 'playlist'"
+            ),
+            1
+        );
+        assert_eq!(
+            conta(&connection, "SELECT COUNT(*) FROM playlist_orfane"),
+            0
+        );
+        assert_eq!(
+            conta(
+                &connection,
+                "SELECT COUNT(*) FROM desiderati WHERE playlist_id IS NULL"
+            ),
+            1
+        );
+
+        let tornata = ripristina(&mut connection, &cancellata).expect("ripristinata");
+        assert_eq!(tornata.id, p.id, "l'identificativo era libero: è lo stesso");
+        assert_eq!(tornata.name, "Serata");
+        assert_eq!(tornata.key, p.key);
+        assert_eq!(tornata.description.as_deref(), Some("Per sabato"));
+        assert_eq!(tornata.tracks, 3);
+        assert_eq!(posizioni(&connection, p.id), ["Tre", "Uno", "Tre"]);
+        // La data di modifica è adesso: la lapide può essere già partita, e
+        // solo una playlist toccata dopo di lei sopravvive alla fusione.
+        assert!(tornata.updated_at > 8);
+        assert_eq!(
+            conta(&connection, "SELECT created_at FROM playlists"),
+            7,
+            "la nascita resta quella di prima"
+        );
+        assert_eq!(
+            conta(&connection, "SELECT COUNT(*) FROM sync_tombstones"),
+            0,
+            "la lapide di questa cancellazione se ne va con lei"
+        );
+        assert_eq!(
+            conta(
+                &connection,
+                &format!(
+                    "SELECT COUNT(*) FROM playlist_orfane WHERE playlist_id = {}",
+                    p.id
+                )
+            ),
+            1
+        );
+        assert_eq!(
+            conta(
+                &connection,
+                &format!(
+                    "SELECT COUNT(*) FROM desiderati WHERE playlist_id = {}",
+                    p.id
+                )
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn un_ripristino_rimette_la_lapide_che_c_era_gia() {
+        // Una playlist cancellata tempo fa e rifatta col nome di prima: la sua
+        // lapide c'era già, e annullare la seconda cancellazione non deve
+        // cancellare anche il ricordo della prima.
+        let mut connection = libreria();
+        let p = create(&connection, "Ritorno").expect("creata");
+        connection
+            .execute(
+                "INSERT INTO sync_tombstones (kind, key, deleted_at) VALUES ('playlist', ?1, 5)",
+                [&p.key],
+            )
+            .expect("lapide vecchia");
+        let cancellata = cancella(&mut connection, p.id).expect("cancellata");
+        assert!(conta(&connection, "SELECT deleted_at FROM sync_tombstones") > 5);
+        ripristina(&mut connection, &cancellata).expect("ripristinata");
+        assert_eq!(
+            conta(&connection, "SELECT deleted_at FROM sync_tombstones"),
+            5
+        );
+    }
+
+    #[test]
+    fn un_ripristino_salta_i_brani_usciti_e_resta_contiguo() {
+        let mut connection = libreria();
+        let p = create(&connection, "Mista").expect("creata").id;
+        add_tracks(&mut connection, p, &[1, 2, 3]).expect("aggiunti");
+        let cancellata = cancella(&mut connection, p).expect("cancellata");
+        connection
+            .execute("DELETE FROM tracks WHERE id = 2", [])
+            .expect("brano tolto");
+        let tornata = ripristina(&mut connection, &cancellata).expect("ripristinata");
+        assert_eq!(tornata.tracks, 2);
+        assert_eq!(posizioni(&connection, p), ["Uno", "Tre"]);
+        assert_eq!(
+            conta(&connection, "SELECT MAX(position) FROM playlist_tracks"),
+            1,
+            "nessun buco nelle posizioni"
+        );
+    }
+
+    #[test]
+    fn un_ripristino_con_l_identificativo_ripreso_ne_prende_un_altro() {
+        // SQLite riusa il più alto quando lo si libera: una playlist creata
+        // nei secondi dell'«Annulla» prende proprio quello.
+        let mut connection = libreria();
+        let p = create(&connection, "Prima").expect("creata");
+        add_tracks(&mut connection, p.id, &[4]).expect("aggiunto");
+        let cancellata = cancella(&mut connection, p.id).expect("cancellata");
+        let nuova = create(&connection, "Nel frattempo").expect("creata");
+        assert_eq!(nuova.id, p.id, "la premessa della prova");
+        let tornata = ripristina(&mut connection, &cancellata).expect("ripristinata");
+        assert_ne!(tornata.id, nuova.id);
+        assert_eq!(posizioni(&connection, tornata.id), ["Quattro"]);
+        assert!(
+            posizioni(&connection, nuova.id).is_empty(),
+            "l'altra resta com'è"
+        );
+    }
+
+    #[test]
+    fn un_ripristino_col_nome_ripreso_non_tocca_niente() {
+        let mut connection = libreria();
+        let p = create(&connection, "Doppia").expect("creata");
+        let cancellata = cancella(&mut connection, p.id).expect("cancellata");
+        create(&connection, "doppia").expect("rifatta a mano");
+        let err = ripristina(&mut connection, &cancellata).expect_err("nome preso");
+        assert_eq!(err.code().kind().code(), "library.playlistExists");
+        assert_eq!(list(&connection).expect("elenco").len(), 1);
+        assert_eq!(
+            conta(&connection, "SELECT COUNT(*) FROM sync_tombstones"),
+            1,
+            "la lapide resta: la cancellazione non è stata annullata"
+        );
+    }
+
+    #[test]
+    fn una_playlist_intelligente_torna_con_le_sue_regole() {
+        use aether_domain::regole::{Campo, Operatore, Regola, Valore};
+        let mut connection = libreria();
+        let insieme = Insieme {
+            regole: vec![Regola {
+                campo: Campo::Durata,
+                operatore: Operatore::Maggiore,
+                valore: Valore::Numero(2500),
+            }],
+            ..Insieme::default()
+        };
+        let p = create_smart(&connection, "Lunghi", &insieme).expect("creata");
+        let cancellata = cancella(&mut connection, p.id).expect("cancellata");
+        let tornata = ripristina(&mut connection, &cancellata).expect("ripristinata");
+        assert!(tornata.is_smart);
+        assert_eq!(tornata.tracks, 2);
+        assert_eq!(regole_di(&connection, tornata.id), Ok(Some(insieme)));
     }
 
     #[test]

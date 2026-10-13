@@ -16,7 +16,9 @@
  */
 import {
   Fragment,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -28,12 +30,17 @@ import type {
   AvanzamentoArricchimento,
   AvanzamentoTesti,
   AvanzamentoNuvola,
+  AvanzamentoVolume,
   Avvio,
   EsitoArricchimento,
   EsitoScansione,
+  ModoLivello,
   Normalizzazione,
+  QuadroSorveglianza,
   StatoArricchimento,
   Resoconto,
+  SaluteDatabase,
+  StatoManutenzione,
   StatoNuvola,
   StatoSincronia,
   StatoTesti,
@@ -271,6 +278,9 @@ function voci(): readonly {
     v("chiusura", "background"),
     v("dati", "numbers"),
     v("dati", "profile"),
+    // Nessuno cerca «manutenzione»: si cerca «spazio», «cache», o «pulisci» —
+    // di solito il giorno in cui il disco è pieno.
+    v("dati", "covers"),
     v("aggiornamenti", "update"),
     // «Versione» è una voce sua e non un sinonimo di «aggiornamenti»: chi la
     // cerca quasi sempre non vuole aggiornare niente — vuole sapere quale
@@ -379,18 +389,37 @@ function useAvanzamentoNuvola(inCorso: boolean): AvanzamentoNuvola | null {
   return inCorso ? avanzamento : null;
 }
 
-/** Una scheda di sezione. */
+/**
+ * Dove va un errore del «?» di una scheda.
+ *
+ * Una `Scheda` è disegnata da una dozzina di componenti diversi, e nessuno di
+ * loro ha motivo di passarle `onErrore` solo per il pulsante dell'intestazione:
+ * lo mette `Impostazioni` una volta, in cima, e chi lo vuole lo legge da qui.
+ */
+const ErroreGuida = createContext<(e: unknown) => void>(() => {});
+
+/**
+ * Una scheda di sezione.
+ *
+ * Le spiegazioni non stanno qui: stanno nella documentazione tecnica sul sito,
+ * e il «?» dell'intestazione apre la voce che spiega come funziona questa parte
+ * (`guida` è l'ancora, e l'elenco di quelle ammesse sta di là, in `comandi.rs`). `nota` resta per un
+ * dato che cambia — «3 skin installate» — e non per una frase che spiega.
+ */
 function Scheda({
   icona,
   titolo,
   nota,
+  guida,
   children,
 }: {
   icona: NomeIcona;
   titolo: string;
   nota?: string | undefined;
+  guida?: string | undefined;
   children: React.ReactNode;
 }) {
+  const onErrore = useContext(ErroreGuida);
   return (
     <section className="scheda section-card">
       <header>
@@ -399,9 +428,184 @@ function Scheda({
         </span>
         <h2 className="section-heading">{titolo}</h2>
         {nota !== undefined && <span className="nota-testa">{nota}</span>}
+        {guida !== undefined && (
+          <button
+            type="button"
+            className="guida-scheda"
+            title={t("settings.help")}
+            aria-label={t("settings.help.of", { titolo })}
+            onClick={() => {
+              ipc.apriGuida(guida).catch(onErrore);
+            }}
+          >
+            ?
+          </button>
+        )}
       </header>
       {children}
     </section>
+  );
+}
+
+/**
+ * «Rileggi tutti i tag»: la prossima scansione rilegge ogni file, e parte subito.
+ *
+ * # A cosa serve
+ *
+ * La scansione rilegge un file quando ne cambiano la data o la dimensione. Ci
+ * sono ritocchi che non cambiano né l'una né l'altra — un taggatore che ferma
+ * la data e riscrive nello spazio libero del tag — e righe scritte da una
+ * versione che leggeva meno: questo è il modo di dire «guardali tutti».
+ * Correzioni a mano e metadati trovati dall'arricchimento sopravvivono alla
+ * rilettura come a ogni altra.
+ *
+ * # Perché avvia la scansione di sempre
+ *
+ * Il nucleo segna soltanto; a leggere è `onScansiona`, cioè la stessa scansione
+ * del pulsante accanto, con il suo avanzamento, il suo Annulla e le sue
+ * conferme. Una seconda strada per leggere i file sarebbe una seconda cosa da
+ * tenere d'accordo con la prima.
+ */
+function RileggiTag({
+  occupato,
+  onScansiona,
+  onErrore,
+}: {
+  occupato: boolean;
+  onScansiona: () => void;
+  onErrore: (e: unknown) => void;
+}) {
+  const [segnati, setSegnati] = useState<number | null>(null);
+  return (
+    <>
+      <div className="azioni">
+        <button
+          type="button"
+          className="bottone btn-ghost"
+          disabled={occupato}
+          onClick={() => {
+            ipc
+              .metadatiRileggiTutti()
+              .then((quanti) => {
+                setSegnati(quanti);
+                onScansiona();
+              })
+              .catch(onErrore);
+          }}
+        >
+          <Icona nome="i-scan" dim={15} />
+          {t("settings.roots.reread")}
+        </button>
+        {segnati !== null && (
+          <span className="oppure">
+            {t("settings.roots.reread.marked", { n: segnati })}
+          </span>
+        )}
+      </div>
+    </>
+  );
+}
+
+/**
+ * La sorveglianza delle cartelle: i due interruttori, e cosa sta succedendo.
+ *
+ * # Perché si gestisce da sé
+ *
+ * Per la stessa ragione di `SchedaTesti`: nessun'altra parte del programma
+ * guarda questo stato, e farlo scendere da `App` vorrebbe dire altre prop per
+ * una riga che si legge solo qui. Lo chiede al montaggio — è un quadro in
+ * memoria, non tocca né disco né database — e lo riceve aggiornato da ogni
+ * cambio di scelta.
+ *
+ * # Due interruttori per tre scelte
+ *
+ * Il nucleo ha tre modi — spenta, dischi locali, anche la rete — e la
+ * finestra li mostra come due domande, perché sono due decisioni diverse:
+ * «voglio che la libreria si aggiorni da sola?» e «anche a costo di tenere
+ * sveglio il NAS?». La seconda senza la prima non ha senso, e lo dice.
+ */
+function SorveglianzaCartelle({
+  onErrore,
+}: {
+  /** La scelta scrive nel database: se non ci arriva, va detto. */
+  onErrore: (e: unknown) => void;
+}) {
+  const [quadro, setQuadro] = useState<QuadroSorveglianza | null>(null);
+
+  useEffect(() => {
+    let annullato = false;
+    ipc
+      .sorveglianzaStato()
+      .then((letto) => {
+        if (!annullato) setQuadro(letto);
+      })
+      .catch(() => {
+        /* Senza quadro gli interruttori restano com'è di serie: niente di
+           distruttivo da annunciare. */
+      });
+    return () => {
+      annullato = true;
+    };
+  }, []);
+
+  const modo = quadro?.modo ?? "locali";
+  const scegli = (scelta: QuadroSorveglianza["modo"]) => {
+    ipc.impostaSorveglianza(scelta).then(setQuadro).catch(onErrore);
+  };
+  const quante = (come: string) =>
+    quadro?.cartelle.filter((c) => c.come === come).length ?? 0;
+  const ferme = quante("nonRaggiungibile");
+  // Con «solo i dischi di questo computer» le cartelle di rete sono `ferma`:
+  // si contano anche loro, se no il NAS spariva dai conteggi e sembrava che la
+  // sorveglianza lo seguisse.
+  const diRete = modo === "locali" ? quante("ferma") : 0;
+
+  return (
+    <>
+      <Interruttore
+        etichetta={t("settings.roots.watch")}
+        acceso={modo !== "spenta"}
+        onCambia={(acceso) => scegli(acceso ? "locali" : "spenta")}
+      />
+      <Interruttore
+        etichetta={t("settings.roots.watch.network")}
+        acceso={modo === "tutte"}
+        onCambia={(acceso) => scegli(acceso ? "tutte" : "locali")}
+        impedito={
+          modo === "spenta" ? t("settings.roots.watch.network.off") : undefined
+        }
+      />
+      {modo !== "spenta" && (quadro?.cartelle.length ?? 0) > 0 && (
+        <p className="nota">
+          {t("settings.roots.watch.state", {
+            avvisi: quante("avvisi"),
+            sondaggio: quante("sondaggio"),
+          })}
+        </p>
+      )}
+      {modo !== "spenta" && ferme > 0 && (
+        <p className="nota">
+          {t("settings.roots.watch.unreachable", { n: ferme })}
+        </p>
+      )}
+      {diRete > 0 && (
+        <p className="nota">
+          {t("settings.roots.watch.stopped", { n: diRete })}
+        </p>
+      )}
+      {quadro?.ultima && (
+        <p className="nota">
+          {t("settings.roots.watch.last", {
+            quando: dataOra(quadro.ultima.quandoMs),
+            inseriti: quadro.ultima.inseriti,
+            aggiornati: quadro.ultima.aggiornati,
+            tolti: quadro.ultima.tolti,
+          })}
+          {quadro.ultima.rinviate > 0 &&
+            ` ${t("settings.roots.watch.held", { n: quadro.ultima.rinviate })}`}
+        </p>
+      )}
+    </>
   );
 }
 
@@ -485,23 +689,29 @@ function SchedaTesti() {
     <Scheda
       icona="i-text"
       titolo={t("settings.lyrics.title")}
-      nota={t("settings.lyrics.note")}
+      guida="lyrics"
     >
-      <p className="nota">{t("settings.lyrics.p1")}</p>
-      <p className="nota">
-        <Trans
-          k="settings.lyrics.p2"
-          v={{ mai: <strong>{t("settings.lyrics.p2.never")}</strong> }}
-        />
-      </p>
 
       <Interruttore
         etichetta={t("settings.lyrics.toggle")}
-        spiegazione={t("settings.lyrics.toggle.hint")}
         acceso={stato?.rete ?? false}
         onCambia={(attivo) => {
           ipc
             .testiRete(attivo)
+            .then(setStato)
+            .catch(() => {});
+        }}
+      />
+
+      {/* Spento finché la lettura non torna, com'è di serie: un interruttore
+          dipinto acceso anche per un istante prometterebbe file nelle cartelle
+          della musica che nessuno scrive. */}
+      <Interruttore
+        etichetta={t("settings.lyrics.sidecar")}
+        acceso={stato?.accanto ?? false}
+        onCambia={(attivo) => {
+          ipc
+            .testiAccanto(attivo)
             .then(setStato)
             .catch(() => {});
         }}
@@ -569,7 +779,6 @@ function SchedaTesti() {
         </button>
       </div>
 
-      <p className="nota">{t("settings.lyrics.pace")}</p>
     </Scheda>
   );
 }
@@ -624,12 +833,102 @@ function InterruttoreFormato({
   return (
     <Interruttore
       etichetta={t("settings.fileFormat.toggle")}
-      spiegazione={t("settings.fileFormat.hint")}
       acceso={visibile}
       onCambia={(valore) => {
         ipc.formatoVisibileScegli(valore).then(setVisibile).catch(onErrore);
       }}
     />
+  );
+}
+
+/** Ogni quanto si rilegge l'avanzamento della misura, finché la scheda è aperta. */
+const AVANZAMENTO_VOLUME_MS = 15_000;
+
+/**
+ * Di chi è il livello del volume uniforme, e quanto della libreria è misurato.
+ *
+ * # Perché si gestisce da sé
+ *
+ * Come `InterruttoreFormato`: nessun'altra parte della schermata guarda il
+ * modo, e l'avanzamento cambia da solo mentre la passata di sottofondo misura.
+ * Se li chiede quando viene montato, e l'avanzamento lo richiede ogni
+ * `AVANZAMENTO_VOLUME_MS` finché resta aperto.
+ *
+ * # Perché l'avanzamento si mostra
+ *
+ * Perché i brani senza tag si normalizzano man mano che vengono misurati, e la
+ * passata gira solo quando la musica tace. Senza un numero, chi accende il
+ * volume uniforme e sente ancora un disco più forte degli altri penserebbe che
+ * non funzioni; con il numero sa che ci sta arrivando.
+ *
+ * Pessimistico come l'interruttore del formato: la linguetta si sposta al
+ * ritorno del comando, con quel che il nucleo ha scritto davvero.
+ */
+function VolumeUniforme({
+  onErrore,
+}: {
+  /** La scelta scrive nel database: se non ci arriva, va detto. */
+  onErrore: (e: unknown) => void;
+}) {
+  const [modo, setModo] = useState<ModoLivello>("automatico");
+  const [avanzamento, setAvanzamento] = useState<AvanzamentoVolume | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let annullato = false;
+    ipc
+      .normalizzazioneModo()
+      .then((letto) => {
+        if (!annullato) setModo(letto);
+      })
+      .catch(() => {
+        /* Automatico, che è il valore di serie. */
+      });
+    const leggi = () => {
+      ipc
+        .normalizzazioneAvanzamento()
+        .then((letto) => {
+          if (!annullato) setAvanzamento(letto);
+        })
+        .catch(() => {
+          /* Senza numero non si mostra la riga: meglio niente che uno zero
+             che non è vero. */
+        });
+    };
+    leggi();
+    const battito = window.setInterval(leggi, AVANZAMENTO_VOLUME_MS);
+    return () => {
+      annullato = true;
+      window.clearInterval(battito);
+    };
+  }, []);
+
+  return (
+    <>
+      <Segmentato
+        etichetta={t("settings.loudness.mode.label")}
+        scelta={modo}
+        onScegli={(scelto) => {
+          ipc.normalizzazioneModoScegli(scelto).then(setModo).catch(onErrore);
+        }}
+        voci={[
+          { chiave: "automatico", etichetta: t("settings.loudness.mode.auto") },
+          { chiave: "album", etichetta: t("settings.loudness.mode.album") },
+          { chiave: "brano", etichetta: t("settings.loudness.mode.track") },
+        ]}
+      />
+      {avanzamento !== null && avanzamento.totale > 0 && (
+        <p className="nota">
+          {avanzamento.misurati >= avanzamento.totale
+            ? t("settings.loudness.done", { n: avanzamento.totale })
+            : t("settings.loudness.progress", {
+                fatti: avanzamento.misurati,
+                totale: avanzamento.totale,
+              })}
+        </p>
+      )}
+    </>
   );
 }
 
@@ -669,7 +968,7 @@ function SchedaDissolvenza({
   };
 
   return (
-    <Scheda icona="i-play" titolo={t("settings.crossfade.title")}>
+    <Scheda icona="i-play" titolo={t("settings.crossfade.title")} guida="crossfade">
       <div className="dissolvenza">
         <input
           type="range"
@@ -700,7 +999,6 @@ function SchedaDissolvenza({
             : t("settings.crossfade.seconds", { n: dove })}
         </span>
       </div>
-      <p className="nota">{t("settings.crossfade.hint")}</p>
       {/* Detto solo quando è acceso: a zero il gapless c'è e la frase
           spiegherebbe la perdita di una cosa che non si sta perdendo. */}
       {dove > 0 && <p className="nota">{t("settings.crossfade.gapless")}</p>}
@@ -752,7 +1050,7 @@ function SchedaSpegnimento({
   ];
 
   return (
-    <Scheda icona="i-play" titolo={t("settings.sleep.title")}>
+    <Scheda icona="i-play" titolo={t("settings.sleep.title")} guida="sleep">
       <Segmentato
         etichetta={t("settings.sleep.title")}
         scelta={scelta}
@@ -764,13 +1062,13 @@ function SchedaSpegnimento({
         }}
         voci={voci}
       />
-      <p className="nota">
-        {spegnimentoMs === null
-          ? t("settings.sleep.hint")
-          : spegnimentoMs === 0
+      {spegnimentoMs !== null && (
+        <p className="nota">
+          {spegnimentoMs === 0
             ? t("settings.sleep.atEnd")
             : t("settings.sleep.left", { tempo: durata(spegnimentoMs) })}
-      </p>
+        </p>
+      )}
     </Scheda>
   );
 }
@@ -819,18 +1117,166 @@ function SchedaChiusura({ onErrore }: { onErrore: (e: unknown) => void }) {
     <Scheda
       icona="i-x"
       titolo={t("settings.background.title")}
-      nota={t("settings.background.note")}
+      guida="background"
     >
-      <p className="nota">{t("settings.background.p1")}</p>
-      <p className="nota">{t("settings.background.p2")}</p>
       <Interruttore
         etichetta={t("settings.background.toggle")}
-        spiegazione={t("settings.background.toggle.hint")}
         acceso={acceso}
         onCambia={(valore) => {
           ipc.secondoPianoAttiva(valore).then(setAcceso).catch(onErrore);
         }}
       />
+    </Scheda>
+  );
+}
+
+/** Da byte a una misura che si legge: nessun decimale sotto il megabyte. */
+function peso(byte: number): string {
+  const mb = byte / (1024 * 1024);
+  if (mb < 1) {
+    return t("settings.maintenance.kb", { n: Math.round(byte / 1024) });
+  }
+  // `numero` e non `toFixed`: la virgola decimale è della lingua, non di JavaScript.
+  if (mb < 1024) return t("settings.maintenance.mb", { n: numero(mb, 1) });
+  return t("settings.maintenance.gb", { n: numero(mb / 1024, 2) });
+}
+
+/** La riga sulla salute del database, per ognuno dei sei esiti. */
+function fraseSalute(salute: SaluteDatabase): string {
+  switch (salute.esito) {
+    case "daFare":
+      return t("settings.maintenance.health.pending");
+    case "sano":
+      return t("settings.maintenance.health.ok", {
+        quando: quando(salute.quandoMs),
+      });
+    case "interrotto":
+      return t("settings.maintenance.health.interrupted");
+    case "saltato":
+      return t("settings.maintenance.health.skipped");
+    // `db.corrupt` ha già la sua frase, e dice cosa fare: ripristinare un
+    // backup o riscansionare. Riscriverla qui ne farebbe due da tenere allineate.
+    case "danneggiato":
+      return testoErrore(salute.errore);
+    case "nonRiuscito":
+      return t("settings.maintenance.health.failed", {
+        errore: testoErrore(salute.errore),
+      });
+  }
+}
+
+/**
+ * La cache delle copertine e la salute del database.
+ *
+ * # Perché si gestisce da sé
+ *
+ * La stessa ragione di `SchedaTesti` e `SchedaChiusura`: nessun'altra parte
+ * del programma guarda questi numeri, e farli scendere da `App` vorrebbe dire
+ * tre prop in più lungo tutta la catena. Li chiede lei quando qualcuno apre la
+ * sezione, e li lascia andare quando si chiude.
+ *
+ * # Perché il pulsante non chiede conferma
+ *
+ * Perché quel che toglie non si perde: sono copertine che nessuna riga del
+ * database nomina più, e se un brano che le aveva torna in libreria la
+ * scansione le rilegge dal suo file. La pulizia gira comunque da sola dopo ogni
+ * scansione; il pulsante è per chi vuole lo spazio adesso.
+ */
+function SchedaManutenzione({ onErrore }: { onErrore: (e: unknown) => void }) {
+  const [stato, setStato] = useState<StatoManutenzione | null>(null);
+  const [guasto, setGuasto] = useState<unknown>(null);
+  const [pulendo, setPulendo] = useState(false);
+  const [liberati, setLiberati] = useState<{ byte: number; file: number } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let annullato = false;
+    ipc
+      .manutenzioneStato()
+      .then((letto) => {
+        if (!annullato) setStato(letto);
+      })
+      .catch((e: unknown) => {
+        // Qui e non in `onErrore`: una misura che non si legge non merita la
+        // fascia rossa in cima alla pagina, merita una riga dentro la scheda.
+        if (!annullato) setGuasto(e);
+      });
+    return () => {
+      annullato = true;
+    };
+  }, []);
+
+  // Il controllo gira un minuto dopo l'avvio: chi ha le Impostazioni aperte
+  // in quel momento deve vederne l'esito senza richiuderle.
+  useAscolto<SaluteDatabase>("manutenzione:salute", (salute) => {
+    setStato((prima) => (prima === null ? prima : { ...prima, salute }));
+  });
+
+  const pulisci = () => {
+    setPulendo(true);
+    setLiberati(null);
+    ipc
+      .manutenzionePulisciCopertine()
+      .then((esito) => {
+        setStato(esito.stato);
+        setLiberati({ byte: esito.byte, file: esito.file });
+      })
+      .catch(onErrore)
+      .finally(() => setPulendo(false));
+  };
+
+  const danneggiato = stato?.salute.esito === "danneggiato";
+
+  return (
+    <Scheda
+      icona="i-album"
+      titolo={t("settings.maintenance.title")}
+      guida="maintenance"
+    >
+      {guasto !== null && <p className="errore">{testoErrore(guasto)}</p>}
+      {stato && (
+        <>
+          <p className="nota">
+            {t("settings.maintenance.cache", {
+              peso: peso(stato.byte),
+              n: stato.file,
+            })}{" "}
+            {stato.orfane > 0 &&
+              t("settings.maintenance.orphans", { n: numero(stato.orfane) })}
+          </p>
+          {danneggiato ? (
+            <p className="errore">{fraseSalute(stato.salute)}</p>
+          ) : (
+            <p className="nota">{fraseSalute(stato.salute)}</p>
+          )}
+        </>
+      )}
+      {liberati && (
+        <p className="esito">
+          {liberati.file === 0
+            ? t("settings.maintenance.nothing")
+            : t("settings.maintenance.cleaned", {
+                peso: peso(liberati.byte),
+                n: liberati.file,
+              })}
+        </p>
+      )}
+      <div className="azioni">
+        <button
+          type="button"
+          className="bottone btn-ghost"
+          /* Su un database danneggiato non si scrive: il nucleo rifiuterebbe
+             comunque, e un pulsante acceso prometterebbe un gesto che non
+             succede. */
+          disabled={pulendo || stato === null || danneggiato}
+          onClick={pulisci}
+        >
+          {pulendo
+            ? t("settings.maintenance.cleaning")
+            : t("settings.maintenance.clean")}
+        </button>
+      </div>
     </Scheda>
   );
 }
@@ -842,7 +1288,7 @@ export function Impostazioni({
   scansione,
   esito,
   skin,
-  dinamici,
+  ripiego,
   accentoPermesso,
   accentoDinamico,
   onAccentoDinamico,
@@ -916,8 +1362,11 @@ export function Impostazioni({
   scansione: Avanzamento | null;
   esito: EsitoScansione | null;
   skin: VoceSkin[];
-  /** Quanti token della skin attiva seguono la copertina. */
-  dinamici: number;
+  /**
+   * La skin scelta che non si è potuta leggere, e per cui si indossa quella di
+   * serie. `null` quando quel che si vede è quel che si è scelto.
+   */
+  ripiego: string | null;
   /**
    * La skin attiva permette l'accento dinamico (`capabilities.dynamicAccent`).
    *
@@ -932,15 +1381,19 @@ export function Impostazioni({
   movimento: string;
   /** Quanto movimento vuole chi guarda, **sotto** quello della skin. */
   movimentoUtente: MovimentoUtente;
-  /** La scrive `App`, che è chi la fa valere sul documento. */
+  /**
+   * La scrive `useAspetto` (`aspettoFinestra.ts`), che è chi la fa valere sul
+   * documento.
+   */
   onMovimentoUtente: (scelta: MovimentoUtente) => void;
   /**
    * Di quanto è ingrandita l'interfaccia: 1 è la misura di serie.
    *
    * Un numero e non un `number | null`, al contrario dello stato che lo tiene
-   * in `App`: quando questa schermata si apre lo zoom è arrivato da un pezzo
-   * — la finestra non si mostra prima — e il caso che resta è quello in cui
-   * la lettura è fallita, dove la misura vera è davvero quella di serie.
+   * in `aspettoFinestra.ts`: quando questa schermata si apre lo zoom è
+   * arrivato da un pezzo — la finestra non si mostra prima — e il caso che
+   * resta è quello in cui la lettura è fallita, dove la misura vera è davvero
+   * quella di serie.
    * Farne un `null` di qua vorrebbe dire un secondo stato «non si sa ancora»
    * in una schermata che non può vederlo.
    */
@@ -960,11 +1413,11 @@ export function Impostazioni({
   onTema: (t: Tema) => void;
   /** Il codice della lingua in uso. */
   lingua: string;
-  /** La scrive `App`, che è chi la fa valere. */
+  /** La scrive `useAspetto` (`aspettoFinestra.ts`), che la fa valere. */
   onLingua: (codice: string) => void;
   /** Le associazioni fra tasti e comandi, come sono in uso adesso. */
   scorciatoie: Associazioni;
-  /** Le nuove, già intere: le scrive `App`, che è chi le fa valere. */
+  /** Le nuove, già intere: le scrive `useAspetto`, che è chi le fa valere. */
   onScorciatoie: (a: Associazioni) => void;
   /**
    * Rifà il giro guidato, subito.
@@ -1047,9 +1500,9 @@ export function Impostazioni({
    * Le importazioni da un servizio esterno e la coda che le scarica.
    *
    * Un oggetto solo e non otto prop sciolte: è uno stato coeso che vive in
-   * `App` — la coda gira anche quando questa schermata non è aperta — e passa
-   * di qui soltanto per essere mostrato. Qui ne resta il **conteggio**: il
-   * resto sta nella pagina.
+   * `FornitoreImportazioni` — la coda gira anche quando questa schermata non è
+   * aperta — e passa di qui soltanto per essere mostrato. Qui ne resta il
+   * **conteggio**: il resto sta nella pagina.
    */
   importazioni: UsoImportazioni;
   /** Lo stato dell'arricchimento, o `null` finché non è stato chiesto. */
@@ -1149,1681 +1602,1551 @@ export function Impostazioni({
       : 0;
 
   return (
-    <div className="impostazioni">
-      <nav className="indice" aria-label={t("settings.index.aria")}>
-        <div className="filtro-impostazioni">
-          <Icona nome="i-search" dim={14} />
-          <input
-            type="search"
-            value={filtro}
-            placeholder={t("settings.index.search")}
-            aria-label={t("settings.index.search")}
-            onChange={(e) => setFiltro(e.target.value)}
-            /* Invio va alla prima trovata: chi ha scritto «replaygain» e vede
-               una riga sola non deve staccare la mano dalla tastiera per
-               cliccarla. */
-            onKeyDown={(e) => {
-              const prima = trovate[0];
-              if (e.key === "Enter" && prima) {
-                onSezione(prima.sezione);
-                setFiltro("");
-              }
-            }}
-          />
-        </div>
-
-        {filtro.trim() === "" ? (
-          gruppi().map(([titolo, dentro]) => (
-            /* Un frammento e non un `<div>`: l'indice è una colonna sola, e un
-               contenitore per gruppo vorrebbe dire quattro scatole da far
-               comportare come se non ci fossero. */
-            <Fragment key={titolo}>
-              <div className="titolo-gruppo">{titolo}</div>
-              {dentro.map(([chiave, etichetta, icona]) => (
-                <button
-                  key={chiave}
-                  type="button"
-                  className="voce nav-pill"
-                  aria-current={sezione === chiave ? "true" : undefined}
-                  data-active={sezione === chiave || undefined}
-                  onClick={() => onSezione(chiave)}
-                >
-                  <Icona nome={icona} dim={16} />
-                  <span>{etichetta}</span>
-                </button>
-              ))}
-            </Fragment>
-          ))
-        ) : trovate.length === 0 ? (
-          <p className="niente empty-state">{t("settings.index.nothing")}</p>
-        ) : (
-          trovate.map((v) => {
-            const dove = sezioni().find(([chiave]) => chiave === v.sezione);
-            return (
-              <button
-                key={`${v.sezione}/${v.titolo}`}
-                type="button"
-                className="voce nav-pill trovata"
-                onClick={() => {
-                  onSezione(v.sezione);
-                  // Il filtro si svuota: lasciarlo pieno vorrebbe dire tornare
-                  // in una pagina il cui indice non mostra più dove si è.
+    <ErroreGuida.Provider value={onErrore}>
+      <div className="impostazioni">
+        <nav className="indice settings-nav" aria-label={t("settings.index.aria")}>
+          <div className="filtro-impostazioni">
+            <Icona nome="i-search" dim={14} />
+            <input
+              type="search"
+              value={filtro}
+              placeholder={t("settings.index.search")}
+              aria-label={t("settings.index.search")}
+              onChange={(e) => setFiltro(e.target.value)}
+              /* Invio va alla prima trovata: chi ha scritto «replaygain» e vede
+                 una riga sola non deve staccare la mano dalla tastiera per
+                 cliccarla. */
+              onKeyDown={(e) => {
+                const prima = trovate[0];
+                if (e.key === "Enter" && prima) {
+                  onSezione(prima.sezione);
                   setFiltro("");
-                }}
-              >
-                <Icona nome={dove?.[2] ?? "i-search"} dim={16} />
-                <span>
-                  {v.titolo}
-                  <em className="dove">{dove?.[1] ?? ""}</em>
-                </span>
-              </button>
-            );
-          })
-        )}
-      </nav>
-
-      <div className="corpo">
-        {sezione === "cartelle" && (
-          <Scheda
-            icona="i-folder"
-            titolo={t("settings.roots.title")}
-            nota={t("settings.roots.note")}
-          >
-            {avvio && avvio.cartelle.length > 0 ? (
-              <ul className="cartelle">
-                {avvio.cartelle.map((c) => (
-                  <li className="cartella" key={c}>
-                    {/* `unicode-bidi: plaintext` accanto a `direction: rtl` sta
-                        nel foglio: senza, un percorso UNC che comincia con due
-                        barre rovesciate si disegnava con quelle in fondo. */}
-                    <span className="percorso" title={c}>
-                      {c}
-                    </span>
-                    <button
-                      type="button"
-                      className="tasto icon-btn"
-                      aria-label={t("settings.roots.forget", { percorso: c })}
-                      title={t("settings.roots.forget.title")}
-                      onClick={() => onTogliCartella(c)}
-                    >
-                      <Icona nome="i-x" dim={14} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="niente empty-state">{t("settings.roots.empty")}</p>
-            )}
-
-            <div className="azioni">
-              <button
-                type="button"
-                className="bottone btn-ghost"
-                onClick={onAggiungiCartella}
-              >
-                <Icona nome="i-plus" dim={15} />
-                {t("settings.roots.add")}
-              </button>
-              <button
-                type="button"
-                className="bottone primario btn-accent"
-                onClick={onScansiona}
-                disabled={
-                  scansione !== null || (avvio?.cartelle.length ?? 0) === 0
                 }
-              >
-                <Icona nome="i-scan" dim={15} />
-                {scansione
-                  ? t("settings.roots.scanning")
-                  : t("settings.roots.scan")}
-              </button>
-              <span className="oppure">{t("settings.roots.orDrop")}</span>
-            </div>
-
-            {scansione && (
-              <div className="avanzamento-scansione">
-                <div className="riga-avanzamento">
-                  <span className="quanti">
-                    {scansione.totale > 0
-                      ? `${numero(scansione.fatti)} / ${numero(scansione.totale)}`
-                      : t("settings.scan.comparing")}
-                  </span>
-                  <button
-                    type="button"
-                    className="bottone minuto btn-ghost"
-                    onClick={onAnnullaScansione}
-                  >
-                    {t("common.cancel")}
-                  </button>
-                </div>
-                <div className="barra player-progress">
-                  <div
-                    className="riempita"
-                    style={{ width: `${percentuale}%` }}
-                  >
-                    <span
-                      className="riflesso progress-sheen"
-                      aria-hidden="true"
-                    />
-                  </div>
-                </div>
-                <p className="nota">{t("settings.scan.note")}</p>
-              </div>
-            )}
-
-            {esito && (
-              <p className="esito">
-                {t("settings.scan.result", {
-                  inseriti: esito.inseriti,
-                  aggiornati: esito.aggiornati,
-                  spostati: esito.spostati,
-                  tolti: esito.tolti,
-                  secondi: (esito.durataMs / 1000).toFixed(1),
-                })}
-                {esito.illeggibili > 0 &&
-                  t("settings.scan.unreadable", { n: esito.illeggibili })}
-                {/* Chi ha premuto Annulla deve leggere che si è fermata, non
-                    «completata»: la libreria è giusta ma incompleta, e il modo
-                    di finirla è rifarla. */}
-                {esito.annullata && (
-                  <>
-                    {" · "}
-                    <strong>{t("settings.scan.stopped.strong")}</strong>
-                    {t("settings.scan.stopped.rest")}
-                  </>
-                )}
-                {/* Una radice che non ha risposto è tutta la differenza fra
-                    «quei brani non ci sono più» e «quei brani non li ho
-                    guardati». Senza questa riga la scansione dice
-                    «completata», e chi la legge conclude la prima delle due
-                    mentre è vera la seconda. I percorsi si scrivono per
-                    intero: sapere che *una* cartella manca non serve a
-                    niente se non si sa quale ricollegare. */}
-                {esito.radiciSaltate.length > 0 && (
-                  <>
-                    {" · "}
-                    <strong>
-                      {t("settings.scan.skipped.strong", {
-                        n: esito.radiciSaltate.length,
-                      })}
-                    </strong>
-                    {t("settings.scan.skipped.rest")}{" "}
-                    {esito.radiciSaltate.join(" · ")}
-                  </>
-                )}
-                {/* Non capita in questa schermata — la scansione a mano non è
-                    prudente, perché qualcuno la sta guardando — ma il campo
-                    arriva lo stesso, e una scansione che ha trattenuto delle
-                    rimozioni non deve poterlo tacere se un giorno passasse
-                    di qui. */}
-                {esito.rimozioniRinviate > 0 && (
-                  <>
-                    {" · "}
-                    <strong>
-                      {t("settings.scan.held.strong", {
-                        n: esito.rimozioniRinviate,
-                      })}
-                    </strong>
-                    {t("settings.scan.held.rest")}
-                  </>
-                )}
-              </p>
-            )}
-          </Scheda>
-        )}
-
-        {sezione === "cartelle" && (
-          <Scheda
-            icona="i-import"
-            titolo={t("settings.downloads.title")}
-            nota={
-              avvio?.cartellaDownload === null
-                ? t("settings.downloads.default")
-                : t("settings.downloads.chosen")
-            }
-          >
-            <p className="nota">
-              <Trans
-                k="settings.downloads.note"
-                v={{
-                  prima: <strong>{t("settings.downloads.note.first")}</strong>,
-                }}
-              />
-            </p>
-
-            {(avvio?.cartelle.length ?? 0) === 0 ? (
-              <p className="niente empty-state">
-                {t("settings.downloads.needRoot")}
-              </p>
-            ) : (
-              <>
-                <div className="cartella-scarichi">
-                  <span
-                    className="percorso"
-                    title={cartellaScarichi ?? undefined}
-                  >
-                    {cartellaScarichi}
-                  </span>
-                </div>
-                {fuoriDalleSorvegliate && (
-                  <p className="avviso">{t("settings.downloads.outside")}</p>
-                )}
-                <div className="azioni">
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    onClick={onScegliCartellaDownload}
-                  >
-                    <Icona nome="i-folder" dim={15} />
-                    {t("settings.downloads.change")}
-                  </button>
-                  {avvio?.cartellaDownload !== null && (
-                    <button
-                      type="button"
-                      className="bottone btn-ghost"
-                      onClick={onCartellaDownloadDiSerie}
-                    >
-                      <Icona nome="i-x" dim={15} />
-                      {t("settings.downloads.reset")}
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
-          </Scheda>
-        )}
-
-        {/* Accanto alle cartelle e non in una sezione sua: l'arricchimento è
-            quel che succede ai file **dopo** che la scansione li ha trovati, e
-            chi viene qui a sistemare la libreria è chi ha bisogno di trovarlo. */}
-        {sezione === "cartelle" && (
-          <Scheda
-            icona="i-scan"
-            titolo={t("settings.enrich.title")}
-            nota={t("settings.enrich.note")}
-          >
-            <p className="nota">
-              <Trans
-                k="settings.enrich.p1"
-                v={{ album: <strong>{t("settings.enrich.p1.album")}</strong> }}
-              />
-            </p>
-            <p className="nota">
-              <Trans
-                k="settings.enrich.p2"
-                v={{
-                  niente: <strong>{t("settings.enrich.p2.nothing")}</strong>,
-                }}
-              />
-            </p>
-
-            {arricchimento?.errore && (
-              <div className="errore">{testoErrore(arricchimento.errore)}</div>
-            )}
-
-            <Interruttore
-              etichetta={t("settings.enrich.toggle")}
-              spiegazione={t("settings.enrich.toggle.hint")}
-              acceso={arricchimento?.attivo ?? false}
-              onCambia={onArricchimentoAttiva}
+              }}
             />
+          </div>
 
-            <dl className="numeri">
-              <div>
-                <dt>{t("settings.enrich.done")}</dt>
-                <dd className="stat-number">
-                  {numero(arricchimento?.completati ?? 0)}
-                </dd>
-              </div>
-              <div>
-                <dt>{t("settings.enrich.noMatch")}</dt>
-                <dd className="stat-number">
-                  {numero(arricchimento?.senzaCorrispondenza ?? 0)}
-                </dd>
-              </div>
-              <div>
-                <dt>{t("settings.enrich.waiting")}</dt>
-                <dd className="stat-number">
-                  {numero(arricchimento?.daFare ?? 0)}
-                </dd>
-              </div>
-              <div>
-                <dt>{t("settings.enrich.lastPass")}</dt>
-                <dd className="stat-number">
-                  {arricchimento?.inCorso
-                    ? t("settings.enrich.inProgress")
-                    : quando(arricchimento?.ultimoMs ?? null)}
-                </dd>
-              </div>
-            </dl>
-
-            {avanzaArricchimento && (
-              <div className="avanzamento-scansione">
-                <div className="riga-avanzamento">
-                  <span className="quanti">
-                    {t("settings.enrich.records", {
-                      fatti: avanzaArricchimento.fatti,
-                      totale: avanzaArricchimento.totale,
-                    })}
-                  </span>
-                </div>
-                <div className="barra player-progress">
-                  <div
-                    className="riempita"
-                    style={{
-                      width: `${
-                        avanzaArricchimento.totale > 0
-                          ? Math.round(
-                              (avanzaArricchimento.fatti /
-                                avanzaArricchimento.totale) *
-                                100,
-                            )
-                          : 0
-                      }%`,
-                    }}
+          {filtro.trim() === "" ? (
+            gruppi().map(([titolo, dentro]) => (
+              /* Un frammento e non un `<div>`: l'indice è una colonna sola, e un
+                 contenitore per gruppo vorrebbe dire quattro scatole da far
+                 comportare come se non ci fossero. */
+              <Fragment key={titolo}>
+                <div className="titolo-gruppo">{titolo}</div>
+                {dentro.map(([chiave, etichetta, icona]) => (
+                  <button
+                    key={chiave}
+                    type="button"
+                    className="voce nav-pill"
+                    aria-current={sezione === chiave ? "true" : undefined}
+                    data-active={sezione === chiave || undefined}
+                    onClick={() => onSezione(chiave)}
                   >
-                    <span
-                      className="riflesso progress-sheen"
-                      aria-hidden="true"
-                    />
-                  </div>
-                </div>
-                <p className="nota">{t("settings.enrich.pace")}</p>
-              </div>
-            )}
+                    <Icona nome={icona} dim={16} />
+                    <span>{etichetta}</span>
+                  </button>
+                ))}
+              </Fragment>
+            ))
+          ) : trovate.length === 0 ? (
+            <p className="niente empty-state">{t("settings.index.nothing")}</p>
+          ) : (
+            trovate.map((v) => {
+              const dove = sezioni().find(([chiave]) => chiave === v.sezione);
+              return (
+                <button
+                  key={`${v.sezione}/${v.titolo}`}
+                  type="button"
+                  className="voce nav-pill trovata"
+                  onClick={() => {
+                    onSezione(v.sezione);
+                    // Il filtro si svuota: lasciarlo pieno vorrebbe dire tornare
+                    // in una pagina il cui indice non mostra più dove si è.
+                    setFiltro("");
+                  }}
+                >
+                  <Icona nome={dove?.[2] ?? "i-search"} dim={16} />
+                  <span>
+                    {v.titolo}
+                    <em className="dove">{dove?.[1] ?? ""}</em>
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </nav>
 
-            {esitoArricchimento && !avanzaArricchimento && (
-              <p className="esito">
-                {t("settings.enrich.result", {
-                  applicati: esitoArricchimento.applicati,
-                  astenuti: esitoArricchimento.astenuti,
-                  senza: esitoArricchimento.senzaCorrispondenza,
-                })}
-                {esitoArricchimento.copertine > 0 &&
-                  t("settings.enrich.result.covers", {
-                    n: esitoArricchimento.copertine,
-                  })}
-              </p>
-            )}
+        <div className="corpo">
+          {sezione === "cartelle" && (
+            <Scheda
+              icona="i-folder"
+              titolo={t("settings.roots.title")}
+              guida="roots"
+            >
+              {avvio && avvio.cartelle.length > 0 ? (
+                <ul className="cartelle">
+                  {avvio.cartelle.map((c) => (
+                    <li className="cartella" key={c}>
+                      {/* `unicode-bidi: plaintext` accanto a `direction: rtl` sta
+                          nel foglio: senza, un percorso UNC che comincia con due
+                          barre rovesciate si disegnava con quelle in fondo. */}
+                      <span className="percorso" title={c}>
+                        {c}
+                      </span>
+                      <button
+                        type="button"
+                        className="tasto icon-btn"
+                        aria-label={t("settings.roots.forget", { percorso: c })}
+                        title={t("settings.roots.forget.title")}
+                        onClick={() => onTogliCartella(c)}
+                      >
+                        <Icona nome="i-x" dim={14} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="niente empty-state">{t("settings.roots.empty")}</p>
+              )}
 
-            <div className="azioni">
-              <button
-                type="button"
-                className="bottone btn-ghost"
-                /* Senza righe da riportare non c'è niente da disfare, e un
-                   pulsante attivo prometterebbe qualcosa che non succede. */
-                disabled={
-                  arricchimento === null ||
-                  arricchimento.inCorso ||
-                  arricchimento.annullabili === 0
-                }
-                onClick={onArricchimentoAnnulla}
-              >
-                <Icona nome="i-x" dim={15} />
-                {arricchimento?.inCorso
-                  ? t("settings.enrich.passRunning")
-                  : arricchimento && arricchimento.annullabili > 0
-                    ? t("settings.enrich.undo.count", {
-                        n: arricchimento.annullabili,
-                      })
-                    : t("settings.enrich.undo")}
-              </button>
-
-              {/* Compare solo se c'è davvero qualcosa da riportare, e non
-                  compare spento: un pulsante disabilitato dice «un giorno
-                  potrai», e qui quel giorno non arriva mai — `neiFile` conta
-                  le righe di `enrich_undo`, che dalla 2.3.1 nessuno scrive
-                  più e che possono solo calare. Su una libreria nata da
-                  questa versione in poi questo bottone non deve esistere
-                  affatto. */}
-              {arricchimento !== null && arricchimento.neiFile > 0 && (
+              <div className="azioni">
                 <button
                   type="button"
                   className="bottone btn-ghost"
-                  disabled={arricchimento.inCorso}
-                  onClick={onArricchimentoRiportaNeiFile}
+                  onClick={onAggiungiCartella}
                 >
-                  <Icona nome="i-import" dim={15} />
-                  {arricchimento.inCorso
-                    ? t("settings.enrich.passRunning")
-                    : t("settings.enrich.toFiles.count", {
-                        n: arricchimento.neiFile,
-                      })}
+                  <Icona nome="i-plus" dim={15} />
+                  {t("settings.roots.add")}
                 </button>
-              )}
-            </div>
-
-            <p className="nota">
-              <Trans
-                k="settings.enrich.undo.note"
-                v={{
-                  spegne: <strong>{t("settings.enrich.undo.note.off")}</strong>,
-                }}
-              />
-            </p>
-
-            {/* Il salto che va spiegato, e che senza questa nota si legge come
-                un guasto: su una libreria che viene dalla 2.3.0 «Dimentica»
-                mostra **zero** finché non gira una passata nuova. È corretto —
-                quei brani hanno una riga in `enrich_undo` e non nella tabella
-                nuova, e i loro tag stanno dentro i file, non in una tabella di
-                Aether — ma nessuno può indovinarlo guardando un contatore a
-                zero accanto a una libreria che l'arricchimento ha
-                evidentemente toccato. La condizione è la stessa del bottone
-                qui sopra, ed è quella giusta: la nota c'è esattamente finché
-                esiste il caso che spiega, e sparisce da sé il giorno in cui la
-                tabella vecchia si svuota. */}
-            {arricchimento !== null && arricchimento.neiFile > 0 && (
-              <p className="nota">
-                <Trans
-                  k="settings.enrich.legacy.note"
-                  n={{ n: arricchimento.neiFile }}
-                  v={{
-                    riporta: <strong>{t("settings.enrich.toFiles")}</strong>,
-                  }}
-                />
-              </p>
-            )}
-          </Scheda>
-        )}
-
-        {/* Dopo l'arricchimento, e per la stessa ragione per cui
-            l'arricchimento sta qui: sono tutt'e due quel che succede ai brani
-            **dopo** che la scansione li ha trovati. */}
-        {sezione === "cartelle" && <SchedaTesti />}
-
-        {sezione === "aspetto" && (
-          <>
-            <Scheda icona="i-skin" titolo={t("settings.language.title")}>
-              {/* L'elenco non è scritto qui: è quel che `import.meta.glob`
-                  trova dentro `src/lingue/`. Un `de.json` lasciato cadere lì
-                  compare in questo controllo senza che questa riga cambi, ed è
-                  l'unico modo di rendere vera la promessa invece che dichiararla.
-                  Sotto le quattro lingue il segmentato le mostra tutte insieme;
-                  oltre, un elenco a tendina — dodici linguette non ci starebbero
-                  e nessuno può sapere quante ne troverà questo codice. */}
-              {DISPONIBILI.length <= 4 ? (
-                <Segmentato
-                  etichetta={t("settings.language.label")}
-                  scelta={lingua}
-                  onScegli={onLingua}
-                  voci={DISPONIBILI.map((l) => ({
-                    chiave: l.codice,
-                    etichetta: l.nome,
-                  }))}
-                />
-              ) : (
-                <select
-                  className="scegli-lingua"
-                  aria-label={t("settings.language.label")}
-                  value={lingua}
-                  onChange={(e) => onLingua(e.target.value)}
-                >
-                  {DISPONIBILI.map((l) => (
-                    <option key={l.codice} value={l.codice}>
-                      {l.nome}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <p className="nota">{t("settings.language.note")}</p>
-            </Scheda>
-
-            <Scheda icona="i-skin" titolo={t("settings.theme.title")}>
-              <Segmentato
-                etichetta={t("settings.theme.label")}
-                scelta={tema}
-                onScegli={onTema}
-                voci={[
-                  { chiave: "scuro", etichetta: t("settings.theme.dark") },
-                  {
-                    chiave: "chiaro",
-                    etichetta: t("settings.theme.light"),
-                    /* Una skin che non dichiara `capabilities.light` non ha una
-                       variante chiara: mostrare l'interruttore acceso e non far
-                       succedere niente è la promessa che `check_skin` chiama
-                       `UnkeptCapability`. */
-                    spenta:
-                      attiva && !attiva.chiara
-                        ? t("settings.theme.noLight", { nome: attiva.nome })
-                        : undefined,
-                  },
-                  { chiave: "sistema", etichetta: t("settings.theme.system") },
-                ]}
-              />
-              <p className="nota">
-                <Trans
-                  k="settings.theme.note"
-                  n={{ sistema: t("settings.theme.system") }}
-                  v={{ token: <code>prefers-color-scheme</code> }}
-                />
-              </p>
-            </Scheda>
-
-            <Scheda
-              icona="i-skin"
-              titolo={t("settings.skin.title")}
-              nota={t("settings.skin.installed", { n: skin.length })}
-            >
-              <div className="griglia-skin">
-                {skin.map((s) => {
-                  /* Tre colori scritti dall'autore in `meta.preview`. Quando non
-                     ci sono si ripiega sul fondo, sulla superficie e
-                     sull'accento — che per una skin sobria dà tre grigi quasi
-                     uguali, ed è esattamente il motivo per cui il campo esiste. */
-                  const bande =
-                    s.anteprima.length === 3
-                      ? s.anteprima
-                      : ["var(--color-surface-0)", "var(--color-surface-2)", "var(--accent)"];
-                  return (
-                    <div
-                      key={s.id}
-                      className="scheda-skin section-card"
-                      data-active={s.attiva || undefined}
-                      onMouseEnter={() => !s.attiva && onAnteprimaSkin(s.id)}
-                      onMouseLeave={() => !s.attiva && onAnteprimaSkin(null)}
-                    >
-                      <button
-                        type="button"
-                        className="prova"
-                        aria-label={t("settings.skin.use", { nome: s.nome })}
-                        onClick={() => onScegliSkin(s.id)}
-                      >
-                        <span className="bande" aria-hidden="true">
-                          {bande.map((colore, i) => (
-                            <span key={i} style={{ background: colore }} />
-                          ))}
-                        </span>
-                        <span className="nome-skin">{s.nome}</span>
-                        <span className="stato">
-                          {s.attiva
-                            ? t("settings.skin.inUse")
-                            : s.diSerie
-                              ? t("settings.skin.builtin")
-                              : s.autore}
-                        </span>
-                      </button>
-                      {s.descrizione !== null && (
-                        /* Solo le skin di serie passano dal catalogo delle
-                           lingue: la loro descrizione la scriviamo noi, ed è
-                           interfaccia come il resto della scheda — «Plain»
-                           spiegava sé stessa in italiano dentro
-                           un'applicazione in inglese. Quella di una skin
-                           installata resta com'è: è un testo di chi l'ha
-                           fatta, e tradurlo vorrebbe dire riscriverlo. */
-                        <p className="descrizione">
-                          {s.diSerie
-                            ? tSe(`skin.builtin.${s.id}.desc`, s.descrizione)
-                            : s.descrizione}
-                        </p>
-                      )}
-                      {/* «Deriva…» apre la creazione di un tema con questa skin
-                          come base, non lo Studio. Prima faceva la stessa cosa
-                          di «Apri nello Studio»: si finiva su un documento con
-                          «Salva e usa» spento e un suggerimento a cambiare
-                          `id` e `meta.name` a mano — un lavoro che la finestra
-                          «Crea tema» sapeva già fare, raggiungibile solo
-                          dall'altro bottone. */}
-                      <div className="azioni-skin">
-                        <button
-                          type="button"
-                          className="bottone minuto btn-ghost"
-                          onClick={() =>
-                            s.diSerie ? onDeriva(s.id) : onApriStudio(s.id)
-                          }
-                        >
-                          <Icona
-                            nome={s.diSerie ? "i-plus" : "i-text"}
-                            dim={13}
-                          />
-                          {s.diSerie
-                            ? t("settings.skin.derive")
-                            : t("settings.skin.openStudio")}
-                        </button>
-                        {/* Le skin si disinstallano. `diSerie` porta scritto
-                            «non si può disinstallare», il che dice che le altre
-                            sì — e il comando non c'era: una skin installata per
-                            curiosità restava nell'elenco per sempre. */}
-                        {!s.diSerie && (
-                          <button
-                            type="button"
-                            className="bottone minuto btn-ghost via-skin"
-                            aria-label={t("settings.skin.uninstall", {
-                              nome: s.nome,
-                            })}
-                            title={
-                              s.attiva
-                                ? t("settings.skin.uninstall.active", {
-                                    nome: s.nome,
-                                  })
-                                : t("settings.skin.uninstall", { nome: s.nome })
-                            }
-                            onClick={() => onDisinstallaSkin(s.id)}
-                          >
-                            <Icona nome="i-x" dim={13} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {/* L'ancora del giro guidato: qui e non sulla griglia sopra,
-                  perché il passo racconta lo Studio — e la porta d'ingresso
-                  dello Studio per chi non ha ancora nessuna skin sua è «Crea
-                  tema», non una delle schede installate. */}
-              <div className="azioni" data-giro="studio">
-                {/* Prima di «Installa»: fare un tema è il comando principale di
-                    questa scheda, installarne uno fatto da altri è il caso
-                    raro. Il pulsante per-scheda qui sopra apre lo Studio su una
-                    skin che c'è già; questo ne fa una che non c'è. */}
                 <button
                   type="button"
                   className="bottone primario btn-accent"
-                  onClick={onCreaTema}
+                  onClick={onScansiona}
+                  disabled={
+                    scansione !== null || (avvio?.cartelle.length ?? 0) === 0
+                  }
                 >
-                  <Icona nome="i-plus" dim={15} />
-                  {t("settings.skin.create")}
+                  <Icona nome="i-scan" dim={15} />
+                  {scansione
+                    ? t("settings.roots.scanning")
+                    : t("settings.roots.scan")}
                 </button>
+                <span className="oppure">{t("settings.roots.orDrop")}</span>
+              </div>
+
+              <RileggiTag
+                occupato={
+                  scansione !== null || (avvio?.cartelle.length ?? 0) === 0
+                }
+                onScansiona={onScansiona}
+                onErrore={onErrore}
+              />
+
+              <SorveglianzaCartelle onErrore={onErrore} />
+
+              {scansione && (
+                <div className="avanzamento-scansione">
+                  <div className="riga-avanzamento">
+                    <span className="quanti">
+                      {scansione.totale > 0
+                        ? `${numero(scansione.fatti)} / ${numero(scansione.totale)}`
+                        : t("settings.scan.comparing")}
+                    </span>
+                    <button
+                      type="button"
+                      className="bottone minuto btn-ghost"
+                      onClick={onAnnullaScansione}
+                    >
+                      {t("common.cancel")}
+                    </button>
+                  </div>
+                  <div className="barra player-progress">
+                    <div
+                      className="riempita"
+                      style={{ width: `${percentuale}%` }}
+                    >
+                      <span
+                        className="riflesso progress-sheen"
+                        aria-hidden="true"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {esito && (
+                <p className="esito">
+                  {t("settings.scan.result", {
+                    inseriti: esito.inseriti,
+                    aggiornati: esito.aggiornati,
+                    spostati: esito.spostati,
+                    tolti: esito.tolti,
+                    secondi: numero(esito.durataMs / 1000, 1),
+                  })}
+                  {esito.illeggibili > 0 &&
+                    t("settings.scan.unreadable", { n: esito.illeggibili })}
+                  {/* Chi ha premuto Annulla deve leggere che si è fermata, non
+                      «completata»: la libreria è giusta ma incompleta, e il modo
+                      di finirla è rifarla. */}
+                  {esito.annullata && (
+                    <>
+                      {" · "}
+                      <strong>{t("settings.scan.stopped.strong")}</strong>
+                      {t("settings.scan.stopped.rest")}
+                    </>
+                  )}
+                  {/* Una radice che non ha risposto è tutta la differenza fra
+                      «quei brani non ci sono più» e «quei brani non li ho
+                      guardati». Senza questa riga la scansione dice
+                      «completata», e chi la legge conclude la prima delle due
+                      mentre è vera la seconda. I percorsi si scrivono per
+                      intero: sapere che *una* cartella manca non serve a
+                      niente se non si sa quale ricollegare. */}
+                  {esito.radiciSaltate.length > 0 && (
+                    <>
+                      {" · "}
+                      <strong>
+                        {t("settings.scan.skipped.strong", {
+                          n: esito.radiciSaltate.length,
+                        })}
+                      </strong>
+                      {t("settings.scan.skipped.rest")}{" "}
+                      {esito.radiciSaltate.join(" · ")}
+                    </>
+                  )}
+                  {/* Le sottocartelle che non si sono lasciate leggere: i brani
+                      lì sotto non sono stati né tolti né riletti, e l'elenco
+                      dice dove guardare. */}
+                  {esito.cartelleIlleggibili.length > 0 && (
+                    <>
+                      {" · "}
+                      <strong>
+                        {t("settings.scan.lostFolders.strong", {
+                          n: esito.cartelleIlleggibili.length,
+                        })}
+                      </strong>
+                      {t("settings.scan.lostFolders.rest")}{" "}
+                      {esito.cartelleIlleggibili.join(" · ")}
+                    </>
+                  )}
+                  {/* Dalla 3.0 anche la scansione a mano trattiene una sparizione
+                      di massa e la chiede con `ConfermaRimozioni`; se la domanda
+                      si chiude con «Tienili», la riga resta a ricordarlo. */}
+                  {esito.rimozioniRinviate > 0 && (
+                    <>
+                      {" · "}
+                      <strong>
+                        {t("settings.scan.held.strong", {
+                          n: esito.rimozioniRinviate,
+                        })}
+                      </strong>
+                      {t("settings.scan.held.rest")}
+                    </>
+                  )}
+                </p>
+              )}
+            </Scheda>
+          )}
+
+          {sezione === "cartelle" && (
+            <Scheda
+              icona="i-import"
+              titolo={t("settings.downloads.title")}
+              guida="downloads"
+              nota={
+                avvio?.cartellaDownload === null
+                  ? t("settings.downloads.default")
+                  : t("settings.downloads.chosen")
+              }
+            >
+
+              {(avvio?.cartelle.length ?? 0) === 0 ? (
+                <p className="niente empty-state">
+                  {t("settings.downloads.needRoot")}
+                </p>
+              ) : (
+                <>
+                  <div className="cartella-scarichi">
+                    <span
+                      className="percorso"
+                      title={cartellaScarichi ?? undefined}
+                    >
+                      {cartellaScarichi}
+                    </span>
+                  </div>
+                  {fuoriDalleSorvegliate && (
+                    <p className="avviso">{t("settings.downloads.outside")}</p>
+                  )}
+                  <div className="azioni">
+                    <button
+                      type="button"
+                      className="bottone btn-ghost"
+                      onClick={onScegliCartellaDownload}
+                    >
+                      <Icona nome="i-folder" dim={15} />
+                      {t("settings.downloads.change")}
+                    </button>
+                    {avvio?.cartellaDownload !== null && (
+                      <button
+                        type="button"
+                        className="bottone btn-ghost"
+                        onClick={onCartellaDownloadDiSerie}
+                      >
+                        <Icona nome="i-x" dim={15} />
+                        {t("settings.downloads.reset")}
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </Scheda>
+          )}
+
+          {/* Accanto alle cartelle e non in una sezione sua: l'arricchimento è
+              quel che succede ai file **dopo** che la scansione li ha trovati, e
+              chi viene qui a sistemare la libreria è chi ha bisogno di trovarlo. */}
+          {sezione === "cartelle" && (
+            <Scheda
+              icona="i-scan"
+              titolo={t("settings.enrich.title")}
+              guida="enrich"
+            >
+
+              {arricchimento?.errore && (
+                <div className="errore">{testoErrore(arricchimento.errore)}</div>
+              )}
+
+              <Interruttore
+                etichetta={t("settings.enrich.toggle")}
+                acceso={arricchimento?.attivo ?? false}
+                onCambia={onArricchimentoAttiva}
+              />
+
+              <dl className="numeri">
+                <div>
+                  <dt>{t("settings.enrich.done")}</dt>
+                  <dd className="stat-number">
+                    {numero(arricchimento?.completati ?? 0)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t("settings.enrich.noMatch")}</dt>
+                  <dd className="stat-number">
+                    {numero(arricchimento?.senzaCorrispondenza ?? 0)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t("settings.enrich.waiting")}</dt>
+                  <dd className="stat-number">
+                    {numero(arricchimento?.daFare ?? 0)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t("settings.enrich.lastPass")}</dt>
+                  <dd className="stat-number">
+                    {arricchimento?.inCorso
+                      ? t("settings.enrich.inProgress")
+                      : quando(arricchimento?.ultimoMs ?? null)}
+                  </dd>
+                </div>
+              </dl>
+
+              {avanzaArricchimento && (
+                <div className="avanzamento-scansione">
+                  <div className="riga-avanzamento">
+                    <span className="quanti">
+                      {t("settings.enrich.records", {
+                        fatti: avanzaArricchimento.fatti,
+                        totale: avanzaArricchimento.totale,
+                      })}
+                    </span>
+                  </div>
+                  <div className="barra player-progress">
+                    <div
+                      className="riempita"
+                      style={{
+                        width: `${
+                          avanzaArricchimento.totale > 0
+                            ? Math.round(
+                                (avanzaArricchimento.fatti /
+                                  avanzaArricchimento.totale) *
+                                  100,
+                              )
+                            : 0
+                        }%`,
+                      }}
+                    >
+                      <span
+                        className="riflesso progress-sheen"
+                        aria-hidden="true"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {esitoArricchimento && !avanzaArricchimento && (
+                <p className="esito">
+                  {t("settings.enrich.result", {
+                    applicati: esitoArricchimento.applicati,
+                    astenuti: esitoArricchimento.astenuti,
+                    senza: esitoArricchimento.senzaCorrispondenza,
+                  })}
+                  {esitoArricchimento.copertine > 0 &&
+                    t("settings.enrich.result.covers", {
+                      n: esitoArricchimento.copertine,
+                    })}
+                </p>
+              )}
+
+              <div className="azioni">
                 <button
                   type="button"
                   className="bottone btn-ghost"
-                  onClick={onInstallaSkin}
+                  /* Senza righe da riportare non c'è niente da disfare, e un
+                     pulsante attivo prometterebbe qualcosa che non succede. */
+                  disabled={
+                    arricchimento === null ||
+                    arricchimento.inCorso ||
+                    arricchimento.annullabili === 0
+                  }
+                  onClick={onArricchimentoAnnulla}
                 >
-                  <Icona nome="i-import" dim={15} />
-                  {t("settings.skin.install")}
+                  <Icona nome="i-x" dim={15} />
+                  {arricchimento?.inCorso
+                    ? t("settings.enrich.passRunning")
+                    : arricchimento && arricchimento.annullabili > 0
+                      ? t("settings.enrich.undo.count", {
+                          n: arricchimento.annullabili,
+                        })
+                      : t("settings.enrich.undo")}
                 </button>
-                <span className="oppure">{t("settings.skin.orDrop")}</span>
-              </div>
-            </Scheda>
 
-            {/* In «Aspetto» e non altrove: il giro guidato racconta com'è
-                fatta la finestra, ed è la stessa domanda a cui rispondono la
-                lingua, il tema e le skin. La sezione «Movimento e accesso» —
-                dove stanno le scorciatoie, che il decimo passo nomina —
-                sarebbe stata l'altra candidata, ma là dentro si dichiara una
-                condizione, non si chiede una presentazione. */}
-            <Scheda
-              icona="i-home"
-              titolo={t("settings.tour.title")}
-              nota={t("settings.tour.note")}
-            >
-              <p className="nota">{t("settings.tour.p1")}</p>
-              <div className="azioni">
-                <button type="button" className="bottone" onClick={onGiro}>
-                  <Icona nome="i-play" dim={15} />
-                  {t("settings.tour.redo")}
-                </button>
+                {/* Compare solo se c'è davvero qualcosa da riportare, e non
+                    compare spento: un pulsante disabilitato dice «un giorno
+                    potrai», e qui quel giorno non arriva mai — `neiFile` conta
+                    le righe di `enrich_undo`, che dalla 2.3.1 nessuno scrive
+                    più e che possono solo calare. Su una libreria nata da
+                    questa versione in poi questo bottone non deve esistere
+                    affatto. */}
+                {arricchimento !== null && arricchimento.neiFile > 0 && (
+                  <button
+                    type="button"
+                    className="bottone btn-ghost"
+                    disabled={arricchimento.inCorso}
+                    onClick={onArricchimentoRiportaNeiFile}
+                  >
+                    <Icona nome="i-import" dim={15} />
+                    {arricchimento.inCorso
+                      ? t("settings.enrich.passRunning")
+                      : t("settings.enrich.toFiles.count", {
+                          n: arricchimento.neiFile,
+                        })}
+                  </button>
+                )}
               </div>
-            </Scheda>
-          </>
-        )}
 
-        {sezione === "riproduzione" && (
-          <>
-            <Scheda icona="i-eq" titolo={t("settings.eq.title")}>
-              <p className="nota">{t("settings.eq.p1")}</p>
-              <p className="nota">
-                <Trans
-                  k="settings.eq.p2"
-                  v={{ mentre: <strong>{t("settings.eq.p2.while")}</strong> }}
-                />
-              </p>
-              <Equalizzatore
-                attivo={eqAttivo}
-                guadagni={eqGuadagni}
-                taglia="pagina"
-                onErrore={onErrore}
-              />
-            </Scheda>
-            <Scheda icona="i-play" titolo={t("settings.playback.title")}>
-              {/* Acceso, finalmente, e senza scorciatoie. La tinta dominante la
-                estrae `aether-app` dalla miniatura del disco; se sia leggibile
-                lo decide `aether-skin` in OKLCH, dove vive `contrast_ratio`.
-                Quando nessuna chiarezza di quella tonalità regge 4,5:1 contro
-                le superfici del tema, la risposta è «no» e vince l'accento
-                della skin: è la ragione per cui questo interruttore è rimasto
-                spento finché non c'è stato un posto in cui metterlo che non
-                fosse «scrivi il colore e spera». */}
-              <Interruttore
-                etichetta={t("settings.accent.toggle")}
-                spiegazione={t("settings.accent.hint")}
-                acceso={accentoDinamico && accentoPermesso}
-                onCambia={onAccentoDinamico}
-                impedito={
-                  accentoPermesso ? undefined : t("settings.accent.blocked")
-                }
-              />
-              {accentoPermesso && dinamici > 0 && (
+              {/* Il salto che va spiegato, e che senza questa nota si legge come
+                  un guasto: su una libreria che viene dalla 2.3.0 «Dimentica»
+                  mostra **zero** finché non gira una passata nuova. È corretto —
+                  quei brani hanno una riga in `enrich_undo` e non nella tabella
+                  nuova, e i loro tag stanno dentro i file, non in una tabella di
+                  Aether — ma nessuno può indovinarlo guardando un contatore a
+                  zero accanto a una libreria che l'arricchimento ha
+                  evidentemente toccato. La condizione è la stessa del bottone
+                  qui sopra, ed è quella giusta: la nota c'è esattamente finché
+                  esiste il caso che spiega, e sparisce da sé il giorno in cui la
+                  tabella vecchia si svuota. */}
+              {arricchimento !== null && arricchimento.neiFile > 0 && (
                 <p className="nota">
                   <Trans
-                    k="settings.accent.tokens"
-                    n={{ n: dinamici }}
+                    k="settings.enrich.legacy.note"
+                    n={{ n: arricchimento.neiFile }}
                     v={{
-                      quanti: <strong>{dinamici}</strong>,
-                      var: <code>var(--accent)</code>,
+                      riporta: <strong>{t("settings.enrich.toFiles")}</strong>,
                     }}
                   />
                 </p>
               )}
-              {/* `normale` di serie, e non è una scelta di disegno: è quel che
-                il motore fa da quando esiste. Un aggiornamento che lo spegnesse
-                in silenzio cambierebbe il volume di chi ha i tag senza che
-                nessuna schermata lo spieghi — ed è la ragione per cui i quattro
-                stati partono da qui e non da «spento». */}
-              <Segmentato
-                etichetta={t("settings.replaygain.label")}
-                scelta={replaygain}
-                onScegli={onReplaygain}
-                voci={[
-                  { chiave: "spento", etichetta: t("settings.replaygain.off") },
-                  { chiave: "basso", etichetta: t("settings.replaygain.low") },
-                  {
-                    chiave: "normale",
-                    etichetta: t("settings.replaygain.normal"),
-                  },
-                  { chiave: "alto", etichetta: t("settings.replaygain.high") },
-                ]}
-              />
-              <p className="nota">{t("settings.replaygain.hint")}</p>
-              <Interruttore
-                etichetta={t("settings.autoplay.toggle")}
-                spiegazione={t("settings.autoplay.hint")}
-                acceso={autoplay}
-                onCambia={onAutoplay}
-              />
-              {/* Qui e non in «Aspetto», per la regola di questa sezione: il
-                  dominio della chiave è `player.*`. E dentro questa scheda e
-                  non in una sua, perché una scheda intera per un interruttore
-                  solo sarebbe un titolo più alto di quel che contiene. */}
-              <InterruttoreFormato onErrore={onErrore} />
             </Scheda>
-            {/* Prima della dissolvenza e dopo l'equalizzatore, che è l'ordine
-                di quanto spesso ci si torna: da quale scheda esce il suono è
-                la prima cosa che si viene a cercare qui quando qualcosa non si
-                sente, e la dissolvenza è una preferenza che si decide una
-                volta. */}
-            <Scheda icona="i-play" titolo={t("settings.output.title")}>
-              <SchedaUscita onErrore={onErrore} />
-            </Scheda>
-            <SchedaDissolvenza
-              dissolvenzaS={dissolvenzaS}
-              onDissolvenza={onDissolvenza}
-            />
-            <SchedaSpegnimento
-              spegnimentoMs={spegnimentoMs}
-              onSpegnimento={onSpegnimento}
-            />
-            {/* In «Riproduzione» e non in «Aspetto»: il dominio delle
-                chiavi è `player.*`, come ogni altro residente di questa
-                sezione. «Aspetto» è dove vive il look — che per la linea di
-                questa scheda è esattamente la metà che non è
-                un'impostazione, ma un blocco di token dello Studio. */}
-            <Scheda icona="i-eq" titolo={t("settings.spectrum.title")}>
-              <SchedaSpettro onErrore={onErrore} />
-            </Scheda>
-          </>
-        )}
+          )}
 
-        {sezione === "movimento" && (
-          <Scheda
-            icona="i-eq"
-            titolo={t("settings.shortcuts.title")}
-            nota={t("settings.shortcuts.note")}
-          >
-            <Scorciatoie associazioni={scorciatoie} onCambia={onScorciatoie} />
-          </Scheda>
-        )}
+          {/* Dopo l'arricchimento, e per la stessa ragione per cui
+              l'arricchimento sta qui: sono tutt'e due quel che succede ai brani
+              **dopo** che la scansione li ha trovati. */}
+          {sezione === "cartelle" && <SchedaTesti />}
 
-        {/* Fra le scorciatoie e il movimento, e in questa sezione e non in
-            «Aspetto»: ingrandire non è una scelta di look come il tema o la
-            skin — è la stessa domanda del movimento ridotto, cioè «fai in modo
-            che io ci arrivi». Sta sotto le scorciatoie perché è la scheda che
-            le spiega: quelle tre righe lì sopra dicono i tasti, questi tre
-            bottoni fanno la stessa cosa per chi i tasti li ha tolti. */}
-        {sezione === "movimento" && (
-          <Scheda
-            icona="i-expand"
-            titolo={t("settings.zoom.title")}
-            nota={t("settings.zoom.note")}
-          >
-            <p className="nota">{t("settings.zoom.p1")}</p>
-            {/* I tre bottoni e non un cursore o un elenco di misure: un
-                elenco vorrebbe i gradini scritti da questa parte, cioè un
-                secondo elenco di numeri accanto a quello del nucleo. Qui si
-                mandano gesti, e il numero che si legge è quello che il nucleo
-                ha risposto. */}
-            <div className="azioni">
-              <button
-                type="button"
-                className="bottone"
-                onClick={() => onZoom(false)}
-              >
-                {t("settings.zoom.smaller")}
-              </button>
-              <button type="button" className="bottone" onClick={onZoomNormale}>
-                {t("settings.zoom.reset")}
-              </button>
-              <button
-                type="button"
-                className="bottone"
-                onClick={() => onZoom(true)}
-              >
-                {t("settings.zoom.bigger")}
-              </button>
-            </div>
-            <p className="nota">
-              {t("settings.zoom.now", { quanto: Math.round(zoom * 100) })}
-            </p>
-          </Scheda>
-        )}
-
-        {sezione === "movimento" && (
-          <Scheda icona="i-eq" titolo={t("settings.motion.title")}>
-            <p className="nota">
-              <Trans
-                k="settings.motion.p1"
-                v={{
-                  token: <code>motion.intensity</code>,
-                  livello: <strong>{movimento}</strong>,
-                }}
-              />
-            </p>
-            <p className="nota">
-              <Trans
-                k="settings.motion.p2"
-                v={{ layout: <code>layout</code> }}
-              />
-            </p>
-
-            {/* Due voci e non tre. Da qui si può soltanto **ridurre** sotto
-                quel che la skin dichiara: un livello «di più» contraddirebbe
-                la frase qui sopra, che dice che una preferenza di
-                accessibilità sovrascrivibile non è una preferenza. Chi vuole
-                più movimento cambia skin, che è dove il movimento si
-                dichiara. */}
-            <Segmentato
-              etichetta={t("settings.motion.pref")}
-              scelta={movimentoUtente}
-              onScegli={onMovimentoUtente}
-              voci={[
-                { chiave: "sistema", etichetta: t("settings.motion.system") },
-                { chiave: "ridotto", etichetta: t("settings.motion.reduce") },
-              ]}
-            />
-            <p className="nota">{t("settings.motion.pref.why")}</p>
-          </Scheda>
-        )}
-
-        {sezione === "nuvola" && (
-          <Scheda icona="i-cloud" titolo={t("settings.cloud.title")}>
-            <p className="nota">
-              <Trans
-                k="settings.cloud.p1"
-                v={{ non: <strong>{t("settings.cloud.p1.not")}</strong> }}
-              />
-            </p>
-            <p className="nota">{t("settings.cloud.p2")}</p>
-
-            {nuvola?.errore && (
-              <div className="errore">{testoErrore(nuvola.errore)}</div>
-            )}
-
-            {nuvola && !nuvola.configurato && (
-              <p className="nota">{t("settings.cloud.noCreds")}</p>
-            )}
-
-            <Interruttore
-              etichetta={t("settings.cloud.toggle")}
-              spiegazione={t("settings.cloud.toggle.hint")}
-              acceso={nuvola?.attivo ?? false}
-              onCambia={onNuvolaAttiva}
-              impedito={
-                nuvola?.collegato ? undefined : t("settings.cloud.needAccount")
-              }
-            />
-
-            <dl className="numeri">
-              <div>
-                <dt>{t("settings.cloud.account")}</dt>
-                <dd className="stat-number">
-                  {nuvola?.email ??
-                    (nuvola?.collegato
-                      ? t("settings.cloud.connected")
-                      : t("settings.cloud.none"))}
-                </dd>
-              </div>
-              <div>
-                <dt>{t("settings.cloud.lastSave")}</dt>
-                <dd className="stat-number">
-                  {quando(nuvola?.ultimoMs ?? null)}
-                </dd>
-              </div>
-            </dl>
-
-            {avanzaNuvola && (
-              <div className="avanzamento-scansione">
-                <div className="riga-avanzamento">
-                  <span className="quanti">
-                    {fasiNuvola()[avanzaNuvola.cosa]}{" "}
-                    {numero(avanzaNuvola.fatti)} / {numero(avanzaNuvola.totale)}
-                  </span>
-                </div>
-                <div className="barra player-progress">
-                  <div
-                    className="riempita"
-                    style={{
-                      width: `${
-                        avanzaNuvola.totale > 0
-                          ? Math.round(
-                              (avanzaNuvola.fatti / avanzaNuvola.totale) * 100,
-                            )
-                          : 0
-                      }%`,
-                    }}
+          {sezione === "aspetto" && (
+            <>
+              <Scheda icona="i-skin" titolo={t("settings.language.title")} guida="language">
+                {/* L'elenco non è scritto qui: è quel che `import.meta.glob`
+                    trova dentro `src/lingue/`. Un `de.json` lasciato cadere lì
+                    compare in questo controllo senza che questa riga cambi, ed è
+                    l'unico modo di rendere vera la promessa invece che dichiararla.
+                    Sotto le quattro lingue il segmentato le mostra tutte insieme;
+                    oltre, un elenco a tendina — dodici linguette non ci starebbero
+                    e nessuno può sapere quante ne troverà questo codice. */}
+                {DISPONIBILI.length <= 4 ? (
+                  <Segmentato
+                    etichetta={t("settings.language.label")}
+                    scelta={lingua}
+                    onScegli={onLingua}
+                    voci={DISPONIBILI.map((l) => ({
+                      chiave: l.codice,
+                      etichetta: l.nome,
+                    }))}
+                  />
+                ) : (
+                  <select
+                    className="scegli-lingua"
+                    aria-label={t("settings.language.label")}
+                    value={lingua}
+                    onChange={(e) => onLingua(e.target.value)}
                   >
-                    <span className="riflesso progress-sheen" aria-hidden="true" />
-                  </div>
-                </div>
-              </div>
-            )}
+                    {DISPONIBILI.map((l) => (
+                      <option key={l.codice} value={l.codice}>
+                        {l.nome}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </Scheda>
 
-            <div className="azioni">
-              {nuvola?.collegato ? (
-                <>
+              <Scheda icona="i-skin" titolo={t("settings.theme.title")} guida="theme">
+                <Segmentato
+                  etichetta={t("settings.theme.label")}
+                  scelta={tema}
+                  onScegli={onTema}
+                  voci={[
+                    /* Una skin mostra la sua base e, se ce l'ha, la variante del
+                       tema opposto. Il tema che non sa mostrare si spegne:
+                       lasciarlo acceso e non far succedere niente sarebbe una
+                       scelta fatta e non avvenuta. */
+                    {
+                      chiave: "scuro",
+                      etichetta: t("settings.theme.dark"),
+                      spenta:
+                        attiva && attiva.scheme === "light" && !attiva.variante
+                          ? t("settings.theme.noDark", { nome: attiva.nome })
+                          : undefined,
+                    },
+                    {
+                      chiave: "chiaro",
+                      etichetta: t("settings.theme.light"),
+                      spenta:
+                        attiva && attiva.scheme === "dark" && !attiva.variante
+                          ? t("settings.theme.noLight", { nome: attiva.nome })
+                          : undefined,
+                    },
+                    { chiave: "sistema", etichetta: t("settings.theme.system") },
+                  ]}
+                />
+              </Scheda>
+
+              <Scheda
+                icona="i-skin"
+                titolo={t("settings.skin.title")}
+                guida="skin"
+                nota={t("settings.skin.installed", { n: skin.length })}
+              >
+                {/* Prima della griglia, e solo quando è successo: è la risposta
+                    alla domanda che porta qui — «perché non è la mia skin?». La
+                    scelta nel database è ancora quella, quindi non si dice
+                    «cambiata», si dice «non si legge». */}
+                {ripiego !== null && (
+                  <p className="nota nota-ripiego" role="status">
+                    {t("settings.skin.fallback", { id: ripiego })}
+                  </p>
+                )}
+                <div className="griglia-skin">
+                  {skin.map((s) => {
+                    /* Tre colori scritti dall'autore in `meta.preview`. Quando non
+                       ci sono si ripiega sul fondo, sulla superficie e
+                       sull'accento — che per una skin sobria dà tre grigi quasi
+                       uguali, ed è esattamente il motivo per cui il campo esiste. */
+                    const bande =
+                      s.anteprima.length === 3
+                        ? s.anteprima
+                        : ["var(--color-surface-0)", "var(--color-surface-2)", "var(--accent)"];
+                    const rotta = s.guasto !== undefined;
+                    return (
+                      <div
+                        key={s.id}
+                        className="scheda-skin section-card"
+                        data-active={s.attiva || undefined}
+                        data-rotta={rotta || undefined}
+                        onMouseEnter={() => !s.attiva && !rotta && onAnteprimaSkin(s.id)}
+                        onMouseLeave={() => !s.attiva && !rotta && onAnteprimaSkin(null)}
+                      >
+                        {/* Una skin installata che non passa più la validazione
+                            non si indossa e non si prova al passaggio: la scheda
+                            porta nello Studio, che è dove si aggiusta. Fino alla
+                            3.0 spariva dall'elenco senza dire niente. */}
+                        <button
+                          type="button"
+                          className="prova"
+                          aria-label={
+                            rotta
+                              ? t("settings.skin.openBroken", { nome: s.nome })
+                              : t("settings.skin.use", { nome: s.nome })
+                          }
+                          onClick={() => (rotta ? onApriStudio(s.id) : onScegliSkin(s.id))}
+                        >
+                          <span className="bande" aria-hidden="true">
+                            {bande.map((colore, i) => (
+                              <span key={i} style={{ background: colore }} />
+                            ))}
+                          </span>
+                          <span className="nome-skin">{s.nome}</span>
+                          <span className="stato">
+                            {rotta
+                              ? t("settings.skin.broken")
+                              : s.attiva
+                                ? t("settings.skin.inUse")
+                                : s.diSerie
+                                  ? t("settings.skin.builtin")
+                                  : s.autore}
+                          </span>
+                        </button>
+                        {s.guasto !== undefined && (
+                          <p className="descrizione">{tSe(`errors.${s.guasto}`, s.guasto)}</p>
+                        )}
+                        {s.descrizione !== null && (
+                          /* Solo le skin di serie passano dal catalogo delle
+                             lingue: la loro descrizione la scriviamo noi, ed è
+                             interfaccia come il resto della scheda — «Plain»
+                             spiegava sé stessa in italiano dentro
+                             un'applicazione in inglese. Quella di una skin
+                             installata resta com'è: è un testo di chi l'ha
+                             fatta, e tradurlo vorrebbe dire riscriverlo. */
+                          <p className="descrizione">
+                            {s.diSerie
+                              ? tSe(`skin.builtin.${s.id}.desc`, s.descrizione)
+                              : s.descrizione}
+                          </p>
+                        )}
+                        {/* «Deriva…» apre la creazione di un tema con questa skin
+                            come base, non lo Studio. Prima faceva la stessa cosa
+                            di «Apri nello Studio»: si finiva su un documento con
+                            «Salva e usa» spento e un suggerimento a cambiare
+                            `id` e `meta.name` a mano — un lavoro che la finestra
+                            «Crea tema» sapeva già fare, raggiungibile solo
+                            dall'altro bottone. */}
+                        <div className="azioni-skin">
+                          <button
+                            type="button"
+                            className="bottone minuto btn-ghost"
+                            onClick={() =>
+                              s.diSerie ? onDeriva(s.id) : onApriStudio(s.id)
+                            }
+                          >
+                            <Icona
+                              nome={s.diSerie ? "i-plus" : "i-text"}
+                              dim={13}
+                            />
+                            {s.diSerie
+                              ? t("settings.skin.derive")
+                              : t("settings.skin.openStudio")}
+                          </button>
+                          {/* Le skin si disinstallano. `diSerie` porta scritto
+                              «non si può disinstallare», il che dice che le altre
+                              sì — e il comando non c'era: una skin installata per
+                              curiosità restava nell'elenco per sempre. */}
+                          {!s.diSerie && (
+                            <button
+                              type="button"
+                              className="bottone minuto btn-ghost via-skin"
+                              aria-label={t("settings.skin.uninstall", {
+                                nome: s.nome,
+                              })}
+                              title={
+                                s.attiva
+                                  ? t("settings.skin.uninstall.active", {
+                                      nome: s.nome,
+                                    })
+                                  : t("settings.skin.uninstall", { nome: s.nome })
+                              }
+                              onClick={() => onDisinstallaSkin(s.id)}
+                            >
+                              <Icona nome="i-x" dim={13} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* L'ancora del giro guidato: qui e non sulla griglia sopra,
+                    perché il passo racconta lo Studio — e la porta d'ingresso
+                    dello Studio per chi non ha ancora nessuna skin sua è «Crea
+                    tema», non una delle schede installate. */}
+                <div className="azioni" data-giro="studio">
+                  {/* Prima di «Installa»: fare un tema è il comando principale di
+                      questa scheda, installarne uno fatto da altri è il caso
+                      raro. Il pulsante per-scheda qui sopra apre lo Studio su una
+                      skin che c'è già; questo ne fa una che non c'è. */}
                   <button
                     type="button"
-                    className="bottone btn-ghost"
-                    disabled={nuvola.inCorso}
-                    onClick={onNuvolaSalva}
+                    className="bottone primario btn-accent"
+                    onClick={onCreaTema}
                   >
-                    <Icona nome="i-cloud" dim={15} />
-                    {nuvola.inCorso
-                      ? t("settings.cloud.saving")
-                      : t("settings.cloud.saveNow")}
+                    <Icona nome="i-plus" dim={15} />
+                    {t("settings.skin.create")}
                   </button>
                   <button
                     type="button"
                     className="bottone btn-ghost"
-                    disabled={nuvola.inCorso}
-                    onClick={onNuvolaRipristina}
+                    onClick={onInstallaSkin}
                   >
                     <Icona nome="i-import" dim={15} />
-                    {t("settings.cloud.restore")}
+                    {t("settings.skin.install")}
                   </button>
-                  <button
-                    type="button"
-                    className="bottone btn-ghost"
-                    disabled={nuvola.inCorso}
-                    onClick={onNuvolaScollega}
-                  >
-                    {t("settings.cloud.disconnect")}
+                  <span className="oppure">{t("settings.skin.orDrop")}</span>
+                </div>
+              </Scheda>
+
+              {/* In «Aspetto» e non altrove: il giro guidato racconta com'è
+                  fatta la finestra, ed è la stessa domanda a cui rispondono la
+                  lingua, il tema e le skin. La sezione «Movimento e accesso» —
+                  dove stanno le scorciatoie, che il decimo passo nomina —
+                  sarebbe stata l'altra candidata, ma là dentro si dichiara una
+                  condizione, non si chiede una presentazione. */}
+              <Scheda
+                icona="i-home"
+                titolo={t("settings.tour.title")}
+                guida="tour"
+              >
+                <div className="azioni">
+                  <button type="button" className="bottone" onClick={onGiro}>
+                    <Icona nome="i-play" dim={15} />
+                    {t("settings.tour.redo")}
                   </button>
-                </>
-              ) : (
+                </div>
+              </Scheda>
+            </>
+          )}
+
+          {sezione === "riproduzione" && (
+            <>
+              <Scheda icona="i-eq" titolo={t("settings.eq.title")} guida="eq">
+                <Equalizzatore
+                  attivo={eqAttivo}
+                  guadagni={eqGuadagni}
+                  taglia="pagina"
+                  onErrore={onErrore}
+                />
+              </Scheda>
+              <Scheda icona="i-play" titolo={t("settings.playback.title")} guida="playback">
+                {/* Acceso, finalmente, e senza scorciatoie. La tinta dominante la
+                  estrae `aether-app` dalla miniatura del disco; se sia leggibile
+                  lo decide `aether-skin` in OKLCH, dove vive `contrast_ratio`.
+                  Quando nessuna chiarezza di quella tonalità regge 4,5:1 contro
+                  le superfici del tema, la risposta è «no» e vince l'accento
+                  della skin: è la ragione per cui questo interruttore è rimasto
+                  spento finché non c'è stato un posto in cui metterlo che non
+                  fosse «scrivi il colore e spera». */}
+                <Interruttore
+                  etichetta={t("settings.accent.toggle")}
+                  acceso={accentoDinamico && accentoPermesso}
+                  onCambia={onAccentoDinamico}
+                  impedito={
+                    accentoPermesso ? undefined : t("settings.accent.blocked")
+                  }
+                />
+                {/* `normale` di serie, e non è una scelta di disegno: è quel che
+                  il motore fa da quando esiste. Un aggiornamento che lo spegnesse
+                  in silenzio cambierebbe il volume di chi ha i tag senza che
+                  nessuna schermata lo spieghi — ed è la ragione per cui i quattro
+                  stati partono da qui e non da «spento». */}
+                <Segmentato
+                  etichetta={t("settings.replaygain.label")}
+                  scelta={replaygain}
+                  onScegli={onReplaygain}
+                  voci={[
+                    { chiave: "spento", etichetta: t("settings.replaygain.off") },
+                    { chiave: "basso", etichetta: t("settings.replaygain.low") },
+                    {
+                      chiave: "normale",
+                      etichetta: t("settings.replaygain.normal"),
+                    },
+                    { chiave: "alto", etichetta: t("settings.replaygain.high") },
+                  ]}
+                />
+                <VolumeUniforme onErrore={onErrore} />
+                <Interruttore
+                  etichetta={t("settings.autoplay.toggle")}
+                  acceso={autoplay}
+                  onCambia={onAutoplay}
+                />
+                {/* Qui e non in «Aspetto», per la regola di questa sezione: il
+                    dominio della chiave è `player.*`. E dentro questa scheda e
+                    non in una sua, perché una scheda intera per un interruttore
+                    solo sarebbe un titolo più alto di quel che contiene. */}
+                <InterruttoreFormato onErrore={onErrore} />
+              </Scheda>
+              {/* Prima della dissolvenza e dopo l'equalizzatore, che è l'ordine
+                  di quanto spesso ci si torna: da quale scheda esce il suono è
+                  la prima cosa che si viene a cercare qui quando qualcosa non si
+                  sente, e la dissolvenza è una preferenza che si decide una
+                  volta. */}
+              <Scheda icona="i-play" titolo={t("settings.output.title")} guida="output">
+                <SchedaUscita onErrore={onErrore} />
+              </Scheda>
+              <SchedaDissolvenza
+                dissolvenzaS={dissolvenzaS}
+                onDissolvenza={onDissolvenza}
+              />
+              <SchedaSpegnimento
+                spegnimentoMs={spegnimentoMs}
+                onSpegnimento={onSpegnimento}
+              />
+              {/* In «Riproduzione» e non in «Aspetto»: il dominio delle
+                  chiavi è `player.*`, come ogni altro residente di questa
+                  sezione. «Aspetto» è dove vive il look — che per la linea di
+                  questa scheda è esattamente la metà che non è
+                  un'impostazione, ma un blocco di token dello Studio. */}
+              <Scheda icona="i-eq" titolo={t("settings.spectrum.title")} guida="spectrum">
+                <SchedaSpettro onErrore={onErrore} />
+              </Scheda>
+            </>
+          )}
+
+          {sezione === "movimento" && (
+            <Scheda
+              icona="i-eq"
+              titolo={t("settings.shortcuts.title")}
+              guida="shortcuts"
+            >
+              <Scorciatoie associazioni={scorciatoie} onCambia={onScorciatoie} />
+            </Scheda>
+          )}
+
+          {/* Fra le scorciatoie e il movimento, e in questa sezione e non in
+              «Aspetto»: ingrandire non è una scelta di look come il tema o la
+              skin — è la stessa domanda del movimento ridotto, cioè «fai in modo
+              che io ci arrivi». Sta sotto le scorciatoie perché è la scheda che
+              le spiega: quelle tre righe lì sopra dicono i tasti, questi tre
+              bottoni fanno la stessa cosa per chi i tasti li ha tolti. */}
+          {sezione === "movimento" && (
+            <Scheda
+              icona="i-expand"
+              titolo={t("settings.zoom.title")}
+              guida="zoom"
+            >
+              {/* I tre bottoni e non un cursore o un elenco di misure: un
+                  elenco vorrebbe i gradini scritti da questa parte, cioè un
+                  secondo elenco di numeri accanto a quello del nucleo. Qui si
+                  mandano gesti, e il numero che si legge è quello che il nucleo
+                  ha risposto. */}
+              <div className="azioni">
                 <button
                   type="button"
-                  className="bottone btn-ghost"
-                  disabled={!nuvola?.configurato || nuvola.inCorso}
-                  onClick={onNuvolaCollega}
+                  className="bottone"
+                  onClick={() => onZoom(false)}
                 >
-                  <Icona nome="i-cloud" dim={15} />
-                  {nuvola?.inCorso
-                    ? t("settings.cloud.waiting")
-                    : t("settings.cloud.connect")}
+                  {t("settings.zoom.smaller")}
                 </button>
-              )}
-            </div>
+                <button type="button" className="bottone" onClick={onZoomNormale}>
+                  {t("settings.zoom.reset")}
+                </button>
+                <button
+                  type="button"
+                  className="bottone"
+                  onClick={() => onZoom(true)}
+                >
+                  {t("settings.zoom.bigger")}
+                </button>
+              </div>
+              <p className="nota">
+                {t("settings.zoom.now", { quanto: Math.round(zoom * 100) })}
+              </p>
+            </Scheda>
+          )}
 
-            {nuvola?.collegato === false && nuvola.configurato && (
+          {sezione === "movimento" && (
+            <Scheda icona="i-eq" titolo={t("settings.motion.title")} guida="motion">
               <p className="nota">
                 <Trans
-                  k="settings.cloud.browser"
+                  k="settings.motion.p1"
                   v={{
-                    browser: (
-                      <strong>{t("settings.cloud.browser.strong")}</strong>
-                    ),
+                    livello: <strong>{movimento}</strong>,
                   }}
                 />
               </p>
-            )}
 
-            {/* In chiaro, e non più dietro un `<details>` intitolato «Usa il
-                tuo progetto Google».
-                Quel titolo prometteva un lusso — «solo se vuoi che la quota sia
-                la tua» — mentre queste due caselle sono l'unica cosa che fa
-                esistere il backup: senza, la scheda qui sopra dichiara che non
-                può partire. Quel che tiene in piedi una funzione non si mette
-                dietro una freccetta. */}
-            <div className="credenziali-drive">
-              <h3 className="titoletto">{t("settings.creds.title")}</h3>
-              <p className="nota">{t("settings.creds.note")}</p>
+              {/* Due voci e non tre. Da qui si può soltanto **ridurre** sotto
+                  quel che la skin dichiara: un livello «di più» contraddirebbe
+                  la frase qui sopra, che dice che una preferenza di
+                  accessibilità sovrascrivibile non è una preferenza. Chi vuole
+                  più movimento cambia skin, che è dove il movimento si
+                  dichiara. */}
+              <Segmentato
+                etichetta={t("settings.motion.pref")}
+                scelta={movimentoUtente}
+                onScegli={onMovimentoUtente}
+                voci={[
+                  { chiave: "sistema", etichetta: t("settings.motion.system") },
+                  { chiave: "ridotto", etichetta: t("settings.motion.reduce") },
+                ]}
+              />
+            </Scheda>
+          )}
 
-              <div className="azioni">
-                <input
-                  type="text"
-                  className="campo mono field-input"
-                  aria-label={t("settings.creds.id")}
-                  placeholder="client id"
-                  value={clientId}
-                  onChange={(e) => setClientId(e.target.value)}
-                />
-                <input
-                  type="password"
-                  className="campo mono field-input"
-                  aria-label={t("settings.creds.secret")}
-                  placeholder="client secret"
-                  value={clientSecret}
-                  onChange={(e) => setClientSecret(e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="bottone btn-ghost"
-                  onClick={() => onNuvolaCredenziali(clientId, clientSecret)}
-                >
-                  {t("settings.creds.use")}
-                </button>
-              </div>
-              {/* Detto come quel che è — un modo di **togliere** — e non come
-                  un ripiego su credenziali che in questa copia non esistono. */}
-              <p className="nota">{t("settings.creds.clear")}</p>
+          {sezione === "nuvola" && (
+            <Scheda icona="i-cloud" titolo={t("settings.cloud.title")} guida="cloud">
 
-              {/* Il tasto e non un `<details>`: sono sei passi da fare una
-                  volta sola, e chi torna qui torna per incollare. */}
-              <div className="azioni">
-                <button
-                  type="button"
-                  className="bottone btn-ghost"
-                  aria-expanded={guidaDrive}
-                  onClick={() => setGuidaDrive((prima) => !prima)}
-                >
-                  <Icona nome={guidaDrive ? "i-chev-d" : "i-list"} dim={15} />
-                  {guidaDrive
-                    ? t("settings.creds.hide")
-                    : t("settings.creds.show")}
-                </button>
-              </div>
+              {nuvola?.errore && (
+                <div className="errore">{testoErrore(nuvola.errore)}</div>
+              )}
 
-              {guidaDrive && (
+              {/* Due frasi e non una: «non configurato» da solo sembrava un
+                  guasto, e non lo è — è una scelta di come Aether viene
+                  distribuito. La prima dice cosa vuol dire, la seconda cosa si
+                  può fare, compresa la strada che non chiede nessun account. */}
+              {nuvola && !nuvola.configurato && (
                 <>
-                  {/* Numerati, come i tre passi del Client ID di Spotify in
-                      `Account.tsx`, e per la stessa ragione: sono cose da fare
-                      **in ordine** su un sito che non è questo, e chi torna dal
-                      browser deve ritrovare il punto in cui era. */}
-                  <ol className="passi">
-                    <li>
-                      <Trans
-                        k="settings.creds.step1"
-                        v={{ console: <code>console.cloud.google.com</code> }}
-                      />
-                    </li>
-                    <li>
-                      <Trans
-                        k="settings.creds.step2"
-                        v={{
-                          dove: (
-                            <strong>{t("settings.creds.step2.where")}</strong>
-                          ),
-                          api: <strong>{t("settings.creds.step2.api")}</strong>,
-                        }}
-                      />
-                    </li>
-                    <li>
-                      <Trans
-                        k="settings.creds.step3"
-                        v={{
-                          dove: (
-                            <strong>{t("settings.creds.step3.where")}</strong>
-                          ),
-                          tipo: (
-                            <strong>{t("settings.creds.step3.type")}</strong>
-                          ),
-                          pubblica: (
-                            <strong>{t("settings.creds.step3.publish")}</strong>
-                          ),
-                        }}
-                      />
-                    </li>
-                    <li>
-                      <Trans
-                        k="settings.creds.step4"
-                        v={{ scope: <code>.../auth/drive.appdata</code> }}
-                      />
-                    </li>
-                    <li>
-                      <Trans
-                        k="settings.creds.step5"
-                        v={{
-                          dove: (
-                            <strong>{t("settings.creds.step5.where")}</strong>
-                          ),
-                          tipo: (
-                            <strong>{t("settings.creds.step5.type")}</strong>
-                          ),
-                        }}
-                      />
-                    </li>
-                    <li>
-                      <Trans
-                        k="settings.creds.step6"
-                        v={{
-                          id: <strong>{t("settings.creds.step6.id")}</strong>,
-                          secret: (
-                            <strong>{t("settings.creds.step6.secret")}</strong>
-                          ),
-                        }}
-                      />
-                    </li>
-                  </ol>
-                  <p className="nota">{t("settings.creds.keyring")}</p>
+                  <p className="nota">{t("settings.cloud.noCreds")}</p>
                 </>
               )}
-            </div>
-          </Scheda>
-        )}
 
-        {sezione === "sincronia" && (
-          <Scheda icona="i-cloud" titolo={t("settings.sync.title")}>
-            <p className="nota">
-              <Trans
-                k="settings.sync.p1"
-                v={{ senza: <strong>{t("settings.sync.p1.noServer")}</strong> }}
-              />
-            </p>
-            {/* La differenza dal backup, detta con l'esempio invece che con la
-                definizione: «una copia da cui ripartire» e «dispositivi che
-                continuano a vivere ciascuno per conto suo» sono vere e non
-                dicono cosa succede a chi accende la cosa sbagliata. */}
-            <p className="nota">
-              <Trans
-                k="settings.sync.p2"
-                v={{
-                  nonBackup: <strong>{t("settings.sync.p2.notBackup")}</strong>,
-                  fondono: <strong>{t("settings.sync.p2.merge")}</strong>,
-                }}
-              />
-            </p>
-            <p className="nota">{t("settings.sync.p3")}</p>
-
-            {sincronia?.errore && (
-              <div className="errore">{testoErrore(sincronia.errore)}</div>
-            )}
-
-            <Interruttore
-              etichetta={t("settings.sync.toggle")}
-              spiegazione={t("settings.sync.toggle.hint")}
-              acceso={sincronia?.attiva ?? false}
-              onCambia={onSincroniaAttiva}
-              impedito={
-                sincronia?.pronta ? undefined : t("settings.sync.needStore")
-              }
-            />
-
-            <div className="azioni">
-              <Segmentato
-                etichetta={t("settings.sync.where")}
-                scelta={sincronia?.dove ?? "cartella"}
-                voci={[
-                  {
-                    chiave: "cartella",
-                    etichetta: t("settings.sync.where.folder"),
-                  },
-                  {
-                    chiave: "drive",
-                    etichetta: t("settings.sync.where.drive"),
-                  },
-                ]}
-                onScegli={(dove) =>
-                  onSincroniaMagazzino(
-                    dove,
-                    cartellaSincronia ?? sincronia?.cartella ?? null,
-                  )
+              <Interruttore
+                etichetta={t("settings.cloud.toggle")}
+                acceso={nuvola?.attivo ?? false}
+                onCambia={onNuvolaAttiva}
+                impedito={
+                  nuvola?.collegato ? undefined : t("settings.cloud.needAccount")
                 }
               />
-            </div>
 
-            {(sincronia?.dove ?? "cartella") === "cartella" ? (
-              <>
-                <p className="nota">
-                  <Trans
-                    k="settings.sync.folder.note"
-                    v={{ sotto: <code>dispositivi</code> }}
-                  />
-                </p>
-                <div className="azioni">
-                  <input
-                    type="text"
-                    className="campo field-input"
-                    placeholder={t("settings.sync.folder.hint")}
-                    value={cartellaSincronia ?? sincronia?.cartella ?? ""}
-                    onChange={(e) => setCartellaSincronia(e.target.value)}
-                  />
+              <dl className="numeri">
+                <div>
+                  <dt>{t("settings.cloud.account")}</dt>
+                  <dd className="stat-number">
+                    {nuvola?.email ??
+                      (nuvola?.collegato
+                        ? t("settings.cloud.connected")
+                        : t("settings.cloud.none"))}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t("settings.cloud.lastSave")}</dt>
+                  <dd className="stat-number">
+                    {quando(nuvola?.ultimoMs ?? null)}
+                  </dd>
+                </div>
+              </dl>
+
+              {avanzaNuvola && (
+                <div className="avanzamento-scansione">
+                  <div className="riga-avanzamento">
+                    <span className="quanti">
+                      {fasiNuvola()[avanzaNuvola.cosa]}{" "}
+                      {numero(avanzaNuvola.fatti)} / {numero(avanzaNuvola.totale)}
+                    </span>
+                  </div>
+                  <div className="barra player-progress">
+                    <div
+                      className="riempita"
+                      style={{
+                        width: `${
+                          avanzaNuvola.totale > 0
+                            ? Math.round(
+                                (avanzaNuvola.fatti / avanzaNuvola.totale) * 100,
+                              )
+                            : 0
+                        }%`,
+                      }}
+                    >
+                      <span className="riflesso progress-sheen" aria-hidden="true" />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="azioni">
+                {nuvola?.collegato ? (
+                  <>
+                    <button
+                      type="button"
+                      className="bottone btn-ghost"
+                      disabled={nuvola.inCorso}
+                      onClick={onNuvolaSalva}
+                    >
+                      <Icona nome="i-cloud" dim={15} />
+                      {nuvola.inCorso
+                        ? t("settings.cloud.saving")
+                        : t("settings.cloud.saveNow")}
+                    </button>
+                    <button
+                      type="button"
+                      className="bottone btn-ghost"
+                      disabled={nuvola.inCorso}
+                      onClick={onNuvolaRipristina}
+                    >
+                      <Icona nome="i-import" dim={15} />
+                      {t("settings.cloud.restore")}
+                    </button>
+                    <button
+                      type="button"
+                      className="bottone btn-ghost"
+                      disabled={nuvola.inCorso}
+                      onClick={onNuvolaScollega}
+                    >
+                      {t("settings.cloud.disconnect")}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="bottone btn-ghost"
+                    disabled={!nuvola?.configurato || nuvola.inCorso}
+                    onClick={onNuvolaCollega}
+                  >
+                    <Icona nome="i-cloud" dim={15} />
+                    {nuvola?.inCorso
+                      ? t("settings.cloud.waiting")
+                      : t("settings.cloud.connect")}
+                  </button>
+                )}
+                {/* Chi ha aperto il consenso per sbaglio, o ha chiuso la scheda
+                    del browser, non deve aspettare tre minuti davanti a un tasto
+                    spento. Il collegamento annullato torna senza errore. */}
+                {nuvola?.inCorso && !nuvola.collegato && (
                   <button
                     type="button"
                     className="bottone btn-ghost"
                     onClick={() => {
-                      onSincroniaMagazzino(
-                        "cartella",
-                        cartellaSincronia ?? sincronia?.cartella ?? "",
-                      );
-                      setCartellaSincronia(null);
+                      ipc.nuvolaAnnulla().catch(onErrore);
                     }}
                   >
-                    {t("settings.sync.folder.use")}
+                    {t("settings.cloud.cancel")}
+                  </button>
+                )}
+              </div>
+
+              {/* In chiaro, e non più dietro un `<details>` intitolato «Usa il
+                  tuo progetto Google».
+                  Quel titolo prometteva un lusso — «solo se vuoi che la quota sia
+                  la tua» — mentre queste due caselle sono l'unica cosa che fa
+                  esistere il backup: senza, la scheda qui sopra dichiara che non
+                  può partire. Quel che tiene in piedi una funzione non si mette
+                  dietro una freccetta. */}
+              <div className="credenziali-drive">
+                <h3 className="titoletto">{t("settings.creds.title")}</h3>
+
+                <div className="azioni">
+                  <input
+                    type="text"
+                    className="campo mono field-input"
+                    aria-label={t("settings.creds.id")}
+                    placeholder="client id"
+                    value={clientId}
+                    onChange={(e) => setClientId(e.target.value)}
+                  />
+                  <input
+                    type="password"
+                    className="campo mono field-input"
+                    aria-label={t("settings.creds.secret")}
+                    placeholder="client secret"
+                    value={clientSecret}
+                    onChange={(e) => setClientSecret(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="bottone btn-ghost"
+                    onClick={() => onNuvolaCredenziali(clientId, clientSecret)}
+                  >
+                    {t("settings.creds.use")}
                   </button>
                 </div>
-              </>
-            ) : (
-              <p className="nota">
-                {t("settings.sync.drive.note")}
-                {sincronia?.pronta === false &&
-                  t("settings.sync.drive.needAccount")}
-              </p>
-            )}
+                {/* Detto come quel che è — un modo di **togliere** — e non come
+                    un ripiego su credenziali che in questa copia non esistono. */}
 
-            <dl className="numeri">
-              <div>
-                <dt>{t("settings.sync.thisDevice")}</dt>
-                <dd className="stat-number">
-                  {sincronia?.dispositivi.find((d) => d.sonoIo)?.nome ??
-                    sincronia?.io ??
-                    "—"}
-                </dd>
-              </div>
-              <div>
-                <dt>{t("settings.sync.lastPass")}</dt>
-                <dd className="stat-number">
-                  {quando(sincronia?.ultimaMs ?? null)}
-                </dd>
-              </div>
-              <div>
-                <dt>{t("settings.data.devices")}</dt>
-                <dd className="stat-number">
-                  {numero(sincronia?.dispositivi.length ?? 0)}
-                </dd>
-              </div>
-            </dl>
+                {/* Il tasto e non un `<details>`: sono sei passi da fare una
+                    volta sola, e chi torna qui torna per incollare. */}
+                <div className="azioni">
+                  <button
+                    type="button"
+                    className="bottone btn-ghost"
+                    aria-expanded={guidaDrive}
+                    onClick={() => setGuidaDrive((prima) => !prima)}
+                  >
+                    <Icona nome={guidaDrive ? "i-chev-d" : "i-list"} dim={15} />
+                    {guidaDrive
+                      ? t("settings.creds.hide")
+                      : t("settings.creds.show")}
+                  </button>
+                </div>
 
-            {sincronia?.resoconto && (
-              <p className="nota">{riassunto(sincronia.resoconto)}</p>
-            )}
-
-            <div className="azioni">
-              <button
-                type="button"
-                className="bottone btn-ghost"
-                disabled={!sincronia?.pronta || sincronia.inCorso}
-                onClick={onSincroniaAdesso}
-              >
-                <Icona nome="i-cloud" dim={15} />
-                {sincronia?.inCorso
-                  ? t("settings.sync.syncing")
-                  : t("settings.sync.now")}
-              </button>
-            </div>
-
-            {(sincronia?.dispositivi.length ?? 0) > 0 && (
-              <details className="non-ritrovati">
-                <summary>
-                  {t("settings.sync.devices", {
-                    n: sincronia?.dispositivi.length ?? 0,
-                  })}
-                </summary>
-                <p>
-                  <Trans
-                    k="settings.sync.devices.note"
-                    v={{
-                      ignoto: (
-                        <strong>{t("settings.sync.devices.unknown")}</strong>
-                      ),
-                    }}
-                  />
-                </p>
-                <ul className="cartelle">
-                  {(sincronia?.dispositivi ?? []).map((dispositivo) => (
-                    <li key={dispositivo.id} className="azioni">
-                      {dispositivo.sonoIo ? (
-                        <span className="percorso">
-                          {t("settings.sync.thisComputer", {
-                            nome: dispositivo.nome ?? dispositivo.id,
-                          })}
-                        </span>
-                      ) : (
-                        <input
-                          type="text"
-                          className="campo field-input"
-                          aria-label={t("settings.sync.deviceName", {
-                            id: dispositivo.id,
-                          })}
-                          /* Il campo è la sola cosa che serve, e non una
-                             finestrella: `window.prompt` in una webview è un
-                             modale che il sistema può decidere di non mostrare,
-                             e un pulsante che a volte non fa niente è peggio di
-                             un campo brutto. */
-                          placeholder={dispositivo.id}
-                          value={nomi[dispositivo.id] ?? dispositivo.nome ?? ""}
-                          onChange={(e) =>
-                            setNomi({
-                              ...nomi,
-                              [dispositivo.id]: e.target.value,
-                            })
-                          }
+                {guidaDrive && (
+                  <>
+                    {/* Numerati, come i tre passi del Client ID di Spotify in
+                        `Account.tsx`, e per la stessa ragione: sono cose da fare
+                        **in ordine** su un sito che non è questo, e chi torna dal
+                        browser deve ritrovare il punto in cui era. */}
+                    <ol className="passi">
+                      <li>
+                        <Trans
+                          k="settings.creds.step1"
+                          v={{ console: <code>console.cloud.google.com</code> }}
                         />
-                      )}
-                      {!dispositivo.sonoIo && (
-                        <>
-                          <button
-                            type="button"
-                            className="bottone btn-ghost"
-                            onClick={() =>
-                              onSincroniaAccoppia(
-                                dispositivo.id,
-                                nomi[dispositivo.id] ??
-                                  dispositivo.nome ??
-                                  null,
-                              )
-                            }
-                          >
-                            {dispositivo.fidato
-                              ? t("settings.sync.rename")
-                              : t("settings.sync.accept")}
-                          </button>
-                          <button
-                            type="button"
-                            className="bottone btn-ghost"
-                            onClick={() => onSincroniaDimentica(dispositivo.id)}
-                          >
-                            {t("settings.sync.forget")}
-                          </button>
-                        </>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-                <p className="nota">
-                  <Trans
-                    k="settings.sync.forget.note"
-                    v={{
-                      non: (
-                        <strong>{t("settings.sync.forget.note.not")}</strong>
-                      ),
-                    }}
-                  />
-                </p>
-              </details>
-            )}
-          </Scheda>
-        )}
-        {sezione === "legacy" && (
-          <Scheda icona="i-import" titolo={t("settings.legacy.title")}>
-            <p className="nota">
-              <Trans
-                k="settings.legacy.note"
-                v={{
-                  sola: <strong>{t("settings.legacy.note.readonly")}</strong>,
-                }}
-              />
-            </p>
-            <div className="azioni">
-              <button
-                type="button"
-                className="bottone btn-ghost"
-                onClick={onImporta}
-              >
-                <Icona nome="i-import" dim={15} />
-                {t("settings.legacy.pick")}
-              </button>
-            </div>
-          </Scheda>
-        )}
+                      </li>
+                      <li>
+                        <Trans
+                          k="settings.creds.step2"
+                          v={{
+                            dove: (
+                              <strong>{t("settings.creds.step2.where")}</strong>
+                            ),
+                            api: <strong>{t("settings.creds.step2.api")}</strong>,
+                          }}
+                        />
+                      </li>
+                      <li>
+                        <Trans
+                          k="settings.creds.step3"
+                          v={{
+                            dove: (
+                              <strong>{t("settings.creds.step3.where")}</strong>
+                            ),
+                            tipo: (
+                              <strong>{t("settings.creds.step3.type")}</strong>
+                            ),
+                            pubblica: (
+                              <strong>{t("settings.creds.step3.publish")}</strong>
+                            ),
+                          }}
+                        />
+                      </li>
+                      <li>
+                        <Trans
+                          k="settings.creds.step4"
+                          v={{ scope: <code>.../auth/drive.appdata</code> }}
+                        />
+                      </li>
+                      <li>
+                        <Trans
+                          k="settings.creds.step5"
+                          v={{
+                            dove: (
+                              <strong>{t("settings.creds.step5.where")}</strong>
+                            ),
+                            tipo: (
+                              <strong>{t("settings.creds.step5.type")}</strong>
+                            ),
+                          }}
+                        />
+                      </li>
+                      <li>
+                        <Trans
+                          k="settings.creds.step6"
+                          v={{
+                            id: <strong>{t("settings.creds.step6.id")}</strong>,
+                            secret: (
+                              <strong>{t("settings.creds.step6.secret")}</strong>
+                            ),
+                          }}
+                        />
+                      </li>
+                    </ol>
+                  </>
+                )}
+              </div>
+            </Scheda>
+          )}
 
-        {/* Una scheda sola, e due righe.
-            C'era un selettore Spotify/YouTube in cima, e non c'è più: da
-            YouTube non si scarica — le loro *API Developer Policies*
-            (§ III.E.1.a) lo vietano esplicitamente, e non c'è configurazione
-            che lo renda lecito — quindi la domanda «da quale servizio» non ha
-            più due risposte. Restano due gesti diversi: un link, o il proprio
-            archivio. */}
-        {sezione === "esterno" && (
-          <Scheda
-            icona="i-list"
-            titolo={t("settings.import.title")}
-            nota={t("settings.import.note")}
-          >
-            <div className="strade-import">
-              <div className="riga-opzione">
-                <div className="che-cosa">
-                  <div className="etichetta">{t("settings.import.link")}</div>
-                  <div className="spiegazione">
-                    <Trans
-                      k="settings.import.link.hint"
-                      v={{
-                        a: <span className="mono">archive.org</span>,
-                        b: <span className="mono">audius.co</span>,
-                      }}
-                    />
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="bottone btn-ghost"
-                  onClick={onImportaLink}
-                >
-                  <Icona nome="i-list" dim={15} />
-                  {t("settings.import.link.cta")}
-                </button>
+          {sezione === "sincronia" && (
+            <Scheda icona="i-cloud" titolo={t("settings.sync.title")} guida="sync">
+              {/* La differenza dal backup, detta con l'esempio invece che con la
+                  definizione: «una copia da cui ripartire» e «dispositivi che
+                  continuano a vivere ciascuno per conto suo» sono vere e non
+                  dicono cosa succede a chi accende la cosa sbagliata. */}
+
+              {sincronia?.errore && (
+                <div className="errore">{testoErrore(sincronia.errore)}</div>
+              )}
+
+              <Interruttore
+                etichetta={t("settings.sync.toggle")}
+                acceso={sincronia?.attiva ?? false}
+                onCambia={onSincroniaAttiva}
+                impedito={
+                  sincronia?.pronta ? undefined : t("settings.sync.needStore")
+                }
+              />
+
+              <div className="azioni">
+                <Segmentato
+                  etichetta={t("settings.sync.where")}
+                  scelta={sincronia?.dove ?? "cartella"}
+                  voci={[
+                    {
+                      chiave: "cartella",
+                      etichetta: t("settings.sync.where.folder"),
+                    },
+                    {
+                      chiave: "drive",
+                      etichetta: t("settings.sync.where.drive"),
+                    },
+                  ]}
+                  onScegli={(dove) =>
+                    onSincroniaMagazzino(
+                      dove,
+                      cartellaSincronia ?? sincronia?.cartella ?? null,
+                    )
+                  }
+                />
               </div>
 
-              <div className="riga-opzione">
-                <div className="che-cosa">
-                  <div className="etichetta">
-                    {t("settings.import.archive")}
+              {(sincronia?.dove ?? "cartella") === "cartella" ? (
+                <>
+                  <div className="azioni">
+                    <input
+                      type="text"
+                      className="campo field-input"
+                      placeholder={t("settings.sync.folder.hint")}
+                      value={cartellaSincronia ?? sincronia?.cartella ?? ""}
+                      onChange={(e) => setCartellaSincronia(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="bottone btn-ghost"
+                      onClick={() => {
+                        onSincroniaMagazzino(
+                          "cartella",
+                          cartellaSincronia ?? sincronia?.cartella ?? "",
+                        );
+                        setCartellaSincronia(null);
+                      }}
+                    >
+                      {t("settings.sync.folder.use")}
+                    </button>
                   </div>
-                  <div className="spiegazione">
-                    {t("settings.import.archive.hint")}
-                  </div>
+                </>
+              ) : (
+                sincronia?.pronta === false && (
+                  <p className="nota">{t("settings.sync.drive.needAccount")}</p>
+                )
+              )}
+
+              <dl className="numeri">
+                <div>
+                  <dt>{t("settings.sync.thisDevice")}</dt>
+                  <dd className="stat-number">
+                    {sincronia?.dispositivi.find((d) => d.sonoIo)?.nome ??
+                      sincronia?.io ??
+                      "—"}
+                  </dd>
                 </div>
+                <div>
+                  <dt>{t("settings.sync.lastPass")}</dt>
+                  <dd className="stat-number">
+                    {quando(sincronia?.ultimaMs ?? null)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t("settings.data.devices")}</dt>
+                  <dd className="stat-number">
+                    {numero(sincronia?.dispositivi.length ?? 0)}
+                  </dd>
+                </div>
+              </dl>
+
+              {sincronia?.resoconto && (
+                <p className="nota">{riassunto(sincronia.resoconto)}</p>
+              )}
+
+              <div className="azioni">
                 <button
                   type="button"
                   className="bottone btn-ghost"
-                  onClick={onImportaAccount}
+                  disabled={!sincronia?.pronta || sincronia.inCorso}
+                  onClick={onSincroniaAdesso}
                 >
                   <Icona nome="i-cloud" dim={15} />
-                  {t("settings.import.archive.cta")}
+                  {sincronia?.inCorso
+                    ? t("settings.sync.syncing")
+                    : t("settings.sync.now")}
                 </button>
               </div>
-            </div>
 
-            {/* Le fonti attive, con la loro licenza e quel che si può farne.
-                Non è decorazione: è la risposta alla domanda che chiunque
-                distribuisca musica ha il diritto di farsi — da dove viene quel
-                che questa applicazione mi mette sul disco. */}
-            <ul className="fonti-attive">
-              {(importazioni.stato?.cataloghi ?? []).map((catalogo) => (
-                <li key={catalogo.nome}>
-                  <span className="etichetta">{nomeFonte(catalogo.nome)}</span>
-                  <span className="spiegazione">
-                    {catalogo.consegna
-                      ? t("settings.import.source.download")
-                      : t("settings.import.source.listen")}
+              {(sincronia?.dispositivi.length ?? 0) > 0 && (
+                <details className="non-ritrovati">
+                  <summary>
+                    {t("settings.sync.devices", {
+                      n: sincronia?.dispositivi.length ?? 0,
+                    })}
+                  </summary>
+                  <ul className="cartelle">
+                    {(sincronia?.dispositivi ?? []).map((dispositivo) => (
+                      <li key={dispositivo.id} className="azioni">
+                        {dispositivo.sonoIo ? (
+                          <span className="percorso">
+                            {t("settings.sync.thisComputer", {
+                              nome: dispositivo.nome ?? dispositivo.id,
+                            })}
+                          </span>
+                        ) : (
+                          <input
+                            type="text"
+                            className="campo field-input"
+                            aria-label={t("settings.sync.deviceName", {
+                              id: dispositivo.id,
+                            })}
+                            /* Il campo è la sola cosa che serve, e non una
+                               finestrella: `window.prompt` in una webview è un
+                               modale che il sistema può decidere di non mostrare,
+                               e un pulsante che a volte non fa niente è peggio di
+                               un campo brutto. */
+                            placeholder={dispositivo.id}
+                            value={nomi[dispositivo.id] ?? dispositivo.nome ?? ""}
+                            onChange={(e) =>
+                              setNomi({
+                                ...nomi,
+                                [dispositivo.id]: e.target.value,
+                              })
+                            }
+                          />
+                        )}
+                        {!dispositivo.sonoIo && (
+                          <>
+                            <button
+                              type="button"
+                              className="bottone btn-ghost"
+                              onClick={() =>
+                                onSincroniaAccoppia(
+                                  dispositivo.id,
+                                  nomi[dispositivo.id] ??
+                                    dispositivo.nome ??
+                                    null,
+                                )
+                              }
+                            >
+                              {dispositivo.fidato
+                                ? t("settings.sync.rename")
+                                : t("settings.sync.accept")}
+                            </button>
+                            <button
+                              type="button"
+                              className="bottone btn-ghost"
+                              onClick={() => onSincroniaDimentica(dispositivo.id)}
+                            >
+                              {t("settings.sync.forget")}
+                            </button>
+                          </>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </Scheda>
+          )}
+          {sezione === "legacy" && (
+            <Scheda icona="i-import" titolo={t("settings.legacy.title")} guida="legacy">
+              <div className="azioni">
+                <button
+                  type="button"
+                  className="bottone btn-ghost"
+                  onClick={onImporta}
+                >
+                  <Icona nome="i-import" dim={15} />
+                  {t("settings.legacy.pick")}
+                </button>
+              </div>
+            </Scheda>
+          )}
+
+          {/* Una scheda sola, e due righe.
+              C'era un selettore Spotify/YouTube in cima, e non c'è più: da
+              YouTube non si scarica — le loro *API Developer Policies*
+              (§ III.E.1.a) lo vietano esplicitamente, e non c'è configurazione
+              che lo renda lecito — quindi la domanda «da quale servizio» non ha
+              più due risposte. Restano due gesti diversi: un link, o il proprio
+              archivio. */}
+          {sezione === "esterno" && (
+            <Scheda
+              icona="i-list"
+              titolo={t("settings.import.title")}
+              guida="import"
+            >
+              <div className="strade-import">
+                <div className="riga-opzione">
+                  <div className="che-cosa">
+                    <div className="etichetta">{t("settings.import.link")}</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="bottone btn-ghost"
+                    onClick={onImportaLink}
+                  >
+                    <Icona nome="i-list" dim={15} />
+                    {t("settings.import.link.cta")}
+                  </button>
+                </div>
+
+                <div className="riga-opzione">
+                  <div className="che-cosa">
+                    <div className="etichetta">
+                      {t("settings.import.archive")}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="bottone btn-ghost"
+                    onClick={onImportaAccount}
+                  >
+                    <Icona nome="i-cloud" dim={15} />
+                    {t("settings.import.archive.cta")}
+                  </button>
+                </div>
+              </div>
+
+              {/* Le fonti attive, con la loro licenza e quel che si può farne.
+                  Non è decorazione: è la risposta alla domanda che chiunque
+                  distribuisca musica ha il diritto di farsi — da dove viene quel
+                  che questa applicazione mi mette sul disco. */}
+              <ul className="fonti-attive">
+                {(importazioni.stato?.cataloghi ?? []).map((catalogo) => (
+                  <li key={catalogo.nome}>
+                    <span className="etichetta">{nomeFonte(catalogo.nome)}</span>
+                    <span className="spiegazione">
+                      {catalogo.consegna
+                        ? t("settings.import.source.download")
+                        : t("settings.import.source.listen")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+
+              <Interruttore
+                etichetta={t("settings.import.alt")}
+                acceso={importazioni.stato?.alternative ?? true}
+                onCambia={(v) => void importazioni.ammettiAlternative(v)}
+              />
+
+              {/* Un rimando e non più il pannello intero.
+                  Quel che succede dopo la conferma dura **un'ora** e sopravvive
+                  alla chiusura dell'applicazione: il settimo pannello di nove
+                  dentro le impostazioni non è un posto dove si torna a guardare
+                  come va — è un posto in cui si va a cambiare qualcosa. Il
+                  conteggio resta qui perché la porta senza un numero dietro è una
+                  porta che non si apre; l'elenco sta nella pagina. */}
+              {inCoda > 0 ? (
+                <button
+                  type="button"
+                  className="bottone rimando"
+                  onClick={() => onVista("importazioni")}
+                >
+                  <Icona nome="i-list" dim={15} />
+                  {t("settings.queue.link", { n: inCoda })}
+                  {importazioni.stato?.attiva === false &&
+                    t("settings.queue.paused")}
+                  <span className="freccia" aria-hidden="true">
+                    ›
                   </span>
-                </li>
-              ))}
-            </ul>
+                </button>
+              ) : (
+                <p className="nota">
+                  <Trans
+                    k="settings.queue.empty"
+                    v={{
+                      porta: (
+                        <button
+                          type="button"
+                          className="tasto-testo"
+                          onClick={() => onVista("importazioni")}
+                        >
+                          {t("settings.queue.empty.link")}
+                        </button>
+                      ),
+                    }}
+                  />
+                </p>
+              )}
+            </Scheda>
+          )}
+          {sezione === "scrobbling" && (
+            <Scheda
+              icona="i-cloud"
+              titolo={t("settings.scrobbling.title")}
+              guida="scrobbling"
+            >
+              <Scrobbling onErrore={onErrore} onNotizia={onNotizia} />
+            </Scheda>
+          )}
+          {sezione === "modelli" && (
+            <Scheda
+              icona="i-ia"
+              titolo={t("settings.models.title")}
+              guida="models"
+            >
+              <ModelliIA onErrore={onErrore} onNotizia={onNotizia} />
+            </Scheda>
+          )}
+          {sezione === "chiusura" && <SchedaChiusura onErrore={onErrore} />}
 
-            <Interruttore
-              etichetta={t("settings.import.alt")}
-              spiegazione={t("settings.import.alt.hint")}
-              acceso={importazioni.stato?.alternative ?? true}
-              onCambia={(v) => void importazioni.ammettiAlternative(v)}
-            />
-
-            {/* Quel che prima erano sei paragrafi in prima pagina. Nessuno di
-                loro si legge **prima** di importare: si leggono quando qualcosa
-                non torna, e in cima costavano lo spazio dei due tasti. */}
-            <details className="non-ritrovati">
-              <summary>{t("settings.import.how")}</summary>
-              <p>
-                <Trans
-                  k="settings.import.how.p1"
-                  v={{
-                    cataloghi: (
-                      <strong>{t("settings.import.how.p1.free")}</strong>
-                    ),
-                  }}
-                />
-              </p>
-              <p>
-                <Trans
-                  k="settings.import.how.p2"
-                  v={{
-                    solo: <strong>{t("settings.import.how.p2.only")}</strong>,
-                    daComprare: (
-                      <strong>{t("settings.import.how.p2.toBuy")}</strong>
-                    ),
-                  }}
-                />
-              </p>
-              <p>
-                <Trans
-                  k="settings.import.how.p3"
-                  v={{
-                    dice: <strong>{t("settings.import.how.p3.says")}</strong>,
-                  }}
-                />
+          {sezione === "dati" && avvio && (
+            <Scheda icona="i-album" titolo={t("settings.data.title")} guida="data">
+              <dl className="numeri">
+                <div>
+                  <dt>{t("settings.data.tracks")}</dt>
+                  <dd className="stat-number">{numero(avvio.numeri.tracks)}</dd>
+                </div>
+                <div>
+                  <dt>{t("settings.data.albums")}</dt>
+                  <dd className="stat-number">{numero(avvio.numeri.albums)}</dd>
+                </div>
+                <div>
+                  <dt>{t("settings.data.artists")}</dt>
+                  <dd className="stat-number">{numero(avvio.numeri.artists)}</dd>
+                </div>
+                <div>
+                  <dt>{t("settings.data.listening")}</dt>
+                  <dd className="stat-number">{ore(avvio.numeri.durationMs)}</dd>
+                </div>
+              </dl>
+              <p className="percorso" title={avvio.dataDir}>
+                {avvio.dataDir}
               </p>
               <p className="nota">
-                <Trans
-                  k="settings.import.how.p4"
-                  v={{
-                    riconoscibili: (
-                      <strong>{t("settings.import.how.p4.tellable")}</strong>
-                    ),
-                  }}
-                />
+                {avvio.migrazioni === 0
+                  ? t("settings.data.noMigrations")
+                  : t("settings.data.migrations", { n: avvio.migrazioni })}{" "}
+                {avvio.fts5
+                  ? t("settings.data.fts.ok")
+                  : t("settings.data.fts.missing")}
               </p>
-              <p className="nota">{t("settings.import.how.p5")}</p>
-            </details>
+            </Scheda>
+          )}
 
-            {/* Un rimando e non più il pannello intero.
-                Quel che succede dopo la conferma dura **un'ora** e sopravvive
-                alla chiusura dell'applicazione: il settimo pannello di nove
-                dentro le impostazioni non è un posto dove si torna a guardare
-                come va — è un posto in cui si va a cambiare qualcosa. Il
-                conteggio resta qui perché la porta senza un numero dietro è una
-                porta che non si apre; l'elenco sta nella pagina. */}
-            {inCoda > 0 ? (
-              <button
-                type="button"
-                className="bottone rimando"
-                onClick={() => onVista("importazioni")}
-              >
-                <Icona nome="i-list" dim={15} />
-                {t("settings.queue.link", { n: inCoda })}
-                {importazioni.stato?.attiva === false &&
-                  t("settings.queue.paused")}
-                <span className="freccia" aria-hidden="true">
-                  ›
-                </span>
-              </button>
-            ) : (
-              <p className="nota">
-                <Trans
-                  k="settings.queue.empty"
-                  v={{
-                    porta: (
-                      <button
-                        type="button"
-                        className="tasto-testo"
-                        onClick={() => onVista("importazioni")}
-                      >
-                        {t("settings.queue.empty.link")}
-                      </button>
-                    ),
-                  }}
-                />
-              </p>
-            )}
-          </Scheda>
-        )}
-        {sezione === "scrobbling" && (
-          <Scheda
-            icona="i-cloud"
-            titolo={t("settings.scrobbling.title")}
-            nota={t("settings.scrobbling.note")}
-          >
-            <Scrobbling onErrore={onErrore} onNotizia={onNotizia} />
-          </Scheda>
-        )}
-        {sezione === "modelli" && (
-          <Scheda
-            icona="i-ia"
-            titolo={t("settings.models.title")}
-            nota={t("settings.models.note")}
-          >
-            <ModelliIA onErrore={onErrore} onNotizia={onNotizia} />
-          </Scheda>
-        )}
-        {sezione === "chiusura" && <SchedaChiusura onErrore={onErrore} />}
+          {sezione === "dati" && <SchedaManutenzione onErrore={onErrore} />}
 
-        {sezione === "dati" && avvio && (
-          <Scheda icona="i-album" titolo={t("settings.data.title")}>
-            <dl className="numeri">
-              <div>
-                <dt>{t("settings.data.tracks")}</dt>
-                <dd className="stat-number">{numero(avvio.numeri.tracks)}</dd>
-              </div>
-              <div>
-                <dt>{t("settings.data.albums")}</dt>
-                <dd className="stat-number">{numero(avvio.numeri.albums)}</dd>
-              </div>
-              <div>
-                <dt>{t("settings.data.artists")}</dt>
-                <dd className="stat-number">{numero(avvio.numeri.artists)}</dd>
-              </div>
-              <div>
-                <dt>{t("settings.data.listening")}</dt>
-                <dd className="stat-number">{ore(avvio.numeri.durationMs)}</dd>
-              </div>
-            </dl>
-            <p className="percorso" title={avvio.dataDir}>
-              {avvio.dataDir}
-            </p>
-            <p className="nota">
-              {avvio.migrazioni === 0
-                ? t("settings.data.noMigrations")
-                : t("settings.data.migrations", { n: avvio.migrazioni })}{" "}
-              {avvio.fts5
-                ? t("settings.data.fts.ok")
-                : t("settings.data.fts.missing")}
-            </p>
-          </Scheda>
-        )}
+          {sezione === "dati" && (
+            <Scheda
+              icona="i-import"
+              titolo={t("settings.profile.title")}
+              guida="profile"
+            >
+              <Profilo
+                onErrore={onErrore}
+                onNotizia={onNotizia}
+                onImportato={onProfiloImportato}
+              />
+            </Scheda>
+          )}
 
-        {sezione === "dati" && (
-          <Scheda
-            icona="i-import"
-            titolo={t("settings.profile.title")}
-            nota={t("settings.profile.note")}
-          >
-            <Profilo
-              onErrore={onErrore}
-              onNotizia={onNotizia}
-              onImportato={onProfiloImportato}
-            />
-          </Scheda>
-        )}
-
-        {sezione === "aggiornamenti" && (
-          <Scheda
-            icona="i-cloud"
-            titolo={t("settings.update.title")}
-            nota={t("settings.update.note")}
-          >
-            <Aggiornamenti onErrore={onErrore} />
-          </Scheda>
-        )}
+          {sezione === "aggiornamenti" && (
+            <Scheda
+              icona="i-cloud"
+              titolo={t("settings.update.title")}
+              guida="update"
+            >
+              <Aggiornamenti onErrore={onErrore} />
+            </Scheda>
+          )}
+        </div>
       </div>
-    </div>
+    </ErroreGuida.Provider>
   );
 }

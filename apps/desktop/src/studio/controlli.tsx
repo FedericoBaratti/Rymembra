@@ -25,9 +25,20 @@
  * l'unità si legge dal valore e si conserva; `Unita` la cambia quando lo si
  * vuole davvero.
  */
+import { useState } from "react";
+
 import type { TipoToken, TokenRegistro } from "../ipc";
-import { Icona, type NomeIcona } from "../parti/Icone";
+import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
+import {
+  daOklch,
+  esadecimale,
+  esadecimaleOpaco,
+  leggiColore,
+  versoOklch,
+  type Oklch,
+  type Rgba,
+} from "./colore";
 import { tinta } from "./valori";
 import { t } from "../lingue";
 
@@ -56,8 +67,12 @@ const UNITA = [
  */
 const CURVE = ["linear", "ease", "ease-in", "ease-out", "ease-in-out"] as const;
 
-/** In che forma è scritta una curva. Sono le tre di `document.rs::easing`. */
-type FormaCurva = "niente" | "parola" | "bezier" | "passi";
+/**
+ * In che forma è scritta una curva: le tre di `document.rs::easing`, più il
+ * nome di una curva della skin — che il formato 2 accetta dove la curva la usa
+ * qualcuno (un'animazione, la rotta, una transizione), non dove la si dichiara.
+ */
+type FormaCurva = "niente" | "parola" | "bezier" | "passi" | "nome";
 
 /**
  * Una curva del documento, letta.
@@ -68,6 +83,9 @@ type FormaCurva = "niente" | "parola" | "bezier" | "passi";
  * abbreviata, e `sala.json` lo mostra alla riga di `motion.ease.outExpo`.
  */
 function formaCurva(valore: unknown): FormaCurva {
+  if (typeof valore === "string") {
+    return (CURVE as readonly string[]).includes(valore) ? "parola" : "nome";
+  }
   if (valore === null || typeof valore !== "object" || Array.isArray(valore))
     return "niente";
   switch ((valore as Record<string, unknown>)["kind"]) {
@@ -91,15 +109,29 @@ function puntiDi(valore: unknown): number[] | null {
 }
 
 /** In che forma è scritto un colore. */
-export type Modo = "niente" | "token" | "tavolozza" | "letterale";
+export type Modo = "niente" | "token" | "tavolozza" | "sorgente" | "letterale";
 
 function modoDi(valore: unknown): Modo {
   if (typeof valore === "string") return "letterale";
   if (valore !== null && typeof valore === "object") {
     if ("$token" in valore) return "token";
     if ("$palette" in valore) return "tavolozza";
+    if ("$source" in valore) return "sorgente";
   }
   return "niente";
+}
+
+/** L'alfa scritta accanto a un riferimento, o 1. */
+function alfaDi(valore: unknown): number {
+  if (valore === null || typeof valore !== "object") return 1;
+  const alfa = (valore as Record<string, unknown>)["alpha"];
+  return typeof alfa === "number" && Number.isFinite(alfa) ? alfa : 1;
+}
+
+/** Un riferimento con la sua alfa: `1` non si scrive, è il valore di serie. */
+function conAlfa(riferimento: Record<string, unknown>, alfa: number): Record<string, unknown> {
+  const tonda = Math.round(alfa * 1000) / 1000;
+  return tonda >= 1 ? riferimento : { ...riferimento, alpha: tonda };
 }
 
 /** Il numero dentro un valore, comunque sia scritto. `NaN` se non ce n'è uno. */
@@ -139,6 +171,7 @@ export function ValoreColore({
   tokens,
   tavolozza,
   escluso,
+  sorgenti = [],
   onCambia,
 }: {
   valore: unknown;
@@ -152,14 +185,22 @@ export function ValoreColore({
    * errore da nessuna parte. Si toglie dall'elenco invece di spiegarlo dopo.
    */
   escluso?: string | undefined;
+  /**
+   * Le sorgenti dinamiche — i colori della copertina — quando il posto le
+   * ammette: i token di colore sì, una parte no. Vuoto, il modo non c'è.
+   */
+  sorgenti?: readonly string[];
   onCambia: (valore: unknown) => void;
 }) {
+  const [aperto, setAperto] = useState(false);
   const modo = modoDi(valore);
   const dipinto = tinta(valore, tokens, tavolozza);
   const colori = tokens.filter((t) => t.kind === "color" && t.id !== escluso);
   const nomiTavolozza = Object.keys(tavolozza);
+  const letto = typeof valore === "string" ? leggiColore(valore) : null;
 
   const cambiaModo = (prossimo: Modo) => {
+    setAperto(prossimo === "letterale");
     switch (prossimo) {
       case "niente":
         onCambia(null);
@@ -172,19 +213,30 @@ export function ValoreColore({
         // spenta, e questo ramo non si raggiunge.
         onCambia({ $palette: nomiTavolozza[0] ?? "" });
         break;
-      case "letterale":
-        onCambia("#000000");
+      case "sorgente":
+        onCambia({ $source: sorgenti[0] ?? "albumArt.vibrant" });
         break;
+      case "letterale": {
+        // Si parte dal colore che si vedeva, non dal nero: passare da un
+        // riferimento a un letterale è quasi sempre «voglio ritoccare questo».
+        const visto = dipinto === null ? null : leggiColore(dipinto);
+        onCambia(visto === null ? "#000000" : esadecimale(visto));
+        break;
+      }
     }
   };
 
   return (
-    <div className="valore-colore">
-      <span
+    <div className="valore-colore" data-aperto={aperto || undefined}>
+      <button
+        type="button"
         className="pastiglia"
         style={dipinto === null ? undefined : { background: dipinto }}
         data-vuota={dipinto === null || undefined}
-        aria-hidden="true"
+        aria-label={t("studio.ctl.theColor")}
+        aria-expanded={modo === "letterale" ? aperto : undefined}
+        disabled={modo !== "letterale"}
+        onClick={() => setAperto((a) => !a)}
       />
       <select
         className="modo field-input"
@@ -197,6 +249,7 @@ export function ValoreColore({
         <option value="tavolozza" disabled={nomiTavolozza.length === 0}>
           $palette
         </option>
+        {(sorgenti.length > 0 || modo === "sorgente") && <option value="sorgente">$source</option>}
         <option value="letterale">{t("studio.ctl.literal")}</option>
       </select>
 
@@ -220,14 +273,7 @@ export function ValoreColore({
           className="quale field-input"
           aria-label={t("studio.ctl.whichColor")}
           value={String((valore as Record<string, unknown>)["$palette"] ?? "")}
-          onChange={(e) => {
-            const alpha = (valore as Record<string, unknown>)["alpha"];
-            onCambia(
-              typeof alpha === "number"
-                ? { $palette: e.target.value, alpha }
-                : { $palette: e.target.value },
-            );
-          }}
+          onChange={(e) => onCambia(conAlfa({ $palette: e.target.value }, alfaDi(valore)))}
         >
           {nomiTavolozza.map((nome) => (
             <option key={nome} value={nome}>
@@ -237,19 +283,195 @@ export function ValoreColore({
         </select>
       )}
 
+      {modo === "sorgente" && (
+        <select
+          className="quale field-input"
+          aria-label={t("studio.ctl.whichSource")}
+          value={String((valore as Record<string, unknown>)["$source"] ?? "")}
+          onChange={(e) => onCambia(conAlfa({ $source: e.target.value }, alfaDi(valore)))}
+        >
+          {sorgenti.map((nome) => (
+            <option key={nome} value={nome}>
+              {nome}
+            </option>
+          ))}
+        </select>
+      )}
+
       {modo === "letterale" && (
         <input
-          className="quale field-input"
-          type="color"
-          aria-label={t("studio.ctl.theColor")}
-          value={
-            typeof valore === "string" && valore.startsWith("#")
-              ? valore
-              : "#000000"
-          }
-          onChange={(e) => onCambia(e.target.value)}
+          className="quale field-input esadecimale"
+          type="text"
+          spellCheck={false}
+          aria-label={t("studio.ctl.hex")}
+          // Una chiave per valore: il campo si riscrive da fuori quando il
+          // colore cambia dai cursori, e resta libero mentre ci si scrive.
+          key={String(valore)}
+          defaultValue={String(valore)}
+          aria-invalid={letto === null || undefined}
+          onBlur={(e) => {
+            const nuovo = leggiColore(e.target.value);
+            if (nuovo !== null) onCambia(e.target.value.trim());
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
         />
       )}
+
+      {(modo === "tavolozza" || modo === "sorgente") && (
+        <label className="alfa-riferimento">
+          <span>α</span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            aria-label={t("studio.ctl.alpha")}
+            value={alfaDi(valore)}
+            onChange={(e) =>
+              onCambia(
+                conAlfa(
+                  Object.fromEntries(
+                    Object.entries(valore as Record<string, unknown>).filter(([k]) => k !== "alpha"),
+                  ),
+                  Number.parseFloat(e.target.value),
+                ),
+              )
+            }
+          />
+          <span className="lettura">{Math.round(alfaDi(valore) * 100)}%</span>
+        </label>
+      )}
+
+      {modo === "letterale" && aperto && letto !== null && (
+        <SceltaColore colore={letto} onCambia={(c) => onCambia(esadecimale(c))} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Un colore che può essere solo letterale: il valore di un colore della
+ * tavolozza, che è il posto dove i riferimenti finiscono e non cominciano.
+ */
+export function ColoreLetterale({
+  valore,
+  etichetta,
+  onCambia,
+}: {
+  valore: unknown;
+  etichetta: string;
+  onCambia: (valore: string) => void;
+}) {
+  const letto = typeof valore === "string" ? leggiColore(valore) : null;
+  return (
+    <div className="colore-letterale">
+      <div className="valore-colore">
+        <span
+          className="pastiglia"
+          style={typeof valore === "string" ? { background: valore } : undefined}
+          data-vuota={letto === null || undefined}
+          aria-hidden="true"
+        />
+        <input
+          className="quale field-input esadecimale"
+          type="text"
+          spellCheck={false}
+          aria-label={etichetta}
+          key={String(valore)}
+          defaultValue={typeof valore === "string" ? valore : ""}
+          aria-invalid={letto === null || undefined}
+          onBlur={(e) => {
+            if (leggiColore(e.target.value) !== null) onCambia(e.target.value.trim());
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+        />
+      </div>
+      <SceltaColore
+        colore={letto ?? { r: 0.5, g: 0.5, b: 0.5, a: 1 }}
+        onCambia={(c) => onCambia(esadecimale(c))}
+      />
+    </div>
+  );
+}
+
+/**
+ * Il selettore di un colore letterale: luce, croma e tinta in OKLCH, più l'alfa.
+ *
+ * I tre cursori tengono lo stato in OKLCH fra un tocco e l'altro: riletto
+ * dall'esadecimale a ogni passo, un grigio perderebbe la tinta (non ce l'ha) e
+ * il cursore della tinta tornerebbe a zero appena si toglie il croma — la
+ * ragione per cui i selettori in HSL «saltano».
+ */
+function SceltaColore({ colore, onCambia }: { colore: Rgba; onCambia: (c: Rgba) => void }) {
+  const [ok, setOk] = useState<Oklch>(() => versoOklch(colore));
+  const [da, setDa] = useState(() => esadecimale(colore));
+  // Un colore arrivato da fuori — un annullo, un'altra scrittura — rifà lo
+  // stato; il proprio, riscritto uguale, no.
+  const adesso = esadecimale(colore);
+  if (adesso !== da && adesso !== esadecimale(daOklch(ok))) {
+    setDa(adesso);
+    setOk(versoOklch(colore));
+  }
+
+  const cambia = (campo: keyof Oklch, valore: number) => {
+    const nuovo = { ...ok, [campo]: valore };
+    setOk(nuovo);
+    const rgb = daOklch(nuovo);
+    setDa(esadecimale(rgb));
+    onCambia(rgb);
+  };
+
+  const opaco = esadecimaleOpaco(daOklch({ ...ok, a: 1 }));
+  const binari: readonly [keyof Oklch, string, number, number, number, string][] = [
+    ["l", "L", 0, 1, 0.005, `${Math.round(ok.l * 100)}%`],
+    ["c", "C", 0, 0.37, 0.002, ok.c.toFixed(3)],
+    ["h", "H", 0, 360, 1, `${Math.round(ok.h)}°`],
+    ["a", "α", 0, 1, 0.01, `${Math.round(ok.a * 100)}%`],
+  ];
+  return (
+    <div
+      className="scelta-colore"
+      style={{ ["--scelto" as string]: opaco, ["--l" as string]: ok.l, ["--c" as string]: ok.c }}
+    >
+      {binari.map(([campo, nome, min, max, passo, lettura]) => (
+        <label key={campo} className="binario-colore" data-campo={campo}>
+          <span className="nome-binario">{nome}</span>
+          <input
+            type="range"
+            min={min}
+            max={max}
+            step={passo}
+            value={ok[campo]}
+            aria-label={t(`studio.ctl.oklch.${campo}`)}
+            onChange={(e) => cambia(campo, Number.parseFloat(e.target.value))}
+          />
+          <span className="lettura">{lettura}</span>
+        </label>
+      ))}
+      <label className="binario-colore">
+        <span className="nome-binario">
+          <Icona nome="i-drop" dim={12} />
+        </span>
+        <input
+          type="color"
+          className="colore-sistema"
+          aria-label={t("studio.ctl.systemPicker")}
+          value={opaco}
+          onChange={(e) => {
+            const scelto = leggiColore(e.target.value);
+            if (scelto === null) return;
+            const nuovo = { ...scelto, a: ok.a };
+            setOk(versoOklch(nuovo));
+            setDa(esadecimale(nuovo));
+            onCambia(nuovo);
+          }}
+        />
+        <span className="lettura">{t("studio.ctl.systemPicker.short")}</span>
+      </label>
     </div>
   );
 }
@@ -473,6 +695,7 @@ export function ValoreCurva({
   valore,
   etichetta,
   curveSkin = [],
+  perNome = false,
   onCambia,
 }: {
   valore: unknown;
@@ -488,16 +711,30 @@ export function ValoreCurva({
    * è quel che c'è, e dirlo è meglio che offrire un elenco che sembra legare.
    */
   curveSkin?: readonly { nome: string; curva: unknown }[] | undefined;
+  /**
+   * Il posto accetta una curva per nome e una parola nuda (`"ease-out"`):
+   * le animazioni, la rotta, le transizioni delle parti. Lì scegliere una
+   * curva della skin scrive il suo **nome**, e le due restano legate.
+   */
+  perNome?: boolean;
   onCambia: (valore: unknown) => void;
 }) {
   const forma = formaCurva(valore);
-  const punti = puntiDi(valore);
-  const dentro = (valore ?? {}) as Record<string, unknown>;
-  const parola = forma === "parola" ? String(dentro["keyword"] ?? "") : null;
+  const punti =
+    forma === "nome"
+      ? puntiDi(curveSkin.find((c) => c.nome === valore)?.curva)
+      : puntiDi(valore);
+  const dentro = (valore !== null && typeof valore === "object" ? valore : {}) as Record<
+    string,
+    unknown
+  >;
+  const parola =
+    forma === "parola" ? (typeof valore === "string" ? valore : String(dentro["keyword"] ?? "")) : null;
   const passi = forma === "passi" ? dentro : null;
 
   /** Quel che sta scritto nel `<select>`: la forma, o la parola scelta. */
-  const scelta = forma === "parola" ? `parola:${parola ?? ""}` : forma;
+  const scelta =
+    forma === "parola" ? `parola:${parola ?? ""}` : forma === "nome" ? `skin:${String(valore)}` : forma;
 
   const scegli = (quale: string) => {
     if (quale === "niente") {
@@ -505,7 +742,8 @@ export function ValoreCurva({
       return;
     }
     if (quale.startsWith("parola:")) {
-      onCambia({ kind: "keyword", keyword: quale.slice("parola:".length) });
+      const scelta = quale.slice("parola:".length);
+      onCambia(perNome ? scelta : { kind: "keyword", keyword: scelta });
       return;
     }
     if (quale.startsWith("skin:")) {
@@ -513,7 +751,7 @@ export function ValoreCurva({
       const trovata = curveSkin.find((c) => c.nome === nome);
       // Una curva della skin che non c'è più non si scrive: meglio lasciare
       // quel che c'era che sostituirlo con `undefined`.
-      if (trovata !== undefined) onCambia(trovata.curva);
+      if (trovata !== undefined) onCambia(perNome ? nome : trovata.curva);
       return;
     }
     if (quale === "bezier") {
@@ -564,7 +802,7 @@ export function ValoreCurva({
         )}
       </select>
 
-      {punti !== null && (
+      {punti !== null && forma === "bezier" && (
         <div className="quattro">
           {punti.map((p, i) => (
             <input
@@ -699,6 +937,21 @@ type LivelloOmbra = {
   color?: unknown;
 };
 
+/** Le quattro misure di un livello d'ombra, coi capi dei loro cursori. */
+const MISURE_OMBRA = [
+  ["x", -40, 40],
+  ["y", -40, 40],
+  ["blur", 0, 80],
+  ["spread", -20, 40],
+] as const;
+
+/** I livelli di un'ombra per esteso; `null` se è un riferimento o manca. */
+function livelliDi(valore: unknown): LivelloOmbra[] | null {
+  if (valore === null || typeof valore !== "object" || Array.isArray(valore)) return null;
+  const livelli = (valore as Record<string, unknown>)["layers"];
+  return Array.isArray(livelli) ? (livelli as LivelloOmbra[]) : null;
+}
+
 /**
  * Un'ombra: una lista di livelli, non una stringa.
  *
@@ -715,27 +968,59 @@ export function ValoreOmbra({
   valore,
   tokens,
   tavolozza,
+  conToken = false,
   onCambia,
 }: {
   valore: unknown;
   tokens: readonly TokenRegistro[];
   tavolozza: Readonly<Record<string, string>>;
+  /**
+   * Il posto ammette `{ "$token": "shadow.2" }`: l'ombra di una parte o di un
+   * fotogramma sì, il valore di un token d'ombra no — un token non ne
+   * richiama un altro.
+   */
+  conToken?: boolean;
   onCambia: (valore: unknown) => void;
 }) {
-  const livelli: LivelloOmbra[] = Array.isArray(valore)
-    ? (valore as LivelloOmbra[])
-    : [];
+  const riferito =
+    valore !== null && typeof valore === "object" && "$token" in (valore as object)
+      ? String((valore as Record<string, unknown>)["$token"])
+      : null;
+  const livelli = livelliDi(valore) ?? [];
+  const ombre = tokens.filter((t) => t.kind === "shadow");
 
+  const scriviLivelli = (nuovi: LivelloOmbra[]) => onCambia({ layers: nuovi });
   const cambia = (indice: number, campo: keyof LivelloOmbra, dato: unknown) => {
     const nuovi = livelli.map((l, i) =>
       i === indice ? { ...l, [campo]: dato ?? undefined } : l,
     );
-    onCambia(nuovi);
+    scriviLivelli(nuovi);
   };
 
   return (
     <div className="valore-ombra">
-      {livelli.map((livello, indice) => (
+      {conToken && (
+        <select
+          className="field-input"
+          aria-label={t("studio.ctl.shadowShape")}
+          value={riferito ?? (livelliDi(valore) === null ? "" : "*")}
+          onChange={(e) => {
+            const scelta = e.target.value;
+            if (scelta === "") onCambia(null);
+            else if (scelta === "*") scriviLivelli(livelli.length > 0 ? livelli : [{ x: "0px", y: "2px", blur: "8px", color: "#00000033" }]);
+            else onCambia({ $token: scelta });
+          }}
+        >
+          <option value="">{t("studio.ctl.undeclared.f")}</option>
+          <option value="*">{t("studio.ctl.shadowByHand")}</option>
+          {ombre.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.id}
+            </option>
+          ))}
+        </select>
+      )}
+      {riferito === null && livelli.map((livello, indice) => (
         // L'indice è la chiave perché è l'identità: un'ombra non ha un nome, e
         // due uguali nella stessa pila restano due livelli.
         <div key={indice} className="un-livello-ombra">
@@ -754,29 +1039,25 @@ export function ValoreOmbra({
               type="button"
               className="via icon-btn"
               aria-label={t("studio.ctl.removeLayer", { n: indice + 1 })}
-              onClick={() => onCambia(livelli.filter((_, i) => i !== indice))}
+              onClick={() => scriviLivelli(livelli.filter((_, i) => i !== indice))}
             >
               <Icona nome="i-x" dim={11} />
             </button>
           </div>
           <div className="misure-ombra">
-            {(["x", "y", "blur", "spread"] as const).map((campo) => (
+            {MISURE_OMBRA.map(([campo, min, max]) => (
               <label key={campo} className="misura-ombra">
                 <span>{campo}</span>
                 <input
-                  className="field-input"
-                  type="text"
-                  inputMode="numeric"
-                  placeholder="—"
-                  value={livello[campo] ?? ""}
-                  onChange={(e) =>
-                    cambia(
-                      indice,
-                      campo,
-                      e.target.value === "" ? undefined : e.target.value,
-                    )
-                  }
+                  type="range"
+                  min={min}
+                  max={max}
+                  step={1}
+                  aria-label={t("studio.ctl.shadowMeasure", { campo, n: indice + 1 })}
+                  value={Number.parseFloat(livello[campo] ?? "0") || 0}
+                  onChange={(e) => cambia(indice, campo, `${e.target.value}px`)}
                 />
+                <span className="lettura">{livello[campo] ?? "—"}</span>
               </label>
             ))}
           </div>
@@ -788,67 +1069,20 @@ export function ValoreOmbra({
           />
         </div>
       ))}
-      <button
-        type="button"
-        className="aggiungi-livello"
-        onClick={() =>
-          onCambia([
-            ...livelli,
-            { x: "0px", y: "1px", blur: "2px", color: "#00000040" },
-          ])
-        }
-      >
-        <Icona nome="i-plus" dim={13} />
-        <span>{t("studio.ctl.addLayer")}</span>
-        {livelli.length === 0 && (
-          <span className="quanti">{t("studio.ctl.nowNone")}</span>
-        )}
-      </button>
+      {riferito === null && (
+        <button
+          type="button"
+          className="aggiungi-livello"
+          onClick={() =>
+            scriviLivelli([...livelli, { x: "0px", y: "1px", blur: "2px", color: "#00000040" }])
+          }
+        >
+          <Icona nome="i-plus" dim={13} />
+          <span>{t("studio.ctl.addLayer")}</span>
+          {livelli.length === 0 && <span className="quanti">{t("studio.ctl.nowNone")}</span>}
+        </button>
+      )}
     </div>
-  );
-}
-
-/**
- * Una scheda di sezione dello Studio.
- *
- * # Perché una funzione e non cinque volte lo stesso markup
- *
- * Perché era cinque volte lo stesso markup. `Tavolozza.tsx` apriva ogni
- * pannello con le stesse sei righe — `<section className="scheda
- * section-card">`, un `<header>`, l'involucro dell'icona, il titolo, la nota —
- * e la sesta copia non era più uguale alle prime cinque: mancava
- * l'`aria-hidden` sull'icona in tutte, e la nota compariva o no a seconda del
- * pannello. `Impostazioni.tsx` ha la stessa funzione, e la ha da prima; qui non
- * si può importarla — è locale a quel file, e quel file non è di questo
- * pacchetto — quindi lo Studio ne tiene una sua, con le stesse classi.
- *
- * Il titolo è `h3` e non `h2` perché nello Studio queste schede stanno dentro
- * una vista che ha già la sua intestazione: saltare un livello di titolo è la
- * cosa che chi naviga per intestazioni sente per prima.
- */
-export function Scheda({
-  icona,
-  titolo,
-  nota,
-  children,
-}: {
-  icona: NomeIcona;
-  titolo: string;
-  /** Il numero, o la mezza frase, che sta all'angolo destro della testata. */
-  nota?: string | undefined;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="scheda section-card">
-      <header>
-        <span className="section-icon" aria-hidden="true">
-          <Icona nome={icona} dim={16} />
-        </span>
-        <h3 className="section-heading">{titolo}</h3>
-        {nota !== undefined && <span className="nota-testa">{nota}</span>}
-      </header>
-      {children}
-    </section>
   );
 }
 
@@ -884,6 +1118,8 @@ export function ControlloPerTipo({
   token,
   tokens,
   tavolozza,
+  sorgenti,
+  curveSkin,
   onCambia,
 }: {
   tipo: TipoToken;
@@ -892,6 +1128,10 @@ export function ControlloPerTipo({
   token?: TokenRegistro | undefined;
   tokens: readonly TokenRegistro[];
   tavolozza: Readonly<Record<string, string>>;
+  /** Le sorgenti dinamiche, per un colore che le ammette. */
+  sorgenti?: readonly string[];
+  /** Le curve della skin, per una curva. */
+  curveSkin?: readonly { nome: string; curva: unknown }[];
   onCambia: (valore: unknown) => void;
 }) {
   const limitato = token?.min != null && token.max != null;
@@ -904,6 +1144,7 @@ export function ControlloPerTipo({
           tokens={tokens}
           tavolozza={tavolozza}
           escluso={token?.id}
+          sorgenti={sorgenti ?? []}
           onCambia={onCambia}
         />
       );
@@ -934,6 +1175,7 @@ export function ControlloPerTipo({
         <ValoreCurva
           valore={valore}
           etichetta={token?.id ?? t("studio.ctl.curve")}
+          curveSkin={curveSkin}
           onCambia={onCambia}
         />
       );

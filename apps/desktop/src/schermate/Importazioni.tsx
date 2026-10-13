@@ -25,10 +25,10 @@
  *
  * # Lo stato non è qui
  *
- * `useImportazioni` sta in `App`, come prima. Questa è la superficie: se lo
- * stato fosse qui, uscire dalla pagina smonterebbe le sottoscrizioni e la coda
- * tornerebbe a scendere in silenzio — cioè il difetto che tutto questo esiste
- * per togliere.
+ * `useImportazioni` sta in `FornitoreImportazioni`, montato una volta fra i
+ * fornitori di `App`. Questa è la superficie: se lo stato fosse qui, uscire
+ * dalla pagina smonterebbe le sottoscrizioni e la coda tornerebbe a scendere
+ * in silenzio — cioè il difetto che tutto questo esiste per togliere.
  */
 import { useEffect, useState } from "react";
 
@@ -50,7 +50,7 @@ import {
 } from "../parti/Incertezza";
 import { Intestazione } from "../parti/Intestazione";
 import { Rapporto } from "../parti/Rapporto";
-import { nomeLicenza, numero } from "../formato";
+import { nomeGenere, nomeLicenza, numero } from "../formato";
 import { t } from "../lingue";
 import { Trans } from "../lingue/Trans";
 
@@ -225,18 +225,18 @@ function RigaBrano({ brano, fonte }: { brano: BranoScarico; fonte: string }) {
               normale da tacere. Ambra quando non è dichiarata, perché quello è
               il caso in cui il file **non** viene preso. */}
           <span
-            className="pastiglia licenza"
+            className="pastiglia badge licenza"
             data-livello={scelto.licenza === "sconosciuta" ? "avviso" : "certo"}
           >
             {nomeLicenza(scelto.licenza)}
           </span>
           {nomeNatura(scelto.natura) !== null && (
-            <span className="pastiglia natura" data-livello="avviso">
+            <span className="pastiglia badge natura" data-livello="avviso">
               {nomeNatura(scelto.natura)}
             </span>
           )}
           {nomeAffidabilita(scelto.affidabilita) !== null && (
-            <span className="pastiglia ufficialita" data-livello="certo">
+            <span className="pastiglia badge ufficialita" data-livello="certo">
               {nomeAffidabilita(scelto.affidabilita)}
             </span>
           )}
@@ -305,9 +305,9 @@ function Riga({
           {riga.titolo}
         </span>
         <span className="genere">
-          {riga.genere}
-          {riga.brani !== null &&
-            t("imports.row.tracks", { n: numero(riga.brani) })}
+          {/* Il genere arriva dal nucleo come nome stabile: si traduce. */}
+          {nomeGenere(riga.genere)}
+          {riga.brani !== null && t("imports.row.tracks", { n: riga.brani })}
         </span>
         {/* Senza rapporto in sessione le tacche si **omettono**, non si mettono
             a «completo»: di un'importazione ritrovata al riavvio non sappiamo
@@ -484,7 +484,7 @@ function DaComprareSezione({ quanti }: { quanti: number }) {
                     vuol dire che quel brano da qualche parte si **ascolta**, ed
                     è una cosa diversa da «non l'ho trovato». */}
                 {riga.motivo === "download.notPermitted" && (
-                  <span className="pastiglia licenza" data-livello="nota">
+                  <span className="pastiglia badge licenza" data-livello="nota">
                     {t("buy.listenOnly")}
                   </span>
                 )}
@@ -616,7 +616,7 @@ export function SchermataImportazioni({
               <span className="stato">
                 {attiva
                   ? t("imports.state.running")
-                  : t("imports.state.paused", { n: numero(inAttesa) })}
+                  : t("imports.state.paused", { n: inAttesa })}
               </span>
             </div>
           )}
@@ -657,10 +657,10 @@ export function SchermataImportazioni({
             {storia.map((r) => (
               <li key={r.sourceId} className="list-row">
                 <span className="titolo">{r.title}</span>
-                <span className="genere">{r.kind}</span>
+                <span className="genere">{nomeGenere(r.kind)}</span>
                 <span className="conteggio">
                   {r.missing > 0
-                    ? t("imports.history.missing", { n: numero(r.missing) })
+                    ? t("imports.history.missing", { n: r.missing })
                     : t("imports.history.allThere")}
                 </span>
                 <button

@@ -49,16 +49,16 @@
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aether_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 
-use crate::decodifica::{Decodificatore, Sorgente};
+use crate::decodifica::{Decodificatore, FormatoSuonato, Sorgente};
 use crate::equalizzatore::{BANDE, Coefficienti};
 use crate::uscita::{FormatoUscita, RISERVA_MS, Uscita};
-use crate::{Condiviso, correzione, dissolvi, punto_curva, risali, volume_uscita};
+use crate::{Condiviso, Livello, correzione, dissolvi, punto_curva, risali, volume_uscita};
 
 /// In quanti passi si passa da una curva dell'equalizzatore all'altra.
 ///
@@ -145,10 +145,204 @@ pub struct Posizione {
     /// È in pausa.
     ///
     /// Unico campo che non viene dall'istantanea: lo riempie
-    /// [`Motore::posizione`] leggendo il bit condiviso nell'istante in cui
-    /// qualcuno chiede dove siamo. Il perché sta in [`Motore::pausa`].
+    /// [`Motore::posizione`] leggendo la pausa **voluta** nell'istante in cui
+    /// qualcuno chiede dove siamo. Il perché sta in [`Motore::pausa`], e perché
+    /// voluta e non in corso sta in `Intese::pausa_voluta`.
     pub in_pausa: bool,
+    /// Com'è fatto quel che si sente, secondo il decodificatore.
+    ///
+    /// Viaggia col segno del brano, come `track_id`: in un passaggio senza
+    /// buco cambia al fotogramma in cui il brano nuovo comincia a sentirsi, e
+    /// non quando la decodifica lo apre — qualche secondo prima, quanto
+    /// l'anello tiene da parte.
+    pub formato: Option<FormatoSuonato>,
 }
+
+/// Un [`Evento`], con quel che serve a chi lo riceve per decidere se vale ancora.
+///
+/// # Perché l'evento non basta più
+///
+/// Perché da quando gli eventi viaggiano su un filo loro — «aether-eventi», vedi
+/// [`Motore::avvia_con_annunci`] — fra il momento in cui il motore dice una cosa
+/// e quello in cui chi sta sopra la legge passa del tempo. Poco, di solito: il
+/// tempo di attraversare un canale. Ma chi sta sopra, per leggerla, prende il
+/// suo lucchetto, e in quel lucchetto possono essere successe due cose che
+/// l'evento non sa.
+///
+/// **Il motore è stato sostituito.** È il caso di `Condiviso::abbandonato`, e
+/// il controllo che [`Motore::drop`] rende possibile alzando la bandiera andava
+/// fatto **dall'altra parte**: l'osservatore passava il controllo, poi si
+/// metteva in coda sul lucchetto del lettore tenuto da chi stava sostituendo
+/// il motore, e quando lo otteneva parlava al motore nuovo di un brano del
+/// vecchio. [`Annuncio::ha_voce`] si chiede **sotto** quel lucchetto, dove la
+/// risposta non può più cambiare.
+///
+/// **Qualcuno ha già voltato pagina.** Un `Iniziato` del brano B annunciato un
+/// istante prima che la finestra chiedesse un altro brano arriva dopo la
+/// richiesta: letto com'è, farebbe avanzare la coda oltre il brano appena
+/// chiesto. [`Annuncio::superato`] lo riconosce.
+///
+/// E porta la **posizione di quell'istante**, che prima chi riceveva andava a
+/// leggersi dal motore mentre il motore aspettava: ora il motore non aspetta
+/// più, e fra l'annuncio e la lettura la posizione può essere già stata
+/// azzerata. Il caso che se ne accorgerebbe è il guasto di rete, dove «Riprova»
+/// deve sapere dove si era **prima** che il motore si fermasse.
+pub struct Annuncio {
+    /// Cosa è successo.
+    pub evento: Evento,
+    /// Dove si era nell'istante dell'annuncio.
+    ///
+    /// Per un [`Evento::Iniziato`] è già quella del brano che comincia; per un
+    /// [`Evento::Fermato`] è quella vuota; per un [`Evento::Errore`] è l'ultima
+    /// nota prima del guasto.
+    pub posizione: Posizione,
+    condiviso: Arc<Condiviso>,
+    intese: Arc<Intese>,
+    /// Quante svolte il filo aveva eseguito quando l'annuncio è partito. Vedi
+    /// [`Intese::chieste`].
+    svolte: u64,
+}
+
+impl Annuncio {
+    /// Il motore che l'ha detto è ancora quello in uso.
+    ///
+    /// Da chiedere **dentro** il lucchetto sotto cui il motore si sostituisce:
+    /// fuori, la risposta può cambiare fra la domanda e l'uso. Vedi il tipo.
+    #[must_use]
+    pub fn ha_voce(&self) -> bool {
+        !self.condiviso.abbandonato.load(Ordering::Acquire)
+    }
+
+    /// Dopo che l'annuncio è partito qualcuno ha già chiesto al motore di
+    /// cambiare strada — un brano nuovo, o lo stop — e il filo non l'aveva
+    /// ancora fatto.
+    ///
+    /// Un annuncio così parla di quel che si sentiva **prima** della richiesta:
+    /// chi l'ha fatta ha già chiuso l'ascolto e mosso la coda, e rileggerlo
+    /// vorrebbe dire muoverla una seconda volta.
+    #[must_use]
+    pub fn superato(&self) -> bool {
+        self.intese.chieste.load(Ordering::SeqCst) > self.svolte
+    }
+}
+
+impl std::fmt::Debug for Annuncio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Annuncio")
+            .field("evento", &self.evento)
+            .field("posizione", &self.posizione)
+            .field("svolte", &self.svolte)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Quel che la maniglia e il filo della decodifica si dicono **fuori** dalla
+/// coda dei comandi.
+///
+/// Tre caselle, tutte scritte da chi preme e lette da chi decodifica o da chi
+/// riceve gli annunci. Non stanno in `Condiviso` perché la callback audio non
+/// le guarda: sono accordi fra due fili che possono aspettarsi, non fra uno che
+/// può e uno che non può.
+struct Intese {
+    /// La pausa che chi comanda **vuole**, che non è sempre quella in corso.
+    ///
+    /// `Condiviso::in_pausa` è quella in corso, e la legge la callback. Le due
+    /// divergono in un caso solo, ed è il difetto che questa casella chiude: si
+    /// mette in pausa, si sceglie un altro brano, e prima di questa riga
+    /// [`Motore::suona`] abbassava subito la pausa in corso — mentre il comando
+    /// che butta via l'anello era ancora in coda. Per qualche millisecondo la
+    /// callback suonava **quel che era rimasto nell'anello del brano di
+    /// prima**: un colpo del vecchio brano prima del nuovo.
+    ///
+    /// Adesso `suona` scrive qui che non si vuole più la pausa, e la pausa in
+    /// corso si abbassa sul filo della decodifica **dopo** che l'anello è stato
+    /// svuotato. Chi chiede dove siamo legge questa casella, non l'altra: il
+    /// pulsante mostra le due stanghette nell'istante in cui si preme, che è
+    /// la ragione per cui la pausa si scrive da qui e non dalla coda — vedi
+    /// [`Motore::pausa`].
+    pausa_voluta: AtomicBool,
+    /// Quante svolte — brani avviati e stop — la maniglia ha chiesto.
+    ///
+    /// Cresce **prima** che il comando parta, sul filo di chi preme; il suo
+    /// gemello `eseguite` cresce sul filo della decodifica quando la svolta è
+    /// stata fatta. Finché i due differiscono c'è una svolta in viaggio, e un
+    /// annuncio partito in quel tempo parla di quel che c'era prima: vedi
+    /// [`Annuncio::superato`].
+    chieste: AtomicU64,
+    /// Quante svolte il filo della decodifica ha eseguito.
+    eseguite: AtomicU64,
+}
+
+impl Intese {
+    fn nuove() -> Arc<Self> {
+        Arc::new(Self {
+            // Come `Condiviso::in_pausa`: si comincia fermi.
+            pausa_voluta: AtomicBool::new(true),
+            chieste: AtomicU64::new(0),
+            eseguite: AtomicU64::new(0),
+        })
+    }
+
+    /// C'è una svolta chiesta e non ancora fatta.
+    fn in_viaggio(&self) -> bool {
+        self.chieste.load(Ordering::SeqCst) > self.eseguite.load(Ordering::SeqCst)
+    }
+
+    /// In pausa, subito: voluta e in corso insieme, in quest'ordine.
+    fn pausa(&self, condiviso: &Condiviso) {
+        self.pausa_voluta.store(true, Ordering::SeqCst);
+        condiviso.in_pausa.store(true, Ordering::SeqCst);
+    }
+
+    /// Fuori pausa — ma la pausa in corso si abbassa solo se non c'è una
+    /// svolta in viaggio. Se c'è, la abbasserà il filo della decodifica dopo
+    /// aver svuotato l'anello: vedi [`Intese::allinea`].
+    fn riprendi(&self, condiviso: &Condiviso) {
+        self.pausa_voluta.store(false, Ordering::SeqCst);
+        if !self.in_viaggio() {
+            self.allinea(condiviso);
+        }
+    }
+
+    /// Porta la pausa in corso dove la vuole chi comanda.
+    ///
+    /// # Perché la seconda lettura
+    ///
+    /// Perché fra la lettura e la scrittura qualcuno può mettere in pausa: la
+    /// sua scrittura di `in_pausa` arriverebbe **prima** della nostra, e la
+    /// nostra la cancellerebbe — musica che riparte dopo che si è premuto
+    /// pausa. Rileggendo la volontà dopo aver scritto, chi ha messo in pausa in
+    /// mezzo viene visto: [`Intese::pausa`] scrive la volontà prima della pausa
+    /// in corso, e con l'ordine `SeqCst` una delle due letture la trova.
+    fn allinea(&self, condiviso: &Condiviso) {
+        if self.pausa_voluta.load(Ordering::SeqCst) {
+            condiviso.in_pausa.store(true, Ordering::SeqCst);
+            return;
+        }
+        condiviso.in_pausa.store(false, Ordering::SeqCst);
+        if self.pausa_voluta.load(Ordering::SeqCst) {
+            condiviso.in_pausa.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// La dissolvenza verso la pausa del timer di spegnimento, in corso.
+#[derive(Clone, Copy)]
+struct Sfumatura {
+    inizio: Instant,
+    durata: Duration,
+    /// Arrivata in fondo: la pausa è già stata messa, e il guadagno **resta**
+    /// al fondo finché qualcuno non riprende. Vedi [`Contesto::avanza_sfumatura`].
+    finita: bool,
+}
+
+/// Quanto scende il volume alla fine di una [`Sfumatura`], in decibel.
+///
+/// Sessanta: sotto non si sente più niente sopra il rumore di una stanza, e la
+/// pausa che arriva lì non è un taglio. La discesa è lineare **in decibel**,
+/// che all'orecchio è una discesa uniforme; lineare in ampiezza sembrerebbe
+/// ferma per metà del tempo e poi cadrebbe tutta alla fine.
+const SFUMATURA_DB: f32 = 60.0;
 
 /// Quel che si può chiedere al motore.
 enum Comando {
@@ -156,6 +350,12 @@ enum Comando {
     Prepara(Option<Box<BranoAperto>>),
     Ferma,
     VaiA(u64),
+    /// Porta il volume a zero in tanti millisecondi, poi mette in pausa.
+    Sfuma {
+        ms: u64,
+    },
+    /// Lascia perdere la sfumatura in corso, se ce n'è una.
+    AnnullaSfuma,
     Volume {
         volume: f32,
         muto: bool,
@@ -196,8 +396,65 @@ pub struct Motore {
     /// Il nome dell'uscita su cui si è aperto davvero. Vedi
     /// [`Motore::dispositivo`].
     dispositivo: String,
-    /// Tenerla viva tiene acceso il flusso.
-    _uscita: Uscita,
+    /// Gli accordi con il filo della decodifica che non passano dalla coda.
+    intese: Arc<Intese>,
+    /// Tenerla viva tiene aperto il flusso; [`Uscita::sveglia`] lo rimette in
+    /// moto quando riposa, prima di ogni comando che ha bisogno della callback.
+    uscita: Uscita,
+}
+
+/// Dove il filo della decodifica lascia i suoi annunci.
+///
+/// Una chiusura e non un `Sender` perché le prove in fondo al file la vogliono
+/// **sincrona** — un registro che si riempie mentre il contesto gira — mentre il
+/// motore vero la vuole su un canale. Chi decodifica non sa quale delle due ha
+/// in mano, e non deve: in tutti e due i casi consegnare costa un `push`.
+type Voce = Box<dyn Fn(Annuncio) + Send>;
+
+/// Il filo «aether-eventi»: riceve gli annunci e li passa all'osservatore.
+///
+/// # Perché un filo in mezzo
+///
+/// Perché l'osservatore dell'applicazione **lavora**: a ogni cambio di brano
+/// prende il lucchetto del lettore, scrive l'ascolto sul database, conserva la
+/// coda, compone lo stato per la finestra. Finché lo chiamava il filo della
+/// decodifica, tutto quel lavoro stava fra un blocco di campioni e il
+/// successivo — con il lucchetto del lettore conteso dalla finestra e quello
+/// della libreria conteso da una scansione. L'anello regge qualche decimo di
+/// secondo a 192 kHz su otto canali: un database occupato per un secondo, al
+/// cambio di brano, era un buco nel suono proprio dove il gapless doveva non
+/// farne.
+///
+/// Adesso il filo della decodifica consegna un messaggio e torna a decodificare.
+/// L'ordine resta quello in cui gli eventi sono successi: il canale è uno, e chi
+/// lo svuota è uno.
+///
+/// # Quando finisce
+///
+/// Quando il contesto — l'unico che tiene l'altro capo — viene lasciato cadere,
+/// cioè quando il filo della decodifica esce: il canale si chiude, gli annunci
+/// rimasti si consegnano, e il ciclo termina da sé. Quelli di un motore
+/// abbandonato arrivano comunque all'osservatore, che li riconosce con
+/// [`Annuncio::ha_voce`].
+fn voce_su_filo(osservatore: Box<dyn Fn(Annuncio) + Send>) -> Result<Voce, AppError> {
+    let (manda, ricevi) = std::sync::mpsc::channel::<Annuncio>();
+    std::thread::Builder::new()
+        .name("aether-eventi".to_owned())
+        .spawn(move || {
+            for annuncio in ricevi {
+                osservatore(annuncio);
+            }
+        })
+        .map_err(|err| {
+            AppError::new(ErrorCode::PlaybackEngineUnavailable)
+                .with_cause(format!("filo degli eventi: {err}"))
+        })?;
+    Ok(Box::new(move |annuncio| {
+        // Un canale chiuso vuol dire un filo degli eventi che non c'è più: non
+        // c'è nessuno a cui dirlo, e il filo della decodifica non deve cadere
+        // per questo.
+        let _ = manda.send(annuncio);
+    }))
 }
 
 impl Motore {
@@ -206,10 +463,42 @@ impl Motore {
     /// `voluto` è il nome dell'uscita da aprire, `None` per quella predefinita
     /// di sistema. Chiedere un nome che non c'è **non** fallisce: si ripiega
     /// sul predefinito, e [`Motore::dispositivo`] dice dove si è finiti.
+    ///
+    /// L'osservatore riceve soltanto l'evento: il controllo del motore
+    /// abbandonato lo fa questa funzione, subito prima di chiamarlo. Chi deve
+    /// farlo sotto un lucchetto suo — perché sotto quel lucchetto il motore si
+    /// sostituisce — usa [`Motore::avvia_con_annunci`].
     pub fn avvia(
         osservatore: impl Fn(Evento) + Send + 'static,
         voluto: Option<String>,
     ) -> Result<Self, AppError> {
+        Self::avvia_con_annunci(
+            move |annuncio: Annuncio| {
+                if annuncio.ha_voce() {
+                    osservatore(annuncio.evento);
+                }
+            },
+            voluto,
+        )
+    }
+
+    /// Come [`Motore::avvia`], ma l'osservatore riceve l'[`Annuncio`] intero.
+    ///
+    /// Gira sul filo «aether-eventi», mai su quello della decodifica né sulla
+    /// callback audio: può prendere lucchetti, scrivere sul database e aspettare
+    /// senza che il suono ne sappia niente.
+    ///
+    /// # Errori
+    ///
+    /// `playback.engineUnavailable` se non parte uno dei due fili, e gli errori
+    /// di apertura del dispositivo.
+    pub fn avvia_con_annunci(
+        osservatore: impl Fn(Annuncio) + Send + 'static,
+        voluto: Option<String>,
+    ) -> Result<Self, AppError> {
+        // Il filo degli eventi **prima** del dispositivo: se non parte, non
+        // resta aperto un flusso audio che nessuno chiuderà.
+        let voce = voce_su_filo(Box::new(osservatore))?;
         let condiviso = Condiviso::nuovo();
 
         // L'anello si dimensiona prima di sapere la frequenza vera, quindi si
@@ -262,8 +551,9 @@ impl Motore {
             Arc::clone(&condiviso),
             Arc::clone(&posizione),
             formato,
-            Box::new(osservatore),
+            voce,
         );
+        let intese = Arc::clone(&contesto.intese);
 
         std::thread::Builder::new()
             .name("aether-decodifica".to_owned())
@@ -283,7 +573,8 @@ impl Motore {
                 formato.frequenza,
             )),
             dispositivo,
-            _uscita: uscita,
+            intese,
+            uscita,
         })
     }
 
@@ -353,13 +644,35 @@ impl Motore {
         &self.dispositivo
     }
 
+    /// L'uscita aperta è Bluetooth: in pausa la libera dopo un secondo invece
+    /// che dopo trenta. Vedi `uscita::RIPOSO_BLUETOOTH`.
+    #[must_use]
+    pub const fn su_bluetooth(&self) -> bool {
+        self.uscita.bluetooth
+    }
+
     /// Comincia a suonare questo brano, adesso, scartando quel che c'era.
     ///
     /// Il brano arriva **già aperto**: il perché sta in [`BranoAperto`].
     pub fn suona(&self, brano: BranoAperto) {
-        // Abbassato qui e non all'apertura del file, per la ragione — e per
-        // l'ordine — scritti in [`Motore::pausa`].
-        self.condiviso.in_pausa.store(false, Ordering::Release);
+        // Il flusso prima di tutto: il comando fa svuotare l'anello, e lo
+        // svuotamento è una stretta di mano con la callback che a flusso fermo
+        // nessuno stringe. Vedi [`Uscita::sveglia`].
+        self.uscita.sveglia();
+        // La svolta si conta **prima** di partire: un annuncio che il filo
+        // manda da qui al momento in cui la esegue parla del brano di prima.
+        // Vedi [`Annuncio::superato`].
+        self.intese.chieste.fetch_add(1, Ordering::SeqCst);
+        // Si scrive che la pausa non la si vuole più, qui e non all'apertura
+        // del file — per la ragione, e per l'ordine, scritti in
+        // [`Motore::pausa`]. Ma la pausa **in corso** resta alzata: la abbassa
+        // il filo della decodifica dopo aver buttato l'anello, altrimenti la
+        // callback suonerebbe quel che ci era rimasto del brano di prima. Vedi
+        // `Intese::pausa_voluta`.
+        self.intese.pausa_voluta.store(false, Ordering::SeqCst);
+        // Quel che il filo sta aspettando dalla rete non serve più: vedi
+        // `Condiviso::in_lettura`. Prima del comando, non dopo.
+        self.condiviso.interrompi_la_lettura();
         self.manda(Comando::Suona(Box::new(brano)));
     }
 
@@ -373,8 +686,16 @@ impl Motore {
     }
 
     /// Riprende.
+    ///
+    /// Lascia perdere anche la sfumatura del timer di spegnimento, se ce n'è
+    /// una in corso: chi preme play mentre la musica si sta spegnendo la vuole,
+    /// e lasciarla scendere fino alla pausa vorrebbe dire ignorarlo. Vedi
+    /// [`Motore::sfuma`].
     pub fn riprendi(&self) {
-        self.condiviso.in_pausa.store(false, Ordering::Release);
+        // A flusso fermo, togliere la pausa non farebbe uscire niente.
+        self.uscita.sveglia();
+        self.intese.riprendi(&self.condiviso);
+        self.manda(Comando::AnnullaSfuma);
     }
 
     /// Mette in pausa.
@@ -383,7 +704,8 @@ impl Motore {
     ///
     /// Ci passava, e il comando non faceva altro che alzare questo bit: la
     /// pausa vera sta nella callback dell'uscita, che legge `in_pausa` a ogni
-    /// blocco e manda silenzio senza consumare l'anello. Il giro per il filo
+    /// blocco, sfuma in una dozzina di millisecondi — gli unici fotogrammi che
+    /// la pausa consuma — e poi manda silenzio senza toccare l'anello. Il giro per il filo
     /// della decodifica non serviva a mettere in pausa — serviva solo a farsi
     /// aspettare.
     ///
@@ -398,20 +720,59 @@ impl Motore {
     /// scrivono tutti dal filo di chi preme, quindi valgono nell'ordine in cui
     /// si preme: con l'avvio in coda e la pausa immediata, una pausa premuta
     /// subito dopo un avvio se la sarebbe mangiata l'avvio, arrivando dopo.
+    ///
+    /// Le caselle sono due, e questa funzione le scrive tutte e due: quella che
+    /// dice cosa si vuole e quella che legge la callback. Il perché delle due
+    /// sta su `Intese::pausa_voluta`.
     pub fn pausa(&self) {
-        self.condiviso.in_pausa.store(true, Ordering::Release);
+        self.intese.pausa(&self.condiviso);
     }
 
     /// Smette e dimentica tutto.
     pub fn ferma(&self) {
+        // Anche fermarsi svuota l'anello: stessa stretta di mano di `suona`.
+        self.uscita.sveglia();
+        self.intese.chieste.fetch_add(1, Ordering::SeqCst);
         // Il bit prima del comando: svuotare l'anello è lavoro del filo, dire
         // che siamo fermi no — vedi [`Motore::pausa`].
-        self.condiviso.in_pausa.store(true, Ordering::Release);
+        self.intese.pausa(&self.condiviso);
+        self.condiviso.interrompi_la_lettura();
         self.manda(Comando::Ferma);
+    }
+
+    /// Porta il volume a zero in `ms` millisecondi, poi mette in pausa.
+    ///
+    /// È la fine del timer di spegnimento. Prima era una pausa secca, cioè il
+    /// modo peggiore di svegliare chi si stava addormentando: la musica si
+    /// fermava a metà di una frase, e il silenzio improvviso fa l'effetto di un
+    /// rumore. La discesa è lineare in decibel — vedi [`SFUMATURA_DB`] — e il
+    /// volume torna dov'era alla ripresa, risalendo dal fondo: chi riprende il
+    /// giorno dopo non ritrova il cursore a zero, e intanto la pausa si è
+    /// chiusa sul silenzio e non su un ritorno improvviso del volume.
+    ///
+    /// La fa il filo della decodifica, a ogni suo giro: quattro millisecondi
+    /// fra un passo e l'altro, che la rampa della callback leviga del tutto.
+    /// Un brano nuovo, uno stop o una ripresa la annullano.
+    pub fn sfuma(&self, ms: u64) {
+        self.manda(Comando::Sfuma { ms });
+    }
+
+    /// Lascia perdere la sfumatura in corso, se ce n'è una.
+    ///
+    /// Serve a chi spegne il timer mentre la musica sta già scendendo.
+    pub fn annulla_sfumatura(&self) {
+        self.manda(Comando::AnnullaSfuma);
     }
 
     /// Salta a un punto del brano corrente.
     pub fn vai_a(&self, ms: u64) {
+        // Un salto svuota l'anello: stessa stretta di mano di `suona`, e un
+        // salto in pausa col flusso a riposo è proprio il caso che la perdeva.
+        self.uscita.sveglia();
+        // Un salto chiesto mentre il precedente aspetta ancora la rete: quello
+        // smette di aspettare, e di più salti in fila il filo fa solo l'ultimo
+        // (vedi `compatta`).
+        self.condiviso.interrompi_la_lettura();
         self.manda(Comando::VaiA(ms));
     }
 
@@ -486,16 +847,14 @@ impl Motore {
     /// pausa no, viene dal bit condiviso letto adesso. Chi ha appena premuto
     /// pausa non deve aspettare il prossimo giro di quel filo per sentirselo
     /// dire — vedi [`Motore::pausa`].
+    ///
+    /// Il bit è quello della pausa **voluta**, non quella in corso: subito dopo
+    /// [`Motore::suona`] le due differiscono per qualche millisecondo, e chi
+    /// chiede deve sentirsi dire quel che ha appena chiesto. Vedi
+    /// `Intese::pausa_voluta`.
     #[must_use]
     pub fn posizione(&self) -> Posizione {
-        let istantanea = self
-            .posizione
-            .lock()
-            .map_or_else(|avvelenato| *avvelenato.into_inner(), |g| *g);
-        Posizione {
-            in_pausa: self.condiviso.in_pausa.load(Ordering::Acquire),
-            ..istantanea
-        }
+        istantanea(&self.posizione, &self.intese)
     }
 
     /// Il motore non suona più, e non ricomincerà da solo.
@@ -619,6 +978,21 @@ impl Motore {
     }
 }
 
+/// La posizione com'è adesso, con la pausa voluta: vedi [`Motore::posizione`].
+///
+/// Fuori dal `impl` perché la legge anche il filo della decodifica, che il
+/// motore non ce l'ha ma le due caselle sì — è la posizione che viaggia dentro
+/// ogni [`Annuncio`].
+fn istantanea(posizione: &std::sync::Mutex<Posizione>, intese: &Intese) -> Posizione {
+    let scritta = posizione
+        .lock()
+        .map_or_else(|avvelenato| *avvelenato.into_inner(), |g| *g);
+    Posizione {
+        in_pausa: intese.pausa_voluta.load(Ordering::SeqCst),
+        ..scritta
+    }
+}
+
 impl Drop for Motore {
     /// # Perché la bandiera prima del comando
     ///
@@ -633,6 +1007,11 @@ impl Drop for Motore {
     ///
     /// Alzando `abbandonato` per primo, ogni annuncio di questo motore da qui
     /// in poi cade nel vuoto. Vedi `Condiviso::abbandonato`.
+    ///
+    /// Quelli già partiti, invece, sono in viaggio sul filo degli eventi, e la
+    /// bandiera li raggiunge dall'altra parte: [`Annuncio::ha_voce`] la rilegge
+    /// sotto il lucchetto con cui chi sta sopra sostituisce il motore, che è
+    /// l'unico posto in cui la risposta non può più cambiare.
     fn drop(&mut self) {
         self.condiviso.abbandonato.store(true, Ordering::Release);
         self.manda(Comando::Chiudi);
@@ -657,14 +1036,14 @@ impl Drop for Motore {
 /// — e il filo di decodifica riceve qualcosa che è già pronto a consegnare
 /// campioni.
 ///
-/// Porta con sé durata e ReplayGain: quando toccherà a lui, la [`Sorgente`] da
+/// Porta con sé durata e livello: quando toccherà a lui, la [`Sorgente`] da
 /// cui vengono non esisterà più — è stata consumata dall'apertura — e senza
 /// questi due campi il brano attaccato in gapless arriverebbe in interfaccia
 /// con durata zero e senza correzione di volume.
 pub struct BranoAperto {
     decodificatore: Decodificatore,
     durata_ms: u64,
-    replaygain_db: Option<f32>,
+    livello: Livello,
 }
 
 impl BranoAperto {
@@ -678,14 +1057,30 @@ impl BranoAperto {
     /// `playback.formatUnsupported` per un contenitore che non si riconosce,
     /// `fs.networkUnavailable` se a non rispondere è la condivisione —
     /// ritentabile, e chi chiama ci mette accanto il tasto «Riprova».
+    ///
+    /// # La bandiera dell'annullo
+    ///
+    /// Ogni brano ne ha una sua, data al decodificatore e, attraverso lui, alla
+    /// sorgente: un flusso di rete la guarda mentre aspetta. La alza il motore
+    /// quando un salto, un brano nuovo o uno stop rendono inutile la lettura
+    /// in corso — vedi `Condiviso::in_lettura`. Un file del disco non aspetta
+    /// niente, e per lui la bandiera è un atomico letto per pacchetto.
     pub fn apri(sorgente: Sorgente, formato: FormatoUscita) -> Result<Self, AppError> {
         let durata_ms = sorgente.durata_ms;
-        let replaygain_db = sorgente.replaygain_db;
-        let decodificatore = Decodificatore::apri(sorgente, formato.frequenza, formato.canali)?;
+        let livello = Livello {
+            guadagno_db: sorgente.replaygain_db,
+            picco: sorgente.picco,
+        };
+        let decodificatore = Decodificatore::apri_con_annullo(
+            sorgente,
+            formato.frequenza,
+            formato.canali,
+            Arc::new(AtomicBool::new(false)),
+        )?;
         Ok(Self {
             decodificatore,
             durata_ms,
-            replaygain_db,
+            livello,
         })
     }
 
@@ -743,6 +1138,9 @@ struct Segno {
     /// musica si fermava alla seconda ripetizione — o il brano ancora dopo non
     /// partiva mai. L'annuncio segue l'ascolto, e l'ascolto è questo numero.
     ascolto: u64,
+    /// Com'è fatto il brano: va in [`Posizione::formato`] quando il segno è
+    /// raggiunto.
+    formato: Option<FormatoSuonato>,
 }
 
 /// Un brano decodificato per intero che si sta ancora sentendo.
@@ -757,14 +1155,63 @@ struct Uscente {
     brano: BranoAperto,
 }
 
+/// Com'è andata la ricerca del brano su cui far cadere un salto.
+///
+/// Tre esiti e non un `bool`, perché il salto che fallisce ha bisogno di
+/// distinguere gli ultimi due: se nessuno ha toccato niente, un salto fallito
+/// lascia la puntina dov'era; se per saltare si sono rimessi in fila i
+/// decodificatori, l'anello non racconta più quel che verrà e va buttato
+/// comunque.
+enum Puntina {
+    /// `corrente` era già il brano che si sente.
+    AlSuoPosto,
+    /// Il brano che si sente è stato riportato in `corrente`.
+    Riportata,
+    /// Non c'è modo di riportarlo: il salto si lascia cadere.
+    Persa,
+}
+
 struct Contesto {
     comandi: Receiver<Comando>,
     produttore: rtrb::Producer<f32>,
     condiviso: Arc<Condiviso>,
     posizione: Arc<std::sync::Mutex<Posizione>>,
-    osservatore: Box<dyn Fn(Evento) + Send>,
+    /// Dove vanno gli annunci: vedi [`Voce`] e [`voce_su_filo`].
+    voce: Voce,
+    /// Gli accordi con la maniglia: vedi [`Intese`].
+    intese: Arc<Intese>,
     formato: FormatoUscita,
     corrente: Option<Decodificatore>,
+    /// A quale ascolto appartiene `corrente`.
+    ///
+    /// # Perché non basta il suo `track_id`
+    ///
+    /// Per la stessa ragione di [`Segno::ascolto`]: con «ripeti uno» il brano
+    /// che si decodifica e quello che si sente possono avere lo stesso
+    /// identificativo ed essere due ascolti diversi. Negli ultimi secondi di
+    /// ogni ripetizione il decodificatore è già sulla ripetizione dopo, e
+    /// [`Contesto::riporta_sotto_la_puntina`] — che doveva riconoscerlo — la
+    /// scambiava per quella che si sentiva: il salto cadeva sulla ripetizione
+    /// successiva col numero d'ascolto di quella in corso, la successiva non
+    /// veniva mai annunciata, chi sta sopra non preparava la terza, e la musica
+    /// si fermava.
+    ascolto_corrente: u64,
+    /// A quale ascolto appartiene l'entrante di una dissolvenza: il numero del
+    /// segno annotato a metà curva. Vale solo finché `entrante` c'è.
+    ascolto_entrante: u64,
+    /// La discesa verso la pausa del timer di spegnimento, se ce n'è una.
+    /// Vedi [`Motore::sfuma`].
+    sfumatura: Option<Sfumatura>,
+    /// Il segno dell'ultimo salto aspetta il primo blocco per sapere dove si è
+    /// atterrati davvero.
+    ///
+    /// Su un file il punto d'arrivo lo sa già [`Decodificatore::cerca`]. Su un
+    /// flusso di rete il salto è grossolano — si atterra sul pacchetto più
+    /// vicino, e rincorrere il fotogramma esatto vorrebbe dire scaricare tutti
+    /// i byte in mezzo — e dove si è finiti lo dice solo il primo blocco
+    /// decodificato. Con il numero chiesto il cursore e i testi resterebbero
+    /// sfasati di quel pacchetto per tutto il resto del brano.
+    riallinea_segno: bool,
     /// Il brano che si sta ancora **sentendo** quando la decodifica è già
     /// passata a quello dopo.
     ///
@@ -820,7 +1267,12 @@ struct Contesto {
     /// campioni invece di stare in uno scalare globale, quel che conta è a chi
     /// appartengono i campioni che stanno uscendo dal decodificatore adesso —
     /// e con una dissolvenza in corso i due non sono lo stesso brano.
-    rg_decodifica: Option<f32>,
+    rg_decodifica: Livello,
+    /// La correzione del brano **prima** di quello che si decodifica, per la
+    /// sua coda che esce dal ricampionatore passato al seguito: vedi
+    /// [`Contesto::decodifica_un_blocco`]. Conta solo finché
+    /// [`Decodificatore::ereditati`] non è zero.
+    rg_altrui: Livello,
     /// Quanto dura la sovrapposizione fra due brani. Zero: nessuna.
     dissolvenza_ms: u64,
     /// La latenza della catena d'uscita dichiarata a mano, in millisecondi.
@@ -961,19 +1413,80 @@ fn messaggio_del_panico(carico: &(dyn std::any::Any + Send)) -> String {
     "causa sconosciuta".to_owned()
 }
 
+/// I comandi arrivati insieme, ridotti a quelli che vale ancora la pena di
+/// eseguire.
+///
+/// # Il difetto che chiude
+///
+/// Sei trascinate sulla barra del tempo sono sei `VaiA`, e il filo li eseguiva
+/// tutti e sei. Su un file locale non si vede: un salto è una `seek` nel
+/// buffer. Su un brano di rete ognuno è un `SeekMode::Accurate` che chiede al
+/// catalogo **tutti i byte in mezzo**, e su un nodo che consegna a cinquanta
+/// chilobyte al secondo sono decine di secondi l'uno. In fila diventano minuti:
+/// due minuti misurati, con il cursore fermo, la finestra che dice che sta
+/// suonando, e ogni altro comando in coda dietro di loro — compreso il «suona»
+/// di un brano che sta sul disco e non avrebbe niente da aspettare.
+///
+/// Di quei sei salti ne conta uno: l'ultimo. Gli altri cinque sono posizioni
+/// che nessuno ha mai sentito, e attraversarle non è un servizio reso a
+/// nessuno.
+///
+/// # Le due regole
+///
+/// **Di più salti nello stesso lotto sopravvive l'ultimo.** Non serve che siano
+/// attaccati: fra due salti possono esserci un volume o un equalizzatore, e
+/// nessuno dei due guarda dove si è: il secondo salto cancella il primo
+/// comunque.
+///
+/// **Un salto seguito da `Suona` o `Ferma` non si fa affatto.** Quei due
+/// rifanno la posizione da capo, quindi il salto che li precede è lavoro che
+/// verrebbe buttato appena finito — ed è il caso peggiore, perché è
+/// esattamente il gesto di chi, stufo di aspettare, mette su un altro brano.
+///
+/// Una passata sola, dal fondo verso l'inizio, con una domanda che si porta
+/// dietro: «quel che ho già visto rende inutile un salto?».
+fn compatta(lotto: &mut Vec<Comando>) {
+    let mut superfluo = false;
+    let mut i = lotto.len();
+    while i > 0 {
+        i -= 1;
+        let Some(comando) = lotto.get(i) else { break };
+        match comando {
+            Comando::VaiA(_) if superfluo => {
+                // `remove` è lineare, e va benissimo: un lotto è quel che è
+                // arrivato in quattro millisecondi, cioè una manciata.
+                lotto.remove(i);
+            }
+            Comando::VaiA(_) | Comando::Suona(_) | Comando::Ferma => superfluo = true,
+            _ => {}
+        }
+    }
+}
+
 fn filo(ctx: &mut Contesto) {
+    // Fuori dal giro: la stessa scatola serve tutte le passate, e dopo la prima
+    // non chiede più memoria a nessuno.
+    let mut lotto: Vec<Comando> = Vec::new();
     loop {
         // I comandi in attesa, tutti, prima di lavorare: fra un «pausa» e un
         // «riprendi» arrivati insieme deve vincere il secondo, non il primo.
+        // Si raccolgono e **poi** si eseguono, perché per dire quali contano
+        // bisogna averli visti tutti — vedi [`compatta`].
+        lotto.clear();
         loop {
             match ctx.comandi.try_recv() {
                 Ok(Comando::Chiudi) | Err(TryRecvError::Disconnected) => return,
-                Ok(comando) => ctx.esegui(comando),
+                Ok(comando) => lotto.push(comando),
                 Err(TryRecvError::Empty) => break,
             }
         }
+        compatta(&mut lotto);
+        for comando in lotto.drain(..) {
+            ctx.esegui(comando);
+        }
         let lavorato = ctx.riempi();
         ctx.avanza_eq();
+        ctx.avanza_sfumatura();
         ctx.aggiorna();
         if !lavorato {
             // Niente da decodificare, o anello pieno: quattro millisecondi sono
@@ -999,16 +1512,21 @@ impl Contesto {
         condiviso: Arc<Condiviso>,
         posizione: Arc<std::sync::Mutex<Posizione>>,
         formato: FormatoUscita,
-        osservatore: Box<dyn Fn(Evento) + Send>,
+        voce: Voce,
     ) -> Self {
         Self {
             comandi,
             produttore,
             condiviso,
             posizione,
-            osservatore,
+            voce,
+            intese: Intese::nuove(),
             formato,
             corrente: None,
+            ascolto_corrente: 0,
+            ascolto_entrante: 0,
+            sfumatura: None,
+            riallinea_segno: false,
             uscente: None,
             prossimo: None,
             segni: VecDeque::new(),
@@ -1022,7 +1540,8 @@ impl Contesto {
             muto: false,
             replaygain_attivo: true,
             bersaglio_db: -18.0,
-            rg_decodifica: None,
+            rg_decodifica: Livello::NESSUNO,
+            rg_altrui: Livello::NESSUNO,
             dissolvenza_ms: 0,
             latenza_manuale_ms: 0,
             durata_corrente_ms: 0,
@@ -1045,10 +1564,37 @@ impl Contesto {
 
     fn esegui(&mut self, comando: Comando) {
         match comando {
-            Comando::Suona(brano) => self.avvia_brano(*brano),
+            Comando::Suona(brano) => {
+                self.avvia_brano(*brano);
+                // Contata **dopo** aver buttato l'anello, e la pausa in corso
+                // allineata dopo ancora: finché la svolta risulta in viaggio,
+                // `Intese::riprendi` lascia la pausa in corso alzata, e una
+                // ripresa premuta nel frattempo non fa suonare i resti del brano
+                // di prima.
+                self.intese.eseguite.fetch_add(1, Ordering::SeqCst);
+                self.intese.allinea(&self.condiviso);
+            }
             Comando::Prepara(brano) => self.prepara(brano.map(|b| *b)),
-            Comando::Ferma => self.ferma(),
+            Comando::Ferma => {
+                // Contata **prima** di fermarsi: il `Fermato` che parte da
+                // `ferma` è la risposta a questa richiesta, non un annuncio di
+                // prima, e non deve risultare superato.
+                self.intese.eseguite.fetch_add(1, Ordering::SeqCst);
+                self.ferma();
+            }
             Comando::VaiA(ms) => self.vai_a(ms),
+            Comando::Sfuma { ms } => {
+                self.sfumatura = Some(Sfumatura {
+                    inizio: Instant::now(),
+                    durata: Duration::from_millis(ms.max(1)),
+                    finita: false,
+                });
+            }
+            Comando::AnnullaSfuma => {
+                if self.sfumatura.take().is_some() {
+                    self.applica_guadagno();
+                }
+            }
             Comando::Volume { volume, muto } => {
                 self.volume = volume;
                 self.muto = muto;
@@ -1127,11 +1673,61 @@ impl Contesto {
     /// all'istante, perché i campioni già decodificati portano il guadagno di
     /// prima. È una manopola che si tocca dalle impostazioni una volta ogni
     /// tanto, e il cambio arriva senza un salto.
+    ///
+    /// Durante una [`Sfumatura`] il volume esce moltiplicato per quel che resta
+    /// della discesa: così un cursore del volume mosso mentre la musica si sta
+    /// spegnendo cambia il livello da cui si scende, e non la fa risalire.
     fn applica_guadagno(&self) {
-        let g = volume_uscita(self.volume, self.muto);
+        let g = volume_uscita(self.volume, self.muto) * self.resto_della_sfumatura();
         self.condiviso
             .guadagno
             .store(g.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Quanto del volume resta a questo punto della sfumatura: uno se non ce
+    /// n'è una.
+    fn resto_della_sfumatura(&self) -> f32 {
+        let Some(sfumatura) = self.sfumatura else {
+            return 1.0;
+        };
+        fattore_di_sfumatura(sfumatura.inizio.elapsed(), sfumatura.durata)
+    }
+
+    /// Un passo della sfumatura, e alla fine la pausa.
+    ///
+    /// # Perché il volume resta giù fino alla ripresa
+    ///
+    /// Qui c'era scritto che il volume tornava quello del cursore subito dopo
+    /// la pausa, «tanto la callback in pausa non suona niente». Non è vero per
+    /// i primi dodici millisecondi: la pausa nella callback è una porta che si
+    /// chiude in `DISSOLVENZA_MS` (vedi `uscita.rs`), e mentre si chiudeva la
+    /// rampa del guadagno inseguiva già il volume pieno partendo dal fondo
+    /// della discesa. Il prodotto delle due faceva un «blip» di qualche
+    /// millisecondo a una ventina di decibel sotto il volume — dopo sei secondi
+    /// di silenzio quasi totale, nella stanza di chi si stava addormentando.
+    ///
+    /// Adesso la sfumatura arrivata in fondo **resta**, segnata come finita: il
+    /// guadagno rimane al fondo, la porta si chiude sul quasi-silenzio, e il
+    /// volume del cursore torna solo quando la si toglie — la ripresa
+    /// ([`Motore::riprendi`] manda `AnnullaSfuma`), un brano nuovo, uno stop.
+    /// Alla ripresa la rampa riparte dal fondo, che è la ripartenza morbida
+    /// che il commento di prima prometteva.
+    fn avanza_sfumatura(&mut self) {
+        let Some(sfumatura) = self.sfumatura.as_mut() else {
+            return;
+        };
+        // Già in pausa e già al fondo: non c'è niente da fare, e rimettere la
+        // pausa a ogni giro si mangerebbe una ripresa premuta nel frattempo.
+        if sfumatura.finita {
+            return;
+        }
+        if sfumatura.inizio.elapsed() < sfumatura.durata {
+            self.applica_guadagno();
+            return;
+        }
+        sfumatura.finita = true;
+        self.intese.pausa(&self.condiviso);
+        self.applica_guadagno();
     }
 
     /// Butta via quel che è già in viaggio verso le casse.
@@ -1171,24 +1767,33 @@ impl Contesto {
     fn avvia_brano(&mut self, brano: BranoAperto) {
         let track_id = brano.decodificatore.track_id();
         let durata_ms = brano.durata_ms;
-        let replaygain_db = brano.replaygain_db;
+        let livello = brano.livello;
+        let formato = brano.decodificatore.formato_suonato();
         self.scarta_in_volo();
         self.corrente = Some(brano.decodificatore);
         self.prossimo = None;
         self.annunciato = None;
         self.fine_dichiarata = false;
-        self.rg_decodifica = replaygain_db;
+        self.rg_decodifica = livello;
         self.durata_corrente_ms = durata_ms;
         self.azzera_dissolvenza();
+        // Un brano scelto a mano mentre il timer spegneva la musica è una
+        // risposta al timer: la discesa si lascia perdere.
+        self.sfumatura = None;
+        // Il segno di un salto chiesto prima non c'è più: l'ha buttato
+        // `scarta_in_volo` insieme all'anello.
+        self.riallinea_segno = false;
         self.applica_guadagno();
         let ascolto = self.nuovo_ascolto();
+        self.ascolto_corrente = ascolto;
         self.segni.push_back(Segno {
             da: 0,
             track_id,
             durata_ms,
             offset_ms: 0,
-            replaygain_db,
+            replaygain_db: livello.guadagno_db,
             ascolto,
+            formato: Some(formato),
         });
     }
 
@@ -1245,22 +1850,34 @@ impl Contesto {
         }
     }
 
+    /// Butta tutto e si ferma.
+    ///
+    /// Anche la pausa si alza qui, e non soltanto in [`Motore::ferma`]: il filo
+    /// si ferma anche da solo, quando la rete muore a metà brano, e un motore
+    /// fermo che si dice «non in pausa» è un motore che la finestra disegna
+    /// come se suonasse. La posizione vuota si scrive **prima** dell'annuncio,
+    /// perché l'annuncio se la porta dietro — vedi [`Annuncio::posizione`].
     fn ferma(&mut self) {
         self.scarta_in_volo();
         self.corrente = None;
         self.prossimo = None;
         self.azzera_dissolvenza();
         self.annunciato = None;
+        if self.sfumatura.take().is_some() {
+            self.applica_guadagno();
+        }
+        self.intese.pausa(&self.condiviso);
+        self.scrivi_posizione(Posizione::default());
         if !self.fine_dichiarata {
             self.fine_dichiarata = true;
             self.annuncia(Evento::Fermato);
         }
-        self.scrivi_posizione(Posizione::default());
     }
 
     /// Rimette sotto la puntina il brano che si **sente**, se la decodifica è
-    /// già passata a quello dopo. `false` se non c'è modo di farlo, e allora
-    /// chi chiama deve lasciar perdere invece di andare avanti su `corrente`.
+    /// già passata a quello dopo. [`Puntina::Persa`] se non c'è modo di farlo,
+    /// e allora chi chiama deve lasciar perdere invece di andare avanti su
+    /// `corrente`.
     ///
     /// # Perché serve
     ///
@@ -1271,30 +1888,27 @@ impl Contesto {
     /// `segni.front()`, che è la stessa fonte da cui [`Contesto::aggiorna`]
     /// prende il titolo e la posizione mostrati.
     ///
-    /// Lo scambio è quello che questa funzione fa già per l'entrante di una
-    /// dissolvenza: il brano che stava in canna torna a essere il **prossimo**,
-    /// riavvolto al suo inizio, e quello di prima torna corrente.
-    fn riporta_sotto_la_puntina(&mut self) -> bool {
-        // A metà sovrapposizione il segno in testa è già dell'entrante mentre
-        // `corrente` è ancora l'uscente, e non è un disallineamento da
-        // correggere: è il modo in cui un salto durante una dissolvenza torna
-        // al brano di prima invece di far avanzare la coda. Vedi il seguito di
-        // [`Contesto::vai_a`].
-        if self.entrante.is_some() {
-            return true;
-        }
+    /// # Perché si confronta l'ascolto e non il brano
+    ///
+    /// Perché con «ripeti uno» il brano che si sente e quello che si decodifica
+    /// hanno lo stesso identificativo e sono due ascolti diversi: il confronto
+    /// sull'identificativo li dava per lo stesso, e il salto finiva sulla
+    /// ripetizione successiva. Vedi [`Contesto::ascolto_corrente`].
+    ///
+    /// Lo scambio è quello che [`Contesto::puntina_in_dissolvenza`] fa per
+    /// l'entrante di una dissolvenza nella sua prima metà: il brano che stava in
+    /// canna torna a essere il **prossimo**, riavvolto al suo inizio, e quello
+    /// di prima torna corrente. La dissolvenza non passa di qui: là i brani
+    /// vivi sono tre, e la domanda è un'altra.
+    fn riporta_sotto_la_puntina(&mut self) -> Puntina {
         let Some(testa) = self.segni.front() else {
             // Nessun segno: non c'è nessun brano che si sente, e non c'è niente
             // da riportare indietro.
-            return true;
+            return Puntina::AlSuoPosto;
         };
-        let (udito, ascolto) = (testa.track_id, testa.ascolto);
-        if self
-            .corrente
-            .as_ref()
-            .is_some_and(|d| d.track_id() == udito)
-        {
-            return true;
+        let ascolto = testa.ascolto;
+        if self.corrente.is_some() && self.ascolto_corrente == ascolto {
+            return Puntina::AlSuoPosto;
         }
         // Serve quello messo da parte, e serve che sia proprio l'ascolto in
         // testa: su brani più corti di quel che l'anello tiene da parte
@@ -1303,7 +1917,7 @@ impl Contesto {
         // decodificatore del primo. Lì non c'è niente da riportare indietro, e
         // il salto si lascia cadere.
         if self.uscente.as_ref().map(|u| u.ascolto) != Some(ascolto) {
-            return false;
+            return Puntina::Persa;
         }
         // Con qualcosa già in canna lo scambio perderebbe un brano: quello che
         // sposta indietro andrebbe scritto dove sta il seguente. Non capita —
@@ -1311,10 +1925,10 @@ impl Contesto {
         // capitasse, un salto lasciato cadere è meglio di una coda che salta una
         // riga.
         if self.prossimo.is_some() {
-            return false;
+            return Puntina::Persa;
         }
-        let Some(uscente) = self.uscente.take().map(|u| u.brano) else {
-            return false;
+        let Some(uscente) = self.uscente.take() else {
+            return Puntina::Persa;
         };
         // Quel che stava in canna torna a essere il prossimo, dal suo inizio:
         // l'anello con i suoi campioni sta per essere buttato, e riattaccarlo a
@@ -1324,114 +1938,184 @@ impl Contesto {
             let mut futuro = BranoAperto {
                 decodificatore,
                 durata_ms: self.durata_corrente_ms,
-                replaygain_db: self.rg_decodifica,
+                livello: self.rg_decodifica,
             };
             if futuro.decodificatore.cerca(0).is_ok() {
                 self.prossimo = Some(futuro);
             }
         }
-        self.durata_corrente_ms = uscente.durata_ms;
-        self.rg_decodifica = uscente.replaygain_db;
-        self.corrente = Some(uscente.decodificatore);
-        true
+        self.durata_corrente_ms = uscente.brano.durata_ms;
+        self.rg_decodifica = uscente.brano.livello;
+        self.ascolto_corrente = uscente.ascolto;
+        self.corrente = Some(uscente.brano.decodificatore);
+        Puntina::Riportata
+    }
+
+    /// Il salto arriva a metà di una dissolvenza: su quale dei due brani cade.
+    ///
+    /// # La domanda è quale si sente
+    ///
+    /// Come per ogni altro salto, e la risposta la dà il segno in testa. A metà
+    /// curva il brano che entra viene annunciato: prima di quel punto chi
+    /// ascolta sente soprattutto quello che esce, dopo soprattutto quello che
+    /// entra, e la finestra ne mostra già il titolo.
+    ///
+    /// **Nella prima metà** il salto è per il brano che esce: resta corrente, e
+    /// quello che entrava torna in canna dal suo inizio. La coda di chi sta
+    /// sopra non si è mossa, perché l'annuncio non è ancora partito.
+    ///
+    /// **Nella seconda metà** il salto è per il brano che entra, ed era qui il
+    /// difetto. Il ramo di prima faceva sempre la cosa della prima metà: il
+    /// salto cadeva sul brano che **usciva** mentre la finestra mostrava
+    /// l'altro, e il brano che entrava, riavvolto, veniva scritto in canna
+    /// **sopra** il successivo — che chi sta sopra aveva già consegnato,
+    /// rispondendo all'annuncio di metà curva. Il motore lo perdeva, chi sta
+    /// sopra lo credeva ancora in canna e non lo riapriva più: dopo il brano
+    /// che entrava, la musica si fermava. Adesso l'uscente se ne va — ne
+    /// restavano pochi secondi a volume calante — l'entrante diventa corrente
+    /// e il successivo resta dov'è.
+    ///
+    /// La canna si riempie solo se è vuota, anche nella prima metà: se chi sta
+    /// sopra ci ha messo altro nel frattempo — la coda è cambiata — quel che ha
+    /// scelto vale più di un brano che la coda non indica più.
+    fn puntina_in_dissolvenza(&mut self) -> Puntina {
+        let Some(mut entrante) = self.entrante.take() else {
+            return Puntina::AlSuoPosto;
+        };
+        let si_sente_l_entrante = self
+            .segni
+            .front()
+            .is_some_and(|segno| segno.ascolto == self.ascolto_entrante);
+        if si_sente_l_entrante {
+            self.durata_corrente_ms = entrante.durata_ms;
+            self.rg_decodifica = entrante.livello;
+            self.ascolto_corrente = self.ascolto_entrante;
+            self.corrente = Some(entrante.decodificatore);
+        } else if self.prossimo.is_none() && entrante.decodificatore.cerca(0).is_ok() {
+            self.prossimo = Some(entrante);
+        }
+        Puntina::Riportata
     }
 
     fn vai_a(&mut self, ms: u64) {
         // Il salto cade sul brano che si sente, non su quello che si decodifica:
-        // vedi [`Contesto::riporta_sotto_la_puntina`]. Quando i due non sono lo
-        // stesso e non c'è modo di rimetterli in fila, il salto si lascia cadere
-        // — la puntina resta dov'era, che è quel che fa anche un salto fallito
-        // qui sotto.
-        if !self.riporta_sotto_la_puntina() {
+        // vedi [`Contesto::riporta_sotto_la_puntina`] e, a metà di una
+        // dissolvenza, [`Contesto::puntina_in_dissolvenza`]. Quando i due non
+        // sono lo stesso e non c'è modo di rimetterli in fila, il salto si
+        // lascia cadere — la puntina resta dov'era, che è quel che fa anche un
+        // salto fallito qui sotto.
+        let puntina = if self.entrante.is_some() {
+            self.puntina_in_dissolvenza()
+        } else {
+            self.riporta_sotto_la_puntina()
+        };
+        if matches!(puntina, Puntina::Persa) {
             return;
         }
+        let frequenza = self.formato.frequenza;
         let Some(decodificatore) = self.corrente.as_mut() else {
             return;
         };
         let track_id = decodificatore.track_id();
-        if let Err(err) = decodificatore.cerca(ms) {
-            // Si annuncia e si torna indietro, **senza** fermare: un salto che
-            // non riesce lascia la puntina dov'era, e dov'era è ancora un posto
-            // buono da cui continuare.
-            //
-            // Vale anche quando il guasto viene dalla rete, ed è voluto:
-            // `Decodificatore::cerca` lo riconosce per quel che è, quindi il
-            // codice che esce di qui è già ritentabile — la finestra si annota
-            // il punto e disegna «Riprova». Se poi la share è davvero morta, la
-            // prima lettura che segue lo scopre e **là** il motore si ferma, dal
-            // ramo di rete di [`Contesto::decodifica_un_blocco`]. Fermarsi già
-            // qui vorrebbe dire buttare via un brano per un salto fallito su una
-            // rete che magari sta solo respirando male.
-            self.annuncia(Evento::Errore(Box::new(err)));
-            return;
-        }
-        // Dove si è atterrati, che non è sempre dove si era chiesto: sopra la
-        // fine del flusso `Decodificatore::cerca` mette un tetto invece di
-        // fallire, e scrivere qui il millisecondo **chiesto** manderebbe il
-        // cursore fuori dalla barra per gli ultimi istanti del brano.
-        let raggiunto_ms = ms_da_fotogrammi(decodificatore.consegnati(), self.formato.frequenza);
-        // Il segno del brano corrente, per non perderne durata e ReplayGain.
-        let (durata_ms, replaygain_db) = self
-            .segni
-            .iter()
-            .find(|s| s.track_id == track_id)
-            .map_or((0, None), |s| (s.durata_ms, s.replaygain_db));
-        // L'ascolto è quello del segno che si sta sentendo, qualunque brano sia.
-        // Il brano corrente, se non era ancora stato annunciato — un salto un
-        // istante dopo il play —, lo sarà col segno nuovo. Quello già annunciato
-        // non lo sarà una seconda volta: il conteggio dell'ascolto ripartirebbe
-        // da capo. E a metà dissolvenza il segno che si sente è già
-        // dell'entrante: col suo numero, il ritorno al brano di prima non sembra
-        // un brano nuovo, cioè un salto non fa avanzare la coda.
-        let ascolto = match self.segni.front() {
-            Some(segno) => segno.ascolto,
-            None => self.nuovo_ascolto(),
+        // Un salto su un flusso può aspettare la rete, e il salto dopo deve
+        // poterlo interrompere: vedi `Condiviso::in_lettura`.
+        self.condiviso.pubblica_lettura(decodificatore.bandiera());
+        let cercato = decodificatore.cerca(ms);
+        self.condiviso.ritira_lettura();
+        let raggiunto_ms = match cercato {
+            // Dove si è atterrati, che non è sempre dove si era chiesto: sopra
+            // la fine del flusso `Decodificatore::cerca` mette un tetto invece
+            // di fallire, e scrivere qui il millisecondo **chiesto** manderebbe
+            // il cursore fuori dalla barra per gli ultimi istanti del brano.
+            Ok(()) => ms_da_fotogrammi(decodificatore.consegnati(), frequenza),
+            Err(err) => {
+                let dov_e = ms_da_fotogrammi(decodificatore.consegnati(), frequenza);
+                // Si annuncia e si torna indietro, **senza** fermare: un salto
+                // che non riesce lascia la puntina dov'era, e dov'era è ancora
+                // un posto buono da cui continuare.
+                //
+                // Vale anche quando il guasto viene dalla rete, ed è voluto:
+                // `Decodificatore::cerca` lo riconosce per quel che è, quindi il
+                // codice che esce di qui è già ritentabile — la finestra si
+                // annota il punto e disegna «Riprova». Se poi la share è davvero
+                // morta, la prima lettura che segue lo scopre e **là** il motore
+                // si ferma, dal ramo di rete di
+                // [`Contesto::decodifica_un_blocco`]. Fermarsi già qui vorrebbe
+                // dire buttare via un brano per un salto fallito su una rete che
+                // magari sta solo respirando male.
+                //
+                // Un salto **annullato** non si annuncia: lo ha interrotto il
+                // comando dopo, che è già in fila, e un «Riprova» per un salto
+                // che nessuno vuole più sarebbe un avviso sbagliato.
+                if err.code().kind() != ErrorCodeKind::InternalAborted {
+                    self.annuncia(Evento::Errore(Box::new(err)));
+                }
+                if matches!(puntina, Puntina::AlSuoPosto) {
+                    return;
+                }
+                // Ma se per saltare si sono rimessi in fila i decodificatori,
+                // l'anello non racconta più quel che verrà: contiene il seguito
+                // di un brano che non è più corrente, o una dissolvenza con uno
+                // dei due brani tolto di mezzo. Lo si butta lo stesso, e si
+                // riparte da dove il decodificatore rimasto è arrivato.
+                dov_e
+            }
         };
         self.scarta_in_volo();
         // Una sovrapposizione in corso non sopravvive a un salto: i campioni
-        // già mescolati sono appena stati buttati, e il brano che stava
-        // entrando torna a essere quello che verrà **dopo** — dal suo inizio,
-        // non da dove la curva l'aveva portato. Senza questo riavvolgimento
-        // attaccherebbe a metà, e senza il ritorno in `prossimo` non
-        // attaccherebbe affatto: al suo posto suonerebbe quello ancora dopo,
-        // che chi sta sopra ha preparato all'annuncio di metà curva.
-        //
-        // Se non si riavvolge si lascia perdere: un brano che non sa tornare al
-        // proprio inizio non è materiale per una dissolvenza, e in `prossimo`
-        // resta quel che c'era.
-        //
-        // L'annuncio di metà curva invece era già partito, e per chi sta sopra
-        // il brano corrente è quello che stava entrando: non va disfatto né
-        // rifatto, ed è quel che `ascolto`, preso qui sopra dal segno che si
-        // sentiva, già garantisce.
-        if let Some(mut entrante) = self.entrante.take()
-            && entrante.decodificatore.cerca(0).is_ok()
-        {
-            self.prossimo = Some(entrante);
-        }
+        // già mescolati sono appena stati buttati, e quale dei due brani resta
+        // l'ha già deciso [`Contesto::puntina_in_dissolvenza`].
         self.azzera_dissolvenza();
+        // L'ascolto è quello del brano rimasto sotto la puntina, cioè di quello
+        // che si sentiva. Se non era ancora stato annunciato — un salto un
+        // istante dopo il play — lo sarà col segno nuovo; quello già annunciato
+        // non lo sarà una seconda volta, perché il conteggio dell'ascolto
+        // ripartirebbe da capo e un salto farebbe avanzare la coda. Durata e
+        // ReplayGain sono i suoi per la stessa ragione: dopo la scelta di chi
+        // salta, `corrente` e le sue caselle parlano dello stesso brano.
         self.segni.push_back(Segno {
             da: 0,
             track_id,
-            durata_ms,
+            durata_ms: self.durata_corrente_ms,
             offset_ms: raggiunto_ms,
-            replaygain_db,
-            ascolto,
+            replaygain_db: self.rg_decodifica.guadagno_db,
+            ascolto: self.ascolto_corrente,
+            formato: self.corrente.as_ref().map(Decodificatore::formato_suonato),
         });
         self.fine_dichiarata = false;
+        self.riallinea_segno = true;
     }
 
     /// Riempie l'anello finché c'è posto e c'è roba. `true` se ha fatto qualcosa.
+    ///
+    /// # Perché a pezzi e non un campione alla volta
+    ///
+    /// Perché un `push` per campione è un confronto fra i due indici
+    /// dell'anello — con una lettura atomica dell'altro filo quando la copia in
+    /// cache non basta — per ognuno dei quasi due milioni di campioni al secondo
+    /// di un'uscita a 192 kHz su otto canali. Un pezzo chiede il posto libero
+    /// una volta, copia tutto quel che ci sta e pubblica il nuovo indice una
+    /// volta sola. Il suono è lo stesso; il filo della decodifica torna prima a
+    /// fare il suo mestiere, che è decodificare.
     fn riempi(&mut self) -> bool {
         let mut fatto = false;
         loop {
-            while let Some(&campione) = self.resto.front() {
-                if self.produttore.push(campione).is_err() {
+            if !self.resto.is_empty() {
+                let quanti = self.produttore.slots().min(self.resto.len());
+                if quanti > 0
+                    && let Ok(pezzo) = self.produttore.write_chunk_uninit(quanti)
+                {
+                    // Si copiano e **poi** si tolgono, contando quelli scritti
+                    // davvero: un campione tolto da `resto` e non arrivato
+                    // nell'anello sarebbe un buco nel suono.
+                    let scritti = pezzo.fill_from_iter(self.resto.iter().copied());
+                    self.resto.drain(..scritti);
+                    fatto |= scritti > 0;
+                }
+                if !self.resto.is_empty() {
                     // Anello pieno: si riproverà al giro dopo.
                     return fatto;
                 }
-                self.resto.pop_front();
-                fatto = true;
             }
             if !self.decodifica_un_blocco() {
                 return fatto;
@@ -1442,41 +2126,72 @@ impl Contesto {
 
     /// Un blocco dal decodificatore corrente dentro `resto`. `false` se non c'è
     /// più niente da decodificare.
+    ///
+    /// # La giuntura senza stacco
+    ///
+    /// Quando il brano dopo è già in canna, senza una dissolvenza in mezzo e
+    /// con la stessa forma di questo, la fine del flusso non consegna la coda
+    /// del ricampionatore: la lascia nel filtro, e il filtro passa al seguito
+    /// con [`Decodificatore::passa_la_coda`]. Così la giuntura di un album
+    /// senza stacchi la attraversa un ricampionatore solo — il perché sta in
+    /// testa a `decodifica/ricampionatore.rs` — e il segno del brano nuovo si
+    /// sposta avanti dei fotogrammi di coda che usciranno insieme ai suoi
+    /// primi.
     fn decodifica_un_blocco(&mut self) -> bool {
         let Some(decodificatore) = self.corrente.as_mut() else {
             return false;
         };
-        match decodificatore.prossimo(&mut self.blocco) {
+        let lascia = self.entrante.is_none()
+            && self
+                .prossimo
+                .as_ref()
+                .is_some_and(|p| decodificatore.puo_passare_la_coda(&p.decodificatore));
+        // Letto **prima** della consegna: dopo, il decodificatore li ha già
+        // tolti dal conto.
+        let altrui = decodificatore.ereditati();
+        // Questa lettura si può lasciare a metà: vedi `Condiviso::in_lettura`.
+        self.condiviso.pubblica_lettura(decodificatore.bandiera());
+        let esito = if lascia {
+            decodificatore.prossimo_lasciando_la_coda(&mut self.blocco)
+        } else {
+            decodificatore.prossimo(&mut self.blocco)
+        };
+        self.condiviso.ritira_lettura();
+        match esito {
+            // Annullata da un comando arrivato mentre si aspettava la rete: non
+            // è un guasto, e non c'è niente da fare in questo giro. Il comando
+            // lo raccoglie il giro dopo — di solito un salto, che riporta il
+            // decodificatore in un punto pulito.
+            Err(err) if err.code().kind() == ErrorCodeKind::InternalAborted => false,
             Ok(true) => {
-                // La correzione del brano si applica ai **suoi** campioni,
-                // adesso, invece che a tutto quel che esce dall'anello. È
-                // l'unico modo perché due brani sovrapposti possano avere due
-                // ReplayGain diversi, e per la catena non cambia niente: il
-                // filtro dell'equalizzatore è lineare, quindi moltiplicare
-                // prima o dopo di lui dà lo stesso suono.
-                let g = correzione(
-                    self.rg_decodifica,
-                    self.replaygain_attivo,
-                    self.bersaglio_db,
-                );
-                if (g - 1.0).abs() > f32::EPSILON {
-                    for campione in &mut self.blocco {
-                        *campione *= g;
+                let arrivati = decodificatore.consegnati();
+                self.accoda_il_blocco(arrivati, altrui);
+                true
+            }
+            Ok(false) if decodificatore.coda_sospesa() => {
+                let passati = self
+                    .prossimo
+                    .as_mut()
+                    .and_then(|p| decodificatore.passa_la_coda(&mut p.decodificatore));
+                if let Some(rinvio) = passati {
+                    self.rg_altrui = self.rg_decodifica;
+                    return self.passa_al_prossimo_dopo(rinvio);
+                }
+                // Non capita: fra la domanda e la fine del flusso non è
+                // cambiato niente. Ma se capitasse, la coda esce come a ogni
+                // fine brano, imbottita di silenzio, e non si perde.
+                match decodificatore.consegna_la_coda(&mut self.blocco) {
+                    Ok(true) => {
+                        let arrivati = decodificatore.consegnati();
+                        self.accoda_il_blocco(arrivati, 0);
+                        true
+                    }
+                    Ok(false) => self.passa_al_prossimo(),
+                    Err(err) => {
+                        self.annuncia(Evento::Errore(Box::new(err)));
+                        self.passa_al_prossimo()
                     }
                 }
-                // Prima la salita del brano che è rimasto solo a metà curva,
-                // poi l'eventuale curva nuova: sono due cose diverse che
-                // possono capitare allo stesso blocco — un brano brevissimo fa
-                // in tempo a finire di entrare e a cominciare a uscire — e in
-                // quel caso i due guadagni si moltiplicano, che è esattamente
-                // quel che deve succedere.
-                self.forse_risali();
-                self.forse_dissolvi();
-                self.resto.extend(self.blocco.iter().copied());
-                self.spinti = self
-                    .spinti
-                    .saturating_add(fotogrammi(self.blocco.len(), self.formato.canali));
-                true
             }
             Ok(false) => self.passa_al_prossimo(),
             Err(err) => {
@@ -1506,6 +2221,77 @@ impl Contesto {
                 }
                 self.passa_al_prossimo()
             }
+        }
+    }
+
+    /// Il blocco appena decodificato, dalla correzione del brano fino a `resto`.
+    ///
+    /// `altrui` sono i fotogrammi in testa al blocco che appartengono ancora al
+    /// brano prima — la coda arrivata col ricampionatore, vedi
+    /// [`Contesto::decodifica_un_blocco`] — e che prendono la **sua**
+    /// correzione.
+    fn accoda_il_blocco(&mut self, arrivati: u64, altrui: u64) {
+        self.riallinea_dopo_il_salto(arrivati);
+        // La correzione del brano si applica ai **suoi** campioni, adesso,
+        // invece che a tutto quel che esce dall'anello. È l'unico modo perché
+        // due brani sovrapposti possano avere due ReplayGain diversi, e per la
+        // catena non cambia niente: il filtro dell'equalizzatore è lineare,
+        // quindi moltiplicare prima o dopo di lui dà lo stesso suono.
+        let g = correzione(
+            self.rg_decodifica,
+            self.replaygain_attivo,
+            self.bersaglio_db,
+        );
+        let testa = usize::try_from(altrui)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::from(self.formato.canali))
+            .min(self.blocco.len());
+        let (di_prima, suoi) = self.blocco.split_at_mut(testa);
+        if !di_prima.is_empty() {
+            let g_prima = correzione(self.rg_altrui, self.replaygain_attivo, self.bersaglio_db);
+            if (g_prima - 1.0).abs() > f32::EPSILON {
+                for campione in di_prima {
+                    *campione *= g_prima;
+                }
+            }
+        }
+        if (g - 1.0).abs() > f32::EPSILON {
+            for campione in suoi {
+                *campione *= g;
+            }
+        }
+        // Prima la salita del brano che è rimasto solo a metà curva, poi
+        // l'eventuale curva nuova: sono due cose diverse che possono capitare
+        // allo stesso blocco — un brano brevissimo fa in tempo a finire di
+        // entrare e a cominciare a uscire — e in quel caso i due guadagni si
+        // moltiplicano, che è esattamente quel che deve succedere.
+        self.forse_risali();
+        self.forse_dissolvi();
+        self.resto.extend(self.blocco.iter().copied());
+        self.spinti = self
+            .spinti
+            .saturating_add(fotogrammi(self.blocco.len(), self.formato.canali));
+    }
+
+    /// Il primo blocco dopo un salto dice dove si è atterrati: il segno del
+    /// salto si corregge su quello. Vedi [`Contesto::riallinea_segno`].
+    ///
+    /// `arrivati` sono i fotogrammi consegnati dal decodificatore **dopo** il
+    /// blocco: l'inizio del blocco è quello, meno il blocco. Si corregge solo il
+    /// segno del salto — l'ultimo in fila, annotato al fotogramma d'uscita zero
+    /// e ancora a zero fotogrammi spinti — e mai uno arrivato dopo.
+    fn riallinea_dopo_il_salto(&mut self, arrivati: u64) {
+        if !std::mem::take(&mut self.riallinea_segno) {
+            return;
+        }
+        let inizio = arrivati.saturating_sub(fotogrammi(self.blocco.len(), self.formato.canali));
+        let frequenza = self.formato.frequenza;
+        let (spinti, ascolto) = (self.spinti, self.ascolto_corrente);
+        if let Some(segno) = self.segni.back_mut()
+            && segno.da == spinti
+            && segno.ascolto == ascolto
+        {
+            segno.offset_ms = ms_da_fotogrammi(inizio, frequenza);
         }
     }
 
@@ -1611,7 +2397,7 @@ impl Contesto {
         };
         // Il brano che entra porta la **sua** correzione, non quella di quello
         // che esce.
-        let g = correzione(entrante.replaygain_db, attivo, bersaglio);
+        let g = correzione(entrante.livello, attivo, bersaglio);
         while self.coda_entrante.len() < quanti {
             // Un `let ... else` e non un `match`: gli altri due casi — il brano
             // entrante finito, o illeggibile — vogliono la stessa cosa, cioè
@@ -1720,14 +2506,19 @@ impl Contesto {
             )]
             let meta = sovrapposti / 2;
             let ascolto = self.nuovo_ascolto();
+            // Il numero si tiene da parte: un salto a metà curva lo confronta
+            // con quello in testa per sapere quale dei due brani si sente. Vedi
+            // [`Contesto::puntina_in_dissolvenza`].
+            self.ascolto_entrante = ascolto;
             if let Some(preparato) = self.entrante.as_ref() {
                 self.segni.push_back(Segno {
                     da: self.spinti.saturating_add(meta),
                     track_id: preparato.decodificatore.track_id(),
                     durata_ms: preparato.durata_ms,
                     offset_ms: ms_da_fotogrammi(meta, self.formato.frequenza),
-                    replaygain_db: preparato.replaygain_db,
+                    replaygain_db: preparato.livello.guadagno_db,
                     ascolto,
+                    formato: Some(preparato.decodificatore.formato_suonato()),
                 });
             }
             self.segno_dissolvenza = true;
@@ -1760,6 +2551,14 @@ impl Contesto {
     /// stato spinto: è lì che il brano nuovo comincerà a sentirsi, e non un
     /// campione prima. È tutto quel che serve perché il gapless sia gapless.
     fn passa_al_prossimo(&mut self) -> bool {
+        self.passa_al_prossimo_dopo(0)
+    }
+
+    /// Come [`Contesto::passa_al_prossimo`], con il brano nuovo che comincia
+    /// a sentirsi `rinvio` fotogrammi dopo quel che è già stato spinto: la coda
+    /// del corrente che gli è passata col ricampionatore, e che uscirà in testa
+    /// ai suoi primi campioni. Vedi [`Contesto::decodifica_un_blocco`].
+    fn passa_al_prossimo_dopo(&mut self, rinvio: u64) -> bool {
         // Chi prende il posto è l'entrante, se una sovrapposizione era in
         // corso: è lui che si stava già sentendo, ed è già avanti di tutta la
         // dissolvenza. In quel caso `prossimo` è il brano ancora dopo e deve
@@ -1778,8 +2577,10 @@ impl Contesto {
         // che la musica smetta.
         //
         // Durata e ReplayGain sono ancora i suoi: chi li sovrascrive sta più in
-        // basso. L'ascolto è quello del suo segno, cercato dal fondo perché con
-        // una dissolvenza in corso il segno dell'entrante è già in fila.
+        // basso. L'ascolto pure, ed è [`Contesto::ascolto_corrente`]: prima lo
+        // si cercava fra i segni per identificativo, e con «ripeti uno» sotto
+        // una dissolvenza il segno trovato era quello dell'entrante — lo stesso
+        // brano, l'ascolto dopo.
         //
         // Si scrive solo se c'è davvero qualcosa da mettere da parte: questa
         // funzione viene chiamata una seconda volta quando un preparato arriva
@@ -1788,19 +2589,12 @@ impl Contesto {
         // in quel momento si sta ancora sentendo, che è esattamente quello
         // messo da parte al giro di prima.
         if let Some(decodificatore) = self.corrente.take() {
-            let id = decodificatore.track_id();
-            let ascolto = self
-                .segni
-                .iter()
-                .rev()
-                .find(|s| s.track_id == id)
-                .map_or(0, |s| s.ascolto);
             self.uscente = Some(Uscente {
-                ascolto,
+                ascolto: self.ascolto_corrente,
                 brano: BranoAperto {
                     decodificatore,
                     durata_ms: self.durata_corrente_ms,
-                    replaygain_db: self.rg_decodifica,
+                    livello: self.rg_decodifica,
                 },
             });
         }
@@ -1815,7 +2609,9 @@ impl Contesto {
                 //
                 // Perché qui il brano attacca **dal suo primo campione**: senza
                 // dissolvenza il passaggio è un gapless, e il fotogramma zero
-                // dell'entrante esce esattamente a `self.spinti`. `da` e
+                // dell'entrante esce esattamente a `self.spinti` — più la coda
+                // del corrente, quando è passata col ricampionatore e uscirà
+                // davanti a lui: è `rinvio`. `da` e
                 // `offset_ms` descrivono lo stesso istante — la regola di
                 // [`Segno`] — e quell'istante è l'inizio del brano, quindi zero è
                 // la verità.
@@ -1826,15 +2622,20 @@ impl Contesto {
                 // cui l'entrante ha già suonato `meta` fotogrammi. Chi
                 // uniformasse le due rimetterebbe il difetto che quel commento
                 // racconta.
-                if !self.segno_dissolvenza {
+                if self.segno_dissolvenza {
+                    // Il numero è quello del segno di metà curva.
+                    self.ascolto_corrente = self.ascolto_entrante;
+                } else {
                     let ascolto = self.nuovo_ascolto();
+                    self.ascolto_corrente = ascolto;
                     self.segni.push_back(Segno {
-                        da: self.spinti,
+                        da: self.spinti.saturating_add(rinvio),
                         track_id,
                         durata_ms: preparato.durata_ms,
                         offset_ms: 0,
-                        replaygain_db: preparato.replaygain_db,
+                        replaygain_db: preparato.livello.guadagno_db,
                         ascolto,
+                        formato: Some(preparato.decodificatore.formato_suonato()),
                     });
                 }
                 if dissolveva {
@@ -1858,7 +2659,7 @@ impl Contesto {
                         .spinti
                         .saturating_add(fotogrammi(self.blocco.len(), self.formato.canali));
                 }
-                self.rg_decodifica = preparato.replaygain_db;
+                self.rg_decodifica = preparato.livello;
                 self.durata_corrente_ms = preparato.durata_ms;
                 self.chiudi_sovrapposizione();
                 self.corrente = Some(preparato.decodificatore);
@@ -1964,12 +2765,28 @@ impl Contesto {
         let ms = segno
             .offset_ms
             .saturating_add(ms_da_fotogrammi(scorsi, self.formato.frequenza));
-        let (track_id, durata_ms, replaygain_db, ascolto) = (
+        let (track_id, durata_ms, replaygain_db, ascolto, formato) = (
             segno.track_id,
             segno.durata_ms,
             segno.replaygain_db,
             segno.ascolto,
+            segno.formato,
         );
+
+        // `in_pausa` resta al valore di riposo: lo riempie [`Motore::posizione`]
+        // quando qualcuno legge, dal bit condiviso.
+        //
+        // **Prima** dell'annuncio, e non dopo com'era: l'annuncio si porta
+        // dietro la posizione di quest'istante — vedi [`Annuncio::posizione`] —
+        // e un `Iniziato` che viaggiasse con la posizione del brano di prima
+        // direbbe a chi sta sopra la durata sbagliata.
+        self.scrivi_posizione(Posizione {
+            track_id: Some(track_id),
+            ms,
+            durata_ms,
+            formato,
+            ..Posizione::default()
+        });
 
         // L'ascolto e non il brano: vedi [`Segno::ascolto`].
         if self.annunciato != Some(ascolto) {
@@ -1982,15 +2799,6 @@ impl Contesto {
             self.annuncia(Evento::Iniziato { track_id });
         }
         let _ = replaygain_db;
-
-        // `in_pausa` resta al valore di riposo: lo riempie [`Motore::posizione`]
-        // quando qualcuno legge, dal bit condiviso.
-        self.scrivi_posizione(Posizione {
-            track_id: Some(track_id),
-            ms,
-            durata_ms,
-            ..Posizione::default()
-        });
         self.forse_fine(suonati);
     }
 
@@ -2034,7 +2842,9 @@ impl Contesto {
         }
         if suonati >= self.spinti && self.resto.is_empty() {
             self.fine_dichiarata = true;
-            self.condiviso.in_pausa.store(true, Ordering::Release);
+            // Voluta e in corso insieme: a coda finita chi chiede dove siamo
+            // deve sentirsi dire «fermo», e il pulsante diventare il triangolo.
+            self.intese.pausa(&self.condiviso);
             self.segni.clear();
             // Con la musica finita non c'è più niente da sentire, e il brano
             // messo da parte è solo un file che resta aperto — su Windows, un
@@ -2063,11 +2873,27 @@ impl Contesto {
     ///
     /// Tacere e non accodare: quel che questo motore aveva da dire riguardava
     /// dei campioni che non usciranno mai dalle casse.
+    ///
+    /// Questo è il primo dei due controlli, e il meno importante: taglia gli
+    /// annunci che partirebbero **dopo** la sostituzione. Quelli partiti un
+    /// istante prima sono già in viaggio, e il controllo che conta per loro lo
+    /// fa chi li riceve — vedi [`Annuncio::ha_voce`].
+    ///
+    /// Consegnare non aspetta nessuno: sul motore vero la voce è un canale
+    /// verso il filo «aether-eventi» (vedi [`voce_su_filo`]), e il lavoro che
+    /// l'annuncio scatena lo fa quel filo, non questo.
     fn annuncia(&self, evento: Evento) {
         if self.condiviso.abbandonato.load(Ordering::Acquire) {
             return;
         }
-        (self.osservatore)(evento);
+        let annuncio = Annuncio {
+            evento,
+            posizione: istantanea(&self.posizione, &self.intese),
+            condiviso: Arc::clone(&self.condiviso),
+            intese: Arc::clone(&self.intese),
+            svolte: self.intese.eseguite.load(Ordering::SeqCst),
+        };
+        (self.voce)(annuncio);
     }
 
     /// Il filo della decodifica è caduto: lo dice, e lascia il motore in uno
@@ -2105,25 +2931,22 @@ impl Contesto {
     ///
     /// # Perché non tocca `in_pausa`
     ///
-    /// Perché `annota_ripresa`, nell'applicazione, legge quel bit **grezzo**
+    /// Perché `annota_ripresa`, nell'applicazione, legge la pausa **voluta**
     /// per decidere se la musica dovrà ripartire da sola dopo la riapertura.
-    /// Alzarlo qui vorrebbe dire raccontargli che l'utente aveva messo in
+    /// Alzarla qui vorrebbe dire raccontargli che l'utente aveva messo in
     /// pausa, e un brano che stava suonando resterebbe fermo dopo un guasto che
     /// nessuno ha chiesto.
     fn caduto(&mut self, panico: &str) {
         CADUTI.fetch_add(1, Ordering::AcqRel);
-        let istantanea = self
-            .posizione
-            .lock()
-            .map_or_else(|avvelenato| *avvelenato.into_inner(), |g| *g);
+        let dove = istantanea(&self.posizione, &self.intese);
         self.condiviso
             .causa_perdita
             .store(CAUSA_FILO_CADUTO, Ordering::Release);
         self.condiviso.perso.store(true, Ordering::Release);
         self.annuncia(Evento::Errore(Box::new(
             AppError::new(ErrorCode::PlaybackStalled {
-                track_id: istantanea.track_id,
-                position_ms: Some(istantanea.ms),
+                track_id: dove.track_id,
+                position_ms: Some(dove.ms),
             })
             .with_cause(format!("il filo della decodifica è caduto: {panico}")),
         )));
@@ -2145,6 +2968,19 @@ fn avvicina(correnti: &mut [f32; BANDE], bersaglio: &[f32; BANDE], rimasti: u8) 
             *corrente + (*voluto - *corrente) / divisore
         };
     }
+}
+
+/// Quanto del volume resta dopo `passato` di una sfumatura lunga `durata`.
+///
+/// Lineare in decibel, da zero a −[`SFUMATURA_DB`]: il perché sta sulla
+/// costante. Oltre la fine resta al fondo invece di risalire, e una durata
+/// nulla è già finita.
+fn fattore_di_sfumatura(passato: Duration, durata: Duration) -> f32 {
+    if durata.is_zero() {
+        return 10.0f32.powf(-SFUMATURA_DB / 20.0);
+    }
+    let t = (passato.as_secs_f32() / durata.as_secs_f32()).clamp(0.0, 1.0);
+    10.0f32.powf(-SFUMATURA_DB * t / 20.0)
 }
 
 /// Quanti fotogrammi ci sono in tanti campioni interlacciati.
@@ -2213,6 +3049,88 @@ mod prove {
         assert_eq!(ms_da_fotogrammi(0, 44_100), 0);
         // Frequenza zero non deve dividere per zero.
         assert_eq!(ms_da_fotogrammi(1, 0), 1_000);
+    }
+
+    /// I salti di un lotto, come restano dopo [`compatta`].
+    fn salti(lotto: &[Comando]) -> Vec<u64> {
+        lotto
+            .iter()
+            .filter_map(|c| match c {
+                Comando::VaiA(ms) => Some(*ms),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn di_piu_salti_insieme_ne_resta_uno() {
+        // Sei trascinate sulla barra del tempo.
+        let mut lotto = vec![
+            Comando::VaiA(10_000),
+            Comando::VaiA(220_000),
+            Comando::VaiA(48_000),
+            Comando::VaiA(300_000),
+            Comando::VaiA(91_000),
+            Comando::VaiA(175_000),
+        ];
+        compatta(&mut lotto);
+        assert_eq!(salti(&lotto), vec![175_000]);
+        assert_eq!(lotto.len(), 1);
+    }
+
+    #[test]
+    fn fra_due_salti_quel_che_non_guarda_la_posizione_resta() {
+        // Il volume non sa dove si è: non salva il salto che lo precede, e non
+        // si fa buttare da quello che lo segue.
+        let mut lotto = vec![
+            Comando::VaiA(10_000),
+            Comando::Volume {
+                volume: 0.5,
+                muto: false,
+            },
+            Comando::VaiA(90_000),
+        ];
+        compatta(&mut lotto);
+        assert_eq!(salti(&lotto), vec![90_000]);
+        assert!(matches!(lotto[0], Comando::Volume { .. }));
+        assert_eq!(lotto.len(), 2);
+    }
+
+    #[test]
+    fn un_salto_che_finisce_sotto_un_altro_brano_non_si_fa() {
+        // Chi è stufo di aspettare mette su un altro brano: il salto di prima
+        // è lavoro che verrebbe buttato appena finito.
+        let mut lotto = vec![Comando::VaiA(220_000), Comando::Ferma];
+        compatta(&mut lotto);
+        assert!(salti(&lotto).is_empty());
+        assert_eq!(lotto.len(), 1);
+    }
+
+    #[test]
+    fn il_salto_dopo_il_cambio_di_brano_resta() {
+        // L'ordine conta: questo salto è per il brano nuovo, ed è la ripresa
+        // dal punto in cui lo si era lasciato.
+        let mut lotto = vec![Comando::Ferma, Comando::VaiA(45_000)];
+        compatta(&mut lotto);
+        assert_eq!(salti(&lotto), vec![45_000]);
+        assert_eq!(lotto.len(), 2);
+    }
+
+    #[test]
+    fn compattare_non_tocca_un_lotto_senza_salti() {
+        let mut lotto = vec![
+            Comando::Volume {
+                volume: 1.0,
+                muto: false,
+            },
+            Comando::Dissolvenza { ms: 20 },
+            Comando::Ferma,
+        ];
+        compatta(&mut lotto);
+        assert_eq!(lotto.len(), 3);
+        let mut vuoto: Vec<Comando> = Vec::new();
+        compatta(&mut vuoto);
+        assert!(vuoto.is_empty());
     }
 
     #[test]
@@ -2350,6 +3268,7 @@ mod prove {
             estensione: Some("wav".to_owned()),
             durata_ms: 1_000,
             replaygain_db: None,
+            picco: None,
         }
     }
 
@@ -2404,6 +3323,19 @@ mod prove {
         campioni: usize,
         osservatore: Box<dyn Fn(Evento) + Send>,
     ) -> Banco {
+        // Le prove di sempre guardano l'evento, e lo guardano **subito**: la
+        // voce del banco chiama l'osservatore sullo stesso filo, senza il
+        // canale e senza «aether-eventi». Le prove del filo degli eventi lo
+        // montano da sé, con [`banco_con_voce`].
+        banco_con_voce(
+            frequenza,
+            campioni,
+            Box::new(move |annuncio: Annuncio| osservatore(annuncio.evento)),
+        )
+    }
+
+    /// Come [`banco_con_anello`], ma la voce si sceglie per intero.
+    fn banco_con_voce(frequenza: u32, campioni: usize, voce: Voce) -> Banco {
         let (manda, ricevi) = std::sync::mpsc::channel();
         let (produttore, consumatore) = rtrb::RingBuffer::<f32>::new(campioni);
         let (curve, prese) = rtrb::RingBuffer::<Coefficienti>::new(32);
@@ -2418,7 +3350,7 @@ mod prove {
                 frequenza,
                 canali: 1,
             },
-            osservatore,
+            voce,
         );
         Banco {
             ctx,
@@ -2635,6 +3567,72 @@ mod prove {
 
         let arrivo =
             primo_annuncio(&storia, 2).expect("il secondo brano non è mai stato annunciato");
+        assert!(
+            arrivo.posizione.ms <= 20,
+            "il gapless attacca a {} ms invece che da capo",
+            arrivo.posizione.ms
+        );
+    }
+
+    /// Due brani da un secondo a 44,1 kHz, allo stesso livello, uno dopo
+    /// l'altro su un'uscita a 48 kHz: il caso del collaudo dal vivo.
+    fn due_brani_a_44(osservatore: Box<dyn Fn(Evento) + Send>) -> Banco {
+        let mut banco = banco_con(48_000, osservatore);
+        let primo = aperto(&banco.ctx, brano_onesto(1, 44_100, 0.5, 1_000));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        let secondo = aperto(&banco.ctx, brano_onesto(2, 44_100, 0.5, 1_000));
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
+        banco
+    }
+
+    #[test]
+    fn il_gapless_ricampionato_non_ha_buchi_alla_giuntura() {
+        // Lo schiocco del collaudo dal vivo. Con un ricampionatore per brano la
+        // coda del primo si chiudeva con degli zeri e la testa del secondo
+        // partiva da zeri: in mezzo il livello scendeva per una manciata di
+        // campioni, e un gradino così si sente. Con un ricampionatore solo che
+        // attraversa la giuntura il livello non si muove.
+        let mut banco = due_brani_a_44(Box::new(|_| {}));
+        let fuori = suona_tutto(&mut banco, |_| {});
+
+        // Due secondi a 44,1 kHz sono esattamente due secondi a 48.
+        assert_eq!(
+            fuori.len(),
+            96_000,
+            "la coda del primo si è persa o doppiata"
+        );
+        let giuntura = fuori
+            .get(46_000..50_000)
+            .expect("l'uscita arriva a due secondi");
+        let fuori_posto = giuntura
+            .iter()
+            .filter(|c| (**c - 0.5).abs() >= 0.01)
+            .count();
+        assert_eq!(
+            fuori_posto, 0,
+            "{fuori_posto} campioni fuori livello alla giuntura"
+        );
+    }
+
+    #[test]
+    fn il_gapless_ricampionato_annuncia_il_secondo_dove_comincia() {
+        // Il contrappeso della prova qui sopra: i primi fotogrammi che il
+        // secondo brano consegna sono la coda del primo, rimasta nel
+        // ricampionatore che hanno in comune. Il segno del secondo va messo
+        // dopo di loro, al secondo esatto, e non dove il primo ha smesso di
+        // consegnare — altrimenti la posizione del secondo parte in anticipo e
+        // la coda del primo viene contata come sua.
+        let (registro, osservatore) = spia();
+        let mut banco = due_brani_a_44(osservatore);
+        let storia = suona_raccontando(&mut banco, &registro);
+
+        let arrivo =
+            primo_annuncio(&storia, 2).expect("il secondo brano non è mai stato annunciato");
+        assert!(
+            arrivo.suonati >= 48_000,
+            "il secondo brano annunciato a {} fotogrammi, prima della fine del primo",
+            arrivo.suonati
+        );
         assert!(
             arrivo.posizione.ms <= 20,
             "il gapless attacca a {} ms invece che da capo",
@@ -3326,6 +4324,7 @@ mod prove {
             estensione: Some("wav".to_owned()),
             durata_ms: 1_000,
             replaygain_db: None,
+            picco: None,
         }
     }
 
@@ -3417,6 +4416,7 @@ mod prove {
             estensione: Some("flac".to_owned()),
             durata_ms: 500,
             replaygain_db: None,
+            picco: None,
         }
     }
 
@@ -3496,7 +4496,7 @@ mod prove {
     fn un_salto_oltre_la_fine_non_dice_che_il_file_e_danneggiato() {
         // Trascinare il cursore fino in fondo. Prima diceva che il file era
         // danneggiato: symphonia rifiuta con `SeekError(OutOfRange)` appena
-        // `ts > n_frames`, il ripiego lo traduceva in `playback.decodeFailed`,
+        // `ts > num_frames`, il ripiego lo traduceva in `playback.decodeFailed`,
         // e il catalogo dichiara quel codice `Warning, Never` ritentabile —
         // cioè all'utente arrivava «questo file è danneggiato, sostituiscilo».
         // Su un FLAC succedeva **sempre**, perché il cursore arriva in fondo
@@ -3558,6 +4558,7 @@ mod prove {
             estensione: Some("flac".to_owned()),
             durata_ms: 500,
             replaygain_db: None,
+            picco: None,
         };
 
         let Err(err) = crate::decodifica::Decodificatore::apri(sorgente, 48_000, 1) else {
@@ -3601,11 +4602,12 @@ mod prove {
     ///
     /// Perché sotto non ci sono abbastanza **pagine Ogg**, e senza pagine il
     /// gapless non si esercita. Mezzo secondo di tono entra tutto in una pagina
-    /// sola, e con una pagina sola symphonia non riesce a distinguere il
-    /// silenzio di testa da quello di coda: attribuisce l'imbottitura finale al
-    /// pre-skip, non taglia niente, e la prova finirebbe per misurare un caso
-    /// che a un file vero non capita. A tre secondi le pagine audio sono
-    /// quattro, `trim_start` e `trim_end` arrivano davvero a `decodifica::opus`,
+    /// sola, e con una pagina sola il demultiplatore deve indovinare quale
+    /// silenzio è di testa e quale di coda — symphonia 0.5 attribuiva
+    /// l'imbottitura finale al pre-skip e non tagliava niente, la 0.6 suppone
+    /// che il flusso cominci da zero — e la prova finirebbe per misurare un
+    /// caso che a un file vero non capita. A tre secondi le pagine audio sono
+    /// quattro, il `trim_end` dell'ultima arriva davvero a `decodifica::opus`,
     /// e quel che si prova è la strada che percorre la musica di qualcuno.
     ///
     /// Sedici kilobit al secondo per tenerlo sotto i diecimila byte: un tono
@@ -3637,6 +4639,7 @@ mod prove {
             estensione: Some(estensione.to_owned()),
             durata_ms: 3_000,
             replaygain_db: None,
+            picco: None,
         }
     }
 
@@ -3826,6 +4829,7 @@ mod prove {
             estensione: Some("wav".to_owned()),
             durata_ms: 2_000,
             replaygain_db: None,
+            picco: None,
         };
         (sorgente, morta)
     }
@@ -3866,6 +4870,7 @@ mod prove {
             estensione: Some("wav".to_owned()),
             durata_ms: 0,
             replaygain_db: None,
+            picco: None,
         };
 
         let Err(err) = crate::decodifica::Decodificatore::apri(sorgente, 48_000, 1) else {
@@ -4085,6 +5090,7 @@ mod prove {
             estensione: Some("wav".to_owned()),
             durata_ms: 1_000,
             replaygain_db: None,
+            picco: None,
         }
     }
 
@@ -4212,5 +5218,563 @@ mod prove {
         avvicina(&mut correnti, &bersaglio, PASSI_EQ - 1);
         let primo = correnti.first().copied().unwrap_or(0.0);
         assert!(primo > 0.0 && primo < 8.0, "salto invece di rampa: {primo}");
+    }
+
+    // ── gli annunci su un filo loro ─────────────────────────────────────────
+
+    /// Un giro del ciclo di decodifica con la callback finta: decodifica,
+    /// consuma un blocco come farebbero le casse, traduce in una posizione.
+    /// Restituisce la posizione raccontata e se qualcosa si è mosso.
+    fn un_giro(banco: &mut Banco) -> (Posizione, bool) {
+        let lavorato = banco.ctx.riempi();
+        let mut presi = 0u64;
+        while presi < BLOCCO_FINTO {
+            if banco.consumatore.pop().is_err() {
+                break;
+            }
+            presi = presi.saturating_add(1);
+        }
+        banco
+            .condiviso
+            .fotogrammi
+            .fetch_add(presi, Ordering::Relaxed);
+        banco.ctx.avanza_sfumatura();
+        banco.ctx.aggiorna();
+        let posizione = istantanea(&banco.ctx.posizione, &banco.ctx.intese);
+        (posizione, lavorato || presi > 0)
+    }
+
+    /// Gli annunci interi, tenuti da parte per guardarli dopo.
+    type Annunci = Arc<std::sync::Mutex<Vec<Annuncio>>>;
+
+    /// Una voce che conserva gli annunci invece di passarli a qualcuno.
+    fn spia_annunci() -> (Annunci, Voce) {
+        let annunci: Annunci = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dentro = Arc::clone(&annunci);
+        let voce: Voce = Box::new(move |annuncio| {
+            if let Ok(mut elenco) = dentro.lock() {
+                elenco.push(annuncio);
+            }
+        });
+        (annunci, voce)
+    }
+
+    /// Come [`spia`] trascrive gli eventi, per confrontarli con una lista.
+    fn riga_di(evento: &Evento) -> String {
+        match evento {
+            Evento::Iniziato { track_id } => format!("iniziato:{track_id}"),
+            Evento::Fermato => "fermato".to_owned(),
+            Evento::Errore(err) => format!("errore:{}", err.code().kind().code()),
+        }
+    }
+
+    #[test]
+    fn un_osservatore_lento_non_ferma_la_decodifica() {
+        // Il difetto che il filo «aether-eventi» chiude: l'osservatore girava
+        // sul filo della decodifica, e al cambio di brano prendeva il
+        // lucchetto del lettore, scriveva l'ascolto sul database e aggiornava
+        // la scheda di Windows — tutto mentre l'anello si svuotava. Qui
+        // l'osservatore resta fermo su un cancello chiuso per tutto il tempo in
+        // cui i due brani si decodificano: se il filo della decodifica lo
+        // aspettasse, il ciclo qui sotto non finirebbe mai.
+        let cancello = Arc::new(std::sync::Mutex::new(()));
+        let chiuso = cancello.lock().expect("il cancello si chiude");
+        let registro: Registro = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let osservatore: Box<dyn Fn(Annuncio) + Send> = {
+            let cancello = Arc::clone(&cancello);
+            let registro = Arc::clone(&registro);
+            Box::new(move |annuncio| {
+                let _passa = cancello.lock();
+                if let Ok(mut elenco) = registro.lock() {
+                    elenco.push(riga_di(&annuncio.evento));
+                }
+            })
+        };
+        let voce = voce_su_filo(osservatore).expect("il filo degli eventi parte");
+        let mut banco = banco_con_voce(48_000, 16_384, voce);
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
+
+        let mut finito = false;
+        for _ in 0..200_000 {
+            let (_, mosso) = un_giro(&mut banco);
+            if !mosso && banco.ctx.corrente.is_none() && banco.ctx.fine_dichiarata {
+                finito = true;
+                break;
+            }
+        }
+        assert!(
+            finito,
+            "la decodifica non arriva in fondo mentre l'osservatore è fermo"
+        );
+        assert!(
+            eventi(&registro).is_empty(),
+            "il cancello era chiuso: nessun annuncio poteva essere già arrivato"
+        );
+
+        // Si apre il cancello: gli annunci arrivano tutti, e nell'ordine in cui
+        // sono successi.
+        drop(chiuso);
+        let scadenza = Instant::now() + Duration::from_secs(10);
+        while quanti_eventi(&registro) < 3 && Instant::now() < scadenza {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            eventi(&registro),
+            ["iniziato:1", "iniziato:2", "fermato"],
+            "gli annunci sono arrivati in un altro ordine"
+        );
+    }
+
+    #[test]
+    fn un_annuncio_partito_prima_di_una_svolta_e_superato() {
+        // L'`Iniziato` di un brano, annunciato un istante prima che qualcuno ne
+        // chiedesse un altro, arriva a chi sta sopra **dopo** la richiesta. Letto
+        // com'è farebbe avanzare la coda oltre il brano appena scelto:
+        // `superato` è il modo di riconoscerlo.
+        let (annunci, voce) = spia_annunci();
+        let mut banco = banco_con_voce(48_000, 16_384, voce);
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
+        // Come fa `Motore::suona`: la svolta si conta prima di partire.
+        banco.ctx.intese.chieste.fetch_add(1, Ordering::SeqCst);
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        let _ = un_giro(&mut banco);
+        let vecchio = annunci
+            .lock()
+            .ok()
+            .and_then(|mut elenco| elenco.pop())
+            .expect("il primo brano si annuncia");
+        assert!(
+            !vecchio.superato(),
+            "appena partito non è superato da niente"
+        );
+
+        // Qualcuno chiede un altro brano: la maniglia conta la svolta, il filo
+        // non l'ha ancora eseguita.
+        banco.ctx.intese.chieste.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            vecchio.superato(),
+            "un annuncio partito prima della richiesta deve risultare superato"
+        );
+
+        // Il filo esegue: quel che annuncia da qui in poi è la risposta.
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
+        banco.ctx.esegui(Comando::Suona(Box::new(secondo)));
+        let _ = un_giro(&mut banco);
+        let nuovo = annunci
+            .lock()
+            .ok()
+            .and_then(|mut elenco| elenco.pop())
+            .expect("il secondo brano si annuncia");
+        assert!(matches!(nuovo.evento, Evento::Iniziato { track_id: 2 }));
+        assert!(
+            !nuovo.superato(),
+            "la risposta alla richiesta non è superata"
+        );
+
+        // E la voce del motore sostituito si spegne anche per gli annunci già
+        // partiti: la bandiera si legge quando si riceve, non quando si manda.
+        assert!(nuovo.ha_voce());
+        banco.condiviso.abbandonato.store(true, Ordering::Release);
+        assert!(
+            !nuovo.ha_voce(),
+            "un annuncio già in viaggio parla ancora per un motore sostituito"
+        );
+    }
+
+    #[test]
+    fn l_annuncio_di_un_guasto_di_rete_porta_la_posizione_di_prima() {
+        // «Riprova» deve sapere dove si era quando la rete è caduta, e il motore
+        // subito dopo si ferma e azzera la posizione. Finché l'osservatore
+        // girava sul filo della decodifica la leggeva in tempo; adesso che
+        // arriva dopo, la posizione viaggia dentro l'annuncio.
+        let (annunci, voce) = spia_annunci();
+        let mut banco = banco_con_voce(48_000, 16_384, voce);
+        let primo = aperto(&banco.ctx, brano_che_muore(1, 48_000));
+        chiedi_un_brano(&banco);
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        for _ in 0..100_000 {
+            let (_, mosso) = un_giro(&mut banco);
+            if !mosso && banco.ctx.corrente.is_none() {
+                break;
+            }
+        }
+        let elenco = annunci.lock().expect("il registro si legge");
+        let guasto = elenco
+            .iter()
+            .find(|a| matches!(a.evento, Evento::Errore(_)))
+            .expect("la share morta si annuncia");
+        assert_eq!(
+            guasto.posizione.track_id,
+            Some(1),
+            "il guasto non dice più di quale brano era"
+        );
+        assert!(
+            !guasto.posizione.in_pausa,
+            "la musica stava andando: la ripresa deve ripartire da sola"
+        );
+        let fermato = elenco
+            .iter()
+            .find(|a| matches!(a.evento, Evento::Fermato))
+            .expect("il motore si ferma");
+        assert_eq!(fermato.posizione.track_id, None);
+        assert!(
+            fermato.posizione.in_pausa,
+            "un motore fermo deve dirsi in pausa"
+        );
+        drop(elenco);
+        assert!(
+            banco.condiviso.in_pausa.load(Ordering::SeqCst),
+            "fermo per la rete, la callback deve restare in silenzio"
+        );
+    }
+
+    // ── la pausa e il brano nuovo ───────────────────────────────────────────
+
+    /// Quel che fa `Motore::suona` dalla parte della maniglia, senza maniglia.
+    fn chiedi_un_brano(banco: &Banco) {
+        banco.ctx.intese.chieste.fetch_add(1, Ordering::SeqCst);
+        banco.ctx.intese.pausa_voluta.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn un_brano_scelto_in_pausa_non_fa_sentire_i_resti_di_quello_prima() {
+        // Il difetto: `Motore::suona` abbassava subito la pausa in corso, mentre
+        // il comando che butta l'anello era ancora in coda. Per qualche
+        // millisecondo la callback suonava i resti del brano messo in pausa.
+        let mut banco = banco(48_000);
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
+        chiedi_un_brano(&banco);
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        let _ = un_giro(&mut banco);
+        banco.ctx.intese.pausa(&banco.condiviso);
+
+        chiedi_un_brano(&banco);
+        assert!(
+            banco.condiviso.in_pausa.load(Ordering::SeqCst),
+            "la pausa in corso si è abbassata prima che l'anello fosse buttato"
+        );
+        assert!(
+            !istantanea(&banco.ctx.posizione, &banco.ctx.intese).in_pausa,
+            "chi chiede dove siamo deve sentirsi dire quel che ha appena chiesto"
+        );
+        // Una ripresa premuta nel frattempo non cambia niente: la svolta è in
+        // viaggio, e la pausa in corso la abbassa chi la esegue.
+        banco.ctx.intese.riprendi(&banco.condiviso);
+        assert!(banco.condiviso.in_pausa.load(Ordering::SeqCst));
+
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
+        banco.ctx.esegui(Comando::Suona(Box::new(secondo)));
+        assert!(
+            !banco.condiviso.in_pausa.load(Ordering::SeqCst),
+            "svuotato l'anello, il brano nuovo deve suonare"
+        );
+    }
+
+    #[test]
+    fn una_pausa_premuta_subito_dopo_un_brano_nuovo_vince() {
+        // L'ordine che `Motore::pausa` promette: pausa, ripresa e avvio valgono
+        // nell'ordine in cui si premono. Un avvio in coda non si mangia una
+        // pausa premuta dopo.
+        let mut banco = banco(48_000);
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
+        chiedi_un_brano(&banco);
+        banco.ctx.intese.pausa(&banco.condiviso);
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        assert!(banco.condiviso.in_pausa.load(Ordering::SeqCst));
+        assert!(istantanea(&banco.ctx.posizione, &banco.ctx.intese).in_pausa);
+    }
+
+    // ── il salto a metà di una dissolvenza ──────────────────────────────────
+
+    /// Tre brani con una dissolvenza da seicento millisecondi, su un anello
+    /// abbastanza corto da far cadere l'annuncio di metà curva **mentre** i
+    /// due brani si stanno ancora mescolando. `seconda_meta` sceglie l'istante
+    /// del salto: dopo l'annuncio del brano che entra, o prima.
+    ///
+    /// Chi sta sopra fa quel che fa l'applicazione: all'annuncio del secondo
+    /// brano mette in canna il terzo.
+    fn salto_nella_dissolvenza(seconda_meta: bool) -> (Vec<String>, Vec<Posizione>) {
+        let (registro, osservatore) = spia();
+        // Un decimo di secondo d'anello: la decodifica sta avanti di così poco
+        // che a metà curva l'entrante è ancora in mano alla dissolvenza.
+        let mut banco = banco_con_anello(48_000, 4_800, osservatore);
+        banco.ctx.esegui(Comando::Dissolvenza { ms: 600 });
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(secondo))));
+
+        let mut storia = Vec::new();
+        let mut saltato = false;
+        let mut terzo_consegnato = false;
+        for _ in 0..200_000 {
+            let (posizione, mosso) = un_giro(&mut banco);
+            storia.push(posizione);
+            let annunciato = eventi(&registro).iter().any(|e| e == "iniziato:2");
+            if annunciato && !terzo_consegnato {
+                let terzo = aperto(&banco.ctx, brano(3, 48_000, 0.1));
+                banco.ctx.esegui(Comando::Prepara(Some(Box::new(terzo))));
+                terzo_consegnato = true;
+            }
+            if !saltato
+                && banco.ctx.entrante.is_some()
+                && banco.ctx.dissolvenza_fatti > 0
+                && annunciato == seconda_meta
+            {
+                banco.ctx.esegui(Comando::VaiA(100));
+                saltato = true;
+            }
+            if !mosso && banco.ctx.corrente.is_none() && banco.ctx.fine_dichiarata {
+                break;
+            }
+        }
+        assert!(saltato, "il banco non arriva mai nella finestra del salto");
+        (eventi(&registro), storia)
+    }
+
+    #[test]
+    fn un_salto_nella_seconda_meta_della_dissolvenza_non_perde_il_brano_dopo() {
+        // Il difetto: a metà curva il brano che entra si annuncia, chi sta
+        // sopra mette in canna il successivo, e un salto subito dopo riavvolgeva
+        // il brano che entrava e lo riscriveva in canna **sopra** il successivo.
+        // Il salto finiva sul brano che usciva, mentre la finestra mostrava
+        // l'altro; il successivo era perso, e dopo il secondo brano la musica si
+        // fermava.
+        let (annunci, storia) = salto_nella_dissolvenza(true);
+        assert_eq!(
+            annunci,
+            ["iniziato:1", "iniziato:2", "iniziato:3", "fermato"],
+            "la coda non è arrivata al terzo brano"
+        );
+        // Il salto è caduto sul brano che si sentiva, cioè sul secondo: dalla
+        // metà curva — trecento millisecondi — torna a cento.
+        let tornato = storia.windows(2).any(|due| {
+            due[0].track_id == Some(2)
+                && due[1].track_id == Some(2)
+                && due[0].ms > due[1].ms.saturating_add(100)
+                && (80..=250).contains(&due[1].ms)
+        });
+        assert!(
+            tornato,
+            "dopo il salto il secondo brano non riparte da ~100 ms: è saltato il brano che usciva"
+        );
+        // E da quando il secondo si sente, il primo non torna più.
+        let dal_secondo = storia
+            .iter()
+            .position(|p| p.track_id == Some(2))
+            .unwrap_or(storia.len());
+        let del_primo_dopo = storia
+            .get(dal_secondo..)
+            .unwrap_or_default()
+            .iter()
+            .any(|p| p.track_id == Some(1));
+        assert!(
+            !del_primo_dopo,
+            "dopo il salto si racconta di nuovo il brano che usciva"
+        );
+    }
+
+    #[test]
+    fn un_salto_nella_prima_meta_della_dissolvenza_torna_al_brano_che_esce() {
+        // Il contrappeso: prima di metà curva si sente soprattutto il brano che
+        // esce, la finestra mostra ancora lui, e il salto è per lui. Quello che
+        // entrava torna in canna dal suo inizio, e arriva dopo come se niente
+        // fosse.
+        let (annunci, storia) = salto_nella_dissolvenza(false);
+        assert_eq!(
+            annunci,
+            ["iniziato:1", "iniziato:2", "iniziato:3", "fermato"],
+            "un salto nella prima metà ha disordinato la coda"
+        );
+        let del_primo: Vec<u64> = storia
+            .iter()
+            .filter(|p| p.track_id == Some(1))
+            .map(|p| p.ms)
+            .collect();
+        let risalito = del_primo
+            .windows(2)
+            .any(|due| due[0] > due[1].saturating_add(100) && (80..=250).contains(&due[1]));
+        assert!(
+            risalito,
+            "il brano che usciva non è tornato a ~100 ms: il salto è finito altrove"
+        );
+    }
+
+    // ── ripeti uno ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn un_salto_negli_ultimi_secondi_di_ripeti_uno_non_ferma_la_musica() {
+        // Il difetto: negli ultimi secondi di ogni ripetizione il decodificatore
+        // è già sulla ripetizione dopo, e il confronto per identificativo le
+        // dava per lo stesso brano. Il salto cadeva sulla ripetizione successiva
+        // col numero d'ascolto di quella in corso: la successiva non si
+        // annunciava mai, chi sta sopra non preparava la terza, e la musica si
+        // fermava.
+        let (registro, osservatore) = spia();
+        let mut banco = banco_con_anello(
+            48_000,
+            usize::try_from(fotogrammi_da_ms(1_000, 48_000)).unwrap_or(48_000),
+            osservatore,
+        );
+        let primo = aperto(&banco.ctx, brano_onesto(7, 48_000, 0.8, 800));
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        // Come chi sta sopra con «ripeti uno»: il successivo è lo stesso brano,
+        // consegnato alla partenza e poi a ogni annuncio.
+        let di_nuovo = aperto(&banco.ctx, brano_onesto(7, 48_000, 0.8, 800));
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(di_nuovo))));
+        let mut consegnati = 2usize;
+
+        let mut saltato = false;
+        let mut storia = Vec::new();
+        for _ in 0..400_000 {
+            let annunci = quanti_eventi(&registro);
+            if annunci >= consegnati && consegnati < 3 && banco.ctx.prossimo.is_none() {
+                let ancora = aperto(&banco.ctx, brano_onesto(7, 48_000, 0.8, 800));
+                banco.ctx.esegui(Comando::Prepara(Some(Box::new(ancora))));
+                consegnati += 1;
+            }
+            let (posizione, mosso) = un_giro(&mut banco);
+            // La finestra: si sente la prima ripetizione, la decodifica è già
+            // sulla seconda.
+            if !saltato
+                && annunci == 1
+                && posizione.ms > 400
+                && banco.ctx.uscente.is_some()
+                && banco.ctx.corrente.is_some()
+            {
+                banco.ctx.esegui(Comando::VaiA(100));
+                saltato = true;
+            }
+            storia.push((posizione, quanti_eventi(&registro)));
+            if !mosso && banco.ctx.corrente.is_none() && banco.ctx.fine_dichiarata {
+                break;
+            }
+        }
+
+        assert!(saltato, "la finestra del difetto non si è mai aperta");
+        assert_eq!(
+            eventi(&registro),
+            ["iniziato:7", "iniziato:7", "iniziato:7", "fermato"],
+            "dopo il salto le ripetizioni non vanno avanti"
+        );
+        let risalito = storia
+            .windows(2)
+            .any(|due| due[0].0.ms > 400 && (50..=300).contains(&due[1].0.ms));
+        assert!(risalito, "il salto non ha riportato la puntina a ~100 ms");
+        // E il salto è caduto sulla ripetizione che si **sentiva**: la seconda
+        // comincia dopo, dal suo inizio. Se il salto fosse caduto sulla seconda
+        // — il decodificatore che correva avanti — lei si annuncerebbe subito,
+        // a cento millisecondi, e la prima sarebbe sparita a metà.
+        let seconda = storia
+            .iter()
+            .find(|(_, annunci)| *annunci >= 2)
+            .map(|(posizione, _)| posizione.ms)
+            .expect("la seconda ripetizione non si annuncia mai");
+        assert!(
+            seconda < 50,
+            "la seconda ripetizione si annuncia a {seconda} ms: il salto l'ha portata via"
+        );
+    }
+
+    // ── la sfumatura del timer di spegnimento ───────────────────────────────
+
+    #[test]
+    fn la_sfumatura_scende_in_decibel_e_si_ferma_in_fondo() {
+        let durata = Duration::from_secs(4);
+        assert!((fattore_di_sfumatura(Duration::ZERO, durata) - 1.0).abs() < 1e-6);
+        // A metà strada, metà dei decibel: −30 dB.
+        let meta = fattore_di_sfumatura(Duration::from_secs(2), durata);
+        assert!(
+            (meta - 10.0f32.powf(-1.5)).abs() < 1e-4,
+            "a metà vale {meta}"
+        );
+        let fondo = fattore_di_sfumatura(durata, durata);
+        assert!((fondo - 0.001).abs() < 1e-6, "in fondo vale {fondo}");
+        // Oltre la fine non risale.
+        let oltre = fattore_di_sfumatura(Duration::from_secs(9), durata);
+        assert!((oltre - fondo).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn la_sfumatura_finisce_in_pausa_e_rimette_il_volume_alla_ripresa() {
+        // La fine del timer: il volume scende, la musica si ferma **al fondo**
+        // — la porta della callback si chiude sul quasi-silenzio, non su un
+        // volume che risale — e il volume torna dov'era alla ripresa, così chi
+        // riprende domani non trova il cursore a zero.
+        let mut banco = banco(48_000);
+        banco.ctx.esegui(Comando::Volume {
+            volume: 0.5,
+            muto: false,
+        });
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
+        chiedi_un_brano(&banco);
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(Comando::Sfuma { ms: 80 });
+
+        std::thread::sleep(Duration::from_millis(40));
+        banco.ctx.avanza_sfumatura();
+        let a_meta = f32::from_bits(banco.condiviso.guadagno.load(Ordering::Relaxed));
+        assert!(
+            a_meta > 0.0 && a_meta < 0.25,
+            "a metà sfumatura il guadagno è {a_meta}"
+        );
+        assert!(!banco.condiviso.in_pausa.load(Ordering::SeqCst));
+
+        std::thread::sleep(Duration::from_millis(60));
+        banco.ctx.avanza_sfumatura();
+        assert!(
+            banco.condiviso.in_pausa.load(Ordering::SeqCst),
+            "finita la sfumatura la musica deve essere in pausa"
+        );
+        assert!(istantanea(&banco.ctx.posizione, &banco.ctx.intese).in_pausa);
+        // In pausa il guadagno resta al fondo: rimetterlo subito era il «blip»
+        // mentre la porta si chiudeva.
+        let in_pausa = f32::from_bits(banco.condiviso.guadagno.load(Ordering::Relaxed));
+        assert!(
+            in_pausa < volume_uscita(0.5, false) * 0.01,
+            "a pausa appena messa il guadagno è già risalito: {in_pausa}"
+        );
+        // E resta lì ai giri dopo, senza rimettere la pausa a ogni passo.
+        std::thread::sleep(Duration::from_millis(5));
+        banco.ctx.avanza_sfumatura();
+        let ancora = f32::from_bits(banco.condiviso.guadagno.load(Ordering::Relaxed));
+        assert!((ancora - in_pausa).abs() < 1e-6);
+
+        // La ripresa la toglie: dov'era vuol dire il cursore a metà, che con
+        // la curva percepita è un ottavo dell'ampiezza e non la metà.
+        banco.ctx.esegui(Comando::AnnullaSfuma);
+        let rimesso = f32::from_bits(banco.condiviso.guadagno.load(Ordering::Relaxed));
+        assert!(
+            (rimesso - volume_uscita(0.5, false)).abs() < 1e-6,
+            "il volume non è tornato dov'era: {rimesso}"
+        );
+    }
+
+    #[test]
+    fn un_brano_scelto_durante_la_sfumatura_la_annulla() {
+        let mut banco = banco(48_000);
+        let primo = aperto(&banco.ctx, brano(1, 48_000, 0.8));
+        chiedi_un_brano(&banco);
+        banco.ctx.esegui(Comando::Suona(Box::new(primo)));
+        banco.ctx.esegui(Comando::Sfuma { ms: 60_000 });
+        std::thread::sleep(Duration::from_millis(5));
+        banco.ctx.avanza_sfumatura();
+
+        let secondo = aperto(&banco.ctx, brano(2, 48_000, 0.4));
+        chiedi_un_brano(&banco);
+        banco.ctx.esegui(Comando::Suona(Box::new(secondo)));
+        banco.ctx.avanza_sfumatura();
+        assert!(
+            banco.ctx.sfumatura.is_none(),
+            "la sfumatura è sopravvissuta"
+        );
+        let guadagno = f32::from_bits(banco.condiviso.guadagno.load(Ordering::Relaxed));
+        assert!(
+            (guadagno - volume_uscita(0.8, false)).abs() < 1e-6,
+            "il brano nuovo parte col volume sfumato: {guadagno}"
+        );
     }
 }

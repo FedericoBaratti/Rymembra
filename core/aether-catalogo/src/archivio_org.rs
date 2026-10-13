@@ -28,6 +28,8 @@
 //! anche se i suoi file si scaricherebbero benissimo. Il fatto che un indirizzo
 //! risponda non è un permesso.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use aether_domain::errors::{AppError, ErrorCode};
@@ -120,6 +122,31 @@ const FORMATI: [(&str, &str); 4] = [
     ("mp3", "mp3"),
 ];
 
+/// Gli stessi formati, nell'ordine di chi **ascolta** e basta.
+///
+/// Rovesciato, e il conto è quello che la prova sul campo ha fatto: un FLAC
+/// dell'Archive vuole circa centodieci kilobyte al secondo per suonare senza
+/// fermarsi, e il nodo che lo serviva ne dava cinquanta. L'MP3 che l'Archive
+/// genera dallo stesso nastro ne vuole un quarto, e per un file che nessuno
+/// terrà sul disco la differenza di qualità non compra niente: compra solo
+/// silenzi in mezzo alla canzone.
+const FORMATI_PER_ASCOLTO: [(&str, &str); 4] = [
+    ("vbr mp3", "mp3"),
+    ("mp3", "mp3"),
+    ("flac", "flac"),
+    ("24bit flac", "flac"),
+];
+
+/// Che cosa si farà del file scelto, che decide quale formato vince.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Uso {
+    /// Portarlo sul disco: vince l'originale. Vedi [`FORMATI`].
+    Tenere,
+    /// Suonarlo mentre arriva: vince il più leggero. Vedi
+    /// [`FORMATI_PER_ASCOLTO`].
+    Ascoltare,
+}
+
 /// Un client dell'Internet Archive.
 #[derive(Debug, Clone)]
 pub struct ArchivioOrg {
@@ -127,6 +154,14 @@ pub struct ArchivioOrg {
     /// La rete dei prelievi, che ha una scadenza sua: vedi
     /// [`Rete::per_prelievo`].
     prelievo: Rete,
+    /// La rete dei flussi: vedi [`Rete::per_flusso`].
+    flusso: Rete,
+    /// Per ogni FLAC già chiesto, il file che si suona al suo posto.
+    ///
+    /// Vedi [`Self::da_ascoltare`]. Condivisa fra le copie, come il nodo di
+    /// Audius: il lettore clona i cataloghi a ogni apertura, e una memoria che
+    /// non sopravvivesse al clone rileggerebbe la scheda a ogni brano.
+    ascolto: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl Default for ArchivioOrg {
@@ -142,17 +177,30 @@ impl ArchivioOrg {
         Self {
             rete: Rete::nuova("archive.org", SCADENZA),
             prelievo: Rete::per_prelievo("archive.org"),
+            flusso: Rete::per_flusso("archive.org"),
+            ascolto: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// La rete che usa per **chiedere**: ricerche, schede, elenchi.
     ///
-    /// Le richieste piccole e la lettura a finestre di un flusso, che piccole
-    /// sono anche loro. Per portare giù un file intero c'è
-    /// [`Self::rete_prelievo`], e la differenza fra le due è la scadenza.
+    /// Le richieste piccole, con una scadenza complessiva. Per portare giù un
+    /// file intero c'è [`Self::rete_prelievo`], per suonarlo mentre arriva
+    /// [`Self::rete_flusso`], e la differenza fra le tre è la scadenza.
     #[must_use]
     pub const fn rete(&self) -> &Rete {
         &self.rete
+    }
+
+    /// La rete che usa per **suonare un file mentre arriva**.
+    ///
+    /// Fino alla 2.4.0 i flussi leggevano con [`Self::rete`], e le sue finestre
+    /// crescono fino a due megabyte: con trenta secondi complessivi, su una
+    /// linea lenta una finestra moriva a metà e con lei la canzone. Vedi
+    /// [`Rete::per_flusso`].
+    #[must_use]
+    pub const fn rete_flusso(&self) -> &Rete {
+        &self.flusso
     }
 
     /// La rete che usa per **portare giù un file**.
@@ -257,7 +305,16 @@ impl ArchivioOrg {
                     continue;
                 }
             };
-            candidati.extend(brani_dalla_scheda(&identificativo, &scheda, atteso));
+            // Con un brano atteso si sta cercando un file da portare giù — è la
+            // strada della coda di prelievo; senza, qualcuno ha scritto una
+            // frase in Esplora, e quel che troverà lo ascolterà mentre arriva.
+            // Chi da lì vuole tenerne una copia passa da [`Self::per_tenere`].
+            let uso = if atteso.is_some() {
+                Uso::Tenere
+            } else {
+                Uso::Ascoltare
+            };
+            candidati.extend(brani_dalla_scheda(&identificativo, &scheda, atteso, uso));
             if atteso.is_some_and(|b| primo_sicuro(&candidati, b)) {
                 break;
             }
@@ -287,7 +344,7 @@ impl ArchivioOrg {
                 .with_cause(format!("l'item «{identificativo}» non esiste")));
         }
 
-        let candidati = brani_dalla_scheda(identificativo, &scheda, None);
+        let candidati = brani_dalla_scheda(identificativo, &scheda, None, Uso::Tenere);
         if candidati.is_empty() {
             return Err(
                 AppError::new(ErrorCode::CatalogoResolveFailed).with_cause(format!(
@@ -332,6 +389,87 @@ impl ArchivioOrg {
         })
     }
 
+    /// Lo stesso brano, nel formato da tenere sul disco.
+    ///
+    /// # Perché serve
+    ///
+    /// Perché Esplora sceglie per l'ascolto — vedi [`FORMATI_PER_ASCOLTO`] — e
+    /// «Tieni una copia» parte da lì: senza questo passo la copia sul disco
+    /// sarebbe l'MP3 che l'Archive ha generato, quando accanto c'è l'originale
+    /// senza perdita che [`FORMATI`] esiste per preferire.
+    ///
+    /// Si rilegge la scheda dell'item e si prende il file che ha la **stessa
+    /// radice** del nome: è quel che i derivati dell'Archive condividono con
+    /// l'originale da cui vengono, ed è la stessa chiave con cui
+    /// [`brani_dalla_scheda`] li raggruppa. Se non se ne trova uno migliore,
+    /// resta quello di partenza, che è comunque il brano che si è ascoltato.
+    ///
+    /// # Errori
+    ///
+    /// Quelli di una scheda: `net.*` per i guasti di trasporto, `download.*`
+    /// per una risposta che non si legge.
+    pub fn per_tenere(&self, candidato: &Candidato) -> Result<Candidato, AppError> {
+        let Some(riferimento) = crate::riconosci(&candidato.url) else {
+            return Ok(candidato.clone());
+        };
+        let scheda = self.scheda(&riferimento.id)?;
+        Ok(
+            lo_stesso_brano(&riferimento.id, &scheda, &candidato.url, Uso::Tenere)
+                .unwrap_or_else(|| candidato.clone()),
+        )
+    }
+
+    /// L'indirizzo da suonare al posto di un FLAC di questo catalogo.
+    ///
+    /// # Per chi
+    ///
+    /// Per i brani entrati in libreria con la 2.4.0, che sceglieva il FLAC anche
+    /// per l'ascolto. Sono di due specie, e tutte e due si sentivano male: quelli
+    /// dei concerti `stream_only`, il cui FLAC è **privato** e risponde `401` a
+    /// ogni tentativo, e quelli il cui FLAC si scarica ma vuole il quadruplo
+    /// della linea di un MP3 e su un nodo lento si ferma a metà. La riga in
+    /// libreria resta com'è — l'indirizzo è la sua identità, e cambiarlo
+    /// vorrebbe dire un'altra riga — e al momento di suonarla si prende l'MP3
+    /// con la stessa radice, come fa oggi la ricerca (vedi
+    /// [`FORMATI_PER_ASCOLTO`]).
+    ///
+    /// # Quando non cambia niente
+    ///
+    /// Un indirizzo che non è un FLAC, e uno per cui la scheda non risponde o
+    /// non ha un fratello più leggero: si suona quello che c'è, che è quel che
+    /// si faceva prima. La risposta si ricorda per la sessione, così un brano
+    /// ripreso o risentito non paga di nuovo la scheda.
+    #[must_use]
+    pub fn da_ascoltare(&self, url: &str) -> String {
+        if aether_domain::indirizzo::estensione_da_url(url).as_deref() != Some("flac") {
+            return url.to_owned();
+        }
+        if let Some(noto) = self
+            .ascolto
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(url)
+        {
+            return noto.clone();
+        }
+        let Some(riferimento) = crate::riconosci(url) else {
+            return url.to_owned();
+        };
+        // Un guasto qui non si racconta: la scheda serve a migliorare la scelta,
+        // non a farla, e se non arriva resta l'indirizzo della riga. Non si
+        // ricorda nemmeno, perché la prossima volta potrebbe arrivare.
+        let Ok(scheda) = self.scheda(&riferimento.id) else {
+            return url.to_owned();
+        };
+        let scelto = lo_stesso_brano(&riferimento.id, &scheda, url, Uso::Ascoltare)
+            .map_or_else(|| url.to_owned(), |c| c.url);
+        self.ascolto
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(url.to_owned(), scelto.clone());
+        scelto
+    }
+
     /// La ricerca avanzata: da una query a un elenco di item.
     fn cerca_item(&self, query: &str, righe: u32) -> Result<Vec<Value>, AppError> {
         let url = format!(
@@ -347,8 +485,16 @@ impl ArchivioOrg {
             corpo: Corpo::Niente,
         })?;
         if !risposta.e_andata() {
-            return Err(AppError::new(ErrorCode::DownloadExternalSearchFailed)
-                .with_cause(format!("la ricerca ha risposto {}", risposta.stato)));
+            // Si passa da `stato_a_errore` e non si scrive qui lo stato: quella
+            // sa già distinguere un 503 — l'archivio è sotto carico, si ritenta
+            // — da un 400 che dice che la richiesta non andava bene, e allega
+            // quel che il servizio ha risposto invece del solo numero.
+            let guasto = self.rete.stato_a_errore(&risposta, &url);
+            return Err(crate::guasto_di_ricerca(
+                "Internet Archive",
+                &guasto,
+                "la ricerca non ha risposto",
+            ));
         }
         let corpo: Value = serde_json::from_slice(&risposta.corpo).map_err(|err| {
             AppError::new(ErrorCode::DownloadBadResponse)
@@ -464,14 +610,23 @@ fn disponibilita_da(metadati: &Value, licenza: &Licenza) -> Disponibilita {
     Disponibilita::decidi(Fonte::InternetArchive, licenza, !solo_ascolto)
 }
 
+/// I formati nell'ordine in cui vincono, per quel che si farà del file.
+const fn formati_per(uso: Uso) -> &'static [(&'static str, &'static str); 4] {
+    match uso {
+        Uso::Tenere => &FORMATI,
+        Uso::Ascoltare => &FORMATI_PER_ASCOLTO,
+    }
+}
+
 /// Il formato di un file, tradotto in estensione, se lo sappiamo aprire.
 ///
 /// Restituisce anche quanto è preferito, perché la scelta fra due file dello
-/// stesso brano nello stesso item è esattamente questa: il FLAC originale batte
-/// l'MP3 che l'Archive ha generato da lui.
-fn formato_di(file: &Value) -> Option<(usize, &'static str)> {
+/// stesso brano nello stesso item è esattamente questa: per tenerlo il FLAC
+/// originale batte l'MP3 che l'Archive ha generato da lui, per ascoltarlo
+/// mentre arriva il contrario. Vedi [`Uso`].
+fn formato_di(file: &Value, uso: Uso) -> Option<(usize, &'static str)> {
     let dichiarato = file.get("format")?.as_str()?.to_ascii_lowercase();
-    FORMATI
+    formati_per(uso)
         .iter()
         .enumerate()
         .find(|(_, (nome, _))| dichiarato == *nome)
@@ -520,11 +675,21 @@ fn durata_di(file: &Value) -> Option<u32> {
 ///
 /// Con `atteso` a `Some`, tiene solo quelli che potrebbero essere quel brano;
 /// con `None` li tiene tutti, che è il caso di chi ha incollato il link
-/// dell'item e vuole quel che c'è dentro.
+/// dell'item e vuole quel che c'è dentro. `uso` decide quale formato vince fra
+/// quelli dello stesso brano.
+///
+/// # I file privati non ci sono
+///
+/// Un file con `"private": "true"` sta nell'elenco e non si scarica: risponde
+/// `401` a chiunque. È la forma dei concerti `stream_only` — tutti i Grateful
+/// Dead da tavolo, per esempio — dove i FLAC sono privati e l'MP3 accanto no.
+/// Prima di questo controllo il FLAC vinceva sempre, e «Ascolta» su quei
+/// concerti rispondeva «il server ha risposto con un errore» a ogni brano.
 fn brani_dalla_scheda(
     identificativo: &str,
     scheda: &Value,
     atteso: Option<&BranoEsterno>,
+    uso: Uso,
 ) -> Vec<Candidato> {
     let metadati = scheda.get("metadata").unwrap_or(&Value::Null);
     let licenza = licenza_da(metadati);
@@ -548,7 +713,10 @@ fn brani_dalla_scheda(
     let mut migliori: Vec<((String, String), usize, Candidato)> = Vec::new();
 
     for voce in file {
-        let Some((rango, estensione)) = formato_di(voce) else {
+        if vero(voce, "private") {
+            continue;
+        }
+        let Some((rango, estensione)) = formato_di(voce, uso) else {
             continue;
         };
         let Some(nome) = voce.get("name").and_then(Value::as_str) else {
@@ -614,6 +782,33 @@ fn brani_dalla_scheda(
     }
 
     migliori.into_iter().map(|(_, _, c)| c).collect()
+}
+
+/// Lo stesso brano di `url`, nel formato che vince per `uso`.
+///
+/// La radice del nome è la chiave: `gd77d1t02.mp3` è il derivato di
+/// `gd77d1t02.flac`, e l'Archive lo nomina così apposta. Fra i file con la
+/// stessa radice vince il primo dell'ordine di `uso` — per tenerlo l'originale
+/// senza perdita, per ascoltarlo l'MP3 — e mai un file privato. `None` se l'item
+/// non ne ha nessuno: il brano è sparito, o è stato rinominato.
+fn lo_stesso_brano(identificativo: &str, scheda: &Value, url: &str, uso: Uso) -> Option<Candidato> {
+    let radice = radice_del_file(url);
+    let ordine = formati_per(uso);
+    brani_dalla_scheda(identificativo, scheda, None, uso)
+        .into_iter()
+        .filter(|c| radice_del_file(&c.url) == radice)
+        .min_by_key(|c| {
+            ordine
+                .iter()
+                .position(|(_, estensione)| c.estensione.as_deref() == Some(*estensione))
+                .unwrap_or(usize::MAX)
+        })
+}
+
+/// L'ultimo pezzo di un indirizzo, senza estensione.
+fn radice_del_file(url: &str) -> &str {
+    let ultimo = url.rsplit('/').next().unwrap_or(url);
+    ultimo.rsplit_once('.').map_or(ultimo, |(radice, _)| radice)
 }
 
 /// Il nome del file senza cartella e senza estensione, come ripiego di un titolo.
@@ -862,7 +1057,7 @@ mod prove {
               ]
             }"#,
         );
-        assert_eq!(brani_dalla_scheda("gd77", &s, None).len(), 2);
+        assert_eq!(brani_dalla_scheda("gd77", &s, None, Uso::Tenere).len(), 2);
     }
 
     #[test]
@@ -892,13 +1087,146 @@ mod prove {
               ]
             }"#,
         );
-        let trovati = brani_dalla_scheda("gd77", &s, None);
+        let trovati = brani_dalla_scheda("gd77", &s, None, Uso::Tenere);
         assert_eq!(trovati.len(), 1);
         assert!(trovati.first().is_some_and(|c| c.url.ends_with(".flac")));
         assert_eq!(
             trovati.first().and_then(|c| c.estensione.clone()),
             Some("flac".to_owned())
         );
+    }
+
+    #[test]
+    fn per_ascoltare_dei_due_formati_vince_il_piu_leggero() {
+        // Quel che si suona mentre arriva: il FLAC vuole il quadruplo della
+        // linea, e sul nodo dell'Archive misurato non c'era.
+        let s = scheda(
+            r#"{
+              "metadata": {"identifier":"gd77","collection":["etree"],"creator":"Grateful Dead"},
+              "files": [
+                {"name":"gd77t01.flac","format":"Flac","title":"Sugaree","length":"300"},
+                {"name":"gd77t01.mp3","format":"VBR MP3","title":"Sugaree","length":"300"}
+              ]
+            }"#,
+        );
+        let trovati = brani_dalla_scheda("gd77", &s, None, Uso::Ascoltare);
+        assert_eq!(trovati.len(), 1);
+        assert!(
+            trovati.first().is_some_and(|c| c.url.ends_with(".mp3")),
+            "{:?}",
+            trovati.first().map(|c| &c.url)
+        );
+        assert_eq!(
+            trovati.first().and_then(|c| c.estensione.clone()),
+            Some("mp3".to_owned())
+        );
+    }
+
+    #[test]
+    fn un_file_privato_non_diventa_un_candidato() {
+        // La forma dei concerti `stream_only`, presa dal 5 maggio 1977: i FLAC
+        // sono privati e rispondono 401, l'MP3 accanto si ascolta. Prima vinceva
+        // il FLAC anche per chi voleva tenerlo, e ogni «Ascolta» era un errore.
+        let s = scheda(
+            r#"{
+              "metadata": {"identifier":"gd77","collection":["etree","stream_only"],
+                           "creator":"Grateful Dead","stream_only":"true"},
+              "files": [
+                {"name":"gd77-05-05d1t02.flac","format":"Flac","title":"Promised Land",
+                 "length":"260","private":"true"},
+                {"name":"gd77-05-05d1t02.mp3","format":"VBR MP3","title":"Promised Land",
+                 "length":"260"}
+              ]
+            }"#,
+        );
+        for uso in [Uso::Tenere, Uso::Ascoltare] {
+            let trovati = brani_dalla_scheda("gd77", &s, None, uso);
+            assert_eq!(trovati.len(), 1, "{uso:?}");
+            assert!(
+                trovati.first().is_some_and(|c| c.url.ends_with(".mp3")),
+                "{uso:?}: ha scelto un file privato"
+            );
+        }
+        // E un item fatto solo di file privati non dà niente, invece di dare
+        // dei brani che non suoneranno.
+        let tutto_privato = scheda(
+            r#"{
+              "metadata": {"identifier":"x","collection":["etree"]},
+              "files": [{"name":"t01.flac","format":"Flac","title":"Jam","private":true}]
+            }"#,
+        );
+        assert!(brani_dalla_scheda("x", &tutto_privato, None, Uso::Ascoltare).is_empty());
+    }
+
+    #[test]
+    fn da_quel_che_si_e_ascoltato_si_tiene_loriginale() {
+        // «Tieni una copia» parte dall'MP3 scelto per l'ascolto e deve portare
+        // giù il FLAC dello stesso brano: stessa radice del nome, non stesso
+        // titolo, perché due «Jam» dello stesso concerto sono due brani.
+        let s = scheda(
+            r#"{
+              "metadata": {"identifier":"gd77","collection":["etree"],"creator":"Grateful Dead"},
+              "files": [
+                {"name":"gd77d1t05.flac","format":"Flac","title":"Jam","length":"300"},
+                {"name":"gd77d1t05.mp3","format":"VBR MP3","title":"Jam","length":"300"},
+                {"name":"gd77d2t03.flac","format":"Flac","title":"Jam","length":"420"},
+                {"name":"gd77d2t03.mp3","format":"VBR MP3","title":"Jam","length":"420"}
+              ]
+            }"#,
+        );
+        let ascoltato = "https://archive.org/download/gd77/gd77d2t03.mp3";
+        let da_tenere = lo_stesso_brano("gd77", &s, ascoltato, Uso::Tenere);
+        assert_eq!(
+            da_tenere.as_ref().map(|c| c.url.as_str()),
+            Some("https://archive.org/download/gd77/gd77d2t03.flac")
+        );
+        assert_eq!(
+            da_tenere.and_then(|c| c.estensione),
+            Some("flac".to_owned())
+        );
+        // Un file che nell'item non c'è più non diventa un altro brano.
+        assert!(
+            lo_stesso_brano(
+                "gd77",
+                &s,
+                "https://archive.org/download/gd77/sparito.mp3",
+                Uso::Tenere
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn un_flac_gia_in_libreria_si_ascolta_dal_suo_mp3() {
+        // Le righe entrate con la 2.4.0 portano il FLAC. Il caso peggiore è il
+        // concerto `stream_only`, dove il FLAC è privato e risponde 401: al
+        // momento di suonarlo si prende l'MP3 con la stessa radice.
+        let s = scheda(
+            r#"{
+              "metadata": {"identifier":"gd77","collection":["etree"],"stream_only":"true"},
+              "files": [
+                {"name":"gd77-05-05d1t02.flac","format":"Flac","title":"Promised Land",
+                 "private":"true"},
+                {"name":"gd77-05-05d1t02.mp3","format":"VBR MP3","title":"Promised Land"},
+                {"name":"gd77-05-05d1t03.mp3","format":"VBR MP3","title":"Sugaree"}
+              ]
+            }"#,
+        );
+        let in_libreria = "https://archive.org/download/gd77/gd77-05-05d1t02.flac";
+        assert_eq!(
+            lo_stesso_brano("gd77", &s, in_libreria, Uso::Ascoltare).map(|c| c.url),
+            Some("https://archive.org/download/gd77/gd77-05-05d1t02.mp3".to_owned())
+        );
+    }
+
+    #[test]
+    fn solo_un_flac_va_a_cercare_un_fratello() {
+        // Un MP3 si suona com'è, senza chiedere niente all'Archive: la prova
+        // gira senza rete, e se partisse una richiesta qui tornerebbe un altro
+        // indirizzo o un errore.
+        let archivio = ArchivioOrg::nuovo();
+        let mp3 = "https://archive.org/download/ItsAllAGame/02%20I%27m%20All%20Good.mp3";
+        assert_eq!(archivio.da_ascoltare(mp3), mp3);
     }
 
     #[test]
@@ -913,7 +1241,7 @@ mod prove {
               ]
             }"#,
         );
-        assert!(brani_dalla_scheda("x", &s, None).is_empty());
+        assert!(brani_dalla_scheda("x", &s, None, Uso::Ascoltare).is_empty());
     }
 
     #[test]
@@ -924,7 +1252,7 @@ mod prove {
               "files": [{"name":"t01.flac","format":"Flac","title":"Sugaree","length":"300"}]
             }"#,
         );
-        let trovati = brani_dalla_scheda("gd77", &s, None);
+        let trovati = brani_dalla_scheda("gd77", &s, None, Uso::Ascoltare);
         assert_eq!(trovati.first().map(|c| c.natura), Some(Natura::DalVivo));
     }
 
@@ -943,7 +1271,7 @@ mod prove {
             title: "Sugaree".to_owned(),
             ..BranoEsterno::default()
         };
-        let trovati = brani_dalla_scheda("gd77", &s, Some(&atteso));
+        let trovati = brani_dalla_scheda("gd77", &s, Some(&atteso), Uso::Tenere);
         assert_eq!(trovati.len(), 1);
         assert_eq!(trovati.first().map(|c| c.titolo.as_str()), Some("Sugaree"));
     }

@@ -11,6 +11,7 @@ use lofty::file::{AudioFile, TaggedFile, TaggedFileExt};
 use lofty::picture::{Picture, PictureType};
 use lofty::prelude::{Accessor, ItemKey};
 use lofty::probe::Probe;
+use unicode_normalization::UnicodeNormalization as _;
 
 use crate::files::MusicFiles;
 
@@ -74,16 +75,35 @@ pub struct TrackTags {
     pub cover: Option<EmbeddedCover>,
 }
 
-/// Un valore di tag ripulito: niente spazi ai bordi, e vuoto vale come assente.
+/// Un valore di tag ripulito: niente spazi ai bordi, vuoto vale come assente, e
+/// in forma NFC.
 ///
 /// Un titolo di soli spazi non è un titolo. Lasciarlo passare produce brani che
 /// in libreria appaiono senza nome e non si possono cercare.
+///
+/// # Perché NFC
+///
+/// Perché «ö» si può scrivere in due modi: un carattere solo, U+00F6, o una «o»
+/// seguita dalla dieresi combinante U+0308. Sono la stessa lettera per chi
+/// legge e due stringhe diverse per chi confronta, e i taggatori del Mac — e i
+/// file passati da un filesystem Apple — scrivono volentieri la seconda. Il
+/// danno si vedeva nella ricerca: il tokenizzatore di FTS5 (`unicode61`) non
+/// considera la dieresi staccata parte della parola, quindi «Björk» scomposto
+/// finiva nell'indice come «bjo» e «rk», e cercare *björk* non lo trovava.
+///
+/// NFC ricompone, e da qui in poi ogni testo letto da un file ha una forma sola.
+/// Le chiavi di identità non cambiano: `fold_text` passa comunque da NFD, e le
+/// due forme della stessa lettera ci arrivano identiche.
 fn clean(value: Option<&str>) -> Option<String> {
     let trimmed = value?.trim();
     if trimmed.is_empty() {
         None
-    } else {
+    } else if unicode_normalization::is_nfc(trimmed) {
+        // Il caso di quasi tutti i tag: nessuna ricomposizione da fare, e una
+        // copia sola invece di un giro carattere per carattere.
         Some(trimmed.to_owned())
+    } else {
+        Some(trimmed.nfc().collect())
     }
 }
 
@@ -167,6 +187,30 @@ fn bitrate_del_suono(properties: &lofty::properties::FileProperties) -> Option<u
         .or_else(|| properties.overall_bitrate().filter(plausibile))
 }
 
+/// Il racconto intero di un errore di `lofty`, cause comprese.
+///
+/// Dalla 0.25 gli errori di `lofty` dicono in `Display` solo **dove** si sono
+/// fermati — «failed to parse Mpeg file», «failed to write Mp4 file» — e il
+/// **perché** lo tengono nella catena di `source()`: l'accesso negato dal
+/// sistema, il frame più lungo del file, il formato che non si riconosce. Un
+/// `to_string()` da solo consegnerebbe al dettaglio dell'errore proprio la metà
+/// che non aiuta nessuno, e un «non riesco a scrivere i tag» senza il motivo è
+/// la segnalazione a cui non si sa rispondere.
+///
+/// Qui si cuciono tutti gli anelli, dal primo all'ultimo, separati da `: `.
+/// Vale anche per [`crate::tag_scrittura`], che scrive con la stessa libreria
+/// e fallisce allo stesso modo.
+pub(crate) fn racconta_errore(errore: &(dyn std::error::Error + 'static)) -> String {
+    let mut racconto = errore.to_string();
+    let mut causa = errore.source();
+    while let Some(anello) = causa {
+        racconto.push_str(": ");
+        racconto.push_str(&anello.to_string());
+        causa = anello.source();
+    }
+    racconto
+}
+
 /// Legge i tag di un file attraverso il fornitore di file dato.
 pub fn read_tags(files: &dyn MusicFiles, path: &str) -> Result<TrackTags, AppError> {
     let mut reader = files.open(path)?;
@@ -186,7 +230,7 @@ pub fn read_tags(files: &dyn MusicFiles, path: &str) -> Result<TrackTags, AppErr
         .guess_file_type()
         .map_err(|err| fail(&err.to_string()))?;
 
-    let tagged = probe.read().map_err(|err| fail(&err.to_string()))?;
+    let tagged = probe.read().map_err(|err| fail(&racconta_errore(&err)))?;
     let properties = tagged.properties();
     let file_type = format!("{:?}", tagged.file_type());
 
@@ -256,6 +300,17 @@ mod tests {
         assert_eq!(clean(Some("   ")), None);
         assert_eq!(clean(Some("  Titolo  ")), Some("Titolo".to_owned()));
         assert_eq!(clean(None), None);
+    }
+
+    #[test]
+    fn un_tag_scomposto_si_ricompone() {
+        // «Björk» come lo scrive un taggatore del Mac: una «o» e la dieresi
+        // combinante. Esce con la «ö» di un carattere solo, che è quella che
+        // l'indice di ricerca sa tenere intera.
+        let scomposto = "Bjo\u{0308}rk";
+        assert_eq!(clean(Some(scomposto)), Some("Bj\u{00F6}rk".to_owned()));
+        // Un testo già composto esce com'è entrato.
+        assert_eq!(clean(Some("Sigur Rós")), Some("Sigur Rós".to_owned()));
     }
 
     #[test]

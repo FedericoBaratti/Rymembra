@@ -107,8 +107,17 @@ pub struct SchedaSorgente {
     pub collocazione: Collocazione,
     /// La durata secondo il database, per quando il file non la dichiara.
     pub durata_ms: i64,
-    /// Il guadagno ReplayGain scritto nei tag, se c'era.
+    /// Il guadagno che porta il brano al riferimento di −18 LUFS, in dB.
+    ///
+    /// Dal tag ReplayGain quando c'è, altrimenti dalla misura della passata
+    /// d'analisi ([`crate::intensita`]); `None` se non si sa né l'uno né
+    /// l'altro. Il nome è quello di sempre perché il motore lo tratta allo
+    /// stesso modo da qualunque parte arrivi: è lo stesso numero, riferito
+    /// allo stesso −18.
     pub replaygain_db: Option<f64>,
+    /// Il picco vero, lineare, dalla stessa misura. Serve a non alzare un
+    /// brano oltre il fondo scala: vedi `aether_play::correzione`.
+    pub picco: Option<f64>,
 }
 
 /// Da dove escono i byte di un brano. Due possibilità, e mai una terza.
@@ -174,6 +183,18 @@ impl Collocazione {
     }
 }
 
+/// La riga di [`scheda_sorgente`]: percorso, servizio, indirizzo, durata,
+/// guadagno del tag, intensità e picco misurati.
+type RigaDaSuonare = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    i64,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+);
+
 /// La sola query: cosa dice il database di questo brano.
 ///
 /// # Errori
@@ -181,17 +202,15 @@ impl Collocazione {
 /// `playback.sourceUnavailable` se la riga non c'è più, `db.queryFailed` se il
 /// database non risponde.
 pub fn scheda_sorgente(connection: &Connection, track_id: i64) -> Result<SchedaSorgente, AppError> {
-    let (path, servizio, fonte_url, durata_ms, replaygain_db): (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        i64,
-        Option<f64>,
-    ) = connection
+    let (path, servizio, fonte_url, durata_ms, dal_tag, lufs, picco): RigaDaSuonare = connection
         .query_row(
-            "SELECT path, source_service, fonte_url, duration_ms, replaygain_track_db
-               FROM tracks WHERE id = ?1",
-            [track_id],
+            "SELECT t.path, t.source_service, t.fonte_url, t.duration_ms,
+                    t.replaygain_track_db, m.lufs, m.picco
+               FROM tracks t
+               LEFT JOIN track_intensita m
+                      ON m.track_id = t.id AND m.versione = ?2
+              WHERE t.id = ?1",
+            rusqlite::params![track_id, i64::from(aether_play::intensita::VERSIONE)],
             |row| {
                 Ok((
                     row.get(0)?,
@@ -199,6 +218,8 @@ pub fn scheda_sorgente(connection: &Connection, track_id: i64) -> Result<SchedaS
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
                 ))
             },
         )
@@ -238,11 +259,146 @@ pub fn scheda_sorgente(connection: &Connection, track_id: i64) -> Result<SchedaS
         }
     };
 
+    // Il tag prima della misura: l'ha scritto qualcuno apposta. La misura
+    // copre tutto il resto, che nelle librerie vere è quasi tutto.
+    let replaygain_db = dal_tag.or_else(|| lufs.map(guadagno_misurato));
     Ok(SchedaSorgente {
         track_id,
         collocazione,
         durata_ms,
         replaygain_db,
+        picco,
+    })
+}
+
+/// Il guadagno che porta al riferimento un brano misurato a `lufs`.
+///
+/// `aether_play::intensita::guadagno_db` in `f64`, perché è quel che il
+/// database e la scheda portano.
+fn guadagno_misurato(lufs: f64) -> f64 {
+    aether_play::intensita::RIFERIMENTO_LUFS - lufs
+}
+
+/// Come si sceglie il livello di un brano: il suo, o quello del suo disco.
+///
+/// Il livello del brano porta ogni brano allo stesso volume, ed è quel che si
+/// vuole in una scaletta mescolata. Quello del disco sposta tutti i brani di
+/// un album della stessa quantità, e tiene la distanza che chi l'ha
+/// masterizzato ha voluto fra un'introduzione in punta di piedi e il pezzo
+/// forte che la segue: normalizzati uno per uno, i due arriverebbero uguali.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModoLivello {
+    /// Sempre quello del brano.
+    Brano,
+    /// Sempre quello del disco, quando il brano ne ha uno.
+    Album,
+    /// Quello del disco quando si sta ascoltando un disco — nessuno shuffle, e
+    /// accanto nella coda un brano dello stesso album — altrimenti quello del
+    /// brano. Di serie: è quel che fanno foobar2000 e gli altri lettori che
+    /// lo offrono, ed è la sola scelta che non chiede di ricordarsi di
+    /// cambiare impostazione passando da un disco a una scaletta.
+    #[default]
+    Automatico,
+}
+
+/// Quel che c'è intorno al brano da aprire, nella coda.
+///
+/// Serve a [`ModoLivello::Automatico`] per capire se si sta ascoltando un
+/// disco. Lo compila chi ha in mano la coda; qui si leggono solo gli
+/// identificativi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Intorno {
+    /// Lo shuffle è acceso: i vicini sono un caso, non un disco.
+    pub mescolato: bool,
+    /// Il brano che suona subito prima, nell'ordine d'ascolto.
+    pub prima: Option<i64>,
+    /// Il brano che suona subito dopo.
+    pub dopo: Option<i64>,
+}
+
+/// La scheda di un brano **da suonare**: come [`scheda_sorgente`], con il
+/// livello scelto secondo la normalizzazione conservata e secondo la coda.
+///
+/// # Errori
+///
+/// Gli stessi di [`scheda_sorgente`].
+pub fn scheda_da_suonare(
+    connection: &Connection,
+    track_id: i64,
+    intorno: Intorno,
+) -> Result<SchedaSorgente, AppError> {
+    let mut scheda = scheda_sorgente(connection, track_id)?;
+    let modo = load_replaygain(connection)?.modo;
+    let del_disco = match modo {
+        ModoLivello::Brano => false,
+        ModoLivello::Album => true,
+        ModoLivello::Automatico => {
+            !intorno.mescolato && stesso_disco(connection, track_id, intorno)?
+        }
+    };
+    if del_disco && let Some((guadagno, picco)) = livello_del_disco(connection, track_id)? {
+        scheda.replaygain_db = Some(guadagno);
+        scheda.picco = picco.or(scheda.picco);
+    }
+    Ok(scheda)
+}
+
+/// Uno dei vicini nella coda è dello stesso disco?
+///
+/// Un disco vuol dire un titolo d'album: i file sciolti di una cartella hanno
+/// la stessa `album_key` senza essere un album.
+fn stesso_disco(
+    connection: &Connection,
+    track_id: i64,
+    intorno: Intorno,
+) -> Result<bool, AppError> {
+    let vicini = [intorno.prima, intorno.dopo];
+    for vicino in vicini.into_iter().flatten() {
+        if vicino == track_id {
+            continue;
+        }
+        let uguale: bool = connection
+            .query_row(
+                "SELECT EXISTS (
+                   SELECT 1 FROM tracks a JOIN tracks b ON b.album_key = a.album_key
+                    WHERE a.id = ?1 AND b.id = ?2
+                      AND a.album IS NOT NULL AND TRIM(a.album) <> '')",
+                rusqlite::params![track_id, vicino],
+                |row| row.get(0),
+            )
+            .map_err(|err| db_error("confronto dei dischi nella coda", &err))?;
+        if uguale {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Il livello del disco di un brano: guadagno in dB e picco lineare.
+///
+/// Il tag d'album quando c'è — calcolato da chi l'ha scritto sull'album
+/// suonato di fila, che è la misura giusta — altrimenti la media dei brani
+/// misurati di [`crate::intensita::dell_album_di`]. Il picco viene sempre
+/// dalla misura: è l'unico posto dove c'è. `None` se del disco non si sa
+/// niente, e allora resta il livello del brano.
+fn livello_del_disco(
+    connection: &Connection,
+    track_id: i64,
+) -> Result<Option<(f64, Option<f64>)>, AppError> {
+    let dal_tag: Option<f64> = connection
+        .query_row(
+            "SELECT replaygain_album_db FROM tracks WHERE id = ?1",
+            [track_id],
+            |row| row.get(0),
+        )
+        .map_err(|err| db_error("lettura del guadagno d'album", &err))?;
+    let misurato = crate::intensita::dell_album_di(connection, track_id)?;
+    let picco = misurato.map(|m| m.picco);
+    Ok(match (dal_tag, misurato) {
+        (Some(db), _) => Some((db, picco)),
+        (None, Some(m)) => Some((guadagno_misurato(m.lufs), picco)),
+        (None, None) => None,
     })
 }
 
@@ -316,6 +472,11 @@ pub fn sorgente_da_scheda(
             reason = "sono decibel: la precisione di un f32 è un milionesimo di dB"
         )]
         replaygain_db: scheda.replaygain_db.map(|db| db as f32),
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "un picco lineare: la precisione di un f32 è più che abbondante"
+        )]
+        picco: scheda.picco.map(|p| p as f32),
     })
 }
 
@@ -374,8 +535,7 @@ pub fn record_play(
         return Ok(false);
     }
     let ms_played = i64::try_from(ascolto.listened_ms).unwrap_or(i64::MAX);
-    let tx = connection
-        .transaction()
+    let tx = crate::library::transazione_di_scrittura(connection)
         .map_err(|err| db_error("apertura della transazione d'ascolto", &err))?;
 
     // `stats_updated_at` insieme agli altri: è ciò su cui `merge_stats` decide
@@ -496,21 +656,69 @@ impl Default for Volume {
     }
 }
 
+/// Volume e silenziamento come stanno **nella riga**, con la curva con cui il
+/// numero va letto.
+///
+/// # Perché la curva sta scritta accanto al numero
+///
+/// Fino alla 2.4 il numero era un'ampiezza: 0,5 voleva dire metà ampiezza,
+/// cioè −6 dB, e metà corsa del cursore suonava quasi come il massimo. Dalla
+/// 3.0 il numero è la **posizione del cursore**, e il motore la porta al cubo
+/// (`aether_play::volume_uscita`): metà corsa è −18 dB, che è quel che
+/// l'orecchio si aspetta da «a metà». Lo stesso 0,8 letto con la curva nuova
+/// suonerebbe sei decibel sotto quel che si sentiva ieri — un aggiornamento
+/// che abbassa il volume a tutti senza dirlo. Una riga senza `curva` è della
+/// curva vecchia, e si converte leggendola nella posizione che suona uguale:
+/// la radice cubica dell'ampiezza.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct VolumeSuDisco {
+    volume: f32,
+    muto: bool,
+    /// 0 (assente) = ampiezza, come fino alla 2.4; [`CURVA_PERCEPITA`] =
+    /// posizione del cursore.
+    #[serde(default)]
+    curva: u8,
+}
+
+/// La curva della 3.0: il numero è la posizione del cursore.
+const CURVA_PERCEPITA: u8 = 1;
+
 /// Conserva volume e silenziamento.
 pub fn save_volume(connection: &Connection, volume: Volume) -> Result<(), AppError> {
-    let json = serde_json::to_string(&volume).unwrap_or_else(|_| "{}".to_owned());
+    let su_disco = VolumeSuDisco {
+        volume: volume.volume,
+        muto: volume.muto,
+        curva: CURVA_PERCEPITA,
+    };
+    let json = serde_json::to_string(&su_disco).unwrap_or_else(|_| "{}".to_owned());
     crate::settings::write(connection, CHIAVE_VOLUME, &json)
 }
 
 /// Rilegge volume e silenziamento.
+///
+/// Una riga scritta prima della 3.0 si converte alla curva nuova in lettura, e
+/// non si riscrive: la conversione è la stessa ogni volta, e la prima
+/// [`save_volume`] la fissa. Così anche un profilo esportato da una 2.4 e
+/// importato qui arriva al volume a cui suonava.
 pub fn load_volume(connection: &Connection) -> Result<Volume, AppError> {
     let Some(json) = crate::settings::read(connection, CHIAVE_VOLUME)? else {
         return Ok(Volume::default());
     };
-    Ok(serde_json::from_str::<Volume>(&json)
-        .map(|v| Volume {
-            volume: v.volume.clamp(0.0, 1.0),
-            ..v
+    Ok(serde_json::from_str::<VolumeSuDisco>(&json)
+        .map(|v| {
+            let volume = if v.volume.is_finite() {
+                v.volume.clamp(0.0, 1.0)
+            } else {
+                Volume::default().volume
+            };
+            Volume {
+                volume: if v.curva == CURVA_PERCEPITA {
+                    volume
+                } else {
+                    volume.cbrt()
+                },
+                muto: v.muto,
+            }
         })
         .unwrap_or_default())
 }
@@ -526,15 +734,21 @@ pub fn load_volume(connection: &Connection) -> Result<Volume, AppError> {
 /// una cosa che era accesa — un cambiamento di volume che nessuno ha chiesto e
 /// che nessuna schermata spiega.
 ///
-/// Non c'è nessun rischio nel lasciarla accesa su una libreria senza tag: senza
-/// `replaygain_db` la correzione è esattamente 1.0, cioè niente. Il valore serve
-/// a chi i tag ce li ha e vuole i dischi come sono stati masterizzati.
+/// Fino alla 2.4 lasciarla accesa su una libreria senza tag non cambiava
+/// niente: senza `replaygain_db` la correzione era esattamente 1.0. Dalla 3.0
+/// la passata d'analisi misura ogni brano ([`crate::intensita`]), e accesa
+/// vuol dire davvero tutti i brani allo stesso volume. Chi vuole i dischi come
+/// sono stati masterizzati la spegne.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Normalizzazione {
-    /// Il guadagno dei tag si applica.
+    /// Il guadagno si applica.
     pub attivo: bool,
     /// A quanti LUFS si porta tutto. Il riferimento dei tag è −18.
     pub bersaglio_db: f32,
+    /// Livello del brano o del disco. Assente nelle righe scritte prima della
+    /// 3.0, e allora vale il suo valore di serie.
+    #[serde(default)]
+    pub modo: ModoLivello,
 }
 
 impl Default for Normalizzazione {
@@ -542,6 +756,7 @@ impl Default for Normalizzazione {
         Self {
             attivo: true,
             bersaglio_db: BERSAGLIO_PREDEFINITO_DB,
+            modo: ModoLivello::default(),
         }
     }
 }
@@ -833,7 +1048,10 @@ pub const CHIAVE_USCITA: &str = "player.output";
 ///
 /// # Perché il nome e non un identificativo
 ///
-/// Perché cpal non ne ha uno: `Device` sa dire soltanto `name()`. Il prezzo è
+/// Perché le scelte già salvate sono nomi: fino alla 2.4 cpal non dava altro, e
+/// dalla 0.18 il suo `Device::id()` stabile serve a riconoscere il predefinito
+/// fra due schede omonime, non ancora a ricordare la scelta — passarci vorrebbe
+/// dire migrare le preferenze. Il prezzo è
 /// scritto in testa a `aether_play::dispositivi` — nomi tradotti, ripetuti, che
 /// un aggiornamento del driver può riscrivere — e si paga con il ripiego:
 /// `dispositivi::scegli` torna al predefinito quando il nome non corrisponde a
@@ -907,6 +1125,7 @@ fn sane(quante: u16) -> u16 {
 fn sana(normalizzazione: Normalizzazione) -> Normalizzazione {
     Normalizzazione {
         attivo: normalizzazione.attivo,
+        modo: normalizzazione.modo,
         bersaglio_db: if normalizzazione.bersaglio_db.is_finite() {
             normalizzazione
                 .bersaglio_db
@@ -1456,6 +1675,28 @@ mod prove {
     }
 
     #[test]
+    fn il_volume_della_2_4_suona_uguale_con_la_curva_nuova() {
+        // Ieri 0,512 d'ampiezza; oggi la posizione che, al cubo, dà la stessa.
+        let c = db();
+        crate::settings::write(&c, CHIAVE_VOLUME, r#"{"volume":0.512,"muto":false}"#)
+            .expect("scritto");
+        let letto = load_volume(&c).expect("riletto");
+        assert!(
+            (letto.volume - 0.8).abs() < 1e-5,
+            "posizione {}",
+            letto.volume
+        );
+        assert!(
+            (aether_play::volume_uscita(letto.volume, false) - 0.512).abs() < 1e-5,
+            "non suona come prima"
+        );
+        // Salvato una volta, resta dov'è: la conversione non si ripete.
+        save_volume(&c, letto).expect("salvato");
+        let riletto = load_volume(&c).expect("riletto");
+        assert!((riletto.volume - 0.8).abs() < 1e-5);
+    }
+
+    #[test]
     fn un_volume_mai_impostato_non_e_al_massimo() {
         let c = db();
         assert!(load_volume(&c).expect("riletto").volume < 1.0);
@@ -1800,12 +2041,28 @@ mod prove {
             Normalizzazione {
                 attivo: false,
                 bersaglio_db: -14.0,
+                modo: ModoLivello::Album,
             },
         )
         .expect("salvata");
         let letta = load_replaygain(&c).expect("riletta");
         assert!(!letta.attivo);
         assert_eq!(letta.bersaglio_db, -14.0);
+        assert_eq!(letta.modo, ModoLivello::Album);
+    }
+
+    #[test]
+    fn una_normalizzazione_della_2_4_prende_il_modo_di_serie() {
+        let c = db();
+        crate::settings::write(
+            &c,
+            CHIAVE_REPLAYGAIN,
+            r#"{"attivo":true,"bersaglio_db":-23.0}"#,
+        )
+        .expect("scritta");
+        let letta = load_replaygain(&c).expect("riletta");
+        assert_eq!(letta.bersaglio_db, -23.0);
+        assert_eq!(letta.modo, ModoLivello::Automatico);
     }
 
     #[test]
@@ -1970,6 +2227,7 @@ mod prove {
             collocazione: Collocazione::File("//srv/musica/1.mp3".to_owned()),
             durata_ms: 1_000,
             replaygain_db: None,
+            picco: None,
         };
         let err = sorgente_da_scheda(&files, &scheda).expect_err("deve fallire");
         assert_eq!(err.code().kind(), ErrorCodeKind::FsNetworkUnavailable);

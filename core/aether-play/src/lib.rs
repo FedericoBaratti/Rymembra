@@ -40,7 +40,7 @@
 //! mobile e vanno consegnati tutti insieme o per niente.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use aether_domain::errors::AppError;
 
@@ -49,11 +49,12 @@ pub mod decodifica;
 pub mod dispositivi;
 pub mod equalizzatore;
 pub mod impronta;
+pub mod intensita;
 pub mod motore;
 pub mod spettro;
 pub mod uscita;
 
-pub use decodifica::{Flusso, Sorgente};
+pub use decodifica::{Flusso, FormatoSuonato, Sorgente};
 pub use dispositivi::Dispositivo;
 pub use equalizzatore::{BANDE, CENTRI_HZ, LIMITE_DB, PRESET_DI_SERIE};
 pub use motore::{BranoAperto, Evento, Motore, Posizione};
@@ -89,6 +90,22 @@ pub enum Codec {
 
 impl Codec {
     /// Cosa possiamo fare di un file con questa estensione.
+    ///
+    /// # Perché `.mka`, `.webm` e `.caf` non ci sono ancora
+    ///
+    /// Il motore li sa suonare: symphonia 0.6 demultiplexa Matroska/WebM e CAF,
+    /// e dentro ci sono codec che già decodifichiamo — le prove in
+    /// `decodifica` ne costruiscono uno per tipo e ci saltano dentro. Quel che
+    /// manca sta sopra al motore. `aether-app` legge tag e durata con lofty, e
+    /// lofty 0.25 non conosce né Matroska né CAF: aggiunti qui e all'elenco
+    /// chiuso del dominio, quei file entrerebbero in libreria senza titolo,
+    /// senza copertina e con una durata a zero — e di un Matroska symphonia non
+    /// dà nemmeno il numero dei fotogrammi. Ci sono poi due limiti di Matroska
+    /// nella 0.6.1 che un disco senza stacchi sentirebbe: l'imbottitura finale
+    /// (`DiscardPadding`) non si toglie, e senza indice (`Cues`) si salta solo
+    /// in avanti, quindi il ritorno all'inizio di un brano già preparato non
+    /// torna indietro. Per questo l'elenco resta quello del dominio, e questa
+    /// funzione con lui: prima la lettura dei tag, poi le estensioni.
     #[must_use]
     pub fn da_estensione(estensione: &str) -> Self {
         let pulita = estensione.trim_start_matches('.').to_ascii_lowercase();
@@ -108,7 +125,8 @@ impl Codec {
 /// prendere lucchetti — e un altro è il filo che decodifica, che non deve
 /// aspettarla.
 pub(crate) struct Condiviso {
-    /// In pausa: la callback scrive silenzio senza consumare l'anello.
+    /// In pausa: la callback sfuma in una dozzina di millisecondi, poi scrive
+    /// silenzio senza consumare l'anello.
     pub in_pausa: AtomicBool,
     /// Il filo che decodifica chiede alla callback di scartare tutto.
     ///
@@ -194,13 +212,37 @@ pub(crate) struct Condiviso {
     /// non paga. È un booleano e non un conteggio perché la schermata che lo
     /// mostra è una sola.
     pub spettro: AtomicBool,
+    /// La bandiera dell'annullo di quel che il filo della decodifica sta
+    /// leggendo adesso, se può restare ad aspettare la rete.
+    ///
+    /// # Perché passa di qui
+    ///
+    /// Perché un salto su un flusso dell'Internet Archive può aspettare la rete
+    /// per secondi, e il salto dopo — chi trascina il cursore ne manda sei —
+    /// restava in fila dietro di lui. Chi manda `VaiA`, `Suona` o `Ferma` alza
+    /// la bandiera trovata qui **prima** di mandare il comando: la lettura in
+    /// corso smette di aspettare, il filo raccoglie il comando nuovo.
+    ///
+    /// Il filo la pubblica solo attorno alle letture che possono essere
+    /// lasciate a metà — un blocco del brano corrente, un salto — e la ritira
+    /// subito dopo. Il riavvolgimento a zero di un brano in canna non la
+    /// pubblica: annullato, quel brano andrebbe perso, e chi sta sopra lo
+    /// crederebbe ancora in canna. Pubblicare e alzare stanno sotto lo stesso
+    /// lucchetto: una bandiera alzata per un comando già raccolto viene
+    /// riabbassata dal filo prima della lettura dopo, e il caso peggiore è un
+    /// annullo mancato — un salto che aspetta la rete come prima — mai un
+    /// comando perso.
+    ///
+    /// Un lucchetto e non un atomico perché a toccarla sono solo il filo della
+    /// finestra e quello della decodifica, mai la callback audio.
+    pub in_lettura: std::sync::Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl Condiviso {
     pub(crate) fn nuovo() -> Arc<Self> {
         Arc::new(Self {
-            // Si comincia in pausa: il flusso si apre subito, ma finché non c'è
-            // un brano non deve consumare niente.
+            // Si comincia in pausa: il flusso nasce a riposo, e anche dopo il
+            // primo risveglio non deve consumare niente finché non c'è un brano.
             in_pausa: AtomicBool::new(true),
             svuota: AtomicBool::new(false),
             guadagno: AtomicU32::new(1.0f32.to_bits()),
@@ -212,32 +254,111 @@ impl Condiviso {
             causa_perdita: AtomicU32::new(0),
             abbandonato: AtomicBool::new(false),
             spettro: AtomicBool::new(false),
+            in_lettura: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Alza la bandiera di quel che il filo della decodifica sta leggendo, se
+    /// sta leggendo qualcosa che si può lasciare a metà. Vedi
+    /// [`Condiviso::in_lettura`].
+    pub(crate) fn interrompi_la_lettura(&self) {
+        let lettura = self
+            .in_lettura
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(bandiera) = lettura.as_ref() {
+            bandiera.store(true, Ordering::Release);
+        }
+    }
+
+    /// Dichiara che il filo della decodifica sta per leggere da qui, con la
+    /// bandiera abbassata: un comando raccolto prima non deve fermare questa
+    /// lettura.
+    pub(crate) fn pubblica_lettura(&self, bandiera: Option<Arc<AtomicBool>>) {
+        let mut lettura = self
+            .in_lettura
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(b) = bandiera.as_ref() {
+            b.store(false, Ordering::Release);
+        }
+        *lettura = bandiera;
+    }
+
+    /// La lettura è finita: niente più da interrompere.
+    ///
+    /// La bandiera si riabbassa qui, e non solo alla prossima pubblicazione:
+    /// il decodificatore che l'ha in mano può essere riavvolto un attimo dopo
+    /// **senza** pubblicarla — un brano che torna in canna — e con la bandiera
+    /// ancora alzata quel riavvolgimento fallirebbe da sé, perdendo il brano.
+    /// Il comando che l'aveva alzata è già in fila, e il giro dopo lo raccoglie
+    /// comunque.
+    pub(crate) fn ritira_lettura(&self) {
+        let mut lettura = self
+            .in_lettura
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(bandiera) = lettura.take() {
+            bandiera.store(false, Ordering::Release);
+        }
     }
 }
 
-/// Il guadagno da applicare, messi insieme volume, silenziamento e ReplayGain.
+/// Di quanto va corretto un brano, e fin dove può salire.
 ///
-/// # ReplayGain
+/// # Perché il picco viaggia insieme al guadagno
 ///
-/// Il tag dichiara di quanti decibel il brano va corretto per stare a un
-/// riferimento di −18 LUFS. `bersaglio_db` sposta quel riferimento: a −18 il tag
-/// si usa com'è, a −14 si aggiungono quattro decibel. La correzione si taglia
-/// fra −24 e +12 dB perché un tag sbagliato — e ce ne sono — non deve poter
-/// mandare in saturazione l'uscita né azzerarla.
+/// Perché un guadagno da solo non sa se si può applicare. Un disco degli anni
+/// Settanta misurato a −24 LUFS chiede sei decibel per arrivare al riferimento,
+/// e se il suo picco sta già a −2 dBFS quei sei decibel lo portano quattro
+/// decibel **oltre** il fondo scala: la normalizzazione, che doveva solo
+/// uniformare i livelli, diventerebbe una distorsione. Col picco accanto,
+/// [`correzione`] sa fermarsi dove il brano smetterebbe di starci.
 ///
-/// Sulla libreria misurata di questo progetto **nessun file ha il tag**: questo
-/// stadio esiste perché il volume ne ha bisogno comunque, e perché il giorno in
-/// cui i tag ci saranno non si dovrà toccare la catena.
+/// Il bersaglio invece **non** sta qui: è una scelta di chi ascolta, può
+/// cambiare a metà brano, e il motore la tiene per conto suo. È la ragione per
+/// cui il limite si calcola al momento, e non una volta per tutte da chi apre il
+/// brano.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Livello {
+    /// Di quanti decibel spostare il brano per portarlo al riferimento di −18
+    /// LUFS: dal tag ReplayGain, o dalla misura di [`intensita`]. `None`: niente
+    /// da correggere.
+    pub guadagno_db: Option<f32>,
+    /// Il picco del brano, lineare (`1.0` è il fondo scala), se lo si conosce.
+    ///
+    /// È il picco **vero** della misura — quello fra un campione e l'altro, che
+    /// è dove una conversione analogica satura davvero — e per un brano non
+    /// ancora misurato non c'è: allora il guadagno si applica senza tetto, come
+    /// prima della 3.0, e a tenere a bada l'eccesso resta [`limita`].
+    pub picco: Option<f32>,
+}
+
+impl Livello {
+    /// Nessuna correzione: il brano esce com'è.
+    pub const NESSUNO: Self = Self {
+        guadagno_db: None,
+        picco: None,
+    };
+}
+
+/// Il guadagno da applicare, messi insieme volume, silenziamento e correzione.
+///
+/// # La correzione
+///
+/// Il livello dichiara di quanti decibel il brano va corretto per stare a un
+/// riferimento di −18 LUFS. `bersaglio_db` sposta quel riferimento: a −18 il
+/// valore si usa com'è, a −14 si aggiungono quattro decibel. Vedi
+/// [`correzione`] per i tagli.
 #[must_use]
 pub fn guadagno(
     volume: f32,
     muto: bool,
-    replaygain_db: Option<f32>,
+    livello: Livello,
     replaygain_attivo: bool,
     bersaglio_db: f32,
 ) -> f32 {
-    volume_uscita(volume, muto) * correzione(replaygain_db, replaygain_attivo, bersaglio_db)
+    volume_uscita(volume, muto) * correzione(livello, replaygain_attivo, bersaglio_db)
 }
 
 /// Quanto chiede il cursore del volume, e nient'altro.
@@ -253,28 +374,99 @@ pub fn guadagno(
 /// Quel che resta globale — questo — lo applica la callback in fondo alla
 /// catena, con la sua rampa. Quel che è del brano viaggia coi campioni, e li
 /// raggiunge nel filo che decodifica.
+///
+/// # Perché una curva, e non la posizione del cursore così com'è
+///
+/// Perché l'orecchio sente i rapporti, non le differenze. Con il cursore
+/// lineare, fino alla 2.x, tutta la manopola utile stava nel primo quarto:
+/// da metà corsa in su il volume cambiava di sei decibel in tutto, e sotto il
+/// dieci per cento ogni pixel era un salto. Il cubo della posizione è la
+/// curva che usano i mixer di sistema per la stessa ragione: a metà cursore
+/// dà −18 dB, a otto decimi −6, e ogni tratto della corsa sposta il volume di
+/// una quantità che si sente simile.
+///
+/// La posizione salvata dalla 2.x era il guadagno lineare, non la posizione:
+/// la converte una volta sola `aether_app::playback::load_volume`, così chi
+/// aggiorna ritrova lo stesso volume con il cursore in un punto diverso.
 #[must_use]
 pub fn volume_uscita(volume: f32, muto: bool) -> f32 {
     if muto {
         return 0.0;
     }
-    volume.clamp(0.0, 1.0)
+    let posizione = volume.clamp(0.0, 1.0);
+    posizione * posizione * posizione
 }
 
-/// La correzione che porta un brano al bersaglio: ReplayGain, e nient'altro.
+/// Quanto sotto il fondo scala un brano normalizzato può arrivare, al massimo.
 ///
-/// Senza tag la correzione è esattamente 1.0, cioè niente: è il motivo per cui
-/// tenere la normalizzazione accesa su una libreria senza tag non cambia una
-/// virgola.
+/// Il fondo scala esatto: il tetto di [`correzione`] è «non salire oltre il
+/// picco che il file ha già», non un margine di sicurezza. Il margine lo dà
+/// [`limita`], che comincia a piegare un decibel prima.
+const TETTO_PICCO: f32 = 1.0;
+
+/// La correzione che porta un brano al bersaglio, e nient'altro.
+///
+/// Senza guadagno la correzione è esattamente 1.0, cioè niente: è il motivo
+/// per cui tenere la normalizzazione accesa su una libreria senza tag e non
+/// ancora misurata non cambia una virgola.
+///
+/// # I due tagli
+///
+/// - Fra −24 e +12 dB, perché un tag sbagliato — e ce ne sono — non deve poter
+///   mandare in saturazione l'uscita né azzerarla.
+/// - Col picco noto, un guadagno che **alza** si ferma dove il picco tocca il
+///   fondo scala. Solo quando alza: un brano che la normalizzazione abbassa non
+///   può saturare più di quanto già faccia il file, e un picco oltre lo zero —
+///   capita, sulle masterizzazioni recenti misurate col picco vero — non deve
+///   costare al brano il livello che il riferimento gli chiede.
 #[must_use]
-pub fn correzione(replaygain_db: Option<f32>, attivo: bool, bersaglio_db: f32) -> f32 {
-    match (attivo, replaygain_db) {
-        (true, Some(db)) => {
-            let spostato = db + (bersaglio_db + 18.0);
-            10.0f32.powf(spostato.clamp(-24.0, 12.0) / 20.0)
+pub fn correzione(livello: Livello, attivo: bool, bersaglio_db: f32) -> f32 {
+    let (true, Some(db)) = (attivo, livello.guadagno_db) else {
+        return 1.0;
+    };
+    let spostato = db + (bersaglio_db + 18.0);
+    let voluto = 10.0f32.powf(spostato.clamp(-24.0, 12.0) / 20.0);
+    match livello.picco {
+        Some(picco) if voluto > 1.0 && picco.is_finite() && picco > 0.0 => {
+            voluto.min((TETTO_PICCO / picco).max(1.0))
         }
-        _ => 1.0,
+        _ => voluto,
     }
+}
+
+/// Da dove comincia a piegare [`limita`]: −1 dBFS.
+const GINOCCHIO: f32 = 0.891_250_9;
+
+/// Il limitatore morbido in fondo alla catena: sotto −1 dBFS non tocca niente,
+/// sopra piega dolcemente verso il fondo scala invece di tagliare.
+///
+/// # Perché serve anche con il tetto di [`correzione`]
+///
+/// Perché il tetto conosce solo il picco del **file**, e non tutto quel che
+/// arriva all'uscita viene da lì: l'equalizzatore alza i bassi fino a dodici
+/// decibel, un brano non ancora misurato alza senza sapere dove si ferma, un
+/// bersaglio a −14 porta i dischi forti sopra lo zero. Prima di questa
+/// funzione quei campioni arrivavano alla conversione e venivano tagliati di
+/// netto, che è la distorsione più brutta che ci sia: un gradino, con tutte le
+/// armoniche che si porta dietro.
+///
+/// # Perché una curva fissa e non un limitatore con attacco e rilascio
+///
+/// Perché gira nella callback audio, per ogni campione, e lì non c'è posto per
+/// un ritardo di previsione né per uno stato da tenere in pari fra i canali.
+/// Una tangente iperbolica sopra il ginocchio è continua con la sua derivata —
+/// niente spigoli, quindi niente armoniche in più finché il segnale non ci
+/// arriva — e al di sotto costa un confronto.
+#[must_use]
+#[inline]
+pub fn limita(campione: f32) -> f32 {
+    let ampiezza = campione.abs();
+    if ampiezza <= GINOCCHIO {
+        return campione;
+    }
+    let spazio = 1.0 - GINOCCHIO;
+    let piegato = GINOCCHIO + spazio * ((ampiezza - GINOCCHIO) / spazio).tanh();
+    piegato.copysign(campione)
 }
 
 /// Mescola due brani che si sovrappongono, dentro il blocco di quello uscente.
@@ -425,6 +617,35 @@ mod prove {
     use super::*;
 
     #[test]
+    fn la_bandiera_dell_annullo_si_alza_solo_mentre_si_legge() {
+        let condiviso = Condiviso::nuovo();
+        let bandiera = Arc::new(AtomicBool::new(false));
+        // Niente pubblicato: un salto non ha niente da interrompere.
+        condiviso.interrompi_la_lettura();
+        assert!(!bandiera.load(Ordering::Acquire));
+
+        // Una bandiera rimasta alzata da prima si riabbassa alla
+        // pubblicazione: un comando già raccolto non ferma la lettura dopo.
+        bandiera.store(true, Ordering::Release);
+        condiviso.pubblica_lettura(Some(Arc::clone(&bandiera)));
+        assert!(!bandiera.load(Ordering::Acquire));
+
+        // Durante la lettura, un comando la alza.
+        condiviso.interrompi_la_lettura();
+        assert!(bandiera.load(Ordering::Acquire));
+
+        // Ritirata, si riabbassa: il decodificatore può tornare in canna e
+        // riavvolgersi senza fallire da sé.
+        condiviso.ritira_lettura();
+        assert!(!bandiera.load(Ordering::Acquire));
+        condiviso.interrompi_la_lettura();
+        assert!(
+            !bandiera.load(Ordering::Acquire),
+            "non più pubblicata: nessuno la tocca"
+        );
+    }
+
+    #[test]
     fn i_formati_che_sappiamo_e_quelli_che_no() {
         assert_eq!(Codec::da_estensione("mp3"), Codec::Supportato);
         assert_eq!(Codec::da_estensione(".FLAC"), Codec::Supportato);
@@ -449,42 +670,172 @@ mod prove {
         }
     }
 
+    /// Solo il guadagno, senza picco: il caso di un tag ReplayGain.
+    const fn db(valore: f32) -> Livello {
+        Livello {
+            guadagno_db: Some(valore),
+            picco: None,
+        }
+    }
+
     #[test]
     fn il_silenziamento_vince_su_tutto() {
-        assert_eq!(guadagno(1.0, true, Some(6.0), true, -18.0), 0.0);
+        assert_eq!(guadagno(1.0, true, db(6.0), true, -18.0), 0.0);
     }
 
     #[test]
     fn senza_replaygain_il_guadagno_e_il_volume() {
-        assert!((guadagno(0.5, false, None, true, -18.0) - 0.5).abs() < f32::EPSILON);
+        let atteso = volume_uscita(0.5, false);
+        assert!(
+            (guadagno(0.5, false, Livello::NESSUNO, true, -18.0) - atteso).abs() < f32::EPSILON
+        );
         // Il tag c'è ma la correzione è spenta.
-        assert!((guadagno(0.5, false, Some(-6.0), false, -18.0) - 0.5).abs() < f32::EPSILON);
+        assert!((guadagno(0.5, false, db(-6.0), false, -18.0) - atteso).abs() < f32::EPSILON);
     }
 
     #[test]
     fn un_brano_troppo_forte_viene_abbassato() {
-        let g = guadagno(1.0, false, Some(-6.0), true, -18.0);
+        let g = guadagno(1.0, false, db(-6.0), true, -18.0);
         assert!(g < 1.0 && g > 0.4, "guadagno {g}");
     }
 
     #[test]
     fn il_bersaglio_sposta_il_riferimento() {
-        let a_18 = guadagno(1.0, false, Some(0.0), true, -18.0);
-        let a_14 = guadagno(1.0, false, Some(0.0), true, -14.0);
+        let a_18 = guadagno(1.0, false, db(0.0), true, -18.0);
+        let a_14 = guadagno(1.0, false, db(0.0), true, -14.0);
         assert!(a_14 > a_18, "a −14 deve suonare più forte");
     }
 
     #[test]
     fn un_tag_assurdo_non_manda_in_saturazione() {
-        let g = guadagno(1.0, false, Some(90.0), true, -18.0);
+        let g = guadagno(1.0, false, db(90.0), true, -18.0);
         // +12 dB è il tetto: circa 4x, non trentamila.
         assert!(g < 4.1, "guadagno {g}");
     }
 
     #[test]
     fn il_volume_si_taglia_fra_zero_e_uno() {
-        assert!((guadagno(5.0, false, None, false, -18.0) - 1.0).abs() < f32::EPSILON);
-        assert_eq!(guadagno(-1.0, false, None, false, -18.0), 0.0);
+        assert!((guadagno(5.0, false, Livello::NESSUNO, false, -18.0) - 1.0).abs() < f32::EPSILON);
+        assert_eq!(guadagno(-1.0, false, Livello::NESSUNO, false, -18.0), 0.0);
+    }
+
+    // ── la curva del volume ──
+
+    /// Da guadagno lineare a decibel.
+    fn in_db(g: f32) -> f32 {
+        20.0 * g.log10()
+    }
+
+    #[test]
+    fn la_curva_del_volume_va_in_decibel_e_non_in_pixel() {
+        // I tre punti promessi dal commento di `volume_uscita`.
+        assert!((in_db(volume_uscita(0.5, false)) + 18.06).abs() < 0.05);
+        assert!((in_db(volume_uscita(0.8, false)) + 5.81).abs() < 0.05);
+        assert_eq!(volume_uscita(1.0, false), 1.0);
+        assert_eq!(volume_uscita(0.0, false), 0.0);
+        // E ogni tratto della corsa sposta qualcosa: nessun gradino piatto in
+        // cima, dov'era il difetto del cursore lineare.
+        let alto = in_db(volume_uscita(0.9, false)) - in_db(volume_uscita(0.7, false));
+        let medio = in_db(volume_uscita(0.6, false)) - in_db(volume_uscita(0.4, false));
+        assert!(alto > 5.0, "dal 70 al 90% solo {alto} dB");
+        assert!(medio > 9.0, "dal 40 al 60% solo {medio} dB");
+    }
+
+    #[test]
+    fn la_curva_cresce_sempre() {
+        let mut prima = -1.0_f32;
+        for passo in 0..=100_u16 {
+            let g = volume_uscita(f32::from(passo) / 100.0, false);
+            assert!(g > prima || passo == 0, "la curva scende a {passo}%");
+            prima = g;
+        }
+    }
+
+    // ── il tetto del picco ──
+
+    #[test]
+    fn un_brano_che_sale_si_ferma_al_suo_picco() {
+        // +6 dB chiesti, picco a −2 dBFS: si può salire di due, non di sei.
+        let livello = Livello {
+            guadagno_db: Some(6.0),
+            picco: Some(10.0_f32.powf(-2.0 / 20.0)),
+        };
+        let g = correzione(livello, true, -18.0);
+        assert!((in_db(g) - 2.0).abs() < 0.01, "salito di {} dB", in_db(g));
+    }
+
+    #[test]
+    fn un_brano_che_scende_non_guarda_il_picco() {
+        // Un picco oltre lo zero su un brano da abbassare: il tetto non c'entra,
+        // e il brano deve arrivare dove il riferimento lo vuole.
+        let livello = Livello {
+            guadagno_db: Some(-8.0),
+            picco: Some(1.3),
+        };
+        let g = correzione(livello, true, -18.0);
+        assert!((in_db(g) + 8.0).abs() < 0.01, "sceso di {} dB", in_db(g));
+    }
+
+    #[test]
+    fn un_picco_gia_oltre_lo_zero_non_abbassa_chi_doveva_salire() {
+        // Chiesti +3 dB, picco a +1 dBFS: non si sale, ma nemmeno si scende
+        // sotto il file così com'è.
+        let livello = Livello {
+            guadagno_db: Some(3.0),
+            picco: Some(10.0_f32.powf(1.0 / 20.0)),
+        };
+        assert!((correzione(livello, true, -18.0) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn un_picco_assurdo_si_ignora() {
+        for picco in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let livello = Livello {
+                guadagno_db: Some(6.0),
+                picco: Some(picco),
+            };
+            let g = correzione(livello, true, -18.0);
+            assert!(
+                (in_db(g) - 6.0).abs() < 0.01,
+                "picco {picco}: {} dB",
+                in_db(g)
+            );
+        }
+    }
+
+    // ── il limitatore ──
+
+    #[test]
+    fn sotto_il_ginocchio_il_limitatore_non_tocca_niente() {
+        for campione in [0.0_f32, 0.25, -0.5, 0.89, -0.891] {
+            assert_eq!(limita(campione).to_bits(), campione.to_bits());
+        }
+    }
+
+    #[test]
+    fn sopra_il_ginocchio_piega_e_non_passa_il_fondo_scala() {
+        let mut prima = 0.0_f32;
+        for passo in 0..=400_u16 {
+            let entrata = 0.85 + f32::from(passo) / 100.0;
+            let uscita = limita(entrata);
+            assert!(uscita <= 1.0, "{entrata} esce a {uscita}");
+            assert!(uscita >= prima, "il limitatore torna indietro a {entrata}");
+            assert!(
+                (limita(-entrata) + uscita).abs() < f32::EPSILON,
+                "asimmetrico a {entrata}"
+            );
+            prima = uscita;
+        }
+    }
+
+    #[test]
+    fn il_limitatore_non_ha_spigoli_al_ginocchio() {
+        // Pendenza uno subito sopra il ginocchio, come subito sotto: niente
+        // gradino nella derivata, quindi niente armoniche finché non ci si
+        // arriva davvero.
+        let h = 1e-4_f32;
+        let pendenza = (limita(GINOCCHIO + h) - limita(GINOCCHIO)) / h;
+        assert!((pendenza - 1.0).abs() < 0.01, "pendenza {pendenza}");
     }
 
     // ── la dissolvenza ──
