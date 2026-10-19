@@ -7,7 +7,7 @@
  * guardava leggeva «1.340 tolti» a cose fatte, e con quei brani se n'erano già
  * andati cronologia, playlist, voti e preferiti. Il caso vero non è quasi mai
  * «li ho cancellati io»: è il disco staccato, la share che risponde a metà, la
- * cartella rinominata fuori da Aether. Adesso, sopra la stessa soglia che
+ * cartella rinominata fuori da Rymembra. Adesso, sopra la stessa soglia che
  * protegge la scansione automatica, il nucleo **non toglie**: finisce il resto
  * del lavoro e consegna un riassunto — quanti, e da quali cartelle — che questa
  * finestrella mostra.

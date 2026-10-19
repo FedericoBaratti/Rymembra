@@ -9,29 +9,29 @@
 //! che tocca proprio questo modulo: aprire una connessione è un'attesa, e le
 //! attese si aspettano a mani vuote.
 
-use aether_app::playback::{Collocazione, SchedaSorgente};
-use aether_catalogo::Cataloghi;
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::esterno::Fonte;
-use aether_domain::indirizzo::estensione_da_url;
-use aether_domain::scelta::Candidato;
-use aether_net::{Cancello, FlussoHttp};
+use rymembra_app::playback::{Collocazione, SchedaSorgente};
+use rymembra_catalogo::Cataloghi;
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::esterno::Fonte;
+use rymembra_domain::indirizzo::estensione_da_url;
+use rymembra_domain::scelta::Candidato;
+use rymembra_net::{Cancello, FlussoHttp};
 
 /// Il riferimento a un brano che non è un file.
 ///
 /// Due campi e nient'altro, perché due sono le domande: **quale catalogo** — che
-/// decide da quale [`aether_net::Rete`] escono i byte, con le sue scadenze, il
+/// decide da quale [`rymembra_net::Rete`] escono i byte, con le sue scadenze, il
 /// suo modo di trattare un `429` e la sua riserva di connessioni — e **a che
 /// indirizzo**.
 ///
 /// Non c'è la licenza e non c'è la disponibilità, e non è una dimenticanza: qui
 /// non si scrive niente sul disco. Il cancello che le guarda è quello di
-/// `aether_catalogo::prelievo`, e sta prima della rete perché prima della rete
+/// `rymembra_catalogo::prelievo`, e sta prima della rete perché prima della rete
 /// deve stare; ascoltare mentre arriva è la cosa che [`Disponibilita::SoloAscolto`]
 /// **permette**, e chiederne il permesso una seconda volta qui vorrebbe dire
 /// due implementazioni della stessa regola.
 ///
-/// [`Disponibilita::SoloAscolto`]: aether_domain::esterno::Disponibilita::SoloAscolto
+/// [`Disponibilita::SoloAscolto`]: rymembra_domain::esterno::Disponibilita::SoloAscolto
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RiferimentoFlusso {
     /// Da quale catalogo, cioè con quale rete si apre.
@@ -43,7 +43,7 @@ pub(super) struct RiferimentoFlusso {
 
 /// Il percorso con cui Audius conserva un brano invece di un indirizzo.
 ///
-/// `aether_catalogo::audius` scrive `/v1/tracks/<id>/stream` e non un URL
+/// `rymembra_catalogo::audius` scrive `/v1/tracks/<id>/stream` e non un URL
 /// intero, e la ragione sta scritta là: Audius non ha un server ma una rete di
 /// nodi che entrano ed escono, e un indirizzo con dentro il nodo di oggi fra un
 /// mese punta a una macchina che non c'è più. Il nodo lo rimette
@@ -71,9 +71,9 @@ const PERCORSO_AUDIUS: &str = "/v1/tracks/";
 /// # Perché il riconoscimento passa dal catalogo e non da un elenco di qui
 ///
 /// Perché un elenco di domini scritto qui sarebbe il **secondo**:
-/// `aether_catalogo::riconosci` è una allowlist rigida, e il suo modulo dice
+/// `rymembra_catalogo::riconosci` è una allowlist rigida, e il suo modulo dice
 /// perché — «un link che non si riconosce è un link a cui non si va, ed è la
-/// garanzia che Aether non vada mai a bussare dove non è invitato». Due copie di
+/// garanzia che Rymembra non vada mai a bussare dove non è invitato». Due copie di
 /// quella regola sono due copie che un giorno diranno cose diverse, e il giorno
 /// in cui succede si va a bussare da qualche parte per sbaglio.
 ///
@@ -98,7 +98,7 @@ pub(super) fn riferimento_di(scheda: &SchedaSorgente) -> Option<RiferimentoFluss
 ///
 /// Perché fra la riga e questa funzione c'è un database, e un database è un
 /// file che si può aprire con altri strumenti. La colonna dice da dove *si
-/// crede* che arrivino i byte; l'allowlist dice dove Aether è invitato ad
+/// crede* che arrivino i byte; l'allowlist dice dove Rymembra è invitato ad
 /// andare. La seconda non si delega alla prima — è la differenza fra un
 /// programma che non bussa dove non deve e un programma che non bussa dove non
 /// deve *finché nessuno gli scrive un indirizzo in tabella*.
@@ -130,7 +130,7 @@ fn riferimento_da_testo(fonte: Fonte, url: &str) -> Option<RiferimentoFlusso> {
     // dichiara: un indirizzo dell'Internet Archive in una riga che dice Jamendo
     // aprirebbe una connessione con la rete sbagliata, cioè con le scadenze e i
     // limiti di frequenza di un servizio verso un altro.
-    (aether_catalogo::riconosci(pulito)?.fonte == fonte).then(|| RiferimentoFlusso {
+    (rymembra_catalogo::riconosci(pulito)?.fonte == fonte).then(|| RiferimentoFlusso {
         fonte,
         url: pulito.to_owned(),
     })
@@ -140,13 +140,13 @@ fn riferimento_da_testo(fonte: Fonte, url: &str) -> Option<RiferimentoFlusso> {
 ///
 /// **Va in rete**, e quindi va chiamata dove la rete si può aspettare: dentro
 /// la scadenza di [`brano_di`](super::brano_di), senza nessun lucchetto in
-/// mano. Costa una richiesta `Range` da [`aether_net::flusso::FINESTRA`] byte —
+/// mano. Costa una richiesta `Range` da [`rymembra_net::flusso::FINESTRA`] byte —
 /// l'inizio del brano, che è la prima cosa che il decodificatore chiederà —
 /// più, su Audius, la scelta del nodo.
 ///
 /// # Perché la rete è quella del catalogo e non una nuova
 ///
-/// Perché in quella `Rete` ci sono lo `User-Agent` con cui Aether si presenta,
+/// Perché in quella `Rete` ci sono lo `User-Agent` con cui Rymembra si presenta,
 /// la scadenza che quel servizio merita, il modo di leggere un `Retry-After` e
 /// la riserva di connessioni già calda. È la rete **dei flussi** del catalogo
 /// (`rete_flusso`), non quella delle domande: fino alla 2.4.0 era la seconda, e
@@ -212,7 +212,7 @@ pub(super) fn apri_flusso(
         // Il catalogo per cui `FlussoHttp` è nato: da Jamendo non si tiene
         // niente, e ascoltare mentre arriva è l'unico modo lecito che c'è. Senza
         // la feature il ramo non esiste e la fonte cade nel caso generale, che è
-        // la verità: questa copia di Aether Jamendo non ce l'ha.
+        // la verità: questa copia di Rymembra Jamendo non ce l'ha.
         #[cfg(feature = "jamendo")]
         Fonte::Jamendo => {
             let flusso = FlussoHttp::nuovo(
@@ -249,7 +249,7 @@ fn cancello_di(fonte: Fonte, partenza: &str) -> Cancello {
 ///
 /// # La stessa allowlist dell'indirizzo di partenza
 ///
-/// L'indirizzo di partenza è passato da `aether_catalogo::riconosci`, e il
+/// L'indirizzo di partenza è passato da `rymembra_catalogo::riconosci`, e il
 /// bersaglio deve passare **dallo stesso posto**: un secondo elenco di domini
 /// scritto qui sarebbe il secondo, cioè quello che un giorno dice una cosa
 /// diversa (vedi [`riferimento_di`]). Ma `riconosci` legge link pubblici, e il
@@ -277,7 +277,7 @@ fn bersaglio_ammesso(fonte: Fonte, partenza: &str, bersaglio: &str) -> bool {
     if !bersaglio.starts_with("https://") {
         return false;
     }
-    let Some(ospite) = aether_net::http::ospite(bersaglio) else {
+    let Some(ospite) = rymembra_net::http::ospite(bersaglio) else {
         return false;
     };
     if fonte == Fonte::Audius {
@@ -290,7 +290,7 @@ fn bersaglio_ammesso(fonte: Fonte, partenza: &str, bersaglio: &str) -> bool {
         .strip_prefix("https://")
         .and_then(|resto| resto.find('/').and_then(|inizio| resto.get(inizio..)))
         .unwrap_or("/");
-    aether_catalogo::riconosci(&format!("https://{ospite}{percorso}"))
+    rymembra_catalogo::riconosci(&format!("https://{ospite}{percorso}"))
         .is_some_and(|riferimento| riferimento.fonte == fonte)
 }
 
@@ -323,18 +323,18 @@ fn nome_pubblico(ospite: &str) -> bool {
     (lettere || punycode) && !di_casa
 }
 
-/// Un flusso di rete, vestito da [`aether_play::Flusso`].
+/// Un flusso di rete, vestito da [`rymembra_play::Flusso`].
 ///
 /// # Perché serve un involucro
 ///
-/// Perché il tratto è di `aether-play` e il tipo è di `aether-net`, e nessuno
+/// Perché il tratto è di `rymembra-play` e il tipo è di `rymembra-net`, e nessuno
 /// dei due è di qui: la regola dell'orfano vieta di scrivere quell'`impl` in un
-/// terzo crate. È la stessa ragione per cui `aether-app` ne ha uno suo
+/// terzo crate. È la stessa ragione per cui `rymembra-app` ne ha uno suo
 /// (`playback::Adattatore`) per i file, e la stessa forma.
 ///
 /// Non è però solo una formalità del compilatore. Questo modulo è **l'unico
-/// posto dell'albero che conosce tutti e due i lati**: `aether-app` non vede la
-/// rete e `aether-catalogo` non vede il motore. Il punto in cui un flusso HTTP
+/// posto dell'albero che conosce tutti e due i lati**: `rymembra-app` non vede la
+/// rete e `rymembra-catalogo` non vede il motore. Il punto in cui un flusso HTTP
 /// diventa qualcosa che si può suonare non poteva stare altrove.
 struct FlussoDiRete(FlussoHttp);
 
@@ -350,7 +350,7 @@ impl std::io::Seek for FlussoDiRete {
     }
 }
 
-impl aether_play::Flusso for FlussoDiRete {
+impl rymembra_play::Flusso for FlussoDiRete {
     /// Quanto è lungo, se il servizio lo ha dichiarato.
     ///
     /// Non è un di più: `MediaSource::is_seekable` di symphonia risponde
@@ -362,7 +362,7 @@ impl aether_play::Flusso for FlussoDiRete {
 
     /// I byte arrivano dalla rete: il decodificatore salta con la modalità
     /// grossolana e la riga dei dati tecnici prende il bitrate da qui. Vedi
-    /// `aether_play::Flusso::remoto`.
+    /// `rymembra_play::Flusso::remoto`.
     fn remoto(&self) -> bool {
         true
     }
@@ -382,7 +382,7 @@ impl aether_play::Flusso for FlussoDiRete {
 /// una riga in più — il motore non ha mai saputo cosa ci fosse dietro i byte.
 ///
 /// Il suggerimento di formato lo ricava
-/// [`aether_domain::indirizzo::estensione_da_url`]: la regola sta nel dominio
+/// [`rymembra_domain::indirizzo::estensione_da_url`]: la regola sta nel dominio
 /// perché la usano tre casse che non si vedono fra loro — questa, il prelievo
 /// dei cataloghi e la libreria — e due copie divergerebbero alla prima
 /// correzione fatta da una parte sola. Divergevano già.
@@ -390,8 +390,8 @@ pub(super) fn sorgente_da_flusso(
     scheda: &SchedaSorgente,
     url: &str,
     flusso: FlussoHttp,
-) -> aether_play::Sorgente {
-    aether_play::Sorgente {
+) -> rymembra_play::Sorgente {
+    rymembra_play::Sorgente {
         track_id: scheda.track_id,
         media: Box::new(FlussoDiRete(flusso)),
         estensione: estensione_da_url(url),
@@ -502,7 +502,7 @@ mod prove {
     ///
     /// Compreso il suffisso che somiglia: `evilarchive.org` finisce per
     /// `archive.org`, e la ragione per cui non passa sta in
-    /// `aether_catalogo::riferimento`. Questa prova esiste per accorgersi il
+    /// `rymembra_catalogo::riferimento`. Questa prova esiste per accorgersi il
     /// giorno in cui questo modulo smettesse di passare da quel cancello.
     #[test]
     fn un_dominio_che_non_ci_ha_invitati_non_diventa_un_flusso() {
@@ -518,7 +518,7 @@ mod prove {
             assert_eq!(
                 riferimento_da_testo(Fonte::InternetArchive, indirizzo),
                 None,
-                "«{indirizzo}» non è un posto dove Aether sia invitato"
+                "«{indirizzo}» non è un posto dove Rymembra sia invitato"
             );
         }
     }
@@ -604,7 +604,7 @@ mod prove {
     fn un_rimando_di_audius_va_verso_un_nome_pubblico() {
         let cancello = cancello_di(
             Fonte::Audius,
-            "https://discoveryprovider.audius.co/v1/tracks/aB3dE/stream?app_name=Aether",
+            "https://discoveryprovider.audius.co/v1/tracks/aB3dE/stream?app_name=Rymembra",
         );
         for buono in [
             "https://creatornode2.audius.co/tracks/cidstream/Qm?signature=x",
@@ -633,19 +633,19 @@ mod prove {
 
     /// Un file finto in memoria, al posto di un catalogo.
     ///
-    /// Passa dal tratto `Sorgente` di `aether-net`, che esiste esattamente per
+    /// Passa dal tratto `Sorgente` di `rymembra-net`, che esiste esattamente per
     /// questo: provare il cablaggio contro un servizio vero vorrebbe dire non
     /// provarlo.
     #[derive(Debug)]
     struct FintaRete(Vec<u8>);
 
-    impl aether_net::flusso::Sorgente for FintaRete {
-        fn pezzo(&self, da: u64, quanti: u64) -> Result<aether_net::Pezzo, AppError> {
+    impl rymembra_net::flusso::Sorgente for FintaRete {
+        fn pezzo(&self, da: u64, quanti: u64) -> Result<rymembra_net::Pezzo, AppError> {
             let inizio = usize::try_from(da).unwrap_or(usize::MAX);
             let fine = inizio
                 .saturating_add(usize::try_from(quanti).unwrap_or(0))
                 .min(self.0.len());
-            Ok(aether_net::Pezzo {
+            Ok(rymembra_net::Pezzo {
                 byte: self.0.get(inizio..fine).unwrap_or(&[]).to_vec(),
                 totale: Some(u64::try_from(self.0.len()).unwrap_or(0)),
                 url_finale: None,

@@ -14,7 +14,7 @@
  *   inneschi, gli effetti coi loro parametri, le animazioni e le curve del
  *   documento, i file del pacchetto, le parole chiuse di ogni campo.
  * - **Gli errori sulla riga.** La riga e la colonna le calcola il nucleo
- *   (`aether_skin::posizioni`), e il segno cade sul valore sbagliato.
+ *   (`rymembra_skin::posizioni`), e il segno cade sul valore sbagliato.
  * - **Le descrizioni al passaggio**, sulle parti e sui token.
  * - **Una storia sola.** CodeMirror non tiene la sua: Ctrl+Z e Ctrl+Y vanno
  *   allo Studio, così il codice e i controlli annullano la stessa cosa.

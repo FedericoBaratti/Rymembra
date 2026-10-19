@@ -10,7 +10,7 @@
 //! compila, e sul computer di chi ascolta finisce nel nulla.
 //!
 //! Finché l'applicazione si apre non è grave: quasi ogni guasto ha una faccia
-//! nella finestra. Il caso che conta è l'altro. Quando Aether **non parte**,
+//! nella finestra. Il caso che conta è l'altro. Quando Rymembra **non parte**,
 //! chi lo ha scaricato ha esattamente due informazioni da darci — «non si
 //! apre» e «Windows 11» — e nessuna delle due si può usare. Il diario è la
 //! terza.
@@ -66,19 +66,19 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
-use aether_domain::tempo::istante_iso;
+use rymembra_domain::tempo::istante_iso;
 
 // Il macro sta alla radice del crate — è quel che fa `#[macro_export]` — e va
 // riportato qui dentro perché in questo modulo il nome `nota` è già preso dalla
 // funzione che il macro chiama. I due vivono in spazi dei nomi diversi, quindi
 // convivono: questa riga sceglie quale dei due significa `nota!`.
 use crate::nota;
-use aether_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::errors::{AppError, ErrorCode};
 
 use crate::errore::{Esito, errore};
 
 /// Come si chiama il file su cui si sta scrivendo adesso.
-const NOME: &str = "aether.log";
+const NOME: &str = "rymembra.log";
 
 /// Quanto può crescere un file prima che si passi al successivo.
 ///
@@ -88,7 +88,7 @@ const TETTO: u64 = 2 * 1024 * 1024;
 
 /// Quanti file si tengono in tutto, contando quello corrente.
 ///
-/// `aether.log`, `aether.1.log`, `aether.2.log`. Il terzo che invecchia se ne
+/// `rymembra.log`, `rymembra.1.log`, `rymembra.2.log`. Il terzo che invecchia se ne
 /// va.
 const QUANTI: u32 = 3;
 
@@ -140,7 +140,7 @@ fn preso() -> MutexGuard<'static, Option<Aperto>> {
 ///
 /// Se non si riesce ad aprire — cartella non scrivibile, disco pieno — non
 /// succede niente di visibile e l'applicazione continua senza diario. È il
-/// comportamento giusto: chi ha aperto Aether voleva ascoltare, non registrare.
+/// comportamento giusto: chi ha aperto Rymembra voleva ascoltare, non registrare.
 pub fn apri(cartella_dati: &Path) {
     let cartella = cartella_dati.join(CARTELLA);
     if fs::create_dir_all(&cartella).is_err() {
@@ -155,7 +155,7 @@ pub fn apri(cartella_dati: &Path) {
     // un diario che arriva da qualcun altro non si sa a quale codice appartenga
     // — e la prima domanda davanti a un guasto è sempre «quale versione».
     nota!(
-        "[diario] Aether {} — sessione aperta",
+        "[diario] Rymembra {} — sessione aperta",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -311,14 +311,14 @@ fn ruota() {
         let da = if indice == 1 {
             cartella.join(NOME)
         } else {
-            cartella.join(format!("aether.{}.log", indice - 1))
+            cartella.join(format!("rymembra.{}.log", indice - 1))
         };
-        let _ = fs::rename(da, cartella.join(format!("aether.{indice}.log")));
+        let _ = fs::rename(da, cartella.join(format!("rymembra.{indice}.log")));
     }
     // Quel che è invecchiato oltre l'ultimo file se ne va. `remove_file` su
     // qualcosa che non c'è non è un guasto: alla prima rotazione della vita di
     // un'installazione quel file non esiste ancora.
-    let _ = fs::remove_file(cartella.join(format!("aether.{QUANTI}.log")));
+    let _ = fs::remove_file(cartella.join(format!("rymembra.{QUANTI}.log")));
 
     *guardia = apri_il_file(cartella);
 }
@@ -374,7 +374,7 @@ macro_rules! nota {
 /// non li ha più nessuno. Un `catch_unwind` riceve il carico — una `String` o
 /// uno `&str` — e nient'altro: né file, né riga, né la catena delle chiamate.
 ///
-/// Nell'albero ce n'è **uno**, `aether_play::motore::filo_sorvegliato`, che
+/// Nell'albero ce n'è **uno**, `rymembra_play::motore::filo_sorvegliato`, che
 /// raccoglie i pezzi del filo di decodifica per ricostruire il motore invece di
 /// lasciarlo suonare zeri; quel che ne ricava è il messaggio, e lo mette in un
 /// evento per la finestra. Il perché il filo era caduto lì lo scrive questo
@@ -409,7 +409,7 @@ pub fn installa_gancio_dei_panici() {
 ///
 /// # Perché un bottone e non un percorso scritto in una schermata
 ///
-/// Perché `%APPDATA%\io.github.federicobaratti.aether\diario` non è un posto in
+/// Perché `%APPDATA%\io.github.federicobaratti.rymembra\diario` non è un posto in
 /// cui qualcuno arriva leggendolo: `%APPDATA%` è nascosta di serie in Esplora
 /// risorse, e il primo passo di ogni segnalazione diventa spiegare come
 /// mostrare le cartelle nascoste. Un bottone toglie quel passo, ed è l'unica
@@ -597,7 +597,7 @@ mod prove {
             riempi_fino_al_tetto();
             nota!("[prova] la riga che fa traboccare");
             assert!(
-                dove.join("aether.1.log").exists(),
+                dove.join("rymembra.1.log").exists(),
                 "il file pieno non è stato messo da parte"
             );
             let Ok(nuovo) = fs::read_to_string(dove.join(NOME)) else {
@@ -618,17 +618,17 @@ mod prove {
     fn oltre_l_ultimo_file_si_dimentica() {
         in_una_cartella(|radice| {
             let dove = radice.join(CARTELLA);
-            // Tre rotazioni di fila: alla fine devono esserci `aether.log`,
+            // Tre rotazioni di fila: alla fine devono esserci `rymembra.log`,
             // `.1` e `.2`, e non un `.3`.
             for giro in 0..3 {
                 riempi_fino_al_tetto();
                 nota!("[prova] giro {giro}");
             }
             assert!(dove.join(NOME).exists(), "manca il file corrente");
-            assert!(dove.join("aether.1.log").exists(), "manca il primo");
-            assert!(dove.join("aether.2.log").exists(), "manca il secondo");
+            assert!(dove.join("rymembra.1.log").exists(), "manca il primo");
+            assert!(dove.join("rymembra.2.log").exists(), "manca il secondo");
             assert!(
-                !dove.join("aether.3.log").exists(),
+                !dove.join("rymembra.3.log").exists(),
                 "il quarto file non doveva sopravvivere: la rotazione non dimentica"
             );
         });
@@ -674,11 +674,11 @@ mod prove {
             ),
             (r"C:\Users\Mario Rossi".to_owned(), "%USERPROFILE%"),
         ];
-        let riga = r"[avvio] libreria aperta dati=C:\Users\Mario Rossi\AppData\Roaming\io.github.federicobaratti.aether migrazioni=0";
+        let riga = r"[avvio] libreria aperta dati=C:\Users\Mario Rossi\AppData\Roaming\io.github.federicobaratti.rymembra migrazioni=0";
         let pulita = senza_utente(riga, &cartelle);
         assert_eq!(
             pulita,
-            r"[avvio] libreria aperta dati=%APPDATA%\io.github.federicobaratti.aether migrazioni=0"
+            r"[avvio] libreria aperta dati=%APPDATA%\io.github.federicobaratti.rymembra migrazioni=0"
         );
         // Le maiuscole non contano, come per Windows; e più volte nella riga.
         let due = senza_utente(

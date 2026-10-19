@@ -1,11 +1,11 @@
 /**
- * Il profilo: portarsi dietro Aether su un altro computer.
+ * Il profilo: portarsi dietro Rymembra su un altro computer.
  *
  * # Cosa è cambiato, e cosa questo pannello deve dire adesso
  *
  * Fino alla 2.3.0 il profilo era un `.json` di diciassette preferenze, e questa
  * schermata poteva dire «un file con le tue scelte» ed essere completa. Dalla
- * 2.3.1 è un archivio `.aeprofile` che porta anche ascolti, voti, playlist,
+ * 2.3.1 è un archivio `.ryprofile` che porta anche ascolti, voti, playlist,
  * correzioni, testi, copertine e pacchetti skin — e allora tre cose che prima
  * non c'erano diventano obbligatorie da mostrare:
  *
@@ -45,6 +45,7 @@ import type {
   PianoProfilo,
   RimappaturaRadice,
 } from "../ipc";
+import { ESTENSIONE_PROFILO_PRECEDENTE } from "../eredita";
 import { ipc } from "../ipc";
 import { useAscolto } from "../pagine";
 import { Icona } from "./Icone";
@@ -157,8 +158,8 @@ export function Profilo({
   const esporta = async () => {
     try {
       const scelta = await save({
-        defaultPath: "aether-profilo.aeprofile",
-        filters: [{ name: t("profile.file"), extensions: ["aeprofile"] }],
+        defaultPath: "rymembra-profilo.ryprofile",
+        filters: [{ name: t("profile.file"), extensions: ["ryprofile"] }],
       });
       if (typeof scelta !== "string") return;
       setInVolo(true);
@@ -177,11 +178,15 @@ export function Profilo({
     try {
       const scelta = await open({
         multiple: false,
-        // Tutte e due le estensioni: il `.json` della 2.2 si legge ancora, e un
-        // filtro che lo nascondesse renderebbe irraggiungibile un file che il
-        // programma sa aprire benissimo.
+        // Tutte le estensioni: il `.json` della 2.2 e il profilo della versione
+        // precedente si leggono ancora, e un filtro che li nascondesse
+        // renderebbe irraggiungibile un file che il programma sa aprire
+        // benissimo.
         filters: [
-          { name: t("profile.file"), extensions: ["aeprofile", "json"] },
+          {
+            name: t("profile.file"),
+            extensions: ["ryprofile", ESTENSIONE_PROFILO_PRECEDENTE, "json"],
+          },
         ],
       });
       if (typeof scelta !== "string") return;

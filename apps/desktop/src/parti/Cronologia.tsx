@@ -7,7 +7,7 @@
  * linguetta accanto a «Coda» era disegnata spenta, con la sua ragione scritta
  * accanto — «la cronologia si registra, ma non c'è ancora un comando per
  * leggerla». Era un difetto piccolo finché quella tabella conteneva solo gli
- * ascolti fatti dentro Aether: su una libreria appena aperta, zero righe sotto
+ * ascolti fatti dentro Rymembra: su una libreria appena aperta, zero righe sotto
  * una linguetta che nessuno avrebbe premuto due volte.
  *
  * L'importazione di un account Spotify la riempie di anni, e da lì in poi una

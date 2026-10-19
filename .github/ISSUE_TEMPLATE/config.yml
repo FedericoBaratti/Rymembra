@@ -3,10 +3,10 @@
 blank_issues_enabled: false
 contact_links:
   - name: I found a security problem
-    url: https://github.com/FedericoBaratti/Aether/security/advisories/new
+    url: https://github.com/FedericoBaratti/Rymembra/security/advisories/new
     about: >-
       Don't open a public issue. Issues are indexed, and the first person to
       read it wouldn't be the person who can fix it. See SECURITY.md.
   - name: I want to ask something, not report a fault
-    url: https://github.com/FedericoBaratti/Aether/discussions
+    url: https://github.com/FedericoBaratti/Rymembra/discussions
     about: Questions, ideas and «could it maybe» belong in the discussions.

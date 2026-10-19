@@ -1,9 +1,9 @@
 //! La passata sonora, dal lato della finestra.
 //!
-//! `aether_play::impronta` sa ricavare quarantasette numeri da trenta secondi di
-//! audio; `aether_app::sonora` sa quali brani ne aspettano ancora e come si
+//! `rymembra_play::impronta` sa ricavare quarantasette numeri da trenta secondi di
+//! audio; `rymembra_app::sonora` sa quali brani ne aspettano ancora e come si
 //! scrivono. Nessuno dei due sa **quando** farlo, e il quando è tutto il
-//! problema: l'analisi è l'unica cosa in Aether che legge dal disco a tutta
+//! problema: l'analisi è l'unica cosa in Rymembra che legge dal disco a tutta
 //! velocità senza che nessuno l'abbia chiesta, e il disco è la stessa risorsa da
 //! cui dipende la riproduzione senza buchi.
 //!
@@ -13,7 +13,7 @@
 //! # Due passate in una
 //!
 //! Dalla 3.0 la passata ha una seconda metà: finite le impronte, si misura
-//! quanto forte suona ogni brano (`aether_app::intensita`), che è quel che
+//! quanto forte suona ogni brano (`rymembra_app::intensita`), che è quel che
 //! serve al volume uniforme per i brani senza tag ReplayGain. Stesse regole —
 //! lucchetti, musica, radici che non rispondono — con un costo diverso: una
 //! decodifica **intera** invece di trenta secondi. Vedi [`intensita`].
@@ -34,13 +34,13 @@
 //! aspetta.
 //!
 //! Che sia vero non è affidato all'attenzione di chi legge:
-//! [`aether_app::playback::sorgente_da_scheda`] non riceve mai una
+//! [`rymembra_app::playback::sorgente_da_scheda`] non riceve mai una
 //! `rusqlite::Connection`, quindi la versione sbagliata di questo filo non si
 //! può nemmeno scrivere.
 //!
 //! # Perché cede alla riproduzione
 //!
-//! Il filo `aether-preparatore` apre il brano successivo **mentre** il corrente
+//! Il filo `rymembra-preparatore` apre il brano successivo **mentre** il corrente
 //! suona, ed è ciò che rende il passaggio fra due tracce campione-esatto. Se
 //! l'analisi gli contende la testina proprio in quel momento, il risultato è il
 //! buco udibile fra una traccia e l'altra che la 2.1.0 ha chiuso — reintrodotto
@@ -70,11 +70,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-use aether_app::intensita as volume;
-use aether_app::playback::SchedaSorgente;
-use aether_app::scadenza::{Mancato, Operaio};
-use aether_app::sonora::{self, Misurato};
-use aether_domain::errors::AppError;
+use rymembra_app::intensita as volume;
+use rymembra_app::playback::SchedaSorgente;
+use rymembra_app::scadenza::{Mancato, Operaio};
+use rymembra_app::sonora::{self, Misurato};
+use rymembra_domain::errors::AppError;
 use tauri::{AppHandle, Manager as _};
 
 use crate::nota;
@@ -85,7 +85,7 @@ use crate::stato::{Stato, adesso_ms, con_libreria};
 /// Due minuti. Più dell'arricchimento, che ne aspetta uno e mezzo, perché
 /// all'avvio la scansione sta ancora leggendo la stessa cartella e il ripristino
 /// della coda sta ancora aprendo lo stesso disco. È anche il tempo in cui chi ha
-/// appena aperto Aether decide cosa ascoltare — e se sceglie, [`RESPIRO`]
+/// appena aperto Rymembra decide cosa ascoltare — e se sceglie, [`RESPIRO`]
 /// prende il posto di questo numero e l'analisi non comincia affatto.
 const ATTESA_AVVIO: Duration = Duration::from_secs(2 * 60);
 
@@ -214,7 +214,7 @@ pub fn sporca(app: &AppHandle) {
 /// lascia passare a qualunque sveglia invece che a una di un tipo particolare.
 pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
     let avviato = std::thread::Builder::new()
-        .name("aether-analisi".to_owned())
+        .name("rymembra-analisi".to_owned())
         .spawn(move || {
             let mut svegliato = match orecchio.recv_timeout(ATTESA_AVVIO) {
                 // Canale chiuso: l'applicazione sta uscendo. Non si comincia
@@ -472,8 +472,8 @@ fn misura_lotto(schede: &[SchedaSorgente]) -> Vec<Misurato> {
 /// Un brano, con la scadenza addosso.
 fn misura_uno(scheda: &SchedaSorgente) -> Misurato {
     let copia = scheda.clone();
-    aether_app::scadenza::con_scadenza(SCADENZA_NOME, SCADENZA_BRANO, move || {
-        sonora::misura(&aether_app::files::LocalFiles, &copia)
+    rymembra_app::scadenza::con_scadenza(SCADENZA_NOME, SCADENZA_BRANO, move || {
+        sonora::misura(&rymembra_app::files::LocalFiles, &copia)
     })
     .unwrap_or(Misurato::NonRaggiungibile)
 }
@@ -602,7 +602,7 @@ fn misura_intensita(schede: &[SchedaSorgente]) -> Vec<volume::Misurato> {
 fn misura_volume(operaio: &mut Operaio, scheda: &SchedaSorgente) -> volume::Misurato {
     let copia = scheda.clone();
     match operaio.esegui(scadenza_volume(scheda), move || {
-        volume::misura(&aether_app::files::LocalFiles, &copia)
+        volume::misura(&rymembra_app::files::LocalFiles, &copia)
     }) {
         Ok(misurato) => misurato,
         // Il file è arrivato ed è il contenuto a essere storto: si segna, e
@@ -631,13 +631,13 @@ fn scadenza_volume(scheda: &SchedaSorgente) -> Duration {
 
 /// Un guasto del database, nella forma del catalogo.
 ///
-/// Delega a [`aether_app::db::codice_da_sqlite`], che guarda il codice di SQLite
+/// Delega a [`rymembra_app::db::codice_da_sqlite`], che guarda il codice di SQLite
 /// e distingue un database occupato — che si riprova — da una share che non
 /// risponde. Prima rispondeva `db.queryFailed` a qualunque guasto, e chi la
-/// leggeva si trovava consigliato di riavviare Aether per un file che era
+/// leggeva si trovava consigliato di riavviare Rymembra per un file che era
 /// occupato da mezzo secondo dalla scansione.
 fn db_errore(cosa: &str, err: &rusqlite::Error) -> AppError {
-    aether_app::db::codice_da_sqlite(cosa, err)
+    rymembra_app::db::codice_da_sqlite(cosa, err)
 }
 
 #[cfg(test)]
@@ -675,7 +675,7 @@ mod prove {
     fn la_scadenza_del_volume_cresce_con_la_durata() {
         let scheda = |durata_ms| SchedaSorgente {
             track_id: 1,
-            collocazione: aether_app::playback::Collocazione::File("x.flac".to_owned()),
+            collocazione: rymembra_app::playback::Collocazione::File("x.flac".to_owned()),
             durata_ms,
             replaygain_db: None,
             picco: None,

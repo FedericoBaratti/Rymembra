@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { ESTENSIONE_SKIN_PRECEDENTE } from "../src/eredita";
 import type { Trascinati } from "../src/ipc";
 import { pianoDeiTrascinati, type SituazioneTrascinati } from "../src/trascinati";
 
@@ -21,10 +22,10 @@ const normale: SituazioneTrascinati = { primoInAttesa: false, avviato: true };
 
 test("una skin vince su tutto il resto", () => {
   const piano = pianoDeiTrascinati(
-    lasciati({ skin: ["a.aeskin"], playlist: ["b.m3u8"], brani: [1], cartelle: ["C:/M"] }),
+    lasciati({ skin: ["a.ryskin"], playlist: ["b.m3u8"], brani: [1], cartelle: ["C:/M"] }),
     normale,
   );
-  assert.deepEqual(piano, { tipo: "skin", percorso: "a.aeskin" });
+  assert.deepEqual(piano, { tipo: "skin", percorso: "a.ryskin" });
 });
 
 test("una playlist apre la sua finestrella, e non si fa altro", () => {
@@ -70,4 +71,16 @@ test("file che la libreria non conosce: si dice, e prima dei file inutili", () =
   assert.equal(fuori.tipo === "resto" && fuori.notizia, "fuoriLibreria");
   const niente = pianoDeiTrascinati(lasciati({}), normale);
   assert.equal(niente.tipo === "resto" && niente.notizia, null);
+});
+
+test("una skin di prima si installa come una di adesso", () => {
+  // A dire cos'è una skin è il nucleo, che riconosce anche l'estensione di
+  // prima (`trascinati.rs`): qui basta che quel che arriva in `skin` vinca
+  // su tutto il resto, qualunque sia l'estensione del file.
+  const vecchia = `C:/Skin/notte.${ESTENSIONE_SKIN_PRECEDENTE}`;
+  const piano = pianoDeiTrascinati(
+    lasciati({ skin: [vecchia, "b.ryskin"], playlist: ["b.m3u8"], brani: [1], cartelle: ["C:/M"] }),
+    normale,
+  );
+  assert.deepEqual(piano, { tipo: "skin", percorso: vecchia });
 });

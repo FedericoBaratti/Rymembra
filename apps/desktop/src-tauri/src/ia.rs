@@ -1,7 +1,7 @@
 //! I profili dei modelli, e il filo che porta una risposta mentre arriva.
 //!
 //! Involucri, come tutto il resto di questo crate: il client sta in
-//! `aether-ia`, i profili in `settings`, le chiavi nel portachiavi. Qui c'è chi
+//! `rymembra-ia`, i profili in `settings`, le chiavi nel portachiavi. Qui c'è chi
 //! li mette insieme, chi tiene il turno in corso, e chi lo racconta alla
 //! finestra.
 //!
@@ -39,11 +39,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aether_app::settings;
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_ia::messaggi::{Fine, Messaggio, Voce};
-use aether_ia::{Cliente, Fornitore, Profilo};
-use aether_oauth::portachiavi::{DiSistema, Portachiavi as _};
+use rymembra_app::settings;
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_ia::messaggi::{Fine, Messaggio, Voce};
+use rymembra_ia::{Cliente, Fornitore, Profilo};
+use rymembra_oauth::portachiavi::{DiSistema, Portachiavi as _};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager as _, State};
 
@@ -331,7 +331,7 @@ pub fn ia_salva_profilo(
         let nome = profilo.nome.trim();
         let url_base = profilo.url_base.trim().to_owned();
         let modello = profilo.modello.trim().to_owned();
-        aether_ia::controlla_indirizzo(&url_base)?;
+        rymembra_ia::controlla_indirizzo(&url_base)?;
 
         let mut profili = leggi_profili(&stato)?;
         let quale = profilo
@@ -350,7 +350,7 @@ pub fn ia_salva_profilo(
             Some(esistente) => esistente.id.clone(),
             None => {
                 let presi: Vec<String> = profili.iter().map(|p| p.id.clone()).collect();
-                aether_ia::id_da_nome(nome, &presi)
+                rymembra_ia::id_da_nome(nome, &presi)
             }
         };
 
@@ -362,7 +362,7 @@ pub fn ia_salva_profilo(
         // L'origine si scrive insieme alla chiave e si tiene finché la chiave
         // vale: è quel che il prossimo salvataggio confronta. Vedi la sezione
         // «Quando `None` non basta a tenerla» qui sopra.
-        let origine_nuova = aether_net::http::origine(&url_base);
+        let origine_nuova = rymembra_net::http::origine(&url_base);
         let mut dimenticata = None;
         let (con_chiave, origine_chiave) = match chiave.as_deref() {
             None => match quale.and_then(|i| profili.get(i)) {
@@ -375,7 +375,7 @@ pub fn ia_salva_profilo(
                     // Credential Manager senza motivo, e il giorno in cui
                     // l'indirizzo tornasse quello di prima ripartirebbe verso
                     // un posto che nel frattempo nessuno ha ricontrollato.
-                    portachiavi().cancella(&aether_ia::voce_portachiavi(&id))?;
+                    portachiavi().cancella(&rymembra_ia::voce_portachiavi(&id))?;
                     nota!(
                         "[ia] profilo {id}: l'indirizzo è passato a un'altra origine, la chiave \
                          è stata dimenticata"
@@ -386,11 +386,11 @@ pub fn ia_salva_profilo(
                 _ => (false, None),
             },
             Some("") => {
-                portachiavi().cancella(&aether_ia::voce_portachiavi(&id))?;
+                portachiavi().cancella(&rymembra_ia::voce_portachiavi(&id))?;
                 (false, None)
             }
             Some(valore) => {
-                portachiavi().scrivi(&aether_ia::voce_portachiavi(&id), valore.trim())?;
+                portachiavi().scrivi(&rymembra_ia::voce_portachiavi(&id), valore.trim())?;
                 (true, origine_nuova)
             }
         };
@@ -442,7 +442,7 @@ pub fn ia_elimina_profilo(
     id: String,
 ) -> Esito<StatoIaIpc> {
     let esito = (|| {
-        portachiavi().cancella(&aether_ia::voce_portachiavi(&id))?;
+        portachiavi().cancella(&rymembra_ia::voce_portachiavi(&id))?;
         let mut profili = leggi_profili(&stato)?;
         profili.retain(|p| p.id != id);
         scrivi_profili(&stato, &profili)?;
@@ -494,7 +494,7 @@ pub fn ia_scegli_profilo(
 /// scadenza passata su un *worker* del runtime: tre clic su «Prova» contro un
 /// indirizzo morto bastavano a fermare ogni altro comando asincrono.
 #[tauri::command]
-pub async fn ia_modelli(app: AppHandle, id: String) -> Esito<Vec<aether_ia::Modello>> {
+pub async fn ia_modelli(app: AppHandle, id: String) -> Esito<Vec<rymembra_ia::Modello>> {
     in_disparte("modelli di un profilo", move || {
         let Some(stato) = app.try_state::<Stato>() else {
             return Err(AppError::new(ErrorCode::InternalAborted {
@@ -552,7 +552,7 @@ pub fn ia_conversa(
             channel: "ia_conversa".to_owned(),
             detail: Some(format!(
                 "un'immagine che non è PNG, JPEG o WebP in base64, o pesa più di {} MB ({} byte)",
-                aether_ia::messaggi::IMMAGINE_MASSIMA_MB,
+                rymembra_ia::messaggi::IMMAGINE_MASSIMA_MB,
                 guasta.len()
             )),
         })));
@@ -564,7 +564,7 @@ pub fn ia_conversa(
 
     let manico = app.clone();
     let avviato = std::thread::Builder::new()
-        .name("aether-ia".to_owned())
+        .name("rymembra-ia".to_owned())
         .spawn(move || {
             parla(&manico, &cliente, &messaggi, numero, &fermare);
             manico.state::<StatoIa>().lascia_posto(numero);
@@ -597,12 +597,12 @@ pub fn ia_conversa(
 /// quindi nello stesso annullo.
 #[tauri::command]
 pub fn ia_operazioni(testo: String) -> Esito<OperazioniIpc> {
-    let (operazioni, ragioni) = aether_ia::operazioni::estrai(&testo);
+    let (operazioni, ragioni) = rymembra_ia::operazioni::estrai(&testo);
     Ok(OperazioniIpc {
         operazioni: operazioni
             .into_iter()
             .map(|o| OperazioneIpc {
-                togli: o.op == aether_ia::Op::Togli,
+                togli: o.op == rymembra_ia::Op::Togli,
                 percorso: o.percorso,
                 valore: o.valore,
             })

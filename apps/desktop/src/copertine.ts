@@ -30,7 +30,7 @@ export type MisuraCopertina = "miniatura" | "media" | "piena";
 /**
  * Il lato di ciascuna misura, in pixel.
  *
- * Sono i `MAX_LATO_*` di `core/aether-app/src/covers.rs`: un lato è un massimo,
+ * Sono i `MAX_LATO_*` di `core/rymembra-app/src/covers.rs`: un lato è un massimo,
  * e una copertina più piccola dell'originale resta della sua misura. `srcset`
  * dichiara il massimo, che è quel che serve a scegliere.
  */

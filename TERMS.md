@@ -1,11 +1,11 @@
-# Aether terms of use
+# Rymembra terms of use
 
 Last updated: 10 September 2026.
 
-Aether is a free program, distributed under the MIT license. This document is
+Rymembra is a free program, distributed under the MIT license. This document is
 not the contract between you and me — that's `LICENSE`, and it says the program
 is given «as is». This document is about something different and more concrete:
-**what you can do with the music Aether gets for you**, because those terms
+**what you can do with the music Rymembra gets for you**, because those terms
 aren't set by me and I can't waive them on your behalf.
 
 It's worth reading once. It's short.
@@ -14,11 +14,11 @@ It's worth reading once. It's short.
 
 ## 1. The program is yours, the music isn't
 
-Aether's code is MIT: do what you like with it.
+Rymembra's code is MIT: do what you like with it.
 
-The music you download through Aether is **not covered by that license**. Every
+The music you download through Rymembra is **not covered by that license**. Every
 track comes from a catalog, and carries with it the conditions that catalog
-and that artist put on it. Aether records each track's license next to the track
+and that artist put on it. Rymembra records each track's license next to the track
 itself, and shows it in the queue, precisely so this distinction doesn't get
 lost.
 
@@ -30,7 +30,7 @@ your phone, burn to a CD for yourself. The conditions below are about
 
 ## 2. The non-commercial constraint, which applies to you too
 
-Two of the sources Aether uses carry a *non commercial* clause, and it isn't a
+Two of the sources Rymembra uses carry a *non commercial* clause, and it isn't a
 formality.
 
 ### Live Music Archive (archive.org/details/etree)
@@ -52,22 +52,22 @@ In practice, for what you download from there:
 The *Jamendo API Terms of Use* define «commercial use» as «any monetary
 compensation, including any revenue arising from affiliation programs or
 advertising». From their API you **listen**: the terms explicitly forbid caching
-the content or offering offline access to it, and Aether does neither. The
+the content or offering offline access to it, and Rymembra does neither. The
 Jamendo module sits behind a feature that can be switched off for exactly this
 reason.
 
-### And for Aether itself
+### And for Rymembra itself
 
-It's the reason **Aether is and stays free**. A paid version would violate those
+It's the reason **Rymembra is and stays free**. A paid version would violate those
 clauses. Donations are accepted as support for the program's development, not as
 payment for the music — no donation unlocks content, no track sits behind a
 payment.
 
 ---
 
-## 3. What Aether refuses to do, and why
+## 3. What Rymembra refuses to do, and why
 
-Some things a program like this *could* do, and that Aether does not:
+Some things a program like this *could* do, and that Rymembra does not:
 
 - **It doesn't download from YouTube.** Their *API Developer Policies*
   § III.E.1.a forbid it; § III.I.7 forbids separating the audio from the video;
@@ -78,32 +78,32 @@ Some things a program like this *could* do, and that Aether does not:
   hands **you** on request, which is yours by right of data portability.
 - **It doesn't download what the license doesn't allow.** The check happens
   before any network request: a track marked listen-only isn't even asked for.
-  If a catalog says «you listen and you don't carry it away», Aether doesn't
+  If a catalog says «you listen and you don't carry it away», Rymembra doesn't
   test whether the server would let it.
 - **It doesn't circumvent protection measures.** No DRM is touched, in any form.
 
-If you find a way to make Aether do one of these things, that's a defect. Report
+If you find a way to make Rymembra do one of these things, that's a defect. Report
 it.
 
 ---
 
 ## 3-bis. Lyrics, and what LRCLIB is
 
-Song lyrics are protected works, like the songs. Aether takes three routes to
+Song lyrics are protected works, like the songs. Rymembra takes three routes to
 them, and none of the three is «we have them under license»:
 
 1. **What's already in your files** — an `.lrc` next to the track, or the tag
    inside the file. It's yours, and it's the first source looked at.
 2. **LRCLIB**, a public and free catalog fed by the people who use it. It has
-   an open API, made for music players: Aether queries it the way a browser
+   an open API, made for music players: Rymembra queries it the way a browser
    queries a site, with no keys, no page scraping and no circumventing anything.
 3. **What you sync yourself**, which stays a file on your disk.
 
 The part usually left unsaid, and said here: LRCLIB **is not a distributor with
-sub-publishing contracts**. It's a database built by the community. Aether
+sub-publishing contracts**. It's a database built by the community. Rymembra
 breaks no rule by reading it, and that doesn't make the lyrics that come out of
 it «licensed». Whoever hosts that catalog answers takedown requests from
-rights holders; Aether redistributes nothing, keeps no copies elsewhere and does
+rights holders; Rymembra redistributes nothing, keeps no copies elsewhere and does
 not upload them into your backup.
 
 Musixmatch, Genius, AZLyrics, LyricFind and the Chinese catalogs stay out, and
@@ -124,11 +124,11 @@ stays the rights holder's even when you were the one who put the timings in:
 what you're sharing are the **timings**, and the timings travel with the words
 because separated they're no use to anyone. If you neither wrote those words nor
 have the right to distribute them, sending them to a public catalog is your
-decision and not one Aether takes for you — and that's the reason there's no way
+decision and not one Rymembra takes for you — and that's the reason there's no way
 for it to happen without your having decided it.
 
-What goes to LRCLIB goes there under LRCLIB's license, not Aether's: the
-catalog hosts it and answers for what it hosts. Aether keeps no copy, doesn't
+What goes to LRCLIB goes there under LRCLIB's license, not Rymembra's: the
+catalog hosts it and answers for what it hosts. Rymembra keeps no copy, doesn't
 resell it and doesn't put it back into circulation elsewhere. Your `.lrc` stays
 on your disk, identical, whether you press that button or not.
 
@@ -136,7 +136,7 @@ on your disk, identical, whether you press that button or not.
 
 ## 4. What's left to buy
 
-When no free catalog has a track, Aether doesn't retry forever and doesn't
+When no free catalog has a track, Rymembra doesn't retry forever and doesn't
 pretend it's a fault: it puts it in «To buy», with links to Bandcamp, Qobuz and
 Discogs.
 
@@ -148,21 +148,24 @@ domains — precisely so nothing else can be slipped in.
 
 ## 5. Your library is yours
 
-Aether works on files that sit on your disk and on an SQLite database that sits
+Rymembra works on files that sit on your disk and on an SQLite database that sits
 in your data folder. There's no server, there's no account, there's nothing I
 can switch off.
 
-**Aether does not modify your music files.** It opens them to read — to scan
+**Rymembra does not modify your music files.** It opens them to read — to scan
 them, to decode them, to measure them — and never to write. Up to 2.3.0 that
 was not true, and this section used to say so: enrichment rewrote the tags in
 your files, and a reorganizer moved them into `Artist/Album` folders. From
-2.3.1 neither does. What Aether works out about a track lives in the library
+2.3.1 neither does. What Rymembra works out about a track lives in the library
 database beside your own corrections, where a re-scan cannot silently undo it.
 
 What it does write is a short list, and `PRIVACY.md` § 8 carries all of it: the
-files Aether downloaded itself, the `.lrc` it saves beside a track, the
+files Rymembra downloaded itself, the `.lrc` it saves beside a track, the
 playlists and the profile archive you ask it to export, and its own data
-folder. Nothing on that list is a file you already had.
+folder. Nothing on that list is a file you already had. When you upgrade from
+the previous version, the installer removes it and Rymembra carries its data into
+that folder on first start; your library comes with you and nothing is
+overwritten.
 
 One entry does reach a file you already had, and only when you press it: from
 2.3.2 a track's menu offers **«Delete from disk»**, which sends the file to the
@@ -186,7 +189,7 @@ you each track's conditions; respecting them is your business.
 
 ## 7. If something here is wrong
 
-If you represent a catalog, a label or an artist and you believe Aether is
+If you represent a catalog, a label or an artist and you believe Rymembra is
 doing something it shouldn't, write. There's no formal procedure because there's
 no company: there's a person, and the answer to a well-founded report is fixing
 the code.

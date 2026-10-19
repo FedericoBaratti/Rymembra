@@ -115,7 +115,7 @@ fn applica(finestra: &tauri::WebviewWindow, fattore: f64) -> f64 {
 #[tauri::command]
 pub fn zoom_avvio(finestra: tauri::WebviewWindow, stato: State<'_, Stato>) -> Esito<f64> {
     let fattore = con_libreria(&stato, |libreria| {
-        aether_app::preferenze::zoom(&libreria.connection)
+        rymembra_app::preferenze::zoom(&libreria.connection)
     })
     .map_err(errore)?;
     Ok(applica(&finestra, fattore))
@@ -123,14 +123,14 @@ pub fn zoom_avvio(finestra: tauri::WebviewWindow, stato: State<'_, Stato>) -> Es
 
 /// Un gradino in su o in giù, applicato e ricordato.
 ///
-/// La scala sta nel nucleo (`aether_app::preferenze::SCALA_ZOOM`), non qui e
+/// La scala sta nel nucleo (`rymembra_app::preferenze::SCALA_ZOOM`), non qui e
 /// nemmeno nella pagina: è la stessa regola per cui una preferenza si convalida
 /// dove si scrive. Da qui passa un **verso**, non un numero, quindi non esiste
 /// nessun modo di chiedere un fattore fuori scala: la finestra non ne conosce
 /// nemmeno uno.
 ///
 /// Ai due estremi non succede niente, e non è un errore: vedi
-/// `aether_app::preferenze::zoom_al_gradino` sul perché la scala non gira.
+/// `rymembra_app::preferenze::zoom_al_gradino` sul perché la scala non gira.
 ///
 /// # Errori
 ///
@@ -138,10 +138,10 @@ pub fn zoom_avvio(finestra: tauri::WebviewWindow, stato: State<'_, Stato>) -> Es
 #[tauri::command]
 pub fn zoom_passo(finestra: tauri::WebviewWindow, stato: State<'_, Stato>, su: bool) -> Esito<f64> {
     let fattore = con_libreria(&stato, |libreria| {
-        let adesso = aether_app::preferenze::zoom(&libreria.connection)?;
-        aether_app::preferenze::imposta_zoom(
+        let adesso = rymembra_app::preferenze::zoom(&libreria.connection)?;
+        rymembra_app::preferenze::imposta_zoom(
             &libreria.connection,
-            aether_app::preferenze::zoom_al_gradino(adesso, su),
+            rymembra_app::preferenze::zoom_al_gradino(adesso, su),
         )
     })
     .map_err(errore)?;
@@ -171,9 +171,9 @@ pub fn zoom_passo(finestra: tauri::WebviewWindow, stato: State<'_, Stato>, su: b
 #[tauri::command]
 pub fn zoom_normale(finestra: tauri::WebviewWindow, stato: State<'_, Stato>) -> Esito<f64> {
     let scritto = con_libreria(&stato, |libreria| {
-        aether_app::preferenze::imposta_zoom(
+        rymembra_app::preferenze::imposta_zoom(
             &libreria.connection,
-            aether_app::preferenze::ZOOM_NEUTRO,
+            rymembra_app::preferenze::ZOOM_NEUTRO,
         )
     })
     .map_err(errore)?;

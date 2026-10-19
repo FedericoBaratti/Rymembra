@@ -83,7 +83,7 @@ export function data(ms: number): string {
 /**
  * I due segnaposti che il nucleo scrive quando il tag non c'è.
  *
- * Sono costanti in `aether-domain/src/album.rs`, e restano italiane di
+ * Sono costanti in `rymembra-domain/src/album.rs`, e restano italiane di
  * proposito: `library.rs` le scrive **nelle righe del database**, e di lì
  * entrano nella chiave con cui un album si raggruppa. Tradurle là dove nascono
  * vorrebbe dire chiavi d'album diverse fra due avvii con lingue diverse, cioè
@@ -141,7 +141,7 @@ export function artistaNoto(nome: string): boolean {
  * «OML».
  *
  * Il vocabolario vero è uno solo, ed è `Licenza::nome()` in
- * `core/aether-domain/src/esterno.rs`: `pubblicoDominio`, `cc-…`, `oml`,
+ * `core/rymembra-domain/src/esterno.rs`: `pubblicoDominio`, `cc-…`, `oml`,
  * `liberaNonCommerciale`, `tutteRiservate`, `sconosciuta`. Questa funzione è
  * l'unico posto che lo traduce.
  *
@@ -180,7 +180,7 @@ export function nomeLicenza(licenza: string): string {
  * Che cosa nomina un link, o che cosa si è importato, davanti a chi ascolta.
  *
  * Il nucleo lo manda come nome stabile — `GenereContenuto::nome()` in
- * `aether-domain/src/esterno.rs`: `brano`, `album`, `playlist`, `artista`,
+ * `rymembra-domain/src/esterno.rs`: `brano`, `album`, `playlist`, `artista`,
  * `collezione`, e dagli account anche `preferiti` — e fino alla 3.0 finiva a
  * schermo così com'era: un'interfaccia in inglese diceva «Jamendo · brano · 12
  * tracks». Le parole sono in italiano perché sono un valore dell'IPC, non un

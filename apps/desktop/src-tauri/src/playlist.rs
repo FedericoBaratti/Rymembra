@@ -1,7 +1,7 @@
 //! I comandi delle playlist.
 //!
 //! Involucri, come quelli di [`crate::comandi`]: ogni funzione traduce gli
-//! argomenti, chiama `aether_app::playlists` e traduce l'errore. Nessuna
+//! argomenti, chiama `rymembra_app::playlists` e traduce l'errore. Nessuna
 //! decisione — né su cosa sia un nome valido, né su cosa succeda a una playlist
 //! automatica, né su come si riscrivano le posizioni. Sono tutte cose che
 //! Android dovrà fare identiche, e una regola scritta qui sarebbe una regola da
@@ -12,12 +12,14 @@
 
 use std::path::{Path, PathBuf};
 
-use aether_app::import_playlist::{self, PlaylistFileReport};
-use aether_app::library::TrackSummary;
-use aether_app::playlists::{self, PlaylistSummary};
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::playlist_file::{FormatoPlaylist, PlaylistLetta};
-use aether_domain::regole::{Campo, Combinazione, Insieme, Operatore, Ordinamento, Regola, Valore};
+use rymembra_app::import_playlist::{self, PlaylistFileReport};
+use rymembra_app::library::TrackSummary;
+use rymembra_app::playlists::{self, PlaylistSummary};
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::playlist_file::{FormatoPlaylist, PlaylistLetta};
+use rymembra_domain::regole::{
+    Campo, Combinazione, Insieme, Operatore, Ordinamento, Regola, Valore,
+};
 
 use crate::destinazioni;
 use crate::disparte::leggi_la_libreria;
@@ -87,7 +89,7 @@ pub fn playlist_rinomina(
 /// # Perché qui, e perché poche
 ///
 /// La cancellazione è già scritta quando l'avviso compare — vedi
-/// `aether_app::playlists::Cancellata` per il perché — e quel che serve a
+/// `rymembra_app::playlists::Cancellata` per il perché — e quel che serve a
 /// tornare indietro sta in memoria, con un gettone che la finestra ripassa. È
 /// la forma delle rimozioni in attesa di `comandi.rs`: una statica e non uno
 /// stato gestito, perché è un posto solo per un processo solo, che nessuno deve
@@ -217,7 +219,7 @@ pub async fn playlist_aggiungi(
 ///
 /// Erano due comandi chiamati di seguito dalla finestra, e un'aggiunta fallita
 /// lasciava una playlist vuota col nome appena scelto: vedi
-/// `aether_app::playlists::crea_e_aggiungi`.
+/// `rymembra_app::playlists::crea_e_aggiungi`.
 #[tauri::command]
 pub async fn playlist_crea_e_aggiungi(
     app: tauri::AppHandle,
@@ -269,7 +271,7 @@ pub fn playlist_riordina(
 
 /// Una regola, come arriva dalla finestra.
 ///
-/// Un tipo IPC a parte e non `aether_domain::regole::Regola` direttamente: là
+/// Un tipo IPC a parte e non `rymembra_domain::regole::Regola` direttamente: là
 /// il valore è un `enum` a tre varianti, e un `enum` con dati attraverso serde
 /// diventa un oggetto etichettato che il TypeScript deve costruire a mano. Qui
 /// è quel che una schermata produce davvero — tre campi, il terzo di due tipi
@@ -450,11 +452,11 @@ pub async fn playlist_regole_prova(
     leggi_la_libreria(app, "anteprima delle regole", move |libreria| {
         let adesso = adesso_ms();
         Ok(AnteprimaRegole {
-            quanti: aether_app::smart::quanti(&libreria.connection, &insieme, adesso)?,
+            quanti: rymembra_app::smart::quanti(&libreria.connection, &insieme, adesso)?,
             scartate: insieme.scartate(),
             prende_tutto: insieme.prende_tutto(),
             prende_niente: insieme.prende_niente(),
-            primi: aether_app::smart::brani(
+            primi: rymembra_app::smart::brani(
                 &libreria.connection,
                 &Insieme {
                     limite: Some(ANTEPRIMA),
@@ -535,8 +537,8 @@ fn leggi_file(percorso: &str) -> Result<(PlaylistLetta, String, Option<PathBuf>)
         .with_cause("non è un file di playlist: servono .m3u, .m3u8, .pls o .xspf")
     })?;
     let byte = std::fs::read(&path)
-        .map_err(|err| aether_app::files::io_error(&path.display().to_string(), &err))?;
-    let letta = aether_domain::playlist_file::leggi(&byte, formato);
+        .map_err(|err| rymembra_app::files::io_error(&path.display().to_string(), &err))?;
+    let letta = rymembra_domain::playlist_file::leggi(&byte, formato);
     let dal_file = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -585,6 +587,6 @@ pub fn playlist_esporta(stato: State<'_, Stato>, id: i64, percorso: String) -> E
     })
     .map_err(errore)?;
     std::fs::write(&path, testo.as_bytes())
-        .map_err(|err| errore(aether_app::files::io_error(&percorso, &err)))?;
+        .map_err(|err| errore(rymembra_app::files::io_error(&percorso, &err)))?;
     Ok(quanti)
 }

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Aether",
-  "version": "3.0.0",
-  "identifier": "io.github.federicobaratti.aether",
+  "productName": "Rymembra",
+  "version": "3.0.1",
+  "identifier": "io.github.federicobaratti.rymembra",
   "build": {
     "beforeDevCommand": "npm run dev:web",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Aether",
+        "title": "Rymembra",
         "width": 1280,
         "height": 820,
         "minWidth": 880,
@@ -25,8 +25,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: http://aether-cover.localhost aether-cover: http://aether-skin.localhost aether-skin:; font-src 'self' http://aether-skin.localhost aether-skin:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://aether-skin.localhost aether-skin:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-      "devCsp": "default-src 'self'; img-src 'self' data: http://aether-cover.localhost aether-cover: http://aether-skin.localhost aether-skin:; font-src 'self' http://aether-skin.localhost aether-skin:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' http://localhost:5173; connect-src 'self' ipc: http://ipc.localhost http://aether-skin.localhost aether-skin: http://localhost:5173 ws://localhost:5173; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "csp": "default-src 'self'; img-src 'self' data: http://rymembra-cover.localhost rymembra-cover: http://rymembra-skin.localhost rymembra-skin:; font-src 'self' http://rymembra-skin.localhost rymembra-skin:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://rymembra-skin.localhost rymembra-skin:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self'; img-src 'self' data: http://rymembra-cover.localhost rymembra-cover: http://rymembra-skin.localhost rymembra-skin:; font-src 'self' http://rymembra-skin.localhost rymembra-skin:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' http://localhost:5173; connect-src 'self' ipc: http://ipc.localhost http://rymembra-skin.localhost rymembra-skin: http://localhost:5173 ws://localhost:5173; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       "assetProtocol": { "enable": false }
     }
   },
@@ -38,7 +38,7 @@
     "copyright": "Copyright (c) 2026 Federico Baratti",
     "category": "Music",
     "shortDescription": "Un lettore musicale per la musica che possiedi.",
-    "longDescription": "Aether suona i file che hai gia sul disco, e sa procurarti quel che manca dai cataloghi liberi: Internet Archive e Audius. Ogni brano porta con se la licenza sotto cui e stato preso. Quel che nessun catalogo libero ha finisce in una lista d'acquisto, con i link ai negozi dove l'artista viene pagato.",
+    "longDescription": "Rymembra suona i file che hai gia sul disco, e sa procurarti quel che manca dai cataloghi liberi: Internet Archive e Audius. Ogni brano porta con se la licenza sotto cui e stato preso. Quel che nessun catalogo libero ha finisce in una lista d'acquisto, con i link ai negozi dove l'artista viene pagato.",
     "licenseFile": "../../../LICENSE",
     "resources": {
       "../../../LICENSE": "LICENSE.txt",
@@ -52,13 +52,18 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "installer/precedente.nsh"
+      }
+    }
   },
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZGMDYyMjIzOEJCRTBEQ0QKUldUTkRiNkxJeUlHLzR5Mm9HRTlGVUwzRzdNR0lSN2d5RWxaWGJQZWxreUN0eFRSVm5CazZDWkgK",
       "endpoints": [
-        "https://github.com/FedericoBaratti/Aether/releases/latest/download/latest.json"
+        "https://github.com/FedericoBaratti/Rymembra/releases/latest/download/latest.json"
       ],
       "requireSignedVersion": true,
       "windows": {

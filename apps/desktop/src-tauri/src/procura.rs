@@ -1,8 +1,8 @@
 //! La coda che procura i desiderati, dal lato della finestra.
 //!
 //! Quattro comandi, sei eventi e un filo di sottofondo. Le decisioni stanno in
-//! `aether-domain` (quale file), il dialogo con i cataloghi in
-//! `aether-catalogo`, il database in `aether-app`: qui si tiene il tempo e si
+//! `rymembra-domain` (quale file), il dialogo con i cataloghi in
+//! `rymembra-catalogo`, il database in `rymembra-app`: qui si tiene il tempo e si
 //! prende il lucchetto — due cose che nessuno di quei tre sa fare, e che sono
 //! anche le due che possono far impuntare la riproduzione.
 //!
@@ -40,7 +40,7 @@
 //! lucchetto per tutta la coda vorrebbe dire un'applicazione che per un'ora non
 //! risponde: niente riproduzione, niente ricerca, niente scansione.
 //!
-//! Che sia vero non è affidato all'attenzione di chi legge: `aether-catalogo`
+//! Che sia vero non è affidato all'attenzione di chi legge: `rymembra-catalogo`
 //! non riceve mai una `rusqlite::Connection`, quindi il codice che terrebbe il
 //! lucchetto durante un prelievo non si può nemmeno scrivere.
 //!
@@ -61,15 +61,15 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::spegnimento::Emette as _;
-use aether_app::desiderati::{self, Desiderato};
-use aether_app::settings;
-use aether_app::tag_scrittura::scrivi_tag;
-use aether_catalogo::Cataloghi;
-use aether_domain::destinazione::destinazione;
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::esterno::{Disponibilita, Fonte};
-use aether_domain::paths::PathRules;
-use aether_domain::scelta::{Candidato, affidabilita, scarto_durata, scegli_candidato};
+use rymembra_app::desiderati::{self, Desiderato};
+use rymembra_app::settings;
+use rymembra_app::tag_scrittura::scrivi_tag;
+use rymembra_catalogo::Cataloghi;
+use rymembra_domain::destinazione::destinazione;
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::esterno::{Disponibilita, Fonte};
+use rymembra_domain::paths::PathRules;
+use rymembra_domain::scelta::{Candidato, affidabilita, scarto_durata, scegli_candidato};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
@@ -196,7 +196,7 @@ pub struct StatoCoda {
     /// «31 su 74» e nasconde quale dei due sta scendendo. Vedi
     /// [`desiderati::per_sorgente`].
     pub sorgenti: Vec<desiderati::Sorgente>,
-    /// Da dove Aether prende la musica, adesso.
+    /// Da dove Rymembra prende la musica, adesso.
     ///
     /// Sostituisce il vecchio `ytdlp: bool`, e la differenza non è cosmetica:
     /// là c'era una cosa che poteva **mancare**, e mezza interfaccia esisteva
@@ -474,7 +474,7 @@ pub fn riprova_falliti(app: AppHandle, stato: State<'_, Stato>) -> Esito<u32> {
 /// I cataloghi compilati in questa build.
 ///
 /// Scritto a mano e non dedotto: quali cataloghi ci siano dipende dalle feature
-/// di `aether-catalogo`, e un elenco che si costruisse da sé nasconderebbe il
+/// di `rymembra-catalogo`, e un elenco che si costruisse da sé nasconderebbe il
 /// fatto che spegnerne uno è una decisione — quella di Jamendo, per esempio, è
 /// legata a una clausola non commerciale e va presa da chi distribuisce.
 fn cataloghi_attivi() -> Vec<CatalogoAttivo> {
@@ -540,7 +540,7 @@ pub fn avvia(app: &AppHandle) {
 
     let manico = app.clone();
     let avviato = std::thread::Builder::new()
-        .name("aether-procura".to_owned())
+        .name("rymembra-procura".to_owned())
         .spawn(move || {
             passata(&manico);
             manico.state::<StatoProcura>().lascia_posto();
@@ -696,7 +696,7 @@ fn un_brano(
     let mut ultima = 0_u32;
     let esito = procura.cataloghi.preleva(
         &scelto,
-        &aether_catalogo::Richiesta {
+        &rymembra_catalogo::Richiesta {
             cartella_download: cartella,
             cartella_temporanea: temporanea,
             base_relativa: &dove.relativo(),
@@ -860,9 +860,9 @@ fn cartellino(scelto: &Candidato, desiderato: &Desiderato) -> Scelto {
 /// computer, quel campo è l'unica cosa che dice sotto quale patto quel brano è
 /// finito lì.
 fn con_attribuzione(
-    brano: &aether_domain::BranoEsterno,
+    brano: &rymembra_domain::BranoEsterno,
     attribuzione: Option<&str>,
-) -> aether_domain::BranoEsterno {
+) -> rymembra_domain::BranoEsterno {
     let mut copia = brano.clone();
     if let Some(riga) = attribuzione {
         copia.pagina_url = copia.pagina_url.or_else(|| Some(riga.to_owned()));
@@ -930,7 +930,7 @@ fn copertina(app: &AppHandle, desiderato: &Desiderato) -> Option<Vec<u8>> {
         .ok()?;
     // Otto mebibyte, lo stesso limite che `tag_scrittura` applica quando la
     // incorpora: scaricarne di più vorrebbe dire buttarli via un passo dopo.
-    aether_net::immagine::plausibile(&byte, 8 * 1024 * 1024).then_some(byte)
+    rymembra_net::immagine::plausibile(&byte, 8 * 1024 * 1024).then_some(byte)
 }
 
 // ── gli eventi ──────────────────────────────────────────────────────────────
@@ -1112,7 +1112,7 @@ fn cartella_temporanea(app: &AppHandle) -> PathBuf {
 /// su una libreria da cinquantamila brani, una camminata intera — su un NAS,
 /// minuti — per far entrare i dieci file appena scaricati. Adesso guarda solo
 /// la cartella dove i file sono arrivati, e solo la parte di lei che sta sotto
-/// una cartella sorvegliata (`aether_app::library::dentro_le_radici`): un file
+/// una cartella sorvegliata (`rymembra_app::library::dentro_le_radici`): un file
 /// che nessuna «Scansiona» troverebbe non deve entrare in libreria per la porta
 /// di servizio. Il resto della libreria è fuori competenza, e non può sparire.
 ///
@@ -1177,7 +1177,7 @@ fn scansione_automatica(app: &AppHandle, stato: &Stato) {
     let Some(cartella) = cartella_download(app) else {
         return;
     };
-    let roots = aether_app::library::dentro_le_radici(
+    let roots = rymembra_app::library::dentro_le_radici(
         &cartella.to_string_lossy(),
         &radici,
         PathRules::for_current_platform(),
@@ -1200,8 +1200,8 @@ fn scansione_automatica(app: &AppHandle, stato: &Stato) {
     // questa bandiera durante la camminata **e** fra un file e l'altro, quindi
     // basta lei.
     let fermati = || stato.scansione_fermata() || crate::spegnimento::in_uscita();
-    let scan = aether_app::library::Scan {
-        files: Arc::new(aether_app::files::LocalFiles),
+    let scan = rymembra_app::library::Scan {
+        files: Arc::new(rymembra_app::files::LocalFiles),
         covers: copertine,
         roots: &roots,
         rules: PathRules::for_current_platform(),
@@ -1211,7 +1211,7 @@ fn scansione_automatica(app: &AppHandle, stato: &Stato) {
         // toglierebbe mezza libreria e se ne accorgerebbe il giorno dopo chi
         // non trova più i suoi brani.
         prudente: true,
-        scadenze: aether_app::library::Scadenze::default(),
+        scadenze: rymembra_app::library::Scadenze::default(),
         fermati: Some(&fermati),
     };
     let mut deposito = DepositoStato::nuovo(stato);
@@ -1282,7 +1282,7 @@ fn rientra_in_libreria(app: &AppHandle) {
     // si annota e basta: i file sono al loro posto, e la passata successiva
     // riprova.
     let ritorno = con_libreria(&stato, |libreria| {
-        aether_app::desiderati::riconcilia(&libreria.connection, None)
+        rymembra_app::desiderati::riconcilia(&libreria.connection, None)
     });
     match ritorno {
         Ok(fatto) if fatto.voci_rimesse > 0 || fatto.righe_chiuse > 0 => {

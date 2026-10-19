@@ -28,12 +28,12 @@ function sig(commentoFidato) {
 
 test("la versione firmata si legge dal commento fidato", () => {
   assert.equal(
-    versioneFirmata(sig("timestamp:1790000000\tfile:Aether_3.0.0_x64-setup.exe\tversion:3.0.0")),
+    versioneFirmata(sig("timestamp:1790000000\tfile:Rymembra_3.0.0_x64-setup.exe\tversion:3.0.0")),
     "3.0.0",
   );
   // Le firme fatte prima che la CLI la scrivesse: niente versione, e dalla 3.0
   // non aggiornano più nessuno.
-  assert.equal(versioneFirmata(sig("timestamp:1790000000\tfile:Aether_2.4.0_x64-setup.exe")), null);
+  assert.equal(versioneFirmata(sig("timestamp:1790000000\tfile:Rymembra_2.4.0_x64-setup.exe")), null);
 });
 
 test("la versione nei file ha delle note vere nel changelog", () => {

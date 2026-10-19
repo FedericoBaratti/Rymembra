@@ -5,7 +5,7 @@
  *
  * È l'unico stato di questa interfaccia che il nucleo non conosce, ed è giusto
  * che non lo conosca: una posizione *voluta* e non ancora avvenuta. Finché il
- * dito è giù, `aether-play` sta ancora suonando dov'era, e chi trascina deve
+ * dito è giù, `rymembra-play` sta ancora suonando dov'era, e chi trascina deve
  * vedere dove sta andando invece di dove è.
  *
  * Stava scritto in tre componenti — la barra, la colonna e lo schermo intero —
@@ -29,7 +29,7 @@
  * La finestra, nel frattempo, diceva «in riproduzione» con la posizione ferma:
  * nessun errore, nessun segnale, niente da capire.
  *
- * Quell'attesa è più corta di prima — la finestra di `aether-net` adesso cresce
+ * Quell'attesa è più corta di prima — la finestra di `rymembra-net` adesso cresce
  * mentre si legge di fila, e il nodo dell'Archive si risolve una volta sola —
  * ma resta un'attesa, perché i byte in mezzo vanno comunque scaricati. Quel che
  * non deve restare è il silenzio: finché il motore non è arrivato, il cursore

@@ -6,7 +6,7 @@
  * Fino alla 3.0 la lettera era il primo carattere della chiave d'ordinamento,
  * cercato fra le ventisei dell'alfabeto: «é» non è «e», e un artista che
  * cominciava con una lettera accentata finiva sotto «#», insieme ai numeri.
- * La chiave del nucleo (`aether_domain::keys::sort_name`) toglie già gran parte
+ * La chiave del nucleo (`rymembra_domain::keys::sort_name`) toglie già gran parte
  * dei diacritici, ma non tutti — «ø», «ł» restano quel che sono — e soprattutto
  * non sa **chi legge**: per un italiano «ö» è una «o» con i puntini, per uno
  * svedese è l'ultima lettera dell'alfabeto, e metterla sotto «O» sarebbe

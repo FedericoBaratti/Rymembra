@@ -3,7 +3,7 @@
  *
  * # Perché non basta `t()`
  *
- * Il grosso del testo di Aether non sono etichette: sono capoversi che spiegano
+ * Il grosso del testo di Rymembra non sono etichette: sono capoversi che spiegano
  * qualcosa, e dentro hanno markup — un `<code>` che nomina un token, uno
  * `<strong>` che porta un valore calcolato. Per esempio, dalle impostazioni:
  *

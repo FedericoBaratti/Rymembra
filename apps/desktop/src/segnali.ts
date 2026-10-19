@@ -1,7 +1,7 @@
 /**
  * Gli attributi di stato che una skin legge.
  *
- * Il formato 2 anima le parti su dieci stati del DOM (`core/aether-skin/src/
+ * Il formato 2 anima le parti su dieci stati del DOM (`core/rymembra-skin/src/
  * stati.rs`), e metà di quegli stati sono già attributi che l'app scriveva per
  * sé — `aria-current`, `aria-selected`, `aria-pressed`, `:disabled`. Gli altri
  * nascono qui, e ognuno ha **un** posto che lo scrive, così una skin che anima

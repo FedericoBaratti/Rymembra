@@ -41,7 +41,7 @@ export function impostazioniFinte(): ComponentProps<typeof Impostazioni> {
       {
         id: "plain",
         nome: "Plain",
-        autore: "Aether",
+        autore: "Rymembra",
         descrizione: null,
         diSerie: true,
         attiva: false,
@@ -52,7 +52,7 @@ export function impostazioniFinte(): ComponentProps<typeof Impostazioni> {
       {
         id: "vinile",
         nome: "Vinile",
-        autore: "Aether",
+        autore: "Rymembra",
         descrizione: null,
         diSerie: true,
         attiva: true,

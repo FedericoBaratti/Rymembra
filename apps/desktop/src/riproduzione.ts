@@ -90,7 +90,7 @@ const FERMO: StatoRiproduzione = {
 // prop lo farebbe passare da `App`, che è precisamente la catena che l'archivio
 // esterno della posizione esiste per non risvegliare.
 //
-// È `aether_domain::testo::ANTICIPO_MS`, e arriva dentro `riproduzione:stato`:
+// È `rymembra_domain::testo::ANTICIPO_MS`, e arriva dentro `riproduzione:stato`:
 // fino a ieri stava scritto due volte, qui a mano e nel dominio, e la copia è
 // durata finché nessuno ha toccato nessuna delle due.
 

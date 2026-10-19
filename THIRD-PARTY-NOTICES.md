@@ -1,6 +1,6 @@
 # Third-party component notices
 
-Aether is distributed under the MIT license (see `LICENSE`). The program,
+Rymembra is distributed under the MIT license (see `LICENSE`). The program,
 however, is not made only of the code written here: it incorporates other
 people's free software, and their licenses ask for the text to travel
 together with the binary. This file is that text.
@@ -24,7 +24,7 @@ nobody anything, under-attributing is the only thing you pay for.
 **MPL-2.0** — the whole `symphonia` family, which is the audio decoding
 engine, plus `cssparser` and `selectors`. The MPL is *file-based*: it
 requires the source of the **covered files** you modify to be distributed.
-Aether modifies none of them — it uses them as crates from the registry, at
+Rymembra modifies none of them — it uses them as crates from the registry, at
 the versions written in `Cargo.lock` — so the obligation is discharged by
 saying so and pointing at where the original is. If one were ever forked,
 that fork would have to be published.
@@ -60,7 +60,7 @@ recently it was not.
 **AAC** decoding happens through `symphonia-codec-aac`, which is an
 independent implementation. The fundamental patents on AAC-LC expired
 between 2017 and 2023, and the Via LA licensing program bills on the
-**sale** of encoders and decoders: Aether is free and sells nothing. There
+**sale** of encoders and decoders: Rymembra is free and sells nothing. There
 is therefore nothing to pay and nothing to ask for.
 
 ---

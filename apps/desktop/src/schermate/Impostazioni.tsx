@@ -115,12 +115,12 @@ export type Sezione =
  * dispositivi, scrobbling, importazione da un servizio, e l'importazione dalla
  * versione precedente — che è la stessa cosa da vicinissimo.
  *
- * **Il programma** è Aether che parla di sé.
+ * **Il programma** è Rymembra che parla di sé.
  *
  * # «Modelli IA» sotto Preferenze
  *
  * Stava dopo «Scrobbling», e la ragione scritta qui era buona: sono le tre
- * schede di fila che parlano di un servizio con cui Aether scambia qualcosa, e
+ * schede di fila che parlano di un servizio con cui Rymembra scambia qualcosa, e
  * i modelli sono l'unica impostazione di tutto il programma che possa far
  * uscire da questo computer una cosa **scritta dall'utente**.
  *
@@ -1092,7 +1092,7 @@ function SchedaSpegnimento({
  * colore, e una scrittura fallita si nota perché il colore non è cambiato. Qui
  * non c'è niente da vedere — l'effetto è quel che farà la X fra tre ore — e un
  * interruttore acceso su una scrittura fallita mentirebbe fino alla prima volta
- * che qualcuno chiude Aether credendo di nasconderlo.
+ * che qualcuno chiude Rymembra credendo di nasconderlo.
  */
 function SchedaChiusura({ onErrore }: { onErrore: (e: unknown) => void }) {
   const [acceso, setAcceso] = useState(false);
@@ -2051,7 +2051,7 @@ export function Impostazioni({
                   mostra **zero** finché non gira una passata nuova. È corretto —
                   quei brani hanno una riga in `enrich_undo` e non nella tabella
                   nuova, e i loro tag stanno dentro i file, non in una tabella di
-                  Aether — ma nessuno può indovinarlo guardando un contatore a
+                  Rymembra — ma nessuno può indovinarlo guardando un contatore a
                   zero accanto a una libreria che l'arricchimento ha
                   evidentemente toccato. La condizione è la stessa del bottone
                   qui sopra, ed è quella giusta: la nota c'è esattamente finché
@@ -2338,8 +2338,8 @@ export function Impostazioni({
               </Scheda>
               <Scheda icona="i-play" titolo={t("settings.playback.title")} guida="playback">
                 {/* Acceso, finalmente, e senza scorciatoie. La tinta dominante la
-                  estrae `aether-app` dalla miniatura del disco; se sia leggibile
-                  lo decide `aether-skin` in OKLCH, dove vive `contrast_ratio`.
+                  estrae `rymembra-app` dalla miniatura del disco; se sia leggibile
+                  lo decide `rymembra-skin` in OKLCH, dove vive `contrast_ratio`.
                   Quando nessuna chiarezza di quella tonalità regge 4,5:1 contro
                   le superfici del tema, la risposta è «no» e vince l'accento
                   della skin: è la ragione per cui questo interruttore è rimasto
@@ -2500,7 +2500,7 @@ export function Impostazioni({
               )}
 
               {/* Due frasi e non una: «non configurato» da solo sembrava un
-                  guasto, e non lo è — è una scelta di come Aether viene
+                  guasto, e non lo è — è una scelta di come Rymembra viene
                   distribuito. La prima dice cosa vuol dire, la seconda cosa si
                   può fare, compresa la strada che non chiede nessun account. */}
               {nuvola && !nuvola.configurato && (

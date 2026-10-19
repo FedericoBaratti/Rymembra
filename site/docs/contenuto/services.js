@@ -1,5 +1,5 @@
 /* Capitolo 9 — i servizi: backup su Drive, sincronia, scrobbling, modelli di linguaggio, aggiornamenti. */
-(window.AETHER_DOCS = window.AETHER_DOCS || []).push({
+(window.RYMEMBRA_DOCS = window.RYMEMBRA_DOCS || []).push({
   id: "services",
   title: "Online services",
   lead: "Everything optional that talks to a remote service: Drive backup, device sync, scrobbling, language models for the Studio, and the update check.",
@@ -7,19 +7,20 @@
     {
       id: "cloud",
       title: "Backup on Google Drive",
-      src: ["core/aether-cloud/src/servizio.rs", "core/aether-cloud/src/drive.rs", "core/aether-cloud/src/oauth.rs", "core/aether-cloud/src/pacchetti.rs", "core/aether-app/src/backup.rs", "core/aether-domain/src/restore.rs", "apps/desktop/src-tauri/src/nuvola.rs", "apps/desktop/src-tauri/build.rs"],
+      src: ["core/rymembra-cloud/src/servizio.rs", "core/rymembra-cloud/src/drive.rs", "core/rymembra-cloud/src/oauth.rs", "core/rymembra-cloud/src/pacchetti.rs", "core/rymembra-app/src/backup.rs", "core/rymembra-domain/src/restore.rs", "apps/desktop/src-tauri/src/nuvola.rs", "apps/desktop/src-tauri/build.rs"],
       body: [
         "The backup stores what a scan cannot rebuild — statistics, playlists, tombstones, watched roots, skins and Studio drafts — in Drive's **app-data folder** (`drive.appdata` scope): invisible in Drive, readable only by this OAuth client. Audio files and covers are not uploaded.",
         {
           table: {
             head: ["File in appDataFolder", "Contents"],
             rows: [
-              ["`aether-libreria.v1.json.gz`", "`Salvataggio { version: 1, generatedAt, generatedBy, content }` — tracks by `track_key` with merged stats, playlists with member keys, tombstones, roots, active skin, skin and draft hashes (≈ 70 KB per 1,400 tracks)"],
-              ["`aether-skin-<id>.aeskin`", "Installed skin packages (up to 20 MB, rarely change)"],
-              ["`aether-bozza-<id>.json.gz`", "Studio draft manifests"],
+              ["`rymembra-libreria.v1.json.gz`", "`Salvataggio { version: 1, generatedAt, generatedBy, content }` — tracks by `track_key` with merged stats, playlists with member keys, tombstones, roots, active skin, skin and draft hashes (≈ 70 KB per 1,400 tracks)"],
+              ["`rymembra-skin-<id>.ryskin`", "Installed skin packages (up to 20 MB, rarely change)"],
+              ["`rymembra-bozza-<id>.json.gz`", "Studio draft manifests"],
             ],
           },
         },
+        "Files that the previous version left in the app-data folder under its own names are recognised: during a pass they are renamed in place to the names above (same file, same content, no new upload). If both the old and the new name exist the new one wins and a copy under the old name is removed only when an identical one is kept, and a document of this very device under the old name is never read as another device's.",
         { h: "A pass" },
         {
           ol: [
@@ -29,19 +30,19 @@
             "Uploads up to 5 MB are multipart; larger ones resumable in 8 MiB chunks (4 consecutive failures allowed, resuming from the `Range` the server confirms). Downloads are capped at 25 MiB and decompression at 64 MiB.",
           ],
         },
-        "**The local database is never written by a backup pass.** Restoring is explicit: `nuvola_piano_ripristino` downloads, parses (`interpreta`: bad records dropped, a newer format refused) and shows `aether_domain::restore::plan_restore` — stats merged with `merge_stats`, missing tracks only listed, playlists replaced only if the backup's is strictly newer, roots unioned, skins/drafts added only if missing; `nuvola_ripristina` re-plans and applies it in one transaction.",
+        "**The local database is never written by a backup pass.** Restoring is explicit: `nuvola_piano_ripristino` downloads, parses (`interpreta`: bad records dropped, a newer format refused) and shows `rymembra_domain::restore::plan_restore` — stats merged with `merge_stats`, missing tracks only listed, playlists replaced only if the backup's is strictly newer, roots unioned, skins/drafts added only if missing; `nuvola_ripristina` re-plans and applies it in one transaction.",
         { h: "Schedule and credentials" },
-        "Thread `aether-nuvola`: first pass 30 s after start, then every 15 min, and 2 min after a burst of changes (any command that changes the library calls `nuvola::se_riuscito`). Drive calls have a 120 s deadline. `nuvola.attivo` switches it.",
-        "The Google consent runs in the system browser with PKCE and a loopback redirect, 3 min to complete ([OAuth](#oauth)). A desktop program cannot keep an OAuth secret, so **release builds ship without a Google client**: Settings asks for your own «Desktop app» client id and secret (`nuvola_credenziali`; the secret goes to the keychain). Builds made with `AETHER_GOOGLE_CLIENT_ID` / `AETHER_GOOGLE_CLIENT_SECRET` in the environment embed them via `option_env!` (`build.rs` re-exports them).",
+        "Thread `rymembra-nuvola`: first pass 30 s after start, then every 15 min, and 2 min after a burst of changes (any command that changes the library calls `nuvola::se_riuscito`). Drive calls have a 120 s deadline. `nuvola.attivo` switches it.",
+        "The Google consent runs in the system browser with PKCE and a loopback redirect, 3 min to complete ([OAuth](#oauth)). A desktop program cannot keep an OAuth secret, so **release builds ship without a Google client**: Settings asks for your own «Desktop app» client id and secret (`nuvola_credenziali`; the secret goes to the keychain). Builds made with `RYMEMBRA_GOOGLE_CLIENT_ID` / `RYMEMBRA_GOOGLE_CLIENT_SECRET` in the environment embed them via `option_env!` (`build.rs` re-exports them).",
       ],
       see: ["sync", "profile", "oauth"],
     },
     {
       id: "sync",
       title: "Device sync",
-      src: ["core/aether-sync/src/lib.rs", "core/aether-sync/src/documento.rs", "core/aether-sync/src/fusione.rs", "core/aether-sync/src/contatore.rs", "core/aether-sync/src/registro.rs", "core/aether-sync/src/sequenza.rs", "core/aether-sync/src/magazzino.rs", "core/aether-sync/src/motore.rs", "core/aether-app/src/sincronia.rs", "apps/desktop/src-tauri/src/sincronia.rs", "core/aether-sync/tests/convergenza.rs"],
+      src: ["core/rymembra-sync/src/lib.rs", "core/rymembra-sync/src/documento.rs", "core/rymembra-sync/src/fusione.rs", "core/rymembra-sync/src/contatore.rs", "core/rymembra-sync/src/registro.rs", "core/rymembra-sync/src/sequenza.rs", "core/rymembra-sync/src/magazzino.rs", "core/rymembra-sync/src/motore.rs", "core/rymembra-app/src/sincronia.rs", "apps/desktop/src-tauri/src/sincronia.rs", "core/rymembra-sync/tests/convergenza.rs"],
       body: [
-        "No server, no ordering guarantees. Each device writes **only its own** document, `dispositivi/aether-<id>.v1.json.gz`, and every device merges all of them. The same layout works on a shared folder (Syncthing, OneDrive, Dropbox, a USB stick) and on Drive, and «conflicted copies» cannot occur. State per device, not an operation log: its size is the library's, not the history's, so nothing ever needs compaction.",
+        "No server, no ordering guarantees. Each device writes **only its own** document, `dispositivi/rymembra-<id>.v1.json.gz`, and every device merges all of them. The same layout works on a shared folder (Syncthing, OneDrive, Dropbox, a USB stick) and on Drive, and «conflicted copies» cannot occur. State per device, not an operation log: its size is the library's, not the history's, so nothing ever needs compaction.",
         { h: "Four merge shapes" },
         {
           table: {
@@ -63,16 +64,16 @@
             "Lock window 2: `sincronia::applica_se_ferma` re-checks that playlists and roots did not change meanwhile (otherwise it rolls back and retries later) and writes counters, registers, playlists (sequence → `playlist_tracks`), roots and tombstones.",
           ],
         },
-        "A device that appears in the store is **unknown** until accepted: `sincronia_accoppia` gives it a name and trusts it (`sync_dispositivi`); untrusted documents are not merged. `sincronia_dimentica` forgets a device without removing the plays it brought. The store is a folder (`sincronia.cartella`) **or** Drive, never both (`sincronia.dove`). Thread `aether-sincronia`: first pass after 20 s, every 5 min, 30 s after a burst; switch `sincronia.attiva`.",
+        "A device that appears in the store is **unknown** until accepted: `sincronia_accoppia` gives it a name and trusts it (`sync_dispositivi`); untrusted documents are not merged. `sincronia_dimentica` forgets a device without removing the plays it brought. The store is a folder (`sincronia.cartella`) **or** Drive, never both (`sincronia.dove`). Thread `rymembra-sincronia`: first pass after 20 s, every 5 min, 30 s after a burst; switch `sincronia.attiva`.",
       ],
       see: ["cloud", "listens", "profile"],
     },
     {
       id: "scrobbling",
       title: "Scrobbling",
-      src: ["core/aether-scrobble/src/lib.rs", "core/aether-scrobble/src/lastfm.rs", "core/aether-scrobble/src/listenbrainz.rs", "core/aether-app/src/scrobble.rs", "apps/desktop/src-tauri/src/scrobble.rs"],
+      src: ["core/rymembra-scrobble/src/lib.rs", "core/rymembra-scrobble/src/lastfm.rs", "core/rymembra-scrobble/src/listenbrainz.rs", "core/rymembra-app/src/scrobble.rs", "apps/desktop/src-tauri/src/scrobble.rs"],
       body: [
-        "Only listens that already passed `counts_as_play` are scrobbled ([Listens](#listens)), so the services count exactly what the library counts. `aether-scrobble` never sees the database: the queue is drained by reading a block, releasing the lock, sending, then reopening to delete.",
+        "Only listens that already passed `counts_as_play` are scrobbled ([Listens](#listens)), so the services count exactly what the library counts. `rymembra-scrobble` never sees the database: the queue is drained by reading a block, releasing the lock, sending, then reopening to delete.",
         {
           table: {
             head: ["Aspect", "ListenBrainz", "Last.fm"],
@@ -84,16 +85,16 @@
             ],
           },
         },
-        "The durable `scrobble_queue` (unique on service, time, artist, title) survives restarts; a failed item counts attempts up to `MASSIMI_TENTATIVI` = 10 (a non-retryable rejection jumps to the cap and shows as «stuck»). Thread `aether-scrobble` wakes on demand or every 300 s; a ListenBrainz batch rejected with 400 is bisected down to the bad entry. «Now playing» is sent on its own short-lived thread and never queued. With `scrobble.attivo` off the queue stops filling, so turning it back on does not send three days of plays at once. Tokens, keys, secrets and the session live in the keychain; Last.fm's API key moved there from `settings` in 2.3.1.",
+        "The durable `scrobble_queue` (unique on service, time, artist, title) survives restarts; a failed item counts attempts up to `MASSIMI_TENTATIVI` = 10 (a non-retryable rejection jumps to the cap and shows as «stuck»). Thread `rymembra-scrobble` wakes on demand or every 300 s; a ListenBrainz batch rejected with 400 is bisected down to the bad entry. «Now playing» is sent on its own short-lived thread and never queued. With `scrobble.attivo` off the queue stops filling, so turning it back on does not send three days of plays at once. Tokens, keys, secrets and the session live in the keychain; Last.fm's API key moved there from `settings` in 2.3.1.",
       ],
       see: ["listens", "oauth"],
     },
     {
       id: "models",
       title: "Language models",
-      src: ["core/aether-ia/src/lib.rs", "core/aether-ia/src/cliente.rs", "core/aether-ia/src/fornitore.rs", "core/aether-ia/src/profilo.rs", "core/aether-ia/src/sse.rs", "core/aether-ia/src/operazioni.rs", "core/aether-ia/src/messaggi.rs", "apps/desktop/src-tauri/src/ia.rs"],
+      src: ["core/rymembra-ia/src/lib.rs", "core/rymembra-ia/src/cliente.rs", "core/rymembra-ia/src/fornitore.rs", "core/rymembra-ia/src/profilo.rs", "core/rymembra-ia/src/sse.rs", "core/rymembra-ia/src/operazioni.rs", "core/rymembra-ia/src/messaggi.rs", "apps/desktop/src-tauri/src/ia.rs"],
       body: [
-        "A model is used for one thing: the Skin Studio chat ([Studio chat](#studio-chat)). `aether-ia` is a plain OpenAI-compatible client that knows nothing about skins; the Studio passes the vocabulary as messages.",
+        "A model is used for one thing: the Skin Studio chat ([Studio chat](#studio-chat)). `rymembra-ia` is a plain OpenAI-compatible client that knows nothing about skins; the Studio passes the vocabulary as messages.",
         {
           table: {
             head: ["Provider", "Endpoint", "Key"],
@@ -110,7 +111,7 @@
             "**Profiles** (up to 16) live in `ia.profili`, the active one in `ia.profilo`. A profile never contains the key, only whether one exists and its keychain entry name; the key is bound to the **origin** it was entered for, so changing a profile's URL to another origin forgets the key instead of sending it there.",
             "**Requests**: `conversa` streams with a 10 min timeout, `modelli` lists models with 15 s; no redirects at all (a 307 would resend the conversation). 401/403, unknown model and a refused local connection get their own codes (`ia.unauthorized`, `ia.modelUnknown`, `ia.localServerDown`); error details are capped at 300 characters. `Cliente`'s `Debug` is hand-written so the key cannot leak.",
             "**Streaming**: `sse::Sse` parses `data:` events incrementally across chunk boundaries (CR, LF, CRLF; `[DONE]`), with at most 1 MiB of leftover. The desktop forwards chunks as `ia:pezzo` throttled to 50 ms, then `ia:fine` or `ia:errore`; one conversation at a time (`ia.busy`), stoppable with `ia_ferma`.",
-            "**Edits** come back as a fenced JSON block whose info string is `aether-patch`, extracted by `operazioni` (at most 12 operations, reasons ≤ 120 characters) — more portable across local models than tool calling. Images up to 8 MB may accompany a message.",
+            "**Edits** come back as a fenced JSON block whose info string is `rymembra-patch`, extracted by `operazioni` (at most 12 operations, reasons ≤ 120 characters) — more portable across local models than tool calling. Images up to 8 MB may accompany a message.",
           ],
         },
         "What is sent: the skin document, the selection and what you typed — never the library or your listens.",
@@ -120,19 +121,20 @@
     {
       id: "update",
       title: "Updates, logs and documents",
-      src: ["apps/desktop/src-tauri/src/aggiornamenti.rs", "apps/desktop/src-tauri/tauri.conf.json", "apps/desktop/src-tauri/src/comandi.rs", "apps/desktop/src/parti/Aggiornamenti.tsx", "strumenti/manifesto.js"],
+      src: ["apps/desktop/src-tauri/src/aggiornamenti.rs", "apps/desktop/src-tauri/tauri.conf.json", "apps/desktop/src-tauri/installer/precedente.nsh", "apps/desktop/src-tauri/src/comandi.rs", "apps/desktop/src/parti/Aggiornamenti.tsx", "strumenti/manifesto.js"],
       body: [
-        "`tauri-plugin-updater` is driven only by `aggiornamenti.rs`; the window has no updater permission. The endpoint is `https://github.com/FedericoBaratti/Aether/releases/latest/download/latest.json`.",
+        "`tauri-plugin-updater` is driven only by `aggiornamenti.rs`; the window has no updater permission. The endpoint is `https://github.com/FedericoBaratti/Rymembra/releases/latest/download/latest.json`.",
         { h: "Checking" },
         {
           ul: [
-            "Thread `aether-aggiornamenti`: first check `DOPO_PRONTO` = 10 s after the window reports ready (or 60 s if it never does), then every 30 min; skipped at start only if the last success was less than 5 min ago and found nothing. Offline: retry after 1, 5 and 15 min.",
-            "The request carries **nothing of yours**: no identifier, not even the installed version (the comparison happens locally) and no Aether user agent — GitHub sees an IP fetching a public file.",
+            "Thread `rymembra-aggiornamenti`: first check `DOPO_PRONTO` = 10 s after the window reports ready (or 60 s if it never does), then every 30 min; skipped at start only if the last success was less than 5 min ago and found nothing. Offline: retry after 1, 5 and 15 min.",
+            "The request carries **nothing of yours**: no identifier, not even the installed version (the comparison happens locally) and no Rymembra user agent — GitHub sees an IP fetching a public file.",
             "No public key in `tauri.conf.json` → no check at all (an updater that cannot verify must not download). `aggiornamenti.attivo` off → only «Check now». A found version is remembered (`aggiornamenti.trovata`); «Skip this version» writes `aggiornamenti.saltata`.",
           ],
         },
         { h: "Installing" },
-        "Only on explicit request (`aggiornamenti_installa`; a double click is guarded). The download runs on `aether-aggiornamento` with progress events every 200 ms; it is cancelled after 60 s without a byte (`net.timeout`) or by `aggiornamenti_annulla`. The plugin verifies the **minisign** signature against the key compiled into the executable, and since 3.0 `requireSignedVersion` also requires the signature to be bound to the version the manifest announces. Playback is paused, the NSIS installer runs in passive mode, and `on_before_exit` runs the normal shutdown sequence ([Startup](#startup)) before the process exits. A build compiled without signing keys refuses to download.",
+        "Only on explicit request (`aggiornamenti_installa`; a double click is guarded). The download runs on `rymembra-aggiornamento` with progress events every 200 ms; it is cancelled after 60 s without a byte (`net.timeout`) or by `aggiornamenti_annulla`. The plugin verifies the **minisign** signature against the key compiled into the executable, and since 3.0 `requireSignedVersion` also requires the signature to be bound to the version the manifest announces. Playback is paused, the NSIS installer runs in passive mode, and `on_before_exit` runs the normal shutdown sequence ([Startup](#startup)) before the process exits. A build compiled without signing keys refuses to download.",
+        "The NSIS installer also takes care of the previous version (`installer/precedente.nsh`, hooked in through `bundle.windows.nsis.installerHooks`): before copying anything it silently uninstalls it, leaving its data folder alone — the data are picked up at the first start ([Data](#data)). If the previous version is still running, the passive/silent installer waits a few seconds for it to close and a graphical one asks the user to close it; if it stays open the installer goes on and leaves the old version installed.",
         { h: "Logs and documents" },
         "The same Settings card opens the log folder (`diario_apri`; see [Logs](#logs)) and, through `apri_documento`, a closed list of public documents in the system browser — repository, issues, licence, third-party notices, privacy, terms, donations — never in the webview.",
       ],

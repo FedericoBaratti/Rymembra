@@ -15,7 +15,7 @@
 //! ritentabilità e chiave i18n. L'interfaccia decide cosa mostrare guardando
 //! quelli, non facendo `indexOf` su una frase.
 
-use aether_domain::errors::AppError;
+use rymembra_domain::errors::AppError;
 use serde::Serialize;
 
 use crate::nota;

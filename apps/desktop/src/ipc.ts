@@ -60,7 +60,7 @@ export function eRitentabile(value: unknown): boolean {
  * Stava scritta a mano — venticinque messaggi italiani chiavati per codice — e
  * il campo che li avrebbe resi inutili arrivava dal nucleo da sempre senza che
  * nessuno lo leggesse: `ErroreIpc.i18nKey`, generato in
- * `aether-domain/src/errors/catalog.rs` come `concat!("errors.", <codice>)`.
+ * `rymembra-domain/src/errors/catalog.rs` come `concat!("errors.", <codice>)`.
  * Erano le stesse due tabelle da tenere allineate che il catalogo del nucleo
  * esiste per non avere: venticinque voci qui contro centoquattro codici di là,
  * e ogni codice nuovo compariva a schermo come `spotify.notPublic` finché
@@ -413,7 +413,7 @@ export interface Trascinati {
   brani: number[];
   /** File audio che la libreria non conosce. */
   fuoriLibreria: number;
-  /** Né cartelle né file che Aether sappia usare. */
+  /** Né cartelle né file che Rymembra sappia usare. */
   ignorati: number;
 }
 
@@ -455,7 +455,7 @@ export interface Avvio {
 /**
  * Cosa ha portato via un'esportazione del profilo.
  *
- * Dalla 2.3.1 il profilo non è più un JSON ma un archivio `.aeprofile`, e non
+ * Dalla 2.3.1 il profilo non è più un JSON ma un archivio `.ryprofile`, e non
  * c'è più nessun documento che passi di qui: il nucleo lo scrive direttamente
  * sul file scelto, una voce alla volta, perché con le copertine dentro può
  * pesare centinaia di megabyte.
@@ -798,7 +798,7 @@ export interface VoceCronologia {
   quandoMs: number;
   /** Quanto se n'è sentito. */
   msAscoltati: number;
-  /** `local` se l'ha suonato Aether, `spotify` se importato da un account. */
+  /** `local` se l'ha suonato Rymembra, `spotify` se importato da un account. */
   sorgente: string;
 }
 
@@ -1012,7 +1012,7 @@ export interface StatoRiproduzione {
   /**
    * Di quanto una riga di testo si accende prima del suo tempo, in millisecondi.
    *
-   * Viene dal nucleo — è `aether_domain::testo::ANTICIPO_MS` — e non si ripete
+   * Viene dal nucleo — è `rymembra_domain::testo::ANTICIPO_MS` — e non si ripete
    * qui: la stessa ricerca della riga accesa esiste in Rust e in
    * `parti/Testo.tsx`, e per un po' il numero è stato scritto a mano in tutti e
    * due i posti. Chi lo legge passa da `riproduzione.ts::anticipoAdesso`.
@@ -1188,7 +1188,7 @@ export interface Tempo {
 /**
  * Quante bande ha l'equalizzatore, e dove stanno.
  *
- * Ricopiate da `aether_play::equalizzatore::CENTRI_HZ`, che è l'originale. Qui
+ * Ricopiate da `rymembra_play::equalizzatore::CENTRI_HZ`, che è l'originale. Qui
  * servono solo per scrivere le etichette sotto i cursori: quante ne arrivano
  * davvero lo dice `eqGuadagni`, e il disegno si adatta a quello.
  */
@@ -1496,7 +1496,7 @@ export type GenereSmart = "testo" | "numero" | "booleano" | "data";
 /**
  * Il genere di ogni campo, e le sue etichette.
  *
- * Ricopiato da `aether_domain::regole` — `Campo::genere` e `Operatore::per` —
+ * Ricopiato da `rymembra_domain::regole` — `Campo::genere` e `Operatore::per` —
  * che è l'originale. Qui serve solo a disegnare i menù: quali coppie stiano in
  * piedi lo decide comunque il nucleo, che scarta le regole storte invece di
  * fallire.
@@ -1760,7 +1760,7 @@ export interface DiagnosticaCatalogo {
    * Da qui si può tenere una copia, o solo ascoltare.
    *
    * Non è una capacità tecnica ma una regola: Jamendo vieta esplicitamente la
-   * cache e l'accesso offline nei suoi termini, e Aether la rispetta invece di
+   * cache e l'accesso offline nei suoi termini, e Rymembra la rispetta invece di
    * scoprire se il server glielo lascerebbe fare.
    */
   consegna: boolean;
@@ -1841,7 +1841,7 @@ export interface StatoScarico {
    */
   sorgenti: SorgenteScarico[];
   /**
-   * Da dove Aether prende la musica, adesso.
+   * Da dove Rymembra prende la musica, adesso.
    *
    * Sostituisce il vecchio `ytdlp: boolean`, e la differenza non è cosmetica:
    * là c'era una cosa che poteva **mancare**, e mezza interfaccia esisteva per
@@ -2345,7 +2345,7 @@ export interface Registro {
   format: number;
   contrastoMinimo: number;
 
-  // I tetti del movimento, da `core/aether-skin/src/movimento.rs`. Stavano
+  // I tetti del movimento, da `core/rymembra-skin/src/movimento.rs`. Stavano
   // ricopiati a mano in cima a `studio/Movimento.tsx`, col commento che diceva
   // che la strada giusta era farli passare di qui: sono gli stessi numeri con
   // cui il validatore rifiuta, e due copie sono due copie che divergono.
@@ -2441,7 +2441,7 @@ export interface Problema {
   /**
    * La riga in cui è scritto, da uno.
    *
-   * La calcola il nucleo (`aether_skin::posizioni`) su una passata sola del
+   * La calcola il nucleo (`rymembra_skin::posizioni`) su una passata sola del
    * testo. Prima non c'era, e la finestra la indovinava cercando l'ultimo pezzo
    * del percorso col primo `indexOf` che corrispondeva — su
    * `parts.x.background.0.stops.1.color` finiva a sottolineare la prima riga
@@ -2646,7 +2646,7 @@ export interface CambiamentiSincronia {
    *
    * Il `#[serde(rename_all = "camelCase")]` sta su `Resoconto`, che è il tipo
    * **esterno**, e serde non lo propaga ai tipi annidati: `Cambiamenti` vive in
-   * `core/aether-app/src/sincronia.rs` e non ne ha uno suo, quindi serializza i
+   * `core/rymembra-app/src/sincronia.rs` e non ne ha uno suo, quindi serializza i
    * propri campi com'è scritto in Rust. È l'unico campo di due parole qui
    * dentro — tutti gli altri sono uguali nelle due grafie — ed è per questo che
    * il difetto è passato inosservato: dichiarato `playlistTolte`, a runtime
@@ -2726,7 +2726,7 @@ export interface AggiornamentoDisponibile {
 /**
  * Lo stato del controllo aggiornamenti.
  *
- * È l'unica richiesta di rete che Aether fa senza che nessuno gliel'abbia
+ * È l'unica richiesta di rete che Rymembra fa senza che nessuno gliel'abbia
  * chiesta, e per questo ha un interruttore suo in Impostazioni e un numero suo
  * in `PRIVACY.md`.
  */
@@ -2734,7 +2734,7 @@ export interface StatoAggiornamenti {
   /** Il controllo periodico è acceso. Di serie lo è. */
   attivo: boolean;
   /**
-   * Questa copia di Aether sa verificare la firma di un aggiornamento.
+   * Questa copia di Rymembra sa verificare la firma di un aggiornamento.
    *
    * Falso in un albero compilato senza chiavi di firma. Il controllo allora non
    * parte affatto — annunciare qualcosa che poi non si può installare sarebbe
@@ -2912,7 +2912,7 @@ export interface MessaggioIa {
    * Le immagini che l'accompagnano, come indirizzi `data:` PNG, JPEG o WebP.
    *
    * Il nucleo le controlla al confine prima che vadano in rete; vedi
-   * `aether_ia::Messaggio::immagine_ammessa`.
+   * `rymembra_ia::Messaggio::immagine_ammessa`.
    */
   immagini?: string[];
 }
@@ -3108,7 +3108,7 @@ export interface RigaTesto {
  * Il testo di un brano, già interpretato dal nucleo.
  *
  * Qui non arriva mai un LRC: arrivano righe in ordine, con i loro millisecondi.
- * È deliberato — il formato lo legge `aether_domain::testo`, e un secondo
+ * È deliberato — il formato lo legge `rymembra_domain::testo`, e un secondo
  * lettore scritto in TypeScript divergerebbe dal primo su tutto quel che il
  * formato non dice, che è quasi tutto.
  */
@@ -3127,7 +3127,7 @@ export interface TestoBrano {
    * Arriva separato da `scartoMs` perché i due li decidono due persone diverse:
    * questo chi ha scritto il `.lrc`, l'altro chi sta ascoltando adesso. Si
    * sommano alla posizione, mai ai tempi delle righe — vedi
-   * `aether_domain::testo::posizione_corretta`, che è dove la regola vive.
+   * `rymembra_domain::testo::posizione_corretta`, che è dove la regola vive.
    */
   offsetMs: number;
   /** La correzione di chi ascolta. */
@@ -3148,7 +3148,7 @@ export interface TestoBrano {
    * Non si ricostruisce qui da `fonte` e `cercato`. Il testo piatto conta come
    * «non si ha»: il catalogo tiene più voci per lo stesso brano e la prima che
    * risponde non è sempre quella con i tempi — vedi
-   * `aether_app::testi::TestoBrano::da_chiedere`.
+   * `rymembra_app::testi::TestoBrano::da_chiedere`.
    */
   daChiedere: boolean;
 }
@@ -3522,7 +3522,7 @@ export const ipc = {
   // Lo zoom della finestra. **Nessun numero attraversa questa interfaccia**:
   // di qua partono tre gesti — apri, un gradino su o giù, torna al vero — e
   // torna indietro il fattore che è stato applicato, buono solo da mostrare.
-  // La scala dei gradini vive in `aether_app::preferenze::SCALA_ZOOM` e di
+  // La scala dei gradini vive in `rymembra_app::preferenze::SCALA_ZOOM` e di
   // elenchi non ne esistono due: mandare un fattore da qui vorrebbe dire
   // conoscerne almeno uno, e da lì a copiarli tutti è un passo.
   //
@@ -3538,7 +3538,7 @@ export const ipc = {
   // La chiama sia chi il giro lo finisce sia chi lo salta: sono due modi di
   // dire «questo l'ho visto».
   giroFatto: () => invoke<void>("giro_fatto"),
-  // Un archivio `.aeprofile`, non più un `.json`: dentro ci sono anche la
+  // Un archivio `.ryprofile`, non più un `.json`: dentro ci sono anche la
   // libreria, le copertine e i pacchetti skin. Il vecchio formato si **legge**
   // ancora e non si scrive più.
   profiloEsporta: (percorso: string) =>
@@ -3666,7 +3666,7 @@ export const ipc = {
   skinInstalla: (percorso: string) =>
     invoke<VoceSkin>("skin_installa", { percorso }),
   // Installa un manifest senza passare da un file sul disco: è quel che serve
-  // a un tema fatto qui dentro, che altrimenti dovrebbe uscire come `.aeskin`
+  // a un tema fatto qui dentro, che altrimenti dovrebbe uscire come `.ryskin`
   // e rientrare dalla stessa finestra di dialogo per essere usato.
   // `bozza` è l'id della bozza da cui prendere miniatura e risorse: senza,
   // si impacchetta il solo manifest.
@@ -3922,7 +3922,7 @@ export const ipc = {
   // **cataloghi liberi**: Internet Archive, e — quando ci saranno — Jamendo e
   // Audius. Non da Spotify, che non consegna file a nessuno, e non da YouTube,
   // le cui *API Developer Policies* (§ III.E.1.a) vietano di scaricare,
-  // memorizzare o mettere in cache i loro contenuti. Nessuna parte di Aether ci
+  // memorizzare o mettere in cache i loro contenuti. Nessuna parte di Rymembra ci
   // prova più.
   //
   // Il nome IPC è rimasto `scarica_*`, e vale la pena dire perché: cambiarlo
@@ -4052,7 +4052,7 @@ export const ipc = {
   // primo disegno: dopo, l'elenco arriva da sé sull'evento
   // `riproduzione:dispositivi`, e non c'è nessun tasto «aggiorna» da premere.
   dispositiviAudio: () => invoke<DispositivoAudio[]>("dispositivi_audio"),
-  // Da quale uscita far sentire Aether. `null` è «quella di sistema», ed è una
+  // Da quale uscita far sentire Rymembra. `null` è «quella di sistema», ed è una
   // scelta come le altre: dice di seguire il sistema quando cambia, non di non
   // avere preferenze. Il dispositivo si riapre subito, e il brano riparte da
   // dov'era.
@@ -4218,7 +4218,7 @@ export const ipc = {
   // Torna **subito**: scaricare settanta megabyte e lanciare un installer non
   // sta dentro una chiamata IPC. Quel che succede arriva da
   // `aggiornamenti:avanzamento`, e se va bene l'ultima cosa che questa finestra
-  // fa è chiudersi — su Windows è l'installer NSIS a terminare Aether e a
+  // fa è chiudersi — su Windows è l'installer NSIS a terminare Rymembra e a
   // riaprirlo.
   aggiornamentiInstalla: () => invoke<void>("aggiornamenti_installa"),
   // Ferma lo scaricamento in corso. Torna subito; lo stato con
@@ -4330,7 +4330,7 @@ export const ipc = {
   // dal disco, senza fallire — spegnere non è un errore.
   testoCerca: (id: number) => invoke<TestoBrano>("testo_cerca", { id }),
   // Il ritentativo esplicito, e non un doppione del precedente: fra il
-  // pannello e la rete ci sono due memorie — il deposito di `aether-meta` e la
+  // pannello e la rete ci sono due memorie — il deposito di `rymembra-meta` e la
   // colonna `checked_at` — e con `testoCerca` tutt'e due risponderebbero prima
   // che parta una richiesta. Chi preme «Cerca di nuovo» rivedrebbe lo stesso
   // vuoto e concluderebbe che il pulsante è finto. Questo le salta entrambe.
@@ -4417,7 +4417,7 @@ export const ipc = {
   // Può metterci decine di secondi: riapre e riscrive un file per brano.
   arricchimentoAnnulla: () =>
     invoke<EsitoAnnullamento>("arricchimento_annulla"),
-  // **Questo comando riscrive i file dell'utente, ed è l'unico in tutta Aether
+  // **Questo comando riscrive i file dell'utente, ed è l'unico in tutta Rymembra
   // che lo faccia.** Non è una funzione del programma: è una via d'uscita a
   // termine per chi vuole togliere dai propri file i tag che le versioni fino
   // alla 2.3.0 ci avevano messo. Dalla 2.3.1 l'arricchimento scrive in una
@@ -4426,7 +4426,7 @@ export const ipc = {
   // fare. Il CHANGELOG lo dà per rimosso in una release futura.
   //
   // Chi lo chiama deve dirlo sull'etichetta del pulsante: chi ha appena letto
-  // «Aether non modifica i tuoi file» va avvisato prima, non dopo. Non è il
+  // «Rymembra non modifica i tuoi file» va avvisato prima, non dopo. Non è il
   // gemello di `arricchimentoAnnulla` con un nome più lungo — quello dimentica
   // una tabella e non tocca niente sul disco.
   //

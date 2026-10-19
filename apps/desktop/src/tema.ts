@@ -17,7 +17,7 @@
  *
  * Dove la scelta si **ricorda** è invece cambiato: stava in `localStorage`,
  * adesso sta in `ui.theme`, nel database. La ragione sta scritta per esteso in
- * `core/aether-app/src/preferenze.rs`, e in breve è che nel frattempo sono nati
+ * `core/rymembra-app/src/preferenze.rs`, e in breve è che nel frattempo sono nati
  * due lettori di tutte le preferenze — il backup su Drive e il profilo — e una
  * preferenza in `localStorage` non finisce in nessuno dei due.
  *
@@ -54,13 +54,13 @@ export interface TemiSkin {
 }
 
 /** La chiave in cui la scelta viveva prima che tornasse nel nucleo. */
-const CHIAVE = "aether.tema";
+const CHIAVE = "rymembra.tema";
 
 /**
  * La scelta rimasta da prima dell'aggiornamento, se c'è.
  *
  * `null` quando non c'è niente da recuperare — che è il caso di chiunque apra
- * Aether per la prima volta, e di chiunque abbia già fatto questo passaggio.
+ * Rymembra per la prima volta, e di chiunque abbia già fatto questo passaggio.
  */
 export function temaDiRipiego(): Tema | null {
   const letto = window.localStorage.getItem(CHIAVE);

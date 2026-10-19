@@ -1,0 +1,31 @@
+[package]
+name = "rymembra-domain"
+description = "Il dominio puro di Rymembra: nessun I/O, nessun orologio, nessuno stato globale."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Nessuno di questi crate va su crates.io.
+#
+# Non è modestia: sono i pezzi di un'applicazione, con nomi che occuperebbero
+# uno spazio dei nomi pubblico senza offrire niente a nessuno, e con un patto
+# di stabilità che non esiste — le firme qui dentro cambiano quando serve.
+# Senza questa riga un `cargo publish` distratto dalla radice li
+# pubblicherebbe tutti, e un nome preso su crates.io non si restituisce.
+publish = false
+
+[dependencies]
+unicode-normalization.workspace = true
+# La riparazione del testo illeggibile (`codifica`): un `Ã¨` che era un `è`.
+# Serve solo a decodificare — vedi il commento nel `Cargo.toml` della radice.
+encoding_rs.workspace = true
+
+[dev-dependencies]
+# Servono ai soli vettori dorati: il dominio non serializza nulla da sé.
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

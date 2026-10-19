@@ -4,8 +4,8 @@
 //!
 //! Con la preferenza accesa il tasto di chiusura **nasconde** la finestra invece
 //! di far uscire il processo: la musica continua, perché non è mai stata nella
-//! finestra. Sta tutta in `aether-play`, nei fili `aether-uscita` e
-//! `aether-decodifica`, e la pagina non contiene un solo `<audio>` — non c'è
+//! finestra. Sta tutta in `rymembra-play`, nei fili `rymembra-uscita` e
+//! `rymembra-decodifica`, e la pagina non contiene un solo `<audio>` — non c'è
 //! niente, dalla parte della finestra, che nascondendola si fermi.
 //!
 //! Il tasto «riduci a icona» resta quel che era. Chi lo preme sta chiedendo di
@@ -25,7 +25,7 @@
 //!
 //! # Perché le etichette arrivano dalla finestra
 //!
-//! «Mostra Aether» ed «Esci» sono due testi che l'utente legge, e tutti i testi
+//! «Mostra Rymembra» ed «Esci» sono due testi che l'utente legge, e tutti i testi
 //! che l'utente legge stanno in `apps/desktop/src/lingue/`, dove
 //! `strumenti/lingue.js` controlla che l'italiano e l'inglese abbiano le stesse
 //! chiavi. Scrivendoli qui sarebbero gli unici due fuori da quel controllo — e
@@ -39,7 +39,7 @@
 //!
 //! Dalla 3.0 il menù ha anche le tre voci della musica — riproduci o pausa,
 //! successivo, precedente — e l'icona dice cosa sta suonando, nel suggerimento
-//! che compare passandoci sopra. Chi tiene Aether in secondo piano la musica la
+//! che compare passandoci sopra. Chi tiene Rymembra in secondo piano la musica la
 //! comanda da lì, senza riaprire la finestra.
 //!
 //! Le voci passano dagli stessi comandi dei tasti della finestra, attraverso
@@ -94,7 +94,7 @@ const VOCE_PRECEDENTE: &str = "vassoio.precedente";
 ///
 /// Il nome del programma, non tradotto: la stessa scelta di `display_name` in
 /// `media.rs`.
-const SUGGERIMENTO_A_RIPOSO: &str = "Aether";
+const SUGGERIMENTO_A_RIPOSO: &str = "Rymembra";
 
 /// Quanti caratteri del suggerimento si tengono.
 ///
@@ -108,7 +108,7 @@ const SUGGERIMENTO_MASSIMO: usize = 100;
 /// Le etichette del menù, come le manda la finestra.
 #[derive(Clone)]
 struct Etichette {
-    /// «Mostra Aether».
+    /// «Mostra Rymembra».
     mostra: String,
     /// «Esci».
     esci: String,
@@ -236,8 +236,8 @@ pub fn nasconde(app: &tauri::AppHandle) -> bool {
 /// # Perché non è più privata
 ///
 /// Perché ha un secondo chiamante fuori da qui, e fa la stessa cosa per la stessa
-/// ragione: [`crate::una_sola_istanza`], quando qualcuno riapre Aether mentre
-/// Aether è già aperta. Quel gesto e il clic sull'icona nel vassoio sono la
+/// ragione: [`crate::una_sola_istanza`], quando qualcuno riapre Rymembra mentre
+/// Rymembra è già aperta. Quel gesto e il clic sull'icona nel vassoio sono la
 /// stessa richiesta — «rimettimi davanti la finestra» — e due funzioni che la
 /// soddisfano sono due funzioni che il giorno in cui i gesti giusti diventano
 /// quattro ne fanno tre.
@@ -498,7 +498,7 @@ pub fn stacca(app: &tauri::AppHandle) {
 pub fn avvia(app: &tauri::AppHandle) {
     let stato_app = app.state::<Stato>();
     let letto = con_libreria(&stato_app, |libreria| {
-        aether_app::preferenze::secondo_piano(&libreria.connection)
+        rymembra_app::preferenze::secondo_piano(&libreria.connection)
     });
     match letto {
         Ok(attivo) => ricorda(app, attivo),
@@ -512,7 +512,7 @@ pub fn avvia(app: &tauri::AppHandle) {
 #[tauri::command]
 pub fn secondo_piano(stato: State<'_, Stato>) -> Esito<bool> {
     con_libreria(&stato, |libreria| {
-        aether_app::preferenze::secondo_piano(&libreria.connection)
+        rymembra_app::preferenze::secondo_piano(&libreria.connection)
     })
     .map_err(errore)
 }
@@ -531,8 +531,8 @@ pub fn secondo_piano_attiva(
     attivo: bool,
 ) -> Esito<bool> {
     let rimasto = con_libreria(&stato, |libreria| {
-        aether_app::preferenze::imposta_secondo_piano(&libreria.connection, attivo)?;
-        aether_app::preferenze::secondo_piano(&libreria.connection)
+        rymembra_app::preferenze::imposta_secondo_piano(&libreria.connection, attivo)?;
+        rymembra_app::preferenze::secondo_piano(&libreria.connection)
     })
     .map_err(errore)?;
     // Fuori da `con_libreria`, a lucchetto già lasciato: costruire l'icona
@@ -574,7 +574,7 @@ pub fn vassoio_lingua(
     if let Some(trasporto) = &trasporto {
         crate::barra::etichette(
             &app,
-            aether_barra::Etichette {
+            rymembra_barra::Etichette {
                 precedente: trasporto.precedente.clone(),
                 riproduci: trasporto.riproduci.clone(),
                 pausa: trasporto.pausa.clone(),
@@ -696,7 +696,7 @@ mod prove {
     /// Due etichette qualunque: qui conta solo che ci siano.
     fn etichette() -> Etichette {
         Etichette {
-            mostra: "Mostra Aether".to_owned(),
+            mostra: "Mostra Rymembra".to_owned(),
             esci: "Esci".to_owned(),
             trasporto: None,
         }

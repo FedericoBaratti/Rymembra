@@ -45,7 +45,7 @@
 //!
 //! La cartella della sincronia si **scrive a mano** in un campo di testo, e
 //! prima diventava `create_dir_all`: un errore di battitura in
-//! `D:\Sincronia\Aether` era un albero di cartelle nuove su un disco a caso,
+//! `D:\Sincronia\Rymembra` era un albero di cartelle nuove su un disco a caso,
 //! senza che nessuno lo dicesse. Adesso le regole 1 e 2 valgono uguali, e si
 //! crea **al più l'ultimo gradino**: se la cartella che la contiene esiste, la
 //! si crea; se no si dice di no, con la stessa frase di sempre — «scegli una
@@ -53,7 +53,7 @@
 
 use std::path::{Component, Path, PathBuf, Prefix};
 
-use aether_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::errors::{AppError, ErrorCode};
 
 /// Le estensioni di una playlist.
 ///
@@ -62,12 +62,18 @@ use aether_domain::errors::{AppError, ErrorCode};
 /// qui sotto tiene le due liste allineate.
 pub(crate) const ESTENSIONI_PLAYLIST: &[&str] = &["m3u8", "m3u", "pls", "xspf"];
 
-/// L'estensione di un pacchetto di skin.
-pub(crate) const ESTENSIONI_SKIN: &[&str] = &["aeskin"];
+/// L'estensione di un pacchetto di skin, **in scrittura**.
+///
+/// Solo quella di adesso: le estensioni di prima si leggono (la finestra di
+/// scelta, il trascinamento) ma non si scrivono mai, e una lista di file
+/// ammessi in scrittura che le contenesse farebbe nascere dati sotto il nome
+/// vecchio. Vedi `rymembra_domain::eredita`.
+pub(crate) const ESTENSIONI_SKIN: &[&str] = &["ryskin"];
 
-/// L'estensione di un profilo. Il `.json` della 2.2 si **legge** ancora, ma
-/// non si scrive più: un profilo esportato oggi è sempre un `.aeprofile`.
-pub(crate) const ESTENSIONI_PROFILO: &[&str] = &["aeprofile"];
+/// L'estensione di un profilo, **in scrittura**. Il `.json` della 2.2 e il
+/// profilo con l'estensione di prima si **leggono** ancora, ma non si scrivono
+/// più: un profilo esportato oggi è sempre un `.ryprofile`.
+pub(crate) const ESTENSIONI_PROFILO: &[&str] = &["ryprofile"];
 
 /// Un file che la finestra può far scrivere: dove, e con quale estensione.
 #[derive(Debug)]
@@ -223,7 +229,7 @@ mod tests {
 
     #[test]
     fn le_estensioni_delle_playlist_sono_quelle_che_si_sanno_scrivere() {
-        use aether_domain::playlist_file::FormatoPlaylist;
+        use rymembra_domain::playlist_file::FormatoPlaylist;
         // Ogni estensione ammessa ha un formato: nessuna ricade più su M3U per
         // ripiego, che era il difetto.
         for estensione in ESTENSIONI_PLAYLIST {
@@ -261,12 +267,12 @@ mod tests {
         let file =
             file_da_scrivere(r"C:\Musica\SERATA.PLS", ESTENSIONI_PLAYLIST).expect("maiuscole");
         assert_eq!(file.estensione, "pls");
-        let file = file_da_scrivere(r"D:\skin\Notte.AeSkin", ESTENSIONI_SKIN).expect("miste");
-        assert_eq!(file.estensione, "aeskin");
+        let file = file_da_scrivere(r"D:\skin\Notte.RySkin", ESTENSIONI_SKIN).expect("miste");
+        assert_eq!(file.estensione, "ryskin");
 
         // Un nome con dei punti dentro è ancora un nome: conta l'ultimo.
         assert!(file_da_scrivere(r"C:\p\Vol. 2.xspf", ESTENSIONI_PLAYLIST).is_ok());
-        assert!(file_da_scrivere(r"C:\p\aether-profilo.aeprofile", ESTENSIONI_PROFILO).is_ok());
+        assert!(file_da_scrivere(r"C:\p\rymembra-profilo.ryprofile", ESTENSIONI_PROFILO).is_ok());
     }
 
     #[cfg(windows)]
@@ -275,6 +281,16 @@ mod tests {
         assert!(file_da_scrivere(r"\\nas\musica\serata.m3u", ESTENSIONI_PLAYLIST).is_ok());
         assert!(file_da_scrivere(r"\\?\C:\Musica\serata.m3u8", ESTENSIONI_PLAYLIST).is_ok());
         assert!(file_da_scrivere(r"\\?\UNC\nas\musica\serata.pls", ESTENSIONI_PLAYLIST).is_ok());
+    }
+
+    #[test]
+    fn le_estensioni_di_scrittura_sono_solo_quelle_nuove() {
+        use rymembra_domain::eredita;
+        // Le estensioni di prima sono ammesse in lettura da altre parti, e qui
+        // non devono rientrare: un salvataggio che le usasse riporterebbe sul
+        // disco il nome che il trasloco ha appena tolto.
+        assert!(!ESTENSIONI_SKIN.contains(&eredita::ESTENSIONE_SKIN));
+        assert!(!ESTENSIONI_PROFILO.contains(&eredita::ESTENSIONE_PROFILO));
     }
 
     #[cfg(windows)]
@@ -304,14 +320,28 @@ mod tests {
             codice(file_da_scrivere(r"C:\p\serata.m3u8.", ESTENSIONI_PLAYLIST)),
             rifiutato
         );
-        // Un file che si chiama solo `.aeskin` non ha estensione: è un nome.
+        // Un file che si chiama solo `.ryskin` non ha estensione: è un nome.
         assert_eq!(
-            codice(file_da_scrivere(r"C:\p\.aeskin", ESTENSIONI_SKIN)),
+            codice(file_da_scrivere(r"C:\p\.ryskin", ESTENSIONI_SKIN)),
             rifiutato
         );
         // Le liste non si mescolano.
         assert_eq!(
-            codice(file_da_scrivere(r"C:\p\notte.aeskin", ESTENSIONI_PROFILO)),
+            codice(file_da_scrivere(r"C:\p\notte.ryskin", ESTENSIONI_PROFILO)),
+            rifiutato
+        );
+        // E il nome di prima non si scrive: si legge, ma non rinasce sul disco.
+        let skin_di_prima = format!(r"C:\p\notte.{}", rymembra_domain::eredita::ESTENSIONE_SKIN);
+        assert_eq!(
+            codice(file_da_scrivere(&skin_di_prima, ESTENSIONI_SKIN)),
+            rifiutato
+        );
+        let profilo_di_prima = format!(
+            r"C:\p\profilo.{}",
+            rymembra_domain::eredita::ESTENSIONE_PROFILO
+        );
+        assert_eq!(
+            codice(file_da_scrivere(&profilo_di_prima, ESTENSIONI_PROFILO)),
             rifiutato
         );
         assert_eq!(
@@ -338,7 +368,7 @@ mod tests {
             r"\serata.m3u8",
             r"..\serata.m3u8",
             // Dispositivi e pipe.
-            r"\\.\pipe\aether.m3u8",
+            r"\\.\pipe\rymembra.m3u8",
             r"\\.\COM1.m3u8",
             r"\\?\GLOBALROOT\Device\HarddiskVolume1\serata.m3u8",
             // Risalite e flussi NTFS.
@@ -364,7 +394,7 @@ mod tests {
     #[test]
     fn si_crea_solo_l_ultimo_gradino() {
         let radice = tempfile::tempdir().expect("cartella temporanea");
-        let nuova = radice.path().join("Aether");
+        let nuova = radice.path().join("Rymembra");
         // Con uno spazio in coda, come esce da un campo di testo incollato.
         let scritto = format!("{} ", nuova.display());
         assert_eq!(

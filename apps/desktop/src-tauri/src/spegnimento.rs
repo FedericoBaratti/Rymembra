@@ -6,7 +6,7 @@
 //! arriva `CloseRequested`, poi `ExitRequested`, poi il ciclo degli eventi di
 //! `tao` si dichiara `Destroyed`, poi `DestroyWindow` smonta la finestra
 //! nascosta su cui viaggiano i messaggi fra i fili. In mezzo a tutto questo i
-//! fili di sottofondo di Aether — l'orologio a quattro colpi al secondo, lo
+//! fili di sottofondo di Rymembra — l'orologio a quattro colpi al secondo, lo
 //! spettro a trenta — continuano a chiamare `app.emit`, che non è una chiamata
 //! innocua: è una `PostMessageW` verso quella finestra nascosta.
 //!

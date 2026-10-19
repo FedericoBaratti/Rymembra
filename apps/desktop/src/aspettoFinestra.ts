@@ -431,8 +431,8 @@ export function useAspetto({
   /**
    * L'accento segue la copertina del disco che sta suonando.
    *
-   * Tre righe qui e nessuna decisione: il colore lo estrae `aether-app` dalla
-   * miniatura, e se sia leggibile lo decide `aether-skin` in OKLCH, dove vive
+   * Tre righe qui e nessuna decisione: il colore lo estrae `rymembra-app` dalla
+   * miniatura, e se sia leggibile lo decide `rymembra-skin` in OKLCH, dove vive
    * `contrast_ratio`. La finestra scrive quel che le viene detto — è la stessa
    * regola per cui il foglio della skin arriva già compilato.
    *

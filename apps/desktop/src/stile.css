@@ -1,7 +1,7 @@
 /*
  * I colori non stanno più qui: li scrive il motore delle skin.
  *
- * Quel che segue è il foglio che `aether-skin` produce per la skin di serie,
+ * Quel che segue è il foglio che `rymembra-skin` produce per la skin di serie,
  * copiato sotto `:root` invece che sotto `:root[data-skin='plain']`. Serve
  * perché l'IPC risponde qualche millisecondo dopo il primo disegno, e in quei
  * millisecondi senza token la finestra sarebbe testo nero su bianco. È lo stesso
@@ -14,7 +14,7 @@
  *
  * NON si modifica a mano. Si rigenera con
  *
- *     cargo run -p aether-skin --example compila
+ *     cargo run -p rymembra-skin --example compila
  *
  * e due test del crate desktop confrontano questi blocchi con l'uscita del
  * compilatore: una copia che può divergere in silenzio è il difetto che tutto il
@@ -238,7 +238,7 @@
  * `strumenti/classi.js`, con l'elenco delle eccezioni vuoto.
  *
  * Sta **dopo** il blocco generato apposta, e non è una sfumatura: quel blocco lo
- * riscrive `cargo run -p aether-skin --example compila` e lo confrontano riga
+ * riscrive `cargo run -p rymembra-skin --example compila` e lo confrontano riga
  * per riga due prove del crate desktop, quindi una dichiarazione lassù
  * sparirebbe alla prima rigenerazione portandosi dietro i due test.
  */
@@ -635,8 +635,8 @@ body {
  * nome ripetuto e tre quadrati — non c'è più. Non era brutta per gusto: era di
  * un altro programma. Portava i suoi colori dentro una finestra che ha una
  * skin, restava chiara mentre tutto il resto era scuro, e occupava trentadue
- * pixel su tutta la larghezza per dire «Aether» a chi aveva appena aperto
- * Aether.
+ * pixel su tutta la larghezza per dire «Rymembra» a chi aveva appena aperto
+ * Rymembra.
  *
  * # Perché non è stata sostituita da un'altra fascia
  *
@@ -3277,7 +3277,7 @@ body {
  * l'unico dei quattro che si trascina.
  *
  * `min-width: 0` e l'ellissi non sono cosmetici. `.colonna .giudizio` sta in
- * una colonna larga **348 px fissi** — è `core/aether-skin/src/layout.rs`, non
+ * una colonna larga **348 px fissi** — è `core/rymembra-skin/src/layout.rs`, non
  * una percentuale — e il contenuto minimo di una riga di testo senza `min-width:
  * 0` è la riga intera: spingerebbe fuori la coda invece di accorciarsi. Con
  * un'edizione dal nome lungo il bitrate finisce sotto i puntini, e il markup
@@ -3421,7 +3421,7 @@ body {
 /* ── il testo che scorre ─────────────────────────────────────────────────── */
 /* Le due parti che una skin può ridipingere sono `lyrics-screen` — il pannello —
    e `lyric-line` — la riga, accesa e no. Sono dichiarate in
-   `aether-skin::parts` da prima che il testo esistesse: il posto era deciso, e
+   `rymembra-skin::parts` da prima che il testo esistesse: il posto era deciso, e
    questo è quel che ci è arrivato dentro.
 
    Da qui in giù vale una disciplina di peso, e conviene dirla una volta sola.
@@ -10324,7 +10324,7 @@ body {
 
 /* ── lo stesso movimento ridotto, chiesto da qui ──────────────────────────────
  *
- * `data-motion-utente='ridotto'` è la preferenza che si sceglie dentro Aether,
+ * `data-motion-utente='ridotto'` è la preferenza che si sceglie dentro Rymembra,
  * in «Movimento e accesso». Fa **le stesse cose** del blocco qui sopra, ed è
  * scritta una seconda volta perché una `@media` non si può allargare: le sue
  * regole valgono quando il sistema lo chiede e mai altrimenti, e non c'è modo

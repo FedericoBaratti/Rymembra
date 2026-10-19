@@ -77,6 +77,7 @@ import { ConfermaRimozioni } from "./ConfermaRimozioni";
 import { ConfermaSkin } from "./ConfermaSkin";
 import { ConfermaTrasloco } from "./ConfermaTrasloco";
 import { Copertina } from "./Copertina";
+import { CARTELLA_DELLA_1_0 } from "./eredita";
 import { brani_, durata, nomeArtista, titoloAlbum } from "./formato";
 import { Fornitori } from "./Fornitori";
 import {
@@ -1208,10 +1209,10 @@ export function App() {
    * Sceglie il database della versione rilasciata.
    *
    * La cartella dati di questa applicazione è **diversa** da quella della 1.0.0
-   * — `%APPDATA%\Aether` contro `%APPDATA%\io.github.federicobaratti.aether` — apposta perché
-   * finché questa non è finita la vecchia deve restare apribile. Perciò il
-   * dialogo si apre lì: è dove il file sta, e comporre il percorso a mano è il
-   * modo di sbagliarlo su un profilo spostato.
+   * — `%APPDATA%\io.github.federicobaratti.rymembra` contro la cartella dati
+   * della 1.0 — apposta perché finché questa non è finita la vecchia deve
+   * restare apribile. Perciò il dialogo si apre lì: è dove il file sta, e
+   * comporre il percorso a mano è il modo di sbagliarlo su un profilo spostato.
    */
   const scegliDatabase = async () => {
     try {
@@ -1221,7 +1222,7 @@ export function App() {
         // Sparso e non `defaultPath: … : undefined`: con
         // `exactOptionalPropertyTypes` una proprietà assente e una uguale a
         // `undefined` sono due cose diverse, e il dialogo vuole la prima.
-        ...(roaming ? { defaultPath: `${roaming}\\Aether` } : {}),
+        ...(roaming ? { defaultPath: `${roaming}\\${CARTELLA_DELLA_1_0}` } : {}),
         filters: [
           { name: t("file.database"), extensions: ["db", "sqlite", "sqlite3"] },
         ],

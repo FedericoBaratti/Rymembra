@@ -5,7 +5,7 @@
  *
  * Perché `meta` ha quattro campi obbligatori — `name`, `author`, `version` — e
  * uno facoltativo che la scheda della skin mostra sotto il nome. Chiedere solo
- * il nome vorrebbe dire scrivere «Aether» come autore di un tema che l'utente ha
+ * il nome vorrebbe dire scrivere «Rymembra» come autore di un tema che l'utente ha
  * fatto da sé, e lasciare a lui il compito di scoprire che si corregge nella
  * scheda «Documento» dello Studio. La versione è l'unica che non si chiede: un
  * tema nuovo è `1.0.0` e non c'è una seconda risposta possibile.

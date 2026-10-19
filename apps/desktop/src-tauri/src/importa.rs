@@ -1,8 +1,8 @@
 //! L'importazione da un link, dal lato della finestra.
 //!
 //! Sei comandi, una famiglia di eventi e una cella. Il dialogo con i cataloghi
-//! sta in `aether-catalogo`, l'abbinamento in `aether-domain`, la scrittura in
-//! `aether-app`: qui si tiene una cella e si prende il lucchetto — due cose che
+//! sta in `rymembra-catalogo`, l'abbinamento in `rymembra-domain`, la scrittura in
+//! `rymembra-app`: qui si tiene una cella e si prende il lucchetto — due cose che
 //! nessuno di quei tre sa fare.
 //!
 //! # Che cosa è cambiato, e perché il modulo si è accorciato di trecento righe
@@ -37,11 +37,11 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
-use aether_app::import_esterno::{self, RapportoImport};
-use aether_catalogo::Cataloghi;
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::esterno::{AvanzamentoLettura, ContenutoEsterno, Fonte};
-use aether_net::Rete;
+use rymembra_app::import_esterno::{self, RapportoImport};
+use rymembra_catalogo::Cataloghi;
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::esterno::{AvanzamentoLettura, ContenutoEsterno, Fonte};
+use rymembra_net::Rete;
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
@@ -230,9 +230,9 @@ fn risolvi(
     url: &str,
     forza: bool,
 ) -> Result<(), AppError> {
-    let Some(riferimento) = aether_catalogo::riconosci(url) else {
+    let Some(riferimento) = rymembra_catalogo::riconosci(url) else {
         return Err(AppError::new(ErrorCode::DownloadUnrecognizedUrl)
-            .with_message("non è un link di un catalogo che Aether sappia leggere".to_owned()));
+            .with_message("non è un link di un catalogo che Rymembra sappia leggere".to_owned()));
     };
 
     let chiave = chiave(riferimento.fonte, &riferimento.id);
@@ -280,7 +280,7 @@ fn porta_dentro(rete: &Rete, url: &str) -> Option<String> {
     let mut byte = Vec::new();
     rete.preleva(url, &[], &mut byte, &|| false, &mut |_, _| {})
         .ok()?;
-    aether_net::immagine::data_uri(&byte, COPERTINA_MASSIMA)
+    rymembra_net::immagine::data_uri(&byte, COPERTINA_MASSIMA)
 }
 
 /// Fa qualcosa con il contenuto in cella.
@@ -341,7 +341,7 @@ pub fn import_anteprima(
             scaricabili: c
                 .tracks
                 .iter()
-                .filter(|b| b.disponibilita == aether_domain::esterno::Disponibilita::Scaricabile)
+                .filter(|b| b.disponibilita == rymembra_domain::esterno::Disponibilita::Scaricabile)
                 .count(),
         })
     })
@@ -528,8 +528,8 @@ mod prove {
             "https://www.youtube.com/watch?v=4IJI6soiQhI",
             "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT",
         ] {
-            assert!(aether_catalogo::riconosci(url).is_none(), "su «{url}»");
+            assert!(rymembra_catalogo::riconosci(url).is_none(), "su «{url}»");
         }
-        assert!(aether_catalogo::riconosci("https://archive.org/details/gd1977-05-08").is_some());
+        assert!(rymembra_catalogo::riconosci("https://archive.org/details/gd1977-05-08").is_some());
     }
 }

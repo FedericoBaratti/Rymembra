@@ -1,0 +1,33 @@
+[package]
+name = "rymembra-oauth"
+description = "Le parti di OAuth che non sanno con chi stanno parlando: PKCE, il servitore di loopback, il portachiavi."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Nessuno di questi crate va su crates.io.
+#
+# Non è modestia: sono i pezzi di un'applicazione, con nomi che occuperebbero
+# uno spazio dei nomi pubblico senza offrire niente a nessuno, e con un patto
+# di stabilità che non esiste — le firme qui dentro cambiano quando serve.
+# Senza questa riga un `cargo publish` distratto dalla radice li
+# pubblicherebbe tutti, e un nome preso su crates.io non si restituisce.
+publish = false
+
+[dependencies]
+rymembra-domain = { path = "../rymembra-domain" }
+getrandom.workspace = true
+sha2.workspace = true
+# Il portachiavi di sistema, dietro una feature accesa di serie: una futura
+# build Android la spegne e fornisce la sua, senza portarsi dietro il
+# Credential Manager di Windows.
+keyring = { workspace = true, optional = true }
+
+[features]
+default = ["portachiavi"]
+portachiavi = ["dep:keyring"]
+
+[lints]
+workspace = true

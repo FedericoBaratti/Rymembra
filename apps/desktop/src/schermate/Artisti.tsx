@@ -3,7 +3,7 @@
  *
  * # Il ritratto è un mosaico, e non è un ripiego
  *
- * Nessuna immagine d'artista esisterà mai in Aether: non c'è rete, e un lettore
+ * Nessuna immagine d'artista esisterà mai in Rymembra: non c'è rete, e un lettore
  * locale che va a prendersi i ritratti su internet è un lettore locale che
  * chiama casa. Quindi il riquadro mostra fino a quattro copertine dei suoi
  * dischi, in un mosaico due per due.

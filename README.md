@@ -1,4 +1,4 @@
-# Aether
+# Rymembra
 
 A music player for Windows, written in Rust. It plays the audio files on your
 disk and joins your local library up with the freely accessible music catalogs.
@@ -29,7 +29,7 @@ disk and joins your local library up with the freely accessible music catalogs.
 
 ## Overview
 
-Aether plays the audio files already on your disk. Starting from a playlist —
+Rymembra plays the audio files already on your disk. Starting from a playlist —
 exported from your Spotify archive, read from an M3U file, or given as a link —
 it matches the tracks against your local library and fetches the missing ones
 from the freely accessible catalogs: Internet Archive and Audius. Since 2.4.0
@@ -44,15 +44,28 @@ does not ship third-party binaries. The reasons are documented in [Sources that
 are excluded](#sources-that-are-excluded) and are a project constraint, not a
 temporary limitation.
 
-![Aether's home screen](immagini/casa.webp)
+![Rymembra's home screen](immagini/casa.webp)
 
-The home screen. The «Pick up where you left off» panel restores the last
-interrupted track and the exact position inside it. Below are the recently
-played tracks, the most recently added albums, and the records that have been in
-the library a long time and never played.
+The home screen. At the top, «Il lunedì» (*Monday*): this week's collections,
+twenty tracks each, worked out on this computer; the dot marks the ones that are
+new. Below, «Riprendi dov'eri» (*Resume*) brings back the last interrupted track
+at the exact point where it stopped — here *Eyes Wide Shut*, at 3:25 — and one
+click plays it from there. Then «Ascoltati di recente» (*Recently played*);
+further down the page, out of the picture, the most recently added albums and
+the records you haven't played in a while.
 
-*The images in this document come from a real library of 1465 tracks and 935
-albums.*
+On the left, the destinations with their counts — «Cartelle» (*Folders*) counts
+the watched folders, not the tracks, and «Esplora» (*Explore*) has no count at
+all — and, under «Playlist», the buttons to import a playlist from a file, to
+create a smart one and to create an empty one. On the right, the column of what
+is playing: cover, title, progress, controls, rating, volume and the line that
+says what the file is, with the queue underneath («Coda», 11 tracks here), the
+history («Cronologia») and the button that empties the queue («Svuota»). The
+same column comes back in most of the pictures that follow.
+
+*The images in this document show the Italian interface — the program speaks
+English too, and the Studio picture is taken in English — and come from a real
+library of 2611 tracks, 1096 albums and 685 artists.*
 
 ---
 
@@ -69,31 +82,50 @@ albums.*
 
 On Audius, permission is set by the artist per individual track. There are three
 distinct controls: the download switch and two *gates*, which can make access
-conditional on following the artist or on holding a token. Aether checks all
+conditional on following the artist or on holding a token. Rymembra checks all
 three and considers permission granted only in the absence of any prohibition.
 
 **Jamendo** is implemented and covered by tests, but disabled in this version.
 The cause isn't technical: the API is free for non-commercial use only, and the
 terms define commercial use as «any monetary compensation». The module is
 already set up for streaming-only listening — the terms forbid caching and
-offline access — through `aether-net::FlussoHttp`, which plays a track without
+offline access — through `rymembra-net::FlussoHttp`, which plays a track without
 writing it to disk. See [Known limits](#known-limits-and-planned-work).
 
 ![The «Where the music comes from» section in the settings](immagini/fonti.webp)
 
-The same sources in the program's interface. The «From a link» field accepts
-archive.org and audius.co addresses without requiring accounts or API keys.
-«Your Spotify archive» processes locally the ZIP archive Spotify hands you on
-request.
+The same sources in the program, under *Settings → Services → Import from a
+service* («Servizi → Importa da un servizio»). The «?» in the corner of the card
+opens the guide to the section, closed in the picture. What the rows do:
+
+- **«Da un link»** (*From a link*) takes a track, an album or a collection from
+  archive.org or audius.co, with no account and no API key. Rymembra reads what
+  is inside, looks in the library for what you already have, and fetches the
+  rest when the license allows it.
+- **«Il tuo archivio Spotify»** (*Your Spotify archive*) reads, on this
+  computer, the ZIP that Spotify hands you on request: playlists, liked tracks,
+  saved albums and artists, and years of listening, all at once instead of
+  thirty pasted links.
+- **Internet Archive** and **Audius** are listed with the rule they follow: a
+  track is streamed and downloaded only when its own license allows it.
+- **«Accetta registrazioni diverse»** (*Accept different recordings*) lets a
+  concert, a reissue or a re-recording stand in for the studio version, since
+  the free catalogs are mostly made of those. When one is taken, the track
+  says so with a «dal vivo» (*live*) badge. With the switch off, the search is
+  strict and finds much less.
+
+The imports themselves run in the «Importazioni» (*Imports*) page: the queue
+goes on with the screen closed, and the reports can be opened again from
+there.
 
 ### What it doesn't cover
 
 No freely accessible source distributes the commercial catalog. This is not a
 technical limitation to be worked around: it is the reason other programs carry
-out operations the terms of the services they use do not permit. Aether covers
+out operations the terms of the services they use do not permit. Rymembra covers
 what it can through lawful channels and, for the rest of the catalog, points at
 where to buy it. Anyone looking for a tool to obtain commercial discographies
-for free will not find that feature in Aether.
+for free will not find that feature in Rymembra.
 
 ---
 
@@ -125,7 +157,7 @@ a longer listening history than the public API offers.
 
 ## Features
 
-- **Every track at the same loudness.** Aether measures each file with EBU
+- **Every track at the same loudness.** Rymembra measures each file with EBU
   R128 — integrated loudness and true peak — in a background pass that runs
   only while nothing is playing, and uses ReplayGain or R128 tags where the
   file has them. Track, album or automatic mode; a track is never raised past
@@ -136,7 +168,14 @@ a longer listening history than the public API offers.
   persistent queue. A single audio engine (`cpal` + `symphonia`) spread over
   three threads, with no shared lock at all between the decoder and the audio
   callback; the stream sleeps after thirty seconds of silence, so the PC can
-  go to sleep with Aether open.
+  go to sleep with Rymembra open.
+- **What the file really is.** Next to the rating, a line says what is
+  playing — «FLAC · 44.1 kHz · 24-bit · Stereo · 1058 kbps» — as the
+  **decoder** reports it while the track plays: the real codec inside an
+  `.m4a`, the MP3 that a FLAC page of the Internet Archive actually streams.
+  It describes the edition and not the output; if the sound card is
+  resampling, the line still says 44.1 kHz, and hovering it says «Resampled
+  from 44.1 kHz to 48 kHz for the audio output».
 - **A library on SQLite**: incremental scanning with detection of moved files,
   manual and automatic playlists, ratings, favorites and listening history. A
   track can leave it too: «Remove from library» takes the row out and leaves
@@ -203,13 +242,14 @@ a longer listening history than the public API offers.
   It is off until you configure a provider, and what it sends is documented in
   [`PRIVACY.md`](PRIVACY.md) § 2-quater.
 - **Backup and synchronization** to Google Drive or to a shared folder, plus a
-  **profile** you can carry by hand: a `.aeprofile` archive with the settings,
+  **profile** you can carry by hand: a `.ryprofile` archive with the settings,
   the library, the listening history, the lyrics, your corrections, the covers
   and the skin packages in it. It is written and read straight onto the disk,
   one entry at a time, so a profile of several hundred megabytes never sits in
   memory; importing shows you the plan first and proposes a remapping for every
   root that does not exist on this machine. The old seventeen-line JSON is
-  still read, and no longer written.
+  still read, and no longer written. Profiles and skin packages written by the
+  previous version can still be imported.
 
   **Google Drive needs a Google project of your own, and the installer
   published here ships without one — on purpose.** A desktop program cannot
@@ -218,12 +258,14 @@ a longer listening history than the public API offers.
   quota that anybody could exhaust. So *Settings → Backup* says «not
   configured» and explains how to turn it on: create an OAuth client of the
   «Desktop app» type in the Google Cloud Console and paste its ID and secret.
-  The folder Aether writes to is its private application folder, visible only
+  The folder Rymembra writes to is its private application folder, visible only
   to that client. If you would rather not, synchronizing through a shared
   folder (Syncthing, OneDrive, Dropbox) needs no account, and an exported
   profile keeps a copy of everything. Builds made with
-  `AETHER_GOOGLE_CLIENT_ID` and `AETHER_GOOGLE_CLIENT_SECRET` in the
-  environment carry their own client and skip this step.
+  `RYMEMBRA_GOOGLE_CLIENT_ID` and `RYMEMBRA_GOOGLE_CLIENT_SECRET` in the
+  environment carry their own client and skip this step. Backup and sync files
+  that the previous version left in that folder are recognised and renamed in
+  place at the next pass, without uploading them again.
 - **Scrobbling** to Last.fm and ListenBrainz.
 - **Automatic updates**: a check for releases on GitHub at every start, ten
   seconds after the window is ready, then every thirty minutes; without a
@@ -248,26 +290,33 @@ than faked. *Settings → Redo the tour* brings it back.
 
 ![The track list](immagini/brani.webp)
 
-The track list, with cover art, album, rating and duration. There are no
-pages, numbered or endless: the scrollbar is as long as the whole list from the
-first moment, only the rows on screen are fetched — dragging to the bottom of
-fifty thousand tracks asks for the last rows and nothing in between — and a
-view you leave keeps its scroll position, focus and selection for when you come
-back. «Select all» selects the whole view, not what happens to be loaded.
+The track list, «Brani» (*Tracks*): cover, title and artists, album, rating,
+duration and the heart of the favorites, here in «Per scaffale» order (*Shelf
+order*), with the search field beside it — `/` or `Ctrl+F` jumps to it. There
+are no pages, numbered or endless: the scrollbar is as long as the whole list
+from the first moment, only the rows on screen are fetched — dragging to the
+bottom of fifty thousand tracks asks for the last rows and nothing in between —
+and a view you leave keeps its scroll position, focus and selection for when you
+come back. «Select all» selects the whole view, not what happens to be loaded.
 
 ![The playback screen with the spectrum analyzer](immagini/riproduzione.webp)
 
-The playback screen with the spectrum analyzer on. The samples are taken after
-the equalizer and before the volume control: changes to the equalization curve
-are visible in the bars, changes to the volume are not. The bands reach the
-interface through a ring buffer that discards excess samples when it is full, so
-as not to introduce any wait in the audio callback. Under the rating there is a
-line saying what the file is — «FLAC · 44.1 kHz · 24-bit · Stereo · 1058 kbps»
-— as the **decoder** reports it while the track plays: the real codec inside an
-`.m4a`, the MP3 that a FLAC page of the Internet Archive actually streams. It
-describes the edition and not the output; if the sound card is resampling, the
-line still says 44.1 kHz, and hovering it says «Resampled from 44.1 kHz to 48
-kHz».
+The playback screen, «In riproduzione» (*Now playing*), with the spectrum scene
+on — here *Skirmish*, from the soundtrack of *S.T.A.L.K.E.R. 2*. The scene is a
+grid of bars: from 8 to 1024 across — the row of numbers at the bottom left
+chooses how many, 128 here — and about fifty rows in depth. The front row is
+now; the rows behind are the last half minute of music, moving back toward the
+horizon and fading, with the reflection underneath. The camera sways with the
+energy of the low bands, so when the music stops it stops too.
+
+The samples are taken after the equalizer and before the volume control:
+changes to the equalization curve are visible in the bars, changes to the
+volume are not. The bands reach the interface through a ring buffer that
+discards excess samples when it is full, so as not to introduce any wait in
+the audio callback. At the bottom right, the line that says what the file is:
+«FLAC · 48 kHz · 24 bit · Stereo · 1314 kbps». The three buttons at the top
+right switch the lyrics, the spectrum and the queue on and off; «Chiudi»
+(*Close*), or Esc, closes the screen.
 
 The whole window zooms, `Ctrl++`, `Ctrl+-` and `Ctrl+0`, over the same seven
 steps between 90% and 200% that every browser offers. It is the WebView's zoom
@@ -280,19 +329,25 @@ it is the correction left over after Windows' own scaling on this monitor.
 
 ## Customization
 
-| «Plain» skin, the default | «Cyberpunk Edge» skin, installed |
+| «Plain» skin, the default | «Neon» skin, built in |
 | --- | --- |
-| ![The album grid with the Plain skin](immagini/album.webp) | ![The same grid with the Cyberpunk Edge skin](immagini/skin.webp) |
+| ![The album grid with the Plain skin](immagini/album.webp) | ![The same grid with the Neon skin](immagini/skin.webp) |
 
-The same screen with two different skins. A skin redefines colors, borders,
-shadows, type and corner radii across 101 interface components — and, since
-2.3.0, the visualizer's scene as well: not only its colors, but its geometry and
-its behavior, from the depth of the room and the aperture of the lens down to
-how fast a bar falls. This is not a matter of switching between a light theme
-and a dark one — although a skin has both: it declares its base scheme, dark
-or light, and a variant for the other one that may override its tokens,
-palette, patterns and components. A skin can also ship its own fonts and
-images.
+The same album grid with two of the skins that come with the program. «Plain»
+lays the covers on near black with a single violet accent; «Neon» turns the
+accent cyan and makes the current entry glow, writes the name in magenta and the
+titles in spaced capitals, and squares the cards off with a thin border. Only
+the skin changes between the two pictures: the library, the layout and the track
+in the column are the same.
+
+A skin redefines colors, borders, shadows, type and corner radii across 101
+interface components — and, since 2.3.0, the visualizer's scene as well: not
+only its colors, but its geometry and its behavior, from the depth of the room
+and the aperture of the lens down to how fast a bar falls. This is not a matter
+of switching between a light theme and a dark one — although a skin has both: it
+declares its base scheme, dark or light, and a variant for the other one that
+may override its tokens, palette, patterns and components. A skin can also ship
+its own fonts and images.
 
 Since 3.0 a skin can **animate any component**. A component binds named
 animations to fifteen triggers: its ten states — hover, pressed, selected,
@@ -308,29 +363,50 @@ through `calc(… * var(--motion-scale))`, and a test asserts that none escapes.
 Instead of fixed caps, each component and the whole window have a cost budget:
 going over it is a warning, shown while you spend it.
 
-Skins written for Aether 2 are migrated as they are read and look as they
+Skins written for Rymembra 2 are migrated as they are read and look as they
 did — a test compares what they compile to against frozen copies, rule by
-rule. Skins written in the new format do not open in Aether 2.
+rule. Skins written in the new format do not open in Rymembra 2.
 
 ![The Studio, the skin editor](immagini/studio.webp)
 
-The Studio is the built-in editor, laid out as one workspace. On the left,
-the components grouped by area with the tree of the window's layout, or the
-variables — the 73 tokens, the palette, patterns, easings, fonts and images. In
-the middle, the **real pages of the application**, running on a sample library
-and never on yours, at three window widths, with any state forced on the
-selected component and a probe that names whatever sits under the pointer. On
-the right, the inspector: the style, states, motion and code of the selection,
-with its cost. At the bottom, a timeline to draw an animation keyframe by
-keyframe, the list of problems with «go» and «fix», and the whole document in a
-code editor that completes from the format's own vocabulary. A palette
-generator builds a legible set of colors from one color or from the cover that
-is playing, and «Try on the app» dresses the real window in the draft until
-you press Esc.
+The Studio is the built-in editor, laid out as one workspace. In the picture it
+has «Neon Edge» open — a skin derived from «Neon» with *Settings → Appearance →
+Derive…* — with the album card selected.
 
-The status bar reports errors, warnings and the number of color pairs with a
-contrast ratio below 4.5:1, the recommended legibility threshold. The figure is computed before export, so that a skin distributed with
-contrast warnings is the result of a deliberate choice.
+- **Top bar.** The skin's name, version and save state, undo and redo, the
+  theme being edited (Dark, Light), the window width of the preview (3
+  columns, 2 columns, Narrow) and a button that pauses the canvas. On the
+  right: the button that opens the assistant's chat (see [Asking instead of
+  writing](#asking-instead-of-writing)); «Try on the app», which dresses the
+  real window in the draft until you press Esc; «Export», which writes the
+  package; and «Save and use», which puts it on.
+- **Left.** «Layers», the components grouped by area as they sit in the
+  window's layout, each group with its count — with a search (`Ctrl+K`) and
+  a filter for all of them, the repainted ones and the animated ones — or
+  «Variables»: the 73 tokens, the palette, patterns, easings, fonts and images.
+- **Middle.** The **real pages of the application** — the page menu says
+  which, «Albums» here — running on a sample library and never on yours.
+  Beside it, «Nothing over» chooses what to lay on top of the page: a menu, a
+  dialog, the queue, the equalizer. The row below forces any state on the
+  selected component (Base, Hover, Pressed, Selected and the rest), and «Force
+  on canvas» shows it in the preview. A probe names whatever sits under the
+  pointer.
+- **Right.** The inspector: «Style», «States», «Motion» and «Code» for the
+  selection, with what it costs against its budget — «Surface 0/10», «Motion
+  4/16».
+- **Status bar.** Whether the skin is valid, its warnings, the number of color
+  pairs with a contrast ratio below 4.5:1 (the recommended legibility
+  threshold), and the motion budget of the whole window: «Valid · 0 warnings ·
+  0 low contrasts · motion 94/96» here. The figure is computed before export,
+  so a skin distributed with contrast warnings is the result of a deliberate
+  choice.
+
+The drawer at the bottom is closed in the picture: it opens where it is needed —
+«open in the timeline» from an animation, the error count, «go to line» from a
+problem. It holds a timeline to draw an animation keyframe by keyframe, the
+list of problems with «go» and «fix», and the whole document in a code editor
+that completes from the format's own vocabulary. A palette generator builds a
+legible set of colors from one color or from the cover that is playing.
 
 ### Asking instead of writing
 
@@ -366,13 +442,25 @@ database, and never passes through the window.
 ## Installation
 
 The Windows installer is available among the assets of the [latest
-release](https://github.com/FedericoBaratti/Aether/releases/latest): an NSIS
+release](https://github.com/FedericoBaratti/Rymembra/releases/latest): an NSIS
 executable.
 
 **Windows SmartScreen warning.** The executable is not signed with a code
 signing certificate, so SmartScreen blocks it on first launch. To proceed: «More
 info» → «Run anyway». The reasons for the missing signature are given in [Known
 limits](#known-limits-and-planned-work).
+
+**Coming from the previous version.** The installer removes the previous
+version by itself, and leaves its data where they are: if that version is
+still open it waits a few seconds for it to close (or asks you to close it,
+also from the icon next to the clock) before going on. The first time
+Rymembra starts, the data of the previous version are transferred
+automatically — library, settings, covers, skins, Studio drafts, profile
+copies, the log — and the accounts it had saved in the operating system's
+keychain and its backup and sync files on Google Drive are picked up on first
+use. Nothing is overwritten or deleted: if a library already exists in the new
+folder it wins, and if the previous version is still running when Rymembra
+starts, Rymembra says so and closes without touching anything.
 
 The changes introduced by each version are listed in
 [`CHANGELOG.md`](CHANGELOG.md). The numbering rule is described at the top of
@@ -387,9 +475,9 @@ in its own entry and says what going back would cost** — which is always the
 same thing: a copy of the database taken before the update, because an older
 version refuses to open a newer database rather than guessing at it. 2.3.1
 migrates twice, `019_identita_e_metadati.sql` and `020_cronologia_unica.sql`,
-and it is a patch. From 3.0 Aether takes that copy itself before every
-migration — `aether.db.schema-NNN.bak`, beside the database, the last two
-kept — so going back means putting it in place of `aether.db`.
+and it is a patch. From 3.0 Rymembra takes that copy itself before every
+migration — `rymembra.db.schema-NNN.bak`, beside the database, the last two
+kept — so going back means putting it in place of `rymembra.db`.
 
 ---
 
@@ -408,7 +496,7 @@ kept — so going back means putting it in place of `aether.db`.
 ```bash
 # Everything CI checks, in one go: versions, translations, CSS classes, the
 # interface's build and tests, the release tools' tests, formatting, clippy
-# and about 2,300 Rust tests — all runnable with no network connection
+# and about 2,500 Rust tests — all runnable with no network connection
 cd apps/desktop && npm run verify
 ```
 
@@ -444,7 +532,7 @@ versioned: the `.chiavi/` folder is excluded through `.gitignore`.
 
 ```bash
 cd apps/desktop
-npm run tauri signer generate -- -w ../../.chiavi/aether.key
+npm run tauri signer generate -- -w ../../.chiavi/rymembra.key
 ```
 
 The contents of the `.pub` file go into `plugins.updater.pubkey` inside
@@ -470,39 +558,39 @@ without `--app-version` produces an update no 3.x copy will install, and
 
 ```
 core/
-  aether-domain     pure logic: no I/O, no access to the clock,
-                    no global state
-  aether-play       audio engine (cpal + symphonia)
-  aether-app        the library: SQLite, scanning, imports, queue
-  aether-catalogo   the free-access catalogs; the only module that
-                    downloads audio
-  aether-net        blocking HTTP (ureq), rate limiting, circuit breaker
-  aether-meta       MusicBrainz, Cover Art Archive, Deezer, iTunes
-  aether-archivio   reading the Spotify GDPR archive
-  aether-skin       the skin format and its compiler
-  aether-oauth      PKCE and the system keychain
-  aether-cloud      Google Drive
-  aether-sync       synchronization between devices
-  aether-scrobble   Last.fm and ListenBrainz
-  aether-ia         an OpenAI-compatible client for language models,
-                    which knows nothing about skins
-apps/desktop        the interface: Tauri 2 + React 19
+  rymembra-domain     pure logic: no I/O, no access to the clock,
+                      no global state
+  rymembra-play       audio engine (cpal + symphonia)
+  rymembra-app        the library: SQLite, scanning, imports, queue
+  rymembra-catalogo   the free-access catalogs; the only module that
+                      downloads audio
+  rymembra-net        blocking HTTP (ureq), rate limiting, circuit breaker
+  rymembra-meta       MusicBrainz, Cover Art Archive, Deezer, iTunes
+  rymembra-archivio   reading the Spotify GDPR archive
+  rymembra-skin       the skin format and its compiler
+  rymembra-oauth      PKCE and the system keychain
+  rymembra-cloud      Google Drive
+  rymembra-sync       synchronization between devices
+  rymembra-scrobble   Last.fm and ListenBrainz
+  rymembra-ia         an OpenAI-compatible client for language models,
+                      which knows nothing about skins
+apps/desktop          the interface: Tauri 2 + React 19
 ```
 
-The direction of the dependencies is binding. `aether-catalogo` has no access to
+The direction of the dependencies is binding. `rymembra-catalogo` has no access to
 `rusqlite`: it is therefore structurally impossible, and not merely inadvisable,
 to hold the library lock for the whole duration of a download.
 
 How every part works — threads and locks, the schema, the scan, the audio
 engine, the skin compiler, the IPC surface — is described in the [technical
-documentation](https://federicobaratti.github.io/Aether/docs/), whose source is
+documentation](https://federicobaratti.github.io/Rymembra/docs/), whose source is
 in `site/docs/`.
 
 ---
 
 ## Licenses
 
-Aether's code is distributed under the **MIT** license
+Rymembra's code is distributed under the **MIT** license
 ([`LICENSE`](LICENSE)).
 
 The dependencies use different licenses: the `symphonia` family is **MPL-2.0**,
@@ -511,7 +599,7 @@ The dependencies use different licenses: the `symphonia` family is **MPL-2.0**,
 given in [Building](#building). The Geist and Bricolage Grotesque fonts are
 distributed under **SIL OFL 1.1** (`apps/desktop/src/font/OFL.txt`).
 
-The music acquired through Aether is subject to the license of the source it
+The music acquired through Rymembra is subject to the license of the source it
 came from, which is distinct from the program's. The implications are described
 in [`TERMS.md`](TERMS.md), including the Live Music Archive's **non-commercial**
 clause, which binds the listener too.
@@ -520,7 +608,7 @@ clause, which binds the listener too.
 
 ## Privacy
 
-Aether collects no telemetry, requires no account and talks to no servers other
+Rymembra collects no telemetry, requires no account and talks to no servers other
 than the ones the user explicitly queries: the music catalogs, MusicBrainz,
 Google Drive, the scrobbling service, and the language model configured for the
 Skin Studio — the last three only if you connect them, and the last one possibly
@@ -533,7 +621,7 @@ make and the data each one transmits.
 
 ## Keeping the project going
 
-Aether is free and funded by donations. There is no paid version and none is
+Rymembra is free and funded by donations. There is no paid version and none is
 planned: two of the integrated sources, the Live Music Archive and Jamendo, are
 subject to *non commercial* clauses that a paid version would violate. The
 constraint is stated explicitly in the terms of use.
@@ -547,12 +635,12 @@ constraint is stated explicitly in the terms of use.
   installed. An OV certificate requires validation of the applicant's identity
   and an annual cost.
 - **Jamendo.** The code is there and the tests pass
-  (`cargo test -p aether-catalogo --features jamendo`), but the feature is
+  (`cargo test -p rymembra-catalogo --features jamendo`), but the feature is
   disabled pending formal clarification from `licensing@jamendo.com` on whether
   donations count as commercial use.
 - **Seeking inside a streamed track.** Dragging the cursor through a streamed
   track is not instant, and on a large MP3 it can take tens of seconds. The
-  cause is not Aether: an MP3 without a seek table cannot be positioned by
+  cause is not Rymembra: an MP3 without a seek table cannot be positioned by
   arithmetic, so the decoder *scans* to the point — and scanning means asking
   the network for every byte in between. 2.4.0 removed what could be removed
   (the window grows while reading forward, and the Archive's storage node is
@@ -577,7 +665,7 @@ reply, the Jamendo module stays behind a Cargo feature that can be switched off.
 
 | Document | Content |
 | --- | --- |
-| [Technical documentation](https://federicobaratti.github.io/Aether/docs/) | How the code works, subsystem by subsystem (`site/docs/`) |
+| [Technical documentation](https://federicobaratti.github.io/Rymembra/docs/) | How the code works, subsystem by subsystem (`site/docs/`) |
 | [`CHANGELOG.md`](CHANGELOG.md) | The changes in each version and the numbering rule |
 | [`PRIVACY.md`](PRIVACY.md) | How data is handled and every network request |
 | [`TERMS.md`](TERMS.md) | Terms of use and the licenses of acquired content |

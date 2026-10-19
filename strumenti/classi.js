@@ -17,7 +17,7 @@
  * `campo-identita`. Il nome è ragionevole, è solo che non l'ha mai disegnato
  * nessuno.
  *
- * **Una parte del registro che l'app non emette.** `aether-skin::parts` dichiara
+ * **Una parte del registro che l'app non emette.** `rymembra-skin::parts` dichiara
  * il vocabolario che una skin può ridipingere, e la tela dello Studio lo mostra
  * sulle pagine vere dell'app — tranne i pochi pezzi che la tela disegna da sé
  * (`studio/Tela.tsx`: il giro guidato fermo su un passo). Se una parte stesse
@@ -25,12 +25,12 @@
  * scrive e non funzionare quando la installa: il modo peggiore di scoprire una
  * cosa. È il caso di `viz-scene`, scritto
  * nell'app dove il registro dice `viz-screen` — cioè esattamente l'errore per
- * assonanza che `aether-skin::vicini` esiste per correggere a chi fa le skin, e
+ * assonanza che `rymembra-skin::vicini` esiste per correggere a chi fa le skin, e
  * che qui l'aveva fatto l'app.
  *
  * Una parte però l'app la può emettere in **due** modi, e per un po' questo
  * strumento ne conosceva uno solo. Il primo è il `className` del markup. Il
- * secondo è l'albero di serie dello scafale, in `core/aether-skin/src/layout.rs`:
+ * secondo è l'albero di serie dello scafale, in `core/rymembra-skin/src/layout.rs`:
  * una zona dichiara `.parte("…")`, `Impaginazione.tsx` mette in classe
  * `nodo.part` senza sapere cosa ci sia scritto, e la parte finisce nel DOM
  * esattamente come le altre. `app-shell` è così, su tutti e due i rami di
@@ -123,11 +123,11 @@ process.chdir(REPO);
 
 const SORGENTI = "apps/desktop/src";
 const FOGLIO = path.join(SORGENTI, "stile.css");
-const REGISTRO = "core/aether-skin/src/parts.rs";
+const REGISTRO = "core/rymembra-skin/src/parts.rs";
 // L'albero di serie dello scafale. Le parti che dichiara finiscono in classe
 // per mano di `Impaginazione.tsx`, che non sa quali siano: è markup emesso, e
 // il solo motivo per cui va letto qui è che è scritto in Rust.
-const IMPAGINAZIONE = "core/aether-skin/src/layout.rs";
+const IMPAGINAZIONE = "core/rymembra-skin/src/layout.rs";
 // La tela dello Studio. Disegna l'app vera, ma qualche pezzo lo ridisegna da
 // sé — il giro guidato fermo su un passo — e una parte che vivesse solo qui
 // sarebbe una promessa che la tela mantiene e la finestra no.

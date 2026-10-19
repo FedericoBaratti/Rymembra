@@ -8,7 +8,7 @@
  *
  * # Perché non c'è nessuna attesa, mai
  *
- * L'albero viene dal **database** (`core/aether-app/src/cartelle.rs`), non dal
+ * L'albero viene dal **database** (`core/rymembra-app/src/cartelle.rs`), non dal
  * filesystem: aprire un nodo è un accesso a una mappa in RAM più, se ha dei
  * file, la lettura delle sue dieci righe in `tracks`, e nessuna espansione
  * tocca il disco o la rete. È la ragione per cui questa schermata si apre col

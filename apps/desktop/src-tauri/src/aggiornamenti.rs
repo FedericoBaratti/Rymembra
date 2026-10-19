@@ -13,22 +13,22 @@
 //! di serie, niente della libreria. **La versione installata non viene nemmeno
 //! mandata** — il confronto lo fa il programma, qui, dopo aver letto il file, e
 //! non c'è nessun servizio a cui si chieda «sono aggiornato?». Non viene mandato
-//! neppure un `User-Agent` che nomini Aether, e non è una dimenticanza: vedi
+//! neppure un `User-Agent` che nomini Rymembra, e non è una dimenticanza: vedi
 //! [`costruisci`], dove sta scritto perché e cosa costa. Quel che GitHub vede è
 //! che qualcuno da un certo indirizzo IP ha chiesto un file pubblico, cioè quel
 //! che vedrebbe di chiunque aprisse la pagina delle release con un browser.
 //!
-//! È l'unica richiesta che Aether fa senza che nessuno gliel'abbia chiesta, ed
+//! È l'unica richiesta che Rymembra fa senza che nessuno gliel'abbia chiesta, ed
 //! è per questo che sta scritta in `PRIVACY.md` con un numero suo e si spegne
 //! con un interruttore in Impostazioni.
 //!
 //! # Un controllo a ogni avvio
 //!
-//! È la voce #10 di `TODO.md`: ogni volta che Aether si apre, controlla da sé
+//! È la voce #10 di `TODO.md`: ogni volta che Rymembra si apre, controlla da sé
 //! una volta. Il controllo d'avvio parte [`DOPO_PRONTO`] dopo che la finestra
 //! si è mostrata (il comando `pronto`), o dopo [`ATTESA_PRONTO_MASSIMA`] se la
 //! finestra non lo dice mai. Fino alla 2.4.0 la guardia fra un controllo e
-//! l'altro era di mezz'ora, e chi apriva Aether due volte nella stessa mezz'ora
+//! l'altro era di mezz'ora, e chi apriva Rymembra due volte nella stessa mezz'ora
 //! non controllava la seconda: adesso è di [`GUARDIA`], che basta a non
 //! martellare GitHub se il programma si apre e si chiude in un giro, e non
 //! toglie il controllo a nessuno che lo riapra dopo pranzo. «Controlla adesso»
@@ -39,7 +39,7 @@
 //! # Senza rete, si riprova presto
 //!
 //! Un controllo d'avvio senza rete — il portatile aperto in treno, il Wi-Fi
-//! che si aggancia dopo Aether — non aspetta la mezz'ora: si riprova dopo
+//! che si aggancia dopo Rymembra — non aspetta la mezz'ora: si riprova dopo
 //! uno, cinque e quindici minuti ([`RIPROVE_SENZA_RETE`]), e poi si torna al
 //! passo normale. Solo il controllo automatico: se `aggiornamenti.attivo` è
 //! spento, non riprova niente.
@@ -90,8 +90,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::spegnimento::Emette as _;
-use aether_app::settings;
-use aether_domain::errors::{AppError, ErrorCode};
+use rymembra_app::settings;
+use rymembra_domain::errors::{AppError, ErrorCode};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 use tauri_plugin_updater::{Update, Updater, UpdaterExt as _};
@@ -122,7 +122,7 @@ const CHIAVE_SALTATA: &str = "aggiornamenti.saltata";
 ///
 /// Perché la guardia d'avvio salta il controllo se l'ultimo è recente — era
 /// mezz'ora, adesso [`GUARDIA`] — e l'aggiornamento trovato vive **solo** in
-/// memoria. Chi vedeva l'avviso, chiudeva Aether e lo riapriva subito non lo
+/// memoria. Chi vedeva l'avviso, chiudeva Rymembra e lo riapriva subito non lo
 /// rivedeva più: il controllo d'avvio saltava, e il prossimo arrivava dopo
 /// mezz'ora. Qui si ricorda soltanto che una versione nuova c'era — basta a
 /// far fare comunque il controllo d'avvio, che è l'unico modo di riavere
@@ -134,7 +134,7 @@ const CHIAVE_TROVATA: &str = "aggiornamenti.trovata";
 ///
 /// Mezz'ora, che è quel che è stato chiesto ed è anche una scelta difendibile:
 /// una release esce qualche volta al mese, quindi la frequenza non serve a
-/// scoprirla presto — serve a fare in modo che chi tiene Aether aperto per
+/// scoprirla presto — serve a fare in modo che chi tiene Rymembra aperto per
 /// giorni la scopra comunque, senza dover chiudere e riaprire. Il costo è una
 /// richiesta da trecento byte, cioè meno di quel che costa disegnare la lista
 /// dei brani una volta.
@@ -144,7 +144,7 @@ const INTERVALLO: Duration = Duration::from_secs(30 * 60);
 ///
 /// Dieci secondi, ed erano quarantacinque dall'apertura. Il conto si fa dalla
 /// finestra mostrata e non dal processo nato, perché è da lì che qualcuno sta
-/// guardando: chi apre Aether, vede che c'è una versione nuova e lo richiude
+/// guardando: chi apre Rymembra, vede che c'è una versione nuova e lo richiude
 /// deve scoprirlo prima di richiuderlo. I dieci secondi sono quelli in cui la
 /// finestra disegna la prima schermata e la coda di ieri torna su; la richiesta
 /// non tocca il disco e il lucchetto della libreria lo prende per due letture
@@ -166,7 +166,7 @@ const ATTESA_PRONTO_MASSIMA: Duration = Duration::from_secs(60);
 ///
 /// Cinque minuti, ed era mezz'ora: la guardia esiste per chi apre e chiude il
 /// programma a raffica — un collegamento cliccato due volte, un crash all'avvio
-/// che si ripete — non per far saltare il controllo a chi riapre Aether
+/// che si ripete — non per far saltare il controllo a chi riapre Rymembra
 /// mezz'ora dopo, che è precisamente chi la voce #10 di `TODO.md` voleva
 /// servire.
 const GUARDIA: Duration = Duration::from_secs(5 * 60);
@@ -225,14 +225,14 @@ const RESPIRO_AVANZAMENTO: Duration = Duration::from_millis(200);
 /// Provare un updater senza questa vorrebbe dire pubblicare una release vera
 /// per ogni tentativo. Con questa si serve un `latest.json` da una cartella
 /// locale e si guarda succedere tutto: l'avviso che compare, il «Non ora» che
-/// lo zittisce, l'installer che parte. Il precedente è `AETHER_DATI`, e la
+/// lo zittisce, l'installer che parte. Il precedente è `RYMEMBRA_DATI`, e la
 /// ragione è la stessa — le cose irreversibili si giudicano guardandole.
 ///
 /// In rilascio non esiste: l'endpoint di un updater è la cosa che decide quale
 /// eseguibile finisce sul computer di qualcuno, e una variabile d'ambiente che
 /// la cambia è un modo di installare software altrui che non deve esserci.
 #[cfg(debug_assertions)]
-const VARIABILE_ENDPOINT: &str = "AETHER_AGGIORNAMENTI_ENDPOINT";
+const VARIABILE_ENDPOINT: &str = "RYMEMBRA_AGGIORNAMENTI_ENDPOINT";
 
 /// Perché il filo si è svegliato.
 ///
@@ -329,7 +329,7 @@ pub fn finestra_pronta(app: &AppHandle) {
 pub struct StatoAggiornamentiIpc {
     /// Il controllo periodico è acceso.
     pub attivo: bool,
-    /// Questa copia di Aether ha una chiave pubblica con cui verificare.
+    /// Questa copia di Rymembra ha una chiave pubblica con cui verificare.
     ///
     /// Falso in un albero in cui le chiavi non sono state generate, e la
     /// finestra lo usa per non mostrare un interruttore che non comanda niente.
@@ -479,7 +479,7 @@ pub fn aggiornamenti_salta(
 ///
 /// Torna subito: il lavoro vero sta su un filo suo, e quel che succede si
 /// racconta con `aggiornamenti:avanzamento`. Su Windows, con
-/// `installMode: "passive"`, è l'installer NSIS a chiudere Aether e a
+/// `installMode: "passive"`, è l'installer NSIS a chiudere Rymembra e a
 /// riaprirlo — quindi da qui in poi questo processo non ha più niente da fare
 /// se non lasciare il dispositivo audio e uscire di scena.
 ///
@@ -519,7 +519,7 @@ pub fn aggiornamenti_installa(
 
     let suo = app.clone();
     let avviato = std::thread::Builder::new()
-        .name("aether-aggiornamento".to_owned())
+        .name("rymembra-aggiornamento".to_owned())
         .spawn(move || {
             scarica_e_installa(&suo, &aggiornamento);
         });
@@ -568,7 +568,7 @@ pub fn aggiornamenti_annulla(aggiornamenti: State<'_, StatoAggiornamenti>) -> Es
 /// # La guardia d'avvio
 ///
 /// La prima passata è l'unica che può essere di troppo: chi apre e chiude
-/// Aether a raffica farebbe una richiesta per apertura. Quindi la sola passata
+/// Rymembra a raffica farebbe una richiesta per apertura. Quindi la sola passata
 /// d'avvio guarda quando è andato a buon fine l'ultimo controllo, e se è di
 /// meno di [`GUARDIA`] non la fa — vedi [`troppo_presto`]. Il battito
 /// periodico, dopo, non guarda niente: `INTERVALLO` è passato per definizione.
@@ -585,7 +585,7 @@ pub fn aggiornamenti_annulla(aggiornamenti: State<'_, StatoAggiornamenti>) -> Es
 /// un panico dentro il plugin non porta via il filo, che riprova al giro dopo.
 pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
     let avviato = std::thread::Builder::new()
-        .name("aether-aggiornamenti".to_owned())
+        .name("rymembra-aggiornamenti".to_owned())
         .spawn(move || {
             // Una sveglia è sempre una persona; la scadenza, mai. Vedi
             // `passata`.
@@ -612,7 +612,7 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
                     );
                     Giro::Saltato
                 } else {
-                    crate::stato::sorvegliato("aether-aggiornamenti", || passata(&app, a_mano))
+                    crate::stato::sorvegliato("rymembra-aggiornamenti", || passata(&app, a_mano))
                         .unwrap_or(Giro::Fallito)
                 };
                 guardia = false;
@@ -743,7 +743,7 @@ fn versione_trovata_prima(app: &AppHandle) -> bool {
 /// E si controlla anche quando l'istante salvato è nel **futuro**, che succede a
 /// chiunque sposti avanti l'orologio del computer e poi lo rimetta indietro. Un
 /// `adesso - ultimo` negativo confrontato con una durata darebbe «recente», e
-/// quella copia di Aether non controllerebbe più nulla fino al giorno scritto nel
+/// quella copia di Rymembra non controllerebbe più nulla fino al giorno scritto nel
 /// database. La sottrazione è satura e il confronto vuole un risultato **non
 /// negativo**: un istante impossibile vale come nessun istante.
 fn troppo_presto(ultimo_ms: Option<i64>, adesso_ms: i64) -> bool {
@@ -870,7 +870,7 @@ fn controlla(app: &AppHandle) -> Result<Option<Update>, AppError> {
 /// impegno preso con chi legge, non una descrizione da tenere aggiornata: si
 /// mantiene non scrivendo questa riga. Quel che parte resta
 /// `tauri-plugin-updater/<versione del plugin>`, cioè il nome di una libreria,
-/// che di questa copia di Aether non dice niente.
+/// che di questa copia di Rymembra non dice niente.
 ///
 /// Sta scritto perché **un'assenza non si distingue da una dimenticanza**, e la
 /// prossima persona che passa di qui aggiungerebbe l'intestazione «per
@@ -900,7 +900,7 @@ fn costruisci(app: &AppHandle) -> Result<Updater, AppError> {
         .updater_builder()
         .timeout(SCADENZA_RICHIESTA)
         .on_before_exit(move || {
-            nota!("[aggiornamenti] l'installer prende il posto di Aether: si spegne tutto");
+            nota!("[aggiornamenti] l'installer prende il posto di Rymembra: si spegne tutto");
             crate::spegnimento::spegni(&mano);
             mano.cleanup_before_exit();
         });
@@ -1260,9 +1260,9 @@ fn stato_ipc(
 mod prove {
     use super::*;
 
-    /// Un database vero, migrato, in memoria: la fixture di `aether-app`.
+    /// Un database vero, migrato, in memoria: la fixture di `rymembra-app`.
     fn libreria() -> rusqlite::Connection {
-        aether_app::db::open_in_memory()
+        rymembra_app::db::open_in_memory()
             .expect("un database in memoria si apre sempre")
             .connection
     }
@@ -1317,7 +1317,7 @@ mod prove {
         // Un minuto fa: si salta. È il caso di chi apre e chiude a raffica.
         assert!(troppo_presto(Some(adesso - 60 * 1_000), adesso));
         assert!(troppo_presto(Some(adesso - guardia + 1), adesso));
-        // Il confine esatto, e oltre: si controlla. Chi riapre Aether dieci
+        // Il confine esatto, e oltre: si controlla. Chi riapre Rymembra dieci
         // minuti dopo — la voce #10 di `TODO.md` — controlla.
         assert!(!troppo_presto(Some(adesso - guardia), adesso));
         assert!(!troppo_presto(Some(adesso - 10 * 60 * 1_000), adesso));

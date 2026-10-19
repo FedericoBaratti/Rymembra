@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { LINGUAGGIO_PATCH_PRECEDENTE } from "../src/eredita";
+import { LINGUAGGIO_PATCH, NON_APPLICATA, haBloccoDiModifiche, storiaLeggera } from "../src/studio/prompt";
 import {
   CAMBI_IN_VISTA,
   CONVERSAZIONE_VUOTA,
@@ -164,8 +166,59 @@ test("l'esito di una proposta si salva e si rilegge", () => {
     battute: [],
     messaggi: [
       { ruolo: "user", testo: "scurisci" },
-      { ruolo: "assistant", testo: "```aether-patch\n[]\n```", applicata: false },
+      { ruolo: "assistant", testo: "```rymembra-patch\n[]\n```", applicata: false },
     ],
   };
   assert.equal(leggiSalvata(serializza(c)).messaggi[1]?.applicata, false);
+});
+
+test("una chat salvata col tag di prima si rilegge com'era, e il blocco si riconosce", () => {
+  // Com'è sul disco di chi ha aggiornato: il testo porta ancora il tag di allora.
+  const vecchia = "```" + LINGUAGGIO_PATCH_PRECEDENTE + "\n[]\n```";
+  const sulDisco = JSON.stringify({
+    versione: 1,
+    modalita: "proposta",
+    vede: false,
+    battute: [],
+    messaggi: [
+      { ruolo: "user", testo: "scurisci" },
+      { ruolo: "assistant", testo: vecchia, applicata: false },
+      { ruolo: "user", testo: "ancora" },
+      { ruolo: "assistant", testo: vecchia, applicata: true },
+    ],
+  });
+  const letta = leggiSalvata(sulDisco);
+  // Il testo non si riscrive in lettura: la chat resta quella che era.
+  assert.equal(letta.messaggi[1]?.testo, vecchia);
+  assert.equal(letta.messaggi[1]?.applicata, false);
+  assert.equal(letta.messaggi[3]?.applicata, true);
+  assert.ok(haBloccoDiModifiche(letta.messaggi[1]?.testo ?? ""));
+
+  // E la cronologia che ne esce per il modello è quella di una chat di adesso.
+  const nuova = "```" + LINGUAGGIO_PATCH + "\n[]\n```";
+  assert.deepEqual(storiaLeggera(letta.messaggi), [
+    { ruolo: "user", testo: "scurisci" },
+    { ruolo: "assistant", testo: `${nuova}\n${NON_APPLICATA}` },
+    { ruolo: "user", testo: "ancora" },
+    { ruolo: "assistant", testo: nuova },
+  ]);
+});
+
+test("l'esito di una proposta di prima si salva e si rilegge anche dopo un giro", () => {
+  const c: Conversazione = {
+    modalita: "proposta",
+    vede: false,
+    battute: [],
+    messaggi: [
+      { ruolo: "user", testo: "scurisci" },
+      {
+        ruolo: "assistant",
+        testo: "```" + LINGUAGGIO_PATCH_PRECEDENTE + "\n[]\n```",
+        applicata: false,
+      },
+    ],
+  };
+  const dopo = leggiSalvata(serializza(leggiSalvata(serializza(c))));
+  assert.equal(dopo.messaggi[1]?.applicata, false);
+  assert.ok(haBloccoDiModifiche(dopo.messaggi[1]?.testo ?? ""));
 });

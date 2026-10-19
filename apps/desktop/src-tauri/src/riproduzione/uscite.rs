@@ -8,7 +8,7 @@
 //! Fa parte di [`crate::riproduzione`]: la regola dei due lucchetti — prima il
 //! lettore, poi la libreria — è scritta là e vale anche qui.
 
-use aether_app::playback;
+use rymembra_app::playback;
 use serde::Serialize;
 
 use crate::spegnimento::Emette as _;
@@ -36,7 +36,7 @@ use super::{
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DispositivoAudio {
-    /// L'identità, che è il nome cpal. Vedi `aether_play::dispositivi`.
+    /// L'identità, che è il nome cpal. Vedi `rymembra_play::dispositivi`.
     pub id: String,
     /// Come chiamarlo a schermo.
     pub nome: String,
@@ -85,7 +85,7 @@ pub struct DispositivoAudio {
 /// non si è spostato. La ricostruzione resta quindi la cura in tutti i casi; e
 /// per chi ha fissato una scheda, il seguito del predefinito sarebbe proprio il
 /// comportamento da evitare. Questo filo resta com'era, e il motore si apre su
-/// un dispositivo preciso: vedi `aether_play::dispositivi`.
+/// un dispositivo preciso: vedi `rymembra_play::dispositivi`.
 ///
 /// # Perché un filo suo e non quello dell'orologio
 ///
@@ -102,7 +102,7 @@ pub struct DispositivoAudio {
 /// rilegge subito. È la stessa forma di `crate::aggiornamenti::avvia_filo`.
 pub fn avvia_sorveglianza(app: tauri::AppHandle, orecchio: std::sync::mpsc::Receiver<()>) {
     let avviato = std::thread::Builder::new()
-        .name("aether-dispositivi".to_owned())
+        .name("rymembra-dispositivi".to_owned())
         .spawn(move || {
             // L'elenco dell'ultima passata. Locale al filo: non lo guarda
             // nessun altro, e il confronto con questo è tutto il rilevamento.
@@ -111,7 +111,7 @@ pub fn avvia_sorveglianza(app: tauri::AppHandle, orecchio: std::sync::mpsc::Rece
             // passata annuncia quel che c'è: la finestra che si è appena
             // aperta non deve aspettare che qualcosa cambi per sapere quali
             // uscite esistono.
-            let mut visti: Vec<aether_play::Dispositivo> = Vec::new();
+            let mut visti: Vec<rymembra_play::Dispositivo> = Vec::new();
             let mut attesa = PASSO_DISPOSITIVI;
             loop {
                 // Prima di qualunque cosa che tocchi l'`AppHandle`: se la
@@ -153,7 +153,10 @@ enum Passo {
 }
 
 /// Una passata del sorvegliante. Non fallisce mai rumorosamente.
-fn passata_dispositivi(app: &tauri::AppHandle, visti: &mut Vec<aether_play::Dispositivo>) -> Passo {
+fn passata_dispositivi(
+    app: &tauri::AppHandle,
+    visti: &mut Vec<rymembra_play::Dispositivo>,
+) -> Passo {
     // `try_state` e non `state`: `state` panica se lo stato non c'è, e questo
     // filo gira anche mentre lo stato viene lasciato cadere.
     let Some(stato) = app.try_state::<StatoLettore>() else {
@@ -166,7 +169,7 @@ fn passata_dispositivi(app: &tauri::AppHandle, visti: &mut Vec<aether_play::Disp
     // essere buttato. Vedi `riapertura::ferma_l_ascolto_se_perso`.
     ferma_l_ascolto_se_perso(&stato);
 
-    let adesso = aether_play::dispositivi::elenco();
+    let adesso = rymembra_play::dispositivi::elenco();
     if adesso != *visti {
         visti.clone_from(&adesso);
         app.emetti(
@@ -214,7 +217,7 @@ fn passata_dispositivi(app: &tauri::AppHandle, visti: &mut Vec<aether_play::Disp
     // un'apertura di dispositivo, che si è presa il suo tempo, e confrontare
     // con la fotografia di prima direbbe «non converge» ogni volta che qualcuno
     // stacca un cavo proprio in quell'istante.
-    if let Some(ancora) = da_riaprire(&stato, &aether_play::dispositivi::elenco()) {
+    if let Some(ancora) = da_riaprire(&stato, &rymembra_play::dispositivi::elenco()) {
         nota!("[riproduzione] la riapertura non ha portato dove doveva: {ancora}");
         return Passo::Insisti;
     }
@@ -262,7 +265,7 @@ fn passata_dispositivi(app: &tauri::AppHandle, visti: &mut Vec<aether_play::Disp
 /// Fa eccezione il motore mai aperto: lì non c'è niente da aspettare, e
 /// un'uscita qualunque è meglio di un'applicazione muta. Vedi
 /// `dispositivi::scegli`.
-fn da_riaprire(stato: &StatoLettore, adesso: &[aether_play::Dispositivo]) -> Option<String> {
+fn da_riaprire(stato: &StatoLettore, adesso: &[rymembra_play::Dispositivo]) -> Option<String> {
     let voluta = stato
         .uscita_voluta
         .lock()
@@ -279,7 +282,7 @@ fn da_riaprire(stato: &StatoLettore, adesso: &[aether_play::Dispositivo]) -> Opt
     };
     // Prima del guasto, e non dopo: un'uscita fissata che non c'è si aspetta
     // anche — soprattutto — a motore perso.
-    let giusta = aether_play::dispositivi::scegli_per_riaprire(adesso, voluta.as_deref())?;
+    let giusta = rymembra_play::dispositivi::scegli_per_riaprire(adesso, voluta.as_deref())?;
     if lettore.motore.dispositivo_perso() {
         // «Il motore» e non «l'uscita»: la bandiera che si legge qui la alzano
         // in due — la callback quando il dispositivo sparisce, e il filo della
@@ -310,7 +313,7 @@ fn da_riaprire(stato: &StatoLettore, adesso: &[aether_play::Dispositivo]) -> Opt
 /// appena si riattacca il cavo. Un rigo spento dice la verità.
 fn elenco_per_finestra(
     stato: &StatoLettore,
-    adesso: &[aether_play::Dispositivo],
+    adesso: &[rymembra_play::Dispositivo],
 ) -> Vec<DispositivoAudio> {
     let voluta = stato
         .uscita_voluta
@@ -380,11 +383,11 @@ pub fn dispositivi_audio(stato: State<'_, StatoLettore>) -> Esito<Vec<Dispositiv
     let _ = stato.sveglia_dispositivi.send(());
     Ok(elenco_per_finestra(
         &stato,
-        &aether_play::dispositivi::elenco(),
+        &rymembra_play::dispositivi::elenco(),
     ))
 }
 
-/// Sceglie da quale uscita far sentire Aether. `None`: quella di sistema.
+/// Sceglie da quale uscita far sentire Rymembra. `None`: quella di sistema.
 ///
 /// # Cosa succede subito
 ///
@@ -430,7 +433,7 @@ pub fn scegli_dispositivo_audio(
     // passata del sorvegliante.
     app.emetti(
         "riproduzione:dispositivi",
-        elenco_per_finestra(&stato, &aether_play::dispositivi::elenco()),
+        elenco_per_finestra(&stato, &rymembra_play::dispositivi::elenco()),
     );
     Ok(())
 }

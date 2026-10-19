@@ -1,8 +1,8 @@
 //! L'arricchimento dei metadati, dal lato della finestra.
 //!
 //! Quattro comandi, due eventi e un filo di sottofondo. Le decisioni stanno in
-//! `aether-domain`, le richieste in `aether-meta`, l'orchestrazione in
-//! `aether_app::enrich`: qui si tiene il tempo e si prende il lucchetto — le due
+//! `rymembra-domain`, le richieste in `rymembra-meta`, l'orchestrazione in
+//! `rymembra_app::enrich`: qui si tiene il tempo e si prende il lucchetto — le due
 //! cose che nessuno di quei tre sa fare, e le due che possono far impuntare la
 //! riproduzione.
 //!
@@ -21,13 +21,13 @@
 //! nello store — dura da secondi a minuti e avviene **senza nessun
 //! lucchetto**.
 //!
-//! Che sia vero non è affidato all'attenzione di chi legge: `aether-meta` non
+//! Che sia vero non è affidato all'attenzione di chi legge: `rymembra-meta` non
 //! riceve mai una `rusqlite::Connection`, quindi il codice che terrebbe il
 //! lucchetto durante una richiesta di rete non si può nemmeno scrivere.
 //!
 //! # Perché l'interruttore e il ritorno indietro sono qui
 //!
-//! Fino alla 2.3.0 questo era l'unico filo di Aether che **scriveva nei file
+//! Fino alla 2.3.0 questo era l'unico filo di Rymembra che **scriveva nei file
 //! dell'utente senza che nessuno guardasse prima**, e questa nota argomentava
 //! perché fosse accettabile. Dalla 2.3.1 la domanda non si pone: quel che
 //! l'arricchimento decide finisce nelle righe di `tracks` e in
@@ -39,9 +39,9 @@
 //! Restano due garanzie, e sono le stesse di prima lette in un'altra luce:
 //!
 //! * si scrive solo su verdetto `Applica`, e astenersi è il comportamento
-//!   normale (la ragione per esteso sta in testa a `aether_domain::enrich`);
+//!   normale (la ragione per esteso sta in testa a `rymembra_domain::enrich`);
 //! * quel che si scrive si dimentica con un clic, perché sta in una tabella e
-//!   non dentro migliaia di file: `aether_app::enrich::dimentica` la svuota e
+//!   non dentro migliaia di file: `rymembra_app::enrich::dimentica` la svuota e
 //!   rilegge i tag dai file, che sono intatti.
 //!
 //! Da qui i due comandi che sembrano accessori e non lo sono:
@@ -52,7 +52,7 @@
 //!
 //! # Il terzo comando, che è un'uscita a termine
 //!
-//! [`arricchimento_riporta_nei_file`] è l'unica cosa in tutta Aether che
+//! [`arricchimento_riporta_nei_file`] è l'unica cosa in tutta Rymembra che
 //! riscriva ancora i tag dentro i file dell'utente, ed è lì solo per **disfare
 //! quel che hanno fatto le versioni passate**: le righe di `enrich_undo` che
 //! la 2.3.0 e prima di lei hanno lasciato in tabella. Non si può chiamare per
@@ -68,14 +68,14 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
-use aether_app::covers::CoverStore;
-use aether_app::enrich::{self, DepositoSqlite, Gruppo};
-use aether_app::library::{Toccati, ricostruisci_aggregati};
-use aether_app::settings;
-use aether_app::vicinanza;
-use aether_domain::enrich::Verdetto;
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_meta::Fornitori;
+use rymembra_app::covers::CoverStore;
+use rymembra_app::enrich::{self, DepositoSqlite, Gruppo};
+use rymembra_app::library::{Toccati, ricostruisci_aggregati};
+use rymembra_app::settings;
+use rymembra_app::vicinanza;
+use rymembra_domain::enrich::Verdetto;
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_meta::Fornitori;
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
@@ -351,9 +351,9 @@ pub fn arricchimento_annulla(
 /// # Che cosa fa che nessun altro comando fa
 ///
 /// **Apre e riscrive i file dell'utente.** È l'unico che lo faccia in tutta
-/// Aether, esiste solo per disfare le scritture della 2.3.0 e di prima, e lo
+/// Rymembra, esiste solo per disfare le scritture della 2.3.0 e di prima, e lo
 /// dice l'etichetta del bottone che lo chiama: senza quella scritta, un utente
-/// che ha appena letto «Aether non modifica i tuoi file» premerebbe un pulsante
+/// che ha appena letto «Rymembra non modifica i tuoi file» premerebbe un pulsante
 /// che glieli modifica. Vedi la nota in testa al modulo: è una via d'uscita a
 /// termine, e il CHANGELOG la dà per rimossa in una release futura.
 ///
@@ -457,7 +457,7 @@ fn subito(arricchimento: &StatoArricchimento) {
 /// da una richiesta al secondo — pagando tre lucchetti per la velocità di uno.
 pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
     let avviato = crate::stato::avvia_filo_periodico(
-        "aether-arricchimento",
+        "rymembra-arricchimento",
         orecchio,
         ATTESA_AVVIO,
         RAFFICA,
@@ -612,7 +612,7 @@ fn passata_vera(
         }
 
         // I file dell'utente non si toccano: qui si salvano soltanto le
-        // copertine nello store di Aether. Vedi la nota in testa al modulo.
+        // copertine nello store di Rymembra. Vedi la nota in testa al modulo.
         let (esiti, guasti) = enrich::applica(&da_fare.covers, &decisione.scritture);
         for guasto in &guasti {
             // Un'immagine che non si salva — disco pieno, byte illeggibili —
@@ -838,13 +838,13 @@ fn vicini(stato: &State<'_, Stato>, servizi: &Fornitori) -> Result<usize, AppErr
 
 /// Un guasto del database, nella forma del catalogo.
 ///
-/// Delega a [`aether_app::db::codice_da_sqlite`]: è la seconda connessione allo
+/// Delega a [`rymembra_app::db::codice_da_sqlite`]: è la seconda connessione allo
 /// stesso file, quindi è anche il punto da cui arriva il `SQLITE_BUSY` più
 /// frequente di tutta l'applicazione — l'arricchimento che legge mentre la
 /// scansione scrive. Raccontarlo come «il database ha rifiutato una richiesta»
 /// era dire all'utente di riavviare per una coda di mezzo secondo.
 fn db_errore(cosa: &str, err: &rusqlite::Error) -> AppError {
-    aether_app::db::codice_da_sqlite(cosa, err)
+    rymembra_app::db::codice_da_sqlite(cosa, err)
 }
 
 /// Lo stato, nella forma che la finestra riceve.

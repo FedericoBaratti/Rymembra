@@ -1,8 +1,8 @@
 //! La riproduzione, dal lato della finestra.
 //!
 //! Tiene insieme tre cose che vivono in tre posti diversi: la **coda**
-//! (`aether_domain::queue`, pura), il **motore** (`aether-play`, che non sa
-//! cosa sia una libreria) e il **database** (`aether_app::playback`). Nessuno
+//! (`rymembra_domain::queue`, pura), il **motore** (`rymembra-play`, che non sa
+//! cosa sia una libreria) e il **database** (`rymembra_app::playback`). Nessuno
 //! dei tre conosce gli altri due, ed è voluto — ma qualcuno deve pur
 //! presentarli, e quel qualcuno è questo modulo.
 //!
@@ -47,8 +47,8 @@
 //! # Perché il conteggio d'ascolto si scrive qui e non nel motore
 //!
 //! Perché il motore non sa se quel che ha suonato conta. La regola —
-//! `aether_domain::listen::counts_as_play` — è del dominio, e la scrittura è di
-//! `aether-app`. Qui c'è solo il filo che le mette in fila.
+//! `rymembra_domain::listen::counts_as_play` — è del dominio, e la scrittura è di
+//! `rymembra-app`. Qui c'è solo il filo che le mette in fila.
 //!
 //! # Dov'è cosa
 //!
@@ -92,14 +92,14 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
-use aether_app::library::{FormatoFile, TrackSummary};
-use aether_app::playback::{self, Equalizzazione, Normalizzazione, Qualita, Volume};
-use aether_catalogo::Cataloghi;
-use aether_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
-use aether_domain::listen::{Listen, ListenTracker};
-use aether_domain::queue::{Queue, RepeatMode, Step};
-use aether_play::motore::Annuncio;
-use aether_play::{Evento, Motore, Posizione};
+use rymembra_app::library::{FormatoFile, TrackSummary};
+use rymembra_app::playback::{self, Equalizzazione, Normalizzazione, Qualita, Volume};
+use rymembra_catalogo::Cataloghi;
+use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
+use rymembra_domain::listen::{Listen, ListenTracker};
+use rymembra_domain::queue::{Queue, RepeatMode, Step};
+use rymembra_play::motore::Annuncio;
+use rymembra_play::{Evento, Motore, Posizione};
 use serde::Serialize;
 use tauri::{Manager as _, State};
 
@@ -191,7 +191,7 @@ const BATTITI_PER_SEGNO: u32 = 20;
 /// un evento e l'altro perché lo misura.
 ///
 /// Lo zero e l'uno del byte, invece, **non** si sono spostati e non si
-/// sposteranno: sono `aether_play::spettro::FONDO_DB` e il fondo scala, cioè la
+/// sposteranno: sono `rymembra_play::spettro::FONDO_DB` e il fondo scala, cioè la
 /// definizione di cosa significhi questo numero. Il token `canvas.viz.floor`
 /// rialza il fondo dalla parte di chi disegna, rimappando lo stesso byte;
 /// spostarlo qui vorrebbe dire un secondo formato di trasporto, e due formati
@@ -244,7 +244,7 @@ struct BandeIpc {
 
 impl BandeIpc {
     /// Quantizza quel che il lettore ha appena misurato.
-    fn da(bande: &aether_play::Bande) -> Self {
+    fn da(bande: &rymembra_play::Bande) -> Self {
         Self {
             fini: bande
                 .fini
@@ -340,7 +340,7 @@ pub struct StatoRiproduzione {
     /// # Perché una costante viaggia dentro uno stato
     ///
     /// Perché l'alternativa era peggio: questo numero è
-    /// `aether_domain::testo::ANTICIPO_MS`, e fino a ieri stava scritto **due
+    /// `rymembra_domain::testo::ANTICIPO_MS`, e fino a ieri stava scritto **due
     /// volte** — là e a mano dentro `parti/Testo.tsx`, che cerca la riga accesa
     /// venti volte al secondo e non può attraversare l'IPC per ogni riga. Due
     /// copie a mano dello stesso numero sono durate finché nessuno ha toccato una
@@ -373,7 +373,7 @@ pub struct StatoRiproduzione {
     ///
     /// Il **codice** e non la frase: la frase va tradotta, e una stringa
     /// italiana che attraversa l'IPC resta italiana anche per chi ha
-    /// l'interfaccia in inglese. Vedi [`aether_app::autoplay::Motivo::codice`].
+    /// l'interfaccia in inglese. Vedi [`rymembra_app::autoplay::Motivo::codice`].
     ///
     /// `None` quando il brano dopo l'hai messo tu, e allora non c'è niente da
     /// spiegare.
@@ -602,7 +602,7 @@ pub struct Lettore {
 
 impl Lettore {
     /// Fa partire un brano, e il successivo in canna se ne va con quello che c'era.
-    fn suona(&mut self, brano: aether_play::BranoAperto) {
+    fn suona(&mut self, brano: rymembra_play::BranoAperto) {
         self.motore.suona(brano);
         self.puntina_a_vuoto = None;
         self.coda_del_giro = None;
@@ -612,8 +612,8 @@ impl Lettore {
     }
 
     /// Mette in canna il brano dopo, o toglie quello che c'era.
-    fn prepara(&mut self, brano: Option<aether_play::BranoAperto>) {
-        self.in_canna = brano.as_ref().map(aether_play::BranoAperto::track_id);
+    fn prepara(&mut self, brano: Option<rymembra_play::BranoAperto>) {
+        self.in_canna = brano.as_ref().map(rymembra_play::BranoAperto::track_id);
         self.motore.prepara(brano);
     }
 
@@ -773,7 +773,7 @@ pub struct StatoLettore {
     /// riserva di connessioni si condivide fra le copie. È così che il filo del
     /// preparatore se lo porta dentro la scadenza senza portarci uno `State`.
     cataloghi: Cataloghi,
-    /// Su quale uscita si vuole sentire Aether. `None`: quella di sistema.
+    /// Su quale uscita si vuole sentire Rymembra. `None`: quella di sistema.
     ///
     /// # Perché una copia qui e non una lettura dal database
     ///
@@ -801,7 +801,7 @@ pub struct StatoLettore {
     /// quella di adesso invece di quella dell'ultima passata. Stessa forma del
     /// risveglio di `crate::aggiornamenti`.
     pub sveglia_dispositivi: std::sync::mpsc::Sender<()>,
-    /// Il canale verso il filo «aether-seguito»: vedi [`in_ordine`].
+    /// Il canale verso il filo «rymembra-seguito»: vedi [`in_ordine`].
     seguito: std::sync::mpsc::Sender<Seguito>,
     /// La coda in memoria non è ancora quella sul disco.
     ///
@@ -819,14 +819,14 @@ pub struct StatoLettore {
     /// dall'epoca. `0`: nessuna in corso.
     ///
     /// Il motore scende e si mette in pausa da solo (vedi
-    /// `aether_play::Motore::sfuma`); a chi sta sopra resta da fermare
+    /// `rymembra_play::Motore::sfuma`); a chi sta sopra resta da fermare
     /// l'ascolto e dirlo alla finestra quando la discesa è finita, e questa è
     /// la sveglia per farlo. Fuori dal lucchetto per la ragione di
     /// [`StatoLettore::spegnimento`]: la legge l'orologio a ogni giro.
     pub sfumando_fino: std::sync::atomic::AtomicI64,
 }
 
-/// Un lavoro da fare dopo, in ordine, sul filo «aether-seguito».
+/// Un lavoro da fare dopo, in ordine, sul filo «rymembra-seguito».
 ///
 /// Una chiusura e non un `enum` perché i lavori sono di forma diversa — lo
 /// stato da comporre e mandare, un ascolto da scrivere, un evento piccolo per
@@ -925,7 +925,7 @@ pub const FINE_DEL_BRANO: i64 = -1;
 /// perché somiglia a tutto.
 ///
 /// L'osservatore riceve l'[`Annuncio`] intero e non il solo evento: gira sul
-/// filo «aether-eventi» del motore, e i controlli che l'annuncio porta — il
+/// filo «rymembra-eventi» del motore, e i controlli che l'annuncio porta — il
 /// motore è ancora questo? qualcuno ha già voltato pagina? — vanno fatti sotto
 /// il lucchetto del lettore, che è qui. Vedi [`su_evento`].
 fn apri_motore(app: &tauri::AppHandle, voluto: Option<String>) -> Result<Motore, AppError> {
@@ -983,7 +983,9 @@ impl StatoLettore {
             Self {
                 lettore: Mutex::new(lettore),
                 spettro: std::sync::atomic::AtomicBool::new(false),
-                spettro_bande: std::sync::atomic::AtomicU16::new(aether_play::RISOLUZIONE_DI_SERIE),
+                spettro_bande: std::sync::atomic::AtomicU16::new(
+                    rymembra_play::RISOLUZIONE_DI_SERIE,
+                ),
                 spegnimento: std::sync::atomic::AtomicI64::new(0),
                 ripresa: Mutex::new(None),
                 scheda_corrente: Mutex::new(None),
@@ -1005,7 +1007,7 @@ impl StatoLettore {
     }
 }
 
-/// Avvia il filo «aether-seguito» e restituisce il canale per parlargli.
+/// Avvia il filo «rymembra-seguito» e restituisce il canale per parlargli.
 ///
 /// # Perché esiste
 ///
@@ -1035,7 +1037,7 @@ fn avvia_seguito(app: &tauri::AppHandle) -> std::sync::mpsc::Sender<Seguito> {
     let (manda, ricevi) = std::sync::mpsc::channel::<Seguito>();
     let manico = app.clone();
     let avviato = std::thread::Builder::new()
-        .name("aether-seguito".to_owned())
+        .name("rymembra-seguito".to_owned())
         .spawn(move || {
             for lavoro in ricevi {
                 // Un lavoro che cade non deve portarsi via il filo: dietro di
@@ -1055,7 +1057,7 @@ fn avvia_seguito(app: &tauri::AppHandle) -> std::sync::mpsc::Sender<Seguito> {
     manda
 }
 
-/// Mette `lavoro` in fila sul filo «aether-seguito», dietro a quel che c'era.
+/// Mette `lavoro` in fila sul filo «rymembra-seguito», dietro a quel che c'era.
 ///
 /// Si chiama con il lucchetto del lettore in mano quando l'ordine rispetto agli
 /// altri cambiamenti del lettore conta — lo stato, l'ascolto, gli eventi che la
@@ -1104,7 +1106,7 @@ pub(crate) fn aspetta_il_seguito(app: &tauri::AppHandle, entro: Duration) {
 fn uscita_scelta(app: &tauri::AppHandle) -> Option<String> {
     let stato = app.state::<Stato>();
     con_libreria(&stato, |libreria| {
-        aether_app::playback::load_uscita(&libreria.connection)
+        rymembra_app::playback::load_uscita(&libreria.connection)
     })
     .ok()
     .flatten()
@@ -1345,7 +1347,7 @@ fn intorno_di(app: &tauri::AppHandle, track_id: i64) -> playback::Intorno {
 /// quello dell'arricchimento e quello del backup, cioè tutta l'applicazione per
 /// un cavo staccato.
 ///
-/// `aether_app::playback` è già spaccato apposta nelle due metà. Qui la prima
+/// `rymembra_app::playback` è già spaccato apposta nelle due metà. Qui la prima
 /// gira sotto lucchetto, il lucchetto si lascia, e la seconda va su un filo suo
 /// con una scadenza addosso.
 ///
@@ -1396,8 +1398,8 @@ fn intorno_di(app: &tauri::AppHandle, track_id: i64) -> playback::Intorno {
 fn brano_di(
     app: &tauri::AppHandle,
     track_id: i64,
-    formato: aether_play::FormatoUscita,
-) -> Result<aether_play::BranoAperto, AppError> {
+    formato: rymembra_play::FormatoUscita,
+) -> Result<rymembra_play::BranoAperto, AppError> {
     let stato = app.state::<Stato>();
     let intorno = intorno_di(app, track_id);
     let scheda = con_libreria(&stato, |libreria| {
@@ -1430,17 +1432,17 @@ fn brano_di(
     } else {
         APERTURA_BRANO
     };
-    aether_app::scadenza::con_scadenza(APERTURA_BRANO_NOME, scadenza, move || match riferimento {
+    rymembra_app::scadenza::con_scadenza(APERTURA_BRANO_NOME, scadenza, move || match riferimento {
         Some(rif) => {
             let (flusso, da_suonare) = apri_flusso(&cataloghi, &rif)?;
             let sorgente = sorgente_da_flusso(&scheda, &da_suonare, flusso);
             // Il riconoscimento del contenitore legge dalla rete, e un guasto lì
             // arriva col codice delle cartelle: vedi [`interruzione_di_flusso`].
-            aether_play::BranoAperto::apri(sorgente, formato).map_err(interruzione_di_flusso)
+            rymembra_play::BranoAperto::apri(sorgente, formato).map_err(interruzione_di_flusso)
         }
         None => {
-            let sorgente = playback::sorgente_da_scheda(&aether_app::files::LocalFiles, &scheda)?;
-            aether_play::BranoAperto::apri(sorgente, formato)
+            let sorgente = playback::sorgente_da_scheda(&rymembra_app::files::LocalFiles, &scheda)?;
+            rymembra_play::BranoAperto::apri(sorgente, formato)
         }
     })
     .unwrap_or_else(|| {
@@ -1546,7 +1548,7 @@ struct Abbozzo {
     corrente: Option<i64>,
     /// Com'è fatto quel che si sente, e di quale brano: lo dice il motore, e
     /// [`completa`] lo usa per correggere le colonne del database.
-    suonato: Option<(i64, aether_play::FormatoSuonato)>,
+    suonato: Option<(i64, rymembra_play::FormatoSuonato)>,
 }
 
 /// La fotografia del lettore: vedi [`Abbozzo`].
@@ -1610,7 +1612,7 @@ fn abbozzo(app: &tauri::AppHandle, lettore: &Lettore) -> Abbozzo {
             // Dal dominio, non da qui: è la stessa costante che `riga_attiva`
             // usa nel nucleo, e ripeterla qui sarebbe la terza copia di un
             // numero che questa release esiste in parte per ridurre a una.
-            anticipo_ms: aether_domain::testo::ANTICIPO_MS,
+            anticipo_ms: rymembra_domain::testo::ANTICIPO_MS,
             // Il motivo vale per il brano che **verrà**, non per uno qualunque:
             // se nel frattempo la coda è cambiata, la frase parlerebbe di un
             // brano che non c'è più. Confrontare costa un `Option<i64>` e toglie
@@ -1658,9 +1660,9 @@ fn completa(
     let (brano, formato) = corrente.map_or((None, None), |id| {
         let stato_app = app.state::<Stato>();
         let leggi = |libreria: &mut crate::stato::Libreria| {
-            let brano = aether_app::library::read_summary(&libreria.connection, id)?;
+            let brano = rymembra_app::library::read_summary(&libreria.connection, id)?;
             let formato = if playback::load_formato_visibile(&libreria.connection)? {
-                aether_app::library::read_formato(&libreria.connection, id)?
+                rymembra_app::library::read_formato(&libreria.connection, id)?
             } else {
                 None
             };
@@ -1712,7 +1714,7 @@ fn completa(
 ///
 /// # Perché il codice non è sempre quello del dispositivo perso
 ///
-/// Perché `aether_play` alza una bandiera sola per due guasti diversi — la
+/// Perché `rymembra_play` alza una bandiera sola per due guasti diversi — la
 /// ragione sta in `Condiviso::perso`, e in breve è che la cura è la stessa: un
 /// motore nuovo. Al banner però la differenza serve, perché le due frasi
 /// mandano l'utente in due posti opposti: `playback.deviceLost` dice che
@@ -1772,7 +1774,7 @@ const fn nome_ripetizione(repeat: RepeatMode) -> &'static str {
 
 /// Quel che arriva dal motore.
 ///
-/// Gira sul filo «aether-eventi» del motore — non su quello della decodifica,
+/// Gira sul filo «rymembra-eventi» del motore — non su quello della decodifica,
 /// non sulla callback audio: qui si può prendere un lucchetto e aspettare il
 /// database senza che il suono ne sappia niente. Fino a ieri girava sul filo
 /// della decodifica, e ogni attesa di qui era un pezzo d'anello che nessuno
@@ -1841,7 +1843,7 @@ fn su_evento(app: &tauri::AppHandle, annuncio: Annuncio) {
             );
             // Un guasto di rete non è la fine del brano: è una pausa imposta da
             // un cavo. Il motore si è fermato invece di scorrere la coda (vedi
-            // il commento in `aether_play::motore::decodifica_un_blocco`), e
+            // il commento in `rymembra_play::motore::decodifica_un_blocco`), e
             // qui si annota **dove**: lo dice la posizione che l'annuncio si
             // porta dietro, presa un istante prima che la fermata la azzerasse.
             // Finché questa funzione girava sul filo della decodifica la si
@@ -1853,8 +1855,8 @@ fn su_evento(app: &tauri::AppHandle, annuncio: Annuncio) {
             //
             // Vale identico per un flusso, e senza una riga in più: una
             // connessione che cade a metà canzone arriva fin qui con lo stesso
-            // codice, perché `aether_net::flusso` la traduce in un numero di
-            // sistema che `aether_domain::errors::rete` riconosce. La strada del
+            // codice, perché `rymembra_net::flusso` la traduce in un numero di
+            // sistema che `rymembra_domain::errors::rete` riconosce. La strada del
             // «Riprova» è quindi una sola per tutti e due i casi — che è il
             // punto: un brano interrotto dalla rete non deve raccontare due
             // storie diverse a seconda di dove stavano i byte.
@@ -2104,7 +2106,7 @@ fn annota_ripresa_da(stato: &StatoLettore, posizione: Posizione) -> Option<i64> 
 fn durata_di(app: &tauri::AppHandle, track_id: i64) -> u64 {
     let stato = app.state::<Stato>();
     con_libreria_entro(&stato, ATTESA_SCHEDA, |libreria| {
-        aether_app::library::read_summary(&libreria.connection, track_id)
+        rymembra_app::library::read_summary(&libreria.connection, track_id)
     })
     .and_then(Result::ok)
     .flatten()
@@ -2181,7 +2183,7 @@ pub fn dissolvenza(
 
 /// Dichiara di quanto la catena d'uscita ritarda il suono, in millisecondi.
 ///
-/// È il terzo dei tre ritardi che il `//!` di `aether_play::motore` distingue:
+/// È il terzo dei tre ritardi che il `//!` di `rymembra_play::motore` distingue:
 /// quello che nessuna misura vede — mixer di sistema, driver, DAC, e su un'uscita
 /// senza fili la radio. Il motore ci somma quel che `cpal` gli riporta e toglie
 /// il totale dalla posizione raccontata, così cursore, testi e pannello di
@@ -2198,7 +2200,7 @@ pub fn dissolvenza(
 ///
 /// Non tocca il suono, non sposta la fine di un brano e non rimanda il gapless:
 /// la fine si dichiara quando l'ultimo campione ha lasciato l'anello del motore,
-/// e il perché sta in `aether_play::motore::Contesto::forse_fine`.
+/// e il perché sta in `rymembra_play::motore::Contesto::forse_fine`.
 ///
 /// **Niente `nuvola::se_riuscito`**, come ogni altro setter di preferenze di
 /// questo modulo — e qui con una ragione in più: è un numero che descrive
@@ -2459,10 +2461,10 @@ pub fn suona(
 pub fn radio(app: tauri::AppHandle, stato: State<'_, StatoLettore>, brano: i64) -> Esito<()> {
     let stato_app = app.state::<Stato>();
     let coda = con_libreria(&stato_app, |libreria| {
-        aether_app::autoplay::radio(
+        rymembra_app::autoplay::radio(
             &libreria.connection,
             brano,
-            aether_app::autoplay::RADIO,
+            rymembra_app::autoplay::RADIO,
             adesso_ms(),
         )
     })
@@ -2943,7 +2945,7 @@ pub fn vai_a(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: u64) -> 
 /// suonare a un lettore che non c'è è una richiesta senza risposta. Questo
 /// invece è la domanda che la finestra fa per prima, e rispondere con un errore
 /// vorrebbe dire una finestra che si apre su un guasto invece che su una
-/// libreria — mentre senza scheda audio Aether resta un catalogo consultabile,
+/// libreria — mentre senza scheda audio Rymembra resta un catalogo consultabile,
 /// che è quello che `StatoLettore` conserva l'errore per permettere.
 ///
 /// Lo stato che torna è quello di un lettore fermo, con dentro il motivo: è la
@@ -2989,7 +2991,7 @@ pub fn riproduzione_stato(
             autoplay: false,
             dissolvenza_s: 0,
             latenza_ms: 0,
-            anticipo_ms: aether_domain::testo::ANTICIPO_MS,
+            anticipo_ms: rymembra_domain::testo::ANTICIPO_MS,
             motivo_prossimo: None,
             audio: Some(guasto_di_apertura(&err)),
             // Nessuna uscita: non se n'è mai aperta una.

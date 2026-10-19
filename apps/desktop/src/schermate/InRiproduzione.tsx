@@ -333,7 +333,7 @@ export function InRiproduzione({
             <Icona nome="i-text" dim={16} titolo={t("np.lyrics")} />
           </button>
           {/* Questo invece è acceso, e lo è da quando il motore espone le
-              bande: `aether-play::spettro` le prende dai campioni che escono
+              bande: `rymembra-play::spettro` le prende dai campioni che escono
               davvero. La regola non è cambiata — quel che si disegna viene dal
               suono — è cambiato che adesso il suono si può guardare. */}
           <button

@@ -1,7 +1,7 @@
 //! Il backup su Drive, dal lato della finestra.
 //!
 //! Otto comandi, due eventi e un filo di sottofondo. Le decisioni stanno in
-//! `aether-domain`, il formato in `aether-app`, la rete in `aether-cloud`: qui
+//! `rymembra-domain`, il formato in `rymembra-app`, la rete in `rymembra-cloud`: qui
 //! si tiene il tempo e si prende il lucchetto — due cose che nessuno di quei tre
 //! sa fare, e che sono anche le due che possono far impuntare la riproduzione.
 //!
@@ -17,7 +17,7 @@
 //! quel che sta in mezzo — impronte, gzip, `files.list`, i caricamenti — dura da
 //! secondi a minuti e avviene **senza nessun lucchetto**.
 //!
-//! Che sia vero non è affidato all'attenzione di chi legge: `aether-cloud` non
+//! Che sia vero non è affidato all'attenzione di chi legge: `rymembra-cloud` non
 //! riceve mai una `rusqlite::Connection`, quindi il codice che terrebbe il
 //! lucchetto durante una richiesta di rete non si può nemmeno scrivere.
 //!
@@ -28,9 +28,9 @@
 //! clonare il progetto e lanciare `cargo test` diventa impossibile per chiunque
 //! non abbia un progetto Google.
 //!
-//! Le due costanti stanno **qui** e non in `aether-cloud` perché `option_env!`
+//! Le due costanti stanno **qui** e non in `rymembra-cloud` perché `option_env!`
 //! legge l'ambiente del crate che si sta compilando. È anche la stratificazione
-//! giusta: `aether-cloud` riceve delle `Credenziali` e resta provabile.
+//! giusta: `rymembra-cloud` riceve delle `Credenziali` e resta provabile.
 //!
 //! Da scrivere perché nessuno «indurisca» la cosa sbagliata: **un client secret
 //! dentro un binario desktop non è un segreto**. `strings` lo trova, e la
@@ -44,17 +44,17 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
-use aether_app::backup::{self, StatoLocale};
-use aether_app::settings;
-use aether_cloud::drive::{self, Drive};
-use aether_cloud::http::Rete;
-use aether_cloud::oauth::{self, Credenziali, Token};
-use aether_cloud::pacchetti;
-use aether_cloud::portachiavi::{self, DiSistema, Portachiavi as _};
-use aether_cloud::servizio::{self, DaRipristinare};
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::paths::PathRules;
-use aether_domain::restore::{RestoreInput, RestorePlan, plan_restore};
+use rymembra_app::backup::{self, StatoLocale};
+use rymembra_app::settings;
+use rymembra_cloud::drive::{self, Drive};
+use rymembra_cloud::http::Rete;
+use rymembra_cloud::oauth::{self, Credenziali, Token};
+use rymembra_cloud::pacchetti;
+use rymembra_cloud::portachiavi::{self, DiSistema, Portachiavi as _};
+use rymembra_cloud::servizio::{self, DaRipristinare};
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::paths::PathRules;
+use rymembra_domain::restore::{RestoreInput, RestorePlan, plan_restore};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
@@ -66,15 +66,15 @@ use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
 // ── le credenziali compilate dentro ─────────────────────────────────────────
 
 /// L'identificativo del client OAuth, se chi ha compilato l'ha fornito.
-const CLIENT_ID_COMPILATO: Option<&str> = option_env!("AETHER_GOOGLE_CLIENT_ID");
+const CLIENT_ID_COMPILATO: Option<&str> = option_env!("RYMEMBRA_GOOGLE_CLIENT_ID");
 
 /// Il segreto del client OAuth. Vedi la nota in testa al modulo.
-const CLIENT_SECRET_COMPILATO: Option<&str> = option_env!("AETHER_GOOGLE_CLIENT_SECRET");
+const CLIENT_SECRET_COMPILATO: Option<&str> = option_env!("RYMEMBRA_GOOGLE_CLIENT_SECRET");
 
 // ── le chiavi in `settings` ─────────────────────────────────────────────────
 //
 // Nessuna di queste è un segreto: il token di aggiornamento sta nel portachiavi
-// di sistema, e il motivo è scritto in `aether_cloud::portachiavi`.
+// di sistema, e il motivo è scritto in `rymembra_cloud::portachiavi`.
 
 /// Il backup automatico è acceso.
 const CHIAVE_ATTIVO: &str = "nuvola.attivo";
@@ -570,7 +570,7 @@ fn dimentica_l_account(stato: &Stato, nuvola: &StatoNuvola) -> Result<(), AppErr
 /// Sostituisce le credenziali del client con quelle scritte dall'utente.
 ///
 /// Serve a chi vuole usare il **proprio** progetto Google invece di quello di
-/// Aether: la quota è di chi la paga. Un identificativo vuoto rimette quelle
+/// Rymembra: la quota è di chi la paga. Un identificativo vuoto rimette quelle
 /// compilate dentro.
 ///
 /// # Cambiare client vuol dire scollegarsi
@@ -696,7 +696,7 @@ pub async fn nuvola_piano_ripristino(app: AppHandle) -> Esito<PianoRipristinoIpc
 /// **Ricalcola il piano** invece di fidarsi di quello mostrato: fra l'anteprima
 /// e la conferma può essere finita una scansione, e le skin appena scritte
 /// cambiano cosa resta da fare. È l'invariante di ogni `piano → esegui` di
-/// Aether: il piano si mostra, l'esecuzione lo rifà.
+/// Rymembra: il piano si mostra, l'esecuzione lo rifà.
 ///
 /// In disparte: scarica anche i pacchetti di skin, che arrivano a venti
 /// megabyte l'uno. Vedi [`nuvola_collega`].
@@ -720,7 +720,7 @@ fn ripristina(app: &AppHandle) -> Result<EsitoRipristinoIpc, AppError> {
 
         // Prima i file, poi il database. Se si committasse la transazione e poi
         // un download fallisse, resterebbe scritto uno `skin.active` che punta a
-        // una skin che non esiste, e Aether si riaprirebbe senza sapersi
+        // una skin che non esiste, e Rymembra si riaprirebbe senza sapersi
         // disegnare.
         let (da, esistono, scritti) = con_drive(&nuvola, &credenziali, |drive| {
             let Some(da) = servizio::scarica_salvataggio(drive)? else {
@@ -812,7 +812,7 @@ fn sporca_subito(nuvola: &StatoNuvola) {
 /// thread.
 pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
     let avviato = crate::stato::avvia_filo_periodico(
-        "aether-nuvola",
+        "rymembra-nuvola",
         orecchio,
         ATTESA_AVVIO,
         RAFFICA,
@@ -1182,12 +1182,12 @@ fn stato_ipc(stato: &Stato, nuvola: &StatoNuvola) -> Result<StatoNuvolaIpc, AppE
 /// Nello stesso ordine di `contenuto.roots`, che è lo stesso di
 /// `dal_salvataggio(..).roots`: le cartelle si copiano senza filtri.
 fn cartelle_presenti(da: &DaRipristinare) -> Vec<bool> {
-    aether_app::volumi::esistenze(
+    rymembra_app::volumi::esistenze(
         da.contenuto.roots.clone(),
-        aether_app::volumi::SCADENZA_RISOLUZIONE,
+        rymembra_app::volumi::SCADENZA_RISOLUZIONE,
     )
     .into_iter()
-    .map(|esistenza| esistenza == aether_app::volumi::Esistenza::Presente)
+    .map(|esistenza| esistenza == rymembra_app::volumi::Esistenza::Presente)
     .collect()
 }
 

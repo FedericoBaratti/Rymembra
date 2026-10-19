@@ -15,7 +15,7 @@
 # conviene aver capito: `plugins.updater.endpoints` punta a
 # `/releases/latest/download/latest.json`, e `/releases/latest` **salta le
 # bozze**. Finché la release resta bozza, quindi, nessuna copia installata di
-# Aether la vede: si può scaricare l'installer a mano dalla pagina, provarlo, e
+# Rymembra la vede: si può scaricare l'installer a mano dalla pagina, provarlo, e
 # accorgersi che qualcosa non va senza che nel frattempo si sia aggiornato
 # nessuno.
 #
@@ -228,7 +228,7 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: aether-non-firmato
+          name: rymembra-non-firmato
           path: uscita/
           if-no-files-found: error
 
@@ -262,7 +262,7 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: aether-non-firmato
+          name: rymembra-non-firmato
           path: uscita/
 
       # Prima di firmare, e non dopo. Alla v2.0.1 il segreto era arrivato
@@ -284,7 +284,7 @@ jobs:
       #
       # `--app-version` non è facoltativo: `tauri build` lo metteva da solo, a
       # mano va detto. Scrive la versione nel commento fidato della firma, che
-      # la firma copre; dalla 3.0 Aether accende `requireSignedVersion` e
+      # la firma copre; dalla 3.0 Rymembra accende `requireSignedVersion` e
       # **rifiuta** un aggiornamento la cui firma non dica la versione che il
       # manifesto annuncia — è quel che impedisce a chi manomette `latest.json`
       # di accoppiare un numero nuovo all'installer vecchio di una release
@@ -318,7 +318,7 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: aether-windows
+          name: rymembra-windows
           path: uscita/
           if-no-files-found: error
 
@@ -334,7 +334,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: aether-windows
+          name: rymembra-windows
           path: uscita/
 
       - name: Pubblica la release
@@ -347,7 +347,7 @@ jobs:
           # ref è il ramo, e la release si chiamerebbe «main».
           tag_name: ${{ needs.tag.outputs.tag }}
           body: |
-            ## Aether ${{ needs.tag.outputs.tag }}
+            ## Rymembra ${{ needs.tag.outputs.tag }}
 
             See `CHANGELOG.md` for what changed.
 
@@ -364,9 +364,19 @@ jobs:
             identity validation and an annual cost: when there is one, this
             warning will disappear from these notes.
 
+            ### Coming from the previous version
+
+            This installer removes the previous version by itself and leaves
+            its data alone. The first time Rymembra starts, the library,
+            settings, skins, drafts, accounts and sync of the previous version
+            carry over automatically. If the previous version is open, close
+            it first (also from the icon next to the clock): the installer
+            waits a few seconds, then leaves it installed rather than closing
+            it under you.
+
             ### Where the music comes from
 
-            Aether plays your files, and looks for what's missing in the
+            Rymembra plays your files, and looks for what's missing in the
             **free catalogs**. It doesn't download from YouTube and doesn't
             scrape Spotify: the why is in `README.md`. What no free catalog
             has ends up in a shopping list, not in an error.
@@ -386,7 +396,7 @@ jobs:
       #      Le prove dicono che il codice fa quel che deve; non dicono che
       #      l'installer parta;
       #   2. pubblicare la bozza. Da quel momento `/releases/latest` la vede, e
-      #      ogni copia di Aether accesa nel mondo se ne accorge al prossimo
+      #      ogni copia di Rymembra accesa nel mondo se ne accorge al prossimo
       #      avvio.
       #
       # Automatizzare il secondo si può in due righe. Non si fa: è l'unico punto

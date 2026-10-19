@@ -2,7 +2,7 @@
  * Cosa farne, dei file lasciati cadere sulla finestra.
  *
  * Quale percorso è cosa lo dice il nucleo (`trascinati.rs`): una cartella, un
- * `.aeskin`, una playlist, un brano che la libreria conosce, uno che non
+ * `.ryskin`, una playlist, un brano che la libreria conosce, uno che non
  * conosce. Qui c'è la decisione che viene dopo, ed è una regola sola per
  * tutta la finestra: `pianoDeiTrascinati` la scrive senza toccare niente, e
  * `test/trascinati.test.ts` la prova; a farla succedere è `App`

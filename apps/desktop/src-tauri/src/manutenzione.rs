@@ -10,7 +10,7 @@
 //!    del database (`PRAGMA quick_check`) su una connessione sua, con un tempo
 //!    massimo. Non all'apertura: su cinquantamila brani sono due decimi di
 //!    secondo a cache calda e molto di più a cache fredda, e l'apertura gira
-//!    sul filo della finestra. I numeri stanno in `aether_app::db`;
+//!    sul filo della finestra. I numeri stanno in `rymembra_app::db`;
 //! 2. **ogni sei ore**, `PRAGMA optimize`, che la documentazione di SQLite
 //!    chiede per le connessioni che restano aperte a lungo. Quella di chiusura
 //!    la fa [`crate::stato::ottimizza_uscendo`], quella di apertura il nucleo;
@@ -40,9 +40,9 @@ use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
-use aether_app::covers::{self, Liberato, Occupazione};
-use aether_app::db::{self, Controllo};
-use aether_domain::errors::{AppError, ErrorCode};
+use rymembra_app::covers::{self, Liberato, Occupazione};
+use rymembra_app::db::{self, Controllo};
+use rymembra_domain::errors::{AppError, ErrorCode};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _};
 
@@ -61,7 +61,7 @@ use crate::stato::{NOME_DATABASE, Stato, adesso_ms, con_libreria};
 /// dell'arricchimento (un minuto e mezzo) e dell'analisi sonora (due minuti):
 /// il controllo legge tutto il database, e farlo mentre gli altri fili fanno la
 /// loro prima passata vorrebbe dire contendersi il disco proprio quando chi ha
-/// appena aperto Aether sta scegliendo cosa ascoltare.
+/// appena aperto Rymembra sta scegliendo cosa ascoltare.
 const ATTESA_AVVIO: Duration = Duration::from_secs(60);
 
 /// Quanto aspettare dopo una scansione prima di pulire: dieci secondi.
@@ -73,7 +73,7 @@ const RAFFICA: Duration = Duration::from_secs(10);
 /// Ogni quanto il filo si sveglia da solo: sei ore.
 ///
 /// La documentazione di SQLite suggerisce `optimize` «ogni qualche ora» su una
-/// connessione che resta aperta; chi tiene Aether nel vassoio per giorni lo
+/// connessione che resta aperta; chi tiene Rymembra nel vassoio per giorni lo
 /// riceve quattro volte al giorno, e a ogni battito costa meno di un
 /// millisecondo quando non c'è niente da fare.
 const INTERVALLO: Duration = Duration::from_secs(6 * 60 * 60);
@@ -214,7 +214,7 @@ pub fn uscendo(app: &AppHandle) {
 /// [`crate::stato::avvia_filo_periodico`], comune agli altri tre.
 fn avvia_filo(app: AppHandle, orecchio: Receiver<()>) {
     let avviato = crate::stato::avvia_filo_periodico(
-        "aether-manutenzione",
+        "rymembra-manutenzione",
         orecchio,
         ATTESA_AVVIO,
         RAFFICA,

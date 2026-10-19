@@ -20,7 +20,7 @@
 //! riscritto più corto non è una versione più bassa, è un copione diverso, e
 //! chi lo ha visto nella forma di prima non l'ha visto in questa. Per la stessa
 //! ragione il nucleo conserva il testo com'è, senza interpretarlo — vedi il
-//! preambolo di `aether_app::preferenze`.
+//! preambolo di `rymembra_app::preferenze`.
 //!
 //! # Perché la decisione sta qui e non nella finestra
 //!
@@ -80,7 +80,7 @@ fn da_fare(visto: Option<&str>) -> bool {
 #[tauri::command]
 pub fn giro_da_fare(stato: State<'_, Stato>) -> Esito<bool> {
     let visto = con_libreria(&stato, |libreria| {
-        aether_app::preferenze::giro_visto(&libreria.connection)
+        rymembra_app::preferenze::giro_visto(&libreria.connection)
     })
     .map_err(errore)?;
     Ok(da_fare(visto.as_deref()))
@@ -100,7 +100,7 @@ pub fn giro_da_fare(stato: State<'_, Stato>) -> Esito<bool> {
 #[tauri::command(async)]
 pub fn giro_fatto(stato: State<'_, Stato>) -> Esito<()> {
     con_libreria(&stato, |libreria| {
-        aether_app::preferenze::imposta_giro_visto(&libreria.connection, VERSIONE_COPIONE)
+        rymembra_app::preferenze::imposta_giro_visto(&libreria.connection, VERSIONE_COPIONE)
     })
     .map_err(errore)
 }

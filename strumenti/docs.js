@@ -57,7 +57,7 @@ function carica(cartella = CARTELLA) {
         .map((f) => `contenuto/${f}`)
     : [];
   return {
-    capitoli: finestra.AETHER_DOCS || [],
+    capitoli: finestra.RYMEMBRA_DOCS || [],
     pagina,
     mancanti,
     orfani: suDisco.filter((f) => !elenco.includes(f)),

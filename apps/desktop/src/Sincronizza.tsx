@@ -19,7 +19,7 @@
  * come sono. Vanno al nucleo, che decodifica il brano, ne tira fuori gli
  * **attacchi** (dove il suono comincia davvero) e aggancia ogni battuta al più
  * vicino, correggendo le altre della latenza mediana misurata su quelle
- * agganciate. La regola sta in `aether_domain::testo::aggancia` e si prova
+ * agganciate. La regola sta in `rymembra_domain::testo::aggancia` e si prova
  * senza aprire una finestra; qui si raccolgono le pressioni di un tasto.
  *
  * # I momenti, e uno solo alla volta
@@ -75,7 +75,7 @@ type Momento = "righe" | "battute" | "rivedi" | "parole" | "dono";
  *
  * Gli spazi in coda non sono un dettaglio: concatenando le parole si deve
  * riottenere la riga, ed è **esattamente** la verifica che il nucleo fa prima
- * di scriverle (`aether_domain::testo::parole_combaciano`). Uno `split(" ")`
+ * di scriverle (`rymembra_domain::testo::parole_combaciano`). Uno `split(" ")`
  * che li butta darebbe parole che rimesse in fila si attaccano fra loro, e il
  * nucleo le rifiuterebbe tutte — giustamente.
  *
@@ -787,7 +787,7 @@ export function Sincronizza({
                   <p className="nota">
                     {accanto
                       ? t("sync.words.attached", { n: righeConParole })
-                      : t("sync.words.attachedAether", { n: righeConParole })}
+                      : t("sync.words.attachedRymembra", { n: righeConParole })}
                   </p>
                 )}
                 {/* Dove finisce, detto prima di premere: un file accanto alla
@@ -796,7 +796,7 @@ export function Sincronizza({
                 <p className="nota">
                   {accanto
                     ? t("sync.review.where")
-                    : t("sync.review.whereAether")}
+                    : t("sync.review.whereRymembra")}
                 </p>
               </>
             )}
@@ -900,7 +900,7 @@ export function Sincronizza({
                 <p className="nota">
                   {accanto
                     ? t("sync.words.where")
-                    : t("sync.words.whereAether")}
+                    : t("sync.words.whereRymembra")}
                 </p>
               </>
             )}
@@ -910,7 +910,7 @@ export function Sincronizza({
                 <p className="fatto">
                   <Icona nome="i-check" dim={16} />
                   {!accanto
-                    ? t("sync.done.savedAether")
+                    ? t("sync.done.savedRymembra")
                     : nonNelFile === null
                       ? t("sync.done.saved")
                       : t("sync.done.savedInLibrary")}

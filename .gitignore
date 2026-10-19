@@ -20,7 +20,7 @@ release/
 #
 # Qui dentro stavano diciotto megabyte di `yt-dlp.exe`, impacchettati
 # nell'installer. Non ci stanno più: il modulo che li invocava è stato
-# cancellato, e Aether adesso parla solo HTTP. **Nessun eseguibile di terze
+# cancellato, e Rymembra adesso parla solo HTTP. **Nessun eseguibile di terze
 # parti finisce nel pacchetto**, ed è una delle due cose che lo rendevano
 # indistribuibile.
 #
@@ -37,7 +37,7 @@ platform-tools/
 # `legacy/` è già fuori dal repo; `legacy.rar` è lo stesso albero compresso e
 # pesa 2,2 GB. Un archivio in un commit non si toglie più: la storia se lo porta
 # dietro anche dopo un `git rm`.
-# Le skin non sono in questo elenco pur essendo zip: hanno estensione `.aeskin`
+# Le skin non sono in questo elenco pur essendo zip: hanno estensione `.ryskin`
 # e vivono nel repo di proposito.
 *.rar
 *.7z
@@ -92,7 +92,7 @@ Thumbs.db
 apps/desktop/src-tauri/oauth.local.toml
 
 # -- Le chiavi di firma degli aggiornamenti -------------------------------------
-# `npm run tauri signer generate -- -w ../../.chiavi/aether.key` scrive qui
+# `npm run tauri signer generate -- -w ../../.chiavi/rymembra.key` scrive qui
 # dentro. La `.pub` non e' un segreto — il suo contenuto sta gia' in
 # `tauri.conf.json` — ma la privata firma gli eseguibili che si installano da
 # soli sui computer altrui, e per quella non c'e' un rimedio dopo: le
@@ -101,6 +101,9 @@ apps/desktop/src-tauri/oauth.local.toml
 # repository e fuori da questo disco: una copia nel gestore di password, e il
 # contenuto nei segreti di GitHub come TAURI_SIGNING_PRIVATE_KEY.
 .chiavi/
+# La copia di sicurezza delle stesse chiavi, con la password in chiaro nel
+# LEGGIMI: per nessuna ragione deve finire in un commit.
+Rymembra-chiavi/
 
 # -- Quel che sta sulla scrivania e non nel programma ---------------------------
 # Roba che serve a chi sviluppa e a nessun altro, e che senza queste righe un

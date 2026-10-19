@@ -1,13 +1,13 @@
 /* Capitolo 10 — le skin: il documento, il compilatore, il movimento, l'impaginazione, il tema, l'accento, i pacchetti, la migrazione. */
-(window.AETHER_DOCS = window.AETHER_DOCS || []).push({
+(window.RYMEMBRA_DOCS = window.RYMEMBRA_DOCS || []).push({
   id: "skins",
   title: "Skins",
-  lead: "`aether-skin`: a skin is typed data, never CSS. The document and its registries, the only CSS author, motion and its safety rules, the layout tree, themes and accents, packages, and the migration from format 1.",
+  lead: "`rymembra-skin`: a skin is typed data, never CSS. The document and its registries, the only CSS author, motion and its safety rules, the layout tree, themes and accents, packages, and the migration from format 1.",
   entries: [
     {
       id: "skin",
       title: "The skin document (format 2)",
-      src: ["core/aether-skin/src/lib.rs", "core/aether-skin/src/document.rs", "core/aether-skin/src/tokens.rs", "core/aether-skin/src/parts.rs", "core/aether-skin/src/stati.rs", "core/aether-skin/src/values.rs", "core/aether-skin/src/effects.rs", "core/aether-skin/src/vicini.rs", "core/aether-skin/skins/plain.json", "apps/desktop/src-tauri/src/skin.rs"],
+      src: ["core/rymembra-skin/src/lib.rs", "core/rymembra-skin/src/document.rs", "core/rymembra-skin/src/tokens.rs", "core/rymembra-skin/src/parts.rs", "core/rymembra-skin/src/stati.rs", "core/rymembra-skin/src/values.rs", "core/rymembra-skin/src/effects.rs", "core/rymembra-skin/src/vicini.rs", "core/rymembra-skin/skins/plain.json", "apps/desktop/src-tauri/src/skin.rs"],
       body: [
         "**A skin is data, not CSS.** Colours enter as channels, lengths as number + unit, curves as four numbers; the compiler is the only author of CSS, so `url()` beacons, `@import` and attribute-exfiltrating selectors have no channel to travel through. The guarantee holds only if every field is typed, which is why even harmless things like `calc()` and CSS colour names are refused.",
         { h: "Shape" },
@@ -35,7 +35,7 @@
     {
       id: "skin-compiler",
       title: "From document to CSS",
-      src: ["core/aether-skin/src/compile.rs", "core/aether-skin/src/effects.rs", "core/aether-skin/src/compile/tests.rs", "core/aether-skin/tests/fedelta.rs"],
+      src: ["core/rymembra-skin/src/compile.rs", "core/rymembra-skin/src/effects.rs", "core/rymembra-skin/src/compile/tests.rs", "core/rymembra-skin/tests/fedelta.rs"],
       body: [
         "`compile_skin` is infallible and returns `CompiledSkin { id, css, cost, shell_cost, motion_cost, dynamic_tokens, presenze }`.",
         {
@@ -53,7 +53,7 @@
           ul: [
             "Tokens become `--skin-*` custom properties; the variant is emitted under `[data-theme='<opposite scheme>']`, mobile overrides under `[data-mobile]`. Derived values (e.g. `--accent-rgb` triples, `--shell-left`, `--player-clearance`) are computed by the compiler, not authored.",
             "Each part compiles to rules on its class; states map to DOM state (`:hover`, `[aria-current]`, `[aria-selected]`, `[aria-pressed]`, `:disabled`, `[data-playing]`…), with `:where()` so later rules win by order.",
-            "**Only names reach the CSS** — id, version, palette, pattern, easing, animation, font and asset names — and each passes `nel_suo_alfabeto` at the point of insertion. The header comment carries only id and version (the name used to be there and allowed a `*/` injection). The only `url()` points to `http://aether-skin.localhost` (`ORIGINE_RISORSE`). Keyframes are named `skin-<id>-anim-<name>`, fonts `skin-<id>-<family>`.",
+            "**Only names reach the CSS** — id, version, palette, pattern, easing, animation, font and asset names — and each passes `nel_suo_alfabeto` at the point of insertion. The header comment carries only id and version (the name used to be there and allowed a `*/` injection). The only `url()` points to `http://rymembra-skin.localhost` (`ORIGINE_RISORSE`). Keyframes are named `skin-<id>-anim-<name>`, fonts `skin-<id>-<family>`.",
             "Effects have a cost class — cheap 1, paint 3, composited 4, GPU 10 — and each surface has `SURFACE_COST_BUDGET` = 10 (exactly one `backdrop-filter`). Cost, target property, name and compilation are four exhaustive `match`es: an effect without a cost does not compile.",
           ],
         },
@@ -64,7 +64,7 @@
     {
       id: "motion",
       title: "Motion, the flash rule and reduced motion",
-      src: ["core/aether-skin/src/movimento.rs", "core/aether-skin/src/document.rs", "core/aether-skin/src/compile.rs", "core/aether-skin/tests/attivazione.rs", "core/aether-app/src/preferenze.rs", "apps/desktop/src/aspetto.ts", "apps/desktop/src/presenza.tsx"],
+      src: ["core/rymembra-skin/src/movimento.rs", "core/rymembra-skin/src/document.rs", "core/rymembra-skin/src/compile.rs", "core/rymembra-skin/tests/attivazione.rs", "core/rymembra-app/src/preferenze.rs", "apps/desktop/src/aspetto.ts", "apps/desktop/src/presenza.tsx"],
       body: [
         "Animations are declared once in `motion.animations` (≤ `MAX_ANIMAZIONI` = 64; 2–12 keyframes, the first at 0; duration ≤ 10 s, delay ≤ 5 s, iterations ≤ 16 or `infinite`) and bound by parts to **triggers**: the 10 states plus 5 moments — enter, exit, share (flying between screens), in-view, change. The principle: a skin animates **states of the DOM, not events of the application**; an infinite loop is allowed only on a state (a record spinning while `playing`, which pauses rather than restarts). Keyframes move, scale, rotate, skew, blur, recolour and clip. Staggers are capped at 400 ms over 12 items.",
         { h: "Always stoppable" },
@@ -87,7 +87,7 @@
     {
       id: "layout",
       title: "The layout tree",
-      src: ["core/aether-skin/src/layout.rs", "apps/desktop/src/Impaginazione.tsx", "apps/desktop/src/studio/AlberoScafale.tsx"],
+      src: ["core/rymembra-skin/src/layout.rs", "apps/desktop/src/Impaginazione.tsx", "apps/desktop/src/studio/AlberoScafale.tsx"],
       body: [
         "`layout.shell` describes where things are, with a closed vocabulary that cannot overlap or overflow: flex rows, columns and scroll zones (no grid, no absolute positioning), gaps from `none` to `xl`, alignment and distribution options.",
         {
@@ -104,17 +104,17 @@
     {
       id: "theme",
       title: "Theme and variant",
-      src: ["apps/desktop/src/tema.ts", "apps/desktop/src/aspettoFinestra.ts", "core/aether-app/src/preferenze.rs", "core/aether-skin/src/document.rs"],
+      src: ["apps/desktop/src/tema.ts", "apps/desktop/src/aspettoFinestra.ts", "core/rymembra-app/src/preferenze.rs", "core/rymembra-skin/src/document.rs"],
       body: [
         "`ui.theme` is `scuro`, `chiaro` or `sistema`. A skin declares its base `scheme` and may provide a `variant` for the other one. `temaMostrato(tema, skin)` resolves what is shown: the wanted scheme (`sistema` follows `prefers-color-scheme` and changes live) if it equals the skin's base or the skin has a variant, otherwise the base. `applicaTema` writes `data-theme=\"light|dark\"` on `<html>`, which the compiled variant rules select; Settings disables the choice a skin cannot honour and says which variant is missing.",
-        "The theme moved from `localStorage` into `settings` so backup and profile carry it; the old `aether.tema` key is read once as a fallback.",
+        "The theme moved from `localStorage` into `settings` so backup and profile carry it; the old `rymembra.tema` key is read once as a fallback.",
       ],
       see: ["skin", "accent"],
     },
     {
       id: "accent",
       title: "Accent from the cover",
-      src: ["core/aether-skin/src/dinamico.rs", "core/aether-app/src/tinta.rs", "apps/desktop/src-tauri/src/skin.rs", "apps/desktop/src/aspetto.ts"],
+      src: ["core/rymembra-skin/src/dinamico.rs", "core/rymembra-app/src/tinta.rs", "apps/desktop/src-tauri/src/skin.rs", "apps/desktop/src/aspetto.ts"],
       body: [
         "With `skin.dynamicAccent` on (default off), the accent follows the playing cover: `tinta::dominante` picks the cover's hue ([Covers](#covers)) and `dinamico::accento_sicuro` keeps that **hue** while moving lightness in OKLCH until the colour reaches the required contrast against every surface it appears on as text, and against the text drawn on top of it; chroma is reduced to fit sRGB and capped at `TETTO_CROMA` = 0.20. If no lightness works, the answer is `None` and the skin's own accent stays. A skin can refuse with `capabilities.dynamicAccent: false`, and that wins over the preference. Text never follows the cover.",
         "`accento_copertina` returns the variables, which `applicaAccento` writes on the root's inline style. The Studio's palette generator (`tavolozza_da`) uses the same rule to build a legible palette from one colour or the current cover.",
@@ -124,9 +124,9 @@
     {
       id: "skin-package",
       title: "Packages, installation and the skin protocol",
-      src: ["core/aether-skin/src/package.rs", "apps/desktop/src-tauri/src/skin.rs", "apps/desktop/src/ConfermaSkin.tsx", "core/aether-cloud/src/pacchetti.rs"],
+      src: ["core/rymembra-skin/src/package.rs", "apps/desktop/src-tauri/src/skin.rs", "apps/desktop/src/ConfermaSkin.tsx", "core/rymembra-cloud/src/pacchetti.rs"],
       body: [
-        "An `.aeskin` is a zip with a **closed list** of entry names: `skin.json` (required), `preview.png`, and `assets/<name>.<ext>` one level deep with a constrained file name. Types are recognised by magic bytes — PNG, JPEG, WebP, WOFF2; no SVG. All limits are checked from the zip index **before** decompressing:",
+        "A `.ryskin` is a zip with a **closed list** of entry names: `skin.json` (required), `preview.png`, and `assets/<name>.<ext>` one level deep with a constrained file name. Types are recognised by magic bytes — PNG, JPEG, WebP, WOFF2; no SVG. All limits are checked from the zip index **before** decompressing:",
         {
           table: {
             head: ["Limit", "Value"],
@@ -140,15 +140,15 @@
             ],
           },
         },
-        "Writing deflates the manifest and stores assets uncompressed. Installing (`skin_installa`, also by dropping a file on the window) validates, runs the exam (refuse above 2× budget; ask when `daConfermare`), and copies the package to `<data>/skin/<id>.aeskin`; built-in skins cannot be uninstalled.",
-        "Fonts and images are served by the custom scheme `aether-skin`: `http://aether-skin.localhost/<id>/<name>` from an installed package, `…/bozza/<id>/<name>` from a Studio draft. The handler re-checks the id alphabet, the closed name list and the type from the bytes; no path is ever composed from unchecked input.",
+        "Writing deflates the manifest and stores assets uncompressed. Installing (`skin_installa`, also by dropping a file on the window) validates, runs the exam (refuse above 2× budget; ask when `daConfermare`), and copies the package to `<data>/skin/<id>.ryskin`; built-in skins cannot be uninstalled.",
+        "Fonts and images are served by the custom scheme `rymembra-skin`: `http://rymembra-skin.localhost/<id>/<name>` from an installed package, `…/bozza/<id>/<name>` from a Studio draft. The handler re-checks the id alphabet, the closed name list and the type from the bytes; no path is ever composed from unchecked input.",
       ],
       see: ["skin", "security"],
     },
     {
       id: "skin-migration",
       title: "From format 1 to format 2",
-      src: ["core/aether-skin/src/migrazione.rs", "core/aether-skin/tests/migrazione.rs", "core/aether-skin/tests/oro"],
+      src: ["core/rymembra-skin/src/migrazione.rs", "core/rymembra-skin/tests/migrazione.rs", "core/rymembra-skin/tests/oro"],
       body: [
         "Format 1 documents are migrated when read (`MIGRAZIONI`), before validation, and look as they did:",
         {
@@ -166,7 +166,7 @@
             ],
           },
         },
-        "Parts that format 1 shared under one class are split, copying the style to each new part name (`COPIE`). `forma_canonica` writes keys in canonical order. `tests/migrazione.rs` compiles golden format-1 skins (`tests/oro/*.v1.json`) and compares the CSS with the frozen format-1 output as (rule, property, value) triples, with the allowed differences listed. Format 2 skins do not open in Aether 2.x, which is why the format change made this release a major ([CHANGELOG](https://github.com/FedericoBaratti/Aether/blob/main/CHANGELOG.md)).",
+        "Parts that format 1 shared under one class are split, copying the style to each new part name (`COPIE`). `forma_canonica` writes keys in canonical order. `tests/migrazione.rs` compiles golden format-1 skins (`tests/oro/*.v1.json`) and compares the CSS with the frozen format-1 output as (rule, property, value) triples, with the allowed differences listed. Format 2 skins do not open in Rymembra 2.x, which is why the format change made this release a major ([CHANGELOG](https://github.com/FedericoBaratti/Rymembra/blob/main/CHANGELOG.md)).",
       ],
       see: ["skin"],
     },

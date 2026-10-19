@@ -3,7 +3,7 @@
  *
  * # Cos'è
  *
- * Trecento byte su GitHub, e l'unica cosa che decide se una copia di Aether
+ * Trecento byte su GitHub, e l'unica cosa che decide se una copia di Rymembra
  * installata da qualche parte si aggiornerà o no. `tauri-plugin-updater` lo
  * scarica ogni mezz'ora, confronta `version` con la propria, e se è più nuova
  * prende `platforms[…].url`, ne verifica la firma con la chiave compilata
@@ -119,7 +119,7 @@ function identificativo(base64DelFile, cosa) {
  * Sta nel *commento fidato* del file minisign — la riga `trusted comment:`,
  * coperta dalla firma — come coppie `chiave:valore` separate da tabulazioni:
  * `timestamp:…\tfile:…\tversion:3.0.0`. La scrive `tauri signer sign
- * --app-version`, e dalla 3.0 Aether (`requireSignedVersion` in
+ * --app-version`, e dalla 3.0 Rymembra (`requireSignedVersion` in
  * `tauri.conf.json`) rifiuta un aggiornamento la cui firma non la porti o ne
  * porti un'altra: va controllata qui, prima che lo scopra ogni copia
  * installata.
@@ -152,7 +152,7 @@ function chiavePubblica() {
       `${TAURI}: plugins.updater.pubkey è vuoto.\n` +
         "Senza, gli eseguibili non sanno verificare niente e l'aggiornamento\n" +
         "fallirebbe sul computer di chi lo scarica. Generare le chiavi con:\n" +
-        "  cd apps/desktop && npm run tauri signer generate -- -w ../../.chiavi/aether.key",
+        "  cd apps/desktop && npm run tauri signer generate -- -w ../../.chiavi/rymembra.key",
     );
   }
   return chiave.trim();
@@ -319,7 +319,7 @@ function main() {
   fs.mkdirSync(dove, { recursive: true });
   const uscita = path.join(dove, "latest.json");
   fs.writeFileSync(uscita, `${JSON.stringify(manifesto, null, 2)}\n`);
-  console.log(`${uscita}: Aether ${v}, firmato con ${dellaChiave}`);
+  console.log(`${uscita}: Rymembra ${v}, firmato con ${dellaChiave}`);
   console.log(`  ${manifesto.platforms[BERSAGLIO].url}`);
 }
 

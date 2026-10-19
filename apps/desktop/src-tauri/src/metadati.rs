@@ -17,8 +17,8 @@
 //! più frequente — la maggior parte delle deduzioni sono corrette, e senza un
 //! gesto per dirlo l'elenco non si svuoterebbe mai.
 
-use aether_app::incerti::{self, TracciaIncerta};
-use aether_app::provenienza::Correzioni;
+use rymembra_app::incerti::{self, TracciaIncerta};
+use rymembra_app::provenienza::Correzioni;
 use tauri::State;
 
 use crate::errore::{Esito, errore};
@@ -85,7 +85,7 @@ pub fn metadati_conferma(stato: State<'_, Stato>, id: i64) -> Esito<()> {
 /// sua esclusione, il suo avanzamento e il suo Annulla — la finestra la avvia
 /// subito dopo, e una seconda strada per leggere i file sarebbe una seconda
 /// strada da tenere d'accordo con la prima. Il come sta su
-/// `aether_app::library::rileggi_tutti_i_tag`; le correzioni a mano e
+/// `rymembra_app::library::rileggi_tutti_i_tag`; le correzioni a mano e
 /// l'arricchimento sopravvivono alla rilettura come a ogni altra.
 ///
 /// Restituisce quanti brani aspettano la rilettura.
@@ -99,7 +99,7 @@ pub fn metadati_conferma(stato: State<'_, Stato>, id: i64) -> Esito<()> {
 #[tauri::command(async)]
 pub fn metadati_rileggi_tutti(stato: State<'_, Stato>) -> Esito<usize> {
     con_libreria(&stato, |libreria| {
-        aether_app::library::rileggi_tutti_i_tag(&libreria.connection)
+        rymembra_app::library::rileggi_tutti_i_tag(&libreria.connection)
     })
     .map_err(errore)
 }

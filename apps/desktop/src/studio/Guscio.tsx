@@ -291,8 +291,8 @@ export function Studio({
     const ora = attuale.current;
     try {
       const dove = await save({
-        defaultPath: `${idBozza.current}.aeskin`,
-        filters: [{ name: "Aether skin", extensions: ["aeskin"] }],
+        defaultPath: `${idBozza.current}.ryskin`,
+        filters: [{ name: "Rymembra skin", extensions: ["ryskin"] }],
       });
       if (dove === null) return;
       await istantanea("esportata");

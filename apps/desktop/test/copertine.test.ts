@@ -14,15 +14,15 @@ const IMPRONTA = "ab".repeat(32);
 test("le tre misure hanno i loro indirizzi", () => {
   assert.equal(
     indirizzoCopertina(IMPRONTA, "miniatura"),
-    `http://aether-cover.localhost/${IMPRONTA}.t`,
+    `http://rymembra-cover.localhost/${IMPRONTA}.t`,
   );
   assert.equal(
     indirizzoCopertina(IMPRONTA, "media"),
-    `http://aether-cover.localhost/${IMPRONTA}.m`,
+    `http://rymembra-cover.localhost/${IMPRONTA}.m`,
   );
   assert.equal(
     indirizzoCopertina(IMPRONTA, "piena"),
-    `http://aether-cover.localhost/${IMPRONTA}`,
+    `http://rymembra-cover.localhost/${IMPRONTA}`,
   );
 });
 
@@ -30,9 +30,9 @@ test("srcset dichiara le tre larghezze, dalla più piccola", () => {
   assert.equal(
     srcsetCopertina(IMPRONTA),
     [
-      `http://aether-cover.localhost/${IMPRONTA}.t 160w`,
-      `http://aether-cover.localhost/${IMPRONTA}.m 320w`,
-      `http://aether-cover.localhost/${IMPRONTA} 640w`,
+      `http://rymembra-cover.localhost/${IMPRONTA}.t 160w`,
+      `http://rymembra-cover.localhost/${IMPRONTA}.m 320w`,
+      `http://rymembra-cover.localhost/${IMPRONTA} 640w`,
     ].join(", "),
   );
 });

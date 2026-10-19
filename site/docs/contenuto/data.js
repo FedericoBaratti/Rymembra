@@ -1,24 +1,25 @@
 /* Capitolo 2 — i dati sul disco: database, schema, migrazioni, manutenzione, impostazioni, profilo. */
-(window.AETHER_DOCS = window.AETHER_DOCS || []).push({
+(window.RYMEMBRA_DOCS = window.RYMEMBRA_DOCS || []).push({
   id: "data-chapter",
   title: "Data on disk",
-  lead: "The data folder, the SQLite library and its schema, how it migrates and looks after itself, where settings live, and the `.aeprofile` archive.",
+  lead: "The data folder, the SQLite library and its schema, how it migrates and looks after itself, where settings live, and the `.ryprofile` archive.",
   entries: [
     {
       id: "data",
       title: "The data folder and the database connection",
-      src: ["core/aether-app/src/db/mod.rs", "apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/src/main.rs"],
+      src: ["core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/trasloco.rs", "apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/src/main.rs"],
       body: [
-        "Everything Aether keeps lives in the application data folder, `%APPDATA%\\io.github.federicobaratti.aether` on Windows (asked to Tauri, never composed by hand). The environment variable `AETHER_DATI` replaces it at startup — the way to try an import or a migration on a copy without touching the real library; it also disables the single-instance guard.",
+        "Everything Rymembra keeps lives in the application data folder, `%APPDATA%\\io.github.federicobaratti.rymembra` on Windows (asked to Tauri, never composed by hand). The environment variable `RYMEMBRA_DATI` replaces it at startup — the way to try an import or a migration on a copy without touching the real library; it also disables the single-instance guard.",
+        "**Coming from the previous version.** On the first start the data of the previous version are transferred automatically, before the log or the database is opened (`trasloco.rs`, only for the default folder): the old data folder is renamed to this one — library, settings, covers, skins, drafts, profile copies and log files, which take the new names — and an interrupted transfer resumes at the next start. Nothing is overwritten and nothing is deleted: if the new folder already holds a library, it wins and the old one is left untouched; if the previous version is still running (its database is open), nothing is moved and Rymembra says so in a dialog and closes. Skins and profile archives written by the previous version still import, and its keychain entries and Drive files are picked up on first use ([OAuth](#oauth), [Drive backup](#cloud)).",
         {
           table: {
             head: ["Path in the data folder", "Contents"],
             rows: [
-              ["`aether.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 30"],
-              ["`aether.db.schema-NNN.bak`", "Copy taken before a migration (last two kept)"],
+              ["`rymembra.db` (+ `-wal`, `-shm`)", "The library: SQLite, schema version 30"],
+              ["`rymembra.db.schema-NNN.bak`", "Copy taken before a migration (last two kept)"],
               ["`copertine/`", "Content-addressed cover store — see [Covers](#covers)"],
-              ["`skin/`", "Installed `.aeskin` packages and Studio drafts (`skin/bozze/`)"],
-              ["`diario/`", "The log, `aether.log`, rotated — see [Logs](#logs)"],
+              ["`skin/`", "Installed `.ryskin` packages and Studio drafts (`skin/bozze/`)"],
+              ["`diario/`", "The log, `rymembra.log`, rotated — see [Logs](#logs)"],
               ["`profilo/`", "Safety copies written before a profile import"],
             ],
           },
@@ -34,14 +35,14 @@
             "If WAL is not usable: fall back to `journal_mode = TRUNCATE` with `synchronous = FULL`. The open never fails because of the journal; the startup log line says `giornale=wal|truncate|memory|<mode>-non-usabile`.",
           ],
         },
-        "With the fallback, readers and writers serialize, so the UI stutters during scans; the data folder is never moved automatically.",
+        "With the fallback, readers and writers serialize, so the UI stutters during scans; the data folder is never moved automatically to get out of the fallback.",
         { h: "Connections" },
         "One main connection, behind the library mutex ([Runtime](#runtime)). Two secondary connections to the same file — the enrichment response cache and the Folders tree index — get the same 5 s busy timeout and foreign keys via `prepara_connessione_secondaria`; they inherit the journal from the file and never migrate. Writes that read first use `TransactionBehavior::Immediate` (`library::transazione_di_scrittura`) to avoid `SQLITE_BUSY_SNAPSHOT`.",
         { h: "SQLite errors" },
         "`codice_da_sqlite` maps SQLite result codes to the catalog and appends the extended code to the cause:",
         {
           table: {
-            head: ["SQLite", "Aether code"],
+            head: ["SQLite", "Rymembra code"],
             rows: [
               ["`BUSY`, `LOCKED`", "`db.locked` (retryable)"],
               ["`READONLY`", "`db.readOnly`"],
@@ -61,7 +62,7 @@
     {
       id: "schema",
       title: "The schema (version 30)",
-      src: ["core/aether-app/src/db/schema", "core/aether-app/src/db/schema/001_baseline.sql", "core/aether-app/src/db/schema/026_brani_di_catalogo.sql", "core/aether-app/src/db/schema/030_libreria_leggera.sql"],
+      src: ["core/rymembra-app/src/db/schema", "core/rymembra-app/src/db/schema/001_baseline.sql", "core/rymembra-app/src/db/schema/026_brani_di_catalogo.sql", "core/rymembra-app/src/db/schema/030_libreria_leggera.sql"],
       body: [
         "Times are milliseconds since the epoch, durations milliseconds. There are no views. The central table is `tracks`; almost everything else hangs off `tracks.id` (with `ON DELETE CASCADE`) or off a stable key.",
         { h: "tracks" },
@@ -117,11 +118,11 @@
     {
       id: "migrations",
       title: "Migrations and the pre-migration copy",
-      src: ["core/aether-app/src/db/migrations.rs", "core/aether-app/src/db/mod.rs", "core/aether-app/src/db/manutenzione.rs", "CHANGELOG.md"],
+      src: ["core/rymembra-app/src/db/migrations.rs", "core/rymembra-app/src/db/mod.rs", "core/rymembra-app/src/db/manutenzione.rs", "CHANGELOG.md"],
       body: [
         "`MIGRATIONS` is an ordered list of 30 `Migration { version, name, sql, ricostruisce }`, each SQL file embedded with `include_str!`. `LATEST_VERSION` is computed from the list in a `const` block; a test checks that versions are consecutive from 1 and that every `.sql` file is listed.",
         { h: "Forward only" },
-        "There are no down migrations. A database whose `user_version` is greater than `LATEST_VERSION` is refused with `db.versionAhead` (fatal) rather than opened with queries that ignore half its columns. Going back to an older Aether means restoring the copy below.",
+        "There are no down migrations. A database whose `user_version` is greater than `LATEST_VERSION` is refused with `db.versionAhead` (fatal) rather than opened with queries that ignore half its columns. Going back to an older Rymembra means restoring the copy below.",
         { h: "One transaction per migration" },
         "Each runs as `BEGIN; <sql>; PRAGMA user_version = N; COMMIT`. If the third fails, the first two stay applied and `user_version` says so — one transaction for all would turn a partial upgrade into one that never starts. A failure is `db.migrationFailed { from, to, step }`.",
         "Migration 026 is the only one with `ricostruisce: true`: it rebuilds `tracks` to drop a `NOT NULL`. `DROP TABLE` with foreign keys on would fire every `ON DELETE CASCADE` into `tracks`, so `foreign_keys` is switched off **before** `BEGIN` (inside a transaction the pragma is ignored), `PRAGMA foreign_key_check` must find nothing before `COMMIT`, and afterwards the code verifies that foreign keys are back on.",
@@ -129,7 +130,7 @@
         "When there is something to migrate and something to protect (`0 < version < 30`, a file database), `prima_di_migrare` runs:",
         {
           ol: [
-            "if `aether.db.schema-NNN.bak` (NNN = the version the copy **contains**) already exists, keep it — it predates every failed attempt;",
+            "if `rymembra.db.schema-NNN.bak` (NNN = the version the copy **contains**) already exists, keep it — it predates every failed attempt;",
             "estimate the copy as used pages × page size;",
             "reserve that size plus a margin (half the database, at least `MARGINE_MINIMO` = 32 MiB) by extending a temporary file with `set_len`, so a full disk fails now and not halfway;",
             "`VACUUM INTO <name>.parziale`, then rename: a file with the final name is always complete;",
@@ -143,9 +144,9 @@
     {
       id: "maintenance",
       title: "Health check, optimize and cover cleanup",
-      src: ["core/aether-app/src/db/manutenzione.rs", "apps/desktop/src-tauri/src/manutenzione.rs", "core/aether-app/src/covers.rs", "apps/desktop/src/parti/Avvisi.tsx"],
+      src: ["core/rymembra-app/src/db/manutenzione.rs", "apps/desktop/src-tauri/src/manutenzione.rs", "core/rymembra-app/src/covers.rs", "apps/desktop/src/parti/Avvisi.tsx"],
       body: [
-        "The thread `aether-manutenzione` uses the periodic template with `ATTESA_AVVIO` = 60 s, `RAFFICA` = 10 s and `INTERVALLO` = 6 h. It is also woken by every scan that ends (the scan's `TurnoDiScansione` sends the signal when it drops).",
+        "The thread `rymembra-manutenzione` uses the periodic template with `ATTESA_AVVIO` = 60 s, `RAFFICA` = 10 s and `INTERVALLO` = 6 h. It is also woken by every scan that ends (the scan's `TurnoDiScansione` sends the signal when it drops).",
         {
           table: {
             head: ["Operation", "When", "Cost measured on 50,000 tracks / 107 MB"],
@@ -159,7 +160,7 @@
           },
         },
         { h: "The quick check" },
-        "`db::controlla_il_file` opens its **own** connection without `SQLITE_OPEN_CREATE` (a missing file must not be created and declared healthy) and with `query_only`, so a long read never holds the library lock. A watchdog thread (`aether-scadenza-sqlite`) calls `sqlite3_interrupt` after `TEMPO_DEL_CONTROLLO` = 30 s. Outcomes: `Sano`, `Interrotto` (unknown, not damage), or `Err(db.corrupt)` with the first 8 lines of the answer. The check runs only in WAL mode: with the `TRUNCATE` fallback a long reader would block every writer, so it is skipped and reported as such.",
+        "`db::controlla_il_file` opens its **own** connection without `SQLITE_OPEN_CREATE` (a missing file must not be created and declared healthy) and with `query_only`, so a long read never holds the library lock. A watchdog thread (`rymembra-scadenza-sqlite`) calls `sqlite3_interrupt` after `TEMPO_DEL_CONTROLLO` = 30 s. Outcomes: `Sano`, `Interrotto` (unknown, not damage), or `Err(db.corrupt)` with the first 8 lines of the answer. The check runs only in WAL mode: with the `TRUNCATE` fallback a long reader would block every writer, so it is skipped and reported as such.",
         "The result (`daFare`, `sano`, `interrotto`, `saltato`, `danneggiato`, `nonRiuscito`) is kept in `StatoManutenzione`, emitted as `manutenzione:salute`, and readable at any time with `manutenzione_salute` so a reloaded window can still show the damaged-database banner. After `danneggiato` the thread **stops writing**: no optimize, no cleanup.",
         { h: "Cover cleanup" },
         "When `covers::quante_orfane` is non-zero, `pulisci` takes the scan turn (from the door that does not wake anyone) and the enrichment turn — both save cover files outside the lock and register them later, so a cleanup in between could delete a file about to be referenced. Under the lock it deletes orphan `cover_art` rows; without the lock it deletes their files and leftovers older than `ETA_DEGLI_AVANZI` = 24 h. `manutenzione_stato` reports cache size, orphan count and health; `manutenzione_pulisci_copertine` runs the cleanup on demand and returns `library.scanBusy` / `metadata.enrichBusy` when it has to wait.",
@@ -169,10 +170,10 @@
     {
       id: "settings-store",
       title: "Settings and preferences",
-      src: ["core/aether-app/src/settings.rs", "core/aether-app/src/preferenze.rs", "core/aether-app/src/playback.rs", "core/aether-app/src/profilo/mod.rs"],
+      src: ["core/rymembra-app/src/settings.rs", "core/rymembra-app/src/preferenze.rs", "core/rymembra-app/src/playback.rs", "core/rymembra-app/src/profilo/mod.rs"],
       body: [
         "All preferences are rows of the `settings` table (`key TEXT PRIMARY KEY, value TEXT`). `settings::read` returns `Ok(None)` for a missing key — the normal state of a first start; the caller decides what absence means. `read_json` / `write_json` store typed values. Preferences that once lived in the WebView's `localStorage` (theme, shortcuts, language) moved here so that backup and profile carry them.",
-        "**Secrets never go in this table**: `aether.db` is readable by any process of the user and is copied by backups. Tokens and keys are in the OS keychain.",
+        "**Secrets never go in this table**: `rymembra.db` is readable by any process of the user and is copied by backups. Tokens and keys are in the OS keychain.",
         {
           table: {
             head: ["Key", "Holds", "Default when absent", "In a profile"],
@@ -203,22 +204,22 @@
     },
     {
       id: "profile",
-      title: "The profile archive (.aeprofile)",
-      src: ["core/aether-app/src/profilo/mod.rs", "core/aether-app/src/profilo/archivio.rs", "core/aether-app/src/profilo/biblioteca.rs", "core/aether-app/src/profilo/radici.rs", "apps/desktop/src-tauri/src/profilo.rs", "apps/desktop/src/parti/Profilo.tsx"],
+      title: "The profile archive (.ryprofile)",
+      src: ["core/rymembra-app/src/profilo/mod.rs", "core/rymembra-app/src/profilo/archivio.rs", "core/rymembra-app/src/profilo/biblioteca.rs", "core/rymembra-app/src/profilo/radici.rs", "apps/desktop/src-tauri/src/profilo.rs", "apps/desktop/src/parti/Profilo.tsx"],
       body: [
         "A profile is a single file you carry by hand: preferences **and** the library's irreplaceable data. It overlaps with the Drive backup on purpose — the backup is automatic and needs an account; the profile is a gesture and needs nothing.",
         { h: "Format" },
-        "A zip with signature `aether.profilo`, format version 2, extension `.aeprofile`. Format 1 (a JSON of preferences) is still read — recognised by its first byte `{` against `PK\\x03\\x04` — and no longer written. Entry names form a **closed list**; any other name rejects the whole archive (no path ever needs normalizing, so `../` cannot exist).",
+        "A zip with signature `rymembra.profilo`, format version 2, extension `.ryprofile`. Format 1 (a JSON of preferences) is still read — recognised by its first byte `{` against `PK\\x03\\x04` — and no longer written. Entry names form a **closed list**; any other name rejects the whole archive (no path ever needs normalizing, so `../` cannot exist).",
         {
           table: {
             head: ["Entry", "Contents"],
             rows: [
               ["`manifesto.json`", "Signature, version, date, library identity, device, app version, the matching key (`track_key`), counts, and the `fuori` list of what was deliberately left out"],
               ["`preferenze.json`", "The v1 document: the preferences in `CATALOGO`"],
-              ["`sincronia/aether-<id>.v1.json.gz`", "This device's sync document, byte for byte what `aether_sync::documento::serializza` writes"],
+              ["`sincronia/rymembra-<id>.v1.json.gz`", "This device's sync document, byte for byte what `rymembra_sync::documento::serializza` writes"],
               ["`biblioteca.v1.json`", "What sync does not carry: play history, corrections (with their `content_key`s), lyrics, wanted tracks, cover references"],
               ["`copertine/<hh>/<hash>.jpg`, `.t.jpg`", "Cover files"],
-              ["`skin/<id>.aeskin`, `skin/bozze/<id>.json`", "Installed skins and Studio drafts"],
+              ["`skin/<id>.ryskin`, `skin/bozze/<id>.json`", "Installed skins and Studio drafts"],
             ],
           },
         },
@@ -232,10 +233,10 @@
             "`sincronia::allinea` brings the sync tables up to date (its own transaction);",
             "identity check (`profilo.identita`): a library with no identity adopts the profile's; a **different** identity gets only preferences, covers and skins, unless the user says it is the same library (`unisci_comunque`);",
             "outside the lock, path answers are computed: each remapped root is checked with a 3 s timeout, and for each remapping the plan samples `CAMPIONE_DEL_PIANO` = 64 files (the real import checks them all) with three answers — exists, missing, unknown;",
-            "in one Immediate transaction: root remapping (`tracks.path` is rewritten only where the new file exists), preferences, corrections **first**, the sync merge (`aether_sync::fondi` of local and imported documents), then the library complement — history `INSERT OR IGNORE`, newest correction and lyrics win (never over hand-made lyrics), covers attached only to tracks without one.",
+            "in one Immediate transaction: root remapping (`tracks.path` is rewritten only where the new file exists), preferences, corrections **first**, the sync merge (`rymembra_sync::fondi` of local and imported documents), then the library complement — history `INSERT OR IGNORE`, newest correction and lyrics win (never over hand-made lyrics), covers attached only to tracks without one.",
           ],
         },
-        "Nothing is ever deleted by an import: no tombstone from the profile is applied. Before writing, a safety copy goes to `profilo/prima-<ms>.aeprofile` (`COPIE_TENUTE` = 3); `profilo_annulla` restores preferences and the active skin from it — the additive library part cannot be undone. All four commands run in `in_disparte`, since a profile usually sits on a USB stick or a share; progress is the `profilo:avanzamento` event.",
+        "Nothing is ever deleted by an import: no tombstone from the profile is applied. Before writing, a safety copy goes to `profilo/prima-<ms>.ryprofile` (`COPIE_TENUTE` = 3); `profilo_annulla` restores preferences and the active skin from it — the additive library part cannot be undone. All four commands run in `in_disparte`, since a profile usually sits on a USB stick or a share; progress is the `profilo:avanzamento` event.",
       ],
       see: ["sync", "cloud", "settings-store"],
     },

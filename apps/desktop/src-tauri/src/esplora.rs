@@ -35,10 +35,10 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use aether_catalogo::Cataloghi;
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::esterno::Disponibilita;
-use aether_domain::scelta::Candidato;
+use rymembra_catalogo::Cataloghi;
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::esterno::Disponibilita;
+use rymembra_domain::scelta::Candidato;
 use serde::Serialize;
 use tauri::State;
 
@@ -245,7 +245,7 @@ pub fn esplora_cerca(
         .map(|c| (c.fonte.nome().to_owned(), c.url.clone()))
         .collect();
     let presenti = con_libreria(&stato, |libreria| {
-        aether_app::catalogo::gia_in_libreria(&libreria.connection, &riferimenti)
+        rymembra_app::catalogo::gia_in_libreria(&libreria.connection, &riferimenti)
     })
     .map_err(errore)?;
 
@@ -334,17 +334,17 @@ pub fn esplora_aggiungi(
     stato: State<'_, Stato>,
     esplora: State<'_, StatoEsplora>,
     url: String,
-) -> Esito<aether_app::catalogo::Aggiunti> {
+) -> Esito<rymembra_app::catalogo::Aggiunti> {
     let candidato = candidato_di(&esplora, &url).map_err(errore)?;
     let esito = con_libreria(&stato, |libreria| {
-        aether_app::catalogo::aggiungi(&mut libreria.connection, std::slice::from_ref(&candidato))
+        rymembra_app::catalogo::aggiungi(&mut libreria.connection, std::slice::from_ref(&candidato))
     })
     .map_err(errore)?;
     if esito.senza_byte > 0 {
-        return Err(errore(aether_app::catalogo::nessuno_lo_consegna()));
+        return Err(errore(rymembra_app::catalogo::nessuno_lo_consegna()));
     }
     if esito.scartati > 0 {
-        return Err(errore(aether_app::catalogo::riga_illeggibile()));
+        return Err(errore(rymembra_app::catalogo::riga_illeggibile()));
     }
     crate::nuvola::se_riuscito(&app, Ok(esito))
 }
@@ -356,7 +356,7 @@ pub fn esplora_aggiungi(
 /// Perché sono due gesti diversi e vanno detti in due modi diversi: «tienilo»
 /// mette in libreria qualcosa che si potrà ascoltare, questo annota che quel
 /// brano esiste e che per averlo bisogna comprarlo. Finisce fra i
-/// [`Stato::Introvabile`](aether_app::desiderati::Stato::Introvabile) di
+/// [`Stato::Introvabile`](rymembra_app::desiderati::Stato::Introvabile) di
 /// `desiderati`, che è la riga che nessuna passata di scaricamento riprova e
 /// che la lista della spesa raccoglie.
 ///
@@ -374,7 +374,7 @@ pub fn esplora_nella_lista(
 ) -> Esito<bool> {
     let candidato = candidato_di(&esplora, &url).map_err(errore)?;
     let scritte = con_libreria(&stato, |libreria| {
-        aether_app::catalogo::nella_lista_della_spesa(
+        rymembra_app::catalogo::nella_lista_della_spesa(
             &mut libreria.connection,
             std::slice::from_ref(&candidato),
             &frase,
@@ -429,7 +429,7 @@ pub fn esplora_tieni(
         ascoltato
     };
     let scritte = con_libreria(&stato, |libreria| {
-        aether_app::catalogo::da_tenere(
+        rymembra_app::catalogo::da_tenere(
             &mut libreria.connection,
             std::slice::from_ref(&candidato),
             &frase,
@@ -441,7 +441,7 @@ pub fn esplora_tieni(
     // «fatto» tiepido. Il cancello sta nel nucleo, quindi qui si guarda la
     // stessa condizione per scegliere la frase, non per decidere.
     if scritte == 0 && candidato.disponibilita != Disponibilita::Scaricabile {
-        return Err(errore(aether_app::catalogo::non_si_tiene()));
+        return Err(errore(rymembra_app::catalogo::non_si_tiene()));
     }
     crate::nuvola::se_riuscito(&app, Ok(scritte > 0))
 }
@@ -451,7 +451,7 @@ pub fn esplora_tieni(
 #[serde(rename_all = "camelCase")]
 pub struct EsitoAggiuntaTutti {
     /// I conteggi: quanti nuovi, quanti c'erano già, quanti rifiutati.
-    pub conteggi: aether_app::catalogo::Aggiunti,
+    pub conteggi: rymembra_app::catalogo::Aggiunti,
     /// Gli indirizzi che **adesso** stanno in libreria.
     ///
     /// Non è ridondante rispetto ai conteggi: è l'unica cosa con cui la
@@ -491,8 +491,8 @@ pub fn esplora_aggiungi_tutti(
     // lascerebbero in mezzo una finestra in cui un'altra scrittura cambia
     // la risposta, e la risposta serve a disegnare i tasti.
     let esito = con_libreria(&stato, |libreria| {
-        let conteggi = aether_app::catalogo::aggiungi(&mut libreria.connection, &candidati)?;
-        let presenti = aether_app::catalogo::gia_in_libreria(&libreria.connection, &riferimenti)?;
+        let conteggi = rymembra_app::catalogo::aggiungi(&mut libreria.connection, &candidati)?;
+        let presenti = rymembra_app::catalogo::gia_in_libreria(&libreria.connection, &riferimenti)?;
         Ok(EsitoAggiuntaTutti {
             conteggi,
             in_libreria: presenti.into_iter().collect(),
@@ -530,8 +530,8 @@ pub fn esplora_togli(
     // cancellazione non c'è più niente da cui leggerlo, ed è quello che la
     // coda conosce.
     let (id, tolto) = con_libreria(&stato, |libreria| {
-        let id = aether_app::catalogo::id_di(&libreria.connection, fonte, &url)?;
-        let tolto = aether_app::catalogo::togli(&mut libreria.connection, fonte, &url)?;
+        let id = rymembra_app::catalogo::id_di(&libreria.connection, fonte, &url)?;
+        let tolto = rymembra_app::catalogo::togli(&mut libreria.connection, fonte, &url)?;
         Ok((id, tolto))
     })
     .map_err(errore)?;
@@ -557,7 +557,7 @@ pub fn esplora_identificativo(
 ) -> Esito<Option<i64>> {
     let candidato = candidato_di(&esplora, &url).map_err(errore)?;
     con_libreria(&stato, |libreria| {
-        aether_app::catalogo::id_di(&libreria.connection, candidato.fonte.nome(), &url)
+        rymembra_app::catalogo::id_di(&libreria.connection, candidato.fonte.nome(), &url)
     })
     .map_err(errore)
 }
@@ -571,14 +571,14 @@ pub fn esplora_identificativo(
 /// pericolosa** che la finestra ha, e lasciarle scegliere quale indirizzo
 /// vorrebbe dire dargliela intera. Qui la finestra nomina un risultato; la
 /// pagina è quella che il catalogo aveva dichiarato per quel risultato, e prima
-/// di aprirla passa comunque dall'allowlist di `aether_catalogo::riconosci` —
+/// di aprirla passa comunque dall'allowlist di `rymembra_catalogo::riconosci` —
 /// che è lo stesso cancello da cui passano i byte da suonare.
 ///
 /// # Errori
 ///
 /// `catalogo.resolveFailed` se quell'indirizzo non è fra i risultati
 /// dell'ultima ricerca; `download.unrecognizedUrl` se quel risultato non ha una
-/// pagina pubblica, o se la pagina non è in un posto dove Aether sia invitato;
+/// pagina pubblica, o se la pagina non è in un posto dove Rymembra sia invitato;
 /// `internal.aborted` se il browser non si apre.
 #[tauri::command(async)]
 pub fn esplora_apri_pagina(esplora: State<'_, StatoEsplora>, url: String) -> Esito<()> {
@@ -589,10 +589,11 @@ pub fn esplora_apri_pagina(esplora: State<'_, StatoEsplora>, url: String) -> Esi
                 .with_cause("questo brano non dichiara una pagina pubblica".to_owned()),
         )
     })?;
-    if aether_catalogo::riconosci(&pagina).is_none() {
+    if rymembra_catalogo::riconosci(&pagina).is_none() {
         return Err(errore(
-            AppError::new(ErrorCode::DownloadUnrecognizedUrl)
-                .with_cause("questa pagina non è in un posto dove Aether sia invitato".to_owned()),
+            AppError::new(ErrorCode::DownloadUnrecognizedUrl).with_cause(
+                "questa pagina non è in un posto dove Rymembra sia invitato".to_owned(),
+            ),
         ));
     }
     tauri_plugin_opener::open_url(&pagina, None::<&str>).map_err(|err| {
@@ -608,7 +609,7 @@ pub fn esplora_apri_pagina(esplora: State<'_, StatoEsplora>, url: String) -> Esi
 #[cfg(test)]
 mod prove {
     use super::*;
-    use aether_domain::esterno::{Disponibilita, Fonte, Licenza};
+    use rymembra_domain::esterno::{Disponibilita, Fonte, Licenza};
 
     fn candidato() -> Candidato {
         Candidato {

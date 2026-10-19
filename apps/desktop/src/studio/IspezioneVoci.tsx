@@ -742,7 +742,7 @@ export function IspezioneAnimazione({ nome }: { nome: string }) {
 
 /** L'indirizzo di una risorsa della bozza, come lo scrive il compilatore. */
 export function indirizzoBozza(id: string, nome: string): string {
-  return `http://aether-skin.localhost/bozza/${encodeURIComponent(id)}/${encodeURIComponent(nome)}`;
+  return `http://rymembra-skin.localhost/bozza/${encodeURIComponent(id)}/${encodeURIComponent(nome)}`;
 }
 
 /** Un carattere della bozza caricato per un campione; il nome della famiglia, o `null`. */

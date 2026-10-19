@@ -1,0 +1,508 @@
+{
+  "format": 2,
+  "id": "vinile",
+  "meta": {
+    "name": "Vinile",
+    "author": "Rymembra",
+    "version": "1.0.0",
+    "description": "Il negozio di dischi: carta avorio, inchiostro, un'etichetta rossa. Il disco gira mentre suona, e di notte la sala si scurisce.",
+    "license": "MIT",
+    "preview": ["#f3ede2", "#d8ccb8", "#a3301c"]
+  },
+  "scheme": "light",
+  "capabilities": {
+    "dynamicAccent": false
+  },
+  "palette": {
+    "inchiostro": "#1c1712",
+    "etichetta": "#a3301c",
+    "ottone": "#b98a3e"
+  },
+  "patterns": {
+    "grana": {
+      "effect": "dotGrid",
+      "color": { "$palette": "inchiostro", "alpha": 0.045 },
+      "spacing": "5px",
+      "dot": "1px"
+    },
+    "luce": {
+      "effect": "radialGradient",
+      "shape": "ellipse",
+      "at": ["18%", "0%"],
+      "size": "120%",
+      "stops": [
+        { "color": { "$palette": "ottone", "alpha": 0.14 }, "at": "0%" },
+        { "color": { "$palette": "ottone", "alpha": 0 }, "at": "70%" }
+      ]
+    }
+  },
+  "tokens": {
+    "font.sans": ["Geist"],
+    "font.mono": ["Geist Mono"],
+    "font.display": ["Georgia", "Bricolage Grotesque"],
+
+    "color.surface.0": "#f3ede2",
+    "color.surface.1": "#ebe3d5",
+    "color.surface.2": "#e2d8c7",
+    "color.surface.3": "#d8ccb8",
+
+    "color.text.1": "rgba(28, 23, 18, 0.94)",
+    "color.text.2": "rgba(28, 23, 18, 0.74)",
+    "color.text.3": "rgba(28, 23, 18, 0.66)",
+
+    "color.accent": { "$palette": "etichetta" },
+    "color.accent.soft": { "$palette": "etichetta", "alpha": 0.12 },
+    "color.accent.glow": { "$palette": "etichetta", "alpha": 0.26 },
+    "color.accent.like": { "$palette": "etichetta" },
+    "color.hero": { "$token": "color.accent" },
+
+    "color.danger": "#a61b1b",
+    "color.danger.soft": "rgba(166, 27, 27, 0.12)",
+    "color.success": "#1b6334",
+    "color.success.soft": "rgba(27, 99, 52, 0.12)",
+    "color.warning": "#6e5100",
+    "color.warning.soft": "rgba(110, 81, 0, 0.14)",
+
+    "color.ambient.1": "rgba(185, 138, 62, 0.1)",
+    "color.ambient.2": "rgba(163, 48, 28, 0.05)",
+    "color.sidebar": "rgba(28, 23, 18, 0.035)",
+    "color.hairline": "rgba(28, 23, 18, 0.1)",
+
+    "layout.rail": "68px",
+    "layout.railExpanded": "240px",
+    "layout.playerHeight": "92px",
+    "layout.playerGap": "14px",
+    "layout.contentX": { "min": "16px", "preferred": "3cqw", "max": "48px" },
+
+    "radius.panel": "10px",
+    "radius.card": "6px",
+
+    "shadow.1": {
+      "layers": [
+        { "x": "0px", "y": "1px", "blur": "1px", "color": "rgba(28, 23, 18, 0.06)" },
+        { "x": "0px", "y": "2px", "blur": "6px", "spread": "-1px", "color": "rgba(28, 23, 18, 0.08)" }
+      ]
+    },
+    "shadow.2": {
+      "layers": [
+        { "x": "0px", "y": "1px", "blur": "2px", "color": "rgba(28, 23, 18, 0.08)" },
+        { "x": "0px", "y": "8px", "blur": "20px", "spread": "-4px", "color": "rgba(28, 23, 18, 0.14)" }
+      ]
+    },
+    "shadow.3": {
+      "layers": [
+        { "x": "0px", "y": "2px", "blur": "6px", "spread": "-1px", "color": "rgba(28, 23, 18, 0.08)" },
+        { "x": "0px", "y": "22px", "blur": "50px", "spread": "-10px", "color": "rgba(28, 23, 18, 0.2)" }
+      ]
+    },
+    "shadow.player": {
+      "layers": [
+        { "inset": true, "x": "0px", "y": "1px", "blur": "0px", "color": "rgba(255, 252, 245, 0.8)" },
+        { "x": "0px", "y": "1px", "blur": "3px", "color": "rgba(28, 23, 18, 0.08)" },
+        { "x": "0px", "y": "10px", "blur": "30px", "spread": "-8px", "color": "rgba(28, 23, 18, 0.14)" }
+      ]
+    },
+    "glow.accent": {
+      "layers": [
+        { "x": "0px", "y": "2px", "blur": "10px", "spread": "-2px", "color": { "$token": "color.accent.glow" } }
+      ]
+    },
+
+    "motion.ease.outExpo": { "kind": "cubicBezier", "points": [0.16, 1, 0.3, 1] },
+    "motion.ease.spring": { "kind": "cubicBezier", "points": [0.34, 1.4, 0.64, 1] },
+    "motion.dur.1": "160ms",
+    "motion.dur.2": "300ms",
+    "motion.dur.3": "480ms",
+
+    "canvas.viz.primary": { "$token": "color.accent" },
+    "canvas.viz.secondary": "#7a2a1a",
+    "canvas.viz.tip": "#fff6ea",
+    "canvas.viz.glow": 12,
+    "canvas.viz.width": 4.6,
+    "canvas.viz.depth": 5.2,
+    "canvas.viz.height": 0.62,
+    "canvas.viz.fill": 0.7,
+    "canvas.viz.lens": 52,
+    "canvas.viz.eye": 0.72,
+    "canvas.viz.haze": 0.4,
+    "canvas.viz.reflection": 0.18,
+    "canvas.viz.ambient": 0.5,
+    "canvas.viz.sway": 0.8,
+    "canvas.viz.beat": 0.9,
+    "canvas.viz.attack": 41,
+    "canvas.viz.release": 258,
+    "canvas.viz.floor": -70,
+    "canvas.scrubber.glow": 3,
+    "canvas.scrubber.rest": "rgba(28, 23, 18, 0.16)"
+  },
+  "variant": {
+    "palette": {
+      "inchiostro": "#f6eee2"
+    },
+    "tokens": {
+      "color.surface.0": "#15110d",
+      "color.surface.1": "#1c1712",
+      "color.surface.2": "#241e18",
+      "color.surface.3": "#2e261f",
+
+      "color.text.1": "rgba(246, 238, 226, 0.92)",
+      "color.text.2": "rgba(246, 238, 226, 0.66)",
+      "color.text.3": "rgba(246, 238, 226, 0.56)",
+
+      "color.accent": "#ef7a5a",
+      "color.accent.soft": "rgba(239, 122, 90, 0.16)",
+      "color.accent.glow": "rgba(239, 122, 90, 0.32)",
+      "color.accent.like": "#ef7a5a",
+
+      "color.danger": "#f0706a",
+      "color.danger.soft": "rgba(240, 112, 106, 0.15)",
+      "color.success": "#6fcf97",
+      "color.success.soft": "rgba(111, 207, 151, 0.14)",
+      "color.warning": "#f2c94c",
+      "color.warning.soft": "rgba(242, 201, 76, 0.14)",
+
+      "color.ambient.1": "rgba(239, 122, 90, 0.08)",
+      "color.ambient.2": "rgba(185, 138, 62, 0.06)",
+      "color.sidebar": "rgba(255, 255, 255, 0.03)",
+      "color.hairline": "rgba(246, 238, 226, 0.08)",
+
+      "shadow.1": {
+        "layers": [
+          { "x": "0px", "y": "1px", "blur": "2px", "color": "rgba(0, 0, 0, 0.34)" },
+          { "x": "0px", "y": "4px", "blur": "12px", "spread": "-2px", "color": "rgba(0, 0, 0, 0.26)" }
+        ]
+      },
+      "shadow.2": {
+        "layers": [
+          { "x": "0px", "y": "2px", "blur": "4px", "spread": "-1px", "color": "rgba(0, 0, 0, 0.36)" },
+          { "x": "0px", "y": "10px", "blur": "26px", "spread": "-6px", "color": "rgba(0, 0, 0, 0.44)" }
+        ]
+      },
+      "shadow.3": {
+        "layers": [
+          { "x": "0px", "y": "4px", "blur": "10px", "spread": "-2px", "color": "rgba(0, 0, 0, 0.38)" },
+          { "x": "0px", "y": "26px", "blur": "60px", "spread": "-12px", "color": "rgba(0, 0, 0, 0.58)" }
+        ]
+      },
+      "shadow.player": {
+        "layers": [
+          { "inset": true, "x": "0px", "y": "1px", "blur": "0px", "color": "rgba(246, 238, 226, 0.06)" },
+          { "x": "0px", "y": "2px", "blur": "6px", "spread": "-1px", "color": "rgba(0, 0, 0, 0.36)" },
+          { "x": "0px", "y": "14px", "blur": "44px", "spread": "-10px", "color": "rgba(0, 0, 0, 0.52)" }
+        ]
+      },
+
+      "canvas.viz.secondary": "#3a1c14",
+      "canvas.viz.tip": "#ffe9dc",
+      "canvas.scrubber.rest": "rgba(246, 238, 226, 0.18)"
+    },
+    "parts": {
+      "app-shell": {
+        "background": [
+          { "$pattern": "grana" },
+          { "$pattern": "luce" },
+          { "effect": "solid", "color": { "$token": "color.surface.0" } }
+        ]
+      }
+    }
+  },
+  "motion": {
+    "intensity": "full",
+    "easings": {
+      "puntina": { "kind": "cubicBezier", "points": [0.2, 0.8, 0.2, 1] }
+    },
+    "route": {
+      "duration": "300ms",
+      "easing": "puntina",
+      "out": { "opacity": 0 },
+      "in": { "opacity": 0, "translateY": 6 }
+    },
+    "animations": {
+      "sale": {
+        "duration": "340ms",
+        "easing": "puntina",
+        "frames": [
+          { "at": 0, "opacity": 0, "translateY": 10 },
+          { "at": 100, "opacity": 1, "translateY": 0 }
+        ]
+      },
+      "appare": {
+        "duration": "220ms",
+        "easing": "ease-out",
+        "frames": [
+          { "at": 0, "opacity": 0, "scale": 0.97, "translateY": -4 },
+          { "at": 100, "opacity": 1, "scale": 1, "translateY": 0 }
+        ]
+      },
+      "svanisce": {
+        "duration": "160ms",
+        "easing": "ease-in",
+        "frames": [
+          { "at": 0, "opacity": 1 },
+          { "at": 100, "opacity": 0, "scale": 0.98 }
+        ]
+      },
+      "velo": {
+        "duration": "220ms",
+        "easing": "ease-out",
+        "frames": [
+          { "at": 0, "opacity": 0 },
+          { "at": 100, "opacity": 1 }
+        ]
+      },
+      "da-destra": {
+        "duration": "360ms",
+        "easing": "puntina",
+        "frames": [
+          { "at": 0, "opacity": 0, "translateX": 24 },
+          { "at": 100, "opacity": 1, "translateX": 0 }
+        ]
+      },
+      "a-destra": {
+        "duration": "220ms",
+        "easing": "ease-in",
+        "frames": [
+          { "at": 0, "opacity": 1, "translateX": 0 },
+          { "at": 100, "opacity": 0, "translateX": 24 }
+        ]
+      },
+      "gira": {
+        "duration": "1800ms",
+        "easing": "linear",
+        "iterations": "infinite",
+        "fill": "none",
+        "frames": [
+          { "at": 0, "rotate": 0 },
+          { "at": 100, "rotate": 360 }
+        ]
+      },
+      "battito": {
+        "duration": "300ms",
+        "easing": { "kind": "cubicBezier", "points": [0.34, 1.56, 0.64, 1] },
+        "frames": [
+          { "at": 0, "scale": 1 },
+          { "at": 40, "scale": 1.24 },
+          { "at": 100, "scale": 1 }
+        ]
+      },
+      "volo": {
+        "duration": "440ms",
+        "easing": "puntina",
+        "frames": [
+          { "at": 0, "opacity": 1 },
+          { "at": 100, "opacity": 1 }
+        ]
+      },
+      "cambia": {
+        "duration": "280ms",
+        "easing": "ease-out",
+        "frames": [
+          { "at": 0, "opacity": 0, "translateY": 4 },
+          { "at": 100, "opacity": 1, "translateY": 0 }
+        ]
+      }
+    }
+  },
+  "layout": {
+    "density": "comfortable",
+    "shell": {
+      "zone": "row",
+      "part": "app-shell",
+      "children": [
+        { "widget": "navigation", "options": { "wide": true } },
+        { "zone": "column", "children": [{ "widget": "page-header" }, { "widget": "content" }] },
+        { "widget": "column" },
+        { "widget": "player" },
+        { "widget": "queue", "size": "hug" },
+        { "widget": "selection-bar" }
+      ]
+    }
+  },
+  "parts": {
+    "app-shell": {
+      "background": [
+        { "$pattern": "grana" },
+        { "effect": "solid", "color": { "$token": "color.surface.0" } }
+      ]
+    },
+
+    "ambient-backdrop": {
+      "background": [{ "$pattern": "luce" }]
+    },
+
+    "sidebar": {
+      "borderColor": { "$token": "color.hairline" }
+    },
+
+    "brand": {
+      "font": "display",
+      "fontWeight": 700,
+      "letterSpacing": "-0.01em"
+    },
+
+    "page-title": {
+      "font": "display",
+      "fontWeight": 700,
+      "letterSpacing": "-0.015em"
+    },
+
+    "section-heading": {
+      "font": "display",
+      "fontWeight": 600
+    },
+
+    "home-shelf-title": {
+      "font": "display",
+      "fontWeight": 600
+    },
+
+    "home-shelf": {
+      "motion": { "inView": "sale" }
+    },
+
+    "nav-pill": {
+      "states": {
+        "hover": { "background": [{ "effect": "solid", "color": { "$token": "color.accent.soft" } }] },
+        "current": { "textColor": { "$token": "color.accent" }, "fontWeight": 600 }
+      },
+      "motion": { "transition": { "duration": "160ms", "easing": "ease-out" } }
+    },
+
+    "section-card": {
+      "borderColor": { "$token": "color.hairline" },
+      "shadow": { "$token": "shadow.1" }
+    },
+
+    "card": {
+      "radius": "6px",
+      "states": {
+        "hover": { "background": [{ "effect": "solid", "color": { "$token": "color.surface.1" } }], "shadow": { "$token": "shadow.2" } },
+        "current": { "textColor": { "$token": "color.accent" } }
+      },
+      "motion": {
+        "enter": "sale",
+        "stagger": "30ms",
+        "transition": { "duration": "200ms", "easing": "puntina" }
+      }
+    },
+
+    "card-cover": {
+      "radius": "3px",
+      "shadow": { "$token": "shadow.1" },
+      "motion": { "share": "volo" }
+    },
+
+    "card-title": {
+      "fontWeight": 600
+    },
+
+    "hero-art": {
+      "radius": "4px",
+      "shadow": { "$token": "shadow.3" },
+      "motion": { "share": "volo" }
+    },
+
+    "list-row": {
+      "states": {
+        "hover": { "background": [{ "effect": "solid", "color": { "$token": "color.surface.1" } }] },
+        "selected": { "background": [{ "effect": "solid", "color": { "$token": "color.accent.soft" } }] },
+        "current": { "textColor": { "$token": "color.accent" }, "fontWeight": 600 }
+      },
+      "motion": { "enter": "sale", "stagger": "16ms" }
+    },
+
+    "track-index": {
+      "font": "mono"
+    },
+
+    "play-btn-primary": {
+      "background": [
+        {
+          "effect": "conicGradient",
+          "from": 0,
+          "at": ["50%", "50%"],
+          "stops": [
+            { "color": "rgba(255, 255, 255, 0.16)", "at": "0%" },
+            { "color": "rgba(255, 255, 255, 0)", "at": "25%" },
+            { "color": "rgba(255, 255, 255, 0.16)", "at": "50%" },
+            { "color": "rgba(255, 255, 255, 0)", "at": "75%" },
+            { "color": "rgba(255, 255, 255, 0.16)", "at": "100%" }
+          ]
+        },
+        { "effect": "solid", "color": { "$token": "color.accent" } }
+      ],
+      "textColor": { "$token": "color.surface.0" },
+      "states": {
+        "pressed": { "opacity": 0.86 }
+      }
+    },
+
+    "heart": {
+      "motion": { "checked": "battito" }
+    },
+
+    "column": {
+      "motion": { "enter": "da-destra", "exit": "a-destra" }
+    },
+
+    "column-art": {
+      "radius": "50%",
+      "shadow": { "$token": "shadow.2" },
+      "motion": { "playing": "gira", "share": "volo" }
+    },
+
+    "np-thumb": {
+      "radius": "50%"
+    },
+
+    "np-art": {
+      "radius": "50%",
+      "shadow": { "$token": "shadow.3" },
+      "motion": { "playing": "gira", "share": "volo" }
+    },
+
+    "np-title": {
+      "font": "display",
+      "motion": { "change": "cambia" }
+    },
+
+    "np-screen": {
+      "background": [
+        { "effect": "vignette", "color": "rgba(28, 23, 18, 0.18)", "start": 55 },
+        { "$pattern": "luce" },
+        { "effect": "solid", "color": { "$token": "color.surface.0" } }
+      ]
+    },
+
+    "lyric-line": {
+      "font": "display",
+      "states": {
+        "current": { "textColor": { "$token": "color.accent" } }
+      }
+    },
+
+    "menu-pop": {
+      "radius": "8px",
+      "borderColor": { "$token": "color.hairline" },
+      "motion": { "enter": "appare", "exit": "svanisce" }
+    },
+
+    "glass-modal": {
+      "radius": "12px",
+      "motion": { "enter": "appare", "exit": "svanisce" }
+    },
+
+    "modal-veil": {
+      "motion": { "enter": "velo", "exit": "svanisce" }
+    },
+
+    "toast-card": {
+      "radius": "8px",
+      "motion": { "enter": "da-destra", "exit": "a-destra" }
+    },
+
+    "selection-bar": {
+      "motion": { "enter": "sale", "exit": "svanisce" }
+    }
+  }
+}

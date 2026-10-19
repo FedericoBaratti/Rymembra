@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 
 import { DOVE, PAGINE, SOVRAPPOSIZIONI } from "../src/studio/scena";
 
-const REGISTRO = readFileSync(new URL("../../../core/aether-skin/src/parts.rs", import.meta.url), "utf8");
+const REGISTRO = readFileSync(new URL("../../../core/rymembra-skin/src/parts.rs", import.meta.url), "utf8");
 const parti = [...REGISTRO.matchAll(/PartDef::nuova\(\s*"([a-z0-9-]+)"/g)].map((m) => m[1]!);
 
 test("ogni luogo di DOVE è una parte del registro", () => {

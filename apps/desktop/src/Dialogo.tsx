@@ -26,7 +26,7 @@
  * Le classi, il contenuto, i tasti. Le classi arrivano scritte per intero da
  * chi chiama — `classe="finestrella stretta glass-modal"` — e non composte qui:
  * sono il contratto con le skin (`glass-modal` è una parte del registro di
- * `aether-skin`), e `strumenti/classi.js` le legge dove sono scritte. Il velo
+ * `rymembra-skin`), e `strumenti/classi.js` le legge dove sono scritte. Il velo
  * invece è sempre lo stesso, e porta le sue qui.
  *
  * Il titolo diventa l'`<h2>` in cima, perché è lui a dare il nome al dialogo:
