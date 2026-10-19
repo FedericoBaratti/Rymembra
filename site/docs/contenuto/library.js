@@ -1,5 +1,5 @@
 /* Capitolo 3 — la libreria: scansione, identità, tag, album, sorveglianza, NAS, Cartelle, rimozioni, copertine, ricerca, playlist. */
-(window.AETHER_DOCS = window.AETHER_DOCS || []).push({
+(window.RYMEMBRA_DOCS = window.RYMEMBRA_DOCS || []).push({
   id: "library",
   title: "The library",
   lead: "How files become rows: the scan and its plan, track identity, tags, albums, watched folders, network shares, the Folders tree, removal, covers, search and playlists.",
@@ -7,9 +7,9 @@
     {
       id: "roots",
       title: "Watched folders and the scan",
-      src: ["core/aether-app/src/library.rs", "core/aether-domain/src/scan_plan.rs", "core/aether-domain/src/paths.rs", "core/aether-app/src/files.rs", "apps/desktop/src-tauri/src/comandi.rs", "core/aether-app/src/primo.rs"],
+      src: ["core/rymembra-app/src/library.rs", "core/rymembra-domain/src/scan_plan.rs", "core/rymembra-domain/src/paths.rs", "core/rymembra-app/src/files.rs", "apps/desktop/src-tauri/src/comandi.rs", "core/rymembra-app/src/primo.rs"],
       body: [
-        "The library is an **index of the disk**, not the data: a scan compares the watched folders (`library.roots`) with the `tracks` table and reconciles them. The decision is a pure function, `aether_domain::scan_plan::plan_scan`; `aether_app::library::Scan::run_su` executes it.",
+        "The library is an **index of the disk**, not the data: a scan compares the watched folders (`library.roots`) with the `tracks` table and reconciles them. The decision is a pure function, `rymembra_domain::scan_plan::plan_scan`; `rymembra_app::library::Scan::run_su` executes it.",
         { h: "The plan" },
         "`plan_scan(ScanInput { roots, found, known }, rules)` returns a `ScanPlan`: `to_insert`, `to_update`, `to_remove` (`Disappeared` or `DuplicateRow`), `skipped` (`InTrash`, `NonAudio`, `TooSmall`, `Duplicate`), and the counts `unchanged` / `untouched`. Rules:",
         {
@@ -55,7 +55,7 @@
     {
       id: "identity",
       title: "Track identity: keys, folding and paths",
-      src: ["core/aether-domain/src/keys.rs", "core/aether-domain/src/text.rs", "core/aether-domain/src/paths.rs", "core/aether-domain/tests/parita_legacy.rs"],
+      src: ["core/rymembra-domain/src/keys.rs", "core/rymembra-domain/src/text.rs", "core/rymembra-domain/src/paths.rs", "core/rymembra-domain/tests/parita_legacy.rs"],
       body: [
         "A track has four names, each answering a different question.",
         {
@@ -82,21 +82,21 @@
     {
       id: "tags",
       title: "Reading tags",
-      src: ["core/aether-app/src/metadata.rs", "core/aether-app/src/library.rs", "core/aether-domain/src/codifica.rs", "core/aether-domain/src/indizi.rs", "core/aether-domain/src/ricostruzione.rs", "core/aether-app/src/incerti.rs"],
+      src: ["core/rymembra-app/src/metadata.rs", "core/rymembra-app/src/library.rs", "core/rymembra-domain/src/codifica.rs", "core/rymembra-domain/src/indizi.rs", "core/rymembra-domain/src/ricostruzione.rs", "core/rymembra-app/src/incerti.rs"],
       body: [
         "`metadata::read_tags` uses `lofty` (one library for all formats) with `read_properties(true)`, so VBR durations are computed rather than estimated from the header. It reads the primary tag (falling back to the first: an MP3 with both ID3v2 and ID3v1 must not get 30-character titles), NFC-normalizes and trims every string, and extracts: title, artist, album, album artist, year (recording date, falling back to `Year`), track and disc numbers, genre, comment, unsynced lyrics, BPM, initial key, ReplayGain track/album gain, MusicBrainz recording / release-group / release ids, duration, sample rate, channels, codec and the embedded cover.",
         "Bitrate: `audio_bitrate` is trusted only from `BITRATE_MINIMO_KBPS` = 32 up; below it falls back to `overall_bitrate` (file size over duration). MP4 files often declare 0–15 kbps in `esds`, and the file-format line would otherwise say «4 kbps». Migration 027 forced a re-read of rows stored with a bitrate under 32.",
         { h: "Fallbacks" },
-        "`read_track` turns tags into a `TrackRow`: a missing title becomes the file stem, a missing artist «Artista sconosciuto», a missing album «Album sconosciuto» (`aether_domain::album::UNKNOWN_*`). The `ContentKey` is computed before these fallbacks, the `TrackKey` after. A cover that cannot be stored does not fail the track: it lands in `ScanReport::cover_failures`.",
+        "`read_track` turns tags into a `TrackRow`: a missing title becomes the file stem, a missing artist «Artista sconosciuto», a missing album «Album sconosciuto» (`rymembra_domain::album::UNKNOWN_*`). The `ContentKey` is computed before these fallbacks, the `TrackKey` after. A cover that cannot be stored does not fail the track: it lands in `ScanReport::cover_failures`.",
         { h: "Text repair and hints (not wired into the scan)" },
-        "`aether_domain::codifica` repairs mojibake (`BjÃ¶rk` → `Björk`) behind a structural gate and a margin over the original; `leggi_byte` decodes raw bytes trying windows-1252/1251, Shift_JIS and GBK — used today for `.lrc` sidecars. `indizi` extracts hints from `Artist/Year - Album/NN - Title` paths and `ricostruzione` combines tags, repairs and hints into per-field provenance. The review list in `incerti` reads `meta_salute`, but `read_track` does not call this reconstruction, so **the scan never fills `meta_salute`** and the list is empty until that side is connected; corrections made by hand work regardless.",
+        "`rymembra_domain::codifica` repairs mojibake (`BjÃ¶rk` → `Björk`) behind a structural gate and a margin over the original; `leggi_byte` decodes raw bytes trying windows-1252/1251, Shift_JIS and GBK — used today for `.lrc` sidecars. `indizi` extracts hints from `Artist/Year - Album/NN - Title` paths and `ricostruzione` combines tags, repairs and hints into per-field provenance. The review list in `incerti` reads `meta_salute`, but `read_track` does not call this reconstruction, so **the scan never fills `meta_salute`** and the list is empty until that side is connected; corrections made by hand work regardless.",
       ],
       see: ["corrections", "roots"],
     },
     {
       id: "albums",
       title: "Albums and artists",
-      src: ["core/aether-domain/src/album.rs", "core/aether-app/src/library.rs", "core/aether-domain/tests/parita_album.rs", "core/aether-app/src/db/schema/030_libreria_leggera.sql"],
+      src: ["core/rymembra-domain/src/album.rs", "core/rymembra-app/src/library.rs", "core/rymembra-domain/tests/parita_album.rs", "core/rymembra-app/src/db/schema/030_libreria_leggera.sql"],
       body: [
         "Album identity is **not** the text `(album, album_artist)` — that splits one release into several cards at every inconsistency. `album_group_key(album, path)` = normalized title with edition suffixes stripped + the normalized containing folder, the way Jellyfin, Plex and Navidrome treat local libraries.",
         {
@@ -116,7 +116,7 @@
     {
       id: "watching",
       title: "Folders that watch themselves",
-      src: ["apps/desktop/src-tauri/src/sorveglia.rs", "core/aether-app/src/library.rs", "core/aether-app/src/volumi.rs"],
+      src: ["apps/desktop/src-tauri/src/sorveglia.rs", "core/rymembra-app/src/library.rs", "core/rymembra-app/src/volumi.rs"],
       body: [
         "`sorveglia.rs` keeps the library current without pressing «Scan». The mode is `library.watch`: `spenta` (off), `locali` (default: local disks only) or `tutte` (also network shares).",
         {
@@ -132,18 +132,18 @@
         "**Notifications**: one `notify` watcher (`ReadDirectoryChangesW`) per local root. Events are coalesced by `Accorpatore`: scan when they have been quiet for `ACCORPAMENTO` = 2 s, and no later than `ATTESA_MASSIMA` = 60 s after the first. Only the folders that changed are rescanned (`cartelle_da_riguardare`, reduced to the outermost with `piu_esterne`) — copying an album scans that album.",
         "**Polling** (network shares, opt-in): every `SONDAGGIO` = 5 min the folder mtimes are read — not files, not tags — with a 2 min deadline; a folder whose mtime changed is rescanned. It is off by default because it keeps a NAS's disks awake.",
         "These scans are **prudent**: nobody watches them, so the mass-removal guard only reports, a folder subtree is the whole scope of the pass, and a root that does not answer judges nothing. If another scan holds the turn, the pending folders wait and are retried every 500 ms. Every `CONTROLLO` = 60 s the root list and mode are re-read, so a profile import or a sync that changes the roots is picked up. Results reach the window as `scarico:in_libreria`.",
-        "At startup `aether-risveglio` touches mapped and UNC roots once (30 s deadline), because Windows reconnects mapped drives lazily and an untouched `Z:` answers `ERROR_NOT_CONNECTED` for a while.",
+        "At startup `rymembra-risveglio` touches mapped and UNC roots once (30 s deadline), because Windows reconnects mapped drives lazily and an untouched `Z:` answers `ERROR_NOT_CONNECTED` for a while.",
       ],
       see: ["network-shares", "roots"],
     },
     {
       id: "network-shares",
       title: "Music on a NAS or a mapped drive",
-      src: ["core/aether-app/src/volumi.rs", "core/aether-app/src/scadenza.rs", "core/aether-app/src/files.rs", "core/aether-domain/src/errors/rete.rs", "core/aether-app/src/profilo/radici.rs", "apps/desktop/src-tauri/src/sorveglia.rs"],
+      src: ["core/rymembra-app/src/volumi.rs", "core/rymembra-app/src/scadenza.rs", "core/rymembra-app/src/files.rs", "core/rymembra-domain/src/errors/rete.rs", "core/rymembra-app/src/profilo/radici.rs", "apps/desktop/src-tauri/src/sorveglia.rs"],
       body: [
         "On SMB a failing call does not fail: it waits up to ~40 s. Every disk operation that may touch a share therefore has a deadline, and every «is it there?» has three answers.",
         { h: "Deadlines without killing threads" },
-        "`aether_app::scadenza` runs blocking work on a thread and stops waiting after a deadline; the thread is **abandoned**, not killed, so the work must be `Send + 'static`. `con_scadenza` = one job, one thread; `Operaio` = one reusable thread for many jobs (scan reads), replaced when one hangs; `a_rate` = a producer streaming results with a silence limit (the walk).",
+        "`rymembra_app::scadenza` runs blocking work on a thread and stops waiting after a deadline; the thread is **abandoned**, not killed, so the work must be `Send + 'static`. `con_scadenza` = one job, one thread; `Operaio` = one reusable thread for many jobs (scan reads), replaced when one hangs; `a_rate` = a producer streaming results with a silence limit (the walk).",
         { h: "Local or network" },
         "`files::percorso_di_rete` recognises a path by its shape (UNC). A mapped letter lies about its shape, so `volumi` asks Windows: `std::fs::canonicalize` of the containing folder returns `\\\\?\\UNC\\server\\share\\…` for a mapped drive. Calls run with `SCADENZA_RISOLUZIONE` = 5 s, up to `PARALLELISMO` = 8 at a time. `Collocazione` is `Locale`, `DiRete` or `Ignota`; deletion treats `Ignota` as network (no Recycle Bin promise). `Esistenza` is `Presente`, `Assente` or `Ignota`.",
         { h: "Failures that are the network" },
@@ -158,7 +158,7 @@
     {
       id: "folders-view",
       title: "The Folders tree",
-      src: ["core/aether-app/src/cartelle.rs", "apps/desktop/src-tauri/src/cartelle.rs", "apps/desktop/src/albero.ts", "apps/desktop/src/schermate/Cartelle.tsx"],
+      src: ["core/rymembra-app/src/cartelle.rs", "apps/desktop/src-tauri/src/cartelle.rs", "apps/desktop/src/albero.ts", "apps/desktop/src/schermate/Cartelle.tsx"],
       body: [
         "Folders shows the library as a tree in the foobar2000 style. It is built from `tracks.path`, **never** from the disk: expanding a node on a dead share would otherwise cost 40 s, and the only folders worth showing are those with indexed tracks.",
         "A `LIKE 'C:\\Musica%'` cannot use the `BINARY` index on `path` (case-insensitive `LIKE`), and `GLOB` would need the exact bytes of the prefix, which vary in case and slashes. So the tree is an **in-memory trie** built with one read of `tracks` (35 ms measured on 18,534 tracks), keyed by `path_key`. Above `SOGLIA_IDENTIFICATIVI` = 200,000 rows nodes keep counts only; the filter returns at most `LIMITE_FILTRO` = 2,000 matches; reads go in chunks of 500. Siblings sort in natural order (`CD 2` before `CD 10`).",
@@ -170,7 +170,7 @@
     {
       id: "removal",
       title: "Removing and deleting tracks",
-      src: ["apps/desktop/src-tauri/src/cancellazione.rs", "core/aether-app/src/library.rs", "core/aether-app/src/db/schema/023_correzioni_orfane.sql", "core/aether-app/src/db/schema/028_statistiche_orfane.sql", "apps/desktop/src/ConfermaEliminazione.tsx"],
+      src: ["apps/desktop/src-tauri/src/cancellazione.rs", "core/rymembra-app/src/library.rs", "core/rymembra-app/src/db/schema/023_correzioni_orfane.sql", "core/rymembra-app/src/db/schema/028_statistiche_orfane.sql", "apps/desktop/src/ConfermaEliminazione.tsx"],
       body: [
         "Two commands for two questions. `brani_togli` removes rows only — the file stays, and if it is still under a watched root the next scan brings it back (the result says how many will return). `brani_elimina` sends files to the Recycle Bin (`trash` crate) and removes the rows of the files that actually got there.",
         "On a network location there is no Recycle Bin, and Windows' `IFileOperation` with «undo» silently deletes for good while reporting success. So `brani_su_rete` first classifies each file with `volumi`; the confirmation dialog says which files will be **deleted permanently**, and only with that confirmation are they removed with `remove_file`. Without it the core refuses with `fs.noRecycleBin` before touching anything. Order of operations: clear the tracks from the queue and stop the engine (an open file cannot be trashed on Windows), trash, then write the database.",
@@ -182,7 +182,7 @@
     {
       id: "covers",
       title: "Covers",
-      src: ["core/aether-app/src/covers.rs", "core/aether-app/src/tinta.rs", "apps/desktop/src-tauri/src/copertine.rs", "apps/desktop/src/copertine.ts", "apps/desktop/src/aspetto.ts"],
+      src: ["core/rymembra-app/src/covers.rs", "core/rymembra-app/src/tinta.rs", "apps/desktop/src-tauri/src/copertine.rs", "apps/desktop/src/copertine.ts", "apps/desktop/src/aspetto.ts"],
       body: [
         "`CoverStore` is **content-addressed**: the name is `blake3` of the original image bytes, so a cover shared by twelve tracks is stored once, retagging does not orphan it, and a rescan of an already-stored cover costs one `stat`. Originals are not kept (embedded PNGs are 500–600 KB each); the store writes re-encoded JPEGs under `copertine/<hh>/<hash>`:",
         {
@@ -198,7 +198,7 @@
         "Decoding is bounded against decompression bombs: `LATO_MASSIMO_DECODIFICA` = 8,192 px per side and `MEMORIA_MASSIMA_DECODIFICA` = 192 MiB, checked from the header before allocating. `CoverSource` (`tag`, `provider`, `spotify`, `caa`, `manual`) is stored in `cover_art.source` and drives replacement decisions.",
         "Clean-up is reference counting: `riferimenti` discovers from the schema every column that names a cover, `dimentica_orfane` removes unreferenced rows, and the maintenance thread deletes the files — see [Maintenance](#maintenance).",
         { h: "Serving" },
-        "The window never receives image bytes over IPC. The custom scheme `aether-cover` (seen by WebView2 as `http://aether-cover.localhost/<hash>[.m|.t]`) is served asynchronously by `copertine::servi`; it accepts only a hash — anything with a separator is refused — so it cannot read arbitrary files. `copertine.ts` builds `srcset` with the three sizes and lets the browser choose.",
+        "The window never receives image bytes over IPC. The custom scheme `rymembra-cover` (seen by WebView2 as `http://rymembra-cover.localhost/<hash>[.m|.t]`) is served asynchronously by `copertine::servi`; it accepts only a hash — anything with a separator is refused — so it cannot read arbitrary files. `copertine.ts` builds `srcset` with the three sizes and lets the browser choose.",
         { h: "Dominant hue" },
         "`tinta::dominante` builds a 36-bin hue histogram (10° per bin), excluding near-black (< 0.15), near-white (> 0.95) and greys (saturation < 0.20), weights by saturation (capped at 0.85), requires a 5 % share and returns the circular mean of the winning bin — or `None` for black-and-white covers. It feeds the cover-driven accent ([Accent](#accent)).",
       ],
@@ -207,7 +207,7 @@
     {
       id: "search",
       title: "Search",
-      src: ["core/aether-app/src/library.rs", "core/aether-app/src/db/schema/001_baseline.sql", "apps/desktop/src/ricerca.ts"],
+      src: ["core/rymembra-app/src/library.rs", "core/rymembra-app/src/db/schema/001_baseline.sql", "apps/desktop/src/ricerca.ts"],
       body: [
         "Search uses the FTS5 table `tracks_fts` (title, artist, album, album artist, genre; tokenizer `unicode61 remove_diacritics 2`), kept current by triggers. `fts_query` turns each typed word into a quoted prefix term — `\"bjor\"*` — so FTS operators (`AND`, `NEAR`, `-`, parentheses) in names like «AC/DC» are literal, and results appear while typing. Results are ordered by `bm25`. `search` is paged (offset, limit) and `search_count` returns the total, which the sparse list in the window needs before fetching rows ([Lists](#lists)).",
         "FTS5 availability is probed at open; without it search is unavailable and Settings says so.",
@@ -217,11 +217,11 @@
     {
       id: "playlists",
       title: "Playlists and smart playlists",
-      src: ["core/aether-app/src/playlists.rs", "core/aether-app/src/smart.rs", "core/aether-domain/src/regole.rs", "apps/desktop/src-tauri/src/playlist.rs", "apps/desktop/src/Regole.tsx"],
+      src: ["core/rymembra-app/src/playlists.rs", "core/rymembra-app/src/smart.rs", "core/rymembra-domain/src/regole.rs", "apps/desktop/src-tauri/src/playlist.rs", "apps/desktop/src/Regole.tsx"],
       body: [
         "A playlist's identity is its `PlaylistKey` (unique), names are at most `NOME_MASSIMO` = 200 characters. Members are `playlist_tracks(playlist_id, track_id, position)` with primary key `(playlist_id, position)`, so removing or reordering rewrites positions; adding appends. Deleting writes a playlist tombstone for sync; the desktop keeps deleted playlists in memory for `DURATA_ANNULLO` = 60 s (at most 8) so `playlist_ripristina` can undo.",
         { h: "Smart playlists" },
-        "A smart playlist **is** its query: rules are stored as JSON in `playlists.rules` and never materialized, so «played in the last 30 days» is right after midnight without anyone writing. The vocabulary is closed enums in `aether_domain::regole`:",
+        "A smart playlist **is** its query: rules are stored as JSON in `playlists.rules` and never materialized, so «played in the last 30 days» is right after midnight without anyone writing. The vocabulary is closed enums in `rymembra_domain::regole`:",
         {
           table: {
             head: ["Part", "Values"],
@@ -233,7 +233,7 @@
             ],
           },
         },
-        "`smart.rs` compiles them to SQL with one hard rule: **no value ever reaches the SQL text** — column names and comparison shapes come from `match` arms on the enums, and every user value is bound as `?`. Text comparisons use the custom function `aether_piega` (deterministic, applies `fold_text`), registered lazily so cached statements are not invalidated. Results are capped at `TETTO` = 5,000; counts are cached per `libreria_stato.generazione` (up to 256 entries). Manual edits to a smart playlist are refused (`library.playlistIsSmart`).",
+        "`smart.rs` compiles them to SQL with one hard rule: **no value ever reaches the SQL text** — column names and comparison shapes come from `match` arms on the enums, and every user value is bound as `?`. Text comparisons use the custom function `rymembra_piega` (deterministic, applies `fold_text`), registered lazily so cached statements are not invalidated. Results are capped at `TETTO` = 5,000; counts are cached per `libreria_stato.generazione` (up to 256 entries). Manual edits to a smart playlist are refused (`library.playlistIsSmart`).",
         "The rule editor (`Regole.tsx`) previews the count live through `playlist_regole_prova` (first 20 tracks).",
       ],
       see: ["identity", "sync"],

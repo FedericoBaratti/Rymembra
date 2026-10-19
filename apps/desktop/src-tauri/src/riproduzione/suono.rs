@@ -12,8 +12,8 @@
 //! Fa parte di [`crate::riproduzione`]: la regola dei due lucchetti — prima il
 //! lettore, poi la libreria — è scritta là e vale anche qui.
 
-use aether_app::playback::{self, Equalizzazione, ModoLivello, Normalizzazione, Volume};
-use aether_play::PRESET_DI_SERIE;
+use rymembra_app::playback::{self, Equalizzazione, ModoLivello, Normalizzazione, Volume};
+use rymembra_play::PRESET_DI_SERIE;
 use serde::Serialize;
 
 use crate::spegnimento::Emette as _;
@@ -204,7 +204,7 @@ pub fn equalizzatore(
 ///
 /// # Cosa cambia davvero
 ///
-/// Il guadagno lo applica `aether_play::guadagno` allo stadio del volume. Fino
+/// Il guadagno lo applica `rymembra_play::guadagno` allo stadio del volume. Fino
 /// alla 2.4 la correzione esisteva **solo per i brani che portano il tag**, e
 /// sulle librerie vere — dove il tag non ce l'ha quasi nessuno — acceso e
 /// spento suonavano identici. Dalla 3.0 i brani senza tag li misura la passata
@@ -305,7 +305,7 @@ pub fn normalizzazione_modo_scegli(
 #[serde(rename_all = "camelCase")]
 pub struct AvanzamentoVolume {
     /// I brani di cui la passata si è già occupata: misurati, muti o
-    /// illeggibili. Vedi `aether_app::intensita::avanzamento`.
+    /// illeggibili. Vedi `rymembra_app::intensita::avanzamento`.
     pub misurati: i64,
     /// I brani con un file, cioè quelli che la passata misura.
     pub totale: i64,
@@ -319,7 +319,7 @@ pub struct AvanzamentoVolume {
 #[tauri::command(async)]
 pub fn normalizzazione_avanzamento(stato: State<'_, Stato>) -> Esito<AvanzamentoVolume> {
     con_libreria(&stato, |libreria| {
-        aether_app::intensita::avanzamento(&libreria.connection, adesso_ms())
+        rymembra_app::intensita::avanzamento(&libreria.connection, adesso_ms())
     })
     .map(|(misurati, totale)| AvanzamentoVolume { misurati, totale })
     .map_err(errore)
@@ -355,7 +355,7 @@ pub fn eq_preset_elenco(stato: State<'_, Stato>) -> Esito<Vec<VocePreset>> {
 /// Salva la curva corrente sotto un nome.
 ///
 /// `false` se il nome era vuoto. Un nome che c'è già sostituisce quella curva:
-/// la regola sta in `aether_app::playback::salva_preset`, con la sua ragione.
+/// la regola sta in `rymembra_app::playback::salva_preset`, con la sua ragione.
 #[tauri::command]
 pub fn eq_preset_salva(
     stato: State<'_, Stato>,

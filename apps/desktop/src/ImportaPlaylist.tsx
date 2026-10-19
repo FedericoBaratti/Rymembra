@@ -162,7 +162,7 @@ export function ImportaPlaylist({
           {vuota && <Avviso livello="blocco">{t("plfile.empty")}</Avviso>}
 
           {/* Nota: righe che non si sono capite sono un fatto del file, non
-              un guasto di Aether, e non c'è niente da fare. */}
+              un guasto di Rymembra, e non c'è niente da fare. */}
           {rapporto.unreadable > 0 && (
             <Avviso livello="nota">
               {t("plfile.unreadable", { n: rapporto.unreadable })}

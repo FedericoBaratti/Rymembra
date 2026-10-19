@@ -3,7 +3,7 @@
  *
  * Stava nel corpo di `App`, e ci stava per una ragione che non c'è più: era
  * l'unico posto da cui la si potesse cambiare. Adesso la cambiano le
- * Impostazioni, lo Studio («Prova sull'app», «Salva e usa»), un file `.aeskin`
+ * Impostazioni, lo Studio («Prova sull'app», «Salva e usa»), un file `.ryskin`
  * lasciato cadere sulla finestra e la conferma di una skin importata — e tutti
  * passano dalle stesse cinque funzioni, che vivono qui con lo stato che
  * toccano.
@@ -28,6 +28,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { applicaSkin } from "./aspetto";
+import { ESTENSIONE_SKIN_PRECEDENTE } from "./eredita";
 import { ipc, type Skin, type VoceSkin } from "./ipc";
 import { t } from "./lingue";
 import { useStatoPresente } from "./presenza";
@@ -69,7 +70,7 @@ export interface SkinDellaFinestra {
   anteprimaSkin: (id: string | null) => void;
   /** Toglie una skin installata. */
   disinstallaSkin: (id: string) => Promise<void>;
-  /** Chiede un file `.aeskin` e lo installa. */
+  /** Chiede un file `.ryskin` e lo installa. */
   installaSkin: () => Promise<void>;
   /** Una skin appena installata da un file: indossata subito, o prima guardata. */
   dopoInstallazione: (installata: VoceSkin) => Promise<void>;
@@ -408,7 +409,10 @@ export function useSkinAttiva(segnalaErrore: (e: unknown) => void): SkinDellaFin
     try {
       const scelta = await open({
         multiple: false,
-        filters: [{ name: t("file.skin"), extensions: ["aeskin"] }],
+        // Anche l'estensione di prima: una skin salvata con la versione
+        // precedente si installa ancora, e un filtro che la nascondesse la
+        // renderebbe irraggiungibile. Il salvataggio scrive solo la nuova.
+        filters: [{ name: t("file.skin"), extensions: ["ryskin", ESTENSIONE_SKIN_PRECEDENTE] }],
       });
       if (typeof scelta !== "string") return;
       await dopoInstallazione(await ipc.skinInstalla(scelta));

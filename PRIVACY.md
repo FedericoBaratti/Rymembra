@@ -2,8 +2,8 @@
 
 Last updated: 26 September 2026.
 
-**Aether has no telemetry, no analytics, no crash reporting, and sends nothing
-to me.** There is no Aether server. There is no account to create. There is
+**Rymembra has no telemetry, no analytics, no crash reporting, and sends nothing
+to me.** There is no Rymembra server. There is no account to create. There is
 nothing I can see of what you do.
 
 That said, the program does talk to the network — a player that looks for cover
@@ -15,10 +15,10 @@ that isn't written here, that's a defect: report it.
 
 ## What stays on your computer
 
-Everything Aether knows about you:
+Everything Rymembra knows about you:
 
 - **The library**, in an SQLite database in the application's data folder
-  (`%APPDATA%\io.github.federicobaratti.aether` on Windows): tracks, playlists,
+  (`%APPDATA%\io.github.federicobaratti.rymembra` on Windows): tracks, playlists,
   ratings, favorites, listening history, play counts.
 - **The settings**, in the same folder.
 - **The cover art**, in a file cache next to the database.
@@ -27,6 +27,13 @@ Everything Aether knows about you:
 - **The secrets** — the Google Drive tokens, the scrobbling credentials and the
   API keys of any language model you configure — in the **operating system's
   keychain**, not in a file. On Windows that's Credential Manager.
+
+If you come from the previous version, the first time Rymembra starts it
+transfers that version's data automatically: the library, the settings, the
+cover art, the skins and drafts, and the secrets it had saved in the keychain,
+which are moved to the new entries rather than copied. The installer removes the
+previous version but never its data. All of this happens on your computer; no
+request is made for it.
 
 None of this leaves your computer, except for the backup if you turn it on
 yourself (§ 4).
@@ -42,15 +49,15 @@ import that puts tracks in the queue.
 | --- | --- | --- |
 | `archive.org` | Searching for a track, reading an item, fetching a file | The title and artist you're searching for, or the item identifier; your IP address |
 | `api.jamendo.com`, `prod-1.storage.jamendo.com` | *(not compiled in this version)* Search and listening | As above, plus the `client_id` you will have configured yourself |
-| `api.audius.co`, and whichever *discovery node* answers | Searching for a track, reading a link, fetching a file | The title and artist you're searching for, or the identifier; `app_name=Aether`, which is the same for every copy of the program; your IP address |
+| `api.audius.co`, and whichever *discovery node* answers | Searching for a track, reading a link, fetching a file | The title and artist you're searching for, or the identifier; `app_name=Rymembra`, which is the same for every copy of the program; your IP address |
 
 A link that doesn't belong to one of these three domains is **not attempted**:
 the program refuses before opening any connection. That isn't generic caution,
-it's the rule that keeps Aether inside the terms of the people who give it the
+it's the rule that keeps Rymembra inside the terms of the people who give it the
 music.
 
-Aether always identifies itself with the same `User-Agent`:
-`Aether/0.1 (+https://github.com/federicobaratti/aether)`. It doesn't disguise
+Rymembra always identifies itself with the same `User-Agent`:
+`Rymembra/0.1 (+https://github.com/federicobaratti/rymembra)`. It doesn't disguise
 itself as a browser and it can't: the constructor that allowed that was removed
 along with the code that needed it.
 
@@ -81,7 +88,7 @@ everyone else using the same program.
 
 ## 2-bis. Song lyrics
 
-Aether looks **first** at what you already have: an `.lrc` file next to the
+Rymembra looks **first** at what you already have: an `.lrc` file next to the
 track, or the lyric inside the file's tag. That doesn't leave your house and
 doesn't cross any network.
 
@@ -129,7 +136,7 @@ What goes out, exactly:
 | The same lines without the timings | The catalog keeps them in two forms; the untimed text is derived from the timed one, never from anything else |
 
 And what does **not** go out: no file path, no device identifier, no account, no
-cookie. LRCLIB doesn't ask for an account and Aether hasn't got one to give it.
+cookie. LRCLIB doesn't ask for an account and Rymembra hasn't got one to give it.
 What reaches whoever hosts the catalog is the IP address the request comes
 from, as with any site.
 
@@ -151,7 +158,7 @@ want no traffic towards that service, and this is its most explicit form.
 
 ## 2-ter. Similarity between tracks
 
-Aether tries to work out **which of your tracks resemble each other**, so it can
+Rymembra tries to work out **which of your tracks resemble each other**, so it can
 propose something sensible when a record ends. It does this in three ways, and
 two of the three never leave the house:
 
@@ -197,7 +204,7 @@ working, it knows a little less.
 
 **Why ListenBrainz and not something else.** Because MetaBrainz's data is CC0 —
 public domain, commercial use included — and because it's the same foundation
-Aether already sends scrobbles to if you asked it to (section 3). The two stay
+Rymembra already sends scrobbles to if you asked it to (section 3). The two stay
 separate: **scrobbling goes through your account, this doesn't.** If you haven't
 connected any ListenBrainz account, this feature works all the same and
 completely anonymously, because there's no account for it to lean on.
@@ -222,7 +229,7 @@ point of this section.
 
 **With a local model, nothing leaves this computer.** Ollama and LM Studio are
 programs running on your own machine; the request goes to `127.0.0.1` and stops
-there. This is the reason Aether allows an unencrypted `http://` in exactly one
+there. This is the reason Rymembra allows an unencrypted `http://` in exactly one
 case — see the rewritten point in § 7.
 
 **With OpenRouter, or any address of your own, something does leave.** Namely:
@@ -245,7 +252,7 @@ case — see the rewritten point in § 7.
   is sent once: later turns do not send it again;
 - **your API key**, in the `Authorization` header, because that is how the
   service knows who is asking;
-- two courtesy headers naming the application (`Aether`, and this repository's
+- two courtesy headers naming the application (`Rymembra`, and this repository's
   address), the same information the `User-Agent` already carries.
 
 **What does not go, ever.** No track, no album, no artist, no playlist, no
@@ -265,7 +272,7 @@ the Google Drive backup (§ 4) nor of the profile archive (§ 4-bis): both carry
 only the draft's `skin.json`.
 
 **The key lives in the operating system's keychain**, one entry per profile
-(`ia.<profile>.chiave` under the usual Aether service), never in the library
+(`ia.<profile>.chiave` under the usual Rymembra service), never in the library
 database. The window never receives it: the core reads it an instant before each
 request and drops it afterwards.
 
@@ -273,7 +280,7 @@ request and drops it afterwards.
 nothing periodic, and nothing that starts on its own — every request is one you
 made by pressing Send. Closing the window stops a generation in progress.
 
-**Choosing a provider is choosing a privacy policy.** Aether can tell you what
+**Choosing a provider is choosing a privacy policy.** Rymembra can tell you what
 it sends; it cannot tell you what the other end keeps. OpenRouter routes your
 request to a third-party model provider of its own, each with its own retention
 rules. If that matters to you, a local model is the option where the question
@@ -302,7 +309,7 @@ not whether it is secret but *whose it is*. It is a personal credential you
 registered in your own name, and anyone holding it scrobbles as you until you
 revoke it. That did not matter while the settings table stayed on one machine;
 it started mattering in 2.3.1, when the profile archive became something you put
-on a USB stick. Aether moves the key across once, at startup. If the keychain
+on a USB stick. Rymembra moves the key across once, at startup. If the keychain
 does not answer, the key **stays where it is** rather than being lost, and the
 profile leaves it out either way.
 
@@ -314,13 +321,17 @@ This starts **only if you connect it**, and it isn't on by default.
 
 | Host | When | What reaches it |
 | --- | --- | --- |
-| `accounts.google.com` | On connecting | The consent screen opens in the **system browser**, never inside Aether's window |
+| `accounts.google.com` | On connecting | The consent screen opens in the **system browser**, never inside Rymembra's window |
 | `oauth2.googleapis.com` | On connecting and on renewals | The token exchange |
 | `www.googleapis.com` | On every backup | The backup document |
 
 The backup contains your **library**: tracks, playlists, ratings, history. Not
 the audio files. It ends up in the application-reserved folder of **your**
-Drive, where no other program sees it.
+Drive, where no other program sees it. The backup files that the previous
+version left there are recognised and renamed in place the next time it runs, so
+nothing is uploaded twice, and a file is removed only when an identical copy
+under the new name is kept; the rename is one more request to Google Drive, of
+the same kind as the backup itself.
 
 The refresh token lives in the operating system's keychain. Disconnecting the
 account deletes it; what has already been uploaded stays on your Drive until you
@@ -332,11 +343,11 @@ The alternative that touches no network exists: syncing to a shared folder.
 
 ## 4-bis. The profile archive
 
-This touches no network at all. It is here because it is the one file Aether
+This touches no network at all. It is here because it is the one file Rymembra
 writes that is *meant* to be carried somewhere else, and you should know what
 is inside it before you hand it to anyone.
 
-*Settings › Profile › Export* writes an `aether-profilo.aeprofile` where you ask
+*Settings › Profile › Export* writes a `rymembra-profilo.ryprofile` where you ask
 for it. It is a zip; you can open it with any archive manager and read what it
 holds:
 
@@ -344,7 +355,7 @@ holds:
 | --- | --- |
 | `manifesto.json` | What the archive claims to be, and an explicit list of what it left out |
 | `preferenze.json` | Your settings — theme, skin, equalizer, shortcuts, watched folders |
-| `sincronia/aether-<device>.v1.json.gz` | Play counts, ratings, favourites, resume positions, playlists |
+| `sincronia/rymembra-<device>.v1.json.gz` | Play counts, ratings, favourites, resume positions, playlists |
 | `biblioteca.v1.json` | Listening history, your metadata corrections, lyrics, the "to buy" list |
 | `copertine/…` | The cover art cache |
 | `skin/…` | Installed skins and Skin Studio drafts |
@@ -363,8 +374,8 @@ What is **not** inside, and cannot be:
 
 Importing one **adds and never removes**: listens are summed, playlists merged,
 covers and skins written only where none exist, and a lyric you synced by hand
-is never overwritten. Before writing anything, Aether saves what your computer
-looks like right now to `<data folder>\profilo\prima-<timestamp>.aeprofile`,
+is never overwritten. Before writing anything, Rymembra saves what your computer
+looks like right now to `<data folder>\profilo\prima-<timestamp>.ryprofile`,
 keeping the last three. That backup restores your settings — not the merged
 history, which is additive and has no undo, and which the interface says so
 rather than promising a return that does not exist.
@@ -386,7 +397,7 @@ there on is between you, them and their own policies.
 
 ## 6. The update check
 
-This is **the only request Aether makes without your having asked for it**, and
+This is **the only request Rymembra makes without your having asked for it**, and
 that's why it gets its own section instead of a line at the bottom of a list.
 
 | Host | When | What reaches it |
@@ -396,10 +407,10 @@ that's why it gets its own section instead of a line at the bottom of a list.
 
 **One check at every start, but not one per click.** Until 2.4 the startup check
 was skipped when the last successful one was less than half an hour old, which
-meant that whoever reopened Aether after twenty minutes never got the check
+meant that whoever reopened Rymembra after twenty minutes never got the check
 `TODO.md` asked for. From 3.0 the threshold is five minutes: it is there for a
 shortcut double-clicked or a start that crashes and repeats, so that opening and
-closing Aether ten times in a minute still makes one request, not ten. Pressing
+closing Rymembra ten times in a minute still makes one request, not ten. Pressing
 «Check now» is the exception, and deliberately so — a button you pressed has to
 do something.
 
@@ -410,26 +421,28 @@ a browser. Inside are a version number, two lines of notes and an address.
 **Nothing of yours goes into the request.** No identifier, no serial number, no
 counter, no information about your library. Not even the version you have
 installed travels: the comparison is done by the program on your computer, after
-reading the file. The request doesn't even carry a `User-Agent` naming Aether,
+reading the file. The request doesn't even carry a `User-Agent` naming Rymembra,
 and that is deliberate rather than forgotten — the code says so where the request
 is built. What GitHub can infer is that somebody, from a certain IP address,
 asked for a public file — exactly what it would know about anyone opening that
 page with a browser.
 
 **It installs nothing on its own.** When it finds a new version it says so and
-stops. Downloading and installing start from a button, because installing means
-closing Aether, and that isn't something to do while you're listening. If you
+stops. (The installer, whether you download it by hand or the update check
+brought it, removes the previous version of the program before copying the new
+one; it touches no network for that, and it leaves the data folder alone.) Downloading and installing start from a button, because installing means
+closing Rymembra, and that isn't something to do while you're listening. If you
 answer «Not now», it doesn't ask you about that version again: it asks you about
 the next one.
 
 **What it downloads gets verified.** The installer carries a cryptographic
-signature, and Aether checks it against a public key compiled into the
+signature, and Rymembra checks it against a public key compiled into the
 executable before running anything at all. If it doesn't check out, the
 installer is thrown away. It serves one precise case: someone who manages to
 answer in GitHub's place — a corporate proxy, one certificate too many in the
 system store — can't make you install a program of theirs.
 
-**It switches off**, in *Settings → Updates*. Switched off, Aether never
+**It switches off**, in *Settings → Updates*. Switched off, Rymembra never
 contacts GitHub: you'll stay on this version until you come and press «Check
 now» or download the installer by hand. It's on by default, and that's a choice:
 a music player that doesn't update is a music player holding a network library
@@ -439,7 +452,7 @@ that's months out of date.
 
 ## 7. What *doesn't* happen, and is worth saying
 
-- **No request at startup, except the one in § 6.** Opening Aether sends nothing
+- **No request at startup, except the one in § 6.** Opening Rymembra sends nothing
   to anyone for the first forty-five seconds, and after that sends a GET to a
   public file — or not even that, if it already did less than half an hour ago.
   There's no other ping, and nothing goes out on closing.
@@ -467,32 +480,34 @@ that's months out of date.
 
 ---
 
-## 8. What Aether does *not* touch
+## 8. What Rymembra does *not* touch
 
-**Your music files are not modified.** Aether opens them to read them — to
+**Your music files are not modified.** Rymembra opens them to read them — to
 scan them, to decode them, to measure them — and never to write. Up to 2.3.0
 that was not true, and this section used to say so; from 2.3.1 the complete
-list of what Aether writes is the one below, and your `.flac` and `.mp3` files
+list of what Rymembra writes is the one below, and your `.flac` and `.mp3` files
 are not on it.
 
-What Aether writes, and where:
+What Rymembra writes, and where:
 
-- **Files it downloaded itself**, in the download folder you chose. Aether
+- **Files it downloaded itself**, in the download folder you chose. Rymembra
   writes the tags and the cover art into those, because it is the one that
   created them: a file that arrived a minute ago with no artist and no title
   is not "your file" in the sense this section is about.
 - **The lyrics files it saves next to a track** — `name.lrc` and, when you
   time the words, `name.a2.lrc`. These are *new* files, written beside the
   track; the track itself is not opened. From 2.3.2, when one of them is
-  already there and Aether is about to replace it with something different,
+  already there and Rymembra is about to replace it with something different,
   the version that was there is kept once as `name.lrc.bak` (or
   `name.a2.lrc.bak`) instead of being overwritten.
 - **The playlists you export**, `.m3u` and `.pls`, where you ask for them.
-- **The profile archive** (`.aeprofile`), where you ask for it.
+- **The profile archive** (`.ryprofile`), where you ask for it.
 - **The application's data folder** —
-  `%APPDATA%\io.github.federicobaratti.aether` — which holds the library
+  `%APPDATA%\io.github.federicobaratti.rymembra` — which holds the library
   database, the cover art cache, the installed skins and the log described
-  below.
+  below. On the first start after an upgrade, Rymembra also renames the data
+  folder of the previous version into this one (and the files inside to the
+  new names), without overwriting or deleting anything.
 
 Nothing on that list leaves your computer, and nothing on it is a file you
 already had.
@@ -501,7 +516,7 @@ already had.
 
 A track's context menu ends with **«Delete from disk»**, and it does what it
 says: the file goes to the **Recycle Bin**, and the library row goes with it.
-It is the only thing in Aether that reaches a music file you already had, so
+It is the only thing in Rymembra that reaches a music file you already had, so
 the conditions on it are the ones you would want. It never runs by itself and
 is never part of a scan, an enrichment pass or any other background work; it
 asks first, with «Cancel» as the primary button; it goes to the Recycle Bin
@@ -518,9 +533,9 @@ It would be an easy feature to add, and it is missing on purpose.
 
 Writing a tag changes the file's modification date. The next scan sees a file
 that changed, reads it again, and takes the tags in it as the truth — so
-whatever Aether wrote comes back in through the front door, and the library
+whatever Rymembra wrote comes back in through the front door, and the library
 starts depending on the contents of your files again. That loop is exactly what
-2.3.1 closed: what Aether works out about a track now lives in its own database
+2.3.1 closed: what Rymembra works out about a track now lives in its own database
 table, your correction always wins over it, and neither of them can be silently
 undone by a re-scan.
 
@@ -532,7 +547,7 @@ archive.
 **One exception, and it is on its way out.** Versions up to 2.3.0 *did* rewrite
 your tags during enrichment, and kept a copy of what was there before. So that
 you can still undo those old writes, *Settings → Metadata* offers a button
-whose label says it writes into the files. It is the only thing in Aether that
+whose label says it writes into the files. It is the only thing in Rymembra that
 opens your music for writing, it only appears while there is something left to
 undo, it never runs by itself, and it will be removed in a future release once
 those records are gone.
@@ -540,7 +555,7 @@ those records are gone.
 ### The log
 
 Inside the application's data folder —
-`%APPDATA%\io.github.federicobaratti.aether\diario` — Aether keeps three text
+`%APPDATA%\io.github.federicobaratti.rymembra\diario` — Rymembra keeps three text
 files with what went wrong: the thread that didn't start, the audio device that
 disappeared, the error code of a command that answered badly. They serve one
 thing only, namely being able to answer «it won't open» with something more than
@@ -551,7 +566,7 @@ thing only, namely being able to answer «it won't open» with something more th
 thread that produced them, and the path of the **application's data folder** —
 the one above, which on Windows contains your account name because `%APPDATA%`
 runs through it. It's the only thing of yours that ends up there, and it's kept
-on purpose, because it's the first line to look at when Aether won't open: it
+on purpose, because it's the first line to look at when Rymembra won't open: it
 says whether the database was where it should have been. Deleting it from the
 file before attaching it takes nothing away from the rest.
 

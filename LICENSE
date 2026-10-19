@@ -22,9 +22,9 @@ SOFTWARE.
 
 ---
 
-This licence covers the source code of Aether itself.
+This licence covers the source code of Rymembra itself.
 
-It does not cover the third-party software Aether incorporates: see
+It does not cover the third-party software Rymembra incorporates: see
 THIRD-PARTY-NOTICES.md, which lists every dependency together with its own
 licence text. Notably, the Symphonia audio decoding family is MPL-2.0 and
 cpal is Apache-2.0 — neither is MIT, and both carry obligations of their own.
@@ -32,8 +32,8 @@ cpal is Apache-2.0 — neither is MIT, and both carry obligations of their own.
 It does not cover the bundled fonts (Geist, Bricolage Grotesque), which are
 under the SIL Open Font License 1.1: see apps/desktop/src/font/OFL.txt.
 
-And it does not cover any music Aether obtains for you. Every track carries
+And it does not cover any music Rymembra obtains for you. Every track carries
 the licence its source gave it — public domain, a Creative Commons variant,
-the Audius Open Music License, or none at all — and Aether records that
+the Audius Open Music License, or none at all — and Rymembra records that
 licence next to the track precisely so that this distinction never gets lost.
 See TERMS.md.

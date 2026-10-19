@@ -216,7 +216,7 @@ const COPIONE: readonly (
   | readonly [Exclude<NomePasso, "benvenuto">, ...Ancora[]]
 )[] = [
   // Il solo passo senza ancora, ed è voluto: i riflettori dicono **dove**
-  // stanno le cose, e nessuno diceva **cosa** fa il programma. Chi apre Aether
+  // stanno le cose, e nessuno diceva **cosa** fa il programma. Chi apre Rymembra
   // per la prima volta veniva portato sulla barra laterale senza sapere che
   // cosa stesse guardando. Il fumetto sta al centro e il velo non si scurisce:
   // non c'è niente da illuminare, e un velo scuro senza buco è la cosa che il

@@ -1,27 +1,27 @@
 /* Capitolo 5 — il motore audio: struttura, decodifica, uscita, gapless e dissolvenza, livelli, EQ, spettro, analisi. */
-(window.AETHER_DOCS = window.AETHER_DOCS || []).push({
+(window.RYMEMBRA_DOCS = window.RYMEMBRA_DOCS || []).push({
   id: "audio",
   title: "The audio engine",
-  lead: "`aether-play`: one engine, three roles, lock-free rings, sample-exact track changes, loudness levelling, a 10-band EQ, the spectrum, and the background analysis it powers.",
+  lead: "`rymembra-play`: one engine, three roles, lock-free rings, sample-exact track changes, loudness levelling, a 10-band EQ, the spectrum, and the background analysis it powers.",
   entries: [
     {
       id: "engine",
       title: "Engine structure",
-      src: ["core/aether-play/src/lib.rs", "core/aether-play/src/motore.rs", "core/aether-play/src/uscita.rs"],
+      src: ["core/rymembra-play/src/lib.rs", "core/rymembra-play/src/motore.rs", "core/rymembra-play/src/uscita.rs"],
       body: [
-        "`aether-play` knows nothing about libraries or paths: it receives a `Sorgente` (bytes behind a `Read + Seek`, an extension, a duration, a level) and makes it audible. Dependencies: symphonia 0.6.1 (mp3, flac, isomp4/aac/alac, ogg/vorbis, wav/pcm, aiff, mkv, caf), `opus-pure` 0.2.1, cpal 0.18.2, rubato 0.16, ebur128 0.1.10, rtrb 0.3.",
+        "`rymembra-play` knows nothing about libraries or paths: it receives a `Sorgente` (bytes behind a `Read + Seek`, an extension, a duration, a level) and makes it audible. Dependencies: symphonia 0.6.1 (mp3, flac, isomp4/aac/alac, ogg/vorbis, wav/pcm, aiff, mkv, caf), `opus-pure` 0.2.1, cpal 0.18.2, rubato 0.16, ebur128 0.1.10, rtrb 0.3.",
         { h: "Three roles" },
         {
           table: {
             head: ["Role", "Thread", "Owns"],
             rows: [
               ["Commander", "any (`Motore` handle)", "Sends `Comando`s over a channel: `Suona`, `Prepara`, `Ferma`, `VaiA`, `Sfuma`, `AnnullaSfuma`, `Volume`, `ReplayGain`, `Dissolvenza`, `Latenza`, `Equalizzatore`, `Chiudi`"],
-              ["Decoder", "`aether-decodifica`", "symphonia readers, resampler, channel matrix, per-track gain, crossfade; fills the sample ring; tracks position"],
+              ["Decoder", "`rymembra-decodifica`", "symphonia readers, resampler, channel matrix, per-track gain, crossfade; fills the sample ring; tracks position"],
               ["Callback", "cpal (WASAPI, real-time)", "Pops samples, applies EQ, spectrum tap, volume ramp, gate, limiter; converts to the device format"],
             ],
           },
         },
-        "Announcements (`Evento::Iniziato`, `Fermato`, `Errore`) are delivered on a separate thread, `aether-eventi`, so whatever the listener does (database writes, locks) never stalls decoding. The decoder runs inside `catch_unwind` (`filo_sorvegliato`): a panic in symphonia on a malformed file increments a session counter, raises the «lost» flag with cause 3 and announces `playback.stalled` instead of leaving a silent engine.",
+        "Announcements (`Evento::Iniziato`, `Fermato`, `Errore`) are delivered on a separate thread, `rymembra-eventi`, so whatever the listener does (database writes, locks) never stalls decoding. The decoder runs inside `catch_unwind` (`filo_sorvegliato`): a panic in symphonia on a malformed file increments a session counter, raises the «lost» flag with cause 3 and announces `playback.stalled` instead of leaving a silent engine.",
         { h: "Three rings, no shared lock" },
         "Between decoder and callback there are three lock-free `rtrb` rings: **samples** (interleaved `f32`), **EQ coefficients** (a whole curve published at once, never half of two), and **spectrum taps** back to the reader. Everything else is atomics in `Condiviso`: `in_pausa`, `svuota` (flush handshake: raised by the decoder, lowered by the callback after emptying), `guadagno`, `fotogrammi` (frames delivered to the device buffer), `vuoti` (underrun samples), `latenza_fotogrammi`, `perso` + `causa_perdita` (1 device gone, 2 backend failure, 3 decoder crashed; the cause is written before the flag), `abbandonato` (a replaced engine stays silent), `spettro`. The only `Mutex` is `in_lettura`, the cancel flag of a network read, which the callback never touches.",
         "`RISERVA_MS` = 200 ms is the guaranteed minimum buffered ahead; the ring is sized for 192 kHz × 8 channels, so at 48 kHz stereo it holds about 3 s.",
@@ -37,7 +37,7 @@
     {
       id: "decoding",
       title: "Decoding, resampling, channels and seeking",
-      src: ["core/aether-play/src/decodifica.rs", "core/aether-play/src/decodifica/ricampionatore.rs", "core/aether-play/src/decodifica/canali.rs", "core/aether-play/src/decodifica/opus.rs"],
+      src: ["core/rymembra-play/src/decodifica.rs", "core/rymembra-play/src/decodifica/ricampionatore.rs", "core/rymembra-play/src/decodifica/canali.rs", "core/rymembra-play/src/decodifica/opus.rs"],
       body: [
         "`Decodificatore` promises three things: the exact number of output frames (`ceil(n × out / in)`), channels routed by position, and seeks that land on the exact frame.",
         {
@@ -56,12 +56,12 @@
     {
       id: "output",
       title: "Output devices, stream sleep and latency",
-      src: ["core/aether-play/src/uscita.rs", "core/aether-play/src/dispositivi.rs", "apps/desktop/src-tauri/src/riproduzione/uscite.rs", "apps/desktop/src-tauri/src/riproduzione/riapertura.rs", "apps/desktop/src/parti/UscitaAudio.tsx"],
+      src: ["core/rymembra-play/src/uscita.rs", "core/rymembra-play/src/dispositivi.rs", "apps/desktop/src-tauri/src/riproduzione/uscite.rs", "apps/desktop/src-tauri/src/riproduzione/riapertura.rs", "apps/desktop/src/parti/UscitaAudio.tsx"],
       body: [
         { h: "The callback" },
         "Rules: no allocation, no locks, no panics. Per block: count the call, drain the coefficient ring, read flags and gain; per frame: move the **gate** (`DISSOLVENZA_MS` = 12 ms open/close, so pause, resume and seeks never click); when paused with the gate closed, write zeros without consuming the ring; otherwise volume ramp (≈ 40 ms) → pop sample → EQ (skipped when flat) → spectrum tap (channel average) → × gain × gate → `limita` (only when the gain or the EQ can exceed full scale) → format conversion (f32, f64, i32, i24, i16, u16, all clamped). Underruns are counted in `vuoti`.",
         { h: "Stream sleep" },
-        "A WASAPI stream that stays open keeps a power request alive («An audio stream is currently in use») and Windows never sleeps. The thread `aether-uscita` therefore pauses the cpal stream (`IAudioClient::Stop`) after `RIPOSO_DOPO` = 30 s of pause, after `RIPOSO_A_VUOTO` = 1 s when paused with nothing left to play, and after `RIPOSO_BLUETOOTH` = 1 s on Bluetooth — so multipoint headphones are released to the phone at once. HDMI/optical receivers keep the 30 s, because they swallow the start of music when re-locking. It never sleeps with a flush pending. `Uscita::sveglia` restarts the stream and waits (≤ 500 ms) for the first callback before any command that needs it.",
+        "A WASAPI stream that stays open keeps a power request alive («An audio stream is currently in use») and Windows never sleeps. The thread `rymembra-uscita` therefore pauses the cpal stream (`IAudioClient::Stop`) after `RIPOSO_DOPO` = 30 s of pause, after `RIPOSO_A_VUOTO` = 1 s when paused with nothing left to play, and after `RIPOSO_BLUETOOTH` = 1 s on Bluetooth — so multipoint headphones are released to the phone at once. HDMI/optical receivers keep the 30 s, because they swallow the start of music when re-locking. It never sleeps with a flush pending. `Uscita::sveglia` restarts the stream and waits (≤ 500 ms) for the first callback before any command that needs it.",
         { h: "Device identity and choice" },
         "Devices are identified by their WASAPI friendly name; the default is detected by endpoint id. `player.output` stores the chosen name (absent = follow the system default). `dispositivi::scegli` (opening) falls back to the default if the wanted device is missing; `scegli_per_riaprire` (reopening while playing) does **not** — a pinned device that disappears means wait for it, not «play from the office speakers».",
         { h: "Losing a device" },
@@ -69,7 +69,7 @@
           ol: [
             "The cpal error callback maps `DeviceNotAvailable`, `StreamInvalidated`, `HostUnavailable` to cause 1 (others 2; xruns and `DeviceChanged` are ignored) and raises `perso`.",
             "Within 250 ms the clock thread records a resume point (track, ms, was playing, time) and emits `riproduzione:audio` once.",
-            "`aether-dispositivi` polls the device list every 2 s (backing off ×2 up to 30 s after failed reopens). With a target available it calls `riapri_su`: a new `Motore` is opened **outside** the lock (`APERTURA_USCITA` = 20 s), then swapped in under it with volume, EQ, ReplayGain, crossfade, latency and spectrum re-applied; the listen in progress is paused, not lost.",
+            "`rymembra-dispositivi` polls the device list every 2 s (backing off ×2 up to 30 s after failed reopens). With a target available it calls `riapri_su`: a new `Motore` is opened **outside** the lock (`APERTURA_USCITA` = 20 s), then swapped in under it with volume, EQ, ReplayGain, crossfade, latency and spectrum re-applied; the listen in progress is paused, not lost.",
             "`riprendi_dov_era` restarts the track at the saved millisecond only if the bookmark is fresh (`RIPRESA_FRESCA` = 30 min) and music was playing, and not if the decoder-crash counter grew since (to avoid re-seating a file that crashes the decoder).",
           ],
         },
@@ -82,9 +82,9 @@
     {
       id: "crossfade",
       title: "Gapless and crossfade",
-      src: ["core/aether-play/src/motore.rs", "core/aether-play/src/lib.rs", "core/aether-play/src/decodifica/ricampionatore.rs", "apps/desktop/src-tauri/src/riproduzione/fili.rs"],
+      src: ["core/rymembra-play/src/motore.rs", "core/rymembra-play/src/lib.rs", "core/rymembra-play/src/decodifica/ricampionatore.rs", "apps/desktop/src-tauri/src/riproduzione/fili.rs"],
       body: [
-        "Both rely on having the next track **already open**: the desktop thread `aether-preparatore` opens it while the current one plays (15 ms debounce) and hands it over with `Motore::prepara`, only if the queue's next item and the output format are unchanged.",
+        "Both rely on having the next track **already open**: the desktop thread `rymembra-preparatore` opens it while the current one plays (15 ms debounce) and hands it over with `Motore::prepara`, only if the queue's next item and the output format are unchanged.",
         { h: "Gapless" },
         "When the current decoder ends, `passa_al_prossimo_dopo(rinvio)` starts the prepared one and places its `Segno` at the frame where everything already pushed ends — plus the resampler tail inherited from the previous track when they share a resampler. No event, no reopen, no silence. The finished track is kept as `uscente` until its last sample is heard, so a seek in the final seconds lands on the track actually being heard. With crossfade on, gapless does not apply, even between tracks of the same album.",
         { h: "Crossfade" },
@@ -104,9 +104,9 @@
     {
       id: "playback",
       title: "Loudness levelling, volume and the format line",
-      src: ["core/aether-play/src/lib.rs", "core/aether-play/src/intensita.rs", "core/aether-app/src/playback.rs", "core/aether-app/src/intensita.rs", "apps/desktop/src-tauri/src/riproduzione/suono.rs", "apps/desktop/src/parti/Formato.tsx"],
+      src: ["core/rymembra-play/src/lib.rs", "core/rymembra-play/src/intensita.rs", "core/rymembra-app/src/playback.rs", "core/rymembra-app/src/intensita.rs", "apps/desktop/src-tauri/src/riproduzione/suono.rs", "apps/desktop/src/parti/Formato.tsx"],
       body: [
-        "Every track carries a `Livello { guadagno_db, picco }`: the dB needed to reach a −18 LUFS reference, and the linear true peak. The gain comes from the ReplayGain tag when present, otherwise from Aether's own EBU R128 measurement in `track_intensita`; the peak only from the measurement.",
+        "Every track carries a `Livello { guadagno_db, picco }`: the dB needed to reach a −18 LUFS reference, and the linear true peak. The gain comes from the ReplayGain tag when present, otherwise from Rymembra's own EBU R128 measurement in `track_intensita`; the peak only from the measurement.",
         { h: "Targets and modes" },
         {
           table: {
@@ -129,7 +129,7 @@
           ],
         },
         { h: "Measuring loudness" },
-        "`aether_play::intensita` decodes the whole file at 48 kHz stereo through the same chain as playback and runs `ebur128` for integrated loudness and 4× oversampled true peak; nothing above −70 LUFS is `Muto`. The background pass is described in [Analysis](#analysis); `normalizzazione_avanzamento` reports how many tracks are measured.",
+        "`rymembra_play::intensita` decodes the whole file at 48 kHz stereo through the same chain as playback and runs `ebur128` for integrated loudness and 4× oversampled true peak; nothing above −70 LUFS is `Muto`. The background pass is described in [Analysis](#analysis); `normalizzazione_avanzamento` reports how many tracks are measured.",
         { h: "The format line" },
         "With `player.fileFormat.visible` on, the player shows «FLAC · 44.1 kHz · 24-bit · Stereo · 1058 kbps» **as the decoder reports it** while playing (`FormatoSuonato` → `FormatoFile::completato_da`): the real codec inside an `.m4a`, the MP3 that an Internet Archive «FLAC» page actually streams. It describes the file, not the output; when the device resamples, the tooltip says «Resampled from 44.1 kHz to 48 kHz».",
       ],
@@ -138,7 +138,7 @@
     {
       id: "eq",
       title: "Equalizer",
-      src: ["core/aether-play/src/equalizzatore.rs", "apps/desktop/src-tauri/src/riproduzione/suono.rs", "apps/desktop/src/parti/Equalizzatore.tsx"],
+      src: ["core/rymembra-play/src/equalizzatore.rs", "apps/desktop/src-tauri/src/riproduzione/suono.rs", "apps/desktop/src/parti/Equalizzatore.tsx"],
       body: [
         "Ten octave bands centred at 31.25, 62.5, 125, 250, 500 Hz, 1, 2, 4, 8 and 16 kHz (`CENTRI_HZ`), ±`LIMITE_DB` = 12 dB each. Octaves rather than equal-width bands because hearing is logarithmic.",
         {
@@ -156,10 +156,10 @@
     {
       id: "spectrum",
       title: "Spectrum: analysis and the 3D scene",
-      src: ["core/aether-play/src/spettro.rs", "apps/desktop/src-tauri/src/riproduzione/fili.rs", "apps/desktop/src/parti/Spettro3D.tsx", "apps/desktop/src/parti/SchedaSpettro.tsx", "apps/desktop/src/parti/DettaglioSpettro.tsx"],
+      src: ["core/rymembra-play/src/spettro.rs", "apps/desktop/src-tauri/src/riproduzione/fili.rs", "apps/desktop/src/parti/Spettro3D.tsx", "apps/desktop/src/parti/SchedaSpettro.tsx", "apps/desktop/src/parti/DettaglioSpettro.tsx"],
       body: [
         "The callback averages channels into the spectrum ring **only while someone is looking** (`Condiviso::spettro`); the ring holds 32,768 samples and drops when full rather than waiting. `Spettro` (behind a mutex on the `Motore`, never touched by the callback) runs a hand-written radix-2 FFT over a 4,096-sample Hann window (≈ 11.7 Hz per bin at 48 kHz), floor −70 dB.",
-        "Two reductions: octave bands (smoothing rise 0.55, fall 0.12) and fine log-spaced bands from 20 Hz to 20 kHz at a chosen resolution (`RISOLUZIONI` = 8, 16, 32, 64, 128, 256, 512, 1024; default 64), normalized to 64 bands so bar height does not depend on resolution, interpolated below bin width. The desktop thread `aether-spettro` sends `riproduzione:spettro` (`{ fini: u8[] }`) every 33 ms while visible, polling at 250 ms otherwise.",
+        "Two reductions: octave bands (smoothing rise 0.55, fall 0.12) and fine log-spaced bands from 20 Hz to 20 kHz at a chosen resolution (`RISOLUZIONI` = 8, 16, 32, 64, 128, 256, 512, 1024; default 64), normalized to 64 bands so bar height does not depend on resolution, interpolated below bin width. The desktop thread `rymembra-spettro` sends `riproduzione:spettro` (`{ fini: u8[] }`) every 33 ms while visible, polling at 250 ms otherwise.",
         { h: "The scene" },
         "`Spettro3D.tsx` is a WebGL2 bar field: up to 1,024 bars wide with about 30 s of history (`MEMORIA_MS`), sampled every 33 ms. History is a cascade of rings, each level max-pooling two-to-one so depth is logarithmic in time; boxes are instanced (`gl_InstanceID`, up to `SCATOLE` = 32,768) with heights in a one-byte-per-band texture — one or two draw calls (the reflection is optional, `PIANI_RIFLESSI` = 3 levels). Eighteen `canvas.viz.*` skin tokens are read from CSS variables, refreshed by a mutation observer, not per frame.",
         "Quality (`player.spectrum.quality`): `alta`, `bassa` or `auto`, which watches the 95th-percentile frame delay over a 2 s window and changes density (2 / 1.5 / 1) with a 5 s dwell that doubles on each reversal up to 60 s. Quality is a fact of this machine and does not travel in a profile; `player.spectrum.visible` (start with the scene on) and `player.spectrum.bands` do. The Studio feeds the same component from a fake source.",
@@ -169,9 +169,9 @@
     {
       id: "analysis",
       title: "Background analysis: fingerprints and loudness",
-      src: ["apps/desktop/src-tauri/src/analisi.rs", "core/aether-play/src/impronta.rs", "core/aether-play/src/intensita.rs", "core/aether-app/src/sonora.rs", "core/aether-app/src/intensita.rs"],
+      src: ["apps/desktop/src-tauri/src/analisi.rs", "core/rymembra-play/src/impronta.rs", "core/rymembra-play/src/intensita.rs", "core/rymembra-app/src/sonora.rs", "core/rymembra-app/src/intensita.rs"],
       body: [
-        "`aether-analisi` is the only thread that reads files at full speed without being asked, so it yields to playback: first pass 2 min after start, then every 20 min (2 min burst after a scan), and if music is playing it backs off for `RESPIRO` = 30 s. It never takes the player lock; the library lock only to read a batch and to write results.",
+        "`rymembra-analisi` is the only thread that reads files at full speed without being asked, so it yields to playback: first pass 2 min after start, then every 20 min (2 min burst after a scan), and if music is playing it backs off for `RESPIRO` = 30 s. It never takes the player lock; the library lock only to read a batch and to write results.",
         { h: "Sonic fingerprints" },
         "`impronta` takes 30 s from the middle of a track (at least 10 s), decodes at 22,050 Hz mono and computes **47 numbers**: 13 MFCC means and variances over 26 mel bands (40 Hz–10 kHz), spectral centroid, rolloff, flatness and flux, RMS, dynamic range, crest, silence share, tempo, beat strength, onset rate and chroma (362–5,000 Hz). `VERSIONE_ESTRATTORE` = 1. Batches of 64 (`sonora::LOTTO`) on 3 threads with a 25 s deadline per track; outcomes `ok`, `illeggibile`, `muto`, `corto`; failures retried after 30 days. Once at least 50 tracks are measured, a normalization scale (`impronta_scala`) is computed. Fingerprints feed [Autoplay](#autoplay) and the weekly collections.",
         { h: "Loudness" },

@@ -18,11 +18,11 @@
 //! arrivano a raffiche — copiare un album sono venti file, e per ognuno due o
 //! tre eventi — e si **accorpano**: si aspetta che la raffica taccia per
 //! [`ACCORPAMENTO`], e poi si riscansionano soltanto le cartelle in cui è
-//! successo qualcosa (`aether_app::library::cartelle_da_riguardare`). Un album
+//! successo qualcosa (`rymembra_app::library::cartelle_da_riguardare`). Un album
 //! copiato è una scansione di un album, non della libreria.
 //!
 //! Sulle **condivisioni di rete** l'avviso può non arrivare: dipende dal
-//! server, e quando la rete cade cade in silenzio. Lì, solo se chi usa Aether
+//! server, e quando la rete cade cade in silenzio. Lì, solo se chi usa Rymembra
 //! lo chiede, un **sondaggio** leggero ogni [`SONDAGGIO`]: le date di modifica
 //! delle cartelle, non i file e meno che mai i tag. Una cartella in cui è
 //! comparso, sparito o stato rinominato qualcosa cambia data, e si riscansiona
@@ -35,7 +35,7 @@
 //! automatica di fine download — una radice che non risponde non giudica
 //! nessuno, una sottocartella illeggibile non fa sparire niente, e una passata
 //! che toglierebbe troppo in una volta non toglie niente da sola (vedi
-//! `aether_app::library::Scan::prudente`). In più un sottoalbero è **solo**
+//! `rymembra_app::library::Scan::prudente`). In più un sottoalbero è **solo**
 //! quello: il resto della radice è fuori competenza e non può sparire.
 //!
 //! # Una scansione alla volta, e nessuna persa
@@ -62,12 +62,12 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use aether_app::files::MusicFiles as _;
-use aether_app::library::{Scadenze, Scan, cartelle_da_riguardare, piu_esterne};
-use aether_app::volumi::{Collocazione, Esistenza};
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::paths::{PathRules, is_under};
 use notify::Watcher as _;
+use rymembra_app::files::MusicFiles as _;
+use rymembra_app::library::{Scadenze, Scan, cartelle_da_riguardare, piu_esterne};
+use rymembra_app::volumi::{Collocazione, Esistenza};
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::paths::{PathRules, is_under};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _};
 
@@ -292,7 +292,7 @@ impl Accorpatore {
 }
 
 /// I file che non sono musica e cambiano spesso accanto alla musica: le
-/// copertine, i testi che Aether stesso può scrivere accanto ai brani, le
+/// copertine, i testi che Rymembra stesso può scrivere accanto ai brani, le
 /// liste, i file temporanei di una copia o di un download.
 ///
 /// Un avviso su uno di questi non vale una scansione. Un nome sconosciuto
@@ -531,7 +531,7 @@ pub async fn imposta_sorveglianza(app: AppHandle, modo: String) -> Esito<QuadroS
         })));
     };
     crate::disparte::leggi_la_libreria(app.clone(), "sorveglianza delle cartelle", move |l| {
-        aether_app::settings::write(&l.connection, CHIAVE_SORVEGLIANZA, scelto.come_testo())
+        rymembra_app::settings::write(&l.connection, CHIAVE_SORVEGLIANZA, scelto.come_testo())
     })
     .await
     .map_err(errore)?;
@@ -597,7 +597,7 @@ pub fn avvia(app: &AppHandle) {
         .try_state::<Stato>()
         .and_then(|stato| {
             con_libreria(&stato, |l| {
-                aether_app::settings::read(&l.connection, CHIAVE_SORVEGLIANZA)
+                rymembra_app::settings::read(&l.connection, CHIAVE_SORVEGLIANZA)
             })
             .ok()
         })
@@ -614,14 +614,14 @@ pub fn avvia(app: &AppHandle) {
     });
     let mano = app.clone();
     let avviato = std::thread::Builder::new()
-        .name("aether-sorveglia".to_owned())
+        .name("rymembra-sorveglia".to_owned())
         .spawn(move || filo(&mano, &posta, &orecchio));
     if let Err(err) = avviato {
         nota!("[sorveglia] il filo non è partito: {err}");
     }
     let mano = app.clone();
     let avviato = std::thread::Builder::new()
-        .name("aether-risveglio".to_owned())
+        .name("rymembra-risveglio".to_owned())
         .spawn(move || risveglia(&mano));
     if let Err(err) = avviato {
         nota!("[sorveglia] il risveglio delle cartelle di rete non è partito: {err}");
@@ -635,7 +635,7 @@ pub fn avvia(app: &AppHandle) {
 /// non prima. Nessuno aspetta questa risposta: serve a bussare.
 const RISVEGLIO_SCADENZA: Duration = Duration::from_secs(30);
 
-/// Bussa alle cartelle di rete appena Aether si apre, perché siano sveglie
+/// Bussa alle cartelle di rete appena Rymembra si apre, perché siano sveglie
 /// quando qualcuno preme play.
 ///
 /// # Perché
@@ -659,9 +659,9 @@ fn risveglia(app: &AppHandle) {
         return;
     };
     let radici = con_libreria(&stato, |l| {
-        aether_app::settings::read_json::<Vec<String>>(
+        rymembra_app::settings::read_json::<Vec<String>>(
             &l.connection,
-            aether_app::settings::CHIAVE_CARTELLE,
+            rymembra_app::settings::CHIAVE_CARTELLE,
         )
     });
     let radici = match radici {
@@ -671,7 +671,8 @@ fn risveglia(app: &AppHandle) {
     for radice in &radici {
         ricorda_dove(app, radice, Collocazione::Ignota);
     }
-    let dove = aether_app::volumi::collocazioni(&radici, aether_app::volumi::SCADENZA_RISOLUZIONE);
+    let dove =
+        rymembra_app::volumi::collocazioni(&radici, rymembra_app::volumi::SCADENZA_RISOLUZIONE);
     for (radice, dove) in radici.iter().zip(&dove) {
         ricorda_dove(app, radice, *dove);
     }
@@ -687,7 +688,7 @@ fn risveglia(app: &AppHandle) {
         return;
     }
     let inizio = Instant::now();
-    let risposte = aether_app::volumi::esistenze(da_svegliare.clone(), RISVEGLIO_SCADENZA);
+    let risposte = rymembra_app::volumi::esistenze(da_svegliare.clone(), RISVEGLIO_SCADENZA);
     let sveglie = risposte
         .iter()
         .filter(|risposta| **risposta == Esistenza::Presente)
@@ -725,7 +726,7 @@ fn ricorda_dove(app: &AppHandle, radice: &str, dove: Collocazione) {
 /// controllo che si bloccasse sulla share sarebbe la stessa attesa che si sta
 /// cercando di misurare.
 pub fn forse_in_rete(app: &AppHandle, percorso: &str) -> bool {
-    if aether_app::volumi::dalla_forma(Path::new(percorso)).is_some() {
+    if rymembra_app::volumi::dalla_forma(Path::new(percorso)).is_some() {
         return true;
     }
     let Some(stato) = app.try_state::<StatoSorveglianza>() else {
@@ -898,10 +899,12 @@ fn controlla(app: &AppHandle, posta: &Sender<Messaggio>, motore: &mut Motore) {
         return;
     };
     let letto = con_libreria(&stato, |l| {
-        let radici: Vec<String> =
-            aether_app::settings::read_json(&l.connection, aether_app::settings::CHIAVE_CARTELLE)?
-                .unwrap_or_default();
-        let modo = aether_app::settings::read(&l.connection, CHIAVE_SORVEGLIANZA)?;
+        let radici: Vec<String> = rymembra_app::settings::read_json(
+            &l.connection,
+            rymembra_app::settings::CHIAVE_CARTELLE,
+        )?
+        .unwrap_or_default();
+        let modo = rymembra_app::settings::read(&l.connection, CHIAVE_SORVEGLIANZA)?;
         Ok((radici, Modo::dal_salvato(modo.as_deref())))
     });
     let (radici, modo) = match letto {
@@ -936,7 +939,7 @@ fn controlla(app: &AppHandle, posta: &Sender<Messaggio>, motore: &mut Motore) {
         // Dove sta, chiesto fuori da ogni lucchetto e con la scadenza: su una
         // lettera mappata che non risponde è un'attesa.
         let dove =
-            aether_app::volumi::collocazione(radice, aether_app::volumi::SCADENZA_RISOLUZIONE);
+            rymembra_app::volumi::collocazione(radice, rymembra_app::volumi::SCADENZA_RISOLUZIONE);
         ricorda_dove(app, radice, dove);
         let voluto = come_sorvegliare(modo, dove);
         let sorvegliata = match voluto {
@@ -1026,7 +1029,7 @@ fn controlla(app: &AppHandle, posta: &Sender<Messaggio>, motore: &mut Motore) {
 /// Perché il loro osservatore muore **in silenzio**. In `notify` 8.2 su Windows
 /// un completamento fallito di `ReadDirectoryChangesW` — il disco USB staccato,
 /// la lettera che sparisce — toglie la sorveglianza e lo scrive in un registro
-/// che Aether non ascolta: il gestore qui sotto non riceve nessun errore, il
+/// che Rymembra non ascolta: il gestore qui sotto non riceve nessun errore, il
 /// ramo `Guasto` non scatta, e la cartella resta «con gli avvisi» per tutta la
 /// sessione senza che nessun avviso arrivi più. Riattaccato il disco, quel che
 /// ci si copiava sopra non entrava in libreria.
@@ -1046,7 +1049,7 @@ fn lascia_cadere_le_morte(motore: &mut Motore) {
     if con_avvisi.is_empty() {
         return;
     }
-    let risposte = aether_app::volumi::esistenze(con_avvisi.clone(), VIVA_SCADENZA);
+    let risposte = rymembra_app::volumi::esistenze(con_avvisi.clone(), VIVA_SCADENZA);
     for (radice, risposta) in con_avvisi.iter().zip(risposte) {
         if risposta != Esistenza::Assente {
             continue;
@@ -1075,15 +1078,15 @@ fn osserva_entro(
 ) -> Result<notify::RecommendedWatcher, String> {
     let percorso = radice.to_owned();
     let posta = posta.clone();
-    aether_app::scadenza::con_scadenza(
+    rymembra_app::scadenza::con_scadenza(
         "osserva",
-        aether_app::volumi::SCADENZA_RISOLUZIONE,
+        rymembra_app::volumi::SCADENZA_RISOLUZIONE,
         move || osserva(&percorso, &posta).map_err(|guasto| guasto.to_string()),
     )
     .unwrap_or_else(|| {
         Err(format!(
             "la cartella non ha risposto entro {} secondi",
-            aether_app::volumi::SCADENZA_RISOLUZIONE.as_secs()
+            rymembra_app::volumi::SCADENZA_RISOLUZIONE.as_secs()
         ))
     })
 }
@@ -1147,8 +1150,8 @@ fn sonda(app: &AppHandle, motore: &mut Motore) {
         // Con la scadenza: una share che smette di rispondere a metà non deve
         // tenere fermo il filo. Scaduta, la fotografia di prima resta buona.
         let Some(foto) =
-            aether_app::scadenza::con_scadenza("sondaggio", SONDAGGIO_SCADENZA, move || {
-                aether_app::files::LocalFiles
+            rymembra_app::scadenza::con_scadenza("sondaggio", SONDAGGIO_SCADENZA, move || {
+                rymembra_app::files::LocalFiles
                     .radice_raggiungibile(&percorso)
                     .then(|| fotografa(&percorso))
             })
@@ -1223,7 +1226,7 @@ fn esegui(app: &AppHandle, stato: &Stato, cartelle: &[String], _turno: TurnoDiSc
     };
     let fermati = || stato.scansione_fermata() || crate::spegnimento::in_uscita();
     let scan = Scan {
-        files: std::sync::Arc::new(aether_app::files::LocalFiles),
+        files: std::sync::Arc::new(rymembra_app::files::LocalFiles),
         covers: copertine,
         roots: cartelle,
         rules: PathRules::for_current_platform(),

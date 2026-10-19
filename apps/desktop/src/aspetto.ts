@@ -144,7 +144,7 @@ export function applicaMovimento(scelta: MovimentoUtente): void {
  * L'indirizzo di una copertina.
  *
  * Non passa dall'IPC: le immagini le chiede il motore di rendering al
- * protocollo `aether-cover`, in parallelo e con la sua cache. Novecento
+ * protocollo `rymembra-cover`, in parallelo e con la sua cache. Novecento
  * copertine in base64 dentro delle risposte JSON sarebbero novecento stringhe
  * da tenere vive in memoria per disegnare dei quadratini.
  *
@@ -156,5 +156,5 @@ export function urlCopertina(
 ): string | null {
   if (!hash) return null;
   const nome = miniatura ? `${hash}.t` : hash;
-  return `http://aether-cover.localhost/${nome}`;
+  return `http://rymembra-cover.localhost/${nome}`;
 }

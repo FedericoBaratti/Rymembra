@@ -21,7 +21,7 @@
 //! cresce fino a centinaia di fili: un lavoro fermo lì non toglie il posto a
 //! nessuno.
 //!
-//! # Perché non basta `aether_app::scadenza::con_scadenza`
+//! # Perché non basta `rymembra_app::scadenza::con_scadenza`
 //!
 //! Perché rispondono a due domande diverse. `con_scadenza` dice **quanto** si è
 //! disposti ad aspettare, e alla scadenza lascia il lavoro indietro; questo dice
@@ -74,7 +74,7 @@
 //!
 //! [`Turno`]: crate::stato::Turno
 
-use aether_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::errors::{AppError, ErrorCode};
 
 /// Esegue `lavoro` sul pool bloccante e ne aspetta l'esito.
 ///

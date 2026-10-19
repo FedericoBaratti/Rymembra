@@ -12,8 +12,9 @@
 //! La finestra riceve i percorsi già divisi per quel che se ne fa, e decide solo
 //! dove portare chi guarda.
 
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::paths::{PathRules, extension_of, is_supported_audio_path};
+use rymembra_domain::eredita;
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::paths::{PathRules, extension_of, is_supported_audio_path};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _};
 
@@ -33,7 +34,8 @@ const ESTENSIONI_PLAYLIST: [&str; 4] = ["m3u", "m3u8", "pls", "xspf"];
 pub struct Trascinati {
     /// Da aggiungere alle cartelle sorvegliate.
     pub cartelle: Vec<String>,
-    /// Pacchetti `.aeskin` da installare.
+    /// Pacchetti di skin da installare: `.ryskin`, e anche quelli con
+    /// l'estensione di prima, che l'installazione riscrive col nome nuovo.
     pub skin: Vec<String>,
     /// File di playlist da importare.
     pub playlist: Vec<String>,
@@ -45,7 +47,7 @@ pub struct Trascinati {
     /// Un numero e non un elenco: la finestra ne fa una frase sola — «aggiungi
     /// la cartella che li contiene» — e non ha niente da fare con i nomi.
     pub fuori_libreria: usize,
-    /// Tutto il resto: né cartelle né file che Aether sappia usare.
+    /// Tutto il resto: né cartelle né file che Rymembra sappia usare.
     pub ignorati: usize,
 }
 
@@ -63,7 +65,10 @@ fn smista(percorsi: Vec<String>, e_cartella: impl Fn(&str) -> bool) -> (Trascina
             continue;
         }
         let estensione = extension_of(&percorso);
-        if estensione == "aeskin" {
+        // Il pacchetto di prima si legge ancora: chi ha una skin scaricata o
+        // salvata a suo tempo la lascia cadere sulla finestra come sempre, e
+        // `skin::installa` non guarda l'estensione, solo il contenuto.
+        if estensione == "ryskin" || estensione == eredita::ESTENSIONE_SKIN {
             smistati.skin.push(percorso);
         } else if ESTENSIONI_PLAYLIST.contains(&estensione.as_str()) {
             smistati.playlist.push(percorso);
@@ -109,7 +114,7 @@ fn smista_e_cerca(stato: &Stato, percorsi: Vec<String>) -> Result<Trascinati, Ap
         return Ok(smistati);
     }
     let trovati = con_libreria(stato, |libreria| {
-        aether_app::library::ids_by_path(
+        rymembra_app::library::ids_by_path(
             &libreria.connection,
             &audio,
             PathRules::for_current_platform(),
@@ -139,7 +144,7 @@ mod prove {
                 r"C:\Musica",
                 r"C:\Scaricati\Serata.M3U8",
                 r"C:\Scaricati\vecchia.pls",
-                r"C:\Scaricati\notte.aeskin",
+                r"C:\Scaricati\notte.ryskin",
                 r"C:\Scaricati\01 - Brano.flac",
                 r"C:\Scaricati\note.txt",
             ]),
@@ -151,8 +156,33 @@ mod prove {
             tutti(&[r"C:\Scaricati\Serata.M3U8", r"C:\Scaricati\vecchia.pls"]),
             "l'estensione si confronta in minuscolo"
         );
-        assert_eq!(smistati.skin, tutti(&[r"C:\Scaricati\notte.aeskin"]));
+        assert_eq!(smistati.skin, tutti(&[r"C:\Scaricati\notte.ryskin"]));
         assert_eq!(audio, tutti(&[r"C:\Scaricati\01 - Brano.flac"]));
+        assert_eq!(smistati.ignorati, 1);
+    }
+
+    #[test]
+    fn la_skin_con_l_estensione_di_prima_si_installa_ancora() {
+        // Compatibilità: un pacchetto salvato prima del cambio di nome è una
+        // skin, non un file «ignorato». L'estensione si confronta in minuscolo
+        // come tutte le altre, e quella nuova non ha smesso di valere.
+        let vecchia = format!(r"C:\Scaricati\vecchia.{}", eredita::ESTENSIONE_SKIN);
+        let maiuscola = format!(
+            r"C:\Scaricati\GRANDE.{}",
+            eredita::ESTENSIONE_SKIN.to_uppercase()
+        );
+        let nuova = r"C:\Scaricati\nuova.RySkin".to_owned();
+        let (smistati, audio) = smista(
+            vec![
+                vecchia.clone(),
+                maiuscola.clone(),
+                nuova.clone(),
+                r"C:\Scaricati\altro.zip".to_owned(),
+            ],
+            |_| false,
+        );
+        assert_eq!(smistati.skin, vec![vecchia, maiuscola, nuova]);
+        assert!(audio.is_empty());
         assert_eq!(smistati.ignorati, 1);
     }
 

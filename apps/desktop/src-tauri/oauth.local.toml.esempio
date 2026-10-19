@@ -37,5 +37,5 @@
 # dalla storia di git, ed eliminare il client invalida anche ogni token di
 # aggiornamento mai emesso per lui.
 
-AETHER_GOOGLE_CLIENT_ID = ""
-AETHER_GOOGLE_CLIENT_SECRET = ""
+RYMEMBRA_GOOGLE_CLIENT_ID = ""
+RYMEMBRA_GOOGLE_CLIENT_SECRET = ""

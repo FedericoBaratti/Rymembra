@@ -1,5 +1,5 @@
 /* Capitolo 12 — la finestra: architettura del frontend, viste, elenchi, tastiera, zoom, lingue, giro guidato, finestre di dialogo. */
-(window.AETHER_DOCS = window.AETHER_DOCS || []).push({
+(window.RYMEMBRA_DOCS = window.RYMEMBRA_DOCS || []).push({
   id: "interface",
   title: "The window (frontend)",
   lead: "React 19 + TypeScript in WebView2: how state flows from Rust into components, how pages and kept-alive views are rendered, lists without pages, the keyboard, zoom, translations, the guided tour and dialogs.",
@@ -22,7 +22,7 @@
             "**Long-lived providers** (`Fornitori.tsx`) survive page changes: imports and the download queue, Drive/sync/enrichment state, the «what is playing» context.",
           ],
         },
-        "Controls are pessimistic: commands return the full new state and the UI paints from that; ratings and likes are the optimistic exception. Covers are plain `<img>` with `srcset` over the `aether-cover` scheme, never IPC.",
+        "Controls are pessimistic: commands return the full new state and the UI paints from that; ratings and likes are the optimistic exception. Covers are plain `<img>` with `srcset` over the `rymembra-cover` scheme, never IPC.",
         "Build: Vite targeting `chrome125` (View Transitions, `light-dark()`, `@starting-style`), strict TypeScript (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`). Runtime dependencies are React, ReactDOM, `@tauri-apps/api`, `@tauri-apps/plugin-dialog` and CodeMirror — no state, i18n, icon or animation library.",
       ],
       see: ["views", "lists", "ipc", "player"],
@@ -66,7 +66,7 @@
     {
       id: "shortcuts",
       title: "Keyboard",
-      src: ["apps/desktop/src/tastiera.ts", "apps/desktop/src/tasti.ts", "apps/desktop/src/modale.ts", "apps/desktop/src/parti/Scorciatoie.tsx", "core/aether-app/src/preferenze.rs"],
+      src: ["apps/desktop/src/tastiera.ts", "apps/desktop/src/tasti.ts", "apps/desktop/src/modale.ts", "apps/desktop/src/parti/Scorciatoie.tsx", "core/rymembra-app/src/preferenze.rs"],
       body: [
         "`tastiera.ts` is the single shortcut table. Defaults (`DI_SERIE`):",
         {
@@ -90,7 +90,7 @@
     {
       id: "zoom",
       title: "Zoom",
-      src: ["apps/desktop/src-tauri/src/zoom.rs", "core/aether-app/src/preferenze.rs"],
+      src: ["apps/desktop/src-tauri/src/zoom.rs", "core/rymembra-app/src/preferenze.rs"],
       body: [
         "The whole window zooms over seven steps, `SCALA_ZOOM` = 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, using the **WebView's** zoom (`WebviewWindow::set_zoom`), not a CSS `zoom` or a scale token. With the browser zoom the CSS pixel stays the unit the page reasons in, so the two modules that measure the DOM — the virtual list and the tour spotlight — keep working; under CSS `zoom`, `getBoundingClientRect` and `scrollTop` would live in different coordinate spaces.",
         "Commands `zoom_passo(su)`, `zoom_normale`, `zoom_avvio`; the window shows the value the core answered. The step is stored in `ui.zoom` (an unknown value falls back to 1.0) and does **not** travel in a profile: it is the correction left after Windows' own scaling on this monitor.",

@@ -9,7 +9,7 @@
  * # Perché la forma è `piano → conferma → rapporto`, e non un'altra
  *
  * Fino alla 2.3.1 questa schermata era quasi una copia di `Riordino.tsx`,
- * deliberatamente: erano le due sole di Aether che cambiassero qualcosa senza
+ * deliberatamente: erano le due sole di Rymembra che cambiassero qualcosa senza
  * poterla disfare con un tasto, e non esistendo un runner di test per il
  * TypeScript la sola verifica strutturale possibile era che le due si
  * leggessero come un diff. Ritirato il riordino, di quelle due è rimasta

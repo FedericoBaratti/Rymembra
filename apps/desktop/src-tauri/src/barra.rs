@@ -1,9 +1,9 @@
 //! I tre pulsanti sotto l'anteprima della finestra, nella barra delle
 //! applicazioni.
 //!
-//! Passando il puntatore sull'icona di Aether, sotto l'anteprima compaiono
+//! Passando il puntatore sull'icona di Rymembra, sotto l'anteprima compaiono
 //! brano precedente, riproduci o pausa e brano successivo — come in foobar2000.
-//! Il lavoro con Windows lo fa `aether-barra`; qui c'è soltanto quel che
+//! Il lavoro con Windows lo fa `rymembra-barra`; qui c'è soltanto quel che
 //! collega i pulsanti al lettore.
 //!
 //! # Le stesse strade del vassoio
@@ -31,7 +31,7 @@
 
 use std::sync::{Mutex, PoisonError};
 
-use aether_barra::{Aspetto, Barra, Etichette, Tasto};
+use rymembra_barra::{Aspetto, Barra, Etichette, Tasto};
 use tauri::Manager as _;
 
 use crate::media::Gesto;
@@ -95,7 +95,7 @@ fn aggancia(app: &tauri::AppHandle) {
         };
         crate::media::premi(&mano, gesto);
     };
-    let barra = match aether_barra::aggancia(hwnd, su_tasto, |riga| nota!("{riga}")) {
+    let barra = match rymembra_barra::aggancia(hwnd, su_tasto, |riga| nota!("{riga}")) {
         Ok(barra) => barra,
         Err(err) => {
             nota!("[barra] niente pulsanti nell'anteprima: {err}");
@@ -123,7 +123,7 @@ fn aggancia(app: &tauri::AppHandle) {
 ///
 /// La chiama chi manda lo stato alla finestra, accanto al vassoio — vedi
 /// `crate::riproduzione::manda_stato`. Se niente di quel che i pulsanti
-/// mostrano è cambiato, `aether-barra` non tocca niente.
+/// mostrano è cambiato, `rymembra-barra` non tocca niente.
 pub(crate) fn riflette(app: &tauri::AppHandle, stato: &StatoRiproduzione) {
     cambia(app, |aspetto| {
         aspetto.suona = stato.brano.is_some() && !stato.in_pausa;

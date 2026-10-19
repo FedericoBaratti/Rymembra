@@ -100,7 +100,9 @@ import { differenze, differenzeFoglia, quanteCambiano, type Cambio } from "./dif
 import { fotografaTela, telaDelloStudio } from "./fotografia";
 import { applicaOperazioni } from "./patch";
 import {
+  BLOCCO,
   correzione,
+  haBloccoDiModifiche,
   rigaSelezione,
   sistema,
   stimaGettoni,
@@ -131,9 +133,6 @@ const PENSIERO_IN_VISTA = 400;
 
 /** Quanto aspetta il salvataggio della conversazione dopo l'ultima battuta. */
 const RESPIRO_SALVATAGGIO = 400;
-
-/** Un blocco di modifiche dentro una risposta, anche ancora aperto. */
-const BLOCCO = /```aether-patch[\s\S]*?(?:```|$)/g;
 
 /**
  * Quel che il modello ha proposto.
@@ -355,7 +354,7 @@ export function Chat({
    * eventi distinti: se React non ha ancora ridisegnato in mezzo, `parziale`
    * dentro il gestore della fine è quello di **prima** dell'ultimo pezzo. Il
    * pezzo che si perderebbe è l'ultimo, cioè quasi sempre la coda del blocco
-   * delle modifiche — un `aether-patch` troncato di due caratteri, che il
+   * delle modifiche — un `rymembra-patch` troncato di due caratteri, che il
    * parser rifiuta senza che niente lo spieghi.
    */
   const arrivato = useRef("");
@@ -404,7 +403,7 @@ export function Chat({
     for (let i = messaggi.length - 1; i >= 0; i--) {
       const m = messaggi[i];
       if (m === undefined || m.ruolo !== "assistant") continue;
-      if (!m.testo.includes("```aether-patch")) return;
+      if (!haBloccoDiModifiche(m.testo)) return;
       conversazione.current = [...messaggi.slice(0, i), { ...m, applicata }, ...messaggi.slice(i + 1)];
       return;
     }
@@ -772,7 +771,7 @@ export function Chat({
   const allArrivo = (pezzo: PezzoIa) => {
     if (!mio(pezzo.turno)) return;
     // Due cesti e non uno: il ragionamento si guarda, la risposta si legge e si
-    // interpreta. Mescolarli darebbe un blocco `aether-patch` con dentro i
+    // interpreta. Mescolarli darebbe un blocco `rymembra-patch` con dentro i
     // tentativi che il modello ha scartato mentre pensava.
     if (pezzo.pensiero) {
       pensato.current += pezzo.testo;

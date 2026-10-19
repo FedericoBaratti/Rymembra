@@ -1,0 +1,130 @@
+{
+  "format": 1,
+  "id": "completa",
+  "meta": {
+    "name": "Completa",
+    "author": "Rymembra",
+    "version": "1.4.2",
+    "description": "Ogni costrutto del formato 1, per provare la migrazione al 2.",
+    "license": "MIT",
+    "basedOn": "plain",
+    "preview": ["#0b0b10", "#1a1a24", "#f0a060"]
+  },
+  "capabilities": { "light": true, "mobile": true, "dynamicAccent": false },
+  "palette": { "rame": "#f0a060", "notte": "#07070b" },
+  "patterns": {
+    "griglia": { "effect": "hairlineGrid", "color": { "$palette": "rame", "alpha": 0.08 }, "cell": "32px" },
+    "taglio": { "effect": "chamfer", "size": "8px", "corners": ["topLeft", "bottomRight"] },
+    "vetro": { "effect": "blurBehind", "radius": "18px", "saturate": 140 }
+  },
+  "tokens": {
+    "font.sans": ["Geist"],
+    "color.surface.0": "#0b0b10",
+    "color.surface.1": "#101018",
+    "color.surface.2": "#1a1a24",
+    "color.surface.3": "#22222e",
+    "color.text.1": "rgba(255, 255, 255, 0.92)",
+    "color.text.2": "rgba(255, 255, 255, 0.64)",
+    "color.text.3": "rgba(255, 255, 255, 0.54)",
+    "color.accent": { "$palette": "rame" },
+    "color.accent.soft": { "$palette": "rame", "alpha": 0.16 },
+    "color.danger": "#ec5d5e",
+    "color.success": "#34d399",
+    "color.warning": "#facc15",
+    "color.hairline": "rgba(255, 255, 255, 0.08)",
+    "radius.panel": "18px",
+    "radius.card": "12px",
+    "motion.dur.1": "140ms",
+    "motion.dur.2": "260ms",
+    "motion.ease.outExpo": { "kind": "cubicBezier", "points": [0.16, 1, 0.3, 1] }
+  },
+  "themes": {
+    "light": {
+      "color.surface.0": "#fbfbfd",
+      "color.surface.1": "#f3f3f7",
+      "color.surface.2": "#ebebf1",
+      "color.surface.3": "#e2e2ec",
+      "color.text.1": "rgba(16, 16, 22, 0.92)",
+      "color.text.2": "rgba(16, 16, 22, 0.68)",
+      "color.text.3": "rgba(16, 16, 22, 0.64)",
+      "color.accent": "#9a4f12",
+      "color.accent.soft": "rgba(154, 79, 18, 0.14)",
+      "color.accent.glow": "rgba(154, 79, 18, 0.28)"
+    }
+  },
+  "platforms": { "mobile": { "radius.panel": "12px" } },
+  "motion": {
+    "intensity": "essential",
+    "easings": { "molla": { "kind": "cubicBezier", "points": [0.34, 1.56, 0.64, 1] } },
+    "routeTransition": {
+      "out": { "opacity": 0, "scale": 0.99 },
+      "in": { "opacity": 0, "translateY": 10 }
+    },
+    "animations": {
+      "sale": {
+        "duration": "320ms",
+        "easing": { "kind": "cubicBezier", "points": [0.16, 1, 0.3, 1] },
+        "frames": [
+          { "at": 0, "opacity": 0, "translateY": 12 },
+          { "at": 100, "opacity": 1, "translateY": 0 }
+        ]
+      },
+      "pulsa": {
+        "duration": "600ms",
+        "delay": "80ms",
+        "iterations": 2,
+        "direction": "alternate",
+        "frames": [
+          { "at": 0, "scale": 1 },
+          { "at": 100, "scale": 1.06 }
+        ]
+      }
+    }
+  },
+  "layout": { "player": "bottom-bar", "sidebar": "hidden", "density": "compact" },
+  "parts": {
+    "app-shell": {
+      "background": [{ "effect": "solid", "color": { "$token": "color.surface.0" } }]
+    },
+    "section-card": {
+      "background": [
+        { "effect": "linearGradient", "angle": 180, "stops": [
+          { "color": { "$token": "color.surface.2" }, "at": "0%" },
+          { "color": { "$token": "color.surface.1" }, "at": "100%" }
+        ] }
+      ],
+      "layer": { "background": [{ "$pattern": "griglia" }], "opacity": 0.6 },
+      "borderColor": { "$palette": "rame", "alpha": 0.2 },
+      "radius": "14px",
+      "animations": { "enter": "sale" }
+    },
+    "glass-modal": {
+      "filter": { "$pattern": "vetro" },
+      "clip": { "$pattern": "taglio" },
+      "borderColor": { "$palette": "rame", "alpha": 0.18 }
+    },
+    "menu-pop": { "borderColor": { "$palette": "rame", "alpha": 0.16 }, "radius": "10px" },
+    "hero-art": { "radius": "10px" },
+    "list-row": {
+      "states": {
+        "hover": { "background": [{ "effect": "solid", "color": { "$token": "color.surface.2" } }] },
+        "active": { "textColor": { "$token": "color.accent" }, "fontWeight": 600 }
+      }
+    },
+    "nav-pill": {
+      "letterSpacing": "0.02em",
+      "textTransform": "uppercase",
+      "states": {
+        "active": { "textColor": { "$token": "color.accent" } },
+        "focus": { "borderColor": { "$token": "color.accent" }, "borderWidth": "2px" },
+        "disabled": { "opacity": 0.4 }
+      },
+      "animations": { "hover": "pulsa", "active": "sale" }
+    },
+    "play-btn-primary": {
+      "background": [{ "effect": "solid", "color": { "$token": "color.accent" } }],
+      "textColor": { "$token": "color.surface.0" }
+    },
+    "viz-title": { "opacity": 1 }
+  }
+}

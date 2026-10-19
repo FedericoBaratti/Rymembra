@@ -253,7 +253,7 @@ const DA_TAGLIA: Record<(typeof TAGLIE_TRASPORTO)[number], TagliaTrasporto> = {
 /**
  * Il registro dei widget di questo lato.
  *
- * Deve restare allineato con `WIDGETS` in `core/aether-skin/src/layout.rs`, e
+ * Deve restare allineato con `WIDGETS` in `core/rymembra-skin/src/layout.rs`, e
  * **senza un runner di test in TypeScript** l'allineamento non si asserisce: si
  * rende visibile. Un nome dell'albero che non è qui produce un segnaposto che si
  * vede, non un buco silenzioso.

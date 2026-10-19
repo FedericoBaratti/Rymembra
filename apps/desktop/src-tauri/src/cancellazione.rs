@@ -8,7 +8,7 @@
 //! una volta — e ha un limite che non si nasconde: se il file sta ancora sotto
 //! una cartella sorvegliata, la prossima scansione lo rimette. La libreria è un
 //! indice del disco, non il disco, e nessun indice può dire a un file di non
-//! esistere. Per questo [`aether_app::library::Cancellazione`] porta indietro
+//! esistere. Per questo [`rymembra_app::library::Cancellazione`] porta indietro
 //! `torneranno`: è la sola cosa onesta da mostrare a chi ha appena premuto.
 //!
 //! [`brani_elimina`] dice «questo non lo voglio più»: il file va nel Cestino, e
@@ -27,7 +27,7 @@
 //! teneva la musica su un NAS, «Elimina dal disco» voleva dire quindi una
 //! cancellazione senza ritorno raccontata come un viaggio nel Cestino.
 //!
-//! Adesso si chiede prima dove sta ogni file ([`aether_app::volumi`], che
+//! Adesso si chiede prima dove sta ogni file ([`rymembra_app::volumi`], che
 //! riconosce anche le lettere mappate), la finestra lo dice nella conferma —
 //! «questi N file saranno cancellati definitivamente» — e solo con quella
 //! conferma in mano i file di rete si tolgono con `remove_file`, senza passare
@@ -52,11 +52,11 @@
 
 use std::path::Path;
 
-use aether_app::library::{self, Cancellazione};
-use aether_app::settings::{self, CHIAVE_CARTELLE};
-use aether_app::volumi::{self, Collocazione};
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::paths::PathRules;
+use rymembra_app::library::{self, Cancellazione};
+use rymembra_app::settings::{self, CHIAVE_CARTELLE};
+use rymembra_app::volumi::{self, Collocazione};
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::paths::PathRules;
 use tauri::Manager as _;
 
 use crate::disparte::in_disparte;
@@ -199,15 +199,15 @@ pub async fn brani_su_rete(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<usiz
 /// non è la rete a dirlo: Windows racconta la share sparita con lo stesso
 /// genere di errore del file sparito, e lì la riga deve restare.
 fn per_sempre(percorso: &str) -> Result<(), AppError> {
-    match std::fs::remove_file(aether_app::files::percorso_lungo(Path::new(percorso))) {
+    match std::fs::remove_file(rymembra_app::files::percorso_lungo(Path::new(percorso))) {
         Ok(()) => Ok(()),
         Err(err)
             if err.kind() == std::io::ErrorKind::NotFound
-                && !aether_domain::errors::rete::e_di_rete(&err) =>
+                && !rymembra_domain::errors::rete::e_di_rete(&err) =>
         {
             Ok(())
         }
-        Err(err) => Err(aether_app::files::io_error(percorso, &err)),
+        Err(err) => Err(rymembra_app::files::io_error(percorso, &err)),
     }
 }
 
@@ -480,7 +480,7 @@ mod prove {
     #[test]
     fn il_numero_che_il_diario_ha_visto_davvero() {
         // Non un valore costruito qui: è quel che il crate ha restituito
-        // cestinando la riga di un file spostato fuori da Aether, copiato dal
+        // cestinando la riga di un file spostato fuori da Rymembra, copiato dal
         // diario. La prima versione confrontava `2` con questo, non trovava mai
         // niente, e mandava a schermo il generico — che una frase ce l'ha, ed
         // è per questo che non si vedeva.

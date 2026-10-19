@@ -5,7 +5,7 @@
 //! copertine, se qualcuno ha chiesto alla scansione di fermarsi, e se una
 //! scansione è già in corso. Sono accanto e non dentro perché chi le chiede non
 //! deve mettersi in coda dietro chi sta usando il database: il gestore del
-//! protocollo `aether-cover://` vuole solo comporre un percorso, e
+//! protocollo `rymembra-cover://` vuole solo comporre un percorso, e
 //! `annulla_scansione` vuole alzare un bit — nessuno dei due ha bisogno della
 //! connessione, e farglieli chiedere insieme li ferma per tutta la durata di
 //! quel che qualcun altro sta facendo.
@@ -25,9 +25,9 @@
 //! significherebbe sbagliarla su un profilo mobile o su un utente con la
 //! cartella spostata.
 //!
-//! La cartella è **diversa** da quella dell'applicazione rilasciata
-//! (`%APPDATA%\Aether`). Deve esserlo: finché questa non è finita, la vecchia
-//! deve restare apribile, e l'importatore la legge in sola lettura.
+//! La cartella è **diversa** da quella dell'applicazione rilasciata (la
+//! cartella dati della versione 1.0). Deve esserlo: finché questa non è finita,
+//! la vecchia deve restare apribile, e l'importatore la legge in sola lettura.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,9 +36,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use crate::nota;
-use aether_app::covers::CoverStore;
-use aether_domain::errors::AppError;
 use rusqlite::Connection;
+use rymembra_app::covers::CoverStore;
+use rymembra_domain::errors::AppError;
 
 /// Come si chiama il file del database dentro la cartella dati.
 ///
@@ -46,7 +46,7 @@ use rusqlite::Connection;
 /// una **seconda** connessione allo stesso file per la sua cache, e due nomi
 /// scritti a mano che divergono produrrebbero un database vuoto accanto a quello
 /// vero — senza nessun errore, perché SQLite crea il file che non trova.
-pub const NOME_DATABASE: &str = "aether.db";
+pub const NOME_DATABASE: &str = "rymembra.db";
 
 /// La libreria aperta.
 pub struct Libreria {
@@ -67,14 +67,14 @@ pub struct Libreria {
     /// diario che distingue una libreria veloce da una che si impunta a ogni
     /// scansione — `truncate` vuol dire che WAL non si è accesa, e che letture e
     /// scritture vanno in fila. Il vocabolario completo e il perché stanno su
-    /// [`aether_app::db::Opened::giornale`].
+    /// [`rymembra_app::db::Opened::giornale`].
     pub giornale: String,
     /// La copia fatta prima delle migrazioni, o perché non c'è. `None` quando
     /// non c'era niente da migrare.
     ///
     /// Anche questa sta qui solo per la riga di avvio: se un aggiornamento va
     /// storto, la prima domanda è se c'è una copia da cui ripartire, e dove.
-    pub istantanea: Option<aether_app::db::Istantanea>,
+    pub istantanea: Option<rymembra_app::db::Istantanea>,
 }
 
 /// Lo stato condiviso fra i comandi.
@@ -85,6 +85,10 @@ pub struct Stato {
     /// apre e spiega perché il database non si è aperto è utilizzabile — ci si
     /// può leggere il percorso, cambiare cartella, ripristinare un backup. Un
     /// processo che esce prima di disegnare qualcosa non lo è.
+    ///
+    /// È lo stesso errore anche quando la libreria non si è nemmeno provata ad
+    /// aprire, perché il trasloco dei dati di prima ha detto di no: vedi
+    /// [`Stato::rifiutato`].
     pub libreria: Mutex<Result<Libreria, AppError>>,
 
     /// Dove stanno le copertine, senza passare dal mutex.
@@ -93,7 +97,7 @@ pub struct Stato {
     /// [`CoverStore`] è un `PathBuf` dietro un `Clone` gratuito, e quella
     /// cartella non cambia per tutta la vita del processo: tenerla **solo**
     /// dentro il mutex vorrebbe dire chiedere il lucchetto per calcolare un
-    /// nome di file — che è quel che il gestore di `aether-cover://` faceva a
+    /// nome di file — che è quel che il gestore di `rymembra-cover://` faceva a
     /// ogni immagine della griglia, sul filo della finestra, mentre una
     /// scansione lo teneva.
     ///
@@ -160,7 +164,26 @@ pub struct Stato {
 impl Stato {
     /// Apre la libreria nella cartella dati data.
     pub fn apri(data_dir: PathBuf) -> Self {
-        let libreria = apri_libreria(data_dir);
+        Self::da_libreria(apri_libreria(data_dir))
+    }
+
+    /// Lo stato di un avvio che non ha aperto niente, perché il trasloco dei
+    /// dati della versione precedente ha detto di no.
+    ///
+    /// È lo stato che `apri` produce quando `apri_libreria` fallisce — la
+    /// libreria è l'errore, e le due scorciatoie senza lucchetto
+    /// (`store_copertine`, `cartella_dati`) sono vuote — con una differenza che
+    /// è tutto il punto: qui `apri_libreria` non viene chiamata. Non crea la
+    /// cartella dati, non apre il database, non tocca le copertine. Ogni
+    /// comando che chiede la libreria si sente rispondere con `errore`, che è
+    /// esattamente come l'applicazione tratta da sempre un database che non si
+    /// è aperto: non c'è un secondo percorso d'errore da imparare.
+    pub fn rifiutato(errore: AppError) -> Self {
+        Self::da_libreria(Err(errore))
+    }
+
+    /// Lo stato attorno a una libreria già aperta, o all'errore che la sostituisce.
+    fn da_libreria(libreria: Result<Libreria, AppError>) -> Self {
         Self {
             store_copertine: libreria.as_ref().ok().map(|l| l.covers.clone()),
             cartella_dati: libreria.as_ref().ok().map(|l| l.data_dir.clone()),
@@ -261,7 +284,7 @@ impl Stato {
 /// La libreria di questa applicazione, vista come un deposito da aprire e
 /// richiudere.
 ///
-/// È l'unico punto dell'applicazione che nomina `aether_app::library::Deposito`:
+/// È l'unico punto dell'applicazione che nomina `rymembra_app::library::Deposito`:
 /// il nucleo chiede una connessione **per il tempo di una transazione**, questo
 /// gliela dà prendendo il lucchetto e lo rilascia appena la chiusura ritorna.
 /// Fra una chiamata e l'altra il lucchetto è libero, ed è quel che rende
@@ -281,7 +304,7 @@ impl<'a> DepositoStato<'a> {
     }
 }
 
-impl aether_app::library::Deposito for DepositoStato<'_> {
+impl rymembra_app::library::Deposito for DepositoStato<'_> {
     fn con_connessione<T, F>(&mut self, azione: F) -> Result<T, AppError>
     where
         F: FnOnce(&mut Connection) -> Result<T, AppError>,
@@ -645,9 +668,9 @@ pub fn avvia_filo_periodico<S: Send + 'static>(
 
 fn apri_libreria(data_dir: PathBuf) -> Result<Libreria, AppError> {
     std::fs::create_dir_all(&data_dir)
-        .map_err(|err| aether_app::files::io_error(&data_dir.display().to_string(), &err))?;
+        .map_err(|err| rymembra_app::files::io_error(&data_dir.display().to_string(), &err))?;
     let covers = CoverStore::open(data_dir.join("copertine"))?;
-    let aperto = aether_app::db::open(&data_dir.join(NOME_DATABASE))?;
+    let aperto = rymembra_app::db::open(&data_dir.join(NOME_DATABASE))?;
     Ok(Libreria {
         connection: aperto.connection,
         covers,
@@ -702,8 +725,8 @@ pub fn riga_di_avvio(stato: &Stato) {
 /// quello da rimettere a mano se la migrazione è andata storta. La riga dice
 /// anche quando la copia **non** c'è, e perché: è l'informazione che serve di
 /// più proprio nel giorno in cui servirebbe la copia.
-fn riga_dell_istantanea(istantanea: Option<&aether_app::db::Istantanea>) {
-    use aether_app::db::Istantanea;
+fn riga_dell_istantanea(istantanea: Option<&rymembra_app::db::Istantanea>) {
+    use rymembra_app::db::Istantanea;
     match istantanea {
         None => {}
         Some(Istantanea::Fatta {
@@ -752,7 +775,7 @@ pub fn ottimizza_uscendo(stato: &Stato) {
         return;
     }
     match con_libreria_entro(stato, ATTESA_OTTIMIZZAZIONE_USCITA, |libreria| {
-        aether_app::db::ottimizza(&libreria.connection)
+        rymembra_app::db::ottimizza(&libreria.connection)
     }) {
         Some(Ok(())) => {}
         Some(Err(err)) => nota!(
@@ -769,7 +792,7 @@ pub fn ottimizza_uscendo(stato: &Stato) {
 
 /// L'orologio, in millisecondi dall'epoca.
 ///
-/// Qui e non in `aether-app`: il dominio non ha un orologio — è la sua regola —
+/// Qui e non in `rymembra-app`: il dominio non ha un orologio — è la sua regola —
 /// e chi glielo porta è l'applicazione. Sta in questo modulo, e non copiato nei
 /// due file che lo usano, perché il timestamp che scrive `preferito` e quello
 /// che chiude un ascolto devono venire dalla stessa riga: due letture che si
@@ -953,7 +976,7 @@ fn con_libreria_dalla_finestra<T>(
             ATTESA_DELLA_FINESTRA.as_secs()
         );
         return Err(
-            AppError::new(aether_domain::errors::ErrorCode::DbLocked).with_cause(format!(
+            AppError::new(rymembra_domain::errors::ErrorCode::DbLocked).with_cause(format!(
                 "lucchetto della libreria non disponibile entro {} s sul filo della finestra",
                 ATTESA_DELLA_FINESTRA.as_secs()
             )),
@@ -1250,6 +1273,38 @@ mod prove {
             inizio.elapsed() < Duration::from_millis(400),
             "e si recupera subito, non alla scadenza"
         );
+    }
+
+    fn rifiuto_di_prova() -> AppError {
+        AppError::new(rymembra_domain::errors::ErrorCode::InternalUnexpected {
+            detail: Some("trasloco rifiutato".to_owned()),
+        })
+        .with_cause("prova")
+    }
+
+    #[test]
+    fn uno_stato_rifiutato_risponde_come_una_libreria_che_non_si_e_aperta() {
+        // Il rifiuto del trasloco non ha un percorso d'errore suo: è lo stato
+        // che l'applicazione conosce già, quello di `apri_libreria` fallita.
+        // Ogni comando che chiede la libreria deve sentirsi dare l'errore, e
+        // nessuna scorciatoia senza lucchetto deve fingere che qualcosa sia
+        // aperto.
+        let stato = Stato::rifiutato(rifiuto_di_prova());
+
+        let errore = con_libreria(&stato, |_| Ok(())).expect_err("la libreria non c'è");
+        assert_eq!(errore.code().kind().code(), "internal.unexpected");
+        assert_eq!(errore.cause(), Some("prova"));
+
+        assert!(stato.cartella_dati().is_none());
+        let copertine = stato.copertine().expect_err("niente copertine");
+        assert_eq!(copertine.code().kind().code(), "internal.unexpected");
+
+        // Gli stessi accessi dell'uscita, che non aspettano niente: nessuna
+        // azione eseguita, ma nemmeno un'attesa o un panico.
+        let esito = con_libreria_entro(&stato, Duration::from_millis(50), |_| Ok(()));
+        assert!(matches!(esito, Some(Err(_))));
+        // E la riga di avvio la racconta senza cadere.
+        riga_di_avvio(&stato);
     }
 }
 

@@ -218,7 +218,7 @@ export const Navigazione = memo(function Navigazione({
         <span className="anello" aria-hidden="true">
           <Icona nome="i-mark" dim={20} />
         </span>
-        <span className="nome">Aether</span>
+        <span className="nome">Rymembra</span>
         <button
           type="button"
           className="tasto icon-btn richiudi"

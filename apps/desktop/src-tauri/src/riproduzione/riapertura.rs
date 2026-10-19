@@ -10,9 +10,9 @@
 //! aprire un dispositivo audio è un'attesa come le altre: si apre il motore
 //! nuovo **prima** di chiedere il lucchetto del lettore.
 
-use aether_app::playback::{Equalizzazione, Normalizzazione, Volume};
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::queue::Queue;
+use rymembra_app::playback::{Equalizzazione, Normalizzazione, Volume};
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::queue::Queue;
 use tauri::{Manager as _, State};
 
 use crate::errore::{Esito, errore};
@@ -40,7 +40,7 @@ use super::{
 /// due secondi, per sempre. Rimettere la puntina nello stesso solco è la mossa
 /// giusta per un cavo staccato e la peggiore per un file che fa cadere chi lo
 /// legge, e i due casi si distinguono da un numero solo:
-/// `aether_play::motore::fili_caduti`, che cresce quando il filo cade.
+/// `rymembra_play::motore::fili_caduti`, che cresce quando il filo cade.
 ///
 /// # Perché una casella di modulo e non un campo dello stato
 ///
@@ -62,7 +62,7 @@ static ULTIMA_RIPRESA: std::sync::Mutex<Option<(i64, u32)>> = std::sync::Mutex::
 /// su **questo stesso brano** è finito con un filo per terra: il numero è
 /// cresciuto da allora, e cresce solo in un modo. Vedi [`ULTIMA_RIPRESA`].
 fn si_puo_rimettere_la_puntina(track_id: i64) -> bool {
-    let caduti = aether_play::motore::fili_caduti();
+    let caduti = rymembra_play::motore::fili_caduti();
     let mut guardia = ULTIMA_RIPRESA
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -545,7 +545,7 @@ fn riapri_davvero(
 fn riprendi_dov_era(
     app: &tauri::AppHandle,
     stato: &StatoLettore,
-    formato: aether_play::FormatoUscita,
+    formato: rymembra_play::FormatoUscita,
     suona: bool,
 ) -> bool {
     let annotato = *stato

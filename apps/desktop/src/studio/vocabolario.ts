@@ -4,7 +4,7 @@
  * # Perché non arrivano già tradotte
  *
  * Perché il registro non è interfaccia: è il **vocabolario** di quel che una
- * skin può ridisegnare, e vive in `aether-skin` — cinquantuno parti,
+ * skin può ridisegnare, e vive in `rymembra-skin` — cinquantuno parti,
  * settantatré token, quattordici widget, le loro manopole e i parametri degli
  * effetti. Ogni voce porta una frase che dice a cosa serve, e quelle frasi si
  * leggono nello Studio: nell'albero, nell'ispettore, sulle manopole di un

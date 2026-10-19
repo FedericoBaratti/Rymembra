@@ -17,7 +17,7 @@
 //! cancellato qualcosa» — resta giusta, e la risposta è che qui non c'è niente
 //! che possa cancellare. Ogni fusione è commutativa, associativa e idempotente;
 //! l'unica cosa che sparisce è quel che qualcuno ha tolto **apposta**, e viaggia
-//! come lapide. I test di convergenza in `aether-sync` lo dimostrano invece di
+//! come lapide. I test di convergenza in `rymembra-sync` lo dimostrano invece di
 //! affermarlo, ed è la ragione per cui questo automatismo si può accendere.
 //!
 //! # L'ordine dei lucchetti
@@ -26,7 +26,7 @@
 //! > quello della libreria in tre finestre brevi.**
 //!
 //! Allineare e leggere; poi la rete, senza niente in mano; poi applicare. Che sia
-//! vero non è affidato all'attenzione di chi legge: `aether-sync` non riceve mai
+//! vero non è affidato all'attenzione di chi legge: `rymembra-sync` non riceve mai
 //! una `rusqlite::Connection`, quindi il codice che terrebbe il lucchetto durante
 //! una lettura di rete non si può nemmeno scrivere.
 //!
@@ -44,14 +44,14 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
-use aether_app::settings;
-use aether_app::sincronia::{self, Cambiamenti, Dispositivo};
-use aether_cloud::http::Rete;
-use aether_cloud::oauth::Credenziali;
-use aether_cloud::pacchetti;
-use aether_cloud::portachiavi::{self, DiSistema, Portachiavi as _};
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_sync::{Cartella, Magazzino, Memoria, Motore};
+use rymembra_app::settings;
+use rymembra_app::sincronia::{self, Cambiamenti, Dispositivo};
+use rymembra_cloud::http::Rete;
+use rymembra_cloud::oauth::Credenziali;
+use rymembra_cloud::pacchetti;
+use rymembra_cloud::portachiavi::{self, DiSistema, Portachiavi as _};
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_sync::{Cartella, Magazzino, Memoria, Motore};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
@@ -511,7 +511,7 @@ pub fn sporca(app: &AppHandle) {
 pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
     let mut rivalutata = false;
     let avviato = crate::stato::avvia_filo_periodico(
-        "aether-sincronia",
+        "rymembra-sincronia",
         orecchio,
         ATTESA_AVVIO,
         RAFFICA,
@@ -750,7 +750,7 @@ fn magazzino(
                 return Err(AppError::new(ErrorCode::SyncAuthExpired));
             };
             let access = crate::nuvola::accesso_condiviso(app, credenziali)?;
-            Ok(Box::new(aether_cloud::Drive::nuovo(
+            Ok(Box::new(rymembra_cloud::Drive::nuovo(
                 Rete::nuova("drive", SCADENZA_DRIVE),
                 &access,
             )))
@@ -769,10 +769,10 @@ fn magazzino(
             // I documenti vanno in una sottocartella e non nella radice: la
             // cartella che l'utente sceglie è quasi sempre una cartella di
             // Syncthing o di Dropbox che contiene già altro, e riempirgliela di
-            // file `aether-*.json.gz` alla pari con i suoi è un modo di rendersi
+            // file `rymembra-*.json.gz` alla pari con i suoi è un modo di rendersi
             // antipatici che non serve a niente.
             Ok(Box::new(Cartella::nuova(
-                radice.join(aether_sync::documento::CARTELLA),
+                radice.join(rymembra_sync::documento::CARTELLA),
             )))
         }
     }
@@ -880,9 +880,9 @@ fn in_ipc(elenco: Vec<Dispositivo>, io: &str) -> Vec<DispositivoIpc> {
 mod prove {
     use super::*;
 
-    /// Un database vero, migrato, in memoria: la fixture di `aether-app`.
+    /// Un database vero, migrato, in memoria: la fixture di `rymembra-app`.
     fn libreria() -> rusqlite::Connection {
-        aether_app::db::open_in_memory()
+        rymembra_app::db::open_in_memory()
             .expect("un database in memoria si apre sempre")
             .connection
     }

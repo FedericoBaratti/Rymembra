@@ -3,7 +3,7 @@
  *
  * # Perché serviva
  *
- * Aether apriva su un elenco. Le quattro destinazioni della libreria — album,
+ * Rymembra apriva su un elenco. Le quattro destinazioni della libreria — album,
  * artisti, brani, preferiti — sono tutte e quattro un elenco alfabetico, e
  * nessuna risponde alla domanda che uno si fa davvero aprendo un lettore
  * musicale: *cosa stavo ascoltando*. Per riprendere il disco di ieri sera

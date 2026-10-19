@@ -107,7 +107,7 @@ function main() {
         "Il file è **una riga sola**, senza a capo: copiarlo da un terminale\n" +
         "che manda a capo a ottanta colonne lo spezza, e `tauri` rifiuta.\n" +
         "Da PowerShell, negli appunti tutto intero e in un pezzo solo:\n" +
-        '  Set-Clipboard -Value ([IO.File]::ReadAllText("$PWD\\.chiavi\\aether.key"))',
+        '  Set-Clipboard -Value ([IO.File]::ReadAllText("$PWD\\.chiavi\\rymembra.key"))',
     );
   }
 

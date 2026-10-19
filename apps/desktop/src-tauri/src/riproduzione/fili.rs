@@ -18,7 +18,7 @@
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
-use aether_app::playback;
+use rymembra_app::playback;
 use tauri::{Manager as _, State};
 
 use crate::errore::{Esito, errore};
@@ -98,7 +98,7 @@ const RAFFICA_PREPARA: Duration = Duration::from_millis(15);
 /// asincrono.
 pub fn avvia_preparatore(app: tauri::AppHandle, orecchio: std::sync::mpsc::Receiver<()>) {
     let avviato = std::thread::Builder::new()
-        .name("aether-preparatore".to_owned())
+        .name("rymembra-preparatore".to_owned())
         .spawn(move || {
             loop {
                 // Canale chiuso: l'applicazione sta uscendo.
@@ -219,7 +219,7 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
             //
             // «Peggio che inutile» perché il motore, nel frattempo, può averlo
             // **già attaccato**: davanti alla callback c'è più di un secondo di
-            // musica — vedi `aether_play::uscita::RISERVA_MS` — e in quel
+            // musica — vedi `rymembra_play::uscita::RISERVA_MS` — e in quel
             // margine `Iniziato` non è ancora arrivato, quindi la coda non è
             // ancora avanzata e `peek_next` indica ancora lui. La seconda copia
             // finiva in canna dietro sé stessa, e alla fine del brano il motore
@@ -382,7 +382,7 @@ const SFUMATURA_SPEGNIMENTO: Duration = Duration::from_secs(6);
 /// stava addormentando: la musica si fermava a metà di una frase, e un
 /// silenzio improvviso sveglia quanto un rumore. Adesso il motore scende in
 /// [`SFUMATURA_SPEGNIMENTO`] e si mette in pausa da solo — vedi
-/// `aether_play::Motore::sfuma` — e questa funzione, a discesa finita, ferma
+/// `rymembra_play::Motore::sfuma` — e questa funzione, a discesa finita, ferma
 /// l'ascolto e lo dice alla finestra. Qualunque gesto nel frattempo — play,
 /// un altro brano, il timer toccato — la annulla.
 ///
@@ -609,7 +609,7 @@ pub fn salva_uscendo(app: &tauri::AppHandle) {
 /// niente.
 pub fn avvia_orologio(app: tauri::AppHandle) {
     std::thread::Builder::new()
-        .name("aether-orologio".to_owned())
+        .name("rymembra-orologio".to_owned())
         .spawn(move || {
             let mut ultimo_fermo = true;
             // Quanti giri d'orologio sono passati, per il segno di «riprendi
@@ -781,7 +781,7 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
 /// chiusa non costa niente né qui né nella callback audio.
 pub fn avvia_spettro(app: tauri::AppHandle) {
     std::thread::Builder::new()
-        .name("aether-spettro".to_owned())
+        .name("rymembra-spettro".to_owned())
         .spawn(move || {
             loop {
                 // Trenta giri al secondo: è il filo che ha più probabilità di

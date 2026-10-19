@@ -1,5 +1,5 @@
 /* Capitolo 11 — lo Skin Studio: lo spazio di lavoro, l'anteprima sulla libreria finta, la chat. */
-(window.AETHER_DOCS = window.AETHER_DOCS || []).push({
+(window.RYMEMBRA_DOCS = window.RYMEMBRA_DOCS || []).push({
   id: "studio-chapter",
   title: "Skin Studio",
   lead: "The built-in skin editor: why it edits text, how it validates while you type, how it previews the real pages on a sample library, and how the chat changes a skin.",
@@ -24,7 +24,7 @@
         { h: "Panels" },
         "Left: parts by group with the layout tree (`Livelli.tsx`, `AlberoScafale.tsx`), or the variables (palette, tokens, patterns, easings, animations, fonts, images, snapshots). Centre: the canvas ([preview](#studio-preview)). Right: the inspector — style, states, motion, code of the selection, with its cost (`IspezioneParte.tsx`). Bottom dock: the keyframe timeline (played with the Web Animations API, using the same keyframe rules as `compile.rs`), the problem list with «go» and «fix», and the code. A palette generator builds a legible palette from one colour or the playing cover ([Accent](#accent)).",
         { h: "Drafts on disk" },
-        "`studio.rs` keeps drafts in `<data>/skin/bozze/<id>/` (manifest, `assets/`, `chat.json` ≤ 2 MB) and up to 20 snapshots per draft in `skin/istantanee/<id>/`. Commands: `studio_registro` (the whole vocabulary, once), `studio_valida`, `studio_documento`, `studio_salva`, `studio_scarta`, `studio_esporta` (writes an `.aeskin`), `studio_istantanee` / `_istantanea` / `_ripristina`, `studio_risorsa_aggiungi` / `_togli`, `studio_migra` (format 1 → 2), `studio_crea` (new draft; ids are 2–48 characters `[a-z0-9-]` starting with a letter), `studio_compila_app`, `studio_tavolozza_da`, `studio_chat_leggi` / `_scrivi`.",
+        "`studio.rs` keeps drafts in `<data>/skin/bozze/<id>/` (manifest, `assets/`, `chat.json` ≤ 2 MB) and up to 20 snapshots per draft in `skin/istantanee/<id>/`. Commands: `studio_registro` (the whole vocabulary, once), `studio_valida`, `studio_documento`, `studio_salva`, `studio_scarta`, `studio_esporta` (writes a `.ryskin`), `studio_istantanee` / `_istantanea` / `_ripristina`, `studio_risorsa_aggiungi` / `_togli`, `studio_migra` (format 1 → 2), `studio_crea` (new draft; ids are 2–48 characters `[a-z0-9-]` starting with a letter), `studio_compila_app`, `studio_tavolozza_da`, `studio_chat_leggi` / `_scrivi`.",
       ],
       see: ["studio-preview", "studio-chat", "skin"],
     },
@@ -49,13 +49,13 @@
     {
       id: "studio-chat",
       title: "The Studio chat",
-      src: ["apps/desktop/src/studio/Chat.tsx", "apps/desktop/src/studio/prompt.ts", "apps/desktop/src/studio/conversazione.ts", "apps/desktop/src/studio/tenace.ts", "core/aether-ia/src/operazioni.rs", "apps/desktop/src-tauri/src/ia.rs"],
+      src: ["apps/desktop/src/studio/Chat.tsx", "apps/desktop/src/studio/prompt.ts", "apps/desktop/src/studio/conversazione.ts", "apps/desktop/src/studio/tenace.ts", "core/rymembra-ia/src/operazioni.rs", "apps/desktop/src-tauri/src/ia.rs"],
       body: [
         "It works because the format already has what a model needs: a **closed, declared** vocabulary (73 tokens, 101 parts, 12 effects, each with a valid example), text edited by path, and a validator that never fails and suggests the nearest name for every typo.",
         {
           ul: [
             "**Prompt** (`prompt.ts`, in English): a contract built from the registry (names only, no descriptions), the selection («make this rounder» means the selected part, state and theme), a light version of the document and of the history (each capped at 12,000 characters to fit small local contexts), and the current validation errors.",
-            "**Answer**: prose plus a fenced block tagged `aether-patch` with JSON operations — `scrivi` (set a value at a path, creating what is missing) and `togli` (remove it); JSON Patch spellings such as `path`, `value`, `replace` are accepted because models write them — extracted by `aether_ia::operazioni` (≤ 12 operations, reasons ≤ 120 characters).",
+            "**Answer**: prose plus a fenced block tagged `rymembra-patch` with JSON operations — `scrivi` (set a value at a path, creating what is missing) and `togli` (remove it); JSON Patch spellings such as `path`, `value`, `replace` are accepted because models write them — extracted by `rymembra_ia::operazioni` (≤ 12 operations, reasons ≤ 120 characters).",
             "**Proposal** mode shows the values that would change and waits for «Apply». **Agent** mode (default) applies, re-validates with `studio_valida`, and sends the errors back for correction — at most `GIRI_MASSIMI` = 4 rounds, with Stop; warnings do not trigger a retry; a snapshot is taken before the first round.",
             "Every change goes through the same path as a dragged slider, so Ctrl+Z undoes it. Each answer lists the values it changed, each a link to the thing it names.",
           ],

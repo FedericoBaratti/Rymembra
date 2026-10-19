@@ -49,7 +49,7 @@ export function ConfermaSkin({
     righe.push(t("skin.review.contrast", { n: esame.contrasti }));
   }
   // L'anello del fuoco sta col testo: è l'altra cosa che, se non si vede, lascia
-  // qualcuno senza sapere dove si trova (WP27, `aether_skin::focus_ring_pairs`).
+  // qualcuno senza sapere dove si trova (WP27, `rymembra_skin::focus_ring_pairs`).
   if (esame.anelli > 0) {
     righe.push(t("skin.review.focusRing", { n: esame.anelli }));
   }

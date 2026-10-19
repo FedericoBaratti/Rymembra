@@ -1,8 +1,8 @@
 //! I comandi dell'importazione di un account Spotify intero.
 //!
 //! Involucri, come tutto il resto di questo crate: qui non si decide niente. La
-//! lettura dell'archivio sta in `aether-archivio`, l'abbinamento in
-//! `aether-domain`, la scrittura in `aether-app`.
+//! lettura dell'archivio sta in `rymembra-archivio`, l'abbinamento in
+//! `rymembra-domain`, la scrittura in `rymembra-app`.
 //!
 //! # Una via sola, e perché è quella giusta
 //!
@@ -17,7 +17,7 @@
 //! portabilità), e portarselo dove si vuole è precisamente il diritto che
 //! quell'articolo riconosce.
 //!
-//! La differenza pratica per chi usa Aether è una sola: l'archivio va chiesto a
+//! La differenza pratica per chi usa Rymembra è una sola: l'archivio va chiesto a
 //! Spotify e arriva in qualche giorno. In cambio, contiene la cronologia
 //! **completa** invece delle ultime cinquanta righe che l'API concedeva.
 //!
@@ -39,9 +39,9 @@
 
 use std::sync::Mutex;
 
-use aether_app::import_account::{self, AccountImportReport};
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::spotify_account::{AccountSnapshot, Scelte};
+use rymembra_app::import_account::{self, AccountImportReport};
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::spotify_account::{AccountSnapshot, Scelte};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
@@ -84,7 +84,7 @@ impl Default for StatoAccount {
 #[serde(rename_all = "camelCase")]
 pub struct Anteprima {
     /// `archivio`. Resta un campo e non una costante perché
-    /// [`aether_domain::spotify_account::Provenienza`] ha ancora il valore
+    /// [`rymembra_domain::spotify_account::Provenienza`] ha ancora il valore
     /// `api`: un database scritto da una versione precedente lo contiene, e
     /// leggerlo non deve diventare un errore.
     pub provenienza: String,
@@ -204,7 +204,7 @@ pub fn account_stato(
 pub fn archivio_apri(account: State<'_, StatoAccount>, percorso: String) -> Esito<Anteprima> {
     let esito = (|| {
         let _turno = Turno::prendi(&account.in_corso).ok_or_else(occupato)?;
-        let lettura = aether_archivio::leggi(std::path::Path::new(&percorso))?;
+        let lettura = rymembra_archivio::leggi(std::path::Path::new(&percorso))?;
 
         let anteprima = Anteprima {
             letti: lettura.letti,
@@ -416,7 +416,7 @@ fn stato_ipc(stato: &Stato, account: &StatoAccount) -> Result<StatoAccountIpc, A
 #[cfg(test)]
 mod prove {
     use super::*;
-    use aether_domain::spotify_account::{PlaylistSpotify, Provenienza};
+    use rymembra_domain::spotify_account::{PlaylistSpotify, Provenienza};
 
     #[test]
     fn le_scelte_attraversano_il_confine_senza_scambiarsi() {
@@ -466,7 +466,7 @@ mod prove {
     fn un_archivio_vecchio_scritto_dall_api_si_legge_ancora() {
         // La strada dell'API non c'è più, ma un database che l'ha usata sì. Se
         // `da_snapshot` inciampasse sulla provenienza `api`, chi aggiorna
-        // Aether vedrebbe la schermata dell'account rompersi senza spiegazione.
+        // Rymembra vedrebbe la schermata dell'account rompersi senza spiegazione.
         let dall_api = da_snapshot(&AccountSnapshot::vuoto(Provenienza::Api));
         assert_eq!(dall_api.provenienza, "api");
         assert!(!dall_api.cronologia_completa);

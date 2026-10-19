@@ -9,7 +9,7 @@
  * # Miniatura o piena
  *
  * Il nucleo scrive due file per copertina: l'originale e una miniatura da 160
- * pixel di lato (`MAX_LATO_MINIATURA` in `core/aether-app/src/covers.rs`). Fino
+ * pixel di lato (`MAX_LATO_MINIATURA` in `core/rymembra-app/src/covers.rs`). Fino
  * a qui l'interfaccia chiedeva **sempre** la miniatura, anche per la copertina
  * di «In riproduzione», che è larga trecentosessanta e su uno schermo a 150%
  * sono cinquecentoquaranta pixel veri: un JPEG da 160 ingrandito tre volte e

@@ -1,5 +1,5 @@
 /* Capitolo 8 — la rete: il client HTTP, la cadenza e la cache, i flussi posizionabili, OAuth e il portachiavi. */
-(window.AETHER_DOCS = window.AETHER_DOCS || []).push({
+(window.RYMEMBRA_DOCS = window.RYMEMBRA_DOCS || []).push({
   id: "network",
   title: "Network",
   lead: "One blocking HTTP client for every service, per-service pacing with a circuit breaker, seekable HTTP streams, and the OAuth pieces that do not depend on the provider.",
@@ -7,14 +7,14 @@
     {
       id: "http",
       title: "The HTTP client",
-      src: ["core/aether-net/src/http.rs", "core/aether-net/src/immagine.rs", "core/aether-net/src/lib.rs"],
+      src: ["core/rymembra-net/src/http.rs", "core/rymembra-net/src/immagine.rs", "core/rymembra-net/src/lib.rs"],
       body: [
-        "`aether_net::Rete` wraps a `ureq` 3 agent (cheap to clone; clones share the connection pool). It sees only the error catalog — never the database — which is what makes «a lock held during a request» impossible to write.",
+        "`rymembra_net::Rete` wraps a `ureq` 3 agent (cheap to clone; clones share the connection pool). It sees only the error catalog — never the database — which is what makes «a lock held during a request» impossible to write.",
         {
           ul: [
             "**Status is not an error**: `http_status_as_error(false)` keeps 4xx/5xx bodies, because the body is the information (`invalid_grant` vs `invalid_client` from Google). `stato_a_errore` translates when the caller wants the default mapping (`net.http { status }`, `net.rateLimited`, …).",
             "**TLS** uses the operating system's trust store (`rustls-platform-verifier`), so a corporate proxy with a root installed in Windows works, and revoked roots go away with Windows updates. `https_only` everywhere.",
-            "**User-Agent**: `Aether/<version> (+https://github.com/federicobaratti/aether)` — MusicBrainz policy asks for a contact. The update check is the exception and sends no Aether user agent ([Updates](#update)).",
+            "**User-Agent**: `Rymembra/<version> (+https://github.com/federicobaratti/rymembra)` — MusicBrainz policy asks for a contact. The update check is the exception and sends no Rymembra user agent ([Updates](#update)).",
             "**Body cap**: `TETTO_CORPO_DI_SERIE` = 10 MiB unless a client raises it (`con_tetto_corpo`). Images are recognised by magic bytes (`immagine::tipo`), never by `Content-Type`.",
           ],
         },
@@ -39,9 +39,9 @@
     {
       id: "rate-limits",
       title: "Pacing, circuit breaker and response cache",
-      src: ["core/aether-meta/src/cadenza.rs", "core/aether-meta/src/deposito.rs", "core/aether-meta/src/lib.rs", "core/aether-app/src/enrich.rs"],
+      src: ["core/rymembra-meta/src/cadenza.rs", "core/rymembra-meta/src/deposito.rs", "core/rymembra-meta/src/lib.rs", "core/rymembra-app/src/enrich.rs"],
       body: [
-        "Retrying after a 503 is a second request that arrives too early. `aether_meta::Cadenza` is a gate **before** each request: one per service, it reserves the next slot under a short lock and sleeps outside it.",
+        "Retrying after a 503 is a second request that arrives too early. `rymembra_meta::Cadenza` is a gate **before** each request: one per service, it reserves the next slot under a short lock and sleeps outside it.",
         {
           table: {
             head: ["Service", "Minimum spacing"],
@@ -56,14 +56,14 @@
           },
         },
         "**Circuit breaker**: after `GUASTI_PER_APRIRE` = 3 consecutive transport failures the service is considered down for `RAFFREDDAMENTO` = 5 min and calls fail at once with `net.circuitOpen`; a 404 counts as success. There is no half-open state: services are queried in bursts, and the next burst after the cooldown is the probe. Without it, an enrichment pass on an offline laptop would wait through 120 twenty-second timeouts.",
-        "**Cache**: `Fornitori` remembers answers through the `Deposito` trait, implemented in `aether-app` by `DepositoSqlite` over the `enrich_cache` table on a secondary connection (expired rows are deleted on open). Lifetimes: search 7 days, release 30 days, «not found» 3 days, affinity 90 days, affinity «not found» 30 days. `json()` distinguishes `Ok(None)` («they don't have it», cacheable) from `Err` («unknown», not cached).",
+        "**Cache**: `Fornitori` remembers answers through the `Deposito` trait, implemented in `rymembra-app` by `DepositoSqlite` over the `enrich_cache` table on a secondary connection (expired rows are deleted on open). Lifetimes: search 7 days, release 30 days, «not found» 3 days, affinity 90 days, affinity «not found» 30 days. `json()` distinguishes `Ok(None)` («they don't have it», cacheable) from `Err` («unknown», not cached).",
       ],
       see: ["http", "enrich", "lyrics"],
     },
     {
       id: "http-streams",
       title: "Seekable HTTP streams",
-      src: ["core/aether-net/src/flusso.rs", "apps/desktop/src-tauri/src/riproduzione/flusso.rs"],
+      src: ["core/rymembra-net/src/flusso.rs", "apps/desktop/src-tauri/src/riproduzione/flusso.rs"],
       body: [
         "`FlussoHttp` is a `Read + Seek + Send + Sync` over HTTP Range requests, so the decoder can read tags at the end, return to the first frame and seek — without any file on disk (Jamendo's terms forbid caching; `TERMS.md` § 2). At most two windows are in memory and they are overwritten as playback advances.",
         {
@@ -82,14 +82,14 @@
     {
       id: "oauth",
       title: "OAuth and the keychain",
-      src: ["core/aether-oauth/src/lib.rs", "core/aether-oauth/src/pkce.rs", "core/aether-oauth/src/loopback.rs", "core/aether-oauth/src/portachiavi.rs", "core/aether-oauth/src/scadenza.rs", "core/aether-cloud/src/oauth.rs"],
+      src: ["core/rymembra-oauth/src/lib.rs", "core/rymembra-oauth/src/pkce.rs", "core/rymembra-oauth/src/loopback.rs", "core/rymembra-oauth/src/portachiavi.rs", "core/rymembra-oauth/src/scadenza.rs", "core/rymembra-cloud/src/oauth.rs"],
       body: [
-        "`aether-oauth` holds the parts of OAuth 2.0 that are the same for every provider, and no HTTP; provider details (endpoints, scopes, form fields) stay with the provider's crate (`aether-cloud` for Google).",
+        "`rymembra-oauth` holds the parts of OAuth 2.0 that are the same for every provider, and no HTTP; provider details (endpoints, scopes, form fields) stay with the provider's crate (`rymembra-cloud` for Google).",
         {
           ul: [
             "**PKCE** (RFC 7636): verifier = base64url of 32 random bytes (43 characters), challenge S256; plus a random `state`.",
             "**Loopback** (`Attesa`): binds `127.0.0.1:0` — a port chosen by the OS, never fixed (guessable) and never `0.0.0.0` (the LAN). Non-blocking accept polled every 100 ms; request line ≤ 8 KiB, ≤ 64 headers; a wrong `state` gets a 400 and the wait continues; cancellable; replies with a small localized page. Consent always happens in the **system browser**: a webview able to draw `accounts.google.com` would be a phishing surface.",
-            "**Keychain** (`Portachiavi` trait): `DiSistema` uses `keyring` (Windows Credential Manager) under the service `io.github.federicobaratti.aether`; `InMemoria` for tests; `Guasto` when the keychain is unreachable. It **never falls back** to `settings`.",
+            "**Keychain** (`Portachiavi` trait): `DiSistema` uses `keyring` (Windows Credential Manager) under the service `io.github.federicobaratti.rymembra`; `InMemoria` for tests; `Guasto` when the keychain is unreachable. It **never falls back** to `settings`. Entries written by the previous version under its own service name are read as a fallback: the first read copies the value under the current name and, only if that succeeded, removes the old entry; disconnecting removes both, so a forgotten account does not come back.",
             "**Expiry**: tokens are refreshed `ANTICIPO` = 60 s before they expire.",
           ],
         },

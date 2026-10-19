@@ -6,7 +6,7 @@
  * Non interpreta niente. Le righe arrivano dal nucleo già in ordine e già in
  * millisecondi: qui non c'è nessuna espressione regolare, nessun `[mm:ss.xx]` e
  * nessuna idea di cosa sia un LRC. È deliberato — il lettore vero sta in
- * `aether_domain::testo`, si prova senza aprire una finestra, e un secondo
+ * `rymembra_domain::testo`, si prova senza aprire una finestra, e un secondo
  * lettore scritto qui divergerebbe dal primo su tutto quel che il formato non
  * dice.
  *
@@ -163,7 +163,7 @@ const NESSUNA_RIGA: RigaTesto[] = [];
  * Quale riga è accesa a questa posizione: la stessa ricerca binaria del nucleo.
  *
  * `anticipo` arriva da fuori, e fino a ieri era il numero `150` scritto qui. Due
- * copie a mano della stessa costante — questa e `aether_domain::testo::ANTICIPO_MS`
+ * copie a mano della stessa costante — questa e `rymembra_domain::testo::ANTICIPO_MS`
  * — sono durate finché nessuno ha toccato nessuna delle due; adesso il nucleo lo
  * manda dentro lo stato della riproduzione e `anticipoAdesso` lo legge di lì.
  *
@@ -196,7 +196,7 @@ function rigaAttiva(
  *   dove comincia la prima vera. `righe[-1 + 1]` è già `righe[0]`, quindi
  *   l'unica cosa da dire è che il suo inizio è zero;
  * * l'**ultima** riga non ha una successiva da cui misurare, e prende `fine` —
- *   la durata del brano. `aether_domain::testo::avanzamento` in quel caso torna
+ *   la durata del brano. `rymembra_domain::testo::avanzamento` in quel caso torna
  *   zero, e ha ragione: il dominio non sa quanto è lungo il file. La finestra
  *   sì, e usarla non è inventare un tempo, è leggerne uno che c'è già. Senza,
  *   l'ultima riga di ogni canzone resta bianca e ferma per tutta la coda.
@@ -444,7 +444,7 @@ export function Testo({
   }, [letture]);
 
   // La posizione con cui confrontare i tempi: quella del lettore più i due
-  // scarti. È `aether_domain::testo::posizione_corretta`, e la regola è che i
+  // scarti. È `rymembra_domain::testo::posizione_corretta`, e la regola è che i
   // tempi delle righe non si toccano mai — si sposta il metro, non i numeri.
   const corretta =
     posizioneMs + (testo?.offsetMs ?? 0) + (testo?.scartoMs ?? 0);
@@ -742,7 +742,7 @@ export function Testo({
 
            `data-active` accanto a `data-attiva`, e non al posto suo: il
            registro delle parti compila lo stato «attivo» in
-           `[data-active], .is-active` (`aether_skin::PartState::selector`),
+           `[data-active], .is-active` (`rymembra_skin::PartState::selector`),
            quindi senza questo attributo una skin può ridipingere `lyric-line`
            ma non la riga che sta suonando — cioè l'unica che si guarda. È
            lo stesso accoppiamento che `.riga` tiene con `aria-current`. */
@@ -864,7 +864,7 @@ export function Testo({
           un problema», e la striscia compariva solo con l'aderenza diversa da
           «buona». Era falso, e il falso costava una funzione. L'aderenza misura
           una cosa sola: se i tempi **stanno dentro** la durata di questo file —
-          è `aether_domain::testo::verifica_durata`, e guarda dove finisce
+          è `rymembra_domain::testo::verifica_durata`, e guarda dove finisce
           l'ultima riga. Non dice niente su dove cadano. Un `.lrc` battuto su
           un'altra edizione con la stessa lunghezza, un master con mezzo secondo
           di silenzio in testa, una catena d'uscita che ritarda più di quanto il

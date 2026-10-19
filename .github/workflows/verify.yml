@@ -183,7 +183,7 @@ jobs:
 
       # Solo le dipendenze che finiscono nella finestra: un avviso su uno
       # strumento di compilazione (`vite`, `typescript`) non tocca chi installa
-      # Aether, e una CI rossa per quello si impara a ignorarla.
+      # Rymembra, e una CI rossa per quello si impara a ignorarla.
       - name: npm audit
         working-directory: apps/desktop
         run: npm audit --omit=dev
@@ -202,7 +202,7 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      # Le tre cose che hanno reso Aether indistribuibile, e che non devono
+      # Le tre cose che hanno reso Rymembra indistribuibile, e che non devono
       # tornare. Il grep esclude i commenti che *spiegano* perché non ci sono:
       # quelli valgono, ed è giusto che restino.
       - name: Nessun binario impacchettato

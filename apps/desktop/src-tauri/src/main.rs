@@ -1,6 +1,6 @@
 //! L'applicazione desktop.
 //!
-//! Una finestra sopra `aether-app`, e nient'altro. Tutto quel che decide sta nel
+//! Una finestra sopra `rymembra-app`, e nient'altro. Tutto quel che decide sta nel
 //! nucleo; qui c'è l'apertura della finestra, il registro dei comandi e il
 //! protocollo che serve le copertine.
 
@@ -46,7 +46,14 @@ mod vassoio;
 mod viste;
 mod zoom;
 
+use std::ffi::OsString;
+use std::path::PathBuf;
+
+use rymembra_app::trasloco;
+use rymembra_domain::eredita;
+use rymembra_domain::errors::{AppError, ErrorCode};
 use tauri::Manager as _;
+use tauri_plugin_dialog::{DialogExt as _, MessageDialogKind};
 
 /// Quanto si aspetta la finestra prima di mostrarla comunque.
 ///
@@ -209,7 +216,7 @@ fn main() {
 
     let costruita = una_sola_istanza(tauri::Builder::default())
         // Scegliere la cartella della musica è la prima cosa che fa chi apre
-        // Aether: un campo di testo in cui incollare un percorso funziona, e
+        // Rymembra: un campo di testo in cui incollare un percorso funziona, e
         // sbaglia al primo spazio o alla prima barra rovesciata.
         .plugin(tauri_plugin_dialog::init())
         // La schermata di consenso di Google si apre nel browser di **sistema**.
@@ -221,7 +228,7 @@ fn main() {
         // script che apre nel browser ogni `<a target="_blank">` cliccato — un
         // modo di uscire dalla finestra che non passa da nessun comando nostro,
         // e che una skin o un testo di un catalogo potrebbero usare. I link che
-        // Aether apre li apre `comandi::apri_documento`, che sa quali sono.
+        // Rymembra apre li apre `comandi::apri_documento`, che sa quali sono.
         .plugin(
             tauri_plugin_opener::Builder::new()
                 .open_js_links_on_click(false)
@@ -239,11 +246,23 @@ fn main() {
             // solo punto in cui lo si può riconoscere. Vedi
             // `stato::con_libreria`.
             stato::segna_filo_della_finestra();
-            let data_dir = cartella_dati(app.handle())?;
-            // Il diario **prima di tutto il resto**, libreria compresa: quel
-            // che si vuole leggere quando Aether non si apre è precisamente
-            // ciò che succede nelle righe qui sotto.
-            diario::apri(&data_dir);
+            let scelta = cartella_dati(app.handle())?;
+            let data_dir = scelta.cartella.clone();
+            // I dati di chi aveva la versione di prima, **prima di tutto il
+            // resto**: se la cartella nuova deve arrivare dalla vecchia, deve
+            // arrivare prima che qualcosa ci scriva dentro — il diario qui
+            // sotto, il database, le copertine — perché lo spostamento di una
+            // cartella intera vale solo se quella nuova non c'è ancora. Il
+            // diario si apre subito dopo, comunque, ed è lì che il trasloco
+            // racconta cos'ha fatto.
+            let esito = prepara_i_dati(&scelta);
+            // Un rifiuto non ferma il `setup`: gli stati vanno registrati
+            // comunque, perché i comandi li estraggono per tipo e uno stato
+            // mancante farebbe fallire ognuno con «state not managed», cioè
+            // con un messaggio per chi scrive il codice invece di quello vero.
+            // Ma i passi che aprono o scrivono nella cartella nuova non
+            // partono — vedi [`rifiuta`].
+
             // Prima della libreria, perché non ne ha bisogno: una cella vuota
             // e un cliente HTTP che non ha ancora aperto niente. La prima
             // richiesta parte quando qualcuno incolla un link, così chi non
@@ -273,11 +292,27 @@ fn main() {
             //
             // Dentro un `Arc` perché il filo che sfratta l'albero se lo tiene
             // per conto suo, senza dover passare da Tauri per ritrovarlo.
-            app.manage(std::sync::Arc::new(cartelle::IndiceCartelle::nuovo(
-                &data_dir,
-            )));
+            //
+            // Solo se i dati sono stati presi: l'indice apre il database alla
+            // prima domanda, e dopo un rifiuto del trasloco nella cartella
+            // nuova non si deve aprire niente, nemmeno in sola lettura. Senza
+            // indice le sue domande rispondono `internal.aborted`: lo cercano
+            // per `try_state` (vedi `cartelle::indice`), non con un'estrazione
+            // per tipo.
+            if esito.is_ok() {
+                app.manage(std::sync::Arc::new(cartelle::IndiceCartelle::nuovo(
+                    &data_dir,
+                )));
+            }
 
-            let stato = stato::Stato::apri(data_dir);
+            // Dopo un rifiuto la libreria è l'errore che l'applicazione sa già
+            // trattare — la stessa di un database che non si è aperto — e
+            // `Stato::apri` non si chiama: creerebbe la cartella nuova, il
+            // database e le copertine, proprio ciò che il rifiuto deve evitare.
+            let stato = match &esito {
+                Ok(()) => stato::Stato::apri(data_dir),
+                Err(errore) => rifiuta(app.handle(), errore),
+            };
             // La riga di avvio va stampata **prima** di disegnare: se
             // l'apertura del database è fallita, è l'unica traccia che resta
             // quando la finestra mostra solo l'errore.
@@ -439,10 +474,10 @@ fn main() {
         // la risposta subito. Serve perché la lettura dal disco possa avvenire
         // fuori dal thread che riceve la richiesta — una griglia che scorre ne
         // fa decine al secondo, e farle in fila le farebbe apparire a scatti.
-        .register_asynchronous_uri_scheme_protocol("aether-cover", copertine::servi)
+        .register_asynchronous_uri_scheme_protocol("rymembra-cover", copertine::servi)
         // I caratteri e le immagini delle skin. Stessa forma, stesse ragioni:
         // un `@font-face` li chiede al motore come qualunque risorsa.
-        .register_asynchronous_uri_scheme_protocol("aether-skin", skin::servi_risorsa)
+        .register_asynchronous_uri_scheme_protocol("rymembra-skin", skin::servi_risorsa)
         .invoke_handler(tauri::generate_handler![
             pronto,
             finestra_trascina,
@@ -506,7 +541,7 @@ fn main() {
             comandi::imposta_lingua,
             comandi::imposta_scorciatoie,
             // Lo zoom della finestra. Tre gesti e nessun numero: la scala dei
-            // gradini vive in `aether_app::preferenze::SCALA_ZOOM` e di elenchi
+            // gradini vive in `rymembra_app::preferenze::SCALA_ZOOM` e di elenchi
             // non ne esistono due — vedi il preambolo di `zoom.rs`.
             zoom::zoom_avvio,
             zoom::zoom_passo,
@@ -775,7 +810,7 @@ fn main() {
             // non ha nient'altro da leggere. Se `setup` era arrivato ad aprire
             // il diario, la riga resta sul disco; se non ci era arrivato, resta
             // almeno in sviluppo.
-            nota!("[avvio] Aether non è riuscito ad avviarsi: {err}");
+            nota!("[avvio] Rymembra non è riuscito ad avviarsi: {err}");
             std::process::exit(1);
         }
     }
@@ -789,13 +824,13 @@ fn main() {
 /// nessun danno. Sono due cose che fanno male davvero:
 ///
 /// 1. **Due processi sullo stesso database.** SQLite in WAL regge due scrittori,
-///    ma Aether non è scritta per questo: `Stato` tiene la libreria dietro un
+///    ma Rymembra non è scritta per questo: `Stato` tiene la libreria dietro un
 ///    mutex *di processo*, e due processi hanno due mutex che non si vedono. Due
 ///    scansioni in parallelo sulle stesse righe, due `rebuild_aggregates`, due
 ///    code di ieri riprese insieme — e la cronologia d'ascolto è l'unica cosa in
 ///    tutto il programma che una riscansione non sa ricostruire.
 /// 2. **Due icone nel vassoio**, di cui una riapre una finestra che non sta
-///    suonando. Chi chiude con la X e poi riapre Aether dal collegamento
+///    suonando. Chi chiude con la X e poi riapre Rymembra dal collegamento
 ///    ottiene, oggi, un secondo processo muto accanto a quello che suona — e il
 ///    gesto che voleva fare era «rimettimi davanti la finestra».
 ///
@@ -805,14 +840,22 @@ fn main() {
 /// del primo processo batte anche a finestra nascosta, quindi non c'è niente da
 /// risvegliare.
 ///
-/// # Perché `AETHER_DATI` e non `debug_assertions`
+/// # Perché una cartella scelta a mano e non `debug_assertions`
 ///
 /// Perché la ragione di questo guardiano è **una cartella dati condivisa**, e
-/// `AETHER_DATI` è l'unico modo che esiste in questo programma per averne due
-/// diverse (vedi [`cartella_dati`]). Due Aether su due cartelle dati non sono
-/// due processi sullo stesso database: sono la prova che la scorciatoia di
-/// sviluppo esiste per fare, cioè la libreria vera da una parte e quella di
-/// prova dall'altra, aperte insieme per confrontarle.
+/// una variabile d'ambiente è l'unico modo che esiste in questo programma per
+/// averne due diverse (vedi [`cartella_dati`]). Le variabili sono due:
+/// `RYMEMBRA_DATI`, e [`eredita::VARIABILE_DATI`], quella della versione
+/// precedente, che il programma rispetta ancora e che fa lo stesso mestiere. Chi
+/// la teneva impostata per separare un'istanza di prova da quella vera non deve
+/// ritrovarsi, da un aggiornamento all'altro, con un guardiano che gli impedisce
+/// di aprirle insieme.
+///
+/// Il criterio è uno solo, e sta in [`dati_a_mano`]: lo stesso con cui
+/// [`cartella_dati`] decide se la cartella è di serie. Due Rymembra su due
+/// cartelle dati non sono due processi sullo stesso database: sono la prova che
+/// la scorciatoia di sviluppo esiste per fare, cioè la libreria vera da una
+/// parte e quella di prova dall'altra, aperte insieme per confrontarle.
 ///
 /// `#[cfg(not(debug_assertions))]` sarebbe stato più corto e avrebbe sbagliato
 /// due volte: avrebbe **bloccato** le due cartelle dati in rilascio, che è il
@@ -821,8 +864,8 @@ fn main() {
 /// `npm run dev` deve poter partire. Una funzione che non gira mai in sviluppo è
 /// una funzione che si scopre rotta dall'utente.
 ///
-/// Il prezzo è dichiarato: chi tiene `AETHER_DATI` impostata di suo — in
-/// sviluppo, o perché i dati stanno su un altro disco — non ha il guardiano, e
+/// Il prezzo è dichiarato: chi tiene una delle due variabili impostata di suo —
+/// in sviluppo, o perché i dati stanno su un altro disco — non ha il guardiano, e
 /// due avvii gli danno due processi come oggi. È il baratto giusto fra i due
 /// possibili, perché chi ha impostato quella variabile sa di averla impostata.
 ///
@@ -835,16 +878,20 @@ fn main() {
 /// Dentro il `setup` del plugin, cioè **prima** di [`cartella_dati`] e di tutto
 /// quel che il `setup` qui sotto apre: il secondo processo non arriva mai a
 /// toccare il database, quindi non può lasciare un `-wal` da riassorbire né
-/// mettere mano alla cronologia d'ascolto. E non si vede niente lampeggiare,
-/// perché la finestra nasce nascosta (`visible: false` in `tauri.conf.json`) e a
-/// mostrarla è il frontend, che in quel processo non parte.
+/// mettere mano alla cronologia d'ascolto. Né a spostare la cartella della
+/// versione precedente: [`prepara_i_dati`] viene dopo, e due processi che
+/// traslocano insieme gli stessi file sono il guasto che il trasloco, con la
+/// sua sonda, esiste per non avere. E non si vede niente lampeggiare, perché la
+/// finestra nasce nascosta (`visible: false` in `tauri.conf.json`) e a mostrarla
+/// è il frontend, che in quel processo non parte.
 fn una_sola_istanza(costruttore: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
-    if std::env::var_os("AETHER_DATI").is_some_and(|valore| !valore.is_empty()) {
+    let (nuova, vecchia) = variabili_dei_dati();
+    if dati_a_mano(nuova, vecchia) {
         return costruttore;
     }
     costruttore.plugin(tauri_plugin_single_instance::init(
         |app, _argomenti, _da| {
-            // Gli argomenti e la cartella del secondo processo non servono: Aether
+            // Gli argomenti e la cartella del secondo processo non servono: Rymembra
             // non si apre con un file sulla riga di comando, e non c'è niente da
             // consegnare. Quel che c'era da fare è riportare davanti la finestra.
             vassoio::mostra(app);
@@ -852,10 +899,62 @@ fn una_sola_istanza(costruttore: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
     ))
 }
 
-/// Dove stanno database, copertine e skin.
+/// Il nome della variabile d'ambiente con cui si sceglie a mano la cartella dati.
+const VARIABILE_DATI: &str = "RYMEMBRA_DATI";
+
+/// Le due variabili che possono dettare la cartella dati, nell'ordine in cui
+/// valgono: quella di adesso e quella della versione precedente.
+///
+/// È l'unico punto che le legge dall'ambiente del processo. Chi decide —
+/// [`cartella_dati`], [`una_sola_istanza`] — le riceve come valori, ed è per
+/// questo che la decisione si prova senza toccare l'ambiente.
+fn variabili_dei_dati() -> (Option<OsString>, Option<OsString>) {
+    (
+        std::env::var_os(VARIABILE_DATI),
+        std::env::var_os(eredita::VARIABILE_DATI),
+    )
+}
+
+/// Una delle due variabili detta la cartella dati?
+///
+/// La risposta è quella di [`trasloco::scegli_cartella`] — una variabile vuota è
+/// come se non ci fosse — e non una sua copia: il guardiano dell'istanza unica e
+/// la scelta della cartella devono andare d'accordo, e due modi di leggere
+/// «impostata» sono due modi di non andarci.
+fn dati_a_mano(nuova: Option<OsString>, vecchia: Option<OsString>) -> bool {
+    trasloco::scegli_cartella(nuova, vecchia, PathBuf::new()).personalizzata
+}
+
+/// La scelta della cartella dati, chiedendo quella di serie solo se serve.
+///
+/// Con una variabile impostata la cartella di serie non si calcola nemmeno,
+/// com'è sempre stato: `di_serie` può fallire, e un guasto lì non deve fermare
+/// chi la cartella l'ha già indicata a mano.
+fn scegli_la_cartella<E>(
+    nuova: Option<OsString>,
+    vecchia: Option<OsString>,
+    di_serie: impl FnOnce() -> Result<PathBuf, E>,
+) -> Result<trasloco::Scelta, E> {
+    let predefinita = if dati_a_mano(nuova.clone(), vecchia.clone()) {
+        PathBuf::new()
+    } else {
+        di_serie()?
+    };
+    Ok(trasloco::scegli_cartella(nuova, vecchia, predefinita))
+}
+
+/// Dove stanno database, copertine e skin, e come ci si è arrivati.
 ///
 /// Normalmente la cartella dati dell'applicazione, che su Windows è
-/// `%APPDATA%\io.github.federicobaratti.aether`. `AETHER_DATI` la sostituisce.
+/// `%APPDATA%\io.github.federicobaratti.rymembra`. `RYMEMBRA_DATI` la sostituisce.
+/// La sostituisce anche la variabile della versione precedente,
+/// [`eredita::VARIABILE_DATI`], se la nuova non c'è o è vuota: chi la teneva
+/// impostata continua a vederla rispettata. La precedenza e il resto sono di
+/// [`trasloco::scegli_cartella`]; qui si leggono solo le variabili.
+///
+/// Torna la [`trasloco::Scelta`] intera, e non il solo percorso, perché da come
+/// ci si è arrivati dipende il trasloco dei dati di prima: lo si cerca accanto
+/// alla cartella di serie, e mai accanto a una scelta a mano.
 ///
 /// # Perché una scorciatoia del genere esiste
 ///
@@ -869,14 +968,198 @@ fn una_sola_istanza(costruttore: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
 /// l'unica cosa in tutto il programma che una scansione non sa ricostruire.
 ///
 /// Con questa, si copia il database in una cartella qualunque, si lancia
-/// `AETHER_DATI=... aether.exe` e si rompe pure tutto: la libreria vera non sa
+/// `RYMEMBRA_DATI=... rymembra.exe` e si rompe pure tutto: la libreria vera non sa
 /// nemmeno che è successo.
 ///
-/// La variabile si legge **solo qui**, all'avvio, e da nessun'altra parte:
+/// Le variabili si leggono **solo qui**, all'avvio, e da nessun'altra parte:
 /// quello che il resto del programma vede è un `PathBuf` e basta, come prima.
-fn cartella_dati(app: &tauri::AppHandle) -> Result<std::path::PathBuf, tauri::Error> {
-    if let Some(scelta) = std::env::var_os("AETHER_DATI").filter(|v| !v.is_empty()) {
-        return Ok(std::path::PathBuf::from(scelta));
+fn cartella_dati(app: &tauri::AppHandle) -> Result<trasloco::Scelta, tauri::Error> {
+    let (nuova, vecchia) = variabili_dei_dati();
+    scegli_la_cartella(nuova, vecchia, || app.path().app_data_dir())
+}
+
+/// Porta nella cartella dati quella della versione precedente, poi apre il diario.
+///
+/// # L'ordine non si cambia
+///
+/// Il trasloco sta **prima** del diario, della libreria e di tutto ciò che crea
+/// un file nella cartella nuova: se la cartella di prima deve arrivare intera,
+/// lo può fare solo finché quella nuova non esiste (o è vuota), e il diario, il
+/// database e le copertine bastano a farla esistere. Il diario viene subito
+/// dopo, e racconta lì cos'è successo: una riga per ogni cosa spostata o
+/// rinominata, e per ogni conflitto lasciato com'era.
+///
+/// # Quando dice di no
+///
+/// `Err` vuol dire che il trasloco non è andato avanti — la versione di prima è
+/// ancora aperta, o una cartella non si lascia spostare — e che la cartella nuova
+/// **non** va toccata: niente diario, niente database, niente copertine. Il
+/// motivo si scrive solo dove si può (in sviluppo, su `stderr`), perché il
+/// diario è chiuso e non si apre; a dirlo a chi guarda ci pensa [`rifiuta`].
+fn prepara_i_dati(scelta: &trasloco::Scelta) -> Result<(), trasloco::Errore> {
+    let rapporto = match trasloco::trasloca(&trasloco::percorsi_per(scelta)) {
+        Ok(rapporto) => rapporto,
+        Err(errore) => {
+            nota!("[avvio] trasloco dei dati della versione precedente rifiutato: {errore}");
+            return Err(errore);
+        }
+    };
+    diario::apri(&scelta.cartella);
+    if scelta.da_variabile_precedente {
+        nota!(
+            "[avvio] cartella dati dettata da {}, la variabile della versione precedente: {}",
+            eredita::VARIABILE_DATI,
+            scelta.cartella.display()
+        );
     }
-    app.path().app_data_dir()
+    for riga in trasloco::righe_di_diario(&rapporto) {
+        nota!("{riga}");
+    }
+    Ok(())
+}
+
+/// Il trasloco ha detto di no: lo si dice all'utente, e lo stato non apre niente.
+///
+/// # Che cosa ottiene chi guarda
+///
+/// Un dialogo di errore con il testo bilingue di
+/// [`trasloco::messaggio_di_rifiuto`], e l'uscita quando lo si chiude. Il testo
+/// nomina la versione di prima perché l'utente capisca che cosa chiudere, e dice
+/// che nessun dato è stato cancellato: non che non sia stato toccato niente, perché
+/// un rifiuto può arrivare a metà di una fusione, con qualche voce già passata.
+///
+/// # Perché il dialogo non blocca
+///
+/// Perché il `setup` gira sul filo della finestra, e `blocking_show` aspetta che
+/// quel filo recapiti il dialogo: si aspetterebbero a vicenda. `show` lo
+/// consegna al ciclo degli eventi e ritorna subito; il dialogo compare quando
+/// il `setup` ha finito, e la callback — che gira su un filo suo — esce dal
+/// processo. `exit` e non `app.exit`: a quel punto non c'è niente da spegnere in
+/// ordine, e la sequenza di [`spegnimento`] presuppone una libreria.
+///
+/// # Lo stato che torna
+///
+/// [`stato::Stato::rifiutato`]: la libreria «non aperta» che l'applicazione sa già
+/// trattare, con `internal.unexpected` perché il rifiuto non ha una frase sua
+/// nel catalogo — la causa porta il motivo vero per il diario e per chi legge
+/// l'errore a schermo, e il dialogo ha già detto il resto. Fino all'uscita ogni
+/// comando che chiede la libreria riceve quell'errore, e nessuno apre la cartella
+/// nuova.
+///
+/// # Il portachiavi
+///
+/// Non solo i file: anche le voci del Credential Manager della versione di prima
+/// non si toccano. Il `setup` continua dopo il rifiuto, e il filo del backup
+/// legge l'account di Google dal portachiavi mezzo minuto dopo l'avvio; con il
+/// travaso acceso lo porterebbe dal servizio di prima a quello nuovo togliendolo
+/// alla versione di prima, che è aperta e in quel momento lo usa. Per questo la
+/// prima cosa che si fa, prima ancora del dialogo, è sospendere il travaso: da lì
+/// `DiSistema` lavora solo sul servizio nuovo.
+fn rifiuta(app: &tauri::AppHandle, errore: &trasloco::Errore) -> stato::Stato {
+    // La versione di prima è aperta, o comunque i suoi file sono in uso, e le sue
+    // voci del portachiavi sono ancora le sue: il rifiuto serve a lasciarle
+    // intatte, e il dialogo qui sotto promette che nessun dato è stato
+    // cancellato. Per prima cosa, perché il `setup` prosegue e avvia i fili che
+    // arrivano al portachiavi.
+    rymembra_oauth::portachiavi::sospendi_il_travaso();
+    app.dialog()
+        .message(trasloco::messaggio_di_rifiuto(errore))
+        .kind(MessageDialogKind::Error)
+        .title("Rymembra")
+        .show(|_| std::process::exit(1));
+    stato::Stato::rifiutato(
+        AppError::new(ErrorCode::InternalUnexpected {
+            detail: Some("trasloco dei dati della versione precedente rifiutato".to_owned()),
+        })
+        .with_cause(errore.to_string()),
+    )
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+    use std::cell::Cell;
+
+    fn os(testo: &str) -> Option<OsString> {
+        Some(OsString::from(testo))
+    }
+
+    #[test]
+    fn senza_variabili_la_cartella_e_quella_di_serie_e_il_guardiano_resta() {
+        assert!(!dati_a_mano(None, None));
+        let scelta = scegli_la_cartella(None, None, || Ok::<_, ()>(PathBuf::from("di-serie")))
+            .expect("la cartella di serie c'è");
+        assert_eq!(scelta.cartella, PathBuf::from("di-serie"));
+        assert!(!scelta.personalizzata);
+        assert!(!scelta.da_variabile_precedente);
+    }
+
+    #[test]
+    fn una_delle_due_variabili_basta_a_togliere_il_guardiano() {
+        // La nuova, quella di prima, tutte e due: in tutti e tre i casi la
+        // cartella è scelta a mano, e Rymembra non registra l'istanza unica.
+        assert!(dati_a_mano(os("nuova"), None));
+        assert!(dati_a_mano(None, os("vecchia")));
+        assert!(dati_a_mano(os("nuova"), os("vecchia")));
+    }
+
+    #[test]
+    fn una_variabile_vuota_e_come_se_non_ci_fosse() {
+        assert!(!dati_a_mano(os(""), None));
+        assert!(!dati_a_mano(None, os("")));
+        assert!(!dati_a_mano(os(""), os("")));
+        // Una vuota non cancella l'altra.
+        assert!(dati_a_mano(os(""), os("vecchia")));
+        assert!(dati_a_mano(os("nuova"), os("")));
+    }
+
+    #[test]
+    fn la_cartella_di_serie_si_chiede_solo_se_nessuna_variabile_la_sostituisce() {
+        let chiamate = Cell::new(0_u32);
+        let di_serie = || {
+            chiamate.set(chiamate.get() + 1);
+            Ok::<_, ()>(PathBuf::from("di-serie"))
+        };
+
+        let scelta = scegli_la_cartella(os("a-mano"), None, di_serie).expect("scelta");
+        assert_eq!(scelta.cartella, PathBuf::from("a-mano"));
+        assert!(scelta.personalizzata);
+        let scelta = scegli_la_cartella(None, os("di-prima"), di_serie).expect("scelta");
+        assert_eq!(scelta.cartella, PathBuf::from("di-prima"));
+        assert!(scelta.da_variabile_precedente);
+        assert_eq!(chiamate.get(), 0, "la cartella di serie non serviva");
+
+        let scelta = scegli_la_cartella(os(""), os(""), di_serie).expect("scelta");
+        assert_eq!(scelta.cartella, PathBuf::from("di-serie"));
+        assert_eq!(chiamate.get(), 1, "serviva, e una volta sola");
+    }
+
+    #[test]
+    fn un_guasto_della_cartella_di_serie_ferma_solo_chi_non_ha_scelto() {
+        let guasto = || Err::<PathBuf, _>("la cartella dati non si risolve");
+        // Nessuna variabile: la cartella di serie serve, e il guasto arriva.
+        assert_eq!(
+            scegli_la_cartella(None, None, guasto).expect_err("niente cartella"),
+            "la cartella dati non si risolve"
+        );
+        // Con una variabile il guasto non viene nemmeno incontrato.
+        let scelta = scegli_la_cartella(os("a-mano"), None, guasto).expect("scelta");
+        assert_eq!(scelta.cartella, PathBuf::from("a-mano"));
+    }
+
+    #[test]
+    fn la_variabile_di_adesso_vince_su_quella_di_prima() {
+        let scelta = scegli_la_cartella(os("nuova"), os("vecchia"), || Ok::<_, ()>(PathBuf::new()))
+            .expect("scelta");
+        assert_eq!(scelta.cartella, PathBuf::from("nuova"));
+        assert!(!scelta.da_variabile_precedente);
+    }
+
+    #[test]
+    fn il_nome_della_variabile_di_adesso_non_cambia() {
+        // Il nome della variabile è un'interfaccia per chi lancia il programma:
+        // le prove di sviluppo e la documentazione lo usano per esteso.
+        assert_eq!(VARIABILE_DATI, "RYMEMBRA_DATI");
+        assert_ne!(VARIABILE_DATI, eredita::VARIABILE_DATI);
+    }
 }

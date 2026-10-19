@@ -11,7 +11,7 @@
  * Quattro numeri indipendenti sono quattro occasioni di divergere, e il sintomo
  * non è un errore: è un installer che si chiama in un modo e un programma che
  * ne dichiara un altro nel registro di avvio. Nella cartella `release/` del
- * vecchio albero ci sono ancora `Aether Setup 0.9.13.7.26.2.exe` e
+ * vecchio albero ci sono ancora `Rymembra Setup 0.9.13.7.26.2.exe` e
  * `0.9.14.7.26.2.exe` accanto a `0.9.14.7.26.3.exe`: è questo problema in forma
  * di artefatti.
  *

@@ -25,7 +25,7 @@
 //! # Il runtime di Visual C++, e perché dipende dal profilo
 //!
 //! L'installer porta dentro l'eseguibile il runtime di Visual C++ collegato
-//! staticamente: chi installa Aether non deve avere già il pacchetto
+//! staticamente: chi installa Rymembra non deve avere già il pacchetto
 //! ridistribuibile di Microsoft, che su un Windows appena messo spesso manca.
 //! Fino a `tauri 2.11` lo decideva la CLI, e solo in `tauri build`; dalla
 //! `2.12` lo decide `tauri-build`, e di serie lo fa **sempre** — anche in un
@@ -34,7 +34,7 @@
 //! Lì fa danni. Per collegarlo così `tauri-build` mette nella propria cartella
 //! di uscita un `msvcrt.lib` finto e la aggiunge ai percorsi del linker; e
 //! `cargo`, quando prova gli esempi della documentazione, passa quei percorsi a
-//! **tutti** i crate del workspace. Gli esempi di `aether-domain` trovavano il
+//! **tutti** i crate del workspace. Gli esempi di `rymembra-domain` trovavano il
 //! `msvcrt.lib` finto al posto di quello vero, e non si collegavano più.
 //!
 //! Quindi si torna a com'era: statico nel profilo `release`, che è quello di
@@ -44,7 +44,7 @@
 use std::path::Path;
 
 /// Le due variabili che il codice legge con `option_env!`.
-const VARIABILI: [&str; 2] = ["AETHER_GOOGLE_CLIENT_ID", "AETHER_GOOGLE_CLIENT_SECRET"];
+const VARIABILI: [&str; 2] = ["RYMEMBRA_GOOGLE_CLIENT_ID", "RYMEMBRA_GOOGLE_CLIENT_SECRET"];
 
 /// Il file locale da cui leggerle quando non stanno nell'ambiente.
 ///

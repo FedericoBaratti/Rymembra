@@ -35,8 +35,8 @@ body:
     attributes:
       label: The log
       description: >-
-        In Aether: **Settings → Updates → «Open the log folder»**. Inside there
-        is `aether.log`: paste its last lines, or attach the file.
+        In Rymembra: **Settings → Updates → «Open the log folder»**. Inside there
+        is `rymembra.log`: paste its last lines, or attach the file.
 
         It doesn't contain your track titles or the paths of your library —
         `PRIVACY.md` § 8 says what ends up in there and what doesn't. The only
@@ -44,9 +44,12 @@ body:
         contains your Windows account name: if you'd rather, delete it before
         pasting.
 
-        **If Aether doesn't open at all**, the folder is
-        `%APPDATA%\io.github.federicobaratti.aether\diario` — paste that into
-        File Explorer's address bar.
+        **If Rymembra doesn't open at all**, the folder is
+        `%APPDATA%\io.github.federicobaratti.rymembra\diario` — paste that into
+        File Explorer's address bar. If that folder doesn't exist, look in
+        `%APPDATA%` for the other one whose name starts with
+        `io.github.federicobaratti`: right after an upgrade, a start that
+        failed leaves the data where the previous version had them.
       render: text
     validations:
       required: false
@@ -56,7 +59,7 @@ body:
     attributes:
       label: Which version
       description: >-
-        In Aether: **Settings → Updates → «Installed version»**.
+        In Rymembra: **Settings → Updates → «Installed version»**.
       placeholder: "3.0.0"
     validations:
       required: true

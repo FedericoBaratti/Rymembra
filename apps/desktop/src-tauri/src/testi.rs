@@ -1,13 +1,13 @@
 //! I testi, dal lato della finestra.
 //!
 //! Due comandi e una forma da serializzare. Le decisioni stanno in
-//! `aether_domain::testo`, la catena delle fonti in `aether_app::testi`: qui si
+//! `rymembra_domain::testo`, la catena delle fonti in `rymembra_app::testi`: qui si
 //! prende il lucchetto della libreria per il tempo di una lettura, e si traduce
 //! quel che ne esce in qualcosa che attraversi l'IPC.
 //!
 //! # Perché una forma a parte e non `Testo` così com'è
 //!
-//! Perché `aether-domain` non conosce serde — è la sua regola, e la ragione è
+//! Perché `rymembra-domain` non conosce serde — è la sua regola, e la ragione è
 //! che il dominio non deve avere un'opinione su come lo si trasmette. La stessa
 //! indirezione di [`crate::errore::ErroreIpc`], per lo stesso motivo.
 //!
@@ -24,12 +24,12 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::spegnimento::Emette as _;
-use aether_app::enrich::DepositoSqlite;
-use aether_app::settings;
-use aether_app::testi::{self, Copertura, Fonte};
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::testo::{Aderenza, Parola, Riga, Testo, parole_combaciano};
-use aether_meta::Fornitori;
+use rymembra_app::enrich::DepositoSqlite;
+use rymembra_app::settings;
+use rymembra_app::testi::{self, Copertura, Fonte};
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::testo::{Aderenza, Parola, Riga, Testo, parole_combaciano};
+use rymembra_meta::Fornitori;
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
@@ -83,7 +83,7 @@ pub struct TestoIpc {
     /// Arriva separato da [`scarto_ms`](Self::scarto_ms) e non già sommato,
     /// perché i due si correggono da due posti diversi: questo è di chi ha
     /// scritto il file, l'altro è di chi sta ascoltando. La finestra li somma
-    /// alla posizione — è quel che fa `aether_domain::testo::posizione_corretta`
+    /// alla posizione — è quel che fa `rymembra_domain::testo::posizione_corretta`
     /// — e ne mostra uno solo.
     pub offset_ms: i32,
     /// La correzione di chi ascolta.
@@ -95,7 +95,7 @@ pub struct TestoIpc {
     /// Vale la pena chiedere al catalogo: quel che si ha non scorre.
     ///
     /// La finestra non ricalcola la condizione — guarda questo. Vedi
-    /// `aether_app::testi::TestoBrano::da_chiedere` per la regola e per il
+    /// `rymembra_app::testi::TestoBrano::da_chiedere` per la regola e per il
     /// difetto che c'era prima che fosse una regola sola.
     pub da_chiedere: bool,
 }
@@ -207,7 +207,7 @@ fn testo_gia_saputo(stato: &Stato, id: i64) -> Result<TestoIpc, AppError> {
 /// essere secondi. Prima quelle letture stavano dentro `con_libreria`, e per
 /// tutti quei secondi si fermavano la lista dei brani, la ricerca, e ogni altro
 /// comando che chiedeva la libreria. È la stessa forma dei tre tempi della
-/// rete, e la ragione sta per esteso su `aether_app::testi::DalDisco`.
+/// rete, e la ragione sta per esteso su `rymembra_app::testi::DalDisco`.
 ///
 /// Fra la prima presa e la seconda la riga in tabella può cambiare — una passata
 /// che scrive un esito — e non è un problema: `componi` la usa per decidere da
@@ -307,7 +307,7 @@ pub struct StatoTesti {
     /// il tempo di un clic, e tenerne di più sarebbe memoria di testi che nessuno
     /// guarda. Se il clic arriva per un brano diverso, o dopo che la lista è
     /// stata sostituita, la voce si richiede.
-    candidati: Mutex<Option<(i64, Vec<aether_meta::lrclib::Voce>)>>,
+    candidati: Mutex<Option<(i64, Vec<rymembra_meta::lrclib::Voce>)>>,
 }
 
 impl std::fmt::Debug for StatoTesti {
@@ -365,7 +365,7 @@ fn servizi(app: &AppHandle, testi: &StatoTesti) -> Result<Arc<Fornitori>, AppErr
         return Ok(Arc::clone(gia));
     }
     // La cartella della libreria, e non `app_data_dir()`: quella è la cartella
-    // **di serie**, e con `AETHER_DATI` impostata la libreria sta altrove. Il
+    // **di serie**, e con `RYMEMBRA_DATI` impostata la libreria sta altrove. Il
     // deposito dei testi finiva così nel database dell'utente vero mentre il
     // resto del programma lavorava sulla copia — cioè proprio la cosa che
     // quella variabile esiste per impedire. `arricchimento` la prende già da
@@ -406,7 +406,7 @@ pub struct StatoTestiIpc {
     /// Si può chiedere al catalogo.
     pub rete: bool,
     /// Un testo sincronizzato a mano si scrive anche in un `.lrc` accanto al
-    /// brano. Vedi `aether_app::testi::accanto_ai_file`.
+    /// brano. Vedi `rymembra_app::testi::accanto_ai_file`.
     pub accanto: bool,
     /// Una passata sta girando adesso.
     pub in_corso: bool,
@@ -462,7 +462,7 @@ fn stato_adesso(stato: &Stato, testi: &StatoTesti) -> Result<StatoTestiIpc, AppE
 /// durata sarebbe una riga in meno e bloccherebbe la riproduzione per il tempo
 /// di una richiesta HTTP — che con una rete lenta è la scadenza intera, venti
 /// secondi. Che non si possa fare per sbaglio è garantito dal fatto che
-/// `aether-meta` non riceve mai una `Connection`.
+/// `rymembra-meta` non riceve mai una `Connection`.
 ///
 /// # Errori
 ///
@@ -512,7 +512,7 @@ pub fn testo_cerca(
 /// Perché fra il pannello e la rete ci sono due memorie, e tutt'e due
 /// risponderebbero prima che parta una richiesta:
 ///
-/// * il **deposito** di `aether-meta` tiene un «non ce l'ho» per tre giorni e
+/// * il **deposito** di `rymembra-meta` tiene un «non ce l'ho» per tre giorni e
 ///   una risposta per una settimana;
 /// * la colonna `checked_at` tiene «a questo brano si è già chiesto» per
 ///   quattordici giorni, ed è quel che decide `da_chiedere`.
@@ -523,7 +523,7 @@ pub fn testo_cerca(
 /// mezzo tutt'e due: azzera `checked_at` e chiede senza rileggere il deposito.
 ///
 /// Il ritentativo automatico invece **non** è questo: i due tentativi in più a
-/// mezzo secondo e a un secondo e mezzo stanno in `aether_app::testi`, valgono
+/// mezzo secondo e a un secondo e mezzo stanno in `rymembra_app::testi`, valgono
 /// per ogni richiesta e servono all'inciampo di rete. Questo qui è un gesto, e
 /// costa una richiesta a un servizio pubblico: per questo lo fa solo chi lo
 /// chiede, un brano alla volta.
@@ -595,14 +595,14 @@ pub struct CandidatoIpc {
     pub anteprima: Option<String>,
 }
 
-impl From<&aether_meta::lrclib::Voce> for CandidatoIpc {
-    fn from(voce: &aether_meta::lrclib::Voce) -> Self {
+impl From<&rymembra_meta::lrclib::Voce> for CandidatoIpc {
+    fn from(voce: &rymembra_meta::lrclib::Voce) -> Self {
         let grezzo = voce
             .sincronizzato
             .as_deref()
             .or(voce.piatto.as_deref())
             .unwrap_or_default();
-        let letto = aether_domain::testo::leggi(grezzo);
+        let letto = rymembra_domain::testo::leggi(grezzo);
         let anteprima: Vec<String> = letto
             .come_piatto()
             .lines()
@@ -644,7 +644,7 @@ pub struct CandidatiIpc {
 ///
 /// Esiste per il testo scelto male — o scartato dai veti — che fino a qui non
 /// aveva rimedio se non sincronizzarne uno da capo. Vedi
-/// [`aether_meta::lrclib::candidati`] per cosa torna e in che ordine.
+/// [`rymembra_meta::lrclib::candidati`] per cosa torna e in che ordine.
 ///
 /// Con l'interruttore della rete spento non si chiede, e non è un errore — è la
 /// stessa scelta di [`testo_cerca`]; torna `rete: false` con l'elenco vuoto.
@@ -709,7 +709,7 @@ pub fn testo_scegli(
 ) -> Esito<TestoIpc> {
     let brano =
         con_libreria(&stato, |libreria| testi::brano(&libreria.connection, id)).map_err(errore)?;
-    let dall_elenco = |voci: &[aether_meta::lrclib::Voce]| {
+    let dall_elenco = |voci: &[rymembra_meta::lrclib::Voce]| {
         voci.iter()
             .find(|voce| voce.candidato.id == candidato)
             .cloned()
@@ -826,7 +826,7 @@ pub fn testi_rete(
 /// Vale per i salvataggi da qui in poi: i file già scritti restano dove sono —
 /// toglierli sarebbe toccare di nuovo le cartelle della musica, proprio quel che
 /// l'interruttore spento promette di non fare — e continuano a leggersi. Il
-/// perché del valore di serie sta su `aether_app::testi::accanto_ai_file`.
+/// perché del valore di serie sta su `rymembra_app::testi::accanto_ai_file`.
 ///
 /// # Errori
 ///
@@ -892,7 +892,7 @@ fn avvia(app: &AppHandle) {
 
     let manico = app.clone();
     let avviato = std::thread::Builder::new()
-        .name("aether-testi".to_owned())
+        .name("rymembra-testi".to_owned())
         .spawn(move || {
             passata(&manico);
             manico.emetti("testi:finito", ());
@@ -1228,7 +1228,7 @@ mod prove {
         );
         // E si rileggono: è il giro completo, con la stessa coppia di funzioni
         // che il resto dell'applicazione usa.
-        let riletto = aether_domain::testo::leggi(gemelli.esteso.as_deref().expect("l'esteso"));
+        let riletto = rymembra_domain::testo::leggi(gemelli.esteso.as_deref().expect("l'esteso"));
         assert_eq!(
             riletto
                 .righe
@@ -1264,7 +1264,7 @@ mod prove {
     fn risincronizzare_non_butta_le_traduzioni() {
         // Il testo di prima, letto da un `.lrc` con la traduzione sotto ogni
         // riga e un ritornello che torna due volte con due traduzioni diverse.
-        let prima = aether_domain::testo::leggi(concat!(
+        let prima = rymembra_domain::testo::leggi(concat!(
             "[00:01.00]strofa\n[00:01.00]verse\n",
             "[00:02.00]coro\n[00:02.00]chorus one\n",
             "[00:03.00]coro\n[00:03.00]chorus two\n",
@@ -1347,7 +1347,7 @@ mod prove {
 /// e ascolta un album vedeva, a ogni cambio di brano, qualche secondo di
 /// «Cerco il testo…» prima della prima riga — cioè proprio l'introduzione, che
 /// è la parte in cui il testo serve. E quei secondi non sono la rete: sono la
-/// [`aether_meta::Cadenza`], che concede una richiesta ogni quarto di secondo,
+/// [`rymembra_meta::Cadenza`], che concede una richiesta ogni quarto di secondo,
 /// più la richiesta esatta e quella generosa.
 ///
 /// Chiedendolo mentre il brano corrente suona ancora, il testo del successivo è
@@ -1391,7 +1391,7 @@ pub fn precarica_prossimo(app: &AppHandle, prossimo: Option<i64>) {
     }
     let manico = app.clone();
     let avviato = std::thread::Builder::new()
-        .name("aether-testo-dopo".to_owned())
+        .name("rymembra-testo-dopo".to_owned())
         .spawn(move || precarica_adesso(&manico, id));
     if let Err(err) = avviato {
         // Senza il filo si perde l'anticipo, non il testo: il pannello lo
@@ -1472,7 +1472,7 @@ fn segnala(app: &AppHandle, err: &AppError) {
 /// mandarli alla finestra perché li rimandi indietro sarebbe traffico per un
 /// calcolo che la finestra non fa comunque. Quel che serve là è il risultato —
 /// i tempi raddrizzati — e la regola che li produce sta in
-/// `aether_domain::testo::aggancia`, che è pura e provata senza aprire un file.
+/// `rymembra_domain::testo::aggancia`, che è pura e provata senza aprire un file.
 ///
 /// Decodifica il brano per intero: uno o due secondi su quattro minuti. Per
 /// questo è `(async)`: un comando normale gira sul **filo principale** della
@@ -1494,29 +1494,29 @@ pub fn testo_aggancia(stato: State<'_, Stato>, id: i64, battute: Vec<u32>) -> Es
     // testo. La decodifica vera avviene poi ancora più fuori: il
     // `Decodificatore` non sa niente del database.
     let scheda = con_libreria(&stato, |libreria| {
-        aether_app::playback::scheda_sorgente(&libreria.connection, id)
+        rymembra_app::playback::scheda_sorgente(&libreria.connection, id)
     })
     .map_err(errore)?;
     let sorgente =
-        aether_app::playback::sorgente_da_scheda(&aether_app::files::LocalFiles, &scheda)
+        rymembra_app::playback::sorgente_da_scheda(&rymembra_app::files::LocalFiles, &scheda)
             .map_err(errore)?;
-    let attacchi = aether_play::attacchi::attacchi(sorgente).map_err(errore)?;
-    Ok(aether_domain::testo::aggancia(&battute, &attacchi))
+    let attacchi = rymembra_play::attacchi::attacchi(sorgente).map_err(errore)?;
+    Ok(rymembra_domain::testo::aggancia(&battute, &attacchi))
 }
 
 /// Salva un testo sincronizzato a mano.
 ///
 /// Riceve le righe già agganciate: l'aggancio agli attacchi lo fa
-/// `aether_domain::testo::aggancia`, che è puro, e la finestra manda quel che ne
+/// `rymembra_domain::testo::aggancia`, che è puro, e la finestra manda quel che ne
 /// esce. Qui si compone l'LRC e si scrive — la riga in tabella prima, e poi, se
 /// l'utente l'ha chiesto, i `.lrc` accanto al brano.
 ///
 /// # Perché l'LRC si scrive qui e non nella finestra
 ///
 /// Perché comporre un LRC è l'esatto inverso di leggerlo, e i due devono essere
-/// la stessa idea del formato: `aether_domain::testo::scrivi` è provato contro
+/// la stessa idea del formato: `rymembra_domain::testo::scrivi` è provato contro
 /// `leggi` sugli stessi vettori. Un compositore scritto in TypeScript
-/// produrrebbe file che solo Aether rilegge com'erano.
+/// produrrebbe file che solo Rymembra rilegge com'erano.
 ///
 /// # Errori
 ///
@@ -1529,7 +1529,7 @@ pub fn testo_aggancia(stato: State<'_, Stato>, id: i64, battute: Vec<u32>) -> Es
 /// parole, quando ce ne sono, e il semplice altrimenti. Fino alla 2.4 portava
 /// sempre il semplice, e le parole vivevano solo nell'`.a2.lrc` accanto al
 /// brano: con i file accanto spenti — che dalla 3.0 è il valore di serie, vedi
-/// `aether_app::testi::accanto_ai_file` — sarebbero andate perse al primo
+/// `rymembra_app::testi::accanto_ai_file` — sarebbero andate perse al primo
 /// salvataggio. A LRCLIB le parole non arrivano lo stesso: le toglie
 /// [`testi::da_restituire`], che al catalogo manda il gemello semplice.
 ///
@@ -1545,15 +1545,15 @@ pub fn testo_aggancia(stato: State<'_, Stato>, id: i64, battute: Vec<u32>) -> Es
 /// # I due scarti si azzerano entrambi, e non è una dimenticanza
 ///
 /// «Offset» qui nomina due numeri diversi, e confonderli è il modo di rompere
-/// questo comando. `aether_domain::testo::posizione_corretta` è l'unico posto in
+/// questo comando. `rymembra_domain::testo::posizione_corretta` è l'unico posto in
 /// cui si sommano, e dice quali sono:
 ///
 /// * **`Testo::offset_ms`** è il `[offset:]` **del file**, quello che `scrivi`
 ///   emette in testa all'LRC. Lo azzera questa funzione, ed è la riga
 ///   `offset_ms: 0` qui sotto;
-/// * **`lyrics.offset_ms`** — che in `aether_app::testi` si chiama `scarto_ms`,
+/// * **`lyrics.offset_ms`** — che in `rymembra_app::testi` si chiama `scarto_ms`,
 ///   ed è quello che muovono i due bottoni del pannello — è la correzione di chi
-///   ascolta. Lo azzera `aether_app::testi::salva_a_mano`, sulla sua riga.
+///   ascolta. Lo azzera `rymembra_app::testi::salva_a_mano`, sulla sua riga.
 ///
 /// Tutti e due, e per la stessa ragione: **le battute nascono nello spazio della
 /// posizione grezza.** `Sincronizza.tsx::batti` legge `posizioneAdesso()`, cioè
@@ -1597,7 +1597,7 @@ pub fn testo_salva(
 
             // ── sotto lucchetto: la riga, che è dove il lavoro non si perde ─
             // Prima del file, e la ragione sta su
-            // `aether_app::testi::salva_a_mano`: una cartella di sola lettura
+            // `rymembra_app::testi::salva_a_mano`: una cartella di sola lettura
             // non deve costare mezz'ora di battute.
             let accanto = con_libreria(&stato, |libreria| {
                 testi::registra_a_mano(
@@ -1731,7 +1731,7 @@ pub struct ParolaSalvata {
     /// Gli spazi arrivano fin qui perché sono quelli che separano una parola
     /// dalla successiva quando la riga si ricompone: rifilarli in viaggio
     /// vorrebbe dire riattaccare le parole fra loro. È la stessa ragione
-    /// scritta su `aether_domain::testo::Parola`, ed è anche quel che rende
+    /// scritta su `rymembra_domain::testo::Parola`, ed è anche quel che rende
     /// verificabile la corrispondenza fra le parole e la riga.
     pub testo: String,
 }
@@ -1758,7 +1758,7 @@ pub struct RigaSalvata {
 /// # Perché due file e non uno
 ///
 /// Perché `.a2.lrc` — l'LRC con i `<mm:ss.xx>` dentro la riga — lo leggono in
-/// pochi. Lo legge Aether, lo leggono alcuni lettori per telefono, e per tutti
+/// pochi. Lo legge Rymembra, lo leggono alcuni lettori per telefono, e per tutti
 /// gli altri quei `<…>` sono **testo**: aprire un `a2` con un lettore che non
 /// lo conosce vuol dire vedere i tempi stampati in mezzo alle parole.
 ///
@@ -1768,7 +1768,7 @@ pub struct RigaSalvata {
 /// due file stanno accanto allo stesso brano, hanno gli stessi tempi di riga, e
 /// chi non sa cosa sia il primo trova il secondo.
 ///
-/// Quale dei due rilegge Aether lo decide `aether_app::testi::CODE`, che guarda
+/// Quale dei due rilegge Rymembra lo decide `rymembra_app::testi::CODE`, che guarda
 /// `a2.lrc` per primo: il più ricco vince, e il gemello resta lì per gli altri.
 struct Gemelli {
     /// Il `.lrc` di sempre: i tempi delle righe e basta.
@@ -1786,7 +1786,7 @@ struct Gemelli {
 ///
 /// # Le parole che non combaciano si buttano
 ///
-/// `aether_domain::testo::parole_combaciano` verifica che rimettere in fila le
+/// `rymembra_domain::testo::parole_combaciano` verifica che rimettere in fila le
 /// parole ridia la riga. Quando non la ridà, i tempi delle parole di quella
 /// riga si scartano e la riga resta sincronizzata al verso: il perché per
 /// esteso sta su quella funzione, e in breve è che dei tempi riassegnati a caso
@@ -1851,7 +1851,7 @@ fn componi(righe: Vec<RigaSalvata>, prima: &[Riga]) -> Gemelli {
         .collect();
 
     let esteso = righe.iter().any(|riga| !riga.parole.is_empty()).then(|| {
-        aether_domain::testo::scrivi(&Testo {
+        rymembra_domain::testo::scrivi(&Testo {
             righe: righe.clone(),
             piatto: None,
             strumentale: false,
@@ -1861,7 +1861,7 @@ fn componi(righe: Vec<RigaSalvata>, prima: &[Riga]) -> Gemelli {
         })
     });
 
-    let semplice = aether_domain::testo::scrivi(&Testo {
+    let semplice = rymembra_domain::testo::scrivi(&Testo {
         righe: righe
             .into_iter()
             .map(|riga| Riga {
@@ -1881,7 +1881,7 @@ fn componi(righe: Vec<RigaSalvata>, prima: &[Riga]) -> Gemelli {
 ///
 /// # Perché toglierlo è metà del lavoro
 ///
-/// Perché `aether_app::testi::CODE` guarda `a2.lrc` **prima** di `lrc`. Un
+/// Perché `rymembra_app::testi::CODE` guarda `a2.lrc` **prima** di `lrc`. Un
 /// esteso rimasto lì da una sincronizzazione di ieri scavalcherebbe il `.lrc`
 /// scritto oggi: si salverebbe, non si vedrebbe cambiare niente, e la ragione
 /// sarebbe un file che nessuno ha pensato di guardare. Chi rifà i tempi senza
@@ -1895,7 +1895,7 @@ fn componi(righe: Vec<RigaSalvata>, prima: &[Riga]) -> Gemelli {
 /// nello stato voluto. Un file che non c'era non è un guasto.
 ///
 /// Togliere non vuol dire cancellare: un esteso che non era nostro finisce in un
-/// `.a2.lrc.bak`, com'è scritto su `aether_app::testi::scrivi_sidecar`.
+/// `.a2.lrc.bak`, com'è scritto su `rymembra_app::testi::scrivi_sidecar`.
 fn gemello_esteso(brano: &Path, esteso: Option<&str>) -> Result<(), AppError> {
     testi::scrivi_sidecar(brano, "a2.lrc", esteso)
 }

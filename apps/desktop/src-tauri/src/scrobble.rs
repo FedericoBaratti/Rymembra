@@ -1,8 +1,8 @@
 //! I comandi dello scrobbling, e il filo che svuota la coda.
 //!
 //! Involucri, come tutto il resto di questo crate: i due protocolli stanno in
-//! `aether-scrobble`, la coda in `aether_app::scrobble`, la regola di cosa conta
-//! in `aether_domain::listen`. Qui c'è chi tiene le credenziali, chi decide
+//! `rymembra-scrobble`, la coda in `rymembra_app::scrobble`, la regola di cosa conta
+//! in `rymembra_domain::listen`. Qui c'è chi tiene le credenziali, chi decide
 //! quando è il momento di mandare, e chi lo racconta alla finestra.
 //!
 //! # I lucchetti, nell'ordine che conta
@@ -41,13 +41,13 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
-use aether_app::scrobble::{self as coda, Voce};
-use aether_app::settings;
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::listen::Listen;
-use aether_domain::scrobble::{Ascolto, Servizio};
-use aether_oauth::portachiavi::{DiSistema, Portachiavi};
-use aether_scrobble::{LastFm, ListenBrainz, per_richiesta};
+use rymembra_app::scrobble::{self as coda, Voce};
+use rymembra_app::settings;
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::listen::Listen;
+use rymembra_domain::scrobble::{Ascolto, Servizio};
+use rymembra_oauth::portachiavi::{DiSistema, Portachiavi};
+use rymembra_scrobble::{LastFm, ListenBrainz, per_richiesta};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
@@ -79,7 +79,7 @@ const CHIAVE_LFM_SEGRETO: &str = "lastfm.segreto";
 /// dentro un file che si passa in giro è la definizione del guasto.
 ///
 /// Il travaso lo fa [`travasa_chiave_lastfm`] una volta sola all'avvio. Il
-/// profilo la lascia comunque fuori — `aether_app::profilo::CATALOGO` non la
+/// profilo la lascia comunque fuori — `rymembra_app::profilo::CATALOGO` non la
 /// contiene, e una prova lo tiene vero — quindi anche una macchina su cui il
 /// portachiavi non risponde non la esporta.
 const CHIAVE_LFM_CHIAVE: &str = "lastfm.api_key";
@@ -533,7 +533,7 @@ pub fn dopo_un_ascolto(app: &AppHandle, ascolto: &Listen) {
 pub fn sta_suonando(app: &AppHandle, track_id: i64) {
     let manico = app.clone();
     let avviato = std::thread::Builder::new()
-        .name("aether-scrobble-adesso".to_owned())
+        .name("rymembra-scrobble-adesso".to_owned())
         .spawn(move || {
             let stato = manico.state::<Stato>();
             let Ok(servizi) = collegati(&stato) else {
@@ -596,7 +596,7 @@ pub fn avvia(app: &AppHandle) {
 
     let manico = app.clone();
     let avviato = std::thread::Builder::new()
-        .name("aether-scrobble".to_owned())
+        .name("rymembra-scrobble".to_owned())
         .spawn(move || {
             loop {
                 {
@@ -610,7 +610,7 @@ pub fn avvia(app: &AppHandle) {
                     // Sorvegliata: un panico in mezzo a una passata non porta
                     // via il filo, e la coda si riprova al giro dopo. Vedi
                     // `crate::stato::sorvegliato`.
-                    let esito = crate::stato::sorvegliato("aether-scrobble", || passata(&manico));
+                    let esito = crate::stato::sorvegliato("rymembra-scrobble", || passata(&manico));
                     if let Some(esito) = esito
                         && (esito.mandati > 0 || esito.guasto.is_some())
                     {
@@ -934,7 +934,7 @@ const fn portachiavi() -> DiSistema {
 /// Last.fm senza dire niente: l'utente si ritroverebbe da rifare il consenso e
 /// nessuno collegherebbe la cosa a un travaso.
 ///
-/// È la stessa regola scritta in testa a `aether_oauth::portachiavi` — un
+/// È la stessa regola scritta in testa a `rymembra_oauth::portachiavi` — un
 /// declassamento silenzioso di una proprietà di sicurezza è peggio di una
 /// funzione che dice di non poter partire — applicata nel verso in cui qui
 /// serve: non si perde la credenziale per proteggerla.
@@ -1018,7 +1018,7 @@ fn collegati(stato: &Stato) -> Result<Vec<Servizio>, AppError> {
 ///
 /// Un portachiavi che non risponde **non** è «non collegato»: lo si dice, e non
 /// si prova a mandare. Ripiegare su `settings` sarebbe il declassamento
-/// silenzioso che `aether_oauth::portachiavi` vieta in testa al modulo.
+/// silenzioso che `rymembra_oauth::portachiavi` vieta in testa al modulo.
 fn leggi_segreto(chiave: &str) -> Result<Option<String>, AppError> {
     portachiavi().leggi(chiave)
 }
@@ -1159,11 +1159,11 @@ fn lamenta(cosa: &str, err: &AppError) {
 #[cfg(test)]
 mod prove {
     use super::*;
-    use aether_oauth::portachiavi::{Guasto, InMemoria};
+    use rymembra_oauth::portachiavi::{Guasto, InMemoria};
 
     /// Una libreria vuota in memoria.
     fn libreria() -> rusqlite::Connection {
-        aether_app::db::open_in_memory()
+        rymembra_app::db::open_in_memory()
             .expect("database")
             .connection
     }

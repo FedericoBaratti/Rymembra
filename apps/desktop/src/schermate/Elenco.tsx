@@ -429,7 +429,7 @@ function TestaElenco({
  * farebbe saltare la pagina, che è il difetto che i segnaposto esistono per
  * evitare.
  *
- * `skeleton` è una parte del registro (`core/aether-skin/src/parts.rs`), e la
+ * `skeleton` è una parte del registro (`core/rymembra-skin/src/parts.rs`), e la
  * sua descrizione dice che l'animazione fa parte dell'identità della skin.
  * Fino a qui era emessa **solo** nell'anteprima dello Studio: l'applicazione
  * mostrava una parte che non usava.

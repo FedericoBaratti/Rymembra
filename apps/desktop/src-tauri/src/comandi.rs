@@ -1,22 +1,22 @@
 //! I comandi che la finestra può chiamare.
 //!
 //! Sono involucri e basta. Ogni riga di questo file o traduce un argomento, o
-//! chiama `aether_app`, o traduce un errore: **niente decisioni**. Il momento in
+//! chiama `rymembra_app`, o traduce un errore: **niente decisioni**. Il momento in
 //! cui un comando comincia a scegliere cosa inserire o cosa togliere è il
 //! momento in cui quella scelta smette di essere provabile senza aprire una
 //! finestra, e ricomincia a poter divergere da quella di Android.
 
 use crate::spegnimento::Emette as _;
-use aether_app::import_legacy;
-use aether_app::library::{
+use rymembra_app::import_legacy;
+use rymembra_app::library::{
     AlbumSummary, ArtistSummary, Counts, RimozioneInAttesa, RimozioniSottoUnaRadice, Scadenze,
     Scan, ScanReport, TrackOrder, TrackSummary, album_tracks, applica_rimozioni, counts,
     list_albums, list_artists, list_tracks, recently_added_albums, riassumi_rimozioni, search,
     summaries_by_id,
 };
-use aether_app::settings::CHIAVE_CARTELLE;
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::paths::PathRules;
+use rymembra_app::settings::CHIAVE_CARTELLE;
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::paths::PathRules;
 use serde::Serialize;
 use tauri::{Manager as _, State};
 
@@ -50,7 +50,7 @@ pub struct Avvio {
     /// `None` vuol dire **mai scelto**, ed è diverso da «sistema»: la finestra
     /// deve poter distinguere le due cose per sapere se ripiegare sulla
     /// preferenza rimasta in `localStorage` prima che il tema tornasse nel
-    /// nucleo. Vedi `aether_app::preferenze`.
+    /// nucleo. Vedi `rymembra_app::preferenze`.
     pub tema: Option<String>,
     /// La lingua scelta, come codice ISO. `None` vuol dire **mai scelta**.
     ///
@@ -75,7 +75,7 @@ pub struct Avvio {
 /// di impostazione corrotto non gli lascia modo di correggerlo. È la regola di
 /// `settings::read_json`, dove sta ora insieme alla sua ragione.
 fn leggi_cartelle(connection: &rusqlite::Connection) -> Result<Vec<String>, AppError> {
-    Ok(aether_app::settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default())
+    Ok(rymembra_app::settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default())
 }
 
 /// Lo stato all'avvio.
@@ -92,15 +92,16 @@ pub async fn avvio(app: tauri::AppHandle) -> Esito<Avvio> {
             cartelle: leggi_cartelle(&libreria.connection)?,
             // Il `filter` regge le righe vuote scritte prima che
             // `imposta_cartella_download` cancellasse invece di svuotare.
-            cartella_download: aether_app::settings::read(
+            cartella_download: rymembra_app::settings::read(
                 &libreria.connection,
-                aether_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
+                rymembra_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
             )?
             .filter(|scelta| !scelta.trim().is_empty()),
             numeri: counts(&libreria.connection)?,
-            tema: aether_app::preferenze::tema(&libreria.connection)?.map(|t| t.nome().to_owned()),
-            lingua: aether_app::preferenze::lingua(&libreria.connection)?,
-            scorciatoie: aether_app::preferenze::scorciatoie(&libreria.connection)?,
+            tema: rymembra_app::preferenze::tema(&libreria.connection)?
+                .map(|t| t.nome().to_owned()),
+            lingua: rymembra_app::preferenze::lingua(&libreria.connection)?,
+            scorciatoie: rymembra_app::preferenze::scorciatoie(&libreria.connection)?,
         })
     })
     .await
@@ -115,7 +116,7 @@ pub async fn avvio(app: tauri::AppHandle) -> Esito<Avvio> {
 /// stringa: `D:\Musica`, `d:\musica` e `D:\Musica\` — il dialogo, un
 /// trascinamento e un percorso incollato — erano tre cartelle sorvegliate, e la
 /// stessa musica si scansionava tre volte. Il confronto giusto è
-/// [`aether_domain::paths::path_key`], che è quello della scansione, e sta qui
+/// [`rymembra_domain::paths::path_key`], che è quello della scansione, e sta qui
 /// perché le strade che arrivano a questo comando sono tre: resta la prima
 /// grafia, quella con cui la cartella era già in elenco.
 ///
@@ -127,7 +128,7 @@ pub async fn avvio(app: tauri::AppHandle) -> Esito<Avvio> {
 /// voleva dire ogni brano rientrato col nome nuovo e la storia vuota: la
 /// seconda non entra, e la risposta la mette fra le `gemelle`, per cui la
 /// finestra propone [`cartelle_trasloca`]. La decisione è
-/// [`aether_app::profilo::radici::ordina_cartelle`], che si prova senza una
+/// [`rymembra_app::profilo::radici::ordina_cartelle`], che si prova senza una
 /// share; qui si chiede soltanto al disco il nome vero di ogni cartella.
 ///
 /// # Dove gira
@@ -145,17 +146,17 @@ pub async fn avvio(app: tauri::AppHandle) -> Esito<Avvio> {
 pub async fn imposta_cartelle(
     app: tauri::AppHandle,
     cartelle: Vec<String>,
-) -> Esito<aether_app::profilo::radici::CartelleOrdinate> {
+) -> Esito<rymembra_app::profilo::radici::CartelleOrdinate> {
     let mano = app.clone();
     let esito = in_disparte("cartelle sorvegliate", move || {
         let stato = libreria_di(&mano, "cartelle sorvegliate")?;
         let prima = con_libreria(&stato, |libreria| leggi_cartelle(&libreria.connection))?;
         let nomi = nomi_veri(&prima, &cartelle);
-        let ordinate = aether_app::profilo::radici::ordina_cartelle(&prima, &cartelle, &|c| {
+        let ordinate = rymembra_app::profilo::radici::ordina_cartelle(&prima, &cartelle, &|c| {
             nomi.get(c).cloned().flatten()
         });
         con_libreria(&stato, |libreria| {
-            aether_app::settings::write_json(
+            rymembra_app::settings::write_json(
                 &libreria.connection,
                 CHIAVE_CARTELLE,
                 &ordinate.cartelle,
@@ -200,7 +201,7 @@ fn nomi_veri(
     chieste: &[String],
 ) -> std::collections::HashMap<String, Option<String>> {
     let regole = PathRules::for_current_platform();
-    let chiave = |p: &str| aether_domain::paths::path_key(p, regole);
+    let chiave = |p: &str| rymembra_domain::paths::path_key(p, regole);
     let c_e_una_nuova = chieste
         .iter()
         .any(|c| !prima.iter().any(|p| chiave(p) == chiave(c)));
@@ -213,14 +214,14 @@ fn nomi_veri(
         .filter(|c| !c.is_empty())
         .collect();
     let risolti =
-        aether_app::volumi::risolvi_tutti(&elenco, aether_app::volumi::SCADENZA_RISOLUZIONE);
+        rymembra_app::volumi::risolvi_tutti(&elenco, rymembra_app::volumi::SCADENZA_RISOLUZIONE);
     elenco.into_iter().zip(risolti).collect()
 }
 
 /// Sposta la libreria da una cartella sorvegliata alla stessa cartella scritta
 /// in un altro modo, senza perdere niente.
 ///
-/// È la risposta a una [`aether_app::profilo::radici::Gemella`]: `Z:\` e
+/// È la risposta a una [`rymembra_app::profilo::radici::Gemella`]: `Z:\` e
 /// `\\nas\musica` sono lo stesso posto, e chi aggiunge la seconda vuole che la
 /// libreria la usi **al posto** della prima. Si riscrivono i percorsi dei brani
 /// — ascolti, voti e playlist restano attaccati alle loro righe — poi la
@@ -250,7 +251,7 @@ pub async fn cartelle_trasloca(
     app: tauri::AppHandle,
     da: String,
     a: String,
-) -> Esito<aether_app::profilo::radici::Riscritti> {
+) -> Esito<rymembra_app::profilo::radici::Riscritti> {
     let mano = app.clone();
     let esito = in_disparte("trasloco di una cartella sorvegliata", move || {
         trasloca_ora(&mano, &da, &a)
@@ -272,12 +273,12 @@ fn trasloca_ora(
     app: &tauri::AppHandle,
     da: &str,
     a: &str,
-) -> Result<aether_app::profilo::radici::Riscritti, AppError> {
-    use aether_app::profilo::radici;
-    use aether_app::volumi::{self, Esistenza};
+) -> Result<rymembra_app::profilo::radici::Riscritti, AppError> {
+    use rymembra_app::profilo::radici;
+    use rymembra_app::volumi::{self, Esistenza};
 
     let stato = libreria_di(app, "trasloco di una cartella sorvegliata")?;
-    let rimappature = [aether_app::profilo::Rimappatura {
+    let rimappature = [rymembra_app::profilo::Rimappatura {
         da: da.to_owned(),
         a: a.to_owned(),
         brani: 0,
@@ -294,7 +295,7 @@ fn trasloca_ora(
 
     // ── con il lucchetto, una transazione sola ──
     con_libreria(&stato, |libreria| {
-        let fallita = |err: rusqlite::Error| aether_app::db::codice_da_sqlite("trasloco", &err);
+        let fallita = |err: rusqlite::Error| rymembra_app::db::codice_da_sqlite("trasloco", &err);
         let tx = libreria
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -322,13 +323,13 @@ fn trasloca_ora(
         // Rimesse in ordine con le regole di sempre: la cartella traslocata
         // può essere finita dentro un'altra, o sopra un doppione.
         let ordinate = radici::ordina_cartelle(&rimappate, &rimappate, &|_| None);
-        aether_app::settings::write_json(&tx, CHIAVE_CARTELLE, &ordinate.cartelle)?;
+        rymembra_app::settings::write_json(&tx, CHIAVE_CARTELLE, &ordinate.cartelle)?;
 
-        let chiave_download = aether_app::settings::CHIAVE_CARTELLA_DOWNLOAD;
-        if let Some(scarichi) = aether_app::settings::read(&tx, chiave_download)? {
+        let chiave_download = rymembra_app::settings::CHIAVE_CARTELLA_DOWNLOAD;
+        if let Some(scarichi) = rymembra_app::settings::read(&tx, chiave_download)? {
             let spostata = radici::rimappa_percorso(&scarichi, &rimappature);
             if spostata != scarichi {
-                aether_app::settings::write(&tx, chiave_download, &spostata)?;
+                rymembra_app::settings::write(&tx, chiave_download, &spostata)?;
             }
         }
 
@@ -371,15 +372,15 @@ pub fn imposta_cartella_download(
         con_libreria(&stato, |libreria| {
             let scelta = percorso.trim();
             if scelta.is_empty() {
-                aether_app::settings::forget(
+                rymembra_app::settings::forget(
                     &libreria.connection,
-                    aether_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
+                    rymembra_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
                 )
                 .map(|_| ())
             } else {
-                aether_app::settings::write(
+                rymembra_app::settings::write(
                     &libreria.connection,
-                    aether_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
+                    rymembra_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
                     scelta,
                 )
             }
@@ -422,10 +423,10 @@ pub async fn cronologia(
     app: tauri::AppHandle,
     offset: i64,
     limite: i64,
-) -> Esito<Vec<aether_app::library::VoceCronologia>> {
+) -> Esito<Vec<rymembra_app::library::VoceCronologia>> {
     let (offset, limite) = pagina(offset, limite);
     leggi_la_libreria(app, "cronologia", move |libreria| {
-        aether_app::library::list_history(&libreria.connection, offset, limite)
+        rymembra_app::library::list_history(&libreria.connection, offset, limite)
     })
     .await
     .map_err(errore)
@@ -438,7 +439,7 @@ pub async fn cronologia(
 #[tauri::command]
 pub async fn cronologia_conteggio(app: tauri::AppHandle) -> Esito<i64> {
     leggi_la_libreria(app, "conteggio della cronologia", |libreria| {
-        aether_app::library::count_history(&libreria.connection)
+        rymembra_app::library::count_history(&libreria.connection)
     })
     .await
     .map_err(errore)
@@ -609,7 +610,7 @@ impl EsitoScansione {
         numeri: Counts,
         da_confermare: Option<RimozioniDaConfermare>,
     ) -> Self {
-        let quali = |elenco: &[aether_app::library::Unreadable]| -> Vec<FileSaltato> {
+        let quali = |elenco: &[rymembra_app::library::Unreadable]| -> Vec<FileSaltato> {
             elenco
                 .iter()
                 .take(QUANTI_DETTAGLI)
@@ -796,7 +797,7 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
     // deve fermarla anche se nessuno ha premuto «Annulla».
     let fermati = || fermare.scansione_fermata() || crate::spegnimento::in_uscita();
     let scan = Scan {
-        files: std::sync::Arc::new(aether_app::files::LocalFiles),
+        files: std::sync::Arc::new(rymembra_app::files::LocalFiles),
         covers: copertine,
         roots: &roots,
         rules: PathRules::for_current_platform(),
@@ -869,7 +870,7 @@ pub struct EsitoRimozioni {
 /// Toglie le rimozioni che l'ultima scansione a mano aveva trattenuto.
 ///
 /// Non cammina il disco: toglie **esattamente** le righe trattenute, per
-/// identificativo e percorso — vedi `aether_app::library::applica_rimozioni`.
+/// identificativo e percorso — vedi `rymembra_app::library::applica_rimozioni`.
 /// Quel che quelle righe portavano con sé — ascolti, voto, preferito, posto
 /// nelle playlist — resta messo da parte per novanta giorni (migrazione 028) e
 /// torna se il file ricompare.
@@ -1072,7 +1073,7 @@ pub async fn cerca(
 #[tauri::command]
 pub async fn cerca_conteggio(app: tauri::AppHandle, query: String) -> Esito<i64> {
     leggi_la_libreria(app, "conteggio della ricerca", move |libreria| {
-        aether_app::library::search_count(&libreria.connection, &query)
+        rymembra_app::library::search_count(&libreria.connection, &query)
     })
     .await
     .map_err(errore)
@@ -1087,7 +1088,7 @@ pub async fn preferiti(
 ) -> Esito<Vec<TrackSummary>> {
     let (offset, limite) = pagina(offset, limite);
     leggi_la_libreria(app, "preferiti", move |libreria| {
-        aether_app::library::list_liked(&libreria.connection, offset, limite)
+        rymembra_app::library::list_liked(&libreria.connection, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1103,7 +1104,7 @@ pub async fn album_artista(
 ) -> Esito<Vec<AlbumSummary>> {
     let (offset, limite) = pagina(offset, limite);
     leggi_la_libreria(app, "album di un artista", move |libreria| {
-        aether_app::library::albums_by_artist(&libreria.connection, &nome, offset, limite)
+        rymembra_app::library::albums_by_artist(&libreria.connection, &nome, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1209,7 +1210,7 @@ pub fn preferito(
             // Dal classificatore e non costruito a mano: un database occupato o
             // una share staccata devono dirlo, non «il database ha rifiutato
             // una richiesta».
-            .map_err(|err| aether_app::db::codice_da_sqlite("preferito", &err))
+            .map_err(|err| rymembra_app::db::codice_da_sqlite("preferito", &err))
     })
     .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)
@@ -1234,7 +1235,7 @@ pub fn preferito(
 #[tauri::command(async)]
 pub fn brano_mostra_nella_cartella(stato: State<'_, Stato>, id: i64) -> Esito<()> {
     let percorso = con_libreria(&stato, |libreria| {
-        let brano = aether_app::library::read_summary(&libreria.connection, id)?
+        let brano = rymembra_app::library::read_summary(&libreria.connection, id)?
             .ok_or_else(|| AppError::new(ErrorCode::LibraryTrackNotFound { track_id: Some(id) }))?;
         // Un brano di catalogo non sta in nessuna cartella. La finestra nasconde
         // già questo gesto quando il brano è un flusso; il controllo resta
@@ -1275,7 +1276,7 @@ pub fn brano_mostra_nella_cartella(stato: State<'_, Stato>, id: i64) -> Esito<()
 /// indirizzo vorrebbe dire dargliela intera. La finestra nomina un brano;
 /// l'indirizzo è quello che il catalogo aveva dichiarato quando quel brano è
 /// entrato, e prima di aprirlo passa comunque dall'allowlist di
-/// `aether_catalogo::riconosci` — lo stesso cancello da cui passano i byte da
+/// `rymembra_catalogo::riconosci` — lo stesso cancello da cui passano i byte da
 /// suonare.
 ///
 /// `(async)`: aprire il browser di sistema può metterci un istante, e non sul
@@ -1285,12 +1286,12 @@ pub fn brano_mostra_nella_cartella(stato: State<'_, Stato>, id: i64) -> Esito<()
 ///
 /// `library.trackNotFound` se il brano non c'è più;
 /// `download.unrecognizedUrl` se non dichiara una pagina pubblica, o se quella
-/// pagina non è in un posto dove Aether sia invitato; `internal.aborted` se il
+/// pagina non è in un posto dove Rymembra sia invitato; `internal.aborted` se il
 /// browser non si apre.
 #[tauri::command(async)]
 pub fn brano_apri_pagina(stato: State<'_, Stato>, id: i64) -> Esito<()> {
     let pagina = con_libreria(&stato, |libreria| {
-        let brano = aether_app::library::read_summary(&libreria.connection, id)?
+        let brano = rymembra_app::library::read_summary(&libreria.connection, id)?
             .ok_or_else(|| AppError::new(ErrorCode::LibraryTrackNotFound { track_id: Some(id) }))?;
         brano.fonte_pagina.ok_or_else(|| {
             AppError::new(ErrorCode::DownloadUnrecognizedUrl)
@@ -1298,10 +1299,11 @@ pub fn brano_apri_pagina(stato: State<'_, Stato>, id: i64) -> Esito<()> {
         })
     })
     .map_err(errore)?;
-    if aether_catalogo::riconosci(&pagina).is_none() {
+    if rymembra_catalogo::riconosci(&pagina).is_none() {
         return Err(errore(
-            AppError::new(ErrorCode::DownloadUnrecognizedUrl)
-                .with_cause("questa pagina non è in un posto dove Aether sia invitato".to_owned()),
+            AppError::new(ErrorCode::DownloadUnrecognizedUrl).with_cause(
+                "questa pagina non è in un posto dove Rymembra sia invitato".to_owned(),
+            ),
         ));
     }
     tauri_plugin_opener::open_url(&pagina, None::<&str>).map_err(|err| {
@@ -1342,13 +1344,13 @@ pub fn valutazione(
                 // il primo data **questo** voto, il secondo continua a datare
                 // l'ultima notizia qualunque sul brano. Solo il primo permette a
                 // uno zero di viaggiare come una decisione invece che come
-                // un'assenza — vedi `aether_app::sincronia`.
+                // un'assenza — vedi `rymembra_app::sincronia`.
                 "UPDATE tracks SET rating = ?2, stats_updated_at = ?3, rating_at = ?3
                   WHERE id = ?1",
                 rusqlite::params![id, stelle, now],
             )
             .map(|_| ())
-            .map_err(|err| aether_app::db::codice_da_sqlite("valutazione", &err))
+            .map_err(|err| rymembra_app::db::codice_da_sqlite("valutazione", &err))
     })
     .map_err(errore);
     crate::nuvola::se_riuscito(&app, esito)
@@ -1403,9 +1405,9 @@ fn importa_interno(
 /// ragione per cui ci è tornato.
 #[tauri::command]
 pub fn imposta_tema(app: tauri::AppHandle, stato: State<'_, Stato>, tema: String) -> Esito<()> {
-    let Some(scelto) = aether_app::preferenze::Tema::dal_nome(&tema) else {
+    let Some(scelto) = rymembra_app::preferenze::Tema::dal_nome(&tema) else {
         return Err(errore(AppError::new(
-            aether_domain::errors::ErrorCode::IpcPayloadInvalid {
+            rymembra_domain::errors::ErrorCode::IpcPayloadInvalid {
                 channel: "imposta_tema".to_owned(),
                 detail: Some(format!("«{tema}» non è uno dei tre temi")),
             },
@@ -1414,7 +1416,7 @@ pub fn imposta_tema(app: tauri::AppHandle, stato: State<'_, Stato>, tema: String
     crate::nuvola::se_riuscito(
         &app,
         con_libreria(&stato, |libreria| {
-            aether_app::preferenze::imposta_tema(&libreria.connection, scelto)
+            rymembra_app::preferenze::imposta_tema(&libreria.connection, scelto)
         })
         .map_err(errore),
     )
@@ -1439,7 +1441,7 @@ pub fn imposta_tema(app: tauri::AppHandle, stato: State<'_, Stato>, tema: String
 #[tauri::command]
 pub fn movimento_ridotto(stato: State<'_, Stato>) -> Esito<bool> {
     con_libreria(&stato, |libreria| {
-        aether_app::preferenze::movimento_ridotto(&libreria.connection)
+        rymembra_app::preferenze::movimento_ridotto(&libreria.connection)
     })
     .map_err(errore)
 }
@@ -1459,7 +1461,7 @@ pub fn imposta_movimento_ridotto(
     crate::nuvola::se_riuscito(
         &app,
         con_libreria(&stato, |libreria| {
-            aether_app::preferenze::imposta_movimento_ridotto(&libreria.connection, ridotto)
+            rymembra_app::preferenze::imposta_movimento_ridotto(&libreria.connection, ridotto)
         })
         .map_err(errore),
     )
@@ -1477,7 +1479,7 @@ pub fn imposta_lingua(app: tauri::AppHandle, stato: State<'_, Stato>, lingua: St
     crate::nuvola::se_riuscito(
         &app,
         con_libreria(&stato, |libreria| {
-            aether_app::preferenze::imposta_lingua(&libreria.connection, &lingua)
+            rymembra_app::preferenze::imposta_lingua(&libreria.connection, &lingua)
         })
         .map_err(errore),
     )
@@ -1493,7 +1495,7 @@ pub fn imposta_scorciatoie(
     crate::nuvola::se_riuscito(
         &app,
         con_libreria(&stato, |libreria| {
-            aether_app::preferenze::imposta_scorciatoie(&libreria.connection, &scorciatoie)
+            rymembra_app::preferenze::imposta_scorciatoie(&libreria.connection, &scorciatoie)
         })
         .map_err(errore),
     )
@@ -1523,8 +1525,8 @@ pub struct StatoUiCartelle {
 pub fn cartelle_ui(stato: State<'_, Stato>) -> Esito<StatoUiCartelle> {
     con_libreria(&stato, |libreria| {
         Ok(StatoUiCartelle {
-            aperte: aether_app::preferenze::cartelle_aperte(&libreria.connection)?,
-            scelta: aether_app::preferenze::cartella_scelta(&libreria.connection)?,
+            aperte: rymembra_app::preferenze::cartelle_aperte(&libreria.connection)?,
+            scelta: rymembra_app::preferenze::cartella_scelta(&libreria.connection)?,
         })
     })
     .map_err(errore)
@@ -1535,7 +1537,7 @@ pub fn cartelle_ui(stato: State<'_, Stato>) -> Esito<StatoUiCartelle> {
 /// # Perché non passa da `nuvola::se_riuscito`
 ///
 /// Perché sono percorsi di *questa* macchina — vedi il preambolo di
-/// `aether_app::preferenze` — e una passata di backup vale quel che porta
+/// `rymembra_app::preferenze` — e una passata di backup vale quel che porta
 /// altrove. Farla partire a ogni nodo aperto vorrebbe dire svegliare la rete
 /// per un dato che sull'altro computer non si può nemmeno usare.
 #[tauri::command]
@@ -1545,8 +1547,8 @@ pub fn imposta_cartelle_ui(
     scelta: String,
 ) -> Esito<()> {
     con_libreria(&stato, |libreria| {
-        aether_app::preferenze::imposta_cartelle_aperte(&libreria.connection, &aperte)?;
-        aether_app::preferenze::imposta_cartella_scelta(&libreria.connection, &scelta)
+        rymembra_app::preferenze::imposta_cartelle_aperte(&libreria.connection, &aperte)?;
+        rymembra_app::preferenze::imposta_cartella_scelta(&libreria.connection, &scelta)
     })
     .map_err(errore)
 }
@@ -1598,7 +1600,7 @@ pub struct Casa {
 /// motore delle regole su tutta la libreria.
 #[tauri::command]
 pub async fn casa(app: tauri::AppHandle) -> Esito<Casa> {
-    use aether_domain::regole::{
+    use rymembra_domain::regole::{
         Campo, Combinazione, Insieme, Operatore, Ordinamento, Regola, Valore,
     };
 
@@ -1607,17 +1609,17 @@ pub async fn casa(app: tauri::AppHandle) -> Esito<Casa> {
 
         // Dove ci si era fermati: la coda di ieri sa quale brano, e la
         // posizione sta in una chiave sua.
-        let istantanea = aether_app::playback::load_queue(connection)?;
-        let corrente = aether_domain::queue::Queue::restore(istantanea).current();
+        let istantanea = rymembra_app::playback::load_queue(connection)?;
+        let corrente = rymembra_domain::queue::Queue::restore(istantanea).current();
         let riprendi = match corrente {
-            Some(id) => aether_app::library::read_summary(connection, id)?,
+            Some(id) => rymembra_app::library::read_summary(connection, id)?,
             None => None,
         };
         // La posizione si legge solo se c'è un brano a cui appartiene: da sola
         // sarebbe un numero senza significato, e mostrarla accanto al brano
         // sbagliato è peggio che non mostrarla.
         let riprendi_ms = match &riprendi {
-            Some(brano) => aether_app::playback::load_posizione(connection, brano.id)?,
+            Some(brano) => rymembra_app::playback::load_posizione(connection, brano.id)?,
             None => 0,
         };
 
@@ -1636,7 +1638,7 @@ pub async fn casa(app: tauri::AppHandle) -> Esito<Casa> {
         // scritta a mano: è la stessa domanda che una playlist intelligente sa
         // già fare, e scriverla due volte vorrebbe dire due idee di cosa
         // significhi «non di recente».
-        let trascurati = aether_app::smart::brani(
+        let trascurati = rymembra_app::smart::brani(
             connection,
             &Insieme {
                 combinazione: Combinazione::Tutte,
@@ -1686,8 +1688,8 @@ pub struct RaccoltaSettimana {
 ///
 /// # Perché il fuso arriva dall'interfaccia
 ///
-/// Perché il nucleo non ha un fuso: `aether-domain` non guarda l'orologio e
-/// `aether-app` tiene il tempo in millisecondi universali, che è l'unica forma
+/// Perché il nucleo non ha un fuso: `rymembra-domain` non guarda l'orologio e
+/// `rymembra-app` tiene il tempo in millisecondi universali, che è l'unica forma
 /// che sopravvive a una sincronizzazione fra dispositivi in due paesi. Il
 /// lunedì invece è un fatto locale — comincia sette ore prima a Roma che a Los
 /// Angeles — e l'unico posto che sa dove si trova la finestra è la finestra.
@@ -1695,7 +1697,7 @@ pub struct RaccoltaSettimana {
 /// `scostamento_minuti` sono i minuti da **aggiungere** all'universale per
 /// avere l'ora locale: è il contrario del segno di `getTimezoneOffset()`, e il
 /// verso si legge senza doverci pensare. Vedi
-/// [`aether_domain::settimana::lunedi`].
+/// [`rymembra_domain::settimana::lunedi`].
 ///
 /// # Perché `(async)` e non un comando qualunque
 ///
@@ -1719,10 +1721,10 @@ pub fn settimana(
     scostamento_minuti: i32,
 ) -> Esito<Vec<RaccoltaSettimana>> {
     let adesso = adesso_ms();
-    let lunedi = aether_domain::settimana::lunedi(adesso, scostamento_minuti);
+    let lunedi = rymembra_domain::settimana::lunedi(adesso, scostamento_minuti);
 
     con_libreria(&stato, |libreria| {
-        let raccolte = aether_app::settimana::aggiorna(&mut libreria.connection, lunedi, adesso)?;
+        let raccolte = rymembra_app::settimana::aggiorna(&mut libreria.connection, lunedi, adesso)?;
         let mut fuori = Vec::with_capacity(raccolte.len());
         for raccolta in raccolte {
             fuori.push(RaccoltaSettimana {
@@ -1744,7 +1746,7 @@ pub fn settimana(
 #[tauri::command]
 pub fn settimana_apri(stato: State<'_, Stato>, raccolta: i64) -> Esito<()> {
     con_libreria(&stato, |libreria| {
-        aether_app::settimana::apri(&libreria.connection, raccolta, adesso_ms())
+        rymembra_app::settimana::apri(&libreria.connection, raccolta, adesso_ms())
     })
     .map_err(errore)
 }
@@ -1775,7 +1777,7 @@ enum Documento {
     Repository,
     /// Dove si segnala un problema.
     Segnalazioni,
-    /// La licenza di Aether.
+    /// La licenza di Rymembra.
     Licenza,
     /// Gli avvisi sulle dipendenze.
     Terze,
@@ -2057,9 +2059,9 @@ mod prove {
 /// Le cartelle musicali del sistema che contengono davvero qualcosa.
 ///
 /// Serve al primo avvio, e la decisione di cosa proporre sta in
-/// `aether_app::primo`: qui si traduce soltanto, come ogni altra riga di questo
+/// `rymembra_app::primo`: qui si traduce soltanto, come ogni altra riga di questo
 /// file. Quali siano le cartelle musicali di un sistema però lo sa il sistema, e
-/// **questo** lo si può chiedere solo da qui: `aether-app` non conosce Tauri e
+/// **questo** lo si può chiedere solo da qui: `rymembra-app` non conosce Tauri e
 /// non deve conoscerlo.
 ///
 /// # La scadenza dice quanto, la riserva dice dove
@@ -2083,8 +2085,8 @@ mod prove {
 pub async fn cartelle_candidate(app: tauri::AppHandle) -> Esito<Vec<CartellaCandidata>> {
     let percorsi = percorsi_musicali(&app);
     let trovate = in_disparte("cartelle candidate", move || {
-        aether_app::scadenza::con_scadenza(RICERCA_CARTELLE_NOME, RICERCA_CARTELLE, move || {
-            aether_app::primo::esamina(&aether_app::files::LocalFiles, &percorsi)
+        rymembra_app::scadenza::con_scadenza(RICERCA_CARTELLE_NOME, RICERCA_CARTELLE, move || {
+            rymembra_app::primo::esamina(&rymembra_app::files::LocalFiles, &percorsi)
         })
         .unwrap_or_default()
     })

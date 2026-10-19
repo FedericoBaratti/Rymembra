@@ -1,6 +1,6 @@
 //! I comandi del pannello «Cartelle», e l'albero che tengono in vita.
 //!
-//! L'albero vero lo costruisce [`aether_app::cartelle`], che spiega perché
+//! L'albero vero lo costruisce [`rymembra_app::cartelle`], che spiega perché
 //! viene dal database e non dal disco. Qui c'è quel che il nucleo non può
 //! sapere: **quando** costruirlo, quanto tenerlo, e da quale connessione
 //! leggerlo.
@@ -56,16 +56,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use aether_app::cartelle::{
+use rusqlite::{Connection, OpenFlags};
+use rymembra_app::cartelle::{
     Albero, CartelleFiltrate, FileCartella, LIMITE_FILTRO, NodoCartella,
     brani_diretti_dal_database, brani_sotto_dal_database, file_della_cartella, filtra,
     sotto_una_radice,
 };
-use aether_app::files::MusicFiles as _;
-use aether_app::settings::{self, CHIAVE_CARTELLE};
-use aether_domain::errors::{AppError, ErrorCode};
-use aether_domain::paths::PathRules;
-use rusqlite::{Connection, OpenFlags};
+use rymembra_app::files::MusicFiles as _;
+use rymembra_app::settings::{self, CHIAVE_CARTELLE};
+use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::paths::PathRules;
 
 use crate::disparte::in_disparte;
 use crate::errore::{Esito, errore};
@@ -197,7 +197,7 @@ impl IndiceCartelle {
         // l'albero delle cartelle diventerebbe l'unica cosa che dice «il
         // database non si apre» di un database aperto.
         let connessione = Connection::open_with_flags(
-            aether_app::files::percorso_lungo(&self.percorso),
+            rymembra_app::files::percorso_lungo(&self.percorso),
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|err| {
@@ -209,7 +209,7 @@ impl IndiceCartelle {
         // Solo quel che non sta nel file. Niente `journal_mode`, niente
         // migrazioni: la connessione principale ha già fatto entrambe, e questa
         // non potrebbe nemmeno se volesse.
-        aether_app::db::prepara_connessione_secondaria(&connessione);
+        rymembra_app::db::prepara_connessione_secondaria(&connessione);
         Ok(connessione)
     }
 
@@ -330,7 +330,7 @@ pub async fn cartelle_figlie(
 
 /// Gli identificativi dei brani sotto `percorso`, nell'ordine di riproduzione.
 ///
-/// L'ordine lo decide [`aether_app::cartelle`], e dentro una cartella è quello
+/// L'ordine lo decide [`rymembra_app::cartelle`], e dentro una cartella è quello
 /// dell'album — che è la cosa giusta perché una cartella, nel caso normale, *è*
 /// un album.
 ///
@@ -420,7 +420,7 @@ pub async fn cartelle_file(
 }
 
 /// Le cartelle e i file il cui nome contiene `testo`, con la strada per
-/// arrivarci: vedi [`aether_app::cartelle::filtra`].
+/// arrivarci: vedi [`rymembra_app::cartelle::filtra`].
 ///
 /// # Dove gira
 ///
@@ -523,7 +523,7 @@ fn cartella_da_mostrare(connessione: &Connection, percorso: &str) -> Result<Path
         return Err(rifiuto("non sta sotto nessuna cartella sorvegliata"));
     }
     let cartella = PathBuf::from(percorso);
-    match std::fs::metadata(aether_app::files::percorso_lungo(&cartella)) {
+    match std::fs::metadata(rymembra_app::files::percorso_lungo(&cartella)) {
         Ok(dati) if dati.is_dir() => Ok(cartella),
         Ok(_) => Err(rifiuto("non è una cartella")),
         Err(err) => Err(AppError::new(ErrorCode::FsNotFound {
@@ -560,7 +560,8 @@ pub async fn cartelle_radici_vive(radici: Vec<String>) -> Esito<Vec<bool>> {
             let fili: Vec<_> = radici
                 .iter()
                 .map(|radice| {
-                    ambito.spawn(move || aether_app::files::LocalFiles.radice_raggiungibile(radice))
+                    ambito
+                        .spawn(move || rymembra_app::files::LocalFiles.radice_raggiungibile(radice))
                 })
                 .collect();
             fili.into_iter()
@@ -747,7 +748,8 @@ mod tests {
             let fili: Vec<_> = [esiste.as_str(), "Z:/non/esiste/di/sicuro"]
                 .into_iter()
                 .map(|radice| {
-                    ambito.spawn(move || aether_app::files::LocalFiles.radice_raggiungibile(radice))
+                    ambito
+                        .spawn(move || rymembra_app::files::LocalFiles.radice_raggiungibile(radice))
                 })
                 .collect();
             fili.into_iter()

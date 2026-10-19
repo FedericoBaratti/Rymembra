@@ -95,7 +95,7 @@ export function AvvisoAudio({
     const guasto = stato.audio;
     /* La causa tradotta dal codice, con la frase del nucleo come ripiego.
        `tSe` perché il codice non lo può verificare TypeScript: arriva da
-       `aether-play`, che di lingue non ne conosce. Prima si stampava la frase
+       `rymembra-play`, che di lingue non ne conosce. Prima si stampava la frase
        e basta, ed era italiana accanto a un'etichetta inglese. */
     /* L'uscita fissata che se n'è andata non è un guasto da riparare ma
        un'attesa: il nucleo riprende da sé quando torna. Dirlo così — «In

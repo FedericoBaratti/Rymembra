@@ -8,28 +8,28 @@
 [workspace]
 resolver = "3"
 members = [
-    "core/aether-domain",
-    "core/aether-play",
-    "core/aether-app",
-    "core/aether-skin",
-    "core/aether-net",
-    "core/aether-meta",
-    "core/aether-catalogo",
-    "core/aether-oauth",
-    "core/aether-archivio",
-    "core/aether-sync",
-    "core/aether-cloud",
-    "core/aether-scrobble",
-    "core/aether-ia",
+    "core/rymembra-domain",
+    "core/rymembra-play",
+    "core/rymembra-app",
+    "core/rymembra-skin",
+    "core/rymembra-net",
+    "core/rymembra-meta",
+    "core/rymembra-catalogo",
+    "core/rymembra-oauth",
+    "core/rymembra-archivio",
+    "core/rymembra-sync",
+    "core/rymembra-cloud",
+    "core/rymembra-scrobble",
+    "core/rymembra-ia",
     "apps/desktop/src-tauri",
-    "apps/desktop/aether-barra",
+    "apps/desktop/rymembra-barra",
 ]
 
 [workspace.package]
-version = "3.0.0"
+version = "3.0.1"
 edition = "2024"
 # Era 1.85, che è il minimo dell'edizione 2024. L'ha alzata prima `opus-pure`,
-# il decodificatore Opus di `aether-play`, che ne dichiara 1.88; poi `tauri
+# il decodificatore Opus di `rymembra-play`, che ne dichiara 1.88; poi `tauri
 # 2.12`, che insieme ai suoi plugin ne dichiara 1.90 (e `lofty 0.25` 1.89). Il
 # numero qui deve essere il vero pavimento del workspace — dipendenze comprese —
 # o non dice niente a nessuno. Conta anche per `cargo update`: il risolutore
@@ -44,11 +44,11 @@ authors = ["Federico Baratti"]
 # usa fuori dalla CI — dove l'indirizzo lo dice `GITHUB_REPOSITORY` — e due
 # indirizzi diversi per la stessa release sono due modi di scoprire fra un anno
 # quale dei due qualcuno aveva salvato.
-repository = "https://github.com/FedericoBaratti/Aether"
+repository = "https://github.com/FedericoBaratti/Rymembra"
 
 [workspace.dependencies]
 unicode-normalization = "0.1"
-# La riparazione del testo illeggibile (`aether_domain::codifica`). Serve solo a
+# La riparazione del testo illeggibile (`rymembra_domain::codifica`). Serve solo a
 # DECODIFICARE: la strada di ritorno — dai caratteri ai byte che li avevano
 # prodotti — è una tabella scritta a mano di trentadue voci, perché il
 # codificatore di questa libreria sostituisce l'inrappresentabile con un
@@ -59,28 +59,28 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # ── la nuvola ───────────────────────────────────────────────────────────────
-# Queste stanno qui e non in `aether-cloud` perché prima o poi le vorrà anche
+# Queste stanno qui e non in `rymembra-cloud` perché prima o poi le vorrà anche
 # qualcun altro (il recupero delle copertine, l'arricchimento da MusicBrainz), e
 # due versioni diverse di uno stack TLS nello stesso binario sono megabyte
 # duplicati.
 #
-# `ureq` e non `reqwest`: è bloccante, e tutto Aether è bloccante. Un runtime
+# `ureq` e non `reqwest`: è bloccante, e tutto Rymembra è bloccante. Un runtime
 # asincrono per fare quattro richieste HTTP ogni quarto d'ora vorrebbe dire
 # portarsi dietro tokio — e con lui una seconda idea di cos'è un errore, di
 # cos'è un timeout e di chi possiede un thread.
 #
 # `platform-verifier`: i certificati li giudica il sistema operativo — su
 # Windows lo stesso archivio di radici che usa Edge — e non un elenco cucito
-# nel binario il giorno della compilazione. È ciò che fa funzionare Aether
+# nel binario il giorno della compilazione. È ciò che fa funzionare Rymembra
 # dietro un proxy aziendale o un antivirus che ispeziona il TLS con una radice
 # installata a mano, e che fa sparire una radice ritirata con gli
-# aggiornamenti di Windows invece che con la release successiva di Aether. La
-# feature porta solo l'interruttore: accenderlo è di `aether_net::http`, dove
+# aggiornamenti di Windows invece che con la release successiva di Rymembra. La
+# feature porta solo l'interruttore: accenderlo è di `rymembra_net::http`, dove
 # si costruisce l'agente. Nel `Cargo.lock` non entra niente di nuovo:
 # `rustls-platform-verifier` c'era già, lo usa il `reqwest` dell'updater.
 ureq = { version = "3.4", features = ["platform-verifier"] }
 flate2 = "1"
-# L'impronta del contenuto. Sta qui e non più nel solo `aether-app` da quando la
+# L'impronta del contenuto. Sta qui e non più nel solo `rymembra-app` da quando la
 # calcolano in due: il backup, per sapere se quei byte sono già lassù, e la
 # sincronia, per sapere quali documenti degli altri dispositivi vale la pena
 # scaricare. È la stessa domanda, e due implementazioni diverse della stessa
@@ -91,8 +91,8 @@ getrandom = "0.3"
 keyring = { version = "3", features = ["windows-native"] }
 # `default-features = false` più il solo `deflate`: bzip2, zstd, lzma, xz e ppmd
 # porterebbero altrettante catene di compilazione C per formati che né una skin
-# né un archivio di Spotify usano. Serve a due crate — `aether-skin` per i
-# pacchetti `.aeskin`, `aether-archivio` per i dati che Spotify manda — e sta
+# né un archivio di Spotify usano. Serve a due crate — `rymembra-skin` per i
+# pacchetti `.ryskin`, `rymembra-archivio` per i dati che Spotify manda — e sta
 # qui perché due versioni diverse dello stesso decompressore nello stesso
 # binario sono megabyte duplicati.
 zip = { version = "8", default-features = false, features = ["deflate"] }
@@ -101,7 +101,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 # Il dominio non ha bisogno di unsafe. Vietato, non scoraggiato: se un giorno
 # servisse davvero, deve essere una decisione visibile in questo file.
 #
-# Ed è servito, una volta: `apps/desktop/aether-barra`, i tre pulsanti
+# Ed è servito, una volta: `apps/desktop/rymembra-barra`, i tre pulsanti
 # nell'anteprima della barra delle applicazioni. Per metterli bisogna parlare
 # COM con la barra e mettersi in mezzo ai messaggi della finestra, e nessuna
 # dipendenza seria lo fa al posto nostro — come invece fanno `souvlaki` e
@@ -136,7 +136,7 @@ strip = "symbols"
 # 1. Il database. Con `abort` un panico qualunque, su un filo qualunque, ferma
 #    il processo senza eseguire nessun `Drop`: la connessione SQLite non si
 #    chiude, il WAL non si consolida. È così che nella cartella dell'utente si
-#    è trovato un `aether.db-wal` da quattro megabyte e mezzo mai riassorbito.
+#    è trovato un `rymembra.db-wal` da quattro megabyte e mezzo mai riassorbito.
 #
 # 2. Il codice si è documentato assumendo `unwind`. `analisi::misura_lotto`
 #    scrive che un filo caduto perde solo il suo lotto, e lo scrive perché fa

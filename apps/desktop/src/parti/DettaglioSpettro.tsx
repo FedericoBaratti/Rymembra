@@ -13,7 +13,7 @@
  *
  * # Perché le risoluzioni sono scritte qui
  *
- * Sono le stesse otto di `aether_play::RISOLUZIONI`, e una costante del motore
+ * Sono le stesse otto di `rymembra_play::RISOLUZIONI`, e una costante del motore
  * non attraversa l'IPC. Non è un doppione da tenere allineato a mano sperando
  * di non sbagliare: il comando risponde con quante bande sono **rimaste**,
  * quindi una linguetta che chiedesse un numero che non esiste tornerebbe

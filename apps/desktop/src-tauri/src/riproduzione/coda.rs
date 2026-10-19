@@ -11,10 +11,10 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use aether_app::library::TrackSummary;
-use aether_app::playback;
-use aether_domain::errors::AppError;
-use aether_domain::queue::{Queue, QueueSnapshot, RepeatMode};
+use rymembra_app::library::TrackSummary;
+use rymembra_app::playback;
+use rymembra_domain::errors::AppError;
+use rymembra_domain::queue::{Queue, QueueSnapshot, RepeatMode};
 use serde::Serialize;
 use tauri::{Manager as _, State};
 
@@ -148,10 +148,10 @@ pub(super) fn scegli_da_solo(
     app: &tauri::AppHandle,
     corrente: i64,
     esclusi: &[i64],
-) -> Option<aether_app::autoplay::Scelta> {
+) -> Option<rymembra_app::autoplay::Scelta> {
     let stato = app.state::<Stato>();
     con_libreria(&stato, |libreria| {
-        aether_app::autoplay::prossimo(&libreria.connection, corrente, esclusi, adesso_ms())
+        rymembra_app::autoplay::prossimo(&libreria.connection, corrente, esclusi, adesso_ms())
     })
     .ok()
     .flatten()
@@ -278,7 +278,7 @@ pub fn riprendi_coda(app: &tauri::AppHandle) {
         let bande = con_libreria(&stato, |libreria| {
             playback::load_spettro_bande(&libreria.connection)
         })
-        .unwrap_or(aether_play::RISOLUZIONE_DI_SERIE);
+        .unwrap_or(rymembra_play::RISOLUZIONE_DI_SERIE);
         app.state::<StatoLettore>()
             .spettro_bande
             .store(bande, std::sync::atomic::Ordering::Relaxed);
@@ -720,7 +720,7 @@ pub fn mescola(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<(
 #[tauri::command]
 pub fn brani_per_id(stato: State<'_, Stato>, brani: Vec<i64>) -> Esito<Vec<TrackSummary>> {
     con_libreria(&stato, |libreria| {
-        aether_app::library::summaries_by_id(&libreria.connection, &brani)
+        rymembra_app::library::summaries_by_id(&libreria.connection, &brani)
     })
     .map_err(errore)
 }

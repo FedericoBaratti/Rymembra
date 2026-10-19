@@ -14,7 +14,7 @@ Why one number instead of six: the version ends up in three places the user sees
 the phone reads from `/health` to decide whether the protocol is compatible —
 and those three places read it from different `package.json` files. Six
 independent numbers are six chances to diverge; in the old tree's `release/`
-folder there are still `Aether Setup 0.9.13.7.26.2.exe` and `0.9.14.7.26.2.exe`
+folder there are still `Rymembra Setup 0.9.13.7.26.2.exe` and `0.9.14.7.26.2.exe`
 sitting next to `0.9.14.7.26.3.exe`, which is this problem in the form of
 artifacts.
 
@@ -22,7 +22,7 @@ What increments what:
 
 - **patch** — everything the application does to itself, however much of it
   there is: fixes, and features too — see the second amendment below;
-- **minor** — a release after which something *outside* Aether has to keep up:
+- **minor** — a release after which something *outside* Rymembra has to keep up:
   a skin that must declare a token it did not declare before, a phone that must
   send a field it did not send before. Nothing breaks in the meantime — that is
   what separates this from a major;
@@ -85,6 +85,108 @@ Entries older than 2.3.1 argue their number under the rule that was in force
 when they were written. They are a record of what shipped and are left as they
 were, not restated.
 
+## [3.0.1] — 2026-10-15
+
+**Same program, new name, and nothing left behind.** The program is now called
+Rymembra. A name is the one thing about a program that every other thing is
+filed under — the folder where the library lives, the entries in the keychain,
+the files in Drive, the extension of a skin — so renaming it was never going to
+be a search and replace: whoever has the previous version installed has a
+library, accounts and a backup under the old names, and a new name that makes
+them start from zero is a worse program, not a renamed one. This entry is about
+making sure it isn't.
+
+### Changed — the program is now called Rymembra
+
+The name changes everywhere it can be seen and in every place the program files
+something under it: the window, the installer and its shortcuts, the
+application's folder (`%APPDATA%\io.github.federicobaratti.rymembra`), the log
+(`rymembra.log`), the database (`rymembra.db`) and the copies taken before a
+migration (`rymembra.db.schema-NNN.bak`), the entries in the system keychain, the
+backup and sync files in Drive's application folder, and the code fence the
+Studio's chat speaks in (`rymembra-patch`). The environment variable that points
+the program at another data folder is `RYMEMBRA_DATI`; the one the previous
+version read is still honoured when the new one is not set.
+
+Nothing else is renamed for the sake of it: the screens, the settings and the
+way the program behaves are the ones you already know.
+
+### Added — what the previous version left behind carries over by itself
+
+On the first start after installing, Rymembra finds the data of the previous
+version and takes them over, without asking anything. It does this before
+opening the log or the database, and in this order of caution: **nothing is
+overwritten, and nothing is deleted that is not first safe somewhere else.**
+
+- *Library and settings.* The previous data folder is renamed to the new one —
+  an atomic rename when the disk allows it, entry by entry when it does not —
+  and the database, its write-ahead files, the log files, the copies taken
+  before a migration, the skins and the copies of the profile inside it take the
+  new names. The database is renamed last: as long as the old name exists, no
+  new code has opened it, so a transfer interrupted halfway simply resumes at
+  the next start. Cover art and drafts keep their place.
+- *Accounts.* The secrets in the keychain — the Google Drive tokens, the
+  scrobbling credentials, the keys of the language models — are read from the
+  old entry the first time they are needed, written to the new one, and only
+  then removed; if the write fails, the old entry stays where it was. Forgetting
+  an account removes both, so one you disconnected does not come back.
+- *Drive backup and sync.* The library, skins, drafts and device documents
+  already in Drive are recognised under their old names and renamed in place at
+  the next pass: same file, same content, no new upload. If both a new and an
+  old copy exist, the new one wins and the old is removed only when an identical
+  one is kept. A device that has not been updated yet does not see the renamed
+  documents until it is.
+- *Studio conversations.* The ones saved with the previous code fence are still
+  read; the model is only taught the new one.
+- *If the new folder already holds a library*, it wins and the old one is left
+  exactly as it was. *If the previous version is still running*, its database is
+  open: Rymembra says so, closes without touching anything, and asks you to close
+  the other one — also from the icon next to the clock — and open Rymembra again.
+- *A data folder you chose yourself* (through the environment variable) is never
+  moved; only the files inside it take the new names.
+
+### Changed — the installer removes the previous version
+
+Installing used to leave the previous version in place next to the new one: two
+programs, two entries in *Apps & features*, two sets of shortcuts. The installer
+now uninstalls the previous version itself, silently and before it copies a
+single file, keeping everything it kept in the data folder. It needs no
+administrator rights: it looks for the old program among the current user's
+installed programs only. If that program is open, the installer started by the
+update check waits ten seconds for it to close, and a graphical one asks you to
+close it, in Italian and English; if it stays open, Rymembra is installed anyway
+and the old version is left for *Apps & features* to remove. The shortcuts and
+the entry in *Apps & features* of the previous version go with it, and
+Rymembra's shortcuts take their place — in the Start menu, and on the desktop
+where the previous version had one — also when the installer is the one started
+by the update check, which otherwise only refreshes shortcuts that already
+exist.
+
+### Changed — skins and profiles: `.ryskin` and `.ryprofile`
+
+Skin packages are now `.ryskin` files and profile archives `.ryprofile`, and
+that is all the program writes. Files with the extension of the previous version
+still import — from the file dialogs and by dragging them onto the window — and
+so do profile archives written by it, whose manifest carries the previous name.
+
+### Database
+
+Migration `031_sorgenti_rymembra` (schema 30 → 31) rewrites the prefix that an
+import from an account archive puts in front of the source identifiers it
+makes up — in the wish list (`desiderati.source_id`), in imported playlists
+(`playlists.source_playlist_id`) and in the import reports
+(`import_reports.source_id`) — from the previous version's to `rymembra:`, so
+that importing the same archive again recognises the playlist it already made
+instead of creating a second one. A row that would collide with one already
+written under the new prefix is dropped: the new one wins. The migration is
+idempotent.
+
+**Going back costs a copy of the database**, as for every migration: 3.0.0 opens
+schema 30 and refuses 31 with `db.versionAhead`. Rymembra takes that copy itself
+before migrating — `rymembra.db.schema-030.bak`, beside the database — and
+putting it back in place of `rymembra.db` returns to the library as it was on
+the day of the update; what was played, rated or added afterwards is not in it.
+
 ## [3.0.0] — 2026-10-13
 
 **A leap, not a step.** 3.0 began as the release in which a skin can move — the
@@ -115,7 +217,7 @@ never ran the collection through a dedicated tool had the column empty
 everywhere, and the switch sounded the same on and off. A disc remastered in
 2010 arrived ten decibels above one from 1975, in the same queue.
 
-Aether now **measures** every track the way broadcasters do, with EBU R128: the
+Rymembra now **measures** every track the way broadcasters do, with EBU R128: the
 integrated loudness in LUFS and the true peak. The measurement runs in a second
 pass of the sound analysis that was already decoding every file, on two
 threads, only while nothing is playing — two minutes after the window opens,
@@ -198,7 +300,7 @@ played whole.
 
 An album copied into a music folder, renamed there or deleted from it now
 enters or leaves the library on its own, a few seconds later, without
-pressing «Scan». On local disks Aether listens to Windows' change
+pressing «Scan». On local disks Rymembra listens to Windows' change
 notifications, waits for two seconds of quiet and rescans only the folders
 that changed — with the safety of every automatic scan: if it would remove
 too many tracks at once it removes nothing, and the next «Scan» asks. On
@@ -262,7 +364,7 @@ a font family, size and line height, a filter stack on the element itself (what
 format 1 called `filter` was the backdrop, and is now called that), and a
 `before` layer behind its content next to the `after` layer it already had.
 A skin can ship **its own fonts and images**, served to the window from the
-package through a new `aether-skin` protocol; the address is written only by
+package through a new `rymembra-skin` protocol; the address is written only by
 the compiler, from a name it has already validated, so a manifest cannot point
 anywhere else.
 
@@ -404,7 +506,7 @@ half-skins. Leaving the Studio waits for the save to succeed. Drafts, the
 chat, snapshots and packages are written atomically, so a crash mid-save
 leaves the previous file and not half of the new one, and the package writer
 enforces the same limits as the reader: a skin the Studio exports is a skin
-Aether accepts. Validating and compiling run off the window's thread with a
+Rymembra accepts. Validating and compiling run off the window's thread with a
 cache keyed by the text, and a skin's images and fonts are served from a cache
 with an `ETag` instead of being read from the package at every request — the
 Studio stays smooth on a large skin. The format 1 migration no longer turns a
@@ -420,7 +522,7 @@ Lezer, Tauri's API) next to the crates, with their license texts.
 
 ### Fixed — a library on a NAS or a mapped drive
 
-The ninth line of `TODO.md`: with the music on a network share, Aether said
+The ninth line of `TODO.md`: with the music on a network share, Rymembra said
 «the database refused the request». It was several failures wearing one
 message, and each is now its own.
 
@@ -442,7 +544,7 @@ message, and each is now its own.
   returns — the share comes back, the disk is plugged in again — all of it
   returns to the new row, in the same spot of the same playlists.
 - **Deleting from disk on a share** has no Recycle Bin behind it: Windows
-  deletes for good. 2.4 called it «Move to Recycle Bin» all the same. Aether
+  deletes for good. 2.4 called it «Move to Recycle Bin» all the same. Rymembra
   now recognises network paths, mapped letters included, and asks for an
   explicit «delete permanently».
 - **A letter and its UNC path are the same folder.** Replacing `Z:\Music` with
@@ -455,7 +557,7 @@ message, and each is now its own.
   database refused» is left for real defects.
 - **The first play after starting, with the NAS still asleep.** Windows
   reconnects a mapped letter lazily, and the first plays on `Z:` failed with
-  «network unavailable» while it did. Aether now wakes the shares as soon as
+  «network unavailable» while it did. Rymembra now wakes the shares as soon as
   it starts, gives a file on the network fifteen seconds to open instead of
   five, opens one track at a time however many times play is pressed, and
   when the share is still asleep the error bar keeps its «Retry» — which now
@@ -467,7 +569,7 @@ message, and each is now its own.
   minute every minute while the NAS slept. Settings now also counts the
   network folders it is not watching, instead of leaving them out.
 - **A watch that dies says so.** When Windows drops a watch — the share goes,
-  a USB disk is unplugged — Aether used to go on calling the folder
+  a USB disk is unplugged — Rymembra used to go on calling the folder
   «watched». It now notices within a minute, tries again, falls back to the
   five-minute check when network folders are on, and when the watch is back
   it looks again at what changed in between.
@@ -545,9 +647,9 @@ the output is resampling: «Resampled from 44.1 kHz to 48 kHz».
 
 ### Changed — Windows: the PC sleeps, the media overlay knows the track, the taskbar has buttons
 
-- **Aether no longer keeps the PC awake.** The audio stream was started once
+- **Rymembra no longer keeps the PC awake.** The audio stream was started once
   and never paused, and Windows treats an open stream as «playing»: with
-  Aether open, the PC never went to sleep. The stream now sleeps after thirty
+  Rymembra open, the PC never went to sleep. The stream now sleeps after thirty
   seconds of pause or stop (one second on Bluetooth, see the next point) and
   wakes on the next play.
 - **Pausing lets go of Bluetooth headphones.** Multipoint headphones paired
@@ -560,14 +662,14 @@ the output is resampling: «Resampled from 44.1 kHz to 48 kHz».
   music every time the stream restarts. The log's audio line now says
   `bluetooth=sì|no`, at startup and whenever the output is reopened.
 - **Previous, Play/Pause and Next under the taskbar preview**, as in
-  foobar2000: hover Aether's taskbar icon and the three buttons sit under the
+  foobar2000: hover Rymembra's taskbar icon and the three buttons sit under the
   window's thumbnail. They do what the tray menu does, the middle one turns
   into Pause while music plays, the tooltips are the tray's labels in the
   interface language, and the icons are drawn at the system's scale in the
   colour of the taskbar's light or dark theme. They come back when the window
   returns from the tray or Explorer restarts. This needs talking COM to the
   taskbar, which no maintained dependency does for us, so it is the one place
-  in Aether with `unsafe` code: a module of its own crate, `aether-barra`,
+  in Rymembra with `unsafe` code: a module of its own crate, `rymembra-barra`,
   declared as the single exception next to `unsafe_code = "forbid"` in the
   workspace manifest. No new package enters `Cargo.lock`.
 - **Windows' media overlay** (the one the volume keys open) lost the title and
@@ -589,8 +691,8 @@ the rest of the track.
 
 ### Changed — the database looks after itself
 
-Before every migration Aether now takes a copy of the database next to it —
-`aether.db.schema-027.bak` for the one 3.0 migrates from — and keeps the last
+Before every migration Rymembra now takes a copy of the database next to it —
+`rymembra.db.schema-027.bak` for the one 3.0 migrates from — and keeps the last
 two. It checks the file for damage a minute after starting (`quick_check`, a
 fifth of a second) and keeps the planner's statistics fresh (`PRAGMA
 optimize`). The cover cache can be cleaned from Settings, which now shows its
@@ -599,7 +701,7 @@ all the memory.
 
 ### Changed — your metadata survive an edit made elsewhere
 
-`TODO.md` #5. When a file is changed by another program, the fields Aether
+`TODO.md` #5. When a file is changed by another program, the fields Rymembra
 enriched are put back if the raw tag they came from did not change, and the
 track goes back into the enrichment queue if it did — 2.4 replaced
 everything with what the file said. «Reread all tags» does it for the whole
@@ -610,7 +712,7 @@ ask for it in Settings: the library is where they live.
 
 ### Changed — Google Drive, updates, and the work in the background
 
-- **Updates (`TODO.md` #10).** Aether checks once at every start, ten seconds
+- **Updates (`TODO.md` #10).** Rymembra checks once at every start, ten seconds
   after the window is ready, and if there is no network it tries again after
   one, five and fifteen minutes. A download that goes a minute without a byte
   stops and says so, and can be cancelled. The update now runs the same
@@ -677,7 +779,7 @@ could still wander through the whole window under a dialog that looked modal.
   could leave the old skin on screen with the new one marked «in use».
 - **Deleting a playlist can be undone.** It goes at once, and a notice with
   «Undo» stays for ten seconds: undo puts it back with its tracks in their
-  order. The undo is kept in memory for a minute, so closing Aether makes the
+  order. The undo is kept in memory for a minute, so closing Rymembra makes the
   deletion final.
 - **«Create» in «Add to playlist» is one step.** It was two: if the second
   failed, an empty playlist was left with the name you had just chosen, and
@@ -741,10 +843,10 @@ could still wander through the whole window under a dialog that looked modal.
   changing the address asks for the key again instead of sending it to the new
   one. The AI, sign-in and scrobbling clients follow no redirects, Drive
   follows two at most and only to Google, and a stream's redirects must lead
-  to a catalog Aether knows. HTTPS certificates are checked against Windows'
+  to a catalog Rymembra knows. HTTPS certificates are checked against Windows'
   own store.
 - **SQLite 3.53.2**, which closes CVE-2026-11824 in FTS5 — reachable here
-  through the database of an older Aether opened by the importer. Tauri 2.12,
+  through the database of an older Rymembra opened by the importer. Tauri 2.12,
   lofty 0.25 and zip 8 come with it.
 - **Updates are bound to their version.** The signature of an update now
   carries the version it was made for, and 3.0 refuses one whose signature
@@ -782,7 +884,7 @@ repository.
 
 A major, and the clearest one this project has shipped: `SKIN_FORMAT_VERSION`
 goes from 1 to 2, which is the first of the two points the versioning rules at
-the top of this file name. Aether 3.0 reads every format 1 skin; Aether 2.x
+the top of this file name. Rymembra 3.0 reads every format 1 skin; Rymembra 2.x
 refuses every format 2 skin as a format it does not read. A skin exported from
 this Studio, and every draft it has opened, will not open in 2.4.
 
@@ -809,9 +911,9 @@ Three migrations, all additive: nothing is rewritten and no table is rebuilt.
 
 **Going back to 2.4.0 costs a copy of the database**, as for every migration:
 2.4 opens schema 27 and refuses 30 with `db.versionAhead`. 3.0 takes that copy
-itself before migrating — `aether.db.schema-027.bak`, beside the database in
-`%APPDATA%\io.github.federicobaratti.aether` — and putting it back in place of
-`aether.db` returns to 2.4 with the library as it was on the day of the
+itself before migrating — `rymembra.db.schema-027.bak`, beside the database in
+`%APPDATA%\io.github.federicobaratti.rymembra` — and putting it back in place of
+`rymembra.db` returns to 2.4 with the library as it was on the day of the
 update: what was played, rated or added afterwards is not in it. The
 loudness measurements cost only time to redo.
 
@@ -830,7 +932,7 @@ The second was one sentence: «your exe doesn't do live searches and streaming»
 
 That one was half true in a way that was hard to see from outside. Since 2.2.0
 the player has known how to play bytes arriving from the network without
-writing them anywhere: `aether_play::Sorgente` takes a stream, not a path, and
+writing them anywhere: `rymembra_play::Sorgente` takes a stream, not a path, and
 `FlussoHttp` reads a remote file through a sliding window using HTTP `Range`.
 Gapless, crossfade, the equalizer and the spectrum all worked on it. What was
 missing was not an engine. It was **a place in the library for a track that is
@@ -971,7 +1073,7 @@ and that case is checked first.
 ### The number
 
 This is the first minor since 2.3.0, and under the rule as amended in 2.3.1 a
-minor has to be earned: something outside Aether has to keep up. Something
+minor has to be earned: something outside Rymembra has to keep up. Something
 does. The contrast table now measures every surface a skin repaints, in each
 theme the skin declares, and a skin that declared `capabilities.light` and
 painted a surface dark passed validation yesterday with «0 errors, 0 warnings»
@@ -1044,7 +1146,7 @@ all three had the same cause, which nothing in the engine had ever written
 down: the ring buffer between the decoder and the sound card is sized for
 192 kHz across eight channels, so on an ordinary output it holds over three
 seconds of music. For the last three seconds of every track, **the track you
-hear and the track Aether is decoding are not the same track.** Around them,
+hear and the track Rymembra is decoding are not the same track.** Around them,
 the queue was fixed to play what it says it plays: «repeat one» repeats,
 dragging to reorder works again, and a next track you removed no longer plays
 anyway.
@@ -1052,7 +1154,7 @@ anyway.
 Two things that were missing rather than broken arrive with them. A track can
 leave the library from its own context menu — «Remove from library», which
 keeps the file, and «Delete from disk», which sends it to the Recycle Bin;
-until now the only way out was to close Aether and delete the file in Explorer.
+until now the only way out was to close Rymembra and delete the file in Explorer.
 And lyrics can be chosen by hand from everything the catalogue has for a track,
 with what you pick staying picked and what you drop staying dropped.
 
@@ -1132,7 +1234,7 @@ A track's context menu ends with two new entries: **«Remove from library…»**
 **«Delete from disk…»**. Both work on the whole selection, both ask first.
 
 Until now a track could only leave the library by its file leaving the disk: to
-get rid of one you closed Aether, deleted the file in Explorer, and came back to
+get rid of one you closed Rymembra, deleted the file in Explorer, and came back to
 press «Scan». There was no entry for it anywhere, and the only code that removed
 a row lived inside the scan, where it means «this file is not on this disk» —
 which is a different statement.
@@ -1157,7 +1259,7 @@ disk is worse than one that claims too much.
 Both are confirmed, and the primary button in that window is «Cancel». What goes
 away with the row is not just the row: the rating, the like, the play counts and
 the place in playlists were built by listening, over years, and there is no undo
-to offer for them. Where an undo does exist — the replaced queue — Aether offers
+to offer for them. Where an undo does exist — the replaced queue — Rymembra offers
 the undo and asks nothing.
 
 Three things happen around the row, and none of them is visible:
@@ -1211,7 +1313,7 @@ fourth `windows` with four satellites.
   than not. The track's album is right below it, where it always was.
 - **The Folders panel updates after a scan** — including the one that runs by
   itself when downloads finish, and after importing a profile. It showed the
-  counts and folders from before until the watched folders changed or Aether
+  counts and folders from before until the watched folders changed or Rymembra
   restarted. Open folders and the selection stay as they are.
 - **«Resume» on Home resumes that track, from where it was.** The position it
   offered belonged to whatever played last — «Resume at 0:29» on a 22-second
@@ -1259,11 +1361,11 @@ fourth `windows` with four satellites.
 - **Saving hand-synced lyrics no longer depends on being able to write next to
   the track.** The row in the library is written first; the `.lrc` beside the
   track follows, and if it can't be written — a read-only folder, a share —
-  the editor says «saved in Aether, but not next to the track» instead of
+  the editor says «saved in Rymembra, but not next to the track» instead of
   losing the half hour of tapping. A stale `.lrc` older than your sync no
   longer overrides it.
 - **An existing `.lrc` or `.a2.lrc` is never overwritten or deleted without a
-  copy.** The first time Aether replaces or removes one with different content,
+  copy.** The first time Rymembra replaces or removes one with different content,
   it is moved to `<name>.lrc.bak` (or `.a2.lrc.bak`).
 - **The profile carries three more choices**: whether lyrics may be fetched
   online, whether to check for updates, and whether the guided tour was already
@@ -1336,12 +1438,12 @@ fourth `windows` with four satellites.
   made the catalogue fail was retried at the head of every batch, and five of
   them in a row stopped the pass for good; they are now skipped for the rest of
   the pass and, when the failure is not transient, retried a day later.
-- **With `AETHER_DATI` set**, the lyrics cache was written to the default data
+- **With `RYMEMBRA_DATI` set**, the lyrics cache was written to the default data
   folder instead of the one in use.
 
 ### Changed — the guided tour and the update notice
 
-- **The tour opens with a welcome card** saying what Aether does, before
+- **The tour opens with a welcome card** saying what Rymembra does, before
   pointing at where things are.
 - **The player steps are no longer skipped on a first run.** Four of the steps
   point at things that only exist while a track is loaded, and on a fresh
@@ -1360,7 +1462,7 @@ fourth `windows` with four satellites.
   download that can take a minute.
 - **The update notice survives a restart.** The version found lived only in
   memory, and the startup check is skipped within 30 minutes of the last one,
-  so reopening Aether hid it for half an hour. A found version is now
+  so reopening Rymembra hid it for half an hour. A found version is now
   remembered and forces the startup check.
 - **«Check now» says «You have the latest version»** when it finds nothing,
   instead of just re-enabling the button.
@@ -1369,7 +1471,7 @@ fourth `windows` with four satellites.
 
 - **«The database refused a request» no longer stands in for a network
   fault.** `SQLITE_CANTOPEN`, `SQLITE_PROTOCOL` and `SQLITE_IOERR_LOCK` fell
-  into the catch-all, whose message says the fault is almost always Aether's;
+  into the catch-all, whose message says the fault is almost always Rymembra's;
   they now say network share, disk, or busy. The favourite and rating commands,
   which built that error by hand, go through the same classifier, and a
   correction on a track that no longer exists says so instead of blaming the
@@ -1465,7 +1567,7 @@ neither seen nor pressed — nor could an error from a track started there.
 ### Fixed — the last seconds of a track
 
 Three faults, all of them living in the same handful of seconds, and all of
-them for the same reason: **the track you hear and the track Aether is decoding
+them for the same reason: **the track you hear and the track Rymembra is decoding
 are not the same track.** The ring buffer between the decoder and the sound card
 is sized for the worst case a device could ask for — 192 kHz across eight
 channels — so on an ordinary 48 kHz stereo output the same samples are over
@@ -1480,7 +1582,7 @@ has already finished it and moved on to the next.
   track ended with nothing left to play, and nothing happened: no new track, no
   stop, the queue frozen and the button still saying «playing». Only pressing
   something by hand got the music back. The seek now lands on the track you can
-  hear — Aether keeps its decoder for as long as one of its samples is still
+  hear — Rymembra keeps its decoder for as long as one of its samples is still
   waiting to be heard — and the one that was queued up goes back to being the
   next one, from its beginning. Where it cannot (two tracks shorter than the
   buffer, one after the other), the seek is dropped rather than misapplied.
@@ -1553,7 +1655,7 @@ and the page underneath is `inert` so Tab no longer walks an invisible list.
 **The release that stops writing in your files.** Up to 2.3.0 two features
 changed what was on your disk: enrichment rewrote tags every half hour, and the
 reorganizer moved files into `Artist/Album`. One has been rewritten so that it
-touches nothing, and the other has been retired. What Aether still writes is
+touches nothing, and the other has been retired. What Rymembra still writes is
 now short enough to list, and it is listed, in [`PRIVACY.md`](PRIVACY.md) § 8.
 [`TERMS.md`](TERMS.md) § 5 promised the opposite — «some operations modify your
 files» — and has been rewritten to say what is true now instead of being left
@@ -1721,7 +1823,7 @@ that would otherwise break:
 - **No `infinite`.** The four endless animations in the application are each
   stopped by hand, one rule at a time, under `prefers-reduced-motion`. A skin
   cannot write those rules, so a skin's endless animation would be the only
-  thing in Aether that cannot be stopped. A pulse is `direction: alternate`
+  thing in Rymembra that cannot be stopped. A pulse is `direction: alternate`
   with two iterations.
 - **Every emitted duration goes through `calc(… * var(--motion-scale))`**, or
   reduced motion is simply routed around. A test asserts that no `animation:`
@@ -1735,7 +1837,7 @@ that would otherwise break:
 optional, and a document that has never heard of `animations` was already
 valid.
 
-### Added — the profile carries the library, and it is a `.aeprofile`
+### Added — the profile carries the library, and it is a `.ryprofile`
 
 The profile used to be seventeen lines of JSON: openable in an editor,
 readable, and that was a property rather than an accident. It now carries the
@@ -1766,7 +1868,7 @@ history.
 ### Added — lyrics can now be timed word by word
 
 The domain has been ready for a long time — `.a2.lrc` was already first in the
-list of sidecars Aether looks for, the writer already emitted `<mm:ss.xx>` and
+list of sidecars Rymembra looks for, the writer already emitted `<mm:ss.xx>` and
 the reader already read them back — and the words were being thrown away in
 between. *Sync* gains a **fourth step, optional and skippable**: you tap once
 per word, and it reuses the same tap/redo/finish that the line step uses.
@@ -1778,7 +1880,7 @@ twin stays for everybody else.
 
 ### Added — Opus plays, and `.oga` with it
 
-Aether already knew Opus and would not play it. The scan took the files —
+Rymembra already knew Opus and would not play it. The scan took the files —
 `opus` has been in the closed list of audio extensions since this Rust core's
 first commit, and was in the TypeScript tree before it, which is why the golden
 scan fixture expects one — the library held them, lofty read their tags, and the
@@ -1786,7 +1888,7 @@ technical line under «Now playing» even knew how to write the word «Opus». T
 you pressed play and got `playback.formatUnsupported`.
 
 The refusal was deliberate and it was written down: a `Codec` enum in
-`aether-play` whose only job was to say which recognised formats the engine
+`rymembra-play` whose only job was to say which recognised formats the engine
 could not decode, with a comment promising that the compiler would point at
 every place to touch on the day an Opus decoder turned up. This is that day, and
 the promise held — the places were exactly the ones it named.
@@ -1863,7 +1965,7 @@ hits.
 ### Changed — a failed query now says which failure it was
 
 Everything the database refused used to arrive as one code, `db.queryFailed`,
-whose message suggests restarting Aether. Four cases have been pulled out of
+whose message suggests restarting Rymembra. Four cases have been pulled out of
 it, and none of them is fixed by restarting:
 
 - `db.locked` — somebody else is writing right now, usually the scan.
@@ -1909,7 +2011,7 @@ exactly the same key, and from this release the Folders panel walks the real
 one. Keeping the feature meant keeping a JSONL journal, an undo, a plan screen
 and twenty-six translated strings so that a thousand files could be moved
 around to build a view that was already on the screen. It also meant keeping
-the one place in Aether that moved files across a network share **while
+the one place in Rymembra that moved files across a network share **while
 holding the library lock**, which is to say the last thing that could freeze
 the window for a minute at a time.
 
@@ -1938,11 +2040,11 @@ the fix.
 
 Three consequences worth naming:
 
-- **Cover art is no longer embedded** into your files. Aether stores it in its
+- **Cover art is no longer embedded** into your files. Rymembra stores it in its
   own cache and shows it from there. Cover art that is already inside a file is
   still read and still used — nothing stopped working.
 - **Your corrections always win.** The order in which a track's fields are
-  resolved is written out once, in `aether_app::incerti`: raw tags, then
+  resolved is written out once, in `rymembra_app::incerti`: raw tags, then
   `track_meta_arricchita`, then `track_overrides`. A correction made by hand is
   the last word, and — fixed in this release — it survives a re-scan, which it
   did not before.
@@ -1959,7 +2061,7 @@ into the files. It appears only while there is something left to undo, and on a
 library that has never seen an older version it does not appear at all.
 
 **That button is going away.** `arricchimento_riporta_nei_file` is the only
-thing left in Aether that opens your music for writing, it is kept for one
+thing left in Rymembra that opens your music for writing, it is kept for one
 release as a way out and not as a feature, and it will be **removed in a future
 release** once the records it works from are gone. This line is the notice.
 
@@ -2221,7 +2323,7 @@ Settings says where it is, and leaves it there.
 
 Until now the audio output was not managed at all: `uscita.rs` opened
 `default_output_device()` and that was the whole of it. No list, no choice, no
-way to send Aether to a USB DAC while the system stayed on the speakers —
+way to send Rymembra to a USB DAC while the system stayed on the speakers —
 `output_devices()` was not called anywhere in the workspace. What existed was
 only fault *detection*: cpal signalled a dead stream, and a red band offered
 **Reopen**, to be pressed by hand.
@@ -2231,7 +2333,7 @@ Three things were wrong with that, and all three are fixed.
 **The band was a dead end.** Nothing ever looked to see whether a device had
 come *back*: plugging the headphones in again did nothing, and the application
 started without a sound card stayed a browsable catalogue until the next
-restart. A new thread, `aether-dispositivi`, now re-reads the list every two
+restart. A new thread, `rymembra-dispositivi`, now re-reads the list every two
 seconds and reopens by itself. It is a thread of its own and not the clock's:
 enumerating WASAPI is a system call that a misbehaving driver can sit on for
 hundreds of milliseconds, and the clock moves the scrubber four times a second.
@@ -2300,10 +2402,10 @@ Either way the change goes through the same path a dragged slider does, so
 first round, because four rounds are four edits and undoing them one at a time
 would be the wrong punishment for having tried.
 
-The changes travel inside a fenced `aether-patch` block rather than through tool
+The changes travel inside a fenced `rymembra-patch` block rather than through tool
 calls, and that is not a shortcut: small local models get tool calling wrong far
 more often than they get a fenced code block wrong. Reading that block is done
-in Rust, in `aether-ia`, because it is the function that receives the least
+in Rust, in `rymembra-ia`, because it is the function that receives the least
 predictable input in the whole application and `npm run verify` has no
 TypeScript tests. Nine well-formed operations and one crooked one are worth
 nine: what is rejected is named, not thrown away with the rest.
@@ -2325,7 +2427,7 @@ back in Agent mode.
 - **OpenRouter** for remote models — the only one that wants a key.
 - **Ollama** (`http://localhost:11434/v1`) and **Bionic / LM Studio**
   (`http://localhost:1234/v1`) for models running on your own machine. Bionic is
-  LM Studio's new agent app; it exposes no HTTP API of its own, so what Aether
+  LM Studio's new agent app; it exposes no HTTP API of its own, so what Rymembra
   calls is LM Studio's local server — Developer tab, Start server.
 - **Custom**, for any other OpenAI-compatible endpoint.
 
@@ -2340,7 +2442,7 @@ The «Test» button and the model list are the same request (`GET /models`): a
 service that answers it answers everything — right address, process running, key
 accepted.
 
-OpenRouter counts tokens while streaming, but only tells whoever asks: Aether
+OpenRouter counts tokens while streaming, but only tells whoever asks: Rymembra
 asks, so the count under a finished answer is a real number on the one provider
 of the four that charges for it.
 
@@ -2380,10 +2482,10 @@ machine. With OpenRouter or an address of your own, what leaves is **the skin
 document you have open and what you type in the chat** — a design file and a
 conversation. No track, no album, no playlist, no listening history, no file
 name, no identifier of you or of this installation. And the note that choosing a
-provider is choosing a privacy policy: Aether can tell you what it sends, not
+provider is choosing a privacy policy: Rymembra can tell you what it sends, not
 what the other end keeps.
 
-### Added — `aether-ia`
+### Added — `rymembra-ia`
 
 A new crate, and it earns its place by what it does **not** know: what a skin
 is. It speaks the OpenAI-compatible dialect, decodes the event stream, and
@@ -2410,8 +2512,8 @@ at all: something finally listens on that road.
 
 With the switch on, closing **hides** the window and the music keeps playing.
 Nothing had to be moved to make that true: the audio has always lived entirely
-in the Rust process — `aether-play`, threads `aether-uscita` and
-`aether-decodifica` — and the page does not contain a single `<audio>`,
+in the Rust process — `rymembra-play`, threads `rymembra-uscita` and
+`rymembra-decodifica` — and the page does not contain a single `<audio>`,
 `AudioContext` or `mediaSession`. There is nothing, on the window's side, that
 hiding it stops. The OS media card keeps working for the same kind of reason:
 SMTC is attached to the window's `HWND`, and `hide()` does not destroy it, which
@@ -2419,7 +2521,7 @@ is also why hiding is right where destroying the window would have orphaned the
 session.
 
 An icon appears in the notification area: left click reopens, right click offers
-**Show Aether** and **Quit**. It is not decoration — a hidden window with no way
+**Show Rymembra** and **Quit**. It is not decoration — a hidden window with no way
 back is a lost program — and that is why `vassoio::nasconde` does not ask only
 whether the preference is on: it asks whether the icon actually exists. If the
 system refused it, or if the labels have not come down from the window yet, the
@@ -2454,7 +2556,7 @@ of looking like an oversight.
 `verify.yml` runs `strumenti/classi.js`. The `verify` npm script already did and
 CI did not, which is the half of the check that catches nobody.
 
-New tests: twelve on `aether-skin::document::effetto`, five on `media.rs`, four
+New tests: twelve on `rymembra-skin::document::effetto`, five on `media.rs`, four
 on `vassoio.rs` — with `deve_esserci` pulled out so there was something to test
 — and three plus three on the predicates of `aggiornamenti.rs` and
 `sincronia.rs`.
@@ -2588,8 +2690,8 @@ that produced nothing until it was fixed:
   it lost: between the rules and the answer sit the vocabulary and twenty
   kilobytes of manifest, and the last shape a model sees is the shape it
   imitates — it answered with a ```json block holding a rewritten fragment.
-  With eight lines at the end, the same model and the same question produce an
-  `aether-patch` block.
+  With eight lines at the end, the same model and the same question produce a
+  `rymembra-patch` block.
 - **JSON Patch spellings are read, not refused.** A model that has read ten
   thousand JSON Patches writes `path`, `value`, `replace`, `set`. Nothing in
   those is ambiguous inside a list of operations, and refusing them cost a round
@@ -2622,7 +2724,7 @@ and cannot do otherwise — they have no certificate and cannot have one.
 There were three ways out and two were wrong: dropping `https_only` (throwing
 away the protection for everyone to fix one case), or calling those services
 from the window with `fetch` (which would break the content policy and make the
-window the one place in Aether that talks to the network on its own).
+window the one place in Rymembra that talks to the network on its own).
 
 The third: a client that accepts `http://` **only towards this machine**, with
 the host checked **on every request** and not once when the profile is saved,
@@ -2643,7 +2745,7 @@ headings — **Preferences** (folders, appearance, AI models, closing),
 unchanged: same cards, same order inside each group.
 
 *AI Models* was first placed after *Scrobbling*, and the comment defending that
-was a good one: three cards in a row about a service Aether exchanges something
+was a good one: three cards in a row about a service Rymembra exchanges something
 with, and models are the only setting in the whole program that can send
 something the **user wrote** off this computer. What that ordering was
 protecting, though, was that the question «what leaves, and towards whom» got
@@ -2672,11 +2774,11 @@ not, and the docblock says why rather than leaving the next reader to decide
 whether they were forgotten.
 
 «The extension you can get out of a URL» was written three times — the window,
-the catalogue fetch, and a fresh copy that had just been born in `aether-app`.
+the catalogue fetch, and a fresh copy that had just been born in `rymembra-app`.
 Three copies of one rule are three answers waiting to diverge, so it now lives
-once, in `aether_domain::indirizzo`. In the same spirit `aether-app` had nine identical
+once, in `rymembra_domain::indirizzo`. In the same spirit `rymembra-app` had nine identical
 `db_error` and two «now in milliseconds»; they are `library::db_error` and
-`library::now_ms`. In `aether-play`, `causa_perdita` and `codice_perdita` are
+`library::now_ms`. In `rymembra-play`, `causa_perdita` and `codice_perdita` are
 derived from one table instead of two lists that had to be kept in step by hand.
 
 About forty items in `core/`'s crates became `pub(crate)` — each was used only
@@ -2795,11 +2897,11 @@ translated; the diary goes on writing the Italian sentence, because the diary is
 Italian all the way through. It is the rule the same file already wrote for
 `motivo_prossimo`: the code and not the sentence.
 
-### Fixed — Aether introduced itself as version 0.1
+### Fixed — Rymembra introduced itself as version 0.1
 
 To MusicBrainz, the Cover Art Archive, iTunes, Deezer, LRCLIB and ListenBrainz,
-Aether said it was **`Aether/0.1`**, and had done since the beginning: the string
-was written by hand in `core/aether-net/src/http.rs`, and
+Rymembra said it was **`Rymembra/0.1`**, and had done since the beginning: the string
+was written by hand in `core/rymembra-net/src/http.rs`, and
 `strumenti/versione.js`, which keeps the other three declarations of the version
 in step, never looked at it. Whoever runs MusicBrainz asks for a recognizable
 version, and presenting one that doesn't exist is the way to get rate-limited —
@@ -2882,9 +2984,9 @@ this file every migration forces a minor. Migrations only go forward: coming
 back from here to 2.1.0 is not uninstalling and reinstalling, it is restoring a
 copy of the database made before updating.
 
-### Added — affinity: Aether starts to know what your music is made of
+### Added — affinity: Rymembra starts to know what your music is made of
 
-When a record ended, Aether proposed the next track through a cascade of five
+When a record ended, Rymembra proposed the next track through a cascade of five
 rules — same album, same artist, same genre, an unplayed favorite, any track at
 all — which in its own comment declared of itself: «because it isn't a
 recommender». That was true. Now it is one, and the cascade has stayed
@@ -2912,13 +3014,13 @@ takes itself out of the way without breaking the others:
   long. Fraction completed, a six-month decay, and a penalty for what has just
   been heard.
 
-The blend lives in `aether-domain`, with no I/O and no clock, and it
+The blend lives in `rymembra-domain`, with no I/O and no clock, and it
 **redistributes the weights** instead of summing them: an absent layer doesn't
 lower everyone's score, it takes itself out of the reckoning. With no network,
 no MusicBrainz identifiers and no analysis done yet, the result stays defined —
 three tests say so.
 
-### Added — Monday: the first thing in Aether that changes on its own
+### Added — Monday: the first thing in Rymembra that changes on its own
 
 The Home had four shelves — Resume, Recent, Added, Neglected — computed in one
 query, and the same today as in a month's time if nothing was touched. They were
@@ -2957,7 +3059,7 @@ the program.
 
 The project's third collection — **Outside**, new music from the free catalogs —
 isn't there, and the database constraint doesn't even admit its name: the
-catalogs Aether knows can answer «do you have this exact track?», not «what
+catalogs Rymembra knows can answer «do you have this exact track?», not «what
 resembles this?».
 
 ### Added — «Radio from here», and a queue that says why
@@ -2993,7 +3095,7 @@ one» stays English for whoever has the interface in English.
 
 ### Added — the first launch reaches as far as the first note
 
-Aether opened onto an empty room saying «add a folder from the settings», while
+Rymembra opened onto an empty room saying «add a folder from the settings», while
 `%USERPROFILE%\Music` exists on a hundred per cent of Windows installations and
 nobody was looking at it. Now the music folders the system declares are counted
 one by one and offered **already ticked**: the gesture becomes «Continue». As
@@ -3020,11 +3122,11 @@ declared length, and therefore the cursor in its rightful place.
 
 ### Fixed — the application no longer dies while being closed
 
-In the logs of people using Aether there were eight identical panics, on 2.0.1
+In the logs of people using Rymembra there were eight identical panics, on 2.0.1
 and on 2.1.0, always the same: `cannot move state from Destroyed`. It was not a
 defect of this version — it was there before — and it was the reason the
 application «vanished» instead of closing, leaving behind a four-and-a-half
-megabyte `aether.db-wal` that was never reabsorbed.
+megabyte `rymembra.db-wal` that was never reabsorbed.
 
 Background threads send events to the window: the clock four times a second, the
 spectrum thirty. Sending an event, on Windows, means leaving a message in a
@@ -3127,7 +3229,7 @@ languages badly instead of one well.
 
 `STUDIO-STREAMING.md` was a design study: an analysis of a list of free
 streaming apps, a triage of how they actually get their audio, and a four-phase
-road for bringing that experience into Aether without breaking the terms. It
+road for bringing that experience into Rymembra without breaking the terms. It
 described no existing code — it proposed one — and a document that proposes is
 read as a promise by whoever finds it in the repository root.
 
@@ -3200,7 +3302,7 @@ first failure instead of being questioned file by file: a single long wait
 instead of one for each of the remaining files.
 
 **And the tests.** None of them decoded a real FLAC: now there is a
-hundred-and-fifty-four-byte sample in `aether-play/tests/campioni`, and three
+hundred-and-fifty-four-byte sample in `rymembra-play/tests/campioni`, and three
 tests that go over it — decoding with resampling, seeking, and a share that dies
 halfway through the header. Plus: the root probe, the real one with the deadline,
 which the in-memory doubles had always overridden; and a check that every `.sql`
@@ -3209,7 +3311,7 @@ the one `016_metadati` had slipped through.
 
 ### Fixed — an unplugged network cable no longer takes away either the window or the library
 
-Aether opens music files with `std::fs`. On an SMB share that stops answering —
+Rymembra opens music files with `std::fs`. On an SMB share that stops answering —
 server off, VPN dropped, mapped drive letter with nothing behind it any more —
 those calls don't fail: they **wait**, for the forty seconds of Windows'
 timeout. For all forty the window was declared «not responding». This round
@@ -3450,9 +3552,9 @@ because whoever clicks thinks they got it wrong themselves.
 **The first version that can be given to somebody.**
 
 Three rewrites in a row, on the same working branch. The first
-(`aether/skin-system-e-core`, from 26 July 2026) redid the core and the skin
-system; the second (`aether/rust-core`) took everything into Rust behind a Tauri
-window; the third took out everything that made Aether undistributable —
+(`rymembra/skin-system-e-core`, from 26 July 2026) redid the core and the skin
+system; the second (`rymembra/rust-core`) took everything into Rust behind a Tauri
+window; the third took out everything that made Rymembra undistributable —
 `yt-dlp` packaged into the installer and the scraping of Spotify's private
 endpoints — and put the free catalogs in their place.
 
@@ -3483,10 +3585,10 @@ access, so `Fonte::puo_consegnare()` is `false` and no downloadable track ever
 comes out of there — not «usually», but always, because it is decided by
 `Disponibilita::decidi` a step below and the module has no way to step over it.
 
-Listening without keeping means playing something that isn't a file, and Aether
-didn't know how. Now there is `aether_net::FlussoHttp`.
+Listening without keeping means playing something that isn't a file, and Rymembra
+didn't know how. Now there is `rymembra_net::FlussoHttp`.
 
-**The audio engine has not been touched.** `aether_play::Sorgente` takes a
+**The audio engine has not been touched.** `rymembra_play::Sorgente` takes a
 `Box<dyn Flusso>` — `Read + Seek + Send + Sync` — and not a path; the comment
 that says so talked about Android, «there is no path to open there but a grant
 from the system», and it holds identically for a listen-only catalog. The seam
@@ -3521,17 +3623,17 @@ track.
 
 **The `jamendo` feature is born switched off**, and that's the part that matters
 most. Their API is free for non-commercial use only and the terms define
-commercial use as «any monetary compensation»; Aether supports itself with
+commercial use as «any monetary compensation»; Rymembra supports itself with
 donations. Whether they count is for Jamendo to say — the question is at
 `licensing@jamendo.com`, see `TERMS.md` § 2 — and until they have answered, an
 installer that uses that API on unknown conditions is precisely the kind of thing
 this program was rewritten to avoid. The code is there and is tested
-(`cargo test -p aether-catalogo --features jamendo`); on the day of the answer it
+(`cargo test -p rymembra-catalogo --features jamendo`); on the day of the answer it
 turns on with one line.
 
 ### Added — Audius, the second catalog
 
-Aether had only one. `Cataloghi::cerca` collected the failures in a vector and
+Rymembra had only one. `Cataloghi::cerca` collected the failures in a vector and
 failed «only if nobody answered»; the «Why isn't it working?» panel distinguished
 «nobody is answering» from «whoever answers works»; the window already mapped the
 names of three sources. All written in the plural, for a single catalog.
@@ -3585,7 +3687,7 @@ piece.
 
 ### Added — a log, so that «it won't open» becomes a diagnosis
 
-In release, Aether had **no** way of reporting what had gone wrong. `main.rs`
+In release, Rymembra had **no** way of reporting what had gone wrong. `main.rs`
 declares `windows_subsystem = "windows"`, which removes the console; the
 thirty-five `eprintln!`s scattered through the application — the thread that
 doesn't start, the audio device that disappears, the catalog that refuses — thus
@@ -3646,7 +3748,7 @@ one whose signature (title, artist, album, duration to the second) matches the
 file's. It isn't necessarily the one with the timings. For Caparezza's «The
 Auditels Family» the exact signature finds the entry uploaded in 2020, which
 carries only the flat text; the other six entries for the same track, same
-duration to a tenth of a second, do have the LRC. Aether stopped at the first and
+duration to a tenth of a second, do have the LRC. Rymembra stopped at the first and
 never asked for the others.
 
 Now an exact answer **without timings** no longer closes the search: it is kept
@@ -3667,7 +3769,7 @@ question is open again.
 
 ### Added — a front door, instead of an alphabetical list
 
-Aether opened onto the album grid. The library's four destinations — albums,
+Rymembra opened onto the album grid. The library's four destinations — albums,
 artists, tracks, favorites — are all four an ordered list, and none of them
 answered the question you actually ask yourself when opening a player: *what was
 I listening to*. To pick up last night's record you had to remember what it was
@@ -3683,7 +3785,7 @@ concerned you own nothing.
 «Pick up where you left off» required a fact that was stored nowhere:
 `QueueSnapshot` knew which track you were on, not what point in the track. The
 position now lives in a key of its own in `settings` and not inside the queue —
-`aether_domain::queue` describes which tracks and in what order, and doesn't know
+`rymembra_domain::queue` describes which tracks and in what order, and doesn't know
 what a millisecond is.
 
 **No new widget and no change to the skin registry**: the page goes through the
@@ -3698,17 +3800,17 @@ taken once at opening, and `usePagine` stays for the views that are real lists.
 ### Added — the keyboard's media keys, and the Windows card
 
 The keyboard's play/pause key did nothing if the window wasn't in the foreground,
-and the panel Windows 11 shows in the volume flyout was empty: Aether was playing
+and the panel Windows 11 shows in the volume flyout was empty: Rymembra was playing
 and the operating system didn't know what.
 
-Now Aether registers itself as an SMTC session. The panel shows cover art, title
+Now Rymembra registers itself as an SMTC session. The panel shows cover art, title
 and artist, its buttons work, and — this is the point — **it is Windows that
 routes the media keys**, which therefore arrive even from another full-screen
 application.
 
 Discarded: `tauri-plugin-global-shortcut`. Registering the media keys as global
 shortcuts would **steal them from every other program**, and anyone opening a
-video while Aether is open would find the pause key pausing the wrong thing.
+video while Rymembra is open would find the pause key pausing the wrong thing.
 Registering a media session is the opposite — it's the system that decides whose
 turn it is, as for every other player.
 
@@ -3758,7 +3860,7 @@ for it.
 
 ### Added — the queue that doesn't end, chosen from your library
 
-When the last track ends, Aether chooses another one instead of stopping. The
+When the last track ends, Rymembra chooses another one instead of stopping. The
 cascade is: the rest of the record, then another album by the same artist, then
 something in the same genre not listened to for a month, then an unplayed
 favorite, then any track at all.
@@ -3997,7 +4099,7 @@ they pressed.
 
 The window is born without decorations. The gray strip the operating system drew
 above the application — the icon, the name repeated to someone who had just
-opened Aether, the three squares — belonged to another program: it brought its
+opened Rymembra, the three squares — belonged to another program: it brought its
 colors inside a window that has a skin, it stayed light while everything else was
 dark, and it took thirty-two pixels across the whole width.
 
@@ -4056,7 +4158,7 @@ March 2025 the labels of `tj-actions/changed-files` were rewritten, and
 twenty-three thousand repositories ran new code believing they were running the
 old. The bill for that day, inside `release.yml`, would not be a dirty build: it
 would be the updater's private key in somebody else's hands, that is, every
-installed copy of Aether never updating again. The version stays readable in the
+installed copy of Rymembra never updating again. The version stays readable in the
 comment next to the hash. The price is that the actions no longer update
 themselves, and that comment is the only place where it's visible that they're
 old.
@@ -4076,7 +4178,7 @@ launch from. The fallback value therefore never fell through to the input, and a
 release launched from `main` compared the three files' version against the word
 «main» and stopped there. Now the tag is decided by `github.ref_type`, and the
 same text goes into `tag_name:` and into the release title — which were reading
-the ref too, and on a manual release would have published «Aether main».
+the ref too, and on a manual release would have published «Rymembra main».
 
 The three remaining findings are `site/support.js`'s `postMessage` calls, which
 declare `"*"` as the origin and don't check the writer's. The file begins with
@@ -4149,10 +4251,10 @@ What can be said and what cannot:
   asymmetric, because the hand is always late — and the **median** of the offsets
   on the snapped lines corrects the ones that didn't find an onset. It is that
   person's reaction latency at that moment, measured instead of guessed. The
-  onsets come out of the spectral flux computed with the FFT `aether-play`
+  onsets come out of the spectral flux computed with the FFT `rymembra-play`
   already had for the spectrum: no new dependency, no binary to package.
 
-The LRC is read by **the core**, in `aether_domain::testo`: the window receives
+The LRC is read by **the core**, in `rymembra_domain::testo`: the window receives
 lines already in order and already in milliseconds, and doesn't know what a
 `[mm:ss.xx]` is. A second reader written in TypeScript would have diverged from
 the first on everything the format doesn't say — and a 1998 format says almost
@@ -4434,7 +4536,7 @@ text, so they're left to be translated instead of to be found.
 The biggest thing in this round is a subtraction, and it's worth writing down
 why.
 
-**`aether-yt` — deleted in full.** Five thousand five hundred lines that invoked
+**`rymembra-yt` — deleted in full.** Five thousand five hundred lines that invoked
 `yt-dlp.exe` to take the videos' bytes, plus YouTube Music's internal API. The
 *YouTube API Developer Policies* § III.E.1.a forbid it in terms that leave no
 margin: «You must not… download, import, backup, cache, or store copies of
@@ -4446,7 +4548,7 @@ visible (§ III.I.9), and limit metadata retention to thirty days (§ III.E.4). 
 music player that keeps a library is exactly the thing those three rules rule
 out: YouTube wasn't fixed, it was removed.
 
-**`aether-spotify` — deleted in full.** It talked to private endpoints: the
+**`rymembra-spotify` — deleted in full.** It talked to private endpoints: the
 internal GraphQL with the persisted queries' hashes, anonymous tokens
 reconstructed with HMAC-SHA1, the anonymous handshake, and **Spotify's web
 player client id** — not ours — with a forged Chrome User-Agent. It was
@@ -4468,7 +4570,7 @@ archive and the playlist files, and the free catalogs arrive.
 
 ### Added — the free catalogs
 
-**`aether-catalogo`**, a new crate that talks only to `aether-net`: no child
+**`rymembra-catalogo`**, a new crate that talks only to `rymembra-net`: no child
 process, no binary to package, HTTP requests you can read in the code. In the
 first round there is the **Internet Archive** — Live Music Archive, netlabels,
 public domain — with search, item reading and file fetching.
@@ -4488,7 +4590,7 @@ track, in places where the people who made it get paid.
 
 **The nature of the recording**, said on screen. The free catalogs don't have the
 commercial catalog's studio versions: they have concerts, reissues, reworkings —
-the Live Music Archive is made **only** of concerts. Aether accepts them, and puts
+the Live Music Archive is made **only** of concerts. Rymembra accepts them, and puts
 a pill next to the track saying which one it took. Anyone rebuilding a precise
 record can switch that behavior off (`catalogo.alternative` in the settings).
 
@@ -4529,18 +4631,18 @@ conditions it did is a file nobody will know in a year whether they can share.
 
 ### Changed — the application identifier
 
-`dev.aether.desktop` → **`io.github.federicobaratti.aether`**.
+`dev.rymembra.desktop` → **`io.github.federicobaratti.rymembra`**.
 
-The first is a reverse-DNS on `aether.dev`, a domain that isn't mine. On
+The first is a reverse-DNS on `rymembra.dev`, a domain that isn't mine. On
 something that gets published that isn't a subtlety, and changing it **before**
 the first release costs one person; changing it afterwards costs everyone.
 
 **If you already had a trial library**, the data folder and the keychain service
 name move too. In practice:
 
-- the library is in `%APPDATA%\dev.aether.desktop` and Aether now looks for it in
-  `%APPDATA%\io.github.federicobaratti.aether`: renaming the folder finds it
-  again, or you launch with `AETHER_DATI=...` pointed at the old one;
+- the library is in `%APPDATA%\dev.rymembra.desktop` and Rymembra now looks for it in
+  `%APPDATA%\io.github.federicobaratti.rymembra`: renaming the folder finds it
+  again, or you launch with `RYMEMBRA_DATI=...` pointed at the old one;
 - the connections to Google Drive and to the scrobbling services have to be
   redone: the tokens sit in Credential Manager under the old service name, and
   looking for them under the new one gives «not connected».
@@ -4549,22 +4651,22 @@ name move too. In practice:
 
 A workspace of five crates plus the desktop application:
 
-- **`aether-domain`** — pure, with neither clock nor disk: track and playlist
+- **`rymembra-domain`** — pure, with neither clock nor disk: track and playlist
   keys, text normalization, album grouping, queue with shuffle and repeat, scan
   plan with move detection, reorganization plan, statistics merging, listening
   rules, error catalog. Tested with golden files and parity tests.
-- **`aether-play`** — the audio engine, one only: `cpal` plus `symphonia`, three
+- **`rymembra-play`** — the audio engine, one only: `cpal` plus `symphonia`, three
   threads and a lock-free ring between the decoder and the audio callback.
   Gapless, ReplayGain, volume. In the old tree playback was written twice —
   Howler in the webview, ExoPlayer in Kotlin — and diverged with every change.
-- **`aether-app`** — the orchestration: database and migrations, filesystem,
+- **`rymembra-app`** — the orchestration: database and migrations, filesystem,
   metadata, cover art, scanning and FTS5 search, playlists, executing the
   reorganization with a journal and an undo, importing from the old database,
   persistence of the queue and the volume.
-- **`aether-skin`** — the token registry, parametric effects with a declared
-  cost, the parts registry, the compiler, the `.aeskin` format with the guards
+- **`rymembra-skin`** — the token registry, parametric effects with a declared
+  cost, the parts registry, the compiler, the `.ryskin` format with the guards
   for an untrusted archive.
-- **`aether-cloud`** — the Google Drive backup: OAuth 2.0 with PKCE, an ephemeral
+- **`rymembra-cloud`** — the Google Drive backup: OAuth 2.0 with PKCE, an ephemeral
   loopback server for consent, Drive REST v3 restricted to the application's
   private folder, the system keychain for the token. It never receives a database
   connection, and that is how «no library lock stays held during a network
@@ -4629,7 +4731,7 @@ A Tauri 2 window over the core, with no logic of its own:
   of what would come back before it comes back. The thread that saves runs in the
   background and takes the library lock in two short windows only, so a pass
   doesn't stall either playback or a scan.
-- **Installed skins**: `.aeskin` files read from the data folder, a selector, a
+- **Installed skins**: `.ryskin` files read from the data folder, a selector, a
   persistent choice. An unreadable skin disappears from the list instead of
   breaking it.
 
@@ -4653,12 +4755,12 @@ contrasts measured in both themes.
   1100px it closes and the floating player goes back to exactly what it was.
 - **Settings** is a page, with six sections: folders and scanning, appearance,
   playback, motion and access, from the previous version, library and data. The
-  folders and the `.aeskin` files dropped onto the window land there too —
+  folders and the `.ryskin` files dropped onto the window land there too —
   `dragDropEnabled` was on and had no handler at all.
 - **Light, dark or system theme**, with no new command: the compiler already
   emits the `[data-theme='light']` selector.
-- **Artists**: a new view, with `list_artists` in `aether-app` and `sort_name` in
-  `aether-domain` (The Cure under C). The portrait is a 2×2 mosaic of the real
+- **Artists**: a new view, with `list_artists` in `rymembra-app` and `sort_name` in
+  `rymembra-domain` (The Cure under C). The portrait is a 2×2 mosaic of the real
   cover art: there's no network, and an artist image will never exist.
 - **Now playing**: a two-column screen where the navigation **stays** — covering
   everything would force you to close it to change view. Three doors to open it,
@@ -4698,10 +4800,10 @@ contrasts measured in both themes.
   Studio is built on.
 - **`skin_installa_sorgente`** and the **«Save and use»** button in the Studio: a
   manifest gets installed without going through a file on disk. Before, the only
-  road was exporting an `.aeskin` into some folder and reinstalling it from the
+  road was exporting a `.ryskin` into some folder and reinstalling it from the
   Settings' dialog — two path choices for a file nobody wanted. The package is
   **read back** before being put down, that is, it goes through the same guards as
-  a skin that arrived over the network. «Export .aeskin» stays, and serves what it
+  a skin that arrived over the network. «Export .ryskin» stays, and serves what it
   really served: **giving** a theme to somebody else.
 - **Three new parts** in the registry, from 48 to 51: `list-row`, `segmented`,
   `selection-bar`. And the markup now names them: **it emits 42 of them**, where
@@ -4712,7 +4814,7 @@ contrasts measured in both themes.
   accent, which for two skins out of three worked by accident.
 - **Contrast warning** in `check_skin`: every text/surface pair below 4.5:1, in
   **both** themes. `contrast_ratio` existed and only the tests called it.
-  `cargo run -p aether-skin --example contrasti` prints the table, and that's
+  `cargo run -p rymembra-skin --example contrasti` prints the table, and that's
   where the document's numbers come from.
 - **`SkinIpc` carries layout and motion**: `layout` and `motion.intensity` were
   compiled and nobody read them. The interface now honors them, with the system's
@@ -4784,7 +4886,7 @@ Ten octave bands — 31, 62, 125, 250, 500 Hz, 1, 2, 4, 8, 16 kHz — adjustable
 the button next to the volume in the player bar, and a card in Settings ›
 Playback. One component, in two sizes, like the transport.
 
-- **`aether-play::equalizzatore`**: a cascade of ten *peaking* biquads from the
+- **`rymembra-play::equalizzatore`**: a cascade of ten *peaking* biquads from the
   RBJ cookbook, in transposed direct form II with the state in `f64`. The form and
   the precision aren't pedantry: the 31 Hz band on a 48 kHz output has its poles a
   thousandth from the unit circle, and in `f32` in direct form I that filter
@@ -4872,7 +4974,7 @@ exposes neither samples nor bands, and drawing a fake one would be the interface
 only lie». Now it exposes them, so the reason it was disabled is gone. The rule
 hasn't changed: what is drawn comes from the sound that comes out.
 
-- **`aether-play::spettro`**: the samples are taken in the audio callback — the
+- **`rymembra-play::spettro`**: the samples are taken in the audio callback — the
   only place that sees what actually comes out — and pass through a **third
   lock-free ring**, after the two the crate already had. A `push` that fails loses
   the sample, and that's the right hierarchy: the alternative would be making the
@@ -4920,8 +5022,8 @@ hasn't changed: what is drawn comes from the sound that comes out.
   `capabilities.dynamicAccent` was declared, `dynamic_tokens` compiled, and nobody
   extracted a color from it — because `--accent` is also a **text** color and a
   record's vivid tint doesn't guarantee 4.5:1. Now the tint is extracted in Rust
-  from the thumbnail already on disk (`aether-app::tinta`: ten-degree buckets on
-  hue, circular mean, black, white and grays discarded) and `aether-skin::dinamico`
+  from the thumbnail already on disk (`rymembra-app::tinta`: ten-degree buckets on
+  hue, circular mean, black, white and grays discarded) and `rymembra-skin::dinamico`
   carries it into OKLCH, slides it **in lightness** in both directions starting
   from the cover's, and takes the first that holds the threshold on all the theme's
   surfaces *and* for the text that goes on top of it. Hue and chroma stay the
@@ -4932,7 +5034,7 @@ hasn't changed: what is drawn comes from the sound that comes out.
     of one written by hand: there aren't two definitions of «legible accent» in the
     same program.
   - **No canvas.** Reading the pixels in the window would have imposed an
-    `Access-Control-Allow-Origin` on the `aether-cover` protocol, that is,
+    `Access-Control-Allow-Origin` on the `rymembra-cover` protocol, that is,
     widening for a decoration a contract kept narrow on purpose, and putting
     twenty-five thousand pixels on the interface thread at every track change.
   - **Only the family's four tokens are written**, with the alpha the skin had
@@ -5025,12 +5127,12 @@ artists and listening history without pasting thirty addresses by hand.
 There are two roads because they're complementary, not alternative, and neither
 of the two is enough:
 
-- **OAuth consent** (`aether-spotify::account`) gives the ISRC — matching's step
+- **OAuth consent** (`rymembra-spotify::account`) gives the ISRC — matching's step
   zero, which the keyless reader no longer receives — and can be repeated whenever
   you like. But since February 2026 an application in Development Mode requires the
   owner to have **Premium active**: if it lapses, it stops working and Spotify
   warns nobody. The screen says so **before** connecting.
-- **The ZIP archive** Spotify sends on request (`aether-archivio`) asks nothing of
+- **The ZIP archive** Spotify sends on request (`rymembra-archivio`) asks nothing of
   anyone and carries **years** of history, where the API gives fifty rows. In
   exchange it arrives in two pieces weeks apart, and only one of them may be
   opened: what's missing stays empty and the preview says which half.
@@ -5041,10 +5143,10 @@ window has a single screen, and doesn't know where what it's showing came from.
 
 What follows from that:
 
-- **`aether-oauth`**, extracted: PKCE, the loopback server and the keychain sat
-  inside `aether-cloud` and knew about Google. Now they serve two masters and name
+- **`rymembra-oauth`**, extracted: PKCE, the loopback server and the keychain sat
+  inside `rymembra-cloud` and knew about Google. Now they serve two masters and name
   neither.
-- **The scopes are all read-only**, with a test forbidding their widening. Aether
+- **The scopes are all read-only**, with a test forbidding their widening. Rymembra
   must not be able to touch anybody's account.
 - **`play_history.source`** distinguishes imported listens from real ones, and it's
   what makes the import **undoable**: «forget the imported listens» is a targeted
@@ -5107,10 +5209,10 @@ nobody can correct it if it's wrong.
   restore dialog: a «Save now» from the settings showed «Saving…» and nothing else,
   for tens of seconds.
 
-### Added — `AETHER_DATI`, to try things without risking them
+### Added — `RYMEMBRA_DATI`, to try things without risking them
 
 The environment variable replaces the application's data folder. It exists
-because almost everything irreversible Aether does — reorganizing the files on
+because almost everything irreversible Rymembra does — reorganizing the files on
 disk, importing a whole account, restoring a backup — can be read in a unit test
 and can only be **judged** by watching it happen in a real window, on a library
 that resembles somebody's. Without it, those two things are the same library: the
@@ -5180,7 +5282,7 @@ the history and the scrobble must count the **same thing**, and a second measure
 written here would be the defect `listen.rs` exists to correct, back in through
 the service door.
 
-- **`aether-scrobble`**, a new crate, doesn't see `rusqlite`. It isn't hygiene:
+- **`rymembra-scrobble`**, a new crate, doesn't see `rusqlite`. It isn't hygiene:
   the queue empties a thousand listens at a time, and if this crate could touch
   the connection the natural thing to write would be «read a row, send it, delete
   it» — that is, holding the library lock for the whole duration of the network,
@@ -5211,7 +5313,7 @@ Two things worth more than the sum of the lines they cost:
   ignored», those two will never come back accepted — the date is what it is.
   Putting them back in the queue would mean resending them forever.
 
-`aether-net` has learned a second header: ListenBrainz doesn't send `Retry-After`
+`rymembra-net` has learned a second header: ListenBrainz doesn't send `Retry-After`
 but `X-RateLimit-Reset-In`, and without reading it a `429` would wait blindly for
 thirty seconds when two were enough — multiplied by every block of a queue that
 empties.
@@ -5307,7 +5409,7 @@ inherits its decisions, not its code.
 - **Database layer**: an abstract driver, a migration chain unified from the two
   divergent ones, opening with diagnosis, parity proved rather than agreed.
 - **Playback**: explicit state, engine errors translated into codes, recovery.
-- **`.aeskin` skin format**: a skin is data, not CSS. Token registry, parametric
+- **`.ryskin` skin format**: a skin is data, not CSS. Token registry, parametric
   effects with a declared cost, parts registry, compiler, and a package format
   with the guards for an untrusted archive (path traversal, zip bomb, lied-about
   type).
@@ -5328,7 +5430,7 @@ inherits its decisions, not its code.
   recreated. Without that, reorganizing the library — the feature added shortly
   before — would zero the play counts, favorites and ratings of every track, and
   remove them from every playlist.
-- **Statistics merging** (`aether-domain::merge`): commutative and idempotent, with
+- **Statistics merging** (`rymembra-domain::merge`): commutative and idempotent, with
   every rule chosen in the direction that doesn't destroy — a count goes up and not
   down, a zero doesn't erase a rating, a favorite removed isn't put back by the
   other device. The importer needs it and device-to-device sync will need it
@@ -5355,6 +5457,6 @@ Defects found in the old tree and not carried into the new one:
 ## [1.0.0] — 2026-07-17
 
 Published from the old tree, which remains in `legacy/Aeter/` as a read-only
-reference; the installer is `legacy/Aeter/release/Aether Setup 1.0.0.exe`. The
+reference; the installer is `legacy/Aeter/release/Rymembra Setup 1.0.0.exe`. The
 changes before this line have not been reconstructed: the history is in the old
 tree's git log.

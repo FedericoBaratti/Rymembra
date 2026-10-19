@@ -1,0 +1,57 @@
+[package]
+name = "rymembra-barra"
+description = "I tre pulsanti nell'anteprima della barra delle applicazioni: l'unico posto di Rymembra che parla col sistema operativo a mano."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+# Come tutti gli altri crate del workspace: è un pezzo dell'applicazione, non
+# una libreria per altri. Vedi la riga gemella in `src-tauri/Cargo.toml`.
+publish = false
+
+# Solo su Windows. Altrove il crate compila lo stesso e non fa niente: vedi
+# `src/lib.rs`.
+#
+# La 0.62 è quella che l'albero aveva già — la usano `tauri` e `trash` — e il
+# `Cargo.lock` non guadagna nessun pacchetto: si accendono soltanto le parti
+# dell'API che servono qui.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Una tabella sua e non `workspace = true`, ed è tutta la ragione per cui questo
+# crate esiste a parte: la radice vieta `unsafe` con `forbid`, che non si
+# scavalca, e qui `unsafe` serve. Cargo non permette di ereditare la tabella del
+# workspace e cambiarne una riga, quindi la si ricopia: i lint di clippy sono
+# gli stessi, parola per parola, e `unsafe_code` scende da `forbid` a `deny` —
+# vietato ovunque in questo crate tranne nel modulo che lo dichiara, cioè
+# `src/finestra.rs`.
+#
+# In cambio, tre regole che il resto del workspace non ha bisogno di avere: ogni
+# blocco `unsafe` spiega perché è giusto (`undocumented_unsafe_blocks`), e dentro
+# una funzione `unsafe` ogni operazione pericolosa sta comunque in un blocco suo
+# (`unsafe_op_in_unsafe_fn`), così il conto delle cose da controllare è quello
+# dei blocchi e non quello delle funzioni.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+integer_division = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+undocumented_unsafe_blocks = "deny"

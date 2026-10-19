@@ -3,7 +3,7 @@
  *
  * # Il problema che risolve
  *
- * Aggiungere una lingua ad Aether costa un file: si lascia cadere `de.json` in
+ * Aggiungere una lingua a Rymembra costa un file: si lascia cadere `de.json` in
  * `apps/desktop/src/lingue/` e il programma lo trova da sé, perché l'elenco
  * delle lingue disponibili *è* il contenuto di quella cartella
  * (`import.meta.glob`, in `lingue/index.ts`). Non c'è nessun registro da
@@ -275,7 +275,7 @@ function primeVoci(elenco, quante = 12) {
  *
  * È precisamente il buco da cui è passato `errors.fs.networkUnavailable`. Il
  * catalogo del nucleo genera per ogni codice la chiave `errors.<codice>`
- * (`aether-domain/src/errors/catalog.rs`), la finestra la cerca, e quando non la
+ * (`rymembra-domain/src/errors/catalog.rs`), la finestra la cerca, e quando non la
  * trova ripiega sul `message` — che è il dettaglio tecnico scritto per chi legge
  * i registri, non per chi ascolta musica. Il guasto non si vede: non c'è nessun
  * errore, c'è una frase sbagliata, e la si scopre solo capitandoci sopra.
@@ -285,7 +285,7 @@ function primeVoci(elenco, quante = 12) {
  * perché questo strumento gira anche dove `cargo` non c'è, e perché la forma di
  * quelle righe è dichiarativa apposta.
  */
-const CATALOGO = "core/aether-domain/src/errors/catalog.rs";
+const CATALOGO = "core/rymembra-domain/src/errors/catalog.rs";
 
 /** I codici dichiarati dal nucleo, nell'ordine in cui stanno scritti. */
 function codiciDelNucleo() {

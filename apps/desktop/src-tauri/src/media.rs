@@ -2,7 +2,7 @@
 //!
 //! # Cosa mancava
 //!
-//! Aether non parlava in nessun modo con Windows. Fra i comandi registrati in
+//! Rymembra non parlava in nessun modo con Windows. Fra i comandi registrati in
 //! [`crate::main`] non ce n'era uno che uscisse dalla finestra: il tasto
 //! play/pausa della tastiera non faceva niente, nel riquadro del volume di
 //! Windows 11 non compariva nessuna scheda, la barra delle applicazioni non
@@ -73,7 +73,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
-use aether_app::covers::CoverStore;
+use rymembra_app::covers::CoverStore;
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
     SeekDirection,
@@ -94,7 +94,7 @@ const PASSO_SALTO_MS: u64 = 5_000;
 ///
 /// # Perché la copertina sta qui dentro
 ///
-/// SMTC vuole un **file vero**, non lo schema `aether-cover` con cui la
+/// SMTC vuole un **file vero**, non lo schema `rymembra-cover` con cui la
 /// finestra chiede le copertine: quel protocollo lo serve l'applicazione, e il
 /// sistema operativo non lo sa parlare. Il percorso si ricava da
 /// [`CoverStore::path_for`], che è deterministico, e lo `CoverStore` è
@@ -220,10 +220,10 @@ pub fn avvia(app: &tauri::AppHandle) {
     let config = PlatformConfig {
         // Il nome che il sistema mostra accanto ai comandi. Non tradotto: è
         // il nome del programma, e i nomi dei programmi non si traducono.
-        display_name: "Aether",
+        display_name: "Rymembra",
         // Serve solo a MPRIS su Linux, che qui non si compila mai. Sta qui
         // perché il tipo lo pretende, non perché faccia qualcosa.
-        dbus_name: "aether",
+        dbus_name: "rymembra",
         hwnd: Some(punt),
     };
 
@@ -452,7 +452,7 @@ fn consegna(controlli: &mut Controlli, scheda: Scheda) {
     }
 }
 
-/// La copertina per quando non ce n'è una: l'icona di Aether.
+/// La copertina per quando non ce n'è una: l'icona di Rymembra.
 ///
 /// # Perché un file nella cartella temporanea
 ///
@@ -468,8 +468,8 @@ fn copertina_di_ripiego() -> Option<String> {
     const ICONA: &[u8] = include_bytes!("../icons/128x128.png");
     static PERCORSO: OnceLock<PathBuf> = OnceLock::new();
     let percorso =
-        PERCORSO.get_or_init(|| std::env::temp_dir().join("aether-scheda-senza-copertina.png"));
-    if !percorso.exists() && aether_app::scrittura::scrivi_atomico(percorso, ICONA).is_err() {
+        PERCORSO.get_or_init(|| std::env::temp_dir().join("rymembra-scheda-senza-copertina.png"));
+    if !percorso.exists() && rymembra_app::scrittura::scrivi_atomico(percorso, ICONA).is_err() {
         return None;
     }
     url_di_file(percorso)
@@ -540,7 +540,7 @@ pub(crate) enum Gesto {
     VaiA(u64),
 }
 
-/// Esegue un gesto sul filo «aether-tasti», dietro a quelli arrivati prima.
+/// Esegue un gesto sul filo «rymembra-tasti», dietro a quelli arrivati prima.
 ///
 /// # Perché un filo
 ///
@@ -565,7 +565,7 @@ pub(crate) fn premi(app: &tauri::AppHandle, gesto: Gesto) {
         let (manda, ricevi) = std::sync::mpsc::channel::<Gesto>();
         let mano = app.clone();
         let avviato = std::thread::Builder::new()
-            .name("aether-tasti".to_owned())
+            .name("rymembra-tasti".to_owned())
             .spawn(move || {
                 for gesto in ricevi {
                     esegui(&mano, gesto);
@@ -719,7 +719,7 @@ mod prove {
         // `/C:/…`, che Windows rifiuta, e con lui saltava la scheda intera.
         // Quel che arriva al sistema dev'essere il percorso di partenza,
         // lettera di unità e barre rovesce comprese.
-        let percorso = r"C:\Users\ada\AppData\Roaming\aether\copertine\ab\abcdef.jpg";
+        let percorso = r"C:\Users\ada\AppData\Roaming\rymembra\copertine\ab\abcdef.jpg";
         let url = url_di_file(std::path::Path::new(percorso)).expect("un percorso UTF-8");
         assert_eq!(url, format!("file://{percorso}"));
         assert_eq!(percorso_che_souvlaki_consegna(&url), Some(percorso));

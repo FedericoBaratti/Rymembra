@@ -8,10 +8,10 @@
 //! come chiederebbe qualunque immagine: in parallelo, con la sua cache, e
 //! scartando quelle che escono dallo schermo.
 //!
-//! L'indirizzo è `aether-cover://localhost/<impronta>` per la copertina piena,
-//! `aether-cover://localhost/<impronta>.m` per la media (le schede delle
+//! L'indirizzo è `rymembra-cover://localhost/<impronta>` per la copertina piena,
+//! `rymembra-cover://localhost/<impronta>.m` per la media (le schede delle
 //! griglie, vedi `MAX_LATO_MEDIA` nel nucleo) e
-//! `aether-cover://localhost/<impronta>.t` per la miniatura.
+//! `rymembra-cover://localhost/<impronta>.t` per la miniatura.
 //!
 //! La media è l'unica che può non esserci ancora: nasce dalla piena alla prima
 //! richiesta, ed è per questo che qui si passa da [`CoverStore::media`] invece
@@ -25,7 +25,7 @@
 //! richiesta con dentro un separatore non è un percorso da normalizzare — è una
 //! richiesta che non può essere legittima, e si rifiuta.
 
-use aether_app::covers::CoverStore;
+use rymembra_app::covers::CoverStore;
 use tauri::http;
 use tauri::{Manager as _, UriSchemeContext, UriSchemeResponder};
 
@@ -207,7 +207,7 @@ mod tests {
             0x44, 0xAE, 0x42, 0x60, 0x82,
         ];
         let salvata = store
-            .store(&PNG, aether_app::covers::CoverSource::Tag)
+            .store(&PNG, rymembra_app::covers::CoverSource::Tag)
             .expect("salvataggio");
         for misura in [Misura::Miniatura, Misura::Media, Misura::Piena] {
             assert!(leggi(&store, &salvata.hash, misura).is_some(), "{misura:?}");

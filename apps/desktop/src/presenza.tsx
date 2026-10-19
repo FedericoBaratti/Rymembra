@@ -13,7 +13,7 @@
  *
  * # Il contratto col compilatore
  *
- * Per ogni parte che dichiara un innesco, `aether-skin` scrive una regola su
+ * Per ogni parte che dichiara un innesco, `rymembra-skin` scrive una regola su
  * `::view-transition-new(.vt-<parte>-enter)`, `-old(.vt-<parte>-exit)` o
  * `-group(.vt-<parte>-share)`, e mette la parte in `CompiledSkin::presenze`.
  * Qui si legge quell'elenco e si passa la classe dell'innesco — o `"none"`,

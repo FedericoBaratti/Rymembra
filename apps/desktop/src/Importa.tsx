@@ -203,7 +203,7 @@ export function Importa({
 // ── da un link: uno dei cataloghi liberi ────────────────────────────────────
 
 /**
- * Che aspetto ha un link che Aether sa leggere.
+ * Che aspetto ha un link che Rymembra sa leggere.
  *
  * Esempi veri e non descrizioni: chi ha negli appunti qualcosa che a questi non
  * somiglia lo vede prima di incollare, invece di scoprirlo dal messaggio di una

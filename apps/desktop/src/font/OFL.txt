@@ -1,7 +1,7 @@
-I font impacchettati in Aether e la loro licenza
+I font impacchettati in Rymembra e la loro licenza
 ================================================
 
-Aether incorpora due famiglie di caratteri. La SIL Open Font License 1.1
+Rymembra incorpora due famiglie di caratteri. La SIL Open Font License 1.1
 obbliga a distribuire questo testo insieme ai file dei font, ed è il motivo
 per cui esiste questo file.
 

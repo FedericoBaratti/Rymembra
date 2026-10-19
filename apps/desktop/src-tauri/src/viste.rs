@@ -17,7 +17,7 @@
 //! # Lo stesso ordine delle pagine, per costruzione
 //!
 //! Non c'è una seconda query scritta qui: si chiamano le stesse funzioni di
-//! `aether_app::library` che servono le pagine (`list_tracks`, `list_liked`,
+//! `rymembra_app::library` che servono le pagine (`list_tracks`, `list_liked`,
 //! `search`), senza limite. Un ordine scritto due volte è un ordine che prima o
 //! poi diverge, e «Seleziona tutto» seguito da «Riproduci» suonerebbe un ordine
 //! diverso da quello che si vede.
@@ -26,8 +26,8 @@
 //! cinquantamila brani qualche decina di millisecondi, fuori dal filo della
 //! finestra. È il gesto di un clic, non di uno scorrimento.
 
-use aether_app::library::{TrackOrder, TrackSummary, list_liked, list_tracks, search};
-use aether_domain::errors::{AppError, ErrorCode};
+use rymembra_app::library::{TrackOrder, TrackSummary, list_liked, list_tracks, search};
+use rymembra_domain::errors::{AppError, ErrorCode};
 use serde::Deserialize;
 use tauri::Manager as _;
 
@@ -120,7 +120,7 @@ mod tests {
 
     /// Una libreria in memoria con `n` brani, uno su tre fra i preferiti.
     fn libreria(n: i64) -> rusqlite::Connection {
-        let connection = aether_app::db::open_in_memory()
+        let connection = rymembra_app::db::open_in_memory()
             .expect("database")
             .connection;
         for i in 0..n {

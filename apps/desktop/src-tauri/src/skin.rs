@@ -1,6 +1,6 @@
 //! La skin attiva, compilata dal nucleo.
 //!
-//! Questo modulo non produce una riga di CSS: la produce `aether-skin`, e qui si
+//! Questo modulo non produce una riga di CSS: la produce `rymembra-skin`, e qui si
 //! sceglie soltanto quale skin compilare. È la stessa regola dei comandi —
 //! nessuna decisione fuori dal nucleo — e vale doppio qui, perché su Android il
 //! foglio non servirà affatto e serviranno gli stessi token in un'altra forma.
@@ -38,8 +38,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use aether_app::settings::{CHIAVE_ACCENTO_DINAMICO, CHIAVE_SKIN};
-use aether_domain::errors::{AppError, ErrorCode};
+use rymembra_app::settings::{CHIAVE_ACCENTO_DINAMICO, CHIAVE_SKIN};
+use rymembra_domain::errors::{AppError, ErrorCode};
 use serde::Serialize;
 use tauri::State;
 
@@ -55,7 +55,7 @@ pub const DI_SERIE: &str = "plain";
 /// sarebbe un file che nessuno leggerebbe mai: `sorgente` risponde prima di
 /// guardare il disco.
 fn di_serie(id: &str) -> bool {
-    aether_skin::di_serie(id).is_some()
+    rymembra_skin::di_serie(id).is_some()
 }
 
 /// Dove stanno le skin installate.
@@ -85,20 +85,20 @@ fn id_sicuro(id: &str) -> bool {
 /// da un archivio. Il tipo di ritorno è lo stesso per entrambe, perché una skin
 /// **è** il suo manifest: da qui in giù non c'è più differenza.
 fn sorgente(data_dir: &Path, id: &str) -> Result<String, AppError> {
-    if let Some(testo) = aether_skin::di_serie(id) {
+    if let Some(testo) = rymembra_skin::di_serie(id) {
         return Ok(testo.to_owned());
     }
     if !id_sicuro(id) {
         return Err(AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }));
     }
-    let percorso = cartella_skin(data_dir).join(format!("{id}.aeskin"));
+    let percorso = cartella_skin(data_dir).join(format!("{id}.ryskin"));
     let bytes = std::fs::read(&percorso)
         .map_err(|_| AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }))?;
     // `read_skin_package` porta le guardie dell'archivio non fidato — traversal
     // del percorso, zip bomb, tipo mentito — e sono le stesse anche quando il
     // file l'ha messo lì l'utente: una skin scaricata da internet e copiata a
     // mano nella cartella non è più fidata di una arrivata dalla rete.
-    let pacchetto = aether_skin::read_skin_package(&bytes)?;
+    let pacchetto = rymembra_skin::read_skin_package(&bytes)?;
     Ok(pacchetto.source)
 }
 
@@ -193,8 +193,8 @@ pub struct NodoIpc {
 }
 
 /// L'albero, con gli indirizzi già calcolati.
-fn nodo(zona: &aether_skin::LayoutZone, via: &mut Vec<usize>) -> NodoIpc {
-    use aether_skin::LayoutNode;
+fn nodo(zona: &rymembra_skin::LayoutZone, via: &mut Vec<usize>) -> NodoIpc {
+    use rymembra_skin::LayoutNode;
 
     let mut figli = Vec::with_capacity(zona.children.len());
     for (indice, figlio) in zona.children.iter().enumerate() {
@@ -243,12 +243,12 @@ fn nodo(zona: &aether_skin::LayoutZone, via: &mut Vec<usize>) -> NodoIpc {
 ///
 /// È la proprietà che permette all'editor di riscrivere l'albero da quel che ha
 /// ricevuto: quel che esce di qui, rimesso dentro, si rilegge uguale.
-fn misura(size: aether_skin::layout::TrackSize) -> String {
-    use aether_skin::layout::TrackSize;
+fn misura(size: rymembra_skin::layout::TrackSize) -> String {
+    use rymembra_skin::layout::TrackSize;
     match size {
         TrackSize::Hug => "hug".to_owned(),
         TrackSize::Fill => "fill".to_owned(),
-        TrackSize::Fixed(length) => aether_skin::values::format_length(length),
+        TrackSize::Fixed(length) => rymembra_skin::values::format_length(length),
     }
 }
 
@@ -268,8 +268,8 @@ fn indirizzo(via: &[usize]) -> String {
         .join("-")
 }
 
-const fn valore_opzione(valore: aether_skin::layout::OptionValue) -> ValoreOpzioneIpc {
-    use aether_skin::layout::OptionValue;
+const fn valore_opzione(valore: rymembra_skin::layout::OptionValue) -> ValoreOpzioneIpc {
+    use rymembra_skin::layout::OptionValue;
     match valore {
         OptionValue::Flag(acceso) => ValoreOpzioneIpc::Flag(acceso),
         OptionValue::Word(parola) => ValoreOpzioneIpc::Word(parola),
@@ -388,7 +388,7 @@ pub struct VoceSkin {
 
 impl VoceSkin {
     /// La voce di un documento letto.
-    fn di(documento: aether_skin::SkinDocument, di_serie: bool, attiva: bool) -> Self {
+    fn di(documento: rymembra_skin::SkinDocument, di_serie: bool, attiva: bool) -> Self {
         Self {
             anteprima: anteprima(&documento.meta),
             scheme: documento.scheme.as_str(),
@@ -422,7 +422,7 @@ impl VoceSkin {
             autore: meta("author").unwrap_or_default(),
             descrizione: None,
             anteprima: Vec::new(),
-            scheme: aether_skin::Scheme::Dark.as_str(),
+            scheme: rymembra_skin::Scheme::Dark.as_str(),
             variante: false,
             di_serie: false,
             attiva,
@@ -442,8 +442,8 @@ pub struct MisuraIpc {
     pub budget: u32,
 }
 
-impl From<aether_skin::document::Misura> for MisuraIpc {
-    fn from(misura: aether_skin::document::Misura) -> Self {
+impl From<rymembra_skin::document::Misura> for MisuraIpc {
+    fn from(misura: rymembra_skin::document::Misura) -> Self {
         Self {
             costo: misura.costo,
             budget: misura.budget,
@@ -472,7 +472,7 @@ pub struct CicloIpc {
 /// subito. Ora la risposta porta l'esame del nucleo — i budget, i cicli, i
 /// contrasti — e se [`EsameIpc::da_confermare`] è vero la finestra chiede prima
 /// di indossarla. Che cosa meriti una domanda lo decide il nucleo
-/// (`aether_skin::document::Esame::da_confermare`), non l'interfaccia.
+/// (`rymembra_skin::document::Esame::da_confermare`), non l'interfaccia.
 ///
 /// Quel che sfora **più del doppio** di un budget non arriva qui: non si
 /// installa affatto (`controlla_installazione`), e le skin che lampeggiano non
@@ -495,14 +495,14 @@ pub struct EsameIpc {
     /// Quante coppie di testo e superficie non si leggono.
     pub contrasti: usize,
     /// Quanti anelli del fuoco non si vedono: sotto 3:1 contro le superfici,
-    /// tema per tema (`aether_skin::focus_ring_pairs`).
+    /// tema per tema (`rymembra_skin::focus_ring_pairs`).
     pub anelli: usize,
     /// C'è qualcosa da chiedere prima di indossarla.
     pub da_confermare: bool,
 }
 
-impl From<aether_skin::document::Esame> for EsameIpc {
-    fn from(esame: aether_skin::document::Esame) -> Self {
+impl From<rymembra_skin::document::Esame> for EsameIpc {
+    fn from(esame: rymembra_skin::document::Esame) -> Self {
         Self {
             da_confermare: esame.da_confermare(),
             superficie: esame.superficie.into(),
@@ -526,12 +526,12 @@ impl From<aether_skin::document::Esame> for EsameIpc {
 }
 
 /// I tre colori della scheda, nella scrittura che il CSS accetta.
-fn anteprima(meta: &aether_skin::document::SkinMeta) -> Vec<String> {
+fn anteprima(meta: &rymembra_skin::document::SkinMeta) -> Vec<String> {
     meta.preview
         .map(|colori| {
             colori
                 .iter()
-                .map(|c| aether_skin::values::format_color(*c))
+                .map(|c| rymembra_skin::values::format_color(*c))
                 .collect()
         })
         .unwrap_or_default()
@@ -544,10 +544,10 @@ fn anteprima(meta: &aether_skin::document::SkinMeta) -> Vec<String> {
 /// la parte che decide qualcosa.
 fn compila(data_dir: &Path, id: &str) -> Result<SkinIpc, AppError> {
     let sorgente = sorgente(data_dir, id)?;
-    let documento = aether_skin::parse_skin_json(&sorgente)?;
+    let documento = rymembra_skin::parse_skin_json(&sorgente)?;
     Ok(skin_ipc(
         &documento,
-        &aether_skin::Ambito::app(&documento.id),
+        &rymembra_skin::Ambito::app(&documento.id),
     ))
 }
 
@@ -555,8 +555,11 @@ fn compila(data_dir: &Path, id: &str) -> Result<SkinIpc, AppError> {
 ///
 /// Due chiamanti: la skin scelta, nell'ambito della finestra, e la prova di
 /// una bozza dello Studio, con le risorse della bozza (`studio_compila_app`).
-pub fn skin_ipc(documento: &aether_skin::SkinDocument, ambito: &aether_skin::Ambito) -> SkinIpc {
-    let compilata = aether_skin::compile::compila(documento, ambito);
+pub fn skin_ipc(
+    documento: &rymembra_skin::SkinDocument,
+    ambito: &rymembra_skin::Ambito,
+) -> SkinIpc {
+    let compilata = rymembra_skin::compile::compila(documento, ambito);
     SkinIpc {
         id: compilata.id,
         css: compilata.css,
@@ -591,8 +594,8 @@ pub fn skin_ipc(documento: &aether_skin::SkinDocument, ambito: &aether_skin::Amb
 /// I difetti vengono da `SkinLayout::default()` e da `MotionIntensity::Full`,
 /// cioè dal formato: ripeterli qui vorrebbe dire avere due posti in cui è
 /// scritto cosa succede a chi non dichiara niente.
-pub fn impaginazione(documento: &aether_skin::SkinDocument) -> ImpaginazioneIpc {
-    use aether_skin::document::{Density, SkinLayout};
+pub fn impaginazione(documento: &rymembra_skin::SkinDocument) -> ImpaginazioneIpc {
+    use rymembra_skin::document::{Density, SkinLayout};
 
     // Si prende in prestito invece di copiare: da quando `SkinLayout` porta lo
     // scafale non è più `Copy`, e copiare un albero per leggerne tre enum
@@ -608,7 +611,7 @@ pub fn impaginazione(documento: &aether_skin::SkinDocument) -> ImpaginazioneIpc 
         motion: documento
             .motion
             .as_ref()
-            .map_or(aether_skin::document::MotionIntensity::Full, |m| {
+            .map_or(rymembra_skin::document::MotionIntensity::Full, |m| {
                 m.intensity
             })
             .as_str(),
@@ -623,7 +626,7 @@ pub fn impaginazione(documento: &aether_skin::SkinDocument) -> ImpaginazioneIpc 
 /// disegnare la finestra, e una finestra che non si disegna non può mostrare a
 /// nessuno perché non si è disegnata.
 fn skin_scelta(connection: &rusqlite::Connection) -> String {
-    aether_app::settings::read(connection, CHIAVE_SKIN)
+    rymembra_app::settings::read(connection, CHIAVE_SKIN)
         .ok()
         .flatten()
         // Un valore assente o illeggibile vale «quella di serie»: una skin
@@ -646,7 +649,7 @@ fn skin_scelta(connection: &rusqlite::Connection) -> String {
 ///
 /// Il difetto era questo. L'impaginazione dell'intera finestra viene da qui —
 /// `layout.shell` è l'albero, e il renderer senza albero non disegna niente —
-/// quindi un `.aeskin` che non si legge non faceva una finestra brutta: ne
+/// quindi un `.ryskin` che non si legge non faceva una finestra brutta: ne
 /// faceva una **vuota**, con i soli tre tasti di sistema, per sempre, senza un
 /// messaggio e senza una via d'uscita, perché anche le Impostazioni stanno
 /// dentro l'impaginazione. Il nucleo intanto rispondeva a tutto.
@@ -731,7 +734,7 @@ fn compila_o_ripiega(
 /// validazione invece resta, col suo guasto: vedi [`VoceSkin::guasto`].
 ///
 /// Dei pacchetti si legge il **solo** manifest
-/// (`aether_skin::package::leggi_manifesto`), e fuori dal lucchetto della
+/// (`rymembra_skin::package::leggi_manifesto`), e fuori dal lucchetto della
 /// libreria: al database serve una riga sola, quale skin è scelta. Fino alla
 /// 3.0 ogni apertura delle Impostazioni decomprimeva ogni carattere e ogni
 /// immagine di ogni skin installata, col lucchetto in mano.
@@ -747,8 +750,8 @@ pub fn skin_elenco(stato: State<'_, Stato>) -> Esito<Vec<VoceSkin>> {
 /// Quel che fa [`skin_elenco`], senza lo stato di Tauri attorno.
 fn elenco(data_dir: &Path, scelta: &str) -> Result<Vec<VoceSkin>, AppError> {
     let mut voci = Vec::new();
-    for (id, testo) in aether_skin::DI_SERIE {
-        let documento = aether_skin::parse_skin_json(testo)?;
+    for (id, testo) in rymembra_skin::DI_SERIE {
+        let documento = rymembra_skin::parse_skin_json(testo)?;
         voci.push(VoceSkin::di(documento, true, scelta == *id));
     }
 
@@ -758,15 +761,15 @@ fn elenco(data_dir: &Path, scelta: &str) -> Result<Vec<VoceSkin>, AppError> {
         .flatten()
         .filter_map(Result::ok)
         .map(|voce| voce.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "aeskin"))
+        .filter(|p| p.extension().is_some_and(|e| e == "ryskin"))
         .filter_map(|p| {
             let nome_file = p.file_stem()?.to_str()?.to_owned();
             let bytes = std::fs::read(&p).ok()?;
             // Un archivio che non si apre non ha niente da mostrare né da
             // aggiustare: resta fuori, come sempre.
-            let manifesto = aether_skin::package::leggi_manifesto(&bytes).ok()?;
-            let letto = aether_skin::parse_skin_json(&manifesto.source).and_then(|documento| {
-                aether_skin::package::risorse_presenti(&documento, &manifesto.risorse)?;
+            let manifesto = rymembra_skin::package::leggi_manifesto(&bytes).ok()?;
+            let letto = rymembra_skin::parse_skin_json(&manifesto.source).and_then(|documento| {
+                rymembra_skin::package::risorse_presenti(&documento, &manifesto.risorse)?;
                 Ok(documento)
             });
             match letto {
@@ -822,7 +825,7 @@ fn elenco(data_dir: &Path, scelta: &str) -> Result<Vec<VoceSkin>, AppError> {
 /// archivio troncato a metà dall'uscita era una finestra che ripiegava sulla
 /// skin di serie senza sapere perché.
 pub(crate) fn installa(data_dir: &Path, bytes: &[u8]) -> Result<VoceSkin, AppError> {
-    let pacchetto = aether_skin::read_skin_package(bytes)?;
+    let pacchetto = rymembra_skin::read_skin_package(bytes)?;
     let documento = pacchetto.document;
     if di_serie(&documento.id) || !id_sicuro(&documento.id) {
         return Err(AppError::new(ErrorCode::SkinNotFound {
@@ -833,19 +836,19 @@ pub(crate) fn installa(data_dir: &Path, bytes: &[u8]) -> Result<VoceSkin, AppErr
                 .to_owned(),
         ));
     }
-    aether_skin::document::controlla_installazione(&documento)?;
-    let esame = EsameIpc::from(aether_skin::document::esamina(&documento));
+    rymembra_skin::document::controlla_installazione(&documento)?;
+    let esame = EsameIpc::from(rymembra_skin::document::esamina(&documento));
     let dir = cartella_skin(data_dir);
     std::fs::create_dir_all(&dir)
-        .map_err(|err| aether_app::files::io_error(&dir.display().to_string(), &err))?;
-    aether_app::scrittura::scrivi_atomico(&dir.join(format!("{}.aeskin", documento.id)), bytes)?;
+        .map_err(|err| rymembra_app::files::io_error(&dir.display().to_string(), &err))?;
+    rymembra_app::scrittura::scrivi_atomico(&dir.join(format!("{}.ryskin", documento.id)), bytes)?;
     Ok(VoceSkin {
         esame: Some(esame),
         ..VoceSkin::di(documento, false, false)
     })
 }
 
-/// Installa una skin da un file `.aeskin`.
+/// Installa una skin da un file `.ryskin`.
 #[tauri::command(async)]
 pub fn skin_installa(
     app: tauri::AppHandle,
@@ -857,7 +860,7 @@ pub fn skin_installa(
     let esito = crate::studio::cartella_dati(&stato)
         .and_then(|dati| {
             let bytes = std::fs::read(&percorso)
-                .map_err(|err| aether_app::files::io_error(&percorso, &err))?;
+                .map_err(|err| rymembra_app::files::io_error(&percorso, &err))?;
             installa(&dati, &bytes)
         })
         .map_err(errore);
@@ -868,7 +871,7 @@ pub fn skin_installa(
 ///
 /// # Perché non basta esportare
 ///
-/// Lo Studio sapeva scrivere un `.aeskin` da qualche parte sul disco
+/// Lo Studio sapeva scrivere un `.ryskin` da qualche parte sul disco
 /// (`studio_esporta`) e l'applicazione sapeva installarne uno scelto a mano
 /// (`skin_installa`): chi faceva un tema doveva fare quel giro per vedere il
 /// proprio lavoro nell'elenco delle skin. Fra i due passaggi non c'era nessuna
@@ -908,7 +911,7 @@ fn installa_sorgente(
     // `write_skin_package` valida da sé — è la stessa chiamata di
     // `studio_esporta`, e gli errori del manifest fermano qui, compresa
     // una risorsa nominata che la bozza non ha.
-    let bytes = aether_skin::write_skin_package(&aether_skin::package::WritePackageInput {
+    let bytes = rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
         source: sorgente,
         preview: preview.as_deref(),
         assets: &assets,
@@ -954,12 +957,12 @@ fn disinstalla(stato: &Stato, id: &str) -> Result<SkinIpc, AppError> {
         );
     }
     let dati = crate::studio::cartella_dati(stato)?;
-    let file = cartella_skin(&dati).join(format!("{id}.aeskin"));
+    let file = cartella_skin(&dati).join(format!("{id}.ryskin"));
     if !file.exists() {
         return Err(AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }));
     }
     std::fs::remove_file(&file)
-        .map_err(|err| aether_app::files::io_error(&file.display().to_string(), &err))?;
+        .map_err(|err| rymembra_app::files::io_error(&file.display().to_string(), &err))?;
 
     // Se era quella indossata, la finestra resterebbe con un foglio che non
     // ha più una sorgente: si torna a quella di serie prima di rispondere,
@@ -968,7 +971,7 @@ fn disinstalla(stato: &Stato, id: &str) -> Result<SkinIpc, AppError> {
     if attiva == id {
         let compilata = compila(&dati, DI_SERIE)?;
         con_libreria(stato, |libreria| {
-            aether_app::settings::write(&libreria.connection, CHIAVE_SKIN, &compilata.id)
+            rymembra_app::settings::write(&libreria.connection, CHIAVE_SKIN, &compilata.id)
         })?;
         return Ok(compilata);
     }
@@ -988,7 +991,7 @@ pub fn skin_scegli(app: tauri::AppHandle, stato: State<'_, Stato>, id: String) -
         .and_then(|dati| compila(&dati, &id))
         .and_then(|compilata| {
             con_libreria(&stato, |libreria| {
-                aether_app::settings::write(&libreria.connection, CHIAVE_SKIN, &compilata.id)
+                rymembra_app::settings::write(&libreria.connection, CHIAVE_SKIN, &compilata.id)
             })?;
             Ok(compilata)
         })
@@ -999,8 +1002,8 @@ pub fn skin_scegli(app: tauri::AppHandle, stato: State<'_, Stato>, id: String) -
 // ── L'accento che segue la copertina ────────────────────────────────────────
 //
 // Tre comandi e nessuna decisione, come tutto il resto di questo modulo: quale
-// colore esca dalla copertina lo decide `aether_app::tinta`, se sia leggibile lo
-// decide `aether_skin::dinamico`, e qui si legge un'impostazione e si mette in
+// colore esca dalla copertina lo decide `rymembra_app::tinta`, se sia leggibile lo
+// decide `rymembra_skin::dinamico`, e qui si legge un'impostazione e si mette in
 // fila l'una dopo l'altra.
 
 /// Una proprietà personalizzata da scrivere sulla radice della finestra.
@@ -1019,7 +1022,7 @@ pub struct VariabileIpc {
 
 /// La preferenza è accesa?
 fn accento_scelto(connection: &rusqlite::Connection) -> bool {
-    aether_app::settings::read_json(connection, CHIAVE_ACCENTO_DINAMICO)
+    rymembra_app::settings::read_json(connection, CHIAVE_ACCENTO_DINAMICO)
         .ok()
         .flatten()
         // Assente o illeggibile vale spento: è la stessa regola di `skin_scelta`
@@ -1038,7 +1041,7 @@ pub fn accento_dinamico(stato: State<'_, Stato>) -> Esito<bool> {
 #[tauri::command(async)]
 pub fn accento_dinamico_attiva(stato: State<'_, Stato>, attivo: bool) -> Esito<bool> {
     con_libreria(&stato, |libreria| {
-        aether_app::settings::write_json(&libreria.connection, CHIAVE_ACCENTO_DINAMICO, &attivo)?;
+        rymembra_app::settings::write_json(&libreria.connection, CHIAVE_ACCENTO_DINAMICO, &attivo)?;
         Ok(attivo)
     })
     .map_err(errore)
@@ -1063,7 +1066,7 @@ pub fn accento_dinamico_attiva(stato: State<'_, Stato>, attivo: bool) -> Esito<b
 /// `covers.tinta` compone un percorso dall'impronta e apre quel file, quindi
 /// un'impronta che sia in realtà `../../qualcosa` è una lettura arbitraria di
 /// file chiesta dalla finestra. Il controllo è lo stesso del protocollo
-/// `aether-cover` — [`crate::copertine::e_un_impronta`] — e un'impronta che non
+/// `rymembra-cover` — [`crate::copertine::e_un_impronta`] — e un'impronta che non
 /// lo passa vale come una copertina che non c'è: nessuna tinta, nessun errore
 /// da mostrare.
 /// # Perché il lucchetto si molla a metà
@@ -1121,11 +1124,11 @@ pub fn accento_copertina(
     // risparmiare un microsecondo ogni canzone. Adesso che la lettura non è più
     // sotto il lucchetto, quel microsecondo lo paga solo chi chiama.
     let sorgente = sorgente(&data_dir, &skin).map_err(errore)?;
-    let documento = aether_skin::parse_skin_json(&sorgente).map_err(errore)?;
+    let documento = rymembra_skin::parse_skin_json(&sorgente).map_err(errore)?;
 
-    let tinta = aether_skin::values::Rgba { r, g, b, a: 1.0 };
+    let tinta = rymembra_skin::values::Rgba { r, g, b, a: 1.0 };
     Ok(
-        aether_skin::dinamico::accento_dinamico(&documento, tinta, chiaro).map(|variabili| {
+        rymembra_skin::dinamico::accento_dinamico(&documento, tinta, chiaro).map(|variabili| {
             variabili
                 .into_iter()
                 .map(|(nome, valore)| VariabileIpc { nome, valore })
@@ -1139,11 +1142,11 @@ pub fn accento_copertina(
 /// Risponde a una richiesta di risorsa di una skin.
 ///
 /// Gli indirizzi li scrive **solo** il compilatore, a partire da nomi che il
-/// documento ha già validato (`aether_skin::compile::ORIGINE_RISORSE`):
+/// documento ha già validato (`rymembra_skin::compile::ORIGINE_RISORSE`):
 ///
-/// - `http://aether-skin.localhost/<id>/<nome>` per una skin installata, che
-///   la risorsa la tiene dentro il suo `.aeskin`;
-/// - `http://aether-skin.localhost/bozza/<id>/<nome>` per la bozza dello
+/// - `http://rymembra-skin.localhost/<id>/<nome>` per una skin installata, che
+///   la risorsa la tiene dentro il suo `.ryskin`;
+/// - `http://rymembra-skin.localhost/bozza/<id>/<nome>` per la bozza dello
 ///   Studio, che la tiene in `skin/bozze/<id>/assets/`.
 ///
 /// Qui si controlla tutto un'altra volta, perché questa è una porta e la
@@ -1230,7 +1233,7 @@ const QUANTI_SCAFFALI: usize = 2;
 ///
 /// # Perché
 ///
-/// Fino alla 3.0 ogni richiesta di una risorsa rileggeva l'intero `.aeskin`
+/// Fino alla 3.0 ogni richiesta di una risorsa rileggeva l'intero `.ryskin`
 /// e decomprimeva **tutte** le sue voci — il manifest, la miniatura, ogni
 /// carattere e ogni immagine — per restituirne una: una skin con tre
 /// caratteri e uno sfondo apriva l'archivio quattro volte a ogni avvio e a
@@ -1250,7 +1253,7 @@ fn risorsa(dati: &Path, percorso: &str, gia: Option<&str>) -> Result<Servita, u1
         [id, nome] => (false, *id, *nome),
         _ => return Err(400),
     };
-    if !id_sicuro(id) || aether_skin::tipo_risorsa(nome).is_none() {
+    if !id_sicuro(id) || rymembra_skin::tipo_risorsa(nome).is_none() {
         return Err(400);
     }
     if bozza {
@@ -1266,7 +1269,7 @@ fn risorsa(dati: &Path, percorso: &str, gia: Option<&str>) -> Result<Servita, u1
         let bytes = std::fs::read(file).map_err(|_| 404_u16)?;
         // Il tipo dai byte, come dentro un pacchetto: un `.woff2` che non lo è
         // non arriva al motore dei caratteri.
-        let tipo = aether_skin::riconosci_risorsa(nome, &bytes).ok_or(415_u16)?;
+        let tipo = rymembra_skin::riconosci_risorsa(nome, &bytes).ok_or(415_u16)?;
         return Ok(Servita::Piena {
             tipo,
             corpo: Arc::new(bytes),
@@ -1274,7 +1277,7 @@ fn risorsa(dati: &Path, percorso: &str, gia: Option<&str>) -> Result<Servita, u1
         });
     }
 
-    let file = cartella_skin(dati).join(format!("{id}.aeskin"));
+    let file = cartella_skin(dati).join(format!("{id}.ryskin"));
     let impronta = impronta_di(id, &std::fs::metadata(&file).map_err(|_| 404_u16)?);
     if gia == Some(impronta.as_str()) {
         return Ok(Servita::Uguale(impronta));
@@ -1305,7 +1308,8 @@ fn risorsa(dati: &Path, percorso: &str, gia: Option<&str>) -> Result<Servita, u1
     // dell'archivio ci sono tutte; la validazione del documento no, perché qui
     // si servono byte che il pacchetto contiene, non si decide di indossarlo.
     let archivio = std::fs::read(&file).map_err(|_| 404_u16)?;
-    let pacchetto = aether_skin::package::leggi_pacchetto_grezzo(&archivio).map_err(|_| 404_u16)?;
+    let pacchetto =
+        rymembra_skin::package::leggi_pacchetto_grezzo(&archivio).map_err(|_| 404_u16)?;
     let scaffale = Scaffale {
         file: file.clone(),
         impronta: impronta.clone(),
@@ -1356,11 +1360,11 @@ fn risposta_risorsa(esito: Result<Servita, u16>) -> tauri::http::Response<Vec<u8
         .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
 }
 
-/// Un `.aeskin` scritto a mano, voci salvate senza comprimerle.
+/// Un `.ryskin` scritto a mano, voci salvate senza comprimerle.
 ///
 /// Per le prove di quel che lo scrittore del nucleo non produce mai: un
 /// pacchetto col manifest che non passa la validazione, cioè la skin
-/// installata da una versione di Aether che lo accettava. Lo zip più piccolo
+/// installata da una versione di Rymembra che lo accettava. Lo zip più piccolo
 /// che il lettore apre: intestazione locale, indice, coda — col CRC vero,
 /// perché il lettore lo controlla.
 #[cfg(test)]
@@ -1444,16 +1448,16 @@ mod tests {
             );
         let cartella = dir.path().join("skin");
         std::fs::write(
-            cartella.join("vecchia.aeskin"),
+            cartella.join("vecchia.ryskin"),
             zip_a_mano(&[("skin.json", rotta.as_bytes())]),
         )
         .expect("scritta");
         // E un archivio che non si apre affatto: quello resta fuori.
-        std::fs::write(cartella.join("rotta.aeskin"), b"non sono uno zip").expect("scritta");
+        std::fs::write(cartella.join("rotta.ryskin"), b"non sono uno zip").expect("scritta");
         // Il pacchetto a mano si legge con le guardie, e non con la validazione.
-        let letto = std::fs::read(cartella.join("vecchia.aeskin")).expect("letto");
-        assert!(aether_skin::package::leggi_pacchetto_grezzo(&letto).is_ok());
-        assert!(aether_skin::read_skin_package(&letto).is_err());
+        let letto = std::fs::read(cartella.join("vecchia.ryskin")).expect("letto");
+        assert!(rymembra_skin::package::leggi_pacchetto_grezzo(&letto).is_ok());
+        assert!(rymembra_skin::read_skin_package(&letto).is_err());
 
         let voci = elenco(dir.path(), "vecchia").expect("l'elenco");
         let vecchia = voci
@@ -1487,10 +1491,10 @@ mod tests {
         resto.get(..fine).unwrap_or_default().trim().to_owned()
     }
 
-    fn compilata() -> aether_skin::CompiledSkin {
+    fn compilata() -> rymembra_skin::CompiledSkin {
         let documento =
-            aether_skin::parse_skin_json(aether_skin::PLAIN_SOURCE).expect("la skin di serie");
-        aether_skin::compile_skin(&documento)
+            rymembra_skin::parse_skin_json(rymembra_skin::PLAIN_SOURCE).expect("la skin di serie");
+        rymembra_skin::compile_skin(&documento)
     }
 
     #[test]
@@ -1507,7 +1511,7 @@ mod tests {
         let atteso = corpo(&compilata().css, ":root[data-skin='plain'] {");
         assert_eq!(
             generato, atteso,
-            "\nrigenera con: cargo run -p aether-skin --example compila\n"
+            "\nrigenera con: cargo run -p rymembra-skin --example compila\n"
         );
     }
 
@@ -1527,7 +1531,7 @@ mod tests {
         );
         assert_eq!(
             generato, atteso,
-            "\nrigenera con: cargo run -p aether-skin --example compila\n"
+            "\nrigenera con: cargo run -p rymembra-skin --example compila\n"
         );
     }
 
@@ -1538,7 +1542,7 @@ mod tests {
         // nell'attributo. Sono due righe uguali in due crate diversi, e questo
         // test è ciò che impedisce loro di divergere in silenzio.
         let documento =
-            aether_skin::parse_skin_json(aether_skin::PLAIN_SOURCE).expect("la skin di serie");
+            rymembra_skin::parse_skin_json(rymembra_skin::PLAIN_SOURCE).expect("la skin di serie");
         let albero = impaginazione(&documento).shell;
         let css = compilata().css;
 
@@ -1559,7 +1563,7 @@ mod tests {
         // Il renderer non ha un caso «manca»: una skin che tace riceve l'albero
         // di serie, e lo riceve dal nucleo invece che da una copia in
         // TypeScript.
-        let documento = aether_skin::parse_skin_json(
+        let documento = rymembra_skin::parse_skin_json(
             r##"{"format":1,"id":"muta","meta":{"name":"M","author":"A","version":"1.0.0"},"tokens":{}}"##,
         )
         .expect("valida");
@@ -1592,8 +1596,8 @@ mod tests {
             .expect("la finestra dichiara un fondo");
 
         assert_eq!(
-            aether_skin::values::parse_color(configurato),
-            aether_skin::values::parse_color(surface),
+            rymembra_skin::values::parse_color(configurato),
+            rymembra_skin::values::parse_color(surface),
             "il fondo della finestra ({configurato}) non è quello di «{DI_SERIE}» ({surface})"
         );
     }
@@ -1683,11 +1687,11 @@ mod tests {
 
     /// Un manifest valido con l'id che si vuole: quello di serie, rinominato.
     fn sorgente_con_id(id: &str) -> String {
-        aether_skin::PLAIN_SOURCE.replace("\"id\": \"plain\"", &format!("\"id\": \"{id}\""))
+        rymembra_skin::PLAIN_SOURCE.replace("\"id\": \"plain\"", &format!("\"id\": \"{id}\""))
     }
 
     fn pacchetto(sorgente: &str) -> Vec<u8> {
-        aether_skin::write_skin_package(&aether_skin::package::WritePackageInput {
+        rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
             source: sorgente,
             preview: None,
             assets: &[],
@@ -1703,7 +1707,7 @@ mod tests {
 
         assert_eq!(voce.id, "nocturne");
         assert!(!voce.di_serie);
-        assert!(dir.path().join("skin").join("nocturne.aeskin").is_file());
+        assert!(dir.path().join("skin").join("nocturne.ryskin").is_file());
 
         // Da qui in poi è una skin come le altre: il giro completo — manifest,
         // pacchetto, cartella, compilazione — è quel che questo test prova, e
@@ -1744,7 +1748,7 @@ mod tests {
         )
         .expect_err("respinta");
         assert_eq!(err.code().kind().code(), "skin.overBudget");
-        assert!(!dir.path().join("skin").join("pesante.aeskin").exists());
+        assert!(!dir.path().join("skin").join("pesante.ryskin").exists());
     }
 
     #[test]
@@ -1763,13 +1767,13 @@ mod tests {
         assert!(esame.da_confermare);
         assert_eq!(
             (esame.movimento_parte.costo, esame.movimento_parte.budget),
-            (23, aether_skin::MOTION_COST_BUDGET)
+            (23, rymembra_skin::MOTION_COST_BUDGET)
         );
 
         // Nell'IPC il campo manca del tutto quando non c'è: l'elenco resta
         // quello di prima.
         let voce = VoceSkin::di(
-            aether_skin::parse_skin_json(aether_skin::PLAIN_SOURCE).expect("la skin di serie"),
+            rymembra_skin::parse_skin_json(rymembra_skin::PLAIN_SOURCE).expect("la skin di serie"),
             true,
             true,
         );
@@ -1789,7 +1793,7 @@ mod tests {
         // base non aveva — due differenze che il test con la sola sostituzione
         // dell'id non vedrebbe.
         let mut documento: serde_json::Value =
-            serde_json::from_str(aether_skin::PLAIN_SOURCE).expect("la skin di serie");
+            serde_json::from_str(rymembra_skin::PLAIN_SOURCE).expect("la skin di serie");
         documento["id"] = "notturno".into();
         documento["meta"]["name"] = "Notturno".into();
         documento["meta"]["author"] = "Io".into();
@@ -1814,26 +1818,26 @@ mod tests {
 
     #[test]
     fn una_skin_non_puo_prendere_il_posto_di_quella_di_serie() {
-        // `plain` viene dal binario e non dalla cartella: un `plain.aeskin`
+        // `plain` viene dal binario e non dalla cartella: un `plain.ryskin`
         // installato sarebbe un file che non si può più togliere dall'elenco e
         // che nessuno legge, perché `sorgente` risponde prima di guardare il
         // disco.
         let dir = tempfile::tempdir().expect("cartella temporanea");
         let err =
-            installa(dir.path(), &pacchetto(aether_skin::PLAIN_SOURCE)).expect_err("respinta");
+            installa(dir.path(), &pacchetto(rymembra_skin::PLAIN_SOURCE)).expect_err("respinta");
 
         assert_eq!(err.code().kind().code(), "skin.notFound");
-        assert!(!dir.path().join("skin").join("plain.aeskin").exists());
+        assert!(!dir.path().join("skin").join("plain.ryskin").exists());
 
         // E vale per tutte quelle di serie, non solo per la prima.
-        let vinile = aether_skin::di_serie("vinile").expect("vinile è di serie");
+        let vinile = rymembra_skin::di_serie("vinile").expect("vinile è di serie");
         installa(dir.path(), &pacchetto(vinile)).expect_err("respinta");
-        assert!(!dir.path().join("skin").join("vinile.aeskin").exists());
+        assert!(!dir.path().join("skin").join("vinile.ryskin").exists());
     }
 
     #[test]
     fn le_skin_di_serie_si_compilano_dal_binario() {
-        for (id, _) in aether_skin::DI_SERIE {
+        for (id, _) in rymembra_skin::DI_SERIE {
             let compilata = compila(vuota(), id).expect("compilata");
             assert_eq!(compilata.id, *id);
             assert_eq!(compilata.ripiego, None);
@@ -1867,16 +1871,17 @@ mod tests {
     #[test]
     fn una_risorsa_si_serve_dal_pacchetto_o_dalla_bozza() {
         let dir = tempfile::tempdir().expect("cartella temporanea");
-        let archivio = aether_skin::write_skin_package(&aether_skin::package::WritePackageInput {
-            source: &sorgente_con_id("nocturne"),
-            preview: None,
-            assets: &[aether_skin::package::SkinAsset {
-                name: "titoli.woff2".to_owned(),
-                mime: "font/woff2",
-                bytes: WOFF2.to_vec(),
-            }],
-        })
-        .expect("impacchettata");
+        let archivio =
+            rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
+                source: &sorgente_con_id("nocturne"),
+                preview: None,
+                assets: &[rymembra_skin::package::SkinAsset {
+                    name: "titoli.woff2".to_owned(),
+                    mime: "font/woff2",
+                    bytes: WOFF2.to_vec(),
+                }],
+            })
+            .expect("impacchettata");
         installa(dir.path(), &archivio).expect("installata");
         assert_eq!(
             piena(risorsa(dir.path(), "nocturne/titoli.woff2", None)),
@@ -1921,10 +1926,10 @@ mod tests {
     fn chi_ha_gia_la_risorsa_riceve_un_304_e_un_pacchetto_nuovo_cambia_impronta() {
         let dir = tempfile::tempdir().expect("cartella temporanea");
         let pacchetto = |bytes: &[u8]| {
-            aether_skin::write_skin_package(&aether_skin::package::WritePackageInput {
+            rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
                 source: &sorgente_con_id("nocturne"),
                 preview: None,
-                assets: &[aether_skin::package::SkinAsset {
+                assets: &[rymembra_skin::package::SkinAsset {
                     name: "titoli.woff2".to_owned(),
                     mime: "font/woff2",
                     bytes: bytes.to_vec(),
@@ -1956,8 +1961,8 @@ mod tests {
         for cattivo in [
             "",
             "nocturne",
-            "../aether.db",
-            "nocturne/../../aether.db",
+            "../rymembra.db",
+            "nocturne/../../rymembra.db",
             "bozza/../x.png",
             "bozza/prova/../../x.png",
             "nocturne/titoli.svg",
@@ -1983,7 +1988,7 @@ mod tests {
                     .find(|pezzo| pezzo.contains(direttiva))
                     .unwrap_or_default();
                 assert!(
-                    valore.contains("http://aether-skin.localhost"),
+                    valore.contains("http://rymembra-skin.localhost"),
                     "{chiave}: {direttiva} non ammette le risorse delle skin"
                 );
             }

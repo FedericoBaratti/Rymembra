@@ -214,7 +214,7 @@ export function AvvisoErrore({
  * # Cosa dice di fare
  *
  * Le due strade di `db/manutenzione.rs`: il profilo, che mette al sicuro voti,
- * preferiti e playlist in un file a parte, e la copia `aether.db.schema-NNN.bak`
+ * preferiti e playlist in un file a parte, e la copia `rymembra.db.schema-NNN.bak`
  * che il nucleo scrive prima di ogni migrazione. Prima il profilo: è l'unica
  * delle due che non perde quel che è cambiato dopo l'ultima migrazione. Il
  * tasto porta dove stanno tutte e due le cose — il percorso della cartella dati

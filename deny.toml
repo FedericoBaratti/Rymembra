@@ -9,14 +9,14 @@
 # Perché è l'unico bersaglio che l'installer produce, come dice il preambolo di
 # `verify.yml`. Senza questa riga `cargo deny` guarderebbe anche le dipendenze
 # di Linux e macOS che `tauri` e `cpal` si portano dietro — licenze e avvisi di
-# codice che in Aether non entra — e una CI che fallisce per un crate di ALSA
+# codice che in Rymembra non entra — e una CI che fallisce per un crate di ALSA
 # è una CI che si impara a ignorare.
 [graph]
 targets = ["x86_64-pc-windows-msvc"]
 all-features = false
 
 # Gli avvisi di sicurezza di RustSec. Un avviso aperto ferma la CI: lo si
-# legge, e se non tocca Aether lo si scrive qui sotto con il perché, invece di
+# legge, e se non tocca Rymembra lo si scrive qui sotto con il perché, invece di
 # spegnere il controllo.
 [advisories]
 version = 2
@@ -35,7 +35,7 @@ ignore = [
 # Niente GPL né LGPL: l'eseguibile è uno solo, statico, distribuito con licenza
 # MIT, e una dipendenza copyleft cambierebbe quel che si può fare del tutto.
 # MPL-2.0 sta nell'elenco perché vale file per file (symphonia, cssparser): chi
-# riceve Aether riceve anche il diritto di avere quei file, e il README dice dove.
+# riceve Rymembra riceve anche il diritto di avere quei file, e il README dice dove.
 [licenses]
 version = 2
 confidence-threshold = 0.9

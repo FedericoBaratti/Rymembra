@@ -2,7 +2,7 @@
 //!
 //! Involucri, come tutto il resto di questo crate: la decisione di cosa entra
 //! nel profilo, come si scrive l'archivio e cosa vince quando si fonde sta in
-//! `aether_app::profilo`. Qui c'è quel che quel modulo non può avere — il
+//! `rymembra_app::profilo`. Qui c'è quel che quel modulo non può avere — il
 //! lucchetto della libreria, la cartella dei dati, la casualità del sistema, e
 //! la finestra a cui raccontare a che punto è.
 //!
@@ -56,10 +56,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use aether_app::profilo::radici;
-use aether_app::profilo::{self, Ambiente, Esportazione, Passo, Piano, Rimappatura, Sorgenti};
-use aether_app::volumi::{self, Esistenza};
-use aether_domain::errors::{AppError, ErrorCode};
+use rymembra_app::profilo::radici;
+use rymembra_app::profilo::{self, Ambiente, Esportazione, Passo, Piano, Rimappatura, Sorgenti};
+use rymembra_app::volumi::{self, Esistenza};
+use rymembra_domain::errors::{AppError, ErrorCode};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _};
 
@@ -71,13 +71,13 @@ use crate::stato::{Stato, adesso_ms, con_libreria};
 /// Dove sta il pacchetto di una skin installata.
 ///
 /// La stessa forma di `skin::cartella_skin` e di quella di
-/// `aether_cloud::pacchetti`, e questa è la terza copia: le altre due
+/// `rymembra_cloud::pacchetti`, e questa è la terza copia: le altre due
 /// restituiscono **byte**, e qui serve il **percorso** perché l'archivio ci
 /// copia dentro in streaming invece di caricare venti megabyte per skin. Tre
 /// righe con questa nota costano meno di un accessore pubblico in più su due
 /// moduli che non sono di questo pacchetto.
 fn file_skin(data_dir: &Path, id: &str) -> PathBuf {
-    data_dir.join("skin").join(format!("{id}.aeskin"))
+    data_dir.join("skin").join(format!("{id}.ryskin"))
 }
 
 /// Dove sta il manifest di una bozza dello Studio.
@@ -110,7 +110,7 @@ fn avanza(app: &AppHandle, cosa: &str, passo: Passo) {
 /// due librerie che si dichiarassero la stessa fonderebbero le proprie
 /// cronologie, che è il guasto da cui l'identità esiste per difendere.
 fn genera_identita() -> Result<String, AppError> {
-    aether_cloud::oauth::identificativo()
+    rymembra_cloud::oauth::identificativo()
 }
 
 /// Lo stato della libreria, o l'errore di chi è arrivato mentre si chiudeva.
@@ -153,8 +153,8 @@ type Pacchetti = (
 
 /// Le impronte e i percorsi di skin e bozze.
 fn pacchetti(data_dir: &Path) -> Pacchetti {
-    let skin = aether_cloud::pacchetti::elenca_skin(data_dir);
-    let bozze = aether_cloud::pacchetti::elenca_bozze(data_dir);
+    let skin = rymembra_cloud::pacchetti::elenca_skin(data_dir);
+    let bozze = rymembra_cloud::pacchetti::elenca_bozze(data_dir);
     let percorsi_skin = skin
         .keys()
         .map(|id| (id.clone(), file_skin(data_dir, id)))
@@ -174,7 +174,7 @@ fn pacchetti(data_dir: &Path) -> Pacchetti {
 /// # Errori
 ///
 /// `fs.extensionRefused` o `fs.pathInvalid` se il percorso non è quello di un
-/// `.aeprofile` — si controlla prima di tutto il resto, perché non costa niente
+/// `.ryprofile` — si controlla prima di tutto il resto, perché non costa niente
 /// e non tocca il disco: vedi [`crate::destinazioni`];
 /// `internal.aborted` se la libreria non c'è più; `db.queryFailed` se la
 /// raccolta fallisce; `fs.writeFailed` se l'archivio non si scrive.
@@ -377,7 +377,7 @@ fn annulla_ora(app: &AppHandle) -> Result<Piano, AppError> {
 
 /// Il corpo di [`profilo_piano`] e [`profilo_importa`].
 ///
-/// Una funzione sola con un interruttore, come in `aether_app::profilo`: due
+/// Una funzione sola con un interruttore, come in `rymembra_app::profilo`: due
 /// funzioni che devono fare la stessa cosa e differire in una riga sono due
 /// funzioni che prima o poi differiscono in due.
 fn applica_ora(
@@ -403,15 +403,15 @@ fn applica_ora(
         profilo::estrai_copertine(Path::new(percorso), &store, &|passo| {
             avanza(app, "copertine", passo);
         })?;
-        // I pacchetti passano dalle guardie di `aether_cloud::pacchetti`, che
+        // I pacchetti passano dalle guardie di `rymembra_cloud::pacchetti`, che
         // sono le stesse dell'installazione a mano: identificatore sicuro,
         // archivio validato, e **non si sovrascrive mai** quel che c'è. Un
         // archivio arrivato su una chiavetta non è più fidato di uno scaricato.
         profilo::per_ogni_pacchetto(Path::new(percorso), |id, bozza, byte| {
             let scritto = if bozza {
-                aether_cloud::pacchetti::scrivi_bozza(&data_dir, id, byte)
+                rymembra_cloud::pacchetti::scrivi_bozza(&data_dir, id, byte)
             } else {
-                aether_cloud::pacchetti::scrivi_skin(&data_dir, id, byte)
+                rymembra_cloud::pacchetti::scrivi_skin(&data_dir, id, byte)
             };
             // Un pacchetto illeggibile non ferma l'importazione: è una skin che
             // non si installa, non una libreria che non si importa. Il resto

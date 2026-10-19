@@ -6,7 +6,7 @@
  * A provare l'updater senza pubblicare una release. Serve le stesse due cose
  * che servirebbe GitHub — un `latest.json` e l'installer a cui punta — e
  * `apps/desktop/src-tauri/src/aggiornamenti.rs` ha il gancio che lo rende
- * possibile: `AETHER_AGGIORNAMENTI_ENDPOINT`, sotto `#[cfg(debug_assertions)]`,
+ * possibile: `RYMEMBRA_AGGIORNAMENTI_ENDPOINT`, sotto `#[cfg(debug_assertions)]`,
  * sostituisce l'endpoint quando l'applicazione gira con `npm run dev`.
  *
  * L'endpoint è `http://` e non `https://`, e va bene: il vincolo sul protocollo
@@ -25,7 +25,7 @@
  * dell'updater mentre è un numero digitato male.
  *
  * Quindi si legge dal nome del file che il bundler ha scritto —
- * `Aether_0.3.0_x64-setup.exe` — che è l'unico posto che non può mentire,
+ * `Rymembra_0.3.0_x64-setup.exe` — che è l'unico posto che non può mentire,
  * perché lo ha scritto la stessa compilazione che ha prodotto i byte.
  *
  * # Un modo
@@ -99,7 +99,7 @@ function versioneDellInstaller(nome) {
   if (!m) {
     basta(
       `Dal nome «${nome}» non ricavo un numero di versione.\n` +
-        "Atteso qualcosa come Aether_0.3.0_x64-setup.exe.",
+        "Atteso qualcosa come Rymembra_0.3.0_x64-setup.exe.",
     );
   }
   return m[1];
@@ -244,7 +244,7 @@ function main() {
   // sulla stessa rete.
   server.listen(porta, "127.0.0.1", () => {
     const endpoint = `http://127.0.0.1:${porta}/latest.json`;
-    console.log(`Aether ${corrente}  →  ${offerta}`);
+    console.log(`Rymembra ${corrente}  →  ${offerta}`);
     console.log(`  ${nome} (${(quantoPesa / 1024 / 1024).toFixed(1)} MB)`);
     console.log(`  firmato con ${dellaChiave}${guasta ? "  ⚠ GUASTATA APPOSTA" : ""}`);
     if (guasta) {
@@ -256,7 +256,7 @@ function main() {
     console.log(`\nIn ascolto su ${endpoint}\n`);
     console.log("In un altro terminale:");
     console.log("  cd apps\\desktop");
-    console.log(`  $env:AETHER_AGGIORNAMENTI_ENDPOINT = "${endpoint}"`);
+    console.log(`  $env:RYMEMBRA_AGGIORNAMENTI_ENDPOINT = "${endpoint}"`);
     console.log("  npm run dev\n");
     console.log("Poi Impostazioni → Aggiornamenti → «Controlla adesso»,");
     console.log("che il primo giro da solo arriva dopo due minuti.\n");

@@ -6,7 +6,7 @@
  *
  * Perché qui il registro, il documento e la selezione sono già in memoria — lo
  * Studio li ha per disegnare — e perché il pannello deve poter dire **quanto**
- * sta mandando. `aether-ia` resta ignorante di cosa sia una skin: queste righe
+ * sta mandando. `rymembra-ia` resta ignorante di cosa sia una skin: queste righe
  * arrivano al client come un messaggio come gli altri.
  *
  * # Cosa viene dal registro, e cosa è scritto qui
@@ -45,6 +45,7 @@
  * una persona. Non passa dal catalogo delle lingue per la stessa ragione: e
  * per questo il modulo non importa `../lingue`, e si prova con `node --test`.
  */
+import { LINGUAGGIO_PATCH_PRECEDENTE } from "../eredita";
 import type { MessaggioIa, Problema, Registro, Validazione } from "../ipc";
 import type { MessaggioChat } from "./conversazione";
 import type { Selezione, Tema } from "./negozio";
@@ -74,16 +75,16 @@ const BATTUTE_INTERE = 4;
 /**
  * Il contratto d'uscita: come si scrive una modifica.
  *
- * Un blocco `aether-patch` di operazioni per percorso, e non il documento
+ * Un blocco `rymembra-patch` di operazioni per percorso, e non il documento
  * riscritto: un modello che riscrive venti kilobyte per cambiare un raggio
  * sbaglia, prima o poi, uno dei diciannove che non doveva toccare.
  */
-const CONTRATTO = `You edit an Aether skin manifest: a JSON document that paints a music player.
+const CONTRATTO = `You edit a Rymembra skin manifest: a JSON document that paints a music player.
 
-To change it, emit ONE fenced block with the language tag \`aether-patch\`,
+To change it, emit ONE fenced block with the language tag \`rymembra-patch\`,
 containing a JSON array of operations. Nothing else in the block.
 
-\`\`\`aether-patch
+\`\`\`rymembra-patch
 [{"op": "scrivi", "percorso": ["tokens", "color.surface.0"], "valore": "#050508"},
  {"op": "scrivi", "percorso": ["parts", "card", "states", "hover", "shadow"], "valore": {"$token": "shadow.2"}},
  {"op": "togli", "percorso": ["parts", "section-card", "radius"]}]
@@ -247,7 +248,7 @@ function compatto(testo: string): string {
  * modello locale da ventisette miliardi di parametri, le istruzioni scritte
  * solo in testa producevano un blocco ```json con dentro il pezzo di documento
  * riscritto. Con queste righe in fondo, lo stesso modello e la stessa domanda
- * producono un blocco `aether-patch`. L'ultima forma vista è quella che un
+ * producono un blocco `rymembra-patch`. L'ultima forma vista è quella che un
  * modello imita: qui è il contratto e non il documento.
  *
  * Va **dopo gli errori**: in modalità agent quello è l'elenco che cresce, e
@@ -255,7 +256,7 @@ function compatto(testo: string): string {
  */
 const CHIUSURA = `REMEMBER — the answer has exactly two parts, in this order:
 1. one short sentence saying what you changed, in the user's language;
-2. ONE fenced block tagged \`aether-patch\` holding the JSON array of operations.
+2. ONE fenced block tagged \`rymembra-patch\` holding the JSON array of operations.
 
 Never a \`json\` block, and never the rewritten document: only the operations.
 \`percorso\` is an array of steps — ["parts", "card", "background", "0"] — never
@@ -611,15 +612,56 @@ export function correzione(
   pezzi.push(
     applicato
       ? "Emit a new block that fixes only these. Do not repeat what already works."
-      : "Emit the same change again as one `aether-patch` block, in the correct form.",
+      : "Emit the same change again as one `rymembra-patch` block, in the correct form.",
   );
   return pezzi.join("\n\n");
 }
 
 // ── la cronologia, leggera ──────────────────────────────────────────────────
 
-/** Un blocco di modifiche dentro una risposta. */
-const BLOCCO = /```aether-patch[\s\S]*?(```|$)/g;
+/**
+ * Il linguaggio, quello che segue i tre apici, del blocco con cui il modello
+ * propone le modifiche. È l'unico che si insegna al modello e che si scrive.
+ */
+export const LINGUAGGIO_PATCH = "rymembra-patch";
+
+/**
+ * Un blocco di modifiche dentro una risposta, anche ancora aperto.
+ *
+ * Riconosce il tag di adesso e quello di prima (`LINGUAGGIO_PATCH_PRECEDENTE`):
+ * le chat salvate sul disco, e la cronologia che torna al modello, contengono
+ * ancora il vecchio, e un blocco di allora, applicato o scartato, deve
+ * comportarsi come uno di adesso. È globale: si usa con `match`, `matchAll` e
+ * `replace`, mai con `test` o `exec`, che si porterebbero dietro `lastIndex`.
+ * Per sapere solo se c'è un blocco c'è [`haBloccoDiModifiche`].
+ */
+export const BLOCCO = new RegExp(
+  "```(?:" + LINGUAGGIO_PATCH + "|" + LINGUAGGIO_PATCH_PRECEDENTE + ")[\\s\\S]*?(?:```|$)",
+  "g",
+);
+
+/** L'apertura di un blocco di modifiche, senza stato: vedi [`BLOCCO`]. */
+const APERTURA_BLOCCO = new RegExp("```(?:" + LINGUAGGIO_PATCH + "|" + LINGUAGGIO_PATCH_PRECEDENTE + ")");
+
+/**
+ * Il testo contiene un blocco di modifiche, col tag di adesso o con quello di
+ * prima. Al posto di un `includes` sul tag, che dimenticherebbe le chat
+ * salvate prima del cambio di nome.
+ */
+export function haBloccoDiModifiche(testo: string): boolean {
+  return APERTURA_BLOCCO.test(testo);
+}
+
+/**
+ * Il testo con i blocchi di modifiche aperti dal tag di adesso.
+ *
+ * Al modello si mostra un solo nome: una cronologia che gli facesse rileggere
+ * il tag di prima gliene insegnerebbe due, e un modello imita l'ultima forma
+ * che ha visto. Il contenuto del blocco non si tocca.
+ */
+export function conTagNuovo(testo: string): string {
+  return testo.replaceAll("```" + LINGUAGGIO_PATCH_PRECEDENTE, "```" + LINGUAGGIO_PATCH);
+}
 
 /** Il testo accorciato a `quanti` caratteri, con un segno che lo dice. */
 function accorcia(testo: string, quanti: number): string {
@@ -627,13 +669,13 @@ function accorcia(testo: string, quanti: number): string {
 }
 
 /** La riga che segue una proposta che non è stata applicata. */
-export const NON_APPLICATA = "[this aether-patch block was NOT applied: the user discarded it]";
+export const NON_APPLICATA = `[this ${LINGUAGGIO_PATCH} block was NOT applied: the user discarded it]`;
 
 /** Il segno di un blocco vecchio, nella cronologia riassunta. */
 function segnoDelBlocco(applicata: boolean | undefined): string {
   return applicata === false
-    ? "[an aether-patch block, NOT applied: the user discarded it]"
-    : "[an aether-patch block, already applied]";
+    ? `[a ${LINGUAGGIO_PATCH} block, NOT applied: the user discarded it]`
+    : `[a ${LINGUAGGIO_PATCH} block, already applied]`;
 }
 
 /**
@@ -656,6 +698,13 @@ function segnoDelBlocco(applicata: boolean | undefined): string {
  * no. Un messaggio senza segno, da una conversazione salvata prima, si
  * racconta come prima. Il segno non parte: si mandano solo `ruolo`, `testo` e,
  * sull'ultimo, le immagini.
+ *
+ * # Le conversazioni di prima del cambio di nome
+ *
+ * Le chat sul disco contengono ancora il tag di prima. Un loro blocco si
+ * riconosce come uno di adesso — riassunto, o segnato come scartato — e le
+ * risposte che restano intere arrivano al modello col tag di adesso
+ * (`conTagNuovo`): del vecchio nome il modello non deve vedere traccia.
  */
 export function storiaLeggera(
   conversazione: readonly MessaggioChat[],
@@ -664,8 +713,10 @@ export function storiaLeggera(
   const ultima = conversazione.length - 1;
   const senzaVecchieImmagini: MessaggioIa[] = conversazione.map((m, i) => {
     const scartata =
-      m.ruolo === "assistant" && m.applicata === false && m.testo.includes("```aether-patch");
-    const testo = scartata ? `${m.testo}\n${NON_APPLICATA}` : m.testo;
+      m.ruolo === "assistant" && m.applicata === false && haBloccoDiModifiche(m.testo);
+    // Una risposta salvata col tag di prima arriva al modello col tag di adesso.
+    const corrente = m.ruolo === "assistant" ? conTagNuovo(m.testo) : m.testo;
+    const testo = scartata ? `${corrente}\n${NON_APPLICATA}` : corrente;
     return i === ultima && m.immagini !== undefined
       ? { ruolo: m.ruolo, testo, immagini: m.immagini }
       : { ruolo: m.ruolo, testo };

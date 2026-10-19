@@ -1,7 +1,7 @@
-/* La documentazione tecnica di Aether: il disegno.
+/* La documentazione tecnica di Rymembra: il disegno.
  *
  * Il testo non sta qui: sta in `contenuto/<capitolo>.js`, un file per capitolo,
- * e ognuno aggiunge il suo a `window.AETHER_DOCS` nell'ordine in cui
+ * e ognuno aggiunge il suo a `window.RYMEMBRA_DOCS` nell'ordine in cui
  * `index.html` li carica. `strumenti/docs.js` controlla che i file siano tutti
  * caricati, che le ancore esistano e che ogni percorso citato in `src` esista
  * davvero nel repository. Questo file sa soltanto come si mette in pagina —
@@ -20,7 +20,7 @@
 (function () {
   "use strict";
 
-  var CAPITOLI = window.AETHER_DOCS || [];
+  var CAPITOLI = window.RYMEMBRA_DOCS || [];
   var indice = document.querySelector("[data-index]");
   var corpo = document.querySelector("[data-body]");
   var vuoto = document.querySelector("[data-empty]");

@@ -1,19 +1,19 @@
 /* Capitolo 13 — la shell desktop: avvio e uscita, IPC, vassoio, confini di sicurezza, diario. */
-(window.AETHER_DOCS = window.AETHER_DOCS || []).push({
+(window.RYMEMBRA_DOCS = window.RYMEMBRA_DOCS || []).push({
   id: "shell",
   title: "The desktop shell",
-  lead: "`aether-desktop`, the Tauri 2 app: the startup order, the IPC surface, closing to the tray, the security boundaries between the page and the core, and the log.",
+  lead: "`rymembra-desktop`, the Tauri 2 app: the startup order, the IPC surface, closing to the tray, the security boundaries between the page and the core, and the log.",
   entries: [
     {
       id: "startup",
       title: "Startup and shutdown",
       src: ["apps/desktop/src-tauri/src/main.rs", "apps/desktop/src-tauri/src/spegnimento.rs", "apps/desktop/src-tauri/src/stato.rs", "apps/desktop/src-tauri/tauri.conf.json"],
       body: [
-        "Before anything else `main` installs the panic hook that writes panics to the log. Plugins: single-instance (skipped when `AETHER_DATI` is set), dialog, opener (with `open_js_links_on_click(false)`: no injected script opens `target=_blank` links behind the core's back), updater (no permission for the page).",
+        "Before anything else `main` installs the panic hook that writes panics to the log. Plugins: single-instance (skipped when `RYMEMBRA_DATI` is set), dialog, opener (with `open_js_links_on_click(false)`: no injected script opens `target=_blank` links behind the core's back), updater (no permission for the page).",
         { h: "Setup order" },
         {
           ol: [
-            "mark the UI thread (for `con_libreria`), resolve the data folder (`AETHER_DATI` or `%APPDATA%\\io.github.federicobaratti.aether`), open the log;",
+            "mark the UI thread (for `con_libreria`), resolve the data folder (`RYMEMBRA_DATI` or `%APPDATA%\\io.github.federicobaratti.rymembra`), bring in the previous version's data if there are any ([Data](#data)), open the log;",
             "register lightweight states that open nothing yet: imports, Explore, account, procurement, lyrics, the Folders index;",
             "open the library (`Stato::apri`) and write the startup line (`dati=… migrazioni=… fts5=… giornale=…`);",
             "register SMTC and taskbar-button states, start the player (opens the output device, restores yesterday's queue), the preparer, clock, spectrum and device-watcher threads, then SMTC and taskbar buttons;",
@@ -75,35 +75,35 @@
           },
         },
         { h: "URI schemes" },
-        "Two asynchronous custom schemes serve bytes the page asks for as ordinary resources, never through JSON: `aether-cover` ([Covers](#covers)) and `aether-skin` ([Packages](#skin-package)). WebView2 exposes them as `http://<scheme>.localhost/…`. Both accept only validated names, never paths.",
+        "Two asynchronous custom schemes serve bytes the page asks for as ordinary resources, never through JSON: `rymembra-cover` ([Covers](#covers)) and `rymembra-skin` ([Packages](#skin-package)). WebView2 exposes them as `http://<scheme>.localhost/…`. Both accept only validated names, never paths.",
       ],
       see: ["frontend", "errors", "security"],
     },
     {
       id: "background",
       title: "Closing to the tray",
-      src: ["apps/desktop/src-tauri/src/vassoio.rs", "apps/desktop/src-tauri/src/main.rs", "core/aether-app/src/preferenze.rs"],
+      src: ["apps/desktop/src-tauri/src/vassoio.rs", "apps/desktop/src-tauri/src/main.rs", "core/rymembra-app/src/preferenze.rs"],
       body: [
-        "With `ui.closeToTray` on (default off), the close button **hides** the window instead of exiting: playback continues, because music never lived in the page — it is all in `aether-play`'s threads; the page has no `<audio>`. Minimize is unchanged. `on_window_event(CloseRequested)` prevents the close and hides; `App::run` then skips the shutdown sequence for that close.",
-        "The tray icon is the way back, so `vassoio::nasconde` hides only if the icon **actually exists** — if the system refused it, or the menu labels have not arrived yet, the X closes as usual. Labels come from the window (`vassoio_lingua`) so they are translated with everything else. The menu has show, play/pause, next, previous and exit; the tooltip shows the current track (≤ 100 characters). «Exit» raises the exit flag before calling `exit`, so the close is not prevented. A second launch of Aether brings this window back (`vassoio::mostra`) instead of starting a second process.",
+        "With `ui.closeToTray` on (default off), the close button **hides** the window instead of exiting: playback continues, because music never lived in the page — it is all in `rymembra-play`'s threads; the page has no `<audio>`. Minimize is unchanged. `on_window_event(CloseRequested)` prevents the close and hides; `App::run` then skips the shutdown sequence for that close.",
+        "The tray icon is the way back, so `vassoio::nasconde` hides only if the icon **actually exists** — if the system refused it, or the menu labels have not arrived yet, the X closes as usual. Labels come from the window (`vassoio_lingua`) so they are translated with everything else. The menu has show, play/pause, next, previous and exit; the tooltip shows the current track (≤ 100 characters). «Exit» raises the exit flag before calling `exit`, so the close is not prevented. A second launch of Rymembra brings this window back (`vassoio::mostra`) instead of starting a second process.",
       ],
       see: ["startup", "os-media"],
     },
     {
       id: "security",
       title: "Security boundaries",
-      src: ["apps/desktop/src-tauri/tauri.conf.json", "apps/desktop/src-tauri/capabilities/default.json", "apps/desktop/src-tauri/src/destinazioni.rs", "apps/desktop/src-tauri/src/copertine.rs", "apps/desktop/src-tauri/src/skin.rs", "apps/desktop/aether-barra/src/finestra.rs", "SECURITY.md"],
+      src: ["apps/desktop/src-tauri/tauri.conf.json", "apps/desktop/src-tauri/capabilities/default.json", "apps/desktop/src-tauri/src/destinazioni.rs", "apps/desktop/src-tauri/src/copertine.rs", "apps/desktop/src-tauri/src/skin.rs", "apps/desktop/rymembra-barra/src/finestra.rs", "SECURITY.md"],
       body: [
         "The page touches more third-party text than any other part (tags, shared skins, catalog answers), so it is treated as untrusted. Four fences, each independent of the others:",
         {
           ul: [
-            "**CSP**: `default-src 'self'`; images from self, `data:`, `aether-cover` and `aether-skin`; fonts from self and `aether-skin`; `script-src 'self'`; `connect-src` only IPC and `aether-skin`; `object-src`, `base-uri`, `form-action`, `frame-ancestors` all `'none'`. The asset protocol is disabled. Fonts are bundled; no remote resource can load.",
+            "**CSP**: `default-src 'self'`; images from self, `data:`, `rymembra-cover` and `rymembra-skin`; fonts from self and `rymembra-skin`; `script-src 'self'`; `connect-src` only IPC and `rymembra-skin`; `object-src`, `base-uri`, `form-action`, `frame-ancestors` all `'none'`. The asset protocol is disabled. Fonts are bundled; no remote resource can load.",
             "**Capabilities**: a closed list of five permissions — listen/unlisten to events, `is-minimized`, the open and save dialogs. No `core:default`, no opener, no `core:window`, no updater.",
-            "**Write targets** (`destinazioni.rs`): the four commands that write where the page says (playlist export, skin export, profile export, sync folder) require an absolute drive or UNC path (not `\\\\.\\` or `\\\\?\\GLOBALROOT`), no `..` and no `:` in components (NTFS alternate streams), and the format's extension (`m3u8`/`m3u`/`pls`/`xspf`, `aeskin`, `aeprofile`), else `fs.extensionRefused`; for folders only the last level may be created.",
+            "**Write targets** (`destinazioni.rs`): the four commands that write where the page says (playlist export, skin export, profile export, sync folder) require an absolute drive or UNC path (not `\\\\.\\` or `\\\\?\\GLOBALROOT`), no `..` and no `:` in components (NTFS alternate streams), and the format's extension (`m3u8`/`m3u`/`pls`/`xspf`, `ryskin`, `ryprofile`), else `fs.extensionRefused`; for folders only the last level may be created.",
             "**Reads**: the cover scheme accepts only a hash, the skin scheme only a checked id and a name from the package's closed list, typed by magic bytes. Documents and the docs open in the **system browser** from closed lists (`apri_documento`, `apri_guida` with `ANCORE_GUIDA`), never from a URL the page composes.",
           ],
         },
-        "Inside the core: untrusted archives (`.aeskin`, `.aeprofile`, the Spotify zip) use closed name lists and limits checked before decompressing; images have decode limits; HTTP follows redirects only through declared gates; secrets live in the keychain and are never written into errors. `unsafe` is forbidden in every crate except `aether-barra`, where it is confined to `finestra.rs` with a justification on each block (`undocumented_unsafe_blocks` is denied).",
+        "Inside the core: untrusted archives (`.ryskin`, `.ryprofile`, the Spotify zip) use closed name lists and limits checked before decompressing; images have decode limits; HTTP follows redirects only through declared gates; secrets live in the keychain and are never written into errors. `unsafe` is forbidden in every crate except `rymembra-barra`, where it is confined to `finestra.rs` with a justification on each block (`undocumented_unsafe_blocks` is denied).",
       ],
       see: ["skin-package", "profile", "http", "oauth"],
     },
@@ -112,7 +112,7 @@
       title: "The log",
       src: ["apps/desktop/src-tauri/src/diario.rs", "apps/desktop/src-tauri/src/errore.rs"],
       body: [
-        "`diario.rs` writes plain lines to `<data>/diario/aether.log`, rotated at `TETTO` = 2 MiB into three files (`QUANTI` = 3). Lines use the `nota!` macro and the form `[module] what happened`, so the first bracket says whether the failure is the player's, the network's or the database's. No `log`/`tracing`: thirty lines of text do not need subscribers and levels.",
+        "`diario.rs` writes plain lines to `<data>/diario/rymembra.log`, rotated at `TETTO` = 2 MiB into three files (`QUANTI` = 3). Lines use the `nota!` macro and the form `[module] what happened`, so the first bracket says whether the failure is the player's, the network's or the database's. No `log`/`tracing`: thirty lines of text do not need subscribers and levels.",
         {
           ul: [
             "**What goes in**: every error that reaches the window (code, severity, retryability, cause — written by `errore::errore`), the startup line, thread panics with their location, slow-lock warnings.",

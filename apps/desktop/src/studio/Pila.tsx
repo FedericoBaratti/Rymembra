@@ -443,7 +443,7 @@ export function Livelli({
     onCambia(nuovi);
   };
 
-  // Col puntatore, non col trascinamento HTML5: dentro la finestra di Aether
+  // Col puntatore, non col trascinamento HTML5: dentro la finestra di Rymembra
   // quello non arriva mai al rilascio, e la pila si prendeva ma non si
   // riordinava. Vedi `riordino.ts`, che è lo stesso gesto della coda.
   const presa = usePresaPerRiordino({

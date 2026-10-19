@@ -3,7 +3,7 @@
  *
  * È la metà della issue #1 che mancava davvero. «Your exe doesn't do live
  * searches and streaming», scriveva chi l'ha aperta: la seconda metà il lettore
- * la sapeva fare da tre versioni — `aether_play::Sorgente` prende dei byte, non
+ * la sapeva fare da tre versioni — `rymembra_play::Sorgente` prende dei byte, non
  * un percorso — ma non c'era nessun posto da cui cercarli.
  *
  * # Perché la ricerca parte con Invio
@@ -24,7 +24,7 @@
  *
  * # Perché ogni riga porta la sua licenza e il suo link
  *
- * Non è pignoleria legale ed è la cosa che rende Aether diverso da quel che
+ * Non è pignoleria legale ed è la cosa che rende Rymembra diverso da quel che
  * l'autore della issue aveva in mente. Da qui non esce niente che non si possa
  * prendere: la pastiglia dice che cosa se ne può fare, e il rimando alla pagina
  * pubblica è, per certe Creative Commons e per i termini di Audius, una
@@ -636,7 +636,7 @@ export function Esplora({
                       </button>
                     )}
                     {/* Quel che non si può ascoltare si può almeno
-                        annotare: è la seconda metà di quel che Aether
+                        annotare: è la seconda metà di quel che Rymembra
                         promette — o la musica, o dove comprarla.
 
                         Oggi questo ramo non si accende, e conviene saperlo
