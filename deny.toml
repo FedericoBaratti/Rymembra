@@ -26,6 +26,20 @@ ignore = [
   # È una macro che gira solo in compilazione, portata da `lofty`, e non finisce
   # nell'eseguibile. Si toglie da qui quando `lofty` la sostituisce.
   { id = "RUSTSEC-2024-0436", reason = "macro di sola compilazione, portata da lofty; nessun codice nell'eseguibile" },
+  # Tre difetti di `zip` (8.x, nostro, e 4.x, di `tauri-plugin-updater`), tutti
+  # dentro `ZipArchive::extract` e `ZipStreamReader::extract`, l'estrazione di
+  # un archivio intero su disco: bit SUID/SGID conservati, permessi Unix
+  # applicati attraverso un collegamento simbolico, collegamenti simbolici che
+  # puntano fuori dalla cartella. Rymembra non estrae mai un archivio intero:
+  # skin, profili e archivi degli account si leggono voce per voce, con i nomi
+  # controllati uno a uno. L'updater chiama `extract` solo su un aggiornamento
+  # impacchettato in zip, e solo dopo averne verificato la firma con la nostra
+  # chiave (`Update::download`); le release pubblicano l'installer `.exe`, non
+  # uno zip. I permessi Unix su Windows non esistono. La correzione è `zip` 9:
+  # per il nostro si passa quando lo si tocca, per l'updater quando lo porta lui.
+  { id = "RUSTSEC-2026-0367", reason = "zip: SUID/SGID in extract(); mai chiamato da noi, l'updater estrae solo pacchetti firmati, e su Windows non ci sono" },
+  { id = "RUSTSEC-2026-0368", reason = "zip: link simbolici fuori dalla cartella in extract(); mai chiamato da noi, l'updater estrae solo pacchetti firmati" },
+  { id = "RUSTSEC-2026-0369", reason = "zip: permessi Unix attraverso link simbolici in extract(); mai chiamato da noi, e su Windows non ci sono" },
 ]
 
 # L'elenco chiuso delle licenze che `THIRD-PARTY-NOTICES.md` sa già

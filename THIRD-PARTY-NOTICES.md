@@ -325,7 +325,7 @@ their reader's search: it appears in its license's group.
 | `rustc_version` | 0.4.1 | MIT OR Apache-2.0 | <https://github.com/djc/rustc-version-rs> |
 | `rustc-hash` | 2.1.3 | Apache-2.0 OR MIT | <https://github.com/rust-lang/rustc-hash> |
 | `rustfft` | 6.4.1 | MIT OR Apache-2.0 | <https://github.com/ejmahler/RustFFT> |
-| `rustls` | 0.23.45 | Apache-2.0 OR ISC OR MIT | <https://github.com/rustls/rustls> |
+| `rustls` | 0.23.46 | Apache-2.0 OR ISC OR MIT | <https://github.com/rustls/rustls> |
 | `rustls-pki-types` | 1.15.1 | MIT OR Apache-2.0 | <https://github.com/rustls/pki-types> |
 | `rustls-platform-verifier` | 0.7.1 | MIT OR Apache-2.0 | <https://github.com/rustls/rustls-platform-verifier> |
 | `rustls-webpki` | 0.103.15 | ISC | <https://github.com/rustls/webpki> |
@@ -650,7 +650,7 @@ for the other crates that use it.
 - `regex-syntax 0.8.11`
 - `rtrb 0.3.5`
 - `rustc_version 0.4.1`
-- `rustls 0.23.45`
+- `rustls 0.23.46`
 - `scopeguard 1.2.0`
 - `serde_with 3.24.0`
 - `serde_with_macros 3.24.0`
@@ -5885,7 +5885,7 @@ DEALINGS IN THE SOFTWARE.
 <details><summary>Which packages</summary>
 
 - `hyper-rustls 0.27.10`
-- `rustls 0.23.45`
+- `rustls 0.23.46`
 
 </details>
 
@@ -5912,7 +5912,7 @@ THIS SOFTWARE.
 <details><summary>Which packages</summary>
 
 - `hyper-rustls 0.27.10`
-- `rustls 0.23.45`
+- `rustls 0.23.46`
 
 </details>
 

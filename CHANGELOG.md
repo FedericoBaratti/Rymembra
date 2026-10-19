@@ -169,6 +169,22 @@ that is all the program writes. Files with the extension of the previous version
 still import — from the file dialogs and by dragging them onto the window — and
 so do profile archives written by it, whose manifest carries the previous name.
 
+### Security
+
+- **rustls 0.23.46.** Four advisories published after 3.0.0
+  (RUSTSEC-2026-0346 to 0349) are in the TLS library every connection of the
+  program goes through: session secrets in a `Debug` output, data sent to the
+  wrong server after a rejected Encrypted Client Hello, a certificate
+  decompression that could allocate a gigabyte before authentication, and later
+  connections downgraded to classical key exchange by an unauthenticated reply.
+  The update is the patch release that fixes them.
+- **Three advisories on `zip` that do not apply** (RUSTSEC-2026-0367 to 0369)
+  are written in `deny.toml` with the reason. They are all in the extraction of
+  a whole archive to disk, which Rymembra never does — skins, profiles and
+  account archives are read entry by entry — and which the updater does only to
+  a package whose signature it has already verified; the Unix permissions they
+  are about do not exist on Windows.
+
 ### Database
 
 Migration `031_sorgenti_rymembra` (schema 30 → 31) rewrites the prefix that an
