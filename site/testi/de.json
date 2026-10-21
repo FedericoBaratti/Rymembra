@@ -1,0 +1,222 @@
+{
+  "meta": {
+    "titolo": "Rymembra — kostenloser Musikplayer für Windows: FLAC, lückenlos, gleiche Lautstärke",
+    "descrizione": "Kostenloser Open-Source-Musikplayer für Windows. FLAC und MP3 lückenlos und gleich laut, Playlists aus deinen Spotify-Daten und fehlende Titel aus freien Katalogen.",
+    "immagine": "Rymembra, ein Musikplayer für Windows"
+  },
+  "nav": {
+    "salta": "Zum Inhalt",
+    "etichetta": "Hauptmenü",
+    "menu": "Menü",
+    "viaggio": "So funktioniert's",
+    "domande": "Fragen",
+    "docs": "Dokumentation",
+    "lingue": "Sprache",
+    "scarica": "Herunterladen"
+  },
+  "hero": {
+    "titolo": "Deine Musik, wiedergefunden.",
+    "lede": "Rymembra ist ein kostenloser Musikplayer für Windows. Er spielt die Dateien, die schon auf deiner Festplatte liegen, baut deine Playlists wieder auf — sogar aus deinen Spotify-Daten — und sucht fehlende Titel nur dort, wo es erlaubt ist.",
+    "cta": "Für Windows herunterladen",
+    "cta2": "So funktioniert's",
+    "nota": "Kostenlos und Open Source, MIT-Lizenz. Windows 64 Bit, Version {versione}, erschienen am {data}.",
+    "alt": "Der Startbildschirm von Rymembra mit den Sammlungen der Woche, dem Titel zum Fortsetzen und der Warteschlange",
+    "didascalia": "Der Startbildschirm: die Sammlungen der Woche, der unterbrochene Titel, bereit, an genau der Stelle weiterzuspielen, und rechts die Warteschlange. Die Bilder zeigen die italienische Oberfläche; das Programm spricht auch Englisch."
+  },
+  "altrove": {
+    "testo": "Rymembra ist ein Programm für Windows: Schick dir den Link und lade es am PC herunter.",
+    "manda": "Link senden",
+    "copia": "Link kopieren",
+    "copiato": "Link kopiert"
+  },
+  "viaggio": {
+    "titolo": "Folge einem Titel.",
+    "testo": "Von einer Zeile in einer Playlist bis zu deinen Lautsprechern: was Rymembra tut, Schritt für Schritt.",
+    "rotta": "Die Stationen der Reise"
+  },
+  "rotta": {
+    "playlist": "Playlist",
+    "disco": "Deine Festplatte",
+    "cataloghi": "Freie Kataloge",
+    "suono": "Klang",
+    "skin": "Skins",
+    "tuo": "Deins",
+    "scarica": "Herunterladen"
+  },
+  "playlist": {
+    "titolo": "Alles beginnt mit einer Playlist.",
+    "testo": "Fordere bei Spotify eine Kopie deiner Daten an, und du bekommst eine ZIP-Datei: Playlists, Lieblingssongs, gespeicherte Alben, gefolgte Künstler und Jahre an Hörverlauf. Rymembra liest sie auf deinem Computer, alles auf einmal — nichts verlässt den Rechner.",
+    "punti": [
+      "Eine M3U-, M3U8- oder PLS-Datei geht auch.",
+      "Ebenso ein Link zu einem Titel, einem Album oder einer Sammlung auf archive.org oder audius.co — ohne Konto, ohne API-Schlüssel."
+    ]
+  },
+  "disco": {
+    "titolo": "Zuerst schaut er auf deiner Festplatte.",
+    "testo": "Jeder Titel wird mit der Bibliothek abgeglichen, die Rymembra von deinen Musikordnern führt, nach Tags und Dauer, Album für Album. Was du schon hast, wird gefunden und von dort gespielt, wo es liegt.",
+    "punti": [
+      "Ordner überwachen sich selbst: Kopierst du ein Album hinein, ist es Sekunden später in der Bibliothek.",
+      "Auf einem NAS oder Netzlaufwerk macht eine Freigabe, die kurz nicht antwortet, Titel ungeprüft, nie verschwunden.",
+      "Ein Scan, der viele Titel entfernen würde, zeigt sie dir und fragt vorher."
+    ]
+  },
+  "cataloghi": {
+    "titolo": "Was fehlt, sucht er dort, wo es erlaubt ist.",
+    "testo": "Das Internet Archive und Audius beherbergen Musik, die zum Teilen veröffentlicht wurde: mehr als 250.000 Konzerte im Live Music Archive, Netlabels, Gemeinfreies, Titel, die Künstler unter offenen Lizenzen veröffentlicht haben. Ein Titel wird nur heruntergeladen, wenn seine eigene Lizenz es erlaubt, und er behält diese Lizenz. Ist keine Studioversion frei, kann ein Konzert einspringen — und der Titel sagt, dass er live ist.",
+    "acquisti": "Keine freie Quelle hat den kommerziellen Katalog, und Rymembra holt ihn nicht von dort, wo er es nicht sollte: Was er nicht rechtmäßig findet, kommt auf eine Einkaufsliste, mit Links zu Bandcamp und Qobuz.",
+    "esclusi": "Bewusst weggelassen: YouTube, dessen Bedingungen das Herunterladen und Speichern von Inhalten verbieten, und die privaten Schnittstellen von Spotify, deren Nutzung ein unbefugter Zugriff wäre.",
+    "alt": "Die Einstellungskarte, die zeigt, woher die Musik kommt",
+    "didascalia": "Einstellungen, „Woher die Musik kommt“: jede Quelle mit der Regel, der sie folgt."
+  },
+  "suono": {
+    "titolo": "Dann spielt er, wie es sich gehört.",
+    "testo": "Jeder Titel gleich laut: Rymembra misst jede Datei nach EBU R128, während nichts läuft, und hebt einen Titel nie über seine eigene Spitze. Alben laufen lückenlos, auch wenn eine 44,1-kHz-Platte auf eine 48-kHz-Soundkarte trifft. Und eine Zeile unter dem Titel sagt, was die Datei wirklich ist, so wie der Decoder sie liest.",
+    "punti": [
+      "Equalizer, Überblendung und eine Warteschlange, die einen Neustart übersteht.",
+      "Synchronisierte Songtexte von LRCLIB, und eine Möglichkeit, sie selbst zu timen.",
+      "Scrobbling zu Last.fm und ListenBrainz."
+    ],
+    "alt": "Der Wiedergabebildschirm mit dem Spektrumanalysator",
+    "didascalia": "Jetzt läuft, mit der Spektrum-Szene und der Zeile, die sagt, was die Datei ist. [Wie die Audio-Engine funktioniert]({base}docs/audio/) (auf Englisch)."
+  },
+  "skin": {
+    "titolo": "Er sieht aus, wie du willst.",
+    "testo": "Ein Skin kann jeden der 101 Teile des Fensters neu gestalten und animieren — Farben, Schrift, Rahmen, Bewegung — und sein Kontrast wird geprüft, bevor du ihn teilst. Das eingebaute Studio bearbeitet Skins auf den echten Seiten des Programms und kann ein Sprachmodell, auf deinem Rechner oder entfernt, bitten, die Änderung für dich vorzunehmen.",
+    "altStudio": "Das Studio, der eingebaute Skin-Editor",
+    "didascaliaStudio": "Das Studio: links die Ebenen, in der Mitte die echten Seiten des Programms, rechts der Inspektor.",
+    "altPlain": "Das Album-Raster mit dem Skin Plain",
+    "altNeon": "Dasselbe Album-Raster mit dem Skin Neon",
+    "didascalia": "Dieselben Alben mit Plain, dem Standard-Skin, und mit Neon. Nur der Skin ändert sich."
+  },
+  "tuo": {
+    "titolo": "Und es bleibt deins.",
+    "testo": "Kein Konto, keine Telemetrie, kein Rymembra-Server. Die Bibliothek lebt in einer Datenbank auf deinem Computer: Online gefundene Tags und deine eigenen Korrekturen landen dort, nie in deinen Musikdateien.",
+    "punti": [
+      "Sicherung und Abgleich über einen geteilten Ordner — Syncthing, OneDrive, Dropbox — oder über Google Drive mit einem eigenen Google-Projekt.",
+      "Das ganze Profil passt in eine .ryprofile-Datei, die du von Hand mitnehmen kannst.",
+      "Jede Netzwerkanfrage, die das Programm stellen kann, steht in [PRIVACY.md]({privacy})."
+    ]
+  },
+  "scena": {
+    "playlist": "Playlist aus dem Archiv",
+    "esempio": "Erfundene Titel, zur Veranschaulichung.",
+    "musica": "Musik",
+    "suDisco": "auf der Platte",
+    "manca": "fehlt",
+    "concerto": "live im Crescent",
+    "dalVivo": "live",
+    "youtube": "Bedingungen verbieten das Herunterladen",
+    "spotify": "kein unbefugter Zugriff",
+    "listaAcquisti": "Einkaufsliste",
+    "inRiproduzione": "Jetzt läuft",
+    "stessoVolume": "Jeder Titel auf dieselbe Lautheit gebracht",
+    "senzaPause": "Ein Titel endet, der nächste beginnt: keine Lücke",
+    "profilo": "Einstellungen, Bibliothek, Verlauf, Songtexte, Cover",
+    "telemetria": "Telemetrie",
+    "nessuna": "keine",
+    "account": "Konto",
+    "nessuno": "keins",
+    "backup": "Sicherung",
+    "backupDove": "dein Ordner oder dein Drive"
+  },
+  "scarica": {
+    "titolo": "Bereit zum Hören.",
+    "testo": "Ein Installer für Windows 64 Bit. Updates kommen von selbst, signiert, und werden nur installiert, wenn du es sagst.",
+    "sotto": "Für Windows 64 Bit. Kostenlos.",
+    "azione": "Herunterladen",
+    "file": "Die Datei heißt `{file}`, erschienen am {data}. [Was ist neu]({note}), [alle Versionen]({tutte}).",
+    "impronta": {
+      "sommario": "{dimensione} MB · SHA-256-Prüfsumme",
+      "verifica": "Zum Prüfen der Datei in PowerShell: `Get-FileHash $HOME\\Downloads\\{file}` muss dieselbe Prüfsumme ausgeben."
+    },
+    "passo1": {
+      "titolo": "Herunterladen und öffnen",
+      "testo": "Es ist ein einziger Installer. Ist die vorherige Version installiert, ersetzt er sie."
+    },
+    "passo2": {
+      "titolo": "An SmartScreen vorbei",
+      "testo": "Der Installer ist nicht mit einem Zertifikat signiert, das jedes Jahr Geld kostet, deshalb warnt Windows beim ersten Mal. Klicke auf „Weitere Informationen“ und dann auf „Trotzdem ausführen“."
+    },
+    "passo3": {
+      "titolo": "Zeig ihm deine Musik",
+      "testo": "Wähle deinen Musikordner. Eine kurze Tour zeigt dir das Programm einmal, im echten Fenster."
+    },
+    "precedente": "Du kommst von Aether, dem früheren Namen des Programms? Der Installer ersetzt es, und beim ersten Start ziehen Bibliothek, Einstellungen, Skins und Konten von selbst um. Nichts wird überschrieben."
+  },
+  "smartscreen": {
+    "titolo": "Der Computer wurde durch Windows geschützt",
+    "testo": "Von Microsoft Defender SmartScreen wurde der Start einer unbekannten App verhindert. Die Ausführung dieser App stellt ein Risiko für den PC dar.",
+    "info": "Weitere Informationen",
+    "esegui": "Trotzdem ausführen",
+    "nonEseguire": "Nicht ausführen"
+  },
+  "domande": {
+    "titolo": "Fragen",
+    "elenco": [
+      {
+        "d": "Ist er wirklich kostenlos?",
+        "r": "Ja, und das bleibt so. Es gibt keine Bezahlversion und es ist keine geplant: Zwei seiner Quellen, das Live Music Archive und Jamendo, haben nicht-kommerzielle Klauseln, die eine Bezahlversion verletzen würde. Die Entwicklung wird über Spenden finanziert."
+      },
+      {
+        "d": "Läuft er unter macOS oder Linux?",
+        "r": "Heute nicht. Den Installer gibt es nur für Windows, und eine Version für macOS, Linux oder Mobilgeräte gibt es noch nicht."
+      },
+      {
+        "d": "Warum warnt mich Windows bei der Installation?",
+        "r": "Weil der Installer nicht mit einem Code-Signing-Zertifikat signiert ist, das eine Identitätsprüfung und eine jährliche Gebühr verlangt. SmartScreen hält unsignierte Programme auf, die es selten gesehen hat: Klicke auf „Weitere Informationen“ und dann auf „Trotzdem ausführen“. Bei Updates ist das anders: Das Programm prüft ihre Signatur, bevor es irgendetwas installiert."
+      },
+      {
+        "d": "Woher kommt die Musik? Ist das legal?",
+        "r": "Zuerst aus deinen eigenen Dateien. Dann aus dem Internet Archive und von Audius, und nur, wenn die Lizenz eines Titels eine Kopie erlaubt; jeder Titel behält seine Lizenz, und die nicht-kommerzielle Klausel des Live Music Archive gilt auch für dich. Rymembra lädt nichts von YouTube herunter und schöpft keine Daten von Spotify ab. Die Einzelheiten stehen in [TERMS.md]({termini})."
+      },
+      {
+        "d": "Verändert er meine Musikdateien?",
+        "r": "Nein. Online gefundene Tags, deine Korrekturen, Cover, Songtexte, Wiedergaben und Bewertungen liegen in der Datenbank der Bibliothek. In einen Musikordner geschrieben werden nur die Titel, die du herunterlädst, und, wenn du es einschaltest, eine .lrc-Textdatei neben einem Titel."
+      },
+      {
+        "d": "Kann ich meine Spotify-Playlists mitnehmen?",
+        "r": "Ja. Fordere deine Daten auf der Datenschutzseite deines Spotify-Kontos an: Sie kommen als ZIP, meist innerhalb weniger Tage, der vollständige Hörverlauf dauert länger. Rymembra liest sie auf deinem Computer und gleicht jeden Titel mit deiner Bibliothek und den freien Katalogen ab. Das ZIP enthält keine Audiodateien: Was du nicht hast und kein freier Katalog hat, kommt auf die Einkaufsliste."
+      },
+      {
+        "d": "Schickt er meine Daten irgendwohin?",
+        "r": "Es gibt keine Telemetrie und keinen Rymembra-Server. Das Programm spricht nur mit den Diensten, die du nutzt — den Katalogen, MusicBrainz für Tags, LRCLIB für Songtexte, GitHub für die Update-Prüfung und allem, was du selbst verbindest. [PRIVACY.md]({privacy}) listet jede Anfrage und was sie sendet."
+      }
+    ]
+  },
+  "sostieni": {
+    "titolo": "Kostenlos, und getragen von denen, die ihn nutzen.",
+    "testo": "Wenn Rymembra dir nützt, hält eine Spende ihn am Laufen. Ein Fehlerbericht oder eine Idee helfen genauso.",
+    "dona": "Auf GitHub Sponsors unterstützen",
+    "segnala": "Ein Problem melden",
+    "scrivi": "Eine E-Mail schreiben"
+  },
+  "musica": {
+    "ascolta": "Soundtrack anhören: Machina von Scott Buckley",
+    "pausa": "Soundtrack anhalten",
+    "invito": "Anhören",
+    "ferma": "Anhalten",
+    "demo": {
+      "ascolta": "Übergang anhören",
+      "ferma": "Stopp",
+      "senzaPause": "Lückenlos",
+      "livellato": "Gleiche Lautstärke",
+      "nota": "Eine Simulation: *Machina* in zwei Titel geteilt, der zweite 8 dB lauter, wie ein anderes Mastering."
+    },
+    "piede": "Musik: [„Machina“](https://www.scottbuckley.com.au/library/machina/) von Scott Buckley, lizenziert unter [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.de). Für die Website neu komprimiert; in der Klang-Demo in zwei Teile geteilt und in der Lautstärke verändert."
+  },
+  "piede": {
+    "frase": "Ein Musikplayer für Windows, geschrieben in Rust. Er spielt, was du hast, und findet den Rest dort, wo es erlaubt ist.",
+    "etichetta": "Website",
+    "versioni": "Alle Versionen",
+    "changelog": "Änderungsprotokoll",
+    "privacy": "Datenschutz",
+    "termini": "Bedingungen",
+    "sicurezza": "Sicherheit",
+    "licenza": "Lizenz",
+    "mit": "Code unter der MIT-Lizenz."
+  },
+  "lingua": {
+    "suggerimento": "Diese Seite auf Deutsch lesen",
+    "chiudi": "Schließen"
+  }
+}

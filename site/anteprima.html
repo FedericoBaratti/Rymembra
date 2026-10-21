@@ -1,0 +1,58 @@
+<!doctype html>
+<!--
+  Il sorgente di `anteprima.jpg`, l'immagine che compare quando qualcuno
+  condivide un link al sito (Open Graph, 1200×630). Non si pubblica: si apre,
+  si fotografa una volta e la foto si versiona. In JPEG e non in WebP, perché
+  non tutte le piattaforme che leggono Open Graph sanno leggere il WebP; e
+  sotto i 300 KB, che è quanto accettano alcune app di messaggi.
+
+  Dalla radice del repository, con Edge (o Chrome) senza finestra, che
+  fotografa sempre in PNG:
+
+    msedge --headless=new --hide-scrollbars --window-size=1200,630 \
+      --screenshot=anteprima.png "file:///<percorso>/site/anteprima.html"
+
+  e poi da PNG a JPEG, qualità 86, con qualunque programma di immagini.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rymembra — anteprima</title>
+<style>
+  @font-face { font-family: "Bricolage Grotesque"; font-weight: 200 800; src: url("../apps/desktop/src/font/bricolage-latin.woff2") format("woff2"); }
+  @font-face { font-family: Geist; font-weight: 100 900; src: url("../apps/desktop/src/font/geist-latin.woff2") format("woff2"); }
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; background: #09090d; }
+  body {
+    position: relative;
+    font-family: Geist, sans-serif;
+    color: #f2f2f7;
+    background:
+      radial-gradient(700px 420px at 92% 110%, rgba(79, 214, 224, 0.16), transparent 70%),
+      radial-gradient(800px 520px at 70% -20%, rgba(139, 124, 246, 0.28), transparent 70%),
+      #09090d;
+  }
+  .testo { position: absolute; left: 72px; top: 92px; width: 520px; }
+  .marchio { display: flex; align-items: center; gap: 16px; font: 650 40px/1 "Bricolage Grotesque"; letter-spacing: -0.02em; }
+  h1 { margin: 52px 0 26px; font: 750 84px/0.92 "Bricolage Grotesque"; letter-spacing: -0.05em; }
+  p { margin: 0; font-size: 25px; line-height: 1.4; color: rgba(242, 242, 247, 0.72); }
+  .finestra {
+    position: absolute; left: 640px; top: 96px; width: 760px;
+    border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.16);
+    box-shadow: 0 50px 120px -40px rgba(139, 124, 246, 0.6);
+    transform: perspective(1400px) rotateY(-14deg) rotateX(4deg);
+    transform-origin: left center;
+  }
+</style>
+</head>
+<body>
+  <div class="testo">
+    <div class="marchio">
+      <svg width="46" height="46" viewBox="0 0 20 20" fill="none" stroke-width="2.6" stroke-linecap="round"><path d="M10 2.4a7.6 7.6 0 0 1 0 15.2" stroke="#8b7cf6"/><path d="M10 17.6a7.6 7.6 0 0 1 0-15.2" stroke="#4fd6e0"/></svg>
+      Rymembra
+    </div>
+    <h1>Your music, remembered.</h1>
+    <p>A free music player for Windows. Gapless, at even loudness, from the files you already have.</p>
+  </div>
+  <img class="finestra" src="../immagini/casa.webp" alt="">
+</body>
+</html>

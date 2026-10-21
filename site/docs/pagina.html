@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>@view-transition{navigation:auto}@media (prefers-reduced-motion:reduce){@view-transition{navigation:none}}</style>
+{{&$testa}}
+<title>{{=$titolo}}</title>
+<meta name="description" content="{{=$descrizione}}">
+<link rel="canonical" href="{{=$canonico}}">
+<meta name="theme-color" content="#09090d">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="{{=$radice}}favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{{=$radice}}icona.png">
+<link rel="preload" href="{{=$radice}}font/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{{=$radice}}base.css">
+<link rel="stylesheet" href="{{=$base}}docs.css">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rymembra">
+<meta property="og:title" content="{{=$titolo}}">
+<meta property="og:description" content="{{=$descrizione}}">
+<meta property="og:url" content="{{=$canonico}}">
+<meta property="og:image" content="https://rymembra.com/anteprima.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{{&$jsonld}}</script>
+<script src="{{=$base}}docs.js" defer></script>
+</head>
+<body>
+<a class="salta" href="#contenuto">Skip to content</a>
+
+<header class="top">
+  <a class="marchio" href="{{=$radice}}">{{&$marchio}}<span>Rymembra</span></a>
+  <a class="badge" href="{{=$docs}}">Docs</a>
+  <span class="spazio"></span>
+  <a class="esterno" href="{{=$repo}}">GitHub</a>
+  <button type="button" class="menu-btn" data-menu aria-expanded="false" aria-controls="indice" hidden>Chapters</button>
+</header>
+
+<div class="layout">
+  <nav class="lato" id="indice" aria-label="Documentation">
+    <form class="cerca" role="search" data-cerca data-ricerca="{{=$ricerca}}" data-base="{{=$base}}" hidden>
+      <label>
+        <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="9" r="5"/><path d="m12.8 12.8 3.6 3.6"/></svg>
+        <input type="search" name="q" autocomplete="off" spellcheck="false" placeholder="Search the docs" aria-label="Search the docs" aria-controls="risultati">
+      </label>
+      <ol class="risultati" id="risultati" data-risultati hidden></ol>
+      <p class="nessuno" data-nessuno hidden>Nothing matches these words.</p>
+    </form>
+    {{&$lato}}
+  </nav>
+
+  <main class="doc" id="contenuto">
+    {{&$corpo}}
+  </main>
+</div>
+
+<footer class="piede-docs">
+  <p>Rymembra {{=$versione}}, under the MIT licence.</p>
+  <p class="collegamenti"><a href="{{=$radice}}">rymembra.com</a><a href="{{=$privacy}}">Privacy</a><a href="{{=$repo}}">Source on GitHub</a></p>
+</footer>
+</body>
+</html>

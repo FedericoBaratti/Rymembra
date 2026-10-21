@@ -33,7 +33,7 @@
       title: "Workspace and crates",
       src: ["Cargo.toml", "core", "apps/desktop/src-tauri/Cargo.toml", "apps/desktop/rymembra-barra/Cargo.toml", "apps/desktop/package.json"],
       body: [
-        "One Cargo workspace at the repository root (`resolver = \"3\"`, edition 2024, `rust-version = \"1.90\"`, version `3.0.0`) with 15 members, plus the React frontend in `apps/desktop/src`. A root-level `cargo test` builds and tests the desktop app too, not only the libraries.",
+        "One Cargo workspace at the repository root (`resolver = \"3\"`, edition 2024, `rust-version = \"1.90\"`, version `3.0.1`) with 15 members, plus the React frontend in `apps/desktop/src`. A root-level `cargo test` builds and tests the desktop app too, not only the libraries.",
         {
           table: {
             head: ["Crate", "Role", "Internal dependencies"],
@@ -246,7 +246,7 @@
               ["`apps/desktop/rymembra-barra/`", "Taskbar buttons crate"],
               ["`apps/desktop/src/`", "React frontend; `test/` holds its `node --test` suites"],
               ["`strumenti/`", "Repository checks and release tools (Node, no dependencies)"],
-              ["`site/`", "The landing page and these docs, published by `.github/workflows/sito.yml`"],
+              ["`site/`", "The sources of the website — the landing page (one template, `testi/` in four languages) and these docs — built into `_site/` by `strumenti/sito.js` and published by `.github/workflows/sito.yml`"],
               ["`.github/workflows/`", "`verify.yml`, `release.yml`, `sito.yml`"],
             ],
           },
