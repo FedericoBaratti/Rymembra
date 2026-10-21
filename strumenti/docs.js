@@ -1,19 +1,20 @@
 /*
  * La documentazione tecnica dice il vero sul repository.
  *
- * Il testo sta in `site/docs/contenuto/<capitolo>.js`, un file per capitolo,
- * caricati da `site/docs/index.html` nell'ordine in cui si leggono. Una pagina
- * a cui manca un capitolo si disegna lo stesso, e un percorso sbagliato in una
- * voce si legge benissimo: per questo si scoprono tardi. Qui si controlla che:
+ * Il testo sta in `site/docs/contenuto/<capitolo>.js`, un file per capitolo, e
+ * `site/docs/indice.json` li elenca nell'ordine in cui si leggono:
+ * `strumenti/sito.js` ne fa una pagina per capitolo. Un sito a cui manca un
+ * capitolo si costruisce lo stesso, e un percorso sbagliato in una voce si legge
+ * benissimo: per questo si scoprono tardi. Qui si controlla che:
  *
- *   - ogni file di `contenuto/` sia caricato dalla pagina, e ogni file caricato
- *     esista;
+ *   - ogni file di `contenuto/` sia nell'indice, e ogni file dell'indice esista;
  *   - capitoli e voci abbiano un `id` unico, un titolo e un corpo;
  *   - ogni blocco abbia una forma nota (paragrafo, `h`, `note`, `ul`, `ol`,
  *     `code`, `table`), e ogni riga di una tabella tante celle quante la testa;
  *   - ogni `**` e ogni apice inverso sia chiuso (fuori dai blocchi di codice);
- *   - ogni rimando — `see`, `[testo](#voce)`, e gli `href="#…"` della pagina —
- *     porti a una voce o a un capitolo che esiste;
+ *   - ogni rimando — `see` e `[testo](#voce)` — porti a una voce o a un
+ *     capitolo che esiste (i collegamenti delle pagine costruite li controlla
+ *     `strumenti/sito.js`, sull'uscita);
  *   - ogni percorso in `src` esista nel repository: un file rinominato rompe
  *     questo controllo invece di lasciare una voce che indica il vuoto;
  *   - ogni ancora ammessa dal nucleo (`ANCORE_GUIDA` in `comandi.rs`) esista
@@ -30,15 +31,21 @@ const REPO = path.dirname(__dirname);
 const CARTELLA = path.join(REPO, "site", "docs");
 const COMANDI = path.join(REPO, "apps/desktop/src-tauri/src/comandi.rs");
 
-/** I file di contenuto che la pagina carica, nell'ordine in cui li carica. */
-function caricati(pagina) {
-  return [...pagina.matchAll(/<script src="\.\/(contenuto\/[^"]+\.js)"><\/script>/g)].map((m) => m[1]);
+/**
+ * I file di contenuto nell'ordine in cui si leggono: `indice.json` è un array di
+ * nomi di file di `contenuto/`.
+ */
+function elencati(indice) {
+  const nomi = JSON.parse(indice);
+  if (!Array.isArray(nomi) || !nomi.every((n) => typeof n === "string" && /^[a-z0-9-]+\.js$/.test(n))) {
+    throw new Error("indice.json dev'essere un array di nomi di file .js");
+  }
+  return nomi.map((n) => `contenuto/${n}`);
 }
 
-/** Carica i capitoli come lo farebbe il browser: stessi file, stesso ordine. */
+/** Carica i capitoli nell'ordine dell'indice, in un contesto dove esiste solo `window`. */
 function carica(cartella = CARTELLA) {
-  const pagina = fs.readFileSync(path.join(cartella, "index.html"), "utf8");
-  const elenco = caricati(pagina);
+  const elenco = elencati(fs.readFileSync(path.join(cartella, "indice.json"), "utf8"));
   const finestra = {};
   const contesto = vm.createContext({ window: finestra });
   const mancanti = [];
@@ -58,7 +65,6 @@ function carica(cartella = CARTELLA) {
     : [];
   return {
     capitoli: finestra.RYMEMBRA_DOCS || [],
-    pagina,
     mancanti,
     orfani: suDisco.filter((f) => !elenco.includes(f)),
   };
@@ -120,7 +126,7 @@ function rimandi(testo) {
  * `esiste` dice se un percorso del repository c'è: si passa da fuori perché le
  * prove possano farne a meno del disco.
  */
-function controlla(capitoli, ancore, esiste, pagina = "") {
+function controlla(capitoli, ancore, esiste) {
   const problemi = [];
   const dica = (m) => problemi.push(m);
 
@@ -189,9 +195,6 @@ function controlla(capitoli, ancore, esiste, pagina = "") {
     }
   }
 
-  for (const m of pagina.matchAll(/href="#([^"]+)"/g)) {
-    if (!bersagli.has(m[1])) dica(`index.html: «#${m[1]}» non porta a niente`);
-  }
   if (ancore) {
     for (const x of ancore) if (!voci.has(x)) dica(`manca la voce «${x}» ammessa da ANCORE_GUIDA`);
   }
@@ -199,13 +202,13 @@ function controlla(capitoli, ancore, esiste, pagina = "") {
 }
 
 function main() {
-  const { capitoli, pagina, mancanti, orfani } = carica();
+  const { capitoli, mancanti, orfani } = carica();
   const ancore = ancoreDelNucleo();
   const problemi = [];
-  for (const f of mancanti) problemi.push(`index.html carica ${f}, che non esiste`);
-  for (const f of orfani) problemi.push(`${f} non è caricato da index.html`);
+  for (const f of mancanti) problemi.push(`indice.json elenca ${f}, che non esiste`);
+  for (const f of orfani) problemi.push(`${f} non è in indice.json`);
   if (!ancore || ancore.length === 0) problemi.push("non trovo ANCORE_GUIDA in comandi.rs");
-  problemi.push(...controlla(capitoli, ancore, (p) => fs.existsSync(path.join(REPO, p)), pagina));
+  problemi.push(...controlla(capitoli, ancore, (p) => fs.existsSync(path.join(REPO, p))));
   if (problemi.length) {
     console.error(`docs: ${problemi.length} problemi\n` + problemi.map((p) => "  - " + p).join("\n"));
     process.exit(1);
@@ -216,4 +219,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { carica, caricati, ancoreDelNucleo, controlla, forma, chiuso, rimandi };
+module.exports = { carica, elencati, ancoreDelNucleo, controlla, forma, chiuso, testiInLinea, rimandi };

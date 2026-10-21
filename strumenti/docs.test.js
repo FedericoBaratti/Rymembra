@@ -8,7 +8,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { ancoreDelNucleo, caricati, carica, controlla, forma, chiuso, rimandi } = require("./docs.js");
+const { ancoreDelNucleo, elencati, carica, controlla, forma, chiuso, rimandi } = require("./docs.js");
 
 const TUTTO_ESISTE = () => true;
 
@@ -92,20 +92,22 @@ test("un id ripetuto si vede", () => {
   assert.ok(controlla(c, [], TUTTO_ESISTE).some((p) => /ripetuta/.test(p)));
 });
 
-test("la pagina carica i capitoli che dichiara", () => {
-  const pagina = '<script src="./contenuto/a.js"></script>\n<script src="./docs.js"></script>';
-  assert.deepEqual(caricati(pagina), ["contenuto/a.js"]);
+test("l'indice elenca i capitoli nell'ordine in cui si leggono", () => {
+  assert.deepEqual(elencati('["b.js", "a.js"]'), ["contenuto/b.js", "contenuto/a.js"]);
+  // Un percorso o un nome che non è un file di `contenuto/` non passa.
+  assert.throws(() => elencati('["../a.js"]'));
+  assert.throws(() => elencati('{"a": "a.js"}'));
 });
 
 test("la documentazione vera torna", () => {
-  const { capitoli, pagina, mancanti, orfani } = carica();
+  const { capitoli, mancanti, orfani } = carica();
   assert.deepEqual(mancanti, []);
   assert.deepEqual(orfani, []);
   const ancore = ancoreDelNucleo();
   assert.ok(ancore.length > 0);
   const repo = path.dirname(__dirname);
   assert.deepEqual(
-    controlla(capitoli, ancore, (p) => fs.existsSync(path.join(repo, p)), pagina),
+    controlla(capitoli, ancore, (p) => fs.existsSync(path.join(repo, p))),
     [],
   );
 });

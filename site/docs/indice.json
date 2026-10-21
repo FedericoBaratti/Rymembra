@@ -1,0 +1,16 @@
+[
+  "overview.js",
+  "data.js",
+  "library.js",
+  "metadata.js",
+  "audio.js",
+  "player.js",
+  "sources.js",
+  "network.js",
+  "services.js",
+  "skins.js",
+  "studio.js",
+  "interface.js",
+  "shell.js",
+  "build.js"
+]

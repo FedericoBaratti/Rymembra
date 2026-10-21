@@ -111,9 +111,10 @@
  *
  * I testi sono **corti apposta** e stanno in `lingue/{it,en}.json` sotto
  * `tour.step.*`. Le versioni lunghe delle stesse cose sono due e vivono
- * altrove: **`README.md` § Interface/Customization (righe 160-226)** e
- * **`site/index.html` (righe 332-420)**. Sono tre copie in due lingue, e
- * l'allineamento si tiene **a mano**, rileggendo queste tre righe quando una
+ * altrove: **`README.md` § Interface/Customization (righe 160-226)** e il
+ * viaggio del sito, **`site/testi/<lingua>.json`** (le tappe da `playlist` a
+ * `tuo`, in quattro lingue). L'allineamento si tiene **a mano**, rileggendo
+ * questi testi quando una
  * funzione cambia: un generatore che le producesse tutte da una sorgente sola
  * costerebbe più di quel che risparmia, perché i tre testi hanno tre lunghezze
  * e tre mestieri — uno spiega a chi non ha ancora installato, uno a chi ha

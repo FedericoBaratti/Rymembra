@@ -14,10 +14,12 @@
     "check:lingue": "node ../../strumenti/lingue.js",
     "check:classi": "node ../../strumenti/classi.js",
     "check:docs": "node ../../strumenti/docs.js",
+    "check:sito": "node ../../strumenti/sito.js --controlla",
+    "sito": "node ../../strumenti/sito.js",
     "version:set": "node ../../strumenti/versione.js",
     "licenze": "node ../../strumenti/licenze.js",
     "test:strumenti": "node --test \"../../strumenti/*.test.js\"",
-    "verify": "npm run check:version && npm run check:lingue && npm run check:docs && npm run check:classi && npm run build:web && npm run test:web && npm run test:strumenti && cargo fmt --all --check --manifest-path ../../Cargo.toml && cargo clippy --workspace --all-targets --manifest-path ../../Cargo.toml && cargo test --workspace --manifest-path ../../Cargo.toml"
+    "verify": "npm run check:version && npm run check:lingue && npm run check:docs && npm run check:sito && npm run check:classi && npm run build:web && npm run test:web && npm run test:strumenti && cargo fmt --all --check --manifest-path ../../Cargo.toml && cargo clippy --workspace --all-targets --manifest-path ../../Cargo.toml && cargo test --workspace --manifest-path ../../Cargo.toml"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

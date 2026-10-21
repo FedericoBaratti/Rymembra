@@ -525,6 +525,13 @@ npm run build
 node strumenti/licenze.js
 ```
 
+```bash
+# Build the website (landing page in four languages and the technical
+# documentation) from site/ into _site/, and check it; serve _site/ with any
+# static server to preview it
+node strumenti/sito.js
+```
+
 ### Updater signing keys
 
 The update system requires a key pair, generated once. The keys are not
