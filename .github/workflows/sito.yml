@@ -17,6 +17,29 @@
 # `workflow_dispatch` resta per le correzioni al sito fra una release e
 # l'altra: un refuso non deve aspettare la versione dopo.
 #
+# # Che versione annuncia
+#
+# Quella della release pubblicata, non quella a cui è arrivato il codice. Una
+# correzione lanciata a mano quando `main` dice già 3.0.2, e la 3.0.2 non è
+# uscita, deve continuare a offrire la 3.0.1: il pulsante «Scarica» linka
+# l'installer di quella versione, e uno che non esiste è un 404. Per questo il
+# tag arriva da fuori — dall'evento della release, o dall'ultima release
+# pubblicata — e `strumenti/sito.js` lo riceve con `--versione`.
+#
+# # Cosa si pubblica
+#
+# `site/` è il sorgente; `strumenti/sito.js` ne costruisce `_site/` (le pagine
+# nelle quattro lingue, un capitolo della documentazione per pagina, la
+# sitemap) e si carica quella. Se un controllo del generatore fallisce, non si
+# pubblica niente.
+#
+# # Il deploy da un tag
+#
+# L'evento `release` gira sul ref del tag (`refs/tags/v…`), e l'ambiente
+# `github-pages` per difetto accetta solo il ramo principale: in *Settings →
+# Environments → github-pages* va aggiunta la regola per i tag `v*`, o questo
+# lavoro si ferma con «Tag … is not allowed to deploy to github-pages».
+#
 # # Prima che funzioni
 #
 # In *Settings → Pages* del repository, «Source» va messo su **GitHub Actions**.
@@ -56,16 +79,53 @@ jobs:
       # preambolo di `release.yml`: un'etichetta si può spostare, un hash no.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # Lo stesso Node di `verify.yml`: il generatore è CommonJS senza
+      # dipendenze, ma usa `Intl` per scrivere le date in quattro lingue.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      # Il tag della release che si sta pubblicando; a mano, l'ultima
+      # pubblicata (`gh release view` senza argomenti salta le bozze).
+      - name: La versione da annunciare
+        id: versione
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_EVENTO: ${{ github.event.release.tag_name }}
+        run: |
+          tag="$TAG_EVENTO"
+          if [ -z "$tag" ]; then
+            tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Si annuncia $tag"
+
+      # L'installer di quella release, perché la pagina ne dica il peso e
+      # l'impronta SHA-256 misurandoli sul file che il pulsante scarica, e non
+      # copiandoli da qualche altra parte.
+      - name: L'installer da descrivere
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.versione.outputs.tag }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*_x64-setup.exe' --dir "$RUNNER_TEMP/installer"
+
+      # Il tag passa da una variabile e non dentro lo script: un nome di tag
+      # finisce nella shell come dato, non come codice.
+      - name: Il sito si costruisce
+        env:
+          TAG: ${{ steps.versione.outputs.tag }}
+        run: node strumenti/sito.js --versione "$TAG" --installer "$RUNNER_TEMP/installer"
+
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
 
-      # Si carica `site/` e basta. Non la radice: là dentro ci sono il sorgente,
-      # il changelog e i documenti, e Pages li servirebbe tutti a chiunque
-      # indovini un percorso. Sono già pubblici sul repository — ma pubblicarli
-      # due volte da due indirizzi diversi è il modo di averne una copia vecchia
-      # in giro per sempre.
+      # Si carica `_site/` e basta. Non la radice: là dentro ci sono il
+      # sorgente, il changelog e i documenti, e Pages li servirebbe tutti a
+      # chiunque indovini un percorso. Sono già pubblici sul repository — ma
+      # pubblicarli due volte da due indirizzi diversi è il modo di averne una
+      # copia vecchia in giro per sempre.
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
-          path: site
+          path: _site
 
       - id: pubblicazione
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
