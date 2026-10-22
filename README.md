@@ -47,9 +47,10 @@ temporary limitation.
 ![Rymembra's home screen](immagini/casa.webp)
 
 The home screen. At the top, «Il lunedì» (*Monday*): this week's collections,
-twenty tracks each, worked out on this computer; the dot marks the ones that are
-new. Below, «Riprendi dov'eri» (*Resume*) brings back the last interrupted track
-at the exact point where it stopped — here *Eyes Wide Shut*, at 3:25 — and one
+up to twenty tracks each, worked out on this computer; the dot marks the ones
+that are new. Below, «Riprendi dov'eri» (*Resume*) brings back the last
+interrupted track at the exact point where it stopped — here *Fuochi a mare*, at
+1:32 — and one
 click plays it from there. Then «Ascoltati di recente» (*Recently played*);
 further down the page, out of the picture, the most recently added albums and
 the records you haven't played in a while.
@@ -64,8 +65,10 @@ history («Cronologia») and the button that empties the queue («Svuota»). The
 same column comes back in most of the pictures that follow.
 
 *The images in this document show the Italian interface — the program speaks
-English too, and the Studio picture is taken in English — and come from a real
-library of 2611 tracks, 1096 albums and 685 artists.*
+English too, and the Studio picture is taken in English — and come from a
+library made up for them: 88 tracks, 16 albums and 10 artists whose names,
+covers and sound were invented, so that no picture shows somebody else's
+music.*
 
 ---
 
@@ -302,7 +305,7 @@ come back. «Select all» selects the whole view, not what happens to be loaded.
 ![The playback screen with the spectrum analyzer](immagini/riproduzione.webp)
 
 The playback screen, «In riproduzione» (*Now playing*), with the spectrum scene
-on — here *Skirmish*, from the soundtrack of *S.T.A.L.K.E.R. 2*. The scene is a
+on — here *Porto franco*, a 24-bit FLAC. The scene is a
 grid of bars: from 8 to 1024 across — the row of numbers at the bottom left
 chooses how many, 128 here — and about fifty rows in depth. The front row is
 now; the rows behind are the last half minute of music, moving back toward the
@@ -314,7 +317,7 @@ changes to the equalization curve are visible in the bars, changes to the
 volume are not. The bands reach the interface through a ring buffer that
 discards excess samples when it is full, so as not to introduce any wait in
 the audio callback. At the bottom right, the line that says what the file is:
-«FLAC · 48 kHz · 24 bit · Stereo · 1314 kbps». The three buttons at the top
+«FLAC · 44,1 kHz · 24 bit · Stereo · 1602 kbps». The three buttons at the top
 right switch the lyrics, the spectrum and the queue on and off; «Chiudi»
 (*Close*), or Esc, closes the screen.
 
