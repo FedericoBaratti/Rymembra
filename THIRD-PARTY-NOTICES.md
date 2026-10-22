@@ -329,7 +329,7 @@ their reader's search: it appears in its license's group.
 | `rustls` | 0.23.46 | Apache-2.0 OR ISC OR MIT | <https://github.com/rustls/rustls> |
 | `rustls-pki-types` | 1.15.1 | MIT OR Apache-2.0 | <https://github.com/rustls/pki-types> |
 | `rustls-platform-verifier` | 0.7.1 | MIT OR Apache-2.0 | <https://github.com/rustls/rustls-platform-verifier> |
-| `rustls-webpki` | 0.103.15 | ISC | <https://github.com/rustls/webpki> |
+| `rustls-webpki` | 0.103.16 | ISC | <https://github.com/rustls/webpki> |
 | `rustversion` | 1.0.23 | MIT OR Apache-2.0 | <https://github.com/dtolnay/rustversion> |
 | `same-file` | 1.0.6 | Unlicense/MIT | <https://github.com/BurntSushi/same-file> |
 | `schemars` | 0.8.22 | MIT | <https://github.com/GREsau/schemars> |
@@ -457,7 +457,7 @@ their reader's search: it appears in its license's group.
 | `wasm-bindgen-shared` | 0.2.129 | MIT OR Apache-2.0 | <https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared> |
 | `web_atoms` | 0.2.6 | MIT OR Apache-2.0 | <https://github.com/servo/html5ever> |
 | `web-time` | 1.1.0 | MIT OR Apache-2.0 | <https://github.com/daxpedda/web-time> |
-| `webpki-roots` | 1.0.9 | CDLA-Permissive-2.0 | <https://github.com/rustls/webpki-roots> |
+| `webpki-roots` | 1.0.10 | CDLA-Permissive-2.0 | <https://github.com/rustls/webpki-roots> |
 | `webview2-com` | 0.39.1 | MIT | <https://github.com/wravery/webview2-rs> |
 | `webview2-com-macros` | 0.8.1 | MIT | <https://github.com/wravery/webview2-rs> |
 | `webview2-com-sys` | 0.39.1 | MIT | <https://github.com/wravery/webview2-rs> |
@@ -15355,7 +15355,7 @@ SOFTWARE.
 
 <details><summary>Which packages</summary>
 
-- `rustls-webpki 0.103.15`
+- `rustls-webpki 0.103.16`
 
 </details>
 
@@ -17646,7 +17646,7 @@ SOFTWARE.
 
 <details><summary>Which packages</summary>
 
-- `webpki-roots 1.0.9`
+- `webpki-roots 1.0.10`
 
 </details>
 

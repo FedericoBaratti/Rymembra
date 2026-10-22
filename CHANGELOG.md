@@ -518,6 +518,16 @@ release was checked on: Radeon 740M integrated graphics, 1920×1200 at 60 Hz,
 - Import dialogs show at most fifty missing tracks, with «…and N more»; the
   saved report still lists them all.
 
+### Security
+
+- **rustls-webpki 0.103.16 and webpki-roots 1.0.10.** Two advisories published
+  after 3.0.1 (RUSTSEC-2026-0381 and 0382) are in the certificate checks every
+  connection of the program goes through: the bundled roots still included
+  `emSign ECC Root CA - G3`, and the verifier could accept a certificate path
+  through emSign intermediates whose private keys are now publicly known. The
+  updates are the patch releases that remove that root and reject those
+  intermediates.
+
 ### Database
 
 Three migrations, schema 31 → 34, all additive: no table is rebuilt and no
