@@ -16,7 +16,7 @@ use tauri::{Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
-use crate::stato::{Stato, con_libreria};
+use crate::stato::con_libreria;
 
 use super::riapertura::{Modo, ferma_l_ascolto_se_perso, riapri_su};
 use super::{
@@ -100,9 +100,20 @@ pub struct DispositivoAudio {
 /// Perché chi apre le impostazioni deve vedere l'elenco di **adesso**, non
 /// quello di due secondi fa: [`dispositivi_audio`] pungola questo filo, che
 /// rilegge subito. È la stessa forma di `crate::aggiornamenti::avvia_filo`.
+///
+/// # Sorvegliato
+///
+/// Ogni passata gira dentro `crate::stato::sorvegliato`. È il filo che rimette
+/// in piedi il motore quando il dispositivo se ne va — e quando se ne va il
+/// filo della decodifica, e da oggi anche quello dell'uscita — e una passata
+/// che parla col driver è proprio il posto da cui un panico può arrivare. Prima
+/// quel panico si portava via il filo, e con lui ogni riapertura automatica per
+/// il resto della sessione: cuffie staccate, e la musica non tornava più da
+/// sola. Adesso la passata caduta vale come una riapertura fallita — l'attesa
+/// raddoppia, e si riprova.
 pub fn avvia_sorveglianza(app: tauri::AppHandle, orecchio: std::sync::mpsc::Receiver<()>) {
     let avviato = std::thread::Builder::new()
-        .name("rymembra-dispositivi".to_owned())
+        .name(FILO_DISPOSITIVI.to_owned())
         .spawn(move || {
             // L'elenco dell'ultima passata. Locale al filo: non lo guarda
             // nessun altro, e il confronto con questo è tutto il rilevamento.
@@ -120,11 +131,16 @@ pub fn avvia_sorveglianza(app: tauri::AppHandle, orecchio: std::sync::mpsc::Rece
                 if crate::spegnimento::in_uscita() {
                     return;
                 }
-                attesa = match passata_dispositivi(&app, &mut visti) {
+                let passo = crate::stato::sorvegliato(FILO_DISPOSITIVI, || {
+                    passata_dispositivi(&app, &mut visti)
+                })
+                .unwrap_or(Passo::Insisti);
+                attesa = match passo {
                     Passo::Riposo => PASSO_DISPOSITIVI,
                     // Il raddoppio, non un'attesa fissa: riaprire ha appena
                     // parlato col driver e non ha funzionato, e insistere allo
-                    // stesso ritmo vuol dire insistere per ore.
+                    // stesso ritmo vuol dire insistere per ore. Una passata
+                    // caduta in panico conta come una che non ha funzionato.
                     Passo::Insisti => attesa.saturating_mul(2).min(ATTESA_MASSIMA_DISPOSITIVI),
                 };
                 match orecchio.recv_timeout(attesa) {
@@ -143,6 +159,10 @@ pub fn avvia_sorveglianza(app: tauri::AppHandle, orecchio: std::sync::mpsc::Rece
         nota!("[avvio] il filo dei dispositivi audio non è partito: {err}");
     }
 }
+
+/// Il nome del filo che sorveglia i dispositivi: nel diario dei panici e nella
+/// salute dei fili, che lo contano per nome.
+const FILO_DISPOSITIVI: &str = "rymembra-dispositivi";
 
 /// Come si aspetta prima della prossima passata.
 enum Passo {
@@ -411,7 +431,7 @@ pub fn scegli_dispositivo_audio(
     stato: State<'_, StatoLettore>,
     id: Option<String>,
 ) -> Esito<()> {
-    let libreria = app.state::<Stato>();
+    let libreria = super::libreria_di(&app, "uscita audio").map_err(errore)?;
     con_libreria(&libreria, |db| {
         playback::save_uscita(&db.connection, id.as_deref())
     })

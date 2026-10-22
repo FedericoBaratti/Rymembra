@@ -22,22 +22,29 @@
 ///
 /// # Perché non è più «come nel vecchio albero»
 ///
-/// Perché una voce in più c'è: `oga`. La riga diceva «come nel vecchio albero»
-/// e quella parità è anche il senso di
+/// Perché due voci in più ci sono: `oga` e `ape`. La riga diceva «come nel
+/// vecchio albero» e quella parità è anche il senso di
 /// `tests/golden/scan.json`, che è generato eseguendo il `paths.ts` legacy —
-/// quindi questa divergenza va dichiarata qui, o il prossimo che legge i due
+/// quindi queste divergenze vanno dichiarate qui, o il prossimo che legge i due
 /// file insieme trova una contraddizione e non sa da che parte stia il guasto.
 ///
-/// **È voluta, e costa zero.** `.oga` è l'estensione che Xiph raccomanda per
-/// l'audio dentro Ogg: stesso contenitore di `.ogg`, stesso demultiplatore, e
-/// dentro ci può stare Vorbis, FLAC o Opus indifferentemente — tutti e tre già
+/// **`oga` è voluta, e costa zero.** `.oga` è l'estensione che Xiph raccomanda
+/// per l'audio dentro Ogg: stesso contenitore di `.ogg`, stesso demultiplatore,
+/// e dentro ci può stare Vorbis, FLAC o Opus indifferentemente — tutti e tre già
 /// decodificabili. Escluderlo non proteggeva da niente: lasciava fuori dalla
 /// libreria dei file che l'app sa aprire, scrivere e suonare.
 ///
-/// Nessuno dei casi del golden usa `.oga`, quindi la parità che quel file
-/// misura resta verde: quel che è cambiato è l'elenco, non il modo di leggerlo.
-pub const SUPPORTED_EXTENSIONS: [&str; 11] = [
-    "mp3", "flac", "m4a", "aac", "ogg", "oga", "wav", "aiff", "aif", "opus", "wma",
+/// **`ape` viene dalle immagini CD** (vedi [`crate::cue`]). Monkey's Audio è il
+/// secondo formato dei rip fatti con EAC: sul NAS misurato, 143 immagini su
+/// 300 sono `.ape`, accanto al loro `.cue`. Senza questa voce quelle
+/// immagini non si potevano abbinare al foglio, e i loro dischi restavano fuori
+/// dalla libreria per intero. Il decodificatore sta in `rymembra-play`.
+///
+/// Nessuno dei casi del golden usa `.oga` né `.ape`, quindi la parità che quel
+/// file misura resta verde: quel che è cambiato è l'elenco, non il modo di
+/// leggerlo.
+pub const SUPPORTED_EXTENSIONS: [&str; 12] = [
+    "mp3", "flac", "m4a", "aac", "ogg", "oga", "wav", "aiff", "aif", "opus", "wma", "ape",
 ];
 
 /// La cartella dei doppioni scartati, dentro quella dei download.
@@ -226,6 +233,17 @@ mod tests {
         assert!(is_supported_audio_path(r"C:\Music\A.OGA"));
         assert!(is_supported_audio_path(r"C:\Music\a.opus"));
         assert!(!is_supported_audio_path(r"C:\Music\a.ogg.txt"));
+    }
+
+    #[test]
+    fn ape_e_musica_e_il_cue_no() {
+        // Il `.cue` non è un brano: lo diventano le voci virtuali che se ne
+        // ricavano, e quelle le riconosce il piano, non l'estensione.
+        assert!(is_supported_audio_path(r"\\nas\Cd\Album.ape"));
+        assert!(is_supported_audio_path(r"\\nas\Cd\ALBUM.APE"));
+        assert!(!is_supported_audio_path(r"\\nas\Cd\Album.cue"));
+        assert!(!is_supported_audio_path(r"\\nas\Cd\Album.cue|03"));
+        assert!(!is_supported_audio_path(r"\\nas\Cd\Album.wv"));
     }
 
     #[test]

@@ -293,10 +293,26 @@ struct RigaFile {
 }
 
 impl RigaFile {
+    /// Il nome della foglia: quello del file, o il titolo per un brano
+    /// d'immagine CD.
+    ///
+    /// Il «nome del file» di un brano d'immagine sarebbe `Album.cue|03`, che non
+    /// è il nome di niente: il brano un file suo non ce l'ha, e quello che il
+    /// pannello deve dire è il titolo. Se il titolo manca resta il percorso
+    /// virtuale, e la finestra, che lo riconosce, scrive «Traccia 03 · Album».
+    fn nome(&self) -> &str {
+        if rymembra_domain::cue::brano_d_immagine(&self.percorso).is_some()
+            && !self.titolo.trim().is_empty()
+        {
+            return &self.titolo;
+        }
+        base_name(&self.percorso)
+    }
+
     fn in_foglia(self) -> FileCartella {
         FileCartella {
             brano: self.id,
-            nome: base_name(&self.percorso).to_owned(),
+            nome: self.nome().to_owned(),
             percorso: self.percorso,
             titolo: self.titolo,
             durata_ms: self.durata_ms,
@@ -658,11 +674,22 @@ impl Albero {
                 nodo.diretti = nodo.diretti.saturating_add(1);
             }
             if con_identificativi && let Some(cartella) = lavoro.brani.get_mut(corrente) {
+                // Un brano d'immagine CD si ordina per foglio e poi per
+                // numero, e tutti e due si leggono dal percorso: il nome
+                // `album.cue|03`, confrontato come lo legge chi guarda, dà
+                // proprio quell'ordine. Disco e numero di traccia non entrano,
+                // e apposta: due fogli nella stessa cartella — `CD1.cue` e
+                // `CD2.cue`, quasi sempre senza `REM DISCNUMBER` — ripartono
+                // tutti e due da 1, e per numero di traccia si mescolerebbero.
+                // È anche l'ordine in cui la finestra disegna le foglie
+                // (`albero.ts::ordinaFile`), così quel che suona è quel che si
+                // vede.
+                let d_immagine = rymembra_domain::cue::brano_d_immagine(&riga.percorso).is_some();
                 cartella.push(DaOrdinare {
                     // Chi non ha numero va in coda, non in testa: dentro un
                     // album i non numerati sono i bonus.
-                    disco: riga.disco.unwrap_or(i64::MAX),
-                    traccia: riga.traccia.unwrap_or(i64::MAX),
+                    disco: riga.disco.filter(|_| !d_immagine).unwrap_or(i64::MAX),
+                    traccia: riga.traccia.filter(|_| !d_immagine).unwrap_or(i64::MAX),
                     nome: path_key(base_name(&riga.percorso), regole),
                     id: riga.id,
                 });
@@ -909,8 +936,12 @@ pub fn filtra(
         .collect();
     let mut file: Vec<(usize, FileCartella)> = Vec::new();
     for riga in leggi_file(connection)? {
-        let combacia = fold_text(base_name(&riga.percorso)).contains(&ago)
-            || fold_text(&riga.titolo).contains(&ago);
+        // Il nome della foglia e non quello del percorso: per un brano
+        // d'immagine il secondo è `Album.cue|03`, e cercando «album» ogni
+        // traccia del disco si accenderebbe per un nome che nessuna riga
+        // scrive.
+        let combacia =
+            fold_text(riga.nome()).contains(&ago) || fold_text(&riga.titolo).contains(&ago);
         if !combacia {
             continue;
         }
@@ -1450,6 +1481,58 @@ mod tests {
         riga(&c, 5, r"C:\M\Al\Bonus\x.mp3", Some(1), Some(1));
         let albero = Albero::costruisci(&c, &[r"C:\M".to_owned()], WIN).expect("albero");
         assert_eq!(albero.brani_sotto(r"C:\M\Al"), Some(vec![3, 1, 2, 4, 5]));
+    }
+
+    #[test]
+    fn i_brani_d_immagine_stanno_col_loro_cue_per_foglio_e_numero() {
+        let c = banco();
+        // Due fogli nella stessa cartella, numerati tutti e due da 1: per
+        // numero di traccia si mescolerebbero. E uno con un numero di disco,
+        // che per un brano d'immagine non conta.
+        riga(&c, 1, r"C:\M\Al\CD2.cue|01", None, Some(1));
+        riga(&c, 2, r"C:\M\Al\CD1.cue|02", None, Some(2));
+        riga(&c, 3, r"C:\M\Al\CD1.cue|10", None, Some(10));
+        riga(&c, 4, r"C:\M\Al\CD1.cue|01", Some(2), Some(1));
+        riga(&c, 5, r"C:\M\Al\CD2.cue|02", None, Some(2));
+        let albero = Albero::costruisci(&c, &[r"C:\M".to_owned()], WIN).expect("albero");
+        // Nella cartella del `.cue`, e il `.cue` non diventa una cartella.
+        assert_eq!(nomi(&albero.figlie(Some(r"C:\M"))), vec!["Al"]);
+        assert!(albero.figlie(Some(r"C:\M\Al")).is_empty());
+        assert_eq!(albero.quanti_diretti(r"C:\M\Al"), 5);
+        // L'ordine della finestra: foglio, poi numero.
+        assert_eq!(albero.brani_diretti(r"C:\M\Al"), Some(vec![4, 2, 3, 1, 5]));
+        assert_eq!(
+            brani_diretti_dal_database(&c, r"C:\M\Al", WIN).expect("dal database"),
+            vec![4, 2, 3, 1, 5]
+        );
+    }
+
+    #[test]
+    fn una_foglia_d_immagine_si_chiama_col_suo_titolo() {
+        let c = banco();
+        brano_titolato(&c, 1, r"C:\M\Al\Album.cue|01", "Overture");
+        brano_titolato(&c, 2, r"C:\M\Al\Album.cue|02", "");
+        brano_titolato(&c, 3, r"C:\M\Al\album bonus.mp3", "Bonus");
+        let albero = Albero::costruisci(&c, &[r"C:\M".to_owned()], WIN).expect("albero");
+        let foglie = file_della_cartella(&c, &albero, r"C:\M\Al").expect("foglie");
+        let nome_di = |brano: i64| {
+            foglie
+                .iter()
+                .find(|f| f.brano == brano)
+                .map(|f| f.nome.clone())
+        };
+        assert_eq!(nome_di(1).as_deref(), Some("Overture"));
+        // Senza titolo resta il percorso virtuale: la finestra lo riconosce e
+        // scrive «Traccia 02 · Album».
+        assert_eq!(nome_di(2).as_deref(), Some("Album.cue|02"));
+        assert_eq!(nome_di(3).as_deref(), Some("album bonus.mp3"));
+
+        // Il filtro guarda quel che la riga scrive: «album» non accende la
+        // traccia che si chiama «Overture» solo perché il suo foglio si chiama
+        // così.
+        let filtro = filtra(&c, &albero, "album", LIMITE_FILTRO).expect("filtro");
+        let al = ramo(&filtro, Some(r"C:\M\Al")).expect("Al è aperta");
+        assert_eq!(brani_delle_foglie(&al.file), vec![2, 3]);
     }
 
     #[test]

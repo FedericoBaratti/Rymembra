@@ -56,10 +56,10 @@ import { Artisti } from "../schermate/Artisti";
 import { Cartelle } from "../schermate/Cartelle";
 import { ElencoBrani, ElencoFinto, GrigliaFinta, Sentinella } from "../schermate/Elenco";
 import { Esplora } from "../schermate/Esplora";
-import { Home, TestaHome } from "../schermate/Home";
+import { Home, testaHome } from "../schermate/Home";
 import { Impostazioni } from "../schermate/Impostazioni";
 import { InRiproduzione } from "../schermate/InRiproduzione";
-import { GrigliaAlbum, StatoVuoto, TestaLibreria } from "../schermate/Libreria";
+import { GrigliaAlbum, StatoVuoto, testaLibreria } from "../schermate/Libreria";
 import { Suona } from "../segnali";
 import {
   ALBUM,
@@ -667,19 +667,21 @@ function pagina(
     </>
   );
   const testaDi = (vista: "album" | "artisti" | "brani" | "cartelle") => (
-    <TestaLibreria
-      vista={vista}
-      numeri={{ albums: ALBUM.length, artists: ARTISTI.length, tracks: BRANI.length, liked: 9, durationMs: 0 }}
-      cartelle={1}
+    <Intestazione
+      {...testaLibreria({
+        vista,
+        numeri: { albums: ALBUM.length, artists: ARTISTI.length, tracks: BRANI.length, liked: 9, durationMs: 0 },
+        cartelle: 1,
+        ordinamento: { etichetta: t("sort.shelf"), onApri: niente },
+      })}
       query=""
       onQuery={niente}
-      ordinamento={{ etichetta: t("sort.shelf"), onApri: niente }}
     />
   );
   switch (scena.pagina) {
     case "home":
       return {
-        intestazione: <TestaHome query="" onQuery={niente} />,
+        intestazione: <Intestazione {...testaHome()} query="" onQuery={niente} />,
         corpo: (
           <Home
             casa={CASA}

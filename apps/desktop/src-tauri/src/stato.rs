@@ -156,6 +156,11 @@ pub struct Stato {
     /// (vedi [`TurnoDiScansione`]). Una riga in ognuno dei chiamanti sarebbe una
     /// riga che il prossimo chiamante dimentica.
     ///
+    /// Dalla 3.0.2 parte solo se la scansione ha detto di aver cambiato
+    /// qualcosa ([`TurnoDiScansione::segna_cambiamenti`]): con la sorveglianza
+    /// di serie le scansioni sono decine al giorno, quasi tutte su un disco
+    /// invariato, e una manutenzione svegliata da ognuna è lavoro per niente.
+    ///
     /// Un `OnceLock` perché la manutenzione nasce dopo la libreria, e la
     /// registra una volta sola.
     fine_scansione: OnceLock<Sender<()>>,
@@ -231,12 +236,13 @@ impl Stato {
     /// automatica. Il turno si libera da sé quando la guardia cade — anche
     /// uscendo per un `?`, che è la ragione per cui [`Turno`] esiste.
     ///
-    /// Quando cade, la guardia sveglia anche la manutenzione: vedi
-    /// [`TurnoDiScansione`].
+    /// Quando cade, la guardia sveglia anche la manutenzione, se la scansione
+    /// ha segnato dei cambiamenti: vedi [`TurnoDiScansione`].
     pub fn turno_di_scansione(&self) -> Option<TurnoDiScansione<'_>> {
         Turno::prendi(&self.scansione_in_corso).map(|turno| TurnoDiScansione {
             _turno: turno,
             sveglia: self.fine_scansione.get(),
+            cambiato: AtomicBool::new(false),
         })
     }
 
@@ -295,12 +301,27 @@ impl Stato {
 /// cancellato un brano, l'arricchimento ne ha riscritto i tag. Il nucleo è
 /// scritto per quello; l'unica cosa che non tollera è **un'altra scansione**, ed
 /// è per questo che [`Stato::turno_di_scansione`] esiste.
-pub struct DepositoStato<'a>(&'a Stato);
+///
+/// # Le prese si contano
+///
+/// Una presa che tiene la libreria più di due secondi lo dice nel diario, come
+/// ogni altra (vedi [`con_libreria`]), e qui dice anche **quale** presa della
+/// scansione era: la prima per i fogli o per il piano, poi le righe doppie, un
+/// lotto dopo l'altro, le rimozioni, gli album. Il nome della fase non arriva
+/// fin qui — il tratto presta una connessione e non sa a che cosa serva — ma
+/// il numero, accanto alla riga `[scansione]` con i tempi di ogni fase, basta a
+/// dire chi ha fatto aspettare la finestra.
+pub struct DepositoStato<'a> {
+    /// Lo stato che apre e richiude.
+    stato: &'a Stato,
+    /// Quante volte ha prestato la connessione finora.
+    prese: u32,
+}
 
 impl<'a> DepositoStato<'a> {
     /// Il deposito che apre e richiude questo stato.
     pub fn nuovo(stato: &'a Stato) -> Self {
-        Self(stato)
+        Self { stato, prese: 0 }
     }
 }
 
@@ -309,7 +330,10 @@ impl rymembra_app::library::Deposito for DepositoStato<'_> {
     where
         F: FnOnce(&mut Connection) -> Result<T, AppError>,
     {
-        con_libreria(self.0, |libreria| azione(&mut libreria.connection))
+        self.prese = self.prese.saturating_add(1);
+        con_libreria_per(self.stato, Some(self.prese), |libreria| {
+            azione(&mut libreria.connection)
+        })
     }
 }
 
@@ -393,20 +417,53 @@ impl Drop for Turno<'_> {
 /// Il turno di una scansione: un [`Turno`], più la sveglia della manutenzione.
 ///
 /// Quando cade — a scansione finita, annullata o fallita, anche uscendo per un
-/// `?` — sveglia il filo della manutenzione, che dopo la sua raffica guarda se
-/// sono rimaste copertine senza nessuno e passa `PRAGMA optimize` su una
-/// libreria appena cambiata. Prima si sveglia, poi il turno si libera: il
-/// `Drop` di questa struttura gira prima di quello dei suoi campi, e la
-/// manutenzione aspetta comunque dieci secondi prima di chiederlo.
+/// `?` — sveglia il filo della manutenzione, se la scansione ha segnato di aver
+/// cambiato qualcosa ([`TurnoDiScansione::segna_cambiamenti`]). La manutenzione
+/// dopo la sua raffica guarda se sono rimaste copertine senza nessuno e passa
+/// `PRAGMA optimize` su una libreria appena cambiata. Prima si sveglia, poi il
+/// turno si libera: il `Drop` di questa struttura gira prima di quello dei suoi
+/// campi, e la manutenzione aspetta comunque dieci secondi prima di chiederlo.
+///
+/// # Perché la sveglia va chiesta
+///
+/// Fino alla 3.0.1 partiva a ogni caduta. Con la sorveglianza delle cartelle
+/// di serie le scansioni sono decine al giorno, e quasi tutte trovano il disco
+/// com'era: svegliare la manutenzione per ognuna voleva dire contare le
+/// copertine orfane e riottimizzare una libreria che non era cambiata. Chi
+/// scansiona sa se ha scritto qualcosa — il rapporto lo dice — e lo dice qui;
+/// chi non lo dice non sveglia nessuno.
 pub struct TurnoDiScansione<'a> {
     /// Il turno vero, che si libera cadendo.
     _turno: Turno<'a>,
     /// Chi svegliare. `None` finché la manutenzione non si è registrata.
     sveglia: Option<&'a Sender<()>>,
+    /// La scansione ha cambiato qualcosa: alla caduta si sveglia.
+    ///
+    /// Un atomico e non un `Cell` perché il turno può essere prestato a un
+    /// altro filo per riferimento, e un `Cell` lo renderebbe impossibile senza
+    /// che nessuno ne abbia bisogno per altro. Costa uguale.
+    cambiato: AtomicBool,
+}
+
+impl TurnoDiScansione<'_> {
+    /// La scansione ha cambiato qualcosa in libreria: alla fine si sveglia la
+    /// manutenzione.
+    ///
+    /// La chiama chi tiene il turno quando il rapporto dice
+    /// `inserted + updated + moved + removed > 0` — e anche quando la scansione
+    /// fallisce, se può aver scritto prima di cadere: un lotto già commesso ha
+    /// le sue copertine, e una rimozione già fatta le sue orfane. Chiamarla due
+    /// volte vale una.
+    pub fn segna_cambiamenti(&self) {
+        self.cambiato.store(true, Ordering::Relaxed);
+    }
 }
 
 impl Drop for TurnoDiScansione<'_> {
     fn drop(&mut self) {
+        if !self.cambiato.load(Ordering::Relaxed) {
+            return;
+        }
         if let Some(sveglia) = self.sveglia {
             // Un canale chiuso vuol dire che il filo non c'è più, cioè che si
             // sta uscendo: non è un guasto della scansione.
@@ -907,17 +964,83 @@ fn prendi_la_libreria(stato: &Stato) -> MutexGuard<'_, Result<Libreria, AppError
 /// connessione SQLite, che un panico in codice Rust non lascia a metà di
 /// niente, e rifiutare ogni comando successivo trasformerebbe un guasto isolato
 /// in un'applicazione morta fino al riavvio.
+///
+/// # Chi tiene, oltre a chi aspetta
+///
+/// La riga di chi aspetta dice chi ha subito l'attesa, non chi l'ha causata: il
+/// diario di una sessione vera ha mostrato la finestra ferma sessanta e
+/// settanta secondi senza un nome dall'altra parte. Per questo anche chi
+/// **tiene** la libreria più di [`TENUTA_DA_NOTARE`] lo scrive, col nome del
+/// filo — vedi [`racconta_la_tenuta`]. Sul percorso normale costa un `Instant`
+/// e un confronto.
 pub fn con_libreria<T>(
     stato: &Stato,
+    azione: impl FnOnce(&mut Libreria) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    con_libreria_per(stato, None, azione)
+}
+
+/// [`con_libreria`], con il numero della presa quando a chiedere è una
+/// scansione ([`DepositoStato`]): finisce nella riga di una tenuta lunga.
+fn con_libreria_per<T>(
+    stato: &Stato,
+    presa: Option<u32>,
     azione: impl FnOnce(&mut Libreria) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
     if sul_filo_della_finestra() {
         return con_libreria_dalla_finestra(stato, azione);
     }
     let mut guardia = prendi_la_libreria(stato);
-    match guardia.as_mut() {
+    let preso = Instant::now();
+    let esito = match guardia.as_mut() {
         Ok(libreria) => azione(libreria),
         Err(errore) => Err(errore.clone()),
+    };
+    // Prima si lascia, poi si racconta: la riga del diario è una scrittura su
+    // disco, e non deve allungare proprio l'attesa che sta denunciando.
+    drop(guardia);
+    racconta_la_tenuta(preso.elapsed(), presa);
+    esito
+}
+
+/// Oltre quanto chi tiene la libreria lo scrive nel diario.
+///
+/// Gli stessi due secondi di [`ATTESA_DA_NOTARE`], visti dall'altra parte: là
+/// scrive chi aspetta, qui chi fa aspettare. Sotto ci stanno le transazioni
+/// legittime — un lotto della scansione, la ricostruzione degli album a regime;
+/// sopra c'è chi, tenendola, fa rinunciare la finestra dopo quattro secondi.
+const TENUTA_DA_NOTARE: Duration = ATTESA_DA_NOTARE;
+
+/// La riga del diario per un lucchetto tenuto `tenuta` dal filo `filo`, o
+/// `None` se è sotto [`TENUTA_DA_NOTARE`].
+///
+/// `presa` è il numero della presa quando a tenerlo era una scansione: vedi
+/// [`DepositoStato`]. Pura apposta, per provare soglia e testo senza un
+/// diario.
+fn riga_della_tenuta(tenuta: Duration, filo: &str, presa: Option<u32>) -> Option<String> {
+    if tenuta <= TENUTA_DA_NOTARE {
+        return None;
+    }
+    let ms = tenuta.as_millis();
+    Some(match presa {
+        None => format!("[stato] lucchetto tenuto {ms} ms dal filo «{filo}»"),
+        Some(presa) => {
+            format!("[stato] lucchetto tenuto {ms} ms dal filo «{filo}» (scansione, presa {presa})")
+        }
+    })
+}
+
+/// Scrive nel diario una tenuta lunga, se lo è.
+///
+/// Da chiamare **dopo** aver lasciato il lucchetto. Il nome del filo si chiede
+/// solo sopra la soglia: sotto, tutto il costo è il confronto.
+fn racconta_la_tenuta(tenuta: Duration, presa: Option<u32>) {
+    if tenuta <= TENUTA_DA_NOTARE {
+        return;
+    }
+    let filo = std::thread::current();
+    if let Some(riga) = riga_della_tenuta(tenuta, filo.name().unwrap_or("senza nome"), presa) {
+        nota!("{riga}");
     }
 }
 
@@ -966,10 +1089,31 @@ const ATTESA_DELLA_FINESTRA: Duration = Duration::from_secs(4);
 /// lotto per lotto; e un gesto da ripetere costa meno di una finestra che
 /// Windows dichiara morta. Sugli altri fili — i comandi `(async)`, le passate —
 /// l'attesa resta quella di sempre.
+///
+/// # Le attese sono due
+///
+/// Il mutex è la prima. La seconda è dentro SQLite: preso il lucchetto, una
+/// scrittura può trovare il **file** occupato da un'altra connessione — la
+/// cache dell'arricchimento, l'analisi, l'indice delle cartelle, che scrivono
+/// sullo stesso database dalle loro — e lì il `busy_timeout` della connessione
+/// aspetta altri cinque secondi. Quattro più cinque fa nove secondi sul filo
+/// della finestra, cioè proprio il «non risponde» che i quattro dovevano
+/// evitare. Per la durata dell'azione l'attesa di SQLite prende quel che resta
+/// dei quattro secondi, con un minimo che lasci passare le scritture brevi
+/// altrui, e dopo torna quella di sempre — anche se l'azione panica, perché la
+/// connessione è la stessa per tutti e un'attesa corta dimenticata lì farebbe
+/// fallire le passate di sottofondo.
+///
+/// Cosa non promette: SQLite fa ripartire l'attesa a ogni lucchetto che
+/// chiede, quindi un'azione con due scritture separate può aspettare `resta`
+/// due volte. I comandi sincroni che scrivono — un cuoricino, un voto — sono
+/// una scrittura sola; uno che ne facesse di più dovrebbe chiedersi se è giusto
+/// che stia sul filo della finestra.
 fn con_libreria_dalla_finestra<T>(
     stato: &Stato,
     azione: impl FnOnce(&mut Libreria) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
+    let inizio = Instant::now();
     let Some(mut guardia) = lucchetto_entro(&stato.libreria, ATTESA_DELLA_FINESTRA) else {
         nota!(
             "[stato] il filo della finestra rinuncia alla libreria dopo {} s",
@@ -982,11 +1126,38 @@ fn con_libreria_dalla_finestra<T>(
             )),
         );
     };
-    match guardia.as_mut() {
-        Ok(libreria) => azione(libreria),
-        Err(errore) => Err(errore.clone()),
+    let preso = Instant::now();
+    let libreria = match guardia.as_mut() {
+        Ok(libreria) => libreria,
+        Err(errore) => return Err(errore.clone()),
+    };
+    let resta = ATTESA_DELLA_FINESTRA
+        .saturating_sub(inizio.elapsed())
+        .max(ATTESA_MINIMA_DEL_FILE);
+    let _ = libreria.connection.busy_timeout(resta);
+    let esito = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| azione(&mut *libreria)));
+    let _ = libreria
+        .connection
+        .busy_timeout(Duration::from_millis(u64::from(
+            rymembra_app::db::BUSY_TIMEOUT_MS,
+        )));
+    // Anche il filo della finestra può tenerla a lungo — è il caso peggiore,
+    // perché mentre la tiene la finestra non ridisegna — e lo dice come gli
+    // altri, a lucchetto lasciato.
+    drop(guardia);
+    racconta_la_tenuta(preso.elapsed(), None);
+    match esito {
+        Ok(esito) => esito,
+        Err(panico) => std::panic::resume_unwind(panico),
     }
 }
+
+/// L'attesa minima che il filo della finestra concede a SQLite quando il file è
+/// occupato da un'altra connessione, anche se il mutex si è già preso quasi
+/// tutto il tempo: le scritture delle passate sono transazioni da pochi
+/// millisecondi, e un quarto di secondo le lascia finire invece di rispondere
+/// «occupato» a un cuoricino per un soffio.
+const ATTESA_MINIMA_DEL_FILE: Duration = Duration::from_millis(250);
 
 /// Come [`con_libreria`], ma rinuncia se il lucchetto non arriva entro `entro`.
 ///
@@ -1214,11 +1385,11 @@ mod prove {
     }
 
     #[test]
-    fn la_fine_di_una_scansione_sveglia_la_manutenzione_e_la_pulizia_no() {
+    fn la_fine_di_una_scansione_che_ha_cambiato_sveglia_la_manutenzione_e_la_pulizia_no() {
         // La scansione sveglia la manutenzione quando il suo turno cade — per
-        // qualunque strada sia partita — e la pulizia, che prende lo stesso
-        // turno dall'altra porta, no: altrimenti si sveglierebbe da sola a ogni
-        // giro, per sempre.
+        // qualunque strada sia partita — se ha segnato di aver cambiato
+        // qualcosa. La pulizia, che prende lo stesso turno dall'altra porta,
+        // no: altrimenti si sveglierebbe da sola a ogni giro, per sempre.
         let dir = tempfile::tempdir().expect("cartella temporanea");
         let stato = Stato::apri(dir.path().to_path_buf());
         let (sveglia, orecchio) = std::sync::mpsc::channel();
@@ -1237,18 +1408,89 @@ mod prove {
         );
 
         {
-            let _turno = stato.turno_di_scansione().expect("turno libero");
+            let turno = stato.turno_di_scansione().expect("turno libero");
             assert!(
                 stato.turno_di_manutenzione().is_none(),
                 "e una scansione esclude la pulizia"
             );
+            turno.segna_cambiamenti();
+            turno.segna_cambiamenti();
             assert!(orecchio.try_recv().is_err(), "non prima della fine");
         }
         assert!(orecchio.try_recv().is_ok(), "la scansione finita sveglia");
         assert!(
+            orecchio.try_recv().is_err(),
+            "una volta sola, anche segnata due volte"
+        );
+        assert!(
             stato.turno_di_scansione().is_some(),
             "e il turno è di nuovo libero"
         );
+    }
+
+    #[test]
+    fn una_scansione_che_non_ha_cambiato_niente_non_sveglia_nessuno() {
+        // Il caso di quasi tutte le passate della sorveglianza: il disco è
+        // com'era, e la manutenzione non ha niente da guardare.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let (sveglia, orecchio) = std::sync::mpsc::channel();
+        stato.a_fine_scansione(sveglia);
+
+        drop(stato.turno_di_scansione().expect("turno libero"));
+        assert!(
+            orecchio.try_recv().is_err(),
+            "senza cambiamenti la caduta del turno tace"
+        );
+        assert!(stato.turno_di_scansione().is_some(), "e il turno è libero");
+    }
+
+    #[test]
+    fn una_tenuta_lunga_si_racconta_col_nome_del_filo() {
+        // La riga che mancava al diario dei sessanta secondi di finestra
+        // ferma: chi teneva la libreria, e per quanto.
+        let sotto = TENUTA_DA_NOTARE;
+        assert_eq!(
+            riga_della_tenuta(sotto, "rymembra-analisi", None),
+            None,
+            "alla soglia non si scrive niente"
+        );
+        assert_eq!(
+            riga_della_tenuta(Duration::from_millis(150), "x", Some(3)),
+            None
+        );
+        assert_eq!(
+            riga_della_tenuta(Duration::from_millis(2_001), "rymembra-analisi", None).as_deref(),
+            Some("[stato] lucchetto tenuto 2001 ms dal filo «rymembra-analisi»")
+        );
+        assert_eq!(
+            riga_della_tenuta(
+                Duration::from_millis(62_480),
+                "tokio-runtime-worker",
+                Some(7)
+            )
+            .as_deref(),
+            Some(
+                "[stato] lucchetto tenuto 62480 ms dal filo «tokio-runtime-worker» \
+                 (scansione, presa 7)"
+            )
+        );
+    }
+
+    #[test]
+    fn il_deposito_conta_le_sue_prese() {
+        // Il numero che la riga di una tenuta lunga porta: una per ogni
+        // prestito, a partire da uno.
+        use rymembra_app::library::Deposito as _;
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let mut deposito = DepositoStato::nuovo(&stato);
+        for attesa in 1..=3_u32 {
+            deposito
+                .con_connessione(|_| Ok(()))
+                .expect("la libreria è aperta");
+            assert_eq!(deposito.prese, attesa);
+        }
     }
 
     #[test]

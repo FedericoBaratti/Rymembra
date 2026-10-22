@@ -9,11 +9,36 @@
  */
 import type { ReactNode } from "react";
 
+import { contiDellaCamminata, momentoDi } from "../fasiScansione";
 import { numero } from "../formato";
 import type { Avanzamento } from "../ipc";
 import { t } from "../lingue";
 import { Presenza } from "../presenza";
 import { Icona } from "./Icone";
+
+/**
+ * La riga del toast: a che punto è la scansione.
+ *
+ * Durante la camminata le cartelle e i file trovati — sul NAS sono una decina
+ * di secondi, e prima la barra restava ferma su «confronto col disco…» come se
+ * non stesse succedendo niente. Durante l'attesa, che si sta aspettando la fine
+ * di una scansione partita da sola: «occupato» non si dice più.
+ */
+function cosaDice(scansione: Avanzamento): string {
+  switch (momentoDi(scansione)) {
+    case "attende":
+      return t("toast.scan.waiting");
+    case "cerca":
+      return t("toast.scan.searching", contiDellaCamminata(scansione, t));
+    case "confronta":
+      return t("toast.scan.comparing");
+    case "legge":
+      return t("toast.scan", {
+        fatti: numero(scansione.fatti),
+        totale: numero(scansione.totale),
+      });
+  }
+}
 
 export function PilaToast({
   scansione,
@@ -43,21 +68,16 @@ export function PilaToast({
           <div className="toast toast-card">
             <Icona nome="i-scan" dim={16} />
             <div className="dentro">
-              <div className="cosa">
-                {scansione.totale > 0
-                  ? t("toast.scan", {
-                      fatti: numero(scansione.fatti),
-                      totale: numero(scansione.totale),
-                    })
-                  : t("toast.scan.comparing")}
-              </div>
+              <div className="cosa">{cosaDice(scansione)}</div>
               {/* L'avanzamento esisteva **solo a schermo**: una barra senza
                   ruolo è un rettangolo che si allunga, e a chi ascolta lo
                   schermo non diceva niente — né che c'è una scansione, né a che
                   punto è. `aria-valuenow` manca finché il totale non si sa
                   («confronto col disco…»), ed è il modo in cui si dichiara un
                   avanzamento indeterminato: un `0` lì vorrebbe dire «non è
-                  ancora cominciato», che è un'altra cosa. */}
+                  ancora cominciato», che è un'altra cosa. Al suo posto, a chi
+                  interroga la barra, la frase della riga sopra: «cerco i file,
+                  tante cartelle» dice più di un avanzamento senza numero. */}
               <div
                 className="toast-progress"
                 role="progressbar"
@@ -65,6 +85,9 @@ export function PilaToast({
                 aria-valuemin={0}
                 aria-valuemax={scansione.totale > 0 ? scansione.totale : undefined}
                 aria-valuenow={scansione.totale > 0 ? scansione.fatti : undefined}
+                aria-valuetext={
+                  momentoDi(scansione) === "legge" ? undefined : cosaDice(scansione)
+                }
               >
                 <span
                   style={{

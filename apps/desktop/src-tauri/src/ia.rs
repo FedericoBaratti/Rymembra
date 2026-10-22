@@ -90,7 +90,10 @@ struct Turno {
 /// Lo stato dei modelli.
 pub struct StatoIa {
     /// La conversazione in corso, se ce n'è una.
-    corrente: Mutex<Option<Turno>>,
+    ///
+    /// In un `Arc` perché a lasciarla è un [`Posto`] che vive sul filo della
+    /// conversazione, e quel filo è `'static`: vedi [`Posto`].
+    corrente: Arc<Mutex<Option<Turno>>>,
     /// Il numero del prossimo turno.
     ///
     /// Cresce e non torna indietro: un numero riusato farebbe arrivare alla
@@ -105,17 +108,18 @@ impl StatoIa {
     #[must_use]
     pub fn nuovo() -> Self {
         Self {
-            corrente: Mutex::new(None),
+            corrente: Arc::new(Mutex::new(None)),
             prossimo: AtomicU64::new(1),
         }
     }
 
     /// Prende il posto per un turno nuovo, se è libero.
     ///
-    /// Restituisce il numero del turno e la sua bandiera. `None` quando ce n'è
-    /// già uno in corso: la prova e la presa sono un gesto solo, o due
-    /// richieste arrivate insieme passerebbero tutte e due.
-    fn prendi_posto(&self) -> Option<(u64, Arc<AtomicBool>)> {
+    /// Restituisce il [`Posto`], che porta il numero del turno e la sua
+    /// bandiera e che il posto lo lascia cadendo. `None` quando ce n'è già uno
+    /// in corso: la prova e la presa sono un gesto solo, o due richieste
+    /// arrivate insieme passerebbero tutte e due.
+    fn prendi_posto(&self) -> Option<Posto> {
         let mut corrente = self
             .corrente
             .lock()
@@ -129,21 +133,11 @@ impl StatoIa {
             numero,
             fermare: Arc::clone(&fermare),
         });
-        Some((numero, fermare))
-    }
-
-    /// Libera il posto, se il turno che lo teneva è ancora questo.
-    ///
-    /// Il controllo sul numero non è pedanteria: senza, un filo che finisce
-    /// tardi libererebbe il posto di un turno cominciato dopo di lui.
-    fn lascia_posto(&self, numero: u64) {
-        let mut corrente = self
-            .corrente
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if corrente.as_ref().is_some_and(|t| t.numero == numero) {
-            *corrente = None;
-        }
+        Some(Posto {
+            numero,
+            fermare,
+            corrente: Arc::clone(&self.corrente),
+        })
     }
 
     /// Alza la bandiera di quel turno. `false` se non è più lui.
@@ -173,6 +167,56 @@ impl StatoIa {
 impl Default for StatoIa {
     fn default() -> Self {
         Self::nuovo()
+    }
+}
+
+/// Libera il posto, se il turno che lo teneva è ancora quello col numero dato.
+///
+/// Il controllo sul numero non è pedanteria: senza, un filo che finisce tardi
+/// libererebbe il posto di un turno cominciato dopo di lui.
+fn lascia(corrente: &Mutex<Option<Turno>>, numero: u64) {
+    let mut corrente = corrente
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if corrente.as_ref().is_some_and(|t| t.numero == numero) {
+        *corrente = None;
+    }
+}
+
+/// Il posto di una conversazione, preso. Lo lascia cadendo — anche srotolando
+/// per un panico.
+///
+/// # Il difetto che toglie
+///
+/// Il posto si lasciava con una chiamata scritta a mano **dopo** [`parla`], sul
+/// filo della conversazione. Un panico in mezzo — una risposta del modello che
+/// un parser non si aspettava — srotolava oltre quella riga, e il turno
+/// restava in `corrente` per sempre: ogni domanda dopo riceveva `ia.busy`, la
+/// chat diceva «sto rispondendo» a una risposta che non sarebbe mai arrivata, e
+/// solo un riavvio la liberava.
+///
+/// # Perché possiede invece di prestare
+///
+/// Perché il filo della conversazione è `'static`, e un prestito dello stato di
+/// Tauri non ci entra: si portava dietro l'`AppHandle` e rileggeva lo stato con
+/// `state`, che panica se lo stato non c'è più — cioè proprio mentre la
+/// finestra si chiude. Questo tiene un `Arc` della cella, e la libera comunque.
+///
+/// Si sposta dentro la chiusura del filo: se `spawn` fallisce la chiusura cade
+/// senza essere eseguita, e il posto con lei — non serve un secondo rilascio a
+/// mano sul ramo dell'errore.
+struct Posto {
+    /// Il numero che la finestra usa per riconoscere i suoi eventi.
+    numero: u64,
+    /// La bandiera di [`ia_ferma`] per questo turno.
+    fermare: Arc<AtomicBool>,
+    /// La cella da liberare, posseduta.
+    corrente: Arc<Mutex<Option<Turno>>>,
+}
+
+impl Drop for Posto {
+    fn drop(&mut self) {
+        lascia(&self.corrente, self.numero);
     }
 }
 
@@ -523,13 +567,33 @@ pub async fn ia_modelli(app: AppHandle, id: String) -> Esito<Vec<rymembra_ia::Mo
 ///
 /// Le istruzioni di sistema arrivano dentro `messaggi`, costruite dalla
 /// finestra: vedi il preambolo.
+///
+/// # In disparte
+///
+/// Sul pool bloccante, con [`in_disparte`], come [`ia_modelli`]: prima di
+/// restituire il numero legge i profili dalla libreria e costruisce il client,
+/// che legge la chiave dal portachiavi di Windows — un'attesa di disco e di
+/// sistema che su un *worker* del runtime toglieva il posto a ogni altro
+/// comando asincrono.
 #[tauri::command(async)]
-pub fn ia_conversa(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    ia: State<'_, StatoIa>,
-    messaggi: Vec<Messaggio>,
-) -> Esito<u64> {
+pub async fn ia_conversa(app: AppHandle, messaggi: Vec<Messaggio>) -> Esito<u64> {
+    in_disparte("conversazione con un modello", move || {
+        conversa(&app, messaggi)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`ia_conversa`], sul pool bloccante.
+fn conversa(app: &AppHandle, messaggi: Vec<Messaggio>) -> Esito<u64> {
+    let (Some(stato), Some(ia)) = (app.try_state::<Stato>(), app.try_state::<StatoIa>()) else {
+        return Err(errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("conversazione con un modello".to_owned()),
+            })
+            .with_cause("la libreria non è più fra gli stati gestiti"),
+        ));
+    };
     // Il client si costruisce **prima** di prendere il posto: un profilo
     // incompleto deve dare il suo errore subito, non occupare il turno per il
     // tempo di scoprirlo.
@@ -558,19 +622,22 @@ pub fn ia_conversa(
         })));
     }
 
-    let Some((numero, fermare)) = ia.prendi_posto() else {
+    let Some(posto) = ia.prendi_posto() else {
         return Err(errore(AppError::new(ErrorCode::IaBusy)));
     };
+    let numero = posto.numero;
 
     let manico = app.clone();
     let avviato = std::thread::Builder::new()
         .name("rymembra-ia".to_owned())
         .spawn(move || {
-            parla(&manico, &cliente, &messaggi, numero, &fermare);
-            manico.state::<StatoIa>().lascia_posto(numero);
+            // Il posto si lascia cadendo, alla fine di questa chiusura — o
+            // srotolando, se `parla` va in panico. Vedi [`Posto`].
+            parla(&manico, &cliente, &messaggi, posto.numero, &posto.fermare);
+            drop(posto);
         });
+    // Un `spawn` fallito lascia cadere la chiusura, e il posto con lei.
     if let Err(err) = avviato {
-        ia.lascia_posto(numero);
         nota!("[ia] il filo della conversazione non è partito: {err}");
         return Err(errore(
             AppError::new(ErrorCode::InternalUnexpected {
@@ -817,13 +884,13 @@ mod prove {
     #[test]
     fn una_conversazione_alla_volta() {
         let ia = StatoIa::nuovo();
-        let (primo, _) = ia.prendi_posto().expect("il primo turno prende il posto");
+        let primo = ia.prendi_posto().expect("il primo turno prende il posto");
         assert!(ia.occupato());
         assert!(
             ia.prendi_posto().is_none(),
             "il secondo turno non deve passare"
         );
-        ia.lascia_posto(primo);
+        drop(primo);
         assert!(!ia.occupato());
         assert!(ia.prendi_posto().is_some(), "dopo, il posto è libero");
     }
@@ -833,13 +900,31 @@ mod prove {
     #[test]
     fn un_turno_finito_tardi_non_libera_il_posto_di_un_altro() {
         let ia = StatoIa::nuovo();
-        let (primo, _) = ia.prendi_posto().expect("primo");
-        ia.lascia_posto(primo);
-        let (secondo, _) = ia.prendi_posto().expect("secondo");
-        ia.lascia_posto(primo);
+        let primo = ia.prendi_posto().expect("primo");
+        let numero_primo = primo.numero;
+        drop(primo);
+        let secondo = ia.prendi_posto().expect("secondo");
+        // Un rilascio in ritardo a nome del primo: il numero non è più quello.
+        lascia(&ia.corrente, numero_primo);
         assert!(ia.occupato(), "il secondo turno tiene ancora il posto");
-        ia.lascia_posto(secondo);
+        drop(secondo);
         assert!(!ia.occupato());
+    }
+
+    /// Una conversazione che cade in panico lascia il posto: prima la chat
+    /// rispondeva `ia.busy` a ogni domanda dopo, fino al riavvio.
+    #[test]
+    fn una_conversazione_caduta_in_panico_lascia_il_posto() {
+        let ia = StatoIa::nuovo();
+        let posto = ia.prendi_posto().expect("il posto è libero");
+        let caduta = std::thread::spawn(move || {
+            let _posto = posto;
+            panic!("una risposta che il parser non si aspettava");
+        })
+        .join();
+        assert!(caduta.is_err(), "il filo è caduto davvero");
+        assert!(!ia.occupato(), "il posto si è liberato srotolando");
+        assert!(ia.prendi_posto().is_some());
     }
 
     #[test]
@@ -847,17 +932,19 @@ mod prove {
         let ia = StatoIa::nuovo();
         let mut visti = Vec::new();
         for _ in 0..5_u8 {
-            let (numero, _) = ia.prendi_posto().expect("il posto è libero ogni volta");
+            let posto = ia.prendi_posto().expect("il posto è libero ogni volta");
+            let numero = posto.numero;
             assert!(!visti.contains(&numero), "{numero} già visto");
             visti.push(numero);
-            ia.lascia_posto(numero);
         }
     }
 
     #[test]
     fn fermare_vale_solo_sul_turno_in_corso() {
         let ia = StatoIa::nuovo();
-        let (numero, bandiera) = ia.prendi_posto().expect("un turno");
+        let posto = ia.prendi_posto().expect("un turno");
+        let numero = posto.numero;
+        let bandiera = Arc::clone(&posto.fermare);
         assert!(
             !ia.ferma(numero.wrapping_add(1)),
             "un altro numero non ferma"
@@ -866,7 +953,7 @@ mod prove {
         assert!(ia.ferma(numero));
         assert!(bandiera.load(Ordering::Relaxed));
 
-        ia.lascia_posto(numero);
+        drop(posto);
         assert!(!ia.ferma(numero), "un turno finito non si ferma più");
     }
 }

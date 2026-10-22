@@ -299,8 +299,13 @@ fn effective_artist(member: &AlbumMember) -> &str {
 }
 
 /// Il valore non vuoto più frequente, a pari merito il minore alfabeticamente.
+///
+/// Prende i membri per riferimento, uno per uno, e non una fetta: i gruppi che
+/// [`build_album_groups`] ricompone a ogni giro sono elenchi di riferimenti, e
+/// copiarli tutti per chiedere un dominante costerebbe una copia della libreria
+/// per giro.
 fn dominant<'a>(
-    members: &'a [AlbumMember],
+    members: impl IntoIterator<Item = &'a AlbumMember>,
     get: impl Fn(&'a AlbumMember) -> Option<&'a str>,
 ) -> Option<String> {
     let mut counts: HashMap<&str, usize> = HashMap::new();
@@ -448,18 +453,96 @@ pub struct AlbumGroups {
     pub remap: Vec<(String, String)>,
 }
 
+/// La chiave canonica di un super-gruppo: l'identificativo dominante quando
+/// c'è — gruppo di pubblicazione, poi pubblicazione, poi album Spotify — e
+/// altrimenti la più piccola fra le chiavi di base.
+fn canonical_key(members: &[&AlbumMember], base_keys: &[&str]) -> String {
+    let membri = || members.iter().copied();
+    if let Some(id) = dominant(membri(), |m| m.mb_release_group_id.as_deref()) {
+        return format!("mbrg:{id}");
+    }
+    if let Some(id) = dominant(membri(), |m| m.mb_release_id.as_deref()) {
+        return format!("mbr:{id}");
+    }
+    if let Some(id) = dominant(membri(), |m| m.spotify_album_id.as_deref()) {
+        return format!("sp:{id}");
+    }
+    base_keys
+        .iter()
+        .min()
+        .map_or_else(String::new, |k| (*k).to_owned())
+}
+
+/// Un super-gruppo in costruzione: i membri, le chiavi di base che lo
+/// compongono e la chiave canonica che ne esce.
+struct SuperGruppo<'m> {
+    /// La radice dell'insieme-unione.
+    radice: usize,
+    /// La chiave canonica, da [`canonical_key`].
+    chiave: String,
+    /// I brani, nell'ordine dei gruppi di base.
+    membri: Vec<&'m AlbumMember>,
+    /// Le chiavi di base che ci sono finite dentro.
+    chiavi_di_base: Vec<&'m str>,
+}
+
 /// Ricostruisce gli album dai brani, fondendo i gruppi che condividono un
 /// identificativo autorevole.
 ///
-/// Tre passi: raggruppare per chiave di brano; unire i gruppi che condividono un
-/// identificativo — gruppo di pubblicazione MusicBrainz, poi pubblicazione, poi
-/// album Spotify; dare a ogni super-gruppo una chiave canonica, che è
-/// l'identificativo condiviso quando c'è (`mbrg:`, `mbr:`, `sp:`) e altrimenti
-/// la più piccola fra le chiavi di base.
+/// Quattro passi: raggruppare per chiave di brano; unire i gruppi che
+/// condividono un identificativo — gruppo di pubblicazione MusicBrainz, poi
+/// pubblicazione, poi album Spotify; dare a ogni super-gruppo una chiave
+/// canonica, che è l'identificativo condiviso quando c'è (`mbrg:`, `mbr:`,
+/// `sp:`) e altrimenti la più piccola fra le chiavi di base; unire i
+/// super-gruppi a cui è toccata la stessa chiave canonica, finché non ce ne
+/// sono più due uguali.
 ///
 /// **Gli identificativi uniscono e non dividono mai.** È la proprietà che rende
 /// innocua una taggatura parziale: se metà dei brani porta l'identificativo e
 /// metà no, il disco resta uno.
+///
+/// # Le chiavi canoniche sono uniche
+///
+/// È quel che `albums.album_key`, chiave primaria, pretende, e il terzo passo
+/// da solo non lo garantisce. Per due strade, e la prima è quella di una
+/// libreria vera:
+///
+/// - **una chiave canonica rimasta sui brani.** Dopo una ricostruzione
+///   `tracks.album_key` porta la chiave canonica, `mbrg:X`: è il rimappaggio.
+///   Se poi la scansione rilegge soltanto i brani identificati di un disco —
+///   l'arricchimento fino alla 2.3.0 scriveva nei file i tag trovati, e un
+///   file riscritto si rilegge — quelli tornano alla chiave di base,
+///   mentre i compagni senza identificativo restano sotto `mbrg:X`. I due
+///   gruppi non condividono nessun identificativo e il secondo passo non li
+///   unisce; ma il primo ha `X` come dominante, e il secondo, che di
+///   identificativi non ne ha, prende la più piccola delle sue chiavi di base:
+///   ancora `mbrg:X`.
+/// - **il dominante di un super-gruppo non è quello che lo ha unito.** Il
+///   secondo passo guarda l'identificativo dominante di ogni gruppo di base, il
+///   terzo quello del super-gruppo intero, che può essere un altro. Due gruppi
+///   uniti per la pubblicazione, con gruppo di pubblicazione dominante `A` l'uno
+///   e `C` l'altro, possono avere `B` come dominante una volta insieme — e `B`
+///   è la chiave di un gruppo rimasto fuori.
+///
+/// Fino a qui l'inserimento falliva su `UNIQUE constraint failed:
+/// albums.album_key`, la transazione tornava indietro portandosi via anche la
+/// versione degli aggregati, e la passata dopo rifaceva tutto per fallire
+/// uguale. Unire è la risposta giusta, non solo quella che fa passare
+/// l'inserimento: i brani rimasti sotto `mbrg:X` erano nel disco `X`, e niente
+/// da allora ha detto il contrario — è la stessa regola per cui un
+/// identificativo unisce e non divide.
+///
+/// Il quarto passo si ripete finché non unisce più niente, e finisce: ogni giro
+/// che non è l'ultimo unisce almeno due super-gruppi, che sono in numero
+/// finito. Con la regola di adesso basta un giro — due super-gruppi con la
+/// stessa chiave `mbrg:X` hanno `X` come dominante tutti e due, o uno dei due di
+/// identificativi non ne ha, e insieme `X` resta il dominante — e il secondo
+/// conferma soltanto. Il ciclo c'è perché quella è una proprietà della regola di
+/// oggi, e una regola cambiata domani non deve poter rimettere il doppione in
+/// silenzio.
+///
+/// Chi ricostruisce soltanto le chiavi toccate deve seguire anche questa
+/// unione: vedi `ricostruisci_aggregati` in `rymembra-app`.
 #[must_use]
 pub fn build_album_groups(members: &[AlbumMember]) -> AlbumGroups {
     // Chiavi di base in ordine di comparsa: l'ordine non cambia il risultato —
@@ -513,8 +596,7 @@ pub fn build_album_groups(members: &[AlbumMember]) -> AlbumGroups {
     let link_by = |parent: &mut Vec<usize>, get: fn(&AlbumMember) -> Option<&str>| {
         let mut first_for_id: HashMap<String, usize> = HashMap::new();
         for (position, group) in groups.iter().enumerate() {
-            let owned: Vec<AlbumMember> = group.iter().map(|m| (*m).clone()).collect();
-            let Some(id) = dominant(&owned, |m| get(m)) else {
+            let Some(id) = dominant(group.iter().copied(), get) else {
                 continue;
             };
             match first_for_id.get(&id) {
@@ -529,39 +611,92 @@ pub fn build_album_groups(members: &[AlbumMember]) -> AlbumGroups {
     link_by(&mut parent, |m| m.mb_release_id.as_deref());
     link_by(&mut parent, |m| m.spotify_album_id.as_deref());
 
-    // ── raccolta dei super-gruppi ──
-    let mut members_by_root: HashMap<usize, Vec<AlbumMember>> = HashMap::new();
-    let mut keys_by_root: HashMap<usize, Vec<&str>> = HashMap::new();
-    for (position, group) in groups.iter().enumerate() {
-        let root = find(&mut parent, position);
-        let entry = members_by_root.entry(root).or_default();
-        entry.extend(group.iter().map(|m| (*m).clone()));
-        if let Some(key) = base_keys.get(position) {
-            keys_by_root.entry(root).or_default().push(key);
+    // ── i super-gruppi e le loro chiavi, finché nessuna chiave è doppia ──
+    //
+    // Vedi «Le chiavi canoniche sono uniche» qui sopra. Ogni giro ricompone i
+    // super-gruppi dall'insieme-unione e unisce quelli con la stessa chiave;
+    // l'unione tiene come radice la chiave di base minore, quindi né l'ordine
+    // dei giri né quello dentro un giro cambiano il risultato.
+    let super_gruppi = loop {
+        let mut per_radice: HashMap<usize, (Vec<&AlbumMember>, Vec<&str>)> = HashMap::new();
+        for (position, group) in groups.iter().enumerate() {
+            let root = find(&mut parent, position);
+            let (membri, chiavi) = per_radice.entry(root).or_default();
+            membri.extend(group.iter().copied());
+            if let Some(key) = base_keys.get(position) {
+                chiavi.push(*key);
+            }
         }
-    }
+        let super_gruppi: Vec<SuperGruppo<'_>> = per_radice
+            .into_iter()
+            .map(|(radice, (membri, chiavi_di_base))| SuperGruppo {
+                radice,
+                chiave: canonical_key(&membri, &chiavi_di_base),
+                membri,
+                chiavi_di_base,
+            })
+            .collect();
+        let mut uniti = false;
+        // Anche i dominanti del super-gruppo uniscono, e non solo quelli dei
+        // gruppi di base che `link_by` ha guardato. Senza, la ricostruzione non
+        // era idempotente: dopo il rimappaggio i gruppi di base della passata
+        // dopo **sono** i super-gruppi di questa, con i loro dominanti, e la
+        // passata dopo fondeva quel che questa aveva lasciato separato — due
+        // dischi che diventavano uno alla seconda scansione, e la ricostruzione
+        // per chiavi che smetteva di dare la stessa cosa di quella intera
+        // finché non si arrivava a un punto fermo. Così il punto fermo è
+        // questo giro: la stessa regola di `link_by`, applicata finché non
+        // unisce più niente.
+        let identificativi: [fn(&AlbumMember) -> Option<&str>; 3] = [
+            |m| m.mb_release_group_id.as_deref(),
+            |m| m.mb_release_id.as_deref(),
+            |m| m.spotify_album_id.as_deref(),
+        ];
+        for get in identificativi {
+            let mut primo_con: HashMap<String, usize> = HashMap::new();
+            for gruppo in &super_gruppi {
+                let Some(id) = dominant(gruppo.membri.iter().copied(), get) else {
+                    continue;
+                };
+                match primo_con.get(&id) {
+                    Some(&altra) => {
+                        if find(&mut parent, altra) != find(&mut parent, gruppo.radice) {
+                            union(&mut parent, altra, gruppo.radice, &base_keys);
+                            uniti = true;
+                        }
+                    }
+                    None => {
+                        primo_con.insert(id, gruppo.radice);
+                    }
+                }
+            }
+        }
+        let mut prima_con: HashMap<&str, usize> = HashMap::new();
+        for gruppo in &super_gruppi {
+            match prima_con.get(gruppo.chiave.as_str()) {
+                Some(&altra) => {
+                    if find(&mut parent, altra) != find(&mut parent, gruppo.radice) {
+                        union(&mut parent, altra, gruppo.radice, &base_keys);
+                        uniti = true;
+                    }
+                }
+                None => {
+                    prima_con.insert(gruppo.chiave.as_str(), gruppo.radice);
+                }
+            }
+        }
+        if !uniti {
+            break super_gruppi;
+        }
+    };
 
-    let mut albums = Vec::with_capacity(members_by_root.len());
+    let mut albums = Vec::with_capacity(super_gruppi.len());
     let mut remap: Vec<(String, String)> = Vec::new();
-    for (root, group_members) in members_by_root {
-        let release_group = dominant(&group_members, |m| m.mb_release_group_id.as_deref());
-        let release = dominant(&group_members, |m| m.mb_release_id.as_deref());
-        let spotify = dominant(&group_members, |m| m.spotify_album_id.as_deref());
-        let mut member_keys = keys_by_root.remove(&root).unwrap_or_default();
-        member_keys.sort_unstable();
-
-        let canonical = match (release_group, release, spotify) {
-            (Some(id), _, _) => format!("mbrg:{id}"),
-            (None, Some(id), _) => format!("mbr:{id}"),
-            (None, None, Some(id)) => format!("sp:{id}"),
-            (None, None, None) => member_keys
-                .first()
-                .map_or_else(String::new, |k| (*k).to_owned()),
-        };
-
-        albums.push(aggregate_group(canonical.clone(), &group_members));
-        for key in member_keys {
-            remap.push((key.to_owned(), canonical.clone()));
+    for gruppo in super_gruppi {
+        let group_members: Vec<AlbumMember> = gruppo.membri.into_iter().cloned().collect();
+        albums.push(aggregate_group(gruppo.chiave.clone(), &group_members));
+        for key in gruppo.chiavi_di_base {
+            remap.push((key.to_owned(), gruppo.chiave.clone()));
         }
     }
 
@@ -678,6 +813,129 @@ mod tests {
         ];
         let out = build_album_groups(&rows);
         assert_eq!(out.albums.len(), 1);
+        assert_eq!(out.remap.len(), 3);
+    }
+
+    #[test]
+    fn una_seconda_ricostruzione_non_fonde_niente_di_nuovo() {
+        // Il controesempio della revisione. `k1` e `k2` si uniscono per il
+        // gruppo di pubblicazione A; uniti, il loro album Spotify dominante
+        // diventa R — quattro su dieci, contro i tre di P e i tre di Q — che è
+        // anche quello di `k3`. Guardando solo i gruppi di base, `k3` restava
+        // fuori alla prima passata ed entrava alla seconda: due ricostruzioni
+        // di fila davano due tabelle diverse.
+        let con = |chiave: &str, rg: &str, sp: &str| AlbumMember {
+            mb_release_group_id: Some(rg.to_owned()),
+            spotify_album_id: Some(sp.to_owned()),
+            ..member(chiave, "A")
+        };
+        let mut rows = Vec::new();
+        for sp in ["P", "P", "P", "R", "R"] {
+            rows.push(con("k1", "A", sp));
+        }
+        for sp in ["Q", "Q", "Q", "R", "R"] {
+            rows.push(con("k2", "A", sp));
+        }
+        rows.push(con("k3", "B", "R"));
+
+        let prima = build_album_groups(&rows);
+        let in_tabella = |out: &AlbumGroups| {
+            out.albums
+                .iter()
+                .map(|a| (a.album_key.clone(), a.total_tracks))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(in_tabella(&prima), vec![("mbrg:A".to_owned(), 11)]);
+
+        // La passata dopo parte dai brani rimappati, come fa la libreria.
+        let rimappati: Vec<AlbumMember> = rows
+            .iter()
+            .map(|m| {
+                let nuova = prima
+                    .remap
+                    .iter()
+                    .find(|(da, _)| *da == m.album_key)
+                    .map_or_else(|| m.album_key.clone(), |(_, a)| a.clone());
+                AlbumMember {
+                    album_key: nuova,
+                    ..m.clone()
+                }
+            })
+            .collect();
+        assert_eq!(
+            in_tabella(&build_album_groups(&rimappati)),
+            in_tabella(&prima)
+        );
+    }
+
+    #[test]
+    fn una_chiave_canonica_rimasta_sui_brani_non_raddoppia_l_album() {
+        // Il guasto della libreria vera, per ognuno dei tre identificativi. Un
+        // disco di tredici brani in una cartella, tre identificati: tutti e
+        // tredici erano finiti sotto la chiave canonica. Poi la scansione ha
+        // riletto i tre identificati, che sono tornati alla chiave di base; i
+        // dieci senza identificativo hanno tenuto quella canonica. Tutti e due
+        // i gruppi si davano la stessa chiave, e l'inserimento falliva.
+        let base = "greatest hits c:/nas/fugees/greatest hits";
+        let identificato = |canonica: &str| {
+            let mut m = member(base, "Greatest Hits");
+            let id = Some("X".to_owned());
+            match canonica {
+                "mbrg:X" => m.mb_release_group_id = id,
+                "mbr:X" => m.mb_release_id = id,
+                _ => m.spotify_album_id = id,
+            }
+            m
+        };
+        for canonica in ["mbrg:X", "mbr:X", "sp:X"] {
+            let mut rows = vec![identificato(canonica); 3];
+            rows.extend(vec![member(canonica, "Greatest Hits"); 10]);
+            let out = build_album_groups(&rows);
+            assert_eq!(
+                out.albums
+                    .iter()
+                    .map(|a| (a.album_key.as_str(), a.total_tracks))
+                    .collect::<Vec<_>>(),
+                vec![(canonica, 13)],
+                "{canonica}: un disco solo, sotto la chiave che aveva"
+            );
+            assert_eq!(
+                out.remap,
+                vec![
+                    (base.to_owned(), canonica.to_owned()),
+                    (canonica.to_owned(), canonica.to_owned()),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn la_chiave_del_super_gruppo_non_e_l_identificativo_che_lo_ha_unito() {
+        // k1 e k2 si uniscono per la pubblicazione R. Il gruppo di
+        // pubblicazione dominante è A per k1 e C per k2, ma messi insieme è B:
+        // la stessa chiave canonica di k4, che nessuna unione aveva legato a
+        // loro perché l'unione guarda il dominante di ogni gruppo di base.
+        let con = |chiave: &str, rg: &str, r: Option<&str>| AlbumMember {
+            mb_release_group_id: Some(rg.to_owned()),
+            mb_release_id: r.map(str::to_owned),
+            ..member(chiave, "A")
+        };
+        let mut rows = Vec::new();
+        for rg in ["A", "A", "A", "B", "B"] {
+            rows.push(con("k1", rg, Some("R")));
+        }
+        for rg in ["C", "C", "C", "B", "B"] {
+            rows.push(con("k2", rg, Some("R")));
+        }
+        rows.push(con("k4", "B", None));
+        let out = build_album_groups(&rows);
+        assert_eq!(
+            out.albums
+                .iter()
+                .map(|a| (a.album_key.as_str(), a.total_tracks))
+                .collect::<Vec<_>>(),
+            vec![("mbrg:B", 11)]
+        );
         assert_eq!(out.remap.len(), 3);
     }
 

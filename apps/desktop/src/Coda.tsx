@@ -159,6 +159,9 @@ export function RigheCoda({
    * colonna, che è sempre aperta. Lo scorrevole è l'elenco stesso, quindi
    * contenitore e ancora coincidono; le due `.paglia` sono `li` perché stanno
    * dentro un `ol`.
+   *
+   * Con `altezzeDiverse`: il titolo si legge intero e va a capo quanto serve,
+   * quindi un brano dal nome lungo è una riga più alta delle altre.
    */
   const scorrevole = useRef<HTMLOListElement>(null);
   const finestra = useVirtuale({
@@ -166,6 +169,7 @@ export function RigheCoda({
     contenitore: scorrevole,
     ancora: scorrevole,
     selettoreRiga: ".riga-coda",
+    altezzeDiverse: true,
   });
 
   const comanda = (azione: Promise<void>) => {
@@ -234,6 +238,22 @@ export function RigheCoda({
     if (atteso === null || coda[atteso.dove] !== atteso.id) return;
     seguire.current = null;
     vaiA(atteso.dove);
+    /* E poi dentro la vista, col minimo di scorrimento. Le due righe scambiate
+       sono nodi nuovi, e lo scroll anchoring del motore — che non trova più il
+       nodo su cui si reggeva — sposta lo scorrimento dell'altezza di una riga.
+       Con righe uguali era una riga d'ingombro e la spostata restava in vista;
+       con un titolo su cinque righe finiva mezza sotto il bordo, e il fuoco
+       già sul nodo non la riportava su: `focus()` su chi ce l'ha non scorre. */
+    const elenco = scorrevole.current;
+    const riga =
+      elenco?.querySelector<HTMLElement>(`.riga-coda[data-indice="${atteso.dove}"]`) ?? null;
+    if (elenco === null || riga === null) return;
+    const vista = elenco.getBoundingClientRect();
+    const r = riga.getBoundingClientRect();
+    const sopra = vista.top - r.top;
+    const sotto = r.bottom - vista.bottom;
+    if (sopra > 0) elenco.scrollTop -= sopra;
+    else if (sotto > 0) elenco.scrollTop += Math.min(sotto, -sopra);
   }, [coda, vaiA]);
 
   const daTastiera = (e: KeyboardEvent<HTMLElement>) => {
@@ -278,7 +298,7 @@ export function RigheCoda({
     >
       <li
         className="paglia"
-        style={{ height: finestra.sopra * finestra.altezza }}
+        style={{ height: finestra.pagliaSopra }}
         role="presentation"
       />
       {stato.coda.slice(finestra.primo, finestra.ultimo).map((id, k) => {
@@ -376,7 +396,7 @@ export function RigheCoda({
       })}
       <li
         className="paglia"
-        style={{ height: finestra.sotto * finestra.altezza }}
+        style={{ height: finestra.pagliaSotto }}
         role="presentation"
       />
     </ol>

@@ -24,6 +24,7 @@ import { useEffect, useState } from "react";
 
 import { ipc } from "../ipc";
 import { useAscolto } from "../pagine";
+import { Annuncio } from "./Annuncio";
 import { Icona } from "./Icone";
 import { brani_ } from "../formato";
 import { t } from "../lingue";
@@ -57,38 +58,45 @@ export function AvvisoCoda({ onErrore }: { onErrore: (e: unknown) => void }) {
     return () => window.clearTimeout(conto);
   }, [avviso]);
 
-  if (avviso === null) return null;
-
   // «1 brano» o «12 brani»: la forma la sceglie il motore delle lingue.
-  const brani = brani_(avviso.brani);
+  const frase =
+    avviso === null
+      ? null
+      : avviso.svuotata
+        ? t("queue.undo.cleared", { brani: brani_(avviso.brani) })
+        : t("queue.undo.replaced", { brani: brani_(avviso.brani) });
+
+  // La regione prima del riquadro, e montata anche senza avviso: è lei a
+  // parlare, perché il riquadro nasce già pieno. Vedi `Annuncio.tsx`.
   return (
-    <div className="notizia avviso-coda toast-card" role="status">
-      <Icona nome="i-check" dim={16} />
-      <span>
-        {avviso.svuotata
-          ? t("queue.undo.cleared", { brani })
-          : t("queue.undo.replaced", { brani })}
-      </span>
-      <button
-        type="button"
-        className="bottone minuto btn-ghost"
-        title={t("queue.undo.aria")}
-        onClick={() => {
-          const numero = avviso.numero;
-          setAvviso(null);
-          ipc.codaRipristina(numero).catch(onErrore);
-        }}
-      >
-        {t("queue.undo")}
-      </button>
-      <button
-        type="button"
-        className="tasto icon-btn"
-        aria-label={t("common.close")}
-        onClick={() => setAvviso(null)}
-      >
-        <Icona nome="i-x" dim={14} />
-      </button>
-    </div>
+    <>
+      <Annuncio testo={frase} />
+      {avviso !== null && (
+        <div className="notizia avviso-coda toast-card">
+          <Icona nome="i-check" dim={16} />
+          <span>{frase}</span>
+          <button
+            type="button"
+            className="bottone minuto btn-ghost"
+            title={t("queue.undo.aria")}
+            onClick={() => {
+              const numero = avviso.numero;
+              setAvviso(null);
+              ipc.codaRipristina(numero).catch(onErrore);
+            }}
+          >
+            {t("queue.undo")}
+          </button>
+          <button
+            type="button"
+            className="tasto icon-btn"
+            aria-label={t("common.close")}
+            onClick={() => setAvviso(null)}
+          >
+            <Icona nome="i-x" dim={14} />
+          </button>
+        </div>
+      )}
+    </>
   );
 }

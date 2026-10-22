@@ -45,6 +45,22 @@
  * mentre si scrive, perché in un campo pieno il primo significato di Escape è
  * «lascia stare», e chi lo preme dentro la ricerca vuole uscirne. Lasciarlo
  * riassegnare vorrebbe dire poter chiudere a chiave una finestrella modale.
+ *
+ * # Indietro: il tasto del mouse e Alt+←
+ *
+ * Il tasto «indietro» del mouse e `Alt+←` sono il gesto con cui ogni browser e
+ * ogni gestore di file torna di un passo, e qui non facevano niente. Adesso
+ * scendono la stessa scala di Escape (`chiudi`): un livello per pressione,
+ * dall'album all'artista, dall'artista alla griglia. Non sono configurabili per
+ * la stessa ragione di Escape, e come Escape tacciono quando c'è una
+ * finestrella aperta, che ha i suoi tasti.
+ *
+ * `Alt+←` è l'eccezione alla regola qui sopra sugli accordi: dentro un campo di
+ * testo **non** passa. Gli altri accordi con `Alt` non vogliono dire niente a
+ * una casella, questo sì — chi è abituato alle scorciatoie dei browser lo
+ * preme per tornare all'inizio della parola — e una ricerca che a metà frase
+ * svuota la casella e chiude l'album aperto è peggio di una scorciatoia che
+ * manca. Il tasto del mouse invece passa sempre: non lo si preme scrivendo.
  */
 import { useEffect, useRef } from "react";
 
@@ -377,6 +393,17 @@ function vuoleIlTasto(bersaglio: EventTarget | null, tasto: string): boolean {
   );
 }
 
+/** Il tasto «indietro» del mouse, nella numerazione di `MouseEvent.button`. */
+const TASTO_INDIETRO = 3;
+
+/** Il fuoco è sotto qualcosa che si prende i suoi tasti: una finestrella. */
+function sottoUnModale(bersaglio: EventTarget | null): boolean {
+  return (
+    modaleAperto() ||
+    (bersaglio instanceof Element && bersaglio.closest("[aria-modal='true']") !== null)
+  );
+}
+
 /** Il campo di ricerca dell'intestazione, se la pagina ne ha uno. */
 export function campoRicerca(): HTMLInputElement | null {
   return document.querySelector<HTMLInputElement>("[data-cerca]");
@@ -486,6 +513,28 @@ export function useScorciatoie(
         return;
       }
 
+      // `Alt+←`, indietro: la scala di Escape, ma non mentre si scrive. Prima
+      // della mappa, e solo se nessuno se l'è presa: chi l'ha associato a un
+      // comando suo nella scheda delle scorciatoie vince. Vedi il preambolo.
+      if (
+        e.key === "ArrowLeft" &&
+        e.altKey &&
+        !e.ctrlKey &&
+        !e.shiftKey &&
+        !e.metaKey &&
+        !nomiDi(e).some((tasto) => mappa.current.has(tasto))
+      ) {
+        if (siStaScrivendo(e.target) || sottoUnModale(e.target)) return;
+        // Sempre, anche quando non c'era niente da chiudere: il gesto di serie
+        // di `Alt+←` è la cronologia della pagina, e qui una cronologia non c'è.
+        e.preventDefault();
+        // Un livello per pressione, non per ripetizione: tenuti giù, i due
+        // tasti scenderebbero tutta la scala — selezione, ricerca, album,
+        // artista — in poche centinaia di millisecondi.
+        if (!e.repeat) azioni.chiudi();
+        return;
+      }
+
       // Il carattere prima, la posizione poi: `Ctrl+F` su una tastiera russa
       // arriva come `Ctrl+а`, e si riconosce dal tasto su cui sta. Vedi
       // `tasti.ts` per quando la posizione conta e quando no.
@@ -502,11 +551,7 @@ export function useScorciatoie(
       // modale è una finestrella aperta (il conto di `useFinestrella`) o un
       // pannello `aria-modal` che ha il fuoco, come l'equalizzatore. Niente
       // `preventDefault`: il tasto resta a chi ce l'ha, e `Ctrl+C` copia.
-      const sottoUnModale =
-        modaleAperto() ||
-        (e.target instanceof Element &&
-          e.target.closest("[aria-modal='true']") !== null);
-      if (!passaLaScorciatoia(comando, sottoUnModale)) return;
+      if (!passaLaScorciatoia(comando, sottoUnModale(e.target))) return;
 
       // Un accordo con `Ctrl` o `Alt` passa anche mentre si scrive, e con esso
       // i tasti funzione, che nessuna parola contiene; un tasto nudo no. Vedi il
@@ -525,7 +570,25 @@ export function useScorciatoie(
       esegui(comando, azioni);
     };
 
+    /*
+     * Il tasto «indietro» del mouse. Su `mouseup` e su nient'altro: `auxclick`
+     * può arrivare per lo stesso tasto, e ascoltarli tutti e due scenderebbe
+     * due gradini a ogni pressione. `preventDefault` perché il gesto di serie
+     * di quel tasto, in un browser, è la cronologia della pagina: qui la
+     * pagina è una sola, e il gesto è nostro.
+     */
+    const indietro = (e: MouseEvent) => {
+      if (e.button !== TASTO_INDIETRO) return;
+      e.preventDefault();
+      if (!accese.current || sottoUnModale(e.target)) return;
+      ultime.current.chiudi();
+    };
+
     window.addEventListener("keydown", ascolta);
-    return () => window.removeEventListener("keydown", ascolta);
+    window.addEventListener("mouseup", indietro);
+    return () => {
+      window.removeEventListener("keydown", ascolta);
+      window.removeEventListener("mouseup", indietro);
+    };
   }, []);
 }

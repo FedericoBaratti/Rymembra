@@ -85,6 +85,460 @@ Entries older than 2.3.1 argue their number under the rule that was in force
 when they were written. They are a record of what shipped and are left as they
 were, not restated.
 
+## [3.0.2] — 2026-10-22
+
+**A release about what the logs said.** Almost nothing in it is new to look at
+— the exceptions are the full-screen spectrum, which looks cleaner because it
+was repaired, not redesigned, and CD images with a cue sheet, which the library
+now splits into their tracks. It is what a real library, kept on a network share
+and listened to every day for six weeks, wrote in its log while things went wrong — read line by line, matched
+against the Windows event log, reproduced on a copy of that library, and fixed
+where each fault was born. Most fixes below come with a test that failed before
+them; the others — the supervision of the player's threads, the order of its
+locks, parts of the interface — were checked by reading and by running the
+program, and the ones that can only be checked with real headphones and a real
+restart of Windows are listed as such. Most of the changes were also read a
+second time by someone trying to break them, and one fix did not survive that
+reading: it is described, with the reason, in the audio section.
+
+### Fixed — scanning is fast, and it sees everything on the share
+
+Measured on the library this release was built on: 20,490 tracks in two folders
+of a NAS, 2,567 folders and 29,558 files, over Wi-Fi.
+
+- **A scan with nothing to do takes 8 seconds instead of 16 to 20.** What is
+  left is the time the NAS takes to list its folders.
+  - Folders are now listed by four threads instead of one. On that NAS the walk
+    went from 10–12 s to about 7 s; more threads gain nothing, because by then
+    the NAS itself is the limit.
+  - A file the tag reader refuses is now remembered by path, size, date and
+    reader version, and is not opened again over the network at every scan.
+    It is tried again when the file changes, when a newer Rymembra reads tags
+    differently, or with «Re-read all tags». Network errors and timeouts are
+    never remembered: those files are tried again next time, as before.
+- **131 songs that never entered the library now do.** All are files nothing
+  was wrong with:
+  - 104 MP3s whose first bytes after the ID3 tag are not audio, so the format
+    could not be guessed from the content: the extension now decides;
+  - 26 MP3s with one malformed ID3 frame, which made the whole file unreadable:
+    they now enter with their sound properties and the ID3v1 tag, if any;
+  - one more whose content looked like another format.
+
+  The 54 WMA files of that library stay out, because nothing in Rymembra can
+  play them, but they are no longer re-read at every scan. The same goes for a
+  zip file renamed `.flac`.
+- **Tags are read four files at a time.** On a share this is what made the
+  first scan slow: the first scan after updating read 5,215 tracks in 14 s.
+  After a timeout or a network error the reads on that folder drop back to one
+  at a time, so a share that is failing is not hit four times harder.
+- **The scan says what it is doing while it walks.** It shows «Looking for
+  files… N folders, M files» instead of an empty bar for the whole walk, which
+  on that share was most of the scan.
+- **Pressing «Scan» while an automatic scan runs now waits for it and says so**,
+  instead of answering «busy» after thirty seconds. «Cancel» ends the wait.
+- **Sound analysis and enrichment now pause while a scan runs**, so they no
+  longer compete with it for the share. They resume by themselves afterwards.
+- **A scan that changed nothing no longer starts the rest.** Maintenance,
+  analysis, enrichment and the Drive backup used to run after every scan.
+- **The search index is no longer rewritten when only a play count, a date or
+  an album key changes.** On that library, rebuilding every album after
+  «Re-read all tags» went from 330 ms to 114 ms, with album keys now rewritten
+  in one pass instead of two.
+- **The log now says how every scan went:** where it came from (by hand,
+  watching, realignment, downloads), how many folders and files it saw and
+  read, and how long each phase took. It also says which thread held the
+  library for more than two seconds. The log of that library showed the window
+  waiting 62 to 77 seconds without saying who for.
+
+### Changed — network folders are watched by default
+
+Until now, watching was on only for local disks unless you changed it. A
+library on a NAS was never scanned by itself: not at startup, not after sleep,
+and not when a new CD was copied onto the share. It stayed as it was until
+someone pressed «Scan».
+
+- **Watching now covers network folders by default** for everyone who never
+  chose. A choice you made stays as it is.
+- **Network folders now receive the system's change notifications**, as local
+  disks always have. Checked on that NAS: a new folder, a new file and a rename
+  arrive in 10–70 ms, and only the folders that changed are scanned.
+- **A realignment backs the notifications up.** It is a scan of the whole
+  folder that reads only what changed: about 8 seconds on that share. It runs:
+  - at startup;
+  - after the computer wakes from sleep;
+  - when a share that stopped answering answers again;
+  - every 30 minutes.
+
+  The notifications are re-armed before each realignment, because the library
+  behind them stops listening without saying so when the network drops. If
+  they cannot be armed at all, the realignment runs every 5 minutes on its own.
+- **The realignment replaces the old polling**, which read the date of every
+  folder every five minutes. It did the same walk, but had three faults: it
+  did not see tags edited in place, it threw away a walk that took longer than
+  two minutes, and it forgot a change it had seen if the scan that followed
+  could not run.
+- **Local disks get a safety net too.** The system's notifications can stop
+  arriving without a word — after a burst of changes larger than their buffer,
+  or a USB disk that wakes up under a new name — so local folders are now
+  realigned after sleep and every hour, with their watcher re-armed first.
+- **Changes are no longer lost.** A folder that could not be scanned because
+  another scan held the turn, the share did not answer or the scan failed is
+  tried again: in seconds for a busy turn, in minutes for a share that is away,
+  each folder on its own clock, so a NAS that is off does not hold back the
+  local disks. A folder that could not be read is tried again after 1, 2, 4, 8
+  and 16 minutes, then left until the next realignment.
+- **An album moved between two watched folders keeps its plays,** its rating
+  and its playlist places, even when the folder it left stays on the disk
+  empty.
+- **A new album is scanned by itself.** A folder copied to the top of a share
+  used to make the whole share be walked.
+- **A share that answers but holds no music** — mounted but empty, or still
+  waking up — while the library knows at least fifty of its tracks is treated
+  as not answering by automatic scans, and nothing is removed from it.
+
+### New — CD images with a cue sheet, and Monkey's Audio
+
+A whole CD ripped as a single file with a `.cue` sheet beside it is now split
+into its tracks. That library had 299 such images: 157 FLAC files, which until
+now appeared as a single track the length of the disc, and 142 Monkey's Audio
+files, which did not appear at all. They became 4,877 tracks.
+
+- **Titles, performers and track numbers come from the cue sheet.** Album,
+  artist, year and genre come from the sheet when it has them, otherwise from
+  the file's own tags. A track without a title is «Track NN».
+- **Finding the image a sheet describes:**
+  - the file named in the sheet;
+  - or, if that name does not exist, a file with the same name and another
+    extension — the usual case of a rip saved as `.wav` and compressed later;
+  - or a file with the sheet's own name.
+
+  Never «the only large file in the folder»: on that library this rule would
+  have joined a sheet to an ordinary track. Sheets written in UTF-8, UTF-16 or
+  the Windows Western code page are all read.
+- **Each track plays exactly its part of the file, to the sample.** Two
+  consecutive tracks of the same image play with no gap and no crossfade, as
+  on the disc. «Repeat one», shuffle, and going from the last track back to the
+  first are not consecutive, and are played as separate tracks. Seeking,
+  resuming and lyrics count from the start of the track.
+- **Monkey's Audio (`.ape`) now plays,** whether it holds a single track or a
+  whole image. The decoder is pure Rust (`ape-decoder`). On nine files and
+  ranges of that library, including seeks into the middle, it gave the same
+  samples as ffmpeg, bit for bit. Files made with Monkey's Audio before 3.99
+  cannot be decoded — one image on that library — and stay out of the library
+  instead of appearing as silent tracks. A damaged block plays as silence of
+  its exact length instead of stopping the track, and a truncated file ends
+  where its audio ends.
+- **The pairing follows the files.** An image renamed beside its sheet is
+  followed at the next scan. A second sheet that appears next to an image does
+  not take it from the sheet that already has its tracks in the library, so
+  their plays and playlists stay where they are. Dropping the image file itself
+  on the window, or finding it in a playlist file, means its tracks in order.
+- **The rest of the program treats an image's tracks as parts of one file:**
+  - tags are never written into the image;
+  - lyrics stay in the library rather than in an `.lrc` beside the file, which
+    every track of the disc would share;
+  - «Delete from disk» works only when every track of the image is selected,
+    and then sends the image and its sheet to the Recycle Bin;
+  - «Show in folder» shows the image;
+  - a playlist file lists the `.cue` once for a run of its tracks, and a `.cue`
+    in a playlist file or dropped on the window becomes its tracks in order;
+  - Folders lists the tracks by title, in disc order.
+- A disc that was in the library as one long track is replaced by its tracks.
+  Its plays and rating are not moved onto one of the tracks: on that library
+  none of the 157 had any.
+- **Still not supported:** WavPack (one image on that library) and WMA.
+
+### Fixed — albums are rebuilt again, and your edits are kept
+
+Since 2.2, in a library where only the identified tracks of a disc had been
+re-read — which is what happened after the enrichment of those versions wrote
+the tags it found into the files — two groups of tracks could end up claiming
+the same album key. From then on every rebuild of the albums failed with
+`UNIQUE constraint failed: albums.album_key`, and the log of the library this
+release was built on shows it about 170 times in six weeks:
+
+- the background enrichment never finished a pass;
+- every scan, and the scan at the end of the download queue, reported failure;
+- deleting tracks, confirming removals and manual metadata corrections — which
+  rebuild the albums in the same transaction as their own change — were
+  **rolled back**: the change you made did not stick;
+- the album grid stopped following the library.
+
+Groups that receive the same album key are now one album, as they were before
+the re-read, and the rule that joins albums by a shared identifier is applied
+until nothing more joins, so a second rebuild no longer merges what the first
+left apart. The first scan after updating rebuilds the albums once, in full, to
+clear what the failed rebuilds left behind. And if a rebuild ever fails again
+after the tracks of a scan or an enrichment pass are already written, the
+library now asks for a full rebuild instead of staying marked up to date with
+stale albums.
+
+### Fixed — the window no longer waits nine seconds
+
+A command that runs on the window's thread gave up on a busy library after four
+seconds — but inside those four seconds SQLite could start a five-second wait
+of its own when another connection was writing, which made nine, past the point
+where Windows calls the window «not responding». The second wait now takes only
+what is left of the first.
+
+The player no longer keeps itself locked while it does slow work: writing a
+preference to the database, restoring the queue, computing the spectrum thirty
+times a second and waking a sleeping audio stream now happen outside the lock,
+so pause, seek and track changes stay responsive during a scan. The background
+enrichment now stops at the next album when the app closes or its switch is
+turned off, instead of finishing a batch of network requests. And the commands
+that wait on the network or on a large file — link and account imports, catalog
+search, lyrics lookup and publishing, the AI chat, history export to
+ListenBrainz, playlist-file import — now run where waiting costs nobody else a
+turn.
+
+### Fixed — audio devices that come and go
+
+The same log shows the headphones of this library's owner disappearing and
+coming back forty-four times, often at the moment the computer went to sleep or
+woke up, and the player following them less well than it should have:
+
+- **The player no longer reopens on whatever device comes first.** When Windows
+  is between two default outputs it briefly marks none, and in that instant the
+  automatic reopen took the first device in the list — on that computer «AMD
+  Streaming Audio Device», a virtual output at 16 kHz with no speakers behind
+  it — only to reopen again a moment later. It now waits for Windows to choose.
+- **A device caught in the middle of a change is a temporary loss, not a fatal
+  error.** `0x8889000F` at startup and «Failed to get audio clock» during a
+  reopen used to end in «restart Rymembra»; Rymembra now retries by itself, with
+  one quick second attempt.
+- **A crash in the middle of a reopen no longer disables reopening** for the
+  rest of the session.
+- **The threads that advance the queue, send the position, draw the spectrum,
+  watch the devices and keep the stream open survive a crash.** They carry on,
+  or hand the engine to the automatic reopen, instead of dying in silence and
+  leaving the player mute or stuck.
+- **When the first device appears after starting without one, the player comes
+  up with your queue, volume and equaliser already in place**, so a play or a
+  volume change made in that moment is no longer overwritten.
+- **A local file whose format crashes the decoder is reported as unreadable**,
+  instead of as a network share that does not answer, with a «Retry» that could
+  never succeed.
+- **Skipping, seeking or stopping also interrupts** the read-ahead of a
+  streamed track, the read of the track fading in and long runs of packets that
+  do not decode, instead of waiting for them to finish.
+- When automatic playback resumes after a reopen, the log now says why it did
+  or did not start playing again, and on which device.
+
+A track with no audio at all still stops the queue where it is, as before. A
+fix for it was written and then taken out: with «repeat one» on such a track it
+made the queue start over fifty times a second, which is worse than stopping.
+
+### Fixed — closing when Windows restarts, shuts down or logs off
+
+The logs of 2.2 to 2.4 held twelve copies of the same panic, `cannot move state
+from Destroyed`, and every one of them falls within seconds of Windows restarting,
+shutting down, logging off or going to sleep: the panic came from the window
+library, which declared its event loop finished on `WM_ENDSESSION` while
+messages for it were still queued. The version of that library in use today
+ends the process right after its last event, and no shutdown since 3.0.0 has
+left a panic in the log.
+This release checks it instead of hoping — the end of a session is reproduced
+through the Restart Manager, the way Windows Update and installers ask a program
+to close, and the whole shutdown sequence runs before the process goes — and
+makes it visible: the sequence now writes when it starts and how long it took,
+so a session that ended without it can be told apart from one that ended
+cleanly. The scrobbling threads no longer panic when they find the app already
+gone.
+
+### Fixed — writing tags into your files can no longer leave a song cut short
+
+«Restore tags into files» is the one place where Rymembra opens your songs for
+writing, and the library behind `lofty` rewrites a file in place: when the new
+tag is longer than the room the old one left, it moves all the audio that
+follows forward. On a fifty-megabyte FLAC on a network share those are seconds
+in which the file is half-written, and a power cut, a forced exit or a share
+that goes away in that moment left the song truncated under its own name — a
+file the next scan reads as good, and that stops halfway through.
+
+Each song is now copied beside itself before the write, and the tags are still
+written into the song itself, so its permissions, its sharing with a player that
+has it open and its identity on the disk are exactly what they were. If the
+write fails or crashes, the original is copied back from that copy; when it
+succeeds, the copy goes. After a hard crash in the middle, a complete copy
+stays next to the song — its name followed by `.<n>-<n>.tmp` — and is never
+deleted automatically, since it may be the only good one. The pass also stops
+between one file and the next when the app closes. A song whose name is a
+dozen characters short of the 255 Windows allows is now refused instead of
+written, because the copy beside it would not fit.
+
+Replacing a file now also waits out the brief locks that antivirus scanners and
+the search indexer take on a file they have just seen, instead of failing at
+the first try. If the enrichment pass stops midway because the database could
+not be read or written, the albums it had already saved still get their totals
+rebuilt before the error is reported. And if the download queue crashes, the
+window is told it stopped, instead of showing it running until a restart.
+
+### Fixed — background work that stopped for the rest of the session
+
+- A crash in the download queue or in the AI chat no longer leaves them «busy»
+  until a restart: each holds its turn through a guard that is released even
+  when the thread panics, and their threads no longer crash if the app is
+  shutting down around them.
+- A file that crashes the audio decoder during sound analysis is now marked
+  unreadable and retried a month later, instead of being mistaken for an
+  unreachable drive that stopped every later pass before the files behind it;
+  and the analysis thread restarts after an unexpected panic.
+- Creating a smart playlist can no longer leave the library's connection stuck
+  inside an open transaction when the final commit fails — a reader holding the
+  lock on a library on a network share is enough — after which every write
+  failed until a restart.
+- A migration whose final commit fails now rolls back instead of leaving the
+  transaction open.
+- A panic raised while the log file was being written on the same thread no
+  longer freezes the app.
+
+### Fixed — backups and restores of skins
+
+A skin whose file is damaged on this computer — a copy interrupted half-way, a
+disk that lost a sector — has a different fingerprint from the one in Drive,
+and the backup took «different» for «changed»: the next pass uploaded the broken
+file over the good copy, turning a damaged disk into a damaged backup. Skins
+whose archive does not open are now left out of the backup, and a restore sees
+them as missing and puts the good copy back. Restoring skins and drafts writes
+them atomically, and replaces copies an earlier interrupted restore left
+half-written, while never overwriting a skin or a draft that is someone's work.
+
+### Fixed — smaller things that lost data or said the wrong thing
+
+- Moving the library to another spelling of the same folder now waits for a
+  scan in progress instead of running beside it, which could put the scanned
+  tracks back under the old name; while it waits the question stays open.
+- A lyrics `.lrc` file that exists but cannot be read is no longer treated as
+  missing and replaced or deleted without a `.bak`; lyrics that fail to save are
+  logged instead of silently lost.
+
+### Fixed — the interface
+
+- **Removing two watched folders quickly no longer brings the first one back.**
+  Each change was computed from the list as it was on screen when you clicked;
+  changes now run one at a time, each from what the core last reported, and the
+  buttons wait until the change is done.
+- **A screen that fails to draw no longer takes the whole window with it.** Each
+  page, the Studio, the full-screen Now Playing and the spectrum have their own
+  error boundary, with «Try again» in place; navigation, playback and the queue
+  keep working.
+- **A failed load no longer looks like an empty library:** the Artists page says
+  the list could not be read and offers «Try again», and the Folders page shows a
+  placeholder while the startup data arrives instead of «No folders».
+- **Old answers no longer overwrite newer views.** After a failed delete or
+  reorder, the tracks of the album or playlist you had left no longer replace
+  the ones you opened meanwhile, and a slow startup read no longer switches the
+  spectrum back off just after you turned it on.
+- **«Add all» in Explore can no longer run twice.**
+- **A live update that fails to start is reported** instead of leaving part of
+  the window frozen, and three actions in Explore and Imports that failed in
+  silence now say so.
+- **Screen readers announce notices reliably** — queue replaced, playlist
+  deleted, updates, import progress — from regions that are always there.
+- **The search box keeps the focus while you type.** On Tracks, Albums,
+  Artists, Folders, Favorites and Home the first letter turned the page into
+  the search results and the field was drawn anew, so you had to click it again
+  to keep typing; deleting the last letter did the same on the way back. The
+  field now stays the same while the page changes around it, and Esc clears it
+  without taking the focus away.
+
+### Fixed — the full-screen spectrum: no grain, smooth motion, quiet in pause
+
+Measured before and after, with the same track and settings, on the laptop this
+release was checked on: Radeon 740M integrated graphics, 1920×1200 at 60 Hz,
+512 bars, quality «High».
+
+- **No more grain.**
+  - At 512 bars the gaps between bars were narrower than a pixel: 0.85 px at
+    the front, 0.2 px at the back. With the camera always swaying, every frame
+    sampled them differently, so they flickered over the whole scene like a
+    barcode.
+  - Gaps now close where a screen cannot draw them, below about a pixel, and
+    stay where it can.
+  - Bars narrower than four pixels no longer turn into a flickering checkerboard
+    of lit tops and dark sides. Their light moves toward the average of their
+    faces, the way distance already fades them.
+  - At 64 or 128 bars the scene looks as before.
+- **Smooth scrolling.**
+  - The scene used to move when data arrived. Data reaches the window through
+    the same thread that runs everything else, so each event a few milliseconds
+    early or late became a small jump or a pause. A busy moment became a jump of
+    several rows.
+  - The scene now keeps its own clock and draws a few milliseconds in the past.
+    Its speed per frame now stays between 0.97 and 1.03 of the right speed,
+    where it used to vary between 0.91 and 1.05.
+  - A stall becomes a short catch-up instead of a jump.
+  - The bars are smoothed on the music's time, not on the arrival rhythm.
+- **The spectrum thread keeps time.** It slept 33 ms after its work, so its
+  period drifted, and it waited for the player's lock on every round. It now
+  keeps absolute deadlines and never waits for that lock.
+- **Pause no longer keeps the graphics card busy.**
+  - In pause, the spectrum went on transforming the last 85 ms of music thirty
+    times a second. The scene never saw the silence that puts it to sleep, so it
+    redrew forever.
+  - A stream that stops is now silence: the past drains out, and the scene goes
+    to sleep about 34 s into the pause.
+  - GPU use in pause went from 36 % to 4 %.
+  - Turning the scene off also empties what it had heard, so reopening it no
+    longer starts from a fragment of earlier music.
+- **Less work for the browser.**
+  - Because a line ran one step too early, the skin's tokens were read again on
+    every event with sound: thirty forced style recalculations a second.
+  - The fade that keeps the title readable over the scene was a CSS mask, which
+    cost a full-screen pass on every frame. It is now computed in the shader.
+    That pass pays for the extra pixels the bars now cover with their gaps
+    closed, so GPU use while playing stays about where it was, around half of
+    this laptop's integrated graphics. No frame was dropped before or after.
+
+### Changed — the interface
+
+- **The queue and the history show whole names.** A long title, or a long
+  «artist · album», used to end in «…» — in the third column a title has less
+  than two hundred pixels, and what was cut was often the part that tells two
+  versions of the same song apart. Names now wrap onto as many lines as they
+  need, and a word wider than the column breaks instead of spilling out. The
+  queue still draws only the rows on screen, now measuring each one: scrolling
+  twenty thousand tracks, jumping with the scrollbar, PgUp/PgDn, Home/End,
+  dragging and Alt+↑↓ behave as before, and a row moved with Alt+↑↓ stays in
+  view even when it is several lines tall.
+- Uninstalling a skin, removing a watched folder, disconnecting the Google
+  account, forgetting imported plays and deleting an AI profile now ask first,
+  and say what is lost; Cancel is the highlighted button.
+- The mouse Back button and Alt+← step back one level, like Escape. Alt+← does
+  nothing while you type, and one press is one level.
+- Favorites with nothing in them say so, with a hint to press the heart.
+- The search fields in Explore and Folders no longer draw a box inside a box.
+- «Last pass» and «Last save» in Settings drop the seconds and fit beside the
+  other numbers.
+- The compact and spacious densities now resize text fields, search fields and
+  buttons too.
+- Nothing in the interface is smaller than 10 pixels.
+- The English interface uses English quotation marks.
+- Import dialogs show at most fifty missing tracks, with «…and N more»; the
+  saved report still lists them all.
+
+### Database
+
+Three migrations, schema 31 → 34, all additive: no table is rebuilt and no
+row is rewritten.
+
+- `032_file_illeggibili` — the files the tag reader refused, with their size,
+  date and reader version, so they are not reopened until something changes.
+- `033_fts_solo_testo` — the trigger that keeps the search index in step now
+  fires only when title, artist, album, album artist or genre change.
+- `034_brani_da_immagine` — three columns on `tracks`: `immagine` (the audio
+  file a track is part of), `inizio_cd` and `fine_cd` (its start and end in CD
+  frames, 1/75 s, exactly as the cue sheet gives them). Also `fogli_cue`, the
+  cue sheets already read, so an unchanged sheet is not reopened at every scan.
+  A track of an image has the path `…\Album.cue|NN`: the `|` cannot appear in a
+  Windows file name, so it never collides with a real file.
+
+As with every migration, the library is copied as it was before migrating, to
+`rymembra.db.schema-031.bak` beside it. 3.0.1 does not open a library at schema
+34; going back means that copy. The internal version of the album tables also
+changes, which makes the first scan after updating rebuild them in full.
+
 ## [3.0.1] — 2026-10-15
 
 **Same program, new name, and nothing left behind.** The program is now called

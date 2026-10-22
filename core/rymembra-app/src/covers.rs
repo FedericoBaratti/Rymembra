@@ -337,7 +337,12 @@ impl CoverStore {
         let decoded = decodifica(original, &hash)?;
 
         let piena = fit(&decoded, MAX_LATO);
-        let miniatura = fit(&decoded, MAX_LATO_MINIATURA);
+        // La miniatura dalla piena e non dall'originale: Lanczos3 su una
+        // copertina da tremila pixel costa quanto la decodifica, e dalla 640 il
+        // conto si fa su un ventesimo dei pixel. A 160 pixel la differenza fra
+        // le due strade non si vede, e una scansione di dischi nuovi ne paga
+        // una per copertina.
+        let miniatura = fit(&piena, MAX_LATO_MINIATURA);
         let width = piena.width();
         let height = piena.height();
 

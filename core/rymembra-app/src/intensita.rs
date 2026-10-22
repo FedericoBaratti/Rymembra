@@ -38,7 +38,7 @@ use rymembra_play::intensita::{self, Esito, Intensita};
 
 use crate::files::MusicFiles;
 use crate::library::db_error;
-use crate::playback::{Collocazione, SchedaSorgente, sorgente_da_scheda};
+use crate::playback::{SchedaSorgente, collocazione_su_disco, sorgente_da_scheda};
 
 /// Quanti brani per passata.
 ///
@@ -87,8 +87,15 @@ pub enum Misurato {
 /// `sonora::candidato_where`, e per la stessa ragione: due copie divergono.
 /// Anche qui i brani di catalogo restano fuori — misurarne uno vorrebbe dire
 /// scaricarlo per intero — e `'muto'` non torna mai.
+///
+/// Un brano d'immagine CD entra come gli altri, e si misura il **suo** pezzo
+/// del disco: più brani della stessa immagine sono più misure dello stesso
+/// file, ognuna sul suo tratto. Resta fuori solo una riga d'immagine che non
+/// dice dove il brano comincia — non la scrive la scansione — perché misurarla
+/// vorrebbe dire misurare un pezzo a caso del disco.
 const fn candidato_where() -> &'static str {
     "t.path IS NOT NULL
+     AND (t.immagine IS NULL OR t.inizio_cd IS NOT NULL)
      AND (m.track_id IS NULL
           OR m.versione <> ?1
           OR (m.lufs IS NULL AND m.esito <> 'muto' AND m.tentato_at < ?2))"
@@ -148,7 +155,7 @@ pub fn candidati(
     quanti: usize,
 ) -> Result<Vec<SchedaSorgente>, AppError> {
     let sql = format!(
-        "SELECT t.id, t.path, t.duration_ms
+        "SELECT t.id, t.path, t.duration_ms, t.immagine, t.inizio_cd, t.fine_cd
          FROM tracks t
          LEFT JOIN track_intensita m ON m.track_id = t.id
          WHERE {}
@@ -167,21 +174,33 @@ pub fn candidati(
                 i64::try_from(quanti).unwrap_or(i64::MAX),
             ],
             |row| {
-                Ok(SchedaSorgente {
-                    track_id: row.get(0)?,
-                    // `candidato_where` ha escluso i brani senza file.
-                    collocazione: Collocazione::File(row.get(1)?),
-                    durata_ms: row.get(2)?,
+                // `candidato_where` ha escluso i brani senza file. Per un
+                // brano d'immagine la collocazione porta il pezzo, così si
+                // misura il brano e non il disco intero.
+                let track_id: i64 = row.get(0)?;
+                let percorso: String = row.get(1)?;
+                let durata_ms: i64 = row.get(2)?;
+                let collocazione =
+                    collocazione_su_disco(&percorso, row.get(3)?, row.get(4)?, row.get(5)?);
+                Ok(collocazione.map(|collocazione| SchedaSorgente {
+                    track_id,
+                    collocazione,
+                    durata_ms,
                     // La misura non ne ha bisogno: si misura il file com'è.
                     replaygain_db: None,
                     picco: None,
-                })
+                }))
             },
         )
         .map_err(|err| db_error("elenco dei brani da misurare", &err))?;
-    righe
+    // Una riga d'immagine con dei confini che non stanno in un CD si salta:
+    // vedi `collocazione_su_disco`. La scansione non ne scrive.
+    Ok(righe
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| db_error("elenco dei brani da misurare", &err))
+        .map_err(|err| db_error("elenco dei brani da misurare", &err))?
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 /// Misura **un** brano, dall'inizio alla fine. Non tocca il database.
@@ -358,6 +377,7 @@ mod prove {
 
     use super::*;
     use crate::db;
+    use crate::playback::Collocazione;
 
     fn libreria() -> Connection {
         db::open_in_memory()
@@ -424,6 +444,56 @@ mod prove {
             avanzamento(&connection, 2_000).expect("avanzamento"),
             (1, 1)
         );
+    }
+
+    #[test]
+    fn un_brano_d_immagine_si_misura_sul_suo_pezzo() {
+        // Due brani della stessa immagine, e una riga d'immagine senza
+        // inizio — che la scansione non scrive — che non deve entrare né
+        // nell'elenco né nel conto: le due domande rispondono insieme.
+        let connection = libreria();
+        connection
+            .execute_batch(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, duration_ms,
+                                     file_size, date_added, date_modified,
+                                     immagine, inizio_cd, fine_cd)
+                 VALUES (1, '/musica/disco/Album.cue|03', 'k1', 'T', 'A', 'Disco', 200000,
+                         1, 3, 0, '/musica/disco/Album.flac', 30000, 45000),
+                        (2, '/musica/disco/Album.cue|04', 'k2', 'T', 'A', 'Disco', 300000,
+                         1, 2, 0, '/musica/disco/Album.flac', 45000, NULL),
+                        (3, '/musica/disco/Album.cue|05', 'k3', 'T', 'A', 'Disco', 1000,
+                         1, 1, 0, '/musica/disco/Album.flac', NULL, NULL);",
+            )
+            .expect("brani d'immagine");
+        let schede = candidati(&connection, 0, 10).expect("candidati");
+        let viste: Vec<(i64, Collocazione, i64)> = schede
+            .into_iter()
+            .map(|s| (s.track_id, s.collocazione, s.durata_ms))
+            .collect();
+        assert_eq!(
+            viste,
+            vec![
+                (
+                    1,
+                    Collocazione::Segmento {
+                        immagine: "/musica/disco/Album.flac".to_owned(),
+                        inizio_cd: 30_000,
+                        fine_cd: Some(45_000),
+                    },
+                    200_000
+                ),
+                (
+                    2,
+                    Collocazione::Segmento {
+                        immagine: "/musica/disco/Album.flac".to_owned(),
+                        inizio_cd: 45_000,
+                        fine_cd: None,
+                    },
+                    300_000
+                ),
+            ]
+        );
+        assert_eq!(quanti_mancano(&connection, 0).expect("conteggio"), 2);
     }
 
     #[test]

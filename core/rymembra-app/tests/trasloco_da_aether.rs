@@ -260,16 +260,21 @@ fn una_libreria_vera_passa_da_aether_a_rymembra() {
         "riga di diario\n"
     );
 
-    // Si apre il database come lo apre l'applicazione: migra dalla 30 alla 31.
+    // Si apre il database come lo apre l'applicazione: migra dalla 30 in su.
     let aperto = db::open(&nuova.join("rymembra.db")).expect("apertura");
     assert_eq!(aperto.version_before, 30, "il giornale ha portato la 30");
-    assert_eq!(aperto.applied, 1, "dalla 30 manca la sola 31");
+    // Quante ne mancano dalla 30, e non «una»: il numero scritto a mano
+    // diventava rosso alla prima migrazione aggiunta dopo la 31.
+    assert_eq!(
+        u32::try_from(aperto.applied).expect("il conto delle migrazioni sta in un u32"),
+        LATEST_VERSION - 30,
+        "dalla 30 mancano la 31 e tutte quelle dopo"
+    );
     let connessione = &aperto.connection;
     let versione: u32 = connessione
         .query_row("PRAGMA user_version", [], |riga| riga.get(0))
         .expect("versione");
     assert_eq!(versione, LATEST_VERSION);
-    assert_eq!(versione, 31);
 
     // Le righe sono tutte lì — comprese quelle che stavano solo nel giornale — e
     // gli identificativi delle sorgenti hanno il nome di adesso.
@@ -343,7 +348,7 @@ fn una_libreria_vera_passa_da_aether_a_rymembra() {
     let secondo = trasloca(&macchina.percorsi).expect("secondo trasloco");
     assert_eq!(secondo, Rapporto::default());
     let riaperto = db::open(&nuova.join("rymembra.db")).expect("riapertura");
-    assert_eq!(riaperto.version_before, 31);
+    assert_eq!(riaperto.version_before, LATEST_VERSION);
     assert_eq!(riaperto.applied, 0);
     assert_eq!(conta(&riaperto.connection, "desiderati"), 3);
 }

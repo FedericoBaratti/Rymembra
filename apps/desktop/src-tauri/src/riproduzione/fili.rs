@@ -29,7 +29,7 @@ use super::coda::{scegli_da_solo, scrivi_coda};
 use super::{
     AVANZAMENTO_MINIMO_MS, BATTITI_PER_SEGNO, BandeIpc, FINE_DEL_BRANO, Lettore, PASSO_SPETTRO,
     PASSO_SPETTRO_FERMO, PASSO_TEMPO, StatoLettore, Tempo, annota_ripresa, aspetta_il_seguito,
-    brano_di, con_lettore, guasto_di, manda_stato,
+    brano_di, con_lettore, guasto_di, manda_stato, presa_spettro_se_libera,
 };
 
 /// Dice al motore quale sarà il brano dopo.
@@ -66,7 +66,13 @@ pub(super) fn prepara_prossimo(app: &tauri::AppHandle, lettore: &mut Lettore) {
     // Il lucchetto in mano dice anche un'altra cosa: è mentre ce l'ha che il
     // colpetto va mandato — così il filo che si sveglia trova la coda già nello
     // stato nuovo e non in quello di un istante prima.
-    sveglia_preparatore(&app.state::<StatoLettore>());
+    //
+    // `try_state`: questa funzione la chiamano anche gli annunci del motore, su
+    // un filo che può ritrovarsi vivo mentre gli stati se ne vanno. Senza lo
+    // stato non c'è nessun preparatore da svegliare.
+    if let Some(stato) = app.try_state::<StatoLettore>() {
+        sveglia_preparatore(&stato);
+    }
 }
 
 /// Il colpetto sul canale del preparatore.
@@ -87,6 +93,16 @@ fn sveglia_preparatore(stato: &StatoLettore) {
 /// contare secondi prima della fine del brano — e tolgono di mezzo la raffica.
 const RAFFICA_PREPARA: Duration = Duration::from_millis(15);
 
+/// Il nome del filo del preparatore: nel diario dei panici e nella salute dei
+/// fili, che lo contano per nome.
+const FILO_PREPARATORE: &str = "rymembra-preparatore";
+
+/// Il nome del filo dell'orologio. Vedi [`FILO_PREPARATORE`].
+const FILO_OROLOGIO: &str = "rymembra-orologio";
+
+/// Il nome del filo dello spettro. Vedi [`FILO_PREPARATORE`].
+const FILO_SPETTRO: &str = "rymembra-spettro";
+
 /// Il filo che apre il brano successivo.
 ///
 /// Esiste per una ragione sola: **togliere l'apertura di un file dal filo della
@@ -96,9 +112,23 @@ const RAFFICA_PREPARA: Duration = Duration::from_millis(15);
 /// Modellato sugli altri fili di questo albero — `avvia_orologio`,
 /// `nuvola::avvia_filo`: un thread nominato, un canale, nessun runtime
 /// asincrono.
+///
+/// # Sorvegliato
+///
+/// Ogni passata gira dentro `crate::stato::sorvegliato`. Prima un panico in una
+/// passata — un brano aperto a metà, uno stato già smontato — srotolava fuori
+/// dal ciclo e il filo finiva in silenzio: le spinte successive cadevano in un
+/// canale che nessuno leggeva più, il brano dopo non veniva più preparato, e la
+/// musica si fermava alla fine di ogni brano senza un errore da nessuna parte.
+/// Adesso la passata caduta finisce nel diario e nella salute dei fili, e il
+/// filo aspetta la spinta dopo.
+///
+/// Niente attesa dopo la caduta, al contrario dei fili a battito: questo non
+/// gira da solo, gira a spinte, e le spinte arrivano a ogni cambio di brano —
+/// un panico che si ripete non diventa un ciclo che consuma il processore.
 pub fn avvia_preparatore(app: tauri::AppHandle, orecchio: std::sync::mpsc::Receiver<()>) {
     let avviato = std::thread::Builder::new()
-        .name("rymembra-preparatore".to_owned())
+        .name(FILO_PREPARATORE.to_owned())
         .spawn(move || {
             loop {
                 // Canale chiuso: l'applicazione sta uscendo.
@@ -109,7 +139,9 @@ pub fn avvia_preparatore(app: tauri::AppHandle, orecchio: std::sync::mpsc::Recei
                 // antirimbalzo, e si esce quando per quindici millisecondi non
                 // arriva più niente — o subito, se il canale si è chiuso.
                 while orecchio.recv_timeout(RAFFICA_PREPARA).is_ok() {}
-                prepara_prossimo_adesso(&app);
+                let _ = crate::stato::sorvegliato(FILO_PREPARATORE, || {
+                    prepara_prossimo_adesso(&app);
+                });
             }
         });
     if avviato.is_err() {
@@ -143,7 +175,11 @@ pub fn avvia_preparatore(app: tauri::AppHandle, orecchio: std::sync::mpsc::Recei
 /// richiesta, a quel punto, è già partita: è la raffica a doverla evitare, non
 /// il controllo finale.
 fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
-    let stato = app.state::<StatoLettore>();
+    // `try_state` e non `state`: `state` panica se lo stato non c'è, e questo
+    // filo gira anche mentre gli stati vengono lasciati cadere.
+    let Some(stato) = app.try_state::<StatoLettore>() else {
+        return;
+    };
 
     // ── 0. l'autoplay, se la coda non ha un dopo ──
     //
@@ -607,24 +643,28 @@ pub fn salva_uscendo(app: &tauri::AppHandle) {
 /// Manda solo mentre suona: un'applicazione ferma in secondo piano non deve
 /// svegliare il webview quattro volte al secondo per dirgli che non è cambiato
 /// niente.
+///
+/// # Sorvegliato
+///
+/// Ogni giro gira dentro `crate::stato::sorvegliato`. Questo filo fa quattro
+/// lavori che non hanno nessun altro a farli — la posizione alla finestra, il
+/// timer di spegnimento, il salvataggio di volume, curva e coda, e il primo
+/// avviso del dispositivo perso — e prima un panico in un giro li fermava tutti
+/// e quattro per il resto della sessione, senza una riga da nessuna parte che
+/// non fosse la traccia del panico. Adesso il giro caduto si annota e il filo
+/// riparte, dopo un'attesa che cresce se continua a cadere
+/// (`crate::stato::attesa_dopo_la_caduta`): un panico che si ripete identico a
+/// ogni giro non deve diventare quattro righe al secondo nel diario.
+///
+/// Se il filo non parte lo dice il diario, come per gli altri fili del lettore.
+/// Prima l'esito della `spawn` si buttava, e un orologio mai partito era un
+/// cursore fermo senza nessuna spiegazione.
 pub fn avvia_orologio(app: tauri::AppHandle) {
-    std::thread::Builder::new()
-        .name("rymembra-orologio".to_owned())
+    let avviato = std::thread::Builder::new()
+        .name(FILO_OROLOGIO.to_owned())
         .spawn(move || {
-            let mut ultimo_fermo = true;
-            // Quanti giri d'orologio sono passati, per il segno di «riprendi
-            // dov'eri». Un contatore locale al filo: non lo guarda nessun
-            // altro, e non merita né un atomico né un lucchetto.
-            let mut battiti: u32 = 0;
-            // Il dispositivo era già sparito all'ultimo giro: serve perché
-            // l'annuncio parta **una volta**, non quattro al secondo per tutto
-            // il tempo in cui le cuffie restano staccate.
-            let mut gia_perso = false;
-            // Per «in attesa di dati»: com'era al giro prima, e da quanti giri
-            // di fila la musica non avanza mentre la callback serve silenzio.
-            // Vedi `Tempo::in_attesa`.
-            let mut prima: (Option<i64>, u64, u64) = (None, 0, 0);
-            let mut giri_a_secco: u8 = 0;
+            let mut memoria = Orologio::default();
+            let mut cadute_di_fila = 0_u32;
             loop {
                 std::thread::sleep(PASSO_TEMPO);
                 // Prima di qualunque cosa che tocchi l'`AppHandle`: se la
@@ -633,141 +673,191 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
                 if crate::spegnimento::in_uscita() {
                     return;
                 }
-                // `try_state` e non `state`: `state` panica se lo stato non
-                // c'è, e questo filo gira anche mentre lo stato viene lasciato
-                // cadere. Nessuno stato vuol dire che non c'è più niente da
-                // raccontare a nessuno.
-                let Some(stato_lettore) = app.try_state::<StatoLettore>() else {
-                    return;
-                };
-
-                // Le preferenze audio che i cursori hanno lasciato in sospeso.
-                // Quasi sempre non c'è niente da fare: due letture rilassate.
-                salva_quel_che_manca(&app, &stato_lettore, ATTESA_ORDINARIA);
-
-                // Prima della posizione, perché è la ragione per cui la
-                // posizione ha smesso di muoversi. Un dispositivo sparito
-                // lascia la callback senza nessuno che la chiami: i fotogrammi
-                // non avanzano più, il cursore resta fermo, e senza questo
-                // controllo la finestra continua a dire che sta suonando.
-                let perso = con_lettore(&stato_lettore, |lettore| Ok(guasto_di(&lettore.motore)))
-                    .unwrap_or(None);
-                match (&perso, gia_perso) {
-                    (Some(guasto), false) => {
-                        nota!("[riproduzione] il motore non suona più: {}", guasto.causa);
-                        // Dov'era la musica, segnato adesso e una volta sola,
-                        // sul fronte. La posizione la tiene il motore, e
-                        // [`riapri_audio`] il motore lo butta per costruirne
-                        // un altro — che di quel che il primo stava suonando
-                        // non sa niente. Senza questa riga «Riapri» ricomincia
-                        // dall'inizio del brano; con questa riga rimette la
-                        // puntina nel solco. È la stessa funzione, e la stessa
-                        // ragione, del ramo di rete in [`su_evento`].
-                        annota_ripresa(&stato_lettore);
-                        app.emetti("riproduzione:audio", guasto.clone());
-                        // E lo stato intero, perché chi non stava ascoltando
-                        // l'evento — una schermata aperta dopo — lo trovi lì.
-                        let _ = con_lettore(&stato_lettore, |lettore| {
-                            manda_stato(&app, lettore);
-                            Ok(())
-                        });
-                        gia_perso = true;
+                match crate::stato::sorvegliato(FILO_OROLOGIO, || {
+                    giro_d_orologio(&app, &mut memoria)
+                }) {
+                    Some(std::ops::ControlFlow::Break(())) => return,
+                    Some(std::ops::ControlFlow::Continue(())) => cadute_di_fila = 0,
+                    None => {
+                        cadute_di_fila = cadute_di_fila.saturating_add(1);
+                        std::thread::sleep(crate::stato::attesa_dopo_la_caduta(cadute_di_fila));
                     }
-                    (None, true) => gia_perso = false,
-                    _ => {}
-                }
-
-                // Il timer di spegnimento. Prima della posizione perché se
-                // scade adesso, la posizione che manderemmo fra due righe
-                // sarebbe già quella di un lettore in pausa.
-                scade_il_timer(&app, &stato_lettore);
-
-                let letto = con_lettore(&stato_lettore, |lettore| {
-                    let p = lettore.motore.posizione();
-                    Ok((
-                        p.track_id,
-                        lettore.motore.vuoti(),
-                        Tempo {
-                            posizione_ms: p.ms,
-                            durata_ms: p.durata_ms,
-                            in_pausa: p.in_pausa,
-                            in_attesa: false,
-                        },
-                    ))
-                });
-                let Ok((di_chi, vuoti, mut tempo)) = letto else {
-                    continue;
-                };
-                // A secco: nessuna pausa voluta, la callback ha servito silenzio
-                // dall'ultimo giro, e la posizione dello stesso brano non si è
-                // mossa. Due giri di fila, e non uno, perché un salto su un
-                // file svuota l'anello e lo riempie in qualche millisecondo: un
-                // vuoto solo è quello, e annunciarlo farebbe lampeggiare la
-                // scritta a ogni salto.
-                let (brano_prima, ms_prima, vuoti_prima) = prima;
-                let a_secco = !tempo.in_pausa
-                    && vuoti > vuoti_prima
-                    && di_chi == brano_prima
-                    && tempo.posizione_ms.saturating_sub(ms_prima) < AVANZAMENTO_MINIMO_MS;
-                giri_a_secco = if a_secco {
-                    giri_a_secco.saturating_add(1)
-                } else {
-                    0
-                };
-                tempo.in_attesa = giri_a_secco >= 2;
-                prima = (di_chi, tempo.posizione_ms, vuoti);
-                // Il filo dell'analisi sonora legge da qui se può leggere dal
-                // disco. Passa da un'atomica e non da `con_lettore` perché
-                // chiedere al lettore come sta, per sapere se disturbarlo,
-                // sarebbe gia` disturbarlo: la ragione per esteso sta in testa
-                // a `analisi.rs`.
-                crate::analisi::segna_riproduzione(!tempo.in_pausa && perso.is_none());
-                // Anche al sistema operativo, che dei salti relativi delle
-                // cuffie sa solo il «di quanto» e mai il «da dove»: senza
-                // questa riga il suo «da dove» resterebbe quello dell'ultimo
-                // `manda_stato`, cioè quasi sempre l'inizio del brano.
-                crate::media::segna_posizione(&app, tempo.posizione_ms);
-                // Con il dispositivo perso la posizione è ferma per definizione:
-                // mandarla quattro volte al secondo direbbe «sta suonando» a chi
-                // interpola, che è la bugia che questo giro è venuto a togliere.
-                if perso.is_some() {
-                    continue;
-                }
-                // Un colpo anche quando si è appena fermato, per non lasciare il
-                // cursore a interpolare nel vuoto.
-                if !tempo.in_pausa || !ultimo_fermo {
-                    app.emetti("riproduzione:tempo", tempo);
-                }
-                ultimo_fermo = tempo.in_pausa;
-
-                // Il segno per «riprendi dov'eri», ogni tanto.
-                //
-                // Non a ogni giro: sarebbero quattro scritture al secondo sul
-                // database per un numero che serve una volta sola, alla
-                // prossima apertura. Ogni venti giri sono cinque secondi, che
-                // è la peggior imprecisione possibile su una cosa che si
-                // riprende a mano — e chi chiude a metà brano ritrova il segno
-                // a cinque secondi da dove l'aveva lasciato, non all'inizio.
-                //
-                // Con il brano accanto: vedi `playback::save_posizione`.
-                battiti = battiti.wrapping_add(1);
-                //
-                // Con una scadenza, come ogni altra scrittura di questo filo:
-                // senza, una libreria occupata lo teneva fermo qui, e con lui
-                // la posizione, il timer e la sorveglianza del dispositivo. Un
-                // segno saltato si riscrive fra cinque secondi.
-                if let Some(brano) = di_chi
-                    && !tempo.in_pausa
-                    && battiti.is_multiple_of(BATTITI_PER_SEGNO)
-                    && let Some(stato_app) = app.try_state::<Stato>()
-                {
-                    let _ = con_libreria_entro(&stato_app, ATTESA_ORDINARIA, |libreria| {
-                        playback::save_posizione(&libreria.connection, brano, tempo.posizione_ms)
-                    });
                 }
             }
-        })
-        .ok();
+        });
+    if let Err(err) = avviato {
+        nota!("[avvio] il filo dell'orologio non è partito: {err}");
+    }
+}
+
+/// Quel che l'orologio ricorda da un giro all'altro.
+///
+/// Locale al filo: non lo guarda nessun altro, e non merita né un atomico né un
+/// lucchetto. In una struttura e non in cinque variabili perché il giro gira
+/// dentro `crate::stato::sorvegliato`, che vuole una chiusura: la chiusura se
+/// la presta, e quel che ricorda sopravvive al giro anche quando il giro cade.
+struct Orologio {
+    /// Il giro prima era fermo: serve a mandare un colpo anche quando la musica
+    /// si è appena fermata, per non lasciare il cursore a interpolare nel vuoto.
+    ultimo_fermo: bool,
+    /// Quanti giri d'orologio sono passati, per il segno di «riprendi dov'eri».
+    battiti: u32,
+    /// Il dispositivo era già sparito all'ultimo giro: serve perché l'annuncio
+    /// parta **una volta**, non quattro al secondo per tutto il tempo in cui le
+    /// cuffie restano staccate.
+    gia_perso: bool,
+    /// Per «in attesa di dati»: com'era al giro prima — brano, millisecondo,
+    /// vuoti serviti dalla callback. Vedi `Tempo::in_attesa`.
+    prima: (Option<i64>, u64, u64),
+    /// Da quanti giri di fila la musica non avanza mentre la callback serve
+    /// silenzio.
+    giri_a_secco: u8,
+}
+
+impl Default for Orologio {
+    fn default() -> Self {
+        Self {
+            ultimo_fermo: true,
+            battiti: 0,
+            gia_perso: false,
+            prima: (None, 0, 0),
+            giri_a_secco: 0,
+        }
+    }
+}
+
+/// Un giro d'orologio. `Break` quando non c'è più niente da raccontare a
+/// nessuno — lo stato del lettore se n'è andato — e il filo deve uscire.
+fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::ControlFlow<()> {
+    use std::ops::ControlFlow;
+
+    // `try_state` e non `state`: `state` panica se lo stato non c'è, e questo
+    // filo gira anche mentre lo stato viene lasciato cadere. Nessuno stato vuol
+    // dire che non c'è più niente da raccontare a nessuno.
+    let Some(stato_lettore) = app.try_state::<StatoLettore>() else {
+        return ControlFlow::Break(());
+    };
+
+    // Le preferenze audio che i cursori hanno lasciato in sospeso. Quasi sempre
+    // non c'è niente da fare: due letture rilassate.
+    salva_quel_che_manca(app, &stato_lettore, ATTESA_ORDINARIA);
+
+    // Prima della posizione, perché è la ragione per cui la posizione ha smesso
+    // di muoversi. Un dispositivo sparito lascia la callback senza nessuno che
+    // la chiami: i fotogrammi non avanzano più, il cursore resta fermo, e senza
+    // questo controllo la finestra continua a dire che sta suonando.
+    let perso =
+        con_lettore(&stato_lettore, |lettore| Ok(guasto_di(&lettore.motore))).unwrap_or(None);
+    match (&perso, memoria.gia_perso) {
+        (Some(guasto), false) => {
+            nota!("[riproduzione] il motore non suona più: {}", guasto.causa);
+            // Dov'era la musica, segnato adesso e una volta sola, sul fronte. La
+            // posizione la tiene il motore, e [`riapri_audio`] il motore lo
+            // butta per costruirne un altro — che di quel che il primo stava
+            // suonando non sa niente. Senza questa riga «Riapri» ricomincia
+            // dall'inizio del brano; con questa riga rimette la puntina nel
+            // solco. È la stessa funzione, e la stessa ragione, del ramo di rete
+            // in [`su_evento`].
+            annota_ripresa(&stato_lettore);
+            app.emetti("riproduzione:audio", guasto.clone());
+            // E lo stato intero, perché chi non stava ascoltando l'evento — una
+            // schermata aperta dopo — lo trovi lì.
+            let _ = con_lettore(&stato_lettore, |lettore| {
+                manda_stato(app, lettore);
+                Ok(())
+            });
+            memoria.gia_perso = true;
+        }
+        (None, true) => memoria.gia_perso = false,
+        _ => {}
+    }
+
+    // Il timer di spegnimento. Prima della posizione perché se scade adesso, la
+    // posizione che manderemmo fra due righe sarebbe già quella di un lettore in
+    // pausa.
+    scade_il_timer(app, &stato_lettore);
+
+    let letto = con_lettore(&stato_lettore, |lettore| {
+        let p = lettore.motore.posizione();
+        Ok((
+            p.track_id,
+            lettore.motore.vuoti(),
+            Tempo {
+                posizione_ms: p.ms,
+                durata_ms: p.durata_ms,
+                in_pausa: p.in_pausa,
+                in_attesa: false,
+            },
+        ))
+    });
+    let Ok((di_chi, vuoti, mut tempo)) = letto else {
+        return ControlFlow::Continue(());
+    };
+    // A secco: nessuna pausa voluta, la callback ha servito silenzio dall'ultimo
+    // giro, e la posizione dello stesso brano non si è mossa. Due giri di fila,
+    // e non uno, perché un salto su un file svuota l'anello e lo riempie in
+    // qualche millisecondo: un vuoto solo è quello, e annunciarlo farebbe
+    // lampeggiare la scritta a ogni salto.
+    let (brano_prima, ms_prima, vuoti_prima) = memoria.prima;
+    let a_secco = !tempo.in_pausa
+        && vuoti > vuoti_prima
+        && di_chi == brano_prima
+        && tempo.posizione_ms.saturating_sub(ms_prima) < AVANZAMENTO_MINIMO_MS;
+    memoria.giri_a_secco = if a_secco {
+        memoria.giri_a_secco.saturating_add(1)
+    } else {
+        0
+    };
+    tempo.in_attesa = memoria.giri_a_secco >= 2;
+    memoria.prima = (di_chi, tempo.posizione_ms, vuoti);
+    // Il filo dell'analisi sonora legge da qui se può leggere dal disco. Passa
+    // da un'atomica e non da `con_lettore` perché chiedere al lettore come sta,
+    // per sapere se disturbarlo, sarebbe gia` disturbarlo: la ragione per esteso
+    // sta in testa a `analisi.rs`.
+    crate::analisi::segna_riproduzione(!tempo.in_pausa && perso.is_none());
+    // Anche al sistema operativo, che dei salti relativi delle cuffie sa solo il
+    // «di quanto» e mai il «da dove»: senza questa riga il suo «da dove»
+    // resterebbe quello dell'ultimo `manda_stato`, cioè quasi sempre l'inizio
+    // del brano.
+    crate::media::segna_posizione(app, tempo.posizione_ms);
+    // Con il dispositivo perso la posizione è ferma per definizione: mandarla
+    // quattro volte al secondo direbbe «sta suonando» a chi interpola, che è la
+    // bugia che questo giro è venuto a togliere.
+    if perso.is_some() {
+        return ControlFlow::Continue(());
+    }
+    // Un colpo anche quando si è appena fermato, per non lasciare il cursore a
+    // interpolare nel vuoto.
+    if !tempo.in_pausa || !memoria.ultimo_fermo {
+        app.emetti("riproduzione:tempo", tempo);
+    }
+    memoria.ultimo_fermo = tempo.in_pausa;
+
+    // Il segno per «riprendi dov'eri», ogni tanto.
+    //
+    // Non a ogni giro: sarebbero quattro scritture al secondo sul database per
+    // un numero che serve una volta sola, alla prossima apertura. Ogni venti
+    // giri sono cinque secondi, che è la peggior imprecisione possibile su una
+    // cosa che si riprende a mano — e chi chiude a metà brano ritrova il segno a
+    // cinque secondi da dove l'aveva lasciato, non all'inizio.
+    //
+    // Con il brano accanto: vedi `playback::save_posizione`.
+    memoria.battiti = memoria.battiti.wrapping_add(1);
+    //
+    // Con una scadenza, come ogni altra scrittura di questo filo: senza, una
+    // libreria occupata lo teneva fermo qui, e con lui la posizione, il timer e
+    // la sorveglianza del dispositivo. Un segno saltato si riscrive fra cinque
+    // secondi.
+    if let Some(brano) = di_chi
+        && !tempo.in_pausa
+        && memoria.battiti.is_multiple_of(BATTITI_PER_SEGNO)
+        && let Some(stato_app) = app.try_state::<Stato>()
+    {
+        let _ = con_libreria_entro(&stato_app, ATTESA_ORDINARIA, |libreria| {
+            playback::save_posizione(&libreria.connection, brano, tempo.posizione_ms)
+        });
+    }
+    ControlFlow::Continue(())
 }
 
 /// Avvia il filo che manda le bande dello spettro.
@@ -779,10 +869,30 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
 ///
 /// Quando nessuno guarda dorme e non prende nessun lucchetto: la schermata
 /// chiusa non costa niente né qui né nella callback audio.
+///
+/// # Sorvegliato
+///
+/// Come l'orologio, e con una ragione in più per l'attesa dopo la caduta: questo
+/// filo gira trenta volte al secondo, e un panico che si ripetesse a ogni giro
+/// sarebbero trenta righe al secondo nel diario.
+///
+/// # A scadenze, non a sonni
+///
+/// Fino alla 3.0.1 dormiva [`PASSO_SPETTRO`] **dopo** il lavoro, quindi il
+/// periodo vero era il passo più il lavoro più l'attesa del lucchetto: una
+/// cadenza che deriva, e che la scena — che fa scorrere il passato a file che
+/// arrivano — vedeva come scorrimento irregolare. Adesso dorme fino a una
+/// scadenza assoluta che avanza di un passo per giro (vedi [`attesa_fino`]), e
+/// il lavoro del giro sta dentro il passo invece di aggiungersi.
 pub fn avvia_spettro(app: tauri::AppHandle) {
-    std::thread::Builder::new()
-        .name("rymembra-spettro".to_owned())
+    let avviato = std::thread::Builder::new()
+        .name(FILO_SPETTRO.to_owned())
         .spawn(move || {
+            let mut cadute_di_fila = 0_u32;
+            // Vive qui e non nel giro: è la presa da usare quando il lettore è
+            // occupato. Vedi `presa_spettro_se_libera`.
+            let mut presa = None;
+            let mut scadenza = std::time::Instant::now();
             loop {
                 // Trenta giri al secondo: è il filo che ha più probabilità di
                 // tutti di avere un messaggio in volo nell'istante in cui la
@@ -791,27 +901,159 @@ pub fn avvia_spettro(app: tauri::AppHandle) {
                 if crate::spegnimento::in_uscita() {
                     return;
                 }
-                let Some(stato_lettore) = app.try_state::<StatoLettore>() else {
-                    return;
-                };
-                if !stato_lettore
-                    .spettro
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    std::thread::sleep(PASSO_SPETTRO_FERMO);
-                    continue;
+                match crate::stato::sorvegliato(FILO_SPETTRO, || {
+                    giro_dello_spettro(&app, &mut presa)
+                }) {
+                    Some(Some(true)) => {
+                        cadute_di_fila = 0;
+                        let adesso = std::time::Instant::now();
+                        std::thread::sleep(attesa_fino(&mut scadenza, adesso, PASSO_SPETTRO));
+                    }
+                    Some(Some(false)) => {
+                        cadute_di_fila = 0;
+                        std::thread::sleep(PASSO_SPETTRO_FERMO);
+                        // Il primo giro dopo il riposo parte subito: la
+                        // scadenza vecchia è secondi indietro, e non c'è niente
+                        // da recuperare.
+                        scadenza = std::time::Instant::now();
+                    }
+                    Some(None) => return,
+                    None => {
+                        cadute_di_fila = cadute_di_fila.saturating_add(1);
+                        std::thread::sleep(crate::stato::attesa_dopo_la_caduta(cadute_di_fila));
+                        scadenza = std::time::Instant::now();
+                    }
                 }
-                // La quantizzazione avviene **dentro** il lucchetto, e non è
-                // una distrazione: è l'unico modo di leggere fino a 1024 bande
-                // senza copiarle prima in un vettore da buttare via subito dopo.
-                let bande = con_lettore(&stato_lettore, |lettore| {
-                    Ok(lettore.motore.spettro(BandeIpc::da))
-                });
-                if let Ok(Some(bande)) = bande {
-                    app.emetti("riproduzione:spettro", bande);
-                }
-                std::thread::sleep(PASSO_SPETTRO);
             }
-        })
-        .ok();
+        });
+    if let Err(err) = avviato {
+        nota!("[avvio] il filo dello spettro non è partito: {err}");
+    }
+}
+
+/// Quanto concedere di ritardo prima di ripartire invece di recuperare.
+///
+/// Mezzo passo. Un giro arrivato poco dopo la sua scadenza — un sonno che si è
+/// allungato di un millisecondo, un filo che il sistema ha servito tardi — parte
+/// subito, e la cadenza si tiene. Uno arrivato con un passo intero di ritardo
+/// **non** si recupera con un giro a raffica: due eventi a pochi millesimi l'uno
+/// dall'altro sarebbero proprio lo scatto che questa cadenza esiste per non
+/// mandare. Si riparte da adesso, e la fila persa resta persa.
+const TOLLERANZA_SPETTRO: Duration = Duration::from_millis(16);
+
+/// Quanto dormire fino alla scadenza, e la scadenza dopo.
+///
+/// Scadenze assolute: `scadenza` avanza di `passo` a ogni giro, qualunque cosa
+/// il giro abbia fatto, quindi il lavoro sta **dentro** il passo e la cadenza
+/// non deriva. Oltre [`TOLLERANZA_SPETTRO`] di ritardo si riparte da `adesso`,
+/// senza recuperare.
+fn attesa_fino(
+    scadenza: &mut std::time::Instant,
+    adesso: std::time::Instant,
+    passo: Duration,
+) -> Duration {
+    if adesso.saturating_duration_since(*scadenza) > TOLLERANZA_SPETTRO {
+        *scadenza = adesso;
+    }
+    let attesa = scadenza.saturating_duration_since(adesso);
+    *scadenza += passo;
+    attesa
+}
+
+/// Un giro del filo dello spettro: `Some(true)` se qualcuno guarda, `Some(false)`
+/// se no, `None` se lo stato del lettore se n'è andato e il filo deve uscire.
+///
+/// # Perché la trasformata si fa fuori dal lucchetto
+///
+/// Perché leggere le bande è svuotare l'anello dei campioni e trasformarne la
+/// finestra, trenta volte al secondo, e fino a qui si faceva con il lucchetto
+/// del lettore in mano: la pausa, il salto e gli annunci del motore si mettevano
+/// in fila dietro una trasformata per tutto il tempo in cui la schermata era
+/// aperta. Sotto il lucchetto adesso si prende soltanto la presa — un `Arc` da
+/// clonare, vedi `rymembra_play::Motore::presa_spettro` — e il resto si fa qui,
+/// a mani libere. La quantizzazione resta **dentro** il lucchetto della presa,
+/// che è suo e di nessun altro: è l'unico modo di leggere fino a 1024 bande
+/// senza copiarle prima in un vettore da buttare via subito dopo.
+///
+/// E nemmeno per la presa si aspetta più: vedi [`presa_spettro_se_libera`].
+fn giro_dello_spettro(
+    app: &tauri::AppHandle,
+    presa: &mut Option<rymembra_play::motore::PresaSpettro>,
+) -> Option<bool> {
+    let stato_lettore = app.try_state::<StatoLettore>()?;
+    if !stato_lettore
+        .spettro
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        // Nessuno guarda: la presa si lascia, così non tiene in vita il lettore
+        // di un motore che nel frattempo potrebbe essere sostituito.
+        *presa = None;
+        return Some(false);
+    }
+    if let Some(nuova) = presa_spettro_se_libera(&stato_lettore) {
+        *presa = Some(nuova);
+    }
+    if let Some(presa) = presa.as_ref()
+        && let Some(bande) = presa.leggi(BandeIpc::da)
+    {
+        app.emetti("riproduzione:spettro", bande);
+    }
+    Some(true)
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+    use std::time::Instant;
+
+    const PASSO: Duration = Duration::from_millis(33);
+
+    #[test]
+    fn la_cadenza_non_deriva_col_lavoro() {
+        // Il difetto di prima: dormire un passo **dopo** il lavoro fa del
+        // periodo il passo più il lavoro. Con le scadenze, dieci giri con dieci
+        // millesimi di lavoro l'uno finiscono esattamente a dieci passi.
+        let inizio = Instant::now();
+        let mut scadenza = inizio;
+        let mut adesso = inizio;
+        for _ in 0..10 {
+            adesso += Duration::from_millis(10);
+            let attesa = attesa_fino(&mut scadenza, adesso, PASSO);
+            adesso += attesa;
+        }
+        assert_eq!(adesso.duration_since(inizio), Duration::from_millis(9 * 33));
+        assert_eq!(
+            scadenza.duration_since(inizio),
+            Duration::from_millis(10 * 33)
+        );
+    }
+
+    #[test]
+    fn un_ritardo_piccolo_si_assorbe() {
+        // Un sonno allungato di qualche millesimo: il giro parte subito e la
+        // scadenza dopo resta dov'era, cioè la cadenza si tiene.
+        let inizio = Instant::now();
+        let mut scadenza = inizio + PASSO;
+        let attesa = attesa_fino(
+            &mut scadenza,
+            inizio + PASSO + Duration::from_millis(5),
+            PASSO,
+        );
+        assert_eq!(attesa, Duration::ZERO);
+        assert_eq!(scadenza, inizio + PASSO * 2);
+    }
+
+    #[test]
+    fn un_ritardo_grande_non_diventa_una_raffica() {
+        // Un filo fermo per un decimo di secondo non recupera tre giri a
+        // raffica: riparte da adesso, e il giro dopo è un passo più in là.
+        let inizio = Instant::now();
+        let mut scadenza = inizio + PASSO;
+        let tardi = inizio + Duration::from_millis(140);
+        let attesa = attesa_fino(&mut scadenza, tardi, PASSO);
+        assert_eq!(attesa, Duration::ZERO);
+        assert_eq!(scadenza, tardi + PASSO);
+        let dopo = attesa_fino(&mut scadenza, tardi + Duration::from_millis(1), PASSO);
+        assert_eq!(dopo, Duration::from_millis(32));
+    }
 }

@@ -65,7 +65,7 @@ use rymembra_play::impronta::{self, Esito};
 
 use crate::files::MusicFiles;
 use crate::library::db_error;
-use crate::playback::{Collocazione, SchedaSorgente, sorgente_da_scheda};
+use crate::playback::{SchedaSorgente, collocazione_su_disco, sorgente_da_scheda};
 
 /// Quanti brani per passata.
 ///
@@ -138,8 +138,14 @@ pub const OK: &str = "ok";
 /// esattamente quel che `Disponibilita::SoloAscolto` non permette. Un brano che
 /// non si possiede non entra nella somiglianza, e non ci entra per un motivo
 /// che non è tecnico.
+///
+/// Un brano d'immagine CD entra come gli altri, con il suo pezzo del disco:
+/// l'impronta è quella del brano, non dell'immagine intera. Resta fuori solo la
+/// riga d'immagine che non dice dove il brano comincia, come in
+/// `intensita::candidato_where`.
 const fn candidato_where() -> &'static str {
     "t.path IS NOT NULL
+     AND (t.immagine IS NULL OR t.inizio_cd IS NOT NULL)
      AND (i.track_id IS NULL
           OR i.versione <> ?1
           OR (i.vettore IS NULL AND i.esito <> 'muto' AND i.tentato_at < ?2))"
@@ -181,7 +187,8 @@ pub fn candidati(
     quanti: usize,
 ) -> Result<Vec<SchedaSorgente>, AppError> {
     let sql = format!(
-        "SELECT t.id, t.path, t.duration_ms, t.replaygain_track_db
+        "SELECT t.id, t.path, t.duration_ms, t.replaygain_track_db,
+                t.immagine, t.inizio_cd, t.fine_cd
          FROM tracks t
          LEFT JOIN track_impronta i ON i.track_id = t.id
          WHERE {}
@@ -200,21 +207,34 @@ pub fn candidati(
                 i64::try_from(quanti).unwrap_or(i64::MAX),
             ],
             |row| {
-                Ok(SchedaSorgente {
-                    track_id: row.get(0)?,
-                    // `candidato_where` ha già escluso i brani senza file:
-                    // qui `path` non è mai `NULL`, e un catalogo non arriva.
-                    collocazione: Collocazione::File(row.get(1)?),
-                    durata_ms: row.get(2)?,
-                    replaygain_db: row.get(3)?,
+                // `candidato_where` ha già escluso i brani senza file: qui
+                // `path` non è mai `NULL`, e un catalogo non arriva. Un brano
+                // d'immagine porta il suo pezzo, e la durata è la sua: è su
+                // quella che l'impronta sceglie i trenta secondi da leggere.
+                let track_id: i64 = row.get(0)?;
+                let percorso: String = row.get(1)?;
+                let durata_ms: i64 = row.get(2)?;
+                let replaygain_db: Option<f64> = row.get(3)?;
+                let collocazione =
+                    collocazione_su_disco(&percorso, row.get(4)?, row.get(5)?, row.get(6)?);
+                Ok(collocazione.map(|collocazione| SchedaSorgente {
+                    track_id,
+                    collocazione,
+                    durata_ms,
+                    replaygain_db,
                     picco: None,
-                })
+                }))
             },
         )
         .map_err(|err| db_error("elenco dei brani da analizzare", &err))?;
-    righe
+    // Una riga d'immagine con dei confini che non stanno in un CD si salta:
+    // vedi `collocazione_su_disco`. La scansione non ne scrive.
+    Ok(righe
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| db_error("elenco dei brani da analizzare", &err))
+        .map_err(|err| db_error("elenco dei brani da analizzare", &err))?
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 /// Misura **un** brano. Non tocca il database.
@@ -548,6 +568,7 @@ mod prove {
 
     use super::*;
     use crate::db;
+    use crate::playback::Collocazione;
 
     fn libreria() -> Connection {
         db::open_in_memory()
@@ -610,6 +631,40 @@ mod prove {
         let candidati = candidati(&connection, 0, 10).expect("candidati");
         assert_eq!(candidati.len(), 1);
         assert_eq!(candidati.first().map(|c| c.track_id), Some(1));
+    }
+
+    #[test]
+    fn un_brano_d_immagine_porta_il_suo_pezzo_e_la_sua_durata() {
+        // L'impronta legge trenta secondi scelti sulla durata: deve essere
+        // quella del brano, e il pezzo quello suo, o si misura il disco.
+        let connection = libreria();
+        connection
+            .execute_batch(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, duration_ms,
+                                     file_size, date_added, date_modified,
+                                     replaygain_track_db, immagine, inizio_cd, fine_cd)
+                 VALUES (1, '/musica/disco/Album.cue|02', 'k1', 'T', 'A', 'AL', 240000,
+                         1, 2, 0, -6.5, '/musica/disco/Album.ape', 18000, 36000),
+                        (2, '/musica/disco/Album.cue|03', 'k2', 'T', 'A', 'AL', 1000,
+                         1, 1, 0, NULL, '/musica/disco/Album.ape', NULL, NULL);",
+            )
+            .expect("brani d'immagine");
+        assert_eq!(quanti_mancano(&connection, 0).expect("conteggio"), 1);
+        let candidati = candidati(&connection, 0, 10).expect("candidati");
+        let [scheda] = candidati.as_slice() else {
+            panic!("un solo candidato, non {}", candidati.len());
+        };
+        assert_eq!(scheda.track_id, 1);
+        assert_eq!(scheda.durata_ms, 240_000);
+        assert_eq!(scheda.replaygain_db, Some(-6.5));
+        assert_eq!(
+            scheda.collocazione,
+            Collocazione::Segmento {
+                immagine: "/musica/disco/Album.ape".to_owned(),
+                inizio_cd: 18_000,
+                fine_cd: Some(36_000),
+            }
+        );
     }
 
     #[test]

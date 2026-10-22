@@ -19,6 +19,12 @@
 //! testata e sottomoduli allo stesso modo: ognuno di loro rimanda qui, e
 //! nessuno la riscrive per conto suo.
 //!
+//! Un terzo, `StatoLettore::preferenze`, sta **fuori** da quell'ordine: si
+//! prende per primo e senza niente in mano, e chi lo tiene prende la libreria,
+//! la lascia, e solo dopo il lettore. Serve a mettere in fila i comandi delle
+//! preferenze da quando la loro scrittura non sta più dentro il lucchetto del
+//! lettore — vedi `cambia_preferenza`.
+//!
 //! # E la terza attesa, che non è un lucchetto: la rete
 //!
 //! Da quando un brano può non essere un file, aprirlo può voler dire aprire una
@@ -235,6 +241,17 @@ const BATTITI_PER_SEGNO: u32 = 20;
 /// un canale con un proprietario e un ciclo di vita da gestire. Sono due
 /// riscritture del trasporto per un guadagno che a 64 bande non si misura; a
 /// 1024 si misurerebbe, ma 1024 barre le chiede chi ha deciso di pagarle.
+///
+/// Riguardato nella 3.0.2, con due fatti in più, e confermato. Il primo è nei
+/// sorgenti di Tauri 2.12: anche il canale finisce in un `eval` sul filo della
+/// finestra — `ipc/channel.rs` manda direttamente i JSON fino a 8 KB e i grezzi
+/// sotto i 1024 byte, e oltre fa fare alla pagina un `fetch` in più — quindi non
+/// toglie di mezzo il filo che decide quando un evento arriva, che era la sola
+/// cosa che contasse. Il secondo è il banco di misura del 22-10-2026, a 512
+/// bande su questa codifica: 29,9 eventi al secondo, nessuna raffica, nessun
+/// fotogramma perso. Lo scatto che si vedeva non era il peso dell'evento ma il
+/// suo **ritmo**, e lo toglie l'orologio della scena (`orologioSpettro.ts`), che
+/// non disegna più le file quando arrivano.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BandeIpc {
@@ -824,6 +841,18 @@ pub struct StatoLettore {
     /// la sveglia per farlo. Fuori dal lucchetto per la ragione di
     /// [`StatoLettore::spegnimento`]: la legge l'orologio a ogni giro.
     pub sfumando_fino: std::sync::atomic::AtomicI64,
+    /// Mette in fila i comandi che cambiano una preferenza del lettore.
+    ///
+    /// Non protegge un dato: protegge un **ordine**. La scrittura di una
+    /// preferenza è uscita dal lucchetto del lettore, e quel lucchetto era
+    /// anche quel che impediva a due comandi ravvicinati di arrivare al disco in
+    /// un ordine e al lettore in quello opposto. Vedi [`cambia_preferenza`].
+    ///
+    /// Si prende **per primo e da solo**: chi lo tiene prende poi la libreria e
+    /// la lascia, e poi il lettore; nessuno lo chiede tenendo in mano uno degli
+    /// altri due. Così non entra nell'ordine «prima il lettore, poi la
+    /// libreria», e non può chiudere un cerchio con nessuno.
+    preferenze: Mutex<()>,
 }
 
 /// Un lavoro da fare dopo, in ordine, sul filo «rymembra-seguito».
@@ -1000,6 +1029,7 @@ impl StatoLettore {
                 coda_da_salvare: std::sync::atomic::AtomicBool::new(false),
                 sfumando_fino: std::sync::atomic::AtomicI64::new(0),
                 aprendo: std::sync::atomic::AtomicI64::new(NESSUN_BRANO),
+                preferenze: Mutex::new(()),
             },
             orecchio,
             orecchio_dispositivi,
@@ -1104,12 +1134,34 @@ pub(crate) fn aspetta_il_seguito(app: &tauri::AppHandle, entro: Duration) {
 /// spettro — il nucleo può normalizzare, e la finestra deve vedere il valore
 /// vero.
 fn uscita_scelta(app: &tauri::AppHandle) -> Option<String> {
-    let stato = app.state::<Stato>();
+    let stato = app.try_state::<Stato>()?;
     con_libreria(&stato, |libreria| {
         rymembra_app::playback::load_uscita(&libreria.connection)
     })
     .ok()
     .flatten()
+}
+
+/// La libreria, se è ancora fra gli stati gestiti.
+///
+/// `try_state` e non `state`, ed è la regola di tutto questo modulo da quando i
+/// suoi fili sono sorvegliati: `state` **panica** se lo stato non c'è, e le
+/// strade che passano di qui girano sui fili di sottofondo — il preparatore,
+/// gli annunci del motore, il seguito, il sorvegliante dei dispositivi — che
+/// possono ritrovarsi vivi mentre l'applicazione si chiude e gli stati sono
+/// già stati lasciati cadere. Un panico lì voleva dire un filo morto in
+/// silenzio; adesso è un errore che chi chiama sa già trattare. La stessa
+/// forma, e lo stesso codice, di `comandi::libreria_di`.
+fn libreria_di<'a>(
+    app: &'a tauri::AppHandle,
+    cosa: &'static str,
+) -> Result<State<'a, Stato>, AppError> {
+    app.try_state::<Stato>().ok_or_else(|| {
+        AppError::new(ErrorCode::InternalAborted {
+            what: Some(cosa.to_owned()),
+        })
+        .with_cause("la libreria non è più fra gli stati gestiti")
+    })
 }
 
 /// Stampa se il dispositivo audio si è aperto, e come.
@@ -1218,6 +1270,35 @@ fn prendi_il_lettore(
     }
 }
 
+/// La presa dello spettro, se il lettore è libero **adesso** — e niente se no.
+///
+/// La usa il filo dello spettro, che trenta volte al secondo prendeva il
+/// lettore con l'attesa senza limite degli altri fili: la presa è un `Arc` da
+/// clonare, ma per clonarlo si metteva in fila dietro a chiunque tenesse il
+/// lucchetto, e ogni attesa era un evento in ritardo — cioè uno scatto nella
+/// scena, che scorre a file che arrivano. Adesso non aspetta mai: se il lettore
+/// è occupato, il filo legge con la presa che aveva già.
+///
+/// Quella presa cambia solo quando cambia il motore, cioè a una riapertura del
+/// dispositivo, e quella vecchia non fa danni: l'anello di un motore buttato
+/// non lo riempie più nessuno, e il lettore lo legge come silenzio
+/// (`rymembra_play::spettro`, «Quando il suono si ferma») finché un giro non
+/// trova il lettore libero e la rinnova.
+///
+/// Il veleno si recupera, come in [`prendi_il_lettore`]; un lettore che non
+/// c'è — nessun dispositivo — non ha una presa da dare.
+fn presa_spettro_se_libera(stato: &StatoLettore) -> Option<rymembra_play::motore::PresaSpettro> {
+    let guardia = match stato.lettore.try_lock() {
+        Ok(guardia) => guardia,
+        Err(std::sync::TryLockError::Poisoned(veleno)) => veleno.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+    };
+    guardia
+        .as_ref()
+        .ok()
+        .map(|lettore| lettore.motore.presa_spettro())
+}
+
 /// Un seme per il mescolamento.
 ///
 /// L'orologio: il dominio non ne ha uno — è la sua regola — quindi glielo porta
@@ -1256,13 +1337,14 @@ fn chiudi_ascolto(app: &tauri::AppHandle, lettore: &mut Lettore) {
 /// Scrive un ascolto finito, e avvisa chi ne deve sapere. Gira sul filo del
 /// seguito, senza il lucchetto del lettore.
 fn scrivi_ascolto(app: &tauri::AppHandle, ascolto: &Listen) {
-    let stato = app.state::<Stato>();
-    let scritto = con_libreria(&stato, |libreria| {
-        // L'ascolto si intesta a questo computer. Non è contabilità: il conteggio
-        // è la somma dei contatori di tutti i dispositivi, e un ascolto senza
-        // mittente non saprebbe in quale sommarsi.
-        let dispositivo = crate::nuvola::dispositivo(&libreria.connection)?;
-        playback::record_play(&mut libreria.connection, ascolto, &dispositivo)
+    let scritto = libreria_di(app, "ascolto").and_then(|stato| {
+        con_libreria(&stato, |libreria| {
+            // L'ascolto si intesta a questo computer. Non è contabilità: il
+            // conteggio è la somma dei contatori di tutti i dispositivi, e un
+            // ascolto senza mittente non saprebbe in quale sommarsi.
+            let dispositivo = crate::nuvola::dispositivo(&libreria.connection)?;
+            playback::record_play(&mut libreria.connection, ascolto, &dispositivo)
+        })
     });
     match scritto {
         // `true` vuol dire che il conteggio è cresciuto davvero. Segnalarlo
@@ -1324,7 +1406,10 @@ const APERTURA_BRANO_NOME: &str = "apertura-brano";
 /// rinuncia dopo [`ATTESA_DELLA_FINESTRA`] — il brano si apre lo stesso, col
 /// livello suo: meglio un disco un po' meno fedele che un brano che non parte.
 fn intorno_di(app: &tauri::AppHandle, track_id: i64) -> playback::Intorno {
-    con_lettore(&app.state::<StatoLettore>(), |lettore| {
+    let Some(stato) = app.try_state::<StatoLettore>() else {
+        return playback::Intorno::default();
+    };
+    con_lettore(&stato, |lettore| {
         let (prima, dopo) = lettore.coda.neighbors(track_id);
         Ok(playback::Intorno {
             mescolato: lettore.coda.shuffle(),
@@ -1392,15 +1477,16 @@ fn intorno_di(app: &tauri::AppHandle, track_id: i64) -> playback::Intorno {
 /// flusso. Fino alla 2.4.0 anche il flusso diceva `fs.networkUnavailable`, e la
 /// finestra rispondeva «la cartella di rete non risponde: la VPN caduta, il
 /// cavo staccato» per un brano dell'Internet Archive che di cartelle non ne ha.
-/// `playback.formatUnsupported` per un contenitore che non si riconosce, e i
-/// `net.*` di [`apri_flusso`] quando la rete risponde prima della scadenza per
-/// dire di no.
+/// `playback.formatUnsupported` per un contenitore che non si riconosce — o il
+/// cui riconoscimento cade in panico, che non è la rete: vedi
+/// [`apertura_mancata`] — e i `net.*` di [`apri_flusso`] quando la rete risponde
+/// prima della scadenza per dire di no.
 fn brano_di(
     app: &tauri::AppHandle,
     track_id: i64,
     formato: rymembra_play::FormatoUscita,
 ) -> Result<rymembra_play::BranoAperto, AppError> {
-    let stato = app.state::<Stato>();
+    let stato = libreria_di(app, "apertura del brano")?;
     let intorno = intorno_di(app, track_id);
     let scheda = con_libreria(&stato, |libreria| {
         playback::scheda_da_suonare(&libreria.connection, track_id, intorno)
@@ -1411,12 +1497,23 @@ fn brano_di(
     let remoto = riferimento_di(&scheda);
     // Il percorso si copia prima per la stessa ragione: senza di lui l'errore
     // direbbe «la rete non risponde» senza dire quale cartella andare a
-    // ricollegare.
-    let percorso = scheda.collocazione.percorso().map(str::to_owned);
+    // ricollegare. È il file che si **apre** — per un brano d'immagine CD
+    // l'immagine, non il percorso `…\Album.cue|03` che in tabella lo nomina e
+    // che `percorso()` giustamente non dà: senza, un brano d'immagine sul NAS
+    // avrebbe preso la scadenza corta di un disco locale.
+    let percorso = scheda.collocazione.file_audio().map(str::to_owned);
     // I cataloghi si clonano fuori dallo stato: un `State` non attraversa il
     // confine di un filo, e il clone è quasi gratis — l'agente sta in un `Arc` e
     // la riserva di connessioni resta la stessa (vedi [`StatoLettore::cataloghi`]).
-    let cataloghi = app.state::<StatoLettore>().cataloghi.clone();
+    let cataloghi = app
+        .try_state::<StatoLettore>()
+        .map(|stato| stato.cataloghi.clone())
+        .ok_or_else(|| {
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some("apertura del brano".to_owned()),
+            })
+            .with_cause("il lettore non è più fra gli stati gestiti")
+        })?;
     let riferimento = remoto.clone();
     // Un file su una cartella di rete aspetta quanto un flusso: un NAS che
     // dorme fa girare i dischi in otto, quindici secondi, e Windows ricollega
@@ -1432,33 +1529,82 @@ fn brano_di(
     } else {
         APERTURA_BRANO
     };
-    rymembra_app::scadenza::con_scadenza(APERTURA_BRANO_NOME, scadenza, move || match riferimento {
-        Some(rif) => {
-            let (flusso, da_suonare) = apri_flusso(&cataloghi, &rif)?;
-            let sorgente = sorgente_da_flusso(&scheda, &da_suonare, flusso);
-            // Il riconoscimento del contenitore legge dalla rete, e un guasto lì
-            // arriva col codice delle cartelle: vedi [`interruzione_di_flusso`].
-            rymembra_play::BranoAperto::apri(sorgente, formato).map_err(interruzione_di_flusso)
-        }
-        None => {
-            let sorgente = playback::sorgente_da_scheda(&rymembra_app::files::LocalFiles, &scheda)?;
-            rymembra_play::BranoAperto::apri(sorgente, formato)
-        }
+    let esito =
+        rymembra_app::scadenza::con_scadenza_o_caduta(APERTURA_BRANO_NOME, scadenza, move || {
+            match riferimento {
+                Some(rif) => {
+                    let (flusso, da_suonare) = apri_flusso(&cataloghi, &rif)?;
+                    let sorgente = sorgente_da_flusso(&scheda, &da_suonare, flusso);
+                    // Il riconoscimento del contenitore legge dalla rete, e un
+                    // guasto lì arriva col codice delle cartelle: vedi
+                    // [`interruzione_di_flusso`].
+                    rymembra_play::BranoAperto::apri(sorgente, formato)
+                        .map_err(interruzione_di_flusso)
+                }
+                None => {
+                    let sorgente =
+                        playback::sorgente_da_scheda(&rymembra_app::files::LocalFiles, &scheda)?;
+                    rymembra_play::BranoAperto::apri(sorgente, formato)
+                }
+            }
+        });
+    esito.unwrap_or_else(|mancato| {
+        Err(apertura_mancata(
+            &mancato,
+            scadenza,
+            remoto.is_some(),
+            percorso,
+        ))
     })
-    .unwrap_or_else(|| {
-        let causa = format!(
-            "l'apertura non è finita entro {} secondi",
-            scadenza.as_secs()
-        );
-        if remoto.is_some() {
-            return Err(AppError::new(ErrorCode::NetTimeout {
-                url: None,
-                timeout_ms: u64::try_from(scadenza.as_millis()).ok(),
-            })
-            .with_cause(causa));
+}
+
+/// Perché un brano non si è aperto, quando l'apertura non ha nemmeno risposto.
+///
+/// # Le due mancate, e perché non sono la stessa
+///
+/// **Scaduta**: l'apertura non è tornata in tempo. Su un file è una cartella
+/// di rete che non risponde, su un flusso un catalogo che non risponde: in
+/// tutti e due i casi aspettare può bastare, e il codice è ritentabile —
+/// `fs.networkUnavailable` o `net.timeout`, e la fascia offre «Riprova».
+///
+/// **Caduta**: l'apertura è tornata **subito**, ma senza un risultato, perché
+/// il riconoscimento del contenitore — codice di terzi davanti a byte
+/// qualunque — è andato in panico. Fino a questa versione le due erano lo
+/// stesso `None`, e un file locale rovinato si presentava come «la cartella di
+/// rete non risponde»: «Riprova» per un file che non si aprirà mai, a ogni
+/// tentativo, per sempre. Adesso è `playback.formatUnsupported`, che non è
+/// ritentabile e dice la cosa vera — il file non si legge — con il messaggio
+/// del panico nella causa, per il diario. Il codice è già nel catalogo e già
+/// tradotto: un codice nuovo vorrebbe dire una frase che la finestra non ha.
+fn apertura_mancata(
+    mancato: &rymembra_app::scadenza::Mancato,
+    scadenza: Duration,
+    da_un_catalogo: bool,
+    percorso: Option<String>,
+) -> AppError {
+    match mancato {
+        rymembra_app::scadenza::Mancato::Caduto { messaggio } => AppError::new(
+            ErrorCode::PlaybackFormatUnsupported { format: None },
+        )
+        .with_cause(format!(
+            "il riconoscimento del formato è caduto: {}",
+            messaggio.as_deref().unwrap_or("panico senza messaggio")
+        )),
+        rymembra_app::scadenza::Mancato::Scaduto => {
+            let causa = format!(
+                "l'apertura non è finita entro {} secondi",
+                scadenza.as_secs()
+            );
+            if da_un_catalogo {
+                return AppError::new(ErrorCode::NetTimeout {
+                    url: None,
+                    timeout_ms: u64::try_from(scadenza.as_millis()).ok(),
+                })
+                .with_cause(causa);
+            }
+            AppError::new(ErrorCode::FsNetworkUnavailable { path: percorso }).with_cause(causa)
         }
-        Err(AppError::new(ErrorCode::FsNetworkUnavailable { path: percorso }).with_cause(causa))
-    })
+    }
 }
 
 /// Compone lo stato e lo manda alla finestra — e al sistema operativo.
@@ -1567,17 +1713,22 @@ fn abbozzo(app: &tauri::AppHandle, lettore: &Lettore) -> Abbozzo {
     // Si corregge qui e non nella finestra perché di stato ce n'è uno: le
     // schermate che leggono `inPausa` sono tre, e ognuna che se lo aggiusti per
     // conto suo è un'occasione di non farlo.
+    // `try_state` e non `state`: la fotografia si scatta anche dai fili di
+    // sottofondo — gli annunci, l'orologio, il sorvegliante — e uno stato che
+    // non c'è più vuol dire un'applicazione che si chiude, non un panico.
+    let stato_lettore = app.try_state::<StatoLettore>();
     let guasto = guasto_di(&lettore.motore).map(|mut guasto| {
         // Il motore si è perso **sull'uscita fissata**: è lei che si aspetta.
         // `uscita_voluta` è un lucchetto foglia — nessuno lo tiene mentre
         // chiede quello del lettore — quindi prenderlo qui, col lettore in
         // mano, non cambia l'ordine di niente.
-        let voluta = app
-            .state::<StatoLettore>()
-            .uscita_voluta
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let voluta = stato_lettore.as_ref().and_then(|stato| {
+            stato
+                .uscita_voluta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        });
         // Non quando a cadere è stato il filo della decodifica: lì l'uscita è
         // al suo posto, e «in attesa delle cuffie» manderebbe a cercare un
         // cavo che non c'entra.
@@ -1602,10 +1753,10 @@ fn abbozzo(app: &tauri::AppHandle, lettore: &Lettore) -> Abbozzo {
             eq_attivo: lettore.eq.attivo,
             eq_guadagni: lettore.eq.guadagni.clone(),
             replaygain: nome_normalizzazione(lettore.normalizzazione).to_owned(),
-            // Solo una lettura atomica: `state` restituisce il registro, non
-            // prende il lucchetto — che del resto è già in mano a chi ci ha
+            // Solo una lettura atomica: `try_state` restituisce il registro,
+            // non prende il lucchetto — che del resto è già in mano a chi ci ha
             // chiamati.
-            spegnimento_ms: quanto_manca(&app.state::<StatoLettore>()),
+            spegnimento_ms: stato_lettore.as_ref().and_then(|stato| quanto_manca(stato)),
             autoplay: lettore.autoplay,
             dissolvenza_s: lettore.dissolvenza_s,
             latenza_ms: lettore.latenza_ms,
@@ -1657,8 +1808,14 @@ fn completa(
     //
     // Quando la libreria non risponde, la scheda si prende dal ricordo: vedi
     // `StatoLettore::scheda_corrente`.
+    // Gli stati con `try_state`: questa metà gira sul filo del seguito, e
+    // uscendo gli stati possono non esserci più. Senza la libreria si legge il
+    // ricordo; senza il lettore non c'è nemmeno un ricordo, e lo stato parte
+    // senza scheda.
     let (brano, formato) = corrente.map_or((None, None), |id| {
-        let stato_app = app.state::<Stato>();
+        let Some(stato_lettore) = app.try_state::<StatoLettore>() else {
+            return (None, None);
+        };
         let leggi = |libreria: &mut crate::stato::Libreria| {
             let brano = rymembra_app::library::read_summary(&libreria.connection, id)?;
             let formato = if playback::load_formato_visibile(&libreria.connection)? {
@@ -1668,11 +1825,10 @@ fn completa(
             };
             Ok((brano, formato))
         };
-        let letto = match attesa {
+        let letto = app.try_state::<Stato>().and_then(|stato_app| match attesa {
             Some(entro) => con_libreria_entro(&stato_app, entro, leggi),
             None => Some(con_libreria(&stato_app, leggi)),
-        };
-        let stato_lettore = app.state::<StatoLettore>();
+        });
         let mut ricordo = stato_lettore
             .scheda_corrente
             .lock()
@@ -2007,9 +2163,10 @@ fn fermato(app: &tauri::AppHandle, stato_lettore: &StatoLettore, lettore: &mut L
         && !rete_caduta
     {
         in_ordine(app, move |app| {
-            let stato_app = app.state::<Stato>();
-            let _ = con_libreria(&stato_app, |libreria| {
-                playback::save_posizione(&libreria.connection, id, 0)
+            let _ = libreria_di(app, "segno di fine brano").and_then(|stato_app| {
+                con_libreria(&stato_app, |libreria| {
+                    playback::save_posizione(&libreria.connection, id, 0)
+                })
             });
         });
     }
@@ -2023,7 +2180,9 @@ fn fermato(app: &tauri::AppHandle, stato_lettore: &StatoLettore, lettore: &mut L
 /// di tenerla da parte. Nel dubbio — la libreria non risponde — si dice di no,
 /// cioè si lascia l'errore com'era.
 fn e_un_flusso(app: &tauri::AppHandle, track_id: i64) -> bool {
-    let stato = app.state::<Stato>();
+    let Some(stato) = app.try_state::<Stato>() else {
+        return false;
+    };
     con_libreria(&stato, |libreria| {
         playback::scheda_sorgente(&libreria.connection, track_id)
     })
@@ -2104,13 +2263,57 @@ fn annota_ripresa_da(stato: &StatoLettore, posizione: Posizione) -> Option<i64> 
 /// vale zero, cioè «non si sa» — e per il conteggio dell'ascolto una durata
 /// ignota è un caso che la regola del dominio conosce già.
 fn durata_di(app: &tauri::AppHandle, track_id: i64) -> u64 {
-    let stato = app.state::<Stato>();
+    let Some(stato) = app.try_state::<Stato>() else {
+        return 0;
+    };
     con_libreria_entro(&stato, ATTESA_SCHEDA, |libreria| {
         rymembra_app::library::read_summary(&libreria.connection, track_id)
     })
     .and_then(Result::ok)
     .flatten()
     .map_or(0, |b| u64::try_from(b.duration_ms).unwrap_or(0))
+}
+
+/// Scrive una preferenza del lettore, la rilegge, e la consegna al lettore.
+///
+/// # Il difetto che toglie
+///
+/// I comandi che cambiano una manopola del lettore — l'autoplay, la
+/// dissolvenza, la latenza, la normalizzazione — scrivevano sul database
+/// **dentro** il lucchetto del lettore. Una scansione che tiene la libreria
+/// per secondi teneva così fermo anche il lettore: la pausa premuta in quel
+/// momento, l'annuncio del brano dopo, l'orologio, tutti in fila dietro a una
+/// preferenza da salvare.
+///
+/// Adesso si scrive e si rilegge **prima**, con il solo lucchetto della
+/// libreria; il lettore si prende dopo, il tempo di copiare il valore riletto.
+///
+/// # Perché un lucchetto suo, [`StatoLettore::preferenze`]
+///
+/// Perché quello del lettore, tenuto attraverso la scrittura, faceva anche un
+/// altro lavoro: metteva in fila due comandi ravvicinati sulla stessa manopola.
+/// Senza, due cursori mossi in fretta potevano scrivere sul disco in un ordine
+/// e arrivare al lettore nell'ordine opposto, e la finestra mostrare un valore
+/// diverso da quello che sarebbe tornato al prossimo avvio. Questo lucchetto
+/// fa solo quello: lo prendono soltanto i comandi delle preferenze, sempre per
+/// primo e senza nient'altro in mano — vedi l'ordine scritto in testa al
+/// modulo — e lo tengono per una scrittura e una copia.
+///
+/// `applica` riceve l'esito della scrittura com'è: è lei a sapere qual è il
+/// ripiego giusto quando il database non ha risposto.
+fn cambia_preferenza<T, R>(
+    app: &tauri::AppHandle,
+    stato: &StatoLettore,
+    cosa: &'static str,
+    scrivi: impl FnOnce(&mut crate::stato::Libreria) -> Result<T, AppError>,
+    applica: impl FnOnce(&mut Lettore, Result<T, AppError>) -> Result<R, AppError>,
+) -> Result<R, AppError> {
+    let _in_fila = stato
+        .preferenze
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let scritto = libreria_di(app, cosa).and_then(|libreria| con_libreria(&libreria, scrivi));
+    con_lettore(stato, |lettore| applica(lettore, scritto))
 }
 
 /// Accende o spegne la coda che non finisce.
@@ -2120,21 +2323,25 @@ fn durata_di(app: &tauri::AppHandle, track_id: i64) -> u64 {
 /// prossimo cambio di traccia — che non ci sarebbe.
 #[tauri::command(async)]
 pub fn autoplay(app: tauri::AppHandle, stato: State<'_, StatoLettore>, attivo: bool) -> Esito<()> {
-    con_lettore(&stato, |lettore| {
-        let stato_app = app.state::<Stato>();
-        // Si rilegge quel che è stato scritto, come per la normalizzazione: se
-        // il salvataggio fallisce, l'interruttore non deve restare acceso su
-        // una scelta che non sopravvivrà alla chiusura.
-        let salvato = con_libreria(&stato_app, |libreria| {
+    // Si rilegge quel che è stato scritto, come per la normalizzazione: se il
+    // salvataggio fallisce, l'interruttore non deve restare acceso su una
+    // scelta che non sopravvivrà alla chiusura. La scrittura fuori dal
+    // lucchetto del lettore: vedi [`cambia_preferenza`].
+    cambia_preferenza(
+        &app,
+        &stato,
+        "autoplay",
+        |libreria| {
             playback::save_autoplay(&libreria.connection, attivo)?;
             playback::load_autoplay(&libreria.connection)
-        })
-        .unwrap_or(attivo);
-        lettore.autoplay = salvato;
-        prepara_prossimo(&app, lettore);
-        manda_stato(&app, lettore);
-        Ok(())
-    })
+        },
+        |lettore, salvato| {
+            lettore.autoplay = salvato.unwrap_or(attivo);
+            prepara_prossimo(&app, lettore);
+            manda_stato(&app, lettore);
+            Ok(())
+        },
+    )
     .map_err(errore)
 }
 
@@ -2155,29 +2362,34 @@ pub fn autoplay(app: tauri::AppHandle, stato: State<'_, StatoLettore>, attivo: b
 /// punto in cui la dissolvenza esiste per non farne.
 ///
 /// `(async)` per la ragione scritta su `suono::normalizzazione`: si scrive sul
-/// database dentro il lucchetto del lettore, e sul filo della finestra una
-/// libreria occupata fermava la finestra.
+/// database, e sul filo della finestra una libreria occupata fermava la
+/// finestra. Il lucchetto del lettore, invece, non aspetta più la scrittura:
+/// vedi [`cambia_preferenza`].
 #[tauri::command(async)]
 pub fn dissolvenza(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     secondi: u64,
 ) -> Esito<()> {
-    con_lettore(&stato, |lettore| {
-        let stato_app = app.state::<Stato>();
-        // Riletta invece che ripetuta, come per l'autoplay: `save_crossfade`
-        // taglia al massimo, e senza rileggere il cursore resterebbe su un
-        // valore che il database ha rifiutato.
-        let salvato = con_libreria(&stato_app, |libreria| {
+    // Riletta invece che ripetuta, come per l'autoplay: `save_crossfade` taglia
+    // al massimo, e senza rileggere il cursore resterebbe su un valore che il
+    // database ha rifiutato.
+    cambia_preferenza(
+        &app,
+        &stato,
+        "dissolvenza",
+        |libreria| {
             playback::save_crossfade(&libreria.connection, secondi)?;
             playback::load_crossfade(&libreria.connection)
-        })
-        .unwrap_or(secondi.min(playback::CROSSFADE_MASSIMO_S));
-        lettore.motore.dissolvenza(salvato.saturating_mul(1000));
-        lettore.dissolvenza_s = salvato;
-        manda_stato(&app, lettore);
-        Ok(())
-    })
+        },
+        |lettore, salvato| {
+            let salvato = salvato.unwrap_or(secondi.min(playback::CROSSFADE_MASSIMO_S));
+            lettore.motore.dissolvenza(salvato.saturating_mul(1000));
+            lettore.dissolvenza_s = salvato;
+            manda_stato(&app, lettore);
+            Ok(())
+        },
+    )
     .map_err(errore)
 }
 
@@ -2211,21 +2423,27 @@ pub fn dissolvenza(
 /// `(async)`, come [`dissolvenza`].
 #[tauri::command(async)]
 pub fn latenza(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: i64) -> Esito<i64> {
-    con_lettore(&stato, |lettore| {
-        let stato_app = app.state::<Stato>();
-        // Riletta invece che ripetuta, come per la dissolvenza: `save_latenza`
-        // taglia, e senza rileggere il cursore resterebbe su un valore che il
-        // database ha rifiutato.
-        let salvato = con_libreria(&stato_app, |libreria| {
+    // Riletta invece che ripetuta, come per la dissolvenza: `save_latenza`
+    // taglia, e senza rileggere il cursore resterebbe su un valore che il
+    // database ha rifiutato.
+    cambia_preferenza(
+        &app,
+        &stato,
+        "latenza",
+        |libreria| {
             playback::save_latenza(&libreria.connection, ms)?;
             playback::load_latenza(&libreria.connection)
-        })
-        .unwrap_or_else(|_| ms.clamp(-playback::LATENZA_MASSIMA_MS, playback::LATENZA_MASSIMA_MS));
-        lettore.motore.latenza(salvato);
-        lettore.latenza_ms = salvato;
-        manda_stato(&app, lettore);
-        Ok(salvato)
-    })
+        },
+        |lettore, salvato| {
+            let salvato = salvato.unwrap_or_else(|_| {
+                ms.clamp(-playback::LATENZA_MASSIMA_MS, playback::LATENZA_MASSIMA_MS)
+            });
+            lettore.motore.latenza(salvato);
+            lettore.latenza_ms = salvato;
+            manda_stato(&app, lettore);
+            Ok(salvato)
+        },
+    )
     .map_err(errore)
 }
 
@@ -2281,7 +2499,7 @@ pub fn spettro_bande_scegli(
     stato: State<'_, StatoLettore>,
     quante: u16,
 ) -> Esito<u16> {
-    let stato_app = app.state::<Stato>();
+    let stato_app = libreria_di(&app, "barre dello spettro").map_err(errore)?;
     let rimaste = con_libreria(&stato_app, |libreria| {
         playback::save_spettro_bande(&libreria.connection, quante)?;
         playback::load_spettro_bande(&libreria.connection)
@@ -2408,7 +2626,7 @@ pub fn formato_visibile_scegli(
     stato: State<'_, StatoLettore>,
     acceso: bool,
 ) -> Esito<bool> {
-    let stato_app = app.state::<Stato>();
+    let stato_app = libreria_di(&app, "formato visibile").map_err(errore)?;
     let rimasto = con_libreria(&stato_app, |libreria| {
         playback::save_formato_visibile(&libreria.connection, acceso)?;
         playback::load_formato_visibile(&libreria.connection)
@@ -2459,7 +2677,7 @@ pub fn suona(
 /// che comincia da un altro brano è una radio che ha ignorato il gesto.
 #[tauri::command(async)]
 pub fn radio(app: tauri::AppHandle, stato: State<'_, StatoLettore>, brano: i64) -> Esito<()> {
-    let stato_app = app.state::<Stato>();
+    let stato_app = libreria_di(&app, "radio").map_err(errore)?;
     let coda = con_libreria(&stato_app, |libreria| {
         rymembra_app::autoplay::radio(
             &libreria.connection,
@@ -2843,13 +3061,13 @@ pub fn riprendi(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<
     };
     let da_ms = match (chiesto, corrente) {
         (Some(ms), _) => ms,
-        (None, Some(id)) => {
-            let stato_app = app.state::<Stato>();
-            con_libreria(&stato_app, |libreria| {
-                playback::load_posizione(&libreria.connection, id)
+        (None, Some(id)) => libreria_di(&app, "segno di ripresa")
+            .and_then(|stato_app| {
+                con_libreria(&stato_app, |libreria| {
+                    playback::load_posizione(&libreria.connection, id)
+                })
             })
-            .unwrap_or(0)
-        }
+            .unwrap_or(0),
         (None, None) => 0,
     };
     avvia_corrente(&app, &stato, false, da_ms).map_err(errore)
@@ -2919,9 +3137,77 @@ pub fn precedente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esit
     .map_err(errore)
 }
 
+/// Il campanello del motore di adesso, preso e lasciato col lucchetto, suonato
+/// **fuori**.
+///
+/// # Perché
+///
+/// Perché i comandi del motore che svuotano l'anello — il salto, lo stop —
+/// svegliano prima il flusso, e un flusso a riposo ci mette fino a mezzo
+/// secondo a rispondere: lo dice `rymembra_play::uscita::Uscita::sveglia`. Due
+/// di quei comandi, [`vai_a`] e `coda::coda_svuota`, girano sul filo della
+/// finestra e chiedevano il risveglio **con il lucchetto del lettore in mano**:
+/// per quel mezzo secondo restavano in fila gli annunci del motore, l'orologio,
+/// il preparatore. Adesso il risveglio si paga qui, a lucchetto lasciato, e il
+/// comando vero lo trova già fatto.
+///
+/// L'ordine dei comandi non cambia: tutti e due restano sincroni, sul filo
+/// della finestra, e il secondo non parte prima che il primo abbia finito. Il
+/// filo della finestra aspetta lo stesso il risveglio — è lui a chiederlo — ma
+/// adesso aspetta da solo.
+///
+/// Se nel frattempo il motore è stato sostituito il campanello suona a vuoto,
+/// e il comando sveglierà il motore nuovo da sé: è un caso raro, ed è il
+/// comportamento di prima.
+///
+/// # Perché il campanello si prende con un'attesa corta
+///
+/// Perché il comando, subito dopo, il lucchetto lo chiede di nuovo, e sul filo
+/// della finestra quella seconda presa può aspettare fino ad
+/// [`ATTESA_DELLA_FINESTRA`]. Con due attese piene di fila la finestra poteva
+/// restare ferma più di quattro secondi, a un passo dai cinque oltre i quali
+/// Windows la dichiara morta. Qui si aspetta al più [`ATTESA_DEL_CAMPANELLO`]:
+/// se il lucchetto è occupato il risveglio anticipato si salta, e il comando fa
+/// quel che faceva prima — si sveglia da sé, col lucchetto in mano. Per lo
+/// stesso motivo non c'è errore da restituire: un lettore che non c'è lo dirà
+/// il comando.
+fn sveglia_fuori_dal_lucchetto(stato: &StatoLettore) {
+    let fino = std::time::Instant::now() + ATTESA_DEL_CAMPANELLO;
+    let campanello = loop {
+        match stato.lettore.try_lock() {
+            Ok(guardia) => break guardia.as_ref().ok().map(|l| l.motore.campanello()),
+            Err(std::sync::TryLockError::Poisoned(veleno)) => {
+                break veleno
+                    .into_inner()
+                    .as_ref()
+                    .ok()
+                    .map(|l| l.motore.campanello());
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= fino {
+                    break None;
+                }
+                std::thread::sleep(PASSO_ATTESA);
+            }
+        }
+    };
+    if let Some(campanello) = campanello {
+        campanello.suona();
+    }
+}
+
+/// Quanto [`sveglia_fuori_dal_lucchetto`] aspetta il lucchetto del lettore
+/// prima di rinunciare al risveglio anticipato.
+///
+/// Cento millisecondi: chi tiene il lucchetto lo tiene di solito per
+/// microsecondi, e oltre vuol dire che qualcuno lo sta tenendo a lungo — e
+/// allora il comando, che il lucchetto lo vuole comunque, aspetterà lui.
+const ATTESA_DEL_CAMPANELLO: Duration = Duration::from_millis(100);
+
 /// Salta a un punto del brano.
 #[tauri::command]
 pub fn vai_a(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: u64) -> Esito<()> {
+    sveglia_fuori_dal_lucchetto(&stato);
     con_lettore(&stato, |lettore| {
         lettore.motore.vai_a(ms);
         // A motore vuoto il salto si tiene da parte per chi aprirà il brano:
@@ -3033,5 +3319,60 @@ mod prove {
             interruzione_di_flusso(formato).code().kind(),
             ErrorCodeKind::PlaybackFormatUnsupported
         );
+    }
+
+    /// Un file che fa cadere il riconoscimento del formato non è la rete.
+    ///
+    /// Era il difetto: la caduta chiudeva il canale della scadenza, l'apertura
+    /// riceveva lo stesso «niente» di una cartella che non risponde, e la
+    /// finestra offriva «Riprova» per sempre su un file locale rovinato.
+    #[test]
+    fn un_formato_che_fa_cadere_l_apertura_non_si_riprova() {
+        use rymembra_app::scadenza::Mancato;
+
+        let caduto = apertura_mancata(
+            &Mancato::Caduto {
+                messaggio: Some("intestazione storta".to_owned()),
+            },
+            APERTURA_BRANO,
+            false,
+            Some(r"C:\Musica\rotto.flac".to_owned()),
+        );
+        assert_eq!(
+            caduto.code().kind(),
+            ErrorCodeKind::PlaybackFormatUnsupported
+        );
+        assert!(!caduto.is_retryable(), "un file rovinato non si riprova");
+        assert!(
+            caduto
+                .cause()
+                .is_some_and(|c| c.contains("intestazione storta")),
+            "il messaggio del panico deve arrivare al diario"
+        );
+        // Anche quando il brano arriva da un catalogo: è il contenitore a non
+        // leggersi, non la rete a non rispondere.
+        assert!(
+            !apertura_mancata(
+                &Mancato::Caduto { messaggio: None },
+                APERTURA_FLUSSO,
+                true,
+                None
+            )
+            .is_retryable()
+        );
+
+        // La scadenza vera resta quella di sempre: ritentabile, col codice
+        // della cartella per un file e della rete per un flusso.
+        let scaduto = apertura_mancata(
+            &Mancato::Scaduto,
+            APERTURA_FLUSSO,
+            false,
+            Some(r"\\nas\musica\a.flac".to_owned()),
+        );
+        assert_eq!(scaduto.code().kind(), ErrorCodeKind::FsNetworkUnavailable);
+        assert!(scaduto.is_retryable());
+        let flusso = apertura_mancata(&Mancato::Scaduto, APERTURA_FLUSSO, true, None);
+        assert_eq!(flusso.code().kind(), ErrorCodeKind::NetTimeout);
+        assert!(flusso.is_retryable());
     }
 }

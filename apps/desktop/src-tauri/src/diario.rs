@@ -64,7 +64,7 @@ use std::borrow::Cow;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 
 use rymembra_domain::tempo::istante_iso;
 
@@ -204,31 +204,38 @@ pub fn nota(argomenti: std::fmt::Arguments<'_>) {
     // Il lucchetto si prende e si lascia **dentro** questo blocco: la rotazione
     // che può seguire lo riprende, e tenerlo qui vorrebbe dire aspettare se
     // stessi per sempre.
-    let pieno = {
-        let mut guardia = preso();
-        let Some(aperto) = guardia.as_mut() else {
-            return;
-        };
-        let riga = format!("{} {argomenti}\n", istante_iso(adesso_ms()));
-        let riga = senza_utente(&riga, cartelle_dell_utente());
-        // Un errore di scrittura non si racconta a nessuno: raccontarlo
-        // vorrebbe dire scriverlo sul diario che non si riesce a scrivere.
-        if aperto.file.write_all(riga.as_bytes()).is_ok() {
-            aperto.scritti = aperto
-                .scritti
-                .saturating_add(u64::try_from(riga.len()).unwrap_or(0));
-        }
-        // `flush` a ogni riga, e sì, costa. È il prezzo del solo caso che
-        // conta: se il processo muore un istante dopo — ed è precisamente
-        // quando si vuole leggere l'ultima riga — un buffer non ancora
-        // svuotato è la riga che spiegava tutto, persa.
-        let _ = aperto.file.flush();
-        aperto.scritti >= TETTO
-    };
+    let pieno = scrivi_la_riga(&mut preso(), argomenti);
 
     if pieno {
         ruota();
     }
+}
+
+/// Scrive una riga nel diario aperto, con l'istante davanti, sotto una guardia
+/// che chi chiama ha già preso. `true` se il file ha passato il tetto e va
+/// ruotato — cosa che tocca a chi chiama, **dopo** aver lasciato la guardia.
+///
+/// Una funzione a parte perché le strade per arrivarci sono due: [`nota`], che
+/// il lucchetto lo aspetta, e [`nota_dal_gancio`], che non può.
+fn scrivi_la_riga(guardia: &mut Option<Aperto>, argomenti: std::fmt::Arguments<'_>) -> bool {
+    let Some(aperto) = guardia.as_mut() else {
+        return false;
+    };
+    let riga = format!("{} {argomenti}\n", istante_iso(adesso_ms()));
+    let riga = senza_utente(&riga, cartelle_dell_utente());
+    // Un errore di scrittura non si racconta a nessuno: raccontarlo vorrebbe
+    // dire scriverlo sul diario che non si riesce a scrivere.
+    if aperto.file.write_all(riga.as_bytes()).is_ok() {
+        aperto.scritti = aperto
+            .scritti
+            .saturating_add(u64::try_from(riga.len()).unwrap_or(0));
+    }
+    // `flush` a ogni riga, e sì, costa. È il prezzo del solo caso che conta: se
+    // il processo muore un istante dopo — ed è precisamente quando si vuole
+    // leggere l'ultima riga — un buffer non ancora svuotato è la riga che
+    // spiegava tutto, persa.
+    let _ = aperto.file.flush();
+    aperto.scritti >= TETTO
 }
 
 /// Le cartelle dell'utente che non si scrivono per esteso, con il loro
@@ -400,9 +407,66 @@ pub fn installa_gancio_dei_panici() {
             .name()
             .unwrap_or("senza nome")
             .to_owned();
-        nota!("[PANICO] filo={filo} a {dove}: {info}");
+        nota_dal_gancio(format_args!("[PANICO] filo={filo} a {dove}: {info}"));
         precedente(info);
     }));
+}
+
+/// Quante volte il gancio dei panici chiede il lucchetto del diario prima di
+/// rinunciare. Vedi [`nota_dal_gancio`].
+const TENTATIVI_DAL_GANCIO: u32 = 20;
+
+/// La pausa fra due richieste del gancio: venti per un millisecondo sono al
+/// più qualche decina di millisecondi di ritardo su un filo che sta cadendo.
+const PAUSA_DAL_GANCIO: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// Scrive una riga dal gancio dei panici, senza mai aspettare il lucchetto del
+/// diario più di un attimo.
+///
+/// # Perché non [`nota`]
+///
+/// Perché il panico può arrivare **mentre questo stesso filo tiene il
+/// lucchetto**: dentro [`nota`], con la guardia presa — un formattatore di terzi
+/// fra gli argomenti, una scrittura che cade. Il gancio gira prima dello
+/// svolgimento, quando la guardia non è ancora stata lasciata, e un `Mutex` di
+/// `std` non è rientrante: `nota` lì dentro aspettava se stesso, per sempre. E
+/// con lui ogni altro filo al suo primo `nota!`, cioè l'applicazione intera.
+///
+/// Qui il lucchetto si chiede con `try_lock`, qualche volta e con una pausa
+/// breve: un altro filo che sta scrivendo una riga la finisce in microsecondi,
+/// e la riga del panico entra lo stesso nel file. Se resta occupato, è quasi
+/// certamente questo filo a tenerlo, e la riga va su `stderr` — in rilascio da
+/// nessuna parte, ma una riga persa è meglio di un'applicazione ferma.
+///
+/// Un lucchetto avvelenato si prende lo stesso, come in [`preso`]: è proprio il
+/// momento in cui scrivere serve di più.
+///
+/// Nessuna rotazione da qui, nemmeno a diario pieno: [`ruota`] riprende il
+/// lucchetto aspettandolo. La fa la prossima riga normale.
+fn nota_dal_gancio(argomenti: std::fmt::Arguments<'_>) {
+    #[cfg(debug_assertions)]
+    eprintln!("{argomenti}");
+
+    for _ in 0..TENTATIVI_DAL_GANCIO {
+        let mut guardia = match cella().try_lock() {
+            Ok(guardia) => guardia,
+            Err(TryLockError::Poisoned(avvelenato)) => avvelenato.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                std::thread::sleep(PAUSA_DAL_GANCIO);
+                continue;
+            }
+        };
+        let _ = scrivi_la_riga(&mut guardia, argomenti);
+        return;
+    }
+    // In sviluppo la riga è già su `stderr`, qui sopra. `writeln!` e non
+    // `eprintln!`: questo è un gancio dei panici, e un `eprintln!` che non
+    // riesce a scrivere va in panico a sua volta — dentro il gancio, cioè
+    // l'interruzione del processo.
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = writeln!(std::io::stderr(), "{argomenti}");
+    }
 }
 
 /// Apre la cartella del diario nel gestore file del sistema.
@@ -712,5 +776,46 @@ mod prove {
         if let Some(aperto) = guardia.as_mut() {
             aperto.scritti = TETTO.saturating_sub(1);
         }
+    }
+
+    /// Un panico che arriva mentre lo stesso filo tiene il lucchetto del
+    /// diario non deve aspettare se stesso.
+    ///
+    /// Il caso vero: qualcosa va in panico **dentro** [`nota`], mentre la
+    /// guardia è presa — un formattatore di terzi dentro gli argomenti, una
+    /// scrittura che cade. Il gancio chiedeva lo stesso lucchetto sullo stesso
+    /// filo, e un `Mutex` di `std` non è rientrante: il filo restava fermo per
+    /// sempre, e con lui ogni altro filo che volesse scrivere una riga.
+    #[test]
+    fn il_gancio_non_aspetta_un_lucchetto_che_tiene_lui() {
+        let _turno = IL_TURNO.lock().unwrap_or_else(PoisonError::into_inner);
+        let (fatto, finito) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let guardia = preso();
+            nota_dal_gancio(format_args!("[PANICO] filo=prova a qui: dentro il diario"));
+            drop(guardia);
+            let _ = fatto.send(());
+        });
+        assert!(
+            finito
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_ok(),
+            "il gancio si è fermato ad aspettare il lucchetto del suo stesso filo"
+        );
+    }
+
+    /// Col lucchetto libero, il gancio scrive nel diario come ogni altra riga.
+    #[test]
+    fn il_gancio_scrive_nel_diario_quando_e_libero() {
+        in_una_cartella(|radice| {
+            nota_dal_gancio(format_args!("[PANICO] filo=prova a qui: fuori"));
+            let Ok(testo) = fs::read_to_string(radice.join(CARTELLA).join(NOME)) else {
+                return;
+            };
+            assert!(
+                testo.contains("[PANICO] filo=prova a qui: fuori"),
+                "la riga del panico non è nel diario: {testo}"
+            );
+        });
     }
 }

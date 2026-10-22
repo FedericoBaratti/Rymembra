@@ -167,6 +167,15 @@ pub struct BranoDaTestare {
     /// le parole si cercano lo stesso — il catalogo dei testi si interroga per
     /// artista, titolo e durata, e quelli un flusso ce li ha — ma non c'è
     /// nessun file accanto a cui posare un `.lrc`.
+    ///
+    /// `None` anche per un brano d'immagine CD, per la stessa ragione detta
+    /// dall'altro lato: il suo percorso, `…\Album.cue|03`, non è un file, e il
+    /// file vero è l'immagine di tutto il disco. Un `.lrc` accanto sarebbe di
+    /// tutti i brani insieme — `Album.lrc`, lo stesso per la traccia 1 e per la
+    /// 12 — e il tag sincronizzato dentro l'immagine, se ci fosse, non è di
+    /// nessun brano in particolare. I suoi testi stanno nel database, come
+    /// quelli di un brano di catalogo. È la stessa risposta di
+    /// [`crate::playback::Collocazione::percorso`].
     pub path: Option<String>,
     /// L'identità fra dispositivi, che è la chiave della tabella `lyrics`.
     pub track_key: String,
@@ -187,8 +196,13 @@ pub struct BranoDaTestare {
 /// Con l'alias `t.` davanti a ognuna: la stessa stringa serve alla lettura di un
 /// brano solo e alla coda della passata, che è una join, e due elenchi da tenere
 /// allineati diventerebbero due elenchi diversi al primo campo aggiunto.
-const COLONNE: &str = "t.id, t.path, t.track_key, t.title, t.artist, t.album,
-     t.duration_ms, t.lyrics";
+///
+/// Il percorso di un brano d'immagine esce `NULL` già da qui, e non più sotto:
+/// vedi [`BranoDaTestare::path`]. Così ogni strada che posa o legge un sidecar
+/// — anche quelle della finestra, che passano da [`brano`] — lo tratta da sé
+/// come un brano senza file, invece di dover ricordare a ognuna la domanda.
+const COLONNE: &str = "t.id, CASE WHEN t.immagine IS NULL THEN t.path END, t.track_key,
+     t.title, t.artist, t.album, t.duration_ms, t.lyrics";
 
 fn brano_da_riga(row: &rusqlite::Row<'_>) -> rusqlite::Result<BranoDaTestare> {
     Ok(BranoDaTestare {
@@ -622,7 +636,9 @@ fn leggi_sidecar_con_data(brano: &Path) -> Option<(String, Option<i64>)> {
 /// # Errori
 ///
 /// `fs.writeFailed` col percorso, per la scrittura, lo spostamento o la
-/// rimozione. Un sidecar che non c'era, da togliere, non è un guasto.
+/// rimozione — e per la **lettura** del sidecar di prima, quando c'è e non si
+/// lascia leggere: senza il suo contenuto non si sa se meriti un `.bak`, e
+/// allora non si tocca. Un sidecar che non c'era, da togliere, non è un guasto.
 pub fn scrivi_sidecar(brano: &Path, coda: &str, contenuto: Option<&str>) -> Result<(), AppError> {
     let percorso = percorso_sidecar(brano, coda);
     let copia = percorso_sidecar(brano, &format!("{coda}.bak"));
@@ -633,7 +649,17 @@ pub fn scrivi_sidecar(brano: &Path, coda: &str, contenuto: Option<&str>) -> Resu
         })
         .with_cause(err.to_string())
     };
-    let di_prima = std::fs::read(&percorso).ok();
+    // «Non c'è» è solo `NotFound`. Ogni altro errore di lettura — un altro
+    // programma che lo tiene aperto senza condividerne la lettura, una share
+    // che risponde a metà — vuol dire che il file c'è e non si sa cosa
+    // contenga: valeva «niente da mettere da parte», e la scrittura o la
+    // rimozione che seguono lo portavano via senza `.bak`. Meglio non toccarlo
+    // e dirlo.
+    let di_prima = match std::fs::read(&percorso) {
+        Ok(byte) => Some(byte),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(guaio(&percorso, err)),
+    };
     let da_mettere_da_parte = di_prima
         .as_deref()
         .is_some_and(|c| contenuto.is_none_or(|nuovo| c != nuovo.as_bytes()))
@@ -2438,6 +2464,55 @@ mod prove {
     }
 
     #[test]
+    fn un_brano_d_immagine_tiene_i_testi_solo_nel_database() {
+        let (dir, connection) = libreria();
+        crate::settings::write(&connection, CHIAVE_ACCANTO, "1").expect("interruttore");
+        let cue = dir.path().join("Album.cue").display().to_string();
+        let immagine = dir.path().join("Album.flac");
+        std::fs::write(&immagine, b"finto").expect("immagine");
+        // Il `.lrc` che il percorso virtuale troverebbe da solo: `Album.cue|03`
+        // con l'estensione cambiata è `Album.lrc`, che è del disco intero.
+        let del_disco = dir.path().join("Album.lrc");
+        std::fs::write(&del_disco, "[00:01.00]del disco\n").expect("sidecar del disco");
+        connection
+            .execute(
+                "INSERT INTO tracks
+                   (path, track_key, title, artist, album, duration_ms, file_size,
+                    date_added, date_modified, immagine, inizio_cd, fine_cd)
+                 VALUES (?1, 'chiave', 'Titolo', 'Artista', 'Album', 120000, 1, 0, 0,
+                         ?2, 0, 9000)",
+                rusqlite::params![
+                    rymembra_domain::cue::percorso_del_brano(&cue, 3),
+                    immagine.display().to_string()
+                ],
+            )
+            .expect("brano d'immagine");
+        let id = connection.last_insert_rowid();
+
+        let riga = super::brano(&connection, id).expect("riga");
+        assert_eq!(
+            riga.path, None,
+            "come un brano di catalogo: nessun file accanto"
+        );
+        let esito = per_brano(&connection, id).expect("testo");
+        assert_ne!(esito.fonte, Fonte::Sidecar, "il `.lrc` del disco non è suo");
+
+        salva_a_mano(&connection, &riga, LRC).expect("salvataggio");
+        let salvata = leggi_riga(&connection, "chiave").expect("riga salvata");
+        assert_eq!(
+            salvata.synced.as_deref(),
+            Some(LRC),
+            "il testo sta nel database"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&del_disco).expect("sidecar del disco"),
+            "[00:01.00]del disco\n",
+            "accanto all'immagine non si scrive niente"
+        );
+        assert!(!dir.path().join("Album.lrc.bak").exists());
+    }
+
+    #[test]
     fn il_lrc_di_qualcun_altro_resta_in_un_bak() {
         let (dir, connection) = libreria();
         // Chi lo ha chiesto: di serie il `.lrc` non si scrive.
@@ -2470,6 +2545,42 @@ mod prove {
         scrivi_sidecar(&brano, "a2.lrc", None).expect("rimozione");
         assert!(!esteso.exists());
         assert!(brano.with_extension("a2.lrc.bak").exists());
+    }
+
+    /// Un sidecar che c'è ma non si lascia leggere non si toglie alla cieca.
+    ///
+    /// Il caso vero è un altro programma che lo tiene aperto senza condividerne
+    /// la lettura — un editor di testi, un sincronizzatore — o una share che
+    /// risponde a metà. Prima l'errore di lettura valeva «non c'è niente»:
+    /// nessun `.bak`, e la rimozione — che Windows concede a chi ha condiviso
+    /// la cancellazione — portava via il file dell'utente senza copia.
+    #[cfg(windows)]
+    #[test]
+    fn un_sidecar_che_non_si_legge_non_si_toglie_senza_copia() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        /// `FILE_SHARE_DELETE`: si condivide la cancellazione e nient'altro.
+        const SOLO_CANCELLAZIONE: u32 = 0x0000_0004;
+
+        let dir = tempfile::tempdir().expect("cartella");
+        let brano = dir.path().join("brano.mp3");
+        std::fs::write(&brano, b"finto").expect("file");
+        let sidecar = brano.with_extension("lrc");
+        std::fs::write(&sidecar, "[00:05.00]il testo di qualcun altro").expect("altrui");
+
+        let tenuto = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(SOLO_CANCELLAZIONE)
+            .open(&sidecar)
+            .expect("un altro programma lo tiene aperto");
+        let esito = scrivi_sidecar(&brano, "lrc", None);
+        drop(tenuto);
+
+        assert!(esito.is_err(), "un file illeggibile non è un file assente");
+        assert_eq!(
+            std::fs::read_to_string(&sidecar).expect("il file c'è ancora"),
+            "[00:05.00]il testo di qualcun altro"
+        );
+        assert!(!brano.with_extension("lrc.bak").exists());
     }
 
     #[test]

@@ -29,6 +29,8 @@
 import { useEffect, useRef, type RefObject } from "react";
 
 import { useDati } from "../dati";
+import { ipc, testoErrore } from "../ipc";
+import { ascoltoFallito } from "../pagine";
 
 /** Gli ascoltatori di un componente, per evento. */
 export type Gestori = Readonly<Record<string, (carico: unknown) => void>>;
@@ -75,10 +77,21 @@ export function useAscoltiTenaci(radice: RefObject<Element | null>, gestori: Ges
           if (nuovo.chiuso) return;
           if (nuovo.aperto) ultimi.current[evento]?.(carico);
           else nuovo.coda.push([evento, carico]);
-        }).then((stop) => {
-          if (nuovo.chiuso) stop();
-          else nuovo.sciogli.push(stop);
-        });
+        }).then(
+          (stop) => {
+            if (nuovo.chiuso) stop();
+            else nuovo.sciogli.push(stop);
+          },
+          // Come in `useAscolto`: nel diario, e detto. Un turno della chat che
+          // non riceve i suoi pezzi resterebbe aperto per sempre senza dire
+          // perché. A sportello già chiuso soltanto nel diario, come fa
+          // `useAscolto` a componente smontato: una fascia rossa per una chat
+          // che non c'è più non direbbe niente a nessuno.
+          (e: unknown) => {
+            if (nuovo.chiuso) ipc.diarioAnnota("ascolto", `${evento}: ${testoErrore(e)}`);
+            else ascoltoFallito(evento, e);
+          },
+        );
       }
       sportello.current = nuovo;
       aperto = nuovo;

@@ -119,6 +119,8 @@ fn esegui(
     commit: bool,
 ) -> Result<PlaylistFileReport, AppError> {
     let per_percorso = indice_percorsi(connection)?;
+    let per_foglio = con_i_nomi(fogli_della_libreria(connection)?);
+    let per_immagine = con_i_nomi(immagini_della_libreria(connection)?);
     let libreria = crate::import_esterno::leggi_libreria(connection)?;
     let indice = Indice::nuovo(&libreria);
 
@@ -146,12 +148,43 @@ fn esegui(
         // volte, quindi chi è ambiguo semplicemente non risponde e la voce
         // scende al gradino dei tag.
         let intero = chiave_percorso(&voce.percorso, accanto_a);
-        let trovato = per_percorso
+        // Il percorso intero prima di ogni ripiego sul nome, anche quando è
+        // l'immagine di un disco: l'immagine non è una riga, e un brano
+        // qualunque che altrove si chiama `Album.flac` risponderebbe per nome
+        // al posto del disco che il file nomina per intero.
+        let trovato: Option<&[i64]> = per_percorso
             .get(&intero)
-            .or_else(|| nome_file(&voce.percorso).and_then(|n| per_percorso.get(&n)));
-        if let Some(id) = trovato {
+            .map(std::slice::from_ref)
+            .or_else(|| per_immagine.get(&intero).map(Vec::as_slice))
+            .or_else(|| {
+                nome_file(&voce.percorso)
+                    .and_then(|n| per_percorso.get(&n))
+                    .map(std::slice::from_ref)
+            });
+        if let Some(brani) = trovato {
             rapporto.matched_by_path += 1;
-            ordine.push(*id);
+            ordine.extend_from_slice(brani);
+            continue;
+        }
+        // Una voce che è il `.cue` di un'immagine in libreria: i suoi brani,
+        // tutti e in ordine di numero. È quel che [`esporta`] scrive al posto
+        // dei brani d'immagine, ed è come un altro lettore scrive un disco
+        // intero. Con gli stessi due tentativi, e lo stesso rifiuto di un nome
+        // che si ripete — `CDImage.cue` ce l'hanno molti dischi. Conta **una**
+        // voce ritrovata, perché nel file la riga è una: i numeri del
+        // rapporto restano le righe del file, divise fra chi si è ritrovato e
+        // chi no.
+        //
+        // Lo stesso per una voce che è l'immagine stessa — quel che scrive chi
+        // non sa dei `.cue`, o chi trascina il file grande —, col solo nome
+        // come ripiego.
+        let foglio = per_foglio
+            .get(&intero)
+            .or_else(|| nome_file(&voce.percorso).and_then(|n| per_foglio.get(&n)))
+            .or_else(|| nome_file(&voce.percorso).and_then(|n| per_immagine.get(&n)));
+        if let Some(brani) = foglio {
+            rapporto.matched_by_path += 1;
+            ordine.extend_from_slice(brani);
             continue;
         }
         // Il secondo gradino: la stessa scala dell'importazione da Spotify. Un
@@ -240,6 +273,144 @@ fn indice_percorsi(connection: &Connection) -> Result<HashMap<String, i64>, AppE
         }
     }
     Ok(indice)
+}
+
+/// I brani di un `.cue`, in ordine di numero: quelli della sua immagine che la
+/// libreria conosce.
+///
+/// Il percorso del `.cue` si confronta come ogni altro percorso di questo
+/// modulo, cioè con la chiave della scansione: barre in un verso o nell'altro,
+/// e le maiuscole solo dove il filesystem le distingue. Vuoto se la libreria
+/// di quel `.cue` non ha brani — un foglio che non descrive un'immagine, o
+/// una cartella non ancora scansionata.
+///
+/// Serve all'importazione di una playlist che nomina un `.cue`, e a chi
+/// trascina un `.cue` sulla finestra: tutti e due vogliono il disco, non il
+/// foglio.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la libreria non risponde.
+pub fn brani_del_foglio(connection: &Connection, percorso_cue: &str) -> Result<Vec<i64>, AppError> {
+    Ok(fogli_della_libreria(connection)?
+        .remove(&normalizza(percorso_cue))
+        .unwrap_or_default())
+}
+
+/// Ogni `.cue` con dei brani in libreria, per chiave di percorso, con i suoi
+/// brani in ordine di numero.
+///
+/// Dai brani d'immagine — `immagine IS NOT NULL` — e dal loro percorso, che
+/// porta il `.cue` e il numero: `…\Album.cue|03`. Il numero si legge da lì e
+/// non da `track_number`, che è un tag e può mancare o mentire; quello del
+/// percorso è il numero del foglio.
+fn fogli_della_libreria(connection: &Connection) -> Result<HashMap<String, Vec<i64>>, AppError> {
+    let mut statement = connection
+        .prepare("SELECT id, path FROM tracks WHERE immagine IS NOT NULL AND path IS NOT NULL")
+        .map_err(|err| db_error("indice dei fogli", &err))?;
+    let righe = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|err| db_error("indice dei fogli", &err))?;
+    let mut fogli: HashMap<String, Vec<(u8, i64)>> = HashMap::new();
+    for riga in righe {
+        let (id, percorso) = riga.map_err(|err| db_error("indice dei fogli", &err))?;
+        if let Some((cue, numero)) = rymembra_domain::cue::brano_d_immagine(&percorso) {
+            fogli.entry(normalizza(cue)).or_default().push((numero, id));
+        }
+    }
+    Ok(fogli
+        .into_iter()
+        .map(|(cue, mut brani)| {
+            brani.sort_unstable();
+            (cue, brani.into_iter().map(|(_, id)| id).collect())
+        })
+        .collect())
+}
+
+/// I brani di un'immagine CD, in ordine di numero: quelli che la libreria
+/// conosce con quell'`immagine`.
+///
+/// Il percorso si confronta come in [`brani_del_foglio`], con la chiave della
+/// scansione. Vuoto se il file non è l'immagine di nessun brano — un file
+/// intero, o un'immagine senza foglio.
+///
+/// Serve a chi trascina sulla finestra il file grande invece del `.cue`, e
+/// all'importazione di una playlist che lo nomina: tutti e due vogliono il
+/// disco, e il file grande in libreria non è una riga.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la libreria non risponde.
+pub fn brani_dell_immagine(connection: &Connection, percorso: &str) -> Result<Vec<i64>, AppError> {
+    Ok(immagini_della_libreria(connection)?
+        .remove(&normalizza(percorso))
+        .unwrap_or_default())
+}
+
+/// Ogni immagine con dei brani in libreria, per chiave di percorso, con i suoi
+/// brani in ordine di numero.
+///
+/// Come [`fogli_della_libreria`], ma dalla colonna `immagine`. Una sola
+/// immagine ha i brani di un solo foglio, tranne per il tempo di una passata in
+/// cui due fogli se la sono contesa: allora i brani escono foglio per foglio,
+/// ognuno in ordine di numero.
+fn immagini_della_libreria(connection: &Connection) -> Result<HashMap<String, Vec<i64>>, AppError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, path, immagine FROM tracks
+              WHERE immagine IS NOT NULL AND path IS NOT NULL",
+        )
+        .map_err(|err| db_error("indice delle immagini", &err))?;
+    let righe = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|err| db_error("indice delle immagini", &err))?;
+    let mut immagini: HashMap<String, Vec<(String, u8, i64)>> = HashMap::new();
+    for riga in righe {
+        let (id, percorso, immagine) =
+            riga.map_err(|err| db_error("indice delle immagini", &err))?;
+        if let Some((cue, numero)) = rymembra_domain::cue::brano_d_immagine(&percorso) {
+            immagini
+                .entry(normalizza(&immagine))
+                .or_default()
+                .push((normalizza(cue), numero, id));
+        }
+    }
+    Ok(immagini
+        .into_iter()
+        .map(|(immagine, mut brani)| {
+            brani.sort_unstable();
+            (immagine, brani.into_iter().map(|(_, _, id)| id).collect())
+        })
+        .collect())
+}
+
+/// L'indice per [`esegui`] dei dischi d'immagine — per `.cue` o per
+/// immagine —: per percorso intero e, se non si ripete, per solo nome. La
+/// stessa forma di [`indice_percorsi`].
+fn con_i_nomi(mut indice: HashMap<String, Vec<i64>>) -> HashMap<String, Vec<i64>> {
+    let mut per_nome: HashMap<String, Option<Vec<i64>>> = HashMap::new();
+    for (percorso, brani) in &indice {
+        if let Some(nome) = nome_file(percorso) {
+            per_nome
+                .entry(nome)
+                .and_modify(|posto| *posto = None)
+                .or_insert_with(|| Some(brani.clone()));
+        }
+    }
+    for (nome, unico) in per_nome {
+        if let Some(brani) = unico {
+            indice.entry(nome).or_insert(brani);
+        }
+    }
+    indice
 }
 
 /// La chiave con cui una voce del file si cerca in libreria.
@@ -377,6 +548,16 @@ fn nome_file(percorso: &str) -> Option<String> {
 /// dischi non esiste, e un file di playlist per metà relativo e per metà
 /// assoluto è la cosa che i lettori altrui interpretano peggio.
 ///
+/// # Un brano d'immagine si scrive come il suo `.cue`
+///
+/// Il percorso di un brano d'immagine CD, `…\Album.cue|03`, esiste solo dentro
+/// Rymembra: un altro lettore non saprebbe che farsene, e nemmeno il disco. Il
+/// file vero che un lettore sa aprire è il `.cue`, e si scrive quello — **una
+/// volta** per ogni fila di brani dello stesso foglio, col titolo del disco e
+/// la durata della fila. Riletto da [`import`], un `.cue` torna i brani del
+/// disco, tutti: chi aveva in playlist due tracce di un disco se lo ritrova
+/// intero, che è il prezzo di un file che altri lettori sanno leggere.
+///
 /// # Errori
 ///
 /// `library.playlistNotFound` se la playlist non c'è; `db.queryFailed` se la
@@ -395,23 +576,48 @@ pub fn esporta(
             })
         })?;
     let brani = crate::playlists::tracks(connection, playlist_id)?;
-    // `filter_map` e non `map`: un file di playlist è un elenco di **file**, e
-    // un brano di catalogo un file non ce l'ha. Scriverci dentro l'indirizzo
-    // del flusso sembrerebbe generoso e sarebbe un errore doppio: altri lettori
-    // aprirebbero un indirizzo di Audius senza il nodo davanti — cioè niente —
-    // e l'elenco uscirebbe di casa portandosi dietro un indirizzo che i termini
-    // di certi cataloghi non vogliono veder ridistribuito.
-    let voci: Vec<VocePlaylist> = brani
-        .into_iter()
-        .filter_map(|b| {
-            Some(VocePlaylist {
-                percorso: b.path?,
+    let mut voci: Vec<VocePlaylist> = Vec::with_capacity(brani.len());
+    // Il `.cue` dell'ultima voce scritta, se era un disco: il brano d'immagine
+    // che segue dallo stesso foglio allunga quella voce invece di ripeterla.
+    let mut foglio_di_prima: Option<String> = None;
+    for b in brani {
+        // Un file di playlist è un elenco di **file**, e un brano di catalogo
+        // un file non ce l'ha: si salta. Scriverci dentro l'indirizzo del
+        // flusso sembrerebbe generoso e sarebbe un errore doppio: altri lettori
+        // aprirebbero un indirizzo di Audius senza il nodo davanti — cioè
+        // niente — e l'elenco uscirebbe di casa portandosi dietro un indirizzo
+        // che i termini di certi cataloghi non vogliono veder ridistribuito.
+        let Some(percorso) = b.path else {
+            continue;
+        };
+        let durata_ms = u64::try_from(b.duration_ms).ok();
+        let Some((cue, _)) = rymembra_domain::cue::brano_d_immagine(&percorso) else {
+            foglio_di_prima = None;
+            voci.push(VocePlaylist {
+                percorso,
                 titolo: Some(b.title),
                 artista: Some(b.artist),
-                durata_ms: u64::try_from(b.duration_ms).ok(),
-            })
-        })
-        .collect();
+                durata_ms,
+            });
+            continue;
+        };
+        if foglio_di_prima.as_deref() == Some(cue)
+            && let Some(ultima) = voci.last_mut()
+        {
+            ultima.durata_ms = ultima
+                .durata_ms
+                .zip(durata_ms)
+                .map(|(fin_qui, questo)| fin_qui.saturating_add(questo));
+            continue;
+        }
+        foglio_di_prima = Some(cue.to_owned());
+        voci.push(VocePlaylist {
+            percorso: cue.to_owned(),
+            titolo: Some(b.album),
+            artista: Some(b.artist),
+            durata_ms,
+        });
+    }
     Ok(rymembra_domain::playlist_file::scrivi(
         &riepilogo.name,
         &voci,
@@ -636,6 +842,152 @@ mod prove {
                 formato.nome()
             );
         }
+    }
+
+    // ── i dischi d'immagine e i loro `.cue` ─────────────────────────────────
+
+    /// La libreria di prova con un disco d'immagine di tre brani, inseriti
+    /// apposta fuori ordine: l'ordine deve venire dal numero, non dall'id.
+    fn con_un_disco() -> Connection {
+        let c = libreria();
+        c.execute_batch(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, duration_ms,
+                                 file_size, date_added, date_modified,
+                                 immagine, inizio_cd, fine_cd)
+             VALUES (22, 'C:\\Musica\\Disco\\Album.cue|03', 'kd3', 'Terzo', 'Tale', 'Disco',
+                     30000, 9, 1, 1, 'C:\\Musica\\Disco\\Album.flac', 4500, NULL),
+                    (20, 'C:\\Musica\\Disco\\Album.cue|01', 'kd1', 'Primo', 'Tale', 'Disco',
+                     10000, 9, 1, 1, 'C:\\Musica\\Disco\\Album.flac', 0, 750),
+                    (21, 'C:\\Musica\\Disco\\Album.cue|02', 'kd2', 'Secondo', 'Tale', 'Disco',
+                     20000, 9, 1, 1, 'C:\\Musica\\Disco\\Album.flac', 750, 4500);",
+        )
+        .expect("disco d'immagine");
+        c
+    }
+
+    #[test]
+    fn i_brani_di_un_foglio_escono_in_ordine_di_numero() {
+        let c = con_un_disco();
+        // Le barre al contrario non contano, come per ogni altro percorso.
+        assert_eq!(
+            brani_del_foglio(&c, "C:/Musica/Disco/Album.cue").expect("brani"),
+            vec![20, 21, 22]
+        );
+        assert!(
+            brani_del_foglio(&c, "C:/Musica/Altro.cue")
+                .expect("brani")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn una_voce_cue_diventa_il_suo_disco() {
+        let mut c = con_un_disco();
+        let letta = PlaylistLetta {
+            nome: None,
+            voci: vec![
+                voce("C:\\Altro\\pezzo.mp3", None, None),
+                voce("C:\\Musica\\Disco\\Album.cue", None, None),
+            ],
+            illeggibili: 0,
+        };
+        let r = import(&mut c, &letta, "Disco", None).expect("importata");
+        // Una riga del file, una voce ritrovata: i numeri restano le righe.
+        assert_eq!(r.matched_by_path, 2);
+        assert!(r.missing.is_empty());
+        let ids: Vec<i64> = crate::playlists::tracks(&c, r.playlist_id.expect("creata"))
+            .expect("brani")
+            .into_iter()
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(ids, vec![3, 20, 21, 22]);
+    }
+
+    #[test]
+    fn una_voce_che_e_l_immagine_diventa_il_suo_disco() {
+        // Il file grande nominato al posto del `.cue`: non è una riga, ma è
+        // l'immagine di tre. E un brano intero che altrove si chiama come lei
+        // non deve rispondere per nome al posto del disco nominato per intero.
+        let mut c = con_un_disco();
+        c.execute_batch(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, duration_ms,
+                                 file_size, date_added, date_modified)
+             VALUES (30, 'D:\\Altrove\\Album.flac', 'kx', 'Intero', 'Altri', 'Altro',
+                     60000, 1, 1, 1);",
+        )
+        .expect("un omonimo");
+        assert_eq!(
+            brani_dell_immagine(&c, "C:/Musica/Disco/Album.flac").expect("brani"),
+            vec![20, 21, 22],
+            "le barre al contrario non contano"
+        );
+        assert!(
+            brani_dell_immagine(&c, "D:\\Altrove\\Album.flac")
+                .expect("brani")
+                .is_empty(),
+            "un file intero non è un'immagine"
+        );
+
+        let letta = PlaylistLetta {
+            nome: None,
+            voci: vec![
+                voce("C:\\Altro\\pezzo.mp3", None, None),
+                voce("C:\\Musica\\Disco\\Album.flac", None, None),
+            ],
+            illeggibili: 0,
+        };
+        let r = import(&mut c, &letta, "Immagine", None).expect("importata");
+        assert_eq!(r.matched_by_path, 2, "una riga del file, una voce");
+        assert!(r.missing.is_empty());
+        let ids: Vec<i64> = crate::playlists::tracks(&c, r.playlist_id.expect("creata"))
+            .expect("brani")
+            .into_iter()
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(ids, vec![3, 20, 21, 22]);
+    }
+
+    #[test]
+    fn un_disco_si_esporta_come_il_suo_cue_una_volta_per_fila() {
+        let mut c = con_un_disco();
+        // Una playlist scritta a mano, con i brani nell'ordine che si vuole.
+        let letta = PlaylistLetta {
+            nome: None,
+            voci: vec![
+                voce("C:\\Musica\\Disco\\Album.cue|01", None, None),
+                voce("C:\\Musica\\Disco\\Album.cue|02", None, None),
+                voce("C:\\Altro\\pezzo.mp3", None, None),
+                voce("C:\\Musica\\Disco\\Album.cue|03", None, None),
+            ],
+            illeggibili: 0,
+        };
+        let r = import(&mut c, &letta, "Misto", None).expect("importata");
+        assert_eq!(
+            r.matched_by_path, 4,
+            "i percorsi virtuali sono percorsi della libreria"
+        );
+
+        let testo =
+            esporta(&c, r.playlist_id.expect("creata"), FormatoPlaylist::M3u).expect("esportata");
+        assert!(
+            !testo.contains('|'),
+            "nessun percorso virtuale nel file:\n{testo}"
+        );
+        let riletta = rymembra_domain::playlist_file::leggi_testo(&testo, FormatoPlaylist::M3u);
+        let percorsi: Vec<&str> = riletta.voci.iter().map(|v| v.percorso.as_str()).collect();
+        assert_eq!(
+            percorsi,
+            vec![
+                "C:\\Musica\\Disco\\Album.cue",
+                "C:\\Altro\\pezzo.mp3",
+                "C:\\Musica\\Disco\\Album.cue",
+            ]
+        );
+        // La prima voce è la fila di due brani: il titolo del disco, la durata
+        // dei due.
+        let prima = riletta.voci.first().expect("prima voce");
+        assert_eq!(prima.titolo.as_deref(), Some("Disco"));
+        assert_eq!(prima.durata_ms, Some(30_000));
     }
 
     // ── i `file://` e le loro quattro forme ─────────────────────────────────

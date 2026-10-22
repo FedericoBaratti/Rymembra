@@ -44,6 +44,7 @@ import { t } from "../lingue";
 import { durata, nomeLicenza } from "../formato";
 import { conIndice } from "../segnali";
 import { useDati } from "../dati";
+import { StatoVuoto } from "./Libreria";
 
 /**
  * Che cosa dire dopo un «aggiungi tutti».
@@ -117,12 +118,22 @@ export interface StatoEsplora {
   frase: string;
   /** A che punto è la pagina. */
   fase: Fase;
+  /**
+   * «Aggiungi tutti» è partito e non ha ancora risposto.
+   *
+   * Qui e non in uno stato del componente per la stessa ragione dei
+   * risultati: il componente si smonta cambiando schermata, e tornando prima
+   * della risposta il tasto si riaccendeva — e una seconda pressione mandava
+   * al nucleo la stessa aggiunta una seconda volta.
+   */
+  tuttiInCorso: boolean;
 }
 
 /** Esplora com'è la prima volta che la si apre. */
 export const ESPLORA_INIZIALE: StatoEsplora = {
   frase: "",
   fase: { tipo: "ferma" },
+  tuttiInCorso: false,
 };
 
 export function Esplora({
@@ -148,7 +159,7 @@ export function Esplora({
   onLibreriaCambiata: () => void;
 }) {
   const letture = useDati().ipc;
-  const { frase, fase } = stato;
+  const { frase, fase, tuttiInCorso } = stato;
   const setFrase = useCallback(
     (testo: string) => onStato((prima) => ({ ...prima, frase: testo })),
     [onStato],
@@ -387,6 +398,12 @@ export function Esplora({
   );
 
   const aggiungiTutti = useCallback(async () => {
+    if (tuttiInCorso) return;
+    onStato((prima) => ({ ...prima, tuttiInCorso: true }));
+    // Il numero della ricerca di cui si aggiunge tutto: «Cerca» resta premibile
+    // mentre si aggiunge, e i segni «in libreria» di questa risposta non vanno
+    // scritti sulle righe di una ricerca partita dopo. Vedi `ultimaRicerca`.
+    const ricerca = ultimaRicerca;
     try {
       const esito = await ipc.esploraAggiungiTutti();
       // Si segna quel che il nucleo dice essere in libreria, non quel che da
@@ -395,7 +412,7 @@ export function Esplora({
       // su un brano che a premerlo rispondeva con un errore.
       const dentro = new Set(esito.inLibreria);
       setFase((prima) =>
-        prima.tipo === "esito"
+        prima.tipo === "esito" && ricerca === ultimaRicerca
           ? {
               ...prima,
               esito: {
@@ -412,8 +429,10 @@ export function Esplora({
       onNotizia(riassunto(esito.conteggi));
     } catch (e) {
       onErrore(e);
+    } finally {
+      onStato((prima) => ({ ...prima, tuttiInCorso: false }));
     }
-  }, [onLibreriaCambiata, onNotizia, onErrore]);
+  }, [tuttiInCorso, onStato, setFase, onLibreriaCambiata, onNotizia, onErrore]);
 
   const risultati = fase.tipo === "esito" ? fase.esito.risultati : [];
   const daAggiungere = risultati.filter(
@@ -444,7 +463,9 @@ export function Esplora({
           <button
             type="button"
             className="bottone btn-ghost"
-            onClick={() => void ipc.esploraAnnulla()}
+            onClick={() => {
+              ipc.esploraAnnulla().catch(onErrore);
+            }}
           >
             {t("explore.cancel")}
           </button>
@@ -458,26 +479,28 @@ export function Esplora({
             {t("explore.search")}
           </button>
         )}
-        {daAggiungere > 1 && (
+        {/* Resta a schermo mentre lavora, anche quando le righe già entrate
+            fanno scendere il conto sotto due: sparire a metà direbbe «fatto». */}
+        {(daAggiungere > 1 || tuttiInCorso) && (
           <button
             type="button"
             className="bottone btn-ghost"
+            disabled={tuttiInCorso}
+            aria-busy={tuttiInCorso}
             onClick={() => void aggiungiTutti()}
           >
-            {t("explore.addAll")}
+            {tuttiInCorso ? t("explore.addAll.busy") : t("explore.addAll")}
           </button>
         )}
       </div>
 
       {fase.tipo === "ferma" && (
-        <div className="vuoto empty-state">
-          <span className="empty-icon" aria-hidden="true">
-            <Icona nome="i-search" dim={30} />
-          </span>
-          <h2>{t("explore.start.title")}</h2>
-          <p>{t("explore.start.sub")}</p>
-          <p className="nota">{t("explore.start.note")}</p>
-        </div>
+        <StatoVuoto
+          icona="i-search"
+          titolo={t("explore.start.title")}
+          testo={t("explore.start.sub")}
+          nota={t("explore.start.note")}
+        />
       )}
 
       {fase.tipo === "cerca" && (
@@ -487,13 +510,11 @@ export function Esplora({
       )}
 
       {fase.tipo === "guasto" && (
-        <div className="vuoto empty-state">
-          <span className="empty-icon" aria-hidden="true">
-            <Icona nome="i-alert" dim={30} />
-          </span>
-          <h2>{t("explore.down.title")}</h2>
-          <p>{t("explore.down.sub")}</p>
-        </div>
+        <StatoVuoto
+          icona="i-alert"
+          titolo={t("explore.down.title")}
+          testo={t("explore.down.sub")}
+        />
       )}
 
       {/* Senza risultati, i due casi si escludono a vicenda, e per un pezzo
@@ -503,24 +524,19 @@ export function Esplora({
           guardia la carta in testa a questo file. Interrotta vince: «non ho
           trovato niente» su una ricerca che non è finita non è vero. */}
       {fase.tipo === "esito" && risultati.length === 0 && (
-        <div className="vuoto empty-state">
-          <span className="empty-icon" aria-hidden="true">
-            <Icona
-              nome={fase.esito.annullata ? "i-x" : "i-search"}
-              dim={30}
-            />
-          </span>
-          <h2>
-            {fase.esito.annullata
+        <StatoVuoto
+          icona={fase.esito.annullata ? "i-x" : "i-search"}
+          titolo={
+            fase.esito.annullata
               ? t("explore.cancelled")
-              : t("explore.empty.title")}
-          </h2>
-          <p>
-            {fase.esito.annullata
+              : t("explore.empty.title")
+          }
+          testo={
+            fase.esito.annullata
               ? t("explore.cancelled.sub")
-              : t("explore.empty.sub")}
-          </p>
-        </div>
+              : t("explore.empty.sub")
+          }
+        />
       )}
 
       {/* Con dei risultati invece convivono, e devono: l'elenco c'è ed è
@@ -548,7 +564,10 @@ export function Esplora({
           </p>
           <ul className="elenco-esplora">
             {risultati.map((riga, indice) => {
-              const occupata = inCorso.has(riga.url);
+              // Durante «Aggiungi tutti» ogni riga è occupata: un «Aggiungi» o un
+              // «Togli» premuti nel mezzo correrebbero contro la stessa
+              // aggiunta, e l'ultima risposta a tornare deciderebbe la riga.
+              const occupata = tuttiInCorso || inCorso.has(riga.url);
               const siPuoAscoltare = riga.disponibilita !== "soloAcquisto";
               return (
                 <li
@@ -630,7 +649,9 @@ export function Esplora({
                         className="bottone minuto btn-ghost"
                         title={t("explore.page")}
                         aria-label={t("explore.page")}
-                        onClick={() => void ipc.esploraApriPagina(riga.url)}
+                        onClick={() => {
+                          ipc.esploraApriPagina(riga.url).catch(onErrore);
+                        }}
                       >
                         <Icona nome="i-external" dim={14} />
                       </button>

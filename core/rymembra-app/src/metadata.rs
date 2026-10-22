@@ -5,15 +5,40 @@
 //! `node-taglib-sharp` per scrivere — e non concordavano su tutto: la copertina
 //! letta da una non era sempre quella che l'altra riscriveva.
 
+use std::io::{Read, Seek, SeekFrom};
+
 use lofty::config::ParseOptions;
-use lofty::file::{AudioFile, TaggedFile, TaggedFileExt};
+use lofty::file::{AudioFile, FileType, TaggedFile, TaggedFileExt};
 use lofty::picture::{Picture, PictureType};
 use lofty::prelude::{Accessor, ItemKey};
 use lofty::probe::Probe;
 use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::paths::extension_of;
 use unicode_normalization::UnicodeNormalization as _;
 
 use crate::files::MusicFiles;
+
+/// La versione del lettore dei tag, cioè di quel che [`read_tags`] sa leggere.
+///
+/// Entra nella memoria dei rifiuti della scansione (`file_illeggibili`, vedi la
+/// migrazione 032): un file che questo lettore ha rifiutato non si riapre finché
+/// non cambia il file **o questo numero**. Chi insegna al lettore a leggere
+/// qualcosa che prima rifiutava — un formato in più, un ripiego in più — lo
+/// alza, e la prima scansione dopo riprova da sola tutti i rifiutati. Non
+/// alzarlo vorrebbe dire un lettore migliore che non rivede mai i file su cui
+/// quello di prima aveva detto di no.
+///
+/// - **1** — il ripiego sull'estensione, la seconda prova col tipo
+///   dell'estensione, le sole proprietà quando i tag sono rotti, il rifiuto
+///   degli APE prima della 3.99.
+pub const VERSIONE_LETTORE: i64 = 1;
+
+/// La prima versione di Monkey's Audio che il motore sa suonare: la 3.99.
+///
+/// Sotto, `ape-decoder` non apre il file (vedi `rymembra-play`), e il brano
+/// entrerebbe in libreria per poi rispondere «formato non supportato» al primo
+/// clic: un brano muto è peggio di un brano che non c'è.
+const APE_MINIMA: u16 = 3990;
 
 /// La copertina trovata dentro il file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +119,7 @@ pub struct TrackTags {
 /// NFC ricompone, e da qui in poi ogni testo letto da un file ha una forma sola.
 /// Le chiavi di identità non cambiano: `fold_text` passa comunque da NFD, e le
 /// due forme della stessa lettera ci arrivano identiche.
-fn clean(value: Option<&str>) -> Option<String> {
+pub(crate) fn clean(value: Option<&str>) -> Option<String> {
     let trimmed = value?.trim();
     if trimmed.is_empty() {
         None
@@ -211,26 +236,290 @@ pub(crate) fn racconta_errore(errore: &(dyn std::error::Error + 'static)) -> Str
     racconto
 }
 
-/// Legge i tag di un file attraverso il fornitore di file dato.
-pub fn read_tags(files: &dyn MusicFiles, path: &str) -> Result<TrackTags, AppError> {
-    let mut reader = files.open(path)?;
-    let fail = |detail: &str| {
-        AppError::new(ErrorCode::MetadataTagReadFailed {
-            path: Some(path.to_owned()),
+/// Il dettaglio di un rifiuto del lettore: `metadata.tagReadFailed` con il
+/// perché.
+fn rifiuto(path: &str, detail: &str) -> AppError {
+    AppError::new(ErrorCode::MetadataTagReadFailed {
+        path: Some(path.to_owned()),
+    })
+    .with_cause(detail.to_owned())
+}
+
+/// L'errore di I/O sepolto nella catena di un errore di `lofty`, se ce n'è uno
+/// che parla del **disco** e non del file.
+///
+/// `lofty` incarta tutto in un `FileParseError`, anche la rete che cade a metà
+/// lettura: detto `metadata.tagReadFailed`, quel guasto finirebbe nella memoria
+/// dei rifiuti della scansione come se il file fosse rotto, e un brano buono
+/// sparirebbe per sempre perché quel giorno il NAS ha singhiozzato. Qui lo si
+/// ripesca e lo si restituisce per quel che è.
+///
+/// Qualche errore di I/O invece resta del file, perché è il modo in cui `lofty`
+/// dice che la **struttura** non torna: la fine inattesa (`UnexpectedEof`, un
+/// blocco che dichiara più byte di quanti ce ne siano), i dati che non sono quel
+/// che dichiarano (`InvalidData`), e il salto prima dell'inizio — un'intestazione
+/// che punta fuori dal file, o la ricerca dell'ID3v1 negli ultimi 128 byte di un
+/// file che ne ha meno. Il salto Windows lo dice con un suo numero (vedi
+/// [`SALTO_PRIMA_DELL_INIZIO`]), gli altri sistemi con `InvalidInput`. Un file
+/// fatto così resta tale finché qualcuno non lo cambia — e allora cambiano anche
+/// dimensione e data, e la memoria lo lascia riprovare.
+fn guasto_del_disco<'a>(
+    errore: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a std::io::Error> {
+    use std::io::ErrorKind as K;
+    let mut anello: Option<&(dyn std::error::Error + 'static)> = Some(errore);
+    while let Some(adesso) = anello {
+        if let Some(io) = adesso.downcast_ref::<std::io::Error>() {
+            let della_struttura = matches!(
+                io.kind(),
+                K::UnexpectedEof | K::InvalidInput | K::InvalidData
+            ) || io.raw_os_error() == SALTO_PRIMA_DELL_INIZIO;
+            let del_file = della_struttura && !rymembra_domain::errors::rete::e_di_rete(io);
+            return (!del_file).then_some(io);
+        }
+        anello = adesso.source();
+    }
+    None
+}
+
+/// `ERROR_NEGATIVE_SEEK`: Windows rifiuta di spostarsi prima dell'inizio del
+/// file con questo numero, che Rust non sa classificare e lascia
+/// `Uncategorized`. Sugli altri sistemi lo stesso caso è un `InvalidInput`.
+#[cfg(windows)]
+const SALTO_PRIMA_DELL_INIZIO: Option<i32> = Some(131);
+/// Vedi la gemella per Windows: qui il caso è già un `InvalidInput`.
+#[cfg(not(windows))]
+const SALTO_PRIMA_DELL_INIZIO: Option<i32> = None;
+
+/// Com'è andata la lettura che ha funzionato.
+struct Letto {
+    /// Il file, con quel che `lofty` ne ha capito.
+    file: TaggedFile,
+    /// I tag erano illeggibili, e si sono lette le sole proprietà.
+    solo_proprieta: bool,
+}
+
+/// Apre il file con `lofty`, ripiegando dove il primo tentativo sbaglia.
+///
+/// # I tre ripieghi, e i file veri che li chiedono
+///
+/// Misurati sui 186 file che una libreria vera rifiutava a ogni scansione:
+///
+/// 1. **L'estensione, quando il contenuto non basta.** 104 MP3 avevano dopo il
+///    tag ID3 della spazzatura più lunga di quella che il riconoscimento dal
+///    contenuto è disposto a scorrere (`max_junk_bytes`), e `lofty` concludeva
+///    «nessun formato». Il tipo dell'estensione si dà **prima** di indovinare:
+///    `guess_file_type` lo sostituisce solo se dal contenuto capisce qualcosa,
+///    e il lettore MP3 la sua sincronia la cerca da sé, senza quel limite.
+/// 2. **L'estensione, quando il contenuto inganna.** Due file si facevano
+///    scambiare per un altro formato — un `.mp3` che sembrava AAC, un `.flac`
+///    che sembrava MPEG — e la lettura col tipo indovinato falliva. Se il tipo
+///    dell'estensione è un altro, si riprova con quello.
+/// 3. **Le sole proprietà, quando sono i tag a essere rotti.** 26 MP3 avevano
+///    frame ID3 (`TXXX`, `TRCK`) in UTF-8 o UTF-16 malformato. Il parsing
+///    tollerante di `lofty` 0.25 (`ParsingMode::Relaxed`) **non** li salta:
+///    nel sorgente salta i frame con l'intestazione rotta, ma un contenuto che
+///    non si decodifica risale con un `?` da `read_all_frames_into_list` in
+///    qualunque modo, e con lui l'intero file. Si rilegge allora con
+///    `read_tags(false)` — durata, frequenza, canali dal flusso — e il resto
+///    viene dai ripieghi dei file senza tag, più il vecchio ID3v1 in coda al
+///    file se c'è (vedi [`id3v1`]). Un brano col titolo del nome del file è
+///    meglio di un brano che non c'è.
+///
+/// Ogni ripiego si tenta solo dopo un errore **del file**: un guasto del disco
+/// (vedi [`guasto_del_disco`]) esce subito per quel che è, perché riprovare su
+/// una rete caduta costa un'altra attesa per lo stesso esito. Se nessun
+/// tentativo riesce, l'errore è quello del primo, che è quello che racconta
+/// meglio il file.
+fn leggi_il_file<R: Read + Seek>(reader: &mut R, path: &str) -> Result<Letto, AppError> {
+    // La durata va calcolata: senza, i file a bitrate variabile la riportano
+    // stimata dall'intestazione, che su un VBR lungo sbaglia di parecchi
+    // secondi — e la durata finisce nell'interfaccia e nei confronti di
+    // somiglianza.
+    let con_i_tag = ParseOptions::new().read_properties(true);
+    let senza_tag = ParseOptions::new().read_properties(true).read_tags(false);
+    let dall_estensione = FileType::from_ext(extension_of(path));
+
+    let mut probe = Probe::new(&mut *reader).options(con_i_tag);
+    if let Some(tipo) = dall_estensione {
+        probe = probe.set_file_type(tipo);
+    }
+    let probe = probe
+        .guess_file_type()
+        .map_err(|err| crate::files::io_error(path, &err))?;
+    let Some(indovinato) = probe.file_type() else {
+        // Né il contenuto né l'estensione: è un formato che `lofty` non
+        // conosce — il WMA, che sta fra le estensioni della libreria ma non fra
+        // quelle che si sanno leggere. Un rifiuto che non cambierà finché non
+        // cambia il lettore.
+        return Err(AppError::new(ErrorCode::PlaybackFormatUnsupported {
+            format: Some(extension_of(path)),
         })
-        .with_cause(detail.to_owned())
+        .with_cause(
+            "nessun formato riconosciuto, né dal contenuto né dall'estensione".to_owned(),
+        ));
+    };
+    let primo = match probe.read() {
+        Ok(file) => {
+            return Ok(Letto {
+                file,
+                solo_proprieta: false,
+            });
+        }
+        Err(err) => {
+            if let Some(io) = guasto_del_disco(&err) {
+                return Err(crate::files::io_error(path, io));
+            }
+            rifiuto(path, &racconta_errore(&err))
+        }
     };
 
-    let probe = Probe::new(&mut reader)
-        // La durata va calcolata: senza, i file a bitrate variabile la
-        // riportano stimata dall'intestazione, che su un VBR lungo sbaglia di
-        // parecchi secondi — e la durata finisce nell'interfaccia e nei
-        // confronti di somiglianza.
-        .options(ParseOptions::new().read_properties(true))
-        .guess_file_type()
-        .map_err(|err| fail(&err.to_string()))?;
+    // I ripieghi, in ordine: il tipo dell'estensione se è un altro, poi le sole
+    // proprietà con il tipo indovinato e con quello dell'estensione.
+    let altro = dall_estensione.filter(|tipo| *tipo != indovinato);
+    let mut tentativi: Vec<(FileType, ParseOptions, bool)> = Vec::with_capacity(3);
+    if let Some(tipo) = altro {
+        tentativi.push((tipo, con_i_tag, false));
+    }
+    tentativi.push((indovinato, senza_tag, true));
+    if let Some(tipo) = altro {
+        tentativi.push((tipo, senza_tag, true));
+    }
+    for (tipo, opzioni, solo_proprieta) in tentativi {
+        reader
+            .seek(SeekFrom::Start(0))
+            .map_err(|err| crate::files::io_error(path, &err))?;
+        match Probe::new(&mut *reader)
+            .options(opzioni)
+            .set_file_type(tipo)
+            .read()
+        {
+            Ok(file) => {
+                return Ok(Letto {
+                    file,
+                    solo_proprieta,
+                });
+            }
+            Err(err) => {
+                if let Some(io) = guasto_del_disco(&err) {
+                    return Err(crate::files::io_error(path, io));
+                }
+            }
+        }
+    }
+    Err(primo)
+}
 
-    let tagged = probe.read().map_err(|err| fail(&racconta_errore(&err)))?;
+/// La versione di Monkey's Audio scritta in testa al file: `MAC ` e poi un
+/// `u16` little-endian (3970 per la 3.97). Prima può esserci un tag ID3v2, che
+/// si salta.
+///
+/// `None` se l'intestazione non è quella attesa: allora decide `lofty`, che il
+/// file l'ha già letto.
+fn versione_ape<R: Read + Seek>(reader: &mut R) -> std::io::Result<Option<u16>> {
+    reader.seek(SeekFrom::Start(0))?;
+    let mut testa = [0_u8; 10];
+    reader.read_exact(&mut testa)?;
+    if testa.starts_with(b"ID3") {
+        // La dimensione è sincronizzata: sette bit per byte, e i dieci byte
+        // dell'intestazione non sono contati.
+        let dimensione = testa
+            .get(6..10)
+            .unwrap_or_default()
+            .iter()
+            .fold(0_u64, |somma, byte| (somma << 7) | u64::from(byte & 0x7F));
+        reader.seek(SeekFrom::Start(dimensione.saturating_add(10)))?;
+    } else {
+        reader.seek(SeekFrom::Start(0))?;
+    }
+    let mut mac = [0_u8; 6];
+    reader.read_exact(&mut mac)?;
+    let [b'M', b'A', b'C', b' ', basso, alto] = mac else {
+        return Ok(None);
+    };
+    Ok(Some(u16::from_le_bytes([basso, alto])))
+}
+
+/// I campi del vecchio ID3v1 in coda al file: gli ultimi 128 byte, se cominciano
+/// con `TAG`.
+///
+/// Serve solo al ripiego delle sole proprietà (vedi [`leggi_il_file`]), dove
+/// l'ID3v2 è rotto e `lofty` non lo legge più: lì i trenta caratteri del
+/// vecchio tag sono tutto quel che resta di titolo, interprete e album, e un
+/// titolo troncato è meglio del nome del file. Nella lettura normale non si usa
+/// mai: il tag ricco, quando si legge, vince sempre.
+///
+/// Il testo è Latin-1, come vuole lo standard: un byte, un carattere.
+fn id3v1<R: Read + Seek>(reader: &mut R) -> Option<TrackTags> {
+    reader.seek(SeekFrom::End(-128)).ok()?;
+    let mut coda = [0_u8; 128];
+    reader.read_exact(&mut coda).ok()?;
+    if !coda.starts_with(b"TAG") {
+        return None;
+    }
+    let campo = |da: usize, a: usize| -> Option<String> {
+        let testo: String = coda
+            .get(da..a)?
+            .iter()
+            .take_while(|byte| **byte != 0)
+            .map(|byte| char::from(*byte))
+            .collect();
+        clean(Some(&testo))
+    };
+    // ID3v1.1: lo zero al penultimo byte del commento dice che l'ultimo è il
+    // numero di traccia.
+    let traccia = match (coda.get(125), coda.get(126)) {
+        (Some(0), Some(&numero)) if numero > 0 => Some(u32::from(numero)),
+        _ => None,
+    };
+    Some(TrackTags {
+        title: campo(3, 33),
+        artist: campo(33, 63),
+        album: campo(63, 93),
+        year: campo(93, 97).and_then(|anno| anno.parse::<i32>().ok()),
+        track_number: traccia,
+        ..TrackTags::default()
+    })
+}
+
+/// Legge i tag di un file attraverso il fornitore di file dato.
+///
+/// Con i ripieghi di [`leggi_il_file`]. Un `.ape` più vecchio della 3.99 è un
+/// rifiuto anche se `lofty` lo legge: vedi [`APE_MINIMA`].
+///
+/// # Errori
+///
+/// - `metadata.tagReadFailed` se il file non si legge in nessun modo;
+/// - `playback.formatUnsupported` per un formato che non si sa leggere o non si
+///   sa suonare (il WMA, un APE vecchio);
+/// - un errore del disco (`fs.*`) se a non rispondere è il disco e non il file.
+///
+/// Solo i primi due dicono qualcosa del file, e solo quelli la scansione li
+/// ricorda: vedi [`VERSIONE_LETTORE`].
+pub fn read_tags(files: &dyn MusicFiles, path: &str) -> Result<TrackTags, AppError> {
+    let mut reader = files.open(path)?;
+    let Letto {
+        file: tagged,
+        solo_proprieta,
+    } = leggi_il_file(&mut reader, path)?;
+
+    if tagged.file_type() == FileType::Ape
+        && let Some(versione) =
+            versione_ape(&mut reader).map_err(|err| crate::files::io_error(path, &err))?
+        && versione < APE_MINIMA
+    {
+        return Err(AppError::new(ErrorCode::PlaybackFormatUnsupported {
+            format: Some(format!(
+                "Monkey's Audio {}.{:02}",
+                versione.div_euclid(1000),
+                versione.rem_euclid(1000).div_euclid(10)
+            )),
+        })
+        .with_cause(format!(
+            "Monkey's Audio {versione}: il motore suona dalla {APE_MINIMA} in su"
+        )));
+    }
+
     let properties = tagged.properties();
     let file_type = format!("{:?}", tagged.file_type());
 
@@ -243,6 +532,17 @@ pub fn read_tags(files: &dyn MusicFiles, path: &str) -> Result<TrackTags, AppErr
         cover: pick_cover(&tagged),
         ..TrackTags::default()
     };
+
+    if solo_proprieta {
+        if let Some(vecchio) = id3v1(&mut reader) {
+            tags.title = vecchio.title;
+            tags.artist = vecchio.artist;
+            tags.album = vecchio.album;
+            tags.year = vecchio.year;
+            tags.track_number = vecchio.track_number;
+        }
+        return Ok(tags);
+    }
 
     // Il tag principale quando c'è; altrimenti il primo. Un mp3 può avere sia
     // ID3v2 sia ID3v1: il primario è quello ricco, e ripiegare sul secondo
@@ -328,6 +628,169 @@ mod tests {
         assert_eq!(errore.code().kind(), ErrorCodeKind::MetadataTagReadFailed);
         assert!(!errore.is_retryable() || errore.is_retryable());
     }
+
+    /// Quaranta fotogrammi MPEG-1 Layer III, 128 kbit/s a 44,1 kHz: quanto basta
+    /// perché `lofty` trovi la sincronia, la confermi sul fotogramma dopo e
+    /// calcoli una durata.
+    fn fotogrammi_mp3() -> Vec<u8> {
+        let mut out = Vec::new();
+        for _ in 0..40 {
+            out.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x64]);
+            out.resize(out.len() + 413, 0);
+        }
+        out
+    }
+
+    /// Un tag ID3v2.3 con i frame dati, ognuno `(identificativo, contenuto)`.
+    fn id3v23(frame: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+        let mut corpo = Vec::new();
+        for (id, contenuto) in frame {
+            corpo.extend_from_slice(*id);
+            let lunghezza = u32::try_from(contenuto.len()).expect("un frame piccolo");
+            corpo.extend_from_slice(&lunghezza.to_be_bytes());
+            corpo.extend_from_slice(&[0, 0]);
+            corpo.extend_from_slice(contenuto);
+        }
+        let n = u32::try_from(corpo.len()).expect("un tag piccolo");
+        let mut out = b"ID3\x03\x00\x00".to_vec();
+        for spostamento in [21, 14, 7, 0] {
+            out.push(u8::try_from((n >> spostamento) & 0x7F).expect("sette bit"));
+        }
+        out.extend_from_slice(&corpo);
+        out
+    }
+
+    /// Il vecchio ID3v1, centoventotto byte in coda.
+    fn id3v1_di(titolo: &str, artista: &str) -> Vec<u8> {
+        let mut out = b"TAG".to_vec();
+        for (testo, lunghezza) in [(titolo, 30), (artista, 30), ("Disco", 30), ("1999", 4)] {
+            let mut campo = testo.as_bytes().to_vec();
+            campo.resize(lunghezza, 0);
+            out.extend_from_slice(&campo);
+        }
+        // Commento di 28 byte, lo zero dell'ID3v1.1, la traccia, il genere.
+        out.resize(125, 0);
+        out.extend_from_slice(&[0, 7, 255]);
+        out
+    }
+
+    #[test]
+    fn la_spazzatura_dopo_il_tag_non_nasconde_un_mp3() {
+        use crate::files::LocalFiles;
+
+        // Più spazzatura di quella che il riconoscimento dal contenuto scorre
+        // (`max_junk_bytes`, 1024), come nei 104 MP3 che il NAS rifiutava.
+        let mut byte = id3v23(&[(b"TIT2", b"\x00Titolo vero")]);
+        byte.extend(std::iter::repeat_n(0x55_u8, 4096));
+        byte.extend(fotogrammi_mp3());
+        let dir = tempfile::tempdir().expect("cartella");
+
+        // Senza l'estensione giusta il contenuto da solo non basta: è la prova
+        // che il file qui sotto è davvero uno di quelli che si perdevano.
+        let senza = dir.path().join("brano.bin");
+        std::fs::write(&senza, &byte).expect("scrittura");
+        assert!(read_tags(&LocalFiles, &senza.to_string_lossy()).is_err());
+
+        let mp3 = dir.path().join("brano.mp3");
+        std::fs::write(&mp3, &byte).expect("scrittura");
+        let letti = read_tags(&LocalFiles, &mp3.to_string_lossy()).expect("si legge");
+        assert_eq!(letti.title.as_deref(), Some("Titolo vero"));
+        assert_eq!(letti.codec.as_deref(), Some("Mpeg"));
+        assert!(letti.duration_ms > 0);
+    }
+
+    #[test]
+    fn un_frame_rotto_lascia_le_proprieta_e_il_vecchio_tag() {
+        use crate::files::LocalFiles;
+
+        // `TRCK` dichiarato UTF-16 e senza il segno d'ordine dei byte: è il
+        // guasto di 12 MP3 veri, e `lofty` rifiuta l'intero file.
+        let mut byte = id3v23(&[
+            (b"TIT2", b"\x00Titolo ricco"),
+            (b"TRCK", b"\x01\x41\x00\x42\x00"),
+        ]);
+        byte.extend(fotogrammi_mp3());
+        byte.extend(id3v1_di("Titolo povero", "Artista"));
+        let dir = tempfile::tempdir().expect("cartella");
+        let mp3 = dir.path().join("brano.mp3");
+        std::fs::write(&mp3, &byte).expect("scrittura");
+
+        let letti = read_tags(&LocalFiles, &mp3.to_string_lossy()).expect("si legge lo stesso");
+        assert!(letti.duration_ms > 0, "le proprietà vengono dal flusso");
+        // Il tag ricco è perso con il suo frame rotto: restano i trenta
+        // caratteri in coda, che sono meglio del nome del file.
+        assert_eq!(letti.title.as_deref(), Some("Titolo povero"));
+        assert_eq!(letti.artist.as_deref(), Some("Artista"));
+        assert_eq!(letti.album.as_deref(), Some("Disco"));
+        assert_eq!(letti.year, Some(1999));
+        assert_eq!(letti.track_number, Some(7));
+    }
+
+    #[test]
+    fn la_versione_di_un_ape_si_legge_in_testa_anche_dopo_un_id3() {
+        use std::io::Cursor;
+
+        let mut vecchio = b"MAC ".to_vec();
+        vecchio.extend_from_slice(&3970_u16.to_le_bytes());
+        vecchio.resize(64, 0);
+        assert_eq!(
+            versione_ape(&mut Cursor::new(vecchio.clone())).expect("lettura"),
+            Some(3970)
+        );
+
+        // Lo stesso dietro un tag ID3v2 di dieci byte di corpo.
+        let mut con_id3 = b"ID3\x03\x00\x00\x00\x00\x00\x0A".to_vec();
+        con_id3.resize(20, 0);
+        con_id3.extend_from_slice(&vecchio);
+        assert_eq!(
+            versione_ape(&mut Cursor::new(con_id3)).expect("lettura"),
+            Some(3970)
+        );
+
+        // Un'intestazione che non è quella attesa non decide niente.
+        assert_eq!(
+            versione_ape(&mut Cursor::new(vec![0_u8; 64])).expect("lettura"),
+            None
+        );
+    }
+
+    #[test]
+    fn un_formato_che_nessuno_sa_leggere_e_non_supportato() {
+        use crate::files::LocalFiles;
+        use rymembra_domain::errors::ErrorCodeKind;
+
+        // Un WMA: sta fra le estensioni della libreria, ma `lofty` non lo
+        // conosce né dal contenuto né dall'estensione.
+        let dir = tempfile::tempdir().expect("cartella");
+        let wma = dir.path().join("brano.wma");
+        let mut byte = vec![
+            0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62,
+            0xCE, 0x6C,
+        ];
+        byte.resize(4096, 0);
+        std::fs::write(&wma, &byte).expect("scrittura");
+        let errore = read_tags(&LocalFiles, &wma.to_string_lossy()).expect_err("non si legge");
+        assert_eq!(
+            errore.code().kind(),
+            ErrorCodeKind::PlaybackFormatUnsupported
+        );
+    }
+
+    #[test]
+    fn un_errore_del_disco_dentro_lofty_resta_del_disco() {
+        // Un `FileParseError` che incarta un errore di I/O vero: il codice deve
+        // dire il disco, non il file. Con `metadata.tagReadFailed` la scansione
+        // lo ricorderebbe come rifiuto, e il brano sparirebbe per un singhiozzo.
+        let rete = std::io::Error::other("la rete se n'è andata");
+        let incartato = lofty::error::FileParseError::from(rete);
+        assert!(guasto_del_disco(&incartato).is_some());
+
+        // Un file troncato invece è del file.
+        let troncato = std::io::Error::from(std::io::ErrorKind::UnexpectedEof);
+        let incartato = lofty::error::FileParseError::from(troncato);
+        assert!(guasto_del_disco(&incartato).is_none());
+    }
+
     /// Un bitrate impossibile non si crede: si ripiega sul conto del file.
     ///
     /// È il caso MP4 di tutti i giorni. `esds` dichiara cinque kbit/s per un

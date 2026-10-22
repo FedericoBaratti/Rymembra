@@ -6,9 +6,10 @@
  * vedono solo scorrendo, in fondo a una libreria vera. Qui sono numeri che
  * entrano e numeri che escono, e li provano i test di `test/finestra.test.ts`.
  *
- * Tre conti: quali righe disegnare per uno scorrimento dato, quante colonne ha
- * una griglia che si dispone da sé (`repeat(auto-fill, …)`), e dove va il fuoco
- * in una griglia quando si preme una freccia.
+ * Quattro conti: quali righe disegnare per uno scorrimento dato — con un passo
+ * solo, o su righe di altezza diversa (la coda) —, quante colonne ha una
+ * griglia che si dispone da sé (`repeat(auto-fill, …)`), e dove va il fuoco in
+ * una griglia quando si preme una freccia.
  */
 
 /** Quel che serve per sapere quali righe disegnare. */
@@ -63,6 +64,107 @@ export function finestraDa(m: Misure): Intervallo {
   const primo = stretto(visibileDa - m.margine, 0, fine);
   const ultimo = Math.min(primo + quante, m.totale);
   return { primo, ultimo, visibileDa };
+}
+
+/**
+ * Dove comincia ogni riga, quando le righe non sono alte uguale.
+ *
+ * `scala[i]` è la cima della riga `i` dall'inizio dell'elenco, e `scala[totale]`
+ * l'altezza dell'elenco intero: una voce in più delle righe perché la paglia di
+ * sotto sia `scala[totale] - scala[ultimo]` senza un caso a parte per la fine.
+ *
+ * Una riga mai disegnata non ha una misura e vale `stima`: quanto è alta davvero
+ * lo dice il disegno, e fino ad allora il suo posto è la paglia. Diciottomila
+ * somme sono meno di un millesimo di secondo, e chi chiama la rifà solo quando
+ * una misura cambia.
+ */
+export function scalaDa(
+  altezze: ReadonlyMap<number, number>,
+  totale: number,
+  stima: number,
+): Float64Array {
+  const righe = Math.max(totale, 0);
+  const scala = new Float64Array(righe + 1);
+  let somma = 0;
+  for (let i = 0; i < righe; i++) {
+    somma += altezze.get(i) ?? stima;
+    scala[i + 1] = somma;
+  }
+  return scala;
+}
+
+/**
+ * La riga che contiene il punto `y`: l'ultima che comincia prima di lui o lì.
+ *
+ * Una ricerca binaria e non una divisione, perché con righe diverse non c'è un
+ * passo per cui dividere. Fuori dai bordi dà la prima riga o la fine.
+ */
+function rigaA(scala: ArrayLike<number>, y: number): number {
+  let basso = 0;
+  let alto = scala.length - 1;
+  while (basso < alto) {
+    const mezzo = (basso + alto + 1) >> 1;
+    if ((scala[mezzo] ?? 0) <= y) basso = mezzo;
+    else alto = mezzo - 1;
+  }
+  return basso;
+}
+
+/** Quel che serve per la finestra su righe di altezza diversa. */
+export interface MisureScala {
+  /** `scrollTop` dello scorrevole. */
+  scorrimento: number;
+  /** Dove comincia la prima riga dentro lo scorrevole, in pixel. */
+  cima: number;
+  /** `clientHeight` dello scorrevole. */
+  altezzaVista: number;
+  /** Da `scalaDa`: una voce più delle righe. */
+  scala: ArrayLike<number>;
+  /** Righe in più per lato. */
+  margine: number;
+  /** La finestra disegnata adesso: la si tiene finché basta (vedi sotto). */
+  tenere?: { primo: number; ultimo: number } | undefined;
+}
+
+/**
+ * Le righe da disegnare, come `finestraDa`, ma sulla scala invece che su un
+ * passo.
+ *
+ * Il margine resta in **righe** e non in pixel: serve a coprire il fotogramma
+ * che il calcolo arriva in ritardo, e ogni riga di margine vale almeno una riga
+ * di rotella. `visibili` — le righe intere che entrano dalla prima in vista —
+ * qui si conta, perché non è più l'altezza della vista divisa per un passo.
+ *
+ * `tenere` è la finestra disegnata adesso, e resta quella finché copre la vista
+ * con almeno metà del margine per lato. Senza, la finestra scattava avanti e
+ * indietro di una riga all'infinito: una riga misurata mezzo pixel diversa da
+ * come è disegnata sposta il contenuto di quel mezzo pixel, lo scroll anchoring
+ * del motore lo corregge, la correzione si arrotonda al pixel del dispositivo
+ * (1,11 px CSS con lo zoom a 0,9), e lo scorrimento passa il confine fra due
+ * righe — che sceglie l'altra finestra, che corregge all'indietro.
+ */
+export function finestraDaScala(m: MisureScala): Intervallo & { visibili: number } {
+  const totale = Math.max(m.scala.length - 1, 0);
+  const fine = Math.max(totale - 1, 0);
+  const alto = m.scorrimento - m.cima;
+  const visibileDa = stretto(rigaA(m.scala, alto), 0, fine);
+  const inFondo = Math.max(rigaA(m.scala, alto + m.altezzaVista), visibileDa);
+  const cimaVisibile = m.scala[visibileDa] ?? 0;
+  const entrano = rigaA(m.scala, cimaVisibile + m.altezzaVista) - visibileDa;
+  const visibili = Math.max(entrano, 1);
+  const t = m.tenere;
+  if (t !== undefined && t.primo < t.ultimo && t.ultimo <= totale) {
+    const mezzo = Math.floor(m.margine / 2);
+    if (
+      t.primo <= Math.max(visibileDa - mezzo, 0) &&
+      t.ultimo >= Math.min(inFondo + 1 + mezzo, totale)
+    ) {
+      return { primo: t.primo, ultimo: t.ultimo, visibileDa, visibili };
+    }
+  }
+  const primo = stretto(visibileDa - m.margine, 0, fine);
+  const ultimo = Math.min(inFondo + 1 + m.margine, totale);
+  return { primo, ultimo, visibileDa, visibili };
 }
 
 /**

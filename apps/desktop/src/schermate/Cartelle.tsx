@@ -134,13 +134,14 @@ import { Dialogo } from "../Dialogo";
 import { brani_, durata } from "../formato";
 import { useFuoco } from "../fuoco";
 import { ipc, type Brano, type NodoCartella } from "../ipc";
-import { t } from "../lingue";
+import { t, useLingua } from "../lingue";
 import type { Apertura, Voce } from "../Menu";
 import { useAscolto, useRada } from "../pagine";
 import { Icona } from "../parti/Icone";
 import { conIndice } from "../segnali";
 import { useVirtuale } from "../virtuale";
 import { ElencoBrani, ElencoFinto } from "./Elenco";
+import { StatoVuoto } from "./Libreria";
 
 /**
  * Per quanto si crede alla sonda delle radici prima di rifarla.
@@ -255,6 +256,53 @@ interface SceltaBrani {
 }
 
 const NESSUN_BRANO: SceltaBrani = { ids: new Set(), ancora: null };
+
+/** Le righe dell'albero finto: piene e corte alternate, come i nomi veri. */
+const RIGHE_FINTE: readonly boolean[] = [false, true, false, false, true, false];
+
+/**
+ * L'albero mentre le cartelle sorvegliate non si sanno ancora.
+ *
+ * Prima di `avvio` le radici erano un elenco vuoto, e la pagina diceva
+ * «nessuna cartella sorvegliata» a chi ne ha cinque — per il tempo della prima
+ * risposta, o per sempre se quella risposta non arrivava. Qui c'è la colonna
+ * dell'albero con le sue righe in attesa, che è la forma di quel che arriverà:
+ * la stessa ragione di `ElencoFinto` e `GrigliaFinta`.
+ *
+ * Le classi delle righe sono quelle vere, e lo scheletro è `skeleton`: una skin
+ * che veste l'albero veste anche la sua attesa. `role="status"` sul contenitore
+ * e `aria-hidden` sulle righe: chi ascolta lo schermo sente «sto caricando» una
+ * volta, non sei rettangoli.
+ */
+export function CartelleFinte() {
+  return (
+    <div className="vista-cartelle">
+      <div className="colonna-albero">
+        <div
+          className="albero-cartelle folder-tree"
+          role="status"
+          aria-label={t("list.loading")}
+        >
+          {RIGHE_FINTE.map((corta, i) => (
+            <div
+              key={i}
+              className="nodo-cartella list-row folder-row"
+              style={{ "--livello-nodo": 1 } as CSSProperties}
+              aria-hidden="true"
+            >
+              <span className="icona-nodo">
+                <Icona nome="i-folder" dim={14} />
+              </span>
+              <div className="nome-nodo">
+                <div className={corta ? "riga-finta corta skeleton" : "riga-finta skeleton"} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function Cartelle({
   radici,
@@ -376,7 +424,14 @@ export function Cartelle({
     () => (filtro === null ? conRadici : attraversoLente(conRadici, filtro)),
     [conRadici, filtro],
   );
-  const righe = useMemo(() => appiattisci(vista), [vista]);
+  // La lingua fra le dipendenze: un brano d'immagine CD senza titolo si chiama
+  // «Traccia 03 · Album», e cambiando lingua deve cambiare anche lui.
+  const lingua = useLingua();
+  const righe = useMemo(
+    () =>
+      appiattisci(vista, (numero, album) => t("folders.imageTrack", { numero, album })),
+    [vista, lingua],
+  );
 
   // ── quel che si chiede al nucleo ────────────────────────────────────────
 
@@ -1380,13 +1435,11 @@ export function Cartelle({
 
   if (radici.length === 0) {
     return (
-      <div className="vuoto empty-state">
-        <span className="empty-icon" aria-hidden="true">
-          <Icona nome="i-folder" dim={30} />
-        </span>
-        <h2>{t("folders.empty.title")}</h2>
-        <p>{t("folders.empty.hint")}</p>
-      </div>
+      <StatoVuoto
+        icona="i-folder"
+        titolo={t("folders.empty.title")}
+        testo={t("folders.empty.hint")}
+      />
     );
   }
 

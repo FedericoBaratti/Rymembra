@@ -19,6 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::cue::brano_d_immagine;
 use crate::paths::{
     MIN_TRACK_BYTES, PathRules, is_in_trash, is_supported_audio_path, is_under, path_key,
 };
@@ -249,9 +250,14 @@ pub fn plan_scan(input: ScanInput<'_>, rules: PathRules) -> ScanPlan {
         // cestino o non audio va riportato per quel che è, non come «troppo
         // piccolo» — il motivo finisce nella diagnostica, e uno sbagliato manda
         // a cercare nel posto sbagliato.
+        //
+        // Un brano d'immagine CD (`…\Album.cue|03`) è musica anche se la sua
+        // «estensione» non lo è: l'ha messo qui `cue::espandi_immagini` al
+        // posto dell'immagine, che è il file che si apre. Il `.cue` vero
+        // invece resta fuori, come ogni file che non si suona.
         let skip = if is_in_trash(&file.path) {
             Some(SkipReason::InTrash)
-        } else if !is_supported_audio_path(&file.path) {
+        } else if !is_supported_audio_path(&file.path) && brano_d_immagine(&file.path).is_none() {
             Some(SkipReason::NonAudio)
         } else if file.size_bytes < MIN_TRACK_BYTES {
             Some(SkipReason::TooSmall)
@@ -325,7 +331,12 @@ pub fn plan_scan(input: ScanInput<'_>, rules: PathRules) -> ScanPlan {
 /// libreria in `C:\Music`, i download in `c:\music\download`) non devono far
 /// riscrivere le stesse righe avanti e indietro a ogni passata. Quel che sta
 /// sotto lo scrive il disco, ed è lì che un nome rinominato si vede.
-fn stessa_grafia(nota: &str, trovato: &str, radici: &[String], rules: PathRules) -> bool {
+///
+/// Pubblica perché la stessa domanda la scansione la fa anche fuori dal piano,
+/// sull'immagine di un brano d'immagine CD: il percorso virtuale del brano può
+/// restare identico mentre l'immagine sotto cambia nome.
+#[must_use]
+pub fn stessa_grafia(nota: &str, trovato: &str, radici: &[String], rules: PathRules) -> bool {
     if nota == trovato {
         return true;
     }
@@ -657,6 +668,42 @@ mod tests {
         assert_eq!(
             p.skipped.first().map(|s| s.reason),
             Some(SkipReason::InTrash)
+        );
+    }
+
+    #[test]
+    fn i_brani_d_immagine_sono_musica_e_il_foglio_no() {
+        let p = plan(
+            &[r"\\nas\Cd"],
+            vec![
+                file(r"\\nas\Cd\Album\Album.cue", 1_200, 1),
+                file(r"\\nas\Cd\Album\Album.cue|01", 300_000_000, 5),
+                file(r"\\nas\Cd\Album\Album.cue|02", 300_000_000, 5),
+                file(r"\\nas\Cd\Album\Album.ape|01", 300_000_000, 5),
+            ],
+            vec![],
+        );
+        assert_eq!(
+            p.to_insert
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                r"\\nas\Cd\Album\Album.cue|01",
+                r"\\nas\Cd\Album\Album.cue|02"
+            ]
+        );
+        // Il foglio è uno scarto per quel che è, e un percorso che somiglia a
+        // un brano d'immagine senza esserlo pure.
+        assert_eq!(
+            p.skipped
+                .iter()
+                .map(|s| (s.file.path.as_str(), s.reason))
+                .collect::<Vec<_>>(),
+            vec![
+                (r"\\nas\Cd\Album\Album.cue", SkipReason::NonAudio),
+                (r"\\nas\Cd\Album\Album.ape|01", SkipReason::NonAudio),
+            ]
         );
     }
 

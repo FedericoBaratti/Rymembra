@@ -4,9 +4,11 @@ import assert from "node:assert/strict";
 import {
   colonneDa,
   finestraDa,
+  finestraDaScala,
   larghezzaColonnaDa,
   passoGriglia,
   righeDiGriglia,
+  scalaDa,
 } from "../src/finestra";
 
 test("la finestra in cima disegna lo schermo più il margine", () => {
@@ -120,4 +122,132 @@ test("il fuoco nella griglia: frecce, bordi, Inizio e Fine", () => {
   assert.equal(passo(5, "End"), 9);
   assert.equal(passo(5, "Enter"), null);
   assert.equal(passoGriglia(0, "End", 4, 0), null, "una griglia vuota non ha dove");
+});
+
+test("la scala somma le righe misurate e stima le altre", () => {
+  const scala = scalaDa(
+    new Map([
+      [1, 60],
+      [3, 80],
+    ]),
+    5,
+    40,
+  );
+  assert.deepEqual([...scala], [0, 40, 100, 140, 220, 260]);
+  assert.deepEqual([...scalaDa(new Map(), 0, 40)], [0], "un elenco vuoto è alto zero");
+  // Una misura oltre la fine (la coda si è accorciata) non conta.
+  assert.deepEqual([...scalaDa(new Map([[7, 99]]), 2, 40)], [0, 40, 80]);
+});
+
+/** Righe alte 40 e 120 a turno: la riga 2k comincia a 160k, la 2k+1 a 160k+40. */
+function alterne(totale: number): Float64Array {
+  const altezze = new Map<number, number>();
+  for (let i = 0; i < totale; i++) altezze.set(i, i % 2 === 0 ? 40 : 120);
+  return scalaDa(altezze, totale, 40);
+}
+
+test("su righe diverse la finestra trova la riga in cima senza un passo", () => {
+  const f = finestraDaScala({
+    scorrimento: 880,
+    cima: 30,
+    altezzaVista: 600,
+    scala: alterne(1000),
+    margine: 8,
+  });
+  // 850 dalla cima cade dentro la riga 11 (da 840 a 960).
+  assert.equal(f.visibileDa, 11);
+  assert.equal(f.primo, 3);
+  // Il fondo della vista, 1450, cade nella riga 18 (da 1440 a 1480).
+  assert.equal(f.ultimo, 18 + 1 + 8);
+  // Dalla 11 alla 17 entrano intere: finiscono a 1440, la vista a 1440.
+  assert.equal(f.visibili, 7);
+});
+
+test("su righe alte uguale la scala dà la finestra del passo", () => {
+  const passo = 42;
+  const altezze = new Map<number, number>();
+  for (let i = 0; i < 5000; i++) altezze.set(i, passo);
+  const m = { scorrimento: 5000, cima: 30, altezzaVista: 600, margine: 8 };
+  const conPasso = finestraDa({ ...m, passo, totale: 5000 });
+  const conScala = finestraDaScala({ ...m, scala: scalaDa(altezze, 5000, passo) });
+  assert.equal(conScala.visibileDa, conPasso.visibileDa);
+  assert.equal(conScala.primo, conPasso.primo);
+  assert.equal(conScala.visibili, Math.floor(600 / passo));
+});
+
+test("la finestra su righe diverse copre sempre la vista", () => {
+  // Altezze da una, due e tre righe di testo, in un ordine che non si ripete.
+  const totale = 18_000;
+  const altezze = new Map<number, number>();
+  let seme = 7;
+  for (let i = 0; i < totale; i++) {
+    seme = (seme * 48_271) % 2_147_483_647;
+    altezze.set(i, [38, 54, 70][seme % 3] ?? 38);
+  }
+  const scala = scalaDa(altezze, totale, 38);
+  const cima = 8;
+  const altezzaVista = 640;
+  const fondo = (scala[totale] ?? 0) + cima - altezzaVista;
+  for (let scorrimento = 0; scorrimento <= fondo; scorrimento += 997) {
+    const f = finestraDaScala({ scorrimento, cima, altezzaVista, scala, margine: 8 });
+    // In cima la vista comincia sopra la prima riga, nel bordo dell'elenco.
+    const da = scorrimento - cima;
+    assert.ok((scala[f.primo] ?? 0) <= Math.max(da, 0), `sopra la vista a ${scorrimento}`);
+    assert.ok(
+      f.ultimo === totale || (scala[f.ultimo] ?? 0) >= da + altezzaVista,
+      `sotto la vista a ${scorrimento}`,
+    );
+    assert.ok(f.visibileDa >= f.primo && f.visibileDa < f.ultimo);
+    assert.ok(f.ultimo - f.primo < 60, `e non molte di più: ${f.ultimo - f.primo}`);
+  }
+  // In fondo: l'ultima riga è disegnata, e non molte prima.
+  const ultima = finestraDaScala({ scorrimento: fondo, cima, altezzaVista, scala, margine: 8 });
+  assert.equal(ultima.ultimo, totale);
+  assert.ok(ultima.primo > totale - 40, `${ultima.primo}`);
+});
+
+test("su righe diverse i bordi, l'elenco vuoto e una riga più alta della vista", () => {
+  const scala = alterne(100);
+  const sopra = finestraDaScala({ scorrimento: -500, cima: 0, altezzaVista: 400, scala, margine: 8 });
+  assert.deepEqual([sopra.primo, sopra.visibileDa], [0, 0]);
+  const sotto = finestraDaScala({ scorrimento: 1e9, cima: 0, altezzaVista: 400, scala, margine: 8 });
+  assert.equal(sotto.ultimo, 100);
+  assert.ok(sotto.primo <= 99 && sotto.visibileDa <= 99);
+  const vuoto = finestraDaScala({
+    scorrimento: 0,
+    cima: 0,
+    altezzaVista: 400,
+    scala: scalaDa(new Map(), 0, 40),
+    margine: 8,
+  });
+  assert.deepEqual([vuoto.primo, vuoto.ultimo, vuoto.visibili], [0, 0, 1]);
+  // Una riga sola più alta della vista: PagGiù deve muoversi lo stesso.
+  const alta = finestraDaScala({
+    scorrimento: 0,
+    cima: 0,
+    altezzaVista: 400,
+    scala: scalaDa(new Map([[0, 1000]]), 3, 40),
+    margine: 8,
+  });
+  assert.equal(alta.visibili, 1);
+});
+
+test("la finestra disegnata resta finché copre la vista con mezzo margine", () => {
+  const scala = alterne(1000);
+  const m = { cima: 8, altezzaVista: 300, scala, margine: 8 };
+  const prima = finestraDaScala({ ...m, scorrimento: 4000 });
+  // Un pixel di dispositivo avanti e indietro, attorno a dove si è: la stessa
+  // finestra, qualunque confine di riga cada lì in mezzo.
+  for (const scarto of [1.11, -1.11, 2.22, -2.22]) {
+    const dopo = finestraDaScala({ ...m, scorrimento: 4000 + scarto, tenere: prima });
+    assert.deepEqual([dopo.primo, dopo.ultimo], [prima.primo, prima.ultimo], `a ${scarto}`);
+  }
+  // Ma non oltre il mezzo margine: lì la finestra si sposta, e copre la vista.
+  const lontano = finestraDaScala({ ...m, scorrimento: 4000 + 6 * 160, tenere: prima });
+  assert.ok(lontano.primo > prima.primo);
+  assert.ok((scala[lontano.primo] ?? 0) <= 4000 + 6 * 160 - 8);
+  assert.ok((scala[lontano.ultimo] ?? 0) >= 4000 + 6 * 160 - 8 + 300);
+  // Una finestra di un elenco più lungo di adesso non si tiene.
+  const corta = finestraDaScala({ ...m, scorrimento: 0, tenere: { primo: 0, ultimo: 2000 } });
+  assert.ok(corta.ultimo <= 1000);
 });

@@ -22,6 +22,7 @@ import {
 
 import { ipc, type Brano, type Playlist } from "./ipc";
 import type { Libreria } from "./libreria";
+import { vinceLUltima } from "./ultima";
 
 /** Quel che `usePlaylistAperta` legge da `App`. */
 export interface IngressiPlaylistAperta {
@@ -57,6 +58,12 @@ export interface PlaylistAperta {
   mira: Dispatch<SetStateAction<number | null>>;
   /** Lascia la riga portata in questa posizione. */
   lascia: (indice: number) => void;
+  /**
+   * Rilegge i brani della playlist aperta, dopo un gesto andato male.
+   *
+   * Col turno: vedi `turno` qui sotto.
+   */
+  rileggiPlaylist: () => void;
 }
 
 /** Vedi il commento in testa. */
@@ -83,7 +90,20 @@ export function usePlaylistAperta({
   // aperta non deve farla lampeggiare vuota — e la risposta di una richiesta
   // superata si butta.
   const playlistDiPrima = useRef<number | null>(null);
+  /**
+   * Il turno dell'ultima richiesta dei brani (`ultima.ts`).
+   *
+   * Le richieste partono da due posti: l'effetto qui sotto, a ogni apertura, e
+   * le riletture dopo un riordino o un'eliminazione falliti
+   * (`rileggiPlaylist`). Una rilettura non sapeva niente dell'effetto, e la sua
+   * risposta arrivava anche dopo che si era aperta un'altra playlist: i brani
+   * della vecchia finivano sotto il titolo della nuova. Adesso vince l'ultima
+   * partita, da qualunque dei due posti, e chiudere la playlist ne prende una
+   * anche lui.
+   */
+  const [turno] = useState(vinceLUltima);
   useEffect(() => {
+    const mio = turno();
     if (!playlistAperta) {
       playlistDiPrima.current = null;
       return;
@@ -95,17 +115,45 @@ export function usePlaylistAperta({
     ipc
       .playlistBrani(quale)
       .then((brani) => {
-        if (superata) return;
+        if (superata || !mio()) return;
         setBraniPlaylist(brani);
         setPlaylistCaricata(quale);
       })
       .catch((e: unknown) => {
-        if (!superata) segnalaErrore(e);
+        if (!superata && mio()) segnalaErrore(e);
       });
     return () => {
       superata = true;
     };
-  }, [playlistAperta, segnalaErrore]);
+  }, [playlistAperta, segnalaErrore, turno]);
+
+  /**
+   * La rilettura dopo un gesto andato male.
+   *
+   * Scrive anche `playlistCaricata`: se ha preso il turno a una richiesta
+   * dell'effetto ancora in volo, è lei l'unica risposta che arriverà, e senza
+   * quel segno la pagina resterebbe a dire «sto arrivando».
+   */
+  const rileggiPlaylist = useCallback(() => {
+    const quale = playlistDiPrima.current;
+    if (quale === null) return;
+    const mio = turno();
+    ipc
+      .playlistBrani(quale)
+      .then((brani) => {
+        if (!mio()) return;
+        setBraniPlaylist(brani);
+        setPlaylistCaricata(quale);
+      })
+      .catch((e: unknown) => {
+        if (!mio()) return;
+        // Anche sul guasto: la richiesta dell'effetto che questa ha superato
+        // non scriverà più niente, e senza il segno la pagina resterebbe a
+        // dire «sto arrivando» invece di mostrare quel che ha.
+        setPlaylistCaricata(quale);
+        segnalaErrore(e);
+      });
+  }, [turno, segnalaErrore]);
 
   /** Rimpiazza una playlist nell'elenco e, se è quella aperta, anche lì. */
   const aggiornaPlaylist = useCallback(
@@ -163,13 +211,10 @@ export function usePlaylistAperta({
         .then(aggiornaPlaylist)
         .catch((e: unknown) => {
           segnalaErrore(e);
-          ipc
-            .playlistBrani(playlistAperta.id)
-            .then(setBraniPlaylist)
-            .catch(segnalaErrore);
+          rileggiPlaylist();
         });
     },
-    [playlistAperta, braniPlaylist.length, aggiornaPlaylist, segnalaErrore],
+    [playlistAperta, braniPlaylist.length, aggiornaPlaylist, segnalaErrore, rileggiPlaylist],
   );
 
   const presa = useCallback((indice: number | null) => {
@@ -198,5 +243,6 @@ export function usePlaylistAperta({
     presa,
     mira: setMirata,
     lascia,
+    rileggiPlaylist,
   };
 }

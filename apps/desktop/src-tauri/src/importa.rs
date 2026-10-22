@@ -43,8 +43,9 @@ use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::esterno::{AvanzamentoLettura, ContenutoEsterno, Fonte};
 use rymembra_net::Rete;
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager as _, State};
 
+use crate::disparte::in_disparte;
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, con_libreria};
 
@@ -313,17 +314,24 @@ fn avvelenato() -> AppError {
 /// stessa risposta magra per tutto il tempo in cui l'applicazione resta aperta,
 /// e «Riprova» non riproverebbe niente.
 ///
-/// `(async)`: parla con la rete — più pagine, e una copertina da scaricare — e
-/// un comando normale terrebbe fermo il filo principale della finestra per
-/// tutto quel tempo.
-#[tauri::command(async)]
-pub fn import_anteprima(
-    app: AppHandle,
-    importa: State<'_, StatoImport>,
-    url: String,
-    forza: bool,
-) -> Esito<Anteprima> {
-    risolvi(&app, &importa, &url, forza).map_err(errore)?;
+/// In disparte, sul pool bloccante: parla con la rete — più pagine, e una
+/// copertina da scaricare — e un `(async)` su una funzione sincrona passava
+/// tutto quel tempo su un *worker* del runtime, che sono tanti quanti i
+/// processori. Tre anteprime su un catalogo lento bastavano a fermare ogni
+/// altro comando asincrono. Vedi [`crate::disparte`].
+#[tauri::command]
+pub async fn import_anteprima(app: AppHandle, url: String, forza: bool) -> Esito<Anteprima> {
+    in_disparte("anteprima di un'importazione", move || {
+        anteprima(&app, &url, forza)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`import_anteprima`], sul pool bloccante.
+fn anteprima(app: &AppHandle, url: &str, forza: bool) -> Esito<Anteprima> {
+    let importa = gestito::<StatoImport>(app, "anteprima di un'importazione").map_err(errore)?;
+    risolvi(app, &importa, url, forza).map_err(errore)?;
     con_contenuto(&importa, |risolto| {
         let c = &risolto.contenuto;
         Ok(Anteprima {
@@ -350,16 +358,18 @@ pub fn import_anteprima(
 
 /// Cosa porterebbe l'importazione, senza scrivere niente.
 ///
-/// `(async)` come [`import_anteprima`]: può dover risolvere il link.
-#[tauri::command(async)]
-pub fn import_piano(
+/// In disparte come [`import_anteprima`]: può dover risolvere il link.
+#[tauri::command]
+pub async fn import_piano(
     app: AppHandle,
-    stato: State<'_, Stato>,
-    importa: State<'_, StatoImport>,
     url: String,
     crea_playlist: bool,
 ) -> Esito<RapportoImport> {
-    esegui(&app, &stato, &importa, &url, crea_playlist, false)
+    in_disparte("piano di un'importazione", move || {
+        esegui(&app, &url, crea_playlist, false)
+    })
+    .await
+    .map_err(errore)?
 }
 
 /// Importa per davvero.
@@ -376,47 +386,72 @@ pub fn import_piano(
 /// cercando. Se una coda sta già girando non ne parte una seconda: quella in
 /// corso rilegge la tabella a ogni lotto.
 ///
-/// `(async)` come [`import_anteprima`]: la risoluzione del link e la scrittura
-/// di trecento righe non stanno sul filo della finestra — è la ragione per cui
-/// `import:avanzamento` esiste.
-#[tauri::command(async)]
-pub fn import_esegui(
+/// In disparte come [`import_anteprima`]: la risoluzione del link e la
+/// scrittura di trecento righe non stanno né sul filo della finestra — è la
+/// ragione per cui `import:avanzamento` esiste — né su un *worker* del runtime.
+#[tauri::command]
+pub async fn import_esegui(
     app: AppHandle,
-    stato: State<'_, Stato>,
-    importa: State<'_, StatoImport>,
     url: String,
     crea_playlist: bool,
 ) -> Esito<RapportoImport> {
-    let esito = crate::nuvola::se_riuscito(
-        &app,
-        esegui(&app, &stato, &importa, &url, crea_playlist, true),
-    );
-    if esito.as_ref().is_ok_and(|rapporto| rapporto.missing > 0) {
-        crate::procura::avvia(&app);
-    }
-    esito
+    in_disparte("importazione", move || {
+        let esito = crate::nuvola::se_riuscito(&app, esegui(&app, &url, crea_playlist, true));
+        if esito.as_ref().is_ok_and(|rapporto| rapporto.missing > 0) {
+            crate::procura::avvia(&app);
+        }
+        esito
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Uno stato gestito, per un corpo che gira sul pool bloccante.
+///
+/// `try_state` e non `state`: il pool può ritrovarsi vivo mentre gli stati
+/// gestiti vengono lasciati cadere, e `state` lì panica. La causa è la stessa
+/// di `disparte::leggi_la_libreria`, perché il guasto è lo stesso.
+///
+/// `pub(crate)` perché la usano tutti i comandi che passano in disparte per
+/// fare rete — l'account, l'esplorazione, i testi, le playlist da file, lo
+/// scrobbling: una copia per modulo sarebbe sei frasi d'errore che divergono.
+/// Il suo posto vero sarebbe accanto a [`in_disparte`].
+///
+/// # Errori
+///
+/// `internal.aborted` se lo stato non è più fra quelli gestiti.
+pub(crate) fn gestito<'a, T: Send + Sync + 'static>(
+    app: &'a AppHandle,
+    cosa: &str,
+) -> Result<State<'a, T>, AppError> {
+    app.try_state::<T>().ok_or_else(|| {
+        AppError::new(ErrorCode::InternalAborted {
+            what: Some(cosa.to_owned()),
+        })
+        .with_cause("lo stato non è più fra quelli gestiti: la finestra si sta chiudendo")
+    })
 }
 
 fn esegui(
     app: &AppHandle,
-    stato: &State<'_, Stato>,
-    importa: &State<'_, StatoImport>,
     url: &str,
     crea_playlist: bool,
     conferma: bool,
 ) -> Esito<RapportoImport> {
+    let stato = gestito::<Stato>(app, "importazione").map_err(errore)?;
+    let importa = gestito::<StatoImport>(app, "importazione").map_err(errore)?;
     // Prima la rete, fuori da ogni lucchetto… e senza `forza`: il piano e la
     // conferma parlano del contenuto che si è appena visto, e rileggerlo
     // vorrebbe dire poter importare qualcosa di diverso da quel che mostrava
     // l'anteprima.
-    risolvi(app, importa, url, false).map_err(errore)?;
+    risolvi(app, &importa, url, false).map_err(errore)?;
     // …poi una copia del contenuto, così la cella non resta presa mentre si
     // scrive nel database: sono due lucchetti diversi, e prenderli in ordine
     // fisso è quel che rende impossibile incrociarli.
     let contenuto =
-        con_contenuto(importa, |risolto| Ok(risolto.contenuto.clone())).map_err(errore)?;
+        con_contenuto(&importa, |risolto| Ok(risolto.contenuto.clone())).map_err(errore)?;
 
-    con_libreria(stato, |libreria| {
+    con_libreria(&stato, |libreria| {
         if conferma {
             import_esterno::import(&mut libreria.connection, &contenuto, crea_playlist)
         } else {
@@ -471,10 +506,19 @@ pub fn import_rapporti(stato: State<'_, Stato>, limite: u32) -> Esito<Vec<Rappor
 /// niente. Per la stessa ragione non la si chiama a ogni apertura di finestra:
 /// `scarico_stato` dà l'elenco dei cataloghi senza toccare la rete.
 ///
-/// `(async)`, proprio perché fa richieste vere: due cataloghi che non
-/// rispondono sarebbero due timeout consumati sul filo della finestra.
-#[tauri::command(async)]
-pub fn import_diagnostica(importa: State<'_, StatoImport>) -> Esito<Diagnostica> {
+/// In disparte, proprio perché fa richieste vere: due cataloghi che non
+/// rispondono sarebbero due timeout consumati sul filo della finestra, o su un
+/// *worker* del runtime che serve a tutti gli altri comandi asincroni.
+#[tauri::command]
+pub async fn import_diagnostica(app: AppHandle) -> Esito<Diagnostica> {
+    in_disparte("diagnostica dei cataloghi", move || diagnostica(&app))
+        .await
+        .map_err(errore)?
+}
+
+/// Il corpo di [`import_diagnostica`], sul pool bloccante.
+fn diagnostica(app: &AppHandle) -> Esito<Diagnostica> {
+    let importa = gestito::<StatoImport>(app, "diagnostica dei cataloghi").map_err(errore)?;
     let d = importa.cataloghi.diagnostica();
     Ok(Diagnostica {
         cataloghi: vec![

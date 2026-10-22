@@ -508,31 +508,63 @@ pub fn create_smart(
     // vuota col nome richiesto — e il nome, ormai occupato, farebbe fallire
     // anche il tentativo successivo. Savepoint e non `transaction()`, che
     // vorrebbe una connessione mutabile che nessun chiamante ha.
+    //
+    // Chi ha aperto la transazione si guarda **prima** del savepoint: se non
+    // c'era nessuna transazione intorno, il savepoint la apre, e chiuderlo è il
+    // commit. Vedi [`disfa_savepoint`] per perché conta saperlo.
+    let nostra = connection.is_autocommit();
     connection
         .execute_batch("SAVEPOINT crea_smart")
         .map_err(|err| db_error("apertura della creazione di una playlist", &err))?;
-    let esito = crea_riga(connection, name).and_then(|id| {
-        connection
-            .execute(
-                "UPDATE playlists SET is_smart = 1, rules = ?2 WHERE id = ?1",
-                rusqlite::params![id, regole],
-            )
-            .map_err(|err| db_error("regole di una playlist nuova", &err))?;
-        read_one(connection, id)
-    });
-    match esito {
-        Ok(riassunto) => {
+    let esito = crea_riga(connection, name)
+        .and_then(|id| {
+            connection
+                .execute(
+                    "UPDATE playlists SET is_smart = 1, rules = ?2 WHERE id = ?1",
+                    rusqlite::params![id, regole],
+                )
+                .map_err(|err| db_error("regole di una playlist nuova", &err))?;
+            read_one(connection, id)
+        })
+        .and_then(|riassunto| {
             connection
                 .execute_batch("RELEASE crea_smart")
                 .map_err(|err| db_error("chiusura della creazione di una playlist", &err))?;
             Ok(riassunto)
-        }
-        Err(err) => {
-            // Best-effort: l'errore da riportare è quello vero, non quello
-            // del disfacimento.
-            let _ = connection.execute_batch("ROLLBACK TO crea_smart; RELEASE crea_smart");
-            Err(err)
-        }
+        });
+    if esito.is_err() {
+        disfa_savepoint(connection, "crea_smart", nostra);
+    }
+    esito
+}
+
+/// Disfa e chiude un savepoint dopo un guasto. Best-effort: l'errore da
+/// riportare è quello vero, non quello del disfacimento.
+///
+/// # Perché non basta un `?` sul `RELEASE`
+///
+/// Perché il `RELEASE` del savepoint più esterno **è** il commit, e un commit
+/// può fallire: `SQLITE_BUSY` quando un lettore tiene il suo lucchetto con il
+/// giornale `TRUNCATE` del ripiego su una share, `SQLITE_FULL` su un disco
+/// pieno. SQLite allora lascia la transazione **aperta**, e la connessione è
+/// quella condivisa della libreria: senza nessuno che la chiuda, ogni `BEGIN
+/// IMMEDIATE` dopo risponde «già dentro una transazione», fino al riavvio.
+///
+/// # Perché un `ROLLBACK` intero, e solo a volte
+///
+/// `ROLLBACK TO` seguito da `RELEASE` è il disfacimento giusto, e dentro una
+/// transazione di qualcun altro è anche l'unico lecito. Ma quando il savepoint
+/// la transazione l'ha aperta lui, quel `RELEASE` è di nuovo un commit, e
+/// davanti allo stesso lettore fallisce per la stessa ragione del primo.
+/// Allora, e solo allora — `nostra` dice se prima del savepoint la connessione
+/// era fuori da ogni transazione — si chiude con un `ROLLBACK` intero, che non
+/// chiede lucchetti e non può portarsi via niente di altrui. Con una
+/// transazione di chi chiama ancora aperta non si tocca: quella è sua, e
+/// annullarla gli toglierebbe lavoro che non gli si è chiesto di buttare.
+fn disfa_savepoint(connection: &Connection, nome: &str, nostra: bool) {
+    let _ = connection.execute_batch(&format!("ROLLBACK TO {nome}; RELEASE {nome}"));
+    if nostra && !connection.is_autocommit() {
+        let _ = connection.execute_batch("ROLLBACK");
     }
 }
 
@@ -1752,5 +1784,55 @@ mod prove {
         let mut connection = libreria();
         let err = add_tracks(&mut connection, 404, &[1]).expect_err("non c'è");
         assert_eq!(err.code().kind().code(), "library.playlistNotFound");
+    }
+
+    /// Un `RELEASE` che fallisce non lascia la connessione dentro una
+    /// transazione.
+    ///
+    /// Il caso vero è un giornale `TRUNCATE` — il ripiego di una cartella dati
+    /// su una share, dove WAL non si accende — con un lettore che tiene il suo
+    /// lucchetto condiviso: chiudere il savepoint più esterno **è** il commit, e
+    /// il commit aspetta un lucchetto esclusivo che non arriva. Qui l'attesa è
+    /// zero e il giornale è `DELETE`, che per questo conto è lo stesso.
+    ///
+    /// Prima l'errore usciva con un `?` e il savepoint restava aperto: la
+    /// connessione condivisa restava in transazione, e ogni `BEGIN IMMEDIATE`
+    /// dopo rispondeva «già dentro una transazione» fino al riavvio.
+    #[test]
+    fn un_release_che_fallisce_non_lascia_la_transazione_aperta() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join("rymembra.db");
+        let connection = crate::db::open(&percorso).expect("database").connection;
+        connection
+            .pragma_update(None, "journal_mode", "DELETE")
+            .expect("giornale senza WAL");
+        connection
+            .busy_timeout(std::time::Duration::ZERO)
+            .expect("senza attesa");
+
+        let lettore = Connection::open(&percorso).expect("lettore");
+        lettore
+            .execute_batch("BEGIN")
+            .expect("transazione di lettura");
+        let _: i64 = lettore
+            .query_row("SELECT COUNT(*) FROM playlists", [], |riga| riga.get(0))
+            .expect("il lettore prende il lucchetto condiviso");
+
+        let esito = create_smart(&connection, "Mai nata", &Insieme::default());
+        assert!(esito.is_err(), "il commit non può passare: {esito:?}");
+        assert!(
+            connection.is_autocommit(),
+            "la connessione è rimasta dentro il savepoint"
+        );
+
+        lettore.execute_batch("COMMIT").expect("il lettore finisce");
+        connection
+            .execute_batch("BEGIN IMMEDIATE; COMMIT;")
+            .expect("una transazione nuova deve poter partire");
+        assert_eq!(
+            conta(&connection, "SELECT COUNT(*) FROM playlists"),
+            0,
+            "la riga a metà è stata disfatta, non lasciata lì"
+        );
     }
 }

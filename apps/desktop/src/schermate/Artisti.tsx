@@ -48,7 +48,7 @@ import { Icona } from "../parti/Icone";
 import { t, useLingua } from "../lingue";
 import { brani_, nomeArtista } from "../formato";
 import { conIndice } from "../segnali";
-import { pagliaDiGriglia, useGrigliaVirtuale } from "./Libreria";
+import { pagliaDiGriglia, StatoVuoto, useGrigliaVirtuale } from "./Libreria";
 
 export function Artisti({
   artisti,
@@ -106,13 +106,11 @@ export function Artisti({
 
   if (artisti.length === 0) {
     return (
-      <div className="vuoto empty-state">
-        <span className="empty-icon" aria-hidden="true">
-          <Icona nome="i-artist" dim={30} />
-        </span>
-        <h2>{t("artists.empty.title")}</h2>
-        <p>{t("artists.empty.hint")}</p>
-      </div>
+      <StatoVuoto
+        icona="i-artist"
+        titolo={t("artists.empty.title")}
+        testo={t("artists.empty.hint")}
+      />
     );
   }
 

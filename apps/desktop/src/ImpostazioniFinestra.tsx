@@ -119,6 +119,7 @@ export const ImpostazioniDellaFinestra = memo(function ImpostazioniDellaFinestra
   aspetto,
   skin,
   azioni,
+  cartelleOccupate,
 }: {
   sezione: Sezione;
   onSezione: (s: Sezione) => void;
@@ -127,6 +128,8 @@ export const ImpostazioniDellaFinestra = memo(function ImpostazioniDellaFinestra
   aspetto: Aspetto;
   skin: SkinDellaFinestra;
   azioni: AzioniImpostazioni;
+  /** Un gesto sulle cartelle sorvegliate è in corso: vedi `cartelleSorvegliate.ts`. */
+  cartelleOccupate: boolean;
 }) {
   const libreria = useLibreria();
   const avvio = useArchivio(libreria.avvio);
@@ -203,6 +206,7 @@ export const ImpostazioniDellaFinestra = memo(function ImpostazioniDellaFinestra
       onErrore={onErrore}
       onAggiungiCartella={azioni.onAggiungiCartella}
       onTogliCartella={azioni.onTogliCartella}
+      cartelleOccupate={cartelleOccupate}
       onScegliCartellaDownload={azioni.onScegliCartellaDownload}
       onCartellaDownloadDiSerie={() => {
         // Stringa vuota: il nucleo toglie la riga e torna alla prima

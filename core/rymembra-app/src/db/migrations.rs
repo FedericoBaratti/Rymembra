@@ -226,6 +226,26 @@ pub const MIGRATIONS: &[Migration] = &[
         // Solo `UPDATE` e `DELETE` di righe, nessuna tabella ricostruita.
         ricostruisce: false,
     },
+    Migration {
+        version: 32,
+        name: "file-illeggibili",
+        sql: include_str!("schema/032_file_illeggibili.sql"),
+        ricostruisce: false,
+    },
+    Migration {
+        version: 33,
+        name: "fts-solo-testo",
+        sql: include_str!("schema/033_fts_solo_testo.sql"),
+        // Un trigger buttato e rifatto: la tabella resta quella che è.
+        ricostruisce: false,
+    },
+    Migration {
+        version: 34,
+        name: "brani-da-immagine",
+        sql: include_str!("schema/034_brani_da_immagine.sql"),
+        // Solo `ADD COLUMN`: SQLite le aggiunge senza ricostruire `tracks`.
+        ricostruisce: false,
+    },
 ];
 
 /// La versione a cui questa build porta il database.

@@ -54,11 +54,12 @@ pub struct Trascinati {
 /// Divide i percorsi, senza il database.
 ///
 /// Separata dal comando per provarla senza una libreria: `e_cartella` è la
-/// domanda al filesystem, e nelle prove è una chiusura. I file audio tornano
-/// come percorsi, e a tradurli in brani ci pensa il comando.
+/// domanda al filesystem, e nelle prove è una chiusura. I file audio e i fogli
+/// `.cue` tornano come percorsi, nell'ordine in cui sono arrivati, e a
+/// tradurli in brani ci pensa il comando.
 fn smista(percorsi: Vec<String>, e_cartella: impl Fn(&str) -> bool) -> (Trascinati, Vec<String>) {
     let mut smistati = Trascinati::default();
-    let mut audio = Vec::new();
+    let mut da_cercare = Vec::new();
     for percorso in percorsi {
         if e_cartella(&percorso) {
             smistati.cartelle.push(percorso);
@@ -72,14 +73,21 @@ fn smista(percorsi: Vec<String>, e_cartella: impl Fn(&str) -> bool) -> (Trascina
             smistati.skin.push(percorso);
         } else if ESTENSIONI_PLAYLIST.contains(&estensione.as_str()) {
             smistati.playlist.push(percorso);
-        } else if is_supported_audio_path(&percorso) {
-            audio.push(percorso);
+        } else if estensione == ESTENSIONE_FOGLIO || is_supported_audio_path(&percorso) {
+            // Un `.cue` non è un file audio — la scansione lo tiene fuori — ma
+            // chi lo lascia cadere vuole il disco che descrive: lo si cerca
+            // insieme ai file audio, e diventa i suoi brani. Un `.ape` passa
+            // di qui come ogni altro formato che si sa suonare.
+            da_cercare.push(percorso);
         } else {
             smistati.ignorati = smistati.ignorati.saturating_add(1);
         }
     }
-    (smistati, audio)
+    (smistati, da_cercare)
 }
+
+/// L'estensione dei fogli che tagliano un'immagine CD nei suoi brani.
+const ESTENSIONE_FOGLIO: &str = "cue";
 
 /// Divide i percorsi lasciati cadere sulla finestra.
 ///
@@ -107,23 +115,63 @@ pub async fn smista_trascinati(app: AppHandle, percorsi: Vec<String>) -> Esito<T
 }
 
 /// Il corpo di [`smista_trascinati`], in disparte.
+///
+/// Un file audio diventa il suo brano; un `.cue` diventa i brani del suo
+/// disco, in ordine di traccia (`rymembra_app::import_playlist::brani_del_foglio`).
+/// Così anche l'immagine CD, il file grande che il `.cue` taglia: in libreria
+/// non è una riga, e chi la lascia cadere vuole il disco, come chi lascia
+/// cadere il foglio (`rymembra_app::import_playlist::brani_dell_immagine`).
+/// Quel che la libreria non conosce — anche un `.cue` di cui non ha nessun
+/// brano — conta fra i `fuori_libreria`, e la finestra suggerisce di aggiungere
+/// la cartella.
 fn smista_e_cerca(stato: &Stato, percorsi: Vec<String>) -> Result<Trascinati, AppError> {
-    let (mut smistati, audio) =
+    let (mut smistati, da_cercare) =
         smista(percorsi, |percorso| std::path::Path::new(percorso).is_dir());
-    if audio.is_empty() {
+    if da_cercare.is_empty() {
         return Ok(smistati);
     }
+    let e_un_foglio = |percorso: &str| extension_of(percorso) == ESTENSIONE_FOGLIO;
     let trovati = con_libreria(stato, |libreria| {
-        rymembra_app::library::ids_by_path(
+        let audio: Vec<String> = da_cercare
+            .iter()
+            .filter(|percorso| !e_un_foglio(percorso))
+            .cloned()
+            .collect();
+        let mut per_percorso = rymembra_app::library::ids_by_path(
             &libreria.connection,
             &audio,
             PathRules::for_current_platform(),
-        )
+        )?
+        .into_iter();
+        // Nell'ordine in cui sono arrivati, fogli e file mescolati: è
+        // l'ordine in cui finiscono in coda.
+        let mut trovati: Vec<Vec<i64>> = Vec::with_capacity(da_cercare.len());
+        for percorso in &da_cercare {
+            if e_un_foglio(percorso) {
+                trovati.push(rymembra_app::import_playlist::brani_del_foglio(
+                    &libreria.connection,
+                    percorso,
+                )?);
+            } else if let Some(id) = per_percorso.next().flatten() {
+                trovati.push(vec![id]);
+            } else {
+                // Prima la riga col suo percorso, poi l'immagine: se la
+                // vecchia riga del disco intero c'è ancora, è quella che la
+                // libreria mostra, e risponde lei. Il ripiego legge tutti i
+                // brani d'immagine, ma solo per i file che non hanno una riga.
+                trovati.push(rymembra_app::import_playlist::brani_dell_immagine(
+                    &libreria.connection,
+                    percorso,
+                )?);
+            }
+        }
+        Ok(trovati)
     })?;
-    for trovato in trovati {
-        match trovato {
-            Some(id) => smistati.brani.push(id),
-            None => smistati.fuori_libreria = smistati.fuori_libreria.saturating_add(1),
+    for brani in trovati {
+        if brani.is_empty() {
+            smistati.fuori_libreria = smistati.fuori_libreria.saturating_add(1);
+        } else {
+            smistati.brani.extend(brani);
         }
     }
     Ok(smistati)
@@ -184,6 +232,116 @@ mod prove {
         assert_eq!(smistati.skin, vec![vecchia, maiuscola, nuova]);
         assert!(audio.is_empty());
         assert_eq!(smistati.ignorati, 1);
+    }
+
+    #[test]
+    fn un_foglio_e_un_ape_si_cercano_insieme_ai_file_audio() {
+        // L'ordine è quello d'arrivo, fogli e file mescolati: è l'ordine in
+        // cui i brani finiranno in coda.
+        let (smistati, da_cercare) = smista(
+            tutti(&[
+                r"D:\Dischi\Album.CUE",
+                r"D:\Dischi\Vecchio\CDImage.ape",
+                r"D:\Dischi\01.flac",
+                r"D:\Dischi\note.log",
+            ]),
+            |_| false,
+        );
+        assert_eq!(
+            da_cercare,
+            tutti(&[
+                r"D:\Dischi\Album.CUE",
+                r"D:\Dischi\Vecchio\CDImage.ape",
+                r"D:\Dischi\01.flac",
+            ])
+        );
+        assert_eq!(smistati.ignorati, 1);
+    }
+
+    #[test]
+    fn un_foglio_trascinato_diventa_i_brani_del_suo_disco() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        con_libreria(&stato, |libreria| {
+            libreria
+                .connection
+                .execute_batch(
+                    "INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                         duration_ms, file_size, date_added, date_modified)
+                     VALUES (1, 'C:\\M\\a.flac', 'k1', 'T', 'A', 'Al', 'g', 1000, 1, 0, 0);
+                     INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                         duration_ms, file_size, date_added, date_modified,
+                                         immagine, inizio_cd, fine_cd)
+                     VALUES (3, 'C:\\M\\Disco\\Album.cue|02', 'k3', 'Due', 'A', 'D', 'd', 1000,
+                             9, 0, 0, 'C:\\M\\Disco\\Album.flac', 7500, NULL),
+                            (2, 'C:\\M\\Disco\\Album.cue|01', 'k2', 'Uno', 'A', 'D', 'd', 1000,
+                             9, 0, 0, 'C:\\M\\Disco\\Album.flac', 0, 7500);",
+                )
+                .map_err(|err| rymembra_app::db::codice_da_sqlite("banco", &err))
+        })
+        .expect("banco");
+
+        let smistati = smista_e_cerca(
+            &stato,
+            tutti(&[
+                r"C:\M\Disco\Album.cue",
+                r"C:\M\a.flac",
+                r"C:\M\nuovo.mp3",
+                r"C:\M\Altro\Senza.cue",
+            ]),
+        )
+        .expect("smistati");
+        assert_eq!(
+            smistati.brani,
+            vec![2, 3, 1],
+            "il disco in ordine di traccia, poi il file, come sono arrivati"
+        );
+        assert_eq!(
+            smistati.fuori_libreria, 2,
+            "il file e il foglio che la libreria non conosce"
+        );
+    }
+
+    #[test]
+    fn l_immagine_trascinata_diventa_i_brani_del_suo_disco() {
+        // Il difetto: l'immagine non ha una riga sua, e finiva fra i
+        // `fuori_libreria` — «aggiungi la cartella» per un disco che in
+        // libreria c'è tutto.
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        con_libreria(&stato, |libreria| {
+            libreria
+                .connection
+                .execute_batch(
+                    "INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                         duration_ms, file_size, date_added, date_modified)
+                     VALUES (1, 'C:\\M\\a.flac', 'k1', 'T', 'A', 'Al', 'g', 1000, 1, 0, 0);
+                     INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                         duration_ms, file_size, date_added, date_modified,
+                                         immagine, inizio_cd, fine_cd)
+                     VALUES (3, 'C:\\M\\Disco\\Album.cue|02', 'k3', 'Due', 'A', 'D', 'd', 1000,
+                             9, 0, 0, 'C:\\M\\Disco\\Album.flac', 7500, NULL),
+                            (2, 'C:\\M\\Disco\\Album.cue|01', 'k2', 'Uno', 'A', 'D', 'd', 1000,
+                             9, 0, 0, 'C:\\M\\Disco\\Album.flac', 0, 7500);",
+                )
+                .map_err(|err| rymembra_app::db::codice_da_sqlite("banco", &err))
+        })
+        .expect("banco");
+
+        let smistati = smista_e_cerca(
+            &stato,
+            tutti(&[r"C:\M\a.flac", r"C:\M\Disco\Album.flac", r"C:\M\nuovo.mp3"]),
+        )
+        .expect("smistati");
+        assert_eq!(
+            smistati.brani,
+            vec![1, 2, 3],
+            "il file, poi il disco in ordine di traccia, come sono arrivati"
+        );
+        assert_eq!(
+            smistati.fuori_libreria, 1,
+            "solo il file che la libreria non conosce"
+        );
     }
 
     #[test]

@@ -15,10 +15,12 @@
 //!    chiede per le connessioni che restano aperte a lungo. Quella di chiusura
 //!    la fa [`crate::stato::ottimizza_uscendo`], quella di apertura il nucleo;
 //! 3. la **pulizia delle copertine** che nessun brano, album, artista o
-//!    playlist nomina più — dopo ogni scansione (la sveglia la dà il turno
-//!    della scansione quando cade: vedi [`crate::stato::TurnoDiScansione`]) e
-//!    al battito periodico, se ce ne sono. Dopo una scansione che non ha tolto
-//!    niente il conto delle orfane dice zero, e la pulizia non parte.
+//!    playlist nomina più — dopo ogni scansione che ha cambiato qualcosa (la
+//!    sveglia la dà il turno della scansione quando cade, se la scansione l'ha
+//!    chiesta: vedi [`crate::stato::TurnoDiScansione`]) e al battito
+//!    periodico, se ce ne sono. Una scansione su un disco invariato non
+//!    sveglia nessuno; dopo una che non ha tolto niente il conto delle orfane
+//!    dice zero, e la pulizia non parte.
 //!
 //! E due comandi per le Impostazioni: quanto occupa la cache delle copertine
 //! e com'è andato il controllo ([`manutenzione_stato`]), e la pulizia a mano

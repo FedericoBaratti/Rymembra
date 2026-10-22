@@ -34,6 +34,8 @@ import {
 } from "react";
 
 import { useDati } from "./dati";
+import { ipc, testoErrore } from "./ipc";
+import { t } from "./lingue";
 import { ArchivioRado, type SorgenteRada } from "./rada";
 
 /**
@@ -281,6 +283,46 @@ export function usePigro<T>(valore: T, ritardoMs: number): T {
 }
 
 /**
+ * Dove va un ascolto che non si è aperto: la fascia d'errore della finestra.
+ *
+ * Lo sceglie `App` quando si monta (`sportelloAscolti`), e non arriva per
+ * contesto: gli ascolti stanno anche **sopra** chi fornirebbe il contesto — in
+ * `App` stessa, nei fornitori delle importazioni e del backup — e un canale che
+ * non li raggiunge tutti è un canale che tace proprio dove serve.
+ */
+let segnalaAscolto: ((e: unknown) => void) | null = null;
+
+/**
+ * Dice dove mandare gli ascolti che non si aprono. Restituisce come smettere.
+ *
+ * Una sola finestra, un solo sportello: chi lo apre dopo prende il posto di chi
+ * c'era, e chiudere uno sportello che non è più il proprio non tocca niente.
+ */
+export function sportelloAscolti(segnala: (e: unknown) => void): () => void {
+  segnalaAscolto = segnala;
+  return () => {
+    if (segnalaAscolto === segnala) segnalaAscolto = null;
+  };
+}
+
+/**
+ * Un ascolto che non si è aperto: nel diario, e detto.
+ *
+ * # Perché non bastava il `void`
+ *
+ * `listen` restituisce una promessa, e se il nucleo la rifiuta — un evento che
+ * il permesso non lascia passare, una finestra che si chiude mentre si apre —
+ * la pagina resta lì senza aggiornarsi più da sola, e nessuno lo sa: la
+ * promessa rifiutata finiva nella traccia generica di `main.tsx`, senza dire
+ * quale evento, e a schermo non compariva niente. Qui il diario riceve il nome
+ * dell'evento, e chi guarda una frase che dice cosa fare.
+ */
+export function ascoltoFallito(evento: string, e: unknown): void {
+  ipc.diarioAnnota("ascolto", `${evento}: ${testoErrore(e)}`);
+  segnalaAscolto?.(new Error(t("crash.listen")));
+}
+
+/**
  * Ascolta un evento del nucleo per tutta la vita del componente.
  *
  * # Perché non basta `useEffect` con `listen` dentro
@@ -336,16 +378,24 @@ export function useAscolto<T>(
     if (!acceso) return;
     let vivo = true;
     let sciogli: (() => void) | null = null;
-    void ascolta<T>(evento, (carico) => ultimo.current(carico)).then((stop) => {
-      if (vivo) {
-        sciogli = stop;
-      } else {
-        // La promessa si è risolta dopo lo smontaggio: l'ascoltatore esiste già
-        // ed è orfano. Si scioglie qui, che è l'unico posto in cui lo si ha in
-        // mano.
-        stop();
-      }
-    });
+    ascolta<T>(evento, (carico) => ultimo.current(carico)).then(
+      (stop) => {
+        if (vivo) {
+          sciogli = stop;
+        } else {
+          // La promessa si è risolta dopo lo smontaggio: l'ascoltatore esiste
+          // già ed è orfano. Si scioglie qui, che è l'unico posto in cui lo si
+          // ha in mano.
+          stop();
+        }
+      },
+      // Nel diario sempre; a schermo solo se il componente c'è ancora: un
+      // ascolto rifiutato dopo lo smontaggio non toglie niente a nessuno.
+      (e: unknown) => {
+        if (vivo) ascoltoFallito(evento, e);
+        else ipc.diarioAnnota("ascolto", `${evento}: ${testoErrore(e)}`);
+      },
+    );
     return () => {
       vivo = false;
       sciogli?.();

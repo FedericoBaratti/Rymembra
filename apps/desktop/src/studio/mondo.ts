@@ -199,6 +199,7 @@ const ESITO_ESPLORA: EsitoRicerca = {
 export const ESPLORA: StatoEsplora = {
   frase: "debussy clair de lune",
   fase: { tipo: "esito", frase: "debussy clair de lune", esito: ESITO_ESPLORA },
+  tuttiInCorso: false,
 };
 
 /** Un testo sincronizzato, con la riga accesa a metà. */

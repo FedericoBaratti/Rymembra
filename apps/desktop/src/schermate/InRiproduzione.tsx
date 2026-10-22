@@ -110,6 +110,8 @@ import { Trasporto } from "../parti/Trasporto";
 import { t } from "../lingue";
 import { nomeArtista, titoloAlbum } from "../formato";
 import { useDati } from "../dati";
+import { RecintoErrori } from "../Recinto";
+import { vinceLUltima } from "../ultima";
 
 export function InRiproduzione({
   stato,
@@ -154,9 +156,35 @@ export function InRiproduzione({
   // così un avvio da spento a spento non costa un montaggio e uno smontaggio
   // della scena — cioè un contesto WebGL creato e distrutto per niente.
   const [spettroVisibile, setSpettroVisibile] = useState(false);
+  /**
+   * Chi ha l'ultima parola sullo spettro: la lettura d'apertura o un clic.
+   *
+   * Un turno solo per tutte e due (`ultima.ts`). La lettura d'apertura poteva
+   * arrivare **dopo** il primo clic — succede quando il nucleo è occupato a
+   * scansionare — e rimetteva a schermo la preferenza di prima, sopra la scelta
+   * appena fatta: lo spettro si accendeva e si rispegneva da solo.
+   */
+  const [turnoSpettro] = useState(vinceLUltima);
+  /**
+   * Un clic sullo spettro aspetta la sua risposta.
+   *
+   * In un riferimento e non solo nello stato: due clic nello stesso
+   * fotogramma leggerebbero tutti e due il valore di prima, e scriverebbero due
+   * volte la stessa cosa. Il tasto non si spegne — `disabled` gli toglierebbe
+   * il fuoco, e chi lo usa da tastiera lo ritroverebbe sul documento — ma dice
+   * `aria-busy`, e il clic in più si ignora.
+   */
+  const spettroInVolo = useRef(false);
+  const [spettroOccupato, setSpettroOccupato] = useState(false);
   useEffect(() => {
-    letture.spettroVisibile().then(setSpettroVisibile).catch(onErrore);
-  }, [onErrore, letture]);
+    const mio = turnoSpettro();
+    letture
+      .spettroVisibile()
+      .then((visibile) => {
+        if (mio()) setSpettroVisibile(visibile);
+      })
+      .catch(onErrore);
+  }, [onErrore, letture, turnoSpettro]);
   // Quante barre disegna la scena. Parte da quel che dice il nucleo — la
   // preferenza sta in `settings`, non qui — e si chiede una volta sola,
   // all'apertura: è una lettura da una tabella di chiavi, non da mezza libreria.
@@ -296,13 +324,19 @@ export function InRiproduzione({
           l'unico caso che ricostruisce la texture è il passaggio da o verso
           «bassa», che si paga una volta e non si può evitare: la larghezza di
           una texture si decide alla sua nascita. */}
+      {/* Nel suo recinto, stretto: una scheda grafica che rifiuta il WebGL a
+          metà di un disegno non deve portarsi via la copertina e i comandi.
+          Al posto della scena resta la fascia con «Riprova», e il resto della
+          schermata in piedi. */}
       {spettroVisibile && (
-        <Spettro3D
-          barre={barre}
-          inPausa={stato.inPausa}
-          qualita={qualitaSpettro}
-          onErrore={onErrore}
-        />
+        <RecintoErrori dove="spettro" stretto>
+          <Spettro3D
+            barre={barre}
+            inPausa={stato.inPausa}
+            qualita={qualitaSpettro}
+            onErrore={onErrore}
+          />
+        </RecintoErrori>
       )}
 
       <header className="testa">
@@ -340,16 +374,39 @@ export function InRiproduzione({
             type="button"
             className="tasto icon-btn"
             aria-pressed={spettroVisibile}
+            aria-busy={spettroOccupato}
             aria-label={t("np.spectrum.toggle")}
             onClick={() => {
               // Si scrive e si dipinge dalla risposta, non dal click: la
               // preferenza sta nel database, e l'unico modo di non mentire su
               // quel che ci sarà alla prossima apertura è mostrare quel che ci
               // è finito davvero.
+              if (spettroInVolo.current) return;
+              spettroInVolo.current = true;
+              setSpettroOccupato(true);
+              const mio = turnoSpettro();
               ipc
                 .spettroVisibileScegli(!spettroVisibile)
-                .then(setSpettroVisibile)
-                .catch(onErrore);
+                .then((visibile) => {
+                  if (mio()) setSpettroVisibile(visibile);
+                })
+                .catch((e: unknown) => {
+                  onErrore(e);
+                  // Il clic ha preso il turno anche alla lettura d'apertura,
+                  // che non scriverà più: si rilegge la preferenza vera,
+                  // invece di restare sul valore di serie.
+                  if (!mio()) return;
+                  letture
+                    .spettroVisibile()
+                    .then((visibile) => {
+                      if (mio()) setSpettroVisibile(visibile);
+                    })
+                    .catch(() => {});
+                })
+                .finally(() => {
+                  spettroInVolo.current = false;
+                  setSpettroOccupato(false);
+                });
             }}
           >
             <Icona nome="i-eq" dim={16} titolo={t("np.spectrum")} />

@@ -31,6 +31,7 @@ pub mod abbinamento;
 pub mod affinita;
 pub mod album;
 pub mod codifica;
+pub mod cue;
 pub mod destinazione;
 pub mod enrich;
 pub mod eredita;

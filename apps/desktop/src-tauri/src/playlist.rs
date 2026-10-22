@@ -22,8 +22,9 @@ use rymembra_domain::regole::{
 };
 
 use crate::destinazioni;
-use crate::disparte::leggi_la_libreria;
+use crate::disparte::{in_disparte, leggi_la_libreria};
 use crate::errore::{Esito, errore};
+use crate::importa::gestito;
 use crate::stato::{Stato, adesso_ms, con_libreria};
 use tauri::State;
 
@@ -498,24 +499,34 @@ pub struct PianoFile {
 }
 
 /// Importa davvero un file di playlist.
-#[tauri::command(async)]
-pub fn playlist_file_importa(
+///
+/// In disparte, sul pool bloccante: legge un file che l'utente ha scelto — da
+/// una chiavetta, da una share — e poi scrive una playlist intera. Un
+/// `(async)` su una funzione sincrona faceva aspettare quel disco a un
+/// *worker* del runtime, togliendo il posto a ogni altro comando asincrono.
+#[tauri::command]
+pub async fn playlist_file_importa(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     percorso: String,
     nome: String,
 ) -> Esito<PlaylistFileReport> {
-    let (letta, predefinito, cartella) = leggi_file(&percorso).map_err(errore)?;
-    let nome = if nome.trim().is_empty() {
-        predefinito
-    } else {
-        nome
-    };
-    let esito = con_libreria(&stato, |libreria| {
-        import_playlist::import(&mut libreria.connection, &letta, &nome, cartella.as_deref())
+    in_disparte("importazione di un file di playlist", move || {
+        let stato =
+            gestito::<Stato>(&app, "importazione di un file di playlist").map_err(errore)?;
+        let (letta, predefinito, cartella) = leggi_file(&percorso).map_err(errore)?;
+        let nome = if nome.trim().is_empty() {
+            predefinito
+        } else {
+            nome
+        };
+        let esito = con_libreria(&stato, |libreria| {
+            import_playlist::import(&mut libreria.connection, &letta, &nome, cartella.as_deref())
+        })
+        .map_err(errore);
+        crate::nuvola::se_riuscito(&app, esito)
     })
-    .map_err(errore);
-    crate::nuvola::se_riuscito(&app, esito)
+    .await
+    .map_err(errore)?
 }
 
 /// Apre un file di playlist: quel che conteneva, il nome di serie, e dove sta.

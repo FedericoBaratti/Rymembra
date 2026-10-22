@@ -287,30 +287,81 @@ fn vive(rimappature: &[Rimappatura]) -> Vec<&Rimappatura> {
         .collect()
 }
 
-/// Le righe da riscrivere: identificativo, percorso nuovo, e la posizione
-/// della rimappatura che l'ha prodotto.
+/// Una riga da riscrivere.
+struct DaRiscrivere {
+    id: i64,
+    /// Il `path` nuovo.
+    percorso: String,
+    /// L'`immagine` nuova, per un brano d'immagine CD.
+    immagine: Option<String>,
+    /// La posizione della rimappatura che l'ha prodotta.
+    rimappatura: usize,
+}
+
+impl DaRiscrivere {
+    /// Il file di cui chiedere al disco se c'è.
+    ///
+    /// Il `path` per un brano qualunque. Per un brano d'immagine CD il `path` è
+    /// `…\Album.cue|03`, che sul disco non c'è e non ci sarà mai — un `stat` su
+    /// quel nome risponde «no», e la riga resterebbe ferma per sempre: quel che
+    /// deve esserci è l'**immagine**, il file da cui il brano suona. Il `.cue`
+    /// le sta accanto, nella stessa cartella, e se non ci fosse la scansione
+    /// dopo lo direbbe da sé.
+    fn da_verificare(&self) -> &str {
+        self.immagine.as_deref().unwrap_or(&self.percorso)
+    }
+}
+
+/// Le righe da riscrivere, con la rimappatura che le riguarda.
+///
+/// L'immagine di un brano d'immagine si rimappa con la **stessa** rimappatura
+/// del suo percorso: sta nella cartella del `.cue`, quindi sotto lo stesso
+/// prefisso. Se non ci stesse — non succede con le righe della scansione — la
+/// riga non si tocca: un `path` spostato con l'immagine rimasta indietro è un
+/// brano che non suona né di qua né di là.
 fn da_riscrivere(
     connection: &Connection,
     vive: &[&Rimappatura],
-) -> Result<Vec<(i64, String, usize)>, AppError> {
+) -> Result<Vec<DaRiscrivere>, AppError> {
     let mut istruzione = connection
-        .prepare("SELECT id, path FROM tracks WHERE path IS NOT NULL")
+        .prepare("SELECT id, path, immagine FROM tracks WHERE path IS NOT NULL")
         .map_err(|err| db_error("percorsi da rimappare", &err))?;
     let righe = istruzione
         .query_map([], |riga| {
-            Ok((riga.get::<_, i64>(0)?, riga.get::<_, String>(1)?))
+            Ok((
+                riga.get::<_, i64>(0)?,
+                riga.get::<_, String>(1)?,
+                riga.get::<_, Option<String>>(2)?,
+            ))
         })
         .map_err(|err| db_error("percorsi da rimappare", &err))?;
     let mut trovati = Vec::new();
     for riga in righe {
-        let (id, percorso) = riga.map_err(|err| db_error("lettura di un percorso", &err))?;
-        if let Some((quale, nuovo)) = vive
+        let (id, percorso, immagine) =
+            riga.map_err(|err| db_error("lettura di un percorso", &err))?;
+        let Some((quale, nuovo)) = vive
             .iter()
             .enumerate()
             .find_map(|(quale, r)| riscrivi(&percorso, &r.da, &r.a).map(|n| (quale, n)))
-        {
-            trovati.push((id, nuovo, quale));
-        }
+        else {
+            continue;
+        };
+        let immagine = match immagine {
+            None => None,
+            Some(immagine) => match vive
+                .get(quale)
+                .and_then(|r| riscrivi(&immagine, &r.da, &r.a))
+            {
+                Some(nuova) => Some(nuova),
+                None => continue,
+            },
+        };
+        trovati.push(DaRiscrivere {
+            id,
+            percorso: nuovo,
+            immagine,
+            rimappatura: quale,
+        });
     }
     Ok(trovati)
 }
@@ -318,7 +369,8 @@ fn da_riscrivere(
 /// Un percorso nuovo da verificare, e la rimappatura da cui viene.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidato {
-    /// Il percorso che il brano avrebbe dopo la rimappatura.
+    /// Il file di cui chiedere al disco: il percorso che il brano avrebbe dopo
+    /// la rimappatura o, per un brano d'immagine CD, la sua immagine.
     pub percorso: String,
     /// La posizione della rimappatura, fra quelle compilate.
     pub rimappatura: usize,
@@ -331,6 +383,10 @@ pub struct Candidato {
 /// ricalcola dentro la transazione, quindi una risposta preparata qui trova il
 /// suo percorso di là.
 ///
+/// Ogni file una volta sola: i brani di un'immagine CD chiedono tutti della
+/// stessa immagine, e un disco di dodici tracce sul NAS sarebbero dodici
+/// domande uguali.
+///
 /// # Errori
 ///
 /// `db.queryFailed` se la lettura fallisce.
@@ -342,11 +398,13 @@ pub fn candidati(
     if vive.is_empty() {
         return Ok(Vec::new());
     }
+    let mut visti = std::collections::HashSet::new();
     Ok(da_riscrivere(connection, &vive)?
         .into_iter()
-        .map(|(_, percorso, rimappatura)| Candidato {
-            percorso,
-            rimappatura,
+        .filter(|riga| visti.insert(riga.da_verificare().to_owned()))
+        .map(|riga| Candidato {
+            percorso: riga.da_verificare().to_owned(),
+            rimappatura: riga.rimappatura,
         })
         .collect())
 }
@@ -540,12 +598,17 @@ pub fn applica_verificati(
     let mut occupato = tx
         .prepare(occupato_sql)
         .map_err(|err| db_error("percorsi da rimappare", &err))?;
+    // L'immagine insieme al percorso, nella stessa riga e nello stesso
+    // momento: per un brano qualunque è `NULL` prima e dopo.
     let mut sposta = tx
-        .prepare("UPDATE tracks SET path = ?2 WHERE id = ?1")
+        .prepare("UPDATE tracks SET path = ?2, immagine = ?3 WHERE id = ?1")
         .map_err(|err| db_error("percorsi da rimappare", &err))?;
 
-    for (id, nuovo, _) in da_riscrivere {
-        match verifica(&nuovo) {
+    for riga in da_riscrivere {
+        // «Occupato» resta una domanda sul `path`, anche per un brano
+        // d'immagine: è lui l'identità `UNIQUE` della riga, e l'immagine è di
+        // tutti i brani del disco insieme.
+        match verifica(riga.da_verificare()) {
             Esistenza::Presente => {}
             Esistenza::Assente => {
                 esito.irrintracciabili += 1;
@@ -557,14 +620,14 @@ pub fn applica_verificati(
             }
         }
         let gia = occupato
-            .exists(rusqlite::params![nuovo, id])
+            .exists(rusqlite::params![riga.percorso, riga.id])
             .map_err(|err| db_error("percorsi da rimappare", &err))?;
         if gia {
             esito.gia_presenti += 1;
             continue;
         }
         esito.percorsi += sposta
-            .execute(rusqlite::params![id, nuovo])
+            .execute(rusqlite::params![riga.id, riga.percorso, riga.immagine])
             .map_err(|err| db_error("riscrittura di un percorso", &err))?;
     }
     Ok(esito)
@@ -905,6 +968,70 @@ mod prove {
         assert_eq!(fatto.gia_presenti, 1);
         assert_eq!(fatto.percorsi, 0);
         assert_eq!(percorso_di(&connection, 1), r"D:\Musica\a.flac");
+    }
+
+    #[test]
+    fn un_brano_d_immagine_si_sposta_con_la_sua_immagine() {
+        // Il `path` virtuale sul disco non c'è mai: si chiede dell'immagine,
+        // una volta per disco, e si riscrivono tutti e due insieme.
+        let mut connection = libreria();
+        connection
+            .execute_batch(
+                r"INSERT INTO tracks (id, path, track_key, title, artist, album,
+                                      file_size, date_added, date_modified,
+                                      immagine, inizio_cd, fine_cd)
+                  VALUES (10, 'D:\Musica\Disco\Album.cue|01', 'k10', 'T', 'X', 'Y', 1, 1, 1,
+                          'D:\Musica\Disco\Album.ape', 0, 750),
+                         (11, 'D:\Musica\Disco\Album.cue|02', 'k11', 'T', 'X', 'Y', 1, 1, 1,
+                          'D:\Musica\Disco\Album.ape', 750, NULL);",
+            )
+            .expect("brani d'immagine");
+        let rimappature = vec![Rimappatura {
+            da: r"D:\Musica".to_owned(),
+            a: r"E:\M".to_owned(),
+            brani: 5,
+        }];
+        let trovati = candidati(&connection, &rimappature).expect("candidati");
+        let percorsi: Vec<&str> = trovati.iter().map(|c| c.percorso.as_str()).collect();
+        assert_eq!(
+            percorsi,
+            [
+                r"E:\M\a.flac",
+                r"E:\M\b.flac",
+                r"E:\M\c.flac",
+                r"E:\M\Disco\Album.ape"
+            ],
+            "l'immagine una volta sola, mai il percorso virtuale"
+        );
+
+        let tx = connection.transaction().expect("transazione");
+        let fatto = applica_verificati(&tx, &rimappature, &|percorso| {
+            if percorso == r"E:\M\Disco\Album.ape" {
+                Esistenza::Presente
+            } else {
+                Esistenza::Assente
+            }
+        })
+        .expect("rimappatura");
+        tx.commit().expect("chiusura");
+        assert_eq!(fatto.percorsi, 2);
+        assert_eq!(fatto.irrintracciabili, 3);
+        for (id, numero) in [(10, "01"), (11, "02")] {
+            let (percorso, immagine): (String, String) = connection
+                .query_row(
+                    "SELECT path, immagine FROM tracks WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .expect("riga");
+            assert_eq!(percorso, format!(r"E:\M\Disco\Album.cue|{numero}"));
+            assert_eq!(immagine, r"E:\M\Disco\Album.ape");
+        }
+        // Un brano qualunque resta senza immagine.
+        let senza: Option<String> = connection
+            .query_row("SELECT immagine FROM tracks WHERE id = 1", [], |r| r.get(0))
+            .expect("riga");
+        assert_eq!(senza, None);
     }
 
     #[test]

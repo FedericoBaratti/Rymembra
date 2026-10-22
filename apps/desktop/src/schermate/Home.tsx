@@ -53,39 +53,30 @@ import { artistaNoto, brani_, durata, nomeArtista, titoloAlbum } from "../format
 import type { Album, Brano, Casa, Raccolta } from "../ipc";
 import { t } from "../lingue";
 import { Icona } from "../parti/Icone";
-import { Intestazione } from "../parti/Intestazione";
 import { conIndice, suonoAlbum, suonoBrano, useQuelCheSuona } from "../segnali";
 import { COPERTINA_IN_VOLO, Presenza, Volo } from "../presenza";
+import { StatoVuoto } from "./Libreria";
 
 /**
- * L'intestazione della Home. In un export suo, come per «Importazioni».
+ * L'intestazione della Home: le prop di `Intestazione`, come `testaLibreria`.
  *
  * Passa da `Intestazione` invece di disegnarsi il proprio markup: occhiello,
  * titolo e sottotitolo hanno già le loro classi e le loro regole, e una
  * seconda intestazione scritta a mano sarebbe una seconda cosa da ridipingere
  * ogni volta che una skin cambia idea su come si scrive un titolo di pagina.
+ * Le prop e non un componente che la avvolge per la ragione detta in
+ * `testaLibreria`: alla prima lettera la testata diventa quella della ricerca,
+ * e con un tipo diverso nello stesso posto il campo perdeva il fuoco.
  *
- * La ricerca ci passa attraverso perché la Home è una **destinazione**, non una
- * pagina di servizio come Impostazioni: è la schermata su cui l'applicazione
- * apre, quindi è il posto da cui si cerca più spesso. Senza questi due prop il
- * campo non veniva disegnato (`Intestazione` lo salta quando manca `onQuery`) e
- * premere «/» lasciava il fuoco sul `<body>`.
+ * La casella va aggiunta da chi la disegna, perché la Home è una
+ * **destinazione**, non una pagina di servizio come Impostazioni: è la
+ * schermata su cui l'applicazione apre, quindi è il posto da cui si cerca più
+ * spesso. Senza `query` e `onQuery` il campo non veniva disegnato
+ * (`Intestazione` lo salta quando manca `onQuery`) e premere «/» lasciava il
+ * fuoco sul `<body>`.
  */
-export function TestaHome({
-  query,
-  onQuery,
-}: {
-  query: string;
-  onQuery: (testo: string) => void;
-}) {
-  return (
-    <Intestazione
-      occhiello={t("home.eyebrow")}
-      titolo={t("home.title")}
-      query={query}
-      onQuery={onQuery}
-    />
-  );
+export function testaHome() {
+  return { occhiello: t("home.eyebrow"), titolo: t("home.title") };
 }
 
 /** Un brano, come scheda dentro un ripiano. */
@@ -487,13 +478,11 @@ export function Home({
   // niente da mettere su nessuno dei quattro ripiani.
   if (vuota) {
     return (
-      <div className="vuoto empty-state">
-        <span className="empty-icon" aria-hidden="true">
-          <Icona nome="i-home" dim={30} />
-        </span>
-        <h2>{t("home.empty.title")}</h2>
-        <p>{t("home.empty.hint")}</p>
-      </div>
+      <StatoVuoto
+        icona="i-home"
+        titolo={t("home.empty.title")}
+        testo={t("home.empty.hint")}
+      />
     );
   }
 

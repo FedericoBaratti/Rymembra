@@ -44,6 +44,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use rymembra_domain::errors::AppError;
 
+mod ape;
 pub mod attacchi;
 pub mod decodifica;
 pub mod dispositivi;
@@ -54,7 +55,7 @@ pub mod motore;
 pub mod spettro;
 pub mod uscita;
 
-pub use decodifica::{Flusso, FormatoSuonato, Sorgente};
+pub use decodifica::{Flusso, FormatoSuonato, Segmento, Sorgente};
 pub use dispositivi::Dispositivo;
 pub use equalizzatore::{BANDE, CENTRI_HZ, LIMITE_DB, PRESET_DI_SERIE};
 pub use motore::{BranoAperto, Evento, Motore, Posizione};
@@ -106,13 +107,16 @@ impl Codec {
     /// in avanti, quindi il ritorno all'inizio di un brano già preparato non
     /// torna indietro. Per questo l'elenco resta quello del dominio, e questa
     /// funzione con lui: prima la lettura dei tag, poi le estensioni.
+    ///
+    /// `.ape` invece c'è: Monkey's Audio lo legge `crate::ape`, un lettore nostro
+    /// sopra `ape-decoder`, e lofty ne legge i tag. È il formato di tante
+    /// immagini CD col loro `.cue`, che è la ragione per cui è entrato.
     #[must_use]
     pub fn da_estensione(estensione: &str) -> Self {
         let pulita = estensione.trim_start_matches('.').to_ascii_lowercase();
         match pulita.as_str() {
-            "mp3" | "flac" | "m4a" | "aac" | "ogg" | "oga" | "wav" | "aiff" | "aif" | "opus" => {
-                Self::Supportato
-            }
+            "mp3" | "flac" | "m4a" | "aac" | "ogg" | "oga" | "wav" | "aiff" | "aif" | "opus"
+            | "ape" => Self::Supportato,
             "wma" => Self::NonSupportato,
             _ => Self::Sconosciuto,
         }
@@ -653,6 +657,10 @@ mod prove {
         // `.oga` è Ogg come `.ogg`: stesso contenitore, stesso demultiplatore,
         // e dentro ci può stare Vorbis, FLAC o Opus indifferentemente.
         assert_eq!(Codec::da_estensione("oga"), Codec::Supportato);
+        // Monkey's Audio, il formato delle immagini CD: senza perdita, e lo
+        // sappiamo suonare.
+        assert_eq!(Codec::da_estensione("ape"), Codec::Supportato);
+        assert_eq!(Codec::da_estensione(".APE"), Codec::Supportato);
         assert_eq!(Codec::da_estensione("wma"), Codec::NonSupportato);
         assert_eq!(Codec::da_estensione("txt"), Codec::Sconosciuto);
     }

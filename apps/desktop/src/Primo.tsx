@@ -47,13 +47,38 @@ import {
   useState,
 } from "react";
 
+import { contiDellaCamminata, momentoDi } from "./fasiScansione";
 import { useFinestrella } from "./finestrella";
 import { numero } from "./formato";
-import type { CartellaCandidata, EsitoScansione } from "./ipc";
+import type { Avanzamento, CartellaCandidata, EsitoScansione } from "./ipc";
 import { t } from "./lingue";
 import { Icona } from "./parti/Icone";
 import { Presenza } from "./presenza";
 import { useDati } from "./dati";
+
+/**
+ * Quel che segue «Sto leggendo la libreria…»: i numeri, fuori dalla regione
+ * viva.
+ *
+ * Durante la camminata le cartelle e i file trovati, che su un NAS sono una
+ * decina di secondi in cui prima non compariva niente; durante l'attesa, che
+ * si sta aspettando la fine di una scansione partita da sola. Vedi
+ * `fasiScansione.ts`.
+ */
+function aChePunto(scansione: Avanzamento): string {
+  switch (momentoDi(scansione)) {
+    case "attende":
+      return ` ${t("primo.attesa")}`;
+    case "cerca": {
+      const conti = contiDellaCamminata(scansione, t);
+      return ` ${conti.cartelle}, ${conti.file}`;
+    }
+    case "confronta":
+      return "";
+    case "legge":
+      return ` ${numero(scansione.fatti)}/${numero(scansione.totale)}`;
+  }
+}
 
 /** Quel che il primo avvio chiede alla finestra di fare per lui. */
 export interface PrimoProps {
@@ -62,7 +87,7 @@ export interface PrimoProps {
   /** Apre il dialogo di sistema e restituisce la cartella scelta. */
   onScegliCartella: () => Promise<string | null>;
   /** L'avanzamento della scansione, o `null` se non ne sta girando nessuna. */
-  scansione: { fatti: number; totale: number } | null;
+  scansione: Avanzamento | null;
   /** Quanti brani ci sono in libreria adesso. */
   brani: number;
   /**
@@ -279,8 +304,7 @@ export function Primo({
           {scansionando && (
             <p className="primo-attesa">
               <span role="status">{t("primo.scansione")}</span>
-              {scansione.totale > 0 &&
-                ` ${numero(scansione.fatti)}/${numero(scansione.totale)}`}
+              {aChePunto(scansione)}
             </p>
           )}
 

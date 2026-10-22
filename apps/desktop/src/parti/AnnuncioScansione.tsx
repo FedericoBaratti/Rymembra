@@ -14,6 +14,12 @@
  * Due notizie meritano di essere dette senza che nessuno le chieda: che è
  * cominciata — la libreria sta per cambiare sotto le dita — e che è finita.
  *
+ * Dalla 3.0.2 una terza, che si dice una volta: che «Scansiona» sta aspettando
+ * la fine di una scansione partita da sola. Senza, chi ha premuto sentirebbe
+ * «cominciata» e poi niente per un minuto. Le fasi della camminata e della
+ * lettura invece no: sono battiti, e si leggono sulla barra (`fasiScansione.ts`,
+ * `annuncioFra`).
+ *
  * # Perché una regione sempre montata
  *
  * Perché una regione viva annuncia i **cambiamenti** del suo testo, e una che
@@ -27,20 +33,25 @@
  */
 import { useEffect, useRef, useState } from "react";
 
+import { annuncioFra, statoAnnunciato } from "../fasiScansione";
 import type { Avanzamento } from "../ipc";
 import { t } from "../lingue";
 
 export function AnnuncioScansione({ scansione }: { scansione: Avanzamento | null }) {
-  const inCorso = scansione !== null;
+  // Tre stati e non l'avanzamento: l'effetto gira solo quando cambia uno di
+  // questi, mai a un battito.
+  const stato = statoAnnunciato(scansione);
   const [testo, setTesto] = useState("");
   /** Com'era al disegno prima: si annuncia il passaggio, non lo stato. */
-  const prima = useRef(inCorso);
+  const prima = useRef(stato);
 
   useEffect(() => {
-    if (prima.current === inCorso) return;
-    prima.current = inCorso;
-    setTesto(inCorso ? t("scan.announce.start") : t("scan.announce.end"));
-  }, [inCorso]);
+    const cosa = annuncioFra(prima.current, stato);
+    prima.current = stato;
+    if (cosa === "inizio") setTesto(t("scan.announce.start"));
+    else if (cosa === "attesa") setTesto(t("scan.announce.waiting"));
+    else if (cosa === "fine") setTesto(t("scan.announce.end"));
+  }, [stato]);
 
   return (
     <div className="solo-lettori" role="status">

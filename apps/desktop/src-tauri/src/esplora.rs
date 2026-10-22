@@ -40,9 +40,11 @@ use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::esterno::Disponibilita;
 use rymembra_domain::scelta::Candidato;
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, State};
 
+use crate::disparte::in_disparte;
 use crate::errore::{Esito, errore};
+use crate::importa::gestito;
 use crate::stato::{Stato, con_libreria};
 
 /// Lo stato della ricerca nei cataloghi.
@@ -201,27 +203,34 @@ fn in_ipc(candidato: &Candidato, in_libreria: bool) -> RisultatoIpc {
 
 /// Cerca una frase nei cataloghi liberi.
 ///
-/// `(async)` come `import_anteprima`, e per la stessa ragione: parla con la
-/// rete per qualche secondo, e un comando normale terrebbe fermo il filo
-/// principale della finestra per tutto quel tempo.
+/// In disparte come `import_anteprima`, e per la stessa ragione: parla con la
+/// rete per qualche secondo, e né il filo principale della finestra né un
+/// *worker* del runtime devono restare fermi per tutto quel tempo — chi scrive
+/// nella casella di ricerca ne fa partire una a ogni pausa, e tre cataloghi
+/// lenti bastavano a occupare ogni worker.
 ///
 /// # Errori
 ///
 /// `download.externalSearchFailed` se **nessun** catalogo ha risposto — che è
 /// una frase diversa da «nessun risultato», e la finestra le distingue perché
 /// chi legge la seconda al posto della prima smette di cercare.
-#[tauri::command(async)]
-pub fn esplora_cerca(
-    stato: State<'_, Stato>,
-    esplora: State<'_, StatoEsplora>,
-    testo: String,
-) -> Esito<EsitoRicerca> {
+#[tauri::command]
+pub async fn esplora_cerca(app: AppHandle, testo: String) -> Esito<EsitoRicerca> {
+    in_disparte("ricerca nei cataloghi", move || cerca(&app, &testo))
+        .await
+        .map_err(errore)?
+}
+
+/// Il corpo di [`esplora_cerca`], sul pool bloccante.
+fn cerca(app: &AppHandle, testo: &str) -> Esito<EsitoRicerca> {
+    let stato = gestito::<Stato>(app, "ricerca nei cataloghi").map_err(errore)?;
+    let esplora = gestito::<StatoEsplora>(app, "ricerca nei cataloghi").map_err(errore)?;
     let numero = esplora.comincia();
     let annullato = || esplora.fermata(numero);
 
     let ricerca = esplora
         .cataloghi
-        .cerca_libera(&testo, &annullato)
+        .cerca_libera(testo, &annullato)
         .map_err(errore)?;
 
     // Superata mentre cercava: la sua risposta non la aspetta più nessuno, e

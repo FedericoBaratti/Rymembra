@@ -105,7 +105,10 @@ pub struct StatoProcura {
     /// Non è pignoleria: due code che leggono lo stesso lotto prenderebbero gli
     /// stessi brani due volte, sullo stesso percorso, con due prelievi che
     /// scrivono lo stesso file.
-    in_corso: AtomicBool,
+    ///
+    /// In un `Arc` perché chi la abbassa è un [`Posto`] che vive sul filo della
+    /// coda, e quel filo è `'static`: vedi [`Posto`].
+    in_corso: Arc<AtomicBool>,
     /// Qualcuno ha chiesto di fermarsi.
     da_fermare: AtomicBool,
     /// Quanti ne restano, per chi chiede lo stato senza aspettare un evento.
@@ -126,7 +129,7 @@ impl StatoProcura {
     #[must_use]
     pub fn nuovo() -> Self {
         Self {
-            in_corso: AtomicBool::new(false),
+            in_corso: Arc::new(AtomicBool::new(false)),
             da_fermare: AtomicBool::new(false),
             rimasti: AtomicU32::new(0),
             fatti: AtomicU32::new(0),
@@ -134,16 +137,15 @@ impl StatoProcura {
         }
     }
 
-    /// Prova a prendere il posto della coda. `false` se ce n'è già una.
-    fn prendi_posto(&self) -> bool {
+    /// Prova a prendere il posto della coda. `None` se ce n'è già una.
+    ///
+    /// Il posto si lascia lasciando cadere il [`Posto`]: non c'è un
+    /// `lascia_posto` da ricordarsi di chiamare.
+    fn prendi_posto(&self) -> Option<Posto> {
         self.in_corso
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    }
-
-    /// Lascia il posto.
-    fn lascia_posto(&self) {
-        self.in_corso.store(false, Ordering::Release);
+            .ok()
+            .map(|_| Posto(Arc::clone(&self.in_corso)))
     }
 
     /// Chiede alla coda in corso di fermarsi.
@@ -160,6 +162,37 @@ impl StatoProcura {
 impl Default for StatoProcura {
     fn default() -> Self {
         Self::nuovo()
+    }
+}
+
+/// Il posto della coda, preso. Lo lascia cadendo — anche srotolando per un
+/// panico.
+///
+/// # Il difetto che toglie
+///
+/// Il posto si prendeva con un `compare_exchange` e si lasciava con uno `store`
+/// scritto a mano **dopo** la passata, sul filo della coda. Un panico in mezzo
+/// — un catalogo che risponde con byte che un parser non si aspettava —
+/// srotolava oltre quella riga: la bandiera restava alzata, e ogni `avvia` dopo
+/// rispondeva «ce n'è già una» a una coda che non c'era più. Niente si
+/// scaricava fino al riavvio, e niente lo diceva.
+///
+/// # Perché non [`crate::stato::Turno`]
+///
+/// Perché `Turno` presta la bandiera, e il filo della coda è `'static`: un
+/// prestito dello stato di Tauri non ci entra. Questo la **possiede**, in un
+/// `Arc`, e per lo stesso motivo la abbassa anche se nel frattempo gli stati
+/// gestiti sono stati lasciati cadere. E si prende nel comando, prima del filo,
+/// perché fra la decisione e l'avvio non deve passare un secondo `avvia`: è il
+/// caso che `Turno::adotta` risolve per chi presta, qui risolto possedendo.
+///
+/// Si sposta dentro la chiusura del filo, e anche questo conta: se `spawn`
+/// fallisce, la chiusura cade senza essere eseguita e il posto con lei.
+struct Posto(Arc<AtomicBool>);
+
+impl Drop for Posto {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -520,8 +553,15 @@ fn alternative_ammesse(connection: &rusqlite::Connection) -> bool {
 /// modo automatico» chiesto — confermata un'importazione, i brani mancanti
 /// cominciano a essere cercati da soli.
 pub fn avvia(app: &AppHandle) {
-    let procura = app.state::<StatoProcura>();
-    if !procura.prendi_posto() {
+    // `try_state` e non `state`, qui e in tutto quel che il filo della coda
+    // raggiunge: `state` panica se lo stato non c'è, e la coda gira — e viene
+    // avviata, da un comando sul pool bloccante — anche mentre la finestra si
+    // chiude e gli stati gestiti vengono lasciati cadere. Vedi
+    // [`cartella_download`].
+    let Some(procura) = app.try_state::<StatoProcura>() else {
+        return;
+    };
+    let Some(posto) = procura.prendi_posto() else {
         // Ce n'è già una. I brani appena importati li prenderà lei al prossimo
         // lotto: la coda rilegge la tabella a ogni giro, quindi non si perde
         // niente e non serve accodare una seconda passata.
@@ -532,7 +572,7 @@ pub fn avvia(app: &AppHandle) {
         // hai appena fatto assomiglia a un'importazione non riuscita.
         annuncia(app);
         return;
-    }
+    };
     // Prima di partire: un annullamento arrivato dopo la fine della coda
     // precedente fermerebbe questa al primo brano.
     procura.da_fermare.store(false, Ordering::Relaxed);
@@ -542,19 +582,49 @@ pub fn avvia(app: &AppHandle) {
     let avviato = std::thread::Builder::new()
         .name("rymembra-procura".to_owned())
         .spawn(move || {
-            passata(&manico);
-            manico.state::<StatoProcura>().lascia_posto();
-            manico.emetti("scarico:finito", ());
+            sul_filo(
+                posto,
+                || passata(&manico),
+                || {
+                    manico.emetti("scarico:finito", ());
+                },
+            );
         });
+    // Un `spawn` fallito lascia cadere la chiusura, e il posto con lei.
     if let Err(err) = avviato {
         nota!("[procura] il filo della coda non è partito: {err}");
-        procura.lascia_posto();
     }
+}
+
+/// Il corpo del filo della coda: la passata, poi il posto lasciato, poi
+/// l'annuncio della fine — **anche** se la passata è caduta in panico.
+///
+/// # Il difetto che toglie
+///
+/// Il [`Posto`] si liberava srotolando, ma l'evento `scarico:finito` stava
+/// dopo la passata, e un panico lo saltava: la finestra continuava a mostrare
+/// la coda al lavoro, con lo spinner acceso, per una coda che non c'era più. Il
+/// panico qui si ferma — il gancio dei panici l'ha già scritto nel diario, con
+/// il posto da cui veniva — e la fine si annuncia come sempre.
+///
+/// Il posto cade **prima** dell'evento: chi riceve `scarico:finito` e chiede lo
+/// stato deve già leggere «ferma».
+///
+/// `AssertUnwindSafe` per la ragione scritta su [`crate::stato::sorvegliato`]:
+/// i lucchetti si riprendono da avvelenati, e le scritture nel database stanno
+/// in transazioni che un panico lascia cadere senza commit.
+fn sul_filo(posto: Posto, passata: impl FnOnce(), finito: impl FnOnce()) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(passata));
+    drop(posto);
+    finito();
 }
 
 /// Una passata completa: legge lotti finché ce n'è, o finché non si ferma.
 fn passata(app: &AppHandle) {
-    let procura = app.state::<StatoProcura>();
+    let (Some(procura), Some(stato)) = (app.try_state::<StatoProcura>(), app.try_state::<Stato>())
+    else {
+        return;
+    };
 
     let Some(cartella) = cartella_download(app) else {
         segnala_guasto(
@@ -570,7 +640,7 @@ fn passata(app: &AppHandle) {
         return;
     };
     let temporanea = cartella_temporanea(app);
-    let alternative = con_libreria(&app.state::<Stato>(), |libreria| {
+    let alternative = con_libreria(&stato, |libreria| {
         Ok(alternative_ammesse(&libreria.connection))
     })
     .unwrap_or(true);
@@ -585,7 +655,7 @@ fn passata(app: &AppHandle) {
         if procura.fermata() {
             break;
         }
-        let lotto = match con_libreria(&app.state::<Stato>(), |libreria| {
+        let lotto = match con_libreria(&stato, |libreria| {
             desiderati::leggi_da_scaricare(&libreria.connection, LOTTO)
         }) {
             Ok(lotto) => lotto,
@@ -617,7 +687,9 @@ fn esegui_lotto(
     alternative: bool,
     lotto: Vec<Desiderato>,
 ) {
-    let procura = app.state::<StatoProcura>();
+    let Some(procura) = app.try_state::<StatoProcura>() else {
+        return;
+    };
     let totale = totale_da_fare(app);
     procura.rimasti.store(totale, Ordering::Relaxed);
 
@@ -632,7 +704,7 @@ fn esegui_lotto(
             let coda = Arc::clone(&coda);
             ambito.spawn(move || {
                 loop {
-                    if app.state::<StatoProcura>().fermata() {
+                    if da_fermare(app) {
                         break;
                     }
                     let Some(desiderato) = coda.lock().ok().and_then(|mut c| c.pop()) else {
@@ -643,6 +715,13 @@ fn esegui_lotto(
             });
         }
     });
+}
+
+/// Qualcuno ha chiesto di fermarsi — o lo stato non c'è più, che per il filo
+/// della coda vuol dire la stessa cosa: la finestra si sta chiudendo.
+fn da_fermare(app: &AppHandle) -> bool {
+    app.try_state::<StatoProcura>()
+        .is_none_or(|procura| procura.fermata())
 }
 
 /// Un brano solo, dall'inizio alla fine.
@@ -657,8 +736,12 @@ fn un_brano(
     alternative: bool,
     desiderato: &Desiderato,
 ) {
-    let procura = app.state::<StatoProcura>();
-    let fermare = || app.state::<StatoProcura>().fermata();
+    // Senza stato la riga resta in `attesa` senza che nessuno l'abbia toccata,
+    // ed è giusto così: si sta uscendo, e la prossima apertura la riprende.
+    let Some(procura) = app.try_state::<StatoProcura>() else {
+        return;
+    };
+    let fermare = || da_fermare(app);
     emetti_brano(app, desiderato, None, "cerco", None, None);
 
     // ── la scelta, fuori da ogni lucchetto ──────────────────────────────────
@@ -822,7 +905,14 @@ fn trova(
         }));
     }
 
-    let procura = app.state::<StatoProcura>();
+    // Senza stato è un annullamento, non un guasto: `chiudi_male` non consuma
+    // tentativi per lui, e la riga resta in coda per la prossima apertura.
+    let Some(procura) = app.try_state::<StatoProcura>() else {
+        return Err(AppError::new(ErrorCode::InternalAborted {
+            what: Some("ricerca di un brano".to_owned()),
+        })
+        .with_cause("la coda non è più fra gli stati gestiti"));
+    };
     let candidati = procura.cataloghi.cerca(&desiderato.brano, fermare)?;
     // Solo quel che si può tenere: un file che si ascolta e basta non è una
     // risposta a «mettimelo in libreria», e sceglierlo per poi rifiutarlo un
@@ -894,9 +984,10 @@ fn segna(
     desiderato: &Desiderato,
     azione: impl FnOnce(&rusqlite::Connection) -> Result<(), AppError>,
 ) {
-    let esito = con_libreria(&app.state::<Stato>(), |libreria| {
-        azione(&libreria.connection)
-    });
+    let Some(stato) = app.try_state::<Stato>() else {
+        return;
+    };
+    let esito = con_libreria(&stato, |libreria| azione(&libreria.connection));
     if let Err(guasto) = esito {
         // Non si può fare altro che dirlo: se il database non risponde, il
         // brano resterà in `attesa` e verrà ritentato al prossimo giro — che è
@@ -921,7 +1012,7 @@ fn copertina(app: &AppHandle, desiderato: &Desiderato) -> Option<Vec<u8>> {
     let url = desiderato.brano.cover_url.as_deref()?;
     let mut byte = Vec::new();
     let rete = app
-        .state::<StatoProcura>()
+        .try_state::<StatoProcura>()?
         .cataloghi
         .archivio()
         .rete()
@@ -965,7 +1056,9 @@ fn emetti_brano(
 /// preso: è il solo modo perché un'importazione confermata a coda in corsa
 /// compaia subito nell'elenco invece che alla fine del brano in corso.
 pub fn annuncia(app: &AppHandle) {
-    let procura = app.state::<StatoProcura>();
+    let Some(procura) = app.try_state::<StatoProcura>() else {
+        return;
+    };
     let (rimasti, sorgenti) = situazione(app);
     procura.rimasti.store(rimasti, Ordering::Relaxed);
     let fatti = procura.fatti.load(Ordering::Relaxed);
@@ -987,10 +1080,14 @@ fn segnala_guasto(app: &AppHandle, guasto: &AppError) {
 
 /// Quanti ne restano in tabella.
 fn totale_da_fare(app: &AppHandle) -> u32 {
-    con_libreria(&app.state::<Stato>(), |libreria| {
-        desiderati::conta_in_attesa(&libreria.connection)
-    })
-    .unwrap_or(0)
+    app.try_state::<Stato>()
+        .and_then(|stato| {
+            con_libreria(&stato, |libreria| {
+                desiderati::conta_in_attesa(&libreria.connection)
+            })
+            .ok()
+        })
+        .unwrap_or(0)
 }
 
 /// Quanti ne restano e come stanno le importazioni, con un lucchetto solo.
@@ -998,13 +1095,17 @@ fn totale_da_fare(app: &AppHandle) -> u32 {
 /// Due prese separate lascerebbero passare in mezzo un brano concluso da un
 /// altro filo, e i due numeri racconterebbero due momenti diversi.
 fn situazione(app: &AppHandle) -> (u32, Vec<desiderati::Sorgente>) {
-    con_libreria(&app.state::<Stato>(), |libreria| {
-        Ok((
-            desiderati::conta_in_attesa(&libreria.connection)?,
-            desiderati::per_sorgente(&libreria.connection)?,
-        ))
-    })
-    .unwrap_or_default()
+    app.try_state::<Stato>()
+        .and_then(|stato| {
+            con_libreria(&stato, |libreria| {
+                Ok((
+                    desiderati::conta_in_attesa(&libreria.connection)?,
+                    desiderati::per_sorgente(&libreria.connection)?,
+                ))
+            })
+            .ok()
+        })
+        .unwrap_or_default()
 }
 
 /// Il codice del catalogo più la causa, per la colonna `download_error`.
@@ -1143,7 +1244,7 @@ fn scansione_automatica(app: &AppHandle, stato: &Stato) {
     if stato.scansione_in_corso() {
         nota!("[procura] scansione automatica in coda: ce n'è già una in corso");
     }
-    let Some(_turno) = crate::sorveglia::aspetta_il_turno(stato, &crate::spegnimento::in_uscita)
+    let Some(turno) = crate::sorveglia::aspetta_il_turno(stato, &crate::spegnimento::in_uscita)
     else {
         nota!("[procura] scansione automatica lasciata: il programma si sta chiudendo");
         return;
@@ -1204,6 +1305,9 @@ fn scansione_automatica(app: &AppHandle, stato: &Stato) {
         files: Arc::new(rymembra_app::files::LocalFiles),
         covers: copertine,
         roots: &roots,
+        // La guardia per radice vale per le cartelle sorvegliate, non per la
+        // cartella dei download che ci sta dentro.
+        radici_della_libreria: &radici,
         rules: PathRules::for_current_platform(),
         // Questa non la guarda nessuno: parte da sé quando la coda ha finito
         // di scaricare. È il caso per cui la guardia è stata scritta — se
@@ -1217,8 +1321,15 @@ fn scansione_automatica(app: &AppHandle, stato: &Stato) {
     let mut deposito = DepositoStato::nuovo(stato);
     let esito = scan.run_su(&mut deposito, |_, _| std::ops::ControlFlow::Continue(()));
 
+    // La manutenzione si sveglia alla caduta del turno solo se la passata ha
+    // scritto qualcosa (vedi `TurnoDiScansione`), o se è caduta e non si sa:
+    // vedi `comandi::forse_cambiata`.
+    if crate::comandi::forse_cambiata(&esito) {
+        turno.segna_cambiamenti();
+    }
     match esito {
         Ok(report) => {
+            crate::comandi::racconta_scansione("download", &report);
             // Le due cose che questa scansione può aver taciuto finiscono nel
             // diario, perché è l'unico posto che le raccoglie: nessuno sta
             // guardando la finestra quando gira, e l'evento qui sotto porta un
@@ -1239,7 +1350,14 @@ fn scansione_automatica(app: &AppHandle, stato: &Stato) {
             app.emetti("scarico:in_libreria", report.inserted);
             crate::cartelle::cambiate(app);
         }
-        Err(guasto) => nota!("[procura] la scansione finale è fallita: {guasto}"),
+        Err(guasto) => {
+            nota!("[procura] la scansione finale è fallita: {guasto}");
+            // Caduta a metà, può aver già scritto dei lotti: la finestra
+            // rilegge lo stesso, o i brani già entrati restano invisibili fino
+            // alla prossima scansione riuscita. `scarico:in_libreria` no:
+            // porta quanti ne sono entrati, e quel numero non c'è.
+            crate::cartelle::cambiate(app);
+        }
     }
 }
 
@@ -1310,10 +1428,58 @@ mod prove {
         // Due code insieme leggerebbero lo stesso lotto e scriverebbero lo
         // stesso file da due prelievi.
         let stato = StatoProcura::nuovo();
-        assert!(stato.prendi_posto());
-        assert!(!stato.prendi_posto(), "la seconda non deve entrare");
-        stato.lascia_posto();
-        assert!(stato.prendi_posto(), "finita la prima, si riparte");
+        let prima = stato.prendi_posto().expect("la prima entra");
+        assert!(
+            stato.prendi_posto().is_none(),
+            "la seconda non deve entrare"
+        );
+        drop(prima);
+        assert!(
+            stato.prendi_posto().is_some(),
+            "finita la prima, si riparte"
+        );
+    }
+
+    /// Una coda che cade in panico lascia il posto: prima la bandiera restava
+    /// alzata, e niente si scaricava più fino al riavvio.
+    #[test]
+    fn una_coda_caduta_in_panico_lascia_il_posto() {
+        let stato = StatoProcura::nuovo();
+        let posto = stato.prendi_posto().expect("il posto è libero");
+        let caduta = std::thread::spawn(move || {
+            let _posto = posto;
+            panic!("un catalogo ha risposto con byte che nessuno si aspettava");
+        })
+        .join();
+        assert!(caduta.is_err(), "il filo è caduto davvero");
+        assert!(
+            stato.prendi_posto().is_some(),
+            "il posto si è liberato srotolando"
+        );
+        assert!(!stato.in_corso.load(Ordering::Acquire));
+    }
+
+    /// Una passata che cade in panico annuncia la fine lo stesso, e col posto
+    /// già lasciato: altrimenti la finestra mostrerebbe la coda al lavoro per
+    /// sempre.
+    #[test]
+    fn una_passata_caduta_annuncia_la_fine() {
+        let stato = StatoProcura::nuovo();
+        let posto = stato.prendi_posto().expect("il posto è libero");
+        let annunciata = std::cell::Cell::new(false);
+        sul_filo(
+            posto,
+            || panic!("un catalogo ha risposto con byte che nessuno si aspettava"),
+            || {
+                assert!(
+                    !stato.in_corso.load(Ordering::Acquire),
+                    "chi riceve la fine deve già leggere «ferma»"
+                );
+                annunciata.set(true);
+            },
+        );
+        assert!(annunciata.get(), "la fine non è stata annunciata");
+        assert!(stato.prendi_posto().is_some());
     }
 
     #[test]

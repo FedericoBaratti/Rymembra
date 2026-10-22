@@ -43,7 +43,8 @@ import type { FornitoreIa, ModelloIa, ProfiloIa, StatoIa } from "../ipc";
 import { ipc } from "../ipc";
 import { Icona } from "./Icone";
 import { Segmentato } from "./Segmentato";
-import { t, type Chiave } from "../lingue";
+import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
+import { t, tSe } from "../lingue";
 
 /** L'indirizzo che si propone scegliendo un fornitore. */
 const DI_SERIE: Record<FornitoreIa, string> = {
@@ -151,6 +152,12 @@ export function ModelliIA({
    */
   const [soloGratis, setSoloGratis] = useState(false);
   const [inVolo, setInVolo] = useState(false);
+  /**
+   * «Eliminare il profilo?», prima di farlo: con il profilo se ne va la sua
+   * chiave dal portachiavi, e una chiave non si ricostruisce. Vedi
+   * `ConfermaGesto.tsx`.
+   */
+  const [domanda, setDomanda] = useState<Domanda | null>(null);
 
   useEffect(() => {
     ipc.iaProfili().then(setStato).catch(onErrore);
@@ -306,7 +313,10 @@ export function ModelliIA({
                     )}
                   </div>
                   <div className="spiegazione">
-                    {t(`ia.provider.${profilo.fornitore}` as Chiave)} ·{" "}
+                    {/* `tSe`: il fornitore arriva dal nucleo, e uno che questa
+                        finestra non conosce ancora si legge col suo nome invece
+                        che con la chiave nuda. */}
+                    {tSe(`ia.provider.${profilo.fornitore}`, profilo.fornitore)} ·{" "}
                     {profilo.modello} · {profilo.urlBase}
                     {profilo.conChiave ? ` · ${t("ia.hasKey")}` : ""}
                     {!profilo.conChiave && CON_CHIAVE.includes(profilo.fornitore)
@@ -341,7 +351,16 @@ export function ModelliIA({
                     type="button"
                     className="bottone btn-ghost"
                     disabled={inVolo}
-                    onClick={() => esegui(() => ipc.iaEliminaProfilo(profilo.id))}
+                    onClick={() =>
+                      setDomanda({
+                        titolo: t("ia.delete.confirm.title", { nome: profilo.nome }),
+                        descrizione: profilo.conChiave
+                          ? t("ia.delete.confirm.bodyKey")
+                          : t("ia.delete.confirm.body"),
+                        conferma: t("ia.delete.confirm.ok"),
+                        fai: () => esegui(() => ipc.iaEliminaProfilo(profilo.id)),
+                      })
+                    }
                   >
                     {t("ia.delete")}
                   </button>
@@ -477,6 +496,10 @@ export function ModelliIA({
        * passa mai.
        */}
       {bozza.id === null && <p className="nota">{t("ia.test.afterSave")}</p>}
+
+      {domanda !== null && (
+        <ConfermaGesto domanda={domanda} onChiudi={() => setDomanda(null)} />
+      )}
     </>
   );
 }

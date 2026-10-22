@@ -24,6 +24,15 @@ export interface ArtistiDellaFinestra {
   artisti: Artista[];
   /** Una richiesta è in volo: i segnaposto, ma solo la prima volta. */
   artistiInArrivo: boolean;
+  /**
+   * L'ultima lettura è fallita.
+   *
+   * Serve a non dire una bugia: senza, una lettura fallita lasciava l'elenco
+   * vuoto, e la vista diceva «nessun artista» sopra una libreria che ne ha
+   * duecento. Chi la disegna mostra il guasto e «Riprova», che è
+   * `invalidaArtisti`.
+   */
+  artistiGuasto: boolean;
   /** Li rilegge subito se la vista è aperta, entrandoci se no. */
   invalidaArtisti: () => void;
 }
@@ -42,11 +51,13 @@ export function useArtisti(
   const artistiDaRileggere = useRef(true);
   const [giroArtisti, setGiroArtisti] = useState(0);
   const [artistiInArrivo, setArtistiInArrivo] = useState(false);
+  const [artistiGuasto, setArtistiGuasto] = useState(false);
   useEffect(() => {
     if (vista !== "artisti" || cercando) return;
     if (!artistiDaRileggere.current) return;
     artistiDaRileggere.current = false;
     setArtistiInArrivo(true);
+    setArtistiGuasto(false);
     let annullato = false;
     let arrivati = false;
     ipc
@@ -57,6 +68,7 @@ export function useArtisti(
       })
       .catch((e: unknown) => {
         artistiDaRileggere.current = true;
+        if (!annullato) setArtistiGuasto(true);
         segnalaErrore(e);
       })
       .finally(() => {
@@ -74,5 +86,5 @@ export function useArtisti(
     setGiroArtisti((n) => n + 1);
   }, []);
 
-  return { artisti, artistiInArrivo, invalidaArtisti };
+  return { artisti, artistiInArrivo, artistiGuasto, invalidaArtisti };
 }

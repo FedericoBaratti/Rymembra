@@ -241,7 +241,11 @@ pub fn scrivi_campi(percorso: &std::path::Path, campi: &Fields) -> Result<(), Ap
         }
     }
 
-    salva(percorso, tipo, tag, campi).map_err(|err| fallito(racconta_errore(&err)))
+    // Con una riserva, come [`ripristina_campi`]: il file è dell'utente. Vedi
+    // [`con_una_riserva`].
+    con_una_riserva(percorso, &fallito, |vero| {
+        salva(vero, tipo, tag, campi).map_err(|err| fallito(racconta_errore(&err)))
+    })
 }
 
 /// Scrive il tag sul file, aggiungendo a mano ciò che la strada generica perde.
@@ -322,10 +326,18 @@ fn salva(
 /// non possono esserci stati: un brano che ne portava uno nei tag non è mai
 /// entrato fra i candidati.
 ///
+/// # Mai senza riserva
+///
+/// Il tag si riscrive sul posto, come sempre, ma con una copia del brano
+/// accanto che lo rimette com'era se la scrittura fallisce o cade: vedi
+/// [`con_una_riserva`]. Un errore a metà lascia il brano com'era, non troncato.
+///
 /// # Errori
 ///
 /// `metadata.tagWriteFailed` se il file non si apre, non si interpreta o non si
-/// riscrive.
+/// riscrive — e se è di sola lettura, che è l'utente che dice di non toccarlo.
+/// `fs.writeFailed` col percorso della riserva se il brano non si è potuto
+/// rimettere com'era: vedi [`crate::scrittura::riserva_rimasta`].
 pub fn ripristina_campi(percorso: &std::path::Path, originali: &Fields) -> Result<(), AppError> {
     let fallito = |dettaglio: String| {
         AppError::new(ErrorCode::MetadataTagWriteFailed {
@@ -396,8 +408,53 @@ pub fn ripristina_campi(percorso: &std::path::Path, originali: &Fields) -> Resul
         tag.remove_key(chiave);
     }
 
-    tag.save_to_path(percorso, WriteOptions::default())
-        .map_err(|err| fallito(racconta_errore(&err)))
+    con_una_riserva(percorso, &fallito, |vero| {
+        tag.save_to_path(vero, WriteOptions::default())
+            .map_err(|err| fallito(racconta_errore(&err)))
+    })
+}
+
+/// Riscrive i tag di un file dell'utente sul posto, con una copia di riserva
+/// accanto che lo rimette com'era se la scrittura non arriva in fondo.
+///
+/// # Perché una riserva
+///
+/// Perché `lofty` riscrive sul posto: quando il tag nuovo è più lungo dello
+/// spazio che c'era, sposta in avanti **tutto l'audio** che segue, e su un FLAC
+/// da cinquanta megabyte su una share sono secondi in cui il file è a metà. Un
+/// errore lì, un parser che cade, un disco di rete che se ne va, e il brano
+/// dell'utente restava troncato col suo nome giusto — un file che la scansione
+/// rilegge come buono e che si interrompe a metà canzone. Questa è l'unica
+/// funzione di Rymembra che apre in scrittura i brani di chi ascolta, e il
+/// brano non è una cache che si rifà: se si perde, è perso.
+///
+/// # Perché sul posto
+///
+/// Perché il file deve restare **lo stesso**: permessi propri, condivisione con
+/// chi lo tiene aperto — il lettore, il preparatore, l'analisi — e identità
+/// sono quelli di prima solo se si scrive dentro di lui. La riserva e il
+/// ripristino li fa [`crate::scrittura::modifica_con_riserva`], che dice anche
+/// cosa resta sul disco dopo un'interruzione vera e come riconoscerlo.
+///
+/// Gli errori di quel passo — la riserva che non si fa, per spazio o per un
+/// nome troppo lungo — escono come `metadata.tagWriteFailed`, con la causa
+/// dentro. Salvo uno: se nemmeno il ripristino è riuscito, l'errore resta
+/// quello della riserva, col suo percorso, perché chi chiama possa contarlo a
+/// parte — vedi [`crate::scrittura::riserva_rimasta`].
+fn con_una_riserva(
+    percorso: &std::path::Path,
+    fallito: &dyn Fn(String) -> AppError,
+    scrivi: impl FnOnce(&std::path::Path) -> Result<(), AppError>,
+) -> Result<(), AppError> {
+    crate::scrittura::modifica_con_riserva(percorso, scrivi).map_err(|err| {
+        if matches!(err.code(), ErrorCode::MetadataTagWriteFailed { .. })
+            || crate::scrittura::riserva_rimasta(&err)
+        {
+            err
+        } else {
+            fallito(err.to_string())
+        }
+    })
 }
 
 /// Un valore di tag ripulito: vuoto vale come assente.
@@ -693,6 +750,58 @@ mod prove {
         let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
         assert_eq!(letti.title.as_deref(), Some("Poetica"));
         assert_eq!(letti.album.as_deref(), Some("Possibili scenari"));
+    }
+
+    /// Il ritorno dei tag passa da una riserva: il risultato è lo stesso di una
+    /// scrittura sul posto, e accanto al brano non resta niente.
+    #[test]
+    fn ripristinare_i_campi_non_lascia_avanzi() {
+        let (cartella, percorso) = file_di_prova();
+        scrivi_tag(&percorso, &brano(), 1, None).expect("tag di partenza");
+        ripristina_campi(
+            &percorso,
+            &Fields {
+                title: Some("Titolo di prima".to_owned()),
+                ..Fields::default()
+            },
+        )
+        .expect("ritorno");
+
+        let letti = read_tags(&LocalFiles, &percorso.display().to_string()).expect("rilettura");
+        assert_eq!(letti.title.as_deref(), Some("Titolo di prima"));
+        assert_eq!(letti.album, None, "un `None` qui svuota");
+        let nomi: Vec<_> = std::fs::read_dir(cartella.path())
+            .expect("cartella")
+            .filter_map(|voce| Some(voce.ok()?.file_name()))
+            .collect();
+        assert_eq!(nomi, ["brano.mp3"], "nessun temporaneo accanto al brano");
+    }
+
+    /// Un brano di sola lettura non si riscrive, e resta byte per byte com'era.
+    #[test]
+    fn un_brano_di_sola_lettura_non_si_riscrive() {
+        let (_cartella, percorso) = file_di_prova();
+        scrivi_tag(&percorso, &brano(), 1, None).expect("tag di partenza");
+        let prima = std::fs::read(&percorso).expect("letto");
+        let mut permessi = std::fs::metadata(&percorso)
+            .expect("permessi")
+            .permissions();
+        permessi.set_readonly(true);
+        std::fs::set_permissions(&percorso, permessi.clone()).expect("sola lettura");
+
+        let esito = ripristina_campi(&percorso, &Fields::default());
+        assert_eq!(
+            esito.map_err(|e| e.code().kind().code().to_owned()),
+            Err("metadata.tagWriteFailed".to_owned())
+        );
+        assert_eq!(std::fs::read(&percorso).expect("letto"), prima);
+
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "si toglie la sola lettura messa dalla prova, perché la cartella temporanea si possa cancellare"
+        )]
+        permessi.set_readonly(false);
+        let _ = std::fs::set_permissions(&percorso, permessi);
     }
 
     #[test]

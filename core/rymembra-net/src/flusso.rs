@@ -68,7 +68,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 
 use crate::http::{Cancello, Pezzo, Rete, Rimandi};
 
@@ -365,6 +365,17 @@ impl Anticipo {
     fn caduto(&self) -> bool {
         matches!(self.esito, Some(Err(_)))
     }
+
+    /// È caduta perché qualcuno ha chiesto di smettere, non per la rete.
+    ///
+    /// Vedi [`FlussoHttp::forse_anticipa`]: un annullo non è un guasto, e non
+    /// deve far crescere la pausa prima della prossima finestra anticipata.
+    fn annullato(&self) -> bool {
+        matches!(
+            &self.esito,
+            Some(Err(err)) if err.code().kind() == ErrorCodeKind::InternalAborted
+        )
+    }
 }
 
 impl Drop for Anticipo {
@@ -471,9 +482,26 @@ impl FlussoHttp {
             if !anticipo.caduto() {
                 return;
             }
+            // Lasciata a metà da un annullo: si butta e basta. Non è la rete
+            // che ha detto di no, e contarla fra i guasti farebbe aspettare la
+            // finestra dopo per un salto che qualcuno ha appena chiesto.
+            let annullato = anticipo.annullato();
             self.anticipo = None;
-            self.anticipi_caduti = self.anticipi_caduti.saturating_add(1);
-            self.anticipo_non_prima = Some(Instant::now() + self.pausa_dopo_un_guasto());
+            if !annullato {
+                self.anticipi_caduti = self.anticipi_caduti.saturating_add(1);
+                self.anticipo_non_prima = Some(Instant::now() + self.pausa_dopo_un_guasto());
+            }
+        }
+        // Con un annullo in corso non se ne chiede un'altra: nascerebbe già
+        // morta, e a ogni lettura dentro la finestra ne nascerebbe una nuova —
+        // un filo al colpo, buttato via un istante dopo. La chiederà la prima
+        // lettura dopo che il comando l'avrà riabbassato.
+        if self
+            .annullo
+            .as_ref()
+            .is_some_and(|annullo| annullo.load(Ordering::Acquire))
+        {
+            return;
         }
         if self
             .anticipo_non_prima
@@ -500,10 +528,23 @@ impl FlussoHttp {
         let lascia = Arc::new(AtomicBool::new(false));
         let bandiera = Arc::clone(&lascia);
         let sorgente = Arc::clone(&self.sorgente);
+        // Anche l'annullo di chi suona, non soltanto la bandiera di questa
+        // finestra. La finestra anticipata è quella che [`Self::riempi`]
+        // **aspetta** con un `join` quando il cursore ci arriva prima di lei, e
+        // finché il filo guardava soltanto la sua bandiera quell'attesa non la
+        // interrompeva nessuno: il salto, il brano dopo o lo stop premuti
+        // mentre un nodo lento consegnava a goccia restavano in fila dietro
+        // una richiesta che poteva durare fino alla scadenza della rete.
+        let annullo = self.annullo.clone();
         let filo = std::thread::Builder::new()
             .name("flusso-anticipo".to_owned())
             .spawn(move || {
-                sorgente.pezzo_finche(fine, quanti, &|| !bandiera.load(Ordering::Relaxed))
+                sorgente.pezzo_finche(fine, quanti, &|| {
+                    !bandiera.load(Ordering::Relaxed)
+                        && !annullo
+                            .as_ref()
+                            .is_some_and(|annullo| annullo.load(Ordering::Acquire))
+                })
             })
             .ok();
         if filo.is_some() {
@@ -1278,6 +1319,78 @@ mod prove {
         );
         filo.join().expect("il filo che alza la bandiera");
         assert_eq!(sorgente.lasciate.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn l_annullo_ferma_anche_l_attesa_della_finestra_anticipata() {
+        // Il cursore arriva in fondo alla finestra prima che la successiva,
+        // chiesta in anticipo, sia arrivata: `riempi` la aspetta. Il filo
+        // dell'anticipo guardava soltanto la sua bandiera, e l'annullo di chi
+        // suona — il salto, il brano dopo, lo stop — non lo raggiungeva: la
+        // lettura restava appesa per tutta la lentezza della linea.
+        let sorgente = lenta();
+        let mut flusso = FlussoHttp::da(Box::new(ALenta(Arc::clone(&sorgente)))).expect("si apre");
+        let annullo = Arc::new(AtomicBool::new(false));
+        flusso.ascolta_annullo(Arc::clone(&annullo));
+        let mut finestra = vec![0_u8; usize::try_from(FINESTRA).unwrap_or(0)];
+        flusso
+            .read_exact(&mut finestra)
+            .expect("la prima finestra è già in mano");
+        assert!(
+            flusso.anticipo.is_some(),
+            "la finestra dopo doveva essere già stata chiesta"
+        );
+
+        let alza = Arc::clone(&annullo);
+        let filo = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            alza.store(true, Ordering::Release);
+        });
+        let partenza = Instant::now();
+        let mut buf = [0_u8; 16];
+        assert!(
+            flusso.read(&mut buf).is_err(),
+            "una lettura annullata non consegna niente"
+        );
+        assert!(
+            partenza.elapsed() < Duration::from_secs(2),
+            "ha aspettato la finestra anticipata per {:?}",
+            partenza.elapsed()
+        );
+        filo.join().expect("il filo che alza la bandiera");
+        assert!(sorgente.lasciate.load(Ordering::Relaxed) >= 1);
+    }
+
+    #[test]
+    fn un_anticipo_annullato_non_conta_come_un_guasto() {
+        // Un annullo non è la rete che dice di no: la finestra anticipata
+        // lasciata a metà da un salto non deve far aspettare la prossima.
+        let sorgente = lenta();
+        let mut flusso = FlussoHttp::da(Box::new(ALenta(Arc::clone(&sorgente)))).expect("si apre");
+        let annullo = Arc::new(AtomicBool::new(false));
+        flusso.ascolta_annullo(Arc::clone(&annullo));
+        let mut finestra = vec![0_u8; usize::try_from(FINESTRA.div_ceil(2)).unwrap_or(0)];
+        flusso.read_exact(&mut finestra).expect("mezza finestra");
+        assert!(flusso.anticipo.is_some());
+        annullo.store(true, Ordering::Release);
+        let partenza = Instant::now();
+        while flusso.anticipo.as_ref().is_some_and(|a| a.filo.is_some())
+            && partenza.elapsed() < Duration::from_secs(2)
+        {
+            flusso.forse_anticipa();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            flusso.anticipo.is_none(),
+            "la finestra anticipata non ha sentito l'annullo"
+        );
+        annullo.store(false, Ordering::Release);
+        flusso.forse_anticipa();
+        assert_eq!(
+            flusso.anticipi_caduti, 0,
+            "l'annullo contato come un guasto"
+        );
+        assert!(flusso.anticipo_non_prima.is_none());
     }
 
     /// Una sorgente in cui la finestra anticipata arriva con un po' di ritardo,

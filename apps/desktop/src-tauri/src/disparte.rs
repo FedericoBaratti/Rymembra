@@ -30,25 +30,20 @@
 //! perché senza la prima aspetterebbe per sempre un file solo, e senza la
 //! seconda aspetterebbe occupando un posto che serve a tutti gli altri comandi.
 //!
-//! # Quanti comandi passano di qui
+//! # Quali comandi passano di qui
 //!
-//! Dieci. Tre aprono file di cui non si sa niente, in cartelle che l'utente ha
-//! scelto e che possono stare su una share: `comandi::scansiona`,
-//! `comandi::cartelle_candidate`, `testi::testo_brano`. Tre sono il
-//! pannello «Cartelle» — `cartelle::cartelle_figlie`, `cartelle::cartelle_brani`,
-//! `cartelle::cartelle_radici_vive` — e ci passano per due ragioni diverse: la
-//! sonda delle radici tocca il disco esattamente come la scansione, mentre le
-//! altre due leggono soltanto il database, e stanno qui perché la costruzione
-//! dell'albero vale una trentina di millisecondi che sul filo principale sono
-//! due fotogrammi persi.
+//! Ogni comando che aspetta qualcosa che non è la CPU: un file in una cartella
+//! che l'utente ha scelto e che può stare su una share — la scansione, il
+//! pannello «Cartelle», il profilo, il testo accanto al brano — e ogni comando
+//! che parla con la rete: le importazioni da un link o da un archivio, la
+//! ricerca nei cataloghi, i testi, la conversazione con l'IA, la cronologia
+//! mandata a ListenBrainz. Un elenco scritto qui invecchierebbe al primo
+//! comando spostato, ed era successo: la fonte è `grep 'in_disparte("'`.
 //!
-//! Gli ultimi quattro sono il profilo — `profilo::profilo_esporta`,
-//! `profilo::profilo_piano`, `profilo::profilo_importa`,
-//! `profilo::profilo_annulla` — e sono il caso peggiore di tutti: aprono un
-//! file che l'utente ha scelto, e le due destinazioni naturali di un profilo
-//! sono una chiavetta e una cartella di rete. Un archivio da trecento megabyte
-//! scritto su una share che smette di rispondere è la scansione lenta,
-//! moltiplicata per la quantità di byte.
+//! Il caso peggiore è il profilo: apre un file che l'utente ha scelto, e le
+//! due destinazioni naturali di un profilo sono una chiavetta e una cartella di
+//! rete. Un archivio da trecento megabyte scritto su una share che smette di
+//! rispondere è la scansione lenta, moltiplicata per la quantità di byte.
 //!
 //! # E le letture lunghe della libreria
 //!
@@ -62,17 +57,15 @@
 //! scorre a scatti mentre la pagina successiva arriva. La regola che ne esce è
 //! semplice: un comando che legge più di una riga per chiave non è sincrono.
 //!
-//! Gli altri settantanove `#[tauri::command(async)]` restano dove sono:
-//! spostarli tutti insieme sarebbe un gesto che nessuna prova copre, e la
-//! maggior parte fa una query di microsecondi. Il prossimo candidato è
-//! `arricchimento::arricchimento_riporta_nei_file`, che riapre in scrittura un
-//! file per ogni riga di `enrich_undo` **dentro** il lucchetto della libreria:
-//! stesso difetto, dominio diverso. Non lo si sposta perché il [`Turno`] ce
-//! l'ha già ed è una via d'uscita a termine, che il CHANGELOG dà per rimossa
-//! in una release futura: rifargli l'impianto costerebbe più di quanto valga
-//! qualcosa che deve sparire.
-//!
-//! [`Turno`]: crate::stato::Turno
+//! Gli altri `#[tauri::command(async)]` restano dove sono: spostarli tutti
+//! insieme sarebbe un gesto che nessuna prova copre, e la maggior parte fa una
+//! query di microsecondi. Fra quelli che toccano ancora il disco o la rete
+//! restano `arricchimento::arricchimento_annulla`,
+//! `arricchimento::arricchimento_riporta_nei_file`, `testi::testo_candidati`,
+//! `playlist::playlist_file_piano` e `playlist::playlist_esporta`.
+//! `arricchimento_riporta_nei_file` non tiene più il lucchetto della libreria
+//! mentre riscrive i file — lo lascia fra una fase e l'altra — ma il suo corpo
+//! gira ancora su un worker del runtime.
 
 use rymembra_domain::errors::{AppError, ErrorCode};
 
