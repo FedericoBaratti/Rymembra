@@ -406,6 +406,7 @@ pub(super) fn sorgente_da_flusso(
             reason = "un picco lineare fra 0 e qualche unità: un f32 basta e avanza"
         )]
         picco: scheda.picco.map(|picco| picco as f32),
+        segmento: None,
     }
 }
 

@@ -269,6 +269,7 @@ mod prove {
             durata_ms: 0,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         }
     }
 
@@ -319,6 +320,48 @@ mod prove {
             "{} contro {}",
             a_44.lufs,
             a_48.lufs
+        );
+    }
+
+    #[test]
+    fn una_traccia_d_immagine_si_misura_da_sola() {
+        // Un'immagine fatta di silenzio e poi di un seno forte: la traccia che
+        // sta tutta nel silenzio deve risultare muta, e quella del seno deve
+        // durare quanto il suo pezzo e non quanto il disco. Se la misura
+        // guardasse il file intero, la prima avrebbe un'intensità e la seconda
+        // durerebbe sei secondi.
+        let mut silenzio = seno(48_000, 0.0, 2.0);
+        let mut forte = seno(48_000, 0.5, 4.0);
+        // Il WAV del silenzio, con i quattro secondi del seno in coda.
+        let mut byte = Vec::new();
+        std::io::Read::read_to_end(&mut silenzio.media, &mut byte).expect("si legge");
+        let mut seno_forte = Vec::new();
+        std::io::Read::read_to_end(&mut forte.media, &mut seno_forte).expect("si legge");
+        let dati = seno_forte.get(44..).expect("c'è l'intestazione");
+        byte.extend_from_slice(dati);
+        let lunghezza = u32::try_from(byte.len() - 44).expect("sta");
+        byte[40..44].copy_from_slice(&lunghezza.to_le_bytes());
+        byte[4..8].copy_from_slice(&(lunghezza + 36).to_le_bytes());
+
+        let pezzo = |inizio_cd: u32, fine_cd: Option<u32>| Sorgente {
+            media: Box::new(Byte(std::io::Cursor::new(byte.clone()))),
+            segmento: Some(crate::Segmento {
+                immagine: "disco.wav".to_owned(),
+                inizio_cd,
+                fine_cd,
+            }),
+            ..seno(48_000, 0.0, 0.0)
+        };
+        assert_eq!(
+            misura(pezzo(0, Some(150))).expect("si legge"),
+            Esito::Muto,
+            "la prima traccia è silenzio"
+        );
+        let seconda = misurata(pezzo(150, None));
+        assert!(
+            (3_990..=4_010).contains(&seconda.durata_ms),
+            "durata {}",
+            seconda.durata_ms
         );
     }
 

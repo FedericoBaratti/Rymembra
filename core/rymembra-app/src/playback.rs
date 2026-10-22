@@ -18,7 +18,7 @@ use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_domain::esterno::Fonte;
 use rymembra_domain::listen::Listen;
 use rymembra_domain::queue::{QueueSnapshot, RepeatMode};
-use rymembra_play::{BANDE, LIMITE_DB, Sorgente};
+use rymembra_play::{BANDE, LIMITE_DB, Segmento, Sorgente};
 
 use crate::files::MusicFiles;
 use crate::library::db_error;
@@ -103,9 +103,11 @@ pub const CHIAVE_FORMATO_VISIBILE: &str = "player.fileFormat.visible";
 pub struct SchedaSorgente {
     /// Quale brano.
     pub track_id: i64,
-    /// Da dove escono i byte: un file sul disco, o un catalogo.
+    /// Da dove escono i byte: un file sul disco, un pezzo d'immagine, o un
+    /// catalogo.
     pub collocazione: Collocazione,
-    /// La durata secondo il database, per quando il file non la dichiara.
+    /// La durata secondo il database, per quando il file non la dichiara. Per
+    /// un brano d'immagine è quella del brano, non del disco.
     pub durata_ms: i64,
     /// Il guadagno che porta il brano al riferimento di −18 LUFS, in dB.
     ///
@@ -120,7 +122,8 @@ pub struct SchedaSorgente {
     pub picco: Option<f64>,
 }
 
-/// Da dove escono i byte di un brano. Due possibilità, e mai una terza.
+/// Da dove escono i byte di un brano: un file intero, un pezzo di un file, o
+/// un catalogo.
 ///
 /// # Perché è un enum e non un percorso con qualche colonna accanto
 ///
@@ -136,6 +139,22 @@ pub struct SchedaSorgente {
 /// È la stessa cosa che dice il `CHECK` della migrazione 26, e sta in due posti
 /// di proposito: quel che il database rifiuta di contenere è anche quel che il
 /// Rust non sa rappresentare.
+///
+/// # Perché le possibilità erano due e adesso sono tre
+///
+/// Per la stessa ragione per cui l'enum esiste. Un brano d'immagine CD — una
+/// traccia di un FLAC o di un APE intero, descritta da un `.cue` — ha un
+/// percorso in tabella, `…\Album.cue|03`, ma quel percorso **non è un file**:
+/// non si apre, e accanto a lui non si posa un `.lrc` né si riscrivono tag. Il
+/// file vero è l'immagine, che è di tutti i brani del disco insieme. Lasciarlo
+/// dentro [`Collocazione::File`] avrebbe voluto dire che ogni funzione che apre
+/// un percorso apriva quello sbagliato, in silenzio; una terza variante
+/// obbliga di nuovo ogni chiamante a decidere — e le due domande si separano:
+/// [`Collocazione::percorso`] per chi lavora **accanto** al file del brano,
+/// [`Collocazione::file_audio`] per chi ne **apre** l'audio.
+///
+/// Il `CHECK` della 26 resta vero: una riga d'immagine ha il suo `path`, ed è
+/// un brano sul disco come gli altri.
 ///
 /// # Da non confondere con [`crate::provenienza`]
 ///
@@ -158,33 +177,100 @@ pub enum Collocazione {
         /// percorso senza nodo davanti, e il perché sta nella migrazione 26.
         url: String,
     },
+    /// Un brano d'immagine CD: il file vero e il pezzo.
+    Segmento {
+        /// Il percorso dell'immagine, così com'è nella colonna `immagine` —
+        /// mai normalizzato, perché serve ad aprirla, e **identico** per tutti
+        /// i brani dello stesso disco: è anche quel che il motore confronta
+        /// per decidere se due brani sono contigui.
+        immagine: String,
+        /// Dove comincia il brano, in fotogrammi CD (1/75 s) dall'inizio
+        /// dell'immagine.
+        inizio_cd: u32,
+        /// Dove finisce, escluso. `None` per l'ultimo brano, che va fino in
+        /// fondo all'immagine.
+        fine_cd: Option<u32>,
+    },
 }
 
 impl Collocazione {
-    /// Il percorso sul disco, se di un file si tratta.
+    /// Il percorso sul disco, se il brano è un file **suo**.
     ///
     /// L'unico modo di arrivare a quella stringa, e la forma è voluta: chi la
     /// chiama ha in mano un `Option` e deve deciderne il `None`.
+    ///
+    /// `None` anche per un brano d'immagine, ed è la risposta giusta per chi
+    /// chiede questo: chi lavora **accanto** al file — un `.lrc` da posare, dei
+    /// tag da riscrivere, un file da cancellare — un brano d'immagine lo tratta
+    /// come un brano senza file. Il suo file è di tutto il disco, e un testo o
+    /// un titolo scritti lì sarebbero di tutti i brani insieme. Chi deve
+    /// **aprire** l'audio chiede [`Self::file_audio`].
     #[must_use]
     pub fn percorso(&self) -> Option<&str> {
         match self {
             Self::File(percorso) => Some(percorso),
+            Self::Catalogo { .. } | Self::Segmento { .. } => None,
+        }
+    }
+
+    /// Il file da cui escono i byte, se ce n'è uno sul disco: il brano stesso,
+    /// o l'immagine di cui è un pezzo.
+    ///
+    /// Solo per chi **apre** l'audio — la riproduzione, le misure dell'analisi
+    /// — che di un brano d'immagine legge il pezzo suo e nient'altro. Per tutto
+    /// il resto vale [`Self::percorso`].
+    #[must_use]
+    pub fn file_audio(&self) -> Option<&str> {
+        match self {
+            Self::File(percorso) => Some(percorso),
+            Self::Segmento { immagine, .. } => Some(immagine),
             Self::Catalogo { .. } => None,
         }
     }
 
-    /// Da quale catalogo arriva, se non è un file.
+    /// Da quale catalogo arriva, se non è sul disco.
     #[must_use]
     pub const fn fonte(&self) -> Option<Fonte> {
         match self {
-            Self::File(_) => None,
+            Self::File(_) | Self::Segmento { .. } => None,
             Self::Catalogo { fonte, .. } => Some(*fonte),
         }
     }
 }
 
+/// La collocazione di una riga che sta sul disco: il file intero, o il pezzo
+/// d'immagine se la riga ne ha una.
+///
+/// Le tre colonne dell'immagine come stanno in tabella. `None` quando la riga
+/// dice di essere un brano d'immagine ma non dice dove il brano comincia, o
+/// dice dei confini che non stanno in un CD — un inizio negativo, una fine che
+/// non viene dopo l'inizio. Non succede con le righe che scrive la scansione,
+/// e chi riceve `None` lo tratta come una riga che non sa leggere: non si
+/// suona, né si misura, un pezzo a caso del disco.
+pub(crate) fn collocazione_su_disco(
+    percorso: &str,
+    immagine: Option<String>,
+    inizio_cd: Option<i64>,
+    fine_cd: Option<i64>,
+) -> Option<Collocazione> {
+    let Some(immagine) = immagine else {
+        return Some(Collocazione::File(percorso.to_owned()));
+    };
+    let inizio_cd = u32::try_from(inizio_cd?).ok()?;
+    let fine_cd = match fine_cd {
+        None => None,
+        Some(fine) => Some(u32::try_from(fine).ok().filter(|fine| *fine > inizio_cd)?),
+    };
+    Some(Collocazione::Segmento {
+        immagine,
+        inizio_cd,
+        fine_cd,
+    })
+}
+
 /// La riga di [`scheda_sorgente`]: percorso, servizio, indirizzo, durata,
-/// guadagno del tag, intensità e picco misurati.
+/// guadagno del tag, intensità e picco misurati, e le tre colonne
+/// dell'immagine — il file, l'inizio e la fine del brano.
 type RigaDaSuonare = (
     Option<String>,
     Option<String>,
@@ -193,19 +279,26 @@ type RigaDaSuonare = (
     Option<f64>,
     Option<f64>,
     Option<f64>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
 );
 
 /// La sola query: cosa dice il database di questo brano.
+///
+/// Per un brano d'immagine la durata è quella **del brano**, non del disco: è
+/// quel che decide la dissolvenza, e la colonna la porta già così.
 ///
 /// # Errori
 ///
 /// `playback.sourceUnavailable` se la riga non c'è più, `db.queryFailed` se il
 /// database non risponde.
 pub fn scheda_sorgente(connection: &Connection, track_id: i64) -> Result<SchedaSorgente, AppError> {
-    let (path, servizio, fonte_url, durata_ms, dal_tag, lufs, picco): RigaDaSuonare = connection
+    let riga: RigaDaSuonare = connection
         .query_row(
             "SELECT t.path, t.source_service, t.fonte_url, t.duration_ms,
-                    t.replaygain_track_db, m.lufs, m.picco
+                    t.replaygain_track_db, m.lufs, m.picco,
+                    t.immagine, t.inizio_cd, t.fine_cd
                FROM tracks t
                LEFT JOIN track_intensita m
                       ON m.track_id = t.id AND m.versione = ?2
@@ -220,6 +313,9 @@ pub fn scheda_sorgente(connection: &Connection, track_id: i64) -> Result<SchedaS
                     row.get(4)?,
                     row.get(5)?,
                     row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
                 ))
             },
         )
@@ -235,6 +331,8 @@ pub fn scheda_sorgente(connection: &Connection, track_id: i64) -> Result<SchedaS
             }
             altro => db_error("lettura del brano da suonare", &altro),
         })?;
+    let (path, servizio, fonte_url, durata_ms, dal_tag, lufs, picco, immagine, inizio_cd, fine_cd) =
+        riga;
 
     // Il `CHECK` della migrazione 26 garantisce che una delle due ci sia, e che
     // non ci siano tutte e due. Qui si legge comunque come se non lo
@@ -243,8 +341,25 @@ pub fn scheda_sorgente(connection: &Connection, track_id: i64) -> Result<SchedaS
     // entra nel programma. La risposta a «non so cosa sia questa riga» è
     // saltare il brano, non suonare qualcosa a caso.
     let collocazione = match (path, servizio.zip(fonte_url)) {
-        (Some(percorso), None) => Collocazione::File(percorso),
-        (None, Some((servizio, url))) => Collocazione::Catalogo {
+        (Some(percorso), None) => {
+            // Lo stesso vale per un brano d'immagine che non dice dove
+            // comincia: suonarlo dall'inizio del file vorrebbe dire suonare
+            // il primo brano del disco al posto del suo.
+            let Some(collocazione) = collocazione_su_disco(&percorso, immagine, inizio_cd, fine_cd)
+            else {
+                return Err(AppError::new(ErrorCode::PlaybackSourceUnavailable {
+                    track_id: Some(track_id),
+                    path: Some(percorso),
+                })
+                .with_cause(
+                    "la riga d'immagine non dice dove il brano comincia e finisce".to_owned(),
+                ));
+            };
+            collocazione
+        }
+        // Un catalogo con un'immagine accanto è una riga che dice due cose:
+        // cade nell'ultimo ramo, come quella che dice file e catalogo insieme.
+        (None, Some((servizio, url))) if immagine.is_none() => Collocazione::Catalogo {
             fonte: Fonte::da_testo(&servizio),
             url,
         },
@@ -432,7 +547,9 @@ pub fn sorgente_da_scheda(
     files: &dyn MusicFiles,
     scheda: &SchedaSorgente,
 ) -> Result<Sorgente, AppError> {
-    let Some(percorso) = scheda.collocazione.percorso() else {
+    // `file_audio` e non `percorso`: di un brano d'immagine si apre l'immagine,
+    // e il pezzo da suonare viaggia accanto ai byte, nel segmento.
+    let Some(percorso) = scheda.collocazione.file_audio() else {
         return Err(AppError::new(ErrorCode::PlaybackSourceUnavailable {
             track_id: Some(scheda.track_id),
             // Nessun percorso, e non per reticenza: la finestra mostra quel
@@ -459,9 +576,27 @@ pub fn sorgente_da_scheda(
         .with_cause(err.cause().unwrap_or(err.code().kind().code()).to_owned())
     })?;
 
+    // Il pezzo, per un brano d'immagine. La stringa dell'immagine passa così
+    // com'è nella colonna: è uguale per tutti i brani dello stesso disco, ed è
+    // su quell'uguaglianza che il motore riconosce due brani contigui.
+    let segmento = match &scheda.collocazione {
+        Collocazione::Segmento {
+            immagine,
+            inizio_cd,
+            fine_cd,
+        } => Some(Segmento {
+            immagine: immagine.clone(),
+            inizio_cd: *inizio_cd,
+            fine_cd: *fine_cd,
+        }),
+        Collocazione::File(_) | Collocazione::Catalogo { .. } => None,
+    };
+
     Ok(Sorgente {
         track_id: scheda.track_id,
         media: Box::new(Adattatore::nuovo(media)),
+        // Dall'immagine, per un brano d'immagine: `…\Album.cue|03` non ha
+        // un'estensione che dica come sono fatti i byte.
         estensione: estensione_di(percorso),
         durata_ms: u64::try_from(scheda.durata_ms).unwrap_or(0),
         // `f64` nel database perché SQLite non ha i float a 32 bit; il motore
@@ -477,6 +612,7 @@ pub fn sorgente_da_scheda(
             reason = "un picco lineare: la precisione di un f32 è più che abbondante"
         )]
         picco: scheda.picco.map(|p| p as f32),
+        segmento,
     })
 }
 
@@ -2243,5 +2379,162 @@ mod prove {
         });
         let err = sorgente(&c, &files, 1).expect_err("deve fallire");
         assert_eq!(err.code().kind(), ErrorCodeKind::PlaybackSourceUnavailable);
+    }
+
+    // ── i brani d'immagine CD ───────────────────────────────────────────────
+
+    /// L'immagine di prova: lo stesso file per tutti i brani del disco.
+    const IMMAGINE: &str = "C:/m/Disco/Album.flac";
+
+    /// Il brano `numero` del disco, scritto a mano come lo scrive la scansione:
+    /// percorso virtuale, immagine, confini in fotogrammi CD, durata del brano.
+    fn brano_d_immagine(
+        connection: &Connection,
+        id: i64,
+        numero: u8,
+        inizio_cd: Option<i64>,
+        fine_cd: Option<i64>,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO tracks
+                     (id, path, track_key, title, artist, album, duration_ms,
+                      file_size, date_added, date_modified,
+                      immagine, inizio_cd, fine_cd)
+                 VALUES (?1, ?2, ?3, 'T', 'A', 'Al', 200000, 300000000, 0, 0,
+                         ?4, ?5, ?6)",
+                rusqlite::params![
+                    id,
+                    rymembra_domain::cue::percorso_del_brano("C:/m/Disco/Album.cue", numero),
+                    format!("k{id}"),
+                    IMMAGINE,
+                    inizio_cd,
+                    fine_cd
+                ],
+            )
+            .expect("brano d'immagine inserito");
+    }
+
+    /// Un `MusicFiles` che apre un flusso vuoto e si ricorda che cosa ha aperto.
+    #[derive(Default)]
+    struct FileAperti(std::sync::Mutex<Vec<String>>);
+
+    impl MusicFiles for FileAperti {
+        fn walk(&self, _root: &str) -> Result<crate::files::Camminata, AppError> {
+            Ok(crate::files::Camminata {
+                file: Vec::new(),
+                completa: true,
+            })
+        }
+
+        fn open(
+            &self,
+            path: &str,
+        ) -> Result<Box<dyn crate::files::ReadSeek + Send + Sync>, AppError> {
+            self.0.lock().expect("elenco").push(path.to_owned());
+            Ok(Box::new(std::io::Cursor::new(Vec::<u8>::new())))
+        }
+    }
+
+    #[test]
+    fn un_brano_d_immagine_apre_l_immagine_e_porta_il_suo_pezzo() {
+        let c = db();
+        brano_d_immagine(&c, 1, 2, Some(15_000), Some(30_000));
+        let scheda = scheda_sorgente(&c, 1).expect("scheda");
+        assert_eq!(
+            scheda.collocazione,
+            Collocazione::Segmento {
+                immagine: IMMAGINE.to_owned(),
+                inizio_cd: 15_000,
+                fine_cd: Some(30_000),
+            }
+        );
+        // Accanto al brano non c'è un file suo; l'audio sta nell'immagine.
+        assert_eq!(scheda.collocazione.percorso(), None);
+        assert_eq!(scheda.collocazione.file_audio(), Some(IMMAGINE));
+        assert_eq!(scheda.collocazione.fonte(), None);
+
+        let files = FileAperti::default();
+        let sorgente = sorgente_da_scheda(&files, &scheda).expect("sorgente");
+        assert_eq!(
+            *files.0.lock().expect("elenco"),
+            vec![IMMAGINE.to_owned()],
+            "si apre l'immagine, mai il percorso virtuale"
+        );
+        assert_eq!(
+            sorgente.segmento,
+            Some(Segmento {
+                immagine: IMMAGINE.to_owned(),
+                inizio_cd: 15_000,
+                fine_cd: Some(30_000),
+            })
+        );
+        assert_eq!(sorgente.estensione.as_deref(), Some("flac"));
+        assert_eq!(sorgente.durata_ms, 200_000, "la durata del brano");
+    }
+
+    #[test]
+    fn l_ultimo_brano_d_immagine_va_fino_in_fondo() {
+        let c = db();
+        brano_d_immagine(&c, 1, 9, Some(150_000), None);
+        let files = FileAperti::default();
+        let sorgente = sorgente(&c, &files, 1).expect("sorgente");
+        assert_eq!(
+            sorgente.segmento.map(|s| (s.inizio_cd, s.fine_cd)),
+            Some((150_000, None))
+        );
+    }
+
+    #[test]
+    fn un_file_intero_non_porta_un_segmento() {
+        let c = db();
+        brano(&c, 1, 1000);
+        let files = FileAperti::default();
+        let sorgente = sorgente(&c, &files, 1).expect("sorgente");
+        assert_eq!(sorgente.segmento, None);
+        assert_eq!(
+            *files.0.lock().expect("elenco"),
+            vec!["C:/m/1.mp3".to_owned()]
+        );
+    }
+
+    #[test]
+    fn un_brano_d_immagine_senza_confini_non_si_suona() {
+        // Senza inizio si suonerebbe il disco dall'inizio, cioè un altro brano;
+        // con una fine prima dell'inizio, niente di sensato.
+        let c = db();
+        brano_d_immagine(&c, 1, 1, None, Some(30_000));
+        brano_d_immagine(&c, 2, 2, Some(30_000), Some(30_000));
+        for id in [1, 2] {
+            let err = scheda_sorgente(&c, id).expect_err("riga d'immagine rotta");
+            assert_eq!(err.code().kind(), ErrorCodeKind::PlaybackSourceUnavailable);
+        }
+    }
+
+    #[test]
+    fn i_confini_d_immagine_si_leggono_solo_se_stanno_in_un_cd() {
+        let immagine = || Some(IMMAGINE.to_owned());
+        assert_eq!(
+            collocazione_su_disco("C:/m/a.flac", None, Some(5), Some(1)),
+            Some(Collocazione::File("C:/m/a.flac".to_owned())),
+            "senza immagine le colonne dei confini non contano"
+        );
+        assert_eq!(collocazione_su_disco("x", immagine(), Some(-1), None), None);
+        assert_eq!(
+            collocazione_su_disco("x", immagine(), Some(10), Some(10)),
+            None
+        );
+        assert_eq!(
+            collocazione_su_disco("x", immagine(), Some(0), Some(i64::from(u32::MAX) + 1)),
+            None
+        );
+        assert_eq!(
+            collocazione_su_disco("x", immagine(), Some(0), Some(75)),
+            Some(Collocazione::Segmento {
+                immagine: IMMAGINE.to_owned(),
+                inizio_cd: 0,
+                fine_cd: Some(75),
+            })
+        );
     }
 }

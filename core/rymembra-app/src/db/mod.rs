@@ -52,7 +52,11 @@ use rusqlite::{Connection, ErrorCode as CodiceSqlite};
 use rymembra_domain::errors::{AppError, ErrorCode};
 
 /// Quanto aspettare se un'altra connessione sta scrivendo, prima di arrendersi.
-const BUSY_TIMEOUT_MS: u32 = 5_000;
+///
+/// Pubblica perché c'è chi la accorcia per la durata di un'azione — il filo
+/// della finestra, che non può aspettare cinque secondi — e poi deve rimetterla
+/// esattamente com'era.
+pub const BUSY_TIMEOUT_MS: u32 = 5_000;
 
 /// Traduce un errore di SQLite nel catalogo, tenendo il testo originale come causa.
 ///
@@ -814,6 +818,12 @@ fn migrate(connection: &Connection) -> Result<usize, AppError> {
         match outcome {
             Ok(()) => {
                 if let Err(err) = connection.execute_batch("COMMIT") {
+                    // Un `COMMIT` che fallisce — `SQLITE_BUSY`, un disco che
+                    // non scrive — lascia la transazione aperta, e dentro una
+                    // transazione `PRAGMA foreign_keys` non fa niente: senza
+                    // questo `ROLLBACK` anche la riga dopo sarebbe un gesto a
+                    // vuoto. Come sotto, l'errore da dire resta il primo.
+                    let _ = connection.execute_batch("ROLLBACK");
                     riaccendi(connection);
                     return Err(fallita(&err));
                 }
@@ -1859,6 +1869,122 @@ mod tests {
         assert_eq!(dopo, 0, "cancellare un brano lo toglie dall'indice");
     }
 
+    /// Quante righe ha il deposito dei segmenti dell'indice di ricerca.
+    ///
+    /// Ogni transazione che tocca l'indice ci lascia un segmento nuovo, anche
+    /// quando rimette gli stessi titoli di prima: è il segno, visibile da fuori,
+    /// che un trigger ha riscritto una riga nell'indice.
+    fn segmenti_di_ricerca(connection: &Connection) -> i64 {
+        quante(connection, "tracks_fts_data")
+    }
+
+    /// Un brano solo, con i campi che la tabella pretende.
+    fn un_brano(connection: &Connection) {
+        connection
+            .execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified)
+                 VALUES (1, 'C:/M/a.mp3', 'k', 'Vecchio', 'X', 'Y', 5000000, 1, 1)",
+                [],
+            )
+            .expect("inserimento");
+    }
+
+    /// Quanti brani trova una ricerca.
+    fn trovati(connection: &Connection, parola: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM tracks_fts WHERE tracks_fts MATCH ?1",
+                [parola],
+                |r| r.get(0),
+            )
+            .expect("ricerca")
+    }
+
+    #[test]
+    fn l_indice_di_ricerca_si_riscrive_solo_quando_cambia_il_testo() {
+        // Prima della 33 un ascolto contato riscriveva la riga nell'indice: è
+        // la prova che la sonda vede quel che deve vedere. Senza questa metà,
+        // una sonda che non si muove mai passerebbe in tutti e due i casi.
+        let prima = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&prima, 32);
+        un_brano(&prima);
+        let segmenti = segmenti_di_ricerca(&prima);
+        prima
+            .execute(
+                "UPDATE tracks SET play_count = play_count + 1 WHERE id = 1",
+                [],
+            )
+            .expect("un ascolto");
+        assert!(
+            segmenti_di_ricerca(&prima) > segmenti,
+            "alla 32 un ascolto passa ancora dall'indice"
+        );
+
+        // Dalla 33: ascolti, la data rimessa a -1 da «Rileggi tutti i tag» e la
+        // chiave d'album riscritta dagli aggregati non toccano l'indice.
+        let db = open_in_memory().expect("apertura");
+        let c = &db.connection;
+        un_brano(c);
+        let segmenti = segmenti_di_ricerca(c);
+        c.execute_batch(
+            "UPDATE tracks SET play_count = play_count + 1 WHERE id = 1;
+             UPDATE tracks SET date_modified = -1 WHERE id = 1;
+             UPDATE tracks SET album_key = 'y m' WHERE id = 1;",
+        )
+        .expect("scritture che non riguardano il testo");
+        assert_eq!(segmenti_di_ricerca(c), segmenti, "l'indice non si è mosso");
+        assert_eq!(trovati(c, "vecchio"), 1, "e trova ancora quel che trovava");
+
+        // Il titolo sì: la riga si riscrive, il nuovo si trova e il vecchio no.
+        c.execute("UPDATE tracks SET title = 'Nuovo' WHERE id = 1", [])
+            .expect("rinomina");
+        assert!(segmenti_di_ricerca(c) > segmenti);
+        assert_eq!(trovati(c, "nuovo"), 1);
+        assert_eq!(trovati(c, "vecchio"), 0);
+    }
+
+    #[test]
+    fn i_brani_d_immagine_e_le_due_memorie_della_scansione_hanno_il_loro_posto() {
+        // Le tre colonne dei brani d'immagine, la memoria dei rifiuti e la cache
+        // dei fogli: quel che la scansione scrive dalla 34 in poi.
+        let db = open_in_memory().expect("apertura");
+        let c = &db.connection;
+        c.execute_batch(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
+                                 date_added, date_modified, immagine, inizio_cd, fine_cd)
+             VALUES (1, 'C:/M/Disco.cue|01', 'k1', 'Uno', 'X', 'Y', 5000000, 1, 1,
+                     'C:/M/Disco.flac', 0, 15000),
+                    (2, 'C:/M/Disco.cue|02', 'k2', 'Due', 'X', 'Y', 5000000, 1, 1,
+                     'C:/M/Disco.flac', 15000, NULL),
+                    (3, 'C:/M/a.mp3', 'k3', 'Tre', 'X', 'Y', 5000000, 1, 1, NULL, NULL, NULL);
+             INSERT INTO file_illeggibili (chiave, dimensione, modificato_ms, versione,
+                                           causa, visto_ms)
+             VALUES ('c:/m/b.wma', 10, 20, 1, 'formato', 30);
+             INSERT INTO fogli_cue (chiave, dimensione, modificato_ms, foglio)
+             VALUES ('c:/m/disco.cue', 100, 200, 'null');",
+        )
+        .expect("le tabelle nuove");
+        assert_eq!(
+            colonna(
+                c,
+                "SELECT path FROM tracks WHERE immagine IS NOT NULL ORDER BY path"
+            ),
+            ["C:/M/Disco.cue|01", "C:/M/Disco.cue|02"]
+        );
+        // L'indice parziale è quello che risponde a «i brani di questa immagine».
+        let piano: String = c
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT id FROM tracks WHERE immagine = 'C:/M/Disco.flac'",
+                [],
+                |r| r.get(3),
+            )
+            .expect("piano");
+        assert!(piano.contains("idx_tracks_immagine"), "{piano}");
+        assert_eq!(quante(c, "file_illeggibili"), 1);
+        assert_eq!(quante(c, "fogli_cue"), 1);
+    }
+
     /// La colonna di testo di una query, riga per riga, nell'ordine chiesto.
     fn colonna(connection: &Connection, sql: &str) -> Vec<String> {
         let mut query = connection
@@ -1934,8 +2060,14 @@ mod tests {
         libreria_con_le_sorgenti_di_prima(&connection);
 
         let applicate = migrate(&connection).expect("la 31 deve passare");
-        assert_eq!(applicate, 1, "dalla 30 manca la sola 31");
-        assert_eq!(user_version(&connection).expect("versione"), 31);
+        // Quante ne mancano dalla 30, e non «una»: il numero scritto a mano
+        // diventava rosso alla prima migrazione aggiunta dopo la 31.
+        assert_eq!(
+            u32::try_from(applicate).expect("il conto delle migrazioni sta in un u32"),
+            LATEST_VERSION - 30,
+            "dalla 30 mancano la 31 e tutte quelle dopo"
+        );
+        assert_eq!(user_version(&connection).expect("versione"), LATEST_VERSION);
 
         // I desiderati: il resto della stringa è intatto, e l'ordine è quello
         // di inserimento.
@@ -2106,7 +2238,10 @@ mod tests {
 
         let aperto = open(&percorso).expect("apertura con migrazione");
         assert_eq!(aperto.version_before, 30);
-        assert_eq!(aperto.applied, 1);
+        assert_eq!(
+            u32::try_from(aperto.applied).expect("il conto delle migrazioni sta in un u32"),
+            LATEST_VERSION - 30
+        );
         assert_eq!(
             colonna(
                 &aperto.connection,

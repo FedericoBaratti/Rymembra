@@ -321,19 +321,34 @@ pub fn arricchimento_annulla(
         // della libreria nel primo e nel terzo, e in mezzo la rilettura di un
         // file per ogni brano arricchito — che su un NAS addormentato sono
         // secondi l'uno, con scansione, backup e play fermi ad aspettare.
-        let da_fare = con_libreria(&stato, |libreria| {
+        //
+        // Nel primo tempo anche le cartelle dei `.cue` dei brani d'immagine:
+        // dopo, l'annotazione che le nomina non c'è più. Vedi
+        // [`cartelle_dei_fogli_arricchiti`].
+        let (da_fare, cartelle) = con_libreria(&stato, |libreria| {
             settings::write(&libreria.connection, CHIAVE_ATTIVO, "0")?;
-            enrich::da_dimenticare(&libreria.connection)
+            Ok((
+                enrich::da_dimenticare(&libreria.connection)?,
+                cartelle_dei_fogli_arricchiti(&libreria.connection)?,
+            ))
         })?;
         let riletti = enrich::rileggi_i_file(da_fare);
-        con_libreria(&stato, |libreria| {
+        let annullati = con_libreria(&stato, |libreria| {
             enrich::registra_dimenticati(&mut libreria.connection, riletti)
-        })
+        })?;
+        Ok::<_, AppError>((annullati, cartelle))
     })();
     // Fuori dalla chiusura, cioè con il turno ormai lasciato cadere: qui dentro
     // lo stato direbbe `inCorso: true` per un'operazione appena finita, e il
     // pulsante resterebbe disabilitato fino al comando successivo.
     scorda_errore(&arricchimento);
+    // I brani d'immagine dimenticati aspettano la scansione che li ricostruisce
+    // dal loro `.cue`, e sul disco non è cambiato niente che la faccia partire:
+    // la si chiede alla sorveglianza, per quelle cartelle.
+    let annullati = annullati.map(|(annullati, cartelle)| {
+        crate::sorveglia::riguarda(&app, cartelle);
+        annullati
+    });
 
     let esito = annullati.and_then(|annullati| {
         Ok(EsitoAnnullamentoIpc {
@@ -384,7 +399,24 @@ pub fn arricchimento_riporta_nei_file(
         let da_fare = con_libreria(&stato, |libreria| {
             enrich::da_riportare(&libreria.connection)
         })?;
-        let riscritti = enrich::riscrivi_nei_file(da_fare);
+        // Fra un file e l'altro si guarda se l'applicazione sta uscendo: sono
+        // minuti su una share, e chi chiude non deve aspettare né trovarsi il
+        // processo trattenuto. Quel che è già riscritto si registra lo stesso
+        // qui sotto; il resto resta in `enrich_undo` per la volta dopo. Un
+        // «Annulla» dalla finestra non c'è ancora: il predicato è il posto
+        // dove attaccarlo.
+        let riscritti = enrich::riscrivi_nei_file(da_fare, &crate::spegnimento::in_uscita);
+        // Il solo esito che chiede a qualcuno di guardare il disco: accanto a
+        // questi brani è rimasta la copia intera di com'erano. Il numero e il
+        // nome con cui riconoscerle, non i percorsi: sono i titoli della
+        // libreria di qualcuno, e il diario si spedisce.
+        if riscritti.riserve_rimaste() > 0 {
+            nota!(
+                "[arricchimento] {} brani non si sono potuti rimettere com'erano: accanto a ognuno è rimasta la sua copia intera, col nome del brano più «.{}-<numero>.tmp»",
+                riscritti.riserve_rimaste(),
+                std::process::id()
+            );
+        }
         con_libreria(&stato, |libreria| {
             enrich::registra_riportati(&mut libreria.connection, riscritti)
         })
@@ -439,6 +471,16 @@ pub fn sporca(app: &AppHandle) {
 /// Chiede una passata senza aspettare la raffica.
 fn subito(arricchimento: &StatoArricchimento) {
     let _ = arricchimento.sveglia.send(Sveglia::Subito);
+}
+
+/// Una passata lasciata a una scansione: si riprova una raffica dopo.
+///
+/// Il filo, da solo, tornerebbe fra mezz'ora ([`INTERVALLO`]), e una scansione
+/// che non ha cambiato niente non lo sveglia. Una sveglia `Sporca` mandata a
+/// sé stessi lo fa riprovare dopo [`RAFFICA`]: se la scansione è ancora lì si
+/// rimanda di nuovo, altrimenti si lavora.
+fn rimanda_per_la_scansione(app: &AppHandle) {
+    sporca(app);
 }
 
 /// Avvia il filo che arricchisce da solo.
@@ -567,6 +609,15 @@ fn passata_vera(
         return Ok(None);
     };
 
+    // Una scansione in corso ha la precedenza: l'arricchimento non parte
+    // mentre gira. Le due scrivono le stesse righe — una dai tag, l'altra dai
+    // cataloghi — e la scansione ha qualcuno che la aspetta. Ci si risveglia da
+    // soli, una raffica dopo: vedi [`rimanda_per_la_scansione`].
+    if stato.scansione_in_corso() {
+        rimanda_per_la_scansione(app);
+        return Ok(None);
+    }
+
     // ── finestra 1: leggere il lotto. ───────────────────────────────────────
     let Some(da_fare) = apri_passata(&stato)? else {
         return Ok(None);
@@ -599,7 +650,47 @@ fn passata_vera(
     // Le chiavi d'album e gli artisti che le scritture hanno toccato, per la
     // finestra 3: vedi [`Toccati`].
     let mut toccati = Toccati::nessuno();
+    let mut interrotta = false;
+    // Il guasto che ha fermato il ciclo, se ce n'è uno. Si tiene da parte invece
+    // di uscire con un `?`: i gruppi registrati prima sono già scritti, ognuno
+    // nella sua transazione, e uscire da qui saltava la finestra 3 — gli album
+    // di quei brani restavano quelli di prima, e la libreria segnata in regola
+    // non lo avrebbe saputo. Si ferma il ciclo, si chiude la passata, e solo
+    // dopo si restituisce l'errore.
+    let mut guasto: Option<AppError> = None;
     for (fatti, gruppo) in da_fare.gruppi.iter().enumerate() {
+        // Prima di ogni gruppo, e non solo all'inizio della passata: dodici
+        // gruppi sono minuti di richieste a una al secondo, e in quei minuti si
+        // può chiudere l'applicazione o spegnere l'interruttore. Prima nessuno
+        // dei due fermava niente: la chiusura aspettava la fine del lotto, e
+        // chi spegneva in Impostazioni guardava le richieste continuare — cioè
+        // un interruttore che non spegne, e la promessa di `PRIVACY.md` mancata
+        // per qualche minuto. L'interruttore si rilegge dal database, che è
+        // dove sta: un lucchetto breve per gruppo, contro un gruppo che ne dura
+        // decine di secondi. Quel che è già registrato resta, ed è intero:
+        // ogni gruppo ha la sua transazione. Un interruttore che non si legge
+        // ferma il ciclo come uno spento: vedi `guasto`.
+        // E una scansione cominciata nel frattempo la si lascia passare, fra
+        // un gruppo e l'altro: non è un guasto, i gruppi già registrati
+        // restano, gli album si rifanno qui sotto come dopo ogni
+        // interruzione, e il resto lo fa la passata dopo.
+        if stato.scansione_in_corso() {
+            interrotta = true;
+            rimanda_per_la_scansione(app);
+            break;
+        }
+        match da_interrompere(&stato) {
+            Ok(false) => {}
+            Ok(true) => {
+                interrotta = true;
+                break;
+            }
+            Err(err) => {
+                interrotta = true;
+                guasto = Some(err);
+                break;
+            }
+        }
         avanza(app, fatti, totale);
 
         let decisione = enrich::decidi(servizi, gruppo);
@@ -626,7 +717,11 @@ fn passata_vera(
         }
 
         // ── finestra 2: registrare questo gruppo. ───────────────────────────
-        let conto = con_libreria(&stato, |libreria| {
+        //
+        // Un gruppo che non si registra ferma il ciclo come l'interruttore che
+        // non si legge, e per la stessa ragione: i gruppi di prima sono già
+        // scritti, e la finestra 3 deve arrivare anche per loro.
+        let registrato = con_libreria(&stato, |libreria| {
             // `Immediate`, come le altre due di questo file: la transazione
             // legge e poi scrive, e il `DepositoSqlite` scrive la sua cache
             // sullo stesso file da un'altra connessione. Una transazione
@@ -650,7 +745,15 @@ fn passata_vera(
             tx.commit()
                 .map_err(|err| db_errore("chiusura della transazione di arricchimento", &err))?;
             Ok(conto)
-        })?;
+        });
+        let conto = match registrato {
+            Ok(conto) => conto,
+            Err(err) => {
+                interrotta = true;
+                guasto = Some(err);
+                break;
+            }
+        };
 
         bilancio.applicati = bilancio.applicati.saturating_add(conto.applicati);
         bilancio.astenuti = bilancio.astenuti.saturating_add(conto.astenuti);
@@ -678,19 +781,30 @@ fn passata_vera(
     //
     // Un guasto non fa cadere la passata: i metadati sono già scritti, e
     // perderli per una domanda sulle somiglianze sarebbe il torto sbagliato.
-    bilancio.vicini = match vicini(&stato, servizi) {
-        Ok(quanti) => quanti,
-        Err(err) => {
-            nota!(
-                "[arricchimento] vicini non raccolti codice={} causa={}",
-                err.code().kind().code(),
-                err.cause().unwrap_or("—")
-            );
-            0
+    //
+    // Una passata interrotta le salta: sono altre richieste in rete, e sia chi
+    // esce sia chi ha spento l'interruttore ha appena detto di non volerne.
+    bilancio.vicini = if interrotta {
+        0
+    } else {
+        match vicini(&stato, servizi) {
+            Ok(quanti) => quanti,
+            Err(err) => {
+                nota!(
+                    "[arricchimento] vicini non raccolti codice={} causa={}",
+                    err.code().kind().code(),
+                    err.cause().unwrap_or("—")
+                );
+                0
+            }
         }
     };
 
     // ── finestra 3: gli aggregati, una volta sola. ──────────────────────────
+    //
+    // Anche dopo un'interruzione: è solo database, per chiavi, e i gruppi già
+    // registrati hanno bisogno dei loro album rifatti quanto quelli di una
+    // passata intera.
     //
     // Qui e non dentro il ciclo: riscrivere gli stessi album dodici volte di
     // fila costerebbe dodici volte per un risultato che conta solo alla fine.
@@ -701,29 +815,71 @@ fn passata_vera(
     // con `db.locked` mentre girava. Il risultato è lo stesso: vedi
     // [`ricostruisci_aggregati`], che rifà anche gli album **fusi** con quelli
     // toccati attraverso un identificativo condiviso.
-    con_libreria(&stato, |libreria| {
-        if bilancio.applicati > 0 && !toccati.e_vuoto() {
-            // L'arricchimento scrive `mb_release_group_id` su brani che prima non
-            // l'avevano, ed è esattamente l'identificativo con cui i gruppi
-            // d'album si **fondono**. Senza la ricostruzione, il disco resterebbe
-            // spezzato nelle due schede che l'arricchimento ha appena dimostrato
-            // essere una sola.
-            let tx = libreria
-                .connection
+    let chiusura = con_libreria(&stato, |libreria| {
+        chiudi_la_passata(&mut libreria.connection, bilancio.applicati > 0, &toccati)
+    });
+
+    // Il guasto che ha fermato il ciclo viene prima di quello della chiusura:
+    // è lui che dice perché la passata non è finita.
+    if let Some(err) = guasto {
+        return Err(err);
+    }
+    chiusura?;
+    Ok(Some(bilancio))
+}
+
+/// La finestra 3 di una passata: gli aggregati per le chiavi toccate, e l'ora
+/// dell'ultima passata.
+///
+/// `rifare` dice se qualcosa è stato applicato: senza, non c'è niente da
+/// ricostruire, ma l'ora si scrive lo stesso.
+///
+/// # Errori
+///
+/// Quello della ricostruzione se cade, e allora prima di tornare si chiede la
+/// ricostruzione intera; altrimenti quello della scrittura dell'ora.
+fn chiudi_la_passata(
+    connection: &mut rusqlite::Connection,
+    rifare: bool,
+    toccati: &Toccati,
+) -> Result<(), AppError> {
+    let esito = (|| -> Result<(), AppError> {
+        if rifare && !toccati.e_vuoto() {
+            // L'arricchimento scrive `mb_release_group_id` su brani che
+            // prima non l'avevano, ed è esattamente l'identificativo con
+            // cui i gruppi d'album si **fondono**. Senza la ricostruzione,
+            // il disco resterebbe spezzato nelle due schede che
+            // l'arricchimento ha appena dimostrato essere una sola.
+            let tx = connection
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                 .map_err(|err| db_errore("apertura della ricostruzione", &err))?;
-            ricostruisci_aggregati(&tx, &toccati)?;
+            ricostruisci_aggregati(&tx, toccati)?;
             tx.commit()
                 .map_err(|err| db_errore("chiusura della ricostruzione", &err))?;
         }
-        settings::write(
-            &libreria.connection,
-            CHIAVE_ULTIMO,
-            &adesso_ms().to_string(),
-        )
-    })?;
-
-    Ok(Some(bilancio))
+        Ok(())
+    })();
+    // I brani dei gruppi sono già scritti, ognuno nella sua transazione
+    // chiusa un passo fa: se la ricostruzione cade — un `db.locked`
+    // passeggero, o un guasto come quello delle chiavi d'album doppie della
+    // 3.0 — gli album restano quelli di prima mentre i brani sono già quelli
+    // nuovi, e la libreria segnata in regola non lo saprebbe mai. Le chiavi
+    // toccate si perdono con questa passata, e l'unico modo di ritrovarle è
+    // la ricostruzione intera alla prossima scansione: la si chiede, come
+    // fa la scansione stessa al suo settimo passo. Sforzo minimo: se non
+    // riesce nemmeno questa scrittura, l'errore da dire resta quello vero.
+    if esito.is_err() {
+        let _ = rymembra_app::library::chiedi_ricostruzione_intera(connection);
+    }
+    // L'ora dell'ultima passata si scrive **anche** quando sono caduti solo
+    // gli aggregati. Dice quando la libreria ha ricevuto metadati, e quelli
+    // sono arrivati: i conteggi accanto nel pannello — completati, senza
+    // corrispondenza — sono già cambiati. Lasciarla indietro farebbe dire
+    // al pannello «nessuna passata da ieri» sopra numeri di adesso; il
+    // guasto degli album lo racconta l'errore della passata, che arriva lo
+    // stesso. Ed è il primo errore a tornare, non quello di questa riga.
+    let scritto = settings::write(connection, CHIAVE_ULTIMO, &adesso_ms().to_string());
+    esito.and(scritto)
 }
 
 /// Legge sotto il lucchetto tutto ciò che serve a una passata, e lo rilascia.
@@ -794,6 +950,20 @@ fn riferisci(app: &AppHandle) {
 /// nota in testa al modulo.
 fn attivo(connection: &rusqlite::Connection) -> Result<bool, AppError> {
     Ok(settings::read(connection, CHIAVE_ATTIVO)?.as_deref() != Some("0"))
+}
+
+/// Se la passata in corso deve smettere prima del prossimo gruppo: si sta
+/// uscendo, o qualcuno ha spento l'interruttore mentre lavorava.
+///
+/// # Errori
+///
+/// Quelli di [`attivo`]: un database che non risponde qui non risponderebbe
+/// nemmeno alla registrazione del gruppo, un passo dopo.
+fn da_interrompere(stato: &Stato) -> Result<bool, AppError> {
+    if crate::spegnimento::in_uscita() {
+        return Ok(true);
+    }
+    con_libreria(stato, |libreria| attivo(&libreria.connection)).map(|acceso| !acceso)
 }
 
 /// Dimentica l'errore dell'ultima passata.
@@ -875,12 +1045,61 @@ fn stato_ipc(
                 &libreria.connection,
                 "SELECT COUNT(*) FROM track_meta_arricchita",
             )?,
-            nei_file: quanti(&libreria.connection, "SELECT COUNT(*) FROM enrich_undo")?,
+            nei_file: quanti(&libreria.connection, CONTA_DA_RIPORTARE)?,
             ultimo_ms: settings::read(&libreria.connection, CHIAVE_ULTIMO)?
                 .and_then(|quando| quando.parse().ok()),
             errore,
         })
     })
+}
+
+/// Quante fotografie di `enrich_undo` «Riporta nei file» riporterebbe.
+///
+/// Lo stesso filtro di `rymembra_app::enrich::da_riportare`: le righe che sono
+/// brani d'immagine CD restano fuori, perché nei file non si riportano mai —
+/// il file è l'immagine di tutto il disco. Contarle lo stesso lasciava il
+/// numero sopra zero per sempre, e il pulsante acceso su un lavoro che non
+/// avrebbe fatto niente. Le fotografie senza più la riga contano, come là.
+const CONTA_DA_RIPORTARE: &str = "SELECT COUNT(*) FROM enrich_undo u
+                                    LEFT JOIN tracks t ON t.id = u.track_id
+                                   WHERE t.immagine IS NULL";
+
+/// Le cartelle dei `.cue` dei brani d'immagine CD arricchiti.
+///
+/// Servono a «Dimentica» ([`arricchimento_annulla`]): un brano d'immagine non
+/// si rilegge dal suo file — il file è l'immagine di tutto il disco, e il
+/// titolo vero sta nel `.cue` — e il nucleo lo segna da rileggere alla
+/// prossima scansione (`date_modified = -1`). Ma i file sul disco non sono
+/// cambiati, quindi nessun avviso farebbe partire quella scansione da sé: va
+/// chiesta, per queste cartelle. Si leggono **prima** di dimenticare, perché
+/// dopo l'annotazione che le nomina non c'è più.
+fn cartelle_dei_fogli_arricchiti(
+    connection: &rusqlite::Connection,
+) -> Result<Vec<String>, AppError> {
+    let fallita = |err: rusqlite::Error| db_errore("cartelle dei fogli arricchiti", &err);
+    let mut statement = connection
+        .prepare(
+            "SELECT t.path FROM track_meta_arricchita m
+               JOIN tracks t ON t.id = m.track_id
+              WHERE t.immagine IS NOT NULL AND t.path IS NOT NULL",
+        )
+        .map_err(fallita)?;
+    let percorsi = statement
+        .query_map([], |riga| riga.get::<_, String>(0))
+        .map_err(fallita)?;
+    let mut cartelle: Vec<String> = Vec::new();
+    for percorso in percorsi {
+        let percorso = percorso.map_err(fallita)?;
+        let cartella = rymembra_domain::cue::brano_d_immagine(&percorso)
+            .and_then(|(cue, _)| std::path::Path::new(cue).parent())
+            .map(|cartella| cartella.to_string_lossy().into_owned());
+        if let Some(cartella) = cartella
+            && !cartelle.contains(&cartella)
+        {
+            cartelle.push(cartella);
+        }
+    }
+    Ok(cartelle)
 }
 
 /// Un conteggio, per le tre righe di stato.
@@ -892,4 +1111,136 @@ fn quanti(connection: &rusqlite::Connection, sql: &str) -> Result<i64, AppError>
     connection
         .query_row(sql, [], |row| row.get(0))
         .map_err(|err| db_errore("conteggio dell'arricchimento", &err))
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    /// L'interruttore spento a passata in corso si legge prima del gruppo dopo.
+    ///
+    /// È quel che il ciclo della passata chiede a ogni giro: prima non lo
+    /// chiedeva nessuno, e chi spegneva in Impostazioni guardava le richieste
+    /// continuare fino alla fine del lotto.
+    #[test]
+    fn l_interruttore_spento_ferma_la_passata_al_gruppo_dopo() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        assert_eq!(da_interrompere(&stato), Ok(false), "acceso di serie");
+
+        con_libreria(&stato, |libreria| {
+            settings::write(&libreria.connection, CHIAVE_ATTIVO, "0")
+        })
+        .expect("spento");
+        assert_eq!(da_interrompere(&stato), Ok(true));
+
+        con_libreria(&stato, |libreria| {
+            settings::write(&libreria.connection, CHIAVE_ATTIVO, "1")
+        })
+        .expect("riacceso");
+        assert_eq!(da_interrompere(&stato), Ok(false));
+    }
+
+    /// Se la ricostruzione degli aggregati cade dopo che i gruppi sono già
+    /// scritti, la prossima scansione li rifà per intero — le chiavi toccate
+    /// si perdono con la passata — e l'ora dell'ultima passata si scrive lo
+    /// stesso. L'errore che torna è quello della ricostruzione.
+    #[test]
+    fn aggregati_caduti_chiedono_la_ricostruzione_intera() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let mut guardia = stato.libreria.lock().expect("lucchetto");
+        let libreria = guardia.as_mut().expect("libreria aperta");
+        let connection = &mut libreria.connection;
+        // Un brano scritto da un gruppo, gli aggregati segnati in regola, e un
+        // guasto che fa cadere ogni scrittura sugli album: è il `db.locked` o
+        // la chiave doppia, senza doverli fabbricare.
+        connection
+            .execute_batch(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                     duration_ms, file_size, date_added, date_modified)
+                 VALUES (1, 'C:\\M\\a.mp3', 'k', 'T', 'A', 'Al', 'gruppo', 1000, 1, 0, 0);
+                 UPDATE libreria_stato SET aggregati = 99 WHERE id = 1;
+                 CREATE TEMP TRIGGER guasto_i BEFORE INSERT ON albums
+                   BEGIN SELECT RAISE(ABORT, 'guasto di prova'); END;
+                 CREATE TEMP TRIGGER guasto_d BEFORE DELETE ON albums
+                   BEGIN SELECT RAISE(ABORT, 'guasto di prova'); END;
+                 CREATE TEMP TRIGGER guasto_u BEFORE UPDATE ON albums
+                   BEGIN SELECT RAISE(ABORT, 'guasto di prova'); END;",
+            )
+            .expect("banco");
+        let mut toccati = Toccati::nessuno();
+        toccati.segna_brani(connection, &[1]).expect("toccati");
+        assert!(!toccati.e_vuoto());
+
+        let esito = chiudi_la_passata(connection, true, &toccati);
+        assert!(esito.is_err(), "la ricostruzione doveva cadere");
+
+        let aggregati: i64 = connection
+            .query_row(
+                "SELECT aggregati FROM libreria_stato WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("versione");
+        assert_eq!(aggregati, 0, "la prossima ricostruzione dev'essere intera");
+        assert!(
+            settings::read(connection, CHIAVE_ULTIMO)
+                .expect("lettura")
+                .is_some(),
+            "l'ora dell'ultima passata si scrive anche così"
+        );
+    }
+
+    /// Un file intero e due brani di un'immagine CD, arricchiti tutti e tre,
+    /// con le fotografie di `enrich_undo` di una versione passata.
+    fn banco_d_immagine(connection: &rusqlite::Connection) {
+        connection
+            .execute_batch(
+                r"INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                     duration_ms, file_size, date_added, date_modified)
+                 VALUES (1, 'C:\M\a.mp3', 'k1', 'T', 'A', 'Al', 'g', 1000, 1, 0, 0);
+                 INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                     duration_ms, file_size, date_added, date_modified,
+                                     immagine, inizio_cd, fine_cd)
+                 VALUES (2, 'C:\M\Disco\Album.cue|01', 'k2', 'Uno', 'A', 'D', 'd',
+                         1000, 9, 0, 0, 'C:\M\Disco\Album.flac', 0, 7500),
+                        (3, 'C:\M\Disco\Album.cue|02', 'k3', 'Due', 'A', 'D', 'd',
+                         1000, 9, 0, 0, 'C:\M\Disco\Album.flac', 7500, NULL);
+                 INSERT INTO track_meta_arricchita (track_id, campi, set_at)
+                 VALUES (1, '{}', 0), (2, '{}', 0), (3, '{}', 0);
+                 INSERT INTO enrich_undo (track_id, path, tags, written_at)
+                 VALUES (1, 'C:\M\a.mp3', '{}', 0),
+                        (2, 'C:\M\Disco\Album.flac', '{}', 0);",
+            )
+            .expect("banco");
+    }
+
+    /// Le fotografie dei brani d'immagine non si riportano mai nei file, e
+    /// non devono tenere acceso il numero che dice quante ce ne sono.
+    #[test]
+    fn i_brani_d_immagine_non_contano_fra_quelli_da_riportare_nei_file() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let guardia = stato.libreria.lock().expect("lucchetto");
+        let connection = &guardia.as_ref().expect("libreria aperta").connection;
+        banco_d_immagine(connection);
+        assert_eq!(quanti(connection, CONTA_DA_RIPORTARE), Ok(1));
+    }
+
+    /// Dopo «Dimentica» i brani d'immagine si ricostruiscono dal loro `.cue`
+    /// alla scansione dopo, che va chiesta per la sua cartella: una volta
+    /// sola, anche se i brani sono due.
+    #[test]
+    fn dimenticare_un_immagine_fa_riguardare_la_cartella_del_suo_foglio() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let guardia = stato.libreria.lock().expect("lucchetto");
+        let connection = &guardia.as_ref().expect("libreria aperta").connection;
+        banco_d_immagine(connection);
+        assert_eq!(
+            cartelle_dei_fogli_arricchiti(connection),
+            Ok(vec![r"C:\M\Disco".to_owned()])
+        );
+    }
 }

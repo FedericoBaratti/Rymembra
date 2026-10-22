@@ -38,6 +38,15 @@ import { LetturaLink, useLetturaLink } from "./parti/LetturaLink";
 import { t } from "./lingue";
 import { Trans } from "./lingue/Trans";
 
+/**
+ * Quante righe di un elenco di brani mancanti si montano in una finestrella.
+ *
+ * Cinquanta, come per i file di playlist (`ImportaPlaylist.tsx`): un elenco
+ * che nessuno legge oltre la prima schermata, e che da una libreria grande
+ * arrivava con migliaia di righe tutte montate insieme. Sotto, «e altri N».
+ */
+const MANCANTI_A_SCHERMO = 50;
+
 /** Una riga del rapporto: etichetta, numero, e il perché quando serve. */
 function Voce({
   etichetta,
@@ -172,10 +181,19 @@ export function Importa({
                     React ne disegnava uno e perdeva l'altro. L'elenco non
                     cambia ordine mentre si guarda, quindi la posizione è
                     stabile. */}
-                {rapporto.unmatched.map((etichetta, posizione) => (
-                  <li key={`${posizione}-${etichetta}`}>{etichetta}</li>
-                ))}
+                {rapporto.unmatched
+                  .slice(0, MANCANTI_A_SCHERMO)
+                  .map((etichetta, posizione) => (
+                    <li key={`${posizione}-${etichetta}`}>{etichetta}</li>
+                  ))}
               </ul>
+              {rapporto.unmatched.length > MANCANTI_A_SCHERMO && (
+                <p className="nota">
+                  {t("plfile.andMore", {
+                    n: rapporto.unmatched.length - MANCANTI_A_SCHERMO,
+                  })}
+                </p>
+              )}
             </details>
           )}
         </>
@@ -464,6 +482,12 @@ export function ImportaLink({
   // Il piano *è* il rapporto: non ce n'è più un secondo dopo la conferma,
   // perché dopo la conferma questa finestrella non c'è più.
   const rapporto = piano;
+  /** Quanti mancanti restano fuori dall'elenco a schermo: vedi `MANCANTI_A_SCHERMO`. */
+  const altriMancanti =
+    rapporto === null
+      ? 0
+      : Math.max(rapporto.missing, rapporto.missingTracks.length) -
+        Math.min(rapporto.missingTracks.length, MANCANTI_A_SCHERMO);
   const monco = anteprima?.troncato ?? null;
   // Ha risposto solo il terzo livello: di questo contenuto si sanno il titolo e
   // la copertina, e i brani sono zero. Importare adesso creerebbe una playlist
@@ -829,14 +853,22 @@ export function ImportaLink({
                   }}
                 />
               </p>
+              {/* I primi cinquanta (`MANCANTI_A_SCHERMO`); il rapporto
+                  salvato li tiene tutti, e la pagina Importazioni lo riapre. Il
+                  resto si conta dal totale del nucleo e non dalle righe
+                  arrivate: se un giorno ne mandasse meno, «e altri» direbbe
+                  comunque il vero. */}
               <ul>
-                {rapporto.missingTracks.map((b) => (
+                {rapporto.missingTracks.slice(0, MANCANTI_A_SCHERMO).map((b) => (
                   <li key={`${b.position}-${b.title}`}>
                     {b.artist ? `${b.artist} — ` : ""}
                     {b.title}
                   </li>
                 ))}
               </ul>
+              {altriMancanti > 0 && (
+                <p className="nota">{t("plfile.andMore", { n: altriMancanti })}</p>
+              )}
             </details>
           )}
         </>

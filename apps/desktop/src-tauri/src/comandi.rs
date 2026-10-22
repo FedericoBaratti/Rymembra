@@ -9,10 +9,10 @@
 use crate::spegnimento::Emette as _;
 use rymembra_app::import_legacy;
 use rymembra_app::library::{
-    AlbumSummary, ArtistSummary, Counts, RimozioneInAttesa, RimozioniSottoUnaRadice, Scadenze,
-    Scan, ScanReport, TrackOrder, TrackSummary, album_tracks, applica_rimozioni, counts,
-    list_albums, list_artists, list_tracks, recently_added_albums, riassumi_rimozioni, search,
-    summaries_by_id,
+    AlbumSummary, ArtistSummary, Avanzamento as ScanAvanzamento, Counts, RimozioneInAttesa,
+    RimozioniSottoUnaRadice, Scadenze, Scan, ScanReport, TrackOrder, TrackSummary, album_tracks,
+    applica_rimozioni, counts, list_albums, list_artists, list_tracks, recently_added_albums,
+    riassumi_rimozioni, search, summaries_by_id,
 };
 use rymembra_app::settings::CHIAVE_CARTELLE;
 use rymembra_domain::errors::{AppError, ErrorCode};
@@ -22,6 +22,7 @@ use tauri::{Manager as _, State};
 
 use crate::disparte::{in_disparte, leggi_la_libreria};
 use crate::errore::{Esito, errore};
+use crate::nota;
 use crate::stato::{DepositoStato, Stato, adesso_ms, con_libreria};
 
 /// Quel che la finestra deve sapere appena si apre.
@@ -268,6 +269,11 @@ pub async fn cartelle_trasloca(
     crate::nuvola::se_riuscito(&app, esito)
 }
 
+/// Quanto il trasloco aspetta il turno delle scansioni prima di dire
+/// «occupato». Abbastanza per una pulizia delle copertine, non per una
+/// scansione: quella la si lascia finire, e il trasloco si chiede dopo.
+const ATTESA_DEL_TURNO_DI_TRASLOCO: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Il corpo di [`cartelle_trasloca`], sul filo che l'ha presa in disparte.
 fn trasloca_ora(
     app: &tauri::AppHandle,
@@ -278,6 +284,30 @@ fn trasloca_ora(
     use rymembra_app::volumi::{self, Esistenza};
 
     let stato = libreria_di(app, "trasloco di una cartella sorvegliata")?;
+    // Il turno delle scansioni, per tutta la durata. Una scansione scrive a
+    // lotti e lascia il lucchetto fra l'uno e l'altro: se stesse leggendo la
+    // cartella vecchia, i lotti dopo il trasloco rimetterebbero i suoi brani
+    // sotto il nome di prima — una cartella non più sorvegliata, con la storia
+    // vuota alla scansione dopo — che è il guasto che il trasloco esiste per
+    // evitare. Il turno di manutenzione e non quello di scansione: escludono
+    // allo stesso modo, ma questo non sveglia la manutenzione quando cade.
+    //
+    // Lo si aspetta un poco invece di rinunciare subito: il turno lo prende
+    // anche la pulizia delle copertine, una decina di secondi dopo ogni
+    // scansione, e un trasloco rifiutato per quella sarebbe una domanda da
+    // rifare per niente. Si gira in disparte, quindi l'attesa non ferma
+    // nessuno; oltre la scadenza c'è davvero una scansione, e lo si dice.
+    let scadenza = std::time::Instant::now() + ATTESA_DEL_TURNO_DI_TRASLOCO;
+    let _turno = loop {
+        if let Some(turno) = stato.turno_di_manutenzione() {
+            break turno;
+        }
+        if crate::spegnimento::in_uscita() || std::time::Instant::now() >= scadenza {
+            return Err(AppError::new(ErrorCode::LibraryScanBusy)
+                .with_cause("il trasloco aspetta che la scansione in corso finisca"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
     let rimappature = [rymembra_app::profilo::Rimappatura {
         da: da.to_owned(),
         a: a.to_owned(),
@@ -446,13 +476,130 @@ pub async fn cronologia_conteggio(app: tauri::AppHandle) -> Esito<i64> {
 }
 
 /// L'avanzamento di una scansione, mandato alla finestra mentre procede.
-#[derive(Debug, Clone, Copy, Serialize)]
+///
+/// Una forma sola per le tre fasi, con i campi che non c'entrano a zero: la
+/// finestra la riceve come evento (`scansione:avanzamento`) e come risposta a
+/// [`scansione_avanzamento`], e due forme vorrebbero dire due tipi da tenere
+/// d'accordo dall'altra parte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Avanzamento {
-    /// File letti finora.
+    /// A che punto è.
+    pub fase: FaseScansione,
+    /// File letti finora, nella fase `legge`.
     pub fatti: usize,
-    /// File da leggere in tutto.
+    /// File da leggere in tutto, nella fase `legge`; zero finché non si sa.
     pub totale: usize,
+    /// Cartelle elencate finora, dalla fase `cerca` in poi.
+    pub cartelle: usize,
+    /// File trovati finora, musica o no, dalla fase `cerca` in poi.
+    pub trovati: usize,
+}
+
+/// La fase di una scansione a mano, come la vede la finestra.
+///
+/// Tre e non due perché l'attesa è un momento a sé: «Scansiona» premuto mentre
+/// gira una scansione partita da sola aspetta che finisca, e chi guarda deve
+/// leggere che sta aspettando — non una barra ferma a zero, e non «occupato».
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FaseScansione {
+    /// Aspetta il turno: c'è una scansione automatica in corso.
+    Attende,
+    /// La camminata sul disco: si contano cartelle e file.
+    Cerca,
+    /// La lettura dei file: `fatti` su `totale`.
+    Legge,
+}
+
+impl Avanzamento {
+    /// L'avanzamento di una fase, con i numeri a zero.
+    const fn di(fase: FaseScansione) -> Self {
+        Self {
+            fase,
+            fatti: 0,
+            totale: 0,
+            cartelle: 0,
+            trovati: 0,
+        }
+    }
+}
+
+/// Una riga nel diario per ogni scansione.
+///
+/// `origine`: `"a mano"`, `"sorveglianza"`, `"riallineamento"`, `"download"`.
+/// È la riga che risponde a «quanto è durata, dove è andato il tempo, che cosa
+/// ha cambiato» senza dover ricostruire niente: una scansione invariata sul NAS
+/// si riconosce da `letti=0`, una lenta dalla fase che si mangia il totale.
+///
+/// Sta qui e la chiamano tutti quelli che scansionano — anche
+/// `crate::sorveglia` e `crate::procura` — perché il formato è uno: chi cerca
+/// nel diario `[scansione]` deve trovare gli stessi campi qualunque strada
+/// abbia fatto partire la passata.
+pub fn racconta_scansione(origine: &str, esito: &ScanReport) {
+    crate::nota!("{}", riga_della_scansione(origine, esito));
+}
+
+/// Il testo di [`racconta_scansione`]. Pura, per provarne il formato.
+///
+/// Manca il numero delle radici guardate, che il rapporto non porta: ci sono
+/// quelle che **non** hanno risposto (`saltate=`) e i rami persi dentro quelle
+/// che rispondevano (`rami=`).
+fn riga_della_scansione(origine: &str, esito: &ScanReport) -> String {
+    let tempi = &esito.tempi;
+    format!(
+        "[scansione] origine={origine} cartelle={} file={} letti={} illeggibili={}(+{} noti) \
+         immagine={} inseriti={} aggiornati={} spostati={} tolti={} saltate={} rami={} \
+         rinviate={}{} cammino={}ms fogli={}ms piano={}ms lettura={}ms scrittura={}ms \
+         album={}ms totale={}ms",
+        esito.cartelle_viste,
+        esito.file_visti,
+        esito.letti,
+        esito.unreadable.len(),
+        esito.illeggibili_noti,
+        esito.brani_d_immagine,
+        esito.inserted,
+        esito.updated,
+        esito.moved,
+        esito.removed,
+        esito.radici_saltate.len(),
+        esito.rami_persi.len(),
+        esito.rimozioni_rinviate,
+        if esito.cancelled { " annullata" } else { "" },
+        tempi.camminata_ms,
+        tempi.fogli_ms,
+        tempi.piano_ms,
+        tempi.lettura_ms,
+        tempi.scrittura_ms,
+        tempi.aggregati_ms,
+        esito.elapsed_ms,
+    )
+}
+
+/// La scansione ha cambiato qualcosa in libreria.
+///
+/// È la domanda che decide chi svegliare dopo — manutenzione, analisi,
+/// arricchimento, backup, l'albero delle cartelle — e la regola dell'accordo
+/// sul turno ([`crate::stato::TurnoDiScansione::segna_cambiamenti`]).
+pub(crate) const fn ha_cambiato(esito: &ScanReport) -> bool {
+    esito.inserted > 0 || esito.updated > 0 || esito.moved > 0 || esito.removed > 0
+}
+
+/// La scansione può aver cambiato qualcosa: [`ha_cambiato`] se è finita,
+/// sempre se è caduta.
+///
+/// Una scansione caduta a metà può aver già scritto dei lotti, o tolto delle
+/// righe, e l'errore non porta i conti: non si sa. Nel dubbio si fa come se
+/// avesse cambiato — il turno sveglia la manutenzione, la finestra rilegge —
+/// perché il prezzo di una rilettura per niente è niente, e quello di una
+/// libreria mostrata com'era prima sono brani che non si trovano o righe che
+/// non suonano. Vale per chi scansiona prendendo il turno senza un deposito
+/// che si accorga delle scritture: la scansione a mano e quella dei download.
+pub(crate) const fn forse_cambiata(esito: &Result<ScanReport, AppError>) -> bool {
+    match esito {
+        Ok(report) => ha_cambiato(report),
+        Err(_) => true,
+    }
 }
 
 /// Cosa ha fatto una scansione, nella forma che la finestra riceve.
@@ -467,10 +614,14 @@ pub struct EsitoScansione {
     pub spostati: usize,
     /// Righe tolte.
     pub tolti: usize,
-    /// File che non si sono potuti leggere.
+    /// File che non si sono potuti leggere in questa passata.
     ///
-    /// Entrano comunque in libreria, marcati «degradato»: qui c'è il numero, e
-    /// in [`EsitoScansione::illeggibili_quali`] ci sono i percorsi.
+    /// Qui c'è il numero, e in [`EsitoScansione::illeggibili_quali`] ci sono i
+    /// percorsi. Dalla 3.0.2 non ci sono quelli già rifiutati così com'erano
+    /// in una passata di prima (migrazione 032): non si riaprono, e una
+    /// riscansione invariata dice zero. Un formato che il motore non sa
+    /// suonare — un WMA, un APE più vecchio della 3.99 — arriva con
+    /// `playback.formatUnsupported`.
     pub illeggibili: usize,
     /// Quali, fino a [`QUANTI_DETTAGLI`].
     ///
@@ -654,6 +805,20 @@ impl EsitoScansione {
             numeri,
         }
     }
+
+    /// Una scansione a mano lasciata mentre aspettava il turno: non ha
+    /// guardato niente e non ha cambiato niente, e la finestra lo legge come
+    /// ogni scansione fermata — `annullata`.
+    fn lasciata(numeri: Counts) -> Self {
+        Self::da(
+            &ScanReport {
+                cancelled: true,
+                ..ScanReport::default()
+            },
+            numeri,
+            None,
+        )
+    }
 }
 
 /// Scansiona le cartelle sorvegliate.
@@ -683,46 +848,70 @@ impl EsitoScansione {
 /// Il prezzo è che due scansioni insieme si intreccerebbero davvero, e
 /// `tracks.path` è UNIQUE: per questo la prima cosa che si prende è il turno.
 ///
+/// # L'attesa del turno
+///
+/// Se una scansione partita da sola — la sorveglianza delle cartelle, la coda
+/// dei download — tiene il turno, questa aspetta che finisca, **senza limite**:
+/// la finestra riceve un avanzamento in fase `attende` e lo mostra, e chi non
+/// vuole aspettare preme Annulla. Fino alla 3.0.1 l'attesa durava trenta
+/// secondi e poi rispondeva `library.scanBusy`; con la sorveglianza di serie un
+/// riallineamento di una radice di rete ne dura di più, e «occupato» a chi ha
+/// premuto un tasto e sta guardando era la risposta sbagliata a una domanda
+/// che si risolveva da sola.
+///
+/// Annulla, o l'uscita, durante l'attesa non sono errori: l'esito torna con
+/// `annullata` e tutti i numeri a zero. E non fermano la scansione automatica
+/// che si stava aspettando: quella non l'ha chiesta chi ha premuto Annulla.
+///
 /// # Errori
 ///
-/// `library.scanBusy` se una scansione è già in corso e non finisce entro
-/// [`ATTESA_DEL_TURNO`] — a mano, quella automatica che parte quando la coda
-/// dei download ha finito, o una della sorveglianza delle cartelle. `internal.aborted`
-/// se lo stato non c'è più. Poi quel che riporta il nucleo: `db.*` per il
-/// database, `fs.*` per il disco. Una radice che non risponde **non** è un
-/// errore: finisce in `radiciSaltate`, e i suoi brani restano dove sono.
+/// `library.scanBusy` se c'è già una scansione chiesta a mano — un secondo
+/// clic, un'altra finestra: l'attesa è per quelle automatiche.
+/// `internal.aborted` se lo stato non c'è più. Poi quel che riporta il nucleo:
+/// `db.*` per il database, `fs.*` per il disco. Una radice che non risponde
+/// **non** è un errore: finisce in `radiciSaltate`, e i suoi brani restano
+/// dove sono.
 #[tauri::command]
 pub async fn scansiona(app: tauri::AppHandle) -> Esito<EsitoScansione> {
     let mano = app.clone();
     let esito = in_disparte("scansione", move || scansiona_ora(&mano))
         .await
         .map_err(errore)?;
+    // Chi svegliare dopo dipende da che cosa la scansione ha cambiato, e dalla
+    // 3.0.2 solo da quello: una riscansione su un disco invariato — il caso di
+    // quasi tutte, con la sorveglianza accesa — non ha brani nuovi da
+    // arricchire o da misurare, né statistiche nuove da salvare, né cartelle
+    // nuove da disegnare. Svegliarli tutti a vuoto era lavoro e disco per
+    // niente, proprio nei minuti in cui chi ha premuto vuole ascoltare.
+    let cambiato = esito.as_ref().is_ok_and(|fatto| {
+        fatto.inseriti > 0 || fatto.aggiornati > 0 || fatto.spostati > 0 || fatto.tolti > 0
+    });
+    if !cambiato {
+        return esito;
+    }
     // Una scansione porta dentro brani che nessuno ha mai tentato di
     // arricchire, ed è il momento in cui hanno più bisogno: appena importati
     // sono precisamente quelli con «Album sconosciuto» e nessuna copertina.
-    if esito.is_ok() {
-        crate::arricchimento::sporca(&app);
-        crate::analisi::sporca(&app);
-        // Una scansione cambia quali cartelle esistono e cosa c'è dentro:
-        // l'albero del pannello «Cartelle» è derivato da `tracks`, quindi non
-        // si aggiorna, si butta. Costa un contatore atomico e un evento, e non
-        // ricostruisce niente — se il pannello non è aperto non c'è nemmeno un
-        // albero.
-        crate::cartelle::cambiate(&app);
-    }
+    crate::arricchimento::sporca(&app);
+    crate::analisi::sporca(&app);
+    // Una scansione cambia quali cartelle esistono e cosa c'è dentro:
+    // l'albero del pannello «Cartelle» è derivato da `tracks`, quindi non
+    // si aggiorna, si butta. Costa un contatore atomico e un evento, e non
+    // ricostruisce niente — se il pannello non è aperto non c'è nemmeno un
+    // albero.
+    crate::cartelle::cambiate(&app);
     // Una scansione cambia quali brani esistono, quindi quali statistiche il
     // backup può ancorare: un brano ritrovato dopo una reinstallazione va
     // salvato subito, non al prossimo cuoricino.
     crate::nuvola::se_riuscito(&app, esito)
 }
 
-/// Quanto «Scansiona» aspetta che finisca una scansione partita da sola.
+/// Ogni quanto «Scansiona» riprova a prendere il turno mentre aspetta.
 ///
-/// Trenta secondi: la scansione di un album o della cartella dei download è
-/// questione di secondi, anche su una share. Oltre, quella in corso è una
-/// passata lunga — un'altra «Scansiona», una radice intera da riguardare — e
-/// la risposta giusta torna a essere `library.scanBusy`.
-const ATTESA_DEL_TURNO: std::time::Duration = std::time::Duration::from_secs(30);
+/// Un decimo di secondo, come il trasloco: Annulla e l'uscita si sentono
+/// subito, e il turno, quando si libera, si prende prima che lo riprenda
+/// un'altra passata automatica.
+const PASSO_DEL_TURNO: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Il corpo di [`scansiona`], sul filo che l'ha presa in disparte.
 ///
@@ -742,44 +931,40 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
             .with_cause("la libreria non è più fra gli stati gestiti"),
         ));
     };
+    // Da qui la scansione c'è anche per una finestra che arriva a metà —
+    // anche mentre aspetta il turno — e la sua fine si dice a tutte quando la
+    // guardia cade: vedi `IN_CORSO`. Una sola a mano alla volta: l'attesa è
+    // per le scansioni automatiche, e un secondo «Scansiona» mentre la prima
+    // lavora risponde subito, come sempre.
+    let Some(segno) = ScansioneInCorso::comincia(app) else {
+        return Err(errore(
+            AppError::new(ErrorCode::LibraryScanBusy)
+                .with_cause("c'è già una scansione chiesta a mano"),
+        ));
+    };
     // Il turno prima di tutto: due scansioni intrecciate si contendono
     // l'inserimento della stessa riga in `tracks`, dove `path` è UNIQUE. Si
-    // libera da sé quando la guardia cade, anche uscendo per un `?`.
-    //
-    // Aspettandolo un poco, dalla 3.0: con la sorveglianza delle cartelle il
-    // turno lo prendono anche le scansioni partite da sole, che durano quanto
-    // un album. Rispondere «occupato» a chi ha premuto «Scansiona» mentre ne
-    // girava una sarebbe un errore per qualcosa che fra tre secondi non c'è
-    // più. Oltre l'attesa, la risposta resta quella di sempre.
-    let fine_attesa = std::time::Instant::now() + ATTESA_DEL_TURNO;
-    let Some(_turno) = crate::sorveglia::aspetta_il_turno(&stato, &|| {
-        crate::spegnimento::in_uscita() || std::time::Instant::now() >= fine_attesa
-    }) else {
-        return Err(errore(AppError::new(ErrorCode::LibraryScanBusy)));
+    // libera da sé quando la guardia cade, anche uscendo per un `?`. Se lo
+    // tiene una scansione automatica si aspetta, quanto serve: vedi
+    // «L'attesa del turno» su [`scansiona`]. Preso il turno, la bandiera
+    // d'annullamento è già azzerata: vedi [`aspetta_il_turno_a_mano`].
+    let Some(turno) =
+        aspetta_il_turno_a_mano(&stato, &crate::spegnimento::in_uscita, &mut |attende| {
+            app.emetti("scansione:avanzamento", attende)
+        })
+    else {
+        nota!("[scansione] origine=a mano lasciata mentre aspettava il turno");
+        // I numeri di adesso, che la scansione automatica aspettata può aver
+        // cambiato. Senza, la finestra resta con quelli di prima: non è un
+        // guasto da dire a chi ha appena premuto Annulla.
+        let numeri =
+            con_libreria(&stato, |libreria| counts(&libreria.connection)).unwrap_or_default();
+        return Ok(EsitoScansione::lasciata(numeri));
     };
-    // Ma se il programma si sta chiudendo, non si comincia affatto: una
-    // scansione chiesta mentre si esce non deve azzerare la bandiera che
-    // l'uscita ha appena alzato, cioè far ripartire proprio il filo che tutto il
-    // resto sta aspettando che se ne vada.
-    if crate::spegnimento::in_uscita() {
-        return Err(errore(
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("scansione".to_owned()),
-            })
-            .with_cause("il programma si sta chiudendo"),
-        ));
-    }
-    // Dopo il turno e il controllo d'uscita, e prima di leggere: un annullamento
-    // arrivato dopo la fine della scansione precedente fermerebbe questa al
-    // primo file.
-    stato.riprendi_scansioni();
-    // E le rimozioni trattenute dalla passata prima non valgono più: questa
+    // Le rimozioni trattenute dalla passata prima non valgono più: questa
     // riguarda il disco da capo, e se c'è ancora qualcosa da chiedere lo
     // chiederà lei, con un gettone suo.
     *in_attesa() = None;
-    // Da qui la scansione c'è anche per una finestra che arriva a metà, e la
-    // sua fine si dice a tutte quando la guardia cade: vedi `IN_CORSO`.
-    let segno = ScansioneInCorso::comincia(app);
 
     // Lo store delle copertine si copia **fuori** dal lucchetto: è un percorso, e
     // il nucleo se lo porta dietro su fili che possono sopravvivere alla scadenza
@@ -790,16 +975,17 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
 
     let fermare = &*stato;
     // La stessa bandiera che legge il callback dell'avanzamento, più l'uscita.
-    // Il nucleo la guarda durante la camminata, dove di avanzamento non ce n'è
-    // perché non c'è ancora niente da contare — ed è la parte che su una share
-    // lenta dura di più — e poi fra un file e l'altro. L'uscita entra qui e non
-    // solo nella bandiera perché una chiusura arrivata a scansione già partita
-    // deve fermarla anche se nessuno ha premuto «Annulla».
+    // Il nucleo la guarda durante la camminata e la lettura dei fogli, e poi fra
+    // un file e l'altro. L'uscita entra qui e non solo nella bandiera perché
+    // una chiusura arrivata a scansione già partita deve fermarla anche se
+    // nessuno ha premuto «Annulla».
     let fermati = || fermare.scansione_fermata() || crate::spegnimento::in_uscita();
     let scan = Scan {
         files: std::sync::Arc::new(rymembra_app::files::LocalFiles),
         covers: copertine,
         roots: &roots,
+        // Qui le cartelle guardate sono quelle sorvegliate.
+        radici_della_libreria: &roots,
         rules: PathRules::for_current_platform(),
         // Questa scansione l'ha chiesta qualcuno che è davanti alla finestra:
         // se toglierebbe troppo in una volta non toglie, e chiede. Spento qui
@@ -811,24 +997,71 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
     };
     let mut deposito = DepositoStato::nuovo(&stato);
     let mut ultimo = 0usize;
-    let report = scan
-        .run_su(&mut deposito, |fatti, totale| {
+    // I conti della camminata restano nell'avanzamento anche durante la
+    // lettura: chi guarda li ha appena letti, e non devono tornare a zero.
+    let mut camminata = (0usize, 0usize);
+    let esito = scan.run_con(&mut deposito, |passo| {
+        let avanzamento = match passo {
+            // Il nucleo la racconta già al più quattro volte al secondo: ogni
+            // racconto è un evento.
+            ScanAvanzamento::Camminata { cartelle, file } => {
+                camminata = (cartelle, file);
+                Some(Avanzamento {
+                    fase: FaseScansione::Cerca,
+                    fatti: 0,
+                    totale: 0,
+                    cartelle,
+                    trovati: file,
+                })
+            }
             // Non a ogni file: mandare un evento per ognuno di 1421 file
             // inonderebbe il canale IPC per disegnare una barra che si muove di
             // meno di un pixel per volta.
-            if fatti == totale || fatti.saturating_sub(ultimo) >= 25 {
-                ultimo = fatti;
-                let avanzamento = Avanzamento { fatti, totale };
-                segno.avanza(avanzamento);
-                app.emetti("scansione:avanzamento", avanzamento);
+            ScanAvanzamento::Lettura { fatti, totale } => {
+                (fatti == totale || fatti.saturating_sub(ultimo) >= 25).then(|| {
+                    ultimo = fatti;
+                    Avanzamento {
+                        fase: FaseScansione::Legge,
+                        fatti,
+                        totale,
+                        cartelle: camminata.0,
+                        trovati: camminata.1,
+                    }
+                })
             }
-            if fermare.scansione_fermata() {
-                std::ops::ControlFlow::Break(())
-            } else {
-                std::ops::ControlFlow::Continue(())
-            }
-        })
-        .map_err(errore)?;
+        };
+        if let Some(avanzamento) = avanzamento {
+            segno.avanza(avanzamento);
+            app.emetti("scansione:avanzamento", avanzamento);
+        }
+        if fermare.scansione_fermata() {
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(())
+        }
+    });
+    // Anche se è caduta: vedi `forse_cambiata`. La manutenzione svegliata per
+    // niente costa meno di copertine orfane che nessuno pulisce.
+    if forse_cambiata(&esito) {
+        turno.segna_cambiamenti();
+    }
+    let report = match esito {
+        Ok(report) => report,
+        Err(guasto) => {
+            // Caduta a metà, può aver già scritto dei lotti o tolto delle
+            // righe: la finestra rilegge qui, perché `scansiona` dopo un
+            // errore non sveglia nessuno. Senza, mostrerebbe la libreria di
+            // prima fino alla prossima scansione riuscita.
+            crate::cartelle::cambiate(app);
+            nota!(
+                "[scansione] origine=a mano fallita codice={} causa={}",
+                guasto.code().kind().code(),
+                guasto.cause().unwrap_or("—")
+            );
+            return Err(errore(guasto));
+        }
+    };
+    racconta_scansione("a mano", &report);
     // I numeri in una presa a parte, dopo: il deposito è appena stato
     // restituito, e chiederli da dentro la scansione vorrebbe dire tenerlo per
     // una `COUNT(*)` che con la scrittura non c'entra niente.
@@ -851,6 +1084,69 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
         Some(riassunto)
     };
     Ok(EsitoScansione::da(&report, numeri, da_confermare))
+}
+
+/// Il turno per la scansione a mano: subito se è libero, altrimenti quando la
+/// scansione automatica che lo tiene ha finito.
+///
+/// `None` se nel frattempo qualcuno ha premuto Annulla
+/// ([`annulla_scansione`]) o il programma si sta chiudendo: chi chiama
+/// risponde `annullata`, e non comincia niente.
+///
+/// # L'attesa si dice una volta
+///
+/// Al primo tentativo andato a vuoto parte un avanzamento in fase `attende`, e
+/// lo stato di [`IN_CORSO`] lo ripete a chi arriva dopo. Non uno per giro:
+/// dieci eventi al secondo per dire la stessa cosa sarebbero solo rumore.
+///
+/// # Il passaggio dall'attesa al lavoro, sotto il lucchetto di [`IN_CORSO`]
+///
+/// Annulla fa due cose diverse secondo la fase: durante l'attesa lascia
+/// l'attesa ([`ATTESA_LASCIATA`]), durante il lavoro ferma la scansione
+/// (`Stato::ferma_scansione`). Se la fase cambiasse fra la sua domanda e il suo
+/// gesto, un Annulla andrebbe perso — lasciata un'attesa già finita, o alzata
+/// una bandiera che il passaggio azzera subito dopo. Per questo il passaggio
+/// — guardare se l'attesa è stata lasciata, azzerare la bandiera
+/// d'annullamento, segnare la fase `cerca` — avviene tutto dentro quel
+/// lucchetto, e Annulla guarda e agisce dentro lo stesso.
+///
+/// `in_uscita` e `annuncia` arrivano da fuori — l'uscita del programma e
+/// l'evento per la finestra — solo perché le prove non hanno né l'una né
+/// l'altra: la bandiera d'uscita è di tutto il binario di prova.
+fn aspetta_il_turno_a_mano<'a>(
+    stato: &'a Stato,
+    in_uscita: &dyn Fn() -> bool,
+    annuncia: &mut dyn FnMut(Avanzamento),
+) -> Option<crate::stato::TurnoDiScansione<'a>> {
+    let mut detta = false;
+    loop {
+        let turno = stato.turno_di_scansione();
+        {
+            let mut posto = in_corso();
+            if ATTESA_LASCIATA.load(std::sync::atomic::Ordering::Relaxed) || in_uscita() {
+                // Il turno, se preso, cade qui senza aver segnato niente: non
+                // sveglia nessuno.
+                return None;
+            }
+            if let Some(turno) = turno {
+                // Prima di leggere: un annullamento arrivato dopo la fine della
+                // scansione precedente fermerebbe questa al primo file. Non se
+                // si sta uscendo — lo esclude il controllo qui sopra — perché
+                // lì la bandiera l'ha alzata l'uscita, e azzerarla farebbe
+                // ripartire il filo che tutto il resto aspetta che se ne vada.
+                stato.riprendi_scansioni();
+                *posto = Some(Avanzamento::di(FaseScansione::Cerca));
+                return Some(turno);
+            }
+        }
+        if !detta {
+            detta = true;
+            let attende = Avanzamento::di(FaseScansione::Attende);
+            *in_corso() = Some(attende);
+            annuncia(attende);
+        }
+        std::thread::sleep(PASSO_DEL_TURNO);
+    }
 }
 
 /// Com'è andata una conferma di rimozioni.
@@ -894,7 +1190,7 @@ pub async fn rimozioni_conferma(app: tauri::AppHandle, gettone: u64) -> Esito<Es
             })
             .with_cause("la libreria non è più fra gli stati gestiti"));
         };
-        let Some(_turno) = stato.turno_di_scansione() else {
+        let Some(turno) = stato.turno_di_scansione() else {
             return Err(AppError::new(ErrorCode::LibraryScanBusy));
         };
         // Si prende l'elenco solo se è quello confermato; resta in mano fino a
@@ -915,6 +1211,11 @@ pub async fn rimozioni_conferma(app: tauri::AppHandle, gettone: u64) -> Esito<Es
                 }
             }
         };
+        // Righe tolte sono copertine forse rimaste senza nessuno: la
+        // manutenzione va svegliata come dopo una scansione che toglie.
+        if tolti > 0 {
+            turno.segna_cambiamenti();
+        }
         let numeri = con_libreria(&stato, |libreria| counts(&libreria.connection))?;
         Ok(EsitoRimozioni { tolti, numeri })
     })
@@ -954,11 +1255,39 @@ pub fn rimozioni_scarta() {
 /// L'attesa che resta, quindi, è quella di un'apertura sola — fino alla sua
 /// scadenza, se il file è su una condivisione che non risponde. Chi lo mostra lo
 /// sa dall'esito, che dirà `annullata`.
+///
+/// # Durante l'attesa del turno
+///
+/// Se la scansione a mano sta ancora aspettando che finisca una automatica, il
+/// bit da alzare è un altro: [`ATTESA_LASCIATA`], che fa smettere di aspettare
+/// e basta. Quello di sempre lo leggono anche le scansioni automatiche, e
+/// alzarlo lì fermerebbe la passata della sorveglianza che nessuno ha chiesto
+/// di fermare. La domanda sulla fase e il gesto stanno dentro lo stesso
+/// lucchetto di [`IN_CORSO`], che si tiene per il tempo di una copia: vedi
+/// [`aspetta_il_turno_a_mano`] per perché.
 #[tauri::command]
 pub fn annulla_scansione(stato: State<'_, Stato>) -> Esito<()> {
-    stato.ferma_scansione();
+    annulla(&stato);
     Ok(())
 }
+
+/// Il corpo di [`annulla_scansione`], senza Tauri intorno.
+fn annulla(stato: &Stato) {
+    let posto = in_corso();
+    if posto.is_some_and(|adesso| adesso.fase == FaseScansione::Attende) {
+        ATTESA_LASCIATA.store(true, std::sync::atomic::Ordering::Relaxed);
+    } else {
+        stato.ferma_scansione();
+    }
+}
+
+/// Chi ha premuto Annulla mentre la scansione a mano aspettava il turno.
+///
+/// Si scrive e si azzera solo col lucchetto di [`IN_CORSO`] in mano: vedi
+/// [`aspetta_il_turno_a_mano`]. Un atomico e non un campo dentro quel posto
+/// perché [`scansione_avanzamento`] restituisce il posto così com'è, e questo
+/// bit alla finestra non serve.
+static ATTESA_LASCIATA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // ── la scansione vista da una finestra che arriva a metà ────────────────────
 
@@ -989,7 +1318,7 @@ pub fn annulla_scansione(stato: State<'_, Stato>) -> Esito<()> {
 static IN_CORSO: std::sync::Mutex<Option<Avanzamento>> = std::sync::Mutex::new(None);
 
 /// Il posto della scansione in corso, anche se un filo è caduto tenendolo:
-/// dentro c'è un `Option` di due numeri, intero comunque.
+/// dentro c'è un `Option` di qualche numero, intero comunque.
 fn in_corso() -> std::sync::MutexGuard<'static, Option<Avanzamento>> {
     IN_CORSO
         .lock()
@@ -1009,20 +1338,35 @@ struct ScansioneInCorso<'a> {
 }
 
 impl<'a> ScansioneInCorso<'a> {
-    /// La scansione comincia: non c'è ancora niente da contare, che è anche
-    /// quel che la finestra disegna nei primi istanti di una sua.
-    fn comincia(app: &'a tauri::AppHandle) -> Self {
-        *in_corso() = Some(Avanzamento {
-            fatti: 0,
-            totale: 0,
-        });
-        Self { app }
+    /// La scansione comincia, se non ce n'è già una a mano: `None` vuol dire
+    /// che c'è.
+    ///
+    /// Comincia in fase `attende`, senza dirlo a nessuno: finché non ha il
+    /// turno sta aspettando, anche se per un istante solo, e un Annulla in
+    /// quell'istante deve lasciare l'attesa e non fermare la scansione
+    /// automatica che magari tiene il turno. L'evento `attende` parte solo se
+    /// l'attesa c'è davvero: vedi [`aspetta_il_turno_a_mano`].
+    fn comincia(app: &'a tauri::AppHandle) -> Option<Self> {
+        prendi_il_posto().then_some(Self { app })
     }
 
     /// L'ultimo avanzamento mandato, per chi arriverà dopo.
     fn avanza(&self, avanzamento: Avanzamento) {
         *in_corso() = Some(avanzamento);
     }
+}
+
+/// Segna in [`IN_CORSO`] una scansione a mano che comincia, in fase
+/// `attende`; `false` se ce n'è già una. Il corpo di
+/// [`ScansioneInCorso::comincia`], senza Tauri intorno.
+fn prendi_il_posto() -> bool {
+    let mut posto = in_corso();
+    if posto.is_some() {
+        return false;
+    }
+    *posto = Some(Avanzamento::di(FaseScansione::Attende));
+    ATTESA_LASCIATA.store(false, std::sync::atomic::Ordering::Relaxed);
+    true
 }
 
 impl Drop for ScansioneInCorso<'_> {
@@ -1039,8 +1383,10 @@ impl Drop for ScansioneInCorso<'_> {
 /// n'è una in corso.
 ///
 /// La chiede la finestra all'apertura: vedi [`IN_CORSO`]. Sincrono e senza il
-/// lucchetto della libreria, come [`annulla_scansione`]: legge due numeri in
-/// memoria.
+/// lucchetto della libreria, come [`annulla_scansione`]: legge qualche numero
+/// in memoria. Ha la forma dell'evento `scansione:avanzamento`, fase compresa:
+/// una finestra che arriva mentre «Scansiona» aspetta il turno legge
+/// `attende`.
 #[tauri::command]
 pub fn scansione_avanzamento() -> Option<Avanzamento> {
     *in_corso()
@@ -1235,18 +1581,7 @@ pub fn preferito(
 #[tauri::command(async)]
 pub fn brano_mostra_nella_cartella(stato: State<'_, Stato>, id: i64) -> Esito<()> {
     let percorso = con_libreria(&stato, |libreria| {
-        let brano = rymembra_app::library::read_summary(&libreria.connection, id)?
-            .ok_or_else(|| AppError::new(ErrorCode::LibraryTrackNotFound { track_id: Some(id) }))?;
-        // Un brano di catalogo non sta in nessuna cartella. La finestra nasconde
-        // già questo gesto quando il brano è un flusso; il controllo resta
-        // perché un comando è una porta, e una porta non si fida di chi bussa.
-        brano.path.ok_or_else(|| {
-            AppError::new(ErrorCode::PlaybackSourceUnavailable {
-                track_id: Some(id),
-                path: None,
-            })
-            .with_cause("un brano di catalogo non sta in nessuna cartella".to_owned())
-        })
+        file_da_mostrare(&libreria.connection, id)
     })
     .map_err(errore)?;
     tauri_plugin_opener::reveal_item_in_dir(&percorso).map_err(|err| {
@@ -1257,6 +1592,42 @@ pub fn brano_mostra_nella_cartella(stato: State<'_, Stato>, id: i64) -> Esito<()
             .with_cause(err.to_string()),
         )
     })
+}
+
+/// Il file da mostrare per un brano: il suo, o l'immagine CD di cui è un pezzo.
+///
+/// Un brano d'immagine ha in tabella un percorso `…\Album.cue|03`, che non è un
+/// file: chiederlo a Esplora risorse vorrebbe dire una cartella che non si apre,
+/// o un errore che dà la colpa al disco. Il file vero è l'immagine, nella
+/// colonna `immagine`, ed è quello che ha senso vedere selezionato — accanto
+/// al suo `.cue`.
+///
+/// # Errori
+///
+/// `library.trackNotFound` se il brano non c'è più;
+/// `playback.sourceUnavailable` se è di catalogo; `db.*` se la lettura fallisce.
+fn file_da_mostrare(connection: &rusqlite::Connection, id: i64) -> Result<String, AppError> {
+    use rusqlite::OptionalExtension as _;
+    let brano = rymembra_app::library::read_summary(connection, id)?
+        .ok_or_else(|| AppError::new(ErrorCode::LibraryTrackNotFound { track_id: Some(id) }))?;
+    // Un brano di catalogo non sta in nessuna cartella. La finestra nasconde
+    // già questo gesto quando il brano è un flusso; il controllo resta
+    // perché un comando è una porta, e una porta non si fida di chi bussa.
+    let percorso = brano.path.ok_or_else(|| {
+        AppError::new(ErrorCode::PlaybackSourceUnavailable {
+            track_id: Some(id),
+            path: None,
+        })
+        .with_cause("un brano di catalogo non sta in nessuna cartella".to_owned())
+    })?;
+    let immagine: Option<String> = connection
+        .query_row("SELECT immagine FROM tracks WHERE id = ?1", [id], |riga| {
+            riga.get(0)
+        })
+        .optional()
+        .map_err(|err| rymembra_app::db::codice_da_sqlite("immagine di un brano", &err))?
+        .flatten();
+    Ok(immagine.unwrap_or(percorso))
 }
 
 /// Apre nel browser la pagina pubblica di un brano di catalogo.
@@ -2156,4 +2527,227 @@ fn percorsi_musicali(app: &tauri::AppHandle) -> Vec<String> {
     let mut visti = std::collections::HashSet::new();
     fuori.retain(|percorso| visti.insert(percorso.clone()));
     fuori
+}
+
+#[cfg(test)]
+mod prove_della_scansione {
+    use super::*;
+    use rymembra_app::library::TempiScansione;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn l_avanzamento_arriva_in_camel_case_con_la_fase() {
+        // La forma che la finestra legge, dall'evento e da
+        // `scansione_avanzamento`: una sola, con la fase in minuscolo.
+        let cerca = Avanzamento {
+            fase: FaseScansione::Cerca,
+            fatti: 0,
+            totale: 0,
+            cartelle: 2561,
+            trovati: 29_503,
+        };
+        assert_eq!(
+            serde_json::to_value(cerca).expect("json"),
+            serde_json::json!({
+                "fase": "cerca",
+                "fatti": 0,
+                "totale": 0,
+                "cartelle": 2561,
+                "trovati": 29_503,
+            })
+        );
+        for (fase, nome) in [
+            (FaseScansione::Legge, "legge"),
+            (FaseScansione::Attende, "attende"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(Avanzamento::di(fase)).expect("json")["fase"],
+                nome
+            );
+        }
+    }
+
+    #[test]
+    fn la_riga_del_diario_ha_un_formato_solo() {
+        let esito = ScanReport {
+            inserted: 3,
+            updated: 1,
+            removed: 2,
+            cartelle_viste: 2561,
+            file_visti: 29_503,
+            letti: 4,
+            illeggibili_noti: 61,
+            brani_d_immagine: 4883,
+            radici_saltate: vec![r"\\nas\spento".to_owned()],
+            elapsed_ms: 8200,
+            tempi: TempiScansione {
+                camminata_ms: 8100,
+                fogli_ms: 12,
+                piano_ms: 30,
+                lettura_ms: 5,
+                scrittura_ms: 40,
+                aggregati_ms: 60,
+            },
+            ..ScanReport::default()
+        };
+        assert_eq!(
+            riga_della_scansione("a mano", &esito),
+            "[scansione] origine=a mano cartelle=2561 file=29503 letti=4 illeggibili=0(+61 noti) \
+             immagine=4883 inseriti=3 aggiornati=1 spostati=0 tolti=2 saltate=1 rami=0 \
+             rinviate=0 cammino=8100ms fogli=12ms piano=30ms lettura=5ms scrittura=40ms \
+             album=60ms totale=8200ms"
+        );
+        assert!(ha_cambiato(&esito));
+
+        // Una fermata lo dice, e non ha cambiato niente.
+        let fermata = ScanReport {
+            cancelled: true,
+            ..ScanReport::default()
+        };
+        assert!(
+            riga_della_scansione("sorveglianza", &fermata)
+                .contains("origine=sorveglianza cartelle=0")
+        );
+        assert!(
+            riga_della_scansione("sorveglianza", &fermata)
+                .contains("rinviate=0 annullata cammino=")
+        );
+        assert!(!ha_cambiato(&fermata));
+        // Basta un numero solo dei quattro.
+        assert!(ha_cambiato(&ScanReport {
+            moved: 1,
+            ..ScanReport::default()
+        }));
+    }
+
+    #[test]
+    fn una_scansione_caduta_vale_come_una_che_ha_cambiato() {
+        // Il difetto: la scansione a mano e quella dei download, cadute dopo
+        // aver scritto dei lotti, non avvisavano la finestra, che restava con
+        // la libreria di prima. L'errore non porta i conti: nel dubbio sì.
+        let caduta: Result<ScanReport, AppError> = Err(AppError::new(ErrorCode::InternalAborted {
+            what: Some("scansione".to_owned()),
+        }));
+        assert!(forse_cambiata(&caduta));
+        // Finita, decide quel che ha fatto: niente non avvisa nessuno.
+        assert!(!forse_cambiata(&Ok(ScanReport::default())));
+        assert!(forse_cambiata(&Ok(ScanReport {
+            removed: 1,
+            ..ScanReport::default()
+        })));
+    }
+
+    #[test]
+    fn mostra_nella_cartella_un_brano_d_immagine_mostra_l_immagine() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let mut guardia = stato.libreria.lock().expect("lucchetto");
+        let libreria = guardia.as_mut().expect("libreria aperta");
+        libreria
+            .connection
+            .execute_batch(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                     duration_ms, file_size, date_added, date_modified)
+                 VALUES (1, 'C:\\M\\a.flac', 'k1', 'T', 'A', 'Al', 'g', 1000, 1, 0, 0);
+                 INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                     duration_ms, file_size, date_added, date_modified,
+                                     immagine, inizio_cd, fine_cd)
+                 VALUES (2, 'C:\\M\\Disco\\Album.cue|03', 'k2', 'T3', 'A', 'Al', 'g', 1000, 1,
+                         0, 0, 'C:\\M\\Disco\\Album.ape', 7500, 15000);",
+            )
+            .expect("banco");
+        assert_eq!(
+            file_da_mostrare(&libreria.connection, 1).expect("un file"),
+            r"C:\M\a.flac"
+        );
+        assert_eq!(
+            file_da_mostrare(&libreria.connection, 2).expect("un brano d'immagine"),
+            r"C:\M\Disco\Album.ape",
+            "non il percorso virtuale, che non si apre"
+        );
+        let manca = file_da_mostrare(&libreria.connection, 99).expect_err("non c'è");
+        assert_eq!(manca.code().kind().code(), "library.trackNotFound");
+    }
+
+    /// Il ciclo intero dell'attesa del turno, in una prova sola: i due posti
+    /// che tocca (`IN_CORSO`, `ATTESA_LASCIATA`) sono statici, e due prove che
+    /// li usassero insieme si guarderebbero a vicenda.
+    #[test]
+    fn l_attesa_del_turno_si_lascia_con_annulla_senza_fermare_la_scansione_automatica() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let mai = || false;
+
+        // ── il turno libero: si prende subito, senza annunciare un'attesa ──
+        assert!(prendi_il_posto());
+        assert!(!prendi_il_posto(), "una sola scansione a mano alla volta");
+        // Un annullamento rimasto da prima non deve fermare questa.
+        stato.ferma_scansione();
+        let mut annunci = 0_u32;
+        let turno = aspetta_il_turno_a_mano(&stato, &mai, &mut |_| annunci += 1)
+            .expect("il turno era libero");
+        assert_eq!(annunci, 0, "nessuna attesa da dire");
+        assert!(!stato.scansione_fermata(), "azzerato prima di leggere");
+        assert_eq!(in_corso().map(|a| a.fase), Some(FaseScansione::Cerca));
+        // Al lavoro, Annulla ferma la scansione come sempre.
+        annulla(&stato);
+        assert!(stato.scansione_fermata());
+        drop(turno);
+        *in_corso() = None;
+
+        // ── il turno di una scansione automatica: si aspetta ──
+        stato.riprendi_scansioni();
+        let automatica = stato.turno_di_scansione().expect("turno libero");
+        assert!(prendi_il_posto());
+        let annunciata = AtomicBool::new(false);
+        let preso = std::thread::scope(|fili| {
+            let filo = fili.spawn(|| {
+                aspetta_il_turno_a_mano(&stato, &mai, &mut |avanzamento| {
+                    assert_eq!(avanzamento.fase, FaseScansione::Attende);
+                    annunciata.store(true, Ordering::Release);
+                })
+                .is_some()
+            });
+            let limite = Instant::now() + Duration::from_secs(10);
+            while !annunciata.load(Ordering::Acquire) {
+                assert!(Instant::now() < limite, "l'attesa non si è annunciata");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // Chi arriva adesso legge l'attesa, come l'evento.
+            assert_eq!(
+                scansione_avanzamento().map(|a| a.fase),
+                Some(FaseScansione::Attende)
+            );
+            annulla(&stato);
+            filo.join().expect("il filo è finito")
+        });
+        assert!(!preso, "un'attesa lasciata non prende il turno");
+        // E quel che `scansiona` risponde allora è una scansione annullata,
+        // nella forma che la finestra legge — non `library.scanBusy`.
+        let lasciata = EsitoScansione::lasciata(Counts::default());
+        assert!(lasciata.annullata);
+        assert_eq!(
+            serde_json::to_value(&lasciata).expect("json")["annullata"],
+            true
+        );
+        assert!(
+            !stato.scansione_fermata(),
+            "la scansione automatica non l'ha fermata nessuno"
+        );
+        assert!(
+            stato.turno_di_scansione().is_none(),
+            "il turno resta a chi lo teneva"
+        );
+        *in_corso() = None;
+
+        // ── l'uscita lascia l'attesa allo stesso modo ──
+        assert!(prendi_il_posto());
+        assert!(aspetta_il_turno_a_mano(&stato, &|| true, &mut |_| ()).is_none());
+        drop(automatica);
+        // E con il turno libero, chi esce non lo prende comunque.
+        assert!(aspetta_il_turno_a_mano(&stato, &|| true, &mut |_| ()).is_none());
+        assert!(stato.turno_di_scansione().is_some(), "e il turno è libero");
+        *in_corso() = None;
+    }
 }

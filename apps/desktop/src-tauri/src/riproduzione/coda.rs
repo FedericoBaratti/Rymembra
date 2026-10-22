@@ -149,7 +149,9 @@ pub(super) fn scegli_da_solo(
     corrente: i64,
     esclusi: &[i64],
 ) -> Option<rymembra_app::autoplay::Scelta> {
-    let stato = app.state::<Stato>();
+    // `try_state`: chi chiede è il filo del preparatore, che può ritrovarsi
+    // vivo mentre gli stati se ne vanno.
+    let stato = app.try_state::<Stato>()?;
     con_libreria(&stato, |libreria| {
         rymembra_app::autoplay::prossimo(&libreria.connection, corrente, esclusi, adesso_ms())
     })
@@ -197,94 +199,165 @@ pub(super) fn scrivi_coda(
 /// La coda torna, la musica no: un'applicazione che comincia a suonare da sola
 /// all'avvio è un'applicazione che fa saltare sulla sedia chi l'ha aperta per
 /// cercare una canzone.
+///
+/// # Prima si legge, poi si prende il lettore
+///
+/// Fino a questa versione le nove letture dal database stavano **dentro** il
+/// lucchetto del lettore, ognuna con la sua presa della libreria. All'avvio
+/// non costava niente a nessuno; con una scansione in corso, chi chiamava
+/// teneva chiuso il lettore per tutta l'attesa della libreria. Adesso si legge
+/// tutto con una presa sola della libreria e a lettore lasciato — vedi
+/// [`leggi_il_salvato`] — e il lettore si prende dopo, il tempo di copiare: vedi
+/// [`rimetti_il_salvato`].
+///
+/// Il motore aperto per la prima volta a programma già avviato — le cuffie
+/// attaccate dopo — non passa di qui: lì il lettore nasce già con quel che c'è
+/// scritto, e non vuoto per essere riempito un attimo dopo. Vedi
+/// `riapertura::riapri_davvero`.
 pub fn riprendi_coda(app: &tauri::AppHandle) {
-    let stato_lettore = app.state::<StatoLettore>();
+    // `try_state`, come in tutto il modulo: uno stato che non c'è più vuol dire
+    // un'applicazione che si chiude, non un panico.
+    let Some(stato_lettore) = app.try_state::<StatoLettore>() else {
+        return;
+    };
+    let salvato = leggi_il_salvato(app);
     let _ = con_lettore(&stato_lettore, |lettore| {
-        let stato = app.state::<Stato>();
-        // Una coda salvata che non si legge non è una ragione per saltare tutto
-        // il resto: col `?` di prima, un guasto qui lasciava il motore col
-        // volume di serie, l'equalizzatore spento e la normalizzazione di
-        // fabbrica — cioè il primo brano a tutto volume per chi teneva il
-        // cursore basso. Si riparte con la coda vuota, e il resto si rimette.
-        match con_libreria(&stato, |libreria| {
-            playback::load_queue(&libreria.connection)
-        }) {
-            Ok(istantanea) => lettore.coda = Queue::restore(istantanea),
-            Err(err) => nota!(
-                "[riproduzione] coda salvata non riletta codice={} causa={}",
-                err.code().kind().code(),
-                err.cause().unwrap_or("—")
-            ),
-        }
-        let volume = con_libreria(&stato, |libreria| {
-            playback::load_volume(&libreria.connection)
-        })
-        .unwrap_or_default();
-        lettore.volume = volume;
-        lettore.motore.volume(volume.volume, volume.muto);
-        let eq = con_libreria(&stato, |libreria| playback::load_eq(&libreria.connection))
-            .unwrap_or_default();
-        lettore.motore.equalizzatore(&eq.guadagni, eq.attivo);
-        lettore.eq = eq;
-        // La normalizzazione si rimanda al motore anche quando coincide con il
-        // suo valore di serie: costa un comando su una coda che è già lì, e
-        // toglie di mezzo la domanda «chi dei due ha ragione» il giorno in cui
-        // uno dei due valori cambiasse.
-        let normalizzazione = con_libreria(&stato, |libreria| {
-            playback::load_replaygain(&libreria.connection)
-        })
-        .unwrap_or_default();
-        lettore
-            .motore
-            .replaygain(normalizzazione.attivo, normalizzazione.bersaglio_db);
-        lettore.normalizzazione = normalizzazione;
-
-        // L'autoplay non si manda al motore — il motore non sa cosa sia una
-        // libreria, ed è giusto così. Serve solo a `prepara_prossimo`, che è
-        // di qui.
-        lettore.autoplay = con_libreria(&stato, |libreria| {
-            playback::load_autoplay(&libreria.connection)
-        })
-        .unwrap_or(false);
-
-        // La dissolvenza invece sì: è il motore a doverla fare, ed è l'unico
-        // che sa quando un brano sta per finire. Si manda anche quando vale
-        // zero, per la stessa ragione della normalizzazione qui sopra.
-        let dissolvenza_s = con_libreria(&stato, |libreria| {
-            playback::load_crossfade(&libreria.connection)
-        })
-        .unwrap_or(0);
-        lettore
-            .motore
-            .dissolvenza(dissolvenza_s.saturating_mul(1000));
-        lettore.dissolvenza_s = dissolvenza_s;
-
-        // E la latenza d'uscita dichiarata a mano, per la stessa ragione: la
-        // compensazione la fa il motore, e un motore appena aperto non sa niente
-        // di quel che l'utente aveva dichiarato. Senza questa riga il cursore
-        // delle impostazioni mostrerebbe il numero scritto e la posizione non ne
-        // terrebbe conto, che è la peggiore delle due bugie possibili.
-        let latenza_ms = con_libreria(&stato, |libreria| {
-            playback::load_latenza(&libreria.connection)
-        })
-        .unwrap_or(0);
-        lettore.motore.latenza(latenza_ms);
-        lettore.latenza_ms = latenza_ms;
-
-        // Quante barre vuole vedere chi guarda. Si applica all'avvio anche se
-        // la schermata è chiusa: costa un messaggio e vuol dire che la prima
-        // apertura mostra la scena giusta invece di quella di serie per un
-        // fotogramma.
-        let bande = con_libreria(&stato, |libreria| {
-            playback::load_spettro_bande(&libreria.connection)
-        })
-        .unwrap_or(rymembra_play::RISOLUZIONE_DI_SERIE);
-        app.state::<StatoLettore>()
-            .spettro_bande
-            .store(bande, std::sync::atomic::Ordering::Relaxed);
-        lettore.motore.spettro_dettaglio(bande);
+        rimetti_il_salvato(&stato_lettore, lettore, salvato);
         Ok(())
     });
+}
+
+/// Quel che [`riprendi_coda`] rimette al suo posto, letto dal database.
+pub(super) struct Salvato {
+    /// La coda, se si è letta. Il guasto, se no, l'ha già scritto nel diario
+    /// [`leggi_il_salvato`].
+    coda: Option<Queue>,
+    volume: playback::Volume,
+    eq: playback::Equalizzazione,
+    normalizzazione: playback::Normalizzazione,
+    autoplay: bool,
+    dissolvenza_s: u64,
+    latenza_ms: i64,
+    bande: u16,
+}
+
+/// Legge tutto quel che [`riprendi_coda`] rimette, con una presa sola della
+/// libreria e senza il lettore in mano.
+///
+/// Ogni lettura ha il suo ripiego, com'era quando erano nove prese diverse:
+/// una preferenza illeggibile vale quella di serie, e non porta via le altre.
+/// Una libreria che non risponde affatto — o che non c'è più — le fa valere
+/// tutte di serie, e la coda resta vuota.
+///
+/// Una coda salvata che non si legge non è una ragione per saltare tutto il
+/// resto: col `?` di una volta, un guasto lì lasciava il motore col volume di
+/// serie, l'equalizzatore spento e la normalizzazione di fabbrica — cioè il
+/// primo brano a tutto volume per chi teneva il cursore basso. Il guasto si
+/// scrive nel diario **qui**, dove nessun lucchetto è in mano.
+pub(super) fn leggi_il_salvato(app: &tauri::AppHandle) -> Salvato {
+    let letto = super::libreria_di(app, "coda salvata").and_then(|stato| {
+        con_libreria(&stato, |libreria| {
+            let c = &libreria.connection;
+            Ok((
+                playback::load_queue(c).map(Queue::restore),
+                Salvato {
+                    coda: None,
+                    volume: playback::load_volume(c).unwrap_or_default(),
+                    eq: playback::load_eq(c).unwrap_or_default(),
+                    normalizzazione: playback::load_replaygain(c).unwrap_or_default(),
+                    autoplay: playback::load_autoplay(c).unwrap_or(false),
+                    dissolvenza_s: playback::load_crossfade(c).unwrap_or(0),
+                    latenza_ms: playback::load_latenza(c).unwrap_or(0),
+                    bande: playback::load_spettro_bande(c)
+                        .unwrap_or(rymembra_play::RISOLUZIONE_DI_SERIE),
+                },
+            ))
+        })
+    });
+    let (coda, mut salvato) = letto.unwrap_or_else(|err| {
+        (
+            Err(err),
+            Salvato {
+                coda: None,
+                volume: playback::Volume::default(),
+                eq: playback::Equalizzazione::default(),
+                normalizzazione: playback::Normalizzazione::default(),
+                autoplay: false,
+                dissolvenza_s: 0,
+                latenza_ms: 0,
+                bande: rymembra_play::RISOLUZIONE_DI_SERIE,
+            },
+        )
+    });
+    match coda {
+        Ok(coda) => salvato.coda = Some(coda),
+        Err(err) => nota!(
+            "[riproduzione] coda salvata non riletta codice={} causa={}",
+            err.code().kind().code(),
+            err.cause().unwrap_or("—")
+        ),
+    }
+    salvato
+}
+
+/// Rimette nel lettore — e nel suo motore — quel che [`leggi_il_salvato`] ha
+/// letto. Si chiama con il lucchetto del lettore in mano, o su un lettore che
+/// nessun altro vede ancora; non aspetta niente.
+pub(super) fn rimetti_il_salvato(
+    stato_lettore: &StatoLettore,
+    lettore: &mut Lettore,
+    salvato: Salvato,
+) {
+    if let Some(coda) = salvato.coda {
+        lettore.coda = coda;
+    }
+    lettore.volume = salvato.volume;
+    lettore
+        .motore
+        .volume(salvato.volume.volume, salvato.volume.muto);
+    lettore
+        .motore
+        .equalizzatore(&salvato.eq.guadagni, salvato.eq.attivo);
+    lettore.eq = salvato.eq;
+    // La normalizzazione si rimanda al motore anche quando coincide con il suo
+    // valore di serie: costa un comando su una coda che è già lì, e toglie di
+    // mezzo la domanda «chi dei due ha ragione» il giorno in cui uno dei due
+    // valori cambiasse.
+    lettore.motore.replaygain(
+        salvato.normalizzazione.attivo,
+        salvato.normalizzazione.bersaglio_db,
+    );
+    lettore.normalizzazione = salvato.normalizzazione;
+
+    // L'autoplay non si manda al motore — il motore non sa cosa sia una
+    // libreria, ed è giusto così. Serve solo a `prepara_prossimo`, che è di qui.
+    lettore.autoplay = salvato.autoplay;
+
+    // La dissolvenza invece sì: è il motore a doverla fare, ed è l'unico che sa
+    // quando un brano sta per finire. Si manda anche quando vale zero, per la
+    // stessa ragione della normalizzazione qui sopra.
+    lettore
+        .motore
+        .dissolvenza(salvato.dissolvenza_s.saturating_mul(1000));
+    lettore.dissolvenza_s = salvato.dissolvenza_s;
+
+    // E la latenza d'uscita dichiarata a mano, per la stessa ragione: la
+    // compensazione la fa il motore, e un motore appena aperto non sa niente di
+    // quel che l'utente aveva dichiarato. Senza questa riga il cursore delle
+    // impostazioni mostrerebbe il numero scritto e la posizione non ne terrebbe
+    // conto, che è la peggiore delle due bugie possibili.
+    lettore.motore.latenza(salvato.latenza_ms);
+    lettore.latenza_ms = salvato.latenza_ms;
+
+    // Quante barre vuole vedere chi guarda. Si applica all'avvio anche se la
+    // schermata è chiusa: costa un messaggio e vuol dire che la prima apertura
+    // mostra la scena giusta invece di quella di serie per un fotogramma. Anche
+    // nella copia fuori dal motore, che sopravvive a una riapertura: vedi
+    // `StatoLettore::spettro_bande`.
+    stato_lettore
+        .spettro_bande
+        .store(salvato.bande, std::sync::atomic::Ordering::Relaxed);
+    lettore.motore.spettro_dettaglio(salvato.bande);
 }
 
 /// Un gesto sulla coda, e poi — se il gesto lo chiede — la partenza.
@@ -539,8 +612,13 @@ pub fn coda_riordina(
 }
 
 /// Svuota la coda e ferma tutto.
+///
+/// Il flusso si sveglia **prima**, a lucchetto lasciato: fermare il motore
+/// svuota l'anello, e svuotarlo vuole il flusso sveglio. Vedi
+/// `super::sveglia_fuori_dal_lucchetto`.
 #[tauri::command]
 pub fn coda_svuota(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+    super::sveglia_fuori_dal_lucchetto(&stato);
     con_lettore(&stato, |lettore| {
         ricorda_coda_di_prima(&app, lettore, None);
         chiudi_ascolto(&app, lettore);

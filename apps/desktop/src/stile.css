@@ -353,8 +353,11 @@
 }
 
 /*
- * Quel che il resto del foglio legge. Nessuna regola conosce né `--ritmo-*` né
- * `--densita-k`: continuano tutte a chiedere `--spazio-3`, e qui si compone.
+ * Quel che il resto del foglio legge. Nessuna regola conosce `--ritmo-*`:
+ * continuano tutte a chiedere `--spazio-3`, e qui si compone. `--densita-k` lo
+ * leggono a parte soltanto le altezze dei comandi — `.campo`, `.bottone` — che
+ * non sono spaziature: devono stringersi con la densità ma non con il ritmo
+ * della skin, che può scendere fino a zero.
  *
  * Il selettore elenca due posti, e non è una cintura con le bretelle. Una
  * proprietà personalizzata si **eredita già risolta**: composta solo su `:root`,
@@ -1380,7 +1383,7 @@ body {
   flex: 0 1 250px;
   width: 250px;
   min-width: 170px;
-  height: 34px;
+  height: calc(34px * var(--densita-k));
   padding: 0 12px;
   background: var(--color-surface-2);
   border: 1px solid var(--hairline);
@@ -1599,7 +1602,10 @@ body {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  padding: 8px var(--spazio-3);
+  /* In verticale con la densità, come l'altezza di `.campo`: un bottone che
+     sta accanto a una casella si stringe e si allarga con lei, invece di
+     restare alto quanto in «comoda» accanto a una casella che si è stretta. */
+  padding: calc(8px * var(--densita-k)) var(--spazio-3);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-card);
   background: var(--color-surface-2);
@@ -1642,7 +1648,7 @@ body {
   color: var(--color-text-3);
 }
 .bottone.minuto {
-  padding: 4px 10px;
+  padding: calc(4px * var(--densita-k)) 10px;
   font-size: 12px;
 }
 
@@ -2833,6 +2839,15 @@ body {
 .in-riproduzione .corpo {
   position: relative;
 }
+/* Lo spettro caduto (`RecintoErrori` in `Recinto.tsx`, stretto): la fascia
+   prende il posto della scena, e come la testata deve stare sopra l'ambiente e
+   lo scrim — che sono posizionati, e un blocco che non lo è finirebbe sotto di
+   loro, con «Riprova» coperto dal fondo sfocato. Il margine è quello della
+   testata, così la fascia si allinea al titolo. */
+.in-riproduzione > .avviso {
+  position: relative;
+  margin: var(--spazio-3) 32px 0;
+}
 
 /* Le notizie a schermo intero: la loro casa in cima alla pagina è coperta da
    questa schermata. Galleggiano sotto la testata, dove non coprono «Chiudi»
@@ -3347,12 +3362,19 @@ body {
  * rende leggibile il titolo — quel nero arriva all'ottanta per cento in basso,
  * cioè esattamente dove stanno le barre.
  *
- * La maschera è ciò che tiene leggibile il testo: la scena si spegne salendo, e
+ * La sfumatura è ciò che tiene leggibile il testo: la scena si spegne salendo, e
  * dove c'è il sommario ne resta un terzo. Si apre più in alto di prima — al
  * sedici per cento invece che al trentaquattro — perché il sommario si è
  * spostato in un angolo e la fascia centrale, che era coperta dalla copertina e
- * dalle dieci barre, adesso è tutta della scena. Costa una sfumatura sul
- * compositore, che è il posto in cui costa meno.
+ * dalle dieci barre, adesso è tutta della scena.
+ *
+ * Non è più una `mask-image` qui: la fa lo shader della scena
+ * (`Spettro3D.tsx`, `FRAMMENTO`), con gli stessi tre stop. Il commento che
+ * stava qui diceva che sul compositore costava meno, e misurato non era vero:
+ * una tela che cambia a ogni fotogramma con una maschera sopra è una passata in
+ * più su tutto lo schermo a ogni fotogramma, cinque punti di GPU su quarantotto
+ * sul portatile del banco di misura — per un'alfa che nel frammento si
+ * moltiplica gratis.
  */
 .in-riproduzione .scena-spettro {
   position: absolute;
@@ -3363,12 +3385,6 @@ body {
   /* Decorazione: il clic passa attraverso e arriva a quel che c'è sotto. Senza,
      una tela grande quanto lo schermo si mangerebbe ogni clic della schermata. */
   pointer-events: none;
-  mask-image: linear-gradient(
-    180deg,
-    transparent 0%,
-    rgb(0 0 0 / 0.35) 16%,
-    rgb(0 0 0 / 1) 42%
-  );
 }
 
 .coda-np {
@@ -3453,7 +3469,7 @@ body {
      Era 0.45, cioè un velo, ed è la stessa ricetta di `.coda-np`: sopra una
      copertina sfocata funziona. Sopra la scena dello spettro no — quella è una
      tela che ridisegna sessanta volte al secondo delle barre chiare, e la
-     maschera di `.scena-spettro` le sfuma **in alto**, cioè le lascia piene
+     sfumatura della scena (nel suo shader) le spegne **in alto**, cioè le lascia piene
      esattamente nella metà bassa del pannello, che è dov'è quasi tutto il
      testo. Misurato sullo screenshot: una riga non accesa cadeva a 4.4:1 nella
      parte buona e sotto il 3:1 sopra le barre. Non ci sono due modi di leggere
@@ -3525,7 +3541,8 @@ body {
   overflow-x: clip;
   scrollbar-width: none;
   /* Le righe si dissolvono ai bordi invece di essere tranciate dall'angolo
-     tondo del pannello. È la stessa maschera che porta `.scena-spettro`. La
+     tondo del pannello. È lo stesso gesto della sfumatura della scena dello
+     spettro, che però sta nel suo shader e non qui. La
      sfumatura di sotto è più lunga di quella di sopra perché di sotto entra
      quel che deve ancora arrivare: una riga che entra sfumando si comincia a
      leggere mentre entra, una che esce non la rilegge nessuno. */
@@ -4407,7 +4424,7 @@ body {
   height: 15px;
   border-radius: 4px;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--color-text-2);
   cursor: pointer;
 }
@@ -4482,7 +4499,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 32px;
+  height: calc(32px * var(--densita-k));
   padding: 0 12px;
   background: var(--color-surface-2);
   border: 1px solid var(--hairline);
@@ -4925,7 +4942,7 @@ body {
   background: var(--accent-soft);
   color: var(--accent);
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
 }
 /*
  * L'etichettina in mono maiuscoletto: è la stessa in tutto lo Studio, e si
@@ -5014,7 +5031,7 @@ body {
   border-radius: 99px;
   background: var(--color-surface-3);
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 600;
 }
 .livello .via {
@@ -5292,7 +5309,7 @@ body {
 }
 .pila-caratteri .posto {
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--color-text-3);
   text-align: center;
 }
@@ -5341,7 +5358,7 @@ body {
 }
 .valore-ombra .misura-ombra span {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   color: var(--color-text-3);
 }
 .valore-ombra .misura-ombra input {
@@ -5841,7 +5858,7 @@ body {
   padding: 2px 8px;
   border-radius: 99px;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -5961,7 +5978,7 @@ body {
 }
 .tasto-cerca {
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--color-text-3);
 }
 .albero-parti {
@@ -6357,7 +6374,7 @@ body {
   flex: none;
   width: 22px;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   text-transform: uppercase;
   color: var(--color-text-3);
 }
@@ -6895,7 +6912,7 @@ body {
 .selettore-stato {
   max-width: 100%;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--color-text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7378,7 +7395,7 @@ body {
   background: var(--warning-soft);
   color: var(--warning);
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   white-space: nowrap;
 }
 .campioni-contrasto {
@@ -7540,7 +7557,7 @@ body {
   top: 2px;
   transform: translateX(-50%);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   color: var(--color-text-3);
   pointer-events: none;
 }
@@ -8348,6 +8365,18 @@ body {
 .impostazioni .numeri dd {
   margin: 2px 0 0;
 }
+/* Una data fra i numeri: «05/10/2026, 12:25» non è un numero da leggere per
+   primo, e alla misura dei titoli non ci stava — andava a capo dopo la virgola
+   con l'ora sola sotto, più grande delle etichette di tutta la scheda. Qui è
+   piccola abbastanza da stare su una riga nelle colonne di una scheda larga, e
+   in una stretta va a capo in due righe pari, data sopra e ora sotto. Il
+   carattere resta quello dei numeri: è sempre un dato della scheda. */
+.impostazioni .numeri dd[data-quando] {
+  font-size: 14px;
+  line-height: 1.3;
+  letter-spacing: 0;
+  text-wrap: balance;
+}
 /* Il carattere da titolo anche qui: un numero grande in una scheda di
    statistiche non è un dato in una tabella, è il titolo di quella scheda —
    «1 421» è ciò che si legge per primo e la parola sotto lo spiega.
@@ -8585,7 +8614,7 @@ body {
   position: absolute;
   top: 3px;
   right: 4px;
-  font-size: 9px;
+  font-size: 10px;
   font-family: var(--font-mono);
   line-height: 1;
 }
@@ -9124,7 +9153,7 @@ body {
   gap: 4px;
   max-width: 100%;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: 99px;
   background: var(--color-surface-1);
   color: var(--color-text-2);
   font-size: 10.5px;
@@ -9267,7 +9296,7 @@ body {
   flex: none;
   padding: 2px 9px;
   border: 1px solid var(--hairline);
-  border-radius: 999px;
+  border-radius: 99px;
   background: transparent;
   color: var(--color-text-2);
   font: inherit;
@@ -9401,12 +9430,16 @@ body {
   cursor: default;
   opacity: 0.55;
 }
+/* Il nome intero, a capo quante volte serve: nella terza colonna un titolo ha
+   meno di duecento pixel, e i puntini nascondevano proprio la parte che
+   distingue due versioni dello stesso brano. `anywhere` e non `break-word`
+   perché anche una parola sola più larga della colonna deve andare a capo, e
+   senza alzare il minimo della traccia: la × resterebbe fuori dalla riga. La
+   coda regge righe di altezza diversa (`altezzeDiverse` in `virtuale.ts`). */
 .riga-coda .nome,
 .riga-coda .autore {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .riga-coda .autore {
   font-size: 11px;
@@ -9848,7 +9881,12 @@ body {
 .campo,
 .editor-regole input,
 .editor-regole select {
-  height: 34px;
+  /* L'altezza segue la densità come le spaziature intorno: con «compatta» i
+     campi restavano alti quanto in «comoda», e una riga di filtri stretti
+     aveva in mezzo una casella che non si era stretta. Il moltiplicatore e non
+     `--spazio-5`, che vale 34 pixel per caso: è il ritmo della skin, e una
+     skin che lo porta a zero non deve far sparire le caselle. */
+  height: calc(34px * var(--densita-k));
   padding: 0 var(--spazio-3);
   background: var(--color-surface-2);
   border: 1px solid var(--hairline);
@@ -9869,6 +9907,25 @@ body {
 .campo::placeholder,
 .editor-regole input::placeholder {
   color: var(--color-text-3);
+}
+
+/*
+ * La casella dentro la pillola della ricerca non è un campo: il campo è la
+ * pillola (`.cerca`), che ha già il fondo, il bordo, l'incavo e — col fuoco —
+ * l'anello. Le regole di ogni pillola toglievano al `.campo` di dentro qualcosa
+ * e non tutto: in Esplora restavano l'incavo e l'anello del fuoco, nel filtro
+ * delle Cartelle anche il fondo e il bordo, e si vedeva un rettangolo
+ * arrotondato dentro l'altro, spostato dopo la lente. Qui si toglie tutto, una
+ * volta per le tre pillole, fuoco compreso: `.campo:focus` pesa quanto una
+ * regola di pagina e viene dopo, quindi va battuto per nome.
+ */
+.cerca .campo,
+.cerca .campo:focus {
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 /* ── scelta di una playlist ──────────────────────────────────────────────── */
@@ -12041,8 +12098,9 @@ body {
  * brano — spostarla fuori la farebbe scivolare a fine riga, dove sembrerebbe
  * una proprietà della coda invece che di quella traccia.
  *
- * Una riga sola come le altre due: la coda ha righe di altezza fissa, e una
- * frase che va a capo sfalserebbe tutto quel che c'è sotto. */
+ * Una riga sola, a differenza delle altre due: quelle sono il nome del brano e
+ * vanno lette intere, questa è un commento — e un commento che va a capo
+ * pesa nella riga quanto il titolo. */
 .riga-coda .perche {
   display: block;
   overflow: hidden;
@@ -12594,7 +12652,7 @@ body {
   gap: 8px;
   flex: 1 1 auto;
   min-width: 170px;
-  height: 34px;
+  height: calc(34px * var(--densita-k));
   padding: 0 12px;
   background: var(--color-surface-2);
   border: 1px solid var(--hairline);

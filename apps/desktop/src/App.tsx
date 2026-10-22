@@ -57,6 +57,7 @@ import {
   useState,
 } from "react";
 
+import { accorpa } from "./accorpa";
 import { Account } from "./Account";
 import { AggiungiAPlaylist, fraseDellAggiunta } from "./AggiungiAPlaylist";
 import { ugualiInSuperficie, useArchivio } from "./archivio";
@@ -120,8 +121,9 @@ import {
   type AzioniBrani,
 } from "./menuBrani";
 import { NuovoTema } from "./NuovoTema";
-import { paginaCorrente } from "./pagina";
-import { useAscolto, useRada } from "./pagine";
+import { chiaveDiPagina, paginaCorrente } from "./pagina";
+import { sportelloAscolti, useAscolto, useRada } from "./pagine";
+import { Annuncio } from "./parti/Annuncio";
 import { AnnuncioScansione } from "./parti/AnnuncioScansione";
 import { AvvisoAggiornamento } from "./parti/Aggiornamenti";
 import { AvvisoCoda } from "./parti/AvvisoCoda";
@@ -144,29 +146,32 @@ import {
 } from "./presenza";
 import { Primo } from "./Primo";
 import { elencoPieno, type ArchivioRado, type Elenco } from "./rada";
+import { RecintoErrori } from "./Recinto";
 import { Regole } from "./Regole";
 import { useRicerca } from "./ricerca";
 import { Ripristino } from "./Ripristino";
 import { useRiproduzione } from "./riproduzione";
 import { useAvanzamentoScansione } from "./scansione";
 import { Artisti } from "./schermate/Artisti";
+import { CartelleFinte } from "./schermate/Cartelle";
 import { ElencoFinto, GrigliaFinta } from "./schermate/Elenco";
 import {
   Esplora,
   ESPLORA_INIZIALE,
   type StatoEsplora,
 } from "./schermate/Esplora";
-import { Home, TestaHome } from "./schermate/Home";
+import { Home, testaHome } from "./schermate/Home";
 import {
   SchermataImportazioni,
   TestaImportazioni,
 } from "./schermate/Importazioni";
 import type { Sezione } from "./schermate/Impostazioni";
-import { GrigliaAlbum, StatoVuoto, TestaLibreria } from "./schermate/Libreria";
+import { GrigliaAlbum, StatoVuoto, testaLibreria } from "./schermate/Libreria";
 import { chiaveDellaSelezione } from "./selezione";
 import { useSelezione } from "./selezioneVista";
 import { useSkinAttiva } from "./skinAttiva";
 import { useStabile } from "./stabile";
+import { vinceLUltima } from "./ultima";
 import { PillolaProva } from "./studio/PillolaProva";
 import { sorgenteNuova, type DatiTema } from "./studio/nuovo";
 import { campoRicerca, useScorciatoie } from "./tastiera";
@@ -221,10 +226,23 @@ const NESSUN_BRANO: Brano[] = [];
 /** Nessuna scelta: la selezione delle viste nascoste, con un'identità sola. */
 const NESSUNA_SCELTA: ReadonlySet<number> = new Set();
 
+/**
+ * Quanto si aspetta il secondo evento di una raffica prima di rileggere la
+ * libreria: vedi `ricaricaAccorpata`.
+ *
+ * Il nucleo li manda uno dopo l'altro dallo stesso filo, e arrivano a pochi
+ * millisecondi; cinquanta li prendono anche con la finestra impegnata a
+ * disegnare, e dopo una scansione di secondi tre fotogrammi non si vedono.
+ */
+const ACCORPA_RICARICHE_MS = 50;
+
 
 export function App() {
   const [errore, setErrore] = useStatoPresente<Guasto | null>(null);
   const segnalaErrore = useCallback((e: unknown) => setErrore(guastoDa(e)), []);
+  // Un ascolto del nucleo che non si apre finisce nella stessa fascia: vedi
+  // `sportelloAscolti` in `pagine.ts`.
+  useEffect(() => sportelloAscolti(segnalaErrore), [segnalaErrore]);
   /**
    * `avvio`, le playlist, la scansione e il suo esito: vedi `libreria.ts`, e lì
    * perché sono quattro archivi e non quattro stati di questo componente.
@@ -480,6 +498,20 @@ export function App() {
   }, [dimenticaTema, ricarica, rileggiSkin, ricaricaSkin, rileggiAccento, rileggiMovimento]);
 
   /**
+   * Fuori dallo Studio, per la sua porta o per quella del suo recinto.
+   *
+   * Una funzione sola per le due: chiudere dal recinto — lo Studio è caduto —
+   * deve lasciare la finestra com'è dopo una chiusura normale, prova
+   * dimenticata e skin rilette compresi.
+   */
+  const esciDalloStudio = useCallback(() => {
+    setStudioAperto(null);
+    skinFinestra.scordaProva();
+    // Le skin possono essere cambiate mentre si era là dentro.
+    void ricaricaSkin();
+  }, [skinFinestra, ricaricaSkin]);
+
+  /**
    * La terza colonna, che si chiude da sé quando la finestra si stringe: vedi
    * `terzaColonna.ts`. Qui, dove stava l'ascolto del ridimensionamento.
    */
@@ -605,7 +637,7 @@ export function App() {
    * Gli artisti della vista Artisti, tenuti finché la libreria non cambia:
    * vedi `artisti.ts`.
    */
-  const { artisti, artistiInArrivo, invalidaArtisti } = useArtisti(
+  const { artisti, artistiInArrivo, artistiGuasto, invalidaArtisti } = useArtisti(
     vista,
     cercando,
     segnalaErrore,
@@ -704,6 +736,34 @@ export function App() {
   }, [ricaricaBrani, ricaricaContorno]);
 
   /**
+   * Rilegge la libreria dopo un cambiamento venuto dal nucleo: una volta per
+   * raffica di eventi.
+   *
+   * Dei brani scaricati che entrano in libreria arrivano con **due** eventi di
+   * fila — `scarico:in_libreria` e subito dopo `cartelle:cambiate` — e ognuno
+   * rileggeva tutto: due `avvio`, due giri di pagine per ogni elenco aperto,
+   * per una scansione sola. Adesso il primo apre una finestra di
+   * `ACCORPA_RICARICHE_MS`, il secondo ci entra, e alla chiusura la libreria si
+   * rilegge una volta (`accorpa.ts`). Le scansioni della sorveglianza, dalla
+   * 3.0.2, mandano già soltanto `cartelle:cambiate`.
+   *
+   * Il lavoro passa da un riferimento perché `caricaVista` cambia con la vista
+   * aperta: quel che parte alla chiusura deve essere quello di adesso, non
+   * quello del disegno in cui la finestra si è aperta.
+   */
+  const ricaricaDalNucleo = useRef(() => {});
+  useEffect(() => {
+    ricaricaDalNucleo.current = () => {
+      void ricarica();
+      caricaVista();
+    };
+  });
+  const [ricaricaAccorpata] = useState(() =>
+    accorpa(() => ricaricaDalNucleo.current(), ACCORPA_RICARICHE_MS),
+  );
+  useEffect(() => () => ricaricaAccorpata.butta(), [ricaricaAccorpata]);
+
+  /**
    * I brani scaricati sono entrati in libreria.
    *
    * La coda, quando finisce, rifà una scansione da sé: i file presi dai
@@ -711,11 +771,12 @@ export function App() {
    * aperta continuerebbe a mostrare i conteggi di prima — una libreria a cui
    * sono appena arrivati quaranta brani che non compaiono finché non si cambia
    * schermata.
+   *
+   * Un ascolto suo anche se fa quel che fa `cartelle:cambiate`: l'evento porta
+   * quanti brani sono entrati, ed è qui che andrebbe una notizia per i
+   * download, se un giorno la si vorrà.
    */
-  useAscolto("scarico:in_libreria", () => {
-    void ricarica();
-    void caricaVista();
-  });
+  useAscolto("scarico:in_libreria", () => ricaricaAccorpata.chiama());
 
   /*
    * La libreria è cambiata sotto: una scansione — anche quella che parte da
@@ -726,15 +787,12 @@ export function App() {
    * elenchi; le righe si invalidano, e quelle che si guardano si richiedono.
    * Una vista nascosta non chiede niente finché non torna.
    *
-   * Dopo una scansione a mano arriva insieme alla risposta di `scansiona`, che
-   * fa le stesse due cose: due invalidazioni di fila costano una pagina
-   * richiesta due volte, e saltarne una vorrebbe dire sapere quale delle due
-   * strade ha portato il cambiamento.
+   * Accorpato con `scarico:in_libreria`, vedi sopra. Dopo una scansione a mano
+   * arriva invece insieme alla risposta di `scansiona`, che fa le stesse due
+   * cose per conto suo e non passa di qui: là la barra resta finché la
+   * libreria non è riletta, e quella rilettura `scansiona` la deve aspettare.
    */
-  useAscolto("cartelle:cambiate", () => {
-    void ricarica();
-    caricaVista();
-  });
+  useAscolto("cartelle:cambiate", () => ricaricaAccorpata.chiama());
 
   /*
    * I brani dell'album aperto.
@@ -746,9 +804,17 @@ export function App() {
    * due album in fila veloce poteva ritrovarsi sotto il secondo i brani del
    * primo, se la prima risposta arrivava dopo: la risposta di una richiesta
    * superata si butta.
+   *
+   * «Superata» vuol dire da chiunque, non solo da questo effetto: anche la
+   * rilettura dopo un'eliminazione fallita (`elimina`) chiede i brani
+   * dell'album, e prima li scriveva comunque, cioè sotto l'album che nel
+   * frattempo si era aperto. Le due strade prendono il turno dallo stesso
+   * contatore (`ultima.ts`), e chiudere l'album ne prende uno anche lui.
    */
   const albumDiPrima = useRef<string | null>(null);
+  const [turnoAlbum] = useState(vinceLUltima);
   useEffect(() => {
+    const mio = turnoAlbum();
     if (!aperto) {
       albumDiPrima.current = null;
       return;
@@ -759,15 +825,17 @@ export function App() {
     ipc
       .braniAlbum(aperto.albumKey)
       .then((brani) => {
-        if (!superata) setBraniAperto(brani);
+        if (!superata && mio()) setBraniAperto(brani);
       })
       .catch((e: unknown) => {
-        if (!superata) segnalaErrore(e);
+        if (!superata && mio()) segnalaErrore(e);
       });
     return () => {
       superata = true;
     };
-  }, [aperto]);
+    // `segnalaErrore` e il turno non cambiano mai: ci sono perché l'effetto li
+    // legge, non perché lo facciano ripartire.
+  }, [aperto, segnalaErrore, turnoAlbum]);
 
   /** Porta in una vista, azzerando tutto quel che le sta sopra. */
   const vaiA = useCallback((dove: Vista) => {
@@ -1084,24 +1152,22 @@ export function App() {
    * Le due cose insieme e non due pulsanti: fra «ho detto dove sta la musica» e
    * «voglio che la legga» non c'è nessuna decisione in mezzo, e il secondo
    * pulsante esisteva solo perché il primo non sapeva cosa fare dopo.
+   *
+   * `useStabile` e non `useCallback` con le dipendenze vuote: `scansiona` è
+   * definita in questo corpo e cambia identità a ogni disegno, e la versione
+   * del primo disegno chiamava `caricaVista` con la `vista` di allora — una
+   * domanda in più alla Home da qualunque pagina. Così l'identità resta una, e
+   * chiama sempre l'ultima.
    */
-  const primoConferma = useCallback(
-    async (cartelle: string[]) => {
-      try {
-        await ipc.impostaCartelle(cartelle);
-        await ricarica();
-        await scansiona();
-      } catch (e) {
-        segnalaErrore(e);
-      }
-    },
-    // `scansiona` è definita in questo corpo e cambia identità a ogni disegno
-    // (`ricarica` no: è della libreria, `libreria.ts`): entrarci nelle
-    // dipendenze farebbe rifare questa lambda a ogni disegno per niente. Chi
-    // la riceve non la confronta.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
+  const primoConferma = useStabile(async (cartelle: string[]) => {
+    try {
+      await ipc.impostaCartelle(cartelle);
+      await ricarica();
+      await scansiona();
+    } catch (e) {
+      segnalaErrore(e);
+    }
+  });
 
   /** Il dialogo di sistema, per chi la musica la tiene altrove. */
   const primoScegli = useCallback(async () => {
@@ -1112,8 +1178,7 @@ export function App() {
       segnalaErrore(e);
       return null;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [segnalaErrore]);
 
   /**
    * L'ultimo clic prima del suono.
@@ -1136,8 +1201,7 @@ export function App() {
         segnalaErrore(e);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [segnalaErrore, setPrimoChiuso]);
 
   /**
    * Le cartelle sorvegliate: aggiungere, togliere, dove scaricare, e la
@@ -1147,11 +1211,12 @@ export function App() {
     gemella,
     setGemella,
     scegliCartella,
-    dopoLeCartelle,
+    aggiungiCartelle,
     trasloca,
     scegliCartellaDownload,
     togliCartella,
-  } = useCartelleSorvegliate({ avvio, ricarica, setNotizia, segnalaErrore });
+    occupate: cartelleOccupate,
+  } = useCartelleSorvegliate({ libreria, setNotizia, segnalaErrore });
 
   /**
    * Sceglie un file di playlist da importare.
@@ -1313,6 +1378,7 @@ export function App() {
     presa,
     mira,
     lascia,
+    rileggiPlaylist,
   } = usePlaylistAperta({ playlistAperta, setPlaylistAperta, libreria, segnalaErrore });
 
   /**
@@ -1751,15 +1817,28 @@ export function App() {
         // `caricaVista` rifà gli elenchi impaginati, non questi due: hanno
         // effetti loro, legati all'album e alla playlist aperti, che un errore
         // non fa scattare.
-        if (aperto) {
-          ipc.braniAlbum(aperto.albumKey).then(setBraniAperto).catch(segnalaErrore);
-        }
-        if (playlistAperta) {
+        // Col turno, tutte e due: fra il clic e la risposta si può aver
+        // aperto un altro album, o un'altra playlist, e i brani di questo non
+        // devono finire sotto quella.
+        //
+        // Il turno da solo non basta: preso qui, *dopo* le due attese, sarebbe
+        // l'ultimo, e farebbe vincere i brani di questo album anche sopra la
+        // lettura dell'album aperto nel frattempo. Quindi prima si guarda se
+        // l'album aperto adesso (`albumDiPrima`, che l'effetto tiene
+        // aggiornato) è ancora quello del clic, e lo si riguarda all'arrivo.
+        const chiave = aperto?.albumKey;
+        if (chiave !== undefined && albumDiPrima.current === chiave) {
+          const mio = turnoAlbum();
           ipc
-            .playlistBrani(playlistAperta.id)
-            .then(setBraniPlaylist)
-            .catch(segnalaErrore);
+            .braniAlbum(chiave)
+            .then((brani) => {
+              if (mio() && albumDiPrima.current === chiave) setBraniAperto(brani);
+            })
+            .catch((errore: unknown) => {
+              if (mio() && albumDiPrima.current === chiave) segnalaErrore(errore);
+            });
         }
+        if (playlistAperta) rileggiPlaylist();
       }
     },
     [
@@ -1772,6 +1851,8 @@ export function App() {
       ricaricaPlaylist,
       caricaVista,
       segnalaErrore,
+      turnoAlbum,
+      rileggiPlaylist,
     ],
   );
 
@@ -1978,14 +2059,10 @@ export function App() {
       if (cartelle?.dove === "sorvegliate" && avvio) {
         vaiA("impostazioni");
         setSezione("cartelle");
-        const unite = [...new Set([...avvio.cartelle, ...cartelle.percorsi])];
-        ipc
-          .impostaCartelle(unite)
-          .then(async (esito) => {
-            await ricarica();
-            dopoLeCartelle(esito);
-          })
-          .catch(segnalaErrore);
+        // Dalla fila delle cartelle e non da `avvio`: un trascinamento mentre si
+        // toglie una cartella partiva dall'elenco di prima e la rimetteva. Vedi
+        // `elencoCartelle.ts`.
+        void aggiungiCartelle(cartelle.percorsi);
         return;
       }
       if (piano.notizia === "fuoriLibreria") setNotizia(t("drop.notInLibrary"));
@@ -2235,6 +2312,13 @@ export function App() {
    *
    * Quale pagina sia lo dice `pagina`, e lo dice una volta sola per
    * l'intestazione e per il corpo: vedi `pagina.ts`.
+   *
+   * Ogni pagina con la casella di ricerca restituisce `Intestazione` **diretta**,
+   * mai un componente che la avvolge: alla prima lettera la pagina diventa la
+   * ricerca, e un tipo diverso nello stesso posto fa rifare a React la testata
+   * da capo — col campo nuovo senza fuoco, e chi scriveva doveva ricliccarci.
+   * Le testate di Home e libreria arrivano per questo come prop
+   * (`testaHome`, `testaLibreria`).
    */
   const testa = () => {
     if (pagina.tipo === "importazioni") {
@@ -2409,16 +2493,18 @@ export function App() {
       );
     }
     if (pagina.tipo === "home") {
-      return <TestaHome query={query} onQuery={setQuery} />;
+      return <Intestazione {...testaHome()} query={query} onQuery={setQuery} />;
     }
     return (
-      <TestaLibreria
-        vista={pagina.vista}
-        numeri={numeri}
-        cartelle={avvio?.cartelle.length ?? 0}
+      <Intestazione
+        {...testaLibreria({
+          vista: pagina.vista,
+          numeri,
+          cartelle: avvio?.cartelle.length ?? 0,
+          ordinamento: { etichetta: etichettaOrdine, onApri: menuOrdine },
+        })}
         query={query}
         onQuery={setQuery}
-        ordinamento={{ etichetta: etichettaOrdine, onApri: menuOrdine }}
       />
     );
   };
@@ -2499,6 +2585,7 @@ export function App() {
           aspetto={aspetto}
           skin={skinFinestra}
           azioni={azioniImpostazioni}
+          cartelleOccupate={cartelleOccupate}
         />
       );
     }
@@ -2717,9 +2804,12 @@ export function App() {
     // chiede da sé, un livello alla volta, e uno scheletro di righe di brani
     // sopra un albero sarebbe l'attesa di qualcos'altro.
     if (vista === "cartelle") {
+      // Senza `avvio` le radici non si sanno: un elenco vuoto qui farebbe dire
+      // alla pagina «nessuna cartella», che non è vero. Vedi `CartelleFinte`.
+      if (avvio === null) return <CartelleFinte />;
       return (
         <CartelleCollegate
-          radici={avvio?.cartelle ?? []}
+          radici={avvio.cartelle}
           onMenu={setMenu}
           onErrore={segnalaErrore}
           /* Il pannello dei brani della cartella è l'elenco di sempre, e si
@@ -2753,6 +2843,19 @@ export function App() {
     switch (v) {
       case "brani":
       case "preferiti":
+        // Nessun preferito: l'elenco disegnava l'intestazione delle colonne
+        // sopra il vuoto, cioè una tabella che sembra non essersi caricata. Il
+        // conto viene da `avvio`, che il cuore tiene allineato da sé
+        // (`cambiaPreferito`), quindi non c'è un istante in cui menta.
+        if (v === "preferiti" && avvio !== null && avvio.numeri.liked === 0) {
+          return (
+            <StatoVuoto
+              icona="i-heart"
+              titolo={t("empty.liked.title")}
+              testo={t("empty.liked.body")}
+            />
+          );
+        }
         return (
           <ElencoBraniCollegato
             rada={v === "brani" ? radaBrani : radaPreferiti}
@@ -2786,6 +2889,19 @@ export function App() {
         // I segnaposto solo la prima volta: una rilettura degli artisti tiene a
         // schermo quelli di prima finché non arrivano i nuovi.
         if (artisti.length === 0 && artistiInArrivo) return <GrigliaFinta />;
+        // Una lettura fallita non è una libreria senza artisti: lo stato vuoto
+        // qui direbbe «nessun artista», che è la frase sbagliata. Con degli
+        // artisti già in mano si tengono quelli, e il guasto lo dice la fascia.
+        if (artisti.length === 0 && artistiGuasto) {
+          return (
+            <StatoVuoto
+              icona="i-alert"
+              titolo={t("artists.error.title")}
+              testo={t("artists.error.hint")}
+              azione={{ etichetta: t("common.retry"), fai: invalidaArtisti }}
+            />
+          );
+        }
         return (
           <Artisti
             artisti={artisti}
@@ -2824,14 +2940,26 @@ export function App() {
    * La libreria vuota e quella senza cartelle si dicono al posto della vista:
    * la vista resta montata e nascosta, e torna quando la libreria si riempie.
    */
+  /*
+   * Ogni pagina nel suo recinto (`Recinto.tsx`): una che cade prende il posto
+   * di sé stessa e basta, e la navigazione, il lettore e la coda restano. Le
+   * viste tenute montate ne hanno uno ciascuna, dentro il loro `<Activity>`;
+   * le altre ne dividono uno che si rialza da solo cambiando pagina.
+   */
   const corpo = () => (
     <>
       {VISTE_TENUTE.filter((v) => visitate.includes(v)).map((v) => (
         <Activity key={v} mode={v === tenutaVisibile ? "visible" : "hidden"}>
-          {disegnaTenuta(v, v === tenutaVisibile)}
+          <RecintoErrori dove={`pagina ${v}`}>
+            {disegnaTenuta(v, v === tenutaVisibile)}
+          </RecintoErrori>
         </Activity>
       ))}
-      {tenutaVisibile === null && corpoAltro()}
+      {tenutaVisibile === null && (
+        <RecintoErrori dove="pagina" chiave={chiaveDiPagina(pagina)}>
+          {corpoAltro()}
+        </RecintoErrori>
+      )}
     </>
   );
 
@@ -2872,9 +3000,12 @@ export function App() {
    * vestito l'uno ha già vestito l'altro. In due posti come la fascia, e per la
    * stessa ragione. Il gettone si legge al clic e l'avviso se ne va subito: un
    * secondo clic non deve chiedere un secondo ripristino.
+   *
+   * Non parla lui a chi ascolta lo schermo: nasce già pieno, e in due copie.
+   * Lo dice una regione sola, sempre montata, accanto a quella delle notizie.
    */
   const avvisoCancellata = cancellata !== null && (
-    <div className="notizia avviso-coda toast-card" role="status">
+    <div className="notizia avviso-coda toast-card">
       <Icona nome="i-check" dim={16} />
       <span>{t("playlist.deleted", { nome: cancellata.nome })}</span>
       <button
@@ -2956,22 +3087,27 @@ export function App() {
                     perdere la posizione di scorrimento dell'elenco, e chiudere
                     riporterebbe in cima a una libreria che si stava guardando a metà. */}
                 {grande && conBrano ? (
-                  <InRiproduzioneCollegata
-                    onChiudi={() => setGrande(false)}
-                    onPreferito={cambiaPreferito}
-                    onVoto={cambiaVoto}
-                    onErrore={segnalaErrore}
-                    avvisi={
-                      <>
-                        {/* Una seconda copia, montata solo qui: quella nella
-                            pagina è sotto, `inert`. Vede gli avvisi che nascono a
-                            schermo intero; quelli di prima erano già a schermo. */}
-                        <AvvisoCoda onErrore={segnalaErrore} />
-                        {avvisoCancellata}
-                        {notizieDiFascia}
-                      </>
-                    }
-                  />
+                  <RecintoErrori
+                    dove="in riproduzione"
+                    uscita={{ etichetta: t("common.close"), fai: () => setGrande(false) }}
+                  >
+                    <InRiproduzioneCollegata
+                      onChiudi={() => setGrande(false)}
+                      onPreferito={cambiaPreferito}
+                      onVoto={cambiaVoto}
+                      onErrore={segnalaErrore}
+                      avvisi={
+                        <>
+                          {/* Una seconda copia, montata solo qui: quella nella
+                              pagina è sotto, `inert`. Vede gli avvisi che nascono a
+                              schermo intero; quelli di prima erano già a schermo. */}
+                          <AvvisoCoda onErrore={segnalaErrore} />
+                          {avvisoCancellata}
+                          {notizieDiFascia}
+                        </>
+                      }
+                    />
+                  </RecintoErrori>
                 ) : null}
                 {/* `inert` a schermo intero: la pagina resta montata ma è
                     coperta, e un Tab che ci entrasse porterebbe il fuoco su un
@@ -3324,6 +3460,22 @@ export function App() {
         {giroAperto && <Giro onPrepara={preparaGiro} onChiudi={chiudiGiro} />}
       </div>
 
+      {/* Le notizie della fascia e «Playlist eliminata — Annulla», a chi
+          ascolta lo schermo: una regione sola per ciascuna, sempre montata, e
+          non i riquadri, che nascono già pieni e in più copie (vedi
+          `Annuncio.tsx`). Fuori da `.finestra-app`, che diventa `inert` mentre
+          lo Studio la copre: anche lì le notizie si vedono, e vanno dette. E
+          fuori dalla fascia, perché nel primo avvio la fascia sta in un
+          contenitore che si nasconde quando è vuoto (`.primo-avvisi:empty`). */}
+      <Annuncio testo={notizia} />
+      <Annuncio
+        testo={
+          cancellata === null
+            ? null
+            : t("playlist.deleted", { nome: cancellata.nome })
+        }
+      />
+
       {/* Lo Studio occupa la finestra intera, navigazione compresa: è un'altra
           applicazione dentro la stessa finestra, e tenere la barra della
           libreria accanto a un editor di skin darebbe due navigazioni che non
@@ -3332,40 +3484,45 @@ export function App() {
       {studioAperto !== null && (
         <Activity mode={studioInProva ? "hidden" : "visible"}>
           <div className="strato-studio">
-            <Suspense
-              fallback={
-                <div className="studio3 caricando" role="status">
-                  {t("common.loading")}
-                </div>
-              }
+            {/* Il recinto attorno al caricamento, non solo allo Studio: un
+                pacchetto che non arriva cade qui come un guasto di disegno, e
+                senza «Chiudi lo Studio» resterebbe una finestra coperta da una
+                fascia rossa. Gli avvisi qui sotto restano fuori: devono poter
+                dire anche questo. */}
+            <RecintoErrori
+              dove="studio"
+              uscita={{ etichetta: t("crash.studio.close"), fai: esciDalloStudio }}
             >
-              <Studio
-                id={studioAperto}
-                onEsci={() => {
-                  setStudioAperto(null);
-                  skinFinestra.scordaProva();
-                  // Le skin possono essere cambiate mentre si era là dentro.
-                  void ricaricaSkin();
-                }}
-                // «Salva e usa» ridipinge la finestra intera, non solo
-                // l'anteprima dentro lo Studio: è la stessa strada di quando si
-                // sceglie una skin.
-                onInstallata={(id) => void scegliSkin(id)}
-                // La chat dello Studio, senza un modello configurato, non
-                // promette niente e porta qui: la scheda sta in una finestra che
-                // lo Studio nasconde per intero, e dire «configurane uno» senza
-                // portarci lascerebbe da cercare.
-                onModelli={() => {
-                  setStudioAperto(null);
-                  skinFinestra.scordaProva();
-                  void ricaricaSkin();
-                  vaiA("impostazioni");
-                  setSezione("modelli");
-                }}
-                onProva={skinFinestra.iniziaProva}
-                onErrore={segnalaErrore}
-              />
-            </Suspense>
+              <Suspense
+                fallback={
+                  <div className="studio3 caricando" role="status">
+                    {t("common.loading")}
+                  </div>
+                }
+              >
+                <Studio
+                  id={studioAperto}
+                  onEsci={esciDalloStudio}
+                  // «Salva e usa» ridipinge la finestra intera, non solo
+                  // l'anteprima dentro lo Studio: è la stessa strada di quando si
+                  // sceglie una skin.
+                  onInstallata={(id) => void scegliSkin(id)}
+                  // La chat dello Studio, senza un modello configurato, non
+                  // promette niente e porta qui: la scheda sta in una finestra che
+                  // lo Studio nasconde per intero, e dire «configurane uno» senza
+                  // portarci lascerebbe da cercare.
+                  onModelli={() => {
+                    setStudioAperto(null);
+                    skinFinestra.scordaProva();
+                    void ricaricaSkin();
+                    vaiA("impostazioni");
+                    setSezione("modelli");
+                  }}
+                  onProva={skinFinestra.iniziaProva}
+                  onErrore={segnalaErrore}
+                />
+              </Suspense>
+            </RecintoErrori>
             {/* Gli avvisi anche qui. Lo Studio copre la finestra, e la fascia
                 della pagina resta sotto di lui: un errore di «Esporta» o di
                 «Prova sull'app» finiva lì, dove nessuno lo vedeva. Sono gli

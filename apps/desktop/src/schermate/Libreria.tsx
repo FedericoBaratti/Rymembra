@@ -19,7 +19,6 @@ import { t } from "../lingue";
 import type { VistaLibreria } from "../pagina";
 import { useVersione } from "../pagine";
 import { Icona, type NomeIcona } from "../parti/Icone";
-import { Intestazione } from "../parti/Intestazione";
 import { COPERTINA_IN_VOLO, Presenza, Volo } from "../presenza";
 import type { SorgenteRada } from "../rada";
 import { conIndice, suonoAlbum, useQuelCheSuona } from "../segnali";
@@ -268,17 +267,30 @@ export function GrigliaAlbum({
 /**
  * Il riquadro di quando non c'è niente: un'icona, cosa manca, e se si può,
  * il gesto che lo riempie.
+ *
+ * Uno per tutte le pagine, e non copiato in ognuna: le copie scritte a mano
+ * erano sei, e la prima differenza fra due di loro sarebbe stata una skin che
+ * veste lo stato vuoto degli album e non quello degli artisti.
+ *
+ * `nota` è la riga in più, più piccola, che qualche pagina ha da dire sotto la
+ * spiegazione. `secondaria` lascia il gesto nel suo grigio: quando la pagina
+ * vuota non è un guasto da riparare ma un posto dove si arriverà — la coda
+ * delle importazioni — un tasto colorato lo farebbe sembrare un dovere.
  */
 export function StatoVuoto({
   icona,
   titolo,
   testo,
+  nota,
   azione,
 }: {
   icona: NomeIcona;
   titolo: string;
   testo: React.ReactNode;
-  azione?: { etichetta: string; fai: () => void } | undefined;
+  nota?: React.ReactNode;
+  azione?:
+    | { etichetta: string; fai: () => void; secondaria?: boolean | undefined }
+    | undefined;
 }) {
   return (
     <div className="vuoto empty-state">
@@ -287,8 +299,13 @@ export function StatoVuoto({
       </span>
       <h2>{titolo}</h2>
       <p>{testo}</p>
+      {nota !== undefined && <p className="nota">{nota}</p>}
       {azione && (
-        <button type="button" className="bottone primario btn-accent" onClick={azione.fai}>
+        <button
+          type="button"
+          className={azione.secondaria ? "bottone" : "bottone primario btn-accent"}
+          onClick={azione.fai}
+        >
           {azione.etichetta}
         </button>
       )}
@@ -296,21 +313,26 @@ export function StatoVuoto({
   );
 }
 
-/** La testata di una vista della libreria, quando niente è aperto sopra. */
-export function TestaLibreria({
+/**
+ * La testata di una vista della libreria, quando niente è aperto sopra.
+ *
+ * Le prop di `Intestazione`, non un componente che la avvolge: alla prima
+ * lettera nella casella la pagina diventa quella della ricerca, che disegna
+ * `Intestazione` diretta, e un componente in mezzo era un tipo diverso nello
+ * stesso posto. React rifaceva la testata da capo, il campo nuovo nasceva senza
+ * fuoco, e chi scriveva doveva ricliccarci dopo la prima lettera. La casella la
+ * aggiunge chi disegna: `testa()` in `App.tsx`, e lo Studio.
+ */
+export function testaLibreria({
   vista,
   numeri,
   cartelle,
-  query,
-  onQuery,
   ordinamento,
 }: {
   vista: VistaLibreria;
   numeri: Avvio["numeri"] | undefined;
   /** Quante cartelle si sorvegliano. */
   cartelle: number;
-  query: string;
-  onQuery: (testo: string) => void;
   /** Solo sui Brani, l'unica vista che si ordina. */
   ordinamento?: { etichetta: string; onApri: (e: React.MouseEvent) => void } | undefined;
 }) {
@@ -325,14 +347,10 @@ export function TestaLibreria({
     preferiti: [t("nav.favorites"), t("page.library.liked", { n: numeri?.liked ?? 0 })],
   };
   const [titolo, sotto] = titoli[vista];
-  return (
-    <Intestazione
-      occhiello={t("page.library")}
-      titolo={titolo}
-      sottotitolo={sotto}
-      query={query}
-      onQuery={onQuery}
-      {...(vista === "brani" && ordinamento ? { ordinamento } : {})}
-    />
-  );
+  return {
+    occhiello: t("page.library"),
+    titolo,
+    sottotitolo: sotto,
+    ...(vista === "brani" && ordinamento ? { ordinamento } : {}),
+  };
 }

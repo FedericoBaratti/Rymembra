@@ -29,10 +29,16 @@
 //!
 //! # Le due regole del ripristino
 //!
-//! **Non si sovrascrive mai.** Né una skin installata né una bozza. Una skin
-//! locale può essere stata modificata a mano; una bozza *è* lavoro non ancora
-//! salvato. Un ripristino è una cosa che si fa quando si è già perso qualcosa:
-//! non deve poter essere la seconda perdita.
+//! **Non si sovrascrive mai il lavoro di qualcuno.** Né una skin installata né
+//! una bozza. Una skin locale può essere stata modificata a mano; una bozza *è*
+//! lavoro non ancora salvato. Un ripristino è una cosa che si fa quando si è già
+//! perso qualcosa: non deve poter essere la seconda perdita.
+//!
+//! Quel che si sostituisce è soltanto ciò che il lavoro di nessuno non può
+//! essere: una copia di quegli stessi byte rimasta a metà, e una skin che non si
+//! apre nemmeno come archivio. Il perché, e come si riconoscono, sta in
+//! [`da_scrivere`]. E da qui in poi si scrive in modo che a metà non resti
+//! niente: vedi [`scrivi`].
 //!
 //! **Non ci si fida dei byte scaricati.** [`scrivi_skin`] li fa passare per
 //! `rymembra_skin::read_skin_package`, che porta le guardie dell'archivio non
@@ -45,6 +51,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rymembra_app::backup::impronta;
+use rymembra_app::scrittura::scrivi_atomico;
 use rymembra_domain::errors::{AppError, ErrorCode};
 
 /// La skin che viene dal binario e non dalla cartella.
@@ -127,6 +134,36 @@ pub fn elenca_skin(data_dir: &Path) -> BTreeMap<String, String> {
     trovate
 }
 
+/// Come [`elenca_skin`], senza le skin il cui archivio non si apre.
+///
+/// # Perché il backup e il ripristino non devono vederle
+///
+/// Un `.ryskin` troncato — una copia interrotta, un disco che ha perso un
+/// settore — ha un'impronta diversa da quella del backup. Per il backup
+/// «diversa» vuol dire «cambiata», e la passata dopo lo caricherebbe **sopra**
+/// la copia buona che sta su Drive: il guasto di un disco diventerebbe il
+/// guasto del backup, l'unico posto da cui si sarebbe potuto rimediare. Per il
+/// ripristino, una skin elencata vuol dire «già installata», e la copia buona
+/// non verrebbe mai riscaricata. Lasciarla fuori fa il giusto da tutti e due i
+/// lati: il backup non la tocca (e lassù non si cancella mai niente), il
+/// ripristino la vede mancante e la rimette da Drive.
+///
+/// Rotta vuol dire soltanto `skin.packageCorrupt`, come in [`scrivi_skin`]:
+/// una skin che si apre e porta una voce che questa versione non conosce può
+/// venire da una versione più nuova, ed è sana.
+#[must_use]
+pub fn elenca_skin_sane(data_dir: &Path) -> BTreeMap<String, String> {
+    let mut trovate = elenca_skin(data_dir);
+    trovate.retain(|id, _| !leggi_skin(data_dir, id).is_ok_and(|bytes| archivio_rotto(&bytes)));
+    trovate
+}
+
+/// L'archivio di una skin non si apre nemmeno come archivio.
+fn archivio_rotto(bytes: &[u8]) -> bool {
+    rymembra_skin::package::leggi_manifesto(bytes)
+        .is_err_and(|err| matches!(err.code(), ErrorCode::SkinPackageCorrupt { .. }))
+}
+
 /// Le bozze dello Studio, con l'impronta del loro manifest.
 ///
 /// Una cartella di bozza senza `skin.json` non è una bozza: è il residuo di un
@@ -181,10 +218,12 @@ pub fn leggi_bozza(data_dir: &Path, id: &str) -> Result<Vec<u8>, AppError> {
     })
 }
 
-/// Installa una skin scaricata, **senza mai sovrascriverne una che c'è**.
+/// Installa una skin scaricata, **senza mai sovrascriverne una sana che c'è**.
 ///
-/// Restituisce `false` quando la skin c'era già: non è un guasto, è la
-/// condizione normale di un ripristino ripetuto.
+/// Restituisce `false` quando la skin c'era già — identica, o diversa e sana:
+/// non è un guasto, è la condizione normale di un ripristino ripetuto. Una che
+/// c'è ma è rotta — una copia a metà, un archivio che non si apre — si
+/// sostituisce: vedi [`da_scrivere`].
 ///
 /// # I tre controlli, e cosa impedisce ciascuno
 ///
@@ -207,7 +246,10 @@ pub fn scrivi_skin(data_dir: &Path, id: &str, bytes: &[u8]) -> Result<bool, AppE
         return Err(AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }));
     }
     let percorso = cartella_skin(data_dir).join(format!("{id}.ryskin"));
-    if percorso.exists() {
+    // Un archivio che non si apre nemmeno come archivio non è il lavoro di
+    // nessuno: è l'avanzo di una scrittura interrotta, anche se viene da un
+    // backup diverso da questo. Vedi [`archivio_rotto`].
+    if !da_scrivere(&percorso, bytes, archivio_rotto) {
         return Ok(false);
     }
 
@@ -221,15 +263,15 @@ pub fn scrivi_skin(data_dir: &Path, id: &str, bytes: &[u8]) -> Result<bool, AppE
         );
     }
 
-    let cartella = cartella_skin(data_dir);
-    std::fs::create_dir_all(&cartella).map_err(|err| scrittura(&cartella, &err))?;
-    std::fs::write(&percorso, bytes).map_err(|err| scrittura(&percorso, &err))?;
+    scrivi(&percorso, bytes)?;
     Ok(true)
 }
 
 /// Scrive una bozza dello Studio, **solo se non c'è già**.
 ///
-/// Restituisce `false` quando la bozza c'era. Una bozza è lavoro non salvato: un
+/// Restituisce `false` quando la bozza c'era. «C'era» vuol dire il suo
+/// `skin.json`, non la cartella, e non una copia a metà di questi stessi byte:
+/// vedi [`da_scrivere`]. Una bozza è lavoro non salvato: un
 /// ripristino non se lo mangia, nemmeno se quello nel backup è più recente —
 /// «più recente» qui vorrebbe dire «salvato più tardi su un altro computer», che
 /// non dice niente su quale dei due valga di più.
@@ -246,8 +288,16 @@ pub fn scrivi_bozza(data_dir: &Path, id: &str, bytes: &[u8]) -> Result<bool, App
     if !id_sicuro(id) {
         return Err(AppError::new(ErrorCode::SkinNotFound { id: id.to_owned() }));
     }
-    let cartella = cartella_bozze(data_dir).join(id);
-    if cartella.exists() {
+    // Il manifest e non la cartella: una cartella senza `skin.json` è il
+    // residuo di un salvataggio interrotto — [`elenca_bozze`] non la elenca, e
+    // proprio per questo il piano la chiede — e «la cartella c'è» la saltava
+    // a ogni ripristino, per sempre.
+    //
+    // Nessun «rotto» oltre la copia a metà: lo Studio salva anche le bozze che
+    // non passano la validazione, perché sono lavoro in corso, e un manifest
+    // che non si legge può essere esattamente quello.
+    let file = cartella_bozze(data_dir).join(id).join(MANIFEST);
+    if !da_scrivere(&file, bytes, |_| false) {
         return Ok(false);
     }
 
@@ -259,19 +309,67 @@ pub fn scrivi_bozza(data_dir: &Path, id: &str, bytes: &[u8]) -> Result<bool, App
     })?;
     rymembra_skin::parse_skin_json(sorgente)?;
 
-    std::fs::create_dir_all(&cartella).map_err(|err| scrittura(&cartella, &err))?;
-    let file = cartella.join(MANIFEST);
-    std::fs::write(&file, bytes).map_err(|err| scrittura(&file, &err))?;
+    scrivi(&file, bytes)?;
     Ok(true)
 }
 
-/// Una scrittura fallita, nominando il file.
-fn scrittura(percorso: &Path, err: &std::io::Error) -> AppError {
-    AppError::new(ErrorCode::FsWriteFailed {
-        path: percorso.display().to_string(),
-        detail: Some(err.kind().to_string()),
+/// Se un ripristino deve scrivere `percorso` con `remoti`, guardando cosa c'è
+/// già sul disco.
+///
+/// # Il confronto, al posto di «c'è già»
+///
+/// Fino alla 3.0 bastava che il file ci fosse. Ma il ripristino scriveva con un
+/// `fs::write` qualunque, e uno interrotto — la corrente, un'uscita forzata, un
+/// disco pieno — lasciava il file col nome giusto e dentro una parte del
+/// pacchetto: un `.ryskin` che non si apre, che «c'era già» a ogni ripristino
+/// dopo e che quindi non tornava più. Adesso si guarda **cosa** c'è:
+///
+/// * **niente** — si scrive;
+/// * **gli stessi byte** — non c'è niente da fare, ed è il caso normale di un
+///   ripristino ripetuto;
+/// * **una copia a metà di questi byte** — più corta o lunga uguale, e dove
+///   differisce ci sono zeri: è quel che `write` lascia quando si ferma, o
+///   quando la lunghezza è arrivata sul disco e il contenuto no. Nessuno
+///   scrive a mano un file così, e si completa;
+/// * **qualcosa che `rotto` riconosce come guasto** — si sostituisce. Per le
+///   skin è un archivio che non si apre; per le bozze niente, vedi
+///   [`scrivi_bozza`];
+/// * **altro** — è lavoro di qualcuno, e resta. Anche quando non si legge: un
+///   file che il ripristino non sa interpretare non è un file che il
+///   ripristino ha il diritto di buttare.
+///
+/// Un errore di lettura diverso da «non c'è» vale come «altro»: se il disco
+/// non lascia leggere, scriverci sopra alla cieca è peggio che non ripristinare.
+fn da_scrivere(percorso: &Path, remoti: &[u8], rotto: impl Fn(&[u8]) -> bool) -> bool {
+    let locali = match std::fs::read(percorso) {
+        Ok(locali) => locali,
+        Err(err) => return err.kind() == std::io::ErrorKind::NotFound,
+    };
+    if locali == remoti {
+        return false;
+    }
+    let a_meta = locali.len() <= remoti.len()
+        && locali
+            .iter()
+            .zip(remoti)
+            .all(|(locale, remoto)| locale == remoto || *locale == 0);
+    a_meta || rotto(&locali)
+}
+
+/// Scrive un pacchetto ripristinato in modo che nessuno possa trovarlo a metà.
+///
+/// Passa da [`rymembra_app::scrittura::scrivi_atomico`]: un ripristino interrotto
+/// adesso lascia il file di prima o nessun file, mai un pezzo — ed è quel che
+/// rende vero il confronto di [`da_scrivere`] anche domani. Crea le cartelle
+/// che mancano.
+fn scrivi(percorso: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    scrivi_atomico(percorso, bytes).map_err(|err| {
+        AppError::new(ErrorCode::FsWriteFailed {
+            path: percorso.display().to_string(),
+            detail: Some(err.code().kind().code().to_owned()),
+        })
+        .with_cause(err.to_string())
     })
-    .with_cause(err.to_string())
 }
 
 #[cfg(test)]
@@ -317,6 +415,37 @@ mod prove {
         let elenco = elenca_skin(dir.path());
         assert_eq!(elenco.len(), 1);
         assert_eq!(elenco.get("notte"), Some(&impronta(&bytes)));
+    }
+
+    #[test]
+    fn una_skin_rotta_in_locale_non_va_nel_backup_e_si_riscarica() {
+        // `notte` è sana, `giorno` è stata troncata da una copia interrotta.
+        // Il backup non deve vedere `giorno` — la caricherebbe sopra la copia
+        // buona di Drive — e il ripristino la deve vedere mancante, così la
+        // copia buona torna al suo posto.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let notte = pacchetto("notte");
+        let giorno = pacchetto("giorno");
+        assert_eq!(scrivi_skin(dir.path(), "notte", &notte), Ok(true));
+        let percorso = cartella_skin(dir.path()).join("giorno.ryskin");
+        std::fs::write(
+            &percorso,
+            giorno.get(..giorno.len().div_euclid(3)).expect("un terzo"),
+        )
+        .expect("troncata");
+
+        assert_eq!(
+            elenca_skin(dir.path()).len(),
+            2,
+            "elencate lo sono tutte e due"
+        );
+        let sane = elenca_skin_sane(dir.path());
+        assert_eq!(sane.keys().collect::<Vec<_>>(), vec!["notte"]);
+
+        // Il ripristino che la riscarica la rimette intera.
+        assert_eq!(scrivi_skin(dir.path(), "giorno", &giorno), Ok(true));
+        assert_eq!(std::fs::read(&percorso).expect("rilettura"), giorno);
+        assert_eq!(elenca_skin_sane(dir.path()).len(), 2);
     }
 
     #[test]
@@ -477,6 +606,148 @@ mod prove {
             elenco.get("in-corso"),
             Some(&impronta(rymembra_skin::PLAIN_SOURCE.as_bytes())),
             "l'impronta è quella del manifest, non della cartella"
+        );
+    }
+
+    /// I nomi dei file in una cartella, ordinati.
+    fn nomi(cartella: &Path) -> Vec<String> {
+        let mut nomi: Vec<String> = std::fs::read_dir(cartella)
+            .expect("cartella")
+            .filter_map(|voce| Some(voce.ok()?.file_name().to_string_lossy().into_owned()))
+            .collect();
+        nomi.sort();
+        nomi
+    }
+
+    /// Il guasto che il ripristino lasciava: un `.ryskin` scritto a metà da un
+    /// ripristino interrotto, col nome giusto. «C'è già» lo saltava a ogni
+    /// ripristino dopo, per sempre.
+    #[test]
+    fn una_skin_troncata_da_un_ripristino_interrotto_si_rimpiazza() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let bytes = pacchetto("notte");
+        let cartella = dir.path().join("skin");
+        std::fs::create_dir_all(&cartella).expect("cartella");
+        let mezzo = bytes.get(..bytes.len().div_euclid(2)).expect("metà");
+        std::fs::write(cartella.join("notte.ryskin"), mezzo).expect("troncata");
+
+        assert_eq!(scrivi_skin(dir.path(), "notte", &bytes), Ok(true));
+        assert_eq!(
+            std::fs::read(cartella.join("notte.ryskin")).expect("letta"),
+            bytes
+        );
+        assert_eq!(nomi(&cartella), ["notte.ryskin"], "nessun temporaneo");
+    }
+
+    /// Un archivio che non si apre nemmeno come archivio non è il lavoro di
+    /// nessuno: anche se non è la metà di **questo** pacchetto — il ripristino
+    /// interrotto poteva venire da un backup più vecchio — si rimpiazza.
+    #[test]
+    fn una_skin_che_non_si_apre_si_rimpiazza() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let cartella = dir.path().join("skin");
+        std::fs::create_dir_all(&cartella).expect("cartella");
+        std::fs::write(cartella.join("notte.ryskin"), b"PK\x03\x04 a meta").expect("rotta");
+
+        let bytes = pacchetto("notte");
+        assert_eq!(scrivi_skin(dir.path(), "notte", &bytes), Ok(true));
+        assert_eq!(
+            std::fs::read(cartella.join("notte.ryskin")).expect("letta"),
+            bytes
+        );
+    }
+
+    /// Una skin sana e diversa da quella del backup resta: può essere stata
+    /// modificata a mano, e il ripristino non è il posto dove decidere chi
+    /// delle due valga di più.
+    #[test]
+    fn una_skin_sana_e_diversa_resta() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let sorgente = rymembra_skin::PLAIN_SOURCE
+            .replace("\"id\": \"plain\"", "\"id\": \"notte\"")
+            .replace("\"name\": \"Plain\"", "\"name\": \"Mia\"");
+        let mia = rymembra_skin::write_skin_package(&rymembra_skin::package::WritePackageInput {
+            source: &sorgente,
+            preview: None,
+            assets: &[],
+        })
+        .expect("pacchetto modificato");
+        let cartella = dir.path().join("skin");
+        std::fs::create_dir_all(&cartella).expect("cartella");
+        std::fs::write(cartella.join("notte.ryskin"), &mia).expect("mia");
+
+        assert_eq!(
+            scrivi_skin(dir.path(), "notte", &pacchetto("notte")),
+            Ok(false)
+        );
+        assert_eq!(
+            std::fs::read(cartella.join("notte.ryskin")).expect("letta"),
+            mia
+        );
+    }
+
+    /// Una cartella di bozza senza `skin.json` è il residuo di un salvataggio
+    /// interrotto — lo dice già [`elenca_bozze`], che non la elenca — e quindi
+    /// il piano la chiede. «La cartella c'è» la saltava.
+    #[test]
+    fn una_bozza_senza_manifest_si_scrive() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let cartella = dir.path().join("skin").join("bozze").join("in-corso");
+        std::fs::create_dir_all(&cartella).expect("cartella vuota");
+
+        let sorgente = rymembra_skin::PLAIN_SOURCE.as_bytes();
+        assert_eq!(scrivi_bozza(dir.path(), "in-corso", sorgente), Ok(true));
+        assert_eq!(leggi_bozza(dir.path(), "in-corso").as_deref(), Ok(sorgente));
+        assert_eq!(nomi(&cartella), ["skin.json"], "nessun temporaneo");
+    }
+
+    /// Un manifest tagliato a metà, o con la coda di zeri che un'interruzione
+    /// di corrente lascia dopo un `write`, è il backup scritto a metà: si
+    /// completa.
+    #[test]
+    fn una_bozza_scritta_a_meta_si_completa() {
+        let sorgente = rymembra_skin::PLAIN_SOURCE.as_bytes();
+        let mezzo = sorgente
+            .get(..sorgente.len().div_euclid(3))
+            .expect("un terzo");
+        let mut a_zeri = mezzo.to_vec();
+        a_zeri.resize(sorgente.len(), 0);
+        for rotta in [Vec::new(), mezzo.to_vec(), a_zeri] {
+            let dir = tempfile::tempdir().expect("cartella temporanea");
+            let cartella = dir.path().join("skin").join("bozze").join("in-corso");
+            std::fs::create_dir_all(&cartella).expect("cartella");
+            std::fs::write(cartella.join(MANIFEST), &rotta).expect("rotta");
+
+            assert_eq!(
+                scrivi_bozza(dir.path(), "in-corso", sorgente),
+                Ok(true),
+                "{} byte rimasti",
+                rotta.len()
+            );
+            assert_eq!(leggi_bozza(dir.path(), "in-corso").as_deref(), Ok(sorgente));
+        }
+    }
+
+    /// Una bozza non valida ma **non** rotta resta: lo Studio salva anche le
+    /// bozze che non passano la validazione, perché sono lavoro in corso.
+    #[test]
+    fn una_bozza_non_valida_ma_scritta_da_qualcuno_resta() {
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let cartella = dir.path().join("skin").join("bozze").join("in-corso");
+        std::fs::create_dir_all(&cartella).expect("cartella");
+        std::fs::write(cartella.join(MANIFEST), b"{ \"a meta\": ").expect("lavoro in corso");
+
+        assert_eq!(
+            scrivi_bozza(
+                dir.path(),
+                "in-corso",
+                rymembra_skin::PLAIN_SOURCE.as_bytes()
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            leggi_bozza(dir.path(), "in-corso").as_deref(),
+            Ok(&b"{ \"a meta\": "[..])
         );
     }
 }

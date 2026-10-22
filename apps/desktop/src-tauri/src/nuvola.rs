@@ -1201,8 +1201,10 @@ fn pianifica(
     let dal_backup = backup::dal_salvataggio(&da.contenuto, &qui.tombstones);
     // Le skin **disponibili**, non solo quelle installate: `plain` viene dal
     // binario, e senza di lei una skin attiva `plain` nel backup sembrerebbe
-    // impossibile da ripristinare.
-    let skin_locali: Vec<String> = pacchetti::elenca_skin(dati)
+    // impossibile da ripristinare. Le sane soltanto: una skin il cui archivio
+    // non si apre deve risultare mancante, così il piano la riscarica — vedi
+    // `pacchetti::elenca_skin_sane`.
+    let skin_locali: Vec<String> = pacchetti::elenca_skin_sane(dati)
         .into_keys()
         .chain(std::iter::once(pacchetti::DI_SERIE.to_owned()))
         .collect();

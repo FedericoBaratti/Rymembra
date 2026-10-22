@@ -75,6 +75,20 @@
 //! abbandona anche se alla sonda risponde ancora — vedi [`SCADENZE_DI_FILA`].
 //! Senza quella regola una share viva ma esausta si farebbe pagare
 //! venticinque secondi per ogni file rimasto, uno dopo l'altro.
+//!
+//! # Le immagini CD
+//!
+//! Un `.cue` accanto a un'immagine fa diventare l'immagine i suoi brani: voci
+//! virtuali `….cue|NN` decise dal dominio ([`rymembra_domain::cue`]), una riga
+//! per brano con `immagine`, `inizio_cd` e `fine_cd` (migrazione 034). I fogli
+//! letti si ricordano in `fogli_cue`, e i brani della stessa immagine si
+//! leggono aprendola una volta sola: vedi [`Scan::run_con`].
+//!
+//! # Un no si ricorda
+//!
+//! Un file che il lettore rifiuta per com'è fatto non si riapre alla passata
+//! dopo, finché non cambia lui o il lettore: vedi la migrazione 032 e
+//! [`ScanReport::illeggibili_noti`].
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -84,11 +98,15 @@ use rusqlite::{Connection, Row, Transaction, TransactionBehavior};
 use rymembra_domain::album::{AlbumMember, AlbumRow, album_group_key, build_album_groups};
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_domain::keys::{ContentKey, ContentKeyInput, TrackKey, TrackKeyInput};
-use rymembra_domain::paths::{PathRules, file_stem, is_under};
-use rymembra_domain::scan_plan::{
-    DiscoveredFile, KnownTrack, RemoveReason, RemovedIdentity, ScanInput, ScanPlan,
-    match_moved_tracks, plan_scan,
+use rymembra_domain::paths::{
+    PathRules, extension_of, file_stem, is_supported_audio_path, is_under, path_key,
 };
+use rymembra_domain::scan_plan::{
+    DiscoveredFile, KnownTrack, PendingUpdate, RemoveReason, RemovedIdentity, ScanInput, ScanPlan,
+    SkipReason, match_moved_tracks, plan_scan, stessa_grafia,
+};
+
+use rymembra_domain::cue::{Abbinamento, Foglio, brano_d_immagine};
 
 use crate::covers::{CoverSource, CoverStore, StoredCover};
 use crate::files::{MusicFiles, Voce};
@@ -336,6 +354,19 @@ pub struct TrackRow {
     pub mb_release_group_id: Option<String>,
     /// Identificativo MusicBrainz della pubblicazione.
     pub mb_release_id: Option<String>,
+    /// Il file audio vero di un brano d'immagine CD (vedi la migrazione 034);
+    /// `None` per un file intero.
+    ///
+    /// Si scrive **sempre**, anche quando è `None`: un brano d'immagine che
+    /// torna file intero — l'immagine tagliata a mano in brani con gli stessi
+    /// tag, riconosciuta come spostamento — deve perdere il riferimento, e un
+    /// `UPDATE` che saltasse le tre colonne lo lascerebbe a suonare un pezzo di
+    /// un file che non c'entra più.
+    pub immagine: Option<String>,
+    /// Dove comincia il brano dentro l'immagine, in fotogrammi CD (1/75 s).
+    pub inizio_cd: Option<i64>,
+    /// Dove finisce, escluso; `None` per l'ultimo, che arriva in fondo al file.
+    pub fine_cd: Option<i64>,
 }
 
 /// Legge un file e ne costruisce la riga, salvando la copertina nello store.
@@ -453,6 +484,9 @@ pub fn read_track(
         mb_recording_id: tags.mb_recording_id,
         mb_release_group_id: tags.mb_release_group_id,
         mb_release_id: tags.mb_release_id,
+        immagine: None,
+        inizio_cd: None,
+        fine_cd: None,
     })
 }
 
@@ -562,8 +596,9 @@ fn insert_cover(tx: &Transaction<'_>, row: &TrackRow, now: i64) -> Result<(), Ap
         .map_err(|err| db_error("registrazione di una copertina", &err))
 }
 
-/// I ventotto campi che un brano prende dal file, nell'ordine dei segnaposto,
-/// più quel che l'istruzione aggiunge in coda (`?29`).
+/// I campi che un brano prende dal file, nell'ordine dei segnaposto: i ventotto
+/// di sempre, la chiave di contenuto (`?29`), quel che l'istruzione aggiunge in
+/// coda (`?30`) e le tre colonne dei brani d'immagine (`?31`–`?33`).
 ///
 /// Un elenco solo per inserimento e aggiornamento. Scritto due volte, prima o
 /// poi le due copie divergono su una colonna, e il risultato è un campo che si
@@ -619,6 +654,11 @@ macro_rules! esegui_coi_campi {
             // lo sbaglia in silenzio.
             $row.content_key,
             $coda,
+            // Dopo la coda per la stessa ragione di `content_key`: aggiunte
+            // in fondo, nessun segnaposto di prima cambia numero.
+            $row.immagine,
+            $row.inizio_cd,
+            $row.fine_cd,
         ])
     }};
 }
@@ -635,11 +675,11 @@ fn insert_track(tx: &Transaction<'_>, row: &TrackRow, now: i64) -> Result<(), Ap
                sample_rate, channels, codec, file_size, date_modified,
                replaygain_track_db, replaygain_album_db, mb_recording_id,
                mb_release_group_id, mb_release_id, content_key, date_added,
-               source
+               source, immagine, inizio_cd, fine_cd
              ) VALUES (
                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26,
-               ?27, ?28, ?29, ?30, 'scan'
+               ?27, ?28, ?29, ?30, 'scan', ?31, ?32, ?33
              )",
         )
         .map_err(|err| db_error("inserimento di un brano", &err))?;
@@ -714,7 +754,8 @@ fn update_track(
                channels = ?20, codec = ?21, file_size = ?22, date_modified = ?23,
                replaygain_track_db = ?24, replaygain_album_db = ?25,
                mb_recording_id = ?26, mb_release_group_id = ?27,
-               mb_release_id = ?28, content_key = ?29
+               mb_release_id = ?28, content_key = ?29,
+               immagine = ?31, inizio_cd = ?32, fine_cd = ?33
              WHERE id = ?30",
         )
         .map_err(|err| db_error("aggiornamento di un brano", &err))?;
@@ -751,6 +792,14 @@ fn update_track(
 /// Restituisce quante righe aspettano la rilettura. I brani di catalogo non
 /// hanno un file, e non si contano.
 ///
+/// # E le due memorie della scansione si svuotano
+///
+/// La memoria dei rifiuti (`file_illeggibili`, migrazione 032) e la cache dei
+/// fogli `.cue` (`fogli_cue`, migrazione 034): sono le due cose per cui una
+/// scansione **non** riapre un file, e chi chiede di rileggere tutto chiede
+/// proprio di riaprirli. Un file rifiutato da un lettore di allora, o un foglio
+/// letto male da un parser di allora, tornano a essere guardati.
+///
 /// # E gli album si rifanno da capo
 ///
 /// Chi chiede di rileggere tutto sta dicendo che la libreria in tabella non gli
@@ -769,6 +818,9 @@ pub fn rileggi_tutti_i_tag(connection: &Connection) -> Result<usize, AppError> {
               WHERE path IS NOT NULL AND date_modified <> -1",
             [],
         )
+        .map_err(|err| db_error("richiesta di rilettura dei tag", &err))?;
+    connection
+        .execute_batch("DELETE FROM file_illeggibili; DELETE FROM fogli_cue;")
         .map_err(|err| db_error("richiesta di rilettura dei tag", &err))?;
     chiedi_ricostruzione_intera(connection)?;
     connection
@@ -1230,7 +1282,20 @@ thread_local! {
 /// cambia la regola — `rymembra_domain::album`, o il modo in cui qui si leggono
 /// i membri — **alza questo numero**, e la prima scansione dopo l'aggiornamento
 /// rimette tutto in riga da sé.
-pub const VERSIONE_AGGREGATI: i64 = 1;
+///
+/// # Le versioni
+///
+/// - **1** — la regola con cui è arrivata la ricostruzione per chiavi.
+/// - **2** — due super-gruppi con la stessa chiave canonica si fondono, e la
+///   chiusura per chiavi segue anche quel legame: vedi [`build_album_groups`].
+///   Con la 1 un disco riletto a metà faceva fallire ogni ricostruzione su
+///   `UNIQUE constraint failed: albums.album_key`. Chi scrive i brani — la
+///   scansione, l'arricchimento — li conferma prima, in una transazione sua, e
+///   la ricostruzione fallita tornava indietro da sola: brani nuovi, album
+///   vecchi, e le chiavi toccate perse con la transazione. Una libreria che a
+///   quel punto diceva già 1 restava «in regola» senza esserlo, e nessuna
+///   passata per chiavi l'avrebbe rimessa a posto.
+pub const VERSIONE_AGGREGATI: i64 = 2;
 
 /// Oltre quante chiavi d'album toccate conviene rifare tutto.
 ///
@@ -1503,6 +1568,18 @@ fn conta_aggregati(connection: &Connection) -> Result<Aggregates, AppError> {
 /// lo verifica: dopo una serie di modifiche a caso, per chiavi e per intero
 /// danno tabelle identiche.
 ///
+/// I gruppi si fondono anche per **chiave canonica**: due a cui tocca la stessa
+/// diventano uno, identificativi in comune o no — vedi «Le chiavi canoniche
+/// sono uniche» in [`build_album_groups`]. La chiave di un gruppo è un suo
+/// identificativo con il prefisso davanti, o una sua chiave di base; quindi due
+/// gruppi con la stessa chiave o condividono un identificativo, o la chiave
+/// dell'uno è scritta come chiave di base sui brani dell'altro — un `mbrg:X`
+/// rimasto da una ricostruzione di prima. Per questo la chiusura percorre quel
+/// legame nei due versi: dall'identificativo `X` ai brani sotto `mbrg:X`, e da
+/// una chiave `mbrg:X` ai brani che portano `X`. Il secondo verso mancava, e
+/// la prova `la_chiusura_va_dalla_chiave_canonica_all_identificativo` dice
+/// cosa costava: un disco riletto a metà rifatto con dieci brani su tredici.
+///
 /// Per gli artisti è più semplice: un nome è nominato da qualche brano o non lo
 /// è, e la risposta cambia solo per i nomi che i brani toccati avevano o hanno.
 ///
@@ -1570,6 +1647,10 @@ fn membri_delle_chiavi(
 
 /// Le chiavi d'album dei brani che portano uno di questi identificativi, o che
 /// si chiamano come la chiave canonica che uno di loro produrrebbe.
+///
+/// Chi chiama ci mette anche gli identificativi scritti nelle chiavi del
+/// fronte — `X` per una chiave `mbrg:X`, con [`identificativo_della_chiave`] —
+/// e così la stessa lettura copre il verso opposto.
 ///
 /// È il passo della chiusura in [`ricostruisci_aggregati`]. Si guardano **tutti**
 /// gli identificativi dei membri, e non solo quello dominante di ogni gruppo
@@ -1640,6 +1721,20 @@ fn chiavi_che_condividono(
     Ok(fuori)
 }
 
+/// L'identificativo da cui è nata una chiave canonica: `X` per `mbrg:X`,
+/// `mbr:X` e `sp:X`; `None` per una chiave di base.
+///
+/// È la strada inversa dei tre `format!` di [`chiavi_che_condividono`], con gli
+/// stessi prefissi di `build_album_groups`. Una chiave di base che per caso
+/// cominciasse con uno dei tre — un album che si chiama «SP: Live» — dà un
+/// identificativo che nessun brano porta: la chiusura cerca una volta in più e
+/// non trova niente, che è il lato giusto da cui sbagliare.
+fn identificativo_della_chiave(chiave: &str) -> Option<&str> {
+    ["mbrg:", "mbr:", "sp:"]
+        .into_iter()
+        .find_map(|prefisso| chiave.strip_prefix(prefisso))
+}
+
 /// Rifà le righe di `albums` delle chiavi toccate e di quelle che con loro si
 /// fondono. Vedi [`ricostruisci_aggregati`].
 ///
@@ -1682,6 +1777,20 @@ fn ricostruisci_gli_album(
                 if !id.is_empty() && cercati.insert(id.to_owned()) {
                     identificativi.push(id.to_owned());
                 }
+            }
+        }
+        // E l'identificativo scritto nella chiave stessa. Brani rimasti sotto
+        // `mbrg:X` da una ricostruzione di prima, che di identificativi non ne
+        // portano più, si fondono per chiave canonica con chi ha `X` come
+        // dominante — vedi `build_album_groups` — e dalle loro righe a quelle
+        // l'unica strada è la chiave.
+        for id in fronte
+            .iter()
+            .filter_map(|chiave| identificativo_della_chiave(chiave))
+        {
+            let id = id.trim();
+            if !id.is_empty() && cercati.insert(id.to_owned()) {
+                identificativi.push(id.to_owned());
             }
         }
         membri.extend(nuovi);
@@ -1740,34 +1849,52 @@ fn ricostruisci_gli_album(
 ///
 /// # Come
 ///
-/// In due tempi: ogni chiave d'origine va prima in un nome di passaggio che
-/// nessuna chiave vera può avere — il carattere di controllo `\u{1}` davanti
-/// alla destinazione — e solo dopo, quando nessuna riga porta più una chiave
-/// d'origine, i nomi di passaggio diventano le destinazioni. Nessun `UPDATE`
-/// può così toccare una riga già rimappata.
+/// Con un `UPDATE` solo, guidato da una tabella temporanea di coppie: ogni riga
+/// prende la destinazione della **sua** chiave d'origine, letta una volta
+/// sola, e nessuna può essere toccata due volte — la catena qui sopra non ha
+/// modo di formarsi, perché nessuna istruzione viene dopo un'altra.
+///
+/// Fino alla 3.0.2 erano due `UPDATE` per coppia, con un nome di passaggio in
+/// mezzo (`\u{1}` davanti alla destinazione) per spezzare la catena. Corretti,
+/// ma ogni riga si riscriveva due volte, e su una ricostruzione intera dopo
+/// «Rileggi tutti i tag» — seimila brani in cinquecento album da riportare
+/// alla chiave canonica, misurati su una libreria vera — erano mille
+/// istruzioni e più di metà del tempo: la ricostruzione passava da 60 ms a
+/// 330, ancora 208 con l'indice di ricerca che non segue più `album_key`
+/// (migrazione 033), e 114 così.
 fn rimappa_le_chiavi(tx: &Transaction<'_>, remap: &[(String, String)]) -> Result<(), AppError> {
     let cambi: Vec<&(String, String)> = remap.iter().filter(|(da, a)| da != a).collect();
     if cambi.is_empty() {
         return Ok(());
     }
-    let mut parcheggia = tx
-        .prepare_cached("UPDATE tracks SET album_key = char(1) || ?2 WHERE album_key = ?1")
-        .map_err(|err| db_error("rimappaggio delle chiavi d'album", &err))?;
-    for (da, a) in &cambi {
-        parcheggia
-            .execute(rusqlite::params![da, a])
-            .map_err(|err| db_error("rimappaggio delle chiavi d'album", &err))?;
+    let fallito = |err: &rusqlite::Error| db_error("rimappaggio delle chiavi d'album", err);
+    // Temporanea: sta nella connessione, non nel file, e non la vede nessun
+    // altro. Si svuota prima e dopo, così una ricostruzione caduta a metà non
+    // lascia coppie a quella dopo.
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS rimappa_chiavi (da TEXT PRIMARY KEY, a TEXT NOT NULL);
+         DELETE FROM temp.rimappa_chiavi;",
+    )
+    .map_err(|err| fallito(&err))?;
+    {
+        let mut coppia = tx
+            .prepare_cached("INSERT OR REPLACE INTO temp.rimappa_chiavi (da, a) VALUES (?1, ?2)")
+            .map_err(|err| fallito(&err))?;
+        for (da, a) in &cambi {
+            coppia
+                .execute(rusqlite::params![da, a])
+                .map_err(|err| fallito(&err))?;
+        }
     }
-    let destinazioni: std::collections::BTreeSet<&str> =
-        cambi.iter().map(|(_, a)| a.as_str()).collect();
-    let mut arriva = tx
-        .prepare_cached("UPDATE tracks SET album_key = ?1 WHERE album_key = char(1) || ?1")
-        .map_err(|err| db_error("rimappaggio delle chiavi d'album", &err))?;
-    for a in destinazioni {
-        arriva
-            .execute([a])
-            .map_err(|err| db_error("rimappaggio delle chiavi d'album", &err))?;
-    }
+    tx.execute(
+        "UPDATE tracks
+            SET album_key = (SELECT a FROM temp.rimappa_chiavi WHERE da = tracks.album_key)
+          WHERE album_key IN (SELECT da FROM temp.rimappa_chiavi)",
+        [],
+    )
+    .map_err(|err| fallito(&err))?;
+    tx.execute("DELETE FROM temp.rimappa_chiavi", [])
+        .map_err(|err| fallito(&err))?;
     Ok(())
 }
 
@@ -1915,7 +2042,21 @@ pub struct ScanReport {
     /// Va **mostrato**: una scansione che non ha visto la cartella sul NAS ha
     /// fatto un lavoro parziale, e un «completata» che non lo dice fa credere
     /// che i brani mancanti non ci siano più.
+    ///
+    /// Comprende anche le [`ScanReport::radici_vuote`]: per chi legge questo
+    /// elenco come «non guardate» sono esattamente quello.
     pub radici_saltate: Vec<String>,
+    /// Le radici che hanno risposto **vuote**, e che la guardia per radice ha
+    /// saltato: cartelle sorvegliate con almeno cinquanta brani in libreria e
+    /// nessun file di musica sul disco. Vedi [`Scan::radici_della_libreria`].
+    ///
+    /// Stanno **anche** in [`ScanReport::radici_saltate`], perché non sono
+    /// state giudicate. Qui a parte perché la domanda di chi riprova è un'altra:
+    /// una radice che non risponde si riprova finché risponde, una che risponde
+    /// vuota risponderà vuota anche fra cinque minuti — la si riprova quando
+    /// cambia qualcosa, o la si giudica con una scansione a mano, dove c'è chi
+    /// può confermare.
+    pub radici_vuote: Vec<String>,
     /// Righe che il piano toglierebbe e che la guardia ha lasciato stare.
     ///
     /// Diverso da zero quando una passata toglierebbe troppo in una volta:
@@ -1945,7 +2086,94 @@ pub struct ScanReport {
     /// Contate anche fra le `untouched` del piano, che è quel che sono: righe
     /// su cui questa passata non ha competenza.
     pub non_verificati: usize,
+    /// Quanto è durata ogni fase: vedi [`TempiScansione`].
+    pub tempi: TempiScansione,
+    /// Quante cartelle la camminata ha elencato.
+    ///
+    /// Le conta chi sa contarle — la camminata vera manda un battito per
+    /// cartella (`Voce::Cartella`) — e chi non sa resta a zero.
+    pub cartelle_viste: usize,
+    /// Quanti file la camminata ha trovato, musica o no, **prima** che le
+    /// immagini CD diventino i loro brani: è il numero del disco, non della
+    /// libreria.
+    pub file_visti: usize,
+    /// Quante voci si sono date da leggere al lettore dei tag.
+    ///
+    /// I brani di un'immagine contano uno per uno anche se l'immagine si apre
+    /// una volta sola: è lo stesso conto dell'avanzamento. Su un disco
+    /// invariato è zero, ed è il numero da guardare per sapere se una
+    /// riscansione è stata gratis.
+    pub letti: usize,
+    /// Le voci che il piano dava da leggere e che non si sono lette, perché il
+    /// lettore le aveva già rifiutate così com'erano: stessa dimensione, stessa
+    /// data, stessa [`crate::metadata::VERSIONE_LETTORE`]. Vedi la migrazione
+    /// 032.
+    pub illeggibili_noti: usize,
+    /// Quanti brani d'immagine CD la camminata ha visto, cioè quante voci
+    /// virtuali `….cue|NN` sono entrate nel piano al posto delle loro immagini.
+    pub brani_d_immagine: usize,
 }
+
+/// Quanto è durata ogni fase di una scansione, in millisecondi.
+///
+/// Per chi vuole sapere **dove** va il tempo: la riga del diario sul desktop,
+/// l'esempio da riga di comando. Le fasi sono quelle di [`Scan::run_su`]; quel
+/// che manca alla somma per fare `elapsed_ms` sono le prese brevi del deposito
+/// fra l'una e l'altra.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TempiScansione {
+    /// La camminata sul disco.
+    pub camminata_ms: u64,
+    /// I fogli `.cue`: la cache, le letture di quelli cambiati, l'espansione
+    /// delle immagini nei loro brani.
+    pub fogli_ms: u64,
+    /// Le righe note, la memoria dei rifiuti e il piano.
+    pub piano_ms: u64,
+    /// La lettura dei file, senza le scritture dei lotti.
+    pub lettura_ms: u64,
+    /// Le transazioni di scrittura: le doppie, i lotti, le rimozioni.
+    pub scrittura_ms: u64,
+    /// La ricostruzione di album e artisti.
+    pub aggregati_ms: u64,
+}
+
+/// I millisecondi passati da `inizio`, in un `u64`.
+fn millisecondi(inizio: Instant) -> u64 {
+    u64::try_from(inizio.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Quel che un'osservazione della scansione racconta. Passato a
+/// [`Scan::run_con`].
+///
+/// Due fasi e non una, perché sono due attese diverse per chi guarda: durante
+/// la camminata non si sa ancora quanti file ci siano da leggere — si sa solo
+/// quante cartelle si sono guardate — e senza un numero la finestra mostrerebbe
+/// una barra ferma per tutti i secondi in cui un NAS si fa elencare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Avanzamento {
+    /// Durante la camminata: cartelle elencate e file trovati finora, su
+    /// tutte le radici. Non più di quattro volte al secondo.
+    Camminata {
+        /// Le cartelle elencate.
+        cartelle: usize,
+        /// I file trovati, musica o no.
+        file: usize,
+    },
+    /// Durante la lettura: come l'`on_progress` di [`Scan::run_su`].
+    Lettura {
+        /// Le voci lette, saltate o rifiutate finora.
+        fatti: usize,
+        /// Le voci da leggere in tutto.
+        totale: usize,
+    },
+}
+
+/// Ogni quanto, al più, si racconta la camminata.
+///
+/// Quattro volte al secondo: abbastanza perché il numero delle cartelle
+/// scorra, e abbastanza poche perché raccontarlo non costi niente a chi lo
+/// riceve — sul desktop ogni racconto è un evento verso la finestra.
+const RACCONTO_CAMMINATA: Duration = Duration::from_millis(250);
 
 /// Una riga che la scansione toglierebbe, e che aspetta un sì.
 ///
@@ -2034,6 +2262,14 @@ pub struct Scan<'a> {
     pub covers: CoverStore,
     /// Le cartelle da guardare.
     pub roots: &'a [String],
+    /// Le cartelle sorvegliate della libreria, come sono nelle impostazioni.
+    ///
+    /// Non sono sempre le `roots`: la sorveglianza e i download guardano
+    /// sottocartelle. Servono alla guardia per radice delle scansioni
+    /// prudenti, che vale **solo** per le radici della passata che coincidono
+    /// con una di queste: vedi `Scan::guardia_per_radice`. Vuoto vuol dire
+    /// «nessuna guardia per radice».
+    pub radici_della_libreria: &'a [String],
     /// Come si confrontano i percorsi su questo filesystem.
     pub rules: PathRules,
     /// Nessuno sta guardando: chi riceve l'esito non può confermare niente.
@@ -2098,6 +2334,7 @@ impl std::fmt::Debug for Scan<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Scan")
             .field("roots", &self.roots)
+            .field("radici_della_libreria", &self.radici_della_libreria)
             .field("rules", &self.rules)
             .field("prudente", &self.prudente)
             .field("scadenze", &self.scadenze)
@@ -2147,6 +2384,8 @@ enum Passo {
     Trovato(DiscoveredFile),
     /// Una cartella dentro cui non si è potuto guardare.
     RamoPerso(String),
+    /// Una cartella elencata: nessun file, ma il disco ha risposto.
+    Cartella,
     /// Non ce ne sono altri.
     Fine {
         /// Nessun ramo perso.
@@ -2187,7 +2426,18 @@ enum Passo {
 /// sul NAS impediva di scansionare anche il disco interno. La stessa regola che
 /// vale per una radice spenta — «si salta quella, non si rinuncia a tutto» —
 /// non aveva motivo di non valere anche qui.
-fn cammina_una_radice(scan: &Scan<'_>, root: &str) -> Passeggiata {
+///
+/// # Il racconto
+///
+/// `conto` porta le cartelle e i file visti su tutte le radici, e `racconta`
+/// lo riceve non più spesso di [`RACCONTO_CAMMINATA`]. Un `Break` da lì vale
+/// quanto un Annulla: chi guarda ha detto basta.
+fn cammina_una_radice(
+    scan: &Scan<'_>,
+    root: &str,
+    conto: &mut ContoCammino,
+    racconta: &mut dyn FnMut(usize, usize) -> ControlFlow<()>,
+) -> Passeggiata {
     let disco = Arc::clone(&scan.files);
     let percorso = root.to_owned();
     let Some(passi) = crate::scadenza::a_rate("camminata", move |manda| {
@@ -2197,6 +2447,7 @@ fn cammina_una_radice(scan: &Scan<'_>, root: &str) -> Passeggiata {
             let passo = match voce {
                 Voce::File(file) => Passo::Trovato(file),
                 Voce::RamoPerso(ramo) => Passo::RamoPerso(ramo),
+                Voce::Cartella => Passo::Cartella,
             };
             if manda.send(passo).is_ok() {
                 ControlFlow::Continue(())
@@ -2228,9 +2479,16 @@ fn cammina_una_radice(scan: &Scan<'_>, root: &str) -> Passeggiata {
         if scan.fermato() {
             return Passeggiata::Fermata;
         }
+        if conto.ultimo_racconto.elapsed() >= RACCONTO_CAMMINATA {
+            conto.ultimo_racconto = Instant::now();
+            if racconta(conto.cartelle, conto.file).is_break() {
+                return Passeggiata::Fermata;
+            }
+        }
         match passi.recv_timeout(BATTITO) {
             Ok(Passo::Trovato(trovato)) => {
                 file.push(trovato);
+                conto.file = conto.file.saturating_add(1);
                 ultima_consegna = Instant::now();
                 margine = scan.scadenze.camminata;
             }
@@ -2238,6 +2496,13 @@ fn cammina_una_radice(scan: &Scan<'_>, root: &str) -> Passeggiata {
             // rifiuto. Il silenzio che si misura è quello di chi non risponde.
             Ok(Passo::RamoPerso(ramo)) => {
                 rami.push(ramo);
+                ultima_consegna = Instant::now();
+                margine = scan.scadenze.camminata;
+            }
+            // E anche una cartella senza brani: mille cartelle di sole
+            // copertine sono un disco che risponde, non uno che tace.
+            Ok(Passo::Cartella) => {
+                conto.cartelle = conto.cartelle.saturating_add(1);
                 ultima_consegna = Instant::now();
                 margine = scan.scadenze.camminata;
             }
@@ -2262,6 +2527,16 @@ fn cammina_una_radice(scan: &Scan<'_>, root: &str) -> Passeggiata {
     }
 }
 
+/// Quel che la camminata ha contato finora, su tutte le radici.
+struct ContoCammino {
+    /// Le cartelle elencate: i battiti di [`Voce::Cartella`].
+    cartelle: usize,
+    /// I file trovati.
+    file: usize,
+    /// L'ultima volta che si è raccontato.
+    ultimo_racconto: Instant,
+}
+
 /// Cosa si è visto guardando il disco, e cosa no.
 #[derive(Debug, Default)]
 pub struct Ricognizione {
@@ -2274,6 +2549,10 @@ pub struct Ricognizione {
     pub viste: Vec<String>,
     /// Le radici che non hanno risposto, o che si sono arenate a metà.
     pub radici_saltate: Vec<String>,
+    /// Le radici che la guardia per radice ha saltato perché vuote: vedi
+    /// [`ScanReport::radici_vuote`]. Stanno anche in
+    /// [`Ricognizione::radici_saltate`].
+    pub radici_vuote: Vec<String>,
     /// Le cartelle illeggibili dentro radici che hanno risposto.
     ///
     /// La radice sta fra le [`Ricognizione::viste`] e si giudica, **tranne**
@@ -2286,6 +2565,8 @@ pub struct Ricognizione {
     /// interrotta, e le radici che non si sono ancora guardate non sono né viste
     /// né saltate.
     pub fermata: bool,
+    /// Quante cartelle si sono elencate: vedi [`ScanReport::cartelle_viste`].
+    pub cartelle: usize,
 }
 
 /// Guarda tutte le radici, senza toccare il database.
@@ -2307,19 +2588,44 @@ pub struct Ricognizione {
 /// ed è lo stesso che impedisce a una scansione della sola cartella dei download
 /// di svuotare il resto della libreria.
 pub fn cammina(scan: &Scan<'_>) -> Ricognizione {
+    cammina_con(scan, &mut |_, _| ControlFlow::Continue(()))
+}
+
+/// Come [`cammina`], raccontando l'avanzamento: vedi [`Avanzamento::Camminata`].
+///
+/// # L'ordine
+///
+/// I file di ogni radice escono ordinati per chiave di percorso. La camminata
+/// a più fili non promette un ordine (vedi `MusicFiles::walk_a_rate`), e chi
+/// viene dopo sì: il piano, che mostrato due volte deve dire due volte la
+/// stessa cosa; l'espansione delle immagini, che fra due fogli per la stessa
+/// immagine sceglie sempre lo stesso; la lettura, che va a lotti, e un lotto
+/// che cambia composizione fra due passate è un'interruzione che riprende da
+/// un posto diverso.
+fn cammina_con(
+    scan: &Scan<'_>,
+    racconta: &mut dyn FnMut(usize, usize) -> ControlFlow<()>,
+) -> Ricognizione {
     let mut esito = Ricognizione::default();
+    let mut conto = ContoCammino {
+        cartelle: 0,
+        file: 0,
+        ultimo_racconto: Instant::now(),
+    };
     for root in scan.roots {
         if scan.fermato() {
             esito.fermata = true;
+            esito.cartelle = conto.cartelle;
             return esito;
         }
         if !scan.files.radice_raggiungibile(root) {
             esito.radici_saltate.push(root.clone());
             continue;
         }
-        match cammina_una_radice(scan, root) {
+        match cammina_una_radice(scan, root, &mut conto, racconta) {
             Passeggiata::Fermata => {
                 esito.fermata = true;
+                esito.cartelle = conto.cartelle;
                 return esito;
             }
             // Saltata **senza risondare**, e la differenza conta. Il gate qui
@@ -2334,7 +2640,7 @@ pub fn cammina(scan: &Scan<'_>) -> Ricognizione {
                 continue;
             }
             Passeggiata::Vista {
-                file,
+                mut file,
                 completa,
                 mut rami,
             } => {
@@ -2375,13 +2681,39 @@ pub fn cammina(scan: &Scan<'_>) -> Ricognizione {
                 if !completa && rami.is_empty() {
                     rami.push(root.clone());
                 }
+                file.sort_by_cached_key(|trovato| path_key(&trovato.path, scan.rules));
                 esito.rami_persi.extend(rami);
                 esito.trovati.extend(file);
                 esito.viste.push(root.clone());
             }
         }
     }
+    // L'ultimo racconto, a camminata finita: il numero che la finestra lascia
+    // sullo schermo mentre comincia la fase dopo è quello vero.
+    let _ = racconta(conto.cartelle, conto.file);
+    esito.cartelle = conto.cartelle;
     esito
+}
+
+/// Un avviso del sistema su un percorso sotto le radici.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cambiamento {
+    /// Il percorso che il sistema ha nominato.
+    pub percorso: String,
+    /// Creato, o rinominato **verso** questo nome: se adesso è una cartella,
+    /// la si guarda da sé invece che dal genitore.
+    pub nuovo: bool,
+}
+
+/// Che cos'è un percorso, adesso, sul disco.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Natura {
+    /// Una cartella: si può camminare.
+    Cartella,
+    /// Un file.
+    File,
+    /// Niente, o niente che si riesca a vedere.
+    Assente,
 }
 
 /// Le cartelle da riscansionare dopo che sotto le radici è cambiato qualcosa.
@@ -2399,17 +2731,27 @@ pub fn cammina(scan: &Scan<'_>) -> Ricognizione {
 ///
 /// # Quale cartella, per ogni cambiamento
 ///
-/// **Quella che lo contiene**, e non il percorso stesso: un file tolto non c'è
-/// più, e una cartella rinominata ha due nomi, di cui uno non esiste più. Il
-/// genitore c'è — di solito — e camminandolo si vede tanto quel che è arrivato
-/// quanto quel che se n'è andato.
+/// **Una cartella nuova si guarda da sé.** Un album copiato sul NAS arriva
+/// come «è comparsa la cartella `…\Guccini\Radici`» (o «è stata rinominata
+/// verso»): camminare quella basta a vedere tutto quel che contiene, e
+/// camminare il genitore vorrebbe dire rileggere l'elenco di tutti gli album
+/// dell'artista per trovarne uno. Lo dice [`Cambiamento::nuovo`] insieme alla
+/// risposta del disco: dev'essere nuova **e** una cartella adesso.
+///
+/// **Tutto il resto, dalla cartella che lo contiene**, e non dal percorso
+/// stesso: un file tolto non c'è più, e una cartella rinominata ha due nomi, di
+/// cui uno non esiste più. Il genitore c'è — di solito — e camminandolo si vede
+/// tanto quel che è arrivato quanto quel che se n'è andato.
 ///
 /// Di solito, perché anche il genitore può essere sparito: si cancella un
 /// artista intero, e il sistema racconta prima i file dei suoi album. Allora si
-/// risale finché si trova una cartella che `esiste` — al più la radice stessa.
-/// Non è pignoleria: una scansione su una cartella che non esiste più la salta
-/// come una radice che non risponde, cioè **non toglie niente** (vedi
-/// [`cammina`]), e i brani cancellati resterebbero in libreria per sempre.
+/// risale finché si trova qualcosa che è una [`Natura::Cartella`] — al più la
+/// radice stessa. Non è pignoleria: una scansione su una cartella che non esiste
+/// più la salta come una radice che non risponde, cioè **non toglie niente**
+/// (vedi [`cammina`]), e i brani cancellati resterebbero in libreria per
+/// sempre. E nemmeno un file va bene come punto d'arrivo: una «cartella» che è
+/// diventata un file — rinominata, ricreata con lo stesso nome — non si
+/// cammina.
 ///
 /// Un percorso fuori da tutte le radici non produce niente; la radice stessa
 /// cambiata produce la radice.
@@ -2422,36 +2764,41 @@ pub fn cammina(scan: &Scan<'_>) -> Ricognizione {
 /// percorso, così due chiamate con gli stessi ingressi danno la stessa
 /// scansione.
 ///
-/// `esiste` è una domanda al disco passata da fuori: questa funzione resta
+/// `natura` è una domanda al disco passata da fuori: questa funzione resta
 /// pura, e chi la chiama sa se il disco è locale — dove chiederlo non costa
 /// niente — o no.
+///
+/// Chi chiama — la sorveglianza — **non** passa gli avvisi di semplice
+/// modifica su una cartella: arrivano già quelli dei file che contiene, e
+/// guardarla da sé vorrebbe dire rileggerla tutta per un tag cambiato.
 #[must_use]
 pub fn cartelle_da_riguardare(
-    cambiati: &[String],
+    cambiati: &[Cambiamento],
     radici: &[String],
     rules: PathRules,
-    esiste: &dyn Fn(&str) -> bool,
+    natura: &dyn Fn(&str) -> Natura,
 ) -> Vec<String> {
     let mut candidate: Vec<String> = Vec::new();
-    for cambiato in cambiati {
+    for cambiamento in cambiati {
+        let cambiato = cambiamento.percorso.as_str();
         let Some(radice) = radici.iter().find(|r| is_under(cambiato, r, rules)) else {
             continue;
         };
-        let stessa = |a: &str, b: &str| {
-            rymembra_domain::paths::path_key(a, rules) == rymembra_domain::paths::path_key(b, rules)
-        };
+        let stessa = |a: &str, b: &str| path_key(a, rules) == path_key(b, rules);
         let mut cartella = if stessa(cambiato, radice) {
             radice.clone()
+        } else if cambiamento.nuovo && natura(cambiato) == Natura::Cartella {
+            cambiato.to_owned()
         } else {
             cartella_che_contiene(cambiato).unwrap_or_else(|| radice.clone())
         };
-        // Si risale finché la cartella c'è, senza mai uscire dalla radice.
+        // Si risale finché si trova una cartella, senza mai uscire dalla radice.
         while !stessa(&cartella, radice) {
             if !is_under(&cartella, radice, rules) {
                 cartella.clone_from(radice);
                 break;
             }
-            if esiste(&cartella) {
+            if natura(&cartella) == Natura::Cartella {
                 break;
             }
             cartella = cartella_che_contiene(&cartella).unwrap_or_else(|| radice.clone());
@@ -2538,27 +2885,31 @@ pub fn piu_esterne(mut cartelle: Vec<String>, rules: PathRules) -> Vec<String> {
 /// durata, camminata inclusa, ed è esattamente la cosa che sul desktop non si
 /// può fare.
 pub fn plan(scan: &Scan<'_>, connection: &Connection) -> Result<Esplorazione, AppError> {
-    let ricognizione = cammina(scan);
+    let fermata = |ricognizione: Ricognizione| Esplorazione {
+        piano: ScanPlan::default(),
+        radici_saltate: ricognizione.radici_saltate,
+        fermata: true,
+        rami_persi: ricognizione.rami_persi,
+        non_verificati: 0,
+    };
+    let mut ricognizione = cammina(scan);
     if ricognizione.fermata {
-        return Ok(Esplorazione {
-            piano: ScanPlan::default(),
-            radici_saltate: ricognizione.radici_saltate,
-            fermata: true,
-            rami_persi: ricognizione.rami_persi,
-            non_verificati: 0,
-        });
+        return Ok(fermata(ricognizione));
+    }
+    // I fogli come li vede la scansione vera, cache compresa: un'anteprima che
+    // non espandesse le immagini mostrerebbe da inserire i dischi interi, e da
+    // togliere i loro brani. La cache qui si legge e basta: la scrive chi
+    // scansiona davvero.
+    let cache = fogli_ricordati(connection)?;
+    let con_brani = fogli_con_brani(connection, scan.rules)?;
+    let fogli = scan.espandi_i_fogli(&mut ricognizione, &cache, &con_brani);
+    if fogli.fermata {
+        return Ok(fermata(ricognizione));
     }
     let known = known_tracks(connection)?;
-    let mut piano = plan_scan(
-        ScanInput {
-            roots: &ricognizione.viste,
-            found: &ricognizione.trovati,
-            known: &known,
-        },
-        scan.rules,
-    );
-    let non_verificati =
-        risparmia_i_non_verificati(&mut piano, &ricognizione.rami_persi, scan.rules);
+    let immagini = immagini_dei_brani(connection)?;
+    let (piano, non_verificati) =
+        scan.pianifica(&mut ricognizione, &known, &immagini, &fogli.abbinamenti);
     Ok(Esplorazione {
         piano,
         radici_saltate: ricognizione.radici_saltate,
@@ -2707,6 +3058,817 @@ fn caduto(path: &str, messaggio: Option<&str>) -> AppError {
     .with_cause(causa)
 }
 
+/// Quante letture si tengono in volo insieme.
+///
+/// Quattro, come i fili della camminata: su una condivisione SMB l'attesa di
+/// un file è quasi tutta andata e ritorno di rete, e quattro richieste in volo
+/// la nascondono quasi tutta senza far sembrare un attacco quel che chiede un
+/// lettore musicale. Di più non serve a un NAS di casa, e su un disco locale
+/// il collo di bottiglia è comunque il lettore dei tag.
+const LETTURE_IN_VOLO: usize = 4;
+
+/// Oltre questa dimensione un `.cue` non è un foglio.
+///
+/// Un megabyte: il foglio più lungo che si sia visto, un doppio dal vivo con
+/// titoli lunghi, non arriva a dieci kilobyte. Un file più grosso con quel nome
+/// è qualcos'altro, e leggerlo tutto per scoprirlo costerebbe un'attesa di rete
+/// per niente.
+const FOGLIO_MASSIMO: u64 = 1024 * 1024;
+
+/// Quante righe note fanno sospetta una radice vista senza musica.
+///
+/// Cinquanta, come [`SOGLIA_RIMOZIONI`] e per la stessa ragione: sotto, una
+/// cartella vuota è plausibile — una chiavetta svuotata di proposito — e la
+/// guardia non deve scattare su una libreria piccolissima. Sopra, zero brani
+/// trovati dove ce n'erano cinquanta è molto più spesso un punto di mount
+/// caduto che un utente che ha cancellato tutto.
+const RADICE_SOSPETTA: usize = 50;
+
+/// Un lavoro per la squadra, col suo posto nell'ordine.
+type Incarico<T> = (usize, Box<dyn FnOnce() -> T + Send + 'static>);
+
+/// Fino a [`LETTURE_IN_VOLO`] lavori insieme, ognuno sul suo
+/// [`crate::scadenza::Operaio`] e con la sua scadenza.
+///
+/// # Perché così
+///
+/// `Operaio::esegui` aspetta il suo lavoro: è fatto per uno alla volta, ed è
+/// giusto così — è lui a sapere quando un filo si è appeso. Per averne quattro
+/// in volo servono quattro operai, e qualcuno che aspetti ciascuno: sono i
+/// quattro fili della squadra, che prendono gli incarichi da una coda sola e
+/// rimandano gli esiti col loro posto. Chi coordina — il filo della scansione —
+/// non aspetta mai un file preciso: aspetta il prossimo esito, un [`BATTITO`]
+/// per volta, e intanto guarda se qualcuno ha chiesto di smettere.
+///
+/// # Chi si appende
+///
+/// Un file che non torna appende il filo dell'operaio, non quello della
+/// squadra: alla scadenza l'operaio lo abbandona e risponde
+/// [`Mancato::Scaduto`], e il filo della squadra passa al prossimo incarico con
+/// un operaio nuovo.
+///
+/// # Lasciarla andare
+///
+/// Nessun `Drop` e nessun `join`: cadendo la squadra cade la coda, e ogni filo
+/// esce appena finito quel che sta facendo — al più dopo una scadenza. È quel
+/// che permette a un annullamento di non aspettare le letture in volo.
+struct Squadra<T: Send + 'static> {
+    /// La coda degli incarichi; `None` se il sistema non ha dato nemmeno un filo.
+    coda: Option<std::sync::mpsc::Sender<Incarico<T>>>,
+    /// Gli esiti, col posto dell'incarico.
+    esiti: std::sync::mpsc::Receiver<(usize, Result<T, Mancato>)>,
+    /// Per rispondere da sé quando non c'è nessuno a cui affidare: l'incarico
+    /// vale scaduto, come per un `Operaio` che non riesce ad assumere.
+    da_se: std::sync::mpsc::Sender<(usize, Result<T, Mancato>)>,
+}
+
+impl<T: Send + 'static> Squadra<T> {
+    /// Assume `quanti` fili, con la stessa scadenza per ogni incarico.
+    fn nuova(nome: &str, quanti: usize, scadenza: Duration) -> Self {
+        let (manda, ricevi) = std::sync::mpsc::channel::<Incarico<T>>();
+        let ricevi = Arc::new(std::sync::Mutex::new(ricevi));
+        let (rispondi, esiti) = std::sync::mpsc::channel();
+        let mut assunti = 0_usize;
+        for numero in 0..quanti {
+            let coda = Arc::clone(&ricevi);
+            let rispondi = rispondi.clone();
+            let nome_operaio = format!("{nome}{numero}");
+            let avviato = std::thread::Builder::new()
+                .name(format!("rymembra-squadra-{nome}{numero}"))
+                .spawn(move || {
+                    let mut operaio = crate::scadenza::Operaio::nuovo(&nome_operaio);
+                    loop {
+                        // Il lucchetto solo per prendere: chi aspetta un
+                        // incarico lo tiene, gli altri aspettano dietro di lui,
+                        // e nessuno lavora con il lucchetto in mano.
+                        let incarico = {
+                            let Ok(guardia) = coda.lock() else {
+                                return;
+                            };
+                            guardia.recv()
+                        };
+                        let Ok((posto, lavoro)) = incarico else {
+                            return;
+                        };
+                        let esito = operaio.esegui(scadenza, lavoro);
+                        if rispondi.send((posto, esito)).is_err() {
+                            return;
+                        }
+                    }
+                });
+            if avviato.is_ok() {
+                assunti += 1;
+            }
+        }
+        Self {
+            coda: (assunti > 0).then_some(manda),
+            esiti,
+            da_se: rispondi,
+        }
+    }
+
+    /// Affida un lavoro. Non aspetta niente.
+    fn affida(&self, posto: usize, lavoro: Box<dyn FnOnce() -> T + Send + 'static>) {
+        let consegnato = self
+            .coda
+            .as_ref()
+            .is_some_and(|coda| coda.send((posto, lavoro)).is_ok());
+        if !consegnato {
+            let _ = self.da_se.send((posto, Err(Mancato::Scaduto)));
+        }
+    }
+
+    /// Il prossimo esito, se arriva entro `attesa`.
+    fn prossimo(&self, attesa: Duration) -> Option<(usize, Result<T, Mancato>)> {
+        self.esiti.recv_timeout(attesa).ok()
+    }
+}
+
+/// Una lettura da fare: un file intero, o i brani di un'immagine CD.
+///
+/// I brani della stessa immagine diventano **un lavoro solo**: l'immagine si
+/// apre una volta, e ne escono tutte le righe. Aprirla una volta per brano
+/// vorrebbe dire leggere quattordici volte la stessa intestazione — e su un
+/// FLAC da quattrocento megabyte la stessa copertina incorporata — per un disco
+/// solo.
+struct Lavoro {
+    /// Le voci del piano che il lavoro copre, nell'ordine in cui escono le
+    /// righe: una per un file intero, una per brano per un'immagine.
+    voci: Vec<(DiscoveredFile, Destinazione)>,
+    /// L'immagine con il suo foglio, per i brani d'immagine.
+    immagine: Option<Arc<Abbinamento>>,
+}
+
+impl Lavoro {
+    /// Il percorso da cui si capisce sotto quale radice sta il lavoro.
+    ///
+    /// Il primo delle voci: i brani d'immagine stanno nella cartella del loro
+    /// `.cue`, quindi sotto la stessa radice dell'immagine.
+    fn percorso(&self) -> &str {
+        self.voci.first().map_or("", |(file, _)| file.path.as_str())
+    }
+}
+
+/// Raccoglie quel che va letto in lavori: i brani della stessa immagine
+/// insieme, al posto del primo di loro; ogni altro file da solo.
+fn in_lavori(
+    da_leggere: Vec<(DiscoveredFile, Destinazione)>,
+    immagini: &std::collections::HashMap<String, Arc<Abbinamento>>,
+    rules: PathRules,
+) -> Vec<Lavoro> {
+    let mut lavori: Vec<Lavoro> = Vec::with_capacity(da_leggere.len());
+    let mut del_foglio: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (file, destinazione) in da_leggere {
+        let foglio = brano_d_immagine(&file.path).map(|(cue, _)| path_key(cue, rules));
+        let abbinamento = foglio
+            .as_ref()
+            .and_then(|chiave| immagini.get(chiave).map(|abbinato| (chiave, abbinato)));
+        let Some((chiave, abbinamento)) = abbinamento else {
+            lavori.push(Lavoro {
+                voci: vec![(file, destinazione)],
+                immagine: None,
+            });
+            continue;
+        };
+        if let Some(lavoro) = del_foglio
+            .get(chiave)
+            .and_then(|&posto| lavori.get_mut(posto))
+        {
+            lavoro.voci.push((file, destinazione));
+            continue;
+        }
+        del_foglio.insert(chiave.clone(), lavori.len());
+        lavori.push(Lavoro {
+            voci: vec![(file, destinazione)],
+            immagine: Some(Arc::clone(abbinamento)),
+        });
+    }
+    lavori
+}
+
+/// I fotogrammi CD (1/75 s) in millisecondi, per difetto.
+fn fotogrammi_in_ms(fotogrammi: u32) -> i64 {
+    i64::from(fotogrammi).saturating_mul(40).div_euclid(3)
+}
+
+/// Legge i brani di un'immagine CD: l'immagine si apre **una volta**, e ne
+/// escono le righe dei brani chiesti, nell'ordine chiesto.
+///
+/// # Da dove viene ogni campo
+///
+/// - **Dall'immagine**, una per tutti: frequenza, canali, bitrate, formato,
+///   copertina incorporata, e la durata dell'ultimo brano, che finisce dove
+///   finisce il file.
+/// - **Dal foglio, con i tag dell'immagine come ripiego**: album (`TITLE` del
+///   disco), artista dell'album (`PERFORMER` del disco), anno (`REM DATE`),
+///   genere, numero del disco. Un foglio scritto da EAC ce li ha quasi sempre;
+///   uno scritto a mano no, e allora vale quel che il rip ha messo nei tag.
+/// - **Dal foglio e basta**: titolo e interprete del brano — in mancanza
+///   «Traccia NN» e l'interprete del disco —, il numero (`TRACK`), inizio e
+///   fine in fotogrammi, e la durata del brano: `(fine - inizio) / 75` secondi.
+///
+/// Non passano ai brani i campi che nell'immagine riguardano il disco intero e
+/// su un brano mentirebbero: il commento, il testo, i battiti, la tonalità,
+/// l'identificativo MusicBrainz della registrazione e il guadagno ReplayGain
+/// «di traccia» — che su un'immagine è misurato sull'intero disco, e quindi è
+/// semmai quello dell'album.
+///
+/// Il testo in particolare (`tracks.lyrics`) resta **sempre vuoto** su una
+/// riga d'immagine, all'inserimento come a ogni riscrittura: è la stessa regola
+/// di un file intero — la colonna dice quel che il file dice, e
+/// [`update_track`] la riscrive dai tag ogni volta — applicata a un file che di
+/// un brano solo non dice niente. Un testo incorporato nell'immagine
+/// comparirebbe identico su tutti i quattordici brani.
+///
+/// # Dimensione e data
+///
+/// Quelle della voce virtuale, **esattamente**: la dimensione dell'immagine e
+/// la data più recente fra il `.cue` e l'immagine (vedi
+/// [`rymembra_domain::cue::espandi_immagini`]). Sono i due numeri che il piano
+/// confronta alla passata dopo, e uno solo diverso farebbe rileggere ogni
+/// brano d'immagine a ogni scansione.
+///
+/// # La chiave di contenuto
+///
+/// Si calcola con gli stessi ingressi di un file, presi dal foglio: interprete
+/// (del brano, del disco, dei tag dell'immagine), titolo del brano **com'è
+/// scritto nel foglio** — senza il ripiego «Traccia NN» —, album, durata **del
+/// brano** e dimensione dell'immagine. Con interprete e titolo è
+/// `interprete|titolo|album`, la stessa che avrebbe quel brano rippato a file
+/// separati. Senza uno dei due la chiave ripiegherebbe su
+/// `durata|dimensione`, e la dimensione dell'immagine è la stessa per tutti i
+/// brani del disco: le si aggiunge allora il numero del brano
+/// (`durata|dimensione|NN`). Nessun ingresso dipende dal percorso, ed è quel
+/// che permette di riconoscere un'immagine spostata con il suo `.cue`: i brani
+/// tengono identificativo, ascolti e playlist.
+fn read_image_tracks(
+    files: &dyn MusicFiles,
+    covers: &CoverStore,
+    abbinamento: &Abbinamento,
+    voci: &[DiscoveredFile],
+) -> Result<Vec<TrackRow>, AppError> {
+    use rymembra_domain::album::{UNKNOWN_ALBUM, UNKNOWN_ARTIST};
+    use rymembra_domain::keys::normalize_key;
+
+    let tags = read_tags(files, &abbinamento.immagine.path)?;
+    let foglio = &abbinamento.foglio;
+    let pulito = |valore: Option<&String>| crate::metadata::clean(valore.map(String::as_str));
+    let durata_immagine = i64::try_from(tags.duration_ms).unwrap_or(0);
+
+    let album_grezzo = pulito(foglio.titolo.as_ref()).or_else(|| tags.album.clone());
+    let album = album_grezzo
+        .clone()
+        .unwrap_or_else(|| UNKNOWN_ALBUM.to_owned());
+    let interprete_del_disco = pulito(foglio.interprete.as_ref());
+    let album_artist = interprete_del_disco
+        .clone()
+        .or_else(|| tags.album_artist.clone());
+    // `REM DATE` è testo: `1999`, `1999/05/12`, `1999-05`. Le prime quattro
+    // cifre, quando lo sono.
+    let year = foglio
+        .data
+        .as_deref()
+        .and_then(|data| data.get(..4))
+        .filter(|anno| anno.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|anno| anno.parse::<i64>().ok())
+        .or_else(|| tags.year.map(i64::from));
+    let genre = pulito(foglio.genere.as_ref()).or_else(|| tags.genre.clone());
+    let disc_number = foglio.disco.or(tags.disc_number).map(i64::from);
+
+    // La copertina una volta per l'immagine: la stessa per tutti i brani, e
+    // salvarla quattordici volte vorrebbe dire contarla quattordici volte fra
+    // quelle ricodificate.
+    let (cover, mut copertina_persa) = match tags.cover.as_ref() {
+        None => (None, None),
+        Some(incorporata) => match covers.store(&incorporata.data, CoverSource::Tag) {
+            Ok(salvata) => (Some(salvata), None),
+            Err(err) => (None, Some(err)),
+        },
+    };
+
+    let mut righe = Vec::with_capacity(voci.len());
+    for (posto, voce) in voci.iter().enumerate() {
+        let fuori = || {
+            AppError::new(ErrorCode::MetadataTagReadFailed {
+                path: Some(voce.path.clone()),
+            })
+            .with_cause("il foglio non ha questo brano".to_owned())
+        };
+        let (_, numero) = brano_d_immagine(&voce.path).ok_or_else(fuori)?;
+        let indice = foglio
+            .tracce
+            .iter()
+            .position(|traccia| traccia.numero == numero)
+            .ok_or_else(fuori)?;
+        let traccia = foglio.tracce.get(indice).ok_or_else(fuori)?;
+        let fine = foglio.fine_cd(indice);
+        let duration_ms = match fine {
+            Some(fine) => fotogrammi_in_ms(fine.saturating_sub(traccia.inizio_cd)),
+            None => durata_immagine.saturating_sub(fotogrammi_in_ms(traccia.inizio_cd)),
+        }
+        .max(0);
+
+        let titolo_grezzo = pulito(traccia.titolo.as_ref());
+        let artista_grezzo = pulito(traccia.interprete.as_ref())
+            .or_else(|| interprete_del_disco.clone())
+            .or_else(|| tags.artist.clone());
+        let file_size = i64::try_from(voce.size_bytes).unwrap_or(i64::MAX);
+
+        let chiave = ContentKey::compute(ContentKeyInput {
+            artist: artista_grezzo.as_deref(),
+            title: titolo_grezzo.as_deref(),
+            album: album_grezzo.as_deref(),
+            duration_ms: Some(duration_ms),
+            file_size: Some(file_size),
+        })
+        .into_string();
+        let content_key = if normalize_key(artista_grezzo.as_deref()).is_empty()
+            || normalize_key(titolo_grezzo.as_deref()).is_empty()
+        {
+            format!("{chiave}|{numero:02}")
+        } else {
+            chiave
+        };
+
+        let title = titolo_grezzo.unwrap_or_else(|| format!("Traccia {numero:02}"));
+        let artist = artista_grezzo.unwrap_or_else(|| UNKNOWN_ARTIST.to_owned());
+        let track_key = TrackKey::compute(TrackKeyInput {
+            artist: Some(&artist),
+            title: Some(&title),
+            album: Some(&album),
+        })
+        .into_string();
+        // La cartella del percorso virtuale è quella del `.cue`: il nome dopo
+        // l'ultimo separatore è `Album.cue|03`, e la chiave d'album lo toglie
+        // come toglie il nome di un file.
+        let album_key = album_group_key(&album, &voce.path);
+
+        // Dal secondo brano in poi la copertina è «già presente»: l'ha
+        // salvata il primo, e la stessa immagine non si conta due volte.
+        let copertina = cover.clone().map(|mut salvata| {
+            if posto > 0 {
+                salvata.already_present = true;
+            }
+            salvata
+        });
+
+        righe.push(TrackRow {
+            path: voce.path.clone(),
+            track_key,
+            content_key,
+            title,
+            artist,
+            album: album.clone(),
+            album_artist: album_artist.clone(),
+            album_key,
+            year,
+            track_number: Some(i64::from(numero)),
+            disc_number,
+            genre: genre.clone(),
+            duration_ms,
+            bpm: None,
+            musical_key: None,
+            comment: None,
+            lyrics: None,
+            cover: copertina,
+            copertina_persa: copertina_persa.take(),
+            bitrate: tags.bitrate.map(i64::from),
+            sample_rate: tags.sample_rate.map(i64::from),
+            channels: tags.channels.map(i64::from),
+            codec: tags.codec.clone(),
+            file_size,
+            date_modified: voce.modified_ms,
+            replaygain_track_db: None,
+            replaygain_album_db: tags
+                .replaygain_album_db
+                .or(tags.replaygain_track_db)
+                .map(f64::from),
+            mb_recording_id: None,
+            mb_release_group_id: tags.mb_release_group_id.clone(),
+            mb_release_id: tags.mb_release_id.clone(),
+            immagine: Some(abbinamento.immagine.path.clone()),
+            inizio_cd: Some(i64::from(traccia.inizio_cd)),
+            fine_cd: fine.map(i64::from),
+        });
+    }
+    Ok(righe)
+}
+
+/// Un foglio come lo ricorda la cache `fogli_cue`.
+struct FoglioRicordato {
+    /// La dimensione che il `.cue` aveva quando lo si è letto.
+    dimensione: u64,
+    /// La data che aveva.
+    modificato_ms: i64,
+    /// Quel che diceva; `None` se non descriveva un'immagine.
+    foglio: Option<Foglio>,
+}
+
+/// Un foglio letto in questa passata, da mettere nella cache.
+struct FoglioLetto {
+    /// La chiave di percorso del `.cue`.
+    chiave: String,
+    /// La sua dimensione.
+    dimensione: u64,
+    /// La sua data.
+    modificato_ms: i64,
+    /// Quel che dice.
+    foglio: Option<Foglio>,
+}
+
+/// Il foglio nella forma in cui sta nella colonna `fogli_cue.foglio`: JSON.
+///
+/// Una copia dei campi del dominio con i suoi nomi, e non un `derive` sul
+/// dominio: il dominio non serializza niente da sé (vedi il `Cargo.toml` di
+/// questa cassa). I nomi sono quelli del dominio perché sono il formato: se il
+/// dominio aggiunge un campo, un foglio in cache senza quel campo si legge lo
+/// stesso (`serde(default)`) e il campo resta vuoto finché il `.cue` non si
+/// rilegge — al più tardi con «Rileggi tutti i tag», che svuota la cache.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FoglioSalvato {
+    file: String,
+    #[serde(default)]
+    titolo: Option<String>,
+    #[serde(default)]
+    interprete: Option<String>,
+    #[serde(default)]
+    data: Option<String>,
+    #[serde(default)]
+    genere: Option<String>,
+    #[serde(default)]
+    disco: Option<u32>,
+    tracce: Vec<TracciaSalvata>,
+}
+
+/// Un brano del foglio salvato. Vedi [`FoglioSalvato`].
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TracciaSalvata {
+    numero: u8,
+    #[serde(default)]
+    titolo: Option<String>,
+    #[serde(default)]
+    interprete: Option<String>,
+    inizio_cd: u32,
+}
+
+impl From<&Foglio> for FoglioSalvato {
+    fn from(foglio: &Foglio) -> Self {
+        Self {
+            file: foglio.file.clone(),
+            titolo: foglio.titolo.clone(),
+            interprete: foglio.interprete.clone(),
+            data: foglio.data.clone(),
+            genere: foglio.genere.clone(),
+            disco: foglio.disco,
+            tracce: foglio
+                .tracce
+                .iter()
+                .map(|traccia| TracciaSalvata {
+                    numero: traccia.numero,
+                    titolo: traccia.titolo.clone(),
+                    interprete: traccia.interprete.clone(),
+                    inizio_cd: traccia.inizio_cd,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<FoglioSalvato> for Foglio {
+    fn from(salvato: FoglioSalvato) -> Self {
+        Self {
+            file: salvato.file,
+            titolo: salvato.titolo,
+            interprete: salvato.interprete,
+            data: salvato.data,
+            genere: salvato.genere,
+            disco: salvato.disco,
+            tracce: salvato
+                .tracce
+                .into_iter()
+                .map(|traccia| rymembra_domain::cue::TracciaCue {
+                    numero: traccia.numero,
+                    titolo: traccia.titolo,
+                    interprete: traccia.interprete,
+                    inizio_cd: traccia.inizio_cd,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// La cache dei fogli, per chiave di percorso del `.cue`.
+///
+/// Una riga che non si rilegge — un JSON rotto, scritto da chissà chi — si
+/// salta: il suo `.cue` si rilegge, e la riga si riscrive.
+fn fogli_ricordati(
+    connection: &Connection,
+) -> Result<std::collections::HashMap<String, FoglioRicordato>, AppError> {
+    let mut statement = connection
+        .prepare("SELECT chiave, dimensione, modificato_ms, foglio FROM fogli_cue")
+        .map_err(|err| db_error("lettura dei fogli ricordati", &err))?;
+    let righe = statement
+        .query_map([], |riga| {
+            Ok((
+                riga.get::<_, String>(0)?,
+                riga.get::<_, i64>(1)?,
+                riga.get::<_, i64>(2)?,
+                riga.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|err| db_error("lettura dei fogli ricordati", &err))?;
+    let mut fogli = std::collections::HashMap::new();
+    for riga in righe {
+        let (chiave, dimensione, modificato_ms, testo) =
+            riga.map_err(|err| db_error("lettura dei fogli ricordati", &err))?;
+        let (Ok(dimensione), Ok(foglio)) = (
+            u64::try_from(dimensione),
+            serde_json::from_str::<Option<FoglioSalvato>>(&testo),
+        ) else {
+            continue;
+        };
+        fogli.insert(
+            chiave,
+            FoglioRicordato {
+                dimensione,
+                modificato_ms,
+                foglio: foglio.map(Foglio::from),
+            },
+        );
+    }
+    Ok(fogli)
+}
+
+/// Le chiavi dei fogli che la cache ricorda, senza i fogli: per potarla.
+fn chiavi_dei_fogli(connection: &Connection) -> Result<Vec<String>, AppError> {
+    let mut statement = connection
+        .prepare("SELECT chiave FROM fogli_cue")
+        .map_err(|err| db_error("lettura dei fogli ricordati", &err))?;
+    let righe = statement
+        .query_map([], |riga| riga.get::<_, String>(0))
+        .map_err(|err| db_error("lettura dei fogli ricordati", &err))?;
+    righe
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("lettura dei fogli ricordati", &err))
+}
+
+/// Le chiavi di percorso dei `.cue` che hanno già dei brani in libreria.
+///
+/// Per [`rymembra_domain::cue::espandi_immagini`]: fra due fogli per la stessa
+/// immagine vince quello che i brani li ha già. Dalle righe e non dalla cache
+/// dei fogli, perché la cache ricorda anche i fogli che hanno perso.
+fn fogli_con_brani(
+    connection: &Connection,
+    rules: PathRules,
+) -> Result<std::collections::HashSet<String>, AppError> {
+    let mut statement = connection
+        .prepare("SELECT path FROM tracks WHERE immagine IS NOT NULL AND path IS NOT NULL")
+        .map_err(|err| db_error("lettura dei fogli con brani", &err))?;
+    let righe = statement
+        .query_map([], |riga| riga.get::<_, String>(0))
+        .map_err(|err| db_error("lettura dei fogli con brani", &err))?;
+    let mut chiavi = std::collections::HashSet::new();
+    for riga in righe {
+        let percorso = riga.map_err(|err| db_error("lettura dei fogli con brani", &err))?;
+        if let Some((cue, _)) = brano_d_immagine(&percorso) {
+            chiavi.insert(path_key(cue, rules));
+        }
+    }
+    Ok(chiavi)
+}
+
+/// L'immagine di ogni brano d'immagine in libreria, per identificativo.
+///
+/// Si legge con le righe note, nella stessa presa: serve al piano per
+/// accorgersi di un'immagine rinominata. Vedi [`immagini_rinominate`].
+fn immagini_dei_brani(
+    connection: &Connection,
+) -> Result<std::collections::HashMap<i64, String>, AppError> {
+    let mut statement = connection
+        .prepare("SELECT id, immagine FROM tracks WHERE immagine IS NOT NULL")
+        .map_err(|err| db_error("lettura delle immagini dei brani", &err))?;
+    let righe = statement
+        .query_map([], |riga| {
+            Ok((riga.get::<_, i64>(0)?, riga.get::<_, String>(1)?))
+        })
+        .map_err(|err| db_error("lettura delle immagini dei brani", &err))?;
+    righe
+        .collect::<Result<_, _>>()
+        .map_err(|err| db_error("lettura delle immagini dei brani", &err))
+}
+
+/// Rimette fra gli aggiornamenti i brani d'immagine che il piano dà per
+/// invariati e la cui immagine, sul disco, non è più quella della riga.
+///
+/// # Perché il piano non li vede
+///
+/// Il piano confronta la voce virtuale con la riga: il percorso
+/// `…\Album.cue|03`, la dimensione dell'immagine, la data più recente fra
+/// foglio e immagine. Un'immagine rinominata senza toccare il foglio non cambia
+/// nessuno dei tre — il foglio la ritrova lo stesso, col nome del `.cue` o con
+/// le sole maiuscole diverse, e un rinomina non cambia la data — e la colonna
+/// `immagine` resterebbe col nome vecchio per sempre: i brani non suonano più,
+/// e «elimina dal disco» cestinerebbe il `.cue` lasciando l'immagine.
+///
+/// Si confronta come il piano confronta i percorsi, maiuscole comprese sotto
+/// la radice: vedi [`stessa_grafia`]. Su una share sensibile alle maiuscole
+/// `Disco.flac` diventato `disco.flac` è un altro nome, e il vecchio non si
+/// apre.
+///
+/// Un brano rimesso qui si rilegge come uno cambiato, e la riga si riscrive con
+/// l'immagine nuova: stesso identificativo, quindi ascolti e playlist restano.
+/// Esce dalle invariate, che la guardia contro le stragi somma.
+fn immagini_rinominate(
+    piano: &mut ScanPlan,
+    ricognizione: &Ricognizione,
+    known: &[KnownTrack],
+    immagini: &std::collections::HashMap<i64, String>,
+    abbinamenti: &[Abbinamento],
+    rules: PathRules,
+) {
+    if immagini.is_empty() || abbinamenti.is_empty() {
+        return;
+    }
+    let per_foglio: std::collections::HashMap<String, &Abbinamento> = abbinamenti
+        .iter()
+        .map(|abbinamento| (path_key(&abbinamento.cue.path, rules), abbinamento))
+        .collect();
+    // La riga di ogni percorso virtuale: fra due con la stessa chiave quella
+    // che il piano tiene, la più vecchia.
+    let mut righe: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for riga in known
+        .iter()
+        .filter(|riga| brano_d_immagine(&riga.path).is_some())
+    {
+        righe
+            .entry(path_key(&riga.path, rules))
+            .and_modify(|id| *id = (*id).min(riga.id))
+            .or_insert(riga.id);
+    }
+    let gia: std::collections::HashSet<i64> = piano
+        .to_update
+        .iter()
+        .map(|pendente| pendente.track_id)
+        .collect();
+    // Le voci scartate il piano non le ha giudicate invariate; le doppie sì,
+    // la prima volta.
+    let scartate: std::collections::HashSet<String> = piano
+        .skipped
+        .iter()
+        .filter(|scarto| scarto.reason != SkipReason::Duplicate)
+        .map(|scarto| path_key(&scarto.file.path, rules))
+        .collect();
+    let mut viste: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut in_piu: Vec<PendingUpdate> = Vec::new();
+    for voce in &ricognizione.trovati {
+        let Some((cue, _)) = brano_d_immagine(&voce.path) else {
+            continue;
+        };
+        let chiave = path_key(&voce.path, rules);
+        if scartate.contains(&chiave) || !viste.insert(chiave.clone()) {
+            continue;
+        }
+        let Some(&id) = righe.get(&chiave) else {
+            continue;
+        };
+        if gia.contains(&id) {
+            continue;
+        }
+        let (Some(colonna), Some(abbinamento)) =
+            (immagini.get(&id), per_foglio.get(&path_key(cue, rules)))
+        else {
+            continue;
+        };
+        if stessa_grafia(
+            colonna,
+            &abbinamento.immagine.path,
+            &ricognizione.viste,
+            rules,
+        ) {
+            continue;
+        }
+        in_piu.push(PendingUpdate {
+            file: voce.clone(),
+            track_id: id,
+        });
+    }
+    piano.unchanged = piano.unchanged.saturating_sub(in_piu.len());
+    piano.to_update.extend(in_piu);
+}
+
+/// Un rifiuto come lo ricorda `file_illeggibili`: vedi la migrazione 032.
+struct RifiutoRicordato {
+    /// La dimensione che il file aveva.
+    dimensione: i64,
+    /// La data che aveva.
+    modificato_ms: i64,
+    /// La versione del lettore che l'ha rifiutato.
+    versione: i64,
+}
+
+impl RifiutoRicordato {
+    /// Il file è ancora quello rifiutato, davanti allo stesso lettore?
+    fn vale_per(&self, file: &DiscoveredFile) -> bool {
+        i64::try_from(file.size_bytes).is_ok_and(|dimensione| dimensione == self.dimensione)
+            && file.modified_ms == self.modificato_ms
+            && self.versione == crate::metadata::VERSIONE_LETTORE
+    }
+}
+
+/// La memoria dei rifiuti, per chiave di percorso.
+fn rifiuti_ricordati(
+    connection: &Connection,
+) -> Result<std::collections::HashMap<String, RifiutoRicordato>, AppError> {
+    let mut statement = connection
+        .prepare("SELECT chiave, dimensione, modificato_ms, versione FROM file_illeggibili")
+        .map_err(|err| db_error("lettura dei file illeggibili", &err))?;
+    let righe = statement
+        .query_map([], |riga| {
+            Ok((
+                riga.get::<_, String>(0)?,
+                RifiutoRicordato {
+                    dimensione: riga.get(1)?,
+                    modificato_ms: riga.get(2)?,
+                    versione: riga.get(3)?,
+                },
+            ))
+        })
+        .map_err(|err| db_error("lettura dei file illeggibili", &err))?;
+    righe
+        .collect::<Result<std::collections::HashMap<_, _>, _>>()
+        .map_err(|err| db_error("lettura dei file illeggibili", &err))
+}
+
+/// Un rifiuto di questa passata, da ricordare.
+struct RifiutoNuovo {
+    /// La chiave di percorso.
+    chiave: String,
+    /// La dimensione del file.
+    dimensione: i64,
+    /// La sua data.
+    modificato_ms: i64,
+    /// Il perché, come lo racconta l'errore.
+    causa: String,
+}
+
+/// Il rifiuto dice qualcosa **del file**, e lo ridirà finché il file non cambia?
+///
+/// Due codici soli: il lettore ha avuto i byte e ha detto di no
+/// (`metadata.tagReadFailed`), o il formato non si sa leggere o suonare
+/// (`playback.formatUnsupported`). Tutto il resto — la rete, una scadenza, un
+/// permesso, un file sparito fra la camminata e la lettura — riguarda il
+/// momento, e ricordarlo nasconderebbe per sempre un brano buono. Il lettore
+/// che si schianta (`Mancato::Caduto`) porta anche lui `metadata.tagReadFailed`,
+/// ma non passa di qui: chi chiama lo tratta a parte.
+fn rifiuto_deterministico(error: &AppError) -> bool {
+    matches!(
+        error.code().kind(),
+        ErrorCodeKind::MetadataTagReadFailed | ErrorCodeKind::PlaybackFormatUnsupported
+    )
+}
+
+/// Com'è andata la fase dei fogli.
+#[derive(Default)]
+struct Fogli {
+    /// Le immagini abbinate ai loro fogli.
+    abbinamenti: Vec<Abbinamento>,
+    /// I fogli letti adesso, da scrivere nella cache.
+    letti: Vec<FoglioLetto>,
+    /// I brani d'immagine entrati al posto delle immagini.
+    brani: usize,
+    /// Qualcuno ha chiesto di smettere mentre si leggevano.
+    fermata: bool,
+}
+
+/// L'esito di un lavoro di lettura, per chi lo gestisce: `None` se non lo si è
+/// nemmeno tentato perché la sua radice era già morta.
+type EsitoLettura = Option<Result<Result<Vec<TrackRow>, AppError>, Mancato>>;
+
+/// Lo stato della lettura che passa da un lotto all'altro.
+struct StatoLettura<'r> {
+    /// Le radici che hanno smesso di rispondere **mentre** si leggeva.
+    abbandonate: Vec<String>,
+    /// Quante letture di fila sono scadute su ciascuna radice.
+    scadenze_di_fila: std::collections::HashMap<&'r str, usize>,
+    /// Le radici che hanno consegnato un file intero di recente: su quelle si
+    /// tengono più letture in volo. Vedi [`Scan::run_con`].
+    fiducia: std::collections::HashSet<&'r str>,
+    /// Le voci gestite finora.
+    fatti: usize,
+}
+
+/// Quel che un lotto ha letto, in attesa della sua transazione.
+#[derive(Default)]
+struct LottoLetto {
+    /// Le righe, con la loro destinazione.
+    righe: Vec<(TrackRow, Destinazione)>,
+    /// I rifiuti da ricordare.
+    rifiutati: Vec<RifiutoNuovo>,
+    /// Le chiavi lette con successo: se la memoria le ricorda come rifiutate,
+    /// non lo sono più.
+    riusciti: Vec<String>,
+}
+
 impl Scan<'_> {
     /// Qualcuno ha chiesto di smettere?
     ///
@@ -2769,11 +3931,473 @@ impl Scan<'_> {
         });
     }
 
+    /// Come [`Scan::file_illeggibile`], per tutte le voci di un lavoro.
+    ///
+    /// La sonda la paga la prima voce sola: i brani di un'immagine sono lo
+    /// stesso file, e chiedere quattordici volte alla radice come sta per lo
+    /// stesso guasto vorrebbe dire quattordici sonde. Se la radice è morta, le
+    /// altre voci non si elencano — non sono illeggibili, non si sono potute
+    /// guardare —; se è viva, si elencano con lo stesso perché.
+    fn lavoro_illeggibile(
+        &self,
+        voci: &[(DiscoveredFile, Destinazione)],
+        error: &AppError,
+        abbandonate: &mut Vec<String>,
+        illeggibili: &mut Vec<Unreadable>,
+    ) {
+        let Some(((primo, _), resto)) = voci.split_first() else {
+            return;
+        };
+        let morte_prima = abbandonate.len();
+        self.file_illeggibile(primo, error.clone(), abbandonate, illeggibili);
+        if abbandonate.len() > morte_prima {
+            return;
+        }
+        for (file, _) in resto {
+            illeggibili.push(Unreadable {
+                path: file.path.clone(),
+                error: error.clone(),
+            });
+        }
+    }
+
+    /// La fase dei fogli: legge i `.cue` cambiati, ricorda gli altri, e mette
+    /// i brani d'immagine al posto delle loro immagini.
+    ///
+    /// # Senza il lucchetto
+    ///
+    /// La cache arriva da fuori, letta da chi chiama con una presa breve; qui
+    /// si legge solo il disco. I fogli da leggere sono solo quelli nuovi o
+    /// cambiati — dimensione o data diverse da quelle ricordate — e si leggono
+    /// in parallelo, ognuno con la sua scadenza, al più [`FOGLIO_MASSIMO`]
+    /// byte.
+    ///
+    /// # Un foglio che non si legge
+    ///
+    /// Su una rete che singhiozza un `.cue` può non arrivare, e il danno non
+    /// sarebbe piccolo: l'immagine tornerebbe un brano unico per una passata —
+    /// o passerebbe al foglio gemello — e i suoi brani risulterebbero spariti.
+    /// Così no:
+    ///
+    /// - **se la cache lo ricorda**, vale quel che diceva, con la dimensione e
+    ///   la data **di allora**: le voci virtuali tornano identiche a quelle
+    ///   scritte in libreria, e nessun brano si rilegge con un foglio vecchio
+    ///   che poi nessuno correggerebbe più — alla passata dopo, letto davvero,
+    ///   il foglio porta la sua data nuova e i brani si rileggono;
+    /// - **se non lo ricorda**, la musica della sua cartella non si giudica: i
+    ///   file audio lì accanto escono da questa passata — uno di loro è
+    ///   l'immagine, e non si sa quale — e la cartella diventa un ramo perso,
+    ///   quindi niente di quel che ci stava si toglie.
+    ///
+    /// In tutti e due i casi la cartella entra fra i rami persi, che è quel che
+    /// è: un pezzo di radice su cui questa passata non ha potuto dire tutto.
+    ///
+    /// `con_brani` sono le chiavi dei `.cue` che hanno già brani in libreria:
+    /// fra due fogli per la stessa immagine vince il loro. Vedi
+    /// [`fogli_con_brani`].
+    fn espandi_i_fogli(
+        &self,
+        ricognizione: &mut Ricognizione,
+        cache: &std::collections::HashMap<String, FoglioRicordato>,
+        con_brani: &std::collections::HashSet<String>,
+    ) -> Fogli {
+        use rymembra_domain::cue::{FoglioTrovato, espandi_immagini, leggi_foglio};
+        use std::io::Read as _;
+
+        let mut esito = Fogli::default();
+        let mut trovati_fogli: Vec<FoglioTrovato> = Vec::new();
+        let mut da_leggere: Vec<(DiscoveredFile, String)> = Vec::new();
+        for file in &ricognizione.trovati {
+            if extension_of(&file.path) != "cue" {
+                continue;
+            }
+            let chiave = path_key(&file.path, self.rules);
+            match cache.get(&chiave) {
+                Some(ricordato)
+                    if ricordato.dimensione == file.size_bytes
+                        && ricordato.modificato_ms == file.modified_ms =>
+                {
+                    if let Some(foglio) = ricordato.foglio.clone() {
+                        trovati_fogli.push(FoglioTrovato {
+                            cue: file.clone(),
+                            foglio,
+                        });
+                    }
+                }
+                _ => da_leggere.push((file.clone(), chiave)),
+            }
+        }
+
+        let mut senza_foglio: Vec<String> = Vec::new();
+        if !da_leggere.is_empty() {
+            let squadra = Squadra::<Result<Option<Foglio>, AppError>>::nuova(
+                "fogli",
+                LETTURE_IN_VOLO,
+                self.scadenze.brano,
+            );
+            let mut affidati = 0_usize;
+            let mut tornati = 0_usize;
+            while tornati < da_leggere.len() {
+                while affidati < da_leggere.len() && affidati - tornati < LETTURE_IN_VOLO {
+                    let Some((file, _)) = da_leggere.get(affidati) else {
+                        break;
+                    };
+                    let disco = Arc::clone(&self.files);
+                    let percorso = file.path.clone();
+                    squadra.affida(
+                        affidati,
+                        Box::new(move || {
+                            let mut lettore = disco.open(&percorso)?;
+                            let mut byte = Vec::new();
+                            std::io::Read::take(&mut lettore, FOGLIO_MASSIMO.saturating_add(1))
+                                .read_to_end(&mut byte)
+                                .map_err(|err| crate::files::io_error(&percorso, &err))?;
+                            if u64::try_from(byte.len()).unwrap_or(u64::MAX) > FOGLIO_MASSIMO {
+                                return Ok(None);
+                            }
+                            Ok(leggi_foglio(&byte))
+                        }),
+                    );
+                    affidati += 1;
+                }
+                let Some((posto, letto)) = squadra.prossimo(BATTITO) else {
+                    if self.fermato() {
+                        esito.fermata = true;
+                        return esito;
+                    }
+                    continue;
+                };
+                tornati += 1;
+                let Some((cue, chiave)) = da_leggere.get(posto) else {
+                    continue;
+                };
+                match letto {
+                    Ok(Ok(foglio)) => {
+                        if let Some(foglio) = foglio.clone() {
+                            trovati_fogli.push(FoglioTrovato {
+                                cue: cue.clone(),
+                                foglio,
+                            });
+                        }
+                        esito.letti.push(FoglioLetto {
+                            chiave: chiave.clone(),
+                            dimensione: cue.size_bytes,
+                            modificato_ms: cue.modified_ms,
+                            foglio,
+                        });
+                    }
+                    // Un guasto, una scadenza, un parser che cade: il foglio
+                    // non si sa. Vedi la doc qui sopra.
+                    Ok(Err(_)) | Err(_) => {
+                        let cartella =
+                            cartella_che_contiene(&cue.path).unwrap_or_else(|| cue.path.clone());
+                        match cache.get(chiave) {
+                            Some(ricordato) => {
+                                if let Some(foglio) = ricordato.foglio.clone() {
+                                    trovati_fogli.push(FoglioTrovato {
+                                        cue: DiscoveredFile {
+                                            path: cue.path.clone(),
+                                            size_bytes: ricordato.dimensione,
+                                            modified_ms: ricordato.modificato_ms,
+                                        },
+                                        foglio,
+                                    });
+                                }
+                            }
+                            None => senza_foglio.push(path_key(&cartella, self.rules)),
+                        }
+                        ricognizione.rami_persi.push(cartella);
+                    }
+                }
+            }
+        }
+
+        // La musica accanto a un foglio che non si è letto e che nessuno
+        // ricorda: una di quelle è l'immagine, e non si sa quale.
+        if !senza_foglio.is_empty() {
+            ricognizione.trovati.retain(|file| {
+                !is_supported_audio_path(&file.path)
+                    || !cartella_che_contiene(&file.path).is_some_and(|cartella| {
+                        senza_foglio.contains(&path_key(&cartella, self.rules))
+                    })
+            });
+        }
+
+        if trovati_fogli.is_empty() {
+            // Niente da espandere, ma i file veri dal nome che sembra un
+            // brano d'immagine vanno buttati lo stesso: vedi `espandi_immagini`.
+            ricognizione
+                .trovati
+                .retain(|file| brano_d_immagine(&file.path).is_none());
+            return esito;
+        }
+        let espansione = espandi_immagini(
+            std::mem::take(&mut ricognizione.trovati),
+            trovati_fogli,
+            con_brani,
+            self.rules,
+        );
+        ricognizione.trovati = espansione.trovati;
+        esito.brani = espansione
+            .abbinamenti
+            .iter()
+            .map(|abbinamento| abbinamento.foglio.tracce.len())
+            .sum();
+        esito.abbinamenti = espansione.abbinamenti;
+        esito
+    }
+
+    /// La guardia per radice, solo nelle scansioni prudenti.
+    ///
+    /// Una radice vista che in libreria ha almeno [`RADICE_SOSPETTA`] righe e
+    /// sul disco **zero** file di musica vale «saltata»: va in
+    /// `radici_saltate`, esce dalle viste, e niente di quel che ci stava si
+    /// toglie. È il punto di mount che risponde vuoto perché il disco sotto non
+    /// si è montato, la condivisione che si ricollega con una cartella vuota al
+    /// posto di quella vera: la sonda dice sì, la camminata dice niente, e senza
+    /// questa guardia una scansione partita da sola — al risveglio, al ritorno
+    /// della rete — toglierebbe la radice intera senza che nessuno la guardi.
+    ///
+    /// Solo nelle prudenti, perché nelle altre qualcuno sta guardando: la
+    /// guardia contro le stragi gli chiede conferma, e se la radice l'ha
+    /// svuotata davvero può dire di sì.
+    ///
+    /// # Solo sulle cartelle sorvegliate
+    ///
+    /// Vale per le radici della passata che **sono** cartelle sorvegliate —
+    /// [`Scan::radici_della_libreria`], per chiave di percorso — e non per le
+    /// sottocartelle che la sorveglianza e i download guardano. Un punto di
+    /// mount che cade svuota la cartella sorvegliata, non un album dentro; una
+    /// sottocartella vuota con cinquanta brani noti è invece il caso di tutti i
+    /// giorni: l'album spostato per intero, che la sorveglianza manda come «la
+    /// cartella di prima e quella di adesso». Saltare la prima voleva dire che
+    /// i suoi brani non sparivano, quindi non si appaiavano con quelli comparsi
+    /// nell'altra: entravano doppi, e il riallineamento dopo toglieva i vecchi
+    /// con ascolti, voti e playlist.
+    ///
+    /// Una sottocartella che risponde vuota per un guasto resta protetta dalla
+    /// guardia contro le stragi, come ogni altra passata.
+    fn guardia_per_radice(&self, ricognizione: &mut Ricognizione, known: &[KnownTrack]) {
+        let e_musica =
+            |path: &str| is_supported_audio_path(path) || brano_d_immagine(path).is_some();
+        let sorvegliate: std::collections::HashSet<String> = self
+            .radici_della_libreria
+            .iter()
+            .map(|radice| path_key(radice, self.rules))
+            .collect();
+        let sospette: Vec<String> = ricognizione
+            .viste
+            .iter()
+            .filter(|radice| sorvegliate.contains(&path_key(radice, self.rules)))
+            .filter(|radice| {
+                let note = known
+                    .iter()
+                    .filter(|riga| is_under(&riga.path, radice, self.rules))
+                    .take(RADICE_SOSPETTA)
+                    .count();
+                note >= RADICE_SOSPETTA
+                    && !ricognizione.trovati.iter().any(|file| {
+                        e_musica(&file.path) && is_under(&file.path, radice, self.rules)
+                    })
+            })
+            .cloned()
+            .collect();
+        for radice in sospette {
+            ricognizione.viste.retain(|vista| *vista != radice);
+            ricognizione
+                .trovati
+                .retain(|file| !is_under(&file.path, &radice, self.rules));
+            ricognizione.radici_vuote.push(radice.clone());
+            ricognizione.radici_saltate.push(radice);
+        }
+    }
+
+    /// Il piano su quel che si è visto: la guardia per radice, la decisione
+    /// del dominio, e i rami persi tolti dalle rimozioni.
+    ///
+    /// Lo stesso per [`plan`] e per [`Scan::run_con`]: un'anteprima che
+    /// decidesse in un altro modo direbbe «sto per togliere» una cosa e poi ne
+    /// farebbe un'altra.
+    ///
+    /// `immagini` e `abbinamenti` servono a riprendere i brani d'immagine la
+    /// cui immagine ha cambiato nome: vedi [`immagini_rinominate`].
+    fn pianifica(
+        &self,
+        ricognizione: &mut Ricognizione,
+        known: &[KnownTrack],
+        immagini: &std::collections::HashMap<i64, String>,
+        abbinamenti: &[Abbinamento],
+    ) -> (ScanPlan, usize) {
+        if self.prudente {
+            self.guardia_per_radice(ricognizione, known);
+        }
+        let mut piano = plan_scan(
+            ScanInput {
+                roots: &ricognizione.viste,
+                found: &ricognizione.trovati,
+                known,
+            },
+            self.rules,
+        );
+        immagini_rinominate(
+            &mut piano,
+            ricognizione,
+            known,
+            immagini,
+            abbinamenti,
+            self.rules,
+        );
+        let non_verificati =
+            risparmia_i_non_verificati(&mut piano, &ricognizione.rami_persi, self.rules);
+        (piano, non_verificati)
+    }
+
+    /// Gestisce l'esito di un lavoro, **nell'ordine dei lavori**: la logica di
+    /// sempre, per un file o per tutti i brani di un'immagine.
+    fn gestisci<'s>(
+        &'s self,
+        stato: &mut StatoLettura<'s>,
+        lavoro: &Lavoro,
+        esito: EsitoLettura,
+        report: &mut ScanReport,
+        lotto: &mut LottoLetto,
+    ) {
+        let radice = self.radice_di(lavoro.percorso());
+        stato.fatti = stato.fatti.saturating_add(lavoro.voci.len());
+        let Some(esito) = esito else {
+            return;
+        };
+        // Un risultato da una radice abbandonata nel frattempo — mentre questo
+        // era in volo, un altro ha scoperto che la rete se n'è andata — vale
+        // quanto non averlo tentato: niente sonda, niente elenco.
+        if radice.is_some_and(|root| stato.abbandonate.iter().any(|a| a == root)) {
+            return;
+        }
+        match esito {
+            Ok(Ok(righe)) => {
+                // La radice ha risposto: la serie di scadenze, se ce n'era una
+                // cominciata, non è una serie.
+                if let Some(root) = radice {
+                    stato.scadenze_di_fila.remove(root);
+                    stato.fiducia.insert(root);
+                }
+                for (mut row, (file, destinazione)) in righe.into_iter().zip(&lavoro.voci) {
+                    // Si prende invece di clonarla: la riga sta per essere
+                    // consegnata al lotto, e da lì in poi la copertina persa
+                    // non serve più a nessuno.
+                    if let Some(persa) = row.copertina_persa.take() {
+                        report.cover_failures.push(Unreadable {
+                            path: file.path.clone(),
+                            error: persa,
+                        });
+                    }
+                    if let Some(cover) = row.cover.as_ref() {
+                        if cover.already_present {
+                            report.covers_reused += 1;
+                        } else {
+                            report.covers_stored += 1;
+                        }
+                    }
+                    lotto.riusciti.push(path_key(&file.path, self.rules));
+                    lotto.righe.push((row, *destinazione));
+                }
+            }
+            Ok(Err(error)) if rifiuto_deterministico(&error) => {
+                // Il file è arrivato, e il lettore ha detto di no: la radice
+                // risponde, e il no si ricorda — vedi la migrazione 032.
+                if let Some(root) = radice {
+                    stato.fiducia.insert(root);
+                }
+                let causa = error.to_string();
+                for (file, _) in &lavoro.voci {
+                    lotto.rifiutati.push(RifiutoNuovo {
+                        chiave: path_key(&file.path, self.rules),
+                        dimensione: i64::try_from(file.size_bytes).unwrap_or(i64::MAX),
+                        modificato_ms: file.modified_ms,
+                        causa: causa.clone(),
+                    });
+                    report.unreadable.push(Unreadable {
+                        path: file.path.clone(),
+                        error: error.clone(),
+                    });
+                }
+            }
+            Ok(Err(error)) => {
+                if let Some(root) = radice
+                    && error.code().kind() == ErrorCodeKind::FsNetworkUnavailable
+                {
+                    stato.fiducia.remove(root);
+                }
+                self.lavoro_illeggibile(
+                    &lavoro.voci,
+                    &error,
+                    &mut stato.abbandonate,
+                    &mut report.unreadable,
+                );
+            }
+            // Il lettore dei tag è caduto su questo file: `lofty` davanti a
+            // un'intestazione malformata, un `assert!` di terzi. Un file
+            // illeggibile, detto per nome, e nient'altro: **non** una scadenza,
+            // e non conta verso l'abbandono della radice. Fino alla 2.4 lo era,
+            // e tre file rotti di fila in una cartella del disco di casa la
+            // facevano abbandonare come «rete non disponibile».
+            //
+            // Anzi: un file che fa cadere il lettore è un file che è
+            // **arrivato**, byte per byte. La radice ha risposto, e la serie di
+            // scadenze — se ce n'era una — si interrompe come dopo una lettura
+            // riuscita. Non si ricorda: una caduta non è una risposta del
+            // lettore, ed è giusto riprovare.
+            Err(Mancato::Caduto { messaggio }) => {
+                if let Some(root) = radice {
+                    stato.scadenze_di_fila.remove(root);
+                    stato.fiducia.insert(root);
+                }
+                for (file, _) in &lavoro.voci {
+                    report.unreadable.push(Unreadable {
+                        path: file.path.clone(),
+                        error: caduto(&file.path, messaggio.as_deref()),
+                    });
+                }
+            }
+            // Non è tornato in tempo: il filo è ancora dentro la `open`, e da
+            // qui in poi non lo si aspetta più. Vale un guasto di rete, e come
+            // tale fa scattare la sonda della radice — perché la domanda è la
+            // stessa: è lento questo file, o è morta la cartella?
+            Err(Mancato::Scaduto) => {
+                if let Some(root) = radice {
+                    stato.fiducia.remove(root);
+                }
+                self.lavoro_illeggibile(
+                    &lavoro.voci,
+                    &scaduto(lavoro.percorso(), self.scadenze.brano),
+                    &mut stato.abbandonate,
+                    &mut report.unreadable,
+                );
+                // E poi la seconda domanda, quella che la sonda non fa: non «la
+                // radice risponde?» ma «la radice serve a qualcosa?». Alla terza
+                // scadenza di fila la risposta è no, e insistere costerebbe una
+                // scadenza e una sonda per ognuno dei file rimasti.
+                if let Some(root) = radice {
+                    let di_fila = stato.scadenze_di_fila.entry(root).or_insert(0);
+                    *di_fila += 1;
+                    if *di_fila >= SCADENZE_DI_FILA && !stato.abbandonate.iter().any(|a| a == root)
+                    {
+                        stato.abbandonate.push(root.to_owned());
+                    }
+                }
+            }
+        }
+    }
+
     /// Esegue la scansione chiedendo la connessione una fase per volta.
     ///
     /// `on_progress` riceve `(fatti, totale)` sui soli file da leggere, che sono
     /// la parte lenta. Rimozioni e aggregati non entrano nel conteggio perché
     /// non hanno una durata percepibile.
+    ///
+    /// È [`Scan::run_con`] con l'osservatore di prima: le
+    /// [`Avanzamento::Lettura`] vanno a `on_progress`, le
+    /// [`Avanzamento::Camminata`] non le chiede nessuno.
     ///
     /// # Le fasi, e quali non toccano il deposito
     ///
@@ -2782,11 +4406,16 @@ impl Scan<'_> {
     /// 1. **La camminata.** Nessuna connessione in mano: è la fase che su una
     ///    share lenta dura minuti. Chi si ferma qui non ha deciso niente, e
     ///    infatti non scrive niente — nemmeno una presa.
-    /// 2. **Il piano.** Una presa per leggere le righe note, poi una funzione
-    ///    pura del dominio che decide.
-    /// 3. **Le righe doppie e le sparizioni in sospeso.** Una presa sola.
-    /// 4. **La lettura dei file.** Di nuovo niente in mano, e ogni file con una
-    ///    scadenza addosso: è l'altra fase lunga.
+    /// 1. ter. **I fogli `.cue`.** Una presa breve per la cache, se c'è almeno
+    ///    un `.cue`; poi il disco, di nuovo senza niente in mano. Vedi
+    ///    `espandi_i_fogli`.
+    /// 2. **Il piano.** Una presa per leggere le righe note e la memoria dei
+    ///    rifiuti, poi una funzione pura del dominio che decide.
+    /// 3. **Le righe doppie, le sparizioni in sospeso e le due memorie.** Una
+    ///    presa sola.
+    /// 4. **La lettura dei file.** Di nuovo niente in mano, fino a
+    ///    [`LETTURE_IN_VOLO`] file insieme, ognuno con una scadenza addosso: è
+    ///    l'altra fase lunga.
     /// 5. **La scrittura di ogni lotto.** Una presa per lotto, una transazione
     ///    dentro.
     /// 6. **Le rimozioni rimaste.** Una presa.
@@ -2815,18 +4444,17 @@ impl Scan<'_> {
     ///
     /// # Fermarsi
     ///
-    /// Durante la camminata risponde [`Scan::fermati`]: non si è ancora deciso
-    /// niente, quindi non si scrive niente e l'esito è un `cancelled` con il
-    /// piano vuoto.
+    /// Durante la camminata — e durante la lettura dei fogli — risponde
+    /// [`Scan::fermati`]: non si è ancora deciso niente, quindi non si scrive
+    /// niente e l'esito è un `cancelled` con il piano vuoto.
     ///
     /// Durante la lettura rispondono in due, e basta uno: `on_progress` che
     /// restituisce [`ControlFlow::Break`], o la stessa [`Scan::fermati`]. La
-    /// scansione si ferma allora **alla fine del file in corso**: il lotto
-    /// chiude la sua transazione con le righe che ha già letto, e lì si
-    /// smette. Non alla fine del lotto — su una share dove ogni apertura costa
-    /// mezzo minuto, i quattrocentonovantanove file rimasti sarebbero ore fra
-    /// l'Annulla e il momento in cui succede qualcosa. Quel che è stato scritto
-    /// resta.
+    /// scansione si ferma allora **all'esito che sta gestendo**: il lotto
+    /// chiude la sua transazione con le righe che ha già gestito, e lì si
+    /// smette. Le letture ancora in volo non si aspettano — su una share dove
+    /// ogni apertura costa mezzo minuto sarebbero mezzo minuto fra l'Annulla e
+    /// il momento in cui succede qualcosa — e quel che è stato scritto resta.
     ///
     /// Non è un annullamento nel senso di «disfare» — è «basta così»: la passata
     /// dopo trova una libreria giusta e incompleta e la finisce da sé. È il
@@ -2841,10 +4469,59 @@ impl Scan<'_> {
         deposito: &mut D,
         mut on_progress: impl FnMut(usize, usize) -> ControlFlow<()>,
     ) -> Result<ScanReport, AppError> {
+        self.run_con(deposito, |avanzamento| match avanzamento {
+            Avanzamento::Lettura { fatti, totale } => on_progress(fatti, totale),
+            Avanzamento::Camminata { .. } => ControlFlow::Continue(()),
+        })
+    }
+
+    /// Come [`Scan::run_su`], con un osservatore più ricco: racconta anche la
+    /// camminata. Vedi [`Avanzamento`].
+    ///
+    /// Un [`ControlFlow::Break`] durante la camminata vale un Annulla durante
+    /// la camminata: niente scritto, `cancelled` e piano vuoto.
+    ///
+    /// # Le letture in parallelo
+    ///
+    /// Fino a [`LETTURE_IN_VOLO`] lavori insieme, sulla [`Squadra`]; gli esiti
+    /// si gestiscono **in ordine**, sul filo di chi coordina, con la logica di
+    /// sempre: abbandoni, scadenze di fila, sonda, copertine, avanzamento,
+    /// annullamento. L'ordine conta perché è quello che dà un senso a «tre
+    /// scadenze di fila», e perché un lotto interrotto deve aver scritto un
+    /// prefisso dei suoi file, non quelli che per caso sono arrivati prima.
+    ///
+    /// **Una radice si guadagna il parallelo.** Finché non ha consegnato un
+    /// file — all'inizio, e di nuovo dopo una scadenza o un guasto di rete —
+    /// su di lei si legge un file alla volta: sulla share che muore a metà è
+    /// il primo file a pagare l'attesa e a scoprirlo per tutti, invece di
+    /// quattro scadenze insieme e quattro fili appesi. Le altre radici, intanto,
+    /// leggono quanto possono.
+    ///
+    /// Fra un lotto e l'altro la squadra si svuota: si scrive solo quando non
+    /// c'è più niente in volo, così il lucchetto non è mai in mano a qualcuno
+    /// mentre un file si sta aprendo. Costa la coda di un lotto ogni
+    /// cinquecento file.
+    ///
+    /// # Errori
+    ///
+    /// `db.*` se una presa del deposito fallisce. I file che non si leggono non
+    /// sono errori: vedi [`ScanReport::unreadable`].
+    pub fn run_con<D: Deposito>(
+        &self,
+        deposito: &mut D,
+        mut avanzamento: impl FnMut(Avanzamento) -> ControlFlow<()>,
+    ) -> Result<ScanReport, AppError> {
         let started = Instant::now();
+        let mut tempi = TempiScansione::default();
 
         // ── 1. il disco, senza niente in mano ──
-        let ricognizione = cammina(self);
+        let inizio = Instant::now();
+        let mut ricognizione = cammina_con(self, &mut |cartelle, file| {
+            avanzamento(Avanzamento::Camminata { cartelle, file })
+        });
+        tempi.camminata_ms = millisecondi(inizio);
+        let cartelle_viste = ricognizione.cartelle;
+        let file_visti = ricognizione.trovati.len();
 
         // ── 1 bis. chi si è fermato camminando non ha deciso niente ──
         //
@@ -2852,39 +4529,118 @@ impl Scan<'_> {
         // transazione. Il piano resta vuoto perché un piano calcolato su mezza
         // camminata direbbe «spariti» dei brani che stanno sotto radici che non
         // si è fatto in tempo a guardare.
-        if ricognizione.fermata {
-            return Ok(ScanReport {
-                cancelled: true,
-                radici_saltate: ricognizione.radici_saltate,
-                rami_persi: ricognizione.rami_persi,
-                elapsed_ms: started.elapsed().as_millis(),
-                ..ScanReport::default()
-            });
-        }
-
-        // ── 2. le righe note, e il piano, che è una funzione pura ──
-        let known = deposito.con_connessione(|connection| known_tracks(connection))?;
-        let mut report = ScanReport {
-            plan: plan_scan(
-                ScanInput {
-                    roots: &ricognizione.viste,
-                    found: &ricognizione.trovati,
-                    known: &known,
-                },
-                self.rules,
-            ),
+        let fermata = |ricognizione: Ricognizione, tempi: TempiScansione| ScanReport {
+            cancelled: true,
             radici_saltate: ricognizione.radici_saltate,
+            rami_persi: ricognizione.rami_persi,
+            elapsed_ms: started.elapsed().as_millis(),
+            tempi,
+            cartelle_viste,
+            file_visti,
             ..ScanReport::default()
         };
+        if ricognizione.fermata {
+            return Ok(fermata(ricognizione, tempi));
+        }
+
+        // ── 1 ter. i fogli `.cue`: la cache con una presa breve, il disco senza ──
+        let inizio = Instant::now();
+        let ci_sono_fogli = ricognizione
+            .trovati
+            .iter()
+            .any(|file| extension_of(&file.path) == "cue");
+        let (cache_fogli, con_brani) = if ci_sono_fogli {
+            deposito.con_connessione(|connection| {
+                Ok((
+                    fogli_ricordati(connection)?,
+                    fogli_con_brani(connection, self.rules)?,
+                ))
+            })?
+        } else {
+            (
+                std::collections::HashMap::new(),
+                std::collections::HashSet::new(),
+            )
+        };
+        let fogli = self.espandi_i_fogli(&mut ricognizione, &cache_fogli, &con_brani);
+        tempi.fogli_ms = millisecondi(inizio);
+        if fogli.fermata {
+            return Ok(fermata(ricognizione, tempi));
+        }
+
+        // ── 2. le righe note, la memoria dei rifiuti, e il piano ──
+        let inizio = Instant::now();
+        let (known, rifiuti, fogli_in_cache, immagini_note) =
+            deposito.con_connessione(|connection| {
+                Ok((
+                    known_tracks(connection)?,
+                    rifiuti_ricordati(connection)?,
+                    chiavi_dei_fogli(connection)?,
+                    immagini_dei_brani(connection)?,
+                ))
+            })?;
         // ── 2 bis. quel che sta sotto un ramo perso non è sparito ──
         //
-        // Prima di tutto il resto, perché da qui in poi il piano decide: le
-        // sparizioni diventano candidate agli spostamenti e poi rimozioni. Una
-        // riga sotto una sottocartella illeggibile non deve arrivare a nessuna
-        // delle due — non è stata vista, e non vederla non vuol dire niente.
-        report.non_verificati =
-            risparmia_i_non_verificati(&mut report.plan, &ricognizione.rami_persi, self.rules);
-        report.rami_persi = ricognizione.rami_persi;
+        // Dentro `pianifica`, prima di tutto il resto, perché da qui in poi il
+        // piano decide: le sparizioni diventano candidate agli spostamenti e
+        // poi rimozioni. Una riga sotto una sottocartella illeggibile non deve
+        // arrivare a nessuna delle due — non è stata vista, e non vederla non
+        // vuol dire niente.
+        let (piano, non_verificati) = self.pianifica(
+            &mut ricognizione,
+            &known,
+            &immagini_note,
+            &fogli.abbinamenti,
+        );
+
+        // Le due memorie si potano dove si è guardato: una riga di un file che
+        // sotto una radice vista — e fuori dai rami persi — non c'è più, è una
+        // riga di niente. Si confrontano con i trovati **dopo** l'espansione,
+        // perché i rifiuti di un'immagine sono ricordati per brano.
+        let da_potare = {
+            let visti: std::collections::HashSet<String> = ricognizione
+                .trovati
+                .iter()
+                .map(|file| path_key(&file.path, self.rules))
+                .collect();
+            let potabile = |chiave: &str| {
+                !visti.contains(chiave)
+                    && ricognizione
+                        .viste
+                        .iter()
+                        .any(|radice| is_under(chiave, radice, self.rules))
+                    && !ricognizione
+                        .rami_persi
+                        .iter()
+                        .any(|ramo| is_under(chiave, ramo, self.rules))
+            };
+            let rifiuti: Vec<String> = rifiuti
+                .keys()
+                .filter(|chiave| potabile(chiave))
+                .cloned()
+                .collect();
+            // Dalle chiavi lette adesso e non dalla cache della fase dei fogli:
+            // quella si legge solo se c'è almeno un `.cue`, e quando l'ultimo
+            // se n'è andato è proprio la sua riga che va tolta.
+            let fogli: Vec<String> = fogli_in_cache
+                .into_iter()
+                .filter(|chiave| potabile(chiave))
+                .collect();
+            (rifiuti, fogli)
+        };
+
+        let mut report = ScanReport {
+            plan: piano,
+            radici_saltate: ricognizione.radici_saltate,
+            radici_vuote: ricognizione.radici_vuote,
+            non_verificati,
+            rami_persi: ricognizione.rami_persi,
+            cartelle_viste,
+            file_visti,
+            brani_d_immagine: fogli.brani,
+            ..ScanReport::default()
+        };
+        tempi.piano_ms = millisecondi(inizio);
 
         // ── 3. una presa sola: le doppie se ne vanno, le sparizioni si tengono ──
         //
@@ -2896,6 +4652,10 @@ impl Scan<'_> {
         //
         // Le sparizioni invece restano in sospeso: qualcuna è uno spostamento, e
         // lo si scopre solo leggendo i file nuovi.
+        //
+        // E le due memorie: i fogli appena letti nella cache, le righe di file
+        // che non ci sono più fuori da entrambe.
+        let inizio = Instant::now();
         let doppie: Vec<(i64, String)> = report
             .plan
             .to_remove
@@ -2908,6 +4668,18 @@ impl Scan<'_> {
             .to_remove
             .iter()
             .filter(|r| r.reason == RemoveReason::Disappeared)
+            .map(|r| r.track.id)
+            .collect();
+        // Quali di queste erano brani d'immagine: servono all'appaiamento degli
+        // spostamenti, che non deve mai attraversare il confine fra un file
+        // intero e un pezzo di file. Vedi più sotto.
+        let spariti_d_immagine: std::collections::HashSet<i64> = report
+            .plan
+            .to_remove
+            .iter()
+            .filter(|r| {
+                r.reason == RemoveReason::Disappeared && brano_d_immagine(&r.track.path).is_some()
+            })
             .map(|r| r.track.id)
             .collect();
         // Gli album e gli artisti che questa passata tocca, fase per fase: alla
@@ -2928,206 +4700,274 @@ impl Scan<'_> {
                 tx.commit()
                     .map_err(|err| db_error("chiusura della transazione", &err))?;
             }
+            if !fogli.letti.is_empty() || !da_potare.0.is_empty() || !da_potare.1.is_empty() {
+                let tx = transazione_di_scrittura(connection)
+                    .map_err(|err| db_error("apertura della transazione", &err))?;
+                aggiorna_le_memorie(&tx, &fogli.letti, &da_potare.0, &da_potare.1)?;
+                tx.commit()
+                    .map_err(|err| db_error("chiusura della transazione", &err))?;
+            }
             let sospese = content_keys_of(connection, &spariti)?;
             Ok((tolte, sospese))
         })?;
         report.removed += tolte;
+        tempi.scrittura_ms = tempi.scrittura_ms.saturating_add(millisecondi(inizio));
 
         // ── quel che va letto, in un elenco solo ──
         // Inserimenti e aggiornamenti differiscono solo per la presenza di una
         // riga da riusare; leggerli insieme tiene i lotti pieni anche quando gli
         // uni sono pochi e gli altri tanti.
+        //
+        // Senza i file che il lettore ha già rifiutato così come sono: il piano
+        // li conta lo stesso — fra gli inserimenti o gli aggiornamenti, che è
+        // quel che sarebbero — e la guardia contro le stragi somma su quei
+        // conti, quindi toglierli da lì cambierebbe il suo denominatore.
         let mut da_leggere: Vec<(DiscoveredFile, Destinazione)> =
             Vec::with_capacity(report.plan.to_insert.len() + report.plan.to_update.len());
+        let ricordato = |file: &DiscoveredFile| {
+            rifiuti
+                .get(&path_key(&file.path, self.rules))
+                .is_some_and(|rifiuto| rifiuto.vale_per(file))
+        };
         for file in &report.plan.to_insert {
-            da_leggere.push((file.clone(), Destinazione::Nuova));
+            if ricordato(file) {
+                report.illeggibili_noti += 1;
+            } else {
+                da_leggere.push((file.clone(), Destinazione::Nuova));
+            }
         }
         for pending in &report.plan.to_update {
-            da_leggere.push((
-                pending.file.clone(),
-                Destinazione::Aggiorna(pending.track_id),
-            ));
+            if ricordato(&pending.file) {
+                report.illeggibili_noti += 1;
+            } else {
+                da_leggere.push((
+                    pending.file.clone(),
+                    Destinazione::Aggiorna(pending.track_id),
+                ));
+            }
         }
+        let immagini: std::collections::HashMap<String, Arc<Abbinamento>> = fogli
+            .abbinamenti
+            .into_iter()
+            .map(|abbinamento| {
+                (
+                    path_key(&abbinamento.cue.path, self.rules),
+                    Arc::new(abbinamento),
+                )
+            })
+            .collect();
+        let mut lavori: std::collections::VecDeque<Lavoro> =
+            in_lavori(da_leggere, &immagini, self.rules).into();
+        let totale: usize = lavori.iter().map(|lavoro| lavoro.voci.len()).sum();
 
-        let totale = da_leggere.len();
-        let mut fatti = 0;
-        // Le radici che hanno smesso di rispondere **mentre** si leggeva.
-        //
-        // La sonda della camminata guarda le radici prima di cominciare; questa
-        // è la rete che se ne va dopo, a lettura iniziata. Senza, una share
-        // caduta a metà costava una scadenza per ogni file rimasto — e i suoi
-        // brani, non riletti, restavano candidati alla rimozione.
-        let mut abbandonate: Vec<String> = Vec::new();
-        // Quante letture di fila sono scadute su ciascuna radice.
-        //
-        // Solo le scadenze: un errore vero — un file rotto, un permesso negato
-        // — non dice niente sulla salute della condivisione, e non conta né in
-        // un senso né nell'altro. Una lettura riuscita azzera il conto della
-        // sua radice, perché quel che si sta cercando è una **serie**: alla
-        // [`SCADENZE_DI_FILA`]-esima la radice si abbandona anche se alla sonda
-        // risponde ancora. I file che hanno pagato la scadenza restano
-        // nell'elenco degli illeggibili, detti per nome: sono stati tentati.
-        let mut scadenze_di_fila: std::collections::HashMap<&str, usize> =
-            std::collections::HashMap::new();
+        let mut stato = StatoLettura {
+            abbandonate: Vec::new(),
+            scadenze_di_fila: std::collections::HashMap::new(),
+            fiducia: std::collections::HashSet::new(),
+            fatti: 0,
+        };
         // ── 4. la lettura, di nuovo senza niente in mano ──
         //
-        // Un filo solo per tutte le letture, riusato finché uno non gli si
+        // Quattro fili per tutte le letture, riusati finché uno non gli si
         // appende addosso: centomila file non sono centomila fili.
-        let mut operaio = crate::scadenza::Operaio::nuovo("lettura");
-        for lotto in da_leggere.chunks(LOTTO) {
-            let mut righe: Vec<(TrackRow, Destinazione)> = Vec::with_capacity(lotto.len());
-            for (file, destinazione) in lotto {
-                // Su una radice già dichiarata morta non si tenta nemmeno: ogni
-                // apertura su una share che non risponde costa la scadenza
-                // intera, e su una libreria vera i file rimasti sono decine di
-                // migliaia. Il primo file paga l'attesa e la scopre per tutti.
-                let su_radice_morta = self
-                    .radice_di(&file.path)
-                    .is_some_and(|root| abbandonate.iter().any(|a| a == root));
-                if !su_radice_morta {
-                    // Il deposito non è in mano a nessuno qui dentro, ed è il
-                    // punto di tutto: è la fase che su una share lenta dura, e
-                    // se la connessione fosse presa la finestra aspetterebbe.
-                    //
-                    // Tutto quel che serve al filo se lo porta via: l'`Arc` dei
-                    // file, la cartella delle copertine, il file da leggere. Un
-                    // filo che si appende sopravvive a questa iterazione, e non
-                    // può tenere in mano niente che appartenga a `self`.
+        // Assunta solo se c'è qualcosa da leggere: una riscansione invariata
+        // non costa nemmeno i suoi quattro fili.
+        let squadra = (!lavori.is_empty()).then(|| {
+            Squadra::<Result<Vec<TrackRow>, AppError>>::nuova(
+                "lettura",
+                LETTURE_IN_VOLO,
+                self.scadenze.brano,
+            )
+        });
+        while let Some(squadra) = squadra.as_ref().filter(|_| !lavori.is_empty()) {
+            let inizio = Instant::now();
+            // Il lotto: lavori interi fino a [`LOTTO`] voci, così i brani di
+            // un'immagine non si spezzano fra due transazioni.
+            let mut lotto_lavori: Vec<Lavoro> = Vec::new();
+            let mut voci = 0_usize;
+            while voci < LOTTO {
+                let Some(lavoro) = lavori.pop_front() else {
+                    break;
+                };
+                voci += lavoro.voci.len();
+                lotto_lavori.push(lavoro);
+            }
+            let mut letto = LottoLetto::default();
+            let mut esiti: std::collections::BTreeMap<usize, EsitoLettura> =
+                std::collections::BTreeMap::new();
+            let mut in_volo: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::new();
+            let mut affidati = 0_usize;
+            let mut gestiti = 0_usize;
+            while gestiti < lotto_lavori.len() {
+                // Prima si gestisce il prossimo nell'ordine, se è arrivato:
+                // affidare prima vorrebbe dire decidere con quel che si
+                // sapeva un esito fa — un secondo file mandato sulla radice
+                // che il primo sta per dichiarare morta.
+                if let Some(esito) = esiti.remove(&gestiti) {
+                    let Some(lavoro) = lotto_lavori.get(gestiti) else {
+                        break;
+                    };
+                    self.gestisci(&mut stato, lavoro, esito, &mut report, &mut letto);
+                    gestiti += 1;
+                    // Due modi di sentirsi dire «basta», e ne basta uno. Il
+                    // callback parla per chi sta guardando la barra; la
+                    // bandiera parla per tutti gli altri — l'uscita del
+                    // programma, un chiamante che di avanzamento non sa che
+                    // farsene e passa un `Continue` fisso.
+                    let fatti = stato.fatti;
+                    if avanzamento(Avanzamento::Lettura { fatti, totale }).is_break()
+                        || self.fermato()
+                    {
+                        report.cancelled = true;
+                        break;
+                    }
+                    continue;
+                }
+
+                // Poi si affida quel che si può, nell'ordine: una radice morta non
+                // si tenta nemmeno — ogni apertura su una share che non
+                // risponde costa la scadenza intera, e su una libreria vera i
+                // file rimasti sono decine di migliaia —, una radice senza
+                // fiducia un file per volta.
+                //
+                // E mai più di [`LETTURE_IN_VOLO`] lavori oltre l'ultimo
+                // gestito, arrivati o no: un esito che torna in anticipo libera
+                // un filo, ma non dice ancora niente della radice, e affidare al
+                // suo posto vorrebbe dire continuare a tentare una share che il
+                // primo esito in coda sta per dichiarare morta.
+                while affidati < gestiti.saturating_add(LETTURE_IN_VOLO) {
+                    let Some(lavoro) = lotto_lavori.get(affidati) else {
+                        break;
+                    };
+                    let radice = self.radice_di(lavoro.percorso()).unwrap_or("");
+                    if stato.abbandonate.iter().any(|a| a == radice) {
+                        esiti.insert(affidati, None);
+                        affidati += 1;
+                        continue;
+                    }
+                    let finestra = if stato.fiducia.contains(radice) {
+                        LETTURE_IN_VOLO
+                    } else {
+                        1
+                    };
+                    let gia = in_volo.entry(radice).or_insert(0);
+                    if *gia >= finestra {
+                        break;
+                    }
+                    *gia += 1;
+                    report.letti += lavoro.voci.len();
+                    // Tutto quel che serve al filo se lo porta via: l'`Arc`
+                    // dei file, la cartella delle copertine, le voci. Un filo
+                    // che si appende sopravvive a questa iterazione, e non può
+                    // tenere in mano niente che appartenga a `self`.
                     let disco = Arc::clone(&self.files);
                     let copertine = self.covers.clone();
-                    let quale = file.clone();
-                    let letto = operaio.esegui(self.scadenze.brano, move || {
-                        read_track(disco.as_ref(), &copertine, &quale)
-                    });
-                    match letto {
-                        Ok(Ok(mut row)) => {
-                            // La radice ha risposto: la serie di scadenze, se
-                            // ce n'era una cominciata, non è una serie.
-                            if let Some(root) = self.radice_di(&file.path) {
-                                scadenze_di_fila.remove(root);
+                    let voci: Vec<DiscoveredFile> =
+                        lavoro.voci.iter().map(|(file, _)| file.clone()).collect();
+                    let immagine = lavoro.immagine.clone();
+                    squadra.affida(
+                        affidati,
+                        Box::new(move || match immagine {
+                            Some(abbinamento) => {
+                                read_image_tracks(disco.as_ref(), &copertine, &abbinamento, &voci)
                             }
-                            // Si prende invece di clonarla: la riga sta per essere
-                            // consegnata al lotto, e da lì in poi la copertina persa
-                            // non serve più a nessuno.
-                            if let Some(persa) = row.copertina_persa.take() {
-                                report.cover_failures.push(Unreadable {
-                                    path: file.path.clone(),
-                                    error: persa,
-                                });
+                            None => voci
+                                .first()
+                                .map(|file| read_track(disco.as_ref(), &copertine, file))
+                                .transpose()
+                                .map(|riga| riga.into_iter().collect()),
+                        }),
+                    );
+                    affidati += 1;
+                }
+                // Il prossimo da gestire era su una radice morta: è già qui,
+                // senza aspettare niente.
+                if esiti.contains_key(&gestiti) {
+                    continue;
+                }
+
+                // Altrimenti si aspetta il prossimo esito, un battito per
+                // volta, guardando se qualcuno ha chiesto di smettere.
+                match squadra.prossimo(BATTITO) {
+                    Some((posto, esito)) => {
+                        if let Some(lavoro) = lotto_lavori.get(posto) {
+                            let radice = self.radice_di(lavoro.percorso()).unwrap_or("");
+                            if let Some(gia) = in_volo.get_mut(radice) {
+                                *gia = gia.saturating_sub(1);
                             }
-                            if let Some(cover) = row.cover.as_ref() {
-                                if cover.already_present {
-                                    report.covers_reused += 1;
-                                } else {
-                                    report.covers_stored += 1;
-                                }
-                            }
-                            righe.push((row, *destinazione));
                         }
-                        Ok(Err(error)) => self.file_illeggibile(
-                            file,
-                            error,
-                            &mut abbandonate,
-                            &mut report.unreadable,
-                        ),
-                        // Il lettore dei tag è caduto su questo file: `lofty`
-                        // davanti a un'intestazione malformata, un `assert!`
-                        // di terzi. Un file illeggibile, detto per nome, e
-                        // nient'altro: **non** una scadenza, e non conta verso
-                        // l'abbandono della radice. Fino alla 2.4 lo era, e tre
-                        // file rotti di fila in una cartella del disco di casa
-                        // la facevano abbandonare come «rete non disponibile».
-                        //
-                        // Anzi: un file che fa cadere il lettore è un file che
-                        // è **arrivato**, byte per byte. La radice ha risposto,
-                        // e la serie di scadenze — se ce n'era una — si
-                        // interrompe come dopo una lettura riuscita.
-                        Err(Mancato::Caduto { messaggio }) => {
-                            if let Some(root) = self.radice_di(&file.path) {
-                                scadenze_di_fila.remove(root);
-                            }
-                            report.unreadable.push(Unreadable {
-                                path: file.path.clone(),
-                                error: caduto(&file.path, messaggio.as_deref()),
-                            });
-                        }
-                        // Non è tornato in tempo: il filo è ancora dentro la
-                        // `open`, e da qui in poi non lo si aspetta più. Vale un
-                        // guasto di rete, e come tale fa scattare la sonda della
-                        // radice — perché la domanda è la stessa: è lento questo
-                        // file, o è morta la cartella?
-                        Err(Mancato::Scaduto) => {
-                            self.file_illeggibile(
-                                file,
-                                scaduto(&file.path, self.scadenze.brano),
-                                &mut abbandonate,
-                                &mut report.unreadable,
-                            );
-                            // E poi la seconda domanda, quella che la sonda non
-                            // fa: non «la radice risponde?» ma «la radice serve
-                            // a qualcosa?». Alla terza scadenza di fila la
-                            // risposta è no, e insistere costerebbe una
-                            // scadenza e una sonda per ognuno dei file rimasti.
-                            if let Some(root) = self.radice_di(&file.path) {
-                                let di_fila = scadenze_di_fila.entry(root).or_insert(0);
-                                *di_fila += 1;
-                                if *di_fila >= SCADENZE_DI_FILA
-                                    && !abbandonate.iter().any(|a| a == root)
-                                {
-                                    abbandonate.push(root.to_owned());
-                                }
-                            }
+                        esiti.insert(posto, Some(esito));
+                    }
+                    None => {
+                        if self.fermato() {
+                            report.cancelled = true;
+                            break;
                         }
                     }
                 }
-                fatti += 1;
-                // Due modi di sentirsi dire «basta», e ne basta uno. Il callback
-                // parla per chi sta guardando la barra; la bandiera parla per
-                // tutti gli altri — l'uscita del programma, un chiamante che di
-                // avanzamento non sa che farsene e passa un `Continue` fisso.
-                if on_progress(fatti, totale).is_break() || self.fermato() {
-                    report.cancelled = true;
-                    // E si smette **qui**, non alla fine del lotto: le righe già
-                    // lette scendono nella transazione qui sotto, e i file
-                    // rimasti del lotto — fino a cinquecento, a mezzo minuto
-                    // l'uno su una share stanca — non si leggono affatto.
-                    break;
-                }
             }
+            tempi.lettura_ms = tempi.lettura_ms.saturating_add(millisecondi(inizio));
+            let LottoLetto {
+                mut righe,
+                rifiutati,
+                riusciti,
+            } = letto;
+            // I rifiuti ricordati che non lo sono più: se ne va la riga.
+            let guariti: Vec<String> = riusciti
+                .into_iter()
+                .filter(|chiave| rifiuti.contains_key(chiave))
+                .collect();
 
             // ── quali di questi file nuovi sono righe che si sono spostate ──
             //
             // Decisione pura: nessun disco, nessun database.
+            //
+            // In due giri separati, e mai a cavallo: i file interi con i file
+            // interi, i brani d'immagine con i brani d'immagine. Un disco intero
+            // che diventa i suoi brani — la prima scansione con i `.cue`, o un
+            // `.cue` aggiunto accanto a un'immagine — non è uno spostamento:
+            // appaiato a uno dei suoi pezzi, gli ascolti, il voto e le playlist
+            // di settanta minuti di musica finirebbero su un brano solo. E la
+            // chiave lo permette davvero: un'immagine FLAC che porta nei tag il
+            // titolo del secondo brano ha la stessa chiave di contenuto di quel
+            // brano, ed è successo su cinque dischi della libreria vera. Il caso
+            // contrario — un `.cue` tolto, e i brani che tornano un file solo —
+            // è lo stesso confine percorso all'indietro.
             if !sospese.is_empty() {
-                let posizioni: Vec<usize> = righe
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, (_, d))| *d == Destinazione::Nuova)
-                    .map(|(index, _)| index)
-                    .collect();
-                let chiavi: Vec<&str> = posizioni
-                    .iter()
-                    .filter_map(|index| righe.get(*index))
-                    .map(|(row, _)| row.content_key.as_str())
-                    .collect();
-                let identita: Vec<RemovedIdentity<'_>> = sospese
-                    .iter()
-                    .map(|(track_id, content_key)| RemovedIdentity {
-                        track_id: *track_id,
-                        content_key: content_key.as_str(),
-                    })
-                    .collect();
-
                 let mut appaiate: Vec<i64> = Vec::new();
-                for rematch in match_moved_tracks(&identita, &chiavi) {
-                    let Some(&posizione) = posizioni.get(rematch.insert_index) else {
-                        continue;
-                    };
-                    let Some(slot) = righe.get_mut(posizione) else {
-                        continue;
-                    };
-                    slot.1 = Destinazione::Sposta(rematch.track_id);
-                    appaiate.push(rematch.track_id);
+                for d_immagine in [false, true] {
+                    let posizioni: Vec<usize> = righe
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (row, d))| {
+                            *d == Destinazione::Nuova && row.immagine.is_some() == d_immagine
+                        })
+                        .map(|(index, _)| index)
+                        .collect();
+                    let chiavi: Vec<&str> = posizioni
+                        .iter()
+                        .filter_map(|index| righe.get(*index))
+                        .map(|(row, _)| row.content_key.as_str())
+                        .collect();
+                    let identita: Vec<RemovedIdentity<'_>> = sospese
+                        .iter()
+                        .filter(|(track_id, _)| spariti_d_immagine.contains(track_id) == d_immagine)
+                        .map(|(track_id, content_key)| RemovedIdentity {
+                            track_id: *track_id,
+                            content_key: content_key.as_str(),
+                        })
+                        .collect();
+                    for rematch in match_moved_tracks(&identita, &chiavi) {
+                        let Some(&posizione) = posizioni.get(rematch.insert_index) else {
+                            continue;
+                        };
+                        let Some(slot) = righe.get_mut(posizione) else {
+                            continue;
+                        };
+                        slot.1 = Destinazione::Sposta(rematch.track_id);
+                        appaiate.push(rematch.track_id);
+                    }
                 }
                 sospese.retain(|(track_id, _)| !appaiate.contains(track_id));
             }
@@ -3136,6 +4976,7 @@ impl Scan<'_> {
             //
             // In scrittura dall'inizio: `riapplica` legge prima di scrivere, e
             // così i trigger delle orfane. Vedi `transazione_di_scrittura`.
+            let inizio = Instant::now();
             let now = now_ms();
             let scritte = deposito.con_connessione(|connection| {
                 let tx = transazione_di_scrittura(connection)
@@ -3196,6 +5037,7 @@ impl Scan<'_> {
                 // E **dopo**: l'album e l'artista in cui ogni riga è entrata,
                 // correzioni a mano comprese.
                 toccati.segna_brani(&tx, &scritte_qui)?;
+                ricorda_i_rifiuti(&tx, &rifiutati, &guariti, now)?;
                 tx.commit()
                     .map_err(|err| db_error("chiusura della transazione", &err))?;
                 Ok((inserite, aggiornate, spostate))
@@ -3203,6 +5045,7 @@ impl Scan<'_> {
             report.inserted += scritte.0;
             report.updated += scritte.1;
             report.moved += scritte.2;
+            tempi.scrittura_ms = tempi.scrittura_ms.saturating_add(millisecondi(inizio));
 
             // Il lotto è chiuso e scritto: è l'unico punto in cui fermarsi non
             // lascia niente a metà.
@@ -3210,6 +5053,9 @@ impl Scan<'_> {
                 break;
             }
         }
+        // Le letture ancora in volo — solo dopo un annullamento — non si
+        // aspettano: la squadra se ne va, e i suoi fili escono da soli.
+        drop(squadra);
 
         // ── le radici che sono morte mentre si leggeva ──
         //
@@ -3219,6 +5065,7 @@ impl Scan<'_> {
         // all'inizio della passata, spostata di qualche minuto più in là — e a
         // quel punto costerebbe di più, perché una scansione arrivata a metà ha
         // già scritto tutto il resto.
+        let abbandonate = stato.abbandonate;
         if !abbandonate.is_empty() {
             let sotto_una_morta = |id: i64| {
                 report
@@ -3303,6 +5150,7 @@ impl Scan<'_> {
                     report.rimozioni_in_attesa = elenco;
                 }
             } else {
+                let inizio = Instant::now();
                 let tolte = deposito.con_connessione(|connection| {
                     let tx = transazione_di_scrittura(connection)
                         .map_err(|err| db_error("apertura della transazione", &err))?;
@@ -3318,6 +5166,7 @@ impl Scan<'_> {
                     Ok(tolte)
                 })?;
                 report.removed += tolte;
+                tempi.scrittura_ms = tempi.scrittura_ms.saturating_add(millisecondi(inizio));
             }
         }
 
@@ -3327,6 +5176,7 @@ impl Scan<'_> {
         // cambiato niente non rilegge più cinquantamila brani per riscrivere
         // gli stessi album. Per intero quando serve — la prima volta, dopo una
         // migrazione o «Rileggi tutti i tag»: vedi `ricostruisci_aggregati`.
+        let inizio = Instant::now();
         report.aggregates = deposito.con_connessione(|connection| {
             if toccati.e_vuoto() {
                 // Niente scritto, niente transazione: due conteggi e basta.
@@ -3334,14 +5184,31 @@ impl Scan<'_> {
                     return conta_aggregati(connection);
                 }
             }
-            let tx = transazione_di_scrittura(connection)
-                .map_err(|err| db_error("apertura della transazione", &err))?;
-            let aggregati = ricostruisci_aggregati(&tx, &toccati)?;
-            tx.commit()
-                .map_err(|err| db_error("chiusura della transazione", &err))?;
-            Ok(aggregati)
+            let esito = (|| {
+                let tx = transazione_di_scrittura(connection)
+                    .map_err(|err| db_error("apertura della transazione", &err))?;
+                let aggregati = ricostruisci_aggregati(&tx, &toccati)?;
+                tx.commit()
+                    .map_err(|err| db_error("chiusura della transazione", &err))?;
+                Ok(aggregati)
+            })();
+            // I brani di questa passata sono già scritti, in transazioni
+            // chiuse prima di qui: se la ricostruzione cade — un `db.locked`
+            // passeggero, o un guasto come quello delle chiavi doppie della
+            // 3.0 — gli album restano quelli di prima mentre i brani sono già
+            // quelli nuovi, e la libreria segnata in regola non lo saprebbe
+            // mai. Le chiavi toccate da questa passata si perdono con lei:
+            // l'unico modo di ritrovarle è la ricostruzione intera, e la si
+            // chiede. Sforzo minimo — se non riesce neanche questa scrittura,
+            // l'errore da dire resta quello vero.
+            if esito.is_err() {
+                let _ = chiedi_ricostruzione_intera(connection);
+            }
+            esito
         })?;
+        tempi.aggregati_ms = millisecondi(inizio);
 
+        report.tempi = tempi;
         report.elapsed_ms = started.elapsed().as_millis();
         Ok(report)
     }
@@ -3359,6 +5226,98 @@ impl Scan<'_> {
     ) -> Result<ScanReport, AppError> {
         self.run_su(connection, on_progress)
     }
+}
+
+/// Scrive nelle due memorie della scansione quel che la fase dei fogli e il
+/// piano hanno deciso: i fogli appena letti nella cache, e via le righe di file
+/// che sotto una radice vista non ci sono più.
+fn aggiorna_le_memorie(
+    tx: &Transaction<'_>,
+    letti: &[FoglioLetto],
+    rifiuti_da_potare: &[String],
+    fogli_da_potare: &[String],
+) -> Result<(), AppError> {
+    let mut ricorda = tx
+        .prepare_cached(
+            "INSERT OR REPLACE INTO fogli_cue (chiave, dimensione, modificato_ms, foglio)
+             VALUES (?1, ?2, ?3, ?4)",
+        )
+        .map_err(|err| db_error("cache dei fogli", &err))?;
+    for letto in letti {
+        let foglio = serde_json::to_string(&letto.foglio.as_ref().map(FoglioSalvato::from))
+            .map_err(|err| {
+                AppError::new(ErrorCode::DbQueryFailed {
+                    detail: Some("cache dei fogli".to_owned()),
+                })
+                .with_cause(err.to_string())
+            })?;
+        ricorda
+            .execute(rusqlite::params![
+                letto.chiave,
+                i64::try_from(letto.dimensione).unwrap_or(i64::MAX),
+                letto.modificato_ms,
+                foglio,
+            ])
+            .map_err(|err| db_error("cache dei fogli", &err))?;
+    }
+    let mut via_il_foglio = tx
+        .prepare_cached("DELETE FROM fogli_cue WHERE chiave = ?1")
+        .map_err(|err| db_error("cache dei fogli", &err))?;
+    for chiave in fogli_da_potare {
+        via_il_foglio
+            .execute([chiave])
+            .map_err(|err| db_error("cache dei fogli", &err))?;
+    }
+    let mut via_il_rifiuto = tx
+        .prepare_cached("DELETE FROM file_illeggibili WHERE chiave = ?1")
+        .map_err(|err| db_error("memoria dei file illeggibili", &err))?;
+    for chiave in rifiuti_da_potare {
+        via_il_rifiuto
+            .execute([chiave])
+            .map_err(|err| db_error("memoria dei file illeggibili", &err))?;
+    }
+    Ok(())
+}
+
+/// Ricorda i rifiuti di un lotto e dimentica quelli che non lo sono più.
+fn ricorda_i_rifiuti(
+    tx: &Transaction<'_>,
+    rifiutati: &[RifiutoNuovo],
+    guariti: &[String],
+    now: i64,
+) -> Result<(), AppError> {
+    if !rifiutati.is_empty() {
+        let mut ricorda = tx
+            .prepare_cached(
+                "INSERT OR REPLACE INTO file_illeggibili
+                   (chiave, dimensione, modificato_ms, versione, causa, visto_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .map_err(|err| db_error("memoria dei file illeggibili", &err))?;
+        for rifiuto in rifiutati {
+            ricorda
+                .execute(rusqlite::params![
+                    rifiuto.chiave,
+                    rifiuto.dimensione,
+                    rifiuto.modificato_ms,
+                    crate::metadata::VERSIONE_LETTORE,
+                    rifiuto.causa,
+                    now,
+                ])
+                .map_err(|err| db_error("memoria dei file illeggibili", &err))?;
+        }
+    }
+    if !guariti.is_empty() {
+        let mut dimentica = tx
+            .prepare_cached("DELETE FROM file_illeggibili WHERE chiave = ?1")
+            .map_err(|err| db_error("memoria dei file illeggibili", &err))?;
+        for chiave in guariti {
+            dimentica
+                .execute([chiave])
+                .map_err(|err| db_error("memoria dei file illeggibili", &err))?;
+        }
+    }
+    Ok(())
 }
 
 /// Un brano come lo mostra una lista.
@@ -4467,6 +6426,7 @@ mod tests {
                 files: Arc::new(LocalFiles),
                 covers: self.store.clone(),
                 roots: &roots,
+                radici_della_libreria: &roots,
                 rules: PathRules::for_current_platform(),
                 prudente: false,
                 scadenze: Scadenze::default(),
@@ -4483,6 +6443,7 @@ mod tests {
                 files: Arc::new(LocalFiles),
                 covers: self.store.clone(),
                 roots: &roots,
+                radici_della_libreria: &roots,
                 rules: PathRules::for_current_platform(),
                 prudente: false,
                 scadenze: Scadenze::default(),
@@ -6851,6 +8812,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -6894,6 +8856,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -6939,6 +8902,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -6992,6 +8956,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7047,6 +9012,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7095,6 +9061,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7136,6 +9103,69 @@ mod tests {
     }
 
     #[test]
+    fn una_ricostruzione_caduta_chiede_quella_intera() {
+        // I brani di una passata si scrivono prima degli aggregati, in
+        // transazioni già chiuse: se la ricostruzione cade, la libreria non
+        // può restare segnata in regola con gli album di prima. È il caso delle
+        // chiavi d'album doppie della 3.0 — un guasto che si ripeteva identico
+        // a ogni passata — ma anche di un `db.locked` qualunque.
+        let mut lib = Libreria::nuova();
+        lib.brano("Artista/Disco/uno.wav", "Uno", "Artista", "Disco");
+        lib.scansiona();
+        assert!(aggregati_in_regola(&lib.connection).expect("versione"));
+
+        // Da qui ogni album scritto fallisce, come falliva la riga doppia.
+        lib.connection
+            .execute_batch(
+                "CREATE TEMP TRIGGER album_rifiutati BEFORE INSERT ON main.albums
+                 BEGIN SELECT RAISE(ABORT, 'album rifiutato dalla prova'); END;",
+            )
+            .expect("trigger");
+        lib.brano("Artista/Disco/due.wav", "Due", "Artista", "Disco");
+        let roots = vec![lib.root()];
+        let caduta = Scan {
+            files: Arc::new(LocalFiles),
+            covers: lib.store.clone(),
+            roots: &roots,
+            radici_della_libreria: &roots,
+            rules: PathRules::for_current_platform(),
+            prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
+        }
+        .run(&mut lib.connection, |_, _| ControlFlow::Continue(()));
+        assert!(caduta.is_err(), "la ricostruzione doveva cadere");
+        let brani: i64 = lib
+            .connection
+            .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(brani, 2, "i brani della passata restano scritti");
+        assert!(
+            !aggregati_in_regola(&lib.connection).expect("versione"),
+            "la prossima ricostruzione deve essere intera"
+        );
+
+        // Tolto il guasto, la passata dopo rimette tutto in regola: la
+        // ricostruzione intera trova il brano nuovo che quella per chiavi
+        // aveva perso insieme alla sua transazione.
+        lib.connection
+            .execute_batch("DROP TRIGGER temp.album_rifiutati;")
+            .expect("via il trigger");
+        lib.scansiona();
+        assert!(aggregati_in_regola(&lib.connection).expect("versione"));
+        let (album, nel_disco): (i64, i64) = lib
+            .connection
+            .query_row("SELECT COUNT(*), MAX(total_tracks) FROM albums", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .expect("album");
+        assert_eq!(
+            (album, nel_disco),
+            (1, 2),
+            "un disco, con tutti e due i brani"
+        );
+    }
+    #[test]
     fn tre_file_malformati_di_fila_non_fanno_abbandonare_la_radice() {
         // Il lettore dei tag che panica su un file malformato tornava lo
         // stesso `None` di una lettura scaduta, e contava fra le scadenze di
@@ -7164,6 +9194,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7239,6 +9270,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7296,6 +9328,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7327,6 +9360,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7349,13 +9383,20 @@ mod tests {
         for id in 1..=60 {
             riga(&connection, id, &format!(r"C:\musica\{id}.mp3"), 10);
         }
+        // Uno solo è rimasto al suo posto: la radice non è vuota, quindi non è
+        // la guardia per radice a fermare tutto — vedi la prova dopo — ma
+        // quella contro le stragi.
+        riga(&connection, 61, r"C:\musica\resta.mp3", 10);
 
-        let disco = Arc::new(FintoDisco::nuovo());
+        let disco = Arc::new(
+            FintoDisco::nuovo().con_file(r"C:\musica", vec![trovato(r"C:\musica\resta.mp3", 10)]),
+        );
         let roots = vec![r"C:\musica".to_owned()];
         let prudente = Scan {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7376,7 +9417,104 @@ mod tests {
         let rimasti: i64 = connection
             .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
             .expect("conteggio");
-        assert_eq!(rimasti, 60, "le righe sono ancora tutte lì");
+        assert_eq!(rimasti, 61, "le righe sono ancora tutte lì");
+    }
+
+    #[test]
+    fn una_radice_vuota_che_aveva_cinquanta_brani_vale_saltata_se_nessuno_guarda() {
+        // Il punto di mount che risponde vuoto: la sonda dice sì, la camminata
+        // dice niente. Una scansione partita da sola — al risveglio, al ritorno
+        // della rete — non deve nemmeno arrivare a contare le rimozioni: la
+        // radice vale saltata, e i suoi brani restano fuori competenza.
+        let (_dir, store, mut connection) = banco();
+        // Dieci più della soglia: abbastanza anche per la guardia contro le
+        // stragi, che scatta **sopra** le cinquanta.
+        let quante = RADICE_SOSPETTA + 10;
+        for id in 1..=quante {
+            let id = i64::try_from(id).expect("pochi");
+            riga(&connection, id, &format!(r"\\nas\musica\{id}.mp3"), 10);
+        }
+        let disco = Arc::new(FintoDisco::nuovo());
+        let roots = vec![r"\\nas\musica".to_owned()];
+        let scansione = |prudente: bool| Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
+            roots: &roots,
+            radici_della_libreria: &roots,
+            rules: PathRules {
+                case_insensitive: true,
+            },
+            prudente,
+            scadenze: Scadenze::default(),
+            fermati: None,
+        };
+
+        let esito = scansione(true)
+            .run(&mut connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione prudente");
+        assert_eq!(esito.radici_saltate, vec![r"\\nas\musica".to_owned()]);
+        // Vuota e non muta: chi riprova deve poter distinguere le due.
+        assert_eq!(esito.radici_vuote, vec![r"\\nas\musica".to_owned()]);
+        assert_eq!(esito.removed, 0);
+        assert_eq!(
+            esito.rimozioni_rinviate, 0,
+            "niente da rinviare: non si è giudicato"
+        );
+        assert_eq!(esito.plan.untouched, quante);
+
+        // A mano la guardia per radice non c'è: chi guarda può dire di sì, e
+        // la guardia contro le stragi gli chiede conferma.
+        let esito = scansione(false)
+            .run(&mut connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione a mano");
+        assert!(esito.radici_saltate.is_empty());
+        assert!(esito.radici_vuote.is_empty());
+        assert_eq!(esito.rimozioni_in_attesa.len(), quante);
+        assert_eq!(esito.removed, 0);
+
+        // La cartella sorvegliata scritta in un'altra grafia nelle impostazioni
+        // è la stessa: la guardia vale per chiave di percorso.
+        let libreria = vec![r"\\NAS\Musica\".to_owned()];
+        let altra_grafia = Scan {
+            radici_della_libreria: &libreria,
+            ..scansione(true)
+        };
+        let esito = altra_grafia
+            .run(&mut connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione prudente");
+        assert_eq!(esito.radici_vuote, vec![r"\\nas\musica".to_owned()]);
+        assert_eq!(esito.removed, 0);
+    }
+
+    #[test]
+    fn una_radice_vuota_con_meno_di_cinquanta_brani_si_svuota_davvero() {
+        // Sotto la soglia una cartella vuota è plausibile — una chiavetta
+        // svuotata di proposito — e la guardia non scatta nemmeno in una
+        // scansione automatica.
+        let (_dir, store, mut connection) = banco();
+        for id in 1..RADICE_SOSPETTA {
+            let id = i64::try_from(id).expect("pochi");
+            riga(&connection, id, &format!(r"E:\chiavetta\{id}.mp3"), 10);
+        }
+        let disco = Arc::new(FintoDisco::nuovo());
+        let roots = vec![r"E:\chiavetta".to_owned()];
+        let scan = Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
+            roots: &roots,
+            radici_della_libreria: &roots,
+            rules: PathRules {
+                case_insensitive: true,
+            },
+            prudente: true,
+            scadenze: Scadenze::default(),
+            fermati: None,
+        };
+        let esito = scan
+            .run(&mut connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione");
+        assert!(esito.radici_saltate.is_empty());
+        assert_eq!(esito.removed, RADICE_SOSPETTA - 1);
     }
 
     #[test]
@@ -7403,6 +9541,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7686,6 +9825,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7809,6 +9949,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7875,6 +10016,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7930,6 +10072,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -7984,6 +10127,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -8046,6 +10190,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -8092,6 +10237,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -8143,6 +10289,7 @@ mod tests {
             files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
             covers: store.clone(),
             roots: &roots,
+            radici_della_libreria: &roots,
             rules: PathRules {
                 case_insensitive: true,
             },
@@ -8330,12 +10477,15 @@ mod tests {
         assert_eq!(etichetta_codec("Custom(\"tta\")"), "Custom(\"tta\")");
     }
 
-    /// Una scansione limitata a una cartella, come la fa la sorveglianza.
+    /// Una scansione limitata a una cartella, come la fa la sorveglianza: le
+    /// cartelle guardate sono le date, quella sorvegliata resta la radice.
     fn scansiona_soltanto(lib: &mut Libreria, cartelle: &[String]) -> ScanReport {
+        let libreria = vec![lib.root()];
         let scan = Scan {
             files: Arc::new(LocalFiles),
             covers: lib.store.clone(),
             roots: cartelle,
+            radici_della_libreria: &libreria,
             rules: PathRules::for_current_platform(),
             prudente: true,
             scadenze: Scadenze::default(),
@@ -8392,14 +10542,37 @@ mod tests {
         // Dalla cartella che la conteneva, invece, la sparizione si vede.
         let uno = lib.musica().join("Uno");
         let cartelle = cartelle_da_riguardare(
-            &[a.join("01.wav").to_string_lossy().into_owned()],
+            &[Cambiamento {
+                percorso: a.join("01.wav").to_string_lossy().into_owned(),
+                nuovo: false,
+            }],
             &[lib.root()],
             PathRules::for_current_platform(),
-            &|c| std::path::Path::new(c).exists(),
+            &natura_sul_disco,
         );
         assert_eq!(cartelle, vec![uno.to_string_lossy().into_owned()]);
         let esito = scansiona_soltanto(&mut lib, &cartelle);
         assert_eq!(esito.removed, 1);
+    }
+
+    /// Che cos'è un percorso sul disco vero.
+    fn natura_sul_disco(percorso: &str) -> Natura {
+        let percorso = std::path::Path::new(percorso);
+        if percorso.is_dir() {
+            Natura::Cartella
+        } else if percorso.exists() {
+            Natura::File
+        } else {
+            Natura::Assente
+        }
+    }
+
+    /// Un avviso di modifica o cancellazione: non nuovo.
+    fn cambiato(percorso: &str) -> Cambiamento {
+        Cambiamento {
+            percorso: percorso.to_owned(),
+            nuovo: false,
+        }
     }
 
     #[test]
@@ -8408,7 +10581,17 @@ mod tests {
             case_insensitive: true,
         };
         let radici = vec![r"C:\Musica".to_owned(), r"D:\Altro".to_owned()];
-        let esistono = |c: &str| !c.contains("Sparito");
+        // Un disco finto: quel che finisce con un'estensione è un file, quel
+        // che si chiama «Sparito» non c'è, il resto è una cartella.
+        let natura = |c: &str| {
+            if c.contains("Sparito") {
+                Natura::Assente
+            } else if c.ends_with(".flac") {
+                Natura::File
+            } else {
+                Natura::Cartella
+            }
+        };
         let cambiati = [
             // Due file dello stesso album: un album solo.
             r"C:\Musica\Uno\A\01.flac",
@@ -8422,9 +10605,9 @@ mod tests {
             // Dentro una cartella già presa per intero.
             r"D:\Altro\Qualcosa\y.flac",
         ]
-        .map(str::to_owned);
+        .map(cambiato);
         assert_eq!(
-            cartelle_da_riguardare(&cambiati, &radici, win, &esistono),
+            cartelle_da_riguardare(&cambiati, &radici, win, &natura),
             vec![
                 r"C:\Musica\Due".to_owned(),
                 r"C:\Musica\Uno\A".to_owned(),
@@ -8433,8 +10616,89 @@ mod tests {
         );
         // Un file subito sotto la radice: la radice.
         assert_eq!(
-            cartelle_da_riguardare(&[r"c:\musica\x.flac".to_owned()], &radici, win, &esistono),
+            cartelle_da_riguardare(&[cambiato(r"c:\musica\x.flac")], &radici, win, &natura),
             vec![r"C:\Musica".to_owned()]
+        );
+        // Una cartella nuova si guarda da sé, non dal genitore: un album
+        // copiato sotto l'artista non costa l'elenco di tutti gli altri suoi.
+        let arrivato = Cambiamento {
+            percorso: r"C:\Musica\Guccini\Radici".to_owned(),
+            nuovo: true,
+        };
+        assert_eq!(
+            cartelle_da_riguardare(std::slice::from_ref(&arrivato), &radici, win, &natura),
+            vec![r"C:\Musica\Guccini\Radici".to_owned()]
+        );
+        // La stessa cartella, ma avvisata come modifica: dal genitore, come
+        // tutto quel che non è nuovo.
+        assert_eq!(
+            cartelle_da_riguardare(
+                &[cambiato(r"C:\Musica\Guccini\Radici")],
+                &radici,
+                win,
+                &natura
+            ),
+            vec![r"C:\Musica\Guccini".to_owned()]
+        );
+        // Un file nuovo non è una cartella: dal genitore.
+        assert_eq!(
+            cartelle_da_riguardare(
+                &[Cambiamento {
+                    percorso: r"C:\Musica\Guccini\Radici\01.flac".to_owned(),
+                    nuovo: true,
+                }],
+                &radici,
+                win,
+                &natura
+            ),
+            vec![r"C:\Musica\Guccini\Radici".to_owned()]
+        );
+        // Una cartella nuova che nel frattempo è sparita — creata e rinominata
+        // subito — si guarda dal primo antenato che c'è.
+        assert_eq!(
+            cartelle_da_riguardare(
+                &[Cambiamento {
+                    percorso: r"C:\Musica\Tre\Sparito".to_owned(),
+                    nuovo: true,
+                }],
+                &radici,
+                win,
+                &natura
+            ),
+            vec![r"C:\Musica\Tre".to_owned()]
+        );
+        // Un antenato che è diventato un file non si cammina: si risale ancora.
+        let file_al_posto = |c: &str| {
+            if c.ends_with("Quattro") || c.ends_with(".flac") {
+                Natura::File
+            } else {
+                Natura::Cartella
+            }
+        };
+        assert_eq!(
+            cartelle_da_riguardare(
+                &[cambiato(r"C:\Musica\Cinque\Quattro\01.flac")],
+                &radici,
+                win,
+                &file_al_posto
+            ),
+            vec![r"C:\Musica\Cinque".to_owned()]
+        );
+        // E l'arrivo dentro un altro arrivo si riduce al più esterno.
+        assert_eq!(
+            cartelle_da_riguardare(
+                &[
+                    arrivato,
+                    Cambiamento {
+                        percorso: r"C:\Musica\Guccini\Radici\CD2".to_owned(),
+                        nuovo: true,
+                    },
+                ],
+                &radici,
+                win,
+                &natura
+            ),
+            vec![r"C:\Musica\Guccini\Radici".to_owned()]
         );
         // Una radice di unità: il genitore di `X:\a.flac` è `X:\`.
         assert_eq!(cartella_che_contiene(r"X:\a.flac").as_deref(), Some(r"X:\"));
@@ -8456,6 +10720,971 @@ mod tests {
             vec![r"D:\Scarichi\Buoni".to_owned()]
         );
         assert!(dentro_le_radici(r"E:\Altrove", &radici, win).is_empty());
+    }
+
+    // ── le immagini CD, la memoria dei rifiuti, le letture in parallelo ─────
+    //
+    // Su file veri in una cartella temporanea, attraverso un disco che conta le
+    // aperture: la domanda che conta per un'immagine CD non è solo «i brani
+    // escono giusti» ma «alla passata dopo non si riapre niente», e la risposta
+    // si vede contando.
+
+    /// Il disco vero, contando le aperture; volendo con i `.cue` che non si
+    /// leggono e qualche file che si apre con comodo.
+    struct DiscoContato {
+        aperture: std::sync::atomic::AtomicUsize,
+        cue_rotti: std::sync::atomic::AtomicBool,
+        /// I file il cui percorso contiene uno di questi pezzi dormono
+        /// `attesa` prima di aprirsi.
+        lenti: Vec<String>,
+        attesa: Duration,
+    }
+
+    impl DiscoContato {
+        fn nuovo() -> Arc<Self> {
+            Arc::new(Self {
+                aperture: std::sync::atomic::AtomicUsize::new(0),
+                cue_rotti: std::sync::atomic::AtomicBool::new(false),
+                lenti: Vec::new(),
+                attesa: Duration::ZERO,
+            })
+        }
+
+        fn aperture(&self) -> usize {
+            self.aperture.swap(0, std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn rompi_i_fogli(&self, rotti: bool) {
+            self.cue_rotti
+                .store(rotti, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl MusicFiles for DiscoContato {
+        fn walk(&self, root: &str) -> Result<crate::files::Camminata, AppError> {
+            LocalFiles.walk(root)
+        }
+
+        fn walk_a_rate(
+            &self,
+            root: &str,
+            su_voce: &mut dyn FnMut(crate::files::Voce) -> ControlFlow<()>,
+        ) -> Result<bool, AppError> {
+            LocalFiles.walk_a_rate(root, su_voce)
+        }
+
+        fn radice_raggiungibile(&self, root: &str) -> bool {
+            LocalFiles.radice_raggiungibile(root)
+        }
+
+        fn open(
+            &self,
+            path: &str,
+        ) -> Result<Box<dyn crate::files::ReadSeek + Send + Sync>, AppError> {
+            self.aperture
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.cue_rotti.load(std::sync::atomic::Ordering::SeqCst)
+                && path.to_lowercase().ends_with(".cue")
+            {
+                return Err(AppError::new(ErrorCode::FsNetworkUnavailable {
+                    path: Some(path.to_owned()),
+                }));
+            }
+            if self.lenti.iter().any(|pezzo| path.contains(pezzo.as_str())) {
+                std::thread::sleep(self.attesa);
+            }
+            LocalFiles.open(path)
+        }
+    }
+
+    /// Una scansione a mano della libreria, attraverso il disco dato.
+    fn scansiona_con(lib: &mut Libreria, disco: &Arc<DiscoContato>) -> ScanReport {
+        let roots = vec![lib.root()];
+        let scan = Scan {
+            files: Arc::clone(disco) as Arc<dyn MusicFiles>,
+            covers: lib.store.clone(),
+            roots: &roots,
+            radici_della_libreria: &roots,
+            rules: PathRules::for_current_platform(),
+            prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
+        };
+        scan.run(&mut lib.connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione")
+    }
+
+    /// Un WAV di silenzio lungo `secondi`: 8 kHz mono a 16 bit, che si taglia
+    /// al fotogramma CD senza resti.
+    fn wav_lungo(path: &Path, secondi: u32) {
+        let dati = usize::try_from(16_000 * secondi).expect("piccolo");
+        let mut out = Vec::with_capacity(dati + 44);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&u32::try_from(dati + 36).expect("piccolo").to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&8_000u32.to_le_bytes());
+        out.extend_from_slice(&16_000u32.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&u32::try_from(dati).expect("piccolo").to_le_bytes());
+        out.resize(out.len() + dati, 0);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("cartelle");
+        }
+        std::fs::write(path, &out).expect("scrittura del wav");
+    }
+
+    /// Un foglio come lo scrive EAC, per l'immagine `file`, con i brani
+    /// `(titolo, INDEX 01)`.
+    fn scrivi_foglio(path: &Path, file: &str, brani: &[(&str, &str)]) {
+        use std::fmt::Write as _;
+        let mut testo = String::from(
+            "REM GENRE Rock\r\nREM DATE 1999\r\nPERFORMER \"Artista\"\r\nTITLE \"Disco\"\r\n",
+        );
+        let _ = write!(testo, "FILE \"{file}\" WAVE\r\n");
+        for (posto, (titolo, inizio)) in brani.iter().enumerate() {
+            let _ = write!(
+                testo,
+                "  TRACK {:02} AUDIO\r\n    TITLE \"{titolo}\"\r\n    INDEX 01 {inizio}\r\n",
+                posto + 1
+            );
+        }
+        std::fs::write(path, testo).expect("scrittura del foglio");
+    }
+
+    /// Tre brani su un'immagine di dieci secondi: 0–3 s, 3–6,49 s, il resto.
+    const TRE_BRANI: [(&str, &str); 3] = [
+        ("Primo", "00:00:00"),
+        ("Secondo", "00:03:00"),
+        ("Terzo", "00:06:37"),
+    ];
+
+    /// Un disco in `cartella` (dentro la musica): `Disco.wav` più `Disco.cue`,
+    /// con date fisse — il foglio più recente dell'immagine.
+    fn un_disco(lib: &Libreria, cartella: &[&str]) -> (PathBuf, PathBuf) {
+        let mut dir = lib.musica();
+        for pezzo in cartella {
+            dir = dir.join(pezzo);
+        }
+        let immagine = dir.join("Disco.wav");
+        let cue = dir.join("Disco.cue");
+        wav_lungo(&immagine, 10);
+        scrivi_foglio(&cue, "Disco.wav", &TRE_BRANI);
+        data(&immagine, 1_000_000);
+        data(&cue, 1_000_100);
+        (cue, immagine)
+    }
+
+    /// Un brano d'immagine come sta in tabella.
+    #[derive(Debug, PartialEq, Eq)]
+    struct BranoVisto {
+        id: i64,
+        path: String,
+        numero: Option<i64>,
+        titolo: String,
+        durata: i64,
+        inizio: Option<i64>,
+        fine: Option<i64>,
+        immagine: Option<String>,
+        data: Option<i64>,
+        dimensione: Option<i64>,
+    }
+
+    /// I brani d'immagine in tabella, in ordine di percorso.
+    fn brani_visti(lib: &Libreria) -> Vec<BranoVisto> {
+        let mut statement = lib
+            .connection
+            .prepare(
+                "SELECT id, path, track_number, title, duration_ms, inizio_cd, fine_cd,
+                        immagine, date_modified, file_size
+                   FROM tracks WHERE immagine IS NOT NULL ORDER BY path",
+            )
+            .expect("brani d'immagine");
+        statement
+            .query_map([], |r| {
+                Ok(BranoVisto {
+                    id: r.get(0)?,
+                    path: r.get(1)?,
+                    numero: r.get(2)?,
+                    titolo: r.get(3)?,
+                    durata: r.get(4)?,
+                    inizio: r.get(5)?,
+                    fine: r.get(6)?,
+                    immagine: r.get(7)?,
+                    data: r.get(8)?,
+                    dimensione: r.get(9)?,
+                })
+            })
+            .expect("lettura")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("righe")
+    }
+
+    /// Lo stesso percorso, per chi confronta come la scansione.
+    fn stesso(a: &str, b: &Path) -> bool {
+        let rules = PathRules::for_current_platform();
+        path_key(a, rules) == path_key(&b.to_string_lossy(), rules)
+    }
+
+    #[test]
+    fn un_immagine_col_suo_foglio_diventa_i_suoi_brani() {
+        let mut lib = Libreria::nuova();
+        let (cue, immagine) = un_disco(&lib, &["Artista", "Disco"]);
+
+        let primo = lib.scansiona();
+        assert_eq!(primo.inserted, 3);
+        assert_eq!(primo.brani_d_immagine, 3);
+        assert!(primo.unreadable.is_empty(), "{:?}", primo.unreadable);
+
+        let brani = brani_visti(&lib);
+        let titoli: Vec<&str> = brani.iter().map(|b| b.titolo.as_str()).collect();
+        assert_eq!(titoli, ["Primo", "Secondo", "Terzo"]);
+        assert_eq!(
+            brani.iter().map(|b| b.numero).collect::<Vec<_>>(),
+            [Some(1), Some(2), Some(3)]
+        );
+        // I tempi esatti del foglio, in fotogrammi; la fine dell'ultimo è
+        // quella del file.
+        assert_eq!(
+            brani.iter().map(|b| (b.inizio, b.fine)).collect::<Vec<_>>(),
+            [
+                (Some(0), Some(225)),
+                (Some(225), Some(487)),
+                (Some(487), None)
+            ]
+        );
+        assert_eq!(
+            brani.iter().map(|b| b.durata).collect::<Vec<_>>(),
+            [3000, 3493, 3507]
+        );
+        let dimensione =
+            i64::try_from(std::fs::metadata(&immagine).expect("immagine").len()).expect("piccola");
+        for brano in &brani {
+            assert!(stesso(&brano.path, &cue) || brano.path.contains('|'));
+            assert!(
+                brano
+                    .immagine
+                    .as_deref()
+                    .is_some_and(|p| stesso(p, &immagine)),
+                "{brano:?}"
+            );
+            // Il contratto delle date: esattamente la voce virtuale.
+            assert_eq!(
+                brano.data,
+                Some(1_000_100_000),
+                "la data del foglio, la più recente"
+            );
+            assert_eq!(
+                brano.dimensione,
+                Some(dimensione),
+                "la dimensione dell'immagine"
+            );
+        }
+        // Dal foglio: album, artista, anno, genere. E un album solo.
+        let (album, artista, anno, genere): (String, String, Option<i64>, Option<String>) = lib
+            .connection
+            .query_row(
+                "SELECT album, artist, year, genre FROM tracks WHERE track_number = 2",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("il secondo brano");
+        assert_eq!(
+            (album.as_str(), artista.as_str(), anno, genere.as_deref()),
+            ("Disco", "Artista", Some(1999), Some("Rock"))
+        );
+        assert_eq!(lib.conta("albums"), 1);
+        // L'immagine non c'è anche come brano intero.
+        assert_eq!(lib.conta("tracks"), 3);
+
+        // La passata dopo non apre niente: né i brani né il foglio.
+        let disco = DiscoContato::nuovo();
+        let secondo = scansiona_con(&mut lib, &disco);
+        assert_eq!(
+            disco.aperture(),
+            0,
+            "una riscansione invariata non apre nessun file"
+        );
+        assert_eq!(secondo.letti, 0);
+        assert_eq!(
+            (secondo.inserted, secondo.updated, secondo.removed),
+            (0, 0, 0)
+        );
+        assert_eq!(secondo.plan.unchanged, 3);
+        assert_eq!(secondo.brani_d_immagine, 3);
+    }
+
+    #[test]
+    fn un_foglio_cambiato_riscrive_i_suoi_brani() {
+        let mut lib = Libreria::nuova();
+        let (cue, _) = un_disco(&lib, &["Artista", "Disco"]);
+        lib.scansiona();
+        let prima: Vec<i64> = brani_visti(&lib).iter().map(|b| b.id).collect();
+
+        scrivi_foglio(
+            &cue,
+            "Disco.wav",
+            &[
+                ("Uno", "00:00:00"),
+                ("Due", "00:03:00"),
+                ("Tre", "00:06:37"),
+                ("Quattro", "00:08:00"),
+            ],
+        );
+        data(&cue, 1_000_200);
+        let esito = lib.scansiona();
+        assert_eq!((esito.updated, esito.inserted, esito.removed), (3, 1, 0));
+        let dopo = brani_visti(&lib);
+        assert_eq!(
+            dopo.iter().map(|b| b.titolo.as_str()).collect::<Vec<_>>(),
+            ["Uno", "Due", "Tre", "Quattro"]
+        );
+        assert_eq!(
+            dopo.iter().take(3).map(|b| b.id).collect::<Vec<_>>(),
+            prima,
+            "le righe che c'erano restano le stesse"
+        );
+        assert!(dopo.iter().all(|b| b.data == Some(1_000_200_000)));
+        // Il terzo adesso finisce dove comincia il quarto.
+        assert_eq!(dopo.get(2).map(|b| b.fine), Some(Some(600)));
+    }
+
+    #[test]
+    fn un_brano_solo_da_rileggere_riapre_l_immagine_e_rifa_quella_riga() {
+        // La sentinella `-1` su un brano solo — «dimentica l'arricchimento»,
+        // o una riga rimasta indietro —: si riapre l'immagine, si rifà quella
+        // riga dal foglio, e le sorelle non si toccano.
+        let mut lib = Libreria::nuova();
+        un_disco(&lib, &["Artista", "Disco"]);
+        lib.scansiona();
+        let prima = brani_visti(&lib);
+        lib.connection
+            .execute(
+                "UPDATE tracks SET date_modified = -1, title = 'X' WHERE track_number = 2",
+                [],
+            )
+            .expect("sentinella");
+
+        let disco = DiscoContato::nuovo();
+        let esito = scansiona_con(&mut lib, &disco);
+        assert_eq!((esito.letti, esito.updated), (1, 1));
+        assert_eq!(
+            disco.aperture(),
+            1,
+            "l'immagine sola: il foglio viene dalla cache"
+        );
+        assert_eq!(
+            brani_visti(&lib),
+            prima,
+            "la riga è tornata quella del foglio"
+        );
+    }
+
+    #[test]
+    fn un_foglio_tolto_restituisce_l_immagine_intera() {
+        let mut lib = Libreria::nuova();
+        let (cue, _) = un_disco(&lib, &["Artista", "Disco"]);
+        lib.scansiona();
+        assert_eq!(lib.conta("fogli_cue"), 1);
+
+        std::fs::remove_file(&cue).expect("via il foglio");
+        let esito = lib.scansiona();
+        assert_eq!(esito.removed, 3, "i brani se ne vanno");
+        assert_eq!(esito.inserted, 1, "e l'immagine torna un file intero");
+        assert!(brani_visti(&lib).is_empty());
+        assert_eq!(lib.conta("tracks"), 1);
+        assert_eq!(
+            lib.conta("fogli_cue"),
+            0,
+            "la cache dimentica il foglio che non c'è più"
+        );
+    }
+
+    #[test]
+    fn un_disco_intero_non_diventa_uno_dei_suoi_brani() {
+        // Il caso della libreria vera: un'immagine FLAC già in libreria come
+        // brano intero, con nei tag il titolo del secondo brano — cioè la
+        // stessa chiave di contenuto di quel brano. Arriva il `.cue`: il disco
+        // intero se ne va, e i suoi ascolti non finiscono su un pezzo solo.
+        let mut lib = Libreria::nuova();
+        let (cue, _) = un_disco(&lib, &["Artista", "Disco"]);
+        lib.scansiona();
+        let chiave_del_secondo: String = lib
+            .connection
+            .query_row(
+                "SELECT content_key FROM tracks WHERE track_number = 2",
+                [],
+                |r| r.get(0),
+            )
+            .expect("la chiave del secondo brano");
+
+        // Senza foglio, l'immagine torna un brano intero — nemmeno questo è
+        // uno spostamento.
+        std::fs::remove_file(&cue).expect("via il foglio");
+        let senza = lib.scansiona();
+        assert_eq!((senza.moved, senza.removed, senza.inserted), (0, 3, 1));
+        lib.connection
+            .execute(
+                "UPDATE tracks SET content_key = ?1, play_count = 9 WHERE immagine IS NULL",
+                [&chiave_del_secondo],
+            )
+            .expect("il disco intero con la chiave del secondo brano");
+
+        scrivi_foglio(&cue, "Disco.wav", &TRE_BRANI);
+        data(&cue, 1_000_300);
+        let con = lib.scansiona();
+        assert_eq!(
+            (con.moved, con.removed, con.inserted),
+            (0, 1, 3),
+            "il disco intero si toglie, i brani entrano nuovi"
+        );
+        let ascoltati: i64 = lib
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM tracks WHERE play_count > 0",
+                [],
+                |r| r.get(0),
+            )
+            .expect("conteggio");
+        assert_eq!(ascoltati, 0, "nessun brano ha ereditato il disco intero");
+        assert_eq!(brani_visti(&lib).len(), 3);
+        assert_eq!(lib.conta("tracks"), 3);
+    }
+
+    #[test]
+    fn un_immagine_spostata_col_suo_foglio_tiene_i_suoi_brani() {
+        let mut lib = Libreria::nuova();
+        un_disco(&lib, &["Artista", "Disco"]);
+        lib.scansiona();
+        let prima = brani_visti(&lib);
+        lib.connection
+            .execute(
+                "UPDATE tracks SET play_count = 7 WHERE track_number = 2",
+                [],
+            )
+            .expect("ascolti");
+
+        let vecchia = lib.musica().join("Artista").join("Disco");
+        let nuova = lib.musica().join("Artista").join("Altro");
+        std::fs::rename(&vecchia, &nuova).expect("spostamento");
+        let esito = lib.scansiona();
+        assert_eq!((esito.moved, esito.inserted, esito.removed), (3, 0, 0));
+        let dopo = brani_visti(&lib);
+        assert_eq!(
+            dopo.iter().map(|b| b.id).collect::<Vec<_>>(),
+            prima.iter().map(|b| b.id).collect::<Vec<_>>(),
+            "gli identificativi restano"
+        );
+        assert!(
+            dopo.iter().all(|b| b
+                .immagine
+                .as_deref()
+                .is_some_and(|p| stesso(p, &nuova.join("Disco.wav")))),
+            "e l'immagine è quella nuova: {dopo:?}"
+        );
+        let ascolti: i64 = lib
+            .connection
+            .query_row(
+                "SELECT play_count FROM tracks WHERE track_number = 2",
+                [],
+                |r| r.get(0),
+            )
+            .expect("ascolti");
+        assert_eq!(ascolti, 7);
+    }
+
+    #[test]
+    fn un_foglio_che_non_si_legge_non_fa_danni() {
+        let mut lib = Libreria::nuova();
+        let (cue, _) = un_disco(&lib, &["Artista", "Disco"]);
+        let disco = DiscoContato::nuovo();
+
+        // Mai letto e non si legge: la musica accanto non si giudica — una di
+        // quelle è l'immagine — e la cartella è un ramo perso.
+        disco.rompi_i_fogli(true);
+        let esito = scansiona_con(&mut lib, &disco);
+        assert_eq!(esito.inserted, 0, "l'immagine non entra come brano intero");
+        assert_eq!(esito.rami_persi.len(), 1);
+        assert_eq!(lib.conta("tracks"), 0);
+
+        disco.rompi_i_fogli(false);
+        assert_eq!(scansiona_con(&mut lib, &disco).inserted, 3);
+        let prima = brani_visti(&lib);
+
+        // Cambiato e non si legge: vale quel che la cache ricorda, con la data
+        // di allora — niente si rilegge, niente si toglie.
+        scrivi_foglio(&cue, "Disco.wav", &[("A", "00:00:00"), ("B", "00:05:00")]);
+        data(&cue, 1_000_300);
+        disco.rompi_i_fogli(true);
+        let esito = scansiona_con(&mut lib, &disco);
+        assert_eq!((esito.letti, esito.updated, esito.removed), (0, 0, 0));
+        assert_eq!(esito.rami_persi.len(), 1);
+        assert_eq!(brani_visti(&lib), prima);
+
+        // Appena si legge, il foglio nuovo vale per davvero.
+        disco.rompi_i_fogli(false);
+        let esito = scansiona_con(&mut lib, &disco);
+        assert_eq!((esito.updated, esito.removed), (2, 1));
+        assert_eq!(
+            brani_visti(&lib)
+                .iter()
+                .map(|b| b.titolo.as_str())
+                .collect::<Vec<_>>(),
+            ["A", "B"]
+        );
+    }
+
+    #[test]
+    fn un_immagine_rinominata_senza_toccare_il_foglio_si_riscrive() {
+        // Il foglio nomina `Rip.wav`; l'immagine si chiama poi come il foglio.
+        // Il foglio la ritrova lo stesso — col suo nome — e la voce virtuale
+        // resta identica: stesso percorso, stessa dimensione, stessa data. Ma
+        // la colonna `immagine` deve seguire il file, o i brani non suonano.
+        let mut lib = Libreria::nuova();
+        let dir = lib.musica().join("Artista").join("Disco");
+        let rip = dir.join("Rip.wav");
+        let cue = dir.join("Disco.cue");
+        wav_lungo(&rip, 10);
+        scrivi_foglio(&cue, "Rip.wav", &TRE_BRANI);
+        data(&rip, 1_000_000);
+        data(&cue, 1_000_100);
+        assert_eq!(lib.scansiona().inserted, 3);
+        let prima = brani_visti(&lib);
+        assert!(
+            prima
+                .iter()
+                .all(|b| b.immagine.as_deref().is_some_and(|p| stesso(p, &rip)))
+        );
+        let ids = |brani: &[BranoVisto]| brani.iter().map(|b| b.id).collect::<Vec<_>>();
+
+        let nuova = dir.join("Disco.wav");
+        std::fs::rename(&rip, &nuova).expect("rinomina");
+        let esito = lib.scansiona();
+        assert_eq!(
+            (esito.updated, esito.inserted, esito.removed, esito.moved),
+            (3, 0, 0, 0)
+        );
+        let dopo = brani_visti(&lib);
+        assert_eq!(ids(&dopo), ids(&prima), "le stesse righe");
+        assert!(
+            dopo.iter()
+                .all(|b| b.immagine.as_deref().is_some_and(|p| stesso(p, &nuova))),
+            "{dopo:?}"
+        );
+
+        // Le sole maiuscole: su una share sensibile `Disco.wav` e `disco.wav`
+        // sono due nomi, e il vecchio non si apre più.
+        let minuscola = dir.join("disco.wav");
+        std::fs::rename(&nuova, &minuscola).expect("rinomina");
+        let esito = lib.scansiona();
+        assert_eq!((esito.updated, esito.inserted, esito.removed), (3, 0, 0));
+        let dopo = brani_visti(&lib);
+        assert_eq!(ids(&dopo), ids(&prima));
+        assert!(
+            dopo.iter().all(|b| b
+                .immagine
+                .as_deref()
+                .is_some_and(|p| p.ends_with("disco.wav"))),
+            "{dopo:?}"
+        );
+
+        // E poi più niente: la colonna non rimbalza.
+        let disco = DiscoContato::nuovo();
+        let esito = scansiona_con(&mut lib, &disco);
+        assert_eq!(
+            disco.aperture(),
+            0,
+            "una riscansione invariata non apre niente"
+        );
+        assert_eq!((esito.updated, esito.letti), (0, 0));
+        assert_eq!(esito.plan.unchanged, 3);
+    }
+
+    #[test]
+    fn un_foglio_nuovo_accanto_non_ruba_il_disco() {
+        // Un secondo foglio per la stessa immagine, che si ordina prima del
+        // primo e porta altri titoli. Se vincesse lui, i percorsi virtuali
+        // cambierebbero tutti, gli spostamenti non si riconoscerebbero — i
+        // titoli sono diversi — e i brani se ne andrebbero con i loro ascolti.
+        let mut lib = Libreria::nuova();
+        let (cue, _) = un_disco(&lib, &["Artista", "Disco"]);
+        lib.scansiona();
+        let prima = brani_visti(&lib);
+
+        scrivi_foglio(
+            &cue.with_file_name("Aaa.cue"),
+            "Disco.wav",
+            &[
+                ("Uno", "00:00:00"),
+                ("Due", "00:03:00"),
+                ("Tre", "00:06:37"),
+            ],
+        );
+        let esito = lib.scansiona();
+        assert_eq!(
+            (esito.inserted, esito.removed, esito.updated, esito.moved),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(brani_visti(&lib), prima);
+    }
+
+    #[test]
+    fn una_sottocartella_svuotata_dalla_sorveglianza_e_uno_spostamento() {
+        // La sorveglianza guarda le sottocartelle: un album spostato per intero
+        // arriva come «la cartella di prima e quella di adesso». La prima ha
+        // più di cinquanta brani noti e nessun file, ma non è una cartella
+        // sorvegliata: è davvero vuota, e i suoi brani sono quelli comparsi
+        // nell'altra. Saltarla vorrebbe dire ogni brano due volte.
+        let mut lib = Libreria::nuova();
+        let quanti = RADICE_SOSPETTA + 2;
+        for n in 1..=quanti {
+            lib.brano(
+                &format!("Sorgente/{n:02}.wav"),
+                &format!("Pezzo {n}"),
+                "Tale",
+                "Al",
+            );
+        }
+        assert_eq!(lib.scansiona().inserted, quanti);
+        let ids_prima: Vec<i64> = (1..=quanti)
+            .map(|n| lib.id_del_titolo(&format!("Pezzo {n}")))
+            .collect();
+
+        let sorgente = lib.musica().join("Sorgente");
+        let destinazione = lib.musica().join("Destinazione");
+        std::fs::create_dir_all(&destinazione).expect("cartella");
+        for n in 1..=quanti {
+            let nome = format!("{n:02}.wav");
+            std::fs::rename(sorgente.join(&nome), destinazione.join(&nome)).expect("spostamento");
+        }
+        let cartelle = [
+            sorgente.to_string_lossy().into_owned(),
+            destinazione.to_string_lossy().into_owned(),
+        ];
+        let esito = scansiona_soltanto(&mut lib, &cartelle);
+        assert!(
+            esito.radici_saltate.is_empty(),
+            "{:?}",
+            esito.radici_saltate
+        );
+        assert!(esito.radici_vuote.is_empty());
+        assert_eq!((esito.moved, esito.inserted, esito.removed), (quanti, 0, 0));
+        assert_eq!(lib.conta("tracks"), i64::try_from(quanti).expect("pochi"));
+        let ids_dopo: Vec<i64> = (1..=quanti)
+            .map(|n| lib.id_del_titolo(&format!("Pezzo {n}")))
+            .collect();
+        assert_eq!(ids_dopo, ids_prima, "le stesse righe, spostate");
+    }
+
+    /// Un file che il lettore rifiuta: un `.mp3` che dentro non ha niente.
+    fn spazzatura(path: &Path, quanti: usize) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("cartelle");
+        }
+        std::fs::write(path, vec![b'x'; quanti]).expect("scrittura");
+    }
+
+    #[test]
+    fn un_file_rifiutato_non_si_riapre_finche_non_cambia() {
+        let mut lib = Libreria::nuova();
+        lib.brano("A/buono.wav", "Buono", "A", "B");
+        let rotto = lib.musica().join("A").join("rotto.mp3");
+        let grande = usize::try_from(MIN_TRACK_BYTES * 2).expect("piccolo");
+        spazzatura(&rotto, grande);
+        data(&rotto, 2_000_000);
+        let disco = DiscoContato::nuovo();
+
+        let primo = scansiona_con(&mut lib, &disco);
+        assert_eq!(primo.unreadable.len(), 1);
+        assert_eq!(lib.conta("file_illeggibili"), 1, "il no si ricorda");
+
+        // Uguale a prima: non si riapre, e si conta fra i già noti.
+        disco.aperture();
+        let secondo = scansiona_con(&mut lib, &disco);
+        assert_eq!(disco.aperture(), 0);
+        assert_eq!((secondo.letti, secondo.illeggibili_noti), (0, 1));
+        assert!(secondo.unreadable.is_empty());
+
+        // Cambiato: si riprova.
+        spazzatura(&rotto, grande + 1);
+        data(&rotto, 2_000_100);
+        let terzo = scansiona_con(&mut lib, &disco);
+        assert_eq!((terzo.letti, terzo.illeggibili_noti), (1, 0));
+        assert_eq!(lib.conta("file_illeggibili"), 1);
+
+        // «Rileggi tutti i tag» dimentica tutti i no.
+        rileggi_tutti_i_tag(&lib.connection).expect("rilettura");
+        assert_eq!(lib.conta("file_illeggibili"), 0);
+        let quarto = scansiona_con(&mut lib, &disco);
+        assert_eq!(quarto.illeggibili_noti, 0);
+        assert!(
+            quarto
+                .unreadable
+                .iter()
+                .any(|u| u.path.ends_with("rotto.mp3"))
+        );
+
+        // Guarito — al suo posto un file vero —: la memoria lo dimentica.
+        std::fs::remove_file(&rotto).expect("via");
+        let sano = lib.musica().join("A").join("rotto.wav");
+        wav(&sano);
+        // E un file rifiutato che sparisce si pota: qui il `.mp3` non c'è più.
+        let quinto = scansiona_con(&mut lib, &disco);
+        assert_eq!(quinto.inserted, 1);
+        assert_eq!(lib.conta("file_illeggibili"), 0);
+    }
+
+    #[test]
+    fn la_rete_e_le_cadute_non_si_ricordano() {
+        // Un singhiozzo di rete su una radice viva e un lettore che si
+        // schianta: nessuno dei due dice niente del file, e la passata dopo
+        // deve riprovare tutti e due.
+        let (_dir, store, mut connection) = banco();
+        let disco = Arc::new(
+            FintoDisco::nuovo()
+                .con_file(r"\\nas\musica", vec![trovato(r"\\nas\musica\a.mp3", 10)])
+                .senza_rete(r"\\nas\musica")
+                .con_file(r"C:\musica", vec![trovato(r"C:\musica\rotto.mp3", 10)])
+                .malformato(r"C:\musica\rotto.mp3"),
+        );
+        let roots = vec![r"\\nas\musica".to_owned(), r"C:\musica".to_owned()];
+        let scan = Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
+            roots: &roots,
+            radici_della_libreria: &roots,
+            rules: PathRules {
+                case_insensitive: true,
+            },
+            prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
+        };
+        let primo = scan
+            .run(&mut connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione");
+        assert_eq!(primo.unreadable.len(), 2);
+        let ricordati: i64 = connection
+            .query_row("SELECT COUNT(*) FROM file_illeggibili", [], |r| r.get(0))
+            .expect("conteggio");
+        assert_eq!(ricordati, 0);
+        let secondo = scan
+            .run(&mut connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione");
+        assert_eq!((secondo.letti, secondo.illeggibili_noti), (2, 0));
+    }
+
+    #[test]
+    fn le_letture_in_parallelo_si_gestiscono_nell_ordine_del_piano() {
+        // I primi due file arrivano tardi, i tre dopo subito: senza l'ordine,
+        // fermarsi al quarto scriverebbe l'1, il 3, il 4 e il 5.
+        let mut lib = Libreria::nuova();
+        for n in 1..=8 {
+            lib.brano(
+                &format!("Tale/Al/{n:02}.wav"),
+                &format!("Pezzo {n}"),
+                "Tale",
+                "Al",
+            );
+        }
+        let disco = Arc::new(DiscoContato {
+            aperture: std::sync::atomic::AtomicUsize::new(0),
+            cue_rotti: std::sync::atomic::AtomicBool::new(false),
+            lenti: vec!["01.wav".to_owned(), "02.wav".to_owned()],
+            attesa: Duration::from_millis(300),
+        });
+        let roots = vec![lib.root()];
+        let scan = Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: lib.store.clone(),
+            roots: &roots,
+            radici_della_libreria: &roots,
+            rules: PathRules::for_current_platform(),
+            prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
+        };
+        let esito = scan
+            .run(&mut lib.connection, |fatti, _| {
+                if fatti >= 4 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .expect("scansione");
+        assert!(esito.cancelled);
+        let mut statement = lib
+            .connection
+            .prepare("SELECT title FROM tracks ORDER BY title")
+            .expect("titoli");
+        let titoli: Vec<String> = statement
+            .query_map([], |r| r.get(0))
+            .expect("lettura")
+            .collect::<Result<_, _>>()
+            .expect("righe");
+        assert_eq!(titoli, ["Pezzo 1", "Pezzo 2", "Pezzo 3", "Pezzo 4"]);
+    }
+
+    #[test]
+    fn una_radice_che_muore_con_letture_in_volo_non_insiste() {
+        // Il primo file arriva — rotto, ma arriva — e la radice si guadagna le
+        // letture in parallelo; i quattro dopo partono insieme, e la rete se
+        // ne va. Il primo dei quattro scopre la radice morta con la sonda; gli
+        // altri tre, già in volo, valgono saltati: niente sonda, niente elenco.
+        // I file dopo non si tentano.
+        let (_dir, store, mut connection) = banco();
+        riga(&connection, 1, r"\\nas\musica\vecchio.mp3", 10);
+        let mut file = vec![trovato(r"\\nas\musica\0-rotto.mp3", 10)];
+        for lettera in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] {
+            file.push(trovato(&format!(r"\\nas\musica\{lettera}.mp3"), 10));
+        }
+        let disco = Arc::new(
+            FintoDisco::nuovo()
+                .con_file(r"\\nas\musica", file)
+                .malformato(r"\\nas\musica\0-rotto.mp3")
+                .senza_rete(r"\\nas\musica")
+                .cade_dopo_la_sonda(r"\\nas\musica"),
+        );
+        let roots = vec![r"\\nas\musica".to_owned()];
+        let scan = Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
+            roots: &roots,
+            radici_della_libreria: &roots,
+            rules: PathRules {
+                case_insensitive: true,
+            },
+            prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
+        };
+        let esito = scan
+            .run(&mut connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione");
+        // Il rotto, più al più le letture che erano in volo quando la rete se
+        // n'è andata: dei nove file, i quattro dopo non si tentano.
+        assert_eq!(disco.aperture(), 1 + LETTURE_IN_VOLO);
+        assert_eq!(
+            esito
+                .unreadable
+                .iter()
+                .map(|u| u.path.as_str())
+                .collect::<Vec<_>>(),
+            [r"\\nas\musica\0-rotto.mp3"],
+            "i file in volo su una radice morta non sono illeggibili"
+        );
+        assert_eq!(esito.radici_saltate, vec![r"\\nas\musica".to_owned()]);
+        assert_eq!(esito.removed, 0);
+    }
+
+    #[test]
+    fn annullare_non_aspetta_le_letture_in_volo() {
+        // Un file che ci mette tre secondi ad aprirsi, e un Annulla dopo un
+        // terzo di secondo: si smette subito, senza aspettare che arrivi.
+        let (_dir, store, mut connection) = banco();
+        let disco = Arc::new(
+            FintoDisco::nuovo()
+                .con_file(
+                    r"\\nas\musica",
+                    vec![
+                        trovato(r"\\nas\musica\a.mp3", 10),
+                        trovato(r"\\nas\musica\b.mp3", 10),
+                    ],
+                )
+                .apre_lentamente(r"\\nas\musica", Duration::from_secs(3)),
+        );
+        let basta = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let alza = Arc::clone(&basta);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            alza.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let chiedi = move || basta.load(std::sync::atomic::Ordering::SeqCst);
+        let roots = vec![r"\\nas\musica".to_owned()];
+        let scan = Scan {
+            files: Arc::clone(&disco) as Arc<dyn MusicFiles>,
+            covers: store.clone(),
+            roots: &roots,
+            radici_della_libreria: &roots,
+            rules: PathRules {
+                case_insensitive: true,
+            },
+            prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: Some(&chiedi),
+        };
+        let prima = Instant::now();
+        let esito = scan
+            .run(&mut connection, |_, _| ControlFlow::Continue(()))
+            .expect("scansione");
+        assert!(esito.cancelled);
+        assert!(
+            prima.elapsed() < Duration::from_secs(2),
+            "ha aspettato la lettura in volo: {:?}",
+            prima.elapsed()
+        );
+    }
+
+    #[test]
+    fn la_camminata_si_racconta_e_i_tempi_si_contano() {
+        let mut lib = Libreria::nuova();
+        lib.brano("Uno/A/01.wav", "A1", "Uno", "A");
+        lib.brano("Uno/B/01.wav", "B1", "Uno", "B");
+        lib.brano("Due/C/01.wav", "C1", "Due", "C");
+        let roots = vec![lib.root()];
+        let scan = Scan {
+            files: Arc::new(LocalFiles),
+            covers: lib.store.clone(),
+            roots: &roots,
+            radici_della_libreria: &roots,
+            rules: PathRules::for_current_platform(),
+            prudente: false,
+            scadenze: Scadenze::default(),
+            fermati: None,
+        };
+        let mut visti = Vec::new();
+        let esito = scan
+            .run_con(&mut lib.connection, |avanzamento| {
+                visti.push(avanzamento);
+                ControlFlow::Continue(())
+            })
+            .expect("scansione");
+        assert!(
+            visti.contains(&Avanzamento::Camminata {
+                cartelle: esito.cartelle_viste,
+                file: 3
+            }),
+            "{visti:?}"
+        );
+        assert!(
+            esito.cartelle_viste >= 5,
+            "la radice, due artisti, tre album"
+        );
+        assert_eq!(esito.file_visti, 3);
+        assert_eq!(esito.letti, 3);
+        assert_eq!(
+            visti.last(),
+            Some(&Avanzamento::Lettura {
+                fatti: 3,
+                totale: 3
+            })
+        );
+        // La camminata viene prima della lettura, sempre.
+        let prima_lettura = visti
+            .iter()
+            .position(|a| matches!(a, Avanzamento::Lettura { .. }))
+            .expect("una lettura");
+        assert!(
+            visti
+                .iter()
+                .skip(prima_lettura)
+                .all(|a| matches!(a, Avanzamento::Lettura { .. }))
+        );
     }
 }
 
@@ -9060,6 +12289,224 @@ mod prove_per_chiavi {
         );
         for id in disco {
             assert_eq!(chiave(id), "mbrg:B");
+        }
+    }
+
+    /// Un brano del disco con cui la libreria vera ha trovato il guasto: tredici
+    /// brani in una cartella, e solo i primi tre identificati.
+    fn brano_del_disco(n: usize) -> Riga {
+        Riga {
+            path: format!(r"\\nas\Musica\Fugees\Greatest Hits\{n:02}.flac"),
+            title: format!("Brano {n}"),
+            artist: "Fugees".to_owned(),
+            album: "Greatest Hits".to_owned(),
+            album_artist: None,
+            year: None,
+            genre: None,
+            cover: None,
+            mbrg: (n < 3).then(|| "X".to_owned()),
+            mbr: None,
+            sp: None,
+        }
+    }
+
+    /// Il disco in mezzo a una libreria, ricostruito per intero: i tredici brani
+    /// stanno tutti sotto `mbrg:X`, ed è lo stato da cui la libreria vera è
+    /// partita. La libreria intorno serve alla strada per chiavi, che rinuncia
+    /// quando la chiusura supera metà degli album.
+    fn il_disco(connection: &mut Connection) -> Vec<i64> {
+        libreria(connection, &mut Dado::nuovo(31), 200);
+        let ids: Vec<i64> = (0..13)
+            .map(|n| inserisci(connection, &brano_del_disco(n)))
+            .collect();
+        let tx = transazione_di_scrittura(connection).expect("transazione");
+        rebuild_aggregates(&tx).expect("ricostruzione");
+        tx.commit().expect("commit");
+        ids
+    }
+
+    /// La scansione rilegge questi brani — un taggatore ne ha riscritto i file
+    /// — e ognuno torna alla chiave di base. Restituisce le chiavi toccate,
+    /// segnate prima e dopo come le segna la scansione; gli aggregati non li
+    /// rifà.
+    fn riletti(connection: &mut Connection, ids: &[i64]) -> Toccati {
+        let tx = transazione_di_scrittura(connection).expect("transazione");
+        let mut toccati = Toccati::nessuno();
+        toccati.segna_brani(&tx, ids).expect("prima");
+        for id in ids {
+            let riga = leggi(&tx, *id);
+            riscrivi(&tx, *id, &riga);
+        }
+        toccati.segna_brani(&tx, ids).expect("dopo");
+        tx.commit().expect("commit");
+        toccati
+    }
+
+    #[test]
+    fn un_disco_riletto_a_meta_resta_un_disco_solo() {
+        // Il guasto della libreria vera, centosettanta volte nel diario. I tre
+        // brani identificati tornano alla chiave di base, i dieci senza
+        // identificativo restano sotto `mbrg:X`: due gruppi con la stessa
+        // chiave canonica, e `INSERT INTO albums` falliva su
+        // `UNIQUE constraint failed: albums.album_key` — per intero e per
+        // chiavi, a ogni passata, portando con sé tutta la transazione.
+        let mut connection = database();
+        let ids = il_disco(&mut connection);
+        let toccati = riletti(&mut connection, &ids[..3]);
+
+        let intera = come_la_intera(&mut connection);
+        let tx = transazione_di_scrittura(&mut connection).expect("transazione");
+        let intere_prima = INTERE_IN_QUESTO_FILO.with(std::cell::Cell::get);
+        ricostruisci_aggregati(&tx, &toccati).expect("per chiavi");
+        assert_eq!(
+            INTERE_IN_QUESTO_FILO.with(std::cell::Cell::get),
+            intere_prima,
+            "doveva essere per chiavi"
+        );
+        tx.commit().expect("commit");
+        let per_chiavi = fotografia(&connection);
+        assert!(
+            per_chiavi == intera,
+            "le due ricostruzioni divergono\n{}",
+            differenze(&per_chiavi, &intera)
+        );
+        let del_disco: Vec<&String> = per_chiavi
+            .albums
+            .iter()
+            .filter(|album| album.contains("¦Greatest Hits¦"))
+            .collect();
+        assert_eq!(del_disco.len(), 1, "{del_disco:?}");
+        assert!(
+            del_disco[0].starts_with("mbrg:X¦Greatest Hits¦Fugees¦-¦-¦13¦"),
+            "{del_disco:?}"
+        );
+        for (id, chiave) in &per_chiavi.chiavi {
+            if ids.contains(id) {
+                assert_eq!(chiave.as_deref(), Some("mbrg:X"), "brano {id}");
+            }
+        }
+    }
+
+    #[test]
+    fn la_chiusura_va_dalla_chiave_canonica_all_identificativo() {
+        // Una passata di prima ha scritto i brani e non gli aggregati — la sua
+        // ricostruzione è fallita dopo che i brani erano già confermati — e la
+        // versione è rimasta quella giusta. I tre brani identificati stanno
+        // sotto la chiave di base, i dieci senza identificativo sotto
+        // `mbrg:X`. Adesso si tocca uno solo dei dieci: i suoi compagni non
+        // portano nessun identificativo, e l'unica strada verso i tre è la
+        // chiave stessa, `mbrg:X`, letta come l'identificativo `X`.
+        let mut connection = database();
+        let ids = il_disco(&mut connection);
+        riletti(&mut connection, &ids[..3]);
+
+        let tx = transazione_di_scrittura(&mut connection).expect("transazione");
+        let mut toccati = Toccati::nessuno();
+        toccati.segna_brani(&tx, &ids[5..6]).expect("prima");
+        tx.execute(
+            "UPDATE tracks SET genre = 'Hip hop' WHERE id = ?1",
+            [ids[5]],
+        )
+        .expect("genere");
+        toccati.segna_brani(&tx, &ids[5..6]).expect("dopo");
+        assert_eq!(toccati.quanti_album(), 1);
+        let intere_prima = INTERE_IN_QUESTO_FILO.with(std::cell::Cell::get);
+        ricostruisci_aggregati(&tx, &toccati).expect("per chiavi");
+        assert_eq!(
+            INTERE_IN_QUESTO_FILO.with(std::cell::Cell::get),
+            intere_prima,
+            "doveva essere per chiavi"
+        );
+        tx.commit().expect("commit");
+        let per_chiavi = fotografia(&connection);
+        let intera = come_la_intera(&mut connection);
+        assert!(
+            per_chiavi == intera,
+            "le due ricostruzioni divergono\n{}",
+            differenze(&per_chiavi, &intera)
+        );
+    }
+
+    /// La scansione rilegge i brani **identificati** di un album a caso, e solo
+    /// quelli: tornano alla chiave di base, gli altri restano sotto quella
+    /// canonica. È il modo in cui la libreria vera ha prodotto il guasto.
+    fn rilegge_gli_identificati(tx: &Transaction<'_>, dado: &mut Dado, vivi: &[i64]) -> Toccati {
+        let mut toccati = Toccati::nessuno();
+        if vivi.is_empty() {
+            return toccati;
+        }
+        let chiave: String = tx
+            .query_row(
+                "SELECT album_key FROM tracks WHERE id = ?1",
+                [vivi[dado.fino_a(vivi.len())]],
+                |r| r.get(0),
+            )
+            .expect("chiave");
+        let identificati: Vec<i64> = tx
+            .prepare(
+                "SELECT id FROM tracks WHERE album_key = ?1
+                    AND (mb_release_group_id IS NOT NULL OR mb_release_id IS NOT NULL
+                         OR spotify_album_id IS NOT NULL)",
+            )
+            .expect("identificati")
+            .query_map([chiave], |r| r.get(0))
+            .expect("identificati")
+            .collect::<Result<_, _>>()
+            .expect("identificati");
+        toccati.segna_brani(tx, &identificati).expect("prima");
+        for id in &identificati {
+            let riga = leggi(tx, *id);
+            riscrivi(tx, *id, &riga);
+        }
+        toccati.segna_brani(tx, &identificati).expect("dopo");
+        toccati
+    }
+
+    #[test]
+    fn dischi_riletti_a_pezzi_chiavi_uniche_e_parita() {
+        // La proprietà, a caso: dopo ogni passo — metà delle volte un album di
+        // cui si rileggono i soli brani identificati, l'altra metà una delle
+        // modifiche della prova di parità — la ricostruzione intera riesce, e
+        // riuscire vuol dire chiavi d'album uniche, perché `albums.album_key` è
+        // la chiave primaria; e quella per chiavi lascia le stesse tabelle.
+        for seme in [21_u64, 22, 23, 24] {
+            let mut connection = database();
+            let mut dado = Dado::nuovo(seme);
+            let mut vivi = libreria(&mut connection, &mut dado, 300);
+            let mut prossimo_album = 10_000;
+            let mut per_chiavi_davvero = 0;
+            for passo in 0..80 {
+                let tx = transazione_di_scrittura(&mut connection).expect("transazione");
+                let toccati = if dado.moneta(50) {
+                    rilegge_gli_identificati(&tx, &mut dado, &vivi)
+                } else {
+                    modifica_a_caso(&tx, &mut dado, &mut vivi, &mut prossimo_album)
+                };
+                let intere_prima = INTERE_IN_QUESTO_FILO.with(std::cell::Cell::get);
+                if let Err(err) = ricostruisci_aggregati(&tx, &toccati) {
+                    panic!("seme {seme}, passo {passo}: per chiavi non riesce: {err:?}");
+                }
+                if INTERE_IN_QUESTO_FILO.with(std::cell::Cell::get) == intere_prima {
+                    per_chiavi_davvero += 1;
+                }
+                tx.commit().expect("commit");
+                let per_chiavi = fotografia(&connection);
+                let tx = connection.transaction().expect("transazione");
+                if let Err(err) = rebuild_aggregates(&tx) {
+                    panic!("seme {seme}, passo {passo}: per intero non riesce: {err:?}");
+                }
+                let intera = fotografia(&tx);
+                drop(tx);
+                assert!(
+                    per_chiavi == intera,
+                    "seme {seme}, passo {passo}: le due ricostruzioni divergono\n{}",
+                    differenze(&per_chiavi, &intera)
+                );
+            }
+            assert!(
+                per_chiavi_davvero >= 50,
+                "seme {seme}: solo {per_chiavi_davvero} passi su 80 per chiavi"
+            );
         }
     }
 

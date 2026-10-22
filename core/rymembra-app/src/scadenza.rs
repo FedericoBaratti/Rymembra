@@ -93,6 +93,63 @@ pub fn con_scadenza<T: Send + 'static>(
     ricevi.recv_timeout(scadenza).ok()
 }
 
+/// Come [`con_scadenza`], ma dice **perché** il risultato non c'è.
+///
+/// # Perché una seconda forma
+///
+/// Per la stessa ragione per cui [`Operaio::esegui`] restituisce un
+/// [`Mancato`] invece di un `None`: una scadenza e una caduta dicono due cose
+/// opposte. Con [`con_scadenza`] un lavoro che panica chiude il suo canale
+/// senza rispondere, e chi aspetta riceve lo stesso `None` di una share che
+/// non risponde — **all'istante**, invece che dopo la scadenza.
+///
+/// Il caso che l'ha resa necessaria è l'apertura di un brano. Il
+/// riconoscimento del contenitore è codice di terzi davanti a byte qualunque, e
+/// su un file locale rovinato può cadere: l'applicazione riceveva `None`, lo
+/// leggeva come «la cartella di rete non risponde», e offriva «Riprova» per un
+/// file che non si sarebbe mai aperto — ogni volta, per sempre.
+///
+/// `Err(Mancato::Scaduto)` se la scadenza è passata, o se il filo non è
+/// partito; `Err(Mancato::Caduto)` se il lavoro ha panicato — raccolto qui, col
+/// suo messaggio — o se il filo se n'è andato senza rispondere.
+///
+/// `AssertUnwindSafe` per la ragione scritta su [`Operaio::esegui`]: la
+/// chiusura è posseduta e cade con l'unwind, e di qui esce solo il messaggio.
+///
+/// # Errori
+///
+/// Vedi [`Mancato`].
+pub fn con_scadenza_o_caduta<T: Send + 'static>(
+    nome: &str,
+    scadenza: Duration,
+    lavoro: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Mancato> {
+    let (manda, ricevi) = mpsc::channel::<Result<T, Mancato>>();
+    let avviato = std::thread::Builder::new()
+        .name(format!("rymembra-scadenza-{nome}"))
+        .spawn(move || {
+            let esito = std::panic::catch_unwind(AssertUnwindSafe(lavoro)).map_err(|carico| {
+                Mancato::Caduto {
+                    messaggio: messaggio_del_panico(carico.as_ref()),
+                }
+            });
+            // Come in `con_scadenza`: se chi aspettava se n'è andato, il canale
+            // è chiuso e non c'è niente da fare né da dire.
+            let _ = manda.send(esito);
+        });
+    if avviato.is_err() {
+        return Err(Mancato::Scaduto);
+    }
+    match ricevi.recv_timeout(scadenza) {
+        Ok(esito) => esito,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(Mancato::Scaduto),
+        // Il filo se n'è andato portandosi via il mittente senza rispondere:
+        // col panico raccolto qui sopra non dovrebbe più succedere, ma se
+        // succede somiglia a una caduta, non a un'attesa.
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(Mancato::Caduto { messaggio: None }),
+    }
+}
+
 /// Un lavoro da svolgere, già confezionato: la risposta se la manda da sé.
 ///
 /// Scatolato perché i lavori di un [`Operaio`] hanno risultati di tipi diversi e
@@ -379,6 +436,41 @@ mod prove {
         // risultato invece di lasciarlo cadere in silenzio, che è la promessa
         // scritta qui sopra. Aspettarne la fine è il modo più economico di
         // esercitare quel percorso.
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    #[test]
+    fn una_caduta_non_si_scambia_per_una_scadenza() {
+        // Il formato che fa cadere il riconoscimento del contenitore: la
+        // risposta arriva subito, ed è una caduta col suo messaggio — non la
+        // cartella di rete che non risponde.
+        let prima = std::time::Instant::now();
+        let caduto = con_scadenza_o_caduta("caduto", Duration::from_secs(5), || -> u8 {
+            std::panic::panic_any("intestazione storta")
+        });
+        assert_eq!(
+            caduto,
+            Err(Mancato::Caduto {
+                messaggio: Some("intestazione storta".to_owned())
+            })
+        );
+        assert!(
+            prima.elapsed() < Duration::from_secs(2),
+            "una caduta non deve aspettare la scadenza"
+        );
+
+        // La scadenza vera resta una scadenza.
+        let appeso = con_scadenza_o_caduta("appeso-o", Duration::from_millis(20), || {
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        assert_eq!(appeso, Err(Mancato::Scaduto));
+
+        // E il lavoro che finisce in tempo torna col suo risultato.
+        assert_eq!(
+            con_scadenza_o_caduta("svelto-o", Duration::from_secs(5), || 7),
+            Ok(7)
+        );
+        // Il filo appeso finisce da solo, su un canale che non ascolta nessuno.
         std::thread::sleep(Duration::from_millis(250));
     }
 

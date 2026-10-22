@@ -45,7 +45,9 @@ use rymembra_domain::spotify_account::{AccountSnapshot, Scelte};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
+use crate::disparte::in_disparte;
 use crate::errore::{Esito, errore};
+use crate::importa::gestito;
 use crate::stato::{Stato, Turno, con_libreria};
 
 /// Quel che è stato letto per ultimo.
@@ -250,15 +252,17 @@ pub fn archivio_dimentica(
 
 /// Cosa porterebbe l'importazione di quel che è in cella, senza scrivere niente.
 ///
-/// `(async)`: il piano è l'importazione vera dentro una transazione abbandonata,
-/// e su un archivio di dieci anni sono decine di migliaia di righe.
-#[tauri::command(async)]
-pub fn account_piano(
-    stato: State<'_, Stato>,
-    account: State<'_, StatoAccount>,
-    scelte: ScelteIpc,
-) -> Esito<AccountImportReport> {
-    esegui(&stato, &account, scelte, false)
+/// In disparte, sul pool bloccante: il piano è l'importazione vera dentro una
+/// transazione abbandonata, e su un archivio di dieci anni sono decine di
+/// migliaia di righe. Un `(async)` su una funzione sincrona le scriveva su un
+/// *worker* del runtime, togliendo il posto a ogni altro comando asincrono.
+#[tauri::command]
+pub async fn account_piano(app: AppHandle, scelte: ScelteIpc) -> Esito<AccountImportReport> {
+    in_disparte("piano dell'importazione di un account", move || {
+        esegui(&app, scelte, false)
+    })
+    .await
+    .map_err(errore)?
 }
 
 /// Importa per davvero.
@@ -273,18 +277,19 @@ pub fn account_piano(
 /// Quel che la coda troverà nei cataloghi liberi è un'altra questione, e la
 /// risposta onesta è «una parte». Il resto finisce in «Da comprare», che è la
 /// cosa che questa applicazione può fare e che dice la verità.
-#[tauri::command(async)]
-pub fn account_importa(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    account: State<'_, StatoAccount>,
-    scelte: ScelteIpc,
-) -> Esito<AccountImportReport> {
-    let esito = crate::nuvola::se_riuscito(&app, esegui(&stato, &account, scelte, true));
-    if esito.as_ref().is_ok_and(|rapporto| rapporto.missing() > 0) {
-        crate::procura::avvia(&app);
-    }
-    esito
+///
+/// In disparte come [`account_piano`], e per la stessa ragione.
+#[tauri::command]
+pub async fn account_importa(app: AppHandle, scelte: ScelteIpc) -> Esito<AccountImportReport> {
+    in_disparte("importazione di un account", move || {
+        let esito = crate::nuvola::se_riuscito(&app, esegui(&app, scelte, true));
+        if esito.as_ref().is_ok_and(|rapporto| rapporto.missing() > 0) {
+            crate::procura::avvia(&app);
+        }
+        esito
+    })
+    .await
+    .map_err(errore)?
 }
 
 /// Dimentica gli ascolti importati da Spotify.
@@ -302,19 +307,16 @@ pub fn cronologia_dimentica_importati(app: AppHandle, stato: State<'_, Stato>) -
 
 // ── il lavoro sotto ─────────────────────────────────────────────────────────
 
-fn esegui(
-    stato: &State<'_, Stato>,
-    account: &State<'_, StatoAccount>,
-    scelte: ScelteIpc,
-    conferma: bool,
-) -> Esito<AccountImportReport> {
+fn esegui(app: &AppHandle, scelte: ScelteIpc, conferma: bool) -> Esito<AccountImportReport> {
+    let stato = gestito::<Stato>(app, "importazione di un account").map_err(errore)?;
+    let account = gestito::<StatoAccount>(app, "importazione di un account").map_err(errore)?;
     // Una copia dello snapshot, così la cella non resta presa mentre si scrive
     // nel database: sono due lucchetti diversi, e prenderli in ordine fisso è
     // quel che rende impossibile incrociarli.
-    let snapshot = con_cella(account, |caricato| Ok(caricato.snapshot.clone())).map_err(errore)?;
+    let snapshot = con_cella(&account, |caricato| Ok(caricato.snapshot.clone())).map_err(errore)?;
     let scelte = Scelte::from(scelte);
 
-    con_libreria(stato, |libreria| {
+    con_libreria(&stato, |libreria| {
         if conferma {
             import_account::import(&mut libreria.connection, &snapshot, &scelte)
         } else {

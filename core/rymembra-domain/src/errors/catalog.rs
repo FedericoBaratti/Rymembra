@@ -397,6 +397,20 @@ catalogo! {
     LibraryScanBusy = "library.scanBusy", Library, Info, Always, None;
     /// Il brano non è in libreria.
     LibraryTrackNotFound = "library.trackNotFound", Library, Warning, Never, Some("TRACK_NOT_FOUND"), { track_id: Option<i64> };
+    /// Si è chiesto di eliminare dal disco una parte dei brani di
+    /// un'immagine CD, e non tutti.
+    ///
+    /// Un brano d'immagine non ha un file suo: il file è l'immagine di tutto il
+    /// disco, accanto al `.cue` che la taglia. Cancellarla per togliere un
+    /// brano vorrebbe dire togliere anche gli altri, che nessuno ha scelto; e
+    /// tagliare via un pezzo dall'immagine non si fa. Quindi o si scelgono
+    /// tutti i brani di quel disco — e allora vanno nel Cestino l'immagine e il
+    /// suo `.cue` — o non si tocca niente.
+    ///
+    /// `Warning` e `Never`, come [`Self::FsNoRecycleBin`]: non è un guasto, e la
+    /// stessa richiesta riceve la stessa risposta. `path` è l'immagine, per il
+    /// diario.
+    LibraryImageTrackPartialDelete = "library.imageTrackPartialDelete", Library, Warning, Never, None, { path: String };
     /// La playlist non esiste.
     LibraryPlaylistNotFound = "library.playlistNotFound", Library, Warning, Never, None, { playlist_id: Option<i64> };
     /// Una playlist con questo nome c'è già.

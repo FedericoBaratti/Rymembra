@@ -68,8 +68,25 @@
 //! un tono puro, la cui energia sta in due bin e non si allarga insieme alla
 //! banda: là più bande vogliono dire un picco più stretto e più alto, che è il
 //! significato della parola risoluzione.
+//!
+//! # Quando il suono si ferma
+//!
+//! In pausa la callback non spinge niente, e per molto tempo questo modulo ne
+//! ha tratto la conclusione sbagliata: senza campioni nuovi la finestra restava
+//! quella di prima, e ogni lettura ritrasformava gli stessi ottantacinque
+//! millesimi di musica. Le bande uscivano **congelate e accese** trenta volte al
+//! secondo, per tutta la pausa — e la scena, che si addormenta sul silenzio,
+//! non ne vedeva mai uno: ridisegnava sessanta volte al secondo un fotogramma di
+//! musica che non suonava più.
+//!
+//! Adesso un flusso fermo è quel che è, cioè silenzio. Passato [`SECCO`] senza
+//! un campione, la lettura scrive nella finestra gli zeri che una pausa vera
+//! avrebbe fatto passare, e le bande scendono a zero attraverso la finestra come
+//! con un silenzio suonato. Un buco del flusso — una rete che non risponde —
+//! diventa silenzio per la stessa regola, ed è la verità: è quel che si sente.
 
 use std::f64::consts::PI;
+use std::time::{Duration, Instant};
 
 use crate::equalizzatore::{BANDE, CENTRI_HZ};
 
@@ -137,6 +154,16 @@ const BASSA_HZ: f32 = 20.0;
 /// più in basso, i bordi si fermano a Nyquist e le bande di sopra restano al
 /// fondo scala invece di specchiare quel che c'è sotto.
 const ALTA_HZ: f32 = 20_000.0;
+
+/// Quanto tempo senza un campione prima di chiamarlo silenzio.
+///
+/// Cento millesimi. La callback consegna a blocchi — dieci millesimi sul
+/// dispositivo condiviso di Windows, di più su certe uscite Bluetooth — e due
+/// letture di fila possono non trovare niente anche a musica piena: una soglia
+/// più corta di un blocco scambierebbe il ritmo della callback per una pausa, e
+/// la scena lampeggerebbe a zero. Più lunga, una pausa lascerebbe le barre
+/// appese al loro ultimo valore per un tempo che si vede.
+const SECCO: Duration = Duration::from_millis(100);
 
 /// Un numero complesso, giusto quanto serve alla trasformata.
 ///
@@ -266,7 +293,7 @@ pub struct Bande {
     /// **Grezze**: è la potenza misurata in questo mezzo secondo, riportata
     /// sulla scala di [`FONDO_DB`], e nient'altro. Nessuna inerzia, nessuna
     /// memoria del valore di prima — a flusso fermo tornano a zero alla prima
-    /// lettura invece di scendere piano.
+    /// lettura dopo [`SECCO`] invece di scendere piano.
     ///
     /// Non è una semplificazione: è che lo smorzamento ha cambiato posto. Lo fa
     /// la finestra, nel gestore dell'evento, con due costanti di tempo che una
@@ -411,6 +438,12 @@ pub struct Spettro {
     /// Se calcolare anche le dieci d'ottava. Di serie no: vedi sopra.
     ottave_accese: bool,
     frequenza: f32,
+    /// Fin dove la finestra è aggiornata: l'ultima lettura che ha trovato
+    /// campioni, o l'ultima che ha scritto il silenzio al loro posto.
+    ///
+    /// `None` finché nessuno ha letto: senza un primo istante non c'è un tempo
+    /// da misurare, e la prima lettura lo fissa. Vedi [`SECCO`].
+    ultimo: Option<Instant>,
 }
 
 impl Spettro {
@@ -459,7 +492,65 @@ impl Spettro {
             // Spente: chi le vuole lo dice, e oggi non le vuole nessuno.
             ottave_accese: false,
             frequenza,
+            ultimo: None,
         }
+    }
+
+    /// Butta quel che c'è nell'anello e nella finestra, senza analizzarlo.
+    ///
+    /// La chiama chi spegne la presa. Prima si svuotava l'anello **leggendolo**,
+    /// cioè facendone una trasformata per nessuno e — peggio — lasciando nella
+    /// finestra gli ultimi ottantacinque millesimi di musica: riaccesa la
+    /// schermata dieci minuti dopo, la prima fila disegnava quella musica lì.
+    /// Adesso la finestra riparte vuota, e la prima fila è silenzio finché non
+    /// arriva musica vera.
+    pub fn svuota(&mut self) {
+        while self.ricevi.pop().is_ok() {}
+        self.finestra.fill(0.0);
+        self.cursore = 0;
+        self.piena = false;
+        self.ultimo = None;
+    }
+
+    /// Un campione nella finestra, al posto del più vecchio.
+    fn scrivi(&mut self, campione: f32) {
+        if let Some(posto) = self.finestra.get_mut(self.cursore) {
+            *posto = campione;
+        }
+        self.cursore += 1;
+        if self.cursore >= FINESTRA {
+            self.cursore = 0;
+            self.piena = true;
+        }
+    }
+
+    /// Scrive il silenzio che una pausa ha fatto passare, se è passato
+    /// abbastanza tempo da chiamarla tale.
+    ///
+    /// Quanto silenzio: quello del tempo trascorso, alla frequenza del
+    /// dispositivo, e **mai più di una finestra** — oltre non cambierebbe niente
+    /// di quel che si trasforma, e senza il tetto un'ora di pausa vorrebbe dire
+    /// centosettanta milioni di zeri scritti in un colpo solo.
+    fn tace(&mut self, adesso: Instant) {
+        let Some(ultimo) = self.ultimo else {
+            self.ultimo = Some(adesso);
+            return;
+        };
+        let fermo = adesso.saturating_duration_since(ultimo);
+        if fermo < SECCO {
+            return;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "un tempo positivo per una frequenza positiva, e il risultato si \
+                      stringe subito a FINESTRA"
+        )]
+        let quanti = ((fermo.as_secs_f64() * f64::from(self.frequenza)) as usize).min(FINESTRA);
+        for _ in 0..quanti {
+            self.scrivi(0.0);
+        }
+        self.ultimo = Some(adesso);
     }
 
     /// Accende o spegne il calcolo delle dieci bande d'ottava.
@@ -513,26 +604,31 @@ impl Spettro {
 
     /// Ritira i campioni arrivati e restituisce le bande, ognuna in `0..=1`.
     ///
+    /// `adesso` è l'istante della lettura, ed è tutto quel che serve per
+    /// riconoscere un flusso fermo: vedi [`SECCO`] e la prosa in testa al
+    /// modulo. Arriva da fuori e non da `Instant::now()` perché le prove possano
+    /// far passare il tempo senza aspettarlo.
+    ///
     /// Restituisce sempre qualcosa, anche a flusso fermo — e le due riduzioni si
     /// comportano lì in modo diverso, di proposito. Le ottave **scendono** con
     /// la loro inerzia, che è la stessa che hanno mentre suona. Le fini vanno a
-    /// zero subito, perché a zero ci sono davvero: la coda di rilascio che le fa
-    /// scendere piano la mette la finestra, che è dove adesso vive quella
-    /// manopola.
-    pub fn leggi(&mut self) -> &Bande {
+    /// zero appena il silenzio ha riempito la finestra, perché a zero ci sono
+    /// davvero: la coda di rilascio che le fa scendere piano la mette la
+    /// finestra, che è dove adesso vive quella manopola.
+    pub fn leggi(&mut self, adesso: Instant) -> &Bande {
         // Si svuota tutto quel che c'è: la callback ne produce quarantottomila
         // al secondo e questo si chiama trenta volte, quindi ogni giro ne trova
         // un migliaio e mezzo. Prenderne solo una parte lascerebbe l'anello
         // pieno e lo spettro indietro di un tempo che cresce.
+        let mut arrivati = false;
         while let Ok(campione) = self.ricevi.pop() {
-            if let Some(posto) = self.finestra.get_mut(self.cursore) {
-                *posto = campione;
-            }
-            self.cursore += 1;
-            if self.cursore >= FINESTRA {
-                self.cursore = 0;
-                self.piena = true;
-            }
+            self.scrivi(campione);
+            arrivati = true;
+        }
+        if arrivati {
+            self.ultimo = Some(adesso);
+        } else {
+            self.tace(adesso);
         }
 
         // Una trasformata sola per tutte e due le riduzioni: è la ragione per
@@ -763,6 +859,17 @@ impl Spettro {
 mod prove {
     use super::*;
 
+    /// L'istante di tutte le letture che non parlano del tempo.
+    ///
+    /// Uno solo e fermo: fra due letture allo stesso istante non passa nessun
+    /// [`SECCO`], quindi le prove che spingono i loro campioni a mano misurano
+    /// esattamente quel che misuravano prima che il lettore sapesse riconoscere
+    /// una pausa.
+    fn t0() -> Instant {
+        static ZERO: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        *ZERO.get_or_init(Instant::now)
+    }
+
     /// Riempie il lettore con un segnale generato, e legge finché si assesta.
     fn misura_a(frequenza: u32, quante: u16, mut genera: impl FnMut(usize) -> f32) -> Bande {
         let (mut manda, ricevi) = rtrb::RingBuffer::<f32>::new(FINESTRA * 2);
@@ -773,7 +880,7 @@ mod prove {
         spettro.guarda_ottave(true);
         spettro.dettaglio(quante);
         let mut t = 0usize;
-        let mut bande = spettro.leggi().clone();
+        let mut bande = spettro.leggi(t0()).clone();
         // Parecchi giri: le ottave hanno un'inerzia, e la prima lettura sarebbe
         // il valore a metà della salita invece di quello a regime. Alle fini,
         // che sono grezze, basterebbe una finestra piena — ma questo aiutante
@@ -783,7 +890,7 @@ mod prove {
                 let _ = manda.push(genera(t));
                 t += 1;
             }
-            bande = spettro.leggi().clone();
+            bande = spettro.leggi(t0()).clone();
         }
         bande
     }
@@ -909,18 +1016,18 @@ mod prove {
                 let _ = manda.push(suona(t));
                 t += 1;
             }
-            spettro.leggi();
+            spettro.leggi(t0());
         }
-        let acceso = spettro.leggi().ottave.get(5).copied().unwrap_or(0.0);
+        let acceso = spettro.leggi(t0()).ottave.get(5).copied().unwrap_or(0.0);
 
         // Silenzio, e nessun campione nuovo.
         for _ in 0..40 {
             for _ in 0..FINESTRA {
                 let _ = manda.push(0.0);
             }
-            spettro.leggi();
+            spettro.leggi(t0());
         }
-        let dopo = spettro.leggi().ottave.get(5).copied().unwrap_or(0.0);
+        let dopo = spettro.leggi(t0()).ottave.get(5).copied().unwrap_or(0.0);
         assert!(dopo < acceso * 0.2, "da {acceso} è scesa solo a {dopo}");
     }
 
@@ -943,9 +1050,9 @@ mod prove {
                 let _ = manda.push(suona(t));
                 t += 1;
             }
-            spettro.leggi();
+            spettro.leggi(t0());
         }
-        let (_, acceso) = piu_alta(&spettro.leggi().fini);
+        let (_, acceso) = piu_alta(&spettro.leggi(t0()).fini);
         assert!(acceso > 0.4, "la banda del tono è a {acceso}");
 
         // Una finestra intera di silenzio, e **una sola** lettura. Con la
@@ -954,8 +1061,114 @@ mod prove {
         for _ in 0..FINESTRA {
             let _ = manda.push(0.0);
         }
-        let dopo = spettro.leggi().fini.iter().copied().fold(0.0_f32, f32::max);
+        let dopo = spettro
+            .leggi(t0())
+            .fini
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max);
         assert!(dopo < 0.02, "da {acceso} doveva andare a zero, è a {dopo}");
+    }
+
+    /// Un lettore che ha appena sentito mille hertz, e il suo anello.
+    fn acceso_a_mille() -> (rtrb::Producer<f32>, Spettro, usize) {
+        let (mut manda, ricevi) = rtrb::RingBuffer::<f32>::new(FINESTRA * 2);
+        let mut spettro = Spettro::nuovo(ricevi, 48_000);
+        spettro.dettaglio(64);
+        let mut suona = seno(1_000.0, 48_000);
+        let mut t = 0usize;
+        for _ in 0..4 {
+            for _ in 0..FINESTRA {
+                let _ = manda.push(suona(t));
+                t += 1;
+            }
+            spettro.leggi(t0());
+        }
+        (manda, spettro, t)
+    }
+
+    #[test]
+    fn un_flusso_fermo_e_silenzio() {
+        // La pausa vera: la callback smette di spingere, e nessuno scrive zeri
+        // al suo posto. Prima di questa prova le bande restavano accese per
+        // tutta la pausa, ritrasformando sempre la stessa finestra — e la
+        // scena, che si addormenta sul silenzio, non si addormentava mai.
+        let (_manda, mut spettro, _) = acceso_a_mille();
+        let (_, acceso) = piu_alta(&spettro.leggi(t0()).fini);
+        assert!(acceso > 0.4, "la banda del tono è a {acceso}");
+
+        let dopo = t0() + SECCO + Duration::from_millis(20);
+        let massimo = spettro
+            .leggi(dopo)
+            .fini
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max);
+        assert!(
+            massimo < 0.02,
+            "a flusso fermo doveva tacere, è a {massimo}"
+        );
+    }
+
+    #[test]
+    fn un_buco_piu_corto_di_secco_non_e_una_pausa() {
+        // La callback consegna a blocchi: due letture vuote di fila sono il suo
+        // ritmo, non una pausa. Scambiarle per silenzio farebbe lampeggiare la
+        // scena a zero a musica piena.
+        let (_manda, mut spettro, _) = acceso_a_mille();
+        let prima = piu_alta(&spettro.leggi(t0()).fini).1;
+        let poco_dopo = t0() + SECCO / 2;
+        let ancora = piu_alta(&spettro.leggi(poco_dopo).fini).1;
+        assert!(
+            (prima - ancora).abs() < 1e-6,
+            "da {prima} a {ancora} in meno di SECCO"
+        );
+    }
+
+    #[test]
+    fn la_musica_che_riparte_riaccende_le_bande() {
+        let (mut manda, mut spettro, mut t) = acceso_a_mille();
+        let pausa = t0() + Duration::from_secs(2);
+        spettro.leggi(pausa);
+        let mut suona = seno(1_000.0, 48_000);
+        for _ in 0..FINESTRA {
+            let _ = manda.push(suona(t));
+            t += 1;
+        }
+        let (_, ripreso) = piu_alta(&spettro.leggi(pausa + Duration::from_millis(30)).fini);
+        assert!(ripreso > 0.4, "dopo la ripresa la banda è a {ripreso}");
+    }
+
+    #[test]
+    fn un_ora_di_pausa_costa_una_finestra() {
+        // Il tetto: senza, un'ora di pausa vorrebbe dire scrivere centinaia di
+        // milioni di zeri in una lettura sola. La prova non misura il tempo —
+        // sarebbe fragile — ma fallirebbe per eccesso di durata se il tetto
+        // sparisse, e controlla che il risultato sia comunque il silenzio.
+        let (_manda, mut spettro, _) = acceso_a_mille();
+        let massimo = spettro
+            .leggi(t0() + Duration::from_secs(3_600))
+            .fini
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max);
+        assert!(massimo < 0.02, "dopo un'ora di pausa è a {massimo}");
+    }
+
+    #[test]
+    fn svuotare_butta_anche_la_finestra() {
+        // Spegnere la presa e riaccenderla dieci minuti dopo non deve mostrare
+        // gli ultimi ottantacinque millesimi di prima: era quel che succedeva
+        // quando lo svuotamento passava per una lettura.
+        let (_manda, mut spettro, _) = acceso_a_mille();
+        spettro.svuota();
+        let massimo = spettro
+            .leggi(t0())
+            .fini
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max);
+        assert!(massimo < 0.02, "dopo lo svuotamento è a {massimo}");
     }
 
     #[test]

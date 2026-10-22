@@ -33,9 +33,14 @@ export function Fascia({
 }) {
   return (
     <>
+      {/* Senza `role="status"`: il riquadro nasce già pieno, e in più copie —
+          sopra la pagina, a schermo intero, nello Studio. La notizia la dice
+          una regione sola, sempre montata, in `App` (vedi `Annuncio.tsx`).
+          L'errore invece resta `alert` sul suo riquadro, che gli schermi di
+          lettura annunciano anche appena nato. */}
       {notizia !== null && (
         <Presenza parte="toast-card">
-          <div className="notizia toast-card" role="status">
+          <div className="notizia toast-card">
             <Icona nome="i-check" dim={16} />
             <span>{notizia}</span>
             <button

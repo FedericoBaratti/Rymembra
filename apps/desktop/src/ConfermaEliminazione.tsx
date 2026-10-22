@@ -23,21 +23,37 @@
  * # Dove un Cestino non c'è
  *
  * Prima di mostrare il tasto, per «Elimina dal disco» si chiede al nucleo
- * quanti file stanno su un'unità di rete (`brani_su_rete`): lì il Cestino non
- * esiste, e Windows cancellerebbe per sempre dicendo di averli messi nel
- * Cestino. Se ce n'è anche uno solo la finestrella lo dice con il numero, e il
- * tasto dice «per sempre»: è quella conferma — e solo quella — che il nucleo
- * accetta per cancellarli. Finché la risposta non c'è il tasto resta spento:
- * confermare senza averla letta vorrebbe dire confermare un'altra frase. Se la
- * domanda fallisce si conta tutto come di rete, che fa chiedere di più e non
- * di meno.
+ * quanti dei brani scelti hanno il file su un'unità di rete (`brani_su_rete`):
+ * lì il Cestino non esiste, e Windows cancellerebbe per sempre dicendo di
+ * averli messi nel Cestino. Se ce n'è anche uno solo la finestrella lo dice con
+ * il numero, e il tasto dice «per sempre»: è quella conferma — e solo quella —
+ * che il nucleo accetta per cancellarli. Finché la risposta non c'è il tasto
+ * resta spento: confermare senza averla letta vorrebbe dire confermare
+ * un'altra frase. Se la domanda fallisce si conta tutto come di rete, che fa
+ * chiedere di più e non di meno.
+ *
+ * Il numero è di brani, non di file, perché si confronta con `quanti` per
+ * decidere se dire «gli altri vanno nel Cestino»: i dodici brani di
+ * un'immagine CD sono due file — l'immagine e il `.cue` — e contati come file
+ * facevano dire «2 brani su rete» mentre ne sparivano per sempre dodici. E
+ * conta solo i brani scelti, quindi non supera mai `quanti`: la vecchia riga
+ * del disco intero, se c'è ancora, se ne va con l'immagine anche senza averla
+ * scelta, ma non fa dire «tutti» a una scelta che ha anche un file locale.
+ *
+ * Tranne un caso: i brani di un'immagine CD scelti solo in parte
+ * (`library.imageTrackPartialDelete`). Lì il file è di tutto il disco, e il
+ * nucleo rifiuterebbe comunque: la finestrella dice perché e non offre il
+ * tasto, invece di chiedere un sì a un gesto che non succederà.
  */
 import { useEffect, useState } from "react";
 
 import { Dialogo } from "./Dialogo";
 import { brani_ } from "./formato";
-import { ipc } from "./ipc";
+import { eErroreIpc, ipc, testoErrore } from "./ipc";
 import { t } from "./lingue";
+
+/** Il codice con cui il nucleo rifiuta i brani di un'immagine scelti a metà. */
+const IMMAGINE_A_META = "library.imageTrackPartialDelete";
 
 export function ConfermaEliminazione({
   brani,
@@ -52,6 +68,7 @@ export function ConfermaEliminazione({
 }) {
   const quanti = brani.length;
   const [suRete, setSuRete] = useState<number | null>(dalDisco ? null : 0);
+  const [rifiuto, setRifiuto] = useState<string | null>(null);
   useEffect(() => {
     if (!dalDisco) return;
     let viva = true;
@@ -60,8 +77,13 @@ export function ConfermaEliminazione({
       .then((n) => {
         if (viva) setSuRete(n);
       })
-      .catch(() => {
-        if (viva) setSuRete(brani.length);
+      .catch((err: unknown) => {
+        if (!viva) return;
+        if (eErroreIpc(err) && err.code === IMMAGINE_A_META) {
+          setRifiuto(testoErrore(err));
+          return;
+        }
+        setSuRete(brani.length);
       });
     return () => {
       viva = false;
@@ -96,23 +118,26 @@ export function ConfermaEliminazione({
           })}
         </p>
       )}
+      {rifiuto !== null && <p className="nota">{rifiuto}</p>}
       <div className="tasti-finestrella">
         <button type="button" className="bottone primario" onClick={onChiudi}>
           {t("common.cancel")}
         </button>
-        <button
-          type="button"
-          className="bottone"
-          disabled={suRete === null}
-          aria-busy={suRete === null}
-          onClick={() => onConferma(perSempre)}
-        >
-          {!dalDisco
-            ? t("delete.library.ok")
-            : perSempre
-              ? t("delete.disk.okForever")
-              : t("delete.disk.ok")}
-        </button>
+        {rifiuto === null && (
+          <button
+            type="button"
+            className="bottone"
+            disabled={suRete === null}
+            aria-busy={suRete === null}
+            onClick={() => onConferma(perSempre)}
+          >
+            {!dalDisco
+              ? t("delete.library.ok")
+              : perSempre
+                ? t("delete.disk.okForever")
+                : t("delete.disk.ok")}
+          </button>
+        )}
       </div>
     </Dialogo>
   );

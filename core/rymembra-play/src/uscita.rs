@@ -282,7 +282,69 @@ pub struct Uscita {
     /// Non si clona e non esce di qui: lasciarlo cadere è il modo in cui il filo
     /// sa che deve chiudere il flusso e uscire, e un secondo mittente vivo da
     /// qualche altra parte lo terrebbe aperto per sempre.
-    ordini: mpsc::Sender<Ordine>,
+    ///
+    /// Dentro un `Arc` per una ragione sola, che non contraddice la riga sopra:
+    /// fuori esce soltanto un [`Campanello`], cioè un riferimento **debole**.
+    /// Il mittente forte resta uno, ed è questo: quando l'`Uscita` cade, cade
+    /// lui, e il filo esce come prima.
+    ordini: Arc<mpsc::Sender<Ordine>>,
+}
+
+/// Un modo di svegliare il flusso senza tenere in mano il motore.
+///
+/// # Il difetto che toglie
+///
+/// [`Uscita::sveglia`] può aspettare fino a mezzo secondo — il flusso a riposo
+/// che riparte, un dispositivo che ci mette a rispondere — e la chiamano i
+/// comandi del motore che svuotano l'anello. Nell'applicazione il motore sta
+/// dietro il lucchetto del lettore, e due di quei comandi — il salto e lo
+/// svuotamento della coda — girano sul filo della finestra: quel mezzo secondo
+/// lo passavano col lucchetto in mano, e dietro di loro aspettavano gli
+/// annunci del motore, l'orologio e il preparatore del brano dopo.
+///
+/// Il campanello si prende sotto il lucchetto, si suona **fuori**, e il comando
+/// vero arriva dopo, di nuovo sotto il lucchetto: a quel punto il flusso è già
+/// sveglio, e la sua `sveglia` è un giro di messaggio.
+///
+/// # Perché debole
+///
+/// Perché il mittente vivo è ciò che tiene aperto il flusso (vedi
+/// [`Uscita::ordini`]): un campanello forte dimenticato da qualche parte
+/// terrebbe acceso un dispositivo che nessuno usa più. Debole, si gonfia solo
+/// per il tempo di una `send` e si sgonfia **prima** dell'attesa; se l'`Uscita`
+/// nel frattempo è caduta, suonarlo non fa niente.
+#[derive(Debug, Clone)]
+pub struct Campanello {
+    ordini: std::sync::Weak<mpsc::Sender<Ordine>>,
+}
+
+impl Campanello {
+    /// Sveglia il flusso, se c'è ancora, e torna quando la callback gira — con
+    /// lo stesso tetto di [`Uscita::sveglia`].
+    pub fn suona(&self) {
+        // Il mittente forte vive soltanto in questo blocco: per l'attesa basta
+        // la risposta, e tenerlo oltre vorrebbe dire poter tenere aperto un
+        // flusso che l'`Uscita` ha già lasciato cadere.
+        let attendi = {
+            let Some(ordini) = self.ordini.upgrade() else {
+                return;
+            };
+            chiedi_la_sveglia(&ordini)
+        };
+        if let Some(attendi) = attendi {
+            let _ = attendi.recv_timeout(ATTESA_RISVEGLIO.saturating_mul(2));
+        }
+    }
+}
+
+/// Manda l'ordine di sveglia e restituisce da dove arriverà la risposta.
+///
+/// `None` se il filo non c'è più: il flusso è già chiuso, e non c'è niente da
+/// svegliare né nessuno da aspettare.
+fn chiedi_la_sveglia(ordini: &mpsc::Sender<Ordine>) -> Option<mpsc::Receiver<()>> {
+    let (risposta, attendi) = mpsc::sync_channel(1);
+    ordini.send(Ordine::Sveglia(risposta)).ok()?;
+    Some(attendi)
 }
 
 impl Uscita {
@@ -316,13 +378,18 @@ impl Uscita {
     /// mai più di mezzo secondo: oltre, il dispositivo non risponde e lo dirà la
     /// callback d'errore, non questa attesa.
     pub fn sveglia(&self) {
-        let (risposta, attendi) = mpsc::sync_channel(1);
-        if self.ordini.send(Ordine::Sveglia(risposta)).is_err() {
-            // Il filo non c'è più: il flusso è già chiuso, e non c'è niente da
-            // svegliare né nessuno da aspettare.
-            return;
+        if let Some(attendi) = chiedi_la_sveglia(&self.ordini) {
+            let _ = attendi.recv_timeout(ATTESA_RISVEGLIO.saturating_mul(2));
         }
-        let _ = attendi.recv_timeout(ATTESA_RISVEGLIO.saturating_mul(2));
+    }
+
+    /// Il campanello da suonare senza tenere in mano l'`Uscita`: vedi
+    /// [`Campanello`].
+    #[must_use]
+    pub fn campanello(&self) -> Campanello {
+        Campanello {
+            ordini: Arc::downgrade(&self.ordini),
+        }
     }
 }
 
@@ -352,39 +419,75 @@ pub(crate) fn apri(
 ) -> Result<Uscita, AppError> {
     let (manda_aperta, ricevi_aperta) = mpsc::channel();
     let (ordini, ricevi_ordini) = mpsc::channel::<Ordine>();
+    // Una copia per chi resta fuori dalla rete qui sotto: vedi il commento sul
+    // `catch_unwind`.
+    let sorvegliante = Arc::clone(&condiviso);
 
     std::thread::Builder::new()
         .name("rymembra-uscita".to_owned())
         .spawn(move || {
-            let veglia = Arc::new(Veglia {
-                giri: AtomicU64::new(0),
-                a_riposo: AtomicBool::new(false),
-            });
-            let anelli = Anelli {
-                campioni: anello,
-                coefficienti,
-                spettro: campioni_spettro,
-            };
-            match costruisci(anelli, &veglia, &condiviso, voluto.as_deref()) {
-                Ok((flusso, aperta)) => {
-                    let riposo_in_pausa = if aperta.bluetooth {
-                        RIPOSO_BLUETOOTH
-                    } else {
-                        RIPOSO_DOPO
-                    };
-                    if manda_aperta.send(Ok(aperta)).is_err() {
-                        return;
+            // # Perché una rete anche qui
+            //
+            // Perché questo filo, se cade, cade **in silenzio**. Il suo
+            // `JoinHandle` non lo aspetta nessuno, e con lui se ne va il flusso
+            // — il `Drop` di `cpal::Stream` chiude l'endpoint — senza che la
+            // callback d'errore dica niente: per lei non è successo niente di
+            // cui parlare. Il motore restava in piedi e sano a guardarlo, il
+            // filo della decodifica riempiva un anello che nessuno svuotava, e
+            // `perso` restava basso: il sorvegliante dei dispositivi non vedeva
+            // niente da riaprire. Silenzio, e nessuno a raccontarlo.
+            //
+            // Quel che c'è dentro è codice di terzi che parla col driver —
+            // `play`, `pause`, la costruzione del flusso — ed è da lì che un
+            // panico può arrivare. Raccolto qui, alza la bandiera del motore
+            // perso con la causa del guasto del sistema audio, che è la strada
+            // già scritta per rimettere in piedi un motore nuovo. Un ritorno
+            // normale invece — l'`Uscita` lasciata cadere — non alza niente.
+            //
+            // `AssertUnwindSafe` perché dopo un panico di quel che stava qui
+            // dentro non si guarda più niente: il flusso e gli anelli se ne
+            // vanno con l'unwind, e di fuori resta solo `Condiviso`, che sono
+            // atomiche.
+            let esito = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let veglia = Arc::new(Veglia {
+                    giri: AtomicU64::new(0),
+                    a_riposo: AtomicBool::new(false),
+                });
+                let anelli = Anelli {
+                    campioni: anello,
+                    coefficienti,
+                    spettro: campioni_spettro,
+                };
+                match costruisci(anelli, &veglia, &condiviso, voluto.as_deref()) {
+                    Ok((flusso, aperta)) => {
+                        let riposo_in_pausa = if aperta.bluetooth {
+                            RIPOSO_BLUETOOTH
+                        } else {
+                            RIPOSO_DOPO
+                        };
+                        if manda_aperta.send(Ok(aperta)).is_err() {
+                            return;
+                        }
+                        // Il flusso deve restare vivo qui: è la ragione per cui
+                        // questo filo esiste invece di terminare subito. Esce —
+                        // e il flusso con lui — quando l'`Uscita` viene
+                        // lasciata cadere.
+                        let sonno = Sonno::nuovo(riposo_in_pausa);
+                        custodisci(&flusso, &ricevi_ordini, &condiviso, &veglia, sonno);
                     }
-                    // Il flusso deve restare vivo qui: è la ragione per cui
-                    // questo filo esiste invece di terminare subito. Esce — e
-                    // il flusso con lui — quando l'`Uscita` viene lasciata
-                    // cadere.
-                    let sonno = Sonno::nuovo(riposo_in_pausa);
-                    custodisci(&flusso, &ricevi_ordini, &condiviso, &veglia, sonno);
+                    Err(err) => {
+                        let _ = manda_aperta.send(Err(err));
+                    }
                 }
-                Err(err) => {
-                    let _ = manda_aperta.send(Err(err));
-                }
+            }));
+            // Solo se nessuno l'ha già detto: il panico arriva spesso **dopo**
+            // la callback d'errore — il driver che sparisce e poi fa cadere
+            // anche chi gli parla — e la sua causa, «dispositivo non più
+            // disponibile», è più precisa del «guasto del sistema audio» che si
+            // scriverebbe da qui. Sovrascriverla manderebbe il diario e il
+            // banner a raccontare il guasto sbagliato.
+            if esito.is_err() && !sorvegliante.perso.load(Ordering::Acquire) {
+                segnala_perdita(&sorvegliante, CAUSA_GUASTO);
             }
         })
         .map_err(|err| {
@@ -419,7 +522,7 @@ pub(crate) fn apri(
         dispositivo: aperta.dispositivo,
         era_predefinito: aperta.era_predefinito,
         bluetooth: aperta.bluetooth,
-        ordini,
+        ordini: Arc::new(ordini),
     })
 }
 
@@ -703,9 +806,9 @@ fn costruisci(
                 .with_cause("nessun dispositivo di uscita".to_owned())
         })?;
 
-    let configurazione = dispositivo.default_output_config().map_err(|err| {
-        AppError::new(ErrorCode::PlaybackEngineUnavailable).with_cause(err.to_string())
-    })?;
+    let configurazione = dispositivo
+        .default_output_config()
+        .map_err(|err| errore_di_apertura(&err))?;
 
     let formato = FormatoUscita {
         frequenza: configurazione.sample_rate(),
@@ -773,9 +876,7 @@ fn costruisci(
         }
         _ => flusso_di(&dispositivo, configurazione, voce, stato, su_errore, a_f32),
     }
-    .map_err(|err| {
-        AppError::new(ErrorCode::PlaybackEngineUnavailable).with_cause(err.to_string())
-    })?;
+    .map_err(|err| errore_di_apertura(&err))?;
 
     // **Niente `play()` qui.** Il flusso resta fermo finché qualcuno non chiede
     // di suonare: vedi [`apri`] e [`Uscita::sveglia`].
@@ -1373,6 +1474,43 @@ fn svuota_anello(voce: &mut Voce, condiviso: &Condiviso) {
     // già stati contati, **prima** di questa riga: il filo della decodifica li
     // azzera dopo averla vista, quindi non restano in nessun conto.
     condiviso.svuota.store(false, Ordering::Release);
+}
+
+/// Il guasto di un'apertura del dispositivo, detto col codice che dice se
+/// riprovare.
+///
+/// # Perché due codici e non uno
+///
+/// Fino a questa versione ogni errore di `cpal` all'apertura diventava
+/// `playback.engineUnavailable`, che il catalogo dichiara `Fatal` e non
+/// ritentabile, e che la finestra traduce con «riavvia Rymembra». Per i guasti
+/// più comuni era falso. Il diario vero li mostrava tutti e due: all'avvio
+/// `0x8889000F` (`AUDCLNT_E_ENDPOINT_CREATE_FAILED`), e a metà di una
+/// riapertura automatica «Failed to get audio clock», che sotto è
+/// `AUDCLNT_E_DEVICE_INVALIDATED`. Sono endpoint **in transizione** — cuffie
+/// Bluetooth che negoziano ancora il profilo, il predefinito di Windows che
+/// cambia proprio mentre lo si apre — e un secondo dopo si aprono benissimo.
+///
+/// `cpal` porta entrambi a [`cpal::ErrorKind::DeviceNotAvailable`], anche
+/// dietro la frase di contesto che aggiunge: il tipo sopravvive al messaggio.
+/// Quel tipo, `StreamInvalidated` e `DeviceBusy` — un altro programma che ha
+/// preso l'uscita in esclusiva per un attimo — diventano `playback.deviceLost`:
+/// ritentabile, e già tradotto con la frase giusta, «Rymembra ne cerca un altro
+/// da solo». Il resto — un formato che il dispositivo rifiuta, il servizio audio
+/// di Windows spento, un errore che `cpal` non sa classificare — resta
+/// `engineUnavailable`: lì riprovare fra un secondo non cambia niente, e il
+/// consiglio di controllare la scheda è quello giusto.
+///
+/// Non tocca il catalogo, ed è voluto: `engineUnavailable` resta fatale per i
+/// guasti che lo sono davvero.
+fn errore_di_apertura(err: &cpal::Error) -> AppError {
+    let codice = match err.kind() {
+        cpal::ErrorKind::DeviceNotAvailable
+        | cpal::ErrorKind::StreamInvalidated
+        | cpal::ErrorKind::DeviceBusy => ErrorCode::PlaybackDeviceLost,
+        _ => ErrorCode::PlaybackEngineUnavailable,
+    };
+    AppError::new(codice).with_cause(err.to_string())
 }
 
 /// Quale causa di perdita è un errore del flusso, se lo è.
@@ -2081,6 +2219,72 @@ mod prove {
         assert_eq!(
             codice_errore(cpal::ErrorKind::DeviceBusy),
             Some(CAUSA_GUASTO)
+        );
+    }
+
+    #[test]
+    fn un_endpoint_in_transizione_si_riprova() {
+        use rymembra_domain::errors::ErrorCodeKind;
+
+        // I due guasti del diario vero, come li consegna `cpal`: l'endpoint
+        // che non si crea all'avvio, e l'orologio che non si ottiene a metà
+        // riapertura perché il dispositivo è stato invalidato. Tutti e due
+        // arrivano come «dispositivo non disponibile», col numero nel testo.
+        let creazione = cpal::Error::with_message(
+            cpal::ErrorKind::DeviceNotAvailable,
+            "Elemento non trovato. (0x8889000F)",
+        );
+        let orologio = cpal::Error::with_message(
+            cpal::ErrorKind::DeviceNotAvailable,
+            "Failed to get audio clock: (0x88890004)",
+        );
+        for guasto in [&creazione, &orologio] {
+            let err = errore_di_apertura(guasto);
+            assert_eq!(err.code().kind(), ErrorCodeKind::PlaybackDeviceLost);
+            assert!(err.is_retryable(), "un endpoint in transizione si riprova");
+            assert!(
+                err.cause().is_some_and(|c| c.contains("0x8889")),
+                "il numero deve restare nel diario"
+            );
+        }
+        // Anche il flusso da ricostruire e l'uscita presa in esclusiva per un
+        // attimo: sono attese, non guasti.
+        for tipo in [
+            cpal::ErrorKind::StreamInvalidated,
+            cpal::ErrorKind::DeviceBusy,
+        ] {
+            assert!(errore_di_apertura(&cpal::Error::new(tipo)).is_retryable());
+        }
+        // Un formato che il dispositivo rifiuta resta quel che era: riprovare
+        // fra un secondo non lo cambia.
+        let formato = errore_di_apertura(&cpal::Error::new(cpal::ErrorKind::UnsupportedConfig));
+        assert_eq!(
+            formato.code().kind(),
+            ErrorCodeKind::PlaybackEngineUnavailable
+        );
+        assert!(!formato.is_retryable());
+    }
+
+    #[test]
+    fn un_campanello_di_un_uscita_caduta_non_fa_niente() {
+        // Il campanello è debole: caduto il mittente forte, suonarlo deve
+        // tornare subito invece di aspettare una risposta che nessuno darà, e
+        // soprattutto non deve aver tenuto vivo il canale.
+        let (manda, ricevi) = mpsc::channel::<Ordine>();
+        let forte = Arc::new(manda);
+        let campanello = Campanello {
+            ordini: Arc::downgrade(&forte),
+        };
+        drop(forte);
+        let prima = Instant::now();
+        campanello.suona();
+        assert!(prima.elapsed() < ATTESA_RISVEGLIO, "ha aspettato il vuoto");
+        assert!(
+            matches!(
+                ricevi.recv_timeout(Duration::from_millis(10)),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            ),
+            "il campanello ha tenuto vivo il mittente"
         );
     }
 

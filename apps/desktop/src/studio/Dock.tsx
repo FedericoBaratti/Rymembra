@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState, type PointerEvent as EventoPuntatore } fr
 
 import type { Avviso, Problema } from "../ipc";
 import { numero } from "../formato";
-import { t } from "../lingue";
+import { t, tSe } from "../lingue";
 import { Icona } from "../parti/Icone";
 import { Segmentato } from "../parti/Segmentato";
 import { useStudio } from "./contesto";
@@ -184,7 +184,12 @@ function Problemi() {
           <ul className="elenco-problemi">
             {esito.avvisi.map((a, i) => (
               <li key={`${a.path}:${i}`} className="problema" data-esito="attenzione">
-                <span className="tipo-avviso">{t(`studio3.warning.${a.kind}`)}</span>
+                <span className="tipo-avviso">
+                  {/* `tSe`: il genere dell'avviso lo sceglie il nucleo, e uno
+                      nato dopo questa finestra si legge col suo nome invece che
+                      con la chiave nuda. */}
+                  {tSe(`studio3.warning.${a.kind}`, a.kind)}
+                </span>
                 <div className="testo-problema">
                   <p>{a.message}</p>
                   <code>{a.path || "—"}</code>

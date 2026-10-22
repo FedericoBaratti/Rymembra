@@ -53,6 +53,7 @@ import { Rapporto } from "../parti/Rapporto";
 import { nomeGenere, nomeLicenza, numero } from "../formato";
 import { t } from "../lingue";
 import { Trans } from "../lingue/Trans";
+import { StatoVuoto } from "./Libreria";
 
 /** Quanti brani si prendono insieme: `procura::FILI`. Si dice una volta sola. */
 const FILI = 3;
@@ -501,9 +502,14 @@ function DaComprareSezione({ quanti }: { quanti: number }) {
                            chiamano alla stessa maniera: l'etichetta dice anche
                            che cosa si va a cercare. */
                         aria-label={t("buy.searchOn", { cosa, negozio })}
-                        onClick={() =>
-                          void ipc.cercaDoveComprare(negozio, cosa)
-                        }
+                        // Nell'avviso della sezione, che è il suo canale: un
+                        // browser che non si apre non deve sembrare un clic a
+                        // vuoto.
+                        onClick={() => {
+                          ipc
+                            .cercaDoveComprare(negozio, cosa)
+                            .catch((e: unknown) => setErrore(testoErrore(e)));
+                        }}
                       >
                         {negozio}
                       </button>
@@ -571,12 +577,10 @@ export function SchermataImportazioni({
       )}
 
       {elenco.length === 0 ? (
-        <div className="vuoto empty-state">
-          <span className="empty-icon" aria-hidden="true">
-            <Icona nome="i-import" dim={30} />
-          </span>
-          <h2>{t("imports.empty.title")}</h2>
-          <p>
+        <StatoVuoto
+          icona="i-import"
+          titolo={t("imports.empty.title")}
+          testo={
             <Trans
               k="imports.empty.p1"
               v={{
@@ -584,12 +588,14 @@ export function SchermataImportazioni({
                 b: <span className="mono">audius.co</span>,
               }}
             />
-          </p>
-          <p className="nota">{t("imports.empty.p2")}</p>
-          <button type="button" className="bottone" onClick={onIncollaLink}>
-            {t("imports.pasteLink")}
-          </button>
-        </div>
+          }
+          nota={t("imports.empty.p2")}
+          azione={{
+            etichetta: t("imports.pasteLink"),
+            fai: onIncollaLink,
+            secondaria: true,
+          }}
+        />
       ) : (
         <>
           {totale > 0 && (

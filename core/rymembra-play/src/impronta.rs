@@ -1443,6 +1443,7 @@ mod prove {
             durata_ms: dichiarati_ms,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         }
     }
 

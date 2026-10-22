@@ -95,7 +95,7 @@ export interface RigaAlbero {
   /**
    * Quel che si scrive: l'ultimo segmento, o il percorso intero se è una cima.
    * Per una foglia è il titolo del brano, o il nome del file se il titolo
-   * manca.
+   * manca — o, per un brano d'immagine CD, il numero e il disco.
    */
   nome: string;
   /** Uno per i nodi di primo livello: è già `aria-level`, senza conversioni. */
@@ -191,17 +191,86 @@ export function chiaveRiga(riga: RigaAlbero): string {
 const COLLAZIONE = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 /**
+ * Un brano di un'immagine CD: il `.cue` da cui viene e il suo numero.
+ *
+ * Quei brani non hanno un file loro: stanno tutti dentro un'immagine (un FLAC
+ * o un APE lungo quanto il disco), e il nucleo dà a ciascuno il percorso del
+ * `.cue` seguito da `|` e dal numero a due cifre — `…\Album.cue|03`. Il `|` nei
+ * nomi di file di Windows non può stare, quindi il percorso resta unico e la
+ * chiave della riga non si scontra con niente.
+ *
+ * La stessa regola di `cue.rs::brano_d_immagine` nel nucleo: prima del `|` un
+ * nome che finisce in `.cue`, dopo esattamente due cifre. `null` per tutto il
+ * resto, cioè per ogni file vero.
+ */
+export function branoDImmagine(percorso: string): { cue: string; numero: number } | null {
+  const taglio = percorso.lastIndexOf("|");
+  if (taglio < 0) return null;
+  const cue = percorso.slice(0, taglio);
+  const cifre = percorso.slice(taglio + 1);
+  if (!/^\d{2}$/.test(cifre) || !/\.cue$/i.test(cue)) return null;
+  return { cue, numero: Number(cifre) };
+}
+
+/** L'ultimo segmento di un percorso: il nome del file, senza la cartella. */
+function ultimoSegmento(percorso: string): string {
+  const segmenti = percorso.split(/[\\/]+/);
+  return segmenti[segmenti.length - 1] ?? percorso;
+}
+
+/**
  * Le foglie in ordine di nome di file, letto come lo legge chi guarda.
  *
  * A parità di nome — «Brano.mp3» e «brano.mp3» per la collazione sono uguali —
  * decide il percorso, così l'ordine non dipende da come sono arrivate.
+ *
+ * I brani di un'immagine CD si ordinano per il nome del loro `.cue` e poi per
+ * numero, letti dal **percorso** e non da `nome`: quel che il nucleo scrive in
+ * `nome` per una riga che un file suo non ce l'ha non è un nome di file, e
+ * l'ordine del disco è quello dei numeri. Così i brani dello stesso `.cue`
+ * stanno vicini e in fila, e un doppio clic suona il disco da lì in avanti.
  */
 export function ordinaFile(file: readonly FileCartella[]): FileCartella[] {
-  return [...file].sort(
-    (a, b) =>
-      COLLAZIONE.compare(a.nome, b.nome) ||
-      (a.percorso < b.percorso ? -1 : a.percorso > b.percorso ? 1 : 0),
-  );
+  return file
+    .map((f) => {
+      const brano = branoDImmagine(f.percorso);
+      return brano === null
+        ? { f, nome: f.nome, numero: 0 }
+        : { f, nome: ultimoSegmento(brano.cue), numero: brano.numero };
+    })
+    .sort(
+      (a, b) =>
+        COLLAZIONE.compare(a.nome, b.nome) ||
+        a.numero - b.numero ||
+        (a.f.percorso < b.f.percorso ? -1 : a.f.percorso > b.f.percorso ? 1 : 0),
+    )
+    .map(({ f }) => f);
+}
+
+/**
+ * Come si chiama una foglia d'immagine che un titolo non ce l'ha: il numero e
+ * il nome del disco, «Traccia 03 · Album». Arriva da fuori, come `t` in
+ * `menuBrani.ts`, perché questo modulo non tocca le lingue.
+ */
+export type NomeSenzaTitolo = (numero: string, album: string) => string;
+
+/** Senza lingue: «03 · Album». Serve alle prove e allo Studio. */
+const NUMERO_E_ALBUM: NomeSenzaTitolo = (numero, album) => `${numero} · ${album}`;
+
+/**
+ * Quel che la riga di un file scrive.
+ *
+ * Il titolo se c'è. Un titolo vuoto è un file senza tag: il nome del file è
+ * l'unica cosa che lo distingue dai suoi vicini — tranne per un brano
+ * d'immagine, dove il «nome» sarebbe `Album.cue|03`, che non è un nome di
+ * niente: lì il numero e il nome del `.cue` senza estensione.
+ */
+function nomeDellaFoglia(f: FileCartella, senzaTitolo: NomeSenzaTitolo): string {
+  if (f.titolo.trim().length > 0) return f.titolo;
+  const brano = branoDImmagine(f.percorso);
+  if (brano === null) return f.nome;
+  const album = ultimoSegmento(brano.cue).replace(/\.cue$/i, "");
+  return senzaTitolo(String(brano.numero).padStart(2, "0"), album);
 }
 
 /** Una voce di un elenco di fratelli: una cartella o un file. */
@@ -230,8 +299,14 @@ function vociDi(stato: StatoAlbero, k: string): readonly Voce[] {
  * sotto di sé, e va bene così: la riga è già disegnata con `aria-expanded` a
  * `true`, le figlie compaiono quando arrivano, e nel frattempo non c'è nessuno
  * stato intermedio da inventare.
+ *
+ * `senzaTitolo` scrive i brani d'immagine CD che un titolo non ce l'hanno:
+ * vedi [`NomeSenzaTitolo`].
  */
-export function appiattisci(stato: StatoAlbero): RigaAlbero[] {
+export function appiattisci(
+  stato: StatoAlbero,
+  senzaTitolo: NomeSenzaTitolo = NUMERO_E_ALBUM,
+): RigaAlbero[] {
   const aperti = new Set(stato.aperti);
   const righe: RigaAlbero[] = [];
   const pila: {
@@ -256,9 +331,7 @@ export function appiattisci(stato: StatoAlbero): RigaAlbero[] {
       const f = voce.file;
       righe.push({
         percorso: f.percorso,
-        // Un titolo vuoto è un file senza tag: il nome del file è l'unica cosa
-        // che lo distingue dai suoi vicini.
-        nome: f.titolo.trim().length > 0 ? f.titolo : f.nome,
+        nome: nomeDellaFoglia(f, senzaTitolo),
         livello: cima.livello,
         brani: 1,
         aperto: false,

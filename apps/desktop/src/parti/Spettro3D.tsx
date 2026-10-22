@@ -33,13 +33,28 @@
  * modo in cui si guarda: gli ultimi due decimi di secondo si leggono barra per
  * barra, mezzo minuto fa serve la forma.
  *
- * La cascata gira nel **gestore dell'evento**, non nel ciclo di disegno. È una
- * correzione, non un dettaglio: quando stava di là, «è arrivata una fila» era un
- * booleano invece di una coda, quindi su uno schermo a trenta hertz una fila su
- * tante spariva senza mai entrare nella memoria — e con il ciclo addormentato
- * non ne entrava nessuna. Adesso il passato è esatto e indipendente dal numero
- * di fotogrammi al secondo, che è la sola cosa che «mezzo minuto di memoria»
- * poteva promettere.
+ * Chi spinge le file nella cascata è l'**orologio**, nel ciclo di disegno — ma
+ * da una **coda**, non da un booleano, ed è la differenza con l'errore di una
+ * volta. Quando la cascata stava nel ciclo con un booleano, «è arrivata una
+ * fila» si perdeva se ne arrivavano due fra un fotogramma e l'altro: su uno
+ * schermo a trenta hertz una fila su tante spariva senza mai entrare nella
+ * memoria, e con il ciclo addormentato non ne entrava nessuna. La correzione di
+ * allora fu spostarla nel gestore dell'evento; quella di adesso è la coda. Ogni
+ * fila arrivata ci entra, l'orologio le prende tutte e in ordine, e quando il
+ * ciclo si ferma — sonno, finestra nascosta, contesto perso — la coda si versa
+ * nella cascata e le file tornano a entrare dirette dal gestore. Il passato
+ * resta esatto e indipendente dal numero di fotogrammi al secondo.
+ *
+ * # L'orologio, e perché le file non entrano quando arrivano
+ *
+ * Perché il ritmo d'arrivo non è il ritmo della musica: gli eventi passano dal
+ * filo della finestra di Tauri, e arrivano quando quel filo è libero. Fino alla
+ * 3.0.1 la scena scorreva ad arrivi, e ogni evento in anticipo o in ritardo di
+ * qualche millesimo diventava un saltino o una sosta — il banco del 22-10-2026
+ * lo misurava fra 0,89 e 1,10 del dovuto, fotogramma per fotogramma — e uno
+ * stallo del filo diventava una raffica, cioè un salto di più file. Adesso la
+ * scena disegna un filo nel passato con un orologio suo: `orologioSpettro.ts`
+ * spiega come, e che cosa costa (qualche millesimo).
  *
  * # Perché la profondità è un logaritmo
  *
@@ -88,8 +103,14 @@
  * richiederebbero di ricostruire le risorse invece di scrivere una uniform;
  * l'ottavo basso `length >> 3`, che è una regola di correttezza sulle frequenze
  * e non un gusto; la direzione della luce, tre numeri per cui non esiste un
- * controllo che calzi e di cui uno sbagliato dà una scena nera; e l'altezza
- * minima `0.004`, che è la garanzia «c'è, e adesso è a zero».
+ * controllo che calzi e di cui uno sbagliato dà una scena nera; l'altezza
+ * minima `0.004`, che è la garanzia «c'è, e adesso è a zero»; e le soglie **in
+ * pixel** con cui lo shader chiude le fessure sotto il pixel e spegne il
+ * contrasto delle barre più strette di quattro (vedi `fessuraPx` e
+ * `vDettaglio`), che sono regole su quel che uno schermo sa mostrare, non gusti
+ * — una skin che le abbassasse riporterebbe la grana, non uno stile. Lo stesso
+ * vale per la sfumatura verticale che tiene leggibile il testo, che era una
+ * maschera nel foglio e adesso sta nel frammento con gli stessi tre stop.
  *
  * # Quel che decide la macchina, e non la skin
  *
@@ -244,6 +265,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ipc, type BandeSpettro, type QualitaSpettro } from "../ipc";
 import { useAscolto } from "../pagine";
+import { OrologioSpettro } from "./orologioSpettro";
 
 /** Ogni quanto arriva una fila, in millisecondi. È `PASSO_SPETTRO` del nucleo. */
 const PASSO_MS = 33;
@@ -739,6 +761,7 @@ uniform float frazione;
 uniform float prof;
 uniform float larghezza;
 uniform float spessore;
+uniform float mezzaTela;
 uniform float alta;
 uniform float specchio;
 uniform float foschia;
@@ -749,6 +772,7 @@ out float vLivello;
 out float vSu;
 out float vLuce;
 out float vAlfa;
+out float vDettaglio;
 
 // Dove sta un'età, in profondità. L'età è in eventi e non in secondi, perché è
 // in eventi che la cascata conta.
@@ -831,8 +855,35 @@ void main() {
   float passoX = larghezza / float(colonne);
   float x = (float(colonna) + 0.5) * passoX - larghezza * 0.5;
 
+  // La fessura fra due barre, in pixel, e quanto se ne lascia vedere.
+  //
+  // Una fessura più stretta di un pixel non si può disegnare: la scheda la
+  // campiona a caso, una volta sì e una no, e con la camera che oscilla il
+  // caso cambia a ogni fotogramma. A 512 barre su uno schermo da 1920 erano
+  // fessure da 0,85 pixel davanti e da 0,2 in fondo — un codice a barre che
+  // sfarfallava su tutta la scena, ed era la grana che si vedeva. Quindi la
+  // fessura resta com'è dove si vede (sopra un pixel e mezzo), si chiude dove
+  // non si vede (sotto mezzo pixel), e sfuma in mezzo: le barre restano barre
+  // dove sono abbastanza larghe da esserlo, e diventano un terreno continuo
+  // dove non lo sono.
+  //
+  // Il conto si fa sul **centro** della scatola, con valori che sono gli stessi
+  // per tutti i suoi vertici: calcolato vertice per vertice, la faccia davanti
+  // e quella dietro avrebbero due larghezze diverse, cioè una scatola storta e
+  // una crepa fra una fila e l'altra. Quanti pixel fa un'unità di mondo è la
+  // derivata della proiezione lungo x — camera[0][0] — divisa per la
+  // profondità del centro e riportata sulla mezza tela.
+  float wCentro = (camera * vec4(x, 0.0, (zFronte + zFondo) * 0.5, 1.0)).w;
+  float passoPx = passoX * camera[0][0] * mezzaTela / max(wCentro, 0.001);
+  float fessuraPx = passoPx * (1.0 - spessore);
+  float pieno = mix(1.0, spessore, smoothstep(0.75, 1.5, fessuraPx));
+  // E quanto la barra è ancora leggibile come una scatola, per la luce qui
+  // sotto: piena sopra i quattro pixel, al minimo sotto il pixel e mezzo.
+  float dettaglio = smoothstep(1.5, 4.0, passoPx);
+  vDettaglio = dettaglio;
+
   vec3 locale = posizione;
-  locale.x *= passoX * spessore;
+  locale.x *= passoX * pieno;
   // Esatta, senza il filo di sovrapposizione che c'era prima. Quel quattro per
   // cento serviva a nascondere il buco alla giunzione — ne copriva un ventesimo,
   // e in cambio faceva compenetrare **tutte** le file vicine. Due file alla
@@ -860,6 +911,23 @@ void main() {
   vec3 luce = normalize(vec3(-0.35, 0.85, 0.4));
   vec3 n = vec3(normale.x, normale.y * specchio, normale.z);
   vLuce = ambiente + (1.0 - ambiente) * max(dot(n, luce), 0.0);
+  // La luce di una barra troppo stretta per essere una scatola.
+  //
+  // Una barra larga due pixel è un pixel di cima, chiaro, e un pixel di
+  // fianco, scuro; cento barre di altezze diverse una accanto all'altra sono
+  // una scacchiera di puntini che con la camera che oscilla si rimescola a ogni
+  // fotogramma. Era la grana del fondo della scena a 512 barre, e non era
+  // aliasing di bordo — più campioni non l'avrebbero tolta — ma contrasto
+  // alla scala del pixel. Dove una barra è più stretta di quattro pixel, la
+  // luce delle sue facce si avvicina alla media di quelle che si vedono (cima
+  // e fronte, sei decimi della diretta più l'ambiente), fino a tenerne meno di
+  // metà del contrasto sotto il pixel e mezzo. È la prospettiva aerea che la
+  // foschia già applica all'alfa, applicata al contrasto: il rilievo resta
+  // nell'altezza e nel colore che sale col livello, sparisce il puntinato.
+  // Davanti, e con poche barre, vDettaglio vale uno e la luce è quella di
+  // sempre.
+  float lucemedia = ambiente + (1.0 - ambiente) * 0.6;
+  vLuce = mix(lucemedia, vLuce, mix(0.45, 1.0, dettaglio));
 
   // Quanto è lontana la fila, da zero a uno — e si misura in profondità, non in
   // file: le file sono spaziate uguali per costruzione, e quel che deve
@@ -927,12 +995,14 @@ in float vLivello;
 in float vSu;
 in float vLuce;
 in float vAlfa;
+in float vDettaglio;
 
 uniform vec3 primario;
 uniform vec3 secondario;
 uniform vec3 alone;
 uniform float velo;
 uniform float cresta;
+uniform float altezzaTela;
 
 out vec4 fuori;
 
@@ -944,10 +1014,25 @@ void main() {
   vec3 colore = mix(secondario, primario, clamp(vLivello * 1.3, 0.0, 1.0));
   // La cima si accende con il colore della cresta: è il bagliore che una
   // sfocatura avrebbe dato, pagato zero.
-  colore = mix(colore, alone, smoothstep(0.72, 1.0, vSu) * cresta);
+  // La cresta si spegne insieme al dettaglio: sulla cima di una barra larga
+  // due pixel è un puntino chiaro in più nella scacchiera (vedi vDettaglio
+  // nel vertice).
+  colore = mix(colore, alone, smoothstep(0.72, 1.0, vSu) * cresta * vDettaglio);
   colore *= vLuce;
 
-  float alfa = vAlfa * velo;
+  // La sfumatura verticale che tiene leggibile il testo sopra la scena: zero
+  // in cima, un terzo al sedici per cento dell'altezza, piena dal quarantadue
+  // in giù. Era una mask-image sulla tela, e costava al compositore una
+  // passata in più su tutto lo schermo a ogni fotogramma — misurata, cinque
+  // punti di GPU su quarantotto — per moltiplicare un'alfa che qui si
+  // moltiplica gratis. Gli stop sono gli stessi, ed è la stessa retta a tratti
+  // che il CSS interpolava. gl_FragCoord parte dal basso, la sfumatura
+  // dall'alto: da qui il complemento.
+  float dallAlto = 1.0 - gl_FragCoord.y / altezzaTela;
+  float sfumatura = dallAlto < 0.16
+    ? 0.35 * dallAlto / 0.16
+    : min(1.0, 0.35 + 0.65 * (dallAlto - 0.16) / 0.26);
+  float alfa = vAlfa * velo * clamp(sfumatura, 0.0, 1.0);
   // Niente discard. La riga che stava qui era: if (alfa <= 0.004) discard;
   //
   // Con la miscelazione spenta e il colore premoltiplicato, un frammento sotto
@@ -1132,6 +1217,8 @@ interface Uniformi {
   prof: WebGLUniformLocation | null;
   larghezza: WebGLUniformLocation | null;
   spessore: WebGLUniformLocation | null;
+  /** Mezza larghezza della tela, in pixel: serve alle fessure. */
+  mezzaTela: WebGLUniformLocation | null;
   alta: WebGLUniformLocation | null;
   foschia: WebGLUniformLocation | null;
   ambiente: WebGLUniformLocation | null;
@@ -1140,6 +1227,8 @@ interface Uniformi {
   secondario: WebGLUniformLocation | null;
   alone: WebGLUniformLocation | null;
   velo: WebGLUniformLocation | null;
+  /** L'altezza della tela, in pixel: serve alla sfumatura verticale. */
+  altezzaTela: WebGLUniformLocation | null;
   cresta: WebGLUniformLocation | null;
 }
 
@@ -1434,6 +1523,7 @@ function creaStabili(canvas: HTMLCanvasElement): RisorseStabili | null {
     prof: dove("prof"),
     larghezza: dove("larghezza"),
     spessore: dove("spessore"),
+    mezzaTela: dove("mezzaTela"),
     alta: dove("alta"),
     foschia: dove("foschia"),
     ambiente: dove("ambiente"),
@@ -1442,6 +1532,7 @@ function creaStabili(canvas: HTMLCanvasElement): RisorseStabili | null {
     secondario: dove("secondario"),
     alone: dove("alone"),
     velo: dove("velo"),
+    altezzaTela: dove("altezzaTela"),
     cresta: dove("cresta"),
   };
   // L'unica uniform davvero una-tantum rimasta: la texture sta nell'unità zero,
@@ -1781,6 +1872,62 @@ function rileggi(s: RisorseStabili, barre: number): void {
   }
 }
 
+/**
+ * Quante file la coda tiene al più.
+ *
+ * Sedici: l'orologio ne scarta oltre il suo tetto — dodici più il margine — e
+ * quel che resta è la rete per un ciclo che non gira affatto mentre gli eventi
+ * arrivano, cioè una finestra coperta che il browser smette di ridisegnare.
+ */
+const CAPIENZA = 16;
+
+/**
+ * Le file arrivate che aspettano il loro momento.
+ *
+ * Un anello di file preallocate, larghe quanto le barre: nessuna allocazione
+ * per evento, per la ragione che questo file ripete ovunque. Accanto a ogni
+ * fila, il suo colpo — l'energia dei bassi — perché la camera deve spingersi
+ * quando la fila **entra**, non quando arriva: altrimenti precederebbe la fila
+ * davanti di tutta la profondità della coda.
+ */
+interface Coda {
+  file: Uint8Array[];
+  bassi: Float32Array;
+  /** Il posto della più vecchia. */
+  testa: number;
+  lunghezza: number;
+  /**
+   * L'orologio la sta svuotando: il ciclo gira, e il moto non è ridotto.
+   *
+   * Spenta, le file non ci entrano: vanno dritte nella cascata. È lo stato di
+   * quando la scena dorme, è nascosta o ha perso il contesto — e in tutti e tre
+   * i casi chi la spegne prima la **versa**, così niente resta indietro e
+   * niente arriva fuori ordine.
+   */
+  attiva: boolean;
+}
+
+/** Una coda vuota e spenta, per file larghe `barre`. */
+function nuovaCoda(barre: number): Coda {
+  return {
+    file: Array.from({ length: CAPIENZA }, () => new Uint8Array(barre)),
+    bassi: new Float32Array(CAPIENZA),
+    testa: 0,
+    lunghezza: 0,
+    attiva: false,
+  };
+}
+
+/** Toglie la fila più vecchia e la dà a `entra`. */
+function esce(c: Coda, entra: (fila: Uint8Array, bassi: number) => void): void {
+  if (c.lunghezza <= 0) return;
+  const posto = c.testa;
+  const fila = c.file[posto];
+  c.testa = (posto + 1) % CAPIENZA;
+  c.lunghezza -= 1;
+  if (fila) entra(fila, c.bassi[posto] ?? 0);
+}
+
 /** In che stato è la scena. */
 type Stato = "vivo" | "assopito" | "nascosto" | "perso";
 
@@ -1832,27 +1979,18 @@ export function Spettro3D({
   const stato = useRef<Stato>("vivo");
   /** Il risveglio, che lo monta l'effetto di montaggio: vedi `sveglia`. */
   const sveglia = useRef<() => void>(() => {});
-  /** L'ultima fila, in byte, pronta per la texture. */
+  /** L'ultima fila, in byte, quando entra nella cascata senza passare dalla coda. */
   const arrivo = useRef<Uint8Array>(new Uint8Array(0));
   /** Gli stessi livelli in virgola mobile: è qui che vive lo smorzamento. */
   const livelli = useRef<Float32Array>(new Float32Array(0));
-  /** Quando è arrivata l'ultima fila, per far scorrere le file fra un evento e l'altro. */
-  const quando = useRef(0);
+  /** Le file arrivate che aspettano il loro momento: vedi `Coda`. */
+  const coda = useRef<Coda>(nuovaCoda(0));
   /**
-   * Quanto passa fra un evento e l'altro, misurato.
-   *
-   * Non `PASSO_MS`, che è quanto il filo di là **dorme**: il periodo vero è quel
-   * sonno più il lavoro, quindi dividere per la costante fa saturare la frazione
-   * un pelo prima di ogni fila e poi ripartire da zero — un micro-tremolio a
-   * trenta hertz che si vede e non si sa dire.
-   *
-   * Adesso serve a una seconda cosa, ed è quella che rende corretto lo
-   * smorzamento delle barre: il coefficiente si ricava da questo intervallo, non
-   * da una costante. Un filtro con `α = 1 − exp(−Δt/τ)` è indipendente dalla
-   * cadenza **per costruzione** — se un giorno il nucleo mandasse venti eventi
-   * al secondo invece di trenta, le barre scenderebbero nello stesso tempo.
+   * L'orologio della scena: quando una fila entra, e quanto è cresciuta quella
+   * davanti. Vedi `orologioSpettro.ts`, che è dove sta il perché.
    */
-  const intervallo = useRef(PASSO_MS);
+  const orologio = useRef<OrologioSpettro | null>(null);
+  orologio.current ??= new OrologioSpettro(PASSO_MS);
   /** Da quanti eventi di fila non arriva niente che non sia silenzio. */
   const silenzio = useRef(0);
   /**
@@ -1954,6 +2092,48 @@ export function Spettro3D({
   }, []);
 
   /**
+   * Una fila entra nella cascata, davanti: la texture, la fase, il colpo.
+   *
+   * Due chiamanti e una strada sola: l'orologio, che prende le file dalla coda
+   * quando il **suo** tempo lo dice, e `arrivata`, quando il ciclo non gira e
+   * non c'è un orologio a svuotarla.
+   *
+   * Stabile per sempre, come `arrivata`: tutto quel che tocca sta dietro un
+   * riferimento.
+   */
+  const entra = useCallback((fila: Uint8Array, bassi: number) => {
+    const r = risoluzione.current;
+    if (!r || r.barre !== fila.length) return;
+    const s = stabili.current;
+    if (s && r.texture) s.gl.bindTexture(s.gl.TEXTURE_2D, r.texture);
+    spingi(s, r, 0, fila);
+    // La fase resta dentro un giro completo della cascata: `2^piani` è il
+    // minimo comune multiplo di tutti i passi, quindi il resto per uno
+    // qualunque di essi non cambia, e il numero non cresce per sempre.
+    r.fase = (r.fase + 1) % (1 << r.piani);
+    // Sale di scatto e scende piano, come le barre: un colpo di grancassa deve
+    // spingere la camera, non farla vibrare.
+    colpo.current =
+      bassi > colpo.current
+        ? bassi
+        : colpo.current + (bassi - colpo.current) * 0.08;
+  }, []);
+
+  /**
+   * Versa la coda nella cascata, in ordine, e ferma l'orologio.
+   *
+   * La chiama chiunque fermi il ciclo — il sonno, la finestra nascosta, il
+   * contesto perso, il moto ridotto — **prima** di fermarlo: da lì in poi le
+   * file entrano dirette, e una fila rimasta in coda arriverebbe dopo di loro.
+   */
+  const versa = useCallback(() => {
+    const c = coda.current;
+    while (c.lunghezza > 0) esce(c, entra);
+    c.attiva = false;
+    orologio.current?.azzera();
+  }, [entra]);
+
+  /**
    * Cosa succede quando arriva una fila, qualunque cosa l'abbia mandata.
    *
    * Sta in una funzione stabile e non dentro l'ascolto perché **ha due
@@ -1972,103 +2152,110 @@ export function Spettro3D({
    * sta dietro un riferimento. Se non lo fosse, l'effetto della sorgente
    * sintetica si rifarebbe a ogni disegno di chi sta sopra.
    */
-  const arrivata = useCallback((fini: ArrayLike<number>) => {
-    // Con il contesto perso le manopole non ci sono: si smorza con i valori di
-    // serie per il mezzo secondo che ci mette a tornare. È l'unico posto in cui
-    // il ripiego serve davvero.
-    const m = stabili.current?.manopole ?? SERIE;
+  const arrivata = useCallback(
+    (fini: ArrayLike<number>) => {
+      // Con il contesto perso le manopole non ci sono: si smorza con i valori di
+      // serie per il mezzo secondo che ci mette a tornare. È l'unico posto in cui
+      // il ripiego serve davvero.
+      const m = stabili.current?.manopole ?? SERIE;
 
-    // Due vettori riusati e non due nuovi: trenta allocazioni al secondo da
-    // mille byte sono trenta occasioni al secondo perché il raccoglitore fermi
-    // il filo che disegna. Cambiando risoluzione si rifanno, ed è anche il modo
-    // in cui la memoria dello smorzamento si azzera insieme alle barre.
-    if (livelli.current.length !== fini.length) {
-      livelli.current = new Float32Array(fini.length);
-      arrivo.current = new Uint8Array(fini.length);
-    }
-    const smorzati = livelli.current;
-    const byte = arrivo.current;
+      // Due vettori riusati e non due nuovi: trenta allocazioni al secondo da
+      // mille byte sono trenta occasioni al secondo perché il raccoglitore fermi
+      // il filo che disegna. Cambiando risoluzione si rifanno, ed è anche il modo
+      // in cui la memoria dello smorzamento si azzera insieme alle barre — e la
+      // coda, le cui file sono larghe quanto le barre di prima e non entrerebbero
+      // più da nessuna parte.
+      if (livelli.current.length !== fini.length) {
+        livelli.current = new Float32Array(fini.length);
+        arrivo.current = new Uint8Array(fini.length);
+        const attiva = coda.current.attiva;
+        coda.current = nuovaCoda(fini.length);
+        coda.current.attiva = attiva;
+        orologio.current?.azzera();
+      }
+      const smorzati = livelli.current;
+      const byte = arrivo.current;
 
-    const adesso = performance.now();
-    const passato = adesso - quando.current;
-    // La media si muove solo su ritardi credibili: il primo evento e quelli
-    // dopo una pausa arrivano dopo un'eternità, e la porterebbero a un numero
-    // che non descrive niente.
-    if (
-      quando.current > 0 &&
-      passato > PASSO_MS * 0.4 &&
-      passato < PASSO_MS * 4
-    ) {
-      intervallo.current += (passato - intervallo.current) * 0.1;
-    }
-    quando.current = adesso;
+      // I due coefficienti dello smorzamento, sul tempo **della musica**: una fila
+      // è `PASSO_MS` di suono, qualunque sia l'istante in cui è arrivata. Fino
+      // alla 3.0.1 il passo era l'intervallo d'arrivo misurato, che è il ritmo
+      // del filo della finestra e non quello della canzone; adesso che a
+      // decidere quando una fila si vede è l'orologio, l'arrivo non deve più
+      // decidere niente. Un filtro con `α = 1 − exp(−Δt/τ)` resta indipendente
+      // dalla cadenza per costruzione. A τ zero il filtro è istantaneo: è quel
+      // che un autore si aspetta scrivendo zero, e senza questa guardia sarebbe
+      // una divisione per zero.
+      const salita = m.salita > 0 ? 1 - Math.exp(-PASSO_MS / m.salita) : 1;
+      const discesa = m.discesa > 0 ? 1 - Math.exp(-PASSO_MS / m.discesa) : 1;
+      // Il fondo scala rimappato. Il byte dice sempre la stessa cosa — è la
+      // potenza fra −70 dB e il fondo scala, e quello è il formato del filo — e
+      // qui si riporta su un fondo più alto: da `v` si ricava `dB = 70·(v−1)`, e
+      // `v' = (dB − F) / (−F)`. Con `F = −70` i due numeri qui sotto valgono uno e
+      // zero, cioè l'identità esatta: alzare il fondo non è una correzione al
+      // valore di serie, è una scelta che parte da dove il valore di serie
+      // finisce.
+      const scala = 70 / -m.fondo;
+      const scostamento = (-70 - m.fondo) / -m.fondo;
 
-    // I due coefficienti dello smorzamento, ricavati dal tempo vero. A τ zero il
-    // filtro è istantaneo: è quel che un autore si aspetta scrivendo zero, e
-    // senza questa guardia sarebbe una divisione per zero.
-    const dt = intervallo.current;
-    const salita = m.salita > 0 ? 1 - Math.exp(-dt / m.salita) : 1;
-    const discesa = m.discesa > 0 ? 1 - Math.exp(-dt / m.discesa) : 1;
-    // Il fondo scala rimappato. Il byte dice sempre la stessa cosa — è la
-    // potenza fra −70 dB e il fondo scala, e quello è il formato del filo — e
-    // qui si riporta su un fondo più alto: da `v` si ricava `dB = 70·(v−1)`, e
-    // `v' = (dB − F) / (−F)`. Con `F = −70` i due numeri qui sotto valgono uno e
-    // zero, cioè l'identità esatta: alzare il fondo non è una correzione al
-    // valore di serie, è una scelta che parte da dove il valore di serie
-    // finisce.
-    const scala = 70 / -m.fondo;
-    const scostamento = (-70 - m.fondo) / -m.fondo;
+      let massimo = 0;
+      for (let i = 0; i < fini.length; i += 1) {
+        const grezzo = fini[i] ?? 0;
+        if (grezzo > massimo) massimo = grezzo;
+        const voluto = Math.min(
+          1,
+          Math.max(0, (grezzo / 255) * scala + scostamento),
+        );
+        const prima = smorzati[i] ?? 0;
+        const dopo = prima + (voluto - prima) * (voluto > prima ? salita : discesa);
+        smorzati[i] = dopo;
+        byte[i] = Math.round(dopo * 255);
+      }
 
-    let massimo = 0;
-    for (let i = 0; i < fini.length; i += 1) {
-      const grezzo = fini[i] ?? 0;
-      if (grezzo > massimo) massimo = grezzo;
-      const voluto = Math.min(
-        1,
-        Math.max(0, (grezzo / 255) * scala + scostamento),
-      );
-      const prima = smorzati[i] ?? 0;
-      const dopo = prima + (voluto - prima) * (voluto > prima ? salita : discesa);
-      smorzati[i] = dopo;
-      byte[i] = Math.round(dopo * 255);
-    }
+      silenzio.current = massimo > FRUSCIO ? 0 : silenzio.current + 1;
+      // Il cinturino. Prima di ogni altro controllo, e senza condizioni oltre a
+      // «c'è del suono»: è quel che impedisce il difetto peggiore possibile qui
+      // dentro, una scena nera con la musica che suona perché una macchina a
+      // stati si è incastrata da qualche parte.
+      if (massimo > FRUSCIO) sveglia.current();
 
-    silenzio.current = massimo > FRUSCIO ? 0 : silenzio.current + 1;
-    // Il cinturino. Prima di ogni altro controllo, e senza condizioni oltre a
-    // «c'è del suono»: è quel che impedisce il difetto peggiore possibile qui
-    // dentro, una scena nera con la musica che suona perché una macchina a
-    // stati si è incastrata da qualche parte.
-    if (massimo > FRUSCIO) sveglia.current();
+      // Fra il cambio di risoluzione e la prima fila della misura nuova passano
+      // trenta millesimi: in mezzo arriva una fila della lunghezza di prima, e
+      // scriverla in una texture larga un'altra cosa vorrebbe dire disegnare una
+      // riga di rumore.
+      const r = risoluzione.current;
+      if (!r || r.barre !== fini.length) return;
 
-    // La cascata. Fra il cambio di risoluzione e la prima fila della misura
-    // nuova passano trenta millesimi: in mezzo arriva una fila della lunghezza
-    // di prima, e scriverla in una texture larga un'altra cosa vorrebbe dire
-    // disegnare una riga di rumore.
-    const r = risoluzione.current;
-    if (!r || r.barre !== fini.length) return;
-    const s = stabili.current;
-    if (s && r.texture) s.gl.bindTexture(s.gl.TEXTURE_2D, r.texture);
-    spingi(s, r, 0, byte);
-    // La fase resta dentro un giro completo della cascata: `2^piani` è il
-    // minimo comune multiplo di tutti i passi, quindi il resto per uno
-    // qualunque di essi non cambia, e il numero non cresce per sempre.
-    r.fase = (r.fase + 1) % (1 << r.piani);
+      // Le prime bande sono i bassi, e i bassi sono il tempo. Un ottavo delle
+      // barre, qualunque sia il loro numero: con 64 sono le otto sotto i 100 Hz,
+      // con 1024 sono le prime centoventotto — la stessa fascia di frequenze, non
+      // lo stesso numero di barre. Si calcola qui, dove i livelli ci sono, ma
+      // spinge la camera solo quando la fila **entra**: vedi `entra`.
+      const quante = Math.max(1, fini.length >> 3);
+      let bassi = 0;
+      for (let i = 0; i < quante; i += 1) bassi += smorzati[i] ?? 0;
+      bassi /= quante;
 
-    // Le prime bande sono i bassi, e i bassi sono il tempo. Un ottavo delle
-    // barre, qualunque sia il loro numero: con 64 sono le otto sotto i 100 Hz,
-    // con 1024 sono le prime centoventotto — la stessa fascia di frequenze, non
-    // lo stesso numero di barre.
-    const quante = Math.max(1, fini.length >> 3);
-    let bassi = 0;
-    for (let i = 0; i < quante; i += 1) bassi += smorzati[i] ?? 0;
-    bassi /= quante;
-    // Sale di scatto e scende piano, come le barre: un colpo di grancassa deve
-    // spingere la camera, non farla vibrare.
-    colpo.current =
-      bassi > colpo.current
-        ? bassi
-        : colpo.current + (bassi - colpo.current) * 0.08;
-  }, []);
+      // A ciclo fermo non c'è un orologio che svuoti la coda: la fila entra
+      // subito, com'è sempre entrata. È la strada che tiene esatta la memoria
+      // mentre la scena dorme, e che il paragrafo sulla cascata in testa al file
+      // racconta.
+      const c = coda.current;
+      if (!c.attiva) {
+        entra(byte, bassi);
+        return;
+      }
+      // Una coda piena è un ciclo che non gira da un pezzo — una finestra
+      // coperta che il browser non ridisegna più, per esempio. La più vecchia
+      // entra adesso, per far posto: l'ordine resta quello d'arrivo.
+      if (c.lunghezza >= CAPIENZA) esce(c, entra);
+      orologio.current?.arrivo(performance.now(), c.lunghezza);
+      const posto = (c.testa + c.lunghezza) % CAPIENZA;
+      c.file[posto]?.set(byte);
+      c.bassi[posto] = bassi;
+      c.lunghezza += 1;
+    },
+    [entra],
+  );
 
   // Chi guarda le bande. Non tocca lo stato di React: scrive nei riferimenti
   // che legge il disegno, fa scorrere la cascata, e vive quanto la tela.
@@ -2218,10 +2405,6 @@ export function Spettro3D({
     const risveglia = () => {
       if (stato.current === "perso" || stato.current === "nascosto") return;
       stato.current = "vivo";
-      // Ogni risveglio rilegge i token: la scena può aver dormito attraverso un
-      // cambio di skin, e nessuno degli osservatori è tenuto a ricordarselo.
-      const attuali = stabili.current;
-      if (attuali) attuali.sporco = true;
       if (fotogramma !== 0) return;
       precedente = 0;
       // **Dopo** l'uscita anticipata, e non prima: `risveglia` la chiama ogni
@@ -2230,12 +2413,25 @@ export function Spettro3D({
       // misura mai niente. Quel che è una discontinuità è il ciclo che
       // **riparte**, non il ciclo che gira già.
       assesta();
+      // Ogni risveglio rilegge i token: la scena può aver dormito attraverso un
+      // cambio di skin, e nessuno degli osservatori è tenuto a ricordarselo.
+      //
+      // Anche questa dopo l'uscita, per la stessa ragione della quarantena, ed è
+      // stata a lungo prima. Con la musica accesa voleva dire venti letture
+      // dello stile vivo a ogni evento — trenta volte al secondo, ognuna un
+      // ricalcolo forzato su un documento che lo Scrubber sporca venti volte al
+      // secondo — cioè esattamente il costo che «Come si leggono i token»
+      // dichiara tolto. Il ciclo che gira già ha i suoi osservatori e la sua
+      // rete; è il ciclo che riparte a non sapere cosa si è perso.
+      const attuali = stabili.current;
+      if (attuali) attuali.sporco = true;
       fotogramma = requestAnimationFrame(disegna);
     };
     sveglia.current = risveglia;
 
     /** Il silenzio è più profondo della memoria: non c'è più niente da muovere. */
     const addormenta = () => {
+      versa();
       stato.current = "assopito";
       // Solo se è in pausa. Se sta suonando, il risveglio arriva dagli eventi
       // dello spettro e non c'è nient'altro che lo sostituisca.
@@ -2245,6 +2441,7 @@ export function Spettro3D({
     const nascondi = () => {
       if (stato.current === "perso" || stato.current === "nascosto") return;
       stato.current = "nascosto";
+      versa();
       cancelAnimationFrame(fotogramma);
       fotogramma = 0;
       rubinetto(false);
@@ -2409,13 +2606,31 @@ export function Spettro3D({
       // La seconda metà mancava, e non era una sfumatura: una skin `motion:
       // none` fermava tutte le transizioni dell'app e lasciava girare la stanza.
       const ridotto = pocoMoto || m.moto === 0;
-      // Quanto si è avanti fra una fila e la prossima. Con il moto ridotto resta
-      // a uno: la fila davanti sta alla sua altezza vera invece di crescere da
-      // quella dietro, e la scena avanza a scatti — perché una preferenza di
-      // accessibilità non si aggira accendendo proprio la cosa che vieta.
-      const frazione = ridotto
-        ? 1
-        : Math.min(1, (adesso - quando.current) / intervallo.current);
+      // Quanto si è avanti fra una fila e la prossima, e quali file entrano in
+      // questo fotogramma. Lo decide l'orologio, sul tempo che passa e non
+      // sull'istante in cui le file arrivano: vedi `orologioSpettro.ts`. Le
+      // file si prendono **prima** di caricare cursori, fase e frazione qui
+      // sotto, o la fila davanti crescerebbe verso una fila che non c'è ancora.
+      //
+      // Con il moto ridotto niente orologio: la frazione resta a uno, la fila
+      // davanti sta alla sua altezza vera invece di crescere da quella dietro, e
+      // la scena avanza a scatti — perché una preferenza di accessibilità non si
+      // aggira accendendo proprio la cosa che vieta. Le file entrano dirette,
+      // come quando la scena dorme.
+      let frazione = 1;
+      const c = coda.current;
+      const scorre = orologio.current;
+      if (ridotto || !scorre) {
+        if (c.attiva) versa();
+      } else {
+        if (!c.attiva) {
+          c.attiva = true;
+          scorre.azzera();
+        }
+        const avanzata = scorre.avanza(adesso, c.lunghezza);
+        for (let k = 0; k < avanzata.prendi; k += 1) esce(c, entra);
+        frazione = avanzata.frazione;
+      }
 
       // L'inseguitore, per tempo trascorso e non per fotogramma: a novanta hertz
       // il passo dev'essere più piccolo che a sessanta, o la stanza respirerebbe
@@ -2464,6 +2679,8 @@ export function Spettro3D({
         -2.2,
       );
       gl.uniformMatrix4fv(u.camera, false, risorse.matrice);
+      gl.uniform1f(u.mezzaTela, larghezzaPx * 0.5);
+      gl.uniform1f(u.altezzaTela, altezzaPx);
       // La dissolvenza all'apertura: la scena arriva dietro una copertina che
       // sta già ferma sullo schermo, e comparire di colpo la farebbe sembrare un
       // guasto invece di una cosa che si accende. Quanto duri lo dice `--dur-3`,
@@ -2691,6 +2908,9 @@ export function Spettro3D({
       stabili.current = null;
       const r = risoluzione.current;
       if (r) r.texture = null;
+      // Dopo aver tolto i manici: la coda entra negli anelli e non nella
+      // texture, che non c'è più — e il ripristino la ricaricherà da lì.
+      versa();
     };
     // Prima non c'era: la scena restava nera fino a che qualcuno non chiudeva e
     // riapriva la schermata. Adesso si ricostruisce da sola, e la texture si
@@ -2746,12 +2966,13 @@ export function Spettro3D({
       stabili.current = null;
       disponibile.current = false;
     };
-    // Una dipendenza sola, e non è una dipendenza: `rubinetto` è stabile per
-    // costruzione — `onErrore` sta dietro un riferimento apposta perché lo sia.
+    // Dipendenze che non sono dipendenze: `rubinetto`, `entra` e `versa` sono
+    // stabili per costruzione — `onErrore` sta dietro un riferimento apposta
+    // perché `rubinetto` lo sia, e le altre due toccano solo riferimenti.
     // `barre` non è qui e non deve esserci: rimontare questo effetto vorrebbe
     // dire ricompilare due shader per cambiare la larghezza di una texture, che
     // è precisamente il difetto che la separazione in due record ha tolto.
-  }, [rubinetto]);
+  }, [rubinetto, entra, versa]);
 
   // ── La risoluzione: solo la texture ─────────────────────────────────────
   //
@@ -2786,6 +3007,11 @@ export function Spettro3D({
     // quando un dito preme una linguetta, non trenta volte al secondo.
     s.grezzi.fill(MAI);
     s.sporco = true;
+    // Le file in coda sono della cascata di prima: larghe quanto le barre di
+    // prima, o fatte per anelli di un'altra forma. Si buttano, e l'orologio
+    // riparte da fermo con la prima fila della cascata nuova.
+    coda.current.lunghezza = 0;
+    orologio.current?.azzera();
     sveglia.current();
     return () => {
       distruggiRisoluzione(stabili.current, risoluzione.current);

@@ -41,7 +41,7 @@ use symphonia::core::codecs::audio::{
 };
 use symphonia::core::codecs::registry::CodecRegistry;
 use symphonia::core::errors::SeekErrorKind;
-use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::probe::{Hint, Probe};
 use symphonia::core::formats::well_known::{
     FORMAT_ID_AIFF, FORMAT_ID_CAF, FORMAT_ID_OGG, FORMAT_ID_WAVE,
 };
@@ -53,6 +53,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::Timestamp;
 
 use crate::Codec;
+use crate::ape::FORMAT_ID_APE;
 
 mod canali;
 mod opus;
@@ -80,6 +81,25 @@ static REGISTRO: LazyLock<CodecRegistry> = LazyLock::new(|| {
     symphonia::default::register_enabled_codecs(&mut registro);
     registro.register_audio_decoder::<opus::DecodificatoreOpus>();
     registro
+});
+
+/// I contenitori che sappiamo riconoscere.
+///
+/// # Perché un riconoscitore nostro invece di `symphonia::default::get_probe()`
+///
+/// Per la stessa ragione di [`REGISTRO`], un contenitore più in là: Monkey's
+/// Audio lo legge [`crate::ape::LettoreApe`], che symphonia non porta, e il
+/// riconoscitore predefinito è una costante della libreria. Dentro ci sono gli
+/// stessi contenitori e gli stessi lettori di tag di quello, nello stesso
+/// ordine, più il nostro.
+///
+/// Si costruisce una volta sola, come il registro: è un elenco di descrittori
+/// e un filtro di Bloom, non stato.
+static SONDA: LazyLock<Probe> = LazyLock::new(|| {
+    let mut sonda = Probe::default();
+    symphonia::default::register_enabled_formats(&mut sonda);
+    sonda.register_format::<crate::ape::LettoreApe<'_>>();
+    sonda
 });
 
 /// Le opzioni con cui si costruisce ogni codec.
@@ -184,6 +204,10 @@ pub struct Sorgente {
     /// Il picco vero del brano, lineare, se è stato misurato: il tetto a cui
     /// si ferma un guadagno che alza. Vedi [`crate::Livello`].
     pub picco: Option<f32>,
+    /// Il pezzo del file che è il brano, quando il brano non è il file intero
+    /// ma una traccia di un'immagine CD. `None`: tutto il file. Vedi
+    /// [`Segmento`].
+    pub segmento: Option<Segmento>,
 }
 
 impl std::fmt::Debug for Sorgente {
@@ -192,8 +216,83 @@ impl std::fmt::Debug for Sorgente {
             .field("track_id", &self.track_id)
             .field("estensione", &self.estensione)
             .field("durata_ms", &self.durata_ms)
+            .field("segmento", &self.segmento)
             .finish_non_exhaustive()
     }
+}
+
+/// Un brano che è un pezzo di un file più grande: una traccia di un'immagine
+/// CD, descritta dal suo `.cue`.
+///
+/// Con un segmento il brano **è** il pezzo: si apre posizionato al suo inizio,
+/// e posizione, durata, salti e ripresa contano da lì; finisce al suo ultimo
+/// campione, esatto, e non al primo pacchetto che lo oltrepassa.
+///
+/// # Perché i fotogrammi del CD e non i millisecondi
+///
+/// Perché sono l'unità in cui il foglio è scritto — `INDEX 01 mm:ss:ff`, e un
+/// fotogramma è un settantacinquesimo di secondo — e l'unica in cui il confine
+/// fra due tracce è esatto. A 44,1 kHz un fotogramma sono 588 campioni tondi, e
+/// la fine di una traccia è il primo campione della successiva: né uno in più
+/// né uno in meno. In millisecondi quel confine cadrebbe a metà di un campione,
+/// e due tracce di fila si sovrapporrebbero di un campione o ne perderebbero
+/// uno. La conversione in campioni la fa [`campioni_da_cd`], a ogni frequenza.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Segmento {
+    /// Quale file: il percorso dell'immagine. Il motore non lo apre — i byte
+    /// arrivano nella [`Sorgente`] come sempre — e serve solo a decidere se due
+    /// brani sono contigui: vedi [`Segmento::precede`].
+    pub immagine: String,
+    /// Dove comincia il brano, in fotogrammi CD dall'inizio del file.
+    pub inizio_cd: u32,
+    /// Dove finisce, escluso, in fotogrammi CD dall'inizio del file. `None`:
+    /// fino alla fine del file, com'è l'ultima traccia di un'immagine.
+    pub fine_cd: Option<u32>,
+}
+
+impl Segmento {
+    /// Il brano `prossimo` comincia esattamente dove finisce questo, nello
+    /// stesso file?
+    ///
+    /// Solo allora fra i due non c'è niente — né un buco, né una dissolvenza
+    /// — perché sono un segnale solo, tagliato in due dal foglio: la fine di un
+    /// movimento che sfuma nel successivo, il pubblico di un disco dal vivo.
+    ///
+    /// # Perché una definizione così stretta
+    ///
+    /// Perché ogni passaggio che non sia «la traccia dopo, nell'ordine del
+    /// disco» è un passaggio fra due cose che non si continuano, e attaccarle
+    /// senza dissolvenza sarebbe un taglio netto in mezzo alla musica. Non sono
+    /// contigui la ripetizione dello stesso brano (la fine non è il suo
+    /// inizio), la riproduzione casuale e l'ordine inverso (l'inizio del
+    /// prossimo non è questa fine), e il ritorno dall'ultima traccia alla prima
+    /// (l'ultima non ha una fine scritta: va fino in fondo al file). Seguono la
+    /// strada di sempre, con la dissolvenza se è accesa.
+    #[must_use]
+    pub fn precede(&self, prossimo: &Self) -> bool {
+        self.immagine == prossimo.immagine && self.fine_cd == Some(prossimo.inizio_cd)
+    }
+}
+
+/// I campioni dall'inizio del file fino a un punto del foglio, alla frequenza
+/// data: `fotogrammi × frequenza / 75`, per difetto.
+///
+/// # Perché sui confini assoluti, e mai sulle lunghezze
+///
+/// Perché a una frequenza che 75 non divide — 32 kHz, 22 050 Hz — il conto ha un
+/// resto, e arrotondare le lunghezze vorrebbe dire due tracce di fila che non
+/// si toccano più. Arrotondando i **punti** del file, invece, la fine di una
+/// traccia e l'inizio della successiva sono lo stesso numero per costruzione, e
+/// le tracce di un'immagine la ricoprono esatte. A 44,1 e a 48 kHz il conto è
+/// esatto comunque: 588 e 640 campioni per fotogramma.
+#[expect(
+    clippy::integer_division,
+    reason = "il resto è una frazione di campione, e arrotondare sempre per \
+              difetto lo stesso punto è ciò che fa combaciare due tracce"
+)]
+fn campioni_da_cd(fotogrammi: u32, frequenza: u32) -> u64 {
+    // Due `u32` moltiplicati stanno in un `u64`: niente da saturare.
+    u64::from(fotogrammi) * u64::from(frequenza) / 75
 }
 
 /// L'ultimo numero di sistema che il flusso ha incontrato.
@@ -405,6 +504,15 @@ impl Forma {
 /// `time_base`, che in MP4 è la scala dei tempi della traccia e non per forza
 /// la sua frequenza, e in Matroska è il millisecondo; e non contano sempre dal
 /// primo fotogramma che si sente. Da dove contano lo dice [`origine`].
+///
+/// # Il brano dentro il file
+///
+/// Con un [`Segmento`] il fotogramma zero del brano non è il primo del file ma
+/// il suo inizio, e l'orologio lo sa: [`Self::fotogramma`] e [`Self::ts`]
+/// parlano del brano, e tutto quel che ne discende — il bersaglio di un salto,
+/// lo scarto fino a lì, i fotogrammi consegnati — conta dall'inizio del pezzo
+/// senza saperlo. Solo la rincorsa di un salto guarda il file, perché può
+/// cominciare prima del brano: vedi [`Self::ts_nel_file`].
 #[derive(Debug, Clone, Copy)]
 struct Orologio {
     /// Secondi per unità di timestamp, come frazione.
@@ -412,8 +520,11 @@ struct Orologio {
     denominatore: u128,
     /// La frequenza del codec.
     frequenza: u32,
-    /// Il timestamp del primo fotogramma del brano. Vedi [`origine`].
+    /// Il timestamp del primo fotogramma del file. Vedi [`origine`].
     origine: i64,
+    /// Il fotogramma del file da cui comincia il brano: zero, o l'inizio del
+    /// segmento in campioni. Vedi [`campioni_da_cd`].
+    inizio: u64,
 }
 
 impl Orologio {
@@ -429,6 +540,7 @@ impl Orologio {
             denominatore,
             frequenza,
             origine: 0,
+            inizio: 0,
         };
         orologio.origine = origine(traccia, ogg, &orologio);
         orologio
@@ -438,7 +550,8 @@ impl Orologio {
     ///
     /// Con segno, perché un pacchetto può cominciare **prima** dell'inizio del
     /// brano: i primi fotogrammi di un Opus sono il pre-skip, quelli di un MP3
-    /// il ritardo del codificatore.
+    /// il ritardo del codificatore — e, dentro un'immagine, tutto quel che sta
+    /// prima del segmento.
     #[expect(
         clippy::integer_division,
         reason = "per la quasi totalità dei formati la scala è 1/frequenza e la \
@@ -450,7 +563,7 @@ impl Orologio {
         let scala = i128::try_from(self.numeratore.saturating_mul(u128::from(self.frequenza)))
             .unwrap_or(i128::MAX);
         let denominatore = i128::try_from(self.denominatore).unwrap_or(1).max(1);
-        relativo.saturating_mul(scala) / denominatore
+        (relativo.saturating_mul(scala) / denominatore).saturating_sub(i128::from(self.inizio))
     }
 
     /// Quante unità di timestamp valgono `fotogrammi` fotogrammi, per difetto.
@@ -470,7 +583,17 @@ impl Orologio {
     /// Il timestamp da chiedere a symphonia per il fotogramma `fotogramma` del
     /// brano, arrotondato per difetto: meglio atterrare un soffio prima e
     /// scartare, che un soffio dopo e perdere.
+    #[cfg(test)]
     fn ts(&self, fotogramma: u64) -> Timestamp {
+        self.ts_nel_file(fotogramma.saturating_add(self.inizio))
+    }
+
+    /// Come [`Self::ts`], per un fotogramma contato dall'inizio del **file**.
+    ///
+    /// Serve alla rincorsa di un salto, che su un codec con memoria comincia
+    /// prima del bersaglio: al primo campione di un segmento vuol dire prima
+    /// del brano, in un punto che contato dal brano sarebbe negativo.
+    fn ts_nel_file(&self, fotogramma: u64) -> Timestamp {
         Timestamp::new(self.origine.saturating_add(self.unita(fotogramma)))
     }
 }
@@ -583,10 +706,12 @@ pub struct FormatoSuonato {
 /// Il nome di un codec come lo legge chi ascolta.
 ///
 /// Il PCM non ha un nome suo: un WAV e un AIFF sono lo stesso codec in due
-/// contenitori, e chi guarda conosce il contenitore. Lo stesso per Vorbis, che
-/// in un Ogg si chiama «Ogg Vorbis» come lo chiama la colonna del database
-/// (vedi `etichetta_codec` in `rymembra-app`): due nomi diversi per lo stesso file
-/// sarebbero un cambio di riga quando il brano parte.
+/// contenitori, e chi guarda conosce il contenitore. Un Monkey's Audio arriva
+/// qui come PCM anche lui — lo decodifica il suo lettore, vedi [`crate::ape`] —
+/// e il nome che chi ascolta conosce è quello del contenitore. Lo stesso per
+/// Vorbis, che in un Ogg si chiama «Ogg Vorbis» come lo chiama la colonna del
+/// database (vedi `etichetta_codec` in `rymembra-app`): due nomi diversi per lo
+/// stesso file sarebbero un cambio di riga quando il brano parte.
 fn nome_del_codec(codec: AudioCodecId, contenitore: FormatId) -> Option<&'static str> {
     let pcm = (CODEC_ID_PCM_S32LE..=CODEC_ID_PCM_MULAW).contains(&codec)
         || (CODEC_ID_ADPCM_G722..=CODEC_ID_ADPCM_IMA_QT).contains(&codec);
@@ -595,6 +720,7 @@ fn nome_del_codec(codec: AudioCodecId, contenitore: FormatId) -> Option<&'static
             FORMAT_ID_WAVE => "WAV",
             FORMAT_ID_AIFF => "AIFF",
             FORMAT_ID_CAF => "CAF",
+            FORMAT_ID_APE => "APE",
             _ => "PCM",
         });
     }
@@ -682,8 +808,18 @@ pub struct Decodificatore {
     /// L'ultimo millisecondo a cui il flusso accetta di saltare.
     ///
     /// Da `num_frames`, non da `durata_ms`: sono due numeri diversi, e questo è
-    /// quello che symphonia userà per dire di no.
+    /// quello che symphonia userà per dire di no. Con un segmento è la sua
+    /// lunghezza, contata dal suo inizio.
     fine_flusso_ms: Option<u64>,
+    /// Il pezzo del file che è il brano, se è una traccia d'immagine. Serve a
+    /// [`Self::contiguo_a`]; i tempi li porta già [`Orologio::inizio`].
+    segmento: Option<Segmento>,
+    /// Quanti fotogrammi dura il segmento, alla frequenza del codec: dove si
+    /// taglia la fine. `None`: fino alla fine del file. Vedi [`Self::consuma`].
+    taglio: Option<u64>,
+    /// La fine del segmento è stata raggiunta: il giro dopo chiude il brano,
+    /// senza leggere un altro pacchetto. Vedi [`Self::consuma`].
+    al_taglio: bool,
     /// Il millisecondo del brano a cui comincia l'anello corrente di un Ogg
     /// concatenato. Zero per tutti gli altri file.
     origine_ms: u64,
@@ -740,6 +876,7 @@ impl Decodificatore {
         let track_id = sorgente.track_id;
         let estensione = sorgente.estensione.clone();
         let formato_dichiarato = || estensione.clone();
+        let segmento = sorgente.segmento.take();
 
         // Un formato che sappiamo di non saper suonare si dichiara subito, con
         // il codice che esiste apposta nel catalogo. Lasciarlo arrivare al
@@ -790,7 +927,7 @@ impl Decodificatore {
         }
 
         // Il gapless non si chiede più qui ma al codec: vedi [`opzioni_codec`].
-        let formato = symphonia::default::get_probe()
+        let formato = SONDA
             .probe(
                 &suggerimento,
                 flusso,
@@ -872,13 +1009,37 @@ impl Decodificatore {
         // senza ritardo e imbottitura — quindi il tetto va calcolato da lì, e
         // alla frequenza che dichiara il contenitore, che è quella in cui li ha
         // contati.
-        let fine_flusso_ms = fine_da_fotogrammi(
-            traccia.num_frames,
-            parametri.sample_rate.unwrap_or(frequenza_sorgente),
-        );
+        //
+        // Con un segmento il tetto è la sua fine, contata dal suo inizio — e
+        // mai oltre quel che il file contiene davvero, se un foglio sbagliato
+        // dichiarasse una fine dopo l'ultimo campione. I punti del foglio
+        // diventano campioni alla frequenza del codec, che è quella dei
+        // pacchetti da tagliare.
+        let inizio = segmento
+            .as_ref()
+            .map_or(0, |s| campioni_da_cd(s.inizio_cd, frequenza_sorgente));
+        let taglio = segmento
+            .as_ref()
+            .and_then(|s| s.fine_cd)
+            .map(|fine| campioni_da_cd(fine, frequenza_sorgente).saturating_sub(inizio));
+        let fine_flusso_ms = if segmento.is_some() {
+            let nel_file = traccia.num_frames.map(|n| n.saturating_sub(inizio));
+            let lunghezza = match (taglio, nel_file) {
+                (Some(t), Some(n)) => Some(t.min(n)),
+                (t, n) => t.or(n),
+            };
+            fine_da_fotogrammi(lunghezza, frequenza_sorgente)
+        } else {
+            fine_da_fotogrammi(
+                traccia.num_frames,
+                parametri.sample_rate.unwrap_or(frequenza_sorgente),
+            )
+        };
 
         let (matrice, ricampionatore) = catena(&forma, canali_uscita, frequenza, track_id)?;
         let ogg = e_ogg(formato.as_ref());
+        let mut orologio = Orologio::da(&traccia, frequenza_sorgente, ogg);
+        orologio.inizio = inizio;
         let formato_suonato = FormatoSuonato {
             codec: nome_del_codec(parametri.codec, formato.format_info().format),
             frequenza: forma.frequenza,
@@ -895,7 +1056,7 @@ impl Decodificatore {
             remoto,
         };
 
-        Ok(Self {
+        let mut aperto = Self {
             track_id,
             formato,
             decodificatore,
@@ -905,7 +1066,7 @@ impl Decodificatore {
             frequenza_uscita: frequenza,
             matrice,
             ricampionatore,
-            orologio: Orologio::da(&traccia, frequenza_sorgente, ogg),
+            orologio,
             rincorsa: rincorsa(parametri.codec, frequenza_sorgente),
             salto: None,
             campioni: Vec::new(),
@@ -922,7 +1083,18 @@ impl Decodificatore {
             remoto,
             annullo,
             formato_suonato,
-        })
+            segmento,
+            taglio,
+            al_taglio: false,
+        };
+        // Un segmento che non comincia in testa al file si apre già al suo
+        // inizio: è un salto allo zero del brano, con la rincorsa dei codec con
+        // memoria — che qui pesca nella traccia prima — e lo scarto fino al
+        // campione esatto. Il primo fotogramma che esce è il primo del brano.
+        if inizio > 0 {
+            aperto.cerca(0)?;
+        }
+        Ok(aperto)
     }
 
     /// Com'è fatto quel che questo decodificatore suona.
@@ -957,8 +1129,30 @@ impl Decodificatore {
         self.fine_flusso_ms
     }
 
+    /// Il pezzo di file che questo decodificatore suona, se è una traccia
+    /// d'immagine.
+    #[must_use]
+    pub const fn segmento(&self) -> Option<&Segmento> {
+        self.segmento.as_ref()
+    }
+
+    /// Il brano `seguito` continua questo senza niente in mezzo? Solo se sono
+    /// due segmenti dello stesso file e il secondo comincia dove finisce il
+    /// primo: vedi [`Segmento::precede`], che dice anche perché non basta di
+    /// meno.
+    #[must_use]
+    pub fn contiguo_a(&self, seguito: &Self) -> bool {
+        match (self.segmento.as_ref(), seguito.segmento.as_ref()) {
+            (Some(questo), Some(prossimo)) => questo.precede(prossimo),
+            _ => false,
+        }
+    }
+
     /// Si riposiziona, al fotogramma. La coda interna del ricampionatore va
     /// buttata.
+    ///
+    /// `ms` conta dall'inizio del brano: per una traccia d'immagine, dal suo
+    /// inizio e non da quello del file. Vedi [`Segmento`].
     ///
     /// # Perché il bersaglio si raggiunge scartando
     ///
@@ -1016,7 +1210,23 @@ impl Decodificatore {
         // solo lì, e i suoi timestamp ricominciano da zero a ogni anello.
         let dentro_ms = bersaglio.saturating_sub(self.origine_ms);
         let punto = fotogrammi_da_ms(dentro_ms, self.orologio.frequenza);
-        let partenza = punto.saturating_sub(self.rincorsa);
+        // La rincorsa si conta nel file e non nel brano: al primo campione di
+        // un segmento parte dentro la traccia prima, che è dove il codec deve
+        // scaldarsi. Contata nel brano si fermerebbe a zero, e il primo
+        // pacchetto del segmento uscirebbe con lo schiocco che la rincorsa
+        // esiste per togliere.
+        let partenza = punto
+            .saturating_add(self.orologio.inizio)
+            .saturating_sub(self.rincorsa);
+        // Accurato anche dentro un'immagine MP3, e lo si paga: il salto
+        // accurato di symphonia conta i fotogrammi MPEG dall'inizio del file,
+        // e aprire un brano a metà di un'immagine lunga su una condivisione
+        // rilegge tutto fino a lì. Quello «a grandi linee» leggerebbe poco, ma
+        // stima i timestamp in proporzione ai byte e li sbaglia — di un
+        // fotogramma o due su un bitrate costante, di secondi o minuti su uno
+        // variabile — e fra due brani contigui sarebbe un salto o una
+        // ripetizione che si sente. L'esattezza vince sulla lentezza, che
+        // riguarda solo le immagini MP3 lunghe in rete.
         let modo = if self.remoto {
             SeekMode::Coarse
         } else {
@@ -1028,7 +1238,7 @@ impl Decodificatore {
         let esito = self.formato.seek(
             modo,
             SeekTo::Timestamp {
-                ts: self.orologio.ts(partenza),
+                ts: self.orologio.ts_nel_file(partenza),
                 track_id: self.traccia,
             },
         );
@@ -1046,6 +1256,18 @@ impl Decodificatore {
             //    dichiara: qui il rifiuto si accetta per quello che è, cioè un
             //    brano finito.
             if oltre_la_fine(&err) {
+                // …tranne quando dice che un brano d'immagine sta in un anello
+                // dopo di un Ogg concatenato: symphonia cerca solo nell'anello
+                // corrente, e quel brano risulterebbe vuoto senza un perché.
+                // Si dice invece che non lo sappiamo suonare, come quando
+                // l'anello comincia mentre si suona (vedi [`Self::nuovo_anello`]).
+                if self.segmento.is_some()
+                    && e_ogg(self.formato.as_ref())
+                    && self.c_e_un_anello_dopo()?
+                {
+                    self.esaurito = true;
+                    return Err(ogg_concatenato_in_immagine());
+                }
                 self.a_fine_flusso(bersaglio);
                 return Ok(());
             }
@@ -1063,6 +1285,7 @@ impl Decodificatore {
         self.coda_sospesa = false;
         self.ereditati = 0;
         self.esaurito = false;
+        self.al_taglio = false;
         self.salto = Some(punto);
         // Il bersaglio e non `ms`: la posizione che si riporta è quella a cui si
         // è atterrati, non quella che era stata chiesta. Scriverci `ms`
@@ -1074,6 +1297,64 @@ impl Decodificatore {
             self.frequenza_uscita,
         );
         Ok(())
+    }
+
+    /// Dopo l'anello corrente di un Ogg ne comincia un altro?
+    ///
+    /// Un salto oltre la fine dell'anello, dentro un'immagine, vuol dire una di
+    /// due cose: il brano sta in un anello dopo, che non sappiamo suonare, o
+    /// sta oltre la fine del file — un'immagine troncata, o un foglio che
+    /// descrive più di quel che c'è — e allora è un brano vuoto come in ogni
+    /// altro formato. Per saperlo si va a un secondo dalla fine dell'anello e
+    /// si legge fino in fondo: qualche pagina, e o comincia un anello nuovo o
+    /// finisce il file.
+    ///
+    /// `false` anche quando non si riesce a saperlo: si resta al brano vuoto,
+    /// che era quel che succedeva prima.
+    fn c_e_un_anello_dopo(&mut self) -> Result<bool, AppError> {
+        /// I pacchetti da leggere al massimo: da un secondo prima della fine
+        /// sono qualche decina, e oltre questo qualcosa non va come si crede.
+        const TETTO: usize = 1_000;
+        let fine = self
+            .formato
+            .tracks()
+            .iter()
+            .find(|t| t.id == self.traccia)
+            .and_then(|t| Some((t.start_ts, t.num_frames?)));
+        let Some((inizio, fotogrammi)) = fine else {
+            return Ok(false);
+        };
+        let un_secondo = u64::from(self.orologio.frequenza);
+        let ts = Timestamp::new(
+            inizio
+                .get()
+                .saturating_add(self.orologio.unita(fotogrammi.saturating_sub(un_secondo))),
+        );
+        let esito = self.formato.seek(
+            SeekMode::Accurate,
+            SeekTo::Timestamp {
+                ts,
+                track_id: self.traccia,
+            },
+        );
+        if let Err(err) = esito {
+            return self.annullo_o_rete(&err).map_or(Ok(false), Err);
+        }
+        for _ in 0..TETTO {
+            match self.formato.next_packet() {
+                Ok(Some(_)) => {}
+                Ok(None) => return Ok(false),
+                Err(symphonia::core::errors::Error::ResetRequired) => return Ok(true),
+                Err(err) => return self.annullo_o_rete(&err).map_or(Ok(false), Err),
+            }
+        }
+        Ok(false)
+    }
+
+    /// L'annullo o la rete, se l'errore è uno dei due: i guasti che nessuna
+    /// strada deve inghiottire.
+    fn annullo_o_rete(&self, err: &symphonia::core::errors::Error) -> Option<AppError> {
+        self.annullato().or_else(|| se_di_rete(err))
     }
 
     /// Dove si salta davvero, dato dove è stato chiesto di saltare.
@@ -1113,6 +1394,7 @@ impl Decodificatore {
     /// come uno schiocco al posto della fine del brano.
     fn a_fine_flusso(&mut self, bersaglio: u64) {
         self.esaurito = true;
+        self.al_taglio = false;
         self.salto = None;
         self.decodificatore.reset();
         if let Some(r) = self.ricampionatore.as_mut() {
@@ -1210,6 +1492,26 @@ impl Decodificatore {
             return Ok(false);
         }
         loop {
+            // L'annullo si guarda a ogni giro, e non solo sugli errori e alla
+            // fine del flusso. Questo ciclo può girare a lungo **senza**
+            // consegnare niente: pacchetti che non si decodificano e si
+            // saltano, pacchetti di un'altra traccia, pacchetti vuoti — e su
+            // una cartella di rete ognuno è una lettura. Un file rovinato per
+            // un tratto lungo teneva il filo qui dentro, lettura dopo lettura,
+            // mentre il salto o il brano scelto nel frattempo aspettavano in
+            // coda. Una lettura d'atomica per pacchetto è niente accanto a
+            // quel che costa decodificarlo.
+            if let Some(annullo) = self.annullato() {
+                return Err(annullo);
+            }
+            // Il segmento è finito anche se il file no: la fine passa dalla
+            // stessa porta della fine del flusso, così la coda del
+            // ricampionatore esce — o passa al brano dopo — come a ogni fine
+            // brano. E non si legge un pacchetto in più, che su una
+            // condivisione di rete è una lettura che non serve a niente.
+            if self.al_taglio {
+                return self.fine_del_flusso(fuori, lascia);
+            }
             let pacchetto = match self.formato.next_packet() {
                 Ok(Some(p)) => p,
                 // La fine del flusso, che in 0.6 si dice così e non più con un
@@ -1397,6 +1699,12 @@ impl Decodificatore {
     /// uscita — altrimenti il filtro di uno non è il filtro dell'altro — e se
     /// il seguito non ha ancora consegnato niente: la coda si attacca al suo
     /// primo campione, non a un punto qualunque.
+    ///
+    /// Il primo campione del **brano**, che per una traccia d'immagine non è
+    /// il primo del file: il seguito si apre già saltato al suo inizio, e quel
+    /// salto è allo zero del brano — vedi [`Orologio::inizio`]. È ciò che fa di
+    /// due tracce contigue un segnale solo, attraversato da un filtro solo come
+    /// se il disco non fosse mai stato tagliato.
     #[must_use]
     pub fn puo_passare_la_coda(&self, seguito: &Self) -> bool {
         let intatto = seguito
@@ -1474,6 +1782,14 @@ impl Decodificatore {
     /// I campioni stanno in [`Self::campioni`], interlacciati, e il loro primo
     /// fotogramma è il fotogramma `inizio` del brano. `forma` è quella nuova
     /// del codec, se è cambiata rispetto al pacchetto prima.
+    ///
+    /// # Il taglio della fine, qui e non dopo
+    ///
+    /// La fine di un segmento si taglia sui campioni del **codec**, prima del
+    /// ricampionatore: è l'unico punto in cui un campione è un campione del
+    /// file, e il confine del foglio cade esatto. Dopo il ricampionatore il
+    /// confine sarebbe a metà fra due fotogrammi d'uscita, e il filtro avrebbe
+    /// già mescolato l'ultimo campione del brano col primo della traccia dopo.
     fn consuma(
         &mut self,
         inizio: i128,
@@ -1482,6 +1798,7 @@ impl Decodificatore {
         fuori: &mut Vec<f32>,
     ) -> Result<(), AppError> {
         let scarto = self.da_scartare(inizio, quanti);
+        let quanti = self.entro_il_taglio(inizio, quanti);
         if scarto >= quanti {
             return Ok(());
         }
@@ -1493,8 +1810,10 @@ impl Decodificatore {
         // dalla stessa `self`. Lo scambio non alloca — un `Vec` vuoto non ha
         // niente da allocare.
         let campioni = std::mem::take(&mut self.campioni);
+        let canali = self.forma.canali;
+        let fine = quanti.saturating_mul(canali).min(campioni.len());
         let utili = campioni
-            .get(scarto.saturating_mul(self.forma.canali)..)
+            .get(scarto.saturating_mul(canali)..fine)
             .unwrap_or_default();
         let esito = match self.ricampionatore.as_mut() {
             Some(r) => r.spingi(utili, &self.matrice, fuori),
@@ -1536,6 +1855,24 @@ impl Decodificatore {
             return 0;
         }
         usize::try_from(bersaglio - inizio).unwrap_or(quanti)
+    }
+
+    /// Quanti fotogrammi di questo pacchetto stanno prima della fine del
+    /// segmento: tutti, senza un segmento o lontano dalla sua fine.
+    ///
+    /// Quando il pacchetto la raggiunge — anche esattamente col suo ultimo
+    /// fotogramma — alza [`Self::al_taglio`]: il giro dopo chiude il brano
+    /// invece di leggere ancora.
+    fn entro_il_taglio(&mut self, inizio: i128, quanti: usize) -> usize {
+        let Some(taglio) = self.taglio else {
+            return quanti;
+        };
+        let restano = i128::from(taglio).saturating_sub(inizio);
+        if restano > i128::try_from(quanti).unwrap_or(i128::MAX) {
+            return quanti;
+        }
+        self.al_taglio = true;
+        usize::try_from(restano.max(0)).unwrap_or(0)
     }
 
     /// Mette la catena in forma per i campioni che arrivano.
@@ -1585,6 +1922,15 @@ impl Decodificatore {
     /// dentro. Da qui in poi i salti restano dentro l'anello nuovo, perché è
     /// l'unico in cui symphonia sa cercare.
     fn nuovo_anello(&mut self, fuori: &mut Vec<f32>) -> Result<(), AppError> {
+        // Dentro un'immagine un anello nuovo non si sa dove metterlo: i tempi
+        // del foglio contano dall'inizio del file, i timestamp di symphonia
+        // ricominciano da zero a ogni anello, e i salti sanno stare solo
+        // nell'anello corrente. Un brano che finisse qui suonerebbe un pezzo
+        // sbagliato del disco senza dirlo; meglio dire che questa combinazione
+        // non la sappiamo suonare, col codice che esiste apposta.
+        if self.segmento.is_some() {
+            return Err(ogg_concatenato_in_immagine());
+        }
         let senza_audio = || {
             AppError::new(ErrorCode::PlaybackDecodeFailed {
                 track_id: Some(self.track_id),
@@ -1685,6 +2031,15 @@ impl Decodificatore {
         self.ereditati -= altrui;
         self.consegnati = self.consegnati.saturating_add(usciti - altrui);
     }
+}
+
+/// Un Ogg concatenato dentro un'immagine con il `.cue`: una combinazione che
+/// non sappiamo suonare. Vedi [`Decodificatore::nuovo_anello`].
+fn ogg_concatenato_in_immagine() -> AppError {
+    AppError::new(ErrorCode::PlaybackFormatUnsupported {
+        format: Some("ogg".to_owned()),
+    })
+    .with_cause("Ogg concatenato dentro un'immagine con il .cue".to_owned())
 }
 
 /// La matrice dei canali e, se le frequenze differiscono, il ricampionatore.
@@ -2048,6 +2403,7 @@ mod prove {
             durata_ms: 0,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         }
     }
 
@@ -2362,6 +2718,7 @@ mod prove {
             durata_ms: 0,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         };
         let mut d = Decodificatore::apri(s, 48_000, 1).expect("si apre");
         assert!(d.remoto);
@@ -2879,7 +3236,9 @@ mod prove {
         let mut d = Decodificatore::apri(sorgente(byte, "wav"), 48_000, 6).expect("si apre");
         let fuori = tutto(&mut d);
         assert_eq!(fuori.len(), 4_800 * 6);
-        for fotogramma in fuori.chunks_exact(6) {
+        let (fotogrammi, avanzo) = fuori.as_chunks::<6>();
+        assert!(avanzo.is_empty());
+        for fotogramma in fotogrammi {
             assert!((fotogramma[0] - 10_000.0 / 32_768.0).abs() < 1e-6);
             assert!((fotogramma[1] + 20_000.0 / 32_768.0).abs() < 1e-6);
             assert!(fotogramma[2..].iter().all(|c| *c == 0.0), "{fotogramma:?}");
@@ -2946,6 +3305,7 @@ mod prove {
             durata_ms: 0,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         };
         let mut d =
             Decodificatore::apri_con_annullo(s, 48_000, 1, Arc::clone(&bandiera)).expect("si apre");
@@ -2980,5 +3340,489 @@ mod prove {
         assert!((blocco[0] - 9_600.0 / 32_768.0).abs() < 1e-6);
         d.cerca(0).expect("il salto riesce");
         assert_eq!(tutto(&mut d).len(), quanti);
+    }
+
+    // ── le tracce d'immagine ────────────────────────────────────────────────
+
+    /// Una rampa su uno o due canali: il fotogramma `n` vale `n` (modulo
+    /// 32 768) a sinistra e il suo opposto a destra, così ogni campione dice da
+    /// che punto del file viene e da che canale.
+    fn rampa_su(canali: u16, quanti: usize) -> Vec<i16> {
+        let mut campioni = Vec::with_capacity(quanti * usize::from(canali));
+        for valore in rampa(quanti) {
+            campioni.push(valore);
+            if canali == 2 {
+                campioni.push(-valore);
+            }
+        }
+        campioni
+    }
+
+    /// Il valore che la rampa ha al fotogramma `n` del file, come lo consegna
+    /// il decodificatore.
+    fn della_rampa(n: u64) -> f32 {
+        (n % 32_768) as f32 / 32_768.0
+    }
+
+    /// Un pezzo di un WAV, come lo descrive un `.cue`.
+    fn d_immagine(byte: Vec<u8>, inizio_cd: u32, fine_cd: Option<u32>) -> Sorgente {
+        Sorgente {
+            segmento: Some(Segmento {
+                immagine: "disco.wav".to_owned(),
+                inizio_cd,
+                fine_cd,
+            }),
+            ..sorgente(byte, "wav")
+        }
+    }
+
+    fn apri_a(s: Sorgente, frequenza: u32, canali: u16) -> Decodificatore {
+        Decodificatore::apri(s, frequenza, canali).expect("si apre")
+    }
+
+    #[test]
+    fn un_segmento_suona_esattamente_il_suo_pezzo() {
+        // Da 40 a 130 fotogrammi CD, cioè 1,2 secondi a partire da 0,533: a
+        // 44,1 kHz sono i campioni da 23 520 a 76 440, a 48 kHz da 25 600 a
+        // 83 200. Né uno in più né uno in meno, con i valori di quel punto del
+        // file e non di un altro.
+        for (frequenza, canali) in [(44_100_u32, 1_u16), (44_100, 2), (48_000, 1), (48_000, 2)] {
+            let quanti = usize::try_from(campioni_da_cd(225, frequenza)).expect("sta");
+            let byte = wav(frequenza, canali, &rampa_su(canali, quanti));
+            let mut d = apri_a(d_immagine(byte, 40, Some(130)), frequenza, canali);
+            assert_eq!(
+                d.fine_flusso_ms(),
+                Some(1_200),
+                "la durata è quella del pezzo"
+            );
+            let fuori = tutto(&mut d);
+
+            let attesi = campioni_da_cd(130, frequenza) - campioni_da_cd(40, frequenza);
+            assert_eq!(
+                attesi,
+                90 * u64::from(frequenza).div_ceil(75),
+                "a 44,1 e 48 kHz è esatto"
+            );
+            let c = usize::from(canali);
+            assert_eq!(
+                fuori.len(),
+                usize::try_from(attesi).expect("sta") * c,
+                "{frequenza} Hz, {canali} canali"
+            );
+            assert_eq!(d.consegnati(), attesi, "la posizione conta dal suo inizio");
+            let primo = campioni_da_cd(40, frequenza);
+            for (i, fotogramma) in fuori.chunks_exact(c).enumerate() {
+                let atteso = della_rampa(primo + u64::try_from(i).expect("sta"));
+                assert!(
+                    (fotogramma[0] - atteso).abs() < 1e-6,
+                    "{frequenza} Hz: il fotogramma {i} vale {} invece di {atteso}",
+                    fotogramma[0] * 32_768.0
+                );
+                if c == 2 {
+                    assert!((fotogramma[1] + atteso).abs() < 1e-6, "il canale destro");
+                }
+            }
+            // L'ultimo è l'ultimo prima della traccia dopo.
+            let ultimo = fuori.get(fuori.len() - c).copied().expect("c'è");
+            assert!((ultimo - della_rampa(campioni_da_cd(130, frequenza) - 1)).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn le_tracce_di_un_immagine_la_ricoprono_esatte() {
+        // A 32 kHz e a 22 050 Hz un fotogramma CD non è un numero intero di
+        // campioni: le tracce messe in fila devono essere il file, campione per
+        // campione, perché i confini si arrotondano tutti nello stesso modo.
+        for frequenza in [32_000_u32, 22_050, 44_100] {
+            let totali = usize::try_from(campioni_da_cd(300, frequenza)).expect("sta");
+            let byte = wav(frequenza, 1, &rampa(totali));
+            let confini = [0_u32, 7, 13, 101, 202];
+            let mut di_fila = Vec::new();
+            for (i, inizio) in confini.iter().enumerate() {
+                let fine = confini.get(i + 1).copied();
+                let mut d = apri_a(d_immagine(byte.clone(), *inizio, fine), frequenza, 1);
+                di_fila.extend(tutto(&mut d));
+            }
+            let intero = tutto(&mut apri_a(sorgente(byte, "wav"), frequenza, 1));
+            assert_eq!(di_fila.len(), intero.len(), "{frequenza} Hz");
+            assert!(di_fila == intero, "{frequenza} Hz: un campione fuori posto");
+        }
+    }
+
+    #[test]
+    fn un_salto_dentro_un_segmento_conta_dal_suo_inizio() {
+        let byte = wav(48_000, 1, &rampa(144_000));
+        let primo = campioni_da_cd(40, 48_000);
+        let lungo = 90 * 640;
+        let mut d = apri_a(d_immagine(byte, 40, Some(130)), 48_000, 1);
+        assert_eq!(d.consegnati(), 0);
+
+        d.cerca(250).expect("il salto riesce");
+        assert_eq!(d.consegnati(), 12_000);
+        let resto = tutto(&mut d);
+        assert_eq!(resto.len(), lungo - 12_000);
+        assert!((resto[0] - della_rampa(primo + 12_000)).abs() < 1e-6);
+
+        // Lo zero è l'inizio del brano, non del file.
+        d.cerca(0).expect("il salto riesce");
+        assert_eq!(d.consegnati(), 0);
+        let da_capo = tutto(&mut d);
+        assert_eq!(da_capo.len(), lungo);
+        assert!((da_capo[0] - della_rampa(primo)).abs() < 1e-6);
+
+        // Oltre la fine ci si ferma al margine prima della fine del pezzo, e la
+        // fine resta quella del pezzo: niente della traccia dopo.
+        d.cerca(60_000).expect("il salto riesce");
+        let coda = tutto(&mut d);
+        assert_eq!(coda.len(), 5_760, "i 120 ms del margine");
+        let ultimo = coda.last().copied().expect("c'è");
+        assert!((ultimo - della_rampa(primo + 57_599)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn una_traccia_d_immagine_riprende_dov_era() {
+        // «Riprendi dov'eri»: chi sta sopra apre il brano e salta alla
+        // posizione salvata, che conta dall'inizio della traccia. Qui con
+        // l'uscita a 48 kHz, come quasi sempre: il segmento si conta alla
+        // frequenza del file, la posizione a quella dell'uscita.
+        let byte = wav(44_100, 2, &rampa_su(2, 132_300));
+        let mut d = apri_a(d_immagine(byte, 75, Some(150)), 48_000, 2);
+        assert_eq!(d.fine_flusso_ms(), Some(1_000));
+        d.cerca(500).expect("il salto riesce");
+        assert_eq!(d.consegnati(), 24_000);
+        let resto = tutto(&mut d);
+        assert_eq!(resto.len(), 24_000 * 2, "mezzo secondo a 48 kHz, stereo");
+        assert_eq!(d.consegnati(), 48_000);
+    }
+
+    #[test]
+    fn due_tracce_contigue_sono_il_disco_senza_buchi_ne_doppioni() {
+        // Senza ricampionatore: la fine della prima e l'inizio della seconda
+        // sono lo stesso campione, e in fila sono il file.
+        let byte = wav(48_000, 2, &rampa_su(2, 144_000));
+        let mut primo = apri_a(d_immagine(byte.clone(), 0, Some(100)), 48_000, 2);
+        let mut secondo = apri_a(d_immagine(byte.clone(), 100, None), 48_000, 2);
+        assert!(primo.contiguo_a(&secondo));
+        assert!(!secondo.contiguo_a(&primo), "all'indietro non lo sono");
+        let mut fuori = tutto_lasciando_la_coda(&mut primo);
+        assert!(!primo.coda_sospesa(), "senza ricampionatore non c'è coda");
+        assert_eq!(primo.consegnati(), 100 * 640);
+        fuori.extend(tutto(&mut secondo));
+        let intero = tutto(&mut apri_a(sorgente(byte, "wav"), 48_000, 2));
+        assert_eq!(fuori.len(), intero.len());
+        assert!(
+            fuori == intero,
+            "la giuntura ha perso o doppiato un campione"
+        );
+    }
+
+    #[test]
+    fn due_tracce_contigue_ricampionate_passano_per_un_filtro_solo() {
+        // Il caso di quasi tutti i dischi: 44,1 kHz su un'uscita a 48. La
+        // seconda traccia si apre già saltata al suo inizio, e per il passaggio
+        // della coda quel salto vale «all'inizio»: prende il ricampionatore della
+        // prima con la coda dentro, e le due escono come il file intero.
+        let totali = 3 * 44_100;
+        let byte = wav(44_100, 1, &coseno(44_100, 0, totali));
+        let atteso = tutto(&mut apri_a(sorgente(byte.clone(), "wav"), 48_000, 1));
+
+        let mut primo = apri_a(d_immagine(byte.clone(), 0, Some(97)), 48_000, 1);
+        let mut secondo = apri_a(d_immagine(byte, 97, None), 48_000, 1);
+        assert!(primo.contiguo_a(&secondo));
+        assert!(
+            primo.puo_passare_la_coda(&secondo),
+            "un seguito aperto al suo inizio_cd è all'inizio"
+        );
+        let mut fuori = tutto_lasciando_la_coda(&mut primo);
+        assert!(primo.coda_sospesa(), "la coda deve restare nel filtro");
+        let rinvio = primo.passa_la_coda(&mut secondo).expect("la coda passa");
+        assert!(rinvio > 0);
+        assert_eq!(
+            primo.consegnati(),
+            97 * 640,
+            "il primo conta tutto il suo pezzo"
+        );
+        fuori.extend(tutto(&mut secondo));
+        assert_eq!(
+            fuori.len(),
+            atteso.len(),
+            "né un fotogramma in più né in meno"
+        );
+        let giuntura = scarto(&fuori, &atteso);
+        assert!(giuntura < 1e-6, "scarto dal disco intero: {giuntura}");
+    }
+
+    #[test]
+    fn la_contiguita_e_quella_del_foglio_e_basta() {
+        let traccia = |immagine: &str, inizio_cd: u32, fine_cd: Option<u32>| Segmento {
+            immagine: immagine.to_owned(),
+            inizio_cd,
+            fine_cd,
+        };
+        let prima = traccia("disco.ape", 0, Some(100));
+        let seconda = traccia("disco.ape", 100, Some(250));
+        let ultima = traccia("disco.ape", 250, None);
+        assert!(
+            prima.precede(&seconda),
+            "la traccia dopo, nell'ordine del disco"
+        );
+        assert!(seconda.precede(&ultima));
+        // Ripeti uno: lo stesso pezzo non comincia dove finisce.
+        assert!(!seconda.precede(&seconda));
+        // L'ordine inverso, e il casuale che salta.
+        assert!(!seconda.precede(&prima));
+        assert!(!prima.precede(&ultima));
+        // Dall'ultima alla prima: l'ultima non ha una fine scritta.
+        assert!(!ultima.precede(&prima));
+        assert!(!ultima.precede(&ultima));
+        // Due dischi diversi con gli stessi tempi.
+        assert!(!prima.precede(&traccia("altro.ape", 100, Some(250))));
+    }
+
+    #[test]
+    fn un_segmento_oltre_la_fine_del_file_e_un_brano_vuoto() {
+        // Un foglio che descrive più di quel che il file contiene: la traccia
+        // si apre e finisce subito, senza un errore e senza suonare altro.
+        let byte = wav(48_000, 1, &rampa(48_000));
+        let mut d = apri_a(d_immagine(byte, 300, None), 48_000, 1);
+        assert!(tutto(&mut d).is_empty());
+        assert_eq!(d.consegnati(), 0);
+    }
+
+    #[test]
+    fn un_segmento_di_un_flac_si_taglia_dentro_il_blocco() {
+        // Il FLAC salta a blocchi di 4096 fotogrammi: l'inizio va raggiunto
+        // scartando e la fine tagliata dentro il blocco. Da 10 a 30 fotogrammi
+        // CD del mezzo secondo di prova sono 11 760 campioni, 12 800 a 48 kHz.
+        let s = Sorgente {
+            segmento: Some(Segmento {
+                immagine: "costante.flac".to_owned(),
+                inizio_cd: 10,
+                fine_cd: Some(30),
+            }),
+            ..sorgente(FLAC_COSTANTE.to_vec(), "flac")
+        };
+        let mut d = apri_a(s, 48_000, 1);
+        assert_eq!(tutto(&mut d).len(), 12_800);
+    }
+
+    #[test]
+    fn un_segmento_di_un_codec_con_memoria_parte_con_la_rincorsa() {
+        // Il secondo centrale del tono Opus. Il pezzo comincia con la rincorsa
+        // presa nella «traccia prima», che contata dal brano sarebbe negativa:
+        // quel che esce deve essere esattamente quel che dà un salto a un
+        // secondo nel file intero — stessa rincorsa, stesso scarto — e non un
+        // codec che si riavvia sul primo campione del pezzo.
+        let s = Sorgente {
+            segmento: Some(Segmento {
+                immagine: "tono.opus".to_owned(),
+                inizio_cd: 75,
+                fine_cd: Some(150),
+            }),
+            ..sorgente(OPUS_TONO.to_vec(), "opus")
+        };
+        let pezzo = tutto(&mut apri_a(s, 48_000, 1));
+        assert_eq!(pezzo.len(), 48_000, "un secondo esatto");
+        let mut d = apri_a(sorgente(OPUS_TONO.to_vec(), "opus"), 48_000, 1);
+        d.cerca(1_000).expect("il salto riesce");
+        let saltato = tutto(&mut d);
+        assert!(
+            pezzo[..] == saltato[..48_000],
+            "il pezzo non è il salto a un secondo"
+        );
+
+        // E sta al suo posto nel file suonato di fila. Le prime migliaia di
+        // campioni dopo un salto il codec li ricostruisce un po' diversi — è
+        // il prezzo di ogni salto su Opus, e la rincorsa lo tiene piccolo —
+        // ma passati quelli lo scarto è del codec che converge, non di un
+        // fotogramma fuori posto: spostato di uno sarebbe venti volte tanto.
+        let intero = tutto(&mut apri_a(sorgente(OPUS_TONO.to_vec(), "opus"), 48_000, 1));
+        let a_regime = scarto(&pezzo[4_000..], &intero[52_000..96_000]);
+        assert!(a_regime < 0.01, "il pezzo è fuori posto di {a_regime}");
+        let spostato = scarto(&pezzo[4_000..47_999], &intero[52_001..96_000]);
+        assert!(
+            spostato > 0.05,
+            "la prova non vede un fotogramma di scarto: {spostato}"
+        );
+    }
+
+    #[test]
+    fn un_ogg_concatenato_dentro_un_immagine_si_dichiara_non_supportato() {
+        // I tempi del foglio contano dal file, quelli di un Ogg ricominciano a
+        // ogni anello: quando il secondo anello comincia, il brano si ferma
+        // col codice dei formati che non sappiamo suonare.
+        let mut byte = OPUS_TONO.to_vec();
+        byte.extend_from_slice(OPUS_TONO);
+        let s = Sorgente {
+            segmento: Some(Segmento {
+                immagine: "disco.opus".to_owned(),
+                inizio_cd: 0,
+                fine_cd: None,
+            }),
+            ..sorgente(byte, "opus")
+        };
+        let mut d = apri_a(s, 48_000, 1);
+        let mut blocco = Vec::new();
+        let err = loop {
+            match d.prossimo(&mut blocco) {
+                Ok(true) => {}
+                Ok(false) => panic!("il secondo anello è passato come se niente fosse"),
+                Err(err) => break err,
+            }
+        };
+        assert_eq!(
+            err.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::PlaybackFormatUnsupported
+        );
+    }
+
+    #[test]
+    fn un_brano_nel_secondo_anello_di_un_ogg_non_e_un_brano_vuoto() {
+        // Due toni da tre secondi in fila: il brano che comincia a quattro
+        // secondi sta nel secondo anello. symphonia non sa saltarci, e prima il
+        // rifiuto diventava un brano vuoto senza un perché.
+        let mut byte = OPUS_TONO.to_vec();
+        byte.extend_from_slice(OPUS_TONO);
+        let a_quattro = |byte: Vec<u8>| Sorgente {
+            segmento: Some(Segmento {
+                immagine: "disco.opus".to_owned(),
+                inizio_cd: 300,
+                fine_cd: None,
+            }),
+            ..sorgente(byte, "opus")
+        };
+        let Err(err) = Decodificatore::apri(a_quattro(byte), 48_000, 1) else {
+            panic!("un brano nel secondo anello si è aperto");
+        };
+        assert_eq!(
+            err.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::PlaybackFormatUnsupported
+        );
+
+        // Lo stesso foglio su un Ogg di un anello solo descrive un brano oltre
+        // la fine del file, come in un'immagine troncata: vuoto, come in ogni
+        // altro formato, e non un errore a ogni brano che segue.
+        let mut d = apri_a(a_quattro(OPUS_TONO.to_vec()), 48_000, 1);
+        assert!(tutto(&mut d).is_empty());
+    }
+
+    /// I byte di un fotogramma dell'MP3 sintetico: MPEG-1, strato III,
+    /// 128 kbit/s a 44,1 kHz, mono, senza imbottitura.
+    const FOTOGRAMMA_MP3: usize = 417;
+
+    /// Un MP3 sintetico di `quanti` fotogrammi, tutti lunghi uguale e con le
+    /// informazioni laterali a zero, cioè silenzio per il decodificatore.
+    /// Davanti, il fotogramma del tag `tag` — `Info` o `Xing` — col numero dei
+    /// fotogrammi; in coda a ognuno, dove il decodificatore non guarda, il suo
+    /// numero, che dice quale fotogramma è stato letto.
+    fn mp3(tag: &[u8; 4], quanti: u32) -> Vec<u8> {
+        let testa = [0xff, 0xfb, 0x90, 0xc0];
+        let mut byte = Vec::new();
+        let mut primo = vec![0_u8; FOTOGRAMMA_MP3];
+        primo[..4].copy_from_slice(&testa);
+        // Dopo i diciassette byte laterali del mono: il tag, le bandiere —
+        // solo il numero dei fotogrammi — e il numero.
+        primo[21..25].copy_from_slice(tag);
+        primo[25..29].copy_from_slice(&1_u32.to_be_bytes());
+        primo[29..33].copy_from_slice(&quanti.to_be_bytes());
+        byte.extend_from_slice(&primo);
+        for n in 0..quanti {
+            let mut fotogramma = vec![0_u8; FOTOGRAMMA_MP3];
+            fotogramma[..4].copy_from_slice(&testa);
+            fotogramma[FOTOGRAMMA_MP3 - 4..].copy_from_slice(&n.to_be_bytes());
+            byte.extend_from_slice(&fotogramma);
+        }
+        byte
+    }
+
+    /// Il numero del fotogramma MPEG che il contenitore consegna adesso, e il
+    /// suo timestamp.
+    fn dove_sta(d: &mut Decodificatore) -> (u64, i64) {
+        let p = d.formato.next_packet().expect("si legge").expect("c'è");
+        let coda: [u8; 4] = p.data[p.data.len() - 4..].try_into().expect("quattro byte");
+        (u64::from(u32::from_be_bytes(coda)), p.pts.get())
+    }
+
+    #[test]
+    fn un_brano_a_meta_di_un_mp3_lungo_atterra_esatto() {
+        // Cinque minuti, e la traccia da 3:00 a 3:10, col tag `Info` del
+        // bitrate costante e con `Xing` del variabile. Tutte e due si aprono
+        // sul fotogramma MPEG che contiene il primo campione della rincorsa,
+        // col timestamp che è davvero il suo, e durano esatte: è il salto
+        // accurato, che conta i fotogrammi dall'inizio del file. Un salto «a
+        // grandi linee» leggerebbe meno, ma stimerebbe il timestamp dai byte —
+        // e fra due tracce contigue un fotogramma sbagliato si sente. Vedi
+        // `cerca`.
+        let quanti = 11_500;
+        let a_tre_minuti = |tag: &[u8; 4]| Sorgente {
+            segmento: Some(Segmento {
+                immagine: "disco.mp3".to_owned(),
+                inizio_cd: 13_500,
+                fine_cd: Some(14_250),
+            }),
+            ..sorgente(mp3(tag, quanti), "mp3")
+        };
+        // L'inizio della traccia meno gli 80 ms di rincorsa, in campioni.
+        let partenza = 13_500 * 588 - fotogrammi_da_ms(RINCORSA_MS, 44_100);
+        let atteso = (
+            partenza.div_euclid(1_152),
+            i64::try_from(partenza.div_euclid(1_152) * 1_152).expect("sta"),
+        );
+        for tag in [b"Info", b"Xing"] {
+            let mut d = apri_a(a_tre_minuti(tag), 44_100, 1);
+            assert_eq!(dove_sta(&mut d), atteso, "{tag:?}: all'apertura");
+
+            let mut d = apri_a(a_tre_minuti(tag), 44_100, 1);
+            assert_eq!(tutto(&mut d).len(), 750 * 588, "{tag:?}");
+            // E tornare all'inizio del brano, da in fondo, atterra lì di nuovo.
+            d.cerca(0).expect("il salto riesce");
+            assert_eq!(dove_sta(&mut d), atteso, "{tag:?}: dopo un salto");
+        }
+    }
+
+    #[test]
+    fn un_ape_che_non_si_sa_leggere_e_un_formato_non_supportato() {
+        // La firma di Monkey's Audio con una versione che `ape-decoder` non
+        // decodifica — la 3.97 di un'immagine vera del NAS, vedi
+        // `ape::VERSIONE_MINIMA` — e una con la versione giusta e
+        // l'intestazione troncata:
+        // tutte e due devono arrivare come formato non supportato — non come un
+        // file rotto, né come un panico in mezzo al riconoscimento.
+        let mut vecchio = b"MAC ".to_vec();
+        vecchio.extend_from_slice(&3_970_u16.to_le_bytes());
+        vecchio.resize(4_096, 0);
+        let mut troncato = b"MAC ".to_vec();
+        troncato.extend_from_slice(&3_990_u16.to_le_bytes());
+        troncato.extend_from_slice(&[0; 10]);
+        for byte in [vecchio, troncato] {
+            let Err(err) = Decodificatore::apri(sorgente(byte, "ape"), 48_000, 2) else {
+                panic!("un APE illeggibile si è aperto");
+            };
+            assert_eq!(
+                err.code().kind(),
+                rymembra_domain::errors::ErrorCodeKind::PlaybackFormatUnsupported
+            );
+        }
+    }
+
+    #[test]
+    fn un_ape_troppo_vecchio_non_diventa_un_wav_di_rumore() {
+        // I Monkey's Audio vecchi conservano dentro di sé l'intestazione del
+        // WAV da cui sono nati. Quando il lettore li lasciava passare senza
+        // riconoscerli, il riconoscitore cercava ancora, trovava quella, e il
+        // lettore WAV suonava i byte compressi come campioni: rumore bianco.
+        // Qui la firma della 3.97 e, poco dopo, un WAV vero: deve restare un
+        // formato non supportato, e non aprirsi come WAV.
+        let mut byte = b"MAC ".to_vec();
+        byte.extend_from_slice(&3_970_u16.to_le_bytes());
+        byte.resize(64, 0);
+        byte.extend_from_slice(&wav(44_100, 2, &rampa_su(2, 44_100)));
+        let Err(err) = Decodificatore::apri(sorgente(byte, "ape"), 48_000, 2) else {
+            panic!("un APE della 3.97 si è aperto: come WAV, cioè come rumore");
+        };
+        assert_eq!(
+            err.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::PlaybackFormatUnsupported
+        );
     }
 }

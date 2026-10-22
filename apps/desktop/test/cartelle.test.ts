@@ -15,6 +15,7 @@ import {
   apri,
   attraversoLente,
   bersagli,
+  branoDImmagine,
   chiave,
   chiaveRiga,
   chiudi,
@@ -222,4 +223,118 @@ test("il doppio clic su un file suona la cartella da lì", () => {
   const righe = appiattisci(apri(apri(libreria(), "C:\\M"), "C:\\M\\Album"));
   assert.deepEqual(codaDaFile(righe, 4), { brani: [1, 2, 10], partenza: 1 });
   assert.equal(codaDaFile(righe, 2), null, "una cartella non è un file");
+});
+
+// ── i brani delle immagini CD ──────────────────────────────────────────────
+
+/**
+ * Un brano d'immagine come lo manda il nucleo: il percorso è quello del `.cue`
+ * più `|NN`, e il nome è l'ultimo segmento — che di un file non è il nome.
+ */
+const traccia = (brano: number, cue: string, numero: string, titolo = `Brano ${brano}`) =>
+  foglia(brano, `${cue}|${numero}`, titolo);
+
+test("un brano d'immagine si riconosce dal percorso, come nel nucleo", () => {
+  assert.deepEqual(branoDImmagine("C:\\M\\Disco\\Album.cue|03"), {
+    cue: "C:\\M\\Disco\\Album.cue",
+    numero: 3,
+  });
+  assert.equal(branoDImmagine("\\\\nas\\cd\\ALBUM.CUE|12")?.numero, 12, "maiuscole");
+  // Due cifre, esatte; e un `.cue` prima del separatore.
+  assert.equal(branoDImmagine("C:\\M\\Album.cue|3"), null);
+  assert.equal(branoDImmagine("C:\\M\\Album.cue|003"), null);
+  assert.equal(branoDImmagine("C:\\M\\Album.flac|03"), null);
+  assert.equal(branoDImmagine("C:\\M\\03 - Brano.flac"), null);
+});
+
+test("i brani dello stesso .cue stanno in fila, per numero", () => {
+  const cue = "C:\\M\\Disco\\Album.cue";
+  const ordinati = ordinaFile([
+    traccia(10, cue, "10", "Decimo"),
+    traccia(2, cue, "02", "Zeta"),
+    traccia(1, cue, "01", "Mezzo"),
+  ]);
+  // Per numero e non per titolo: è l'ordine del disco.
+  assert.deepEqual(
+    ordinati.map((f) => f.brano),
+    [1, 2, 10],
+  );
+  // Dal percorso, non da `nome`: anche se il nucleo ci scrivesse il titolo,
+  // l'ordine resterebbe quello del disco.
+  const coiTitoli = ordinaFile([
+    { ...traccia(2, cue, "02"), nome: "Alfa" },
+    { ...traccia(1, cue, "01"), nome: "Zeta" },
+  ]);
+  assert.deepEqual(
+    coiTitoli.map((f) => f.brano),
+    [1, 2],
+  );
+});
+
+test("due .cue nella stessa cartella non si mescolano, e i file veri stanno al loro posto", () => {
+  const ordinati = ordinaFile([
+    traccia(21, "C:\\M\\Box\\CD2.cue", "01"),
+    foglia(99, "C:\\M\\Box\\Bonus.flac"),
+    traccia(12, "C:\\M\\Box\\CD1.cue", "02"),
+    traccia(22, "C:\\M\\Box\\CD2.cue", "02"),
+    traccia(11, "C:\\M\\Box\\CD1.cue", "01"),
+    foglia(98, "C:\\M\\Box\\Zeta.flac"),
+  ]);
+  assert.deepEqual(
+    ordinati.map((f) => f.brano),
+    // «Bonus.flac», poi CD1 per intero, poi CD2, poi «Zeta.flac»: il nome del
+    // `.cue` sta fra gli altri nomi come se fosse un file.
+    [99, 11, 12, 21, 22, 98],
+  );
+});
+
+test("un brano d'immagine senza titolo si chiama col numero e il disco, mai «Album.cue|03»", () => {
+  let stato = conFigli(VUOTO, null, [cartella("C:\\M", 1, 0, true)]);
+  stato = conFigli(stato, "C:\\M", [cartella("C:\\M\\Disco", 0, 3)]);
+  stato = conFigli(
+    stato,
+    "C:\\M\\Disco",
+    [],
+    [
+      traccia(3, "C:\\M\\Disco\\Album.cue", "03", "  "),
+      traccia(1, "C:\\M\\Disco\\Album.cue", "01", "Il primo"),
+      traccia(2, "C:\\M\\Disco\\Album.cue", "02", ""),
+    ],
+  );
+  stato = apri(apri(stato, "C:\\M"), "C:\\M\\Disco");
+  // Senza lingue: il numero e il disco.
+  assert.deepEqual(nomi(appiattisci(stato)), [
+    "C:\\M",
+    "Disco",
+    "Il primo",
+    "02 · Album",
+    "03 · Album",
+  ]);
+  // Con la frase della finestra.
+  const righe = appiattisci(stato, (numero, album) => `Traccia ${numero} · ${album}`);
+  assert.deepEqual(nomi(righe).slice(2), ["Il primo", "Traccia 02 · Album", "Traccia 03 · Album"]);
+  // Percorsi diversi, chiavi diverse: la selezione non confonde due brani dello
+  // stesso `.cue`, e il doppio clic suona il disco da lì, in ordine.
+  assert.equal(new Set(righe.map(chiaveRiga)).size, righe.length);
+  assert.deepEqual(codaDaFile(righe, 3), { brani: [1, 2, 3], partenza: 1 });
+});
+
+test("sotto il filtro i brani d'immagine tengono lo stesso ordine", () => {
+  const filtro = lente({
+    rami: [
+      { percorso: null, cartelle: [cartella("C:\\M", 1, 0, true)], file: [] },
+      {
+        percorso: "C:\\M",
+        cartelle: [],
+        file: [traccia(10, "C:\\M\\Album.cue", "10"), traccia(9, "C:\\M\\Album.cue", "09")],
+      },
+    ],
+    trovate: [],
+    corrispondenze: 2,
+    troncato: false,
+  });
+  assert.deepEqual(
+    filtro.file.get(chiave("C:\\M"))?.map((f) => f.brano),
+    [9, 10],
+  );
 });

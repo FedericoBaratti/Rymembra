@@ -94,6 +94,29 @@ symphonia = { version = "0.6.1", default-features = false, features = [
 # Esatta perché il crate è nato il 2026-08-27: una 0.2.x nuova ripassa dal mazzo.
 opus-pure = "=0.2.1"
 
+# Monkey's Audio (`.ape`), il formato di tante immagini CD accompagnate dal loro
+# `.cue`. symphonia ne conosce il nome del codec e basta: il decodificatore lo
+# porta questo crate, e `crate::ape` ci mette sopra un lettore di contenitore
+# che consegna a symphonia pacchetti già PCM — il decodificatore PCM che c'è già
+# fa il resto, senza un codec nuovo nel registro.
+#
+# Rust e non C per le ragioni di `opus-pure`, e qui «Rust puro» vuol dire anche
+# senza `unsafe`: il crate se lo vieta (`#![deny(unsafe_code)]`), e il sorgente
+# della 0.3.2 è stato letto per verificarlo. Le sue due dipendenze, `crc32fast`
+# e `md-5`, erano già nel grafo.
+#
+# Si usa **a flusso**: `decode_frame` un fotogramma alla volta, e `seek`, che è
+# aritmetica sulla tabella dei salti letta all'apertura. Mai `decode_all`, che
+# di un'immagine da settanta minuti farebbe settecento megabyte in memoria. La
+# prova che decodifica come ffmpeg sta in `examples/ape_md5.rs`.
+#
+# Un limite, dichiarato: decodifica i file scritti dalla 3.99 in su, non quelli
+# fra la 3.95 e la 3.98 che dice di accettare. Vedi `ape::VERSIONE_MINIMA`.
+#
+# Esatta per la stessa ragione di `opus-pure`: il sorgente letto è questo, e una
+# 0.3.x nuova ripassa dalla lettura e dal confronto con ffmpeg.
+ape-decoder = "=0.3.2"
+
 # L'uscita. WASAPI qui, AAudio quando ci sarà Android: è la ragione per cui il
 # dispositivo sta dietro questa libreria e non dietro una chiamata di sistema.
 #
@@ -120,6 +143,9 @@ rtrb = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
+# L'impronta del PCM in `examples/ape_md5.rs`, da confrontare con quella di
+# ffmpeg. È la stessa versione che `ape-decoder` porta già nel grafo.
+md-5 = "0.10"
 
 [lints]
 workspace = true

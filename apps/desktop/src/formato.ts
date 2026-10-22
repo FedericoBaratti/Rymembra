@@ -75,6 +75,24 @@ export function dataOra(ms: number): string {
   return new Date(ms).toLocaleString(locale());
 }
 
+/**
+ * Una data e un'ora senza i secondi.
+ *
+ * Per i posti stretti: i numeri delle schede delle Impostazioni («Ultima
+ * passata», «Ultimo salvataggio») sono scritti col carattere dei titoli, e
+ * «05/10/2026, 12:25:05» andava a capo dopo la virgola lasciando l'ora da sola
+ * sulla riga sotto. I secondi di una passata di ieri non li legge nessuno.
+ */
+export function dataOraBreve(ms: number): string {
+  return new Date(ms).toLocaleString(locale(), {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 /** Solo la data. */
 export function data(ms: number): string {
   return new Date(ms).toLocaleDateString(locale());

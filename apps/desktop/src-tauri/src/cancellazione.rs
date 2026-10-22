@@ -29,7 +29,7 @@
 //!
 //! Adesso si chiede prima dove sta ogni file ([`rymembra_app::volumi`], che
 //! riconosce anche le lettere mappate), la finestra lo dice nella conferma —
-//! «questi N file saranno cancellati definitivamente» — e solo con quella
+//! «questi N brani saranno cancellati per sempre» — e solo con quella
 //! conferma in mano i file di rete si tolgono con `remove_file`, senza passare
 //! dalla shell. Senza conferma il nucleo rifiuta con `fs.noRecycleBin`, prima
 //! di aver toccato la coda o un file. Un file di cui non si è saputo dove sta
@@ -45,6 +45,15 @@
 //! dire fallire proprio sul brano che si sta ascoltando, cioè su quello che si
 //! sta guardando mentre si preme.
 //!
+//! # Le immagini CD
+//!
+//! Un brano d'immagine — una traccia di un FLAC o di un APE intero, tagliato
+//! da un `.cue` — non ha un file suo, e dal disco si toglie solo insieme a
+//! tutti gli altri brani del suo disco: allora vanno nel Cestino l'immagine e
+//! il `.cue`. Una parte sola si rifiuta, e vale come una parte anche la
+//! vecchia riga del disco intero, che ha per file l'immagine. Il perché sta su
+//! `da_togliere`.
+//!
 //! # Perché un file suo
 //!
 //! Per la stessa ragione di [`crate::playlist`]: `comandi.rs` è già il più
@@ -56,7 +65,7 @@ use rymembra_app::library::{self, Cancellazione};
 use rymembra_app::settings::{self, CHIAVE_CARTELLE};
 use rymembra_app::volumi::{self, Collocazione};
 use rymembra_domain::errors::{AppError, ErrorCode};
-use rymembra_domain::paths::PathRules;
+use rymembra_domain::paths::{PathRules, path_key};
 use tauri::Manager as _;
 
 use crate::disparte::in_disparte;
@@ -148,24 +157,232 @@ pub async fn brani_togli(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<Cancel
     crate::nuvola::se_riuscito(&app, esito)
 }
 
-/// I percorsi su disco dei brani, nell'ordine in cui la libreria li restituisce.
-///
-/// I brani di catalogo non ne hanno, e non compaiono: per loro la domanda
-/// «dove sta il file» non ha senso.
-fn percorsi_dei(stato: &Stato, brani: &[i64]) -> Result<Vec<String>, AppError> {
-    let righe = con_libreria(stato, |libreria| {
-        library::summaries_by_id(&libreria.connection, brani)
-    })?;
-    Ok(righe.into_iter().filter_map(|brano| brano.path).collect())
+/// Quel che «Elimina dal disco» toglie per una parte dei brani scelti.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaTogliere {
+    /// I file veri da togliere, nell'ordine in cui vanno tolti: il file del
+    /// brano; o l'immagine CD e poi il suo `.cue`. Vuoto per un brano di
+    /// catalogo, che sul disco non c'è.
+    file: Vec<String>,
+    /// Le righe che se ne vanno appena il primo file se n'è andato.
+    brani: Vec<i64>,
 }
 
-/// Quanti dei file di questi brani stanno dove un Cestino non c'è.
+/// Che cosa togliere dal disco per questi brani, e quali righe con loro.
+///
+/// # I brani d'immagine CD
+///
+/// Un brano d'immagine non ha un file suo: il suo percorso in tabella,
+/// `…\Album.cue|03`, non si apre, e il file vero — l'immagine, nella colonna
+/// `immagine` — è di tutti i brani del disco insieme. Toglierlo per un brano
+/// solo vorrebbe dire toglierlo agli altri, che nessuno ha scelto. Quindi:
+///
+/// - con `tutti_i_brani`, se dei brani di un'immagine ne è scelta solo una
+///   parte, si rifiuta tutto con `library.imageTrackPartialDelete`, prima di
+///   aver toccato qualunque cosa;
+/// - se sono scelti tutti, si tolgono l'immagine e il suo `.cue` — l'immagine
+///   per prima: se il `.cue` poi non se ne va, alla scansione dopo resta un
+///   foglio senza immagine, che si ignora; nell'ordine opposto resterebbe
+///   un'immagine senza foglio, che tornerebbe come un brano lungo un disco —
+///   e le righe se ne vanno con l'immagine.
+///
+/// Senza `tutti_i_brani` non si rifiuta niente: l'immagine e il `.cue` stanno
+/// in una voce sola anche quando i brani scelti di quel disco sono dodici.
+/// [`brani_su_rete`] chiede invece con `tutti_i_brani`, così che il rifiuto
+/// arrivi **prima** della conferma e non dopo: una finestrella che chiede
+/// «sicuro?» per un gesto che poi verrà rifiutato fa rispondere a una domanda
+/// che non c'era.
+///
+/// L'immagine si riconosce dalla colonna così com'è scritta, la stessa stringa
+/// per tutti i brani di quel disco: è anche quel che la riproduzione confronta
+/// per sapere se due brani sono contigui.
+///
+/// # La vecchia riga del disco intero
+///
+/// Prima che la scansione sapesse leggere i `.cue`, l'immagine era un brano
+/// solo, lungo un disco, con il percorso del file grande e senza `immagine`. La
+/// scansione che la taglia toglie quella riga, ma per un po' può restare
+/// accanto ai brani nuovi: la guardia contro le stragi ne ha rinviato la
+/// rimozione, o chi guardava non l'ha confermata. In quel tempo il suo file è
+/// l'immagine degli altri, e toglierlo per lei sola vorrebbe dire cestinare i
+/// dodici brani che nessuno ha scelto. Quindi quella riga vale come un brano
+/// del disco: da sola si rifiuta come una parte; con tutti i brani d'immagine
+/// sta nella loro voce. E con loro se ne va comunque, scelta o no, perché il
+/// suo file se ne va: una riga per un file che non c'è più è un brano che non
+/// suona.
+///
+/// Il suo percorso si confronta con la colonna `immagine` con la chiave della
+/// scansione ([`path_key`]), cioè come fa il nucleo in
+/// `rymembra_app::import_playlist::brani_dell_immagine`. Non con quella
+/// funzione: legge tutti i brani d'immagine a ogni chiamata, e qui servirebbe
+/// una volta per ogni file scelto, sotto il lucchetto, due volte per gesto.
+/// Le immagini distinte si leggono una volta sola, e solo se fra i brani
+/// scelti c'è un file intero.
+///
+/// # Errori
+///
+/// `library.imageTrackPartialDelete` come detto; `db.*` se la lettura fallisce.
+fn da_togliere(
+    connection: &rusqlite::Connection,
+    brani: &[i64],
+    tutti_i_brani: bool,
+) -> Result<Vec<DaTogliere>, AppError> {
+    use rusqlite::OptionalExtension as _;
+    let fallita = |err: rusqlite::Error| {
+        rymembra_app::db::codice_da_sqlite("brani da eliminare dal disco", &err)
+    };
+    let regole = PathRules::for_current_platform();
+    let righe = library::summaries_by_id(connection, brani)?;
+    let scelti: std::collections::HashSet<i64> = righe.iter().map(|brano| brano.id).collect();
+    let mut immagine_di = connection
+        .prepare_cached("SELECT immagine FROM tracks WHERE id = ?1")
+        .map_err(fallita)?;
+    let mut del_disco = connection
+        .prepare_cached("SELECT id, path FROM tracks WHERE immagine = ?1 ORDER BY path")
+        .map_err(fallita)?;
+    // Le immagini della libreria per chiave di percorso, lette alla prima riga
+    // senza `immagine`: vedi «La vecchia riga del disco intero».
+    let mut immagini: Option<std::collections::HashMap<String, String>> = None;
+    let mut piano = Vec::with_capacity(righe.len());
+    let mut immagini_viste = std::collections::HashSet::new();
+    for brano in righe {
+        // Un brano di catalogo non ha un file: la sua riga se ne va e basta.
+        let Some(percorso) = brano.path else {
+            piano.push(DaTogliere {
+                file: Vec::new(),
+                brani: vec![brano.id],
+            });
+            continue;
+        };
+        let immagine: Option<String> = immagine_di
+            .query_row([brano.id], |riga| riga.get(0))
+            .optional()
+            .map_err(fallita)?
+            .flatten();
+        let immagine = match immagine {
+            Some(immagine) => immagine,
+            None => {
+                if immagini.is_none() {
+                    immagini = Some(immagini_per_chiave(connection, regole)?);
+                }
+                // Un file intero che è l'immagine di altri brani è la vecchia
+                // riga del disco intero: si tratta come un brano di quel disco.
+                let sua = immagini
+                    .as_ref()
+                    .and_then(|indice| indice.get(&path_key(&percorso, regole)))
+                    .cloned();
+                match sua {
+                    Some(immagine) => immagine,
+                    None => {
+                        piano.push(DaTogliere {
+                            file: vec![percorso],
+                            brani: vec![brano.id],
+                        });
+                        continue;
+                    }
+                }
+            }
+        };
+        // Un'immagine si guarda una volta, al primo dei suoi brani.
+        if !immagini_viste.insert(immagine.clone()) {
+            continue;
+        }
+        let disco: Vec<(i64, Option<String>)> = del_disco
+            .query_map([&immagine], |riga| Ok((riga.get(0)?, riga.get(1)?)))
+            .map_err(fallita)?
+            .collect::<Result<_, _>>()
+            .map_err(fallita)?;
+        let mancano = disco.iter().filter(|(id, _)| !scelti.contains(id)).count();
+        if tutti_i_brani && mancano > 0 {
+            return Err(AppError::new(ErrorCode::LibraryImageTrackPartialDelete {
+                path: immagine.clone(),
+            })
+            .with_cause(format!(
+                "scelti {} brani su {} dell'immagine CD: o tutti, o nessuno",
+                disco.len().saturating_sub(mancano),
+                disco.len()
+            )));
+        }
+        // La vecchia riga del disco intero, se c'è, si cerca qui e non si
+        // aspetta di incontrarla fra le scelte: arrivata dopo i brani del suo
+        // disco, verrebbe saltata come un'immagine già vista. Il suo percorso
+        // è quello dell'immagine; quello di un brano d'immagine finisce in
+        // `|NN`, e qui non risponde.
+        let interi = library::ids_by_path(connection, std::slice::from_ref(&immagine), regole)?;
+        let mut file = vec![immagine];
+        for (_, percorso) in &disco {
+            let foglio = percorso
+                .as_deref()
+                .and_then(rymembra_domain::cue::brano_d_immagine)
+                .map(|(cue, _)| cue);
+            if let Some(cue) = foglio
+                && !file.iter().any(|gia| gia == cue)
+            {
+                file.push(cue.to_owned());
+            }
+        }
+        let mut ids: Vec<i64> = disco.into_iter().map(|(id, _)| id).collect();
+        for intera in interi.into_iter().flatten() {
+            if !ids.contains(&intera) {
+                ids.push(intera);
+            }
+        }
+        piano.push(DaTogliere { file, brani: ids });
+    }
+    Ok(piano)
+}
+
+/// Ogni immagine CD della libreria, per chiave di percorso, con la stringa
+/// scritta nella colonna `immagine`.
+///
+/// Le distinte e non i brani: qualche centinaio di righe anche su una libreria
+/// con migliaia di brani d'immagine, e le dà l'indice parziale su `immagine`.
+/// Se due grafie della stessa immagine stessero insieme in tabella — il tempo
+/// di una passata — vince la prima: l'altra ha comunque i suoi brani.
+///
+/// # Errori
+///
+/// `db.*` se la lettura fallisce.
+fn immagini_per_chiave(
+    connection: &rusqlite::Connection,
+    regole: PathRules,
+) -> Result<std::collections::HashMap<String, String>, AppError> {
+    let fallita = |err: rusqlite::Error| {
+        rymembra_app::db::codice_da_sqlite("immagini CD della libreria", &err)
+    };
+    let mut lettura = connection
+        .prepare_cached(
+            "SELECT DISTINCT immagine FROM tracks WHERE immagine IS NOT NULL ORDER BY immagine",
+        )
+        .map_err(fallita)?;
+    let righe = lettura
+        .query_map([], |riga| riga.get::<_, String>(0))
+        .map_err(fallita)?;
+    let mut indice = std::collections::HashMap::new();
+    for riga in righe {
+        let immagine = riga.map_err(fallita)?;
+        indice
+            .entry(path_key(&immagine, regole))
+            .or_insert(immagine);
+    }
+    Ok(indice)
+}
+
+/// Quanti di questi brani se ne vanno per sempre, perché il loro file sta dove
+/// un Cestino non c'è.
 ///
 /// È la domanda che la conferma di «Elimina dal disco» fa **prima** di
 /// mostrarsi: zero vuol dire la frase di sempre, più di zero vuol dire
-/// «questi N file saranno cancellati definitivamente». I file di cui non si è
+/// «questi N brani saranno cancellati per sempre». I file di cui non si è
 /// saputo dove stanno si contano insieme a quelli di rete, per la stessa
 /// ragione per cui [`brani_elimina`] li tratta così: vedi il `//!`.
+///
+/// Brani e non file, perché la finestrella mette questo numero accanto a
+/// quanti brani si sono scelti, e da lì decide se dire «gli altri vanno nel
+/// Cestino». I dodici brani di un'immagine CD sul NAS sono due file — l'immagine
+/// e il `.cue` — e contarli come due diceva «2 brani su rete, gli altri nel
+/// Cestino» mentre sparivano per sempre tutti e dodici. Vedi
+/// [`brani_senza_cestino`].
 ///
 /// # Dove gira
 ///
@@ -174,22 +391,66 @@ fn percorsi_dei(stato: &Stato, brani: &[i64]) -> Result<Vec<String>, AppError> {
 ///
 /// # Errori
 ///
-/// `internal.aborted` se lo stato non c'è più, `db.*` se la lettura fallisce.
+/// `library.imageTrackPartialDelete` se dei brani di un'immagine CD ne è scelta
+/// solo una parte: la conferma lo mostra al posto del tasto, invece di chiedere
+/// un sì che [`brani_elimina`] rifiuterebbe. `internal.aborted` se lo stato non
+/// c'è più, `db.*` se la lettura fallisce.
 #[tauri::command]
 pub async fn brani_su_rete(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<usize> {
     in_disparte("collocazione dei brani da eliminare", move || {
         let stato = stato_di(&app, "collocazione dei brani")?;
-        let percorsi = percorsi_dei(&stato, &brani)?;
-        Ok(
-            volumi::collocazioni(&percorsi, volumi::SCADENZA_RISOLUZIONE)
-                .into_iter()
-                .filter(|dove| !dove.ha_un_cestino())
-                .count(),
-        )
+        let piano = con_libreria(&stato, |libreria| {
+            da_togliere(&libreria.connection, &brani, true)
+        })?;
+        let percorsi: Vec<String> = piano
+            .iter()
+            .flat_map(|voce| voce.file.iter().cloned())
+            .collect();
+        let collocazioni = volumi::collocazioni(&percorsi, volumi::SCADENZA_RISOLUZIONE);
+        // Come in `brani_elimina`: chi non ha una risposta vale come di rete.
+        let dove = |percorso: &str| {
+            percorsi
+                .iter()
+                .position(|p| p == percorso)
+                .and_then(|i| collocazioni.get(i).copied())
+                .unwrap_or(Collocazione::Ignota)
+        };
+        Ok(brani_senza_cestino(&piano, &brani, |percorso| {
+            dove(percorso).ha_un_cestino()
+        }))
     })
     .await
     .map_err(errore)?
     .map_err(errore)
+}
+
+/// Quanti dei brani `scelti` se ne vanno insieme a un file che non può andare
+/// nel Cestino.
+///
+/// Si contano le righe delle voci di [`da_togliere`] che hanno almeno un file
+/// dove il Cestino non c'è: [`brani_elimina`] le toglie tutte insieme col primo
+/// file della voce, quindi per chi guarda sono perse per sempre tutte. Una
+/// voce di catalogo non ha file e non conta.
+///
+/// Solo le scelte, perché la finestrella confronta questo numero con quanti
+/// brani si sono scelti: la vecchia riga del disco intero, che se ne va con
+/// l'immagine anche quando nessuno l'ha scelta, lo farebbe arrivare a «tutti»
+/// in una scelta di dodici brani d'immagine sul NAS e un file locale — e la
+/// frase direbbe che nemmeno quello va nel Cestino.
+///
+/// Pura apposta, con `ha_un_cestino` dato da fuori: la domanda vera chiede a
+/// Windows dove sta una cartella, e una prova non ha un NAS.
+fn brani_senza_cestino(
+    piano: &[DaTogliere],
+    scelti: &[i64],
+    ha_un_cestino: impl Fn(&str) -> bool,
+) -> usize {
+    let scelti: std::collections::HashSet<i64> = scelti.iter().copied().collect();
+    piano
+        .iter()
+        .filter(|voce| voce.file.iter().any(|percorso| !ha_un_cestino(percorso)))
+        .map(|voce| voce.brani.iter().filter(|id| scelti.contains(id)).count())
+        .sum()
 }
 
 /// Cancella un file **per sempre**, dove un Cestino non c'è.
@@ -228,6 +489,9 @@ fn per_sempre(percorso: &str) -> Result<(), AppError> {
 ///
 /// # Errori
 ///
+/// `library.imageTrackPartialDelete` se fra i brani ce n'è qualcuno di
+/// un'immagine CD di cui non sono scelti tutti: vedi [`da_togliere`]. Anche
+/// lì non si è toccato niente.
 /// `fs.noRecycleBin` se qualche file sta dove un Cestino non c'è e `definitivi`
 /// non è stato detto: in quel caso non si è toccato niente, né la coda né un
 /// file. `fs.trashFailed` — o uno dei `fs.*` più precisi, quando Windows dice
@@ -247,8 +511,11 @@ pub async fn brani_elimina(
     let definitivi = definitivi.unwrap_or(false);
     let esito = in_disparte("eliminazione di brani dal disco", move || {
         let stato = stato_di(&mano, "eliminazione di brani")?;
+        // Il piano per primo, e con lui il rifiuto di un'immagine CD scelta a
+        // metà: prima di chiedere dove stanno i file, prima di fermare il
+        // motore, prima di qualunque cosa che si veda.
         let condannati = con_libreria(&stato, |libreria| {
-            library::summaries_by_id(&libreria.connection, &brani)
+            da_togliere(&libreria.connection, &brani, true)
         })?;
         if condannati.is_empty() {
             return Ok(0);
@@ -258,7 +525,7 @@ pub async fn brani_elimina(
         // risposta è un rifiuto, chi ascoltava deve continuare ad ascoltare.
         let percorsi: Vec<String> = condannati
             .iter()
-            .filter_map(|brano| brano.path.clone())
+            .flat_map(|voce| voce.file.iter().cloned())
             .collect();
         let collocazioni = volumi::collocazioni(&percorsi, volumi::SCADENZA_RISOLUZIONE);
         let dove = |percorso: &str| {
@@ -279,35 +546,45 @@ pub async fn brani_elimina(
         }
 
         // Il motore lascia andare i file che ha in mano — il corrente e quello
-        // in canna — prima che il Cestino provi a prenderli.
-        let ids: Vec<i64> = condannati.iter().map(|brano| brano.id).collect();
+        // in canna — prima che il Cestino provi a prenderli. Per un brano
+        // d'immagine il file in mano è l'immagine, e i brani da sgomberare
+        // sono tutti quelli del disco.
+        let ids: Vec<i64> = condannati
+            .iter()
+            .flat_map(|voce| voce.brani.iter().copied())
+            .collect();
         sgombera(&mano, &ids, true);
 
-        let mut andati: Vec<i64> = Vec::with_capacity(condannati.len());
+        let mut andati: Vec<i64> = Vec::with_capacity(ids.len());
         let mut guasto = None;
-        for brano in &condannati {
+        'voci: for voce in &condannati {
             // Un brano di catalogo non ha un file da mandare nel Cestino, e la
             // sua riga se ne va lo stesso: «elimina dal disco» su qualcosa che
             // sul disco non c'è vuol dire «toglilo dalla libreria», che è quel
             // che succede qui sotto insieme a tutti gli altri. Fallire sarebbe
             // rispondere a una domanda che nessuno ha fatto.
-            let Some(percorso) = brano.path.as_deref() else {
-                andati.push(brano.id);
+            if voce.file.is_empty() {
+                andati.extend(&voce.brani);
                 continue;
-            };
-            // Dove il Cestino c'è, il Cestino; dove non c'è — ed è stato
-            // confermato, o non si sarebbe arrivati qui — `remove_file`, senza
-            // passare dalla shell e dal suo dialogo senza finestra.
-            let fatto = if dove(percorso).ha_un_cestino() {
-                trash::delete(percorso).map_err(|err| nel_cestino(percorso, &err))
-            } else {
-                per_sempre(percorso)
-            };
-            match fatto {
-                Ok(()) => andati.push(brano.id),
-                Err(err) => {
-                    guasto = Some(err);
-                    break;
+            }
+            for (quale, percorso) in voce.file.iter().enumerate() {
+                // Dove il Cestino c'è, il Cestino; dove non c'è — ed è stato
+                // confermato, o non si sarebbe arrivati qui — `remove_file`,
+                // senza passare dalla shell e dal suo dialogo senza finestra.
+                let fatto = if dove(percorso).ha_un_cestino() {
+                    trash::delete(percorso).map_err(|err| nel_cestino(percorso, &err))
+                } else {
+                    per_sempre(percorso)
+                };
+                match fatto {
+                    // Le righe se ne vanno col primo file: il brano, o
+                    // l'immagine. Un `.cue` rimasto dopo non suona niente.
+                    Ok(()) if quale == 0 => andati.extend(&voce.brani),
+                    Ok(()) => {}
+                    Err(err) => {
+                        guasto = Some(err);
+                        break 'voci;
+                    }
                 }
             }
         }
@@ -537,5 +814,236 @@ mod prove {
         // gli altri guasti generici.
         let err = nel_cestino(r"C:\musica\a.mp3", &os(1_234));
         assert!(err.cause().is_some_and(|c| c.contains("1234")));
+    }
+}
+
+#[cfg(test)]
+mod prove_delle_immagini {
+    use super::{DaTogliere, da_togliere};
+    use crate::stato::Stato;
+
+    /// Un file intero e un disco d'immagine da tre brani, col suo `.cue`.
+    fn banco(
+        stato: &Stato,
+    ) -> std::sync::MutexGuard<'_, Result<crate::stato::Libreria, rymembra_domain::errors::AppError>>
+    {
+        let guardia = stato.libreria.lock().expect("lucchetto");
+        guardia
+            .as_ref()
+            .expect("libreria aperta")
+            .connection
+            .execute_batch(
+                r"INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                     duration_ms, file_size, date_added, date_modified)
+                 VALUES (1, 'C:\M\a.flac', 'k1', 'T', 'A', 'Al', 'g', 1000, 1, 0, 0);
+                 INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                     duration_ms, file_size, date_added, date_modified,
+                                     immagine, inizio_cd, fine_cd)
+                 VALUES (2, 'C:\M\Disco\Album.cue|01', 'k2', 'Uno', 'A', 'D', 'd', 1000, 9,
+                         0, 0, 'C:\M\Disco\Album.ape', 0, 7500),
+                        (3, 'C:\M\Disco\Album.cue|02', 'k3', 'Due', 'A', 'D', 'd', 1000, 9,
+                         0, 0, 'C:\M\Disco\Album.ape', 7500, 15000),
+                        (4, 'C:\M\Disco\Album.cue|03', 'k4', 'Tre', 'A', 'D', 'd', 1000, 9,
+                         0, 0, 'C:\M\Disco\Album.ape', 15000, NULL);",
+            )
+            .expect("banco");
+        guardia
+    }
+
+    #[test]
+    fn una_parte_dei_brani_di_un_immagine_non_si_elimina() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let guardia = banco(&stato);
+        let connection = &guardia.as_ref().expect("libreria").connection;
+
+        // Due brani del disco su tre, insieme a un file intero: no, per tutti.
+        let rifiuto = da_togliere(connection, &[1, 2, 3], true).expect_err("una parte sola");
+        assert_eq!(
+            rifiuto.code().kind().code(),
+            "library.imageTrackPartialDelete"
+        );
+        assert!(
+            rifiuto.cause().is_some_and(|c| c.contains("2 brani su 3")),
+            "la causa dice quanti: {:?}",
+            rifiuto.cause()
+        );
+    }
+
+    #[test]
+    fn tutti_i_brani_di_un_immagine_tolgono_l_immagine_e_il_suo_foglio() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let guardia = banco(&stato);
+        let connection = &guardia.as_ref().expect("libreria").connection;
+
+        let mut piano = da_togliere(connection, &[4, 1, 2, 3], true).expect("tutti");
+        piano.sort_by_key(|voce| voce.brani.first().copied());
+        assert_eq!(
+            piano,
+            vec![
+                DaTogliere {
+                    file: vec![r"C:\M\a.flac".to_owned()],
+                    brani: vec![1],
+                },
+                DaTogliere {
+                    // Prima l'immagine, poi il foglio: una volta sola
+                    // ciascuno, e mai il percorso virtuale.
+                    file: vec![
+                        r"C:\M\Disco\Album.ape".to_owned(),
+                        r"C:\M\Disco\Album.cue".to_owned()
+                    ],
+                    brani: vec![2, 3, 4],
+                },
+            ]
+        );
+    }
+
+    /// La vecchia riga del disco intero accanto ai brani nuovi: il file grande
+    /// letto come un brano solo, prima che la scansione sapesse dei `.cue`.
+    /// `percorso` è il suo, che può differire dall'immagine nelle maiuscole.
+    fn con_la_riga_intera(connection: &rusqlite::Connection, percorso: &str) {
+        connection
+            .execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                     duration_ms, file_size, date_added, date_modified)
+                 VALUES (5, ?1, 'k5', 'Disco', 'A', 'D', 'd', 3000, 9, 0, 0)",
+                [percorso],
+            )
+            .expect("riga intera");
+    }
+
+    #[test]
+    fn la_vecchia_riga_del_disco_intero_da_sola_non_cestina_l_immagine() {
+        // Il difetto: la riga intera ha `immagine` NULL e per file l'immagine,
+        // e prima diventava `file: [immagine]` — cioè l'immagine nel Cestino
+        // per una riga sola, e i tre brani del disco persi senza averli scelti.
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let guardia = banco(&stato);
+        let connection = &guardia.as_ref().expect("libreria").connection;
+        con_la_riga_intera(connection, r"C:\M\Disco\Album.ape");
+
+        for scelti in [&[5][..], &[1, 5], &[5, 2]] {
+            let rifiuto = da_togliere(connection, scelti, true).expect_err("una parte sola");
+            assert_eq!(
+                rifiuto.code().kind().code(),
+                "library.imageTrackPartialDelete",
+                "scelti {scelti:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn la_vecchia_riga_del_disco_intero_se_ne_va_con_il_suo_disco() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let guardia = banco(&stato);
+        let connection = &guardia.as_ref().expect("libreria").connection;
+        con_la_riga_intera(connection, r"C:\M\Disco\Album.ape");
+
+        let disco = DaTogliere {
+            file: vec![
+                r"C:\M\Disco\Album.ape".to_owned(),
+                r"C:\M\Disco\Album.cue".to_owned(),
+            ],
+            brani: vec![2, 3, 4, 5],
+        };
+        // Una voce sola, in qualunque ordine arrivino: la riga intera prima
+        // dei brani d'immagine o dopo, quando l'immagine è già stata vista.
+        for scelti in [&[5, 2, 3, 4][..], &[2, 3, 4, 5], &[3, 5, 4, 2]] {
+            assert_eq!(
+                da_togliere(connection, scelti, true).expect("tutti"),
+                vec![disco.clone()],
+                "scelti {scelti:?}"
+            );
+        }
+        // Scelti i soli brani d'immagine, la riga intera se ne va lo stesso:
+        // il suo file è l'immagine, e dopo non suonerebbe più.
+        assert_eq!(
+            da_togliere(connection, &[2, 3, 4], true).expect("tutti"),
+            vec![disco]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn la_riga_intera_si_riconosce_anche_con_altre_maiuscole() {
+        // La chiave della scansione, come nel nucleo: su Windows le maiuscole
+        // non distinguono due file.
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let guardia = banco(&stato);
+        let connection = &guardia.as_ref().expect("libreria").connection;
+        con_la_riga_intera(connection, r"C:\M\DISCO\album.APE");
+
+        let rifiuto = da_togliere(connection, &[5], true).expect_err("una parte sola");
+        assert_eq!(
+            rifiuto.code().kind().code(),
+            "library.imageTrackPartialDelete"
+        );
+        let piano = da_togliere(connection, &[2, 3, 4], true).expect("tutti");
+        assert_eq!(piano.len(), 1);
+        assert_eq!(
+            piano.first().map(|voce| voce.brani.clone()),
+            Some(vec![2, 3, 4, 5])
+        );
+    }
+
+    #[test]
+    fn la_conferma_conta_i_brani_che_spariscono_non_i_file() {
+        // Il difetto: un disco d'immagine sul NAS sono due file, e la
+        // finestrella diceva «2 brani su rete, gli altri nel Cestino» mentre
+        // sparivano per sempre tutti e tre. Qui il disco sta «in rete» e il
+        // file intero no.
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let guardia = banco(&stato);
+        let connection = &guardia.as_ref().expect("libreria").connection;
+        let ha_un_cestino = |percorso: &str| !percorso.starts_with(r"C:\M\Disco\");
+
+        let scelti = [1, 2, 3, 4];
+        let piano = da_togliere(connection, &scelti, true).expect("tutti");
+        assert_eq!(
+            super::brani_senza_cestino(&piano, &scelti, ha_un_cestino),
+            3
+        );
+        assert_eq!(super::brani_senza_cestino(&piano, &scelti, |_| false), 4);
+        assert_eq!(super::brani_senza_cestino(&piano, &scelti, |_| true), 0);
+
+        // Un brano di catalogo non ha file, e non sparisce da nessun disco.
+        let catalogo = [DaTogliere {
+            file: Vec::new(),
+            brani: vec![9],
+        }];
+        assert_eq!(super::brani_senza_cestino(&catalogo, &[9], |_| false), 0);
+    }
+
+    #[test]
+    fn la_riga_intera_non_scelta_non_entra_nel_conto() {
+        // Se ne va con l'immagine, ma nessuno l'ha scelta: contarla farebbe
+        // superare alla finestrella il numero dei brani scelti, e con un file
+        // locale nella scelta direbbe che nemmeno quello va nel Cestino.
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let guardia = banco(&stato);
+        let connection = &guardia.as_ref().expect("libreria").connection;
+        con_la_riga_intera(connection, r"C:\M\Disco\Album.ape");
+        let ha_un_cestino = |percorso: &str| !percorso.starts_with(r"C:\M\Disco\");
+
+        let scelti = [1, 2, 3, 4];
+        let piano = da_togliere(connection, &scelti, true).expect("tutti");
+        assert!(
+            piano.iter().any(|voce| voce.brani.contains(&5)),
+            "la riga intera se ne va con l'immagine"
+        );
+        assert_eq!(
+            super::brani_senza_cestino(&piano, &scelti, ha_un_cestino),
+            3
+        );
+        // Scelta anche lei, conta.
+        let tutti = [1, 2, 3, 4, 5];
+        let piano = da_togliere(connection, &tutti, true).expect("tutti");
+        assert_eq!(super::brani_senza_cestino(&piano, &tutti, ha_un_cestino), 4);
     }
 }

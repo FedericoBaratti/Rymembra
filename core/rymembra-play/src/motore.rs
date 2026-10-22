@@ -392,7 +392,10 @@ pub struct Motore {
     /// Dietro un lucchetto, e va bene: chi lo prende è il filo che serve i
     /// comandi, non la callback audio. Il lucchetto sta **fuori** dal percorso
     /// in tempo reale, che è l'unico posto in cui non poteva stare.
-    spettro: std::sync::Mutex<crate::spettro::Spettro>,
+    ///
+    /// In un `Arc` perché chi lo legge possa portarselo via: vedi
+    /// [`Motore::presa_spettro`].
+    spettro: Arc<std::sync::Mutex<crate::spettro::Spettro>>,
     /// Il nome dell'uscita su cui si è aperto davvero. Vedi
     /// [`Motore::dispositivo`].
     dispositivo: String,
@@ -436,13 +439,34 @@ type Voce = Box<dyn Fn(Annuncio) + Send>;
 /// rimasti si consegnano, e il ciclo termina da sé. Quelli di un motore
 /// abbandonato arrivano comunque all'osservatore, che li riconosce con
 /// [`Annuncio::ha_voce`].
+///
+/// # Quando l'osservatore cade
+///
+/// Ogni consegna gira dentro un `catch_unwind`, e il filo va avanti. Prima un
+/// panico dentro l'osservatore — che lavora: lucchetti, database, lo stato da
+/// comporre — srotolava fuori dal ciclo e il filo finiva. Da fuori non si
+/// vedeva niente: il motore suonava, ma i suoi annunci finivano in un canale
+/// senza più nessuno in fondo, e con loro l'avanzare della coda. Il brano
+/// finiva, il successivo non si preparava più, e la musica si fermava a fine
+/// brano senza un errore da nessuna parte.
+///
+/// Si perde l'annuncio che è caduto, e nessun altro. **Non** si alza `perso`:
+/// un panico che si ripete identico sull'annuncio di un certo brano
+/// diventerebbe un motore ricostruito ogni due secondi, lo stesso ciclo che
+/// `fili_caduti` esiste per rompere sul filo della decodifica. La traccia la
+/// scrive il gancio dei panici dell'applicazione, col nome di questo filo,
+/// prima di arrivare qui.
+///
+/// `AssertUnwindSafe` perché l'annuncio caduto non lo guarda più nessuno, e
+/// l'osservatore è una `Fn`: quel che tocca di condiviso lo tocca dietro
+/// lucchetti che chi sta sopra recupera dal veleno.
 fn voce_su_filo(osservatore: Box<dyn Fn(Annuncio) + Send>) -> Result<Voce, AppError> {
     let (manda, ricevi) = std::sync::mpsc::channel::<Annuncio>();
     std::thread::Builder::new()
         .name("rymembra-eventi".to_owned())
         .spawn(move || {
             for annuncio in ricevi {
-                osservatore(annuncio);
+                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| osservatore(annuncio)));
             }
         })
         .map_err(|err| {
@@ -568,10 +592,10 @@ impl Motore {
             condiviso,
             posizione,
             formato,
-            spettro: std::sync::Mutex::new(crate::spettro::Spettro::nuovo(
+            spettro: Arc::new(std::sync::Mutex::new(crate::spettro::Spettro::nuovo(
                 ricevi_spettro,
                 formato.frequenza,
-            )),
+            ))),
             dispositivo,
             intese,
             uscita,
@@ -582,14 +606,15 @@ impl Motore {
     ///
     /// Spenta, la callback non scrive niente: chi non ha la schermata aperta
     /// non paga un `push` per campione. Spegnendola si svuota anche quel che
-    /// era rimasto, così riaprendo la schermata le barre non ripartono da un
-    /// pezzo di musica di dieci minuti fa.
+    /// era rimasto — l'anello **e** la finestra, vedi
+    /// [`crate::spettro::Spettro::svuota`] — così riaprendo la schermata le
+    /// barre non ripartono da un pezzo di musica di dieci minuti fa.
     pub fn guarda_spettro(&self, acceso: bool) {
         self.condiviso
             .spettro
             .store(acceso, std::sync::atomic::Ordering::Relaxed);
         if !acceso && let Ok(mut lettore) = self.spettro.lock() {
-            let _ = lettore.leggi();
+            lettore.svuota();
         }
     }
 
@@ -620,16 +645,58 @@ impl Motore {
     /// la ragione per non dichiararlo impossibile con un `unwrap` adesso è un
     /// fatto e non una prudenza.
     pub fn spettro<R>(&self, prendi: impl FnOnce(&crate::spettro::Bande) -> R) -> Option<R> {
-        self.spettro
-            .lock()
-            .ok()
-            .map(|mut lettore| prendi(lettore.leggi()))
+        self.presa_spettro().leggi(prendi)
+    }
+
+    /// Lo spettro, da leggere **senza** tenere in mano il motore.
+    ///
+    /// # Perché
+    ///
+    /// Perché leggere le bande non è una lettura: è svuotare l'anello dei
+    /// campioni e farne una trasformata, fino a duemila punti, trenta volte al
+    /// secondo. Nell'applicazione il motore sta dietro il lucchetto del lettore,
+    /// e con [`Motore::spettro`] quella trasformata si faceva col lucchetto in
+    /// mano: la pausa, il salto e gli annunci del motore si mettevano in fila
+    /// dietro a lei trenta volte al secondo, per tutto il tempo in cui la
+    /// schermata era aperta. La presa si prende sotto il lucchetto — è un `Arc`
+    /// da clonare — e si legge fuori.
+    ///
+    /// Una presa di un motore sostituito legge l'anello di quel motore, che
+    /// nessuno riempie più: dà bande vecchie per un giro, finché chi legge non
+    /// ne chiede una nuova. Non tiene aperto niente: l'anello dei campioni è
+    /// soltanto memoria.
+    #[must_use]
+    pub fn presa_spettro(&self) -> PresaSpettro {
+        PresaSpettro(Arc::clone(&self.spettro))
+    }
+
+    /// Il campanello del flusso, da suonare senza tenere in mano il motore.
+    ///
+    /// Chi lo suona prima di un comando che svuota l'anello — un salto, uno
+    /// stop — paga l'eventuale risveglio del dispositivo **fuori** dal proprio
+    /// lucchetto; il comando, dopo, lo trova già sveglio. Vedi
+    /// [`crate::uscita::Campanello`].
+    #[must_use]
+    pub fn campanello(&self) -> crate::uscita::Campanello {
+        self.uscita.campanello()
     }
 
     /// Come si è aperto il dispositivo.
     #[must_use]
     pub const fn formato(&self) -> FormatoUscita {
         self.formato
+    }
+
+    /// L'uscita aperta era il predefinito di sistema nell'istante
+    /// dell'apertura.
+    ///
+    /// Serve a chi riapre da solo per riconoscere il ripiego che non voleva:
+    /// senza una preferenza si apre il predefinito, e se nell'elenco non ce
+    /// n'era nessuno marcato — succede, nel mezzo di un cambio di dispositivo —
+    /// l'apertura prende il primo che trova, che può essere un'uscita virtuale.
+    #[must_use]
+    pub const fn era_predefinito(&self) -> bool {
+        self.uscita.era_predefinito
     }
 
     /// Su quale uscita si sta suonando.
@@ -975,6 +1042,26 @@ impl Motore {
         // raccontato una volta, e il pulsante che non si può premere sarebbe
         // l'ultimo posto in cui raccontarlo.
         let _ = self.comandi.send(comando);
+    }
+}
+
+/// Una presa sullo spettro di un motore: vedi [`Motore::presa_spettro`].
+#[derive(Clone)]
+pub struct PresaSpettro(Arc<std::sync::Mutex<crate::spettro::Spettro>>);
+
+impl PresaSpettro {
+    /// Le bande, dentro una funzione che le legge senza copiarle: la stessa
+    /// forma, e lo stesso `None` per un lucchetto avvelenato, di
+    /// [`Motore::spettro`].
+    ///
+    /// L'istante della lettura lo prende qui: è quel che permette al lettore di
+    /// riconoscere un flusso fermo e chiamarlo silenzio (vedi la prosa in testa
+    /// a [`crate::spettro`]).
+    pub fn leggi<R>(&self, prendi: impl FnOnce(&crate::spettro::Bande) -> R) -> Option<R> {
+        self.0
+            .lock()
+            .ok()
+            .map(|mut lettore| prendi(lettore.leggi(std::time::Instant::now())))
     }
 }
 
@@ -2303,11 +2390,26 @@ impl Contesto {
     /// tagliare un brano nel mezzo.
     /// Una volta cominciata vale quella con cui è cominciata: vedi
     /// [`Contesto::dissolvenza_durata`].
+    ///
+    /// Zero anche fra due tracce contigue della stessa immagine CD, con la
+    /// dissolvenza accesa: sono un segnale solo che il foglio ha tagliato in
+    /// due, e sovrapporle vorrebbe dire far sentire due volte, sfasate, gli
+    /// ultimi secondi di una e i primi dell'altra. Il passaggio è il gapless,
+    /// col ricampionatore che attraversa la giuntura. Quali tracce siano
+    /// contigue — poche, e per ragioni precise — lo dice
+    /// [`crate::Segmento::precede`].
     fn fotogrammi_dissolvenza(&self) -> u64 {
         if self.entrante.is_some() {
             return self.dissolvenza_durata;
         }
-        if self.dissolvenza_ms == 0 || self.prossimo.is_none() || self.durata_corrente_ms == 0 {
+        if self.dissolvenza_ms == 0 || self.durata_corrente_ms == 0 {
+            return 0;
+        }
+        let (Some(corrente), Some(prossimo)) = (self.corrente.as_ref(), self.prossimo.as_ref())
+        else {
+            return 0;
+        };
+        if corrente.contiguo_a(&prossimo.decodificatore) {
             return 0;
         }
         fotogrammi_da_ms(self.dissolvenza_ms, self.formato.frequenza)
@@ -2399,12 +2501,23 @@ impl Contesto {
         // che esce.
         let g = correzione(entrante.livello, attivo, bersaglio);
         while self.coda_entrante.len() < quanti {
-            // Un `let ... else` e non un `match`: gli altri due casi — il brano
-            // entrante finito, o illeggibile — vogliono la stessa cosa, cioè
-            // che non succeda niente. Una dissolvenza mancata è un gapless, che
-            // è il comportamento di prima; non è un guasto da segnalare a
-            // nessuno.
-            let Ok(true) = entrante.decodificatore.prossimo(&mut self.blocco_entrante) else {
+            // Anche questa lettura si può lasciare a metà, come quella del
+            // corrente in [`Contesto::decodifica_un_blocco`]: il brano che entra
+            // in dissolvenza sta spesso sulla stessa cartella di rete, e una
+            // share che si pianta qui teneva il filo dentro la sua `ReadFile`
+            // senza che il «prossimo» o lo stop premuti nel frattempo potessero
+            // farlo uscire — la sua bandiera non la pubblicava nessuno.
+            self.condiviso
+                .pubblica_lettura(entrante.decodificatore.bandiera());
+            let esito = entrante.decodificatore.prossimo(&mut self.blocco_entrante);
+            self.condiviso.ritira_lettura();
+            // Un `let ... else` e non un `match`: gli altri casi — il brano
+            // entrante finito, illeggibile, o lasciato a metà da un comando —
+            // vogliono la stessa cosa, cioè che non succeda niente. Una
+            // dissolvenza mancata è un gapless, che è il comportamento di
+            // prima; non è un guasto da segnalare a nessuno, e il comando che
+            // ha interrotto la lettura lo raccoglie il giro dopo.
+            let Ok(true) = esito else {
                 return;
             };
             if (g - 1.0).abs() > f32::EPSILON {
@@ -3269,6 +3382,7 @@ mod prove {
             durata_ms: 1_000,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         }
     }
 
@@ -4254,6 +4368,65 @@ mod prove {
         assert!(suo > 0, "il secondo brano non si annuncia mai");
     }
 
+    /// «Ripeti uno» su un brano senza campioni non gira in tondo.
+    ///
+    /// Il preparatore dell'applicazione risponde a ogni `Iniziato` con lo
+    /// stesso brano — con «ripeti uno» il successivo è il corrente — qualche
+    /// giro dopo. Un preparato che arrivava a fine dichiarata e rianimava il
+    /// motore, per non fermare la coda su un brano vuoto, qui la faceva girare
+    /// per sempre: cinquanta inizi e fini al secondo, e la pausa non la fermava,
+    /// perché ogni ripresa toglieva la pausa da sé. Un preparato a fine
+    /// dichiarata resta rifiutato, e la coda si ferma sul brano vuoto: è un caso
+    /// raro, e molto meno grave.
+    #[test]
+    fn ripeti_uno_su_un_brano_vuoto_non_gira_in_tondo() {
+        let (registro, osservatore) = spia();
+        let mut banco = banco_con(48_000, osservatore);
+        let vuoto = aperto(&banco.ctx, brano_onesto(7, 48_000, 0.5, 0));
+        banco.ctx.esegui(Comando::Suona(Box::new(vuoto)));
+        let mut visti = 0usize;
+        let mut fra_quanti: Option<u32> = None;
+        for _ in 0..2_000 {
+            let iniziati = eventi(&registro)
+                .iter()
+                .filter(|e| e.as_str() == "iniziato:7")
+                .count();
+            if iniziati > visti && fra_quanti.is_none() {
+                visti = iniziati;
+                fra_quanti = Some(3);
+            }
+            if let Some(n) = fra_quanti.as_mut() {
+                if *n == 0 {
+                    let ancora = aperto(&banco.ctx, brano_onesto(7, 48_000, 0.5, 0));
+                    banco.ctx.esegui(Comando::Prepara(Some(Box::new(ancora))));
+                    fra_quanti = None;
+                } else {
+                    *n -= 1;
+                }
+            }
+            banco.ctx.riempi();
+            let mut presi = 0u64;
+            while presi < BLOCCO_FINTO {
+                if banco.consumatore.pop().is_err() {
+                    break;
+                }
+                presi = presi.saturating_add(1);
+            }
+            banco
+                .condiviso
+                .fotogrammi
+                .fetch_add(presi, Ordering::Relaxed);
+            banco.ctx.aggiorna();
+        }
+        let storia = eventi(&registro);
+        let iniziati = storia.iter().filter(|e| e.as_str() == "iniziato:7").count();
+        let fermati = storia.iter().filter(|e| e.as_str() == "fermato").count();
+        assert!(
+            iniziati <= 2,
+            "ripeti-uno su brano vuoto: {iniziati} iniziato, {fermati} fermato in 2000 giri"
+        );
+    }
+
     // ── la condivisione che muore a metà brano ──────────────────────────────
 
     /// Byte che a un certo punto smettono di rispondere.
@@ -4325,6 +4498,7 @@ mod prove {
             durata_ms: 1_000,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         }
     }
 
@@ -4417,6 +4591,7 @@ mod prove {
             durata_ms: 500,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         }
     }
 
@@ -4559,6 +4734,7 @@ mod prove {
             durata_ms: 500,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         };
 
         let Err(err) = crate::decodifica::Decodificatore::apri(sorgente, 48_000, 1) else {
@@ -4640,6 +4816,7 @@ mod prove {
             durata_ms: 3_000,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         }
     }
 
@@ -4830,6 +5007,7 @@ mod prove {
             durata_ms: 2_000,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         };
         (sorgente, morta)
     }
@@ -4871,6 +5049,7 @@ mod prove {
             durata_ms: 0,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         };
 
         let Err(err) = crate::decodifica::Decodificatore::apri(sorgente, 48_000, 1) else {
@@ -5091,6 +5270,7 @@ mod prove {
             durata_ms: 1_000,
             replaygain_db: None,
             picco: None,
+            segmento: None,
         }
     }
 
@@ -5775,6 +5955,248 @@ mod prove {
         assert!(
             (guadagno - volume_uscita(0.8, false)).abs() < 1e-6,
             "il brano nuovo parte col volume sfumato: {guadagno}"
+        );
+    }
+
+    // ── le tracce di un'immagine CD ─────────────────────────────────────────
+
+    /// Un'immagine CD finta: un WAV mono con un livello per traccia, un
+    /// secondo — settantacinque fotogrammi CD — l'una. Il livello dice di
+    /// quale traccia è ogni campione che esce.
+    fn immagine(frequenza: u32, livelli: &[f32]) -> Vec<u8> {
+        let per_traccia = usize::try_from(fotogrammi_da_ms(1_000, frequenza)).unwrap_or(48_000);
+        let campioni: Vec<f32> = livelli
+            .iter()
+            .flat_map(|livello| std::iter::repeat_n(*livello, per_traccia))
+            .collect();
+        wav(frequenza, &campioni)
+    }
+
+    /// Un pezzo di quell'immagine, come lo apre l'applicazione.
+    fn pezzo(
+        track_id: i64,
+        disco: &[u8],
+        inizio_cd: u32,
+        fine_cd: Option<u32>,
+        durata_ms: u64,
+    ) -> Sorgente {
+        Sorgente {
+            track_id,
+            media: Box::new(Byte(std::io::Cursor::new(disco.to_vec()))),
+            estensione: Some("wav".to_owned()),
+            durata_ms,
+            replaygain_db: None,
+            picco: None,
+            segmento: Some(crate::Segmento {
+                immagine: "disco.wav".to_owned(),
+                inizio_cd,
+                fine_cd,
+            }),
+        }
+    }
+
+    /// La traccia `numero` (da uno) di un'immagine di `tracce` tracce da un
+    /// secondo: l'ultima va fino alla fine del file, come in un `.cue`.
+    fn traccia(disco: &[u8], numero: u32, tracce: u32) -> Sorgente {
+        let fine_cd = (numero < tracce).then_some(numero * 75);
+        pezzo(i64::from(numero), disco, (numero - 1) * 75, fine_cd, 1_000)
+    }
+
+    /// Fa girare il contesto con la callback finta, come
+    /// [`suona_raccontando`], tenendo i campioni che escono: servono tutti e
+    /// due, il racconto e il suono.
+    fn suona_e_raccogli(banco: &mut Banco) -> Vec<f32> {
+        let mut fuori = Vec::new();
+        for _ in 0..200_000 {
+            let lavorato = banco.ctx.riempi();
+            let mut presi = 0u64;
+            while presi < BLOCCO_FINTO {
+                let Ok(campione) = banco.consumatore.pop() else {
+                    break;
+                };
+                fuori.push(campione);
+                presi = presi.saturating_add(1);
+            }
+            banco
+                .condiviso
+                .fotogrammi
+                .fetch_add(presi, Ordering::Relaxed);
+            banco.ctx.aggiorna();
+            if !lavorato && presi == 0 && banco.ctx.corrente.is_none() {
+                break;
+            }
+        }
+        fuori
+    }
+
+    /// Suona `prima` e poi `dopo`, con la dissolvenza data: quel che si è
+    /// sentito e quel che il motore ha annunciato.
+    fn due_tracce(dissolvenza_ms: u64, prima: Sorgente, dopo: Sorgente) -> (Vec<f32>, Vec<String>) {
+        let (registro, osservatore) = spia();
+        let mut banco = banco_con(48_000, osservatore);
+        banco
+            .ctx
+            .esegui(Comando::Dissolvenza { ms: dissolvenza_ms });
+        let prima = aperto(&banco.ctx, prima);
+        banco.ctx.esegui(Comando::Suona(Box::new(prima)));
+        let dopo = aperto(&banco.ctx, dopo);
+        banco.ctx.esegui(Comando::Prepara(Some(Box::new(dopo))));
+        let fuori = suona_e_raccogli(&mut banco);
+        (fuori, eventi(&registro))
+    }
+
+    #[test]
+    fn due_tracce_contigue_non_si_dissolvono() {
+        // La dissolvenza è accesa, e fra la prima e la seconda traccia del
+        // disco non deve succedere: il secondo esce attaccato al primo, al suo
+        // livello, e la durata dichiarata è quella vera — così la dissolvenza,
+        // se ci fosse, avrebbe tutto il tempo di cominciare.
+        let disco = immagine(48_000, &[0.2, 0.4, 0.6]);
+        let (fuori, annunci) = due_tracce(400, traccia(&disco, 1, 3), traccia(&disco, 2, 3));
+        assert_eq!(annunci, ["iniziato:1", "iniziato:2", "fermato"]);
+        assert_eq!(
+            fuori.len(),
+            96_000,
+            "una dissolvenza di 400 ms avrebbe accorciato di 19 200 fotogrammi"
+        );
+        assert_eq!(quanti_a(&fuori[..48_000], 0.2), 48_000);
+        assert_eq!(quanti_a(&fuori[48_000..], 0.4), 48_000);
+
+        // Il contrappeso: la prima e la terza, che non sono contigue, nella
+        // stessa immagine e con la stessa dissolvenza, si sovrappongono.
+        let (fuori, annunci) = due_tracce(400, traccia(&disco, 1, 3), traccia(&disco, 3, 3));
+        assert_eq!(annunci, ["iniziato:1", "iniziato:3", "fermato"]);
+        assert!(
+            fuori.len() < 96_000,
+            "la prova non vede la dissolvenza: {} fotogrammi",
+            fuori.len()
+        );
+        let mescolati = fuori.len() - quanti_a(&fuori, 0.2) - quanti_a(&fuori, 0.6);
+        assert!(mescolati > 0, "nessun campione mescolato");
+    }
+
+    #[test]
+    fn due_tracce_contigue_ricampionate_non_hanno_giuntura() {
+        // Il caso vero: un'immagine a 44,1 kHz su un'uscita a 48, con la
+        // dissolvenza accesa. Il livello non si muove attraversando il confine,
+        // e la durata è quella di due secondi esatti.
+        let disco = immagine(44_100, &[0.5, 0.5]);
+        let (fuori, annunci) = due_tracce(400, traccia(&disco, 1, 2), traccia(&disco, 2, 2));
+        assert_eq!(annunci, ["iniziato:1", "iniziato:2", "fermato"]);
+        assert_eq!(
+            fuori.len(),
+            96_000,
+            "la coda del primo si è persa o doppiata"
+        );
+        let giuntura = fuori
+            .get(46_000..50_000)
+            .expect("l'uscita arriva a due secondi");
+        let fuori_posto = giuntura
+            .iter()
+            .filter(|c| (**c - 0.5).abs() >= 0.01)
+            .count();
+        assert_eq!(
+            fuori_posto, 0,
+            "{fuori_posto} campioni fuori livello alla giuntura"
+        );
+    }
+
+    #[test]
+    fn ripeti_uno_su_una_traccia_d_immagine() {
+        // La traccia due, e poi di nuovo lei: non è contigua a sé stessa, la
+        // seconda volta riparte dal suo inizio e non dalla traccia tre, e
+        // finita la seconda volta la musica si ferma. È qui che la 3.0.2 ha
+        // dovuto ritirare una correzione del gapless, che in ripeti-uno girava
+        // all'infinito.
+        let disco = immagine(48_000, &[0.2, 0.4, 0.6]);
+        for dissolvenza_ms in [0, 400] {
+            let (fuori, annunci) =
+                due_tracce(dissolvenza_ms, traccia(&disco, 2, 3), traccia(&disco, 2, 3));
+            assert_eq!(
+                annunci,
+                ["iniziato:2", "iniziato:2", "fermato"],
+                "con {dissolvenza_ms} ms di dissolvenza"
+            );
+            assert_eq!(quanti_a(&fuori, 0.6), 0, "è uscita la traccia dopo");
+            assert_eq!(quanti_a(&fuori, 0.2), 0, "è uscita la traccia prima");
+            if dissolvenza_ms == 0 {
+                assert_eq!(fuori.len(), 96_000);
+                assert_eq!(quanti_a(&fuori, 0.4), 96_000);
+            } else {
+                assert!(fuori.len() < 96_000, "la ripetizione non si è dissolta");
+            }
+        }
+    }
+
+    #[test]
+    fn dall_ultima_traccia_alla_prima() {
+        // L'ultima traccia va fino in fondo al file e la prima comincia da
+        // capo: non sono contigue, e il passaggio è quello di due brani
+        // qualunque — attaccati senza dissolvenza, sovrapposti con.
+        let disco = immagine(48_000, &[0.2, 0.4, 0.6]);
+        let (fuori, annunci) = due_tracce(0, traccia(&disco, 3, 3), traccia(&disco, 1, 3));
+        assert_eq!(annunci, ["iniziato:3", "iniziato:1", "fermato"]);
+        assert_eq!(fuori.len(), 96_000);
+        assert_eq!(quanti_a(&fuori[..48_000], 0.6), 48_000);
+        assert_eq!(quanti_a(&fuori[48_000..], 0.2), 48_000);
+
+        let (fuori, annunci) = due_tracce(400, traccia(&disco, 3, 3), traccia(&disco, 1, 3));
+        assert_eq!(annunci, ["iniziato:3", "iniziato:1", "fermato"]);
+        assert!(fuori.len() < 96_000, "dall'ultima alla prima si dissolve");
+    }
+
+    #[test]
+    fn ripeti_uno_su_una_traccia_vuota_d_immagine_non_gira_in_tondo() {
+        // Come `ripeti_uno_su_un_brano_vuoto_non_gira_in_tondo`, con un foglio
+        // che descrive una traccia oltre la fine del file: si apre, non
+        // contiene niente, e chi sta sopra la ripropone a ogni annuncio. La
+        // guardia è la stessa, e deve valere anche qui.
+        let disco = immagine(48_000, &[0.2, 0.4, 0.6]);
+        let (registro, osservatore) = spia();
+        let mut banco = banco_con(48_000, osservatore);
+        let vuota = aperto(&banco.ctx, pezzo(7, &disco, 300, None, 0));
+        banco.ctx.esegui(Comando::Suona(Box::new(vuota)));
+        let mut visti = 0usize;
+        let mut fra_quanti: Option<u32> = None;
+        for _ in 0..2_000 {
+            let iniziati = eventi(&registro)
+                .iter()
+                .filter(|e| e.as_str() == "iniziato:7")
+                .count();
+            if iniziati > visti && fra_quanti.is_none() {
+                visti = iniziati;
+                fra_quanti = Some(3);
+            }
+            if let Some(n) = fra_quanti.as_mut() {
+                if *n == 0 {
+                    let ancora = aperto(&banco.ctx, pezzo(7, &disco, 300, None, 0));
+                    banco.ctx.esegui(Comando::Prepara(Some(Box::new(ancora))));
+                    fra_quanti = None;
+                } else {
+                    *n -= 1;
+                }
+            }
+            banco.ctx.riempi();
+            let mut presi = 0u64;
+            while presi < BLOCCO_FINTO {
+                if banco.consumatore.pop().is_err() {
+                    break;
+                }
+                presi = presi.saturating_add(1);
+            }
+            banco
+                .condiviso
+                .fotogrammi
+                .fetch_add(presi, Ordering::Relaxed);
+            banco.ctx.aggiorna();
+        }
+        let iniziati = eventi(&registro)
+            .iter()
+            .filter(|e| e.as_str() == "iniziato:7")
+            .count();
+        assert!(
+            iniziati <= 2,
+            "{iniziati} inizi in 2000 giri: gira in tondo"
         );
     }
 }

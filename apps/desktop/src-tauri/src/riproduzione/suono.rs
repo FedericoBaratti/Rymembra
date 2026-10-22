@@ -17,7 +17,7 @@ use rymembra_play::PRESET_DI_SERIE;
 use serde::Serialize;
 
 use crate::spegnimento::Emette as _;
-use tauri::{Manager as _, State};
+use tauri::State;
 
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, adesso_ms, con_libreria};
@@ -219,37 +219,47 @@ pub fn equalizzatore(
 /// al contrario dell'equalizzatore: questo comando arriva quando un dito preme
 /// un interruttore, cioè una volta ogni tanto, non dodici volte al secondo.
 ///
-/// `(async)`: scrive sul database dentro il lucchetto del lettore — è quel che
-/// mette in fila due comandi ravvicinati — e sul filo della finestra, con una
-/// scansione che tiene la libreria, voleva dire la finestra ferma fino a otto
-/// secondi: quattro per il lettore, quattro per la libreria.
+/// `(async)`: scrive sul database, e sul filo della finestra, con una scansione
+/// che tiene la libreria, voleva dire la finestra ferma fino a otto secondi:
+/// quattro per il lettore, quattro per la libreria. La scrittura stava anche
+/// **dentro** il lucchetto del lettore, perché era quello a mettere in fila due
+/// comandi ravvicinati; adesso li mette in fila un lucchetto loro, e il lettore
+/// si prende solo per copiare il valore riletto — vedi
+/// `super::cambia_preferenza`.
 #[tauri::command(async)]
 pub fn normalizzazione(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     livello: String,
 ) -> Esito<()> {
-    con_lettore(&stato, |lettore| {
-        let stato_app = app.state::<Stato>();
-        // Si rilegge quel che è stato scritto invece di fidarsi di quel che è
-        // arrivato: è la disciplina dell'equalizzatore, e serve perché il
-        // bersaglio passa per un taglio.
-        let salvata = con_libreria(&stato_app, |libreria| {
+    // Si rilegge quel che è stato scritto invece di fidarsi di quel che è
+    // arrivato: è la disciplina dell'equalizzatore, e serve perché il bersaglio
+    // passa per un taglio. La scrittura fuori dal lucchetto del lettore, e in
+    // fila con le altre preferenze: vedi `super::cambia_preferenza`.
+    super::cambia_preferenza(
+        &app,
+        &stato,
+        "normalizzazione",
+        |libreria| {
             let modo = playback::load_replaygain(&libreria.connection)?.modo;
             playback::save_replaygain(
                 &libreria.connection,
                 normalizzazione_da_nome(&livello, modo),
             )?;
             playback::load_replaygain(&libreria.connection)
-        })
-        .unwrap_or_else(|_| normalizzazione_da_nome(&livello, lettore.normalizzazione.modo));
-        lettore
-            .motore
-            .replaygain(salvata.attivo, salvata.bersaglio_db);
-        lettore.normalizzazione = salvata;
-        manda_stato(&app, lettore);
-        Ok(())
-    })
+        },
+        |lettore, salvata| {
+            let salvata = salvata.unwrap_or_else(|_| {
+                normalizzazione_da_nome(&livello, lettore.normalizzazione.modo)
+            });
+            lettore
+                .motore
+                .replaygain(salvata.attivo, salvata.bersaglio_db);
+            lettore.normalizzazione = salvata;
+            manda_stato(&app, lettore);
+            Ok(())
+        },
+    )
     .map_err(errore)
 }
 
@@ -284,7 +294,7 @@ pub fn normalizzazione_modo_scegli(
     stato: State<'_, StatoLettore>,
     modo: ModoLivello,
 ) -> Esito<ModoLivello> {
-    let stato_app = app.state::<Stato>();
+    let stato_app = super::libreria_di(&app, "modo della normalizzazione").map_err(errore)?;
     let salvata = con_libreria(&stato_app, |libreria| {
         let attuale = playback::load_replaygain(&libreria.connection)?;
         playback::save_replaygain(&libreria.connection, Normalizzazione { modo, ..attuale })?;

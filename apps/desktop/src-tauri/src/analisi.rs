@@ -212,6 +212,20 @@ pub fn sporca(app: &AppHandle) {
 /// asincrono. Il ciclo però resta scritto qui, e il docblock di là dice perché:
 /// quanto si aspetta dopo una passata lo decide il suo esito, e la raffica si
 /// lascia passare a qualunque sveglia invece che a una di un tipo particolare.
+///
+/// # Sorvegliato
+///
+/// Ogni passata gira dentro [`crate::stato::sorvegliato`], come quelle dei fili
+/// che passano da `avvia_filo_periodico`. Prima non era così: un panico in una
+/// passata srotolava fuori dal ciclo, e il filo finiva — niente più impronte né
+/// volume per il resto della sessione, e niente che lo dicesse. Adesso diventa
+/// una riga nel diario e una voce nella salute dei fili, e la passata dopo
+/// arriva dopo [`crate::stato::attesa_dopo_la_caduta`] — mai oltre
+/// [`INTERVALLO`] — o prima, se una scansione sveglia il filo.
+///
+/// La sorveglianza è la rete sotto la rete: un brano che fa cadere il
+/// decodificatore è già fermato più in basso, uno per uno, da [`misura_uno`] e
+/// da [`misura_volume`]. Qui arrivano solo i panici che nessuno ha previsto.
 pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
     let avviato = std::thread::Builder::new()
         .name("rymembra-analisi".to_owned())
@@ -223,6 +237,7 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
                 Ok(_) => true,
                 Err(RecvTimeoutError::Timeout) => false,
             };
+            let mut cadute_di_fila = 0_u32;
             loop {
                 // Solo chi è stato svegliato aspetta la raffica: una prima
                 // scansione manda una sveglia per lotto, e millequattrocento
@@ -238,11 +253,29 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<Sveglia>) {
                 // lungo vorrebbe dire tre tentativi a sera e una libreria mai
                 // finita. Gli altri esiti non hanno fretta — i brani nuovi
                 // arrivano da una scansione, e una scansione sveglia.
-                let attesa = match passata(&app) {
-                    Fine::Musica => RESPIRO,
-                    Fine::Finito | Fine::Irraggiungibile | Fine::Guasto => INTERVALLO,
-                    // Non si aspetta niente: non c'è nessun dopo.
-                    Fine::Uscita => return,
+                let attesa = match crate::stato::sorvegliato("rymembra-analisi", || passata(&app)) {
+                    Some(fine) => {
+                        cadute_di_fila = 0;
+                        match fine {
+                            // Una scansione in corso si aspetta come la musica:
+                            // mezzo minuto e si riguarda. Non c'è altra sveglia
+                            // su cui contare — una scansione che non ha cambiato
+                            // niente non chiama [`sporca`] — e venti minuti
+                            // sarebbero una passata persa per una scansione da
+                            // dieci secondi.
+                            Fine::Musica | Fine::Scansione => RESPIRO,
+                            Fine::Finito | Fine::Irraggiungibile | Fine::Guasto => INTERVALLO,
+                            // Non si aspetta niente: non c'è nessun dopo.
+                            Fine::Uscita => return,
+                        }
+                    }
+                    // Caduta in panico: `sorvegliato` l'ha già scritto. Si
+                    // riprova presto la prima volta e sempre più piano dopo,
+                    // perché un panico che dipende da un file torna identico.
+                    None => {
+                        cadute_di_fila = cadute_di_fila.saturating_add(1);
+                        crate::stato::attesa_dopo_la_caduta(cadute_di_fila).min(INTERVALLO)
+                    }
                 };
                 svegliato = match orecchio.recv_timeout(attesa) {
                     Err(RecvTimeoutError::Disconnected) => return,
@@ -264,6 +297,8 @@ enum Fine {
     Finito,
     /// È cominciata la musica: si riprende dopo.
     Musica,
+    /// C'è una scansione in corso: si riprende quando ha finito.
+    Scansione,
     /// Una radice non risponde: si riprende al prossimo battito.
     Irraggiungibile,
     /// Il database ha detto di no.
@@ -283,8 +318,8 @@ enum Fine {
 ///
 /// Prima le impronte, poi l'intensità: le impronte costano trenta secondi di
 /// lettura a brano e finiscono presto, l'intensità un brano intero. Solo una
-/// metà finita lascia il posto all'altra — la musica, la chiusura o una radice
-/// che non risponde fermano tutte e due.
+/// metà finita lascia il posto all'altra — la musica, una scansione, la
+/// chiusura o una radice che non risponde fermano tutte e due.
 fn passata(app: &AppHandle) -> Fine {
     match impronte(app) {
         Fine::Finito => intensita(app),
@@ -308,6 +343,10 @@ fn impronte(app: &AppHandle) -> Fine {
         // quel che manca resta candidato per il prossimo avvio.
         if crate::spegnimento::in_uscita() {
             break Fine::Uscita;
+        }
+        // E una scansione, prima di ogni lotto: vedi [`scansione_in_corso`].
+        if scansione_in_corso(app) {
+            break Fine::Scansione;
         }
 
         // ── finestra 1: quali brani. ────────────────────────────────────────
@@ -382,6 +421,19 @@ fn impronte(app: &AppHandle) -> Fine {
     fine
 }
 
+/// Una scansione tiene il turno, adesso.
+///
+/// L'analisi non parte mentre ce n'è una, e si ferma fra un lotto e l'altro se
+/// ne comincia una. Le due vogliono le stesse cose — il disco, spesso la
+/// stessa share, e il lucchetto della libreria per scrivere — e la scansione
+/// ha qualcuno che la aspetta: chi ha premuto «Scansiona», o un CD nuovo che
+/// deve comparire. Una lettura del turno, senza prenderlo: vedi
+/// `Stato::scansione_in_corso`. Senza stato non c'è nessuna scansione.
+fn scansione_in_corso(app: &AppHandle) -> bool {
+    app.try_state::<Stato>()
+        .is_some_and(|stato| stato.scansione_in_corso())
+}
+
 /// Il prossimo lotto di brani da misurare.
 ///
 /// Nessuno stato vuol dire che l'applicazione lo ha già lasciato cadere: si
@@ -450,6 +502,18 @@ fn ritara(app: &AppHandle) -> Result<Option<usize>, AppError> {
 /// costerebbe un lucchetto in più — e questo è il modulo che sui lucchetti ha
 /// appena scritto tre paragrafi.
 fn misura_lotto(schede: &[SchedaSorgente]) -> Vec<Misurato> {
+    misura_lotto_con(schede, SCADENZA_BRANO, |scheda| {
+        sonora::misura(&rymembra_app::files::LocalFiles, &scheda)
+    })
+}
+
+/// [`misura_lotto`] con la misura e la scadenza date: la cucitura che le prove
+/// usano per far cadere un brano a comando.
+fn misura_lotto_con(
+    schede: &[SchedaSorgente],
+    scadenza: Duration,
+    misura: fn(SchedaSorgente) -> Misurato,
+) -> Vec<Misurato> {
     if schede.is_empty() {
         return Vec::new();
     }
@@ -457,25 +521,69 @@ fn misura_lotto(schede: &[SchedaSorgente]) -> Vec<Misurato> {
     std::thread::scope(|ambito| {
         let mani: Vec<_> = schede
             .chunks(per_filo)
-            .map(|pezzo| ambito.spawn(move || pezzo.iter().map(misura_uno).collect::<Vec<_>>()))
+            .map(|pezzo| {
+                ambito.spawn(move || {
+                    // Un operaio per filo, come in [`misura_intensita`]: vedi
+                    // [`misura_uno`] per perché non basta `con_scadenza`.
+                    let mut operaio = Operaio::nuovo(SCADENZA_NOME);
+                    pezzo
+                        .iter()
+                        .map(|scheda| misura_uno(&mut operaio, scheda, scadenza, misura))
+                        .collect::<Vec<_>>()
+                })
+            })
             .collect();
         mani.into_iter()
             // Un filo che è morto non ha misurato niente, e i suoi brani
-            // restano candidati: la passata dopo li ripesca. È l'unico modo di
-            // perdere lavoro qui dentro, e costa una rilettura.
+            // restano candidati: la passata dopo li ripesca. Non succede per un
+            // brano storto — quello lo ferma [`misura_uno`], uno per uno — ma
+            // resta la rete sotto un panico che nessuno ha previsto.
             .filter_map(|mano| mano.join().ok())
             .flatten()
             .collect()
     })
 }
 
-/// Un brano, con la scadenza addosso.
-fn misura_uno(scheda: &SchedaSorgente) -> Misurato {
+/// Un brano, con la scadenza addosso e il suo panico chiuso dentro.
+///
+/// # Il difetto che toglie
+///
+/// Prima la misura girava dentro `con_scadenza`, che risponde `None` sia quando
+/// il tempo scade sia quando il filo del lavoro **muore**: un panico del
+/// decodificatore chiudeva il canale senza risposta, e diventava
+/// [`Misurato::NonRaggiungibile`] — cioè «la radice non risponde». Il lotto si
+/// fermava, il brano non si segnava, e alla passata dopo era di nuovo il primo
+/// candidato: di nuovo un panico, di nuovo il lotto fermo. I brani dietro di lui
+/// non venivano misurati mai.
+///
+/// [`Operaio`] distingue le due cose, come già fa per l'intensità: un panico è
+/// [`Mancato::Caduto`], il file arriva ed è il contenuto a essere storto, e si
+/// segna [`sonora::ILLEGGIBILE`] — l'esito che si ritenta fra
+/// [`sonora::RITENTA_MS`], lo stesso che la migrazione
+/// `021_impronte_illeggibili` ha rimesso in coda quando gli Opus hanno smesso
+/// di esserlo. Solo [`Mancato::Scaduto`] vale ancora «non raggiungibile».
+fn misura_uno(
+    operaio: &mut Operaio,
+    scheda: &SchedaSorgente,
+    scadenza: Duration,
+    misura: fn(SchedaSorgente) -> Misurato,
+) -> Misurato {
     let copia = scheda.clone();
-    rymembra_app::scadenza::con_scadenza(SCADENZA_NOME, SCADENZA_BRANO, move || {
-        sonora::misura(&rymembra_app::files::LocalFiles, &copia)
-    })
-    .unwrap_or(Misurato::NonRaggiungibile)
+    match operaio.esegui(scadenza, move || misura(copia)) {
+        Ok(misurato) => misurato,
+        Err(Mancato::Caduto { messaggio }) => {
+            nota!(
+                "[analisi] il decodificatore è caduto calcolando l'impronta brano={} causa={}",
+                scheda.track_id,
+                messaggio.as_deref().unwrap_or("—")
+            );
+            Misurato::Negata {
+                track_id: scheda.track_id,
+                esito: sonora::ILLEGGIBILE,
+            }
+        }
+        Err(Mancato::Scaduto) => Misurato::NonRaggiungibile,
+    }
 }
 
 /// La seconda metà della passata: quanto forte suona ogni brano.
@@ -502,6 +610,9 @@ fn intensita(app: &AppHandle) -> Fine {
         let Some(stato) = app.try_state::<Stato>() else {
             break Fine::Uscita;
         };
+        if stato.scansione_in_corso() {
+            break Fine::Scansione;
+        }
         let schede = match con_libreria(&stato, |libreria| {
             volume::candidati(&libreria.connection, adesso_ms(), volume::LOTTO)
         }) {
@@ -660,6 +771,63 @@ mod prove {
             !SUONA.load(Ordering::Relaxed),
             "il filo crede che si suoni ancora"
         );
+    }
+
+    /// Una scheda finta: le prove della misura non aprono nessun file.
+    fn scheda(track_id: i64) -> SchedaSorgente {
+        SchedaSorgente {
+            track_id,
+            collocazione: rymembra_app::playback::Collocazione::File(format!("{track_id}.flac")),
+            durata_ms: 180_000,
+            replaygain_db: None,
+            picco: None,
+        }
+    }
+
+    /// Un brano che fa cadere il decodificatore si segna illeggibile, e gli
+    /// altri del lotto — anche quelli dopo di lui sullo stesso filo — si
+    /// misurano lo stesso.
+    ///
+    /// Prima il panico cadeva sul filo della scadenza, che chiudeva il canale
+    /// senza rispondere: valeva «non raggiungibile», cioè una radice morta. Il
+    /// lotto si fermava, il brano non si segnava, e alla passata dopo era di
+    /// nuovo il primo candidato — e di nuovo fermava tutto. I brani dietro di
+    /// lui non venivano misurati mai.
+    #[test]
+    fn un_brano_che_fa_cadere_il_decodificatore_non_ferma_il_lotto() {
+        // Quattro schede su tre fili sono due pezzi da due: [1, 2] e [3, 4].
+        // Il primo del primo pezzo cade, e il secondo deve passare lo stesso.
+        let schede: Vec<SchedaSorgente> = (1..=4).map(scheda).collect();
+        let misurati = misura_lotto_con(&schede, Duration::from_secs(10), |scheda| {
+            assert_ne!(scheda.track_id, 1, "il decodificatore cade su questo file");
+            Misurato::Fatta {
+                track_id: scheda.track_id,
+                vettore: vec![1.0],
+            }
+        });
+
+        assert!(
+            !misurati
+                .iter()
+                .any(|m| matches!(m, Misurato::NonRaggiungibile)),
+            "un file storto non è una radice morta: {misurati:?}"
+        );
+        assert!(
+            misurati.iter().any(|m| matches!(
+                m,
+                Misurato::Negata { track_id: 1, esito } if *esito == sonora::ILLEGGIBILE
+            )),
+            "il brano che cade si segna illeggibile: {misurati:?}"
+        );
+        let fatti: Vec<i64> = misurati
+            .iter()
+            .filter_map(|m| match m {
+                Misurato::Fatta { track_id, .. } => Some(*track_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fatti.len(), 3, "gli altri tre si misurano: {misurati:?}");
+        assert!(fatti.contains(&2), "anche quello dopo, sullo stesso filo");
     }
 
     /// Un lotto vuoto non fa partire nessun filo e non è un guasto.

@@ -52,7 +52,8 @@ import {
   ipc,
   testoErrore,
 } from "../ipc";
-import { dataOra, durata, numero, ore } from "../formato";
+import { contiDellaCamminata, momentoDi } from "../fasiScansione";
+import { dataOra, dataOraBreve, durata, numero, ore } from "../formato";
 import { DISPONIBILI, t, tSe, type Chiave } from "../lingue";
 import { useAscolto } from "../pagine";
 import { Aggiornamenti } from "../parti/Aggiornamenti";
@@ -72,6 +73,7 @@ import type { Associazioni } from "../tastiera";
 import type { MovimentoUtente } from "../aspetto";
 import type { Tema } from "../tema";
 import { Trans } from "../lingue/Trans";
+import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
 import { nomeFonte } from "../parti/Incertezza";
 
 /** Le tredici sezioni, nell'ordine in cui si visitano la prima volta. */
@@ -225,8 +227,11 @@ function voci(): readonly {
 }[] {
   const v = (sezione: Sezione, nome: string) => ({
     sezione,
-    titolo: t(`settings.entry.${nome}` as Chiave),
-    sinonimi: t(`settings.entry.${nome}.syn` as Chiave).split(","),
+    // `tSe` e non `t` con un cast: la chiave si compone qui, e una voce
+    // aggiunta all'elenco senza la sua riga nel file di lingua mostrava la
+    // chiave nuda nell'indice. Il nome della voce si legge, la chiave no.
+    titolo: tSe(`settings.entry.${nome}`, nome),
+    sinonimi: tSe(`settings.entry.${nome}.syn`, "").split(","),
   });
   return [
     v("cartelle", "roots"),
@@ -305,14 +310,19 @@ function cerca(testo: string): ReturnType<typeof voci> {
   );
 }
 
-/** Quando è successa una cosa, in una forma che si legge a colpo d'occhio. */
+/**
+ * Quando è successa una cosa, in una forma che si legge a colpo d'occhio.
+ *
+ * Senza i secondi (`dataOraBreve`): sta quasi sempre in una scheda di numeri,
+ * dove la data intera andava a capo. Vedi `data-quando` nel foglio.
+ */
 function quando(ms: number | null): string {
   if (ms === null || ms <= 0) return t("settings.when.never");
   const passati = Date.now() - ms;
   if (passati < 60_000) return t("settings.when.justNow");
   if (passati < 3_600_000)
     return t("settings.when.minutesAgo", { n: Math.round(passati / 60_000) });
-  return dataOra(ms);
+  return dataOraBreve(ms);
 }
 
 /**
@@ -507,6 +517,25 @@ function RileggiTag({
 }
 
 /**
+ * A che punto è la scansione, accanto ad «Annulla».
+ *
+ * Le stesse quattro frasi del toast (`PilaToast`), in minuscolo come stavano
+ * qui: vedi `fasiScansione.ts`.
+ */
+function quantiDellaScansione(scansione: Avanzamento): string {
+  switch (momentoDi(scansione)) {
+    case "attende":
+      return t("settings.scan.waiting");
+    case "cerca":
+      return t("settings.scan.searching", contiDellaCamminata(scansione, t));
+    case "confronta":
+      return t("settings.scan.comparing");
+    case "legge":
+      return `${numero(scansione.fatti)} / ${numero(scansione.totale)}`;
+  }
+}
+
+/**
  * La sorveglianza delle cartelle: i due interruttori, e cosa sta succedendo.
  *
  * # Perché si gestisce da sé
@@ -523,6 +552,11 @@ function RileggiTag({
  * finestra li mostra come due domande, perché sono due decisioni diverse:
  * «voglio che la libreria si aggiorni da sola?» e «anche a costo di tenere
  * sveglio il NAS?». La seconda senza la prima non ha senso, e lo dice.
+ *
+ * Dalla 3.0.2 il modo di serie è «anche la rete» (`tutte`): i CD nuovi copiati
+ * sul NAS non comparivano, perché con «solo i dischi locali» una radice di rete
+ * non la guardava nessuno. Accendere la prima domanda porta lì, e chi vuole
+ * lasciar dormire il NAS spegne la seconda.
  */
 function SorveglianzaCartelle({
   onErrore,
@@ -548,7 +582,7 @@ function SorveglianzaCartelle({
     };
   }, []);
 
-  const modo = quadro?.modo ?? "locali";
+  const modo = quadro?.modo ?? "tutte";
   const scegli = (scelta: QuadroSorveglianza["modo"]) => {
     ipc.impostaSorveglianza(scelta).then(setQuadro).catch(onErrore);
   };
@@ -565,7 +599,7 @@ function SorveglianzaCartelle({
       <Interruttore
         etichetta={t("settings.roots.watch")}
         acceso={modo !== "spenta"}
-        onCambia={(acceso) => scegli(acceso ? "locali" : "spenta")}
+        onCambia={(acceso) => scegli(acceso ? "tutte" : "spenta")}
       />
       <Interruttore
         etichetta={t("settings.roots.watch.network")}
@@ -575,6 +609,15 @@ function SorveglianzaCartelle({
           modo === "spenta" ? t("settings.roots.watch.network.off") : undefined
         }
       />
+      {/* Come si guarda: è cambiato con la 3.0.2, e «tieni d'occhio» da solo
+          non dice che sul NAS gli avvisi possono mancare, né cosa li
+          sostituisce. */}
+      {modo !== "spenta" && (
+        <p className="nota">
+          {t("settings.roots.watch.how")}
+          {modo === "tutte" && ` ${t("settings.roots.watch.network.how")}`}
+        </p>
+      )}
       {modo !== "spenta" && (quadro?.cartelle.length ?? 0) > 0 && (
         <p className="nota">
           {t("settings.roots.watch.state", {
@@ -1320,6 +1363,7 @@ export function Impostazioni({
   onNotizia,
   onAggiungiCartella,
   onTogliCartella,
+  cartelleOccupate = false,
   onScegliCartellaDownload,
   onCartellaDownloadDiSerie,
   onScansiona,
@@ -1450,6 +1494,11 @@ export function Impostazioni({
   onNotizia: (testo: string) => void;
   onAggiungiCartella: () => void;
   onTogliCartella: (percorso: string) => void;
+  /**
+   * Un gesto sulle cartelle sorvegliate è in corso: «Aggiungi» e le × si
+   * spengono finché non torna. Vedi `cartelleSorvegliate.ts`.
+   */
+  cartelleOccupate?: boolean | undefined;
   /** Apre il dialogo che sceglie dove finiscono i brani scaricati. */
   onScegliCartellaDownload: () => void;
   /** Rimette il valore di serie: la prima cartella sorvegliata. */
@@ -1545,6 +1594,11 @@ export function Impostazioni({
   onSincroniaDimentica: (id: string) => void;
 }) {
   const [clientId, setClientId] = useState("");
+  /**
+   * La domanda aperta prima di un gesto che toglie qualcosa: una cartella
+   * sorvegliata, una skin, l'account di Drive. Vedi `ConfermaGesto.tsx`.
+   */
+  const [domanda, setDomanda] = useState<Domanda | null>(null);
   /**
    * Il percorso che si sta scrivendo, prima di confermarlo.
    *
@@ -1698,7 +1752,17 @@ export function Impostazioni({
                         className="tasto icon-btn"
                         aria-label={t("settings.roots.forget", { percorso: c })}
                         title={t("settings.roots.forget.title")}
-                        onClick={() => onTogliCartella(c)}
+                        disabled={cartelleOccupate}
+                        onClick={() =>
+                          setDomanda({
+                            titolo: t("settings.roots.forget.confirm.title"),
+                            descrizione: t("settings.roots.forget.confirm.body", {
+                              percorso: c,
+                            }),
+                            conferma: t("settings.roots.forget.confirm.ok"),
+                            fai: () => onTogliCartella(c),
+                          })
+                        }
                       >
                         <Icona nome="i-x" dim={14} />
                       </button>
@@ -1713,6 +1777,8 @@ export function Impostazioni({
                 <button
                   type="button"
                   className="bottone btn-ghost"
+                  disabled={cartelleOccupate}
+                  aria-busy={cartelleOccupate}
                   onClick={onAggiungiCartella}
                 >
                   <Icona nome="i-plus" dim={15} />
@@ -1747,11 +1813,7 @@ export function Impostazioni({
               {scansione && (
                 <div className="avanzamento-scansione">
                   <div className="riga-avanzamento">
-                    <span className="quanti">
-                      {scansione.totale > 0
-                        ? `${numero(scansione.fatti)} / ${numero(scansione.totale)}`
-                        : t("settings.scan.comparing")}
-                    </span>
+                    <span className="quanti">{quantiDellaScansione(scansione)}</span>
                     <button
                       type="button"
                       className="bottone minuto btn-ghost"
@@ -1943,7 +2005,7 @@ export function Impostazioni({
                 </div>
                 <div>
                   <dt>{t("settings.enrich.lastPass")}</dt>
-                  <dd className="stat-number">
+                  <dd className="stat-number" data-quando="">
                     {arricchimento?.inCorso
                       ? t("settings.enrich.inProgress")
                       : quando(arricchimento?.ultimoMs ?? null)}
@@ -2266,7 +2328,18 @@ export function Impostazioni({
                                     })
                                   : t("settings.skin.uninstall", { nome: s.nome })
                               }
-                              onClick={() => onDisinstallaSkin(s.id)}
+                              onClick={() =>
+                                setDomanda({
+                                  titolo: t("settings.skin.uninstall.confirm.title", {
+                                    nome: s.nome,
+                                  }),
+                                  descrizione: s.attiva
+                                    ? t("settings.skin.uninstall.confirm.bodyActive")
+                                    : t("settings.skin.uninstall.confirm.body"),
+                                  conferma: t("settings.skin.uninstall.confirm.ok"),
+                                  fai: () => onDisinstallaSkin(s.id),
+                                })
+                              }
                             >
                               <Icona nome="i-x" dim={13} />
                             </button>
@@ -2530,7 +2603,7 @@ export function Impostazioni({
                 </div>
                 <div>
                   <dt>{t("settings.cloud.lastSave")}</dt>
-                  <dd className="stat-number">
+                  <dd className="stat-number" data-quando="">
                     {quando(nuvola?.ultimoMs ?? null)}
                   </dd>
                 </div>
@@ -2590,7 +2663,14 @@ export function Impostazioni({
                       type="button"
                       className="bottone btn-ghost"
                       disabled={nuvola.inCorso}
-                      onClick={onNuvolaScollega}
+                      onClick={() =>
+                        setDomanda({
+                          titolo: t("settings.cloud.disconnect.confirm.title"),
+                          descrizione: t("settings.cloud.disconnect.confirm.body"),
+                          conferma: t("settings.cloud.disconnect.confirm.ok"),
+                          fai: onNuvolaScollega,
+                        })
+                      }
                     >
                       {t("settings.cloud.disconnect")}
                     </button>
@@ -2639,7 +2719,7 @@ export function Impostazioni({
                     type="text"
                     className="campo mono field-input"
                     aria-label={t("settings.creds.id")}
-                    placeholder="client id"
+                    placeholder={t("settings.creds.id.placeholder")}
                     value={clientId}
                     onChange={(e) => setClientId(e.target.value)}
                   />
@@ -2647,7 +2727,7 @@ export function Impostazioni({
                     type="password"
                     className="campo mono field-input"
                     aria-label={t("settings.creds.secret")}
-                    placeholder="client secret"
+                    placeholder={t("settings.creds.secret.placeholder")}
                     value={clientSecret}
                     onChange={(e) => setClientSecret(e.target.value)}
                   />
@@ -2840,7 +2920,7 @@ export function Impostazioni({
                 </div>
                 <div>
                   <dt>{t("settings.sync.lastPass")}</dt>
-                  <dd className="stat-number">
+                  <dd className="stat-number" data-quando="">
                     {quando(sincronia?.ultimaMs ?? null)}
                   </dd>
                 </div>
@@ -3147,6 +3227,9 @@ export function Impostazioni({
           )}
         </div>
       </div>
+      {domanda !== null && (
+        <ConfermaGesto domanda={domanda} onChiudi={() => setDomanda(null)} />
+      )}
     </ErroreGuida.Provider>
   );
 }

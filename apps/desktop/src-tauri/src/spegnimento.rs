@@ -42,6 +42,8 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::nota;
+
 /// Alzata quando la finestra ha cominciato a chiudersi, e mai più abbassata.
 ///
 /// Non torna `false` di proposito: dopo `CloseRequested` non esiste un modo
@@ -87,6 +89,16 @@ pub fn in_uscita() -> bool {
 /// volte di fila.
 pub fn spegni(mano: &tauri::AppHandle) {
     use tauri::Manager as _;
+    // Una riga nel diario, solo la prima volta: senza, una chiusura riuscita e
+    // una mai cominciata si leggevano uguali — nessuna traccia — e la domanda
+    // «alla fine di quella sessione la sequenza è girata?» non aveva risposta.
+    // È la domanda che i panici alla fine della sessione di Windows ponevano.
+    //
+    // Una bandiera sua e non [`USCITA`]: «Esci» dal vassoio alza quella prima
+    // di arrivare qui, e la sequenza vera risulterebbe sempre la seconda.
+    static SEQUENZA: AtomicBool = AtomicBool::new(false);
+    let inizio = std::time::Instant::now();
+    let prima_volta = !SEQUENZA.swap(true, Ordering::Relaxed);
     chiedi();
     // E poi si dice alla scansione di smettere, se ce n'è una. Non è un di più
     // rispetto alla riga qui sopra: questa bandiera ferma i fili che la
@@ -106,6 +118,12 @@ pub fn spegni(mano: &tauri::AppHandle) {
     // sistema con lui, prima che una copia in corso gli faccia cominciare
     // un'altra scansione.
     crate::sorveglia::ferma(mano);
+    // La riga del diario dopo i due arresti e non prima: scriverla prende il
+    // lucchetto del diario e tocca il disco, e la scansione da fermare viene
+    // prima di tutto.
+    if prima_volta {
+        nota!("[uscita] si chiude: sequenza di spegnimento");
+    }
     // L'ultima posizione di un cursore mosso un attimo prima di chiudere: il
     // filo dell'orologio, che di solito la scrive, è appena uscito per via
     // della bandiera.
@@ -120,6 +138,12 @@ pub fn spegni(mano: &tauri::AppHandle) {
     // va parlando col sistema operativo, e lasciarla cadere da sola vorrebbe
     // dire farlo a ciclo degli eventi già smontato.
     crate::vassoio::stacca(mano);
+    if prima_volta {
+        nota!(
+            "[uscita] sequenza finita in {} ms",
+            inizio.elapsed().as_millis()
+        );
+    }
 }
 
 /// Mandare eventi alla finestra solo finché la finestra c'è.

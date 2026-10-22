@@ -745,10 +745,35 @@ export interface CorrezioniMetadati {
   disco?: number;
 }
 
-/** L'avanzamento di una scansione. */
+/**
+ * In che punto è una scansione chiesta a mano.
+ *
+ * - `cerca`: la camminata delle cartelle, che sul NAS dura una decina di
+ *   secondi e prima non diceva niente — la barra restava a zero su zero;
+ * - `legge`: la lettura dei file, `fatti` su `totale`, come sempre;
+ * - `attende`: «Scansiona» aspetta che finisca una scansione partita da sola,
+ *   invece di rispondere «occupato».
+ */
+export type FaseScansione = "cerca" | "legge" | "attende";
+
+/**
+ * L'avanzamento di una scansione.
+ *
+ * `fase`, `cartelle` e `trovati` facoltativi: un nucleo di prima manda soltanto
+ * i due numeri, e la finestra allora si comporta come allora — vedi
+ * `fasiScansione.ts`. Facoltativi anche perché lo Studio disegna il toast con
+ * un avanzamento finto scritto a mano.
+ */
 export interface Avanzamento {
+  fase?: FaseScansione;
+  /** File letti finora, nella fase `legge`. */
   fatti: number;
+  /** File da leggere in tutto; zero finché non si sa. */
   totale: number;
+  /** Cartelle elencate finora, nella fase `cerca`. */
+  cartelle?: number;
+  /** File trovati finora, nella fase `cerca`. */
+  trovati?: number;
 }
 
 /**
@@ -3201,12 +3226,20 @@ export interface AvanzamentoTesti {
 }
 
 /**
- * Cosa si sorveglia: niente, i dischi di questo computer (di serie), o anche
- * le cartelle di rete con un controllo ogni cinque minuti.
+ * Cosa si sorveglia: niente, i soli dischi di questo computer, o anche le
+ * cartelle di rete (di serie dalla 3.0.2). Quelle di rete hanno gli avvisi del
+ * sistema dove la condivisione li manda, più un riallineamento all'avvio, al
+ * risveglio, quando la rete torna e ogni trenta minuti.
  */
 export type ModoSorveglianza = "spenta" | "locali" | "tutte";
 
-/** Come si tiene d'occhio una cartella sorvegliata. */
+/**
+ * Come si tiene d'occhio una cartella sorvegliata.
+ *
+ * `sondaggio` è il nome di sempre, ma dalla 3.0.2 vuol dire «solo il
+ * riallineamento periodico, ogni cinque minuti»: gli avvisi del sistema su
+ * quella cartella non si sono potuti armare.
+ */
 export type ComeSorvegliata = "avvisi" | "sondaggio" | "ferma" | "nonRaggiungibile";
 
 /** La sorveglianza delle cartelle, come la vede la finestra. */
@@ -3436,8 +3469,9 @@ export const ipc = {
   // quei file con `fs.noRecycleBin` prima di toccare qualunque cosa.
   braniElimina: (brani: number[], definitivi = false) =>
     invoke<number>("brani_elimina", { brani, definitivi }),
-  // Quanti dei file di questi brani non possono andare nel Cestino: la conferma
-  // lo chiede prima di mostrarsi.
+  // Quanti di questi brani spariscono per sempre, perché il loro file sta dove
+  // un Cestino non c'è: la conferma lo chiede prima di mostrarsi. Rifiuta con
+  // `library.imageTrackPartialDelete` i brani di un'immagine CD scelti a metà.
   braniSuRete: (brani: number[]) =>
     invoke<number>("brani_su_rete", { brani }),
   // Le cartelle musicali del sistema che contengono davvero qualcosa. Elenco

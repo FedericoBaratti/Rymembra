@@ -295,7 +295,10 @@ pub fn salva<M: Magazzino + ?Sized>(
     adesso_ms: i64,
     mut avanzamento: impl FnMut(Avanzamento),
 ) -> Result<Passata, AppError> {
-    let skin_locali = pacchetti::elenca_skin(data_dir);
+    // Le sane soltanto: una skin rotta in locale caricata sopra la copia buona
+    // di lassù è il guasto di un disco che diventa il guasto del backup. Vedi
+    // [`pacchetti::elenca_skin_sane`].
+    let skin_locali = pacchetti::elenca_skin_sane(data_dir);
     let bozze_locali = pacchetti::elenca_bozze(data_dir);
     let contenuto = backup::snapshot(stato, skin_locali.clone(), bozze_locali.clone());
 

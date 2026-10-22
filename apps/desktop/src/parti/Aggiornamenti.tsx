@@ -37,6 +37,7 @@ import { dataOra, numero } from "../formato";
 import { t } from "../lingue";
 import { useAscolto } from "../pagine";
 import { Icona } from "./Icone";
+import { Annuncio } from "./Annuncio";
 import { Interruttore } from "./Interruttore";
 
 /**
@@ -141,14 +142,32 @@ export function AvvisoAggiornamento({
     setNonOraQui(versione);
   };
 
-  if (
+  const nascosta =
     disponibile === null ||
     disponibile.saltata ||
-    disponibile.versione === nonOra
-  )
-    return null;
-
+    disponibile.versione === nonOra;
   const scaricando = stato?.installazione === true;
+  const guasto = tentato && !scaricando && stato?.errore != null ? stato.errore : null;
+  /*
+   * Quel che si dice a chi ascolta lo schermo, da una regione sempre montata
+   * (`Annuncio.tsx`): la versione nuova, e lo scaricamento che non è riuscito.
+   * La fascia era lei stessa `role="status"` e nasceva già piena, cioè nel
+   * solo modo in cui una regione viva spesso non dice niente. L'avanzamento non
+   * si annuncia: cambia a ogni pacchetto, e lo dice la barra a chi la chiede.
+   */
+  const annuncio = (
+    <Annuncio
+      testo={
+        nascosta
+          ? null
+          : guasto !== null
+            ? testoErrore(guasto)
+            : t("update.available", { v: disponibile.versione })
+      }
+    />
+  );
+  if (nascosta) return <>{annuncio}</>;
+
   // `totale` manca quando il server non manda `Content-Length`. Una barra che
   // non sa dove arriva è una barra che mente: in quel caso si mostrano i
   // megabyte scesi e basta.
@@ -159,7 +178,9 @@ export function AvvisoAggiornamento({
       : null;
 
   return (
-    <div className="notizia aggiornamento toast-card" role="status">
+    <>
+    {annuncio}
+    <div className="notizia aggiornamento toast-card">
       <Icona nome="i-cloud" dim={16} />
       <span>
         <strong>{t("update.available", { v: disponibile.versione })}</strong>
@@ -185,9 +206,7 @@ export function AvvisoAggiornamento({
             </span>
           </span>
         )}
-        {tentato && !scaricando && stato?.errore != null && (
-          <span className="guasto">{testoErrore(stato.errore)}</span>
-        )}
+        {guasto !== null && <span className="guasto">{testoErrore(guasto)}</span>}
       </span>
       {scaricando && (
         <button
@@ -228,6 +247,7 @@ export function AvvisoAggiornamento({
         </>
       )}
     </div>
+    </>
   );
 }
 

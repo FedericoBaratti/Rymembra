@@ -17,7 +17,10 @@
 
 use std::io::{Read, Seek};
 use std::ops::ControlFlow;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::scan_plan::DiscoveredFile;
@@ -37,9 +40,10 @@ impl<T: Read + Seek> ReadSeek for T {}
 /// radice morta e una radice vuota — ed è lo stesso errore, un passo più in là.
 /// La sonda di [`MusicFiles::radice_raggiungibile`] guarda la cartella *prima*
 /// di camminarci dentro; se la rete cade **durante** la camminata di una
-/// libreria grande, quella sonda ha già detto sì, `walkdir` salta in silenzio i
-/// rami che non risponde più, e quel che torna è una fotografia di mezza
-/// libreria che il piano legge come «l'altra metà è sparita».
+/// libreria grande, quella sonda ha già detto sì, un'enumerazione ingenua
+/// salta in silenzio i rami che non rispondono più, e quel che torna è una
+/// fotografia di mezza libreria che il piano legge come «l'altra metà è
+/// sparita».
 ///
 /// Non è un caso di scuola: è la stessa cancellazione che la sonda esiste per
 /// impedire, con la rete caduta un momento più tardi.
@@ -110,6 +114,18 @@ pub enum Voce {
     /// piano chiede «sta sotto questa radice». Può essere la radice stessa,
     /// quando non si sa dire di meglio.
     RamoPerso(String),
+    /// Battito: una cartella è stata elencata, anche se dentro non c'era niente.
+    ///
+    /// Non porta un file e non decide niente, ed esiste per due ragioni. La
+    /// prima è il silenzio che misura chi consuma: una libreria con mille
+    /// cartelle di copertine e nessun brano è un disco che risponde, e senza
+    /// battito sembrerebbe una share morta. La seconda è l'avanzamento: «N
+    /// cartelle, M file» si conta da qui.
+    ///
+    /// Chi non ha cartelle da dichiarare — il corpo di serie di
+    /// [`MusicFiles::walk_a_rate`], un doppio di prova — non è obbligato a
+    /// mandarlo.
+    Cartella,
 }
 
 /// Da dove arrivano i file musicali.
@@ -155,10 +171,14 @@ pub trait MusicFiles: Send + Sync {
     /// dire scegliere fra dichiarare morta una libreria grande e non accorgersi
     /// mai di una share caduta.
     ///
-    /// `su_voce` viene chiamato una volta per file, nell'ordine in cui la
-    /// camminata li incontra, e una volta per ogni ramo che si perde;
-    /// restituendo [`ControlFlow::Break`] dice «basta così» e la camminata si
-    /// ferma lì.
+    /// `su_voce` viene chiamato una volta per file e una volta per ogni ramo
+    /// che si perde; chi sa farlo manda anche un [`Voce::Cartella`] per ogni
+    /// cartella elencata. Lo chiama sempre e solo il filo di chi ha chiamato,
+    /// anche quando sotto la camminata gira su più fili — è per questo che può
+    /// essere un `FnMut` qualunque. L'ordine è quello in cui le voci arrivano e
+    /// **non è un contratto**: chi ha bisogno di un ordine se lo fa.
+    /// Restituendo [`ControlFlow::Break`] dice «basta così» e la camminata si
+    /// ferma lì: dopo un `Break`, `su_voce` non viene chiamato più.
     ///
     /// # Il `bool`
     ///
@@ -455,15 +475,17 @@ pub struct LocalFiles;
 impl MusicFiles for LocalFiles {
     /// Ricostruita sopra [`MusicFiles::walk_a_rate`], e non il contrario.
     ///
-    /// Il ciclo su `walkdir` sta di là perché è di là che serve consegnare man
-    /// mano; qui si raccoglie quel che quello consegna. Due cicli sarebbero due
-    /// idee su cosa conta come ramo perso, e prima o poi una camminata intera e
-    /// una a rate direbbero due cose diverse sulla stessa cartella.
+    /// La camminata vera sta di là perché è di là che serve consegnare man
+    /// mano; qui si raccoglie quel che quella consegna. Due camminate sarebbero
+    /// due idee su cosa conta come ramo perso, e prima o poi una intera e una a
+    /// rate direbbero due cose diverse sulla stessa cartella.
     fn walk(&self, root: &str) -> Result<Camminata, AppError> {
         let mut file = Vec::new();
         let completa = self.walk_a_rate(root, &mut |voce| {
             // I rami persi qui non servono: `completa` dice già che l'elenco è
-            // monco, e chi cammina intero non decide cancellazioni.
+            // monco, e chi cammina intero non decide cancellazioni. I battiti
+            // delle cartelle nemmeno: nessuno misura il silenzio di chi aspetta
+            // la fine.
             if let Voce::File(trovato) = voce {
                 file.push(trovato);
             }
@@ -472,80 +494,39 @@ impl MusicFiles for LocalFiles {
         Ok(Camminata { file, completa })
     }
 
+    /// Quattro fili su una pila di cartelle, e le voci al chiamante per canale.
+    ///
+    /// # Perché più fili
+    ///
+    /// Perché su una share il costo di una cartella non è il disco, è il giro
+    /// di rete: elencarla vuol dire chiedere e aspettare, e mentre si aspetta
+    /// non si fa niente. Sul NAS dell'utente — 2.561 cartelle, 29.503 file —
+    /// un filo solo ci metteva 10-12 secondi, quattro ne mettono 6,7, e oltre
+    /// quattro non si guadagna più niente: il pavimento è il server.
+    ///
+    /// # Cosa non cambia
+    ///
+    /// - `su_voce` lo chiama solo il filo di chi ha chiamato: i fili mandano
+    ///   le voci per canale, e il patto del tratto resta quello che era.
+    /// - I collegamenti non si seguono: vedi `elenca_cartella`.
+    /// - Una cartella che non si apre, o il cui elenco si interrompe a metà, è
+    ///   un [`Voce::RamoPerso`] con il suo nome esatto; un file di cui non si
+    ///   leggono tipo o data lo è della cartella che lo contiene.
+    /// - Un `Break` ferma tutti i fili, e la funzione restituisce `false`.
+    ///
+    /// Cambia l'ordine: i file di una cartella arrivano in ordine di nome, le
+    /// cartelle nell'ordine in cui i fili le finiscono.
     fn walk_a_rate(
         &self,
         root: &str,
         su_voce: &mut dyn FnMut(Voce) -> ControlFlow<()>,
     ) -> Result<bool, AppError> {
-        // Ogni ramo perso abbassa questo, e non è pignoleria: è l'unica
-        // differenza fra «qui non c'è più niente» e «di qui non si è visto
-        // tutto», e a valle decide se dei brani si cancellano.
-        let mut completa = true;
-        // Le cartelle aperte lungo il cammino, con la loro profondità: servono
-        // a dare un indirizzo agli errori che `walkdir` consegna senza. Vedi
-        // [`ramo_di_un_errore`].
-        let mut aperte: Vec<(usize, PathBuf)> = Vec::new();
-        // `walkdir` con i link simbolici non seguiti: seguirli permetterebbe a
-        // un anello di far girare la scansione all'infinito, e a un link verso
-        // la cartella superiore di contare ogni brano due volte.
-        for entry in walkdir::WalkDir::new(root).follow_links(false) {
-            let entry = match entry {
-                Ok(entry) => entry,
-                // Una sottocartella illeggibile non ferma la camminata: si perde
-                // quel ramo, non l'intera libreria. Ma **si dice**, e si dice
-                // quale: è il nome del ramo che permette a valle di non
-                // giudicare quel che ci sta sotto, invece di giudicarlo sparito.
-                Err(err) => {
-                    completa = false;
-                    let ramo = ramo_di_un_errore(err.path(), err.depth(), &aperte, root);
-                    if su_voce(Voce::RamoPerso(ramo)).is_break() {
-                        return Ok(false);
-                    }
-                    continue;
-                }
-            };
-            if entry.file_type().is_dir() {
-                // `walkdir` cammina in profondità: una cartella a profondità
-                // `d` chiude tutte quelle aperte a profondità `d` o più.
-                let profondita = entry.depth();
-                while aperte.last().is_some_and(|(d, _)| *d >= profondita) {
-                    aperte.pop();
-                }
-                aperte.push((profondita, entry.path().to_path_buf()));
-                continue;
-            }
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let Ok(metadata) = entry.metadata() else {
-                // Un file elencato di cui non si legge la data è un file su cui
-                // non si può decidere niente: sparisce dall'elenco, quindi
-                // l'elenco non è più intero. Il ramo perso è la sua cartella, e
-                // non il file solo: l'errore sui metadati di un file è quasi
-                // sempre l'errore di chi serve quella cartella, e i suoi vicini
-                // arrivati prima o dopo non sono una garanzia.
-                completa = false;
-                let cartella = entry
-                    .path()
-                    .parent()
-                    .map_or_else(|| root.to_owned(), |p| p.to_string_lossy().into_owned());
-                if su_voce(Voce::RamoPerso(cartella)).is_break() {
-                    return Ok(false);
-                }
-                continue;
-            };
-            let path = entry.path().to_string_lossy().into_owned();
-            let trovato = DiscoveredFile {
-                path,
-                size_bytes: metadata.len(),
-                modified_ms: modified_ms(&metadata),
-            };
-            // Chi ha detto basta non ha visto tutto: `false`, non `completa`.
-            if su_voce(Voce::File(trovato)).is_break() {
-                return Ok(false);
-            }
-        }
-        Ok(completa)
+        Ok(cammina_a_fili(
+            root,
+            FILI_CAMMINATA,
+            elenca_cartella,
+            su_voce,
+        ))
     }
 
     fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send + Sync>, AppError> {
@@ -579,41 +560,377 @@ impl MusicFiles for LocalFiles {
     }
 }
 
-/// La cartella di cui un errore di `walkdir` racconta il guasto.
+/// Quanti fili elencano cartelle insieme, per ogni radice.
 ///
-/// # Tre casi
+/// Quattro, misurato e non scelto: sul NAS dell'utente un filo solo cammina la
+/// libreria in 10-12 secondi, quattro in 6,7, di più non fanno meglio. Il limite
+/// è il server che risponde, non chi chiede — e ogni filo in più è soltanto un
+/// filo in più da lasciare appeso se la share muore a metà.
+const FILI_CAMMINATA: usize = 4;
+
+/// Quante voci possono aspettare nel canale prima che i fili si fermino.
 ///
-/// - **L'errore ha un percorso.** È il caso di una cartella che non si apre —
-///   `read_dir` rifiutato, permessi negati — e il percorso è quello della
-///   cartella: il ramo perso è lei.
-/// - **L'errore non ce l'ha.** Succede quando la cartella si è aperta e poi
-///   l'elenco si interrompe a metà — la share che cade mentre consegna i nomi.
-///   `walkdir` dice soltanto a che profondità stavano le voci che non sono
-///   arrivate; la cartella che le stava elencando è quella aperta un livello
-///   sopra, e `aperte` la ricorda.
-/// - **Nemmeno quella si trova.** Allora la radice: non sapere dove si è perso
-///   qualcosa vuol dire averlo perso ovunque, e a valle la risposta larga costa
-///   una passata senza rimozioni, mai una rimozione di troppo.
+/// Un tetto, e non un canale aperto: se chi consuma va piano, i fili aspettano
+/// lui invece di ammucchiare in memoria l'elenco di un NAS intero.
+const VOCI_IN_VOLO: usize = 512;
+
+/// Ogni quanti file di una cartella si consegna senza aspettarne la fine.
 ///
-/// Separata dal ciclo perché è l'unica parte della camminata che decide
-/// qualcosa, ed è l'unica che si può provare senza un disco che si rompa a
-/// comando.
-fn ramo_di_un_errore(
-    percorso: Option<&Path>,
-    profondita: usize,
-    aperte: &[(usize, PathBuf)],
-    root: &str,
-) -> String {
-    if let Some(percorso) = percorso {
-        return percorso.to_string_lossy().into_owned();
+/// I file di una cartella arrivano in ordine di nome, e per ordinarli bisogna
+/// averli tutti: quindi si aspetta la fine dell'elenco. Ma una cartella piatta
+/// da diecimila file su una share lenta è un elenco che dura, e chi consuma sta
+/// misurando il silenzio: oltre questa soglia si consegna quel che si ha,
+/// ordinato dentro il lotto. Gli album ci stanno sotto tutti.
+const LOTTO_DI_FILE: usize = 512;
+
+/// Chi elenca una cartella: [`elenca_cartella`], o un sostituto nelle prove.
+///
+/// Consegna file, battito e rami persi sul canale, e restituisce le
+/// sottocartelle da camminare. `None` vuol dire «smetti»: chi ascoltava se n'è
+/// andato, o qualcuno ha alzato la bandiera.
+type Elenca = fn(&Path, &mpsc::SyncSender<Voce>, &AtomicBool) -> Option<Vec<PathBuf>>;
+
+/// Quel che i fili di una camminata hanno in comune.
+struct Cantiere {
+    /// La pila delle cartelle e il conto di quelle non ancora finite.
+    lavori: Mutex<Lavori>,
+    /// Sveglia chi aspetta lavoro: è arrivata una cartella, o è tutto finito.
+    sveglia: Condvar,
+    /// «Basta»: chi consuma ha detto `Break`, o non c'è più nessuno che ascolti.
+    basta: AtomicBool,
+}
+
+/// Lo stato della pila, sotto lucchetto.
+struct Lavori {
+    /// Le cartelle trovate e non ancora prese da nessuno.
+    da_elencare: Vec<PathBuf>,
+    /// Le cartelle trovate e non ancora finite: in pila **o in mano a un filo**.
+    ///
+    /// È questo, e non la pila vuota, a dire che la camminata è finita: con la
+    /// pila vuota un filo può stare ancora elencando la cartella da cui ne
+    /// usciranno altre cento.
+    in_sospeso: usize,
+}
+
+impl Cantiere {
+    fn nuovo(radice: PathBuf) -> Self {
+        Self {
+            lavori: Mutex::new(Lavori {
+                da_elencare: vec![radice],
+                in_sospeso: 1,
+            }),
+            sveglia: Condvar::new(),
+            basta: AtomicBool::new(false),
+        }
     }
-    profondita
-        .checked_sub(1)
-        .and_then(|sopra| aperte.iter().rev().find(|(d, _)| *d == sopra))
-        .map_or_else(
-            || root.to_owned(),
-            |(_, cartella)| cartella.to_string_lossy().into_owned(),
-        )
+
+    fn lavori(&self) -> MutexGuard<'_, Lavori> {
+        // Avvelenato vuol dire che un filo è caduto con il lucchetto in mano.
+        // Dentro ci sono una pila e un contatore, coerenti fra un'istruzione e
+        // l'altra: arrendersi per questo farebbe di un panico una camminata
+        // appesa.
+        self.lavori.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// La prossima cartella da elencare, aspettando se serve. `None` quando
+    /// non ce ne saranno altre, o quando qualcuno ha detto basta.
+    fn prendi(&self) -> Option<PathBuf> {
+        let mut lavori = self.lavori();
+        loop {
+            if self.basta.load(Ordering::SeqCst) || lavori.in_sospeso == 0 {
+                return None;
+            }
+            if let Some(cartella) = lavori.da_elencare.pop() {
+                return Some(cartella);
+            }
+            lavori = self
+                .sveglia
+                .wait(lavori)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// Una cartella è finita, e da lei sono uscite `sotto`.
+    ///
+    /// Le figlie si aggiungono e la madre si toglie **sotto lo stesso
+    /// lucchetto**: contare prima la fine e poi le figlie lascerebbe un istante
+    /// con il conto a zero, e un filo che guardasse proprio allora se ne
+    /// andrebbe con mezza libreria ancora da vedere.
+    fn fatta(&self, mut sotto: Vec<PathBuf>) {
+        // Alla rovescia, perché la pila si svuota dalla coda: così le sorelle
+        // escono in ordine di nome, e con un filo solo la camminata sarebbe
+        // quella di sempre.
+        sotto.sort_unstable_by(|a, b| b.cmp(a));
+        let mut lavori = self.lavori();
+        lavori.in_sospeso = lavori
+            .in_sospeso
+            .saturating_add(sotto.len())
+            .saturating_sub(1);
+        lavori.da_elencare.append(&mut sotto);
+        drop(lavori);
+        self.sveglia.notify_all();
+    }
+
+    /// Ferma tutti i fili: chi elenca alla prossima voce, chi aspetta subito.
+    fn ferma(&self) {
+        self.basta.store(true, Ordering::SeqCst);
+        // Il lucchetto, preso e lasciato, prima della sveglia: chi ha appena
+        // guardato `basta` e sta per mettersi ad aspettare lo tiene in mano, e
+        // una sveglia suonata in quell'istante andrebbe persa — con lui
+        // addormentato per sempre.
+        drop(self.lavori());
+        self.sveglia.notify_all();
+    }
+}
+
+/// Se un filo cade fuori dall'elenco di una cartella, ferma gli altri.
+///
+/// Il panico **dentro** una cartella lo raccoglie [`lavora`], e diventa il
+/// ramo perso di quella cartella. Questo copre il resto — la contabilità della
+/// pila — dove un filo che sparisse senza dirlo lascerebbe il conto delle
+/// cartelle in sospeso sopra zero per sempre, e gli altri ad aspettarlo.
+struct SeCade<'a>(&'a Cantiere);
+
+impl Drop for SeCade<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.ferma();
+        }
+    }
+}
+
+/// Il lavoro di un filo: prendere cartelle ed elencarle, finché ce ne sono.
+fn lavora(cantiere: &Cantiere, manda: &mpsc::SyncSender<Voce>, elenca: Elenca) {
+    let _se_cade = SeCade(cantiere);
+    while let Some(cartella) = cantiere.prendi() {
+        // Un panico dentro una cartella — un nome che il sistema restituisce
+        // storto, un difetto nostro — costa quella cartella e non la
+        // camminata: diventa il suo ramo perso, e gli altri fili proseguono.
+        let esito = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            elenca(&cartella, manda, &cantiere.basta)
+        }));
+        let sotto = match esito {
+            Ok(Some(sotto)) => sotto,
+            Ok(None) => {
+                cantiere.ferma();
+                Vec::new()
+            }
+            Err(_) => {
+                if manda
+                    .send(Voce::RamoPerso(testo_del_percorso(&cartella)))
+                    .is_err()
+                {
+                    cantiere.ferma();
+                }
+                Vec::new()
+            }
+        };
+        cantiere.fatta(sotto);
+    }
+}
+
+/// La camminata di [`LocalFiles::walk_a_rate`], con l'elenco di una cartella
+/// passato da fuori: le prove ci mettono una cartella che panica.
+///
+/// Restituisce [`Camminata::completa`]: `true` solo se nessun ramo è andato
+/// perso e nessuno ha detto basta.
+fn cammina_a_fili(
+    root: &str,
+    fili: usize,
+    elenca: Elenca,
+    su_voce: &mut dyn FnMut(Voce) -> ControlFlow<()>,
+) -> bool {
+    let cantiere = Cantiere::nuovo(PathBuf::from(root));
+    std::thread::scope(|ambito| {
+        let (manda, ricevi) = mpsc::sync_channel(VOCI_IN_VOLO);
+        let mut avviati = Vec::with_capacity(fili);
+        for numero in 0..fili {
+            let manda = manda.clone();
+            let cantiere = &cantiere;
+            let filo = std::thread::Builder::new()
+                .name(format!("rymembra-camminata-{numero}"))
+                .spawn_scoped(ambito, move || lavora(cantiere, &manda, elenca));
+            // Un filo che il sistema non dà è un filo in meno, non una
+            // camminata in meno: bastano quelli che ci sono.
+            if let Ok(filo) = filo {
+                avviati.push(filo);
+            }
+        }
+        // L'originale si lascia subito: il canale si chiude quando l'ultimo
+        // filo lascia il suo, ed è così che il ciclo qui sotto sa che è finita.
+        drop(manda);
+        if avviati.is_empty() {
+            // Nessun filo, nessuno ha guardato: la radice intera non è stata
+            // verificata, ed è quel che si dice.
+            let _ = su_voce(Voce::RamoPerso(root.to_owned()));
+            return false;
+        }
+
+        // Ogni ramo perso abbassa questo, e non è pignoleria: è l'unica
+        // differenza fra «qui non c'è più niente» e «di qui non si è visto
+        // tutto», e a valle decide se dei brani si cancellano.
+        let mut completa = true;
+        let mut interrotta = false;
+        for voce in &ricevi {
+            if matches!(voce, Voce::RamoPerso(_)) {
+                completa = false;
+            }
+            if su_voce(voce).is_break() {
+                interrotta = true;
+                break;
+            }
+        }
+        // La bandiera, poi il canale chiuso, poi l'attesa dei fili: chi elenca
+        // smette alla prossima voce, chi è fermo su un canale pieno si sblocca
+        // con un errore, chi aspetta lavoro si sveglia. Aspettarli con il
+        // canale ancora aperto vorrebbe dire aspettare per sempre quello fermo
+        // a consegnare.
+        cantiere.ferma();
+        drop(ricevi);
+        let caduti = avviati
+            .into_iter()
+            .map(std::thread::ScopedJoinHandle::join)
+            .filter(Result::is_err)
+            .count();
+        // Chi ha detto basta non ha visto tutto: `false`, non `completa`.
+        if interrotta {
+            return false;
+        }
+        if caduti > 0 {
+            // Un filo caduto fuori da una cartella: non si sa che cosa avesse
+            // in mano, e la risposta onesta è la più larga.
+            let _ = su_voce(Voce::RamoPerso(root.to_owned()));
+            return false;
+        }
+        completa
+    })
+}
+
+/// Elenca una cartella: consegna i suoi file e il battito, restituisce le
+/// sottocartelle.
+///
+/// # I collegamenti non si seguono
+///
+/// Il tipo viene da [`std::fs::DirEntry::file_type`], che **non segue** il
+/// collegamento: un link simbolico è un link, non la cartella a cui punta.
+/// Seguirlo permetterebbe a un anello di far girare la scansione all'infinito,
+/// e a un link verso la cartella accanto di contare ogni brano due volte. Su
+/// Windows vale lo stesso per le giunzioni (`mklink /J`): sono punti di
+/// rianalisi «surrogati di nome» come i link, e std le riporta come tali —
+/// `is_symlink()` vero, `is_dir()` falso. La prova `una_giunzione_non_si_segue`
+/// lo controlla sul sistema vero invece di fidarsi.
+///
+/// La radice invece si apre per quel che è: una radice che è essa stessa una
+/// giunzione l'ha scelta l'utente, e si è sempre seguita.
+///
+/// # I metadati non costano
+///
+/// Su Windows [`std::fs::DirEntry::metadata`] restituisce quel che l'elenco ha
+/// già portato — dimensione e data arrivano insieme al nome — e non tocca il
+/// disco. Un `fs::metadata` per file sarebbe un giro di rete in più per ogni
+/// brano, e per di più seguirebbe i collegamenti.
+///
+/// # I percorsi
+///
+/// La cartella si apre con [`percorso_lungo`], perché un album annidato su una
+/// share può sfondare `MAX_PATH`; ma i percorsi consegnati si costruiscono
+/// dalla cartella **senza** prefisso, la radice più i nomi: sono quelli che
+/// finiscono in libreria, e un `\\?\` lì dentro farebbe di ogni brano un brano
+/// nuovo.
+fn elenca_cartella(
+    cartella: &Path,
+    manda: &mpsc::SyncSender<Voce>,
+    basta: &AtomicBool,
+) -> Option<Vec<PathBuf>> {
+    let ramo_perso = || Voce::RamoPerso(testo_del_percorso(cartella));
+    let elenco = match std::fs::read_dir(percorso_lungo(cartella)) {
+        Ok(elenco) => elenco,
+        // Una cartella illeggibile non ferma la camminata: si perde quel ramo,
+        // non l'intera libreria. Ma **si dice**, e si dice quale: è il nome
+        // del ramo che permette a valle di non giudicare quel che ci sta
+        // sotto, invece di giudicarlo sparito. Se è la radice a non aprirsi, il
+        // ramo è la radice.
+        Err(_) => return manda.send(ramo_perso()).ok().map(|()| Vec::new()),
+    };
+    let mut sotto = Vec::new();
+    let mut file = Vec::new();
+    // L'elenco è arrivato in fondo: è la condizione del battito.
+    let mut intera = true;
+    // Un file elencato di cui non si legge il tipo o la data.
+    let mut monca = false;
+    for voce in elenco {
+        if basta.load(Ordering::Relaxed) {
+            return None;
+        }
+        // L'elenco che si interrompe a metà — la share che cade mentre
+        // consegna i nomi — è un ramo perso come la cartella che non si apre:
+        // quel che non è arrivato non si sa cosa fosse. Quel che è arrivato
+        // prima si consegna e si cammina lo stesso: sta sotto il ramo perso e
+        // a valle non si giudica, ma un brano nuovo trovato lì resta trovato.
+        let Ok(voce) = voce else {
+            intera = false;
+            break;
+        };
+        let percorso = cartella.join(voce.file_name());
+        // Un file elencato di cui non si legge il tipo o la data è un file su
+        // cui non si può decidere niente: sparisce dall'elenco, quindi
+        // l'elenco non è più intero. Il ramo perso è la sua cartella, e non il
+        // file solo: l'errore sui metadati di un file è quasi sempre l'errore
+        // di chi serve quella cartella, e i suoi vicini non sono una garanzia.
+        let Ok(tipo) = voce.file_type() else {
+            monca = true;
+            continue;
+        };
+        if tipo.is_dir() {
+            sotto.push(percorso);
+            continue;
+        }
+        // Link, giunzioni, dispositivi: non si seguono e non si contano.
+        if !tipo.is_file() {
+            continue;
+        }
+        let Ok(metadati) = voce.metadata() else {
+            monca = true;
+            continue;
+        };
+        file.push(DiscoveredFile {
+            path: testo_del_percorso(&percorso),
+            size_bytes: metadati.len(),
+            modified_ms: modified_ms(&metadati),
+        });
+        if file.len() >= LOTTO_DI_FILE {
+            consegna_in_ordine(&mut file, manda)?;
+        }
+    }
+    consegna_in_ordine(&mut file, manda)?;
+    if intera {
+        manda.send(Voce::Cartella).ok()?;
+    }
+    if !intera || monca {
+        manda.send(ramo_perso()).ok()?;
+    }
+    Some(sotto)
+}
+
+/// Consegna i file raccolti in ordine di nome, e svuota il mucchio.
+///
+/// Stanno tutti nella stessa cartella, quindi l'ordine dei percorsi è l'ordine
+/// dei nomi. `None` se chi ascoltava se n'è andato.
+fn consegna_in_ordine(
+    file: &mut Vec<DiscoveredFile>,
+    manda: &mpsc::SyncSender<Voce>,
+) -> Option<()> {
+    file.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+    for trovato in file.drain(..) {
+        manda.send(Voce::File(trovato)).ok()?;
+    }
+    Some(())
+}
+
+/// Il percorso nella forma che viaggia: una stringa, anche dove il nome non è
+/// UTF-8.
+fn testo_del_percorso(percorso: &Path) -> String {
+    percorso.to_string_lossy().into_owned()
 }
 
 /// Quanto si aspetta una radice prima di dichiararla irraggiungibile.
@@ -717,15 +1034,20 @@ mod tests {
 
         assert_eq!(completa, intera.completa);
         assert!(completa, "una cartella sana si cammina per intero");
-        let percorsi: Vec<&str> = a_rate
+        let mut percorsi: Vec<&str> = a_rate
             .iter()
-            .map(|voce| match voce {
-                Voce::File(f) => f.path.as_str(),
+            .filter_map(|voce| match voce {
+                Voce::File(f) => Some(f.path.as_str()),
+                Voce::Cartella => None,
                 Voce::RamoPerso(ramo) => panic!("una cartella sana non perde rami: {ramo}"),
             })
             .collect();
-        let attesi: Vec<&str> = intera.file.iter().map(|f| f.path.as_str()).collect();
-        assert_eq!(percorsi, attesi, "stessi file, stesso ordine");
+        let mut attesi: Vec<&str> = intera.file.iter().map(|f| f.path.as_str()).collect();
+        // Gli stessi file, non lo stesso ordine: con più fili l'ordine fra
+        // cartelle diverse è quello in cui i fili finiscono, e non è un patto.
+        percorsi.sort_unstable();
+        attesi.sort_unstable();
+        assert_eq!(percorsi, attesi, "stessi file");
     }
 
     #[test]
@@ -759,6 +1081,321 @@ mod tests {
         );
     }
 
+    /// Tutto quel che una camminata a rate consegna, diviso per specie.
+    #[derive(Debug, Default)]
+    struct Raccolta {
+        file: Vec<String>,
+        battiti: usize,
+        rami: Vec<String>,
+    }
+
+    impl Raccolta {
+        fn metti(&mut self, voce: Voce) -> ControlFlow<()> {
+            match voce {
+                Voce::File(trovato) => self.file.push(trovato.path),
+                Voce::RamoPerso(ramo) => self.rami.push(ramo),
+                Voce::Cartella => self.battiti += 1,
+            }
+            ControlFlow::Continue(())
+        }
+    }
+
+    /// La camminata vera, raccolta per intero, con il suo `bool`.
+    fn raccogli(root: &str) -> (Raccolta, bool) {
+        let mut raccolta = Raccolta::default();
+        let completa = LocalFiles
+            .walk_a_rate(root, &mut |voce| raccolta.metti(voce))
+            .expect("camminata a rate");
+        (raccolta, completa)
+    }
+
+    /// Un albero di prova: `larghezza` cartelle per livello fino a
+    /// `profondita`, e `per_cartella` file in ognuna, radice compresa.
+    ///
+    /// Restituisce i file creati e quante cartelle ci sono, radice compresa.
+    fn albero(
+        radice: &Path,
+        larghezza: usize,
+        profondita: usize,
+        per_cartella: usize,
+    ) -> (Vec<String>, usize) {
+        let mut file = Vec::new();
+        let mut cartelle = 0;
+        let mut da_fare = vec![(radice.to_path_buf(), 0)];
+        while let Some((qui, livello)) = da_fare.pop() {
+            cartelle += 1;
+            // Creati alla rovescia: sul disco l'ordine di creazione non deve
+            // diventare l'ordine di consegna.
+            for n in (0..per_cartella).rev() {
+                let percorso = qui.join(format!("{n:02}.mp3"));
+                std::fs::write(&percorso, b"x").expect("file");
+                file.push(percorso.to_string_lossy().into_owned());
+            }
+            if livello < profondita {
+                for n in 0..larghezza {
+                    let sotto = qui.join(format!("c{n}"));
+                    std::fs::create_dir(&sotto).expect("cartella");
+                    da_fare.push((sotto, livello + 1));
+                }
+            }
+        }
+        (file, cartelle)
+    }
+
+    #[test]
+    fn un_albero_largo_e_profondo_si_vede_tutto_e_una_volta_sola() {
+        // Il rischio di quattro fili su una pila sola non è la lentezza, è la
+        // contabilità: una cartella presa da due fili conta i suoi brani due
+        // volte, una sfuggita al conto delle cartelle in sospeso fa finire la
+        // camminata prima del tempo — e a valle «non trovato» vuol dire
+        // «sparito». Duecentocinquantanove cartelle su quattro livelli, con dei
+        // file a ogni livello, radice compresa.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let (mut attesi, cartelle) = albero(dir.path(), 6, 3, 3);
+        assert_eq!(cartelle, 1 + 6 + 36 + 216);
+        let root = dir.path().to_string_lossy().into_owned();
+
+        let (raccolta, completa) = raccogli(&root);
+
+        assert!(completa, "un albero sano si cammina per intero");
+        assert!(raccolta.rami.is_empty(), "rami persi: {:?}", raccolta.rami);
+        assert_eq!(
+            raccolta.battiti, cartelle,
+            "un battito per ogni cartella elencata, radice compresa"
+        );
+        // Ogni file esattamente una volta: stesso numero, stesso insieme.
+        let distinti: std::collections::HashSet<&String> = raccolta.file.iter().collect();
+        assert_eq!(
+            distinti.len(),
+            raccolta.file.len(),
+            "un file contato due volte"
+        );
+        let mut trovati = raccolta.file.clone();
+        trovati.sort_unstable();
+        attesi.sort_unstable();
+        assert_eq!(trovati, attesi);
+
+        // E dentro ogni cartella, in ordine di nome: le cartelle si mescolano
+        // fra fili, i file di una stessa cartella no.
+        let mut per_cartella: std::collections::HashMap<PathBuf, Vec<&String>> =
+            std::collections::HashMap::new();
+        for file in &raccolta.file {
+            let cartella = Path::new(file).parent().expect("cartella").to_path_buf();
+            per_cartella.entry(cartella).or_default().push(file);
+        }
+        for (cartella, file) in per_cartella {
+            assert!(
+                file.is_sorted(),
+                "i file di {} non sono arrivati in ordine: {file:?}",
+                cartella.display()
+            );
+        }
+    }
+
+    #[test]
+    fn le_cartelle_vuote_battono_anche_loro() {
+        // Una cartella vuota è un disco che ha risposto: senza battito, una
+        // libreria con molte cartelle e pochi brani sembrerebbe ferma a chi
+        // misura il silenzio, e l'avanzamento non le conterebbe.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        for nome in ["uno", "due", "tre"] {
+            std::fs::create_dir(dir.path().join(nome)).expect("cartella");
+        }
+        std::fs::create_dir_all(dir.path().join("a").join("b").join("c")).expect("cartelle");
+        let root = dir.path().to_string_lossy().into_owned();
+
+        let (raccolta, completa) = raccogli(&root);
+
+        assert!(raccolta.file.is_empty());
+        assert!(raccolta.rami.is_empty(), "rami persi: {:?}", raccolta.rami);
+        assert_eq!(
+            raccolta.battiti,
+            1 + 3 + 3,
+            "radice, tre sorelle, tre annidate"
+        );
+        // Vuota ma vista: è la sonda, a valle, a decidere se un vuoto è un
+        // vuoto. Qui niente si è perso.
+        assert!(completa);
+    }
+
+    #[test]
+    fn chi_dice_basta_a_meta_albero_ferma_tutti_i_fili() {
+        // Con un filo solo «basta» voleva dire smettere di girare il ciclo.
+        // Con quattro vuol dire fermare anche gli altri tre, e soprattutto non
+        // chiamare più chi ha detto basta: dopo il `Break` niente, nemmeno le
+        // voci che erano già in volo nel canale.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let (file, _) = albero(dir.path(), 5, 2, 4);
+        assert!(
+            file.len() > 100,
+            "serve un albero più grande del punto di arresto"
+        );
+        let root = dir.path().to_string_lossy().into_owned();
+
+        let mut consegnati = 0_usize;
+        let mut dopo = 0_usize;
+        let mut fermato = false;
+        let completa = LocalFiles
+            .walk_a_rate(&root, &mut |voce| {
+                if fermato {
+                    dopo += 1;
+                    return ControlFlow::Continue(());
+                }
+                if matches!(voce, Voce::File(_)) {
+                    consegnati += 1;
+                }
+                if consegnati >= 10 {
+                    fermato = true;
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .expect("camminata a rate");
+
+        assert_eq!(consegnati, 10, "si ferma al decimo file");
+        assert_eq!(dopo, 0, "dopo il basta non si consegna più niente");
+        assert!(!completa, "chi ha detto basta non ha visto tutto");
+    }
+
+    #[test]
+    fn un_filo_che_cade_su_una_cartella_perde_solo_quella() {
+        // Un panico mentre si elenca una cartella non deve far cadere la
+        // scansione, né lasciarla appesa ad aspettare un filo che non c'è più:
+        // costa quella cartella, che diventa un ramo perso, e il resto si
+        // cammina come sempre.
+        fn elenca_o_cade(
+            cartella: &Path,
+            manda: &mpsc::SyncSender<Voce>,
+            basta: &AtomicBool,
+        ) -> Option<Vec<PathBuf>> {
+            if cartella.file_name().is_some_and(|nome| nome == "rotta") {
+                panic!("una cartella che fa cadere chi la elenca, a comando");
+            }
+            elenca_cartella(cartella, manda, basta)
+        }
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        for (cartella, nome) in [
+            ("sana", "a.mp3"),
+            ("rotta", "b.mp3"),
+            ("rotta/sotto", "c.mp3"),
+            ("altra", "d.mp3"),
+        ] {
+            let qui = dir.path().join(cartella);
+            std::fs::create_dir_all(&qui).expect("cartella");
+            std::fs::write(qui.join(nome), b"x").expect("file");
+        }
+        let root = dir.path().to_string_lossy().into_owned();
+
+        let mut raccolta = Raccolta::default();
+        let completa = cammina_a_fili(&root, FILI_CAMMINATA, elenca_o_cade, &mut |voce| {
+            raccolta.metti(voce)
+        });
+
+        assert!(!completa, "un ramo perso è un elenco parziale");
+        assert_eq!(
+            raccolta.rami,
+            vec![dir.path().join("rotta").to_string_lossy().into_owned()]
+        );
+        let mut trovati = raccolta.file;
+        trovati.sort_unstable();
+        let mut attesi = vec![
+            dir.path()
+                .join("sana")
+                .join("a.mp3")
+                .to_string_lossy()
+                .into_owned(),
+            dir.path()
+                .join("altra")
+                .join("d.mp3")
+                .to_string_lossy()
+                .into_owned(),
+        ];
+        attesi.sort_unstable();
+        assert_eq!(trovati, attesi);
+        assert_eq!(raccolta.battiti, 3, "radice, sana e altra");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn una_giunzione_non_si_segue() {
+        // Le giunzioni sono il collegamento di Windows che si crea senza
+        // privilegi, e quindi quello che si trova davvero sui dischi. Una verso
+        // la cartella accanto conterebbe ogni brano due volte; una verso la
+        // radice non finirebbe mai.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let radice = dir.path().join("radice");
+        let vera = radice.join("vera");
+        std::fs::create_dir_all(&vera).expect("cartelle");
+        std::fs::write(vera.join("a.mp3"), b"x").expect("file");
+        let giunzione = |collegamento: &Path, bersaglio: &Path| {
+            std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(collegamento)
+                .arg(bersaglio)
+                .output()
+                .is_ok_and(|esito| esito.status.success())
+        };
+        if !giunzione(&radice.join("ponte"), &vera) || !giunzione(&vera.join("anello"), &radice) {
+            eprintln!("mklink /J non riuscito: prova saltata");
+            return;
+        }
+        // Un link simbolico vero, se il sistema lo concede (serve la modalità
+        // sviluppatore o i privilegi): se c'è, vale lo stesso patto.
+        let _ = std::os::windows::fs::symlink_dir(&vera, radice.join("simbolico"));
+
+        // Prima quel che std dice di una giunzione, sul sistema vero: è su
+        // questo che la camminata si regge, e non va preso sulla parola.
+        let ponte = std::fs::read_dir(&radice)
+            .expect("elenco")
+            .filter_map(Result::ok)
+            .find(|voce| voce.file_name() == "ponte")
+            .expect("la giunzione sta nell'elenco");
+        let tipo = ponte.file_type().expect("tipo");
+        assert!(
+            tipo.is_symlink(),
+            "una giunzione deve risultare un collegamento"
+        );
+        assert!(!tipo.is_dir(), "e non una cartella da attraversare");
+
+        let (raccolta, completa) = raccogli(&radice.to_string_lossy());
+
+        assert_eq!(
+            raccolta.file,
+            vec![vera.join("a.mp3").to_string_lossy().into_owned()],
+            "il brano una volta sola, dalla cartella vera"
+        );
+        assert_eq!(raccolta.battiti, 2, "radice e vera, nient'altro");
+        assert!(raccolta.rami.is_empty(), "rami persi: {:?}", raccolta.rami);
+        assert!(completa);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn un_percorso_oltre_max_path_si_cammina_e_torna_senza_prefisso() {
+        // Un album annidato su una share sfonda i 260 caratteri senza che
+        // nessun nome sembri lungo. La cartella si apre con il prefisso
+        // verbatim, ma il percorso consegnato resta quello senza: è quello che
+        // finisce in libreria, e con il prefisso ogni brano sarebbe nuovo.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let mut profonda = dir.path().to_path_buf();
+        while profonda.as_os_str().len() < 300 {
+            profonda.push("una cartella dal nome lungo");
+        }
+        std::fs::create_dir_all(&profonda).expect("cartelle profonde");
+        let brano = profonda.join("brano.mp3");
+        std::fs::write(&brano, b"x").expect("file");
+        let root = dir.path().to_string_lossy().into_owned();
+
+        let (raccolta, completa) = raccogli(&root);
+
+        assert!(completa, "rami persi: {:?}", raccolta.rami);
+        assert_eq!(raccolta.file, vec![brano.to_string_lossy().into_owned()]);
+        let trovato = raccolta.file.first().expect("il brano");
+        assert!(trovato.len() > 260);
+        assert!(!trovato.starts_with(r"\\?\"), "il prefisso non deve uscire");
+    }
+
     #[test]
     fn una_radice_inesistente_non_fa_cadere_la_scansione() {
         // Il disco esterno staccato: si riporta vuoto, e le altre radici
@@ -790,36 +1427,6 @@ mod tests {
             .expect("nessun errore");
         assert!(!completa);
         assert_eq!(rami, vec!["Z:/non/esiste".to_owned()]);
-    }
-
-    #[test]
-    fn l_errore_di_walkdir_trova_la_sua_cartella() {
-        let root = r"C:\Musica";
-        let aperte = vec![
-            (0, PathBuf::from(root)),
-            (1, PathBuf::from(r"C:\Musica\Album")),
-            (2, PathBuf::from(r"C:\Musica\Album\CD1")),
-        ];
-        // Con un percorso: è la cartella che non si è aperta.
-        assert_eq!(
-            ramo_di_un_errore(Some(Path::new(r"C:\Musica\Negata")), 1, &aperte, root),
-            r"C:\Musica\Negata"
-        );
-        // Senza: le voci che mancano stavano a profondità 2, quindi le stava
-        // elencando la cartella aperta a profondità 1.
-        assert_eq!(
-            ramo_di_un_errore(None, 2, &aperte, root),
-            r"C:\Musica\Album"
-        );
-        assert_eq!(
-            ramo_di_un_errore(None, 3, &aperte, root),
-            r"C:\Musica\Album\CD1"
-        );
-        // Senza, e senza una cartella che corrisponda: la radice. Non sapere
-        // dove vuol dire dappertutto.
-        assert_eq!(ramo_di_un_errore(None, 0, &aperte, root), root);
-        assert_eq!(ramo_di_un_errore(None, 7, &aperte, root), root);
-        assert_eq!(ramo_di_un_errore(None, 2, &[], root), root);
     }
 
     #[test]

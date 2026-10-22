@@ -172,8 +172,10 @@ pub fn scegli<'a>(elenco: &'a [Dispositivo], voluto: Option<&str>) -> Option<&'a
 
 /// Quale prendere per **riaprire** dopo un guasto, fra quelli che ci sono.
 ///
-/// La stessa regola di [`scegli`] con un'eccezione sola: una preferenza
-/// scritta che nell'elenco non c'è **non ripiega**, e la risposta è `None`.
+/// La stessa regola di [`scegli`] con due eccezioni, che dicono la stessa cosa:
+/// a riaprire non si ripiega. Una preferenza scritta che nell'elenco non c'è
+/// risponde `None`, e così un elenco in cui nessuno è marcato predefinito —
+/// vedi «Senza un predefinito marcato si aspetta», più sotto.
 ///
 /// # Perché due regole
 ///
@@ -186,6 +188,23 @@ pub fn scegli<'a>(elenco: &'a [Dispositivo], voluto: Option<&str>) -> Option<&'a
 ///
 /// Senza preferenza si segue il sistema, come in [`scegli`]: chi ha lasciato
 /// «predefinito» ha chiesto proprio quello.
+///
+/// # Senza un predefinito marcato si aspetta
+///
+/// Il terzo passo di [`scegli`] — «nessuno è marcato: il primo che c'è» — qui
+/// non vale, e la risposta è `None`. All'apertura a freddo è il ripiego giusto:
+/// meglio un'uscita qualunque che un'applicazione muta. A riaprire no, perché
+/// un elenco senza predefinito è quasi sempre un elenco **di passaggio**: le
+/// cuffie Bluetooth se ne sono appena andate e Windows non ha ancora scelto chi
+/// le sostituisce, oppure il predefinito è cambiato fra la sua lettura e
+/// l'enumerazione. In quell'istante «il primo che c'è» è l'ordine di
+/// enumerazione del sistema, e in testa può esserci un'uscita virtuale — il
+/// diario vero mostrava riaperture finite su «AMD Streaming Audio Device» a
+/// 16 kHz, seguite due secondi dopo da una seconda riapertura verso il
+/// predefinito vero, cioè due motori ricostruiti e la musica rimessa al suo
+/// posto due volte. Quel salto lo faceva il nostro ripiego, non Windows. Un
+/// giro d'attesa del sorvegliante costa due secondi e porta direttamente dove
+/// il sistema ha deciso.
 #[must_use]
 pub fn scegli_per_riaprire<'a>(
     elenco: &'a [Dispositivo],
@@ -193,7 +212,7 @@ pub fn scegli_per_riaprire<'a>(
 ) -> Option<&'a Dispositivo> {
     match voluto {
         Some(nome) => elenco.iter().find(|d| d.id == nome),
-        None => scegli(elenco, None),
+        None => elenco.iter().find(|d| d.predefinito),
     }
 }
 
@@ -266,6 +285,34 @@ mod prove {
         assert_eq!(
             scegli(&elenco, Some("Cuffie")).map(|d| d.id.as_str()),
             Some("Altoparlanti")
+        );
+    }
+
+    #[test]
+    fn per_riaprire_senza_un_predefinito_marcato_si_aspetta() {
+        // L'istante di passaggio: le cuffie se ne sono andate e Windows non ha
+        // ancora detto chi le sostituisce. Il primo dell'enumerazione può
+        // essere un'uscita virtuale, e riaprire lì è il salto che il diario
+        // mostrava: si aspetta il giro dopo.
+        let di_passaggio = finti(&[
+            ("AMD Streaming Audio Device", false),
+            ("Altoparlanti", false),
+        ]);
+        assert!(scegli_per_riaprire(&di_passaggio, None).is_none());
+        // Deciso il predefinito, si va lì e non sul primo.
+        let deciso = finti(&[
+            ("AMD Streaming Audio Device", false),
+            ("Altoparlanti", true),
+        ]);
+        assert_eq!(
+            scegli_per_riaprire(&deciso, None).map(|d| d.id.as_str()),
+            Some("Altoparlanti")
+        );
+        // L'apertura a freddo invece ripiega ancora sul primo: meglio suonare
+        // da un'uscita qualunque che nascere muti.
+        assert_eq!(
+            scegli(&di_passaggio, None).map(|d| d.id.as_str()),
+            Some("AMD Streaming Audio Device")
         );
     }
 

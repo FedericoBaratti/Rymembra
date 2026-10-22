@@ -474,23 +474,29 @@ pub fn scrobble_dimentica(
 /// ascolti con una data vecchia e ha un tetto giornaliero, quindi là quelle
 /// righe non entrerebbero — comparirebbero come «ignorate» a decine di
 /// migliaia.
-#[tauri::command(async)]
-pub fn scrobble_importa_cronologia(
-    stato: State<'_, Stato>,
-    app: AppHandle,
-    solo_importati: bool,
-) -> Esito<i64> {
-    let sorgente = if solo_importati {
-        Some("spotify")
-    } else {
-        None
-    };
-    let accodati = con_libreria(&stato, |libreria| {
-        coda::accoda_cronologia(&libreria.connection, Servizio::ListenBrainz, sorgente, 0)
+///
+/// In disparte, sul pool bloccante, come i collegamenti qui sopra: anni di
+/// cronologia sono decine di migliaia di righe da accodare in una scrittura
+/// sola, e un `(async)` su una funzione sincrona le scriveva su un *worker* del
+/// runtime, togliendo il posto a ogni altro comando asincrono.
+#[tauri::command]
+pub async fn scrobble_importa_cronologia(app: AppHandle, solo_importati: bool) -> Esito<i64> {
+    in_disparte("cronologia verso ListenBrainz", move || {
+        let (stato, _) = stati(&app)?;
+        let sorgente = if solo_importati {
+            Some("spotify")
+        } else {
+            None
+        };
+        let accodati = con_libreria(&stato, |libreria| {
+            coda::accoda_cronologia(&libreria.connection, Servizio::ListenBrainz, sorgente, 0)
+        })?;
+        sveglia(&app);
+        Ok(i64::try_from(accodati).unwrap_or(i64::MAX))
     })
-    .map_err(errore)?;
-    sveglia(&app);
-    Ok(i64::try_from(accodati).unwrap_or(i64::MAX))
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 // ── i ganci della riproduzione ──────────────────────────────────────────────
@@ -501,7 +507,11 @@ pub fn scrobble_importa_cronologia(
 /// quello ha scritto davvero: la coda deve contenere le stesse righe della
 /// cronologia, non un insieme suo.
 pub fn dopo_un_ascolto(app: &AppHandle, ascolto: &Listen) {
-    let stato = app.state::<Stato>();
+    // `try_state`: si chiama dai fili del lettore, che possono essere ancora
+    // vivi mentre gli stati gestiti vengono lasciati cadere all'uscita.
+    let Some(stato) = app.try_state::<Stato>() else {
+        return;
+    };
     let servizi = match collegati(&stato) {
         Ok(servizi) if !servizi.is_empty() => servizi,
         _ => return,
@@ -535,7 +545,9 @@ pub fn sta_suonando(app: &AppHandle, track_id: i64) {
     let avviato = std::thread::Builder::new()
         .name("rymembra-scrobble-adesso".to_owned())
         .spawn(move || {
-            let stato = manico.state::<Stato>();
+            let Some(stato) = manico.try_state::<Stato>() else {
+                return;
+            };
             let Ok(servizi) = collegati(&stato) else {
                 return;
             };
@@ -599,8 +611,15 @@ pub fn avvia(app: &AppHandle) {
         .name("rymembra-scrobble".to_owned())
         .spawn(move || {
             loop {
+                // All'uscita il filo se ne va e basta: gli stati gestiti
+                // stanno per essere lasciati cadere, e `state` panicherebbe.
+                if crate::spegnimento::in_uscita() {
+                    return;
+                }
                 {
-                    let scrobble = manico.state::<StatoScrobble>();
+                    let Some(scrobble) = manico.try_state::<StatoScrobble>() else {
+                        return;
+                    };
                     let Some(_turno) = Turno::prendi(&scrobble.in_corso) else {
                         // Una passata a mano è già in corso: questo giro non
                         // serve, e la coda che resta la prende lei.
@@ -632,7 +651,10 @@ pub fn avvia(app: &AppHandle) {
 
 /// Dorme finché qualcuno non chiama, o al massimo [`RIPOSO`].
 fn aspetta(app: &AppHandle) {
-    let scrobble = app.state::<StatoScrobble>();
+    let Some(scrobble) = app.try_state::<StatoScrobble>() else {
+        std::thread::sleep(RIPOSO);
+        return;
+    };
     let (serrata, condizione) = &scrobble.sveglia;
     let Ok(guardia) = serrata.lock() else {
         // Il mutex è avvelenato: c'è poco da fare se non non girare a vuoto.
@@ -647,7 +669,9 @@ fn aspetta(app: &AppHandle) {
 
 /// Sveglia il filo: c'è qualcosa da mandare.
 pub fn sveglia(app: &AppHandle) {
-    let scrobble = app.state::<StatoScrobble>();
+    let Some(scrobble) = app.try_state::<StatoScrobble>() else {
+        return;
+    };
     let (serrata, condizione) = &scrobble.sveglia;
     if let Ok(mut chiamato) = serrata.lock() {
         *chiamato = true;
@@ -657,7 +681,9 @@ pub fn sveglia(app: &AppHandle) {
 
 /// Una passata completa: per ogni servizio collegato, finché c'è coda.
 fn passata(app: &AppHandle) -> EsitoInvio {
-    let stato = app.state::<Stato>();
+    let Some(stato) = app.try_state::<Stato>() else {
+        return EsitoInvio::default();
+    };
     let mut esito = EsitoInvio::default();
 
     if !acceso(&stato) {

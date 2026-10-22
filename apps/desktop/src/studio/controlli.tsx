@@ -789,8 +789,8 @@ export function ValoreCurva({
             {c}
           </option>
         ))}
-        <option value="bezier">cubic-bezier…</option>
-        <option value="passi">steps…</option>
+        <option value="bezier">{t("studio.ctl.curve.bezier")}</option>
+        <option value="passi">{t("studio.ctl.curve.steps")}</option>
         {curveSkin.length > 0 && (
           <optgroup label={t("studio.ctl.curveFromSkin")}>
             {curveSkin.map(({ nome }) => (
@@ -854,8 +854,8 @@ export function ValoreCurva({
             value={String(passi["position"] ?? "end")}
             onChange={(e) => onCambia({ ...passi, position: e.target.value })}
           >
-            <option value="start">start</option>
-            <option value="end">end</option>
+            <option value="start">{t("studio.ctl.step.start")}</option>
+            <option value="end">{t("studio.ctl.step.end")}</option>
           </select>
         </div>
       )}
@@ -1033,7 +1033,7 @@ export function ValoreOmbra({
                   cambia(indice, "inset", e.target.checked || undefined)
                 }
               />
-              <span>inset</span>
+              <span>{t("studio.ctl.inset")}</span>
             </label>
             <button
               type="button"

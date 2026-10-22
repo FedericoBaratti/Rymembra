@@ -68,3 +68,26 @@ export function paginaCorrente(stato: StatoPagina): Pagina {
   if (stato.vista === "home") return { tipo: "home" };
   return { tipo: "libreria", vista: stato.vista };
 }
+
+/**
+ * La pagina in una stringa: due pagine diverse, due stringhe diverse.
+ *
+ * La legge il recinto del corpo (`RecintoErrori` in `Recinto.tsx`) per
+ * rialzarsi da solo: una pagina caduta non deve restare caduta quando se ne
+ * apre un'altra, e «un'altra» vuol dire anche un altro album, un'altra
+ * playlist, un altro artista — non solo un altro tipo di pagina.
+ */
+export function chiaveDiPagina(pagina: Pagina): string {
+  switch (pagina.tipo) {
+    case "playlist":
+      return `playlist:${pagina.playlist.id}`;
+    case "album":
+      return `album:${pagina.album.albumKey}`;
+    case "artista":
+      return `artista:${pagina.artista.name}`;
+    case "libreria":
+      return `libreria:${pagina.vista}`;
+    default:
+      return pagina.tipo;
+  }
+}

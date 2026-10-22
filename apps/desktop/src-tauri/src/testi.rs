@@ -35,6 +35,7 @@ use tauri::{AppHandle, Manager as _, State};
 
 use crate::disparte::in_disparte;
 use crate::errore::{Esito, errore};
+use crate::importa::gestito;
 use crate::nota;
 use crate::stato::{NOME_DATABASE, Stato, Turno, adesso_ms, con_libreria};
 
@@ -469,15 +470,35 @@ fn stato_adesso(stato: &Stato, testi: &StatoTesti) -> Result<StatoTestiIpc, AppE
 /// `library.trackNotFound`, l'errore di rete quando il catalogo non risponde,
 /// `db.queryFailed`.
 ///
-/// `(async)`: la richiesta al catalogo ha una scadenza di venti secondi, e un
-/// comando normale la consumerebbe sul filo principale della finestra.
-#[tauri::command(async)]
-pub fn testo_cerca(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    testi: State<'_, StatoTesti>,
-    id: i64,
-) -> Esito<TestoIpc> {
+/// In disparte, sul pool bloccante: la richiesta al catalogo ha una scadenza di
+/// venti secondi, e un `(async)` su una funzione sincrona la consumava su un
+/// *worker* del runtime, che sono tanti quanti i processori. Vedi
+/// [`crate::disparte`].
+#[tauri::command]
+pub async fn testo_cerca(app: AppHandle, id: i64) -> Esito<TestoIpc> {
+    in_disparte("ricerca di un testo", move || cerca_adesso(&app, id))
+        .await
+        .map_err(errore)?
+}
+
+/// Lo stato della libreria e quello dei testi, per un corpo in disparte.
+///
+/// # Errori
+///
+/// `internal.aborted` se uno dei due non è più fra quelli gestiti.
+fn stati<'a>(
+    app: &'a AppHandle,
+    cosa: &str,
+) -> Result<(State<'a, Stato>, State<'a, StatoTesti>), AppError> {
+    Ok((
+        gestito::<Stato>(app, cosa)?,
+        gestito::<StatoTesti>(app, cosa)?,
+    ))
+}
+
+/// Il corpo di [`testo_cerca`], sul pool bloccante.
+fn cerca_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
+    let (stato, testi) = stati(app, "ricerca di un testo").map_err(errore)?;
     // ── sotto lucchetto: chi è questo brano, e si può chiedere ──────────────
     let (brano, rete) = con_libreria(&stato, |libreria| {
         Ok((
@@ -494,7 +515,7 @@ pub fn testo_cerca(
     }
 
     // ── senza nessun lucchetto ──────────────────────────────────────────────
-    let fornitori = servizi(&app, &testi).map_err(errore)?;
+    let fornitori = servizi(app, &testi).map_err(errore)?;
     let voce = testi::cerca_in_rete(&fornitori, &brano).map_err(errore)?;
 
     // ── di nuovo sotto lucchetto: scrivere; poi rileggere quel che ne esce ──
@@ -534,15 +555,20 @@ pub fn testo_cerca(
 /// `db.queryFailed`. Con l'interruttore spento **non** è un errore: si
 /// risponde quel che si sa dal disco, come [`testo_cerca`].
 ///
-/// `(async)`: come [`testo_cerca`], e per la stessa ragione — la scadenza è di
+/// In disparte come [`testo_cerca`], e per la stessa ragione — la scadenza è di
 /// venti secondi, più le due attese del ritentativo.
-#[tauri::command(async)]
-pub fn testo_cerca_di_nuovo(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    testi: State<'_, StatoTesti>,
-    id: i64,
-) -> Esito<TestoIpc> {
+#[tauri::command]
+pub async fn testo_cerca_di_nuovo(app: AppHandle, id: i64) -> Esito<TestoIpc> {
+    in_disparte("nuova ricerca di un testo", move || {
+        cerca_di_nuovo_adesso(&app, id)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`testo_cerca_di_nuovo`], sul pool bloccante.
+fn cerca_di_nuovo_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
+    let (stato, testi) = stati(app, "nuova ricerca di un testo").map_err(errore)?;
     // ── sotto lucchetto: chi è, si può chiedere, e si dimentica di averlo
     // già chiesto ──────────────────────────────────────────────────────────
     let (brano, rete) = con_libreria(&stato, |libreria| {
@@ -558,7 +584,7 @@ pub fn testo_cerca_di_nuovo(
     }
 
     // ── senza nessun lucchetto ──────────────────────────────────────────────
-    let fornitori = servizi(&app, &testi).map_err(errore)?;
+    let fornitori = servizi(app, &testi).map_err(errore)?;
     let voce = testi::cerca_di_nuovo_in_rete(&fornitori, &brano).map_err(errore)?;
 
     // ── di nuovo sotto lucchetto: scrivere; poi rileggere quel che ne esce ──
@@ -795,15 +821,26 @@ pub fn testi_stato(stato: State<'_, Stato>, testi: State<'_, StatoTesti>) -> Esi
 
 /// Accende o spegne le richieste al catalogo.
 ///
+/// In disparte, sul pool bloccante: dopo la scrittura rilegge lo stato intero,
+/// e la copertura dei testi è un conteggio su tutta la libreria — decine di
+/// millisecondi su cinquantamila brani, che non stanno su un *worker* del
+/// runtime più di quanto stiano sul filo della finestra.
+///
 /// # Errori
 ///
 /// `db.queryFailed`.
-#[tauri::command(async)]
-pub fn testi_rete(
-    stato: State<'_, Stato>,
-    testi: State<'_, StatoTesti>,
-    attivo: bool,
-) -> Esito<StatoTestiIpc> {
+#[tauri::command]
+pub async fn testi_rete(app: AppHandle, attivo: bool) -> Esito<StatoTestiIpc> {
+    in_disparte("interruttore dei testi in rete", move || {
+        rete_adesso(&app, attivo)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`testi_rete`], sul pool bloccante.
+fn rete_adesso(app: &AppHandle, attivo: bool) -> Esito<StatoTestiIpc> {
+    let (stato, testi) = stati(app, "interruttore dei testi in rete").map_err(errore)?;
     con_libreria(&stato, |libreria| {
         settings::write(
             &libreria.connection,
@@ -1029,10 +1066,23 @@ fn passata(app: &AppHandle) {
                     // Il brano però non torna in cima al lotto dopo: vedi
                     // `saltati` e `testi::rimanda`.
                     saltati.insert(brano.id);
-                    if !err.is_retryable() {
-                        let _ = con_libreria(&stato, |libreria| {
+                    if !err.is_retryable()
+                        && let Err(guasto) = con_libreria(&stato, |libreria| {
                             testi::rimanda(&libreria.connection, &brano)
-                        });
+                        })
+                    {
+                        // Non ferma la passata — `saltati` tiene comunque il
+                        // brano fuori da questo giro — ma si dice: senza il
+                        // rinvio il brano torna in cima alla coda al prossimo
+                        // avvio, ed è il difetto che `rimanda` esiste per
+                        // chiudere. L'identificativo e non il titolo: il
+                        // diario si spedisce.
+                        nota!(
+                            "[testi] rinvio non registrato brano={} codice={} causa={}",
+                            brano.id,
+                            guasto.code().kind().code(),
+                            guasto.cause().unwrap_or("—")
+                        );
                     }
                     match sequenza.guasto() {
                         Reazione::ProseguiSegnalando => {
@@ -1442,9 +1492,21 @@ fn precarica_adesso(app: &AppHandle, id: i64) {
     };
 
     // ── di nuovo sotto lucchetto: scrivere ──────────────────────────────────
-    let _ = con_libreria(&stato, |libreria| {
+    //
+    // Un guasto qui non va alla finestra, per la stessa ragione di quello di
+    // rete qui sopra. Ma non va nemmeno buttato: il testo è arrivato dal
+    // catalogo e non è stato salvato, e senza questa riga il diario non
+    // direbbe mai perché il pannello, aperto, lo richiede da capo.
+    if let Err(guasto) = con_libreria(&stato, |libreria| {
         testi::ricorda_esito(&libreria.connection, &brano, voce.as_ref())
-    });
+    }) {
+        nota!(
+            "[testi] testo precaricato non salvato brano={} codice={} causa={}",
+            brano.id,
+            guasto.code().kind().code(),
+            guasto.cause().unwrap_or("—")
+        );
+    }
 }
 
 /// L'avanzamento di una passata, in brani.
@@ -1622,7 +1684,9 @@ pub fn testo_salva(
             // scrivere, e non è un guasto: il testo è già salvato in tabella,
             // che è il posto da cui il pannello lo rilegge. `Ok(())` e si tira
             // dritto. Lo stesso con l'interruttore spento, che è il caso di
-            // serie: la riga è tutto il salvataggio.
+            // serie: la riga è tutto il salvataggio. E lo stesso per un brano
+            // d'immagine CD, per cui il nucleo dà `path` vuoto: un `.lrc`
+            // accanto all'immagine sarebbe il testo di tutto il disco.
             let nei_file = brano
                 .path
                 .as_deref()
@@ -1678,22 +1742,27 @@ pub struct SalvatoIpc {
 /// # Quanto ci mette
 ///
 /// Qualche secondo, e la finestra deve dirlo prima: LRCLIB chiede una prova di
-/// lavoro, cioè del calcolo, non dell'attesa di rete. Per questo è `(async)`:
-/// quei secondi di calcolo più la richiesta non stanno sul filo principale
-/// della finestra.
+/// lavoro, cioè del calcolo, non dell'attesa di rete. Per questo va in
+/// disparte, sul pool bloccante: quei secondi di calcolo più la richiesta non
+/// stanno né sul filo principale della finestra né su un *worker* del runtime.
 ///
 /// # Errori
 ///
 /// `metadata.lyricsPublishRefused` se non c'è niente da mandare o se il catalogo
 /// dice di no; l'errore di trasporto se la rete non risponde; `db.queryFailed`
 /// se il brano non si legge.
-#[tauri::command(async)]
-pub fn testo_pubblica(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    testi: State<'_, StatoTesti>,
-    id: i64,
-) -> Esito<()> {
+#[tauri::command]
+pub async fn testo_pubblica(app: AppHandle, id: i64) -> Esito<()> {
+    in_disparte("pubblicazione di un testo", move || {
+        pubblica_adesso(&app, id)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`testo_pubblica`], sul pool bloccante.
+fn pubblica_adesso(app: &AppHandle, id: i64) -> Esito<()> {
+    let (stato, testi) = stati(app, "pubblicazione di un testo").map_err(errore)?;
     // ── sotto lucchetto: cosa si manderebbe, e si può ───────────────────────
     let (cosa, rete) = con_libreria(&stato, |libreria| {
         Ok((
@@ -1716,7 +1785,7 @@ pub fn testo_pubblica(
     }
 
     // ── senza nessun lucchetto: la prova di lavoro dura secondi ─────────────
-    let fornitori = servizi(&app, &testi).map_err(errore)?;
+    let fornitori = servizi(app, &testi).map_err(errore)?;
     testi::restituisci(&fornitori, &cosa).map_err(errore)
 }
 

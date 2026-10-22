@@ -11,15 +11,15 @@
 //! nuovo **prima** di chiedere il lucchetto del lettore.
 
 use rymembra_app::playback::{Equalizzazione, Normalizzazione, Volume};
-use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_domain::queue::Queue;
-use tauri::{Manager as _, State};
+use tauri::State;
 
 use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::spegnimento::Emette as _;
 
-use super::coda::riprendi_coda;
+use super::coda::{leggi_il_salvato, rimetti_il_salvato, riprendi_coda};
 use super::fili::prepara_prossimo;
 use super::{
     Lettore, StatoLettore, apri_motore, brano_di, con_lettore, manda_stato,
@@ -285,24 +285,52 @@ pub(super) fn riapri_su(
     // ogni due: senza questa riga due aperture si sovrapporrebbero, e due
     // motori vivi sulla stessa scheda sono la stessa musica suonata due volte
     // sfasata.
-    if stato
-        .riapertura_in_corso
-        .swap(true, std::sync::atomic::Ordering::AcqRel)
-    {
+    let Some(_riaprendo) = Riaprendo::prendi(&stato.riapertura_in_corso) else {
         return Ok(Riaperta::Saltata);
+    };
+    riapri_davvero(app, stato, uscita, modo)
+}
+
+/// Tiene alzata [`StatoLettore::riapertura_in_corso`] finché vive, e la
+/// abbassa comunque finisca la riapertura — riuscita, fallita, o caduta a metà.
+///
+/// # Il difetto che chiude
+///
+/// La bandiera si abbassava con una riga dopo la chiamata, e un panico dentro
+/// [`riapri_davvero`] — un driver che risponde una cosa che `cpal` non si
+/// aspettava, una scheda letta a metà — la saltava: la bandiera restava alzata
+/// **per sempre**. Da lì ogni riapertura tornava `Saltata` senza fare niente:
+/// il sorvegliante non rimetteva più in piedi il motore, «Riapri» non
+/// rispondeva, e ogni play a dispositivo perso aspettava i cinque secondi di
+/// `aspetta_la_riapertura` prima di arrendersi. Il sorvegliante oggi il panico
+/// lo raccoglie e va avanti; la bandiera, finché non si abbassava da sola, no.
+///
+/// La stessa forma di [`super::Aprendo`], per la stessa ragione: un `Drop` si
+/// esegue anche durante l'unwind, una riga dopo la chiamata no.
+struct Riaprendo<'a> {
+    bandiera: &'a std::sync::atomic::AtomicBool,
+}
+
+impl<'a> Riaprendo<'a> {
+    /// Alza la bandiera, se non era già alzata. `None` se c'è già una
+    /// riapertura in corso: chi chiama non ha niente da fare.
+    fn prendi(bandiera: &'a std::sync::atomic::AtomicBool) -> Option<Self> {
+        (!bandiera.swap(true, std::sync::atomic::Ordering::AcqRel)).then_some(Self { bandiera })
     }
-    let esito = riapri_davvero(app, stato, uscita, modo);
-    stato
-        .riapertura_in_corso
-        .store(false, std::sync::atomic::Ordering::Release);
-    esito
+}
+
+impl Drop for Riaprendo<'_> {
+    fn drop(&mut self) {
+        self.bandiera
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Il corpo di [`riapri_su`], dentro la bandiera che ne impedisce due insieme.
 ///
-/// Separata solo per questo: con il `?` sparso dentro, riabbassare la bandiera
-/// su ogni uscita anticipata vorrebbe dire ricordarsene ogni volta — e la volta
-/// che ci si dimentica il lettore non riapre mai più.
+/// Separata perché la bandiera la tiene [`Riaprendo`] da fuori: con il `?`
+/// sparso qui dentro, e con un panico possibile in fondo a ogni chiamata al
+/// driver, l'unico posto in cui abbassarla con certezza è un `Drop`.
 fn riapri_davvero(
     app: &tauri::AppHandle,
     stato: &StatoLettore,
@@ -329,7 +357,7 @@ fn riapri_davvero(
     // secondi: con quel lucchetto già in mano, pausa, volume e «prossimo»
     // resterebbero tutti in coda dietro la riapertura. `(async)` toglie di
     // mezzo il filo principale, non il lucchetto.
-    let motore = apri_motore(app, voluta.clone())?;
+    let motore = apri_con_un_secondo_tentativo(app, voluta.as_deref())?;
     // Il formato si legge **prima** che il motore entri nel lettore: subito
     // dopo è dietro il lucchetto, e serve a [`riprendi_dov_era`] che gira
     // quando il lucchetto è già stato lasciato. Sono due interi `Copy`.
@@ -337,13 +365,40 @@ fn riapri_davvero(
     // La riga gemella di `riga_di_avvio_lettore`: le cuffie Bluetooth si
     // collegano quasi sempre a programma già aperto, e senza questa il diario
     // direbbe soltanto com'era l'uscita all'avvio.
+    //
+    // `predefinito` dice se l'uscita aperta era quella di sistema in
+    // quell'istante: è la domanda che il diario non sapeva risolvere davanti a
+    // una riapertura finita su un'uscita virtuale — l'aveva scelta Windows, o
+    // il nostro ripiego?
     nota!(
-        "[riproduzione] audio riaperto uscita={} frequenza={} canali={} bluetooth={}",
+        "[riproduzione] audio riaperto uscita={} frequenza={} canali={} bluetooth={} predefinito={}",
         motore.dispositivo(),
         formato.frequenza,
         formato.canali,
-        if motore.su_bluetooth() { "sì" } else { "no" }
+        if motore.su_bluetooth() { "sì" } else { "no" },
+        if motore.era_predefinito() {
+            "sì"
+        } else {
+            "no"
+        }
     );
+
+    // Il lettore mai aperto — l'avvio senza scheda audio — nasce qui, e nasce
+    // **completo**: coda, volume, curva e il resto si leggono adesso, a lettore
+    // lasciato, e il lettore si pubblica dopo con dentro quel che c'è scritto.
+    // Pubblicarlo vuoto e riempirlo un attimo dopo, com'era, lasciava una
+    // finestra — larga quanto una scansione che tiene la libreria — in cui chi
+    // premeva play o muoveva il volume lo faceva sul lettore vuoto, e la coda e
+    // il volume salvati arrivavano dopo a cancellare il suo gesto.
+    //
+    // Due istruzioni e non una: la guardia della domanda deve cadere **prima**
+    // della lettura, che aspetta la libreria.
+    let mai_aperto = stato
+        .lettore
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_err();
+    let salvato = mai_aperto.then(|| leggi_il_salvato(app));
 
     let mut guardia = stato
         .lettore
@@ -368,6 +423,26 @@ fn riapri_davvero(
                 let causa = format!(
                     "l'uscita fissata «{fissata}» non c'è più, e si aspetta che torni invece di \
                      suonare su «{}»",
+                    motore.dispositivo()
+                );
+                drop(guardia);
+                drop(motore);
+                return Err(AppError::new(ErrorCode::PlaybackDeviceLost).with_cause(causa));
+            }
+            // Lo stesso per chi segue il sistema: senza una preferenza si apre
+            // il predefinito, e se nell'istante dell'apertura nessuna uscita
+            // era marcata tale — le cuffie appena sparite, Windows che non ha
+            // ancora scelto chi le sostituisce — l'apertura ha preso la prima
+            // dell'elenco. Il diario vero la mostrava: «AMD Streaming Audio
+            // Device» a 16 kHz, un'uscita virtuale che nessuno ascolta, e due
+            // secondi dopo una seconda riapertura verso il predefinito vero. Il
+            // salto lo faceva il nostro ripiego, non Windows; qui lo si lascia
+            // cadere, e il sorvegliante riprova quando il sistema ha deciso.
+            // Vedi `rymembra_play::dispositivi::scegli_per_riaprire`.
+            if modo == Modo::Automatica && voluta.is_none() && !motore.era_predefinito() {
+                let causa = format!(
+                    "nessuna uscita era il predefinito di sistema: si aspetta che Windows ne \
+                     scelga uno invece di suonare su «{}»",
                     motore.dispositivo()
                 );
                 drop(guardia);
@@ -450,9 +525,10 @@ fn riapri_davvero(
         }
         Err(_) => {
             // Il caso del motore mai aperto: si costruisce il lettore adesso, e
-            // la coda di ieri la rimette `riprendi_coda` — che è la stessa
-            // funzione dell'avvio, non una sua copia.
-            *guardia = Ok(Lettore {
+            // la coda di ieri la rimettono le stesse funzioni di
+            // `riprendi_coda` — non una loro copia — prima che il lettore si
+            // veda: vedi il commento su `mai_aperto`, più su.
+            let mut nuovo = Lettore {
                 motore,
                 coda: Queue::new(),
                 ascolto: None,
@@ -460,8 +536,8 @@ fn riapri_davvero(
                 eq: Equalizzazione::default(),
                 normalizzazione: Normalizzazione::default(),
                 // Come volume, curva e normalizzazione qui sopra: valori di
-                // partenza che `riprendi_coda`, due righe più giù, rimpiazza
-                // con quel che c'è scritto in `settings`.
+                // partenza che `rimetti_il_salvato`, due righe più giù,
+                // rimpiazza con quel che c'è scritto in `settings`.
                 autoplay: false,
                 dissolvenza_s: 0,
                 latenza_ms: 0,
@@ -473,14 +549,28 @@ fn riapri_davvero(
                 non_aperto: None,
                 annuncio_atteso: false,
                 puntina_a_vuoto: None,
-            });
-            drop(guardia);
-            riprendi_coda(app);
-            let stato_lettore = app.state::<StatoLettore>();
-            return con_lettore(&stato_lettore, |lettore| {
+            };
+            let letto = salvato.is_some();
+            if let Some(salvato) = salvato {
+                rimetti_il_salvato(stato, &mut nuovo, salvato);
+            }
+            *guardia = Ok(nuovo);
+            if !letto {
+                // Non succede: il lettore torna `Err` soltanto all'avvio, e
+                // questa strada è una sola alla volta. Se succedesse — era
+                // aperto quando lo si è chiesto, e non lo è più — la strada di
+                // prima: pubblicato, e riempito subito dopo.
+                drop(guardia);
+                riprendi_coda(app);
+                return con_lettore(stato, |lettore| {
+                    manda_stato(app, lettore);
+                    Ok(Riaperta::Vuota)
+                });
+            }
+            if let Ok(lettore) = guardia.as_ref() {
                 manda_stato(app, lettore);
-                Ok(Riaperta::Vuota)
-            });
+            }
+            return Ok(Riaperta::Vuota);
         }
     }
 
@@ -499,6 +589,50 @@ fn riapri_davvero(
         Ok(Riaperta::Rimessa)
     } else {
         Ok(Riaperta::Vuota)
+    }
+}
+
+/// Quanto si aspetta prima del secondo tentativo d'apertura.
+///
+/// Un quarto di secondo: quel che serve a un endpoint in transizione — le
+/// cuffie Bluetooth che finiscono di negoziare, il predefinito di Windows che
+/// si assesta — per smettere di esserlo, e poco accanto ai due secondi del
+/// giro del sorvegliante che altrimenti toccherebbe aspettare.
+const SECONDO_TENTATIVO: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Apre il motore, e se il dispositivo era in transizione riprova una volta.
+///
+/// # Perché qui e non dentro l'apertura
+///
+/// Perché il diario vero mostrava una riapertura automatica fallita con
+/// «Failed to get audio clock» — `AUDCLNT_E_DEVICE_INVALIDATED` a metà
+/// apertura, l'endpoint invalidato fra la sua scelta e il suo orologio — e il
+/// sorvegliante, a quel punto, raddoppiava l'attesa: quattro secondi di
+/// silenzio in più per un guasto che un quarto di secondo dopo non c'era già
+/// più. Dentro `rymembra_play` il secondo tentativo non si può fare: l'apertura
+/// consuma gli anelli del motore che sta costruendo, e il motore nuovo si
+/// costruisce da capo.
+///
+/// Solo per `playback.deviceLost`, che è come l'apertura dice «endpoint in
+/// transizione» (vedi `rymembra_play::uscita::errore_di_apertura`). **Non** per
+/// la scadenza dei venti secondi né per gli altri guasti: riprovarli subito
+/// vorrebbe dire raddoppiare un'attesa che è già stata lunga, o insistere su
+/// qualcosa che fra un quarto di secondo sarà identico.
+fn apri_con_un_secondo_tentativo(
+    app: &tauri::AppHandle,
+    voluta: Option<&str>,
+) -> Result<rymembra_play::Motore, AppError> {
+    match apri_motore(app, voluta.map(str::to_owned)) {
+        Err(err) if err.code().kind() == ErrorCodeKind::PlaybackDeviceLost => {
+            nota!(
+                "[riproduzione] dispositivo in transizione, si riprova fra {} ms: {}",
+                SECONDO_TENTATIVO.as_millis(),
+                err.cause().unwrap_or("—")
+            );
+            std::thread::sleep(SECONDO_TENTATIVO);
+            apri_motore(app, voluta.map(str::to_owned))
+        }
+        esito => esito,
     }
 }
 
@@ -633,10 +767,18 @@ fn riprendi_dov_era(
         return false;
     };
     if rimessa {
+        // I tre ingressi della decisione, e non solo l'esito: `suonando=no` da
+        // solo non diceva se la musica era ferma già al guasto (una pausa, o
+        // le cuffie che mandano «pausa» staccandosi), o se il segno era più
+        // vecchio di [`super::RIPRESA_FRESCA`]. Sono due cause con due rimedi.
         nota!(
-            "[riproduzione] posizione ripresa dopo la riapertura ms={} suonando={}",
+            "[riproduzione] posizione ripresa dopo la riapertura ms={} suonando={} \
+             suonava={} fresca={} play={}",
             ripresa.ms,
-            riparte
+            riparte,
+            ripresa.suonava,
+            fresca,
+            suona
         );
     }
 
@@ -772,4 +914,44 @@ pub fn riprova_corrente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     Ok(())
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// La bandiera della riapertura si abbassa anche quando la riapertura cade.
+    ///
+    /// Era il difetto: abbassata da una riga dopo la chiamata, un panico la
+    /// lasciava alzata per sempre, e da lì ogni riapertura tornava «saltata»
+    /// senza fare niente.
+    #[test]
+    fn una_riapertura_caduta_non_lascia_la_bandiera_alzata() {
+        let bandiera = AtomicBool::new(false);
+        let caduta = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _riaprendo = Riaprendo::prendi(&bandiera).expect("la bandiera era giù");
+            assert!(bandiera.load(Ordering::Acquire), "alzata mentre si riapre");
+            std::panic::panic_any("il driver ha risposto una cosa inattesa");
+        }));
+        assert!(caduta.is_err());
+        assert!(
+            !bandiera.load(Ordering::Acquire),
+            "la bandiera è rimasta alzata dopo il panico"
+        );
+        // E la riapertura dopo si può fare.
+        assert!(Riaprendo::prendi(&bandiera).is_some());
+    }
+
+    /// Due riaperture insieme no: la seconda trova la bandiera alzata e non fa
+    /// niente, e quando la prima finisce la bandiera torna giù.
+    #[test]
+    fn la_seconda_riapertura_e_saltata() {
+        let bandiera = AtomicBool::new(false);
+        let prima = Riaprendo::prendi(&bandiera);
+        assert!(prima.is_some());
+        assert!(Riaprendo::prendi(&bandiera).is_none());
+        drop(prima);
+        assert!(!bandiera.load(Ordering::Acquire));
+    }
 }

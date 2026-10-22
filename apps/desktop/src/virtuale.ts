@@ -46,6 +46,26 @@
  * chi disegna una griglia toglie `scarto` dall'altezza delle sue due paglie, che
  * stanno in una riga della griglia loro e si portano dietro uno spazio ciascuna.
  *
+ * # Le righe di altezza diversa
+ *
+ * La coda scrive il nome intero di ogni brano, e in una colonna stretta un
+ * titolo lungo va a capo: lì il metro di una riga sola mentirebbe — ogni riga a
+ * capo allungherebbe l'elenco oltre le paglie, e scorrendo la finestra
+ * salterebbe. Con `altezzeDiverse` si misura ogni riga disegnata e la si ricorda
+ * per indice; una riga mai disegnata vale la media delle prime misurate, presa
+ * una volta e poi ferma (il perché sta in `calcola`). Da lì la
+ * `scala` (`scalaDa` in `finestra.ts`) dice dove comincia ciascuna, e le paglie,
+ * la `cima` e `scorriA` la leggono al posto di «indice per altezza».
+ *
+ * Una riga che sopra lo schermo passa dalla stima alla misura sposta quel che le
+ * sta sotto, e quel che si guarda resta fermo lo stesso: lo tiene lo *scroll
+ * anchoring* del motore, che nel foglio non è spento da nessuna parte
+ * (`overflow-anchor`). Le misure si buttano quando cambia la larghezza dello
+ * scorrevole, perché a un'altra larghezza un titolo va a capo altrove.
+ *
+ * Solo negli elenchi: in una griglia una riga di schede è alta quanto la più
+ * alta, e il passo solo basta.
+ *
  * # La memoria, e perché sta qui
  *
  * Le viste della libreria restano montate sotto `<Activity>` quando se ne esce,
@@ -72,7 +92,14 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 
-import { colonneDa, finestraDa, larghezzaColonnaDa, righeDiGriglia } from "./finestra";
+import {
+  colonneDa,
+  finestraDa,
+  finestraDaScala,
+  larghezzaColonnaDa,
+  righeDiGriglia,
+  scalaDa,
+} from "./finestra";
 import { comeScorrere } from "./transizione";
 
 /**
@@ -152,9 +179,20 @@ export interface Virtuale extends Finestra {
    *
    * Sta nel contratto perché chi disegna **deve** averlo: le due `.paglia` sono
    * alte `sopra * altezza` e `sotto * altezza`, e nessun altro qui sa quanto
-   * misura una riga.
+   * misura una riga. Con `altezzeDiverse` è la stima per le righe mai
+   * disegnate, e le paglie si prendono da `pagliaSopra` e `pagliaSotto`.
    */
   altezza: number;
+  /**
+   * Quanto è alta la prima `.paglia`, in pixel.
+   *
+   * In un elenco ad altezza unica è `sopra * altezza`; con `altezzeDiverse` è la
+   * somma delle righe che stanno sopra, misurate o stimate. Le griglie tolgono
+   * ancora `scarto` da sé (`pagliaDiGriglia`).
+   */
+  pagliaSopra: number;
+  /** Quanto è alta la seconda `.paglia`, in pixel: vedi `pagliaSopra`. */
+  pagliaSotto: number;
   /**
    * Lo spazio fra due righe di una griglia, in pixel; zero in un elenco.
    *
@@ -224,6 +262,11 @@ interface StatoFinestra {
   larghezzaColonna: number | null;
   misurata: boolean;
   scorso: boolean;
+  /**
+   * Dove comincia ogni riga, con `altezzeDiverse`; `null` con l'altezza unica.
+   * Un array nuovo solo quando una misura è cambiata: l'identità è il confronto.
+   */
+  scala: Float64Array | null;
 }
 
 /**
@@ -262,6 +305,11 @@ export function useVirtuale(opzioni: {
   /** L'ancora è una griglia a colonne: vedi «Le griglie» nella nota del modulo. */
   griglia?: boolean | undefined;
   /**
+   * Le righe non sono alte uguale: vedi «Le righe di altezza diversa» nella
+   * nota del modulo. Solo negli elenchi; in una griglia non ha effetto.
+   */
+  altezzeDiverse?: boolean | undefined;
+  /**
    * Ricorda lo scorrimento e lo rimette quando la vista torna visibile: vedi
    * «La memoria» nella nota del modulo. Solo per chi sta sotto un `<Activity>`.
    */
@@ -281,9 +329,11 @@ export function useVirtuale(opzioni: {
     selettoreRiga = ".riga",
     selettoreMisura,
     griglia = false,
+    altezzeDiverse = false,
     memoria = false,
     chiave,
   } = opzioni;
+  const diverse = altezzeDiverse && !griglia;
 
   const [stato, setStato] = useState<StatoFinestra>(() => ({
     primo: 0,
@@ -296,6 +346,7 @@ export function useVirtuale(opzioni: {
     larghezzaColonna: null,
     misurata: false,
     scorso: false,
+    scala: null,
   }));
 
   // In un ref oltre che nello stato: il calcolo gira dentro un
@@ -309,6 +360,14 @@ export function useVirtuale(opzioni: {
   const ricordato = useRef<number | null>(null);
   /** La chiave con cui lo scorrimento ricordato è stato preso. */
   const chiaveVista = useRef(chiave);
+  /** Con `altezzeDiverse`: l'altezza misurata di ogni riga già disegnata, per indice. */
+  const altezze = useRef(new Map<number, number>());
+  /** La larghezza dello scorrevole a cui `altezze` sono state prese. */
+  const larghezzaMisure = useRef<number | null>(null);
+  /** Quanto vale una riga mai disegnata: vedi «1 bis» in `calcola`. */
+  const stima = useRef<number | null>(null);
+  /** L'ultima scala fatta da `altezze`: vedi «1 bis» in `calcola`. */
+  const scalaFatta = useRef<Float64Array | null>(null);
 
   const calcola = useCallback(() => {
     const scorrevole = contenitore.current;
@@ -345,7 +404,70 @@ export function useVirtuale(opzioni: {
     // una riga e mezza.
     const rettMetro = metro === null ? null : metro.getBoundingClientRect();
     const misurata = rettMetro !== null && rettMetro.height > 0;
-    const altezza = misurata ? rettMetro.height + scarto : finora.altezza;
+    let altezza = misurata ? rettMetro.height + scarto : finora.altezza;
+
+    // ── 1 bis. le righe una per una ─────────────────────────────────────────
+    // Solo con `altezzeDiverse`: vedi «Le righe di altezza diversa». Ogni riga
+    // disegnata si rimisura, e la scala si rifà solo se una misura si è mossa
+    // di più di mezzo pixel — o se l'elenco ha cambiato lunghezza. Fuori da quei
+    // due casi resta lo stesso array.
+    //
+    // La scala sta in un riferimento accanto alle misure da cui viene, e non si
+    // rilegge dallo stato: nello stesso disegno `calcola` gira due volte (qui
+    // sotto e a ogni disegno), e la seconda, con lo stato ancora vecchio e le
+    // misure già aggiornate, rimetteva la scala di prima — le due si davano il
+    // cambio all'infinito.
+    //
+    // La stima — la media delle righe misurate — si rifà solo quando tutte le
+    // righe sopra la finestra hanno una misura: in cima, o dopo averle scorse
+    // tutte. Lì pesa soltanto sulla paglia di sotto, e niente di quel che si
+    // vede si sposta. Altrove resta ferma: a metà di ventimila brani un decimo
+    // di pixel in più sono mille pixel di paglia sopra, la riga sotto lo
+    // scorrimento diventa un'altra, si misura, la media si muove ancora — e la
+    // finestra rincorreva la propria misura fino a «Maximum update depth
+    // exceeded». In cima invece deve potersi rifare: il primo disegno ha righe
+    // di una riga sola, perché i titoli arrivano dopo.
+    let scala: Float64Array | null = null;
+    if (diverse) {
+      const misure = altezze.current;
+      let cambiate = false;
+      if (larghezzaMisure.current !== scorrevole.clientWidth) {
+        larghezzaMisure.current = scorrevole.clientWidth;
+        cambiate = misure.size > 0;
+        misure.clear();
+        stima.current = null;
+      }
+      elenco.querySelectorAll<HTMLElement>(selettoreRiga).forEach((riga, k) => {
+        const alta = riga.getBoundingClientRect().height;
+        if (alta <= 0) return;
+        const indice = indiceDi(riga, finora.primo + k);
+        const ricordata = misure.get(indice);
+        if (ricordata === undefined || Math.abs(ricordata - alta) > 0.5) {
+          misure.set(indice, alta);
+          cambiate = true;
+        }
+      });
+      const fatta = scalaFatta.current;
+      const lunghezzaCambiata = fatta === null || fatta.length !== totale + 1;
+      if (lunghezzaCambiata) {
+        // Un elenco accorciato si porta via le misure delle righe che non ha
+        // più: resterebbero in una coda che poi si riallunga.
+        for (const indice of misure.keys()) if (indice >= totale) misure.delete(indice);
+      }
+      let sopraMisurate = 0;
+      if (cambiate) for (const indice of misure.keys()) if (indice < finora.primo) sopraMisurate++;
+      const rifare = stima.current === null || (cambiate && sopraMisurate === finora.primo);
+      if (rifare && misure.size > 0) {
+        let somma = 0;
+        for (const alta of misure.values()) somma += alta;
+        stima.current = somma / misure.size;
+      }
+      altezza = stima.current ?? altezza;
+      if (fatta === null || cambiate || lunghezzaCambiata) {
+        scalaFatta.current = scalaDa(misure, totale, altezza);
+      }
+      scala = scalaFatta.current;
+    }
 
     // ── 2. la cima ──────────────────────────────────────────────────────────
     // Dalla riga disegnata, quando ce n'è una: il suo bordo alto meno le righe
@@ -358,30 +480,49 @@ export function useVirtuale(opzioni: {
     if (prima !== null) {
       const rettPrima =
         prima === metro && rettMetro !== null ? rettMetro : prima.getBoundingClientRect();
-      const riga = Math.floor(indiceDi(prima, finora.primo) / colonne);
-      cima.current =
-        rettPrima.top - rettScorrevole.top + scorrevole.scrollTop - riga * altezza;
+      const indice = indiceDi(prima, finora.primo);
+      // Quanto sta sopra di lei: dalla scala quando c'è, se no righe per passo.
+      const sopraLei =
+        scala === null
+          ? Math.floor(indice / colonne) * altezza
+          : (scala[Math.min(indice, scala.length - 1)] ?? 0);
+      cima.current = rettPrima.top - rettScorrevole.top + scorrevole.scrollTop - sopraLei;
     } else {
       cima.current =
         elenco.getBoundingClientRect().top - rettScorrevole.top + scorrevole.scrollTop;
     }
 
     // ── 3. la finestra ──────────────────────────────────────────────────────
-    // In righe, e poi in indici: in un elenco le due cose coincidono.
-    const f = finestraDa({
-      scorrimento: scorrevole.scrollTop,
-      cima: cima.current,
-      altezzaVista: scorrevole.clientHeight,
-      passo: altezza,
-      totale: righeDiGriglia(totale, colonne),
-      margine,
-    });
+    // In righe, e poi in indici: in un elenco le due cose coincidono. Con la
+    // scala, sulle righe misurate invece che su un passo.
+    const suScala =
+      scala === null
+        ? null
+        : finestraDaScala({
+            scorrimento: scorrevole.scrollTop,
+            cima: cima.current,
+            altezzaVista: scorrevole.clientHeight,
+            scala,
+            margine,
+            tenere: { primo: finora.primo, ultimo: finora.ultimo },
+          });
+    const f =
+      suScala ??
+      finestraDa({
+        scorrimento: scorrevole.scrollTop,
+        cima: cima.current,
+        altezzaVista: scorrevole.clientHeight,
+        passo: altezza,
+        totale: righeDiGriglia(totale, colonne),
+        margine,
+      });
     const primo = Math.min(f.primo * colonne, totale);
     const ultimo = Math.min(f.ultimo * colonne, totale);
     const visibileDa = Math.min(f.visibileDa * colonne, Math.max(totale - 1, 0));
     // Le righe intere che entrano nello schermo, almeno una: PagGiù deve
     // muoversi anche in uno scorrevole più basso di una riga.
-    const visibili = Math.max(Math.floor(scorrevole.clientHeight / altezza), 1);
+    const visibili =
+      suScala?.visibili ?? Math.max(Math.floor(scorrevole.clientHeight / altezza), 1);
     // Per sempre, una volta acceso: anche tornando in cima le righe che
     // rinascono sono riciclate, non nuove.
     const scorso = finora.scorso || scorrevole.scrollTop > 0;
@@ -400,7 +541,8 @@ export function useVirtuale(opzioni: {
       colonne === finora.colonne &&
       larghezzaColonna === finora.larghezzaColonna &&
       (misurata || finora.misurata) === finora.misurata &&
-      scorso === finora.scorso
+      scorso === finora.scorso &&
+      scala === finora.scala
     ) {
       return;
     }
@@ -416,8 +558,18 @@ export function useVirtuale(opzioni: {
       // Una volta vera, resta: un disegno di soli scheletri non disfa la misura.
       misurata: misurata || finora.misurata,
       scorso,
+      scala,
     });
-  }, [totale, margine, selettoreRiga, selettoreMisura, griglia, contenitore, ancora]);
+  }, [
+    totale,
+    margine,
+    selettoreRiga,
+    selettoreMisura,
+    griglia,
+    diverse,
+    contenitore,
+    ancora,
+  ]);
 
   /*
    * La memoria: rimette lo scorrimento ricordato quando gli effetti nascono.
@@ -471,7 +623,9 @@ export function useVirtuale(opzioni: {
    * griglia la sua larghezza decide quante colonne — e il metro perché la sua
    * altezza decide **quali**. La seconda è quella che rende innocuo il
    * `min-height` di `.riga` — una riga cresciuta oltre il minimo si misura, non
-   * si indovina — e il ritmo largo di `data-density='spacious'`.
+   * si indovina — e il ritmo largo di `data-density='spacious'`. Con
+   * `altezzeDiverse` il metro sono tutte le righe disegnate: ognuna è alta per
+   * conto suo, e un carattere che arriva tardi le rifà alte diversamente.
    *
    * Un effetto e non due perché l'ascolto e l'osservatore vogliono lo stesso
    * nodo e la stessa condizione d'esistenza: tenerli separati voleva dire due
@@ -507,17 +661,32 @@ export function useVirtuale(opzioni: {
 
     const osservatore = new ResizeObserver(() => calcola());
     osservatore.observe(scorrevole);
-    const metro = ancora.current?.querySelector<HTMLElement>(
-      selettoreMisura ?? selettoreRiga,
-    );
-    if (metro !== null && metro !== undefined) osservatore.observe(metro);
+    if (diverse) {
+      ancora.current
+        ?.querySelectorAll<HTMLElement>(selettoreRiga)
+        .forEach((riga) => osservatore.observe(riga));
+    } else {
+      const metro = ancora.current?.querySelector<HTMLElement>(
+        selettoreMisura ?? selettoreRiga,
+      );
+      if (metro !== null && metro !== undefined) osservatore.observe(metro);
+    }
 
     return () => {
       scorrevole.removeEventListener("scroll", alFotogramma);
       osservatore.disconnect();
       if (inAttesa !== 0) window.cancelAnimationFrame(inAttesa);
     };
-  }, [calcola, stato, contenitore, ancora, selettoreRiga, selettoreMisura, memoria]);
+  }, [
+    calcola,
+    stato,
+    contenitore,
+    ancora,
+    selettoreRiga,
+    selettoreMisura,
+    memoria,
+    diverse,
+  ]);
 
   /*
    * Finché non c'è una misura vera, si riprova a ogni disegno.
@@ -532,9 +701,15 @@ export function useVirtuale(opzioni: {
    * barra si allungava sotto il pollice (collaudo della Fase 3). Una volta
    * misurata, `misurata` resta vera e questo effetto non fa più niente; da lì
    * in poi la segue il `ResizeObserver` sul metro.
+   *
+   * Con `altezzeDiverse` invece gira sempre: una coda riordinata o tradotta
+   * rifà i titoli nelle stesse righe della finestra, e una riga che va a capo
+   * diversamente non cambia né `stato` né `calcola`. Costa una trentina di
+   * rettangoli a disegno, e non gira in tondo: a misure ferme `calcola` non
+   * rifà lo stato.
    */
   useLayoutEffect(() => {
-    if (!statoRef.current.misurata) calcola();
+    if (diverse || !statoRef.current.misurata) calcola();
   });
 
   const scorriA = useCallback(
@@ -545,8 +720,12 @@ export function useVirtuale(opzioni: {
       // antenati scorrevoli e, su un nodo che non è disegnato, non ha niente da
       // muovere. Qui la posizione si sa per calcolo anche quando la riga non
       // esiste nel DOM, che è precisamente il caso per cui questa funzione c'è.
-      const { colonne, altezza } = statoRef.current;
-      const alto = Math.max(cima.current + Math.floor(indice / colonne) * altezza, 0);
+      const { colonne, altezza, scala } = statoRef.current;
+      const sopraLei =
+        scala === null
+          ? Math.floor(indice / colonne) * altezza
+          : (scala[Math.min(Math.max(indice, 0), scala.length - 1)] ?? 0);
+      const alto = Math.max(cima.current + sopraLei, 0);
       if (comportamento === undefined) scorrevole.scrollTop = alto;
       else scorrevole.scrollTo({ top: alto, behavior: comeScorrere(comportamento) });
     },
@@ -562,11 +741,21 @@ export function useVirtuale(opzioni: {
     const ultimo = Math.min(stato.ultimo, totale);
     const primo = Math.min(stato.primo, ultimo);
     const colonne = stato.colonne;
+    const sopra = Math.floor(primo / colonne);
+    const sotto = Math.max(righeDiGriglia(totale, colonne) - Math.ceil(ultimo / colonne), 0);
+    // Con la scala, stretti anche dentro di lei: fino al prossimo calcolo può
+    // essere quella di un elenco di un'altra lunghezza.
+    const scala = stato.scala;
+    const a = (indice: number) =>
+      scala === null ? 0 : (scala[Math.min(indice, scala.length - 1)] ?? 0);
     return {
       primo,
       ultimo,
-      sopra: Math.floor(primo / colonne),
-      sotto: Math.max(righeDiGriglia(totale, colonne) - Math.ceil(ultimo / colonne), 0),
+      sopra,
+      sotto,
+      pagliaSopra: scala === null ? sopra * stato.altezza : a(primo),
+      pagliaSotto:
+        scala === null ? sotto * stato.altezza : Math.max(a(totale) - a(ultimo), 0),
       altezza: stato.altezza,
       scarto: stato.scarto,
       colonne,

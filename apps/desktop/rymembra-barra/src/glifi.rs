@@ -193,7 +193,9 @@ mod prove {
         let lato = 16;
         let pixel = disegna(Glifo::Riproduci, lato, BIANCO);
         let sfumati = pixel
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| p.get(3).is_some_and(|&a| a > 0 && a < 255))
             .count();
         assert!(sfumati > 0);
@@ -219,7 +221,7 @@ mod prove {
     #[test]
     fn il_colore_e_quello_chiesto_in_ordine_blu_verde_rosso() {
         let pixel = disegna(Glifo::Pausa, 16, [0x10, 0x20, 0x30]);
-        for p in pixel.chunks_exact(4) {
+        for p in pixel.as_chunks::<4>().0 {
             assert_eq!(p.get(..3), Some([0x30, 0x20, 0x10].as_slice()));
         }
     }
