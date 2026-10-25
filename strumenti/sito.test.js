@@ -149,6 +149,12 @@ test("il sito vero si costruisce e torna", () => {
     assert.match(it, /<html lang="it">/);
     assert.match(it, /hreflang="x-default" href="https:\/\/rymembra\.com\/"/);
     assert.ok(it.includes(`/releases/download/v${versione}/Rymembra_${versione}_x64-setup.exe`));
+    // La scheda del Store, in tutte le lingue: un collegamento sotto il pulsante
+    // in alto e una seconda riga nella sezione «Scarica», e basta.
+    for (const f of ["index.html", "it/index.html", "fr/index.html", "de/index.html"]) {
+      const pagina = fs.readFileSync(path.join(dir, f), "utf8");
+      assert.equal(pagina.split('href="https://apps.microsoft.com/detail/9NW2F2PW2B91"').length - 1, 2, f);
+    }
     // La colonna sonora si scarica solo quando la si chiede, e ha i suoi crediti.
     assert.ok(it.includes('<audio data-colonna preload="none" loop src="../audio/machina.mp3">'));
     assert.ok(it.includes("https://creativecommons.org/licenses/by/4.0/"));
