@@ -75,6 +75,7 @@
       </a>
       <a class="secondario" href="#viaggio">{{=hero.cta2}}</a>
     </div>
+    <p class="store-link"><a href="{{=$store}}">{{=hero.store}}</a></p>
     <p class="altrove">{{altrove.testo}} <button type="button" data-condividi data-url="{{=$canonico}}" data-copiato="{{=altrove.copiato}}"><span class="altrove-manda">{{=altrove.manda}}</span><span class="altrove-copia">{{=altrove.copia}}</span></button></p>
     <p class="piccolo">{{hero.nota}}</p>
   </div>
@@ -307,6 +308,12 @@
       {{=scarica.azione}}
     </span>
   </a>
+  <a class="riga riga-cta riga-store" href="{{=$store}}">
+    <span class="copertina logo">{{&$marchio}}</span>
+    <span class="titoli"><span class="titolo">{{=scarica.store.titolo}}</span><span class="artista">{{=scarica.store.sotto}}</span></span>
+    <span class="azione">{{=scarica.store.azione}}</span>
+  </a>
+  <p class="file">{{scarica.store.nota}}</p>
   <p class="altrove">{{altrove.testo}} <button type="button" data-condividi data-url="{{=$canonico}}" data-copiato="{{=altrove.copiato}}"><span class="altrove-manda">{{=altrove.manda}}</span><span class="altrove-copia">{{=altrove.copia}}</span></button></p>
   <p class="file">{{scarica.file}}</p>
   {{&$verifica}}

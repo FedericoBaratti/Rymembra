@@ -19,6 +19,7 @@
     "lede": "Rymembra is a free music player for Windows. It plays the files already on your disk, rebuilds your playlists — even from your Spotify data — and looks for the missing tracks only where it's allowed to.",
     "cta": "Download for Windows",
     "cta2": "See how it works",
+    "store": "Or get it from the Microsoft Store",
     "nota": "Free and open source, MIT licence. Windows 64-bit, version {versione}, released {data}.",
     "alt": "Rymembra's home screen, with this week's collections, the track to resume and the queue",
     "didascalia": "The home screen: this week's collections, the interrupted track ready to resume where it stopped, and the queue on the right. The pictures show the Italian interface; the program speaks English too."
@@ -124,6 +125,12 @@
     "testo": "One installer for Windows 64-bit. Updates arrive by themselves, signed, and install only when you say so.",
     "sotto": "For Windows 64-bit. Free.",
     "azione": "Download",
+    "store": {
+      "titolo": "From the Microsoft Store",
+      "sotto": "Updates come from the Store, with no SmartScreen warning.",
+      "azione": "Download",
+      "nota": "The Store copy keeps its own library and settings, separate from the installer's."
+    },
     "file": "The file is `{file}`, released {data}. [What's new]({note}), [all versions]({tutte}).",
     "impronta": {
       "sommario": "{dimensione} MB · SHA-256 checksum",

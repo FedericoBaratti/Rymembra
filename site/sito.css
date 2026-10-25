@@ -314,6 +314,24 @@
   color: var(--t1);
 }
 
+/* L'altra strada, sotto il pulsante: la scheda nel Microsoft Store. È un
+   collegamento e non un secondo pulsante, perché il pulsante resta uno. */
+.store-link {
+  margin: 16px 0 0;
+  color: var(--t2);
+  font-size: 15px;
+}
+.store-link a {
+  color: var(--t1);
+  text-decoration: underline;
+  text-decoration-color: var(--linea-forte);
+  text-underline-offset: 4px;
+  transition: text-decoration-color 0.25s;
+}
+.store-link a:hover {
+  text-decoration-color: var(--t3);
+}
+
 /* Chi legge da un Mac o da un telefono: il pulsante resta, e sotto c'è come
    portarsi il link sul PC. Le classi le mette lo script nella testa della
    pagina, prima che si disegni, perché l'avviso non sposti niente arrivando;
@@ -1505,6 +1523,26 @@ html:not(.js) .scena-skin {
 }
 .riga-cta:hover .azione {
   background: var(--viola-chiaro);
+}
+/* La riga del Store porta anche `riga-cta`, e ne prende misure e adattamento al
+   telefono; qui le si tolgono il viola, che è del pulsante principale, e
+   l'alone. Dopo le regole di `riga-cta`, perché a parità di peso vince l'ultima. */
+.riga-store {
+  margin-top: 12px;
+  border-color: var(--linea-forte);
+  background: var(--sup-2);
+  box-shadow: none;
+}
+.riga-store:hover {
+  border-color: var(--t3);
+}
+.riga-store .azione {
+  border: 1px solid var(--linea-forte);
+  background: transparent;
+  color: var(--t1);
+}
+.riga-store:hover .azione {
+  background: var(--sup-3);
 }
 .file {
   margin: 16px 4px 0;

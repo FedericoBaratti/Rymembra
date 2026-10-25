@@ -60,6 +60,13 @@ const USCITA = path.join(REPO, "_site");
 /** Il dominio del sito: serve agli indirizzi assoluti (canonical, hreflang, Open Graph, sitemap). */
 const DOMINIO = "https://rymembra.com";
 
+/**
+ * La scheda di Rymembra nel Microsoft Store: l'ID è quello di Partner Center
+ * (Identità del prodotto). Senza parametri di lingua, perché il Store sceglie da
+ * sé quella di chi lo apre.
+ */
+const STORE = "https://apps.microsoft.com/detail/9NW2F2PW2B91";
+
 /** La prima è quella della radice, ed è anche `x-default`. */
 const LINGUE = [
   { codice: "en", cartella: "", locale: "en_US", nome: "English" },
@@ -463,6 +470,7 @@ function landing(r, testi, problemi, usate) {
       $data: dataInLingua(r.data, l.locale),
       $file: r.file,
       $scarica: r.scarica,
+      $store: STORE,
       $verifica: "",
       $note: r.note,
       $tutte: `${r.repo}/releases`,
