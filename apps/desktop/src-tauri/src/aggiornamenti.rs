@@ -334,6 +334,11 @@ pub struct StatoAggiornamentiIpc {
     /// Falso in un albero in cui le chiavi non sono state generate, e la
     /// finestra lo usa per non mostrare un interruttore che non comanda niente.
     pub configurato: bool,
+    /// A tenere aggiornata questa copia è il Microsoft Store.
+    ///
+    /// Quando è vero `configurato` è falso, e la finestra dice **perché**: «non
+    /// ho le chiavi» e «ci pensa il Store» sono due frasi diverse per chi legge.
+    pub gestito_dal_store: bool,
     /// La versione installata adesso.
     pub versione_corrente: String,
     /// Quando è finito l'ultimo controllo riuscito.
@@ -1125,19 +1130,66 @@ fn attivo(connection: &rusqlite::Connection) -> Result<bool, AppError> {
     Ok(settings::read(connection, CHIAVE_ATTIVO)?.as_deref() != Some("0"))
 }
 
-/// C'è una chiave pubblica con cui verificare le firme?
+/// Il file che il pacchetto MSIX del Microsoft Store mette accanto
+/// all'eseguibile, e che l'installer NSIS non porta.
 ///
-/// Si legge dalla configurazione compilata dentro l'eseguibile, che è l'unico
-/// posto dove sta: `plugins.updater.pubkey`. Vuota vuol dire che questo albero
-/// non ha ancora chiavi di firma, e allora il controllo non parte affatto.
+/// Lo scrive `strumenti/msix.js` al momento di impacchettare. Il contenuto non
+/// conta, conta che ci sia.
+const MARCATORE_STORE: &str = "rymembra-store.txt";
+
+/// Questa copia è stata installata dal Microsoft Store?
+///
+/// Se sì, a tenerla aggiornata è il Store, e il controllo di Rymembra non deve
+/// fare niente: un aggiornamento che arriva da due parti è un aggiornamento che
+/// il Store non sa di aver fatto, e l'installer NSIS che scarica da GitHub non
+/// può comunque scrivere dentro un pacchetto MSIX, che è di sola lettura.
+///
+/// # Perché un file e non il sistema operativo
+///
+/// Il modo esatto di chiederlo a Windows — `GetCurrentPackageFullName` — è una
+/// chiamata `unsafe`, e la radice del workspace la vieta qui. Il file ha un
+/// vantaggio in più: si prova senza installare niente, mettendolo accanto a un
+/// eseguibile qualunque, e lo scrive soltanto lo script che costruisce il
+/// pacchetto del Store.
+///
+/// Si legge una volta e si ricorda: l'eseguibile non cambia posto mentre gira.
+fn gestita_dallo_store() -> bool {
+    static STORE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STORE.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|esegui| esegui.parent().map(marcatore_in))
+            .unwrap_or(false)
+    })
+}
+
+/// C'è il marcatore del Store in questa cartella?
+///
+/// Separata da [`gestita_dallo_store`] perché quella legge il processo, e questa
+/// si prova su una cartella qualunque.
+fn marcatore_in(cartella: &std::path::Path) -> bool {
+    cartella.join(MARCATORE_STORE).is_file()
+}
+
+/// Questa copia sa e deve controllare gli aggiornamenti da sé?
+///
+/// Due condizioni, e vanno tutte e due: c'è una chiave pubblica con cui
+/// verificare le firme, e a tenerla aggiornata non è il Microsoft Store.
+///
+/// La chiave si legge dalla configurazione compilata dentro l'eseguibile, che è
+/// l'unico posto dove sta: `plugins.updater.pubkey`. Vuota vuol dire che questo
+/// albero non ha ancora chiavi di firma, e allora il controllo non parte
+/// affatto.
 fn configurato(app: &AppHandle) -> bool {
-    app.config()
-        .plugins
-        .0
-        .get("updater")
-        .and_then(|conf| conf.get("pubkey"))
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|chiave| !chiave.trim().is_empty())
+    !gestita_dallo_store()
+        && app
+            .config()
+            .plugins
+            .0
+            .get("updater")
+            .and_then(|conf| conf.get("pubkey"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|chiave| !chiave.trim().is_empty())
 }
 
 /// Mette via l'aggiornamento trovato, o lo toglie.
@@ -1247,6 +1299,7 @@ fn stato_ipc(
     Ok(StatoAggiornamentiIpc {
         attivo: acceso,
         configurato: configurato(app),
+        gestito_dal_store: gestita_dallo_store(),
         versione_corrente: app.package_info().version.to_string(),
         ultimo_ms,
         disponibile,
@@ -1285,6 +1338,39 @@ mod prove {
 
         settings::write(&connection, CHIAVE_ATTIVO, "1").expect("la scrittura riesce");
         assert!(attivo(&connection).expect("la lettura riesce"));
+    }
+
+    #[test]
+    fn il_marcatore_del_store_si_riconosce_dal_file_e_solo_da_quello() {
+        // Il caso che conta è il secondo: una cartella senza il file — cioè
+        // un'installazione NSIS, e ogni albero di sviluppo — non deve mai
+        // spegnere il controllo per un'ombra.
+        let cartella =
+            std::env::temp_dir().join(format!("rymembra-prova-marcatore-{}", std::process::id()));
+        std::fs::create_dir_all(&cartella).expect("la cartella di prova si crea");
+        assert!(!marcatore_in(&cartella));
+
+        // Una cartella con quel nome non è il file: `is_file`, non `exists`.
+        std::fs::create_dir_all(cartella.join(MARCATORE_STORE)).expect("la cartella si crea");
+        assert!(!marcatore_in(&cartella));
+        std::fs::remove_dir(cartella.join(MARCATORE_STORE)).expect("la cartella si toglie");
+
+        std::fs::write(cartella.join(MARCATORE_STORE), "store").expect("il file si scrive");
+        assert!(marcatore_in(&cartella));
+
+        std::fs::remove_dir_all(&cartella).expect("la cartella di prova si toglie");
+    }
+
+    #[test]
+    fn il_nome_del_marcatore_e_quello_che_scrive_lo_script() {
+        // Il nome sta in due posti — qui e in `strumenti/msix.js` — e nessun
+        // compilatore li confronta. Un nome cambiato da una parte sola
+        // lascerebbe l'aggiornamento acceso dentro un pacchetto di sola lettura.
+        let script = include_str!("../../../../strumenti/msix.js");
+        assert!(
+            script.contains(MARCATORE_STORE),
+            "strumenti/msix.js non nomina {MARCATORE_STORE}"
+        );
     }
 
     #[test]

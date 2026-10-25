@@ -340,9 +340,11 @@ export function Aggiornamenti({
         acceso={stato?.attivo ?? true}
         onCambia={accendi}
         impedito={
-          stato?.configurato === false
-            ? t("settings.update.unsigned")
-            : undefined
+          stato?.gestitoDalStore === true
+            ? t("settings.update.store")
+            : stato?.configurato === false
+              ? t("settings.update.unsigned")
+              : undefined
         }
       />
 

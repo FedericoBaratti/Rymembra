@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Il manifesto del pacchetto MSIX per il Microsoft Store.
+
+  Non si installa così com'è: i segnaposto {{...}} li riempie
+  `strumenti/msix.js`, che prende l'identità da `identita.json` (i tre valori
+  di Partner Center → Gestione prodotto → Identità del prodotto) e la versione
+  da `tauri.conf.json`. Un segnaposto rimasto fa fermare lo script.
+
+  # Perché `runFullTrust`
+
+  Rymembra è un programma Win32 normale: legge e scrive nelle cartelle di
+  musica dell'utente, apre il portachiavi, suona sul dispositivo audio. Dentro
+  l'isolamento di un'app UWP non potrebbe fare niente di tutto questo.
+  `runFullTrust` è la capacità «limitata» che dice al sistema di farlo girare
+  come un programma Win32, e Partner Center chiede di giustificarla nell'invio.
+
+  Non ha `internetClient`: quella capacità serve alle app isolate, e un
+  programma a piena fiducia non è soggetto a quell'isolamento.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="{{NOME}}"
+    Publisher="{{EDITORE}}"
+    Version="{{VERSIONE}}"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Rymembra</DisplayName>
+    <PublisherDisplayName>{{NOME_EDITORE}}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <!-- Windows 10 1809: il più vecchio che il Store serve ancora con i
+         pacchetti a piena fiducia, e dove WebView2 è già di sistema o si
+         installa da sé. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="it-IT" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application Id="Rymembra" Executable="rymembra.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Rymembra"
+        Description="{{DESCRIZIONE}}"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

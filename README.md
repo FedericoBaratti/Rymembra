@@ -276,7 +276,8 @@ a longer listening history than the public API offers.
   requires an explicit confirmation, and the installer's signature — bound to
   the version it announces — is verified before it runs. The feature can be
   switched off in the settings; the traffic it generates is documented in
-  [`PRIVACY.md`](PRIVACY.md) § 6.
+  [`PRIVACY.md`](PRIVACY.md) § 6. The Microsoft Store package doesn't have it:
+  there the Store does the updating.
 
 ---
 

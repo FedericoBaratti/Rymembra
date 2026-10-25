@@ -1,6 +1,6 @@
 # Privacy
 
-Last updated: 26 September 2026.
+Last updated: 25 October 2026.
 
 **Rymembra has no telemetry, no analytics, no crash reporting, and sends nothing
 to me.** There is no Rymembra server. There is no account to create. There is
@@ -447,6 +447,16 @@ contacts GitHub: you'll stay on this version until you come and press «Check
 now» or download the installer by hand. It's on by default, and that's a choice:
 a music player that doesn't update is a music player holding a network library
 that's months out of date.
+
+**In the Microsoft Store version it doesn't exist.** A copy installed from the
+Microsoft Store is kept up to date by the Store, not by Rymembra: it never asks
+GitHub for `latest.json`, the table above doesn't apply to it, and the switch in
+*Settings → Updates* says so instead of turning anything on. The Store, for its
+part, is Microsoft's service, with Microsoft's privacy statement: what it learns
+when you install or update an app is between you and it, and Rymembra doesn't see
+any of it. The same copy keeps its data in the application's private folder under
+`%LOCALAPPDATA%\Packages\` instead of `%APPDATA%`, which Windows arranges by
+itself; uninstalling it from Windows removes that folder.
 
 ---
 
