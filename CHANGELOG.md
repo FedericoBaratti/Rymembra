@@ -85,6 +85,60 @@ Entries older than 2.3.1 argue their number under the rule that was in force
 when they were written. They are a record of what shipped and are left as they
 were, not restated.
 
+## [3.0.3] — 2026-10-25
+
+**A release for the Microsoft Store, and nothing to look at.** A copy installed
+from GitHub behaves exactly as the 3.0.2 did: the installer, the updater and
+the data folder are the same. What this release adds is a second way of
+packaging the same program, for the Store, and the one switch that package
+needs to be a good citizen there.
+
+### Added — a package for the Microsoft Store
+
+A Store submission as an EXE/MSI installer must be signed with a certificate
+from a certificate authority the system already trusts, and the Store does not
+sign it for you. An MSIX package is signed by the Store itself, after its
+certification, so the program needs no certificate and the package needs no
+SmartScreen warning. That is the reason for the format, and the reason the NSIS
+installer was left alone.
+
+- `strumenti/msix.js` builds the package from the executable that
+  `tauri build --no-bundle` produces — not from the one inside the installer,
+  which has the installer's kind written into it for the updater — plus the
+  same resources the installer carries, read from `bundle.resources`, the logos
+  in `apps/desktop/src-tauri/msix/Assets`, and a manifest whose identity (name,
+  publisher) is the one Partner Center assigned. It refuses the example values,
+  and checks with `makeappx` that the manifest and the logos hold together. It
+  has its own tests, run with the other tools'.
+- `apps/desktop/src-tauri/msix/scheda-store.md` has the texts of the Store
+  listing in Italian and English, inside the limits of each field.
+
+### Added — a workflow that builds the package from a tag
+
+`.github/workflows/msix.yml` runs by hand on a tag that already exists, under
+the same rules as the release: actions pinned to a hash, no cache, the tag
+checked against the version in the files, `verify` first. It needs no secret
+and writes nothing to the repository: the package it produces is not signed, on
+purpose, because the Store signs it after certification. Nothing here replaces
+`release.yml`, and the installer on GitHub is built exactly as before.
+
+### Changed — a copy from the Store does not check for updates
+
+Inside the package, next to the executable, there is a file named
+`rymembra-store.txt`. When it is there, the program knows the Store keeps it up
+to date: the check for new versions never starts, *Settings → Updates* says why
+instead of showing a switch, and Rymembra does not contact GitHub for it at all.
+Measured on the same build: without the file, two connections to GitHub within
+fifty seconds of starting; with it, none.
+
+It is a file and not a call to the system because the workspace forbids
+`unsafe`, and the exact call (`GetCurrentPackageFullName`) needs it. It has a
+side benefit: it can be tried on any executable, without installing anything.
+
+A copy from the Store keeps its data in the package's private folder, under
+`%LOCALAPPDATA%\Packages\`, and not in `%APPDATA%` — Windows does it by itself —
+so its library is separate from the one an NSIS copy has. `PRIVACY.md` says so.
+
 ## [3.0.2] — 2026-10-22
 
 **A release about what the logs said.** Almost nothing in it is new to look at
