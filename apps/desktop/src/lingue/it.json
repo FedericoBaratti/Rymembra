@@ -1132,6 +1132,7 @@
   "settings.update.title": "Aggiornamenti",
   "settings.update.toggle": "Controlla se ci sono aggiornamenti",
   "settings.update.unsigned": "Questa copia di Rymembra è stata compilata senza chiavi di firma: non potrebbe verificare quel che scarica, quindi non scarica.",
+  "settings.update.store": "Questa copia di Rymembra arriva dal Microsoft Store, e a tenerla aggiornata è il Store: da qui non controlla niente e non contatta nessuno.",
   "settings.update.current": "Versione installata",
   "settings.update.last": "Ultimo controllo",
   "settings.update.check": "Controlla adesso",

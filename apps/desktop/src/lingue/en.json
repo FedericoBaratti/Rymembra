@@ -1132,6 +1132,7 @@
   "settings.update.title": "Updates",
   "settings.update.toggle": "Check for updates",
   "settings.update.unsigned": "This copy of Rymembra was built without signing keys: it could not verify what it downloads, so it does not download.",
+  "settings.update.store": "This copy of Rymembra comes from the Microsoft Store, and the Store keeps it up to date: it checks nothing from here and contacts no one.",
   "settings.update.current": "Installed version",
   "settings.update.last": "Last check",
   "settings.update.check": "Check now",

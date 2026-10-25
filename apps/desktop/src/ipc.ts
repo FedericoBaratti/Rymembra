@@ -2767,6 +2767,13 @@ export interface StatoAggiornamenti {
    * invece di mostrarne uno che non comanda niente.
    */
   configurato: boolean;
+  /**
+   * A tenere aggiornata questa copia è il Microsoft Store.
+   *
+   * Quando è vero `configurato` è falso, e la finestra dice il perché giusto:
+   * non «mancano le chiavi», ma «ci pensa il Store».
+   */
+  gestitoDalStore: boolean;
   /** La versione installata adesso. */
   versioneCorrente: string;
   /** Quando è finito l'ultimo controllo riuscito. */

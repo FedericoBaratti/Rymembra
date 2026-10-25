@@ -1,0 +1,161 @@
+# Da un tag a un pacchetto MSIX per il Microsoft Store.
+#
+# # Perché non fa parte di `release.yml`
+#
+# Perché non ha niente a che fare con quel che `release.yml` protegge. La
+# release di GitHub porta l'installer NSIS, firmato per l'updater con la chiave
+# che sta nei segreti, e **pubblicarla è il gesto che spedisce l'aggiornamento a
+# tutti**. Il pacchetto del Store non passa da lì: lo carica una persona in
+# Partner Center, lo certifica Microsoft, lo firma Microsoft. Nessuna chiave
+# nostra lo tocca, e nessun segreto serve — quindi questo workflow non ha
+# nessun `secrets.` e non scrive sul repository.
+#
+# Parte a mano, su un tag che esiste già: `release.yml` ha già costruito e
+# verificato quel tag per l'installer, e qui si ricostruisce lo stesso codice
+# in una forma diversa.
+#
+# # Cosa esce
+#
+# Un artefatto `rymembra-msix` con il `.msix` **non firmato**: è voluto, e
+# `strumenti/msix.js` lo scrive in fondo. Il Store lo firma dopo la
+# certificazione; installarlo prima su un computer vero richiede un certificato
+# di prova, ed è la ragione per cui la prova si fa dalla cartella
+# (`--solo-cartella`) e non dal `.msix`.
+#
+# # L'identità
+#
+# Viene da `apps/desktop/src-tauri/msix/identita.json`: sono i tre valori di
+# Partner Center → Gestione prodotto → Identità del prodotto, che non sono
+# segreti e finiscono in chiaro in ogni pacchetto.
+#
+# # L'eseguibile non è quello dell'installer
+#
+# `tauri build --no-bundle`, e non l'eseguibile che `tauri build` lascia dopo
+# NSIS: quest'ultimo porta scritto dentro il tipo di installer, e l'updater lo
+# legge. Vedi il preambolo di `strumenti/msix.js`.
+#
+# Le azioni sono inchiodate a un hash come in tutti gli altri workflow; il perché
+# sta per esteso nel preambolo di `release.yml`.
+
+name: msix
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Il tag da impacchettare, per esempio v3.0.3"
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: msix-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # La stessa di `verify.yml` e `release.yml`.
+  RUSTUP_TOOLCHAIN: "1.97.1"
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.versione.outputs.tag }}
+
+    steps:
+      # Il tag passa dall'ambiente e non da `${{ }}` dentro `run:`, per la
+      # ragione scritta in `release.yml`: un tag che contiene `$(…)` smette di
+      # essere un tag e diventa un comando.
+      - name: Quale tag
+        id: scelto
+        shell: bash
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          if ! [[ "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "«$TAG_INPUT» non ha la forma di un tag di versione (v1.2.3)"
+            exit 1
+          fi
+          echo "tag=$TAG_INPUT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.scelto.outputs.tag }}
+          persist-credentials: false
+
+      # Il Store vuole tre numeri e uno zero: un tag con un suffisso
+      # (`v3.0.3-rc.1`) non diventa una versione di pacchetto, e qui la forma è
+      # già stretta per questo.
+      - name: Il tag coincide con la versione
+        id: versione
+        shell: bash
+        env:
+          TAG: ${{ steps.scelto.outputs.tag }}
+        run: |
+          node strumenti/versione.js
+          trovato=$(node -p "require('./apps/desktop/package.json').version")
+          if [ "$trovato" != "${TAG#v}" ]; then
+            echo "il tag dice ${TAG#v}, i file dicono $trovato"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  verifica:
+    needs: tag
+    permissions:
+      contents: read
+    uses: ./.github/workflows/verify.yml
+    with:
+      ref: refs/tags/${{ needs.tag.outputs.tag }}
+
+  pacchetto:
+    needs: [tag, verifica]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          persist-credentials: false
+
+      - name: Rust
+        run: rustup toolchain install ${{ env.RUSTUP_TOOLCHAIN }} --profile minimal
+
+      # Senza cache, per la ragione di `release.yml`: quel che finisce nel
+      # pacchetto deve venire dal lockfile e da nient'altro.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Le dipendenze dell'interfaccia
+        working-directory: apps/desktop
+        run: npm ci
+
+      # `--no-bundle`: l'eseguibile e basta, senza installer — e quindi senza
+      # nessun artefatto dell'updater, che è il motivo per cui qui non serve
+      # spegnere `createUpdaterArtifacts` come in `release.yml`. `--locked`
+      # arriva a cargo, come là.
+      - name: Eseguibile
+        working-directory: apps/desktop
+        shell: bash
+        run: npx tauri build --no-bundle -- --locked
+
+      # L'SDK di Windows c'è su `windows-latest`; `strumenti/msix.js` cerca
+      # `makeappx.exe` e `makepri.exe` da sé.
+      - name: Pacchetto
+        shell: bash
+        run: node strumenti/msix.js
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rymembra-msix
+          path: target/msix/*.msix
+          if-no-files-found: error
