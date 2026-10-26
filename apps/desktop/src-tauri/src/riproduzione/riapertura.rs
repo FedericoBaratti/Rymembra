@@ -19,7 +19,7 @@ use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::spegnimento::Emette as _;
 
-use super::coda::{leggi_il_salvato, rimetti_il_salvato, riprendi_coda};
+use super::coda::{leggi_il_salvato, riga_delle_latenze, rimetti_il_salvato, riprendi_coda};
 use super::fili::prepara_prossimo;
 use super::{
     Lettore, StatoLettore, apri_motore, brano_di, con_lettore, manda_stato,
@@ -113,16 +113,48 @@ static ASCOLTO_DA_CONTINUARE: std::sync::Mutex<Option<i64>> = std::sync::Mutex::
 /// Il segno si consuma comunque, anche quando la risposta è no: se nel
 /// frattempo è partito un altro brano, l'annuncio è suo e la ripresa non c'è
 /// più.
-pub(super) fn e_la_ripresa_dell_ascolto(lettore: &Lettore, track_id: i64) -> bool {
+///
+/// `conta` è la riga che l'ascolto misura — vedi `ospiti::da_contare` — e
+/// non per forza l'id annunciato: in sessione il motore annuncia la maniglia
+/// della voce, e l'ascolto in corso è della riga che quella voce apre.
+pub(super) fn e_la_ripresa_dell_ascolto(
+    lettore: &Lettore,
+    track_id: i64,
+    conta: Option<i64>,
+) -> bool {
     let segnato = ASCOLTO_DA_CONTINUARE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
     segnato == Some(track_id)
-        && lettore
-            .ascolto
-            .as_ref()
-            .is_some_and(|ascolto| ascolto.track_id() == track_id)
+        && conta.is_some_and(|riga| {
+            lettore
+                .ascolto
+                .as_ref()
+                .is_some_and(|ascolto| ascolto.track_id() == riga)
+        })
+}
+
+/// Il prossimo annuncio d'inizio di `track_id` continua l'ascolto in corso
+/// invece di chiuderlo: vedi [`ASCOLTO_DA_CONTINUARE`].
+///
+/// Serve anche alla sessione, che riapre il brano corrente sotto un altro
+/// nome — la maniglia della sua voce, entrando come host, o la voce di prima,
+/// spegnendo la calibrazione — senza che chi ascolta abbia cambiato brano.
+/// Si chiama col lucchetto del lettore in mano, subito dopo aver dato il
+/// brano al motore, per la ragione scritta sulla casella.
+pub(super) fn continua_l_ascolto(track_id: i64) {
+    *ASCOLTO_DA_CONTINUARE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(track_id);
+}
+
+/// Dimentica un ascolto da continuare rimasto in sospeso: entrando o uscendo
+/// da una sessione, il brano a cui si riferiva non c'è più sotto quel nome.
+pub(super) fn dimentica_l_ascolto_da_continuare() {
+    *ASCOLTO_DA_CONTINUARE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
 /// Ferma l'ascolto in corso, se il motore non suona più.
@@ -399,6 +431,15 @@ fn riapri_davvero(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .is_err();
     let salvato = mai_aperto.then(|| leggi_il_salvato(app));
+    // Le latenze per uscita, per la stessa ragione e nello stesso punto: dopo
+    // l'apertura — il motore nuovo sa già su quale uscita suona — e prima del
+    // lucchetto del lettore. Il lettore mai aperto non ne ha bisogno: le ha
+    // già lette `leggi_il_salvato`, e le applica `rimetti_il_salvato`.
+    let latenze = if mai_aperto {
+        None
+    } else {
+        leggi_le_latenze(app)
+    };
 
     let mut guardia = stato
         .lettore
@@ -489,7 +530,7 @@ fn riapri_davvero(
             // Il motore nuovo non ha niente in canna.
             lettore.in_canna = None;
             lettore.non_aperto = None;
-            lettore.annuncio_atteso = false;
+            lettore.annuncio_atteso = None;
             lettore
                 .motore
                 .volume(lettore.volume.volume, lettore.volume.muto);
@@ -507,10 +548,31 @@ fn riapri_davvero(
             // brani tornava secco — e azzerava la compensazione di latenza,
             // rimettendo i testi fuori fase esattamente quando si era appena
             // cambiata uscita.
+            //
+            // Quella che vale adesso: in sessione è zero, qualunque cosa dica
+            // la preferenza. Vedi `insieme::dissolvenza_ms`.
             lettore
                 .motore
-                .dissolvenza(lettore.dissolvenza_s.saturating_mul(1000));
-            lettore.motore.latenza(lettore.latenza_ms);
+                .dissolvenza(super::insieme::dissolvenza_ms(lettore));
+            // La latenza non è più una sola: è quella dell'uscita su cui il
+            // motore nuovo si è **davvero** aperto, o la globale se quell'uscita
+            // un numero suo non ce l'ha. Passare dalle casse alle cuffie
+            // Bluetooth porta con sé il numero delle cuffie. Senza una lettura
+            // riuscita — la libreria occupata oltre l'attesa — resta quella di
+            // prima, che è esattamente com'era fino a questa versione. La copia
+            // nel lettore segue, e `manda_stato` qui sotto porta il cursore
+            // sul numero nuovo.
+            let latenza = latenze
+                .as_ref()
+                .map_or(lettore.latenza_ms, |(globale, voci)| {
+                    rymembra_app::playback::latenza_effettiva(
+                        *globale,
+                        voci,
+                        Some(lettore.motore.dispositivo()),
+                    )
+                });
+            lettore.motore.latenza(latenza);
+            lettore.latenza_ms = latenza;
             // Anche lo spettro: il lettore dentro il motore nuovo è nuovo pure
             // lui, e senza queste due righe chi stava guardando le barre le
             // vedrebbe fermarsi a zero dopo aver riaperto il dispositivo.
@@ -522,6 +584,10 @@ fn riapri_davvero(
                     .spettro_bande
                     .load(std::sync::atomic::Ordering::Relaxed),
             );
+            // E la sessione, se ce n'è una: il motore nuovo nasce col flusso
+            // libero di riposare e senza correzioni, e chi ospita o segue ha
+            // bisogno del primo e non vuole le seconde del motore di prima.
+            super::insieme::motore_sostituito(app, lettore);
         }
         Err(_) => {
             // Il caso del motore mai aperto: si costruisce il lettore adesso, e
@@ -545,10 +611,15 @@ fn riapri_davvero(
                 coda_di_prima: None,
                 coda_curata: false,
                 coda_del_giro: None,
+                pausa_chiesta: (0, false),
                 in_canna: None,
                 non_aperto: None,
-                annuncio_atteso: false,
+                annuncio_atteso: None,
                 puntina_a_vuoto: None,
+                // Un lettore mai aperto non è mai entrato in una sessione:
+                // entrarci chiede un lettore.
+                sessione: None,
+                fermato_della_sessione: false,
             };
             let letto = salvato.is_some();
             if let Some(salvato) = salvato {
@@ -589,6 +660,61 @@ fn riapri_davvero(
         Ok(Riaperta::Rimessa)
     } else {
         Ok(Riaperta::Vuota)
+    }
+}
+
+/// Quanto la riapertura aspetta la libreria per rileggere le latenze.
+///
+/// Un secondo, e poi si va avanti con quella di prima. Il motore nuovo è già
+/// aperto, e il passaggio alla nuova uscita aspetta questa lettura: una
+/// scansione che tiene la libreria non deve poter trattenere le cuffie appena
+/// collegate — o la musica di un dispositivo perso — per tutto il suo lotto.
+/// Il prezzo di una rinuncia è piccolo e già noto — è il comportamento di
+/// prima, un numero solo per tutte le uscite — e lo corregge la riapertura dopo
+/// o il primo tocco del cursore.
+const ATTESA_LATENZE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// La latenza globale e quelle per uscita, lette per la riapertura.
+///
+/// `None` se la libreria non c'è, non risponde, o resta occupata oltre
+/// [`ATTESA_LATENZE`]: chi chiama tiene il numero che il lettore aveva già. Si
+/// chiama **senza** il lucchetto del lettore, e la riga del diario — quando le
+/// voci non si leggono tutte, o la libreria non arriva — si scrive qui, prima
+/// di prenderlo.
+fn leggi_le_latenze(
+    app: &tauri::AppHandle,
+) -> Option<(i64, rymembra_app::playback::LatenzePerUscita)> {
+    let stato_app = super::libreria_di(app, "latenze per uscita").ok()?;
+    let letto = crate::stato::con_libreria_entro(&stato_app, ATTESA_LATENZE, |libreria| {
+        let c = &libreria.connection;
+        Ok((
+            rymembra_app::playback::load_latenza(c)?,
+            rymembra_app::playback::load_latenze_per_uscita(c)?,
+        ))
+    });
+    match letto {
+        Some(Ok((globale, lette))) => {
+            if let Some(riga) = riga_delle_latenze(&lette) {
+                nota!("{riga}");
+            }
+            Some((globale, lette.voci))
+        }
+        Some(Err(err)) => {
+            nota!(
+                "[riproduzione] latenze per uscita non rilette alla riapertura codice={}: resta \
+                 quella di prima",
+                err.code().kind().code()
+            );
+            None
+        }
+        None => {
+            nota!(
+                "[riproduzione] latenze per uscita non rilette: la libreria era occupata da più \
+                 di {} ms, resta quella di prima",
+                ATTESA_LATENZE.as_millis()
+            );
+            None
+        }
     }
 }
 
@@ -827,6 +953,15 @@ fn riprendi_dov_era(
 /// [`super::riprendi`] sa già fare tutte e due le cose — riaprire l'uscita e
 /// rimettere la puntina sul segno annotato, suonando.
 ///
+/// # In una sessione, da chi segue
+///
+/// I due «è un play» qui sopra non valgono: chi segue non suona da sé, e
+/// [`super::riprendi`] manderebbe la ripresa a chi ospita — togliendo la pausa
+/// a tutti per un guasto di un PC solo, o tornando con un «non concesso» a chi
+/// è entrato per ascoltare. Si rifà l'uscita di qui se è lei che manca, come
+/// [`riapri_audio`], e nient'altro: il brano lo rimette il regolatore, che
+/// riapre da sé la voce di chi ospita quando qui non suona niente.
+///
 /// `(async)`: riapre un file che può stare su una cartella di rete, e quella è
 /// esattamente l'attesa da cui la finestra va tenuta fuori.
 #[tauri::command(async)]
@@ -838,16 +973,27 @@ pub fn riprova_corrente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -
 
     // Il formato dell'uscita si legge sotto lucchetto e il lucchetto si lascia
     // subito: sono due interi da una struttura `Copy`, non un'apertura di file.
-    let (formato, perso, con_brano) = con_lettore(&stato, |lettore| {
+    let (formato, perso, con_brano, segue) = con_lettore(&stato, |lettore| {
         Ok((
             lettore.motore.formato(),
             lettore.motore.dispositivo_perso(),
             lettore.motore.posizione().track_id.is_some(),
+            super::insieme::segue(lettore),
         ))
     })
     .map_err(errore)?;
     let ripresa = match annotato {
         Some(ripresa) if !perso => ripresa,
+        // Chi segue: vedi «In una sessione» qui sopra.
+        _ if segue => {
+            return if perso {
+                riapri_su(&app, &stato, None, Modo::AMano)
+                    .map(|_| ())
+                    .map_err(errore)
+            } else {
+                Ok(())
+            };
+        }
         _ if perso || !con_brano => return super::riprendi(app, stato),
         _ => {
             return con_lettore(&stato, |lettore| {

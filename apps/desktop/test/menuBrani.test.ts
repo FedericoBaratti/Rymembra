@@ -149,3 +149,54 @@ test("album e artista: le voci e il loro ordine", () => {
     ["menu.open", "menu.searchName"],
   );
 });
+
+test("una voce di «Ascolta insieme» non ha gesti di libreria", () => {
+  const { fai } = azioni();
+  assert.deepEqual(vociBrani([-3], inMano(file(-3)), fai, t), []);
+});
+
+test("in una selezione mista i gesti valgono solo per le righe della libreria", () => {
+  const { fai, fatte } = azioni();
+  const voci = vociBrani([7, -3], inMano(file(7), file(-3)), fai, t);
+  // Con una sola riga di libreria il menù è quello di un brano solo: la radio
+  // e i «da qui» tornano, perché il seme adesso non è ambiguo.
+  assert.ok(voci.some((v) => v.etichetta === "action.radio"));
+  voci.find((v) => v.etichetta === "action.enqueue")?.azione();
+  assert.deepEqual(fatte, [["accoda", [7]]]);
+});
+
+test("in sessione la radio sparisce dal menù di un brano, e il resto resta", () => {
+  const { fai } = azioni();
+  const fuori = vociBrani([7], inMano(file(7)), fai, t).map((v) => v.etichetta);
+  const dentro = vociBrani([7], inMano(file(7)), fai, t, true).map((v) => v.etichetta);
+  assert.ok(fuori.includes("action.radio"));
+  assert.ok(!dentro.includes("action.radio"));
+  assert.deepEqual(
+    dentro,
+    fuori.filter((v) => v !== "action.radio"),
+  );
+});
+
+test("in sessione la radio sparisce anche dal menù di un album", () => {
+  const segna = () => undefined;
+  const fai = { radio: segna, dopo: segna, accoda: segna };
+  assert.deepEqual(
+    vociAlbum(fai, t, true).map((v) => v.etichetta),
+    ["action.playNext", "action.enqueue"],
+  );
+  assert.ok(vociAlbum(fai, t).some((v) => v.etichetta === "action.radio"));
+});
+
+test("senza la coda concessa da chi ospita, «Dopo» e «In coda» spariscono, e il resto resta", () => {
+  const { fai } = azioni();
+  const tutto = vociBrani([7], inMano(file(7)), fai, t, true).map((v) => v.etichetta);
+  const senza = vociBrani([7], inMano(file(7)), fai, t, true, true).map((v) => v.etichetta);
+  assert.ok(tutto.includes("action.playNext") && tutto.includes("action.enqueue"));
+  assert.deepEqual(
+    senza,
+    tutto.filter((v) => v !== "action.playNext" && v !== "action.enqueue"),
+  );
+  const segna = () => undefined;
+  const album = { radio: segna, dopo: segna, accoda: segna };
+  assert.deepEqual(vociAlbum(album, t, true, true), [], "un menù vuoto non si apre");
+});

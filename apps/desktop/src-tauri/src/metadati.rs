@@ -61,6 +61,8 @@ pub fn metadati_correggi(
     id: i64,
     campi: Correzioni,
 ) -> Esito<Option<TracciaIncerta>> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     con_libreria(&stato, |libreria| {
         incerti::correggi(&mut libreria.connection, id, &campi)?;
         incerti::uno(&libreria.connection, id)
@@ -73,6 +75,8 @@ pub fn metadati_correggi(
 /// `(async)` per la stessa ragione di [`metadati_correggi`].
 #[tauri::command(async)]
 pub fn metadati_conferma(stato: State<'_, Stato>, id: i64) -> Esito<()> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     con_libreria(&stato, |libreria| {
         incerti::conferma(&mut libreria.connection, id)
     })

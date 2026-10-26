@@ -171,6 +171,8 @@ impl From<testi::TestoBrano> for TestoIpc {
 /// chiusura `'static`, e un prestito dello stato lì dentro non entra.
 #[tauri::command]
 pub async fn testo_brano(app: AppHandle, id: i64) -> Esito<TestoIpc> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     let mano = app.clone();
     in_disparte("testo del brano", move || {
         let Some(stato) = mano.try_state::<Stato>() else {
@@ -240,6 +242,8 @@ pub fn testo_scarto(
     id: i64,
     scarto_ms: i32,
 ) -> Esito<()> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     let esito = con_libreria(&stato, |libreria| {
         let brano = testi::brano(&libreria.connection, id)?;
         testi::imposta_scarto(&libreria.connection, &brano.track_key, scarto_ms)
@@ -476,6 +480,8 @@ fn stato_adesso(stato: &Stato, testi: &StatoTesti) -> Result<StatoTestiIpc, AppE
 /// [`crate::disparte`].
 #[tauri::command]
 pub async fn testo_cerca(app: AppHandle, id: i64) -> Esito<TestoIpc> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     in_disparte("ricerca di un testo", move || cerca_adesso(&app, id))
         .await
         .map_err(errore)?
@@ -559,6 +565,8 @@ fn cerca_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
 /// venti secondi, più le due attese del ritentativo.
 #[tauri::command]
 pub async fn testo_cerca_di_nuovo(app: AppHandle, id: i64) -> Esito<TestoIpc> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     in_disparte("nuova ricerca di un testo", move || {
         cerca_di_nuovo_adesso(&app, id)
     })
@@ -687,6 +695,8 @@ pub fn testo_candidati(
     testi: State<'_, StatoTesti>,
     id: i64,
 ) -> Esito<CandidatiIpc> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     let (brano, rete) = con_libreria(&stato, |libreria| {
         Ok((
             testi::brano(&libreria.connection, id)?,
@@ -733,6 +743,8 @@ pub fn testo_scegli(
     id: i64,
     candidato: i64,
 ) -> Esito<TestoIpc> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     let brano =
         con_libreria(&stato, |libreria| testi::brano(&libreria.connection, id)).map_err(errore)?;
     let dall_elenco = |voci: &[rymembra_meta::lrclib::Voce]| {
@@ -779,6 +791,8 @@ pub fn testo_scegli(
 /// `library.trackNotFound`, `db.queryFailed`.
 #[tauri::command(async)]
 pub fn testo_rifiuta(stato: State<'_, Stato>, id: i64) -> Esito<TestoIpc> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     let brano = con_libreria(&stato, |libreria| {
         let brano = testi::brano(&libreria.connection, id)?;
         testi::rifiuta(&libreria.connection, &brano.track_key)?;
@@ -1549,6 +1563,8 @@ fn segnala(app: &AppHandle, err: &AppError) {
 /// tornano com'erano, ed è quel che `aggancia` fa senza candidati.
 #[tauri::command(async)]
 pub fn testo_aggancia(stato: State<'_, Stato>, id: i64, battute: Vec<u32>) -> Esito<Vec<u32>> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     // Sotto lucchetto ci va **solo** la riga di database. L'apertura del file no:
     // su una condivisione di rete morta dura quaranta secondi, e tenerci dentro
     // il lucchetto della libreria vorrebbe dire fermare la scansione,
@@ -1645,6 +1661,8 @@ pub fn testo_salva(
     id: i64,
     righe: Vec<RigaSalvata>,
 ) -> Esito<SalvatoIpc> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     // ── le traduzioni del testo di prima, che l'editor non porta ────────────
     // Vedi «Le traduzioni restano» su `componi`. Con i due tempi di `testo_di`,
     // perché il testo di prima può stare in un sidecar su una share; e senza
@@ -1753,6 +1771,8 @@ pub struct SalvatoIpc {
 /// se il brano non si legge.
 #[tauri::command]
 pub async fn testo_pubblica(app: AppHandle, id: i64) -> Esito<()> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     in_disparte("pubblicazione di un testo", move || {
         pubblica_adesso(&app, id)
     })

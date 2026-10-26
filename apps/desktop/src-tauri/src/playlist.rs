@@ -208,6 +208,9 @@ pub async fn playlist_aggiungi(
     id: i64,
     brani: Vec<i64>,
 ) -> Esito<playlists::Aggiunta> {
+    // Una voce di sessione non è una riga: si rifiuta il gesto intero, invece
+    // di farne metà. Vedi `riproduzione::ospiti::righe_di_libreria`.
+    crate::riproduzione::righe_di_libreria(&brani).map_err(errore)?;
     let esito = leggi_la_libreria(app.clone(), "aggiunta a una playlist", move |libreria| {
         playlists::aggiungi_brani(&mut libreria.connection, id, &brani)
     })
@@ -227,6 +230,9 @@ pub async fn playlist_crea_e_aggiungi(
     nome: String,
     brani: Vec<i64>,
 ) -> Esito<playlists::Aggiunta> {
+    // Una voce di sessione non è una riga: si rifiuta il gesto intero, invece
+    // di farne metà. Vedi `riproduzione::ospiti::righe_di_libreria`.
+    crate::riproduzione::righe_di_libreria(&brani).map_err(errore)?;
     let esito = leggi_la_libreria(
         app.clone(),
         "playlist nuova con i suoi brani",

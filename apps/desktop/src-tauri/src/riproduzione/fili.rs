@@ -28,8 +28,9 @@ use crate::stato::{Stato, adesso_ms, con_libreria_entro};
 use super::coda::{scegli_da_solo, scrivi_coda};
 use super::{
     AVANZAMENTO_MINIMO_MS, BATTITI_PER_SEGNO, BandeIpc, FINE_DEL_BRANO, Lettore, PASSO_SPETTRO,
-    PASSO_SPETTRO_FERMO, PASSO_TEMPO, StatoLettore, Tempo, annota_ripresa, aspetta_il_seguito,
-    brano_di, con_lettore, guasto_di, manda_stato, presa_spettro_se_libera,
+    PASSO_SPETTRO_FERMO, PASSO_TEMPO, StatoLettore, Strada, Tempo, annota_ripresa,
+    aspetta_il_seguito, brano_di, con_lettore, guasto_di, insieme, manda_stato, ospiti,
+    presa_spettro_se_libera, strada,
 };
 
 /// Dice al motore quale sarà il brano dopo.
@@ -191,7 +192,11 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
     // chi l'ha cambiata ha già deciso lui cosa viene dopo.
     let da_scegliere = con_lettore(&stato, |lettore| {
         let fine = stato.spegnimento.load(std::sync::atomic::Ordering::Relaxed) == FINE_DEL_BRANO;
-        if fine || !lettore.autoplay || lettore.coda.peek_next().is_some() {
+        // In sessione l'autoplay tace: sceglierebbe dalla cronologia di uno
+        // solo un brano per tutti, e la coda di sessione è fatta di voci, non
+        // di righe. La preferenza resta scritta com'era, e torna all'uscita.
+        // Vedi `insieme::autoplay`.
+        if fine || !insieme::autoplay(lettore) || lettore.coda.peek_next().is_some() {
             return Ok(None);
         }
         Ok(lettore
@@ -222,7 +227,10 @@ fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
         // dissolvenze, senza tagli, senza un secondo di silenzio prima del
         // previsto.
         let fine = stato.spegnimento.load(std::sync::atomic::Ordering::Relaxed) == FINE_DEL_BRANO;
-        if fine {
+        // Durante la calibrazione il motore suona i clic, che non stanno in
+        // coda: un successivo in canna lo attaccherebbe alla fine dei clic,
+        // e la voce di prima la riapre la calibrazione quando si spegne.
+        if fine || insieme::in_calibrazione(lettore) {
             lettore.prepara(None);
             return Ok(None);
         }
@@ -371,6 +379,12 @@ pub fn spegnimento(
 ) -> Esito<()> {
     use std::sync::atomic::Ordering;
 
+    // In sessione si rifiuta, anche per spegnerlo: all'ingresso lo si è già
+    // spento, e un timer che ferma l'host fermerebbe tutti. Vedi
+    // `crate::insieme::strada`.
+    if let Strada::Fatto = strada(&app, &crate::insieme::Gesto::Timer).map_err(errore)? {
+        return Ok(());
+    }
     let quando = match minuti {
         0 => 0,
         FINE_DEL_BRANO => FINE_DEL_BRANO,
@@ -779,6 +793,16 @@ fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::
 
     let letto = con_lettore(&stato_lettore, |lettore| {
         let p = lettore.motore.posizione();
+        // In sessione, fra una partenza programmata e il primo campione, il
+        // motore dice ancora il punto del brano di prima: alla finestra va
+        // quello promesso, con la durata della voce. Vedi
+        // `insieme::posizione_da_mostrare`.
+        let mostrata = insieme::posizione_da_mostrare(lettore, &p).map(|ms| {
+            let durata = insieme::corrente_da_mostrare(lettore)
+                .and_then(|id| ospiti::durata_ms(app, id))
+                .unwrap_or(p.durata_ms);
+            (ms, durata)
+        });
         Ok((
             p.track_id,
             lettore.motore.vuoti(),
@@ -788,9 +812,10 @@ fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::
                 in_pausa: p.in_pausa,
                 in_attesa: false,
             },
+            mostrata,
         ))
     });
-    let Ok((di_chi, vuoti, mut tempo)) = letto else {
+    let Ok((di_chi, vuoti, mut tempo, mostrata)) = letto else {
         return ControlFlow::Continue(());
     };
     // A secco: nessuna pausa voluta, la callback ha servito silenzio dall'ultimo
@@ -810,6 +835,14 @@ fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::
     };
     tempo.in_attesa = memoria.giri_a_secco >= 2;
     memoria.prima = (di_chi, tempo.posizione_ms, vuoti);
+    // Dopo il conto «a secco», che parla del motore e non di quel che si
+    // mostra: un punto promesso che non si muove per un quarto di secondo non
+    // è una rete che non risponde.
+    let ms_del_motore = tempo.posizione_ms;
+    if let Some((ms, durata)) = mostrata {
+        tempo.posizione_ms = ms;
+        tempo.durata_ms = durata;
+    }
     // Il filo dell'analisi sonora legge da qui se può leggere dal disco. Passa
     // da un'atomica e non da `con_lettore` perché chiedere al lettore come sta,
     // per sapere se disturbarlo, sarebbe gia` disturbarlo: la ragione per esteso
@@ -848,13 +881,17 @@ fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::
     // libreria occupata lo teneva fermo qui, e con lui la posizione, il timer e
     // la sorveglianza del dispositivo. Un segno saltato si riscrive fra cinque
     // secondi.
-    if let Some(brano) = di_chi
+    //
+    // Solo per una riga della libreria: una maniglia domani non vuol dire
+    // niente, e `save_posizione` la rifiuterebbe con una riga nel diario ogni
+    // cinque secondi per tutta la sessione.
+    if let Some(brano) = di_chi.filter(|id| ospiti::e_di_libreria(*id))
         && !tempo.in_pausa
         && memoria.battiti.is_multiple_of(BATTITI_PER_SEGNO)
         && let Some(stato_app) = app.try_state::<Stato>()
     {
         let _ = con_libreria_entro(&stato_app, ATTESA_ORDINARIA, |libreria| {
-            playback::save_posizione(&libreria.connection, brano, tempo.posizione_ms)
+            playback::save_posizione(&libreria.connection, brano, ms_del_motore)
         });
     }
     ControlFlow::Continue(())

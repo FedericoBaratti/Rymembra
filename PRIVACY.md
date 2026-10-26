@@ -1,10 +1,12 @@
 # Privacy
 
-Last updated: 25 October 2026.
+Last updated: 26 October 2026.
 
 **Rymembra has no telemetry, no analytics, no crash reporting, and sends nothing
 to me.** There is no Rymembra server. There is no account to create. There is
-nothing I can see of what you do.
+nothing I can see of what you do. (When you host a «Listen together» session,
+your own PC serves the other PCs on your network that you paired with it, and
+nobody else: § 4-ter.)
 
 That said, the program does talk to the network — a player that looks for cover
 art and downloads music necessarily does. This document lists **every single
@@ -24,9 +26,12 @@ Everything Rymembra knows about you:
 - **The cover art**, in a file cache next to the database.
 - **Your skins and Skin Studio drafts**, in the `skin` folder beside it —
   including, from 3.0, the conversations with the Studio's chat (§ 2-quater).
-- **The secrets** — the Google Drive tokens, the scrobbling credentials and the
-  API keys of any language model you configure — in the **operating system's
-  keychain**, not in a file. On Windows that's Credential Manager.
+- **The secrets** — the Google Drive tokens, the scrobbling credentials, the
+  API keys of any language model you configure and, from 3.1, the key that
+  identifies this PC to the others in «Listen together» — in the **operating
+  system's keychain**, not in a file. On Windows that's Credential Manager.
+- **The PCs you paired** for «Listen together», if any: their public key and
+  the name they had, in the same database (§ 4-ter).
 
 If you come from the previous version, the first time Rymembra starts it
 transfers that version's data automatically: the library, the settings, the
@@ -36,7 +41,8 @@ previous version but never its data. All of this happens on your computer; no
 request is made for it.
 
 None of this leaves your computer, except for the backup if you turn it on
-yourself (§ 4).
+yourself (§ 4), and what a listening session shares with the PCs you paired —
+on your own network, and only if you start or join one (§ 4-ter).
 
 ---
 
@@ -163,7 +169,9 @@ propose something sensible when a record ends. It does this in three ways, and
 two of the three never leave the house:
 
 - **the sound** — thirty seconds from the middle of each file, analyzed on your
-  computer. No byte of audio leaves it, ever, for any reason;
+  computer. No byte of that analysis leaves it, ever, for any reason (audio
+  leaves this computer in one case only: a listening session you start or join
+  yourself, towards PCs you paired, on your own network — § 4-ter);
 - **your listening** — what you've already heard and for how long, from your
   database;
 - **the culture** — «people who listen to this also listen to that», which is
@@ -369,6 +377,10 @@ What is **not** inside, and cannot be:
 - **This computer's backup device identifier**, its audio output, its measured
   output latency, its spectrum quality setting, and the open nodes of the
   Folders panel. These describe a machine, not a person.
+- **The PCs paired for «Listen together»**, and that feature's settings. A
+  pairing is a fact about two machines, and an archive restored on a third one
+  must not make it trust PCs it has never met (§ 4-ter). The same goes for the
+  Drive backup and for synchronization: neither carries them.
 - **Similarity data and the weekly picks**, which are derived and are
   recomputed from whatever library they land in.
 
@@ -379,6 +391,101 @@ looks like right now to `<data folder>\profilo\prima-<timestamp>.ryprofile`,
 keeping the last three. That backup restores your settings — not the merged
 history, which is additive and has no undo, and which the interface says so
 rather than promising a return that does not exist.
+
+---
+
+## 4-ter. Listen together, on your own network
+
+From 3.1, two or more PCs with Rymembra on the same network can listen to the
+same music at the same moment: one **hosts**, the others **follow**. This
+section is everything that feature puts on the network. It is **off by
+default**, and while it is off Rymembra opens no socket for it and sends no
+packet: not one.
+
+### While it is on, and you are not in a session
+
+- **Looking for hosts.** Every ten seconds, and right away when you open its
+  panel, Rymembra sends a **40-byte datagram**: a fixed tag, a format version
+  and sixteen random bytes. Nothing else — no name, no title, nothing about
+  you. It goes out as a broadcast on each of this PC's local networks, which
+  routers do not forward, and as a single datagram to each address you typed by
+  hand in *Settings › Listen together*, which goes wherever that address is.
+- **Only a PC that is hosting answers**, with **34 bytes**: the port to connect
+  to and an 8-byte fingerprint of its public key. So a hosting PC is
+  recognizable on your network; its name is not. These datagrams are the only
+  bytes «Listen together» sends **in the clear**.
+- **A connection to each host it sees**, at most sixteen, kept open so an
+  invitation can reach you. Every connection is encrypted and authenticated —
+  Noise `XX`, with X25519 keys and ChaCha20-Poly1305 — and inside it the two
+  PCs tell each other their **name**: the one in *Settings › Listen together*,
+  which by default is the Windows computer name. That name is said to any
+  Rymembra that completes the handshake, paired or not. Nothing else is said to
+  a PC that is not paired.
+
+### Pairing
+
+The first time two PCs meet, both screens show the **same four-digit code**,
+and both people confirm it. The code is computed from the encrypted handshake
+and from random numbers each side committed to before seeing the other's, so
+a third PC in the middle cannot arrange for two matching codes. After that
+each PC remembers the other's **public key** and name, in the table
+`insieme_pari` of its own library database, and can forget or block it at any
+time. Three failed pairings in ten minutes from the same PC, or ten from any,
+and pairing stops for a while.
+
+This PC's own key — the secret half — lives in Credential Manager, under
+`insieme.chiave.<device>`, never in the database, and it is wiped from memory
+when the feature stops.
+
+### In a session
+
+Only between PCs that are paired, and only inside the encrypted connection:
+
+| What | From whom, to whom |
+| --- | --- |
+| The names of the PCs in the session | the host, to every member |
+| What each member may do — listen, control, or control and change the queue — as the host chose it when they joined | the host, to every member |
+| The session queue: title, artist, album, duration, track number, year, ReplayGain values | the host, to every member |
+| The cover of each track in that queue | its owner, to whoever displays it |
+| The **bytes of the file** of a track in that queue, when a member plays it | its owner, to that member |
+| For a catalog track, only its reference: each PC fetches it from the catalog by itself, as in § 1 | the host, to every member |
+| Pause, seek, skip, and the timing that keeps everyone in sync | between host and members |
+| The gestures of a member, and the tracks a member adds to the queue, which then travel like the host's | a member, to the host, which passes them on |
+| To recognise a copy a member already has: the file's size, its modification date, a hash of its first and last 64 KiB, the library's content key — and its path **only** when it is a network share (`\\server\…`), never a path on a local disk | the owner of the track, to every member |
+
+A member can read **only** the files of the tracks in the session queue, each
+through a random 16-byte permission that ends with the session, when the track
+leaves the queue, or when that member leaves. Your library, your history, your playlists, your
+ratings and any other file stay where they are.
+
+Tracks that belong to another PC are **not counted** in your listening
+history and are **not scrobbled**; your own tracks count on your PC as they
+always did, and so does an identical copy of a shared track, when the session
+found one on your disk.
+
+### The firewall
+
+Only the PC that **hosts** listens: on TCP and UDP port **47811**, or one of
+the nine after it, or any free one. The first time, Windows asks whether to let
+Rymembra through, and Rymembra explains what to choose before it happens. A PC
+that follows opens no port.
+
+To show you the address a colleague can type by hand («This PC's address»),
+the hosting PC reads the addresses of its own network adapters and asks
+Windows which one the default route goes through — a lookup on this computer
+that sends nothing. The address is shown on your screen and is not written to
+the log.
+
+### The log
+
+As for everything else (§ 8): error codes, counts, durations in milliseconds,
+the name of a gesture («pause», «next»…), the level a member was given
+(«listen», «control», «everything») and the row number of a paired PC, of a
+connection or of a member. Never an address, a PC name, a title, a key, a permission or
+a pairing code. The durations are there to answer one question when a
+session feels slow — where the time went: how long a member waited for the
+host's answer to a gesture, how long the gesture waited on the host, and how
+long the session's own thread was busy.
 
 ---
 
@@ -462,11 +569,14 @@ itself; uninstalling it from Windows removes that folder.
 
 ## 7. What *doesn't* happen, and is worth saying
 
-- **No request at startup, except the one in § 6.** Opening Rymembra sends nothing
+- **No request at startup, except the one in § 6 — and «Listen together»'s, if you switched it on.** Opening Rymembra sends nothing
   to anyone for the first forty-five seconds, and after that sends a GET to a
   public file — or not even that, if it already did less than half an hour ago.
-  There's no other ping, and nothing goes out on closing.
-- **No request in the clear leaves this computer.** The HTTP client refuses
+  There's no other ping, and nothing goes out on closing. The one exception is
+  yours to choose: with «Listen together» switched on, looking for hosts on
+  your own network starts with the program, and closing tells the PCs of a
+  session that you left (§ 4-ter).
+- **Nothing in the clear leaves for the internet.** The HTTP client refuses
   `http://` by construction, with exactly one exception: a language model
   running on your own machine (§ 2-quater). Ollama and LM Studio have no
   certificate and cannot have one, so a client built for one of them accepts
@@ -480,6 +590,11 @@ itself; uninstalling it from Windows removes that folder.
   This is a weaker promise than the one that used to be written here, and it is
   written out loud on purpose: a strong promise quietly worked around is worth
   less than a weaker one you can check.
+
+  «Listen together» does not use the HTTP client: its connections are
+  encrypted with Noise (§ 4-ter), and the only bytes it sends in the clear are
+  the 40-byte discovery datagrams and the 34-byte answers of a host, which
+  carry no name and nothing about you.
 - **No external domain in the window.** The content policy (`tauri.conf.json`)
   admits only `'self'` and `data:`. The preview cover art arrives as `data:`
   URIs already downloaded by the core: the page never talks to a catalog

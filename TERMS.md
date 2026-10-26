@@ -1,6 +1,6 @@
 # Rymembra terms of use
 
-Last updated: 10 September 2026.
+Last updated: 26 October 2026.
 
 Rymembra is a free program, distributed under the MIT license. This document is
 not the contract between you and me — that's `LICENSE`, and it says the program
@@ -131,6 +131,32 @@ What goes to LRCLIB goes there under LRCLIB's license, not Rymembra's: the
 catalog hosts it and answers for what it hosts. Rymembra keeps no copy, doesn't
 resell it and doesn't put it back into circulation elsewhere. Your `.lrc` stays
 on your disk, identical, whether you press that button or not.
+
+---
+
+## 3-ter. Listening together
+
+From 3.1 Rymembra can play the same music on several PCs of the same network
+at once («Listen together»). Two things follow from that, and both are about
+the music, not the program.
+
+- **The music of the session travels between its PCs, while it plays.** The
+  host's files go to the PCs that follow, and the tracks a member adds go to
+  the others through the host. It is the same as playing your music on a second
+  set of speakers in another room of your home or office: the tracks are
+  streamed to PCs you paired, for the length of the session, and nothing is
+  left on their disks. It is not a way to
+  hand your library to someone, and Rymembra does not let a member keep what
+  it heard.
+- **Catalog tracks are never passed on.** A track from the Internet Archive or
+  Audius in a session queue is fetched from the catalog by **each** PC, under
+  that catalog's terms (§ 2), and never relayed from one PC to another. The
+  non-commercial clauses of § 2 bind everyone listening, not only the host.
+
+Playing music for an audience — in a shop, a bar, an event — can be a public
+performance that needs a license of its own, depending on where you are.
+Listening together with colleagues or family does not change what you are
+allowed to do with the music, and Rymembra cannot give you that license.
 
 ---
 

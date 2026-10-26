@@ -269,6 +269,20 @@ a longer listening history than the public API offers.
   environment carry their own client and skip this step. Backup and sync files
   that the previous version left in that folder are recognised and renamed in
   place at the next pass, without uploading them again.
+- **Listen together** on your own network. One PC hosts, colleagues or
+  family with Rymembra on the same network follow, and everybody hears the same
+  track at the same moment — close enough for two sets of speakers in one room
+  — while the host's music plays from the host's disk, with no server in
+  between. A member who already has an identical copy of a track plays it from
+  their own disk instead. Each time someone joins, the host chooses whether
+  they just listen, take the controls (pause, skip, seek), or can also change
+  the queue and add their own tracks; volume, equalizer, output and latency
+  stay each person's own. The
+  first time two PCs meet, both screens show the same four-digit code; after
+  that everything travels encrypted, and only between PCs you paired. Off by
+  default; what it sends is documented in [`PRIVACY.md`](PRIVACY.md) § 4-ter,
+  and the firewall question Windows asks the hosting PC is explained before it
+  appears.
 - **Scrobbling** to Last.fm and ListenBrainz.
 - **Automatic updates**: a check for releases on GitHub at every start, ten
   seconds after the window is ready, then every thirty minutes; without a
@@ -500,7 +514,7 @@ kept — so going back means putting it in place of `rymembra.db`.
 ```bash
 # Everything CI checks, in one go: versions, translations, CSS classes, the
 # interface's build and tests, the release tools' tests, formatting, clippy
-# and about 2,500 Rust tests — all runnable with no network connection
+# and about 3,100 Rust tests — all runnable with no network connection
 cd apps/desktop && npm run verify
 ```
 
@@ -585,6 +599,9 @@ core/
   rymembra-scrobble   Last.fm and ListenBrainz
   rymembra-ia         an OpenAI-compatible client for language models,
                       which knows nothing about skins
+  rymembra-insieme    «Listen together»: discovery, the Noise channel,
+                      pairing, reading tracks across the LAN; it knows
+                      nothing about the player
 apps/desktop          the interface: Tauri 2 + React 19
 ```
 
@@ -624,6 +641,8 @@ than the ones the user explicitly queries: the music catalogs, MusicBrainz,
 Google Drive, the scrobbling service, and the language model configured for the
 Skin Studio — the last three only if you connect them, and the last one possibly
 not a server at all, since Ollama and LM Studio run on your own machine.
+«Listen together», if you switch it on, talks only to other Rymembra on your
+own network, encrypted, and shares music only with the PCs you paired.
 
 [`PRIVACY.md`](PRIVACY.md) lists every single network request the program can
 make and the data each one transmits.
@@ -660,6 +679,21 @@ constraint is stated explicitly in the terms of use.
   is the part that was actually broken: before, the window said «playing» with
   the position frozen. FLAC and WAV are unaffected — they carry a seek table, or
   the offset is a multiplication.
+- **Listen together and Bluetooth.** A Bluetooth output plays the sound later
+  than Windows says, by an amount no driver reports and Rymembra cannot
+  measure. Two people each wearing their own headphones do not notice; speakers
+  and Bluetooth headphones in the same room do, and are aligned by ear with
+  «Calibrate», once per output. The same goes for a Bluetooth output whose
+  delay changes by itself after a reconnection.
+- **Listen together over Wi-Fi.** A member's own tracks reach the others
+  through the host, so on Wi-Fi the host carries each of them twice. The
+  session state (the queue, up to a thousand voices) travels compressed, about
+  a fifth of its size, and at most once a second while the host is still
+  describing a new queue. A network where devices cannot see each other (guest
+  networks, «client isolation») cannot be used at all: nothing reaches the
+  host. On a very slow or congested link (around 5 Mbit/s with tens of
+  milliseconds of jitter) a member may take a while to estimate the host's
+  clock before it starts.
 - **macOS and Linux.** The installer's only target is NSIS: the supported
   platform is therefore Windows.
 - **Mobile application.** Present in the previous version of the project, not

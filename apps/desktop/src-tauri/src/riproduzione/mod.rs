@@ -76,6 +76,8 @@
 mod coda;
 mod fili;
 mod flusso;
+pub mod insieme;
+mod ospiti;
 mod riapertura;
 mod suono;
 mod uscite;
@@ -113,10 +115,15 @@ use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::stato::{Stato, adesso_ms, con_libreria, con_libreria_entro};
 
+use crate::insieme::{Gesto, Instradato};
+
 use self::coda::{gesto_di_coda, ricorda_coda_di_prima, salva_coda};
 use self::fili::{prepara_prossimo, quanto_manca};
 use self::flusso::{apri_flusso, riferimento_di, sorgente_da_flusso};
+use self::ospiti::Chi;
 use self::suono::nome_normalizzazione;
+
+pub(crate) use self::ospiti::{riga_di_libreria, righe_di_libreria};
 
 /// Ogni quanto la finestra riceve la posizione.
 ///
@@ -424,6 +431,10 @@ pub struct StatoRiproduzione {
     /// ricampionamento la riga non lo scrive — descrive l'edizione, e cambiare
     /// cuffia non la cambia — ma lo dice a chi ci si ferma sopra.
     pub formato: Option<FormatoFile>,
+    /// «Ascolta insieme», quando questo PC è in una sessione: chi ospita, di
+    /// chi è la voce che suona, se la sincronia è agganciata. `None` fuori
+    /// sessione. Vedi [`crate::insieme::InsiemeNelLettore`].
+    pub insieme: Option<crate::insieme::InsiemeNelLettore>,
 }
 
 /// Il motore audio non c'è: perché, e da quando.
@@ -526,11 +537,15 @@ pub struct Lettore {
     /// domanda — e senza questa copia il cursore delle impostazioni tornerebbe
     /// a zero a ogni ridisegno della finestra.
     dissolvenza_s: u64,
-    /// La latenza d'uscita dichiarata a mano, in millisecondi.
+    /// La latenza d'uscita dichiarata a mano che vale **per l'uscita aperta
+    /// adesso**, in millisecondi.
     ///
-    /// Una copia di quel che sta in `settings`, accanto a `dissolvenza_s` e per
-    /// la stessa ragione: il motore la usa e non la racconta, e senza questa
-    /// copia il cursore delle impostazioni tornerebbe a zero a ogni ridisegno.
+    /// Il valore dell'uscita se ne ha uno suo, la globale altrimenti — vedi
+    /// `playback::latenza_effettiva` — ed è quel che il motore sta usando: per
+    /// questo cambia da sé quando una riapertura passa dalle casse alle cuffie.
+    /// È una copia, accanto a `dissolvenza_s` e per la stessa ragione: il
+    /// motore la usa e non la racconta, e senza questa copia il cursore delle
+    /// impostazioni tornerebbe a zero a ogni ridisegno.
     latenza_ms: i64,
     /// Perché il brano che l'autoplay ha accodato è quello.
     ///
@@ -571,6 +586,14 @@ pub struct Lettore {
     /// [`Lettore::suona`] la dimentica, perché una coda che ha suonato è stata
     /// ascoltata.
     coda_del_giro: Option<Vec<i64>>,
+    /// L'ultima pausa o ripresa chiesta da qualcuno: un numero che cresce a
+    /// ogni gesto, e se il gesto era una pausa. Serve a [`avvia_corrente`]:
+    /// un brano che si apre da un disco di rete può metterci secondi, e una
+    /// pausa premuta nel frattempo fermava il brano di prima — poi l'apertura
+    /// finiva e faceva partire quello nuovo, come se nessuno avesse detto
+    /// niente. In sessione succedeva a ogni membro che metteva in pausa
+    /// mentre l'host apriva la voce dopo.
+    pausa_chiesta: (u64, bool),
     /// Il brano che il motore ha in canna come successivo, se ne ha uno.
     ///
     /// Si scrive soltanto passando da [`Lettore::suona`], [`Lettore::prepara`] e
@@ -598,7 +621,7 @@ pub struct Lettore {
     /// sul brano che non si è aperto: la finestra lo mostra, fermo, accanto
     /// all'errore che già lo diceva.
     non_aperto: Option<i64>,
-    /// Il motore ha appena ricevuto un brano da suonare e non l'ha ancora
+    /// Il brano che il motore ha appena ricevuto da suonare e non ha ancora
     /// annunciato.
     ///
     /// L'annuncio arriva quando il primo campione raggiunge l'orecchio, e nel
@@ -606,26 +629,94 @@ pub struct Lettore {
     /// `[A, A, B]` il successivo è di nuovo A, e l'inizio del primo A sembrava
     /// quello del preparato — la coda avanzava mentre suonava ancora il primo.
     /// Il primo annuncio dopo [`Lettore::suona`] è del brano avviato.
-    annuncio_atteso: bool,
-    /// Il punto chiesto con [`vai_a`] mentre il motore non aveva niente in mano,
-    /// e di quale brano.
+    ///
+    /// Il brano e non un sì o un no, perché nel frattempo la coda può essersi
+    /// già mossa: vedi [`dopo_l_annuncio`].
+    annuncio_atteso: Option<i64>,
+    /// Il punto chiesto con [`vai_a`] mentre il motore non aveva niente in mano
+    /// — o aveva ancora il brano di prima, perché quello della coda si stava
+    /// aprendo — e di quale brano.
     ///
     /// Il caso è la coda rimessa all'avvio: si trascina il cursore, si preme
     /// «play», e il brano partiva dall'inizio — il salto era andato a un motore
-    /// vuoto, che non aveva dove farlo. Lo raccoglie [`riprendi`]; qualunque
+    /// vuoto, che non aveva dove farlo. Lo raccoglie [`riprendi`], o
+    /// [`avvia_corrente`] se il brano è quello che sta aprendo; qualunque altra
     /// partenza lo butta, perché parla di un brano che non era ancora aperto.
     puntina_a_vuoto: Option<(i64, u64)>,
+    /// La sessione d'«Ascolta insieme» in cui il lettore è, se ce n'è una: il
+    /// ruolo, la coda di prima da rimettere all'uscita, l'avvio programmato e
+    /// la calibrazione. Vedi [`insieme`].
+    ///
+    /// # Perché qui dentro e non accanto, come `ripresa`
+    ///
+    /// Perché le regole della sessione cambiano **insieme** alla coda: entrare
+    /// vuol dire coda di maniglie, dissolvenza a zero e niente autoplay nello
+    /// stesso istante, e chi li leggesse da due lucchetti diversi potrebbe
+    /// vedere la coda nuova con le regole vecchie — un autoplay che accoda un
+    /// brano della libreria in una coda di sessione. Sotto un lucchetto solo
+    /// non si può.
+    ///
+    /// Non sopravvive a niente, ed è voluto: una sessione è una connessione
+    /// aperta, non una preferenza. Il motore sostituito da una riapertura la
+    /// ritrova qui, perché il lettore resta lo stesso.
+    sessione: Option<insieme::Sessione>,
+    /// Il prossimo `Fermato` del motore è quello dello stop con cui si è
+    /// usciti da una sessione, e non deve toccare niente dell'utente.
+    ///
+    /// # Il difetto che chiude
+    ///
+    /// Uscendo, il motore si ferma e **nello stesso giro** di lucchetto torna
+    /// la coda dell'utente. Il `Fermato` di quello stop arriva dopo, sul filo
+    /// degli annunci, e non risulta superato — è la risposta allo stop, non un
+    /// annuncio di prima — quindi [`fermato`] lo leggeva come la fine della
+    /// coda dell'utente: il segno di «riprendi dov'eri» del suo brano tornava a
+    /// zero, e il brano lasciato a cinquanta secondi ripartiva dall'inizio.
+    /// Visto nella prova a due istanze; se si esce senza aver suonato niente il
+    /// motore è già fermo, non annuncia niente, e il difetto non si vedeva.
+    ///
+    /// Si alza uscendo e si abbassa al primo brano dato al motore (vedi
+    /// [`Lettore::dopo_un_avvio`]): ogni `Fermato` vero dopo l'uscita ha bisogno
+    /// di musica, e la musica ha bisogno di un brano nuovo. Un `Fermato` della
+    /// sessione arrivato prima dell'uscita — la coda di sessione finita da sé
+    /// un attimo prima di «Termina» — lo consuma lo stesso, ed è giusto: anche
+    /// quello parlava della sessione.
+    fermato_della_sessione: bool,
 }
 
 impl Lettore {
     /// Fa partire un brano, e il successivo in canna se ne va con quello che c'era.
     fn suona(&mut self, brano: rymembra_play::BranoAperto) {
+        let avviato = brano.track_id();
         self.motore.suona(brano);
+        self.dopo_un_avvio(avviato);
+    }
+
+    /// Come [`Lettore::suona`], dal millisecondo `da_ms`: vedi
+    /// `Motore::suona_da`.
+    fn suona_da(&mut self, brano: rymembra_play::BranoAperto, da_ms: u64) {
+        let avviato = brano.track_id();
+        self.motore.suona_da(brano, da_ms);
+        self.dopo_un_avvio(avviato);
+    }
+
+    /// Come [`Lettore::suona`], ma il brano parte **fermo** a `da_ms`: in
+    /// pausa, con l'anello già pieno dal punto giusto. Vedi
+    /// `Motore::apri_fermo`, e `avvia_corrente` per chi lo usa.
+    fn apri_fermo(&mut self, brano: rymembra_play::BranoAperto, da_ms: u64) {
+        let avviato = brano.track_id();
+        self.motore.apri_fermo(brano, da_ms);
+        self.dopo_un_avvio(avviato);
+    }
+
+    /// Quel che un brano appena dato al motore rende vecchio, comunque parta.
+    fn dopo_un_avvio(&mut self, avviato: i64) {
         self.puntina_a_vuoto = None;
         self.coda_del_giro = None;
         self.in_canna = None;
         self.non_aperto = None;
-        self.annuncio_atteso = true;
+        self.annuncio_atteso = Some(avviato);
+        self.fermato_della_sessione = false;
+        insieme::dopo_un_avvio(self);
     }
 
     /// Mette in canna il brano dopo, o toglie quello che c'era.
@@ -639,7 +730,52 @@ impl Lettore {
         self.motore.ferma();
         self.in_canna = None;
         self.non_aperto = None;
-        self.annuncio_atteso = false;
+        self.annuncio_atteso = None;
+        insieme::dopo_un_avvio(self);
+    }
+}
+
+/// Che cosa fa la coda quando il motore annuncia l'inizio di un brano, per chi
+/// non segue una sessione: vedi [`iniziato`].
+#[derive(Debug, PartialEq, Eq)]
+enum DopoLAnnuncio {
+    /// La coda indica già il brano giusto, o lo sceglierà chi l'ha mossa.
+    Resta,
+    /// Il motore ha attaccato il brano in canna: la coda va avanti di uno.
+    AvanzaDallaCanna,
+    /// Il motore ha attaccato un brano che la coda non indica, senza passare
+    /// dalla canna — un entrante rimesso in canna da un salto a metà
+    /// dissolvenza: la coda va avanti di uno.
+    Avanza,
+}
+
+/// La decisione di [`iniziato`], senza il lettore intorno.
+///
+/// Il brano avviato apposta (`atteso`) non sposta mai la coda. Se la coda nel
+/// frattempo indica un altro brano, l'ha mossa un gesto mentre questo aspettava
+/// il suo primo campione — un avvio programmato in sessione, un'uscita
+/// Bluetooth — e chi l'ha mossa sta aprendo il suo: avanzarla come per un
+/// passaggio gapless la portava una voce **oltre** quella scelta, che poi
+/// nessuno apriva. Lo si è visto con due scelte dalla coda a un secondo l'una
+/// dall'altra: l'host restava sul brano di prima, col titolo di quello dopo la
+/// voce scelta, e chi segue con lui.
+///
+/// Se l'annuncio è di un altro brano, quello avviato non è mai uscito — un file
+/// che il motore ha saltato — e l'annuncio si legge come gli altri.
+fn dopo_l_annuncio(
+    brano: i64,
+    atteso: Option<i64>,
+    corrente: Option<i64>,
+    in_canna: Option<i64>,
+) -> DopoLAnnuncio {
+    if atteso == Some(brano) {
+        DopoLAnnuncio::Resta
+    } else if in_canna == Some(brano) {
+        DopoLAnnuncio::AvanzaDallaCanna
+    } else if corrente != Some(brano) {
+        DopoLAnnuncio::Avanza
+    } else {
+        DopoLAnnuncio::Resta
     }
 }
 
@@ -853,6 +989,15 @@ pub struct StatoLettore {
     /// altri due. Così non entra nell'ordine «prima il lettore, poi la
     /// libreria», e non può chiudere un cerchio con nessuno.
     preferenze: Mutex<()>,
+    /// Le voci della sessione d'«Ascolta insieme»: maniglia → voce.
+    ///
+    /// Un lucchetto suo e **foglia**: si può prendere col lettore in mano, per
+    /// tradurre una maniglia mentre si fotografa la coda, ma chi lo tiene non
+    /// chiede mai nient'altro. Fuori dal lettore perché lo legge chi non deve
+    /// aspettarlo — la finestra che chiede le schede della coda, il protocollo
+    /// delle copertine — e una scheda non vale una pausa in fila. Vedi
+    /// [`ospiti`].
+    ospiti: Mutex<ospiti::Registro>,
 }
 
 /// Un lavoro da fare dopo, in ordine, sul filo «rymembra-seguito».
@@ -1000,10 +1145,13 @@ impl StatoLettore {
             coda_di_prima: None,
             coda_curata: false,
             coda_del_giro: None,
+            pausa_chiesta: (0, false),
             in_canna: None,
             non_aperto: None,
-            annuncio_atteso: false,
+            annuncio_atteso: None,
             puntina_a_vuoto: None,
+            sessione: None,
+            fermato_della_sessione: false,
         });
         let (prepara, orecchio) = std::sync::mpsc::channel();
         let (sveglia_dispositivi, orecchio_dispositivi) = std::sync::mpsc::channel();
@@ -1030,6 +1178,7 @@ impl StatoLettore {
                 sfumando_fino: std::sync::atomic::AtomicI64::new(0),
                 aprendo: std::sync::atomic::AtomicI64::new(NESSUN_BRANO),
                 preferenze: Mutex::new(()),
+                ospiti: ospiti::registro_nuovo(),
             },
             orecchio,
             orecchio_dispositivi,
@@ -1409,7 +1558,7 @@ fn intorno_di(app: &tauri::AppHandle, track_id: i64) -> playback::Intorno {
     let Some(stato) = app.try_state::<StatoLettore>() else {
         return playback::Intorno::default();
     };
-    con_lettore(&stato, |lettore| {
+    let intorno = con_lettore(&stato, |lettore| {
         let (prima, dopo) = lettore.coda.neighbors(track_id);
         Ok(playback::Intorno {
             mescolato: lettore.coda.shuffle(),
@@ -1417,7 +1566,16 @@ fn intorno_di(app: &tauri::AppHandle, track_id: i64) -> playback::Intorno {
             dopo,
         })
     })
-    .unwrap_or_default()
+    .unwrap_or_default();
+    // In sessione i vicini sono maniglie, e il database confronta righe: la
+    // riga dietro ciascuna, o nessun vicino. Si traduce a lettore lasciato —
+    // il registro è un lucchetto foglia, ma qui non serve nemmeno tenerli
+    // insieme. Senza, chi ospita il suo disco perderebbe il livello d'album.
+    playback::Intorno {
+        prima: intorno.prima.and_then(|id| ospiti::riga_dietro(app, id)),
+        dopo: intorno.dopo.and_then(|id| ospiti::riga_dietro(app, id)),
+        ..intorno
+    }
 }
 
 /// Apre la sorgente di un brano, senza tenere in mano la libreria mentre aspetta.
@@ -1481,16 +1639,69 @@ fn intorno_di(app: &tauri::AppHandle, track_id: i64) -> playback::Intorno {
 /// cui riconoscimento cade in panico, che non è la rete: vedi
 /// [`apertura_mancata`] — e i `net.*` di [`apri_flusso`] quando la rete risponde
 /// prima della scadenza per dire di no.
+///
+/// # Una voce di sessione
+///
+/// Un id negativo è una voce d'«Ascolta insieme», e l'apre [`ospiti::apri`]:
+/// dalla libreria, dalla rete o da un catalogo, con la stessa regola delle
+/// scadenze e nessun lucchetto in mano. È qui e non in ognuno dei cinque
+/// chiamanti — la partenza, il preparatore, «Riprova», la riapertura del
+/// dispositivo, l'«Annulla» — perché ognuno di loro, adesso, può avere in
+/// mano una maniglia: un ramo dimenticato in uno solo vorrebbe dire una voce
+/// che parte con l'id sbagliato e una coda che avanza da sola.
 fn brano_di(
     app: &tauri::AppHandle,
     track_id: i64,
     formato: rymembra_play::FormatoUscita,
 ) -> Result<rymembra_play::BranoAperto, AppError> {
+    match ospiti::chi(app, track_id) {
+        Chi::Libreria(riga) => brano_di_libreria(app, riga, riga, formato),
+        Chi::Voce(voce) => ospiti::apri(app, track_id, &voce, formato),
+        Chi::Sparita => Err(AppError::new(ErrorCode::PlaybackSourceUnavailable {
+            track_id: None,
+            path: None,
+        })
+        .with_cause(format!(
+            "la voce {track_id} non c'è più: la sessione è finita o l'ha tolta"
+        ))),
+    }
+}
+
+/// I cataloghi del lettore, clonati fuori dallo stato: un `State` non
+/// attraversa il confine di un filo, e il clone è quasi gratis — l'agente sta
+/// in un `Arc` e la riserva di connessioni resta la stessa (vedi
+/// [`StatoLettore::cataloghi`]).
+fn cataloghi_di(app: &tauri::AppHandle, cosa: &'static str) -> Result<Cataloghi, AppError> {
+    app.try_state::<StatoLettore>()
+        .map(|stato| stato.cataloghi.clone())
+        .ok_or_else(|| {
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some(cosa.to_owned()),
+            })
+            .with_cause("il lettore non è più fra gli stati gestiti")
+        })
+}
+
+/// [`brano_di`] per una riga della libreria, annunciata dal motore come
+/// `maniglia`.
+///
+/// Fuori sessione le due coincidono. In sessione chi ospita apre il suo file
+/// sotto la maniglia della voce: il `track_id` della sorgente è quello che il
+/// motore annuncia e mette nelle posizioni, e deve essere quello che la coda
+/// contiene — con l'id della riga, l'annuncio d'inizio non troverebbe la
+/// maniglia in coda e la farebbe avanzare di un passo a ogni brano.
+fn brano_di_libreria(
+    app: &tauri::AppHandle,
+    track_id: i64,
+    maniglia: i64,
+    formato: rymembra_play::FormatoUscita,
+) -> Result<rymembra_play::BranoAperto, AppError> {
     let stato = libreria_di(app, "apertura del brano")?;
-    let intorno = intorno_di(app, track_id);
-    let scheda = con_libreria(&stato, |libreria| {
+    let intorno = intorno_di(app, maniglia);
+    let mut scheda = con_libreria(&stato, |libreria| {
         playback::scheda_da_suonare(&libreria.connection, track_id, intorno)
     })?;
+    scheda.track_id = maniglia;
     // Il riferimento si ricava **prima** della chiusura, che si porta via la
     // scheda: da qui in giù serve solo per sapere che faccia dare a una scadenza
     // passata, e chiederlo di nuovo dopo non si potrebbe.
@@ -1502,18 +1713,7 @@ fn brano_di(
     // che `percorso()` giustamente non dà: senza, un brano d'immagine sul NAS
     // avrebbe preso la scadenza corta di un disco locale.
     let percorso = scheda.collocazione.file_audio().map(str::to_owned);
-    // I cataloghi si clonano fuori dallo stato: un `State` non attraversa il
-    // confine di un filo, e il clone è quasi gratis — l'agente sta in un `Arc` e
-    // la riserva di connessioni resta la stessa (vedi [`StatoLettore::cataloghi`]).
-    let cataloghi = app
-        .try_state::<StatoLettore>()
-        .map(|stato| stato.cataloghi.clone())
-        .ok_or_else(|| {
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("apertura del brano".to_owned()),
-            })
-            .with_cause("il lettore non è più fra gli stati gestiti")
-        })?;
+    let cataloghi = cataloghi_di(app, "apertura del brano")?;
     let riferimento = remoto.clone();
     // Un file su una cartella di rete aspetta quanto un flusso: un NAS che
     // dorme fa girare i dischi in otto, quindici secondi, e Windows ricollega
@@ -1622,7 +1822,26 @@ fn apertura_mancata(
 /// legge dal lettore, senza database. Il resto — la scheda del brano, la
 /// finestra, Windows, il vassoio — lo fa il filo del seguito, nell'ordine in cui
 /// le fotografie sono state scattate. Vedi [`in_ordine`].
+///
+/// # E agli altri PC della sessione
+///
+/// Chi ospita avvisa qui anche la sessione che il lettore è cambiato: ogni
+/// gesto, ogni brano nuovo, ogni pausa passa già da questa funzione, e un
+/// avviso messo altrove sarebbe un posto in più dove dimenticarlo. Non blocca:
+/// suona un campanello, e lo stato per gli altri lo compone il filo della
+/// sessione. Vedi [`insieme::cambiato`].
 pub(crate) fn manda_stato(app: &tauri::AppHandle, lettore: &Lettore) {
+    let abbozzo = abbozzo(app, lettore);
+    insieme::cambiato(app, lettore);
+    in_ordine(app, move |app| pubblica(app, abbozzo));
+}
+
+/// Come [`manda_stato`], ma senza avvisare la sessione: per chi ridisegna
+/// perché è cambiato qualcosa **fuori** dal lettore — una copertina di
+/// sessione arrivata, una voce che ha trovato la sua copia — e non deve far
+/// ripartire uno stato verso gli altri PC che a sua volta lo farebbe
+/// ridisegnare.
+pub(super) fn manda_stato_alla_finestra(app: &tauri::AppHandle, lettore: &Lettore) {
     let abbozzo = abbozzo(app, lettore);
     in_ordine(app, move |app| pubblica(app, abbozzo));
 }
@@ -1661,6 +1880,7 @@ pub fn primo_stato_fuori(app: &tauri::AppHandle) {
 fn manda_stato_con_posizione(app: &tauri::AppHandle, lettore: &Lettore, ms: u64) {
     let mut abbozzo = abbozzo(app, lettore);
     abbozzo.stato.posizione_ms = ms;
+    insieme::cambiato(app, lettore);
     in_ordine(app, move |app| pubblica(app, abbozzo));
 }
 
@@ -1737,13 +1957,20 @@ fn abbozzo(app: &tauri::AppHandle, lettore: &Lettore) -> Abbozzo {
         guasto
     });
     Abbozzo {
-        corrente: lettore.coda.current(),
+        // La voce di calibrazione non sta in coda: mentre suona, la barra
+        // mostra lei e non il brano che ripartirà dopo, che con la posizione
+        // dei clic sotto direbbe un punto che non esiste.
+        corrente: insieme::corrente_da_mostrare(lettore),
         suonato: posizione.track_id.zip(posizione.formato),
         stato: StatoRiproduzione {
             durata_ms: posizione.durata_ms,
             brano: None,
             in_pausa: posizione.in_pausa || guasto.is_some(),
-            posizione_ms: posizione.ms,
+            // In sessione, fra una partenza programmata e il primo campione
+            // il motore dice ancora il punto del brano di prima: si mostra
+            // quello promesso. Vedi `insieme::posizione_da_mostrare`.
+            posizione_ms: insieme::posizione_da_mostrare(lettore, &posizione)
+                .unwrap_or(posizione.ms),
             shuffle: lettore.coda.shuffle(),
             ripeti: nome_ripetizione(lettore.coda.repeat()).to_owned(),
             volume: lettore.volume.volume,
@@ -1775,6 +2002,10 @@ fn abbozzo(app: &tauri::AppHandle, lettore: &Lettore) -> Abbozzo {
             audio: guasto,
             uscita: Some(lettore.motore.dispositivo().to_owned()),
             formato: None,
+            // Una lettura della fotografia che la sessione tiene per conto
+            // suo: nessun lucchetto del lettore, che qui è già in mano. Vedi
+            // `crate::insieme::nel_lettore`.
+            insieme: crate::insieme::nel_lettore(app),
         },
     }
 }
@@ -1813,6 +2044,13 @@ fn completa(
     // ricordo; senza il lettore non c'è nemmeno un ricordo, e lo stato parte
     // senza scheda.
     let (brano, formato) = corrente.map_or((None, None), |id| {
+        // Una voce di sessione la scheda ce l'ha già in memoria, e il ricordo
+        // non le serve: non c'è un database da aspettare.
+        let id = match ospiti::chi(app, id) {
+            Chi::Libreria(riga) => riga,
+            Chi::Voce(voce) => return scheda_di_voce(app, id, &voce, attesa),
+            Chi::Sparita => return (None, None),
+        };
         let Some(stato_lettore) = app.try_state::<StatoLettore>() else {
             return (None, None);
         };
@@ -1864,6 +2102,50 @@ fn completa(
             },
         );
     stato
+}
+
+/// La scheda e il formato di una voce di sessione, per [`completa`].
+///
+/// La scheda viene dalla voce. Il formato no: la riga dei dati tecnici si
+/// mostra se la preferenza è accesa, e allora per una voce che apre un file
+/// di questo PC si leggono le colonne della sua riga, per le altre si parte da
+/// niente e lo riempie il decodificatore (vedi [`FormatoFile::completato_da`]):
+/// di un file che sta su un altro PC il database di qui non sa niente, ma
+/// quel che si sente lo sa il motore.
+fn scheda_di_voce(
+    app: &tauri::AppHandle,
+    maniglia: i64,
+    voce: &ospiti::Voce,
+    attesa: Option<Duration>,
+) -> (Option<TrackSummary>, Option<FormatoFile>) {
+    let scheda = ospiti::scheda(maniglia, voce);
+    let riga = ospiti::riga_dietro(app, maniglia);
+    let leggi = |libreria: &mut crate::stato::Libreria| {
+        if !playback::load_formato_visibile(&libreria.connection)? {
+            return Ok(None);
+        }
+        let dal_database = match riga {
+            Some(riga) => rymembra_app::library::read_formato(&libreria.connection, riga)?,
+            None => None,
+        };
+        Ok(Some(dal_database.unwrap_or(FormatoFile {
+            codec: None,
+            sample_rate: None,
+            channels: None,
+            bitrate: None,
+            bits_per_sample: None,
+            output_rate: None,
+        })))
+    };
+    let formato = app
+        .try_state::<Stato>()
+        .and_then(|stato_app| match attesa {
+            Some(entro) => con_libreria_entro(&stato_app, entro, leggi),
+            None => Some(con_libreria(&stato_app, leggi)),
+        })
+        .and_then(Result::ok)
+        .flatten();
+    (Some(scheda), formato)
 }
 
 /// Il guasto del motore, se ce n'è uno.
@@ -2042,10 +2324,26 @@ fn su_evento(app: &tauri::AppHandle, annuncio: Annuncio) {
 /// motore la scriveva **dopo** l'annuncio: quel che si leggeva era la
 /// posizione del brano di prima, e la durata giusta la ripescava il database.
 fn iniziato(app: &tauri::AppHandle, lettore: &mut Lettore, track_id: i64, posizione: Posizione) {
+    // La voce di calibrazione non è in coda e non è un ascolto: la coda resta
+    // sul brano che ripartirà dopo, e l'ascolto di quel brano resta fermo dov'è
+    // (lo ha fermato `insieme::calibra`). Senza questa uscita, la coda — che
+    // non la trova — avanzerebbe di un passo.
+    if insieme::e_la_calibrazione(track_id) {
+        lettore.annuncio_atteso = None;
+        manda_stato(app, lettore);
+        return;
+    }
+
+    // La riga da contare, se ce n'è una: per una voce di sessione quella che la
+    // voce dichiara, o nessuna. È l'id che va all'ascolto e allo scrobble:
+    // `record_play` rifiuta le maniglie, e il rifiuto finirebbe nel diario a
+    // ogni voce. Vedi `ospiti::da_contare`.
+    let conta = ospiti::da_contare(app, track_id);
+
     // Il brano rimesso nel solco dopo che il dispositivo è tornato: l'ascolto è
     // quello di prima, fermo, e riparte da dove si era fermato invece di
     // chiudersi. Vedi `riapertura::e_la_ripresa_dell_ascolto`.
-    let continua = riapertura::e_la_ripresa_dell_ascolto(lettore, track_id);
+    let continua = riapertura::e_la_ripresa_dell_ascolto(lettore, track_id, conta);
 
     // Il brano precedente è finito **adesso**, non prima: con il gapless fra
     // i due non c'è un istante di silenzio, e questo è l'unico momento in cui
@@ -2063,17 +2361,31 @@ fn iniziato(app: &tauri::AppHandle, lettore: &mut Lettore, track_id: i64, posizi
     // rimesso in canna da un salto a metà dissolvenza.
     //
     // Prima di tutto, però, il brano appena avviato: vedi
-    // `Lettore::annuncio_atteso`. Se l'annuncio è di un altro brano, quello
-    // avviato non è mai uscito — un file che il motore ha saltato — e
-    // l'annuncio si legge come gli altri.
-    let atteso = std::mem::take(&mut lettore.annuncio_atteso);
-    if atteso && lettore.coda.current() == Some(track_id) {
-        // Il brano che la coda indica, che comincia: niente da spostare.
-    } else if lettore.in_canna == Some(track_id) {
-        lettore.in_canna = None;
-        lettore.coda.advance(false);
-    } else if lettore.coda.current() != Some(track_id) {
-        lettore.coda.advance(false);
+    // `Lettore::annuncio_atteso` e [`dopo_l_annuncio`].
+    let atteso = lettore.annuncio_atteso.take();
+    if insieme::segue(lettore) {
+        // Chi segue non sceglie il brano dopo: lo decide l'ancora dell'host, e
+        // la coda è lo specchio della sua. Il cursore va sulla voce che è
+        // cominciata — l'ha attaccata il gapless o una riapertura del
+        // regolatore — perché il brano dopo che il preparatore apre in anticipo
+        // sia quello giusto: lasciato dov'era, il «dopo» sarebbe ancora questa
+        // voce, che finirebbe di nuovo in canna e suonerebbe due volte. Lo
+        // stato dell'host che arriva subito dopo lo conferma o lo corregge.
+        insieme::cursore_sulla_voce(lettore, track_id);
+        if lettore.in_canna == Some(track_id) {
+            lettore.in_canna = None;
+        }
+    } else {
+        match dopo_l_annuncio(track_id, atteso, lettore.coda.current(), lettore.in_canna) {
+            DopoLAnnuncio::Resta => {}
+            DopoLAnnuncio::AvanzaDallaCanna => {
+                lettore.in_canna = None;
+                lettore.coda.advance(false);
+            }
+            DopoLAnnuncio::Avanza => {
+                lettore.coda.advance(false);
+            }
+        }
     }
 
     // La pausa si legge adesso e non dall'annuncio: se qualcuno ha premuto
@@ -2086,13 +2398,13 @@ fn iniziato(app: &tauri::AppHandle, lettore: &mut Lettore, track_id: i64, posizi
         {
             ascolto.resume(adesso_ms());
         }
-    } else {
+    } else if let Some(riga) = conta {
         let durata = if posizione.track_id == Some(track_id) && posizione.durata_ms > 0 {
             posizione.durata_ms
         } else {
             durata_di(app, track_id)
         };
-        let mut ascolto = ListenTracker::begin(track_id, durata, adesso_ms());
+        let mut ascolto = ListenTracker::begin(riga, durata, adesso_ms());
         // Un brano rimesso al suo posto in pausa — l'«Annulla» di una coda
         // ferma, la riapertura di un dispositivo — comincia fermo: senza, il
         // tempo passato in pausa contava come ascoltato.
@@ -2100,12 +2412,19 @@ fn iniziato(app: &tauri::AppHandle, lettore: &mut Lettore, track_id: i64, posizi
             ascolto.pause(adesso_ms());
         }
         lettore.ascolto = Some(ascolto);
+    } else {
+        // Una voce che non conta — il brano di un altro PC — non ha un
+        // ascolto: quel che si sente qui lo conta chi possiede la riga.
+        lettore.ascolto = None;
     }
 
     // Il «sta ascoltando» verso i servizi di scrobbling. Parte su un filo suo:
     // qui il lucchetto del lettore è in mano, e una richiesta HTTP dentro
-    // questa funzione terrebbe fermo tutto quel che lo chiede.
-    crate::scrobble::sta_suonando(app, track_id);
+    // questa funzione terrebbe fermo tutto quel che lo chiede. Solo per una
+    // riga che conta: lo scrobble di un brano altrui lo fa chi lo possiede.
+    if let Some(riga) = conta {
+        crate::scrobble::sta_suonando(app, riga);
+    }
 
     // Il testo del **prossimo**, chiesto adesso che c'è tempo: torna subito e
     // il lavoro va su un filo suo, come la riga qui sopra e per la stessa
@@ -2120,6 +2439,24 @@ fn iniziato(app: &tauri::AppHandle, lettore: &mut Lettore, track_id: i64, posizi
 /// L'ultimo brano è uscito per intero: il ramo `Fermato` di [`su_evento`],
 /// con il lucchetto del lettore già in mano.
 fn fermato(app: &tauri::AppHandle, stato_lettore: &StatoLettore, lettore: &mut Lettore) {
+    // Lo stop con cui si è usciti da una sessione: vedi
+    // `Lettore::fermato_della_sessione`. Si ridisegna e basta.
+    let della_sessione = std::mem::take(&mut lettore.fermato_della_sessione);
+    let rete_caduta = stato_lettore
+        .ripresa
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_some();
+    let da_fare = dopo_il_fermato(
+        della_sessione,
+        insieme::segue(lettore),
+        rete_caduta,
+        lettore.coda.current(),
+    );
+    if !da_fare.tocca_l_utente {
+        manda_stato(app, lettore);
+        return;
+    }
     chiudi_ascolto(app, lettore);
     // Il timer «alla fine di questo brano» ha fatto il suo lavoro: la musica si
     // è fermata dove doveva. Non ha una scadenza — `scade_il_timer` guarda solo
@@ -2137,7 +2474,11 @@ fn fermato(app: &tauri::AppHandle, stato_lettore: &StatoLettore, lettore: &mut L
     // non si è aperto: la coda va su di lui, così la finestra mostra quale —
     // fermo, accanto all'errore — e «riproduci» riprova quello invece di
     // ricominciare il brano appena finito.
-    if lettore.non_aperto.is_some()
+    //
+    // Non per chi segue: la sua coda è lo specchio di quella dell'host, e un
+    // passo fatto qui sarebbe un passo che l'host non ha fatto.
+    if da_fare.avanza_sul_non_aperto
+        && lettore.non_aperto.is_some()
         && lettore.non_aperto == lettore.coda.peek_next()
         && lettore.motore.posizione().track_id.is_none()
     {
@@ -2153,14 +2494,16 @@ fn fermato(app: &tauri::AppHandle, stato_lettore: &StatoLettore, lettore: &mut L
     // l'ha appena segnato.
     //
     // La scrittura va sul filo del seguito, come ogni altra scrittura che
-    // nasce sotto questo lucchetto: vedi [`in_ordine`].
-    let rete_caduta = stato_lettore
-        .ripresa
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .is_some();
-    if let Some(id) = lettore.coda.current()
-        && !rete_caduta
+    // nasce sotto questo lucchetto: vedi [`in_ordine`]. Per quale brano lo
+    // decide [`dopo_il_fermato`], dalla coda di **adesso**: quella del brano
+    // non aperto, se è appena avanzata.
+    if let Some(id) = dopo_il_fermato(
+        della_sessione,
+        insieme::segue(lettore),
+        rete_caduta,
+        lettore.coda.current(),
+    )
+    .segno_a_zero
     {
         in_ordine(app, move |app| {
             let _ = libreria_di(app, "segno di fine brano").and_then(|stato_app| {
@@ -2173,13 +2516,68 @@ fn fermato(app: &tauri::AppHandle, stato_lettore: &StatoLettore, lettore: &mut L
     manda_stato(app, lettore);
 }
 
+/// Che cosa fa un `Fermato`, deciso senza motore: vedi [`fermato`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DopoIlFermato {
+    /// Ascolto, timer «fine del brano», coda e segno: tutto quel che è
+    /// dell'utente. Falso per lo stop dell'uscita da una sessione.
+    tocca_l_utente: bool,
+    /// La coda può avanzare sul brano dopo che non si è aperto. Mai per chi
+    /// segue: la sua coda è lo specchio di quella dell'host.
+    avanza_sul_non_aperto: bool,
+    /// Il brano il cui segno di «riprendi dov'eri» torna a zero.
+    segno_a_zero: Option<i64>,
+}
+
+/// La regola di [`fermato`]. Il segno torna a zero solo per una riga della
+/// libreria — mai per una maniglia: il segno è di domani, e domani la sessione
+/// non c'è più — e mai quando la fermata è di una rete caduta, dove il punto a
+/// metà è proprio quel che si vuole ritrovare.
+const fn dopo_il_fermato(
+    della_sessione: bool,
+    segue: bool,
+    rete_caduta: bool,
+    corrente: Option<i64>,
+) -> DopoIlFermato {
+    if della_sessione {
+        return DopoIlFermato {
+            tocca_l_utente: false,
+            avanza_sul_non_aperto: false,
+            segno_a_zero: None,
+        };
+    }
+    let segno_a_zero = match corrente {
+        Some(id) if ospiti::e_di_libreria(id) && !rete_caduta => Some(id),
+        _ => None,
+    };
+    DopoIlFermato {
+        tocca_l_utente: true,
+        avanza_sul_non_aperto: !segue,
+        segno_a_zero,
+    }
+}
+
 /// Questo brano arriva dalla rete?
 ///
 /// Una lettura di una riga, sotto il lucchetto della libreria e basta: si
 /// chiede nel momento del guasto, che è raro, e la risposta non vale la pena
 /// di tenerla da parte. Nel dubbio — la libreria non risponde — si dice di no,
 /// cioè si lascia l'errore com'era.
+///
+/// Una voce di sessione lo dice da sé: i byte di un altro PC o di un catalogo
+/// arrivano dalla rete, e un guasto lì è un flusso interrotto, non una
+/// cartella di questo PC da ricollegare. Una voce che apre un file di questo PC
+/// si chiede alla sua riga, come sempre.
 fn e_un_flusso(app: &tauri::AppHandle, track_id: i64) -> bool {
+    let track_id = match ospiti::chi(app, track_id) {
+        Chi::Libreria(riga) => riga,
+        Chi::Voce(voce) => match (ospiti::e_un_flusso(&voce), voce.apertura_di_libreria()) {
+            (Some(rete), _) => return rete,
+            (None, Some(riga)) => riga,
+            (None, None) => return false,
+        },
+        Chi::Sparita => return false,
+    };
     let Some(stato) = app.try_state::<Stato>() else {
         return false;
     };
@@ -2262,7 +2660,17 @@ fn annota_ripresa_da(stato: &StatoLettore, posizione: Posizione) -> Option<i64> 
 /// breve, perché si chiede con il lucchetto del lettore in mano. Senza risposta
 /// vale zero, cioè «non si sa» — e per il conteggio dell'ascolto una durata
 /// ignota è un caso che la regola del dominio conosce già.
+///
+/// Per una voce di sessione la durata è quella della sua scheda: il database
+/// non la conosce, e chiederglielo per una maniglia sarebbe una lettura che
+/// risponde sempre «non c'è».
 fn durata_di(app: &tauri::AppHandle, track_id: i64) -> u64 {
+    if let Some(durata) = ospiti::durata_ms(app, track_id) {
+        return durata;
+    }
+    if !ospiti::e_di_libreria(track_id) {
+        return 0;
+    }
     let Some(stato) = app.try_state::<Stato>() else {
         return 0;
     };
@@ -2323,6 +2731,9 @@ fn cambia_preferenza<T, R>(
 /// prossimo cambio di traccia — che non ci sarebbe.
 #[tauri::command(async)]
 pub fn autoplay(app: tauri::AppHandle, stato: State<'_, StatoLettore>, attivo: bool) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::Autoplay).map_err(errore)? {
+        return Ok(());
+    }
     // Si rilegge quel che è stato scritto, come per la normalizzazione: se il
     // salvataggio fallisce, l'interruttore non deve restare acceso su una
     // scelta che non sopravvivrà alla chiusura. La scrittura fuori dal
@@ -2384,8 +2795,11 @@ pub fn dissolvenza(
         },
         |lettore, salvato| {
             let salvato = salvato.unwrap_or(secondi.min(playback::CROSSFADE_MASSIMO_S));
-            lettore.motore.dissolvenza(salvato.saturating_mul(1000));
             lettore.dissolvenza_s = salvato;
+            // Quella che vale adesso: in sessione resta zero, e la scelta
+            // appena scritta torna al motore all'uscita. Vedi
+            // `insieme::dissolvenza_ms`.
+            lettore.motore.dissolvenza(insieme::dissolvenza_ms(lettore));
             manda_stato(&app, lettore);
             Ok(())
         },
@@ -2408,6 +2822,17 @@ pub fn dissolvenza(
 /// di [`spettro_bande_scegli`] e dell'equalizzatore — si scrive, si rilegge, si
 /// restituisce quel che è rimasto scritto.
 ///
+/// # Per quale uscita
+///
+/// Per quella **davvero aperta**, `Motore::dispositivo()`, e non per la
+/// preferenza `player.output`: quando la scheda scelta non c'è l'apertura
+/// ripiega su un'altra, e chi muove il cursore lo fa ascoltando quella. Il
+/// numero si scrive anche come globale, così il cursore di oggi — uno solo —
+/// continua a valere per le uscite che un numero loro non l'hanno ancora: vedi
+/// `playback::dichiara_latenza`. Quel che va al motore lo decide
+/// `playback::latenza_effettiva` sull'uscita che c'è **quando si applica**: se
+/// nel frattempo il motore è stato riaperto altrove, vale il numero di quella.
+///
 /// # Cosa non fa
 ///
 /// Non tocca il suono, non sposta la fine di un brano e non rimanda il gapless:
@@ -2423,6 +2848,14 @@ pub fn dissolvenza(
 /// `(async)`, come [`dissolvenza`].
 #[tauri::command(async)]
 pub fn latenza(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: i64) -> Esito<i64> {
+    // Il nome dell'uscita si chiede **prima** di `cambia_preferenza`, che vuole
+    // il suo lucchetto per primo e senza niente in mano. Un lettore mai aperto
+    // non ha un'uscita: si scrive la sola globale.
+    let uscita = con_lettore(&stato, |lettore| {
+        Ok(lettore.motore.dispositivo().to_owned())
+    })
+    .ok();
+    let quando_ms = adesso_ms();
     // Riletta invece che ripetuta, come per la dissolvenza: `save_latenza`
     // taglia, e senza rileggere il cursore resterebbe su un valore che il
     // database ha rifiutato.
@@ -2431,15 +2864,21 @@ pub fn latenza(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: i64) -
         &stato,
         "latenza",
         |libreria| {
-            playback::save_latenza(&libreria.connection, ms)?;
-            playback::load_latenza(&libreria.connection)
+            playback::dichiara_latenza(&libreria.connection, uscita.as_deref(), ms, quando_ms)
         },
         |lettore, salvato| {
-            let salvato = salvato.unwrap_or_else(|_| {
-                ms.clamp(-playback::LATENZA_MASSIMA_MS, playback::LATENZA_MASSIMA_MS)
-            });
+            let salvato = salvato.map_or_else(
+                |_| ms.clamp(-playback::LATENZA_MASSIMA_MS, playback::LATENZA_MASSIMA_MS),
+                |(globale, voci)| {
+                    playback::latenza_effettiva(globale, &voci, Some(lettore.motore.dispositivo()))
+                },
+            );
+            let prima = lettore.latenza_ms;
             lettore.motore.latenza(salvato);
             lettore.latenza_ms = salvato;
+            // In sessione il numero nuovo si sente subito: vedi
+            // `insieme::latenza_cambiata`.
+            insieme::latenza_cambiata(lettore, prima, salvato);
             manda_stato(&app, lettore);
             Ok(salvato)
         },
@@ -2643,9 +3082,79 @@ pub fn formato_visibile_scegli(
     Ok(rimasto)
 }
 
+// ── la strada dei gesti, quando c'è una sessione ────────────────────────────
+
+/// Com'è finita la strada di un gesto, per il comando che l'ha chiesta.
+///
+/// La traduzione di [`Instradato`] in quel che un comando deve fare dopo: il
+/// rifiuto è già diventato l'errore del `?`, e restano tre strade.
+pub(super) enum Strada {
+    /// Si prosegue come sempre.
+    Prosegui,
+    /// Si prosegue con queste maniglie al posto dei brani chiesti.
+    ConVoci(Vec<i64>),
+    /// Il gesto l'ha preso l'host: il comando torna `Ok(())` senza fare
+    /// altro, e quel che cambia arriva col prossimo stato della sessione.
+    Fatto,
+}
+
+/// La strada di un gesto, chiesta alla sessione.
+///
+/// # Dove si chiama, e perché lì
+///
+/// **In testa al corpo** di ogni comando di trasporto e di coda, prima di
+/// qualunque lucchetto e prima del risveglio del flusso. In testa, perché i
+/// tasti multimediali, i pulsanti della miniatura e il vassoio chiamano queste
+/// funzioni direttamente (`crate::media`): una strada messa solo davanti alla
+/// finestra la scavalcherebbero tutti. Prima di ogni lucchetto, perché la
+/// decisione può voler dire costruire delle voci dal database — un `suona` di
+/// chi ospita — e il database non si aspetta col lettore in mano. La prova
+/// `ogni_comando_di_trasporto_e_di_coda_chiede_la_strada_per_primo` tiene vera
+/// la regola anche per il comando che verrà aggiunto domani.
+///
+/// # Errori
+///
+/// Quello del rifiuto, così com'è: `insieme.gestoNonDisponibile`, o quel che
+/// la sessione ha deciso.
+pub(super) fn strada(app: &tauri::AppHandle, gesto: &Gesto) -> Result<Strada, AppError> {
+    match crate::insieme::instrada(app, gesto) {
+        Instradato::Locale => Ok(Strada::Prosegui),
+        Instradato::ConVoci(maniglie) => Ok(Strada::ConVoci(maniglie)),
+        Instradato::Inoltrato => Ok(Strada::Fatto),
+        Instradato::Rifiutato(err) => Err(err),
+    }
+}
+
+/// [`strada`] per un gesto che porta dei brani: `None` se il gesto è già
+/// stato fatto altrove; altrimenti le maniglie delle voci che la sessione ha
+/// appena creato, se ne ha create.
+///
+/// Le maniglie non si usano qui: se entrano in coda lo decide il corpo del
+/// comando, sotto il lucchetto del lettore, guardando se il lettore ospita
+/// davvero. Vedi `insieme::brani_da_mettere`.
+///
+/// # Errori
+///
+/// Quelli di [`strada`].
+pub(super) fn voci_dalla_strada(
+    app: &tauri::AppHandle,
+    gesto: &Gesto,
+) -> Result<Option<Option<Vec<i64>>>, AppError> {
+    Ok(match strada(app, gesto)? {
+        Strada::Prosegui => Some(None),
+        Strada::ConVoci(maniglie) => Some(Some(maniglie)),
+        Strada::Fatto => None,
+    })
+}
+
 // ── i comandi ───────────────────────────────────────────────────────────────
 
 /// Fa partire una coda nuova a partire dal brano indicato.
+///
+/// In sessione la coda ha un tetto (`MASSIMO_VOCI`): prima della strada si
+/// tiene la finestra di brani attorno a quello scelto, così le voci che la
+/// sessione crea sono quelle che si sentiranno. Vedi
+/// [`insieme::finestra_di_sessione`].
 #[tauri::command(async)]
 pub fn suona(
     app: tauri::AppHandle,
@@ -2653,7 +3162,28 @@ pub fn suona(
     brani: Vec<i64>,
     indice: usize,
 ) -> Esito<()> {
+    let (brani, indice) = insieme::finestra_di_sessione(&app, brani, indice);
+    let gesto = Gesto::Suona {
+        ids: brani.clone(),
+        da: indice,
+    };
+    let Some(voci) = voci_dalla_strada(&app, &gesto).map_err(errore)? else {
+        return Ok(());
+    };
+    // La riga dietro ogni voce, per ritrovare il brano scelto fra le voci: dal
+    // registro, prima del lettore.
+    let voci = voci.map(|maniglie| {
+        let righe = insieme::righe_delle_voci(&app, &maniglie);
+        (maniglie, righe)
+    });
     gesto_di_coda(&app, &stato, |lettore| {
+        // Voci o righe lo decide il lettore, e un brano scelto che non è
+        // diventato una voce non tocca la coda di tutti: vedi
+        // `insieme::lista_da_suonare`.
+        let (scelta, da_dimenticare) =
+            insieme::lista_da_suonare(insieme::ospita(lettore), brani, indice, voci);
+        insieme::dimentica_voci(&app, &da_dimenticare);
+        let (brani, indice) = scelta?;
         ricorda_coda_di_prima(&app, lettore, Some(&brani));
         chiudi_ascolto(&app, lettore);
         lettore.coda.play_tracks(brani, indice, seme());
@@ -2675,8 +3205,15 @@ pub fn suona(
 ///
 /// Il seme sta in testa alla coda perché è il brano che si è premuto: una radio
 /// che comincia da un altro brano è una radio che ha ignorato il gesto.
+///
+/// In sessione si rifiuta: una radio cambierebbe la coda di tutti con trenta
+/// brani scelti dalla cronologia di uno solo. Vedi `crate::insieme::strada`.
 #[tauri::command(async)]
 pub fn radio(app: tauri::AppHandle, stato: State<'_, StatoLettore>, brano: i64) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::Radio).map_err(errore)? {
+        return Ok(());
+    }
+    let brano = riga_di_libreria(brano).map_err(errore)?;
     let stato_app = libreria_di(&app, "radio").map_err(errore)?;
     let coda = con_libreria(&stato_app, |libreria| {
         rymembra_app::autoplay::radio(
@@ -2756,7 +3293,12 @@ fn avvia_corrente(
     // formato di un motore morto e consegnarglielo vorrebbe dire un play che non
     // suona. Soltanto il dispositivo — il brano lo apre questa funzione, e
     // rimettere al suo posto quello di prima lo farebbe ripartire per un attimo.
-    let perso = con_lettore(stato, |lettore| Ok(lettore.motore.dispositivo_perso()))?;
+    // Il numero dell'ultima pausa o ripresa chiesta, adesso: una chiesta da
+    // qui alla partenza vince sul `in_pausa` di chi ha chiamato. Vedi
+    // [`Lettore::pausa_chiesta`].
+    let (perso, gesti_prima) = con_lettore(stato, |lettore| {
+        Ok((lettore.motore.dispositivo_perso(), lettore.pausa_chiesta.0))
+    })?;
     if perso
         && riapertura::riapri_su(app, stato, None, riapertura::Modo::SoloDispositivo)?
             == riapertura::Riaperta::Saltata
@@ -2788,7 +3330,7 @@ fn avvia_corrente(
         // ── 2. l'apertura, senza niente in mano ──
         //
         // Una sola per brano: vedi [`StatoLettore::aprendo`].
-        let Ok(_aprendo) = Aprendo::prendi(&stato.aprendo, id) else {
+        let Ok(mut aprendo) = Aprendo::prendi(&stato.aprendo, id) else {
             return Ok(());
         };
         let brano = match brano_di(app, id, formato) {
@@ -2804,13 +3346,40 @@ fn avvia_corrente(
             if lettore.motore.formato() != formato {
                 return Ok(false);
             }
-            lettore.suona(brano);
-            if da_ms > 0 {
-                lettore.motore.vai_a(da_ms);
-            }
+            // Apertura e salto in un comando solo, fermo o suonando. Era
+            // `suona` + `vai_a` + `pausa`, e fra il primo e gli altri due la
+            // callback poteva far sentire qualche millisecondo dall'inizio del
+            // brano — il «tic» di una ripresa a metà. Vedi `Motore::apri_fermo`
+            // e `Motore::suona_da`.
+            //
+            // In sessione chi ospita non parte subito ma fra un quarto di
+            // secondo, e lo annuncia: è il tempo che serve agli altri per
+            // aprire la stessa voce, e così il brano nuovo comincia insieme
+            // invece di arrivare agli altri già cominciato. Vedi
+            // `insieme::parti`.
+            //
+            // Una pausa o una ripresa chiesta mentre il brano si apriva vince
+            // su quel che si era deciso prima di aprirlo: è più recente.
+            let in_pausa = if lettore.pausa_chiesta.0 == gesti_prima {
+                in_pausa
+            } else {
+                lettore.pausa_chiesta.1
+            };
+            // Lo stesso per un salto chiesto mentre il brano si apriva: vedi
+            // `Lettore::puntina_a_vuoto`.
+            let da_ms = match lettore.puntina_a_vuoto {
+                Some((quale, ms)) if quale == id => ms,
+                _ => da_ms,
+            };
             if in_pausa {
-                lettore.motore.pausa();
+                lettore.apri_fermo(brano, da_ms);
+            } else {
+                insieme::parti(lettore, brano, da_ms);
             }
+            // Consegnato: da qui un salto va al motore, non alla puntina. La
+            // casella si libera sotto il lucchetto, nello stesso istante in
+            // cui la puntina è stata letta — vedi [`vai_a`].
+            drop(aprendo.take());
             prepara_prossimo(app, lettore);
             salva_coda(app, lettore);
             // Lo stato parte subito, senza aspettare che il primo campione
@@ -2957,10 +3526,20 @@ pub(super) fn avvio_fallito(
 }
 
 /// Mette in pausa.
+///
+/// In sessione, subito anche per chi ospita: gli altri si fermano quando
+/// arriva l'ancora, e i pochi millisecondi di differenza li toglie la ripresa,
+/// che invece è programmata. Un avvio programmato e non ancora partito si
+/// butta: vedi `insieme::dopo_una_pausa`.
 #[tauri::command]
 pub fn pausa(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::Pausa).map_err(errore)? {
+        return Ok(());
+    }
     con_lettore(&stato, |lettore| {
+        lettore.pausa_chiesta = (lettore.pausa_chiesta.0.wrapping_add(1), true);
         lettore.motore.pausa();
+        insieme::dopo_una_pausa(lettore);
         if let Some(a) = lettore.ascolto.as_mut() {
             a.pause(adesso_ms());
         }
@@ -2992,8 +3571,17 @@ pub fn pausa(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()>
 /// prima torna al suo posto **suonando**, qualunque cosa dicesse il segno
 /// scritto al momento del guasto. È anche la strada del tasto multimediale,
 /// che chiama questa funzione direttamente, senza passare da [`alterna`].
+///
+/// # In sessione
+///
+/// Chi ospita non riprende subito ma fra un quarto di secondo, e lo annuncia
+/// con l'ancora: così gli altri ripartono nello stesso istante invece di
+/// rincorrerlo. Vedi `insieme::riprendi`.
 #[tauri::command(async)]
 pub fn riprendi(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::Riprendi).map_err(errore)? {
+        return Ok(());
+    }
     let perso =
         con_lettore(&stato, |lettore| Ok(lettore.motore.dispositivo_perso())).map_err(errore)?;
     if perso {
@@ -3024,6 +3612,7 @@ pub fn riprendi(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<
     // da aprire, che può mancare anche lui — una coda vuota, che
     // `avvia_corrente` sa fermare.
     let da_aprire = con_lettore(&stato, |lettore| {
+        lettore.pausa_chiesta = (lettore.pausa_chiesta.0.wrapping_add(1), false);
         if lettore.motore.posizione().track_id.is_none() {
             let corrente = lettore.coda.current();
             // Un salto chiesto a motore vuoto vince sul segno: è più recente, e
@@ -3048,7 +3637,7 @@ pub fn riprendi(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<
                 });
             return Ok(Some((corrente, chiesto)));
         }
-        lettore.motore.riprendi();
+        insieme::riprendi(lettore);
         if let Some(a) = lettore.ascolto.as_mut() {
             a.resume(adesso_ms());
         }
@@ -3059,7 +3648,9 @@ pub fn riprendi(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<
     let Some((corrente, chiesto)) = da_aprire else {
         return Ok(());
     };
-    let da_ms = match (chiesto, corrente) {
+    // Il segno salvato è di una riga della libreria: una voce di sessione non
+    // ne ha uno, e riparte dall'inizio o dal punto chiesto qui sopra.
+    let da_ms = match (chiesto, corrente.filter(|id| ospiti::e_di_libreria(*id))) {
         (Some(ms), _) => ms,
         (None, Some(id)) => libreria_di(&app, "segno di ripresa")
             .and_then(|stato_app| {
@@ -3082,6 +3673,9 @@ pub fn riprendi(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<
 /// faceva niente, il secondo faceva il contrario di quel che diceva.
 #[tauri::command(async)]
 pub fn alterna(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::Alterna).map_err(errore)? {
+        return Ok(());
+    }
     let in_pausa = con_lettore(&stato, |lettore| {
         Ok(lettore.motore.posizione().in_pausa || lettore.motore.dispositivo_perso())
     })
@@ -3096,12 +3690,15 @@ pub fn alterna(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<(
 /// Passa al brano dopo.
 #[tauri::command(async)]
 pub fn prossimo(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::Prossimo).map_err(errore)? {
+        return Ok(());
+    }
     gesto_di_coda(&app, &stato, |lettore| {
         chiudi_ascolto(&app, lettore);
         match lettore.coda.advance(true) {
             Step::Track(_) => Ok(true),
             Step::Restart => {
-                lettore.motore.vai_a(0);
+                insieme::salta(lettore, 0);
                 manda_stato(&app, lettore);
                 Ok(false)
             }
@@ -3118,6 +3715,9 @@ pub fn prossimo(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<
 /// Torna al brano prima, o ricomincia questo.
 #[tauri::command(async)]
 pub fn precedente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::Precedente).map_err(errore)? {
+        return Ok(());
+    }
     gesto_di_coda(&app, &stato, |lettore| {
         let dove = lettore.motore.posizione().ms;
         match lettore.coda.previous(dove) {
@@ -3127,7 +3727,7 @@ pub fn precedente(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esit
             }
             // Ricominciare lo stesso brano non chiude l'ascolto: è ancora quello.
             Step::Restart => {
-                lettore.motore.vai_a(0);
+                insieme::salta(lettore, 0);
                 manda_stato(&app, lettore);
                 Ok(false)
             }
@@ -3205,15 +3805,37 @@ fn sveglia_fuori_dal_lucchetto(stato: &StatoLettore) {
 const ATTESA_DEL_CAMPANELLO: Duration = Duration::from_millis(100);
 
 /// Salta a un punto del brano.
+///
+/// In sessione, per chi ospita mentre suona, il salto è programmato: pausa,
+/// salto e ripresa fra un quarto di secondo, annunciata. Vedi
+/// `insieme::salta`.
 #[tauri::command]
 pub fn vai_a(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: u64) -> Esito<()> {
+    if let Strada::Fatto = strada(&app, &Gesto::VaiA { ms }).map_err(errore)? {
+        return Ok(());
+    }
     sveglia_fuori_dal_lucchetto(&stato);
     con_lettore(&stato, |lettore| {
-        lettore.motore.vai_a(ms);
-        // A motore vuoto il salto si tiene da parte per chi aprirà il brano:
-        // vedi `Lettore::puntina_a_vuoto`.
-        if lettore.motore.posizione().track_id.is_none() {
-            lettore.puntina_a_vuoto = lettore.coda.current().map(|id| (id, ms));
+        // A motore vuoto, o col brano della coda che si sta ancora aprendo (il
+        // titolo è già quello nuovo, il motore ha ancora in mano il vecchio),
+        // il salto si tiene da parte per chi aprirà il brano: vedi
+        // `Lettore::puntina_a_vuoto`. Fatto al motore saltava il brano vecchio,
+        // e poi l'apertura finiva e quello nuovo partiva dall'inizio — in
+        // sessione, sei salti su dieci subito dopo una voce scelta dalla coda.
+        //
+        // «Si sta aprendo» lo dice la casella di [`avvia_corrente`], non il
+        // motore: un brano appena consegnato il motore lo prende sul suo filo,
+        // e per qualche millisecondo dice ancora il brano di prima — un salto
+        // tenuto da parte lì non l'avrebbe raccolto più nessuno. Il motore
+        // invece fa i comandi nell'ordine in cui arrivano.
+        let nel_motore = lettore.motore.posizione().track_id;
+        let corrente = lettore.coda.current();
+        let si_apre = corrente
+            .is_some_and(|id| stato.aprendo.load(std::sync::atomic::Ordering::Acquire) == id);
+        if nel_motore.is_none() || si_apre {
+            lettore.puntina_a_vuoto = corrente.map(|id| (id, ms));
+        } else {
+            insieme::salta(lettore, ms);
         }
         // Con i millisecondi richiesti: il motore li raggiunge sul suo filo, e
         // fino ad allora `posizione()` dice ancora il punto da cui si è
@@ -3285,6 +3907,7 @@ pub fn riproduzione_stato(
             // E nessun formato: senza motore non c'è nessun brano, e senza
             // brano non c'è nessun file di cui dire com'è fatto.
             formato: None,
+            insieme: None,
         }),
     }
 }
@@ -3292,6 +3915,401 @@ pub fn riproduzione_stato(
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    /// L'annuncio del brano avviato non sposta la coda, nemmeno quando un gesto
+    /// l'ha già portata altrove: due scelte dalla coda a un secondo l'una
+    /// dall'altra mandavano l'host una voce oltre la seconda.
+    #[test]
+    fn l_annuncio_del_brano_avviato_non_sposta_la_coda() {
+        // Avviato 42, la coda lo indica, in canna il dopo.
+        assert_eq!(
+            dopo_l_annuncio(42, Some(42), Some(42), Some(43)),
+            DopoLAnnuncio::Resta
+        );
+        // Avviato 42; prima del suo primo campione un gesto ha scelto 44.
+        assert_eq!(
+            dopo_l_annuncio(42, Some(42), Some(44), Some(43)),
+            DopoLAnnuncio::Resta
+        );
+        // `[A, A, B]`: l'inizio del primo A non è quello del secondo in canna.
+        assert_eq!(
+            dopo_l_annuncio(7, Some(7), Some(7), Some(7)),
+            DopoLAnnuncio::Resta
+        );
+    }
+
+    #[test]
+    fn gli_altri_annunci_spostano_la_coda_come_prima() {
+        // Il gapless: niente di atteso, il motore attacca quello in canna.
+        assert_eq!(
+            dopo_l_annuncio(43, None, Some(42), Some(43)),
+            DopoLAnnuncio::AvanzaDallaCanna
+        );
+        // `[A, A, B]`, il secondo A attaccato senza buchi.
+        assert_eq!(
+            dopo_l_annuncio(7, None, Some(7), Some(7)),
+            DopoLAnnuncio::AvanzaDallaCanna
+        );
+        // Avviato 42, che il motore ha saltato: comincia 43, già in canna.
+        assert_eq!(
+            dopo_l_annuncio(43, Some(42), Some(42), Some(43)),
+            DopoLAnnuncio::AvanzaDallaCanna
+        );
+        // Un entrante che la coda non indica, fuori dalla canna.
+        assert_eq!(
+            dopo_l_annuncio(50, None, Some(42), None),
+            DopoLAnnuncio::Avanza
+        );
+        // Il brano che la coda indica, senza attese: niente da fare.
+        assert_eq!(
+            dopo_l_annuncio(42, None, Some(42), None),
+            DopoLAnnuncio::Resta
+        );
+    }
+
+    /// I sorgenti dove stanno i comandi del lettore.
+    const SORGENTI: [(&str, &str); 6] = [
+        ("mod.rs", include_str!("mod.rs")),
+        ("coda.rs", include_str!("coda.rs")),
+        ("fili.rs", include_str!("fili.rs")),
+        ("suono.rs", include_str!("suono.rs")),
+        ("uscite.rs", include_str!("uscite.rs")),
+        ("riapertura.rs", include_str!("riapertura.rs")),
+    ];
+
+    /// I comandi di trasporto e di coda: ognuno chiede la strada al gesto. Con
+    /// loro `imposta_ripeti`, che non è un comando ma la stessa porta per i
+    /// gesti dei membri.
+    const GESTI: [&str; 20] = [
+        "imposta_ripeti",
+        "suona",
+        "radio",
+        "pausa",
+        "riprendi",
+        "alterna",
+        "prossimo",
+        "precedente",
+        "vai_a",
+        "autoplay",
+        "spegnimento",
+        "coda_accoda",
+        "coda_dopo",
+        "coda_vai",
+        "coda_togli",
+        "coda_riordina",
+        "coda_svuota",
+        "coda_ripristina",
+        "ripeti",
+        "mescola",
+    ];
+
+    /// I comandi che **non** sono gesti della sessione, ognuno col suo perché.
+    /// Un comando nuovo che non sta né qui né in [`GESTI`] fa fallire la prova:
+    /// è il modo di obbligare chi lo scrive a decidere.
+    const NON_GESTI: [&str; 24] = [
+        // Domande, o preferenze di questo PC: volume, equalizzatore, uscita e
+        // latenza sono di ciascuno, e restano locali sempre.
+        "riproduzione_stato",
+        "dissolvenza",
+        "latenza",
+        "volume",
+        "equalizzatore",
+        "eq_preset_elenco",
+        "eq_preset_salva",
+        "eq_preset_cancella",
+        "normalizzazione",
+        "normalizzazione_modo",
+        "normalizzazione_modo_scegli",
+        "normalizzazione_avanzamento",
+        "spettro",
+        "spettro_bande",
+        "spettro_bande_scegli",
+        "spettro_visibile",
+        "spettro_visibile_scegli",
+        "spettro_qualita",
+        "spettro_qualita_scegli",
+        "formato_visibile",
+        "formato_visibile_scegli",
+        "dispositivi_audio",
+        "scegli_dispositivo_audio",
+        "riapri_audio",
+    ];
+
+    /// Più tre che toccano la coda senza essere gesti, e si difendono da sé:
+    /// le schede delle righe (le maniglie le risolve `ospiti`), la coda del
+    /// giro guidato (che in sessione non mette niente) e «Riprova» (che
+    /// riprende passando da [`riprendi`], o riapre il brano corrente).
+    const DIFESI_DA_SE: [&str; 3] = ["brani_per_id", "coda_prepara", "riprova_corrente"];
+
+    /// Il sorgente senza le sue prove: le prove nominano i comandi e le firme
+    /// come testo, e la ricerca le scambierebbe per codice.
+    fn senza_prove(testo: &str) -> &str {
+        testo
+            .split(
+                "
+#[cfg(test)]",
+            )
+            .next()
+            .unwrap_or(testo)
+    }
+
+    /// Il corpo di `pub fn nome(`, dalla firma alla graffa che lo chiude a
+    /// inizio riga.
+    fn corpo<'a>(testo: &'a str, nome: &str) -> Option<&'a str> {
+        let testo = senza_prove(testo);
+        let firma = format!("pub fn {nome}(");
+        let inizio = testo.find(&firma)?;
+        let resto = &testo[inizio..];
+        let fine = resto.find("\n}\n")?;
+        Some(&resto[..fine])
+    }
+
+    #[test]
+    fn ogni_comando_di_trasporto_e_di_coda_chiede_la_strada_per_primo() {
+        for nome in GESTI {
+            let trovati: Vec<&str> = SORGENTI
+                .iter()
+                .filter_map(|(_, testo)| corpo(testo, nome))
+                .collect();
+            assert_eq!(trovati.len(), 1, "«{nome}»: un corpo solo, e dev'esserci");
+            let corpo = trovati[0];
+            let strada = corpo
+                .find("strada(")
+                .unwrap_or_else(|| panic!("«{nome}» non chiede la strada al gesto"));
+            // Prima di qualunque lucchetto del lettore, del risveglio del
+            // flusso e della libreria: la strada si chiede a mani vuote.
+            for presa in [
+                "con_lettore(",
+                "gesto_di_coda(",
+                "sveglia_fuori_dal_lucchetto(",
+                "libreria_di(",
+                "cambia_preferenza(",
+                "prendi_il_lettore(",
+            ] {
+                if let Some(dove) = corpo.find(presa) {
+                    assert!(
+                        strada < dove,
+                        "«{nome}» prende «{presa}» prima di chiedere la strada"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ogni_comando_del_lettore_ha_deciso_se_e_un_gesto() {
+        for (file, testo) in SORGENTI {
+            // A inizio riga: nei commenti l'attributo si nomina, fra apici.
+            let mut resto = senza_prove(testo);
+            while let Some(dove) = resto.find(
+                "
+#[tauri::command",
+            ) {
+                resto = &resto[dove..];
+                let firma = resto.find("pub fn ").map(|i| &resto[i + 7..]);
+                let nome: String = firma
+                    .map(|f| {
+                        f.chars()
+                            .take_while(|c| *c == '_' || c.is_alphanumeric())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                assert!(
+                    GESTI.contains(&nome.as_str())
+                        || NON_GESTI.contains(&nome.as_str())
+                        || DIFESI_DA_SE.contains(&nome.as_str()),
+                    "{file}: il comando «{nome}» non dice se è un gesto della sessione"
+                );
+                resto = &resto[1..];
+            }
+        }
+    }
+
+    /// I comandi fuori dal lettore che leggono o scrivono per id di brano: la
+    /// guardia degli id ≤ 0 sta in testa al corpo, prima di qualunque presa
+    /// della libreria. Un `UPDATE … WHERE id = ?` con una maniglia non
+    /// toccherebbe niente e risponderebbe «fatto»: è la bugia che la guardia
+    /// toglie, dicendo `library.trackNotFound`.
+    #[test]
+    fn le_guardie_degli_id_stanno_in_testa_ai_comandi_di_libreria() {
+        let comandi: [(&str, &str, &[&str]); 5] = [
+            (
+                "comandi.rs",
+                include_str!("../comandi.rs"),
+                &[
+                    "preferito",
+                    "brano_mostra_nella_cartella",
+                    "brano_apri_pagina",
+                    "valutazione",
+                ],
+            ),
+            (
+                "metadati.rs",
+                include_str!("../metadati.rs"),
+                &["metadati_correggi", "metadati_conferma"],
+            ),
+            (
+                "testi.rs",
+                include_str!("../testi.rs"),
+                &[
+                    "testo_brano",
+                    "testo_scarto",
+                    "testo_cerca",
+                    "testo_cerca_di_nuovo",
+                    "testo_candidati",
+                    "testo_scegli",
+                    "testo_rifiuta",
+                    "testo_aggancia",
+                    "testo_salva",
+                    "testo_pubblica",
+                ],
+            ),
+            (
+                "playlist.rs",
+                include_str!("../playlist.rs"),
+                &["playlist_aggiungi", "playlist_crea_e_aggiungi"],
+            ),
+            (
+                "cancellazione.rs",
+                include_str!("../cancellazione.rs"),
+                &["brani_togli", "brani_su_rete", "brani_elimina"],
+            ),
+        ];
+        for (file, testo, nomi) in comandi {
+            for nome in nomi {
+                let firma_sync = format!("pub fn {nome}(");
+                let firma_async = format!("pub async fn {nome}(");
+                let inizio = testo
+                    .find(&firma_sync)
+                    .or_else(|| testo.find(&firma_async))
+                    .unwrap_or_else(|| panic!("{file}: «{nome}» non c'è"));
+                let corpo = &testo[inizio..];
+                let corpo = &corpo[..corpo
+                    .find(
+                        "
+}
+",
+                    )
+                    .unwrap_or(corpo.len())];
+                let guardia = corpo
+                    .find("riga_di_libreria(")
+                    .or_else(|| corpo.find("righe_di_libreria("))
+                    .unwrap_or_else(|| panic!("{file}: «{nome}» non ha la guardia"));
+                for presa in [
+                    "con_libreria(",
+                    "leggi_la_libreria(",
+                    "in_disparte(",
+                    "stato_di(",
+                ] {
+                    if let Some(dove) = corpo.find(presa) {
+                        assert!(guardia < dove, "{file}: «{nome}» tocca «{presa}» prima");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Il difetto visto nella prova a due istanze: segno a 50 s, Ospita,
+    /// Riprendi, Prossimo, Pausa, Termina, e il segno tornava a zero.
+    ///
+    /// `esci` ferma il motore e rimette la coda dell'utente nello stesso giro
+    /// di lucchetto; il `Fermato` di quello stop arriva dopo, e trova come
+    /// corrente la riga dell'utente. Senza la bandiera la regola diceva «segno
+    /// a zero» per quella riga, che è il difetto; con la bandiera non tocca
+    /// niente.
+    #[test]
+    fn il_fermato_dell_uscita_dalla_sessione_non_tocca_il_segno_dell_utente() {
+        let brano_dell_utente = Some(7902);
+        // Il difetto: senza sapere di chi è, il Fermato azzera il segno.
+        assert_eq!(
+            dopo_il_fermato(false, false, false, brano_dell_utente).segno_a_zero,
+            brano_dell_utente
+        );
+        // Con la bandiera dell'uscita: niente ascolto, niente coda, niente
+        // segno.
+        let uscita = dopo_il_fermato(true, false, false, brano_dell_utente);
+        assert!(!uscita.tocca_l_utente);
+        assert!(!uscita.avanza_sul_non_aperto);
+        assert_eq!(uscita.segno_a_zero, None);
+        // Dentro la sessione una maniglia non ha segno, e chi segue non fa
+        // avanzare la sua coda specchio.
+        let in_sessione = dopo_il_fermato(false, true, false, Some(-4));
+        assert_eq!(in_sessione.segno_a_zero, None);
+        assert!(!in_sessione.avanza_sul_non_aperto);
+        // Una rete caduta tiene il punto a metà, come sempre.
+        assert_eq!(
+            dopo_il_fermato(false, false, true, brano_dell_utente).segno_a_zero,
+            None
+        );
+    }
+
+    /// Il cablaggio della bandiera dell'uscita, che la prova qui sopra non
+    /// vede: `esci` la alza **dopo** lo stop, `fermato` la consuma per prima
+    /// cosa, e ogni brano dato al motore la abbassa. Se una delle tre righe
+    /// sparisse, la prova della regola continuerebbe a passare e il segno
+    /// tornerebbe a zero.
+    #[test]
+    fn la_bandiera_dell_uscita_e_alzata_consumata_e_abbassata() {
+        let ponte = senza_prove(include_str!("insieme.rs"));
+        let esci = &ponte[ponte.find("pub fn esci(").unwrap_or(0)..];
+        let stop = esci.find("lettore.ferma();").expect("esci ferma il motore");
+        let alza = esci
+            .find("lettore.fermato_della_sessione = true;")
+            .expect("esci alza la bandiera");
+        assert!(stop < alza, "la bandiera va alzata dopo lo stop");
+        let lettore = senza_prove(include_str!("mod.rs"));
+        let fermato = corpo(lettore, "fermato").unwrap_or_default();
+        assert!(fermato.is_empty(), "`fermato` non è pub: si cerca a mano");
+        let fermato = &lettore[lettore.find("\nfn fermato(").unwrap_or(0)..];
+        let consuma = fermato
+            .find("std::mem::take(&mut lettore.fermato_della_sessione)")
+            .expect("fermato consuma la bandiera");
+        let primo_effetto = fermato.find("chiudi_ascolto(").unwrap_or(usize::MAX);
+        assert!(
+            consuma < primo_effetto,
+            "la bandiera si guarda prima di tutto"
+        );
+        let avvio = &lettore[lettore.find("fn dopo_un_avvio(").unwrap_or(0)..];
+        let avvio = &avvio[..avvio.find("\n    }").unwrap_or(avvio.len())];
+        assert!(
+            avvio.contains("self.fermato_della_sessione = false;"),
+            "un brano nuovo abbassa la bandiera"
+        );
+    }
+
+    /// Le strade che scrivono il segno di «riprendi dov'eri» sono due, e
+    /// tutte e due guardano di chi è il brano: l'orologio (solo righe della
+    /// libreria) e la fine della coda (solo righe, e mai lo stop dell'uscita
+    /// da una sessione). Una terza strada fa fallire la prova, ed è voluto:
+    /// chi la aggiunge deve dire cosa fa in sessione.
+    #[test]
+    fn il_segno_si_scrive_solo_da_due_strade_guardate() {
+        let mut strade = Vec::new();
+        for (file, testo) in SORGENTI {
+            let codice = senza_prove(testo);
+            for (dove, _) in codice.match_indices("playback::save_posizione(") {
+                strade.push((file, dove));
+            }
+        }
+        assert_eq!(
+            strade.iter().map(|(file, _)| *file).collect::<Vec<_>>(),
+            ["mod.rs", "fili.rs"],
+            "le strade del segno sono cambiate: {strade:?}"
+        );
+        let fili = senza_prove(include_str!("fili.rs"));
+        let orologio = &fili[..fili.find("playback::save_posizione(").unwrap_or(0)];
+        assert!(
+            orologio.contains("di_chi.filter(|id| ospiti::e_di_libreria(*id))"),
+            "l'orologio scrive il segno anche per le maniglie"
+        );
+        let lettore = senza_prove(include_str!("mod.rs"));
+        let fine = &lettore[..lettore.find("playback::save_posizione(").unwrap_or(0)];
+        let fine = &fine[fine.rfind("fn fermato(").unwrap_or(0)..];
+        assert!(
+            fine.contains(".segno_a_zero"),
+            "la fine della coda scrive il segno senza chiedere a `dopo_il_fermato`"
+        );
+    }
 
     /// Il guasto di rete di un flusso parla di rete, non di cartelle.
     ///
